@@ -276,7 +276,9 @@ fn form_rows_node(
   let review_failed = fn() { failed_of(core, ["automaticDecisions.review"], [("station", station)]) }
   let busy = fn() { flag(d(), "pending") || saving() }
   let model_id = fn() { text(d(), "model") }
-  let chosen = fn() {
+  // (what its rows say of the station's rule, each worked out once for each change of it and told on only as it
+  // changes: a decision made, or the rule turned off, runs none of the rows whose words stay as they were)
+  let chosen_now = @signals.computed(fn(_) {
     match items(view(), "models").iter().find_first(fn(m) { text(Some(m), "id") == model_id() }) {
       Some(m) => text(Some(m), "name")
       None =>
@@ -286,22 +288,27 @@ fn form_rows_node(
           @sf.t("web-pages.automaticDecisions.unavailable", args=[("model", model_id())])
         }
     }
-  }
-  let can_review = fn() {
+  })
+  let chosen = fn() { chosen_now.get() }
+  let can_review_now = @signals.computed(fn(_) {
     flag(view(), "canReview") && flag(field(field(view(), "settings"), "completion"), "enabled") && !flag(d(), "dirty")
-  }
+  })
+  let can_review = fn() { can_review_now.get() }
   let policy = fn() {
     match field(view(), "policy") {
       Some(Object(_)) as p => p
       _ => None
     }
   }
-  let policy_line = fn() {
+  let has_policy = @signals.computed(fn(_) { policy() is Some(_) })
+  let policy_line_now = @signals.computed(fn(_) {
     let summary = text(policy(), "summaryText")
     @sf.t("web-pages.archivePolicy.optionCount", args=[("n", items(policy(), "options").length().to_string())]) +
     (if summary == "" { "" } else { " · " + summary })
-  }
-  let policy_failed = fn() { count(policy(), "failed") > 0 }
+  })
+  let policy_line = fn() { policy_line_now.get() }
+  let policy_failed_now = @signals.computed(fn(_) { count(policy(), "failed") > 0 })
+  let policy_failed = fn() { policy_failed_now.get() }
   @sf.group_node(v, fn(g) {
     @sf.switch_row_node(
       g,
@@ -354,7 +361,7 @@ fn form_rows_node(
         tail_shown=fn() { reviewing() || review_failed() is Some(_) },
       )
     })
-    g.show(fn() { policy() is Some(_) }, fn(r) {
+    g.show(fn() { has_policy.get() }, fn(r) {
       @sf.link_row_node(
         r,
         fn() { @sf.t("web-pages.archivePolicy.title") },

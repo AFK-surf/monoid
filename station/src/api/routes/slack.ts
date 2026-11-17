@@ -228,7 +228,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
     let shown = await putConnect(r, id, { ...i, kind: "slack", slack: slackFields });
     // Its app is connected now: no longer one waiting.
     if (made) {
-      config.update((raw) => {
+      await config.updateSoon((raw) => {
         raw.slackApps = (Array.isArray(raw.slackApps) ? raw.slackApps : []).filter((a: Json) => a?.appId !== made.appId);
       });
     }
@@ -274,7 +274,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
       const install = `https://slack.com/oauth/v2/authorize?client_id=${urlEncode(app.clientId)}&scope=${urlEncode(scopes.join(","))}&redirect_uri=${urlEncode(redirect)}&state=${urlEncode(state)}`;
       made.oauth = { state, clientId: app.clientId, clientSecret: app.clientSecret, redirectUri: redirect, install };
     }
-    change(r, `slack app ${app.appId}`, (raw) => {
+    await change(r, `slack app ${app.appId}`, (raw) => {
       raw.slackApps = [...(Array.isArray(raw.slackApps) ? raw.slackApps : []), made];
     });
     return ok({ appId: app.appId, iconError });
@@ -352,7 +352,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
     } catch (e) {
       throw new Refused(400, tr(lang, "station.slackApp.createFailed", { error: slackError(e, lang) }));
     }
-    change(r, `create slack app for ${id}`, (raw) => {
+    await change(r, `create slack app for ${id}`, (raw) => {
       for (const c of connectsRaw(raw).filter((c) => c?.id === id)) c.slack = { ...(isObject(c.slack) ? c.slack : {}), appId: app.appId };
     });
     return ok({ appId: app.appId, links: slackAppLinks(app.appId, team) });
@@ -372,7 +372,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
     const owner = await ownerOfConfigToken(slack.client, token.accessToken);
     const by = idOf(r.viewer);
     const made = { accessToken: token.accessToken, refreshToken: token.refreshToken, expiresAt: token.expiresAt, teamId: token.teamId, by, ...(owner !== null ? { owner } : {}) };
-    config.update((raw) => {
+    await config.updateSoon((raw) => {
       raw.slackConfigTokens = upsertToken(Array.isArray(raw.slackConfigTokens) ? raw.slackConfigTokens : [], made);
     });
     log.info("slack", "slack configuration token added", { team: token.teamId, by });
@@ -393,7 +393,7 @@ export const routes = (deps: SlackRoutesDeps): Route[] => {
     } catch (e) {
       throw new Refused(400, tr(lang, "station.slackApp.installFailed", { error: slackError(e, lang) }));
     }
-    config.update((raw) => {
+    await config.updateSoon((raw) => {
       for (const app of Array.isArray(raw.slackApps) ? raw.slackApps : []) {
         if (!isObject(app?.oauth) || app.oauth.state !== state) continue;
         app.oauth.botToken = botToken;

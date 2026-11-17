@@ -159,9 +159,21 @@ export const relays = style({});
 /** None to show: under the title, on its line (only the bottom margin: the page's column centres it, mid). */
 export const relaysNone = style({ marginTop: "0", marginBottom: "0", fontSize: vars.textUi, color: vars.muted });
 export const relay = style({ gap: "18px" });
-export const relayHead = style({ display: "flex", alignItems: "center", gap: "8px", minWidth: "0", fontSize: vars.textUi, lineHeight: "22px" });
+/** One line high whether it has the button to take the relay off or not (the button stands over its line, centred on
+ * it), so every card's lines below start alike. */
+export const relayHead = style({ display: "flex", alignItems: "center", gap: "8px", minWidth: "0", height: "22px", fontSize: vars.textUi, lineHeight: "22px" });
 globalStyle(`${relayHead} > b`, { fontWeight: "600", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 export const relaySeen = style({ marginLeft: "auto", flex: "none", fontSize: vars.textMeta, color: vars.subtle, whiteSpace: "nowrap" });
+/** The head's tools: the range and issuing a token, wrapping under each other where the page is narrow. */
+export const relaysTools = style({ display: "flex", alignItems: "center", justifyContent: "flex-end", flexWrap: "wrap", gap: "8px 12px" });
+/** How a relay came onto the list, and the ways into it, each a line to take off. */
+export const relayKept = style({ display: "grid", gap: "6px", minWidth: "0" });
+export const relayHow = style({ fontSize: vars.textMeta, lineHeight: "18px", color: vars.muted, overflowWrap: "anywhere" });
+/** (a part breaks onto the next line whole: "负载按来源 IP 认定" never split in two) */
+globalStyle(`${relayHow} > span`, { whiteSpace: "nowrap" });
+/** The tokens made for relays not used yet: a card above the relays'. */
+export const relayTokens = style({ gap: "8px", marginBottom: "10px" });
+globalStyle(`${relayTokens} > b`, { fontSize: vars.textUi, fontWeight: "600", lineHeight: "22px" });
 /** Its numbers side by side, as wide as each one's value, wrapping onto more lines where the card is narrow. */
 export const relayNumbers = style({
   margin: "0", display: "flex", flexWrap: "wrap", gap: "12px 32px",

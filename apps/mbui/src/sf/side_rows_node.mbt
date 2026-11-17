@@ -7,11 +7,12 @@
 /// Node `v`'s ground as nav_ground_by has it: the pointer's ground in and out (lit_node), the selected one's (`lit`, the
 /// selected grey by default) while `on()`, each over nav_fade from the moment it changes.
 pub fn nav_ground_node(v : @view.View, on : () -> Bool, lit? : Int64) -> Unit {
-  let hover = EdgeWay::new(0.0)
-  let chosen = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-  v.reacts(fn() { lit_node(v) }, fn(h) { hover.go(v, if h { 1.0 } else { 0.0 }, dur_ms) })
-  v.reacts(on, fn(o) { chosen.go(v, if o { 1.0 } else { 0.0 }, dur_ms) })
+  let hover = @motion.NodeWay::new(0.0)
+  let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+  v.reacts(fn() { lit_node(v) }, fn(h) { hover.go_ms(v, if h { 1.0 } else { 0.0 }, dur_ms) })
+  v.reacts(on, fn(o) { chosen.go_ms(v, if o { 1.0 } else { 0.0 }, dur_ms) })
   v
+  .focus_ring_theme()
   .ground(By(fn() {
     let t = theme()
     let lit = lit.unwrap_or(t.p.selected)
@@ -20,7 +21,7 @@ pub fn nav_ground_node(v : @view.View, on : () -> Bool, lit? : Int64) -> Unit {
     if h <= 0.0 && o <= 0.0 {
       0L
     } else {
-      over(alpha(t.p.hover, h * (1.0 - o)), alpha(lit, o))
+      over(alpha(lit, o), alpha(t.p.hover, h * (1.0 - 0.35 * o)))
     }
   }))
   |> ignore
@@ -63,10 +64,11 @@ pub fn band_row_node(
 ///|
 /// A row's words in a sidebar as a node (nav_words'): a list's title's look, cut short where the row has not the room.
 #callsite(autofill(loc))
-pub fn nav_words_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
+/// `faint`: drawn muted while it says so (a place of a station away).
+pub fn nav_words_node(parent : @view.View, words : () -> String, faint? : () -> Bool = fn() { false }, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(w) {
     w.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    words_node(w, words, fn() { theme().chat_list.title.then(nav_cut) }) |> ignore
+    words_node(w, words, fn() { if faint() { theme().chat_list.title.then(nav_cut_faint) } else { theme().chat_list.title.then(nav_cut) } }) |> ignore
   })
   |> ignore
 }
@@ -74,6 +76,10 @@ pub fn nav_words_node(parent : @view.View, words : () -> String, loc~ : SourceLo
 ///|
 // kept across runs: a value (no field of it changes)
 let nav_cut : @ui.TextStyle = @ui.text_style(w=Cut)
+
+///|
+// kept across runs: a value (no field of it changes)
+let nav_cut_faint : @ui.TextStyle = @ui.text_style(w=Cut, color=Muted)
 
 ///|
 /// An update in a bar as a node (update_key's, the settings' sidebar's band): `side` across, round, the pointer's ground
@@ -99,22 +105,28 @@ pub fn update_key_node(
 ) -> Unit {
   // (its tip on what holds it: said while busy too, the key taking no press then, as the pointer rests on it)
   parent.box(made_for=loc, fn(o) {
+    // (the key, which a press lands on: its press shuts the tip, as one on what the tip is of does)
+    let key : Ref[@view.View?] = Ref(None)
     @headless.button(o, label, fn(_) { press() }, disabled=busy, fn(k, b) {
-      let progress = EdgeWay::new(if @signals.untracked(coming) is Some(_) { 1.0 } else { 0.0 })
-      k.reacts(fn() { coming() is Some(_) }, fn(on) { progress.go(k, if on { 1.0 } else { 0.0 }, dur_ms) })
+      key.val = Some(k)
+      let progress = @motion.NodeWay::new(if @signals.untracked(coming) is Some(_) { 1.0 } else { 0.0 })
+      k.reacts(fn() { coming() is Some(_) }, fn(on) { progress.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms) })
       k
       .width(Is(Some(side)))
       .height(Is(Some(side)))
-      // (round as its ground is while there is one, as an old view's key's hovered{} look: at rest none, nothing
-      // standing in a corner)
-      .radius(By(fn() { if lit_node(k) && !b.disabled() { side / 2.0 } else { 0.0 } }))
+      // (round as its ground is while there is one, as an old view's key's hovered{} look; round at rest too, its
+      // ground none: in a sidebar's corner (the settings', where it is last on its band) concentric with it, as the
+      // corner rule takes it whatever it shows)
+      .radius(Is(side / 2.0))
       // (its mark in its middle both ways, as update_key_box's: a box lays what it holds down from its top)
       .lines_up(Is(Some(Middle)))
       .lies_along(Is(Middle))
-      .ground(By(fn() { if lit_node(k) && !b.disabled() { @ui.tree_theme().color(Hover) } else { 0L } }))
+      .focus_ring_theme()
       |> ignore
+      hover_ground_node(k, on=fn() { !b.disabled() })
       // (pressed while it is not busy: a press's ripple on it, its press then; read out unable to be pressed while busy)
-      let rippled = press_look(k, Is(side / 2.0), fn() { false })
+      // (a pointer's press lights its ground: press_ripple's)
+      let rippled = press_look(k, Is(side / 2.0), fn() { false }, pointer=false)
       let on_it = fn(d : @view.Drag) { k.finger_target(d.wx, d.wy) }
       k.gesture(
         @ui.touch_slop(),
@@ -153,7 +165,14 @@ pub fn update_key_node(
       |> ignore
     })
     |> ignore
-    ignore(tip_node(tips, o, why, within=true))
+    ignore(
+      tip_node(tips, o, why, within=true, pressed=fn() {
+        match key.val {
+          Some(k) => k.pressed()
+          None => false
+        }
+      }),
+    )
   })
   |> ignore
 }
@@ -181,8 +200,8 @@ fn coming_node(
           let pi = 3.141592653589793
           let mid = ring / 2.0
           let rad = mid - stroke / 2.0
-          let at = EdgeWay::new(@signals.untracked(coming).unwrap_or(0.0))
-          p.reacts(fn() { coming().unwrap_or(0.0) }, fn(k) { at.go(p, if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }, @kit.progress_ms) })
+          let at = @motion.NodeWay::new(@signals.untracked(coming).unwrap_or(0.0))
+          p.reacts(fn() { coming().unwrap_or(0.0) }, fn(k) { at.go_ms(p, if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k }, @kit.progress_ms) })
           p.box(fn(l) {
             l
             .width(Is(Some(ring)))
@@ -274,4 +293,84 @@ fn updating_node(parent : @view.View, size : Double, color : () -> Int64, loc~ :
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// A key of what comes (progress_key's) as a node in `parent`, over mbui's headless button: `side` across, round, the
+/// pointer's ground on it; its mark `mark` across: `glyph` while nothing comes, else how far it has come (`coming()`:
+/// Some of a part 0 to 1; coming_node's ring in its place, faded between the two over a control's ease without moving
+/// the key), red's dot hung on its corner while `failed()`. Read out a button named `label()`, its tip in `tips`;
+/// pressed, `press`. The key's node.
+#callsite(autofill(loc))
+pub fn progress_key_node(
+  parent : @view.View,
+  tips : TipLayer,
+  side : Double,
+  mark : Double,
+  glyph : String,
+  label : () -> String,
+  coming : () -> Double?,
+  failed : () -> Bool,
+  press : () -> Unit,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let made : Ref[@view.View?] = Ref(None)
+  parent.box(made_for=loc, fn(o) {
+    @headless.button(o, label, fn(_) { press() }, fn(k, b) {
+      made.val = Some(k)
+      let progress = @motion.NodeWay::new(if @signals.untracked(coming) is Some(_) { 1.0 } else { 0.0 })
+      k.reacts(fn() { coming() is Some(_) }, fn(on) { progress.go_ms(k, if on { 1.0 } else { 0.0 }, dur_ms) })
+      k
+      .width(Is(Some(side)))
+      .height(Is(Some(side)))
+      .radius(Is(side / 2.0))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      .focus_ring_theme()
+      |> ignore
+      hover_ground_node(k, on=fn() { !b.disabled() })
+      // (a finger's press ripples on it; a pointer's lights its ground)
+      let rippled = press_look(k, Is(side / 2.0), fn() { false }, pointer=false)
+      let on_it = fn(d : @view.Drag) { k.finger_target(d.wx, d.wy) }
+      k.gesture(
+        @ui.touch_slop(),
+        press=rippled.down,
+        tap=fn(d) {
+          (rippled.tapped)(d)
+          if on_it(d) {
+            b.press()
+          }
+        },
+        drag=fn(d) { if d.kind == Up && @ui.pointing() is Mouse && on_it(d) { b.press() } },
+      )
+      |> ignore
+      k.box(fn(m) {
+        m.width(Is(Some(mark))).height(Is(Some(mark))) |> ignore
+        m.box(fn(still) {
+          still.over(Is(true)).alpha(By(fn() { 1.0 - progress.shown(still) })) |> ignore
+          icon_node(still, glyph, mark, By(fn() { theme().p.text })) |> ignore
+        })
+        |> ignore
+        m.show(fn() { coming() is Some(_) || progress.shown(m) > 0.0 }, fn(c) {
+          c.over(Is(true)).alpha(By(fn() { progress.shown(c) })) |> ignore
+          coming_node(c, fn() { Some(coming().unwrap_or(1.0)) }, mark, fn() { theme().p.text })
+        })
+      })
+      |> ignore
+      // (one failed: red's dot hung on its corner, ringed in the ground it stands on)
+      k.show(failed, at_once=true, fn(d) {
+        d.over(Is(true)).presses(Is(false)) |> ignore
+        style_node(d, fn() { update_dot_at })
+        d.box(fn(ring) {
+          style_node(ring, fn() { update_dot_ring })
+          ring.box(fn(bad) { style_node(bad, fn() { update_dot_bad }) }) |> ignore
+        })
+        |> ignore
+      })
+    })
+    |> ignore
+    ignore(tip_node(tips, o, label, within=true))
+  })
+  |> ignore
+  made.val.unwrap()
 }

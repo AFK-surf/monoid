@@ -274,14 +274,8 @@ fn tape_station_memory(platform? : Int = 0, said? : Bool = false, font? : Double
   t.click(Link, label="记忆")
   t.run_for(@ui.move_most_ms)
   page_over(t, w)
-  // (the station's row: its name as it wrote it, the first line of it)
-  match t.words().search_by(fn(w) { w.0.has_prefix("Willow") }) {
-    Some(i) => {
-      let w = t.words()[i]
-      t.tap(w.1 + 4.0, w.2 + 4.0)
-    }
-    None => fail("no Willow")
-  }
+  // (a station's memory pushed over 记忆)
+  open_page(Setting(@settings.Route::Memory("ws1/st1")))
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
   assert_true(settings_page_whole(t, "发布流程", w))

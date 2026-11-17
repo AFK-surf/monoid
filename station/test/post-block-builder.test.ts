@@ -10,6 +10,7 @@ import { installPostBlocks, postBlocksReady } from "../src/store/post-blocks.ts"
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 import { formatDelivery } from "../src/sessions/actor.ts";
+import { endsOnce } from "./programs.ts";
 
 
 function fromBefore(store: Store, name = "old"): number {
@@ -53,7 +54,8 @@ test("deliveries wait for the previous station and only index their requested su
 });
 
 test("concurrent requests share progress, and closing releases waiters", async () => {
-  const store = Store.open(":memory:");
+  const dir = mkdtempSync(join(tmpdir(), "post-builder-shared-"));
+  const store = Store.open(join(dir, "station.db"));
   const builder = new PostBlockBuilder(store, Promise.resolve());
   try {
     const thread = fromBefore(store);
@@ -64,7 +66,7 @@ test("concurrent requests share progress, and closing releases waiters", async (
     assert.equal(postBlocksReady(store.db, thread, 0), false);
     await long;
     assert.deepEqual(store.postAfter("wanted", thread, 0), { n: 180, ts: "m180" });
-  } finally { await builder.close(); store.close(); }
+  } finally { await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 
   const other = Store.open(":memory:");
   const previous = Promise.withResolvers<void>();
@@ -82,9 +84,8 @@ test("a stopped post block worker retries the requested suffix", async () => {
   const store = Store.open(join(dir, "station.db"));
   const file = join(dir, "worker.mjs");
   const marker = join(dir, "exited");
-  const real = new URL("../src/sessions/post-block-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new PostBlockBuilder(store, Promise.resolve(), pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new PostBlockBuilder(store, Promise.resolve(), file);
   try {
     const thread = fromBefore(store);
     await builder.ready([{ thread, n: 170 }]);

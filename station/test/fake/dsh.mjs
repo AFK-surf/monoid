@@ -5,7 +5,7 @@
 //   say:<text>    a thought, then a reply                fail:auth|rate|model   the turn ends in dsh's error
 //   cmd           a bash call with its output, then a reply                      refuse  the prompt is refused
 //   tools         a call to the station's tools that fails as unreachable
-//   hold          a reply, then waits: a steer is answered in the same turn (`steer:<text>`, then it ends), a cancel
+//   hold          (or a prompt with test-hold in it, as the hub words one) a reply, then waits: a steer is answered in the same turn (`steer:<text>`, then it ends), a cancel
 //                 ends it aborted                                                exit  exits 4 in the middle of the turn
 //   gate:<name>   a reply's first part; the rest once FAKE_DUMP.<name>.a (a fifo) is written, then FAKE_DUMP.<name>.said
 //                 made; the end once FAKE_DUMP.<name>.b is (what the test lets happen when, not a time)
@@ -101,7 +101,7 @@ async function turn(text) {
   }
   if (text === "cmd") call("bash", '{"command":"ls"}', "a\n", false);
   if (text === "tools") call("mcp__stillfail__chat_post", '{"text":"hi"}', "fetch failed: ECONNREFUSED 127.0.0.1:4750", true);
-  if (text === "hold") {
+  if (text === "hold" || text.includes("test-hold")) {
     reply("holding");
     while (!t.cancelled && t.steers.length === 0) await new Promise((r) => (t.wake = r));
     if (t.cancelled) return end({ kind: "aborted", reason: { kind: "user" } });

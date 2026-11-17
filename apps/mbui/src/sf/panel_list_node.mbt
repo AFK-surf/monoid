@@ -13,8 +13,9 @@
 /// row's ground reaches the panel's sides as it does outside a list. As tall as its rows laid end to end where there is
 /// the room, giving way where there is not; `fills`: the room the panel gives it, whatever it holds (one gone about in,
 /// a folder after another, each holding more or less: not a list growing and shrinking at each step); `most`: no taller
-/// than that. `place`: what asks it to show a row (ListPlace: one brought to its middle as it opens). Its node (what
-/// scrolls).
+/// than that. `place`: what asks it to show a row (ListPlace: one brought to its middle as it opens). `stick_end`: made at
+/// its end and kept there as what it holds grows or more comes while it is there, not once scrolled off it; followed
+/// again once scrolled back to it (panel_list's `stick_end`, an old list's). Its node (what scrolls).
 #callsite(autofill(loc))
 pub fn[K : Hash + Eq] panel_list_node(
   parent : @view.View,
@@ -24,6 +25,7 @@ pub fn[K : Hash + Eq] panel_list_node(
   fills? : Bool = false,
   most? : () -> Double,
   place? : @view.ListPlace[K],
+  stick_end? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let at = panel_in_of(parent)
@@ -38,9 +40,14 @@ pub fn[K : Hash + Eq] panel_list_node(
       Some(m) => room.max_height(By(fn() { Some(m()) })) |> ignore
       None => ()
     }
+    // (its keys as last read, and whether their last change put another set in their place (a folder gone into,
+    // another's rows): there at once, not each of its rows closing and the other's opening: pg_blocks_read)
+    let was : Ref[Set[K]] = Ref(Set([]))
+    let other = Ref(false)
+    let read = fn() { pg_blocks_read(was, other, keys()) }
     room.scrolls_window(
       @view.Scroll::list(),
-      keys,
+      read,
       fn(b, k) {
         // (its rows laid out as the panel's are, their words further in by as far as it reaches out)
         panel_in_lend(b, look, at.words + out, sides=at.sides - out, small=at.small, clear=at.clear, listed=true)
@@ -50,8 +57,12 @@ pub fn[K : Hash + Eq] panel_list_node(
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
       place?,
-      // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-      at_once=true,
+      // (its end followed, where it sticks there: none of its rows holding what shows where it is as more comes)
+      follows=fn() { stick_end },
+      holds=fn(_) { !stick_end },
+      // (a row come or gone by data makes its way, the list's (View::comes); another list in its place at once)
+      comes=fn(_) { !other.val },
+      goes=fn(_) { !other.val },
     )
     |> ignore
   })

@@ -1,0 +1,230 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/store_threads"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/jsjson",
+  "station/sql",
+}
+
+// Values
+pub fn card_edit_page(@sql.Db, @json.Json, String, String?) -> @json.Json raise
+
+pub fn card_message_page(@sql.Db, @json.Json, String, String?) -> @json.Json raise
+
+pub async fn harness(@host.Host, String) -> Unit
+
+// Errors
+pub(all) suberror CcSessionsUnavailable {
+  CcSessionsUnavailable(Array[String])
+}
+
+pub(all) suberror DecisionSessionsUnavailable
+
+pub(all) suberror MessageWriteBusy
+
+pub(all) suberror SessionChatUnavailable
+
+pub(all) suberror StoreError {
+  StoreError(String)
+}
+
+// Types and methods
+pub(all) struct CardEditScan {
+  thread : @json.Json
+  ts : @json.Json
+  agent : @json.Json
+  target : String
+  token : String
+  schema : Int32
+}
+pub fn CardEditScan::from_json(@jsjson.JValue) -> Self
+pub fn CardEditScan::to_json(Self) -> @json.Json
+
+pub(all) struct CardOutcome {
+  id : String
+  thread : @json.Json
+  ts : @json.Json
+  agent : @json.Json
+  field : String
+  close : Bool
+  outcome : @jsjson.JValue
+}
+pub fn CardOutcome::from_json(@jsjson.JValue) -> Self
+pub fn CardOutcome::to_json(Self) -> @json.Json
+
+pub(all) struct Prepared {
+  scan : CardEditScan
+  card : String?
+  edit : String??
+}
+
+pub struct Store {
+  db : @sql.Db
+  mut now : Double
+  legacy_said : Bool
+  legacy_agent : Bool
+  legacy_login_cards : Bool
+  legacy_archive_policy : Bool
+  legacy_decision_time : Bool
+  mut legacy_decision_session : String?
+  mut decision_session_index_was_missing : Bool
+  mut decisions : Int32
+  moved_untold : Map[String, Bool]
+  mut depth : Int32
+  sent : Array[@json.Json]
+  requested : Array[@json.Json]
+  mut scan_guard_schema : Int32?
+  mut restate_guard_schema : Int32?
+  mut outbox_schema : Int32?
+  mut archive_last_schema : Int32?
+  mut seed : UInt64
+}
+pub fn Store::archive_marks(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::archive_policy(Self, @json.Json) -> @json.Json raise
+pub fn Store::archive_suggested(Self, @json.Json) -> @json.Json raise
+pub fn Store::asking_message(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::begin_card_edit_scan(Self, CardOutcome) -> CardEditScan? raise
+pub fn Store::card_at(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::card_choices(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::card_closed_since(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::card_ended_by_message(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::card_outcome_heads(Self, String, Int32) -> Array[CardOutcome] raise
+pub fn Store::card_replaced_by(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::cc_threads(Self, @json.Json) -> @json.Json raise
+pub fn Store::clear_archive_suggestion(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::close_card(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::close_login_cards(Self, @json.Json) -> @json.Json raise
+pub fn Store::closed_card(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::complete_router_write(Self, @json.Json) -> @json.Json raise
+pub fn Store::connect_local_threads(Self, @json.Json) -> @json.Json raise
+pub fn Store::connect_thread_station(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::connect_threads(Self, @json.Json) -> @json.Json raise
+pub fn Store::decision_sessions_ready(Self) -> @json.Json raise
+pub fn Store::decisions_version(Self) -> @json.Json
+pub fn Store::deliver(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::deliver_letter(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::delivery_pending(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::dismiss(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::dismissed(Self, @json.Json) -> @json.Json raise
+pub fn Store::drop_connect_threads(Self, @json.Json) -> @json.Json raise
+pub fn Store::edit_message(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::edit_message_if_ready(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::end_card_edit_scan(Self, CardEditScan) -> Unit raise
+pub fn Store::entries_after(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::entries_before(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::entries_between(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::first_text(Self, @json.Json) -> @json.Json raise
+pub fn Store::get_thread(Self, @json.Json) -> @json.Json raise
+pub fn Store::has_active_watch(Self, @json.Json) -> @json.Json raise
+pub fn Store::has_pending(Self, @json.Json) -> @json.Json raise
+pub fn Store::has_session_active_watch(Self, @json.Json) -> @json.Json raise
+pub fn Store::has_undelivered(Self, @json.Json) -> @json.Json raise
+pub fn Store::heard_threads(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::insert_letter(Self, @jsjson.JValue) -> @json.Json raise
+pub fn Store::insert_message(Self, @jsjson.JValue, before? : (() -> Unit raise)?, inserted? : ((Double) -> Unit raise)?) -> @json.Json raise
+pub fn Store::join_thread(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::keep_chat(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::kept_chats(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_decision(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_entry(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_letter(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_message(Self, @json.Json) -> @json.Json raise
+pub fn Store::last_message_at_for_archive(Self, @json.Json) -> @json.Json raise
+pub fn Store::latest_decisions_since(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::latest_thread(Self, @json.Json) -> @json.Json raise
+pub fn Store::latest_thread_if_ready(Self, @json.Json) -> @json.Json raise
+pub fn Store::leave_thread(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::left_thread(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::list_threads(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::mark_card_choices_told(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::mark_delivered(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::mark_moved_note_told(Self, @json.Json) -> @json.Json raise
+pub fn Store::mark_undelivered(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::message_at(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::message_at_if_ready(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::message_count(Self, @json.Json) -> @json.Json raise
+pub fn Store::message_number_at(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::message_page_entries(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::messages_before(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::new(@sql.Db, Double) -> Self raise
+pub fn Store::note_relayed(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::open_thread(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::open_thread_of(Self, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::participants(Self, @json.Json) -> @json.Json raise
+pub fn Store::pending_before(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::pending_card(Self, @json.Json) -> @json.Json raise
+pub fn Store::pending_card_header(Self, @json.Json) -> @json.Json raise
+pub fn Store::pending_card_header_if_ready(Self, @json.Json) -> @json.Json raise
+pub fn Store::pending_count(Self, @json.Json) -> @json.Json raise
+pub fn Store::pending_messages(Self, @json.Json) -> @json.Json raise
+pub fn Store::pinned_sessions(Self) -> @json.Json raise
+pub fn Store::pins(Self, @json.Json) -> @json.Json raise
+pub fn Store::read_position(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::recent_chat_list(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::recent_connect_people(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::recent_decisions(Self) -> @json.Json raise
+pub fn Store::recent_session_threads(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::record_decision(Self, @json.Json, @jsjson.JValue) -> @json.Json raise
+pub fn Store::relayed_to(Self, @json.Json) -> @json.Json raise
+pub fn Store::restate_card(Self, @json.Json, @json.Json, @json.Json, (@jsjson.JValue?) -> @jsjson.JValue raise) -> @json.Json raise
+pub fn Store::restate_queued_card(Self, CardOutcome, Prepared?) -> Bool? raise
+pub fn Store::returning_sessions_in(Self, @json.Json) -> @json.Json raise
+pub fn Store::save_card_outcome(Self, CardOutcome, () -> Unit raise) -> String raise
+pub fn Store::search_chat_list(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::session_chat(Self, @json.Json) -> @json.Json raise
+pub fn Store::session_home_thread(Self, @json.Json) -> @json.Json raise
+pub fn Store::session_thread(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::session_thread_by_id(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::session_threads(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::sessions_with_pending(Self) -> @json.Json raise
+pub fn Store::set_archive_policy(Self, @jsjson.JValue, @jsjson.JValue, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::set_archive_verdict(Self, @json.Json, @json.Json, @json.Json, @jsjson.JValue) -> @json.Json raise
+pub fn Store::set_chat_hidden(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::set_chat_muted(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::set_connect_thread_station(Self, @json.Json, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::set_moved_notes(Self, @json.Json) -> @json.Json raise
+pub fn Store::set_pin(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::set_read(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::starter(Self, @json.Json) -> @json.Json raise
+pub fn Store::suggest_archive(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::thread_at(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::thread_of_message(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::thread_sessions(Self, @json.Json) -> @json.Json raise
+pub fn Store::threads_at(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::unkeep_chat(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::unread_count(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::unread_for_archive(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::untold_card_choices(Self, @json.Json, @json.Json) -> @json.Json raise
+pub fn Store::untold_moved_note(Self, @json.Json) -> @json.Json raise
+pub fn Store::withdraw_card(Self, @json.Json, @json.Json, @json.Json) -> @json.Json raise
+
+pub struct Worker {
+  store : Store
+  rt : @effect.Runtime
+  page : async (@json.Json, String, String?) -> @json.Json
+  message_page : async (@json.Json, String, String?) -> @json.Json
+  scanning : Map[String, Bool]
+  deferred : Map[String, Int32]
+  mut timer : Int32?
+  mut next_id : Int32
+  mut cursor : String
+  mut again : Bool
+  mut ready : Bool
+  mut closed : Bool
+  warnings : Array[String]
+}
+pub fn Worker::close(Self) -> Unit
+pub fn Worker::new(Store, @effect.Runtime, async (@json.Json, String, String?) -> @json.Json, async (@json.Json, String, String?) -> @json.Json) -> Self
+pub fn Worker::previous_exited(Self) -> Unit
+pub fn Worker::previous_failed(Self, String) -> Unit
+pub fn Worker::run_until(Self, Int64) -> Unit
+pub fn Worker::save(Self, CardOutcome, () -> Unit raise) -> String raise
+pub fn Worker::state(Self) -> @json.Json
+pub fn Worker::wake(Self) -> Unit
+
+// Type aliases
+
+// Traits

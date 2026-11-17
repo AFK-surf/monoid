@@ -6,7 +6,7 @@ import type { DatabaseSync } from "node:sqlite";
 const HALF_SAFE = 2_251_799_813_685_247;
 const SECOND_LIMIT = 2_251_799_813_685;
 const UNCERTAIN = "-9007199254740991";
-const deadline = `CASE WHEN typeof(t.ended_at) = 'integer' AND t.ended_at BETWEEN -${HALF_SAFE} AND ${HALF_SAFE}
+export const deadline = `CASE WHEN typeof(t.ended_at) = 'integer' AND t.ended_at BETWEEN -${HALF_SAFE} AND ${HALF_SAFE}
   AND (t.wait_seconds IS NULL OR (typeof(t.wait_seconds) = 'integer' AND t.wait_seconds BETWEEN -${SECOND_LIMIT} AND ${SECOND_LIMIT}))
   THEN t.ended_at + COALESCE(t.wait_seconds, 0) * 1000 ELSE ${UNCERTAIN} END`;
 export const awakeDeadline = (key: string) => `(SELECT ${deadline} FROM sessions s
@@ -45,35 +45,8 @@ export const AWAKE_WAIT_TRIGGERS = `
 export const AWAKE_WAIT_STATUS = `SELECT
   EXISTS (SELECT 1 FROM session_awake_deadlines WHERE deadline = ${UNCERTAIN} LIMIT 1) AS uncertain,
   EXISTS (SELECT 1 FROM session_awake_deadlines WHERE deadline > ? LIMIT 1) AS awake`;
-export const AWAKE_BACKFILL_FIRST = "SELECT session FROM session_recover_waits ORDER BY session LIMIT ?";
-export const AWAKE_BACKFILL_NEXT = "SELECT session FROM session_recover_waits WHERE session > ? ORDER BY session LIMIT ?";
-
 export function awakeWaitsReady(db: DatabaseSync): boolean {
   return (db.prepare("SELECT complete FROM session_awake_wait_meta WHERE id = 1").get() as { complete: number }).complete === 1;
-}
-
-/// The old recovery lookup is prepared first; its entries, the cursor and deadline updates commit together.
-export function awakeWaitsStep(db: DatabaseSync, limit = 64): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("awake wait batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const state = db.prepare("SELECT cursor, complete FROM session_awake_wait_meta WHERE id = 1").get() as { cursor: string | null; complete: number };
-    if (state.complete === 1) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const recovery = db.prepare("SELECT complete FROM session_recover_wait_meta WHERE id = 1").get() as { complete: number };
-    if (recovery.complete !== 1) { db.exec("COMMIT"); return { done: false, visited: 0 }; }
-    const rows = (state.cursor === null ? db.prepare(AWAKE_BACKFILL_FIRST).all(limit)
-      : db.prepare(AWAKE_BACKFILL_NEXT).all(state.cursor, limit)) as { session: string }[];
-    const update = db.prepare(syncAwakeWait("?1"));
-    for (const { session } of rows) update.run(session);
-    const done = rows.length < limit;
-    db.prepare("UPDATE session_awake_wait_meta SET cursor = ?, complete = ? WHERE id = 1")
-      .run(rows.at(-1)?.session ?? state.cursor, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
 }
 
 /// True if the indexed arithmetic and the caller's arithmetic are both exact integers.

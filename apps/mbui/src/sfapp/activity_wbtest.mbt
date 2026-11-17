@@ -274,7 +274,7 @@ fn activity_frame_after(t : @ui.Tester, come : () -> Unit) -> (String, @ui.TreeF
   let f = t.tree_frames()
   let why = t.built_why()
   let perf = t.frame_perf()
-  (why, f.get(0).unwrap_or({ made: 0, let_go: 0, laid: 0, measured: 0 }), perf)
+  (why, f.get(0).unwrap_or({ made: 0, let_go: 0, laid: 0, measured: 0, bindings: 0 }), perf)
 }
 
 ///|
@@ -297,7 +297,7 @@ test "activity: what its agent's stream changes beside the line builds nothing i
   // a rate, a call's input growing, a step ended: nothing comes
   let none = activity_frame_after(t, fn() { () })
   assert_eq(none.0, "", msg="nothing built: \{Repr(none)}")
-  assert_true(none.1 == { made: 0, let_go: 0, laid: 0, measured: 0 }, msg="nothing made: \{Repr(none)}")
+  assert_true(none.1 == { made: 0, let_go: 0, laid: 0, measured: 0, bindings: 0 }, msg="nothing made: \{Repr(none)}")
   // as the core sent it before: the rest of the agent's state changed, the line's words as they were
   let before = activity_frame_after(t, fn() {
     live.set({

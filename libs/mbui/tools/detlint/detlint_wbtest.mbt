@@ -7,8 +7,8 @@ let conf_text : String =
   #|         "frame_core": ["src/ui/app.mbt", "src/host"]},
   #| "globals": {"roots": ["src/app"]},
   #| "flows": ["flows/*.drive"],
-  #| "scripts": ["scripts/*.sh", "scripts/*.mjs"],
-  #| "hosts": ["android/*.java", "src/host/*.m", "src/host/*.c"],
+  #| "scripts": ["scripts/*.sh", "scripts/*.mjs", "web/*.js"],
+  #| "hosts": ["android/*.java", "src/host/*.m", "src/host/*.c", "src/host/*.h", "web/host.js"],
   #| "run_first": {"starts": ["new_run", "fresh_app"], "reads": ["@sf.t", "tr"]},
   #| "reset_by_hand": {"names": ["new_run"]},
   #| "counts": {}}
@@ -2357,6 +2357,27 @@ test "key-read" {
 }
 
 ///|
+test "submitted-read" {
+  // the words a field gave up read by a build outside mbui's ui and kit: counted (a read each); in ui, in kit, in a
+  // test, a field of that name declared or given (no `.` before it), a method of that name, not
+  let fs = found(
+    [
+      (
+        "src/sfpages/x.mbt",
+        "fn d(c : Ctx) -> Unit {\n  let res = c.editor(\"k\")\n  match res.submitted {\n    Some(w) => go(w)\n    None => ()\n  }\n  if c.editor(\"j\").submitted is Some(_) {\n    go(\"\")\n  }\n}\n",
+      ),
+      ("src/ui/editor.mbt", "fn n(st : EditorState) -> Unit {\n  st.submitted = Some(st.text)\n}\n"),
+      ("src/kit/field.mbt", "fn n(e : EditorResult) -> Bool {\n  e.submitted is Some(_)\n}\n"),
+      ("src/sfapp/y_wbtest.mbt", "test \"t\" {\n  ignore(r.submitted)\n}\n"),
+      ("src/sfapp/z.mbt", "struct Z {\n  submitted : Bool\n}\nfn z() -> Z {\n  { submitted: false }\n}\nfn w(f : Form) -> Unit {\n  f.submitted(1)\n}\n"),
+    ],
+    "submitted-read",
+    2,
+  )
+  assert_eq(lines(fs), [3, 7])
+}
+
+///|
 test "build-clock: what a frame's paint reads is not counted" {
   // read in what a paint taker is given, in a function only that calls, in one only paint's root calls: not counted;
   // in a function also called as it is built: counted
@@ -2592,4 +2613,604 @@ test "reset-by-hand" {
     rule="reset-by-hand",
   )
   assert_eq(fs.map(fn(f) { "\{f.file}:\{f.line}" }), ["src/app/a_wbtest.mbt:2", "src/app/a_wbtest.mbt:22"])
+}
+
+///|
+fn perf_cfg() -> Config {
+  Config::new(
+    conf_value().set(
+      "signals",
+      @rjson.Value::Obj([
+        ("scoped_ok", Arr([Str("src/signals"), Str("src/sfbase")])),
+        ("effect_ok", Arr([Str("src/signals"), Str("src/sfbase")])),
+      ]),
+    ),
+  )
+}
+
+///|
+test "scoped-computed" {
+  // a scoped computed outside the parts said to keep one: counted; in them, in a test, a plain computed, the signals'
+  // own definition and an exception with its reason, not
+  let cfg = perf_cfg()
+  let page =
+    #|fn files_node(v : @view.View, list : () -> Array[String]) -> Unit {
+    #|  let listed = @signals.computed_scoped(fn(_) { list() }, same=physical_equal)
+    #|  let plain = @signals.computed(fn(_) { list() }, same=physical_equal)
+    #|  // det-ok(scoped-computed): read by a press with no reader
+    #|  let read = @signals.computed_scoped(fn(_) { list() })
+    #|  v.words(By(fn() { listed().join(",") + plain().join(",") + read().join(",") })) |> ignore
+    #|}
+  let fs = found(
+    [
+      ("src/sfpages/files_node.mbt", page),
+      ("src/sfbase/source.mbt", page),
+      ("src/sfpages/files_node_wbtest.mbt", "test \"t\" {\n  let c = @signals.computed_scoped(fn(_) { 1 })\n  ignore(c)\n}\n"),
+      ("src/signals/signals.mbt", "pub fn[T] computed_scoped(getter : (T?) -> T) -> () -> T {\n  computed_scoped(getter)\n}\n"),
+    ],
+    "scoped-computed",
+    1,
+    cfg~,
+  )
+  assert_eq(fs.map(fn(f) { "\{f.file}:\{f.line}" }), ["src/sfpages/files_node.mbt:2"])
+  assert_eq(
+    lint_sources([("src/sfpages/files_node.mbt", page)], cfg).filter(fn(f) {
+      f.rule == "scoped-computed" && f.excused is Some(_)
+    }).length(),
+    1,
+  )
+}
+
+///|
+test "raw-effect" {
+  // a bare effect (effect, effect_cleanup) outside the parts said to keep one: counted; in them, in a test, a Ctx's
+  // effect (a method), an effect scope and one excused, not
+  let cfg = perf_cfg()
+  let drag =
+    #|fn drag_node(v : @view.View, c : @ui.Ctx, at : @signals.Signal[Int]) -> Unit {
+    #|  let stop = @signals.effect(fn() { ignore(at.get()) })
+    #|  let stop2 = @signals.effect_cleanup(fn() { ignore(at.get()); fn() {  } })
+    #|  c.effect("k", fn(_) {  })
+    #|  let s = @signals.effect_scope(fn() {  })
+    #|  let k = @signals.effect(fn() { ignore(at.get()) }) // det-ok(raw-effect): the drag's own, stopped by its end
+    #|  v.owns(fn() { stop(); stop2(); s(); k() }) |> ignore
+    #|}
+  let fs = found(
+    [
+      ("src/sfdesk/drag.mbt", drag),
+      ("src/sfbase/refs.mbt", drag),
+      ("src/sfdesk/drag_wbtest.mbt", "test \"t\" {\n  let s = @signals.effect(fn() {  })\n  s()\n}\n"),
+    ],
+    "raw-effect",
+    2,
+    cfg~,
+  )
+  assert_eq(lines(fs), [2, 3])
+}
+
+///|
+test "pick-loop: in what a switch_by makes, as in a pick's" {
+  // (View::switch_by is a pick at once: what it makes made again as what it switches by changes, the same)
+  let hits =
+    #|fn lanes_node(v : @view.View, ws : () -> String, n : Int) -> Unit {
+    #|  v.switch_by(fn() { ws() }, fn(p, _) {
+    #|    for i in 0..<n {
+    #|      p.box(fn(r) { r.words(Is(i.to_string())) |> ignore }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/lanes_node.mbt", hits)], "pick-loop", 1)
+  assert_eq(lines(fs), [3])
+}
+
+///|
+test "pick-loop" {
+  // a loop making nodes as it goes round, in what a pick or a show makes (or in a part made in it, given what to make
+  // in): counted, at its `for`
+  let hits =
+    #|fn tiles_node(v : @view.View, kind : () -> Int, xs : () -> Array[String]) -> Unit {
+    #|  v.pick(fn() { kind() }, fn(p, k) {
+    #|    ignore(k)
+    #|    for x in @signals.untracked(xs) {
+    #|      p.box(fn(r) { r.words(Is(x)) |> ignore }) |> ignore
+    #|    }
+    #|    @sf.waiting_node(p, fn(w) {
+    #|      for i, n in [5, 9, 7] {
+    #|        @sf.choice_row_node(w, fn() { n.to_string() }, fn() { i == 0 })
+    #|      }
+    #|    })
+    #|  })
+    #|  v.show(fn() { kind() > 0 }, fn(s) {
+    #|    s.box(fn(right) {
+    #|      for idx in [2, 3, 1] {
+    #|        tile_node(right, idx)
+    #|      }
+    #|    }) |> ignore
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/tiles_node.mbt", hits)], "pick-loop", 3)
+  assert_eq(lines(fs), [4, 8, 15])
+  // what runs later than the view is made (a press's handler, a part's own press, a binding, a callback said by its
+  // label), a loop over data only, one in an each's row inside the pick, one outside any pick or show, one in a test,
+  // an Array's each and one excused: not
+  let misses =
+    #|fn stations_node(v : @view.View, kind : () -> Int, sts : () -> Array[String]) -> Unit {
+    #|  v.pick(fn() { kind() }, fn(p, _) {
+    #|    p.box(fn(b) {
+    #|      b.on_press(fn() {
+    #|        for st in @signals.untracked(sts) {
+    #|          act(st)
+    #|        }
+    #|      }) |> ignore
+    #|    }) |> ignore
+    #|    @sf.button_node(p, fn() { "all" }, fn() {
+    #|      for st in @signals.untracked(sts) {
+    #|        p.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    @sf.ask_node(p, on_got=fn(got) {
+    #|      for st in got {
+    #|        p.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    p.words(By(fn() {
+    #|      let out = []
+    #|      for st in sts() {
+    #|        out.push(st)
+    #|      }
+    #|      out.join(",")
+    #|    })) |> ignore
+    #|    let names = []
+    #|    for st in @signals.untracked(sts) {
+    #|      names.push(st)
+    #|    }
+    #|    p.each(sts, fn(s) { s }, fn(row, s) {
+    #|      for part in s.get().split(",") {
+    #|        row.box(fn(r) { r.words(Is(part.to_string())) |> ignore }) |> ignore
+    #|      }
+    #|    })
+    #|    names.each(fn(n) { p.box(fn(r) { r.words(Is(n)) |> ignore }) |> ignore })
+    #|    // det-ok(pick-loop): the three dots of a wait, made once with the rest
+    #|    for i in 0..<3 {
+    #|      p.box(fn(d) { d.words(Is(i.to_string())) |> ignore }) |> ignore
+    #|    }
+    #|  })
+    #|  for st in @signals.untracked(sts) {
+    #|    v.box(fn(r) { r.words(Is(st)) |> ignore }) |> ignore
+    #|  }
+    #|}
+  found(
+    [
+      ("src/sfpages/stations_node.mbt", misses),
+      ("src/sfpages/tiles_node_wbtest.mbt", hits),
+    ],
+    "pick-loop",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "each-min-height" {
+  // a list's row whose own node says its least height and no height: by the call, by a style said there, by a style
+  // named (in another file too, through what it goes on from), counted
+  let styles =
+    #|let tall_row : @ui.Style = @ui.css("row px=S3 min_h=S11")
+    #|let tall_too : @ui.Style = tall_row.then(@ui.css("gap=S2"))
+    #|let fixed_row : @ui.Style = @ui.css("row h=S11 min_h=S8")
+    #|let free_row : @ui.Style = @ui.css("row min_h=0")
+  let rows =
+    #|fn rows_node(v : @view.View, items : () -> Array[String]) -> Unit {
+    #|  v.each(items, fn(s) { s }, fn(row, s) {
+    #|    row.grow(Is(1.0)).min_height(Is(Some(44.0))) |> ignore
+    #|    row.words(By(fn() { s.get() })) |> ignore
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { tall_too }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    @sf.style_node(row, fn() { @sf.base.then(@ui.style(min_h=Fixed(theme().least))) })
+    #|  })
+    #|  v.each_of(items, fn(row, _) { row.min_height(By(fn() { Some(least()) })) |> ignore })
+    #|}
+  let fs = found([("src/sf/styles.mbt", styles), ("src/sfpages/rows_node.mbt", rows)], "each-min-height", 4)
+  assert_eq(lines(fs), [3, 6, 8, 10])
+  // a least of 0 or none (what lets it shrink), a row with its height said (by the call or its style), a style whose
+  // least is 0, a least said of a node in the row (not the row's own), an Array's each, a test, and one excused: not
+  let fine =
+    #|fn rows_node(v : @view.View, items : () -> Array[String]) -> Unit {
+    #|  v.each(items, fn(s) { s }, fn(row, _) { row.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { row.min_height(Is(None)) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.min_height(Is(Some(44.0))).height(By(fn() { Some(row_h()) })) |> ignore
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { fixed_row }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) { style_node(row, fn() { free_row }) })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.height(Is(Some(44.0))) |> ignore
+    #|    style_node(row, fn() { tall_row })
+    #|  })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    row.box(fn(inner) { inner.min_height(Is(Some(20.0))) |> ignore }) |> ignore
+    #|  })
+    #|  items().each(fn(s) { v.box(fn(b) { b.min_height(Is(Some(20.0))) |> ignore }) |> ignore })
+    #|  v.each(items, fn(s) { s }, fn(row, _) {
+    #|    // det-ok(each-min-height): a card of several lines, as tall as its words come to
+    #|    row.min_height(Is(Some(44.0))) |> ignore
+    #|  })
+    #|}
+  found(
+    [
+      ("src/sf/styles.mbt", styles),
+      ("src/sfpages/fine_node.mbt", fine),
+      ("src/sfpages/rows_node_wbtest.mbt", rows),
+    ],
+    "each-min-height",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "each-lookup" {
+  // a row of an each (each_of) that walks a list to find its item, as it is made or as a binding of it reads: counted,
+  // at the call
+  let hits =
+    #|fn cards_node(v : @view.View, all : () -> Array[Item], ids : () -> Array[String]) -> Unit {
+    #|  v.each(ids, fn(s) { s }, fn(row, id) {
+    #|    let k = id.untracked()
+    #|    let item = fn() { all().iter().find_first(fn(i) { i.id == k }) }
+    #|    row.words(By(fn() { item().map(fn(i) { i.title }).unwrap_or("") })) |> ignore
+    #|    row.box(fn(b) {
+    #|      b.width(By(fn() { Some(all().search_by(fn(i) { i.id == k }).unwrap_or(0).to_double()) })) |> ignore
+    #|    }) |> ignore
+    #|  })
+    #|  v.each_of(all, fn(row, i) {
+    #|    row.words(Is(all().iter().find_first(fn(j) { j.id == i.id }).map(fn(j) { j.title }).unwrap_or(""))) |> ignore
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/cards_node.mbt", hits)], "each-lookup", 3)
+  assert_eq(lines(fs), [4, 7, 11])
+  // a lookup run later than the row is made (a press, a handler, a gesture's tap or drag, a callback said by its
+  // label), one outside any each, a string's find, one in a test and one excused: not
+  let misses =
+    #|fn cards_node(v : @view.View, all : () -> Array[Item], ids : () -> Array[String]) -> Unit {
+    #|  let first = all().iter().find_first(fn(i) { i.pinned })
+    #|  v.each(ids, fn(s) { s }, fn(row, id) {
+    #|    let k = id.untracked()
+    #|    row.on_press(fn() { open(all().iter().find_first(fn(i) { i.id == k })) }) |> ignore
+    #|    @sf.button_node(row, fn() { "go" }, press=fn() { go(all().search_by(fn(i) { i.id == k })) })
+    #|    row.gesture(4.0, tap=fn(_) { open(all().iter().find_first(fn(i) { i.id == k })) }, drag=fn(_) {
+    #|      drop(all().search_by(fn(i) { i.id == k }))
+    #|    }) |> ignore
+    #|    let cut = k.find("/")
+    #|    // det-ok(each-lookup): one of the three tones, a fixed few
+    #|    let tone = tones.iter().find_first(fn(t) { t == k })
+    #|    ignore((first, cut, tone))
+    #|  })
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/cards_node_wbtest.mbt", hits),
+    ],
+    "each-lookup",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "layout-drawn-while" {
+  // a size or room of the layout given what reads a way as it is drawn: counted, at the setter
+  let hits =
+    #|fn slide_node(v : @view.View, way : @motion.Way) -> Unit {
+    #|  v.width(By(fn() { Some(300.0 * way.shown_on(v)) })) |> ignore
+    #|  v.box(fn(b) {
+    #|    b
+    #|    .grow(Is(1.0))
+    #|    .padding(By(fn() {
+    #|      let t = b.drawn_while(fn(at) { way.goes_at(at) })
+    #|      (t, 0.0, 0.0, 0.0)
+    #|    }))
+    #|    |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/sfpages/slide_node.mbt", hits)], "layout-drawn-while", 2)
+  assert_eq(lines(fs), [2, 6])
+  // what is drawn moved by it (offset, alpha), a size worked out of no way, one in a test and one excused: not
+  let misses =
+    #|fn slide_node(v : @view.View, way : @motion.Way) -> Unit {
+    #|  v.offset(By(fn() { (300.0 * way.shown_on(v), 0.0) })).alpha(By(fn() { way.shown_on(v) })) |> ignore
+    #|  v.width(By(fn() { Some(room()) })) |> ignore
+    #|  // det-ok(layout-drawn-while): a sheet's height that truly follows the finger's
+    #|  v.height(By(fn() { Some(way.shown_on(v)) })) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/slide_node_wbtest.mbt", hits),
+    ],
+    "layout-drawn-while",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "shader-int" {
+  let bad_h =
+    #|static const char *VS =
+    #|  "#version 300 es\n"
+    #|  "void main() { gl_Position = vec4(0.0); }\n";
+    #|static const char *FS =
+    #|  "#version 300 es\n"
+    #|  "precision highp float;\n"
+    #|  "out vec4 o;\n"
+    #|  "void main() { o = vec4(1.0); }\n";
+  let bad_js =
+    #|const FS = `#version 300 es
+    #|precision highp float;
+    #|precision mediump int;
+    #|out vec4 o;
+    #|void main() { o = vec4(1.0); }`;
+  let fs = found([("src/host/gles_render.h", bad_h), ("web/host.js", bad_js)], "shader-int", 2)
+  assert_eq(lines(fs), [1, 5])
+  let good_h =
+    #|static const char *VS =
+    #|  "#version 300 es\n"
+    #|  "void main() { gl_Position = vec4(0.0); }\n";
+    #|static const char *FS =
+    #|  "#version 300 es\n"
+    #|  "precision highp float;\n"
+    #|  "precision highp int;\n"
+    #|  "out vec4 o;\n"
+    #|  "void main() { o = vec4(1.0); }\n";
+  let good_js =
+    #|const FS = `#version 300 es
+    #|precision highp float;
+    #|precision highp int;
+    #|out vec4 o;
+    #|void main() { o = vec4(1.0); }`;
+  found([("src/host/gles_render.h", good_h), ("web/host.js", good_js)], "shader-int", 0) |> ignore
+}
+
+///|
+test "raw-hover-ground" {
+  let conf = conf_value().set(
+    "pages",
+    @rjson.Value::Obj([("roots", Arr([Str("src/sfpages")]))]),
+  )
+  let cfg = Config::new(conf)
+  let hits =
+    #|fn row_node(v : @view.View) -> Unit {
+    #|  v.ground(By(fn() { if @sf.lit_node(v) { 0x11223344L } else { 0L } })) |> ignore
+    #|  v.box(fn(b) {
+    #|    b.ground(By(fn() { if b.pointed() { 0x11223344L } else { 0xFFFFFFFFL } })) |> ignore
+    #|  }) |> ignore
+    #|}
+  let fs = found([("src/sfpages/row_node.mbt", hits)], "raw-hover-ground", 2, cfg~)
+  assert_eq(lines(fs), [2, 4])
+  let misses =
+    #|fn row_node(v : @view.View, way : @motion.Eased) -> Unit {
+    #|  @sf.hover_ground_node(v)
+    #|  v.ground(By(fn() { if @sf.lit_node(v) { 0L } else { alpha(0x11223344L, way.shown(v)) } })) |> ignore
+    #|  // det-ok(raw-hover-ground): roving menu active bar moves at once across items
+    #|  v.ground(By(fn() { if v.pointed() { 0x11223344L } else { 0L } })) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfpages/fine_node.mbt", misses),
+      ("src/sfpages/row_node_wbtest.mbt", hits),
+    ],
+    "raw-hover-ground",
+    0,
+    cfg~,
+  )
+  |> ignore
+}
+
+///|
+test "width-structure" {
+  let hits =
+    #|fn table_node(outer : @view.View, flag : () -> Bool) -> Unit {
+    #|  outer.by_room(fn(outer, given) {
+    #|    outer.show(fn() { given.width() < 300.0 }, fn(o) { o.box(fn(_) {  }) |> ignore })
+    #|    let room = fn() { given.width() - 8.0 }
+    #|    let scale = fn() { if room() < 100.0 { room() / 100.0 } else { 1.0 } }
+    #|    outer.pick(fn() { scale() < 1.0 }, at_once=true, fn(o, fitted) { if fitted { o.box(fn(_) {  }) |> ignore } })
+    #|    outer.pick(fn() { room() > 400.0 }, fn(_, _) {  })
+    #|    let fit : () -> Bool = fn() { given.width() > 3.0 }
+    #|    outer.show(fit, fn(_) {  })
+    #|    outer.by_room(fn(inner, given) {
+    #|      inner.show(when=fn() { flag() && given.width() < 10.0 }, fn(_) {  })
+    #|    })
+    #|    |> ignore
+    #|  })
+    #|  |> ignore
+    #|}
+  let fs = found([("src/sf/table_node.mbt", hits)], "width-structure", 5)
+  assert_eq(lines(fs), [3, 6, 7, 9, 11])
+  let misses =
+    #|fn table_node(outer : @view.View, open : () -> Bool, w : @view.View) -> Unit {
+    #|  w.show(fn() { w.width() < 3.0 }, fn(_) {  })
+    #|  outer.by_room(fn(outer, given) {
+    #|    let room = fn() { given.width() - 8.0 }
+    #|    let half = fn() { room() / 2.0 }
+    #|    outer.gap(By(fn() { if half() < 300.0 { 4.0 } else { 8.0 } })) |> ignore
+    #|    outer.width(By(fn() { Some(given.width()) })) |> ignore
+    #|    outer.show(open, fn(o) { o.box(fn(_) {  }) |> ignore })
+    #|    outer.pick(fn() { given.tall(4.0) > 2.0 }, fn(_, _) {  })
+    #|    outer.show(fn() { st.room > 0.0 && pad(room=1.0) > 0.0 }, fn(_) {  })
+    #|    outer.pick(fn() { open() }, fn(o, _) { o.gap(By(fn() { room() })) |> ignore })
+    #|    outer.box(fn(b) {
+    #|      b.on_press(fn() { b.show(fn() { given.width() > 3.0 }, fn(_) {  }) })
+    #|    })
+    #|    |> ignore
+    #|    outer.by_room(fn(inner, r2) {
+    #|      inner.show(fn() { r2.tall(1.0) > 0.0 }, fn(_) {  })
+    #|    })
+    #|    |> ignore
+    #|  })
+    #|  |> ignore
+    #|}
+  found(
+    [("src/sf/fine_node.mbt", misses), ("src/sf/table_node_wbtest.mbt", hits)],
+    "width-structure",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "reused-untracked-key" {
+  let hits =
+    #|fn list_node(v : @view.View, s : @view.Scroll, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  v.scrolls_window(
+    #|    s,
+    #|    keys,
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, key) {
+    #|      let k = @signals.untracked(key)
+    #|      let n = @signals.untracked(fn() { rows.get().get(key()) })
+    #|      let m = key.untracked()
+    #|      let o = untracked(fn() { key() })
+    #|      b.words(By(fn() { "\{k} \{n} \{m} \{o}" })) |> ignore
+    #|    },
+    #|    fn(b, k) { b.words(Is(k)) |> ignore },
+    #|  )
+    #|  |> ignore
+    #|}
+  let fs = found([("src/sfpages/list_node.mbt", hits)], "reused-untracked-key", 4)
+  assert_eq(lines(fs), [7, 8, 9, 10])
+  let misses =
+    #|fn list_node(v : @view.View, s : @view.Scroll, keys : () -> Array[String], rows : @signals.Signal[Map[String, Int]]) -> Unit {
+    #|  v.scrolls_window(
+    #|    s,
+    #|    keys,
+    #|    reused=fn(_) { Some(0) },
+    #|    make_reused=fn(b, key) {
+    #|      b.words(By(fn() { rows.get().get(key()).to_string() })) |> ignore
+    #|      let first = @signals.untracked(fn() { rows.get().length() })
+    #|      let held = @signals.untracked(fn() { b.key })
+    #|      b.on_press(fn() { ignore(@signals.untracked(key)) }) |> ignore
+    #|      b.gesture(tap=fn() { ignore(@signals.untracked(fn() { key() })) }) |> ignore
+    #|      ignore((first, held))
+    #|    },
+    #|    fn(b, k) { b.words(Is(@signals.untracked(fn() { k }))) |> ignore },
+    #|  )
+    #|  |> ignore
+    #|  v.scrolls_window(s, keys, make_reused=fn(b, _) { ignore(@signals.untracked(fn() { b })) }, fn(_, _) {  }) |> ignore
+    #|}
+  found(
+    [("src/sfpages/fine_node.mbt", misses), ("src/sfpages/list_node_wbtest.mbt", hits)],
+    "reused-untracked-key",
+    0,
+  )
+  |> ignore
+}
+
+///|
+test "manual-fade-way" {
+  let conf = conf_value()
+    .set("pages", @rjson.Value::Obj([("roots", Arr([Str("src/sfpages")]))]))
+    .set("library", @rjson.Value::Obj([("roots", Arr([Str("src/sf")]))]))
+  let cfg = Config::new(conf)
+  let hits =
+    #|fn key_node(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  let there = @signals.signal(false)
+    #|  v.reacts(fn() { true }, fn(on) {
+    #|    seen.go(v, 1.0, 100.0)
+    #|    if !on { v.at_moment(v.logic_at() + 100.0, fn() { there.set(false) }) |> ignore }
+    #|  })
+    #|  v.show(fn() { there.get() }, fn(_) {  })
+    #|}
+    #|
+    #|fn bar_node(v : @view.View) -> Unit {
+    #|  let way = EdgeWay::new(1.0)
+    #|  let again = EdgeWay::new(0.0)
+    #|  let gone = @signals.signal(false)
+    #|  v.at_moment(10.0, fn() { gone.set(true) }) |> ignore
+    #|  v.show(fn() { !gone.get() }, fn(_) {  })
+    #|}
+  let fs = found(
+    [("src/sf/key_node.mbt", hits), ("src/sfpages/bar_node.mbt", hits)],
+    "manual-fade-way",
+    4,
+    cfg~,
+  )
+  assert_eq(lines(fs), [2, 2, 12, 12])
+  let misses =
+    #|fn no_moment(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  v.show(fn() { true }, fn(_) {  })
+    #|}
+    #|
+    #|fn no_show(v : @view.View) -> Unit {
+    #|  let seen = @motion.EdgeWay::new(0.0)
+    #|  v.at_moment(10.0, fn() {  }) |> ignore
+    #|}
+    #|
+    #|fn no_way(v : @view.View) -> Unit {
+    #|  let gone = @signals.signal(false)
+    #|  v.at_moment(10.0, fn() { gone.set(true) }) |> ignore
+    #|  v.show(fn() { !gone.get() }, fn(_) {  })
+    #|}
+    #|
+    #|fn way_alone(v : @view.View) -> @motion.EdgeWay {
+    #|  @motion.EdgeWay::new(0.0)
+    #|}
+    #|
+    #|fn not_what_it_shows(v : @view.View, open : @signals.Signal[Bool]) -> Unit {
+    #|  let grow = @motion.EdgeWay::new(0.0)
+    #|  let landed = @signals.signal(false)
+    #|  v.at_moment(v.cause_at(), fn() { grow.go(v, 1.0, 100.0); landed.set(true) }) |> ignore
+    #|  v.show(fn() { open.get() }, fn(_) {  })
+    #|}
+  found(
+    [
+      ("src/sf/fine_node.mbt", misses),
+      ("src/sf/key_node_wbtest.mbt", hits),
+      ("src/stillfail/key_node.mbt", hits),
+    ],
+    "manual-fade-way",
+    0,
+    cfg~,
+  )
+  |> ignore
+}
+
+///|
+test "page-at-moment" {
+  // a page asking a moment of its own (View::at_moment) outside its tests: counted, at the call
+  let cfg = Config::new(@rjson.parse("{\"pages\": {\"roots\": [\"src/sfdesk\", \"src/sfpages\"]}}"))
+  let hits =
+    #|fn bar_node(v : @view.View, open : () -> Bool) -> Unit {
+    #|  let closing = @signals.signal(false)
+    #|  v.reacts(open, fn(o) {
+    #|    if !o {
+    #|      closing.set(true)
+    #|      v.at_moment(v.cause_at() + 120.0, fn() { closing.set(false) }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfdesk/bar_node.mbt", hits)], "page-at-moment", 1, cfg~)
+  assert_eq(lines(fs), [6])
+  // the same in a test, in the library (not a page), excused on its line, and a function of another name: not
+  let excused =
+    #|fn field_node(f : @view.View) -> Unit {
+    #|  // det-ok(page-at-moment): what is typed looked for that much later, the page's own timing
+    #|  f.at_moment(f.cause_at() + 120.0, fn() {  }) |> ignore
+    #|  f.at_moments(1.0) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfdesk/bar_node_wbtest.mbt", hits),
+      ("src/sf/bar_node.mbt", hits),
+      ("src/sfpages/field_node.mbt", excused),
+    ],
+    "page-at-moment",
+    0,
+    cfg~,
+  )
+  |> ignore
 }

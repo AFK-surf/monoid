@@ -3,330 +3,6 @@
 // workspace with the workspace's mark.
 
 ///|
-/// How an agent runs (RunSettingsScreen): what it is now and what it becomes, the changes marked (and why its account
-/// must change, when it must); then the model, how hard it thinks, how fast and who runs it, each picked in the core's
-/// `pick` of `session:<key>` (`pick.set`); the button says what it becomes (不变 when nothing changed) and saves
-/// (`pick.save`), or, another station's model, borrows it once asked again.
-fn run_settings_page(c : @ui.Ctx, core : Core, station : String, key : String) -> Unit {
-  let of = "session:" + key
-  let topic = (core.topic)("pick", { "station": str(station), "of": str(of) }).get()
-  let v = topic.value
-  let pick = fn(more : Array[(String, Json)]) {
-    let p = [("station", str(station)), ("of", str(of))]
-    for x in more {
-      p.push(x)
-    }
-    (core.call)("pick.set", obj(p), fn(r) {
-      match r {
-        Ok(_) => ()
-        Err(e) => (core.say)(fill("android-chat.pick.failed", [("error", error_text(e))]))
-      }
-    })
-  }
-  // picked from what it runs on now, each time it is opened
-  if !run_opened.contains(of) {
-    run_opened[of] = true
-    pick([("open", Json::boolean(true))])
-  }
-  let list = run_list.get(of).unwrap_or("")
-  c.box(w=Fill(1.0), h=Fill(1.0), fn() {
-    let title = match list {
-      "model" => tr("android-chat.pick.model")
-      "account" => tr("android-chat.run.account.choose")
-      _ => tr("android-chat.run.title")
-    }
-    if list != "" {
-      let leave_list = fn() {
-        if list == "account" && field(field(v, "draft"), "profiles") is Some(Array(xs)) && xs.is_empty() {
-          pick([("open", Json::boolean(false))])
-        }
-        run_list.remove(of)
-      }
-      nav_bar(c, core, tr("android-chat.run.title"), title, on_back=leave_list)
-      c.on_back(leave_list)
-    } else {
-      nav_bar(c, core, tr("common.back"), title)
-    }
-    guard v is Some(Object(_)) else {
-      // (read the first time: what it would show of a made-up agent's, in its bones)
-      @sf.waiting(
-        c,
-        fill=true,
-        fn() { run_view(c, core.quiet(), station, key, Some(run_sample()), fn(_) {  }, "") },
-        error=match topic.error {
-          Some(e) => error_text(e)
-          None => ""
-        },
-      )
-      return
-    }
-    run_view(c, core, station, key, v, pick, list)
-  })
-  |> ignore
-}
-
-///|
-/// How an agent runs, as the core's `pick` (`v`) says it (`list`: the models or the accounts to pick from, else all of
-/// it); what is picked told by `pick`.
-fn run_view(
-  c : @ui.Ctx,
-  core : Core,
-  station : String,
-  key : String,
-  v : Json?,
-  pick : (Array[(String, Json)]) -> Unit,
-  list : String,
-) -> Unit {
-  let t = @sf.theme()
-  let of = "session:" + key
-  let draft = field(v, "draft")
-  let runtime = text(draft, "runtime")
-  if list == "model" {
-    // every model it can move to
-    model_list(c, "run-session-models/" + key, items(v, "options"), runtime, text(v, "option"), fn(m) {
-      pick([("model", str(m))])
-      run_list.remove(of)
-    })
-    return
-  }
-  if list == "account" {
-    // beside 全选, a chat's: the station picks its account again now (`pick.repick`), which it took said
-    let repick = text(v, "repick")
-    let repicking = fn() {
-      let busy = is_doing(core, ["pick.repick"], [("station", station), ("of", of)])
-      @sf.button(c, repick, key="run-session-repick", busy~, on_press=fn() {
-        (core.call)("pick.repick", obj([("station", str(station)), ("of", str(of))]), fn(r) {
-          match r {
-            Ok(said) =>
-              match text(Some(said), "said") {
-                "" => ()
-                words => (core.say)(words)
-              }
-            Err(e) => (core.say)(fill("android-misc.act.failed", [("what", repick), ("error", error_text(e))]))
-          }
-        })
-      })
-    }
-    let picked_ids : Array[String]? = match field(draft, "profiles") {
-      Some(Array(xs)) => {
-        let out : Array[String] = []
-        for x in xs {
-          if x is String(s) && s != "" && !out.contains(s) {
-            out.push(s)
-          }
-        }
-        Some(out)
-      }
-      _ =>
-        match text(draft, "profile") {
-          "" => None
-          id => Some([id])
-        }
-    }
-    account_list(
-      c,
-      "run-session-accounts/" + key,
-      items(v, "accounts"),
-      runtime,
-      picked_ids,
-      fn(ids) {
-        match ids {
-          None => pick([("profiles", Json::null()), ("profile", Json::null())])
-          Some(xs) => pick([("profiles", Json::array(xs.map(fn(s) { str(s) })))])
-        }
-      },
-      auto_note=if picked_ids is Some([]) { text(v, "autoNote") } else { "" },
-      auto_trail?=if repick == "" { None } else { Some(repicking) },
-    )
-    return
-  }
-  let group = fn(words : String) {
-    c.box(w=Fill(1.0), pl=6.0, pt=16.0, pb=6.0, fn() {
-      c.text(words, size=t.t.meta, color=t.p.muted, w=Fill(1.0), line=18.0) |> ignore
-    })
-    |> ignore
-  }
-  // as wide as their words, in lines when they do not fit one (History.kt EffortChips: a FlowRow, 8 apart each way;
-  // 16 and 9 in, Smooth(18), the one picked on the ink in semibold)
-  let chips = fn(k : String, options : Array[String], chosen : String, run : (String) -> Unit) {
-    c.box(style=run_chips, flow=true, fn() {
-      for o in options {
-        let on = o == chosen
-        let id = c.id(k + "/" + o)
-        c.on_press(id, fn() {
-          run(o)
-        })
-        c.box(padx=chip_px, pady=chip_py, radius=chip_corner, bg=if on { t.p.text } else { t.p.chip }, id~, fn() {
-          c.text(o, size=t.t.ui, weight=if on { 600 } else { 400 }, color=if on { t.p.bg } else { t.p.text }, wrap=false)
-          |> ignore
-        })
-        |> ignore
-      }
-    })
-    |> ignore
-  }
-  // (a row of the library's list card, as every page's: the user, 2026-10-29, cards each page rounded its own way)
-  let setting_row = fn(k : String, title : String, note : String, trouble : String, lead : (() -> Unit)?, on_press : () -> Unit) {
-    @sf.group(c, fn() { @sf.link_row(c, k, title, note~, trouble~, lead?, title_cut=true, on_press~) })
-  }
-  let fast = flag(v, "fastAvailable")
-  // (in the page's room, 12 from its sides, as every page's blocks: it stood 18 in)
-  c.box(style=run_body, fn() {
-    // (what it shows the run as it would be: changed as a pick is, it goes to its new height)
-    scroll_page(c, "run-session/" + key, keys=["run"], versions=[json_sign(v)], [
-      fn() {
-        // what it was and what it becomes, a line each property, the changes marked
-        c.box(w=Fill(1.0), pt=8.0, fn() {
-          @sf.page_card(c, fn() {
-            let labels = [tr("android-chat.run.label.model"), tr("android-chat.run.label.effort"), tr("android-chat.run.label.account")]
-            if fast {
-              labels.push(tr("android-chat.run.label.speed"))
-            }
-            let was = strings(v, "was")
-            let becomes = strings(v, "becomes")
-            if !flag(v, "runtimeFixed") && runtime != text(field(v, "value"), "runtime") {
-              labels.push(@sf.t("web-main.model.runtime"))
-              was.push(runtime_label(text(field(v, "value"), "runtime")))
-              becomes.push(runtime_label(runtime))
-            }
-            // (the labels' column as wide as the widest of them, in this language: words of a length known, whole)
-            let label_w = labels.fold(init=0.0, fn(m, l) {
-              dmax(m, c.words_across(l, run_label).ceil())
-            })
-            for i, label in labels {
-              let w = was.get(i).unwrap_or("")
-              let b = becomes.get(i).unwrap_or("")
-              let moved = b != w
-              c.box(dir=Row, w=Fill(1.0), gap=8.0, align=ACenter, fn() {
-                c.box(w=Px(label_w), fn() { c.text(label, style=run_label) |> ignore }) |> ignore
-                c.text(w, size=t.t.meta, color=if moved { t.p.muted } else { t.p.text }, wrap=false) |> ignore
-                if moved {
-                  @sf.icon(c, "arrow-right", size=14.0, color=t.p.accent) |> ignore
-                  c.text(b, size=@sf.theme().t.ui, weight=600, color=@sf.link_ink(), wrap=false, w=Fill(1.0)) |> ignore
-                }
-              })
-              |> ignore
-            }
-            match opt_text(v, "force") {
-              Some(f) => c.text(f, size=t.t.caption, color=t.p.warn_ink, w=Fill(1.0), line=17.0) |> ignore
-              None => ()
-            }
-            c.text(tr("android-chat.run.next"), size=t.t.caption, color=t.p.subtle, w=Fill(1.0), line=17.0) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      },
-      fn() {
-        group(tr("android-chat.run.label.model"))
-        setting_row("session-run-model", text(v, "modelText"), "", "", Some(fn() {
-            @sf.maker_mark(c, text(field(v, "maker"), "id"), runtime, 18.0) |> ignore
-          }), fn() { run_list[of] = "model" })
-      },
-      fn() {
-        let runtimes = strings(v, "runtimes")
-        if !flag(v, "runtimeFixed") && runtimes.length() > 1 {
-          let label = @sf.t("web-main.model.runtime")
-          group(label)
-          setting_row("session-run-runtime", runtime_label(runtime), "", "", None, fn() {
-            @sf.pick(
-              label,
-              runtimes.map(fn(r) { @sf.choice(r, runtime_label(r), icon="runtime:" + r) }),
-              runtime,
-              fn(r) { pick([("runtime", str(r))]) },
-              from=Of(c.id("session-run-runtime")),
-            )
-          })
-        }
-      },
-      fn() {
-        group(tr("android-chat.run.effort.title"))
-        c.box(w=Fill(1.0), pb=8.0, fn() {
-          c.text(tr("android-chat.run.effort.note"), size=t.t.caption, color=t.p.muted, w=Fill(1.0), line=17.0) |> ignore
-        })
-        |> ignore
-        let default = tr("android-chat.pick.default")
-        chips("session-effort", [default] + strings(v, "efforts"), match text(draft, "effort") {
-          "" => default
-          e => e
-        }, fn(e) { pick([("effort", if e == default { Json::null() } else { str(e) })]) })
-      },
-      fn() {
-        if fast {
-          group(tr("android-chat.run.label.speed"))
-          c.box(w=Fill(1.0), pb=8.0, fn() {
-            c.text(tr("android-chat.run.speed.note"), size=t.t.caption, color=t.p.muted, w=Fill(1.0), line=17.0) |> ignore
-          })
-          |> ignore
-          let as_plan = tr("android-chat.pick.speed.follow")
-          let standard = tr("android-chat.pick.speed.standard")
-          chips("session-speed", [as_plan, standard, "Fast"], match field(draft, "fast") {
-            Some(True) => "Fast"
-            Some(False) => standard
-            _ => as_plan
-          }, fn(s) {
-            pick([("fast", if s == "Fast" { Json::boolean(true) } else if s == standard { Json::boolean(false) } else { Json::null() })])
-          })
-        }
-      },
-      fn() {
-        group(tr("android-chat.run.label.account"))
-        setting_row(
-          "session-run-account",
-          text(v, "accountText"),
-          text(v, "accountNote"),
-          if flag(v, "accountWarn") { tr("android-chat.run.account.warn") } else { "" },
-          None,
-          fn() { run_list[of] = "account" },
-        )
-        gap(c, 16.0)
-      },
-    ])
-  })
-  |> ignore
-  // its button at its foot: in a panel of its own, each end in the foot corner it is in concentric with it
-  // (@sf.foot_capsule)
-  let (foot_l, foot_r, foot_b) = @sf.foot_capsule(wide_button_h, 12.0, 12.0)
-  // the model picked is another station's: said so over the button, which borrows it (asked again)
-  match field(v, "borrow") {
-    Some(Object(_)) as b => {
-      let allowed = flag(b, "allowed")
-      c.box(w=Fill(1.0), pl=16.0, pr=16.0, pt=8.0, fn() {
-        c.text(if allowed { text(b, "note") } else { opt_text(b, "why").unwrap_or(text(b, "note")) }, size=t.t.caption, color=t.p.muted, w=Fill(1.0), line=17.0)
-        |> ignore
-      })
-      |> ignore
-      c.box(w=Fill(1.0), pl=foot_l, pr=foot_r, pt=12.0, pb=foot_b, fn() {
-        wide_button(c, "session-borrow", text(b, "action"), allowed, busy=is_doing(core, ["pick.borrow"], [("station", station), ("of", of)]), enabled=allowed, on_press=fn() {
-          confirm_borrow(core, station, of, b)
-        })
-      })
-      |> ignore
-    }
-    _ => {
-      let busy = is_doing(core, ["pick.save"], [("station", station), ("of", of)])
-      let changed = flag(v, "changed")
-      let go = changed && has(v, "option") && !busy
-      c.box(w=Fill(1.0), pl=foot_l, pr=foot_r, pt=12.0, pb=foot_b, fn() {
-        wide_button(c, "session-save", text(v, "saveText"), changed, busy~, on_press=fn() {
-          // back at once, not waiting on the station; failed, a toast says why
-          (core.pop)()
-          if go {
-            (core.call)("pick.save", obj([("station", str(station)), ("of", str(of))]), fn(r) {
-              match r {
-                Ok(_) => (core.say)(tr("android-chat.run.saved"))
-                Err(e) => (core.say)(fill("android-chat.save.failed", [("error", error_text(e))]))
-              }
-            })
-          }
-        })
-      })
-      |> ignore
-    }
-  }
-}
-
-///|
 /// How an agent runs, made up, for what is shown while it is read (run_view in its bones).
 fn run_sample() -> Json {
   let w = fn(n : Int) { Json::string(@sf.sample_words(n)) }
@@ -422,164 +98,244 @@ pub fn open_machine_sessions(core : Core, station : String, name : String) -> Un
   let runtime : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
   // (the folder chosen: "" all of them but still.fail's own, machine_own those alone)
   let folder : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
-  let search_key = "machine-search/" + station
-  @sf.panel(
+  let search = field_of("machine-search/" + station)
+  let all = fn() { machine_sessions.get(station).unwrap_or([]) }
+  // whether one is in the folder chosen
+  let in_folder = fn(sv : Json?) {
+    match folder.get() {
+      "" => !flag(sv, "own")
+      f if f == machine_own => flag(sv, "own")
+      f => !flag(sv, "own") && text(sv, "folder") == f
+    }
+  }
+  // what is chosen among: the runtimes of those in the folder (each with how many, and how many in all), the folders
+  // of all of them (still.fail's own apart, most used first), how many are still.fail's own
+  let among = @signals.computed(fn(_) {
+    let runtimes : Array[(String, Int)] = []
+    let folders : Array[(String, Int)] = []
+    let mut own = 0
+    let mut shown_n = 0
+    for s in all() {
+      let sv = Some(s)
+      if in_folder(sv) {
+        shown_n += 1
+        let rt = text(sv, "runtime")
+        match runtimes.search_by(fn(r) { r.0 == rt }) {
+          Some(i) => runtimes[i] = (rt, runtimes[i].1 + 1)
+          None => runtimes.push((rt, 1))
+        }
+      }
+      if flag(sv, "own") {
+        own += 1
+      } else {
+        let f = text(sv, "folder")
+        match folders.search_by(fn(r) { r.0 == f }) {
+          Some(i) => folders[i] = (f, folders[i].1 + 1)
+          None => folders.push((f, 1))
+        }
+      }
+    }
+    folders.sort_by(fn(a, b) { if a.1 != b.1 { b.1 - a.1 } else { a.0.compare(b.0) } })
+    (runtimes, folders, own, shown_n)
+  })
+  // the runtime chosen, while the folder has more than one and that among them (else all of them: nothing hidden by
+  // a choice no longer shown)
+  let rt_now = fn() {
+    let runtimes = among.get().0
+    if runtimes.length() > 1 && runtimes.iter().any(fn(r) { r.0 == runtime.get() }) {
+      runtime.get()
+    } else {
+      ""
+    }
+  }
+  // those the filters leave, under their days' headings: a day by "d" and its words, one of them by "s" and its id
+  let rows = @signals.computed(fn(_) {
+    let lower = search.text().trim().to_owned().to_lower()
+    let rt = rt_now()
+    let out : Array[String] = []
+    let mut day = ""
+    for s in all() {
+      let sv = Some(s)
+      if rt != "" && text(sv, "runtime") != rt {
+        continue
+      }
+      if !in_folder(sv) {
+        continue
+      }
+      if lower != "" &&
+        !first_text(sv, ["title", "first"], "").to_lower().contains(lower) &&
+        !text(sv, "where").to_lower().contains(lower) {
+        continue
+      }
+      if text(sv, "day") != day {
+        day = text(sv, "day")
+        out.push("d" + day)
+      }
+      out.push("s" + text(sv, "id"))
+    }
+    out
+  })
+  let session_of = fn(id : String) -> Json? {
+    let list = all()
+    match list.search_by(fn(s) { text(Some(s), "id") == id }) {
+      Some(i) => Some(list[i])
+      None => None
+    }
+  }
+  @sf.panel_nodes(
     fill("android-chat.new.machine.title", [("station", shown)]),
     description=tr("android-chat.new.machine.text"),
     from=Unanchored,
     wide=true,
     tall=0.75,
+    // (one looked at a step of the same panel: panel_go_nodes)
     steps=true,
-    fn(c, _) {
-      let all = machine_sessions.get(station).unwrap_or([])
-      // whether one is in the folder chosen
-      let in_folder = fn(sv : Json?) {
-        match folder.get() {
-          "" => !flag(sv, "own")
-          f if f == machine_own => flag(sv, "own")
-          f => !flag(sv, "own") && text(sv, "folder") == f
-        }
-      }
-      // what is chosen among: the folders of all of them (still.fail's own apart), the runtimes of those in the folder
-      let runtimes : Array[(String, Int)] = []
-      let folders : Array[(String, Int)] = []
-      let mut own = 0
-      let mut shown_n = 0
-      for s in all {
-        let sv = Some(s)
-        if in_folder(sv) {
-          shown_n += 1
-          let rt = text(sv, "runtime")
-          match runtimes.search_by(fn(r) { r.0 == rt }) {
-            Some(i) => runtimes[i] = (rt, runtimes[i].1 + 1)
-            None => runtimes.push((rt, 1))
-          }
-        }
-        if flag(sv, "own") {
-          own += 1
-        } else {
-          let f = text(sv, "folder")
-          match folders.search_by(fn(r) { r.0 == f }) {
-            Some(i) => folders[i] = (f, folders[i].1 + 1)
-            None => folders.push((f, 1))
-          }
-        }
-      }
-      // the runtime chosen, while the folder has more than one and that among them (else all of them: nothing hidden by
-      // a choice no longer shown)
-      let rt_now = if runtimes.length() > 1 && runtimes.iter().any(fn(r) { r.0 == runtime.get() }) {
-        runtime.get()
-      } else {
-        ""
-      }
-      folders.sort_by(fn(a, b) { if a.1 != b.1 { b.1 - a.1 } else { a.0.compare(b.0) } })
+    fn(v, _) {
       // the filters, in view over the list
-      let mut words = ""
-      c.box(style=@sf.panel_words_in().then(machine_filters), fn() {
-        c.box(style=machine_filters_line, fn() {
-          c.box(style=machine_search, fn() {
-            words = @sf.input(c, search_key, placeholder=tr("android-chat.new.machine.search"), small=true).text.trim().to_owned()
+      v.box(fn(f) {
+        @sf.style_node(f, fn() { @sf.panel_words_in_node(f).then(machine_filters) })
+        f.box(fn(line) {
+          @sf.style_node(line, fn() { machine_filters_line })
+          line.box(fn(s) {
+            @sf.style_node(s, fn() { machine_search }, in_row=true)
+            s.min_width(Is(Some(0.0))) |> ignore
+            @sf.input_node(s, search, placeholder=tr("android-chat.new.machine.search"), small=true) |> ignore
           })
           |> ignore
-          let chip = "machine-folder/" + station
-          let label = match folder.get() {
-            "" => tr("android-chat.new.machine.allFolders")
-            f if f == machine_own => tr("android-chat.new.machine.own")
-            f => f
-          }
-          @sf.chip(c, label, key=chip, icon="folder", on_press=fn() {
-            let choices = [@sf.choice("", tr("android-chat.new.machine.allFolders"), value=(all.length() - own).to_string())]
-            for f in folders {
-              choices.push(@sf.choice(f.0, f.0, value=f.1.to_string()))
-            }
-            if own > 0 {
-              choices.push(@sf.choice(machine_own, tr("android-chat.new.machine.own"), value=own.to_string()))
-            }
-            @sf.pick(tr("android-chat.new.machine.folder"), choices, folder.get(), fn(k) { folder.set(k) }, from=Of(c.id(chip)))
-          })
-        })
-        |> ignore
-        if runtimes.length() > 1 {
-          let labels = [tr("android-chat.new.machine.all") + " " + shown_n.to_string()]
-          for r in runtimes {
-            labels.push(runtime_label(r.0) + " " + r.1.to_string())
-          }
-          let now = match runtimes.search_by(fn(r) { r.0 == rt_now }) {
-            Some(i) => i + 1
-            None => 0
-          }
-          let picked = @sf.segmented(c, "machine-runtime/" + station, labels, now)
-          runtime.set(if picked == 0 { "" } else { runtimes[picked - 1].0 })
-        }
-      })
-      |> ignore
-      // those the filters leave, under their days' headings
-      let lower = words.to_lower()
-      let rows : Array[MachineRow] = []
-      let mut day = ""
-      for s in all {
-        let sv = Some(s)
-        if rt_now != "" && text(sv, "runtime") != rt_now {
-          continue
-        }
-        if !in_folder(sv) {
-          continue
-        }
-        if lower != "" &&
-          !first_text(sv, ["title", "first"], "").to_lower().contains(lower) &&
-          !text(sv, "where").to_lower().contains(lower) {
-          continue
-        }
-        if text(sv, "day") != day {
-          day = text(sv, "day")
-          rows.push(Day(day))
-        }
-        rows.push(Session(s))
-      }
-      if rows.is_empty() {
-        c.box(style=@sf.panel_words_in().then(machine_none), fn() {
-          c.text(tr("android-chat.new.machine.none"), style=machine_none_words) |> ignore
-        })
-        |> ignore
-        return
-      }
-      @sf.panel_list(c, "machine-sessions/" + station, rows.length(), 60.0, fn(i) {
-        match rows[i] {
-          Day(d) =>
-            c.box(style=@sf.panel_words_in().then(if i == 0 { machine_day_first } else { machine_day }), fn() {
-              c.text(d, style=machine_day_words) |> ignore
-            })
-            |> ignore
-          Session(s) => {
-            let sv = Some(s)
-            let key = "machine-session/" + text(sv, "id")
-            @sf.choice_row(
-              c,
-              key,
-              false,
-              first_text(sv, ["title", "first"], ""),
-              note=first_text(sv, ["where", "meta"], ""),
-              lead=fn() { @sf.maker_mark(c, "", text(sv, "runtime"), 18.0) |> ignore },
-              tag=fn() {
-                if has(sv, "session") {
-                  @sf.pill(c, fill("android-chat.new.machine.inApp", [("app", "still.fail")]))
+          let chip : Ref[@view.View?] = Ref(None)
+          chip.val = Some(
+            @sf.chip_node(
+              line,
+              fn() {
+                match folder.get() {
+                  "" => tr("android-chat.new.machine.allFolders")
+                  f if f == machine_own => tr("android-chat.new.machine.own")
+                  f => f
                 }
               },
-              trail=fn() {
-                c.text(text(sv, "when"), style=machine_when) |> ignore
+              fn() {
+                let (_, folders, own, _) = among.untracked()
+                let choices = [@sf.choice("", tr("android-chat.new.machine.allFolders"), value=(all().length() - own).to_string())]
+                for f in folders {
+                  choices.push(@sf.choice(f.0, f.0, value=f.1.to_string()))
+                }
+                if own > 0 {
+                  choices.push(@sf.choice(machine_own, tr("android-chat.new.machine.own"), value=own.to_string()))
+                }
+                match chip.val {
+                  Some(at) =>
+                    @sf.pick(tr("android-chat.new.machine.folder"), choices, folder.untracked(), fn(k) { folder.set(k) }, from=Node(at))
+                  None => ()
+                }
               },
-              // (the look a step further in, in the same dialog)
-              on_press=fn() { look_at_machine_session(core, station, s) },
-            )
-            // its first words whole while it is pointed at
-            @sf.tip(c, key + "/tip", c.id(key), text(sv, "first"), repeats=text(sv, "title") == "")
-          }
-        }
+              icon="folder",
+            ),
+          )
+        })
+        |> ignore
+        f.show(at_once=true, fn() { among.get().0.length() > 1 }, fn(seg) {
+          @sf.segmented_node(
+            seg,
+            fn() {
+              let (runtimes, _, _, shown_n) = among.get()
+              let labels = [tr("android-chat.new.machine.all") + " " + shown_n.to_string()]
+              for r in runtimes {
+                labels.push(runtime_label(r.0) + " " + r.1.to_string())
+              }
+              labels
+            },
+            fn() {
+              let rt = rt_now()
+              match among.get().0.search_by(fn(r) { r.0 == rt }) {
+                Some(i) => i + 1
+                None => 0
+              }
+            },
+            fn(picked) {
+              let runtimes = among.untracked().0
+              runtime.set(if picked == 0 || picked > runtimes.length() { "" } else { runtimes[picked - 1].0 })
+            },
+          )
+        })
       })
       |> ignore
+      // where none is left by the filters: said in the middle
+      v.show(at_once=true, fn() { rows.get().is_empty() }, fn(n) {
+        n.box(fn(b) {
+          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_none) })
+          @sf.words_node(b, fn() { tr("android-chat.new.machine.none") }, fn() { machine_none_words }) |> ignore
+        })
+        |> ignore
+      })
+      let tips = @sf.panel_tips_of(v)
+      v.show(at_once=true, fn() { !rows.get().is_empty() }, fn(l) {
+        @sf.panel_list_node(
+          l,
+          fn() { rows.get() },
+          fn(b, k) {
+            let key = k.exact_view(start=1).to_owned()
+            if k.has_prefix("d") {
+              b.box(fn(d) {
+                @sf.style_node(d, fn() {
+                  @sf.panel_words_in_node(d).then(if rows.get().get(0) == Some(k) { machine_day_first } else { machine_day })
+                })
+                @sf.words_node(d, fn() { key }, fn() { machine_day_words }) |> ignore
+              })
+              |> ignore
+            } else {
+              let sv = fn() { session_of(key) }
+              let r = b.box(fn(r) {
+                @sf.choice_row_node(
+                  r,
+                  fn() { first_text(sv(), ["title", "first"], "") },
+                  fn() { false },
+                  note=fn() { first_text(sv(), ["where", "meta"], "") },
+                  lead=fn(m) { @sf.maker_mark_node(m, "", @signals.untracked(fn() { text(sv(), "runtime") }), machine_mark) |> ignore },
+                  tag=fn(g) {
+                    g.show(at_once=true, fn() { has(sv(), "session") }, fn(p) {
+                      @sf.pill_node(p, fn() { fill("android-chat.new.machine.inApp", [("app", "still.fail")]) }) |> ignore
+                    })
+                  },
+                  trail=fn(t) { @sf.words_node(t, fn() { text(sv(), "when") }, fn() { machine_when }) |> ignore },
+                  // (the look a step further in, in the same dialog)
+                  press=fn() {
+                    match @signals.untracked(sv) {
+                      Some(s) => look_at_machine_session(core, station, s)
+                      None => ()
+                    }
+                  },
+                )
+              })
+              // its first words whole while it is pointed at
+              match tips {
+                Some(layer) =>
+                  @sf.tip_node(
+                    layer,
+                    r,
+                    fn() { text(sv(), "first") },
+                    within=true,
+                    repeats=@signals.untracked(fn() { text(sv(), "title") == "" }),
+                  )
+                  |> ignore
+                None => ()
+              }
+            }
+          },
+          est=machine_row_est,
+          fills=true,
+        )
+        |> ignore
+      })
     },
   )
 }
+
+///|
+/// A row of the machine's sessions as long as it is thought before it is measured, and its runtime's mark.
+let machine_row_est : Double = 60.0
+
+///|
+let machine_mark : Double = 18.0
 
 ///|
 /// The filters over the machine's sessions (their search and folder's line, the runtimes under it), 10 apart.
@@ -622,19 +378,14 @@ let machine_day_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semi
 let machine_when : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, wrap=false)
 
 ///|
-/// A line of the machine's sessions' list: a day's heading, or one of them.
-priv enum MachineRow {
-  Day(String)
-  Session(Json)
-}
-
-///|
 /// The folder chosen for still.fail's own sessions alone (no folder's name: a path's part never has a NUL).
 let machine_own : String = "\u{0}own"
 
 ///|
-/// One of them looked at before going on with it (lookAtMachineSession): what was said in it, the latest at the bottom
-/// (`machineSessions.read`); 继续 makes the chat that goes on with it (`machineSessions.continue`) and opens it.
+/// One of them looked at before going on with it (lookAtMachineSession), a step of their list's panel (panel_go_nodes:
+/// sliding in over the list in the same dialog or sheet, back sliding it off, the list as it was left): what was said in it, the latest at the bottom, the list
+/// standing at its end as it comes (`machineSessions.read`); 继续 makes the chat that goes on with it
+/// (`machineSessions.continue`) and opens it. Where it ran and how long ago under its title.
 fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
   let sv = Some(s)
   let said : @signals.Signal[(Array[Json], Int)?] = @signals.signal(None)
@@ -648,88 +399,208 @@ fn look_at_machine_session(core : Core, station : String, s : Json) -> Unit {
       Err(e) => error.set(error_text(e))
     }
   })
-  // (a step of the list's dialog (open_machine_sessions): where it ran and how long ago under its title, back to the
-  // list its head's back key)
-  @sf.panel_go(first_text(sv, ["title", "first"], ""), description=text(sv, "meta"), fn(c, close) {
-    let t = @sf.theme()
-    c.box(style=@sf.panel_words_in(), w=Fill(1.0), h=Fill(1.0), fn() {
-      match said.get() {
-        None =>
-          if error.get() == "" {
-            c.box(w=Fill(1.0), pt=40.0, align=ACenter, fn() { wait_line(c, tr("common.reading")) }) |> ignore
-          }
-        Some((list, total)) => {
-          let blocks : Array[() -> Unit] = []
-          let left = total - list.length()
-          if left > 0 {
-            blocks.push(fn() {
-              c.text(fill("android-chat.new.machine.more", [("n", left.to_string())]), size=t.t.caption, color=t.p.muted, center=true, w=Fill(1.0), line=17.0)
-              |> ignore
-            })
-          }
-          let runtime = text(sv, "runtime")
-          let model = match text(sv, "model") {
-            "" => runtime_label(runtime)
-            m => m
-          }
-          for i, m in list {
-            let mv = Some(m)
-            blocks.push(fn() {
-              c.box(w=Fill(1.0), pb=18.0, fn() {
-                if flag(mv, "person") {
-                  c.box(dir=Row, w=Fill(1.0), justify=JEnd, fn() {
-                    c.box(max_w=300.0, padx=14.0, pady=9.0, radius=18.0, bg=t.p.chip, fn() {
-                      c.text(text(mv, "text"), size=t.t.body, color=t.p.text, line=21.0) |> ignore
-                    })
-                    |> ignore
-                  })
-                  |> ignore
-                } else {
-                  c.box(w=Fill(1.0), gap=4.0, fn() {
-                    c.box(dir=Row, gap=6.0, align=ACenter, fn() {
-                      @sf.maker_mark(c, "", runtime, 16.0) |> ignore
-                      c.text(model, size=t.t.meta, weight=600, color=t.p.text, wrap=false) |> ignore
-                    })
-                    |> ignore
-                    @sf.markdown(c, text(mv, "text"), key="machine-said/" + i.to_string()) |> ignore
-                  })
-                  |> ignore
-                }
+  let runtime = text(sv, "runtime")
+  let model = match text(sv, "model") {
+    "" => runtime_label(runtime)
+    m => m
+  }
+  @sf.panel_go_nodes(
+    first_text(sv, ["title", "first"], ""),
+    description=text(sv, "meta"),
+    fn(v, close) {
+      v.box(fn(main) {
+        @sf.style_node(main, fn() { @sf.panel_words_in_node(main).then(machine_said_box) })
+        main.pick(fn() { said.get() is Some(_) }, fn(p, read) {
+          if !read {
+            p.show(at_once=true, fn() { error.get() == "" }, fn(w) {
+              w.box(fn(b) {
+                @sf.style_node(b, fn() { machine_said_wait })
+                @sf.wait_line_node(b, fn() { tr("common.reading") }) |> ignore
               })
               |> ignore
             })
-          }
-          let k = "machine-said/" + text(sv, "id")
-          @sf.panel_list(c, k, blocks.length(), 120.0, stick_end=true, fn(i) { (blocks[i])() }) |> ignore
-        }
-      }
-    })
-    |> ignore
-    if error.get() != "" {
-      c.box(style=@sf.panel_words_in(), w=Fill(1.0), pady=6.0, fn() {
-        c.text(error.get(), size=t.t.meta, color=t.p.red, w=Fill(1.0), line=18.0) |> ignore
-      })
-      |> ignore
-    }
-    let busy = is_doing(core, ["machineSessions.continue"], [("station", station), ("id", text(sv, "id"))])
-    c.box(style=@sf.panel_words_in(), dir=Row, w=Fill(1.0), pt=10.0, pb=24.0, gap=8.0, justify=JEnd, fn() {
-      @sf.button(c, tr(if has(sv, "session") { "android-chat.new.machine.open" } else { "android-chat.new.machine.continue" }), key="machine-go", tone=Primary, busy=busy, on_press=fn() {
-        error.set("")
-        (core.call)("machineSessions.continue", obj([("station", str(station)), ("runtime", str(text(sv, "runtime"))), ("id", str(text(sv, "id")))]), fn(r) {
-          match r {
-            Ok(v) => {
-              close()
-              (core.pop)()
-              (core.open_chat)(station, text(Some(v), "key"), first_text(sv, ["title", "first"], ""))
+          } else {
+            @sf.style_node(p, fn() { machine_said_box })
+            // (what was said, the one not given said over them, then each: the person's on its right, the agent's
+            // under its mark and model; -1 the one over them)
+            let blocks = fn() -> Array[Int] {
+              match said.get() {
+                Some((list, total)) => {
+                  let out : Array[Int] = if total > list.length() { [-1] } else { [] }
+                  for i in 0..<list.length() {
+                    out.push(i)
+                  }
+                  out
+                }
+                None => []
+              }
             }
-            Err(e) => error.set(error_text(e))
+            // (standing at its end, the latest, as it comes and as its words are measured: stick_end)
+            @sf.panel_list_node(p, blocks, fn(b, i) { machine_said_node(b, said, i, runtime, model) }, est=machine_said_est, fills=true, stick_end=true)
+            |> ignore
           }
         })
       })
+      |> ignore
+      v.show(at_once=true, fn() { error.get() != "" }, fn(e) {
+        e.box(fn(b) {
+          @sf.style_node(b, fn() { @sf.panel_words_in_node(b).then(machine_error_box) })
+          @sf.words_node(b, fn() { error.get() }, machine_error_words) |> ignore
+        })
+        |> ignore
+      })
+      v.box(fn(row) {
+        @sf.style_node(row, fn() { @sf.panel_words_in_node(row).then(machine_go_row) })
+        @sf.button_node(
+          row,
+          fn() { tr(if has(sv, "session") { "android-chat.new.machine.open" } else { "android-chat.new.machine.continue" }) },
+          fn() {
+            error.set("")
+            (core.call)("machineSessions.continue", obj([("station", str(station)), ("runtime", str(text(sv, "runtime"))), ("id", str(text(sv, "id")))]), fn(r) {
+              match r {
+                Ok(v) => {
+                  close()
+                  (core.pop)()
+                  (core.open_chat)(station, text(Some(v), "key"), first_text(sv, ["title", "first"], ""))
+                }
+                Err(e) => error.set(error_text(e))
+              }
+            })
+          },
+          tone=Primary,
+          busy=fn() { is_doing(core, ["machineSessions.continue"], [("station", station), ("id", text(sv, "id"))]) },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+  )
+}
+
+///|
+/// One of what was said in a machine's session in node `b` (look_at_machine_session's list, `i` of what `said` holds; -1
+/// how many over them it does not give): the person's in a bubble on its right, 300 wide at most; the agent's under
+/// its runtime's mark and `model`, its words as Markdown.
+fn machine_said_node(b : @view.View, said : @signals.Signal[(Array[Json], Int)?], i : Int, runtime : String, model : String) -> Unit {
+  let m = fn() -> Json? {
+    match said.get() {
+      Some((list, _)) => list.get(i)
+      None => None
+    }
+  }
+  if i < 0 {
+    b.box(fn(w) {
+      @sf.style_node(w, fn() { machine_said_more })
+      @sf.words_node(w, fn() {
+        match said.get() {
+          Some((list, total)) => fill("android-chat.new.machine.more", [("n", (total - list.length()).to_string())])
+          None => ""
+        }
+      }, fn() { machine_said_more_words })
+      |> ignore
     })
     |> ignore
+    return
+  }
+  b.box(fn(one) {
+    @sf.style_node(one, fn() { machine_said_one })
+    one.pick(fn() { flag(m(), "person") }, fn(p, person) {
+      if person {
+        @sf.style_node(p, fn() { machine_said_person_row })
+        p.box(fn(bubble) {
+          @sf.style_node(bubble, machine_said_bubble)
+          @sf.words_node(bubble, fn() { text(m(), "text") }, fn() { machine_said_person_words }) |> ignore
+        })
+        |> ignore
+      } else {
+        @sf.style_node(p, fn() { machine_said_agent })
+        p.box(fn(h) {
+          @sf.style_node(h, fn() { machine_said_head })
+          @sf.maker_mark_node(h, "", runtime, machine_said_mark) |> ignore
+          @sf.words_node(h, fn() { model }, fn() { machine_said_model }) |> ignore
+        })
+        |> ignore
+        @sf.markdown_node(p, fn() { text(m(), "text") }) |> ignore
+      }
+    })
   })
+  |> ignore
 }
+
+///|
+/// What was said in one looked at: as tall as the dialog leaves it, a block 120 high till it is measured.
+// kept across runs: a value (no field of it changes)
+let machine_said_box : @ui.Style = @ui.css("w=Full h=Full")
+
+///|
+let machine_said_est : Double = 120.0
+
+///|
+/// Its wait, 40 under its top in the middle.
+// kept across runs: a value (no field of it changes)
+let machine_said_wait : @ui.Style = @ui.css("w=Full pt=S10 align=ACenter")
+
+///|
+/// How many over them it does not give: in the middle, caption on 16.
+// kept across runs: a value (no field of it changes)
+let machine_said_more : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let machine_said_more_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, center=true, w=Full, leading=L4)
+
+///|
+/// Each 18 over the next.
+// kept across runs: a value (no field of it changes)
+let machine_said_one : @ui.Style = @ui.css("w=Full pb=S4_5")
+
+///|
+/// The person's, on its right, a bubble of the chip's ground 300 wide at most, 14 by 8 in, 16 round, the body's words on 20.
+// kept across runs: a value (no field of it changes)
+let machine_said_person_row : @ui.Style = @ui.css("row w=Full justify=JEnd")
+
+///|
+let machine_said_most : Double = 300.0
+
+///|
+fn machine_said_bubble() -> @ui.Style {
+  @ui.style(max_w=Fixed(machine_said_most), px=S3_5, py=S2, radius=Xl2, bg=Data(@sf.theme().p.chip))
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let machine_said_person_words : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, leading=L5)
+
+///|
+/// The agent's: its mark 16 and model (meta, 600) 6 apart, its words 4 under them.
+// kept across runs: a value (no field of it changes)
+let machine_said_agent : @ui.Style = @ui.css("w=Full gap=S1")
+
+///|
+// kept across runs: a value (no field of it changes)
+let machine_said_head : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
+
+///|
+let machine_said_mark : Double = 16.0
+
+///|
+// kept across runs: a value (no field of it changes)
+let machine_said_model : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold, color=Fg, wrap=false)
+
+///|
+/// What went wrong (red, meta on 19), 6 over and under.
+// kept across runs: a value (no field of it changes)
+let machine_error_box : @ui.Style = @ui.css("w=Full py=S1_5")
+
+///|
+fn machine_error_words() -> @ui.TextStyle {
+  @ui.text_style(size=Meta, color=Data(@sf.theme().p.red), w=Full, leading=L4_75)
+}
+
+///|
+/// 继续 at its end, 10 over it and 24 under it, 8 apart.
+// kept across runs: a value (no field of it changes)
+let machine_go_row : @ui.Style = @ui.css("row w=Full pt=S2_5 pb=S6 gap=S2 justify=JEnd")
 
 // ---------------------------------------------------------------------------
 // Adding people and the workspace's mark
@@ -1168,133 +1039,16 @@ let add_people_label : @ui.TextStyle = @ui.text_style(size=Meta, weight=Semibold
 let add_people_said : @ui.TextStyle = @ui.text_style(size=Ui, color=Fg, w=Full, leading=L6)
 
 ///|
-/// The run's chips in lines, and a chip.
-// kept across runs: a value (no field of it changes)
-let run_chips : @ui.Style = @ui.css("row w=Full gap=S2")
-
-///|
-/// A chip of a choice: 16 either side of its words, 9 over and under, round by 18.
-let chip_px : Double = 16.0
-
-///|
-let chip_py : Double = 9.0
-
-///|
-let chip_corner : Double = 18.0
-
-///|
-/// Who runs the model picked: what 全选 and multi-account mean, then 全选 (`None`: the station's pool; `Some([])`:
-/// 全不选, waiting for one account to be tapped; `auto_trail` at 全选's end) and each account it may be kept to, its
-/// provider's mark before it and its allowance after it, 18 from the sides. `pick` hears the selection (`None`: 全选).
-fn account_list(
-  c : @ui.Ctx,
-  key : String,
-  accounts : Array[Json],
-  runtime : String,
-  picked : Array[String]?,
-  pick : (Array[String]?) -> Unit,
-  auto_note? : String = "",
-  auto_trail? : () -> Unit,
-) -> Unit {
-  let all_ids = accounts.map(fn(x) { text(Some(x), "id") }).filter(fn(x) { x != "" })
-  let single_only = accounts.length() <= 1
-  let all_on = picked is None
-  scroll_page(c, key, [
-    fn() {
-      c.box(style=account_list_room, fn() {
-        c.box(style=account_note_room, fn() { c.text(tr("android-chat.run.account.note"), style=account_note_words) |> ignore }) |> ignore
-        @sf.choice_row(
-          c,
-          key + "/auto",
-          all_on,
-          tr("android-chat.run.account.auto"),
-          note=auto_note,
-          disabled=single_only,
-          trail?=auto_trail,
-          on_press=fn() {
-            if !single_only {
-              if all_on {
-                pick(Some([]))
-              } else {
-                pick(None)
-              }
-            }
-          },
-        )
-        for a in accounts {
-          let av = Some(a)
-          let id = text(av, "id")
-          let own = text(av, "runtime")
-          let checked = match picked {
-            None => true
-            Some(xs) => xs.contains(id)
-          }
-          @sf.choice_row(
-            c,
-            key + "/" + id,
-            checked,
-            text(av, "name"),
-            disabled=single_only,
-            lead=fn() { @sf.provider_logo(c, if own == "" { runtime } else { own }, text(av, "kind"), 18.0, text(av, "mark")) },
-            tag=fn() { @sf.quota_chips(c, field(av, "quota"), marked=false, gap=6.0, key=key + "/" + id) },
-            on_press=fn() {
-              if single_only {
-                return
-              }
-              let cur_ids = match picked {
-                None => all_ids
-                Some(xs) => xs
-              }
-              if cur_ids.contains(id) {
-                let next = cur_ids.filter(fn(x) { x != id })
-                pick(Some(next))
-              } else {
-                let next = all_ids.filter(fn(x) { x == id || cur_ids.contains(x) })
-                if next.length() >= all_ids.length() {
-                  pick(None)
-                } else {
-                  pick(Some(next))
-                }
-              }
-            },
-          )
-        }
-      })
-      |> ignore
-    },
-  ])
-}
-
-///|
-/// The accounts' list, 18 from the sides (AccountList: padding(horizontal = 18)).
-// kept across runs: a value (no field of it changes)
-let account_list_room : @ui.Style = @ui.css("w=Full px=S4_5")
-
-///|
-/// What 自动分配 means, over the list: 8 above it, 4 below (padding(top = 8, bottom = 4)).
-// kept across runs: a value (no field of it changes)
-let account_note_room : @ui.Style = @ui.css("w=Full pt=S2 pb=S1")
-
-///|
-/// 12sp, muted.
-// kept across runs: a value (no field of it changes)
-let account_note_words : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, w=Full)
-
-///|
 /// The pickers opened (their `pick.set {open}` sent once a page), and which list a run page shows ("" its first view).
 // kept across runs: said as a run's page opens; the settings' reset empties it
 let run_opened : Map[String, Bool] = Map([])
 
 ///|
 // kept across runs: said by a run's page; the settings' reset empties it
-let run_list : Map[String, String] = Map([])
+let run_list : @sf.LiveMap[String, String] = @sf.LiveMap::new()
 
 ///|
 /// A property's label in what a run was and becomes (meta, muted, on one line).
 // kept across runs: a value (no field of it changes)
 let run_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
-///|
-/// The run page's blocks, in the page's room (12 from its sides) and as tall as the page.
-// kept across runs: a value (no field of it changes)
-let run_body : @ui.Style = @sf.pg_room.then(@ui.style(h=@sf.grow))

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { grantChatTitle } from "../src/adb/title.ts";
 import type { PhoneRequest } from "../src/adb/grants.ts";
-import { titleOf } from "../src/read/views.ts";
+import { titleOf } from "./reference/views.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a phone grant's known chat name does not read the session's other chats", () => {

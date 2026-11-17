@@ -23,6 +23,8 @@
 #include "corner_sl.h"
 #include "contained.h"
 #include "bands.h"
+// the groups of instances the host keeps, drawn out as a frame is taken (submit)
+#include "groups.h"
 
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -37,8 +39,6 @@ int mb_atlas_size = 4096;
 
 static ID3D11Device *dev;
 static ID3D11DeviceContext *ctx;
-static IDXGISwapChain1 *chain;
-static ID3D11RenderTargetView *rtv;
 static ID3D11VertexShader *vs;
 static ID3D11PixelShader *ps;
 // a ground's flat middle (bands.h mb_pieces)
@@ -50,34 +50,94 @@ static ID3D11Texture2D *atlas;
 static ID3D11ShaderResourceView *atlas_srv;
 static ID3D11SamplerState *sampler;
 static ID3D11BlendState *blend;
-// the composition: its root, the native views' visual under the canvas's (NULL: the swap chain is the window's own)
+// the composition's device, the windows' (NULL: each swap chain is its window's own)
 static IDCompositionDevice *dcomp;
-static IDCompositionTarget *dtarget;
-static IDCompositionVisual *droot, *dunder, *dcanvas;
+// what makes a window's swap chain, kept for the windows of the run opened after the first (mb_render_open)
+static IDXGIFactory2 *dxgi_factory;
 static ID3D11RasterizerState *raster, *raster_cut;
-static int fb_w, fb_h;
 // the swap chain is a flip model's (its Present1 takes the part that changed)
 static int flip_chain;
-static double vw = 800, vh = 600, vscale = 1;
 // glass (src/ui/glass.mbt): its passes, their constants, the copies they work in (level j 1/2^j of the largest
 // capture yet, the glass and the blur's margin round it, not of the target: a composer's strip, not the window; [4] a
 // Gaussian's first half), the glass's own constants, the blurred copy in view
 static ID3D11VertexShader *pvs;
 static ID3D11PixelShader *pps, *edge_ps;
 static ID3D11Buffer *pbuf, *gbuf;
-struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rtv; ID3D11ShaderResourceView *srv; int w, h; };
+struct level { ID3D11Texture2D *t; ID3D11RenderTargetView *rt; ID3D11ShaderResourceView *srv; int w, h; };
 static level lv[5];
 static MBContained post_edge;
 static int lv_w, lv_h;
-struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; };
+struct GU { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[8][4]; float misc[4]; float rmap[4]; float ruvc[4]; };
 static GU gu;
 static ID3D11ShaderResourceView *gsrv;
-// the last frame, kept for snapshots (the vertex buffer still holds it) and
-// to find the runs of each image
-static int32_t last_count;
-static float *last_inst;
-static size_t last_cap;
-static float last_bg[3];
+// the capture's sharp level liquid glass sees through its lip (t1 while it is drawn)
+static ID3D11ShaderResourceView *rsrv;
+// What is a window's own (win_app.c: the windows of one run): its swap chain and its buffer's view, its composition's
+// target, root, the native views' visual under the canvas's and the canvas's (NULL: the swap chain is the window's own),
+// its buffer's size in pixels and its size in points and scale (mb_render_set_size's); the last frame, kept for
+// snapshots (the vertex buffer still holds it) and to find the runs of each image; the canvas its frames are drawn
+// into and what of it is said to differ (partial redraw, below). Put in place for a window by mb_render_use.
+#define MB_PARTS 8
+struct RenderWin {
+  IDXGISwapChain1 *chain;
+  ID3D11RenderTargetView *rtv;
+  IDCompositionTarget *dtarget;
+  IDCompositionVisual *droot, *dunder, *dcanvas;
+  int fb_w, fb_h;
+  double vw, vh, vscale;
+  int32_t last_count;
+  float *last_inst;
+  size_t last_cap;
+  float last_bg[3];
+  ID3D11Texture2D *canvas;
+  ID3D11RenderTargetView *canvas_rtv;
+  int canvas_w, canvas_h, canvas_ok;
+  double dirty[MB_PARTS][4];
+  int dirty_n, dirty_whole, dirty_told;
+  // a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
+  int pictures_missing;
+};
+static RenderWin render_wins[MB_WINS];
+static RenderWin *rw = &render_wins[0];
+static void render_win_fresh(RenderWin *w) {
+  memset(w, 0, sizeof *w);
+  w->vw = 800, w->vh = 600, w->vscale = 1;
+}
+static struct RenderWinsMade {
+  RenderWinsMade() {
+    for (int k = 0; k < MB_WINS; k++) render_win_fresh(&render_wins[k]);
+  }
+} render_wins_made;
+#define chain (rw->chain)
+#define rtv (rw->rtv)
+#define dtarget (rw->dtarget)
+#define droot (rw->droot)
+#define dunder (rw->dunder)
+#define dcanvas (rw->dcanvas)
+#define fb_w (rw->fb_w)
+#define fb_h (rw->fb_h)
+#define vw (rw->vw)
+#define vh (rw->vh)
+#define vscale (rw->vscale)
+#define last_count (rw->last_count)
+#define last_inst (rw->last_inst)
+#define last_cap (rw->last_cap)
+#define last_bg (rw->last_bg)
+#define canvas (rw->canvas)
+#define canvas_rtv (rw->canvas_rtv)
+#define canvas_w (rw->canvas_w)
+#define canvas_h (rw->canvas_h)
+#define canvas_ok (rw->canvas_ok)
+#define dirty (rw->dirty)
+#define dirty_n (rw->dirty_n)
+#define dirty_whole (rw->dirty_whole)
+#define dirty_told (rw->dirty_told)
+#define pictures_missing (rw->pictures_missing)
+
+// The window of the run drawn now (win_app.c's win_use): its swap chain, its size, its last frame and its canvas.
+void mb_render_use(int wid) {
+  if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
 
 // the numbers of an instance (src/ui/scene.mbt)
 #define MB_INST 60
@@ -89,8 +149,9 @@ static const char *shader_src =
     "#endif\n"
     "cbuffer U : register(b0) { float2 vp; float scale; float pad; };\n"
     "// glass (src/ui/glass.mbt): where a point is in the blurred copy under it (uv = p * gmap.xy + gmap.zw, kept in guvc),\n"
-    "// a liquid group's bounds, shapes, corners (x of each), how many\n"
-    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; };\n"
+    "// a liquid group's bounds, shapes, corners (x of each), how many; where it is in the capture's sharp level (img while\n"
+    "// liquid glass is drawn: capture's rsrv)\n"
+    "cbuffer G : register(b1) { float4 gmap; float4 guvc; float4 ggb; float4 gshape[8]; float4 grad[8]; float4 gmisc; float4 grmap; float4 gruvc; };\n"
     "Texture2D atlas : register(t0);\n"
     "Texture2D img : register(t1);\n"
     "Texture2D bd : register(t2);\n"
@@ -126,6 +187,7 @@ static const char *shader_src =
     "  VOut o;\n"
     "  o.pos = float4(at.x / vp.x * 2.0 - 1.0, 1.0 - at.y / vp.y * 2.0, 0.0, 1.0);\n"
     "  o.p = pos; o.cp = I.rot.w > 0.5 ? at : pos; o.rect = I.rect; o.prm = I.p; o.color = I.color; o.c2 = I.c2; o.clip = I.clip; o.pd = I.pd; o.rc = I.rc; o.rs = I.rs; o.rr = I.rr;\n"
+    "  if (kind == 1) o.prm.x = I.rot.x;\n"
     "  if (kind == 4 && I.pd.z > 0.5) o.pd.x = I.rot.w;\n"
     "  o.oclip = I.oclip; o.orc = I.orc; o.ors = I.ors; o.fade = I.fade; o.fadex = I.fadex;\n"
     "  return o;\n"
@@ -158,8 +220,23 @@ static const char *shader_src =
     "  }\n"
     "  return d;\n"
     "}\n"
+    "// sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by\n"
+    "float sd_group_soft(float2 p, float k) {\n"
+    "  float d = 1e9;\n"
+    "  int n = int(gmisc.x + 0.5);\n"
+    "  [loop] for (int i = 0; i < 8; i++) {\n"
+    "    if (i >= n) break;\n"
+    "    float2 hs = gshape[i].zw * 0.5;\n"
+    "    d = smin_k(d, sd_rr(p, gshape[i], min(grad[i].x * 1.45, min(hs.x, hs.y)).xxxx), k);\n"
+    "  }\n"
+    "  return d;\n"
+    "}\n"
     "float3 backdrop(float2 p) {\n"
     "  return bd.SampleLevel(samp, clamp(p * gmap.xy + gmap.zw, guvc.xy, guvc.zw), 0).rgb;\n"
+    "}\n"
+    "// what is under liquid glass at p, not blurred\n"
+    "float3 sharp(float2 p) {\n"
+    "  return img.SampleLevel(samp, clamp(p * grmap.xy + grmap.zw, gruvc.xy, gruvc.zw), 0).rgb;\n"
     "}\n"
     "float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
     "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
@@ -231,13 +308,20 @@ static const char *shader_src =
     "  if (kind == 1 || kind == 3 || kind == 7) {\n"
     "    // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample\n"
     "    // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the atlas\n"
-    "    // started over)\n"
-    "    float2 uv = clamp(I.c2.xy + (p - I.rect.xy) / I.rect.zw * I.c2.zw, I.c2.xy + 0.5, I.c2.xy + I.c2.zw - 0.5) / 4096.0;\n"
+    "    // started over); an unscaled, unrotated glyph snaps to exact texel centres so float32 rounding at 1.25x/1.5x\n"
+    "    // never bleeds adjacent ClearType stripes.\n"
+    "    float2 off = abs(I.rect.zw * scale - I.c2.zw);\n"
+    "    // (exact only where its corner is on a pixel too: one half way between two had a row of its texels taken twice\n"
+    "    // and the next not at all, where floor's step fell)\n"
+    "    float2 r0 = I.rect.xy * scale, r0i = floor(r0 + 0.5);\n"
+    "    bool exact = kind == 1 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05 && I.prm.x == 0.0;\n"
+    "    float2 tex = exact ? floor(p * scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
+    "    float2 uv = clamp(I.c2.xy + tex, I.c2.xy + 0.5, I.c2.xy + I.c2.zw - 0.5) / 4096.0;\n"
     "    float4 t = atlas.SampleLevel(samp, uv, 0);\n"
     "    if (kind == 1) {\n"
     "      // (a mask drawn in gray has its three the same as its alpha: as before; a glyph drawn larger or smaller than\n"
-    "      // its picture, its stripes no longer on the screen's: in gray, their mean)\n"
-    "      float2 off = abs(I.rect.zw * scale - I.c2.zw);\n"
+    "      // its picture, its stripes no longer on the screen's: in gray, their mean). Its cover blended as it is, light\n"
+    "      // words on dark as dark on light, as Metal's does (apple_render.m: its colour times its cover)\n"
     "      float3 cov = max(off.x, off.y) > 0.5 ? t.aaa : t.rgb;\n"
     "      stripes = cov * (col.a * cover);\n"
     "      striped = true;\n"
@@ -254,32 +338,105 @@ static const char *shader_src =
     "    return (t * col.a) * cover;\n"
     "  }\n"
     "  if (kind == 6) {\n"
-    "    // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little\n"
+    "    // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus\n"
+    "    // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through\n"
+    "    // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through\n"
+    "    // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its\n"
+    "    // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on\n"
+    "    // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a\n"
+    "    // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the\n"
+    "    // frame drawn whole, to the byte.\n"
     "    float k = I.pd.w;\n"
+    "    // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45\n"
+    "    // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight\n"
+    "    // side bends what is under it as a lens does, not as a prism)\n"
     "    float d = sd_group(p, k);\n"
-    "    float a = saturate(0.5 - d * scale);\n"
+    "    float a = clamp(0.5 - d * scale, 0.0, 1.0);\n"
     "    if (a <= 0.0) discard;\n"
-    "    float e = 0.5;\n"
-    "    float2 grad2 = float2(sd_group(p + float2(e, 0.0), k) - sd_group(p - float2(e, 0.0), k),\n"
-    "                          sd_group(p + float2(0.0, e), k) - sd_group(p - float2(0.0, e), k));\n"
-    "    float2 n = grad2 / max(length(grad2), 1e-4);\n"
+    "    float e = 0.75;\n"
+    "    float2 grad = float2(sd_group_soft(p + float2(e, 0.0), k) - sd_group_soft(p - float2(e, 0.0), k),\n"
+    "                 sd_group_soft(p + float2(0.0, e), k) - sd_group_soft(p - float2(0.0, e), k));\n"
+    "    float2 n_edge = grad / max(length(grad), 1e-4);\n"
+    "    float2 gc = 0.5 * (ggb.xy + ggb.zw);\n"
+    "    float2 gh = max(0.5 * (ggb.zw - ggb.xy), float2(1.0, 1.0));\n"
+    "    float2 dome = clamp((p - gc) / gh, float2(-1.0, -1.0), float2(1.0, 1.0));\n"
+    "    float2 n2 = normalize(n_edge + 0.14 * dome);\n"
     "    float bezel = max(I.c2.y, 1.0);\n"
-    "    float edge = 1.0 - saturate(-d / bezel);\n"
-    "    float disp = I.pd.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));\n"
-    "    float2 off = -n * disp;\n"
-    "    float ch = I.pd.z;\n"
-    "    float3 c = float3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);\n"
-    "    float lc = luma(c);\n"
-    "    c = max(lerp(float3(lc, lc, lc), c, I.prm.z), 0.0);\n"
-    "    c = c * (1.0 - col.a) + col.rgb * col.a;\n"
-    "    // the rim lit from the top left, and less across from it\n"
-    "    float ndl = dot(n, float2(-0.6, -0.8));\n"
-    "    float band = saturate(1.0 + d / 2.5);\n"
-    "    float spec = I.c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +\n"
-    "                           0.3 * edge * edge * max(ndl, 0.0));\n"
-    "    // the edge shaded, more on the side away from the light, so the shape reads over a light ground too\n"
-    "    c *= 1.0 - I.c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));\n"
-    "    c = c + (1.0 - c) * saturate(spec);\n"
+    "    // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)\n"
+    "    float r = clamp(1.0 + d / bezel, 0.0, 1.0);\n"
+    "    float r2 = r * r;\n"
+    "    float r4 = r2 * r2;\n"
+    "    float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);\n"
+    "    float inv_n = 1.0 / sqrt(slope * slope + 1.0);\n"
+    "    float2 Nxy = n2 * (slope * inv_n);\n"
+    "    float Nz = inv_n;\n"
+    "    // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)\n"
+    "    float eta = 0.6578947;\n"
+    "    float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);\n"
+    "    float kt = eta * Nz - sqrt(k_ior);\n"
+    "    float2 Txy = Nxy * kt;\n"
+    "    float Tz = -eta + kt * Nz;\n"
+    "    // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)\n"
+    "    float2 off = Txy * (1.15 * I.pd.y / max(-Tz, 1e-4));\n"
+    "    // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)\n"
+    "    float ch = min(I.pd.z * (0.72 + 0.56 * abs(n2.x * n2.y)), I.pd.z);\n"
+    "    float2 disp = off * ch;\n"
+    "    // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:\n"
+    "    // a spectrum, not three images; the flat blurred, three)\n"
+    "    float3 s0 = sharp(p + off + disp);\n"
+    "    float3 s1 = sharp(p + off + disp * 0.6666667);\n"
+    "    float3 s2 = sharp(p + off + disp * 0.3333333);\n"
+    "    float3 s3 = sharp(p + off);\n"
+    "    float3 s4 = sharp(p + off - disp * 0.3333333);\n"
+    "    float3 s5 = sharp(p + off - disp * 0.6666667);\n"
+    "    float3 s6 = sharp(p + off - disp);\n"
+    "    float3 cs = float3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,\n"
+    "                   (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,\n"
+    "                   (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);\n"
+    "    float3 cf = float3(backdrop(p + off + disp * 0.5).r, backdrop(p + off).g, backdrop(p + off - disp * 0.5).b);\n"
+    "    float lens = r2 * smoothstep(0.16, 0.88, r);\n"
+    "    float3 c = lerp(cf, cs, lens * 0.86);\n"
+    "    // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'\n"
+    "    // colour; from at most off * (1 + 0.85 * ch), inside what is kept)\n"
+    "    float3 bleed = backdrop(p + off * (1.0 + ch * 0.85));\n"
+    "    float3 bleed_sat = max(lerp(luma(bleed).xxx, bleed, I.prm.z * 1.35), 0.0);\n"
+    "    c = lerp(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);\n"
+    "    c = max(lerp(luma(c).xxx, c, I.prm.z), 0.0);\n"
+    "    // (its tint whole on the flat, where words lie, and less through the lip)\n"
+    "    float tint_a = col.a * (1.0 - 0.56 * lens);\n"
+    "    c = c * (1.0 - tint_a) + col.rgb * tint_a;\n"
+    "    // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,\n"
+    "    // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)\n"
+    "    float spot = 0.0;\n"
+    "    if (I.c2.z > 0.5) {\n"
+    "      float q = I.c2.z - 1.0;\n"
+    "      float qx = floor(q * 0.000244140625);\n"
+    "      float qy = q - qx * 4096.0;\n"
+    "      float2 gp = I.rect.xy + float2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);\n"
+    "      float gr = max(min(I.rect.z, I.rect.w) * 1.65, 44.0);\n"
+    "      spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));\n"
+    "    }\n"
+    "    float ndl = dot(n2, float2(-0.6, -0.8));\n"
+    "    float rim = I.c2.x;\n"
+    "    // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white\n"
+    "    float body_ring = r2 * (1.0 - 0.35 * r);\n"
+    "    c = lerp(c, c * float3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);\n"
+    "    // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,\n"
+    "    // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of\n"
+    "    // white, so a light ground does not swallow it\n"
+    "    float rim_lit = rim * (1.0 + 0.42 * spot);\n"
+    "    float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);\n"
+    "    spec_band *= spec_band;\n"
+    "    float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);\n"
+    "    float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +\n"
+    "                            0.28 * fresnel * max(ndl + 0.3, 0.0)) +\n"
+    "                 0.14 * spot * (0.45 + 0.55 * r);\n"
+    "    c = lerp(c, float3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));\n"
+    "    // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white\n"
+    "    float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);\n"
+    "    edge_b *= edge_b;\n"
+    "    float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));\n"
+    "    c = lerp(c, c * float3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));\n"
     "    c += mb_dither(p * scale) / 255.0;\n"
     "    return (float4(c, 1.0) * (a * I.c2.w)) * cover;\n"
     "  }\n"
@@ -293,7 +450,9 @@ static const char *shader_src =
     "  if (kind == 0 || kind == 5) d = notch_cut(d, p, I.rect, I.pd);\n"
     "  if (kind == 4) {\n"
     "    float2 uv = I.c2.xy + saturate((p - I.rect.xy) / I.rect.zw) * I.c2.zw;\n"
-    "    float4 pic = img.SampleLevel(samp, saturate(uv), 0);\n"
+    "    float2 dudx = ddx(p) / max(I.rect.zw, 1e-6) * I.c2.zw;\n"
+    "    float2 dudy = ddy(p) / max(I.rect.zw, 1e-6) * I.c2.zw;\n"
+    "    float4 pic = img.SampleGrad(samp, saturate(uv), dudx, dudy);\n"
     "    float edge = saturate(0.5 - d * scale);\n"
     "    if (I.pd.z > 0.5) {\n"
     "      // Only picture edges inside the frame cut it; the frame's clip covers shared edges once.\n"
@@ -553,9 +712,10 @@ static HRESULT make_device(D3D_DRIVER_TYPE type, UINT flags) {
                            D3D11_SDK_VERSION, &dev, NULL, &ctx);
 }
 
-// The canvas as a composition swap chain (premultiplied alpha) on top of a DirectComposition tree whose other visual,
-// under it, holds the native views; 0 (nothing made) where that cannot be had. MBUI_NO_DCOMP=1: not tried.
-static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) {
+// The window in place's canvas as a composition swap chain (premultiplied alpha) on top of a DirectComposition tree whose
+// other visual, under it, holds the native views, the composition's device made with the first; 0 (nothing made) where
+// that cannot be had. MBUI_NO_DCOMP=1: not tried.
+static int make_composed(IDXGIDevice1 *xdev, HWND hwnd) {
   const char *no = getenv("MBUI_NO_DCOMP");
   if (no && *no && *no != '0') return 0;
   RECT rc;
@@ -570,9 +730,10 @@ static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) 
   sd.Scaling = DXGI_SCALING_STRETCH;
   sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_SEQUENTIAL;
   sd.AlphaMode = DXGI_ALPHA_MODE_PREMULTIPLIED;
-  HRESULT hr = DCompositionCreateDevice(xdev, __uuidof(IDCompositionDevice), (void **)&dcomp);
+  int made_device = !dcomp;
+  HRESULT hr = dcomp ? S_OK : DCompositionCreateDevice(xdev, __uuidof(IDCompositionDevice), (void **)&dcomp);
   if (SUCCEEDED(hr)) hr = dcomp->CreateTargetForHwnd(hwnd, TRUE, &dtarget);
-  if (SUCCEEDED(hr)) hr = factory->CreateSwapChainForComposition(dev, &sd, NULL, &chain);
+  if (SUCCEEDED(hr)) hr = dxgi_factory->CreateSwapChainForComposition(dev, &sd, NULL, &chain);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&droot);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&dunder);
   if (SUCCEEDED(hr)) hr = dcomp->CreateVisual(&dcanvas);
@@ -592,12 +753,30 @@ static int make_composed(IDXGIDevice1 *xdev, IDXGIFactory2 *factory, HWND hwnd) 
   if (droot) droot->Release();
   if (chain) chain->Release();
   if (dtarget) dtarget->Release();
-  if (dcomp) dcomp->Release();
+  if (dcomp && made_device) dcomp->Release(), dcomp = NULL;
   dcanvas = dunder = droot = NULL;
   chain = NULL;
   dtarget = NULL;
-  dcomp = NULL;
   return 0;
+}
+
+// The window in place's swap chain, its own where there is no composition: a flip model's, or before Windows 10 a
+// blit model's (flip_chain says which, the first window's for all)
+static int make_own_chain(HWND hwnd) {
+  DXGI_SWAP_CHAIN_DESC1 sd = {};
+  sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+  sd.SampleDesc.Count = 1;
+  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+  sd.BufferCount = 2;
+  sd.Scaling = DXGI_SCALING_NONE;
+  sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  if (flip_chain && SUCCEEDED(dxgi_factory->CreateSwapChainForHwnd(dev, hwnd, &sd, NULL, NULL, &chain))) return 1;
+  // before Windows 10
+  sd.Scaling = DXGI_SCALING_STRETCH;
+  sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
+  sd.BufferCount = 1;
+  flip_chain = 0;
+  return SUCCEEDED(dxgi_factory->CreateSwapChainForHwnd(dev, hwnd, &sd, NULL, NULL, &chain));
 }
 
 static void make_pipeline(void);
@@ -611,36 +790,81 @@ int mb_render_init(void *hwnd) {
   }
   IDXGIDevice1 *xdev = NULL;
   IDXGIAdapter *adapter = NULL;
-  IDXGIFactory2 *factory = NULL;
   dev->QueryInterface(__uuidof(IDXGIDevice1), (void **)&xdev);
   xdev->SetMaximumFrameLatency(1);  // input to photon over throughput
   xdev->GetAdapter(&adapter);
-  adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&factory);
-  DXGI_SWAP_CHAIN_DESC1 sd = {};
-  sd.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-  sd.SampleDesc.Count = 1;
-  sd.BufferUsage = DXGI_USAGE_RENDER_TARGET_OUTPUT;
-  sd.BufferCount = 2;
-  sd.Scaling = DXGI_SCALING_NONE;
-  sd.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+  adapter->GetParent(__uuidof(IDXGIFactory2), (void **)&dxgi_factory);
   flip_chain = 1;
-  if (make_composed(xdev, factory, (HWND)hwnd)) {
+  if (make_composed(xdev, (HWND)hwnd)) {
     // the composition's swap chain, made at the window's size (its first buffers' view: at the first frame's size)
     fb_w = fb_h = 0;
-  } else if (FAILED(factory->CreateSwapChainForHwnd(dev, (HWND)hwnd, &sd, NULL, NULL, &chain))) {
-    // before Windows 10
-    sd.Scaling = DXGI_SCALING_STRETCH;
-    sd.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-    sd.BufferCount = 1;
-    flip_chain = 0;
-    factory->CreateSwapChainForHwnd(dev, (HWND)hwnd, &sd, NULL, NULL, &chain);
+  } else {
+    make_own_chain((HWND)hwnd);
   }
-  factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
-  factory->Release();
+  dxgi_factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
   adapter->Release();
   xdev->Release();
   make_pipeline();
   return chain != NULL;
+}
+
+// Window `wid` of the run beside the first (win_app.c win_open), its HWND made: its swap chain as the first's is (in the
+// composition, the views under it, where the first's is), nothing drawn in it yet. Window 0 put back in place after.
+int mb_render_open(int wid, void *hwnd) {
+  if (wid <= 0 || wid >= MB_WINS || !dev || !dxgi_factory) return 0;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  render_win_fresh(rw);
+  int ok;
+  if (dcomp) {
+    ok = make_composed(NULL, (HWND)hwnd);
+    if (ok) fb_w = fb_h = 0;
+  } else {
+    ok = make_own_chain((HWND)hwnd);
+  }
+  if (ok) dxgi_factory->MakeWindowAssociation((HWND)hwnd, DXGI_MWA_NO_ALT_ENTER);
+  rw = back;
+  return ok;
+}
+
+// What window `wid` kept let go of, as it closes (its views taken off it first: win_views.cpp mb_views_forget): the
+// next window given its number starts as none was drawn.
+void mb_render_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  if (canvas_rtv) canvas_rtv->Release();
+  if (canvas) canvas->Release();
+  if (rtv) rtv->Release();
+  if (dtarget) dtarget->SetRoot(NULL);
+  if (dcanvas) dcanvas->SetContent(NULL);
+  if (droot) {
+    droot->RemoveAllVisuals();
+    droot->Release();
+  }
+  if (dunder) {
+    dunder->RemoveAllVisuals();
+    dunder->Release();
+  }
+  if (dcanvas) dcanvas->Release();
+  if (chain) chain->Release();
+  if (dtarget) dtarget->Release();
+  if (dcomp) dcomp->Commit();
+  free(last_inst);
+  // (the device's state left naming none of its views)
+  ctx->OMSetRenderTargets(0, NULL, NULL);
+  ctx->Flush();
+  render_win_fresh(rw);
+  rw = back == &render_wins[wid] ? &render_wins[0] : back;
+}
+
+void *mb_render_views_visual_of(int wid) {
+  if (wid < 0 || wid >= MB_WINS) return NULL;
+  RenderWin *back = rw;
+  rw = &render_wins[wid];
+  IDCompositionVisual *v = dunder;
+  rw = back;
+  return v;
 }
 
 // The kinds drawn by a pixel shader of their own: the shader with its kind fixed (ONE_KIND), so each is compiled to its
@@ -831,7 +1055,7 @@ static level level_tex(DXGI_FORMAT format, int w, int h) {
   td.Usage = D3D11_USAGE_DEFAULT;
   td.BindFlags = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
   dev->CreateTexture2D(&td, NULL, &l.t);
-  dev->CreateRenderTargetView(l.t, NULL, &l.rtv);
+  dev->CreateRenderTargetView(l.t, NULL, &l.rt);
   dev->CreateShaderResourceView(l.t, NULL, &l.srv);
   return l;
 }
@@ -841,7 +1065,7 @@ static void ensure_levels(int w, int h) {
   for (int j = 0; j < 5; j++)
     if (lv[j].t) {
       lv[j].srv->Release();
-      lv[j].rtv->Release();
+      lv[j].rt->Release();
       lv[j].t->Release();
     }
   lv_w = w > lv_w ? w : lv_w;
@@ -855,7 +1079,7 @@ static void ensure_levels(int w, int h) {
 static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int mode, float sg, float dx, float dy) {
   ID3D11ShaderResourceView *none[3] = {NULL, NULL, NULL};
   ctx->PSSetShaderResources(0, 3, none);
-  ctx->OMSetRenderTargets(1, &dst->rtv, NULL);
+  ctx->OMSetRenderTargets(1, &dst->rt, NULL);
   D3D11_VIEWPORT vp = {0, 0, (float)w, (float)h, 0, 1};
   ctx->RSSetViewports(1, &vp);
   struct { float a[4], b[4]; MBContained edge; } u = {
@@ -871,17 +1095,12 @@ static void post_pass(level *src, int sw, int sh, level *dst, int w, int h, int 
 // parts differ from the frame before (@hostapi.render_dirty), only those parts of the canvas are drawn again, each cut
 // to it (the scissor, `cut`, while `cut_on`), the frame's ground over it first (the instance after the frame's,
 // submit's), then every instance. Without a window the offscreen target is the canvas.
-static ID3D11Texture2D *canvas;
-static ID3D11RenderTargetView *canvas_rtv;
-static int canvas_w, canvas_h;
-// what the canvas holds is the last frame given; what the offscreen target holds, the frame drawn last
-static int canvas_ok, off_ok;
-// the parts of the next frame that differ (points: x, y, w, h), all of it (`dirty_whole`), and whether any was said
-#define MB_PARTS 8
-static double dirty[MB_PARTS][4];
-static int dirty_n, dirty_whole, dirty_told;
-// a picture the frame drawn last had none of yet (drawn without it): the next drawn whole
-static int pictures_missing, encode_missing;
+// (the canvas, its size and whether it holds the last frame given are the window's: RenderWin above) what the offscreen
+// target holds, the frame drawn last
+static int off_ok;
+// (the parts of the next frame that differ, points: x, y, w, h, all of it, `dirty_whole`, and whether any was said, the
+// window's) a picture the frame being drawn has none of yet
+static int encode_missing;
 static int cut_on;
 static D3D11_RECT cut;
 
@@ -1051,6 +1270,15 @@ static int capture(ID3D11RenderTargetView *target, int pw, int ph, const float *
   gu.map[0] = sc / d / L->w; gu.map[1] = sc / d / L->h;
   gu.map[2] = -(float)px0 / d / L->w; gu.map[3] = -(float)py0 / d / L->h;
   gu.uvc[0] = 0.5f / L->w; gu.uvc[1] = 0.5f / L->h; gu.uvc[2] = (lw[k] - 0.5f) / L->w; gu.uvc[3] = (lh[k] - 0.5f) / L->h;
+  // the sharp one, of the levels its blur left as they were copied: the half once halved twice or more, the copy once
+  // halved (not contained: contained, its copy is the edge's pass's), else L
+  int rk = k >= 2 ? 1 : k == 1 && !contained ? 0 : k;
+  level *R = k >= 2 ? &lv[1] : k == 1 && !contained ? &lv[0] : L;
+  float rd = (float)(1 << rk);
+  rsrv = R->srv;
+  gu.rmap[0] = sc / rd / R->w; gu.rmap[1] = sc / rd / R->h;
+  gu.rmap[2] = -(float)px0 / rd / R->w; gu.rmap[3] = -(float)py0 / rd / R->h;
+  gu.ruvc[0] = 0.5f / R->w; gu.ruvc[1] = 0.5f / R->h; gu.ruvc[2] = (lw[rk] - 0.5f) / R->w; gu.ruvc[3] = (lh[rk] - 0.5f) / R->h;
   return 1;
 }
 
@@ -1154,6 +1382,7 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   ctx->UpdateSubresource(ubuf, 0, NULL, &u, 0, 0);
   memset(&gu, 0, sizeof gu);
   gsrv = NULL;
+  rsrv = NULL;
   segs_upload(f, count);
   main_state(target, pw, ph);
   if (part) {
@@ -1176,8 +1405,11 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
         main_state(target, pw, ph);
       }
       ctx->PSSetShader(ps, NULL, 0);
-      // liquid: the group as one shape, drawn once
-      if (shows) ctx->DrawInstanced(6, (int)(f[start * MB_INST + 5] + 0.5f) == 6 ? 1 : (UINT)(end - start), 0, (UINT)start);
+      // liquid: the group as one shape, drawn once, its capture's sharp level in t1 (an image's run after it binds its
+      // own there again)
+      int liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6;
+      if (shows && liquid) ctx->PSSetShaderResources(1, 1, rsrv ? &rsrv : &atlas_srv);
+      if (shows) ctx->DrawInstanced(6, liquid ? 1 : (UINT)(end - start), 0, (UINT)start);
       start = end;
       continue;
     }
@@ -1213,9 +1445,10 @@ static void encode(ID3D11RenderTargetView *target, int pw, int ph, int32_t count
   cut_on = 0;
 }
 
-// The frame's instances into the vertex buffer and kept (a snapshot draws them again), then drawn into the target: a
-// window's (`chain`) into the canvas, only the parts that differ where it holds the frame before; how many in
-// `parts_out` (-1 all of it, 0 none), the parts in `cuts`.
+// The frame's instances into the vertex buffer and kept (a snapshot draws them again), as floats with its groups'
+// headers drawn out (groups.h: one pass, into what is kept), then drawn into the target: a window's (`chain`) into the
+// canvas, only the parts that differ where it holds the frame before; how many in `parts_out` (-1 all of it, 0 none),
+// the parts in `cuts`.
 static int submit(const double *inst, int32_t count, double r, double g, double b, int *parts_out = NULL,
                   D3D11_RECT *cuts = NULL) {
   if (!rtv) return 0;
@@ -1237,7 +1470,7 @@ static int submit(const double *inst, int32_t count, double r, double g, double 
     last_cap = need * 2;
     last_inst = (float *)realloc(last_inst, last_cap);
   }
-  for (int32_t i = 0; i < n; i++) last_inst[i] = (float)inst[i];
+  mb_groups_floats(last_inst, inst, count);
   memcpy(f, last_inst, (size_t)n * sizeof(float));
   float *gr = f + n;
   memset(gr, 0, MB_INST * sizeof(float));
@@ -1319,12 +1552,16 @@ int mb_frame_beats(void) {
   return beats;
 }
 
-void mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
+// what the frames presented since the last mb_render_pace owe the compositor's beat: 0 nothing, 1 the wait, 2 a window
+// occluded (a hidden or minimized window does not wait for vsync: paced as if it did)
+static int pace_owed;
+
+int mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
   int n = -1;
   D3D11_RECT parts[MB_PARTS];
   if (!submit(inst, count, r, g, b, &n, parts) || !chain) {
     commit_presented();
-    return;
+    return 0;
   }
   // a hidden or minimized window does not wait for vsync; pace it as if it did. A flip model's swap chain is told the
   // parts that changed (what the compositor takes again; none: a pixel's), all of its buffer the canvas's
@@ -1341,8 +1578,13 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     hr = chain->Present(1, 0);
   }
   commit_presented();
-  // A composition's swap chain is not held to the display by its Present, so each frame waits here for the compositor
-  // to compose (DwmFlush): a frame for each of the display's, none between that no one sees. Without it a window that
+  pace_owed = hr != DXGI_STATUS_OCCLUDED ? 1 : pace_owed ? pace_owed : 2;
+  return SUCCEEDED(hr);
+}
+
+// A composition's swap chain is not held to the display by its Present, so each round of frames (win_app.c: every
+// window of the run that wanted one presented its, then this, once: each waiting after its own, two windows drew at
+// half the display's rate) waits here for the compositor to compose (DwmFlush): a frame for each of the display's, none between that no one sees. Without it a window that
   // moves something every frame (a playhead going, a motion) drew as many as the machine could: 1759 to 1794 a second
   // whole in view on a 240 Hz display, 118% of a core, and 238 to 240 a second, 24% of one, waiting so (measured on
   // ScreenReplay's viewer, an RTX 5080's machine, 2026-11-13; partly covered 461 to 484 and 212 to 217). A waitable
@@ -1353,7 +1595,11 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
   // for the next alone. Waiting them all after the work, a frame whose work took 4.2 to 8.3 ms at 240 Hz (a fast drag
   // of ScreenReplay's playhead over a 4K picture) came every 12.5 ms instead of 8.3, half its frames so, 92 to 97 a
   // second in an uneven step; counted from the last, 118 to 120 a second, 8.3 ms apart (2026-11-15).
-  if (hr == DXGI_STATUS_OCCLUDED) Sleep(16);
+void mb_render_pace(void) {
+  int owed = pace_owed;
+  pace_owed = 0;
+  if (!owed) return;
+  if (owed == 2) Sleep(16);
   else if (dcomp) {
     static LARGE_INTEGER last_beat;
     int beats = mb_frame_beats();

@@ -431,10 +431,12 @@ test "desktop: what is picked ends where the pointer let it go: dragged down, th
   assert_true(t.ctx().selection_end() is None)
   t.drag(x0, y0, x1, y1)
   let (ex, ey, eh) = t.ctx().selection_end().unwrap()
+  assert_false(t.ctx().selection_ends_at_start())
   assert_true(ey <= y1 && ey + eh >= y1, msg="\{Repr((ex, ey, eh))}")
   assert_true((ex - x1).abs() < 15.0, msg="\{Repr((ex, ey, eh))}")
   t.drag(x1, y1, x0, y0)
   let (ex, ey, eh) = t.ctx().selection_end().unwrap()
+  assert_true(t.ctx().selection_ends_at_start())
   assert_true(ey <= y0 && ey + eh >= y0, msg="\{Repr((ex, ey, eh))}")
   assert_true((ex - x0).abs() < 15.0, msg="\{Repr((ex, ey, eh))}")
 }

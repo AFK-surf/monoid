@@ -36,7 +36,7 @@ test("a config is filled in from what it says", () => {
   assert.deepEqual(config.profiles[0]!.runtimes, ["claude"]);
   const og = config.profiles[1]!;
   assert.deepEqual([og.home, og.models], ["/abs/og", ["a", "b"]]);
-  assert.deepEqual(og.runtimes, ["claude", "codex", "dsh"]);
+  assert.deepEqual(og.runtimes, ["claude", "codex", "dsh", "pi"]);
   assert.equal(profileEnv(og, "codex").X, "1");
   assert.equal(profileEnv(og, "codex").OPENCODE_GO_KEY, "k");
   assert.equal(config.warmMs, 300_000);
@@ -75,15 +75,16 @@ test("a config from before providers loads as it was", () => {
     ],
   };
   checkConfig(raw, "/x");
-  // DeepSeek Harness runs every key: DeepSeek's (chat completions only) runs nothing else.
-  assert.deepEqual(hubConfig(raw, "/x").profiles.map((p) => p.runtimes), [["claude", "codex", "dsh"], ["claude", "dsh"], ["codex"], ["dsh"]]);
+  // DeepSeek Harness and Pi run every key: DeepSeek's (chat completions only) runs nothing else.
+  assert.deepEqual(hubConfig(raw, "/x").profiles.map((p) => p.runtimes), [["claude", "codex", "dsh", "pi"], ["claude", "dsh", "pi"], ["codex"], ["dsh", "pi"]]);
 });
 
 test("a key runs every runtime it can and a subscription its own", () => {
-  assert.deepEqual(runtimesOf("opencode-go", undefined), ["claude", "codex", "dsh"]);
-  assert.deepEqual(runtimesOf("anthropic-api", "codex"), ["claude", "dsh"]);
+  assert.deepEqual(runtimesOf("opencode-go", undefined), ["claude", "codex", "dsh", "pi"]);
+  assert.deepEqual(runtimesOf("anthropic-api", "codex"), ["claude", "dsh", "pi"]);
   assert.deepEqual(runtimesOf("subscription", "codex"), ["codex"]);
   assert.deepEqual(runtimesOf("subscription", "dsh"), [], "DeepSeek Harness has no subscription here");
+  assert.deepEqual(runtimesOf("subscription", "pi"), [], "nor Pi");
   assert.deepEqual(runtimesOf("env", "dsh"), ["dsh"]);
   assert.deepEqual(runtimesOf("env", undefined), []);
 });

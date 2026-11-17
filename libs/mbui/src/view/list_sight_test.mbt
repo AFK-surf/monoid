@@ -99,6 +99,7 @@ fn sg_seen(c : SgCase) -> @view.Sight[Int] {
   {
     first: tops[0].0,
     into: -tops[0].1,
+    tall: sg_tall,
     last: tops[tops.length() - 1].0,
     whole: whole.last().map(fn(t) { t.0 }),
     from_foot,
@@ -136,7 +137,7 @@ test "a page's list tells what is in sight once after its first layout: at its f
   let c = sg_case(30)
   assert_eq(c.told.length(), 1, msg="\{Repr(c.told)}")
   assert_eq(c.told[0].1, sg_seen(c))
-  assert_eq(c.told[0].1, { first: 25, into: 0.0, last: 29, whole: Some(29), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true })
+  assert_eq(c.told[0].1, { first: 25, into: 0.0, tall: sg_tall, last: 29, whole: Some(29), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true })
   assert_eq(c.place.sight_now(), Some(c.told[0].1))
 }
 
@@ -290,7 +291,7 @@ test "with its top covered 0, 44 and 52: the first key the first with something 
     let (first, into) = if cover >= sg_tall { (1, cover - sg_tall) } else { (0, cover) }
     assert_eq(
       at_top,
-      { first, into, last: 4, whole: Some(4), from_foot: c.scroll.most(), shows: sg_shows, at_foot: false, foot_whole: false },
+      { first, into, tall: sg_tall, last: 4, whole: Some(4), from_foot: c.scroll.most(), shows: sg_shows, at_foot: false, foot_whole: false },
       msg="covered \{cover}, at its top",
     )
     // (at its foot: block 25 at the top of what shows, under the cover where it is 40 or more)
@@ -299,7 +300,7 @@ test "with its top covered 0, 44 and 52: the first key the first with something 
     let (first, into) = if cover >= sg_tall { (26, cover - sg_tall) } else { (25, cover) }
     assert_eq(
       at_foot,
-      { first, into, last: 29, whole: Some(29), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
+      { first, into, tall: sg_tall, last: 29, whole: Some(29), from_foot: 0.0, shows: sg_shows, at_foot: true, foot_whole: true },
       msg="covered \{cover}, at its foot",
     )
   }

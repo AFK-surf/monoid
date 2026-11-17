@@ -4,7 +4,7 @@ import { MANUAL, STILLFAIL_SURFACE } from "../store/rows.ts";
 import type { Args } from "./args.ts";
 import type { Hub } from "./hub.ts";
 import { archiveChat } from "./lifecycle.ts";
-import { Refused } from "./neighbours.ts";
+import { Refused } from "../jobs/remote.ts";
 import { elsewhere, fromBefore, named, peersOf, scopeOf, sessionThreadOf, threadIn } from "./others.ts";
 
 export const ARCHIVE = "session.archive";

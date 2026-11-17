@@ -1,0 +1,17 @@
+# The wide frame (MBUI_WIN=1280x800, 大屏): a picture and a file put in the composer with words and sent.
+timeout 20000
+until 发消息
+wait 600
+tap 发消息
+wait 500
+picks 截图.png:160x120
+key cmd+u
+wait 900
+picks 构建日志.log:2000
+key cmd+u
+wait 900
+type 截图和日志都在这里
+wait 600
+tap icon:arrow-up
+wait 2200
+exit

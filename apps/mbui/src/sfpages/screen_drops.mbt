@@ -31,6 +31,13 @@ priv struct ScreenDropItem {
 }
 
 ///|
+/// One file sent and another the same where they are the same file sent (its serial): what is told of each is its own
+/// signals'.
+impl Eq for ScreenDropItem with equal(self, other) {
+  self.serial == other.serial
+}
+
+///|
 /// Where a file named `name` is in `folder` on the station's machine (its own separator, `\` for a Windows one).
 fn drop_path(folder : String, name : String) -> String {
   let sep = if folder.contains("\\") && !folder.contains("/") { "\\" } else { "/" }
@@ -66,6 +73,7 @@ fn ScreenSess::send_files(self : ScreenSess, files : Array[@hostapi.Picked], to 
       id: @signals.signal(""),
     })
   }
+  self.drops_told.set(self.drops_told.untracked() + 1)
   self.pump()
 }
 
@@ -74,6 +82,7 @@ fn ScreenSess::send_files(self : ScreenSess, files : Array[@hostapi.Picked], to 
 fn ScreenSess::dismiss(self : ScreenSess, d : ScreenDropItem) -> Unit {
   let going = d.state.get() == "going" || d.state.get() == "installing"
   self.drops.retain(fn(x) { x.serial != d.serial })
+  self.drops_told.set(self.drops_told.untracked() + 1)
   if going {
     self.pumping = false
     self.pump()

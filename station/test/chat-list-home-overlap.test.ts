@@ -5,13 +5,13 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "../src/store/chat-list-home-overlap.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "../src/store/chat-list-scope-build.ts";
-import { trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { settleRecentWorkspaceOrderStep } from "../src/store/chat-list-scope-order.ts";
-import { putRecentScopeSource, removeRecentScopeSource } from "../src/store/chat-list-scope-rows.ts";
-import { settleRecentScopeVisibilityStep } from "../src/store/chat-list-scope-visibility.ts";
+import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { settleRecentWorkspaceOrderStep } from "./reference/chat-list/chat-list-scope-order.ts";
+import { putRecentScopeSource, removeRecentScopeSource } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { settleRecentScopeVisibilityStep } from "./reference/chat-list/chat-list-scope-visibility.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const recursive of [false, true]) test(`home and workspace overlap is counted once as both change (recursive triggers ${recursive})`, () => {

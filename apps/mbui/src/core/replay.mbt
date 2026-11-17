@@ -243,7 +243,7 @@ pub fn Replay::parse(log : String) -> Replay {
         let bytes = match (m.get("b"), m.get("bn")) {
           (Some(String(h)), _) => Some(@codec.from_hex(h))
           // (bytes the trace left out, their length kept: as many zeros)
-          (_, Some(Number(n, ..))) => Some(Bytes::new(n.to_int()))
+          (_, Some(Number(n, ..))) => Some(Bytes::make(n.to_int(), b'\x00'))
           _ => None
         }
         evs.push({ out: false, msg: i, bytes, wall, has_wall, done: false, at: -1.0, given: -1.0, host: false, kept: -1 })
@@ -1812,19 +1812,6 @@ pub fn Replay::given_at(self : Replay, call : String) -> Double? {
         asked[id.to_int()] = true
       }
     } else if e.done && !e.host && asked.contains(id.to_int()) && !m.contains("delta") && !m.contains("value") {
-      at = Some(e.given)
-    }
-  }
-  at
-}
-
-///|
-/// When the latest message in given so far that `which` holds for (its JSON) was given here (the clock): a change a
-/// subscription's topic came with, what a motion starts from as the tape has it. None while none is.
-pub fn Replay::given_at_where(self : Replay, which : (Json) -> Bool) -> Double? {
-  let mut at : Double? = None
-  for e in self.evs {
-    if !e.out && !e.host && e.done && which(e.msg) {
       at = Some(e.given)
     }
   }

@@ -463,6 +463,152 @@ test "控制中心 says how long it has been seen; its 连接 row pressed, the v
 }
 
 ///|
+/// A live view on a link of 57 ms through 北京中继, as pengxiao's (2026-11-17: 「明明丢包很严重，结果显示数据都正常」): its
+/// station saying it lost `loss` of what went to this device (None: a station before it says none), this device's own
+/// count of its connection `net_loss` (stationNet's, as the core words it); a phone's, or with keyboard and mouse.
+fn lossy_rig(loss : Double?, net_loss? : Json, mouse? : Bool = false) -> ScreenRig {
+  let net : Map[String, Json] = { "path": "北京中继", "via": "relay", "rtt": { "text": "57 ms", "level": "ok" } }
+  match net_loss {
+    Some(l) => net["loss"] = l
+    None => ()
+  }
+  let r = if mouse {
+    screen_rig(w=1280.0, h=800.0, platform=0, net=Json::object(net))
+  } else {
+    screen_rig(net=Json::object(net))
+  }
+  if mouse {
+    r.t.run_for(@sf.later_ms)
+  }
+  r.live()
+  match loss {
+    Some(p) => r.state("live", more={ "loss": Json::number(p) })
+    None => ()
+  }
+  r.t.draw()
+  r
+}
+
+///|
+/// How the link goes as the signal mark says it now: its level and the bars lit.
+fn link_now(r : ScreenRig) -> (String, Int) {
+  let level = screen_link_level(r.sess().state, screen_net(r.sess()))
+  (level, bars_lit(level))
+}
+
+///|
+/// The view's figures open: from 控制中心's 连接 on a phone; from the viewer's bar's chip with keyboard and mouse where
+/// the link is poor (else 控制中心's 连接 there too).
+fn open_figures(r : ScreenRig) -> Unit {
+  if r.labelled(tr("web-pages.screen.stats")) is Some(_) {
+    r.tap_label(tr("web-pages.screen.stats"))
+  } else {
+    open_center(r)
+    r.t.tap_text(tr("web-pages.screen.stats"))
+  }
+  r.t.run_for(@sf.later_ms)
+  to_sheet_rest(r.t)
+}
+
+///|
+test "a link of 57 ms losing 28.6% of what goes: 丢包率 says it in red, one bar lit red, the bar says the link is poor, 复制诊断 copies it" {
+  let r = lossy_rig(Some(28.6))
+  assert_eq(link_now(r), ("red", 1))
+  assert_true(net_poor(r.sess()))
+  open_figures(r)
+  assert_true(r.t.find("28.6%") is Some(_))
+  assert_eq(r.t.audit(), [])
+  r.tap_label(tr("web-pages.screen.stat.copy"))
+  r.t.draw()
+  let said = @json.parse(r.t.clipboard()) catch { _ => @halt.saying("not JSON") }
+  assert_eq(text(Some(said), "loss"), "28.6%")
+  assert_eq(text(Some(said), "rtt"), "57 ms")
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "with keyboard and mouse, a link losing 28.6%: the viewer's bar shows its chip as the station says it, one bar red; pressed, its figures in red" {
+  let r = lossy_rig(None, mouse=true)
+  // live at 57 ms, nothing said yet of what was lost: no chip
+  assert_true(r.labelled(tr("web-pages.screen.stats")) is None)
+  // the station's count comes with the view's state a second on: the chip comes as it is told
+  r.state("live", more={ "loss": Json::number(28.6) })
+  r.t.draw()
+  assert_true(r.labelled(tr("web-pages.screen.stats")) is Some(_))
+  assert_eq(link_now(r), ("red", 1))
+  assert_eq(r.t.audit(), [])
+  open_figures(r)
+  assert_true(r.t.find("28.6%") is Some(_))
+  assert_eq(r.t.audit(), [])
+  shut(r)
+  mouse_done(r)
+}
+
+///|
+test "a link losing 3.5%: amber, two bars lit, the bar says it is poor" {
+  let r = lossy_rig(Some(3.5))
+  assert_eq(link_now(r), ("amber", 2))
+  assert_true(net_poor(r.sess()))
+  open_figures(r)
+  assert_true(r.t.find("3.5%") is Some(_))
+  assert_eq(r.t.audit(), [])
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "a link of 57 ms losing nothing: 0%, three bars green, the viewer's bar says nothing of it" {
+  let r = lossy_rig(Some(0.0), mouse=true)
+  assert_eq(link_now(r), ("ok", 3))
+  assert_true(!net_poor(r.sess()))
+  assert_true(r.labelled(tr("web-pages.screen.stats")) is None)
+  open_figures(r)
+  assert_true(r.t.find("0%") is Some(_))
+  assert_eq(r.t.audit(), [])
+  shut(r)
+  mouse_done(r)
+}
+
+///|
+test "a station before the view's count: this device's own count shown as its share alone, its level the mark's" {
+  let r = lossy_rig(None, net_loss={ "text": "丢包 12.5%", "level": "red" })
+  assert_eq(link_now(r), ("red", 1))
+  open_figures(r)
+  assert_true(r.t.find("12.5%") is Some(_))
+  assert_true(r.t.find("丢包 12.5%") is None)
+  assert_eq(r.t.audit(), [])
+  r.tap_label(tr("web-pages.screen.stat.copy"))
+  r.t.draw()
+  let said = @json.parse(r.t.clipboard()) catch { _ => @halt.saying("not JSON") }
+  assert_eq(text(Some(said), "loss"), "12.5%")
+  shut(r)
+  screen_done(r.t)
+}
+
+///|
+test "丢包率's words: to a tenth, its level by the share; the most of the station's count and this device's; — before either" {
+  assert_eq(loss_words(0.0), ("0%", ""))
+  assert_eq(loss_words(0.04), ("0%", ""))
+  assert_eq(loss_words(0.5), ("0.5%", ""))
+  assert_eq(loss_words(1.0), ("1.0%", "amber"))
+  assert_eq(loss_words(9.96), ("10.0%", "red"))
+  assert_eq(loss_words(140.0), ("100.0%", "red"))
+  assert_eq(loss_pct_of_words("丢包 12.5%"), Some(12.5))
+  assert_eq(loss_pct_of_words("12.5% loss"), Some(12.5))
+  assert_eq(loss_pct_of_words("丢包"), None)
+  let net : Json? = Some({ "rtt": { "text": "57 ms", "level": "ok" }, "loss": { "text": "丢包 2.0%", "level": "amber" } })
+  assert_eq(screen_loss(Some({ "loss": 28.6 }), net), ("28.6%", "red"))
+  assert_eq(screen_loss(Some({ "loss": 0.0 }), net), ("2.0%", "amber"))
+  assert_eq(screen_loss(None, Some({ "rtt": { "text": "57 ms", "level": "ok" } })), ("0%", ""))
+  assert_eq(screen_loss(None, None), ("—", ""))
+  // what was lost only makes it worse: before the round trip is known, none
+  assert_eq(screen_link_level(Some({ "loss": 0.0 }), None), "")
+  assert_eq(screen_link_level(Some({ "loss": 0.0 }), net), "amber")
+  assert_eq(screen_link_level(Some({ "loss": 0.0 }), Some({ "rtt": { "text": "400 ms", "level": "red" } })), "red")
+}
+
+///|
 test "断开 in 控制中心 closes the screen" {
   let r = screen_rig()
   r.live()
@@ -566,12 +712,12 @@ test "a pose pressed shows as chosen at once, before the picture has come" {
   r.t.draw()
   r.tap_label(tr("web-pages.screen.device.pose.open"))
   r.t.draw()
-  assert_eq(r.ui().logs.pose_asked, 2)
+  assert_eq(r.ui().logs.pose_asked.get(), 2)
   // the picture of the inner panel come: it says which, nothing asked any longer
   r.say({ "config": { "codec": "jpeg", "width": 1426.0, "height": 1004.0 } })
   r.t.stream_shows(r.sess().stream.unwrap().id(), 3.0, 1426, 1004)
   r.t.draw()
-  assert_eq(r.ui().logs.pose_asked, -1)
+  assert_eq(r.ui().logs.pose_asked.get(), -1)
   // (a choice's thumb gone to the one chosen: a cover's slide, @ui.cover_slide_ms)
   r.t.run_for(@ui.cover_slide_ms)
   screen_done(r.t)
@@ -705,6 +851,8 @@ test "a device wider than tall: what it has itself in a row under it, App first;
   let (_, by, _, _) = r.labelled(tr("web-pages.screen.device.home")).map(fn(p) { (p.0, p.1, 0.0, 0.0) }).unwrap()
   let shown = r.ui().shown(r.t.ctx())
   assert_true(by > shown.y + shown.h)
+  // in the room kept for it, in the window
+  assert_true(by + 44.0 <= 600.0)
   // App first, its log asked for only once it is looked at
   assert_true(r.told("screen.logs").is_empty())
   assert_true(r.t.rect_of(tr("web-pages.screen.debug.install")) is Some(_) || r.t.rect_of(tr("web-pages.screen.debug.relaunch")) is Some(_))
@@ -836,8 +984,8 @@ test "重启 App: the list the first time, and the app chosen at one press after
 ///|
 /// What the address bar of tab `screen` holds (the fixture station's).
 fn address_of(screen : String) -> String {
-  match screen_ui(screen_key("ws-1/st-1", screen)).address {
-    Some((_, f)) => f.text()
+  match screen_ui(screen_key("ws-1/st-1", screen)).address_field {
+    Some(f) => f.text()
     None => ""
   }
 }
@@ -974,7 +1122,8 @@ test "words typed in the address bar go to the tab on Enter" {
   assert_true(r.labelled("收件箱 - Proton Mail") is None)
   assert_eq(address_of("browser:tab-1"), "https://console.anthropic.com/login")
   // the keys given it (as ⌘L gives them), its words written over
-  screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked = true
+  let asked = screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked
+  asked.set(asked.untracked() + 1)
   r.frame(1050.0)
   r.t.type_text("proton mail")
   r.t.enter()

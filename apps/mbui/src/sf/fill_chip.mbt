@@ -84,11 +84,13 @@ pub fn fill_chip(
     } else {
       chip_words
     }
-    c.box(style=if chip_joined(mark, words) { words_style.then(chip_joined_gap) } else { words_style }, fn() {
-      if mark != "" {
+    // (a mark run on into its words, 磁盘剩 420 G, one line of words, as fill_chip_node has it)
+    let joined = chip_joined(mark, words)
+    c.box(style=if joined { words_style.then(chip_joined_gap) } else { words_style }, fn() {
+      if mark != "" && !joined {
         c.text(mark, style=chip_text) |> ignore
       }
-      c.text(words, style=chip_text) |> ignore
+      c.text(if joined { mark + words } else { words }, style=chip_text) |> ignore
     })
     |> ignore
   })

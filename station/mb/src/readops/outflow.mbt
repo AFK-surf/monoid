@@ -28,7 +28,7 @@ let legacy_said_page_head_sql : String =
   #|  WHERE e.thread=?1 AND e.n>?2 ORDER BY e.n LIMIT ?3
 
 ///|
-/// store/page-letter-index.ts PAGE_LETTER_KEYS_AFTER.
+/// station/test/reference/backfill/page-letter-index.ts PAGE_LETTER_KEYS_AFTER.
 let page_letter_keys_after_sql : String =
   #|SELECT CAST(p.n AS TEXT) AS n FROM (
   #|    SELECT b.n FROM page_letter_rows b WHERE b.thread=?1 AND b.token=?2 AND b.n>CAST(?3 AS INTEGER)
@@ -169,6 +169,7 @@ fn teams(host : @host.Host, data : String, sep : String) -> Map[String, Team] ra
     match str_of(jget(Some(c), "kind")) {
       Some("feishu") => out[id] = { id, book: "feishu" }
       Some("comma") => out[id] = { id, book: "comma" }
+      Some("group") => out[id] = { id, book: "group" }
       _ =>
         match str_of(jget(jget(jget(Some(c), "slack"), "team"), "id")) {
           Some(t) if t != "" => out[id] = { id: t, book: "slack" }
@@ -188,10 +189,20 @@ fn outflow_person(host : @host.Host, data : String, sep : String, teams_of : () 
       Some(colon) if colon > 0 && colon < rest.length() - 1 => {
         let connect = rest.view(end_offset=colon).to_owned()
         let user = rest.view(start_offset=colon + 1).to_owned()
-        let team = teams_of().get(connect)
+        // (slack-known.ts `teamOf`: a connect moved here, named with the station it came from, by its own name here)
+        let teams = teams_of()
+        let team = match teams.get(connect) {
+          Some(t) => Some(t)
+          None =>
+            match connect.find("@") {
+              Some(at) if at > 0 => teams.get(connect.view(end_offset=at).to_owned())
+              _ => None
+            }
+        }
         let book_file = match team {
           Some(t) if t.book == "feishu" => "feishu-names.json"
           Some(t) if t.book == "comma" => "comma-names.json"
+          Some(t) if t.book == "group" => "group-names.json"
           _ => "slack-names.json"
         }
         let names = match read_json(host, join_path(sep, data, book_file)) {

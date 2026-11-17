@@ -5,10 +5,13 @@
 //   - under all of it, what the frame does in every tier before its pages (signed_in_frame) and what the tape's frame
 //     does under its panels (sfdesk's tape_under: the sidebar as it was left, the chat landed on, back);
 //   - the tape: its row of panels, moved as its move says, what each holds an island of its own;
-//   - over it, a station's screen, a file read or played over the whole window, what opens over the panels (sfdesk's
+//   - over it, a film played over the whole window, what opens over the panels (sfdesk's
 //     overlays.mbt), the presenters (signed_in_over): taking presses where they draw them alone, the panels' covers
 //     under them the tree's;
-//   - over all of it, an image opened: nodes of the tree's (wide_viewer, sfbase's viewer_tree.mbt).
+//   - over all of it, the chat being shared as a picture, a visualization over the whole screen, a station's screen or
+//     terminal or a
+//     drive's text read, and an image opened: nodes of the tree's (sfpages' publish_layer_node, sfbase's
+//     viz_full_layer_node, wide_page, wide_viewer).
 
 ///|
 /// The tape's shell (above), in node `v`.
@@ -20,7 +23,16 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (page_local_ms at most), as a page pushed on a phone slides in then
   @sfdesk.tape_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
-  wide_terminal(v, src)
+  // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
+  signed_in_prompts(v, src)
+  // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
+  // (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
+  // ⌘K's panel over the frame (sfdesk's switcher.mbt), ⌘/'s shortcuts as the shell's keys_open says (shortcuts.mbt)
+  @sfdesk.switcher_node(v, src)
+  @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
+  wide_page(v, src)
   wide_viewer(v, src)
   // a workspace switched shows once all its rail, sidebar and the page its pane lands on open on is answered (sfdesk's
   // frame_opens), the screen as it was till then (sfbase's workspace_switch_node)
@@ -37,35 +49,76 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
-  wide_terminal(v, src)
+  // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
+  signed_in_prompts(v, src)
+  // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
+  // (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
+  // ⌘K's panel over the frame (sfdesk's switcher.mbt), ⌘/'s shortcuts as the shell's keys_open says (shortcuts.mbt)
+  @sfdesk.switcher_node(v, src)
+  @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
+  wide_page(v, src)
   wide_viewer(v, src)
   // (a workspace switched: as taped_shell's)
   @sfbase.workspace_switch_node(v, src, @sfdesk.frame_opens)
 }
 
 ///|
-/// A station's terminal on top over the wide frame, over all of it as a station's screen is (terminal_node): nodes
-/// of the tree's of its own, a modal layer while it is on top, its way back the page under it by name; made again for
-/// another terminal.
-fn wide_terminal(v : @view.View, src : Source) -> Unit {
+/// What a wide frame shows over all of it while it is on top: a station's screen (screen_node), its terminal
+/// (terminal_node), a drive's text read (sfpages' reader_page_node) or its video or song played (sfpages'
+/// play_page_node).
+#derive(Eq)
+priv enum WideTop {
+  Scr(ScreenAt)
+  Term(@sfbase.TerminalAt)
+  Read(DriveAt)
+  Play(DriveAt)
+}
+
+///|
+/// A station's screen (sfpages' screen_node), its terminal, a drive's text read or its film played on top over the wide
+/// frame, over all of it: nodes of the tree's of its own, one structure for them, a modal layer while it is on top, back
+/// closing it; made again for another.
+fn wide_page(v : @view.View, src : Source) -> Unit {
   v.pick(
     at_once=true,
     fn() {
       match app.nav.top() {
-        Terminal(at) => Some(at)
+        Screen(at) => Some(Scr(at))
+        Terminal(at) => Some(Term(at))
+        DriveRead(at) => Some(Read(at))
+        DrivePlay(at) => Some(Play(at))
         _ => None
       }
     },
-    fn(n, at) {
-      guard at is Some(at) else { return }
-      n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Terminal(at)) |> ignore }) |> ignore
-      let back = fn() {
-        let pages = app.nav.pages()
-        if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
+    fn(n, top) {
+      match top {
+        Some(Scr(at)) => {
+          // (back as the page has it: in 全屏 out of it first, its own back key's; else closed, as the stack's)
+          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Screen(at)) |> ignore }) |> ignore
+          @sfpages.screen_node(n, src, at, fn() { system_frame() })
+        }
+        Some(Term(at)) => {
+          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(Terminal(at)) |> ignore }) |> ignore
+          let back = fn() {
+            let pages = app.nav.pages()
+            if pages.length() >= 2 { @sfbase.back_label(pages[pages.length() - 2]) } else { @sf.t("common.back") }
+          }
+          @sfpages.terminal_node(n, src, at, back~, on_back=fn() { @sfbase.close_page(Terminal(at)) |> ignore }, top=fn() {
+            0.0
+          }, width=fn() { n.window().0 })
+        }
+        Some(Read(at)) => {
+          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(DriveRead(at)) |> ignore }) |> ignore
+          @sfpages.reader_page_node(n, src, at)
+        }
+        Some(Play(at)) => {
+          n.over(Is(true)).modal(Is(true)).takes_back(fn() { @sfbase.close_page(DrivePlay(at)) |> ignore }) |> ignore
+          @sfpages.play_page_node(n, src, at)
+        }
+        None => ()
       }
-      @sfpages.terminal_node(n, src, at, back~, on_back=fn() { @sfbase.close_page(Terminal(at)) |> ignore }, top=fn() {
-        0.0
-      }, width=fn() { n.window().0 })
     },
   )
 }
@@ -122,25 +175,16 @@ fn taped_under(c : @ui.Ctx, src : Source) -> Unit {
 }
 
 ///|
-/// Over the tape's panels (an island, taking presses where it draws them alone): a station's screen over the whole
-/// window, as Android's ScreenActivity is over the app; a drive's text read, a film played over it too, as the web's
-/// pages of a file opened; what opens over the panels (sfdesk's
-/// overlays.mbt); the player sideways turned upright and words picked let go by back first; a visualization over the
-/// whole screen; what is over the frame in every tier (signed_in_over).
+/// Over the tape's panels (an island, taking presses where it draws them alone): what opens over the panels (sfdesk's
+/// overlays.mbt); words picked let go by back first; what is over the frame in every tier (signed_in_over). A
+/// station's screen over the whole window, as Android's ScreenActivity is over the app, is a node of its own
+/// (wide_page).
 fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
   match workspace_in_view(src).0 {
     Some(w) => {
-      match app.nav.top() {
-        Screen(at) => c.layer(fn() { @sfpages.screen_page(c, src, at, system_frame()) }) |> ignore
-        DriveRead(at) => c.layer(fn() { @sfpages.reader_page(c, src, at) }) |> ignore
-        DrivePlay(at) => c.layer(fn() { @sfpages.play_page(c, src, at) }) |> ignore
-        _ => ()
-      }
       @sfdesk.overlays(c, src, w)
-      play_back(c)
       pick_back(c)
-      viz_full_layer(c, src)
-      signed_in_over(c, src, w)
+      signed_in_over(c)
     }
     None => ()
   }

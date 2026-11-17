@@ -71,6 +71,9 @@ const RELEASE = process.env.STILLFAIL_NATIVE_RELEASE ?? "native-artifacts";
 /// The store of the parts prebuilt on a development machine (`prebuild`): the releases bucket's natives/, served by
 /// still.fail cloud (install.ts releaseType) to anyone, as the release is by GitHub.
 const STORE = process.env.STILLFAIL_NATIVE_STORE ?? "https://app.still.fail/releases/natives";
+/// GitHub and its API, where the release is (others only for scripts/native-download-test.mjs's server of its own).
+const GITHUB = process.env.STILLFAIL_NATIVE_GITHUB ?? "https://github.com";
+const GITHUB_API = process.env.STILLFAIL_NATIVE_GITHUB_API ?? "https://api.github.com";
 
 /// the CI Mac's CI may resolve the release store directly, just as release-put.sh does for Cloudflare's API. Keep the
 /// original Host and TLS name, and leave GitHub and any other store or redirect to the machine's usual routing.
@@ -319,10 +322,10 @@ function ghosttyVt(): Part {
   };
 }
 
-/// A crate that links libghostty-vt where it is made for macOS or Linux: that build of it is in its key, and its build
-/// is told where it is (GHOSTTY_VT_DIR, which the crate's build.rs reads).
+/// A crate that links libghostty-vt where it is made for macOS, Linux or Windows: that build of it is in its key, and
+/// its build is told where it is (GHOSTTY_VT_DIR, which the crate's build.rs reads).
 function withGhosttyVt(part: Part): Part {
-  const linked = (t: Target) => t === "darwin-arm64" || LINUX(t);
+  const linked = (t: Target) => t === "darwin-arm64" || LINUX(t) || t === "win32-x64";
   return {
     ...part,
     recipe: (t) => ({ ...(part.recipe(t) as object), ...(linked(t) ? { ghosttyVt: key("ghostty-vt", t) } : {}) }),
@@ -402,7 +405,7 @@ const PARTS: Record<string, Part> = {
   // The TypeScript station's launcher (§2) and an agent's runner (§1).
   // On Windows with stillfail-station-w.exe beside it: the launcher as the logon task runs it, with no window.
   launcher: withHidden(stationCrate("station/native/launcher", exe("stillfail-station"), exe("stillfail-station"))),
-  // On macOS and Linux with libghostty-vt linked, the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
+  // With libghostty-vt linked (macOS, Linux, Windows), the screen of a terminal it keeps (its build.rs, src/ghostty.rs).
   runner: withGhosttyVt({ ...stationCrate("station/native/runner", exe("stillfail-runner"), exe("stillfail-runner")), targets: STATION_BINS, env: "STILLFAIL_RUNNER" }),
   // Windows' display as the station's desktop screen, what still.fail Helper is on macOS.
   screen: { ...stationCrate("station/native/screen", () => "stillfail-screen.exe", "stillfail-screen.exe"), targets: ["win32-x64"], env: "STILLFAIL_SCREEN" },
@@ -411,7 +414,7 @@ const PARTS: Record<string, Part> = {
   "archive-rs": {
     ...stationCrate("station/test/archive-rs", () => "archive-rs", "archive-rs"),
     env: "ARCHIVE_RS",
-    publish: ["darwin-arm64"],
+    publish: ["darwin-arm64", "linux-x64"],
   },
   "station-load": { ...stationCrate("station/tools/load", () => "station-load", "station-load", VENDORED), env: "E2E_LOAD", publish: ["darwin-arm64"] },
   // The browser's iroh (web/src/core/iroh-pkg): wasm-bindgen's module, by client/iroh-wasm/build.sh.
@@ -448,20 +451,25 @@ const PARTS: Record<string, Part> = {
       copyFileSync(join(target, "aarch64-linux-android/release/libstillfail_shell.so"), join(out, "libstillfail_shell.so"));
     },
   },
-  // The station's reader in MoonBit (station/mb: read/mb-reader.ts), for every station: its C made by moon on a Mac,
-  // compiled and linked there for each target (station/mb/build.sh: zig for Linux and Windows), with the shell's static
-  // library for it (shell-apple's on the Mac, shell-station's elsewhere: its key in this one's).
+  // The station's reader in MoonBit (station/mb: read/mb-reader.ts), for every station: its C made by moon, compiled
+  // and linked for each target (station/mb/build.sh: zig for Linux and Windows, on a Mac or a Linux x86-64 machine),
+  // with the shell's static library for it (shell-apple's on the Mac, shell-station's elsewhere: its key in this one's).
   reader: {
     files: (t) => [exe("stillfail-reader")(t)],
     targets: STATION_BINS,
     env: "STILLFAIL_MB_READER",
     rust: false,
     inputs: ["station/mb/src", "station/mb/moon.mod", "station/mb/moon.work", "station/mb/build.sh",
-      "libs/mbui/src/effect", "libs/mbui/src/halt", "libs/mbui/moon.mod",
+      "rules/src", "rules/moon.mod",
+      "libs/mbui/src/effect", "libs/mbui/src/halt", "libs/mbui/moon.mod", "libs/mbui/scripts/mbc-stub.sh",
       ":(exclude,glob)**/*_test.mbt", ":(exclude,glob)**/*_wbtest.mbt", ":(exclude,glob)**/pkg.generated.mbti"],
-    recipe: (t) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t), mac: key("shell-apple", "darwin-arm64") }),
+    recipe: (t) => ({ moon: "native release", shell: t === "darwin-arm64" ? key("shell-apple", t) : key("shell-station", t) }),
     build(t, out) {
-      if (osPlatform() !== "darwin" || osArch() !== "arm64") throw new Error("the reader is built on an Apple Silicon Mac");
+      const mac = osPlatform() === "darwin" && osArch() === "arm64";
+      const linux = osPlatform() === "linux" && osArch() === "x64";
+      if (!mac && !(linux && t !== "darwin-arm64")) {
+        throw new Error(`the reader for ${t} is built on an Apple Silicon Mac${t !== "darwin-arm64" ? " or a Linux x86-64 machine" : ""}`);
+      }
       const shell = ensure(t === "darwin-arm64" ? "shell-apple" : "shell-station", t);
       run("bash", [join(ROOT, "station/mb/build.sh"), t, join(out, exe("stillfail-reader")(t))], { env: { ...process.env, SHELL_LIB: join(shell, "libstillfail_shell.a") } });
     },
@@ -1077,53 +1085,6 @@ function unpack(tgz: string, part: string, target: Target, k: string, from: stri
   }
 }
 
-// The browser download endpoint can fail while GitHub's release API and the asset itself are still available. Only
-// try this after that endpoint fails, so an unpublished part does not spend an API request on every build.
-async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: string } | null> {
-  const [owner, repo, extra] = REPO.split("/");
-  if (!owner || !repo || extra !== undefined) return null;
-  const root = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases`;
-  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
-  const api = async (url: string, accept: string, timeout: number): Promise<Response> => {
-    const get = (authenticated: boolean) => fetch(url, {
-      headers: { accept, ...(authenticated && token ? { authorization: `Bearer ${token}` } : {}) },
-      // Keep the token at api.github.com; an asset redirect goes to a separate, signed download URL.
-      redirect: "manual", signal: AbortSignal.timeout(timeout),
-    });
-    const r = await get(Boolean(token));
-    return token && (r.status === 401 || r.status === 403) ? get(false) : r;
-  };
-  try {
-    const found = await api(`${root}/tags/${encodeURIComponent(RELEASE)}`, "application/vnd.github+json", 30_000);
-    if (!found.ok) { log(`release API answered ${found.status}`); return null; }
-    const release = await found.json() as { assets?: { name?: unknown; id?: unknown; digest?: unknown }[] };
-    const asset = Array.isArray(release.assets) ? release.assets.find((a) => a.name === name) : undefined;
-    if (!asset || typeof asset.id !== "number" || !Number.isSafeInteger(asset.id) || asset.id <= 0) return null;
-    const url = `${root}/assets/${asset.id}`;
-    let response = await api(url, "application/octet-stream", 300_000);
-    if ([301, 302, 303, 307, 308].includes(response.status)) {
-      const location = response.headers.get("location");
-      if (location === null) return null;
-      const destination = new URL(location, url);
-      if (destination.protocol !== "https:") return null;
-      response = await fetch(destination, { headers: { accept: "application/octet-stream" }, redirect: "follow", signal: AbortSignal.timeout(300_000) });
-    }
-    if (!response.ok) { log(`release asset API answered ${response.status}`); return null; }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    // Some GitHub API versions answer metadata rather than bytes when they cannot serve the asset.
-    if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) { log("release asset API did not give a gzip archive"); return null; }
-    if (typeof asset.digest === "string" && asset.digest.startsWith("sha256:") &&
-        asset.digest !== `sha256:${createHash("sha256").update(bytes).digest("hex")}`) {
-      log("release asset API gave bytes with a different digest");
-      return null;
-    }
-    return { bytes, url };
-  } catch (e) {
-    log(`release API could not give ${name} (${(e as Error).message})`);
-    return null;
-  }
-}
-
 /// How long a download may go with nothing coming (no connection, no answer, no byte) before it is given up on and the
 /// next place asked. The CI Macs' route to the store stalls now and then, and a stall waited out to the download's
 /// 300 s cut the stable release's jobs at their limit (43458373814, 43460534865, 2026-11-13: four stalls of 177-303 s
@@ -1135,6 +1096,121 @@ const STALLED_MS = 15_000;
 /// station job, each cut at its 10 minutes by one such part); every part is at most tens of MB.
 const SLOW_AFTER_MS = 20_000;
 const SLOWEST_BYTES_PER_S = 200_000;
+/// A download given up on as stalled or too slow (STALLED_MS, SLOWEST_BYTES_PER_S): the next place is asked, not this.
+class Stalled extends Error {}
+const stalledOut = (e: unknown) => e instanceof Stalled || (e as Error | undefined)?.name === "TimeoutError";
+/// A place that answered 5xx or 429, or whose connection or stream broke off (not a stall), is asked again, ATTEMPTS
+/// times in all, RETRY_MS × the tries so far between: a gateway's one 504 said a part was not prebuilt, the release's
+/// download and then its API each asked once (preview's ios, main eb3f3a3a, 43992166607, 2026-11-17: 504, then 403
+/// without GH_TOKEN). A 404 is an answer: never asked again.
+const ATTEMPTS = 3;
+const RETRY_MS = Number(process.env.STILLFAIL_NATIVE_RETRY_MS ?? 2_000);
+const passing = (status: number) => status >= 500 || status === 429;
+const pause = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)); // timer: a retry after a failure, with a backoff
+
+async function fetchWatchedBytes(getResponse: (signal: AbortSignal) => Promise<Response>): Promise<{ response: Response; bytes: Buffer | null }> {
+  const stalled = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const moved = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => stalled.abort(new Stalled(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
+  };
+  moved();
+  const begun = Date.now();
+  let got = 0;
+  const slow = setInterval(() => { // timer: a deadline, the download's rate looked at
+    const ms = Date.now() - begun;
+    if (ms >= SLOW_AFTER_MS && got / (ms / 1000) < SLOWEST_BYTES_PER_S) {
+      stalled.abort(new Stalled(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
+    }
+  }, 1_000);
+  try {
+    const signal = AbortSignal.any([stalled.signal, AbortSignal.timeout(300_000)]);
+    const response = await getResponse(signal);
+    moved();
+    if (!response.ok) return { response, bytes: null };
+    const chunks: Uint8Array[] = [];
+    if (response.body) {
+      const reader = response.body.getReader();
+      for (let next = await reader.read(); !next.done; next = await reader.read()) {
+        chunks.push(next.value);
+        got += next.value.length;
+        moved();
+      }
+    }
+    return { response, bytes: Buffer.concat(chunks) };
+  } finally { clearTimeout(timer); clearInterval(slow); }
+}
+
+// The browser download endpoint can fail while GitHub's release API and the asset itself are still available. Only
+// try this after that endpoint fails, so an unpublished part does not spend an API request on every build.
+async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: string } | null> {
+  for (let n = 1; ; n++) {
+    const got = await releaseThroughApiOnce(name);
+    if (got !== "again") return got;
+    if (n >= ATTEMPTS) return null;
+    await pause(RETRY_MS * n);
+  }
+}
+/// One try of it: "again" where what failed may pass (5xx, 429, a connection or a stream broken off).
+async function releaseThroughApiOnce(name: string): Promise<{ bytes: Buffer; url: string } | null | "again"> {
+  const [owner, repo, extra] = REPO.split("/");
+  if (!owner || !repo || extra !== undefined) return null;
+  const root = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases`;
+  const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
+  const api = async (url: string, accept: string, signal: AbortSignal): Promise<Response> => {
+    const get = (authenticated: boolean) => fetch(url, {
+      headers: { accept, ...(authenticated && token ? { authorization: `Bearer ${token}` } : {}) },
+      // Keep the token at api.github.com; an asset redirect goes to a separate, signed download URL.
+      redirect: "manual", signal,
+    });
+    const r = await get(Boolean(token));
+    return token && (r.status === 401 || r.status === 403) ? get(false) : r;
+  };
+  try {
+    const found = await api(`${root}/tags/${encodeURIComponent(RELEASE)}`, "application/vnd.github+json", AbortSignal.timeout(30_000));
+    if (!found.ok) {
+      log(`release API answered ${found.status}`);
+      await found.body?.cancel().catch(() => {});
+      return passing(found.status) ? "again" : null;
+    }
+    const release = await found.json() as { assets?: { name?: unknown; id?: unknown; digest?: unknown }[] };
+    const asset = Array.isArray(release.assets) ? release.assets.find((a) => a.name === name) : undefined;
+    if (!asset || typeof asset.id !== "number" || !Number.isSafeInteger(asset.id) || asset.id <= 0) return null;
+    const url = `${root}/assets/${asset.id}`;
+    const initial = await api(url, "application/octet-stream", AbortSignal.timeout(STALLED_MS));
+    let response: Response;
+    let bytes: Buffer | null;
+    if ([301, 302, 303, 307, 308].includes(initial.status)) {
+      const location = initial.headers.get("location");
+      await initial.body?.cancel().catch(() => {});
+      if (location === null) return null;
+      const destination = new URL(location, url);
+      // (https: only, as the API's own is; http: only for the test's server)
+      if (destination.protocol !== new URL(root).protocol) return null;
+      ({ response, bytes } = await fetchWatchedBytes((signal) =>
+        fetch(destination, { headers: { accept: "application/octet-stream" }, redirect: "follow", signal })));
+    } else if (!initial.ok) {
+      log(`release asset API answered ${initial.status}`);
+      await initial.body?.cancel().catch(() => {});
+      return passing(initial.status) ? "again" : null;
+    } else {
+      ({ response, bytes } = await fetchWatchedBytes(async () => initial));
+    }
+    if (!response.ok || !bytes) { log(`release asset API answered ${response.status}`); return passing(response.status) ? "again" : null; }
+    // Some GitHub API versions answer metadata rather than bytes when they cannot serve the asset.
+    if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) { log("release asset API did not give a gzip archive"); return null; }
+    if (typeof asset.digest === "string" && asset.digest.startsWith("sha256:") &&
+        asset.digest !== `sha256:${createHash("sha256").update(bytes).digest("hex")}`) {
+      log("release asset API gave bytes with a different digest");
+      return null;
+    }
+    return { bytes, url };
+  } catch (e) {
+    log(`release API could not give ${name} (${(e as Error).message})`);
+    return stalledOut(e) ? null : "again";
+  }
+}
 
 async function download(part: string, target: Target, k: string): Promise<string | null> {
   const name = asset(part, target, k);
@@ -1147,15 +1223,18 @@ async function download(part: string, target: Target, k: string): Promise<string
   const started = Date.now();
   let url = "";
   let bytes: Buffer | null = null;
-  let releaseFailed = false;
-  const releaseUrl = `https://github.com/${REPO}/releases/download/${RELEASE}/${name}`;
+  // (set from inside each try, below)
+  const release = { failed: false };
+  const releaseUrl = `${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`;
   // (each place in turn: one that answers and then breaks off is said so, and the next one asked: a body cut short
   // failed the whole job with only the socket's error, 39431384793)
   // (the store by the direct route where the CI Mac has one, then by the usual route, then the release)
   const places: [string, boolean][] = [[`${STORE}/${name}`, true]];
   if (process.env.STILLFAIL_DIRECT_DNS) places.push([`${STORE}/${name}`, false]);
   places.push([releaseUrl, false]);
-  for (const [at, direct] of places) {
+  // One try of a place: its bytes, "next" (its answer, or a stall: the next place asked) or "again" (5xx, 429,
+  // a connection or a stream broken off: this place asked again, ATTEMPTS in all)
+  const once = async (at: string, direct: boolean): Promise<Buffer | "next" | "again"> => {
     let answered = false;
     // (given up on once nothing came for STALLED_MS, the connection's or a byte's, or once it still comes slower than
     // SLOWEST_BYTES_PER_S after SLOW_AFTER_MS, and the next place asked)
@@ -1163,7 +1242,7 @@ async function download(part: string, target: Target, k: string): Promise<string
     let timer: ReturnType<typeof setTimeout> | undefined;
     const moved = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => stalled.abort(new Error(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
+      timer = setTimeout(() => stalled.abort(new Stalled(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
     };
     moved();
     const begun = Date.now();
@@ -1171,7 +1250,7 @@ async function download(part: string, target: Target, k: string): Promise<string
     const slow = setInterval(() => { // timer: a deadline, the download's rate looked at
       const ms = Date.now() - begun;
       if (ms >= SLOW_AFTER_MS && got / (ms / 1000) < SLOWEST_BYTES_PER_S) {
-        stalled.abort(new Error(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
+        stalled.abort(new Stalled(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
       }
     }, 1_000);
     try {
@@ -1179,10 +1258,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       const r = direct ? await fetchNative(at, { redirect: "follow", signal }) : await fetch(at, { redirect: "follow", signal });
       moved();
       if (!r.ok) {
-        if (at === releaseUrl && r.status !== 404) releaseFailed = true;
+        if (at === releaseUrl && r.status !== 404) release.failed = true;
         if (r.status !== 404) log(`${part} ${target}: ${at} answered ${r.status}`);
         await r.body?.cancel().catch(() => {});
-        continue;
+        return passing(r.status) ? "again" : "next";
       }
       answered = true;
       const chunks: Uint8Array[] = [];
@@ -1190,16 +1269,23 @@ async function download(part: string, target: Target, k: string): Promise<string
         const reader = r.body.getReader();
         for (let next = await reader.read(); !next.done; next = await reader.read()) { chunks.push(next.value); got += next.value.length; moved(); }
       }
-      bytes = Buffer.concat(chunks);
-      url = at;
-      break;
+      return Buffer.concat(chunks);
     } catch (e) {
-      if (at === releaseUrl) releaseFailed = true;
+      if (at === releaseUrl) release.failed = true;
       const cause = (e as Error & { cause?: Error }).cause?.message;
       log(`${part} ${target}: ${answered ? `${at} broke off while sending it` : `could not reach ${new URL(at).host}`} (${(e as Error).message}${cause ? `: ${cause}` : ""})`);
+      return stalledOut(e) ? "next" : "again";
     } finally { clearTimeout(timer); clearInterval(slow); }
+  };
+  places: for (const [at, direct] of places) {
+    for (let n = 1; ; n++) {
+      const tried = await once(at, direct);
+      if (Buffer.isBuffer(tried)) { bytes = tried; url = at; break places; }
+      if (tried === "next" || n >= ATTEMPTS) break;
+      await pause(RETRY_MS * n);
+    }
   }
-  if (!bytes && releaseFailed) {
+  if (!bytes && release.failed) {
     const fromApi = await releaseThroughApi(name);
     if (fromApi !== null) { bytes = fromApi.bytes; url = fromApi.url; }
   }
@@ -1404,7 +1490,7 @@ async function published(): Promise<Set<string> | null> {
   const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   if (token) {
     try {
-      const r = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${RELEASE}`, {
+      const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/tags/${RELEASE}`, {
         headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
         signal: AbortSignal.timeout(30_000),
       });
@@ -1417,7 +1503,7 @@ async function published(): Promise<Set<string> | null> {
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
 async function exists(name: string): Promise<boolean> {
-  const r = await fetch(`https://github.com/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
+  const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
   return r.status === 302 || r.status === 200;
 }
 /// Whether the store of prebuilt parts has it.
@@ -1512,7 +1598,8 @@ async function main(argv: string[]) {
     }
     case "missing": {
       // Each part (default: all of ours) the release lacks, one a line: CI's plan skips the natives job when none is.
-      // --windows: those only Windows builds (the natives-win job's); without it, the others.
+      // --windows: those only Windows builds (the natives-win job's); --mac: Apple's (natives-mac); --linux: the rest
+      // that CI builds on ci-1 (natives); without them, all of ours that CI builds.
       // --prebuilt: the prebuilt ones (`msvc`) that neither the store nor the release has (the prebuild workflow's).
       if (args.includes("--prebuilt")) {
         for (const [p, t] of ours()) {
@@ -1522,25 +1609,41 @@ async function main(argv: string[]) {
         }
         return;
       }
-      const windows = args.includes("--windows");
+      const windows = args.includes("--windows"), mac = args.includes("--mac"), linux = args.includes("--linux");
       const wanted: [string, Target][] = [];
-      for (const a of args.filter((a) => a !== "--windows")) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
-      if (wanted.length === 0) for (const [p, t] of ours()) if (onWindows(p, t) === windows && !onLinux(p, t) && !P(p).prebuilt) wanted.push([p, t]);
+      for (const a of args.filter((a) => !["--windows", "--mac", "--linux"].includes(a))) { const [p, t] = a.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
+      if (wanted.length === 0) {
+        for (const [p, t] of ours()) {
+          if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
+          if (!windows && mac && !(t in APPLE_TRIPLES)) continue;
+          if (!windows && linux && (t in APPLE_TRIPLES)) continue;
+          wanted.push([p, t]);
+        }
+      }
       const remote = (await published()) ?? fail("the release's assets could not be listed");
       for (const [p, t] of wanted) if (!remote.has(asset(p, t, key(p, t)))) console.log(`${p}:${t}`);
       return;
     }
     case "ensure": {
-      let publish = false, outbox = "", windows = false;
+      let publish = false, outbox = "", windows = false, mac = false, linux = false;
       const wanted: [string, Target][] = [];
       for (let i = 0; i < args.length; i++) {
         if (args[i] === "--publish") publish = true;
         else if (args[i] === "--windows") windows = true;
+        else if (args[i] === "--mac") mac = true;
+        else if (args[i] === "--linux") linux = true;
         else if (args[i] === "--outbox") outbox = args[++i] ?? fail("--outbox DIR");
         else { const [p, t] = args[i]!.split(":"); wanted.push(pair(t ? [p!, t] : [p!])); }
       }
-      // Default: all of ours that this kind of machine builds (--windows: what only Windows does).
-      if (wanted.length === 0) for (const [p, t] of ours()) if (onWindows(p, t) === windows && !onLinux(p, t) && !P(p).prebuilt) wanted.push([p, t]);
+      // Default: all of ours that this kind of machine builds (--windows: MSVC's; --mac: Apple's; --linux: ci-1's).
+      if (wanted.length === 0) {
+        for (const [p, t] of ours()) {
+          if (onWindows(p, t) !== windows || onLinux(p, t) || P(p).prebuilt) continue;
+          if (!windows && mac && !(t in APPLE_TRIPLES)) continue;
+          if (!windows && linux && (t in APPLE_TRIPLES)) continue;
+          wanted.push([p, t]);
+        }
+      }
       const listed = await published();
       const remote = listed ?? new Set<string>();
       // Its assets listed: it is there. Else asked again, and said missing only when GitHub says so: a request that did
@@ -1561,7 +1664,7 @@ async function main(argv: string[]) {
       // (`get`'s lock, moon's).
       const todo = wanted.filter(([p, t]) => !complete(cached(p, t, key(p, t)), p, t));
       if (todo.length > 1 && !process.env.STILLFAIL_NATIVE_ONE) {
-        const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : [])];
+        const flags = [...(publish ? ["--publish"] : []), ...(outbox ? ["--outbox", outbox] : []), ...(windows ? ["--windows"] : []), ...(mac ? ["--mac"] : []), ...(linux ? ["--linux"] : [])];
         const one = (p: string, t: Target) => new Promise<number>((done) => {
           const child = spawn(process.execPath, [fileURLToPath(import.meta.url), "ensure", ...flags, `${p}:${t}`],
             { stdio: ["ignore", "inherit", "inherit"], env: { ...process.env, STILLFAIL_NATIVE_ONE: "1" } });
@@ -1642,7 +1745,7 @@ async function main(argv: string[]) {
           const name = asset(p, t, key(p, t));
           if (await inStore(name)) { console.log(`${name}: in the store`); continue; }
           if (!(await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
-          const r = await fetch(`https://github.com/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+          const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
           // (one the release does not give now is left for main's next run, as prune leaves one GitHub dropped)
           if (!r.ok) { console.log(`${name}: the release answered ${r.status}; the next run copies it`); continue; }
           writeFileSync(join(work, "natives", name), Buffer.from(await r.arrayBuffer()));

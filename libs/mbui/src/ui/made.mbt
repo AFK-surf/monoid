@@ -140,7 +140,7 @@ pub fn Made::on_press(self : Made, f : () -> Unit) -> Made {
 ///|
 /// What `items` holds, a node each made by `row` from its item as a signal of its own: made as its key (`key`) comes,
 /// kept while it stays (its item set anew there: what reads it filled anew), let go as it goes; in `items`' order.
-pub fn[T, K : Hash + Eq] made_each(
+pub fn[T : Eq, K : Hash + Eq] made_each(
   items : () -> Array[T],
   key : (T) -> K,
   row : (@signals.Signal[T]) -> Made,

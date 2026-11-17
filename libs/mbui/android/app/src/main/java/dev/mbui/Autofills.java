@@ -15,7 +15,7 @@ import android.view.autofill.AutofillValue;
  * service (1Password, Google's, whichever the person chose in the system's settings) is asked for it as the person
  * asked: it offers its logins for the site there and fills the one picked into the form, which keeps it here until
  * the app takes it (once). Nothing is kept after: the ask ends with the session cancelled, so nothing is offered to be
- * saved. Called from the GL thread; the autofill manager on the main one.
+ * saved. Called from the app's thread (MBView's); the autofill manager on the main one.
  */
 final class Autofills {
     /** The fields' virtual ids under the view. */

@@ -4,16 +4,6 @@
 // the bar brought down as it is: what each is and where it was made beside it.
 
 ///|
-let squeeze_known : Map[String, Int] = {
-  let known = Map([])
-  for k in [
-    // 真问题，待修: (g) a member's note broken onto 2 lines beside what is at the row's end, one line alone:
-    // sf/page_node.mbt:935, asked for at sfpages/workspace_page.mbt:397
-    ("phone-en settings-workspace", 1),
-    ("phone-en settings-add-people", 1),
-    ("phone-en settings-workspace-mark", 1),
-  ] {
-    known[k.0] = k.1
-  }
-  known
-}
+// kept across runs: a value (none known now: 2026-11-15, the members' notes whole on their line beside what is at the
+// row's end, link_row_node's note cut short as link_row's was)
+let squeeze_known : Map[String, Int] = Map([])

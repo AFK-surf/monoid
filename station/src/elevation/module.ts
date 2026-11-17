@@ -26,7 +26,7 @@ export function elevationRoutes(elevation: Elevation): Route[] {
         }
         if (typeof on !== "boolean") return error(400, "on is true or false");
         try {
-          elevation.change(on);
+          await elevation.change(on);
         } catch (e) {
           if (e instanceof ChangeRefused) return error(409, tr(r.lang, `station.elevation.${e.key}`));
           throw e;
@@ -47,7 +47,7 @@ export const ElevationLive = Layer.effectDiscard(
     const elevation = new Elevation({ data, app, now: wall.now, after: wall.after, changed: () => events.overviewChanged() });
     yield* Effect.acquireRelease(
       Effect.sync(() => void elevation.start().catch((e) => log.warn("elevation", "how it runs not looked at", { error: (e as Error).message }))),
-      () => Effect.sync(() => elevation.stop()),
+      () => Effect.promise(() => elevation.stop()),
     );
     parts.routes(elevationRoutes(elevation));
     parts.overview("elevation", (viewer) => elevation.view(managesStation(viewer)));

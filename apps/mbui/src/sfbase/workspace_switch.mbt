@@ -30,7 +30,19 @@ pub fn opens_answered(s : TopicState) -> Bool {
 ///|
 /// The ask a page opens by (what its `opens` says it reads): each topic as `src` has it now, read where it is read.
 pub fn read_now(src : Source) -> (String, Map[String, Json]) -> TopicState {
+  opening_pictures.val = src.picture_waits
   fn(name, params) { src.topic(name, params).get() }
+}
+
+///|
+/// What a chat's page opening waits for of the pictures it shows (Source.picture_waits, chat_opens'), of the source the
+/// shells' waits read by (read_now: what a chat opening is asked by holds no source of its own to ask it of).
+// kept across runs: put back as a run begins, said again by each read_now
+let opening_pictures : Ref[(String) -> Bool] = Ref(fn(_) { false })
+
+///|
+fn init {
+  @ui.on_reset(fn() { opening_pictures.val = fn(_) { false } })
 }
 
 ///|
@@ -209,6 +221,8 @@ fn switch_picked(src : Source, ws : String) -> Unit {
   history_act(fn() {
     app.picked.set(ws)
     (src.call)("prefs.set", Json::object({ "workspace": Json::string(ws) }), answer_unread)
+    // (what was open, in hand or being written on the board of the workspace left: none in the one come to)
+    board_transient_reset()
     nav_home()
   })
 }
@@ -410,7 +424,13 @@ let opens_declared_said : @signals.Signal[String?] = @signals.signal(None, same=
 /// What the page on top reads as it is first built (page_opens), declared in node `v` at the moment it comes on top,
 /// however it came (a row pressed, a notification or a link opened, back to it, a pane landing on it), between frames,
 /// not as the frame that builds it runs; what the page on top before declared and no reader took let go of then.
-pub fn page_opens_node(v : @view.View, src : Source) -> Unit {
+/// What it opens on past that, as `opens` (the shell's: sfapp's page_opens_by on 小屏, sfdesk's pane_opens in the wide
+/// frame) asks it of what is held, declared as that says it, so what waits for the page finds it held.
+pub fn page_opens_node(
+  v : @view.View,
+  src : Source,
+  opens : (Workspace, Page, (String, Map[String, Json]) -> TopicState) -> Bool,
+) -> Unit {
   v.reacts(
     fn() {
       match workspace_in_view(src).0 {
@@ -432,36 +452,41 @@ pub fn page_opens_node(v : @view.View, src : Source) -> Unit {
       })
     },
   )
-  // (a chat on top: what it opens on past its view (chat_opens: its posts' login cards), declared as its view, held,
-  // says them, and as what they say is answered, so the first page's wait and the page's own reads find them held;
-  // once all of it is answered, what it came to is kept for that page and its view followed no more here, so a long
-  // chat's every change is not walked again for it)
+  // (the page on top: what it opens on past what page_opens says (a chat's posts' login cards; where what opens waits
+  // for what it shows, every page's reads: page_reads.mbt), declared as what is held says it, and as what that says is
+  // answered, so the first page's wait and the page's own reads find them held; once all of it is answered, what it
+  // came to is kept for that page and followed no more here, so a long chat's every change is not walked again for it.
+  // Not Home's: its shell's own, declared with it, opens_ahead_node)
+  // (with how many were declared as it read: what the reaction above lets go of as the page comes on top, after this
+  // declared it in the same change, declared again)
   let opened : Ref[(Page, Array[(String, Map[String, Json])])?] = Ref(None)
   v.reacts(
     fn() {
-      page_declared_now() |> ignore
-      guard workspace_in_view(src).0 is Some(_) && app.nav.top() is Chat(r) else {
+      let round = page_declared_now()
+      let top = app.nav.top()
+      guard workspace_in_view(src).0 is Some(w) && !(top is Home) else {
         opened.val = None
-        return []
+        return (round, [])
       }
       match opened.val {
-        Some((p, more)) if p == Chat(r) => return more
+        Some((p, more)) if p == top => return (round, more)
         _ => opened.val = None
       }
       let held = read_held_found(src)
       let more : Array[(String, Map[String, Json])] = []
-      let all = chat_opens(r, fn(name, params) {
-        if name != "chat" {
+      let all = opens(w, top, fn(name, params) {
+        if !(top is Chat(_) && name == "chat") {
           more.push((name, params))
         }
         held(name, params).unwrap_or({ value: None, error: None, version: -1, waiting: false })
       })
       if all {
-        opened.val = Some((Chat(r), more))
+        opened.val = Some((top, more))
       }
-      more
+      (round, more)
     },
-    fn(more) {
+    fn(said) {
+      let (_, more) = said
       // (in the change its view's answer is told in, not after it: the first page's wait looks for them held once
       // that change is told whole)
       for d in more {

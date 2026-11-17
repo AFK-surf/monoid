@@ -37,6 +37,8 @@ export interface Entry {
   fixes: number[];
   /** Empty: it needs no release (the site, the docs). */
   parts: Part[];
+  /** Set to "beta" when `Changelog-channel: beta` restricts the entry to the test channel's changelog. */
+  channel?: "beta";
 }
 
 // For a commit that does not say its parts (those from before they were said), each file reaches the parts of the first
@@ -130,10 +132,11 @@ const NOTHING = /^(none|n\/?a|nothing|无|没有|-+)[.。]?$/i;
  * apps, and nothing said so). A line said again is one line: a squash merge's body repeats each of its commits, each with
  * the same trailers (b7abff2e's one line showed four times in the update dialog).
  */
-export function readMessage(message: string): { text: string[]; fixes: number[]; parts: string[] } {
+export function readMessage(message: string): { text: string[]; fixes: number[]; parts: string[]; channel?: string[] } {
   const text: string[] = [];
   const fixes: number[] = [];
   const parts: string[] = [];
+  const channels: string[] = [];
   for (const paragraph of message.split("\n").slice(1).join("\n").split(/\n[ \t]*\n/)) {
     const lines = paragraph.split("\n").filter((l) => l.trim());
     if (!lines.length || !lines.every((l, i) => TRAILER.test(l) || (i > 0 && /^\s/.test(l)))) continue;
@@ -142,9 +145,11 @@ export function readMessage(message: string): { text: string[]; fixes: number[];
       if (/^changelog$/i.test(key!) && value!.trim()) text.push(value!.trim());
       if (/^fixes$/i.test(key!)) for (const fb of value!.matchAll(/FB-?(\d+)/gi)) fixes.push(Number(fb[1]));
       if (/^changelog-parts$/i.test(key!)) parts.push(...value!.toLowerCase().split(/[,，\s]+/).filter(Boolean));
+      if (/^changelog-channel$/i.test(key!)) channels.push(...value!.toLowerCase().split(/[,，\s]+/).filter(Boolean));
     }
   }
-  return { text: [...new Set(text)], fixes: [...new Set(fixes)], parts: [...new Set(parts)] };
+  const channel = [...new Set(channels)];
+  return { text: [...new Set(text)], fixes: [...new Set(fixes)], parts: [...new Set(parts)], ...(channel.length ? { channel } : {}) };
 }
 
 /** The parts a commit was said to reach people in ([]: `none`, it needs no release); null: it does not say. */
@@ -159,11 +164,13 @@ function partsSaid(said: string[]): Part[] | null {
  * files cannot tell, the desktop's change in code the Android app carries too); a part that is none.
  */
 export function refused(message: string): string[] {
-  const { text, fixes, parts } = readMessage(message);
+  const { text, fixes, parts, channel = [] } = readMessage(message);
   const why = text.filter((t) => NOTHING.test(t)).map((t) => `"Changelog: ${t}": a commit with nothing to tell people writes no Changelog line`);
   if ((text.length || fixes.length) && !parts.length) why.push(`no Changelog-parts: say which of ${PART_NAMES.join(", ")} people see it in (none: it needs no release)`);
   const unknown = parts.filter((p) => !isPart(p) && p !== "none");
   if (unknown.length) why.push(`"Changelog-parts: ${unknown.join(", ")}": the parts are ${PART_NAMES.join(", ")}, or none`);
+  const badChannel = channel.filter((c) => c !== "beta");
+  if (badChannel.length) why.push(`"Changelog-channel: ${badChannel.join(", ")}": only beta is supported`);
   return why;
 }
 
@@ -172,7 +179,7 @@ export function saysNothing(message: string): string[] {
   return readMessage(message).text.filter((t) => NOTHING.test(t));
 }
 
-type Notes = Record<string, { text?: string[]; fixes?: number[]; parts?: string[] }>;
+type Notes = Record<string, { text?: string[]; fixes?: number[]; parts?: string[]; channel?: "beta" }>;
 
 export function changelog(root: string, rev = "HEAD"): Entry[] {
   const git = (...args: string[]) => execFileSync("git", args, { cwd: root, encoding: "utf8", maxBuffer: 256 * 1024 * 1024 });
@@ -202,7 +209,8 @@ export function changelog(root: string, rev = "HEAD"): Entry[] {
     const version = versions.get(commit)!;
     // Where people see it: as docs/changelog-notes.json or its agent says; one from before that did not, where its files are.
     const parts = partsSaid(note?.parts ?? []) ?? partsSaid(said.parts) ?? partsOf(rest.split("\n").filter(Boolean), notCarried);
-    entries.push({ version, commit, at: Number(at), text, fixes, parts });
+    const betaOnly = note?.channel === "beta" || (note?.channel === undefined && (said.channel?.includes("beta") ?? false));
+    entries.push({ version, commit, at: Number(at), text, fixes, parts, ...(betaOnly ? { channel: "beta" } : {}) });
   }
   return entries;
 }
@@ -221,7 +229,7 @@ export function stable(root: string, beta: Entry[] = []): Entry[] {
     .sort((a, b) => b.version - a.version);
   return releases.map((release, i) => {
     const after = releases[i + 1]?.version ?? 0;
-    const fixes = [...new Set(beta.filter((e) => e.version > after && e.version <= release.version).flatMap((e) => e.fixes))].sort((a, b) => a - b);
+    const fixes = [...new Set(beta.filter((e) => e.channel !== "beta" && e.version > after && e.version <= release.version).flatMap((e) => e.fixes))].sort((a, b) => a - b);
     return { ...release, fixes };
   });
 }
@@ -256,12 +264,12 @@ export function lastBase(root: string): number {
   return newest ? newest.base || newest.version : 0;
 }
 
-/** The next release's notes are written from these: the test channel's entries after the last release's base, oldest first. */
+/** The next release's notes are written from these: the test channel's entries after the last release's base, oldest first (excluding `Changelog-channel: beta`). */
 export function draft(root: string, rev = "HEAD"): string {
   const beta = changelog(root, rev);
   const last = lastBase(root);
   const head = Number(execFileSync("git", ["rev-list", "--count", rev], { cwd: root, encoding: "utf8" }).trim());
-  const lines = beta.filter((e) => e.version > last).reverse().map((e) => `0.1.${e.version} [${e.parts.join(",") || "-"}]${e.fixes.length ? ` FB-${e.fixes.join(",FB-")}` : ""}\n${e.text.map((t) => `  ${t}`).join("\n")}`);
+  const lines = beta.filter((e) => e.version > last && e.channel !== "beta").reverse().map((e) => `0.1.${e.version} [${e.parts.join(",") || "-"}]${e.fixes.length ? ` FB-${e.fixes.join(",FB-")}` : ""}\n${e.text.map((t) => `  ${t}`).join("\n")}`);
   return `# The test channel's changes since the last release (0.1.${last}), up to 0.1.${head}\n\n${lines.join("\n")}\n`;
 }
 

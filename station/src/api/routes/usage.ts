@@ -7,13 +7,9 @@ import { cpus, totalmem } from "node:os";
 import { NotEndable, type ResourceWatch } from "../../resources/watch.ts";
 import { log } from "../../ops/log.ts";
 import { wall } from "../../ops/fibers.ts";
-import type { InWorkspace } from "../../store/rows.ts";
-import { USAGE_SUMMARY_PENDING, type UsageSummaryRange } from "../../store/usage-summary-blocks.ts";
 
 const I64_MIN = -9223372036854775808n;
 const I64_MAX = 9223372036854775807n;
-const floorMinute = (n: bigint) => n >= 0n ? n / 60_000n : -1n - (-1n - n) / 60_000n;
-const ceilMinute = (n: bigint) => -floorMinute(-n);
 
 /// `v.parse::<f64>().ok().map(|v| v as i64)`: Rust's float syntax (inf, infinity and nan too, any case), then as an i64
 /// (NaN 0, beyond its range its ends, the fraction dropped). None when it does not read.
@@ -82,8 +78,7 @@ export const routes = (tools: Tools): Route[] => {
 };
 
 /// GET /usage, the usage part's (usage/module.ts): `reading`, whether the counter is still reading what was spent.
-export const usageRoutes = ({ read }: Tools, reading: () => boolean, wakeTotals: (viewer: InWorkspace | null) => void = () => {},
-  waitSummary?: (viewer: InWorkspace | null, range: UsageSummaryRange, signal?: AbortSignal) => Promise<void>): Route[] => [
+export const usageRoutes = ({ read }: Tools, reading: () => boolean): Route[] => [
   // A bounded page of one session's original calls; aggregates remain a separate, statistics-only read.
   {
     method: "GET",
@@ -96,7 +91,9 @@ export const usageRoutes = ({ read }: Tools, reading: () => boolean, wakeTotals:
   },
   // What the agents spent from `from` until `to` (ms), by day as the asker's clock has them (`tz`: minutes east of
   // UTC), with whom, where and on what; `history=1`, everything since counting began by day as well (a station from
-  // before answers without it).
+  // before answers without it). Read as it is kept, at once (store/usage-15m.ts): no statistic to wait for. The tasks
+  // other stations' chats ran here are those from `remoteFrom` (ms; `from` where not given) until `to`, one a day and
+  // chat with how many (`count`) where there were more.
   {
     method: "GET",
     pattern: /^\/usage$/,
@@ -105,6 +102,7 @@ export const usageRoutes = ({ read }: Tools, reading: () => boolean, wakeTotals:
       const from = number(r, "from") ?? 0n;
       const tz = number(r, "tz") ?? 0n;
       const clamped = tz < -1440n ? -1440n : tz > 1440n ? 1440n : tz;
+      const remoteFrom = cursorInteger(r, "remoteFrom");
       const historyFrom = cursorInteger(r, "historyFrom"), historyTo = cursorInteger(r, "historyTo");
       if ((historyFrom === null) !== (historyTo === null)) throw new Refused(400, "history range needs both bounds");
       if (historyFrom !== null && historyTo !== null) {
@@ -112,62 +110,23 @@ export const usageRoutes = ({ read }: Tools, reading: () => boolean, wakeTotals:
         if (historyFrom > historyTo || historyTo - historyFrom > 370n * 86_400_000n || historyFrom % 60_000n !== 0n
           || historyTo % 60_000n !== 0n || localEnd % 86_400_000n !== 0n
           || localEnd < -8_640_000_000_000_000n || localEnd > 8_640_000_000_000_000n) throw new Refused(400, "invalid history range");
-        wakeTotals(r.viewer);
       }
       const history = param(r, "history") === "1";
-      const allowPartial = history && param(r, "allowPartial") === "1";
       const args = { lang: r.lang, from: String(from), to: String(to), tz: String(clamped), reading: reading(), viewer: r.viewer, history,
-        ...(waitSummary !== undefined ? { summaryStrict: true } : {}),
+        ...(remoteFrom !== null ? { remoteFrom: String(remoteFrom) } : {}),
         ...(historyFrom !== null && historyTo !== null ? { historyRange: { from: String(historyFrom), to: String(historyTo) } } : {}) };
-      const answer = async (request: Request, tell?: (answer: Answer) => void): Promise<Answer> => {
-        let prepared = false;
-        let partialTold = false;
-        for (;;) {
-          const result = await read(request, "usage", { ...args, ...(prepared ? { summaryPrepared: true } : {}) });
-          let preparing = false;
-          if (result.status === 503 && Buffer.isBuffer(result.body)) {
-            try { preparing = JSON.parse(result.body.toString("utf8")).error === USAGE_SUMMARY_PENDING; } catch { /* An unrelated error. */ }
-          }
-          if (!preparing || waitSummary === undefined) return result;
-          // Only clients that ask for a partial result know to keep its recent totals in a waiting state. Read the
-          // independent history on a new snapshot, without falling back to a scan of the old minute or call tables.
-          if (allowPartial && !partialTold) {
-            const partial = await read(request, "usage", { ...args, detailsPreparing: true });
-            if (tell === undefined || partial.status !== 200) return partial;
-            tell(partial);
-            partialTold = true;
-          }
-          // Release the reader while the existing background worker prepares the selected workspace, then read one
-          // new snapshot. A device that leaves the page can cancel the wait.
-          try {
-            await waitSummary(r.viewer, { from: floorMinute(from), to: to === I64_MAX ? I64_MAX : ceilMinute(to) }, request.signal);
-            prepared = true;
-          }
-          catch (cause) { return error(503, (cause as Error).message); }
-        }
-      };
-      // Older clients request the whole history without its chart range. Their summary cache also needs the new
-      // pending buckets to be accounted; otherwise every later read revisits them. Let the current read finish first,
-      // then settle only this viewer's new statistics in the existing bounded background worker.
-      const finish = (result: Answer) => {
-        if (result.status === 200) wakeTotals(r.viewer);
-        return result;
-      };
-      const run = async (request: Request, tell?: (answer: Answer) => void) => {
-        const result = await answer(request, tell);
-        return history && historyFrom === null ? finish(result) : result;
-      };
-      // Unlike a JSON request, a stream can stay open while a large range is prepared. It sends the history as soon
-      // as it is available, then the completed answer from the same wait (and closes if the caller leaves).
+      const run = (request: Request) => read(request, "usage", args);
+      // A client from before asks it as a stream (when a range was prepared a batch at a time): its one answer, told
+      // as the event it waits for.
       if ((r.headers["accept"] ?? "").includes("text/event-stream")) return followedUsage(r, run);
       return run(r);
     },
   },
 ];
 
-/// A usage read may need many bounded conversion batches. An event stream keeps that wait and its cursor alive without
-/// holding a reader, and its heartbeats let a client distinguish slow preparation from a lost connection.
-function followedUsage(r: Request, run: (request: Request, tell: (answer: Answer) => void) => Promise<Answer>): Answer {
+/// The usage as an event stream, for a client from before that asks it so: the answer as a `usage` event (an `error`
+/// one where it failed), then the end; its heartbeats while it is read.
+function followedUsage(r: Request, run: (request: Request) => Promise<Answer>): Answer {
   const controller = new AbortController();
   const queue: Buffer[] = [];
   let wake: (() => void) | null = null;
@@ -201,7 +160,7 @@ function followedUsage(r: Request, run: (request: Request, tell: (answer: Answer
   };
   if (r.signal?.aborted) end();
   else r.signal?.addEventListener("abort", end, { once: true });
-  void run({ ...r, signal: controller.signal }, tell).then(tell, (cause) => tell(error(500, (cause as Error).message))).finally(() => {
+  void run({ ...r, signal: controller.signal }).then(tell, (cause) => tell(error(500, (cause as Error).message))).finally(() => {
     finished = true;
     stopHeartbeat();
     r.signal?.removeEventListener("abort", end);

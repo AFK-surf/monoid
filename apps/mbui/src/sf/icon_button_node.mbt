@@ -9,7 +9,9 @@
 /// out, and its tip in `tips`); `press` done as it is pressed. While `disabled()`, faded (icon_button's: 0.45), taking
 /// no press nor the focus. `linked`: its corner where that comes from, as it is worked out where it stands now (a bar's
 /// buttons' at the window's corner: @sf.bar_keys_link; icon_button's `linked`), else round. `shortcut`: the action that
-/// does what it does, its keys said in its tip after its label (icon_button's). The node.
+/// does what it does, its keys said in its tip after its label (icon_button's). `ink`: its icon's ink under the hand
+/// (icon_button's `ink`), the words' where not said. `on`: what it says is so now (a folder starred, the preview shown:
+/// icon_button's `on`), its ground the ink's lit tint and its icon the ink's at rest too. The node.
 #callsite(autofill(loc))
 pub fn icon_button_node(
   parent : @view.View,
@@ -23,9 +25,12 @@ pub fn icon_button_node(
   disabled? : () -> Bool = fn() { false },
   linked? : () -> @ui.CornerOf?,
   shortcut? : String = "",
+  ink? : () -> Int64,
+  grounded? : Bool = true,
+  on? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
-  icon_button_by(loc~, parent, icon, label, fn(_) { press() }, tips, size, icon_size, icon_now, disabled, linked?=linked, shortcut~)
+  icon_button_by(loc~, parent, icon, label, fn(_) { press() }, tips, size, icon_size, icon_now, disabled, linked?=linked, shortcut~, ink?, grounded~, on~)
 }
 
 ///|
@@ -37,9 +42,10 @@ pub fn icon_button_opens_node(
   icon : String,
   label : () -> String,
   open : (@view.View) -> Unit,
+  size? : Double = icon_button_side,
   loc~ : SourceLoc,
 ) -> @view.View {
-  icon_button_by(loc~, parent, icon, label, open, None, icon_button_side, 16.0, None, fn() { false })
+  icon_button_by(loc~, parent, icon, label, open, None, size, 16.0, None, fn() { false })
 }
 
 ///|
@@ -57,6 +63,9 @@ fn icon_button_by(
   disabled : () -> Bool,
   linked? : () -> @ui.CornerOf?,
   shortcut? : String = "",
+  ink? : () -> Int64,
+  grounded? : Bool = true,
+  on? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> @view.View {
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
@@ -80,15 +89,18 @@ fn icon_button_by(
     fn(v, b) {
       // (the hand on it: a pointer over it, a finger or the pointer held on it; the keyboard's focus shown on it)
       let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
-      let hand = EdgeWay::new(0.0)
-      v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let hand = @motion.NodeWay::new(0.0)
+      v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       let pad = (size - icon_size) / 2.0
       v
+      .focus_ring_theme()
       .width(Is(Some(size)))
       .height(Is(Some(size)))
       .padding(Is((pad, pad, pad, pad)))
+      // (none where it has no ground: nothing of it is round to stand in a corner)
       .radius(
         match linked {
+          _ if !grounded => Is(0.0)
           Some(f) =>
             By(fn() {
               match f() {
@@ -100,10 +112,27 @@ fn icon_button_by(
         },
       )
       .alpha(By(fn() { if disabled() { icon_button_disabled_alpha } else { 1.0 } }))
-      // (the page's hover, as a tint of the ink it sits with: icon_button's)
-      .ground(By(fn() { alpha(theme().p.text, 0.065 * hand.shown(v)) }))
+      // (the page's hover, as a tint of the ink it sits with: icon_button's; none where it is `grounded=false`, the
+      // hand shown by its icon's ink alone: one at a row's end in a card's corner, where no circle is concentric with it)
       |> ignore
-      icon_node(v, icon, icon_size, By(fn() { if hand.shown(v) > 0.5 { theme().p.text } else { theme().p.muted } }), name_now?=icon_now)
+      // (its icon the ink once the hand's ground is half way there: `ink`, where said (a star lit while starred, quiet
+      // while not: icon_button's `ink`), else the words'; the muted ink before; the ink at rest while it is `on`)
+      let lit_ink = match ink {
+        Some(f) => f
+        None => fn() { theme().p.text }
+      }
+      // (while it is `on`, the ink's lit tint at rest, as icon_button's: else none where it is `grounded=false`)
+      v.ground(By(fn() {
+        if !grounded {
+          0L
+        } else if on() {
+          alpha(lit_ink(), 0.08)
+        } else {
+          alpha(theme().p.text, 0.065 * hand.shown(v))
+        }
+      }))
+      |> ignore
+      icon_node(v, icon, icon_size, By(fn() { if on() || hand.shown(v) > 0.5 { lit_ink() } else { theme().p.muted } }), name_now?=icon_now)
       |> ignore
       tip.val = match tips {
         Some(t) => Some(tip_node(t, v, label, side=Bottom, shortcut~))

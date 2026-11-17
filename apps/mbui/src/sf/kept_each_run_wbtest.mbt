@@ -1,5 +1,5 @@
 // What the library keeps across runs is each run's own (mbui's on_reset, as presented_each_run_wbtest has the
-// presenters): a run that leaves a menu open, a mark tapped open, a group's or a page's rows as drawn, a text read and
+// presenters): a run that leaves a menu open, a mark tapped open, a page's rows as drawn, a text read and
 // the reader's layout changed, the system's bars said, has none of it as the next run begins. Each failed before these
 // were put back as a run begins: only the app's reset (sfapp's) put them back, so a run without the app (a Tester of
 // sfpages' or of this library's) was given what the run before it left.
@@ -31,14 +31,6 @@ test "a run begins with no menu open, none going, no submenu pointed at, no mark
   assert_eq(submenu_hover.val, "")
   assert_eq(about_open.val, "")
   assert_true(held_felt.is_empty())
-}
-
-///|
-test "a run begins with no group's rows as the run before drew them" {
-  ker_run() |> ignore
-  group_rows_of["甲"] = { order: [("a", fn() {  })] }
-  ker_run() |> ignore
-  assert_true(group_rows_of.is_empty())
 }
 
 ///|

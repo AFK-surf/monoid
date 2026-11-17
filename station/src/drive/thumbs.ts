@@ -7,7 +7,7 @@
 // same way for the modules: those change where they are, so theirs are made again once the file is
 // newer than they are (`since`).
 import { createHash } from "node:crypto";
-import { rmSync, statSync } from "node:fs";
+import { rm, stat } from "node:fs/promises";
 import { join } from "node:path";
 import { log } from "../ops/log.ts";
 import { type Mesh, loadMesh } from "../mesh/native.ts";
@@ -30,16 +30,19 @@ export const idOf = (image: string) => createHash("sha256").update(image).digest
 
 /// The thumbnail made before, if there is one. `since`: of an image that changes (the drive's), one made before that
 /// time (ms) is of what it was, and is removed.
-export function kept(thumbs: string, id: string, since?: number): Thumbnail | null {
+export async function kept(thumbs: string, id: string, since?: number): Promise<Thumbnail | null> {
   for (const [ext, type] of [
     ["jpg", "image/jpeg"],
     ["png", "image/png"],
   ] as const) {
     const path = join(thumbs, `${id}.${ext}`);
-    const st = statSync(path, { throwIfNoEntry: false });
+    const st = await stat(path).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT" || e.code === "ENOTDIR") return null;
+      throw e;
+    });
     if (!st?.isFile()) continue;
     if (since !== undefined && st.mtimeMs < since) {
-      rmSync(path, { force: true });
+      await rm(path, { force: true });
       return null;
     }
     return { path, type };
@@ -67,7 +70,7 @@ function native(): Codecs | null {
 /// image).
 export async function thumbnail(image: string, thumbs: string, using: Codecs | null = native(), since?: number): Promise<Thumbnail | null> {
   if (using === null) return null;
-  if (since !== undefined) kept(thumbs, idOf(image), since);
+  if (since !== undefined) await kept(thumbs, idOf(image), since);
   try {
     return await using.thumbnail(image, thumbs);
   } catch {

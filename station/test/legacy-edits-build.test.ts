@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installLegacyEdits, legacyEditDrain, legacyEditLatest, legacyEditStep, legacyEditsUseOldIndex } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditDrain, legacyEditLatest, legacyEditStep, legacyEditsUseOldIndex } from "./reference/backfill/legacy-edits-build.ts";
 
 function database() {
   const dir = mkdtempSync(join(tmpdir(),"legacy-edits-build-")), path = join(dir,"store.db"), db = new DatabaseSync(path);

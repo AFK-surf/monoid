@@ -34,11 +34,7 @@ export function deviceName(words: (browser: string, os: string) => string): stri
   return words(browser, os);
 }
 
-/** Where a page given `?return_to=` goes once signed in: a path of this origin, else its root. */
-export function returnTo(query: string): string {
-  const to = new URLSearchParams(query).get("return_to") ?? "/";
-  return to.startsWith("/") && !to.startsWith("//") && !to.startsWith("/auth/") && !to.startsWith("/login") ? to : "/";
-}
+export { returnTo } from "./return-to.ts";
 
 /** Sends the browser to still.fail cloud's sign-in, which brings it back to /auth/callback. */
 export async function begin(to: string, name: string): Promise<void> {

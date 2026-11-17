@@ -182,12 +182,14 @@ export class MeshWire implements StationWire {
         const r = l.conn.closeReason();
         return r !== null && r.kind === "application" ? r.reason : null;
       };
-      return { status: reply.status, headers: reply.headers, body: timed, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended };
+      // A stream gone silent takes the way it came on for gone, not every way to the station (`Mesh.dropWay`).
+      const drop = () => mesh.dropWay(key, l);
+      return { status: reply.status, headers: reply.headers, body: timed, via: l.path(), relay: relay !== null ? relayHost(relay) : null, ended, drop };
     }), refusedFor);
   }
 
   reset(station: StationAddr): void {
-    this.#env.meshNow()?.dropLink(station.toString());
+    this.#env.meshNow()?.dropWay(station.toString());
   }
 
   races(): boolean {

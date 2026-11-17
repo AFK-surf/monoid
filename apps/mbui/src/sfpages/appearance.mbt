@@ -31,8 +31,6 @@ pub fn appearance_node(
     if @ui.takes_drops() {
       k.push("drop")
     }
-    // (the chat page tried: last of this device's own, a trial's place)
-    k.push("chatPage")
     if wide() {
       k.push("rail")
     }
@@ -74,7 +72,12 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
           let (x, y) = @signals.untracked(fn() { v.window_down_point() })
           @ui.reveal_from(x, y, dark=fn() { @sf.theme().dark })
         }
-        @settings.set_pref(core, if key == "theme" { "appearance" } else { key }, options[i].0)
+        let pref = match key {
+          "theme" => "appearance"
+          "drop" => "dropAs"
+          _ => key
+        }
+        @settings.set_pref(core, pref, options[i].0)
       },
       note=fn() { if note == "" { "" } else { @sf.t(note) } },
     )
@@ -142,16 +145,6 @@ fn appearance_setting(v : @view.View, core : Core, key : String) -> Unit {
         fn(on) { @settings.set_pref(core, "haptics", if on { "" } else { "off" }) },
         note=fn() { @sf.t("web-pages.appearance.haptics.description") },
       )
-    // the chat page made as nodes, tried (the prefs' `chatPage`: sfbase's chat_page_from_prefs), off unless turned on:
-    // a chat page made after the switch is pressed is the one chosen
-    "chatPage" =>
-      @sf.setting_switch_node(
-        v,
-        fn() { @sf.t("web-pages.appearance.chatPage.title") },
-        fn() { @settings.pref(core, "chatPage") == "nodes" },
-        fn(on) { @settings.set_pref(core, "chatPage", if on { "nodes" } else { "" }) },
-        note=fn() { @sf.t("web-pages.appearance.chatPage.description") },
-      )
     "language" =>
       choice(
         "common.language",
@@ -214,12 +207,28 @@ fn fonts_said(prefs : Json?) -> String {
 }
 
 ///|
-/// 字体's page, one for every frame (opened from 外观's row narrow): what it is for under
-/// its title, the setting (font_setting.mbt).
-pub fn fonts_page(c : @ui.Ctx, core : Core, frame : PageFrame) -> Unit {
-  @sf.page(c, on_back=core.pop, frame~, "fonts", @sf.t("web-pages.appearance.fonts.title"), fonts_blocks(c, core), lead=@sf.t(
-    "web-pages.appearance.fonts.description",
-  ))
+/// 字体's page made once as nodes in node `v`, one for every frame (opened from 外观's row narrow), laid out by the
+/// `width` its frame gives it: what it is for under its title, the setting (font_setting.mbt's fonts_blocks_node).
+pub fn fonts_node(
+  v : @view.View,
+  core : Core,
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+) -> Unit {
+  let (blocks, block) = fonts_blocks_node(core)
+  @sf.page_node(
+    v,
+    fn() { @sf.t("web-pages.appearance.fonts.title") },
+    on_back~,
+    frame~,
+    said?,
+    width?,
+    lead=fn() { @sf.t("web-pages.appearance.fonts.description") },
+    blocks,
+    block,
+  )
 }
 
 ///|

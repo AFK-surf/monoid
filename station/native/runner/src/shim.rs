@@ -68,6 +68,50 @@ fn named(path: &str) -> Named<'_> {
         .map_or(Named::At(path), Named::Beside)
 }
 
+/// Quotes one argument for Windows `CreateProcessW` (`CommandLineToArgvW` / MSVCRT rules).
+pub fn quote_arg(arg: &str, out: &mut String) {
+    if !arg.is_empty() && !arg.bytes().any(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0b' | b'"')) {
+        out.push_str(arg);
+        return;
+    }
+    out.push('"');
+    let mut backslashes = 0usize;
+    for ch in arg.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                for _ in 0..(backslashes * 2 + 1) {
+                    out.push('\\');
+                }
+                out.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                for _ in 0..backslashes {
+                    out.push('\\');
+                }
+                backslashes = 0;
+                out.push(ch);
+            }
+        }
+    }
+    for _ in 0..(backslashes * 2) {
+        out.push('\\');
+    }
+    out.push('"');
+}
+
+/// Builds a full Windows command line for `CreateProcessW` (ConPTY).
+pub fn command_line<'a>(program: &str, args: impl IntoIterator<Item = &'a str>) -> String {
+    let mut line = String::new();
+    quote_arg(program, &mut line);
+    for arg in args {
+        line.push(' ');
+        quote_arg(arg, &mut line);
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,5 +149,17 @@ mod tests {
         // What the station writes for a script: Git's sh, through a variable.
         assert_eq!(read("@\"%USERPROFILE%\\Git\\bin\\sh.exe\" \"%~dp0said\" %*\r\n"), None);
         assert_eq!(read("@\"%USERPROFILE%\\bin\\said.exe\" %*\r\n"), None);
+    }
+
+    #[test]
+    fn windows_command_line_quotes_spaces_backslashes_and_quotes() {
+        let line = command_line(
+            r"C:\Program Files\PowerShell\7\pwsh.exe",
+            ["-NoLogo", "", r#"a"b"#, r"path\with space\"],
+        );
+        assert_eq!(
+            line,
+            r#""C:\Program Files\PowerShell\7\pwsh.exe" -NoLogo "" "a\"b" "path\with space\\""#
+        );
     }
 }

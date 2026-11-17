@@ -6,7 +6,7 @@
 // again when asked again.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { Effect } from "effect";
+import { Deferred, Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
 import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
@@ -341,6 +341,60 @@ test("a download cancelled during a part keeps the bytes already received", asyn
   assert.deepEqual(offsets, [0, first]);
   assert.deepEqual((await r.ask("download.read", { id, offset: 0, length: file.length })).bytes, file);
   t.core.close();
+});
+
+for (const sizeKnown of [true, false]) test(`restarting a download with ${sizeKnown ? "known" : "unknown"} size while cancellation saves a part keeps the new download resumable`, async () => {
+  const file = bytesOf(2 * MB, 3);
+  const t = await started(undefined, 0, (host) => {
+    const fallback = new HostWire(host);
+    return { request: (station, head, body) => {
+      const u = new URL(head.path, "https://stillfail.test");
+      if (!u.pathname.endsWith("/sessions/k1/parts")) return fallback.request(station, head, body);
+      const offset = Number(u.searchParams.get("offset"));
+      let sent = false;
+      return Effect.succeed({
+        status: 200,
+        headers: [["content-type", "application/octet-stream"], ["stillfail-total", String(file.length)]] as [string, string][],
+        via: null,
+        body: { take: Effect.suspend(() => {
+          if (!sent) { sent = true; return Effect.succeed(file.slice(offset, offset + 1024)); }
+          return Effect.never;
+        }) },
+      });
+    } };
+  });
+  const r = await watch(t);
+  const params = { station: ST, key: "k1", name: "film.mp4", size: sizeKnown ? file.length : 0 };
+  const id = (await r.ask("download.start", params)).ok.download.id;
+  const saved = Deferred.makeUnsafe<void>();
+  const store = t.host.storageSet.bind(t.host);
+  let saving = false;
+  t.host.storageSet = (key, bytes) => {
+    if (!saving && key.startsWith("drive-kept-")) {
+      saving = true;
+      return Effect.andThen(Deferred.await(saved), store(key, bytes));
+    }
+    return store(key, bytes);
+  };
+  await r.ask("download.cancel", { id });
+  assert.equal(saving, true, "cancellation waits for the received part's write");
+  assert.deepEqual(await r.view(), []);
+  t.host.advance(1);
+  const restarted = (await r.ask("download.start", params)).ok.download;
+  assert.equal((await r.view())[0].id, id);
+  Deferred.doneUnsafe(saved, Effect.void);
+  await t.host.settle();
+  assert.equal((await r.view())[0].id, id, "the restarted download stays visible");
+  const noted = await Effect.runPromise(t.core.inner.driveKept.downloads());
+  assert.equal(noted.length, 1, "the old cancellation cannot remove the restarted download's recovery record");
+  assert.equal((noted[0] as { startedAt: number }).startedAt, restarted.startedAt, "the old cancellation cannot overwrite the restarted download's record");
+  t.core.close();
+  files(t.host, new Map([["film.mp4", file]]));
+  const core = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+  await t.host.time.pass(500);
+  const again = await watch({ host: t.host, core });
+  assert.equal((await again.view())[0].state, "ready", "the new download resumes after the app restarts");
+  core.close();
 });
 
 test("a cut reply for a different file version is not kept beside the old one", async () => {

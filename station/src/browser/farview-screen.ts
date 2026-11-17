@@ -10,6 +10,7 @@
 //   from the host: {"changed":seq}  the picture changed (asked for then: nothing is polled)
 //                  {"page":{url,title}} {"size":{…}} {"taken":"agent"|"person"}
 //                  {"copied":text}  what a person's copy or cut on that view took (its clipboard's text)
+//                  {"openTab":url}  the page asked for a new tab (to every connection: heard on the watch's alone)
 // A person's paste is text sent as typed ({"text":…}, where the focus is).
 import { connect, type Socket } from "node:net";
 import { log } from "../ops/log.ts";
@@ -144,18 +145,24 @@ export class FarviewScreen implements ScreenSource {
   readonly #views = new Set<FarviewView>();
   #closed = false;
   changed: () => void = () => {};
+  /// Hears each new tab the page asks for, by its address.
+  opened: (url: string) => void = () => {};
 
-  constructor(o: { session: string; port: number }) {
+  /// `n`: which of its chat's tabs (0 its first, whose id is the chat's alone).
+  constructor(o: { session: string; port: number; n?: number }) {
     this.#session = o.session;
     this.#port = o.port;
-    this.id = `browser:fv_${chatDir(o.session)}`;
+    this.id = `browser:fv_${chatDir(o.session)}${o.n ? `_${o.n}` : ""}`;
   }
 
   /// Hears the tab's page and size on a connection of its own while the host runs.
   watch() {
     if (this.#closed || this.#watch !== null) return;
     const link = new FrameLink(this.#port);
-    link.heard = (m) => this.heard(m);
+    link.heard = (m) => {
+      this.heard(m);
+      if (typeof m?.openTab === "string" && m.openTab !== "") this.opened(m.openTab);
+    };
     link.ended = () => {
       if (this.#watch === link) this.#watch = null;
     };

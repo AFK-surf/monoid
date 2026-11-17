@@ -33,22 +33,6 @@ fn slack_reset() -> Unit {
 }
 
 ///|
-/// The draft `key` holds, opened for a connect's tokens (`connect`: a blank one keeps what it has) or an app
-/// installed through Slack's OAuth (`install`, its state: its bot token is on the station already); the core told
-/// once the frame's builds are over. `form`: a connect wizard's, whose draft it is.
-fn slack_tokens(
-  c : @ui.Ctx,
-  core : Core,
-  station : String,
-  key : String,
-  connect? : String = "",
-  install? : String = "",
-  form? : String = "",
-) -> SlackTokens {
-  slack_tokens_draft(core, station, key, connect, install, form, fn(tk, open) { c.tell("tokens-open/" + tk.form, open) })
-}
-
-///|
 /// The draft `key` holds (slack_tokens'), opened as the first to ask for it does: the core told it is opened by `told`
 /// (given the draft and that call: a build's after the frame's builds, what is made once at once).
 fn slack_tokens_draft(
@@ -167,12 +151,19 @@ fn tokens_clear(core : Core, tk : SlackTokens) -> Unit {
 }
 
 ///|
-/// The two tokens' fields (TokenFields): App-Level Token and, unless the app was
-/// installed through Slack (`install`), Bot Token, each a secret's field (`masked`: what is saved, kept while it is left
-/// blank); who they were checked as, in green, while the draft is what is typed; what checking them found wrong, and
-/// why a call failed, in red under them.
-fn token_fields(c : @ui.Ctx, core : Core, tk : SlackTokens, masked? : (String, String) = ("", ""), install? : Bool = false) -> Unit {
-  let view = tokens_view(core, tk)
+/// The two tokens' fields (token_fields', as nodes) in `b`, the connect's page's: App-Level Token and Bot Token, each a
+/// secret's line told to the core's draft as it is typed; who they were checked as, in green, while the draft is what is
+/// typed; what checking them found wrong, and why a call failed, in red under them. `masked`: what is saved, said in
+/// each while it is left blank (kept then); `install`: the app installed through Slack, its Bot Token on the station
+/// already, so no field of it.
+fn token_fields_node(
+  b : @view.View,
+  core : Core,
+  tk : SlackTokens,
+  masked? : (String, String) = ("", ""),
+  install? : Bool = false,
+) -> Unit {
+  let view = fn() { tokens_view(core, tk) }
   let kept = fn(m : String, or_else : String) {
     if m == "" {
       or_else
@@ -180,96 +171,16 @@ fn token_fields(c : @ui.Ctx, core : Core, tk : SlackTokens, masked? : (String, S
       @sf.t("web-main.slack.saved", args=[("token", m)])
     }
   }
-  c.box(style=sk_fields, fn() {
-    @sf.field(c, "App-Level Token", fn() {
-      // (told the core as it is typed)
-      @sf.input(c, "tokens-app/" + tk.form, placeholder=kept(masked.0, "xapp-…"), secret=true, field=tk.app, on_change=fn(words) {
-        let typed = words.trim(chars=" \t\n").to_owned()
-        if typed != tk.app_sent {
-          tk.app_sent = typed
-          tokens_send(core, tk, "edit", Some(obj([("appToken", str(typed))])))
-        }
-      })
-      |> ignore
-    })
-    if !install {
-      @sf.field(c, "Bot Token", fn() {
-        @sf.input(c, "tokens-bot/" + tk.form, placeholder=kept(masked.1, "xoxb-…"), secret=true, field=tk.bot, on_change=fn(words) {
-          let typed = words.trim(chars=" \t\n").to_owned()
-          if typed != tk.bot_sent {
-            tk.bot_sent = typed
-            tokens_send(core, tk, "edit", Some(obj([("botToken", str(typed))])))
-          }
-        })
-        |> ignore
-      })
-    }
-    match field(view, "verified") {
-      Some(Object(_)) as v if text(view, "appToken") == tk.app_sent && text(view, "botToken") == tk.bot_sent =>
-        @sf.verify_ok(c, @sf.t("web-main.slack.verified", args=[("team", text(v, "team")), ("bot", text(v, "botName"))]))
-      _ => ()
-    }
-    let errors = strings(view, "errors")
-    if errors.length() > 0 {
-      c.box(style=sk_errors, fn() {
-        for e in errors {
-          c.text("• " + e, style=sk_error) |> ignore
-        }
-      })
-      |> ignore
-    }
-    if tk.error.get() != "" {
-      c.text(tk.error.get(), style=sk_error) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Making the app in Slack (CreateAppSteps): from still.fail's manifest, named `name` (Slack's page opened by the
-/// station's link: `slack.createAppUrl`), its App-Level Token, installing it, the two tokens filled in below.
-fn create_app_steps(c : @ui.Ctx, core : Core, station : String, name : String) -> Unit {
-  let named = match name.trim(chars=" \t\n").to_owned() {
-    "" => "still.fail"
-    n => n
-  }
-  let on = [("station", station)]
-  let opening = is_doing(core, ["slack.createAppUrl"], on)
-  @sf.steps(c, [
-    fn() {
-      c.text(@sf.t("web-main.slack.step.create", args=[("app", "still.fail"), ("name", named)]), style=@sf.step_words) |> ignore
-      @sf.button(c, @sf.t("web-main.slack.create"), key="slack-create/" + station, icon="external", busy=opening, on_press=fn() {
-        @settings.act(core, @sf.t("web-main.slack.create"), "slack.createAppUrl", obj([("station", str(station)), ("name", str(named))]), then=fn(
-          v,
-        ) {
-          match opt_text(Some(v), "url") {
-            Some(url) => (core.open_link)(url)
-            None => ()
-          }
-        })
-      }) |> ignore
-    },
-    fn() { c.text(@sf.t("web-main.slack.step.appToken"), style=@sf.step_words) |> ignore },
-    fn() { c.text(@sf.t("web-main.slack.step.install"), style=@sf.step_words) |> ignore },
-    fn() { c.text(@sf.t("web-main.slack.step.fill"), style=@sf.step_words) |> ignore },
-  ])
-}
-
-///|
-/// The two tokens' fields (token_fields', as nodes) in `b`, the connect's page's: App-Level Token and Bot Token, each a
-/// secret's line told to the core's draft as it is typed; who they were checked as, in green, while the draft is what is
-/// typed; what checking them found wrong, and why a call failed, in red under them. (Their old view stays the
-/// dialogs' till they are nodes: token_fields.)
-fn token_fields_node(b : @view.View, core : Core, tk : SlackTokens) -> Unit {
-  let view = fn() { tokens_view(core, tk) }
   b.box(fn(f) {
     @sf.style_node(f, fn() { sk_fields })
     @sf.labelled_field_node(f, fn() { "App-Level Token" }, fn(l) {
-      @sf.input_node(l, tk.app, placeholder="xapp-…", secret=true) |> ignore
+      @sf.input_node(l, tk.app, placeholder_by=fn() { kept(masked.0, "xapp-…") }, secret=true, label="App-Level Token") |> ignore
     })
-    @sf.labelled_field_node(f, fn() { "Bot Token" }, fn(l) {
-      @sf.input_node(l, tk.bot, placeholder="xoxb-…", secret=true) |> ignore
-    })
+    if !install {
+      @sf.labelled_field_node(f, fn() { "Bot Token" }, fn(l) {
+        @sf.input_node(l, tk.bot, placeholder_by=fn() { kept(masked.1, "xoxb-…") }, secret=true, label="Bot Token") |> ignore
+      })
+    }
     // (told the core as it is typed)
     f.reacts(fn() { tk.app.text().trim(chars=" \t\n").to_owned() }, fn(typed) {
       if typed != tk.app_sent {

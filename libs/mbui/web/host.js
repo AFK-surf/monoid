@@ -7,7 +7,8 @@
   // the serif face (style bit 4): a reader's 宋体
   const SERIF = '"Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif';
   const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "JetBrains Mono", "PingFang SC", "Noto Sans CJK SC", monospace';
-  const ATLAS = 2048;
+  const ATLAS = 4096;
+  const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
   let cb = null;
@@ -406,6 +407,8 @@
     if (a_rot.x != 0.0) { vec2 d = pos - a_rot.yz; float c = cos(a_rot.x), s = sin(a_rot.x); at = a_rot.yz + vec2(c * d.x - s * d.y, s * d.x + c * d.y); }
     gl_Position = vec4(at.x / u_vp.x * 2.0 - 1.0, 1.0 - at.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
+    // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)
+    if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;
     if (kind == 4 && a_pad.z > 0.5) v_pad.x = a_rot.w;
     v_oclip = a_oclip; v_orc = a_orc; v_ors = a_ors;
     vec2 cq = a_rot.w > 0.5 ? at : pos;
@@ -706,6 +709,7 @@
   `;
   const FS = `#version 300 es
   precision highp float;
+  precision highp int;
   in vec2 v_pos; in vec2 v_cpos;
   flat in vec4 v_rect; flat in vec4 v_p; flat in vec4 v_color; flat in vec4 v_c2; flat in vec4 v_clip; flat in vec4 v_pad;
   flat in vec4 v_rc; flat in vec4 v_rs; flat in vec4 v_rr; flat in vec4 v_oclip; flat in vec4 v_orc; flat in vec4 v_ors;
@@ -718,6 +722,11 @@
   uniform highp sampler2D u_bd;
   uniform vec4 u_map;
   uniform vec4 u_uvc;
+  // where a point is in the capture's sharp level (u_img while liquid glass is drawn: capture's rTex)
+  uniform vec4 u_rmap;
+  uniform vec4 u_ruvc;
+  // a liquid group's bounds (as the vertex shader has them)
+  uniform vec4 u_gb;
   uniform vec4 u_shape[8];
   uniform vec4 u_rad[2];
   uniform int u_n;
@@ -752,8 +761,22 @@
     }
     return d;
   }
+  // sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by
+  float sd_group_soft(vec2 p, float k) {
+    float d = 1e9;
+    for (int i = 0; i < 8; i++) {
+      if (i >= u_n) break;
+      vec2 hs = u_shape[i].zw * 0.5;
+      d = smin_k(d, sd_rr(p, u_shape[i], vec4(min(u_rad[i / 4][i % 4] * 1.45, min(hs.x, hs.y)))), k);
+    }
+    return d;
+  }
   vec3 backdrop(vec2 p) {
     return texture(u_bd, clamp(p * u_map.xy + u_map.zw, u_uvc.xy, u_uvc.zw)).rgb;
+  }
+  // what is under liquid glass at p, not blurred
+  vec3 sharp(vec2 p) {
+    return texture(u_img, clamp(p * u_rmap.xy + u_rmap.zw, u_ruvc.xy, u_ruvc.zw)).rgb;
   }
   float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
   // how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth
@@ -795,8 +818,14 @@
     if (kind == 1 || kind == 3 || kind == 7) {
       // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample
       // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the
-      // atlas started over)
-      vec2 uv = clamp(v_c2.xy + (p - v_rect.xy) / v_rect.zw * v_c2.zw, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
+      // atlas started over). One drawn as big as its picture, not turned, its corner on a pixel: each pixel its
+      // texel's centre, as win_render.cpp takes it (worked out of where it is across the rect, a float's division
+      // took a texel's neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)
+      vec2 off = abs(v_rect.zw * u_scale - v_c2.zw);
+      vec2 r0 = v_rect.xy * u_scale, r0i = floor(r0 + 0.5);
+      bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;
+      vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;
+      vec2 uv = clamp(v_c2.xy + tex, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
       vec4 t = texture(u_atlas, uv);
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
@@ -811,31 +840,105 @@
       return;
     }
     if (kind == 6) {
-      // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little
+      // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus
+      // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through
+      // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through
+      // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its
+      // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on
+      // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a
+      // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the
+      // frame drawn whole, to the byte.
       float k = v_pad.w;
+      // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45
+      // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight
+      // side bends what is under it as a lens does, not as a prism)
       float d = sd_group(p, k);
       float a = clamp(0.5 - d * u_scale, 0.0, 1.0);
       if (a <= 0.0) discard;
-      float e = 0.5;
-      vec2 grad = vec2(sd_group(p + vec2(e, 0.0), k) - sd_group(p - vec2(e, 0.0), k),
-                       sd_group(p + vec2(0.0, e), k) - sd_group(p - vec2(0.0, e), k));
-      vec2 n = grad / max(length(grad), 1e-4);
+      float e = 0.75;
+      vec2 grad = vec2(sd_group_soft(p + vec2(e, 0.0), k) - sd_group_soft(p - vec2(e, 0.0), k),
+                   sd_group_soft(p + vec2(0.0, e), k) - sd_group_soft(p - vec2(0.0, e), k));
+      vec2 n_edge = grad / max(length(grad), 1e-4);
+      vec2 gc = 0.5 * (u_gb.xy + u_gb.zw);
+      vec2 gh = max(0.5 * (u_gb.zw - u_gb.xy), vec2(1.0, 1.0));
+      vec2 dome = clamp((p - gc) / gh, vec2(-1.0, -1.0), vec2(1.0, 1.0));
+      vec2 n2 = normalize(n_edge + 0.14 * dome);
       float bezel = max(v_c2.y, 1.0);
-      float edge = 1.0 - clamp(-d / bezel, 0.0, 1.0);
-      float disp = v_pad.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));
-      vec2 off = -n * disp;
-      float ch = v_pad.z;
-      vec3 c = vec3(backdrop(p + off * (1.0 + ch)).r, backdrop(p + off).g, backdrop(p + off * (1.0 - ch)).b);
+      // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)
+      float r = clamp(1.0 + d / bezel, 0.0, 1.0);
+      float r2 = r * r;
+      float r4 = r2 * r2;
+      float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);
+      float inv_n = 1.0 / sqrt(slope * slope + 1.0);
+      vec2 Nxy = n2 * (slope * inv_n);
+      float Nz = inv_n;
+      // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)
+      float eta = 0.6578947;
+      float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);
+      float kt = eta * Nz - sqrt(k_ior);
+      vec2 Txy = Nxy * kt;
+      float Tz = -eta + kt * Nz;
+      // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)
+      vec2 off = Txy * (1.15 * v_pad.y / max(-Tz, 1e-4));
+      // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)
+      float ch = min(v_pad.z * (0.72 + 0.56 * abs(n2.x * n2.y)), v_pad.z);
+      vec2 disp = off * ch;
+      // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:
+      // a spectrum, not three images; the flat blurred, three)
+      vec3 s0 = sharp(p + off + disp);
+      vec3 s1 = sharp(p + off + disp * 0.6666667);
+      vec3 s2 = sharp(p + off + disp * 0.3333333);
+      vec3 s3 = sharp(p + off);
+      vec3 s4 = sharp(p + off - disp * 0.3333333);
+      vec3 s5 = sharp(p + off - disp * 0.6666667);
+      vec3 s6 = sharp(p + off - disp);
+      vec3 cs = vec3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,
+                     (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,
+                     (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);
+      vec3 cf = vec3(backdrop(p + off + disp * 0.5).r, backdrop(p + off).g, backdrop(p + off - disp * 0.5).b);
+      float lens = r2 * smoothstep(0.16, 0.88, r);
+      vec3 c = mix(cf, cs, lens * 0.86);
+      // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'
+      // colour; from at most off * (1 + 0.85 * ch), inside what is kept)
+      vec3 bleed = backdrop(p + off * (1.0 + ch * 0.85));
+      vec3 bleed_sat = max(mix(vec3(luma(bleed)), bleed, v_p.z * 1.35), 0.0);
+      c = mix(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);
       c = max(mix(vec3(luma(c)), c, v_p.z), 0.0);
-      c = c * (1.0 - col.a) + col.rgb * col.a;
-      // the rim lit from the top left, and less across from it
-      float ndl = dot(n, vec2(-0.6, -0.8));
-      float band = clamp(1.0 + d / 2.5, 0.0, 1.0);
-      float spec = v_c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +
-                             0.3 * edge * edge * max(ndl, 0.0));
-      // the edge shaded, more on the side away from the light, so the shape reads over a light ground too
-      c *= 1.0 - v_c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));
-      c = c + (1.0 - c) * clamp(spec, 0.0, 1.0);
+      // (its tint whole on the flat, where words lie, and less through the lip)
+      float tint_a = col.a * (1.0 - 0.56 * lens);
+      c = c * (1.0 - tint_a) + col.rgb * tint_a;
+      // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,
+      // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)
+      float spot = 0.0;
+      if (v_c2.z > 0.5) {
+        float q = v_c2.z - 1.0;
+        float qx = floor(q * 0.000244140625);
+        float qy = q - qx * 4096.0;
+        vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
+        float gr = max(min(v_rect.z, v_rect.w) * 1.65, 44.0);
+        spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));
+      }
+      float ndl = dot(n2, vec2(-0.6, -0.8));
+      float rim = v_c2.x;
+      // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
+      float body_ring = r2 * (1.0 - 0.35 * r);
+      c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
+      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,
+      // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of
+      // white, so a light ground does not swallow it
+      float rim_lit = rim * (1.0 + 0.42 * spot);
+      float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
+      spec_band *= spec_band;
+      float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
+      float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
+                              0.28 * fresnel * max(ndl + 0.3, 0.0)) +
+                   0.14 * spot * (0.45 + 0.55 * r);
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
+      edge_b *= edge_b;
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
       return;
@@ -936,6 +1039,7 @@
   }`;
   const PFS = `#version 300 es
   precision highp float;
+  precision highp int;
   ${CORNERS}
   // The backdrop's passes: u_a.xy the source's texel, u_a.z 1 halving (dual Kawase's down), 2 a Gaussian along u_b.zw
   // of deviation u_a.w (texels); u_b.xy the last texel's centre of what the source holds
@@ -1004,7 +1108,7 @@
     gl.attachShader(post, compile(gl.FRAGMENT_SHADER, PFS));
     gl.linkProgram(post);
     if (!gl.getProgramParameter(post, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(post));
-    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
+    for (const n of ['u_vp', 'u_scale', 'u_atlas', 'u_img', 'u_bd', 'u_map', 'u_uvc', 'u_rmap', 'u_ruvc', 'u_gb', 'u_shape', 'u_rad', 'u_n', 'u_segs']) U[n] = gl.getUniformLocation(prog, n);
     for (const n of ['u_src', 'u_a', 'u_b', 'u_c']) PU[n] = gl.getUniformLocation(post, n);
     vao = gl.createVertexArray();
     gl.bindVertexArray(vao);
@@ -1037,8 +1141,9 @@
   // channel as the canvas has; what the passes write keeps 10 (RGB10_A2, in as many bytes): at 8 each pass rounds the
   // frost's slow slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels,
   // too narrow to halve, is written back into the copy: it leaves no slope that wide).
-  let lv = null, lvW = 0, lvH = 0, bdTex = null;
+  let lv = null, lvW = 0, lvH = 0, bdTex = null, rTex = null;
   const gmap = new Float32Array(4), guvc = new Float32Array(4), ggb = new Float32Array(4);
+  const rmap = new Float32Array(4), ruvc = new Float32Array(4);
   const gshape = new Float32Array(32), grad = new Float32Array(8);
   let gn = 0;
   function levelTex(format, w, h) {
@@ -1205,6 +1310,14 @@
     gmap[0] = sc / d / L.w; gmap[1] = -sc / d / L.h;
     gmap[2] = -px0 / d / L.w; gmap[3] = (Hh - pb0) / d / L.h;
     guvc[0] = 0.5 / L.w; guvc[1] = 0.5 / L.h; guvc[2] = (lw[k] - 0.5) / L.w; guvc[3] = (lh[k] - 0.5) / L.h;
+    // the sharp one liquid glass sees through its lip, of the levels its blur left as they were copied: the half once
+    // halved twice or more, the copy once halved (not contained: contained, its copy is the edge's pass's), else L
+    const rk = k >= 2 ? 1 : k === 1 && !contained ? 0 : k;
+    const R = k >= 2 ? lv[1] : k === 1 && !contained ? lv[0] : L, rd = 1 << rk;
+    rTex = R.t;
+    rmap[0] = sc / rd / R.w; rmap[1] = -sc / rd / R.h;
+    rmap[2] = -px0 / rd / R.w; rmap[3] = (Hh - pb0) / rd / R.h;
+    ruvc[0] = 0.5 / R.w; ruvc[1] = 0.5 / R.h; ruvc[2] = (lw[rk] - 0.5) / R.w; ruvc[3] = (lh[rk] - 0.5) / R.h;
     return true;
   }
   // the main program's state, after the passes
@@ -1234,6 +1347,8 @@
     gl.uniform1i(U.u_bd, 2);
     gl.uniform4fv(U.u_map, gmap);
     gl.uniform4fv(U.u_uvc, guvc);
+    gl.uniform4fv(U.u_rmap, rmap);
+    gl.uniform4fv(U.u_ruvc, ruvc);
     gl.uniform4fv(U.u_gb, ggb);
     gl.uniform4fv(U.u_shape, gshape);
     gl.uniform4fv(U.u_rad, grad);
@@ -1352,6 +1467,7 @@
       if (n === 0) return;
     }
     bdTex = null;
+    rTex = null;
     gmap.fill(0); guvc.fill(0); ggb.fill(0); gn = 0;
     gl.useProgram(prog);
     gl.bindVertexArray(vao);
@@ -1382,8 +1498,14 @@
         }
         if (shows) {
           for (let i = 0; i < INST / 4; i++) gl.vertexAttribPointer(i, 4, gl.FLOAT, false, INST * 4, start * INST * 4 + i * 16);
-          // liquid: the group as one shape, drawn once
-          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, Math.round(f32[start * INST + 5]) === 6 ? 1 : end - start);
+          // liquid: the group as one shape, drawn once, its capture's sharp level in unit 1 (an image's run after it
+          // binds its own there again)
+          const liquid = Math.round(f32[start * INST + 5]) === 6;
+          if (liquid) {
+            gl.activeTexture(gl.TEXTURE1);
+            gl.bindTexture(gl.TEXTURE_2D, rTex || atlasTex);
+          }
+          gl.drawArraysInstanced(gl.TRIANGLES, 0, 6, liquid ? 1 : end - start);
         }
         start = end;
         continue;
@@ -2264,21 +2386,35 @@
   // (one atlas: colour glyphs in it with the others)
   H.atlasSize = (colour) => colour ? 0 : ATLAS;
 
+  // A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub), in pixels: how far right of
+  // the whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's sub_dx, the same).
+  const subDx = (sub) => sub === 1 ? 0.25 : sub === 2 ? -0.5 : sub === 3 ? -0.25 : 0;
+
   // `e` drawn in black, a pixel round its bounds: its box (in `e`) and its picture, held for H.glyphPut (where it
-  // goes in the atlas is MoonBit's: hostapi's atlas.mbt)
-  function rasterize(e, key) {
+  // goes in the atlas is MoonBit's: hostapi's atlas.mbt). Its ink drawn moved right by its phase (`fullKey`'s), and a
+  // digit of words whose digits are one width (style & 32) by as much again as centres it in the widest's room; the
+  // picture's edges on whole pixels round the ink so moved, so where it lands is never a pixel's rounding of its place
+  // added to that.
+  function rasterize(e, fullKey) {
     held = null;
     const sc = dpr;
+    const sub = (fullKey >>> 26) & 7;
     mctx.font = font(e.size, e.weight, e.style);
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
+    let tabShift = 0;
+    if (e.style & 32 && isDigit(e.c)) {
+      const f = font(e.size, e.weight, e.style);
+      tabShift = (tabWidth(f) - width(f, e.c)) / 2;
+    }
+    const shiftPx = tabShift * sc + (sub < 4 ? subDx(sub) : 0);
     // whole pixels each way from the baseline, so every glyph's baseline is
     // on a pixel row of its bitmap and glyphs on one line line up
     const pad = 1;
-    const l = Math.ceil(left * sc), r = Math.ceil(right * sc);
+    const x0 = Math.floor(-left * sc + shiftPx) - pad, x1 = Math.ceil(right * sc + shiftPx) + pad;
     const a = Math.ceil(asc * sc), d = Math.ceil(desc * sc);
-    const pw = l + r + 2 * pad, ph = a + d + 2 * pad;
+    const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
     rc.width = pw;
@@ -2290,7 +2426,7 @@
     // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
     rctx.fillStyle = '#000';
     rctx.textBaseline = 'alphabetic';
-    rctx.fillText(e.c, pad + l, pad + a);
+    rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
     // emoji's
@@ -2298,20 +2434,16 @@
     for (let i = 0; i < img.data.length && !color; i += 4) {
       if (img.data[i + 3] > 64 && Math.max(img.data[i], img.data[i + 1], img.data[i + 2]) > 32) color = 1;
     }
-    held = { key, img, pw, ph };
+    held = { key: fullKey, img, pw, ph };
     e.w = pw / sc;
     e.h = ph / sc;
-    e.ox = -(l + pad) / sc;
-    if (e.style & 32 && isDigit(e.c)) {
-      const f = font(e.size, e.weight, e.style);
-      e.ox += (tabWidth(f) - width(f, e.c)) / 2;
-    }
+    e.ox = x0 / sc;
     e.oy = -(a + pad) / sc;
     e.color = color;
   }
 
   H.glyph = (key, out) => {
-    const e = entries[key];
+    const e = key >= 0 ? entries[key & 0x03FFFFFF] : undefined;
     if (!e) { for (let i = 0; i < 8; i++) out[i] = 0; return; }
     rasterize(e, key);
     out[0] = 0; out[1] = 0; out[2] = e.w || 0; out[3] = e.h || 0;
@@ -2715,7 +2847,7 @@
   };
   const contextRestored = () => {
     setupGL();
-    lv = null; lvW = 0; lvH = 0; bdTex = null;
+    lv = null; lvW = 0; lvH = 0; bdTex = null; rTex = null;
     segsTex = null; segsRows = 0; segsHad = null; segsHadRows = 0;
     uploadedFor = -1;
     textChanged();
@@ -2741,6 +2873,585 @@
     return true;
   };
 
+  // ---- terminals (src/hostapi/terminal.mbt, ghostty-vt.wasm) ----
+  let vt = null, vtScratch = 0, vtWideLsb = 42;
+  const terms = new Map();
+  let nextTermId = 1;
+  const utf8Dec = typeof TextDecoder !== 'undefined' ? new TextDecoder() : null;
+  const utf8Decode = (bytes) => {
+    if (utf8Dec) return utf8Dec.decode(bytes);
+    let s = '';
+    for (let i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
+    return decodeURIComponent(escape(s));
+  };
+  const termAsked = (globalThis.__mbrender || typeof WebAssembly === 'undefined' || typeof fetch === 'undefined' || typeof URL === 'undefined')
+    ? null
+    : (() => {
+        try {
+          const u = new URL('ghostty-vt.wasm', hostScriptSrc);
+          const q = new URL(hostScriptSrc, location.href).search;
+          if (q) u.search = q;
+          return fetch(u)
+            .then((r) => (r.ok && !(r.headers.get('content-type') || '').includes('text/html') ? r.arrayBuffer() : null))
+            .then((b) => {
+              if (!b || b.byteLength < 8) return null;
+              const hdr = new Uint8Array(b, 0, 4);
+              if (hdr[0] !== 0 || hdr[1] !== 0x61 || hdr[2] !== 0x73 || hdr[3] !== 0x6d) return null;
+              return WebAssembly.instantiate(b, {});
+            })
+            .then((res) => {
+              if (!res) return;
+              const x = res.instance.exports;
+              const s = x.ghostty_alloc(0, 4096);
+              if (!s) return;
+              vt = x;
+              vtScratch = s;
+              try {
+                const p = x.ghostty_type_json();
+                const m = new Uint8Array(x.memory.buffer);
+                let e = p;
+                while (m[e] !== 0) e++;
+                const tj = JSON.parse(utf8Decode(m.subarray(p, e)));
+                const lsb = tj?.types?.GhosttyCell?.bits?.wide?.lsb;
+                if (typeof lsb === 'number') vtWideLsb = lsb;
+              } catch (_) {}
+            })
+            .catch(() => {});
+        } catch (_) {
+          return null;
+        }
+      })();
+
+  function vtModes(t) {
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    const mc = vtScratch + 440;
+    const askMode = (code) => {
+      dv.setUint16(mc, code, true);
+      m8[mc + 2] = 0;
+      return vt.ghostty_terminal_get(t.term, 30, mc) === 0 && m8[mc + 2] !== 0;
+    };
+    let m = 0;
+    if (askMode(1)) m |= 1;
+    if (askMode(2004)) m |= 2;
+    m8[vtScratch] = 0;
+    if (vt.ghostty_terminal_get(t.term, 11, vtScratch) === 0 && m8[vtScratch] !== 0) m |= 4;
+    dv.setInt32(vtScratch, 0, true);
+    if (vt.ghostty_terminal_get(t.term, 6, vtScratch) === 0 && dv.getInt32(vtScratch, true) === 1) m |= 8;
+    if (askMode(1007)) m |= 16;
+    if (askMode(1004)) m |= 32;
+    if (vt.ghostty_terminal_get(t.term, 31, vtScratch + 112) === 0) m |= 64;
+    m8[vtScratch] = 1;
+    if (vt.ghostty_terminal_get(t.term, 32, vtScratch) !== 0 || m8[vtScratch] !== 0) m |= 128;
+    return m;
+  }
+
+  H.termOpen = (cols, rows) => {
+    if (!vt) return 0;
+    const c = cols > 0 ? cols : 1;
+    const r = rows > 0 ? rows : 1;
+    if (vt.ghostty_terminal_new(0, vtScratch, c, r) !== 0) return 0;
+    const term = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_new(0, vtScratch) !== 0) {
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const render = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_iterator_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const rowIt = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (vt.ghostty_render_state_row_cells_new(0, vtScratch) !== 0) {
+      vt.ghostty_render_state_row_iterator_free(rowIt);
+      vt.ghostty_render_state_free(render);
+      vt.ghostty_terminal_free(term);
+      return 0;
+    }
+    const cells = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    new DataView(vt.memory.buffer).setUint32(vtScratch, 16 * 1024 * 1024, true);
+    vt.ghostty_terminal_set(term, 28, vtScratch);
+    let mouse = 0, mouseEv = 0;
+    if (vt.ghostty_mouse_encoder_new(0, vtScratch) === 0) {
+      mouse = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+      new Uint8Array(vt.memory.buffer)[vtScratch] = 1;
+      vt.ghostty_mouse_encoder_set(mouse, 5, vtScratch);
+    }
+    if (vt.ghostty_mouse_event_new(0, vtScratch) === 0) {
+      mouseEv = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    }
+    const id = nextTermId++;
+    terms.set(id, {
+      term, render, rowIt, cells, mouse, mouseEv,
+      dragActive: false, dragX0: 0, dragY0: 0, dragScreenX0: 0, dragScreenY0: 0,
+      mouseSynced: false, mouseButtons: 0,
+      buf: new Uint8Array(8192),
+    });
+    return id;
+  };
+
+  H.termWrite = (id, data) => {
+    const t = terms.get(id);
+    if (!t || !vt || !data || !data.length) return;
+    const n = data.length;
+    if (n <= 2816) {
+      new Uint8Array(vt.memory.buffer).set(data, vtScratch + 1280);
+      vt.ghostty_terminal_vt_write(t.term, vtScratch + 1280, n);
+    } else {
+      const p = vt.ghostty_alloc(0, n);
+      if (!p) return;
+      new Uint8Array(vt.memory.buffer).set(data, p);
+      vt.ghostty_terminal_vt_write(t.term, p, n);
+      vt.ghostty_free(0, p, n);
+    }
+    t.mouseSynced = false;
+  };
+
+  H.termResize = (id, cols, rows, cw, ch) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    vt.ghostty_terminal_resize(t.term, cols > 0 ? cols : 1, rows > 0 ? rows : 1, cw > 0 ? cw : 8, ch > 0 ? ch : 16);
+    t.mouseSynced = false;
+  };
+
+  H.termModes = (id) => {
+    const t = terms.get(id);
+    return t && vt ? vtModes(t) : 0;
+  };
+
+  H.termFrame = (id, flags) => {
+    const t = terms.get(id);
+    if (!t || !vt || vt.ghostty_render_state_update(t.render, t.term) !== 0) return new Uint8Array(0);
+    let dv = new DataView(vt.memory.buffer);
+    let m8 = new Uint8Array(vt.memory.buffer);
+    if (flags & 1) {
+      dv.setInt32(vtScratch, 2, true);
+      vt.ghostty_render_state_set(t.render, 1, vtScratch);
+    }
+    vt.ghostty_render_state_get(t.render, 1, vtScratch);
+    const cols = dv.getUint16(vtScratch, true);
+    vt.ghostty_render_state_get(t.render, 2, vtScratch);
+    const rows = dv.getUint16(vtScratch, true);
+    vt.ghostty_render_state_get(t.render, 3, vtScratch);
+    const dirty = dv.getInt32(vtScratch, true);
+
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 11, vtScratch);
+    const curVis = m8[vtScratch] !== 0;
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 14, vtScratch);
+    const curAt = m8[vtScratch] !== 0;
+    m8[vtScratch] = 0;
+    vt.ghostty_render_state_get(t.render, 12, vtScratch);
+    const curBlink = m8[vtScratch] !== 0;
+    dv.setInt32(vtScratch, 1, true);
+    vt.ghostty_render_state_get(t.render, 10, vtScratch);
+    const curStyle = dv.getInt32(vtScratch, true);
+    let cx = 0, cy = 0, curWide = false;
+    if (curAt) {
+      vt.ghostty_render_state_get(t.render, 15, vtScratch);
+      cx = dv.getUint16(vtScratch, true);
+      vt.ghostty_render_state_get(t.render, 16, vtScratch);
+      cy = dv.getUint16(vtScratch, true);
+      m8[vtScratch] = 0;
+      vt.ghostty_render_state_get(t.render, 17, vtScratch);
+      curWide = m8[vtScratch] !== 0;
+    }
+
+    const hasFg = vt.ghostty_terminal_get(t.term, 18, vtScratch) === 0;
+    const fgR = hasFg ? m8[vtScratch] : 0, fgG = hasFg ? m8[vtScratch + 1] : 0, fgB = hasFg ? m8[vtScratch + 2] : 0;
+    const hasBg = vt.ghostty_terminal_get(t.term, 19, vtScratch) === 0;
+    const bgR = hasBg ? m8[vtScratch] : 0, bgG = hasBg ? m8[vtScratch + 1] : 0, bgB = hasBg ? m8[vtScratch + 2] : 0;
+    const hasCur = vt.ghostty_terminal_get(t.term, 20, vtScratch) === 0;
+    const crR = hasCur ? m8[vtScratch] : 0, crG = hasCur ? m8[vtScratch + 1] : 0, crB = hasCur ? m8[vtScratch + 2] : 0;
+
+    let curFlags = 0;
+    if (curVis && curAt) curFlags |= 1;
+    if (curBlink) curFlags |= 2;
+    if (curWide) curFlags |= 4;
+    if (hasCur) curFlags |= 8;
+    if (hasFg) curFlags |= 16;
+    if (hasBg) curFlags |= 32;
+
+    const modes = vtModes(t);
+    dv = new DataView(vt.memory.buffer);
+    m8 = new Uint8Array(vt.memory.buffer);
+    const sbAt = vtScratch + 16;
+    dv.setBigUint64(sbAt, 0n, true);
+    dv.setBigUint64(sbAt + 8, 0n, true);
+    dv.setBigUint64(sbAt + 16, 0n, true);
+    vt.ghostty_terminal_get(t.term, 9, sbAt);
+    const sbTotal = Number(dv.getBigUint64(sbAt, true) & 0xffffffffn) >>> 0;
+    const sbOffset = Number(dv.getBigUint64(sbAt + 8, true) & 0xffffffffn) >>> 0;
+    const sbLen = Number(dv.getBigUint64(sbAt + 16, true) & 0xffffffffn) >>> 0;
+
+    let out = t.buf;
+    let at = 0;
+    const need = (n) => {
+      if (at + n <= out.length) return;
+      let cap = out.length * 2;
+      while (cap < at + n) cap *= 2;
+      const nb = new Uint8Array(cap);
+      nb.set(out.subarray(0, at));
+      out = t.buf = nb;
+    };
+    const u8 = (v) => { need(1); out[at++] = v & 0xff; };
+    const u16 = (v) => { need(2); out[at++] = v & 0xff; out[at++] = (v >>> 8) & 0xff; };
+    const u32 = (v) => {
+      need(4);
+      out[at++] = v & 0xff;
+      out[at++] = (v >>> 8) & 0xff;
+      out[at++] = (v >>> 16) & 0xff;
+      out[at++] = (v >>> 24) & 0xff;
+    };
+
+    u8(1);
+    u8(dirty === 2 ? 2 : dirty === 1 ? 1 : 0);
+    u16(cols);
+    u16(rows);
+    u16(cx);
+    u16(cy);
+    u8(curStyle >= 0 && curStyle <= 3 ? curStyle : 1);
+    u8(curFlags);
+    u16(modes);
+    u8(fgR); u8(fgG); u8(fgB);
+    u8(bgR); u8(bgG); u8(bgB);
+    u8(crR); u8(crG); u8(crB);
+    u8(0);
+    u32(sbTotal);
+    u32(sbOffset);
+    u32(sbLen);
+    const rowCountAt = at;
+    u16(0);
+    u32(0);
+
+    let rowCount = 0;
+    let havePalette = false;
+    const palAt = vtScratch + 512;
+    const rselAt = vtScratch + 256;
+    const styleAt = vtScratch + 160;
+    const gbufAt = vtScratch + 176;
+    const utf8At = vtScratch + 192;
+    const wideShift = BigInt(vtWideLsb);
+
+    if (dirty !== 0) {
+      dv.setUint32(vtScratch, t.rowIt, true);
+      if (vt.ghostty_render_state_get(t.render, 4, vtScratch) === 0) {
+        while (vt.ghostty_render_state_row_iterator_next_dirty(t.rowIt, vtScratch)) {
+          dv = new DataView(vt.memory.buffer);
+          m8 = new Uint8Array(vt.memory.buffer);
+          const y = dv.getUint16(vtScratch, true);
+          dv.setUint32(rselAt, 8, true);
+          let selStart = 0xffff, selEnd = 0xffff;
+          if (vt.ghostty_render_state_row_get(t.rowIt, 4, rselAt) === 0) {
+            selStart = dv.getUint16(rselAt + 4, true);
+            selEnd = dv.getUint16(rselAt + 6, true);
+          }
+          u16(y);
+          u16(selStart);
+          u16(selEnd);
+          const cellCountAt = at;
+          u16(0);
+          let cellCount = 0;
+
+          dv.setUint32(vtScratch, t.cells, true);
+          if (vt.ghostty_render_state_row_get(t.rowIt, 3, vtScratch) === 0) {
+            let col = 0;
+            while (vt.ghostty_render_state_row_cells_next(t.cells)) {
+              const cellX = col++;
+              let wide = 0;
+              if (vt.ghostty_render_state_row_cells_get(t.cells, 1, vtScratch) === 0) {
+                const raw = dv.getBigUint64(vtScratch, true);
+                wide = Number((raw >> wideShift) & 3n);
+              }
+              if (wide === 2 || wide === 3) continue;
+
+              dv.setUint32(gbufAt, utf8At, true);
+              dv.setUint32(gbufAt + 4, 64, true);
+              dv.setUint32(gbufAt + 8, 0, true);
+              let glen = vt.ghostty_render_state_row_cells_get(t.cells, 9, gbufAt) === 0 ? dv.getUint32(gbufAt + 8, true) : 0;
+              if (glen === 1 && m8[utf8At] === 0x20) glen = 0;
+              if (glen > 64) glen = 64;
+
+              m8.fill(0, styleAt, styleAt + 16);
+              vt.ghostty_render_state_row_cells_get(t.cells, 2, styleAt);
+              const sflagsBase = dv.getUint16(styleAt + 12, true) & 0x07ff;
+
+              const cellFg = vt.ghostty_render_state_row_cells_get(t.cells, 6, vtScratch) === 0;
+              const cfR = cellFg ? m8[vtScratch] : 0, cfG = cellFg ? m8[vtScratch + 1] : 0, cfB = cellFg ? m8[vtScratch + 2] : 0;
+              const cellBg = vt.ghostty_render_state_row_cells_get(t.cells, 5, vtScratch) === 0;
+              const cbR = cellBg ? m8[vtScratch] : 0, cbG = cellBg ? m8[vtScratch + 1] : 0, cbB = cellBg ? m8[vtScratch + 2] : 0;
+
+              let cellUl = false, cuR = 0, cuG = 0, cuB = 0;
+              const ulTag = m8[styleAt + 8];
+              if (ulTag === 2) {
+                cuR = m8[styleAt + 9]; cuG = m8[styleAt + 10]; cuB = m8[styleAt + 11];
+                cellUl = true;
+              } else if (ulTag === 1) {
+                if (!havePalette) havePalette = vt.ghostty_render_state_get(t.render, 9, palAt) === 0;
+                if (havePalette) {
+                  const idx = m8[styleAt + 9] * 3;
+                  cuR = m8[palAt + idx]; cuG = m8[palAt + idx + 1]; cuB = m8[palAt + idx + 2];
+                  cellUl = true;
+                }
+              }
+
+              if (glen === 0 && !cellBg && (sflagsBase & (16 | 64 | 128 | 0x0700)) === 0) continue;
+              let sflags = sflagsBase;
+              if (cellFg) sflags |= 2048;
+              if (cellBg) sflags |= 4096;
+              if (cellUl) sflags |= 8192;
+
+              u16(cellX);
+              u8(wide === 1 ? 2 : 1);
+              u8(glen);
+              u16(sflags);
+              if (cellFg) { u8(cfR); u8(cfG); u8(cfB); }
+              if (cellBg) { u8(cbR); u8(cbG); u8(cbB); }
+              if (cellUl) { u8(cuR); u8(cuG); u8(cuB); }
+              if (glen > 0) {
+                need(glen);
+                out.set(m8.subarray(utf8At, utf8At + glen), at);
+                at += glen;
+              }
+              cellCount++;
+            }
+          }
+          out[cellCountAt] = cellCount & 0xff;
+          out[cellCountAt + 1] = (cellCount >>> 8) & 0xff;
+          rowCount++;
+        }
+      }
+    }
+
+    vt.ghostty_render_state_clean(t.render);
+    out[rowCountAt] = rowCount & 0xff;
+    out[rowCountAt + 1] = (rowCount >>> 8) & 0xff;
+    return out.slice(0, at);
+  };
+
+  H.termScroll = (id, kind, value) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    const svAt = vtScratch + 88;
+    const dv = new DataView(vt.memory.buffer);
+    new Uint8Array(vt.memory.buffer).fill(0, svAt, svAt + 24);
+    if (kind === 0) {
+      dv.setInt32(svAt, 2, true);
+      dv.setInt32(svAt + 8, value | 0, true);
+    } else if (kind === 1) {
+      dv.setInt32(svAt, 0, true);
+    } else if (kind === 2) {
+      dv.setInt32(svAt, 1, true);
+    } else if (kind === 3) {
+      dv.setInt32(svAt, 3, true);
+      dv.setUint32(svAt + 8, value > 0 ? value >>> 0 : 0, true);
+    } else {
+      return;
+    }
+    vt.ghostty_terminal_scroll_viewport(t.term, svAt);
+  };
+
+  H.termSelect = (id, kind, x0, y0, x1, y1) => {
+    const t = terms.get(id);
+    if (!t || !vt) return 0;
+    const selAt = vtScratch + 112;
+    if (kind === 0) {
+      t.dragActive = false;
+      vt.ghostty_terminal_set(t.term, 22, 0);
+      return 0;
+    }
+    if (kind === 4) {
+      t.dragActive = false;
+      new Uint8Array(vt.memory.buffer).fill(0, selAt, selAt + 20);
+      return vt.ghostty_terminal_select_all(t.term, selAt) === 0 && vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    vt.ghostty_terminal_get(t.term, 1, vtScratch);
+    const cols = Math.max(1, dv.getUint16(vtScratch, true));
+    vt.ghostty_terminal_get(t.term, 2, vtScratch);
+    const rows = Math.max(1, dv.getUint16(vtScratch, true));
+    const clamp = (v, lim) => (v <= 0 ? 0 : v >= lim ? lim - 1 : v | 0);
+    const cx0 = clamp(x0, cols), cy0 = clamp(y0, rows);
+    const cx1 = clamp(x1, cols), cy1 = clamp(y1, rows);
+
+    const p0At = vtScratch + 40;
+    const p1At = vtScratch + 64;
+    const optAt = vtScratch + 136;
+    m8.fill(0, p0At, p0At + 48);
+    dv.setInt32(p0At, 1, true);
+    dv.setUint16(p0At + 8, cx0, true);
+    dv.setUint32(p0At + 12, cy0, true);
+
+    if (kind === 2 || kind === 3) {
+      t.dragActive = false;
+      m8.fill(0, optAt, optAt + 24);
+      if (vt.ghostty_terminal_grid_ref(t.term, p0At, optAt + 4) !== 0) return 0;
+      dv.setUint32(optAt, kind === 2 ? 20 : 24, true);
+      m8.fill(0, selAt, selAt + 20);
+      const rc = kind === 2
+        ? vt.ghostty_terminal_select_word(t.term, optAt, selAt)
+        : vt.ghostty_terminal_select_line(t.term, optAt, selAt);
+      return rc === 0 && vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+
+    if (kind === 1) {
+      if (!t.dragActive || t.dragX0 !== x0 || t.dragY0 !== y0) {
+        const sbAt = vtScratch + 16;
+        dv.setBigUint64(sbAt + 8, 0n, true);
+        vt.ghostty_terminal_get(t.term, 9, sbAt);
+        const sbOff = Number(dv.getBigUint64(sbAt + 8, true) & 0xffffffffn) >>> 0;
+        t.dragX0 = x0;
+        t.dragY0 = y0;
+        t.dragScreenX0 = cx0;
+        t.dragScreenY0 = sbOff + cy0;
+        t.dragActive = true;
+      }
+      m8.fill(0, p0At, p0At + 48);
+      dv.setInt32(p0At, 2, true);
+      dv.setUint16(p0At + 8, t.dragScreenX0, true);
+      dv.setUint32(p0At + 12, t.dragScreenY0 >>> 0, true);
+      dv.setInt32(p1At, 1, true);
+      dv.setUint16(p1At + 8, cx1, true);
+      dv.setUint32(p1At + 12, cy1, true);
+      m8.fill(0, selAt, selAt + 20);
+      if (vt.ghostty_terminal_grid_ref(t.term, p0At, selAt) !== 0) return 0;
+      if (vt.ghostty_terminal_grid_ref(t.term, p1At, selAt + 8) !== 0) return 0;
+      return vt.ghostty_terminal_set(t.term, 22, selAt) === 0 ? 1 : 0;
+    }
+    return 0;
+  };
+
+  function vtReadRenderText(t, selOnly) {
+    if (vt.ghostty_render_state_update(t.render, t.term) !== 0) return '';
+    let dv = new DataView(vt.memory.buffer);
+    let m8 = new Uint8Array(vt.memory.buffer);
+    dv.setUint32(vtScratch, t.rowIt, true);
+    if (vt.ghostty_render_state_get(t.render, 4, vtScratch) !== 0) return '';
+    const rselAt = vtScratch + 256;
+    const gbufAt = vtScratch + 176;
+    const utf8At = vtScratch + 192;
+    const wideShift = BigInt(vtWideLsb);
+    const lines = [];
+    while (vt.ghostty_render_state_row_iterator_next(t.rowIt)) {
+      dv = new DataView(vt.memory.buffer);
+      m8 = new Uint8Array(vt.memory.buffer);
+      let s0 = 0, s1 = 0xfffe;
+      if (selOnly) {
+        dv.setUint32(rselAt, 8, true);
+        if (vt.ghostty_render_state_row_get(t.rowIt, 4, rselAt) !== 0) continue;
+        s0 = dv.getUint16(rselAt + 4, true);
+        s1 = dv.getUint16(rselAt + 6, true);
+      }
+      dv.setUint32(vtScratch, t.cells, true);
+      if (vt.ghostty_render_state_row_get(t.rowIt, 3, vtScratch) !== 0) continue;
+      let col = 0;
+      let line = '';
+      while (vt.ghostty_render_state_row_cells_next(t.cells)) {
+        const cx = col++;
+        if (cx < s0 || cx > s1) continue;
+        if (vt.ghostty_render_state_row_cells_get(t.cells, 1, vtScratch) === 0) {
+          const wide = Number((dv.getBigUint64(vtScratch, true) >> wideShift) & 3n);
+          if (wide === 2 || wide === 3) continue;
+        }
+        dv.setUint32(gbufAt, utf8At, true);
+        dv.setUint32(gbufAt + 4, 64, true);
+        dv.setUint32(gbufAt + 8, 0, true);
+        const glen = vt.ghostty_render_state_row_cells_get(t.cells, 9, gbufAt) === 0 ? dv.getUint32(gbufAt + 8, true) : 0;
+        line += glen > 0 ? utf8Decode(m8.subarray(utf8At, utf8At + Math.min(glen, 64))) : ' ';
+      }
+      lines.push(line.replace(/ +$/, ''));
+    }
+    while (!selOnly && lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    return lines.join('\n');
+  }
+
+  H.termText = (id, sel) => {
+    const t = terms.get(id);
+    if (!t || !vt) return '';
+    const selAt = vtScratch + 112;
+    if (sel !== 0 && vt.ghostty_terminal_get(t.term, 31, selAt) !== 0) return '';
+    // Use formatter for selections if compiled into Wasm; for sel===0 (current viewport) or prebuilt wasm32 without
+    // formatter, read viewport rows cleanly from render state so scrollback history is not dumped into "Copy Screen".
+    if (sel !== 0 && vt.ghostty_formatter_terminal_new && vt.ghostty_formatter_terminal_new(0, vtScratch, t.term) === 0) {
+      let dv = new DataView(vt.memory.buffer);
+      let m8 = new Uint8Array(vt.memory.buffer);
+      const fmt = dv.getUint32(vtScratch, true);
+      m8[vtScratch] = 1;
+      vt.ghostty_formatter_set(fmt, 3, vtScratch);
+      vt.ghostty_formatter_set(fmt, 2, vtScratch);
+      vt.ghostty_formatter_set(fmt, 4, selAt);
+      let s = '';
+      if (vt.ghostty_formatter_format_alloc(fmt, 0, vtScratch, vtScratch + 4) === 0) {
+        dv = new DataView(vt.memory.buffer);
+        m8 = new Uint8Array(vt.memory.buffer);
+        const ptr = dv.getUint32(vtScratch, true);
+        const len = dv.getUint32(vtScratch + 4, true);
+        if (ptr && len) s = utf8Decode(m8.subarray(ptr, ptr + len));
+        vt.ghostty_free(0, ptr, len);
+      }
+      vt.ghostty_formatter_free(fmt);
+      return s;
+    }
+    return vtReadRenderText(t, sel !== 0);
+  };
+
+  H.termMouse = (id, action, button, mods, x, y, w, h, cw, ch) => {
+    const t = terms.get(id);
+    if (!t || !vt || !t.mouse || !t.mouseEv) return new Uint8Array(0);
+    if (action !== 2 || !t.mouseSynced) {
+      vt.ghostty_mouse_encoder_set_from_terminal(t.mouse, t.term);
+      t.mouseSynced = true;
+    }
+    if (button >= 1 && button <= 3) {
+      if (action === 0) t.mouseButtons |= 1 << button;
+      else if (action === 1) t.mouseButtons &= ~(1 << button);
+    }
+    const dv = new DataView(vt.memory.buffer);
+    const m8 = new Uint8Array(vt.memory.buffer);
+    m8[vtScratch] = t.mouseButtons !== 0 ? 1 : 0;
+    vt.ghostty_mouse_encoder_set(t.mouse, 4, vtScratch);
+
+    const szAt = vtScratch + 264;
+    m8.fill(0, szAt, szAt + 36);
+    dv.setUint32(szAt, 36, true);
+    dv.setUint32(szAt + 4, w > 0 ? w : 1, true);
+    dv.setUint32(szAt + 8, h > 0 ? h : 1, true);
+    dv.setUint32(szAt + 12, cw > 0 ? cw : 1, true);
+    dv.setUint32(szAt + 16, ch > 0 ? ch : 1, true);
+    vt.ghostty_mouse_encoder_set(t.mouse, 3, szAt);
+
+    vt.ghostty_mouse_event_set_action(t.mouseEv, action === 1 ? 1 : action === 2 ? 2 : 0);
+    if (button >= 1 && button <= 11) vt.ghostty_mouse_event_set_button(t.mouseEv, button);
+    else vt.ghostty_mouse_event_clear_button(t.mouseEv);
+    vt.ghostty_mouse_event_set_mods(t.mouseEv, mods & 0x0f);
+    const posAt = vtScratch + 432;
+    dv.setFloat32(posAt, x < 0 ? 0 : x, true);
+    dv.setFloat32(posAt + 4, y < 0 ? 0 : y, true);
+    vt.ghostty_mouse_event_set_position(t.mouseEv, posAt);
+
+    const outAt = vtScratch + 304;
+    dv.setUint32(vtScratch, 0, true);
+    if (vt.ghostty_mouse_encoder_encode(t.mouse, t.mouseEv, outAt, 128, vtScratch) !== 0) return new Uint8Array(0);
+    const written = new DataView(vt.memory.buffer).getUint32(vtScratch, true);
+    if (!written) return new Uint8Array(0);
+    return new Uint8Array(vt.memory.buffer).slice(outAt, outAt + written);
+  };
+
+  H.termClose = (id) => {
+    const t = terms.get(id);
+    if (!t || !vt) return;
+    if (t.mouseEv) vt.ghostty_mouse_event_free(t.mouseEv);
+    if (t.mouse) vt.ghostty_mouse_encoder_free(t.mouse);
+    vt.ghostty_render_state_row_cells_free(t.cells);
+    vt.ghostty_render_state_row_iterator_free(t.rowIt);
+    vt.ghostty_render_state_free(t.render);
+    vt.ghostty_terminal_free(t.term);
+    terms.delete(id);
+  };
+
   H.run = (title, frame, pointer, wheel, key, text) => {
     document.title = title;
     canvas = document.getElementById('c');
@@ -2752,8 +3463,8 @@
     cb = { frame, pointer, wheel, key, text };
     window.__mb = cb;
     resize();
-    // (the app's first frame once the host knows what it decodes: h264Asked)
-    h264Asked.then(() => {
+    // (the app's first frame once the host knows what it decodes and whether its terminal Wasm is beside it)
+    (termAsked ? Promise.all([h264Asked, termAsked]) : h264Asked).then(() => {
       known = true;
       H.requestFrame();
     });

@@ -32,7 +32,7 @@ import { digest } from "../digest.ts";
 import { logged } from "../log-lines.ts";
 import { type Channel, Channels } from "../channels/channels.ts";
 import { ENTRIES, LETTERS, PAGE, TRANSCRIPT, TRANSCRIPT_PAGE, entriesOf, heldIn, lettersOf, transcriptOf } from "./channel-kinds.ts";
-import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
+import { type HistoryRead, type Link, Links, type LiveView, MEMORY, RECONNECT_MAX_MS, PRESETS, PACE, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import { concat, readAll, replyHeader, type StationWire } from "./wire.ts";
 import { SseParser } from "../sse.ts";
 import * as logins from "./machine-logins.ts";
@@ -601,6 +601,33 @@ export class StationsSync {
       link.memory.set(key, held);
       this.onChange(address, "log", key);
     });
+  }
+
+  /// Its accounts' last hours (GET /profiles/pace, the `profilePace` topic: what the Profile overview draws), read as
+  /// the overview shows them, and again while it does as the station tells its allowances read (`overview`) or its
+  /// calls counted (`usage`); what was read last shows meanwhile. A station from before (404) is as one with no hours.
+  paceShown(address: string): void {
+    this.#enqueue(address, "profilePace", Priority.shown, this.#pace(address));
+  }
+
+  #pace(address: string): Effect.Effect<void, CoreError> {
+    const key = topicKey({ topic: "profilePace", station: address });
+    return Effect.gen({ self: this }, function* () {
+      const link = this.#links.get(address);
+      if (!link || !this.reachable(address)) return;
+      const answer = yield* Effect.result(this.requests.call(link.addr, "GET", "/profiles/pace", null, { quiet: true }));
+      const said = answer._tag === "Success" ? answer.success : answer.failure.status === 404 ? { profiles: {} } : undefined;
+      if (said === undefined) return;
+      link.errors.delete(key);
+      if (equal(link.memory.get(PACE), said)) return;
+      link.memory.set(PACE, said);
+      this.onChange(address, "log", key);
+    });
+  }
+
+  /// The accounts' hours as the station said them last; undefined while it has not.
+  pace(address: string): unknown {
+    return this.#links.get(address)?.memory.get(PACE);
   }
 
   #presets(address: string): Effect.Effect<void, CoreError> {
@@ -1313,7 +1340,10 @@ export class StationsSync {
         return this.#usageRead(address, topic, `/usage?from=${part.from}&tz=${offset}`, put, ctx, attempt);
       }
       const range = usageHistoryRange(now, offset);
-      const path = `/usage?from=${from}&tz=${offset}&history=1&historyFrom=${range.from}&historyTo=${range.to}`;
+      // (the tasks other stations' chats ran here only of the days the card counts them over, 7, and one more for the
+      // clock's day; a station that gathers them says each day's in one: `remoteFrom`, which one from before ignores)
+      const remoteFrom = Math.max(from, now - 8 * 86_400_000);
+      const path = `/usage?from=${from}&tz=${offset}&history=1&historyFrom=${range.from}&historyTo=${range.to}&remoteFrom=${remoteFrom}`;
       return this.#usageRead(address, topic, `${path}&allowPartial=1`, undefined, ctx, attempt);
     });
   }
@@ -1602,6 +1632,7 @@ export class StationsSync {
     if (data === undefined) return;
     const core = this.#core;
     if (SEARCHED.has(name)) this.#searchStale(address);
+    if ((name === "overview" || name === "usage") && core.store.inUse({ topic: "profilePace", station: address })) this.paceShown(address);
     // An archive and restore can be coalesced: there may be no second removal in the shared-row stream.
     if (name === "session" || name === "session-removed") {
       const session = str(get(data, "key"));

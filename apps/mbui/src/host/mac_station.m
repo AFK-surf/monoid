@@ -3,6 +3,9 @@
 #import <Cocoa/Cocoa.h>
 #include <pwd.h>
 #include <signal.h>
+#include <libproc.h>
+#include <sys/socket.h>
+#include <sys/un.h>
 #import "apple.h"
 // (mbui's, beside its host: moon compiles this app's stub with no include path of mbui's)
 #include "../../../../libs/mbui/src/host/post_api.h"
@@ -55,18 +58,34 @@ static pid_t local_pid(NSString *data, NSString **version) {
   if ([s[@"version"] isKindOfClass:NSString.class]) *version = s[@"version"];
   return [pid intValue];
 }
+// Where its data is when it was moved (bin/stillfail's move: ~/.stillfail a link to it), nil where it is not a link.
+static NSString *local_moved_to(NSString *data) {
+  return [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:data error:nil];
+}
+// Whether its release's command moves its data (bin/stillfail's `move`, a release from before has none).
+static BOOL local_moves(NSString *data) {
+  NSString *command = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"app/bin/stillfail"] encoding:NSUTF8StringEncoding error:nil];
+  return [command containsString:@"stillfail move <folder>"];
+}
 static moonbit_string_t sf_station_said(void) {
   // An isolated end-to-end run must not inspect the person's installed station.
   if (getenv("MBUI_ISOLATED_STATION")) return mb_string_from_ns(@"");
   NSString *data = local_data();
   NSString *service = local_service();
-  BOOL there = [NSFileManager.defaultManager fileExistsAtPath:data];
+  NSString *moved = local_moved_to(data);
+  // (moved to a disk not connected: its link is there, what it names not)
+  BOOL there = [NSFileManager.defaultManager fileExistsAtPath:data] || moved != nil;
   // none here, and nothing being done or gone wrong about it: ""; one being installed is said before it is there
   if (!there && !service && !local_doing && !local_failed) return mb_string_from_ns(@"");
   NSString *version = nil;
   pid_t pid = local_pid(data, &version);
   NSMutableDictionary *o = [NSMutableDictionary dictionary];
   if (there || service) o[@"data"] = [data stringByAbbreviatingWithTildeInPath];
+  if (moved) {
+    o[@"at"] = [moved stringByAbbreviatingWithTildeInPath];
+    if (![NSFileManager.defaultManager fileExistsAtPath:data]) o[@"away"] = @YES;
+  }
+  if (local_moves(data)) o[@"moves"] = @YES;
   o[@"runner"] = pid == 0 ? @"none" : service ? @"service" : @"other";
   if (!version && service) {
     NSString *build = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"app/BUILD"] encoding:NSUTF8StringEncoding error:nil];
@@ -77,6 +96,8 @@ static moonbit_string_t sf_station_said(void) {
   // a release of its own (<data>/app: the installer's); a station still.fail's desktop app ran from its bundle has none
   if ([NSFileManager.defaultManager fileExistsAtPath:[data stringByAppendingPathComponent:@"app"]]) o[@"installed"] = @YES;
   if (service) o[@"service"] = @{ @"kind" : @"launchd", @"name" : service };
+  // taken away here (stillfail uninstall, or 卸载本机 Station), its data kept: never brought back unasked
+  if ([NSFileManager.defaultManager fileExistsAtPath:[data stringByAppendingPathComponent:@"uninstalled"]]) o[@"uninstalled"] = @YES;
   NSDictionary *c = local_json([data stringByAppendingPathComponent:@"mesh/cloud.json"]);
   if ([c[@"workspace"] isKindOfClass:NSString.class] && [c[@"workspace"] length]) {
     NSMutableDictionary *w = [NSMutableDictionary dictionaryWithObject:c[@"workspace"] forKey:@"id"];
@@ -249,6 +270,129 @@ static NSString *local_install(NSString *json) {
   return last.length ? last : [NSString stringWithFormat:@"install.sh %d", t.terminationStatus];
 }
 
+// 更改存储位置: its data moved into `folder` by its release's own command (bin/stillfail's `move`), as the person would
+// run it (their shell's PATH, no STILLFAIL_DATA of the app's), what it says of the copy shown as it goes (its "NN%"
+// lines: local_percent). nil when it did, else "move.<its exit>" (2 to 8: bin/stillfail says each), or "move:" and the
+// last it said.
+static NSString *local_move(NSString *data, NSString *folder) {
+  NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
+  [env addEntriesFromDictionary:login_env()];
+  [env removeObjectForKey:@"STILLFAIL_DATA"];
+  NSTask *t = [NSTask new];
+  t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+  t.arguments = @[ [data stringByAppendingPathComponent:@"app/bin/stillfail"], @"move", folder ];
+  t.environment = env;
+  t.standardInput = [NSFileHandle fileHandleWithNullDevice];
+  NSPipe *out = [NSPipe pipe];
+  t.standardOutput = out;
+  t.standardError = out;
+  NSError *e = nil;
+  if (![t launchAndReturnError:&e]) return [@"move:" stringByAppendingString:e.localizedDescription ?: @"sh"];
+  NSMutableData *said = [NSMutableData data];
+  NSUInteger from = 0;
+  for (;;) {
+    NSData *d = [out.fileHandleForReading availableData];
+    if (d.length == 0) break;
+    [said appendData:d];
+    const uint8_t *b = (const uint8_t *)said.bytes;
+    for (NSUInteger i = from; i < said.length; i++) {
+      if (b[i] != '\n') continue;
+      NSString *line = [[NSString alloc] initWithData:[said subdataWithRange:NSMakeRange(from, i - from)] encoding:NSUTF8StringEncoding];
+      from = i + 1;
+      if ([line hasSuffix:@"%"] && line.intValue >= 0 && line.length <= 4) {
+        int percent = line.intValue;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          local_percent = percent;
+          station_changed();
+        });
+      }
+    }
+  }
+  [t waitUntilExit];
+  NSString *s = [[NSString alloc] initWithData:said encoding:NSUTF8StringEncoding] ?: @"";
+  fprintf(stdout, "mac: the station's move exited %d\n%s\n", t.terminationStatus, s.UTF8String);
+  fflush(stdout);
+  int code = t.terminationStatus;
+  if (code == 0) return nil;
+  if (code >= 2 && code <= 8) return [NSString stringWithFormat:@"move.%d", code];
+  NSString *last = @"";
+  for (NSString *line in [s componentsSeparatedByString:@"\n"]) {
+    NSString *l = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (l.length) last = l;
+  }
+  return [@"move:" stringByAppendingString:last.length ? last : [NSString stringWithFormat:@"%d", code]];
+}
+
+// still.fail Helper (station/native/helper: the macOS app the station starts) told to quit, on its socket with its token
+// (main.swift's `quit`): what answers in 3 s, or nothing.
+static void local_helper_quit(NSString *data) {
+  NSString *helper = [data stringByAppendingPathComponent:@"helper"];
+  NSString *token = [NSString stringWithContentsOfFile:[helper stringByAppendingPathComponent:@"token"] encoding:NSUTF8StringEncoding error:nil];
+  token = [token stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+  const char *path = [helper stringByAppendingPathComponent:@"helper.sock"].fileSystemRepresentation;
+  struct sockaddr_un at = {.sun_family = AF_UNIX};
+  if (!token.length || strlen(path) >= sizeof at.sun_path) return;
+  strlcpy(at.sun_path, path, sizeof at.sun_path);
+  int fd = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (fd < 0) return;
+  struct timeval most = {3, 0};
+  setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &most, sizeof most);
+  setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &most, sizeof most);
+  int one = 1;
+  setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
+  if (connect(fd, (struct sockaddr *)&at, sizeof at) == 0) {
+    NSMutableData *line = [[NSJSONSerialization dataWithJSONObject:@{@"token" : token, @"op" : @"quit"} options:0 error:nil] mutableCopy];
+    [line appendBytes:"\n" length:1];
+    if (write(fd, line.bytes, line.length) == (ssize_t)line.length) {
+      char answer[256];
+      (void)read(fd, answer, sizeof answer);
+    }
+  }
+  close(fd);
+}
+
+// 卸载本机 Station (bin/stillfail's uninstall, the same here): its launchd service gone (booted out, its disabling
+// cleared, its plist removed), what still runs of it stopped, its Helper quit, ~/.local/bin's link to its release and
+// the release removed, its data kept and said taken away (`uninstalled`). Done with no release there too (a service
+// left of one removed by hand). nil when it did, else why not.
+static NSString *local_uninstall(NSString *data) {
+  NSFileManager *fm = NSFileManager.defaultManager;
+  NSString *domain = [NSString stringWithFormat:@"gui/%d", getuid()];
+  NSString *own = local_env("MBUI_STATION_LABEL", @"fail.still.station");
+  NSArray *labels = [own isEqualToString:@"fail.still.station"] ? @[ own, @"org.3720.ember.station" ] : @[ own ];
+  for (NSString *label in labels) {
+    NSString *plist = [NSString stringWithFormat:@"%@/Library/LaunchAgents/%@.plist", NSHomeDirectory(), label];
+    if (![fm fileExistsAtPath:plist]) continue;
+    NSString *target = [NSString stringWithFormat:@"%@/%@", domain, label];
+    local_launchctl(@[ @"bootout", target ]);
+    // (bootout returns before the service is gone)
+    for (int i = 0; i < 5 && !local_launchctl(@[ @"print", target ]); i++) sleep(1);
+    local_launchctl(@[ @"enable", target ]);
+    NSError *e = nil;
+    if (![fm removeItemAtPath:plist error:&e]) return e.localizedDescription ?: @"plist";
+  }
+  NSString *version = nil;
+  pid_t pid = local_pid(data, &version);
+  // (by its pid as it said it, while that is still a station's launcher: a pid is reused once its process is gone)
+  char name[64] = "";
+  if (pid > 0) proc_name(pid, name, sizeof name);
+  if (pid > 0 && !strncmp(name, "stillfail", 9) && kill(pid, SIGTERM) == 0) {
+    for (int i = 0; i < 50 && kill(pid, 0) == 0; i++) usleep(100000);
+  }
+  local_helper_quit(data);
+  NSString *link = [NSHomeDirectory() stringByAppendingPathComponent:[@".local/bin" stringByAppendingPathComponent:local_env("MBUI_STATION_ID", @"stillfail")]];
+  NSString *to = [fm destinationOfSymbolicLinkAtPath:link error:nil];
+  // (the release's own path and a slash: stringByAppendingPathComponent takes a trailing one off, and app.old/… is not it)
+  if ([to hasPrefix:[[data stringByAppendingPathComponent:@"app"] stringByAppendingString:@"/"]]) [fm removeItemAtPath:link error:nil];
+  for (NSString *part in @[ @"app", @"app.old", @"app.failed", @"node", @"helper", @"run", @"stillfail.pid" ]) {
+    NSString *path = [data stringByAppendingPathComponent:part];
+    NSError *e = nil;
+    if ([fm fileExistsAtPath:path] && ![fm removeItemAtPath:path error:&e]) return e.localizedDescription ?: part;
+  }
+  if ([fm fileExistsAtPath:data]) [fm createFileAtPath:[data stringByAppendingPathComponent:@"uninstalled"] contents:[NSData data] attributes:nil];
+  return nil;
+}
+
 static void sf_station_act(moonbit_string_t action) {
   if (getenv("MBUI_ISOLATED_STATION")) return;
   NSString *a = mb_ns_from_string(action);
@@ -286,7 +430,40 @@ static void sf_station_act(moonbit_string_t action) {
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:data]];
     return;
   }
-  if (![@[ @"start", @"stop", @"restart" ] containsObject:a]) return;
+  // 更改存储位置 (asked first on its page): a folder chosen (the system's panel, not over the window: the app goes on
+  // drawing), then its data moved there off the main thread (local_move)
+  if ([a isEqualToString:@"move"]) {
+    if (local_doing) {
+      local_failed = @"busy";
+      station_changed();
+      return;
+    }
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.canCreateDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    [panel beginWithCompletionHandler:^(NSModalResponse r) {
+      NSURL *picked = panel.URLs.firstObject;
+      if (r != NSModalResponseOK || !picked || local_doing) return;
+      local_doing = @"move";
+      local_failed = nil;
+      local_percent = -1;
+      local_said = nil;
+      station_changed();
+      NSString *folder = picked.path;
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *failed = local_move(data, folder);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          local_doing = nil;
+          local_failed = failed;
+          station_changed();
+        });
+      });
+    }];
+    return;
+  }
+  if (![@[ @"start", @"stop", @"restart", @"uninstall" ] containsObject:a]) return;
   if (local_doing) {
     local_failed = @"busy";
     station_changed();
@@ -300,15 +477,26 @@ static void sf_station_act(moonbit_string_t action) {
     NSString *service = local_service();
     NSString *version = nil;
     pid_t pid = local_pid(data, &version);
-    if (service) {
+    if ([a isEqualToString:@"uninstall"]) {
+      failed = local_uninstall(data);
+    } else if (service) {
       NSString *domain = [NSString stringWithFormat:@"gui/%d", getuid()];
       NSString *target = [NSString stringWithFormat:@"%@/%@", domain, service];
       if ([a isEqualToString:@"stop"]) {
+        // for good: disabled, launchd starts it at no next login (RunAtLoad) until it is started from here again
+        local_launchctl(@[ @"disable", target ]);
         failed = local_launchctl(@[ @"bootout", target ]);
-      } else if (local_launchctl([a isEqualToString:@"restart"] ? @[ @"kickstart", @"-k", target ] : @[ @"kickstart", target ])) {
-        // not loaded (stopped here, or never since login): loaded, which starts it (RunAtLoad)
-        NSString *plist = [NSString stringWithFormat:@"%@/Library/LaunchAgents/%@.plist", NSHomeDirectory(), service];
-        failed = local_launchctl(@[ @"bootstrap", domain, plist ]);
+        // (not loaded, nothing running: stopped already)
+        if (failed && pid == 0) failed = nil;
+      } else {
+        // started again: no longer taken away, and enabled (stopped here, it was disabled)
+        [NSFileManager.defaultManager removeItemAtPath:[data stringByAppendingPathComponent:@"uninstalled"] error:nil];
+        local_launchctl(@[ @"enable", target ]);
+        if (local_launchctl([a isEqualToString:@"restart"] ? @[ @"kickstart", @"-k", target ] : @[ @"kickstart", target ])) {
+          // not loaded (stopped here, or never since login): loaded, which starts it (RunAtLoad)
+          NSString *plist = [NSString stringWithFormat:@"%@/Library/LaunchAgents/%@.plist", NSHomeDirectory(), service];
+          failed = local_launchctl(@[ @"bootstrap", domain, plist ]);
+        }
       }
     } else if (pid != 0) {
       // started by hand (`stillfail start`): only stopped from here, it has nothing to start it again

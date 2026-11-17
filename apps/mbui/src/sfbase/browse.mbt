@@ -2,7 +2,7 @@
 // topic's BrowseView): the order its entries go in and whether hidden ones show (the device's, prefs `driveViews`),
 // each folder the place shows by its names in that order, what is chosen there, a tree's folders open, the columns'
 // widths dragged, the keys that act now. The phone's drive pages read the order from it; the desktop's files' page all
-// of it (src/sfdesk/browse.mbt). And the stations with a drive (`stations {scope, drive: true, here?}`).
+// of it (src/sfpages/files_browse.mbt). And the stations with a drive (`stations {scope, drive: true, here?}`).
 
 ///|
 /// How a folder's entries are shown (Arrangement): ordered by `by` (name, time, size or kind), the other way (`down`),
@@ -33,6 +33,7 @@ pub fn chosen_none() -> Chosen {
 
 ///|
 /// The `driveBrowse` topic's value (BrowseView).
+#derive(Eq)
 pub(all) struct BrowseView {
   arrangement : Arrangement
   folders : Map[String, Array[String]]
@@ -148,7 +149,7 @@ pub fn browse_where(
 ///|
 /// The place's topic as it stands.
 pub fn browse_topic(src : Source, where_ : Map[String, Json]) -> BrowseView? {
-  match browse_read.read(src, where_).0 {
+  match browse_read.value(src, where_) {
     Some(v) => v
     None => None
   }
@@ -206,12 +207,27 @@ pub fn dv_arrange(src : Source, by? : String, down? : Bool, hidden? : Bool) -> U
 ///|
 /// A folder's entries as the phone's pages show them: in the device's order, hidden ones as it says (the core's, as a
 /// list of the phone's own place shows it); as the station lists them while the core has not said it (what is there
-/// shown at once, as a page shows what it holds); None only where the core has the place but not the folder.
+/// shown at once, as a page shows what it holds).
 pub fn dv_shown(src : Source, station : String, root : String, path : String, entries : Array[DvEntry]) -> Array[DvEntry]? {
   let v = browse_topic(src, browse_where("page", "phone", "list", station, root, path))
-  match v {
-    Some(b) => dv_in_order_held(station + "|" + root + "|" + path, b.folders.get(path), entries)
-    None => Some(entries)
+  dv_shown_of(station + "|" + root + "|" + path, v.map(fn(b) { b.folders.get(path) }), entries)
+}
+
+///|
+/// dv_shown's, of what the core said of the place (`said`: None, the place not said yet; Some(None), the place said but
+/// not this folder's order in it yet): the folder `key`'s entries as the station lists them till the place is said;
+/// said but its folder not yet (the core's two topics, the place and the folder's entries, each its own message, the
+/// place's first value naming no order of this folder), as the folder was last shown, not none for a moment between
+/// two lists of the same entries (all its rows gone and come again, 2026-11-17: a row tapped as it came back was not
+/// there to take it); in its order once said (dv_in_order_held).
+fn dv_shown_of(key : String, said : Array[String]??, entries : Array[DvEntry]) -> Array[DvEntry]? {
+  match said {
+    None => {
+      dv_orders_held[key] = entries
+      Some(entries)
+    }
+    Some(None) => Some(dv_orders_held.get(key).unwrap_or(entries))
+    Some(names) => dv_in_order_held(key, names, entries)
   }
 }
 

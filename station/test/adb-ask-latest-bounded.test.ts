@@ -5,7 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { PhoneGrants } from "../src/adb/grants.ts";
 import { CcIndexBuilder } from "../src/read/cc-index-builder.ts";
-import { prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
+import { prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a phone request waits for an old session's latest chat without scanning its memberships", async () => {

@@ -3,7 +3,7 @@
 // no vault, so a rig (rig/main.ts), which keeps none, runs them too. The secret comes with each command over the
 // station transport and is in no file here; the command runs in the directory its session's tasks share on this
 // machine (jobs/remote.ts `work`), answered at once and ended by asking that station back (`vault.done`).
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { log } from "../ops/log.ts";
 import type { Json } from "../store/store.ts";
 import { hold } from "../updates/holds.ts";
@@ -19,9 +19,9 @@ export const RUN_MS = 10 * 60_000;
 export const CAPTURE_MS = 2 * 60_000;
 
 /// `dir`/`under`, made if need be.
-function joinUnder(dir: string, under: string): string {
+async function joinUnder(dir: string, under: string): Promise<string> {
   const at = under === "" ? dir : `${dir}/${under}`;
-  mkdirSync(at, { recursive: true });
+  await mkdir(at, { recursive: true });
   return at;
 }
 
@@ -69,7 +69,7 @@ export class Incoming {
     if (under.startsWith("/") || under.split(/[\\/]/).includes("..")) throw new Error("under is a path inside the session's directory");
     if (!this.#d.workOf || !this.#d.ask) throw new Error("this station runs no commands for others");
     const ask = this.#d.ask;
-    const cwd = joinUnder(this.#d.workOf(ws, peer, session), under);
+    const cwd = await joinUnder(this.#d.workOf(ws, peer, session), under);
     const tell = (result: Json) =>
       ask(peer, { method: "vault.done", workspace: ws, id, result }).catch((e) => log.warn("vault", "a command's end not told to its station", { error: (e as Error).message }));
     // The station does not update itself meanwhile: the proxy or ssh-agent the command uses is this process's.

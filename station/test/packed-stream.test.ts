@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { constants, zstdCompressSync } from "node:zlib";
-import { seekTable, segmentsFrom } from "../src/read/packed.ts";
+import { seekTable, segmentsFrom } from "./reference/packed.ts";
 import { restoreFile } from "../src/sessions/archive.ts";
 
 test("a search can stop inside an older single-frame archive without reading and expanding the whole frame", async () => {

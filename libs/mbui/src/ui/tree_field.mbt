@@ -17,12 +17,14 @@ priv struct TreeField {
   /// its words' size, as said (followed: its paint and its measure read it)
   font_size : () -> Double
   line : Double
-  max_lines : Int
+  /// how many lines it shows at most, as it is now (followed: its layout reads it; `max_lines_by`)
+  max_lines : () -> Int
   /// what it says it is while empty, as it is now (followed: its paint and what it says read it)
   hint : () -> String
   shorter : Array[String]
   trim : Bool
-  submitted : (String) -> Unit
+  /// what is told its words as they are given up (Enter); none: that Enter presses its layer's default (View::default_press)
+  submitted : ((String) -> Unit)?
   pasted : (String) -> Unit
   /// what is told files pasted into it (⌘V with files or a picture on the clipboard), where it takes them
   files : ((Array[(String, Bytes)]) -> Unit)?
@@ -70,7 +72,11 @@ let tree_fields_rev : Ref[Int] = Ref(0)
 fn view_words_found(d : @view.Drawn) -> String {
   match tree_fields.get(d.id) {
     Some(tf) => (tf.hint)()
-    None => view_words_set(d.words, d.words_look, d.words_breaks)
+    None =>
+      match tree_terminals.get(d.id) {
+        Some(tt) => tt.visible_text()
+        None => view_words_set(d.words, d.words_look, d.words_breaks)
+      }
   }
 }
 
@@ -81,10 +87,16 @@ fn view_words_found(d : @view.Drawn) -> String {
 /// it; `files`: what it is told files pasted into it, where it takes them, as Ctx::editor's `files` and
 /// Ctx::field_files), as tall as
 /// its words lay out between `min_lines` (one unless said) and `max_lines` (Field::laid), read out as a field of its words. `submitted`: what
-/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment; `pasted`, a
+/// is told its words as they are given up (Enter, where it gives them up), once, at that key's moment (none said:
+/// that Enter presses the default of the layer it is in, View::default_press); `pasted`, a
 /// paste of `paste_limit` characters or more, not put in, once, at that paste's; `edited`: its words as the person's
 /// edit changes them (a key, the input method's words, a paste, an undo: Ctx::editor's `on_change`), once, at that
-/// edit's moment, never as the app puts words in it (Field::set, Field::follow). `placeholder_by`: its placeholder as
+/// edit's moment, never as the app puts words in it (Field::set, Field::follow); `edit`: each edit of its words or its
+/// selection by the person, what it was and what it is (Ctx::editor's `on_edit`), at that edit's moment.
+/// `command_sends`: where Enter is a new line, ⌘Enter (Ctrl+Enter elsewhere) gives its words up (Ctx::editor's).
+/// `max_lines_by`: how many lines it shows at most as it is now, followed (in place of `max_lines`: a share of the
+/// window's height). `paste_limit_by`: from how many characters a paste is given up as it is now, followed (in place of
+/// `paste_limit`: a bound an answer says later, none while what it goes to cannot take one). `placeholder_by`: its placeholder as
 /// it is now, followed (in place of `placeholder`). `label`: what a screen reader calls it (none: its
 /// placeholder). The node made.
 pub fn field(
@@ -99,6 +111,7 @@ pub fn field(
   placeholder_color? : Int64 = 0x8E8E93FFL,
   caret_color? : Int64 = 0x0A84FFFFL,
   enter_sends? : Bool,
+  command_sends? : Bool = false,
   shorter? : Array[String] = no_words,
   trim? : Bool = false,
   leaves? : Array[Int] = [],
@@ -107,9 +120,12 @@ pub fn field(
   secret? : Bool = false,
   words? : Bool = false,
   look? : (String) -> (String, Array[(Int, Int, Int64)]),
-  submitted? : (String) -> Unit = fn(_) {  },
+  submitted? : (String) -> Unit,
   pasted? : (String) -> Unit = fn(_) {  },
   edited? : (String) -> Unit,
+  edit? : (FieldEdit) -> Unit,
+  max_lines_by? : () -> Int,
+  paste_limit_by? : () -> Int,
   files? : (Array[(String, Bytes)]) -> Unit,
   size_by? : () -> Double,
   colors_by? : () -> (Int64, Int64, Int64),
@@ -127,6 +143,10 @@ pub fn field(
   let hint = match placeholder_by {
     Some(f) => f
     None => fn() { placeholder }
+  }
+  let most = match max_lines_by {
+    Some(f) => f
+    None => fn() { max_lines }
   }
   parent.box(fn(f) {
     let id = f.id()
@@ -159,10 +179,15 @@ pub fn field(
         })
       None => ()
     }
-    st.enter_sends = enter_sends.unwrap_or(enter_sends_by(max_lines, ime_action))
+    st.enter_sends = enter_sends.unwrap_or(enter_sends_by(@signals.untracked(most), ime_action))
+    st.command_sends = command_sends
     st.leaves = leaves
     st.ime_action = ime_action
-    st.limit = paste_limit
+    match paste_limit_by {
+      // (said again as it changes: the next paste given up by it)
+      Some(by) => f.reacts(by, fn(n) { st.limit = n })
+      None => st.limit = paste_limit
+    }
     st.secret = secret
     st.words = words
     st.look = look
@@ -170,12 +195,13 @@ pub fn field(
     // (the person's edit of its words told as it is made, EditorState::typed_told: what an old view's editor is told
     // as `on_change`)
     st.on_change = edited
+    st.on_edit = edit
     tree_fields_rev.val = tree_fields_rev.val + 1
     tree_fields[id] = {
       st,
       font_size: size,
       line,
-      max_lines,
+      max_lines: most,
       hint,
       shorter,
       trim,
@@ -201,7 +227,7 @@ pub fn field(
     g().editors[tree_said_id(id)] = st
     // (more lines than it shows: its words scroll in it as an old view's field's do, the wheel, a finger (Ctx::editor's
     // scroll_state), how far the layout's (Ctx::lay_out_field))
-    if max_lines > 1 {
+    if max_lines_by is Some(_) || max_lines > 1 {
       let sw = g().scroll_state(tree_said_id(id), true)
       sw.field = true
     }
@@ -211,7 +237,7 @@ pub fn field(
     // where only its look's colours change, drawn again all the same: View::measured)
     .measured(
       By(fn() {
-        let laid = field.laid(font_size=size(), line~, min_lines~, max_lines~, trim~)
+        let laid = field.laid(font_size=size(), line~, min_lines~, max_lines=most(), trim~)
         // (its words as written followed as well as with what is composed: what is composed put in as written shows
         // the same, its look's not, EditorState::look_shown)
         field.text() |> ignore
@@ -278,6 +304,9 @@ pub fn Field::let_go(self : Field) -> Unit {
 /// editor it was given), followed as Ctx::has_focus is: what reads it told as the focus comes to that editor or leaves
 /// it. Held by none: false (a focus asked for it is the Field's own till one holds it, Field::focus).
 pub fn Field::focused(self : Field) -> Bool {
+  // (followed whoever holds it as it is read, or none yet: what read it before its field of the tree was made, which
+  // the focus then comes to, told as it does, not left reading none)
+  hand.focus_id.get() |> ignore
   let id = match self.st.tree_node {
     Some(n) if tree_fields.contains(n) => tree_said_of.get(n).unwrap_or(0)
     // (an old view's editor by the id it was built at, while that id's editor is this Field's still)
@@ -642,12 +671,12 @@ fn tree_field_let_go(id : @view.NodeId, x : Double, y : Double, up : Bool) -> Un
 /// reader's words, a paste come): what its paint reads (Ctx::paint_tree_field), so the frame after paints it again,
 /// whatever else that frame does.
 // kept across runs: only counted on
-let tree_fields_drawn : @signals.Signal[Int] = @signals.signal(0)
+let tree_fields_drawn : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
 
 ///|
 /// A field of the tree's changed by what is its own: painted again from the next frame (tree_fields_drawn).
 fn tree_field_redraw() -> Unit {
-  tree_fields_drawn.set(tree_fields_drawn.untracked() + 1)
+  tree_fields_drawn.val.set(tree_fields_drawn.val.untracked() + 1)
   h_frame_owed()
 }
 
@@ -916,7 +945,15 @@ fn tree_field_told(tf : TreeField) -> Unit {
   match tf.st.submitted {
     Some(words) => {
       tf.st.submitted = None
-      (tf.submitted)(words)
+      match tf.submitted {
+        Some(f) => f(words)
+        // (none takes them: the Enter that gave them up the default's of its layer, as AppKit's field's Return is)
+        None =>
+          match view_app.val {
+            Some(tree) => view_default_pressed(tree, Some(tf.view.id())) |> ignore
+            None => ()
+          }
+      }
     }
     None => ()
   }
@@ -941,7 +978,7 @@ fn Ctx::tree_field_box(
   w : Double,
   h : Double,
 ) -> FieldBox {
-  let z = self.editor_sizing((tf.font_size)(), tf.line, tf.max_lines, true, tree_theme().text_line)
+  let z = self.editor_sizing((tf.font_size)(), tf.line, (tf.max_lines)(), true, tree_theme().text_line)
   {
     id: tree_said_id(id),
     x,
@@ -985,17 +1022,17 @@ fn Ctx::paint_tree_field(
   let fb = self.tree_field_box(id, tf, ux, uy, w, h)
   let st = tf.st
   // (painted again as what is its own changes it (tree_field_redraw), and with the clock while its words are flung on)
-  tree_fields_drawn.get() |> ignore
+  tree_fields_drawn.val.get() |> ignore
   // (more lines than it shows: its words' scroll brought to this frame as an old view's field's is as it is built
   // (Ctx::editor: Ctx::scroll_state, its fling stepped, its bar's and its fling's motion told), kept as this frame's;
   // painted again with the clock while it is flung)
-  if tf.max_lines > 1 {
+  if (tf.max_lines)() > 1 {
     let sw = self.scroll_state(fb.id, true)
     sw.field = true
     sw.theme = self.theme
     sw.built_frame = self.frame_no
     if sw.rest >= 0.0 {
-      frame_clock.get() |> ignore
+      frame_clock.val.get() |> ignore
     }
   }
   st.placed_x = ux
@@ -1061,7 +1098,7 @@ pub fn Tester::drawn_words_found(self : Tester) -> Array[(@view.Drawn, Int, Bool
   .map(fn(e) {
     let (d, holder, presses) = e
     let size = match tree_fields.get(d.id) {
-      Some(tf) => c.editor_sizing((tf.font_size)(), tf.line, tf.max_lines, true, tree_theme().text_line).font_size
+      Some(tf) => c.editor_sizing((tf.font_size)(), tf.line, (tf.max_lines)(), true, tree_theme().text_line).font_size
       None => d.words_look.size
     }
     (d, holder, presses, view_words_found(d), size)

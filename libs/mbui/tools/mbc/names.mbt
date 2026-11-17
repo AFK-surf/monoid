@@ -46,12 +46,20 @@ fn fn_type_key(
   defs : Map[Bytes, Bytes],
   keys : Map[Bytes, Bytes],
   stack : Array[Bytes],
+  cyclic : BSet,
 ) -> Bytes {
   match keys.get(n) {
-    Some(k) => return k
+    Some(k) => {
+      if cyclic.has(n) {
+        cyclic.add_all(BSet::of(stack))
+      }
+      return k
+    }
     None => ()
   }
   if stack.contains(n) {
+    // (a key made through a cycle stands for more than one type: every type on the way to it is kept apart)
+    cyclic.add_all(BSet::of(stack))
     return b"cycle"
   }
   stack.push(n)
@@ -59,7 +67,7 @@ fn fn_type_key(
     if m == n {
       b"self"
     } else if defs.contains(m) {
-      fn_type_key(m, defs, keys, stack)
+      fn_type_key(m, defs, keys, stack, cyclic)
     } else {
       m
     }
@@ -72,10 +80,17 @@ fn fn_type_key(
 
 ///|
 /// {name: its stable name} for moonc's function types (struct _M0TW…), by their definitions (in moonc's order).
+/// Types whose definitions are the same (each other type they name taken as its own definition) are one type: one
+/// name, its definition once (stable.mbt keeps a declaration once). Numbered apart in moonc's order, as they were, a
+/// type new anywhere in the program moved the numbers of the same ones after it, and with them the text of every
+/// unit that named one: an app's change of 20 files of its own made 666 of 1116 units new (main db433ae9 against
+/// 7aba69f6, 2026-11-16), compiled again on every runner. Only those whose key went through a cycle (where "cycle"
+/// stands for a type it does not say) are kept apart, numbered as before.
 fn fn_type_names(defs : Map[Bytes, Bytes]) -> Map[Bytes, Bytes] {
   let keys : Map[Bytes, Bytes] = Map([])
+  let cyclic = BSet::new()
   for n, _ in defs {
-    let _ = fn_type_key(n, defs, keys, [])
+    let _ = fn_type_key(n, defs, keys, [], cyclic)
   }
   let ns = []
   for n, _ in defs {
@@ -94,9 +109,13 @@ fn fn_type_names(defs : Map[Bytes, Bytes]) -> Map[Bytes, Bytes] {
   let seen : Map[Bytes, Int] = Map([])
   for n in order {
     let w = named[keys[n]]
+    if !cyclic.has(n) {
+      out[n] = w
+      continue
+    }
     let c = seen.get_or_default(w, 0) + 1
     seen[w] = c
-    out[n] = if c == 1 { w } else { cat([w, b"_x", bint(c)]) }
+    out[n] = cat([w, b"_c", bint(c)])
   }
   out
 }

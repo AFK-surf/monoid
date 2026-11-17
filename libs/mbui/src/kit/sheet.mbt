@@ -322,7 +322,10 @@ pub fn sheet(
   // (the scrim as far as it has come, as it is drawn: Ctx::bg_by on the layer's ground)
   let scrim = scrim.unwrap_or(th.scrim)
   let o = c.overlay(key, modal=true, initial_focus=@ui.layer_ground, on_escape?, scrim~, inert=!now, fn() {
-    let i = c.box(w=Fill(1.0), h=Px(hx), ty=eff_total - hx + bx - raised, fn() {
+    // (between the system's bars down the window's sides, as what is laid out over the window keeps clear of them: a
+    // phone on its side, its cutout and its home indicator; the system's column of an app's tabs down a side)
+    let bars = @ui.system_bars()
+    let i = c.box(w=Fill(1.0), h=Px(hx), ml=bars.left, mr=bars.right, ty=eff_total - hx + bx - raised, fn() {
       // (its look given the scrim's share as it is built: the sheet's own glass drawn solid darkens with it, a colour
       // with no form read as it is drawn; the sheet is laid out again as it goes anyway, its height and place its
       // springs' as they are built)

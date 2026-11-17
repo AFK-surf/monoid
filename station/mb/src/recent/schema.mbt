@@ -1,4 +1,4 @@
-// The recent chat index's four parts and their writers (station/src/store/chat-list-index.ts, chat-list-scope-journal.ts,
+// The recent chat index's four parts and their writers (station/test/reference/chat-list/chat-list-index.ts, chat-list-scope-journal.ts,
 // chat-list-home-index.ts, chat-list-home-overlap.ts): the same tables and triggers, made when a part is first asked
 // for, each with its version (`recent_chat_versions`, chat-list-schema.ts) in the transaction that makes it.
 

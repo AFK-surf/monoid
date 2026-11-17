@@ -131,9 +131,12 @@ export function resolveTyped(typed: string, stations: readonly Named[], from: { 
   const base = rest === "" || rest === "~" ? home : rest.startsWith("~/") ? (home ? childOf(home, rest.slice(2)) : null) : rest.startsWith("/") || /^[A-Za-z]:[\\/]/.test(rest) ? rest : s.station === from.station ? childOf(from.abs, rest) : home ? childOf(home, rest) : null;
   if (base === null) return null;
   const ends = /[\\/]$/.test(rest) || rest === "" || rest === "~";
-  const abs = ends && base.length > 1 ? base.replace(/[\\/]+$/, "") || "/" : base;
+  // A drive's root keeps its separator: C: alone is that drive's current directory.
+  const root = /^[A-Za-z]:[\\/]/.exec(base)?.[0] ?? "/";
+  const trimmed = ends ? base.replace(/[\\/]+$/, "") : base;
+  const abs = trimmed.length < root.length ? root : trimmed;
   const cut = Math.max(abs.lastIndexOf("/"), abs.lastIndexOf("\\"));
-  return { station: s.station, abs, parent: ends ? abs : cut <= 0 ? "/" : abs.slice(0, cut), partial: ends ? "" : abs.slice(cut + 1) };
+  return { station: s.station, abs, parent: ends ? abs : cut < root.length ? root : abs.slice(0, cut), partial: ends ? "" : abs.slice(cut + 1) };
 }
 
 // ── the files' page's tabs ──

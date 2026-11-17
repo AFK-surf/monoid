@@ -100,13 +100,13 @@ pub fn hover_card_node(
   let owner = owner.unwrap_or(anchor)
   // (a row of it opening a menu beside it (submenu_row_node): its menu open, the card kept open as by `held`, the pointer
   // gone on to the menu, outside the card; as kit's hover_card was held by what opened from it)
-  let row_open : @signals.Signal[@view.View?] = @signals.signal(None, same=same_view)
+  let row_open : @signals.Signal[@view.View?] = @signals.signal_by(None, same=same_view)
   let held = fn() { held() || row_open.get() is Some(_) }
   let open : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
   // (opened by a finger's hold: stays till a press outside, Escape, or its anchor takes no input)
   let by_hand = Ref(false)
   // (the card's panel while it is made: what the pointer may be on)
-  let card : @signals.Signal[@view.View?] = @signals.signal(None, same=fn(a, b) {
+  let card : @signals.Signal[@view.View?] = @signals.signal_by(None, same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => x.id() == y.id()
@@ -114,7 +114,10 @@ pub fn hover_card_node(
     }
   })
   // (how far it is in, and which way it goes: in as hover_card_in, out as hover_card_out)
-  let way = EdgeWay::new(0.0)
+  let way = @motion.NodeWay::new(0.0)
+  // (what the card it opens holds made first, what it reads then waited for before it comes in: OpenGate; a card
+  // made anew each time it opens from none)
+  let gate : Ref[OpenGate] = Ref(OpenGate::new())
   // (the moment pending: its rest's end while closed, its leave's while open)
   let due : Ref[(() -> Unit)?] = Ref(None)
   let stop_due = fn() {
@@ -139,8 +142,15 @@ pub fn hover_card_node(
     })
     |> ignore
     // (a press anywhere in the window but on the card or on what it is of: closed as it goes down, the press what it
-    // lands on's as ever)
-    holder.reacts(fn() { holder.window_downs() }, at_start=false, fn(_) {
+    // lands on's as ever; the window's presses read only while it is open and not kept open, so a card shut again
+    // follows none of them, and its coming to be read is no press)
+    let downs_was : Ref[Int?] = Ref(None)
+    holder.reacts(fn() { if open.get() && !held() { Some(holder.window_downs()) } else { None } }, at_start=false, fn(
+      now,
+    ) {
+      let was = downs_was.val
+      downs_was.val = now
+      guard was is Some(_) && now is Some(_) else { return }
       // (kept open by the app: what the press lands on is what was opened from it)
       guard open.untracked() && !@signals.untracked(held) else { return }
       let (x, y) = holder.window_down_point()
@@ -183,6 +193,7 @@ pub fn hover_card_node(
       .max_height(By(fn() { Some(dmax(0.0, over_room(t).1 - 16.0)) }))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside)
+      .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Group))))
       // (closed with the focus in it: back to what it is of, not to what had it as it opened)
       .focus_returns()
@@ -195,6 +206,7 @@ pub fn hover_card_node(
       // it scrolls, which would cut them and what takes their presses)
       t.lends(panel_submenus_lent, row_open) |> ignore
       t.lends(submenu_layer_lent, holder) |> ignore
+      gate.val.collect(fn() {
       t.box(fn(b) {
         b.alpha(By(fn() { look().words })) |> ignore
         b.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
@@ -211,6 +223,8 @@ pub fn hover_card_node(
         |> ignore
       })
       |> ignore
+      })
+      gate.val.seal(t)
     })
     true
   }
@@ -227,9 +241,14 @@ pub fn hover_card_node(
       guard made.val else { return }
     }
     if on {
-      way.go(anchor, 1.0, hover_card_in_ms, ease=Out)
+      // (none made: made as it is opened, coming in once what it holds is: OpenGate; one still going, at once)
+      if card.untracked() is None {
+        gate.val = OpenGate::new()
+      }
+      gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
     } else {
-      way.go(anchor, 0.0, hover_card_out_ms, ease=Leave)
+      gate.val.stop()
+      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=Leave)
     }
     open.set(on)
   }
@@ -240,6 +259,12 @@ pub fn hover_card_node(
   let takes = fn() { anchor.takes_input() }
   let state = fn() {
     let mouse = @ui.pointing() is Mouse
+    let keep = held()
+    // (closed, not kept open, no mouse's pointer to rest on it: nothing the window's presses or whether it takes input
+    // would change, so neither is read, and a finger's press anywhere in the window wakes none of its kind)
+    if !mouse && !keep && !open.get() {
+      return (false, false, false, true, false)
+    }
     let on_anchor = mouse &&
       (
         match pointed {
@@ -255,7 +280,7 @@ pub fn hover_card_node(
           None => false
         }
       )
-    (on_anchor, on_card, anchor.window_held(), takes(), held())
+    (on_anchor, on_card, anchor.window_held(), takes(), keep)
   }
   let rests_was = Ref(false)
   owner.reacts(state, fn(s) {

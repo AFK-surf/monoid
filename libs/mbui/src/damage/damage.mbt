@@ -141,17 +141,17 @@ pub struct Damage {
   /// why the last frame was drawn whole (Damage::why)
   priv mut why : Int
   /// the first instances that changed in it, said (Damage::told), while `telling`
-  priv seen : Array[String]
+  priv mut seen : Array[String]
   priv mut telling : Bool
   /// how far each group a host keeps reaches (Damage::group_set), wherever it is moved to: what a header of it (kind
   /// 13, src/ui/scene.mbt) covers, moved by its 0, 1
-  priv groups : Map[Int, Rect]
+  priv mut groups : Map[Int, Rect]
   /// what of each group a header of it reads of what is under it: whether it holds glass, and the groups whose headers
   /// it holds (Damage::occlude)
-  priv group_reads : Map[Int, (Bool, Array[Int])]
+  priv mut group_reads : Map[Int, (Bool, Array[Int])]
   /// Damage::occlude's: its covers (cover_most, four numbers each), where each unit of the frame starts, which are
   /// hidden, and the frame without them
-  priv covers : FixedArray[Double]
+  priv mut covers : FixedArray[Double]
   priv mut unit_at : FixedArray[Int]
   priv mut hidden : FixedArray[Bool]
   priv mut shown : FixedArray[Double]
@@ -169,8 +169,8 @@ pub struct Damage {
   priv mut occ_last : Int
   priv mut occ_hid : Int
   priv mut cover_unit : Int
-  priv cover_log : Array[Double]
-  priv replay : FixedArray[Double]
+  priv mut cover_log : Array[Double]
+  priv mut replay : FixedArray[Double]
   priv mut shown_at : FixedArray[Int]
   priv mut occ_shown : Int
   /// a frame with headers, each instance once and each header once, its group's room after it left out (Damage::next)
@@ -186,7 +186,7 @@ pub struct Damage {
   /// the kept frame as it was given (Damage::next): how many instances, headers and their groups' rooms among them,
   /// and where each header was among them and among its units (Damage::moved)
   priv mut given_n : Int
-  priv heads_at : Array[(Int, Int)]
+  priv mut heads_at : Array[(Int, Int)]
   /// of the kept frame, found as a frame of its headers alone is first compared with it (Damage::moved), what no
   /// header changes: whether a picture of it changes under the same numbers (a stream's), and what its glass copies
   priv mut kept_read : Bool
@@ -1429,4 +1429,69 @@ fn dmin(a : Double, b : Double) -> Double {
   } else {
     b
   }
+}
+
+///|
+/// What it compares with put aside (a window's, as another window of the same run is drawn): its putting back.
+pub fn Damage::window_take(self : Damage) -> () -> Unit {
+  let held = { ..self }
+  fn() { self.window_put(held) }
+}
+
+///|
+/// As it is made (a window made anew): nothing presented yet.
+pub fn Damage::window_fresh(self : Damage) -> Unit {
+  self.window_put(Damage::new())
+}
+
+///|
+fn Damage::window_put(self : Damage, o : Damage) -> Unit {
+  self.prev = o.prev
+  self.n = o.n
+  self.w = o.w
+  self.h = o.h
+  self.scale = o.scale
+  self.r = o.r
+  self.g = o.g
+  self.b = o.b
+  self.has = o.has
+  self.why = o.why
+  self.seen = o.seen
+  self.telling = o.telling
+  self.groups = o.groups
+  self.group_reads = o.group_reads
+  self.covers = o.covers
+  self.unit_at = o.unit_at
+  self.hidden = o.hidden
+  self.shown = o.shown
+  self.occ_ok = o.occ_ok
+  self.occ_count = o.occ_count
+  self.occ_w = o.occ_w
+  self.occ_h = o.occ_h
+  self.occ_units = o.occ_units
+  self.occ_pieces = o.occ_pieces
+  self.occ_last = o.occ_last
+  self.occ_hid = o.occ_hid
+  self.cover_unit = o.cover_unit
+  self.cover_log = o.cover_log
+  self.replay = o.replay
+  self.shown_at = o.shown_at
+  self.occ_shown = o.occ_shown
+  self.units = o.units
+  self.prev_hash = o.prev_hash
+  self.prev_at = o.prev_at
+  self.cur_hash = o.cur_hash
+  self.cur_at = o.cur_at
+  self.stamp = o.stamp
+  self.prev_stamp = o.prev_stamp
+  self.given_n = o.given_n
+  self.heads_at = o.heads_at
+  self.kept_read = o.kept_read
+  self.kept_streams = o.kept_streams
+  self.kept_glass = o.kept_glass
+  self.kept_seg = o.kept_seg
+  self.seg_now = o.seg_now
+  self.step_far = o.step_far
+  self.step_ink = o.step_ink
+  self.step_known = o.step_known
 }

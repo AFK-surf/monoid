@@ -1,0 +1,18 @@
+import {
+  "station/host",
+  "station/memory",
+  "station/jsjson",
+  "station/jscase",
+  "station/nodepath",
+  "station/cloud_net",
+  "station/footprint",
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/encoding/base64",
+  "moonbitlang/core/encoding/hex",
+  "moonbitlang/core/string",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/double",
+  "moonbitlang/core/env",
+}

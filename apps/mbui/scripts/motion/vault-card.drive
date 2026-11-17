@@ -5,5 +5,5 @@ timeout 20000
 until =不存
 wait 800
 tap =不存
-until 未存入「测试服务登录」
+until 未存入
 wait 1200

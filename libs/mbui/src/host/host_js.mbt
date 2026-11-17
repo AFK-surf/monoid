@@ -479,6 +479,18 @@ fn reduce_transparency() -> Bool {
 }
 
 ///|
+/// Whether the system asks for more contrast: the web is not drawn by this host for people (its own page), never.
+fn increase_contrast() -> Bool {
+  false
+}
+
+///|
+/// Whether the system is slowing the device down for its heat: a browser says none, never.
+fn thermal_throttled() -> Bool {
+  false
+}
+
+///|
 /// The GPU's time for the last frame drawn, in ms (-1: not known here).
 fn gpu_ms() -> Double {
   js_gpu_ms()
@@ -1333,6 +1345,15 @@ fn window_open(what : String) -> Bool {
 fn window_front(what : String) -> Bool {
   ignore(what)
   false
+}
+
+///|
+/// The windows of this run (see host_native.mbt): a browser's page has its one.
+fn windows(op : Int, wid : Int, what : String) -> Int {
+  ignore(op)
+  ignore(wid)
+  ignore(what)
+  0
 }
 
 ///|

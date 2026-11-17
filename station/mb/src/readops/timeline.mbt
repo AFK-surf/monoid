@@ -1,7 +1,7 @@
 // A session's history (station/src/read/sessions.ts `timeline`, `transcriptState`): the pages of its transcripts'
 // entries and where their reading stands, read as read/transcripts.ts reads them (station/mb src/history's
-// transcripts.mbt). The words a Codex script's calls are said in come from the pool in the language asked
-// (`words.inScriptOutput`).
+// transcripts.mbt). A Codex script's calls whose results are in its output are marked so (`inScript`), their words the
+// client's.
 
 ///|
 /// sessions.ts `transcriptsOf`: a session's transcripts, those of the runtime sessions it ran in before first; None:
@@ -44,14 +44,6 @@ fn runtime_session_sources(db : @sql.Db, key : Json, row : Map[String, Json]) ->
 /// transcripts have.
 pub fn timeline(db : @sql.Db, host : @host.Host, data : String, sep : String, finder : @locate.Finder, ask : Json) -> Json raise {
   let args = ask.value("args").unwrap_or(Json::null())
-  // (put back as it is read: a search says them in Chinese)
-  let before_said = @history.in_script_output.val
-  defer {
-    @history.in_script_output.val = before_said
-  }
-  if args.value("words") is Some({ "inScriptOutput": String(said), .. }) {
-    @history.in_script_output.val = said
-  }
   let before = parse_usize(args.value("before")).unwrap_or(0.0)
   let limit = @cmp.minimum(@cmp.maximum(parse_usize(args.value("limit")).unwrap_or(200.0), 1.0), 1000.0)
   guard transcripts_of(db, host, data, sep, finder, args.value("key").unwrap_or(Json::null())) is Some((runtime, paths)) else {

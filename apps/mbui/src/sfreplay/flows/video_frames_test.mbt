@@ -1,4 +1,4 @@
-// 97-video-frames (e2e/traces/video-frames.trace): a video's frames (the library's player, @sf.player_view): alice's
+// 97-video-frames (e2e/traces/video-frames.trace): a video's frames (the library's player, @sf.player_node): alice's
 // other device sends a clip; opened, it plays, its frames' times read from the file (the host's player: 4 s at 30 a
 // second, 120 frames); paused, which frame of how many, and its ±15 s become ‹ and ›: to the one before and the very
 // next, each as the player says it is there; 保存此帧: the frame showing grabbed by the host and kept in the
@@ -47,7 +47,7 @@ test "97-video-frames" {
     let kept = f.t.kept().filter(fn(k) { k.0.has_prefix("e2e-clip-") && k.0.has_suffix(".png") })
     f.check(kept.length() == 1, "kept: \{Repr(f.t.kept().map(fn(k) { k.0 }))}")
     f.check(
-      f.t.kept_ways().iter().any(fn(k) { k.0.has_prefix("e2e-clip-") && k.1.to_string() == "Photos" }),
+      f.t.kept_ways().iter().any(fn(k) { k.0.has_prefix("e2e-clip-") && Show::to_string(k.1) == "Photos" }),
       "kept: \{Repr(f.t.kept_ways())}",
     )
     if kept.length() == 1 {

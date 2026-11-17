@@ -36,8 +36,9 @@ fn send_at_pace(
     t.type_text("再看一下")
     tap_send(t)
     let till = t.time() + after
+    // (the display's frames as an idle host has them: what nothing asks for not drawn, Tester::frame_as_host)
     while t.time() < till {
-      t.frame()
+      t.frame_as_host() |> ignore
     }
   }
   t.type_text("看一下列表")
@@ -77,8 +78,12 @@ fn send_at_pace(
     (if sent > 0.0 { sent } else { 0.0 }) +
     (if after >= 0.0 { 0.0 } else { answer + (if end > 0.0 { end } else { 0.0 }) }) +
     3000.0
+  // (the display's frames as an idle host has them: a frame nothing asks for is not drawn, and shows what the last
+  // one did, nothing moved; Tester::frame_as_host. Each one drawn read as before)
   while t.time() < end_at {
-    t.frame()
+    if !t.frame_as_host() {
+      continue
+    }
     let seen : Map[String, Double] = Map([])
     // (the frame's words read once, not twice: a tenth or so of this file's time, run at each of CI's rates)
     let said = t.words_said()

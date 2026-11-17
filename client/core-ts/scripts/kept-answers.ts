@@ -150,8 +150,8 @@ for (const key of sorted(goes)) {
   kept["chat.find.go"][key] = findGo(ask.hits ?? [], ask.at ?? null, ask.by ?? 0, ask.from ?? null, ask.to ?? null, ask.drawn ?? {});
 }
 for (const key of sorted(relays)) {
-  const ask = JSON.parse(key) as { connects?: unknown; query?: unknown; all?: unknown; bot?: unknown };
-  kept["chat.relayView"][key] = relayView(readConnects(ask.connects), String(ask.query ?? ""), ask.all === true, typeof ask.bot === "string" ? ask.bot : null, (k, a) => tr("zh", k, a));
+  const ask = JSON.parse(key) as { connects?: unknown; query?: unknown; all?: unknown; bot?: unknown; place?: unknown };
+  kept["chat.relayView"][key] = relayView(readConnects(ask.connects), String(ask.query ?? ""), ask.all === true, typeof ask.bot === "string" ? ask.bot : null, (k, a) => tr("zh", k, a), typeof ask.place === "string" ? ask.place : null);
 }
 for (const key of sorted(tools)) {
   const ask = JSON.parse(key) as { name?: string; call?: string; result?: string; failed?: boolean; said?: boolean };

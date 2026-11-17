@@ -37,6 +37,11 @@ test "right clicking a workspace opens the rail's menu beside it and inside the 
       t.host_says_finger(Some(false))
       t.resize(size.0, size.1)
       t.frame()
+      // The open page stays in front when resizing into Medium; open the sidebar to use its workspace menu.
+      if @sfdesk.wide.tape.get() && @sfdesk.wide.tape_at.get() != @sfdesk.TapePane::Side {
+        t.click(Button, label="展开侧边栏")
+        t.run_for(@ui.move_most_ms)
+      }
       let held = t.audit()
       let (x, y, w, h) = t.query(Button, label=name).unwrap().rect
       t.right_click(x + w / 2.0, y + h / 2.0)

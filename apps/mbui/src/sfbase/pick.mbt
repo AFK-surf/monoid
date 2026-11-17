@@ -88,7 +88,7 @@ fn pick_told_gone() -> Unit {
 /// closes, or another right click elsewhere opens it. What shows the menu (built apart from the message: another old
 /// view's) follows it: told as another is offered, not as the same one is offered again (its turn's action aside).
 // kept across runs: none as a run begins (pick_reset)
-pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, String, String)?] = @signals.signal(
+pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, String, String)?] = @signals.signal_by(
   None,
   same=fn(a, b) {
     match (a, b) {
@@ -603,7 +603,7 @@ fn pick_pop(c : @ui.Ctx, quote : (String, String, String, String) -> Unit) -> Un
         c.box(tx=pop_x - fw / 2.0, fn() {
           let hot = c.lit(pop)
           c.box(style=if hot { pick_pop_hot } else { pick_pop_box }, id=pop, fn() {
-            @sf.icon(c, "quote", size=12.0, color=@sf.theme().p.on_primary) |> ignore
+            @sf.icon(c, if c.selection_ends_at_start() { "quote-open" } else { "quote" }, size=12.0, color=@sf.theme().p.on_primary) |> ignore
             c.text(@sf.t("web-main.chat.quote"), style=pick_pop_words) |> ignore
           })
           |> ignore

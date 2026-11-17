@@ -146,7 +146,7 @@ fn Tree::hand_through(self : Tree, id : NodeId, x : Double, y : Double, moved? :
   guard self.through is Some(th) && th.cover == id else { return false }
   self.through = None
   // (where things are as of this moment, what changed by then laid out: no frame between counts)
-  self.laid_now()
+  self.laid_now(via=13) |> ignore
   let why : Handed = if moved { Moved(th.x0, th.y0) } else { Held }
   guard self.held == Some(id) &&
     self.downs.length() == 1 &&
@@ -192,7 +192,7 @@ fn Tree::hand_on(
   now : Double,
   found? : Bool = false,
 ) -> Unit {
-  self.laid_now()
+  self.laid_now(via=13) |> ignore
   guard self.held is None && (found || self.handed_takes(th, why, x, y)) else { return }
   match th.under {
     Dragged(u) => {

@@ -1,4 +1,4 @@
-// A requested scope's recent chats prepared one bounded piece at a time (station/src/store/chat-list-prepare.ts
+// A requested scope's recent chats prepared one bounded piece at a time (station/test/reference/chat-list/chat-list-prepare.ts
 // `RecentChatPreparation`), here for the MoonBit builder: the station-wide order (no workspace), a named workspace,
 // or home (the workspace that is also the viewer's home: its default part and their overlap too).
 

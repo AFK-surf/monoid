@@ -1,103 +1,7 @@
 // How a column's edge looks as a node of the window's tree (edge_look's, its made-once form): its bar and its line in
 // its middle, each moving between what it shows as its state changes, from the moment of what changed it (a pointer come
-// onto it, a press of it, its end), each on its own way (@motion.Way), from where the one before had it then; drawn
+// onto it, a press of it, its end), each on its own way (@motion.NodeWay), from where the one before had it then; drawn
 // where it is at the moment it is drawn while it goes, where it went once it is there. Made as its state is then, still.
-
-///|
-/// One of what a look moves (a bar's height, how much it shows, its ink, the line's): its way, the end of the way it
-/// goes now (a moment of the node's timeline: what reads it told as it is there), let go as another is said and as the
-/// node is.
-struct EdgeWay {
-  way : @motion.Way
-  ended : @signals.Signal[Int]
-  mut due : () -> Unit
-}
-
-///|
-pub fn EdgeWay::new(v : Double) -> EdgeWay {
-  { way: @motion.Way::new(v), ended: @signals.signal(0), due: fn() {  } }
-}
-
-///|
-/// Off to `to` over `ms` (eased out, or as `ease` says) from `n`'s cause's moment, from where it is then; its end a
-/// moment of `n`'s.
-pub fn EdgeWay::go(self : EdgeWay, n : @view.View, to : Double, ms : Double, ease? : @ui.Ease = Out) -> Unit {
-  if self.way.target() == to {
-    return
-  }
-  (self.due)()
-  self.way.go(to, @motion.tween(ms, ease~), at=n.cause_at())
-  self.due = if self.way.ends_at() >= 0.0 {
-    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
-  } else {
-    fn() {  }
-  }
-}
-
-///|
-/// Off to `to` as `spec` says (a Move by how far it goes) from `n`'s cause's moment, from where it is then (as fast as
-/// it goes then); its end a moment of `n`'s.
-/// `velocity`: as fast as that instead (per second: a hand letting it go).
-pub fn EdgeWay::go_by(
-  self : EdgeWay,
-  n : @view.View,
-  to : Double,
-  spec : @motion.Spec,
-  velocity? : Double,
-) -> Unit {
-  if self.way.target() == to {
-    return
-  }
-  (self.due)()
-  self.way.go(to, spec, at=n.cause_at(), velocity?)
-  self.due = if self.way.ends_at() >= 0.0 {
-    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
-  } else {
-    fn() {  }
-  }
-}
-
-///|
-/// Off from `from` (put there at that moment, still) to `to` as `spec` says, from `n`'s cause's moment; its end a moment
-/// of `n`'s: gone again from the start of its way (a cover's, sent to another item).
-pub fn EdgeWay::go_from(self : EdgeWay, n : @view.View, from : Double, to : Double, spec : @motion.Spec) -> Unit {
-  (self.due)()
-  self.way.put(from)
-  self.way.go(to, spec, at=n.cause_at())
-  self.due = if self.way.ends_at() >= 0.0 {
-    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
-  } else {
-    fn() {  }
-  }
-}
-
-///|
-/// There at once, still (where a hand holds it).
-pub fn EdgeWay::put(self : EdgeWay, v : Double) -> Unit {
-  (self.due)()
-  self.due = fn() {  }
-  self.way.put(v)
-}
-
-///|
-/// The moment its way ends (a moment of its node's timeline: what is done once it is there is declared at it).
-pub fn EdgeWay::end(self : EdgeWay) -> Double {
-  self.way.end()
-}
-
-///|
-/// Where it goes (where it is, at rest), followed as another way is said.
-pub fn EdgeWay::target(self : EdgeWay) -> Double {
-  self.way.said()
-  self.way.target()
-}
-
-///|
-/// Where it is as `n` is drawn: at the moment it is drawn at while it goes, where it went once it is there.
-pub fn EdgeWay::shown(self : EdgeWay, n : @view.View) -> Double {
-  self.ended.get() |> ignore
-  self.way.shown_on(n)
-}
 
 ///|
 /// A column's edge's look in a node of `parent`'s (as tall as it, `handle_w` across, its middle that of `parent`), as
@@ -119,22 +23,16 @@ pub fn edge_look_node(
     let state = fn() { edge_state(over(), on(), active(), line()) }
     let now = @signals.untracked(state)
     // (each as the state is as it is made: still)
-    let shows = EdgeWay::new(if (now & 1) != 0 { 1.0 } else { 0.0 })
-    let long = EdgeWay::new(if (now & 2) != 0 { 1.0 } else { 0.0 })
-    let ink = EdgeWay::new(if (now & 4) != 0 { 1.0 } else { 0.0 })
-    let lit = EdgeWay::new(if (now & 8) != 0 { 1.0 } else { 0.0 })
+    let shows = @motion.NodeWay::new(if (now & 1) != 0 { 1.0 } else { 0.0 })
+    let long = @motion.NodeWay::new(if (now & 2) != 0 { 1.0 } else { 0.0 })
+    let ink = @motion.NodeWay::new(if (now & 4) != 0 { 1.0 } else { 0.0 })
+    let lit = @motion.NodeWay::new(if (now & 8) != 0 { 1.0 } else { 0.0 })
     v.reacts(state, fn(s) {
-      shows.go(v, if (s & 1) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
-      long.go(v, if (s & 2) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
-      ink.go(v, if (s & 4) != 0 { 1.0 } else { 0.0 }, edge_ink_ms)
-      lit.go(v, if (s & 8) != 0 { 1.0 } else { 0.0 }, edge_line_ms)
+      shows.go_ms(v, if (s & 1) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
+      long.go_ms(v, if (s & 2) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
+      ink.go_ms(v, if (s & 4) != 0 { 1.0 } else { 0.0 }, edge_ink_ms)
+      lit.go_ms(v, if (s & 8) != 0 { 1.0 } else { 0.0 }, edge_line_ms)
     })
-    v.owns(fn() {
-      for w in [shows, long, ink, lit] {
-        (w.due)()
-      }
-    })
-    |> ignore
     v.width(Is(Some(handle_w))).grow(Is(1.0)).presses(Is(false)) |> ignore
     // its line, over all of it but S2 at each end, its grey whole at its middle, clear toward its ends
     v.box(fn(l) {

@@ -1,7 +1,7 @@
 // Moving a station's things to another station of its workspace, module by module (the core's `stationMove` topic,
 // client/core-ts/src/move.ts, of the station's move/: each module on its own, its needs first, progress inside it,
 // everything undoable: the owner, 2026-11-14). Rarely used and risky, so no row of the station's page offers it: its ⋯
-// has 迁移到另一台… while it is online and offers moving, which opens this page, a step further in from it; its station's
+// has 迁移到另一台 station while it is online and offers moving, which opens this page, a step further in from it; its station's
 // page shows one row of it only while something of it is moved, moving, stopped or failed (station_move_section).
 // No sentence explains it (the owner, 2026-11-14: 「字太多了，应该用更结构化更所见即所得的方式设计 UI」). Its first card
 // the station it goes to, chosen in one row (a chevron after its name while there is one to choose) and remembered for
@@ -15,7 +15,7 @@
 // a press is a call to the core, a refusal said on the row it was pressed on.
 
 ///|
-/// Station `address`'s 迁移 (its ⋯'s 迁移到另一台…) made once in node `v`, as wide as `width` gives it.
+/// Station `address`'s 迁移 (its ⋯'s 迁移到另一台 station) made once in node `v`, as wide as `width` gives it.
 pub fn station_move_node(
   v : @view.View,
   core : Core,
@@ -28,6 +28,13 @@ pub fn station_move_node(
   tips? : @sf.TipLayer,
 ) -> Unit {
   let s = fn() { station_of(core, here(), address) }
+  // (moving is a station's on the test channel (its overview's `features`): where the station says it is not, as a link
+  // opened of a stable one, the page goes back to where it was opened from, never one of a turn that would be refused)
+  v.reacts(fn() { (core.move_on)() && (s() is None || @settings.station_feature(s(), "stationMove")) }, fn(on) {
+    if !on {
+      on_back()
+    }
+  })
   let title = fn() {
     match text(s(), "name") {
       "" => @sf.t("web-pages.stations.move.title")
@@ -269,7 +276,8 @@ fn station_move_to_node(
     }
   }
   @sf.group_node(b, fn(g) {
-    g.pick(main, fn(r, what) {
+    // (made again only as there comes to be an action at its end or none: which it is, the action alone)
+    g.pick(fn() { main() != "" }, fn(r, acts) {
       @sf.link_row_opens_node(
         r,
         fn() { @sf.t("web-pages.stations.move.to") },
@@ -291,17 +299,21 @@ fn station_move_to_node(
         chevron=false,
         tail=fn(e) { station_move_chevron(e, fn() { "chevron-right" }) },
         tail_shown=fn() { !targets().is_empty() && !(field(v(), "moving") is Some(Object(_))) },
-        control?=match what {
-          "all" =>
-            Some(fn(c : @view.View) {
-              @sf.button_node(c, fn() { @sf.t("web-pages.stations.move.all") }, fn() {
-                station_move_all_confirm(core, address, @signals.untracked(v), false)
-              }, tone=Primary)
-              |> ignore
+        control?=if acts {
+          Some(fn(c : @view.View) {
+            c.pick(main, fn(a, what) {
+              if what == "remove" {
+                @sf.button_node(a, fn() { @sf.t("web-pages.stations.retire.remove") }, remove, tone=Primary) |> ignore
+              } else {
+                @sf.button_node(a, fn() { @sf.t("web-pages.stations.move.all") }, fn() {
+                  station_move_all_confirm(core, address, @signals.untracked(v), false)
+                }, tone=Primary)
+                |> ignore
+              }
             })
-          "remove" =>
-            Some(fn(c : @view.View) { @sf.button_node(c, fn() { @sf.t("web-pages.stations.retire.remove") }, remove, tone=Primary) |> ignore })
-          _ => None
+          })
+        } else {
+          None
         },
       )
     })
@@ -370,8 +382,9 @@ fn station_move_module_node(
         ])
     }
   }
-  card.pick(fn() { (text(m(), "action"), failed() is Some(_)) }, fn(r, k) {
-    let (act_now, refused) = k
+  let act_now = fn() { text(m(), "action") }
+  // (made again only as a refusal comes or goes, its note's ink with it: its action at its end comes and goes in it)
+  card.pick(fn() { failed() is Some(_) }, fn(r, refused) {
     @sf.link_row_node(
       r,
       fn() { @sf.t("web-pages.stations.move.module." + id) },
@@ -382,16 +395,16 @@ fn station_move_module_node(
       folds=is_open,
       control=fn(e) {
         @sf.line_end_node(e, fn(c) {
-          if act_now != "" {
+          c.show(fn() { act_now() != "" }, fn(a) {
             @sf.row_end_button_node(
-              c,
-              fn() { @sf.t(if act_now == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
-              fn() { act(act_now) },
+              a,
+              fn() { @sf.t(if act_now() == "back" { "web-pages.stations.move.back" } else { "web-pages.stations.move.move" }) },
+              fn() { act(@signals.untracked(act_now)) },
               busy=doing,
               disabled=doing,
             )
             |> ignore
-          }
+          })
           station_move_chevron(c, fn() { if is_open() { "chevron-up" } else { "chevron-down" } })
         })
       },
@@ -442,13 +455,17 @@ fn station_move_item_node(
     let total = number(p, "total")
     if total > 0.0 { Some(number(p, "done") / total) } else { None }
   }
-  card.pick(fn() { (text(x(), "action"), state() == "moving") }, fn(r, k) {
-    let (action, moving) = k
+  let action = fn() { text(x(), "action") }
+  // (made again only as there comes to be an action at its end or none: which it is, and its bar as it moves or not,
+  // follow it in the row)
+  card.pick(fn() { action() != "" }, fn(r, acts) {
     let bad = fn() { state() == "failed" }
-    let words = match action {
-      "back" => "web-pages.stations.move.back"
-      "retry" => "common.retry"
-      _ => "web-pages.stations.move.move"
+    let words = fn() {
+      match action() {
+        "back" => "web-pages.stations.move.back"
+        "retry" => "common.retry"
+        _ => "web-pages.stations.move.move"
+      }
     }
     @sf.link_row_node(
       r,
@@ -465,14 +482,15 @@ fn station_move_item_node(
       // (something under its first line always, its bar while it moves, nothing else: so where it stands goes under its
       // label where the line has not the room for both, as a row with lines under it lays them, never the label cut)
       below=fn(b) { station_move_bar(b, part) },
-      below_open=fn() { if moving { 1.0 } else { 0.0 } },
-      control?=if action == "" {
+      below_open=fn() { if state() == "moving" { 1.0 } else { 0.0 } },
+      control?=if !acts {
         None
       } else {
         // (the button alone: with lines always under its first (`below`), the row puts it on that line, as high as it,
         // itself: link_row's `under`)
         Some(fn(c : @view.View) {
-          @sf.row_end_button_node(c, fn() { @sf.t(words) }, fn() { act(action) }, busy=doing, disabled=doing) |> ignore
+          @sf.row_end_button_node(c, fn() { @sf.t(words()) }, fn() { act(@signals.untracked(action)) }, busy=doing, disabled=doing)
+          |> ignore
         })
       },
     )
@@ -537,9 +555,9 @@ fn station_move_section(b : @view.View, core : Core, address : String) -> Unit {
 }
 
 ///|
-/// Its ⋯'s 迁移到另一台… (station_menu_items'), while it is online and offers moving; None otherwise.
+/// Its ⋯'s 迁移到另一台 station (station_menu_items'), while it is online and offers moving; None otherwise.
 fn station_move_item(core : Core, s : Json?) -> @sf.MenuItem? {
-  guard @settings.move_offered(s) else { return None }
+  guard (core.move_on)() && @settings.move_offered(s) else { return None }
   let address = text(s, "station")
-  Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", fn() { (core.push)(StationMove(address)) }))
+  Some(@sf.menu_item_of(@sf.t("web-pages.stations.move.menu"), icon="move", further=true, fn() { (core.push)(StationMove(address)) }))
 }

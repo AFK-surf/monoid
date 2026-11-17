@@ -23,6 +23,7 @@ import { bytes } from "../format.ts";
 import { t } from "../i18n.ts";
 import type { Topic } from "../protocol.ts";
 import { StationAddr } from "../station/addr.ts";
+import type { Link } from "../station/link.ts";
 import { Priority } from "../sync/scheduler.ts";
 import { encode } from "../ops.ts";
 import { get, isObject } from "../util.ts";
@@ -35,6 +36,9 @@ type Of = Extract<Call, { kind: "driveTransfer" }>;
 type Held = { supported: boolean | null; transfers: J[] };
 
 const KEY = "driveTransfers";
+// The stream's and a shown page's reads can overlap. Keep their order and the updates told during each read
+// on the link alone; each read drops its updates as it ends, including when interrupted.
+const reads = new WeakMap<Link, { next: number; applied: number; pending: Set<Map<string, J>> }>();
 const heldAt = (inner: Inner, address: string) => inner.stations.link(address)?.memory.get(KEY) as Held | undefined;
 const hold = (inner: Inner, address: string, held: Held) => inner.stations.link(address)?.memory.set(KEY, held);
 
@@ -51,9 +55,13 @@ function invalidate(inner: Inner, ws: string): void {
 }
 
 /// One station's transfer as it says it now: in place (new ones first).
-function put(inner: Inner, address: string, transfer: unknown): void {
+function put(inner: Inner, address: string, transfer: unknown, told = false): void {
   const id = str(get(transfer, "id"));
   if (id === null || !isObject(transfer)) return;
+  const link = inner.stations.link(address);
+  if (!link) return;
+  // A call's earlier result can arrive after a newer event or GET. Only the stream's updates overlay a read.
+  if (told) for (const changes of reads.get(link)?.pending ?? []) changes.set(id, transfer);
   const held = heldAt(inner, address) ?? { supported: true, transfers: [] };
   const at = held.transfers.findIndex((x) => x.id === id);
   const transfers = at >= 0 ? held.transfers.map((x, i) => (i === at ? transfer : x)) : [transfer, ...held.transfers];
@@ -67,12 +75,34 @@ const ask = (inner: Inner, address: string, method: string, path: string, body: 
 /// A station's transfers, read whole.
 function read(inner: Inner, address: string): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
-    if (!inner.stations.link(address) || !inner.stations.reachable(address)) return;
-    const got = yield* Effect.result(ask(inner, address, "GET", "/drive/transfers"));
-    if (got._tag === "Success") hold(inner, address, { supported: true, transfers: arr(get(got.success, "transfers")).filter(isObject) });
-    else if (got.failure.status === 404) hold(inner, address, { supported: false, transfers: [] });
-    else return;
-    invalidate(inner, ofAddress(address));
+    const link = inner.stations.link(address);
+    if (!link || !inner.stations.reachable(address)) return;
+    let order = reads.get(link);
+    if (!order) reads.set(link, (order = { next: 0, applied: 0, pending: new Set() }));
+    const version = ++order.next;
+    const changes = new Map<string, J>();
+    order.pending.add(changes);
+    yield* Effect.gen(function* () {
+      const got = yield* Effect.result(ask(inner, address, "GET", "/drive/transfers"));
+      if (got._tag === "Failure" && got.failure.status !== 404) return;
+      if (inner.stations.link(address) !== link || version < order.applied) return;
+      order.applied = version;
+      if (got._tag === "Success") {
+        const transfers = new Map(arr(get(got.success, "transfers")).filter(isObject).map((x) => [x.id, x]));
+        const added: J[] = [];
+        // Only updates told since this read began override its rows. Another GET is not such an update.
+        for (const [id, transfer] of changes) {
+          if (transfers.has(id)) transfers.set(id, transfer);
+          else added.push(transfer);
+        }
+        // As with put, new rows go first; updating a row does not change its place.
+        hold(inner, address, { supported: true, transfers: [...added.reverse(), ...transfers.values()] });
+      } else {
+        if (changes.size > 0) return; // A transfer told meanwhile proves this station supports them.
+        hold(inner, address, { supported: false, transfers: [] });
+      }
+      invalidate(inner, ofAddress(address));
+    }).pipe(Effect.ensuring(Effect.sync(() => order.pending.delete(changes))));
   });
 }
 
@@ -199,7 +229,7 @@ export function install(inner: Inner): void {
   inner.stations.also.push({
     read: (address) => read(inner, address),
     event: (address, name, data) => {
-      if (name === "drive-transfers" && isObject(get(data, "transfer"))) put(inner, address, get(data, "transfer"));
+      if (name === "drive-transfers" && isObject(get(data, "transfer"))) put(inner, address, get(data, "transfer"), true);
     },
   });
   inner.router.owners.push(owner(inner));

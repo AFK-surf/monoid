@@ -10,15 +10,15 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { GrokDriver, classifyFailure, grokArgs, sessionDir, usageLine, USAGE } from "../src/agents/grok.ts";
+import { GrokDriver, classifyFailure, grokArgs, sessionAt, usageLine, USAGE } from "../src/agents/grok.ts";
 import { profileEnv, profileRuntimes } from "../src/agents/profiles.ts";
 import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { allLeft } from "../src/agents/runner.ts";
 import { checkProfile, grokModels, loginCommand } from "../src/accounts/profiles.ts";
 import { LoginManager, type LoginState } from "../src/accounts/login.ts";
 import { grokQuotaOf } from "../src/accounts/quota.ts";
-import { callsOf } from "../src/usage/counter.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { callsOf } from "./usage-counter-reference.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
@@ -75,6 +75,17 @@ const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEn
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const live = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" ? [e.event] : []));
 const deltas = (events: RuntimeEvent[]) => live(events).flatMap((e) => (e.kind === "delta" ? [e.text] : []));
+
+/// What each step wrote, its deltas one after another joined: the program holds what a step writes a while and tells it
+/// as one (mb agents.mbt DELTAS_MS), as many as the time it took them to come makes.
+const written = (events: RuntimeEvent[]) =>
+  live(events).reduce<{ id: string; field: string; text: string }[]>((out, e) => {
+    if (e.kind !== "delta") return out;
+    const last = out.at(-1);
+    if (last !== undefined && last.id === e.id && last.field === e.field) last.text += e.text;
+    else out.push({ id: e.id, field: e.field, text: e.text });
+    return out;
+  }, []).map((d) => d.text);
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const stdin = (dump: string) => readFileSync(`${dump}.stdin`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const started = (dump: string) => JSON.parse(readFileSync(dump, "utf8").trim().split("\n")[0]!);
@@ -93,8 +104,8 @@ describe("the Grok Build driver", { concurrency: true }, () => {
     assert.equal(session.busy(), false);
     assert.ok(!events.some((e) => e.type === "turnStarted"), "our own prompt's turn is not one started without us");
     // A thought, then the reply in two chunks: one step each.
-    assert.deepEqual(live(events).filter((e) => e.kind !== "phase").map((e) => e.kind), ["start", "delta", "end", "start", "delta", "delta", "end"]);
-    assert.deepEqual(deltas(events), ["thinking it over", "hel", "lo"]);
+    assert.deepEqual(live(events).filter((e) => e.kind === "start" || e.kind === "end").map((e) => e.kind), ["start", "end", "start", "end"]);
+    assert.deepEqual(written(events), ["thinking it over", "hello"]);
 
     const run = started(o.dump);
     assert.deepEqual(run.argv, ["agent", "--always-approve", "--no-leader", "--model", "grok-4.7", "--reasoning-effort", "xhigh", "stdio"]);
@@ -127,14 +138,14 @@ describe("the Grok Build driver", { concurrency: true }, () => {
       ["user", "x"], ["thinking", "thinking it over"], ["assistant", "x"],
     ]);
     // Each turn's usage kept beside it, its input less what the cache read and wrote.
-    const usage = readFileSync(join(sessionDir(o.profile.home, session.id())!, USAGE), "utf8").trim().split("\n").map((l) => JSON.parse(l));
+    const usage = readFileSync(join((await sessionAt(o.profile.home, session.id()))!, USAGE), "utf8").trim().split("\n").map((l) => JSON.parse(l));
     assert.equal(usage.length, 2);
     assert.deepEqual([usage[0].usage, usage[0].context, usage[0].window], [{ input: 30, cacheRead: 60, cacheWrite: 10, output: 7, calls: 2 }, 1234, 256000]);
     // Between turns, another model and effort are set in the process, not by starting another.
     assert.equal(session.retune?.({ ...o, model: "grok-4.6", effort: "low" }), true);
     await eventually(() => stdin(o.dump).filter((m) => m.method === "session/set_config_option").length === 2);
     assert.deepEqual(stdin(o.dump).filter((m) => m.method === "session/set_config_option").map((m) => [m.params.configId, m.params.value]), [["model", "grok-4.6"], ["reasoning_effort", "low"]]);
-    const calls = callsOf("grok", readFileSync(join(sessionDir(o.profile.home, session.id())!, USAGE), "utf8"), false, { model: null, codexId: null });
+    const calls = callsOf("grok", readFileSync(join((await sessionAt(o.profile.home, session.id()))!, USAGE), "utf8"), false, { model: null, codexId: null });
     assert.deepEqual(calls.map((c) => [c.model, c.input, c.cacheRead, c.cacheWrite, c.output]), [["grok-4.7", 30, 60, 10, 7], ["grok-4.7", 30, 60, 10, 7]]);
     // Each turn's calls, and the context it ended with, of the model's window: what a chat says of them.
     assert.deepEqual(calls.map((c) => [c.calls, c.context, c.window]), [[2, 1234, 256000], [2, 1234, 256000]]);
@@ -319,6 +330,8 @@ describe("the Grok Build driver", { concurrency: true }, () => {
       await session.prompt("hold");
       await a.until((e) => deltas(e).join("").includes("holding"));
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       // Stops: the process goes on under its runner with nobody reading.
       first.detach();
@@ -356,7 +369,7 @@ describe("what a profile runs Grok Build on", () => {
     assert.deepEqual(profileRuntimes(profile({ kind: "subscription" })), ["grok"]);
     assert.deepEqual(profileEnv(profile({ kind: "subscription" }), "grok"), {});
     const xai = profile({ kind: "api-provider", provider: "xai", key: "xai-k" });
-    assert.deepEqual(profileRuntimes(xai), ["codex", "dsh", "grok"]);
+    assert.deepEqual(profileRuntimes(xai), ["codex", "dsh", "pi", "grok"]);
     assert.deepEqual(profileEnv(xai, "grok"), { XAI_API_KEY: "xai-k" });
     assert.ok(!profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })).includes("grok"));
     assert.deepEqual(profileRuntimes(profile({ kind: "env" })), ["grok"]);

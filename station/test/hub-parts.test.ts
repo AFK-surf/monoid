@@ -3,11 +3,13 @@
 import assert from "node:assert/strict";
 import { appendFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
-import { syncBuiltinESMExports } from "node:module";
+import { createRequire, syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { brief, claudeProject, readTimeline, rememberCodexRollout, sessionPlaces, transcriptPaths } from "../src/read/transcript.ts";
+import { claudeProject, sessionPlaces } from "../src/read/transcript.ts";
+import { rememberCodexRolloutSoon as rememberCodexRollout, transcriptPathsSoon as transcriptPaths } from "../src/read/transcript-soon.ts";
+import { brief, readTimeline } from "./reference/transcript.ts";
 import { linkSiteSkills, linkTranscripts, sessionSkills, siteSkills, unlinkAgentHome, writeBuiltinSkills } from "../src/sessions/agent-home.ts";
 import { isSlackMethod, slackWithFiles, threadCommand } from "../src/sessions/args.ts";
 import { splitForSlack } from "../src/sessions/chat.ts";
@@ -15,15 +17,19 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { completionQuestion, parse, request } from "../src/sessions/decision.ts";
 import { sizeOf } from "../src/sessions/image-size.ts";
 import { nextTsAt } from "../src/sessions/internal.ts";
-import { LiveFromClaude } from "../src/agents/live.ts";
-import { HELD_AFTER_MS, type History, type LiveMessage, LiveHub, briefInput, inBrief, tokensOf } from "../src/sessions/live.ts";
-import type { SessionUsage } from "../src/read/usage.ts";
-import { chainOf, entriesOf, lengthOf, stateOf } from "../src/read/transcripts.ts";
-import { prepare, prepareHere } from "../src/sessions/local-links.ts";
+import { LiveFromClaude } from "./reference/live.ts";
+import { HELD_AFTER_MS, type History, type LiveMessage, LiveHub } from "../src/sessions/live.ts";
+import type { SessionUsage } from "./reference/usage.ts";
+import { chainOf, entriesOf, lengthOf, stateOf } from "./reference/transcripts.ts";
+import { prepare } from "../src/sessions/local-links.ts";
+import { prepareHere } from "./reference/local-links.ts";
 import { formatSteps, linkedSession } from "../src/sessions/others.ts";
 import { availableEfforts, cheapToLeave, commonEfforts, pickProfile, serves, urgency } from "../src/sessions/pool.ts";
 import { spelling } from "../src/sessions/config.ts";
 import { settle, testClock } from "./hub-fakes.ts";
+
+/// node:fs/promises as its importers see it once `syncBuiltinESMExports` is called: what a test counts the calls of.
+const promises = createRequire(import.meta.url)("node:fs/promises") as typeof import("node:fs/promises");
 
 const temp = () => mkdtempSync(join(tmpdir(), "hub-parts-"));
 
@@ -216,9 +222,11 @@ test("a watched session's usage is what the counter recorded, told again as it r
   counted = { modelCalls: 4, inputTokens: 900, cachedTokens: 800, outputTokens: 40, cost: 1.5, unpricedCalls: 0, model: "m", contextTokens: 10, contextWindow: null };
   got.length = 0;
   hub.usageCounted();
+  await hub.idle();
   assert.equal(got.length, 1);
   assert.deepEqual([got[0].entries, got[0].start, got[0].usage], [[], 1, counted]);
   hub.usageCounted();
+  await hub.idle();
   assert.equal(got.length, 1, "told only when it changed");
   appendFileSync(path, line("two", "m2"));
   (hub as any).soon("s");
@@ -263,6 +271,7 @@ test("a watcher gets what it lacks, the steps in flight, then new entries as the
   assert.equal((got[1] as any).steps[0].step, "text", "what a step is, not what it wrote");
   got.length = 0;
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "ting" });
+  await hub.idle();
   assert.equal(got.length, 0, "a delta sends nothing");
   hub.event("s", { kind: "end", id: "x" });
   appendFileSync(path, line("writing", "m3"));
@@ -290,7 +299,7 @@ test("a watcher in brief is told the entries in brief, those it lacks and those 
   const time = testClock();
   const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
   const got: LiveMessage[] = [];
-  hub.subscribe("s", 0, null, inBrief((m) => void got.push(m)));
+  hub.subscribe("s", 0, null, (m) => void got.push(m), true);
   await hub.idle();
   appendFileSync(path, bash("b", 300));
   watched(hub, "s");
@@ -327,7 +336,7 @@ test("a session at work is followed by the station itself: told from where it en
   assert.ok(told.some((m) => m.type === "steps"));
   assert.deepEqual(lengths, [["s", 2]]);
   // As a stream that opens finds it.
-  assert.deepEqual(hub.now("s").map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null]]);
+  assert.deepEqual((await hub.nowOf(["s"])).s!.map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null]]);
   told.length = 0;
   // Its last entry, written as its turn ends, is told before it is told to be done (no 40 ms wait).
   appendFileSync(path, line("three", "m3"));
@@ -338,6 +347,8 @@ test("a session at work is followed by the station itself: told from where it en
   assert.deepEqual(lengths.at(-1), ["s", 3]);
   // Done: still followed a while, and at work again within it, not read again from the start.
   hub.running("s", false);
+  // (its wait set in the program before the clock moves)
+  await hub.idle();
   await time.adjust(HELD_AFTER_MS - 1);
   await settle();
   await hub.idle();
@@ -351,6 +362,8 @@ test("a session at work is followed by the station itself: told from where it en
   assert.equal(reads, 1, "located and read once");
   // Done for longer than the while: let go.
   hub.running("s", false);
+  // (its wait set in the program before the clock moves)
+  await hub.idle();
   await time.adjust(HELD_AFTER_MS);
   await settle();
   await hub.idle();
@@ -358,6 +371,7 @@ test("a session at work is followed by the station itself: told from where it en
   told.length = 0;
   appendFileSync(path, line("four", "m4"));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -402,13 +416,11 @@ test("where the readers keep a session's history the live view reads none of its
   assert.equal(got[1]!.type, "steps");
   // Its checklist read back from the latest page, whole; then what it lacks, in brief.
   assert.deepEqual(asked, ["state", "page 3 3 false", "page 3 2 true"]);
-  // None of it kept here: only where it stands.
-  const watching = (hub as any).watched.get("s");
-  assert.deepEqual([watching.tail.keeps, watching.tail.length, watching.tail.entries.length], [false, 3, 0]);
   // Written on: read here from where the readers stood, told in brief.
   got.length = 0;
   appendFileSync(path, bash("d", 300));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -456,8 +468,8 @@ test("a session watched again, or by the next station process, reads its transcr
   const next = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
   const nextAsked: string[] = [];
   next.history = historyOf(path, nextAsked);
-  next.takePlans(JSON.parse(JSON.stringify(hub.carriedPlans())));
-  next.takeTails(JSON.parse(JSON.stringify(hub.carriedTails())));
+  next.takePlans(JSON.parse(JSON.stringify((await hub.carried()).plans)));
+  next.takeTails(JSON.parse(JSON.stringify((await hub.carried()).tails)));
   const nextGot: LiveMessage[] = [];
   next.subscribe("s", 5, null, (m) => void nextGot.push(m));
   await settle();
@@ -476,8 +488,8 @@ test("a session watched again, or by the next station process, reads its transcr
   late.subscribe("s", 5, null, (m) => void lateGot.push(m));
   await settle();
   assert.equal(lateGot.length, 0, "waiting on the process before");
-  late.takePlans(JSON.parse(JSON.stringify(hub.carriedPlans())));
-  late.takeTails(JSON.parse(JSON.stringify(hub.carriedTails())));
+  late.takePlans(JSON.parse(JSON.stringify((await hub.carried()).plans)));
+  late.takeTails(JSON.parse(JSON.stringify((await hub.carried()).tails)));
   await settle();
   assert.deepEqual(lateGot.map((m) => m.type).slice(0, 1), ["timeline"], "joined without the readers");
   handedOver();
@@ -586,7 +598,7 @@ test("a session gone on in a new runtime session: its history reads on from the 
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a session's transcripts are found in the shared place, else in the home of whichever account wrote them; the current one's once written", () => {
+test("a session's transcripts are found in the shared place, else in the home of whichever account wrote them; the current one's once written", async () => {
   const dir = temp();
   const [a, b] = [join(dir, "a"), join(dir, "b")];
   mkdirSync(join(a, "projects", "w"), { recursive: true });
@@ -596,16 +608,16 @@ test("a session's transcripts are found in the shared place, else in the home of
   writeFileSync(join(b, "projects", "w", "two.jsonl"), line("two", "m2"));
   // Written in a home no profile has any more: in the shared place, as every home the station keeps writes there.
   writeFileSync(join(dir, "transcripts", "claude", "w", "zero.jsonl"), line("zero", "m0"));
-  assert.deepEqual(transcriptPaths("claude", dir, [b, a], ["zero", "one", "two", "three"]), {
+  assert.deepEqual(await transcriptPaths("claude", dir, [b, a], ["zero", "one", "two", "three"]), {
     paths: [join(dir, "transcripts", "claude", "w", "zero.jsonl"), join(a, "projects", "w", "one.jsonl"), join(b, "projects", "w", "two.jsonl")],
     current: false,
   });
   writeFileSync(join(b, "projects", "w", "three.jsonl"), line("three", "m3"));
-  assert.equal(transcriptPaths("claude", dir, [b, a], ["one", "two", "three"]).current, true);
+  assert.equal((await transcriptPaths("claude", dir, [b, a], ["one", "two", "three"])).current, true);
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a Claude transcript is looked for in the project of its session's working directory, the projects listed only for one that ran elsewhere", () => {
+test("a Claude transcript is looked for in the project of its session's working directory, the projects listed only for one that ran elsewhere", async () => {
   const dir = temp();
   const shared = join(dir, "transcripts", "claude");
   const workspace = join(dir, "sessions", "ember", "c-1", "workspace");
@@ -620,47 +632,47 @@ test("a Claude transcript is looked for in the project of its session's working 
   writeFileSync(join(shared, "-old-place", "before.jsonl"), line("before", "m0"));
   // Each listing of a directory, counted.
   const listed: string[] = [];
-  const real = fs.readdirSync;
-  fs.readdirSync = ((path: fs.PathLike, ...rest: unknown[]) => (listed.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as unknown as typeof real;
+  const real = promises.readdir;
+  promises.readdir = ((path: fs.PathLike, ...rest: unknown[]) => (listed.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as unknown as typeof real;
   syncBuiltinESMExports();
   try {
     const places = sessionPlaces({ cwd: null, workspace });
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["now"], places), { paths: [join(shared, here, "now.jsonl")], current: true });
+    assert.deepEqual(await transcriptPaths("claude", dir, [], ["now"], places), { paths: [join(shared, here, "now.jsonl")], current: true });
     assert.deepEqual(listed, [], "found where it works: nothing listed");
     // One that ran elsewhere: found by listing the projects, then where it was found.
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["before", "now"], places).paths, [join(shared, "-old-place", "before.jsonl"), join(shared, here, "now.jsonl")]);
+    assert.deepEqual((await transcriptPaths("claude", dir, [], ["before", "now"], places)).paths, [join(shared, "-old-place", "before.jsonl"), join(shared, here, "now.jsonl")]);
     assert.equal(listed.length, 1);
-    assert.equal(transcriptPaths("claude", dir, [], ["before", "now"], places).paths.length, 2);
+    assert.equal((await transcriptPaths("claude", dir, [], ["before", "now"], places)).paths.length, 2);
     assert.equal(listed.length, 1, "where it was found");
     // Moved to another directory: there first, its workspace's still.
     const both = sessionPlaces({ cwd: moved, workspace });
     assert.deepEqual(both, [moved, workspace]);
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["now", "since"], both).paths, [join(shared, here, "now.jsonl"), join(shared, there, "since.jsonl")]);
+    assert.deepEqual((await transcriptPaths("claude", dir, [], ["now", "since"], both)).paths, [join(shared, here, "now.jsonl"), join(shared, there, "since.jsonl")]);
     assert.equal(listed.length, 1);
     // No places said: every project's looked in, as before.
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["since"]).paths, [join(shared, there, "since.jsonl")]);
+    assert.deepEqual((await transcriptPaths("claude", dir, [], ["since"])).paths, [join(shared, there, "since.jsonl")]);
     assert.equal(listed.length, 2);
     // Asked by the live view (the station's main thread): in its places alone, nothing listed (on a station each new chat's
     // look through every project held every device 22 s and 45 s, 2026-11-02); one that ran elsewhere is not found so.
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["fresh"], places, { anywhere: false }), { paths: [], current: false });
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["gone-before"], places, { anywhere: false }).paths, []);
+    assert.deepEqual(await transcriptPaths("claude", dir, [], ["fresh"], places, { anywhere: false }), { paths: [], current: false });
+    assert.deepEqual((await transcriptPaths("claude", dir, [], ["gone-before"], places, { anywhere: false })).paths, []);
     assert.equal(listed.length, 2, "nothing listed");
     // A new session's, not written yet: the projects listed once, not at each read; once written, where it works.
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [], current: false });
+    assert.deepEqual(await transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [], current: false });
     assert.equal(listed.length, 3);
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [], current: false });
+    assert.deepEqual(await transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [], current: false });
     assert.equal(listed.length, 3, "not listed again");
     writeFileSync(join(shared, here, "fresh.jsonl"), line("fresh", "m3"));
-    assert.deepEqual(transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [join(shared, here, "fresh.jsonl")], current: true });
+    assert.deepEqual(await transcriptPaths("claude", dir, [], ["fresh"], places), { paths: [join(shared, here, "fresh.jsonl")], current: true });
     assert.equal(listed.length, 3);
   } finally {
-    fs.readdirSync = real;
+    promises.readdir = real;
     syncBuiltinESMExports();
   }
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a Codex transcript is looked for through its days once, then where it was found", () => {
+test("a Codex transcript is looked for through its days once, then where it was found", async () => {
   const dir = temp();
   const day = join(dir, "transcripts", "codex", "sessions", "2026", "10", "29");
   mkdirSync(day, { recursive: true });
@@ -668,23 +680,23 @@ test("a Codex transcript is looked for through its days once, then where it was 
   const file = join(day, "rollout-2026-10-29T07-00-00-abc.jsonl");
   writeFileSync(file, "");
   const listed: string[] = [];
-  const real = fs.readdirSync;
-  fs.readdirSync = ((path: fs.PathLike, ...rest: unknown[]) => (listed.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as unknown as typeof real;
+  const real = promises.readdir;
+  promises.readdir = ((path: fs.PathLike, ...rest: unknown[]) => (listed.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as unknown as typeof real;
   syncBuiltinESMExports();
   try {
-    assert.deepEqual(transcriptPaths("codex", dir, [], ["abc"]).paths, [file]);
+    assert.deepEqual((await transcriptPaths("codex", dir, [], ["abc"])).paths, [file]);
     const once = listed.length;
     assert.ok(once > 1);
-    assert.deepEqual(transcriptPaths("codex", dir, [], ["abc"]).paths, [file]);
+    assert.deepEqual((await transcriptPaths("codex", dir, [], ["abc"])).paths, [file]);
     assert.equal(listed.length, once, "where it was found");
   } finally {
-    fs.readdirSync = real;
+    promises.readdir = real;
     syncBuiltinESMExports();
   }
   rmSync(dir, { recursive: true, force: true });
 });
 
-test("a reported Codex path follows the shared directory and finds a moved file", () => {
+test("a reported Codex path follows the shared directory and finds a moved file", async () => {
   const dir = temp();
   const shared = join(dir, "transcripts", "codex");
   const home = join(dir, "home");
@@ -696,21 +708,21 @@ test("a reported Codex path follows the shared directory and finds a moved file"
   const path = join(shared, suffix);
   const moved = join(shared, "2026", "11", "03", "rollout-moved-said.jsonl");
   try {
-    assert.equal(rememberCodexRollout(home, "said", join(dir, "elsewhere", "rollout-said.jsonl")), null);
-    assert.equal(rememberCodexRollout(home, "said", join(home, "sessions", "rollout-other.jsonl")), null);
-    assert.equal(rememberCodexRollout(home, "said", reported), reported);
-    assert.deepEqual(transcriptPaths("codex", dir, [home], ["said"]), { paths: [], current: false });
+    assert.equal(await rememberCodexRollout(home, "said", join(dir, "elsewhere", "rollout-said.jsonl")), null);
+    assert.equal(await rememberCodexRollout(home, "said", join(home, "sessions", "rollout-other.jsonl")), null);
+    assert.equal(await rememberCodexRollout(home, "said", reported), reported);
+    assert.deepEqual(await transcriptPaths("codex", dir, [home], ["said"]), { paths: [], current: false });
     writeFileSync(path, "");
-    assert.deepEqual(transcriptPaths("codex", dir, [home], ["said"]), { paths: [path], current: true });
+    assert.deepEqual(await transcriptPaths("codex", dir, [home], ["said"]), { paths: [path], current: true });
     rmSync(path);
     writeFileSync(moved, "");
-    assert.deepEqual(transcriptPaths("codex", dir, [home], ["said"]), { paths: [moved], current: true });
+    assert.deepEqual(await transcriptPaths("codex", dir, [home], ["said"]), { paths: [moved], current: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a reported Codex file moved before its first read can still be found in history", () => {
+test("a reported Codex file moved before its first read can still be found in history", async () => {
   const dir = temp();
   const home = join(dir, "home");
   const original = join(home, "sessions", "2026", "11", "03", "rollout-original-later.jsonl");
@@ -718,15 +730,15 @@ test("a reported Codex file moved before its first read can still be found in hi
   mkdirSync(dirname(moved), { recursive: true });
   writeFileSync(moved, "");
   try {
-    assert.equal(rememberCodexRollout(home, "later", original), original);
-    assert.deepEqual(transcriptPaths("codex", dir, [home], ["later"]), { paths: [moved], current: true });
-    assert.deepEqual(transcriptPaths("codex", dir, [home], ["later"], [], { anywhere: false }), { paths: [moved], current: true });
+    assert.equal(await rememberCodexRollout(home, "later", original), original);
+    assert.deepEqual(await transcriptPaths("codex", dir, [home], ["later"]), { paths: [moved], current: true });
+    assert.deepEqual(await transcriptPaths("codex", dir, [home], ["later"], [], { anywhere: false }), { paths: [moved], current: true });
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("finding a Codex transcript does not stat every other transcript", () => {
+test("finding a Codex transcript does not stat every other transcript", async () => {
   const dir = temp();
   const day = join(dir, "transcripts", "codex", "2026", "10", "29");
   mkdirSync(day, { recursive: true });
@@ -735,21 +747,21 @@ test("finding a Codex transcript does not stat every other transcript", () => {
   const file = join(day, "rollout-wanted.jsonl.zst");
   writeFileSync(file, "");
   const checked: string[] = [];
-  const real = fs.statSync;
-  const mutable = fs as unknown as { statSync: typeof fs.statSync };
-  mutable.statSync = ((path: fs.PathLike, ...rest: unknown[]) => (checked.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as typeof real;
+  const real = promises.stat;
+  const mutable = promises as unknown as { stat: typeof promises.stat };
+  mutable.stat = ((path: fs.PathLike, ...rest: unknown[]) => (checked.push(String(path)), (real as (...a: unknown[]) => unknown)(path, ...rest))) as typeof real;
   syncBuiltinESMExports();
   try {
-    assert.deepEqual(transcriptPaths("codex", dir, [], ["wanted"]).paths, [file.slice(0, -".zst".length)]);
+    assert.deepEqual((await transcriptPaths("codex", dir, [], ["wanted"])).paths, [file.slice(0, -".zst".length)]);
     assert.deepEqual(checked.filter((path) => others.includes(path)), [], "unrelated files need no metadata read");
   } finally {
-    mutable.statSync = real;
+    mutable.stat = real;
     syncBuiltinESMExports();
     rmSync(dir, { recursive: true, force: true });
   }
 });
 
-test("a Codex transcript can be in a linked directory", () => {
+test("a Codex transcript can be in a linked directory", async () => {
   const dir = temp();
   const root = join(dir, "transcripts", "codex");
   const day = join(dir, "elsewhere");
@@ -759,7 +771,7 @@ test("a Codex transcript can be in a linked directory", () => {
   writeFileSync(file, "");
   symlinkSync(day, join(root, "link"), "dir");
   try {
-    assert.deepEqual(transcriptPaths("codex", dir, [], ["linked"]).paths, [join(root, "link", "rollout-linked.jsonl")]);
+    assert.deepEqual((await transcriptPaths("codex", dir, [], ["linked"])).paths, [join(root, "link", "rollout-linked.jsonl")]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -773,14 +785,19 @@ test("how fast the model writes is told once half a second of it has come", asyn
   hub.event("s", { kind: "start", id: "x", step: "text" });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   const rates = () => got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : []));
+  await hub.idle();
   assert.deepEqual(rates(), [], "a first few bytes say nothing of the pace");
   t.mock.timers.tick(600);
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
+  await hub.idle();
   assert.equal(rates().length, 1, "then told, and not again within the second");
+  await hub.idle();
   assert.ok(rates()[0]! > 0);
   hub.event("s", { kind: "end", id: "x" });
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
+  await hub.idle();
   assert.ok(!got.some((m) => m.type === "step" && m.event.kind === "delta"), "no delta is told");
   hub.close();
   await settle(1);
@@ -804,22 +821,27 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   const [first] = delta(50);
   assert.deepEqual(first, { kind: "delta", id: "m:0", field: "text", text: "", tokens: 50 });
   hub.event("s", first!);
+  await hub.idle();
   assert.deepEqual(rates(), [50], "50 tokens in the second since the block began");
   // A pause of four seconds, then 100 tokens: 25 a second, not 100 in a quarter.
   t.mock.timers.tick(4000);
   for (const e of delta(100)) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 25);
   // Each count over the time it covers, the window's two: 200 tokens in the five seconds since the first began.
   t.mock.timers.tick(1000);
   for (const e of delta(100)) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 40);
   // The pause out of the window, 100 a second.
   for (let i = 0; i < 2; i++) {
     t.mock.timers.tick(1000);
     for (const e of delta(100)) hub.event("s", e);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 100);
   for (const e of claude.feed(frame({ type: "content_block_stop", index: 0 }))) hub.event("s", e);
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
   hub.close();
   await settle(1);
@@ -837,6 +859,7 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     hub.event("s", { kind: "delta", id: "cmd", field: "output", text: "x".repeat(100_000) });
     t.mock.timers.tick(500);
   }
+  await hub.idle();
   assert.deepEqual(rates(), [], "a call's output is no rate");
   // 40 tokens a quarter second of English, then of Chinese: 160 token/s each (each long enough to fill the window).
   hub.event("s", { kind: "start", id: "a", step: "text" });
@@ -844,13 +867,14 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     hub.event("s", { kind: "delta", id: "a", field: "text", text: "x".repeat(160) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160);
   for (let i = 0; i < 12; i++) {
     hub.event("s", { kind: "delta", id: "a", field: "text", text: "字".repeat(60) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160, "a Chinese character is not 3/4 of a token");
-  assert.equal(tokensOf("abcd字字字"), 3);
   // A subagent writing beside it adds to it; one of them ending leaves the other's.
   hub.event("s", { kind: "start", id: "b", step: "text", subagent: true, parent: "agent" });
   for (let i = 0; i < 12; i++) {
@@ -859,37 +883,47 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     t.mock.timers.tick(250);
   }
   // Told as the first of the two writes of a quarter comes: the other's of that quarter not in yet.
+  await hub.idle();
   assert.equal(rates().at(-1), 300);
   hub.event("s", { kind: "end", id: "a" });
+  await hub.idle();
   assert.notEqual(rates().at(-1), 0, "the subagent still writes");
   for (let i = 0; i < 12; i++) {
     hub.event("s", { kind: "delta", id: "b", field: "text", text: "x".repeat(160) });
     t.mock.timers.tick(250);
   }
+  await hub.idle();
   assert.equal(rates().at(-1), 160);
   hub.event("s", { kind: "end", id: "b" });
+  await hub.idle();
   assert.equal(rates().at(-1), 0);
   hub.close();
   await settle(1);
 });
 
 // For client cores before 0.1.2301, which say what a running call does by its step (a newer one: by its transcript entry).
-test("a call's step carries what says what it runs, whole, however long the command before it", () => {
+test("a call's step carries what says what it runs, whole, however long the command before it", async () => {
   const description = "Run account-proxy tests 3 times with new mock clock";
   const command = `cd station && ${"node --test test/account-proxy.test.ts && ".repeat(8)}true`;
   const hub = new LiveHub(() => null);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
   hub.event("s", { kind: "start", id: "t", step: "tool", tool: "Bash", input: JSON.stringify({ command, description, timeout: 600000 }) });
-  const told = got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [m.event.input] : []));
-  assert.deepEqual(JSON.parse(told[0]!), { command: [...command].slice(0, 300).join(""), description });
-  assert.equal(briefInput("ls -la"), "ls -la", "a runtime's plain input stays as it is");
-  assert.equal(briefInput("x".repeat(400)), "x".repeat(300));
-  assert.equal(briefInput('{"command": "echo hi", "descrip'), '{"command": "echo hi", "descrip', "an input cut short stays cut short");
+  const told = () => got.flatMap((m) => (m.type === "step" && m.event.kind === "start" ? [m.event.input] : []));
+  await hub.idle();
+  assert.deepEqual(JSON.parse(told()[0]!), { command: [...command].slice(0, 300).join(""), description });
+  const briefInput = async (input: string) => {
+    hub.event("s", { kind: "start", id: "t", step: "tool", tool: "Bash", input });
+    await hub.idle();
+    return told().at(-1);
+  };
+  assert.equal(await briefInput("ls -la"), "ls -la", "a runtime's plain input stays as it is");
+  assert.equal(await briefInput("x".repeat(400)), "x".repeat(300));
+  assert.equal(await briefInput('{"command": "echo hi", "descrip'), '{"command": "echo hi", "descrip', "an input cut short stays cut short");
   hub.close();
 });
 
-test("what stations before linked into the profile homes (the home workspace's memory and skills) is taken away; anything else is left", () => {
+test("what stations before linked into the profile homes (the home workspace's memory and skills) is taken away; anything else is left", async () => {
   const root = temp();
   const agent = join(root, "agent");
   mkdirSync(join(agent, "skills", "team"), { recursive: true });
@@ -916,8 +950,8 @@ test("what stations before linked into the profile homes (the home workspace's m
     { id: "synced", runtimes: ["claude" as const], home: synced },
     { id: "own", runtimes: ["claude" as const], home: own },
   ];
-  unlinkAgentHome(agent, profiles);
-  unlinkAgentHome(agent, profiles); // idempotent
+  await unlinkAgentHome(agent, profiles);
+  await unlinkAgentHome(agent, profiles); // idempotent
   assert.deepEqual(readdirSync(cc), ["grok"]);
   assert.deepEqual(readdirSync(join(cc, "grok")), []);
   assert.deepEqual(readdirSync(both), []);
@@ -949,12 +983,12 @@ test("a session's workspace has its workspace's skills where it runs: one gone i
   rmSync(root, { recursive: true, force: true });
 });
 
-test("every profile's transcripts are a runtime's one shared place", () => {
+test("every profile's transcripts are a runtime's one shared place", async () => {
   const root = temp();
   const data = join(root, "data");
   const [both, own] = [join(data, "homes", "both"), join(root, "own")];
   mkdirSync(join(own, "sessions"), { recursive: true });
-  linkTranscripts(data, [
+  await linkTranscripts(data, [
     { id: "both", runtimes: ["claude", "codex"], home: both },
     { id: "own", runtimes: ["codex"], home: own },
   ]);
@@ -965,7 +999,7 @@ test("every profile's transcripts are a runtime's one shared place", () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("transcripts a home kept itself go to the shared place, a runtime still writing them goes on there, and a home no profile names any more gives its own", () => {
+test("transcripts a home kept itself go to the shared place, a runtime still writing them goes on there, and a home no profile names any more gives its own", async () => {
   const data = temp();
   const shared = join(data, "transcripts", "claude", "w");
   const [now, was, gone] = [join(data, "homes", "a-sync"), join(data, "homes", "a"), join(data, "homes", "b")];
@@ -983,7 +1017,7 @@ test("transcripts a home kept itself go to the shared place, a runtime still wri
   // Claude Code's own sessions/ in a home of its: not Codex's transcripts.
   mkdirSync(join(gone, "sessions"), { recursive: true });
   writeFileSync(join(gone, "sessions", "123.json"), "{}");
-  linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
+  await linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
   for (const home of [now, was, gone]) assert.equal(readlinkSync(join(home, "projects")), join(data, "transcripts", "claude"));
   assert.ok(lstatSync(join(gone, "sessions")).isDirectory());
   assert.equal(readFileSync(join(shared, "s1.jsonl"), "utf8"), line("one", "m1") + line("two", "m2"), "the copy from before it grew gives way");
@@ -993,21 +1027,21 @@ test("transcripts a home kept itself go to the shared place, a runtime still wri
   for (const home of [now, was, gone]) assert.deepEqual(readdirSync(home).filter((n) => n.startsWith("projects.")), [], "nothing kept aside");
   // The runtime started in the home it ran in goes on writing there: the same transcript.
   appendFileSync(join(was, "projects", "w", "s1.jsonl"), line("three", "m4"));
-  assert.deepEqual(transcriptPaths("claude", data, [now], ["s0", "s1", "s2"]).paths.map((p) => readTimeline("claude", p).map((e) => e.text)), [["old"], ["one", "two", "three"], ["new"]]);
+  assert.deepEqual((await transcriptPaths("claude", data, [now], ["s0", "s1", "s2"])).paths.map((p) => readTimeline("claude", p).map((e) => e.text)), [["old"], ["one", "two", "three"], ["new"]]);
   // Linked again (the config changed): as it is.
-  linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
+  await linkTranscripts(data, [{ id: "a", runtimes: ["claude"], home: now }]);
   assert.equal(readFileSync(join(shared, "s1.jsonl"), "utf8"), line("one", "m1") + line("two", "m2") + line("three", "m4"));
   rmSync(data, { recursive: true, force: true });
 });
 
-test("a transcript that went its own way in two homes keeps the shared place's and is left aside, not lost", () => {
+test("a transcript that went its own way in two homes keeps the shared place's and is left aside, not lost", async () => {
   const data = temp();
   const [a, b] = [join(data, "homes", "a"), join(data, "homes", "b")];
   for (const [home, text] of [[a, "mine"], [b, "theirs"]] as const) {
     mkdirSync(join(home, "projects", "w"), { recursive: true });
     writeFileSync(join(home, "projects", "w", "s.jsonl"), line(text, "m"));
   }
-  linkTranscripts(data, [
+  await linkTranscripts(data, [
     { id: "a", runtimes: ["claude"], home: a },
     { id: "b", runtimes: ["claude"], home: b },
   ]);
@@ -1019,33 +1053,33 @@ test("a transcript that went its own way in two homes keeps the shared place's a
   rmSync(data, { recursive: true, force: true });
 });
 
-test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only", () => {
+test("the station's own skills are written and kept as the station has them; the feedback skill on the stable channel only", async () => {
   const root = temp();
   const home = join(root, "agent");
   mkdirSync(join(home, "skills", "team-skill"), { recursive: true });
   writeFileSync(join(home, "skills", "team-skill", "SKILL.md"), "ours");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   const path = join(home, "skills", "stillfail-jobs", "SKILL.md");
   assert.ok(readFileSync(path, "utf8").startsWith("---\nname: stillfail-jobs\n"));
   assert.equal(readFileSync(path, "utf8"), readFileSync(new URL("../src/skills/stillfail-jobs.md", import.meta.url), "utf8"), "the station's text");
   writeFileSync(path, "edited by hand");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(readFileSync(path, "utf8").includes("job_start"), "the station's own, as it has it");
   assert.equal(readFileSync(join(home, "skills", "team-skill", "SKILL.md"), "utf8"), "ours", "the team's stay");
   const script = join(home, "skills", "stillfail-github-ci", "ci-wait.sh");
   assert.equal(readFileSync(script, "utf8"), readFileSync(new URL("../src/skills/stillfail-github-ci/ci-wait.sh", import.meta.url), "utf8"), "the scripts a skill brings, beside it");
   assert.ok(statSync(script).mode & 0o100, "runnable");
   writeFileSync(script, "edited by hand");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(readFileSync(script, "utf8").includes("gh pr checks"), "the station's script, as it has it");
   const feedback = join(home, "skills", "stillfail-feedback", "SKILL.md");
-  writeBuiltinSkills(home, true);
+  await writeBuiltinSkills(home, true);
   assert.ok(readFileSync(feedback, "utf8").includes("feedback_send"));
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(!existsSync(join(home, "skills", "stillfail-feedback")));
-  writeBuiltinSkills(home, true);
+  await writeBuiltinSkills(home, true);
   writeFileSync(join(home, "skills", "stillfail-feedback", "notes.md"), "mine");
-  writeBuiltinSkills(home, false);
+  await writeBuiltinSkills(home, false);
   assert.ok(existsSync(join(home, "skills", "stillfail-feedback", "notes.md")));
   rmSync(root, { recursive: true, force: true });
 });
@@ -1063,8 +1097,8 @@ test("the deployment's skills are linked into an agents' home beside the station
   mkdirSync(join(site, "team"));
   writeFileSync(join(site, "team", "SKILL.md"), "the deployment's");
   writeFileSync(join(site, "machine", "SKILL.md"), "---\nname: machine\n---\nfacts");
-  writeBuiltinSkills(home, false, site);
-  writeBuiltinSkills(home, false, site); // idempotent
+  await writeBuiltinSkills(home, false, site);
+  await writeBuiltinSkills(home, false, site); // idempotent
   const skills = join(home, "skills");
   assert.equal(readlinkSync(join(skills, "machine")), join(site, "machine"));
   assert.equal(readlinkSync(join(skills, "later")), join(site, "later"), "linked before its SKILL.md is written");
@@ -1077,9 +1111,9 @@ test("the deployment's skills are linked into an agents' home beside the station
   writeFileSync(join(site, "later", "SKILL.md"), "---\nname: later\n---\n");
   rmSync(join(site, "team"), { recursive: true });
   mkdirSync(join(site, "gone"));
-  linkSiteSkills(skills, site);
+  await linkSiteSkills(skills, site);
   rmSync(join(site, "gone"), { recursive: true });
-  linkSiteSkills(skills, site);
+  await linkSiteSkills(skills, site);
   assert.ok(!existsSync(join(skills, "gone")) && lstatSync(join(skills, "gone"), { throwIfNoEntry: false }) === undefined, "a link to one gone is taken away");
   assert.equal(readFileSync(join(skills, "team", "SKILL.md"), "utf8"), "ours", "the team's own is never taken");
   await sessionSkills(workspace, skills);
@@ -1087,7 +1121,7 @@ test("the deployment's skills are linked into an agents' home beside the station
   assert.ok(existsSync(join(workspace, ".claude", "skills", "later", "SKILL.md")));
   // Without a site, nothing of it.
   const plain = join(root, "plain");
-  writeBuiltinSkills(plain, false, null);
+  await writeBuiltinSkills(plain, false, null);
   assert.deepEqual(readdirSync(join(plain, "skills")).filter((n) => !n.startsWith("stillfail-")), []);
   rmSync(root, { recursive: true, force: true });
 });
@@ -1112,8 +1146,29 @@ test("the pool skips broken, spent and unfit profiles, then prefers headroom, th
   assert.equal(pickProfile([a, c], "m9", signals(), false).id, "c", "a connect's binding still runs on its healthy profiles");
   // A used-up window whose refill is due runs again, before its allowance is read again.
   health.b = { check: ok("ok"), quota: { ...quota(100), windows: [{ label: "5 小时", usedPercent: 100, resetsAt: 10 }] } };
-  assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 9 }, true).id, "a", "neither can run: still one");
+  assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 9 }, true).id, "b", "neither can run: one that signs in before one whose check failed");
   assert.equal(pickProfile([a, b], "m1", { ...signals(), now: () => 10 }, true).id, "b");
+});
+
+test("with no usable account, the pool prefers one that signs in over stale headroom on a broken login", () => {
+  const broken = profile("broken", ["m"]);
+  const spent = profile("spent", ["m"]);
+  const other = profile("other", ["other-model"]);
+  for (const state of ["failed", "login"]) {
+    for (const limit of [{ quota: quota(100) }, { quota: quota(10), spent: true }]) {
+      const health: Record<string, any> = {
+        broken: { check: ok(state), quota: quota(0) },
+        spent: { check: ok("ok"), ...limit },
+        other: { check: ok("ok"), quota: quota(0) },
+      };
+      const signals = { health: (id: string) => health[id], load: () => 0, lastPicked: () => 0, now: () => 0 };
+      assert.equal(pickProfile([broken, spent, other], "m", signals, true).id, "spent");
+      assert.equal(pickProfile([broken, spent], "old-model", signals, false).id, "spent", "legacy bindings use the same fallback");
+      assert.equal(pickProfile([broken, other], "m", signals, true).id, "broken", "fallback still respects the chosen model");
+      health.broken.check = ok("ok");
+      assert.equal(pickProfile([broken, spent], "m", signals, true).id, "broken", "a recovered account with quota is usable again");
+    }
+  }
 });
 
 test("the pool runs sessions on subscriptions, however full, and on an account billed per use only when none can", () => {
@@ -1292,20 +1347,24 @@ test("what a session has going in the background and its checklist are told whol
   // As it joins: its checklist as its transcript says it, nothing in the background.
   assert.deepEqual(work().at(-1), { type: "work", tasks: [], plan: [{ text: "Read", status: "completed" }, { text: "Fix", status: "in_progress" }] });
   hub.event("s", { kind: "tasks", tasks: [{ id: "a1", kind: "agent", description: "gaps" }] });
+  await hub.idle();
   await time.adjust(65_000);
   hub.event("s", { kind: "tasks", tasks: [{ id: "a1", kind: "agent", description: "gaps" }, { id: "b1", kind: "command", description: "watch CI", startedAt: 60_000 }] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.tasks, [
     { id: "a1", kind: "agent", description: "gaps", startedAt: 0, elapsedMs: 65_000 },
     { id: "b1", kind: "command", description: "watch CI", startedAt: 60_000, elapsedMs: 5_000 },
   ]);
   // The turn ends: they stay.
   await hub.turnEnded("s");
-  assert.equal(hub.now("s").find((m) => m.type === "work") !== undefined, true);
-  assert.equal((hub.now("s").find((m) => m.type === "work") as any).tasks.length, 2);
+  const now = (await hub.nowOf(["s"])).s!;
+  assert.equal(now.find((m) => m.type === "work") !== undefined, true);
+  assert.equal((now.find((m) => m.type === "work") as any).tasks.length, 2);
   // Its checklist written again: told.
   const before = work().length;
   appendFileSync(path, todos("p2", [["Read", "completed"], ["Fix", "completed"], ["Ship", "in_progress"]]));
   watched(hub, "s");
+  await hub.idle();
   await time.adjust(40);
   await settle();
   await hub.idle();
@@ -1313,9 +1372,11 @@ test("what a session has going in the background and its checklist are told whol
   assert.deepEqual(work().at(-1)!.plan.map((p) => p.status), ["completed", "completed", "in_progress"]);
   // Its process ended: nothing in the background.
   hub.event("s", { kind: "tasks", tasks: [] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.tasks, []);
   // A runtime that says its plan apart (ACP): that one is told.
   hub.event("s", { kind: "plan", plan: [{ text: "Survey", status: "pending" }] });
+  await hub.idle();
   assert.deepEqual(work().at(-1)!.plan, [{ text: "Survey", status: "pending" }]);
   hub.close();
   rmSync(dir, { recursive: true, force: true });

@@ -590,6 +590,13 @@ for (const wins of ["bob", "this device"] as const) {
     if (wins === "bob") {
       const off = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.disable", { workspace: "ws" }), catch: (e) => e as CoreError }));
       assert.equal(off.error?.code, "lock_root_only", off.error?.message);
+      // (turning it on again is the root's person's alone too: refused before anyone is asked, nothing said on this
+      // person's own log, where an `open` counts for nothing)
+      const own = w.inner.adb.personal().entries("s1").length;
+      const asked = w.asked();
+      const on = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.open", { workspace: "ws" }), catch: (e) => e as CoreError }));
+      assert.equal(on.error?.code, "lock_root_only", on.error?.message);
+      assert.deepEqual([w.inner.adb.personal().entries("s1").length, w.asked()], [own, asked], "nothing said, nobody asked");
     }
   });
 }
@@ -1108,6 +1115,20 @@ test("words: moved and turned off by the root's person: the page offers turning 
   assert.equal(w.r.host.secureAsked.at(-1)?.reason, "重新开启安全模式");
   const rows = (lockView(w.inner, "ws").pending as { text: string }[]).map((x) => x.text);
   assert.ok(rows.some((x) => /^重新开启安全模式：已记下，等 .+ 上线后生效$/.test(x)), JSON.stringify(rows));
+});
+
+// This device let in by its person's own lock, which does not say the signer it keeps (one from before signers were
+// said there), the workspace's lock naming another: no approval here makes it sign (views/pair.ts `waitingIn` asks it in
+// no workspace), so the page offers none (`unsigned`), but says why and the press that says its signer on that lock.
+test("words: on its person's own lock without its signer said there: why it does not sign and 验证 (lock.confirmSigner), no approval offered; said, gone", async () => {
+  const w = await setUp({ early: true, mine: "otherKey" });
+  const page = lockView(w.inner, "ws");
+  assert.deepEqual([page.signs, page.me.unsigned ?? false, page.me.pair ?? null, page.me.stateText ?? null, page.me.confirmText ?? null], [false, false, null, "此设备需完成一次验证后才能成为受信任设备", "验证"]);
+  const said = await w.run(Effect.tryPromise({ try: () => w.r.ask("lock.confirmSigner", { workspace: "ws" }), catch: (e) => e as CoreError }));
+  assert.equal(said.error, undefined, said.error?.message);
+  assert.equal(w.asked(), 1, "the person asked once");
+  const after = lockView(w.inner, "ws");
+  assert.deepEqual([after.me.unsigned ?? false, after.me.stateText ?? null, after.me.confirmText ?? null], [false, null, null], "said: nothing more to say");
 });
 
 // A device the chain as it moved carries, not on its person's log, taken off by its person's own device after the move

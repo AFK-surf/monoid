@@ -3,13 +3,8 @@
 // an execution history shows it before it is opened (`brief`).
 
 ///|
-/// What the station says of a call taken out of a script once the script's output comes (station.transcript
-/// .inScriptOutput): in the language a read is asked in, as the pool gives it (a search's: Chinese).
-pub let in_script_output : Ref[String] = { val: "（结果在脚本的输出里）" }
-
-///|
 fn entry(at : String?, kind : String, text : String, tool? : String, ok? : Bool, call_id? : String, subagent? : Bool = false) -> Entry {
-  { at, kind, text, tool, ok, call_id, subagent, said: None }
+  { at, kind, text, tool, ok, call_id, subagent, said: None, in_script: false }
 }
 
 ///|
@@ -123,6 +118,55 @@ fn dsh(r : @jsjson.JValue, out : Array[Entry]) -> Unit raise {
       }
     }
   } else if kind == "tool/result" {
+    let e = entry(at, "tool_result", clip(dsh_text(get(message, "content"))), ok=!(get(message, "isError") is Some(Bool(true))))
+    out.push({ ..e, call_id: string_of(get(message, "toolCallId")) })
+  }
+}
+
+///|
+/// Pi's session file (agents/pi.ts names it): its entries' messages, a person's words, the model's (its text, its
+/// thinking, its calls with their arguments), each call's result; what Pi keeps of its own (its system prompt, a model or
+/// level changed, a compaction's summary) is no entry.
+fn pi(r : @jsjson.JValue, out : Array[Entry]) -> Unit {
+  guard string_of(get(Some(r), "type")) == Some("message") else { return }
+  let at = string_of(get(Some(r), "timestamp"))
+  let message = get(Some(r), "message")
+  let role = string_of(get(message, "role")).unwrap_or("")
+  if role == "user" {
+    let text = match get(message, "content") {
+      Some(Str(s)) => @jsjson.raw_text(s)
+      c => dsh_text(c)
+    }
+    if trim(text) != "" {
+      out.push(entry(at, "user", clip(text)))
+    }
+  } else if role == "assistant" {
+    guard get(message, "content") is Some(Arr(blocks)) else { return }
+    for block in blocks {
+      let b = Some(block)
+      let t = string_of(get(b, "type"))
+      if t == Some("text") {
+        let text = string_of(get(b, "text")).unwrap_or("")
+        if trim(text) != "" {
+          out.push(entry(at, "assistant", clip(text)))
+        }
+      } else if t == Some("thinking") {
+        let text = string_of(get(b, "thinking")).unwrap_or("")
+        if trim(text) != "" {
+          out.push(entry(at, "thinking", clip(text)))
+        }
+      } else if t == Some("toolCall") {
+        let name = string_of(get(b, "name")).unwrap_or("")
+        let input = get(b, "arguments")
+        let args = @jsjson.stringify_pretty(match input {
+          None | Some(Null) => Obj([])
+          Some(v) => v
+        })
+        let e = entry(at, "tool_call", if kept_whole(name) { args } else { clip(args) }, tool=name)
+        out.push(with_brief({ ..e, call_id: string_of(get(b, "id")) }, input))
+      }
+    }
+  } else if role == "toolResult" {
     let e = entry(at, "tool_result", clip(dsh_text(get(message, "content"))), ok=!(get(message, "isError") is Some(Bool(true))))
     out.push({ ..e, call_id: string_of(get(message, "toolCallId")) })
   }
@@ -442,7 +486,7 @@ fn codex(r : @jsjson.JValue, state : ReadState, out : Array[Entry]) -> Unit {
       state.inner.remove(id)
     }
     for i in 0..<count {
-      out.push(result(!failed, Some("\{call_id.unwrap_or("")}#\{i}"), in_script_output.val))
+      out.push({ ..result(!failed, Some("\{call_id.unwrap_or("")}#\{i}"), ""), in_script: true })
     }
   }
 }
@@ -695,7 +739,7 @@ pub fn brief(e : Entry) -> (Entry, Bool) {
 }
 
 ///|
-/// An entry as JSON, its fields as transcript.ts's object has them (at, kind, text, tool, ok, callId, subagent, brief).
+/// An entry as JSON, its fields as transcript.ts's object has them (at, kind, text, tool, ok, callId, subagent, brief, inScript).
 pub fn entry_json(e : Entry, briefed : Bool) -> Json {
   let out : Map[String, Json] = {
     "at": match e.at { Some(a) => Json::string(a); None => Json::null() },
@@ -716,6 +760,9 @@ pub fn entry_json(e : Entry, briefed : Bool) -> Json {
   }
   if briefed {
     out["brief"] = Json::boolean(true)
+  }
+  if e.in_script {
+    out["inScript"] = Json::boolean(true)
   }
   Json::object(out)
 }

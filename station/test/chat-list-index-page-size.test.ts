@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { readPreparedDefaultHome } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap, readPreparedRecentHome } from "../src/store/chat-list-home-overlap.ts";
-import { installRecentChatIndex, readGlobalRecentChatIndex } from "../src/store/chat-list-index.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { readPreparedDefaultHome } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap, readPreparedRecentHome } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { installRecentChatIndex, readGlobalRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 test("recent index pages reject sizes that could make a bounded read unbounded", () => {

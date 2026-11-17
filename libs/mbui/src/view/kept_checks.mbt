@@ -229,7 +229,10 @@ fn Tree::boxes_kept_said(self : Tree) -> String? {
     let same = kept.length() == whole.length() &&
       kept.iter().zip(whole.iter()).all(fn(p) { physical_equal(p.0, p.1) })
     if !same {
-      return Some("node \{at}'s boxes kept are not what it holds put again in order: \{kept.length()} kept, \{whole.length()} held")
+      let (made, part) = self.source_of({ at, gen: n.gen })
+      return Some(
+        "node \{at}'s boxes kept are not what it holds put again in order: \{kept.length()} kept, \{whole.length()} held; made at \{made}\{if part != "" { " in " + part } else { "" }}",
+      )
     }
   }
   None

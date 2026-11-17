@@ -68,7 +68,7 @@ let host_outside : Ref[&@hostapi.Host?] = Ref(None)
 /// then (a page a fixture opens over its made-up core, its words) asks the host outside every Tester, as the first
 /// run's did, never the run before's fake, whose environment said that test's language and window (main b80ec9fc's
 /// day's run, 43674422230: xshare_wbtest's chat menu made in English after station_peek_wbtest's last screen in
-/// English, its 分享… not there, the program stopped). A Tester of that run read after it says it was ended.
+/// English, its 分享 not there, the program stopped). A Tester of that run read after it says it was ended.
 ///
 /// A run begun as a Tester's window's tree is first made (its source made then, its fake host in place:
 /// ask_focus_back_wbtest's), before it has drawn a frame, is that Tester's own: its fake stays.
@@ -119,9 +119,12 @@ pub fn Tester::end_run(self : Tester, restore : &@hostapi.Host) -> Unit {
 /// the packages over it: on_reset) emptied; then checked (leaked_state), so that what is added later and not
 /// forgotten here fails the next Tester at once rather than a test somewhere else.
 fn reset_globals() -> Unit {
+  // (the run before's windows beside its first let go of, its first window's state in place: window_slots.mbt)
+  windows_reset()
   window_zoom_reset()
   journal_reset()
   tree_frames_reset()
+  perf_tree_reset()
   run_let_go()
   // A run can end with a frame's resource handover still queued. Finish it before resetting the next run.
   frame_afters_run()
@@ -156,6 +159,10 @@ fn reset_globals() -> Unit {
   reset_glass()
   reveal_reset()
   clear_shapes()
+  // (the paragraphs laid out of those shapes with them: their glyphs' keys the run before's, which a run whose host
+  // gave others (a Tester over another kept text) would draw as its own; text_cache.generation, put back below, does
+  // not tell the two runs apart)
+  rich_kept.clear()
   text_cache.fonts.clear()
   text_cache.metrics.clear()
   glyphs_forget()
@@ -177,6 +184,7 @@ fn reset_globals() -> Unit {
   messages_reset()
   drop_reset()
   fake_op.val = None
+  fake_decode_bytes_after.val = []
   fake_op_runs.clear()
   fake_op_pending.val = false
   fake_autofill.val = false
@@ -212,6 +220,8 @@ fn reset_globals() -> Unit {
   stacked_views.clear()
   views_stirred.clear()
   streams_reset()
+  fake_terminals.clear()
+  fake_terminal_next.val = 0
   native_nodes.clear()
   picture_at.clear()
   wheels.clear()
@@ -428,6 +438,8 @@ pub fn Tester::new(
     native: native.unwrap_or(platform_pointing(platform)),
     keyboard: keyboard.unwrap_or(platform_keyboard(platform)),
     reduce_transparency: false,
+    increase_contrast: false,
+    thermal_throttled: false,
     reduce_motion: false,
     logs: [],
     image_sizes: {},
@@ -448,6 +460,7 @@ pub fn Tester::new(
     generation_on_face_add: Ref(false),
     tabular: 0.0,
     cjk_marks: false,
+    words_spaced: @hostapi.words_spaced_none,
     glyph_box: (6.0, 10.0),
     faces_wider: {},
     latin: None,
@@ -469,6 +482,12 @@ pub fn Tester::new(
     windows_opened: [],
     windows_closed: [],
     windows_fronted: [],
+    windows_in_process: false,
+    window_ids: 0,
+    window_at: 0,
+    window_sizes: {},
+    window_ids_fronted: [],
+    window_ids_closed: [],
     opened: [],
     dark,
     inset: window_inset,
@@ -597,6 +616,7 @@ pub fn Tester::new(
   // (each frame of the looks by the clock alone drawn whole after it as well, and the two compared: frame_watch.mbt)
   looks_check.val = true
   looks_made_at.val = loc.to_string()
+  passes_begin()
   focus_off_begun()
   // (the file each bar of its is held by: motion_runs)
   if motion_runs() {
@@ -613,6 +633,7 @@ pub fn Tester::new(
     }
   }
   looks_unjudged.val = false
+  rows_parted_said.val = ""
   motion_unjudged.val = false
   words_over_begin(loc.to_string(), words_over_held)
   rows_steady_begin(loc.to_string(), words_over_held)
@@ -1190,6 +1211,14 @@ fn Tester::frame_at_said(self : Tester, at : Double) -> String? {
 /// there, nothing later: no step or end taken past it), what is drawn sampled at `shown` (a moment later, as a host's
 /// frame is drawn for its vsync). The next events may come at any moment from `now`.
 pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Unit {
+  // (the first window's frame, its state in place, then each window of the run beside it: tester_windows.mbt)
+  as_window(0, fn() { self.frame_shown_first(now, shown) })
+  self.frames_beside(now, shown)
+}
+
+///|
+/// The first window's frame of frame_shown_at's, with every check the Tester holds it to.
+fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Unit {
   let at = now
   // (what was posted told at its moment, and what the fake host does at its own moments up to this frame's, before the
   // clock comes there: posted_tell, FakeHost::due)
@@ -1234,6 +1263,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
+  // (how many times it laid the window's tree out, and each event since the frame before: tester_passes.mbt)
+  self.hold_passes()
   self.hold_a11y_whole()
   self.frames = self.frames + 1
   self.fake.drawn = true
@@ -1298,6 +1329,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
       }
     _ => ()
   }
+  // (what the Tester's own checks of it ran, none of the next frame's: tester_passes.mbt)
+  passes_counted_now()
 }
 
 ///|
@@ -1668,6 +1701,13 @@ pub fn Tester::instances(self : Tester) -> Int {
 /// 390 844", "control 1 1 0", "close 1", "pdf 2400"…), in order.
 pub fn Tester::views(self : Tester) -> Array[String] {
   self.fake.views
+}
+
+///|
+/// The nodes of the window's tree that hold a native view now (ui's native), in the order they were made: one made
+/// again for what it shows is another node, though its view (kept past it) stays open.
+pub fn Tester::native_nodes(_self : Tester) -> Array[@view.NodeId] {
+  tree_natives.keys().collect()
 }
 
 ///|
@@ -2161,7 +2201,12 @@ pub fn Tester::ctx(self : Tester) -> Ctx {
 /// next frame on.
 pub fn Tester::scroll_to(self : Tester, item : Int) -> Unit {
   match self.list_on() {
-    Old(st) => st.scroll_to(item)
+    // (put there at once by the test: what it shows moves for no row's cause, as Ctx::list_scroll_to says it,
+    // app_scrolled; rows_steady.mbt)
+    Old(st) => {
+      st.scroll_to(item)
+      st.put_at = g().clock
+    }
     // (a page's list: that row brought to its top as its ListPlace brings it, as it is next laid out)
     Tree(l) => view_app.val.unwrap().list_bring(l.list, item)
   }
@@ -2172,7 +2217,10 @@ pub fn Tester::scroll_to(self : Tester, item : Int) -> Unit {
 ///|
 pub fn Tester::scroll_to_end(self : Tester) -> Unit {
   match self.list_on() {
-    Old(st) => st.scroll_to_end()
+    Old(st) => {
+      st.scroll_to_end()
+      st.put_at = g().clock
+    }
     Tree(l) => view_app.val.unwrap().list_to_end(l.list)
   }
   test_stepped()
@@ -2518,6 +2566,21 @@ pub fn Tester::perf_said(self : Tester) -> (Array[Bool], Array[String]) {
 pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_reduce_transparency")
   self.fake.reduce_transparency = on
+}
+
+///|
+/// The system slows the device down for its heat from now on, or no longer: the host asks a frame as it changes.
+pub fn Tester::set_thermal_throttled(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_thermal_throttled")
+  self.fake.thermal_throttled = on
+  self.fake.wants = true
+}
+
+///|
+/// The system asks for more contrast from now on, or no longer.
+pub fn Tester::set_increase_contrast(self : Tester, on : Bool) -> Unit {
+  host_setting_set("set_increase_contrast")
+  self.fake.increase_contrast = on
 }
 
 ///|
@@ -2923,6 +2986,14 @@ pub fn Tester::decode_after(self : Tester, src : String, ms : Double) -> Unit {
 }
 
 ///|
+/// Bytes `data` handed over for a decode (an image added by its bytes: `add_image`) take `ms` to decode, as
+/// Tester::decode_after's source does: its host says each decode of them is done `ms` after it is asked for.
+pub fn Tester::decode_bytes_after(self : Tester, data : Bytes, ms : Double) -> Unit {
+  ignore(self)
+  fake_decode_bytes_after.val.push((data, ms))
+}
+
+///|
 /// Makes up an image at `src`, `w` × `h` pixels, for views to load.
 pub fn Tester::add_image(self : Tester, src : String, w : Int, h : Int) -> Unit {
   self.fake.image_sizes[src] = (w, h)
@@ -3092,6 +3163,33 @@ pub fn Tester::drawn_image_clips(
 }
 
 ///|
+/// How round each image instance of the last frame is drawn, in drawn_images' order: its own corners (36-39: top left,
+/// then round it; 0 square) and the rounded clip outside its own that cuts it (40-43, left, top, right, bottom; its
+/// corners 44-47, all 0 where there is none).
+pub fn Tester::drawn_image_rounds(
+  self : Tester,
+) -> Array[((Double, Double, Double, Double), (Double, Double, Double, Double), (Double, Double, Double, Double))] {
+  self.reads_own()
+  ignore(self)
+  let c = g()
+  let out = []
+  for k in 0..<c.ninst {
+    let b = k * inst_size
+    let a = c.inst
+    if a[b + 5] == 4.0 {
+      out.push(
+        (
+          (a[b + 36], a[b + 37], a[b + 38], a[b + 39]),
+          (a[b + 40], a[b + 41], a[b + 42], a[b + 43]),
+          (a[b + 44], a[b + 45], a[b + 46], a[b + 47]),
+        ),
+      )
+    }
+  }
+  out
+}
+
+///|
 /// The host says the app is shown or not, in front or not (as a window's or an activity's changes are told); `awake`:
 /// it goes on while not shown (a desktop's app put away: @ui.app_awake).
 pub fn Tester::app_state(self : Tester, visible : Bool, focused : Bool, awake? : Bool = false) -> Unit {
@@ -3132,6 +3230,30 @@ pub fn Tester::tabular_wider(self : Tester, em : Double) -> Unit {
 /// (@hostapi.style_proportional), from now on: as a Chinese face (思源黑体) draws it, its pwid asked or not.
 pub fn Tester::cjk_face_marks(self : Tester) -> Unit {
   self.fake.cjk_marks = true
+}
+
+///|
+/// Chinese and Japanese words spaced by mbui (@hostapi.words_spaced_here: an eighth of an em between Han or kana and a
+/// Latin letter or digit, a full-width mark set closer before another), from now on, as on a host whose shaper spaces
+/// none (Android's, Windows', Linux's, the web's); `by_host` for a host whose shaper spaces the words but sets no mark
+/// closer (Core Text's since iOS 26 and macOS 27: mbui sets only the marks); `none` for nobody's (MBUI_AUTOSPACE=off,
+/// and a Tester's own until it says: its fake's widths as they are).
+pub fn Tester::words_spaced_here(
+  self : Tester,
+  by_host? : Bool = false,
+  none? : Bool = false,
+) -> Unit {
+  self.fake.words_spaced = if none {
+    @hostapi.words_spaced_none
+  } else if by_host {
+    @hostapi.words_spaced_by_host
+  } else {
+    @hostapi.words_spaced_here
+  }
+  // (what was laid out in the shapes before laid out again, as when a face comes in: text.mbt's atlas generation)
+  clear_shapes()
+  words_shaped_in.set(words_shaped_in.untracked() + 1)
+  view_words_rescaled()
 }
 
 ///|
@@ -3517,6 +3639,20 @@ pub fn Tester::drags_window_at(self : Tester, x : Double, y : Double) -> Bool {
 }
 
 ///|
+/// Where what is read out as `n` can be seen, as the boxes holding it that clip cut it (Tree::seen_bounds: a strip
+/// scrolled sideways, a list): x0, y0, x1, y1 in the window, its own rect not cut by itself. A node its rect
+/// (`n.rect`) says laid out in the window can lie wholly past that, where a press at its middle lands on whatever is
+/// there instead. Where `n` is no node of the window's tree (an old view's widget), nothing cuts it here.
+pub fn Tester::seen_bounds_of(self : Tester, n : SemNode) -> (Double, Double, Double, Double) {
+  self.reads_own()
+  let all = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+  match (view_tree(), tree_said_ids.get(n.id)) {
+    (Some(tree), Some(id)) => tree.seen_bounds(id)
+    _ => all
+  }
+}
+
+///|
 /// What a press at (x, y) would land on, pressing nothing, found as drags_window_at finds it (view_pointer's order):
 /// "window" where it drags the window; "pressed" where what it lands on does something pressed (a node of the window's
 /// tree with its press or its drag said, as Tree::target_at has it, the rule of a press's room measuring by the same;
@@ -3608,7 +3744,7 @@ fn Find::takes(self : Find, s : SemNode) -> Bool {
 /// What `f` finds, said in a line (for what a test fails with).
 fn Find::said(self : Find) -> String {
   let sb = StringBuilder()
-  sb.write_string(self.role.to_string())
+  sb.write_string(Show::to_string(self.role))
   if self.label != "" {
     sb.write_string(" \{self.label.escape()}")
   }

@@ -1,12 +1,12 @@
 // Links where Windows refuses them (src/ops/links.ts): what a user without the privilege (Developer Mode off) gets, by
 // a maker that refuses as Windows does then, and a junction made for real.
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
-import { link, linkSync } from "../src/ops/links.ts";
+import { link } from "../src/ops/links.ts";
 
 const skip = process.platform !== "win32" && "Windows only";
 const dirs: string[] = [];
@@ -18,10 +18,6 @@ const tempdir = () => {
 };
 const eperm = () => Object.assign(new Error("EPERM: operation not permitted, symlink"), { code: "EPERM" });
 /// Refuses symbolic links as Windows does without the privilege; junctions it makes.
-const refusingSync = (target: string, path: string, type?: string) => {
-  if (type !== "junction") throw eperm();
-  symlinkSync(target, path, "junction");
-};
 const refusing = async (target: string, path: string, type?: "dir" | "file" | "junction") => {
   if (type !== "junction") throw eperm();
   await symlink(target, path, "junction");
@@ -32,7 +28,7 @@ test("refused, a directory is linked as a junction to it and a file is copied, a
   mkdirSync(join(d, "skill"));
   writeFileSync(join(d, "skill", "SKILL.md"), "hi");
   writeFileSync(join(d, "stillfail-job"), "#!/bin/sh\n");
-  assert.equal(linkSync("skill", join(d, "linked"), { junction: true }, refusingSync), "junction");
+  assert.equal(await link("skill", join(d, "linked"), { junction: true }, refusing), "junction");
   assert.ok(lstatSync(join(d, "linked")).isSymbolicLink(), "a junction reads as a link");
   assert.equal(readlinkSync(join(d, "linked")), join(d, "skill"));
   assert.equal(readFileSync(join(d, "linked", "SKILL.md"), "utf8"), "hi");
@@ -49,14 +45,14 @@ test("a stand-in the caller does not allow is not made: the refusal is said", { 
   // None allowed (a tree not at its final path yet), a copy where only a junction is, and the other way round.
   assert.equal(await link("dir", join(d, "a"), {}, refusing), "refused");
   assert.equal(await link("file", join(d, "b"), { junction: true }, refusing), "refused");
-  assert.equal(linkSync("dir", join(d, "c"), { copy: true }, refusingSync), "refused");
+  assert.equal(await link("dir", join(d, "c"), { copy: true }, refusing), "refused");
   for (const made of ["a", "b", "c"]) assert.throws(() => lstatSync(join(d, made)), /ENOENT/);
 });
 
-test("anything but a refusal is the caller's", { skip }, () => {
+test("anything but a refusal is the caller's", { skip }, async () => {
   const d = tempdir();
-  const busy = () => {
+  const busy = async () => {
     throw Object.assign(new Error("EEXIST"), { code: "EEXIST" });
   };
-  assert.throws(() => linkSync("x", join(d, "y"), { junction: true, copy: true }, busy), /EEXIST/);
+  await assert.rejects(link("x", join(d, "y"), { junction: true, copy: true }, busy), /EEXIST/);
 });

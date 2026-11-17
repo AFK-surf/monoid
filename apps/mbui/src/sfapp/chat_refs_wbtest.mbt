@@ -172,10 +172,8 @@ test "words sent with a mark draw it as the field did, as their message will: ne
   let (_, words, _, _) = t.ime()
   assert_eq(words, "@[首页] 吧")
   tap_send(t)
-  // (what it refers to is of this workspace: nothing to share first)
-  let asked = named(calls, "chat.outsideRefs")
-  assert_eq(asked.length(), 1)
-  (asked[0].done)(Ok(Json::object({})))
+  // (what it refers to is a link of this workspace pasted here: nothing to share, the core not asked)
+  assert_eq(named(calls, "chat.outsideRefs").length(), 0)
   t.draw()
   // sent as written (the core makes the mark its link), its row drawing the mark from the frame it is sent
   assert_eq(named(calls, "chat.send").length(), 1)

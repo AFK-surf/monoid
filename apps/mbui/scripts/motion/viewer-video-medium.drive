@@ -6,8 +6,8 @@ until 新建对话
 wait 600
 tapxy -24 420
 wait 900
-until 演示录屏.mp4
-tap 演示录屏.mp4
+until 0:13
+tap 0:13
 wait 1500
 back
 wait 1500

@@ -17,7 +17,7 @@ import type { AgentSession, OpenOptions, Profile, RuntimeEvent } from "../src/ag
 import { allLeft } from "../src/agents/runner.ts";
 import { learn } from "../src/accounts/catalog.ts";
 import { Said, stationLang, tr } from "../src/ops/i18n.ts";
-import { readTimeline, transcriptPath } from "../src/read/transcript.ts";
+import { readTimeline, transcriptPath } from "./reference/transcript.ts";
 
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
@@ -344,6 +344,8 @@ describe("the DeepSeek Harness driver", { concurrency: true }, () => {
       await session.prompt("gate:g");
       await a.until((e) => deltas(e).includes("first "));
       let snapshot: unknown = null;
+      // (its lines held as the hub holds them before a snapshot: hub.ts `handOver`)
+      if (!crashed) await first.freeze();
       if (!crashed) snapshot = JSON.parse(JSON.stringify(session.snapshot()));
       // Stops: the process goes on under its runner, saying the rest with nobody reading.
       first.detach();
@@ -381,7 +383,7 @@ describe("what a profile runs DeepSeek Harness on", () => {
 
   test("a provider's key: DeepSeek on its own route, the rest on the protocol they speak, chat completions first", () => {
     const deepseek = profile({ kind: "api-provider", provider: "deepseek", key: "sk" });
-    assert.deepEqual(profileRuntimes(deepseek), ["dsh"], "DeepSeek speaks chat completions only: dsh alone runs it");
+    assert.deepEqual(profileRuntimes(deepseek), ["dsh", "pi"], "DeepSeek speaks chat completions only: dsh and Pi alone run it");
     assert.deepEqual(dshRoute(deepseek), { kind: "deepseek" });
     assert.deepEqual(profileEnv(deepseek, "dsh"), { DEEPSEEK_API_KEY: "sk" });
     const setup = dshSetup(dshRoute(deepseek), "deepseek-v4-pro", "medium", "", "/h", "r", "http://127.0.0.1:1/mcp");
@@ -392,7 +394,7 @@ describe("what a profile runs DeepSeek Harness on", () => {
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "moonshotai", key: "k" })), { kind: "pi", name: "Kimi", api: "openai-completions", baseURL: "https://api.moonshot.ai/v1" });
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "minimax", key: "k" })), { kind: "pi", name: "MiniMax", api: "anthropic-messages", baseURL: "https://api.minimax.io/anthropic" });
     assert.deepEqual(dshRoute(profile({ kind: "api-provider", provider: "openai", key: "k" })), { kind: "pi", name: "OpenAI", api: "openai-responses", baseURL: "https://api.openai.com/v1" });
-    assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })), ["codex", "dsh"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "openai", key: "k" })), ["codex", "dsh", "pi"]);
     assert.deepEqual(profileEnv(profile({ kind: "api-provider", provider: "openai", key: "k" }), "dsh"), { STILLFAIL_DSH_KEY: "k" });
     // A decision-only provider runs no runtime.
     assert.deepEqual(profileRuntimes(profile({ kind: "api-provider", provider: "jev", key: "k" })), []);
@@ -405,8 +407,8 @@ describe("what a profile runs DeepSeek Harness on", () => {
     assert.equal(own.provider, undefined, "dsh's own default route");
     assert.deepEqual(profileRuntimes(profile({ kind: "env" })), ["dsh"]);
     assert.deepEqual(profileRuntimes(profile({ kind: "subscription" })), [], "no subscription to sign in to");
-    assert.deepEqual(profileRuntimes(profile({ kind: "opencode-go", key: "k" }, { runtime: "claude" })), ["claude", "codex", "dsh"]);
-    assert.deepEqual(profileRuntimes(profile({ kind: "anthropic-api", key: "k" }, { runtime: "claude" })), ["claude", "dsh"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "opencode-go", key: "k" }, { runtime: "claude" })), ["claude", "codex", "dsh", "pi"]);
+    assert.deepEqual(profileRuntimes(profile({ kind: "anthropic-api", key: "k" }, { runtime: "claude" })), ["claude", "dsh", "pi"]);
   });
 
   test("instructions go as system, not developer, on an OpenAI protocol anywhere but OpenAI's own API", () => {

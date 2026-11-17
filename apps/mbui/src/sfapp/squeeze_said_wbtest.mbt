@@ -32,7 +32,7 @@ test "squeeze: every screen fits what people, agents and stations wrote in it at
     }
     for mode in said_modes {
       let at = "\{win.0}-zh \{mode}"
-      let t = screen_in(mode, win, "zh", said=true, motion_judged=false)
+      let t = screen_in(mode, win, "zh", said=true)
       let faults = t.squeeze_faults()
       faults.append(figures_cut(t))
       let known = said_known.get(at).unwrap_or(0)
@@ -153,7 +153,7 @@ test "figures: none cut short at its widest, measured as a real face measures it
       continue
     }
     for mode in said_modes {
-      let t = screen_in(mode, win, "zh", said=true, latin=Some((real_latin, real_latin_bold)), motion_judged=false)
+      let t = screen_in(mode, win, "zh", said=true, latin=Some((real_latin, real_latin_bold)))
       // (cut with the words still whole in the draw list, as an old view's words are where they say nothing of it: the
       // squeeze's fault naming the figure; a device's host draws them cut, `$1,9…`)
       let cut = figures_cut(t) +

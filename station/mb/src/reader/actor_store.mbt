@@ -218,6 +218,35 @@ fn Actors::local_store(self : Actors, f : String, args : Array[Json]) -> Json? r
       }
       Some(Json::null())
     }
+    "endCutOff" => {
+      // store.ts `endCutOff`, the same statements.
+      db.exec("BEGIN IMMEDIATE")
+      let n = (fn() raise {
+        let n = db.run(
+          "UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart', declared = CASE WHEN declared = 'waiting' THEN NULL ELSE declared END, wait_seconds = CASE WHEN declared = 'waiting' THEN NULL ELSE wait_seconds END WHERE session_key = ?1 AND ended_at IS NULL",
+          [arg(0), jnum(self.now)],
+        )
+        if n > 0 {
+          ignore(
+            db.run(
+              "UPDATE turns SET declared = 'final', wait_seconds = NULL WHERE session_key = ?1 AND ended_at = ?2 AND detail = 'other: cut off by restart' AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)",
+              [arg(0), jnum(self.now)],
+            ),
+          )
+        }
+        n
+      })() catch {
+        e => {
+          db.exec("ROLLBACK") catch { _ => () }
+          raise e
+        }
+      }
+      db.exec("COMMIT")
+      if n > 0 {
+        self.changed_store([session_changed(key)])
+      }
+      Some(jnum(n.to_double()))
+    }
     "stopWait" => {
       let n = db.run(
         "UPDATE turns SET outcome = 'aborted', declared = NULL, wait_seconds = NULL, detail = 'other: stopped while waiting' WHERE id = (SELECT id FROM turns WHERE session_key = ?1 ORDER BY started_at DESC, rowid DESC LIMIT 1) AND ended_at IS NOT NULL AND (declared = 'waiting' OR (?2 AND outcome = 'failed' AND detail LIKE 'rate_limit:%'))",

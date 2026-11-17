@@ -1,7 +1,7 @@
 
 
 /** The agent runtimes a mark is drawn for (still.fail's RuntimeKind). */
-type RuntimeMarkKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy";
+type RuntimeMarkKind = "claude" | "codex" | "dsh" | "grok" | "cursor" | "devin" | "hermes" | "agy" | "pi";
 /** A mark stands on its own: no baseline room under it, never squeezed in a row. */
 const BLOCK = { display: "block", flex: "none" } as const;
 
@@ -33,10 +33,14 @@ export function FeishuLogo({ size = 16 }: { size?: number; strokeWidth?: number 
 /**
  * The agent runtimes' marks: Claude's in its orange, OpenAI's (Codex), DeepSeek Harness's, xAI's (Grok Build), Cursor's and
  * Devin's in the text colour. Claude's, OpenAI's and Cursor's paths from simple-icons (CC0); DeepSeek Harness's from its
- * repository (MIT); xAI's the maker mark Grok's models have (public/models/xai.svg); Devin's from devin.ai's favicon; the Antigravity CLI's arch mark (antigravity.google) in Google's blue.
+ * repository (MIT); xAI's the maker mark Grok's models have (public/models/xai.svg); Devin's from devin.ai's favicon; the Antigravity CLI's arch mark (antigravity.google) in Google's blue; Pi's a
+ * lowercase π of our own (apps/mbui's maker_pi.xml) in the text colour.
  */
 export function RuntimeLogo({ runtime, size = 16, className }: { runtime: RuntimeMarkKind; size?: number; className?: string }) {
   if (runtime === "hermes") return <svg width={size} height={size} viewBox="0 0 24 24" role="img" aria-label="Hermes Agent"><path fill="none" stroke="currentColor" strokeWidth="2" d="M6 4v16M18 4v16M6 12h12" /></svg>;
+  if (runtime === "pi") return (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-label="Pi" role="img" style={BLOCK} className={className}><path fill="currentColor" d="M20.5 4.5H8.2C6.3 4.5 4.9 5.2 3.8 6.6L3 7.7l1.6 1.1.7-.9C6 7.4 6.9 7 8.2 7h12.3zM8.5 6c0 6-.9 9.8-3.3 13.2l2.1 1.4C9.9 16.8 11 12.6 11 6zM15 6v10.3c0 2.6 1.2 4 3.4 4 1 0 1.8-.3 2.5-.9l-.9-1.8c-.4.3-.9.4-1.3.4-.8 0-1.2-.6-1.2-1.9V6z" /></svg>
+  );
   if (runtime === "agy") return (
     <svg width={size} height={size} viewBox="0 0 24 24" aria-label="Antigravity CLI" role="img" style={BLOCK} className={className} data-depicts><path fill="#3186FF" d="M 20.288 21.016 C 21.427 21.87 23.136 21.301 21.57 19.734 C 16.871 15.179 17.868 2.65 12.031 2.65 C 6.195 2.65 7.191 15.179 2.493 19.735 C 0.784 21.443 2.635 21.869 3.774 21.015 C 8.187 18.026 7.902 12.758 12.032 12.758 C 16.16 12.758 15.875 18.026 20.288 21.016 Z" /></svg>
   );

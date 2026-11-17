@@ -32,3 +32,17 @@ Back up the anchor, validate with `pfctl -nf`, and reload only the affected anch
 Verify a real QUIC stream from a second LAN machine reports a direct path, then repeat after a station restart.
 Also verify that arbitrary LAN connections and unapproved public TCP/UDP destinations remain blocked and that the
 existing relay and proxy still work. Restore the saved anchor if validation fails.
+
+# Marking the mesh's packets (DSCP)
+
+Set `STILLFAIL_MESH_DSCP=<1–63>` (a Monoid Machine's station image sets `43`) to mark every iroh packet of the station
+with that DSCP: its QUIC datagrams, and its connections to the relays (the TCP dial, its first SYN included, and the
+relays' UDP way). A router that expects the mark can then send them their own way, e.g. a Monoid Machine's `edge` lets
+them past its proxy and clears the mark on the way out. Unset, nothing is marked. A value outside 1–63, or one on a
+system where packets cannot be marked (Linux and macOS can), fails the bind; it is never silently ignored. It is read
+when the station binds its endpoint, so a change needs the station's service restarted, as for
+`STILLFAIL_MESH_BIND_ADDR`.
+
+Set it only for a router that expects it. Any network that honours DSCP (a provider's, an office's QoS) may queue,
+reprioritise, re-mark or drop marked packets differently from the rest. The station's other traffic (still.fail cloud,
+DNS, the relays' HTTPS latency probes) is not marked.

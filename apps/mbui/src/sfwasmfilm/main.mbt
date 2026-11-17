@@ -183,11 +183,23 @@ fn scene_arg(name : String) -> String {
     "MBUI_FIX_PACE" => option(18)
     "MBUI_FIX_CORE" => option(19)
     "MBUI_FIXTURE_JSON" => option(20)
+    "MBUI_OPEN_WHOLE" => option(21)
+    "MBUI_CHAT_PAGE" => option(23)
     // (1Password's answers in a scene: the native film's only)
     "MBUI_FILM_OP" => ""
+    // (the people's faces decoded late and a page waiting for them, sffilmscene's: the native film's only)
+    "MBUI_FILM_FACE_MS" | "MBUI_FILM_FACE_WAITS" => ""
     _ => @halt.saying("picture: unsupported scene option \{name}")
   }
 }
+///|
+/// A scene is no test: the pictures it shows held as a host holds them, a viewer's whole picture among them; no bar of
+/// a test's (fake_host.mbt's host_image_bytes_known) holds it to the few bytes of a test's thumbnails (its picture's
+/// Tester made here, its film's in mbui's film scene).
+fn init {
+  @ui.host_image_bytes_known([("src/sfwasmfilm/main.mbt", 64 * 1024 * 1024), ("src/film/scene.mbt", 64 * 1024 * 1024)])
+}
+
 ///|
 pub fn draw() -> Int {
   // (the app as it runs on a host: what faults shown by its boundary, as there, and said on the log)
@@ -213,6 +225,8 @@ pub fn draw() -> Int {
   if option_number(10) == 1.0 { t.set_window_inset(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
+  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
+  if option(22) != "" { t.set_local_fonts(option(22)) }
   let prepare = option(3)
   let script = option(4)
   let max = option_number(7).to_int()

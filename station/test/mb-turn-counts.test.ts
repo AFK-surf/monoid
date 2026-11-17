@@ -11,7 +11,7 @@ import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { TurnBuilder } from "../src/read/turn-builder.ts";
 import { addSessionTurns } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
-import { turnCountStep, type TurnCountScan } from "../src/store/turn-state.ts";
+import { turnCountStep, type TurnCountScan } from "./reference/turn-state.ts";
 
 const binary = mbReaderBinary();
 

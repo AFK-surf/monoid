@@ -57,6 +57,7 @@ pub fn ask_line_button_node(
 ) -> @view.View {
   let live = fn() { !disabled() }
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(b, _) {
+    b.focus_ring_theme() |> ignore
     style_node(b, fn() {
       let h = button_height()
       let out = option_type().pad_in - @ui.capsule_in(option_row_corner, h)
@@ -73,10 +74,10 @@ pub fn ask_line_button_node(
       )
     })
     let on = fn() { live() && (lit_node(b) || b.pressed()) }
-    let lit = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-    let seen = EdgeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
-    b.reacts(on, fn(o) { lit.go(b, if o { 1.0 } else { 0.0 }, dur_ms) })
-    b.reacts(disabled, fn(off) { seen.go(b, if off { 0.45 } else { 1.0 }, dur_ms) })
+    let lit = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    let seen = @motion.NodeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
+    b.reacts(on, fn(o) { lit.go_ms(b, if o { 1.0 } else { 0.0 }, dur_ms) })
+    b.reacts(disabled, fn(off) { seen.go_ms(b, if off { 0.45 } else { 1.0 }, dur_ms) })
     b
     .ground(By(fn() { alpha(theme().p.hover, lit.shown(b)) }))
     .alpha(By(fn() { seen.shown(b) }))
@@ -116,10 +117,11 @@ pub fn ask_history_trigger_node(
     fn() { words().map(fn(w) { w.text }).join("") + " · " + t("web-main.history.details") },
     open,
     fn(b, _) {
+      b.focus_ring_theme() |> ignore
       style_node(b, fn() { ask_history_line })
       let on = fn() { lit_node(b) || b.focus_shown() }
-      let lit = EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
-      b.reacts(on, fn(o) { lit.go(b, if o { 1.0 } else { 0.0 }, dur_ms) })
+      let lit = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+      b.reacts(on, fn(o) { lit.go_ms(b, if o { 1.0 } else { 0.0 }, dur_ms) })
       b.box(fn(w) {
         // (giving way to the chevron where the line has not the room for both: its words wrap, as the old row's do)
         w

@@ -20,7 +20,7 @@ import { profileEnv } from "../src/agents/profiles.ts";
 import { fingerprint } from "../src/sessions/decision.ts";
 import { DEFAULT_POLICY } from "../src/sessions/archive-policy.ts";
 import { Store } from "../src/store/store.ts";
-import { SessionChatPreparation, sessionChatReady } from "../src/store/session-chat-index.ts";
+import { SessionChatPreparation, sessionChatReady } from "./reference/backfill/session-chat-index.ts";
 import { approval, exe, fakeBrowser, fakeLogin, machine as fakeMachine, provider, script, temp, until, upon } from "./accounts-fakes.ts";
 import { URLS } from "../src/accounts/profiles.ts";
 import { settle, testClock } from "./hub-fakes.ts";
@@ -92,6 +92,8 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
       const found = route.method === method ? route.pattern.exec(path) : null;
       if (found) {
         const a = await route.handle(r, found.slice(1));
+        // (what the profiles' homes say read off the station's thread, as the overview reads it before it is made)
+        await accounts.homesReadSoon();
         return [a.status, JSON.parse(String(a.body))];
       }
     }
@@ -99,6 +101,9 @@ async function rig(o: { approval?: string; data?: string; store?: Store; quota?:
   };
   const profile = (id: string) => accounts.profiles().find((p) => p.id === id);
   const view = (id: string) => accounts.profilesView().find((p) => p.id === id);
+  await accounts.homesReadSoon();
+  // (what its start edited of config.json on disk, as a test reads the file)
+  await config.written();
   return { data, path, config, store, accounts, call, profile, view, close: () => accounts.close() };
 }
 
@@ -223,18 +228,18 @@ describe("the accounts routes", { concurrency: true }, () => {
 
   test("a key on a listed provider makes a profile that runs what its endpoints speak", async () => {
     const t = await rig();
-    // Chat completions only: DeepSeek Harness alone runs it.
+    // Chat completions only: DeepSeek Harness and Pi alone run it.
     const [status, body] = await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq", key: "gsk-123456" } });
     assert.equal(status, 200, JSON.stringify(body));
     assert.equal(body.id, "groq");
     const groq = t.profile("groq")!;
-    assert.deepEqual([(groq.access as any).kind, (groq.access as any).provider, groq.runtimes, groq.name], ["api-provider", "groq", ["dsh"], "Groq"]);
+    assert.deepEqual([(groq.access as any).kind, (groq.access as any).provider, groq.runtimes, groq.name], ["api-provider", "groq", ["dsh", "pi"], "Groq"]);
     assert.equal(profileEnv(groq, "dsh").STILLFAIL_DSH_KEY, "gsk-123456");
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "jev", key: "jev-key-1" } }))[0], 200);
     assert.deepEqual(t.profile("jev")!.runtimes, []);
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "opencode", key: "oc-key-1" } }))[0], 200);
     const zen = t.profile("opencode")!;
-    assert.deepEqual(zen.runtimes, ["claude", "codex", "dsh"]);
+    assert.deepEqual(zen.runtimes, ["claude", "codex", "dsh", "pi"]);
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_BASE_URL, "https://opencode.ai/zen");
     assert.equal(profileEnv(zen, "claude").ANTHROPIC_CUSTOM_HEADERS, "x-opencode-session: {route}");
     assert.equal(profileEnv(zen, "codex").STILLFAIL_API_KEY, "oc-key-1");
@@ -245,7 +250,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "azure-openai", key: "k" } }))[0], 400);
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "custom", endpoint: "http://127.0.0.1:4000/v1", protocol: "anthropic" } }))[0], 200);
     const custom = t.profile("custom")!;
-    assert.deepEqual([(custom.access as any).key, (custom.access as any).endpoint, custom.runtimes], [undefined, "http://127.0.0.1:4000/v1", ["claude", "dsh"]]);
+    assert.deepEqual([(custom.access as any).key, (custom.access as any).endpoint, custom.runtimes], [undefined, "http://127.0.0.1:4000/v1", ["claude", "dsh", "pi"]]);
     // Claude Code adds /v1/messages itself: the address is taken at the root above the /v1 given.
     assert.equal(profileEnv(custom, "claude").ANTHROPIC_BASE_URL, "http://127.0.0.1:4000");
     assert.equal((await t.call("POST", "/profiles", { access: { kind: "api-provider", provider: "groq" } }))[0], 400, "a key is needed");
@@ -280,12 +285,16 @@ describe("the accounts routes", { concurrency: true }, () => {
     await t.call("POST", "/profiles/sub/login");
     const job = await wait("sub", "needs_code");
     assert.ok(job.url.startsWith("https://claude.com/cai/oauth/authorize?"));
-    await t.call("POST", "/profiles/sub/login-code", { code: "wrong" });
+    // A code Claude's command would not take: refused at once, saying what to paste; the sign-in waits on.
+    assert.deepEqual(await t.call("POST", "/profiles/sub/login-code", { code: "good-code" }), [400, { error: "授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）" }]);
+    assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "good-code#other" }))[0], 400);
+    assert.equal(t.view("sub")!.login.state, "needs_code");
+    await t.call("POST", "/profiles/sub/login-code", { code: "wrong#y" });
     assert.ok((await wait("sub", "failed")).error.includes("invalid code"));
     assert.equal((await t.call("POST", "/profiles/sub/login-code", { code: "again" }))[0], 400);
     await t.call("POST", "/profiles/sub/login");
     await wait("sub", "needs_code");
-    await t.call("POST", "/profiles/sub/login-code", { code: " good-code " });
+    await t.call("POST", "/profiles/sub/login-code", { code: " good-code#y " });
     await wait("sub", "done");
 
     await t.call("PUT", "/profiles/cxs", { runtime: "codex", access: { kind: "subscription" } });
@@ -398,7 +407,9 @@ describe("the accounts routes", { concurrency: true }, () => {
       assert.equal(await t.accounts.logins.openPage(started.id, "zh"), "browser:T2");
       const stateForNew = b.options.get("T2")!.stateFile!;
       assert.equal(stateForNew(), join(dir, "homes", started.id, LOGIN_BROWSER_FILE));
-      await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" });
+      assert.equal((await t.call("POST", `/logins/${started.id}/code`, { code: "good-code" }))[0], 400);
+      assert.equal(t.accounts.logins.get(started.id)?.state, "needs_code");
+      await t.call("POST", `/logins/${started.id}/code`, { code: "https://platform.claude.com/oauth/code/callback?code=good-code&state=y" });
       const created = await upon(
         (wake) => t.accounts.onChange(wake),
         () => t.accounts.loginsView().find((l) => l.id === started.id)?.created as string | undefined,
@@ -745,7 +756,7 @@ describe("the accounts routes", { concurrency: true }, () => {
     await s.close();
   });
 
-  test("a profile's home is read on the thread for its first view alone; what changes in it shows once read again off the thread, ten seconds on", async () => {
+  test("a profile's home is read off the thread before its first view; what changes in it shows once read again, ten seconds on", async () => {
     // Its time moves only as the test says.
     const time = testClock();
     const data = temp("homes-read");
@@ -757,13 +768,50 @@ describe("the accounts routes", { concurrency: true }, () => {
     mkdirSync(home, { recursive: true });
     const claims = Buffer.from(JSON.stringify({ email: "b@x.com" })).toString("base64url");
     writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
-    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read on the thread again");
+    assert.deepEqual([t.view("sx")!.homeExists, t.view("sx")!.email], [false, null], "as last read: not read again at once");
     await time.adjust(10_000);
     const seen = await upon((wake) => t.accounts.onChange(wake), () => {
       const v = t.view("sx")!;
       return v.email === "b@x.com" && v.homeExists;
     }, "the home read again");
     assert.ok(seen);
+    await t.close();
+  });
+
+  test("a home read under way as a sign-in changes it is not the one the overview waits for; one asked by a view meanwhile is told", async () => {
+    const data = temp("homes-merged");
+    writeFileSync(join(data, "config.json"), JSON.stringify({ profiles: [{ id: "sx", runtime: "codex", home: "homes/sx", access: { kind: "subscription" } }], connects: [] }));
+    const t = await rig({ data, clock: testClock().clock });
+    const home = join(data, "homes", "sx");
+    const signIn = (email: string) => {
+      mkdirSync(home, { recursive: true });
+      const claims = Buffer.from(JSON.stringify({ email })).toString("base64url");
+      writeFileSync(join(home, "auth.json"), JSON.stringify({ tokens: { id_token: `h.${claims}.s` } }));
+    };
+    // What a sign-in's end does (Accounts.start, logins.changes): what the home says read anew.
+    const told = () => {
+      const a = t.accounts as any;
+      a.homes.delete("sx");
+      a.homesChanged++;
+    };
+    told();
+    signIn("a@x.com");
+    // A view reads it (its reading under way), then a sign-in ends: the overview waits for a reading of after it.
+    assert.equal(t.accounts.profilesView().find((p) => p.id === "sx")!.email, null, "not read yet");
+    told();
+    await t.accounts.homesReadSoon();
+    assert.equal(t.view("sx")!.email, "a@x.com");
+    // The overview's reading under way, then a view asks: what it finds is told.
+    told();
+    signIn("b@x.com");
+    let changes = 0;
+    const stop = t.accounts.onChange(() => changes++);
+    const overview = t.accounts.homesReadSoon();
+    t.accounts.profilesView();
+    await overview;
+    stop();
+    assert.equal(changes, 1, "the view's ask told once read");
+    assert.equal(t.view("sx")!.email, "b@x.com");
     await t.close();
   });
 

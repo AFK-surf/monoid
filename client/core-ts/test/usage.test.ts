@@ -55,7 +55,7 @@ test("days_split_by_who_and_lists_ranked_by_cost", () => {
   assert.equal(v.tiles[1].value, "19 次");
   const daily = v.daily;
   assert.deepEqual([daily.length, daily[6].label, daily[6].today], [7, "10/2", true]);
-  assert.deepEqual(v.series, [{ key: "a@x", name: "阿一" }, { key: "b@x", name: "你" }]);
+  assert.deepEqual(v.series, [{ key: "a@x", name: "阿一", costText: "$4.00" }, { key: "b@x", name: "你", costText: "$0" }]);
   assert.deepEqual(daily[6].parts, [4.0, 0.0]);
   // what the chart says of a day, the core's: its name where picked, its date under its bar, each part's share
   assert.deepEqual([daily[6].name, daily[5].name, daily[5].tick, v.many], ["今天", "10/1", "10/1", false]);
@@ -152,22 +152,124 @@ test("unknown_prices_are_not_shown_as_zero_and_tokens_stay_counted", () => {
   assert.ok("ok" in conform("UsageView", v));
 });
 
-test("days before one station began keeping detail are unavailable rather than zero or partial", () => {
+test("a_station_come_lately_takes_no_days_from_the_others", () => {
+  // (2026-11-16: a station joined six days before, its detailSince the latest, left the 30 days' first 24 and the week
+  // before empty for every station)
   const old = row("2026-09-30", "a@x", 7, "cc", "claude-opus-5-5", 2, 10);
   const recent = row("2026-10-01", "a@x", 7, "cc", "claude-opus-5-5", 1, 2);
+  const weekBefore = row("2026-09-22", "a@x", 7, "cc", "claude-opus-5-5", 4, 4);
+  const monthAgo = row("2026-09-05", "a@x", 7, "cc", "claude-opus-5-5", 3, 7);
   const today = row("2026-10-02", "a@x", 7, "cc", "claude-opus-5-5", 1, 3);
+  const long = NOW - 60 * 86_400_000;
   const sources: Source[] = [
-    { address: "ws/a", name: "a", online: true, value: ok({ ...station([today]), detailSince: NOW - 86_400_000 }) },
-    { address: "ws/b", name: "b", online: true, value: ok(station([old, recent])) },
+    { address: "ws/a", name: "a", online: true, value: ok({ ...station([today]), from: long, detailSince: NOW - 86_400_000 }) },
+    { address: "ws/b", name: "b", online: true, value: ok({ ...station([monthAgo, weekBefore, old, recent]), from: long }) },
+    // (a station just set up says nothing of when it began: it holds back no day and is not noted)
+    { address: "ws/c", name: "c", online: true, value: ok({ ...station([]), from: long, detailSince: null }) },
   ];
   const v = usageView(sources, 7, NOW, 480, {}, []);
-  assert.deepEqual([v.daily[4].costText, v.daily[4].callsText, v.daily[4].cost], ["—", "—", 0]);
+  assert.deepEqual([v.daily[4].costText, v.daily[4].callsText, v.daily[4].cost], ["$10.00", "2 次调用", 10]);
   assert.deepEqual([v.daily[5].costText, v.daily[6].costText], ["$2.00", "$3.00"]);
-  assert.deepEqual([v.tiles[0].value, v.tiles[1].value], ["$5.00", "2 次"]);
-  assert.ok(v.notes.some((note: string) => note.includes("10 月 1 日")));
+  assert.deepEqual([v.tiles[0].value, v.tiles[1].value], ["$15.00", "4 次"]);
+  // the week before is b's to say: against it
+  assert.deepEqual([v.tiles[0].change, v.tiles[0].trend], ["↑275%", "up"]);
+  assert.deepEqual(v.notes, ["a 的记录从 10 月 1 日开始"]);
+  // 30 days: every day of b's, the first 24 too
+  const month = usageView(sources, 30, NOW, 480, {}, []);
+  assert.equal(month.daily.find((d: J) => d.day === "2026-09-05").costText, "$7.00");
+  assert.equal(month.tiles[0].value, "$26.00");
+  // a day before a's began: b's alone, not "—"
   const earlier = usageView(sources, 7, NOW, 480, {}, [], { day: "2026-09-30" });
-  assert.ok(earlier.tiles.every((tile: J) => tile.value === "—"));
-  assert.equal(earlier.empty, false, "unavailable is not described as a period with no usage");
+  assert.deepEqual([earlier.tiles[0].value, earlier.empty], ["$10.00", false]);
+  // (a's own rows from before it began are not its to say)
+  const own = usageView([{ ...sources[0], value: ok({ ...station([old, today]), from: long, detailSince: NOW - 86_400_000 }) }], 7, NOW, 480, {}, []);
+  assert.equal(own.tiles[0].value, "$3.00");
+});
+
+test("one_account_on_several_stations_is_one_row_and_its_allowance_counts_it_once", () => {
+  const rows = (profile: string, cost: number) => [row("2026-10-02", "a@x", 7, profile, "claude-opus-5-5", 1, cost)];
+  const quota = { state: "ok", windows: [{ label: "5h", usedPercent: 40, mark: "5H", left: 60, level: "ok", checkedAt: 0 }], checkedAt: 0 };
+  // (as the accounts' page has them: one account a share hosted on a, borrowed by b and c, its profile's id each its own)
+  const accounts = [{ key: "sh-team@x", title: "team@x", profile: { quota }, members: [
+    { station: "ws/a", profileId: "sh-1" }, { station: "ws/b", profileId: "sh-1b" }, { station: "ws/c", profileId: "sh-1c" },
+  ] }];
+  const sources: Source[] = [
+    // (b's own word for it: none; c's: a name its copy had)
+    { address: "ws/a", name: "alpha", online: true, value: ok({ ...station(rows("sh-1", 3)), profiles: { "sh-1": { name: "团队订阅" } } }) },
+    { address: "ws/b", name: "beta", online: true, value: ok({ ...station(rows("sh-1b", 2)), profiles: {} }) },
+    { address: "ws/c", name: "gamma", online: true, value: ok({ ...station([...rows("sh-1c", 1), ...rows("gone", 0.5)]), profiles: {} }) },
+  ];
+  const v = usageView(sources, 7, NOW, 480, {}, [], {}, accounts);
+  const profiles = v.lists[2].items;
+  assert.deepEqual(profiles.map((p: J) => [p.key, p.title, p.sub, p.costText]), [
+    ["sh-team@x", "team@x", "alpha、beta、gamma", "$6.00"],
+    ["ws/c/gone", "gone（已删除）", "gamma", "$0.50"],
+  ]);
+  assert.deepEqual(v.accounts.map((a: J) => [a.key, a.costText]), [["sh-team@x", "$6.00"]]);
+  // seen alone, by its key: its calls on every station
+  const alone = usageView(sources, 7, NOW, 480, {}, [], { only: { list: "profiles", key: "sh-team@x" } }, accounts);
+  assert.deepEqual([alone.only.title, alone.tiles[0].value], ["team@x", "$6.00"]);
+  // split by the accounts: each part's cost beside its name
+  const split = usageView(sources, 7, NOW, 480, {}, [], { split: "profiles" }, accounts);
+  assert.deepEqual(split.series.map((x: J) => [x.key, x.costText]), [["sh-team@x", "$6.00"], ["ws/c/gone", "$0.50"]]);
+});
+
+test("one_person_heard_on_several_stations_and_platforms_is_one", () => {
+  const sources: Source[] = [
+    // (a knows the Slack person's email)
+    { address: "ws/a", name: "alpha", online: true, value: ok({ ...station([row("2026-10-02", "slack:ds:U9", 7, "cc", "gpt-6", 1, 1)]),
+      people: { "slack:ds:U9": { id: "slack:ds:U9", name: "Foo", email: "foo@cue.surf", via: "slack" } } }) },
+    // (b took the connect over from a: it says the person with a's station, and has not heard their email)
+    { address: "ws/b", name: "beta", online: true, value: ok({ ...station([row("2026-10-02", "slack:ds@st-a:U9", 7, "cc", "gpt-6", 1, 2)]),
+      people: { "slack:ds@st-a:U9": { id: "slack:ds@st-a:U9", name: "U9", email: null, via: "slack" } } }) },
+    // (c heard them on the web, as their account)
+    { address: "ws/c", name: "gamma", online: true, value: ok({ ...station([row("2026-10-02", "foo@cue.surf", 7, "cc", "gpt-6", 1, 4)]),
+      people: { "foo@cue.surf": { id: "foo@cue.surf", name: "foo@cue.surf", email: "foo@cue.surf", via: "cloud" } } }) },
+  ];
+  const members = [{ email: "foo@cue.surf", name: "福", picture: "https://p/foo" }];
+  const v = usageView(sources, 7, NOW, 480, {}, members);
+  const people = v.lists[0].items;
+  assert.deepEqual(people.map((p: J) => [p.key, p.title, p.costText, p.person.shown.picture]), [["foo@cue.surf", "福", "$7.00", "https://p/foo"]]);
+  // nobody knows their email: still one, by the connect they were heard on
+  const none = usageView(sources.slice(1).map((s) => s.address === "ws/b" ? s : { ...s, value: ok({ ...station([row("2026-10-02", "slack:ds:U9", 7, "cc", "gpt-6", 1, 1)]), people: {} }) }), 7, NOW, 480, {}, []);
+  assert.deepEqual(none.lists[0].items.map((p: J) => [p.key, p.costText]), [["slack:ds:u9", "$3.00"]]);
+});
+
+test("the_chats_no_station_names_are_one_row_with_what_they_cost", () => {
+  const rows = [
+    row("2026-10-02", "a@x", 7, "cc", "gpt-6", 1, 2),
+    row("2026-10-02", "a@x", 41, "cc", "gpt-6", 3, 300),
+    row("2026-10-01", "a@x", 42, "cc", "gpt-6", 2, 128),
+  ];
+  const sources: Source[] = [
+    { address: "ws/a", name: "alpha", online: true, value: ok(station(rows)) },
+    { address: "ws/b", name: "beta", online: true, value: ok(station([row("2026-10-02", "a@x", 43, "cc", "gpt-6", 1, 0)])) },
+  ];
+  const v = usageView(sources, 7, NOW, 480, {}, [], { split: "chats" });
+  const chats = v.lists[1].items;
+  const gone = chats.filter((c: J) => c.deleted === true);
+  assert.equal(gone.length, 1);
+  // (last, though they cost the most together)
+  assert.equal(chats[chats.length - 1].key, "deleted/all");
+  assert.deepEqual([gone[0].key, gone[0].title, gone[0].sub, gone[0].costText, gone[0].chat, gone[0].calls, gone[0].shareText, gone[0].tokensText],
+    ["deleted/all", "已删除的对话", "3 个对话已删除", "$428", null, 6, "100%", "606"]);
+  assert.equal(v.series[0].key, "deleted/all");
+  assert.equal(v.series[0].costText, "$428");
+  const shaped = conform("UsageView", v) as J;
+  assert.ok("ok" in shaped);
+  const shapedGone = shaped.ok.lists[1].items.find((c: J) => c.key === "deleted/all");
+  assert.deepEqual([shapedGone.deleted, shapedGone.costText, shapedGone.title], [true, "$428", "已删除的对话"]);
+  assert.equal(tr("en", "core-views.usage.deleted_chat"), "Deleted chats");
+});
+
+test("what_goes_out_keeps_each_tiles_words_under_it_and_each_parts_cost", () => {
+  const rows = [row("2026-10-02", "a@x", 7, "cc", "gpt-6", 10, 3), row("2026-10-02", "b@x", 8, "cc", "gpt-6", 4, 1)];
+  const v = usageView([{ address: "ws/st", name: "studio", online: true, value: ok(station(rows)) }], 7, NOW, 480, {}, []);
+  const shaped = conform("UsageView", v) as J;
+  assert.ok("ok" in shaped);
+  // (the tiles' words under them: dropped by the shape before, the page drew none)
+  assert.deepEqual(shaped.ok.tiles.map((x: J) => x.sub), ["按 API 标准单价估算", "日均 2 次", "缓存命中 90%", "平均每次 1"]);
+  assert.deepEqual(shaped.ok.series.map((x: J) => [x.key, x.costText]), [["a@x", "$3.00"], ["b@x", "$1.00"]]);
 });
 
 test("unknown_people_keep_their_usage_and_the_view_decodes", () => {

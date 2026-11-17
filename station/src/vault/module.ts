@@ -11,7 +11,7 @@ import { wall } from "../ops/fibers.ts";
 import { Browser } from "../browser/service.ts";
 import { Agents } from "../sessions/agents.ts";
 import { sender, senderTitleIfReady } from "../sessions/messages.ts";
-import { ControlPlane, Events, Parts, Paths, Previous, Store } from "../services.ts";
+import { ControlPlane, Events, Parts, Paths, Previous, Readers, Store } from "../services.ts";
 import { vaultTools } from "./tool.ts";
 import { SignIns } from "./signin.ts";
 import { routes as signInRoutes } from "../api/routes/signins.ts";
@@ -62,6 +62,8 @@ export const VaultLive = Layer.effectDiscard(
       },
     });
     yield* Effect.addFinalizer(() => Effect.promise(() => secrets.close()));
+    // (the use index's program let go with the readers' idle ones when the station is short of memory)
+    (yield* Readers).onTrim(() => secrets.trimIdle());
     browsers.onTakenOut((session, request, cookies, workspace) => secrets.renewed(session, request, cookies, workspace));
     browsers.onFresh((session) => secrets.signInAgain(session));
     browsers.onUsed((session, host) => secrets.browserUsed(session, host));

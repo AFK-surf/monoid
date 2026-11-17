@@ -1,4 +1,4 @@
-// The first page of chat_list and its count, read together in one snapshot (station/src/read/ops-sessions.ts
+// The first page of chat_list and its count, read together in one snapshot (station/test/reference/ops-sessions.ts
 // `recentChatList`): each chat with its sessions, latest message and, unnamed, its first words; the sessions named.
 
 ///|

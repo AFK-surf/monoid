@@ -199,7 +199,7 @@ export const CHAT_STATE = {
 export const CHAT_LEAVE = {
   name: "chat_leave",
   description:
-    "Stop following a Slack or Feishu thread you take part in, when people there tell you to (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
+    "Stop following a Slack, Feishu or group thread you are in, when people there ask (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -336,13 +336,18 @@ export const SESSION_SEND = {
 export const CHAT_CREATE = {
   name: "chat_create",
   description:
-    "Open a new still.fail chat with an agent of its own, on this station or another station of the workspace, for work that should go on visibly beside yours (a part to do in parallel, something another machine is better placed for). It begins with your message. You are told how each of its turns ends: to wait for it, end your turn waiting. Write to its agent with session_send to its link. When an answer was uncertain, call again with the same key, which gives the chat made then rather than opening another. Skill stillfail-chats (Other agents) says more.",
+    "Open a still.fail chat with its own agent, here or on another workspace station. for: me means you lead it (it asks you and reports each turn; end waiting to await it); person means your person owns it (no reports to you). text starts it; session_send writes to its link. Retry uncertain calls with the same key. See skills stillfail-chats and stillfail-leading.",
   inputSchema: {
     "type": "object",
     "properties": {
+      "for": {
+        "type": "string",
+        "enum": ["me", "person"],
+        "description": "me: you lead it; person: your person's."
+      },
       "key": {
         "type": "string",
-        "description": "A name of your choosing for this chat (e.g. build-android): the same key again gives the same chat; a new one opens another."
+        "description": "Your name for it: the same key again gives the same chat."
       },
       "text": {
         "type": "string",
@@ -350,7 +355,7 @@ export const CHAT_CREATE = {
       },
       "title": {
         "type": "string",
-        "description": "The chat's name in still.fail lists: a few words, in their language (at most 120 characters). Its agent names it when left out."
+        "description": "The chat's name, in their language (up to 120 characters). Its agent names it when left out."
       },
       "station": {
         "type": "string",
@@ -359,7 +364,7 @@ export const CHAT_CREATE = {
       "runtime": {
         "type": "string",
         "enum": RUNTIME_KINDS,
-        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI). Default: that of its model."
+        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model."
       },
       "model": {
         "type": "string",
@@ -368,6 +373,11 @@ export const CHAT_CREATE = {
       "effort": {
         "type": "string",
         "description": "Its agent's reasoning effort. Default: the one that person has opened most chats with on that runtime and model there lately, else its model's."
+      },
+      "speed": {
+        "type": "string",
+        "enum": ["standard", "fast", "ultrafast"],
+        "description": "Overrides fast. Ultrafast needs a supported Codex model and eligible ChatGPT plan."
       },
       "fast": {
         "type": "boolean",
@@ -390,6 +400,7 @@ export const CHAT_CREATE = {
       }
     },
     "required": [
+      "for",
       "key",
       "text"
     ],
@@ -471,7 +482,7 @@ function stagedRun(hub: Hub, key: string, args: Args, links: boolean, run: (args
     try {
       return await run(given);
     } finally {
-      done();
+      await done();
     }
   })();
 }

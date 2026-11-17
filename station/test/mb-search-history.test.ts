@@ -13,6 +13,7 @@ import type { Asker } from "../src/search/match.ts";
 import { Search } from "../src/search/search.ts";
 import { packFile } from "../src/sessions/archive.ts";
 import { Store } from "../src/store/store.ts";
+import { Worker } from "node:worker_threads";
 
 const binary = mbReaderBinary();
 const line = (v: unknown) => `${JSON.stringify(v)}\n`;
@@ -91,7 +92,7 @@ const pages = [{}, { limit: 3 }, { limit: 2, offset: 3 }, { limit: 200 }];
 
 test("the MoonBit program searches the execution histories as the worker does", { skip: binary === null ? "the MoonBit program is not built here" : false, timeout: 300_000 }, async () => {
   const f = await station();
-  const worker = new Search({ data: f.data, worker: new URL("./reference/search-worker.ts", import.meta.url) }), program = new Search({ data: f.data });
+  const worker = new Search({ data: f.data, reference: (data) => new Worker(new URL("./reference/search-worker.ts", import.meta.url), { workerData: { data }, resourceLimits: { maxOldGenerationSizeMb: 384 } }) }), program = new Search({ data: f.data });
   worker.start(); program.start();
   try {
     let hits = 0;

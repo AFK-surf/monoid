@@ -12,6 +12,10 @@
 /// (its ground, its icon, its spinner, its words) with the rest of what the panel holds: the panel's content's. Its
 /// words changing go to their place for that cause. `card_words`: in a card's foot corner, its words where the card's
 /// begin (card_foot_words's: its padding as far in as that corner leaves them; one with an icon keeps its ends).
+/// `default_on`: while it is its layer's default, pressed by Enter that nothing with the focus takes (a dialog's primary
+/// button; never one that cannot be undone: @view.View::default_press).
+/// `on_night`: on a stage, on the night whatever the theme (the old button's `on_night`: the primary the white, its words
+/// the night; the others the white at 12%).
 /// The node.
 #callsite(autofill(loc))
 pub fn button_node(
@@ -24,9 +28,11 @@ pub fn button_node(
   across? : Bool = false,
   icon? : String = "",
   card_words? : Bool = false,
+  default_on? : () -> Bool,
+  on_night? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  button_by(loc~, parent, label, fn(_) { press() }, tone, busy, disabled, across, icon, card_words)
+  button_by(loc~, parent, label, fn(_) { press() }, tone, busy, disabled, across, icon, card_words, default_on~, on_night~)
 }
 
 ///|
@@ -41,7 +47,7 @@ pub fn button_opens_node(
   icon? : String = "",
   loc~ : SourceLoc,
 ) -> @view.View {
-  button_by(loc~, parent, label, open, tone, fn() { false }, fn() { false }, false, icon, false)
+  button_by(loc~, parent, label, open, tone, fn() { false }, fn() { false }, false, icon, false, default_on=None)
 }
 
 ///|
@@ -57,36 +63,60 @@ fn button_by(
   across : Bool,
   icon : String,
   card_words : Bool,
+  default_on~ : (() -> Bool)?,
+  on_night? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let live = fn() { !disabled() && !busy() }
   let solid = tone == Primary || tone == DangerSolid
+  // (a primary button its layer's default where none is said: Enter in a dialog, a sheet or a panel (a modal layer's
+  // alone, @view.Tree::default_of) that nothing with the focus takes presses it,
+  // as a dialog's default button is (the owner, 2026-11-16: 照苹果的来); a red one never, so that Enter does not do
+  // what cannot be undone; a panel with two primaries has none, @view.Tree::default_of)
+  let default_on = match default_on {
+    Some(f) => Some(f)
+    None => if tone == Primary { Some(fn() { true }) } else { None }
+  }
   let height = button_height()
   // (what it is to the hand, the keyboard and a screen reader is mbui's headless button's: read out a button called by
   // its label, pressed and focused only while not disabled, Enter and Space pressing it. At work is disabled to all of
   // those, and told apart by the eye alone: said to the component as disabled, its spinner this look's. Here, its look)
-  @headless.button(made_for=loc, parent, label, press, disabled=fn() { !live() }, fn(v, b) {
+  @headless.button(made_for=loc, parent, label, press, disabled=fn() { !live() }, default_on?, fn(v, b) {
+    v.focus_ring_theme() |> ignore
     // (the hand on it, or pressing it (the keyboard's focus shown on it, a pointer over it, a finger or the pointer
     // held on it: which of the button's states light it is this look's): how far its ground has gone towards its lit
     // one; at work, how far its spinner is in and how far its room is open; how faded it is)
     let lit = fn() {
       (busy() && (tone == Ghost || tone == GhostDanger)) || (live() && (b.focus_shown() || b.hovered() || b.pressed()))
     }
-    let hand = EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-    let turning = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
-    let open = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
-    let seen = EdgeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
-    v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+    let turning = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let open = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let seen = @motion.NodeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
+    v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
     v.reacts(busy, fn(on) {
-      turning.go(v, if on { 1.0 } else { 0.0 }, dur_ms)
-      open.go_by(v, if on { 1.0 } else { 0.0 }, button_reshape)
+      turning.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms)
+      open.go(v, if on { 1.0 } else { 0.0 }, button_reshape)
     })
-    v.reacts(disabled, fn(off) { seen.go(v, if off { 0.45 } else { 1.0 }, dur_ms) })
+    v.reacts(disabled, fn(off) { seen.go_ms(v, if off { 0.45 } else { 1.0 }, dur_ms) })
     // (its ground, edge and words' ink as the tone has them, the hand's step as far as it has gone)
     let looks = fn() {
       let t = theme()
       let p = t.p
       let h = hand.shown(v)
+      if on_night {
+        // (on a stage: the night under it whatever the theme, the primary the white, the others the white thinned)
+        return match tone {
+          Primary | DangerSolid => {
+            let g = mix(0xFFFFFFFFL, h, share_ink)
+            (g, g, share_ground)
+          }
+          _ => {
+            let g = mix(stage_plain_lit, h, stage_plain)
+            (g, g, share_ink)
+          }
+        }
+      }
       match tone {
         Primary => {
           let g = mix(p.primary_hover, h, p.primary)

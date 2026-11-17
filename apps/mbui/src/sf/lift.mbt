@@ -34,7 +34,7 @@ pub fn lift_over(c : @ui.Ctx, i : Int, key : String, lift : Double, scale : Doub
   let at = "lifted/" + key
   @motion.measure(c, i, at)
   @motion.placed(c, i, fn() {
-    match (@kit.sheet_top(c), @motion.measured_rect(c, at)) {
+    match (sheet_top_now(c), @motion.measured_rect(c, at)) {
       (Some(top), Some((_, y, _, h))) if y + h + lift_clear > top => {
         // no further than the sheet has come up into the window: what hangs past the window's foot is not thrown up
         // as the sheet starts out from under it, nor dropped back as it goes
@@ -63,5 +63,35 @@ let lift_clear : Double = 12.0
 /// What of the window's tree is lifted over the scrim (View::over_scrim: a chat's row) kept clear of the sheet up, as
 /// lift_over keeps an old view's, and clear of it all the way once it is up (where it is and how tall).
 fn init {
-  @ui.over_scrim_floor.val = fn(c) { @kit.sheet_place(c) }
+  @ui.over_scrim_floor.val = fn(c) {
+    match @kit.sheet_place(c) {
+      Some(p) => Some(p)
+      // (a sheet of the window's tree up: where it was drawn this frame, sheet_node's)
+      None =>
+        match tree_sheet_place.val {
+          Some(f) => f()
+          None => None
+        }
+    }
+  }
 }
+
+///|
+/// Where the top of the sheet up is in the window this frame (kit's sheet_top's), the host's or the tree's.
+fn sheet_top_now(c : @ui.Ctx) -> Double? {
+  match @kit.sheet_top(c) {
+    Some(top) => Some(top)
+    None =>
+      match tree_sheet_place.val {
+        Some(f) => f().map(fn(p) { p.0 })
+        None => None
+      }
+  }
+}
+
+///|
+/// Where the sheet of the window's tree made last (sheet_node's: the topmost up) stands in the window as what is drawn
+/// is drawn, its top and how tall it is (kit's sheet_place's, for what is lifted over the scrim to keep clear of it);
+/// none while none is up.
+// kept across runs: said by each sheet as it is made, put back as it is let go; each window's own (presented_windows)
+let tree_sheet_place : Ref[(() -> (Double, Double)?)?] = Ref(None)

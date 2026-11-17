@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeStore, messagesBefore as readMessagesBefore } from "../src/read/store.ts";
+import { makeStore, messagesBefore as readMessagesBefore } from "./reference/store.ts";
 import { I64_MAX, MESSAGES_BEFORE, toMessage } from "../src/store/rows.ts";
 import { MERGED } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";

@@ -582,6 +582,38 @@ pub fn Zoom::zoom_to(self : Zoom, target : Double, ax : Double, ay : Double, gli
 }
 
 ///|
+/// How small a picture pulled down a whole stage's height is, of its fitted size (Zoom::pull).
+pub let zoom_pull_least : Double = 0.6
+
+///|
+/// Pulled off its fitted place by a hand taking it down to close what shows it (a finger, a trackpad's two): its middle
+/// (`dx`, `dy`) from where it rests fitted, smaller the further down it is (to zoom_pull_least of its fitted size a
+/// stage's height down), kept within nothing. Back with Zoom::reset.
+pub fn Zoom::pull(self : Zoom, dx : Double, dy : Double, at~ : Double) -> Unit {
+  self.settle(at) |> ignore
+  let down = if self.bh > 0.0 { zmin(1.0, zmax(0.0, dy) / self.bh) } else { 0.0 }
+  self.scale = self.fit() * (1.0 - down * (1.0 - zoom_pull_least))
+  self.x = dx
+  self.y = self.rest_y() + dy
+  self.fitted = false
+  self.moved()
+}
+
+///|
+/// How far down a pull has it at `at` (Zoom::pull: 0 … 1 of the stage's height), by what it was told and its glide;
+/// none where it is zoomed in or no lower than it rests.
+pub fn Zoom::pulled_at(self : Zoom, at : Double) -> Double {
+  if self.bh <= 0.0 || self.nw <= 0.0 {
+    return 0.0
+  }
+  let (scale, _, y) = self.shown_now(at)
+  if scale > self.fit() * 1.01 {
+    return 0.0
+  }
+  zmax(0.0, zmin(1.0, (y - self.rest_y()) / self.bh))
+}
+
+///|
 /// Back to fitted, gliding.
 pub fn Zoom::reset(self : Zoom, at~ : Double) -> Unit {
   let t = at

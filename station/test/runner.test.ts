@@ -7,7 +7,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { ackedOffset, findRunner, outFile } from "../src/agents/process.ts";
-import { RunnerConnection, existingRunners, liveRunners, startRunner } from "../src/agents/runner.ts";
+import { RunnerConnection, liveRunners, startRunner } from "../src/agents/runner.ts";
+import { existingRunners } from "./runners-kept.ts";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 /// Looks every 20 ms until `f` holds (no deadline: it happens, whatever the machine's speed, or the test hangs).

@@ -154,6 +154,8 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // a workspace switched shows once all its Home opens on is answered (home_opens), the screen as it was till then
   // (sfbase's workspace_switch_node)
   @sfbase.workspace_switch_node(v, src, home_opens)
+  // what the person's devices waiting on this one put up (signed_in_prompts)
+  signed_in_prompts(v, src)
   // the bottom bar told what the app's state and the window say of it as that changes, at the moment of what changed it
   // (a page put on the stack, a place come in, the bars' order, the window's width), whatever frames are drawn: the
   // frames only read where it is then (bar_tell)
@@ -177,13 +179,18 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
       }
     },
   )
+  // ⌘K's search over a page other than the lists (sfdesk's keys.mbt, sfpages' search.mbt), under the bars: on the
+  // page's ground, nothing of the page under it seen
+  v.show(at_once=true, @sfpages.search_over_on, fn(k) {
+    k.over(Is(true)) |> ignore
+    @sfpages.search_over_ground_node(k)
+    @sfpages.search_page_node(k, src, fn() { workspace_in_view(src).0 }, fn() { status_top_now(k.window().0) }, Whole)
+  })
   @ui.old(v, fn(c) {
     match workspace_in_view(src).0 {
       Some(w) => {
-        // ⌘K's search over a page other than the lists (sfdesk's keys.mbt, sfpages' search.mbt), under the bars
-        @sfpages.search_over(c, src, w, status_top())
         narrow_over(c, src, w)
-        signed_in_over(c, src, w)
+        signed_in_over(c)
       }
       None => ()
     }
@@ -192,9 +199,17 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // (a press where it has nothing of its own its pages', a page made once as nodes among them: entry_tree's over's)
   |> @ui.old_takes_own
   |> ignore
+  // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
+  @sfdesk.switcher_node(v, src)
+  // ⌘/'s shortcuts, presented as the shell's keys_open says (sfdesk's shortcuts.mbt)
+  @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
   // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
   // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
   bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
+  // the chat being shared as a picture, and a visualization over the whole screen, over the bar: nodes of the tree's of
+  // their own (sfpages' publish.mbt, sfbase's viz_page.mbt)
+  @sfpages.publish_layer_node(v, src)
+  viz_full_layer_node(v, src)
   // an image opened over the pages, over the bar: nodes of the tree's of its own (sfbase's viewer_tree.mbt); what is
   // opened otherwise, the old view's over them (narrow_over's preview)
   // (its stage the box it is laid out in, this node's: the window's less the system's bars beside it, as the root's
@@ -248,8 +263,8 @@ fn narrow_page_held(c : @ui.Ctx, src : Source, w : Workspace, page : Page, barre
   }
   c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), built)
   // what is the page's own and takes back before it (said with it, in its island: what it reads is what the page
-  // writes): the player sideways turned upright first; words picked in a chat, a link's menu, let go first (pick.mbt)
-  play_back(c)
+  // writes): words picked in a chat, a link's menu, let go first (pick.mbt); the player sideways turned upright first
+  // is the player's own (@sf.player_node)
   pick_back(c)
 }
 
@@ -332,16 +347,13 @@ fn narrow_page_key(c : @ui.Ctx, w : Workspace) -> String {
 }
 
 ///|
-/// Over the pages laid out Small: the bottom bar, the chat being made public, a visualization over the whole screen (a
-/// file open over them is the window's tree's: sfbase viewer_tree.mbt).
+/// Over the pages laid out Small: the bottom bar (a file open over them, the chat being shared as a picture and a
+/// visualization over the whole screen are the window's tree's: sfbase viewer_tree.mbt, sfpages' publish.mbt, sfbase's
+/// viz_page.mbt).
 fn narrow_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // the bottom bar: on a place's top page with nothing over it; none while this device waits to be confirmed in the
   // workspace's safe mode (its Home is the wait: lock_gate)
   bottom_bar(c, src, w, place_of(app.nav.top()), narrow_bar_shown(src, w))
-  // the chat being made public (sfpages' publish.mbt)
-  @sfpages.publish_layer(c, src)
-  // a visualization over the whole screen (viz.mbt)
-  viz_full_layer(c, src)
 }
 
 ///|
@@ -354,33 +366,43 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 }
 
 ///|
-/// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
-/// the settings put up, ⌘K and ⌘/, the presenters, the toasts, the loupe.
-fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  sheet_contents(fn(kind) {
-    match kind {
-      ShareSheet => share_in_sheet(c, src, w)
-      InviteLink => invite_sheet(c, src)
-      LoginLink => login_sheet(c, src, w)
-      NoSheet => ()
-    }
-  })
-  // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
-  // : put up when no other sheet is
-  @settings.lock_prompts(settings_core(src, w), !sheet_open())
-  // a device of the person's waiting on this one for a vault's key (settings/vault_prompts.mbt), the same way
-  @settings.vault_prompts(settings_core(src, w), !sheet_open())
-  // (the core what the settings put up over a page draws with, put up by what has none at hand)
-  @settings.panels_frame(settings_core(src, w), w.id)
-  // what another app shares, in the wide window's panel (share.mbt; a sheet on Small, as ShareSheet)
-  share_panel(c, src, w)
-  // ⌘K's panel and ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's switcher.mbt,
-  // shortcuts.mbt)
-  @sfdesk.switcher(c, src, w)
-  @sfdesk.keys_dialog(c, src)
+/// Over the frame with a workspace in view, in every tier: the presenters, the loupe (what the devices waiting on this
+/// one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction, panels_frame).
+fn signed_in_over(c : @ui.Ctx) -> Unit {
   // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)
   finger_loupe(c)
+}
+
+///|
+/// What the devices of the person's waiting on this one put up over whichever page is open, with a workspace in view, in
+/// every shell signed in (node `v`'s, done as what it reads changes, at its cause's moment): a new device waiting on
+/// this one's code (settings' lock_prompts), then one waiting for a vault's key (settings' vault_prompts), in any
+/// workspace of the person's (the core's `lockPrompts`), each put up when no other sheet is.
+fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
+  v.reacts(
+    fn() {
+      match workspace_in_view(src).0 {
+        Some(w) => {
+          let core = settings_core(src, w)
+          // (free: no sheet of the app's up, nothing presented)
+          Some((w.id, (core.topic)("lockPrompts", Map([])).get().value, !sheet_open(), !@sf.presenting()))
+        }
+        None => None
+      }
+    },
+    fn(said) {
+      match (said, workspace_in_view(src).0) {
+        (Some((_, _, free, _)), Some(w)) => {
+          let core = settings_core(src, w)
+          @settings.lock_prompts(core, free)
+          // (none put up while the one before put one up: each asks whether anything is presented)
+          @settings.vault_prompts(core, free)
+        }
+        _ => ()
+      }
+    },
+  )
 }
 
 ///|
@@ -401,6 +423,8 @@ fn narrow_made(src : Source, page : Page) -> (String, (@view.View, () -> Page, P
           narrow_made_as(src, Setting(r), true).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
+    // (文件 at the root of the stack: the bottom bar's place)
+    Files if @signals.untracked(fn() { app.nav.pages().get(0) }) == Some(Files) => narrow_made_as(src, page, true)
     _ => narrow_made_as(src, page, false)
   }
 }
@@ -447,7 +471,7 @@ fn narrow_made_as(
           }
           // (what the page does, given its place's top bar as it is made: each making of it its own, let go with it
           // where none since gave another)
-          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal(None, same=fn(a, b) {
+          let page_actions : @signals.Signal[((@view.View) -> Unit, Int)?] = @signals.signal_by(None, same=fn(a, b) {
             match (a, b) {
               (None, None) => true
               (Some(x), Some(y)) => x.1 == y.1
@@ -458,7 +482,8 @@ fn narrow_made_as(
             // (under the status bar as the window it is in is now: status_top_now, by its width as it changes; a place
             // of the bottom bar's under the top bar, which names it, over the bottom bar: place_page's)
             if place {
-              { back: None, top: status_top_now(v.window().0) + bar_h + 8.0, foot: nav_foot() + bar_room_now(), named: true }
+              let width = v.window().0
+              { back: None, top: status_top_now(width) + bar_h + 8.0, foot: nav_foot() + bar_room_at(width), named: true }
             } else {
               { back: under.map(@sfbase.back_label), top: status_top_now(v.window().0), foot: nav_foot(), named: false }
             }
@@ -501,6 +526,7 @@ fn narrow_made_as(
                 fn() {
                   match page() {
                     Place(n) => n
+                    Files => "files"
                     _ => ""
                   }
                 },
@@ -533,7 +559,7 @@ fn narrow_made_as(
     page if @sfbase.chat_page_is(page) && !place =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             @sfbase.chat_page_made(
               v,
@@ -567,6 +593,13 @@ fn narrow_made_as(
                 )
               },
               foot=chat_foot_nodes,
+              foot_node=fn(n, s, r) { chat_foot_node(n, s, r, @sf.TipLayer::new(fn() { Some(v) })) },
+              leaving=fn(c, s, r) {
+                match workspace_in_view(s).0 {
+                  Some(w) => new_chat_leaving(c, s, w, r)
+                  None => ()
+                }
+              },
             )
             |> ignore
           },
@@ -575,7 +608,7 @@ fn narrow_made_as(
     // the chats' lists under Home's top bar (home_node); a device waiting to be confirmed in the workspace's safe mode
     // sees that instead (lock_gate_node)
     Home =>
-      made("home", fn(p, core, _here, _frame, stint, _acts) {
+      made_at("home", place, fn(p, core, _here, _frame, stint, _acts, serial) {
         let tips = @sf.TipLayer::new(fn() { None })
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         // (the bar's first place: coming in as a place switched to does, all of it but its ground, told built then:
@@ -594,11 +627,11 @@ fn narrow_made_as(
           if waiting {
             lock_gate_node(q, src, core)
           } else {
-            home_node(q, src, tips, stint)
+            home_node(q, src, tips, stint, shown=fn() { app.nav.shows(serial) })
           }
         })
       })
-    Settings =>
+    Settings | Setting(Home) =>
       made("settings", fn(p, core, here, frame, stint, _acts) {
         @sfpages.settings_home_node(p, core, here, fn(r) { (core.push)(r) }, on_back=core.pop, frame~, stint~, bars=fn() {
           @sf.layout(p.window().0) is Small
@@ -607,6 +640,9 @@ fn narrow_made_as(
     Setting(About) => made("about", fn(p, core, _here, frame, _stint, _acts) { @sfpages.about_node(p, core, on_back=core.pop, frame~) })
     Setting(Changelog) =>
       made("changelog", fn(p, core, _here, frame, _stint, _acts) { @sfpages.changelog_node(p, core, on_back=core.pop, frame~) })
+    // (已归档 laid out Small: its page, the settings' 已归档)
+    Archived | Setting(Archive) =>
+      made("archive", fn(p, core, here, frame, _stint, _acts) { @sfpages.archive_node(p, core, here, on_back=core.pop, frame~) })
     Setting(Archiving) =>
       made("archiving", fn(p, core, here, frame, stint, _acts) {
         @sfpages.archiving_node(p, core, here, on_back=core.pop, frame~, stint~)
@@ -650,10 +686,17 @@ fn narrow_made_as(
       made("auto-policy/" + st, fn(p, core, here, frame, _stint, _acts) { @sfpages.policy_node(p, core, here, st, on_back=core.pop, frame~) })
     Setting(Appearance) =>
       made("appearance", fn(p, core, _here, frame, _stint, _acts) { @sfpages.appearance_node(p, core, on_back=core.pop, frame~) })
+    Setting(Experimental) =>
+      made("experimental", fn(p, core, _here, frame, _stint, _acts) { @sfpages.experimental_node(p, core, on_back=core.pop, frame~) })
     Setting(LocalStation) =>
       made("local-station", fn(p, core, _here, frame, _stint, _acts) { @sfpages.local_station_node(p, core, on_back=core.pop, frame~) })
     Setting(Permissions) =>
       made("permissions", fn(p, core, _here, frame, _stint, _acts) { @sfpages.permissions_node(p, core, on_back=core.pop, frame~) })
+    Setting(Me) =>
+      made("me", fn(p, core, here, frame, stint, _acts) { @sfpages.me_node(p, core, here, on_back=core.pop, frame~, stint~) })
+    Setting(Fonts) => made("fonts", fn(p, core, _here, frame, _stint, _acts) { @sfpages.fonts_node(p, core, on_back=core.pop, frame~) })
+    Setting(BarSettings) =>
+      made("bars", fn(p, core, _here, frame, _stint, _acts) { @sfpages.bars_node(p, core, on_back=core.pop, frame~) })
     Setting(Security) =>
       made("security", fn(p, core, here, frame, stint, _acts) { @sfpages.security_node(p, core, here, on_back=core.pop, frame~, stint~) })
     Setting(SecurityOpen) =>
@@ -664,6 +707,26 @@ fn narrow_made_as(
       made("workspace", fn(p, core, here, frame, stint, _acts) { @sfpages.workspace_node(p, core, here, on_back=core.pop, frame~, stint~) })
     Setting(VaultItems) =>
       made("vault-items", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame~) })
+    Setting(KeptFiles) => made("kept", fn(p, core, _here, frame, _stint, _acts) { @settings.kept_node(p, core, on_back=core.pop, frame~) })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) =>
+      made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, frame, _stint, _acts) {
+        @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) =>
+      made("run/" + station + "/" + key, fn(p, core, _here, frame, _stint, _acts) {
+        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) =>
+      made("adb/" + focus, fn(p, core, _here, frame, _stint, _acts) { @settings.adb_node(p, core, focus, on_back=core.pop, frame~) })
+    Setting(Vault) => made("vault", fn(p, core, here, frame, _stint, _acts) { @sfpages.vault_node(p, core, here, on_back=core.pop, frame~) })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) =>
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame~)
+      })
     // (by its station: another station's another page; as a place of the bottom bar's, its ＋ the bar's notch:
     // connects_add)
     Setting(Connects(only)) =>
@@ -673,6 +736,54 @@ fn narrow_made_as(
     Setting(Connect(station, id)) =>
       made("connect/" + station + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame~, stint~)
+      })
+    // 文件: its places (files_narrow.mbt); at the root of the stack a place of the bottom bar's (narrow_made)
+    Files =>
+      made_at(if place { "place/files" } else { "files" }, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
+        guard workspace_in_view(src).0 is Some(w) else { return }
+        files_narrow_node(p, src, w.id, place, frame, shown=fn() { app.nav.shows(serial) })
+      })
+    // a page of a station's drive (by its folder: another folder another page), laid out by its width (sfpages'
+    // drive_page_node), a folder gone into a page over it (or back to it where it is in the stack)
+    Drive(at) =>
+      made_at("drive/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, false, fn(p, _core, _here, frame, _stint, _acts, serial) {
+        guard workspace_in_view(src).0 is Some(w) else { return }
+        let under = app.nav.under()
+        @sfpages.drive_page_node(
+          p,
+          src,
+          w.id,
+          fn() { at },
+          frame=fn() { { ..frame(), back: under.map(fn(u) { drive_back_label(src, w, u) }) } },
+          width=fn() { p.window().0 },
+          on_back=fn() { @sfbase.go_back() |> ignore },
+          go=drive_go_back_to,
+          shown=fn() { app.nav.shows(serial) },
+        )
+      })
+    // a drive's text read: the whole window, the reader's own bars over it (sfpages' reader_page_node)
+    DriveRead(at) =>
+      made("drive-read/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.reader_page_node(p, src, at)
+      })
+    // a web service an agent started, a visualization it posted: their page, its bar under the status bar
+    // (sfpages' service_page_node, preview_file_page_node)
+    Service(station, job) =>
+      made("service/" + station + "/" + job, fn(p, core, _here, frame, _stint, _acts) {
+        @sfpages.service_page_node(p, src, station, job, core.pop, fn() { frame().top }, fn() { frame().foot })
+      })
+    PreviewFile(station, key, path, name) =>
+      made("preview-file/" + station + "/" + key + "/" + path, fn(p, core, _here, frame, _stint, _acts) {
+        @sfpages.preview_file_page_node(p, src, station, key, path, name, core.pop, fn() { frame().top }, fn() {
+          frame().foot
+        })
+      })
+    // a drive's video or song played: the whole window, the player's own bars over it (sfpages' play_page_node)
+    DrivePlay(at) =>
+      made("drive-play/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.play_page_node(p, src, at)
       })
     // a station's terminal: the whole window, its bar under the status bar (terminal_node)
     Terminal(at) =>
@@ -702,8 +813,10 @@ fn narrow_made_as(
       made_at("history/" + r.station + "/" + key, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
         history_node(p, src, r, key, entry, frame, serial)
       })
-    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab
-    Screen(at) if @sfpages.farview_screen(at.screen) =>
+    // a chat's Farview tab, drawn here (sfpages' farview_tab_node): the bar back, the tab's name, the tab; while
+    // 实验性功能's Farview 原生标签页渲染 is on (read as the stack asks what kind each page is: turned off, the page is
+    // made again in its place as any screen's, its old view)
+    Screen(at) if @sfpages.farview_native_screen(at.screen) =>
       made("farview/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
         p.grow(Is(1.0)).min_height(Is(Some(0.0))).padding(By(fn() { (0.0, 0.0, 0.0, frame().foot) })) |> ignore
         @sf.nav_bar_node(
@@ -714,6 +827,35 @@ fn narrow_made_as(
           top=fn() { frame().top },
         )
         @sfpages.farview_tab_node(p, src, at.station, at.screen)
+      })
+    // a station's screen (sfpages' screen_node): its bar, its picture and what drives it its own, inside the room the
+    // stack's frame keeps over and under it (but in 全屏); let go as the page leaves (app.mbt's page_left: screen_left),
+    // its view paused while a page is over it (screen_covered, above)
+    Screen(at) =>
+      made("screen/" + at.station + "/" + at.screen, fn(p, _core, _here, frame, _stint, _acts) {
+        p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        @sfpages.screen_node(p, src, at, frame)
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt); as a place of the bottom bar's, their ＋ the bar's notch
+    Setting(Stations) =>
+      made_at("stations", place, fn(p, core, here, frame, _stint, _acts, serial) {
+        @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame~, shown=fn() { app.nav.shows(serial) })
+      })
+    // (the workspace's: its list or 概览, one page; as a place of the bottom bar's, its own 概览 and its ＋ the bar's
+    // notch, none in its top bar)
+    Setting(Profiles("")) =>
+      made("profiles/", fn(p, core, here, frame, _stint, _acts) {
+        let overview = if place { @settings.profiles_place_overview } else { @settings.profiles_narrow_overview }
+        @sfpages.profiles_page_node(p, src, core, here, overview, on_back=core.pop, frame~)
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profiles_list_node(p, core, here, only, on_back=core.pop, frame~)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(p, core, here, frame, _stint, _acts) {
+        @sfpages.profile_account_node(p, core, here, key, on_back=core.pop, frame~)
       })
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, frame, stint, _acts) {
@@ -733,9 +875,14 @@ fn narrow_made_as(
 /// the ball goes to by switch_slide, fading in; all of it but its ground.
 fn place_comes_in(v : @view.View) -> Unit {
   let w = place_switch
-  // (told at the way's end, as each way is said: read again then)
+  // (told at the way's end, as each way is said: read again then; cleaned up if let go mid-way)
   let ended : @signals.Signal[Int] = @signals.signal(0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
+  v.owns(fn() {
+    (due.val)()
+    due.val = fn() {  }
+  })
+  |> ignore
   v.reacts(fn() { w.said(); w.ends_at() }, fn(end) {
     (due.val)()
     due.val = if end >= 0.0 {
@@ -748,7 +895,11 @@ fn place_comes_in(v : @view.View) -> Unit {
     ended.get() |> ignore
     w.shown_on(v)
   }
-  v.alpha(By(shown)).offset(By(fn() { (app.switch_way.to_double() * switch_slide * (1.0 - shown()), 0.0) })) |> ignore
+  v
+  .alpha(By(shown))
+  .offset(By(fn() { (app.switch_way.to_double() * switch_slide * (1.0 - shown()), 0.0) }))
+  .carries_until(fn() { w.ends_at() })
+  |> ignore
 }
 
 ///|

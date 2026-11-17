@@ -291,5 +291,7 @@ test("marks_are_said_in_english_too", () => {
 test("a_history_item_goes_out_through_its_shape", () => {
   const item = { key: "k", entries: [1, 2], body: { kind: "mark", content: { text: "等 CI", wait: { since: 5 } } } };
   assert.deepEqual(conformTy("HistoryItem", item), { ok: item });
+  assert.deepEqual(conformTy("HistoryItem", { ...item, turn: { at: 100, time: "14:05" } }), { ok: { ...item, turn: { time: "14:05" } } });
+  assert.deepEqual(conformTy("HistoryItem", { ...item, turn: { at: 100 } }), { ok: { ...item, turn: {} } });
   assert.match((conformTy("HistoryBody", { kind: "Mark", content: { text: "x" } }) as J).error, /unknown variant `Mark`/);
 });

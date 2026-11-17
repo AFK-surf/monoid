@@ -22,11 +22,14 @@ priv struct SizesSteady {
   mut held : Bool
   mut file : String
   /// each measure's last frames (rows_steady_fault's samples), by node and measure
-  seen : Map[(Int, Int, Int64, Bool), Array[(Double, Double, Double)]]
+  mut seen : Map[(Int, Int, Int64, Bool), Array[(Double, Double, Double)]]
   /// when each last turned back (rows_turn_ms)
-  turned : Map[(Int, Int, Int64, Bool), Double]
-  found : Set[String]
+  mut turned : Map[(Int, Int, Int64, Bool), Double]
+  mut found : Set[String]
   mut window : (Double, Double)
+  /// the system's bars round the window as the last frame was drawn (system_bars): what they take of it laid out anew
+  /// at once, as for the window made another size
+  mut bars : (Double, Double, Double, Double)
   /// how much bigger the system's setting made words as the last frame was drawn (font_scale): all laid out anew for it
   /// at once, as for the window made another size
   mut words : Double
@@ -34,10 +37,10 @@ priv struct SizesSteady {
   mut hand : Double
   /// when each column of the tree's was last put at once (Tree::scroll_put_at) and its list's keys last changed by data
   /// (Tree::scroll_keys_at) as the last frame was judged, by its node: either since is this frame's
-  puts : Map[Int, (Double, Double)]
+  mut puts : Map[Int, (Double, Double)]
   /// the width each node of the tree's that says it lays what it holds out at (View::lays_anew) as the last frame was
   /// judged, by its node: another now is this frame's step of what it holds, laid out anew at it at once
-  laids : Map[Int, Double]
+  mut laids : Map[Int, Double]
   /// the moment of the last frame judged: what an answer changed at once since is this frame's (Tree::answered_between)
   mut judged : Double
 }
@@ -51,6 +54,7 @@ let sizes_steady : SizesSteady = {
   turned: {},
   found: Set([]),
   window: (-1.0, -1.0),
+  bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
   hand: -1.0e9,
   puts: {},
@@ -80,6 +84,7 @@ fn sizes_steady_begin(loc : String, held : Bool) -> Unit {
   sizes_steady.turned.clear()
   sizes_steady.found.clear()
   sizes_steady.window = (-1.0, -1.0)
+  sizes_steady.bars = (-1.0, -1.0, -1.0, -1.0)
   sizes_steady.words = -1.0
   sizes_steady.hand = -1.0e9
   sizes_steady.puts.clear()
@@ -190,8 +195,8 @@ fn Ctx::sizes_steady_made(self : Ctx, i : Int) -> String {
 
 ///|
 /// How many times more speed a measure stopped dead loses in its last frame than it lost in each frame before it, at the
-/// least (sizes_steady_fault): one slowing at one rate to rest loses as much each frame, once the frames' lengths are
-/// taken out, up to 1.21 where a frame half again as long as the rest falls between (新建 workspace's sheet, its invite
+/// least (sizes_steady_fault): one slowing at one rate to rest loses as much each frame, once the frames' lengths and
+/// the time between their middles are taken out, up to 1.21 where a frame half again as long as the rest falls between (新建 workspace's sheet, its invite
 /// code's field turned back, 2026-11-11), and a half more than that is what no slowing at one rate comes to; every dead
 /// stop CI's runs count, and each this check was there to find, loses more (1.66 times at the least) or was still
 /// going as fast or faster the frame before.
@@ -245,16 +250,26 @@ fn sizes_steady_fault(
     // falls among the frames; what it does after, turning back or not, no part of it))
     if v0.abs() > least && v1.abs() > least && v0 * v1 > 0.0 && v2.abs() < 0.2 * v1.abs() {
       let toward = if v1 > 0.0 { 1.0 } else { -1.0 }
-      let d1 = (v0 - v1) * toward
-      let d2 = (v1 - v2) * toward
+      // (each loss of speed over the time between the middles of the two frames it is between, in two frames' time: a
+      // slowing at one rate loses as much over the same time, a frame twice as long as the rest between them or not;
+      // frames all `period` apart, as they were)
+      let d1 = (v0 - v1) * toward * (2.0 * period) / (seen[2].1 - seen[0].1)
+      let d2 = (v1 - v2) * toward * (2.0 * period) / (seen[3].1 - seen[1].1)
       // (the frame before those too, where it was seen moving then: one stopped dead at a moment between two frames is
       // sampled as at speed, a piece, still (10, 10, 5, 0), the piece as long as where that moment fell makes it, the
       // same numbers as a slowing set in at once and over in two frames; both are said, or one falling between frames
       // would go unsaid)
+      // (one that set out in it, from rest at a moment between those two frames, a piece of a frame at speed (2, 25, …):
+      // no slowing of its to go by, the frame after its first the one before)
       let back = all.length() > 4 && all[all.length() - 5].1 < seen[0].1
       let d0 = if back {
-        let vb = (seen[0].2 - all[all.length() - 5].2) / (seen[0].1 - all[all.length() - 5].1) * period
-        (vb - v0) * toward
+        let tb = all[all.length() - 5].1
+        let vb = (seen[0].2 - all[all.length() - 5].2) / (seen[0].1 - tb) * period
+        if vb * v0 >= 0.0 && vb.abs() < 0.25 * v0.abs() {
+          d1
+        } else {
+          (vb - v0) * toward * (2.0 * period) / (seen[1].1 - tb)
+        }
       } else {
         d1
       }
@@ -291,8 +306,13 @@ let tree_scroll_held_at : Set[Int] = Set([])
 fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[String] {
   let out : Array[String] = []
   let words = @signals.untracked(font_scale)
-  let resized = sizes_steady.window != (self.width, self.height) || sizes_steady.words != words
+  // (the system's bars said otherwise: the room they leave the window laid out anew at once, no motion of anything in
+  // it, as the window made another size is)
+  let b = @signals.untracked(system_bars)
+  let bars = (b.top, b.bottom, b.left, b.right)
+  let resized = sizes_steady.window != (self.width, self.height) || sizes_steady.words != words || sizes_steady.bars != bars
   sizes_steady.window = (self.width, self.height)
+  sizes_steady.bars = bars
   sizes_steady.words = words
   // (the hand did something since the frame before was judged (rows_steady_hand: the wheel, a key, a press, let go))
   let hand_now = rows_steady.hand != sizes_steady.hand
@@ -519,7 +539,10 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
             }
           }
           for i in 0..<k {
-            if answered_in[i] >= 0 && !(tid[i] >= 0 && tr.on_way_at(tid[i], now)) {
+            // (judged within the column the answer changed: what moves that column whole, a page sliding in, is no step
+            // in it)
+            let within = if answered_in[i] >= 0 && answered_in[i] < k { tid[answered_in[i]] } else { -1 }
+            if answered_in[i] >= 0 && !(tid[i] >= 0 && tr.on_way_at(tid[i], now, within~)) {
               put_now[i] = true
             }
           }
@@ -536,7 +559,16 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
       let gh = ya[i] * n.fh
       let (top0, bot0) = match self.drawn_entry(i) {
         Some({ ground: Some((_, y, _, h, _)), .. }) => (y, y + h)
-        _ => (gy, gy + gh)
+        // (a node of the window's tree: its ground as drawn, off where it is laid out (Tree::ground_drawn_of: a
+        // ground grown on a list's one way, Node's flip_in))
+        _ =>
+          match (tree, tree_frame_ids.get(i)) {
+            (Some(tr), Some(id)) => {
+              let gd = tr.ground_drawn_of(id)
+              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh))
+            }
+            _ => (gy, gy + gh)
+          }
       }
       let left0 = n.x + xb[i]
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)

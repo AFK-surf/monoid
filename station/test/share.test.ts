@@ -4,12 +4,13 @@ import assert from "node:assert/strict";
 import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { checkConfig } from "../src/accounts/check.ts";
 import { ConfigFile } from "../src/ops/config.ts";
-import { Sharing } from "../src/share/index.ts";
+import { Sharing, shareRefusal } from "../src/share/index.ts";
+import { agyAccountFile, agyToken } from "../src/agents/agy.ts";
 import { Refused } from "../src/mesh/bus.ts";
-import { memory } from "../src/read/memory.ts";
+import { memory } from "./reference/memory.ts";
 import { Cloud } from "../src/cloud/state.ts";
 import { allowedIn } from "../src/sessions/config.ts";
 import { until } from "./accounts-fakes.ts";
@@ -55,8 +56,11 @@ class FakeCloud {
 }
 
 type Station = { data: string; config: ConfigFile; sharing: Sharing; lent: string[] };
+/// Every station's sharing closed once the file's tests are done (its skills' program let go), a test's own too.
+const made: Sharing[] = [];
+after(() => Promise.all(made.map((s) => s.close())));
 
-function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean } = {}): Station {
+function station(cloud: FakeCloud, id: string, others: () => Map<string, Station>, profiles: any[] = [], codexRenewRunning: (id: string) => Promise<boolean> = async () => false, extra: { profileChanged?: (id: string, reset: boolean) => Promise<void>; quotaReset?: (id: string) => Promise<void>; machineEmail?: (runtime: string) => string | null; profileGone?: (id: string) => Promise<void>; itself?: (station: string) => boolean; agyRenew?: (home: string) => Promise<void> } = {}): Station {
   const data = mkdtempSync(join(tmpdir(), "share-"));
   writeFileSync(join(data, "config.json"), JSON.stringify({ profiles }));
   const config = new ConfigFile(data);
@@ -82,6 +86,7 @@ function station(cloud: FakeCloud, id: string, others: () => Map<string, Station
     changed: () => {},
     ...extra,
   });
+  made.push(sharing);
   return { data, config, sharing, lent };
 }
 
@@ -404,6 +409,112 @@ test("a borrowed Codex subscription's login is written in its home, the profile 
   auth.tokens.access_token = jwt({ exp: Math.floor(Date.now() / 1000) + 600 });
   writeFileSync(join(home, "auth.json"), JSON.stringify(auth));
   await assert.rejects(b.sharing.lendCodex({ ...copy, home }), /未能借出/);
+});
+
+test("a borrowed Antigravity CLI subscription's sign-in is written in its home without its refresh token, renewed on its host first when it runs out soon", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} };
+  assert.equal(shareRefusal(AGY), null, "an Antigravity CLI sign-in can be shared");
+  assert.match(String(shareRefusal({ ...AGY, runtime: "grok" })), /cannot be shared/);
+  const signIn = (access: string, minutes: number) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + minutes * 60_000).toISOString(), expires_in: 3599 }, auth_method: "consumer", id_token_email: "someone@gmail.test" });
+  const renewed: string[] = [];
+  const a = station(cloud, A, () => all, [AGY], undefined, { agyRenew: async (home) => { renewed.push(home); writeFileSync(agyToken(home), signIn("renewed", 60)); } });
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "gem");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first", 57));
+  await a.sharing.shareProfile("gem", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  assert.equal(copy.runtime, "agy");
+  const home = join(b.data, copy.home);
+  const lentFor = async (rejected = false) => {
+    const until = await b.sharing.lendAgy({ ...copy, home }, rejected);
+    return { until, file: JSON.parse(readFileSync(agyToken(home), "utf8")) };
+  };
+  // 57 minutes left: lent as it is.
+  let got = await lentFor();
+  assert.equal(got.file.token.access_token, "first");
+  assert.equal(got.file.token.refresh_token, undefined, "the refresh token stays on its host");
+  assert.equal(got.file.id_token_email, "someone@gmail.test");
+  assert.equal(JSON.parse(readFileSync(agyAccountFile(home), "utf8")).email, "someone@gmail.test");
+  assert.ok(got.until > Date.now() + 55 * 60_000);
+  assert.deepEqual(renewed, []);
+  // 15 minutes left: renewed on its host first, the renewed one lent.
+  writeFileSync(agyToken(hostHome), signIn("closer", 15));
+  got = await lentFor();
+  assert.deepEqual(renewed, [hostHome]);
+  assert.equal(got.file.token.access_token, "renewed");
+  assert.equal(JSON.parse(readFileSync(agyToken(hostHome), "utf8")).token.refresh_token, "refresh-here");
+  // The host away: the one lent before is used while it lasts, not where it was refused or runs out soon.
+  all.delete(A);
+  assert.ok((await b.sharing.lendAgy({ ...copy, home })) > Date.now() + 55 * 60_000);
+  await assert.rejects(b.sharing.lendAgy({ ...copy, home }, true), /未能借出/);
+  writeFileSync(agyToken(home), signIn("old", 5));
+  await assert.rejects(b.sharing.lendAgy({ ...copy, home }), /未能借出/);
+});
+
+test("an Antigravity CLI subscription signed in again on its host reaches its copies: each told, its new sign-in lent there", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "gem", name: "Google AI Pro", runtime: "agy", access: { kind: "subscription" }, home: "homes/gem", env: {} };
+  const signIn = (access: string) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + 57 * 60_000).toISOString() }, auth_method: "consumer", id_token_email: "someone@gmail.test" });
+  const a = station(cloud, A, () => all, [AGY]);
+  let b: Station;
+  const lent: string[] = [];
+  b = station(cloud, B, () => all, [], undefined, { profileChanged: async (id) => {
+    const profile = b.config.raw().profiles.find((p: any) => p.id === id);
+    const home = join(b.data, profile.home);
+    await b.sharing.lendAgy({ ...profile, home }, true);
+    lent.push(JSON.parse(readFileSync(agyToken(home), "utf8")).token.access_token);
+  } });
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "gem");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first"));
+  await a.sharing.shareProfile("gem", true, null);
+  await settle(a, b);
+  lent.length = 0;
+  // Signed in again on its host (accounts/index.ts `afterSignIn`): nothing of the profile itself changed, so only that
+  // it is told makes its copies take the new sign-in.
+  writeFileSync(agyToken(hostHome), signIn("second"));
+  await settle(a, b);
+  assert.deepEqual(lent, [], "a sign-in's file alone is not followed");
+  a.sharing.loginUpdated("gem");
+  await settle(a, b);
+  assert.deepEqual(lent, ["second"]);
+  await a.sharing.close();
+  await b.sharing.close();
+});
+
+test("a borrowed company Google account keeps its project, region and tier: lent and renewed with them, never its refresh token", async () => {
+  const cloud = new FakeCloud();
+  const all = new Map<string, Station>();
+  const AGY = { id: "work", name: "Gemini Enterprise", runtime: "agy", access: { kind: "subscription", enterprise: true }, home: "homes/work", env: {} };
+  const company = { project_id: "company-project", region: "us-central1", user_tier: "gcp-ge-ultra-tier", tier_display_name: "Gemini Enterprise Ultra", wif_provider: "provider" };
+  const signIn = (access: string, minutes: number) => JSON.stringify({ token: { access_token: access, token_type: "Bearer", refresh_token: "refresh-here", expiry: new Date(Date.now() + minutes * 60_000).toISOString() }, auth_method: "gcp", id_token_email: "someone@company.test", ...company });
+  // Its renewal as agents/agy.ts agyRenew leaves it: the rest of the file kept.
+  const a = station(cloud, A, () => all, [AGY], undefined, { agyRenew: async (home) => writeFileSync(agyToken(home), signIn("renewed", 60)) });
+  const b = station(cloud, B, () => all);
+  all.set(A, a).set(B, b);
+  const hostHome = join(a.data, "homes", "work");
+  mkdirSync(join(hostHome, "agy", ".gemini", "antigravity-cli"), { recursive: true });
+  writeFileSync(agyToken(hostHome), signIn("first", 57));
+  await a.sharing.shareProfile("work", true, null);
+  await settle(a, b);
+  const copy = b.config.raw().profiles[0];
+  const home = join(b.data, copy.home);
+  await b.sharing.lendAgy({ ...copy, home });
+  let file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual({ ...file, token: undefined }, { token: undefined, auth_method: "gcp", id_token_email: "someone@company.test", ...company });
+  assert.equal(file.token.access_token, "first");
+  assert.equal(file.token.refresh_token, undefined, "the refresh token stays on its host");
+  writeFileSync(agyToken(hostHome), signIn("closer", 15));
+  await b.sharing.lendAgy({ ...copy, home });
+  file = JSON.parse(readFileSync(agyToken(home), "utf8"));
+  assert.deepEqual([file.token.access_token, file.token.refresh_token, file.project_id, file.user_tier], ["renewed", undefined, "company-project", "gcp-ge-ultra-tier"]);
 });
 
 test("a host's changed Codex login and resets reach borrowers, including one that was offline", { timeout: 45_000 }, async () => {
@@ -736,7 +847,7 @@ test("a shared skill: copied and linked under its name, edits go back to the hos
   assert.ok(lstatSync(link).isSymbolicLink());
   assert.match(readFileSync(join(link, "SKILL.md"), "utf8"), /first/);
   const id = a.config.raw().sharedSkills.ember.id;
-  assert.equal(b.sharing.skillView("ember")!.role, "user");
+  assert.equal((await b.sharing.skillView("ember"))!.role, "user");
   // An edit on the copy, sent to the host on the version it was made on.
   writeFileSync(join(readlinkSync(link), "SKILL.md"), "---\nname: ember\ndescription: 项目记忆：ember\n---\nfrom mini\n");
   await b.sharing.stateWritten();
@@ -941,4 +1052,58 @@ test("a pass that asks this station itself, answered here at once, never begins 
   assert.ok(left < 20, "asked");
   assert.equal(most, 1, "no pass begun inside another");
   await a.sharing.close();
+});
+
+test("sharing a profile updates hosted state and notifies local listeners at once even while another peer hangs, and reachable peers get it concurrently", async () => {
+  const C = "c".repeat(64);
+  const cloud = new FakeCloud();
+  cloud.peers = [{ id: A, name: "studio" }, { id: B, name: "hung" }, { id: C, name: "mini" }];
+  const all = new Map<string, Station>();
+  let releaseB!: () => void;
+  const bGate = new Promise<void>((r) => { releaseB = r; });
+  let changedCalls = 0;
+  const a = station(cloud, A, () => all, [KEY]);
+  // Override changed listener on A's sharing deps to count immediate notifications.
+  (a.sharing as any).deps.changed = () => { changedCalls += 1; };
+  const c = station(cloud, C, () => all);
+  all.set(A, a).set(C, c).set(B, {
+    sharing: {
+      handle: async () => {
+        await bGate;
+        throw new Error("peer timed out");
+      },
+    },
+  } as any);
+
+  // Start an in-flight reconcile first, then reset changedCalls right before toggling share ON.
+  const first = a.sharing.reconcile();
+  await new Promise((r) => setImmediate(r));
+  await first;
+  changedCalls = 0;
+
+  // Toggling share ON must resolve immediately without waiting for hung peer B, fire changed(), and deliver to C concurrently!
+  await a.sharing.shareProfile("deepseek", true, null);
+  assert.equal(changedCalls, 1, "changed() fired before the hung peer answered");
+  const shareId = a.config.raw().profiles[0].share?.id;
+  assert.equal(typeof shareId, "string");
+  assert.equal(a.sharing.profileView(a.config.raw().profiles[0])?.id, shareId);
+
+  // While B is STILL hung on bGate, reachable peer C receives `share.changed` concurrently and borrows the profile!
+  await until(() => c.config.raw().profiles.length === 1, "C borrowed deepseek while B hung");
+  assert.equal(c.config.raw().profiles[0].share.id, shareId, "reachable peer C received the shared profile while B was still hung");
+
+  // Also toggle share ON for a second profile while B is STILL mid-reconcile on bGate, proving an in-flight hung reconcile never blocks a second toggle either!
+  a.config.update((raw) => {
+    raw.profiles.push({ ...KEY, id: "gemini", name: "Gemini" });
+  });
+  changedCalls = 0;
+  await a.sharing.shareProfile("gemini", true, null);
+  assert.equal(changedCalls, 1, "second toggle also fired changed() immediately while B was hung in reconcile");
+
+  releaseB();
+  await settle(a, c);
+  assert.equal(a.config.raw().profiles[0].share.id, shareId, "share remained active after slow peer settled");
+  assert.equal(c.config.raw().profiles.length, 2, "C borrowed both shared profiles");
+  await a.sharing.close();
+  await c.sharing.close();
 });

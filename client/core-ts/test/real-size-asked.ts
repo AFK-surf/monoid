@@ -68,6 +68,8 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   // ChatGPT one of the chat's station lent to three, its allowance the one read again, `quota`)
   "profile": { topic: "profile", scope: "ws", station, id: "claude-maple-0" },
   "profile key": { topic: "profile", scope: "ws", key: `sub:codex:${PEOPLE[0]!.email}` },
+  // (the Profile overview's pools, sfpages/profiles_overview.mbt: 大屏's Profile place, 概览 switched to)
+  "profilesOverview": { topic: "profilesOverview", scope: "ws" },
   "connects": { topic: "connects", scope: "ws", mine: false },
   "connects mine": { topic: "connects", scope: "ws", mine: true },
   // (a connect of the chat's station with sessions, of its runtime many: its page, and its choice of a session's list)
@@ -187,6 +189,7 @@ function innerOf(parts: { host: FakeHost; store: Store; data: Data; views?: View
   // (the person's own lock as the lock's page reads it: what is pending of it, as many as are kept)
   const personal = {
     standing: () => "member",
+    root: () => null,
     chain: () => null,
     pendingShown: () => ownPendingOf(parts.host.nowMs()).map((item) => ({ item, row: pendingRow(item, STATIONS.map((s) => s.name)) })),
   };

@@ -9,6 +9,7 @@
 ///|
 /// What the core found (`chat.find`): the words looked for, the messages that have them (oldest first, each with how
 /// many times), how many of the chat's entries were looked in of how many, and whether that was all of them.
+#derive(Eq)
 pub(all) struct Found {
   words : Array[String]
   hits : Array[(Double, Int)]
@@ -76,16 +77,20 @@ pub fn find_chat() -> String {
 pub fn find_open(key : String) -> Unit {
   if finding.chat.untracked() != key {
     find_close()
+    // (what was typed before, kept by the bar as it went: forgotten as it opens again)
+    finding.field.set("")
     finding.chat.set(key)
   }
   finding.field.focus()
 }
 
 ///|
-/// ⌘F's bar closed: what it looked for forgotten (what the list marked for it is the page's to let go: FindList).
+/// ⌘F's bar closed: what it looked for forgotten (what the list marked for it is the page's to let go: FindList), the
+/// keyboard let go of. Its field's words are left as they were for the bar as it leaves (it fades out showing what it
+/// showed: find_bar_node), and emptied as it is opened again (find_open).
 pub fn find_close() -> Unit {
+  finding.field.let_go()
   finding.chat.set("")
-  finding.field.set("")
   finding.query = ""
   finding.asked.set("")
   finding.found.set(None)
@@ -95,6 +100,13 @@ pub fn find_close() -> Unit {
   finding.total.set(0)
   finding.moves = 0
   finding.bringing.set(false)
+}
+
+///|
+/// ⌘F's bar closed and its field emptied too (a run's start: nothing of the run before kept).
+pub fn find_reset() -> Unit {
+  find_close()
+  finding.field.set("")
 }
 
 ///|

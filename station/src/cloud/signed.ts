@@ -3,16 +3,17 @@
 // headers (contract §1).
 import { nowSecs } from "../ops/files.ts";
 import { type StationKey, sha256hex } from "./key.ts";
+import type { CloudFetch } from "./transport.ts";
 import type { Cloud } from "./state.ts";
 
-export async function signedPost(cloud: Cloud, key: StationKey, path: string, tag: string, value: unknown, name = "still.fail cloud"): Promise<any> {
+export async function signedPost(cloud: Cloud, key: StationKey, path: string, tag: string, value: unknown, name = "still.fail cloud", request: CloudFetch = cloud.request): Promise<any> {
   const s = cloud.state;
   if (s === null) throw new Error(`this station is not in ${name}`);
   const body = JSON.stringify(value);
   const ts = nowSecs();
   const signature = key.sign(`${tag}:${s.origin}:${s.station}:${ts}:${sha256hex(body)}`);
   const headers: Record<string, string> = { "content-type": "application/json", "x-stillfail-station": s.station, "x-stillfail-ts": String(ts), "x-stillfail-signature": signature };
-  const response = await fetch(`${s.origin}${path}`, { method: "POST", headers, body, signal: AbortSignal.timeout(30_000) });
+  const response = await request(`${s.origin}${path}`, { method: "POST", headers, body, signal: AbortSignal.timeout(30_000) });
   if (!response.ok) throw new Error(`${name} answered ${response.status}: ${await response.text().catch(() => "")}`);
   const text = await response.text();
   return text === "" ? null : JSON.parse(text);

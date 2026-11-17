@@ -94,6 +94,7 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},
@@ -103,7 +104,19 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {},
+    "shader-int": {},
+    "raw-hover-ground": {},
+    "width-structure": {},
+    "reused-untracked-key": {},
+    "manual-fade-way": {},
+    "page-at-moment": {}
   },
   "excused": {
     "frame-request": {},
@@ -163,6 +176,7 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},
@@ -172,6 +186,18 @@
     "read-before-run": {},
     "reset-by-hand": {},
     "app-word": {},
-    "frame-walk": {}
+    "frame-walk": {},
+    "scoped-computed": {},
+    "raw-effect": {},
+    "pick-loop": {},
+    "each-min-height": {},
+    "each-lookup": {},
+    "layout-drawn-while": {},
+    "shader-int": {},
+    "raw-hover-ground": {},
+    "width-structure": {},
+    "reused-untracked-key": {},
+    "manual-fade-way": {},
+    "page-at-moment": {}
   }
 }

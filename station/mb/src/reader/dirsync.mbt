@@ -1,6 +1,7 @@
-// A source session's directory mirrored on this station for its remote tasks (station/src/jobs/dirsync.ts, whose head
-// says how a sync goes): the target's side here, what the mirror has and how a plan is carried out in it. Every file
-// operation is the shell's (off this program's thread); the bytes of the contents sent stay Node's (`putBlobs`).
+// A source session's directory mirrored on this station for its remote tasks (dirsync_source.mbt, whose head says how
+// a sync goes, is the source's side): the target's side here, what the mirror has, the contents sent unpacked into it
+// and how a plan is carried out in it. Every file operation is the shell's (off this program's thread): Node only lands a request's
+// packed pieces in a file as they come off the transport (remote.ts `answer`), never a piece's write, stat or rename.
 
 ///|
 let file_mode : String = "100644"
@@ -14,6 +15,13 @@ let link_mode : String = "120000"
 ///|
 /// A page of a manifest or a plan, as JSON, at most about this much.
 let page_bytes : Int = 512 * 1024
+
+///|
+/// A request's pieces at most, and their bytes unpacked at most (as the source packs them: dirsync_source.mbt).
+let max_pieces : Int = 2000
+
+///|
+let max_raw : Int = 16 * 1024 * 1024
 
 ///|
 fn mode_of_bits(mode : Double) -> String {
@@ -36,8 +44,8 @@ fn is_blob_id(s : String) -> Bool {
 }
 
 ///|
-/// Whether a link at `path` (relative, / between parts) naming `target` stays inside the directory (dirsync.ts
-/// `linkInside`).
+/// Whether a link at `path` (relative, / between parts) naming `target` stays inside the directory (the source's
+/// listing and the target's writing both ask).
 fn link_inside(path : String, target : String) -> Bool {
   if target == "" || target.has_prefix("/") || target.has_prefix("\\") {
     return false
@@ -131,13 +139,13 @@ fn same_content(a : Json?, b : Json?) -> Bool {
 }
 
 ///|
-/// What the mirror has of the files it was given, now (dirsync.ts `actual`): one a command changed is hashed again,
+/// What the mirror has of the files it was given, now (as the station's TypeScript had it, `actual`): one a command changed is hashed again,
 /// one it removed (or made something else) is no longer there; those in `verify` checked by content even where their
 /// stat matches.
 async fn Actors::actual(self : Actors, mirror : String, files : Map[String, Json], verify? : Map[String, Bool] = {}) -> Map[String, Json] raise {
   let out : Map[String, Json] = {}
   for path, e in files {
-    let abs = rjoin([mirror, path])
+    let abs = self.rjoin([mirror, path])
     guard self.lstat(abs) is Some(st) else { continue }
     let same = !verify.contains(path) &&
       st.value("size") == Some(entry_at(e, 2)) &&
@@ -180,8 +188,8 @@ async fn Actors::sync_begin(self : Actors, manifest_path : String, mirror_root :
       base[path] = current
     }
   }
-  self.write_json(rjoin([syncing, "actual.json"]), Json::object(files))
-  self.write_json(rjoin([syncing, "base.json"]), Json::object(base))
+  self.write_json(self.rjoin([syncing, "actual.json"]), Json::object(files))
+  self.write_json(self.rjoin([syncing, "base.json"]), Json::object(base))
   match manifest {
     Some(m) => num_of(m.value("version")).unwrap_or(0.0)
     None => 0.0
@@ -241,7 +249,7 @@ fn plan_part(request : Json) -> Json raise {
 ///|
 /// Removes the empty directories from `path`'s up to the mirror's.
 async fn Actors::prune_empty(self : Actors, mirror : String, path : String) -> Unit {
-  let mut d = rdirname(path)
+  let mut d = self.rdirname(path)
   while d.length() > mirror.length() && d.has_prefix(mirror) {
     // (a folder that is not empty is not removed: fs.remove without `recursive`)
     match (try self.lstat(d) catch { _ => None }) {
@@ -249,12 +257,12 @@ async fn Actors::prune_empty(self : Actors, mirror : String, path : String) -> U
       _ => return
     }
     try self.remove(d) catch { _ => return }
-    d = rdirname(d)
+    d = self.rdirname(d)
   }
 }
 
 ///|
-/// Carries out a plan in the mirror (`name` in `work`, dirsync.ts `apply`): every new content made beside it first (in
+/// Carries out a plan in the mirror (`name` in `work`, as the TypeScript's `apply` did): every new content made beside it first (in
 /// `scratch`, from `blobs` or from a file of the mirror with the same id), then the files that left removed, then the
 /// new ones renamed into place. `files` (what the mirror has) is updated as it goes, also when it stops part way.
 async fn Actors::apply_plan(
@@ -288,9 +296,9 @@ async fn Actors::apply_plan(
       ready.push((path, hash, mode, None))
       continue
     }
-    let temp = rjoin([scratch, i.to_string()])
+    let temp = self.rjoin([scratch, i.to_string()])
     self.remove(temp)
-    let blob = rjoin([blobs, hash])
+    let blob = self.rjoin([blobs, hash])
     let has_blob = self.there(blob)
     let from = if has_blob { None } else { by_hash.get(hash) }
     if !has_blob && from is None {
@@ -298,7 +306,7 @@ async fn Actors::apply_plan(
     }
     if mode == link_mode {
       let target = match from {
-        Some(f) => self.read_link(rjoin([mirror, f]))
+        Some(f) => self.read_link(self.rjoin([mirror, f]))
         None => self.read_text(blob).unwrap_or("")
       }
       if !link_inside(path, target) {
@@ -315,7 +323,7 @@ async fn Actors::apply_plan(
           } else {
             ignore(self.fs("fs.copy", { "from": jstr(blob), "to": jstr(temp) }))
           }
-        Some(f) => ignore(self.fs("fs.copy", { "from": jstr(rjoin([mirror, f])), "to": jstr(temp) }))
+        Some(f) => ignore(self.fs("fs.copy", { "from": jstr(self.rjoin([mirror, f])), "to": jstr(temp) }))
       }
       ignore(self.fs("fs.chmod", { "path": jstr(temp), "mode": jnum(if mode == exec_mode { 0o755.to_double() } else { 0o644.to_double() }) }))
     }
@@ -386,7 +394,7 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
   }
   let set : Array[(String, String, String)] = []
   let remove : Array[String] = []
-  for line in self.read_text(rjoin([syncing, "plan.jsonl"])).unwrap_or("").split("\n") {
+  for line in self.read_text(self.rjoin([syncing, "plan.jsonl"])).unwrap_or("").split("\n") {
     let line = line.to_string()
     if line == "" {
       continue
@@ -411,11 +419,11 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
       _ => ()
     }
   }
-  let base = match self.read_json(rjoin([syncing, "base.json"])) {
+  let base = match self.read_json(self.rjoin([syncing, "base.json"])) {
     Object(b) => b.copy()
     _ => {}
   }
-  let root = rjoin([work, mirror])
+  let root = self.rjoin([work, mirror])
   // Read again at commit: a task's output may have changed while the source sent its files.
   let verify : Map[String, Bool] = {}
   for s in set {
@@ -482,7 +490,7 @@ async fn Actors::sync_commit(self : Actors, work : String, mirror : String, sync
     self.write_whole(manifest_path, js_text(m))
   }
   let (written, removed) = try {
-    self.apply_plan(work, mirror, rjoin([syncing, "scratch"]), rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
+    self.apply_plan(work, mirror, self.rjoin([syncing, "scratch"]), self.rjoin([syncing, "blobs"]), files, safe_set, safe_remove)
   } catch {
     e => {
       finish()
@@ -521,9 +529,97 @@ async fn Actors::sync_changes(self : Actors, manifest_path : String, base : Stri
       "newMode": match is_ { Some(i) => entry_at(i, 1); None => Json::null() },
     }
     if is_ is Some(i) && entry_at(i, 1) == jstr(link_mode) {
-      change["link"] = jstr(self.read_link(rjoin([base, path])))
+      change["link"] = jstr(self.read_link(self.rjoin([base, path])))
     }
     changes.push(Json::object(change))
   }
   { "changes": Json::array(changes), "more": jbool(more) }
+}
+
+///|
+/// sync.put: pieces sent (`index`: [id, size, offset, length] each) unpacked into `blobs`, each content in its own
+/// file, complete when its last piece came and its id checked. Their packed bytes are in the file at `packed` (Node
+/// landed them there), or base64 in `data` from a station from before. A piece that came already (a request asked
+/// again) is skipped; how many pieces there were.
+async fn Actors::put_blobs(self : Actors, blobs : String, index : Json, packed : String?, data : Json) -> Int raise {
+  guard index is Array(index) && index.length() <= max_pieces else { raise refusal("bad pieces") }
+  let pieces : Array[(String, Double, Double, Int)] = []
+  let mut total = 0.0
+  for p in index {
+    guard p is Array([String(hash), size, offset, length, ..]) &&
+      is_blob_id(hash) &&
+      as_u64(size) is Some(size) &&
+      as_u64(offset) is Some(offset) &&
+      as_u64(length) is Some(length) else {
+      raise refusal("bad piece")
+    }
+    if size > max_file || offset + length > size {
+      raise refusal("bad piece")
+    }
+    total += length
+    pieces.push((hash, size, offset, length.to_int()))
+  }
+  if total > max_raw.to_double() {
+    raise refusal("too much in one request")
+  }
+  let unpack = async fn(args : Map[String, Json], bytes : Bytes?) -> Bytes raise {
+    let (_, out) = try {
+      match bytes {
+        Some(b) => self.host.shell("zstd.unpack", Json::object(args), bytes=b)
+        None => self.host.shell("zstd.unpack", Json::object(args))
+      }
+    } catch {
+      e => raise refusal(FsError::of(e))
+    }
+    out.unwrap_or(b"")
+  }
+  let raw = match packed {
+    Some(path) => unpack({ "path": jstr(path), "most": jnum(max_raw.to_double()) }, None)
+    None => {
+      // (STANDARD base64 as the Rust decoded it: padded, nothing else in it)
+      let text = str_of(Some(data)).unwrap_or("")
+      let bytes = if text.length() % 4 != 0 {
+        raise refusal("Invalid input length or symbol")
+      } else {
+        @base64.decode(text) catch { _ => raise refusal("Invalid input length or symbol") }
+      }
+      unpack({ "most": jnum(max_raw.to_double()) }, Some(bytes))
+    }
+  }
+  if raw.length().to_double() != total {
+    raise refusal("pieces do not match their data")
+  }
+  self.mkdirs(blobs)
+  let mut at = 0
+  for p in pieces {
+    let (hash, size, offset, length) = p
+    let piece = raw[at:at + length].to_owned()
+    at += length
+    let done = self.rjoin([blobs, hash])
+    if self.there(done) {
+      continue
+    }
+    let part = "\{done}.part"
+    let has = match self.lstat(part) {
+      Some(st) => num_of(st.value("size")).unwrap_or(0.0)
+      None => 0.0
+    }
+    let end = offset + length.to_double()
+    if end <= has && !(offset == 0.0 && has == 0.0) {
+      continue
+    }
+    if offset != has {
+      raise refusal("a content's pieces came out of order")
+    }
+    // (from its start a new file, else after what it has: openSync's "w" and "a")
+    ignore(self.fs("fs.put", { "path": jstr(part), "offset": jnum(offset), "truncate": jbool(true), "nofollow": jbool(true) }, bytes=piece))
+    if end == size {
+      if self.file_id(part, size) != hash {
+        self.remove(part)
+        raise refusal("a content sent does not match its id")
+      }
+      self.rename(part, done)
+    }
+  }
+  pieces.length()
 }

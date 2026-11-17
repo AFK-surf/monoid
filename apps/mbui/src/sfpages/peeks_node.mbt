@@ -48,7 +48,7 @@ pub fn web_peek_node(
   let holder : Ref[@view.View?] = Ref(None)
   // (what is read as the pointer comes onto the row, while it is: the pictures it names asked as it comes, so that they
   // are mostly here as the card opens)
-  let warm : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal(None, same=fn(a, b) {
+  let warm : @signals.Signal[@signals.Computed[@sfbase.TopicState]?] = @signals.signal_by(None, same=fn(a, b) {
     match (a, b) {
       (None, None) => true
       (Some(x), Some(y)) => physical_equal(x, y)
@@ -170,12 +170,12 @@ fn peek_holder(
     card_made.val = true
     let read = @sfbase.hold(src, scope, "linkPreview", link_params(station, @signals.untracked(href)))
     // (how far in it is, from the moment it opened; out from the moment it closed: hover_in's, hover_out's)
-    let way = @sf.EdgeWay::new(0.0)
+    let way = @motion.NodeWay::new(0.0)
     card.reacts(fn() { card.leaving() }, fn(going) {
       if going {
-        way.go_by(card, 0.0, hover_out.spec)
+        way.go(card, 0.0, hover_out.spec)
       } else {
-        way.go_by(card, 1.0, hover_in.spec)
+        way.go(card, 1.0, hover_in.spec)
       }
     })
     let look = fn() {

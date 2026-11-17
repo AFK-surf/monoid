@@ -11,9 +11,11 @@
 // out); links are not followed. A name already where it goes was answered before the transfer began (the page asks):
 // replaced (the one there to the trash first), kept beside under a name of its own (`free`), or skipped.
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { platform } from "../platform/index.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { type Drive, DriveError, type Entry, MAX_READ } from "./drive.ts";
 
@@ -104,6 +106,7 @@ export async function walkDrive(drive: Drive, root: string, path: string, names:
   };
   const into = async (rel: string): Promise<void> => {
     const listed = await drive.list(root, join2(path, rel), anywhere);
+    if (listed.truncated) throw new DriveError("too_large", `${rel}: too many entries to list; select fewer files or smaller folders`);
     for (const e of listed.entries) await one(join2(rel, e.name), e);
   };
   const one = async (rel: string, e: Entry): Promise<void> => {
@@ -170,17 +173,21 @@ export class Transfers {
   #waiting: (() => void)[] = [];
   #lastSave = 0;
   #closed = false;
+  /// Each transfer's file, written off the station's thread (the latest of it), by id.
+  readonly #files = new Map<string, PrivateFile>();
+  /// The expired records' removals the constructor set going, waited for with what is written (`idle`, `close`).
+  #cleaning: Promise<unknown>[] = [];
 
   constructor(deps: TransfersDeps) {
     this.#deps = deps;
-    mkdirSync(deps.dir, { recursive: true, mode: 0o700 });
-    for (const name of readdirSync(deps.dir)) {
+    mkdirSync(deps.dir, { recursive: true, mode: 0o700 }); // sync: once, before the station serves (drive/module.ts)
+    for (const name of readdirSync(deps.dir)) { // sync: read once, before the station serves
       if (!name.endsWith(".json")) continue;
       try {
-        const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer;
+        const t = JSON.parse(readFileSync(join(deps.dir, name), "utf8")) as Transfer; // sync: read once, before the station serves
         if (typeof t?.id !== "string") continue;
         if (t.endedAt !== undefined && deps.now() - t.endedAt > KEPT_MS) {
-          rmSync(join(deps.dir, name), { force: true });
+          this.#cleaning.push(rm(join(deps.dir, name), { force: true }).catch(() => {}));
           continue;
         }
         this.#all.set(t.id, t);
@@ -231,14 +238,23 @@ export class Transfers {
     return t;
   }
 
-  /// Settled when none is left to run.
-  idle(): Promise<void> {
-    return this.#running === null ? Promise.resolve() : new Promise((resolve) => this.#waiting.push(resolve));
+  /// Settled when none is left to run and what was kept of each is on disk.
+  async idle(): Promise<void> {
+    if (this.#running !== null) await new Promise<void>((resolve) => this.#waiting.push(resolve));
+    await this.#written();
   }
 
-  close(): void {
+  /// Nothing more run; settled once what was kept of each is on disk.
+  async close(): Promise<void> {
     this.#closed = true;
     for (const resolve of this.#waiting.splice(0)) resolve();
+    await this.#written();
+  }
+
+  async #written(): Promise<void> {
+    const cleaning = this.#cleaning;
+    this.#cleaning = [];
+    await Promise.all([...cleaning, ...[...this.#files.values()].map((f) => f.written())]);
   }
 
   #mine(by: string, id: string): Transfer {
@@ -249,13 +265,9 @@ export class Transfers {
 
   #save(t: Transfer, tell: boolean): void {
     this.#all.set(t.id, t);
-    const path = join(this.#deps.dir, `${t.id}.json`);
-    try {
-      writeFileSync(`${path}.tmp`, JSON.stringify(t), { mode: 0o600 });
-      renameSync(`${path}.tmp`, path);
-    } catch (e) {
-      log.warn("drive", "a transfer was not kept", { id: t.id, error: (e as Error).message });
-    }
+    let file = this.#files.get(t.id);
+    if (file === undefined) this.#files.set(t.id, (file = new PrivateFile(join(this.#deps.dir, `${t.id}.json`))));
+    file.write(JSON.stringify(t)).catch((e) => log.warn("drive", "a transfer was not kept", { id: t.id, error: (e as Error).message }));
     this.#lastSave = this.#deps.now();
     if (tell) this.#deps.changed(t);
   }
@@ -288,13 +300,16 @@ export class Transfers {
     const source = t.from.station === null ? localSource(drive, t.from.root, t.from.path, t.anywhere) : this.#deps.remote(t);
     const stopped = () => this.#stop.has(t.id) || this.#closed;
     try {
+      await this.#separate(t, drive);
+      if (stopped()) return;
       if (t.items.length === 0) {
         t.state = "walking";
         this.#save(t, true);
         const names = t.from.names.filter((n) => t.conflicts[n] !== "skip");
         const { items } = await source.walk(names);
         if (stopped()) return;
-        await this.#place(t, drive, items);
+        await this.#place(t, drive, items, stopped);
+        if (stopped()) return;
         t.items = items;
         t.total = items.reduce((n, i) => n + i.size, 0);
         t.state = "copying";
@@ -318,11 +333,33 @@ export class Transfers {
     }
   }
 
+  /// A local copy must not replace what it still reads; a move must not put its result inside what it later removes.
+  /// Check every selected source before any destination is changed, by their real paths (roots may be aliases).
+  async #separate(t: Transfer, drive: Drive): Promise<void> {
+    if (t.from.station !== null) return;
+    const inside = (path: string, dir: string) => platform.paths.within(key(path), key(dir));
+    const into = await drive.locate(t.to.root, t.to.path, t.anywhere);
+    const names = t.from.names.filter((name) => t.conflicts[name] !== "skip");
+    const sources = await Promise.all(names.map((name) => drive.locate(t.from.root, join2(t.from.path, name), t.anywhere)));
+    if (sources.some((from) => inside(into.found, from.found))) {
+      throw new DriveError("invalid_request", "choose a different destination folder: a folder cannot go into itself");
+    }
+    for (const name of names) {
+      // Keeping both chooses a fresh name in #place; a resumed copy already knows that name.
+      if (t.conflicts[name] === "keep" && t.placed[name] === undefined) continue;
+      const to = await drive.locate(t.to.root, join2(t.to.path, t.placed[name] ?? name), t.anywhere);
+      if (sources.some((from) => inside(from.entry, to.entry) || inside(from.found, to.entry))) {
+        throw new DriveError("invalid_request", "choose a different destination or keep both: replacing it would remove a source");
+      }
+    }
+  }
+
   /// Where each name goes: its own name, one kept beside (`keep`), or the one there let go first (`replace`).
-  async #place(t: Transfer, drive: Drive, items: Item[]): Promise<void> {
+  async #place(t: Transfer, drive: Drive, items: Item[], stopped: () => boolean): Promise<void> {
     const listed = await drive.list(t.to.root, t.to.path, t.anywhere);
     const there = new Set(listed.entries.map((e) => key(e.name)));
     for (const name of t.from.names) {
+      if (stopped()) return;
       const answer = t.conflicts[name];
       if (answer === "skip") continue;
       const dir = items.find((i) => i.path === name)?.dir ?? false;

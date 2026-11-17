@@ -253,6 +253,29 @@ describe("slack", { concurrency: true }, () => {
     }
   });
 
+  test("a file Slack's event gives by its id alone (check_file_info) comes named and with its address, from files.info", async () => {
+    const fake = await FakeSlack.start();
+    bot(fake);
+    const surface = new SlackSurface({ appToken: "xapp-1", botToken: "xoxb-1", client: new SlackClient(fake.base), pingMs: PING, staleMs: STALE * 5 });
+    const heard: ChatEvent[] = [];
+    try {
+      await surface.start(async (event) => {
+        heard.push(event);
+      });
+      await fake.until("a socket", () => fake.sockets.length === 1 && surface.socket().connected);
+      fake.answer("files.info", { ok: true, file: { id: "F9", name: "image.png", size: 108054, mode: "hosted", url_private_download: "https://files.slack.com/files-pri/T-F9/download/image.png" } });
+      fake.event("e1", { type: "message", subtype: "file_share", channel: "C1", user: "U1", ts: "5.2", thread_ts: "5.1", text: "see", files: [{ id: "F9", file_access: "check_file_info" }] });
+      await fake.until("e1's ack", () => fake.acks.some((a) => a.envelope_id === "e1"));
+      assert.deepEqual(fake.calls("files.info")[0]!.params, { file: "F9" });
+      assert.deepEqual(heard[0]!.type === "message" && heard[0]!.message.files, [
+        { id: "F9", name: "image.png", size: 108054, url: "https://files.slack.com/files-pri/T-F9/download/image.png" },
+      ]);
+    } finally {
+      await surface.stop();
+      await fake.close();
+    }
+  });
+
   test("a socket that fails is tried again later, its error said", async () => {
     const fake = await FakeSlack.start();
     bot(fake);
@@ -421,7 +444,7 @@ describe("slack", { concurrency: true }, () => {
         ["合并", "1", "squash 合进 main"],
       ],
     );
-    assert.deepEqual([pick.type, pick.initial_option.value, send.text.text, send.style, JSON.parse(send.value)], ["radio_buttons", "1", "确定", "primary", { l: ["先不", "合并"] }]);
+    assert.deepEqual([pick.type, pick.initial_option.value, send.text.text, send.style, JSON.parse(send.value)], ["radio_buttons", "1", "提交", "primary", { l: ["先不", "合并"] }]);
     // A detail longer than an option takes: every option listed whole above, the options their labels only.
     const long = questionBlocks("选", { type: "options", options: [{ label: "A", detail: "说".repeat(80) }, { label: "B" }] }, "zh");
     assert.equal(long[0].text, `选\n\n**A**\n${"说".repeat(80)}\n\n**B**`);

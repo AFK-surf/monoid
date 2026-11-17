@@ -220,10 +220,13 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
       }
       self.enqueue(a, async fn() { self.catch_up(a, a.turn is None && a.waiting is None) })
     }
-    "evict" =>
+    "evict" => {
+      // (`force`: its session archived, its process ends once its turn is over, what it left in the background too:
+      // an archived session keeps nothing running, and is packed cold only once its process is gone)
+      let force = truthy(arg(0))
       self.enqueue(a, async fn() {
         guard a.agent is Some(g) else { return }
-        if self.busy(a) || a.turn is Some(_) || self.holding(a) {
+        if self.busy(a) || a.turn is Some(_) || (!force && self.holding(a)) {
           return
         }
         // (another taken up meanwhile is not the idle one)
@@ -233,6 +236,7 @@ async fn Actors::called(self : Actors, a : Actor, method : String, args : Array[
         ignore(self.agent_do(a, g, "dispose", []))
         self.notify_store(a)
       })
+    }
     "compact" => {
       let say = truthy(arg(0))
       let mut refused : String? = None
@@ -308,7 +312,7 @@ async fn Actors::refills_at(self : Actors, a : Actor) -> Double raise {
 
 ///|
 async fn Actors::live_turn_ended(self : Actors, a : Actor) -> Unit raise {
-  ignore(self.rpc(a.key, "live.turnEnded", [jstr(a.key)]))
+  self.live_turn_end(a.key)
 }
 
 ///|
@@ -540,6 +544,11 @@ async fn Actors::recover(self : Actors, a : Actor) -> Json raise {
     }
     if a.delivery_interruptions > 0 {
       return
+    }
+    // The turn the restart cut off (its process gone with no runner to keep it) is ended here, before anything that may
+    // fail: left open, the session would be shown at work for ever (2026-11-16, a recovery that could not start).
+    if a.turn is None {
+      ignore(self.store(a, "endCutOff", [jstr(a.key)]))
     }
     if self.archived(a) {
       a.recovery_deferred = false
@@ -825,6 +834,7 @@ fn Actors::snapshot(self : Actors, a : Actor) -> Json {
         "by": t.by,
         "declared": match kind_of(t.declared) { Some(k) => jstr(k); None => Json::null() },
         "wait": if kind_of(t.declared) == Some("waiting") { t.declared.unwrap().value("seconds").unwrap_or(Json::null()) } else { Json::null() },
+        "askedBefore": t.asked_before.unwrap_or(Json::null()),
       } : Json)
     None => Json::null()
   }
@@ -880,6 +890,10 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
           Some(k) => parse_declared(k, num_of(t.get("wait")).unwrap_or(0.0))
           None => None
         },
+        asked_before: match t.get("askedBefore") {
+          Some(Object(_) as b) => Some(b)
+          _ => None
+        },
       })
     _ => None
   }
@@ -906,6 +920,8 @@ fn Actors::adopt(self : Actors, a : Actor, snap : Json, agent : Json, profile : 
   if num_of(snap.value("refillMs")) is Some(ms) {
     self.await_refill(a, self.now + ms)
   }
+  // (told now, its idle time with it: what `set_agent` told above was before it was taken up whole)
+  self.mirror(a)
 }
 
 ///|
@@ -1207,7 +1223,7 @@ async fn Actors::start_turn(self : Actors, a : Actor, kind : String, text : Stri
 
 ///|
 async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text : String, by : Json, retry_about : Json) -> Unit raise {
-  self.tell(a.key, "live.event", [jstr(a.key), { "kind": "phase", "phase": "starting" }])
+  self.live_event(a.key, { "kind": "phase", "phase": "starting" })
   if (kind == "input" || kind == "job") && !self.holding(a) && !self.busy(a) &&
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
     ignore(self.clear_now(a, true, said="station.notice.afreshCold", by="as its cache is over", keep_jobs=true))
@@ -1216,6 +1232,7 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
   let lost = a.resume_lost
   a.resume_lost = false
   let (handed, told_choices) = self.with_choices(a, text)
+  a.turn_text = handed
   let stopped = a.stopped_note
   a.stopped_note = None
   let afresh = a.afresh
@@ -1264,7 +1281,8 @@ async fn Actors::begin_turn(self : Actors, a : Actor, kind : String, by : Json) 
     a.posted = false
   }
   let id = str_of(Some(self.rpc(a.key, "node.uuid", []))).unwrap_or("")
-  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", by })
+  let asked_before = if kind == "job" { self.asked_now(a) } else { None }
+  a.turn = Some({ id, declared: None, auth_retried: kind == "auth_retry", codex_retried: kind == "codex_retry", by, asked_before })
   a.phase = "running"
   a.waiting = None
   let for_ = match by {
@@ -1320,10 +1338,18 @@ async fn Actors::end_process(self : Actors, a : Actor, agent : Agent?) -> Unit r
 /// actor.ts `ensureAgent`: its runtime session, opened (Node's: the driver, its options, the words it is told of how it
 /// was opened) where it has none.
 async fn Actors::ensure_agent(self : Actors, a : Actor) -> Agent raise {
-  if a.agent is Some(_) && !a.stale && !self.busy(a) {
+  if a.agent is Some(g) && !a.stale && !self.busy(a) {
     let on = self.rpc(a.key, "node.profileId", [jbool(self.holding(a))]) catch { _ => Json::null() }
     if !(on is Null) && on != a.profile {
       a.stale = true
+    }
+    // (its process can no longer take a turn as it is: an Antigravity CLI one whose borrowed sign-in runs out, runtime.ts
+    // `outlived`; its retune refuses, so it is opened again)
+    if !a.stale {
+      let outlived = self.rpc(a.key, "node.outlived", [jnum(g.handle.to_double())]) catch { _ => Json::null() }
+      if outlived is True {
+        a.stale = true
+      }
     }
   }
   self.catch_up(a, true)
@@ -1387,7 +1413,10 @@ async fn Actors::on_event(self : Actors, a : Actor, generation : Int, event : Js
       let outcome = event.value("outcome").unwrap_or(Json::null())
       ignore(
         self.enqueue(a, async fn() {
-          ignore(self.rpc(a.key, "node.read", [read]))
+          match read {
+            { "live": Number(n, ..), .. } => self.live_ended(n.to_int())
+            _ => ignore(self.rpc(a.key, "node.read", [read]))
+          }
           self.on_turn_ended(a, generation, outcome)
         }),
       )
@@ -1504,8 +1533,20 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return self.compacted(a, outcome)
   }
   let kind = str_of(outcome.value("kind")).unwrap_or("")
-  let reason = str_of(outcome.value("reason")).unwrap_or("")
+  let mut reason = str_of(outcome.value("reason")).unwrap_or("")
   let message = str_of(outcome.value("message")).unwrap_or("")
+  // (agy 1.5.8 says only `⚠ Agent execution terminated due to error.` (`other`) when its borrowed sign-in runs out
+  // under a turn, 2026-11-16: where the process's sign-in has expired, take it as `auth` so `auth_retry` reopens on one
+  // lent anew and goes on once)
+  if a.runtime == "agy" && kind == "failed" && reason == "other" &&
+    message.to_lower().contains("agent execution terminated due to error") && a.agent is Some(g) {
+    if truthy(self.agent_do(a, g, "signInExpired", []) catch { _ => Json::null() }) {
+      reason = "auth"
+    }
+    if !self.is_current(a, generation) {
+      return
+    }
+  }
   // (undefined: none shown; null: the account's; a name: that model's own)
   let mut limit : Json? = None
   if kind == "failed" && reason == "model" && a.turn is Some(_) && !(a.profile is Null) && !a.stop_requested {
@@ -1526,7 +1567,39 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   a.phase = "idle"
   let stop_requested = a.stop_requested
   a.stop_requested = false
-  self.set_running(a, false)
+  // How a turn that said no state ends (2026-11-16, the status refactor): one that posted a card still waiting ends
+  // need_human on it; one that posted, asked once again, ends all_done (no ⚠️ after an answer given). And a turn its
+  // background work woke, that only waits on, asks what the turn before it asked, while no person has spoken or decided
+  // since (`asked_before`, `node.keepAsk`): the work's report does not take the question away.
+  let mut kept_wait : Double? = None
+  if kind == "completed" && turn is Some(t) && !stop_requested {
+    if t.declared is None && a.posted {
+      let started = self.last_turn(a).value("startedAt").unwrap_or(Json::null())
+      let most = num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
+      if truthy(self.rpc(a.key, "node.cardAsks", [jstr(t.id), started])) {
+        t.declared = Some({ "kind": "need_help" })
+        self.log(a, "info", "the turn ended with no state on a card it posted, still waiting: it ends needing a person")
+      } else if a.nudges >= (if most < 1 { most } else { 1 }) {
+        t.declared = Some({ "kind": "all_done" })
+        self.log(a, "info", "the turn posted and said no state, asked again: it ends done")
+      }
+    }
+    if kind_of(t.declared) == Some("waiting") && t.asked_before is Some(before) && a.steered.length() == 0 {
+      let seconds = num_of(t.declared.unwrap().value("seconds")).unwrap_or(0.0)
+      if truthy(self.rpc(a.key, "node.keepAsk", [jstr(t.id), before])) {
+        t.declared = Some({ "kind": "need_help" })
+        kept_wait = Some(seconds)
+        self.log(a, "info", "woken by its background work, it waits on: what it asked before still stands")
+      }
+    }
+  }
+  // (one that ends with no state is asked again at once: it stays running till then, never shown stopped meanwhile;
+  // one asked as often as it may be ends here, stopped at once)
+  let warm = kind == "completed" && !stop_requested && turn is Some({ declared: None, .. }) &&
+    a.nudges < num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
+  if !warm {
+    self.set_running(a, false)
+  }
   let overloaded = turn is Some(_) && kind == "failed" && reason == "overloaded" && !stop_requested
   let retry : Json? = if overloaded {
     let n = a.overloads
@@ -1597,7 +1670,27 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   if a.runtime == "codex" && kind == "failed" && reason == "auth" && !stop_requested && !(a.profile is Null) {
     ignore(self.deps(a, "recheck", [a.profile]))
   }
-  if (a.runtime == "claude" || a.runtime == "codex") && kind == "failed" && reason == "auth" && !stop_requested &&
+  // (agy: session/load answers without checking the CLI's conversation database, and a prompt on a conversation whose
+  // database is absent or corrupt fails with "trajectory not found"; end the broken process so no retry hits it again,
+  // and reopen once in a new conversation that reads back, 2026-11-16)
+  if a.runtime == "agy" && kind == "failed" && message.to_lower().contains("trajectory not found") {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
+    if !stop_requested && !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
+      a.nudges = 0
+      self.log(a, "warn", "Antigravity trajectory missing; reopening in a new runtime session", fields={ "error": jstr(message) })
+      self.start_turn(a, "auth_retry", a.turn_text, by=t.by)
+      if a.turn is Some(nt) && t.codex_retried {
+        nt.codex_retried = true
+      }
+      return
+    }
+  }
+  // (agy: a sign-in lent by another station runs out under a process that never reads it again; a new one opens on
+  // one lent anew, agents/agy.ts AGY_LENT_RENEW_MS)
+  if (a.runtime == "claude" || a.runtime == "codex" || a.runtime == "agy") && kind == "failed" && reason == "auth" && !stop_requested &&
     !self.held(a) && turn is Some(t) && !t.auth_retried && t.declared is None {
     a.nudges = 0
     let agent = a.agent
@@ -1612,6 +1705,12 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       nt.codex_retried = true
     }
     return
+  }
+  if a.runtime == "agy" && kind == "failed" && reason == "auth" && a.agent is Some(_) {
+    let agent = a.agent
+    self.set_agent(a, None)
+    self.end_process(a, agent)
+    self.notify_store(a)
   }
   let spent = kind == "failed" && reason == "rate_limit"
   if !spent {
@@ -1734,25 +1833,28 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
       let left = self.store(a, "leftThread", [jstr(a.key), jstr(w.connect), jstr(w.channel), jstr(w.thread_ts)]) catch { _ => Json::null() }
       self.tell(a.key, "chat.standsAt", [jstr(w.connect), jstr(w.channel), jstr(w.thread_ts), if left is True { { "kind": "left", "words": Json::null() } } else { stands }])
     }
-    if ended is Some(e) {
+    if ended is Some(e) && kept_wait is None {
       ignore(self.deps(a, "settled", [jstr(a.key), jstr(e), words])) catch {
         err => self.log(a, "warn", "the opener of its chat was not told", fields={ "error": jstr(err.to_string()) })
       }
     }
   }
   if self.archived(a) {
+    self.cool(a, warm)
     self.let_go(a)
     ignore(self.deps(a, "idle", [jstr(a.key)]))
     return
   }
   if kind == "completed" && kind_of(ends) != Some("waiting") && self.compacting_to_cap(a) {
-    return
+    return self.cool(a, warm)
   }
   if self.has_pending(a) {
-    return self.pump(a)
+    self.pump(a)
+    return self.cool(a, warm)
   }
   if a.notices.length() > 0 {
-    return self.give_notices(a)
+    self.give_notices(a)
+    return self.cool(a, warm)
   }
   let declared = match turn {
     Some(t) => t.declared
@@ -1769,6 +1871,9 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return
   }
   ignore(self.deps(a, "idle", [jstr(a.key)]))
+  if kept_wait is Some(seconds) {
+    self.wait_ms(a, seconds, seconds * 1000.0)
+  }
   if kind != "completed" || declared is Some(_) {
     a.nudges = 0
     let untitled = if kind == "completed" && !self.held(a) { str_of(Some(self.deps(a, "untitled", [jstr(a.key)]))) } else { None }
@@ -1780,26 +1885,50 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
     return
   }
   if self.held(a) {
-    return
+    return self.cool(a, warm)
   }
   if lost is Some(_) {
     a.nudges = 0
     if a.tools_restarts < 1 {
       a.tools_restarts += 1
       self.log(a, "info", "the turn reached nobody; going on in a new process", fields={ "attempt": jnum(a.tools_restarts.to_double()) })
-      return self.start_turn(a, "resume", self.words(a, "TOOLS_LOST"))
+      self.start_turn(a, "resume", self.words(a, "TOOLS_LOST"))
+      return self.cool(a, warm)
     }
     a.tools_restarts = 0
+    self.cool(a, warm)
     return self.give_up(a, recorded)
   }
   let most = num_of(Some(self.deps(a, "maxNudges", []))).unwrap_or(0.0).to_int()
   if a.nudges < most {
     a.nudges += 1
     self.log(a, "info", "turn ended without a state; nudging", fields={ "attempt": jnum(a.nudges.to_double()) })
-    return self.start_turn(a, "nudge", self.words(a, "NUDGE"))
+    self.start_turn(a, "nudge", self.words(a, "NUDGE"))
+    return self.cool(a, warm)
   }
   a.nudges = 0
+  self.cool(a, warm)
   self.give_up(a, recorded)
+}
+
+///|
+/// A turn's end that kept it running (`warm`: it said no state, to be asked again at once) and started nothing after
+/// all: stopped now.
+async fn Actors::cool(self : Actors, a : Actor, warm : Bool) -> Unit raise {
+  if warm && a.turn is None && !a.compacting && a.codex_update is None {
+    self.set_running(a, false)
+  }
+}
+
+///|
+/// What the session's last turn asked a person and still asks (ended need_human): what a turn its background work woke
+/// keeps asking while it waits on (`on_turn_ended`).
+async fn Actors::asked_now(self : Actors, a : Actor) -> Json? raise {
+  let last = self.last_turn(a)
+  guard last is Object(_) && str_of(last.value("ending")) == Some("need_help") && !(last.value("endedAt") is (None | Some(Null))) else {
+    return None
+  }
+  Some(last)
 }
 
 ///|

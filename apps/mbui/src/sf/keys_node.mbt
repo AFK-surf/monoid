@@ -142,17 +142,9 @@ fn keys_record_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .radius(Is(small_corner))
-    .ground(By(fn() {
-      // (the hover's over its own under the hand, record's hovered: the accent's kept while it records)
-      let theme = @ui.tree_theme()
-      let under = theme.color(if recording() { AccentBg } else { Hover })
-      if lit_node(b) {
-        @ui.over(under, theme.color(Hover))
-      } else {
-        under
-      }
-    }))
+    .ground(By(fn() { @ui.tree_theme().color(if recording() { AccentBg } else { Hover }) }))
     |> ignore
+    hover_ground_node(b)
     pressed_node(b, record, Is(small_corner), Button, name)
     words_node(b, fn() { if recording() { recording_words() } else { keys() } }, fn() {
       if recording() {

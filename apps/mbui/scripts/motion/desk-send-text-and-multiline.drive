@@ -1,0 +1,21 @@
+# The wide frame (MBUI_WIN=1280x800, 大屏): words sent, then three lines sent.
+timeout 20000
+until 发消息
+wait 600
+tap 发消息
+wait 500
+type 发布前再看一眼签名
+wait 700
+tap icon:arrow-up
+wait 1800
+tap 发消息
+wait 500
+type 先看一下签名
+key shift+enter
+type 再看发布说明
+key shift+enter
+type 最后核对版本号
+wait 700
+tap icon:arrow-up
+wait 2200
+exit

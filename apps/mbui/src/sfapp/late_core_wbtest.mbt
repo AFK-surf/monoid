@@ -179,8 +179,8 @@ fn switch_on(
 /// What the frame drawn now shows, `start` the press's moment: the moment after it (to a thousandth of a ms: the same
 /// moment however it was summed), the bones drawn, the workspace in view, whose chats' list's words it draws (ws1's
 /// first row; ws2's, which has no station: 小屏's Home its first station asked for, the wide frame's sidebar that it has
-/// none; "" neither), and whether a new chat's page is drawn whole (its heading: the page the wide frame's pane lands
-/// on in either workspace).
+/// none; "" neither), and whether a new chat's page is drawn whole (the page the wide frame's pane lands on in either
+/// workspace: ws1's its composer's hint; ws2's, with no station to start on, its first station asked for, its note).
 fn switch_frame(t : @ui.Tester, src : Source, start : Double) -> (Double, Int, String, String, Bool) {
   let ws = @signals.untracked(fn() { workspace_in_view(src).0.map(fn(w) { w.id }).unwrap_or("") })
   let words = t.words().map(fn(w) { w.0 })
@@ -196,7 +196,7 @@ fn switch_frame(t : @ui.Tester, src : Source, start : Double) -> (Double, Int, S
     t.bones_drawn(),
     ws,
     home,
-    words.contains("想让 agent 做什么？"),
+    words.contains("想让 agent 做什么？") || words.contains(@sf.t("android-settings.station.firstNote")),
   )
 }
 

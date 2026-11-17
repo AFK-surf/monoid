@@ -1,6 +1,7 @@
 // The slider: a value along a range (`min` … `max`, stepped by `step`), read out a slider called by its label with its
 // range, value text, and Increment / Decrement actions while enabled. Moved by dragging along it (with `thumb_room`
-// reserved for the knob's ends), by ←/↓ and →/↑ or Home/End while it has the keyboard's focus, and by a screen
+// reserved for the knob's ends), by ←/↓ and →/↑ (a step), Page Down and Page Up (ten steps) or Home/End while it
+// has the keyboard's focus, and by a screen
 // reader's step (View::on_step), each telling `change` the new stepped value when it differs from what `value` says
 // then. Controlled (headless.mbt, State): `value` is its caller's; nothing of the value is kept here.
 
@@ -80,10 +81,14 @@ fn slider_snap(x : Double, min : Double, max : Double, step : Double) -> Double 
 ///|
 /// A slider in `parent`, called `label`, at `value()` along `min` … `max` in steps of `step` (`> 0`: snapped to the
 /// nearest step from `min`); `change` told the new value when a drag along it (`thumb_room` reserved for the knob's
-/// ends), an arrow / Home / End key with the focus on it, or a screen reader's step moves it to another value;
+/// ends), an arrow / Page Up / Page Down / Home / End key with the focus on it, or a screen reader's step moves it
+/// to another value;
 /// `disabled` while it cannot be moved; `value_text` how its value is read out (by default its integer where `step` is
-/// a whole number, else its number). `look` is run once as it is made, given its node and what it reads of it. The
-/// node.
+/// a whole number, else its number). `drag`: what a finger or the pointer does on it, given each of its events in
+/// place of moving it to where it is (a control whose press and whose drag differ: a player's timeline, a tap there
+/// at once, a drag through what it plays); its keys and a screen reader's steps as ever. `vertical`: it runs up its
+/// height, `min` at its foot, dragged along it (the keys as ever, ↑ and → more). `look` is run once as it is made,
+/// given its node and what it reads of it. The node.
 #callsite(autofill(loc))
 pub fn slider(
   parent : @view.View,
@@ -97,6 +102,8 @@ pub fn slider(
   thumb_room? : Double = 0.0,
   disabled? : () -> Bool = fn() { false },
   value_text? : (Double) -> String,
+  drag? : (@view.Drag) -> Unit,
+  vertical? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -137,10 +144,17 @@ pub fn slider(
       }
     })
     .on_drag(fn(d) {
-      if !disabled() {
+      if !disabled() && drag is Some(f) {
+        f(d)
+      } else if !disabled() {
         match d.kind {
-          Down | Moved if d.w > thumb_room => {
+          // (along its width, `min` at its left; `vertical`, up its height, `min` at its foot)
+          Down | Moved if !vertical && d.w > thumb_room => {
             let frac = slider_clamp((d.x - thumb_room / 2.0) / (d.w - thumb_room), 0.0, 1.0)
+            go(min + frac * (max - min))
+          }
+          Down | Moved if vertical && d.h > thumb_room => {
+            let frac = slider_clamp(1.0 - (d.y - thumb_room / 2.0) / (d.h - thumb_room), 0.0, 1.0)
             go(min + frac * (max - min))
           }
           _ => ()
@@ -152,11 +166,16 @@ pub fn slider(
         return false
       }
       let cur = value()
-      // 3 Left, 4 Right, 5 Up, 6 Down, 8 Home, 9 End (ui/desktop.mbt key_code_*)
+      // 3 Left, 4 Right, 5 Up, 6 Down, 8 Home, 9 End, 15 Page Up, 16 Page Down (ui/desktop.mbt key_code_*): a page ten
+      // steps, as kit's slider and Radix's
       let to = if k.code == 3 || k.code == 6 {
         Some(cur - step_by)
       } else if k.code == 4 || k.code == 5 {
         Some(cur + step_by)
+      } else if k.code == 15 {
+        Some(cur + step_by * 10.0)
+      } else if k.code == 16 {
+        Some(cur - step_by * 10.0)
       } else if k.code == 8 {
         Some(min)
       } else if k.code == 9 {

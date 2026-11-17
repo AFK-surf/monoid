@@ -306,7 +306,6 @@ test "控制中心 whole, nothing scrolled, with all it can hold: on 小屏, on 
     r.sess().audio_ready.set(true)
     @sf.native_bars.on.set(true)
     @sf.native_bars.side.set(side)
-    @sf.native_over_clear()
     r.t.run_for(@ui.move_most_ms)
     native_pressed(r, "over/screen-center")
     assert_eq(center_whole(r, h), "", msg="\{w}×\{h}")

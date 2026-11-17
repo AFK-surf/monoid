@@ -1,0 +1,9 @@
+# 大屏, a finger: the sidebar's edge held (a long press), then dragged 200 wider over 1.5 s, four samples a frame as a
+# phone hands them (each a move of its own, as hosts did before batches).
+timeout 20000
+samples 4 apart
+until 新建对话
+wait 500
+log measure
+holdon 600 200 0 1500 @296,400
+exit

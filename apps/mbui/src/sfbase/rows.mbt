@@ -6,12 +6,22 @@
 /// The chats of workspace `scope` in list `filter` (all, mine, watching) as the core's view says them, worked out once
 /// for each version of it; what went wrong reading it.
 pub fn chats_of(src : Source, scope : String, filter : String) -> (ChatsView?, String?) {
-  let (read, topic) = chats_read.read(src, chats_params(scope, filter))
+  let (params, said) = chats_asked_said(scope, filter)
+  let (read, topic) = chats_read.read_said(src, params, said)
   let error = match topic.error {
     Some(e) => Some(text(Some(e), "message"))
     None => None
   }
   (read.map(fn(r) { r.view }), error)
+}
+
+///|
+/// Whether list `filter` of workspace `scope` shows what the core answered it now, not what it last said before it was
+/// let go of (`lasting`, shown again at once till the core answers: TopicState::kept) nor nothing yet. What changes in
+/// it is the list changing only from then (sfpages' RowsMotion: the answer's first value taken at once).
+pub fn chats_live(src : Source, scope : String, filter : String) -> Bool {
+  let (_, topic) = chats_read.read(src, chats_params(scope, filter))
+  topic.value is Some(_) && topic.version >= -1
 }
 
 ///|
@@ -39,6 +49,28 @@ fn chats_params(scope : String, filter : String) -> Map[String, Json] {
   }
   params
 }
+
+///|
+/// List `filter` of workspace `scope` as it is asked of the core (chats_params) and its topic's key (topic_key), each
+/// made once and read again after: what reads the list reads it many times a frame (each row's binding, the bar, the
+/// list: 19-33 times a frame on Home, each a map made and written out as JSON), and what is read is the same each
+/// time. Never written into by what reads it.
+fn chats_asked_said(scope : String, filter : String) -> (Map[String, Json], String) {
+  match chats_asked_kept.get((scope, filter)) {
+    Some(k) => k
+    None => {
+      let params = chats_params(scope, filter)
+      let k = (params, topic_key("chats", params))
+      chats_asked_kept[(scope, filter)] = k
+      k
+    }
+  }
+}
+
+///|
+// kept across runs: worked out of its key alone, the same in any run; a few for each workspace (its filters)
+/// What chats_asked_said made, by workspace and filter.
+let chats_asked_kept : Map[(String, String), (Map[String, Json], String)] = Map([])
 
 ///|
 // kept across runs: put back as a run begins (reset), set by the app's tree as it is given its window (sfapp app_tree)
@@ -184,7 +216,8 @@ fn chat_told_before(topic : Json) -> Array[(String, Json)] {
 ///|
 /// How many rows list `filter` of workspace `scope` has past those the core sent (its `more`).
 pub fn chats_more(src : Source, scope : String, filter : String) -> Int {
-  match field(src.topic("chats", chats_params(scope, filter)).get().value, "more") {
+  let (params, said) = chats_asked_said(scope, filter)
+  match field(src.topic_said("chats", params, said).get().value, "more") {
     Some(Number(n, ..)) => n.to_int()
     _ => 0
   }
@@ -231,7 +264,8 @@ pub fn chats_window_for(src : Source, scope : String, filter : String, tall : Do
 /// The chats' list of workspace `scope` as it is asked (all of its chats: chats_params), for what is read of it beside
 /// its rows (its stations' trouble, its glyph).
 pub fn chats_topic(src : Source, scope : String) -> Topic {
-  src.topic("chats", chats_params(scope, "all")).get().snapshot()
+  let (params, said) = chats_asked_said(scope, "all")
+  src.topic_said("chats", params, said).get().snapshot()
 }
 
 ///|
@@ -267,7 +301,7 @@ priv struct ChatsRead {
 /// The chats' list as the core's `chats` topic gives it: its rows read again only as they changed (one chat said
 /// something: its row read).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chats_read : Derived[ChatsRead] = Derived::new("chats", fn(v, was) {
+let chats_read : Derived[ChatsRead] = Derived::new_ref("chats", fn(v, was) {
   let jsons : Array[Json] = []
   for d in items(Some(v), "days") {
     for j in items(Some(d), "items") {
@@ -310,6 +344,17 @@ let chats_read_last : Ref[Array[(Json, ChatItem)]] = Ref([])
 /// A row's key in the list, as the core keys them (client/core-ts collections.ts: `station` and `id`).
 fn chat_row_key(r : Json) -> String {
   text(Some(r), "station") + "\u{1}" + text(Some(r), "id")
+}
+
+///|
+/// The list's filter in workspace `ws` chosen (`all`, `mine`, `watching`, `hidden`): kept here at once, and in the prefs
+/// (the core's `listFilter`, by workspace).
+pub fn set_filter_of(src : Source, ws : String, f : String) -> Unit {
+  if filter_of(src, ws) == f {
+    return
+  }
+  app.filters[ws] = f
+  (src.call)("prefs.set", Json::object({ "listFilter": Json::object(Map::from_array([(ws, Json::string(f))])) }), answer_unread)
 }
 
 ///|
@@ -569,7 +614,20 @@ pub fn row_agent_groups(item : ChatItem) -> Array[RowAgent] {
 /// The stations at a glance, as the core has them in workspace `ws` (asleep while every station is down as the
 /// device's network is), and in words: asleep, what the core cannot reach says it; else the stations (the core's),
 /// and what is wrong with them.
+/// Worked out once for each change of what it reads, and what reads it told only where it comes out otherwise: a chat's
+/// message, card or unread changes the chats' list, not the stations' glyph or words.
 pub fn stations_at_glance(src : Source, ws : String) -> (@sf.GlyphCounts, String) {
+  stations_glance_kept.read(src, ws, fn(_) { stations_at_glance_now(src, ws) }, same=fn(a, b) { a == b })
+}
+
+///|
+/// The stations at a glance by workspace (stations_at_glance's), by the source read.
+// kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
+let stations_glance_kept : Kept[(@sf.GlyphCounts, String)] = Kept::new()
+
+///|
+/// The stations at a glance as the topics say them now (stations_at_glance's getter).
+fn stations_at_glance_now(src : Source, ws : String) -> (@sf.GlyphCounts, String) {
   let chats = chats_topic(src, ws)
   let g = field(chats.value, "glyph")
   let status = src.topic("status", { "workspace": Json::string(ws) }).get().value

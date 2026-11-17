@@ -166,3 +166,74 @@ test("a Windows station updating itself installs only the release its signed wor
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test("the Windows installer downloads only through Download, which tries again on the way and not on a refusal", () => {
+  const script = windowsInstallScript("https://ember.test", "stable", "en");
+  const fn = script.match(/^function Download\(.*?^}$/ms)?.[0];
+  assert.ok(fn);
+  // Every download is its: none left to Invoke-WebRequest once.
+  assert.equal(script.replace(fn, "").match(/Invoke-WebRequest/g), null);
+  assert.match(fn, /\$status -notin 502, 503, 504/);
+  assert.match(fn, /@\(1, 2, 4\)/);
+});
+
+test("a Windows download broken on the way or by a gateway is tried again; a refusal, or one broken every time, fails", { skip: !powershell && "no PowerShell" }, async (t) => {
+  const { createServer } = await import("node:http");
+  /// The server answering, in turn: a status, or "broken" (the connection closed with no answer); 200 once they run out,
+  /// or with `broken` every time. (.NET may itself ask again once on a connection closed so: only how many times
+  /// Download asked is counted where the connection breaks.)
+  let said: (number | "broken")[] = [];
+  let broken = false;
+  const asked: string[] = [];
+  const server = createServer((req, res) => {
+    asked.push(req.url ?? "");
+    const now = broken ? "broken" : (said.shift() ?? 200);
+    if (now === "broken") return void req.socket.destroy();
+    res.writeHead(now, { "content-type": "text/plain" }).end(now === 200 ? "the file" : "no");
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  t.after(() => server.close());
+  const dir = mkdtempSync(join(tmpdir(), "download-again-"));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const script = windowsInstallScript("https://ember.test", "stable", "en");
+  const fn = script.match(/^function Download\(.*?^}$/ms)![0];
+  const file = join(dir, "download.ps1");
+  writeFileSync(file, "\ufeff" + `$ErrorActionPreference = 'Stop'\n$ProgressPreference = 'SilentlyContinue'\n${fn}\nDownload $env:TEST_URL (Join-Path $env:TEST_DIR 'got')\n(Download "$env:TEST_URL.sha256").Content\n`);
+  const url = `http://127.0.0.1:${(server.address() as { port: number }).port}/releases/x.zip`;
+  const run = async (answers: (number | "broken")[], always = false) => {
+    said = answers;
+    broken = always;
+    asked.length = 0;
+    rmSync(join(dir, "got"), { force: true });
+    const { execFile } = await import("node:child_process");
+    const done = await new Promise<{ code: number; out: string }>((resolve) =>
+      execFile(powershell!, ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", file], {
+        env: { ...process.env, TEST_URL: url, TEST_DIR: dir, STILLFAIL_DOWNLOAD_PAUSES: "0 0 0" }, timeout: 60_000,
+      }, (e, out, err) => resolve({ code: e ? ((e as { code?: number }).code ?? 1) : 0, out: out + err })),
+    );
+    return { ...done, again: done.out.match(/trying again in 0s/g)?.length ?? 0 };
+  };
+  const gateways = await run([503, 502]);
+  assert.equal(gateways.code, 0, gateways.out);
+  assert.deepEqual(asked, ["/releases/x.zip", "/releases/x.zip", "/releases/x.zip", "/releases/x.zip.sha256"]);
+  assert.equal(readFileSync(join(dir, "got"), "utf8"), "the file");
+  assert.equal(gateways.again, 2, gateways.out);
+  assert.match(gateways.out, /the file/, "an answer returned when there is no file");
+  const once = await run(["broken"]);
+  assert.equal(once.code, 0, once.out);
+  assert.equal(readFileSync(join(dir, "got"), "utf8"), "the file");
+  const refused = await run([404]);
+  assert.notEqual(refused.code, 0, refused.out);
+  assert.equal(asked.length, 1);
+  assert.equal(refused.again, 0);
+  const gone = await run([502, 503, 504, 502]);
+  assert.notEqual(gone.code, 0, gone.out);
+  assert.equal(asked.length, 4);
+  assert.equal(gone.again, 3, gone.out);
+  assert.ok(!existsSync(join(dir, "got")), "nothing left of it");
+  const cut = await run([], true);
+  assert.notEqual(cut.code, 0, cut.out);
+  assert.equal(cut.again, 3, cut.out);
+  assert.ok(asked.length >= 4, asked.join());
+  assert.ok(!existsSync(join(dir, "got")), "nothing left of it");
+});

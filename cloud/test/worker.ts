@@ -64,6 +64,10 @@ class Saying {
 }
 
 export class Directory extends ProductionDirectory {
+  /** A member left while the Directory still kept their unused rig enrollment tokens. */
+  leaveWithRigTokenFromBefore(workspace: string, sub: string) {
+    this.ctx.storage.sql.exec("DELETE FROM members WHERE workspace = ? AND sub = ?", workspace, sub);
+  }
   /** The presence alarm's check, as if it ran at `ms` (the sockets held here, while rolled back). */
   sweepAt(ms: number) {
     return this.sweep(ms);
@@ -119,6 +123,16 @@ export class Directory extends ProductionDirectory {
   /** A code whose time is up. */
   expireInviteCode(code: string) {
     this.ctx.storage.sql.exec("UPDATE invite_codes SET expires_at = ? WHERE code = ?", nowSeconds(), code);
+  }
+  /** A member-mail reservation made `secs` ago, against the fixed test clock. */
+  ageAddedMail(workspace: string, email: string, secs: number) {
+    this.ctx.storage.sql.exec("UPDATE added_mails SET at = ? WHERE workspace = ? AND email = ?", nowSeconds() - secs, workspace, email);
+  }
+  /** Advance this test Worker's shared clock without waiting for wall time. */
+  advanceClock(secs: number) {
+    const now = clock.now() + secs * 1000;
+    clock.now = () => now;
+    return nowSeconds();
   }
   /** A device's request to be confirmed into a workspace's lock, made `secs` ago. */
   ageLockRequest(workspace: string, base: string, secs: number) {
@@ -343,6 +357,10 @@ export class Account extends ProductionAccount {
     if (kind === "idle") session.idle = nowSeconds();
     else session.expires = nowSeconds();
     this.ctx.storage.kv.put("account", account);
+  }
+  /** The session alarm, run by the test after it expires a session. */
+  sweepSessions() {
+    return this.alarm();
   }
   /** Moves the session's last rotation `seconds` into the past (past its retry window, say). */
   age(id: string, seconds: number) {

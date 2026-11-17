@@ -86,3 +86,38 @@ test "pointing: let go as what is under the point is first told: nothing followe
   t.point_at(-1.0, -1.0)
   assert_eq((a.watched(), b.watched(), t.bindings_held()), (false, false, held))
 }
+
+///|
+test "pointing: a pointed child inside a pressable row let go when pointed_in turns true falls back to the row without oscillating" {
+  let changes = Ref(0)
+  let row_id : Ref[@view.NodeId?] = Ref(None)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(row) {
+        row_id.val = Some(row.id())
+        row
+        .width(Is(Some(100.0)))
+        .height(Is(Some(40.0)))
+        .on_press(fn() {  })
+        .show(
+          fn() {
+            changes.val = changes.val + 1
+            !row.pointed_in()
+          },
+          fn(badge) {
+            badge.over(Is(true)).width(Is(Some(40.0))).height(Is(Some(40.0))).points(Is(true)) |> ignore
+          },
+        )
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(100.0, 100.0) |> ignore
+  assert_eq(changes.val, 1)
+  t.point_at(20.0, 20.0)
+  t.frame(100.0, 100.0) |> ignore
+  assert_eq(t.pointed_now(), row_id.val)
+  assert_eq(changes.val, 2)
+}

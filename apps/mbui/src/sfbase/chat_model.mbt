@@ -28,6 +28,7 @@ pub fn stamp_of(v : Json?, key : String) -> Stamp? {
 
 ///|
 /// A file sent with a message (Attachment).
+#derive(Eq)
 pub(all) struct Attachment {
   name : String
   path : String
@@ -68,6 +69,7 @@ pub fn attachment_of(a : Json) -> Attachment {
 
 ///|
 /// A passage quoted with a message (Quote).
+#derive(Eq)
 pub(all) struct Quote {
   author : String
   text : String
@@ -95,6 +97,7 @@ pub fn quote_of(q : Json) -> Quote {
 
 ///|
 /// An answer a card offers (DecisionOption).
+#derive(Eq)
 pub(all) struct Choice {
   label : String
   detail : String
@@ -123,6 +126,7 @@ pub fn choices_of(v : Json?, key : String) -> Array[Choice]? {
 
 ///|
 /// The card a message carries (MessageCard): options, text or login.
+#derive(Eq)
 pub(all) struct Card {
   kind : String
   assignee_text : String?
@@ -147,6 +151,7 @@ pub(all) struct Card {
 /// reason and the time it asked for; the chat as the card named it (what the rig's person's device signs with the
 /// grant: `rig.decide`'s `ask`); once decided, how (`status`: granted, denied, ended; `why`; granted, whether the rig
 /// took it yet, `delivered`, and for how long it was signed).
+#derive(Eq)
 pub(all) struct RigAsk {
   request : String
   rig : String
@@ -173,6 +178,7 @@ pub(all) struct RigAsk {
 /// why, the chat's tab it is on (a screen of the chat's station), and how it goes (`status`: "" waiting, filling, code,
 /// person, left, done, denied, expired, ended; `why` a person is needed; what the agent `said` is left; whether it is
 /// to be kept, `keep`; the vault request keeping it, `save`, and how that went, `kept`).
+#derive(Eq)
 pub(all) struct SignInAsk {
   id : String
   site : String
@@ -189,6 +195,7 @@ pub(all) struct SignInAsk {
 ///|
 /// An agent's request to debug its person's phone as its card says it (PhoneAsk): its id, the
 /// agent's reason, and once decided how (`status`: granted, denied, ended; `scope`: hour, chat; `why` it ended).
+#derive(Eq)
 pub(all) struct PhoneAsk {
   request : String
   reason : String
@@ -206,6 +213,7 @@ pub(all) struct PhoneAsk {
 /// An agent's request about a vault item as its card says it (VaultAsk): the item, how it is given, the command it is
 /// for; one to keep a secret (`save_kind` not empty): what kind, the account (a file: its name), whether the person
 /// types it in (`typed`); once decided, how (`status`, `scope`).
+#derive(Eq)
 pub(all) struct VaultAsk {
   name : String
   reason : String
@@ -222,6 +230,8 @@ pub(all) struct VaultAsk {
   /// a file's name, where the agent gave one
   filename : String
   typed : Bool
+  /// with `typed`, a service the person signs in to for it instead (slack): a button for its page, no field
+  oauth : String
   /// one to rename the item or change its about (secret_describe): its name and about as they would be, its about as
   /// it was
   describe : Bool
@@ -243,6 +253,7 @@ pub(all) struct VaultAsk {
 
 ///|
 /// Where a card stands (MessageDecision).
+#derive(Eq)
 pub(all) struct Decision {
   resolved : Bool
   dismissed : Bool
@@ -253,6 +264,7 @@ pub(all) struct Decision {
 
 ///|
 /// Who said a message (MessageBy).
+#derive(Eq)
 pub(all) struct By {
   name : String
   agent : String
@@ -277,6 +289,7 @@ pub fn by_of(v : Json?) -> By {
 
 ///|
 /// A place a message went to or came from (Place).
+#derive(Eq)
 pub(all) struct Place {
   name : String
   surface : String
@@ -287,6 +300,7 @@ pub(all) struct Place {
 
 ///|
 /// What an agent said in Slack, or was given from it (ChatSentElsewhere).
+#derive(Eq)
 pub(all) struct Elsewhere {
   key : String
   after : Double
@@ -328,6 +342,7 @@ pub fn elsewhere_of(e : Json) -> Elsewhere {
 
 ///|
 /// A runtime a notice says the station lacks, or a message of the viewer's waits for (RuntimeInstall).
+#derive(Eq)
 pub(all) struct Install {
   /// the runtime it is (`software.update`'s id)
   runtime : String
@@ -360,6 +375,7 @@ pub fn install_of(v : Json?, key : String) -> Install? {
 ///|
 /// A chat a message links to, as the core says it (LinkedChat): its link as written, its title (what the link written
 /// bare reads as), whether it is archived and its words for where it stands then (已归档).
+#derive(Eq)
 pub(all) struct LinkedChat {
   href : String
   title : String
@@ -372,6 +388,7 @@ pub(all) struct LinkedChat {
 /// A chat's run changed to another runtime or model, as the core says it (RunSides): what changed as it was and as it
 /// is now, each drawn after the mark of who made its model ("": its runtime's maker's, @sf.maker_mark's), and what
 /// leads what it is now said alone (换成).
+#derive(Eq)
 pub(all) struct RunSides {
   was : String
   now : String
@@ -384,6 +401,7 @@ pub(all) struct RunSides {
 
 ///|
 /// A message of the chat (ChatMessage), with what the core decides of it.
+#derive(Eq)
 pub(all) struct Message {
   seq : Double
   thread : Double
@@ -436,6 +454,11 @@ pub(all) struct Message {
   notice_reassign_session : String
   /// a failure's own words, as what failed said them, shown under its words when the notice is opened
   notice_detail : String
+  /// failures said in the same words one after another that the core folded into this one: how many (1: itself alone),
+  /// drawn after its words as ×n, and the last of them's seq, what is acted on (重试, 上报…) and read up to (its own
+  /// seq where it folds none)
+  notice_count : Int
+  notice_last_seq : Double
   /// a chat's run changed: what it runs on now, said in place of its words where they have not the room on their line
   /// ("": none), and how it ran and runs, whole, shown in place of its words once it is opened
   notice_short : String
@@ -498,6 +521,7 @@ pub fn message_of(m : Json) -> Message {
                 username: text(field(a, "save"), "username"),
                 filename: text(field(a, "save"), "filename"),
                 typed: flag(field(a, "save"), "typed"),
+                oauth: text(field(a, "save"), "oauth"),
                 describe: field(a, "describe") is Some(_),
                 new_name: text(field(a, "describe"), "name"),
                 new_about: text(field(a, "describe"), "about"),
@@ -602,6 +626,14 @@ pub fn message_of(m : Json) -> Message {
     notice_again_session: text(field(s, "notice"), "againSession"),
     notice_reassign_session: text(field(s, "notice"), "reassignSession"),
     notice_detail: text(field(s, "notice"), "detail"),
+    notice_count: match opt_number(field(s, "notice"), "count") {
+      Some(n) if n >= 2.0 => n.to_int()
+      _ => 1
+    },
+    notice_last_seq: match opt_number(field(s, "notice"), "lastSeq") {
+      Some(n) => n
+      None => number(s, "seq")
+    },
     notice_short: text(field(s, "notice"), "short"),
     notice_lines: items(field(s, "notice"), "lines").filter_map(fn(l) {
       match l {
@@ -637,6 +669,7 @@ pub fn Message::linked(self : Message, href : String) -> LinkedChat? {
 
 ///|
 /// A message sent from here that the chat does not show yet (Outgoing).
+#derive(Eq)
 pub(all) struct Outgoing {
   id : String
   text : String
@@ -668,6 +701,7 @@ pub(all) struct Outgoing {
 
 ///|
 /// An agent of the chat (ChatAgent), as its marks and its activity show it.
+#derive(Eq)
 pub(all) struct Agent {
   key : String
   runtime : String
@@ -712,6 +746,7 @@ pub fn agent_of(a : Json) -> Agent {
 
 ///|
 /// A chat's page (ChatView): its chat with the viewer's read position, its agents and people.
+#derive(Eq)
 pub(all) struct ChatView {
   title : String
   /// its thread's id, and how many wait past a window short of its end
@@ -784,6 +819,7 @@ pub(all) struct ChatView {
 ///|
 /// One of the screens of a chat's station (the chat view's `screens`): its id, kind, title, what its station says of it,
 /// and whether an agent drives it now.
+#derive(Eq)
 pub(all) struct ChatScreen {
   id : String
   kind : String
@@ -796,6 +832,7 @@ pub(all) struct ChatScreen {
 /// A thread a chat's messages can be copied to (the chat view's `cc`): its id (`chat.cc`'s `to`),
 /// where it is (#channel, 私信, the Feishu group), its platform for its mark ("slack" or "feishu"), and whether it is
 /// ticked.
+#derive(Eq)
 pub(all) struct ChatCcTo {
   thread : Double
   place : String
@@ -807,6 +844,7 @@ pub(all) struct ChatCcTo {
 /// A chat's side panel's tabs (the chat view's `tabs`): those open, in order (an agent's history by its session's key,
 /// `jobs`, `files`, `letters`, the web's `service:<job>` and `file:[…]`), the one in front, and whether they are the
 /// ones the chat opens by itself (its agent with no chat yet: its history), not opened by anyone.
+#derive(Eq)
 pub(all) struct ChatTabs {
   open : Array[String]
   shown : String?
@@ -946,6 +984,7 @@ fn chat_outbox_of(s : Json?) -> Array[Outgoing] {
 
 ///|
 /// A station of the workspace as its marks show it (StationView): its address, name and mark, how it is reached.
+#derive(Eq)
 pub(all) struct Station {
   address : String
   name : String
@@ -1065,12 +1104,33 @@ pub fn job_chat(job : Json?) -> ChatRef? {
 /// words (a screen's, a station's 共享调试's, a web service's: link_card_ask), asked as the view says them, all at once. A card laid out as
 /// it came, a lateness after the rows, put every row over it up by its height in one frame (the owner's, 2026-11-14:
 /// data arriving late is no cause of motion; src/sfapp/chat_opens_whole_wbtest.mbt, chat_rows_open_whole_wbtest.mbt).
-pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState) -> Bool {
+///
+/// `whole` (where what opens waits for what it shows: gates_opens, MBUI_OPEN_WHOLE): its draft, its workspace's stations
+/// and its jobs' summary too, all its page reads at once as it is first drawn (page_opens), so the composer opens as
+/// tall as its draft and its bar with its jobs' mark, never a frame after.
+pub fn chat_opens(r : ChatRef, ask : (String, Map[String, Json]) -> TopicState, whole? : Bool = false) -> Bool {
+  // (asked with its view, not after it: all of it asked at once)
+  let mut all = true
+  if whole {
+    page_opens(Chat(r), fn(name, params) {
+      if name != "chat" {
+        all = open_told(ask(name, params)) && all
+      }
+    })
+  }
   let t = ask("chat", chat_params(r))
   if !opens_answered(t) {
-    return t.waiting
+    return t.waiting && all
   }
-  let mut all = true
+  // (the faces of its people in its bar, sfapp's chat.mbt people_stack, and each person's over their messages:
+  // sfpages' message.mbt person_avatar, message_head_node.mbt's)
+  let faces = items(t.value, "people").map(fn(p) { person_of(p).picture })
+  for m in items(t.value, "messages") {
+    if !["agent", "station", "ember", "stillfail"].contains(text(Some(m), "authorKind")) {
+      faces.push(by_of(Some(m)).picture)
+    }
+  }
+  all = pictures_in(opening_pictures.val, faces) && all
   for m in items(t.value, "messages") {
     // (each link's card in a post's words, as the message tells them, its tree or its runs: a screen's a capsule or,
     // previewed, the screen across its top. None of still.fail's notices, whose words are read as no post's; none

@@ -72,7 +72,7 @@ fn outer_viewer(
   }
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   match made {
-    Some(a) => open_preview("ws1/st1", "s-c1", a)
+    Some(a) => open_preview("ws1/st1", "s-c1", a, beside=false)
     None => ()
   }
   t.draw()

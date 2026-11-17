@@ -3,7 +3,7 @@
 // through a direct `call` that answers as the transport does.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,7 +12,8 @@ import { type Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { signalGroup } from "../src/ops/group.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
-import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, writeJson, written } from "../src/jobs/remote.ts";
+import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, written } from "../src/jobs/remote.ts";
+import { writeJson } from "./remote-records.ts";
 import { type Load, OLDER } from "../src/jobs/load.ts";
 import { type Json, Store } from "../src/store/store.ts";
 import { remoteTools } from "../src/tools/remote.ts";
@@ -442,6 +443,25 @@ describe("remote", { concurrency: true }, () => {
     await assert.rejects(call(r, "peer-a", "file.put", { path: "input", offset: 0, data: "", final: true }));
   });
 
+  test("a transfer's path stays in its task's directory, as this machine's paths go (the program's own join)", async () => {
+    const r = station();
+    await call(r, "peer-a", "task.prepare", { spec: { command: "true", name: "paths" } });
+    const win = process.platform === "win32";
+    // (out of the directory: up, the root; on Windows a backslash separates too, and a drive, a share or a stream is
+    // not relative, mb nodepath `relative_parts`)
+    const out = ["../outside", "a/../../outside", "/etc/passwd", "./a", ...(win ? ["..\\outside", "a\\..\\..\\outside", "C:\\Windows\\win.ini", "C:outside", "\\\\server\\share\\x", "\\x", "file:stream"] : [])];
+    for (const path of out) await assert.rejects(call(r, "peer-a", "file.put", { path, offset: 0, data: b64("x"), final: true }), Error, path);
+    // (in it: where this machine's own join puts it, a backslash a name's on Unix)
+    const inside: [string, string[]][] = [["nested/file", ["nested", "file"]], ...(win ? [["nested\\deeper", ["nested", "deeper"]] as [string, string[]]] : [["a\\..\\b", ["a\\..\\b"]] as [string, string[]]])];
+    for (const [path, parts] of inside) {
+      await call(r, "peer-a", "file.put", { path, offset: 0, data: b64(path), final: true });
+      assert.equal(unb64(await call(r, "peer-a", "file.get", { path })), path);
+      const written = (readdirSync(join(r.dir, "remote"), { recursive: true }) as string[]).filter((f) => f.endsWith(join("work", ...parts)));
+      assert.equal(written.length, 1, `${path} written where Node's join puts it: ${written.join(", ")}`);
+      assert.equal(readFileSync(join(r.dir, "remote", written[0]!), "utf8"), path);
+    }
+  });
+
   test("removal from the workspace stops only that peer's task", async () => {
     const r = station();
     for (const peer of ["peer-a", "peer-b"]) {
@@ -643,6 +663,45 @@ describe("remote", { concurrency: true }, () => {
     assert.ok(existsSync(r.remote.usedPath("other")));
   });
 
+  test("a station started again takes up a session closing: its stations asked on its clock until each answered, then its record goes", async () => {
+    const clock = testClock();
+    const store = Store.open(":memory:", null, clock);
+    cleanup.push(() => store.close());
+    const dir = tempdir();
+    // The station before: the session used two stations, closed while neither was reached.
+    const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null });
+    const before = new Remote({ data: dir, store, jobs, clock, notify: () => {}, version: "0.1.1" });
+    let tried = 0;
+    before.attach(async () => {
+      tried++;
+      throw new Error("offline");
+    });
+    before.recordUse("ws", "s", "up");
+    before.recordUse("ws", "s", "down");
+    before.closeSession("s");
+    const path = before.usedPath("s");
+    await written(path);
+    await until("both asked once", () => tried === 2);
+    await before.close();
+    await jobs.shutdown();
+    assert.deepEqual([readJson(path).closing, readJson(path).closed], [true, []], "left closing, none answered");
+
+    // Started again (a program of its own): the record taken up from the disk, its stations asked again.
+    const next = station({ clock, dir, store });
+    const asked: string[] = [];
+    let down = 0;
+    next.remote.attach(async (target, _workspace, request) => {
+      assert.deepEqual([request.method, request.workspace, request.session], ["session.close", "ws", "s"]);
+      asked.push(target);
+      if (target === "down" && down++ === 0) throw new Error("offline");
+      return { closed: true };
+    });
+    await until("asked again as it is attached", () => asked.length === 2);
+    assert.ok(existsSync(path), "one station not answered yet: kept");
+    await rounds("every station answered and the record gone", clock, "10 seconds", () => !existsSync(path));
+    assert.deepEqual([asked.filter((s) => s === "up").length, asked.filter((s) => s === "down").length], [1, 2]);
+  });
+
   // ── recovery_tests ──
 
   test("a persisted receipt reconnects and delivers to its original session", async () => {
@@ -733,6 +792,20 @@ describe("remote", { concurrency: true }, () => {
     await assert.rejects(use("station_task", { ...task, action: "prepare", command: "true", dir: "relative" }), /absolute path/);
     await assert.rejects(use("station_task", { ...task, action: "start" }), /prepare.*failed|prepare.*again/i);
     assert.deepEqual((await use("station_task", { ...task, action: "get" })).job, null);
+  });
+
+  test("a task's directory and what comes back stays in its task's directory, as this machine's paths go (Node's isAbsolute)", async () => {
+    const { home, use } = pair();
+    const src = join(home, "src");
+    mkdirSync(src);
+    writeFileSync(join(src, "input.txt"), "in\n");
+    // (absolute as this machine has it: `C:\…` on Windows, which the program's POSIX-only check once refused)
+    const prepared = await use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: ["out/result.txt"] });
+    assert.equal(prepared.prepared, true, JSON.stringify(prepared));
+    const win = process.platform === "win32";
+    for (const back of ["/etc/passwd", "../outside", "a/../../outside", ...(win ? ["C:\\outside", "\\outside", "a\\..\\..\\outside"] : [])]) {
+      await assert.rejects(use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: [back] }), /back must be paths relative/, back);
+    }
   });
 
   test("a failed prepare stays fenced after migration of an older record and a restart", async () => {

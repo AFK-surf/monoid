@@ -11,7 +11,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
-import { REFERENCE_WORKER, readersOf } from "./reference.ts";
+import { REFERENCE, readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -81,7 +81,7 @@ test("the MoonBit reader reads the open jobs as the worker does", { skip: binary
   job("far", "running", null, 700);
   job("nobody", "running", null, 800);
   job("solo2", "running", null, 900);
-  const worker = new Readers(data, 1, REFERENCE_WORKER);
+  const worker = new Readers(data, 1, REFERENCE);
   const program = readersOf(data, binary);
   const read = (r: Readers, op: string, args: unknown, lang: "zh" | "en") => r.read(op, args, lang).then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
   const all = async (r: Readers) => {
@@ -101,6 +101,49 @@ test("the MoonBit reader reads the open jobs as the worker does", { skip: binary
     const said = JSON.stringify(first);
     for (const sign of ["\"title\":\"Named chat\"", "\"title\":\"please look\"", "\"title\":\"Lone\"", "\"archived\":true", "\"port\":9001", "\"chat\":"])
       assert.ok(said.includes(sign), sign);
+  } finally {
+    worker.close(); program.close();
+    store.close();
+    rmSync(data, { recursive: true, force: true });
+  }
+});
+
+// Another station's task (`remote:<workspace>:<station>:<session>`, no session here) is its workspace's, whichever is
+// this station's home: listed to a joined workspace's viewer, not to the home one's, and a key of no such form the
+// home one's; one waiting in the queue says so. By the workspace's up jobs' index and by the jobs themselves.
+for (const ready of [true, false]) test(`the MoonBit reader lists another station's tasks to their workspace as the worker does (prepared ${ready})`, { skip: binary === null ? "the MoonBit program is not built here" : false }, async () => {
+  const data = mkdtempSync(join(tmpdir(), "mb-reader-open-jobs-remote-"));
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
+  const db = store.db;
+  store.insertSession({ key: "mine", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "mine", createdAt: 1, lastActiveAt: 1, ws: "x" });
+  store.insertSession({ key: "ours", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "ours", createdAt: 1, lastActiveAt: 1, ws: null });
+  const keys = ["remote:w:st:a", "remote:x:st:b", "remote:y:st:c", "remote:x:st:d:e", "remote:x:st:é", "remote:x", "remote:x:st:",
+    "remote:x/z:st:f", "remote:x:st/z:g", "remote::st:h", "remote:x:st:i\nj", "nobody", "mine", "ours"];
+  keys.forEach((key, i) => db.prepare("INSERT INTO jobs(id,session_key,name,command,cwd,port,token,state,started_at,restarts,log,watch,queued) VALUES (?,?,?,'true','/',?,?,?,?,0,'/dev/null',0,?)")
+    .run(`r${i}`, key, `job ${i}`, i % 4 === 3 ? 7000 + i : null, `rt${i}`, i % 4 === 3 ? "exited" : "running", 1000 - i, i === 1 ? 1 : 0));
+  if (!ready) db.exec("UPDATE workspace_up_meta SET ready=0");
+  const worker = new Readers(data, 1, REFERENCE);
+  const program = readersOf(data, binary);
+  const read = (r: Readers, args: unknown) => r.read("openJobs", args, "en").then((t) => JSON.parse(t), (e: Error & { status?: number }) => ({ error: e.message, status: e.status }));
+  const viewers = [{ email: "p@x", workspace: "w", home: true }, { email: "p@x", workspace: "w" }, { email: "p@x", workspace: "x", home: false },
+    { email: "p@x", workspace: "y", home: false }, { email: "p@x", workspace: "x:st", home: false }];
+  const all = async (r: Readers) => {
+    const out: unknown[] = [];
+    for (const viewer of viewers) for (const chats of [true, false]) out.push(await read(r, { viewer, lang: "en", chats }));
+    return out;
+  };
+  try {
+    const first = await all(program);
+    assert.deepEqual(first, await all(worker));
+    const listed = (i: number) => ((first[i * 2 + 1] as { session: string }[]).map((j) => j.session)).sort();
+    const home = ["remote:w:st:a", "remote:x", "remote:x:st:", "remote:x/z:st:f", "remote:x:st/z:g", "remote::st:h", "remote:x:st:i\nj", "nobody", "ours"].sort();
+    assert.deepEqual(listed(0), home);
+    assert.deepEqual(listed(1), home);
+    assert.deepEqual(listed(2), ["remote:x:st:b", "remote:x:st:d:e", "remote:x:st:é", "mine"].sort());
+    assert.deepEqual(listed(3), ["remote:y:st:c"]);
+    assert.deepEqual(listed(4), []);
+    const queued = (first[5] as { id: string; queued?: boolean }[]).map((j) => [j.id, j.queued ?? false]);
+    assert.deepEqual(queued.filter(([, q]) => q), [["r1", true]]);
   } finally {
     worker.close(); program.close();
     store.close();

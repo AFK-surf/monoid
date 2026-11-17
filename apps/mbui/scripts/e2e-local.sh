@@ -28,7 +28,7 @@
 #   scripts/e2e-local.sh rigs-all   up, rigs, down (the side run's, scripts/side.sh rigs); rigs failed, kept the same
 #   scripts/e2e-local.sh move       a station's things moved to another and back, with faults, against what `up`
 #                                   started (e2e/move.ts: alice's device, the test station A, B and a third enrolled
-#                                   beside it, moving switched on in each, E2E_STATION_EXTRA and E2E_MORE_EXTRA)
+#                                   beside it, each on the test channel so that moving is on there: E2E_STATION_EXTRA, E2E_MORE_EXTRA)
 #   scripts/e2e-local.sh move-all   up, move, down (the side run's, scripts/side.sh move); move failed, kept as locks-all's
 #   scripts/e2e-local.sh crash NAME   that station's machine as it loses power: every process of its own SIGKILLed at
 #                                   once (its launcher, Node, runners, agents and jobs: what runs on its data directory
@@ -149,12 +149,17 @@ sources() {
   local want
   want=$(git -C "$SF_SRC" rev-parse --verify HEAD) || die "no source revision in $SF_SRC"
   if [ ! -d $E/.git ]; then
-    git clone -q "$SF_SRC" $E
+    # (its tree alone, as below: from a partial clone, git 2.43 clones through upload-pack, which serves no blob the
+    # checkout lacks)
+    git clone -q --depth 1 "file://$(cd "$SF_SRC" && pwd)" $E
   fi
   if [ "$(git -C $E rev-parse HEAD)" != "$want" ]; then
     # (the revision wanted alone: a checkout that shares its repository with others has branches whose objects it may
-    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before)
-    git -C $E fetch -q "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
+    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before. Its tree
+    # alone, --depth 1: a checkout made as a partial clone (ci-1's, whose work directory the pipeline's jobs check out
+    # with `filter: blob:none`) has only that tree's blobs, and its upload-pack fetches no others: the history was what
+    # side 43803791237's locks and rigs could not have, 2026-11-16)
+    git -C $E fetch -q --depth 1 "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
     git -C $E -c advice.detachedHead=false checkout -q --detach $want || die "no source revision $want in $E"
     rm -f $WORK/stillfail.ready
   fi
@@ -198,6 +203,9 @@ start_cloud() {
 }
 
 # the test station (enrolled), its launcher over its own data
+# Where a station's Slack is: the move drill's stand-in for it (e2e/slack-stand-in.ts), a port a station, as
+# `<its dir>/slack-api` names it (the station's own seam, $STILLFAIL_SLACK_API, station/src/slack/web.ts); none, Slack.
+slack_api() { [ ! -f "$1/slack-api" ] || export STILLFAIL_SLACK_API="$(cat "$1/slack-api")"; }
 start_station() {
   local launcher=$(native launcher)
   # The launcher's takeover means the station has initialized and is serving. Deliver that event directly: the
@@ -205,7 +213,7 @@ start_station() {
   rm -f "$RUN/station.ready"
   mkfifo "$RUN/station.ready"
   exec 9<> "$RUN/station.ready"
-  (. $RUN/station-env.sh && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
+  (. $RUN/station-env.sh && slack_api $STATION && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/station.ready" -- \
     "$launcher" run --app "$STATION/app" --data "$STATION/data" 9>&- & echo $! > "$RUN/station.pid")
   if ! IFS= read -r -t 60 ready <&9; then
@@ -298,7 +306,7 @@ EOF
   ln -s $E/station/dist $STATION/app/station
   ln -s "$(command -v node)" $STATION/app/node/bin/node
   # its one profile with a model enabled, so a new chat can be made there (newChat.create refuses a station with none)
-  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's switch, e2e/move.ts)
+  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's test channel, e2e/move.ts)
   echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false'"${E2E_STATION_EXTRA:-}"'}' > $STATION/data/config.json
   echo '{}' > $STATION/data/homes/cc/.credentials.json
   # (what this shell has of the machine's own station, a job's notify address and token, is not the test station's)
@@ -315,6 +323,8 @@ export STILLFAIL_RUNNER=$(native runner)
 # endpoint across handovers (station/native/launcher/src/front.rs)
 export STILLFAIL_MB_READER=$(native reader)
 export FAKE_DUMP=$STATION/fake-claude.jsonl
+# (E2E_DRILL_HOLD: the move drill's hold at a hand-over's step, given to a build of the station that has it: e2e/move.ts 9m)
+${E2E_DRILL_HOLD:+export STILLFAIL_DRILL_HOLD=$E2E_DRILL_HOLD}
 EOF
   (. $RUN/station-env.sh && node $E/station/dist/main.js enroll $ORIGIN $token --data $STATION/data >$RUN/enroll.log 2>&1) \
     || { cat $RUN/enroll.log; die "enrolling the station failed"; }
@@ -827,7 +837,7 @@ more_launch() {
   rm -f "$RUN/$n.ready"
   mkfifo "$RUN/$n.ready"
   exec 9<> "$RUN/$n.ready"
-  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
+  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && slack_api $B && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/$n.ready" -- \
     "$launcher" run --app $B/app --data $B/data 9>&- >/dev/null 2>&1 & echo $! > $RUN/$n.pid)
   if ! IFS= read -r -t 60 ready <&9; then
@@ -1008,7 +1018,7 @@ case "${1:-all}" in
     locks_moved || { rc=$?; kept locks-moved || true; exit $rc; } ;;
   move) move ;;
   move-all)
-    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"move":true,"maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"move":true'}
+    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"updateChannel":"beta","maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"updateChannel":"beta"'}
     trap down EXIT
     up
     rm -f $RUN/*.before.log

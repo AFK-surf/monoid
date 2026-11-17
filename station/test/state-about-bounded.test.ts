@@ -7,7 +7,7 @@ for (const [tool, kind] of [["chat_post", "all_done"], ["chat_state", "all_done"
   test(`${tool} ${kind} identifies its about message without merging edits`, async () => {
     const r = new Rig();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const about = r.said(thread.id).at(-1)!;
@@ -35,7 +35,7 @@ for (const tool of ["chat_post", "chat_state"] as const) {
   test(`${tool} need_human checks the question's latest words`, async () => {
     const r = new Rig();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const to = `CHAT/${thread.threadTs}`;

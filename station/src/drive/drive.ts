@@ -13,7 +13,6 @@
 // while the helper is there, not even to see whether it may: macOS can hold such a call on a prompt for the station's
 // launcher that nobody answers (seen on macOS 27: the station's thread stayed in opendir on ~/Documents). Without the
 // grant, the helper's window asks for it on that Mac, and the request is refused saying so.
-import { statSync } from "node:fs";
 import { mkdir, readdir, rm, stat } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, join, parse } from "node:path";
@@ -21,10 +20,10 @@ import { tmpdir } from "node:os";
 import { randomUUID } from "node:crypto";
 import { platform } from "../platform/index.ts";
 import { wall } from "../ops/fibers.ts";
-import { unreadableDir, unreadableDirAsync } from "../ops/files.ts";
+import { unreadableDirAsync } from "../ops/files.ts";
 import { TooBig, zipFolder } from "./zip.ts";
 import { type Lang, tr } from "../ops/i18n.ts";
-import { type Fs, type Grant, type Protected, direct, protectedTop, realOf } from "./fs.ts";
+import { type Fs, type Grant, type Protected, direct, protectedTopSoon, realOf } from "./fs.ts";
 import type { ConfigFile } from "../ops/config.ts";
 
 /// Why a request was refused (zdrive's codes, and `protected` for the station's own data), each with its status.
@@ -110,22 +109,24 @@ export function rootsOf(raw: any, workspace: string | null = null): string[] {
 /// A root's name: its last component, or the path itself when it has none (`/`, a drive).
 export const rootName = (path: string) => basename(path) || path;
 
-export function rootView(path: string): RootView {
+/// A root as the station finds it, looked at off its thread: a disk gone or a network file system that does not answer
+/// holds only this look, not every request behind it.
+export async function rootView(path: string): Promise<RootView> {
   const name = rootName(path);
   try {
-    if (!statSync(path).isDirectory()) return { path, name, state: "not_a_directory" };
+    if (!(await stat(path)).isDirectory()) return { path, name, state: "not_a_directory" };
   } catch (e) {
     const code = (e as NodeJS.ErrnoException).code;
     return { path, name, state: code === "EPERM" || code === "EACCES" ? "unreadable" : "missing" };
   }
-  return { path, name, state: unreadableDir(path) ? "unreadable" : "ok" };
+  return { path, name, state: (await unreadableDirAsync(path)) ? "unreadable" : "ok" };
 }
 
 /// A root as the drive and the overview show it: in a folder macOS protects, with still.fail Helper there for it
 /// (`files`), by what is known of the helper's grant, never looked at by the station itself (listing it could hold the
 /// station's thread on a prompt); elsewhere as `rootView` finds it.
-export function rootViewThrough(path: string, files: Protected | null, home = homedir()): RootView {
-  const top = files ? protectedTop(path, home) : null;
+export async function rootViewThrough(path: string, files: Protected | null, home = homedir()): Promise<RootView> {
+  const top = files ? await protectedTopSoon(path, home) : null;
   if (top === null) return rootView(path);
   return { path, name: rootName(path), state: granted(files!, top) ? "ok" : "unreadable" };
 }
@@ -139,17 +140,30 @@ function granted(files: Protected, top: string): boolean {
 
 /// Where a file a person drops into one of the station's screens is put: the machine's
 /// Downloads, where files from elsewhere land (a browser's, AirDrop's) and where its file dialogs look first; the home
-/// where it has none. Only the folder's own entry is looked at, never what is in it: on macOS listing a protected
-/// folder can put a privacy prompt up and hold the caller until it is answered (a whole station, for a sync call). A
-/// station kept from writing there is refused as an upload is (`permission`); one that reaches it another way (still.fail
-/// Helper) puts it there.
-export function dropFolder(home: string): string {
+/// where it has none. Only the folder's own entry is looked at (off the station's thread), never what is in it: on
+/// macOS listing a protected folder can put a privacy prompt up and hold the caller until it is answered. A station kept
+/// from writing there is refused as an upload is (`permission`); one that reaches it another way (still.fail Helper)
+/// puts it there.
+export async function dropFolder(home: string): Promise<string> {
   const downloads = join(home, "Downloads");
-  try {
-    return statSync(downloads).isDirectory() ? downloads : home;
-  } catch {
-    return home;
-  }
+  return stat(downloads).then((s) => (s.isDirectory() ? downloads : home), () => home);
+}
+
+/// `dropFolder` for who asks it on the spot (screens/hub.ts `listed`): found before it is given, then as last found,
+/// looked at again in the background at each ask, so a Downloads made or removed since is found for the next.
+export async function droppedInto(home: string): Promise<() => string> {
+  let kept = await dropFolder(home);
+  let looking = false;
+  return () => {
+    if (!looking) {
+      looking = true;
+      void dropFolder(home).then((found) => {
+        kept = found;
+        looking = false;
+      });
+    }
+    return kept;
+  };
 }
 
 /// A file's type by its name, as a page needs it to open it: what plays, what is read, what is shown.
@@ -263,13 +277,13 @@ export class Drive {
     this.deps = deps;
   }
 
-  roots(): RootView[] {
-    return rootsOf(this.deps.config()).map((p) => this.rootView(p));
+  roots(): Promise<RootView[]> {
+    return Promise.all(rootsOf(this.deps.config()).map((p) => this.rootView(p)));
   }
 
   /// A root's state, as the station may reach it: one macOS keeps from the station is `ok` once still.fail Helper has
   /// the grant for it (looked at in the background the first time, the root told again when it is known).
-  rootView(path: string): RootView {
+  rootView(path: string): Promise<RootView> {
     return rootViewThrough(path, this.deps.files ?? null, this.deps.home ?? homedir());
   }
 
@@ -278,28 +292,28 @@ export class Drive {
     return granted(this.deps.files!, top);
   }
 
-  /// The protected folder `path` is in (by its name) when still.fail Helper is there for it; null when the station
-  /// reaches `path` directly.
-  #locked(path: string): string | null {
-    return this.deps.files ? protectedTop(path, this.deps.home ?? homedir()) : null;
+  /// The protected folder `path` is in when still.fail Helper is there for it (by its name; a place in /Volumes looked at
+  /// first, off the thread: the system's own disk there is a link to /); null when the station reaches `path` directly.
+  #locked(path: string): Promise<string | null> {
+    return this.deps.files ? protectedTopSoon(path, this.deps.home ?? homedir()) : Promise.resolve(null);
   }
 
   /// `path` with its links followed as far as it exists: by still.fail Helper in a protected folder (never by the station
   /// there), else by the station.
-  #real(path: string, fs: Fs): Promise<string> {
-    return fs.helper && this.#locked(path) !== null ? fs.real(path) : real(path);
+  async #real(path: string, fs: Fs): Promise<string> {
+    return fs.helper && (await this.#locked(path)) !== null ? fs.real(path) : real(path);
   }
 
   /// Whether the station may not list `dir`, even through still.fail Helper: looked at off the main thread.
   async #unreadable(dir: string): Promise<boolean> {
-    const top = this.#locked(dir);
+    const top = await this.#locked(dir);
     return top === null ? unreadableDirAsync(dir) : !this.#granted(top);
   }
 
   /// How paths in these scopes (the root each is told to stay in) are reached: through still.fail Helper when any is in
   /// a protected folder the station may not open, else directly.
   async #fs(places: { path: string; top: string }[]): Promise<{ fs: Fs; scopes: string[] }> {
-    const locked = places.map(({ path }) => this.#locked(path));
+    const locked = await Promise.all(places.map(({ path }) => this.#locked(path)));
     // The narrower of the root and the protected folder.
     const scopes = places.map(({ top }, i) => (locked[i] !== null && !within(top, locked[i]!) ? locked[i]! : top));
     if (locked.every((l) => l === null)) return { fs: direct, scopes };
@@ -349,15 +363,24 @@ export class Drive {
       throw new DriveError("path_escape", "a path stays in its root");
     }
     // The root as the station finds it, or, in a protected folder, as still.fail Helper does.
-    let top = this.#locked(named) === null ? await real(named) : named;
+    let top = (await this.#locked(named)) === null ? await real(named) : named;
     const { fs, scopes } = await this.#fs([{ path: parts.length === 0 ? top : join(top, ...parts), top }]);
-    if (fs.helper && this.#locked(top) !== null) top = await fs.real(top);
+    if (fs.helper && (await this.#locked(top)) !== null) top = await fs.real(top);
     const asked = parts.length === 0 ? top : join(top, ...parts);
     const found = await this.#real(asked, fs);
     if (!anywhere && !within(found, top)) throw new DriveError("path_escape", "that path leads out of its root");
     if (await this.isProtected(asked, found)) throw new DriveError("protected", "the station's own data is not part of its drive");
     const entry = parts.length === 0 ? top : join(await this.#real(dirname(asked), fs), basename(asked));
     return { root: named, top, asked, found, entry, parts, fs, scope: scopes[0]! };
+  }
+
+  /// Where a transfer reads a path (`found`) and removes it (`entry`: the last link itself), with the same permission
+  /// prompt as reading it. Roots and parent folders may be aliases of another source or destination.
+  locate(root: string, path: string, anywhere = false): Promise<Pick<Place, "found" | "entry">> {
+    return this.#run(async () => {
+      const { found, entry } = await this.place(root, path, anywhere);
+      return { found, entry };
+    });
   }
 
   /// A folder's entries, folders first, each part by name; what is protected or leads out of the root left out.
@@ -523,7 +546,7 @@ export class Drive {
   /// A file copied to `into` (where a chat's uploads wait for the message that sends them), for a member to send it in a
   /// chat as if it had been uploaded: a clone where the disk can make one (APFS, btrfs), so even a big one costs nothing.
   /// `zip`: a folder put into a zip of its own name instead (links not followed, the station's own data left out).
-  stage(root: string, path: string, into: (name: string) => { safe: string; path: string }, most: number, anywhere = false, zip = false): Promise<{ name: string; path: string; size: number }> {
+  stage(root: string, path: string, into: (name: string) => { safe: string; path: string } | Promise<{ safe: string; path: string }>, most: number, anywhere = false, zip = false): Promise<{ name: string; path: string; size: number }> {
     return this.#run(async () => {
       const at = await this.place(root, path, anywhere);
       const fs = at.fs;
@@ -531,7 +554,7 @@ export class Drive {
       try {
         const s = await fs.stat(at.found);
         if (s.dir && zip) {
-          const to = into(`${name}.zip`);
+          const to = await into(`${name}.zip`);
           const protect = await this.protectedNow();
           const skip = async (p: string, n: string) => PART.test(n) || (await this.isProtected(p, await this.#real(p, fs), protect));
           try {
@@ -543,7 +566,7 @@ export class Drive {
         }
         if (s.dir) throw new DriveError("is_a_directory", "that is a folder");
         if (s.size > most) throw new DriveError("too_large", TOO_BIG);
-        const to = into(name);
+        const to = await into(name);
         await fs.copyTo(at.found, to.path);
         return { name: to.safe, path: to.path, size: s.size };
       } catch (e) {
@@ -641,8 +664,9 @@ export class Drive {
       // Which are repositories: a `.git` looked for in each the station may read, through what listed them, so many at a
       // time. Not in one reached otherwise than its folder (a protected folder in the home's listing): only still.fail
       // Helper reaches it, and a look of the station's own there would wait on macOS asking the person.
-      const reach = this.#locked(at);
-      const looked = entries.filter((e) => !e.unreadable && this.#locked(e.path) === reach);
+      const reach = await this.#locked(at);
+      const reaches = await Promise.all(entries.map((e) => this.#locked(e.path)));
+      const looked = entries.filter((e, i) => !e.unreadable && reaches[i] === reach);
       const marked = await inBatches(looked, GIT_LOOKS, (e) => fs.stat(join(e.path, ".git")).then(() => true, () => false));
       const git = new Set(looked.filter((_, i) => marked[i]));
       const shown = entries.map((e) => (git.has(e) ? { ...e, git: true as const } : e));

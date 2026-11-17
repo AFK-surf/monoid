@@ -2,7 +2,7 @@
 // divided by the zoom, and the renderer draws those points at the corresponding number of screen pixels.
 
 ///|
-let window_zoom_wanted : @signals.Signal[Double] = @signals.signal(1.0, same=fn(a, b) { a == b })
+let window_zoom_wanted : Ref[@signals.Signal[Double]] = Ref(@signals.signal(1.0, same=fn(a, b) { a == b }))
 
 ///|
 // The zoom of the frame actually being built (or last shown), which can differ from the next frame's requested zoom.
@@ -19,7 +19,7 @@ pub fn set_window_key_handler(f : (Int, Int) -> Bool) -> Unit {
 
 ///|
 pub fn window_zoom() -> Double {
-  window_zoom_wanted.get()
+  window_zoom_wanted.val.get()
 }
 
 ///|
@@ -37,10 +37,10 @@ pub fn window_points_to_content(points : Double) -> Double {
 ///|
 /// Ask for the next frame at this zoom; the frame in progress and its input keep the scale they started at.
 pub fn set_window_zoom(zoom : Double) -> Unit {
-  if !window_zoom_supported() || zoom <= 0.0 || zoom == window_zoom_wanted.untracked() {
+  if !window_zoom_supported() || zoom <= 0.0 || zoom == window_zoom_wanted.val.untracked() {
     return
   }
-  window_zoom_wanted.set(zoom)
+  window_zoom_wanted.val.set(zoom)
   @hostapi.set_window_zoom(zoom)
   // The scale is taken at the start of a frame, so a change made during it belongs to the next one.
   g().owe_next()
@@ -48,9 +48,9 @@ pub fn set_window_zoom(zoom : Double) -> Unit {
 
 ///|
 fn window_zoom_reset() -> Unit {
-  window_zoom_wanted.set(1.0)
+  window_zoom_wanted.val.set(1.0)
   window_zoom_drawn.val = 1.0
-  tree_window_zoom.set(1.0)
+  tree_window_zoom.val.set(1.0)
   window_key_handler.val = None
   zoom_wheel_kept.val = false
 }

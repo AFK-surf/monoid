@@ -19,7 +19,7 @@ public final class Natives {
         void fail(String why);
     }
 
-    /** Answers a call of its name: `params` its JSON (an object), on the GL thread; it may answer later, elsewhere. */
+    /** Answers a call of its name: `params` its JSON (an object), on the app's thread; it may answer later, elsewhere. */
     public interface Handler {
         void call(String params, Reply reply);
     }
@@ -40,7 +40,7 @@ public final class Natives {
     private static final ConcurrentHashMap<Integer, Call> calls = new ConcurrentHashMap<>();
     private static final AtomicInteger next = new AtomicInteger(1);
 
-    /** `name` asked with `params` (android_device.h, the GL thread): its id. */
+    /** `name` asked with `params` (android_device.h, the app's thread): its id. */
     static int call(String name, String params) {
         int id = next.getAndIncrement();
         Call c = new Call();

@@ -12,6 +12,4 @@ pub fn overlays(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   rail_overlays(c, src, w)
   rail_native_marks(c)
   attention_panel(c, src, w)
-  // a chat made public (publish.mbt)
-  @sfpages.publish_layer(c, src)
 }

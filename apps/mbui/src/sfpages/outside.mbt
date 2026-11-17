@@ -13,25 +13,26 @@ fn outside_dialog(_c : @ui.Ctx, src : Source, key : String) -> Unit {
   guard @sfbase.outside_asking(key) is Some(s) else { return }
   match outside_up.get(key) {
     None if s.open.get() => {
+      // (its own serial: one asked again for the same draft since is another's)
+      let serial = Ref(-1)
       @sf.panel_nodes(
         @sf.t("web-main.outside.title"),
-        fn(v, _) { outside_body(v, s) },
+        fn(v, close) { outside_body(v, s, close) },
         from=Unanchored,
         description=@sf.t("web-main.outside.lead"),
         foot=fn(v, _) { outside_foot(v, src, s) },
-        // (closed unsaid: its scrim, back, Escape) as 取消
+        // (closed unsaid: its scrim, back, Escape) as 取消; closed decided (by itself, outside_body), let go of: this
+        // asking's, whether its composer is built again or not
         gone=fn() {
-          outside_up.remove(key)
-          match @sfbase.outside_asking(key) {
-            Some(s) => {
-              @sfbase.outside_no(s)
-              @sfbase.outside_gone(s)
-            }
-            None => ()
+          if outside_up.get(key) == Some(serial.val) {
+            outside_up.remove(key)
           }
+          @sfbase.outside_no(s)
+          @sfbase.outside_gone(s)
         },
       )
-      outside_up[key] = @sf.last_presented()
+      serial.val = @sf.last_presented()
+      outside_up[key] = serial.val
     }
     // decided (shared, sent as it is, or 取消): down
     Some(serial) if !s.open.get() => {
@@ -55,8 +56,15 @@ fn outside_reset() -> Unit {
 
 ///|
 /// What asking `s` asks about, in node `v` (the panel's body's): each chat as a reference shows and whose it is, those
-/// the viewer may not share saying so; why sharing failed under them, while it did.
-fn outside_body(v : @view.View, s : @sfbase.OutsideAsk) -> Unit {
+/// the viewer may not share saying so; why sharing failed under them, while it did. Decided (shared and sent, sent as
+/// it is, 取消), it closes itself (`close`), whatever composer asked it is built again or not: a new chat's first words
+/// sent make it its chat, whose composer is another draft's, and the new chat's is not built again to take it down.
+fn outside_body(v : @view.View, s : @sfbase.OutsideAsk, close : () -> Unit) -> Unit {
+  v.reacts(fn() { !s.open.get() }, fn(closed) {
+    if closed {
+      close()
+    }
+  })
   v.box(fn(list) {
     @sf.style_node(list, fn() { outside_list })
     // (the chats an asking is about are said before it opens, and are its own: one asked again is another asking, in

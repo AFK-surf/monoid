@@ -10,12 +10,13 @@ import { Clock, Effect, Fiber } from "effect";
 import { log } from "../ops/log.ts";
 import { Said, stationLang } from "../ops/i18n.ts";
 import { SessionsProgram, type ProgramUser } from "../agents/mb-program.ts";
+import type { HostedProcess, Router } from "../agents/mb-agents.ts";
 import { mbReaderBinary } from "../read/mb-reader.ts";
 import { CommandMissing } from "../agents/runner.ts";
 import { modelLimitOf, runtimeLabel, type AgentSession, type RuntimeEvent, type RuntimeKind } from "../agents/runtime.ts";
 import { chars } from "../agents/live.ts";
 import * as instructions from "../agents/instructions.ts";
-import { handedOf, type PendingMessage, type RunChange } from "../store/rows.ts";
+import { handedOf, type MessageRow, type PendingMessage, type RunChange } from "../store/rows.ts";
 import { runChangeWords } from "./run-change.ts";
 import {
   FALLBACK_MOST, SPENT_BEFORE, cannotStartWords, codexTooOld, compactFailed, compactFailedNotice, failureNotice, formatDelivery,
@@ -53,6 +54,9 @@ export type ProgramShell = {
   told(f: string, args: Json[]): void;
   /// Its waits' clock (`after` said `on` it), where it is not the hub's: a part of the station's on a clock of its own.
   readonly clock?: Clock.Clock;
+  /// What it is asked is not counted as the program's going on (`busy`): it waits on what is not the program's (where a
+  /// transcript is, found by a worker), and says itself when it is done (the live view's `idle`).
+  readonly uncounted?: boolean;
 };
 
 /// The program, one a hub (`ActorsProgram.open`).
@@ -107,6 +111,11 @@ export class ActorsProgram {
     this.#proc.kill();
   }
 
+  /// The program it is: where a runtime session's process read there gives its events its actor (`MbActor` `route`).
+  get program(): SessionsProgram {
+    return this.#proc;
+  }
+
   /// The program for a hub on `data`, where it is built (none: a checkout that did not build it runs no session).
   static open(data: string, clock: Clock.Clock, store: { told(changes: any[]): void; db: any } | null = null): ActorsProgram | null {
     if (mbReaderBinary() === null) return null;
@@ -139,9 +148,14 @@ export class ActorsProgram {
   }
 
   /// Says `message` to it: whether it is there to be told.
+  /// How many lines of each kind (their first key) were said to it: what a test counts of what goes through Node.
+  readonly posted = new Map<string, number>();
+
   post(message: Json): boolean {
     if (this.#closed) return false;
     this.#sent++;
+    const kind = Object.keys(message)[0] ?? "";
+    this.posted.set(kind, (this.posted.get(kind) ?? 0) + 1);
     if (TRACE) process.stderr.write(`actors < ${JSON.stringify(message).slice(0, 400)}\n`);
     this.#proc.post({ ...message, now: this.now() });
     this.#held();
@@ -230,10 +244,11 @@ export class ActorsProgram {
     if (said.mirror !== undefined) (actor as MbActor).mirrored?.(said.state);
     else if (typeof said.rpc === "number") {
       const id = said.rpc;
-      this.#answering++;
+      const counted = !(actor instanceof MbActor) && actor.uncounted === true ? 0 : 1;
+      this.#answering += counted;
       actor.asked(said.fn, Array.isArray(said.args) ? said.args : []).then(
-        (value) => { this.#answering--; this.post({ answer: id, value: value === undefined ? null : value }); },
-        (error) => { this.#answering--; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
+        (value) => { this.#answering -= counted; this.post({ answer: id, value: value === undefined ? null : value }); },
+        (error) => { this.#answering -= counted; this.post({ answer: id, error: errorOf(error, actor.runtime) }); },
       );
     } else if (typeof said.tell === "string") {
       try {
@@ -320,6 +335,8 @@ export class MbActor {
   readonly #told = new Map<number, () => void>();
   readonly #records = new Map<number, { words: string | null; about: [number, number, string] | null; watch: boolean; record?: (write: (about: [number, number, string] | null) => void) => void }>();
   readonly #reads = new Map<number, Promise<void> | void>();
+  /// What it decided of the batch of routed events it is taking (`#event`): a turn's outcome, its unread cleared.
+  #routing: { outcome?: Json; cleared?: boolean } = {};
   readonly #codex = new Map<number, { version: string | null; matches: (() => Promise<boolean>) | undefined }>();
 
   constructor(program: ActorsProgram, key: string, runtime: RuntimeKind, deps: SessionDeps) {
@@ -439,7 +456,8 @@ export class MbActor {
   release() { return this.#call("release").then(() => undefined); }
   warm() { return this.#call("warm").then(() => undefined); }
   changed(restart = false) { return this.#call("changed", [restart]).then(() => undefined); }
-  evict() { return this.#call("evict").then(() => undefined); }
+  /// Ends its process if idle; `force` (its session archived) even with work left in its background (`holding`).
+  evict(force = false) { return this.#call("evict", [force]).then(() => undefined); }
   compact(say = false): Promise<string | null> { return this.#call("compact", [say]); }
   compactToCap() { return this.#call("compactToCap").then(() => undefined); }
   clear(say = false, readBack = false): Promise<string | null> { return this.#call("clear", [say, readBack]); }
@@ -462,14 +480,21 @@ export class MbActor {
     return { ...snap, agent } as Snapshot;
   }
 
-  adopt(snap: Snapshot, agent: AgentSession | null, profile: string) {
+  /// Takes up `snap` with its runtime session `agent`; done once the program has. What the hub reads at once (its
+  /// idle time, `idleMs`) is so from here: the hub looks at it as it takes up (hub.ts `idleNow`, `evictIdle`), and read
+  /// as a session's with no process, every handover started its idle time again (2026-11-15).
+  adopt(snap: Snapshot, agent: AgentSession | null, profile: string): Promise<void> {
     let taken: Json = null;
     if (agent) {
       const handle = ++this.#next;
       this.#agents.set(handle, { generation: this.#generation, session: agent });
       taken = { handle, generation: this.#generation };
+      this.#mirror = { ...this.#mirror, agent: handle, turn: snap.turn?.id ?? null, idleSince: this.#program.now() - (snap.idleMs ?? 0), runtime: snap.runtime };
+      this.runtime = snap.runtime;
     }
-    void this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
+    const adopted = this.#call("adopt", [{ ...snap, agent: null }, taken, profile, this.#deps.store.getSession(this.key)]);
+    if (agent) this.#route(agent, this.#generation);
+    return adopted.then(() => undefined);
   }
 
   close() {
@@ -494,8 +519,41 @@ export class MbActor {
 
   // ── its runtime sessions' events ─────────────────────────────────────────────────────────────────────────────
 
+  /// Its runtime session's process, read in this program, gives the actor its events there (agents.mbt `tell`,
+  /// actors.mbt `routed`): each batch of them is had here first (`#event`), then said taken.
+  #route(session: AgentSession, generation: number) {
+    const s = session as AgentSession & { route?: (router: Router | null) => void };
+    s.route?.({ program: this.#program.program, took: (batch) => this.#took(batch, s, generation) });
+  }
+
+  #unroute(session: AgentSession) {
+    (session as AgentSession & { route?: (router: Router | null) => void }).route?.(null);
+  }
+
+  #took(batch: number, session: AgentSession, generation: number): boolean {
+    const routing = this.#routing;
+    this.#routing = {};
+    const n = (session as AgentSession & { hostedProc?: () => HostedProcess | null }).hostedProc?.()?.n;
+    if (this.#closed || n === undefined) return false;
+    // (what it read clears the unread as the program takes the batch: a mirror from before that is not taken)
+    if (routing.cleared === true) this.#readAt = this.#sent + 1;
+    this.#post({ routed: n, batch, generation, ...(routing.outcome !== undefined ? { outcome: routing.outcome } : {}) });
+    return true;
+  }
+
   #event(generation: number, event: RuntimeEvent) {
     if (this.#closed) return;
+    if ((event as { routed?: boolean }).routed === true) {
+      // (the program gives it the actor and the live view once the batch is said taken: here what the station's own parts
+      // take of it, its unread cleared and a turn's outcome)
+      if (event.type === "live") {
+        if (event.event.kind === "phase" && event.event.phase === "requesting" && this.#mirror.unread.length > 0) {
+          this.#mirror = { ...this.#mirror, unread: [] };
+          this.#routing.cleared = true;
+        }
+      } else if (event.type === "turnEnded") this.#routing.outcome = event.outcome;
+      return;
+    }
     if (event.type === "live") {
       // (the live view takes each at once; the program only what moves its status line and its words)
       this.#deps.live?.event(this.key, event.event);
@@ -530,9 +588,6 @@ export class MbActor {
         (level === "error" ? log.error : level === "warn" ? log.warn : log.info)("session", message, fields ?? {});
         return;
       }
-      case "live.event":
-        deps.live?.event(args[0], args[1]);
-        return;
       case "node.tasks": {
         const session = args[0] === null ? null : this.#agents.get(args[0])?.session ?? null;
         deps.live?.event(this.key, { kind: "tasks", tasks: session?.background?.() ?? [] });
@@ -581,6 +636,7 @@ export class MbActor {
         case "canCompact": return typeof session.compact === "function";
         case "dispose":
           this.#agents.delete(handle);
+          this.#unroute(session);
           await session.dispose();
           return null;
         default:
@@ -589,13 +645,51 @@ export class MbActor {
       }
     }
     if (f === "t") return t(args[0], args[1] ?? undefined);
-    if (f === "live.turnEnded") {
-      await deps.live?.turnEnded(this.key);
-      return null;
-    }
     switch (name) {
       case "words": return this.#words(args[0], args.slice(1));
       case "uuid": return crypto.randomUUID();
+      // A turn that ended with no state on a card it posted (since `started`), still waiting: it ends need_human on it
+      // (store/card-kinds.ts; actor_run.mbt `on_turn_ended`). Whether it does.
+      case "cardAsks": {
+        const [id, started] = args as [string, number | null];
+        let found: MessageRow | null = null;
+        for (const t of deps.store.recentSessionThreads(this.key).threads) {
+          const card = deps.store.pendingCard(t.thread.id)?.[0] ?? null;
+          if (card === null || card.authorKind !== "agent" || card.author !== this.key) continue;
+          if (typeof started === "number" && card.createdAt < started) continue;
+          if (found === null || card.createdAt >= found.createdAt) found = card;
+        }
+        if (found === null) return false;
+        deps.store.setAbout(id, [found.thread, found.n, found.ts]);
+        deps.store.declareTurn(id, "need_help", null);
+        return true;
+      }
+      // A turn its background work woke, that waits on: what the turn before it (`before`, its summary) asked is asked
+      // still, unless a card of the session's chats was closed since (a person decided). Whether it is.
+      case "keepAsk": {
+        const [id, before] = args as [string, Json];
+        const since = typeof before?.endedAt === "number" ? before.endedAt : null;
+        if (since === null) return false;
+        const threads = deps.store.recentSessionThreads(this.key).threads.map((t) => t.thread.id);
+        if (threads.some((thread) => deps.store.cardClosedSince(thread, since))) return false;
+        const about = before.about;
+        let asked: [number, number, string] | null = about !== null && typeof about === "object" && Number.isInteger(about.seq)
+          ? [about.thread, about.seq, about.ts] : null;
+        if (asked === null) {
+          const during: [number, number] = [typeof before.startedAt === "number" ? before.startedAt : 0, since];
+          for (const thread of threads) {
+            const m = deps.store.askingMessage(thread, null, during)?.[0];
+            if (m !== undefined) {
+              asked = [m.thread, m.n, m.ts];
+              break;
+            }
+          }
+        }
+        if (typeof before.need === "string" && before.need !== "") deps.store.setNeed(id, before.need);
+        deps.store.setAbout(id, asked);
+        deps.store.declareTurn(id, "need_help", null);
+        return true;
+      }
       case "timed": return timed(args[0], this.#program.now());
       case "withChoices": {
         const [text, told] = await handedWithChoices(deps, this.key, this.#program.now(), args[0]);
@@ -627,6 +721,7 @@ export class MbActor {
         });
         const handle = ++this.#next;
         this.#agents.set(handle, { generation, session: opened.session });
+        this.#route(opened.session, generation);
         const { session: _, ...rest } = opened;
         return { ...rest, handle, runtime: this.runtime };
       }
@@ -636,7 +731,11 @@ export class MbActor {
         if (!session) return null;
         return retuneAgent(deps, this.key, session, this.runtime, profile, restart, holding);
       }
-      case "profileId": return deps.runOn(this.key, args[0] === true).id;
+      case "profileId": return deps.runOn(this.key, args[0] === true, true).id;
+      case "outlived": {
+        const session = this.#agents.get(args[0])?.session;
+        return session?.outlived?.() === true;
+      }
       case "notice": {
         const [text, profile, runtime, change, about, quiet] = args;
         const recorded = typeof about === "string" ? (where: [number, number, string]) => { deps.store.setAbout(about, where); if (!quiet) deps.store.notify(this.key); } : undefined;

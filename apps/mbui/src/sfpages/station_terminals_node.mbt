@@ -63,6 +63,13 @@ fn terminals_here() -> Bool {
 }
 
 ///|
+/// Whether station `s` offers its terminals here: asked for (not in a replay of a run from before: the source's
+/// `asks_terminals`), and a `beta` feature of the station's that it runs (its overview's `features`: its own channel's).
+fn terminals_offered(core : Core, s : Json?) -> Bool {
+  (core.terminals_on)() && @settings.station_feature(s, "terminal")
+}
+
+///|
 /// Whether station `s` (whole) shows its terminals' rows: up, one from after terminals (`v`, the topic's value), and
 /// this device's host keeps them.
 fn terminals_shown(s : Json?, v : Json?) -> Bool {
@@ -75,7 +82,7 @@ fn terminals_shown(s : Json?, v : Json?) -> Bool {
 /// to open here.
 fn terminals_to_show(core : Core, address : String, s : Json?) -> Bool {
   // (an away station's not asked: its page asks what it shows, station_part_asks')
-  guard (core.terminals_on)() && flag(s, "online") && terminals_here() else { return false }
+  guard terminals_offered(core, s) && flag(s, "online") && terminals_here() else { return false }
   let v = (core.topic)("terminals", { "station": str(address) }).get().value
   flag(v, "known") && !flag(v, "outdated") && (flag(v, "open") || items(v, "terminals").length() > 0)
 }
@@ -87,7 +94,7 @@ fn station_terminal_rows_node(g : @view.View, core : Core, address : String, s :
   // (not in a replay of a run from before the app asked for them: @sfcore's MBUI_TERMINALS)
   guard (core.terminals_on)() else { return }
   let v = fn() { (core.topic)("terminals", { "station": str(address) }).get().value }
-  let shown = fn() { flag(s(), "online") && terminals_shown(s(), v()) }
+  let shown = fn() { terminals_offered(core, s()) && flag(s(), "online") && terminals_shown(s(), v()) }
   let terminals = fn() { if shown() { items(v(), "terminals") } else { [] } }
   g.each(terminals, fn(t) { text(Some(t), "id") }, fn(row, t) {
     let tv = fn() { Some(t.get()) }

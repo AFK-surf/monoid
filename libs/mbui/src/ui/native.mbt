@@ -52,10 +52,20 @@ pub struct NativeView {
   /// what the host was last told: the same 12 and shown
   priv told : FixedArray[Double]
   priv mut told_shown : Bool
+  /// the window of the run it was last drawn in (window_slots.mbt: one beside the first, or the first, 0), and the one
+  /// it was last told it stands in: it is placed (and hidden) by that window's frames alone, and moves to another as
+  /// that one draws it
+  priv mut wid : Int
+  priv mut told_wid : Int
   priv mut closed : Bool
   /// a video's frames' times asked of the host, and read once it said them (asked for in every frame it plays)
   priv mut frames_asked : Bool
   priv mut frame_times : Array[Double]?
+  /// told as they come to be read (views_arrive): what a node of the window's tree binds of them is done again then
+  priv frames_told : @signals.Signal[Bool]
+  /// a site's page told as its host says it moved, went back or on, loads or is framed (views_arrive), and as it is
+  /// loaded from here: what a node of the window's tree binds of it (NativeView::page_at, framed) is done again then
+  priv page_told : @signals.Signal[Int]
   /// a site's: who answers its requests, who hears of a link left by, the replies under way, where its page is
   priv serve : ((SiteRequest, SiteReply) -> Unit)?
   priv leave : (String) -> Unit
@@ -246,9 +256,13 @@ fn NativeView::make(
     hole: FixedArray::make(4, 0.0),
     told: FixedArray::make(12, -1.0),
     told_shown: false,
+    wid: window_now.now,
+    told_wid: window_now.now,
     closed: false,
     frames_asked: false,
     frame_times: None,
+    frames_told: @signals.signal(false, same=fn(a, b) { a == b }),
+    page_told: @signals.signal(0),
   }
   if v.id == 0 {
     v.state.set(-1)
@@ -356,6 +370,7 @@ fn script_hash(js : String) -> String {
 /// Whether this site's page is in a frame of its host's (`NativeView::site`): nothing of the app's runs in it (no
 /// `script`); its sockets are told with `tell_frame`.
 pub fn NativeView::framed(self : NativeView) -> Bool {
+  self.page_told.get() |> ignore
   self.framed
 }
 
@@ -403,6 +418,7 @@ pub fn NativeView::reload(self : NativeView) -> Unit {
 pub fn NativeView::load(self : NativeView, path : String) -> Unit {
   if self.id != 0 && !self.closed {
     self.path = path
+    self.page_told.set(self.page_told.untracked() + 1)
     h_view_site_load(self.id, path)
   }
 }
@@ -422,6 +438,7 @@ pub fn NativeView::set_scale(self : NativeView, k : Double) -> Unit {
 /// Where a site's page is: its path on its host (or the address it went to elsewhere), whether it can go back and
 /// forward, whether it is loading, its title.
 pub fn NativeView::page_at(self : NativeView) -> (String, Bool, Bool, Bool, String) {
+  self.page_told.get() |> ignore
   (self.path, self.can_back, self.can_forward, self.loading, self.title)
 }
 
@@ -476,6 +493,8 @@ pub fn NativeView::frames(self : NativeView) -> Array[Double]? {
   if self.id == 0 || self.closed {
     return None
   }
+  // (followed: read again as views_arrive finds them come)
+  self.frames_told.get() |> ignore
   if !self.frames_asked {
     self.frames_asked = true
     h_view_control(self.id, 20, 0.0)
@@ -803,6 +822,11 @@ fn NativeView::paint_in(
   if v.closed || v.id == 0 {
     return false
   }
+  // (a view a window beside the first draws is that window's while it is open: another window's frame, the first's
+  // as what showed it there goes, takes it not back, nor hides it there: drawn by none of its paint)
+  if v.wid != window_now.now && v.wid > 0 && windows_beside.contains(v.wid) {
+    return false
+  }
   let (x, y, w, h) = match content {
     Some((cx, cy, cw, ch)) => (nx + cx, ny + cy, cw, ch)
     None => (nx, ny, nw, nh)
@@ -859,6 +883,7 @@ fn NativeView::paint_in(
     v.hole[1] = sy
     v.hole[2] = sw
     v.hole[3] = sh
+    v.wid = window_now.now
   } else {
     v.hole[2] = 0.0
     return false
@@ -952,6 +977,13 @@ fn view_stood(id : Int, state : Int) -> Unit {
 /// As a frame begins, before it is decided what it does again (frame_watch.mbt): each view whose host said how it
 /// stands changed read of it (its signals set: what reads them is built again).
 fn views_arrive() -> Unit {
+  // (a video's frames' times asked and not read yet: read as the host has them, what follows them told; the host says
+  // nothing of its own as they come but a frame)
+  for v in open_views {
+    if !v.closed && v.frames_asked && v.frame_times is None && v.frames() is Some(_) {
+      v.frames_told.set(true)
+    }
+  }
   if views_stirred.is_empty() {
     return
   }
@@ -992,7 +1024,8 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
   self.follow_holes(holes)
   self.stack_views(holes)
   for v in open_views.copy() {
-    if v.closed {
+    // (a view another window of the run draws is that window's to place)
+    if v.closed || v.wid != window_now.now {
       continue
     }
     // (shown where this frame draws its hole, wherever that was painted: a row kept and drawn again copies it, its
@@ -1000,7 +1033,7 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
     // its clip, its node put by) has none: not where an earlier paint of the same build had it)
     let shown = holes.contains(v.id)
     let z = window_zoom_drawn.val
-    let mut moved = shown != v.told_shown || z != v.told_zoom
+    let mut moved = shown != v.told_shown || z != v.told_zoom || v.wid != v.told_wid
     if z != v.told_zoom && v.touch != All {
       h_view_tell(v.id, 2, "\{touch_name(v.touch)} \{touch_slop() * z}")
     }
@@ -1024,6 +1057,7 @@ fn Ctx::sync_views(self : Ctx) -> Unit {
       }
       v.told_shown = shown
       v.told_zoom = z
+      v.told_wid = v.wid
       // on a run's log (MBUI_DRAW_LOG): where it was told to go, in device pixels, for the host's own saying where it
       // put it (VIEWAT) to be compared with (scripts/host_contract.sh HOST views): its rect, its clip, its roundest
       // corner, then each corner (top left, then round it)
@@ -1120,7 +1154,7 @@ fn NativeView::take_reads(self : NativeView) -> Unit {
 /// (`view_tell` 5) when the order of those shown is not the one told last; one alone is over nothing.
 fn Ctx::stack_views(self : Ctx, holes : Map[Int, Int]) -> Unit {
   ignore(self)
-  let shown = open_views.filter(fn(v) { !v.closed && v.id != 0 && holes.contains(v.id) })
+  let shown = open_views.filter(fn(v) { !v.closed && v.id != 0 && v.wid == window_now.now && holes.contains(v.id) })
   shown.sort_by_key(fn(v) { holes.get(v.id).unwrap_or(0) })
   let ids = shown.map(fn(v) { v.id })
   if ids == stacked_views {
@@ -1426,7 +1460,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
     let reply : SiteReply = { view: v.id, req, headed: false, ended: false, gone: false, on_gone: fn() {  } }
     v.replies[req] = reply
     let body = if str("method") == "GET" || str("method") == "HEAD" {
-      Bytes::new(0)
+      Bytes::make(0, b'\x00')
     } else {
       h_view_site_body(v.id, req)
     }
@@ -1451,7 +1485,7 @@ fn NativeView::take_site(self : NativeView) -> Unit {
     match (try Some(@json.parse(st)) catch { _ => None }) {
       Some(Object(m)) => {
         let flag = fn(k : String) { m.get(k) is Some(True) }
-        let was = (v.path, v.can_back, v.can_forward, v.loading, v.title)
+        let was = (v.path, v.can_back, v.can_forward, v.loading, v.title, v.framed)
         match m.get("path") {
           Some(String(p)) if p != "" => v.path = p
           _ => ()
@@ -1465,8 +1499,9 @@ fn NativeView::take_site(self : NativeView) -> Unit {
           Some(String(t)) => v.title = t
           _ => ()
         }
-        if was != (v.path, v.can_back, v.can_forward, v.loading, v.title) {
+        if was != (v.path, v.can_back, v.can_forward, v.loading, v.title, v.framed) {
           g().read_changed("view \{v.id}'s page (where it is, its title, whether it loads)")
+          v.page_told.set(v.page_told.untracked() + 1)
         }
       }
       _ => ()

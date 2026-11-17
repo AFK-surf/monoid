@@ -71,12 +71,14 @@ test "a frequent model with a different runtime is applied as its panel leaves w
   assert_eq(t.find("常用搭配"), Some(before), msg="the model rows stay where they were as the panel starts to close")
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the leaving panel keeps the runtime that was shown")
   t.run_for(@kit.pop_out_ms / 2.0)
-  // The rows' layout stays fixed while the panel fades and shrinks.
+  // The rows' layout stays fixed while the panel fades and shrinks: drawn smaller with it, all alike (as much smaller
+  // as its words are), never laid out anew.
   let heading_out = words("常用搭配")
   let row_out = words("SWE-2")
   let other_out = words("DeepSeek V4.1 Flash")
-  assert_true(((row_out.2 - heading_out.2) - (row.2 - heading.2)).abs() < 1.0, msg="the model rows keep their layout")
-  assert_true(((other_out.2 - heading_out.2) - (other.2 - heading.2)).abs() < 1.0, msg="the other model row keeps its layout")
+  let k = heading_out.4 / heading.4
+  assert_true(((row_out.2 - heading_out.2) - k * (row.2 - heading.2)).abs() < 1.0, msg="the model rows keep their layout")
+  assert_true(((other_out.2 - heading_out.2) - k * (other.2 - heading.2)).abs() < 1.0, msg="the other model row keeps its layout")
   assert_true(t.find("DeepSeek Harness") is Some(_), msg="the runtime stays with the leaving panel")
   // Open it again while the first panel is still leaving: the new one has its own, current contents.
   t.tap_text("GPT-6 Astra")
@@ -159,7 +161,7 @@ fn wholly_in_view(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool 
   let (x, y, w, h) = r
   let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
   t
-  .boxes()
+  .boxes_held()
   .iter()
   .all(fn(b) {
     let holds = b.x >= dx - 0.5 && b.x + b.w <= dx + dw + 0.5 &&
@@ -198,7 +200,7 @@ fn starred_beside(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Bool 
 ///|
 /// The words `name` drawn in the rect `r`.
 fn words_in(t : @ui.Tester, r : (Double, Double, Double, Double), name : String) -> @ui.Laid? {
-  t.boxes().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= r.0 && b.x < r.0 + r.2 && b.y >= r.1 && b.y < r.1 + r.3 })
+  t.boxes_held().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= r.0 && b.x < r.0 + r.2 && b.y >= r.1 && b.y < r.1 + r.3 })
 }
 
 ///|
@@ -474,5 +476,30 @@ test "wide: Devin's sidekick at the foot opens a secondary model-by-effort panel
   t.run_for(squeeze_opening)
   assert_true(t.query(Button, label="SWE-2 · 高") is Some(_), msg="the foot says the updated sidekick effort")
 }
-
-
+///|
+test "Ultrafast can be selected and cleared on small and large screens with larger words" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    for scale in [1.0, 1.3] {
+      let t = screen_in("newchat-ultrafast-model", win, "zh", font_scale=scale)
+      // (what is wrong already, wherever it is drawn: what opening the speeds moves keeps its fault)
+      let bare = fn(f : String) { f.split(" (at ").collect()[0].to_owned() }
+      let held = t.audit().map(bare)
+      t.click(Button, label="标准")
+      t.run_for(squeeze_opening)
+      assert_true(t.words().iter().any(fn(w) { w.0 == "Ultrafast" }))
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+      // (on a phone a sheet of buttons, each named with its note; on a wide screen a menu, named by its title)
+      let phone = win.0 == "phone"
+      let item : @view.Role = if phone { Button } else { MenuItemRadio }
+      t.click(item, label=if phone { "Ultrafast " + @sf.t("web-main.model.ultrafastNote") } else { "Ultrafast" })
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.speed, "ultrafast")
+      t.click(Button, label="Ultrafast")
+      t.run_for(squeeze_opening)
+      t.click(item, label="标准")
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.speed, "standard")
+      assert_eq(t.audit().map(bare).filter(fn(f) { !held.contains(f) }), [])
+    }
+  }
+}

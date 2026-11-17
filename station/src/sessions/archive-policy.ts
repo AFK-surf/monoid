@@ -146,7 +146,7 @@ export const policySince = (now: number): number => now - VIEW_DAYS * 86_400_000
 
 /// What the checks since `policySince` say of a workspace's chats (`mine`), each by its latest check: how many chats each
 /// option has and the latest VIEW_CHATS of them, how many were checked and how many checks failed. A reader's
-/// (read/ops-sessions.ts `policyChecks`), off the main thread: a week's checks, 1,341 chats' on a station, read there
+/// (test/reference/ops-sessions.ts `policyChecks`), off the main thread: a week's checks, 1,341 chats' on a station, read there
 /// held it up to 52 s while memory was short (2026-11-04).
 export type PolicyChecks = { checked: number; failed: number; options: Record<string, { count: number; chats: { session: string; at: number; recommended: boolean }[] }> };
 

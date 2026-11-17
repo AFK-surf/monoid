@@ -230,6 +230,7 @@
   "core-misc.lock.rootOnly": "只有 {name} 可以关闭或重新开启安全模式。其本人无法操作时，可在 station 所在的电脑上运行 stillfail lock reset",
   "core-misc.lock.out": "{name} 于 {time} 将你移出了此 workspace 的安全模式。需要继续使用的话，请联系 {name} 或其他管理员重新添加",
   "core-misc.lock.needsApp": "此 workspace 的安全模式要求每位成员至少有一台客户端。请安装桌面或手机客户端并登录，由管理员批准后，再用客户端批准此网页版",
+  "core-misc.lock.signerUnsaid": "此设备需完成一次验证后才能成为受信任设备",
   "core-misc.lock.unconfirmed": "此设备尚未获准访问「{name}」：请在你在「{name}」中的受信任设备上，或请其管理员，打开「设置 › 安全」验证安全码 {code}",
   "core-misc.lock.unconfirmedNoCode": "此设备尚未获准访问「{name}」：请在你在「{name}」中的受信任设备上，或请其管理员，打开「设置 › 安全」批准",
   "core-misc.lock.offOwnLock": "此设备尚未获准访问「{name}」：在这台设备上发送批准请求，输入你的受信任设备上显示的安全码",
@@ -315,6 +316,12 @@
   "core-misc.vault.notOwnerLasts": "仅库的所有者可设置授权上限",
   "core-misc.vault.notOwnerDelete": "仅库的所有者可删除此库",
   "core-misc.vault.unknown": "库不存在，或你不是其成员",
+  "core-misc.vault.oauth.unknown": "这个应用暂时不能用授权的方式添加：请改用「添加 › Token」手动粘贴",
+  "core-misc.vault.oauth.denied": "你在授权页上没有同意，什么都没有保存；要添加的话，再点一次「添加」",
+  "core-misc.vault.oauth.expires": "（这个令牌约 {hours} 小时后过期，过期后要在 {service} 重新授权）",
+  "core-misc.vault.oauth.stale": "这次授权已经过期，或者不是在这台设备上发起的：请在这台设备上再点一次「添加」",
+  "core-misc.vault.oauth.failed": "授权没有完成（{why}）：请再点一次「添加」试试",
+  "core-misc.vault.oauth.about": "{who} 在 {service}「{team}」的个人令牌，通过授权页添加。agent 用它以 {who} 的身份调用 {service} 的 API（发往 {hosts}，放在 Authorization: Bearer 头里）。在 {service} 里取消这个应用的授权后，令牌就失效了",
   "core-misc.vault.unknownItem": "条目不存在",
   "core-misc.vault.scopeTooLong": "这个密钥不给这么长的授权",
   "core-misc.vault.untrusted": "此条目并非由库成员签名写入",
@@ -368,5 +375,9 @@
   "core-misc.feedback.heading": "still.fail 团队回复了 FB-{number}",
   "core-misc.presets.none": "这个预设已经不在了，或者还没读到：重新打开预设列表再试",
   "core-misc.presets.notYours": "这是别人的预设，只能查看、用它开对话或复制一份成自己的再改",
-  "core-misc.presets.signedOut": "没有能进入这个工作区的已登录账号：先登录再改预设"
+  "core-misc.presets.signedOut": "没有能进入这个工作区的已登录账号：先登录再改预设",
+  "core-misc.connect.title.groupForm": "加入 Group 服务器",
+  "core-misc.connect.group.badServer": "Server ID 是 64 位十六进制",
+  "core-misc.connect.group.badRelay": "每个中继地址都要以 https:// 或 http:// 开头",
+  "core-misc.connect.group.badCode": "加入码是 16 位，形如 XXXX-XXXX-XXXX-XXXX"
 }

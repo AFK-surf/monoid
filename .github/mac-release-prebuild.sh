@@ -40,6 +40,26 @@ case "${1:-}" in
     cat "$dir/log"
     [ "$(cat "$dir/status")" = 0 ] || exit 1
     ;;
+  stop)
+    # (the build cut short by the Finish step's own limit: the worker and all it started end before the store is keyed
+    # and saved, so that nothing writes units while they are packed)
+    tree() { for c in $(pgrep -P "$1" 2>/dev/null); do tree "$c"; done; echo "$1"; }
+    [ -s "$dir/pid" ] || exit 0
+    pids=$(tree "$(cat "$dir/pid")")
+    # shellcheck disable=SC2086 # pids, one word each
+    kill -TERM $pids 2>/dev/null || :
+    for _ in 1 2 3 4 5; do kill -0 "$(cat "$dir/pid")" 2>/dev/null || break; sleep 1; done
+    # shellcheck disable=SC2086
+    kill -KILL $pids 2>/dev/null || :
+    # (and, on GitHub's own VM alone, the compilers that left the worker's tree: a parent gone, they were nobody's
+    # child to find, and wrote units on while the store was keyed and packed. Never by name on a machine of ours, whose
+    # other runners' and sessions' compilers are theirs)
+    if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ]; then
+      left=$(pgrep -x 'moon|moonc|mbc|mbc.exe|clang|clang\+\+|clang-[0-9]+' 2>/dev/null || true)
+      # shellcheck disable=SC2086
+      [ -z "$left" ] || kill -KILL $left 2>/dev/null || :
+    fi
+    ;;
   work)
     set +e
     bash "$0" build
@@ -55,10 +75,15 @@ case "${1:-}" in
     export CARGO_TARGET_DIR="$A/out/core-target-macos$MACOSX_DEPLOYMENT_TARGET"
     bash "$A/scripts/core.sh" apple-native aarch64-apple-darwin
     while [ ! -f "$dir/ready" ]; do sleep 1; done
-    # mac-app.sh clears outputs when this marker differs. Let it do so and build normally in that case.
+    # What was built for another macOS (moon's and mbc's objects) goes, as mac-app.sh would have it go, and the marker is
+    # written so that it does not: the core just built for this one (out/core/aarch64-apple-darwin) is kept. Left to
+    # mac-app.sh, with no Moon build restored the prebuild gave up, mac-app.sh took the core away and built it all again
+    # in the bundling step alone, past the job's five minutes (#6955's 133961020901, main's 133951721953, 2026-11-17).
     if [ "$(cat "$A/_build/.macos-min" 2>/dev/null || :)" != "$MACOSX_DEPLOYMENT_TARGET" ]; then
-      echo 'Mac prebuild: no matching Moon build; the release builds it normally'
-      exit 0
+      echo "Mac prebuild: no Moon build for macOS $MACOSX_DEPLOYMENT_TARGET restored; built here whole"
+      rm -rf "$A/_build" "$A/out/mbc"
+      mkdir -p "$A/_build"
+      echo "$MACOSX_DEPLOYMENT_TARGET" > "$A/_build/.macos-min"
     fi
     exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
     [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/stillfail/core_engine.m"
@@ -68,5 +93,5 @@ case "${1:-}" in
     # the compile and let a successful build time out during cleanup (42588746155, 2026-11-09).
     bash "$A/scripts/mac.sh" build
     ;;
-  *) echo "usage: $0 start|ready|packages|wait" >&2; exit 2 ;;
+  *) echo "usage: $0 start|ready|packages|wait|stop" >&2; exit 2 ;;
 esac

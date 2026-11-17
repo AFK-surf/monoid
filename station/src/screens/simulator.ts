@@ -7,7 +7,8 @@
 // Which are booted is CoreSimulator's own simctl's (`simctl list`), looked at again when CoreSimulator rewrites a device's device.plist (it
 // does as the device boots and shuts down) or the list of devices changes, and as the screens are asked for.
 import { execFile } from "node:child_process";
-import { type FSWatcher, existsSync, readFileSync, readdirSync, watch } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
+import { readFile, readdir } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HelperApp } from "../helper/app.ts";
@@ -105,8 +106,7 @@ export class Simulators {
   /// Follows the devices' changes (none where there are no simulators), and looks once.
   start(): Promise<void> {
     if (this.#o.helper === null) return Promise.resolve();
-    this.#follow();
-    return this.refresh();
+    return this.#follow().then(() => this.refresh());
   }
 
   /// The booted devices looked at again (one look at a time; one asked meanwhile is made after it).
@@ -151,7 +151,7 @@ export class Simulators {
       if (this.#closed || this.#listed.has(b.udid)) continue;
       this.#listed.set(b.udid, { source, remove: this.#o.screens.add(source) });
     }
-    this.#follow();
+    await this.#follow();
   }
 
   /// A device type's screen in pixels (its capabilities.plist; 0×0 when it cannot be read), panels (as its masks say
@@ -167,9 +167,8 @@ export class Simulators {
         const capabilities = JSON.parse(await this.#run("plutil", ["-convert", "json", "-o", "-", join(bundle, "Contents/Resources/capabilities.plist")]));
         typed.size = screenOf(capabilities);
         const dir = join(bundle, "Contents/Resources");
-        typed.panels = readdirSync(dir)
-          .filter((f) => f.endsWith(".pdf") && !f.startsWith("sensor_bar"))
-          .flatMap((f) => panelOf(readFileSync(join(dir, f))) ?? []);
+        const masks = (await readdir(dir)).filter((f) => f.endsWith(".pdf") && !f.startsWith("sensor_bar"));
+        typed.panels = (await Promise.all(masks.map(async (f) => panelOf(await readFile(join(dir, f)))))).flatMap((p) => p ?? []);
         const profile = JSON.parse(await this.#run("plutil", ["-convert", "json", "-o", "-", join(dir, "profile.plist")]));
         const sensor = typeof profile?.sensorBarImage === "string" ? profile.sensorBarImage : null;
         const cases = await Promise.all(displaysOf(capabilities, profile).map((d) => chromeOf(d, dir, sensor)));
@@ -182,12 +181,16 @@ export class Simulators {
 
   /// Watches the devices' folder (a device made or deleted) and each device's (its device.plist rewritten as it boots
   /// or shuts down; not what is below, which a running device writes all the time).
-  #follow() {
-    if (this.#closed || !existsSync(this.#devices)) return;
+  async #follow() {
+    if (this.#closed) return;
     const dirs = new Set([this.#devices]);
     try {
-      for (const e of readdirSync(this.#devices, { withFileTypes: true })) if (e.isDirectory() && /^[0-9A-F-]{36}$/i.test(e.name)) dirs.add(join(this.#devices, e.name));
-    } catch {}
+      for (const e of await readdir(this.#devices, { withFileTypes: true })) if (e.isDirectory() && /^[0-9A-F-]{36}$/i.test(e.name)) dirs.add(join(this.#devices, e.name));
+    } catch {
+      // No devices' folder (no simulators): nothing to watch.
+      return;
+    }
+    if (this.#closed) return;
     for (const [dir, w] of this.#watchers) {
       if (dirs.has(dir)) continue;
       w.close();

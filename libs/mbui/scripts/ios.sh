@@ -50,7 +50,11 @@ DEV_NAME=${MBUI_IOS_DEVICE:-ios-mbui-sf}
 PKG=${APP:-demo}
 LOG=${MBUI_IOS_LOG:-$PWD/$OUT/app.log}
 SDK=$(xcrun --sdk $IOS_SDK --show-sdk-path)
-CC="xcrun --sdk $IOS_SDK clang -arch arm64 $MIN -isysroot $SDK"
+# (Xcode's clang itself, found once: through `xcrun` each of the app's ~1100 units ran xcrun first, and mbc keys a
+# unit by its compiler's file, there /usr/bin/xcrun, which a macOS update of GitHub's image changes with Xcode as it
+# was, so that every unit kept for the next run was another's: preview's ios, images 20261104.0337.1 and 20261112.0361.1)
+CLANG=$(xcrun --sdk $IOS_SDK -f clang)
+CC="$CLANG -arch arm64 $MIN -isysroot $SDK"
 CFLAGS="-I$MOON_HOME/include -I$ROOT/src/host -I$ROOT/ios/shim -fwrapv -fno-strict-aliasing -Wno-unused-value -O2 -DMOONBIT_ALLOCATOR=MOONBIT_ALLOCATOR_SYSTEM"
 
 APP_EXTRA= APP_LINK= APP_ENTITLEMENTS=
@@ -111,8 +115,20 @@ for rt,ds in d.items():
     if x['name']=='$DEV_NAME' and x.get('isAvailable'): print(x['udid']); sys.exit()
 ")
   if [ -z "$id" ]; then
-    local rt=$(xcrun simctl list runtimes -j | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']];print(r[-1]['identifier'])")
-    local dt=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys;t=[x for x in json.load(sys.stdin)['devicetypes'] if x['name'].startswith('iPhone 1') and 'Pro' in x['name'] and 'Max' not in x['name']];print(t[-1]['identifier'])")
+    # (an iPhone Pro of those a runtime itself supports, the oldest, else the first iPhone it supports, of the newest
+    # runtime that supports one: a runtime drops the oldest types as it comes (iOS 27.1 the iPhone 11 Pro, the whole
+    # list's last, made before; the render runner's iOS 27.1 the iPhone Duo alone); what it took, and what each runtime
+    # skipped supports, said)
+    local rt_dt=$(xcrun simctl list runtimes -j | python3 -c "
+import json,re,sys
+for r in reversed([x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]):
+  s=r.get('supportedDeviceTypes',[])
+  t=sorted((x for x in s if re.fullmatch(r'iPhone \\d+ Pro',x['name'])),key=lambda x:int(x['name'].split()[1]))
+  t=t or [x for x in s if x.get('productFamily')=='iPhone' or x['name'].startswith('iPhone')]
+  if t: print(r['identifier'],t[0]['identifier']); print('ios: a simulator of',t[0]['name'],'on',r['name'],file=sys.stderr); sys.exit()
+  print('ios: runtime',r['identifier'],'supports no iPhone:',[x['name'] for x in s],file=sys.stderr)
+sys.exit(1)")
+    local rt=${rt_dt% *} dt=${rt_dt#* }
     id=$(xcrun simctl create "$DEV_NAME" "$dt" "$rt")
   fi
   xcrun simctl boot "$id" 2>/dev/null || true
@@ -216,7 +232,7 @@ case "${1:-build}" in
       plutil -replace CFBundleShortVersionString -string "${MBUI_IOS_VERSION:-0.1.$MBUI_IOS_BUILD}" $APPDIR/Info.plist
     fi
     if [ -n "${MBUI_IOS_ASSETS:-}" ]; then
-      xcrun actool --compile $APPDIR --platform $IOS_SDK --minimum-deployment-target 17.0 --target-device iphone \
+      xcrun actool --compile $APPDIR --platform $IOS_SDK --minimum-deployment-target 17.0 --target-device iphone --target-device ipad \
         --app-icon AppIcon --output-partial-info-plist $OUT/assets-info.plist --errors --warnings \
         "$MBUI_IOS_ASSETS" > $OUT/actool.log 2>&1 || { cat $OUT/actool.log; exit 1; }
       /usr/libexec/PlistBuddy -c "Merge $OUT/assets-info.plist" $APPDIR/Info.plist > /dev/null

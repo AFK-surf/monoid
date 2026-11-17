@@ -1,13 +1,15 @@
-// The hook that tells a session a repository's rules (its AGENTS.md files) as its tools first touch the repository
-// (./repo-rules-hook.mjs), as Claude Code and Codex run it: neither reads them below where it was started up but now and
-// then (Claude Code as its Read tool opens a file there; Codex never), and a session starts in its workspace, its clones
-// below it, and mostly reads them with the shell.
+// The hook that tells a session a repository's rules (its AGENTS.md or CLAUDE.md files) as its tools first touch the
+// repository (./repo-rules-hook.mjs), as Claude Code, Codex and Antigravity CLI run it: none reads them all below where
+// it was started up (Claude Code as its Read tool opens a file there; Antigravity CLI only AGENTS.md there; Codex never),
+// and a session starts in its workspace, its clones below it, and often reads them with the shell.
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { platform } from "../platform/index.ts";
 
 export const REPO_RULES_HOOK = fileURLToPath(new URL("./repo-rules-hook.mjs", import.meta.url));
 const quoted = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
+const cmdQuoted = (s: string) => `"${s.replaceAll('"', "")}"`;
 
 /// The Node a hook's command names, which must be there for as long as the agent's process given the command runs, an
 /// update of the station later too: the release's own, beside the hook's file where the release is (<app>/station/ the
@@ -28,3 +30,11 @@ export function hookNode(file: string, has: (path: string) => boolean = existsSy
 /// word in single quotes, so nothing in a path or an argument is the shell's to read.
 export const hookCommand = (file: string, ...args: string[]) => `${[hookNode(file), file, ...args].map(quoted).join(" ")} 2>/dev/null || true`;
 export const REPO_RULES_COMMAND = hookCommand(REPO_RULES_HOOK);
+
+/// A hook's file as Antigravity CLI runs it (`sh -c` on Unix, `cmd /c` on Windows), with `{}` on stdout when the
+/// station's files are missing (`call` on Windows keeps `cmd /c` from stripping outer quotes).
+export const agyHookCommand = (file: string, os: string = platform.os) =>
+  os === "windows"
+    ? `call ${[hookNode(file), file].map(cmdQuoted).join(" ")} 2>nul || echo {}`
+    : `${[hookNode(file), file].map(quoted).join(" ")} 2>/dev/null || printf '{}'`;
+export const AGY_REPO_RULES_COMMAND = agyHookCommand(REPO_RULES_HOOK);

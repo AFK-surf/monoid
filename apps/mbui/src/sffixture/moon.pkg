@@ -10,6 +10,9 @@ import {
   "stillfail/sfbase",
   "stillfail/core",
   "mbui/signals",
+  "fvclient/doc",
+  "fvclient/html",
+  "fvclient/proto",
 }
 
 import { "stillfail/sfkept" } for "wbtest"

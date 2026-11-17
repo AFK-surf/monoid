@@ -2,15 +2,15 @@
 // styles the same): its picture out in the margin before its words (inline: over its head's start), its head (name,
 // where it went, time; where a mouse is what it is used with and it offers itself, its ⋯ at the head's end; right
 // clicked, the same: message_menu_node), what it says under it. Not here yet: its picture held under the
-// pane's top as a long one scrolls past (the old one's c.stick: the list's, to come), its files (message_files.mbt),
-// coming out of its agent's picture (emit).
+// pane's top as a long one scrolls past (the old one's c.stick: the list's, to come), coming out of its agent's picture
+// (emit).
 
 ///|
 /// What a message offers of itself (share_turn_tool's, others_message's `share`): its key (its list's Entry::id, as a
 /// right click on it says it: what the menu that opens is open for, @sfbase.message_menu_on), its link and its words
 /// as they are, and its turn's picture shared (`go`).
 pub(all) struct MessageShare {
-  key : String
+  key : () -> String
   link : () -> String
   words : () -> String
   go : () -> Unit
@@ -108,13 +108,11 @@ fn message_others_node(
     })
     |> ignore
     // (over the row, at its start: out in the margin, or over the head's start where inline)
-    row.box(fn(layer) {
-      layer.over(Is(true)) |> ignore
-      layer.box(fn(av) {
-        @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
-        avatar(av)
-      })
-      |> ignore
+    // (one node over the row, its room its own: no box of the layer's round it)
+    row.box(fn(av) {
+      av.over(Is(true)) |> ignore
+      @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      avatar(av)
     })
     |> ignore
   })
@@ -133,7 +131,8 @@ let msg_share_side : Double = 24.0
 /// What an agent of the chat said in Slack (or Feishu, or another chat) rather than here, or a person's message there it
 /// was given (sent_elsewhere's), as `s` says as it changes, in `v`: drawn as a message of theirs, that place's mark on
 /// the picture's corner and, after the name, where it went or came from, red where sending it failed; its words as
-/// Markdown. In its row's room (message_row_frame_node: `key`, its list's Entry::id `s:<key>`; `side`, `top`; `over`).
+/// Markdown, its files under them (a person's message there came with them). In its row's room
+/// (message_row_frame_node: `key`, its list's Entry::id `s:<key>`; `side`, `top`; `over`).
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn sent_elsewhere_node(
@@ -144,14 +143,17 @@ fn sent_elsewhere_node(
   side : () -> Double,
   top : () -> Double,
   s : () -> Elsewhere,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  message_row_frame_node(v, key, side, top, over~, fn(m) { sent_elsewhere_body(m, src, here, s) })
+  message_row_frame_node(v, fn() { key }, side, top, over~, fn(m) { sent_elsewhere_body(m, src, here, key, s) })
 }
 
 ///|
-/// What was said elsewhere (sent_elsewhere's) in `v`, its row's room round it: sent_elsewhere_node's.
-fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, s : () -> Elsewhere) -> Unit {
+/// What was said elsewhere (sent_elsewhere's) in `v`, its row's room round it: sent_elsewhere_node's (`key` its list's
+/// Entry::id). Its words, where it has any, are what is read in it and picked of it (of its key, as an agent's are);
+/// a link in them held (or right clicked) its menu. No link's card nor a chat's title for a bare link: what was said
+/// elsewhere comes with neither (Elsewhere has no `links`), as the old row had none.
+fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, key : String, s : () -> Elsewhere) -> Unit {
   let surface = fn() {
     match s().place {
       Some(p) => p.surface
@@ -176,17 +178,42 @@ fn sent_elsewhere_body(v : @view.View, src : Source, here : MessageNodeHere, s :
           })
           |> ignore
         } else {
-          agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, fn() {
+          let pic = agent_avatar_node(a, fn() { s().by.maker }, fn() { s().by.runtime }, corner=Some(fn() {
             if surface() == "feishu" { "feishu" } else { "slack" }
-          })
-          |> ignore
+          }))
+          // (one of the chat's agents': its card over its picture, as the old row's agent_avatar has it)
+          message_agent_card_node(pic, src, here, agent, pointed=true)
         }
       })
     },
     fn(h) { message_name_node(h, src, here, fn() { s().by.name }, agent, fn() { "" }) },
     Some(fn(r) { elsewhere_route_node(r, s) }),
     fn(b) {
-      @sf.markdown_node(b, fn() { s().text }, size=fn() { body_size }, on_link=fn(h) { open_link(h) }) |> ignore
+      // (its words in its body itself, as they are (none: nothing of them laid out); what is read in it starts there,
+      // under its head line; what is picked of it of its key, its words alone)
+      let w = @sf.markdown_node(
+        b,
+        fn() { s().text },
+        size=fn() { body_size },
+        on_link=fn(h) { open_link(h) },
+        on_link_hold=Some(message_link_held),
+      )
+      w.read_from() |> ignore
+      @ui.picked_of(w, key, whole=true) |> ignore
+      // (its files, where it came with some: one from elsewhere is said whole as it comes, never given more after; none
+      // made for the many that come with none)
+      if @signals.untracked(fn() { s().attachments.length() > 0 }) {
+        message_files_node(
+          b,
+          src,
+          here.tips,
+          message_files_at(here, fn() { false }),
+          fn() { s().attachments },
+          fn() { false },
+          fn() { None },
+          fn() { "" },
+        )
+      }
     },
   )
   |> ignore

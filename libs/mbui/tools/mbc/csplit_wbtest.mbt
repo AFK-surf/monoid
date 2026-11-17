@@ -707,3 +707,114 @@ test "a generic's instances pieced by the types they are for" {
   assert_eq(type_args(b"_M0FP0mbui0view0Grid0new"), b"_M0FP0mbui0view0Grid0new")
   assert_eq(type_args(b"_M0FPB10i16x8__add"), b"_M0FPB10i16x8__add")
 }
+
+///|
+/// A program with one static object, its layout at `off` in moonc's table (`table` its words)
+fn prog_object(table : String, off : Int) -> String {
+  prelude_src +
+  "\n" +
+  (
+    $|struct _M0TP11a1T;
+    $|
+    $|struct _M0TP11a1T {
+    $|  int32_t x;
+    $|};
+    $|
+    $|static uint32_t const moonbit_layout_table_data[] = { \{table} };
+    $|
+    $|uint32_t const* moonbit_layout_table;
+    $|
+    $|int32_t _M0FP11a1x;
+    $|
+    $|struct {
+    $|  int32_t rc;
+    $|  uint32_t meta;
+    $|  struct _M0TP11a1T data;
+    $|} _M0FP11a1o$object = {
+    $|  Moonbit_make_static_rc(moonbit_BLOCK_KIND_REGULAR),
+    $|  Moonbit_make_regular_object_header(MOONBIT_REGULAR_LAYOUT_CLASS_INDEXED, \{off}, 3),
+    $|  {.x = 9}
+    $|};
+    $|
+    $|void moonbit_init() {
+    $|  moonbit_layout_table = moonbit_layout_table_data;
+    $|  _M0FP11a1x = 1;
+    $|}
+    $|
+    $|int main(int argc, char** argv) {
+    $|  moonbit_init();
+    $|  return _M0FP11a1o$object.data.x + _M0FP11a1x;
+    $|}
+    $|
+  )
+}
+
+///|
+test "a global's object names its layout by its content, set as moonbit_init begins" {
+  // (moonc's layouts numbered across the program: one put in before it renumbered the object's, and made its data
+  // unit new text)
+  let (x, _) = sp(prog_object("1, 0", 0))
+  let (y, _) = sp(prog_object("2, 0, 1, 0", 2))
+  let data_of = fn(files : Map[String, String]) {
+    let mut d = ""
+    for n, t in files {
+      if n.has_prefix("data_p_") && has(t, "_object") {
+        d = t
+      }
+    }
+    d
+  }
+  let dx = data_of(x)
+  assert_true(has(dx, "LAYOUT_CLASS_INDEXED, 0, 3)"))
+  assert_eq(dx, data_of(y)) // the same text, the layout's number moved
+  assert_true(has(x["data_layout.c"], "csplit_layout_fixes[1]"))
+  assert_true(has(x["data_layout.c"], ".meta, &csplit_layout_"))
+  assert_true(has(x["data_layout.c"], "void csplit_fix_layouts(void)"))
+  let init = x["init.c"]
+  assert_true(has(init, "void moonbit_init() {\ncsplit_fix_layouts();\n"))
+}
+
+///|
+/// A program with moonc's function types `names`, all of one definition, b's function calling through the last
+fn prog_same_fn_types(names : Array[String]) -> String {
+  let buf = StringBuilder()
+  buf.write_string(prelude_src + "\n")
+  for n in names {
+    buf.write_string("struct \{n};\n\n")
+  }
+  for n in names {
+    buf.write_string("struct \{n} {\n  int32_t(* code)(struct \{n}*, int32_t);\n};\n\n")
+  }
+  let last = names[names.length() - 1]
+  buf.write_string(
+    (
+      $|int32_t _M0FP11b4call(struct \{last}*);
+      $|
+      $|int32_t _M0FP11b4call(struct \{last}* _M0L1fS6) {
+      $|  return _M0L1fS6->code(_M0L1fS6, 1);
+      $|}
+      $|
+      $|void moonbit_init() {
+      $|}
+      $|
+      $|int main(int argc, char** argv) {
+      $|  moonbit_init();
+      $|  return 0;
+      $|}
+      $|
+    ),
+  )
+  buf.to_string()
+}
+
+///|
+test "function types the same are one type, a new one beside them renaming none" {
+  // (numbered apart in moonc's order, one more of them anywhere moved the names of those after it, and every unit
+  // that named one was new: main db433ae9 against 7aba69f6, 2026-11-16)
+  let (one, _) = sp(prog_same_fn_types(["_M0TWiE5", "_M0TWiE9"]), unit_bytes=2)
+  let (two, _) = sp(prog_same_fn_types(["_M0TWiE5", "_M0TWiE7", "_M0TWiE9"]), unit_bytes=2)
+  assert_eq(unit_named(one, "b"), unit_named(two, "b"))
+  assert_false(has(unit_named(one, "b"), "_x"))
+  assert_eq(occurs(one["decls.h"], "(* code)"), 1) // (defined once)
+  assert_eq(occurs(two["decls.h"], "(* code)"), 1)
+}

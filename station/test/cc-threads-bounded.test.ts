@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { CC_SESSION_KEYS, CcIndexPreparation, CcSessionsUnavailable } from "../src/store/cc-thread-index.ts";
+import { CC_SESSION_KEYS, CcIndexPreparation, CcSessionsUnavailable } from "./reference/backfill/cc-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 
 function prepared(store: Store, thread: number): ReturnType<Store["ccThreads"]> {

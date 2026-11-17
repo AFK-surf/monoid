@@ -18,7 +18,7 @@ fn told_passes_faults(f : () -> Unit) -> Array[String] {
 test "a binding a layout tells again in every layout it is laid out by: given its passes, then told as a fault, and the run goes on" {
   // (the room of a box made by it, read outside it by the width of what holds it: each layout gives the room another
   // width, which tells the binding again, which gives what holds it another width)
-  let room : @signals.Signal[@view.Room?] = @signals.signal(None, same=fn(a, b) { a is None && b is None })
+  let room : @signals.Signal[@view.Room?] = @signals.signal_by(None, same=fn(a, b) { a is None && b is None })
   let runs = Ref(0)
   let faults = told_passes_faults(fn() {
     let t = @view.Tree::new(fn(root) {

@@ -130,7 +130,7 @@ test "分享给其他 workspace on a phone: 完成 drawn as the large screen's, 
 
 ///|
 /// The chat's menu over the fixture's chat in a window `w` by `h` with `platform`'s hand, its `chat` topic as `over`
-/// makes it, calls kept and answered with nothing; its 分享… opened, 分享给其他 workspace pressed (or the panel opened by
+/// makes it, calls kept and answered with nothing; its 分享 opened, 分享给其他 workspace pressed (or the panel opened by
 /// `opens`): the panel up, come to
 /// rest unless `rest` is false (at the frame it opened in then).
 fn xshare_up(

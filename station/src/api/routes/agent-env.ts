@@ -60,7 +60,7 @@ export const routes = ({ config, changed, restart }: AgentEnvDeps): Route[] => [
         }
       } else return error(400, "text: the variables as NAME=value lines; or env: a map of variables to a value, or null to remove one");
       try {
-        config.update((raw) => {
+        await config.updateSoon((raw) => {
           if (Object.keys(next).length > 0) raw.agentEnv = next;
           else delete raw.agentEnv;
         });

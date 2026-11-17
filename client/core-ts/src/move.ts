@@ -218,7 +218,7 @@ export function moveShown(raw: J, o: { to: string; toName: string; module: strin
     // (its station's page shows 迁移 while the person has something to know there: a move under way, something stopped
     // waiting, a module's last turn failed. Something of it on the other station alone, nothing else, shows none: a
     // chat moved for good would say "迁移到 B 1 / 274" at the top of its old station's page for ever, nothing to do
-    // about it there; moving it back is the ⋯ menu's 迁移到另一台… and the page's (the lead, 2026-11-15))
+    // about it there; moving it back is the ⋯ menu's 迁移到另一台 station and the page's (the lead, 2026-11-15))
     active: moving !== null || stopped.length > 0 || shown.some((m) => m.mark !== ""),
     allMove: !acts || toMove === 0 || o.to === "" ? null : { n: toMove, title: t("core-views.move.all.title", { name: o.toName }), text: allText },
     allBack: !acts || toBack === 0 || o.to === "" ? null : { n: toBack, title: t("core-views.move.back.title", { name: o.toName }), text: t("core-views.move.back.text", { n: String(toBack) }) },

@@ -6,8 +6,9 @@ import { hasLegacyAgent, installLegacyAgent } from "./legacy-agent-build.ts";
 import { hasLegacyLoginCards, installLegacyLoginCards } from "./legacy-login-cards.ts";
 import { hasLegacyEdits, hasOldEditIndex, installLegacyEdits, legacyEditLatest, legacyEditsUseOldIndex, usesLegacyEdits } from "./legacy-edits-build.ts";
 import { repairWidgetSourceBeforeAdd, widgetSourceBeforeAddNeedsRepair } from "./widget-sources.ts";
-import { COMPACTED_FROM, QUARTER_MS, STILLFAIL_SURFACE } from "./rows.ts";
-import { incrementalTotalsDecided } from "./usage-detail.ts";
+import { COMPACTED_FROM, STILLFAIL_SURFACE } from "./rows.ts";
+import { systemCardSql } from "./card-kinds.ts";
+import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 
 /// Bump on a change a station before it cannot open. 12 is the Rust station's, brought up on open (store.ts
 /// `#upgradeFrom12`); a database of another version is refused.
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   model TEXT,
   effort TEXT,
   fast INTEGER,
+  speed TEXT,
   afresh INTEGER,
   context INTEGER,
   context_before INTEGER,
@@ -380,6 +382,8 @@ CREATE TABLE IF NOT EXISTS usage_files (
 -- opened it (parent), each by its station ('' for this one) and key, with the key the opener gave the call. The station
 -- of either keeps a row: the child's to tell its parent how its turns end, the parent's to know its children by. The
 -- child's also keeps what its parent was called then (opener_title, addOpenerTitle), for its chat's way back to it.
+-- led (addLedColumn): 1 for a chat its opener leads (chat_create for me), 0 for one opened for its person; NULL
+-- before it.
 CREATE TABLE IF NOT EXISTS opened_chats (
   child_station TEXT NOT NULL,
   child TEXT NOT NULL,
@@ -565,7 +569,7 @@ export function hasRuntimeOrderIndex(db: DatabaseSync): boolean {
 /// add_archive_columns: columns archiving came with, added to a database made before them. When they come, each
 /// session's first chat on the page is taken as its own, and chats of sessions archived then as archived with them.
 export function addArchiveColumns(db: DatabaseSync): void {
-  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
+  for (const [column, kind] of [["archived_by", "TEXT"], ["shown_at", "INTEGER"], ["cwd", "TEXT"], ["fast", "INTEGER"], ["speed", "TEXT"], ["afresh", "INTEGER"], ["context", "INTEGER"], ["context_before", "INTEGER"], ["profiles", "TEXT"]]) {
     if (!has(db, "sessions", column!)) db.exec(`ALTER TABLE sessions ADD COLUMN ${column} ${kind}`);
   }
   // Came with waiting's limit, after the turns table.
@@ -738,6 +742,12 @@ export function addOpenerTitle(db: DatabaseSync): void {
   if (!has(db, "opened_chats", "opener_title")) db.exec("ALTER TABLE opened_chats ADD COLUMN opener_title TEXT");
 }
 
+/// The column chat_create's `for` came with (opened_chats.led): 1 a chat its opener leads, 0 one opened for its
+/// person, NULL before it (its opener told as a leader is, its asks its person's).
+export function addLedColumn(db: DatabaseSync): void {
+  if (!has(db, "opened_chats", "led")) db.exec("ALTER TABLE opened_chats ADD COLUMN led INTEGER");
+}
+
 /// The column leaving a thread came with (thread_sessions.left_at, chat_leave): NULL for a session that hears it.
 export function addLeftColumn(db: DatabaseSync): void {
   if (!has(db, "thread_sessions", "left_at")) db.exec("ALTER TABLE thread_sessions ADD COLUMN left_at INTEGER");
@@ -832,90 +842,6 @@ export function addUsageTotals(db: DatabaseSync): void {
   } catch (e) {
     db.exec("ROLLBACK");
     throw e;
-  }
-}
-
-/// The calls added up by quarter of an hour (`quarter`: their time, ms, over QUARTER_MS) and by session, thread, person,
-/// profile, runtime, model and speed (none of them said: 0 or ''), kept by the database itself as calls are recorded (or
-/// their output grows), as the totals are. Kept for older station processes during handover; the current usage page
-/// reads the finer statistics in usage-detail.ts. Adding up its 30 days read every call of them, many on a station, each time a page showing
-/// it was told usage changed (every minute while agents work): 30 to 100 seconds a read on a machine short of memory,
-/// both of the station's readers held by it and every other read waiting.
-const USAGE_QUARTERS_DROP = `
-CREATE TRIGGER usage_quarters_drop AFTER DELETE ON usage BEGIN
-  UPDATE usage_quarters SET calls = calls - OLD.calls, input = input - OLD.input, cache_read = cache_read - OLD.cache_read, cache_write = cache_write - OLD.cache_write,
-    cache_write_long = cache_write_long - OLD.cache_write_long, output = output - OLD.output
-  WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session AND thread = COALESCE(OLD.thread, 0) AND person = COALESCE(OLD.person, '')
-    AND profile = COALESCE(OLD.profile, '') AND runtime = OLD.runtime AND model = COALESCE(OLD.model, '') AND fast = OLD.fast;
-  DELETE FROM usage_quarters WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session AND thread = COALESCE(OLD.thread, 0)
-    AND person = COALESCE(OLD.person, '') AND profile = COALESCE(OLD.profile, '') AND runtime = OLD.runtime
-    AND model = COALESCE(OLD.model, '') AND fast = OLD.fast AND calls <= 0;
-END;`;
-const USAGE_QUARTERS_KEPT = `
-CREATE TRIGGER usage_quarters_add AFTER INSERT ON usage BEGIN
-  INSERT INTO usage_quarters VALUES (NEW.at / ${QUARTER_MS}, NEW.session, COALESCE(NEW.thread, 0), COALESCE(NEW.person, ''), COALESCE(NEW.profile, ''), NEW.runtime,
-    COALESCE(NEW.model, ''), NEW.fast, NEW.calls, NEW.input, NEW.cache_read, NEW.cache_write, NEW.cache_write_long, NEW.output)
-  ON CONFLICT (quarter, session, thread, person, profile, runtime, model, fast) DO UPDATE SET calls = calls + excluded.calls, input = input + excluded.input,
-    cache_read = cache_read + excluded.cache_read, cache_write = cache_write + excluded.cache_write, cache_write_long = cache_write_long + excluded.cache_write_long,
-    output = output + excluded.output;
-END;
-${USAGE_QUARTERS_DROP}
-CREATE TRIGGER usage_quarters_grow AFTER UPDATE OF output ON usage WHEN NEW.output <> OLD.output BEGIN
-  UPDATE usage_quarters SET output = output + NEW.output - OLD.output
-  WHERE quarter = NEW.at / ${QUARTER_MS} AND session = NEW.session AND thread = COALESCE(NEW.thread, 0) AND person = COALESCE(NEW.person, '')
-    AND profile = COALESCE(NEW.profile, '') AND runtime = NEW.runtime AND model = COALESCE(NEW.model, '') AND fast = NEW.fast;
-END;
-`;
-const USAGE_QUARTERS = `
-CREATE TABLE usage_quarters (
-  quarter INTEGER NOT NULL,
-  session TEXT NOT NULL,
-  thread INTEGER NOT NULL,
-  person TEXT NOT NULL,
-  profile TEXT NOT NULL,
-  runtime TEXT NOT NULL,
-  model TEXT NOT NULL,
-  fast INTEGER NOT NULL,
-  calls INTEGER NOT NULL,
-  input INTEGER NOT NULL,
-  cache_read INTEGER NOT NULL,
-  cache_write INTEGER NOT NULL,
-  cache_write_long INTEGER NOT NULL,
-  output INTEGER NOT NULL,
-  PRIMARY KEY (quarter, session, thread, person, profile, runtime, model, fast)
-) WITHOUT ROWID;
-${USAGE_QUARTERS_KEPT}`;
-
-/// Keep an existing quarter index for older station processes. A fresh database can start one empty; current readers
-/// use usage_detail, so an older database without it does not need an incomplete replacement.
-export function addUsageQuarters(db: DatabaseSync): void {
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_compact_since'").get()) return;
-  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_history_from_detail'").get()) return;
-  const made = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'usage_quarters'").get() !== undefined;
-  if (!made()) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // Current readers use usage_detail. An obsolete quarter index cannot be made complete without reading old calls.
-      if (!made() && !db.prepare("SELECT 1 FROM usage LIMIT 1").get()) db.exec(USAGE_QUARTERS);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
-  }
-  if (!made()) return;
-  const bounded = () => ((db.prepare("SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = 'usage_quarters_drop'").get() as { sql: string } | undefined)?.sql ?? "")
-    .includes(`DELETE FROM usage_quarters WHERE quarter = OLD.at / ${QUARTER_MS} AND session = OLD.session`);
-  if (!bounded()) {
-    // Only the trigger changes; the existing totals need no rebuild.
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      if (!bounded()) db.exec(`DROP TRIGGER IF EXISTS usage_quarters_drop; ${USAGE_QUARTERS_DROP}`);
-      db.exec("COMMIT");
-    } catch (e) {
-      db.exec("ROLLBACK");
-      throw e;
-    }
   }
 }
 
@@ -1354,6 +1280,62 @@ export function addPendingCards(db: DatabaseSync): void {
       db.exec(PENDING_CARDS);
       db.exec("INSERT INTO pending_cards_from VALUES (1, COALESCE((SELECT MAX(rowid) FROM entries), 0))");
     }
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/// The system cards each chat waits on (store/card-kinds.ts: a login, a vault's secret, a phone, a rig, a sign-in),
+/// several at once, kept apart from PENDING_CARDS, which from here on keeps the conversational card each chat waits on:
+/// a system card is let go only as it is closed (its outcome, its withdrawal), a conversational one as a person's
+/// message reaches its agent (in a still.fail chat as it is written; in a platform's thread as it is handed to a
+/// session, `pending_cards_delivered`), and neither replaces the other. Those waiting as it is made are taken from
+/// PENDING_CARDS (one a chat, the way they were read before): nothing older is looked for.
+const PENDING_SYSTEM_CARDS = `
+CREATE TABLE pending_system_cards (
+  thread INTEGER NOT NULL,
+  n INTEGER NOT NULL,
+  PRIMARY KEY (thread, n)
+) WITHOUT ROWID;
+INSERT OR IGNORE INTO pending_system_cards
+  SELECT p.thread, p.n FROM pending_cards p JOIN entries e ON e.thread = p.thread AND e.n = p.n
+  WHERE e.kind = 'message' AND ${systemCardSql("e.card")};
+DELETE FROM pending_cards WHERE EXISTS (SELECT 1 FROM pending_system_cards s WHERE s.thread = pending_cards.thread AND s.n = pending_cards.n);
+CREATE TRIGGER pending_system_cards_post AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND ${systemCardSql("NEW.card")} BEGIN
+  INSERT OR IGNORE INTO pending_system_cards VALUES (NEW.thread, NEW.n);
+END;
+CREATE TRIGGER pending_system_cards_closed AFTER INSERT ON closed_cards BEGIN
+  DELETE FROM pending_system_cards WHERE thread = NEW.thread AND n = NEW.n;
+END;
+CREATE TRIGGER pending_system_cards_gone AFTER DELETE ON threads BEGIN
+  DELETE FROM pending_system_cards WHERE thread = OLD.id;
+END;
+DROP TRIGGER IF EXISTS pending_cards_post;
+CREATE TRIGGER pending_cards_post AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND (NEW.card IS NOT NULL OR NEW.options IS NOT NULL) AND NOT ${systemCardSql("NEW.card")} BEGIN
+  INSERT INTO pending_cards VALUES (NEW.thread, NEW.n) ON CONFLICT (thread) DO UPDATE SET n = excluded.n WHERE excluded.n > pending_cards.n;
+END;
+DROP TRIGGER IF EXISTS pending_cards_answered;
+CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;
+CREATE TRIGGER pending_cards_delivered AFTER INSERT ON deliveries
+WHEN EXISTS (SELECT 1 FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message' AND e.author_kind = 'person') BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;
+`;
+
+/// The system cards kept apart (PENDING_SYSTEM_CARDS), from now on.
+export function addPendingSystemCards(db: DatabaseSync): void {
+  const made = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pending_system_cards'").get() !== undefined;
+  if (made()) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (!made()) db.exec(PENDING_SYSTEM_CARDS);
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

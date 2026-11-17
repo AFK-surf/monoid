@@ -7,8 +7,8 @@ const wanted = (key: string) => `EXISTS (SELECT 1 FROM sessions s WHERE s.key = 
   AND EXISTS (SELECT 1 FROM turns t WHERE t.rowid = (SELECT rowid FROM turns INDEXED BY turns_by_session
     WHERE session_key = ${key} ORDER BY started_at DESC, rowid DESC LIMIT 1)
     AND t.ended_at IS NOT NULL AND (t.declared = 'waiting' OR (t.outcome = 'failed' AND substr(t.detail, 1, 11) = 'rate_limit:')))`;
-const remove = (key: string, guard = "1") => `DELETE FROM session_recover_waits WHERE session = ${key} AND (${guard}) AND NOT (${wanted(key)});`;
-const add = (key: string, guard = "1") => `INSERT INTO session_recover_waits (session, awake_deadline) SELECT ${key}, ${awakeDeadline(key)} WHERE (${guard}) AND ${wanted(key)}
+export const remove = (key: string, guard = "1") => `DELETE FROM session_recover_waits WHERE session = ${key} AND (${guard}) AND NOT (${wanted(key)});`;
+export const add = (key: string, guard = "1") => `INSERT INTO session_recover_waits (session, awake_deadline) SELECT ${key}, ${awakeDeadline(key)} WHERE (${guard}) AND ${wanted(key)}
   AND NOT EXISTS (SELECT 1 FROM session_recover_waits WHERE session = ${key});`;
 const sync = (key: string, guard = "1") => `${remove(key, guard)} ${add(key, guard)} ${syncAwakeWait(key, guard)}`;
 const reconcile = (stage: string) => `DELETE FROM session_recover_waits WHERE session IN (SELECT session FROM ${stage})
@@ -28,9 +28,6 @@ export const RECOVER_WAITS = `SELECT s.*, t.outcome AS recovery_outcome, t.detai
   ORDER BY s.last_active_at DESC, s.rowid DESC`;
 export const RECOVER_AWAKE_WAITS = `SELECT t.ended_at, t.wait_seconds ${recoverySource}
   WHERE s.archived_at IS NULL AND s.running != 1 AND t.ended_at IS NOT NULL AND t.declared = 'waiting'`;
-export const RECOVER_BACKFILL_FIRST = "SELECT key FROM sessions ORDER BY key LIMIT ?";
-export const RECOVER_BACKFILL_NEXT = "SELECT key FROM sessions WHERE key > ? ORDER BY key LIMIT ?";
-
 export function installRecoverWaits(db: DatabaseSync): void {
   const installed = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_recover_wait_meta'").get() !== undefined;
   const awakeInstalled = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'session_awake_wait_meta'").get() !== undefined;
@@ -121,27 +118,4 @@ export function installRecoverWaits(db: DatabaseSync): void {
 
 export function recoverWaitsReady(db: DatabaseSync): boolean {
   return (db.prepare("SELECT complete FROM session_recover_wait_meta WHERE id = 1").get() as { complete: number }).complete === 1;
-}
-
-/// Fill at most `limit` existing sessions. The cursor and its updates commit together; triggers cover intervening writes.
-export function recoverWaitsStep(db: DatabaseSync, limit = 64): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1) throw new RangeError("recovery wait batch must be positive");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const state = db.prepare("SELECT cursor, complete FROM session_recover_wait_meta WHERE id = 1").get() as { cursor: string | null; complete: number };
-    if (state.complete === 1) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const rows = (state.cursor === null ? db.prepare(RECOVER_BACKFILL_FIRST).all(limit)
-      : db.prepare(RECOVER_BACKFILL_NEXT).all(state.cursor, limit)) as { key: string }[];
-    const drop = db.prepare(remove("?1"));
-    const put = db.prepare(add("?1"));
-    for (const { key } of rows) { drop.run(key); put.run(key); }
-    const done = rows.length < limit;
-    db.prepare("UPDATE session_recover_wait_meta SET cursor = ?, complete = ? WHERE id = 1")
-      .run(rows.at(-1)?.key ?? state.cursor, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) {
-    try { db.exec("ROLLBACK"); } catch {}
-    throw error;
-  }
 }

@@ -12,7 +12,7 @@ export const appDir = () => dirname(dirname(fileURLToPath(import.meta.url)));
 
 export function stationVersion(app: string): string | undefined {
   try {
-    const build = readFileSync(join(app, "BUILD"), "utf8").trim();
+    const build = readFileSync(join(app, "BUILD"), "utf8").trim(); // sync: read once a process (kept), as it starts
     return build !== "" && /^[0-9]+$/.test(build) ? `0.1.${build}` : undefined;
   } catch {
     return undefined;

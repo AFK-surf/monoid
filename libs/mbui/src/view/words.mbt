@@ -149,6 +149,8 @@ pub(all) struct RunsMark {
   line : Int64
   line_w : Double
   round : Double
+  starts : Bool
+  ends : Bool
 }
 
 ///|
@@ -310,6 +312,27 @@ pub fn words_run(text : String, weight? : Int = 0, ink? : Int64 = 0L) -> @text.R
 }
 
 ///|
+/// How narrow words in pieces may wrap as a test measures them (runs_measure): their longest word, 7 a character,
+/// words parted by spaces.
+pub fn runs_least_measure(runs : Array[@text.Run], _look : WordsLook, _set : RunsLook, _scale : Double) -> Double {
+  let mut widest = 0
+  let mut word = 0
+  for r in runs {
+    for ch in r.text {
+      if ch == ' ' || ch == '\n' {
+        word = 0
+      } else {
+        word = word + 1
+        if word > widest {
+          widest = word
+        }
+      }
+    }
+  }
+  widest.to_double() * 7.0
+}
+
+///|
 /// Words in pieces measured as a test's are: as their words one after another (words_measure).
 pub fn runs_measure(
   runs : Array[@text.Run],
@@ -355,6 +378,43 @@ pub fn View::shadow(self : View, cast : Live[(Double, Double, Int64)], loc~ : So
 pub fn View::words_halo(self : View, halo : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
   self.bind(loc~, WordsHalo, halo, Paint, fn(h) { self.tree.nodes[self.at].look.halo = h })
   self
+}
+
+///|
+/// The edge round its words, as it changes (`out`: how far out in points, `ink` its colour; 0: none): its words drawn
+/// in that colour `out` off each of the eight ways (across, up and down, and corner to corner), under them, as a mark's
+/// words are edged to be read on any picture; drawn by its own node with its words, as they are laid out, opaque, cut
+/// and big as they are, on every host. Its words are read as one (what is seen of them, words over words), not nine.
+#callsite(autofill(loc))
+pub fn View::words_edge(self : View, edge : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
+  guard self.live() is Some(n) else { return self }
+  let (m, at, gen) = (self.tree.words_edges, self.at, n.gen)
+  // (let go of with this making of the node: Tree::words_edge_of reads none of another)
+  self.owns(fn() {
+    match m.get(at) {
+      Some((g, _)) if g == gen => m.remove(at)
+      _ => ()
+    }
+  })
+  |> ignore
+  self.bind(loc~, WordsEdge, edge, Paint, fn(e) {
+    if e.0 > 0.0 && (e.1 & 0xFFL) != 0L {
+      m[at] = (gen, e)
+    } else {
+      m.remove(at)
+    }
+  })
+  self
+}
+
+///|
+/// The edge round node `id`'s words (View::words_edge: how far out, its colour), as this making of it said; (0, 0)
+/// none.
+pub fn Tree::words_edge_of(self : Tree, id : NodeId) -> (Double, Int64) {
+  match self.words_edges.get(id.at) {
+    Some((g, e)) if g == id.gen => e
+    _ => (0.0, 0L)
+  }
 }
 
 ///|
@@ -833,6 +893,10 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
   n.prop_stop(Prop::Points.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
+    if !n.points_said {
+      n.points_said = true
+      self.tree.hits_bump()
+    }
     if n.points != on {
       n.points = on
       self.tree.inputs_own_said(self.at)

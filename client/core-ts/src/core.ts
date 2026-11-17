@@ -281,7 +281,7 @@ export class Core {
       inner.viewCalls = new ViewCalls(inner, inner.views);
       inner.viewCalls.install();
       // What agents said lately read ahead, kept on the device: a chat opens with its Markdown read (md-ahead.ts).
-      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of));
+      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of), () => inner.store.turn());
       inner.data.onOldMd = (station, of, text) => ahead.refresh(station, of, text);
       inner.data.onLogChange((table, station, id) => {
         if (table === "entry") ahead.thread(station, Number(id));
@@ -456,7 +456,7 @@ export class Core {
       };
       handlers.relayView = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayView" }>;
-        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t));
+        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t, c.place));
       };
       handlers.relayMentions = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayMentions" }>;

@@ -15,10 +15,26 @@
 /// where it comes out the same height, nor in a change that lays nothing of it out: nothing kept after it. `foot`:
 /// what it holds keeps to its foot all the way, its bottom the node's bottom, cut at the node's top (a composer that
 /// grows from its foot, the messages over it going up with it as one: the owner's 2026-10-30, 「以底部为 origin」);
-/// else to its top, cut at its foot, as ever.
-pub fn View::resizes(self : View, spec? : (Double, (Double) -> Double), foot? : Bool = false) -> View {
+/// else to its top, cut at its foot, as ever. Said of a node whose height can make no way where it is (grown, over what
+/// holds it, or not laid out in its turn down a column nor along a row its structure said so: Tree::makes_way), it is
+/// a fault (resizes_never_said), said with `loc`, the line that said it: it would only ever change at once.
+#callsite(autofill(loc))
+pub fn View::resizes(
+  self : View,
+  spec? : (Double, (Double) -> Double),
+  foot? : Bool = false,
+  loc~ : SourceLoc,
+) -> View {
   guard self.live() is Some(n) else { return self }
   let tree = self.tree
+  match tree.resizes_never_said(self.at, loc) {
+    // (no boundary's: what it does is only whether a height goes its way, nothing to show another part for)
+    Some(said) => {
+      fault(said)
+      return self
+    }
+    None => ()
+  }
   let st = n.flex.style
   // (as tall as it was laid out last: where a way it is on has it now, View::comes takes that)
   let from = n.flex.height
@@ -87,4 +103,43 @@ pub fn Tree::holds_to_foot(self : Tree, id : NodeId) -> Bool {
   guard self.alive_id(id) else { return false }
   let n = self.nodes[id.at]
   n.coming && n.flex.style.come_foot
+}
+
+///|
+/// Why node `at`'s height said to make its way (View::resizes, at `loc`) never can where it is, said; None where it can,
+/// or where it is not known yet (the tree never laid out). Only what its place in the tree decides, whatever the moment:
+/// reduced motion, an answer's change or a height that comes out the same are no fault (they do it at once, or nothing,
+/// as asked), being grown, over what holds it, or laid out by a row it makes no way along is.
+fn Tree::resizes_never_said(self : Tree, at : Int, loc : SourceLoc) -> String? {
+  if self.last_w < 0.0 || self.makes_way(at) {
+    return None
+  }
+  let n = self.nodes[at]
+  let st = n.flex.style
+  let why = if st.position == @flex.PositionType::Absolute {
+    "it is over what holds it (absolute), no turn of its own down a column"
+  } else if st.grow > 0.0 {
+    "it is grown (grow \{st.grow}): as tall as what holds it leaves it, never as tall as it comes out"
+  } else {
+    let mut p = n.parent
+    while p >= 0 && self.nodes[p].slot {
+      p = self.nodes[p].parent
+    }
+    if p < 0 {
+      "it is held by nothing that lays it out"
+    } else {
+      "what lays it out is a row, which it makes no way along (no structure of the row said so: View::comes)"
+    }
+  }
+  let (made, part) = self.source_of({ at, gen: n.gen })
+  let made_said = if made == "" {
+    ""
+  } else if part != "" {
+    ", the node made at \{made} (in \{part})"
+  } else {
+    ", the node made at \{made}"
+  }
+  Some(
+    "View::resizes said at \{source_place(loc)} of a node whose height can make no way: \{why}\{made_said}; its height changes at once",
+  )
 }

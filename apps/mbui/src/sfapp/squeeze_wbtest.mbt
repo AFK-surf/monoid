@@ -30,6 +30,10 @@ fn test_window_corner(platform : Int) -> Double {
 /// after it opens (what it opens with over), drawn: the corner and squeeze tests' (corners_wbtest.mbt); with `said`, what
 /// people, agents and stations wrote in it at its longest (squeeze_said_wbtest.mbt); with `font_scale`, the system's
 /// size of words (words_large_wbtest.mbt); with `latin`, ASCII measured as a real face does; with `changing`, on the workspace of real size (real_size_wbtest.mbt).
+/// `loc`: where it is asked, the Tester's place where its motion is not judged (`moves_held` false): its file then the
+/// caller's, so `MOTION unjudged` names that file, never this one, whose bars the screens judged here keep
+/// (motion_bars.sh skips every bar of a file a Tester not judged was made in). Judged, made here as ever.
+#callsite(autofill(loc))
 fn screen_in(
   mode : String,
   win : (String, Double, Double, Int, String),
@@ -39,8 +43,8 @@ fn screen_in(
   dark? : Bool = false,
   font_scale? : Double = 1.0,
   moves_held? : Bool = true,
-  motion_judged? : Bool = true,
   latin? : (FixedArray[Double], FixedArray[Double])? = None,
+  loc~ : SourceLoc,
 ) -> @ui.Tester {
   let (_, w, h, platform, width) = win
   let src : Ref[Source?] = Ref(None)
@@ -76,6 +80,7 @@ fn screen_in(
       }
     }
   }
+  let made_at = if moves_held { screen_here() } else { loc }
   let t = @ui.Tester::new(
     fn(c) { view(c, made()) },
     tree=fn(root) { app_tree(made())(root) },
@@ -93,10 +98,12 @@ fn screen_in(
     // none of which ever changed what fits: 576 screens' ten frames each were most of the sfapp run, 2026-10-25)
     // (`dark`: the app's dark theme, the fixture's prefs saying so: the contrast test's, contrast_wbtest.mbt)
     env=[("MBUI_LOCALE", lang), ("MBUI_REDUCE_MOTION", "1")] + (if dark { [("MBUI_DARK", "1")] } else { [] }),
+    loc=made_at,
   )
-  // (`motion_judged` false: how what moves goes not judged on its frames, the sweeps' (corners, contrast, squeeze_said,
-  // words_large): mbui's Tester::motion_unjudged says why and till when)
-  if !motion_judged {
+  // (`moves_held` false: how what moves goes frame to frame not judged at all (words_over, rows_steady, sizes_steady,
+  // gaps_steady: Tester::motion_unjudged), not worked out on every frame for no one to read: held to nothing, sizes and
+  // gaps steady were a quarter of the real size's wide sweep, 2026-11-16)
+  if !moves_held {
     t.motion_unjudged(true)
   }
   if font_scale != 1.0 {
@@ -113,6 +120,13 @@ fn screen_in(
   t.run_for(squeeze_opening)
   t.frame()
   t
+}
+
+///|
+/// Where screen_in makes a Tester whose motion is judged: in this file, as when Tester::new took its own place there.
+#callsite(autofill(loc))
+fn screen_here(loc~ : SourceLoc) -> SourceLoc {
+  loc
 }
 
 ///|

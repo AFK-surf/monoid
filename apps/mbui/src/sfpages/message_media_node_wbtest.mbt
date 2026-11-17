@@ -27,6 +27,8 @@ fn media_tester(
   asks : Array[((Json) -> Unit, (Result[(Json, Bytes?), Json]) -> Unit)],
   platform? : Int = 0,
 ) -> @ui.Tester {
+  // (no viewer of a test before this one still open or flying back: its thumbnail hidden while it does, file_viewer_reset)
+  @sfbase.file_viewer_reset()
   let src : Source = {
     ..files_src(),
     file: fn(station, key, name) {
@@ -50,7 +52,7 @@ fn media_tester(
       let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      message_files_node(col, src, tips, files_place(), fn() { [media_one()] }, fn() { false }, fn() { None }, "")
+      message_files_node(col, src, tips, files_place(), fn() { [media_one()] }, fn() { false }, fn() { None }, fn() { "" })
       @sf.presented_nodes(root)
     },
     w=430.0,

@@ -211,6 +211,59 @@ test "a film played on an iPhone Duo, 全屏 in the system's bars: the window fi
 }
 
 ///|
+test "a drive's film or song played on an iPhone Duo on its side: its close, 全屏 (a film's) and download in the system's bars, the player's own bar none; closed from there, the tabs back" {
+  for size in [(951.0, 669.0), (466.0, 678.0)] {
+    let (w, h) = size
+    for mode in ["player-video", "player-audio"] {
+      let at = "\{w}x\{h} \{mode}"
+      new_run()
+      let src = fixture(mode)
+      open_fixture_over(mode, src)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able=true)
+      t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
+      t.run_for(@ui.move_most_ms)
+      let said = t.nav_said()
+      for id in ["\"bare\":true", "lead/over/close", "over/download"] {
+        assert_true(said.contains(id), msg="\{at}: the bars handed hold no \{id}: \{said}")
+      }
+      assert_eq(said.contains("over/full"), mode == "player-video", msg="\{at}: \{said}")
+      // (none of the player's own bar: its back)
+      assert_true(t.semantics().iter().all(fn(s) { s.hidden || s.label != @sf.t("common.back") }), msg=at)
+      // 选集 there, a film's folder having others: opened and closed from the system's bars, lit while open
+      if mode == "player-video" {
+        assert_true(said.contains("over/list"), msg="\{at}: \{said}")
+        let key = match app.nav.top() {
+          DrivePlay(d) => @sf.playing_for(reader_key(d)).media.key()
+          _ => ""
+        }
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/list\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_true(@sf.player_listing(key), msg="\{at} \{key}: \{t.nav_said()}")
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/list\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_false(@sf.player_listing(key), msg=at)
+      }
+      // 全屏 there, the inner screen's: the window filled, the bars put away; back out of it first, its actions again
+      if mode == "player-video" && w > 600.0 {
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/full\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_true(@sf.player_full_native(), msg=at)
+        assert_false(t.nav_said().contains("lead/over/close"), msg="\{at}: \{t.nav_said()}")
+        t.back()
+        t.run_for(@ui.move_most_ms)
+        assert_false(@sf.player_full_native(), msg=at)
+        assert_true(app.nav.top() is DrivePlay(_), msg=at)
+        assert_true(t.nav_said().contains("lead/over/close"), msg="\{at}: \{t.nav_said()}")
+      }
+      t.post(@hostapi.system_channel, "{\"nav\":\"lead/over/close\"}")
+      t.run_for(@ui.move_most_ms)
+      assert_false(app.nav.top() is DrivePlay(_), msg=at)
+      assert_true(t.nav_said().contains("\"bare\":false"), msg="\{at}: \{t.nav_said()}")
+    }
+  }
+}
+
+///|
 test "a picture looked at elsewhere: its own bar, as it was" {
   let t = native_chat(951.0, 669.0, false, mode="chat-preview-image")
   t.run_for(@ui.move_most_ms)
@@ -460,9 +513,10 @@ test "an iPhone Duo on its side: a service alone in the side panel a card in it,
   let holes = t.holes()
   assert_eq(holes.length(), 1, msg="the service's page")
   let (x, y, hw, hh) = holes[0]
-  // the panel it is alone in: the roundest at its foot left of those round it
+  // the panel it is alone in (the tree's, an old view in it drawing the service: Tester::boxes_held): the roundest at
+  // its foot left of those round it
   let mut panel : @ui.Laid? = None
-  for b in t.boxes() {
+  for b in t.boxes_held() {
     if b.radii.3 > 0.0 && b.x < x && x + hw <= b.x + b.w && b.y < y && y + hh < b.y + b.h &&
       (panel is None || panel.unwrap().w > b.w) {
       panel = Some(b)
@@ -928,9 +982,18 @@ test "Duo's short column: the open side panel's close in the column, last of the
   let close = @sf.t("web-pages.chat.closePanel")
   assert_true(nav_icon_of(t, "page/side/close") is None)
   side_change(r, "open", Some("s-c1"))
-  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Side))
+  // (the chat or the sidebar in use: none, the close is the panel's alone)
+  for pane in [@sfdesk.TapePane::Page, @sfdesk.TapePane::Side] {
+    @sfdesk.wide.tape_ask.set(Some(pane))
+    t.frame()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), pane)
+    assert_true(nav_icon_of(t, "page/side/close") is None, msg="the panel not in use")
+  }
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Panel))
   t.frame()
   t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
   assert_eq(nav_icon_of(t, "page/side/close"), Some(@sf.icon_path("close")))
   let said = t.nav_said()
   assert_true(said.find("page/chat/info").unwrap() < said.find("page/side/close").unwrap(), msg=said)
@@ -1417,4 +1480,147 @@ test "an iPhone Duo upright: a picture waiting in the composer, rounder than a c
     let (_, (r0, r1, r2, r3)) = p.1
     assert_eq([r0, r1, r2, r3], [@sf.row_corner, @sf.row_corner, @sf.row_corner, @sf.row_corner])
   }
+}
+
+///|
+test "an iPhone Duo upright and on its side: the pane off the tape (连接 and 用量, with no sidebar of their own; the safe mode's wait) under the system's bars at the top, nothing of it pressed or drawn there" {
+  for p in [(669.0, 951.0, 82.0, 0.0), (951.0, 669.0, 24.0, 84.0)] {
+    let (w, h, top, side) = p
+    for state in ["connects", "usage", "lock-waiting"] {
+      new_run()
+      let mode = if state == "lock-waiting" { state } else { "chat" }
+      let src = fixture(mode)
+      open_fixture_over(mode, src)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able=true)
+      t.post(@hostapi.system_channel, "{\"bars\":{\"top\":\{top},\"bottom\":34,\"left\":0,\"right\":\{side}}}")
+      t.run_for(@ui.move_most_ms)
+      if state != "lock-waiting" {
+        @sfbase.go_place(state) |> ignore
+        t.run_for(@ui.move_most_ms)
+      }
+      let at = "\{w}x\{h} \{state}"
+      assert_false(@sfdesk.wide.tape.get(), msg=at)
+      let faults = under_status_bar(t, w, top)
+      if faults.length() > 0 {
+        fail("\{at}: \{faults.length()} under the system's bars, the first \{faults[0]}")
+      }
+    }
+  }
+}
+
+///|
+/// The fixture's chat with a tab of its station's browser open in its panel (chat-browser-tab), on an iPhone Duo open on
+/// its side (951×669, the system's column 84 down its trailing edge), the page brought over (the panel beside it under
+/// the column, as a card pressed in the chat finds it): how many views of the screen were asked and let go of so far.
+fn duo_browser_tab() -> (@ui.Tester, Ref[Int], Ref[Int]) raise {
+  new_run()
+  let base = fixture("chat-browser-tab")
+  @sfpages.open_screen_fixture("chat-browser-tab")
+  let views = Ref(0)
+  let cancels = Ref(0)
+  let src : Source = {
+    ..base,
+    stream: fn(name, params, bytes, on_value, done) {
+      if name == "screen.view" {
+        views.val += 1
+      }
+      (base.stream)(name, params, bytes, on_value, done)
+    },
+    cancel: fn(id) {
+      cancels.val += 1
+      (base.cancel)(id)
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=951.0, h=669.0, platform=1, nav_able=true)
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
+  t.run_for(@ui.move_most_ms)
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Page))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  (t, views, cancels)
+}
+
+///|
+/// The panel brought over (a finger's swipe from the page), at rest.
+fn duo_panel_over(t : @ui.Tester) -> Unit raise {
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Panel))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
+}
+
+///|
+/// What the audit finds at rest with the panel in use, but for main's own (the tape's edge over the page's cover beside
+/// it, at the window's lead, with any panel in use on the Duo: not of this change).
+fn duo_panel_audit(t : @ui.Tester) -> Array[String] {
+  t.audit().filter(fn(f) { !(f.has_prefix("apart: 「") && f.contains("src/sf/edge_node.mbt")) })
+}
+
+///|
+/// The fixture's browser tab's page, as a card of it in the chat opens it.
+// kept across runs: a value (no field of it changes)
+let duo_tab_at : ScreenAt = { station: "ws-1/st-1", screen: "browser:tab-1", title: "", until_gone: false }
+
+///|
+/// The browser's ← → ⟳ said in the side panel, each clear of the system's column.
+fn duo_browser_bar(t : @ui.Tester, at : String) -> Unit raise {
+  for key in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
+    guard said_at(t, @sf.t(key)) is Some((x, _, w, _)) else { fail("\{at}: no \{key} in \{Repr(t.words())}") }
+    assert_true(x + w <= 951.0 - 84.0 + 0.5, msg="\{at}: \{key} under the system's column at \{x}..\{x + w}")
+  }
+}
+
+///|
+test "an iPhone Duo on its side: a screen's card pressed in the chat, its tab open in the panel already and the page in use, brings the panel over with the browser's bar, clear of the system's column" {
+  let (t, _, _) = duo_browser_tab()
+  open_page(Screen(duo_tab_at))
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
+  duo_browser_bar(t, "brought over")
+  assert_eq(duo_panel_audit(t), [])
+}
+
+///|
+test "an iPhone Duo on its side: a screen in the side panel let go of while the page is in use at rest, opened again as the panel comes back" {
+  let (t, views, cancels) = duo_browser_tab()
+  duo_panel_over(t)
+  let (v0, c0) = (views.val, cancels.val)
+  assert_true(v0 >= 1, msg="opened as the panel came over")
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Page))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  assert_eq((views.val, cancels.val), (v0, c0 + 1), msg="let go of out of sight")
+  @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Panel))
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq((views.val, cancels.val), (v0 + 1, c0 + 1), msg="opened again as it came back")
+  duo_browser_bar(t, "back")
+}
+
+///|
+test "an iPhone Duo on its side: 全屏 of a screen in the side panel fills the window, the system's bars put away, the same view all along; back, beside the chat as it was" {
+  let (t, views, cancels) = duo_browser_tab()
+  duo_panel_over(t)
+  let (v0, c0) = (views.val, cancels.val)
+  tap_said(t, @sf.t("android-misc.screen.full"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Screen(_), msg="the page of it on top over all of it")
+  let said = t.nav_said()
+  assert_true(said.contains("\"bare\":true") && said.contains("\"title\":\"\""), msg=said)
+  // (全屏's look: its tools folded into one button over the picture's corner, no rail)
+  assert_true(said_at(t, @sf.t("android-misc.screen.tools")) is Some(_), msg="no 工具: \{Repr(t.words())}")
+  assert_true(said_at(t, @sf.t("android-misc.screen.full")) is None)
+  assert_eq((views.val, cancels.val), (v0, c0), msg="the same view, not opened again")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_), msg="back beside the chat")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Panel)
+  assert_eq((views.val, cancels.val), (v0, c0), msg="the same view kept for the panel")
+  duo_browser_bar(t, "after 全屏")
+  assert_eq(duo_panel_audit(t), [])
 }

@@ -19,6 +19,19 @@ pub(all) struct MessageNodeHere {
   tips : @sf.TipLayer
   stint : () -> Int
   jump : ((String, String) -> Unit)?
+  /// in a picture of the chat being shared (publish.mbt), how its messages' files are drawn there; None in its list
+  picture : MessagePicture?
+}
+
+///|
+/// How a picture of a chat being shared (publish.mbt) draws its messages' files: in the picture itself (`taking`),
+/// else on the page that shares it. `file`: file `a` of message `ts`, as its message draws it (`draw`), in `parent`;
+/// `viz`: a page of HTML `a` placed in message `ts`'s words, in `parent`, its card drawn by `card` where it is not
+/// drawn as itself.
+pub(all) struct MessagePicture {
+  taking : Bool
+  file : (@view.View, String, () -> Attachment, (@view.View) -> Unit) -> Unit
+  viz : (@view.View, String, Attachment, (@view.View) -> Unit) -> Unit
 }
 
 ///|
@@ -47,12 +60,13 @@ fn message_agent_of(here : MessageNodeHere, agent : String) -> String {
 ///|
 /// An agent's picture (agent_avatar's) in `v`: its model's `maker` (its `runtime`'s where none is said; still.fail's
 /// mark without either) on the neutral ground, 18 round, one piece in bones; `corner` (slack | feishu; "" none), that
-/// place's mark on its corner. Each as it changes. Its node (what its agent's card is over: message_agent_card_node).
+/// place's mark on its corner, where a place is said at all (None: an agent's own message, which never has one: no node
+/// held for it). Each as it changes. Its node (what its agent's card is over: message_agent_card_node).
 fn agent_avatar_node(
   v : @view.View,
   maker : () -> String,
   runtime : () -> String,
-  corner : () -> String,
+  corner? : (() -> String)? = None,
 ) -> @view.View {
   v.box(fn(b) {
     @sf.style_node(b, fn() { agent_avatar_ground })
@@ -74,7 +88,10 @@ fn agent_avatar_node(
         @sf.drawable_node(d, said.1, agent_mark_side) |> ignore
       }
     })
-    place_corner_node(b, corner)
+    match corner {
+      Some(c) => place_corner_node(b, c)
+      None => ()
+    }
   })
 }
 
@@ -123,7 +140,9 @@ fn person_avatar_node(
 /// the chat's agents' (`agent`) opens its history beside the chat, another chat's agent's (`from`, its link) that chat;
 /// underlined then while the hand is on it (lit_node), and as wide as a press's least room less its head's gap at
 /// least (its words at its start); one of the chat's agents' with its card over it, as over its picture (agent_hover's:
-/// message_agent_card_node, its agent as the row is made). Each as it changes.
+/// message_agent_card_node). Each as it changes: one that comes to be of the chat's agents after its row was made (the
+/// chat's agents said after its messages) given its card and its hand then, nothing made again; none watched for so
+/// where it can never be one (`may_be_agent` false: a person's row).
 fn message_name_node(
   v : @view.View,
   src : Source,
@@ -131,8 +150,10 @@ fn message_name_node(
   name : () -> String,
   agent : () -> String,
   from : () -> String,
+  may_be_agent? : Bool = true,
 ) -> Unit {
-  let goes = fn() { agent() != "" || from() != "" }
+  // (in a picture of the chat being shared, only words: what it would open is the chat's, not the picture's)
+  let goes = fn() { here.picture is None && (agent() != "" || from() != "") }
   v.box(fn(b) {
     @sf.style_node(b, fn() { msg_name_room })
     let press = fn() {
@@ -144,10 +165,21 @@ fn message_name_node(
       }
     }
     @sf.presses_node(b, on=goes, press)
-    // (its agent's card over it, the card's hand then its presses': one gesture a node)
-    let a = @signals.untracked(agent)
-    if a != "" {
-      message_agent_card_node(b, src, here, a, words_along=true, press~)
+    // (its agent's card over it, the card's hand then its presses': one gesture a node; one that comes to be of the
+    // chat's agents after it was made (the chat's agents said after its messages) given its card then, in place; none
+    // in a picture of the chat)
+    if here.picture is Some(_) {
+      ()
+    } else if @signals.untracked(agent) != "" {
+      message_agent_card_node(b, src, here, agent, words_along=true, press~)
+    } else if may_be_agent {
+      let carded = Ref(false)
+      b.reacts(fn() { agent() != "" }, at_start=false, fn(on) {
+        if on && !carded.val && b.alive() {
+          carded.val = true
+          message_agent_card_node(b, src, here, agent, words_along=true, press~)
+        }
+      })
     }
     b.says(By(fn() { if goes() { Some(@view.said(Link, label=name())) } else { None } })) |> ignore
     b.box(fn(w) {
@@ -178,7 +210,8 @@ fn message_time_node(v : @view.View, tips : @sf.TipLayer, time : () -> Stamp?) -
   v.show(fn() { time() is Some(_) }, fn(b) {
     @sf.presses_node(b, fn() { absolute_times.set(!absolute_times.get()) })
     b.says(By(fn() { Some(@view.said(Button, label=said(false))) })) |> ignore
-    @sf.words_node(b, fn() { said(false) }, fn() { msg_time }) |> ignore
+    // (its words its own, no box of theirs in it: a node a message's head the fewer)
+    @sf.styled_words(b, fn() { said(false) }, fn() { msg_time }) |> ignore
     @sf.tip_node(tips, b, fn() { said(true) }) |> ignore
   })
 }

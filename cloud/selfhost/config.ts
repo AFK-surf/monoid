@@ -42,7 +42,7 @@ export type Route = { role: Role; path: string; to: "api" | Site };
  * What deploy.py puts as the API's secrets, and what a self-hosted cloud sets besides the vars: each read from the
  * environment as well (env.ts says what each is).
  */
-const SECRETS = ["GOOGLE_CLIENT_SECRET", "AUTH_SIGNING_KEY", "ADMIN_TOKEN", "GRANT_SIGNING_JWK", "FEEDBACK_TOKEN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "FCM_SERVICE_ACCOUNT", "APNS_KEY", "AXIOM_TOKEN", "AXIOM_DATASET", "REVIEW_ACCOUNTS", "ADMIN_EMAIL", "RELAY_URL", "OIDC_ISSUER", "OIDC_NAME"];
+const SECRETS = ["GOOGLE_CLIENT_SECRET", "AUTH_SIGNING_KEY", "ADMIN_TOKEN", "GRANT_SIGNING_JWK", "FEEDBACK_TOKEN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "FCM_SERVICE_ACCOUNT", "FCM_SERVICE_ACCOUNT_MORE", "APNS_KEY", "APNS_KEY_MORE", "GCP_TELEMETRY", "REVIEW_ACCOUNTS", "ADMIN_EMAIL", "RELAY_URL", "OIDC_ISSUER", "OIDC_NAME", "OIDC_ROLE_CLAIM"];
 
 /**
  * The cloud's routes from the wrangler files. Each static site's first custom domain is its host (app.still.fail the
@@ -66,7 +66,7 @@ export function routes(): Route[] {
   return all.sort((a, b) => Number(a.path === "*") - Number(b.path === "*"));
 }
 
-/** The names a Worker reads from the environment: its string vars (an object var, RELAY_NAMES say, is not: the
+/** The names a Worker reads from the environment: its string vars (an object var, STATUS_PAGES say, is not: the
  * environment holds text) and, for the API, the secrets. */
 export function fromEnvironment(config: Wrangler, secrets: boolean): string[] {
   const vars = Object.entries(config.vars ?? {}).filter(([, v]) => typeof v === "string").map(([k]) => k);

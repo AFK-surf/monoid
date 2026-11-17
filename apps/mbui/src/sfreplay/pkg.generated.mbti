@@ -16,8 +16,6 @@ pub fn app_tree(@view.View) -> Unit
 
 pub fn e2e_data() -> Bytes
 
-pub fn e2e_doc() -> Bytes
-
 pub fn e2e_photo() -> Bytes
 
 pub let frame_ms : Double
@@ -75,7 +73,6 @@ pub fn Flow::hold(Self, String, Double) -> Unit
 pub fn Flow::hover(Self, String) -> Unit
 pub fn Flow::incidental_calls(Self, Array[String]) -> Unit
 pub fn Flow::key(Self, String) -> Unit
-pub fn Flow::message_taken(Self, (@json.Json) -> Bool) -> Double
 pub fn Flow::no_notice(Self, String) -> Unit
 pub fn Flow::noticed(Self, String) -> Unit
 pub fn Flow::open_page(Self, @sfbase.Page) -> Unit
@@ -104,7 +101,6 @@ pub fn Flow::toast_gone(Self) -> Unit
 pub fn Flow::turns_followed(Self, least? : Double) -> Int32
 pub fn Flow::type_text(Self, String) -> Unit
 pub fn Flow::until(Self, () -> Bool) -> Unit
-pub fn Flow::until_moving(Self, String) -> Double
 pub fn Flow::wheel(Self, Double) -> Unit
 pub fn Flow::wheel_aligned(Self, Double) -> Unit
 pub fn Flow::wheel_at(Self, String, Double) -> Unit

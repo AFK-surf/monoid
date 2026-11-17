@@ -11,14 +11,16 @@
 
 ///|
 /// A look the card to share can be drawn in: `key` what the prefs keep of it (`shareLook`), its name the app's words'
-/// `web-main.stations.shareLook.<key>`; `draw` the picture of the `fleet` view as box `id`, round as a card on the
-/// stage or `flat` (handed out: its ground to its edges). A new look is a `draw` and a line in share_looks: the picker,
+/// `web-main.stations.shareLook.<key>`; `draw` the picture of the `fleet` view in the box it is given (share_pen.mbt), the
+/// card's box, round as a card on the stage or `flat` (handed out: its ground to its edges). A new look is a `draw` and a line in share_looks: the picker,
 /// the fixtures (share-card-<key>) and the corners' check take it from there; the core keeps any key it is given.
 /// `group` the set it is offered in (share_groups), its looks alone in the strip while that set is shown.
+/// `art`: its picture, its tile in the strip (senren_tile; "" none: its card drawn small there).
 priv struct ShareLook {
   key : String
   group : String
-  draw : (@ui.Ctx, Json?, Int, Bool) -> Int
+  draw : (Pen, () -> Json?, Bool) -> Pen
+  art : String
 }
 
 ///|
@@ -32,10 +34,10 @@ let share_groups : Array[String] = ["own", "senren"]
 /// The looks, in the order they are offered; the first the one drawn while none is chosen.
 // kept across runs: a table, never written
 let share_looks : Array[ShareLook] = [
-  { key: "night", group: "own", draw: night_look },
-  { key: "poster", group: "own", draw: poster_look },
-  { key: "receipt", group: "own", draw: receipt_look },
-  { key: "terminal", group: "own", draw: terminal_look },
+  { key: "night", group: "own", draw: night_look, art: "" },
+  { key: "poster", group: "own", draw: poster_look, art: "" },
+  { key: "receipt", group: "own", draw: receipt_look, art: "" },
+  { key: "terminal", group: "own", draw: terminal_look, art: "" },
   // 千恋＊万花's (share_senren.mbt): the heroines' own, 丛雨's ADV box, 芳乃's fortune slip, 茉子's mission report, 蕾娜's inn
   // bill, 小春's menu, 芦花's ledger
   senren("senren-adv", "a1-murasame-adv", sr_adv),
@@ -84,7 +86,12 @@ pub fn share_look_keys() -> Array[String] {
 ///|
 /// The look chosen (the prefs' `shareLook`; none kept, or one this build does not know: the first).
 fn share_look(src : Source) -> ShareLook {
-  let kept = text(src.topic("prefs", Map([])).get().value, "shareLook")
+  share_look_of(text(src.topic("prefs", Map([])).get().value, "shareLook"))
+}
+
+///|
+/// The look kept as `kept` (one this build does not know: the first).
+fn share_look_of(kept : String) -> ShareLook {
   for l in share_looks {
     if l.key == kept {
       return l
@@ -94,58 +101,117 @@ fn share_look(src : Source) -> ShareLook {
 }
 
 ///|
-/// Under the picture, over its buttons: the sets of looks by name (share_groups), the one shown in the white; under them
-/// that set's looks, each the picture itself drawn small (its top, as wide as its tile), its name under it, the chosen
-/// one ringed; a strip that scrolls sideways once there are more than the stage is wide for, the chosen one brought into
-/// view. The set shown is the chosen look's until another is pressed (share_group_shown). A press on a look draws the
-/// card in it at once and keeps it the device's (`prefs.set`).
-fn share_looks_pick(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  let look_now = share_look(src)
-  let now = look_now.key
-  let fleet = share_fleet(src, w)
-  let chosen = c.id("share-card/look/" + now)
-  let shown = if share_group_shown.val == "" { look_now.group } else { share_group_shown.val }
-  c.box(style=groups_and_looks, fn() {
-    c.box(style=groups_row, fn() {
-      for group in share_groups {
-        let id = c.id("share-card/group/" + group)
-        let on = group == shown
-        let name = @sf.t("web-main.stations.shareGroup." + group)
-        let b = c.box(style=groups_item, id~, fn() {
-          c.text(name, style=if on { groups_name_on } else if c.lit(id) { groups_name_lit } else { groups_name }) |> ignore
-        })
-        c.semantics(b, Tab, id~, label=name, selected=on)
-        c.on_press(id, fn() {
-          share_group_shown.val = group
-        })
+/// Under the picture, over its buttons, in `v`: the sets of looks by name (share_groups, a tab list), the one shown in
+/// the white; under them that set's looks, each the picture itself drawn small (its top, as wide as its tile), its name
+/// under it, the chosen one ringed; a strip that scrolls sideways once there are more than the picture is wide for, the
+/// chosen one brought into view as the set shows. The set shown is the chosen look's until another is pressed
+/// (share_group_shown). A press on a look draws the card in it at once and keeps it the device's (`prefs.set`).
+fn share_looks_pick_node(v : @view.View, src : Source, w : Workspace) -> Unit {
+  let shown = fn() {
+    match share_group_shown.get() {
+      "" => share_look(src).group
+      g => g
+    }
+  }
+  v.box(fn(all) {
+    @sf.style_node(all, fn() { groups_and_looks })
+    @headless.radio_group(
+      all,
+      fn() { @sf.t("web-main.stations.shareLook") },
+      shown,
+      fn(g) { share_group_shown.set(g) },
+      kind=Tab,
+      fn(row, rg) {
+        @sf.style_node(row, fn() { groups_row })
+        for group in share_groups {
+          let name = fn() { @sf.t("web-main.stations.shareGroup." + group) }
+          rg.item(row, fn() { group }, name, fn(item, it) {
+            @sf.style_node(item, fn() { groups_item })
+            item.box(fn(n) {
+              let look = fn() {
+                if it.chosen() {
+                  groups_name_on
+                } else if it.hovered() || it.focus_shown() {
+                  groups_name_lit
+                } else {
+                  groups_name
+                }
+              }
+              n
+              .words(By(name))
+              .words_look(By(fn() { @ui.style_words(look()) }))
+              .ink(By(fn() { @ui.style_ink(look()) }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        }
+      },
+    )
+    |> ignore
+    // (as wide as the picture is laid out: more looks than that has the room for scrolled in it, not the stage made as
+    // wide as all of them; no bar under it (one strip): the stage as tall as with four)
+    all.pick(at_once=true, shown, fn(strip, group) { share_looks_strip(strip, src, w, group) })
+  })
+  |> ignore
+}
+
+///|
+/// The looks of set `group` side by side in `v`, scrolled sideways where there are more than the picture is wide for,
+/// the chosen one brought into view as it is made.
+fn share_looks_strip(v : @view.View, src : Source, w : Workspace, group : String) -> Unit {
+  let looks = share_looks.filter(fn(l) { l.group == group })
+  // (their pictures asked all at once, before any is made: what comes of each asked as it is made would lay the strip
+  // out again for each)
+  senren_asked(src, looks.filter(fn(l) { l.art != "" }).map(fn(l) { look_tile_file(l) }))
+  let s = @view.Scroll::across()
+  v.box(fn(room) {
+    room.width(Is(Some(@sf.share_w_most))).max_width(Is(Some(@sf.share_w_most))) |> ignore
+    room.scrolls(s, slop=@ui.touch_slop(), fn(row) {
+      @sf.style_node(row, fn() { looks_row })
+      for look in looks {
+        share_look_item(row, src, w, look)
       }
     })
     |> ignore
-    // (as wide as the picture is laid out: more looks than that has the room for scrolled in it, not the stage made as
-    // wide as all of them; no room of its own at its foot for a bar (`across`, one strip): the stage as tall as with
-    // four, the picture given the room it had, faded at the edge where more of it goes on)
-    c.sideways("share-card/looks/" + shown, w=Px(@sf.share_w_most), across=true, fill=true, show=chosen, fn() {
-      c.box(style=looks_row, fn() {
-        for look in share_looks {
-          if look.group != shown {
-            continue
-          }
-          let id = c.id("share-card/look/" + look.key)
-          let on = look.key == now
-          let name = @sf.t("web-main.stations.shareLook." + look.key)
-          let b = c.box(style=looks_item, id~, fn() {
-            c.box(style=if on { looks_ring_on } else { looks_ring }, fn() { look_tile(c, src, look, fleet) }) |> ignore
-            c.text(name, style=if on || c.lit(id) { looks_name_on } else { looks_name }) |> ignore
-          })
-          c.semantics(b, Button, id~, label=name, selected=on)
-          if !on {
-            c.on_press(id, fn() {
-              (src.call)("prefs.set", { "shareLook": Json::string(look.key) }, @sfbase.answer_unread)
-            })
-          }
-        }
-      })
-      |> ignore
+  })
+  |> ignore
+  // (the chosen one in view: as far along as it is, less what the strip shows past it)
+  let now = share_look(src).key
+  match looks.search_by(fn(l) { l.key == now }) {
+    Some(i) => {
+      let each = share_look_ring_w + @ui.Space::px(S2)
+      s.put(dmax(0.0, i.to_double() * each + share_look_ring_w - @sf.share_w_most))
+    }
+    None => ()
+  }
+}
+
+///|
+/// How wide a look's ring is in the strip: its tile and the room round it to its ring.
+let share_look_ring_w : Double = @sf.share_look_tile_w + 2.0 * (@ui.Space::px(@sf.share_look_in) + 1.5)
+
+///|
+/// Look `look` in the strip (`v`): its tile in its ring (the chosen one's the white), its name under it; pressed, chosen
+/// and kept the device's.
+fn share_look_item(v : @view.View, src : Source, w : Workspace, look : ShareLook) -> Unit {
+  let name = fn() { @sf.t("web-main.stations.shareLook." + look.key) }
+  let on = fn() { share_look(src).key == look.key }
+  @headless.choice(v, Button, name, on, fn(_) {
+    if !on() {
+      (src.call)("prefs.set", { "shareLook": Json::string(look.key) }, @sfbase.answer_unread)
+    }
+  }, fn(item, it) {
+    @sf.style_node(item, fn() { looks_item })
+    item.box(fn(ring) {
+      @sf.style_node(ring, fn() { if it.chosen() { looks_ring_on } else { looks_ring } })
+      look_tile_node(ring, src, look, w)
+    })
+    |> ignore
+    item.box(fn(n) {
+      let st = fn() { if it.chosen() || it.hovered() || it.focus_shown() { looks_name_on } else { looks_name } }
+      n.words(By(name)).words_look(By(fn() { @ui.style_words(st()) })).ink(By(fn() { @ui.style_ink(st()) })) |> ignore
     })
     |> ignore
   })
@@ -153,31 +219,55 @@ fn share_looks_pick(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
 }
 
 ///|
-/// A look's small picture: the picture it draws, laid out as wide as it is handed out (@sf.share_w_most) and drawn as
-/// wide as the tile, from its top (what is under the tile's foot cut); said by its name, not its words. Its own files of
-/// the looks (its small picture: senren_drawing) had on their own, how far in a spinner in its middle until they are
-/// here (2026-11-03 用户「每张独立下载并提供进度」).
-fn look_tile(c : @ui.Ctx, src : Source, look : ShareLook, fleet : Json?) -> Unit {
+/// A look's small picture in `v`: the picture it draws (千恋＊万花's, its picture alone: senren_tile), laid out as wide as
+/// it is handed out (@sf.share_w_most) and drawn as wide as the tile, from its top (what is under the tile's foot cut);
+/// said by its name, not its words; made as the strip shows its set, its figures as they were then (too small to be
+/// read: the picture over it follows them). Its own files of the looks (its small picture:
+/// look_tile_file) had on their own, how far in a spinner in its middle until they are here (2026-11-03 用户「每张独立
+/// 下载并提供进度」).
+fn look_tile_node(v : @view.View, src : Source, look : ShareLook, w : Workspace) -> Unit {
   let k = @sf.share_look_tile_w / @sf.share_w_most
-  c.box(style=@sf.share_look_tile, fn() {
-    c.hidden_from_semantics(fn() {
-      let files : Ref[Array[String]] = Ref([])
-      let at = c.box(style=tile_whole, left=0.0, top=0.0, taps=false, fn() {
-        let was = look_tile_now.val
-        look_tile_now.val = true
-        files.val = senren_drawing(src, fn() { (look.draw)(c, fleet, 0, true) }).1
-        look_tile_now.val = was
-      })
-      c.look(at, @ui.look(scale=k, ox=0.0, oy=0.0))
-      if @sfbase.looks_stand(src, files.val) is LooksGoing(part) {
-        c.box(style=tile_waiting, left=0.0, top=0.0, fn() {
-          @sf.progress_spinner(c, "share-card/look/" + look.key + "/coming", part, size=@sf.theme().round.glyph) |> ignore
-        })
-        |> ignore
+  v.box(fn(tile) {
+    @sf.style_node(tile, fn() { @sf.share_look_tile })
+    tile.hides(Is(true)) |> ignore
+    tile.box(fn(whole) {
+      whole
+      .over(Is(true), edges=(Some(0.0), Some(0.0), None, None))
+      .width(Is(Some(@sf.share_w_most)))
+      .scale(Is(k), about=At(0.0, 0.0))
+      |> ignore
+      if look.art != "" {
+        senren_tile(Pen::of(whole), look.art) |> ignore
+      } else {
+        // (what the view says as the strip shows the set: too small to be read, it follows none of its changes)
+        let said = @signals.untracked(share_fleet(src, w))
+        (look.draw)(Pen::of(whole), fn() { said }, true) |> ignore
       }
     })
+    |> ignore
+    let needs = if look.art != "" { [look_tile_file(look)] } else { [] }
+    let coming = fn() {
+      match @sfbase.looks_stand(src, needs) {
+        LooksGoing(part) => Some(part)
+        _ => None
+      }
+    }
+    // (seen only while they come: made once, how far they are and whether it shows its look alone, so what comes of each
+    // file lays out nothing; whole once they are here, turning no more)
+    tile.box(fn(wait) {
+      wait.over(Is(true)).alpha(By(fn() { if coming() is Some(_) { 1.0 } else { 0.0 } })) |> ignore
+      @sf.style_node(wait, fn() { tile_waiting })
+      @sf.progress_spinner_node(wait, fn() { coming().unwrap_or(Some(1.0)) }, size=@sf.theme().round.glyph) |> ignore
+    })
+    |> ignore
   })
   |> ignore
+}
+
+///|
+/// The file of a look's small picture (senren_tile's), as it is had (senren_art_file).
+fn look_tile_file(look : ShareLook) -> String {
+  senren_art_file(look.art, small=true)
 }
 
 ///|
@@ -186,15 +276,15 @@ fn look_tile(c : @ui.Ctx, src : Source, look : ShareLook, fleet : Json?) -> Unit
 let tile_waiting : @ui.Style = @sf.centred.then(@ui.style(w=Fixed(@sf.share_look_tile_w), h=Fixed(@sf.share_look_tile_h)))
 
 ///|
-/// The card as box `id`, in `ground`: round as a card on the stage, or `flat` (handed out: its ground to its edges).
-fn look_box(c : @ui.Ctx, id : Int, flat : Bool, ground : Int64, inner : () -> Unit) -> Int {
-  c.box(style=(if flat { pic_box_flat } else { pic_box }).then(@ui.style(bg=Data(ground))), id~, inner)
+/// The card in `ground`: round as a card on the stage, or `flat` (handed out: its ground to its edges).
+fn look_box(c : Pen, flat : Bool, ground : Int64, inner : (Pen) -> Unit) -> Pen {
+  c.box(style=(if flat { pic_box_flat } else { pic_box }).then(@ui.style(bg=Data(ground))), inner)
 }
 
 ///|
-/// Words in the code face.
-fn code_words(c : @ui.Ctx, words : String, style : @ui.TextStyle) -> Unit {
-  c.rich([@ui.span(words, mono=true)], style~) |> ignore
+/// Words in the code face, as `words` works them out (and as `style_by` chooses their style, laid out as `style`).
+fn code_words(c : Pen, words : () -> String, style : @ui.TextStyle, style_by? : () -> @ui.TextStyle) -> Unit {
+  c.rich_by(fn() { [@ui.span(words(), mono=true)] }, style~, style_by?)
 }
 
 ///|
@@ -203,6 +293,11 @@ fn span_stats(span : Json?) -> Array[(String, String)] {
   items(span, "stats").map(fn(x) { (text(Some(x), "label"), text(Some(x), "value")) })
 }
 
+///|
+/// `all` each with its place in it: a line kept by its place where nothing else names it.
+fn[T] placed(all : Array[T]) -> Array[(Int, T)] {
+  all.mapi(fn(i, x) { (i, x) })
+}
 
 // ── 大字报 ─────────────────────────────────────────────────────────────────
 
@@ -211,49 +306,71 @@ fn span_stats(span : Json?) -> Array[(String, String)] {
 /// leads the first kind's share over it, what it is of under it; then the chats at work now, large, and where; still.fail
 /// large at its foot (what is passed on says whose it is), its line beside the time. Nothing used: the chats at work
 /// are its number, the tasks across devices its line.
-fn poster_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
-  let spent = items(fleet, "spent")
-  look_box(c, id, flat, @sf.share_poster_ground, fn() {
-    c.box(style=poster_inner, fn() {
-      c.box(style=poster_hero, fn() {
-        if spent.length() > 0 {
-          let first = Some(spent[0])
-          let models = items(first, "models")
-          let top = models.get(0)
-          let used = text(top, "tokensText")
-          let scale = if used.length() > 4 { @sf.share_poster_number_less } else { @sf.share_poster_number_scale }
-          c.text(text(first, "lead"), style=poster_words) |> ignore
-          c.rich([@ui.span(used, scale~)], style=poster_number) |> ignore
-          c.text(text(top, "name") + " " + text(top, "of"), style=poster_words) |> ignore
-          // its other models, each its own tokens and cost (no kind adds its models' up)
-          for m in models[1:] {
-            c.text(text(Some(m), "name") + "  " + text(Some(m), "lineText"), style=poster_small) |> ignore
-          }
-        } else {
-          c.rich([@ui.span(count(fleet, "chats").to_string(), scale=@sf.share_poster_number_scale)], style=poster_number)
-          |> ignore
-          c.text(text(fleet, "chatsText"), style=poster_words) |> ignore
-        }
+fn poster_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let spent = fn() { items(fleet(), "spent") }
+  let used = fn() { spent().length() > 0 }
+  let first = fn() { spent().get(0) }
+  let models = fn() { items(first(), "models") }
+  let top = fn() { models().get(0) }
+  let tasks = fn() { text(fleet(), "tasksText") }
+  look_box(c, flat, @sf.share_poster_ground, fn(c) {
+    c.box(style=poster_inner, fn(c) {
+      c.box(style=poster_hero, fn(c) {
+        c.show_rich(used, fn() { [@ui.span(text(first(), "lead"))] }, style=poster_words)
+        // (the first model's tokens, or with nothing used the chats at work)
+        c.rich_by(
+          fn() {
+            if used() {
+              let words = text(top(), "tokensText")
+              let scale = if words.length() > 4 {
+                @sf.share_poster_number_less
+              } else {
+                @sf.share_poster_number_scale
+              }
+              [@ui.span(words, scale~)]
+            } else {
+              [@ui.span(count(fleet(), "chats").to_string(), scale=@sf.share_poster_number_scale)]
+            }
+          },
+          style=poster_number,
+        )
+        c.text_by(
+          fn() {
+            if used() {
+              text(top(), "name") + " " + text(top(), "of")
+            } else {
+              text(fleet(), "chatsText")
+            }
+          },
+          style=poster_words,
+        )
+        // its other models, each its own tokens and cost (no kind adds its models' up), each kept by its place
+        c.each_rich(
+          fn() { if used() { placed(models()[1:].to_owned()) } else { [] } },
+          fn(m) { m.0 },
+          fn(m) { [@ui.span(text(Some(m().1), "name") + "  " + text(Some(m().1), "lineText"))] },
+          style=poster_small,
+        )
       })
       |> ignore
-      c.box(style=poster_more, fn() {
-        if spent.length() > 0 {
-          c.text(text(fleet, "chatsText"), style=poster_big) |> ignore
-          c.text(text(fleet, "where"), style=poster_small) |> ignore
-        } else if text(fleet, "tasksText") != "" {
-          c.text(text(fleet, "tasksText"), style=poster_big) |> ignore
-          c.text(text(fleet, "tasksPer"), style=poster_small) |> ignore
-        }
+      c.box(style=poster_more, fn(c) {
+        let more = fn() { used() || tasks() != "" }
+        c.show_rich(more, fn() { [@ui.span(if used() { text(fleet(), "chatsText") } else { tasks() })] }, style=poster_big)
+        c.show_rich(
+          more,
+          fn() { [@ui.span(text(fleet(), if used() { "where" } else { "tasksPer" }))] },
+          style=poster_small,
+        )
       })
       |> ignore
       // (the foot at the picture's foot, however tall what is over it)
-      c.box(style=poster_rest, fn() {  }) |> ignore
-      c.box(style=poster_foot, fn() {
+      c.box(style=poster_rest, fn(_) {  }) |> ignore
+      c.box(style=poster_foot, fn(c) {
         c.text("still.fail", style=poster_brand) |> ignore
-        c.box(style=pic_head, fn() {
-          c.box(style=pic_grow, fn() { c.text(@sf.t("web-main.stations.shareTagline"), style=poster_small) |> ignore })
+        c.box(style=pic_head, fn(c) {
+          c.box(style=pic_grow, fn(c) { c.text_by(fn() { @sf.t("web-main.stations.shareTagline") }, style=poster_small) })
           |> ignore
-          c.text(text(fleet, "at"), style=poster_small) |> ignore
+          c.text_by(fn() { text(fleet(), "at") }, style=poster_small)
         })
         |> ignore
       })
@@ -266,204 +383,254 @@ fn poster_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 // ── 小票 ───────────────────────────────────────────────────────────────────
 
 ///|
+/// A line of the receipt's kinds: kind `kind` (in the core's order) as `model` -1, else its model `model`.
+#derive(Eq)
+priv struct ReceiptLine {
+  kind : Int
+  model : Int
+  of : Json
+}
+
+///|
 /// 小票: a till's receipt of the agents' week, on its paper. Read down: still.fail and when, in its middle; each day a
 /// line, its chats archived at its end (today's date in the orange); the chats archived and the tokens read as its
 /// subtotals; each kind of account a line (its accounts), its models under it (each its tokens and cost); between
 /// double dashes the week's spend, large, its total; a barcode made of what it says, still.fail's line under it.
-fn receipt_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
-  let spent = items(fleet, "spent")
-  let week = field(fleet, "week")
-  let stats = span_stats(week)
-  look_box(c, id, flat, @sf.share_receipt_ground, fn() {
-    c.box(style=receipt_head, fn() {
+fn receipt_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  let spent = fn() { items(fleet(), "spent") }
+  let week = fn() { field(fleet(), "week") }
+  let stats = fn() { span_stats(week()) }
+  let days = fn() { items(week(), "days") }
+  let has_days = fn() { days().length() > 0 }
+  let total = fn() { stats().last() }
+  look_box(c, flat, @sf.share_receipt_ground, fn(c) {
+    c.box(style=receipt_head, fn(c) {
       c.rich(
         [@ui.span("still", mono=true), @ui.span(".", mono=true, color=@sf.share_receipt_orange), @ui.span("fail", mono=true)],
         style=receipt_brand,
       )
       |> ignore
-      code_words(c, text(fleet, "at"), receipt_dim)
+      code_words(c, fn() { text(fleet(), "at") }, receipt_dim)
     })
     |> ignore
-    dashes(c)
-    let days = items(week, "days")
-    if days.length() > 0 {
-      c.box(style=receipt_items, fn() {
-        for d in days {
-          let d = Some(d)
-          c.box(style=pic_other, fn() {
-            code_words(c, text(d, "label"), if flag(d, "today") { receipt_today } else { receipt_code_line })
-            c.box(style=pic_grow, fn() {  }) |> ignore
-            code_words(c, text(d, "value"), receipt_value)
-          })
-          |> ignore
-        }
+    c.box(style=receipt_dashes, dashes) |> ignore
+    c.show(has_days, style=receipt_items, fn(c) {
+      c.each(fn() { placed(days()) }, fn(d) { d.0 }, style_of=fn(_) { pic_other }, fn(c, d) {
+        let d = fn() { Some(d().1) }
+        let today = fn() { flag(d(), "today") }
+        code_words(c, fn() { text(d(), "label") }, receipt_code_line, style_by=fn() {
+          if today() {
+            receipt_today
+          } else {
+            receipt_code_line
+          }
+        })
+        c.box(style=pic_grow, fn(_) {  }) |> ignore
+        code_words(c, fn() { text(d(), "value") }, receipt_value)
       })
-      |> ignore
-      dashes(c)
-    }
+    })
+    c.show(has_days, style=receipt_dashes, dashes)
     // the subtotals: the week's figures but its spend (its total)
-    if stats.length() > 1 {
-      c.box(style=receipt_items, fn() {
-        for x in stats[:stats.length() - 1] {
-          receipt_item(c, x.0, x.1, true)
-        }
-      })
-      |> ignore
-    }
-    if spent.length() > 0 {
-      c.box(style=receipt_items, fn() {
-        // each kind a line, its models under it, each its own tokens and cost
-        for k, q in spent {
-          let q = Some(q)
-          c.box(style=if k == 0 { receipt_kind_first } else { receipt_kind }, fn() {
-            c.text(text(q, "name") + " ×" + count(q, "accounts").to_string(), style=receipt_line) |> ignore
-          })
-          |> ignore
-          for m in items(q, "models") {
-            c.box(style=receipt_model, fn() { receipt_item(c, text(Some(m), "name"), text(Some(m), "lineText"), false) }) |> ignore
+    c.show(fn() { stats().length() > 1 }, style=receipt_items, fn(c) {
+      c.each(
+        fn() {
+          let s = stats()
+          placed(s[:s.length() - 1].to_owned())
+        },
+        fn(x) { x.0 },
+        style_of=fn(_) { pic_other },
+        fn(c, x) { receipt_item(c, fn() { x().1.0 }, fn() { x().1.1 }, true) },
+      )
+    })
+    c.show(fn() { spent().length() > 0 }, style=receipt_items, fn(c) {
+      // each kind a line, its models under it, each its own tokens and cost
+      let lines = fn() {
+        let out : Array[ReceiptLine] = []
+        for k, q in spent() {
+          out.push({ kind: k, model: -1, of: q })
+          for i, m in items(Some(q), "models") {
+            out.push({ kind: k, model: i, of: m })
           }
         }
+        out
+      }
+      c.each(
+        lines,
+        fn(l) { (l.kind, l.model) },
+        style_of=fn(l) {
+          if l.model >= 0 {
+            receipt_model
+          } else if l.kind == 0 {
+            receipt_kind_first
+          } else {
+            receipt_kind
+          }
+        },
+        fn(c, l) {
+          let of = fn() { Some(l().of) }
+          if @signals.untracked(l).model < 0 {
+            c.text_by(fn() { text(of(), "name") + " ×" + count(of(), "accounts").to_string() }, style=receipt_line)
+          } else {
+            c.box(style=pic_other, fn(c) {
+              receipt_item(c, fn() { text(of(), "name") }, fn() { text(of(), "lineText") }, false)
+            })
+            |> ignore
+          }
+        },
+      )
+    })
+    let has_total = fn() { total() is Some(_) }
+    let double = fn(c : Pen) {
+      c.box(style=receipt_dashes, dashes) |> ignore
+      c.box(style=receipt_dashes, dashes) |> ignore
+    }
+    c.show(has_total, style=receipt_double, double)
+    c.show(has_total, style=pic_other, fn(c) {
+      c.text_by(fn() { total().map(fn(t) { t.0 }).unwrap_or("") }, style=receipt_title)
+      c.box(style=pic_grow, fn(_) {  }) |> ignore
+      code_words(c, fn() { total().map(fn(t) { t.1 }).unwrap_or("") }, receipt_total)
+    })
+    c.show(has_total, style=receipt_double, double)
+    c.box(style=receipt_foot, fn(c) {
+      c.box(style=receipt_code, fn(c) {
+        barcode(c, fn() { text(fleet(), "at") + text(fleet(), "chatsText") + text(fleet(), "tasksText") })
       })
       |> ignore
-    }
-    match stats {
-      [.., (label, value)] => {
-        c.box(style=receipt_double, fn() {
-          dashes(c)
-          dashes(c)
-        })
-        |> ignore
-        c.box(style=pic_other, fn() {
-          c.text(label, style=receipt_title) |> ignore
-          c.box(style=pic_grow, fn() {  }) |> ignore
-          code_words(c, value, receipt_total)
-        })
-        |> ignore
-        c.box(style=receipt_double, fn() {
-          dashes(c)
-          dashes(c)
-        })
-        |> ignore
-      }
-      _ => ()
-    }
-    c.box(style=receipt_foot, fn() {
-      barcode(c, text(fleet, "at") + text(fleet, "chatsText") + text(fleet, "tasksText"))
-      c.text(@sf.t("web-main.stations.shareTagline"), style=receipt_tagline) |> ignore
+      c.text_by(fn() { @sf.t("web-main.stations.shareTagline") }, style=receipt_tagline)
     })
     |> ignore
   })
 }
 
 ///|
-/// An item of the receipt: what it is (`strong`: in the ink, else dimmer), its figure at the line's end.
-fn receipt_item(c : @ui.Ctx, what : String, value : String, strong : Bool) -> Unit {
-  c.box(style=pic_other, fn() {
-    c.text(what, style=if strong { receipt_name } else { receipt_line }) |> ignore
-    c.box(style=pic_grow, fn() {  }) |> ignore
-    code_words(c, value, receipt_value)
-  })
-  |> ignore
+/// What an item of the receipt holds (`c`, its line: pic_other): what it is (`strong`: in the ink, else dimmer), its
+/// figure at the line's end.
+fn receipt_item(c : Pen, what : () -> String, value : () -> String, strong : Bool) -> Unit {
+  c.text_by(what, style=if strong { receipt_name } else { receipt_line })
+  c.box(style=pic_grow, fn(_) {  }) |> ignore
+  code_words(c, value, receipt_value)
 }
 
 ///|
-/// A torn line of dashes across the receipt.
-fn dashes(c : @ui.Ctx) -> Unit {
-  c.box(style=receipt_dashes, fn() {
-    for _ in 0..<receipt_dash_count {
-      c.box(style=receipt_dash, fn() {  }) |> ignore
-    }
-  })
-  |> ignore
+/// What a torn line of dashes across the receipt holds (`c`, its line: receipt_dashes).
+fn dashes(c : Pen) -> Unit {
+  for _ in 0..<receipt_dash_count {
+    c.box(style=receipt_dash, fn(_) {  }) |> ignore
+  }
 }
 
 ///|
-/// A barcode of `words`: a bar for each of its characters, as wide as its code says (1 to 3), as far from the next.
-fn barcode(c : @ui.Ctx, words : String) -> Unit {
-  c.box(style=receipt_code, fn() {
-    let mut n = 0
-    for ch in words {
-      if n >= receipt_code_most {
+/// A barcode of `words` (`c`, its row: receipt_code): a bar for each of its characters (receipt_code_most at most), as
+/// wide as its code says (1 to 3), as far from the next; each kept by its place, as wide as its character there now.
+fn barcode(c : Pen, words : () -> String) -> Unit {
+  let codes = fn() {
+    let out : Array[(Int, Int)] = []
+    for ch in words() {
+      if out.length() >= receipt_code_most {
         break
       }
-      let k = ch.to_int()
-      let w = (k % 3 + 1).to_double()
-      let gap = (k / 3 % 2 + 1).to_double()
-      c.box(style=receipt_bar.then(@ui.style(w=Fixed(w))), fn() {  }) |> ignore
-      c.box(style=@ui.style(w=Fixed(gap)), fn() {  }) |> ignore
-      n = n + 1
+      out.push((out.length(), ch.to_int()))
     }
-  })
-  |> ignore
+    out
+  }
+  c.each(codes, fn(x) { x.0 }, style_of=fn(x) {
+    let k = x.1
+    let w = (k % 3 + 1).to_double()
+    // (as far from the next as its code says: a point or two)
+    let gap : @ui.Space = if k / 3 % 2 == 0 { SPx } else { S0_5 }
+    receipt_bar.then(@ui.style(w=Fixed(w), mr=gap))
+  }, fn(_, _) {  })
 }
 
 // ── 终端 ───────────────────────────────────────────────────────────────────
+
+///|
+/// A line of the fetch: `id` what it is (a kind, a model, a figure), its key (`key`: "" none, the line going on the one
+/// before) and what it says.
+#derive(Eq)
+priv struct TermLine {
+  id : String
+  key : String
+  words : String
+}
 
 ///|
 /// 终端: still.fail fetched in a terminal, as a system's fetch says what it runs on. Its window's dots and title; the
 /// command; still.fail's mark large (its white face, the terminal being dark) beside who and when; a line a figure, its key in the code
 /// face in the orange: each kind's tokens, the chats at work, the devices, the tasks across devices, the week's chats
 /// archived, tokens and spend; the palette; the prompt again, its cursor.
-fn terminal_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
-  let spent = items(fleet, "spent")
-  let stats = span_stats(field(fleet, "week"))
-  look_box(c, id, flat, @sf.share_terminal_ground, fn() {
-    c.box(style=term_bar, fn() {
-      for _ in 0..<3 {
-        c.box(style=term_dot, fn() {  }) |> ignore
+fn terminal_look(c : Pen, fleet : () -> Json?, flat : Bool) -> Pen {
+  // (its lines, each kept by what it is: a figure changed changes its words alone)
+  let lines = fn() {
+    let f = fleet()
+    let out : Array[TermLine] = []
+    for k, q in items(f, "spent") {
+      let q = Some(q)
+      // (its tokens and cost under it, as the tasks' average under them: on its line a long name was cut short)
+      out.push({
+        id: "kind \{k}",
+        key: if k == 0 { "accounts" } else { "" },
+        words: text(q, "name") + " ×" + count(q, "accounts").to_string(),
+      })
+      // its models under it, each its own tokens and cost
+      for i, m in items(q, "models") {
+        out.push({ id: "model \{k} \{i}", key: "", words: "  " + text(Some(m), "name") + " · " + text(Some(m), "lineText") })
       }
-      c.box(style=pic_grow, fn() { code_words(c, "still.fail — zsh", term_title) }) |> ignore
+    }
+    out.push({ id: "chats", key: "chats", words: text(f, "chatsText") })
+    out.push({ id: "devices", key: "devices", words: text(f, "where") })
+    if text(f, "tasksText") != "" {
+      out.push({ id: "tasks", key: "tasks", words: text(f, "tasksText") })
+      out.push({ id: "tasksPer", key: "", words: text(f, "tasksPer") })
+    }
+    for i, x in span_stats(field(f, "week")) {
+      if i < term_week_keys.length() {
+        out.push({ id: "week \{i}", key: term_week_keys[i], words: x.1 })
+      }
+    }
+    out
+  }
+  look_box(c, flat, @sf.share_terminal_ground, fn(c) {
+    c.box(style=term_bar, fn(c) {
+      for _ in 0..<3 {
+        c.box(style=term_dot, fn(_) {  }) |> ignore
+      }
+      c.box(style=pic_grow, fn(c) { code_words(c, fn() { "still.fail — zsh" }, term_title) }) |> ignore
     })
     |> ignore
     prompt(c, "still.fail fetch")
-    c.box(style=term_who, fn() {
-      @sf.drawable(c, "stillfail_mark_dark", term_mark) |> ignore
-      c.box(style=term_who_words, fn() {
+    c.box(style=term_who, fn(c) {
+      @sf.drawable_node(c.v, "stillfail_mark_dark", term_mark) |> ignore
+      c.box(style=term_who_words, fn(c) {
         c.rich(
           [@ui.span("agents", mono=true, color=@sf.share_orange), @ui.span("@", mono=true), @ui.span("still.fail", mono=true, color=@sf.share_orange)],
           style=term_line_bold,
         )
         |> ignore
-        c.box(style=term_rule, fn() {  }) |> ignore
-        code_words(c, text(fleet, "at"), term_dim)
+        c.box(style=term_rule, fn(_) {  }) |> ignore
+        code_words(c, fn() { text(fleet(), "at") }, term_dim)
       })
       |> ignore
     })
     |> ignore
-    c.box(style=term_block, fn() {
-      for k, q in spent {
-        let q = Some(q)
-        // (its tokens and cost under it, as the tasks' average under them: on its line a long name was cut short)
-        term_key_line(c, if k == 0 { "accounts" } else { "" }, text(q, "name") + " ×" + count(q, "accounts").to_string(), "")
-        // its models under it, each its own tokens and cost
-        for m in items(q, "models") {
-          term_key_line(c, "", "  " + text(Some(m), "name") + " · " + text(Some(m), "lineText"), "")
-        }
-      }
-      term_key_line(c, "chats", text(fleet, "chatsText"), "")
-      term_key_line(c, "devices", text(fleet, "where"), "")
-      if text(fleet, "tasksText") != "" {
-        term_key_line(c, "tasks", text(fleet, "tasksText"), "")
-        term_key_line(c, "", text(fleet, "tasksPer"), "")
-      }
-      for i, x in stats {
-        if i < term_week_keys.length() {
-          term_key_line(c, term_week_keys[i], x.1, "")
-        }
-      }
+    c.box(style=term_block, fn(c) {
+      c.each(lines, fn(l) { l.id }, style_of=fn(_) { term_key_row }, fn(c, l) {
+        c.box(style=term_key_box, fn(c) { code_words(c, fn() { l().key }, term_key) }) |> ignore
+        c.box(style=term_value_box, fn(c) { c.text_by(fn() { l().words }, style=term_value) }) |> ignore
+      })
     })
     |> ignore
     // (a drawing of the terminal's colours, its swatches edge to edge as a terminal's palette shows them: read out as
     // one picture, its blocks what it draws, not the app's to stand apart)
-    let palette = c.box(style=term_palette, fn() {
+    let palette = c.box(style=term_palette, fn(c) {
       for ink in @sf.share_terminal_palette {
-        c.box(style=term_swatch.then(@ui.style(bg=Data(ink))), fn() {  }) |> ignore
+        c.box(style=term_swatch.then(@ui.style(bg=Data(ink))), fn(_) {  }) |> ignore
       }
     })
-    c.semantics(palette, Image, label=@sf.t("web-main.stations.sharePalette"))
-    c.box(style=term_prompt_row, fn() {
-      code_words(c, "~ $", term_prompt)
-      c.box(style=term_cursor, fn() {  }) |> ignore
+    palette.says(Image, fn() { @sf.t("web-main.stations.sharePalette") })
+    c.box(style=term_prompt_row, fn(c) {
+      code_words(c, fn() { "~ $" }, term_prompt)
+      c.box(style=term_cursor, fn(_) {  }) |> ignore
     })
     |> ignore
   })
@@ -475,25 +642,8 @@ fn terminal_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 let term_week_keys : Array[String] = ["archived", "tokens", "spent"]
 
 ///|
-/// A line of the fetch: its key in the orange in a column of its own ("" none: the line goes on the one before), what
-/// it is, and after it `more` in the ink's weight.
-fn term_key_line(c : @ui.Ctx, key : String, words : String, more : String) -> Unit {
-  c.box(style=term_key_row, fn() {
-    c.box(style=term_key_box, fn() { code_words(c, key, term_key) }) |> ignore
-    c.box(style=term_value_box, fn() {
-      c.text(words, style=term_value) |> ignore
-      if more != "" {
-        code_words(c, more, term_more)
-      }
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// The prompt and what is typed after it.
-fn prompt(c : @ui.Ctx, command : String) -> Unit {
+fn prompt(c : Pen, command : String) -> Unit {
   c.rich(
     [@ui.span("~ ", mono=true, color=@sf.share_terminal_dim), @ui.span("$ ", mono=true, color=@sf.share_orange), @ui.span(command, mono=true)],
     style=term_line_bold,
@@ -503,11 +653,12 @@ fn prompt(c : @ui.Ctx, command : String) -> Unit {
 
 ///|
 /// The set of looks shown in the strip, pressed while the card is open; "" none pressed: the chosen look's.
-let share_group_shown : Ref[String] = Ref("")
+// kept across runs: put back as a run begins (share_looks_reset)
+let share_group_shown : @signals.Signal[String] = @signals.signal("")
 
 ///|
 fn share_looks_reset() -> Unit {
-  share_group_shown.val = ""
+  share_group_shown.set("")
 }
 
 // ── the picker's styles ──────────────────────────────────────────────────
@@ -569,11 +720,6 @@ let looks_name : @ui.TextStyle = @ui.text_style(size=Xs, color=Data(@sf.share_di
 ///|
 // kept across runs: a value (no field of it changes)
 let looks_name_on : @ui.TextStyle = looks_name.then(@ui.text_style(color=Data(@sf.share_ink)))
-
-///|
-/// A small picture's picture: as wide as the picture handed out, drawn smaller from its top left.
-// kept across runs: a value (no field of it changes)
-let tile_whole : @ui.Style = @ui.style(w=Fixed(@sf.share_w_most))
 
 
 // ── 大字报's ────────────────────────────────────────────────────────────────
@@ -787,17 +933,13 @@ let term_key_box : @ui.Style = @ui.style(w=@sf.share_terminal_key_w)
 let term_key : @ui.TextStyle = @ui.text_style(size=Sm, weight=Bold, color=Data(@sf.share_orange), wrap=false)
 
 ///|
-/// What it is, and its more after it, 8 apart, taking the rest of the line.
+/// What it is, taking the rest of the line.
 // kept across runs: a value (no field of it changes)
 let term_value_box : @ui.Style = @ui.css("row gap=S2 align=ACenter").then(@ui.style(w=@sf.grow))
 
 ///|
 // kept across runs: a value (no field of it changes)
 let term_value : @ui.TextStyle = @ui.text_style(size=Sm, color=Data(@sf.share_terminal_ink), w=Cut, wrap=false)
-
-///|
-// kept across runs: a value (no field of it changes)
-let term_more : @ui.TextStyle = @ui.text_style(size=Sm, weight=Bold, color=Data(@sf.share_terminal_ink), wrap=false)
 
 ///|
 /// The palette: its colours side by side, as wide as the line shares them, 16 high.
@@ -821,9 +963,3 @@ let term_prompt_row : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 /// Its cursor: a block of the orange, as a terminal's.
 // kept across runs: a value (no field of it changes)
 let term_cursor : @ui.Style = @ui.style(w=@sf.share_terminal_cursor_w, h=@sf.share_terminal_cursor_h, bg=Data(@sf.share_orange))
-
-///|
-/// Whether a look is drawn now as its tile in the strip (look_tile), not as the card on the stage nor as what is handed
-/// out (box 0 too: share_card_open's shot): a look with a picture of its own draws that alone there (share_senren.mbt).
-// kept across runs: set only while a tile is drawn, and put back
-let look_tile_now : Ref[Bool] = Ref(false)

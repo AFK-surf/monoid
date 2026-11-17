@@ -539,16 +539,12 @@ fn Serving::read_path(
   }
   let (op, args) = read
   guard args is Object(a) else { return Give }
-  // (the words and the time the pool gives a read: read/pool.ts `wordsIn`, a list's in `changed` its own args'
-  // (`changedOf`); a session's history only its own word)
+  // (the time the pool gives a read, a list's in `changed` its own args': read/pool.ts `WORDED`, `changedOf`; a device's
+  // reads are given no words, the client says them)
   if op == "changed" {
     guard a.get("args") is Some(Object(inner)) else { return Give }
-    inner["words"] = words
     inner["now"] = Json::number(self.now().to_double())
-  } else if op == "timeline" {
-    a["words"] = { "inScriptOutput": words.value("inScriptOutput").unwrap_or(Json::string("")) }
-  } else {
-    a["words"] = words
+  } else if op != "timeline" {
     a["now"] = Json::number(self.now().to_double())
   }
   let names = []

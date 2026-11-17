@@ -349,16 +349,16 @@ test "equality #169 live pruning: effect not re-run when intermediate computed r
 
 ///|
 test "equality #220 computed same object reference — no downstream propagation" {
-  // (an object compared as JS's === compares it: by what it is, not what it holds: computed's own same)
+  // (an object compared as JS's === compares it: by what it is, not what it holds: computed_ref)
   fw_run(fn() raise {
     let obj = Ref(1)
     let a = fw_signal(0)
-    let b = computed(fn(_) {
+    let b = computed_ref(fn(_) {
       a.get() |> ignore
       obj
     })
     let c_calls = Ref(0)
-    let c = computed(fn(_) {
+    let c = computed_ref(fn(_) {
       c_calls.val += 1
       b.get()
     })

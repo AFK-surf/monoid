@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SearchScopeBuilder } from "../src/search/scope-builder.ts";
-import { SearchScopePreparation } from "../src/search/scope-prepare.ts";
+import { SearchScopePreparation } from "./reference/search-scope-prepare.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

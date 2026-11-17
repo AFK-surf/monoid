@@ -39,6 +39,10 @@ pub(all) enum Role {
   Form
   Heading
   ScrollArea
+  Table
+  Row
+  ColumnHeader
+  Cell
 }
 
 ///|
@@ -80,8 +84,19 @@ pub impl Show for Role with output(self, logger) {
       Form => "Form"
       Heading => "Heading"
       ScrollArea => "ScrollArea"
+      Table => "Table"
+      Row => "Row"
+      ColumnHeader => "ColumnHeader"
+      Cell => "Cell"
     },
   )
+}
+
+///|
+/// Whether one of this role that says no label of its own is called by what it holds (Tree::words_within): all but a
+/// table, which is called by its author alone (ARIA's table, a name from no content), its words its cells'.
+pub fn Role::named_by_held(self : Role) -> Bool {
+  self != Table
 }
 
 ///|
@@ -225,8 +240,10 @@ pub fn Tree::said_order(self : Tree) -> Array[SaidNode] {
   let out : Array[SaidNode] = []
   fn walk(at : Int, parent : Int, depth : Int, hid : Bool) -> Unit {
     let n = self.nodes[at]
-    // (left out of its row: none of it read out, Tree::out_at)
-    if !n.live || n.out {
+    // (left out of its row: none of it read out, Tree::out_at; nor where it is said to be laid out nowhere now
+    // (View::laid_nowhere), as what it says is as of now, before the layout that leaves it out: never what it says now
+    // where it was laid out before)
+    if !n.live || n.out || n.flex.style.display == @flex.DisplayNone {
       return
     }
     // (in its bones: none of it there yet, View::bones)
@@ -445,7 +462,7 @@ pub fn Tree::said_pass(
     let crossed = Ref(false)
     let label = match n.said {
       Some(said) if said.label != "" => Some(said.label)
-      Some(_) if words =>
+      Some(said) if words && said.role.named_by_held() =>
         Some(
           self.words_within(
             id,
@@ -456,6 +473,8 @@ pub fn Tree::said_pass(
             set~,
           ),
         )
+      // (a table: by its author alone)
+      Some(_) if words => Some("")
       Some(_) => None
       None => Some("")
     }

@@ -12,7 +12,7 @@
 ///|
 /// The message of chat `rows` whose words a mouse's pick lies wholly within, once the pointer let it go: what is
 /// picked and the message (a message the core has, by its ts: the id the old page quoted by); none otherwise.
-fn chat_quotable(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)? {
+fn chat_quotable(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard chat_picked_message(rows) is Some((p, m)) && !p.finger else { return None }
   Some((p, m))
 }
@@ -20,7 +20,7 @@ fn chat_quotable(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)? {
 ///|
 /// The message of chat `rows` whose words a finger's pick lies wholly within, once let go: what is picked and the
 /// message; none otherwise.
-fn chat_finger_picked(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)? {
+fn chat_finger_picked(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard chat_picked_message(rows) is Some((p, m)) && p.finger else { return None }
   Some((p, m))
 }
@@ -28,9 +28,9 @@ fn chat_finger_picked(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)? 
 ///|
 /// The message of chat `rows` whose words what is picked lies wholly within, once let go, with the mouse or a finger
 /// (one the viewer sent not yet the chat's too: outgoing_said): what is picked and the message; none otherwise.
-fn chat_picked_message(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)? {
+fn chat_picked_message(rows : ChatBodyList) -> (@ui.WordsPicked, Message)? {
   guard @ui.picked_now() is Some(p) && p.of.length() == 1 else { return None }
-  match rows().rows.get(p.of[0]) {
+  match rows.read().get(p.of[0]) {
     Some({ entry: Said(m), .. }) if m.ts != "" => Some((p, m))
     // (one of the viewer's not the chat's yet, on its way or failed: theirs, of no message, as the old rows quote it)
     Some({ entry: Out(o), .. }) => Some((p, outgoing_said(o)))
@@ -42,7 +42,7 @@ fn chat_picked_message(rows : () -> ChatBodyRows) -> (@ui.WordsPicked, Message)?
 /// What is picked within one message of chat `rows` quoted into draft `draft` (writing_quote: whose words and as what,
 /// as the old rows said them, sfpages' picking; its text trimmed, nothing where that is empty) and let go; picked
 /// across messages or in no message, nothing done, what is picked left as it is.
-fn chat_quote_take(src : Source, draft : String, rows : () -> ChatBodyRows) -> Unit {
+fn chat_quote_take(src : Source, draft : String, rows : ChatBodyList) -> Unit {
   guard @signals.untracked(fn() { chat_picked_message(rows) }) is Some((p, m)) else { return }
   chat_quote_of(src, draft, p, m)
 }
@@ -72,7 +72,7 @@ fn chat_quote_of(src : Source, draft : String, p : @ui.WordsPicked, m : Message)
 /// trimmed, nothing where that is empty), what is picked let go then. One for each pick (its `made`). A finger's pick
 /// in what `v` holds has the page's bar over it instead (@sf.pick_bar_node: 引用, 复制, 全选, the message's own items, its
 /// MessageShare in the chat `here` is: message_share_of).
-fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNodeHere, rows : () -> ChatBodyRows) -> Unit {
+fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNodeHere, rows : ChatBodyList) -> Unit {
   let draft = r.station + ":" + r.session
   // (a finger's pick: the bar over it, the page's own, not the system's text menu: 引用, 复制, 全选, and what the message
   // offers of itself, its turn shared and its link copied; one bar for each pick as it is let go of, made anew as what
@@ -87,7 +87,7 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
     at.pick(fn() { chat_finger_picked(rows).map(fn(q) { q.0 }) }, fn(holds, picked) {
       guard picked is Some(p) && @signals.untracked(fn() { chat_finger_picked(rows) }) is Some((_, m)) else { return }
       let items : Array[@sf.PickBarItem] = [
-        { label: @sf.t("android-chat.pick.quote"), icon: "quote", mark: false, press: fn() { chat_quote_of(src, draft, p, m) } },
+        { label: @sf.t("android-chat.pick.quote"), icon: if p.ends_at_start { "quote-open" } else { "quote" }, mark: false, press: fn() { chat_quote_of(src, draft, p, m) } },
         {
           label: @sf.t("common.copy"),
           icon: "copy",
@@ -160,7 +160,8 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
     holds.box(fn(b) {
       @sf.style_node(b, fn() { chat_quote_pill })
       @ui.keeps_picked(b)
-      .ground(By(fn() { @ui.tree_theme().color(if @sf.lit_node(b) { chat_quote_lit } else { Primary }) }))
+      .focus_ring_theme()
+      .ground(By(fn() { @ui.tree_theme().color(Primary) }))
       .shadow(
         By(fn() {
           let (blur, fall) = @ui.Shadow::Md.blur_y()
@@ -171,7 +172,8 @@ fn chat_quote_node(v : @view.View, src : Source, r : ChatRef, here : MessageNode
       .beside(p.ends_in, side=Top, offset=8.0, piece=@ui.picked_end_piece(p))
       .on_press(fn() { chat_quote_take(src, draft, rows) })
       |> ignore
-      @sf.icon_node(b, "quote", chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
+      @sf.hover_ground_node(b, color=fn() { @ui.tree_theme().color(A(Bg, O15)) })
+      @sf.icon_node(b, if p.ends_at_start { "quote-open" } else { "quote" }, chat_quote_icon, By(fn() { @sf.theme().p.on_primary })) |> ignore
       @sf.words_node(b, fn() { @sf.t("web-main.chat.quote") }, fn() { chat_quote_words }) |> ignore
     })
     |> ignore
@@ -190,10 +192,6 @@ let chat_quote_pill : @ui.Style = @ui.style(
   radius=Full,
   align=ACenter,
 )
-
-///|
-// kept across runs: a value (no field of it changes)
-let chat_quote_lit : @ui.Color = Over(Primary, A(Bg, O15))
 
 ///|
 let chat_quote_icon : Double = 12.0

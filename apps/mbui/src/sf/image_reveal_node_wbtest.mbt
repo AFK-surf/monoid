@@ -35,7 +35,7 @@ fn reveal_tester(
     fn(c) { @ui.old_views_here(c) },
     tree=fn(root) {
       root.show(fn() { shown.get() }, fn(v) {
-        image_reveal_node(v, fn() { src.get() }, fn() { "" }, reveal_test_w, reveal_test_h, held=fn() { held }, comes=fn() {
+        image_reveal_node(v, fn() { src.get() }, fn() { "" }, fn() { reveal_test_w }, fn() { reveal_test_h }, held=fn() { held }, comes=fn() {
           comes
         })
         |> ignore
@@ -161,7 +161,7 @@ test "a tall picture cut to its top: covering its box from its top, the part of 
     fn(c) { @ui.old_views_here(c) },
     tree=fn(root) {
       root.show(fn() { shown.get() }, fn(v) {
-        image_reveal_node(v, fn() { src.get() }, fn() { "" }, w, h, start_crop=true) |> ignore
+        image_reveal_node(v, fn() { src.get() }, fn() { "" }, fn() { w }, fn() { h }, start_crop=fn() { true }) |> ignore
       })
       |> ignore
     },

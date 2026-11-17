@@ -6,7 +6,7 @@
 /// across, blue or red, or at work yellow spokes stepping round in 10. One that comes while it shows pops in (scale 0,
 /// 1.3 at 60%, 1: mark_pop_ms, eased out: row_mark's); one there as it is made does not.
 pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
-  let pop = @sf.EdgeWay::new(1.0)
+  let pop = @motion.NodeWay::new(1.0)
   parent.box(fn(m) {
     // (one there as it is made does not pop: only one that comes while it shows)
     let first = Ref(true)
@@ -224,9 +224,9 @@ pub fn row_aside_node(
       @sf.style_node(g, fn() { aside_agents })
       g.says(By(fn() { Some(@view.said(Image, label=said())) })) |> ignore
       let key = fn(x : @sfbase.RowAgent) { x.maker + "\u{1}" + x.runtime }
-      g.each(fn() { groups().iter().take(aside_most).map(key).collect() }, fn(k) { k }, fn(slot, k) {
-        let k = k.untracked()
-        guard groups().search_by(fn(x) { key(x) == k }).map(fn(i) { groups()[i] }) is Some(x) else { return }
+      // (each mark its own group, given it by the list: its maker and runtime are its key)
+      g.each(fn() { groups().iter().take(aside_most).collect() }, key, fn(slot, x) {
+        let x = x.untracked()
         @sf.style_node(slot, fn() { aside_agent }, in_row=true)
         @sf.maker_mark_node(slot, x.maker, x.runtime, @sf.theme().chat_list.agent_mark) |> ignore
       })
@@ -248,62 +248,44 @@ pub fn row_aside_node(
           people
         }
       }
-      g.each(fn() { shown().map(fn(p) { p.id }) }, fn(id) { id }, fn(slot, id) {
-        let id = id.untracked()
-        let blank : @sfbase.Person = { id, email: "", name: "", display: "", picture: "", mine: false }
-        let p = fn() { shown().iter().find_first(fn(q) { q.id == id }).unwrap_or(blank) }
-        let first = fn() { shown().search_by(fn(q) { q.id == id }) == Some(0) }
+      // (the first shown, by member: a change of it tells the two faces it concerns)
+      let first_is = g.selected(fn() { shown().get(0).map(fn(q) { q.id }) })
+      // (each face its own person, given it by the list: told only as that one changes)
+      g.each(shown, fn(q) { q.id }, fn(slot, person) {
+        let id = person.untracked().id
+        let p = fn() { person.get() }
+        let first = fn() { first_is(id) }
         let starter = fn() { item().people.length() > 1 && p().id == item().creator }
-        let f = slot
-        f.row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
-        f.box(fn(face) {
-          let l = @sf.theme().chat_list
-          // (and a pixel more after who started it, past its face)
-          face
-          .width(By(fn() {
-            Some((if first() { l.face_d } else { l.face_d - face_over }) + (if starter() { face_gap_w } else { 0.0 }))
-          }))
-          .height(Is(Some(l.face_d)))
-          |> ignore
-          face.box(fn(at) {
-            at.over(Is(true)).offset(By(fn() { (if first() { 0.0 } else { -face_over }, 0.0) })) |> ignore
-            // (its ground a pixel round it)
-            at.box(fn(r) {
-              r
-              .over(Is(true))
-              .width(Is(Some(l.face_d + 2.0 * face_ring_in)))
-              .height(Is(Some(l.face_d + 2.0 * face_ring_in)))
-              .offset(Is((-face_ring_in, -face_ring_in)))
-              .radius(Is(1.0e6))
-              .ground(By(ground))
-              |> ignore
-            })
-            |> ignore
-            @sf.avatar_node(at, fn() { if p().email != "" { p().email } else { p().id } }, fn() { p().name }, fn() {
-              if p().picture != "" {
-                (src.picture)(p().picture, stint())
-              } else {
-                ""
-              }
-            }, l.face_d)
-            at.show(starter, fn(ring) {
-              // (over the face, laid out nowhere of its own: round it, not under it)
-              ring.over(Is(true)) |> ignore
-              ring.box(fn(o) {
-                let d = l.face_d + 2.0 * face_ring_out
-                o
-                .over(Is(true))
-                .width(Is(Some(d)))
-                .height(Is(Some(d)))
-                .offset(Is((-face_ring_out, -face_ring_out)))
-                .radius(Is(1.0e6))
-                .edge(By(fn() { (1.0, @sf.theme().p.text) }))
-                |> ignore
-              })
-              |> ignore
-            })
+        // (its slot the room its face takes in the row: a face's, less what it lies over the one before, and a pixel more
+        // after who started it, past its face)
+        let face = slot
+        let l = @sf.theme().chat_list
+        face
+        .width(By(fn() {
+          Some((if first() { l.face_d } else { l.face_d - face_over }) + (if starter() { face_gap_w } else { 0.0 }))
+        }))
+        .height(Is(Some(l.face_d)))
+        |> ignore
+        face.box(fn(at) {
+          // (where it lies over the face before it, and who started it ringed round its face and the ground round
+          // that: a ring of what holds the face, laid out nowhere of its own; the two set together, as either changes)
+          at
+          .over(Is(true))
+          .radius(Is(1.0e6))
+          .sets_together(fn() { (first(), starter(), @sf.theme().p.text) }, fn(w) {
+            let (first, starter, ink) = w
+            at.offset(Is((if first { 0.0 } else { -face_over }, 0.0))) |> ignore
+            at.ring(Is(if starter { (face_ring_out - face_ring_in, face_ring_in, ink) } else { (0.0, 0.0, 0L) })) |> ignore
           })
           |> ignore
+          // (its ground a pixel round it, over the face before it: the face's ring, no box of its own)
+          @sf.avatar_node(at, fn() { if p().email != "" { p().email } else { p().id } }, fn() { p().name }, fn() {
+            if p().picture != "" {
+              (src.picture)(p().picture, stint())
+            } else {
+              ""
+            }
+          }, l.face_d, ring=fn() { (face_ring_in, 0.0, ground()) })
         })
         |> ignore
       })

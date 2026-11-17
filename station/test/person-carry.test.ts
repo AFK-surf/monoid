@@ -68,13 +68,14 @@ test("a person's devices bring their lock to the station and read it there, boun
   assert.equal((lockPartRoute(cloud, "person", "GET", Buffer.alloc(0), viewer("carol"))[1] as any).chains[0].entries.length, 2);
 });
 
-test("the chains kept are read back after a restart, the workspaces they were heard in with them", () => {
+test("the chains kept are read back after a restart, the workspaces they were heard in with them", async () => {
   const dir = mkdtempSync(join(tmpdir(), "person-chains-"));
   const path = join(dir, "person-chains.json");
   const carol = personal("carol");
   const kept = new PersonChains(path);
   kept.keep(carol.genesis, carol.chain, "w1");
   kept.keep(carol.genesis, carol.chain, "w2");
+  await kept.written();
   const again = new PersonChains(path);
   assert.deepEqual(again.heardIn("w2").map(([g]) => g), [carol.genesis]);
   assert.deepEqual(again.of("carol").map(([g, c]) => [g, c.length]), [[carol.genesis, 1]]);
@@ -175,7 +176,7 @@ test("a lock's change is told on the event stream: the workspace's to its member
   stop();
 });
 
-test("the devices that came are listed for the workspace's owners and admins, a member's own for them", () => {
+test("the devices that came are listed for the workspace's owners and admins, a member's own for them", async () => {
   const dir = mkdtempSync(join(tmpdir(), "seen-devices-"));
   const seen = new SeenDevices(join(dir, "seen.json"));
   seen.saw(1000, { workspace: "w1", sub: "carol", email: "c@x" }, "d1", "b1", { kind: "app", label: "Carol's Mac" });
@@ -190,6 +191,7 @@ test("the devices that came are listed for the workspace's owners and admins, a 
   ]);
   assert.deepEqual(seen.of("w1", 9000, "carol", false).map((r) => r.device), ["d1"]);
   // Kept across a restart; past SEEN_SECS, no more.
+  await seen.written();
   const again = new SeenDevices(join(dir, "seen.json"));
   assert.equal(again.of("w2", 9000, "carol", false).length, 1);
   assert.equal(again.of("w1", 1100 + SEEN_SECS + 1, "alice", true).map((r) => r.device).join(), "d1");

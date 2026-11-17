@@ -544,9 +544,43 @@ function safeHeld(inner: Inner, ws: string): boolean | null {
 /// clock), and as a refusal brings logs and bodies (`heardOut`); written only where it changed.
 function keepSafe(inner: Inner, ws: string): void {
   const on = safeHeld(inner, ws);
+  const { stations, keys } = on === true ? guardHeld(inner, ws) : { stations: [], keys: [] };
   const k = inner.data.record(SAFE, ws);
-  if (isObject(k) && k.on === on) return;
-  inner.data.put(SAFE, ws, { on });
+  if (isObject(k) && k.on === on && equal(k.stations, stations) && equal(k.keys, keys)) return;
+  inner.data.put(SAFE, ws, { on, stations, keys });
+}
+
+/// What the stations' lists say of safe mode kept beside `safeHeld` (`lockSafe`'s `stations` and `keys`): the stations
+/// the state in force names, and the signing keys of its devices not run out, each in order.
+function guardHeld(inner: Inner, ws: string): { stations: string[]; keys: string[] } {
+  const h = held(inner, ws);
+  const force = inForceOf(inner, ws, h?.entries ?? []);
+  if (force.said === "waiting") return { stations: [], keys: [] };
+  const at = now(inner);
+  const keys = [...force.f.devices.values()].flatMap((d) => (live(d, at) !== undefined && typeof d.sign_key === "string" ? [d.sign_key as string] : []));
+  return { stations: [...force.f.stations.keys()].sort(), keys: keys.sort() };
+}
+
+/// Safe mode in `ws` as a station's row and page say it (views.ts `#stationsOf`): null where it is off, or not known
+/// to name its stations yet (kept by a core from before, the state in force not come yet); else whether it names a
+/// station (`protects`) and whether the viewer could protect one from here (`can`: an owner on a device that signs,
+/// as the security page offers 保护, `lock.joinStation`), so one it does not name is offered 加入安全模式 where it is
+/// shown, not only on 设置 › 安全 (the user, 2026-11-15). Read of the few bytes kept (`lockSafe`), never the chain.
+export function stationsGuard(inner: Inner, ws: string): { protects: (id: string) => boolean; can: () => boolean } | null {
+  if (inner.provider.kind !== "stillfail" || !safeMode(inner, ws)) return null;
+  const k = inner.data.record(SAFE, ws);
+  // (kept by a core from before, without them: kept again, in a turn of its own, as `safeMode` keeps it)
+  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+  if (!isObject(k) || !Array.isArray(k.stations) || !Array.isArray(k.keys) || k.stations.length === 0) return null;
+  const named = new Set<unknown>(k.stations);
+  const keys = k.keys as unknown[];
+  // (read only where a station is not named: what the rows read otherwise is what they read before)
+  const can = () => {
+    lockSeen(inner).read("self");
+    const signer = signers.get(inner) ?? null;
+    return signer !== null && keys.includes(signer) && get(view(inner, ws), "role") === "owner";
+  };
+  return { protects: (id) => named.has(id), can };
 }
 
 /// A workspace's name as the person knows it: as its view says, else as the account's list does.
@@ -2652,12 +2686,23 @@ export function lockView(inner: Inner, ws: string): J {
   }));
   const renew = members.flatMap((m) => (m.you ? m.groups.flatMap((g) => g.devices).filter((d) => d.renewSoon) : []));
   const dismissed = get(get(inner.data.shared({ topic: "prefs" }), "lockNotice"), ws) === true;
+  // Let in here by its person's own lock (`onBoundPerson`): no approval in this one makes it sign (views/pair.ts
+  // `waitingIn` asks it in no workspace of the kind), so it is offered none. Where that lock does not say the signer
+  // it keeps (personal-lock.ts `signerUnsaid`: one from before signers were said there), a moved workspace's state
+  // does not name it by it: it says so on that lock itself, by a press (`lock.confirmSigner`, the person asked once).
+  const boundOwn = locked && !signs && onBoundPerson(inner, ws);
+  const confirmSigner = locked && !waits && boundOwn && !signs && sub !== null && inner.adb.personal().signerUnsaid(sub);
   // An app in the lock that does not sign with its key (let in before it kept one, as the devices there when the lock
-  // was turned on were; or its key since lost): it may be made one that signs, approved face to face as a new one is.
-  const unsigned = locked && mine !== undefined && mine.kind === "app" && inner.host.appKeys === true && signers.has(inner) && !signs;
-  if (unsigned && typeof mine.sign_key === "string") recover(inner, mine.sign_key);
+  // was turned on were; or its key since lost): it may be made one that signs, approved face to face as a new one is
+  // (`unsigned`), but where its person's own lock lets it in.
+  const lacks = locked && mine !== undefined && mine.kind === "app" && inner.host.appKeys === true && signers.has(inner) && !signs;
+  const unsigned = lacks && !boundOwn;
+  if (lacks && typeof mine.sign_key === "string") recover(inner, mine.sign_key);
+  // Its person taken out of a moved workspace (`outText`): by whom and whom to ask, what it waits for; not to install an
+  // app first, which lets nobody back in.
+  const out = outText(inner, ws);
   // A web page left out whose person has no app in the list: nobody could approve it (`needsAppIn`), so it asks nobody.
-  const needsApp = needsAppIn(inner, ws);
+  const needsApp = out === null && needsAppIn(inner, ws);
   const pair = locked && !waits && !needsApp && (mine === undefined || unsigned) ? pairs.mine(inner, own && sub !== null ? personOf(sub) : ws) : null;
   // The devices its try dials here, as people know them (which machine, a phone or a computer), the most lately used
   // first, those showing a code before them: the person opens still.fail on one of those (2026-11-05: "到底是哪个设备会
@@ -2691,7 +2736,6 @@ export function lockView(inner: Inner, ws: string): J {
     if (h?.entries[0] !== undefined) upto(Math.max(HAND_OVER_FROM, h.entries[0].at) + HAND_OVER_FIRST_SECS);
   }
   p.shownUntil = until;
-  const out = outText(inner, ws);
   const root = movedHere(inner, ws) && role === "owner" && force.said !== "waiting" ? rootOf(inner, ws) : null;
   const rootText = root !== null && root.sub !== sub ? t("core-misc.lock.rootOnlyPage", { name: root.name }) : null;
   const onAgain = root !== null && root.sub === sub && force.said === "off";
@@ -2720,6 +2764,8 @@ export function lockView(inner: Inner, ws: string): J {
       ...(out !== null ? { outText: out } : {}),
       // A web page left out that nobody could approve: to install an app first (`needsAppIn`).
       ...(needsApp ? { needsAppText: t("core-misc.lock.needsApp") } : {}),
+      // On its person's own lock without its signer said there: why it does not sign, and the press that says it.
+      ...(confirmSigner ? { stateText: t("core-misc.lock.signerUnsaid"), confirmText: t("core-misc.vault.confirm") } : {}),
     },
     signers: [...f.devices.values()].filter((d) => typeof d.sign_key === "string").length,
     members,
@@ -3807,10 +3853,10 @@ function webMoved(inner: Inner, sub: string, ws: string, id: string, kind: "web"
 }
 
 /// A moved workspace turned off (`off`) or on again (`open`, with the settings in force and the root's person's email),
-/// by the root's person alone.
+/// by the root's person alone (`offAllowed`, either way: another owner's `open` on their own log would count for
+/// nothing, and was signed there all the same).
 function onOffMoved(inner: Inner, sub: string, ws: string, on: boolean): Effect.Effect<unknown, CoreError> {
-  return Effect.suspend(() => {
-    if (!saysHere(inner, sub)) return Effect.fail(notTrustedHere());
+  return Effect.andThen(offAllowed(inner, sub, ws), () => {
     const force = inForceOf(inner, ws);
     const name = nameOf(inner, ws);
     if (!on) return sayMoved(inner, sub, ws, [{ kind: "off" }], { act: "disable", name }, t("core-misc.lock.reason.disable"));

@@ -8,6 +8,23 @@ pub(all) suberror ShellError {
 }
 
 ///|
+/// Its words as they are, where an error is said (`to_string`): without it MoonBit says only the type's name
+/// ("station/wire.ShellError.ShellError" in a chat's notice in place of "database is locked", Office-VM-1 2026-11-16).
+pub impl Show for ShellError with output(self, logger) {
+  match self {
+    ShellError(m) => logger.write_string(m)
+  }
+}
+
+///|
+/// Its words (moonc 0.10.21 gives a suberror no `to_string` of its own)
+pub fn ShellError::to_string(self : ShellError) -> String {
+  match self {
+    ShellError(m) => m
+  }
+}
+
+///|
 /// Bytes as they come, made lines (each without its newline); what is left is kept for the next.
 pub struct Lines {
   priv partial : Array[Byte]

@@ -44,7 +44,7 @@ decide() {
   # The station in TypeScript, its native parts (vendor/: the mesh addon's iroh), its programs in MoonBit (station/mb: the
   # shell they link, client/shell, and mbui's effect), the rules it checks the lock and
   # vaults by (rules/js), what it shares with the core (client/core-ts/src: scripts/plan-covers.ts finds which), the words it says, the installer it carries (cloud/src/install*.ts: scripts/installers.ts), its deltas (scripts/delta.ts, release-deltas.ts).
-  if has '^(station/(src|native|mb)/|client/shell/|libs/mbui/src/effect/|rules/js/|client/core-ts/src/(shapes/(dsl|schema|model)|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
+  if has '^(station/(src|native|mb)/|client/shell/|libs/mbui/src/effect/|rules/js/|client/core-ts/src/(shapes/(dsl|schema|model)|lock-form|rig-form|whitespace|titles|chat-row|cache-policy|codex-quota|mediaFacts|digest|redact|preset-records|features|model-speed)\.ts$|station/(package\.json|pnpm-lock\.yaml)$|vendor/|client/i18n/|bin/|scripts/(release|station-bundle)\.sh$|scripts/(posthog-key|native|installers|release-sign|delta|release-deltas)\.ts$|cloud/src/(install|install-windows|i18n)\.ts$)'; then station=true; fi
   # The beta Android app: mbui's in the Kotlin one's place (scripts/release.sh --beta android), released for a
   # change to what apps/mbui's beta is made of (scripts/beta.sh APP_SRC: its code, mbui's with its Android host's
   # Java, JZlib among it, the client's, media's, vendor's), to the tool that packs and repacks its APK (mbui's
@@ -99,6 +99,12 @@ decide() {
   # Exercise the GitHub-hosted web and Mac release paths, without secrets or publishing, when their CI changes.
   release_smoke=false
   if [ "${GITHUB_REF:-}" != refs/heads/main ] && { [ "${GITHUB_EVENT_NAME:-}" = workflow_dispatch ] || has '^(\.github/workflows/pipeline\.yml$|\.github/deploy\.sh$|\.github/actions/(setup|natives|mbui-moonbit)/|scripts/release\.sh$)'; }; then release_smoke=true; fi
+  # The checks only a Mac can run (check-mac: Swift's still.fail Helper, the iOS crash reports' Objective-C test, the
+  # Mac release prebuild's Mach-O symbol check, and the launcher's tests on macOS, whose own code there finds a front
+  # left from before by proc_listpids and KERN_PROCARGS2; `check` runs them on Linux): only when one of them or CI's
+  # own files changed.
+  check_mac=false
+  if has '^(station/native/helper/|station/native/launcher/|vendor/(PermissionFlow|serve-sim)/|apps/mbui/(src/host/apple_reports\.m|scripts/ios[_-]reports)|\.github/(mac-release-prebuild|test_mac_release_prebuild)\.sh$|(apps|libs)/mbui/scripts/mac\.sh$)' || has_but '^\.github/' '^\.github/workflows/(mbui-|preview\.yml$)'; then check_mac=true; fi
 }
 
 print() {
@@ -119,6 +125,7 @@ print() {
     echo "station_tests=$station_tests"
     echo "core_tests=$core_tests"
     echo "release_smoke=$release_smoke"
+    echo "check_mac=$check_mac"
   }
 }
 

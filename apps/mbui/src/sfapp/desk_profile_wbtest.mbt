@@ -14,6 +14,125 @@ test "wide: the profile list's rows say an account's name and allowance, its tie
 }
 
 ///|
+test "deleting a profile or removing a station in its place stays in the place instead of going back to the previous page; pushed on the stack, its page closes" {
+  // 1. 大屏 Place("profiles") come to from a chat: history holds the chat behind it, deleting a profile stays in Place("profiles")
+  new_run()
+  let deleted : @signals.Signal[Array[String]] = @signals.signal([])
+  let calls : Array[(String, Json)] = []
+  let base = fixture("settings")
+  let drop_profiles = fn(v : Json, gone : Array[String]) -> Json {
+    if gone.is_empty() {
+      return v
+    }
+    match v {
+      Object(o) => {
+        let copy = o.copy()
+        if copy.get("items") is Some(Array(items_arr)) {
+          copy["items"] = Json::array(
+            items_arr.filter(fn(e) { !gone.contains(text(field(Some(e), "profile"), "id")) }),
+          )
+        }
+        if copy.get("profiles") is Some(Array(ps)) {
+          copy["profiles"] = Json::array(ps.filter(fn(p) { !gone.contains(text(Some(p), "id")) }))
+        }
+        if copy.get("overview") is Some(ov) {
+          match ov {
+            Object(oo) => {
+              let ocopy = oo.copy()
+              if ocopy.get("profiles") is Some(Array(ps)) {
+                ocopy["profiles"] = Json::array(ps.filter(fn(p) { !gone.contains(text(Some(p), "id")) }))
+              }
+              copy["overview"] = Json::object(ocopy)
+            }
+            _ => ()
+          }
+        }
+        Json::object(copy)
+      }
+      _ => v
+    }
+  }
+  let src : Source = {
+    ..base,
+    topic_read: fn(name, params) {
+      let r = base.topic(name, params).get().snapshot()
+      let gone = deleted.get()
+      if name == "profiles" || name == "station" {
+        { ..r, value: r.value.map(fn(v) { drop_profiles(v, gone) }) }
+      } else {
+        r
+      }
+    },
+    call: fn(name, params, done) {
+      calls.push((name, params))
+      if name == "profile.delete" {
+        let id = text(Some(params), "id")
+        deleted.set([..deleted.untracked(), id])
+        done(Ok(Json::object({})))
+      } else if name == "workspace.removeStation" {
+        done(Ok(Json::object({})))
+      } else {
+        (base.call)(name, params, done)
+      }
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() is Chat(_))
+  @sfbase.go_place("profiles") |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.pages() == [Place("profiles")])
+  // Pick ChatGPT 团队 in the sidebar, then delete it: stays on Place("profiles"), moves to the remaining profile
+  t.tap_text("ChatGPT 团队")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("profiles")],
+    msg="stayed in Place(profiles), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "profile.delete" && text(Some(c.1), "id") == "cx" }).length(), 1)
+  assert_true(t.find("备用 key") is Some(_), msg="switched to the first remaining profile")
+
+  // 2. Pushed Setting(Profile(...)) on the stack: deleting it closes that page back to what was under it
+  @sfbase.open_page(Setting(@settings.Route::Profile("ws1/st1", "cc")))
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Setting(@settings.Route::Profile("ws1/st1", "cc")))
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="删除 Profile")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("profiles")],
+    msg="pushed Profile page closed back to Place(profiles), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "profile.delete" && text(Some(c.1), "id") == "cc" }).length(), 1)
+
+  // 3. 大屏 Place("stations") come to from Place("profiles"): removing a station stays in Place("stations")
+  @sfbase.go_place("stations") |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.pages() == [Place("stations")])
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("从 workspace 移除")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="移除 station")
+  t.run_for(@ui.move_most_ms)
+  assert_true(
+    app.nav.pages() == [Place("stations")],
+    msg="stayed in Place(stations), depth=\{app.nav.depth()}",
+  )
+  assert_eq(calls.filter(fn(c) { c.0 == "workspace.removeStation" }).length(), 1)
+}
+
+///|
 /// The desk's page wheeled down until `words` shows on it (above the window's foot).
 fn desk_shown(t : @ui.Tester, words : String) -> Unit {
   t.move_to(800.0, 400.0)
@@ -53,12 +172,12 @@ test "station browser button sits beside 打开授权页面 and wraps cleanly at
     for lang in ["zh", "en"] {
       let label = if lang == "zh" { "在 Willow 的浏览器中打开" } else { "Open in Willow's browser" }
       for win in corner_windows {
-        let t = screen_in(mode, win, lang, motion_judged=false)
+        let t = screen_in(mode, win, lang)
         assert_true(t.query(Button, label~) is Some(_), msg="\{win.0}-\{lang} \{mode}")
         assert_eq(t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown(), [], msg="\{win.0}-\{lang} \{mode}")
       }
       guard corner_windows.search_by(w => w.0 == "phone") is Some(i) else { fail("no phone window") }
-      let t_large = screen_in(mode, corner_windows[i], lang, font_scale=words_large_scale, motion_judged=false)
+      let t_large = screen_in(mode, corner_windows[i], lang, font_scale=words_large_scale)
       assert_true(t_large.query(Button, label~) is Some(_), msg="phone-\{lang}-1.3 \{mode}")
       assert_eq(t_large.squeeze_faults() + t_large.words_over_now() + t_large.fixed_outgrown(), [], msg="phone-\{lang}-1.3 \{mode}")
     }
@@ -148,6 +267,10 @@ test "wide, by touch: the profiles' place opens on a page placed as it is laid o
   @settings.fixture_page("settings-profile-fable") |> ignore
   app.nav.replace(Place("profiles"))
   t.draw()
+  assert_eq(t.placed_faults(), [])
+  assert_true(t.find("额度与恢复") is Some(_))
+  t.tap_text("Claude 主账号")
+  t.run_for(@ui.move_most_ms)
   assert_eq(t.placed_faults(), [])
   // (its sections' titles each across the page's column, none in a box of a few points)
   for words in ["设置"] {
@@ -351,6 +474,169 @@ test "the add page's station choice opens the other station's page whole, the pa
       assert_true(t.find("使用此账号") is None, msg="\{at}: none of Maple's offered")
       station_pressed(t, at, heard, calls, "ws1/st2", ("Willow", "ws1/st1"), ms)
       assert_true(t.find("使用此账号") is Some(_), msg="\{at}: Willow's offered again")
+    }
+  }
+}
+
+///|
+test "profiles overview: wide defaults to 概览 with pool switching; narrow defaults to 账号 and switches to 概览" {
+  // 1. Wide defaults to 概览 with both charts and switches between model pools and individual accounts
+  let t_wide = wide_tester([], mode="place-profiles-sum-a")
+  @settings.fixture_page("settings-profiles-sum-a") |> ignore
+  app.nav.replace(Place("profiles"))
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is Some(_))
+  assert_true(t_wide.find("消耗速度") is Some(_))
+  // (the tightest pool first: Claude's, going without in 12 hours, spending 1.8%/h over what it could keep up, its last
+  // and next 24 hours each against that, either way from 0)
+  assert_true(t_wide.find("18% · 12h后断档") is Some(_))
+  assert_true(t_wide.find("-1.8%/h") is Some(_))
+  assert_true(t_wide.find("+4%/h") is Some(_) && t_wide.find("-4%/h") is Some(_))
+  assert_true(t_wide.find("-24h") is Some(_) && t_wide.find("+24h") is Some(_) && t_wide.find("-12h") is Some(_))
+  assert_true(t_wide.find("3 项需处理") is Some(_))
+  assert_true(t_wide.find("重新登录") is Some(_))
+  assert_true(t_wide.find("更换 key") is Some(_))
+  // (why jiachen@cue.surf is there: its week's allowance mostly unused, gone when the week resets)
+  assert_true(t_wide.find("周额度剩 84% 未用 · 14h后重置清零") is Some(_))
+  // (Claude's pool going without: how many more of its plan would keep it going, under its charts)
+  assert_true(t_wide.find("按当前消耗速度，还需约 ") is Some(_))
+  assert_true(t_wide.find("个同档账号才能不断档") is Some(_))
+  assert_eq(t_wide.corner_faults(), [])
+  assert_eq(t_wide.lit_all_faults(), [])
+  assert_eq(t_wide.room_faults(), [])
+  assert_eq(t_wide.hover_only_faults(), [])
+  assert_eq(t_wide.height_faults(), [])
+  assert_eq(t_wide.first_line_faults(), [])
+  assert_eq(t_wide.line_start_faults(), [])
+  assert_eq(t_wide.fixed_outgrown(), [])
+  assert_eq(t_wide.hand_moves(), [])
+  assert_eq(t_wide.squeeze_faults(), [])
+  t_wide.click(Button, label="Codex 2/3")
+  t_wide.draw()
+  assert_true(t_wide.find("72%") is Some(_))
+  assert_true(t_wide.find("+0.6%/h") is Some(_))
+  assert_true(t_wide.find("18% · 12h后断档") is None)
+  // (Codex's keeps up: nothing said of more accounts, gone as it is picked)
+  assert_true(t_wide.find("个同档账号才能不断档") is None)
+  t_wide.tap_text("ChatGPT 团队")
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is None)
+  t_wide.tap_text("概览")
+  t_wide.run_for(@ui.move_most_ms)
+  assert_true(t_wide.find("额度与恢复") is Some(_))
+
+  // 2. Narrow Place("profiles") (bottom bar) and Setting(Profiles("")) (from settings):
+  //    - 账号 | 概览 has 12px page inset on both sides (not flush to 0..w)
+  //    - Place("profiles") switches to 概览 and back with zero jump on the segmented control and remembers 概览 across shelf switches
+  //    - Setting(Profiles("")) pushed over Place("profiles") keeps compact nav_bar with zero header jump and does not clobber Place("profiles")
+  new_run()
+  let src = fixture_app("place-profiles-sum-a")
+  let t_phone = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+  let acc_radio_0 = t_phone.all(Radio, label="账号")[0].rect
+  let ov_radio_0 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true(acc_radio_0.0 >= 12.0, msg="place accounts radio inset from left edge: \{acc_radio_0.0}")
+  assert_true(ov_radio_0.0 + ov_radio_0.2 <= 390.0 - 12.0, msg="place overview radio inset from right edge: \{ov_radio_0.0 + ov_radio_0.2}")
+  t_phone.tap_text("概览")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Place(\"profiles\") switches to 概览")
+  assert_true(t_phone.find("消耗速度") is Some(_))
+  let ov_radio_1 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true((ov_radio_1.0 - ov_radio_0.0).abs() <= 0.5 && (ov_radio_1.1 - ov_radio_0.1).abs() <= 0.5, msg="place segmented control stays in place: \{ov_radio_0.0},\{ov_radio_0.1} -> \{ov_radio_1.0},\{ov_radio_1.1}")
+  assert_eq(t_phone.corner_faults(), [])
+  assert_eq(t_phone.lit_all_faults(), [])
+  assert_eq(t_phone.room_faults(), [])
+  assert_eq(t_phone.hover_only_faults(), [])
+  assert_eq(t_phone.height_faults(), [])
+  assert_eq(t_phone.first_line_faults(), [])
+  assert_eq(t_phone.line_start_faults(), [])
+  assert_eq(t_phone.fixed_outgrown(), [])
+  assert_eq(t_phone.hand_moves(), [])
+  assert_eq(t_phone.squeeze_faults(), [])
+  // Switch bottom bar away to Home and back: Place("profiles") shelved, keeps 概览
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Home) })
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is None)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Place("profiles")) })
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="shelved Place(\"profiles\") remembers 概览")
+  // Open Settings -> Setting(Profiles("")) over Place("profiles"): starts on 账号, switches without header jump, popping preserves Place("profiles") 概览
+  t_phone.click(Button, label="设置")
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { app.nav.push(Setting(@settings.Route::Profiles(""))) })
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+  let set_acc_0 = t_phone.all(Radio, label="账号")[0].rect
+  let set_ov_0 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true(t_phone.query(Link, label="设置") is Some(_), msg="Setting(Profiles(\"\"))'s 账号 has its way back")
+  assert_true(set_acc_0.0 >= 12.0, msg="settings accounts radio inset: \{set_acc_0.0}")
+  assert_true(set_ov_0.0 + set_ov_0.2 <= 390.0 - 12.0, msg="settings overview radio inset: \{set_ov_0.0 + set_ov_0.2}")
+  t_phone.tap_text("概览")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Setting(Profiles(\"\")) switches to 概览")
+  assert_true(t_phone.query(Link, label="设置") is Some(_), msg="Setting(Profiles(\"\"))'s 概览 keeps the same top bar, its way back")
+  let set_ov_1 = t_phone.all(Radio, label="概览")[0].rect
+  assert_true((set_ov_1.0 - set_ov_0.0).abs() <= 0.5 && (set_ov_1.1 - set_ov_0.1).abs() <= 0.5, msg="settings segmented control stays in place (no header jump): \{set_ov_0.0},\{set_ov_0.1} -> \{set_ov_1.0},\{set_ov_1.1}")
+  assert_eq(t_phone.corner_faults(), [])
+  assert_eq(t_phone.room_faults(), [])
+  assert_eq(t_phone.squeeze_faults(), [])
+  t_phone.tap_text("账号")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is None, msg="Setting(Profiles(\"\")) back to 账号")
+  // Back to the bottom bar's Profile: Setting(Profiles(""))'s switch left it as it was (its own, still 概览)
+  @ui.view_tree().unwrap().event(t_phone.time(), fn() { @sfbase.nav_root_kept(Place("profiles")) })
+  t_phone.run_for(page_local_ms + @ui.move_most_ms)
+  assert_true(t_phone.find("额度与恢复") is Some(_), msg="Setting(Profiles(\"\")) leaves Place(\"profiles\")'s 概览 as it was")
+  t_phone.tap_text("账号")
+  t_phone.run_for(@ui.move_most_ms)
+  assert_true(t_phone.find("Claude 主账号") is Some(_))
+  assert_true(t_phone.find("额度与恢复") is None)
+
+  // 3. Every corner_windows tier (zh & en) + 1.3x font scale on phone for place-profiles, place-profiles-sum-overview, and settings-profiles-sum-a
+  for win in corner_windows {
+    for lang in ["zh", "en"] {
+      for mode in ["place-profiles", "place-profiles-sum-a", "place-profiles-sum-overview", "settings-profiles", "settings-profiles-sum-a"] {
+        let at = "\{win.0}-\{lang} \{mode}"
+        let t = screen_in(mode, win, lang)
+        let expected_corners = if win.0 == "touch" || win.0 == "desk-win" { 1 } else { 0 }
+        let c_faults = t.corner_faults()
+        for f in t.lit_all_faults() {
+          if !c_faults.contains(f) {
+            c_faults.push(f)
+          }
+        }
+        let c_joined = c_faults.join("; ")
+        assert_eq(c_faults.length(), expected_corners, msg="\{at} corners: \{c_joined}")
+        if lang == "zh" {
+          assert_eq(t.room_faults(), [], msg="\{at} room")
+          assert_eq(t.hover_only_faults(), [], msg="\{at} hover")
+          assert_eq(contrast_wrong("\{win.0}-light \{mode}", t.contrast_faults()), None, msg="\{at} contrast")
+        }
+        assert_eq(t.height_faults(), [], msg="\{at} height")
+        assert_eq(t.first_line_faults(), [], msg="\{at} first_line")
+        assert_eq(t.line_start_faults(), [], msg="\{at} line_start")
+        assert_eq(t.fixed_outgrown(), [], msg="\{at} outgrown")
+        assert_eq(t.hand_moves(), [], msg="\{at} hand_moves")
+        if squeeze_windows.contains(win.0) {
+          assert_eq(t.squeeze_faults(), [], msg="\{at} squeeze")
+        }
+        let g_faults = t.gap_faults()
+        let g_joined = g_faults.join("; ")
+        assert_eq(g_faults.length(), 0, msg="\{at} gaps: \{g_joined}")
+      }
+      if win.0 == "phone" {
+        for mode in ["place-profiles", "place-profiles-sum-overview", "settings-profiles", "settings-profiles-sum-a"] {
+          let at = "phone-\{lang}-1.3 \{mode}"
+          let tl = screen_in(mode, win, lang, font_scale=1.3)
+          assert_eq(tl.fixed_outgrown(), [], msg="\{at} outgrown")
+          let wl = tl.squeeze_faults() + tl.words_over_now()
+          let wl_joined = wl.join("; ")
+          assert_eq(wl, [], msg="\{at} words_large: \{wl_joined}")
+        }
+      }
     }
   }
 }

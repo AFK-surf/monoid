@@ -143,3 +143,26 @@ test "a page's list, a row near its foot opened, scrolled on and shut: held wher
     assert_eq((anew, last_y + last_h), (anew, 400.0))
   }
 }
+
+///|
+test "a page's list, a row near its foot opened, scrolled on, shut and opened again: held where it was after the press's ways end, not jumping to the foot" {
+  for anew in [true, false] {
+    let c = gone_case(anew)
+    c.tree.wheel_at(150.0, 200.0, 0.0, 10000.0, 0, 50.0) |> ignore
+    c.at(1000.0)
+    c.press(10, 2000.0)
+    c.at(3000.0)
+    c.tree.wheel_at(150.0, 200.0, 0.0, 100.0, 0, 3100.0) |> ignore
+    c.at(4000.0)
+    let was = c.top_of(10)
+    c.press(10, 5000.0)
+    c.at(6000.0)
+    let shut_end = c.top_of(10)
+    // (opened again: takes the room kept under it and extends past the window's foot, staying where it was after the press's ways end)
+    c.press(10, 7000.0)
+    let reopened = c.top_of(10)
+    c.at(8000.0)
+    let reopened_end = c.top_of(10)
+    assert_eq((anew, shut_end, reopened, reopened_end), (anew, was, was, was))
+  }
+}

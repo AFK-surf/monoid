@@ -1478,6 +1478,13 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
         if !sliding && active_key != m.active_was {
           m.active_was = active_key
           m.trip = dmax(8.0, (goal_x - m.ball_x.value_at(at)).abs())
+          // (told anew on its way, a way no stiffer than the one it is on: its speed, which its stretch draws, taken off
+          // by a spring stiffer than the one that gave it is gone in a frame, the stretch and the ball's height with it, at
+          // 60 a second a step of 3.6 points then 0.2 (a place switched back within its way, bar_places_kept); one as
+          // stiff turns it back at the rate it went)
+          if m.ball_x.end() > at {
+            m.trip = dmax(m.trip, 300.0 * slot_px / m.ball_x.tension)
+          }
         }
         let tension = if sliding { 300.0 } else { dclamp(300.0 * slot_px / m.trip, 90.0, 700.0) }
         if m.placed && m.width != w {
@@ -2554,11 +2561,8 @@ fn place_page(c : @ui.Ctx, src : Source, w : Workspace, place : String) -> Unit 
         Some(r) => {
           // under the top bar, which names it; over the bottom bar
           let top = status_top() + bar_h + 8.0
-          let frame : PageFrame = { back: None, top, foot: nav_foot() + bar_room_now(), named: true }
-          if !@sfdesk.setting_route(c, src, w, r, frame) {
-            let core = settings_core(src, w)
-            @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
-          }
+          let core = settings_core(src, w)
+          @settings.page(c, core, @settings.here_of(core, w.id, w.name), r, root=true, top~)
         }
         None => ()
       }

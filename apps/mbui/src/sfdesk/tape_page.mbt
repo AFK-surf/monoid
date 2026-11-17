@@ -60,8 +60,9 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (a page's bar on the tape the tree's, over its own view: what the page says of it, collected as it is built)
       // (a chat's page made once holds its old view, which says its bar as it is built, as an old view's page does)
       head=fn(b, k, made) {
-        let chat = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && @sfbase.chat_page_is(p) })
-        tape_bar_head(b, k, made && !chat, tips)
+        // (and Home, whose board has its bar of its own: board.mbt's board_tape_made)
+        let own_bar = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home) })
+        tape_bar_head(b, k, made && !own_bar, tips)
       },
       // (a page of the library's made once in its place, where it is: its bar the tape's, from what the page is)
       made=fn(p) { tape_made(src, p, tips) },
@@ -189,7 +190,7 @@ fn tape_bar_of(k : Int) -> TapeBar {
         said: @signals.signal(None, same=fn(a, b) { a == b }),
         back: fn() {  },
         page_said: @signals.signal(None, same=fn(a, b) { a == b }),
-        page_actions: @signals.signal(None, same=fn(a, b) {
+        page_actions: @signals.signal_by(None, same=fn(a, b) {
           match (a, b) {
             (None, None) => true
             (Some(x), Some(y)) => x.2 == y.2
@@ -219,6 +220,11 @@ fn tape_bar_head(b : @view.View, k : Int, made : Bool, tips : @sf.TipLayer) -> U
   let said = fn() {
     if !made {
       return tb.said.get()
+    }
+    // (文件 and a station's drive: a bar of their own, none over them, but a folder laid out narrow, which names
+    // itself to it)
+    if app.nav.page_of(k) is Some((Files | Drive(_), _)) && tb.page_said.get() is None {
+      return None
     }
     match app.nav.page_of(k) {
       Some((p, u)) => {
@@ -328,7 +334,7 @@ fn tape_made(
         kind,
         fn(v : @view.View, _page : () -> Page, _under : Page?, stint : () -> Int, k : Int) {
           let told = fn(s : @sf.PageSaid) { tape_bar_of(k).page_said.set(Some(s)) }
-          v.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+          v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
             // (what the page made in `p` does in the bar, its own while `p` is: given as it is made, let go with `p`
             // where none since gave the bar another's)
             let gen = next_tape_actions_gen()
@@ -361,11 +367,26 @@ fn tape_made(
     )
   }
   match page {
+    // (Home: the board while it is chosen, else the panel's ground: board.mbt)
+    Home if pane_makes.val => Some(board_tape_made(src, tips, width))
     // (laid out by the page's width, narrow or wide: page_node's)
     Setting(About) if pane_makes.val =>
       made("about", fn(p, core, _here, _stint, told, _acts) {
         context_node(p)
         @sfpages.about_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    // (a web service whose chat the station has not said, or that it does not find: service_beside_node)
+    // (no old view: made so whatever pane_makes says)
+    Service(station, job) =>
+      made("service/" + station + "/" + job, fn(p, _core, _here, _stint, _told, _acts) {
+        service_beside_node(p, src, station, job)
+      })
+    // (已归档, none of its chats beside the side column's list of them: what it is)
+    Archived if pane_makes.val => made("archived", fn(p, _core, _here, _stint, _told, _acts) { archive_main_node(p) })
+    Setting(Archive) if pane_makes.val =>
+      made("archive", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.archive_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     Setting(Memories) if pane_makes.val =>
       made("memories", fn(p, core, here, _stint, told, _acts) {
@@ -384,9 +405,12 @@ fn tape_made(
         context_node(p)
         profiles_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
       })
-    // (the stations' place with one that only runs tasks picked: its page made once, in the place of the old view's)
-    Place("stations") if place_rig(src) != "" =>
-      tape_made(src, Setting(Station(place_rig(src))), tips).map(fn(m) { ("place/" + m.0, m.1) })
+    // (the stations' place: the station picked in its list made once as its page is, none the first to add)
+    Place("stations") =>
+      made("place/stations", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        stations_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
+      })
     // (a place of the rail's whose page is one of those: that page as the settings open it, at the stack's root, made
     // under its own kind)
     Place(name) =>
@@ -396,6 +420,8 @@ fn tape_made(
           tape_made(src, Setting(r), tips).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
+    // (the settings come to beside their list: its first row's page, made once as that page is)
+    Settings | Setting(Home) => tape_made(src, Setting(settings_landing), tips).map(fn(m) { ("settings/" + m.0, m.1) })
     // (by its station: another station's another page, not this one become it)
     Setting(Memory(address)) if pane_makes.val =>
       made("memory/" + address, fn(p, core, here, _stint, told, _acts) {
@@ -429,6 +455,45 @@ fn tape_made(
       made("appearance", fn(p, core, _here, _stint, told, _acts) {
         @sfpages.appearance_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Experimental) if pane_makes.val =>
+      made("experimental", fn(p, core, _here, _stint, told, _acts) {
+        @sfpages.experimental_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    // the stations' list, the profiles' (by station: another station's another page) and an account's on several
+    // stations (sfpages' stations_list.mbt, profiles_list.mbt), their ＋ in the bar; made in every case, as they have no
+    // old view
+    Setting(Stations) =>
+      made("stations", fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.stations_list_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(Profiles("")) =>
+      made("profiles/", fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.profiles_page_node(
+          p,
+          src,
+          core,
+          here,
+          @settings.profiles_narrow_overview,
+          on_back=core.pop,
+          frame=fn() { tape_made_frame },
+          said=told,
+          width~,
+          tips~,
+          bar_actions=acts,
+        )
+      })
+    Setting(Profiles(only)) =>
+      made("profiles/" + only, fn(p, core, here, _stint, told, acts) {
+        context_node(p)
+        @sfpages.profiles_list_node(p, core, here, only, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~, bar_actions=acts)
+      })
+    Setting(ProfileAccount(key)) =>
+      made("profile-account/" + key, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.profile_account_node(p, core, here, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
     // (by its station and id: another's another page; made in every case, as it has no old view)
     Setting(Profile(address, id)) =>
       made("profile/" + address + "/" + id, fn(p, core, here, stint, told, _acts) {
@@ -456,6 +521,21 @@ fn tape_made(
         context_node(p)
         @sfpages.permissions_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
       })
+    Setting(Me) if pane_makes.val =>
+      made("me", fn(p, core, here, stint, told, _acts) {
+        context_node(p)
+        @sfpages.me_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, stint~, said=told, width~)
+      })
+    Setting(Fonts) if pane_makes.val =>
+      made("fonts", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.fonts_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
+    Setting(BarSettings) if pane_makes.val =>
+      made("bars", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.bars_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~)
+      })
     Setting(Security) if pane_makes.val =>
       made("security", fn(p, core, here, stint, told, _acts) {
         context_node(p)
@@ -475,6 +555,52 @@ fn tape_made(
       made("vault-items", fn(p, core, here, _stint, told, _acts) {
         context_node(p)
         @sfpages.vault_items_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // 文件 and a station's drive (sfpages' files_page_node.mbt): a bar of their own (no tape bar over them:
+    // tape_bar_head), a folder opened from them another entry over them (files_go)
+    Files if pane_makes.val =>
+      made("files-home", fn(p, _core, _here, _stint, _told, _acts) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        @sfpages.files_home_node(p, src, w.id, frame=fn() { tape_made_frame }, width~, on_back=fn() { app.nav.pop() |> ignore }, tips~, ends=tape_files_ends)
+      })
+    Drive(at) if pane_makes.val =>
+      made("drive/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, fn(p, _core, _here, _stint, told, acts) {
+        guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+        @sfpages.drive_page_node(p, src, w.id, fn() { at }, frame=fn() { tape_made_frame }, width~, on_back=fn() { app.nav.pop() |> ignore }, go=files_go, tips~, bar=(told, acts), ends=tape_files_ends)
+      })
+    Setting(KeptFiles) if pane_makes.val =>
+      made("kept", fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_node(p, core, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and thread: another chat's another page)
+    Setting(KeptChat(station, thread)) if pane_makes.val =>
+      made("kept/" + station + "/" + thread.to_string(), fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.kept_chat_node(p, core, station, thread, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its station and session: another's another page)
+    Setting(RunSettings(station, key)) if pane_makes.val =>
+      made("run/" + station + "/" + key, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.run_settings_node(p, core, station, key, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by the station whose step is said first: another station's another page)
+    Setting(AdbShare(focus)) if pane_makes.val =>
+      made("adb/" + focus, fn(p, core, _here, _stint, told, _acts) {
+        context_node(p)
+        @settings.adb_node(p, core, focus, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    Setting(Vault) if pane_makes.val =>
+      made("vault", fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_node(p, core, here, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
+      })
+    // (by its vault and item: another's another page)
+    Setting(VaultItem(vault, item)) if pane_makes.val =>
+      made("vault-item/" + vault + "/" + item, fn(p, core, here, _stint, told, _acts) {
+        context_node(p)
+        @sfpages.vault_item_node(p, core, here, vault, item, on_back=core.pop, frame=fn() { tape_made_frame }, said=told, width~, tips~)
       })
     // (by its station and id: another's another page; 添加连接 in the bar)
     Setting(Connects(only)) if pane_makes.val =>
@@ -523,7 +649,7 @@ fn tape_made(
     page if pane_makes.val && @sfbase.chat_page_is(page) =>
       Some(
         (
-          "chat",
+          @sfbase.chat_page_kind(),
           fn(v, _page, _under, stint, k) {
             // (its bar the tree's, over the page's old view: chat_bar_wide_node, keeping clear of the panel's corners as a
             // page's bar on the tape does; the tape's head over it none, tape_bar_head)
@@ -549,6 +675,17 @@ fn tape_made(
                 // tape_behind)
                 tape_behind(c, Page, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
                 @sf.pane_round.val = None
+              },
+              foot_node=fn(n, s, r) {
+                @sf.pane_round.val = Some(tape_page_round())
+                @sfpages.chat_composer_node(n, s, r, tips, apart=true)
+                @sf.pane_round.val = None
+              },
+              leaving=fn(c, s, r) {
+                match @sfbase.workspace_in_view(s).0 {
+                  Some(w) => new_chat_after(c, s, w, r)
+                  None => ()
+                }
               },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
               narrower=tape_page_narrower,
@@ -605,8 +742,24 @@ fn tape_made_bar(under : Page?, place : Bool, said : @sf.PageSaid?) -> PaneBarSa
     Some(u) if !place && u is (Setting(_) | Place(_)) => Some(@sfbase.back_label(u))
     _ => None
   }
+  // (back as the page says it, where it says it: a station's profiles, that station's name; page_node's `back_as`)
+  let back = match (back, said) {
+    (Some(_), Some(s)) if s.back != "" => Some(s.back)
+    _ => back
+  }
   match said {
     Some(s) => { back, title: s.title, small: "", about: s.about }
     None => { back, title: "", small: "", about: "" }
   }
+}
+
+///|
+/// Where the files' page's own bar stands in the page's panel (no tape bar over it: tape_bar_head), as a page's bar
+/// there does (pane_bar_node's): its start clear of the panel's top left corner, its last button concentric with the top
+/// right one where it can be, on the tape's one line (how far down to it).
+fn tape_files_ends() -> (Double, Double, Double) {
+  let side = tape_shown_side()
+  let under = if side is None { tape_room_now().under } else { 0.0 }
+  let corners = beside_column(tape_pane_corners(Page, side is Some(_)), under)
+  (tape_bar_start_room(corners, true), tape_bar_end_room(corners), @sf.tape_bar_over())
 }

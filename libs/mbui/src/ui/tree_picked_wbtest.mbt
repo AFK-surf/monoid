@@ -146,6 +146,25 @@ test "words of the tree's dragged over from one row into the next: what each is 
 }
 
 ///|
+test "a mouse's pick says whether it was let go at the start or end of a line" {
+  let took : Array[(String, Array[String])] = []
+  let pill : Ref[@view.NodeId?] = Ref(None)
+  let (t, _, _) = quote_tester(took, pill)
+  let (x, y, w, h) = t.run_rects("hello wide world")[0]
+  let (start, end, mid) = (x + 1.0, x + w - 1.0, y + h / 2.0)
+  let next = dragged_at(t, start, mid, end, mid, t.time(), true)
+  t.frame_at(next)
+  guard picked_now() is Some(forward) else { @halt.saying("no forward pick") }
+  assert_true(forward.text.contains("wide"))
+  assert_false(forward.ends_at_start)
+  let next = dragged_at(t, end, mid, start, mid, next + double_click_ms, true)
+  t.frame_at(next)
+  guard picked_now() is Some(backward) else { @halt.saying("no backward pick") }
+  assert_true(backward.text.contains("wide"))
+  assert_true(backward.ends_at_start)
+}
+
+///|
 test "words of the tree's a finger held still on: once lifted, the system's text menu over them offers the page's own item after copy and select all, and no pill; chosen, it is done and they are let go" {
   let took : Array[(String, Array[String])] = []
   let pill : Ref[@view.NodeId?] = Ref(None)

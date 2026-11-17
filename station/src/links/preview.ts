@@ -201,12 +201,17 @@ async function checksOf(repository: string, sha: string): Promise<{ passed: numb
 
 /// Whether an address is one of the internet's, not a private, loopback or link-local one.
 export function isPublic(address: string): boolean {
-  const v4 = isIP(address) === 4 ? address : /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(address)?.[1];
-  if (v4) {
-    const [a, b] = v4.split(".").map(Number) as [number, number];
+  const kind = isIP(address);
+  if (kind === 0) return false;
+  // URL canonicalizes dotted IPv4 inside IPv6 to hex. Normalize DNS answers too, so expanded and mixed spellings
+  // are checked as the same address; a zone changes the interface, not whether the address is public.
+  const v6 = kind === 6 ? new URL(`http://[${address.split("%")[0]}]/`).hostname.slice(1, -1) : "";
+  const mapped = /^::ffff:([0-9a-f]+):[0-9a-f]+$/.exec(v6);
+  if (kind === 4 || mapped) {
+    const high = mapped ? parseInt(mapped[1]!, 16) : 0;
+    const [a, b] = kind === 4 ? address.split(".").map(Number) as [number, number] : [high >> 8, high & 255];
     return !(a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b < 128) || (a === 169 && b === 254) || (a === 172 && b >= 16 && b < 32) || (a === 192 && b === 168) || a >= 224);
   }
-  const v6 = address.toLowerCase();
   return !(v6 === "::" || v6 === "::1" || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6) || v6.startsWith("ff"));
 }
 

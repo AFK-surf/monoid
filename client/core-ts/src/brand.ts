@@ -35,6 +35,11 @@ export function setTestChannel(on: boolean): void {
   testChannel = on;
 }
 
+/// Whether this core's host runs on the test channel (`beta`).
+export function isTestChannel(): boolean {
+  return testChannel;
+}
+
 /// Whether this core runs in the product's own app (no `client` named), not an app of its own.
 export function setOwnApp(on: boolean): void {
   ownApp = on;

@@ -20,11 +20,34 @@ pub let rebind_ms : Int = 5_000
 /// What else a wake comes to do goes here, each with what it is of: speeds seen on the network of before
 /// forgotten (there only where the network changed: a word this call is given then), the addresses a peer said
 /// tried again, and the endpoints of other ways told as this one is.
-pub fn Mesh::wake(self : Mesh) -> Unit {
+///
+/// `network`: on another network now; the speeds seen on the one before are forgotten (speed.mbt). `retry`: its
+/// person asked to try again; else back after `away_ms` (what the record's line says: trace.mbt).
+pub fn Mesh::wake(self : Mesh, network? : Bool = false, retry? : Bool = false, away_ms? : Int64 = 0L) -> Unit {
   guard !self.closed else { return }
+  if network {
+    self.forget_speeds()
+  }
   // (being bound anew: the endpoint that comes is new to its network, and nothing is on either)
   guard !self.rebinding else { return }
   self.shell.tell("iroh.networkChange", { "id": self.endpoint })
+  self.record_dht(0)
+  self.record("conn network-change", () => {
+    let why = if network {
+      "the network changed"
+    } else if retry {
+      "retry"
+    } else {
+      "the UI back after \{(away_ms.to_double() / 1000.0).round().to_int64()}s"
+    }
+    let open = self.live.filter(link => link.ended() is None).length()
+    "told the main endpoint (\{why}), \{open} link(s) open, \{self.pinned.length()} relay endpoint(s) not told"
+  })
+  // (on another network, perhaps the peer's: its addresses worth a try again, its tailnet once it answers there)
+  for _, ways in self.ways_of {
+    ways.tried.clear()
+    ways.tailnet_answered = false
+  }
   for place, opening in self.links {
     match opening.result {
       Some(Open(link)) =>
@@ -47,7 +70,13 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
   // (cut as its opening ends otherwise, or the mesh closes, it says nothing: whoever ended the opening said it)
   opening.hedge = Some(
     self.scope.fork(name="mesh hedge", () => {
-      let made = attempt(() => self.open(place, opening.credentials, opening.fresh))
+      let span = self.span("mesh.hedge", place.peer)
+      (span.own)("relay", Str(self.relay_status(self.endpoint)))
+      let made = attempt(() => self.dial_all(place, opening.credentials, opening.fresh, traceparent?=span.traceparent))
+      if made is Fell(_) {
+        (span.fail)()
+      }
+      (span.end)()
       self.dialled(place, opening, true, made)
     }),
   )
@@ -56,19 +85,28 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
 ///|
 /// Whether nothing is on the endpoint: no link whose connection has not ended (`live`: a place's, one another took
 /// the place of and not yet closed, one a race opened; a stream of its peer's waited for is a link's), no opening
-/// under way (with the dial tried beside it), no race. What comes to hold the endpoint otherwise is counted here.
+/// under way (with the dial tried beside it), no race, no connection a peer dialled that its program took and that
+/// has not ended (`incomings`, bind.mbt). What comes to hold the endpoint otherwise is counted here.
 fn Mesh::idle(self : Mesh) -> Bool {
-  self.live.length() == 0 && self.racing.length() == 0 && !self.links.values().any(opening => opening.result is None)
+  // (a link on an endpoint of a way's own is not on this one: ways.mbt)
+  self.live.iter().all(link => link.pin is Some(_)) &&
+  self.dialling_main == 0 &&
+  self.racing.length() == 0 &&
+  self.incomings.length() == 0 &&
+  !self.links.values().any(opening => opening.result is None)
 }
 
 ///|
 /// Whether what is on the endpoint all ends by itself, in a time the mesh bounds: something is, and no connection
-/// is open. What is left then is an opening under way (its time: `connect_timeout_ms` once the endpoint is on a
-/// relay, `onto_max_ms` more where it is on none; and that again from a wake that tried it a second time), a race
-/// whose old link ended (its dial is an opening's), a link ended whose answer is not said yet (its read fails
-/// with it). A connection open has no such time: with one, the endpoint is dialled on as it is.
+/// is open, a link's or one a peer dialled. What is left then is an opening under way (its time:
+/// `connect_timeout_ms` once the endpoint is on a relay, `onto_max_ms` more where it is on none; and that again
+/// from a wake that tried it a second time), a race whose old link ended (its dial is an opening's), a link ended
+/// whose answer is not said yet (its read fails with it). A connection open has no such time: with one, the
+/// endpoint is dialled on as it is.
 fn Mesh::settling(self : Mesh) -> Bool {
-  !self.idle() && !self.live.iter().any(link => !link.gone.is_done())
+  !self.idle() &&
+  self.incomings.length() == 0 &&
+  !self.live.iter().any(link => link.pin is None && !link.gone.is_done())
 }
 
 ///|
@@ -83,46 +121,70 @@ fn Mesh::may_rebind(self : Mesh) -> Bool {
 ///|
 /// The endpoint bound anew with the same key, and the one before closed. Only while nothing is on the endpoint
 /// (`Mesh::idle`), and nothing comes to be while it is under way: every dial is a `link`'s, which waits to be told
-/// it ended (`Mesh::hold`), or needs a link there is none of. So no fiber holds the handle of before, but a dial
-/// the shell could not stop for an opening given up, whose connection, should it still come, is closed to be
-/// forgotten as ever.
+/// it ended (`Mesh::hold`), or needs a link there is none of, and whoever asks for a connection a peer dials waits
+/// the same before it takes one (`Mesh::incoming`). So no fiber holds the handle of before, but a dial the shell
+/// could not stop for an opening given up, whose connection, should it still come, is closed to be forgotten as
+/// ever; and the wait for a connection a peer dials, which is let go of as the endpoint it was asked of is
+/// (`Mesh::forget_coming`), the one bound asked by whoever asks next.
 ///
 /// And an endpoint taken for stuck comes to have nothing on it: from the first `link` that finds it so with no
 /// connection open on it and `rebind_ms` gone since the last bind, no new dial is begun on it (`Mesh::link`), so
 /// it is bound anew as the last opening under way ends, an opening's time after at the most (`Mesh::settling`),
 /// however many places are asked for meanwhile; if nobody waits by then, by the next `link`.
 ///
-/// A fiber of the mesh's that nothing cuts short once begun: the shell binds whoever waits, and an endpoint bound
-/// for nobody would stay. So `Mesh::close` waits for it with its other fibers, and it looks again as the shell
-/// answers: the mesh closed meanwhile, the new endpoint never was its and is closed here, the close closing the one
-/// of before; else the new one is the mesh's from that step, whoever waited goes on at once, and the one of before
-/// is closed here after, by this fiber still. Each is closed once. Cut before its first step it asked nothing, and
-/// the close told whoever waited. One that fails leaves the endpoint as it was, and the next is not tried before
-/// `rebind_ms`.
-fn Mesh::rebind(self : Mesh) -> Unit {
+/// `after`: the ends of what was let go of for it (`Mesh::rehome`, bind.mbt), waited for first; cut meanwhile (the
+/// mesh closed), it asked nothing. From there it is a fiber of the mesh's that nothing cuts short: the shell binds
+/// whoever waits, and an endpoint bound for nobody would stay. So `Mesh::close` waits for it with its other fibers,
+/// and it looks again as the shell answers: the mesh closed meanwhile, the new endpoint never was its and is closed
+/// here, the close closing the one of before; else the new one is the mesh's from that step. Told other relays or
+/// entries while the shell bound (`Mesh::retune`), it binds once more, on those, before anyone goes on. Then
+/// whoever waited goes on, and each endpoint of before is closed here after, by this fiber still. Each is closed
+/// once. Cut before its first step it asked nothing, and the close told whoever waited. One that fails leaves the
+/// endpoint as it was, and the next is not tried before `rebind_ms`.
+fn Mesh::rebind(self : Mesh, after? : Array[async () -> Unit] = []) -> Unit {
   self.rebinding = true
   self.rebound_at = Some(self.shell.rt.now())
   ignore(
-    self.scope.fork(name="mesh rebind", () => @effect.uninterruptible(() => {
-      let bound = attempt(() => bind(self.shell, self.options, self.secret))
-      // (this waited: closed meanwhile, the endpoint that came is nobody's)
-      let gone = match bound {
-        Did(endpoint) =>
+    self.scope.fork(name="mesh rebind", () => {
+      for ended in after {
+        ignore(attempt(() => ended()))
+      }
+      @effect.uninterruptible(() => {
+        let gone : Array[Json] = []
+        while !self.closed {
+          let relays = self.relays
+          let entries = self.entries
+          let why = if self.retuned { "relays retold" } else { "a dial unanswered, nothing open" }
+          let bound = attempt(() => bind(self.shell, relays, self.options.relay_only, self.binding, entries, self.secret))
+          self.record("conn rebind", () => match bound {
+            Did(_) => "\{why} -> bound"
+            Fell(e) => "\{why} -> failed: \{said_short(said(e))}"
+          })
+          guard bound is Did(endpoint) else { break }
+          // (this waited: closed meanwhile, the endpoint that came is nobody's)
           if self.closed {
-            Some(endpoint)
-          } else {
-            let before = self.endpoint
-            self.endpoint = endpoint
-            self.stuck = false
-            Some(before)
+            gone.push(endpoint)
+            break
           }
-        Fell(_) => None
-      }
-      self.rebinding = false
-      self.eased()
-      if gone is Some(endpoint) {
-        ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint })))
-      }
-    })),
+          gone.push(self.endpoint)
+          self.endpoint = endpoint
+          self.stuck = false
+          // (told where its program said peers are, as each endpoint bound)
+          self.replay(endpoint)
+          // (the wait for a connection a peer dials was the one of before's, and goes with it, a connection it
+          // brought that nobody took too)
+          self.forget_coming()
+          if physical_equal(relays, self.relays) && physical_equal(entries, self.entries) {
+            self.retuned = false
+            break
+          }
+        }
+        self.rebinding = false
+        self.eased()
+        for endpoint in gone {
+          ignore(attempt(() => self.shell.call("iroh.close", { "id": endpoint, "forget": true })))
+        }
+      })
+    }),
   )
 }

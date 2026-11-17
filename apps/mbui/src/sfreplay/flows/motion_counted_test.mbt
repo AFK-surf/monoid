@@ -18,7 +18,6 @@ fn init {
     // the core's word comes between two frames, read as a frame it stood still (send_paced); at 120 the list's foot
     // under the composer goes back a little as words are sent from it 33 ms after it came to rest (send_card_paced))
     "src/sfreplay/flows/send_card_paced_test.mbt",
-    "src/sfreplay/flows/settings_connect_test.mbt",
     "src/sfreplay/flows/settings_run_settings_test.mbt",
     "src/sfreplay/flows/settings_vault_item_test.mbt",
     "src/sfreplay/flows/share_files_test.mbt",

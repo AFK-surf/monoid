@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, type TestContext } from "node:test";
-import { Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
+import { Clock, Effect, Fiber, Layer, Stream, SubscriptionRef } from "effect";
 import { MeshLive } from "../src/mesh/mesh.ts";
 import { Net } from "../src/jobs/load.ts";
 import { AdminApi, ControlPlane, Events, Key, MeshNative, MeshSide, Own, Parts, Peers, Previous, ScreenRegistry, StationConfig, Store, Up } from "../src/services.ts";
@@ -13,9 +13,10 @@ import { ALPN } from "../src/mesh/serve.ts";
 import { hearLines, type Line } from "../src/ops/log.ts";
 import { memoryMesh } from "./memory-mesh.ts";
 import { StationParts } from "../src/parts.ts";
-import { settle } from "./hub-fakes.ts";
+import { Store as DbStore } from "../src/store/store.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
-function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cubic" | "bbr", scenario: { front?: boolean; failures?: number } = {}) {
+function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cubic" | "bbr", scenario: { front?: boolean; failures?: number; store?: DbStore; clock?: Clock.Clock } = {}) {
   const original = process.env.STILLFAIL_MESH_BIND_ADDR;
   const originalFront = process.env.STILLFAIL_MESH_FRONT;
   if (bindAddr === undefined) delete process.env.STILLFAIL_MESH_BIND_ADDR;
@@ -34,6 +35,7 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
   const binding = Promise.withResolvers<void>();
   const accepting = Promise.withResolvers<void>();
   let calls = 0;
+  let taking = false;
   let presence = false;
   let boundCongestion: string | undefined;
   // The cloud's state as the mesh reads it once bound: a workspace, no relays, no other stations.
@@ -68,21 +70,108 @@ function startup(t: TestContext, bindAddr: string | undefined, congestion?: "cub
       endpoint.online = () => new Promise<void>(() => {});
       const accept = endpoint.accept.bind(endpoint);
       endpoint.accept = () => {
+        taking = true;
         accepting.resolve();
         return accept();
       };
       return endpoint;
     } } as unknown as Mesh),
-    Layer.succeed(Store)(null!), Layer.succeed(AdminApi)(null!), Layer.succeed(Events)({ tell: () => {} } as never),
+    Layer.succeed(Store)(scenario.store ?? null!), Layer.succeed(AdminApi)(null!), Layer.succeed(Events)({ tell: () => {} } as never),
     Layer.succeed(Up)(Effect.runSync(SubscriptionRef.make(true))), Layer.succeed(ScreenRegistry)(null!),
   );
-  const running = Effect.runFork(Effect.scoped(Effect.gen(function* () {
+  const run = Effect.scoped(Effect.gen(function* () {
     yield* Layer.build(MeshLive.pipe(Layer.provide(inputs)));
     built.resolve();
     yield* Effect.never;
-  })));
-  return { previous, exited, built, binding, accepting, running, mesh, station: () => station!, calls: () => calls, presence: () => presence, congestion: () => boundCongestion };
+  }));
+  const running = Effect.runFork(scenario.clock ? run.pipe(Effect.provideService(Clock.Clock, scenario.clock)) : run);
+  return { previous, exited, built, binding, accepting, running, mesh, station: () => station!, calls: () => calls, taking: () => taking, presence: () => presence, congestion: () => boundCongestion };
 }
+
+test("a handover reads the existing device-build epoch while another writer holds the database", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "mesh-builds-handover-"));
+  const old = DbStore.open(join(dir, "station.db"));
+  const next = DbStore.open(join(dir, "station.db"));
+  old.deviceBuildsSince(123);
+  next.db.exec("PRAGMA busy_timeout = 0");
+  old.db.exec("BEGIN IMMEDIATE");
+  const s = startup(t, undefined, undefined, { store: next });
+  try {
+    await s.built.promise;
+    await settle();
+    assert.equal(s.taking(), true, "a kept epoch needs no database write to start accepting");
+    assert.equal(next.deviceBuildsSince(456), 123);
+  } finally {
+    await Effect.runPromise(Fiber.interrupt(s.running));
+    old.db.exec("ROLLBACK");
+    old.close(); next.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("a mesh whose first device-build write is locked starts again after the lock is released", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "mesh-builds-retry-"));
+  const old = DbStore.open(join(dir, "station.db"));
+  const next = DbStore.open(join(dir, "station.db"));
+  next.db.exec("PRAGMA busy_timeout = 5000");
+  old.db.exec("BEGIN IMMEDIATE");
+  const time = testClock();
+  const s = startup(t, undefined, undefined, { store: next, clock: time.clock });
+  let held = true;
+  try {
+    await s.built.promise;
+    await settle();
+    assert.equal(s.taking(), false, "the first write is held");
+    assert.equal(s.calls(), 1);
+    assert.equal(next.db.prepare("PRAGMA busy_timeout").get()?.timeout, 5000, "the usual timeout is restored");
+    await time.adjust(999);
+    await settle();
+    assert.equal(s.calls(), 1, "no retry before the backoff");
+    await time.adjust(1);
+    await settle();
+    assert.equal(s.calls(), 2, "the second attempt still finds the lock");
+    assert.equal(s.taking(), false);
+    old.db.exec("COMMIT"); held = false;
+    await time.adjust(2_000);
+    await settle();
+    assert.equal(s.calls(), 3, "the failed mesh is rebound after the backoff");
+    assert.equal(s.taking(), true, "the new mesh accepts connections after the lock clears");
+    assert.ok(next.db.prepare("SELECT at FROM device_builds_since WHERE one = 1").get());
+    const device = await s.mesh.bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [] });
+    try {
+      const conn = await device.connect({ id: s.station().id() }, ALPN);
+      await (await conn.openBi()).finish();
+      assert.equal(await conn.closed(), "station stopping", "a connection reaches the recovered mesh");
+    } finally { await device.close(); }
+  } finally {
+    await Effect.runPromise(Fiber.interrupt(s.running));
+    if (held) old.db.exec("ROLLBACK");
+    old.close(); next.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("stopping the station during mesh backoff does not bind it again", async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), "mesh-builds-stop-"));
+  const old = DbStore.open(join(dir, "station.db"));
+  const next = DbStore.open(join(dir, "station.db"));
+  next.db.exec("PRAGMA busy_timeout = 0");
+  old.db.exec("BEGIN IMMEDIATE");
+  const time = testClock();
+  const s = startup(t, undefined, undefined, { store: next, clock: time.clock });
+  try {
+    await s.built.promise;
+    await settle();
+    assert.equal(s.calls(), 1);
+    await Effect.runPromise(Fiber.interrupt(s.running));
+    old.db.exec("ROLLBACK");
+    await time.adjust(30_000);
+    await settle();
+    assert.equal(s.calls(), 1, "the retry is cancelled with the station");
+  } finally {
+    await Effect.runPromise(Fiber.interrupt(s.running));
+    if (old.db.isTransaction) old.db.exec("ROLLBACK");
+    old.close(); next.close(); rmSync(dir, { recursive: true, force: true });
+  }
+});
 
 test("the mesh starts with its saved controller, cubic when no choice was made", async (t) => {
   for (const choice of [undefined, "bbr", "cubic"] as const) {

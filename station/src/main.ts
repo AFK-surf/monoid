@@ -23,6 +23,7 @@ import { Browser } from "./browser/service.ts";
 import { dataDir, flag, ownData, positionals } from "./ops/files.ts";
 import { setStationLang, stationLang, tr } from "./ops/i18n.ts";
 import { type Control, launcher } from "./ops/launcher.ts";
+import { HELD, heldBy } from "./ops/held.ts";
 import { hearErrors, hearLines, log } from "./ops/log.ts";
 import { stationLog } from "./ops/log-export.ts";
 import { ConfigFile } from "./ops/config.ts";
@@ -37,6 +38,7 @@ import { AdbLive } from "./adb/module.ts";
 import { TerminalsLive } from "./terminals/module.ts";
 import { BrowserLive } from "./browser/module.ts";
 import { LinksLive } from "./links/module.ts";
+import { FeaturesLive } from "./features.ts";
 import { FeedbackLive } from "./feedback/module.ts";
 import { AgentHomeLive } from "./agenthome/module.ts";
 import { LoginsLive } from "./logins/module.ts";
@@ -48,6 +50,7 @@ import { SearchLive } from "./search/module.ts";
 import { SlackLive } from "./slack/module.ts";
 import { FeishuLive } from "./feishu/module.ts";
 import { CommaLive } from "./comma/module.ts";
+import { GroupLive } from "./group/module.ts";
 import { WorkspaceConnectsLive } from "./connects/workspace.ts";
 import { ModelsLive } from "./models/module.ts";
 import { CopiesLive } from "./replica/module.ts";
@@ -55,6 +58,7 @@ import { MovesLive } from "./move/live.ts";
 import { takeBackSoon } from "./replica/restore.ts";
 import { PROVIDERS, type Provider } from "./cloud/provider.ts";
 import { wall } from "./ops/fibers.ts";
+import { writeHealth } from "./ops/health.ts";
 import { answerHeapRequests, heapCommand } from "./ops/heap.ts";
 import { timeFiles, timeProcesses } from "./ops/file-waits.ts";
 import { longestWaits } from "./ops/waits.ts";
@@ -172,6 +176,12 @@ const BecameRig = Layer.effectDiscard(
 function run() {
   const app = flag(args, "--app");
   if (!app) usage();
+  // On its own (no launcher took the data directory's lock for it): refused where a station runs it already, as the
+  // launcher refuses (ops/held.ts).
+  if (!flag(args, "--launcher-fds") && !flag(args, "--launcher-pipe") && heldBy(data) !== null) {
+    console.error(tr(stationLang(), "station.cli.held", { dir: data }));
+    process.exit(HELD);
+  }
   // Read the essential files before telling the launcher this process is ready. In particular, do not start with
   // defaults when another program has made config.json unreadable.
   const settings = new ConfigFile(data);
@@ -203,9 +213,9 @@ function run() {
     (restored) => { if (restored !== null) log.info("copies", "a lost station's chats taken back", { station: restored.origin, from: restored.from }); },
     (e: Error) => log.error("copies", "a lost station's chats not taken back", { error: e.message }),
   );
-  const paths = Layer.succeed(Paths)({ data, app, beforeStore });
+  const paths = Layer.succeed(Paths)({ data, app, beforeStore, ...(control.restartFront ? { restartFront: control.restartFront } : {}) });
   // still.fail Helper, one for the screens and the drive, and one look at its grants.
-  const base = Layer.mergeAll(Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
+  const base = Layer.mergeAll(StationConfig.layer, Key.layer, ReadersAndStore, MeshNative.layer, Up.layer, ScreenRegistry.layer.pipe(Layer.provideMerge(Grants.layer), Layer.provideMerge(Helper.layer))).pipe(Layer.provideMerge(Previous.layer), Layer.provideMerge(paths));
   const parts = ControlPlane.layer.pipe(Layer.provideMerge(base));
   // A rig (a station that only runs tasks: cloud.json's `rig`, written by `enroll --rig`) is another program of the same release: of a station's
   // parts only what another station asks of it (rig/main.ts). What a machine is, is read once, as it starts; enrolled
@@ -215,7 +225,6 @@ function run() {
     Layer.provideMerge(RigLive(control)),
     Layer.provideMerge(RigSide.layer),
     Layer.provideMerge(AdminHost.layer),
-    Layer.provideMerge(StationConfig.layer),
     Layer.provideMerge(Peers.layer),
     Layer.provideMerge(MeshSide.layer),
     Layer.provideMerge(Parts.layer),
@@ -223,7 +232,7 @@ function run() {
   );
   const station = Layer.mergeAll(MeshLive, Loopback(control), StatusLive, AwakeLive, CheckpointsLive, BecameRig).pipe(
     // The station's parts in its own process (parts.ts), made before the mesh answers anyone: each says what it adds.
-    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive)),
+    Layer.provideMerge(Layer.mergeAll(VaultLive, AdbLive, BrowserLive, LinksLive, FeedbackLive, AgentHomeLive, LoginsLive, DriveTransfersLive, UsageLive, ElevationLive, ResourcesLive, SearchLive, SlackLive, FeishuLive, CommaLive, GroupLive, WorkspaceConnectsLive, ModelsLive, RigsLive, DevicesLive, CopiesLive, MovesLive, TerminalsLive, FeaturesLive)),
     Layer.provideMerge(AdminApi.layer),
     Layer.provideMerge(AgentsLive(control)),
     // The drive, the admin API's: the platform's, before the agents.
@@ -235,7 +244,6 @@ function run() {
     Layer.provideMerge(Browser.layer),
     // config.json, what is the station's own, and the process before this one: the platform's, for every part.
     Layer.provideMerge(Own.layer),
-    Layer.provideMerge(StationConfig.layer),
     // The requests between the stations of the workspace (mesh/bus.ts): the mesh attaches them, the parts answer.
     Layer.provideMerge(Peers.layer),
     // What the mesh and the agents' side share, each filling in its own (services.ts MeshSide).
@@ -248,7 +256,10 @@ function run() {
     Layer.provideMerge(parts),
   );
   // What the parts hold only in memory (the vault's grants), carried over to the next process at a handover.
-  let carry = () => {};
+  let carry = async () => {};
+  // Said of this process in <data>/run/health.json (ops/health.ts) until it stops or hands over: what the next one says
+  // from then on.
+  let healthSaid = true;
   const running = Effect.gen(function* () {
     yield* SubscriptionRef.set(yield* Up, true);
     const stationParts = yield* Parts;
@@ -256,7 +267,24 @@ function run() {
     stationKey = plane.state.state?.station ?? null;
     plane.state.listen((s) => void (stationKey = s?.station ?? null));
     control.carried((what) => stationParts.takeUp(what));
-    carry = () => control.carry(stationParts.carried());
+    carry = async () => control.carry(await stationParts.carried());
+    // How this process is (ops/health.ts), said now (before it is ready: a handover's new process says it before the
+    // one before stops saying it), with each sample of its thread, and as the cloud is heard or not.
+    const mesh = yield* MeshNative;
+    let heldMs = 0;
+    let online = plane.state.reached;
+    let healthWritten: Promise<void> = Promise.resolve();
+    const sayHealth = () => {
+      if (!healthSaid) return;
+      const health = { pid: process.pid, updatedAt: wall.now(), heldMaxMs: Math.round(heldMs), front: mesh.frontLink?.() ?? "direct" as const, presenceOnline: plane.state.reached, relayConflict: mesh.relayConflict?.() === true };
+      healthWritten = healthWritten.then(() => writeHealth(data, health)).catch((e: Error) => log.warn("station", "health.json not written", { error: e.message }));
+    };
+    sayHealth();
+    plane.state.listen(() => {
+      if (plane.state.reached === online) return;
+      online = plane.state.reached;
+      sayHealth();
+    });
     control.ready(version());
     log.info("station", asRig ? "rig up" : "station up", { version: version(), data });
     // Where the memory goes, in MB: the main thread's (and resident), and each reader's heap. Every ten minutes, or
@@ -292,7 +320,11 @@ function run() {
     let usage = process.resourceUsage();
     let sampled = wall.now();
     wall.every(HELD_EVERY_MS, () => { // timer: a sample of this thread
+      // Its loop runs: said to the launcher, which ends a process that says nothing for long (lifecycle.rs heartbeat).
+      control.heartbeat();
       const ms = held.max / 1e6;
+      heldMs = ms;
+      sayHealth();
       const now = wall.now();
       const used = process.cpuUsage(cpu);
       const own = process.threadCpuUsage(ownCpu);
@@ -337,13 +369,14 @@ function run() {
   const stop = (why: string) => {
     if (stopping) return;
     stopping = true;
+    healthSaid = false;
     log.info("station", "stopping", { why });
     Effect.runFork(Fiber.interrupt(fiber)).addObserver(() => void Promise.all([reports.shutdown(), stationLog.shutdown()]).finally(() => process.exit(0)));
   };
   control.on("stop", () => stop("asked to stop"));
   control.on("handover", () => {
-    if (!stopping) carry();
-    stop("handed over to the next station process");
+    // (what the parts carry is given first: some is asked of the sessions' program, which answers at once)
+    void (stopping ? Promise.resolve() : carry().catch((error) => log.warn("station", "nothing carried over", { error: (error as Error).message }))).then(() => stop("handed over to the next station process"));
   });
   fiber.addObserver((exit) => {
     if (!stopping) {

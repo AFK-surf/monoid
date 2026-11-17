@@ -14,7 +14,12 @@
 //     killed in the first pass, b A killed while the chat is held, c B killed as
 //     it took the chat, d move.stop in the first pass, e C without room, f A handed over to a fresh process (SIGUSR2 to
 //     its launcher) in an agent's turn and in a move's;
-//   4 everything (all) to B and all back;
+//   3h C on a sparse volume over the floor, its disk filled by allocation once a chat's first pass began there: the
+//     hand-over fails, the chat on A answering, nothing of it on C, C's room back once the filler goes;
+//   4 everything (all) to B and all back; 4s a Slack connect on Slack's stand-in (e2e/slack-stand-in.ts, each station
+//     pointed at a port of its own): a chat of it moved alone and answered from B through A's connect, the connect
+//     refused before its chats and moved after them (an event a second across it), back, B killed between, A killed
+//     during, A handed over while B answers; a single-session one moved first with what is said meanwhile kept;
 //   5 measured, printed: a 500 MB / 5,000-file room's first pass and pause, 300 chats moved with all, GET /move (the
 //     `stationMove` topic's first answer, and station_move plan) with 300 and 2,400 chats.
 //   6 a chat moved to a B that still holds a retired copy of it (its row `retired:`, entries only B has, an older room
@@ -22,17 +27,26 @@
 //   6b a chat whose key is live on both: shown as one that cannot move, a move refused, B untouched;
 //   7 one station asking another each second while the other is handed to a new process, stopped and started, and
 //     handed to one that dies at start: each ask answered or refused within 2 s, answered again within 5 s of it ready;
+//     7h: asked as each of 10 handovers begins (its launcher's "handing over from Node"): every such ask answered;
 //   8 a device away while a chat moves A→B, A down as it comes back, with no place in B's stream B can go on from (8:
 //     never told by B; 8r: told, its place taken out as B's log moving past it would): it lists the chat once, on B,
 //     which only B's list read can tell it (its session's `from`).
+//   9 single-chat moves A→B, one turn each with no pause: one batch while both stations are handed to their next
+//     process again and again (the invariant), then (9p) one handover a batch, of A or of B, at each phase of a turn,
+//     and (9a) an agent's station_move calls: every chat in sight on one station, what A says went in sight on B,
+//     failed moves told in words and moved on a second ask, the window counted as met; the moves tallied;
+//   9m the real run's limbo (A says it went, its hand-over failed and never shown, B dropped it) made on a build of
+//     main held at its hand-over's test hook (e2e/move-drill-hold.patch, E2E_MOVE_LIMBO_DIST, E2E_DRILL_HOLD; skipped
+//     without), then A's own build started on it: in sight on A again, once, nothing on B, and it moves.
 // Each check says PASS or FAIL with what was seen; a failed one does not stop the next where that can go on alone.
 // E2E_SF_SRC, E2E_ORIGIN, E2E_PEER_DATA as peer.ts; E2E_WORK, E2E_STATION as e2e-local.sh's. E2E_MOVE_ONLY: the
 // parts to run (e.g. "1 2 3a 5"; all of them where unset).
-import { execFileSync, spawnSync } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, statSync, statfsSync, unlinkSync, unwatchFile, watch, watchFile, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { check as checked, deadline, Device, dir, fail, failures, heldProbe, type J, log, whenChanged, within } from "./device.ts";
+import { type Call, SlackStandIn } from "./slack-stand-in.ts";
 
 const WORK = process.env.E2E_WORK!;
 // The last line the drill said: what a limit that passes names as waited for (each wait says itself as it begins).
@@ -147,6 +161,38 @@ const filesIn = (n: Name, id: string) => {
   return existsSync(d) ? readdirSync(d).length : 0;
 };
 
+/// Of the hand-overs out of `sender` begun from `from` to `to` (their id's time), in the order begun, cut in ten: each
+/// tenth's median of what each step took as the sender's own record says (`began`, its clock: from a step's begin to
+/// the next one's, the last to `done`), and of what each kind of request took the receiver to answer (its in record's
+/// `spent`), with the whole run's mean of each beside: the stations' own times, through no file event.
+function recordTenths(sender: Name, receiver: Name, from: number, to: number): string[] {
+  const begun = (id: string) => parseInt(String(id).split("-")[0] ?? "", 36);
+  const outs = handovers(sender, "out").filter((o) => begun(o.id) >= from && begun(o.id) <= to && o.began && typeof o.began === "object").sort((x, y) => begun(x.id) - begun(y.id));
+  if (outs.length < 10) return [`${outs.length} hand-overs with their steps' times: too few to cut in ten (a station from before keeps none)`];
+  const ins = new Map(handovers(receiver, "in").map((i) => [i.id, i] as const));
+  const rows = new Map<string, number[][]>();
+  const put = (k: string, tenth: number, ms: number) => {
+    const r = rows.get(k) ?? Array.from({ length: 10 }, () => [] as number[]);
+    r[tenth]!.push(ms);
+    rows.set(k, r);
+  };
+  outs.forEach((o, i) => {
+    const tenth = Math.min(9, Math.floor((i * 10) / outs.length));
+    const steps = Object.entries(o.began as Record<string, number>).sort((x, y) => x[1] - y[1]);
+    for (let j = 0; j + 1 < steps.length; j++) put(`${sender}: ${steps[j]![0]}`, tenth, steps[j + 1]![1] - steps[j]![1]);
+    if (steps.length > 1) put(`${sender}: begin to its last (${steps.at(-1)![0]})`, tenth, steps.at(-1)![1] - steps[0]![1]);
+    const spent = ins.get(o.id)?.spent as Record<string, number> | undefined;
+    for (const [k, ms] of Object.entries(spent ?? {})) put(`${receiver} answering: ${k}`, tenth, ms);
+  });
+  const median = (xs: number[]) => (xs.length === 0 ? "-" : String([...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]));
+  const mean = (r: number[][]) => {
+    const all = r.flat();
+    return all.length === 0 ? "-" : (all.reduce((a, b) => a + b, 0) / all.length).toFixed(1);
+  };
+  return [`${outs.length} hand-overs by their stations' own times, by tenths, median ms | the run's mean (how many):`,
+    ...[...rows.entries()].map(([k, r]) => `${k}: ${r.map(median).join(" ")} | ${mean(r)} (${r.reduce((n, x) => n + x.length, 0)})`)];
+}
+
 /// What each hand-over out of a station went through and when (this driver's clock), told by its directory's events.
 class Steps {
   readonly seen = new Map<string, { step: string; held: boolean; at: number }[]>();
@@ -183,6 +229,30 @@ class Steps {
   of(id: string) {
     return this.seen.get(id) ?? [];
   }
+  /// Of the hand-overs begun from `from` to `to` (their id's time, the station's clock), in the order begun, cut in ten:
+  /// each tenth's median of each change of step (`files>held*`, … as seen here), of begun to its first record seen, and
+  /// of begun to its end, in ms; what a whole move's per-chat time is made of, and which of it grows along the run.
+  tenths(from: number, to: number): string[] {
+    const begun = (id: string) => parseInt(id.split("-")[0] ?? "", 36);
+    const outs = [...this.seen.entries()].filter(([id, l]) => l.length > 0 && begun(id) >= from && begun(id) <= to).sort((x, y) => begun(x[0]) - begun(y[0]));
+    if (outs.length < 10) return [`${outs.length} hand-overs seen: too few to cut in ten`];
+    const name = (x: { step: string; held: boolean }) => `${x.step}${x.held ? "*" : ""}`;
+    const rows = new Map<string, number[][]>();
+    const put = (k: string, tenth: number, ms: number) => {
+      const r = rows.get(k) ?? Array.from({ length: 10 }, () => [] as number[]);
+      r[tenth]!.push(ms);
+      rows.set(k, r);
+    };
+    outs.forEach(([id, l], i) => {
+      const tenth = Math.min(9, Math.floor((i * 10) / outs.length));
+      put("begun>seen", tenth, l[0]!.at - begun(id));
+      for (let j = 1; j < l.length; j++) put(`${name(l[j - 1]!)}>${name(l[j]!)}`, tenth, l[j]!.at - l[j - 1]!.at);
+      put("begun>end", tenth, l.at(-1)!.at - begun(id));
+    });
+    const median = (xs: number[]) => (xs.length === 0 ? "-" : String([...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)]));
+    return [`${outs.length} hand-overs, by tenths, median ms (how many of the ${outs.length} had the change):`,
+      ...[...rows.entries()].map(([k, r]) => `${k} (${r.reduce((n, x) => n + x.length, 0)}): ${r.map(median).join(" ")}`)];
+  }
   close() {
     this.#w?.close();
   }
@@ -207,7 +277,21 @@ function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
   // (the job's own shell alone, whose argv is `sh -c <its command>` (e2e/fake/claude.mjs's drill-job: a loop, then
   // `: drill-job-<tag>`): what started it may carry the line among its own)
   const mine = new RegExp(`^\\s*(\\d+)\\s+(?:\\S*/)?(?:ba|z)?sh -c while :; do [^;]*; done; : drill-job-${tag}$`);
-  const pids = spawnSync("ps", ["-axo", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
+  // (-ww: ps cuts a long line to the width it guesses otherwise, the tag at its end among what it cut: drill 38)
+  let pids = spawnSync("ps", ["-axww", "-o", "pid=,args="], { encoding: "utf8" }).stdout.split("\n").map((l) => mine.exec(l)?.[1]).filter((x): x is string => x !== undefined).map(Number);
+  // (else the job as its station keeps it: its process group's leader, where that runs: a station that starts it
+  // otherwise than `sh -c <command>`)
+  if (pids.length === 0) {
+    for (const n of stations()) {
+      for (const j of sql(n, `select pgid from jobs where name = ${lit(`drill-${tag}`)} and state = 'running' and pgid is not null`)) {
+        try {
+          process.kill(Number(j.pgid), 0);
+          pids.push(Number(j.pgid));
+        } catch {}
+      }
+    }
+    pids = [...new Set(pids)];
+  }
   return pids.map((pid) => {
     const l = spawnSync("lsof", ["-nP", "-a", "-p", String(pid), "-d", "cwd", "-Fn"], { encoding: "utf8" }).stdout;
     const cwd = /^n(.*)$/m.exec(l)?.[1] ?? "";
@@ -216,7 +300,7 @@ function jobs(tag: string): { pid: number; cwd: string; on: Name | "?" }[] {
 }
 /// What there is of job `tag` to say where it is not as wanted: every process naming it, and its logs' last lines.
 function jobEvidence(tag: string): string {
-  const ps = spawnSync("ps", ["-axo", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(`drill-job-${tag}`)).map((l) => l.trim().slice(0, 200));
+  const ps = spawnSync("ps", ["-axww", "-o", "pid=,ppid=,args="], { encoding: "utf8" }).stdout.split("\n").filter((l) => l.includes(`drill-job-${tag}`)).map((l) => l.trim().slice(0, 200));
   const logs: string[] = [];
   for (const n of stations()) {
     const d = `${DATA[n]}/jobs/logs`;
@@ -240,21 +324,46 @@ const lastOn = (n: Name, ws: string): J | null => {
 };
 const brief = (v: J, most = 600) => JSON.stringify(v)?.slice(0, most);
 
-/// Where chat `key` is stopped, as the station it is shown on keeps it (move/stopped.json): what it waits for; null
-/// where it is not stopped.
-function stoppedOf(key: string): string | null {
-  for (const n of stations()) {
-    let l: J = [];
+/// When anything station `n` keeps of moving last changed (the newest file's time in its move/; what they hold is the
+/// station's own to keep as it will, never read here).
+function moveChanged(n: Name): number {
+  const d = `${DATA[n]}/move`;
+  let most = 0;
+  for (const f of existsSync(d) ? readdirSync(d) : []) {
     try {
-      l = JSON.parse(readFileSync(`${DATA[n]}/move/stopped.json`, "utf8"));
-    } catch {
-      continue;
-    }
-    const s = (Array.isArray(l) ? l : []).find((x: J) => x?.item?.module === "chats" && x?.item?.id === key);
-    if (s !== undefined && standing(n, key) === "live") return `stopped on ${n}, waiting for ${s.waitsFor?.module} ${s.waitsFor?.id}`;
+      most = Math.max(most, statSync(join(d, f)).mtimeMs);
+    } catch {}
+  }
+  return most;
+}
+/// What station `n` says is stopped there, as its GET /move answers (`stopped`, its scheduler's: each item `module id`
+/// with what it waits for), never its files: the device's last answer of it where it was asked after anything in its
+/// move/ last changed, else asked afresh by alice's device, by a page of its chats not read yet (so the core reads it at
+/// once, as timeMove's), let go of once answered. (Asked afresh each time, a say in part 5 would plan 2,384 chats in
+/// the turn it times.)
+async function stoppedOn(n: Name): Promise<{ item: string; waitsFor: string }[]> {
+  const t0 = Date.now();
+  const last = a.moves.findLast((x) => x.station === idOf(n));
+  if (last !== undefined && last.asked > moveChanged(n)) return last.stopped;
+  const w = a.watch({ topic: "stationMove", station: addr(n), to: "", module: "chats", limit: 51 + Math.floor(Math.random() * 140) });
+  try {
+    return (await a.moveSaid(idOf(n), t0, 60_000)).stopped;
+  } finally {
+    w.stop();
+  }
+}
+/// Where chat `key` is stopped, as GET /move of the station it is shown on says: what it waits for; null where it is not
+/// stopped, or its station is down or did not answer (nothing to say then: what waits on it says so itself).
+async function stoppedOf(key: string): Promise<string | null> {
+  for (const n of stations()) {
+    if (standing(n, key) !== "live" || !alive(n)) continue;
+    const s = (await stoppedOn(n).catch(() => [])).find((x) => x.item === `chats ${key}`);
+    if (s !== undefined) return `stopped on ${n}, waiting for ${s.waitsFor}`;
   }
   return null;
 }
+/// What station `n`'s GET /move says is stopped, for a log line.
+const stoppedText = async (n: Name) => brief(await stoppedOn(n).catch((e) => String(e)), 1200);
 /// Whether station `n`'s launcher runs (its pid file, e2e-local.sh's, and that process).
 function alive(n: Name): boolean {
   try {
@@ -281,6 +390,8 @@ function launcherOf(n: Name): number | undefined {
   }
   return undefined;
 }
+/// (Both looked at every 200 ms besides the run directory's events: on the Studio the launcher's lines written by
+/// waitfor's tee went untold for whole seconds, a handover seen only at its 10 s deadline, parts 7h and 9, 2026-11-16.)
 /// Station `n` sent SIGUSR2 by its launcher's pid, as an update does, and the launcher's word on it from its log (each
 /// station's `<name>.log`): it began a handover (a Node started beside the one serving), or the error at once where it
 /// said nothing of one in 10 s.
@@ -295,7 +406,7 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
   process.kill(pid, "SIGUSR2");
   log(`  SIGUSR2 to ${n}'s launcher ${pid}; waiting for it to begin a handover`);
   await whenChanged([RUN], () => /handover: Node [0-9]+ started beside|not handed over; going on as before/.test(since(file, from)), 10_000,
-    () => `${n}'s launcher said nothing of a handover in 10 s: ${since(file, from).split("\n").slice(-5).join(" | ")}`);
+    () => `${n}'s launcher said nothing of a handover in 10 s: ${since(file, from).split("\n").slice(-5).join(" | ")}`, 200);
   return { from, log: file };
 }
 /// What `n`'s launcher said since `from` once it said how the handover ended: taken over, or not handed over (its own
@@ -303,7 +414,7 @@ async function handOver(n: Name): Promise<{ from: number; log: string }> {
 function handoverEnd(h: { from: number; log: string }, ms = 120_000): Promise<string> {
   log("  waiting for the handover's end in the launcher's log");
   return whenChanged([RUN], () => /Node [0-9]+ has taken over|not handed over; going on as before[^\n]*|Node [0-9]+ did not take over[^\n]*/.exec(since(h.log, h.from))?.[0], ms,
-    () => `no end of the handover said: ${since(h.log, h.from).split("\n").slice(-6).join(" | ")}`);
+    () => `no end of the handover said: ${since(h.log, h.from).split("\n").slice(-6).join(" | ")}`, 200);
 }
 
 /// A room filled with `count` files of `bytes` bytes each, each its own random bytes (two the same would be sent once).
@@ -332,7 +443,7 @@ let B = "";
 let C = "";
 const addr = (n: Name) => (n === "A" ? A : n === "B" ? B : C);
 const idOf = (n: Name) => (n === "A" ? aId : n === "B" ? bId : cId);
-const steps: { A?: Steps } = {};
+const steps: { A?: Steps; B?: Steps } = {};
 const report: string[] = [];
 const measured = (s: string) => {
   report.push(s);
@@ -351,23 +462,33 @@ const moveT = (to: string, module = "chats", limit?: number) => ({ topic: "stati
 /// What chat `key` was answered after `text` was said in it by alice's device (aimed at A, where it began: the core
 /// sends it on to where it is): the first new message beginning `prefix`.
 /// It fails at once where no answer can come: what was said failed in the outbox, or the chat is stopped where it is
-/// (its station's move/stopped.json, what GET /move's `stopped` says), saying why.
+/// (what GET /move's `stopped` of its station says), saying why.
 async function say(key: string, text: string, prefix: string, ms = 120_000): Promise<string> {
   log(`  saying ${text.slice(0, 80)}, waiting for ${prefix}`);
   const before = new Set(texts(await untilChat(key, (v) => v?.messages && v, 60_000)));
-  const stopped0 = stoppedOf(key);
+  const stopped0 = await stoppedOf(key);
   if (stopped0 !== null) throw new Error(`no answer can come: the chat is ${stopped0} (${standings(key)})`);
   await a.call("chat.send", { station: A, session: key, text });
-  // (the chat stopped meanwhile, as its station's files say; a wait that never ends otherwise. Let go of at the next
-  // change once the answer came)
+  // (the chat stopped meanwhile, as GET /move of its station says, asked again as what its station keeps of moving
+  // changes, one ask at a time; a wait that never ends otherwise. Let go of at the next change once the answer came)
   let over = false;
-  const stops = whenChanged(stations().map((n) => DATA[n]), () => {
-    if (over) return { over };
-    const s = stoppedOf(key);
-    return s !== null && { stopped: s };
-  }, ms + 5_000, () => "").catch(() => new Promise<never>(() => {}));
+  const stops = new Promise<{ stopped: string }>((resolve) => {
+    let looking = false;
+    let again = false;
+    const look = async () => {
+      if (looking) return void (again = true);
+      looking = true;
+      do {
+        again = false;
+        const s = await stoppedOf(key).catch(() => null);
+        if (s !== null && !over) return resolve({ stopped: s });
+      } while (again && !over);
+      looking = false;
+    };
+    whenChanged(stations().map((n) => `${DATA[n]}/move`), () => over || void look(), ms + 5_000, () => "").catch(() => {});
+  });
   const answered = untilChat(key, (v) => texts(v).find((t) => t.startsWith(prefix) && !before.has(t)) ?? failedSend(v, text), ms);
-  const got = await Promise.race([answered, stops.then((s) => ("stopped" in s ? s : answered))]).finally(() => void (over = true));
+  const got = await Promise.race([answered, stops]).finally(() => void (over = true));
   if (typeof got !== "string") {
     if ("stopped" in got) throw new Error(`no answer can come: the chat is ${got.stopped} (${standings(key)})`);
     throw new Error(`what was said did not go: ${got.failed}`);
@@ -388,6 +509,16 @@ async function newChat(label: string, profile?: string): Promise<string> {
   // (named, as a person does: a chat left unnamed has its agent asked for a title, which is no move's)
   await a.call("chat.rename", { station: A, thread: v.thread.id, title: `drill ${label}` });
   return v.key as string;
+}
+/// A Claude login of station `n`'s own in its config.json (a profile and its home with a credentials file, as the
+/// harness's `up` gives A its `cc`): written while that station is stopped.
+function addLogin(n: Name, id: string): void {
+  const path = `${DATA[n]}/config.json`;
+  const cfg = JSON.parse(readFileSync(path, "utf8"));
+  cfg.profiles = [...(cfg.profiles ?? []).filter((p: J) => p.id !== id), { id, runtime: "claude", home: `homes/${id}`, models: ["claude-sonnet-5-5"] }];
+  writeFileSync(path, JSON.stringify(cfg, null, 2));
+  mkdirSync(`${DATA[n]}/homes/${id}`, { recursive: true });
+  writeFileSync(`${DATA[n]}/homes/${id}/.credentials.json`, "{}");
 }
 /// The device's rows of chat `key` once `ok` holds of them (or the time is up: an error saying what they were).
 async function listed(key: string, ok: (rows: J[]) => boolean, ms = 90_000, what = "as wanted"): Promise<J[]> {
@@ -685,10 +816,10 @@ try {
     await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === id && s.online), 120_000);
     return id;
   };
-  await check("setup: B enrolled beside A with the app's command, moving switched on there, online", async () => {
+  await check("setup: B enrolled beside A with the app's command, on the test channel (moving is on there), online", async () => {
     bId = await enroll("B", "move-b");
     B = `${ws}/${bId}`;
-    if (!/"move":true/.test(readFileSync(`${DATA.B}/config.json`, "utf8"))) throw new Error(`B's config: ${readFileSync(`${DATA.B}/config.json`, "utf8")}`);
+    if (!/"updateChannel":"beta"/.test(readFileSync(`${DATA.B}/config.json`, "utf8"))) throw new Error(`B's config: ${readFileSync(`${DATA.B}/config.json`, "utf8")}`);
     log(`  B ${bId}`);
   });
   if (bId === "") throw new Error("no B: nothing to move to");
@@ -702,6 +833,7 @@ try {
     log(`  on B after ${((Date.now() - t0) / 1000).toFixed(1)} s`);
   });
   steps.A = new Steps("A");
+  steps.B = new Steps("B");
 
   // ── 1: the page's data ──
   if (part("1")) {
@@ -778,7 +910,7 @@ try {
       // (a login that can be shared is lent, not moved: A stays its host, B borrows it, `last.lent`, 5beeaa8cf)
       lentWith = ((l.lent ?? []) as J[]).map((x: J) => (typeof x === "string" ? x : named(x)));
       const profilesA = (JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => p.id);
-      log(`  A's profiles now ${brief(profilesA)}; stopped on A: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 400) : "none"}`);
+      log(`  A's profiles now ${brief(profilesA)}; stopped on A: ${await stoppedText("A")}`);
     });
     if (arrived) {
       await check("2: the login it needs lent to B, not moved: A still hosts it, B borrows it", async () => {
@@ -899,7 +1031,7 @@ try {
         if (account !== undefined && standing("A", k2) === "live" && borrowed.length === 0) {
           const nonce = randomBytes(3).toString("hex");
           await check("2: back on A while its account is still on B: stopped, and the person is told so", async () => {
-            log(`  A's stopped.json: ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
+            log(`  A's stopped: ${await stoppedText("A")}`);
             const m = await a.until(moveT(bId), (v) => v?.modules && v, 60_000);
             const row = await rowSettled("2", m, k2, (r) => r?.state === "stopped");
             const chatsM = m.modules.find((x: J) => x.id === "chats");
@@ -1021,10 +1153,10 @@ try {
       let back = false;
       await check("2k: the chat alone moved back while its login stays on B: on A, stopped, waiting for it", async () => {
         const l = await moveBack(kc, "B");
-        log(`  ${outcome(l)}; ${standings(kc)}; A's stopped ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 600) : "none"}`);
+        log(`  ${outcome(l)}; ${standings(kc)}; A's stopped ${await stoppedText("A")}`);
         if (standing("A", kc) !== "live") throw new Error(`not back on A: ${standings(kc)}; ${outcome(l)}`);
         back = true;
-        const s = stoppedOf(kc);
+        const s = await stoppedOf(kc);
         if (s === null || !s.includes(item)) throw new Error(`not stopped waiting for ${item}: ${s}`);
         const m = await atRest("2k");
         const chatsM = m.modules.find((x: J) => x.id === "chats");
@@ -1080,10 +1212,10 @@ try {
             await a.call("move.start", { station: A, to: bId, module: "accounts", item });
             const lo = await turnEnds("A", t0);
             moved = true;
-            log(`  the login alone to B: ${outcome(lo)}; its turn's stopped ${brief(lo?.stopped ?? null, 600)}; ${standings(kd)}; stopped ${stoppedOf(kd)}`);
+            log(`  the login alone to B: ${outcome(lo)}; its turn's stopped ${brief(lo?.stopped ?? null, 600)}; ${standings(kd)}; stopped ${await stoppedOf(kd)}`);
             // (the facts at that moment, for the station's side: no verdict of them)
-            log(`  2k's second chat as the login left, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 1200) : "none"}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
-            if (stoppedOf(kd) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
+            log(`  2k's second chat as the login left, its facts: A's stopped ${await stoppedText("A")}\n    ${heldOf2(kd)}\n    the first chat: ${heldOf2(kc)}\n    A's runtime sessions of both: ${brief(sql("A", `select session_key, profile, id from runtime_sessions where session_key in (${lit(kd)}, ${lit(kc)})`))}\n    the stations' logs around it:\n    ${logsAround(Date.now() - 1500)}`);
+            if ((await stoppedOf(kd)) === null) throw new Error(`not stopped on A as its login left: ${standings(kd)}`);
             const m = await atRest("2k");
             const row = await rowSettled("2k", m, kd, (r) => r?.state === "stopped" && r?.action === "move");
             log(`  A's page: its row ${brief(row)}`);
@@ -1106,7 +1238,7 @@ try {
             const rowAfter = await rowSettled("2k", after, kd, (r) => r?.state === "there");
             log(`  A's page after: its row ${brief(rowAfter)}`);
             // (the facts at that moment, for the station's side: no verdict of them)
-            log(`  2k's second chat, its facts: A's stopped.json ${existsSync(`${DATA.A}/move/stopped.json`) ? readFileSync(`${DATA.A}/move/stopped.json`, "utf8").slice(0, 800) : "none"}\n    ${heldOf2(kd)}`);
+            log(`  2k's second chat, its facts: A's stopped ${await stoppedText("A")}\n    ${heldOf2(kd)}`);
             if (rowAfter?.state !== "there") throw new Error(`its row on A's page reads ${rowAfter?.state}, not there`);
           });
         } finally {
@@ -1554,6 +1686,9 @@ try {
         mounted = true;
         sh("cp", ["-a", `${orig}/.`, DATA.C]);
         rmSync(orig, { recursive: true, force: true });
+        // (a login of C's own, so a chat made there answers with nothing moved to it: what shows C works once nothing
+        // can move there, the floor refusing every chat on a disk this small)
+        addLogin("C", "cc-c");
         stationDo("again", "third");
         await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === cId && s.online), 120_000);
         const s = statfsSync(DATA.C);
@@ -1590,14 +1725,35 @@ try {
             if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(said);
           });
         }
-        await check("3e: C still works after: a small chat moved to C answers there, and comes back", async () => {
+        // (a station keeps the larger of 20 GiB and a tenth of its disk free, handover.ts `floorOf`: C, on 1.6 GB, takes
+        // no chat at all, and says so in numbers before anything of it is held)
+        await check("3e: a small chat's move to C: refused before it is held, in the floor's words with its numbers; on A, nothing of it on C", async () => {
           const small = await newChat(`f3e-small-${tag}`);
-          const l = await moveChat(small, "C");
+          const t0 = Date.now();
+          await a.call("move.start", { station: A, to: cId, module: "chats", item: small, withNeeds: true });
+          const l = await turnEnds("A", t0);
           for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
-          if (standing("C", small) !== "live") throw new Error(`${standings(small)}; ${outcome(l)}`);
-          const said = await say(small, `drill-note:f3e-small-${tag}`, `drill-noted f3e-small-${tag}`);
-          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "C") throw new Error(said);
-          await home(small);
+          const o = outOf(small);
+          const why = failedWhy(l, `chats ${small}`) || (l.refused ?? []).map((r: J) => r.why).join(" | ");
+          log(`  ${outcome(l)}; its hand-over ${o?.step ?? "none"} held=${o?.held ?? "-"}`);
+          const nums = [...why.matchAll(/(\d+(?:\.\d+)?)\s*(?:GB|GiB)/g)].map((m) => m[1]);
+          if (nums.length < 3) throw new Error(`not the floor's words with its three numbers (left there, the chat's, the floor): ${why}`);
+          if (o !== null && o.held !== false) throw new Error("it was held before it was refused");
+          if (standing("A", small) !== "live") throw new Error(standings(small));
+          if (standing("C", small) !== "none") throw new Error(`C has ${standing("C", small)} of it`);
+          if (handovers("C", "in").some((i) => (i.keys ?? []).includes(small) && i.step === "coming")) throw new Error(`C has a hand-over of it coming: ${brief(handovers("C", "in"))}`);
+          log(`  said: ${why.slice(0, 300)} (${nums.join(", ")})`);
+        });
+        await check("3e: C still works where it needs no room for a chat: a chat made on C answers there, and C answers its move page", async () => {
+          const { key: made } = await a.call("chat.create", { station: C, runtime: "claude", profile: "cc-c" });
+          await a.call("chat.send", { station: C, session: made, text: `drill-note:f3e-c-${tag}` });
+          const v = await a.until({ topic: "chat", station: C, session: made }, (v) => failedSend(v, `drill-note:f3e-c-${tag}`) ?? texts(v).find((t) => t.startsWith(`drill-noted f3e-c-${tag}`)), 120_000);
+          if (typeof v !== "string") throw new Error(`what was said on C did not go: ${v.failed}`);
+          if (at(/cwd=(\S+)/.exec(v)?.[1] ?? "") !== "C") throw new Error(v);
+          const t0 = Date.now();
+          const page = await a.until({ topic: "stationMove", station: C, to: aId, module: "chats" }, (p) => p?.modules && p, 60_000);
+          await a.answered(cId, "/move", t0, 10_000, true);
+          log(`  answered on C: ${v.slice(0, 120)}; C's move page: ${page.modules.map((m: J) => `${m.id} ${m.done}/${m.total}`).join(", ")}`);
         });
       }
     } finally {
@@ -1641,6 +1797,139 @@ try {
         log(`  A's profiles: ${brief((JSON.parse(readFileSync(`${DATA.A}/config.json`, "utf8")).profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })), 400)}`);
         if (lost) throw new Error("A has no login of its own any more: it went to C with a chat and was lost with C");
       });
+    }
+  }
+  // ── 3h: C's disk filled while a chat's files are going (the floor looks only before they go) ──
+  if (part("3h") && (limit("3h", 1800), await clean("3h"))) {
+    const img = `${WORK}/drill-fill`;
+    let mounted = false;
+    let key = "";
+    let freeBefore = 0;
+    const filler = () => `${DATA.C}/drill-filler`;
+    const freeOn = (p: string) => {
+      const s = statfsSync(p);
+      return Number(s.bavail) * Number(s.bsize);
+    };
+    const GiB = 1024 ** 3;
+    const toC = new Set<string>();
+    /// `bytes` of C's volume taken at once by allocation, none of it written (macOS F_PREALLOCATE, then the file's size
+    /// set: the inner volume's free space falls, the sparse image under it does not grow); where that does not take the
+    /// room, written (zeros, a block at a time).
+    const take = async (bytes: number): Promise<string> => {
+      const want = freeOn(DATA.C) - bytes;
+      const pa = spawnSync("python3", ["-I", "-c", [
+        "import errno, fcntl, os, struct, sys",
+        "f, n = sys.argv[1], int(sys.argv[2])",
+        "fd = os.open(f, os.O_RDWR | os.O_CREAT, 0o600)",
+        // (fstore_t: F_ALLOCATEALL, F_PEOFPOSMODE, offset 0 from the physical end, a length; F_PREALLOCATE is 42 on
+        // macOS. Asked whole, APFS refuses it, ENOSPC: drill 36. So a piece at a time, each smaller where one does not fit)
+        "got, piece = 0, 1 << 30",
+        "while got < n and piece >= (8 << 20):",
+        "    ask = min(piece, n - got)",
+        "    try:",
+        "        r = fcntl.fcntl(fd, 42, struct.pack('IiqqQ', 4, 3, 0, ask, 0)); got += struct.unpack('IiqqQ', r)[4]",
+        "    except OSError as e:",
+        "        if e.errno != errno.ENOSPC: raise",
+        "        piece //= 2",
+        "os.ftruncate(fd, got)",
+        "os.close(fd)",
+        "print('allocated', got)",
+      ].join("\n"), filler(), String(bytes)], { encoding: "utf8" });
+      const said = `${(pa.stdout ?? "").trim()} ${(pa.stderr ?? "").trim().split("\n").pop() ?? ""}`.trim();
+      if (freeOn(DATA.C) <= want + 256 * 1048576) return `allocated (${said})`;
+      log(`  allocation took too little: ${said}; ${((freeOn(DATA.C) - want) / 1048576).toFixed(0)} MB over what was wanted`);
+      // (written by a child of its own, the drill's loop going on meanwhile: rr34-1126's dd held it 15 s)
+      const status = await new Promise<number | null>((resolve) => spawn("dd", ["if=/dev/zero", `of=${filler()}`, "bs=8m", `count=${Math.floor(bytes / (8 * 1048576))}`], { stdio: "ignore" }).on("exit", resolve));
+      return `written (dd ${status}: a full disk ends it with 1)`;
+    };
+    try {
+      await check("3h: setup: this machine has the room; C enrolled on a 24 GiB sparse APFS volume of its own, over the floor", async () => {
+        const host = freeOn(WORK);
+        log(`  this machine's disk: ${(host / GiB).toFixed(1)} GiB free`);
+        if (host < 30 * GiB) throw new Error(`not run: this machine has ${(host / GiB).toFixed(1)} GiB free, 30 wanted`);
+        cId = await enroll("C", "move-fill");
+        C = `${ws}/${cId}`;
+        stationDo("second-stop", "third");
+        rmSync(`${img}.sparseimage`, { force: true });
+        sh("hdiutil", ["create", "-quiet", "-type", "SPARSE", "-size", "24g", "-fs", "APFS", "-volname", "drillfill", img]);
+        const orig = `${DATA.C}.orig`;
+        rmSync(orig, { recursive: true, force: true });
+        sh("mv", [DATA.C, orig]);
+        mkdirSync(DATA.C);
+        sh("hdiutil", ["attach", "-quiet", "-nobrowse", "-mountpoint", DATA.C, `${img}.sparseimage`]);
+        mounted = true;
+        sh("cp", ["-a", `${orig}/.`, DATA.C]);
+        rmSync(orig, { recursive: true, force: true });
+        stationDo("again", "third");
+        await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === cId && s.online), 120_000);
+        freeBefore = freeOn(DATA.C);
+        log(`  C ${cId}: ${(freeBefore / GiB).toFixed(2)} GiB free`);
+        if (freeBefore < 21 * GiB) throw new Error(`C's volume has ${(freeBefore / GiB).toFixed(2)} GiB free: not over the floor (20 GiB) with a chat's room`);
+      });
+      if (cId !== "" && mounted) {
+        await check("3h: C's volume filled once the first pass began: the hand-over fails, the chat on A answering, nothing of it on C", async () => {
+          key = await faultChat("f3h", 1000, 400);
+          const t0 = Date.now();
+          await a.call("move.start", { station: A, to: cId, module: "chats", item: key, withNeeds: true });
+          await firstPass(key, t0, "C");
+          const free0 = freeOn(DATA.C);
+          const how = await take(free0 - 64 * 1048576);
+          const free1 = freeOn(DATA.C);
+          log(`  C's volume: ${(free0 / 1048576).toFixed(0)} MB free as the first pass began, ${(free1 / 1048576).toFixed(0)} MB once filled (${how}); this machine's disk ${(freeOn(WORK) / GiB).toFixed(1)} GiB free`);
+          if (free1 > 256 * 1048576) throw new Error(`C's volume not filled: ${(free1 / 1048576).toFixed(0)} MB free`);
+          const l = await turnEnds("A", t0, 600_000);
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
+          const o = outOf(key);
+          log(`  ${outcome(l)}; its hand-over ${o?.step} ${o?.error ?? ""}`);
+          if ((l.done ?? []).some((d: J) => named(d) === `chats ${key}`)) throw new Error(`moved though C's disk was full: ${outcome(l)}`);
+          // (C's own write failing is C's refusal, in numbers: station.move.why.fullThere, its error's code and what is free
+          // there now; never the words of a station that did not answer)
+          const why = failedWhy(l, `chats ${key}`) || (l.refused ?? []).map((r: J) => r.why).join(" | ");
+          if (/没有应答|did not answer|not answer/i.test(why)) throw new Error(`told as a station that did not answer: ${why}`);
+          if (!/ENOSPC|EDQUOT|EROFS/.test(why) || !/\d+(?:\.\d+)?\s*(?:GB|GiB|MB)/.test(why)) throw new Error(`not C's full disk in numbers (its error's code, what is free there): ${why}`);
+          if (standing("A", key) !== "live") throw new Error(standings(key));
+          await whenChanged([`${DATA.C}/replica`], () => !handovers("C", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "coming") && true, 120_000, () => `C's hand-over in: ${brief(handovers("C", "in"))}`);
+          if (standing("C", key) !== "none") throw new Error(`C has ${standing("C", key)} of it`);
+          const said = await say(key, `drill-note:f3h-${tag}`, `drill-noted f3h-${tag}`);
+          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "A") throw new Error(said);
+        });
+        await check("3h: the filler gone, C's room comes back (nothing of the chat left there) and the chat moves there and back", async () => {
+          rmSync(filler(), { force: true });
+          // (APFS gives back what a file took as it gets to it, not at its unlink: drill 36 read C 24 GB short at once)
+          await whenChanged([], () => freeOn(DATA.C) >= freeBefore - 100 * 1048576, 120_000, () => "", 1000).catch(() => {});
+          const free = freeOn(DATA.C);
+          log(`  C free before ${(freeBefore / 1048576).toFixed(0)} MB, now ${(free / 1048576).toFixed(0)} MB`);
+          if (free < freeBefore - 100 * 1048576) throw new Error(`C has ${((freeBefore - free) / 1048576).toFixed(0)} MB less free than before: what was placed of the chat stayed`);
+          const l = await moveChat(key, "C");
+          for (const d of l.done ?? []) if (d.module === "accounts") toC.add(d.id);
+          if (standing("C", key) !== "live") throw new Error(`${standings(key)}; ${outcome(l)}`);
+          const said = await say(key, `drill-note:f3h-c-${tag}`, `drill-noted f3h-c-${tag}`);
+          if (at(/cwd=(\S+)/.exec(said)?.[1] ?? "") !== "C") throw new Error(said);
+          await home(key);
+        });
+      }
+    } finally {
+      rmSync(filler(), { force: true });
+      if (cId !== "") {
+        const t0 = Date.now();
+        await a.call("move.back", { station: A, from: cId, all: true }).then(() => turnEnds("A", t0, 120_000)).then((l) => log(`  what moved to C brought back: ${outcome(l)}`), (e) => log(`  what moved to C not brought back: ${String(e).slice(0, 300)}`));
+        for (const id of toC) {
+          const t1 = Date.now();
+          await a.call("move.back", { station: A, from: cId, module: "accounts", item: id }).then(() => turnEnds("A", t1, 120_000)).then((l) => log(`  ${id} back from C: ${outcome(l)}`), (e) => log(`  ${id} not back from C: ${String(e).slice(0, 300)}`));
+        }
+      }
+      try {
+        if (cId !== "") stationDo("second-stop", "third");
+        if (mounted) sh("hdiutil", ["detach", "-quiet", "-force", DATA.C]);
+        rmSync(`${img}.sparseimage`, { force: true });
+        if (cId !== "") {
+          await a.call("workspace.removeStation", { account: a.sub, workspace: ws, station: cId }).catch((e) => log(`  C not taken out: ${e}`));
+          stationDo("second-down", "third");
+        }
+      } catch (e) {
+        log(`  C's end: ${String(e).slice(0, 300)}`);
+      }
+      cId = "";
     }
   }
   if (part("3f") && (limit("3f", 900), await clean("3f"))) {
@@ -1714,7 +2003,9 @@ try {
       for (const k of keys) writeFileSync(join(roomOn("A", k)!, "mine.txt"), `${k}\n`);
       jobTag = `all${tag}`;
       await say(keys[0]!, `drill-job:${jobTag}`, `drill-job ${jobTag}`);
-      await whenChanged([DATA.A], () => jobs(jobTag).length > 0, 60_000, () => "no job");
+      // (a job is a process: no file of A's need change as it starts, so looked at each second as well; drill 37's
+      // started as A's directory had gone quiet and was never looked for again)
+      await whenChanged([DATA.A], () => jobs(jobTag).length > 0, 60_000, () => `no job: ${jobEvidence(jobTag)}`, 1000);
       for (const k of keys.slice(7)) {
         const thread = (await untilChat(k, (v) => typeof v?.thread?.id === "number" && v)).thread.id;
         await a.call("chat.archive", { station: A, session: k, thread, archived: true });
@@ -1798,12 +2089,517 @@ try {
         if (sql("B", "select count(*) n from vault_plain")[0].n > 0) throw new Error("B kept the vault item it was given");
       });
     }
-    log("SKIP 4: a connect moved with it: not built, the harness has no Slack, Feishu or Comma fake a connect could run against; no connect was part of `all`");
+    log("SKIP 4: a connect moved with `all`: no connect is part of this part's station; a Slack connect's chats and the connect itself are part 4s's, on Slack's stand-in");
+  }
+
+  // ── 4s: a Slack connect, its chats and itself moved, on real processes, Slack being its stand-in ──
+  // (e2e/slack-stand-in.ts: each station pointed at a port of its own, so every call and socket is known by the station
+  // that made it)
+  if (part("4s") && (limit("4s", 5400), await clean("4s"))) {
+    const APP = "xapp-1-drill";
+    const APP1 = "xapp-2-drill";
+    const sl = new SlackStandIn(process.env.E2E_SF_SRC!, [{ app: APP, bot: "xoxb-1-drill", user: "UBOT" }, { app: APP1, bot: "xoxb-2-drill", user: "UBOT2" }], (line) => log(`  ${line}`));
+    const CH = "C1";
+    const CH1 = "C2";
+    const dk = "dk";
+    const dks = "dks";
+    const itemOf = (id: string) => `${id}@${aId}`;
+    const keyOf = (ts: string) => `${dk}:${CH}:${ts}`;
+    const cfgOf = (n: Name): J => JSON.parse(readFileSync(`${DATA[n]}/config.json`, "utf8"));
+    // (as the station it moved to names it: `<id>@<the station it was added on>`, connects/workspace.ts take)
+    const holds = (id: string) => (["A", "B"] as Name[]).filter((n) => (cfgOf(n).connects ?? []).some((c: J) => c?.id === id || c?.id === itemOf(id)));
+    /// What was asked in a thread, and whether an answer must come (one said while its chat's station was down need
+    /// not: what is said then is the notice's); each is held to one answer at the part's end.
+    const asked: { thread: string; word: string; channel: string; must: boolean }[] = [];
+    const sayIn = (thread: string | undefined, text: string, word: string, o: { app?: string; channel?: string; must?: boolean } = {}) => {
+      const s = sl.say(o.app ?? APP, o.channel ?? CH, text, thread);
+      asked.push({ thread: thread ?? s.ts, word, channel: o.channel ?? CH, must: o.must ?? true });
+      log(`  Slack: ${thread === undefined ? "a new conversation" : `in ${thread}`}: ${text} (${s.id})`);
+      return s;
+    };
+    const answersTo = (thread: string, word: string, channel = CH) => sl.posted(channel, thread).filter((c) => (c.params.text ?? "").startsWith(word));
+    const answerTo = (thread: string, word: string, ms = 180_000, channel = CH) => sl.until(`answer "${word}" in ${thread}`, () => answersTo(thread, word, channel)[0], ms);
+    const cwdOf = (c: Call): Name | "?" => at(/cwd=(\S+)/.exec(c.params.text ?? "")?.[1] ?? "");
+    const sockets = (app = APP) => sl.live(app).map((s) => `${s.station}#${s.n}`).join(",") || "none";
+    /// Each two sockets of `app` open at once between `from` and `to`: which, and for how long (ms).
+    const overlaps = (app: string, from = 0, to = Infinity) => {
+      const of = sl.sockets.filter((s) => s.app === app);
+      const out: string[] = [];
+      for (let i = 0; i < of.length; i++) {
+        for (let j = i + 1; j < of.length; j++) {
+          const x = of[i]!;
+          const y = of[j]!;
+          const start = Math.max(x.opened, y.opened, from);
+          const end = Math.min(x.closed || Date.now(), y.closed || Date.now(), to);
+          if (end > start) out.push({ ms: end - start, said: `${x.station}#${x.n} and ${y.station}#${y.n} for ${end - start} ms at ${new Date(start).toISOString().slice(11, 23)}` });
+        }
+      }
+      return out;
+    };
+    /// Each time between `from` and `to` that no socket of `app` was open (a station that was down aside: what is
+    /// asked of this is a move's own).
+    const gaps = (app: string, from: number, to = Date.now()) =>
+      (sl.none.get(app) ?? []).filter((g) => g.from > 0 && g.from < to && (g.to === 0 || g.to > from)).map((g) => ({ ms: (g.to || to) - g.from, said: `none open for ${(g.to || to) - g.from} ms at ${new Date(g.from).toISOString().slice(11, 23)}` }));
+    /// A move's window as measured (both open at once, none open), and what of it is over a second: the platform takes
+    /// several sockets of an app, giving an event to one, so what is held is each event handled once; a window as long
+    /// as a second is no switch.
+    const windowOf = (label: string, app: string, from: number, to = Date.now()) => {
+      const two = overlaps(app, from, to);
+      const none = gaps(app, from, to);
+      measured(`4s ${label}: ${two.length === 0 ? "never two open" : `two open: ${two.map((x) => x.said).join("; ")}`}; ${none.length === 0 ? "never none open" : none.map((x) => x.said).join("; ")}`);
+      return [...two, ...none].filter((x) => x.ms > 1000).map((x) => x.said);
+    };
+    /// The live chat of thread `ts` in `channel`, wherever it is (its key there: B names a connect it took by its
+    /// origin, `dk@<A's id>`).
+    const chatOf = (ts: string, channel = CH): { on: Name; key: string } | null => {
+      for (const n of stations()) {
+        const k = sql(n, `select key from sessions where key like ${lit(`%:${channel}:${ts}`)} and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`)[0]?.key;
+        if (typeof k === "string") return { on: n, key: k };
+      }
+      return null;
+    };
+    /// Whether A's login is lent to B now (A's config: cc shared with B, A its host), and the chats of a connect on B by
+    /// whose they are: moved from A (named as A names them) or begun there (`<id>@<A's id>`, B's name of a connect it took).
+    const lentToB = () => (cfgOf("A").profiles ?? []).some((p: J) => p.id === "cc" && p.share != null && p.share.borrowed !== true && (p.share.allow ?? []).some((x: string) => bId.startsWith(x) || x.startsWith(bId.slice(0, 8))));
+    const onB = (id: string) => ({ fromA: chatsOn("B", id).filter((k) => k.startsWith(`${id}:`)), begun: sql("B", `select key from sessions where key like ${lit(`${itemOf(id)}:%`)} and archived_at is null and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`).map((r) => r.key as string) });
+    /// How many of the app's sockets an envelope was acknowledged on.
+    const ackedOn = (id: string) => sl.sockets.filter((s) => s.acked.has(id)).map((s) => `${s.station}#${s.n}`);
+    const moveConnect = async (id: string, to: Name, withNeeds = true) => {
+      const t0 = Date.now();
+      await a.call("move.start", { station: A, to: idOf(to), module: "connects", item: itemOf(id), withNeeds });
+      return turnEnds("A", t0);
+    };
+    const backConnect = async (id: string, from: Name) => {
+      const t0 = Date.now();
+      await a.call("move.back", { station: A, from: idOf(from), module: "connects", item: itemOf(id) });
+      return turnEnds("A", t0);
+    };
+    /// The connect's chats live on `n` now (by their sessions there).
+    const chatsOn = (n: Name, id = dk) => sql(n, `select key from sessions where key like ${lit(`${id}:%`)} and (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))`).map((r) => r.key as string);
+    /// People's pace in Slack: a message a second while a move runs, a cadence of the drill's, no wait for anything.
+    const cadence = () => new Promise((r) => setTimeout(r, 1000)); // det-ok(script-wait): a cadence (a message a second across a move), not a wait for an event
+    /// Once the turn asked at `after` ended: that what was said since got to the station that holds the connect now,
+    /// `n` of them acknowledged there (so the cadence ran past the move, not before it alone).
+    const takenSince = (sent: { id: string }[], after: number, n: number, station: string) =>
+      sl.until(`${n} said after the move taken on ${station}`, () => sent.filter((d) => {
+        const e = sl.sent.get(d.id)!;
+        return (e.deliveries[0]?.at ?? 0) >= after && e.acked?.station === station;
+      }).length >= n, 60_000);
+    let ok = false;
+    await check("4s: setup: A and B pointed at Slack's stand-in, a Slack connect (multi-session) and a single-session one on A, each app's one socket A's", async () => {
+      for (const n of ["A", "B"] as Name[]) writeFileSync(join(dirname(DATA[n]), "slack-api"), await sl.listen(n));
+      stationDo("halt", "station");
+      try {
+        const cfg = cfgOf("A");
+        const own = (cfg.connects ?? []).filter((c: J) => c?.id !== dk && c?.id !== dks);
+        cfg.connects = [
+          ...own,
+          { id: dk, name: "Drill Slack", mode: "multi-session", bind: { runtime: "claude" }, createdBy: { id: "alice@example.test" }, slack: { appToken: APP, botToken: "xoxb-1-drill", appId: "A1" } },
+          { id: dks, name: "Drill Slack one", mode: "single-session", bind: { runtime: "claude" }, createdBy: { id: "alice@example.test" }, slack: { appToken: APP1, botToken: "xoxb-2-drill", appId: "A2" } },
+        ];
+        writeFileSync(`${DATA.A}/config.json`, JSON.stringify(cfg, null, 2));
+      } finally {
+        await up("A");
+      }
+      stationDo("halt", "second");
+      await up("B");
+      await sl.until("A's sockets", () => sl.live(APP).length === 1 && sl.live(APP1).length === 1, 120_000);
+      log(`  sockets: ${sockets(APP)} / ${sockets(APP1)}; calls so far: ${[...new Set(sl.calls.map((c) => `${c.station}:${c.method}`))].join(" ")}`);
+      if (sl.live(APP)[0]!.station !== "A" || sl.live(APP1)[0]!.station !== "A") throw new Error(`a socket not A's: ${sockets(APP)} / ${sockets(APP1)}`);
+      ok = true;
+    });
+    let t1 = "";
+    let t2 = "";
+    let k1 = "";
+    let k2 = "";
+    if (ok) {
+      await check("4s: a conversation in Slack on A: its chat made on A, answered once in its thread, by an agent on A", async () => {
+        t1 = sayIn(undefined, `drill-remember:s${tag}`, `drill-remembered s${tag}`).ts;
+        const c = await answerTo(t1, `drill-remembered s${tag}`);
+        k1 = keyOf(t1);
+        log(`  answered by ${c.station}'s connect; ${standings(k1)}; posts in it ${brief(sl.posted(CH, t1).map((p) => (p.params.text ?? "").slice(0, 60)))}`);
+        if (standing("A", k1) !== "live") throw new Error(`its chat: ${standings(k1)}`);
+        t2 = sayIn(undefined, `drill-note:a${tag}`, `drill-noted a${tag} `).ts;
+        const c2 = await answerTo(t2, `drill-noted a${tag} `);
+        k2 = keyOf(t2);
+        if (cwdOf(c2) !== "A") throw new Error(`the second answered from ${cwdOf(c2)}: ${c2.params.text}`);
+      });
+    }
+    if (k1 !== "" && k2 !== "") {
+      let moved = false;
+      await check("4s: its chat moved alone to B: the connect stays on A, nothing posted into the thread by the move", async () => {
+        const before = sl.posted(CH, t1).length;
+        const l = await moveChat(k1, "B");
+        log(`  ${outcome(l)}; ${standings(k1)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+        if (standing("B", k1) !== "live") throw new Error(`not on B: ${standings(k1)}; ${outcome(l)}`);
+        if ((l.done ?? []).some((d: J) => named(d).startsWith("connects "))) throw new Error(`the connect went with it: ${outcome(l)}`);
+        moved = true;
+        if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"}`);
+        const after = sl.posted(CH, t1).slice(before);
+        if (after.length > 0) throw new Error(`posted into its thread by the move: ${brief(after.map((c) => `${c.station}: ${c.params.text}`))}`);
+      });
+      if (moved) {
+        await check("4s: a message in its thread afterwards: taken by A's connect, answered once, from B, in the same thread, the agent going on from its context", async () => {
+          const nonce = randomBytes(3).toString("hex");
+          const s = sayIn(t1, `drill-recall:${nonce}`, `drill-recall ${nonce} `);
+          const c = await answerTo(t1, `drill-recall ${nonce} `);
+          const e = sl.sent.get(s.id)!;
+          log(`  delivered ${brief(e.deliveries)}, acknowledged by ${e.acked?.station}; posted by ${c.station}'s connect: ${(c.params.text ?? "").slice(0, 200)}`);
+          if (e.acked?.station !== "A") throw new Error(`acknowledged by ${e.acked?.station ?? "nobody"}, not A's connect`);
+          if (cwdOf(c) !== "B") throw new Error(`answered from ${cwdOf(c)}: ${c.params.text}`);
+          if (!(c.params.text ?? "").includes(`secret=s${tag}`)) throw new Error(`not from its context: ${c.params.text}`);
+          if (c.station !== "A") throw new Error(`posted through ${c.station}, where the connect is not`);
+        });
+        await check("4s: a second chat of the connect still on A works as before", async () => {
+          sayIn(t2, `drill-note:b${tag}`, `drill-noted b${tag} `);
+          const c = await answerTo(t2, `drill-noted b${tag} `);
+          if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+        });
+        await check("4s: the connect moved alone before its other chat: refused, naming it; still A's, its socket A's", async () => {
+          const l = await moveConnect(dk, "B", false);
+          log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+          const r = (l.refused ?? []).find((x: J) => named(x.item) === `connects ${itemOf(dk)}`);
+          if (r === undefined) throw new Error(`not refused: ${outcome(l)}`);
+          if (!String(r.why).includes(k2.slice(-8)) && !/chat|对话/.test(String(r.why))) throw new Error(`refused, not naming its chat: ${r.why}`);
+          if (holds(dk).join() !== "A" || sockets() !== `A#${sl.live(APP)[0]?.n}`) throw new Error(`holds ${holds(dk).join(",")}, sockets ${sockets()}`);
+        });
+        let switched = false;
+        let L: { ts: string; event: J } = { ts: "", event: null };
+        let F: { ts: string; event: J } = { ts: "", event: null };
+        let ends: { ids: { last: string; first: string }; lastOn: string } = { ids: { last: "", first: "" }, lastOn: "" };
+        await check("4s: its other chat moved, then the connect: events at B's socket, A's closed, one socket at a time, an event a second across it none lost or doubled", async () => {
+          const l2 = await moveChat(k2, "B");
+          if (standing("B", k2) !== "live") throw new Error(`the other chat not on B: ${standings(k2)}; ${outcome(l2)}`);
+          // (a new conversation a second from before the connect's move to after its turn's end)
+          const during: { ts: string; id: string; word: string }[] = [];
+          let stop = false;
+          const sender = (async () => {
+            for (let i = 0; !stop && i < 120; i++) {
+              const word = `drill-noted w${i}${tag} `;
+              during.push({ ...sayIn(undefined, `drill-note:w${i}${tag}`, word), word });
+              await cadence();
+            }
+          })();
+          // (the cadence under way before the move: its first conversation answered)
+          await sl.until("the first conversation said", () => during.length > 0, 10_000);
+          await answerTo(during[0]!.ts, during[0]!.word);
+          // (the window's two ends: one event down A's socket the moment B asks for its own, one the first down B's)
+          L = sl.message(APP, CH, `drill-note:l${tag}`);
+          F = sl.message(APP, CH, `drill-note:f${tag}`);
+          asked.push({ thread: L.ts, word: `drill-noted l${tag} `, channel: CH, must: true }, { thread: F.ts, word: `drill-noted f${tag} `, channel: CH, must: true });
+          ends = sl.arm(APP, "B", L.event, F.event);
+          const from = Date.now();
+          let l: J;
+          try {
+            l = await moveConnect(dk, "B");
+            await takenSince(during, Date.now(), 2, holds(dk)[0] ?? "B");
+          } finally {
+            stop = true;
+            await sender;
+          }
+          log(`  ${outcome(l)}; holds ${holds(dk).join(",")}; sockets ${sockets()}; ${during.length} sent across it`);
+          // (refused for a conversation begun while it moved, its chat made on A after the turn's plan: said, then the
+          // connect moved again with nothing said meanwhile, so the rest is driven)
+          let raced = "";
+          if (!(l.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) {
+            raced = outcome(l);
+            log(`  not moved with conversations begun across it: ${raced}; A's chats of it now ${brief(chatsOn("A"))}`);
+            const again = await moveConnect(dk, "B");
+            log(`  again, nothing said meanwhile: ${outcome(again)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+            if (!(again.done ?? []).some((d: J) => named(d) === `connects ${itemOf(dk)}`)) throw new Error(`not moved even so: ${outcome(again)}; first ${raced}`);
+          }
+          switched = true;
+          if (holds(dk).join() !== "B") throw new Error(`held by ${holds(dk).join(",") || "none"}`);
+          await sl.until("B's socket alone", () => sl.live(APP).length === 1 && sl.live(APP)[0]!.station === "B", 60_000).catch(() => {
+            throw new Error(`sockets ${sockets()}`);
+          });
+          const answered = await Promise.all(during.map((d) => answerTo(d.ts, d.word, 300_000).then((c) => ({ d, c }), () => ({ d, c: null }))));
+          for (const { d, c } of answered) {
+            const e = sl.sent.get(d.id)!;
+            log(`    ${d.word.trim()}: delivered ${e.deliveries.map((x) => `${x.station}#${x.n}${x.attempt > 0 ? `(retry ${x.attempt})` : ""}`).join(" ")}, acked ${e.acked?.station ?? "never"}, answered ${answersTo(d.ts, d.word).length}× ${c === null ? "" : `from ${cwdOf(c)} via ${c.station}`}`);
+          }
+          const lost = answered.filter((x) => x.c === null).map((x) => x.d.word.trim());
+          const twice = answered.filter((x) => answersTo(x.d.ts, x.d.word).length > 1).map((x) => x.d.word.trim());
+          if (lost.length > 0 || twice.length > 0) throw new Error(`unanswered ${brief(lost)}; answered more than once ${brief(twice)}`);
+          const acks = during.filter((d) => ackedOn(d.id).length !== 1).map((d) => `${d.word.trim()} acknowledged on ${brief(ackedOn(d.id))}`);
+          if (acks.length > 0) throw new Error(`not acknowledged once: ${acks.join("; ")}`);
+          const long = windowOf("the connect's move to B", APP, from);
+          if (long.length > 0) throw new Error(`over a second: ${long.join("; ")}`);
+          if (raced !== "") throw new Error(`a conversation begun while it moved held the connect back (moved only when asked again with nothing said): ${raced}`);
+        });
+        await check("4s: at the move's two ends, one event down the leaving station's socket as the other asked for its own, one the first down the new one: each handled once, answered once, from where its chat is", async () => {
+          log(`  the last went ${ends.lastOn || "nowhere: B never asked for a socket"} (${ends.ids.last}), the first ${ends.ids.first || "never"}`);
+          if (ends.ids.last === "" || ends.ids.first === "") throw new Error(`the window's ends not given: ${brief(ends)}`);
+          for (const [name, m, id] of [["last", L, ends.ids.last], ["first", F, ends.ids.first]] as const) {
+            const word = `drill-noted ${name === "last" ? "l" : "f"}${tag} `;
+            const c = await answerTo(m.ts, word, 180_000).catch(() => null);
+            const e = sl.sent.get(id)!;
+            const chat = chatOf(m.ts);
+            log(`  the ${name}: delivered ${e.deliveries.map((x) => `${x.station}#${x.n}${x.attempt > 0 ? `(retry ${x.attempt})` : ""}`).join(" ")}, acknowledged on ${brief(ackedOn(id))}; its chat ${chat === null ? "none" : `${chat.key} on ${chat.on}`}; answered ${answersTo(m.ts, word).length}×${c === null ? "" : ` from ${cwdOf(c)} via ${c.station}`}`);
+            if (c === null) throw new Error(`the ${name} not answered`);
+            if (answersTo(m.ts, word).length !== 1) throw new Error(`the ${name} answered ${answersTo(m.ts, word).length}×`);
+            if (ackedOn(id).length !== 1) throw new Error(`the ${name} acknowledged on ${brief(ackedOn(id))}`);
+            if (chat === null || cwdOf(c) !== chat.on) throw new Error(`the ${name} answered from ${cwdOf(c)}, its chat ${chat === null ? "nowhere" : `on ${chat.on}`}`);
+          }
+        });
+        if (switched) {
+          await check("4s: with the connect on B, its moved chat's thread answered once, through B's own socket", async () => {
+            sayIn(t1, `drill-note:c${tag}`, `drill-noted c${tag} `);
+            const c = await answerTo(t1, `drill-noted c${tag} `);
+            if (cwdOf(c) !== "B" || c.station !== "B") throw new Error(`answered from ${cwdOf(c)} via ${c.station}`);
+          });
+          await check("4s: back: the connect first while its chats are on B (refused with its reason, or taken back and still routing them), then the chats, then the connect: on A again, A's socket alone, both threads answered once", async () => {
+            const lc = await backConnect(dk, "B");
+            log(`  the connect back first: ${outcome(lc)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+            const refused = (lc.refused ?? []).find((x: J) => named(x.item) === `connects ${itemOf(dk)}`);
+            if (refused !== undefined) log(`  refused: ${refused.why}`);
+            for (const k of [k1, k2]) {
+              const l = await moveBack(k, "B");
+              log(`  ${k.slice(-17)} back: ${outcome(l)}; ${standings(k)}`);
+              if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
+            }
+            // (the login it was lent for k1 and k2 stays lent while what the connect's move took there, and what was
+            // begun there on it, runs on it: move.uses)
+            const still = onB(dk);
+            log(`  on B still: ${still.fromA.length} moved from A, ${still.begun.length} begun there; A's login lent to B: ${lentToB()}`);
+            if (still.fromA.length + still.begun.length > 0 && !lentToB()) throw new Error(`A took its login back with chats on B still on it: ${brief(still)}`);
+            if (holds(dk).join() !== "A") {
+              const l = await backConnect(dk, "B");
+              log(`  the connect back: ${outcome(l)}; holds ${holds(dk).join(",")}`);
+            }
+            if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"}`);
+            await sl.until("A's socket alone", () => sl.live(APP).length === 1 && sl.live(APP)[0]!.station === "A", 60_000).catch(() => {
+              throw new Error(`sockets ${sockets()}`);
+            });
+            sayIn(t1, `drill-note:d${tag}`, `drill-noted d${tag} `);
+            const c = await answerTo(t1, `drill-noted d${tag} `);
+            if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+            // (a conversation begun while the connect was on B: its chat is B's, routed there from A now)
+            const w = asked.find((x) => x.word.startsWith("drill-noted w") && chatsOn("B").includes(keyOf(x.thread)));
+            if (w !== undefined) {
+              sayIn(w.thread, `drill-note:e${tag}`, `drill-noted e${tag} `);
+              const c2 = await answerTo(w.thread, `drill-noted e${tag} `);
+              log(`  a conversation begun on B, after: answered from ${cwdOf(c2)} via ${c2.station}`);
+              if (cwdOf(c2) !== "B" || c2.station !== "A") throw new Error(`answered from ${cwdOf(c2)} via ${c2.station}`);
+            } else log("  (no conversation begun while the connect was on B is on B)");
+          });
+        }
+      }
+    }
+
+    // ── its faults, as part 3 has them for chats ──
+    if (k1 !== "" && holds(dk).join() === "A") {
+      let t3 = "";
+      let k3 = "";
+      await check("4s fault: B killed between a chat's move and the connect's: told in the thread while B is down, the connect stays A's, answered from B once B is back", async () => {
+        t3 = sayIn(undefined, `drill-remember:f${tag}`, `drill-remembered f${tag}`).ts;
+        await answerTo(t3, `drill-remembered f${tag}`);
+        k3 = keyOf(t3);
+        const l = await moveChat(k3, "B");
+        if (standing("B", k3) !== "live") throw new Error(`not on B: ${standings(k3)}; ${outcome(l)}`);
+        stationDo("crash", "second");
+        const downAt = Date.now();
+        sayIn(t3, `drill-note:x${tag}`, `drill-noted x${tag} `, { must: false });
+        // (connects/workspace.ts receive: an event of a chat on another station that did not get there is told in its
+        // thread, station.connect.stationAway)
+        const toldNow = () => sl.posted(CH, t3).filter((c) => c.at >= downAt);
+        await sl.until("a notice in the thread while B is down", () => toldNow().length > 0, 120_000).catch(() => {});
+        log(`  posted in its thread since B went down: ${brief(toldNow().map((c) => `${c.station}: ${(c.params.text ?? "").slice(0, 160)}`)) || "nothing"}`);
+        const silent = toldNow().length === 0;
+        const lc = await moveConnect(dk, "B").catch((e) => ({ error: String(e) }) as J);
+        log(`  the connect to B, B down: ${"error" in lc ? lc.error : outcome(lc)}; holds ${holds(dk).join(",")}; sockets ${sockets()}`);
+        if (holds(dk).join() !== "A") throw new Error(`the connect is on ${holds(dk).join(",") || "none"} with B down`);
+        if (sl.live(APP).length !== 1 || sl.live(APP)[0]!.station !== "A") throw new Error(`sockets ${sockets()}`);
+        await up("B");
+        sayIn(t3, `drill-recall:y${tag}`, `drill-recall y${tag} `);
+        const c = await answerTo(t3, `drill-recall y${tag} `);
+        if (cwdOf(c) !== "B") throw new Error(`answered from ${cwdOf(c)}`);
+        log(`  the message said while B was down: answered ${answersTo(t3, `drill-noted x${tag} `).length}×`);
+        if (silent) throw new Error("nothing said in the thread of a message to a chat whose station was down (the rest held)");
+      });
+      // (not a cut of the move between B's taking it and A's letting it go: nothing outside the station stops it there,
+      // and it ended within milliseconds every run; what is held is the state after A's end at its first moment)
+      await check("4s fault: A killed the moment the connect's move is asked: afterwards one station holds it, one socket, an event answered once", async () => {
+        for (const k of chatsOn("A")) {
+          const l = await moveChat(k, "B");
+          if (standing("B", k) !== "live") throw new Error(`${k} not on B: ${outcome(l)}`);
+        }
+        await a.call("move.start", { station: A, to: bId, module: "connects", item: itemOf(dk), withNeeds: false });
+        stationDo("crash", "station");
+        const heldThen = holds(dk);
+        await up("A");
+        await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+        log(`  held as A died: ${heldThen.join(",") || "none"}; now ${holds(dk).join(",") || "none"}; sockets ${sockets()}`);
+        await sl.until("one socket", () => sl.live(APP).length === 1, 120_000).catch(() => {
+          throw new Error(`sockets ${sockets()}`);
+        });
+        if (holds(dk).length !== 1) throw new Error(`held by ${holds(dk).join(",") || "none"}`);
+        if (sl.live(APP)[0]!.station !== holds(dk)[0]) throw new Error(`the socket is ${sockets()}, the connect ${holds(dk)[0]}'s`);
+        sayIn(t1, `drill-note:g${tag}`, `drill-noted g${tag} `);
+        const c = await answerTo(t1, `drill-noted g${tag} `);
+        log(`  answered from ${cwdOf(c)} via ${c.station}`);
+      });
+      // (the connect A's again, its chats on B, for the next: once A, started again, has reached B, B's log saying A asked
+      // it which chats are live there; drill 37's asked at once and was refused, A's link to B not yet up)
+      if (holds(dk).join() === "B") {
+        const bLog = `${RUN}/${SHELL_NAME.B}.log`;
+        const from = existsSync(bLog) ? statSync(bLog).size : 0;
+        await a.until(moveT(bId), (v) => v?.modules && v, 60_000).catch(() => {});
+        await whenChanged([RUN], () => new RegExp(`asked which chats are live there station=${aId.slice(0, 12)}`).test(since(bLog, from)), 60_000, () => "", 1000).catch(() => log("  A was not seen asking B within 60 s"));
+      }
+      if (holds(dk).join() === "B") await backConnect(dk, "B").then((l) => log(`  the connect back: ${outcome(l)}`), (e) => log(`  the connect not back: ${String(e).slice(0, 300)}`));
+      if (holds(dk).join() === "A" && standing("B", k1) === "live") {
+        await check("4s fault: A handed over to a fresh process (SIGUSR2) while a routed thread is answered on B: answered once, one socket at a time", async () => {
+          const gate = `${FAKE}.gate-s${tag}`;
+          sayIn(t1, `drill-gate:s${tag}`, `drill-gated s${tag} `);
+          await whenChanged([dirname(FAKE)], () => existsSync(`${FAKE}.turns`) && readFileSync(`${FAKE}.turns`, "utf8").includes(`drill-gate:s${tag}`), 120_000, () => "the gated turn not begun");
+          const opens = sl.sockets.length;
+          const from = Date.now();
+          const h = await handOver("A");
+          log(`  ${await handoverEnd(h)}`);
+          writeFileSync(gate, "");
+          const c = await answerTo(t1, `drill-gated s${tag} `);
+          const during = sl.sockets.slice(opens).map((s) => `${s.station}#${s.n} ${s.opened}-${s.closed || "open"}`);
+          log(`  answered via ${c.station}; sockets opened since: ${brief(during)}; now ${sockets()}`);
+          const long = windowOf("A's handover", APP, from);
+          if (long.length > 0) throw new Error(`over a second: ${long.join("; ")}`);
+          if (answersTo(t1, `drill-gated s${tag} `).length !== 1) throw new Error(`answered ${answersTo(t1, `drill-gated s${tag} `).length}×`);
+        });
+      } else fail("4s fault: A handed over while a routed thread is answered on B", new Error(`not run: it needs the connect on A and its chat on B, and the connect is on ${holds(dk).join(",") || "none"}, the chat ${standings(k1)}`));
+    } else fail("4s faults", new Error(`not run: they begin with the connect on A, and it is on ${holds(dk).join(",") || "none"}${k1 === "" ? ", no chat of it made" : ""}`));
+
+    // ── a single-session connect: not routed, so it goes first, its chat stopped, and what Slack says meanwhile kept ──
+    {
+      let ks = "";
+      let ts1 = "";
+      await check("4s single: a single-session Slack connect's chat on A answered", async () => {
+        ts1 = sayIn(undefined, `drill-remember:o${tag}`, `drill-remembered o${tag}`, { app: APP1, channel: CH1 }).ts;
+        await answerTo(ts1, `drill-remembered o${tag}`, 180_000, CH1);
+        ks = sql("A", `select key from sessions where key like ${lit(`${dks}:%`)}`)[0]?.key ?? "";
+        if (ks === "") throw new Error("no session of it on A");
+      });
+      if (ks !== "") {
+        await check("4s single: its chat moved with what it needs: the connect first, then the chat; what is said meanwhile kept, taken there once, in order", async () => {
+          const words: string[] = [];
+          const qs: { id: string }[] = [];
+          let stop = false;
+          const sender = (async () => {
+            for (let i = 0; !stop && i < 60; i++) {
+              words.push(`q${i}${tag}`);
+              qs.push(sayIn(ts1, `drill-note:q${i}${tag}`, `drill-noted q${i}${tag} `, { app: APP1, channel: CH1, must: false }));
+              await cadence();
+            }
+          })();
+          let l: J;
+          try {
+            l = await moveChat(ks, "B");
+            await takenSince(qs, Date.now(), 1, "B");
+          } finally {
+            stop = true;
+            await sender;
+          }
+          log(`  ${outcome(l)}; ${standings(ks)}; holds ${holds(dks).join(",")}; sockets ${sockets(APP1)}`);
+          if (standing("B", ks) !== "live" || holds(dks).join() !== "B") throw new Error(`${standings(ks)}, the connect ${holds(dks).join(",") || "none"}'s`);
+          const order = (l.done ?? []).map(named);
+          if (order.indexOf(`connects ${itemOf(dks)}`) > order.indexOf(`chats ${ks}`)) throw new Error(`the chat before its connect: ${order.join(", ")}`);
+          const last = words.at(-1)!;
+          await whenChanged([DATA.B], () => sql("B", `select count(*) n from entries where text like ${lit(`%drill-note:${last}%`)}`)[0].n > 0, 120_000, () => "the last said not in B's log");
+          const said = sql("B", `select text from entries where text like ${lit(`%drill-note:q%${tag}%`)} order by thread, n`).map((r) => new RegExp(`drill-note:(q\\d+)${tag}`).exec(String(r.text))?.[1]);
+          const want = words.map((w) => w.replace(tag, ""));
+          log(`  in B's log: ${brief(said)}; said: ${brief(want)}`);
+          const twice = want.filter((w) => said.filter((x) => x === w).length > 1);
+          const missing = want.filter((w) => !said.includes(w));
+          if (twice.length > 0 || missing.length > 0) throw new Error(`missing ${brief(missing)}, twice ${brief(twice)}`);
+          if (said.join() !== want.join()) throw new Error(`out of order: ${brief(said)}`);
+        });
+        await check("4s single: back: on A, its connect A's, one socket, answered there", async () => {
+          const l = await moveBack(ks, "B");
+          log(`  ${outcome(l)}; ${standings(ks)}; holds ${holds(dks).join(",")}`);
+          if (holds(dks).join() !== "A") {
+            const lc = await backConnect(dks, "B");
+            log(`  the connect back: ${outcome(lc)}; holds ${holds(dks).join(",")}`);
+          }
+          if (standing("A", ks) !== "live" || holds(dks).join() !== "A") throw new Error(`${standings(ks)}, the connect ${holds(dks).join(",") || "none"}'s`);
+          await sl.until("A's socket alone", () => sl.live(APP1).length === 1 && sl.live(APP1)[0]!.station === "A", 60_000).catch(() => {
+            throw new Error(`sockets ${sockets(APP1)}`);
+          });
+          sayIn(ts1, `drill-note:r${tag}`, `drill-noted r${tag} `, { app: APP1, channel: CH1 });
+          const c = await answerTo(ts1, `drill-noted r${tag} `, 180_000, CH1);
+          if (cwdOf(c) !== "A") throw new Error(`answered from ${cwdOf(c)}`);
+        });
+      }
+    }
+    await check("4s: the login lent while chats on B run on it, taken back once they are back (moved from A, or begun there and moved to A)", async () => {
+      for (const id of [dk, dks]) {
+        if (holds(id).join() === "B") await backConnect(id, "B").then((l) => log(`  ${id} back: ${outcome(l)}`));
+      }
+      const before = { dk: onB(dk), dks: onB(dks) };
+      log(`  on B: ${brief(before)}; lent to B: ${lentToB()}`);
+      if ([...before.dk.fromA, ...before.dk.begun, ...before.dks.fromA, ...before.dks.begun].length > 0 && !lentToB()) throw new Error(`not lent with chats on B on it: ${brief(before)}`);
+      for (const k of [...before.dk.fromA, ...before.dks.fromA]) {
+        const l = await moveBack(k, "B");
+        if (standing("A", k) !== "live") throw new Error(`${k} not back: ${standings(k)}; ${outcome(l)}`);
+      }
+      // (a Slack chat is archived by no call of the app's, chat.archive taking only still.fail's own: those begun on B
+      // are moved to A by B's own turn, which ends their use of the login as well)
+      for (const k of [...before.dk.begun, ...before.dks.begun]) {
+        const t0 = Date.now();
+        await a.call("move.start", { station: B, to: aId, module: "chats", item: k, withNeeds: true });
+        const l = await turnEnds("B", t0);
+        if (chatsOn("B", k.split(":")[0]!).includes(k)) throw new Error(`${k} still on B: ${outcome(l)}`);
+      }
+      const left = { dk: onB(dk), dks: onB(dks) };
+      log(`  then on B: ${brief(left)}`);
+      await whenChanged([DATA.A], () => !lentToB(), 120_000, () => `still lent to B: ${brief((cfgOf("A").profiles ?? []).map((p: J) => ({ id: p.id, share: p.share ?? null })))}; on B ${brief(left)}`, 1000);
+      log("  A's login taken back");
+    });
+    log("SKIP 4s: a Comma connect moved: not built, the harness has no Comma stand-in (and Feishu's routed connect is Slack's path with another platform's client, not driven here)");
+
+    await check("4s: every message said in Slack answered exactly once (but those said to a station that was down, which need not be)", async () => {
+      // (what is still to come comes within the minute, else it is counted as it is)
+      await sl.until("every answer", () => asked.every((x) => !x.must || answersTo(x.thread, x.word, x.channel).length > 0), 60_000).catch(() => {});
+      const none = asked.filter((x) => x.must && answersTo(x.thread, x.word, x.channel).length === 0).map((x) => x.word.trim());
+      const more = asked.filter((x) => answersTo(x.thread, x.word, x.channel).length > 1).map((x) => `${x.word.trim()} ×${answersTo(x.thread, x.word, x.channel).length}`);
+      const unacked = [...sl.sent.values()].filter((e) => e.acked === null).map((e) => e.id);
+      const again = [...sl.sent.values()].filter((e) => e.deliveries.length > 1).map((e) => `${e.id}×${e.deliveries.length}`);
+      log(`  ${asked.length} said; sent again by Slack ${brief(again)}; never acknowledged ${brief(unacked)}`);
+      log(`  answered by the stand-in with { ok: true } and nothing else: ${[...sl.generic].map(([m, n]) => `${m} ×${n}`).join(", ") || "none"}`);
+      log(`  sockets: ${sl.sockets.map((s) => `${s.app === APP ? "dk" : "dks"} ${s.station}#${s.n} ${((s.closed || Date.now()) - s.opened) / 1000}s`).join(", ")}`);
+      if (none.length > 0 || more.length > 0) throw new Error(`unanswered ${brief(none)}; more than once ${brief(more)}`);
+    });
+    await check("4s: never two sockets of one app open at once for a second or more, across the part (shorter, measured)", async () => {
+      const two = [...overlaps(APP).map((x) => ({ ...x, said: `dk: ${x.said}` })), ...overlaps(APP1).map((x) => ({ ...x, said: `dks: ${x.said}` }))];
+      measured(`4s: two sockets of one app open at once: ${two.length === 0 ? "never" : two.map((x) => x.said).join("; ")}`);
+      const long = two.filter((x) => x.ms > 1000).map((x) => x.said);
+      if (long.length > 0) throw new Error(`for a second or more: ${long.join("; ")}`);
+    });
+
+    // (the stations as part 4 left them: no connect, nothing pointed at the stand-in; the chats Slack made stay)
+    await check("4s: end: the connects taken out of A's and B's config and the stand-in let go", async () => {
+      for (const [n, shell] of [["A", "station"], ["B", "second"]] as const) {
+        stationDo("halt", shell);
+        try {
+          const cfg = cfgOf(n);
+          cfg.connects = (cfg.connects ?? []).filter((c: J) => c?.id !== dk && c?.id !== dks);
+          writeFileSync(`${DATA[n]}/config.json`, JSON.stringify(cfg, null, 2));
+          rmSync(join(dirname(DATA[n]), "slack-api"), { force: true });
+        } finally {
+          await up(n);
+        }
+      }
+      await sl.close();
+    });
   }
 
   // ── 5: measured ──
   if (part("5")) {
     limit("5", 10800);
+    // (E2E_MOVE_CHATS: the whole move's size, shown and archived as the real station's 149 of 2,384; E2E_MOVE_WHOLE_ONLY:
+    // the 500 MB chat's trip and that move alone, there and back, their tables and totals, the 300 chats' timing left
+    // out: a trip of a few minutes to set two trees side by side)
+    const many = Number(process.env.E2E_MOVE_CHATS ?? 2384);
+    const manyShown = Math.round((many * 149) / 2384);
+    const wholeOnly = process.env.E2E_MOVE_WHOLE_ONLY === "1";
     await check("5: one chat with a 500 MB / 5,000-file room: its first pass and its pause, measured", async () => {
       const key = await newChat(`big-${tag}`);
       const t1 = Date.now();
@@ -1835,7 +2631,9 @@ try {
       // (and the device's link to it usable again: a request of its answered by the new process. Online is the cloud's
       // word, which comes first: drill 28's link to A, dialled into the endpoint as it closed, sat three beats (15 s) on
       // a dead connection, and the page's first answer timed after online read 16,446 ms where GET /move took 15)
-      const ready = await a.answered(aId, "/", up, 120_000);
+      // (a request asked after A was up, not one asked of the process before and answered as A came back: p5-5a0d's
+      // 300 chats took one of those for the link usable, and its first answer waited 14 s on the dead link)
+      const ready = await a.answered(aId, "/", up, 120_000, true);
       log(`  A's link usable again ${ready.at - up} ms after A was up (${ready.method} ${ready.path.replace(/\?.*$/, "")})`);
     };
     /// What the stations' logs say of their main thread held since `from` (each log's byte offset): how often, the longest.
@@ -1868,10 +2666,26 @@ try {
     /// often that page was read, and how long each read took. The drill adds no read of its own: drill 27's
     /// timed reads, each a page of another size, stayed live a minute each (the core's grace) and were read again at
     /// every telling, 35 of the 36 reads a second.
+    /// Each station's processes (its Node, its MoonBit programs, whatever runs on its data directory) as `ps` sees them:
+    /// pid, %CPU, RSS (MB) and what it is, by station.
+    const procs = () => {
+      const lines = spawnSync("ps", ["-axww", "-o", "pid=,%cpu=,rss=,args="], { encoding: "utf8" }).stdout.split("\n");
+      return (["A", "B"] as Name[]).map((n) => `${n}: ${lines.filter((l) => l.includes(`${dirname(DATA[n])}/`) && !/\bps\b/.test(l)).map((l) => {
+        const m = /^\s*(\d+)\s+([\d.]+)\s+(\d+)\s+(.*)$/.exec(l);
+        if (m === null) return "";
+        const what = m[4]!.includes("main.js") ? "node" : (/\/([^/\s]+)(?:\s|$)/.exec(m[4]!.split(" --")[0]!)?.[1] ?? m[4]!.slice(0, 30));
+        const flag = /--(sessions|serve|data|builder|replica|front)\b/.exec(m[4]!)?.[1];
+        return `${what}${flag ? `:${flag}` : ""} ${m[2]}% ${(Number(m[3]) / 1024).toFixed(0)}MB`;
+      }).filter((x) => x !== "").join(", ")}`).join(" | ") + ` | machine: ${spawnSync("ps", ["-axr", "-o", "%cpu=,comm="], { encoding: "utf8" }).stdout.split("\n").slice(0, 5).map((l) => l.trim().replace(/\s+\S*\//, " ")).filter((l) => l !== "").join(", ")}`;
+    };
     const duringMove = () => {
       const from = new Date();
+      // (the stations' processes sampled every 10 s while the move runs, into the log: which works beside the
+      // hand-overs)
+      const sampler = setInterval(() => log(`  cpu: ${procs()}`), 10_000);
       return {
         end: async () => {
+          clearInterval(sampler);
           const to = new Date();
           // (the record says a line's time of day alone, UTC: put on the day `from` is, and on the next where it is
           // over 12 hours before `from`. Drill 29's move there ran from 23:59:03 to 00:09:41, and the times compared as
@@ -1884,7 +2698,9 @@ try {
           };
           const rec = readFileSync(join(dir, a.name, "record.log"), "utf8").split("\n")
             .map((l) => /^asked: (\d\d:\d\d:\d\d\.\d{3}) (\S+) GET \/admin\/api\/move\?(\S*) -> answered(?: \S+)? in (\d+) ms/.exec(l))
-            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && when(m[1]!) >= from.getTime() && when(m[1]!) <= to.getTime());
+            // (the page's own path alone, toward B: not the drill's own reads of what is stopped, `to=`, which drill 35
+            // counted as three paths more)
+            .filter((m): m is RegExpExecArray => m !== null && m[2] === aId.slice(0, 8) && /^to=[0-9a-f]+&/.test(m[3]!) && when(m[1]!) >= from.getTime() && when(m[1]!) <= to.getTime());
           const perSecond = new Map<string, number>();
           for (const m of rec) perSecond.set(m[1].slice(0, 8), (perSecond.get(m[1].slice(0, 8)) ?? 0) + 1);
           const secs = Math.max(1, (to.getTime() - from.getTime()) / 1000);
@@ -1896,15 +2712,15 @@ try {
       };
     };
     let timer = "";
-    await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
+    if (!wholeOnly) await check("5: 300 chats (40 shown, 260 archived): GET /move timed", async () => {
       timer = await newChat(`timer-${tag}`);
       await seed(40, 260);
       await timeMove("300 chats", timer);
     });
-    await check("5: a real station's shape, 2,384 chats (149 shown, 2,235 archived): GET /move timed, all of it moved with `all` and back, timed", async () => {
+    await check(`5: a real station's shape, ${many} chats (${manyShown} shown, ${many - manyShown} archived): GET /move timed, all of it moved with \`all\` and back, timed`, async () => {
       if (timer === "") timer = await newChat(`timer-${tag}`);
-      await seed(149, 2235);
-      await timeMove("2,384 chats", timer);
+      await seed(manyShown, many - manyShown);
+      await timeMove(`${many} chats`, timer);
       // (E2E_MOVE_TIMING_ONLY: the pages and the plan timed, the whole moved neither way: a timing run of its own)
       if (process.env.E2E_MOVE_TIMING_ONLY === "1") return log("  (timing only: the 2,384 chats not moved)");
       const n = sql("A", "select count(*) n from sessions where (ws is null or (ws not like 'handed:%' and ws not like 'coming:%'))")[0].n as number;
@@ -1915,7 +2731,7 @@ try {
       await a.call("move.start", { station: A, to: bId, all: true });
       const there = duringMove();
       const l = await turnEnds("A", t0, 3_600_000);
-      measured(`2,384 chats there, during the move: ${await there.end()}`);
+      measured(`${many} chats there, during the move: ${await there.end()}`);
       const seenS = (Date.now() - t0) / 1000;
       // (what is measured is the station's: its turn's end as it wrote it)
       const s = typeof l?.at === "number" ? (l.at - t0) / 1000 : seenS;
@@ -1925,17 +2741,22 @@ try {
       const ends = (x: J, t: number, seen: number) => `the station's turn ended at ${typeof x?.at === "number" ? ((x.at - t) / 1000).toFixed(1) : "?"} s, seen at ${seen.toFixed(1)} s`;
       const notDone = (x: J) => `refused [${(x?.refused ?? []).map((r: J) => `${named(r.item)}: ${r.why}`).join(" | ")}] failed ${failuresOf(x).map((f) => `${f.item}: ${f.error}`).join(" | ") || "none"}`;
       measured(`${n} chats moved with all: ${s.toFixed(0)} s, ${((n - left) / (s / 60)).toFixed(0)} chats a minute, ${left} left on A; ${ends(l, t0, seenS)}; main thread: ${holds(from)}; ${notDone(l)}`);
+      // (each chat's hand-over by its steps, A's records as the drill saw them change: which step a chat's time is in)
+      for (const line of steps.A!.tenths(t0, Date.now())) log(`  there: ${line}`);
+      for (const line of recordTenths("A", "B", t0, Date.now())) log(`  there, own times: ${line}`);
       from = offsets();
       const t1 = Date.now();
       await a.call("move.back", { station: A, from: bId, all: true });
       const back = duringMove();
       const lb = await turnEnds("A", t1, 3_600_000);
-      measured(`2,384 chats back, during the move: ${await back.end()}`);
+      measured(`${many} chats back, during the move: ${await back.end()}`);
       log(`  the watched page took ${watching.values.length} values through both moves`);
       watching.stop();
       const seenB = (Date.now() - t1) / 1000;
       const sb = typeof lb?.at === "number" ? (lb.at - t1) / 1000 : seenB;
       measured(`and back: ${sb.toFixed(0)} s, ${(n / (sb / 60)).toFixed(0)} chats a minute; ${ends(lb, t1, seenB)}; main thread: ${holds(from)}; ${notDone(lb)}`);
+      for (const line of steps.B!.tenths(t1, Date.now())) log(`  back: ${line}`);
+      for (const line of recordTenths("B", "A", t1, Date.now())) log(`  back, own times: ${line}`);
       if (left > 0) throw new Error(`${left} chats not moved`);
     });
   }
@@ -2041,7 +2862,103 @@ try {
       if (why.length > 0) throw new Error(why.join("; "));
     };
 
-    await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
+    // 7h: A handed over n times in a row (E2E_MOVE_HANDOVERS, 10 where unset) while B asks it, each ask placed against A's
+    // handover windows in its launcher's log, from "handing over from Node" to "has taken over". B asks as the launcher
+    // says it is handing over (that line watched as a file), two asks a handover, each the one before's end: an ask in
+    // the window every time. E2E_MOVE_HANDOVER_ASK=each: B asks each second instead, each handover at its own phase of
+    // that second (a measure: about one window in ten had an ask). With E2E_MOVE_HANDOVERS set, 7h alone runs.
+    // (the lead, 2026-11-16: asked at a handover's first milliseconds, B said 「现在连不上」 on main as on the branch,
+    // 8 of 9 and 10 of 12 such asks: every one is to be answered, the next Node's, not refused)
+    const handovers = Number(process.env.E2E_MOVE_HANDOVERS ?? 0);
+    const n7h = handovers > 0 ? handovers : 10;
+    const askAt = process.env.E2E_MOVE_HANDOVER_ASK !== "each";
+    const check7h = () => check(`7h: A handed over ${n7h} times while B asks it ${askAt ? "as each handover begins" : "each second"}: every ask in a handover window answered`, async () => {
+      const t0 = Date.now();
+      const asks: Ask[] = [];
+      if (askAt) {
+        const file = `${RUN}/${SHELL_NAME.A}.log`;
+        for (let i = 1; i <= n7h; i++) {
+          const from = statSync(file).size;
+          const line = () => /^(\S+)[^\n]*handing over from Node [0-9]+ to Node/m.exec(since(file, from));
+          let seen = () => {};
+          const handing = new Promise<void>((resolve) => { seen = () => { if (line() !== null) resolve(); }; });
+          // (its file's events, and its size looked at every 2 ms besides: told by the file's events alone, 11 of 20
+          // asks began over 125 ms after the line, past the window, ho-7h-5)
+          const w = watch(file, () => seen());
+          watchFile(file, { interval: 2 }, () => seen());
+          try {
+            const h = await handOver("A");
+            // (looked at once as well, the line perhaps written already as the handover's start was seen)
+            seen();
+            const ended = handoverEnd(h);
+            const first = await Promise.race([handing.then(() => true), ended.then(() => false)]);
+            w.close();
+            unwatchFile(file);
+            let late = "";
+            if (first) {
+              const b = asking("B", "A");
+              await b.answered(2);
+              await b.stop();
+              asks.push(...b.asks);
+              const said = Date.parse(line()?.[1] ?? "");
+              late = Number.isFinite(said) ? `; asked ${b.asks[0]!.at - said} ms after the line's own time` : "";
+            }
+            const end = await ended;
+            log(`  ${i}/${n7h}: ${end}${first ? late : " (its handing over not seen first: not asked)"}`);
+            if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
+          } finally {
+            w.close();
+            unwatchFile(file);
+          }
+        }
+      } else {
+        const b = asking("B", "A");
+        await b.answered(3);
+        try {
+          // (each handover sent at its own phase of the asks' second, swept across it: sent as an ask ended, every
+          // window fell between two asks, 0 of 250 in one, main's first run of it)
+          const phased = (ms: number) => new Promise((r) => setTimeout(r, ms)); // det-ok(script-wait): the handovers' phase against the asks' second, swept across it, not a wait for an event
+          for (let i = 1; i <= n7h; i++) {
+            await b.begunFrom(Date.now() + 1);
+            await phased(Math.round(((i - 1) * 1000) / n7h));
+            const end = await handoverEnd(await handOver("A"));
+            log(`  ${i}/${n7h}: ${end}`);
+            if (!/has taken over/.test(end)) throw new Error(`not handed over at ${i}: ${end}`);
+            await b.answered(3);
+          }
+        } finally {
+          await b.stop();
+        }
+        asks.push(...b.asks);
+      }
+      // (A's launcher's lines with their own times: each window's start and end, in order)
+      const lines = ["station.before.log", "station.log"].map((f) => `${RUN}/${f}`).filter(existsSync).flatMap((p) => readFileSync(p, "utf8").split("\n"));
+      const at = (l: string) => Date.parse(l.slice(0, 24));
+      const windows: { from: number; to: number }[] = [];
+      let open: number | null = null;
+      for (const l of lines) {
+        const t = at(l);
+        if (!Number.isFinite(t) || t < t0) continue;
+        if (/handing over from Node [0-9]+ to Node [0-9]+/.test(l)) open = t;
+        else if (/Node [0-9]+ has taken over/.test(l) && open !== null) { windows.push({ from: open, to: t }); open = null; }
+      }
+      const inWindow = (x: Ask) => windows.find((w) => x.at <= w.to && x.at + x.ms >= w.from);
+      const landed = asks.filter((x) => inWindow(x) !== undefined);
+      const refused = landed.filter((x) => !x.reached);
+      const outside = asks.filter((x) => inWindow(x) === undefined && !x.reached);
+      const spans = windows.map((w) => w.to - w.from).sort((p, q) => p - q);
+      measured(`7h: ${windows.length} handover windows (ms: min ${spans[0] ?? "-"}, median ${spans[Math.floor(spans.length / 2)] ?? "-"}, max ${spans[spans.length - 1] ?? "-"}); ${asks.length} asks, ${landed.length} in a window, ${refused.length} of those not reached; ${outside.length} not reached outside any window`);
+      for (const x of landed) {
+        const w = inWindow(x)!;
+        log(`  in a window: ask ${iso(x.at)} ${x.ms} ms (window ${iso(w.from)} to ${iso(w.to)}, the ask ${x.at - w.from} ms after its start): ${x.reached ? "" : "UNREACHED "}${x.said.slice(0, 140)}`);
+      }
+      for (const x of [...refused, ...outside].slice(0, 3)) log(`  the ask at ${iso(x.at)} (${x.ms} ms: ${x.said.slice(0, 120)}), both logs:\n${logsBetween(x.at - 1000, x.at + x.ms + 1000) || "  (nothing)"}`);
+      if (refused.length + outside.length > 0) throw new Error(`${refused.length} of ${landed.length} asks in a handover window not reached; ${outside.length} outside`);
+      // (asked as each handover began, none in its window is the drill's own failing, said as such: it held nothing)
+      if (askAt && landed.length === 0) throw new Error(`no ask of ${asks.length} began inside a handover window: the drill asked too late, nothing held`);
+    });
+    if (handovers > 0) await check7h();
+    if (handovers === 0) await check("7a: A handed over to a new process as an update does (SIGUSR2 to its launcher) while B asks it each second: no ask over 2 s, every one answered", async () => {
       const t0 = Date.now();
       const b = asking("B", "A");
       await b.answered(3);
@@ -2085,7 +3002,7 @@ try {
     };
     // (the lead, 2026-11-14: an ask held while A is down and answered once it is back is answered, not failed; what is
     // held is that each is answered or refused in words, none by a timeout, by 5 s after A is ready)
-    await check("7b: A's whole station stopped while B asks it, started again once alice's device sees it down and an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
+    if (handovers === 0) await check("7b: A's whole station stopped while B asks it, started again once alice's device sees it down and an ask of B's is held in the stop: every ask answered or refused in words, none timed out, each by 5 s after A is ready", async () => {
       const { asks, upAt } = await acrossStop("begun");
       // (a station that did not answer, in its words in either language: station.move.noAnswer and .gone, 「…没有应答…」)
       const timedOut = asks.filter((x) => /timed out|no answer in|not ended|answered nothing|没有应答|did not answer|does not answer/.test(x.said));
@@ -2096,11 +3013,11 @@ try {
       if (late.length > 0) why.push(`${late.length} not answered by 5 s after A was ready: ${late.map((x) => `${iso(x.at)} ended ${((x.at + x.ms - upAt) / 1000).toFixed(1)} s after`).join(", ")}`);
       if (why.length > 0) throw new Error(why.join("; "));
     });
-    await check("7b: A stopped while B asks it till an ask begun in the stop has its answer: what that ask gets, and when (measured, no bound yet)", async () => {
+    if (handovers === 0) await check("7b: A stopped while B asks it till an ask begun in the stop has its answer: what that ask gets, and when (measured, no bound yet)", async () => {
       const { asks, downAt, upAt } = await acrossStop("answered");
       for (const x of asks.filter((x) => x.at >= downAt && x.at < upAt)) measured(`7b long stop: an ask begun ${((x.at - downAt) / 1000).toFixed(1)} s into it got after ${(x.ms / 1000).toFixed(1)} s (${((x.at + x.ms - upAt) / 1000).toFixed(1)} s from A ready): ${x.said.slice(0, 160)}`);
     });
-    await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
+    if (handovers === 0) await check("7c: A's new process dies at start beside the serving one (not handed over; going on as before), then B asks A and A asks B: no ask over 2 s, every one answered", async () => {
       log("  waiting for A online on alice's device's link (7b stopped it)");
       await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
       // (the next Node made to die by the harness alone: A's app/station, a link to the station's build, pointed for that
@@ -2144,6 +3061,7 @@ try {
       }
       if (errs.length > 0) throw new Error(errs.join(" | "));
     });
+    if (handovers === 0) await check7h();
   }
   if (part("8") && (limit("8", 1200), await clean("8"))) {
     // A device away while a chat moves A→B, A down as it comes back: only B's list read can tell it the chat came from
@@ -2233,11 +3151,369 @@ try {
       }
     }
   }
+
+  // ── 9: chats moved one turn each, back to back, while a station is handed to its next process again and again ──
+  // (the real run, 2026-11-15 12:20 UTC: a chat on neither station. The sender took an update between two turns; the
+  // next call reached the process before, which began a turn and a hand-over; the next process's start failed that
+  // hand-over as cut by a restart and had the other drop it, and 6 ms later the process before had its counts and
+  // wrote it gone. What is held after each batch, from both stations' own databases and alice's list: every chat in
+  // sight on exactly one station, every chat the sender says went in sight where it went, each failed move told in
+  // words and moved on a second ask, no ask unanswered longer than a handover takes; and counted, the hand-overs
+  // begun on a process with its next one already started, or the part tested nothing.)
+  // E2E_MOVE_9_CHATS: chats a batch of 9p (6). 9: one batch of 12 while both stations are handed over again and
+  // again; 9p: one handover a batch, of A then of B, begun at each phase of the third chat's turn in turn (before its
+  // ask, its first pass, held, its rows, gone, between two turns), tallied: moved at the first ask, failed in words
+  // and moved on a second ask, refused (409); 9a: an agent's station_move calls, one at a time, A handed over once in
+  // each turn at each phase. 9m: E2E_MOVE_LIMBO_DIST, the build A runs while the limbo is made (main's with the
+  // drill's hold, STILLFAIL_DRILL_HOLD), where unset A's own.
+  /// Station `n`'s launcher's handovers since `t0`, from its log: when the next Node started beside the one serving,
+  /// when it began handing over, when it had taken over.
+  const handoverWindows = (n: Name, t0: number) => {
+    const lines = [`${SHELL_NAME[n]}.before.log`, `${SHELL_NAME[n]}.log`].map((f) => `${RUN}/${f}`).filter(existsSync).flatMap((p) => readFileSync(p, "utf8").split("\n"));
+    const out: { started: number; handing: number | null; taken: number }[] = [];
+    let started: number | null = null;
+    let handing: number | null = null;
+    for (const l of lines) {
+      const t = Date.parse(l.slice(0, 24));
+      if (!Number.isFinite(t) || t < t0) continue;
+      if (/handover: Node [0-9]+ started beside/.test(l)) (started = t), (handing = null);
+      else if (/handing over from Node [0-9]+ to Node/.test(l)) handing = t;
+      else if (/Node [0-9]+ has taken over/.test(l) && started !== null) {
+        out.push({ started, handing, taken: t });
+        started = null;
+      }
+    }
+    return out;
+  };
+  /// Station `n` handed to its next process again and again (SIGUSR2 to its launcher, as an update does), each as the
+  /// one before has taken over, until `stop` says so; how long each took, SIGUSR2 to taken over.
+  const handingOver = (n: Name, stop: () => boolean) => {
+    const took: number[] = [];
+    const done = (async () => {
+      while (!stop()) {
+        const t = Date.now();
+        const end = await handoverEnd(await handOver(n));
+        if (!/has taken over/.test(end)) throw new Error(`${n} not handed over: ${end}`);
+        took.push(Date.now() - t);
+      }
+    })();
+    return { took, done };
+  };
+  /// `count` new chats on A, put in by the station's own store while A is stopped (e2e/move-seed.ts), A then up and
+  /// its link usable: their keys.
+  const seedA = async (count: number): Promise<string[]> => {
+    const before = new Set(sql("A", "select key from sessions").map((r) => String(r.key)));
+    const homeWs = sql("A", "select ws from sessions where ws is not null and ws not like 'handed:%' and ws not like 'coming:%' limit 1")[0]?.ws ?? ws;
+    stationDo("halt", "station");
+    log(`  ${execFileSync(process.execPath, ["--no-warnings", join(dirname(new URL(import.meta.url).pathname), "move-seed.ts"), process.env.E2E_SF_SRC!, DATA.A, homeWs, String(count), "0", randomBytes(3).toString("hex")], { encoding: "utf8", timeout: 600_000 }).trim()}`);
+    stationDo("again", "station");
+    const upAt = Date.now();
+    await a.stationState(ws, (s) => s.state === "online", 120_000, aId);
+    await a.answered(aId, "/", upAt, 120_000, true);
+    return sql("A", "select key from sessions where archived_at is null").map((r) => String(r.key)).filter((k) => !before.has(k));
+  };
+  /// Each of `keys` given a room of E2E_MOVE_9_MB MB (20) in 100 files, so that its hand-over's passes take a second
+  /// or so: long enough to be under way as the next process starts (seeded rooms alone went in milliseconds).
+  const roomsOf = (keys: string[], mb = Number(process.env.E2E_MOVE_9_MB ?? 20)) => {
+    if (mb <= 0) return;
+    for (const k of keys) fill(roomOn("A", k)!, "bulk", 100, Math.floor((mb * 1024 * 1024) / 100));
+  };
+  type Moved = { key: string; at: number; askMs: number; said: string; failed: string | null; refused: boolean };
+  /// Where a handover is begun in a chat's turn: before its ask, as its hand-over is at a step (A's out record: its first
+  /// pass, held, its rows, gone), or after its turn ended and before the next ask.
+  type Phase = "ask" | "files" | "held" | "rows" | "gone" | "between";
+  const PHASES: Phase[] = ["ask", "files", "held", "rows", "gone", "between"];
+  /// Whether chat `key`'s hand-over asked at `t0` is at `phase` now (as A's out record says it).
+  const atPhase = (key: string, t0: number, phase: Phase) => {
+    const o = outOn("A", key);
+    if (o === null || o.at < t0 - 1000) return false;
+    if (phase === "files") return o.step === "files" && o.held !== true;
+    if (phase === "held") return o.held === true && o.step === "files";
+    if (phase === "rows") return o.step === "rows";
+    return o.step === "gone" || o.step === "done";
+  };
+  /// What each 409 met (a turn under way): when, what GET /move said then, how long until A's turn under way ended.
+  const met409: string[] = [];
+  /// Chats `keys` moved A→B one turn each, the next asked as the one before ended (the move.start's answer, then the
+  /// turn's end on A): what each ask was answered and how long that took, and what its turn said. `at`: one handover
+  /// (`fire`) begun at `phase` of the turn of chat `index`; what phase it was begun at is said back (`firedAt`).
+  const batchMoves = async (keys: string[], at?: { index: number; phase: Phase; fire: () => Promise<void> }): Promise<Moved[] & { firedAt?: string }> => {
+    const out: Moved[] & { firedAt?: string } = [];
+    let firing: Promise<void> | null = null;
+    for (const [i, key] of keys.entries()) {
+      const t0 = Date.now();
+      if (at?.index === i && at.phase === "ask") (out.firedAt = "ask"), (firing = at.fire());
+      if (at?.index === i && !["ask", "between"].includes(at.phase)) {
+        // (looked at every 10 ms besides the out directory's events: a step of a small chat lasts tens of ms)
+        firing = whenChanged([`${DATA.A}/replica/handover/out`], () => atPhase(key, t0, at.phase) || (lastOn("A", ws)?.at ?? 0) >= t0 && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => "", 10)
+          .then(() => {
+            out.firedAt = atPhase(key, t0, at.phase) ? at.phase : `${at.phase} missed (${outOn("A", key)?.step ?? "no hand-over"} as the turn ended)`;
+            return out.firedAt.includes("missed") ? undefined : at.fire();
+          });
+      }
+      let said = "";
+      let failed: string | null = null;
+      try {
+        await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
+        said = "202";
+      } catch (e) {
+        said = String((e as Error).message ?? e);
+        failed = said;
+      }
+      const askMs = Date.now() - t0;
+      const refused = failed !== null && /http_409/.test(failed);
+      if (failed === null) {
+        // (the turn's end as A says it; one that names no item of its own (a turn cut by a handover, said ended by the
+        // next process) is this ask's failing, in its words)
+        const l = await turnEnds("A", t0, 300_000);
+        said = outcome(l);
+        const named1 = [...(l?.done ?? []), ...(l?.refused ?? []).map((r: J) => r.item)].map((x) => named(x)).concat(failuresOf(l).map((f) => f.item));
+        const why = failedWhy(l, `chats ${key}`);
+        if (!(l.done ?? []).map(named).includes(`chats ${key}`)) failed = named1.includes(`chats ${key}`) ? why || said : `its turn ended naming nothing of it: ${failedWhy(l) || said}`;
+      } else if (refused) {
+        // (a turn under way, as one at a time is: what the page says of it now, and how long it holds the one turn's
+        // place; the next ask waits for its end, as a person would)
+        const t = Date.now();
+        const page = await a.until(moveT(bId, "chats", 20), (v) => v?.modules && v, 30_000).catch(() => null);
+        const l = await turnEnds("A", t, 300_000).catch(() => null);
+        met409.push(`${key.slice(-8)} at ${new Date(t).toISOString()}: GET /move then moving ${brief(page?.moving ?? null, 200)}, last ${brief({ at: page?.last?.at ?? null }, 80)}; the turn under way ended ${l === null ? "never in 300 s" : `${Date.now() - t} ms later: ${outcome(l).slice(0, 200)}`}`);
+      }
+      out.push({ key, at: t0, askMs, said, failed, refused });
+      if (at?.index === i && at.phase === "between") (out.firedAt = "between"), await at.fire();
+    }
+    if (firing !== null) await firing;
+    return out;
+  };
+  /// Where each of `keys` is in sight, as both stations' databases say, and what alice's list shows once it agrees.
+  const sightOf = (keys: string[]) => keys.map((key) => {
+    const live = (["A", "B"] as Name[]).filter((n) => standing(n, key) === "live");
+    const saysWent = standing("A", key).startsWith("handed");
+    return { key, live, saysWent, standings: standings(key) };
+  });
+  /// What a batch left: chats on none, on both, said gone and not there; and, the stations settled, alice's list.
+  const heldAfter = async (label: string, keys: string[]) => {
+    // (settled: no hand-over of these chats under way on either side; one still under way after 120 s is said, and
+    // what is in sight then is held as it is)
+    const underWay = (k: string) => {
+      const o = outOn("A", k);
+      const coming = handovers("B", "in").some((i) => (i.keys ?? []).includes(k) && i.step === "coming");
+      return coming || (o !== null && ["held", "files", "rows"].includes(o.step));
+    };
+    const settled = await whenChanged([DATA.A, DATA.B], () => !keys.some(underWay) && !existsSync(`${DATA.A}/move/turn.json`), 120_000, () => "", 1000).then(() => true, () => false);
+    const stuck = settled ? [] : keys.filter(underWay);
+    for (const k of stuck.slice(0, 3)) log(`  ${label}: ${k.slice(-8)} still under way after 120 s: ${standings(k)}; turn ${existsSync(`${DATA.A}/move/turn.json`) ? readFileSync(`${DATA.A}/move/turn.json`, "utf8") : "none"}\n    ${heldOf2(k)}; B's in ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(k)).map((i) => ({ id: i.id, step: i.step, at: i.at, error: i.error })))}`);
+    const s = sightOf(keys);
+    const none = s.filter((x) => x.live.length === 0);
+    const both = s.filter((x) => x.live.length > 1);
+    const notThere = s.filter((x) => x.saysWent && !x.live.includes("B"));
+    for (const x of [...none, ...both, ...notThere].slice(0, 3)) log(`  ${x.key.slice(-8)}: ${x.standings}\n    ${heldOf2(x.key)}`);
+    return { none, both, notThere, stuck };
+  };
+  /// Of the hand-overs of `keys` since `t0`, how many began (A's out record's `at`) on a process of A with its next one
+  /// already started, and how many came to B (B's in record's `at`) while B's was: the turns that met the window.
+  const metWindow = (keys: string[], t0: number) => {
+    const inside = (t: number, w: { started: number; taken: number }[]) => w.some((x) => t >= x.started && t <= x.taken);
+    const aW = handoverWindows("A", t0);
+    const bW = handoverWindows("B", t0);
+    const outs = keys.flatMap((k) => handovers("A", "out").filter((o) => (o.keys ?? []).includes(k) && o.at >= t0));
+    const ins = keys.flatMap((k) => handovers("B", "in").filter((i) => (i.keys ?? []).includes(k) && i.at >= t0));
+    return { aW: aW.length, bW: bW.length, onA: outs.filter((o) => inside(o.at, aW)).length, onB: ins.filter((i) => inside(i.at, bW)).length, outs: outs.length };
+  };
+  /// A's handover (`n`: A, B or both), SIGUSR2 to its launcher until it says it has taken over.
+  const handOne = (who: Name[]) => async () => {
+    await Promise.all(who.map(async (n) => {
+      const end = await handoverEnd(await handOver(n));
+      if (!/has taken over/.test(end)) throw new Error(`${n} not handed over: ${end}`);
+    }));
+  };
+  /// What a batch's moves came to: moved at the first ask, failed in words (then moved on a second ask, held below),
+  /// refused (409: a turn under way).
+  const tally = (moved: Moved[]) => ({ first: moved.filter((m) => m.failed === null).length, failed: moved.filter((m) => m.failed !== null && !m.refused).length, refused: moved.filter((m) => m.refused).length });
+  /// The properties after a batch (`moved`, of `keys`, whose handovers took at most `tookMost` ms): reasons it failed.
+  const held9 = async (label: string, keys: string[], moved: Moved[], tookMost: number): Promise<string[]> => {
+    const why: string[] = [];
+    const held = await heldAfter(label, keys);
+    if (held.stuck.length > 0) why.push(`${held.stuck.length} hand-over(s) still under way 120 s after the batch: ${held.stuck.map((k) => `${k.slice(-8)} (${standings(k)}, out ${outOn("A", k)?.step})`).join(", ")}`);
+    if (held.none.length > 0) why.push(`${held.none.length} chat(s) on neither station: ${held.none.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
+    if (held.both.length > 0) why.push(`${held.both.length} on both: ${held.both.map((x) => x.key.slice(-8)).join(", ")}`);
+    if (held.notThere.length > 0) why.push(`${held.notThere.length} said gone by A and not in sight on B: ${held.notThere.map((x) => `${x.key.slice(-8)} (${x.standings})`).join(", ")}`);
+    // (an ask is answered within what a handover takes, SIGUSR2 to taken over, and a second's slack for a link dialled anew)
+    const late = moved.filter((m) => m.askMs > tookMost + 1000);
+    if (late.length > 0) why.push(`${late.length} ask(s) answered past the longest handover (${tookMost} ms): ${late.map((m) => `${m.key.slice(-8)} ${m.askMs} ms: ${m.said.slice(0, 120)}`).join(" | ")}`);
+    const failed = moved.filter((m) => m.failed !== null);
+    // (in words: a person's sentence, not a code or a stack alone)
+    const wordless = failed.filter((m) => !/[一-鿿]|[a-z]{3,} [a-z]{3,}/i.test(m.failed ?? ""));
+    if (wordless.length > 0) why.push(`${wordless.length} failed move(s) not told in words: ${wordless.map((m) => m.failed).join(" | ")}`);
+    for (const m of failed) log(`  ${m.key.slice(-8)} ${m.refused ? "refused" : "failed"}: ${m.failed?.slice(0, 200)}`);
+    // (each failed one still in sight on A alone, moved on a second ask with nothing handed over)
+    for (const m of failed.filter((m) => liveOn(m.key).join() === "A")) {
+      const l = await moveChat(m.key, "B");
+      if (standing("B", m.key) !== "live") why.push(`${m.key.slice(-8)} did not move on a second ask: ${outcome(l)}; ${standings(m.key)}`);
+    }
+    if (why.length === 0) await a.until(chatsT(), (v) => v?.days && keys.every((k) => { const r = rowsOf(v).filter((x) => x.session === k); return r.length === 1 && r[0].station === B; }), 90_000).catch(() => {
+      why.push("alice's list does not show each once on B");
+    });
+    return why;
+  };
+  const tallies: string[] = [];
+  let met9 = 0;
+  if (part("9") && (limit("9", 5400), await clean("9"))) {
+    const perBatch = Number(process.env.E2E_MOVE_9_CHATS ?? 6);
+    // (one batch at the pace of a station handed over as soon as it took over, both at once: the invariant alone, as
+    // nearly every move of it fails, on any build)
+    await check(`9: 12 chats moved one turn each, back to back, while both stations are handed over again and again: every chat in sight on one station, each failed move told in words and moved on a second ask, no ask unanswered past a handover`, async () => {
+      const keys = await seedA(12);
+      roomsOf(keys, 5);
+      const t0 = Date.now();
+      let stop = false;
+      const loops = (["A", "B"] as Name[]).map((n) => ({ n, ...handingOver(n, () => stop) }));
+      let moved: Moved[] = [];
+      try {
+        moved = await batchMoves(keys);
+      } finally {
+        stop = true;
+        await Promise.all(loops.map((l) => l.done));
+      }
+      const met = metWindow(keys, t0);
+      met9 += met.onA + met.onB;
+      const t = tally(moved);
+      tallies.push(`9 both, again and again: ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+      measured(`9 both: ${loops.map((l) => `${l.n} handed over ${l.took.length} times`).join(", ")}; hand-overs begun on A with its next process started ${met.onA} of ${met.outs}, come to B so ${met.onB}; ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+      const why = await held9("9 both", keys, moved, Math.max(...loops.flatMap((l) => l.took), 0));
+      if (why.length > 0) throw new Error(why.join("; "));
+    });
+    // (as the real run had it: one handover of the station a batch, begun at a phase of a turn swept batch by batch)
+    for (const who of [["A"], ["B"]] as Name[][]) {
+      for (const phase of PHASES) {
+        const label = `9p ${who.join("+")} at ${phase}`;
+        await check(`9p: ${perBatch} chats moved one turn each, back to back, ${who.join(" and ")} handed over once as the third's turn is at ${phase}: every chat in sight on one station, a failed move told in words and moved on a second ask`, async () => {
+          const keys = await seedA(perBatch);
+          roomsOf(keys, 5);
+          const t0 = Date.now();
+          let took = 0;
+          const fire = handOne(who);
+          const moved = await batchMoves(keys, { index: 2, phase, fire: async () => { const t = Date.now(); await fire(); took = Date.now() - t; } });
+          const met = metWindow(keys, t0);
+          met9 += met.onA + met.onB;
+          const t = tally(moved);
+          tallies.push(`${label} (begun at ${moved.firedAt ?? "?"}): ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused`);
+          measured(`${label}: begun at ${moved.firedAt ?? "?"}, handover ${took} ms; ${t.first} moved at the first ask, ${t.failed} failed in words, ${t.refused} refused; begun on A with its next started ${met.onA}, come to B so ${met.onB}`);
+          const why = await held9(label, keys, moved, Math.max(took, 1));
+          if (why.length > 0) throw new Error(why.join("; "));
+        });
+      }
+    }
+    // (an agent driving a batch through the station's own tool, one call at a time, each waiting for its answer, as
+    // run_batch.py does; A handed over once in each of its turns, at each phase in turn)
+    await check(`9a: an agent moves ${PHASES.length} chats with station_move one at a time while A is handed over once in each turn, at each phase in turn: what each call answered, every chat in sight on one station`, async () => {
+      const driver = await newChat(`9a-driver-${tag}`);
+      const keys = await seedA(PHASES.length);
+      roomsOf(keys, 5);
+      const answers: { key: string; said: string }[] = [];
+      for (const [i, key] of keys.entries()) {
+        const phase = PHASES[i]!;
+        const t0 = Date.now();
+        const fire = handOne(["A"]);
+        let firing: Promise<void> = Promise.resolve();
+        if (phase === "ask") firing = fire();
+        else if (phase !== "between") firing = whenChanged([`${DATA.A}/replica/handover/out`], () => atPhase(key, t0, phase) || (lastOn("A", ws)?.at ?? 0) >= t0 && !existsSync(`${DATA.A}/move/turn.json`), 300_000, () => "", 10).then(() => atPhase(key, t0, phase) ? fire() : undefined);
+        const said = await say(driver, `drill-move:${JSON.stringify({ action: "move", to: bId, module: "chats", item: key, withNeeds: true })}`, "drill-move: ", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+        await firing;
+        if (phase === "between") await fire();
+        answers.push({ key, said });
+        log(`  ${phase}: ${key.slice(-8)} ${said.slice(0, 300)}`);
+      }
+      const refusedA = answers.filter((x) => /409|已有一次迁移在进行|under way/.test(x.said));
+      const unanswered = answers.filter((x) => x.said.startsWith("no answer"));
+      tallies.push(`9a agent: ${answers.filter((x) => standing("B", x.key) === "live").length} of ${answers.length} on B after one call each, ${refusedA.length} answered as a move under way`);
+      const status = await say(driver, `drill-move:${JSON.stringify({ action: "status", to: bId })}`, "drill-move: ", 300_000).catch((e) => `no answer: ${(e as Error).message}`);
+      log(`  station_move status after: ${status.slice(0, 400)}`);
+      const moved: Moved[] = answers.map((x) => ({ key: x.key, at: 0, askMs: 0, said: x.said, failed: standing("B", x.key) === "live" ? null : x.said, refused: refusedA.includes(x) }));
+      const why = await held9("9a", keys, moved, Number.MAX_SAFE_INTEGER);
+      if (unanswered.length > 0) why.push(`${unanswered.length} call(s) never answered in 300 s: ${unanswered.map((x) => `${x.key.slice(-8)}: ${x.said.slice(0, 120)}`).join(" | ")}`);
+      if (refusedA.length > 0) why.push(`${refusedA.length} call(s) answered as a move under way: ${refusedA.map((x) => `${x.key.slice(-8)}: ${x.said.slice(0, 160)}`).join(" | ")}`);
+      if (why.length > 0) throw new Error(why.join("; "));
+    });
+    await check("9: the batches met the window: hand-overs begun on a process whose next one had started (or come to one so)", async () => {
+      for (const t of tallies) log(`  ${t}`);
+      for (const m of met409) log(`  409: ${m}`);
+      if (met9 === 0) throw new Error("no hand-over of any batch began on a process with its next one started: the part tested nothing");
+      log(`  ${met9} in all`);
+    });
+  }
+
+  // ── 9m: the real run's limbo (A says its chat went, its hand-over failed and never shown, B dropped it), made on the
+  // build before the fix by its own steps, held at the hand-over's own test hook; then A's own build started on that
+  // data: the chat in sight on A again, once, nothing of it on B, and it moves as any. It needs a build of main with
+  // the drill's hold (e2e/move-drill-hold.patch, applied to a copy of the tree, never the product; its header says
+  // how): E2E_MOVE_LIMBO_DIST, that copy's station/dist, and E2E_DRILL_HOLD=counts:<path>; without them it is skipped ──
+  const limboGiven = process.env.E2E_MOVE_LIMBO_DIST !== undefined && /^counts:/.test(process.env.E2E_DRILL_HOLD ?? "");
+  if (part("9m") && !limboGiven) log("SKIP 9m: the limbo needs a build of main with the drill's hold, not built: apply e2e/move-drill-hold.patch to a copy of main from before the fix, build its station, and give E2E_MOVE_LIMBO_DIST=<copy>/station/dist and E2E_DRILL_HOLD=counts:<path>");
+  if (part("9m") && limboGiven && (limit("9m", 1800), await clean("9m"))) {
+    const link = `${ST}/app/station`;
+    const own = execFileSync("readlink", [link], { encoding: "utf8" }).trim();
+    const limboDist = process.env.E2E_MOVE_LIMBO_DIST ?? own;
+    const holdAt = process.env.STILLFAIL_DRILL_HOLD ?? process.env.E2E_DRILL_HOLD ?? "";
+    const hold = holdAt.split(":")[1] ?? "";
+    /// A's next process run from `dist` (its app/station pointed there, then a handover).
+    const runA = async (dist: string) => {
+      rmSync(link, { force: true });
+      execFileSync("ln", ["-s", dist, link]);
+      const end = await handoverEnd(await handOver("A"));
+      if (!/has taken over/.test(end)) throw new Error(`A not handed over to ${dist}: ${end}`);
+      log(`  A runs ${dist}`);
+    };
+    let key = "";
+    await check(`9m: the limbo made on ${limboDist === own ? "A's own build" : limboDist}: a chat's hand-over held after its counts, A handed to its next process (which fails it and has B drop it), then let go (it writes gone)`, async () => {
+      key = (await seedA(1))[0]!;
+      // (A handed to a process of the limbo's build in any case: on main's tree a process the harness started itself
+      // never took the hold, nine-5 and nine-7, one the launcher started for a handover did)
+      await runA(limboDist);
+      roomsOf([key], 1);
+      rmSync(`${hold}.held`, { force: true });
+      rmSync(`${hold}.go`, { force: true });
+      writeFileSync(`${hold}.arm`, "");
+      const t0 = Date.now();
+      await a.call("move.start", { station: A, to: bId, module: "chats", item: key, withNeeds: true });
+      await whenChanged([dirname(hold)], () => existsSync(`${hold}.held`), 120_000, () => `the hand-over never came to its hold: ${brief(outOn("A", key))}`, 100);
+      log(`  held after its counts in ${readFileSync(`${hold}.held`, "utf8")}: ${brief(outOn("A", key))}`);
+      const h = await handOver("A");
+      // (the next process's start fails it, as at 12:20:13.294; the process before let go at once, so that it writes gone
+      // while the drop it asked of B is on its way, as 6 ms later there)
+      await whenChanged([DATA.A], () => outOn("A", key)?.step === "failed", 120_000, () => `the next process did not fail it: A ${brief(outOn("A", key))}`, 5);
+      writeFileSync(`${hold}.go`, "");
+      log(`  the next process failed it; the process before let go: ${brief(outOn("A", key))}`);
+      await whenChanged([DATA.B], () => handovers("B", "in").some((i) => (i.keys ?? []).includes(key) && i.step === "dropped"), 120_000, () => `B did not drop it: ${brief(handovers("B", "in").filter((i) => (i.keys ?? []).includes(key)))}`, 100);
+      const end = await handoverEnd(h);
+      log(`  ${end}`);
+      await turnEnds("A", t0, 120_000).catch(() => undefined);
+      // (gone as the process before wrote it: A's handed_over naming B, store.goneTo, the row's ws as that leaves it)
+      const said = () => sql("A", `select station from handed_over where session = ${lit(key)}`).some((r) => String(r.station) === bId);
+      await whenChanged([DATA.A], said, 60_000, () => `the process before never wrote it gone: ${standings(key)}`, 200);
+      log(`  the limbo: ${standings(key)}\n    ${heldOf2(key)}`);
+      if (standing("B", key) !== "none") throw new Error(`not the limbo: B has it, ${standings(key)}`);
+      // (out of A's lists as it says it went: alice's list shows it on neither)
+      let seen: J[] = [];
+      await a.until(chatsT(), (v) => { seen = rowsOf(v).filter((r) => r.session === key); return v?.days && seen.length === 0; }, 60_000).then(() => log("  alice's list shows it on neither station"), () => log(`  alice's list still shows it: ${brief(seen.map((r) => ({ station: r.station, title: r.title })))}`));
+    });
+    if (key !== "" && standing("B", key) === "none" && sql("A", `select station from handed_over where session = ${lit(key)}`).length > 0) {
+      await check("9m: A's own build started on it: the chat in sight on A again, once, nothing of it on B; it then moves to B as any", async () => {
+        await runA(own);
+        await whenChanged([DATA.A], () => standing("A", key) === "live" && sql("A", `select station from handed_over where session = ${lit(key)}`).length === 0, 120_000, () => `still not in sight on A: ${standings(key)}\n    ${heldOf2(key)}`, 1000);
+        if (standing("B", key) !== "none") throw new Error(`B holds it: ${standings(key)}`);
+        await listedOnceOn(key, "A");
+        const l = await moveChat(key, "B");
+        if (standing("B", key) !== "live") throw new Error(`it did not move: ${outcome(l)}; ${standings(key)}`);
+        await listedOnceOn(key, "B");
+      });
+    } else await runA(own).catch((e) => log(`  A not back on its own build: ${e.message}`));
+  }
 } catch (e) {
   fail("the run", e);
 }
 partOver();
 steps.A?.close();
+steps.B?.close();
 for (const r of report) log(`MEASURED ${r}`);
 log(failures() === 0 ? "ALL PASSED" : `${failures()} FAILED`);
 await within(Promise.all([a.close(), bob.close()]), 5000);

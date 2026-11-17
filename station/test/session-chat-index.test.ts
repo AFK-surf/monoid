@@ -5,9 +5,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { ccSessionReady, CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { ccSessionReady, CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, SESSION_CHAT_INDEXED, SESSION_CHAT_MANY, SESSION_CHAT_SMALL,
-  SessionChatPreparation, sessionChatReady } from "../src/store/session-chat-index.ts";
+  SessionChatPreparation, sessionChatReady } from "./reference/backfill/session-chat-index.ts";
 
 function prepare(store: Store, session: string, limit = 8): number {
   const work = new SessionChatPreparation();

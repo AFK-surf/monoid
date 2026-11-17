@@ -13,7 +13,7 @@ fn side_by_side(card : @view.View, make : (@view.View) -> Unit) -> Unit {
 
 ///|
 /// A story's state: a part's own state kept with it, from its first making.
-fn[T] kept(v : T) -> @signals.Signal[T] {
+fn[T : Eq] kept(v : T) -> @signals.Signal[T] {
   @signals.signal(v)
 }
 
@@ -153,6 +153,121 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
             side_by_side(card, fn(r) {
               @sf.icon_button_node(r, "send", fn() { "发送" }, fn() {  }, tips~, disabled=fn() { true }) |> ignore
               @sf.icon_button_node(r, "plus", fn() { "新建" }, fn() {  }, tips~, size=44.0, icon_size=22.0) |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    {
+      key: "send-button",
+      group: "按钮",
+      name: "发送 SendButton",
+      file: "send_button_node.mbt",
+      api: [("send_button_node.mbt", "send_button_node")],
+      play: None,
+      about: "输入框的发送：能发时实心，不能发时变淡、按不动；新对话正在建时转圈。",
+      cases: [
+        (
+          "能发 · 不能发 · 新对话建中",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              @sf.send_button_node(r, fn() { "发送" }, fn() { true }, fn() { false }, fn() {  }, tips~) |> ignore
+              @sf.send_button_node(r, fn() { "发送" }, fn() { false }, fn() { false }, fn() {  }, tips~) |> ignore
+              @sf.send_button_node(r, fn() { "发送" }, fn() { false }, fn() { true }, fn() {  }, tips~) |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    {
+      key: "composer-notice",
+      group: "输入框",
+      name: "输入框上的通知 ComposerNotice",
+      file: "composer_notice_node.mbt",
+      api: [("composer_notice_node.mbt", "composer_notice_node")],
+      play: None,
+      about: "输入框上方的一条通知：图标对准输入框的＋，右端是它提供的操作、关闭，或几个选项；操作失败时原因写在下面。",
+      cases: [
+        (
+          "操作 · 关闭 · 选项",
+          fn(card) {
+            @sf.composer_notice_node(card, tips, fn() { "archive" }, fn() { "这个对话已归档" }, fn() { 24.5 }, offer={
+              words: fn() { "还原对话" },
+              name: fn() { "还原对话" },
+              off: fn() { false },
+              press: fn() {  },
+            })
+            |> ignore
+            @sf.composer_notice_node(card, tips, fn() { "message" }, fn() { "有新的回复" }, fn() { 24.5 }, dismiss={
+              words: fn() { "" },
+              name: fn() { "关闭" },
+              off: fn() { false },
+              press: fn() {  },
+            })
+            |> ignore
+            @sf.composer_notice_node(
+              card,
+              tips,
+              fn() { "clock" },
+              fn() { "缓存已过期，接着聊会重新读一遍" },
+              fn() { 24.5 },
+              choices=fn() { [("keep", "接着聊"), ("fresh", "换新上下文")] },
+              chosen=fn() { "keep" },
+              choose=fn(_) {  },
+            )
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "composer-quote",
+      group: "输入框",
+      name: "待发引用 ComposerQuoteCard",
+      file: "quote_card_node.mbt",
+      api: [("quote_card_node.mbt", "composer_quote_card_node")],
+      play: None,
+      about: "输入框里等着发出去的引用：谁说的、说了什么，下面一行写对它的话，右上角 ✕ 移除。",
+      cases: [
+        (
+          "引用 · 带评论行",
+          fn(card) {
+            let f = @ui.Field::new()
+            @sf.composer_quote_card_node(
+              card,
+              tips,
+              fn() { "agent" },
+              fn() { "把发布说明写一下，先列改动再写影响" },
+              fn() { "" },
+              fn(b) { @ui.field(b, f, placeholder="说点什么", max_lines=1, enter_sends=true) |> ignore },
+              fn() {  },
+              fn() { "移除引用" },
+            )
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "waiting-tile",
+      group: "输入框",
+      name: "待发图片 WaitingTile",
+      file: "waiting_tile_node.mbt",
+      api: [("waiting_tile_node.mbt", "waiting_tile_node")],
+      play: None,
+      about: "输入框里等着发出去的图片或视频：上传中蒙一层并显示进度环，失败时红边加重试，视频显示播放标记。",
+      cases: [
+        (
+          "上传中 · 失败 · 视频",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              let swatch = fn(p : @view.View) { p.ground(Is(0x8899AAFFL)) |> ignore }
+              @sf.waiting_tile_node(r, swatch, fn() { true }, fn() { Some(0.4) }, fn() { false }, fn() {  }, fn() { "重试" })
+              |> ignore
+              @sf.waiting_tile_node(r, swatch, fn() { false }, fn() { None }, fn() { true }, fn() {  }, fn() { "重试" })
+              |> ignore
+              @sf.waiting_tile_node(r, swatch, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "重试" }, video=fn() { true })
+              |> ignore
             })
           },
         ),
@@ -357,6 +472,27 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           fn(card) {
             let chosen = kept(2)
             @sf.seg_fill_node(card, fn() { ["系统", "浅色", "深色"] }, fn() { chosen.get() }, fn(i) { chosen.set(i) }, said="主题")
+            |> ignore
+          },
+        ),
+      ],
+    },
+    {
+      key: "choice-cards",
+      group: "选择",
+      name: "卡片单选 Choice cards",
+      file: "choice_cards_node.mbt",
+      api: [("choice_cards_node.mbt", "choice_cards_node")],
+      play: None,
+      about: "几种呈现方式并排成卡片，图标在上、文字在下，同时只选中一个（看板「显示」弹层里的 列表 | 看板）。",
+      cases: [
+        (
+          "列表 | 看板",
+          fn(card) {
+            let chosen = kept(1)
+            @sf.choice_cards_node(card, fn() { [("list", "列表"), ("view-columns", "看板")] }, fn() { chosen.get() }, fn(i) {
+              chosen.set(i)
+            }, said="视图")
             |> ignore
           },
         ),
@@ -744,7 +880,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
                 @sf.menu(
                   [
                     Some(@sf.menu_item_of("复制", fn() { @sfbase.toast_later("已复制") }, icon="copy")),
-                    Some(@sf.menu_item_of("分享…", fn() {  }, icon="share")),
+                    Some(@sf.menu_item_of("分享", fn() {  }, icon="share", further=true)),
                     None,
                     Some(@sf.menu_item_of("删除", fn() {  }, icon="trash", danger=true)),
                   ],

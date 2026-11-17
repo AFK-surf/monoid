@@ -37,7 +37,7 @@ import { ofAddress } from "../workspace.ts";
 import { presentHistory } from "../history.ts";
 import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
-import { archiveHintOf, badgeKindsOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
+import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
 import { markdown, type MdStore } from "../markdown.ts";
 import { heardFiles } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
@@ -45,7 +45,9 @@ import { KINDS as THING_KINDS, OUTLINE_FOUND, isVideo, mediaDays, thingsHaving, 
 import { archive, archiveSearch } from "./archive.ts";
 import { Local, PENDING_PREFIX } from "./local.ts";
 import { askAnswers } from "./vault.ts";
+import { stationsGuard } from "./lock.ts";
 import * as marks from "./marks.ts";
+import { lineForViewer, stageFields } from "../chat-stage.ts";
 import { usageView } from "./usage.ts";
 import { usageSummary } from "./usage-summary.ts";
 import { fleetView } from "./fleet.ts";
@@ -53,6 +55,7 @@ import { stationUpdates } from "./station-updates.ts";
 import { chatsCard, usageCard } from "./rail-cards.ts";
 import { resourcesView } from "./resources.ts";
 import { stationProfileSummary, workspaceProfiles } from "./profiles.ts";
+import { profilesOverview } from "./profiles-overview.ts";
 import { settingsView } from "./settings.ts";
 import { waysView, type WaysView } from "./ways.ts";
 import { keptWays } from "./ways-stations.ts";
@@ -63,6 +66,9 @@ import * as xshare from "./xshare.ts";
 import * as memberships from "./memberships.ts";
 import * as publish from "./publish.ts";
 import { type SearchSource, searchView, stationTopic } from "./search.ts";
+
+/// An hour, in ms (the Profile overview is made again at each).
+const HOUR = 3_600_000;
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -90,7 +96,7 @@ export const WINDOW_UNTOLD = 50;
 /// (`stationsWhole` is the core's own: a scope's stations, each its page with the models it can run, as `stations` was
 /// before its items were rows. choose.ts reads it for a model's choice and its borrowing; no UI asks it, and protocol.ts
 /// does not offer it.)
-const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const VIEW_TOPICS = new Set(["chats", "chatRow", "chatSearch", "search", "stations", "station", "stationPart", "stationsWhole", "profiles", "profilesWhole", "profilesOverview", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "archive", "workspaceMarks", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// What a chat row's columns say that the views find rows by (db/account.ts): how urgent it is for its person
 /// (workspace marks), whether it asks something of them, what its agents are doing as its list's row says it.
@@ -105,7 +111,7 @@ export const chatDerive: Derive = {
 };
 
 /// A station's overview and host reading as its row and its page show them (Views `#stationShownOf`).
-type StationShown = { full: Derived<J>; profile: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
+type StationShown = { full: Derived<J>; profile: Derived<J>; settings: Derived<J>; host: Derived<J>; row: Derived<J>; hostRow: Derived<J>; unreadable: Derived<boolean>; offered: Derived<J[]>; judge: (o: J) => boolean };
 
 /// A station of a scope, as the workspace lists it.
 /// `joined`: the station's home is another workspace, this one it joined.
@@ -132,6 +138,18 @@ const stationOnline = (v: Value | undefined): boolean => !down(linkValue(v));
 /// The viewer's `archiveHint` of the prefs (an error: none): what the chat list reads of them, made again only as it
 /// changes, not as the app writes another pref (`workspace`, at every switch of workspace).
 const archiveHintIn = (v: Value | undefined): ArchiveHint => archiveHintOf(v !== undefined && "ok" in v ? (v.ok ?? null) : null);
+/// The failures of a station's chats its viewer let go (the prefs' `failsGone` of its workspace, as views/marks.ts
+/// `failureOf` names them), which a row's stage reads (chat-stage.ts `needsViewer`): one picker a station, so that the
+/// store keeps what it picked while the prefs say the same of it.
+const goneIns = new Map<string, (v: Value | undefined) => readonly string[]>();
+function goneIn(station: string): (v: Value | undefined) => readonly string[] {
+  let pick = goneIns.get(station);
+  if (pick === undefined) {
+    pick = (v) => [...failsGoneOf(v !== undefined && "ok" in v ? (v.ok ?? null) : null, ofAddress(station))].filter((k) => k.startsWith(`${station}/`)).sort();
+    goneIns.set(station, pick);
+  }
+  return pick;
+}
 /// What a chat's page reads of the prefs (its side panel's tabs, the station updates let be), so that another of them
 /// written (the workspace, at every switch of it) makes no chat again.
 const chatPrefsIn = (v: Value | undefined): J => {
@@ -193,6 +211,14 @@ function stationsOn(chats: J): J {
   const words = new Map(arr(get(chats, "stations")).map((s) => [str(get(s, "station")) ?? "", s]));
   if (![...words.values()].some((w) => get(w, "offline") !== undefined || get(w, "reconnecting") !== undefined)) return chats;
   return { ...chats, days: arr(get(chats, "days")).map((d) => ({ ...d, items: arr(get(d, "items")).map((row) => stationOn(row, words.get(str(get(row, "station")) ?? ""))) })) };
+}
+
+/// What a search found among a list's rows (refs.search's `items`), each as its station's state makes it (stationOn): as
+/// stationsOn would have made them, the rows it did not find left as they are.
+function foundOn(chats: J, found: J): J {
+  const words = new Map(arr(get(chats, "stations")).map((s) => [str(get(s, "station")) ?? "", s]));
+  if (![...words.values()].some((w) => get(w, "offline") !== undefined || get(w, "reconnecting") !== undefined)) return found;
+  return { ...found, items: arr(get(found, "items")).map((row) => stationOn(row, words.get(str(get(row, "station")) ?? ""))) };
 }
 
 /// Which of a list's rows went and came since it was last made (`#chats`): `whole` when it was made again whole.
@@ -270,8 +296,8 @@ let listRowShapes: string | null = null;
 /// name, its mark where there are several), the viewer, the workspace's members, who the viewer is in Slack there (its
 /// overview's part, `slackUsers`) and the viewer's `archiveHint`. A row is taken as kept only under the key in force;
 /// test/list-rows.test.ts holds that a row made otherwise under another of any of these has another key.
-export function listRowKey(s: StationInfo, mark: { emoji: string | null; icon: string | null } | null, me: J, slackUsers: string[], members: J[], hint: ArchiveHint): string {
-  return textKey(JSON.stringify([KEPT.listRow.making, (listRowShapes ??= shapeKey("ListedChat")), lang(), brand.name(), s.address, s.name, mark, me, slackUsers, membersKey(members), hint]));
+export function listRowKey(s: StationInfo, mark: { emoji: string | null; icon: string | null } | null, me: J, slackUsers: string[], members: J[], hint: ArchiveHint, gone: readonly string[] = []): string {
+  return textKey(JSON.stringify([KEPT.listRow.making, (listRowShapes ??= shapeKey("ListedChat")), lang(), brand.name(), s.address, s.name, mark, me, slackUsers, membersKey(members), hint, gone]));
 }
 
 /// A workspace's members as a key (conform.ts textKey), once for each list of them (a workspace's is shared and never
@@ -355,10 +381,12 @@ function originOf(connect: J, origin: J): { originKind: string; originText: stri
   const feishu = text("surface")?.startsWith("feishu:") === true || format.isFeishuChat(text("channel") ?? "");
   // A Comma Task's: Comma and the Group, no place (a Task is not in a channel).
   const comma = text("surface")?.startsWith("comma:") === true;
+  // A group connect's: its conversation by name (a group's, a private chat's other member's), no #.
+  const group = text("surface")?.startsWith("group:") === true;
   const place = comma || (text("channel") === null && channelName === null) ? null : format.placeName(text("surface") ?? "slack", text("channel") ?? "", channelName ?? "");
   return {
-    originKind: comma ? "comma" : feishu ? "feishu" : "slack",
-    originText: [comma ? "Comma" : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
+    originKind: comma ? "comma" : group ? "group" : feishu ? "feishu" : "slack",
+    originText: [comma ? "Comma" : group ? t("core-views.group") : feishu ? t("core-views.feishu") : "Slack", text("teamName"), place].filter((x) => x !== null).join(" · "),
   };
 }
 
@@ -392,7 +420,7 @@ function stateLineOf(line: ReturnType<typeof present.rowStateLine>): J {
 }
 
 /// What a station's list rows are made with besides their records (#listRow), and the key they are kept by.
-type Around = { s: StationInfo; mark: { emoji: string | null; icon: string | null } | null; me: J; slackUsers: string[]; members: J[]; hint: ArchiveHint; key: string };
+type Around = { s: StationInfo; mark: { emoji: string | null; icon: string | null } | null; me: J; slackUsers: string[]; members: J[]; hint: ArchiveHint; gone: readonly string[]; key: string };
 
 /// What a list read first (#head) that is a row kept beside its record, not its record: by itself (#chats `keptRow`).
 const headKept = new WeakMap<object, HeadRow>();
@@ -428,6 +456,9 @@ function madeDay(d: J, n: number): J {
 }
 
 /// A chat list's key among the windows (Views `chatsWindow`): its topic's params, said or left to their defaults.
+/// Which chats a list is of: those shown (`visible`), those hidden, both (`all`), or both and those an agent leads too
+/// (`found`: a search typed into, the one way to them besides their opener's info; the user, 2026-11-17).
+type Visibility = "visible" | "hidden" | "all" | "found";
 const windowKey = (list: Topic): string => JSON.stringify([list.scope, list.mine === true, list.watching === true, list.hidden === true]);
 
 /// The list with its first `window` rows, in their days, and how many more it has (`more`): what a page shows of it,
@@ -535,6 +566,79 @@ export function lettersByChat(letters: { message: J; way: "in" | "out"; title: s
     const said = last.way === "out" ? t("core-views.letters.out", { name: str(get(last.by, "name")) ?? "", text: words }) : words;
     return { key: link ?? title, title, link, letters, last: said, lastActiveAt: u64(last.createdAt) ?? 0 };
   });
+}
+
+/// A failure notice that may fold with the same said next to it: one line, no install, no run change.
+function foldable(m: J): boolean {
+  return m.system === true && isObject(m.notice) && m.notice.failed === true && m.install === undefined && m.notice.short === undefined && m.notice.lines === undefined;
+}
+
+/// What `foldNotices` made of a run, by its first message: the run it was made of, the same objects, and what it made.
+const foldMade = new WeakMap<object, { run: J[]; out: J }>();
+
+/// still.fail's failures said in the same words one after another, folded into one (the user, 2026-11-16: eleven
+/// 与模型服务的连接中断 filled the screen): the first's `seq` and `ts`, so its row stays the one it was as more come,
+/// with how many (`count`) and the last's `seq` (`lastSeq`), what is acted on and read up to; the last's time, failure
+/// in words (`detail`) and what may be done of it. Their details may differ (another request, another error): what is
+/// shown closed is the same. Not across what was sent elsewhere after one of them (`after`: the seqs it follows).
+export function foldNotices(messages: J[], after?: ReadonlySet<number>): J[] {
+  let folded: J[] | null = null;
+  for (let i = 0; i < messages.length;) {
+    const first = messages[i]!;
+    let j = i + 1;
+    if (foldable(first)) {
+      const words = first.notice.words;
+      const profile = str(first.profile) ?? "";
+      while (j < messages.length && foldable(messages[j]!) && messages[j]!.notice.words === words && (str(messages[j]!.profile) ?? "") === profile && !(after?.has(u64(messages[j - 1]!.seq) ?? -1) ?? false)) j++;
+    }
+    if (j - i < 2) {
+      if (folded !== null) folded.push(first);
+      i = j;
+      continue;
+    }
+    folded ??= messages.slice(0, i);
+    const run = messages.slice(i, j);
+    const was = foldMade.get(first);
+    if (was !== undefined && was.run.length === run.length && was.run.every((m, k) => m === run[k])) folded.push(was.out);
+    else {
+      const last = run[run.length - 1]!;
+      const notice: J = { ...first.notice, count: run.length };
+      const lastSeq = u64(last.seq);
+      if (lastSeq !== null) notice.lastSeq = lastSeq;
+      delete notice.detail;
+      for (let k = run.length - 1; k >= 0; k--) {
+        const detail = str(run[k]!.notice.detail);
+        if (detail !== null && detail !== "") {
+          notice.detail = detail;
+          break;
+        }
+      }
+      for (const mark of ["retrySession", "againSession", "reassignSession"]) {
+        delete notice[mark];
+        for (let k = run.length - 1; k >= 0; k--) {
+          const v = run[k]!.notice[mark];
+          if (v !== undefined) {
+            notice[mark] = v;
+            break;
+          }
+        }
+      }
+      const out: J = { ...first, notice };
+      if (last.createdAt !== undefined) out.createdAt = last.createdAt;
+      if (run.some((m) => m.reportable === true)) out.reportable = true;
+      if (run.some((m) => m.asked === true)) out.asked = true;
+      const shared = sharedValue(out);
+      foldMade.set(first, { run, out: shared });
+      folded.push(shared);
+    }
+    i = j;
+  }
+  return folded ?? messages;
+}
+
+/// The last seq a message shown stands for: a folded notice's last (`lastSeq`), else its own.
+export function endSeq(m: J): number | null {
+  return u64(get(get(m, "notice"), "lastSeq")) ?? u64(get(m, "seq"));
 }
 
 /// The notices that a runtime is not installed, said where they matter: under the viewer's message that waits for it
@@ -728,6 +832,10 @@ const connectsPartOf = (v: Value | undefined): J => {
   return { connects: arr(get(o, "connects")), slackApps: arr(get(o, "slackApps")), profiled: !isObject(o) || arr(get(o, "profiles")).length > 0 };
 };
 
+/// The parts of a station's overview its page asks alone (`stationPart`) that are of its settings (data.ts
+/// overviewSettings): made of those alone.
+const SETTINGS_PARTS = new Set(["automaticDecisions", "archiving"]);
+
 /// What the views are put together with: the core's store and data, and what the accounts say of a workspace.
 export type ViewsEnv = {
   host: Host;
@@ -748,6 +856,8 @@ export type ViewsEnv = {
   xshareAsked?: (station: string, session: string) => xshare.Asked | undefined;
   /// The name of the home workspace of a station a workspace joined, when the viewer is in it (memberships.ts).
   homeName?: (workspace: string, id: string) => string | null;
+  /// Safe mode in a workspace as its stations' rows say it (views/lock.ts `stationsGuard`); none where not given.
+  guard?: (workspace: string) => { protects: (id: string) => boolean; can: () => boolean } | null;
   /// Whether a workspace's notices are heard of on this device (`notify.set` `workspaces`); every one where not given.
   heard?: (workspace: string) => boolean;
   /// A topic a view watches shown again (its owner asked to bring it up to date, store.ts `resume`).
@@ -799,6 +909,7 @@ export function envOf(core: Inner): ViewsEnv {
     resume: (topic) => core.router.resume(topic),
     xshareAsked: (station, session) => xshare.asked(core, station, session),
     homeName: (workspace, id) => memberships.homeName(core, workspace, id),
+    guard: (workspace) => stationsGuard(core, workspace),
     vaultAnswers: (workspace, asks) => askAnswers(core, workspace, asks),
     heard: (workspace) => core.attention?.attend.heard(workspace) ?? true,
     ways: (workspace) => {
@@ -1205,6 +1316,11 @@ export class Views implements Owner {
         scope = view.scope as string;
         perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }];
         break;
+      case "profilesOverview":
+        // (and each station's accounts' last hours, read while the overview shows: its `profilePace`)
+        scope = view.scope as string;
+        perStation = (s) => [{ topic: "link", station: s }, { topic: "overview", station: s }, { topic: "profilePace", station: s }];
+        break;
       case "archive":
         scope = view.scope as string;
         perStation = (s) => [{ topic: "archivedRows", station: s }, { topic: "link", station: s }, ...(typeof view.q === "string" && view.q.trim() !== "" ? [archiveSearch(s, view.q)] : [])];
@@ -1546,6 +1662,12 @@ export class Views implements Owner {
     return this.#core.data.marked(stations);
   }
 
+  /// A chat's record by its thread on a station (none: not listed there), for what is kept here of it alone (a message
+  /// that did not go: views/marks.ts).
+  chatOfThread(station: string, thread: number): J {
+    return this.#core.data.chatOfThread(station, thread) ?? null;
+  }
+
   /// The chat an agent's item has: the still.fail chat bound to it, as the station's items say, or its threads do.
   boundThread(station: string, key: string): number | null {
     const fromRows = u64(get(this.#core.data.chatOfSession(station, key), "thread"));
@@ -1672,18 +1794,19 @@ export class Views implements Owner {
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
       case "search": {
-        const chats = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "all" : "visible");
+        const chats = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "found" : "visible");
         if (chats === undefined || !("ok" in chats)) return chats;
         return searchView(this.#searchSource, stationsOn(wholeRows(chats.ok)), view);
       }
       case "chatSearch": {
         const listed = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "all" : "visible");
         if (listed === undefined || !("ok" in listed)) return listed;
-        const chats = { ok: stationsOn(wholeRows(listed.ok)) };
+        // (each row as its station's state makes it, of those it finds alone: stationsOn, foundOn)
+        const rows = wholeRows(listed.ok);
         const elsewhere = view.elsewhere === true && String(view.query ?? "").trim() !== "";
         // The chats opened on this device first, the latest first, then the rest by when they were last active (refs.ts).
         const opened = refs.openedIn(this.#core.data, view.scope as string);
-        const found = refs.search(chats.ok, view.query as string, view.station as string | undefined, view.exclude as string | undefined, elsewhere ? undefined : (view.limit as number | undefined), opened);
+        const found = foundOn(rows, refs.search(rows, view.query as string, view.station as string | undefined, view.exclude as string | undefined, elsewhere ? undefined : (view.limit as number | undefined), opened));
         // With something typed (`elsewhere`, the `@` menu), those of the viewer's other workspaces whose title has it
         // too, each saying whose, ranked so as not to crowd this workspace's (refs.ts withOutside).
         if (elsewhere) {
@@ -1692,14 +1815,15 @@ export class Views implements Owner {
             if (place.id === view.scope) continue;
             const theirs = this.#chatsWhole(place.id, false, false, "all");
             if (theirs === undefined || !("ok" in theirs)) continue;
-            for (const item of arr(refs.search(stationsOn(wholeRows(theirs.ok)), view.query as string, undefined, undefined, undefined, refs.openedIn(this.#core.data, place.id)).items)) others.push({ ...item, outside: place.name, ...xshare.markOf(place, "outside") });
+            const theirRows = wholeRows(theirs.ok);
+            for (const item of arr(foundOn(theirRows, refs.search(theirRows, view.query as string, undefined, undefined, undefined, refs.openedIn(this.#core.data, place.id))).items)) others.push({ ...item, outside: place.name, ...xshare.markOf(place, "outside") });
           }
           found.items = refs.withOutside(arr(found.items), others, view.query as string, view.scope as string, view.limit as number | undefined);
         }
         // (what it lists whole, as its rows were before the list's were what a row draws: wholeFor)
         found.items = arr(found.items).map((i) => this.wholeFor(i));
         if (typeof view.messages === "number" && view.messages > 0) {
-          found.messages = this.#foundMessages(chats.ok, view);
+          found.messages = this.#foundMessages(stationsOn(rows), view);
           found.words = refs.terms(view.query as string);
         }
         return { ok: found };
@@ -1718,7 +1842,10 @@ export class Views implements Owner {
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
         if (!stations.some((s) => s.address === view.station)) return { ok: null };
-        return { ok: get(this.#stationShownOf(view.station as string).full.get(), view.part as string) ?? null };
+        // (the automatic decisions and archiving of what is kept of them beside the overview, made as the whole makes
+        // them: never the whole)
+        const parts = this.#stationShownOf(view.station as string);
+        return { ok: get(SETTINGS_PARTS.has(view.part as string) ? parts.settings.get() : parts.full.get(), view.part as string) ?? null };
       }
       case "profiles": {
         // What goes out is the rows (ProfileRow), shaped here beside the value the list made (conform.ts shapedBeside, as
@@ -1739,11 +1866,27 @@ export class Views implements Owner {
         return this.#profilesView(view.scope as string);
       case "profile":
         return this.#profileOf(view);
+      case "profilesOverview": {
+        // The Profile overview's pools (views/profiles-overview.ts) of the accounts as the list's rows keep them (each
+        // window's percent left and its refill's moment: no overview decorated whole) and their stations' hours, made
+        // again as either changes and at each hour (its hours are the clock's).
+        const stations0 = this.#stationsOr(view.scope as string);
+        if (stations0 === undefined || !Array.isArray(stations0)) return stations0 as Value | undefined;
+        const key = profileRowKey();
+        const listed = workspaceProfiles(stations0.map((s) => ({ station: s.address, id: s.id, name: s.name, online: s.online, joined: s.joined, overview: this.#profileRowsOfStation(s.address, key) })));
+        const now = this.#core.host.nowMs();
+        this.#againIn(HOUR - (now % HOUR));
+        const stations = new Map(stations0.map((s) => [s.address, s.online]));
+        const pace = (station: string) => (stations.get(station) === true ? this.ok({ topic: "profilePace", station }) : undefined);
+        return { ok: profilesOverview(arr(listed.items), pace, now, this.#core.host.utcOffsetMin(now)) };
+      }
       case "settings": {
         // Each station's name, whether it is up and its overview: what the settings say of them, not their pages.
         const stations = this.#stationsOr(view.scope as string);
         if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
-        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).full.get() }))) };
+        // (of the automatic decisions and archiving kept beside each overview, decorated as the whole decorates them:
+        // never the whole, of some 150 KB a phone's each)
+        return { ok: settingsView(stations.map((s) => ({ name: s.name, online: s.online, overview: this.#stationShownOf(s.address).settings.get() }))) };
       }
       case "connects":
         return this.#connects(view.scope as string, view.mine === true);
@@ -1874,7 +2017,7 @@ export class Views implements Owner {
             // the tasks other stations' chats ran here, as its usage says them (a station from before says none)
             runs: arr(get(this.ok({ topic: "stationUsage", station: s.address }), "remoteRuns"))
               .filter((r) => typeof get(r, "at") === "number" && typeof get(r, "session") === "string")
-              .map((r) => ({ at: get(r, "at") as number, session: get(r, "session") as string })),
+              .map((r) => ({ at: get(r, "at") as number, session: get(r, "session") as string, ...(typeof get(r, "count") === "number" ? { count: get(r, "count") as number } : {}) })),
             // its chats' calls, by day, chat, profile and model, as the usage page reads them
             calls: arr(get(this.ok({ topic: "stationUsage", station: s.address }), "rows")),
           };
@@ -1994,14 +2137,14 @@ export class Views implements Owner {
 
   /// A scope's chat list as a page shows it: its first `first` rows (its window), and how many more it has (`more`). Read
   /// as a window over the index, never a station's rows whole (#chatsOf `windowed`).
-  #chats(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number): Value | undefined {
+  #chats(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number): Value | undefined {
     return this.#chatsOf(scope, mine, watching, visibility, first, true).value;
   }
 
   /// A scope's chat list whole, every row of it: what search, chatSearch and a share's choice read till each chat has
   /// what finds it kept beside it (scripts/whole-lists.ts). `first`: how many rows a page shows of it first, what is read
   /// of its stations' records for its first screen while they are not loaded (#head).
-  #chatsWhole(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all" = "visible", first = WINDOW_UNTOLD): Value | undefined {
+  #chatsWhole(scope: string, mine: boolean, watching: boolean, visibility: Visibility = "visible", first = WINDOW_UNTOLD): Value | undefined {
     return this.#chatsOf(scope, mine, watching, visibility, first, false).value;
   }
 
@@ -2010,7 +2153,7 @@ export class Views implements Owner {
   /// overlaid), how many it shows and which stations' rows run counted by SQLite (`counts`); a row kept beside its record
   /// taken from the cache where held, its text read only where not. Else the stations' rows whole (#chatsWhole).
   /// With it, how many of its rows run (their `state`: `running`), counted of a windowed list.
-  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number, windowed: boolean): { value: Value | undefined; running: number } {
+  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): { value: Value | undefined; running: number } {
     const stations = this.#stationsOr(scope);
     if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined, running: 0 };
     let runningRows = 0;
@@ -2054,7 +2197,9 @@ export class Views implements Owner {
       if (mine && !keptWholes.has(raw) && get(raw, "mine") !== true) return false;
       if (this.local.beingArchived(station, raw)) return false;
       const shown = this.local.asChanging(station, raw);
-      if (visibility !== "all" && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
+      if ((visibility === "visible" || visibility === "hidden") && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
+      // (a chat an agent leads is in no list but a search: its opener's info leads to it, the user 2026-11-17)
+      if (visibility !== "found" && decisions.led(shown)) return false;
       return !watching || present.watches(arr(get(shown, "agents")));
     };
     // (the key each station's rows are kept by beside their records, where they are read so: listRowKey)
@@ -2115,6 +2260,7 @@ export class Views implements Owner {
           }
           if (visibility === "visible" && whole.hidden === true) return null;
           if (visibility === "hidden" && whole.hidden !== true) return null;
+          if (visibility !== "found" && decisions.led(whole)) return null;
           const standIn: J = { lastActiveAt: whole.lastActiveAt, station: s.address, state: h.row!.state };
           if (h.pinnedAt !== null) {
             pinnedAt.set(standIn, h.pinnedAt);
@@ -2137,6 +2283,7 @@ export class Views implements Owner {
           const shown = this.local.asChanging(s.address, raw);
           if (visibility === "visible" && get(shown, "hidden") === true) return null;
           if (visibility === "hidden" && get(shown, "hidden") !== true) return null;
+          if (visibility !== "found" && decisions.led(shown)) return null;
           // Only a frozen row (db/account.ts) is surely as it was when its row was made.
           const keepable = isObject(shown) && Object.isFrozen(shown);
           const kept = keepable ? this.#rowsMade.get(shown) : undefined;
@@ -2158,7 +2305,7 @@ export class Views implements Owner {
             // (kept beside its record under the key in force, where it was read or kept this run; else made, and kept)
             const keeps = key !== null && shown === raw && this.#keepable(s.address, raw);
             const kept = keeps ? data.kept(KEPT.listRow, [s.address, String(raw.id)], key) : undefined;
-            const made = kept !== undefined ? kept.whole : this.#chatRow(s, shown, me, slackUsers, members_, watching, mark, hint);
+            const made = kept !== undefined ? kept.whole : this.#chatRow(s, shown, me, slackUsers, members_, watching, mark, hint, false, this.#goneOf(s.address));
             // Frozen all through: a row made once and shared from then on (output.ts takes it as it is). What it took of
             // its record as it is was frozen all through with it (db/account.ts `frozen` freezes a part after all of
             // its own): deepFreeze stops there, and walks only what was made here.
@@ -2318,7 +2465,7 @@ export class Views implements Owner {
   /// (`items`: a row kept beside its record under its station's key in `keys`, as a HeadRow, else its record; at most
   /// `first` of them in all), then its rows overlaid here (`apart`: what local.ts overlaid names, every one, each its
   /// record); and of each its count and whether one of its rows runs, of the rows the window is of but those overlaid.
-  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number, keys: Map<string, string>): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }> } {
+  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: Visibility, first: number, keys: Map<string, string>): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }> } {
     const data = this.#core.data;
     const addresses = stations.map((s) => s.address);
     const threads: string[] = [];
@@ -2328,7 +2475,7 @@ export class Views implements Owner {
       for (const t0 of o.threads) threads.push(`${a}\u0001${t0}`);
       for (const k of o.sessions) sessions.push(`${a}\u0001${k}`);
     }
-    const p = { stations: addresses, mine, hidden: visibility === "hidden" ? 1 : visibility === "all" ? 2 : 0, watching, threads, sessions, limit: first } as const;
+    const p = { stations: addresses, mine, hidden: visibility === "hidden" ? 1 : visibility === "all" || visibility === "found" ? 2 : 0, watching, threads, sessions, limit: first } as const;
     const items = new Map<string, J[]>();
     const counts = new Map<string, { n: number; runs: boolean; running: number }>();
     const apart = new Set<J>();
@@ -2426,13 +2573,19 @@ export class Views implements Owner {
   /// of is another: one short string a station, not a row.
   #listKeyOf(s: StationInfo, several: boolean, me: J, members: J[], hint: ArchiveHint): string {
     const part = this.#core.data.overviewPart(s.address);
-    const of: unknown[] = [s.address, s.name, several ? s.emoji : null, several ? s.icon : null, several, get(me, "email"), members, part, hint, lang(), brand.name()];
+    const gone = this.#goneOf(s.address);
+    const of: unknown[] = [s.address, s.name, several ? s.emoji : null, several ? s.icon : null, several, get(me, "email"), members, part, hint, gone, lang(), brand.name()];
     const was = this.#listKeys.get(s.address);
     if (was !== undefined && was.of.length === of.length && was.of.every((x, i) => x === of[i])) return was.key;
     const slackUsers = arr(get(part, "slackUsers")).filter((u): u is string => typeof u === "string");
-    const key = listRowKey(s, several ? { emoji: s.emoji, icon: s.icon } : null, me, slackUsers, members, hint);
+    const key = listRowKey(s, several ? { emoji: s.emoji, icon: s.icon } : null, me, slackUsers, members, hint, gone);
     this.#listKeys.set(s.address, { of, key });
     return key;
+  }
+
+  /// The failures of `station`'s chats the viewer let go (goneIn), as its rows' stage reads them.
+  #goneOf(station: string): readonly string[] {
+    return this.#core.store.select({ topic: "prefs" }, goneIn(station));
   }
 
   /// What a row of `station`'s list is made with besides its record, as a list makes it (#chats), and its key; null while
@@ -2442,7 +2595,7 @@ export class Views implements Owner {
     // the station's part, the prefs, the language, the viewer)
     const scope = ofAddress(station);
     const ws = this.value({ topic: "workspace", workspace: scope });
-    const of: unknown[] = [ws === undefined ? undefined : "ok" in ws ? ws.ok : ws, this.#core.data.overviewPart(station), this.#core.store.select({ topic: "prefs" }, archiveHintIn), this.#core.emailOf(scope), lang(), brand.name()];
+    const of: unknown[] = [ws === undefined ? undefined : "ok" in ws ? ws.ok : ws, this.#core.data.overviewPart(station), this.#core.store.select({ topic: "prefs" }, archiveHintIn), this.#goneOf(station), this.#core.emailOf(scope), lang(), brand.name()];
     const was = this.#arounds.get(station);
     if (was !== undefined && was.of.every((x, i) => x === of[i])) return was.around;
     const around = this.#aroundMade(station);
@@ -2461,7 +2614,7 @@ export class Views implements Owner {
     const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
     const slackUsers = arr(get(this.#core.data.overviewPart(station), "slackUsers")).filter((u): u is string => typeof u === "string");
     const mark = stations.length > 1 ? { emoji: s.emoji, icon: s.icon } : null;
-    return { s, mark, me, slackUsers, members, hint, key: this.#listKeyOf(s, stations.length > 1, me, members, hint) };
+    return { s, mark, me, slackUsers, members, hint, gone: this.#goneOf(station), key: this.#listKeyOf(s, stations.length > 1, me, members, hint) };
   }
 
   /// Whether a record's list row is one kept beside it: made of it and of what the key says alone. Not one changing here
@@ -2480,7 +2633,7 @@ export class Views implements Owner {
   #keptMade(station: string, record: J): ListRow | null {
     const a = this.#aroundOf(station);
     if (a === null || !this.#keepable(station, record)) return null;
-    const whole = this.#listRow(a.s, record, a.me, a.slackUsers, a.members, a.mark, a.hint);
+    const whole = this.#listRow(a.s, record, a.me, a.slackUsers, a.members, a.mark, a.hint, a.gone);
     deepFreeze(whole);
     const sent = conformTy("ListedChat", whole);
     if (!("ok" in sent) || !isObject(sent.ok)) return null;
@@ -2575,9 +2728,9 @@ export class Views implements Owner {
   /// A station's row as the list shows it (null: not in this list; made by #listRow); `whole`, as its own `chatRow` gives
   /// it, its record cloned and worked out whole, with what a press, a hold, a swipe or a pointer reads of it besides (its
   /// watch, its swipe's question, its card: the menu's are #rowMenu's), which the list's rows are made without.
-  #chatRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], watching: boolean, mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, whole = false): J {
+  #chatRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], watching: boolean, mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, whole = false, gone: readonly string[] = []): J {
     work.rows++;
-    if (!whole) return watching && !present.watches(arr(get(raw, "agents"))) ? null : this.#listRow(s, raw, me, slackUsers, members_, mark, hint);
+    if (!whole) return watching && !present.watches(arr(get(raw, "agents"))) ? null : this.#listRow(s, raw, me, slackUsers, members_, mark, hint, gone);
     work.rowsCloned++;
     let row = structuredClone(raw);
     Object.assign(row, this.#placeOf(s, raw, mark));
@@ -2603,7 +2756,7 @@ export class Views implements Owner {
       by.label = typeof by.state === "string" ? t("core-views.by_label", { name, state: present.badgeText(by.state) }) : name;
       by.maker = present.maker(str(by.model));
     }
-    row = decisions.presentRow(row);
+    row = decisions.presentRow(row, me);
     Object.assign(row, archivingOf(row, hint));
     // A swipe is the viewer's own choice: every made chat can be archived this way while its station is there (its
     // station's state, `stationOn`), regardless of the chat's state or whether it is recommended for archiving.
@@ -2616,7 +2769,8 @@ export class Views implements Owner {
       const ask = present.swipeAsk(agents, starter, typeof row.hidden === "boolean");
       if (ask !== null) row.swipeAsk = ask;
     }
-    Object.assign(row, stateLineOf(present.rowStateLine(row)));
+    Object.assign(row, stateLineOf(lineForViewer(present.rowStateLine(row), raw, me, members_)));
+    Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
     else delete row.opener;
@@ -2647,7 +2801,7 @@ export class Views implements Owner {
   /// cloned whole into each row, three quarters of it never sent, 2026-11-11), the rest made here: its agents, its last
   /// line, its people as the row draws them. What only its whole row says (its card, its agents' summaries, who said its
   /// last line by name) is not worked out for it; what its state line and mark are worked out of is read of the record.
-  #listRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint): J {
+  #listRow(s: StationInfo, raw: J, me: J, slackUsers: string[], members_: J[], mark: { emoji: string | null; icon: string | null } | null, hint: ArchiveHint, gone: readonly string[]): J {
     const row: J = {};
     for (const k of LIST_ROW_TAKEN) {
       const v = raw[k];
@@ -2688,16 +2842,20 @@ export class Views implements Owner {
     // a whole row's are (decisions.presentRow, present.rowStateLine), its agents' states said as that line reads them.
     const read: J = {
       thread: raw.thread, unread: raw.unread, pinned: raw.pinned, card: raw.card, decision: raw.decision, need: raw.need,
+      creator: raw.creator, opener: raw.opener,
       archiveReminderDismissed: raw.archiveReminderDismissed, archiveReviewed: raw.archiveReviewed, archiveRecommended: raw.archiveRecommended,
       agents: Array.isArray(raw.agents) ? agents.map((a: J) => present.agentStated(a)) : raw.agents, state: present.rowState(agents),
     };
-    const stood = decisions.presentRow(read);
+    const stood = decisions.presentRow(read, me);
     if ("state" in stood) row.state = stood.state;
     else delete row.state;
     if (stood.tone !== undefined) row.tone = stood.tone;
     Object.assign(row, archivingOf(stood, hint));
     if (row.pending !== true) row.swipeArchive = true;
-    Object.assign(row, stateLineOf(present.rowStateLine(stood)));
+    Object.assign(row, stateLineOf(lineForViewer(present.rowStateLine(stood), raw, me, members_)));
+    // Its column on the board and what it says of its own (chat-stage.ts): of its record and who looks alone (a chat
+    // it leads, a background job, said on its record by its station: `opened`, an agent's `waitingAsync`).
+    Object.assign(row, stageFields(raw, me, { gone, failureOf: () => marks.failureOf(s.address, raw) }));
     const opener = this.#opener(s.address, raw);
     if (opener !== null) row.opener = opener;
     if (typeof raw.pinned === "number") pinnedAt.set(row, raw.pinned);
@@ -2746,7 +2904,7 @@ export class Views implements Owner {
     const keepable = isObject(shown) && Object.isFrozen(shown);
     const kept = keepable ? this.#wholeMade.get(shown) : undefined;
     if (kept !== undefined && kept.sig === sig) return kept.row;
-    const made = this.#chatRow(s, shown, me, slackUsers, members_, false, mark, hint, true);
+    const made = this.#chatRow(s, shown, me, slackUsers, members_, false, mark, hint, true, this.#goneOf(s.address));
     if (made !== null) {
       Object.assign(made, this.#rowMenu(s.address, shown, me, menu, connects));
       deepFreeze(made);
@@ -2844,7 +3002,9 @@ export class Views implements Owner {
     // (its title and whether it is archived alone, of their columns)
     const found = this.#core.data.chatTitled(at, session);
     const title = found?.title || str(get(o, "title")) || t("core-views.new_chat");
-    return { station: at, session, title, text: t("core-views.opener", { title }), ...(found?.archived === true ? { archived: true, note: t("core-views.search.archived") } : {}) };
+    return { station: at, session, title, text: t("core-views.opener", { title }), ...(found?.archived === true ? { archived: true, note: t("core-views.search.archived") } : {}),
+      // (it leads this one: chat_create for me. What it asks is its leader's, and the board shows it under its leader)
+      ...(get(o, "led") === true ? { led: true } : {}) };
   }
 
   /// A row whose chat has a message sent here that did not go: marked red, its second line saying which (`unsent`: drawn
@@ -2857,7 +3017,8 @@ export class Views implements Owner {
     if (unsent === undefined) return row;
     const text = format.cleanText(format.plainText(str(unsent.text) ?? ""));
     const { stateAbout: _stateAbout, stateLead: _stateLead, stateLeadText: _stateLeadText, stateRest: _stateRest, ...rest } = row;
-    const marked: J = { ...rest, tone: "alert", unsent: true, stateText: t("core-views.unsent", { text: text === "" ? t("core-views.file") : text }) };
+    // (it needs the viewer: chat-stage.ts needsViewer)
+    const marked: J = { ...rest, tone: "alert", unsent: true, stage: "wait", stateText: t("core-views.unsent", { text: text === "" ? t("core-views.file") : text }) };
     deepFreeze(marked);
     const pinned = pinnedAt.get(row);
     if (pinned !== undefined) pinnedAt.set(marked, pinned);
@@ -3116,6 +3277,7 @@ export class Views implements Owner {
     let silentNext = Infinity;
     const byId = new Map(stations.map((s) => [String(s.id), s]));
     const mine = this.#mayChangeMode(scope);
+    const guard = this.#core.guard?.(scope) ?? null;
     const row = kind === "row";
     const items = stations.filter((s) => only === undefined || s.address === only).map((s) => {
       const parts = this.#stationShownOf(s.address);
@@ -3158,6 +3320,8 @@ export class Views implements Owner {
       } else this.#hostless.delete(s.address);
       const blocked = !s.online && cause === "lock" && typeof get(this.link(s.address), "message") === "string" ? (get(this.link(s.address), "message") as string) : null;
       const running = u64(get(get(overview, "counts"), "running")) ?? 0;
+      const unprotected = guard !== null && !guard.protects(String(s.id));
+      const can = unprotected && guard!.can();
       const item: J = {
         station: s.address,
         id: s.id,
@@ -3171,6 +3335,9 @@ export class Views implements Owner {
         reconnecting: s.online && state !== "online" && state !== "error",
         ...stationState(s.online, blocked !== null || cause === "updating", summary, typeof s.lastSeen === "number" ? s.lastSeen : null, read !== undefined, running, c),
         problems: stationProblems(s.online, silent, blocked, typeof s.lastSeen === "number", cause === "updating", unreadable),
+        // Not named by its workspace's safe mode: its 保护 where it is shown, where the viewer could protect it from here
+        // (the user, 2026-11-15: 「在 station 这里要能点成受保护」, 「不需要写不受保护」: the button alone, no words).
+        ...(unprotected && can && s.online ? { protect: true } : {}),
         // Down for a security mode: why, in place of the page's 离线 words.
         ...(blocked !== null ? { blocked } : {}),
         lastSeen: s.lastSeen,
@@ -3216,15 +3383,17 @@ export class Views implements Owner {
     // on 小屏 (Hermes, Mac Studio, 2026-11-12).
     const shown = new WeakMap<object, present.Made<J>>();
     const readable = new WeakMap<object, boolean>();
-    const decorate = (o: J, c: present.Clock, part = false): J => {
-      if (part) work.profiledParts++;
+    const decorate = (o: J, c: present.Clock, part: false | "profiled" | "settings" = false): J => {
+      if (part === "profiled") work.profiledParts++;
+      else if (part === "settings") work.settingsParts++;
       else work.overviews++;
       const shownOf = present.decorate(overview, structuredClone(o), c);
       // (a part put through the overview's shape as the whole is, the rest of it the shape's defaults, which nothing
-      // reading it reads: its profiles, sharing, mesh and machines' logins as the whole would have them)
-      return asShaped("Overview", part && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
+      // reading it reads: its profiles, sharing, mesh and machines' logins, or its automatic decisions and archiving, as
+      // the whole would have them)
+      return asShaped("Overview", part !== false && isObject(shownOf) ? { ...overviewDefaults(), ...shownOf } : shownOf);
     };
-    const decorated = (read: () => J, part = false) => computed(() => {
+    const decorated = (read: () => J, part: false | "profiled" | "settings" = false) => computed(() => {
       const o = read();
       if (o === undefined) return null;
       // (its times in words, by the minute)
@@ -3233,7 +3402,14 @@ export class Views implements Owner {
     });
     kept = {
       full: decorated(() => this.ok(overview)),
-      profile: decorated(() => this.#core.data.overviewProfiled(station), true),
+      profile: decorated(() => this.#core.data.overviewProfiled(station), "profiled"),
+      // Its automatic decisions and archiving as the whole has them (present.ts overview decorates them of themselves
+      // alone), of what is kept of them beside the overview (data.ts overviewSettings), never of the whole; null where
+      // this core cannot read the whole (`full` would be null), as `unreadable` says it.
+      settings: (() => {
+        const part = decorated(() => this.#core.data.overviewSettings(station), "settings");
+        return computed(() => (kept!.unreadable.get() ? null : part.get()));
+      })(),
       host: computed(() => {
         const h = this.ok({ topic: "host", station });
         return h === undefined ? null : asShaped("Host", present.host(h));
@@ -3308,7 +3484,7 @@ export class Views implements Owner {
     const slackApps: J[] = [];
     let noProfile = stations.length > 0;
     for (const s of stations) {
-      const part = this.#core.store.select({ topic: "overview", station: s.address }, connectsPartOf);
+      const part = this.#connectsPart(s.address);
       if (part === undefined || "err" in part || part.profiled) noProfile = false;
       if (part !== undefined && !("err" in part)) for (const app of part.slackApps) slackApps.push({ station: s.address, stationName: s.name, app });
       if (!s.online) continue;
@@ -3339,6 +3515,13 @@ export class Views implements Owner {
     return shown;
   }
 
+  /// What the connects read of a station's overview (connectsPartOf): of what is kept of it beside the overview
+  /// (data.ts overviewConnects), never the whole; where none is held, why not as the overview's topic says it.
+  #connectsPart(station: string): J {
+    const kept = this.#core.data.overviewConnects(station);
+    return kept !== undefined ? kept : this.#core.store.select({ topic: "overview", station }, connectsPartOf);
+  }
+
   /// One connect of a scope's station, by its id: its page (`page`, ConnectView) or the sessions its choice of one lists
   /// (`candidates`, ConnectCandidates). None while its station's overview is not read, why where it could not be; null
   /// where the scope has no such station up, or it no such connect.
@@ -3347,7 +3530,9 @@ export class Views implements Owner {
     if (stations === undefined || !Array.isArray(stations)) return stations as Value | undefined;
     const s = stations.find((x) => x.address === station);
     if (s === undefined || !s.online) return { ok: null };
-    const v = this.value({ topic: "overview", station });
+    // (of what is kept of its overview beside it, data.ts overviewConnects: never the whole)
+    const kept = this.#core.data.overviewConnects(station);
+    const v = kept !== undefined ? { ok: kept } : this.value({ topic: "overview", station });
     if (v === undefined || "err" in v) return v;
     const connects = arr(get(v.ok, "connects"));
     const connect = connects.find((c) => str(get(c, "id")) === id);
@@ -3478,6 +3663,8 @@ export class Views implements Owner {
     }
     messages.splice(0, messages.length, ...decisions.inMessages(messages, pendingCard, outbox.filter((m) => m.state !== "failed")));
     const elsewhere = timed("chat.elsewhere", () => this.#sentElsewhere(station, thread, agents, messages, u64(page.first) !== null && page.first > 1, page.end === false, { members: members_, bots }));
+    // (folded once what each notice is bound to, and what was sent elsewhere after which, is known of them one by one)
+    messages = foldNotices(messages, new Set(elsewhere.flatMap((s) => (u64(s.after) !== null ? [s.after as number] : []))));
     const title = row !== undefined && row.title !== undefined ? row.title : typeof page.title === "string" ? page.title : format.chatTitle(thread);
     const view: J = {
       me: this.me(scope),
@@ -3557,7 +3744,7 @@ export class Views implements Owner {
       // Only the notice explicitly recorded for this turn can replace its state. Do not mistake another agent's
       // notice (or an earlier one) for it; when the notice isn't loaded the state remains visible.
       const about = present.stateAbout(agent, u64(thread.id) ?? null);
-      return about !== null && messages.some((m: J) => u64(m.seq) === about && get(get(m, "notice"), "failed") === true);
+      return about !== null && messages.some((m: J) => (u64(m.seq) ?? Infinity) <= about && about <= (endSeq(m) ?? -1) && get(get(m, "notice"), "failed") === true);
     }) : null;
     // What it needed of a person, let go by the viewer (忽略): kept, said as let go, in place of what its row says
     const letGo = shown !== null ? present.rowLetGoNeed(shown) : null;
@@ -3591,7 +3778,7 @@ export class Views implements Owner {
     // The bell to what waits floats over the list's end only while that is out of view there: one at the end itself
     // (the line saying what an agent needs, or the last post with nothing after it) shows whenever the end does, so
     // the end keeps clear of the bell only for another. Else a need coming in would push the chat up for nothing.
-    const lastSeq = messages.length > 0 ? u64(get(messages[messages.length - 1], "seq")) : null;
+    const lastSeq = messages.length > 0 ? endSeq(messages[messages.length - 1]) : null;
     const atEnd = (seq: number) => view.newer !== true && (seq === view.stateAsk || (seq === lastSeq && arr(outbox).length === 0 && view.stateText === undefined));
     if (view.asks.some((a: J) => !atEnd(a.seq))) view.askClear = true;
     if (letters > 0) view.letters = letters;
@@ -3675,7 +3862,7 @@ export class Views implements Owner {
     const thread = this.#core.data.listedThread(station, id) ?? get(this.ok({ topic: "thread", station, thread: id }), "thread") ?? {};
     const agents = this.#agentsOf(station, thread);
     const keys = new Set(members(thread));
-    const messages = decisions.inMessages(this.#shown(station, thread, agents, merge(entries).filter((m) => !isLetter(m, keys)), []), null);
+    const messages = foldNotices(decisions.inMessages(this.#shown(station, thread, agents, merge(entries).filter((m) => !isLetter(m, keys)), []), null));
     const out = drawn({ ok: { agents, messages } }, (path) => this.local.uploadOf(station, path), this.#core.data.mdStore(station, `t:${id}`));
     const ws = ofAddress(station);
     return arr(get(out.ok, "messages")).map((m) => (isObject(m) && vaultAskOf(get(m, "card")) !== null ? { ...m, card: this.#vaultCard(m.card, ws) } : m));
@@ -4058,6 +4245,17 @@ export class Views implements Owner {
     const offsetMin = this.#core.host.utcOffsetMin(this.#core.host.nowMs());
     const out: J[] = [];
     const heard = new Set<string>();
+    // Whose workspace keeps a file heard with a message: the session given it (a person's file, put in its uploads), or
+    // the station's agent whose workspace its path is in (another agent's post in the same thread names its own
+    // uploads). Asked of the hearer's session, another agent's file answered 404, shown as 暂时无法预览 for good
+    // (pengxiao, 2026-11-16). The station's sessions read only once a file is not the hearer's.
+    let others: J[] | null = null;
+    const keeper = (path: string, hearer: J, key: string): string => {
+      const within = (ws: string | null) => ws !== null && ws !== "" && path.startsWith(`${ws}/`);
+      if (within(str(get(hearer, "workspace")))) return key;
+      others ??= arr(this.ok({ topic: "sessions", station }));
+      return str(get(others.find((s) => within(str(get(s, "workspace")))), "key")) ?? key;
+    };
     for (const a of agents) {
       const key = str(get(a.session, "key"));
       if (key === null) continue;
@@ -4089,11 +4287,11 @@ export class Views implements Owner {
         const picture = s.out || s.user === null ? undefined : pictures.get(s.user.replace(/^<@(.+)>$/, "$1"));
         const by = s.out ? structuredClone(agent) : { name: s.who || s.user || "Slack", ...(picture !== undefined ? { picture } : {}) };
         // A person's files are listed after their words, as the agent was given them: drawn as files, kept in the
-        // workspace of the agent's session that was given them.
+        // workspace that holds them (`keeper`).
         const words = s.out ? { text: s.text, files: [] } : heardFiles(s.text);
         const text = present.mentions(words.text, people.bots, people.members);
         const item: J = { key: `${key}/${s.i}/${s.k}`, after, createdAt: s.at, text, place, failed: s.failed, by };
-        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: key }));
+        if (words.files.length > 0) item.attachments = words.files.map((f) => ({ ...f, owner: keeper(f.path, a.session, key) }));
         if (!s.out) item.received = true;
         out.push(item);
       }
@@ -4463,7 +4661,8 @@ function drawn<V extends Value | undefined>(out: V, uploadOf: (path: unknown) =>
   if (Array.isArray(view.outbox)) view.outbox = view.outbox.map((o: J) => (isObject(o) ? goingUp({ ...o, attachments: own(o.attachments), ...(typeof o.text === "string" && o.text !== "" ? { words: personWords(o.text) } : {}) }) : o));
   const elsewhere = arr(view.elsewhere);
   if (elsewhere.length > 0) {
-    const bySeq = new Map(messages.map((m, i) => [u64(m.seq), i]));
+    // (a folded notice's last seq too: what was sent after its last is after it)
+    const bySeq = new Map(messages.flatMap((m, i) => [[u64(m.seq), i] as const, [endSeq(m), i] as const]));
     const first: J[] = [];
     const after = new Map<number, J[]>();
     for (const item of elsewhere) {

@@ -1,4 +1,4 @@
-// A station retired from its workspace (sfpages station_retire_node.mbt): its ⋯'s 迁走聊天并移出… over 移出 only while
+// A station retired from its workspace (sfpages station_retire_node.mbt): its ⋯'s 迁走聊天并移出工作区 over 移出 only while
 // it may be (the core's `canRetire`) and offered at all (switched off for now: none), opening a panel of what goes and what stays as the station counts them
 // (`copies.retirePreview`), the station to move to chosen in it, then `copies.retire`; as it goes, 迁移 at the top of its
 // page, its steps a row each and what may be done now, each press the core's call with what the call needs (the
@@ -149,7 +149,7 @@ test "迁移 on a station taking retired ones' chats in: a row each, nothing to 
 }
 
 ///|
-test "its ⋯: no 迁走聊天并移出… while it is switched off (station_retire_offered), not even where it may be retired; 移出 there as before" {
+test "its ⋯: no 迁走聊天并移出工作区 while it is switched off (station_retire_offered), not even where it may be retired; 移出 there as before" {
   // (no copies said by the station, one being retired already, and one that may be retired: none, as it is off)
   for mode in ["settings-station", "settings-station-retire-sending", "settings-station-retire-done", "settings-station-retire"] {
     let calls : Array[Made] = []
@@ -158,7 +158,7 @@ test "its ⋯: no 迁走聊天并移出… while it is switched off (station_ret
     t.run_for(@ui.move_most_ms)
     assert_eq(t.audit(), [], msg=mode)
     assert_true(retire_said(t, "从 workspace 移除"), msg=mode)
-    assert_true(!retire_said(t, "迁走聊天并移出…"), msg=mode)
+    assert_true(!retire_said(t, "迁走聊天并移出工作区"), msg=mode)
   }
   // (and nothing asked of the station for it)
   let calls : Array[Made] = []
@@ -169,7 +169,7 @@ test "its ⋯: no 迁走聊天并移出… while it is switched off (station_ret
 }
 
 ///|
-test "its panel (opened over its page, as a press of 迁走聊天并移出… opened it once its station said what goes): Maple chosen, each kind counted and named, then copies.retire to it" {
+test "its panel (opened over its page, as a press of 迁走聊天并移出工作区 opened it once its station said what goes): Maple chosen, each kind counted and named, then copies.retire to it" {
   let calls : Array[Made] = []
   let t = retire_tester(calls, "settings-station-retire-panel")
   assert_eq(t.audit(), [])

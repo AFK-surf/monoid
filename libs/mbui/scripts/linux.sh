@@ -69,7 +69,7 @@ sync_app() {
   # out)
   for p in $(grep -l '\.m"' $SA/src/*/moon.pkg 2>/dev/null); do
     if [ -f "$(dirname $p)/linux_engine.c" ]; then
-      linux_pkg $p | sed -e 's/"native-stub": *\[[^]]*\.m"[^]]*\]/"native-stub": [ "linux_engine.c" ]/' > $p.linux
+      linux_pkg $p | sed -e 's/"[^"]*\.m"/"linux_engine.c"/' -e 's/-Iout\/core\/ghostty-vt\/include *//' > $p.linux
       mv $p.linux $p
     else
       rm -rf "$(dirname $p)"

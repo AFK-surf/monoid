@@ -128,6 +128,36 @@ test("an invitation waits for its email: signing in with it shows the invitation
   }
 });
 
+for (const via of ["id", "token"] as const) {
+  for (const [addedRole, invitedRole, expectedRole] of [["member", "admin", "admin"], ["member", "owner", "owner"], ["owner", "member", "owner"]] as const) {
+    test(`accepting an invitation by ${via} after first sign-in joins as ${addedRole} applies ${invitedRole} without losing a stronger role`, async () => {
+      const h = await harness();
+      try {
+        const alice = h.as(await h.login("alice"));
+        const home = await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as { id: string };
+        assert.equal((await alice("POST", `/v1/workspaces/${home.id}/members`, { role: addedRole, emails: ["bob@example.test"] })).status, 200);
+        const response = await alice("POST", `/v1/workspaces/${home.id}/invitations`, { role: invitedRole, email: "bob@example.test" });
+        assert.equal(response.status, 200);
+        const invitation = await response.json() as { id: string; token: string };
+
+        // Signing in claims the pending membership first, leaving the invitation to accept in the app or by link.
+        const bob = h.as(await h.login("bob"));
+        const before = await (await bob("GET", "/v1/me")).json() as any;
+        assert.equal(before.workspaces[0].role, addedRole);
+        assert.equal(before.invitations[0].role, invitedRole);
+        const accepted = await bob("POST", via === "id" ? `/v1/invitations/${invitation.id}/accept` : "/v1/invitations/accept", via === "id" ? undefined : { token: invitation.token });
+        assert.equal(accepted.status, 200);
+        assert.equal((await accepted.json() as any).role, expectedRole, "both acceptance routes honor the invitation without lowering an existing role");
+        const after = await (await bob("GET", "/v1/me")).json() as any;
+        assert.equal(after.workspaces[0].role, expectedRole);
+        assert.deepEqual(after.invitations, [], "the accepted invitation is consumed");
+      } finally {
+        await h.close();
+      }
+    });
+  }
+}
+
 test("the web app may use this origin's /auth/callback; other redirects are refused", async () => {
   const h = await harness();
   try {
@@ -234,6 +264,39 @@ test("an account over its requests a minute still signs in a new device: its oth
     assert.equal(last.status, 429);
     const another = await h.login("alice");
     assert.ok(another.access_token);
+  } finally {
+    await h.close();
+  }
+});
+
+
+test("replacing an invitation at the open-invitation limit keeps its seat and invalidates its old link", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const bob = h.as(await h.login("bob"));
+    const home = await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as { id: string };
+    const invite = (email: string, role = "member") => alice("POST", `/v1/workspaces/${home.id}/invitations`, { role, email });
+    const first = await (await invite("bob@example.test")).json() as { id: string; token: string };
+    for (let i = 1; i < 50; i++) assert.equal((await invite(`person${i}@example.test`)).status, 200);
+    const extra = await invite("extra@example.test");
+    assert.equal(extra.status, 429);
+    assert.equal((await extra.json() as any).error, "too_many_invitations");
+
+    const response = await invite("Bob@Example.test", "admin");
+    assert.equal(response.status, 200, "replacing one of the fifty invitations adds no invitation");
+    const replacement = await response.json() as { id: string; token: string };
+    assert.notEqual(replacement.id, first.id);
+    assert.notEqual(replacement.token, first.token);
+    const view = await (await alice("GET", `/v1/workspaces/${home.id}`)).json() as any;
+    assert.equal(view.invitations.length, 50);
+    assert.deepEqual(view.invitations.filter((i: any) => i.email === "bob@example.test").map((i: any) => [i.id, i.role]), [[replacement.id, "admin"]]);
+    assert.equal((await bob("POST", "/v1/invitations/preview", { token: first.token })).status, 404);
+    assert.equal((await bob("POST", `/v1/invitations/${first.id}/accept`)).status, 404);
+    assert.equal((await invite("another@example.test")).status, 429, "replacement never raises the cap");
+    const accepted = await bob("POST", "/v1/invitations/accept", { token: replacement.token });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json() as any).role, "admin");
   } finally {
     await h.close();
   }

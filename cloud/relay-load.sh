@@ -1,8 +1,11 @@
 #!/bin/sh
 # Sends this machine's relay's counters to still.fail cloud, for the admin's console (its 中继 page: src/relay-load.ts),
 # run every minute by a systemd timer on the relays on machines of their own (Beijing's, Hong Kong's, Shenzhen's, Tokyo's). still.fail cloud
-# believes it as the relay whose address it comes from. /etc/iroh-relay/load.env says which relay this is:
+# believes it as the relay whose secret it comes with (RELAY_SECRET, which relay-enroll.sh wrote as the relay put
+# itself on the cloud's list); one listed with none, as the relay whose address it comes from. /etc/iroh-relay/load.env
+# says which relay this is:
 #   RELAY_URL=https://39.105.157.122
+#   RELAY_SECRET=...               (relay-enroll.sh's)
 #   CLOUD=https://app.still.fail   (optional)
 # Installing it (as root):
 #   install -m 755 relay-load.sh /usr/local/bin/relay-load
@@ -41,6 +44,9 @@ conns=$(ss -tinH state established '( sport = :443 )' 2>/dev/null | awk '
     if (last + 0 < 60000) print "node_conn " ip " " port " " rtt " " minrtt " " sent " " again " " rate " " last " " limited
     peer = ""
   }' | head -n 200)
+# (the secret as one argument, where there is one)
+set --
+if [ -n "${RELAY_SECRET:-}" ]; then set -- -H "authorization: Bearer $RELAY_SECRET"; fi
 printf '%s\n%s\n%s\n' "$metrics" "$machine" "$conns" | curl -4 -fsS --max-time 20 -o /dev/null \
-  -H "x-stillfail-relay: $RELAY_URL" -H "content-type: text/plain" \
+  -H "x-stillfail-relay: $RELAY_URL" "$@" -H "content-type: text/plain" \
   --data-binary @- "${CLOUD:-https://app.still.fail}/v1/relays/load"

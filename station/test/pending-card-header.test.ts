@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CARD_POST_LATEST } from "../src/store/card-post-index.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a pending card header keeps the existing card and replacement rules", () => {
@@ -52,7 +52,7 @@ test("the bounded card header and its pending checks use one snapshot", () => {
     let changed = false;
     Object.defineProperty(store, "db", { configurable: true, value: new Proxy(db, { get(target, key) {
       if (key === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,2,'message','answer','person','p','yes',2)").run(thread);
         }

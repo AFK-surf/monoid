@@ -7,7 +7,7 @@ import { log } from "./log.ts";
 import { wall } from "./fibers.ts";
 
 /// How long the previous station process is waited for before its sessions are taken up all the same.
-const PREVIOUS_LIMIT_MS = 40_000;
+export const PREVIOUS_LIMIT_MS = 40_000;
 
 /// Whether a process is alive (signal 0).
 function alive(pid: number): boolean {
@@ -24,7 +24,7 @@ function alive(pid: number): boolean {
 export function previousProcess(run: string): { pid: number | null; gone: Promise<void> } {
   let pid: unknown = null;
   try {
-    pid = JSON.parse(readFileSync(join(run, "hub.json"), "utf8")).pid;
+    pid = JSON.parse(readFileSync(join(run, "hub.json"), "utf8")).pid; // sync: read once, before the station serves
   } catch {}
   if (typeof pid !== "number" || pid === process.pid) return { pid: null, gone: Promise.resolve() };
   return { pid, gone: gone(pid) };

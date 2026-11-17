@@ -4,7 +4,9 @@
 // scripts/mesh-base.ts keeps it so.
 import { existsSync } from "node:fs";
 
-export type Addr = { id: string; relays?: string[]; ips?: string[] };
+/// `disabledRelays`: relays it is not to be reached through, though Address Lookup names them (an addon from before
+/// takes no notice). Said, they stay so for every connection to it until a dial says others.
+export type Addr = { id: string; relays?: string[]; ips?: string[]; disabledRelays?: string[] };
 export type Stream = {
   read(): Promise<Buffer | null>;
   write(bytes: Buffer): Promise<void>;
@@ -35,7 +37,7 @@ export type Connection = {
   alpn(): Buffer;
   via(): string | null;
   /// Every way it can go now (the native connection's; a test's may have none).
-  paths?(): { selected: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null; txPackets: number; lostPackets: number; cwnd?: number; congestionEvents?: number }[];
+  paths?(): { id?: string; selected: boolean; relay?: string | null; ip?: string | null; rttMs?: number | null; txPackets: number; lostPackets: number; cwnd?: number; congestionEvents?: number }[];
   acceptBi(): Promise<Stream | null>;
   openBi(): Promise<Stream>;
   /// Whether the other end is still there: true once anything is heard from it within `withinMs` (superseded.ts).
@@ -46,6 +48,9 @@ export type Connection = {
   close(code: number, reason: string): void;
   isClosed(): boolean;
   closed(): Promise<string>;
+  /// Why it is gone, told apart (lib.rs `CloseInfo`: `application` with the reason the other end closed it with,
+  /// `local`, `timeout`, `other`); null while it is not. An addon from before has none.
+  closeReason?(): { kind: string; reason: string } | null;
   /// Where the endpoint is kept by a program of its own (front.ts): its id of this connection, which the streams it
   /// hands what answers a route (`Endpoint.route`) name it by.
   handed?: number;
@@ -55,9 +60,17 @@ export type Endpoint = {
   sockets(): string[];
   online(): Promise<void>;
   home(): string | null;
+  /// Its home relays as it has them now: connected or not, by which entrance, and whether the relay holds this endpoint
+  /// inactive for another of its id (`conflict`: a second station on its key). An addon or a front from before says no
+  /// `conflict`; one from before relays' status none of it.
+  relayStatus?(): { url: string; connected: boolean; access: string; conflict?: boolean }[];
   insertRelay(url: string): Promise<void>;
   removeRelay(url: string): Promise<void>;
   publicRelays(on: boolean): Promise<void>;
+  /// The relays the endpoint `id` is not to be reached through (`relays`; none: any), and its own public relays too
+  /// where `noPublic`, in force once this resolves: nothing is sent it through one from then on, and what a connection
+  /// to it has through one is given up, its direct paths kept. Absent from an addon or a front from before.
+  disabledRelays?(id: string, relays: string[], noPublic: boolean): Promise<void>;
   keep(urls: string[]): void;
   /// The advanced network setting changed while running (lib.rs): the controller of the connections made from now
   /// on. Absent from an addon from before.
@@ -74,8 +87,8 @@ export type Endpoint = {
   route?(alpn: Buffer, to: string[], routes: string[]): Promise<boolean>;
 };
 /// What an endpoint is bound with. `relayOnly`: through the relays alone, no IP transports (what measures the way
-/// through a relay).
-export type Bind = { secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; relayOnly?: boolean; congestion?: "cubic" | "bbr" };
+/// through a relay). `dscp`: the DSCP (1 to 63) every packet of the process's iroh is marked with from this bind on.
+export type Bind = { secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; relayOnly?: boolean; congestion?: "cubic" | "bbr"; dscp?: number };
 /// What binds endpoints: the addon, or what stands in for it (a test's mesh in memory).
 export type Endpoints = { bind(options: Bind): Promise<Endpoint> };
 

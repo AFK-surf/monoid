@@ -3,7 +3,7 @@
 // chosen, some of each module there and nothing under way (its modules closed); -chats: one chat moving, one stopped
 // waiting for a connect, one failed and one that cannot move, saying why (聊天 open by itself); -ended: that turn
 // ended, the chat moved, each row's action at its end; -empty: every module empty; -none: no station chosen yet;
-// -all: 全部迁移 asked; -section: Willow's own page with its 迁移; -offered: its ⋯ with 迁移到另一台….
+// -all: 全部迁移 asked; -section: Willow's own page with its 迁移; -offered: its ⋯ with 迁移到另一台 station.
 // Every word here is made up.
 
 ///|
@@ -33,6 +33,7 @@ pub let fixture_move_asked : Array[(String, Json)] = []
 ///|
 /// As a run starts.
 fn move_fixture_reset() -> Unit {
+  fx_station_beta.val = true
   fx_move.offered = false
   fx_move.stage = ""
   fx_move.targets = true
@@ -92,6 +93,31 @@ fn move_fixture_mode(m : String) -> Bool {
 /// Willow's overview's `move`.
 fn fx_move_offer() -> Json {
   obj([("offered", Json::boolean(fx_move.offered))])
+}
+
+///|
+/// Whether Willow is updated on the test channel (a mode's `-stable` says not): it runs its `beta` features then.
+// kept across runs: true as a run begins (move_fixture_reset)
+let fx_station_beta : Ref[Bool] = Ref(true)
+
+///|
+/// A test's switch: Willow updated on the test channel (`beta`) or the stable one, whatever the app's own channel.
+pub fn fixture_station_channel(beta : Bool) -> Unit {
+  fx_station_beta.val = beta
+  fx_changed()
+}
+
+///|
+/// Its overview's `features` (station/src/features.ts): on the test channel its terminals, and moving where it offers it.
+fn fx_station_features() -> Json {
+  let out : Array[Json] = []
+  if fx_station_beta.val {
+    out.push(Json::string("terminal"))
+    if fx_move.offered {
+      out.push(Json::string("stationMove"))
+    }
+  }
+  Json::array(out)
 }
 
 ///|

@@ -76,9 +76,9 @@ export function connectEdits(deps: ConnectEditDeps) {
   const { config } = deps;
   const overview = async (r: Request) => await deps.overview(r.viewer, r.lang);
   /// Edits the config for the viewer (said in the log as `what`); its refusals are the asker's (400).
-  const change = (r: Request, what: string, f: (raw: Json) => void) => {
+  const change = async (r: Request, what: string, f: (raw: Json) => void) => {
     try {
-      config.update(f);
+      await config.updateSoon(f);
     } catch (e) {
       throw new Refused(400, (e as Error).message);
     }
@@ -86,7 +86,7 @@ export function connectEdits(deps: ConnectEditDeps) {
   };
   /// `save`: an edit, answered with the overview as it is then.
   const save = async (r: Request, what: string, f: (raw: Json) => void) => {
-    change(r, what, f);
+    await change(r, what, f);
     return overview(r);
   };
   const raw = () => config.raw();
@@ -114,7 +114,7 @@ export function connectEdits(deps: ConnectEditDeps) {
       if (held !== null) throw new Refused(409, tr(r.lang, "station.connect.heldElsewhere", { station: held }));
     }
     const follow: { session?: string; run?: SessionChange } = {};
-    change(r, `connect ${id}`, (raw) => {
+    await change(r, `connect ${id}`, (raw) => {
       const lang = r.lang;
       const connects = connectsRaw(raw);
       const existing = connects.find((c) => c?.id === id);
@@ -275,11 +275,11 @@ export const connectRoutes = (deps: ConnectRoutesDeps): Route[] => {
     {
       method: "POST",
       pattern: /^\/*connects\/+([^/]+)\/+session(?:\/.*)?$/,
-      handle: answer((r, [raw]) => {
+      handle: answer(async (r, [raw]) => {
         const id = mine(r, segment(raw!));
         const i = input(r);
         const target = str(i.session);
-        const key = bindSingle(hub(), id, target !== undefined && target !== "" ? target : null, str(i.title) ?? null, idOf(r.viewer));
+        const key = await bindSingle(hub(), id, target !== undefined && target !== "" ? target : null, str(i.title) ?? null, idOf(r.viewer));
         log.info("admin", "single-session binding changed from the admin page", { connect: id, session: key, by: idOf(r.viewer) });
         return ok({ session: key });
       }),

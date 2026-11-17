@@ -28,6 +28,11 @@ fn page_switch_to(top : Page) -> Unit {
   if top == NewChat && page_switch.was != Some(NewChat) {
     fresh_reset()
   }
+  // (a page that draws no composer: the composer built after it is laid out where it is, not flown from the page
+  // before it, a new chat's left for 设置 and then a chat)
+  if !(top is (Chat(_) | NewChat)) {
+    @sfpages.composer_page_left()
+  }
   page_switch.was = Some(top)
 }
 

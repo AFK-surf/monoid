@@ -5,7 +5,8 @@
 # 904 s of pages where it was told 697, 251 s of its 5 minutes, main 5d06cf01 42935951988, 2026-11-11). Its head (the
 # lines of #) is kept.
 # (A run before #5844 said its line without a package: its packages' programs said none, so all of it is sfapp's.)
-# Needs gh. What no run measured (a file, a rate) keeps its old time.
+# Needs gh. What no run measured (a file, a rate) keeps its old time; a file new to it, `-` at a rate no run measured it
+# at (test.sh deals it as one of the longest there, as a file not in it yet: a 0 would count 1 s).
 set -e
 [ $# -gt 0 ] || { echo "usage: $0 RUN..." >&2; exit 2; }
 D="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +31,6 @@ LC_ALL=C sort -k1,1 -k2,2n -k3,3n "$T/seen" | awk '
 awk 'FNR == NR { m[$2, $3] = $4; seen[$2, $3] = 1; f[$2] = 1; next }
   /^#/ { next }
   { f[$1] = 1; for (c = 2; c <= 5; c++) if (!seen[$1, c]) m[$1, c] = $c }
-  END { for (k in f) printf "%s %d %d %d %d\n", k, m[k, 2], m[k, 3], m[k, 4], m[k, 5] }' "$T/med" "$D/page-seconds.txt" |
+  END { for (k in f) { printf "%s", k; for (c = 2; c <= 5; c++) printf " %s", ((k, c) in m && m[k, c] != "") ? m[k, c] : "-"; print "" } }' "$T/med" "$D/page-seconds.txt" |
   LC_ALL=C sort >> "$T/new"
 mv "$T/new" "$D/page-seconds.txt"

@@ -1,9 +1,9 @@
 // An older store can prepare its login-card lookup without building a native index over all entries in one write.
 import type { DatabaseSync } from "node:sqlite";
 
-const VERSION = 1;
-const BATCH = 64;
-const exists = (db: DatabaseSync, type: string, name: string) =>
+export const VERSION = 1;
+export const BATCH = 64;
+export const exists = (db: DatabaseSync, type: string, name: string) =>
   db.prepare("SELECT 1 FROM sqlite_master WHERE type=? AND name=?").get(type,name) !== undefined;
 
 export function hasLegacyLoginCards(db: DatabaseSync): boolean {
@@ -103,10 +103,10 @@ export const LEGACY_LOGIN_CARDS_FALLBACK = `SELECT thread,n,author FROM entries 
 // writer changing even an already visited key keeps the candidates live.
 type Meta = { version: number; scanned: number; end_thread: string | null; end_n: string | null;
   cursor_thread: string | null; cursor_n: string | null; offset: number | null };
-type Row = { thread: string; n: string; entry_rowid: string; ts: string | null; kind: string; author_kind: string; card: string | null };
-const fields = `CAST(thread AS TEXT) thread,CAST(n AS TEXT) n,CAST(rowid AS TEXT) entry_rowid,ts,kind,author_kind,
+export type Row = { thread: string; n: string; entry_rowid: string; ts: string | null; kind: string; author_kind: string; card: string | null };
+export const fields = `CAST(thread AS TEXT) thread,CAST(n AS TEXT) n,CAST(rowid AS TEXT) entry_rowid,ts,kind,author_kind,
   CASE WHEN card LIKE '%"login"%' THEN CAST(card AS TEXT) END AS card`;
-const readMeta = (db: DatabaseSync) => db.prepare(`SELECT version,scanned,CAST(end_thread AS TEXT) end_thread,
+export const readMeta = (db: DatabaseSync) => db.prepare(`SELECT version,scanned,CAST(end_thread AS TEXT) end_thread,
   CAST(end_n AS TEXT) end_n,CAST(cursor_thread AS TEXT) cursor_thread,CAST(cursor_n AS TEXT) cursor_n,offset
   FROM login_card_meta WHERE id=1`).get() as Meta;
 
@@ -130,74 +130,6 @@ export function installLegacyLoginCards(db: DatabaseSync): boolean {
   } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
 }
 
-export function legacyLoginCardsStep(db: DatabaseSync, limit = 64): { ready: boolean; visited: number; tokens: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > BATCH) throw new RangeError("login card batch must be 1–64");
-  installLegacyLoginCards(db);
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const m = readMeta(db);
-    if (m.version !== VERSION || (m.scanned !== 0 && m.scanned !== 1)) {
-      throw new Error("unsupported login card preparation");
-    }
-    if (m.scanned) { db.exec("COMMIT"); return { ready: true, visited: 0, tokens: 0 }; }
-    // Qualify the sort keys: the selected aliases are text for lossless JS transport, but SQLite must sort integers.
-    // Recheck under the writer lock: an older connection may have installed or removed the native index since the last
-    // batch. Its partial predicate is a superset of the cards we need; triggers keep newer writes current.
-    const from = exists(db,"index","entries_login_cards")
-      ? `FROM entries INDEXED BY entries_login_cards WHERE card LIKE '%"login"%'` : "FROM entries WHERE 1";
-    const first = db.prepare(`SELECT ${fields} ${from} AND thread<=CAST(?1 AS INTEGER) ORDER BY entries.thread,entries.n LIMIT 1`);
-    const same = db.prepare(`SELECT ${fields} ${from} AND thread=CAST(?1 AS INTEGER) AND n>CAST(?2 AS INTEGER) ORDER BY entries.n LIMIT 1`);
-    const later = db.prepare(`SELECT ${fields} ${from} AND thread>CAST(?1 AS INTEGER) AND thread<=CAST(?2 AS INTEGER) ORDER BY entries.thread,entries.n LIMIT 1`);
-    // A partially scanned card can have changed since the previous batch, even so it no longer matches the index.
-    const exact = db.prepare(`SELECT ${fields} FROM entries WHERE thread=CAST(?1 AS INTEGER) AND n=CAST(?2 AS INTEGER)`);
-    const put = db.prepare(`INSERT INTO login_card_keys(login,thread,n,entry_rowid,ts)
-      SELECT ?1,CAST(?2 AS INTEGER),CAST(?3 AS INTEGER),CAST(?4 AS INTEGER),?5
-      WHERE NOT EXISTS (SELECT 1 FROM login_card_keys WHERE login=?1 AND thread=CAST(?2 AS INTEGER) AND n=CAST(?3 AS INTEGER))`);
-    let visited = 0, tokens = 0, ready = m.end_thread === null;
-    while (!ready && visited < limit && tokens < limit) {
-      let row: Row | undefined;
-      if (m.offset !== null) {
-        row = exact.get(m.cursor_thread!,m.cursor_n!) as Row | undefined;
-        if (!row) { m.offset = null; continue; }
-      } else {
-        row = (m.cursor_thread === null ? first.get(m.end_thread!) : same.get(m.cursor_thread,m.cursor_n!)) as Row | undefined;
-        if (!row && m.cursor_thread !== null) row = later.get(m.cursor_thread,m.end_thread!) as Row | undefined;
-        if (!row || BigInt(row.thread) > BigInt(m.end_thread!) || (row.thread === m.end_thread && BigInt(row.n) > BigInt(m.end_n!))) {
-          ready = true; break;
-        }
-        m.cursor_thread = row.thread; m.cursor_n = row.n; m.offset = 0;
-      }
-      visited++;
-      if (row.kind !== "message" || row.author_kind !== "agent" || typeof row.card !== "string") { m.offset = null; continue; }
-      // SQLite's default LIKE folds only ASCII. LIKE also stops at NUL, so no candidate after it can match.
-      let text = row.card.replace(/[A-Z]/g, (c) => c.toLowerCase());
-      const nul = text.indexOf("\0"); if (nul !== -1) text = text.slice(0,nul);
-      const prefix = '"login":"';
-      let offset = m.offset!;
-      while (tokens < limit) {
-        const start = text.indexOf(prefix,offset);
-        if (start === -1) { m.offset = null; break; }
-        offset = start + prefix.length;
-        const end = text.indexOf('"',offset);
-        const login = end === -1 ? "" : text.slice(offset,end);
-        if (/^[0-9a-z]{1,40}$/.test(login)) put.run(login,row.thread,row.n,row.entry_rowid,row.ts);
-        tokens++;
-        m.offset = offset;
-      }
-    }
-    db.prepare(`UPDATE login_card_meta SET scanned=?,cursor_thread=CAST(? AS INTEGER),cursor_n=CAST(? AS INTEGER),offset=? WHERE id=1`)
-      .run(ready ? 1 : 0,m.cursor_thread,m.cursor_n,m.offset);
-    db.exec("COMMIT");
-    return { ready,visited,tokens };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-}
-
 export function legacyLoginCardsNeedsWork(db: DatabaseSync): boolean {
   return hasLegacyLoginCards(db) && readMeta(db).scanned === 0;
-}
-
-export function legacyLoginCardsMaintenanceStep(db: DatabaseSync): { done: boolean; visited: number } {
-  if (!hasLegacyLoginCards(db)) return { done: true,visited: 0 };
-  const result = legacyLoginCardsStep(db);
-  return { done: result.ready,visited: result.visited };
 }

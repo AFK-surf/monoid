@@ -3,11 +3,12 @@
 import { Effect, Layer } from "effect";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
-import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Store } from "../services.ts";
+import { AdminApi, ControlPlane, Events, Key, Parts, Paths, Peers, Previous, Store } from "../services.ts";
 import { Agents } from "../sessions/agents.ts";
 import { chatCards } from "../replica/retire-asks.ts";
 import { gitHere, gitRun } from "../replica/retire.ts";
 import { MoveAsks, moveTools } from "../tools/move.ts";
+import { stationMoveOn } from "../features.ts";
 import { Moves } from "./station.ts";
 import { moveRoutes } from "./routes.ts";
 import { plainStore } from "../vault/plain.ts";
@@ -17,7 +18,7 @@ type Json = any;
 
 export const MovesLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const { data } = yield* Paths;
+    const { app, data } = yield* Paths;
     const store = yield* Store;
     const bus = yield* Peers;
     const cloud = (yield* ControlPlane).state;
@@ -26,6 +27,8 @@ export const MovesLive = Layer.effectDiscard(
     const key = yield* Key;
     const agents = yield* Agents;
     const admin = yield* AdminApi;
+    // (the station process handing over to this one: its move turns and hand-overs its own until it is gone)
+    const previous = yield* Previous;
     const fibers = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("move")), (f) => Effect.promise(() => f.close()));
     const roster = (ws: string) => {
       const m = cloud.membership(ws);
@@ -45,7 +48,7 @@ export const MovesLive = Layer.effectDiscard(
       });
     };
     const moves = new Moves({
-      data, store, fibers, roster,
+      data, store, fibers, roster, previous: previous.exited, previousPid: previous.pid,
       here: () => key.id,
       home: () => cloud.home(),
       ask: (station, request) => bus.ask(station, request),
@@ -71,14 +74,15 @@ export const MovesLive = Layer.effectDiscard(
         arrived: async (keys) => wc()?.arrived(keys),
       },
       jobs: {
-        up: (keys, ws) => store.jobsUp()
-          .filter((j) => !j.sessionKey.startsWith("remote:") && (keys !== null ? keys.includes(j.sessionKey) : ws === undefined || hub.ofWorkspace(j.sessionKey, ws)))
+        // (of sessions `keys`, a chat's: by their index; of a workspace, a plan's: every job up, once a plan)
+        up: (keys, ws) => (keys !== null ? store.jobsUpOf(keys) : store.jobsUp())
+          .filter((j) => !j.sessionKey.startsWith("remote:") && (keys !== null || ws === undefined || hub.ofWorkspace(j.sessionKey, ws)))
           .map((j) => ({ id: j.id, session: j.sessionKey, name: j.name, command: j.command, cwd: j.cwd, port: j.port, watch: j.watch })),
         stop: async (id) => void (await agents.jobs.stop(id)),
         // (the jobs run in the MoonBit program, #6387: a start answers once it went, or with why not)
         start: async (j) => void (await agents.jobs.start(j.session, j.name, j.command, j.cwd ?? store.getSession(j.session)?.workspace ?? data, j.port ?? null, j.watch === true)),
         stopNamed: async (session, name) => {
-          for (const j of store.jobsUp().filter((x) => x.sessionKey === session && x.name === name)) await agents.jobs.stop(j.id);
+          for (const j of store.jobsUpOf([session]).filter((x) => x.name === name)) await agents.jobs.stop(j.id);
         },
       },
       profiles: () => (Array.isArray(agents.config.raw()?.profiles) ? agents.config.raw().profiles : []),
@@ -94,8 +98,8 @@ export const MovesLive = Layer.effectDiscard(
       hasGit: gitHere,
       changed: () => changed(),
       config: agents.config,
-      // (a machine's own setting, off unless set: moving is offered here only once it is on; move/AGENTS.md)
-      moveOn: () => agents.config.raw()?.move === true,
+      // (a beta feature of the station's: features.ts stationMoveOn)
+      moveOn: () => stationMoveOn(agents.config.raw(), app),
       keptSends: (threads) => admin.keptSends(threads),
       keepSends: (sends) => admin.keepSends(sends),
       vault: {
@@ -134,6 +138,9 @@ export const MovesLive = Layer.effectDiscard(
     bus.on("move.", answers);
     // (a login home again, by any route: the share a trip made for it undone)
     agents.sharing.onHosted = (share, from) => void moves.shareCameHome(share, from).catch(() => {});
+    // (the logins changed: what is stopped here for one looked at again, one that came by no move among them)
+    const offLogins = agents.config.listen(() => moves.loginsChanged());
+    yield* Effect.addFinalizer(() => Effect.sync(offLogins));
     const asks = new MoveAsks({
       data, scheduler: moves.scheduler,
       here: () => key.id,
@@ -144,10 +151,12 @@ export const MovesLive = Layer.effectDiscard(
       ask: (station, request) => bus.ask(station, request),
       setWait: (w) => void (moves.wait = w),
       refusal: (ws, station) => moves.refusal(ws, station),
+      room: (ws, station, ids) => moves.room(ws, station, ids),
+      told: moves.told,
     });
     bus.on("move.tool", async (peer, request, workspace) => {
       if (!inWorkspace(peer) || typeof workspace !== "string") throw new Error("not a station of this workspace");
-      return asks.toolIn(workspace, null, request?.args ?? {});
+      return asks.answer(peer, workspace, request);
     });
     parts.routes(moveRoutes({
       scheduler: moves.scheduler,
@@ -165,7 +174,8 @@ export const MovesLive = Layer.effectDiscard(
     // (whether the app offers moving here: the switch; GET /move answers either way)
     parts.overview("move", () => ({ offered: moves.on() }));
     parts.cardChoice("move", { may: (viewer, card, at) => asks.may(viewer, card, at), chosen: (viewer, card, option, at) => asks.chosen(viewer, card, option, at) });
-    parts.tools(moveTools(asks));
+    // (station_move is an agent's only where moving is on here)
+    parts.tools(moveTools(asks), () => moves.on());
     bus.whenAttached(() => void moves.start().catch((e) => log.warn("move", "the migrations did not go on", { error: (e as Error).message })));
   }),
 );

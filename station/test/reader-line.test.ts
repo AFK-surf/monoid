@@ -7,11 +7,12 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { Store } from "../src/store/store.ts";
+import { Worker } from "node:worker_threads";
 
 /// Readers answering by reader-line-worker.mjs, and its state: how many reads started, which kinds, and the gate.
 function gated(size: number) {
   const data = mkdtempSync(join(tmpdir(), "reader-line-"));
-  const readers = new Readers(data, size, new URL("./reader-line-worker.mjs", import.meta.url));
+  const readers = new Readers(data, size, (at) => new Worker(new URL("./reader-line-worker.mjs", import.meta.url), { workerData: { data: at } }));
   const state = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT * 3));
   const args = (hold: boolean) => ({ state: state.buffer, hold });
   const started = async (wanted: number) => {
@@ -194,18 +195,19 @@ test("the database's log is written into it by a reader of its own, while every 
   }
 });
 
-test("the year's history does not wait for old minute statistics nor hold a device reader", { timeout: 30_000 }, async () => {
+test("the year's history does not wait for old remote task statistics nor hold a device reader", { timeout: 30_000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "reader-minute-"));
   const store = Store.open(join(dir, "stillfail.db"));
   const readers = new Readers(dir, 1);
-  store.db.exec("UPDATE usage_minute_all SET done = 0");
+  store.db.exec("UPDATE remote_run_progress SET done = 0");
   const history = readers.read("usage", { from: 0, to: 100, tz: 0, reading: false, history: true, viewer: null }, "en");
   try {
     await readers.read("checkpoint", {}, "en");
     const result = JSON.parse(await history);
     assert.deepEqual(result.history.days, []);
     assert.deepEqual(result.rows, []);
-    assert.equal((store.db.prepare("SELECT done FROM usage_minute_all WHERE id = 1").get() as { done: number }).done, 0);
+    assert.equal(result.history.remoteRuns, undefined, "what is not known yet is left out");
+    assert.equal((store.db.prepare("SELECT done FROM remote_run_progress WHERE id = 1").get() as { done: number }).done, 0);
   } finally {
     readers.close();
     store.close();

@@ -4,6 +4,7 @@
 
 ///|
 /// How much of it has come.
+#derive(Eq)
 pub(all) struct Got {
   loaded : Double
   total : Double

@@ -42,7 +42,7 @@ fn runs_in(t : @ui.Tester, r : (Double, Double, Double, Double)) -> Array[@ui.Te
 ///|
 /// The glass controls over the composer, in their order: the preset's, the station's, the model's.
 fn crowded_controls(t : @ui.Tester) -> Array[@ui.Laid] {
-  t.boxes().filter(fn(b) { b.glass && b.kind == "row" && (b.h - 30.0).abs() < 0.5 })
+  t.boxes_held().filter(fn(b) { b.glass && b.kind == "row" && (b.h - 30.0).abs() < 0.5 })
 }
 
 ///|
@@ -50,7 +50,7 @@ test "narrow: the preset's, the station's and the model's controls side by side,
   let t = crowded("newchat-crowded", w=crowded_narrowest)
   // the three glass controls over the composer, side by side in the window
   let glass = crowded_controls(t)
-  assert_eq(glass.length(), 3, msg="\{Repr(t.boxes().filter(fn(b) { b.glass }).map(fn(b) { (b.kind, b.x, b.y, b.w, b.h) }))}")
+  assert_eq(glass.length(), 3, msg="\{Repr(t.boxes_held().filter(fn(b) { b.glass }).map(fn(b) { (b.kind, b.x, b.y, b.w, b.h) }))}")
   let (preset, station, model) = (glass[0], glass[1], glass[2])
   assert_true(preset.x + preset.w <= station.x)
   assert_true(station.x + station.w <= model.x)
@@ -62,7 +62,7 @@ test "narrow: the preset's, the station's and the model's controls side by side,
   assert_true(station_words.iter().all(fn(r) { r.text == "Willow" }), msg="\{Repr(station_words.map(fn(r) { r.text }))}")
   // the model's: as wide as what it keeps (its padding past the last of it, no more)
   let kept = t
-    .boxes()
+    .boxes_held()
     .filter(fn(b) { b.parent == model.index && b.opacity > 0.0 && b.w > 0.0 })
     .fold(init=0.0, fn(m, b) { if b.x + b.w > m { b.x + b.w } else { m } })
   assert_true(model.x + model.w - kept <= 12.5, msg="\{model.x + model.w - kept} past what it keeps")
@@ -86,7 +86,7 @@ test "narrower still: the preset's words and the station's name leave their cont
   assert_true(model_words.iter().any(fn(r) { r.text.has_prefix("DeepSeek") }), msg="\{Repr(model_words.map(fn(r) { r.text }))}")
   // nothing past what it keeps
   let kept = t
-    .boxes()
+    .boxes_held()
     .filter(fn(b) { b.parent == model.index && b.opacity > 0.0 && b.w > 0.0 })
     .fold(init=0.0, fn(m, b) { if b.x + b.w > m { b.x + b.w } else { m } })
   assert_true(model.x + model.w - kept <= 12.5)
@@ -122,7 +122,7 @@ test "narrow: the configurations used most under their title nearest how hard it
   // the models
   let words_of = fn(label : String) -> Array[String] raise {
     let (x, y, w, h) = t.get(Button, label~).rect
-    t.boxes().filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 }).map(fn(b) { b.text })
+    t.boxes_held().filter(fn(b) { b.kind == "text" && b.x >= x && b.x + b.w <= x + w + 0.5 && b.y >= y && b.y + b.h <= y + h + 0.5 }).map(fn(b) { b.text })
   }
   assert_true(words_of("SWE-2").contains("高"), msg="\{Repr(words_of("SWE-2"))}")
   assert_true(words_of("GPT-6 Astra").contains("中"), msg="\{Repr(words_of("GPT-6 Astra"))}")
@@ -132,7 +132,7 @@ test "narrow: the configurations used most under their title nearest how hard it
   // a configuration: how it runs in its capsule after its name
   let (rx, ry, rw, rh) = rows[4].rect
   assert_true(
-    t.boxes().iter().any(fn(b) { b.kind == "text" && b.text == "DSH · 高" && b.x >= rx && b.x < rx + rw && b.y >= ry && b.y < ry + rh }),
+    t.boxes_held().iter().any(fn(b) { b.kind == "text" && b.text == "DSH · 高" && b.x >= rx && b.x < rx + rw && b.y >= ry && b.y < ry + rh }),
     msg="DeepSeek V4.1 Flash's DSH · 高",
   )
   assert_eq(t.audit().filter(fn(f) { !held.contains(f) }), [])
@@ -157,7 +157,7 @@ test "narrow, models starred: a starred model's configuration under 常用搭配
   // the one it runs on exactly drawn picked (its name the picked weight), the same model run another way not
   let weight = fn(label : String, name : String) -> Int raise {
     let (x, y, w, h) = t.get(Button, label~).rect
-    t.boxes().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= x && b.x < x + w && b.y >= y && b.y < y + h }).map(fn(b) { b.weight }).unwrap_or(0)
+    t.boxes_held().rev().iter().find_first(fn(b) { b.kind == "text" && b.text == name && b.x >= x && b.x < x + w && b.y >= y && b.y < y + h }).map(fn(b) { b.weight }).unwrap_or(0)
   }
   assert_true(
     weight("DeepSeek V4.1 Flash · DSH · 高", "DeepSeek V4.1 Flash") > weight("GPT-6 Astra · 高", "GPT-6 Astra"),
@@ -198,7 +198,7 @@ test "narrow, crowded: a configuration taken out of those used most leaves the s
   // (leaving: still drawn where it was, nothing to press there; the next not come yet, the rest where they were)
   t.run_for(@sf.leave_ms / 2.0)
   assert_true(
-    t.boxes().iter().any(fn(b) { b.kind == "text" && b.text == "GPT-6 Astra" && b.opacity > 0.0 && b.y >= ry - 1.0 && b.y < ry + rh && b.x >= rx && b.x < rx + rw }),
+    t.boxes_held().iter().any(fn(b) { b.kind == "text" && b.text == "GPT-6 Astra" && b.opacity > 0.0 && b.y >= ry - 1.0 && b.y < ry + rh && b.x >= rx && b.x < rx + rw }),
     msg="gone at once from where it was",
   )
   assert_true(t.query(Button, label="Sonnet 5 · 中") is None, msg="the next come before it has gone")
@@ -209,7 +209,7 @@ test "narrow, crowded: a configuration taken out of those used most leaves the s
   // (gone: what was over it on its way down into its room)
   // (where its words are drawn: the configuration's, under the starred Kimi For Coding's)
   let kimi_drawn = fn() {
-    t.boxes().filter(fn(b) { b.kind == "text" && b.text == "Kimi For Coding" && b.y >= kimi.1 - 1.0 }).fold(init=1.0e9, fn(m, b) {
+    t.boxes_held().filter(fn(b) { b.kind == "text" && b.text == "Kimi For Coding" && b.y >= kimi.1 - 1.0 }).fold(init=1.0e9, fn(m, b) {
       if b.y < m { b.y } else { m }
     })
   }
@@ -254,7 +254,7 @@ test "narrow, a short window, models starred and used most: they scroll, how it 
   run_to_sheet_rest(t)
   let sheet = t.get(@ui.Role::Dialog).rect
   assert_true(sheet.3 <= crowded_short * @sf.sheet_most + 1.0, msg="the sheet is \{sheet.3} high")
-  let who = t.boxes().iter().find_first(fn(b) { b.kind == "text" && b.text == "账号" && b.y >= sheet.1 })
+  let who = t.boxes_held().iter().find_first(fn(b) { b.kind == "text" && b.text == "账号" && b.y >= sheet.1 })
   guard who is Some(who) else { fail("no 账号 in the sheet") }
   assert_true(who.y + who.h <= sheet.1 + sheet.3, msg="账号 \{who.y} past the sheet \{Repr(sheet)}")
   let effort = t.get(Slider, label="思考深度").rect
@@ -269,22 +269,16 @@ test "narrow, a short window, models starred and used most: they scroll, how it 
 }
 
 ///|
-/// The rectangle of the words `name` drawn in the sheet (`sheet`), whole (as wide as they advance).
+/// The rectangle of the words `name` drawn in the sheet (`sheet`), whole: a line of them drawn as `name`, nothing of
+/// it cut short (no ellipsis in its place), all of it in the sheet (the window's tree's words, as its draw list has
+/// them: Tester::text_runs).
 fn words_whole(t : @ui.Tester, name : String, sheet : (Double, Double, Double, Double)) -> (Double, Double, Double, Double)? {
   let (sx, sy, sw, sh) = sheet
   t
-  .boxes()
+  .text_runs()
   .iter()
-  .find_first(fn(b) {
-    b.kind == "text" &&
-    b.text == name &&
-    b.y >= sy &&
-    b.y < sy + sh &&
-    b.x >= sx &&
-    b.x + b.w <= sx + sw + 0.5 &&
-    b.w >= @ui.text_advance(name, size=b.font_size, weight=b.weight) - 0.5
-  })
-  .map(fn(b) { (b.x, b.y, b.w, b.h) })
+  .find_first(fn(r) { r.text == name && r.top >= sy && r.bottom <= sy + sh + 0.5 && r.x0 >= sx && r.x1 <= sx + sw + 0.5 })
+  .map(fn(r) { (r.x0, r.top, r.x1 - r.x0, r.bottom - r.top) })
 }
 
 ///|
@@ -441,7 +435,7 @@ test "narrower still, a station of no mark of its own: its control keeps a mark 
   let glass = crowded_controls(t)
   assert_eq(glass.length(), 3)
   let station = glass[1]
-  let shown = t.boxes().filter(fn(b) { b.parent == station.index && b.opacity > 0.0 && b.w > 0.0 })
+  let shown = t.boxes_held().filter(fn(b) { b.parent == station.index && b.opacity > 0.0 && b.w > 0.0 })
   assert_true(shown.length() >= 2, msg="\{Repr(shown.map(fn(b) { (b.kind, b.x, b.w) }))}")
 }
 

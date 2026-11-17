@@ -1,7 +1,8 @@
 // 本机 Station (apps/desktop/src/main.ts localStation), one page in every frame: this
 // machine's station whoever runs it (the service the installer made, a process started by hand), as the system says
 // it (its native call `local_station`), shown as a workspace's stations are: its dot, its name and
-// how it is, 启动 where it is stopped, its menu (停止 or 启动, 重启, 更新到最新版, 打开日志, its data shown); under
+// how it is, 启动 where it is stopped, its menu (停止 or 启动, 重启, 更新到最新版, 打开日志, its data shown, 卸载本机
+// Station asked first); under
 // them who runs it, its version, its workspace, its data, in lines as the room has them; the installer's progress and
 // what went wrong in it. None here: 添加这台 Mac where the app adds one. (The phone's copy, its rows a list each, is
 // gone: a station is shown the one way everywhere.)
@@ -20,7 +21,11 @@ pub fn local_station_node(
 ) -> Unit {
   // (what the host says of it, as it said it last: a signal of that input, read again at each moment it is asked)
   let host : @signals.Signal[String] = @signals.signal(@hostapi.app_said("local_station"), same=fn(a, b) { a == b })
-  let asked = fn() { host.set(@hostapi.app_said("local_station")) }
+  let asked = fn() {
+    let said = @hostapi.app_said("local_station")
+    host.set(said)
+    @settings.local_station_heard(said)
+  }
   fn again(at : Double) -> Unit {
     v.at_moment(at + @settings.local_read_ms, later=true, fn() {
       asked()
@@ -112,7 +117,8 @@ fn local_card_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
   let working = fn() { doing() != "" }
   let running = fn() { text(s(), "runner") != "none" }
   let adds = fn() {
-    if doing() != "" || !@settings.local_station_managed() {
+    // (its data on a disk not connected: it is there, only away, never made anew beside it)
+    if doing() != "" || !@settings.local_station_managed() || flag(s(), "away") {
       return false
     }
     let ws = field(s(), "workspace")
@@ -159,7 +165,7 @@ fn local_card_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
       })
       |> ignore
     })
-    k.show(fn() { doing() == "install" || doing() == "update" }, fn(p) {
+    k.show(fn() { doing() == "install" || doing() == "update" || doing() == "move" }, fn(p) {
       local_past_dot_node(p, fn(u) { local_progress_node(u, s, doing) })
     })
     k.show(fn() { text(s(), "failed") != "" }, fn(p) { local_past_dot_node(p, fn(u) { local_failed_node(u, s) }) })
@@ -170,7 +176,7 @@ fn local_card_node(b : @view.View, core : Core, s : () -> Json?, pc : Bool, aske
 
 ///|
 /// Its ⋯ (an icon button, a block in the card's top right corner): pressed, its menu beside it (停止 or 启动, 重启,
-/// 更新到最新版, 打开日志, its data shown), lined up at its end; open till it is chosen from or dismissed (the hand,
+/// 更新到最新版, 打开日志, its data shown, 卸载本机 Station), lined up at its end; open till it is chosen from or dismissed (the hand,
 /// Escape, a press outside it), local_menu said so as it opens and as it goes.
 fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -> Unit {
   let t = fn() { @sf.theme() }
@@ -182,8 +188,16 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
     let working = text(now, "doing") != ""
     let running = text(now, "runner") != "none"
     let items : Array[@sf.MenuItem?] = []
+    // (chosen from, it is closed too: `gone` is told only of a menu closed with nothing chosen)
+    let closed = fn() {
+      local_menu.val = false
+      open.set(false)
+    }
     let item = fn(key : String, label : String, icon : String, disabled : Bool) {
-      items.push(Some(@sf.menu_item_of(label, icon~, disabled~, fn() { act(key) })))
+      items.push(Some(@sf.menu_item_of(label, icon~, disabled~, fn() {
+        closed()
+        act(key)
+      })))
     }
     if running {
       item("stop", @sf.t("web-pages.localStation.stop"), "stop", working)
@@ -200,6 +214,43 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
     items.push(None)
     item("log", @sf.t("web-pages.localStation.openLog"), "file-text", false)
     item("folder", @settings.local_folder_label(), "folder", false)
+    // its data moved to a folder chosen (another disk), asked first: where its release's command can (`moves`)
+    if flag(now, "moves") && @settings.local_station_managed() {
+      let data = text(now, "data")
+      items.push(
+        Some(
+          @sf.menu_item_of(@sf.t("web-pages.localStation.move"), icon="move", disabled=working, fn() {
+            closed()
+            @sf.confirm(
+              @sf.t("web-pages.localStation.moveTitle"),
+              @sf.t("web-pages.localStation.moveConfirmBody", args=[("data", data)]),
+              @sf.t("web-pages.localStation.moveAction"),
+              fn() { act("move") },
+            )
+          }),
+        ),
+      )
+    }
+    // taken away for good (its service, its release; its data kept), asked first: one the app looks after, with a
+    // release or a service of its own to take away
+    if (flag(now, "installed") || field(now, "service") is Some(_)) && @settings.local_station_managed() {
+      items.push(None)
+      let data = text(now, "data")
+      items.push(
+        Some(
+          @sf.menu_item_of(@sf.t("web-pages.localStation.uninstall"), icon="trash", danger=true, disabled=working, fn() {
+            closed()
+            @sf.confirm(
+              @sf.t("web-pages.localStation.uninstall"),
+              @sf.t("web-pages.localStation.uninstallConfirmBody", args=[("data", data)]),
+              @sf.t("web-pages.localStation.uninstallAction"),
+              danger=true,
+              fn() { act("uninstall") },
+            )
+          }),
+        ),
+      )
+    }
     let (x, y, w, h) = m.placed_window_now()
     local_menu.val = true
     open.set(true)
@@ -211,10 +262,8 @@ fn local_more_node(head : @view.View, s : () -> Json?, act : (String) -> Unit) -
   more.val = Some(
     head.box(fn(m) {
       @sf.style_node(m, fn() { ls_more_at })
-      m
-      .ground(By(fn() { if m.pointed() { @ui.tree_theme().color(Hover) } else { 0L } }))
-      .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.menu.more"), expanded=open.get())) }))
-      |> ignore
+      @sf.hover_ground_node(m)
+      m.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.menu.more"), expanded=open.get())) })) |> ignore
       @sf.presses_node(m, press)
       @sf.icon_node(m, "more", ws_more_icon, By(fn() { t().p.muted })) |> ignore
     }),
@@ -246,13 +295,17 @@ fn local_station_name(s : Json?, pc : Bool) -> String {
 }
 
 ///|
-/// How it is: what is being done to it, else 运行中 or 已停止.
+/// How it is: what is being done to it, else 运行中, 已卸载 (taken away here, its data kept) or 已停止.
 fn local_state(s : Json?) -> String {
   let doing = text(s, "doing")
   if doing != "" {
     @sf.t("web-pages.localStation.doing." + doing)
   } else if text(s, "runner") != "none" {
     @sf.t("web-pages.localStation.running")
+  } else if flag(s, "away") {
+    @sf.t("web-pages.localStation.away")
+  } else if flag(s, "uninstalled") {
+    @sf.t("web-pages.localStation.uninstalled")
   } else {
     @sf.t("web-pages.localStation.stopped")
   }
@@ -271,7 +324,10 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     // stopped: its service's; with none, nothing runs it (this app runs none of its own)
     _ => if service { service_name(s) } else { "" }
   }
-  let place = if !(workspace is Some(Object(_))) {
+  // (its data on a disk not connected: which workspace it is in is not known here, not said to be none)
+  let place = if flag(s, "away") {
+    ""
+  } else if !(workspace is Some(Object(_))) {
     @sf.t("web-pages.localStation.noWorkspace")
   } else {
     let ws = match text(workspace, "name") {
@@ -280,7 +336,14 @@ fn local_facts(s : Json?, pc : Bool) -> Array[String] {
     }
     @sf.t(if flag(workspace, "removed") { "web-pages.localStation.removed" } else { "web-pages.localStation.inWorkspace" }, args=[("workspace", ws)])
   }
-  [run_by, text(s, "version"), place, text(s, "data")].filter(fn(l) { l != "" })
+  // its data where it is: moved (its name a link to it), where it was moved to, and, where that disk is not
+  // connected, that it starts once it is
+  let data = match text(s, "at") {
+    "" => text(s, "data")
+    at if flag(s, "away") => @sf.t("web-pages.localStation.awayLine", args=[("path", at)])
+    at => @sf.t("web-pages.localStation.at", args=[("path", at)])
+  }
+  [run_by, text(s, "version"), place, data].filter(fn(l) { l != "" })
 }
 
 ///|
@@ -326,6 +389,15 @@ fn local_failed_words(s : Json?) -> String {
     "busy" => @sf.t("desktop.local.busy")
     "byHand" => @sf.t("desktop.local.byHand")
     "noService" => @sf.t("desktop.local.noService")
+    // its data's move (bin/stillfail's), by how it ended
+    "move.2" => @sf.t("desktop.local.move.2")
+    "move.3" => @sf.t("desktop.local.move.3")
+    "move.4" => @sf.t("desktop.local.move.4")
+    "move.5" => @sf.t("desktop.local.move.5")
+    "move.6" => @sf.t("desktop.local.move.6")
+    "move.7" => @sf.t("desktop.local.move.7")
+    "move.8" => @sf.t("desktop.local.move.8")
+    e if e.has_prefix("move:") => @sf.t("desktop.local.move.other", args=[("said", e.unsafe_substring(start=5, end=e.length()))])
     e => e
   }
 }
@@ -334,10 +406,14 @@ fn local_failed_words(s : Json?) -> String {
 /// Whether the station here can be started from here: by its service; with none (still.fail's desktop app ran it from
 /// its own bundle, gone with that app; its service taken away), where the app looks after the station here, by the
 /// installer without a token, which makes it one as it is and starts it (更新到最新版's, local_station_carry_on's): a
-/// station in a workspace, the installer's `update` refusing one in none.
+/// station in a workspace, the installer's `update` refusing one in none. Not one whose data is on a disk not connected.
 fn local_startable(s : Json?) -> Bool {
-  field(s, "service") is Some(_) ||
-  (text(field(s, "workspace"), "id") != "" && @settings.local_station_managed())
+  // (its data on a disk not connected: its service starts it once the disk is there, nothing to start before)
+  !flag(s, "away") &&
+  (
+    field(s, "service") is Some(_) ||
+    (text(field(s, "workspace"), "id") != "" && @settings.local_station_managed())
+  )
 }
 
 ///|
@@ -377,9 +453,11 @@ fn local_stopped_in(address : String, said : String) -> Json? {
 }
 
 ///|
-/// How the station here stands where it is not running (local_stopped): what is being done to it, else 已停止.
+/// How the station here stands where it is not running (local_stopped): what is being done to it, else 已卸载 or
+/// 已停止.
 pub fn local_stopped_words(s : Json?) -> String {
   match text(s, "doing") {
+    "" if flag(s, "uninstalled") => @sf.t("web-pages.localStation.uninstalled")
     "" => @sf.t("web-pages.localStation.stopped")
     doing => @sf.t("web-pages.localStation.doing." + doing)
   }

@@ -204,7 +204,7 @@ priv struct Move {
 priv struct DrawState {
   /// the entries of the build so far (each held by its node: Node's `drawn`), and once laid out the frame's
   /// (Ctx::drawn_found)
-  entries : Array[Drawn]
+  mut entries : Array[Drawn]
   /// the builds so far (a frame's each: frame_body builds it again while what it read changes)
   mut build : Int
   mut any : Bool
@@ -221,36 +221,36 @@ priv struct DrawState {
   /// layer opened over the page) or once its layer is painted: its node, how faded, and the moves of what held it
   /// drawn moved by a look of its own (outermost first: Move), made on it as they would have been in its place. Never
   /// painted in its place: nothing that records what is painted (a kept part, a list's row) holds any of it.
-  overlay : Array[(Int, Double, Array[Move], Double, Double)]
+  mut overlay : Array[(Int, Double, Array[Move], Double, Double)]
   /// the moves of what is being painted moved by a look of its own, outermost first (what flies in it takes them)
-  moves : Array[Move]
+  mut moves : Array[Move]
   /// what is over the scrim of the modal layer up (Stratum's OverScrim), painted once that scrim is (Ctx::paint_raised); the
   /// scrims built this frame (overlay.mbt), and whether those are being painted
-  raised : Array[(Int, Double, Double, Double)]
-  scrims : Array[Int]
+  mut raised : Array[(Int, Double, Double, Double)]
+  mut scrims : Array[Int]
   mut raising : Bool
   /// what is painted over everything of its layer wherever it is painted (an editor's handles: on Android windows of
   /// their own over the app's window, a dialog's over them), as this frame's instances [from, to): put after the rest
   /// of its layer (the page, or one of overlay.mbt's) once that is painted (Ctx::raise_tops), so that nothing of it
   /// painted after them covers them, and a layer opened over them does; drawn where they were painted (what holds them
   /// moved them with its look, as what it holds)
-  tops : Array[(Int, Int)]
+  mut tops : Array[(Int, Int)]
   /// the page's covers built this frame (Ctx::stratum's Cover), what is over them (OverCover) waiting for one to be
   /// painted, and whether that is being painted
-  covers : Array[Int]
-  over_cover : Array[(Int, Double, Double, Double)]
+  mut covers : Array[Int]
+  mut over_cover : Array[(Int, Double, Double, Double)]
   mut covering : Bool
   /// what is over everything, the layers over the page too (OverLayers), waiting for the rest to be painted, and
   /// whether it is being painted
-  over_layers : Array[(Int, Double, Double, Double)]
+  mut over_layers : Array[(Int, Double, Double, Double)]
   mut over_all : Bool
   /// by node: the build something in it was last drawn moved in (Ctx::draw_carries)
-  carry : Array[Int]
+  mut carry : Array[Int]
   /// the node whose look by the clock is being painted (its instances tagged once it is: cycle_look.mbt)
   mut cycling : Int
   /// the rows of lists cut by their rooms as they come and go, as the frame was laid out: each row's node, and how far
   /// before its room's edges what it holds fades out (Ctx::rows_soft_after_layout)
-  rows_soft : Array[(Int, Double)]
+  mut rows_soft : Array[(Int, Double)]
 }
 
 ///|
@@ -1007,8 +1007,10 @@ fn Ctx::drawn_paint(self : Ctx, i : Int, alpha : Double) -> Bool {
     return e.only
   }
   let look = e.look_now()
-  // (over a scrim, or the page's cover, where one is up; else in its place)
-  if (e.z == z_over_scrim && dr.scrims.is_empty()) || (e.z == z_over_cover && dr.covers.is_empty()) {
+  // (over a scrim, an old one's or the window's tree's (a sheet of it: View::scrim_under, painted at it in view_host), or the
+  // page's cover, where one is up; else in its place)
+  let scrim_up = !dr.scrims.is_empty() || (view_app.val is Some(tree) && tree.scrims_up())
+  if (e.z == z_over_scrim && !scrim_up) || (e.z == z_over_cover && dr.covers.is_empty()) {
     e.z = 0
   }
   let keep = e.keep is Some(_)
@@ -1872,6 +1874,14 @@ pub fn Ctx::node_parent(self : Ctx, i : Int) -> Int {
 pub fn Ctx::node_pad(self : Ctx, i : Int) -> (Double, Double, Double, Double) {
   let n = self.nodes[i]
   (n.pad_l, n.pad_t, n.pad_r, n.pad_b)
+}
+
+///|
+/// How far node `i` is laid out from (`x`, `y`) now, where it is still the node of id `id`: carried with what holds it
+/// since without being built again (Ctx::moved_shift). None where it is another, or none.
+pub fn Ctx::node_moved_since(self : Ctx, i : Int, id : Int, x : Double, y : Double) -> (Double, Double)? {
+  guard i >= 0 && i < self.count && self.nodes[i].id == id else { return None }
+  Some((self.nodes[i].x - x, self.nodes[i].y - y))
 }
 
 ///|

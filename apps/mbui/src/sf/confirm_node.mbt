@@ -5,8 +5,9 @@
 // draws it (confirm_w wide at most, the window less dialog_margin; dialog_r round, the panel's ground, its line, its
 // shadow; its title, its words, then cancel and the action at its foot's end), coming in by @kit.dialog_in and going
 // by @kit.pop_out from the moments it opens and closes; read out a dialog named by its title. Escape, back and cancel
-// close it (`cancel`); the action does `confirm`. The focus on its own ground as it opens (confirm_dialog's: a layer
-// that traps it with no stop of its own), back to what had it as it goes.
+// close it (`cancel`); the action does `confirm`, and so does Enter where it can be undone (its default: not where
+// `danger`). The focus on its own ground as it opens (confirm_dialog's: a layer that traps it with no stop of its
+// own), back to what had it as it goes.
 
 ///|
 /// A confirm in `parent` while `open()` (going over pop_out_ms once not): `title`, its `words`, `action` (solid red
@@ -32,7 +33,8 @@ pub fn confirm_node(
   dialog_layer_node(parent, open, cancel, shown~, gone~, dims~, covered~, fn(across, layer, look, veil) {
     confirm_panel(across, layer, look, veil, title, words, warning, action, danger, cancel, confirm) |> ignore
     // (the focus on its own ground as it opens, as confirm_dialog's (an overlay that traps it, with no stop of its own:
-    // the layer's own), Enter and Space doing nothing there; back to what had it as it goes)
+    // the layer's own), Space doing nothing there, Enter its default's: its action unless `danger`; back to what had it
+    // as it goes)
     layer
   })
 }
@@ -63,11 +65,17 @@ fn dialog_layer_node(
   dims? : () -> Bool = fn() { true },
   covered? : () -> Bool = fn() { false },
   within? : () -> Bool = fn() { false },
+  back_within? : () -> Bool,
   first_stop? : () -> Bool = fn() { false },
   first_takes? : (@view.Said) -> Bool,
   scrim? : () -> Int64 = fn() { @ui.tree_theme().scrim },
   ground_ms? : Double = confirm_ground_ms,
   night_with_ground? : Bool = false,
+  top_share? : Double = 0.0,
+  come? : @motion.Trans = @kit.dialog_in,
+  come_ms? : Double = @kit.dialog_ms,
+  go? : @motion.Trans = @kit.pop_out,
+  go_ms? : Double = @kit.pop_out_ms,
 ) -> Unit {
   parent.show(
     open,
@@ -75,28 +83,33 @@ fn dialog_layer_node(
       shown()
       layer.owns(gone) |> ignore
       // (how far in it is, its look's and its ground's, from the moment it opened; out from the moment it closed)
-      let shown = EdgeWay::new(0.0)
-      let dim = EdgeWay::new(0.0)
+      let shown = @motion.NodeWay::new(0.0)
+      let dim = @motion.NodeWay::new(0.0)
       // (another dialog over it: it takes nothing then, dimmed over itself as what is under them is, coming and going
       // as that one's ground does)
-      let veiled = EdgeWay::new(0.0)
-      layer.reacts(covered, fn(on) { veiled.go(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
+      let veiled = @motion.NodeWay::new(0.0)
+      layer.reacts(covered, fn(on) { veiled.go_ms(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
       let veil = fn() { confirm_faded(@ui.tree_theme().scrim, veiled.shown(layer)) }
+      // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
-          shown.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
-          dim.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          gate.stop()
+          shown.go_ms(layer, 0.0, go_ms, ease=Leave)
+          dim.go_ms(layer, 0.0, go_ms, ease=Leave)
         } else {
-          shown.go(layer, 1.0, @kit.dialog_ms)
-          dim.go(layer, 1.0, ground_ms)
+          gate.go(layer, fn() {
+            shown.go_ms(layer, 1.0, come_ms)
+            dim.go_ms(layer, 1.0, ground_ms)
+          })
         }
       })
       let look = fn() {
         let p = shown.shown(layer)
         if layer.leaving() {
-          @kit.pop_out.at(p, p)
+          go.at(p, p)
         } else {
-          @kit.dialog_in.at(p, p)
+          come.at(p, p)
         }
       }
       let live = fn() { !layer.leaving() }
@@ -146,7 +159,7 @@ fn dialog_layer_node(
         }
       })
       .takes_back(fn() {
-        if @signals.untracked(live) && !within() {
+        if @signals.untracked(live) && !back_within.unwrap_or(within)() {
           cancel()
         }
       })
@@ -157,7 +170,16 @@ fn dialog_layer_node(
         (left, top, right, foot)
       }))
       |> ignore
-      layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+      // (over it the room `top_share` of the window's height says, where it says one: else as much as under it)
+      layer.box(fn(s) {
+        if top_share > 0.0 {
+          s.height(By(fn() { Some(layer.window().1 * top_share) })).shrink(Is(0.0)) |> ignore
+        } else {
+          s.grow(Is(1.0)) |> ignore
+        }
+      })
+      |> ignore
+      gate.collect(fn() {
       layer.box(fn(across) {
         across.row(Is(true)) |> ignore
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
@@ -172,10 +194,37 @@ fn dialog_layer_node(
         across.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       })
       |> ignore
+      })
+      gate.seal(layer)
       layer.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
     },
-    leave=@kit.pop_out_ms,
+    leave=go_ms,
   )
+}
+
+///|
+/// A panel over the whole window as a dialog of the presenters' is (dialog_layer_node's), in `parent` while `open()`: a
+/// modal layer, what is under it dimmed by the theme's scrim as far as its ground has come in (over `ground_ms`), its
+/// panel (`panel`: made in the row across the window, `top_share` of the window's height over it, given the layer and
+/// its look as it comes and goes; the node given the focus as it opens) coming in as `come` says over `come_ms` and
+/// going as `go` over `go_ms` (0: at once); Escape, back and a press outside its panel close it (`cancel`), Escape
+/// offered to `within` first (true where it took it: a step back within it), back to `back_within` (none: `within`).
+pub fn over_panel_node(
+  parent : @view.View,
+  open : () -> Bool,
+  cancel : () -> Unit,
+  panel : (@view.View, @view.View, () -> @ui.Look) -> @view.View,
+  within? : () -> Bool = fn() { false },
+  back_within? : () -> Bool,
+  top_share? : Double = 0.0,
+  come? : @motion.Trans = @kit.dialog_in,
+  come_ms? : Double = @kit.dialog_ms,
+  ground_ms? : Double = confirm_ground_ms,
+  go? : @motion.Trans = @kit.pop_out,
+  go_ms? : Double = @kit.pop_out_ms,
+) -> Unit {
+  // (its layer over all else in `parent` itself: dialog_layer_node's; nothing made while it is closed but that)
+  dialog_layer_node(parent, open, cancel, fn(across, layer, look, _) { panel(across, layer, look) }, outside=true, within~, back_within?, top_share~, come~, come_ms~, ground_ms~, go~, go_ms~)
 }
 
 ///|
@@ -257,7 +306,14 @@ fn confirm_panel(
       f.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
       // (going, they take nothing: what is leaving takes no press, focus or key; drawn as they were, going with it)
       let no = button_node(f, fn() { t("common.cancel") }, cancel, tone=Ghost)
-      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }) |> ignore
+      // (its action the default where it can be undone: Enter that nothing with the focus takes does it; one that cannot
+      // be undone none, so that Enter never does it: the owner, 2026-11-16, after Apple's)
+      button_node(f, action, confirm, tone=if danger { DangerSolid } else { Primary }, default_on?=if danger {
+        None
+      } else {
+        Some(fn() { true })
+      })
+      |> ignore
       cancel_at.val = Some(no)
     })
     |> ignore

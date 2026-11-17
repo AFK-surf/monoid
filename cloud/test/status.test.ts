@@ -34,9 +34,10 @@ test("the status page's numbers: what the cron found of each service, a failure 
     const cron = async () => assert.equal((await api.scheduled({ cron: "* * * * *", scheduledTime: EVERY_MINUTE_ONLY })).outcome, "ok");
     const states = (s: Status) => Object.fromEntries(s.services.map((v) => [v.name ?? v.id, v.state]));
 
-    // Before any check there is nothing to say.
+    // Before any check there is nothing to say, and no relay listed: which relays there are is what the cron found the
+    // cloud's list to be (src/relay-registry.ts), so the page asks the Directory nothing.
     const before = await status();
-    assert.deepEqual(before.services.map((s) => s.id), ["site", "share", "api", "releases", "relay", "relay"]);
+    assert.deepEqual(before.services.map((s) => s.id), ["site", "share", "api", "releases"]);
     assert.ok(before.services.every((s) => s.state === "unknown" && s.days.length === before.days && s.days.every((d) => d === null)));
 
     const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };

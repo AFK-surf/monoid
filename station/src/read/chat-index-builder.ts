@@ -1,24 +1,23 @@
-import { Worker } from "node:worker_threads";
 import { log } from "../ops/log.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { giveBackfill, releaseStoppedBackfill, takeBackfill } from "../store/backfill.ts";
 import { outflowChatScopes } from "../store/outflow-index.ts";
 import type { InWorkspace } from "../store/rows.ts";
-import { MbProcess, mbReaderBinary } from "./mb-reader.ts";
+import { MbProcess, readerBinary } from "./mb-reader.ts";
 
 type Waiter = { resolve: () => void; reject: (error: Error) => void; done: () => void };
 const IDLE_MS = 5_000;
-/// The pause after a batch that did not finish, as the worker makes it, for the station's other work.
+/// The pause after a batch that did not finish, for the station's other work.
 const PAUSE_MS = 20;
-/// What stands for the MoonBit builder in the backfill permit (a worker's thread id there): never a thread's.
+/// What stands for the MoonBit builder in the backfill permit: never a thread's.
 let nextOwner = 0x50000000;
 
 /// Work only while a program is waiting. Concurrent requests share each scope's bounded work. By the MoonBit builder
-/// (station/mb, src/outflow) where its program is there, the pool taking the backfill permit for it around each batch
-/// (read/requested-builder.ts does the same); else by the worker; a worker of its own given, by that one.
+/// (station/mb, src/outflow; `binary`: the program, a test's own where it gives one), the pool taking the backfill
+/// permit for it around each batch (read/requested-builder.ts does the same).
 export class OutflowChatIndex {
-  #worker: Worker | MbProcess | null = null;
-  readonly #mb: string | null;
+  #worker: MbProcess | null = null;
+  readonly #mb: string;
   #owner = 0;
   #holding = false;
   #current: string | null = null;
@@ -32,13 +31,11 @@ export class OutflowChatIndex {
   readonly #timers = new Fibers("outflow chat index");
   readonly #path: string;
   readonly #options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer };
-  readonly #workerFile: URL | undefined;
 
-  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, workerFile?: URL, mb = workerFile === undefined ? mbReaderBinary() : null) {
+  constructor(path: string, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}, binary = readerBinary()) {
     this.#path = path;
     this.#options = options;
-    this.#workerFile = workerFile;
-    this.#mb = mb;
+    this.#mb = binary;
   }
 
   #priority(): Int32Array | null {
@@ -96,7 +93,7 @@ export class OutflowChatIndex {
       }, (error) => { this.#previousWaiting = false; this.#fail(error instanceof Error ? error : new Error(String(error))); });
       return;
     }
-    if (this.#worker === null && this.#mb !== null) {
+    if (this.#worker === null) {
       const mb = new MbProcess(this.#mb, ["--builder", "outflow-chats", "--db", this.#path]);
       const owner = this.#owner = nextOwner++;
       this.#worker = mb;
@@ -113,30 +110,11 @@ export class OutflowChatIndex {
         this.#gone(mb);
       });
     }
-    if (this.#worker === null) {
-      const file = this.#workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./chat-index-worker.ts" : "./read/chat-index-worker.js", import.meta.url);
-      let worker: Worker;
-      try { worker = new Worker(file, { workerData: { path: this.#path, priority: this.#options.priority }, resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 8 } }); }
-      catch (error) { this.#fail(error instanceof Error ? error : new Error(String(error))); return; }
-      const owner = worker.threadId;
-      this.#worker = worker;
-      worker.unref();
-      worker.on("message", (result: { done: boolean; error?: string }) => {
-        if (this.#worker !== worker || this.#closed) return;
-        this.#answer(result);
-      });
-      worker.once("error", (error) => log.warn("outflow", "the chat order worker failed", { error: error.message }));
-      worker.once("exit", () => {
-        releaseStoppedBackfill(this.#options.priority, owner);
-        this.#gone(worker);
-      });
-    }
     const scope = this.#waiting.keys().next().value as string | undefined;
     if (scope === undefined) return;
     this.#current = scope;
     const worker = this.#worker;
-    if (!(worker instanceof MbProcess)) return void worker.postMessage(scope);
-    // (the MoonBit builder asked once it holds the permit, as the worker takes it itself; without it, not done)
+    // (the MoonBit builder asked once it holds the permit; without it, not done)
     if (!takeBackfill(this.#priority(), this.#owner)) {
       this.#timers.after(PAUSE_MS, () => { if (this.#worker === worker && !this.#closed) this.#answer({ done: false }); });
       return;
@@ -163,8 +141,8 @@ export class OutflowChatIndex {
     this.#pump();
   }
 
-  /// The worker or builder process ended: what it held is asked again of another, after a growing wait.
-  #gone(worker: Worker | MbProcess): void {
+  /// The builder process ended: what it held is asked again of another, after a growing wait.
+  #gone(worker: MbProcess): void {
     if (this.#worker !== worker) return;
     this.#worker = null;
     this.#current = null;

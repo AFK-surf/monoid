@@ -2,8 +2,13 @@
 // the instructions in _meta.antigravity.systemPrompt.append, session/set_model, a turn's usage in the prompt's answer.
 // Without `acp`, its terminal interface signing in as 1.4.12's does (in a terminal, not signed in, not in a remote session):
 // how to sign in asked, Google's page printed, the code read back (`bad`: nothing comes of it), its sign-in written to
-// $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped.
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
+// $HOME/.gemini/antigravity-cli, and the interface going on until it is stopped; a company's account as 1.5.9 signs it
+// in (below). As 1.5.9: told it is a remote session's (SSH_CLIENT, its file kept in a file), it first asks the terminal
+// what it is and waits for the answer; with a sign-in in $HOME already it asks nothing and goes straight into its
+// interface. FAKE_AGY_TIER: the tier session/new says (`_meta.antigravity.tier`). FAKE_AGY_OFFLINE: how many openings
+// (session/new, session/load) of all its processes answer as 1.5.9 does with its backend not reached: no models, and
+// every model refused after (counted in FAKE_DUMP.offline).
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
@@ -11,7 +16,17 @@ const dump = process.env.FAKE_DUMP;
 const args = process.argv.slice(2);
 const promptAt = args.indexOf('-p');
 if (promptAt >= 0 && args[promptAt + 1] === '/usage') await printUsage();
+if (args[0] === 'models') renew();
 if (args[0] !== 'acp') await signIn();
+// `agy models` on a sign-in that ran out: renewed in place, written back with its token and way of signing in alone (as
+// a renewal may leave the rest out).
+function renew() {
+  const path = join(process.env.ANTIGRAVITY_GEMINI_DIR, 'antigravity-cli', 'antigravity-oauth-token');
+  const had = JSON.parse(readFileSync(path, 'utf8'));
+  writeFileSync(path, JSON.stringify({ token: { ...had.token, access_token: 'renewed', expiry: new Date(Date.now() + 3600_000).toISOString() }, auth_method: had.auth_method }));
+  process.stdout.write('gemini-3.5-flash\n');
+  process.exit(0);
+}
 async function printUsage() {
   if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME ?? null, geminiDir: process.env.ANTIGRAVITY_GEMINI_DIR ?? null, cloudCodeUrl: process.env.CLOUD_CODE_URL ?? null, key: process.env.GEMINI_API_KEY ?? null, updates: process.env.AGY_CLI_DISABLE_AUTO_UPDATE ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
   if (process.env.FAKE_AGY_SIGNED_OUT) {
@@ -28,6 +43,11 @@ async function printUsage() {
   if (!existsSync(tokenPath)) {
     process.stdout.write('Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth\n\nWaiting for authentication (timeout 60s)...\n');
     await new Promise(() => {});
+  }
+  // A company's account paying as it goes: no windows.
+  if (process.env.FAKE_AGY_USAGE_EMPTY) {
+    process.stdout.write(JSON.stringify({ conversation_id: '', status: 'SUCCESS', command: { name: 'usage', data: { groups: [] } } }) + '\n');
+    process.exit(0);
   }
   process.stdout.write(JSON.stringify({
     conversation_id: '',
@@ -57,28 +77,91 @@ async function printUsage() {
   process.exit(0);
 }
 async function signIn() {
-  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null }) + '\n');
+  if (dump) appendFileSync(dump, JSON.stringify({ args, home: process.env.HOME, remote: process.env.SSH_CONNECTION ?? null, key: process.env.GEMINI_API_KEY ?? null, fileTokens: process.env.SSH_CLIENT ?? null }) + '\n');
   if (!process.stdin.isTTY) { process.stderr.write('not a terminal\n'); process.exit(1); }
-  const url = 'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&code_challenge=311aMcnjlIZigwJvlJ11zPjRZcH3mLzipvgAYB_hEgc&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=Jn-JRaj4nQfYyaCSr9NcnA';
   process.stdin.setRawMode(true);
+  if (process.env.SSH_CLIENT) {
+    process.stdout.write('\u001b[>q\u001b[c\u001b[>c');
+    let heard = '';
+    await new Promise((resolve) => {
+      const take = (chunk) => {
+        heard += chunk.toString('utf8');
+        if (!heard.includes('\u001b[?1;2c')) return;
+        process.stdin.off('data', take);
+        resolve();
+      };
+      process.stdin.on('data', take);
+    });
+    if (dump) appendFileSync(dump + '.terminal', JSON.stringify(heard) + '\n');
+  }
+  if (existsSync(join(process.env.HOME, '.gemini', 'antigravity-cli', 'antigravity-oauth-token'))) {
+    process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+    await new Promise(() => {});
+  }
+  const url = 'https://accounts.google.com/o/oauth2/auth?access_type=offline&client_id=1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com&code_challenge=311aMcnjlIZigwJvlJ11zPjRZcH3mLzipvgAYB_hEgc&code_challenge_method=S256&prompt=consent&redirect_uri=https%3A%2F%2Fantigravity.google%2Foauth-callback&response_type=code&scope=openid&state=Jn-JRaj4nQfYyaCSr9NcnA';
   process.stdout.write('\u001b[?1049h Welcome to the Antigravity CLI. You are currently not signed in.\n\n Select login method:\n > 1. Google OAuth\n2. Use a Google Cloud project\n');
   let typed = '';
   let step = 'menu';
+  const at = join(process.env.HOME, '.gemini', 'antigravity-cli');
+  const token = (fields) => {
+    mkdirSync(at, { recursive: true });
+    writeFileSync(join(at, 'antigravity-oauth-token'), JSON.stringify({ ...fields }));
+  };
+  let access = '';
+  const signedIn = (fields) => {
+    token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com', ...fields });
+    step = 'in';
+    process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+  };
+  const codeAsked = () => process.stdout.write(` Signing in...Your browser should open automatically. If not:\n\n ${url}\n\n If you aren't automatically redirected, paste the authorization code below:\n\n authorization code...\n`);
+  // A company's account (1.5.9): the second way (a Google Cloud project), Continue with Google Cloud; once its code is in,
+  // its file written with only its token, then its licences (FAKE_AGY_LICENSES: one, chosen with Enter) or, with none, how
+  // to pay (Pay As You Go, the second) and its project asked (`bad-project`: refused).
   process.stdin.on('data', (chunk) => {
     typed += chunk.toString('utf8');
     let enter;
     while ((enter = typed.indexOf('\r')) >= 0) {
-      const line = typed.slice(0, enter).trim();
+      const down = typed.slice(0, enter).includes('\u001b[B');
+      const line = typed.slice(0, enter).replaceAll('\u001b[B', '').trim();
       typed = typed.slice(enter + 1);
-      if (step === 'menu') {
+      if (dump) appendFileSync(dump + '.keys', JSON.stringify({ step, down, line }) + '\n');
+      if (step === 'menu' && down) {
+        step = 'cloud';
+        process.stdout.write(' Select Google Cloud sign-in method:\n > 1. Continue with Google Cloud\n 2. Use advanced SSO config\n');
+      } else if (step === 'menu') {
         step = 'code';
-        process.stdout.write(` Signing in...Your browser should open automatically. If not:\n\n ${url}\n\n If you aren't automatically redirected, paste the authorization code below:\n\n authorization code...\n`);
+        codeAsked();
+      } else if (step === 'cloud') {
+        step = 'gcp-code';
+        codeAsked();
       } else if (step === 'code' && line !== 'bad') {
-        const at = join(process.env.HOME, '.gemini', 'antigravity-cli');
-        mkdirSync(at, { recursive: true });
-        writeFileSync(join(at, 'antigravity-oauth-token'), JSON.stringify({ token: { access_token: `ya29.${line}`, token_type: 'Bearer' }, auth_method: 'oauth', id_token_email: 'someone@gmail.com' }));
+        token({ token: { access_token: `ya29.${line}`, token_type: 'Bearer' }, auth_method: 'oauth', id_token_email: 'someone@gmail.com' });
         step = 'in';
         process.stdout.write('\u001b[2J Welcome to Antigravity CLI!\n');
+      } else if (step === 'gcp-code' && line !== 'bad') {
+        access = `ya29.${line}`;
+        token({ token: { access_token: access, token_type: 'Bearer', refresh_token: 'refresh' }, auth_method: 'gcp', id_token_email: 'someone@company.com' });
+        process.stdout.write(' Fetching licenses...\n');
+        // (as a Google Cloud account that may not list licences: said, and gone on)
+        if (!process.env.FAKE_AGY_LICENSES) process.stdout.write(' Could not fetch licenses: Permission denied (403)\n');
+        if (process.env.FAKE_AGY_LICENSES) {
+          step = 'license';
+          process.stdout.write(' Select a license:\n > Gemini Enterprise Ultra (company-project)\n\n Can\'t find your subscription?\n');
+        } else {
+          step = 'billing';
+          process.stdout.write(' How do you want to pay?\n > 1. Subscriptions\n 2. Pay As You Go\n   Pay only for the tokens you use\n');
+        }
+      } else if (step === 'license' && process.env.FAKE_AGY_AUTH_ERROR) {
+        process.stdout.write(' [Auth Error] Failed to select license: 403 PERMISSION_DENIED\n');
+      } else if (step === 'license') {
+        signedIn({ project_id: 'company-project', region: 'us-central1', user_tier: 'gcp-ge-ultra-tier', tier_display_name: 'Gemini Enterprise Ultra' });
+      } else if (step === 'billing' && down) {
+        step = 'project';
+        process.stdout.write(' Provide Google Cloud project: \n');
+      } else if (step === 'project' && line === 'bad-project') {
+        process.stdout.write(' Permission denied on project bad-project\n');
+      } else if (step === 'project') {
+        signedIn({ project_id: line, region: 'global' });
       }
     }
   });
@@ -108,6 +191,17 @@ const models = process.env.FAKE_AGY_SUBSCRIPTION
       ],
     }
   : { currentModelId: 'gemini-3.5-flash', availableModels: [{ modelId: 'gemini-3.5-flash', name: 'Gemini 3.5 Flash' }, { modelId: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro' }] };
+// Whether this opening is one FAKE_AGY_OFFLINE answers with no models; once one is, the process offers none after.
+let offline = false;
+const opening = () => {
+  const most = Number(process.env.FAKE_AGY_OFFLINE ?? 0);
+  if (most === 0) return models;
+  const counter = dump + '.offline';
+  const seen = existsSync(counter) ? Number(readFileSync(counter, 'utf8')) : 0;
+  writeFileSync(counter, String(seen + 1));
+  offline = seen < most;
+  return offline ? null : models;
+};
 for await (const line of createInterface({ input: process.stdin })) {
   const m = JSON.parse(line);
   if (dump) appendFileSync(dump + '.rpc', line + '\n');
@@ -117,19 +211,20 @@ for await (const line of createInterface({ input: process.stdin })) {
   else if (m.method === 'session/new') {
     if (process.env.FAKE_AGY_SIGNED_OUT) { say({ id: m.id, error: { code: -32000, message: 'Authentication required' } }); continue; }
     sessionId = randomUUID();
-    writeFileSync(join(conversations, sessionId), 'conversation');
-    reply(m.id, { sessionId, models });
+    writeFileSync(join(conversations, `${sessionId}.db`), 'conversation');
+    reply(m.id, { sessionId, models: opening(), ...(process.env.FAKE_AGY_TIER ? { _meta: { antigravity: { tier: { id: process.env.FAKE_AGY_TIER, name: 'Google AI Ultra' } } } } : {}) });
   } else if (m.method === 'session/load') {
     sessionId = p.sessionId;
-    if (!existsSync(join(conversations, sessionId))) { say({ id: m.id, error: { code: -32602, message: 'conversation not found' } }); continue; }
-    update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
-    reply(m.id, { models });
+    if (existsSync(join(conversations, `${sessionId}.db`))) update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'past replay' } });
+    reply(m.id, { models: opening() });
   } else if (m.method === 'session/set_model') {
-    if (!models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: 'unknown model' } });
+    if (offline || !models.availableModels.some((x) => x.modelId === p.modelId)) say({ id: m.id, error: { code: -32602, message: `Unknown model ID: ${p.modelId}` } });
     else reply(m.id, {});
   } else if (m.method === 'session/cancel') {
     if (held) reply(held, { stopReason: 'cancelled' }); held = null;
   } else if (m.method === 'session/prompt') {
+    const dbFile = join(conversations, `${sessionId}.db`);
+    if (!existsSync(dbFile) || readFileSync(dbFile, 'utf8') === 'corrupt') { say({ id: m.id, error: { code: -32603, message: `Internal error: Failed to send user message: not_found: trajectory not found: ${sessionId}: not found` } }); continue; }
     const text = p.prompt[0].text;
     const prev = held;
     held = m.id;
@@ -138,11 +233,13 @@ for await (const line of createInterface({ input: process.stdin })) {
       update({ sessionUpdate: 'user_message_chunk', content: { type: 'text', text } });
     }
     if (text === 'expired') { say({ id: m.id, error: { code: -32603, message: 'Authentication expired. Please log back in.' } }); held = null; continue; }
+    if (text.includes('expire-mid-turn')) { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'partial ' } }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Agent execution terminated due to error.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota-said') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 56m33s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
+    if (text === 'quota-after-calls') { update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Reading it.' } }); update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } }); update({ sessionUpdate: 'tool_call', toolCallId: 'q1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } }); update({ sessionUpdate: 'tool_call_update', toolCallId: 'q1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] }); update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: '\n⚠ Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 22m58s.\n' } }); say({ id: m.id, result: { stopReason: 'end_turn' } }); held = null; continue; }
     if (text === 'quota') { say({ id: m.id, error: { code: -32603, message: 'RESOURCE_EXHAUSTED: You have exhausted your capacity on this model. Your quota will reset after 4h.' } }); held = null; continue; }
     update({ sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking' } });
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'first ' } });
-    if (text === 'hold' || text === 'hold-steer') continue;
+    if (text === 'hold' || text === 'hold-steer' || text.includes('hold-turn')) continue;
     update({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } });
     update({ sessionUpdate: 'tool_call', toolCallId: 't1', title: 'view_file', kind: 'read', status: 'in_progress', rawInput: { AbsolutePath: '/a.txt' } });
     update({ sessionUpdate: 'tool_call_update', toolCallId: 't1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'file contents' } }] });

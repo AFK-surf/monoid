@@ -22,14 +22,22 @@ import { WinInput } from "./win-input.ts";
 
 export const SCREEN_BINARY = "stillfail-screen.exe";
 
+/// Where stillfail-screen was found, by its override (STILLFAIL_SCREEN): looked for again only where it was not.
+const screenFound = new Map<string, string>();
+
 /// The release's stillfail-screen: STILLFAIL_SCREEN, beside the station's code in a release, or built in the checkout.
 export function screenBinary(env: NodeJS.ProcessEnv = process.env): string | null {
+  const key = env.STILLFAIL_SCREEN ?? "";
+  const kept = screenFound.get(key);
+  if (kept !== undefined) return kept;
   const candidates = [
     env.STILLFAIL_SCREEN,
     fileURLToPath(new URL(`./${SCREEN_BINARY}`, import.meta.url)),
     fileURLToPath(new URL(`../../native/screen/target/release/${SCREEN_BINARY}`, import.meta.url)),
   ];
-  return candidates.find((p) => p && existsSync(p)) ?? null;
+  const found = candidates.find((p) => p && existsSync(p)) ?? null; // sync: read once, before the station serves (services.ts, as it makes the desktop's screen)
+  if (found !== null) screenFound.set(key, found);
+  return found;
 }
 
 /// What `stillfail-screen status` says: the main display in pixels, and whether Windows can capture it (10 1903 on).

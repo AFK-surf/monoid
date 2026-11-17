@@ -254,6 +254,27 @@ test("an item may go to where what it needs is not (arriveStopped), and is told 
   assert.deepEqual(back.resumed, [{ module: "chats", id: "c2" }]);
 });
 
+test("back: what arrived stopped is let go by the turn as what it waits for comes, a look at the stopped heard meanwhile (the other station's requests as it comes) letting none of it go", async () => {
+  const w = world();
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [w.accounts, w.chats, w.jobs] });
+  await s.move("ws", "B", { module: "chats", item: "c2", arriveStopped: true });
+  await s.move("ws", "B", { module: "accounts", item: "grok" });
+  // (the account, coming, is here before its move back ends: the station hears from the other meanwhile)
+  const back0 = w.accounts.back.bind(w.accounts);
+  const looked: Need[][] = [];
+  w.accounts.back = async (item, from, opts) => {
+    await back0(item, from, opts);
+    looked.push(await s.settleStopped());
+  };
+  w.log.length = 0;
+  const back = await s.back("ws", "B", { module: "accounts", item: "grok", withNeeds: true });
+  assert.deepEqual(looked, [[]], "the look lets nothing of the turn's go");
+  assert.deepEqual(back.done.map((d) => `${d.module}/${d.id}`), ["chats/c2", "accounts/grok"]);
+  assert.deepEqual(back.resumed, [{ module: "chats", id: "c2" }], "the turn let it go");
+  assert.equal(w.log.filter((l) => l === "resume chats/c2").length, 1, w.log.join(" | "));
+  assert.deepEqual(s.stopped(), []);
+});
+
 test("all at once: an account that cannot be shared goes as late as it can, its chats right after it; what copies (repos) stops nothing", async () => {
   const log: string[] = [];
   const accounts = fake("accounts", [], [{ id: "X", label: "not shared", needs: [] }, { id: "Y", label: "shared", needs: [] }], log, { usable: (id) => id === "Y" });
@@ -411,4 +432,21 @@ test("an item's failure is said in the station's words: its own and the other st
   } finally {
     hearLines(null);
   }
+});
+
+test("the plan says a move would stop only what the turn stops: an item of a module that stops nothing (a routed connect, its threads routed where the chat goes) is not said to be stopped", async () => {
+  const log: string[] = [];
+  const accounts = fake("accounts", [], [{ id: "sub", label: "a subscription", needs: [] }, { id: "grok", label: "a Grok sign-in", needs: [] }], log, { usable: (x) => x === "sub" });
+  const chats = fake("chats", ["accounts"], [{ id: "c1", label: "chat one", needs: [{ module: "accounts", id: "grok" }] }], log);
+  const connects = fake("connects", ["chats"], [{ id: "slack", label: "Slack", needs: [{ module: "chats", id: "c1" }] }], log);
+  delete (connects as { stop?: unknown }).stop;
+  const s = new Scheduler({ data: mkdtempSync(join(process.env.STILLFAIL_TEST_TMP ?? tmpdir(), "move-")), modules: [accounts, chats, connects] });
+  const plan = await s.plan("ws", "B");
+  assert.deepEqual(plan.items.find((x) => x.id === "c1")!.wouldStop, [], "the chat's move stops not its connect");
+  assert.deepEqual(plan.items.find((x) => x.id === "grok")!.wouldStop, [{ module: "chats", id: "c1" }], "its login's move stops the chat");
+  // (and the turn does as the plan says: the login moved alone stops the chat, the chat moved stops nothing)
+  const out = await s.move("ws", "B", { module: "accounts", item: "grok" });
+  assert.deepEqual(out.stopped.map((x) => x.item.id), ["c1"]);
+  const chat = await s.move("ws", "B", { module: "chats", item: "c1" });
+  assert.deepEqual([chat.done.map((d) => d.id), chat.stopped], [["c1"], []]);
 });

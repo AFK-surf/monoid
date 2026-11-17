@@ -1026,6 +1026,146 @@ test("a_file_dragged_in_is_named_by_its_path_until_switched_to_a_file_which_then
   t.core.close();
 });
 
+test("files_named_by_their_paths_survive_a_restart_in_existing_and_new_chat_drafts", async () => {
+  const t = await setup();
+  const refs = [
+    { station: "ws/st", stationName: "Studio", path: "/Users/me/a.txt", dir: false, mode: "path" },
+    { station: "ws/mini", stationName: "Mini", path: "/home/me/project", dir: true, mode: "path" },
+  ];
+  for (const key of ["ws/st:k", "new:ws"]) {
+    await t.ask("add", { key, station: "ws/st", files: [
+      { id: `${key}:a`, name: "a.txt", size: 3, ref: refs[0], drive: { station: "ws/st", root: "/Users/me", path: "a.txt" } },
+      { id: `${key}:dir`, name: "project", size: 0, ref: refs[1] },
+    ] });
+  }
+  await t.ask("text", { key: "ws/st:k", text: "看看这些" });
+  await t.host.time.pass(SOON_MS + 50);
+  await t.host.settle();
+  await Effect.runPromise(t.core.inner.data.written);
+  t.core.close();
+  t.host.takeEmitted();
+  const again = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+  try {
+    for (const key of ["ws/st:k", "new:ws"]) {
+      const restored = again.inner.composers.value(key) as J;
+      assert.deepEqual(restored.files.map((f: J) => [f.name, f.size, f.ref]), [["a.txt", 3, refs[0]], ["project", 0, refs[1]]]);
+      assert.equal(restored.ready, true);
+      assert.equal(restored.uploading, false);
+      // A folder with no file source still stays a path when asked to switch.
+      again.inner.composers.mode(key, restored.files[1].id, "file");
+      const taken = again.inner.composers.take(key, "ws/st");
+      assert.equal(taken.text, `${key === "ws/st:k" ? "看看这些\n" : ""}Studio 上的文件：/Users/me/a.txt\nMini 上的文件夹：/home/me/project`);
+      assert.deepEqual([taken.attachments, taken.uploads], [[], []]);
+    }
+    await t.host.time.pass(SOON_MS + 50);
+    await t.host.settle();
+    await Effect.runPromise(again.inner.data.written);
+    again.close();
+    const cleared = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+    try {
+      for (const key of ["ws/st:k", "new:ws"]) assert.deepEqual((cleared.inner.composers.value(key) as J).files, []);
+    } finally { cleared.close(); }
+  } finally { again.close(); }
+});
+
+test("restored_paths_stay_distinct_from_old_draft_attachments_quotes_and_links_and_can_be_sent_as_files", async () => {
+  const t = await setup();
+  const key = "ws/st:k";
+  const picture = { name: "shot.png", size: 3, path: "/u/shot.png" };
+  const quote = { author: "agent", text: "那段", comment: "为什么", file: picture.name };
+  const link = { title: "Page", url: "https://example.org/page" };
+  // The old draft format remains readable alongside a path added now.
+  call(t.core, t.ui, 90, "draft.put", { key, text: "看看", quotes: [quote], files: [picture], links: [link] });
+  await t.settle();
+  const staged: string[] = [];
+  (t.core.inner.stations.requests as J).driveStage = (_addr: unknown, _root: string, path: string) => {
+    staged.push(path);
+    return Effect.succeed({ name: path, size: 3, path: `/u/${path}` });
+  };
+  for (const mode of ["path", "file"]) {
+    const name = `${mode}.txt`;
+    await t.ask("add", { key, station: "ws/st", files: [{ id: mode, name, size: 3,
+      ref: { station: "ws/st", stationName: "Studio", path: `/Users/me/${name}`, dir: false, mode },
+      drive: { root: "/Users/me", path: name },
+    }] });
+    await t.ask("mode", { key, id: mode, mode: "file" });
+    await t.ask("mode", { key, id: mode, mode: "path" });
+  }
+  assert.deepEqual(staged, ["path.txt", "file.txt"]);
+  await t.ask("add", { key, station: "ws/st", files: [{ id: "folder", name: "project", size: 0,
+    ref: { station: "ws/st", stationName: "Studio", path: "/Users/me/project", dir: true, mode: "path" },
+    drive: { root: "/Users/me", path: "project" },
+  }] });
+  await t.host.time.pass(SOON_MS + 50);
+  await t.host.settle();
+  await Effect.runPromise(t.core.inner.data.written);
+  t.core.close();
+  t.host.takeEmitted();
+  const again = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+  try {
+    const composer = again.inner.composers;
+    const files = (composer.value(key) as J).files;
+    assert.deepEqual(files.filter((f: J) => f.ref).map((f: J) => [f.name, f.ref.mode]), [["path.txt", "path"], ["file.txt", "path"], ["project", "path"]]);
+    assert.deepEqual((composer.value(key) as J).quotes[0].own.done, picture);
+    const taken = composer.take(key, "ws/st");
+    assert.equal(taken.text, "看看\nPage\nhttps://example.org/page\nStudio 上的文件：/Users/me/path.txt\nStudio 上的文件：/Users/me/file.txt\nStudio 上的文件夹：/Users/me/project");
+    assert.deepEqual([taken.attachments, taken.quotes, taken.uploads], [[picture], [quote], []]);
+    composer.restore(key, null, false);
+    const copied: J[] = [];
+    (again.inner.stations.requests as J).driveStage = (addr: J, root: string, path: string, _ctx: unknown, zip: boolean) => {
+      copied.push([String(addr), root, path, zip]);
+      return Effect.succeed({ name: "project.zip", size: 9, path: "/u/project.zip" });
+    };
+    for (const f of files.filter((f: J) => f.ref)) composer.mode(key, f.id, "file");
+    await t.host.settle();
+    const sent = composer.take(key, "ws/st");
+    assert.equal(sent.text, "看看\nPage\nhttps://example.org/page");
+    assert.deepEqual([sent.attachments.map((f: J) => f.path), sent.uploads], [[picture.path, "/u/path.txt", "/u/file.txt", "/u/project.zip"], []]);
+    assert.deepEqual(copied, [["ws/st", "/Users/me", "project", true]]);
+    assert.deepEqual(sent.quotes, [quote]);
+  } finally { again.close(); }
+});
+
+test("restored_path_sources_can_be_switched_to_files_and_follow_a_new_chats_selected_station", async () => {
+  const t = await setup();
+  for (const key of ["ws/st:k", "new:ws"]) {
+    await t.ask("add", { key, station: "ws/st", files: [{ id: key, name: "a.txt", size: 3,
+      ref: { station: "ws/mini", stationName: "Mini", path: "/home/me/a.txt", dir: false, mode: "path" },
+      drive: { station: "ws/mini", root: "/home/me", path: "a.txt" },
+    }] });
+  }
+  await t.host.time.pass(SOON_MS + 50);
+  await t.host.settle();
+  await Effect.runPromise(t.core.inner.data.written);
+  t.core.close();
+  t.host.takeEmitted();
+  const again = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+  try {
+    const read: J[] = [], sent: J[] = [];
+    const requests = again.inner.stations.requests as J;
+    requests.driveRead = (addr: J, root: string, path: string, offset: number, length: number) => {
+      read.push([String(addr), root, path, offset, length]);
+      return Effect.succeed({ type: "", total: 3, mtime: null, bytes: new Uint8Array([7, 8, 9]) });
+    };
+    requests.uploadPart = (addr: J, q: J, bytes: Uint8Array) => {
+      sent.push([String(addr), [...bytes]]);
+      return Effect.succeed({ have: bytes.length, file: { name: q.name, size: bytes.length, path: `/${addr.station}/a.txt` } });
+    };
+    for (const [key, station] of [["ws/st:k", "ws/st"], ["new:ws", "ws/other"]]) {
+      const composer = again.inner.composers;
+      const file = (composer.value(key) as J).files[0];
+      assert.ok(file, "the named path must still be in the draft");
+      composer.mode(key, file.id, "file");
+      const taken = composer.take(key, station);
+      const uploaded = await Effect.runPromise(composer.uploaded(station, taken.uploads));
+      assert.deepEqual([...taken.attachments, ...uploaded].map((f: J) => f.path), [`/${station.split("/")[1]}/a.txt`]);
+      assert.equal(taken.text, "");
+    }
+    assert.deepEqual(read, Array(2).fill(["ws/mini", "/home/me", "a.txt", 0, 3]));
+    assert.deepEqual(sent, [["ws/st", [7, 8, 9]], ["ws/other", [7, 8, 9]]]);
+  } finally { again.close(); }
+});
+
 // The app ended while a message's file went up (Android's system ends it in the background): the file's bytes were kept
 // on the device as they went, so the message goes on from them as the app starts again, not failed for a source the
 // new core never had.
@@ -1181,7 +1321,29 @@ test("a_file_ended_part_way_up_is_kept_whole_and_its_message_sent_from_it", asyn
   }
 });
 
-test("carrying_a_taken_new_chat_draft_keeps_it_empty_and_preserves_taken_for_restore", async () => {
+test("a_restore_says_whether_what_was_taken_came_back", async () => {
+  const t = await setup();
+  const restored = async (id: number, params: J) => {
+    call(t.core, t.ui, id, "composer.restore", params);
+    await t.host.settle();
+    return (answers(t.host.takeEmitted(), id)?.ok as J)?.back;
+  };
+  await t.ask("text", { key: "ws/st:k", text: "发出去" });
+  call(t.core, t.ui, 801, "composer.take", { key: "ws/st:k" });
+  await t.settle();
+  // nothing written since: back
+  assert.equal(await restored(802, { key: "ws/st:k", error: "发不出去", unlessWritten: true }), true);
+  // nothing taken: not
+  assert.equal(await restored(803, { key: "ws/st:k", error: "发不出去" }), false);
+  // taken, something written since: not, the page says why it did not go
+  call(t.core, t.ui, 804, "composer.take", { key: "ws/st:k" });
+  await t.settle();
+  await t.ask("text", { key: "ws/st:k", text: "新的" });
+  assert.equal(await restored(805, { key: "ws/st:k", error: "发不出去", unlessWritten: true }), false);
+  t.core.close();
+});
+
+test("what_a_new_chat_took_to_send_goes_with_its_draft_and_comes_back_where_the_words_are_carried", async () => {
   const t = await setup();
   await t.watch(1, "new:ws");
   await t.ask("text", { key: "new:ws", text: "立即发出去" });
@@ -1190,9 +1352,27 @@ test("carrying_a_taken_new_chat_draft_keeps_it_empty_and_preserves_taken_for_res
   await t.ask("carry", { key: "new:ws", to: "ws/st:pending" });
   await t.watch(2, "ws/st:pending");
   assert.equal(v(t.values, 1).text, "");
-  await t.ask("restore", { key: "new:ws", error: "连接失败" });
-  assert.equal(v(t.values, 1).text, "立即发出去");
-  assert.equal(v(t.values, 1).error, "连接失败");
+  assert.equal(v(t.values, 2).text, "");
+  // The message refused once the page is the chat: its words back in the chat's composer, the new chat's left empty.
+  await t.ask("restore", { key: "ws/st:pending", error: "发不出去" });
+  assert.deepEqual([v(t.values, 2).text, v(t.values, 2).error], ["立即发出去", "发不出去"]);
+  assert.equal(v(t.values, 1).text, "");
+  // Taken again; the chat not made after all: what was written meanwhile carried back to the new chat, and what was
+  // taken with it, put back there (only while nothing new is written there: here, nothing).
+  call(t.core, t.ui, 702, "composer.take", { key: "ws/st:pending" });
+  await t.settle();
+  await t.ask("carry", { key: "ws/st:pending", to: "new:ws" });
+  await t.ask("restore", { key: "new:ws", error: "连接失败", unlessWritten: true });
+  assert.deepEqual([v(t.values, 1).text, v(t.values, 1).error], ["立即发出去", "连接失败"]);
+  assert.equal(v(t.values, 2).text, "");
+  // Taken and carried there and back with something written meanwhile: not put back over it.
+  call(t.core, t.ui, 703, "composer.take", { key: "new:ws" });
+  await t.settle();
+  await t.ask("carry", { key: "new:ws", to: "ws/st:pending" });
+  await t.ask("text", { key: "ws/st:pending", text: "接着写" });
+  await t.ask("carry", { key: "ws/st:pending", to: "new:ws" });
+  await t.ask("restore", { key: "new:ws", error: "连接失败", unlessWritten: true });
+  assert.equal(v(t.values, 1).text, "接着写");
   // newChat.create works even before station overview is in the store
   call(t.core, t.ui, 702, "newChat.create", { station: "ws/unloaded" });
   await t.host.settle();

@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installLegacyAgent, legacyAgentDrain, legacyAgentStep, LEGACY_ASKED_DURING } from "../src/store/legacy-agent-build.ts";
+import { installLegacyAgent, legacyAgentDrain, legacyAgentStep, LEGACY_ASKED_DURING } from "./reference/backfill/legacy-agent-build.ts";
 
 function database() {
   const dir = mkdtempSync(join(tmpdir(),"legacy-agent-")), path = join(dir,"store.db"), db = new DatabaseSync(path);

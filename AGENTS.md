@@ -46,6 +46,11 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   Chinese (`修复：…`, `新增：…`, `改进：…`); `Changelog-parts:` where they see it (`station`, `web`, `android`,
   `desktop`, `cloud`); `Fixes: FB-<n>` a bug report it fixes. The apps' changelog and each stable release's notes
   are written from these alone (`scripts/changelog.ts`); a change with nothing for people writes none.
+- A change to what is not yet everyone's (`client/core-ts/src/features.ts`) says so in that line: one people on stable
+  cannot have (a `beta` feature, a `betaOnly` experimental one) adds `Changelog-channel: beta`, kept out of the stable
+  release's notes; one of an experimental feature names where it is turned on (`新增：实验性功能「对话列表看板视图」中，…`).
+  The change that opens it to stable writes its line for stable then. A line already written otherwise is said again in
+  `docs/changelog-notes.json`.
 - `sh scripts/check.sh full origin/main..HEAD` checks what the range changed (the git hooks run its quick part);
   `STILLFAIL_CHECK_PART` narrows it. Run the part you changed before a PR; the whole of it is CI's.
 - A fix that cannot wait a day for the next stable release (a crash, data lost, people locked out, a release that does

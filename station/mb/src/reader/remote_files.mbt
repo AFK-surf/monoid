@@ -8,6 +8,14 @@ suberror FsError {
 }
 
 ///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+impl Show for FsError with output(self, logger) {
+  match self {
+    FsError(m) => logger.write_string(m)
+  }
+}
+
+///|
 fn FsError::of(e : Error) -> String {
   match e {
     FsError(m) => m
@@ -39,35 +47,20 @@ fn rhash(v : Json) -> String {
 }
 
 ///|
-fn rjoin(parts : Array[String]) -> String {
-  let out = StringBuilder::new()
-  for i, p in parts {
-    if p == "" {
-      continue
-    }
-    if out.to_string() != "" && !out.to_string().has_suffix("/") {
-      out.write_char('/')
-    }
-    out.write_string(p)
-  }
-  out.to_string()
+/// Node's path.join on this station's system (`--sep`): what is told Node of a path (`writing`, `wrote`, the records'
+/// paths it waits on and keeps) is the path its own join makes, so on Windows `\`, never a `/` of this program's.
+fn Actors::rjoin(self : Actors, parts : Array[String]) -> String {
+  @nodepath.join(self.sep, parts)
 }
 
 ///|
-fn rdirname(path : String) -> String {
-  match path.rev_find("/") {
-    Some(0) => "/"
-    Some(i) => path.view(end_offset=i).to_string()
-    None => "."
-  }
+fn Actors::rdirname(self : Actors, path : String) -> String {
+  @nodepath.dirname(self.sep, path)
 }
 
 ///|
-fn rbasename(path : String) -> String {
-  match path.rev_find("/") {
-    Some(i) => path.view(start_offset=i + 1).to_string()
-    None => path
-  }
+fn Actors::rbasename(self : Actors, path : String) -> String {
+  @nodepath.basename(self.sep, path)
 }
 
 ///|
@@ -184,7 +177,7 @@ async fn[X] Actors::in_turn(self : Actors, path : String, work : async () -> X r
 ///|
 /// `json` written whole or not at all: a private temporary file, synced, renamed over (remote.ts `writeWhole`).
 async fn Actors::write_whole(self : Actors, path : String, json : String) -> Unit raise {
-  let temp = with_extension(path, "\{self.random_hex(8)}.tmp")
+  let temp = self.with_extension(path, "\{self.random_hex(8)}.tmp")
   ignore(self.fs("fs.put", { "path": jstr(temp), "offset": jnum(0), "exclusive": jbool(true), "truncate": jbool(true), "sync": jbool(true), "mode": jnum(0o600.to_double()) }, bytes=@utf8.encode(json)))
   self.rename(temp, path) catch {
     e => {
@@ -196,13 +189,8 @@ async fn Actors::write_whole(self : Actors, path : String, json : String) -> Uni
 
 ///|
 /// Path::with_extension: the file name's extension replaced (or added).
-fn with_extension(path : String, ext : String) -> String {
-  let name = rbasename(path)
-  let stem = match name.rev_find(".") {
-    Some(i) if i > 0 => name.view(end_offset=i).to_string()
-    _ => name
-  }
-  rjoin([rdirname(path), "\{stem}.\{ext}"])
+fn Actors::with_extension(self : Actors, path : String, ext : String) -> String {
+  @nodepath.with_extension(self.sep, path, ext)
 }
 
 ///|
@@ -272,15 +260,16 @@ async fn Actors::update_json(self : Actors, path : String, edit : (Json) -> Json
 }
 
 ///|
-/// Path::components as a transfer takes them (remote.ts `filePath`): relative, no `.` first, no `..`, nothing through
-/// a link; its folders made with `create`.
+/// Path::components as a transfer takes them (remote.ts `filePath`): relative as the station's system has it
+/// (ops/paths.ts `relativeParts`: on Windows `\` separates too, and a drive, a share or a stream is not relative), no
+/// `.` first, no `..`, nothing through a link; its folders made with `create`.
 async fn Actors::file_path(self : Actors, root : String, relative : String, create : Bool) -> String raise {
   match self.lstat(root) {
     Some(st) if kind_of_stat(st) == "link" => raise FsError("transfer root is a symbolic link")
     Some(_) => ()
     None => raise FsError("ENOENT: no such file or directory, lstat '\{root}'")
   }
-  guard relative_parts(relative) is Some(given) else { raise FsError("file path must be relative, without . or ..") }
+  guard @nodepath.relative_parts(self.sep, relative) is Some(given) else { raise FsError("file path must be relative, without . or ..") }
   let parts : Array[String] = []
   let mut bad = false
   for i, part in given {
@@ -300,27 +289,13 @@ async fn Actors::file_path(self : Actors, root : String, relative : String, crea
   }
   let mut out = root
   for part in parts {
-    out = rjoin([out, part])
+    out = self.rjoin([out, part])
     if self.lstat(out) is Some(st) && kind_of_stat(st) == "link" {
       raise FsError("file path contains a symbolic link")
     }
   }
   if create {
-    self.mkdirs(rdirname(out))
+    self.mkdirs(self.rdirname(out))
   }
   out
-}
-
-///|
-/// ops/paths.ts `relativeParts` on a POSIX station: the parts of a relative path (None for an absolute one, or one with
-/// `..`).
-fn relative_parts(path : String) -> Array[String]? {
-  if path == "" || path.has_prefix("/") {
-    return None
-  }
-  let parts = path.split("/").map(p => p.to_string()).collect()
-  if parts.iter().any(p => p == "..") {
-    return None
-  }
-  Some(parts)
 }

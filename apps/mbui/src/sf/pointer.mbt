@@ -385,11 +385,12 @@ fn pointer_rgba(shape : PointerShape, px : Int) -> FixedArray[Byte] {
 }
 
 ///|
-/// The image (its key for Ctx::image) of the pointer whose shape the station names `shape` (a CSS cursor's name; the
-/// arrow for one it has none of its own for), `pointer_size` square, its hot spot `pointer_hotspot(shape)` in from the
-/// top left, rasterised at the screen's pixels once.
-pub fn pointer_image(c : @ui.Ctx, shape? : String = "default") -> String {
-  let (key, png) = pointer_png(c, shape~)
+/// The image (its key for a node's picture, View::image) of the pointer whose shape the station names `shape` (a CSS
+/// cursor's name; the arrow for one it has none of its own for), `pointer_size` square, its hot spot
+/// `pointer_hotspot(shape)` in from the top left, rasterised at `scale` pixels to a point (the window's:
+/// View::pixel_scale) once.
+pub fn pointer_image_at(scale : Double, shape? : String = "default") -> String {
+  let (key, png) = pointer_png_at(scale, shape~)
   if !made.contains(key) {
     made[key] = true
     @ui.add_image(key, png())
@@ -398,10 +399,11 @@ pub fn pointer_image(c : @ui.Ctx, shape? : String = "default") -> String {
 }
 
 ///|
-/// The pointer's picture as pointer_image has it, for a host that draws it itself (a remote screen's pointer on its
+/// The pointer's picture as pointer_image_at has it, for a host that draws it itself (a remote screen's pointer on its
 /// system video layer: @ui.Stream::pointer_image): its key, and its PNG (made as it is asked for, once).
-pub fn pointer_png(c : @ui.Ctx, shape? : String = "default") -> (String, () -> Bytes) {
-  let px = px_of(c, pointer_size)
+pub fn pointer_png_at(scale : Double, shape? : String = "default") -> (String, () -> Bytes) {
+  let p = (pointer_size * scale).ceil().to_int()
+  let px = if p < 1 { 1 } else { p }
   let s = pointer_shape_of(shape)
   let key = "mem:sf/pointer/\{pointer_name(s)}/\{px}"
   (key, fn() {
@@ -417,7 +419,7 @@ pub fn pointer_png(c : @ui.Ctx, shape? : String = "default") -> (String, () -> B
 }
 
 ///|
-/// The pointers' PNGs made, by their keys (pointer_png).
+/// The pointers' PNGs made, by their keys (pointer_png_at).
 // kept across runs: each a function of its key alone
 let pointer_pngs : Map[String, Bytes] = Map([])
 

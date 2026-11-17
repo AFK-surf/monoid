@@ -227,27 +227,60 @@ impl Write for Conn {
     }
 }
 
+pub type Proc = Child;
+
+/// The runner's side of a pseudo-terminal, kept to resize it.
+pub struct PtyMaster(File);
+
+impl PtyMaster {
+    /// Tells the terminal's program its terminal is now `cols` × `rows` (it is sent SIGWINCH).
+    pub fn resize(&self, cols: u16, rows: u16) -> io::Result<()> {
+        use std::os::fd::AsRawFd;
+        let size = winsize(cols, rows);
+        // SAFETY: TIOCSWINSZ on the terminal's side we hold, with a winsize that lives across the call.
+        if unsafe { libc::ioctl(self.0.as_raw_fd(), libc::TIOCSWINSZ as _, &size) } != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
+    }
+
+    pub fn close_on_exit(&self) {}
+}
+
 /// The agent: its pid, which is also its process group.
 pub struct Agent {
     pid: i32,
 }
 
 /// Starts the agent in a process group of its own.
-pub fn spawn(program: &str, args: &[String], cwd: Option<&Path>) -> io::Result<(Child, Agent)> {
+pub fn spawn(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+) -> io::Result<(Proc, Agent, Option<Box<dyn Write + Send>>, Box<dyn Read + Send>, Box<dyn Read + Send>)> {
     let mut command = Command::new(program);
     command.args(args).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).process_group(0);
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
-    let child = command.spawn()?;
+    let mut child = command.spawn()?;
     let pid = child.id() as i32;
-    Ok((child, Agent { pid }))
+    let stdin = child.stdin.take().map(|s| Box::new(s) as Box<dyn Write + Send>);
+    let stdout = Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>;
+    let stderr = Box::new(child.stderr.take().unwrap()) as Box<dyn Read + Send>;
+    Ok((child, Agent { pid }, stdin, stdout, stderr))
 }
 
 /// Starts a terminal's program on a pseudo-terminal of `cols` × `rows`, the leader of a session of its own (which is
 /// its process group, as `spawn`'s is) with the terminal as its controlling one: its stdin, stdout and stderr all the
-/// terminal. The terminal's other side (what it writes, and where its input goes) is the File returned.
-pub fn spawn_pty(program: &str, args: &[String], cwd: Option<&Path>, cols: u16, rows: u16) -> io::Result<(Child, Agent, File)> {
+/// terminal.
+pub fn spawn_pty(
+    program: &str,
+    args: &[String],
+    cwd: Option<&Path>,
+    cols: u16,
+    rows: u16,
+) -> io::Result<(Proc, Agent, Box<dyn Write + Send>, Box<dyn Read + Send>, PtyMaster)> {
     use std::os::fd::{FromRawFd, OwnedFd};
     let (mut master, mut slave) = (-1, -1);
     let mut size = winsize(cols, rows);
@@ -283,22 +316,28 @@ pub fn spawn_pty(program: &str, args: &[String], cwd: Option<&Path>, cols: u16, 
     // (the command, and the slave's copies in it, go once it has started: only the program holds that side then)
     let child = command.spawn()?;
     let pid = child.id() as i32;
-    Ok((child, Agent { pid }, File::from(master)))
+    let master = File::from(master);
+    let writer = match master.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            let agent = Agent { pid };
+            agent.abandon();
+            return Err(e);
+        }
+    };
+    let reader = match master.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            let agent = Agent { pid };
+            agent.abandon();
+            return Err(e);
+        }
+    };
+    Ok((child, Agent { pid }, Box::new(writer), Box::new(reader), PtyMaster(master)))
 }
 
 fn winsize(cols: u16, rows: u16) -> libc::winsize {
     libc::winsize { ws_row: rows.max(1), ws_col: cols.max(1), ws_xpixel: 0, ws_ypixel: 0 }
-}
-
-/// Tells the terminal's program its terminal is now `cols` × `rows` (it is sent SIGWINCH).
-pub fn resize_pty(master: &File, cols: u16, rows: u16) -> io::Result<()> {
-    use std::os::fd::AsRawFd;
-    let size = winsize(cols, rows);
-    // SAFETY: TIOCSWINSZ on the terminal's side we hold, with a winsize that lives across the call.
-    if unsafe { libc::ioctl(master.as_raw_fd(), libc::TIOCSWINSZ as _, &size) } != 0 {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
 }
 
 impl Agent {

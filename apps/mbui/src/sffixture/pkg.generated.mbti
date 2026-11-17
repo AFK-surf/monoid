@@ -134,6 +134,8 @@ pub fn fix_every_transfer(String, String, String) -> Unit
 
 pub fn fix_ext(String) -> String
 
+pub let fix_failed_again_ms : Double
+
 pub let fix_fetches : Array[(String, Json)]
 
 pub fn fix_fill_prefs_into(Map[String, Json]) -> Unit
@@ -376,7 +378,7 @@ pub fn fixture_named(String, Json?, (Result[(Json, Bytes), Json]) -> Unit) -> Un
 
 pub fn fixture_new_call(Fixture, String, Json) -> Result[Json, Json]?
 
-pub fn fixture_new_topic(Fixture, String) -> Json?
+pub fn fixture_new_topic(Fixture, String, scope? : String) -> Json?
 
 pub fn fixture_outline(Fixture, Map[String, @json.Json]) -> @json.Json?
 

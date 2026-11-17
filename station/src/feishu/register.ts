@@ -4,14 +4,15 @@
 // The station keeps the device flow and the chosen connect settings until the app has been saved. A restart can then
 // resume polling or retry the save without asking Feishu to create another app.
 import { randomBytes } from "node:crypto";
-import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { gzipSync } from "node:zlib";
+import { readFile } from "node:fs/promises";
+import { promisify } from "node:util";
+import { gzip } from "node:zlib";
 import { Clock, Effect, Exit, FiberSet, Result, Scope } from "effect";
 import type { Viewer } from "../mesh/credential.ts";
 import { liveClock } from "../ops/fibers.ts";
+import { PrivateFile } from "../ops/files.ts";
 import type { Lang } from "../ops/i18n.ts";
-import { readJsonFile } from "../ops/json-file.ts";
+import { InvalidJsonFile } from "../ops/json-file.ts";
 import { log } from "../ops/log.ts";
 import { type Domain, accountsBase } from "./web.ts";
 
@@ -67,8 +68,10 @@ export const ADDONS = {
   callbacks: { items: ["card.action.trigger"] },
 };
 
+const gzipped = promisify(gzip);
+
 /// The addons as the registration's link takes them: JSON, gzipped, base64url without padding.
-export const encodeAddons = (addons: Json): string => gzipSync(Buffer.from(JSON.stringify(addons))).toString("base64url");
+export const encodeAddons = async (addons: Json): Promise<string> => (await gzipped(Buffer.from(JSON.stringify(addons)))).toString("base64url");
 
 export type RegistrationState = "waiting" | "done" | "denied" | "expired" | "failed";
 
@@ -113,7 +116,11 @@ export class Registrations {
   private run: (effect: Effect.Effect<void>) => Promise<void>;
   private clock: Clock.Clock;
   private post: Post;
-  private file: string | undefined;
+  private file: PrivateFile | undefined;
+  /// Once what the file kept is known; what it failed with when it could not be read (nothing is written over it then).
+  private readonly loading: Promise<void>;
+  private unread: Error | null = null;
+  private loaded = false;
   private create: ((r: Registration) => Promise<string>) | null = null;
   private completing = new Map<string, Promise<string>>();
   private started = false;
@@ -121,34 +128,80 @@ export class Registrations {
   constructor(options: { clock?: Clock.Clock; post?: Post; file?: string } = {}) {
     this.clock = options.clock ?? liveClock;
     this.post = options.post ?? post;
-    this.file = options.file;
+    this.file = options.file === undefined ? undefined : new PrivateFile(options.file);
     this.scope = Effect.runSync(Scope.make());
     const run = Effect.runSync(Scope.provide(FiberSet.makeRuntimePromise<never, void, never>(), this.scope));
     this.run = (effect) => run(effect.pipe(Effect.provideService(Clock.Clock, this.clock)));
-    if (this.file !== undefined) {
-      try {
-        const saved = readJsonFile(this.file);
-        if (!Array.isArray(saved)) throw new Error("invalid feishu registration store");
-        for (const r of saved as Registration[]) this.all.set(r.id, r);
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
-      }
+    this.loading = this.load();
+  }
+
+  private async load(): Promise<void> {
+    try {
+      await this.read();
+    } finally {
+      this.loaded = true;
     }
   }
 
-  private persist() {
+  private async read(): Promise<void> {
     if (this.file === undefined) return;
-    mkdirSync(dirname(this.file), { recursive: true });
-    const tmp = `${this.file}.tmp-${process.pid}`;
-    writeFileSync(tmp, `${JSON.stringify([...this.all.values()])}\n`, { mode: 0o600 });
-    renameSync(tmp, this.file);
+    let text: string;
+    try {
+      text = await readFile(this.file.path, "utf8");
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") this.unread = e as Error;
+      return;
+    }
+    let saved: unknown;
+    try {
+      saved = JSON.parse(text);
+    } catch {
+      this.unread = new InvalidJsonFile(this.file.path);
+      return;
+    }
+    if (!Array.isArray(saved)) {
+      this.unread = new Error("invalid feishu registration store");
+      return;
+    }
+    // (one begun meanwhile kept as it is)
+    for (const r of saved as Registration[]) if (!this.all.has(r.id)) this.all.set(r.id, r);
   }
 
-  /// Set once the routes are ready, then resume unfinished registrations from before a restart.
+  /// Once the registrations kept before are known (the routes resume them then: `start`).
+  ready(): Promise<void> {
+    return this.loading;
+  }
+
+  /// Written off the station's thread: what resolves once it is (all of them as they are then). Never over a file
+  /// that could not be read: what it keeps would be lost.
+  private persist(): Promise<void> {
+    if (this.file === undefined) return Promise.resolve();
+    if (!this.loaded) return this.loading.then(() => this.persist());
+    if (this.unread !== null) return Promise.reject(this.unread);
+    return this.file.write(`${JSON.stringify([...this.all.values()])}\n`);
+  }
+
+  /// Once what was changed is written down (or failed).
+  async written(): Promise<void> {
+    await this.loading;
+    await this.file?.written();
+  }
+
+  /// `persist`, no one waiting: said in the log when it did not go.
+  private persistSoon(id: string) {
+    this.persist().catch((e) => log.warn("feishu", "feishu registration not stored", { id, error: (e as Error).message }));
+  }
+
+  /// Set once the routes are ready, then resume unfinished registrations from before a restart (once they are read).
   start(create: (r: Registration) => Promise<string>) {
     this.create = create;
     if (this.started) return;
     this.started = true;
+    void this.loading.then(() => this.resume());
+  }
+
+  private resume() {
+    if (this.unread !== null) log.error("feishu", "feishu registrations not read", { error: this.unread.message });
     for (const r of this.all.values()) {
       if (r.state === "waiting" && r.deviceCode !== null) void this.run(this.ask(r, r.deviceCode, r.interval)).catch(() => {});
       else if (r.state === "done" && r.app !== null && r.context !== null) void this.run(this.autoSave(r)).catch(() => {});
@@ -191,13 +244,13 @@ export class Registrations {
     link.searchParams.set("tp", "sdk");
     link.searchParams.set("source", "still.fail");
     if (name !== null && name !== "") link.searchParams.set("name", name);
-    link.searchParams.set("addons", encodeAddons(ADDONS));
+    link.searchParams.set("addons", await encodeAddons(ADDONS));
     const now = Effect.runSync(Clock.currentTimeMillis.pipe(Effect.provideService(Clock.Clock, this.clock)));
     const expiresIn = typeof begun?.expires_in === "number" ? begun.expires_in : 600;
     const r: Registration = { id: randomBytes(6).toString("hex"), by, url: link.toString(), expiresAt: now + expiresIn * 1000, state: "waiting", error: null, domain, app: null, appId: null, deviceCode, interval: typeof begun?.interval === "number" ? begun.interval : 5, workspace, context, connectId: null };
     this.all.set(r.id, r);
     try {
-      this.persist();
+      await this.persist();
     } catch (e) {
       this.all.delete(r.id);
       throw e;
@@ -231,13 +284,10 @@ export class Registrations {
           r.state = "done";
           // Do not lose the only copy if the journal cannot be written yet. Keep retrying before attempting the save.
           for (;;) {
-            try {
-              self.persist();
-              break;
-            } catch (e) {
-              log.warn("feishu", "feishu registration not stored; retrying", { id: r.id, error: (e as Error).message });
-              yield* Effect.sleep(5000);
-            }
+            const stored = yield* Effect.result(Effect.tryPromise({ try: () => self.persist(), catch: (e) => e as Error }));
+            if (Result.isSuccess(stored)) break;
+            log.warn("feishu", "feishu registration not stored; retrying", { id: r.id, error: stored.failure.message });
+            yield* Effect.sleep(5000);
           }
           self.end(r, "done", null);
           if (r.context !== null) yield* self.autoSave(r);
@@ -246,7 +296,7 @@ export class Registrations {
         if (d?.user_info?.tenant_brand === "lark" && !switched && r.domain !== "lark") {
           switched = true;
           r.domain = "lark";
-          try { self.persist(); } catch (e) { log.warn("feishu", "feishu registration not stored", { id: r.id, error: (e as Error).message }); }
+          self.persistSoon(r.id);
           continue;
         }
         const error = typeof d?.error === "string" ? d.error : "";
@@ -254,7 +304,7 @@ export class Registrations {
         if (error === "slow_down") {
           every += 5;
           r.interval = every;
-          try { self.persist(); } catch (e) { log.warn("feishu", "feishu registration not stored", { id: r.id, error: (e as Error).message }); }
+          self.persistSoon(r.id);
         }
         else if (error === "access_denied") return self.end(r, "denied", null);
         else if (error === "expired_token") return self.end(r, "expired", null);
@@ -267,7 +317,7 @@ export class Registrations {
     r.state = state;
     r.error = error;
     if (state !== "waiting") r.deviceCode = null;
-    try { this.persist(); } catch (e) { log.warn("feishu", "feishu registration not stored", { id: r.id, error: (e as Error).message }); }
+    this.persistSoon(r.id);
     log.info("feishu", "feishu registration ended", { id: r.id, state, ...(r.app ? { app: r.app.appId } : {}) });
     this.changed();
     if (state !== "done") this.expireLater(r);
@@ -281,24 +331,28 @@ export class Registrations {
       yield* Effect.sleep(Math.max(0, r.expiresAt + 24 * 60 * 60_000 - now));
       while (self.all.get(r.id) === r && r.app === null) {
         self.all.delete(r.id);
-        try {
-          self.persist();
+        const stored = yield* Effect.result(Effect.tryPromise({ try: () => self.persist(), catch: (e) => e as Error }));
+        if (Result.isSuccess(stored)) {
           self.changed();
           return;
-        } catch (e) {
-          self.all.set(r.id, r);
-          log.warn("feishu", "feishu registration not removed", { id: r.id, error: (e as Error).message });
-          yield* Effect.sleep(60_000);
         }
+        if (!self.all.has(r.id)) self.all.set(r.id, r);
+        log.warn("feishu", "feishu registration not removed", { id: r.id, error: stored.failure.message });
+        yield* Effect.sleep(60_000);
       }
     })).catch(() => {});
   }
 
-  cancel(id: string, by: string, workspace?: string): boolean {
+  async cancel(id: string, by: string, workspace?: string): Promise<boolean> {
     const r = this.all.get(id);
     if (!r || r.by !== by || (workspace !== undefined && r.workspace !== null && r.workspace !== workspace) || r.state === "done" || r.context !== null) return false;
     this.all.delete(id);
-    try { this.persist(); } catch (e) { this.all.set(id, r); throw e; }
+    try {
+      await this.persist();
+    } catch (e) {
+      if (!this.all.has(id)) this.all.set(id, r);
+      throw e;
+    }
     this.changed();
     return true;
   }
@@ -321,7 +375,7 @@ export class Registrations {
       r.context = null;
       r.url = "";
       try {
-        this.persist();
+        await this.persist();
       } catch (e) {
         r.connectId = null;
         r.app = app;
@@ -357,5 +411,6 @@ export class Registrations {
 
   async close() {
     await Effect.runPromise(Scope.close(this.scope, Exit.void));
+    await this.written();
   }
 }

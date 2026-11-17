@@ -8,7 +8,8 @@
 /// A line to type in in `parent` (input's look: a capsule as tall as the theme's controls, `small` as high as a small
 /// panel's rows with a mouse, its ends round; 16 in, the strong grey's line, on the surface, its words the
 /// body's), editing `field`: `placeholder` while empty (`shorter` ways of saying it where it has less room), as
-/// dots where `secret`; Enter gives its words to `submitted`, once, at that key's moment; `leaves`: the keys it leaves
+/// dots where `secret`; Enter gives its words to `submitted`, once, at that key's moment (none: Enter presses the default
+/// of the layer it is in, as a dialog's field does, @view.View::default_press); `leaves`: the keys it leaves
 /// to what it offers as it is typed in; `edited`: its words as the person's edit changes them (ui's field's), never
 /// as the app puts words in it; `placeholder_by`: its placeholder as it is now, followed (in place of
 /// `placeholder`); `label`: what a screen reader calls it, where no placeholder does (it shows none). While
@@ -31,7 +32,7 @@ pub fn input_node(
   small? : Bool = false,
   solid? : Bool = false,
   leaves? : Array[Int] = [],
-  submitted? : (String) -> Unit = fn(_) {  },
+  submitted? : (String) -> Unit,
   edited? : (String) -> Unit,
   end? : (@view.View) -> Unit,
   lead? : (@view.View) -> Unit,
@@ -67,7 +68,7 @@ pub fn input_node(
       label~,
       secret~,
       leaves~,
-      submitted~,
+      submitted?,
       edited?,
       size_by=fn() { theme().t.body },
       colors_by=fn() {
@@ -157,8 +158,8 @@ fn field_frame(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(f) {
     let live = fn() { !disabled() }
-    let seen = EdgeWay::new(if @signals.untracked(disabled) { field_disabled_alpha } else { 1.0 })
-    f.reacts(disabled, fn(off) { seen.go(f, if off { field_disabled_alpha } else { 1.0 }, dur_ms) })
+    let seen = @motion.NodeWay::new(if @signals.untracked(disabled) { field_disabled_alpha } else { 1.0 })
+    f.reacts(disabled, fn(off) { seen.go_ms(f, if off { field_disabled_alpha } else { 1.0 }, dur_ms) })
     f
     .row(Is(row))
     .lines_up(Is(if row { Some(Middle) } else { None }))

@@ -39,6 +39,9 @@ fn wide_page_node(
   near_foot : (Double, () -> Bool, () -> Unit)?,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (its blocks as last read, and whether their last change put another set in their place: pg_blocks_read)
+  let was : Ref[Set[String]] = Ref(Set([]))
+  let other = Ref(false)
   let items = fn() -> Array[WideItem] {
     let f = frame()
     let out = []
@@ -50,7 +53,7 @@ fn wide_page_node(
     } else if lead() != "" {
       out.push(WideLead)
     }
-    for k in blocks() {
+    for k in pg_blocks_read(was, other, blocks()) {
       out.push(WideBlock(k))
     }
     out.push(WideFoot)
@@ -58,8 +61,20 @@ fn wide_page_node(
   }
   v.box(made_for=loc, fn(sc) {
     sc.grow(Is(1.0)) |> ignore
-    // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-    sc.scrolls_window(scroll, items, bar=@ui.tree_scroll_bar(), est=pg_block_est, at_once=true, near_foot?, fn(s, item) {
+    // (only the block coming to be first or ceasing to be so lays out its top room again, not every block as blocks() grows)
+    let is_first = sc.selected(fn() { blocks().get(0) })
+    // (a block of the page's come or gone by data makes its way, the list's (View::comes); what the frame keeps over it
+    // (a status bar's room, its head as the frame's bar names it or not) there and gone at once, as the window and the
+    // frame are no cause of a way)
+    sc.scrolls_window(
+      scroll,
+      items,
+      bar=@ui.tree_scroll_bar(),
+      est=pg_block_est,
+      comes=fn(k) { !other.val && k is WideBlock(_) },
+      goes=fn(k) { !other.val && k is WideBlock(_) },
+      near_foot?,
+      fn(s, item) {
       match item {
         // the room the frame keeps over it (a status bar's)
         WideTop => s.height(By(fn() { Some(frame().top) })) |> ignore
@@ -82,8 +97,7 @@ fn wide_page_node(
             col.box(fn(room) {
               room
               .padding(By(fn() {
-                let first = blocks().get(0) == Some(k)
-                (desk_column_in, if first { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
+                (desk_column_in, if is_first(k) { desk_first_top } else { 0.0 }, desk_column_in, 0.0)
               }))
               |> ignore
               block(room, k)
@@ -143,9 +157,15 @@ fn wide_head_node(
   .ground(By(fn() { @ui.tree_theme().color(Bg) }))
   |> ignore
   col.show(fn() { frame().back is Some(_) }, fn(line) {
-    // (as wide as its words, its line the rest: what is pressed is back's own)
-    line.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
-    desk_back_node(line, fn() { frame().back.unwrap_or("") }, on_back)
+    // (its room under it held inside it, not as its own padding: what comes and goes closes to nothing, and a box's
+    // padding is the least it is laid out, so 8 of it stayed till the way ended and went at once then: the run page's
+    // back from its models, switches_still's screen 32)
+    line.box(fn(r) {
+      // (as wide as its words, its line the rest: what is pressed is back's own)
+      r.row(Is(true)).padding(Is((0.0, 0.0, 0.0, desk_back_foot))) |> ignore
+      desk_back_node(r, fn() { frame().back.unwrap_or("") }, on_back)
+    })
+    |> ignore
   })
   col.box(made_for=loc, fn(l) {
     l.row(Is(true)).gap(Is(desk_title_gap)).lines_up(Is(Some(Middle))) |> ignore
@@ -407,20 +427,92 @@ let section_foot : Double = 28.0
 let section_note_w : Double = 624.0
 
 ///|
+/// A group's heading where only a narrow page has it (a list cut into cards under headings narrow, one card wide): narrow
+/// heading_node's, wide nothing.
+#callsite(autofill(loc))
+pub fn narrow_heading_node(parent : @view.View, title : () -> String, loc~ : SourceLoc) -> Unit {
+  if look_node(parent) is Narrow {
+    heading_node(loc~, parent, title)
+  }
+}
+
+///|
 /// A section's heading alone, a block of a page's list over the pieces of its card (card_piece_node): as section_node
 /// heads a section, narrow heading_node's, wide its title on its line, as far over the card as it stands there.
+/// `title_after`: what its title holds after its words, wide (section_node's: a count). `note`: what it holds said,
+/// under its title as section_node has it (narrow a page's note under the heading, wide under the title's words).
+/// `trailing`: how many or how much it holds, narrow at its title's line's end, wide as its note. `lead`: what stands
+/// before its title's words on their line (a kind's mark), 6 from them (heading_node's).
 #callsite(autofill(loc))
-pub fn section_heading_node(parent : @view.View, title : () -> String, loc~ : SourceLoc) -> Unit {
-  match look_node(parent) {
-    Narrow => heading_node(loc~, parent, title)
-    Wide =>
-      parent.box(made_for=loc, fn(line) {
-        let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
-        line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
-        words_node(line, title, fn() { section_title }) |> ignore
+pub fn section_heading_node(
+  parent : @view.View,
+  title : () -> String,
+  title_after? : (@view.View) -> Unit,
+  note? : () -> String,
+  trailing? : () -> String,
+  lead? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  // (`trailing`: how many, how much, narrow at its title's line's end in the meta's muted (SectionHeader's trailing),
+  // wide under its title as what it holds said)
+  let note = match (look_node(parent), trailing) {
+    (Narrow, Some(t)) => {
+      heading_node(loc~, parent, title, ends=fn(e) { words_node(e, t, fn() { heading_trailing }) |> ignore }, lead?)
+      return
+    }
+    (Wide, Some(t)) => Some(t)
+    _ => note
+  }
+  if look_node(parent) is Narrow {
+    match note {
+      None => heading_node(loc~, parent, title, lead?)
+      Some(note) =>
+        parent.box(made_for=loc, fn(h) {
+          heading_node(h, title, lead?)
+          h.show(fn() { note() != "" }, fn(n) { page_note_node(n, note) })
+        })
+        |> ignore
+    }
+    return
+  }
+  parent.box(made_for=loc, fn(line) {
+    let side = if in_pane_node(line) { panel_words - panel_card_in } else { 0.0 }
+    line.padding(Is((side, 0.0, side, title_card_wide))) |> ignore
+    // (as section_node's title line has it: what leads its words (a kind's mark), its words and what is after them in a
+    // line, across its middle)
+    if lead is Some(_) || title_after is Some(_) {
+      line.box(fn(l) {
+        l.row(Is(true)).gap(Is(section_title_after_gap)).lines_up(Is(Some(Middle))) |> ignore
+        match lead {
+          Some(make) =>
+            l.box(fn(m) {
+              m.row(Is(true)).lines_up(Is(Some(Middle))).margin(Is((0.0, 0.0, heading_lead_gap - section_title_after_gap, 0.0))) |> ignore
+              make(m)
+            })
+            |> ignore
+          None => ()
+        }
+        words_node(l, title, fn() { section_title }) |> ignore
+        match title_after {
+          Some(after) => after(l)
+          None => ()
+        }
       })
       |> ignore
-  }
+    } else {
+      words_node(line, title, fn() { section_title }) |> ignore
+    }
+    // (what it holds said: under its title, as section_node's)
+    match note {
+      Some(note) =>
+        line.show(fn() { note() != "" }, fn(n) {
+          n.padding(Is((0.0, section_note_gap, 0.0, 0.0))).max_width(Is(Some(section_note_w))) |> ignore
+          words_node(n, note, fn() { section_note }) |> ignore
+        })
+      None => ()
+    }
+  })
+  |> ignore
 }
 
 ///|
@@ -503,6 +595,7 @@ fn wide_link_row_node(
   note_look : (@ui.TextStyle) -> @ui.TextStyle,
   lead : RowLead,
   face : Bool,
+  by_side : Bool,
   lead_ink : () -> Int64,
   goes : Bool,
   ends : Bool,
@@ -510,7 +603,7 @@ fn wide_link_row_node(
   acts : Bool,
   below : ((@view.View) -> Unit)?,
   below_open : () -> Double,
-  note_cut : Bool,
+  note_cut : () -> Bool,
   title_after : ((@view.View) -> Unit)?,
   title_after_shown : () -> Bool,
   folds : (() -> Bool)?,
@@ -521,6 +614,7 @@ fn wide_link_row_node(
   title_cut : Bool,
   value_cut : Bool,
   chevron_room : Bool,
+  lines_from_lead? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -585,35 +679,38 @@ fn wide_link_row_node(
       r.clips(Is(true)) |> ignore
     }
     if goes {
-      (if reach { o } else { r }).ground(By(fn() { if lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+      hover_ground_node(if reach { o } else { r }, by=r)
       presses_node(r, press(r))
       r.says(By(fn() { Some(@view.said(Link, label=title(), expanded?=folds.map(fn(f) { f() }))) })) |> ignore
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as a list's title's line at least,
     // across its middle)
+    // (`lines_from_lead`: made at its first line's start instead, so the lines under that line start where it does)
+    let lead_line = fn(at : @view.View) {
+      at.box(fn(l) {
+        l
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .min_height(By(fn() {
+          if under() {
+            l.words_redone() |> ignore
+            Some(node_sp(l, @ui.tree_theme().leading(L6).unwrap_or(@ui.tree_theme().text_size(Ui).1)))
+          } else {
+            None
+          }
+        }))
+        |> ignore
+        match lead {
+          LeadIcon(name) => icon_node(l, name, desk_mark, By(lead_ink)) |> ignore
+          LeadLine(f) => f(l)
+          _ => ()
+        }
+      })
+      |> ignore
+    }
     match lead {
       NoLead => ()
-      LeadIcon(_) | LeadLine(_) =>
-        r.box(fn(l) {
-          l
-          .row(Is(true))
-          .lines_up(Is(Some(Middle)))
-          .min_height(By(fn() {
-            if under() {
-              l.words_redone() |> ignore
-              Some(node_sp(l, @ui.tree_theme().leading(L6).unwrap_or(@ui.tree_theme().text_size(Ui).1)))
-            } else {
-              None
-            }
-          }))
-          |> ignore
-          match lead {
-            LeadIcon(name) => icon_node(l, name, desk_mark, By(lead_ink)) |> ignore
-            LeadLine(f) => f(l)
-            _ => ()
-          }
-        })
-        |> ignore
+      LeadIcon(_) | LeadLine(_) => if !lines_from_lead { lead_line(r) }
       LeadMade(f) => r.box(fn(l) { f(l) }) |> ignore
       // (in the row's corner, out from its words to the ladder's inset from its start and top)
       LeadTile(f) =>
@@ -625,34 +722,53 @@ fn wide_link_row_node(
     }
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
+      // (`lines_from_lead`: its lead and the lines under it out to the ladder's inset from the row's side, one edge with
+      // what is below them, small blocks concentric in its corner: #6417's mark_out, the user, 2026-11-14)
+      if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+        words.margin(Is((corner_inset - side, 0.0, 0.0, 0.0))) |> ignore
+      }
       words.box(fn(first) {
         first.row(Is(true)).gap(Is(12.0)).lines_up(Is(Some(Middle))) |> ignore
-        first.box(fn(t) {
-          t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-          // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
-          // the line leaves it less: link_row's title_line; its title the same words all along)
-          t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-          t.box(fn(w) {
-            w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            styled_words(w, title, fn() {
-              if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
+        // its title (in a line of its own with its lead, 6 from it, where the lead leads its first line:
+        // `lines_from_lead`, #6417's mark from its name)
+        let title_line = fn(at : @view.View) {
+          at.box(fn(t) {
+            t.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            // (what follows its title on its line while it is said, 8 apart across their middle, the title cut short where
+            // the line leaves it less: link_row's title_line; its title the same words all along)
+            t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
+            t.box(fn(w) {
+              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              styled_words(w, title, fn() {
+                if (title_after is Some(_) && title_after_shown()) || title_cut { titled().then(cut_words) } else { titled() }
+              })
+              |> ignore
+              if acts {
+                w.ink(By(fn() { link_ink() })) |> ignore
+              }
             })
             |> ignore
-            if acts {
-              w.ink(By(fn() { link_ink() })) |> ignore
+            match title_after {
+              Some(after) =>
+                t.show(title_after_shown, fn(a) {
+                  a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
+                  after(a)
+                })
+              None => ()
             }
           })
           |> ignore
-          match title_after {
-            Some(after) =>
-              t.show(title_after_shown, fn(a) {
-                a.margin(Is((8.0, 0.0, 0.0, 0.0))) |> ignore
-                after(a)
-              })
-            None => ()
-          }
-        })
-        |> ignore
+        }
+        if lines_from_lead && lead is (LeadIcon(_) | LeadLine(_)) {
+          first.box(fn(own) {
+            own.row(Is(true)).gap(Is(lead_from_title)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            lead_line(own)
+            title_line(own)
+          })
+          |> ignore
+        } else {
+          title_line(first)
+        }
         first.show(fn() { value() != "" }, fn(said) {
           said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
           said.show(value_dot, fn(d) { status_dot_node(d) })
@@ -674,11 +790,11 @@ fn wide_link_row_node(
         } else if chevron_room {
           first.box(fn(e) { e.width(Is(Some(desk_chevron))).height(Is(Some(desk_chevron))) |> ignore }) |> ignore
         }
-        row_control_node(first, control, under, face, false)
+        row_control_node(first, control, under, by_side, false)
       })
       |> ignore
       words.show(fn() { note() != "" }, fn(n) {
-        styled_words(n, note, fn() { note_look(if note_cut { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
+        styled_words(n, note, fn() { note_look(if note_cut() { wide_list_note.then(cut_words) } else { wide_list_note }) }) |> ignore
       })
       words.show(fn() { trouble() != "" }, fn(n) { styled_words(n, trouble, fn() { desk_note_bad }) |> ignore })
       match below {
@@ -687,7 +803,7 @@ fn wide_link_row_node(
       }
     })
     |> ignore
-    row_control_node(r, control, under, face, true)
+    row_control_node(r, control, under, by_side, true)
     })
     |> ignore
   })
@@ -699,7 +815,9 @@ fn wide_link_row_node(
 /// `note` quieter under it (the theme's rows'), what `control` makes at its end across their middle, 16 apart; on a
 /// list's card (part_of) a row of it (wide_in_list: as far in as its rows' words, 10 over and under, as high as one at
 /// least, its corner concentric with the card's), its title as strong as the list's other rows' (setting_title); its
-/// words' looks `looks` where given. The control alone answers.
+/// words' looks `looks` where given; `first_line`: the control on its title's line (line_end_node's: a switch beside a
+/// title and the note under it on the first of their lines, never across their middle, the user, 2026-11-14). The
+/// control alone answers.
 #callsite(autofill(loc))
 fn wide_control_row_node(
   parent : @view.View,
@@ -708,6 +826,7 @@ fn wide_control_row_node(
   lead : ((@view.View) -> Unit)?,
   control : (@view.View) -> Unit,
   looks? : (() -> @ui.TextStyle, () -> @ui.TextStyle),
+  first_line? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -716,14 +835,18 @@ fn wide_control_row_node(
     None => (fn() { if at.list { setting_title() } else { theme().rows.title } }, fn() { theme().rows.note })
   }
   let row = fn(r : @view.View) {
-    r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(Middle))) |> ignore
+    r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(if first_line { Start } else { Middle }))) |> ignore
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
       led_title_node(words, title, title_look, lead)
       words.show(fn() { note() != "" }, fn(n) { styled_words(n, note, note_look) |> ignore })
     })
     |> ignore
-    control(r)
+    if first_line {
+      line_end_node(r, control)
+    } else {
+      control(r)
+    }
   }
   if at.list {
     parent.box(made_for=loc, fn(cell) {
@@ -781,3 +904,84 @@ fn list_row_corner(v : @view.View) -> Double {
 /// How far a pressed row's ground reaches past it over and under on a panel's card (desk_list_link's): to the card's
 /// rows' inset (corner_inset) from its edge where it is first or last, its words card_pad in.
 let link_pane_out : Double = card_pad - @ui.Space::S2_5.px() - corner_inset
+
+///|
+/// What a heading says at its line's end (SectionHeader's trailing: 13, muted, one line).
+// kept across runs: a value (no field of it changes)
+let heading_trailing : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted, wrap=false)
+
+///|
+/// What a section holds (`body`) in `parent`, laid out as a page's frame has it by its width: narrow on a card of the
+/// page's, wide as it is, on the page's ground (an old section's `Narrow => page_card`).
+#callsite(autofill(loc))
+pub fn narrow_card_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  match part_of(parent).look {
+    Narrow => page_card_node(parent, body, loc~)
+    Wide => body(parent)
+  }
+}
+
+///|
+/// A section whose title says how many it holds (`count`), in `parent`: narrow after its title, quieter (待批准 · 1);
+/// wide the accent's count beside it, as security's sec_section has it.
+#callsite(autofill(loc))
+pub fn count_section_node(
+  parent : @view.View,
+  title : () -> String,
+  count : () -> Int,
+  body : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  match part_of(parent).look {
+    Narrow => section_node(parent, fn() { title() + " · " + count().to_string() }, body, loc~)
+    Wide =>
+      section_node(parent, title, body, title_after=fn(a) {
+        a.box(fn(n) {
+          style_node(n, fn() { section_count })
+          words_node(n, fn() { count().to_string() }, fn() { section_count_words }) |> ignore
+        })
+        |> ignore
+      }, loc~)
+  }
+}
+
+///|
+/// A section's count beside its title, wide (count_section_node's): the accent's, round.
+// kept across runs: a value (no field of it changes)
+let section_count : @ui.Style = @ui.css("px=S1_5 radius=Full bg=AccentBg")
+
+///|
+// kept across runs: a value (no field of it changes)
+let section_count_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=AccentText, wrap=false)
+
+///|
+/// What a page is for, by its ⓘ at the end of its narrow title's line (`about`; a page's actions there): wide none, the
+/// page's own about (page_node's `about`) beside its title there.
+#callsite(autofill(loc))
+pub fn narrow_about_node(parent : @view.View, about : () -> String, tips : TipLayer, loc~ : SourceLoc) -> Unit {
+  if part_of(parent).look is Narrow {
+    about_mark_node(parent, about, fn() { t("web-main.about") }, tips, loc~) |> ignore
+  }
+}
+
+///|
+/// What stands on the page's ground under a section's heading (section_heading_node's), not on a card, made by `body` in
+/// `parent`: narrow as far in as the heading's words (12 in from the page's block) with 16 under it; wide flush with the
+/// heading, the section's foot (28) under it.
+#callsite(autofill(loc))
+pub fn under_heading_node(parent : @view.View, body : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  let wide = part_of(parent).look is Wide
+  parent.box(made_for=loc, fn(u) {
+    style_node(u, fn() { if wide { under_heading_wide } else { under_heading_narrow } })
+    body(u)
+  })
+  |> ignore
+}
+
+///|
+// kept across runs: a value (no field of it changes)
+let under_heading_narrow : @ui.Style = @ui.css("w=Full px=S3 pb=S4")
+
+///|
+// kept across runs: a value (no field of it changes)
+let under_heading_wide : @ui.Style = @ui.css("w=Full pb=S7")

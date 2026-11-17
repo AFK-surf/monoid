@@ -96,53 +96,84 @@ fn ScreenSess::passkey_took(self : ScreenSess) -> Unit {
 }
 
 ///|
-/// 用通行密钥登录, over the stage while a page this viewer drives asks for a passkey (on a host whose device has passkeys
-/// to ask): the site and 登录, what it is at, or why it did not sign.
-fn passkey_sign(c : @ui.Ctx, s : ScreenSess) -> Unit {
-  // an ask under way: its end taken once it came (after this frame: what the page shows changes then)
-  match s.passkey_run {
-    Some(r) if r.done() is Some(_) => c.tell("screen-passkey/" + s.view, fn() { s.passkey_took() })
-    _ => ()
+/// How often an ask for a passkey under way is looked at: the host says nothing as it ends but by a frame
+/// (@hostapi.PasskeyRun::done), so it is looked at while it is under way, a little after each look.
+let passkey_look_ms : Double = 250.0
+
+///|
+/// 用通行密钥登录, over the stage in `c` while a page this viewer drives asks for a passkey (on a host whose device has
+/// passkeys to ask): the site and 登录, what it is at, or why it did not sign. An ask under way looked at till it ends
+/// (passkey_look_ms), its end taken then.
+fn passkey_sign_node(c : @view.View, s : ScreenSess) -> Unit {
+  let looking : Ref[() -> Unit] = Ref(fn() {  })
+  fn look() -> Unit {
+    looking.val = fn() {  }
+    match s.passkey_run {
+      Some(r) =>
+        if r.done() is Some(_) {
+          s.passkey_took()
+        } else {
+          looking.val = c.at_moment(c.logic_at() + passkey_look_ms, look, later=true)
+        }
+      None => ()
+    }
   }
-  let step = s.passkey_step.get()
-  let ask = s.passkey_ask()
-  if !@hostapi.passkeys() || (ask is None && step == "") {
-    return
+
+  c.reacts(fn() { s.passkey_step.get() }, fn(step) {
+    (looking.val)()
+    looking.val = fn() {  }
+    if step == "asking" {
+      look()
+    }
+  })
+  let ask = fn() {
+    s.said.get() |> ignore
+    s.passkey_ask()
   }
-  c.box(style=drops_box, fn() {
-    c.box(style=drop_row_box, fn() {
-      c.box(style=drop_icon_box, fn() {
-        @sf.icon(c, if step == "said" { "info" } else { "key" }, size=drop_icon, color=c.color(Muted)) |> ignore
+  // (what it is about read first, so it is followed whatever the host has)
+  c.show(at_once=true, fn() { !(ask() is None && s.passkey_step.get() == "") && @hostapi.passkeys() }, fn(card) {
+    @sf.style_node(card, fn() { drops_box })
+    floats_node(card)
+    card.box(fn(row) {
+      @sf.style_node(row, fn() { drop_row_box }, in_row=true)
+      let step = fn() { s.passkey_step.get() }
+      @sf.first_line_node(row, Ui, fn(l) {
+        @sf.icon_node(l, "key", drop_icon, By(fn() { @ui.tree_theme().color(Muted) }), name_now=fn() { if step() == "said" { "info" } else { "key" } })
+        |> ignore
       })
       |> ignore
-      @sf.row_lines(c, fn() {
-        let title = match step {
-          "asking" => @sf.t("android-misc.screen.passkey.asking")
-          "said" => s.passkey_note
-          _ => @sf.t("android-misc.screen.passkey.offer")
-        }
-        c.box(style=drop_words, fn() { c.text(title, style=if step == "said" { drop_path_words } else { drop_name }) |> ignore })
-        |> ignore
-        if step == "said" {
-          screen_row_key(c, "passkey-close", "close", @sf.t("common.close"), on_press=fn() {
-            s.passkey_stop()
-          })
-        }
-      }, fn() {
-        if step == "" {
-          // the site under the words, 登录 under it (as 用 1Password 填入 says it)
-          match ask {
-            Some(p) => c.text(text(Some(p), "host"), style=drop_path_words) |> ignore
-            None => ()
+      @sf.row_lines_node(
+        row,
+        fn(first) {
+          let title = fn() {
+            match step() {
+              "asking" => @sf.t("android-misc.screen.passkey.asking")
+              "said" => s.passkey_note
+              _ => @sf.t("android-misc.screen.passkey.offer")
+            }
           }
-          c.box(style=drop_buttons, fn() {
-            soft_button(c, "passkey", @sf.t("android-misc.screen.passkey.button"), on_press=fn() { s.passkey_start() })
+          first.box(fn(w) {
+            @sf.style_node(w, fn() { drop_words }, in_row=true)
+            @sf.words_node(w, title, fn() { if step() == "said" { drop_path_words } else { drop_name } }) |> ignore
           })
           |> ignore
-        }
-      })
+          first.show(at_once=true, fn() { step() == "said" }, fn(k) { screen_row_key_node(k, "close", @sf.t("common.close"), fn() { s.passkey_stop() }) })
+        },
+        fn(under) {
+          under.show(at_once=true, fn() { step() == "" }, fn(u) {
+            // the site under the words, 登录 under it (as 用 1Password 填入 says it)
+            u.show(at_once=true, fn() { ask() is Some(_) }, fn(h) {
+              @sf.words_node(h, fn() { text(ask(), "host") }, fn() { drop_path_words }) |> ignore
+            })
+            u.box(fn(b) {
+              @sf.style_node(b, fn() { drop_buttons }, in_row=true)
+              soft_button_node(b, fn() { @sf.t("android-misc.screen.passkey.button") }, fn() { s.passkey_start() })
+            })
+            |> ignore
+          })
+        },
+      )
     })
     |> ignore
   })
-  |> ignore
 }

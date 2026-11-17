@@ -1,3 +1,4 @@
+import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // The store's rows (the Rust station's store.rs `// ── rows`), camelCase, and how they are read from and written to the database.
 // Option is `T | null`; where the Rust leaves a None Value out (EntryRow's agentIdentity, options, card) it is undefined.
 // The readers (read/store.ts) read rows with these same conversions, leaving out what is not for the pages (tokens).
@@ -38,6 +39,10 @@ export const feishuSurface = (connect: string): string => `feishu:${connect}`;
 /// Where a Comma connect's threads (its Comma Tasks) live: the connect's own.
 export const commaSurface = (connect: string): string => `comma:${connect}`;
 
+/// Where a group connect's threads (its IM server's conversations) live: the connect's own (its people's ids are the
+/// server's).
+export const groupSurface = (connect: string): string => `group:${connect}`;
+
 export type SessionScope = "thread" | "all";
 
 /// Who looks, as far as the station's workspaces go: their workspace, and whether it is the
@@ -48,11 +53,23 @@ export type InWorkspace = { workspace: string; home?: boolean };
 /// member of one workspace sees nothing of another's chats.
 export const sees = (viewer: InWorkspace, ws: string | null): boolean => ws === viewer.workspace || (ws === null && viewer.home !== false);
 
+/// The workspace a task another station sent here runs for, by its job's session key
+/// (`remote:<workspace>:<station>:<session>`: jobs/remote.ts, client/core-ts jobs.ts `remoteOwner`); null for any other
+/// key. No session here has such a key.
+export const remoteWs = (key: string): string | null => /^remote:([^:/]+):[^:/]+:.+$/.exec(key)?.[1] ?? null;
+
+/// Whether `viewer` sees what names a session not here (`sessionWs` undefined): another station's task its
+/// workspace's, whichever this station's home is; anything else the home workspace's.
+export const seesMissing = (viewer: InWorkspace, key: string): boolean => {
+  const ws = remoteWs(key);
+  return ws !== null ? ws === viewer.workspace : sees(viewer, null);
+};
+
 export type SessionRow = {
   /// The station it was handed here from (replica/handover.ts; absent: it began here, or came back to where it began).
   from?: string;
   key: string; connect: string; scope: SessionScope; title: string | null; createdBy: string | null; runtime: string;
-  profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null;
+  profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null;
   /// Whether it goes on afresh once its prompt cache is over, as chosen in its chat (null: as its station is set,
   /// `afreshWhenCold`).
   afresh: boolean | null;
@@ -75,7 +92,7 @@ export type SessionRow = {
 export type NewSession = {
   key: string; connect: string; scope?: SessionScope | null; title?: string | null; createdBy?: string | null;
   runtime: string; profile: string; profilePinned?: boolean; profiles?: string[] | null; model?: string | null; effort?: string | null;
-  fast?: boolean | null; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
+  fast?: boolean | null; speed?: ModelSpeed | null; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
   createdAt: number; lastActiveAt: number; ws?: string | null;
 };
 
@@ -105,7 +122,7 @@ export type EntryKind = "message" | "edit";
 
 export type Quote = { author: string; text: string; comment: string; ts?: string; role?: string; file?: string };
 /// `width`, `height`: a picture's or a film's size as shown; `duration` (ms) and `frames`: a film's length and how many
-/// frames its picture has (sessions/image-size.ts shownFacts), so a page says them before it reads the film.
+/// frames its picture has (sessions/image-size.ts shownFactsSoon), so a page says them before it reads the film.
 export type Attachment = { name: string; path: string; size: number; width?: number; height?: number; thumbhash?: string; duration?: number; frames?: number };
 
 /// One entry of a thread's log (as the archive files hold them, one per line).
@@ -124,7 +141,7 @@ export type EntryRow = {
 /// How a session runs, as a notice of its change says it: its runtime, model, effort, speed, account (`profile`, its
 /// `account` name; `pinned`: kept to it, else the station's pick) and most context (null: as the runtime has it).
 export type RunShown = {
-  runtime: string; model: string | null; effort: string | null; fast: boolean | null; profile: string | null; account: string | null;
+  runtime: string; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; profile: string | null; account: string | null;
   pinned: boolean; context: number | null;
 };
 
@@ -277,7 +294,9 @@ export type StoreChange =
   | { type: "sessionRemoved"; key: string; ws?: string | null }
   /// Entries were appended there (contiguous, in order), or its sessions changed (none); `closed`: the post (its n)
   /// whose card was closed or withdrawn without a message (closed_cards).
-  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number }
+  /// `answered`: a person's message handed to a session in a platform's thread that settled the conversational card
+  /// waiting there (store/card-kinds.ts; in a still.fail chat it is settled as it is written).
+  | { type: "thread"; id: number; entries: EntryRow[]; closed?: number; answered?: { n: number; author: string; ts: string } }
   /// Letters were kept in its own log of them (schema.ts LETTERS; contiguous, in order).
   | { type: "letters"; id: number; letters: EntryRow[] }
   /// It went, with every entry it had; `ws` as its session's.
@@ -428,6 +447,7 @@ export function toSession(r: Json): SessionRow {
   return {
     key: r.key, connect: r.connect, scope: r.scope === "all" ? "all" : "thread", title: r.title, createdBy: r.created_by,
     runtime: r.runtime, profile: r.profile, profilePinned, profiles: parseProfiles(r.profiles, r.profile, profilePinned), model: r.model, effort: r.effort,
+    ...(typeof r.speed === "string" ? { speed: r.speed as ModelSpeed } : {}),
     fast: r.fast === null || r.fast === undefined ? null : r.fast !== 0,
     afresh: r.afresh === null || r.afresh === undefined ? null : r.afresh !== 0, context: typeof r.context === "number" ? r.context : null, contextBefore: typeof r.context_before === "number" ? r.context_before : null,
     runtimeSessionId: r.runtime_session_id,
@@ -443,12 +463,16 @@ export type Opened = {
   link: string | null; state: string | null; createdAt: number;
   /// What the parent was called when it opened the child (kept by the child's station only; null before it).
   openerTitle: string | null;
+  /// Whether its opener leads it (chat_create `for: "me"`): its asks are its opener's to take up, not its person's.
+  /// Null on a row from before it (its opener told as a leader is, its asks its person's).
+  led: boolean | null;
 };
 
 export function toOpened(r: Json): Opened {
   return {
     childStation: r.child_station, child: r.child, parentStation: r.parent_station, parent: r.parent, key: r.key, title: r.title,
     link: r.link, state: r.state, createdAt: r.created_at, openerTitle: r.opener_title ?? null,
+    led: r.led === undefined || r.led === null ? null : Number(r.led) === 1,
   };
 }
 
@@ -651,6 +675,10 @@ export const JOBS_UP = "SELECT * FROM (SELECT * FROM jobs WHERE state = 'running
 
 /// The latest running service, or one waiting to restart, holding a port. The two state-and-port seeks do not read
 /// other services or commands (jobs.ts startId).
+/// The sessions in sight on profile ?1 not handed away, at most ?2 (by the index of those in sight).
+export const LIVE_ON_PROFILE = "SELECT key FROM sessions INDEXED BY sessions_live WHERE archived_at IS NULL AND profile = ?1 AND key NOT IN (SELECT session FROM handed_over) LIMIT ?2";
+/// Each of sessions ?1's last job made (its rowid within the session's index) and where it stands: one statement.
+export const LAST_JOBS_OF = "SELECT session_key AS k, rowid AS r, ended_at AS e, state FROM jobs WHERE rowid IN (SELECT MAX(rowid) FROM jobs INDEXED BY jobs_by_session WHERE session_key IN (SELECT value FROM json_each(?1)) GROUP BY session_key)";
 export const JOB_AT_PORT = `SELECT id, name, port FROM (
   SELECT id, name, port, started_at FROM jobs INDEXED BY jobs_up WHERE state = 'running' AND port = ?1
   UNION ALL
@@ -717,10 +745,6 @@ export const LEGACY_MESSAGES_BEFORE = `SELECT * FROM merged WHERE thread = ?1 AN
 /// The entries belonging to a page of messages, without reading the other entries between them.
 export const MESSAGE_PAGE_ENTRIES = `SELECT e.* FROM json_each(?2) j
   CROSS JOIN entries e ON e.thread=?1 AND e.n=CAST(j.value AS INTEGER) ORDER BY e.n`;
-
-/// The usage page's calls are kept added up by this much time (schema.ts USAGE_QUARTERS): a quarter of an hour, which
-/// every time zone's offset is a whole number of.
-export const QUARTER_MS = 900_000;
 
 /// A context falling under half of what the call before sent (at least this much), on the same account and model, was
 /// compacted (sessions/pool.ts; what schema.ts USAGE_COMPACTIONS keeps).

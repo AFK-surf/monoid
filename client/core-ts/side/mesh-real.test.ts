@@ -418,18 +418,22 @@ async function relay(): Promise<[string, ChildProcess]> {
 /// The first `quick` relay connections through it (asking to upgrade to the relay's protocol) are not held.
 async function slowed(url: string, delay: number, quick = 0, bytesPerSecond = 0): Promise<string> {
   const upstream = new URL(url);
-  type Way = { held: number | null };
+  type Way = { held: number | null; quick: boolean };
   const pump = (from: import("node:net").Socket, to: import("node:net").Socket, way: Way) => {
     // With a speed, each way a line of its own: a chunk goes on once the ones before it have, at that speed.
     let free = 0;
     const pass = (f: () => void, size: number) => {
-      if (bytesPerSecond === 0 || way.held === 0) return way.held === 0 ? f() : setTimeout(f, way.held!);
+      if (way.quick) return f();
+      if (bytesPerSecond === 0) return way.held === 0 ? f() : setTimeout(f, way.held!);
       const now = Date.now();
       free = Math.max(free, now + way.held!) + (size / bytesPerSecond) * 1000;
       setTimeout(f, free - now);
     };
     from.on("data", (chunk: Buffer) => {
-      if (way.held === null) way.held = quick > 0 && /^upgrade:/im.test(chunk.toString("latin1")) && quick-- > 0 ? 0 : delay;
+      if (way.held === null) {
+        way.quick = quick > 0 && /^upgrade:/im.test(chunk.toString("latin1")) && quick-- > 0;
+        way.held = way.quick ? 0 : delay;
+      }
       pass(() => to.write(chunk), chunk.length);
     });
     from.on("close", () => (way.held === null ? to.destroy() : pass(() => to.destroy(), 0)));
@@ -437,7 +441,7 @@ async function slowed(url: string, delay: number, quick = 0, bytesPerSecond = 0)
   const server = tcpServer((down) => {
     const up = tcpConnect(Number(upstream.port), upstream.hostname);
     // The client speaks first: what it says first decides.
-    const way: Way = { held: null };
+    const way: Way = { held: null, quick: false };
     pump(down, up, way);
     pump(up, down, way);
     up.on("error", () => down.destroy());
@@ -606,7 +610,9 @@ measured("a_link_leaves_a_relay_found_slow_for_one_that_brings_replies_sooner", 
   // Its address, as the wire asks: the mesh keeps a link by address (a station in two workspaces has one in each), and
   // the link steered here must be the one the large replies come on (by its id alone, another: 2026-10-16).
   const key = `w/${id}`;
-  const slowB = await slowed(b, 40, 0, 256 * 1024);
+  // (b's round trip is localhost's, its speed 256 KB/s; a's 200 ms, uncapped. With 40 ms on b too, a busy runner's
+  // 40 ms added to both left 121 ms against 202 ms, short of MOVE_GAIN's 30% with the jitter: side 43948376815.)
+  const slowB = await slowed(b, 0, 0, 256 * 1024);
   const e = env(new FakeHost(), new Wakes(), quickClock(new Map()));
   const mesh = await e.runner.run(Mesh.make(e, [a]));
   const runner = e.runner;

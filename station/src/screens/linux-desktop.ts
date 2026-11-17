@@ -53,7 +53,7 @@ export class LinuxDesktop implements ScreenSource {
         await this.#x11.refresh(force);
         // CentOS's standard repositories do not provide both X11 commands. Its installed desktop's GStreamer and
         // XTest libraries can capture and control the same session without adding system repositories.
-        next = this.#x11.access().reason === "linuxTools" && !this.#tools.canPrepare(env) ? this.#fallback : this.#x11;
+        next = this.#x11.access().reason === "linuxTools" && !(await this.#tools.canPrepare(env)) ? this.#fallback : this.#x11;
       }
       if (next !== this.#current) { this.#current = next; this.#o.changed(); }
       if (next !== this.#x11) await next.refresh(force);

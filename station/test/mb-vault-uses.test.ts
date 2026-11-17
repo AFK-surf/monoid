@@ -1,5 +1,5 @@
 // The MoonBit program in the vault use reader's place (station/mb, src/vaultuses; vault/use-reader-mb.ts) prepares and
-// reads as use-index-worker.ts does: step by step the same answers and the same lookups (exceptional bodies read as
+// reads as the use index worker did (test/workers/use-index-worker.ts): step by step the same answers and the same lookups (exceptional bodies read as
 // JavaScript reads them: duplicate keys, lone surrogates, NULs in keys, odd times), the pending lookup and the
 // recovery lookup alike, and the same pages through `UseIndex`, for identities with lone surrogates too.
 import assert from "node:assert/strict";

@@ -229,3 +229,58 @@ test "a panel whose body says its search is at hand: that search has the keys as
     assert_eq(t.focus_said(), was, msg="\{at}: given back")
   }
 }
+
+///|
+/// A panel of nodes that goes in steps (panel_nodes' `steps`) opened by nothing in `t`: its first step a box of body_ink
+/// and 下一步, which goes a step in (panel_go_nodes) to a box of foot_ink titled 节点的第二步; how many times that step was
+/// let go of in `left`.
+fn steps_of_nodes(left : Ref[Int]) -> Unit {
+  @sf.panel_nodes("第一步", from=Unanchored, steps=true, fn(v, _) {
+    ink_node(v, 40.0, 36.0, body_ink)
+    @sf.button_node(v, fn() { "下一步" }, fn() {
+      @sf.panel_go_nodes("节点的第二步", left=fn() { left.val += 1 }, fn(w, _) { ink_node(w, 60.0, 36.0, foot_ink) })
+    })
+    |> ignore
+  })
+}
+
+///|
+test "大屏: a panel of nodes in steps: a step in slides in within the same dialog, its back key and Escape back a step, the first as it was left; Escape from the first closes it" {
+  let t = menu_tester(1280.0, 800.0, 0)
+  let left = Ref(0)
+  steps_of_nodes(left)
+  t.run_for(@ui.move_most_ms)
+  let dialog = t.get(Dialog).id
+  assert_true(t.query(Button, label="返回") is None, msg="no back key on the first step")
+  t.tap_text("下一步")
+  t.run_for(@ui.move_most_ms / 2.0)
+  assert_eq(t.semantics().filter(fn(n) { n.role == Dialog }).length(), 1, msg="one dialog, half way")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.get(Dialog).id, dialog)
+  assert_true(t.find("节点的第二步") is Some(_) && t.find("下一步") is None)
+  t.click(Button, label="返回")
+  t.run_for(@ui.move_most_ms)
+  assert_eq((t.get(Dialog).id, t.find("下一步") is Some(_), t.find("节点的第二步") is None, left.val), (dialog, true, true, 1))
+  t.tap_text("下一步")
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_eq((t.find("下一步") is Some(_), left.val, @sf.presenting()), (true, 2, true))
+  t.key(@ui.key_escape)
+  t.run_for(@kit.pop_out_ms)
+  assert_false(@sf.presenting())
+}
+
+///|
+test "小屏: a panel of nodes in steps: a step in is a page of the same sheet, back a page back" {
+  let t = phone_tester()
+  let left = Ref(0)
+  steps_of_nodes(left)
+  t.run_for(sheet_way_ms(t))
+  t.tap_text("下一步")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("节点的第二步") is Some(_) && t.query(Button, label="返回") is Some(_), msg=t.semantics_dump())
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq((t.find("下一步") is Some(_), left.val, @sf.presenting()), (true, 1, true))
+}

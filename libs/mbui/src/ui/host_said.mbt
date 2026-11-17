@@ -5,7 +5,8 @@
 // solid glass, what decodes a stream, the window's buttons in the top row, the window maximized and how the pointer
 // stands on its maximize button the app draws): each asked of the host as each frame begins
 // (host_settings_arrive), and as it is asked between frames. What the frame is drawn on (the window's size, its pixels,
-// what the host measures words in, where the old views are laid out): as frame_drawn begins it (frame_settings_arrive).
+// where the old views are laid out): as frame_drawn begins it (frame_settings_arrive); what the host measures words in,
+// before the window's tree is brought (on_frame's text_arrive).
 
 ///|
 /// A setting of the host's: its signal (as the frame has it), how it is asked of the host, what else is told as it
@@ -88,9 +89,22 @@ let reads_out_said : HostSaid[Bool] = host_said(false, h_a11y_on)
 let motion_reduced_said : HostSaid[Bool] = host_said(false, motion_reduced_asked)
 
 ///|
-/// Whether glass is drawn solid as the system says (Ctx::glass_solid).
+/// Whether glass is drawn solid as the system says (Ctx::glass_solid): less transparency asked, or the device slowed
+/// for its heat (h_glass_solid).
 // kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
-let glass_solid_said : HostSaid[Bool] = host_said(false, h_reduce_transparency)
+let glass_solid_said : HostSaid[Bool] = host_said(false, h_glass_solid)
+
+///|
+/// Whether the system asks for more contrast (more_contrast).
+// kept across runs: put back by each Tester (host_settings_arrive as its first frame begins)
+let contrast_said : HostSaid[Bool] = host_said(false, h_increase_contrast)
+
+///|
+/// Whether the system asks for more contrast now (macOS's and iOS's Increase Contrast, Windows' high contrast),
+/// followed: what reads it (an app's theme) is made again as it changes.
+pub fn more_contrast() -> Bool {
+  contrast_said.now()
+}
 
 ///|
 /// Whether the host decodes H.264 (h264_here), drives its decoder from here (stream_feeds), has a video layer
@@ -118,6 +132,7 @@ fn host_settings_arrive() -> Unit {
   reads_out_said.arrive()
   motion_reduced_said.arrive()
   glass_solid_said.arrive()
+  contrast_said.arrive()
   h264_said.arrive()
   feeds_said.arrive()
   layers_said.arrive()
@@ -134,23 +149,22 @@ fn reads_out() -> Bool {
 /// The window's size the frame is built and laid out in (frame_body), as frame_drawn begins it: what is built for it
 /// (the frame's root) built again as it changes.
 // kept across runs: set as each frame begins
-let window_size : @signals.Signal[(Double, Double)] = @signals.signal((0.0, 0.0), same=fn(a, b) { a == b })
+let window_size : Ref[@signals.Signal[(Double, Double)]] = Ref(@signals.signal((0.0, 0.0), same=fn(a, b) { a == b }))
 
 ///|
 /// The grid of the device's pixels the frame is laid out on (its scale; whether the host sets things on whole pixels:
 /// whole_px_layout), as frame_drawn begins it: what is built for it (the frame's root: Ctx::scale, Ctx::whole_px) built
 /// again as it changes; what was laid out on another (a node, a row kept as laid out) laid out again.
 // kept across runs: set as each frame begins
-let pixel_grid : @signals.Signal[(Double, Bool)] = @signals.signal((0.0, false), same=fn(a, b) { a == b })
+let pixel_grid : Ref[@signals.Signal[(Double, Bool)]] = Ref(@signals.signal((0.0, false), same=fn(a, b) { a == b }))
 
 ///|
-/// What the frame is drawn on, as it begins (frame_drawn): the window `w` × `h` at `scale`; what the host measures words
-/// in (its glyphs' generation: text_arrive); where the old views are laid out (old_laid_arrive).
+/// What the frame is drawn on, as it begins (frame_drawn): the window `w` × `h` at `scale`; where the old views are laid
+/// out (old_laid_arrive). What the host measures words in (its glyphs' generation: text_arrive) was taken as the frame
+/// began, before the window's tree was brought (on_frame), and asked of the host that once.
 fn frame_settings_arrive(w : Double, h : Double, scale : Double) -> Unit {
-  window_size.set((w, h))
-  pixel_grid.set((scale, whole_px_layout()))
-  atlas_said.val = Some(h_atlas_generation())
-  text_arrive()
+  window_size.val.set((w, h))
+  pixel_grid.val.set((scale, whole_px_layout()))
   old_laid_arrive()
 }
 
@@ -158,7 +172,7 @@ fn frame_settings_arrive(w : Double, h : Double, scale : Double) -> Unit {
 /// The window's frame built and laid out (frame_body) in the window and on the pixels it is drawn on as it began, read
 /// so: built again as the window's size or its pixels change.
 fn frame_body_drawn(c : Ctx, t : Double, tell? : Bool = true) -> Double {
-  let (w, h) = window_size.get()
-  let (scale, _) = pixel_grid.get()
+  let (w, h) = window_size.val.get()
+  let (scale, _) = pixel_grid.val.get()
   frame_body(c, w, h, scale, t, tell~)
 }

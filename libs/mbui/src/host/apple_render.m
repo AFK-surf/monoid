@@ -4,8 +4,11 @@
 #include "corner_sl.h"
 #include "contained.h"
 #include "bands.h"
+#include "groups.h"
 #import <ImageIO/ImageIO.h>
 #import <CoreGraphics/CoreGraphics.h>
+#include <os/lock.h>
+#include <stdatomic.h>
 
 // the numbers of an instance (src/ui/scene.mbt)
 #define MB_INST 60
@@ -20,21 +23,213 @@ static id<MTLRenderPipelineState> hpipe;
 static id<MTLRenderPipelineState> fpipe;
 // the words' glyphs (R8) and colour glyphs (RGBA), square (apple.h)
 static id<MTLTexture> atlas, catlas;
-static CAMetalLayer *mlayer;
 static id<MTLBuffer> bufs[3];
 static size_t buf_cap[3];
 static int buf_i;
 static dispatch_semaphore_t inflight;
-static double vw = 800, vh = 600, vscale = 2;
-// the last frame, kept for snapshots
-static float *last_inst;
-static int32_t last_count;
-static size_t last_cap;
-static double last_bg[3];
-// The frame on the screen: its size as it was drawn (mb_render_set_size's), and whether it shows a stream (whose
-// pictures change under the same instances); its instances and ground are upload's copy (last_inst, last_bg).
-static double shown_w, shown_h, shown_scale;
-static int shown_ok, shown_streams;
+// What of a frame is said to differ from the frame before (partial redraw, below): told at all, all of it, or its parts.
+#define MB_PARTS 8
+// the captures of glass over native views a frame has at most (glass_through)
+#define MB_THROUGH 16
+typedef struct {
+  int told, whole, n;
+  double r[MB_PARTS][4];
+} MBDirty;
+
+// A frame handed from the main thread to the presenting queue (present_q, below): its instances as floats (a buffer of
+// pool_take's), its ground, the size it was made at and the drawable's then, what of it differs from the frame before,
+// whether it has glass and which of its captures frost a native view (glass_through), the atlas's puts it needs
+// (atlas_seq), the textures of its pictures and streams as they were when it was made (mb_image_texture and
+// mb_stream_texture are the main thread's alone), and its frame of a latency run (mac_latency.h).
+@interface MBFrame : NSObject {
+ @public
+  float *inst;
+  size_t cap;
+  int32_t count;
+  double bg[3], w, h, scale;
+  int tw, th, glass, lat;
+  MBDirty parts;
+  int through_n;
+  float through_tid[MB_THROUGH];
+  uint64_t atlas_seq;
+  NSMutableDictionary<NSNumber *, id> *texs;
+}
+@end
+
+// What is a window's own (mac_app.m: the windows of one run, each its view and its layer; the device, the queue, the
+// pipelines, the atlases and the ring of instance buffers are all the windows'). The main thread's: its layer and its
+// size (mb_render_set_size's); the last frame, kept for snapshots and compared with the next (its instances and ground:
+// keep_last's); the frame last handed to be shown: its size, and whether it shows a stream (whose pictures change under
+// the same instances); what was said to differ since (`said`). The presenting queue's (present_q): the canvas its frames
+// are drawn into, whether it holds the last drawn; the frame waiting to be drawn (`pending`, under present_mu) and
+// whether a drawing of it is queued; whether a frame found no drawable (`missed`: the next is not skipped as shown). Put
+// in place for a window by mb_render_use.
+typedef struct {
+  CAMetalLayer *layer;
+  double w, h, scale;
+  float *inst;
+  int32_t count;
+  size_t cap;
+  double bg[3];
+  double shown_w, shown_h, shown_scale;
+  int shown_ok, shown_streams;
+  MBDirty said;
+  id<MTLTexture> cv;
+  int cv_ok;
+  MBFrame *pending;
+  int queued;
+  atomic_int missed;
+} MBRenderWin;
+static MBRenderWin render_wins[MB_WINS] = {[0 ... MB_WINS - 1] = {.w = 800, .h = 600, .scale = 2}};
+static MBRenderWin *rw = &render_wins[0];
+#define mlayer (rw->layer)
+#define vw (rw->w)
+#define vh (rw->h)
+#define vscale (rw->scale)
+#define last_inst (rw->inst)
+#define last_count (rw->count)
+#define last_cap (rw->cap)
+#define last_bg (rw->bg)
+#define shown_w (rw->shown_w)
+#define shown_h (rw->shown_h)
+#define shown_scale (rw->shown_scale)
+#define shown_ok (rw->shown_ok)
+#define shown_streams (rw->shown_streams)
+#define canvas (rw->cv)
+#define canvas_ok (rw->cv_ok)
+#define dirty (rw->said.r)
+#define dirty_n (rw->said.n)
+#define dirty_whole (rw->said.whole)
+#define dirty_told (rw->said.told)
+
+// The window of the run drawn now (mac_app.m's win_use): its layer, its size, its last frame and its canvas in place.
+void mb_render_use(int wid) {
+  if (wid >= 0 && wid < MB_WINS) rw = &render_wins[wid];
+}
+
+// ---------------------------------------------------------------------------
+// Presenting off the main thread. Waiting for a buffer of the ring (the GPU three frames behind), for a drawable (the
+// display's swapchain full: a GPU slowed by its heat, a busy window server) and encoding a frame are done on a serial
+// queue of their own (present_q), not on the main thread that takes input and builds the next frame: there such a wait
+// held the touches, a glide and the next frame's layout for 16-50 ms. The main thread makes a frame's floats, compares
+// it with the last, keeps it as the last and hands it over (MBFrame) as the window's one frame waiting (`pending`): a
+// frame made while the one before still waits takes its place, what each said to differ joined (dirty_join), so a slow
+// GPU draws the newest frame, never a queue of old ones behind the hand. What the main thread alone may touch stays
+// there: the pictures' and streams' textures are looked up as the frame is made (frame_texs), the glyphs it puts in the
+// atlases are kept in order and put in by the queue before the frame that needs them (atlas_puts). A frame presented
+// with Core Animation's transaction (a window resized, shown first or turned; native views moved with it; the layer's
+// opacity changed) or checked (MBUI_PARTIAL_CHECK) is drawn on the main thread as before, once the queue has drawn what
+// it holds (present_drain); so is all that reads back or lets go of what drawing holds.
+static dispatch_queue_t present_q;
+static os_unfair_lock present_mu = OS_UNFAIR_LOCK_INIT;
+
+// Everything handed to present_q drawn, its state the caller's (the main thread's) till it hands more.
+static void present_drain(void) {
+  if (present_q) dispatch_sync(present_q, ^{
+                 });
+}
+
+// The buffers frames' floats are made into, given back as a frame is drawn or replaced: a few kept, the rest freed.
+#define MB_POOL 3
+static float *pool_bufs[MB_POOL];
+static size_t pool_caps[MB_POOL];
+
+static float *pool_take(size_t need, size_t *cap) {
+  float *got = NULL;
+  size_t got_cap = 0;
+  os_unfair_lock_lock(&present_mu);
+  for (int i = 0; i < MB_POOL; i++)
+    if (pool_bufs[i] && (!got || pool_caps[i] >= need)) {
+      float *b = pool_bufs[i];
+      size_t c = pool_caps[i];
+      pool_bufs[i] = got;
+      pool_caps[i] = got_cap;
+      got = b;
+      got_cap = c;
+      if (got_cap >= need) break;
+    }
+  os_unfair_lock_unlock(&present_mu);
+  if (got_cap < need) {
+    free(got);
+    got_cap = need + need / 4;
+    got = malloc(got_cap);
+  }
+  *cap = got_cap;
+  return got;
+}
+
+static void pool_give(float *b, size_t cap) {
+  if (!b) return;
+  os_unfair_lock_lock(&present_mu);
+  for (int i = 0; i < MB_POOL; i++)
+    if (!pool_bufs[i]) {
+      pool_bufs[i] = b;
+      pool_caps[i] = cap;
+      b = NULL;
+      break;
+    }
+  os_unfair_lock_unlock(&present_mu);
+  free(b);
+}
+
+@implementation MBFrame
+- (void)dealloc {
+  pool_give(inst, cap);
+}
+@end
+
+// What window `wid` kept let go of, as it closes: the next window given its number starts as none was drawn.
+void mb_render_forget(int wid) {
+  if (wid <= 0 || wid >= MB_WINS) return;
+  present_drain();
+  MBRenderWin *w = &render_wins[wid];
+  free(w->inst);
+  *w = (MBRenderWin){.w = 800, .h = 600, .scale = 2};
+}
+
+// A part said to differ added to `d`: past as many as it keeps, the last grown round it.
+static void dirty_add(MBDirty *d, double x, double y, double w, double h) {
+  d->told = 1;
+  if (w < 0 || h < 0) {
+    d->whole = 1;
+  } else if (w > 0 && h > 0) {
+    if (d->n == MB_PARTS) {
+      double *e = d->r[MB_PARTS - 1];
+      double x1 = fmax(e[0] + e[2], x + w), y1 = fmax(e[1] + e[3], y + h);
+      e[0] = fmin(e[0], x);
+      e[1] = fmin(e[1], y);
+      e[2] = x1 - e[0];
+      e[3] = y1 - e[1];
+    } else {
+      double *e = d->r[d->n++];
+      e[0] = x; e[1] = y; e[2] = w; e[3] = h;
+    }
+  }
+}
+
+// What a frame said to differ from the one before joined with what the frame it replaces (`was`, never drawn) said:
+// all of it where either was drawn whole, else both's parts (what differs from the frame drawn last is in one or the
+// other).
+static void dirty_join(MBDirty *d, const MBDirty *was) {
+  if (!d->told || d->whole) return;
+  if (!was->told || was->whole) {
+    d->whole = 1;
+    return;
+  }
+  for (int i = 0; i < was->n; i++) dirty_add(d, was->r[i][0], was->r[i][1], was->r[i][2], was->r[i][3]);
+}
+
+// The glyphs put in the atlases (mb_atlas_upload, the main thread's), kept in order till the queue puts them in, each
+// numbered: a frame is drawn after the puts made before it and none after (a glyph put for the next frame where an
+// atlas started over could be where one of this frame's was).
+typedef struct {
+  uint64_t seq;
+  int color, x, y, w, h;
+  uint8_t *px;
+} AtlasPut;
+static AtlasPut *atlas_puts;
+static size_t atlas_puts_n, atlas_puts_cap, atlas_puts_head;
+static uint64_t atlas_seq;
 // glass (src/ui/glass.mbt): the passes that blur what is under it (into the copy, 8 bits a channel, and into the rest,
 // half floats), the copies they work in (level j is 1/2^j of the largest capture yet, the glass and the blur's margin
 // round it, not of the target: a composer's strip, not the window; tmp for a Gaussian's first half), the GPU's time of
@@ -43,6 +238,12 @@ static id<MTLRenderPipelineState> ppipe, ppipe_deep, cpipe;
 static id<MTLTexture> lv[4], ltmp;
 static int lv_w, lv_h;
 static double last_gpu = -1;
+// The size, in points, and the pixels a point of the frame being drawn (encode and what it draws by): its MBFrame's on
+// present_q, the window's or a picture's own (read_of) on the main thread.
+static double at_w = 800, at_h = 600, at_scale = 2;
+// The textures of its pictures and streams as its MBFrame found them (frame_texs; NSNull none yet), or nil: looked up
+// as it is drawn (the main thread's own drawing).
+static NSDictionary<NSNumber *, id> *at_texs;
 
 static NSString *shader_src = @
 "#include <metal_stdlib>\n"
@@ -59,8 +260,8 @@ static NSString *shader_src = @
 "struct U { float2 vp; float scale; float pad; };\n"
 "// glass: where a point's backdrop is in the blurred copy (uv = p * map.xy + map.zw, kept in uvc), a liquid group's\n"
 "// bounds, shapes and corners, how many (misc.x); misc.y 1 where what it copied of a native view's hole is let through\n"
-"// (glass_through)\n"
-"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; };\n"
+"// (glass_through); rmap and ruvc where it is in the capture's sharp level (img, while liquid glass is drawn)\n"
+"struct G { float4 map; float4 uvc; float4 gb; float4 shape[8]; float4 rad[2]; float4 misc; float4 rmap; float4 ruvc; };\n"
 "struct VOut { float4 pos [[position]]; float2 p; float2 cp; uint iid [[flat]]; };\n"
 "vertex VOut vmain(uint vid [[vertex_id]], uint iid [[instance_id]],\n"
 "    const device Inst* inst [[buffer(0)]], constant U& u [[buffer(1)]], constant G& g [[buffer(2)]]) {\n"
@@ -110,12 +311,28 @@ MB_CORNER_SL
 "  }\n"
 "  return d;\n"
 "}\n"
+"// sd_group with each shape's corners rounder (1.45 times, at most half its shorter side): what liquid glass slopes by\n"
+"static float sd_group_soft(float2 p, constant G& g, float k) {\n"
+"  float d = 1e9;\n"
+"  int n = int(g.misc.x + 0.5);\n"
+"  for (int i = 0; i < 8; i++) {\n"
+"    if (i >= n) break;\n"
+"    float2 hs = g.shape[i].zw * 0.5;\n"
+"    d = smin_k(d, sd_rr(p, g.shape[i], float4(min(g.rad[i / 4][i % 4] * 1.45, min(hs.x, hs.y)))), k);\n"
+"  }\n"
+"  return d;\n"
+"}\n"
 "static float4 backdrop4(texture2d<float> bd, constant G& g, float2 p) {\n"
 "  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
 "  float2 uv = clamp(p * g.map.xy + g.map.zw, g.uvc.xy, g.uvc.zw);\n"
 "  return bd.sample(s, uv);\n"
 "}\n"
 "static float3 backdrop(texture2d<float> bd, constant G& g, float2 p) { return backdrop4(bd, g, p).rgb; }\n"
+"// what is under liquid glass at p, not blurred: the capture's sharp level (show_blur's rtex)\n"
+"static float3 sharp(texture2d<float> img, constant G& g, float2 p) {\n"
+"  constexpr sampler s(filter::linear, address::clamp_to_edge);\n"
+"  return img.sample(s, clamp(p * g.rmap.xy + g.rmap.zw, g.ruvc.xy, g.ruvc.zw)).rgb;\n"
+"}\n"
 "static float luma(float3 c) { return dot(c, float3(0.2126, 0.7152, 0.0722)); }\n"
 "// how much of the pixel at p its rounded clip keeps (r: the corners' radii, top left, then clockwise; s: how smooth\n"
 "// each is), its edge covered as a box's own (0.5 - d * scale), so what it cuts meets the ground of the box that cuts it\n"
@@ -155,7 +372,14 @@ MB_CORNER_SL
 "    // cover alone: white, premultiplied, as the colour one would have it.\n"
 "    bool colour = I.c2.x >= 16384.0;\n"
 "    float2 at = float2(I.c2.x - (colour ? 16384.0 : 0.0), I.c2.y);\n"
-"    float2 uv = clamp(at + (p - I.rect.xy) / I.rect.zw * I.c2.zw, at + 0.5, at + I.c2.zw - 0.5);\n"
+"    // One drawn as big as its picture, not turned, its corner on a pixel: each pixel its texel's centre, as\n"
+"    // win_render.cpp takes it (worked out of where it is across the rect, a float's division took a texel's\n"
+"    // neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)\n"
+"    float2 off = abs(I.rect.zw * u.scale - I.c2.zw);\n"
+"    float2 r0 = I.rect.xy * u.scale, r0i = floor(r0 + 0.5);\n"
+"    bool exact = I.rot.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;\n"
+"    float2 tex = exact ? floor(p * u.scale - r0i) + 0.5 : (p - I.rect.xy) / I.rect.zw * I.c2.zw;\n"
+"    float2 uv = clamp(at + tex, at + 0.5, at + I.c2.zw - 0.5);\n"
 "    float4 t = colour ? catlas.sample(s, uv) : float4(atlas.sample(s, uv).r);\n"
 "    if (kind == 1) return (float4(col.rgb, 1.0) * (t.a * col.a)) * cover;\n"
 "    if (kind == 7) {\n"
@@ -170,33 +394,105 @@ MB_CORNER_SL
 "    return (t * col.a) * cover;\n"
 "  }\n"
 "  if (kind == 6) {\n"
-"    // liquid: one shape of the group's, merged; what is under it bent along the bezel, the colours split a little\n"
+"    // liquid: one shape of the group's, merged, a drop of glass on what is under it: its height a squircle's meniscus\n"
+"    // over the bezel (z = (1 - r^4)^(1/4), r 0 where the bezel starts in, 1 at the rim), what is under it seen through\n"
+"    // it bent by Snell's law (n = 1.52), the colours spread into a little spectrum: blurred on its flat, sharp through\n"
+"    // its lip (the capture's level that is not blurred, R), the colour of what is beyond its rim drawn into the lip; its\n"
+"    // rim a cool body, a bright ridge 0.8 in from its edge and a sharp cool edge outside it, so it reads on white as on\n"
+"    // colour; lit round where the pointer is over it (c2.z). Every sample within pad.y * (1 + pad.z) of p: what a\n"
+"    // capture keeps round it (grab_of's margin, damage.mbt's glass_margin), so a part drawn again, or a strip, is the\n"
+"    // frame drawn whole, to the byte.\n"
 "    float k = I.pad.w;\n"
+"    // (its outline and cover the shape's own; how it slopes worked out from the shape with its corners rounder, 1.45\n"
+"    // times, so no crease runs from a corner's start to the middle, and a little dome over the group, so a long straight\n"
+"    // side bends what is under it as a lens does, not as a prism)\n"
 "    float d = sd_group(p, g, k);\n"
 "    float a = clamp(0.5 - d * u.scale, 0.0, 1.0);\n"
 "    if (a <= 0.0) discard_fragment();\n"
-"    float e = 0.5;\n"
-"    float2 grad = float2(sd_group(p + float2(e, 0.0), g, k) - sd_group(p - float2(e, 0.0), g, k),\n"
-"                         sd_group(p + float2(0.0, e), g, k) - sd_group(p - float2(0.0, e), g, k));\n"
-"    float2 n = grad / max(length(grad), 1e-4);\n"
+"    float e = 0.75;\n"
+"    float2 grad = float2(sd_group_soft(p + float2(e, 0.0), g, k) - sd_group_soft(p - float2(e, 0.0), g, k),\n"
+"                 sd_group_soft(p + float2(0.0, e), g, k) - sd_group_soft(p - float2(0.0, e), g, k));\n"
+"    float2 n_edge = grad / max(length(grad), 1e-4);\n"
+"    float2 gc = 0.5 * (g.gb.xy + g.gb.zw);\n"
+"    float2 gh = max(0.5 * (g.gb.zw - g.gb.xy), float2(1.0, 1.0));\n"
+"    float2 dome = clamp((p - gc) / gh, float2(-1.0, -1.0), float2(1.0, 1.0));\n"
+"    float2 n2 = normalize(n_edge + 0.14 * dome);\n"
 "    float bezel = max(I.c2.y, 1.0);\n"
-"    float edge = 1.0 - clamp(-d / bezel, 0.0, 1.0);\n"
-"    float disp = I.pad.y * (1.0 - sqrt(max(1.0 - edge * edge, 0.0)));\n"
-"    float2 off = -n * disp;\n"
-"    float ch = I.pad.z;\n"
-"    float3 c = float3(backdrop(bd, g, p + off * (1.0 + ch)).r, backdrop(bd, g, p + off).g,\n"
-"                      backdrop(bd, g, p + off * (1.0 - ch)).b);\n"
+"    // (r: 0 on the flat inside, d <= -bezel; 1 at the rim, d = 0; the slope rises smoothly out of the flat)\n"
+"    float r = clamp(1.0 + d / bezel, 0.0, 1.0);\n"
+"    float r2 = r * r;\n"
+"    float r4 = r2 * r2;\n"
+"    float slope = 0.52 * (r2 * r) / pow(max(1.0 - r4, 0.035), 0.75);\n"
+"    float inv_n = 1.0 / sqrt(slope * slope + 1.0);\n"
+"    float2 Nxy = n2 * (slope * inv_n);\n"
+"    float Nz = inv_n;\n"
+"    // (Snell's law: the light comes straight down, (0, 0, -1), from air into glass: eta = 1 / 1.52)\n"
+"    float eta = 0.6578947;\n"
+"    float k_ior = max(1.0 - eta * eta * (1.0 - Nz * Nz), 0.0);\n"
+"    float kt = eta * Nz - sqrt(k_ior);\n"
+"    float2 Txy = Nxy * kt;\n"
+"    float Tz = -eta + kt * Nz;\n"
+"    // (at most pad.y away: |Txy / Tz| is 0.858 at the steepest, slope 6.42, so 1.15 times it 0.986)\n"
+"    float2 off = Txy * (1.15 * I.pad.y / max(-Tz, 1e-4));\n"
+"    // (the colours spread along it, a little less where its side runs straight than across a corner: never past pad.z)\n"
+"    float ch = min(I.pad.z * (0.72 + 0.56 * abs(n2.x * n2.y)), I.pad.z);\n"
+"    float2 disp = off * ch;\n"
+"    // (the lip sharp, seven samples across the spread, red from the far end, green about the middle, blue from the near:\n"
+"    // a spectrum, not three images; the flat blurred, three)\n"
+"    float3 s0 = sharp(img, g, p + off + disp);\n"
+"    float3 s1 = sharp(img, g, p + off + disp * 0.6666667);\n"
+"    float3 s2 = sharp(img, g, p + off + disp * 0.3333333);\n"
+"    float3 s3 = sharp(img, g, p + off);\n"
+"    float3 s4 = sharp(img, g, p + off - disp * 0.3333333);\n"
+"    float3 s5 = sharp(img, g, p + off - disp * 0.6666667);\n"
+"    float3 s6 = sharp(img, g, p + off - disp);\n"
+"    float3 cs = float3((s0.r + 0.6666667 * s1.r + 0.3333333 * s2.r) * 0.5,\n"
+"                   (0.3333333 * s1.g + 0.6666667 * s2.g + s3.g + 0.6666667 * s4.g + 0.3333333 * s5.g) * 0.3333333,\n"
+"                   (0.3333333 * s4.b + 0.6666667 * s5.b + s6.b) * 0.5);\n"
+"    float3 cf = float3(backdrop(bd, g, p + off + disp * 0.5).r, backdrop(bd, g, p + off).g, backdrop(bd, g, p + off - disp * 0.5).b);\n"
+"    float lens = r2 * smoothstep(0.16, 0.88, r);\n"
+"    float3 c = mix(cf, cs, lens * 0.86);\n"
+"    // (the colour of what lies beyond the rim, more saturated, drawn into the lip: the meniscus takes its surroundings'\n"
+"    // colour; from at most off * (1 + 0.85 * ch), inside what is kept)\n"
+"    float3 bleed = backdrop(bd, g, p + off * (1.0 + ch * 0.85));\n"
+"    float3 bleed_sat = max(mix(float3(luma(bleed)), bleed, I.p.z * 1.35), 0.0);\n"
+"    c = mix(c, bleed_sat, r2 * (1.0 - 0.30 * r) * 0.26);\n"
 "    c = max(mix(float3(luma(c)), c, I.p.z), 0.0);\n"
-"    c = c * (1.0 - col.a) + col.rgb * col.a;\n"
-"    // the rim lit from the top left, and less across from it\n"
-"    float2 L = float2(-0.6, -0.8);\n"
-"    float ndl = dot(n, L);\n"
-"    float band = clamp(1.0 + d / 2.5, 0.0, 1.0);\n"
-"    float spec = I.c2.x * (band * (0.9 * pow(max(ndl, 0.0), 1.5) + 0.45 * pow(max(-ndl, 0.0), 1.5)) +\n"
-"                           0.3 * edge * edge * max(ndl, 0.0));\n"
-"    // the edge shaded, more on the side away from the light, so the shape reads over a light ground too\n"
-"    c *= 1.0 - I.c2.x * band * (0.1 + 0.25 * max(-ndl, 0.0));\n"
-"    c = c + (1.0 - c) * clamp(spec, 0.0, 1.0);\n"
+"    // (its tint whole on the flat, where words lie, and less through the lip)\n"
+"    float tint_a = col.a * (1.0 - 0.56 * lens);\n"
+"    c = c * (1.0 - tint_a) + col.rgb * tint_a;\n"
+"    // (where the pointer is over it, c2.z: x * 4096 + y + 1, each at half a point from 256 before its rect's top left,\n"
+"    // glass.mbt's glass_spot; taken apart by a power of two, exact, so no pixel's x or y is a half point off)\n"
+"    float spot = 0.0;\n"
+"    if (I.c2.z > 0.5) {\n"
+"      float q = I.c2.z - 1.0;\n"
+"      float qx = floor(q * 0.000244140625);\n"
+"      float qy = q - qx * 4096.0;\n"
+"      float2 gp = I.rect.xy + float2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);\n"
+"      float gr = max(min(I.rect.z, I.rect.w) * 1.65, 44.0);\n"
+"      spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));\n"
+"    }\n"
+"    float ndl = dot(n2, float2(-0.6, -0.8));\n"
+"    float rim = I.c2.x;\n"
+"    // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white\n"
+"    float body_ring = r2 * (1.0 - 0.35 * r);\n"
+"    c = mix(c, c * float3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);\n"
+"    // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,\n"
+"    // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of\n"
+"    // white, so a light ground does not swallow it\n"
+"    float rim_lit = rim * (1.0 + 0.42 * spot);\n"
+"    float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);\n"
+"    spec_band *= spec_band;\n"
+"    float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);\n"
+"    float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +\n"
+"                            0.28 * fresnel * max(ndl + 0.3, 0.0)) +\n"
+"                 0.14 * spot * (0.45 + 0.55 * r);\n"
+"    c = mix(c, float3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));\n"
+"    // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white\n"
+"    float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);\n"
+"    edge_b *= edge_b;\n"
+"    float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));\n"
+"    c = mix(c, c * float3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));\n"
 "    c += mb_dither(p * u.scale) / 255.0;\n"
 "    return (float4(c, 1.0) * (a * I.c2.w)) * cover;\n"
 "  }\n"
@@ -445,6 +741,8 @@ static void prepare_gpu(void) {
 }
 
 __attribute__((constructor)) static void prepare(void) {
+  present_q = dispatch_queue_create("mbui.present", dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL,
+                                                                                           QOS_CLASS_USER_INTERACTIVE, 0));
   prepared = dispatch_group_create();
   kinds_made = dispatch_group_create();
   dispatch_group_async(prepared, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0), ^{ prepare_gpu(); });
@@ -473,14 +771,49 @@ void mb_render_set_size(double w, double h, double scale) {
   vscale = scale;
   CGSize want = CGSizeMake(round(w * scale), round(h * scale));
   if (!CGSizeEqualToSize(mlayer.drawableSize, want)) {
+    // (not while the queue may be asking the layer for a drawable)
+    present_drain();
     mlayer.drawableSize = want;
     shown_ok = 0;
   }
 }
 
+// A glyph's pixels for an atlas, kept to be put in before the next frame drawn (atlas_puts, above).
 void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
-  [(color ? catlas : atlas) replaceRegion:MTLRegionMake2D(x, y, w, h) mipmapLevel:0 withBytes:px
-                              bytesPerRow:(NSUInteger)w * (color ? 4 : 1)];
+  if (w <= 0 || h <= 0) return;
+  size_t n = (size_t)w * h * (color ? 4 : 1);
+  uint8_t *copy = malloc(n);
+  memcpy(copy, px, n);
+  os_unfair_lock_lock(&present_mu);
+  if (atlas_puts_head > 0 && atlas_puts_head == atlas_puts_n) atlas_puts_head = atlas_puts_n = 0;
+  if (atlas_puts_n == atlas_puts_cap) {
+    if (atlas_puts_head > 0) {
+      memmove(atlas_puts, atlas_puts + atlas_puts_head, (atlas_puts_n - atlas_puts_head) * sizeof *atlas_puts);
+      atlas_puts_n -= atlas_puts_head;
+      atlas_puts_head = 0;
+    }
+    if (atlas_puts_n == atlas_puts_cap) {
+      atlas_puts_cap = atlas_puts_cap ? atlas_puts_cap * 2 : 64;
+      atlas_puts = realloc(atlas_puts, atlas_puts_cap * sizeof *atlas_puts);
+    }
+  }
+  atlas_puts[atlas_puts_n++] = (AtlasPut){++atlas_seq, color, x, y, w, h, copy};
+  os_unfair_lock_unlock(&present_mu);
+}
+
+// The glyphs kept put into the atlases, in order, those numbered up to `upto`.
+static void atlas_flush(uint64_t upto) {
+  for (;;) {
+    os_unfair_lock_lock(&present_mu);
+    AtlasPut p = {0};
+    int has = atlas_puts_head < atlas_puts_n && atlas_puts[atlas_puts_head].seq <= upto;
+    if (has) p = atlas_puts[atlas_puts_head++];
+    os_unfair_lock_unlock(&present_mu);
+    if (!has) return;
+    [(p.color ? catlas : atlas) replaceRegion:MTLRegionMake2D(p.x, p.y, p.w, p.h) mipmapLevel:0 withBytes:p.px
+                                 bytesPerRow:(NSUInteger)p.w * (p.color ? 4 : 1)];
+    free(p.px);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -492,9 +825,10 @@ void mb_atlas_upload(int color, int x, int y, int w, int h, const void *px) {
 // slopes into flat steps, a texel of the last level 8 pixels wide on the screen (a blur under 4 pixels, too narrow to
 // halve, is written back into the copy: it leaves no slope that wide).
 
-typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; } GU;
+typedef struct { float map[4]; float uvc[4]; float gb[4]; float shape[8][4]; float rad[2][4]; float misc[4]; float rmap[4]; float ruvc[4]; } GU;
 static GU gu;
 static id<MTLTexture> gtex;  // the blurred copy the glass in view shows
+static id<MTLTexture> rtex;  // the sharp level of it liquid glass sees through its lip (texture 1 while it is drawn)
 
 static id<MTLTexture> level_tex(MTLPixelFormat format, int w, int h) {
   MTLTextureDescriptor *td = [MTLTextureDescriptor
@@ -545,21 +879,25 @@ static void post_pass(id<MTLCommandBuffer> cb, id<MTLTexture> src, int sw, int s
 // saturated as the glass is; the canvas's glass leaves out as much of its frost as was the hole (its copy's alpha,
 // gu.misc.y), for that to show there. The captures that do (their slot 20, through_tid), found as a frame is
 // presented; none in a frame drawn otherwise (offscreen, read back, a snapshot: no views under it).
-#define MB_THROUGH 16
 #define MB_HOLES 32
 static int through_n;
 static float through_tid[MB_THROUGH];
+// (those of the frame being drawn: its MBFrame's, or the main thread's as it draws one itself; none read back)
+static int at_through_n;
+static float at_through_tid[MB_THROUGH];
 
-static int is_through(float tid) {
-  for (int i = 0; i < through_n; i++)
-    if (through_tid[i] == tid) return 1;
+static int in_through(const float *tids, int n, float tid) {
+  for (int i = 0; i < n; i++)
+    if (tids[i] == tid) return 1;
   return 0;
 }
 
+static int is_through(float tid) { return in_through(through_tid, through_n, tid); }
+
 // what of instance b shows: its rect cut by its clip's (x0 y0 x1 y1); 0 when nothing does
-static int shows_of(const double *b, float r[4]) {
-  r[0] = (float)fmax(b[0], b[16]); r[1] = (float)fmax(b[1], b[17]);
-  r[2] = (float)fmin(b[0] + b[2], b[18]); r[3] = (float)fmin(b[1] + b[3], b[19]);
+static int shows_of(const float *b, float r[4]) {
+  r[0] = fmaxf(b[0], b[16]); r[1] = fmaxf(b[1], b[17]);
+  r[2] = fminf(b[0] + b[2], b[18]); r[3] = fminf(b[1] + b[3], b[19]);
   return r[2] > r[0] && r[3] > r[1];
 }
 
@@ -567,15 +905,15 @@ static int shows_of(const double *b, float r[4]) {
 // a backdrop over the views whose holes were painted before it (the last of them: `under`), at that view's place
 // among them. Told to the views (which say whether they can frost: else none is through, the glass as before).
 // Returns whether any hole shows in this frame.
-static int glass_through(const double *f, int32_t count) {
+static int glass_through(const float *f, int32_t count) {
   // Instances are in content points; the system views underneath are placed in window points.
   double zoom = mlayer && mlayer.contentsScale > 0 ? vscale / mlayer.contentsScale : 1.0;
   float holes[MB_HOLES][4];
   int nh = 0, has_hole = 0;
   through_n = 0;
   for (int32_t i = 0; i < count; i++) {
-    const double *b = f + i * MB_INST;
-    int kind = (int)(b[5] + 0.5);
+    const float *b = f + i * MB_INST;
+    int kind = (int)(b[5] + 0.5f);
     float r[4];
     if (kind == 9) {
       if (shows_of(b, r)) {
@@ -584,13 +922,13 @@ static int glass_through(const double *f, int32_t count) {
       }
       continue;
     }
-    if (kind != 5 || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through((float)b[20]) || !shows_of(b, r))
+    if (kind != 5 || b[20] >= 0 || !nh || through_n >= MB_THROUGH || is_through(b[20]) || !shows_of(b, r))
       continue;
     // (its blur reaches a hole near it too)
-    float m = 3.0f * fabsf((float)b[7]);
+    float m = 3.0f * fabsf(b[7]);
     for (int h = 0; h < nh; h++)
       if (holes[h][0] < r[2] + m && r[0] - m < holes[h][2] && holes[h][1] < r[3] + m && r[1] - m < holes[h][3]) {
-        through_tid[through_n++] = (float)b[20];
+        through_tid[through_n++] = b[20];
         break;
       }
   }
@@ -598,11 +936,11 @@ static int glass_through(const double *f, int32_t count) {
   int n = 0;
   int32_t under = 0;
   for (int32_t i = 0; i < count && through_n; i++) {
-    const double *b = f + i * MB_INST;
-    int kind = (int)(b[5] + 0.5);
-    if (kind == 9) under = (int32_t)(b[20] + 0.5) - MB_VIEW_TEX;
+    const float *b = f + i * MB_INST;
+    int kind = (int)(b[5] + 0.5f);
+    if (kind == 9) under = (int32_t)(b[20] + 0.5f) - MB_VIEW_TEX;
     float r[4];
-    if (kind != 5 || !is_through((float)b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
+    if (kind != 5 || !is_through(b[20]) || under <= 0 || n >= MB_FROSTS || !shows_of(b, r)) continue;
     double *e = frosts + n++ * MB_FROST_N;
     for (int k = 0; k < 4; k++) {
       e[k] = r[k] * zoom;
@@ -658,9 +996,9 @@ static int grab_of(Grab *m, const float *f, int32_t start, int32_t end, int32_t 
     }
   }
   m->g.misc[0] = (float)n;
-  m->g.misc[1] = is_through(a[20]) ? 1.0f : 0.0f;
+  m->g.misc[1] = in_through(at_through_tid, at_through_n, a[20]) ? 1.0f : 0.0f;
   m->g.gb[0] = x0 - 2; m->g.gb[1] = y0 - 2; m->g.gb[2] = x1 + 2; m->g.gb[3] = y1 + 2;
-  float sc = (float)vscale;
+  float sc = (float)at_scale;
   int px0 = (int)floorf((x0 - margin) * sc), py0 = (int)floorf((y0 - margin) * sc);
   int px1 = (int)ceilf((x1 + margin) * sc), py1 = (int)ceilf((y1 + margin) * sc);
   if (px0 < 0) px0 = 0;
@@ -697,17 +1035,30 @@ static void show_blur(const Grab *m) {
   grab_levels(m, lw, lh);
   gu = m->g;
   gtex = m->contained && m->k == 0 ? ltmp : lv[m->k];
-  float sc = (float)vscale;
+  float sc = (float)at_scale;
   float W = (float)gtex.width, H = (float)gtex.height, d = (float)(1 << m->k);
   gu.map[0] = sc / d / W; gu.map[1] = sc / d / H;
   gu.map[2] = -(float)m->px0 / d / W; gu.map[3] = -(float)m->py0 / d / H;
   gu.uvc[0] = 0.5f / W; gu.uvc[1] = 0.5f / H;
   gu.uvc[2] = ((float)lw[m->k] - 0.5f) / W; gu.uvc[3] = ((float)lh[m->k] - 0.5f) / H;
+  // the sharp one, of the levels its blur left as they were copied (blur): the half once halved twice or more, the
+  // copy once halved (not contained: contained, its copy is the edge's pass's, ltmp), else the blurred one itself
+  int rk = m->k >= 2 ? 1 : m->k == 1 && !m->contained ? 0 : m->k;
+  rtex = m->k >= 2 ? lv[1] : m->k == 1 && !m->contained ? lv[0] : gtex;
+  float RW = (float)rtex.width, RH = (float)rtex.height, rd = (float)(1 << rk);
+  gu.rmap[0] = sc / rd / RW; gu.rmap[1] = sc / rd / RH;
+  gu.rmap[2] = -(float)m->px0 / rd / RW; gu.rmap[3] = -(float)m->py0 / rd / RH;
+  gu.ruvc[0] = 0.5f / RW; gu.ruvc[1] = 0.5f / RH;
+  gu.ruvc[2] = ((float)lw[rk] - 0.5f) / RW; gu.ruvc[3] = ((float)lh[rk] - 0.5f) / RH;
 }
 
 // A grab of target blurred into the levels: what is drawn so far in its rectangle copied out, halved k times, the
 // Gaussian left (passes of their own, the target's pass ended before), then shown (show_blur).
+// (how many: scripts/apple_render_test.m, a blur shown again as kept is none)
+static int blurs_made;
+
 static void blur(id<MTLCommandBuffer> cb, id<MTLTexture> target, const Grab *m) {
+  blurs_made++;
   ensure_levels(m->w, m->h);
   id<MTLBlitCommandEncoder> bl = [cb blitCommandEncoder];
   [bl copyFromTexture:target sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(m->px0, m->py0, 0)
@@ -781,50 +1132,24 @@ static int32_t seg_base;
 // (@hostapi.render_dirty), only those parts of the canvas are drawn again, a pass each: it loads what the canvas holds,
 // cut to the part (the pass's scissor, `sc`, while `sc_on`), the frame's ground drawn over the part first (the
 // instance after the frame's, upload's), then every instance (what falls outside is cut away).
-static id<MTLTexture> canvas;
-// what the canvas holds is the last frame given (none lost: a frame not drawn into it, its size another)
-static int canvas_ok;
-// the parts of the next frame that differ (points: x, y, w, h), all of it (`dirty_whole`), and whether any was said
-#define MB_PARTS 8
-static double dirty[MB_PARTS][4];
-static int dirty_n, dirty_whole, dirty_told;
 // a picture the frame drawn last had none of yet (its texture not made: drawn without it): the next drawn whole, as
 // what it shows changes under the same numbers
 static int pictures_missing, encode_missing;
 static int sc_on;
 static MTLScissorRect sc;
 
-void mb_host_render_dirty(double x, double y, double w, double h) {
-  dirty_told = 1;
-  if (w < 0 || h < 0) {
-    dirty_whole = 1;
-  } else if (w > 0 && h > 0) {
-    // (more than it keeps: the last one grown round it)
-    if (dirty_n == MB_PARTS) {
-      double *d = dirty[MB_PARTS - 1];
-      double x1 = fmax(d[0] + d[2], x + w), y1 = fmax(d[1] + d[3], y + h);
-      d[0] = fmin(d[0], x);
-      d[1] = fmin(d[1], y);
-      d[2] = x1 - d[0];
-      d[3] = y1 - d[1];
-    } else {
-      double *d = dirty[dirty_n++];
-      d[0] = x; d[1] = y; d[2] = w; d[3] = h;
-    }
-  }
-}
+void mb_host_render_dirty(double x, double y, double w, double h) { dirty_add(&rw->said, x, y, w, h); }
 
-// The parts of a target tw × th pixels the next frame draws, from what was said of them (taken: a frame nothing was
-// said for is drawn whole), into `r`: how many (0 none), -1 all of it. `kept`: the target holds the frame before.
-static int take_parts(int tw, int th, int kept, MTLScissorRect r[MB_PARTS]) {
-  int told = dirty_told, whole = dirty_whole, n = dirty_n;
-  dirty_told = dirty_whole = dirty_n = 0;
-  if (!told || whole || !kept || pictures_missing) return -1;
+// The parts of a target tw × th pixels a frame draws, from what was said of them (`d`, a frame nothing was said for
+// drawn whole), into `r`: how many (0 none), -1 all of it. `kept`: the target holds the frame before.
+static int take_parts(const MBDirty *d, int tw, int th, int kept, MTLScissorRect r[MB_PARTS]) {
+  if (!d->told || d->whole || !kept || pictures_missing) return -1;
   int k = 0;
-  for (int i = 0; i < n; i++) {
+  for (int i = 0; i < d->n; i++) {
     // (whole pixels round it, and one more: the app's part reaches its pixels' antialiasing, not their rounding)
-    int x0 = (int)floor(dirty[i][0] * vscale) - 1, y0 = (int)floor(dirty[i][1] * vscale) - 1;
-    int x1 = (int)ceil((dirty[i][0] + dirty[i][2]) * vscale) + 1, y1 = (int)ceil((dirty[i][1] + dirty[i][3]) * vscale) + 1;
+    const double *e = d->r[i];
+    int x0 = (int)floor(e[0] * at_scale) - 1, y0 = (int)floor(e[1] * at_scale) - 1;
+    int x1 = (int)ceil((e[0] + e[2]) * at_scale) + 1, y1 = (int)ceil((e[1] + e[3]) * at_scale) + 1;
     if (x0 < 0) x0 = 0;
     if (y0 < 0) y0 = 0;
     if (x1 > tw) x1 = tw;
@@ -849,7 +1174,7 @@ static id<MTLRenderCommandEncoder> begin_pass(id<MTLCommandBuffer> cb, id<MTLTex
   rp.colorAttachments[0].storeAction = MTLStoreActionStore;
   rp.colorAttachments[0].clearColor = MTLClearColorMake(r, g, b, alpha);
   id<MTLRenderCommandEncoder> enc = [cb renderCommandEncoderWithDescriptor:rp];
-  struct { float vp[2]; float scale; float pad; } u = {{(float)vw, (float)vh}, (float)vscale, (float)seg_base};
+  struct { float vp[2]; float scale; float pad; } u = {{(float)at_w, (float)at_h}, (float)at_scale, (float)seg_base};
   [enc setRenderPipelineState:p];
   [enc setVertexBuffer:buf offset:0 atIndex:0];
   [enc setVertexBytes:&u length:sizeof(u) atIndex:1];
@@ -873,7 +1198,7 @@ static void draw_banded(id<MTLRenderCommandEncoder> enc, id<MTLRenderPipelineSta
   int32_t s = start;
   for (int32_t i = start; i < end; i++) {
     if (!mb_band_kind(f, i)) continue;
-    int n = mb_bands(f, i, count, (float)vscale, to, st);
+    int n = mb_bands(f, i, count, (float)at_scale, to, st);
     if (n < 0) continue;
     if (i > s) [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:i - s baseInstance:s];
     for (int k = 0; k < n; k++) {
@@ -889,11 +1214,39 @@ static void draw_banded(id<MTLRenderCommandEncoder> enc, id<MTLRenderPipelineSta
   if (end > s) [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6 instanceCount:end - s baseInstance:s];
 }
 
+// The texture of picture or stream `tid` (> 0) for the frame being drawn (at_texs), nil where it has none yet.
+static id<MTLTexture> tex_of(int tid) {
+  if (at_texs) {
+    id t = at_texs[@(tid)];
+    return t == (id)NSNull.null ? nil : t;
+  }
+  return tid > MB_STREAM_TEX ? mb_stream_texture(tid - MB_STREAM_TEX) : tid > 0 ? mb_image_texture(tid) : nil;
+}
+
+// The textures of the pictures and streams `f` draws (`count` instances), looked up now (the main thread), for the
+// queue to draw them by: a picture's not decoded yet NSNull (drawn without it, encode_missing).
+static NSMutableDictionary<NSNumber *, id> *frame_texs(const float *f, int32_t count) {
+  NSMutableDictionary<NSNumber *, id> *d = [NSMutableDictionary new];
+  int last = 0;
+  for (int32_t i = 0; i < count; i++) {
+    const float *b = f + (size_t)i * MB_INST;
+    int tid = (int)b[20];
+    if (tid <= 0 || tid == last || (int)(b[5] + 0.5f) == 9) continue;
+    last = tid;
+    NSNumber *k = @(tid);
+    if (d[k]) continue;
+    id<MTLTexture> t = tid > MB_STREAM_TEX ? mb_stream_texture(tid - MB_STREAM_TEX) : mb_image_texture(tid);
+    d[k] = t ?: (id)NSNull.null;
+  }
+  return d;
+}
+
 // `part`: only that part of the target drawn again, over what it holds (the frame's ground first: the instance after
-// the frame's, upload's); NULL, all of it, cleared to the ground.
+// the frame's, ring_put's); NULL, all of it, cleared to the ground.
 static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderPipelineState> p,
                    id<MTLBuffer> buf, int32_t count, double r, double g, double b, double alpha, const MTLScissorRect *part) {
   gtex = nil;
+  rtex = nil;
   memset(&gu, 0, sizeof gu);
   encode_missing = 0;
   const float *f = (const float *)buf.contents;
@@ -930,7 +1283,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         // (a capture outside the part drawn: neither copied nor drawn, the blur kept as it was. One that meets it is
         // in it whole: the app's part takes in all a capture it reaches copies, @damage)
         shows = shows && grab_in_part(&m);
-        double key[7] = {target.width, target.height, vscale, r, g, b, alpha};
+        double key[7] = {target.width, target.height, at_scale, r, g, b, alpha};
         if (shows && same_under(f, start, count, seg_base, &m, key)) {
           // what it sees is what the levels hold: shown on in this pass
           show_blur(&m);
@@ -940,15 +1293,20 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
         } else if (shows) {
           [enc endEncoding];
           blur(cb, target, &m);
-          keep_under(f, start, count, seg_base, &m, key);
+          // (an image drawn under it that had no texture yet: it comes under the same instances, so this blur is not
+          // kept to be shown again as theirs)
+          if (encode_missing) kept_ok = 0;
+          else keep_under(f, start, count, seg_base, &m, key);
           enc = begin_pass(cb, target, p, buf, 0, r, g, b, alpha);
         }
         bound = tid;
       }
       [enc setRenderPipelineState:p];
-      // liquid: the group as one shape, drawn once
+      // liquid: the group as one shape, drawn once, its capture's sharp level in texture 1 (an image's run after it
+      // binds its own there again)
       if (shows) {
         int liquid = (int)(f[start * MB_INST + 5] + 0.5f) == 6;
+        if (liquid) [enc setFragmentTexture:(rtex ?: atlas) atIndex:1];
         [enc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:6
                 instanceCount:liquid ? 1 : end - start baseInstance:start];
       }
@@ -958,7 +1316,7 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
     id<MTLRenderPipelineState> kp = own ? kind_pipe(p, kind) : p;
     [enc setRenderPipelineState:(hole ? hpipe : kp)];
     // (a hole's image is its view's, src/hostapi/host.mbt view_tex_base + its id: the view is under the canvas here)
-    id<MTLTexture> t = hole ? nil : tid > MB_STREAM_TEX ? mb_stream_texture(tid - MB_STREAM_TEX) : tid ? mb_image_texture(tid) : nil;
+    id<MTLTexture> t = hole ? nil : tex_of(tid);
     // (a stream with no frame of its own yet, or lost: nothing, not the atlas)
     if (!hole && tid > MB_STREAM_TEX && !t) {
       start = end;
@@ -975,12 +1333,12 @@ static void encode(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLRenderP
   sc_on = 0;
 }
 
-// The frame in `buf` drawn into `target`, only its parts that differ (take_parts) where it holds the frame before
-// (`kept`), a pass each, else whole: how many parts (-1 whole, 0 none).
+// The frame in `buf` drawn into `target`, only its parts said to differ (`d`, take_parts) where it holds the frame
+// before (`kept`), a pass each, else whole: how many parts (-1 whole, 0 none).
 static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuffer> buf, int32_t count, double r,
-                      double g, double b, int kept) {
+                      double g, double b, int kept, const MBDirty *d) {
   MTLScissorRect parts[MB_PARTS];
-  int n = take_parts((int)target.width, (int)target.height, kept, parts);
+  int n = take_parts(d, (int)target.width, (int)target.height, kept, parts);
   int missing = 0;
   if (n < 0) {
     encode(cb, target, mpipe, buf, count, r, g, b, 1, NULL);
@@ -994,55 +1352,80 @@ static int draw_parts(id<MTLCommandBuffer> cb, id<MTLTexture> target, id<MTLBuff
   return n;
 }
 
-// The instances into the next buffer of the ring (as floats), and a copy
-// kept for snapshots.
-static id<MTLBuffer> upload(const double *inst, int32_t count, double r, double g, double b) {
+// The frame as floats as it comes (mb_groups_floats: a window's; as it is: one drawn offscreen), before it is the
+// window's last (upload): each frame made here once, compared, put in the ring and kept from here.
+static float *next_inst;
+static size_t next_cap;
+
+// Room in next_inst for `count` instances.
+static float *next_room(int32_t count) {
+  size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
+  if (next_cap < need) {
+    next_inst = realloc(next_inst, need);
+    next_cap = need;
+  }
+  return next_inst;
+}
+
+// Instances `inst` into next_inst as they are (no header of a group among them drawn out: a frame drawn offscreen, as
+// it always was).
+static void next_as_is(const double *inst, int32_t count) {
+  float *f = next_room(count);
+  size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
+  for (size_t i = 0; i < n; i++) f[i] = (float)inst[i];
+}
+
+// The frame in next_inst (`count` instances) kept as the window's last (for snapshots, and what the next is compared
+// with): next_inst and the last swapped, nothing copied.
+static void keep_last(int32_t count, double r, double g, double b) {
+  float *was = last_inst;
+  size_t was_cap = last_cap;
+  last_inst = next_inst;
+  last_cap = next_cap;
+  next_inst = was;
+  next_cap = was ? was_cap : 0;
+  last_count = count;
+  last_bg[0] = r; last_bg[1] = g; last_bg[2] = b;
+}
+
+// Instances `f` (`count` of them) into the next buffer of the ring, and the frame's ground after them: a rect over all
+// the frame (at_w × at_h), opaque, a part drawn again first.
+static id<MTLBuffer> ring_put(const float *f, int32_t count, double r, double g, double b) {
   buf_i = (buf_i + 1) % 3;
   size_t need = (size_t)(count > 0 ? count : 1) * MB_INST * sizeof(float);
-  // (and the frame's ground after its instances: a rect over all the window, opaque, a part drawn again first)
   size_t room = need + MB_INST * sizeof(float);
   if (buf_cap[buf_i] < room) {
     size_t cap = room * 2;
     bufs[buf_i] = [dev newBufferWithLength:cap options:MTLResourceStorageModeShared];
     buf_cap[buf_i] = cap;
   }
-  float *f = (float *)bufs[buf_i].contents;
+  float *d = (float *)bufs[buf_i].contents;
   int32_t n = count * MB_INST;
-  for (int32_t i = 0; i < n; i++) f[i] = (float)inst[i];
-  float *gr = f + n;
+  if (n > 0) memcpy(d, f, (size_t)n * sizeof(float));
+  float *gr = d + n;
   memset(gr, 0, MB_INST * sizeof(float));
-  gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)vw + 32.0f; gr[3] = (float)vh + 32.0f;
+  gr[0] = -16.0f; gr[1] = -16.0f; gr[2] = (float)at_w + 32.0f; gr[3] = (float)at_h + 32.0f;
   gr[8] = (float)r; gr[9] = (float)g; gr[10] = (float)b; gr[11] = 1.0f;
   gr[16] = -1e9f; gr[17] = -1e9f; gr[18] = 1e9f; gr[19] = 1e9f;
-  // keep a copy for snapshots
-  if (last_cap < need) {
-    last_inst = realloc(last_inst, need);
-    last_cap = need;
-  }
-  memcpy(last_inst, f, (size_t)n * sizeof(float));
-  last_count = count;
-  last_bg[0] = r; last_bg[1] = g; last_bg[2] = b;
   return bufs[buf_i];
 }
 
-// Whether a frame is the one on the screen to the last number: then it draws nothing and takes no drawable (the app
-// builds a frame for what it waits on, as a clock's next second, that may show nothing new). Not one a layer presents
-// with its transaction (a resize's: mac_app.m drawWithWindow), which the window's change waits for.
-static int same_as_shown(const double *inst, int32_t count, double r, double g, double b) {
+// Whether a frame is the one last handed to be shown to the last number: then it draws nothing and takes no drawable
+// (the app builds a frame for what it waits on, as a clock's next second, that may show nothing new). Not one a layer
+// presents with its transaction (a resize's: mac_app.m drawWithWindow), which the window's change waits for.
+static int same_as_shown(const float *f, int32_t count, double r, double g, double b) {
   if (!shown_ok || shown_streams || mlayer.presentsWithTransaction || count != last_count) return 0;
   if (vw != shown_w || vh != shown_h || vscale != shown_scale || r != last_bg[0] || g != last_bg[1] || b != last_bg[2]) return 0;
-  int32_t n = count * MB_INST;
-  for (int32_t i = 0; i < n; i++)
-    if ((float)inst[i] != last_inst[i]) return 0;
-  return 1;
+  size_t n = (size_t)(count > 0 ? count : 0) * MB_INST;
+  return n == 0 || (last_inst && memcmp(f, last_inst, n * sizeof(float)) == 0);
 }
 
-// The canvas a window's frames are drawn into (partial redraw, above), tw × th pixels: made again at another size,
+// The canvas window `w`'s frames are drawn into (partial redraw, above), tw × th pixels: made again at another size,
 // what it held lost.
-static void ensure_canvas(int tw, int th) {
-  if (canvas && (int)canvas.width == tw && (int)canvas.height == th) return;
-  canvas = nil;
-  canvas_ok = 0;
+static void ensure_canvas(MBRenderWin *w, int tw, int th) {
+  if (w->cv && (int)w->cv.width == tw && (int)w->cv.height == th) return;
+  w->cv = nil;
+  w->cv_ok = 0;
   if (tw <= 0 || th <= 0) return;
   MTLTextureDescriptor *td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                                                 width:(NSUInteger)tw
@@ -1050,25 +1433,30 @@ static void ensure_canvas(int tw, int th) {
                                                                             mipmapped:NO];
   td.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
   td.storageMode = MTLStorageModePrivate;
-  canvas = [dev newTextureWithDescriptor:td];
+  w->cv = [dev newTextureWithDescriptor:td];
 }
 
 // MBUI_PARTIAL_CHECK=1 (a device's run, by hand: slow): each frame drawn in part compared with itself drawn whole,
-// a line on the log where they differ, once its commands (`cb`, committed) are done.
+// a line on the log where they differ, once its commands (`cb`, committed) are done. Its frames are drawn on the main
+// thread (mb_render_present), the window's last frame then the one just drawn.
 static int partial_check = -1, partial_frames;
 
-static uint8_t *read_texture(id<MTLTexture> src, int *pw, int *ph);
-static uint8_t *read_last(int *pw, int *ph);
-
-static void check_part(id<MTLCommandBuffer> cb, int parts) {
+static int partial_checking(void) {
   if (partial_check < 0) {
     const char *v = getenv("MBUI_PARTIAL_CHECK");
     partial_check = v && v[0] == '1';
   }
-  if (!partial_check) return;
+  return partial_check;
+}
+
+static uint8_t *read_texture(id<MTLTexture> src, int *pw, int *ph);
+static uint8_t *read_last(int *pw, int *ph);
+
+static void check_part(id<MTLCommandBuffer> cb, int parts, MBRenderWin *win) {
+  if (!partial_checking()) return;
   [cb waitUntilCompleted];
   int w, h, fw, fh;
-  uint8_t *drawn = read_texture(canvas, &w, &h);
+  uint8_t *drawn = read_texture(win->cv, &w, &h);
   uint8_t *whole = read_last(&fw, &fh);
   long apart = 0;
   int most = 0, ax = -1, ay = -1;
@@ -1092,19 +1480,25 @@ static void check_part(id<MTLCommandBuffer> cb, int parts) {
 
 // MBUI_PROBE=1 (src/ui/app.mbt's probe): where a present's time goes, said every 240 of them: waiting for a buffer of
 // the ring (the GPU three frames behind), the instances into it, waiting for a drawable (the display's), and the
-// drawing encoded and committed (ms, on average). On the log, and into the performance record while it is kept
-// (ios_app.m's mb_perf_note: none on a Mac, these defaults).
+// drawing encoded and committed (ms, on average), on the queue that presents (present_q) or the main thread. On the
+// log, and into the performance record while it is kept (ios_app.m's mb_perf_note, any thread: none on a Mac, these
+// defaults).
 static int present_probing = -1, present_n;
 static double present_ms[4];
 
 __attribute__((weak)) int mb_perf_on(void) { return 0; }
 __attribute__((weak)) void mb_perf_note(const char *line) { (void)line; }
 
-// A frame's drawable about to be presented (mac_latency.h, a run measuring input to the screen: none elsewhere, this
-// default): when the frame asked for a buffer of the ring (p0), had one (p1), asked for the drawable (p2) and had it
+// A latency run's frames (mac_latency.h, a run measuring input to the screen: none elsewhere, these defaults): one
+// made on the main thread (its number, -1 none: the events handled before it are its), one that took the place of
+// another before it was drawn (the other's events are its), and its drawable about to be presented, on whatever thread
+// draws it: when the frame asked for a buffer of the ring (p0), had one (p1), asked for the drawable (p2) and had it
 // (p3), CACurrentMediaTime's seconds.
-__attribute__((weak)) void mb_latency_presenting(id<CAMetalDrawable> d, double p0, double p1, double p2, double p3) {
-  (void)d, (void)p0, (void)p1, (void)p2, (void)p3;
+__attribute__((weak)) int mb_latency_built(void) { return -1; }
+__attribute__((weak)) void mb_latency_merged(int from, int to) { (void)from, (void)to; }
+__attribute__((weak)) void mb_latency_presenting(id<CAMetalDrawable> d, int k, double p0, double p1, double p2,
+                                                 double p3) {
+  (void)d, (void)k, (void)p0, (void)p1, (void)p2, (void)p3;
 }
 
 static void present_probe(double ring, double upload_s, double drawable, double encode_s) {
@@ -1136,7 +1530,8 @@ static void present_probe(double ring, double upload_s, double drawable, double 
 // stop the frames.)
 void mb_render_trim(void) {
   if (!mlayer || CGSizeEqualToSize(mlayer.drawableSize, CGSizeMake(1, 1))) return;
-  // (nothing of the GPU's still in flight uses what goes)
+  // (what the queue holds drawn first, and nothing of the GPU's still in flight uses what goes)
+  present_drain();
   for (int i = 0; i < 3; i++) dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
   for (int i = 0; i < 3; i++) dispatch_semaphore_signal(inflight);
   for (int j = 0; j < 4; j++) lv[j] = nil;
@@ -1169,56 +1564,66 @@ static void copy_to_drawable(id<MTLCommandBuffer> cb, id<MTLTexture> src, id<MTL
   [e endEncoding];
 }
 
-void mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
-  // a frame that put a native view elsewhere (apple_views.m: a page in a message, as the list scrolls) presented in
-  // the transaction that puts it there (the frame's: mac_app.m drawFrame, ios_app.m tick), so the view and the hole it
-  // shows through change on the same refresh. Presented by itself the drawable is shown once the GPU has drawn it,
-  // apart from the view's move, which the frame's transaction takes to the screen: a refresh or two apart, the page
-  // out of step with its hole as the list moved
-  // (the views' frost of glass over them put where it shows now, with them: glass_through)
-  int has_hole = glass_through(inst, count);
-  BOOL want_opaque = !has_hole;
-  int opaque_changed = mlayer && mlayer.opaque != want_opaque;
-  int with_views = (mb_views_take_moved() || opaque_changed) && !mlayer.presentsWithTransaction;
-  if (!opaque_changed && same_as_shown(inst, count, r, g, b)) {
-    // (what was said of it, nothing changed, not left for the next)
-    dirty_told = dirty_whole = dirty_n = 0;
-    return;
-  }
-  if (opaque_changed) mlayer.opaque = want_opaque;
-  if (with_views) mlayer.presentsWithTransaction = YES;
+// How many frames were drawn and presented (scripts/apple_render_test.m: frames that took another's place are not).
+static int present_drawn;
+
+// Frame `fr` drawn for window `w` and presented: on present_q, or on the main thread once the queue is drained (`tx`:
+// presented with the main thread's Core Animation transaction, once its commands are scheduled, as Core Animation
+// asks; `check`: MBUI_PARTIAL_CHECK's comparison after). Returns whether it had a drawable.
+static int draw_frame(MBRenderWin *w, MBFrame *fr, int tx, int check) {
   double p0 = CACurrentMediaTime();
   dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
   double p1 = CACurrentMediaTime();
-  id<MTLBuffer> buf = upload(inst, count, r, g, b);
+  atlas_flush(fr->atlas_seq);
+  at_w = fr->w;
+  at_h = fr->h;
+  at_scale = fr->scale;
+  at_texs = fr->texs;
+  at_through_n = fr->through_n;
+  memcpy(at_through_tid, fr->through_tid, sizeof at_through_tid);
+  int32_t count = fr->count;
+  double r = fr->bg[0], g = fr->bg[1], b = fr->bg[2];
+  id<MTLBuffer> buf = ring_put(fr->inst, count, r, g, b);
   double e0 = CACurrentMediaTime();
+  // A frame drawn whole (nothing said of its parts, all of it said, a picture missing from the last) with no glass in
+  // it is drawn straight into the drawable once it is had: the canvas would only be drawn whole and copied again, a
+  // pass reading and writing every pixel twice more (30-45 MB a frame of a Retina window, as it scrolls), and the
+  // drawable, framebufferOnly, is all such a frame needs. The canvas then holds no frame: the next drawn in part is
+  // drawn whole into it first (canvas_ok). Glass copies what is under it out of what it is drawn into (blur), which a
+  // drawable that is only a framebuffer cannot be read for: a frame with glass goes through the canvas, as do frames
+  // drawn in part.
+  int tw = fr->tw, th = fr->th;
+  int direct = !fr->glass && tw > 0 && th > 0 && (!fr->parts.told || fr->parts.whole || pictures_missing);
   // drawn into the canvas and committed before asking for the drawable, so the GPU draws the canvas while nextDrawable
   // waits on the swapchain and the drawable is held only for the final copy; a drawable of another size than the
   // canvas (a resize between) redraws the canvas at that size before copying
-  int tw = (int)mlayer.drawableSize.width, th = (int)mlayer.drawableSize.height;
   int checked = 0;
   id<MTLCommandBuffer> cb = nil;
-  if (tw > 0 && th > 0) {
-    ensure_canvas(tw, th);
+  if (direct) {
+    w->cv_ok = 0;
+  } else if (tw > 0 && th > 0) {
+    ensure_canvas(w, tw, th);
     cb = [queue commandBuffer];
-    checked = draw_parts(cb, canvas, buf, count, r, g, b, canvas_ok);
-    canvas_ok = 1;
+    checked = draw_parts(cb, w->cv, buf, count, r, g, b, w->cv_ok, &fr->parts);
+    w->cv_ok = 1;
     if (checked != 0) [cb commit];
   }
   double p2 = CACurrentMediaTime();
-  id<CAMetalDrawable> drawable = [mlayer nextDrawable];
+  id<CAMetalDrawable> drawable = [w->layer nextDrawable];
   double p3 = CACurrentMediaTime();
   id<MTLCommandBuffer> pcb = [queue commandBuffer];
-  if (drawable) {
+  if (drawable && direct) {
+    encode(pcb, drawable.texture, mpipe, buf, count, r, g, b, 1, NULL);
+    pictures_missing = encode_missing;
+  } else if (drawable) {
     int dw = (int)drawable.texture.width, dh = (int)drawable.texture.height;
     if (dw != tw || dh != th) {
-      ensure_canvas(dw, dh);
-      encode(pcb, canvas, mpipe, buf, count, r, g, b, 1, NULL);
-      canvas_ok = 0;
-      dirty_told = dirty_whole = dirty_n = 0;
+      ensure_canvas(w, dw, dh);
+      encode(pcb, w->cv, mpipe, buf, count, r, g, b, 1, NULL);
+      w->cv_ok = 0;
       checked = 0;
     }
-    copy_to_drawable(pcb, canvas, drawable.texture);
+    copy_to_drawable(pcb, w->cv, drawable.texture);
   }
   __block dispatch_semaphore_t sem = inflight;
   id<MTLCommandBuffer> ccb = checked != 0 ? cb : nil;
@@ -1228,19 +1633,8 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     last_gpu = (g0 + g1) * 1000.0;
     dispatch_semaphore_signal(sem);
   }];
-  shown_ok = drawable != nil;
-  if (drawable) {
-    shown_w = vw;
-    shown_h = vh;
-    shown_scale = vscale;
-    shown_streams = 0;
-    const float *f = (const float *)buf.contents;
-    for (int32_t i = 0; i < count && !shown_streams; i++) shown_streams = f[i * MB_INST + 20] > (float)MB_STREAM_TEX;
-  }
-  if (drawable) mb_latency_presenting(drawable, p0, p1, p2, p3);
-  // (a layer that presents with its transaction: shown with the window's change it was drawn for, mac_app.m
-  // drawWithWindow, or the views' moves; once its commands are scheduled, as Core Animation asks)
-  if (drawable && mlayer.presentsWithTransaction) {
+  if (drawable) mb_latency_presenting(drawable, fr->lat, p0, p1, p2, p3);
+  if (drawable && tx) {
     [pcb commit];
     [pcb waitUntilScheduled];
     [drawable present];
@@ -1248,10 +1642,111 @@ void mb_render_present(const double *inst, int32_t count, double r, double g, do
     if (drawable) [pcb presentDrawable:drawable];
     [pcb commit];
   }
-  if (with_views) mlayer.presentsWithTransaction = NO;
-  through_n = 0;
+  at_texs = nil;
+  at_through_n = 0;
+  present_drawn++;
   present_probe(p1 - p0, e0 - p1, p3 - p2, (p2 - e0) + (CACurrentMediaTime() - p3));
-  if (checked > 0) check_part(cb, checked);
+  if (check && checked > 0) check_part(cb, checked, w);
+  return drawable != nil;
+}
+
+// The frame waiting for window `w` drawn (present_q): the newest the main thread handed over.
+static void present_job(MBRenderWin *w) {
+  @autoreleasepool {
+    os_unfair_lock_lock(&present_mu);
+    MBFrame *fr = w->pending;
+    w->pending = nil;
+    w->queued = 0;
+    os_unfair_lock_unlock(&present_mu);
+    // (none had: the window let go of first)
+    if (!fr || !w->layer) return;
+    if (!draw_frame(w, fr, 0, 0)) atomic_store(&w->missed, 1);
+  }
+}
+
+void mb_render_present(const double *inst, int32_t count, double r, double g, double b) {
+  // a frame that put a native view elsewhere (apple_views.m: a page in a message, as the list scrolls) presented in
+  // the transaction that puts it there (the frame's: mac_app.m drawFrame, ios_app.m tick), so the view and the hole it
+  // shows through change on the same refresh. Presented by itself the drawable is shown once the GPU has drawn it,
+  // apart from the view's move, which the frame's transaction takes to the screen: a refresh or two apart, the page
+  // out of step with its hole as the list moved
+  // (the views' frost of glass over them put where it shows now, with them: glass_through)
+  // the frame as floats, its groups' headers drawn out (groups.h): made once, compared, handed over, kept
+  float *f = next_room(count);
+  mb_groups_floats(f, inst, count);
+  int has_hole = glass_through(f, count);
+  BOOL want_opaque = !has_hole;
+  int opaque_changed = mlayer && mlayer.opaque != want_opaque;
+  int with_views = (mb_views_take_moved() || opaque_changed) && !mlayer.presentsWithTransaction;
+  // (the last frame handed over had no drawable: not the one shown)
+  if (atomic_exchange(&rw->missed, 0)) shown_ok = 0;
+  if (!opaque_changed && same_as_shown(f, count, r, g, b)) {
+    // (what was said of it, nothing changed, not left for the next)
+    dirty_told = dirty_whole = dirty_n = 0;
+    through_n = 0;
+    return;
+  }
+  MBFrame *fr = [MBFrame new];
+  fr->count = count;
+  fr->bg[0] = r; fr->bg[1] = g; fr->bg[2] = b;
+  fr->w = vw; fr->h = vh; fr->scale = vscale;
+  fr->tw = (int)mlayer.drawableSize.width;
+  fr->th = (int)mlayer.drawableSize.height;
+  // (whether it has glass, which copies what is drawn under it out of what it is drawn into: slot 20 negative)
+  for (int32_t i = 0; i < count && !fr->glass; i++) fr->glass = f[i * MB_INST + 20] < 0.0f;
+  fr->parts = rw->said;
+  rw->said = (MBDirty){0};
+  fr->through_n = through_n;
+  memcpy(fr->through_tid, through_tid, sizeof through_tid);
+  fr->atlas_seq = atlas_seq;
+  fr->lat = mb_latency_built();
+  through_n = 0;
+  int streams = 0;
+  for (int32_t i = 0; i < count && !streams; i++) streams = f[i * MB_INST + 20] > (float)MB_STREAM_TEX;
+  if (mlayer.presentsWithTransaction || with_views || partial_checking()) {
+    // drawn here, in the main thread's transaction, once the queue has drawn what it holds
+    present_drain();
+    if (opaque_changed) mlayer.opaque = want_opaque;
+    if (with_views) mlayer.presentsWithTransaction = YES;
+    fr->inst = f;
+    int had = draw_frame(rw, fr, mlayer.presentsWithTransaction, 1);
+    fr->inst = NULL;
+    if (with_views) mlayer.presentsWithTransaction = NO;
+    keep_last(count, r, g, b);
+    shown_ok = had;
+  } else {
+    size_t n = (size_t)(count > 0 ? count : 0) * MB_INST * sizeof(float);
+    fr->inst = pool_take(n > 0 ? n : sizeof(float), &fr->cap);
+    if (n > 0) memcpy(fr->inst, f, n);
+    fr->texs = frame_texs(f, count);
+    keep_last(count, r, g, b);
+    shown_ok = 1;
+    MBRenderWin *w = rw;
+    MBFrame *was;
+    int merged = -1, lat = fr->lat;
+    os_unfair_lock_lock(&present_mu);
+    was = w->pending;
+    if (was) {
+      // (it takes the place of one not drawn yet: what that said differs is still to be drawn, the events that one
+      // showed this one shows)
+      dirty_join(&fr->parts, &was->parts);
+      if (was->tw != fr->tw || was->th != fr->th || was->scale != fr->scale) fr->parts.whole = fr->parts.told = 1;
+      if (was->lat >= 0 && lat >= 0) merged = was->lat;
+      else if (was->lat >= 0) fr->lat = was->lat;
+    }
+    w->pending = fr;
+    int go = !w->queued;
+    w->queued = 1;
+    os_unfair_lock_unlock(&present_mu);
+    if (merged >= 0) mb_latency_merged(merged, lat);
+    if (go) dispatch_async(present_q, ^{
+      present_job(w);
+    });
+  }
+  shown_w = vw;
+  shown_h = vh;
+  shown_scale = vscale;
+  shown_streams = streams;
 }
 
 // MBUI_SAFE's bands (mac_app.m), in points, and their ground
@@ -1267,11 +1762,20 @@ void mb_render_set_bands(double top, double bottom, uint32_t ground) {
 // the texture the last frame is drawn again into for the CPU to read (read_last), kept while its size is
 static id<MTLTexture> read_tex;
 
-// Instances `f` (`count` of them, as upload copies a frame's) drawn on the ground `bg` into a texture the CPU reads,
-// and its pixels: BGRA, premultiplied, rows from the top, the size set (mb_render_set_size), *pw × *ph; the caller
-// frees them.
-static uint8_t *read_of(const float *f, int32_t count, const double bg[3], double alpha, int *pw, int *ph) {
-  int w = (int)round(vw * vscale), h = (int)round(vh * vscale);
+// Instances `f` (`count` of them, as a frame's floats are) drawn on the ground `bg` into a texture the CPU reads, at
+// `sw` × `sh` points, `scale` pixels a point, and its pixels: BGRA, premultiplied, rows from the top, *pw × *ph; the
+// caller frees them. On the main thread, what present_q holds drawn first (its state is then the main thread's), every
+// glyph kept put in, no native view's frost through it, the pictures' textures as they are now.
+static uint8_t *read_of(const float *f, int32_t count, const double bg[3], double alpha, double sw, double sh,
+                        double scale, int *pw, int *ph) {
+  present_drain();
+  atlas_flush(UINT64_MAX);
+  at_w = sw;
+  at_h = sh;
+  at_scale = scale;
+  at_texs = nil;
+  at_through_n = 0;
+  int w = (int)round(sw * scale), h = (int)round(sh * scale);
   if (!read_tex || (int)read_tex.width != w || (int)read_tex.height != h) {
     MTLTextureDescriptor *td = [MTLTextureDescriptor
         texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm width:w height:h mipmapped:NO];
@@ -1305,6 +1809,7 @@ static uint8_t *read_of(const float *f, int32_t count, const double bg[3], doubl
 // What a texture the GPU keeps (a canvas: private) holds, once what is drawn into it is done, read back as read_of
 // reads: the caller frees it.
 static uint8_t *read_texture(id<MTLTexture> src, int *pw, int *ph) {
+  present_drain();
   int w = (int)src.width, h = (int)src.height;
   uint8_t *px = malloc((size_t)w * h * 4);
   @autoreleasepool {
@@ -1334,16 +1839,18 @@ static uint8_t *read_texture(id<MTLTexture> src, int *pw, int *ph) {
   return px;
 }
 
-// The last frame's instances (upload's copy) drawn again, read back as read_of reads them.
+// The window's last frame (keep_last's) drawn again at the size set (mb_render_set_size), read back as read_of reads.
 static uint8_t *read_last(int *pw, int *ph) {
-  return read_of(last_inst, last_count, last_bg, 1, pw, ph);
+  return read_of(last_inst, last_count, last_bg, 1, vw, vh, vscale, pw, ph);
 }
 
 // A frame drawn offscreen and read back (a film's, mbui/src/film): `inst` as mb_render_present takes them, kept as
 // the last frame, and its pixels as read_last gives them.
 uint8_t *mb_render_read(const double *inst, int32_t count, double r, double g, double b, int *pw, int *ph) {
   @autoreleasepool {
-    upload(inst, count, r, g, b);
+    present_drain();
+    next_as_is(inst, count);
+    keep_last(count, r, g, b);
     return read_last(pw, ph);
   }
 }
@@ -1390,16 +1897,9 @@ int32_t mb_render_pixels_of(const double *inst, int32_t count, double r, double 
     float *f = malloc((n > 0 ? n : MB_INST) * sizeof(float));
     for (size_t i = 0; i < n; i++) f[i] = (float)inst[i];
     double bg[3] = {r, g, b};
-    // (drawn as a frame of that size is: read_of draws the size set, put back after)
-    double kw = vw, kh = vh, ks = vscale;
-    vscale = scale;
-    vw = w / scale;
-    vh = h / scale;
+    // (drawn as a frame of that size is)
     int fw, fh;
-    uint8_t *px = read_of(f, count, bg, 1, &fw, &fh);
-    vw = kw;
-    vh = kh;
-    vscale = ks;
+    uint8_t *px = read_of(f, count, bg, 1, w / scale, h / scale, scale, &fw, &fh);
     free(f);
     if (fw == w && fh == h) {
       for (int k = 0; k < h; k++) {
@@ -1480,7 +1980,7 @@ int mb_render_snapshot(const char *path) {
 int mb_render_snapshot_transparent(const char *path) {
   int w, h;
   const double clear[3] = {0, 0, 0};
-  uint8_t *px = read_of(last_inst, last_count, clear, 0, &w, &h);
+  uint8_t *px = read_of(last_inst, last_count, clear, 0, vw, vh, vscale, &w, &h);
   return snapshot_of(px, w, h, path);
 }
 
@@ -1523,12 +2023,23 @@ void mb_render_init_offscreen(double w, double h, double scale) {
 // (the command buffer's timestamps), in ms.
 void mb_render_draw_timed(const double *inst, int32_t count, double r, double g, double b, double *out) {
   @autoreleasepool {
+    present_drain();
     dispatch_semaphore_wait(inflight, DISPATCH_TIME_FOREVER);
     double t0 = CACurrentMediaTime();
-    id<MTLBuffer> buf = upload(inst, count, r, g, b);
+    next_as_is(inst, count);
+    keep_last(count, r, g, b);
+    atlas_flush(UINT64_MAX);
+    at_w = vw;
+    at_h = vh;
+    at_scale = vscale;
+    at_texs = nil;
+    at_through_n = 0;
+    id<MTLBuffer> buf = ring_put(last_inst, count, r, g, b);
     id<MTLCommandBuffer> cb = [queue commandBuffer];
     // (only the parts said to differ, as a window's canvas is drawn: the target is kept across frames too)
-    draw_parts(cb, off_target, buf, count, r, g, b, off_ok);
+    MBDirty said = rw->said;
+    rw->said = (MBDirty){0};
+    draw_parts(cb, off_target, buf, count, r, g, b, off_ok, &said);
     off_ok = 1;
     [cb commit];
     double t1 = CACurrentMediaTime();

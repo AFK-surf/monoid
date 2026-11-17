@@ -1,0 +1,97 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/store_schema"
+
+import {
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn active_jobs_fit_at_open(@sql.Db) -> Bool raise
+
+pub fn active_jobs_upgrade_pending(@sql.Db) -> Bool raise
+
+pub let decision_session_index : String
+
+pub let decision_time_index : String
+
+pub fn first_delivery(String) -> String
+
+pub async fn harness(@host.Host, String) -> Unit
+
+pub fn has_card_outbox(@sql.Db) -> Bool raise
+
+pub fn has_compact_usage(@sql.Db) -> Bool raise
+
+pub fn has_decision_session_repair(@sql.Db) -> Bool raise
+
+pub fn has_legacy_agent(@sql.Db) -> Bool raise
+
+pub fn has_legacy_archive_policy(@sql.Db) -> Bool raise
+
+pub fn has_legacy_decision_session(@sql.Db) -> Bool raise
+
+pub fn has_legacy_decision_time(@sql.Db) -> Bool raise
+
+pub fn has_legacy_edits(@sql.Db) -> Bool raise
+
+pub fn has_legacy_login_cards(@sql.Db) -> Bool raise
+
+pub fn has_legacy_said(@sql.Db) -> Bool raise
+
+pub fn has_old_edit_index(@sql.Db) -> Bool raise
+
+pub fn has_shared_decision_session(@sql.Db) -> Bool raise
+
+pub fn has_usage_15m(@sql.Db) -> Bool raise
+
+pub fn headed_from(String) -> (String, String?)
+
+pub fn install_card_outbox(@sql.Db) -> Unit raise
+
+pub fn install_compact_usage(@sql.Db) -> Unit raise
+
+pub fn legacy_edit_latest(String, String, String, Bool) -> String
+
+pub fn legacy_edits_use_old_index(@sql.Db) -> Bool raise
+
+pub fn legacy_said_latest(except? : String) -> String
+
+pub let merged : String
+
+pub fn open(@sql.Db, @host.Host, String, Int64, archive? : String) -> Unit raise
+
+pub fn repair_merged_edit_lookup(@sql.Db) -> Unit raise
+
+pub let schema : String
+
+pub let schema_version : Int32
+
+pub fn settle_connection(@sql.Db) -> Unit raise
+
+pub fn stop_usage_indexes(@sql.Db) -> Unit raise
+
+pub fn system_card_sql(String) -> String
+
+pub fn take_rig_outcomes(@sql.Db) -> Unit raise
+
+pub let thread_state_seek : String
+
+pub fn usage_indexes_left(@sql.Db) -> Bool raise
+
+pub fn usage_indexes_stopped(@sql.Db) -> Bool raise
+
+pub fn uses_legacy_edits(@sql.Db) -> Bool raise
+
+pub fn widget_source_before_add_needs_repair(@sql.Db) -> Bool raise
+
+// Errors
+pub(all) suberror Refused {
+  Refused(String)
+}
+
+// Types and methods
+
+// Type aliases
+
+// Traits

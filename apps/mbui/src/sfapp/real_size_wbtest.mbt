@@ -33,6 +33,12 @@
 // down, a row not there fails with the line to write, and one there no longer measured asks for it to be taken out. A
 // frame that takes a change and builds nothing is a row of zeros, kept: a change the screen does not show costs
 // nothing, and one that comes to cost something fails. Each window is a test of its own, so CI places them apart.
+//
+// And the window's tree's bindings that frame ran (a device's hang report's tree bindings: mbui's Work `bindings_run`),
+// held to real_size_bindings_known_wbtest.mbt the same way, but a row there only where it runs any: a change the screen
+// does not show is stopped before any binding of what shows it runs (a computed read the same), so a row not there is
+// held to none, and one that comes to run the floor or more fails, its sizes the same or not (a binding left
+// ungated, run for every change of a topic and setting what it set: made, laid and measured all 0).
 
 ///|
 /// The windows: a phone's and a wide desktop's (corner_windows').
@@ -48,6 +54,12 @@ let real_size_windows : Array[(String, Double, Double, Int, String)] = [
 let real_size_shell_ways : Array[String] = [
   "chats", "chatRow", "workspaceMarks", "lock", "stations", "longJobs", "workspace", "stationUpdates",
 ]
+
+///|
+/// The shell's ways the board shows as its own page as well (its cards are the chats' rows, each a card of its own; wide,
+/// the sidebar put away beside it): their changes given on the board too, not on Home alone, whose rows are another
+/// page's (a board that woke every card for one chat's change was never given one, 2026-11-16).
+let real_size_board_ways : Array[String] = ["chats"]
 
 ///|
 /// The chat page's own ways: the same chat page under each of its other modes (a sheet, a panel over it), so their
@@ -75,6 +87,44 @@ fn real_size_most() -> (Int, Int, Int) {
     }
   }
   most
+}
+
+///|
+/// The most one frame of a screen's opening may make, lay out and measure where the screen is not in
+/// real_size_known_wbtest.mbt yet, by window: a little over the most of any screen there but those that open a chat's
+/// panes beside the list (`chat-*`, `history`, `service`, `newchat-*`) and the board as it was found (`wide board`,
+/// 2026-11-16); a phone's most was 857, 953, 256. A
+/// new screen over it is not written in as its bar (the board's first, 1805 3469 932, was, #6565): what it holds is made
+/// a row at a time where it shows (View::scrolls_window, a page's page_node), so it opens within it.
+fn real_size_new_screen_most(win : String) -> (Int, Int, Int) {
+  match win {
+    "phone" => (900, 1050, 280)
+    _ => (1500, 2600, 650)
+  }
+}
+
+///|
+/// What is wrong with a screen `name` not in real_size_known_wbtest.mbt, opened in window `win` with the most of a
+/// frame `made`, `laid`, `words`: over a new screen's bar (real_size_new_screen_most), why it is not to be written in;
+/// else none (its line is to be written).
+fn real_size_new_screen_fault(name : String, win : String, made : Int, laid : Int, words : Int) -> String? {
+  let (m, l, w) = real_size_new_screen_most(win)
+  if made > m || laid > l || words > w {
+    Some(
+      "\{name}: made \{made} laid \{laid} measured \{words}, over a new screen's bar (\{m}, \{l}, \{w}): not to be written in real_size_known_wbtest.mbt; make what it holds a row at a time where it shows (View::scrolls_window, page_node)",
+    )
+  } else {
+    None
+  }
+}
+
+///|
+test "a screen not in real_size_known_wbtest.mbt over a new screen's bar is refused, not given a line to write; one within it is given its line" {
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1805, 3469, 932) is Some(_))
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1400, 2700, 300) is Some(_))
+  assert_true(real_size_new_screen_fault("phone new", "phone", 901, 500, 100) is Some(_))
+  assert_true(real_size_new_screen_fault("phone new", "phone", 900, 1050, 280) is None)
+  assert_true(real_size_new_screen_fault("wide new", "wide", 1500, 2600, 650) is None)
 }
 
 ///|
@@ -116,22 +166,26 @@ fn real_size_change_said() -> Unit {
 
 ///|
 /// What the frame that takes `put` does: posted as the core's message is, taken as the frame begins, one frame drawn:
-/// the window's tree's nodes made, let go, laid out, words measured; the old view's nodes built and laid out.
-fn real_size_change_frame(t : @ui.Tester, put : () -> Unit) -> (Int, Int, Int, Int, Int, Int) {
+/// the window's tree's nodes made, let go, laid out, words measured; the old view's nodes built and laid out; the
+/// window's tree's bindings run.
+fn real_size_change_frame(t : @ui.Tester, put : () -> Unit) -> (Int, Int, Int, Int, Int, Int, Int) {
   real_size_change_due.push(put)
   t.tree_frames_from_now()
   t.post(real_size_change_channel, "{}")
   t.frame()
   let old = t.frame_perf()
-  let f = t.tree_frames().fold(init=(0, 0, 0, 0), fn(a, x) {
-    (a.0 + x.made, a.1 + x.let_go, a.2 + x.laid, a.3 + x.measured)
+  let f = t.tree_frames().fold(init=(0, 0, 0, 0, 0), fn(a, x) {
+    (a.0 + x.made, a.1 + x.let_go, a.2 + x.laid, a.3 + x.measured, a.4 + x.bindings)
   })
-  (f.0, f.1, f.2, f.3, old.nodes, old.laid)
+  (f.0, f.1, f.2, f.3, old.nodes, old.laid, f.4)
 }
 
 ///|
-/// Each of the six the most of `a`'s and `b`'s.
-fn real_size_frame_most(a : (Int, Int, Int, Int, Int, Int), b : (Int, Int, Int, Int, Int, Int)) -> (Int, Int, Int, Int, Int, Int) {
+/// Each of the seven the most of `a`'s and `b`'s.
+fn real_size_frame_most(
+  a : (Int, Int, Int, Int, Int, Int, Int),
+  b : (Int, Int, Int, Int, Int, Int, Int),
+) -> (Int, Int, Int, Int, Int, Int, Int) {
   (
     @cmp.maximum(a.0, b.0),
     @cmp.maximum(a.1, b.1),
@@ -139,6 +193,7 @@ fn real_size_frame_most(a : (Int, Int, Int, Int, Int, Int), b : (Int, Int, Int, 
     @cmp.maximum(a.3, b.3),
     @cmp.maximum(a.4, b.4),
     @cmp.maximum(a.5, b.5),
+    @cmp.maximum(a.6, b.6),
   )
 }
 
@@ -146,7 +201,9 @@ fn real_size_frame_most(a : (Int, Int, Int, Int, Int, Int), b : (Int, Int, Int, 
 /// Whether way `way` of a screen `mode` is given its changes there (the head says which are given on one screen):
 /// `measured`, the shell's ways given already in this window; `home`, those Home reads.
 fn real_size_given_here(mode : String, way : String, measured : Map[String, Bool], home : Map[String, Bool]) -> Bool {
-  if real_size_shell_ways.contains(way) {
+  if real_size_board_ways.contains(way) && mode == "board" {
+    true
+  } else if real_size_shell_ways.contains(way) {
     mode == "home" || (!home.contains(way) && !measured.contains(way))
   } else if real_size_chat_ways.contains(way) {
     real_size_chat_modes.contains(mode)
@@ -163,7 +220,7 @@ fn real_size_screen(
   mode : String,
   win : (String, Double, Double, Int, String),
   given : (String) -> Bool,
-) -> ((Int, Int, Int), Array[(String, (Int, Int, Int, Int, Int, Int))]) {
+) -> ((Int, Int, Int), Array[(String, (Int, Int, Int, Int, Int, Int, Int))]) {
   let c = @sfrealsize.RealSizeChanging::new()
   // (what moves not judged frame to frame: putting a way's value back whole before the next cause is the sweep's own,
   // nothing a device does, and a list's rows go back in one frame then: a chat's row 300 went 67 px as its message 301
@@ -171,7 +228,7 @@ fn real_size_screen(
   let t = screen_in(mode, win, "zh", changing=Some(c), moves_held=false)
   let opening = real_size_most()
   real_size_change_said()
-  let rows : Array[(String, (Int, Int, Int, Int, Int, Int))] = []
+  let rows : Array[(String, (Int, Int, Int, Int, Int, Int, Int))] = []
   let todo : Array[(Int, String, Array[Json])] = []
   for i, way in c.ways() {
     let name = @sfrealsize.real_size_way(way.0, way.1)
@@ -189,10 +246,10 @@ fn real_size_screen(
   let nothing = real_size_change_frame(t, fn() {  })
   for job in todo {
     let (i, row, messages) = job
-    let mut most = (0, 0, 0, 0, 0, 0)
+    let mut most = (0, 0, 0, 0, 0, 0, 0)
     for m in messages {
       let f = real_size_change_frame(t, fn() { c.put(i, m) })
-      let f = (f.0, f.1, f.2, f.3, @cmp.maximum(0, f.4 - nothing.4), @cmp.maximum(0, f.5 - nothing.5))
+      let f = (f.0, f.1, f.2, f.3, @cmp.maximum(0, f.4 - nothing.4), @cmp.maximum(0, f.5 - nothing.5), f.6)
       most = real_size_frame_most(most, f)
     }
     c.put_back(i)
@@ -211,6 +268,7 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   let faults : Array[String] = []
   let lines : Array[String] = []
   let change_lines : Array[String] = []
+  let bindings_lines : Array[String] = []
   let seen : Map[String, Bool] = Map([])
   let measured : Map[String, Bool] = Map([])
   let home : Map[String, Bool] = Map([])
@@ -229,10 +287,15 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
     }
     let line = "  \"\{name}\": (\{made}, \{laid}, \{words}),"
     match real_size_known.get(name) {
-      None => {
-        faults.push("\{name}: not in real_size_known_wbtest.mbt")
-        lines.push(line)
-      }
+      None =>
+        match real_size_new_screen_fault(name, win.0, made, laid, words) {
+          // (over a new screen's bar: not a line to write)
+          Some(f) => faults.push(f)
+          None => {
+            faults.push("\{name}: not in real_size_known_wbtest.mbt")
+            lines.push(line)
+          }
+        }
       Some((m, l, w)) =>
         if real_size_over(made, m) || real_size_over(laid, l) || real_size_over(words, w) {
           faults.push(
@@ -260,6 +323,28 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
       let name = "\{win.0} \{mode} \{row}"
       seen[name] = true
       let line = "  \"\{name}\": (\{f.0}, \{f.1}, \{f.2}, \{f.3}, \{f.4}, \{f.5}),"
+      // (the bindings it ran: none where the bindings' file has no row)
+      let b = f.6
+      let bindings_line = "  \"\{name}\": \{b},"
+      match real_size_bindings_known.get(name) {
+        None =>
+          if b > 0 {
+            faults.push(
+              "\{name}: ran \{b} bindings, none in real_size_bindings_known_wbtest.mbt" +
+              (if b >= real_size_change_floor { ": the frame that takes it runs bindings it ran none of" } else { "" }),
+            )
+            bindings_lines.push(bindings_line)
+          }
+        Some(bar) =>
+          if b == 0 {
+            faults.push("\{name}: ran no bindings, its row in real_size_bindings_known_wbtest.mbt \{bar}: take it out")
+          } else if real_size_change_over(b, bar) {
+            faults.push("\{name}: ran \{b} bindings, its bar \{bar}: the frame that takes it runs more than a tenth over it")
+          } else if real_size_change_over(bar, b) {
+            faults.push("\{name}: ran \{b} bindings, a tenth under its bar \{bar}: bring it down")
+            bindings_lines.push(bindings_line)
+          }
+      }
       match real_size_change_known.get(name) {
         None => {
           faults.push("\{name}: not in real_size_change_known_wbtest.mbt")
@@ -283,11 +368,19 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
       faults.push("\{name}: measured no longer (the screen holds that way no more, or the cause is gone): take it out")
     }
   }
+  for name, _ in real_size_bindings_known {
+    if name.has_prefix(win.0 + " ") && !seen.contains(name) {
+      faults.push("\{name}: measured no longer, its row in real_size_bindings_known_wbtest.mbt: take it out")
+    }
+  }
   if lines.length() > 0 {
     println("real_size_known_wbtest.mbt, written so:\n" + lines.join("\n"))
   }
   if change_lines.length() > 0 {
     println("real_size_change_known_wbtest.mbt, written so:\n" + change_lines.join("\n"))
+  }
+  if bindings_lines.length() > 0 {
+    println("real_size_bindings_known_wbtest.mbt, written so:\n" + bindings_lines.join("\n"))
   }
   assert_eq(faults, [])
 }

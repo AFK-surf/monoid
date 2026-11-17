@@ -17,14 +17,16 @@ import { hubConfig } from "../src/sessions/config.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
 import { Store, newMessage } from "../src/store/store.ts";
-import { digest } from "../src/read/digest.ts";
-import { answersSince, openStore } from "../src/read/store.ts";
-import { chatMarks, chatRows, chats } from "../src/read/views.ts";
+import { digest } from "./reference/digest.ts";
+import { answersSince, openStore } from "./reference/store.ts";
+import { chatMarks, chatRows, chats } from "./reference/views.ts";
 import { marksOf, rowsMade } from "../../client/core-ts/src/station/rows-made.ts";
+import { worded } from "../../client/core-ts/src/chat-row.ts";
 import { isDeepStrictEqual } from "node:util";
 import { FakeDriver, settle } from "./hub-fakes.ts";
 import { referenceAnswersSince } from "./card-answer-reference.ts";
-import { UsageCounter, claudeProject } from "../src/usage/counter.ts";
+import { UsageCounter } from "../src/usage/counter.ts";
+import { claudeProject } from "./usage-counter-reference.ts";
 import { keepCounted } from "../src/usage/module.ts";
 
 const viewer = { sub: "u", email: "a@x", name: "A", role: "member", workspace: "w", device: "d" };
@@ -743,11 +745,11 @@ test("a file a message names by its path: its peek and the file whole, only with
     const [cloned, c] = await peek("web/src/Peeks.tsx");
     assert.deepEqual([cloned, c.path, c.lines?.text[0]], [200, realpathSync(join(r.data, "repos", "new", "web", "src", "Peeks.tsx")), "// new"]);
     // Nothing outside, however named; nothing that is not there.
-    assert.deepEqual(await peek("../../../../stillfail.db"), [403, { error: en("station.files.outside") }]);
+    assert.deepEqual(await peek("../../../../stillfail.db"), [403, { error: "station.files.outside" }]);
     // A file there is, outside: Windows has its own.
     const outside = process.platform === "win32" ? join(process.env.SystemRoot ?? "C:\\Windows", "win.ini") : "/etc/hosts";
-    assert.deepEqual(await peek(outside), [403, { error: en("station.files.outside") }]);
-    assert.deepEqual(await peek("src/nope.ts"), [404, { error: en("station.files.notFound") }]);
+    assert.deepEqual(await peek(outside), [403, { error: "station.files.outside" }]);
+    assert.deepEqual(await peek("src/nope.ts"), [404, { error: "station.files.notFound" }]);
     const [, whole] = await r.ask("GET", `/sessions/${key}/open`, undefined, [["path", "src/a.ts"]]);
     assert.equal(Buffer.from(whole.bytes, "base64").toString("utf8").split("\n").length, 40);
     assert.equal(whole.name, "a.ts");
@@ -840,9 +842,9 @@ test("a session at work: the station follows it, its summary says how long its t
     assert.equal((await summary()).transcriptLength, undefined, "not read at work yet: not said");
     // At work: followed, read, its length kept where its summary reads it.
     r.store.setRunning(key, true);
-    assert.deepEqual(r.hub.live.held(), [key]);
-    // Read off the main thread: once it is.
+    // Read off the main thread, the live view's program saying it follows it: once it is.
     await r.hub.live.idle();
+    assert.deepEqual(r.hub.live.held(), [key]);
     assert.equal((await summary()).transcriptLength, 5);
     const timeline = async (query: [string, string][]) => (await r.ask("GET", `/sessions/${encodeURIComponent(key)}/timeline`, undefined, query))[1];
     const texts = (t: any) => [t.start, t.entries.map((e: any) => e.text), t.end];
@@ -1117,7 +1119,8 @@ test("a device makes the sidebar from the summaries and marks as the station mak
     const words = { untitled: tr("en", "station.chat.untitled"), directMessage: tr("en", "station.chat.directMessage"), quotedOnly: tr("en", "station.chat.quotedOnly") };
     const device = rowsMade(sessions, threads, marks!, viewer.email, words);
     const byId = (rows: any[]) => Object.fromEntries(rows.map((row) => [String(row.id), row]));
-    assert.deepEqual(byId(device), byId(station));
+    // (the station's rows leave their words to the client, which says them as it takes them: core-ts data.ts `inWords`)
+    assert.deepEqual(byId(device), byId(station.map((row: any) => worded(row, words))));
     assert.ok(station.some((row: any) => row.card) && station.some((row: any) => row.pinned !== null) && station.length >= 3, "the cases looked at");
     // Of some chats alone: what they are now, the rest as held.
     const [, some] = await r.ask("GET", "/chats", undefined, [["marks", "1"], ["thread", String(made[0].thread.id)], ["session", made[0].key]]);

@@ -37,17 +37,18 @@
 // (`paused`: this station does not use the copy, `hostOff`: its host disabled it; accounts/index.ts putProfile);
 // (made and removed only here). Shared skills are config.json `sharedSkills: {name: {id, allow}}`.
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, unlinkSync, watch, writeFileSync } from "node:fs";
-import { rm } from "node:fs/promises";
-import { basename, dirname, join, relative, sep } from "node:path";
+import { readFileSync, watch } from "node:fs";
+import { lstat, mkdir, readdir, readFile, readlink, rm, stat, unlink } from "node:fs/promises";
+import { basename, dirname, join } from "node:path";
 import type { Clock } from "effect";
 import type { Env, MachineToken } from "../agents/machine-logins.ts";
 import { codexAuthFile } from "../agents/machine-logins.ts";
 import { CONSOLE_FILE } from "../accounts/console.ts";
 import { authFile as cursorAuthFile } from "../accounts/cursor.ts";
 import { KIMI_FILE, KIMI_TOKEN_FILE } from "../accounts/kimi.ts";
-import { cursorEmail, devinAccountFile, grokAuthFile, grokEmail } from "../accounts/profiles.ts";
-import { agyAccountFile, agyToken } from "../agents/agy.ts";
+import { devinAccountFile, grokAuthFile } from "../accounts/profiles.ts";
+import { accountEmailSoon } from "../accounts/index.ts";
+import { agyAccountFile, agyExpiryIn, agyLentFile, agyToken } from "../agents/agy.ts";
 import { LEND_BOUND_MS } from "../accounts/oauth.ts";
 import { devinData } from "../agents/devin.ts";
 import { kimiSignedIn } from "../agents/profiles.ts";
@@ -55,14 +56,15 @@ import type { Cloud } from "../cloud/state.ts";
 import { Refused } from "../mesh/bus.ts";
 import type { ConfigFile } from "../ops/config.ts";
 import { Fibers } from "../ops/fibers.ts";
-import { PrivateFile, writePrivate } from "../ops/files.ts";
+import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
 import { FollowedTree } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
-import { linkSync } from "../ops/links.ts";
-import { joinPath, portableName, relativeParts } from "../ops/paths.ts";
+import { link } from "../ops/links.ts";
+import { joinPath, portableName } from "../ops/paths.ts";
 import { profileFetch } from "../ops/agent-env.ts";
-import { workspaceAgentHome } from "../sessions/agent-home.ts";
+import { workspaceAgentHomePath } from "../sessions/agent-home.ts";
 import { SKIPPED } from "./memory.ts";
+import { MemoryProgram, MemoryProgramStopped } from "./memory-mb.ts";
 import { allowedIn } from "../sessions/config.ts";
 import { type Lang, Said, stationLang, tr } from "../ops/i18n.ts";
 
@@ -74,8 +76,16 @@ const MAX_SKILL_FILES = 200;
 /// A host lends a Codex token it has for at least this long; one closer to its end is renewed first (when it can be).
 const CODEX_LEND_MS = 24 * 3600_000;
 const CODEX_MIN_MS = 3600_000;
+/// A host lends an Antigravity CLI sign-in it has for at least this long (Google's access tokens last an hour), one
+/// closer to its end renewed first; one with less than AGY_MIN_MS waits for its renewal. A borrower asks again as a
+/// process opens with 40 minutes left (agents/agy.ts AGY_LENT_RENEW_MS), so what is lent lasts longer than that.
+const AGY_LEND_MS = 50 * 60_000;
+const AGY_MIN_MS = 42 * 60_000;
 /// A login lent before is used again while its host does not answer, if it still has this long.
 const KEEP_LENT_MS = 3600_000;
+/// A borrower goes on with the Antigravity CLI sign-in lent before while its host is away, if it lasts this long still
+/// (`agy` refuses one with under 5 minutes; a turn begun on it has the rest).
+const KEEP_AGY_MS = 10 * 60_000;
 /// How long a login wanted waits for the cloud to say the workspace's stations.
 const ROSTER_WAIT_MS = 10_000;
 /// Edits to a skill are taken once they have settled this long.
@@ -116,6 +126,8 @@ export type SharingDeps = {
   /// Has the Codex app-server running on a profile here renew its login (it holds the refresh token, which must not be
   /// renewed under it); false: none runs on it.
   codexRenewRunning: (profileId: string) => Promise<boolean>;
+  /// Has `agy` renew an Antigravity CLI profile's sign-in here (agents/agy.ts `agyRenew`: it holds the OAuth client).
+  agyRenew?: (home: string) => Promise<void>;
   /// A profile's check and allowance as this station has them, its allowance asked again when old (for the stations
   /// borrowing it).
   status: (profileId: string) => Promise<{ check: Json; quota: Json }>;
@@ -135,6 +147,8 @@ export type SharingDeps = {
   clock?: Clock.Clock;
   /// Tests: Codex's token endpoint.
   codexTokenUrl?: string;
+  /// Tests: the MoonBit program that reads and writes the skills' files (readerBinary's where none is given).
+  binary?: string;
 };
 
 /// `dir`: of a skill, its directory's device and inode (`dev:ino`), by which it is found again once renamed.
@@ -149,6 +163,8 @@ export type Missing = "name" | "same-name" | "refused";
 type Borrowed = { version: number; hash: string; kind: ShareKind; name: string; host: string; allow: string[] | null; workspace?: string; pending?: boolean; stale?: boolean; quotaRevision?: number; resetPending?: string[]; profileUpdate?: { reset: boolean } };
 /// A share of this station's: what it is, who may use it, its content's hash (null: unreadable now, `unread` why).
 type Own = { kind: ShareKind; name: string; allow: string[] | null; hash: string | null; profile?: Json; skill?: string; unread?: string };
+/// A share of this station's as configured, nothing of it read.
+type Shared = Omit<Own, "hash" | "unread">;
 type State = {
   /// What this station shares: its version (raised when what it is changes) and each station told of it, at which
   /// version (-1: told it is no longer for it).
@@ -199,6 +215,7 @@ function portable(p: Json): Json {
 }
 
 class TooLarge extends Error {}
+const TOO_LARGE = "the skill is too large to share (512 KB, 200 files at most)";
 
 /// Keeps why a station that may use a share does not (null: it does, or may not).
 function miss(hosted: Hosted, peer: string, why: Missing | null) {
@@ -209,71 +226,31 @@ function miss(hosted: Hosted, peer: string, why: Missing | null) {
   }
 }
 
-/// A skill's files, relative paths to their bytes; refused past the limits (or with links in it).
-function readSkill(dir: string): Record<string, Buffer> {
-  const files: Record<string, Buffer> = {};
-  let bytes = 0;
-  const walk = (at: string) => {
-    for (const name of readdirSync(at)) {
-      const path = join(at, name);
-      const meta = lstatSync(path);
-      if (meta.isSymbolicLink()) continue;
-      if (meta.isDirectory()) walk(path);
-      else if (meta.isFile()) {
-        // A conflict kept beside the skill is the host's to show, not part of what is shared.
-        if (/^SKILL\.conflict-/.test(name)) continue;
-        bytes += meta.size;
-        if (bytes > MAX_SKILL_BYTES || Object.keys(files).length >= MAX_SKILL_FILES) throw new TooLarge("the skill is too large to share (512 KB, 200 files at most)");
-        files[relative(dir, path).split(sep).join("/")] = readFileSync(path);
-      }
-    }
-  };
-  walk(dir);
-  return files;
+/// What is at `path` itself (a link not followed): a link and where it leads, something else, or nothing.
+async function entryAt(path: string): Promise<{ link: string } | "other" | null> {
+  try {
+    if (!(await lstat(path)).isSymbolicLink()) return "other";
+    return { link: await readlink(path) };
+  } catch {
+    return null;
+  }
 }
 
-const isLink = (path: string) => {
+/// A directory's device and inode (`dev:ino`), which a rename keeps; null: no directory of its own there. (Node's,
+/// in bigints: the shell's lstat says no inode on Windows, and past 2^53 one would not be itself in JSON.)
+async function dirKey(dir: string): Promise<string | null> {
   try {
-    return lstatSync(path).isSymbolicLink();
-  } catch {
-    return false;
-  }
-};
-
-/// A directory's device and inode (`dev:ino`), which a rename keeps; null: no directory of its own there.
-function dirKey(dir: string): string | null {
-  try {
-    const meta = lstatSync(dir);
+    const meta = await lstat(dir, { bigint: true });
     return meta.isDirectory() ? `${meta.dev}:${meta.ino}` : null;
   } catch {
     return null;
   }
 }
 
-const skillHash = (files: Record<string, Buffer>) =>
-  hashOf(Object.keys(files).sort().map((k) => `${k}\0${createHash("sha256").update(files[k]!).digest("hex")}`).join("\n"));
-
-/// A relative path that stays inside the skill (relativeParts: not rooted, no `..`), none of its components `.` or
-/// empty.
-const safePath = (p: string) => {
-  const parts = relativeParts(p);
-  return parts !== null && !parts.some((s) => s === "." || s === "");
-};
-
-function writeSkill(dir: string, files: Record<string, string>) {
-  const temp = `${dir}.tmp-${randomBytes(4).toString("hex")}`;
-  rmSync(temp, { recursive: true, force: true });
-  for (const [path, data] of Object.entries(files)) {
-    if (!safePath(path)) throw new Error(`bad path in a shared skill: ${path}`);
-    mkdirSync(dirname(join(temp, path)), { recursive: true });
-    writeFileSync(join(temp, path), Buffer.from(data, "base64"));
-  }
-  mkdirSync(temp, { recursive: true });
-  rmSync(dir, { recursive: true, force: true });
-  renameSync(temp, dir);
-}
-
-const encodeFiles = (files: Record<string, Buffer>) => Object.fromEntries(Object.entries(files).map(([k, v]) => [k, v.toString("base64")]));
+/// What the memory's program says of a skill's files (mb/src/memory skills.mbt `skill_read`; what it replaced is
+/// test/reference/share-skills.ts `readSkill`, `skillHash`): its hash and whether it has its SKILL.md, with `bytes` its
+/// files too (path → base64), as another station is sent them.
+type SkillRead = { hash: string; hasSkillMd: boolean; files?: Record<string, string> };
 
 /// When a JWT runs out (ms), if it says.
 function jwtExpiry(token: unknown): number | null {
@@ -287,9 +264,9 @@ function jwtExpiry(token: unknown): number | null {
 }
 
 /// When the Codex login lent before, kept in a borrowed profile's home, runs out (0 when there is none).
-function keptCodexExpiry(file: string): number {
+async function keptCodexExpiry(file: string): Promise<number> {
   try {
-    return jwtExpiry(JSON.parse(readFileSync(file, "utf8"))?.tokens?.access_token) ?? 0;
+    return jwtExpiry(JSON.parse(await readFile(file, "utf8"))?.tokens?.access_token) ?? 0;
   } catch {
     return 0;
   }
@@ -300,14 +277,13 @@ function keptCodexExpiry(file: string): number {
 /// copy of another station's is not this station's to share.
 export function shareRefusal(p: Json): string | null {
   if (isObject(p?.share) && p.share.borrowed === true) return "this profile is another station's";
-  // Grok Build's sign-in is not lent yet (only Claude Code's and Codex's are: lendClaude, lendCodex).
+  // Grok Build's sign-in is not lent yet (only Claude Code's, Codex's and the Antigravity CLI's are: lendClaude,
+  // lendCodex, lendAgy).
   if (p?.access?.kind === "subscription" && p.runtime === "grok") return "a SuperGrok subscription cannot be shared with other stations yet";
   // Nor Cursor's (its key stays where it was minted).
   if (p?.access?.kind === "subscription" && p.runtime === "cursor") return "a Cursor account cannot be shared with other stations yet";
   // Nor Devin's.
   if (p?.access?.kind === "subscription" && p.runtime === "devin") return "a Devin account cannot be shared with other stations yet";
-  // Nor the Antigravity CLI's Google account.
-  if (p?.access?.kind === "subscription" && p.runtime === "agy") return "an Antigravity CLI sign-in cannot be shared with other stations yet";
   // Nor a Kimi sign-in (its token is renewed every few minutes here, accounts/kimi.ts).
   if (p?.access?.provider === "kimi-code" && p?.access?.login === true) return "a Kimi Code sign-in cannot be shared with other stations yet";
   return null;
@@ -336,10 +312,35 @@ export class Sharing {
   private again = false;
   /// Copies asked about in this run (what changed while this station was away is found that way).
   private checked = new Set<string>();
+  /// The skills' files read, hashed and written off the station's thread (mb/src/memory skills.mbt), let go idle.
+  private program: MemoryProgram;
+  /// What reads the skills shared from here and changes `state.hosted` by it (`syncHosted`, `takeEdit`, a skill
+  /// sent): one at a time, so that what one read is not written over by another that read before it.
+  private hostedTurn: Promise<unknown> = Promise.resolve();
 
   constructor(deps: SharingDeps) {
     this.deps = deps;
     this.time = new Fibers("share", deps.clock);
+    this.program = new MemoryProgram(this.root, deps.binary === undefined ? {} : { binary: deps.binary });
+    this.readState();
+  }
+
+  /// The skills' program let go at once if nothing is asked of it: 1, else 0 (the station short of memory).
+  trimIdle(): number {
+    return this.program.trimIdle();
+  }
+
+  private serially<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.hostedTurn.then(f, f);
+    this.hostedTurn = run.catch(() => {});
+    return run;
+  }
+
+  /// A skill's files as the program reads them (SkillRead); TooLarge past what may be shared.
+  private async readSkill(dir: string, bytes = false): Promise<SkillRead> {
+    const r = await this.program.ask("skillRead", { dir, maxBytes: MAX_SKILL_BYTES, maxFiles: MAX_SKILL_FILES, bytes });
+    if (r.tooLarge === true) throw new TooLarge(TOO_LARGE);
+    return { hash: String(r.hash), hasSkillMd: r.hasSkillMd === true, ...(bytes ? { files: r.files } : {}) };
   }
 
   private get root() {
@@ -376,14 +377,14 @@ export class Sharing {
   }
 
   /// What a shared profile is, hashed: where it is shared too (its copies serve those workspaces only).
-  private profileHash(p: Json): string {
+  private async profileHash(p: Json): Promise<string> {
     let login: string | null = null;
     if (p.runtime === "codex" && p.access?.kind === "subscription") {
-      try { login = hashOf(readFileSync(this.codexFile(p), "utf8")); } catch {}
+      try { login = hashOf(await readFile(this.codexFile(p), "utf8")); } catch {}
     }
     // A machine login is read outside the profile's home. Include its account so existing copies receive it after an
     // upgrade and again after a different account is signed in.
-    const email = p.machine === true && p.access?.kind === "subscription" ? { email: this.emailOf(p) } : {};
+    const email = p.machine === true && p.access?.kind === "subscription" ? { email: await this.emailOf(p) } : {};
     return hashOf({ ...portable(p), workspaces: this.sharedIn(p), ...email, ...(login === null ? {} : { login }) });
   }
 
@@ -416,15 +417,15 @@ export class Sharing {
 
   // ── state ──
 
-  /// The one copy of state.json in memory (read at the first use): every change is made to it and written through, so
-  /// a request answered while the shares are brought in line changes the same one.
+  /// The one copy of state.json in memory (read as the station starts, `constructor`): every change is made to it and
+  /// written through, so a request answered while the shares are brought in line changes the same one.
   private state: State | null = null;
   private stateFile: PrivateFile | null = null;
 
   private readState(): State {
     if (this.state) return this.state;
     try {
-      const s = JSON.parse(readFileSync(join(this.root, "state.json"), "utf8"));
+      const s = JSON.parse(readFileSync(join(this.root, "state.json"), "utf8")); // sync: read once, before the station serves
       this.state = { hosted: isObject(s.hosted) ? s.hosted : {}, borrowed: isObject(s.borrowed) ? s.borrowed : {}, moved: isObject(s.moved) ? s.moved : {}, taken: isObject(s.taken) ? s.taken : {} };
     } catch {
       this.state = { hosted: {}, borrowed: {}, moved: {} };
@@ -456,9 +457,10 @@ export class Sharing {
     return joinPath(this.deps.data, home);
   }
 
-  /// The agents' skills of workspace `ws` (null: the home one's, where this station's own shared skills are).
+  /// The agents' skills of workspace `ws` (null: the home one's, where this station's own shared skills are): a joined
+  /// one's made with its agent home (sessions/agent-home.ts `workspaceAgentHome`), or where a skill is linked into it.
   private skillsDir(ws: string | null = null): string {
-    return join(workspaceAgentHome(this.deps.agentHome(), ws, this.deps.cloud.home()), "skills");
+    return join(workspaceAgentHomePath(this.deps.agentHome(), ws, this.deps.cloud.home()), "skills");
   }
 
   /// The skills this station shares: name → id and who may use it (an id alone: every station).
@@ -475,23 +477,30 @@ export class Sharing {
 
   /// Shared skills whose directory is gone: shared under the name it was renamed to (the same directory), or no longer
   /// once it is deleted. Not while there are no skills to look in (an agents' home moved).
-  private followSkills(state: State) {
+  private async followSkills(state: State) {
     const skills = this.skillsDir();
     let names: string[];
     try {
-      names = readdirSync(skills);
+      names = await readdir(skills);
     } catch {
       return;
     }
     const shared = this.sharedSkills();
-    const gone = Object.entries(shared).filter(([name]) => !existsSync(join(skills, name)));
+    const gone: [string, { id: string; allow: string[] | null }][] = [];
+    for (const entry of Object.entries(shared)) {
+      try {
+        await stat(join(skills, entry[0]));
+      } catch {
+        gone.push(entry);
+      }
+    }
     if (gone.length === 0) return;
     const free = new Map<string, string>();
     for (const name of names) {
-      const key = name in shared ? null : dirKey(join(skills, name));
+      const key = name in shared ? null : await dirKey(join(skills, name));
       if (key !== null) free.set(key, name);
     }
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const to: Json = isObject(raw.sharedSkills) ? raw.sharedSkills : {};
       for (const [name, { id }] of gone) {
         const key = state.hosted[id]?.dir;
@@ -507,26 +516,103 @@ export class Sharing {
     });
   }
 
-  /// What this station shares now, by id: what it is, who may use it, its content's hash (null: unreadable now).
-  private ownShares(): Map<string, Own> {
-    const out = new Map<string, Own>();
+  /// What this station shares now, by id: what it is and who may use it, as configured (nothing of it read).
+  private shares(): Map<string, Shared> {
+    const out = new Map<string, Shared>();
     for (const p of this.profiles()) {
       if (!isObject(p.share) || p.share.borrowed === true || typeof p.share.id !== "string") continue;
-      out.set(p.share.id, { kind: "profile", name: String(p.name ?? p.id), allow: Array.isArray(p.share.allow) ? p.share.allow : null, hash: this.profileHash(p), profile: p });
+      out.set(p.share.id, { kind: "profile", name: String(p.name ?? p.id), allow: Array.isArray(p.share.allow) ? p.share.allow : null, profile: p });
     }
-    for (const [name, { id, allow }] of Object.entries(this.sharedSkills())) {
-      const dir = join(this.skillsDir(), name);
+    for (const [name, { id, allow }] of Object.entries(this.sharedSkills())) out.set(id, { kind: "skill", name, allow, skill: name });
+    return out;
+  }
+
+  /// What this station shares now, by id, with its content's hash (null: unreadable now), a skill's read by the program.
+  private async ownShares(): Promise<Map<string, Own>> {
+    const out = new Map<string, Own>();
+    for (const [id, share] of this.shares()) {
+      if (share.kind === "profile") {
+        out.set(id, { ...share, hash: await this.profileHash(share.profile) });
+        continue;
+      }
       let hash: string | null = null;
       let unread: string | undefined;
       try {
-        hash = skillHash(readSkill(dir));
+        hash = (await this.readSkill(join(this.skillsDir(), share.skill!))).hash;
       } catch (e) {
+        // (the station stopping: nothing is said of the skill)
+        if (e instanceof MemoryProgramStopped) throw e;
         unread = e instanceof TooLarge ? "too-large" : "unreadable";
-        log.warn("share", "a shared skill could not be read", { name, error: (e as Error).message });
+        log.warn("share", "a shared skill could not be read", { name: share.skill, error: (e as Error).message });
       }
-      out.set(id, { kind: "skill", name, allow, hash, skill: name, unread });
+      out.set(id, { ...share, hash, unread });
     }
     return out;
+  }
+
+  /// Updates `state.hosted` and file watchers for what this station currently shares, writing `state.json` through
+  /// when anything changed so callers (`shareProfile`, `shareSkill`, `lendTo`) and `deps.changed()` see the new version
+  /// once it is done, without waiting on slow or unanswered peers. One at a time with what else changes it (`serially`).
+  private syncHosted(state: State = this.readState()): Promise<Map<string, Own>> {
+    return this.serially(() => this.syncHostedNow(state));
+  }
+
+  private async syncHostedNow(state: State): Promise<Map<string, Own>> {
+    const own = await this.ownShares();
+    let dirty = false;
+    for (const id of this.loginDirs.keys()) if (!own.has(id)) {
+      this.stopWatch(`login:${id}`);
+      this.loginDirs.delete(id);
+    }
+    // (a skill no longer shared: its watch, made again by a pass that read it before it stopped, stops)
+    const skills = new Set([...own.values()].flatMap((now) => (now.kind === "skill" ? [`hosted:${now.skill}`] : [])));
+    for (const key of [...this.watchers.keys()]) if (key.startsWith("hosted:") && !skills.has(key)) this.stopWatch(key);
+    for (const [id, now] of own) {
+      if (this.unannounced.has(id)) continue;
+      if (now.kind === "skill") await this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
+      if (now.kind === "profile" && now.profile?.runtime === "codex" && now.profile?.access?.kind === "subscription") this.watchLogin(id, this.codexFile(now.profile));
+      else if (this.loginDirs.has(id)) { this.stopWatch(`login:${id}`); this.loginDirs.delete(id); }
+      const was = state.hosted[id];
+      const hosted: Hosted = was ?? { version: 0, hash: "", kind: now.kind, name: now.name, allow: now.allow, told: {} };
+      if (!was) dirty = true;
+      if (now.hash === null) {
+        if (hosted.unread !== now.unread) {
+          hosted.unread = now.unread;
+          dirty = true;
+        }
+        state.hosted[id] = hosted;
+        continue;
+      }
+      if (hosted.unread !== undefined) {
+        delete hosted.unread;
+        dirty = true;
+      }
+      // Its name is part of what it is: a skill renamed is linked under its new name where it is copied.
+      if (hosted.hash !== now.hash || hosted.name !== now.name) {
+        hosted.version += 1;
+        hosted.hash = now.hash;
+        dirty = true;
+      }
+      if (now.kind === "skill") {
+        const nextDir = (await dirKey(join(this.skillsDir(), now.skill!))) ?? hosted.dir;
+        if (hosted.dir !== nextDir) {
+          hosted.dir = nextDir;
+          dirty = true;
+        }
+      }
+      if (JSON.stringify(hosted.allow) !== JSON.stringify(now.allow)) {
+        hosted.allow = now.allow;
+        dirty = true;
+      }
+      if (hosted.name !== now.name) {
+        hosted.name = now.name;
+        dirty = true;
+      }
+      state.hosted[id] = hosted;
+    }
+    // Written before anyone is told, so what they ask for is that version.
+    if (dirty) this.writeState(state);
+    return own;
   }
 
   // ── running ──
@@ -537,12 +623,25 @@ export class Sharing {
     this.reconcile();
   }
 
+  /// Closed: nothing is followed from then on (a watch begun before, its directory still being looked at, is not made).
+  private closed = false;
+
   async close() {
+    this.closed = true;
     for (const stop of this.stops.splice(0)) stop();
+    this.stopWatches();
+    await this.time.close();
+    await this.program.close();
+    // (the links' turn, files alone, done; a pass still asking other stations is not waited for, its watches refused)
+    await this.linkTurn;
+    this.stopWatches();
+    await this.stateWritten();
+  }
+
+  private stopWatches() {
     for (const w of this.watchers.values()) w.close();
     this.watchers.clear();
-    await this.time.close();
-    await this.stateWritten();
+    this.loginDirs.clear();
   }
 
   /// Brings what is here in line with what is configured and what the hosts say: one at a time, again if asked meanwhile.
@@ -571,7 +670,7 @@ export class Sharing {
     if (me === null || this.deps.cloud.removed()) return;
     const rosters = this.rosters();
     const state = this.readState();
-    this.followSkills(state);
+    await this.followSkills(state);
     let pending = false;
     const silent = new Set(this.unreachable.keys());
     const itself = (station: string) => this.deps.itself?.(station) === true;
@@ -593,36 +692,12 @@ export class Sharing {
 
     // What this station shares: its version raised when what it is changed, each station that may use it told
     // (again, one that did not answer), in a workspace it is for, one that no longer may told so.
-    const own = this.ownShares();
-    for (const id of this.loginDirs.keys()) if (!own.has(id)) {
-      this.stopWatch(`login:${id}`);
-      this.loginDirs.delete(id);
-    }
+    const own = await this.syncHosted(state);
     for (const [id, now] of own) {
-      if (this.unannounced.has(id)) continue;
-      if (now.kind === "skill") this.watchHosted(now.skill!, join(this.skillsDir(), now.skill!));
-      if (now.kind === "profile" && now.profile?.runtime === "codex" && now.profile?.access?.kind === "subscription") this.watchLogin(id, this.codexFile(now.profile));
-      else if (this.loginDirs.has(id)) { this.stopWatch(`login:${id}`); this.loginDirs.delete(id); }
-      const was = state.hosted[id];
-      const hosted: Hosted = was ?? { version: 0, hash: "", kind: now.kind, name: now.name, allow: now.allow, told: {} };
-      if (now.hash === null) {
-        hosted.unread = now.unread;
-        state.hosted[id] = hosted;
-        continue;
-      }
-      delete hosted.unread;
-      // Its name is part of what it is: a skill renamed is linked under its new name where it is copied.
-      if (hosted.hash !== now.hash || hosted.name !== now.name) {
-        hosted.version += 1;
-        hosted.hash = now.hash;
-      }
-      if (now.kind === "skill") hosted.dir = dirKey(join(this.skillsDir(), now.skill!)) ?? hosted.dir;
-      hosted.allow = now.allow;
-      hosted.name = now.name;
-      state.hosted[id] = hosted;
-      // Written before anyone is told, so what they ask for is that version.
-      this.writeState();
-      if (rosters === null) continue;
+      if (this.unannounced.has(id) || now.hash === null || rosters === null) continue;
+      const hosted = state.hosted[id];
+      if (!hosted) continue;
+      const peers: Promise<void>[] = [];
       for (const peer of rosters.keys()) {
         // (a station retired into this one: its copies came here with it)
         if (itself(peer)) continue;
@@ -630,32 +705,59 @@ export class Sharing {
         if (ws !== null && this.mayUse(now.allow, peer)) {
           const version = hosted.version;
           if (hosted.told[peer] === version) continue;
-          if (!((await tell(peer, ws, { method: "share.changed", id, kind: now.kind, name: now.name, version, allow: now.allow }, hosted)) instanceof Error)) hosted.told[peer] = version;
+          peers.push(
+            tell(peer, ws, { method: "share.changed", id, kind: now.kind, name: now.name, version, allow: now.allow }, hosted).then((r) => {
+              if (!(r instanceof Error)) hosted.told[peer] = version;
+            }),
+          );
         } else {
           miss(hosted, peer, null);
-          if (peer in hosted.told && !((await tell(peer, null, { method: "share.changed", id, gone: true })) instanceof Error)) delete hosted.told[peer];
+          if (peer in hosted.told) {
+            peers.push(
+              tell(peer, null, { method: "share.changed", id, gone: true }).then((r) => {
+                if (!(r instanceof Error)) delete hosted.told[peer];
+              }),
+            );
+          }
         }
       }
+      if (peers.length > 0) await Promise.all(peers);
       // Stations in none of this station's workspaces now: forgotten.
       for (const peer of Object.keys(hosted.told)) if (!rosters.has(peer)) delete hosted.told[peer];
       for (const peer of Object.keys(hosted.missing ?? {})) if (!rosters.has(peer)) miss(hosted, peer, null);
     }
     // No longer shared: each station told is told so, then it is forgotten.
+    // Shared now, after awaiting peer notifications, so a share turned on while peers were told is kept.
+    const currentOwn = this.shares();
     for (const [id, hosted] of Object.entries(state.hosted)) {
-      if (own.has(id)) continue;
+      if (currentOwn.has(id)) continue;
+      const peers: Promise<void>[] = [];
       for (const peer of Object.keys(hosted.told)) {
         if (itself(peer) || (rosters !== null && !rosters.has(peer))) delete hosted.told[peer];
-        else if (!((await tell(peer, null, { method: "share.changed", id, gone: true })) instanceof Error)) delete hosted.told[peer];
+        else {
+          peers.push(
+            tell(peer, null, { method: "share.changed", id, gone: true }).then((r) => {
+              if (!(r instanceof Error)) delete hosted.told[peer];
+            }),
+          );
+        }
       }
-      if (Object.keys(hosted.told).length === 0) delete state.hosted[id];
+      if (peers.length > 0) await Promise.all(peers);
+      if (!this.shares().has(id) && Object.keys(hosted.told).length === 0) delete state.hosted[id];
     }
     // Handed to another station: the stations told of it hear where it went.
     for (const [id, moved] of Object.entries(state.moved)) {
       const left: string[] = [];
+      const peers: Promise<void>[] = [];
       for (const peer of moved.tell) {
         if (peer === moved.to || itself(peer) || (rosters !== null && !rosters.has(peer))) continue;
-        if ((await tell(peer, null, { method: "share.changed", id, host: moved.to })) instanceof Error) left.push(peer);
+        peers.push(
+          tell(peer, null, { method: "share.changed", id, host: moved.to }).then((r) => {
+            if (r instanceof Error) left.push(peer);
+          }),
+        );
       }
+      if (peers.length > 0) await Promise.all(peers);
       if (left.length === 0) delete state.moved[id];
       else moved.tell = left;
     }
@@ -665,8 +767,8 @@ export class Sharing {
     for (const [id, had] of Object.entries(state.borrowed)) {
       if (rosters !== null && !this.hostThere(had, rosters)) {
         log.info("share", "the station a share was from left the workspace; its copy is taken away", { id, host: had.host });
-        this.drop(id, had);
         delete state.borrowed[id];
+        await this.drop(id, had);
         continue;
       }
       if (!had.stale && !had.pending && !had.profileUpdate && !had.resetPending?.length && this.checked.has(id)) continue;
@@ -687,7 +789,7 @@ export class Sharing {
         }
         if (had.pending && had.kind === "skill") await this.sendSkillEdit(id, had);
         if (!had.stale && !had.profileUpdate) {
-          const now = await this.deps.ask(had.host, this.askIn(had), { method: "share.version", id, ...(had.kind === "skill" ? { hidden: !this.skillLinked(id, had) } : {}) });
+          const now = await this.deps.ask(had.host, this.askIn(had), { method: "share.version", id, ...(had.kind === "skill" ? { hidden: !(await this.skillLinked(id, had)) } : {}) });
           this.unreachable.delete(had.host);
           if (typeof now?.moved === "string") {
             had.host = now.moved;
@@ -700,12 +802,16 @@ export class Sharing {
         if (had.stale || !had.profileUpdate) {
           const got = await this.deps.ask(had.host, this.askIn(had), { method: "share.get", id });
           this.unreachable.delete(had.host);
+          // (heard of again while it was asked for: taken away, or changed, `heard` putting a copy marked stale in its
+          // place, which the pass `heard` asks for fetches; what came here is not placed, nor its allowance's reset
+          // counted, twice)
+          if (state.borrowed[id] !== had) continue;
           if (had.kind === "profile") {
-            this.placeProfile(id, had, got);
+            await this.placedHome(await this.placeProfile(id, had, got));
             const revision = Number(got?.quotaRevision ?? 0);
             if (had.version >= 0) had.profileUpdate = { reset: revision > (had.quotaRevision ?? 0) || had.profileUpdate?.reset === true };
             had.quotaRevision = revision;
-          } else this.placeSkill(id, had, got);
+          } else await this.placeSkill(id, had, got);
           had.version = Number(got?.version ?? 0);
           had.allow = Array.isArray(got?.allow) ? got.allow : null;
           had.stale = false;
@@ -745,7 +851,7 @@ export class Sharing {
     if ([...silent].some((h) => !this.unreachable.has(h))) this.deps.recheck?.();
     this.forgetTaken(state);
     this.writeState(state);
-    this.linkBorrowedSkills(state);
+    await this.linkBorrowedSkills(state);
     // What did not get through is tried again, less often the longer it does not.
     if (!pending) this.retryMs = RETRY_MS;
     else if (this.retry === null) {
@@ -761,10 +867,12 @@ export class Sharing {
 
   // ── copies of others' shares ──
 
-  private placeProfile(id: string, had: Borrowed, got: Json) {
+  /// The copy's profile made or changed in config.json, taken at once and written before what its caller changes of
+  /// the state: its home, for `placedHome` to make.
+  private async placeProfile(id: string, had: Borrowed, got: Json): Promise<string | null> {
     const given = isObject(got?.profile) ? got.profile : null;
     if (!given) throw new Error("the host sent no profile");
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const at = list.findIndex((p) => isObject(p?.share) && p.share.id === id);
       // One kept from before (a station that handed it over keeps its id and home: its chats go on with it).
@@ -787,82 +895,108 @@ export class Sharing {
       raw.profiles = list;
     });
     const placed = this.profiles().find((p) => isObject(p.share) && p.share.id === id);
-    if (placed) mkdirSync(this.home(placed), { recursive: true });
+    return placed ? this.home(placed) : null;
+  }
+
+  private async placedHome(home: string | null) {
+    if (home !== null) await mkdir(home, { recursive: true });
   }
 
   private mirror(id: string) {
     return join(this.root, id, "skill");
   }
 
-  private placeSkill(id: string, had: Borrowed, got: Json) {
+  private async placeSkill(id: string, had: Borrowed, got: Json) {
     if (!isObject(got?.files)) throw new Error("the host sent no files");
     this.stopWatch(`borrowed:${id}`);
-    writeSkill(this.mirror(id), got.files);
+    await this.program.ask("skillWrite", { dir: this.mirror(id), files: got.files });
     had.hash = String(got.hash ?? "");
   }
 
-  /// A copy taken away: its profile, or its skill's link and files.
-  private drop(id: string, had: Borrowed) {
+  /// A copy taken away (already gone from the state): its profile, or its skill's link and files.
+  private async drop(id: string, had: Borrowed) {
     if (had.kind === "profile") {
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((p: Json) => !(isObject(p?.share) && p.share.id === id && p.share.borrowed === true));
       });
       return;
     }
     this.stopWatch(`borrowed:${id}`);
-    this.unlinkSkill(id, had);
-    rmSync(join(this.root, id), { recursive: true, force: true });
+    await this.linking(async () => {
+      // (again in its turn: a watch made before it came, by a pass that saw the copy still there, stops too)
+      this.stopWatch(`borrowed:${id}`);
+      await this.unlinkSkillNow(id, had);
+      await rm(join(this.root, id), { recursive: true, force: true });
+    });
   }
 
-  /// A copied skill's link under its name, if it is this copy's.
-  private unlinkSkill(id: string, had: Borrowed) {
-    const link = join(this.skillsDir(this.askIn(had)), had.name);
-    try {
-      if (lstatSync(link).isSymbolicLink() && readlinkSync(link) === this.mirror(id)) unlinkSync(link);
-    } catch {}
+  /// The copied skills' links made and taken away one at a time (`linkBorrowedSkills`, `drop`, `unlinkSkill`), so that
+  /// none is made to a copy while it is taken away, each looking at the state as it is when its turn comes.
+  private linkTurn: Promise<unknown> = Promise.resolve();
+
+  private linking<T>(f: () => Promise<T>): Promise<T> {
+    const run = this.linkTurn.then(f, f);
+    this.linkTurn = run.catch(() => {});
+    return run;
+  }
+
+  /// A copied skill's link under its name, if it is this copy's (`had`: as it was, its name the one it was linked by).
+  private unlinkSkill(id: string, had: Borrowed): Promise<void> {
+    return this.linking(() => this.unlinkSkillNow(id, had));
+  }
+
+  private async unlinkSkillNow(id: string, had: Borrowed) {
+    const at = join(this.skillsDir(this.askIn(had)), had.name);
+    const now = await entryAt(at);
+    if (now !== null && now !== "other" && now.link === this.mirror(id)) await unlink(at).catch(() => {});
   }
 
   /// Each copied skill linked under its name into the agents' skills of the workspace it was had in, unless one of that
   /// workspace's own has it; edits to the copy followed.
-  private linkBorrowedSkills(state: State) {
-    for (const [id, had] of Object.entries(state.borrowed)) {
-      if (had.kind !== "skill") continue;
-      const target = this.mirror(id);
-      if (!existsSync(target)) continue;
-      try {
-        const skills = this.skillsDir(this.askIn(had));
-        const link = join(skills, had.name);
-        if (!existsSync(link) && !isLink(link)) {
-          mkdirSync(skills, { recursive: true });
-          // Where links are refused, a junction will do: its target is the copy's own directory, which stays where it is.
-          linkSync(target, link, { junction: true });
-          // Its host hears it is shown here (it may have been told otherwise).
-          if (this.checked.delete(id)) this.again = true;
-        } else if (!isLink(link) || readlinkSync(link) !== target) continue;
-      } catch (e) {
-        // This copy's alone: the others are linked all the same.
-        log.warn("share", "a shared skill could not be linked", { id, name: had.name, error: (e as Error).message });
-        continue;
+  private linkBorrowedSkills(state: State): Promise<void> {
+    return this.linking(async () => {
+      for (const id of Object.keys(state.borrowed)) {
+        const had = state.borrowed[id];
+        if (had?.kind !== "skill") continue;
+        const target = this.mirror(id);
+        if (!(await stat(target).then(() => true, () => false))) continue;
+        try {
+          const skills = this.skillsDir(this.askIn(had));
+          const at = join(skills, had.name);
+          const there = await entryAt(at);
+          // (taken away or renamed while its copy was looked at: `drop` or `heard` has it now)
+          if (state.borrowed[id] !== had || had.kind !== "skill" || join(skills, had.name) !== at) continue;
+          if (there === null) {
+            await mkdir(skills, { recursive: true });
+            // Where links are refused, a junction will do: its target is the copy's own directory, which stays where it is.
+            await link(target, at, { junction: true });
+            // Its host hears it is shown here (it may have been told otherwise).
+            if (this.checked.delete(id)) this.again = true;
+          } else if (there === "other" || there.link !== target) continue;
+        } catch (e) {
+          // This copy's alone: the others are linked all the same.
+          log.warn("share", "a shared skill could not be linked", { id, name: had.name, error: (e as Error).message });
+          continue;
+        }
+        await this.watchBorrowed(id, target);
       }
-      this.watchBorrowed(id, target);
-    }
+    });
   }
 
   /// Whether something else is under a copied skill's name here (one of this station's own, or another's copy).
-  private nameTaken(had: Borrowed): boolean {
+  private async nameTaken(had: Borrowed): Promise<boolean> {
     try {
-      const link = join(this.skillsDir(this.askIn(had)), had.name);
-      return existsSync(link) || isLink(link);
+      return (await entryAt(join(this.skillsDir(this.askIn(had)), had.name))) !== null;
     } catch {
       return false;
     }
   }
 
   /// Whether a copied skill shows under its name here (one of this station's own of that name wins).
-  private skillLinked(id: string, had: Borrowed): boolean {
+  private async skillLinked(id: string, had: Borrowed): Promise<boolean> {
     try {
-      const link = join(this.skillsDir(this.askIn(had)), had.name);
-      return lstatSync(link).isSymbolicLink() && readlinkSync(link) === this.mirror(id);
+      const now = await entryAt(join(this.skillsDir(this.askIn(had)), had.name));
+      return now !== null && now !== "other" && now.link === this.mirror(id);
     } catch {
       return false;
     }
@@ -875,8 +1009,11 @@ export class Sharing {
     this.watchers.delete(key);
   }
 
-  private watchDir(key: string, dir: string, then: () => void) {
-    if (this.watchers.has(key) || !existsSync(dir)) return;
+  /// `still`: whether it is still to be followed once its directory was looked at (it may have stopped meanwhile).
+  private async watchDir(key: string, dir: string, then: () => void, still: () => boolean) {
+    if (this.closed || this.watchers.has(key) || !(await stat(dir).then(() => true, () => false))) return;
+    // (closed, no longer to be followed, or one begun meanwhile for the same key follows it already)
+    if (this.closed || !still() || this.watchers.has(key)) return;
     // Its directories each watched, not what a program made beside its files (ops/follow.ts says why).
     const tree: FollowedTree = new FollowedTree({
       root: dir,
@@ -900,14 +1037,14 @@ export class Sharing {
     });
   }
 
-  private watchHosted(name: string, dir: string) {
-    this.watchDir(`hosted:${name}`, dir, () => void this.reconcile());
+  private watchHosted(name: string, dir: string): Promise<void> {
+    return this.watchDir(`hosted:${name}`, dir, () => void this.reconcile(), () => name in this.sharedSkills());
   }
 
   /// Follow the directory, not auth.json itself: Codex replaces the file when it signs in or renews.
   private watchLogin(id: string, file: string) {
     const key = `login:${id}`;
-    if (this.loginDirs.get(id) === file && this.watchers.has(key)) return;
+    if (this.closed || (this.loginDirs.get(id) === file && this.watchers.has(key))) return;
     this.stopWatch(key);
     this.loginDirs.delete(id);
     try {
@@ -922,30 +1059,29 @@ export class Sharing {
     } catch { /* The profile's home may not exist until it is signed in. */ }
   }
 
-  private watchBorrowed(id: string, dir: string) {
-    this.watchDir(`borrowed:${id}`, dir, () => {
-      const state = this.readState();
-      const had = state.borrowed[id];
-      if (!had) return;
-      let files: Record<string, Buffer>;
-      try {
-        files = readSkill(dir);
-      } catch {
-        return;
-      }
-      if (skillHash(files) === had.hash) return;
-      had.pending = true;
-      this.writeState(state);
-      void this.reconcile();
-    });
+  private watchBorrowed(id: string, dir: string): Promise<void> {
+    const key = `borrowed:${id}`;
+    return this.watchDir(key, dir, () => {
+      if (!this.readState().borrowed[id]) return;
+      // (read while no new copy is placed: placing one stops this watch first, and what it read then is not an edit)
+      const watching = this.watchers.get(key);
+      void this.readSkill(dir).then(({ hash }) => {
+        const state = this.readState();
+        const had = state.borrowed[id];
+        if (!had || this.watchers.get(key) !== watching || hash === had.hash) return;
+        had.pending = true;
+        this.writeState(state);
+        void this.reconcile();
+      }, () => {});
+    }, () => this.readState().borrowed[id] !== undefined);
   }
 
   /// An edit made to a copied skill, sent to its host on the version it was made on.
   private async sendSkillEdit(id: string, had: Borrowed) {
-    const files = readSkill(this.mirror(id));
-    const answer = await this.deps.ask(had.host, this.askIn(had), { method: "share.put", id, base: had.version, files: encodeFiles(files) });
+    const { hash, files } = await this.readSkill(this.mirror(id), true);
+    const answer = await this.deps.ask(had.host, this.askIn(had), { method: "share.put", id, base: had.version, files });
     had.pending = false;
-    had.hash = skillHash(files);
+    had.hash = hash;
     if (typeof answer?.version === "number") had.version = answer.version;
     // On an older copy: the host's is fetched, the edit beside it.
     if (answer?.conflict === true) had.stale = true;
@@ -970,7 +1106,7 @@ export class Sharing {
     const state = this.readState();
     const moved = state.moved[id];
     if (moved && method === "share.version") return { moved: moved.to };
-    const own = this.ownShares().get(id);
+    const own = this.shares().get(id);
     if (!own) throw new Error("this station does not share that");
     if (!this.mayUse(own.allow, peer) || this.reach(own, peer) === null) throw new Error("that share is not for this station");
     const version = state.hosted[id]?.version ?? 0;
@@ -987,9 +1123,15 @@ export class Sharing {
     if (own.kind === "profile") {
       const p = own.profile!;
       if (method === "share.get") {
+        // (its account read first: the rest as it is when this answers, its version and allowance's revision of one
+        // moment, not a version from before a reset with the reset's revision)
+        const email = p.access?.kind === "subscription" ? await this.emailOf(p) : null;
+        const now = this.shares().get(id);
+        if (now?.kind !== "profile") throw new Error("this station does not share that");
+        const at = state.hosted[id]?.version ?? 0;
         // It has a copy now: it is told when this one changes.
-        this.told(id, peer, version);
-        return { version, profile: portable(p), email: p.access?.kind === "subscription" ? this.emailOf(p) : null, allow: own.allow, workspaces: this.sharedIn(p), quotaRevision: state.hosted[id]?.quotaRevision ?? 0 };
+        this.told(id, peer, at);
+        return { version: at, profile: portable(now.profile), email, allow: now.allow, workspaces: this.sharedIn(now.profile), quotaRevision: state.hosted[id]?.quotaRevision ?? 0 };
       }
       if (method === "share.lend") {
         if (this.moving.has(id)) throw new Error("the login is being moved to another station");
@@ -1006,9 +1148,13 @@ export class Sharing {
     } else {
       const dir = join(this.skillsDir(), own.skill!);
       if (method === "share.get") {
-        const files = readSkill(dir);
-        this.told(id, peer, version);
-        return { version, hash: skillHash(files), files: encodeFiles(files), allow: own.allow };
+        // (its version as it is when its files are read: not between a change read and its version raised)
+        return this.serially(async () => {
+          const { hash, files } = await this.readSkill(dir, true);
+          const now = state.hosted[id]?.version ?? 0;
+          this.told(id, peer, now);
+          return { version: now, hash, files, allow: own.allow };
+        });
       }
       if (method === "share.put") return this.takeEdit(peer, id, own.skill!, dir, request);
     }
@@ -1026,7 +1172,7 @@ export class Sharing {
 
   /// What a host says of one of its shares, in workspace `ws`: there, changed, no longer for this station, or moved to
   /// another station.
-  private heard(peer: string, id: string, request: Json, ws: string | null): Json {
+  private async heard(peer: string, id: string, request: Json, ws: string | null): Promise<Json> {
     if (!/^sh-[0-9a-z]{10,40}$/.test(id)) throw new Error("bad share id");
     const state = this.readState();
     const had = state.borrowed[id];
@@ -1039,10 +1185,12 @@ export class Sharing {
     // taken is a harmless retry, so the old host can stop sending it.
     if (had && had.host !== peer && request.host === had.host) return { heard: true };
     if (had && had.host !== peer) throw new Error("only the station that has it says so");
+    // (the state changed at once, then the files: what reads the state meanwhile finds it as it is now)
+    let dropped: Promise<void> | null = null;
     if (request.gone === true) {
       if (had) {
-        this.drop(id, had);
         delete state.borrowed[id];
+        dropped = this.drop(id, had);
       }
     } else if (typeof request.host === "string") {
       if (had) {
@@ -1054,28 +1202,29 @@ export class Sharing {
       const name = String(request.name ?? id);
       if (kind === "skill" && !portableName(name)) throw new Error("bad skill name");
       // Renamed on its host: no longer linked under the name it had.
-      if (had?.kind === "skill" && had.name !== name) this.unlinkSkill(id, had);
+      if (had?.kind === "skill" && had.name !== name) dropped = this.unlinkSkill(id, { ...had });
       // A skill of a joined workspace's station: linked into that workspace's skills.
       const where = kind === "skill" && had === undefined && ws !== null && ws !== this.deps.cloud.home() ? { workspace: ws } : {};
       state.borrowed[id] = { ...(had ?? { version: -1, hash: "" }), ...where, kind, name, host: peer, allow: Array.isArray(request.allow) ? request.allow : null, stale: true };
     }
     this.writeState(state);
+    if (dropped !== null) await dropped;
     void this.reconcile();
     // Not to be shown here, as something of this station's has its name (its own skill wins): said to its host.
     const now = state.borrowed[id];
-    if (now?.kind === "skill" && !this.skillLinked(id, now) && this.nameTaken(now)) return { heard: true, hidden: true };
+    if (now?.kind === "skill" && !(await this.skillLinked(id, now)) && (await this.nameTaken(now))) return { heard: true, hidden: true };
     return { heard: true };
   }
 
-  private emailOf(p: Json): string | null {
+  private async emailOf(p: Json): Promise<string | null> {
     if (typeof p.share?.email === "string") return p.share.email;
     if (p.machine === true) return this.deps.machineEmail?.(p.runtime) ?? null;
     const home = this.home(p);
-    if (p.runtime === "grok") return grokEmail(home);
-    if (p.runtime === "cursor") return cursorEmail(home);
+    // (read again only once its file changed: accounts/index.ts emailKept)
+    if (p.runtime === "grok" || p.runtime === "cursor") return accountEmailSoon(p.runtime, home);
     if (p.runtime === "codex") {
       try {
-        const auth = JSON.parse(readFileSync(join(home, "auth.json"), "utf8"));
+        const auth = JSON.parse(await readFile(join(home, "auth.json"), "utf8"));
         const claims = JSON.parse(Buffer.from(String(auth?.tokens?.id_token ?? "").split(".")[1] ?? "", "base64url").toString("utf8"));
         const email = claims?.email ?? claims?.["https://api.openai.com/profile"]?.email;
         return typeof email === "string" ? email : null;
@@ -1085,7 +1234,7 @@ export class Sharing {
     }
     for (const file of [join(home, ".claude.json"), join(home, "claude.json")]) {
       try {
-        const email = JSON.parse(readFileSync(file, "utf8"))?.oauthAccount?.emailAddress;
+        const email = JSON.parse(await readFile(file, "utf8"))?.oauthAccount?.emailAddress;
         if (typeof email === "string") return email;
       } catch {}
     }
@@ -1093,29 +1242,25 @@ export class Sharing {
   }
 
   /// An edit from a station that copies a skill: taken when made on the current version; else kept beside it.
-  private takeEdit(peer: string, id: string, name: string, dir: string, request: Json): Json {
+  private takeEdit(peer: string, id: string, name: string, dir: string, request: Json): Promise<Json> {
+    return this.serially(() => this.takeEditNow(peer, id, name, dir, request));
+  }
+
+  private async takeEditNow(peer: string, id: string, name: string, dir: string, request: Json): Promise<Json> {
     const state = this.readState();
     const hosted = state.hosted[id];
     const version = hosted?.version ?? 0;
-    const files: Record<string, string> = isObject(request.files) ? request.files : {};
-    let size = 0;
-    for (const [path, data] of Object.entries(files)) {
-      if (!safePath(path) || typeof data !== "string") throw new Error("bad file in a skill edit");
-      size += Buffer.byteLength(data, "base64");
-    }
-    if (size > MAX_SKILL_BYTES) throw new Error("the skill is too large to share");
-    let conflict = false;
-    if (request.base === version) {
-      writeSkill(dir, files);
-    } else {
-      conflict = true;
-      const skill = files["SKILL.md"];
-      if (typeof skill === "string") writeFileSync(join(dir, `SKILL.conflict-${peer.slice(0, 12)}.md`), Buffer.from(skill, "base64"));
-    }
+    const files: Record<string, unknown> = isObject(request.files) ? request.files : {};
+    const conflict = request.base !== version;
+    // Its every file checked by the program before anything is written (a path that leaves the skill, past what may
+    // be shared), one made on an older copy too.
+    await this.program.ask("skillWrite", { dir, files, most: MAX_SKILL_BYTES, ...(conflict ? { check: true } : {}) });
+    const skill = files["SKILL.md"];
+    if (conflict && typeof skill === "string") await this.program.ask("skillConflict", { dir, peer, content: skill });
     const next = version + 1;
     if (hosted) {
       hosted.version = next;
-      hosted.hash = skillHash(readSkill(dir));
+      hosted.hash = (await this.readSkill(dir)).hash;
       // The station that sent it has it (unless it conflicted); the others are told.
       if (!conflict) hosted.told[peer] = next;
     }
@@ -1132,24 +1277,23 @@ export class Sharing {
       const t = await this.deps.claudeToken(p, rejected);
       return { runtime: "claude", token: t.token, expiresAt: t.expiresAt };
     }
+    if (p.runtime === "agy") return this.lendAgyHere(p);
     const file = this.codexFile(p);
-    let auth = JSON.parse(readFileSync(file, "utf8"));
+    let auth = JSON.parse(await readFile(file, "utf8"));
     let expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
     if (expiresAt - this.time.now() < CODEX_LEND_MS) {
-      const renewed = this.renewCodexOnce(p, file, auth, expiresAt);
+      // By the Codex running on it, asked to (else it would only when its own token runs out, the station's borrowers
+      // refused till then), or here where none runs.
+      const renewed = this.renewOnce(p, "Codex", expiresAt, async () => {
+        if (!(await this.deps.codexRenewRunning(p.id))) await this.renewCodex(file, auth);
+      });
       // One that still lasts CODEX_MIN_MS waits for its renewal LEND_BOUND_MS at most, then is lent as it is, the renewal
       // going on behind: the station that asked waits 30 s for the answer (mesh/peer.ts ANSWER_MS), as long as the
       // renewal's call may take (Claude's lend, 2026-11-14). One with less waits for it.
-      if (expiresAt - this.time.now() >= CODEX_MIN_MS) {
-        const began = this.time.now();
-        let stop = () => {};
-        const bound = new Promise<boolean>((resolve) => (stop = this.time.after(LEND_BOUND_MS, () => resolve(false))));
-        const inTime = await Promise.race([renewed.then(() => true), bound]);
-        stop();
-        if (!inTime) log.warn("share", "a shared Codex login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on", { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
-      } else await renewed;
+      if (expiresAt - this.time.now() >= CODEX_MIN_MS) await this.withinBound(p, "Codex", expiresAt, renewed);
+      else await renewed;
       // Read again either way: Codex may have renewed it and then failed a step after (it answers with that error).
-      auth = JSON.parse(readFileSync(file, "utf8"));
+      auth = JSON.parse(await readFile(file, "utf8"));
       expiresAt = jwtExpiry(auth?.tokens?.access_token) ?? 0;
     }
     if (expiresAt - this.time.now() < CODEX_MIN_MS) throw new Error("the Codex login here runs out soon and cannot be renewed now");
@@ -1157,33 +1301,66 @@ export class Sharing {
     return { runtime: "codex", tokens: { id_token: tokens.id_token, access_token: tokens.access_token, account_id: tokens.account_id }, expiresAt };
   }
 
-  /// A shared Codex login renewed: by the Codex running on it, asked to (else it would only when its own token runs out,
-  /// the station's borrowers refused till then), or here where none runs. A failure is said: which login, how long it
-  /// took, how long what it has still lasts (what is lent meanwhile).
-  private async renewCodexNow(p: Json, file: string, auth: Json, expiresAt: number): Promise<void> {
-    const began = this.time.now();
-    try {
-      if (!(await this.deps.codexRenewRunning(p.id))) await this.renewCodex(file, auth);
-    } catch (e) {
-      log.warn("share", "renewing a shared Codex login failed", { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message });
+  /// An Antigravity CLI sign-in's access token, renewed first when it has less than AGY_LEND_MS left: one that still
+  /// lasts AGY_MIN_MS waits for its renewal LEND_BOUND_MS at most and is lent as it is, the renewal going on behind (as
+  /// Codex's). Its refresh token stays here.
+  private async lendAgyHere(p: Json): Promise<Json> {
+    const file = agyToken(this.home(p));
+    let text = await readFile(file, "utf8");
+    let expiresAt = agyExpiryIn(text);
+    if (expiresAt - this.time.now() < AGY_LEND_MS) {
+      const renewed = this.renewOnce(p, "Antigravity CLI", expiresAt, () => {
+        if (!this.deps.agyRenew) throw new Error("this station renews no Antigravity CLI sign-in");
+        return this.deps.agyRenew(this.home(p));
+      });
+      if (expiresAt - this.time.now() >= AGY_MIN_MS) await this.withinBound(p, "Antigravity CLI", expiresAt, renewed);
+      else await renewed;
+      text = await readFile(file, "utf8");
+      expiresAt = agyExpiryIn(text);
     }
+    if (expiresAt - this.time.now() < AGY_MIN_MS) throw new Error("the Antigravity CLI sign-in here runs out soon and cannot be renewed now");
+    const had = JSON.parse(text);
+    const { refresh_token: _, ...token } = had.token ?? {};
+    // `stored`: the rest of its file (a company's project, region and tier) for the borrower's (agents/agy.ts
+    // agyLentFile); the fields beside it for borrowers from before.
+    const { token: __, ...rest } = had;
+    return { runtime: "agy", token, email: typeof had.id_token_email === "string" ? had.id_token_email : null, auth_method: typeof had.auth_method === "string" ? had.auth_method : null, stored: rest, expiresAt };
   }
 
-  /// The renewals of shared Codex logins going on, by profile: one at a time, what is lent meanwhile waiting on it.
-  private codexRenewing = new Map<string, Promise<void>>();
+  /// `renewed` waited for LEND_BOUND_MS at most: past it, what is lent is the login as it is, which is said.
+  private async withinBound(p: Json, what: string, expiresAt: number, renewed: Promise<void>): Promise<void> {
+    const began = this.time.now();
+    let stop = () => {};
+    const bound = new Promise<boolean>((resolve) => (stop = this.time.after(LEND_BOUND_MS, () => resolve(false))));
+    const inTime = await Promise.race([renewed.then(() => true), bound]);
+    stop();
+    if (!inTime) log.warn("share", `a shared ${what} login's renewal outlasted the lend's bound; the login it has was lent, the renewal goes on`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000) });
+  }
 
-  private renewCodexOnce(p: Json, file: string, auth: Json, expiresAt: number): Promise<void> {
+  /// One renewal of a profile's login at a time (`renew`), what is lent meanwhile waiting on it; a failure is said:
+  /// which login, how long it took, how long what it has still lasts.
+  private renewOnce(p: Json, what: string, expiresAt: number, renew: () => Promise<unknown>): Promise<void> {
     const id = String(p.id);
-    const going = this.codexRenewing.get(id);
+    const going = this.renewing.get(id);
     if (going !== undefined) return going;
-    const done = this.renewCodexNow(p, file, auth, expiresAt).finally(() => this.codexRenewing.delete(id));
-    this.codexRenewing.set(id, done);
+    const began = this.time.now();
+    const done = Promise.resolve()
+      .then(renew)
+      .then(
+        () => {},
+        (e) => log.warn("share", `renewing a shared ${what} login failed`, { profile: p.id, ms: this.time.now() - began, lastsMin: Math.round((expiresAt - this.time.now()) / 60_000), error: (e as Error).message }),
+      )
+      .finally(() => this.renewing.delete(id));
+    this.renewing.set(id, done);
     return done;
   }
 
+  /// The renewals of shared logins going on, by profile: one at a time, what is lent meanwhile waiting on it.
+  private renewing = new Map<string, Promise<void>>();
+
   /// Once a renewal of profile `id` going on, if any, is over (tests).
   renewedBehind(id: string): Promise<void> {
-    return this.codexRenewing.get(id) ?? Promise.resolve();
+    return this.renewing.get(id) ?? Promise.resolve();
   }
 
   /// Codex's own renewal of its ChatGPT login, done here while no Codex runs on it (it would hold the old refresh token).
@@ -1202,7 +1379,7 @@ export class Sharing {
     next.tokens = { ...next.tokens };
     for (const k of ["id_token", "access_token", "refresh_token"]) if (typeof got?.[k] === "string") next.tokens[k] = got[k];
     next.last_refresh = new Date(this.time.now()).toISOString();
-    writePrivate(file, JSON.stringify(next, null, 2));
+    await writePrivateSoon(file, JSON.stringify(next, null, 2));
     return next;
   }
 
@@ -1268,7 +1445,7 @@ export class Sharing {
   async lendCodex(profile: Json, rejected = false): Promise<number> {
     const host = this.hostOf(profile);
     const home = this.home(profile);
-    if (keptCodexExpiry(join(home, "auth.json")) - this.time.now() < KEEP_LENT_MS) await this.rosterSaid();
+    if ((await keptCodexExpiry(join(home, "auth.json"))) - this.time.now() < KEEP_LENT_MS) await this.rosterSaid();
     let got: Json;
     try {
       got = await this.deps.ask(host, null, { method: "share.lend", id: profile.share.id });
@@ -1276,7 +1453,7 @@ export class Sharing {
     } catch (e) {
       this.unreachable.set(host, this.time.now());
       this.deps.changed();
-      const kept = keptCodexExpiry(join(home, "auth.json"));
+      const kept = await keptCodexExpiry(join(home, "auth.json"));
       if (!rejected && kept - this.time.now() >= KEEP_LENT_MS) {
         log.warn("share", "the host did not lend a new login; the one lent before is used", { profile: profile.id, error: (e as Error).message });
         return kept;
@@ -1290,8 +1467,36 @@ export class Sharing {
       tokens: { ...got.tokens, refresh_token: "lent-by-another-station" },
       last_refresh: new Date(this.time.now()).toISOString(),
     };
-    mkdirSync(home, { recursive: true });
-    writePrivate(join(home, "auth.json"), JSON.stringify(auth, null, 2));
+    await writePrivateSoon(join(home, "auth.json"), JSON.stringify(auth, null, 2));
+    return Number(got.expiresAt ?? 0);
+  }
+
+  /// A borrowed Antigravity CLI subscription: its home's sign-in file written with the host's current access token (no
+  /// refresh token, so `agy` never renews it here); when it runs out. `rejected`: the one there was refused, so it is not
+  /// used again while the host is away.
+  async lendAgy(profile: Json, rejected = false): Promise<number> {
+    const host = this.hostOf(profile);
+    const file = agyToken(this.home(profile));
+    const kept = () => readFile(file, "utf8").then(agyExpiryIn, () => 0);
+    if ((await kept()) - this.time.now() < KEEP_AGY_MS) await this.rosterSaid();
+    let got: Json;
+    try {
+      got = await this.deps.ask(host, null, { method: "share.lend", id: profile.share.id });
+      this.unreachable.delete(host);
+    } catch (e) {
+      this.unreachable.set(host, this.time.now());
+      this.deps.changed();
+      const until = await kept();
+      if (!rejected && until - this.time.now() >= KEEP_AGY_MS) {
+        log.warn("share", "the host did not lend a new sign-in; the one lent before is used", { profile: profile.id, error: (e as Error).message });
+        return until;
+      }
+      log.warn("share", "the host did not lend it", { profile: profile.id, error: (e as Error).message });
+      throw new Said(tr(stationLang(), "station.share.notLent"));
+    }
+    if (got?.runtime !== "agy" || typeof got?.token?.access_token !== "string") throw new Said(tr(stationLang(), "station.share.notLent"));
+    await writePrivateSoon(file, agyLentFile(got));
+    if (typeof got.email === "string" && got.email !== "") await writePrivateSoon(agyAccountFile(this.home(profile)), `${JSON.stringify({ email: got.email })}\n`);
     return Number(got.expiresAt ?? 0);
   }
 
@@ -1306,6 +1511,23 @@ export class Sharing {
       this.unreachable.set(host, this.time.now());
       throw e;
     }
+  }
+
+  /// A sign-in changed on this station. `profileId`: a profile signed in anew, whose copies are told a new version when
+  /// it is shared from here, so that each takes the new sign-in (accounts/index.ts `sharedChanged`): a Codex one's
+  /// version follows its sign-in's file by itself (`profileHash`), the others' (the Antigravity CLI's, Claude's) only so.
+  loginUpdated(profileId?: string): void {
+    const profile = profileId === undefined ? undefined : this.profiles().find((p) => p.id === profileId);
+    const id = profile?.share?.id;
+    if (profile && typeof id === "string" && profile.runtime !== "codex" && profile.share.borrowed !== true) {
+      const state = this.readState();
+      const hosted = state.hosted[id];
+      if (hosted) {
+        hosted.version++;
+        this.writeState(state);
+      }
+    }
+    void this.reconcile();
   }
 
   /// A reset made here or by a borrower is sent to every copy, including those currently offline. The redemption key
@@ -1358,7 +1580,7 @@ export class Sharing {
     // (the stations it reaches are said by the cloud: a station just started waits for them, as a login wanted does)
     if (on && among !== null) await this.rosterSaid();
     const stored: { allow: string[] | null } = { allow: null };
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       for (const x of raw.profiles ?? []) {
         if (x.id !== profileId) continue;
         if (!on) {
@@ -1371,7 +1593,9 @@ export class Sharing {
     });
     const who = stored.allow === null ? "every station" : stored.allow.map((s) => s.slice(0, 8)).join(",");
     log.info("share", "who may use a shared profile changed", { profile: profileId, shared: on, allow: on ? who : null, by });
-    await this.reconcile();
+    await this.syncHosted();
+    this.deps.changed();
+    void this.reconcile();
   }
 
   /// Who may use profile `p` once a person chose among stations `among` (shareProfile): those of them `allow` names
@@ -1400,17 +1624,19 @@ export class Sharing {
     const had = this.sharedSkills()[name]?.id ?? null;
     if (on) {
       const dir = join(this.skillsDir(), name);
-      if (lstatSync(dir).isSymbolicLink()) throw new Error("this skill is another station's");
-      if (readSkill(dir)["SKILL.md"] === undefined) throw new Error("no SKILL.md in that skill");
+      if ((await lstat(dir)).isSymbolicLink()) throw new Error("this skill is another station's");
+      if (!(await this.readSkill(dir)).hasSkillMd) throw new Error("no SKILL.md in that skill");
     }
-    this.deps.config.update((raw) => {
+    await this.deps.config.updateSoon((raw) => {
       const skills: Json = isObject(raw.sharedSkills) ? raw.sharedSkills : {};
       if (on) skills[name] = { id: had ?? newId(), allow };
       else delete skills[name];
       raw.sharedSkills = skills;
     });
     if (!on) this.stopWatch(`hosted:${name}`);
-    await this.reconcile();
+    await this.syncHosted();
+    this.deps.changed();
+    void this.reconcile();
   }
 
   /// A profile of this station's moved to another whole station of a workspace it serves (`to`): its login handed over
@@ -1439,9 +1665,11 @@ export class Sharing {
     for (const name of signInFiles(p)) {
       try {
         const path = join(home, name);
-        if (!lstatSync(path).isSymbolicLink()) credentials[name] = readFileSync(path).toString("base64");
+        if (!(await lstat(path)).isSymbolicLink()) credentials[name] = (await readFile(path)).toString("base64");
       } catch {}
     }
+    // (its account read while its login is here: the copy kept here is named by it after the login goes)
+    const email = await this.emailOf(p);
     const me = this.me();
     const sharing = !isObject(p.share) && shareFirst !== undefined && shareRefusal(p) === null && me !== null;
     if (!isObject(p.share) && !sharing) return this.moveOwn(p, to, ws, credentials, t, lang);
@@ -1461,22 +1689,21 @@ export class Sharing {
     try {
       if (sharing) {
         await shareFirst!(id);
-        this.deps.config.update((raw) => {
+        await this.deps.config.updateSoon((raw) => {
           for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, allow };
         });
         made = true;
         log.info("share", "a profile shared as it moves, with this station and the one it goes to only", { profile: profileId, to });
       }
-      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: this.emailOf(p), credentials, allow, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
+      const answer = await this.deps.ask(to, ws, { method: "share.take", id, profileId, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email, credentials, allow, version: (was?.version ?? 0) + 1, quotaRevision: was?.quotaRevision ?? 0, resetKeys: was?.resetKeys ?? [] });
       taken = true;
       if (typeof answer?.id === "string") there = answer.id;
       // Ours no more: the login forgotten (the new host renews it now), the profile kept as a copy under the same id.
       for (const name of Object.keys(credentials)) await rm(join(home, name), { force: true });
-      const email = this.emailOf(p);
       // (a station its stations do not include keeps no copy: it may not borrow it, and its host's word that it is
       // no longer for it may come before it has one, so it would keep it)
       keeps = allow === null || (me !== null && allow.includes(me));
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         if (!keeps) raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((x: Json) => x?.id !== profileId);
         else for (const x of raw.profiles ?? []) if (x.id === profileId) x.share = { id, borrowed: true, host: to, ...(email ? { email } : {}) };
       });
@@ -1489,7 +1716,7 @@ export class Sharing {
     } catch (e) {
       // (the share this move made, undone while the login is still here alone: as it was)
       if (made && !taken) {
-        this.deps.config.update((raw) => {
+        await this.deps.config.updateSoon((raw) => {
           for (const x of raw.profiles ?? []) if (x.id === profileId && isObject(x.share) && x.share.id === id) delete x.share;
         });
         log.info("share", "a share made to move a profile undone: the move failed", { profile: profileId, to, error: (e as Error).message });
@@ -1531,11 +1758,13 @@ export class Sharing {
     }
     const now = this.profiles().find((x) => x.id === profileId)!;
     const share = String(now.share.id);
+    // (its account read first: its version and allowance's revision then of one moment)
+    const email = now.access?.kind === "subscription" ? await this.emailOf(now) : null;
     const state = this.readState();
     const version = state.hosted[share]?.version ?? 1;
     try {
       await this.deps.ask(to, null, {
-        method: "share.borrow", id: share, version, profile: portable(now), email: now.access?.kind === "subscription" ? this.emailOf(now) : null,
+        method: "share.borrow", id: share, version, profile: portable(now), email,
         allow: Array.isArray(now.share.allow) ? now.share.allow : null, workspaces: this.sharedIn(now), quotaRevision: state.hosted[share]?.quotaRevision ?? 0,
       });
       this.told(share, to, version);
@@ -1556,9 +1785,9 @@ export class Sharing {
   }
 
   /// A share lent to this station by its host for a move (`lendTo`): its copy placed here before this answers.
-  private borrow(peer: string, id: string, request: Json): Json {
+  private async borrow(peer: string, id: string, request: Json): Promise<Json> {
     if (!/^sh-[0-9a-z]{10,40}$/.test(id)) throw new Error("bad share id");
-    if (this.ownShares().has(id)) return { borrowed: true };
+    if (this.shares().has(id)) return { borrowed: true };
     const me = this.me();
     const allow: string[] | null = Array.isArray(request?.allow) ? request.allow : null;
     if (allow !== null && (me === null || !allow.includes(me))) throw new Error("this station is not among those it is shared with");
@@ -1566,13 +1795,14 @@ export class Sharing {
     const had: Borrowed = state.borrowed[id] ?? { version: -1, hash: "", kind: "profile", name: String(request?.profile?.name ?? id), host: peer, allow, stale: true };
     had.host = peer;
     had.allow = allow;
-    this.placeProfile(id, had, request);
+    const home = await this.placeProfile(id, had, request);
     had.version = Number(request?.version ?? 0);
     had.quotaRevision = Number(request?.quotaRevision ?? 0);
     had.stale = false;
     state.borrowed[id] = had;
     this.writeState(state);
     this.checked.add(id);
+    await this.placedHome(home);
     void this.reconcile();
     return { borrowed: true };
   }
@@ -1603,13 +1833,13 @@ export class Sharing {
     this.moving.add(key);
     let there: string;
     try {
-      const answer = await this.deps.ask(to, ws, { method: "share.take", own: true, profileId: p.id, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: this.emailOf(p), credentials });
+      const answer = await this.deps.ask(to, ws, { method: "share.take", own: true, profileId: p.id, profile: { ...portable(p), access: p.access }, served: this.sharedIn(p), lang, email: await this.emailOf(p), credentials });
       if (answer?.taken !== true || typeof answer.id !== "string") throw new Said(t("station.share.moveNotTaken"));
       there = answer.id;
       // (the other has it now: the login here goes, so that one station alone renews it)
       const home = this.home(p);
       for (const name of Object.keys(credentials)) await rm(join(home, name), { force: true });
-      this.deps.config.update((raw) => {
+      await this.deps.config.updateSoon((raw) => {
         raw.profiles = (Array.isArray(raw.profiles) ? raw.profiles : []).filter((x: Json) => x?.id !== p.id);
       });
     } finally {
@@ -1645,16 +1875,15 @@ export class Sharing {
   }
 
   /// The login files handed over with a profile, written in its home here (only those its runtime signs in with).
-  private writeSignIns(home: string, given: Json, credentials: unknown) {
+  private async writeSignIns(home: string, given: Json, credentials: unknown) {
     const allowed = new Set(signInFiles(given));
     for (const [name, data] of Object.entries(isObject(credentials) ? credentials : {})) {
       if (!allowed.has(name) || typeof data !== "string") continue;
       const path = join(home, name);
-      mkdirSync(dirname(path), { recursive: true }); // sync: the login and the profile taken in one step (share.take answers once both are)
       try {
-        if (lstatSync(path).isSymbolicLink()) unlinkSync(path); // sync: the login and the profile taken in one step (share.take answers once both are)
+        if ((await lstat(path)).isSymbolicLink()) await unlink(path);
       } catch {}
-      writePrivate(path, Buffer.from(data, "base64"));
+      await writePrivateSoon(path, Buffer.from(data, "base64"));
     }
   }
 
@@ -1668,7 +1897,7 @@ export class Sharing {
   /// A profile not shared handed over by another station of a workspace both are in: this station's own from now on,
   /// under the id it had there where that is free. One of the same account here already (or taken before, its answer
   /// lost) is the one taken.
-  private takeOwn(peer: string, request: Json): Json {
+  private async takeOwn(peer: string, request: Json): Promise<Json> {
     const given = isObject(request.profile) ? request.profile : null;
     if (!given || typeof given.runtime !== "string" && given.runtime !== undefined) throw new Error("nothing handed over");
     const state = this.readState();
@@ -1676,14 +1905,22 @@ export class Sharing {
     const before = state.taken?.[asked];
     if (before !== undefined && this.profiles().some((x) => x.id === before)) return { taken: true, id: before };
     const email = typeof request.email === "string" && request.email !== "" ? request.email : null;
-    const same = email === null ? undefined : this.profiles().find((x) => x.machine !== true && !(isObject(x.share) && x.share.borrowed === true) && x.runtime === given.runtime && x.access?.kind === given.access?.kind && this.emailOf(x) === email);
+    let same: Json | undefined;
+    for (const x of email === null ? [] : this.profiles()) {
+      if (x.machine !== true && !(isObject(x.share) && x.share.borrowed === true) && x.runtime === given.runtime && x.access?.kind === given.access?.kind && (await this.emailOf(x)) === email) {
+        same = x;
+        break;
+      }
+    }
     if (same !== undefined) return { taken: true, id: same.id, had: true };
     const withheld = this.withheldFor(request.served, request.lang);
     const localId = this.idFor(request.profileId, `moved-${randomBytes(4).toString("hex")}`);
     const home = join(this.deps.data, "homes", localId);
-    mkdirSync(home, { recursive: true }); // sync: the login and the profile taken in one step (share.take answers once both are)
-    this.writeSignIns(home, given, request.credentials);
-    this.deps.config.update((raw) => {
+    // The login written first, then the profile and what it was taken as, in this share's turn (`serially`): nothing of
+    // the shares reads one without the other.
+    await mkdir(home, { recursive: true });
+    await this.writeSignIns(home, given, request.credentials);
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
       const made: Json = { ...portable(given), access: given.access, id: localId, home: `homes/${localId}` };
       if (withheld !== null && withheld.length > 0) made.withheld = withheld;
@@ -1705,15 +1942,20 @@ export class Sharing {
 
   /// A profile handed over by the station that has it (one this station borrows it from, or any station of its
   /// workspaces for one not seen here).
-  private take(peer: string, request: Json): Json {
-    if (request?.own === true) return this.takeOwn(peer, request);
+  /// One at a time (`serially`, with what else changes `state.hosted`): what one looked at to decide (its id here, a copy
+  /// it had, one of the same account) is as it was when it is written.
+  private take(peer: string, request: Json): Promise<Json> {
+    return this.serially(() => (request?.own === true ? this.takeOwn(peer, request) : this.takeShared(peer, request)));
+  }
+
+  private async takeShared(peer: string, request: Json): Promise<Json> {
     const id = String(request?.id ?? "");
     if (!/^sh-[0-9a-z]{10,40}$/.test(id)) throw new Error("bad share id");
     const state = this.readState();
     const had = state.borrowed[id];
     if (had && had.host !== peer) throw new Error("only the station that has it can hand it over");
     const mine = this.profiles().find((x) => isObject(x.share) && x.share.id === id && x.share.borrowed !== true);
-    if (this.ownShares().has(id)) return { taken: true, ...(mine ? { id: mine.id } : {}) };
+    if (this.shares().has(id)) return { taken: true, ...(mine ? { id: mine.id } : {}) };
     const given = isObject(request.profile) ? request.profile : null;
     if (!given) throw new Error("nothing handed over");
     // (the workspaces it served there, and no more, as it is this station's to share now)
@@ -1722,14 +1964,17 @@ export class Sharing {
     const existing = this.profiles().find((x) => isObject(x.share) && x.share.id === id);
     const localId = existing?.id ?? (typeof request.profileId === "string" ? this.idFor(request.profileId, id) : id);
     const home = join(this.deps.data, "homes", localId);
-    mkdirSync(home, { recursive: true }); // sync: the login and the profile taken in one step (share.take answers once both are)
-    this.writeSignIns(home, given, request.credentials);
+    // The login written first, then the profile and the share in one step: nothing reads one without the other.
+    await mkdir(home, { recursive: true });
+    await this.writeSignIns(home, given, request.credentials);
     const allow = Array.isArray(request.allow) ? request.allow : null;
-    this.deps.config.update((raw) => {
+    const made: Json = { ...portable(given), access: given.access, id: localId, home: `homes/${localId}`, share: { id, allow } };
+    if (withheld !== null && withheld.length > 0) made.withheld = withheld;
+    if (!isObject(made.env)) made.env = {};
+    // (hashed as it will be, its login written: the profile, the copy let go and the share then, in this share's turn)
+    const hash = await this.profileHash(made);
+    await this.deps.config.updateSoon((raw) => {
       const list: Json[] = Array.isArray(raw.profiles) ? raw.profiles : [];
-      const made: Json = { ...portable(given), access: given.access, id: localId, home: `homes/${localId}`, share: { id, allow } };
-      if (withheld !== null && withheld.length > 0) made.withheld = withheld;
-      if (!isObject(made.env)) made.env = {};
       const at = list.findIndex((x) => x.id === localId);
       if (at >= 0) list[at] = made;
       else list.push(made);
@@ -1739,10 +1984,9 @@ export class Sharing {
     delete after.borrowed[id];
     // The station that handed it over keeps a copy, at this version.
     const version = Number(request.version ?? 1);
-    const p = this.profiles().find((x) => x.id === localId);
     const quotaRevision = Number.isSafeInteger(request.quotaRevision) && request.quotaRevision >= 0 ? request.quotaRevision : 0;
     const resetKeys = Array.isArray(request.resetKeys) ? request.resetKeys.filter((key: unknown): key is string => typeof key === "string").slice(-32) : [];
-    after.hosted[id] = { version, hash: p ? this.profileHash(p) : "", kind: "profile", name: String(given.name ?? localId), allow, told: { [peer]: version }, quotaRevision, resetKeys };
+    after.hosted[id] = { version, hash, kind: "profile", name: String(given.name ?? localId), allow, told: { [peer]: version }, quotaRevision, resetKeys };
     this.writeState(after);
     log.info("share", "a shared profile handed over to this station", { id, from: peer });
     void this.reconcile();
@@ -1766,11 +2010,11 @@ export class Sharing {
   }
 
   /// What the memory page says of a skill's sharing (null: not shared): by its name in the agents' skills.
-  skillView(name: string): ShareView | null {
+  async skillView(name: string): Promise<ShareView | null> {
     const hosted = this.sharedSkills()[name];
     if (hosted) return { id: hosted.id, role: "host", host: this.me() ?? "", allow: hosted.allow, reachable: null };
     for (const [id, had] of Object.entries(this.readState().borrowed)) {
-      if (had.kind !== "skill" || had.name !== name || !this.skillLinked(id, had)) continue;
+      if (had.kind !== "skill" || had.name !== name || !(await this.skillLinked(id, had))) continue;
       return { id, role: "user", host: had.host, allow: had.allow, reachable: !this.unreachable.has(had.host) };
     }
     return null;

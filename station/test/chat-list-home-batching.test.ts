@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep } from "../src/store/chat-list-home-index.ts";
-import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "../src/store/chat-list-home-overlap.ts";
-import { scanRecentWorkspaceStep } from "../src/store/chat-list-scope-build.ts";
-import { trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
+import { installRecentHomeIndex, scanRecentHomeChatsStep, settleRecentHomeChatStep } from "./reference/chat-list/chat-list-home-index.ts";
+import { installRecentHomeOverlap, readPreparedRecentHome, scanRecentHomeOverlapStep, settleRecentHomeOverlapStep } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { scanRecentWorkspaceStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
 import { Store } from "../src/store/store.ts";
 
 test("one bounded home batch accounts for multiple ordinary old chats", () => {

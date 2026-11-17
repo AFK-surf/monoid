@@ -212,16 +212,16 @@ pub fn chat_list(
             // its menu open (right clicked, its ⋯), the same band in the pointer's ground, easing in and out as a
             // row's under the pointer does
             let under = if i + 1 < n { top_at(i + 1) / 2.0 } else { 0.0 }
+            let band_under = if under > 0.0 { under } else { top / 2.0 }
             let (band, band_by) = match e {
-              // (a notice lights its own pill: system_notice)
-              Said(m) if whole && m.ts == lit.0 && lit.1 > 0.0 && !m.system => (Some((lit.1, top / 2.0, under)), None)
+              Said(m) if whole && m.ts == lit.0 && lit.1 > 0.0 => (Some((lit.1, top / 2.0, band_under)), None)
               Said(m) => {
                 let on = @sfbase.message_menu_on("m:" + m.ts)
                 let a = @motion.told(c, "msg-menu/" + m.ts, if on { 1.0 } else { 0.0 }, spec=@sf.nav_fade)
                 if on || !a.over(c) {
                   let hover = @sf.theme().p.hover
                   // (the last message's as far under it as over it: the list's foot under it, no row to meet)
-                  (Some((1.0, top / 2.0, if under > 0.0 { under } else { top / 2.0 })), Some(fn() { @sf.alpha(hover, a.get(c)) }))
+                  (Some((1.0, top / 2.0, band_under)), Some(fn() { @sf.alpha(hover, a.get(c)) }))
                 } else {
                   (None, None)
                 }
@@ -324,6 +324,11 @@ pub fn chat_list(
       }
       found_centre(c, rd, key, list_box_id, pick, find_chat() == rk)
     }
+    // (laid out where it is on this visit: what floats over it goes by it from the frame after, floats_settled)
+    @sfbase.floats_laid(c, rd, match la.info {
+      Some(i) => i.first >= 0
+      None => false
+    })
     // the way to the newest: away from its end, or short of the chat's end
     let jump = la.away || v.newer
     rd.jump = jump
@@ -471,6 +476,21 @@ pub fn list_key(r : ChatRef) -> String {
 }
 
 ///|
+/// How what floats over chat `r`'s list, `name`, looks as it is `shown` (@motion.presence, float_trans): coming and
+/// going by its motion, its chat's own (its key the chat's), once its list is past its opening (@sfbase.floats_settled);
+/// till then standing as it is found, no motion set out by the list coming to its place nor by another chat's.
+fn chat_float_look(c : @ui.Ctx, r : ChatRef, name : String, shown : Bool) -> @ui.Look? {
+  let rk = r.station + "\u{1}" + r.session
+  if @sfbase.floats_settled(c, @sfbase.reading_of(rk)) {
+    @motion.presence(c, name + "/" + rk, shown, enter=float_trans(), exit=float_trans())
+  } else if shown {
+    Some(float_trans().at(1.0, 1.0))
+  } else {
+    None
+  }
+}
+
+///|
 /// The way to the newest (ToLatest): over the list right over the send button, a round button with ↓ (and, short of
 /// the chat's end, how many new messages wait there), fading in and out; pressed, the list glides to its end and
 /// follows it again; short of the chat's end, the chat's latest page is put in place of what shows (`chat.latest`),
@@ -479,8 +499,8 @@ pub fn list_key(r : ChatRef) -> String {
 /// the end.
 fn to_latest(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, shown : Bool, room : Double) -> Unit {
   let p = @sf.theme().p
-  let look = match
-    @motion.presence(c, "chat-jump", shown, enter=float_trans(), exit=float_trans()) {
+  // (its motion its chat's own, standing as it is found while the chat opens: chat_float_look)
+  let look = match chat_float_look(c, r, "chat-jump", shown) {
     Some(l) => l
     None => return
   }
@@ -553,7 +573,7 @@ fn to_ask(
     None => false
   }
   let shown = asks.length() > 0 && laid && !asks_in_view(ask_rows, info)
-  let look = match @motion.presence(c, "chat-ask", shown, enter=float_trans(), exit=float_trans()) {
+  let look = match chat_float_look(c, r, "chat-ask", shown) {
     Some(l) => l
     None => return shown
   }
@@ -571,14 +591,21 @@ fn to_ask(
   // move_spring), set off as their coming and going is, as this is built for it; laid out where it goes, drawn the
   // rest of its way short of there)
   let lift = under.to_double() * float_above
-  let lifting = @motion.told(c, "chat-ask/lift", lift, spec=@sf.move_spring)
+  // (while the chat opens, where it is found: chat_float_look)
+  let rk = r.station + "\u{1}" + r.session
+  let lifting = if @sfbase.floats_settled(c, @sfbase.reading_of(rk)) {
+    let told = @motion.told(c, "chat-ask/lift/" + rk, lift, spec=@sf.move_spring)
+    fn() { told.get(c) }
+  } else {
+    fn() { lift }
+  }
   c.layer(fn() {
     float_box(c, float_right(c), room + float_lift + lift, fn() {
       let b = c.box(style=if c.hovered(id) { float_button_hot } else { float_button }, id~, fn() {
         @sf.icon(c, "bell", size=float_icon, color=p.text) |> ignore
       })
       c.semantics(b, Button, id~, label=@sf.t("web-main.chat.asks.go"))
-      c.look_by(b, fn() { { ..look, dy: look.dy + lift - lifting.get(c) } })
+      c.look_by(b, fn() { { ..look, dy: look.dy + lift - lifting() } })
       @motion.leaving(c, b, shown)
       b
     })
@@ -955,8 +982,8 @@ fn row_box(
               c.bg_by(g, f)
             }
             None => {
-              let g = c.layer(fn() { c.box(style=flash_ground, fn() {  }) |> ignore })
-              c.look(g, @ui.look(alpha~))
+              let g = c.layer(fn() { c.box(style=band_ground, fn() {  }) |> ignore })
+              c.bg_by(g, fn() { @sf.alpha(@sf.theme().flash_bg(), alpha) })
             }
           }
         None => ()
@@ -998,14 +1025,9 @@ fn float_box(c : @ui.Ctx, right : Double, foot : Double, body : () -> Int) -> Un
 }
 
 ///|
-/// A message's band in a ground drawn as it is painted (its menu open: Ctx::bg_by), the band's room alone.
+/// A message's band in a ground drawn as it is painted (its flash, or its menu open: Ctx::bg_by), the band's room alone.
 // kept across runs: a value (no field of it changes)
 let band_ground : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// A message gone to lit whole, its ground (msgFlash): the accent's, as its row's band (row_box).
-// kept across runs: a value (no field of it changes)
-let flash_ground : @ui.Style = @ui.css("w=Full h=Full bg=AccentBg")
 
 ///|
 /// The message gone to flashing in the list drawn now and how far its flash is (its ts, 0 to 1): its row's band

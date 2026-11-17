@@ -3,7 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { OTHER_JOBS_AT_INSTALL, RUNNING_LIMIT, RUNNING_WAIT_JOBS, UP_JOBS_OF_SESSION, installOtherActiveJobs } from "../src/store/active-jobs.ts";
 import { HAS_ACTIVE_WATCH, installActiveWatches } from "../src/store/watch-jobs.ts";
-import { activeJobUpgradeReady, activeJobUpgradeStep } from "../src/store/active-jobs-upgrade.ts";
+import { activeJobUpgradeReady, activeJobUpgradeStep } from "./reference/backfill/active-jobs-upgrade.ts";
 
 for (const recursive of [false, true]) test(`the running limit follows watches, ordinary jobs and older writers (recursive triggers ${recursive})`, () => {
   const db = new DatabaseSync(":memory:");

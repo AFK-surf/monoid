@@ -74,8 +74,7 @@ const NOT_HELD_ASKS: Record<string, string> = {
 /// Those reading more than `READ_PER_SENT` × what they send and `READ_FREE_KB` now, cold and of the interactions: what each
 /// reads, KB rounded up to a multiple of 8.
 const OVER_READ: Record<string, number> = {
-  "stationPart archiving": 32,
-  "stationPart automaticDecisions": 32,
+  "stationPart archiving": 16,
   "stationPart machineLogins": 32,
   "stationPart logins": 32,
   "stationPart updates": 32,
@@ -83,13 +82,14 @@ const OVER_READ: Record<string, number> = {
   "chats mine": 80,
   profile: 72,
   "profile key": 72,
-  connects: 144,
-  "connects mine": 144,
-  connect: 240,
-  connectCandidates: 136,
+  // (the Profile overview's pools, of every account's row as the list reads them, kept beside each station's part: a
+  // few pools of hours whatever the accounts, so what it sends does not grow with them, what it reads does as the list's)
+  profilesOverview: 32,
+  connect: 216,
+  connectCandidates: 112,
   newChat: 40,
   pick: 144,
-  settings: 144,
+  settings: 40,
   "chatJobs compact": 48,
   "chatJobs summary": 48,
   agentCard: 48,
@@ -112,8 +112,6 @@ const OVER_READ: Record<string, number> = {
   "start 大屏/waited": 472,
   "start 大屏/idle": 472,
   "switch 大屏 to 新对话/waited": 128,
-  "place connects/waited": 144,
-  "place connects/idle": 144,
   "place vault/waited": 192,
   "place vault/idle": 192,
   "place usage/waited": 304,
@@ -122,39 +120,42 @@ const OVER_READ: Record<string, number> = {
 /// The same, asked again.
 const OVER_READ_AGAIN: Record<string, number> = {};
 /// Those whose reading grows faster than what they send with a knob, by name (`<name> again` warm) and knob: what each
-/// reads with that thing held three times, KB rounded up to a multiple of 8.
+/// reads with that thing held three times, KB rounded up to a multiple of 8. (Three of the station's parts went up a
+/// step with profiles as the fixture's first station gained a group connect, 2026-11-16: more data held, read the same
+/// way.)
 const GROWS: Record<string, Partial<Record<Knob, number>>> = {
-  connect: { chats: 648 },
+  connect: { chats: 624 },
   railCard: { chats: 1016, stations: 1024 },
-  "start 小屏/waited": { chats: 1136, stations: 1248 },
-  "start 小屏/idle": { chats: 1136, stations: 1248 },
+  // (a row of a chat not ended keeps its stage and its chats led still at work beside its record (`chat_row`, KEPT
+  // listRow), so a row kept is read with no record: with stations × 3 its reading went 1248.0 → 1248.4 KB, past the
+  // step, 2026-11-16)
+  "start 小屏/waited": { chats: 1136, stations: 1256 },
+  "start 小屏/idle": { chats: 1136, stations: 1256 },
   "start 大屏/waited": { chats: 1136, stations: 1192 },
   "start 大屏/idle": { chats: 1136, stations: 1192 },
-  "stationPart archiving": { profiles: 56 },
-  "stationPart automaticDecisions": { profiles: 56 },
-  "stationPart machineLogins": { profiles: 56 },
-  "stationPart logins": { profiles: 56 },
-  "stationPart updates": { profiles: 56 },
+  "stationPart archiving": { people: 16 },
+  "stationPart automaticDecisions": { people: 16 },
+  "stationPart machineLogins": { profiles: 64 },
+  "stationPart logins": { profiles: 64 },
+  "stationPart updates": { profiles: 64 },
   profiles: { profiles: 80, stations: 96 },
+  profilesOverview: { profiles: 80, stations: 96 },
   profile: { profiles: 200, stations: 216 },
   "profile key": { profiles: 200, stations: 216 },
-  connects: { profiles: 264 },
-  "connects mine": { profiles: 264 },
   newChat: { profiles: 64 },
   pick: { profiles: 272, stations: 416 },
-  settings: { profiles: 264, stations: 416 },
+  settings: { stations: 96 },
   history: { profiles: 72 },
   agentCard: { profiles: 72 },
-  usage: { profiles: 432 },
+  // (usage's stations joined as shared accounts, people and deleted chats came to be counted once across stations: what
+  // it sends with stations × 3 fell from > × 2.5 to × 1.48 while its per-station reads stayed 902 KB, 2026-11-16)
+  usage: { profiles: 432, stations: 904 },
   fleet: { profiles: 448, stations: 952 },
   "switch 大屏 to 新对话/waited": { profiles: 152 },
-  "switch 大屏 to 新对话/idle": { profiles: 160 },
   "place profiles/waited": { profiles: 80, stations: 96 },
   "place profiles/idle": { profiles: 80, stations: 96 },
-  "place connects/waited": { profiles: 272 },
-  "place connects/idle": { profiles: 272 },
-  "place usage/waited": { profiles: 424 },
-  "place usage/idle": { profiles: 424 },
+  "place usage/waited": { profiles: 424, stations: 904 },
+  "place usage/idle": { profiles: 424, stations: 904 },
   chatRow: { people: 16 },
   archive: { people: 24 },
   "railCard usage": { stations: 696 },
@@ -187,12 +188,13 @@ const GROWS_WRITE: Record<string, Partial<Record<Knob, number>>> = {
   "archived held": { chats: 296 },
   "quota alone": { profiles: 48 },
   "session alone": { profiles: 48 },
-  "session held": { profiles: 64 },
   "machine alone": { profiles: 48 },
   "login alone": { profiles: 48 },
   "login held": { profiles: 48 },
   "message held": { stations: 64 },
-  "card held": { stations: 32 },
+  // (as it reads 15.9 → 21.1 KB with the chats three times, as before; what it writes and sends with them fell from
+  // 22.2 → 34.4 KB (× 1.55) to × 0.93 as 待处理's items went by key, workspaceMarks a keyed list, 2026-11-16)
+  "card held": { stations: 32, chats: 24 },
   "screen held": { stations: 16 },
   "member held": { stations: 48 },
 };

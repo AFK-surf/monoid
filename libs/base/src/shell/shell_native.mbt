@@ -22,6 +22,9 @@ extern "C" fn ask_ffi(op : Bytes, json : Bytes) -> Bytes = "bsh_ask"
 extern "C" fn now_ffi() -> Int64 = "bsh_now"
 
 ///|
+extern "C" fn attached_ffi() -> Int = "bsh_attached"
+
+///|
 extern "C" fn random_ffi(n : Int) -> Bytes = "bsh_random"
 
 ///|
@@ -43,6 +46,18 @@ pub fn Shell::start(rt : @effect.Runtime, dir : String) -> Shell raise ShellErro
     raise ShellError("the shell did not start in \{dir}")
   }
   Shell::of_target(rt)
+}
+
+///|
+/// The shell for the fibers of `rt` where the process started it already, for another caller of it, and shared it
+/// with this side (`bsh_attach`, shell.c): nothing is started, this side's calls are numbered past that caller's
+/// (from 2^40), and their answers are those it hands back (`bsh_deliver`), taken as any (`Shell::pump`). Fails
+/// where none was shared.
+pub fn Shell::attached(rt : @effect.Runtime) -> Shell raise ShellError {
+  if attached_ffi() == 0 {
+    raise ShellError("the shell is not attached")
+  }
+  Shell::of_target(rt, base=1L << 40)
 }
 
 ///|
@@ -96,6 +111,29 @@ pub fn Shell::pump(self : Shell, ms : Int64) -> Bool {
     self.answered(more)
   }
   true
+}
+
+///|
+/// One turn for a program whose own loop runs this thread (a window's), never waiting: takes every answer of the
+/// shell's that is in, fires what is due on the runtime's clock and runs what is ready, again until no answer came and
+/// nothing is ready. When the runtime's next timer is due (`next_timer`), for that loop to come back by then; none
+/// where none is set. An answer that comes later wakes that loop by what `bsh_on_wake` (shell.c) was given.
+pub fn Shell::turn(self : Shell) -> Int64? {
+  self.turn_taking(() => self.pump(0L))
+}
+
+///|
+/// `Shell::turn` with what takes the answers in (`take`: whether any came), a test's where no shell is linked.
+fn Shell::turn_taking(self : Shell, take : () -> Bool) -> Int64? {
+  ignore(take())
+  while true {
+    self.rt.tick()
+    // (what the turn asked the shell may be answered by now: taken in this turn too)
+    if !take() && self.rt.idle() {
+      break
+    }
+  }
+  self.rt.next_timer()
 }
 
 ///|

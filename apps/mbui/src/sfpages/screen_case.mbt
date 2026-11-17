@@ -2,7 +2,7 @@
 // station makes of what Xcode has on that Mac (screens/sim-chrome.ts; `screen.chrome`), turned as the device stands. The
 // case has the panel's shape cut out of it, so the picture shows through it, on the system's video layer or drawn here
 // alike; its buttons are pressed where they are, held as long as they are here. Until a device's pictures have come, or
-// from a station without them, device_round draws what it does.
+// from a station without them, device_body_node draws what it does.
 
 ///|
 /// How far past what shows of a button it is still pressed: as much of a press's room as it takes, clear of what is by it.
@@ -32,6 +32,7 @@ priv struct DeviceCase {
 }
 
 ///|
+#derive(Eq)
 priv struct CaseButton {
   name : String
   at : SRect
@@ -98,14 +99,23 @@ let case_asked : Map[String, Bool] = Map([])
 let case_came : Map[String, Bool] = Map([])
 
 ///|
+/// Each case's pictures come (case_came): what asks whether they have reads it again as this is told.
+// kept across runs: a count
+let case_told : @signals.Signal[Int] = @signals.signal(0)
+
+///|
 fn case_picture(station : String, key : String, turn : Int, name : String) -> String {
   "mem:sf/case/\{station}/\{key}/\{turn}/\{name}"
 }
 
 ///|
-/// The case of the panel a picture of `size` is of, once its pictures have come (they are asked for here, those of this
-/// way first and the rest after them, for a turn to find them come); none: not one, or not yet.
-fn device_case(c : @ui.Ctx, s : ScreenSess, size : (Int, Int)?) -> DeviceCase? {
+/// The case of the panel a picture of `size` is of, once its pictures have come and are decoded for node `v`'s window
+/// (they are asked for here, those of this way first and the rest after them, for a turn to find them come, and asked
+/// decoded with the other ways it may stand, so that a turn finds them there); none: not one, or not yet. Followed as
+/// the state is told and as the pictures come.
+fn device_case_now(v : @view.View, s : ScreenSess, size : (Int, Int)?) -> DeviceCase? {
+  s.said.get() |> ignore
+  case_told.get() |> ignore
   guard s.simulator() && size is Some((pw, ph)) && pw > 0 && ph > 0 else { return None }
   guard field(s.state, "chrome") is Some(Array(panels)) && panels.length() > 0 else { return None }
   let (pw, ph) = (pw.to_double(), ph.to_double())
@@ -132,17 +142,19 @@ fn device_case(c : @ui.Ctx, s : ScreenSess, size : (Int, Int)?) -> DeviceCase? {
     0
   }
   let key = text(p, "key")
-  case_ask(c, s, panels, panel, turn)
+  if !case_asked.contains(case_picture(s.station, key, turn, "")) {
+    case_ask_one(s.src, s.station, s.screen, panels, panel, turn)
+  }
   guard case_came.contains(case_picture(s.station, key, turn, "")) else { return None }
   // decoded before it shows, and the other ways it may stand with it, so that a turn finds it there
-  let (win_w, win_h) = c.window_size()
-  let px = dmax(win_w, win_h) * c.scale
+  let (win_w, win_h) = v.window()
+  let px = dmax(win_w, win_h) * v.pixel_scale()
   for t in 0..<4 {
-    if t != turn && case_came.contains(case_picture(s.station, key, t, "")) {
-      c.image_ready(case_picture(s.station, key, t, "body"), px) |> ignore
+    if case_came.contains(case_picture(s.station, key, t, "")) {
+      v.image_ask(case_picture(s.station, key, t, "body"), px)
     }
   }
-  guard c.image_ready(case_picture(s.station, key, turn, "body"), px) else { return None }
+  guard v.image_ready(case_picture(s.station, key, turn, "body"), px) else { return None }
   let (fw, fh) = (number(field(p, "frame"), "width"), number(field(p, "frame"), "height"))
   let rect_of = fn(v : Json?) -> SRect {
     turned_rect({ x: number(v, "x"), y: number(v, "y"), w: number(v, "width"), h: number(v, "height") }, fw, fh, turn)
@@ -180,17 +192,6 @@ fn device_case(c : @ui.Ctx, s : ScreenSess, size : (Int, Int)?) -> DeviceCase? {
 ///|
 /// This way's pictures asked for, then, as each comes, the next not asked for of the others: one at a time, as making them
 /// is all the station does for as long as it takes.
-fn case_ask(c : @ui.Ctx, s : ScreenSess, panels : Array[Json], panel : Int, turn : Int) -> Unit {
-  let station = s.station
-  let screen = s.screen
-  let src = s.src
-  let ask : (Int, Int) -> Unit = fn(i, t) { case_ask_one(src, station, screen, panels, i, t) }
-  if !case_asked.contains(case_picture(station, text(Some(panels[panel]), "key"), turn, "")) {
-    c.tell("screen-case/" + station + "/" + screen + "/\{panel}/\{turn}", fn() { ask(panel, turn) })
-  }
-}
-
-///|
 fn case_ask_one(src : Source, station : String, screen : String, panels : Array[Json], panel : Int, turn : Int) -> Unit {
   let p = Some(panels[panel])
   let key = text(p, "key")
@@ -222,6 +223,7 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
       take(name + "/down", text(pictures, "down"))
     }
     case_came[id] = true
+    case_told.set(case_told.untracked() + 1)
     // the rest, one after another
     for i, _ in panels {
       for t in 0..<4 {
@@ -235,59 +237,97 @@ fn case_ask_one(src : Source, station : String, screen : String, panels : Array[
 }
 
 ///|
-/// A case's picture drawn at `r` of what it is drawn in.
-fn case_image(c : @ui.Ctx, src : String, r : SRect) -> Unit {
-  c.box(tx=r.x, ty=r.y, fn() {
-    c.image(src, w=Px(r.w), h=Px(r.h), fit=FitFill, bg=0L, fade=false) |> ignore
+/// The device's case round its picture in `o` (over the stage): its buttons behind it (in their pressed picture, and in
+/// a way, under a press), it over them, a home button on it, and where each is pressed while it is driven; the
+/// picture's corners, outside the panel, cut off as far in as the case over them (the panel's own less a little, it
+/// being no circle). Each where the picture is drawn, as it is drawn (ScreenUi::shown_on).
+fn device_cased_node(o : @view.View, pg : ScreenPage, size : () -> (Int, Int)?) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let cased = fn() { device_case_now(o, s, size()) }
+  // (the case as it stands, by its pictures: made again for another way it stands, or another device)
+  o.pick(at_once=true, fn() { cased().map(fn(k) { (k.key, k.turn) }) }, fn(c, which) {
+    c.over(Is(true)) |> ignore
+    guard which is Some(_) && @signals.untracked(cased) is Some(k) else { return }
+    let place = fn(n : @view.View, r : SRect) -> SRect {
+      let shown = u.picture_on(n)
+      let scale = shown.w / k.screen.w
+      let ox = shown.x - k.screen.x * scale
+      let oy = shown.y - k.screen.y * scale
+      { x: ox + r.x * scale, y: oy + r.y * scale, w: r.w * scale, h: r.h * scale }
+    }
+    let picture = fn(name : String) { case_picture(k.station, k.key, k.turn, name) }
+    let corner = fn(r : SRect, i : Int) {
+      let unit = dmin(r.w, r.h) * case_corner_share
+      if k.corners.length() == 4 {
+        k.corners[(i + 4 - k.turn) % 4] * unit
+      } else {
+        0.0
+      }
+    }
+    device_corners_node(c, pg, fn(r) { (corner(r, 0), corner(r, 1), corner(r, 2), corner(r, 3)) })
+    let held = u.logs.buttons_held
+    let downs : Map[String, @signals.Signal[Bool]] = Map([])
+    for b in k.buttons {
+      downs[b.name] = @signals.signal(false, same=fn(a, b) { a == b })
+    }
+    let image = fn(n : @view.View, src : () -> String, r : () -> SRect) {
+      n
+      .over(Is(true))
+      .offset(By(fn() {
+        let at = r()
+        (at.x, at.y)
+      }))
+      .width(By(fn() { Some(r().w) }))
+      .height(By(fn() { Some(r().h) }))
+      .image(By(fn() { Some((src(), "", 0)) }))
+      |> ignore
+    }
+    let looks = fn(b : CaseButton) {
+      c.box(fn(n) {
+        let down = fn() { s.driving_now() && downs.get(b.name).map(fn(d) { d.get() }).unwrap_or(false) }
+        image(n, fn() { picture(if down() { b.name + "/down" } else { b.name }) }, fn() {
+          let r = place(n, b.at)
+          // (pressed, in by half the way: it stays to be seen)
+          if down() {
+            let scale = r.w / b.at.w
+            { ..r, x: r.x + b.dx * scale / 2.0, y: r.y + b.dy * scale / 2.0 }
+          } else {
+            r
+          }
+        })
+      })
+      |> ignore
+    }
+    for b in k.buttons {
+      if !b.front {
+        looks(b)
+      }
+    }
+    c.box(fn(n) { image(n, fn() { picture("body") }, fn() { place(n, { x: 0.0, y: 0.0, w: k.frame_w, h: k.frame_h }) }) }) |> ignore
+    for b in k.buttons {
+      if b.front {
+        looks(b)
+      }
+    }
+    // where each is pressed, while it is driven
+    c.show(at_once=true, fn() { s.driving_now() }, fn(p) {
+      p.over(Is(true)) |> ignore
+      p.each(
+        at_once=true,
+        fn() { k.buttons.filter(fn(b) { b.usage is Some(_) && case_button_word(b.name) is Some(_) }) },
+        fn(b) { b.name },
+        fn(slot, b) {
+          let b = b.untracked()
+          match (b.usage, case_button_word(b.name)) {
+            (Some(usage), Some(word)) =>
+              case_button_press_node(slot, pg, b, fn(n) { case_room(place(n, b.at), place(n, k.screen), b.front) }, usage, word, held, downs.get(b.name))
+            _ => ()
+          }
+        },
+      )
+    })
   })
-  |> ignore
-}
-
-///|
-/// The device's case round its picture at `shown`: its buttons behind it (in their pressed picture, and in a way, under a
-/// press), it over them, a home button on it, and where each is pressed.
-fn device_cased(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, k : DeviceCase, shown : SRect) -> Unit {
-  let scale = shown.w / k.screen.w
-  let ox = shown.x - k.screen.x * scale
-  let oy = shown.y - k.screen.y * scale
-  let place = fn(r : SRect) -> SRect {
-    { x: ox + r.x * scale, y: oy + r.y * scale, w: r.w * scale, h: r.h * scale }
-  }
-  let picture = fn(name : String) { case_picture(k.station, k.key, k.turn, name) }
-  let id_of = fn(b : CaseButton) { c.id("screen-case-button/" + s.view + "/" + b.name) }
-  let looks = fn(b : CaseButton) {
-    let down = s.driving() && c.pressed(id_of(b))
-    let r = place(b.at)
-    // (pressed, in by half the way: it stays to be seen)
-    let at = if down { { ..r, x: r.x + b.dx * scale / 2.0, y: r.y + b.dy * scale / 2.0 } } else { r }
-    case_image(c, picture(if down { b.name + "/down" } else { b.name }), at)
-  }
-  // the picture's corners, outside the panel, as far in as the case over them: the panel's own less a little, it being no circle
-  let unit = dmin(shown.w, shown.h) * case_corner_share
-  let corner = fn(i : Int) { if k.corners.length() == 4 { k.corners[(i + 4 - k.turn) % 4] * unit } else { 0.0 } }
-  device_corners(c, u, shown, corner(0), corner(1), corner(2), corner(3))
-  // (each a layer of its own: in one they would lie under one another)
-  for b in k.buttons {
-    if !b.front {
-      c.layer(fn() { looks(b) }) |> ignore
-    }
-  }
-  c.layer(fn() { case_image(c, picture("body"), place({ x: 0.0, y: 0.0, w: k.frame_w, h: k.frame_h })) }) |> ignore
-  for b in k.buttons {
-    if b.front {
-      c.layer(fn() { looks(b) }) |> ignore
-    }
-  }
-  if !s.driving() {
-    return
-  }
-  for b in k.buttons {
-    match (b.usage, case_button_word(b.name)) {
-      (Some(usage), Some(word)) =>
-        c.layer(fn() { case_button_press(c, s, u, b, id_of(b), case_room(place(b.at), place(k.screen), b.front), usage, word) }) |> ignore
-      _ => ()
-    }
-  }
 }
 
 ///|
@@ -334,56 +374,71 @@ fn case_room(r : SRect, screen : SRect, front : Bool) -> SRect {
 }
 
 ///|
-/// A button pressed at `room`: told as it goes down and as it comes up, as long as it is held here (a power button held
-/// is Siri, then the slider, as on the device).
-fn case_button_press(
-  c : @ui.Ctx,
-  s : ScreenSess,
-  u : ScreenUi,
+/// A button pressed in `p` at `room` (where it is as its node `n` is drawn): told as it goes down and as it comes up, as
+/// long as it is held here (a power button held is Siri, then the slider, as on the device); the hand's press on it down
+/// as it goes down, up as it is let go or called off; pressed with no hand on it (a key's, a screen reader's Activate)
+/// down and up at once. Its picture pressed while held (`down`).
+fn case_button_press_node(
+  p : @view.View,
+  pg : ScreenPage,
   b : CaseButton,
-  id : Int,
-  room : SRect,
+  room : (@view.View) -> SRect,
   usage : (Int, Int),
   word : String,
+  held : Map[String, Bool],
+  down : @signals.Signal[Bool]?,
 ) -> Unit {
-  let i = c.box(style=@ui.style(w=Fixed(room.w), h=Fixed(room.h)), tx=room.x, ty=room.y, id~, fn() {  })
-  c.semantics(i, Button, id~, label=word, actions=[Activate])
-  @sf.tip(c, "screen-case-tip/" + b.name, id, word)
-  let held = u.logs.buttons_held
-  let tell = fn(down : Bool) {
+  let s = pg.s
+  let tell = fn(on : Bool) {
     s.input(s.src, Json::object({
       "t": Json::string("button"),
       "page": Json::number(usage.0.to_double()),
       "usage": Json::number(usage.1.to_double()),
-      "down": Json::boolean(down),
+      "down": Json::boolean(on),
     }))
   }
-  // the hand's press on it: down as it goes down (true), up as it is let go (false: the press it ends comes next) or
-  // called off; (pressed with no hand's press on it: a key's, a screen reader's Activate) down and up at once
-  c.follow_press(id, fn(step) {
-    match step {
-      Down(_, _, _) => {
-        held[b.name] = true
-        tell(true)
-      }
-      Up(_, _) =>
-        if held.get(b.name) == Some(true) {
-          held[b.name] = false
-          tell(false)
-        }
-      Off =>
-        if held.get(b.name) == Some(true) {
-          held.remove(b.name)
-          tell(false)
-        }
-      Moving(_, _) => ()
+  let shown = fn(on : Bool) {
+    match down {
+      Some(d) => d.set(on)
+      None => ()
     }
-  })
-  c.on_press(id, fn() {
-    if held.get(b.name) is None {
-      tell(true)
-      tell(false)
+  }
+  let k = @headless.button(p, fn() { word }, fn(_) {
+    match held.get(b.name) {
+      // (no hand's press on it: a key's, a screen reader's Activate) down and up at once
+      None => {
+        tell(true)
+        tell(false)
+      }
+      // (let go, its up not told yet: told as its press ends)
+      Some(true) => {
+        shown(false)
+        tell(false)
+      }
+      Some(false) => ()
     }
     held.remove(b.name)
+  }, fn(n, _) {
+    n
+    .over(Is(true))
+    .offset(By(fn() {
+      let r = room(n)
+      (r.x, r.y)
+    }))
+    .width(By(fn() { Some(room(n).w) }))
+    .height(By(fn() { Some(room(n).h) }))
+    |> ignore
+    // the hand's press on it: down as it goes down, up as it is let go (the press it ends comes next) or called off
+    n.reacts(fn() { n.pressed() }, fn(on) {
+      shown(on)
+      if on {
+        held[b.name] = true
+        tell(true)
+      } else if held.get(b.name) == Some(true) {
+        held[b.name] = false
+        tell(false)
+      }
+    }, at_start=false)
   })
+  @sf.tip_node(pg.tips, k, fn() { word }) |> ignore
 }

@@ -58,7 +58,7 @@ final class Images {
     }
 
     // what each live image was loaded from, to decode it again if the GL
-    // context (and with it every texture) is lost; written on the GL thread,
+    // context (and with it every texture) is lost; written on the app's thread,
     // checked by workers so freed requests skip work
     static final ConcurrentHashMap<Integer, Req> live = new ConcurrentHashMap<>();
 
@@ -92,17 +92,22 @@ final class Images {
         for (Runnable r; (r = heldUploads.poll()) != null; ) r.run();
     }
 
-    static void toGL(Runnable r) {
+    /** {@code r} on the GL thread (MBView.toRender), or kept for mbui-render's pump. */
+    static void toRender(Runnable r) {
         if (held) {
             heldUploads.add(r);
             return;
         }
-        MBView v = Host.view;
-        if (v != null) v.toGL(r);
+        MBView.toRender(r);
     }
 
+    /**
+     * Image `id` freed (the app's thread): its texture let go on the GL thread once a frame made after this is on the
+     * screen (the frame kept till then may be drawn again, and draws it: MBView.toRetire).
+     */
     static void free(int id) {
         live.remove(id);
+        MBView.toRetire(() -> Native.imageGone(id));
     }
 
     static void reload() {
@@ -187,7 +192,7 @@ final class Images {
                     + " in " + (System.nanoTime() - t0) / 1000000 + " ms: " + r.src);
         }
         Bitmap bmp = b;
-        toGL(() -> upload(id, bmp, orig[0], orig[1]));
+        toRender(() -> upload(id, bmp, orig[0], orig[1]));
     }
 
     /** Older decoders: a power-of-two subsample, then scaled and turned. */
@@ -260,7 +265,12 @@ final class Images {
             // Bitmaps are premultiplied, and uploaded as they are
             GLUtils.texImage2D(GLES30.GL_TEXTURE_2D, 0, b, 0);
         }
-        Native.imageDone(id, t[0], b != null ? b.getWidth() : 0, b != null ? b.getHeight() : 0, ow, oh);
+        int w = b != null ? b.getWidth() : 0, h = b != null ? b.getHeight() : 0;
         if (b != null) b.recycle();
+        // the app told on its thread (with both on this one, at once: mbui-render's main waits here for its images)
+        boolean ok = t[0] != 0;
+        if (!Native.imageDone(id, t[0])) return;
+        if (MBView.ONE) Native.imageTold(id, ok, w, h, ow, oh);
+        else MBView.onApp(() -> Native.imageTold(id, ok, w, h, ow, oh));
     }
 }

@@ -310,7 +310,7 @@ fn several_rows(t : @ui.Tester) -> (Array[Double?], Array[Double], Array[String]
   })
   let first_title = title_runs[0].unwrap()
   let right = first_title.x0 + @sfdesk.wide.side_w.get() - 30.0
-  let boxes = t.boxes()
+  let boxes = t.boxes_held()
   let starts : Array[Double?] = []
   let heights : Array[Double] = []
   let words : Array[String] = []

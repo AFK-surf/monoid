@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { JOB_NAME_FIRST_ROW, JOB_NAME_FIRST_SCAN, jobNameFirstStep } from "../src/store/job-name-first.ts";
+import { JOB_NAME_FIRST_ROW, JOB_NAME_FIRST_SCAN, jobNameFirstStep } from "./reference/backfill/job-name-first.ts";
 import { Store } from "../src/store/store.ts";
 
 function fixture(s: Store, count: number): number {

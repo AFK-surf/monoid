@@ -1,15 +1,16 @@
 // macOS and Linux (and another Unix as Linux): process groups and signals, /bin/sh, `/` paths, links. What the two
 // differ in (how the machine reads: sysctl and vm_stat, or /proc; the keychain and QuickLook) is said here too.
-import { type ChildProcess, execFile, execFileSync, spawn } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, realpathSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { type ChildProcess, execFile, spawn } from "node:child_process";
+import { chmodSync, existsSync, readdirSync, readlinkSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { release, type as osType, userInfo } from "node:os";
 import { basename, delimiter, join } from "node:path";
-import { access, copyFile, readFile, readdir } from "node:fs/promises";
+import { access, chmod, copyFile, lstat, readFile, readdir, readlink, realpath, rename, rm, stat, symlink, unlink, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { promisify } from "node:util";
 import { wall } from "../ops/fibers.ts";
 import type { Env, Found, Host, HostSample, Platform } from "./index.ts";
 import { holder, osCpuTicks } from "./processes.ts";
-import { fieldOrNull, firstWord, idleOfIoreg, output, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, procStatTicks, trim } from "./text.ts";
+import { fieldOrNull, firstWord, idleOfIoreg, parseF64, parseLsof, parseMounts, parsePs, parseTopMem, parseU64, pressureOfAvailable, pressureOfLevel, procStatTicks, trim } from "./text.ts";
 
 const MACOS = process.platform === "darwin";
 /// Names in the order people read them (numbers by value, case aside), as the drive sorts them.
@@ -25,6 +26,23 @@ const executable = (p: string) => {
     return false;
   }
 };
+const executableSoon = async (p: string) => {
+  const st = await stat(p).catch(() => null);
+  return st !== null && st.isFile() && (st.mode & 0o111) !== 0;
+};
+/// Where a Chrome may be (Platform.browsers), best first: macOS's apps, the machine's then the user's; elsewhere the
+/// commands on PATH (`onPath`: where one is found, none where it is not) and Google's own place.
+function browserPlaces<T>(env: Env, onPath: (name: string) => T): (string | T)[] {
+  const home = env.HOME ?? "";
+  const apps = (name: string, binary: string) => [`/Applications/${name}.app/Contents/MacOS/${binary}`, join(home, "Applications", `${name}.app`, "Contents", "MacOS", binary)];
+  return MACOS
+    ? [...apps("Google Chrome", "Google Chrome"), ...apps("Chromium", "Chromium"), ...apps("Microsoft Edge", "Microsoft Edge")]
+    : [
+        ...["google-chrome-stable", "google-chrome"].map(onPath),
+        "/opt/google/chrome/chrome",
+        ...["chromium", "chromium-browser", "microsoft-edge-stable", "microsoft-edge"].map(onPath),
+      ];
+}
 const real = (p: string) => {
   try {
     return realpathSync(p);
@@ -32,6 +50,38 @@ const real = (p: string) => {
     return null;
   }
 };
+
+/// How this machine starts a command as background work (Platform.backgrounded): which wrapper is here, looked for
+/// once. macOS's taskpolicy; Linux's ionice (util-linux's: busybox's has no `-t`, without which a container that refuses
+/// the IO class would refuse to run the command) and nice; nice alone; nothing.
+export type Background = { kind: "taskpolicy" } | { kind: "ionice"; ionice: string; nice: string } | { kind: "nice"; nice: string } | { kind: "none" };
+
+let backgroundFound: Background | null = null;
+function background(): Background {
+  if (backgroundFound !== null) return backgroundFound;
+  const there = (p: string) => existsSync(p); // sync: a stat or two, once for the process
+  const nice = ["/usr/bin/nice", "/bin/nice"].find(there);
+  if (MACOS && there("/usr/sbin/taskpolicy")) backgroundFound = { kind: "taskpolicy" };
+  else {
+    const ionice = MACOS ? undefined : ["/usr/bin/ionice", "/bin/ionice"].find((p) => there(p) && !/busybox/.test(real(p) ?? p));
+    backgroundFound = ionice !== undefined && nice !== undefined ? { kind: "ionice", ionice, nice } : nice !== undefined ? { kind: "nice", nice } : { kind: "none" };
+  }
+  return backgroundFound;
+}
+
+/// Whether /usr/bin/nice is here (Platform.lowered), looked for once.
+let niceFound: boolean | null = null;
+const niceThere = (): boolean => (niceFound ??= existsSync("/usr/bin/nice")); // sync: a stat, once for the process
+
+/// `program` with `args` under the wrapper `how`.
+export function backgroundedOn(how: Background, program: string, args: string[]): [string, string[]] {
+  switch (how.kind) {
+    case "taskpolicy": return ["/usr/sbin/taskpolicy", ["-b", program, ...args]];
+    case "ionice": return [how.ionice, ["-t", "-c2", "-n7", how.nice, "-n", "10", program, ...args]];
+    case "nice": return [how.nice, ["-n", "10", program, ...args]];
+    case "none": return [program, args];
+  }
+}
 
 /// files.rs `clean` on Unix: the path absolute (a leading `/`), `.` and `..` worked out lexically.
 function clean(path: string): string {
@@ -108,14 +158,12 @@ async function macMemory(): Promise<HostSample["memory"]> {
 
 const host: Host = {
   /// On macOS the CPUs' user, system, idle and nice time (os.cpus, from the same counters as Mach's
-  /// HOST_CPU_LOAD_INFO, in ms rather than ticks: the share is the same); elsewhere /proc/stat.
+  /// HOST_CPU_LOAD_INFO, in ms rather than ticks: the share is the same); elsewhere /proc/stat, read off the main
+  /// thread. Not os.cpus on Linux: libuv reads /proc/stat there itself, on the main thread, and each CPU's
+  /// cpufreq file besides.
   cpuTicks() {
     if (MACOS) return osCpuTicks();
-    try {
-      return procStatTicks(readFileSync("/proc/stat", "utf8"));
-    } catch {
-      return null;
-    }
+    return readFile("/proc/stat", "utf8").then(procStatTicks, () => null);
   },
   /// The memory on macOS as Activity Monitor counts it (app, wired and compressed pages, not reclaimable cache), its
   /// swap; elsewhere /proc's. Every command and file at once, none waited on.
@@ -215,12 +263,12 @@ function procAddress(hex: string): string {
 
 /// Where `pids` listen at `port` by Linux's /proc (no lsof): the listening sockets of the port, those whose inode one of
 /// them holds open.
-function procListening(pids: number[], port: number): string[] | null {
+async function procListening(pids: number[], port: number): Promise<string[] | null> {
   const sockets = new Map<string, string>();
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     let text: string;
     try {
-      text = readFileSync(table, "utf8");
+      text = await readFile(table, "utf8");
     } catch {
       continue;
     }
@@ -231,19 +279,19 @@ function procListening(pids: number[], port: number): string[] | null {
       if (parseInt(hexPort ?? "", 16) === port) sockets.set(f[9]!, procAddress(address ?? ""));
     }
   }
-  if (!existsSync("/proc/self/fd")) return null;
+  if (!(await access("/proc/self/fd").then(() => true, () => false))) return null;
   const found: string[] = [];
   for (const pid of pids) {
     let fds: string[] = [];
     try {
-      fds = readdirSync(`/proc/${pid}/fd`);
+      fds = await readdir(`/proc/${pid}/fd`);
     } catch {
       continue;
     }
     for (const fd of fds) {
       let target = "";
       try {
-        target = readlinkSync(`/proc/${pid}/fd/${fd}`);
+        target = await readlink(`/proc/${pid}/fd/${fd}`);
       } catch {
         continue;
       }
@@ -258,32 +306,63 @@ function procListening(pids: number[], port: number): string[] | null {
 /// std::env::consts::OS for the Unixes Node names otherwise.
 const OS: Record<string, string> = { darwin: "macos", linux: "linux", freebsd: "freebsd", openbsd: "openbsd" };
 
-/// macOS's mounts as last read (platform `mounts`), and when; read again in the background once this old.
+/// macOS's mounts as last read (platform `mounts`), and when; read again in the background once this old. Never read
+/// on the thread: `/sbin/mount` once took the thread for as long as a network share it lists did not answer.
 let mounted: { at: number; points: string[] } | null = null;
-let mounting = false;
+let mounting: Promise<string[]> | null = null;
 const MOUNTS_FRESH_MS = 2_000;
+
+/// `/sbin/mount` read off the thread, one read at a time however many ask.
+function readMounts(): Promise<string[]> {
+  mounting ??= new Promise<string[]>((resolve) => {
+    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
+      mounting = null;
+      mounted = { at: wall.now(), points: error ? (mounted?.points ?? []) : parseMounts(out) };
+      resolve(mounted.points);
+    });
+  });
+  return mounting;
+}
+
+/// Platform.mounts: as last read, none before the first read is in (which this starts); read again in the background
+/// once stale.
 function mounts(): string[] {
   if (!MACOS) return [];
-  if (mounted === null) {
-    let out = "";
-    try {
-      out = execFileSync("/sbin/mount", { encoding: "utf8" });
-    } catch {}
-    mounted = { at: wall.now(), points: parseMounts(out) };
-  } else if (!mounting && wall.now() - mounted.at > MOUNTS_FRESH_MS) {
-    mounting = true;
-    execFile("/sbin/mount", { encoding: "utf8" }, (error, out) => {
-      mounting = false;
-      mounted = { at: wall.now(), points: error ? mounted!.points : parseMounts(out) };
-    });
+  if (mounted === null || wall.now() - mounted.at > MOUNTS_FRESH_MS) void readMounts();
+  return mounted?.points ?? [];
+}
+
+/// Platform.mountsSoon: as mount says them now, read first where not read yet or stale.
+async function mountsSoon(): Promise<string[]> {
+  if (!MACOS) return [];
+  if (mounted !== null && wall.now() - mounted.at <= MOUNTS_FRESH_MS) return mounted.points;
+  return readMounts();
+}
+
+/// Where Linux's `script` (util-linux's) may be.
+const SCRIPTS = ["/usr/bin/script", "/bin/script"];
+
+/// Platform.terminalSoon, given where Linux's `script` is (none: there is no pseudo-terminal to give).
+function inTerminal(script: string | undefined, program: string, args: string[], cols: number, rows: number): [string, string[]] | null {
+  // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
+  const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
+  // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
+  // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
+  if (MACOS) {
+    const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
+    const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
+    return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
   }
-  return mounted.points;
+  return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
 }
 
 export const unix: Platform = {
   os: OS[process.platform] ?? process.platform,
   buildOs: process.platform === "darwin" || process.platform === "linux" ? process.platform : null,
   clonesFiles: MACOS,
+  nativeCache: (env, home) =>
+    env.STILLFAIL_NATIVE_CACHE ||
+    (MACOS ? join(home, "Library", "Caches", "stillfail-native") : join(env.XDG_CACHE_HOME || join(home, ".cache"), "stillfail-native")),
 
   exe: (name) => name,
   home: (env) => env.HOME,
@@ -307,6 +386,17 @@ export const unix: Platform = {
     }
     return null;
   },
+  savedPath: async () => null,
+  async findCommandSoon(name: string, env: Env): Promise<Found | null> {
+    const path = env.PATH;
+    if (path === undefined) return null;
+    for (const dir of path.split(delimiter)) {
+      const onPath = join(dir === "" ? "." : dir, name);
+      const st = await stat(onPath).catch(() => null);
+      if (st !== null && st.isFile() && (st.mode & 0o111) !== 0) return { onPath, real: (await realpath(onPath).catch(() => null)) ?? onPath };
+    }
+    return null;
+  },
   userShell(env) {
     if (env.SHELL) return env.SHELL;
     try {
@@ -318,12 +408,31 @@ export const unix: Platform = {
     }
   },
   runnable: (command, args) => ({ file: command, args }),
+  runnableSoon: async (command, args) => ({ file: command, args }),
   posixShell: () => "/bin/sh",
+  posixShellSoon: async () => "/bin/sh",
   grouped: (program, args) => [program, args],
-  lowered: (program, args, by) => (by === 0 || !existsSync("/usr/bin/nice") ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
+  lowered: (program, args, by) => (by === 0 || !niceThere() ? [program, args] : ["/usr/bin/nice", ["-n", String(by), program, ...args]]),
+  backgrounded: (program, args) => backgroundedOn(background(), program, args),
+  flushing: (dir) => (MACOS ? ["sync", []] : ["sync", ["-f", dir]]),
   makeCommand(path, script) {
     writeFileSync(path, script);
     chmodSync(path, 0o755);
+    return path;
+  },
+  async makeCommandSoon(path, script) {
+    // (one there already as it is to be kept: a command running it may hold it)
+    const [had, st] = await Promise.all([readFile(path, "utf8").catch(() => null), stat(path).catch(() => null)]);
+    if (had === script && st !== null && (st.mode & 0o111) !== 0) return path;
+    const tmp = `${path}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(tmp, script);
+      await chmod(tmp, 0o755);
+      await rename(tmp, path);
+    } catch (error) {
+      await rm(tmp, { force: true }).catch(() => {});
+      throw error;
+    }
     return path;
   },
 
@@ -364,12 +473,7 @@ export const unix: Platform = {
       const hex = port.toString(16).toUpperCase().padStart(4, "0");
       const inodes = new Set<string>();
       for (const file of ["/proc/net/tcp", "/proc/net/tcp6"]) {
-        let text = "";
-        try {
-          text = readFileSync(file, "utf8");
-        } catch {
-          continue;
-        }
+        const text = await readFile(file, "utf8").catch(() => "");
         for (const line of text.split("\n").slice(1)) {
           const f = line.trim().split(/\s+/);
           if (f.length > 9 && f[1]!.endsWith(`:${hex}`) && f[3] === "01") inodes.add(f[9]!);
@@ -388,7 +492,7 @@ export const unix: Platform = {
         }
         for (const fd of fds) {
           try {
-            const link = readlinkSync(`/proc/${pid}/fd/${fd}`);
+            const link = await readlink(`/proc/${pid}/fd/${fd}`);
             const m = /^socket:\[(\d+)\]$/.exec(link);
             if (m && inodes.has(m[1]!)) {
               pids.push(pid);
@@ -442,17 +546,18 @@ export const unix: Platform = {
     return found;
   },
   mounts,
+  mountsSoon,
   linkRefused: () => false,
   syncsDirectories: true,
-  shareFile(target, link) {
+  async shareFile(target, link) {
     try {
-      const meta = lstatSync(link);
-      if (meta.isSymbolicLink() && readlinkSync(link) === target) return;
-      unlinkSync(link);
+      const meta = await lstat(link);
+      if (meta.isSymbolicLink() && (await readlink(link)) === target) return;
+      await unlink(link);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
-    symlinkSync(target, link);
+    await symlink(target, link);
   },
 
   runnerSocketVisible: true,
@@ -510,19 +615,12 @@ export const unix: Platform = {
       child.unref();
     });
   },
-  shimUpdate: () => null,
-  linkCommand(command, dir) {
+  shimUpdate: async () => null,
+  async linkCommand(command, dir) {
     const link = join(dir, basename(command));
-    try {
-      lstatSync(link);
-      return false;
-    } catch {}
-    try {
-      symlinkSync(command, link);
-      return true;
-    } catch {
-      return false;
-    }
+    if ((await lstat(link).catch(() => null)) !== null) return false;
+    // (symlink() fails where something of that name was made meanwhile: nothing is replaced)
+    return symlink(command, link).then(() => true, () => false);
   },
   codexStandalone: true,
   nodeBuild(version) {
@@ -542,31 +640,27 @@ export const unix: Platform = {
   },
 
   browsers(env) {
-    const home = env.HOME ?? "";
-    const apps = (name: string, binary: string) => [`/Applications/${name}.app/Contents/MacOS/${binary}`, join(home, "Applications", `${name}.app`, "Contents", "MacOS", binary)];
-    const onPath = (names: string[]) => names.flatMap((n) => unix.findCommand(n, env)?.onPath ?? []);
-    const found = MACOS
-      ? [...apps("Google Chrome", "Google Chrome"), ...apps("Chromium", "Chromium"), ...apps("Microsoft Edge", "Microsoft Edge")]
-      : [
-          ...onPath(["google-chrome-stable", "google-chrome"]),
-          "/opt/google/chrome/chrome",
-          ...onPath(["chromium", "chromium-browser", "microsoft-edge-stable", "microsoft-edge"]),
-        ];
-    return [...new Set(found)].filter(executable);
+    const onPath = (name: string) => unix.findCommand(name, env)?.onPath ?? null;
+    return [...new Set(browserPlaces(env, onPath).flatMap((p) => p ?? []))].filter(executable);
+  },
+  async browsersSoon(env) {
+    const onPath = async (name: string) => (await unix.findCommandSoon(name, env))?.onPath ?? null;
+    const found = (await Promise.all(browserPlaces(env, onPath))).flatMap((p) => p ?? []);
+    const there = await Promise.all([...new Set(found)].map(async (p) => ({ p, is: await executableSoon(p) })));
+    return there.flatMap(({ p, is }) => (is ? [p] : []));
   },
   hasDisplay: (env) => MACOS || Boolean(env.DISPLAY || env.WAYLAND_DISPLAY),
-  terminal(program, args, cols, rows) {
-    // The window's size first (script's own is its stdin's, a pipe's: none), then the command in its place.
-    const inner = ["/bin/sh", "-c", `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`, "sh", program, ...args];
-    // macOS's script refuses a socket for its stdin, and Node's pipes (and macOS's fifos) are sockets: a pipe is put
-    // between, `cat` feeding it from ours, ended as the command ends (else it would hold the end up until ours closes).
-    if (MACOS) {
-      const run = `stty cols ${cols} rows ${rows} 2>/dev/null; exec "$@"`;
-      const feed = `exec 3<&0; cat <&3 | { /usr/bin/script -q /dev/null /bin/sh -c '${run}' sh "$@" 3<&-; s=$?; /usr/bin/pkill -P $$ -x cat; exit $s; }`;
-      return ["/bin/sh", ["-c", feed, "sh", program, ...args]];
+  async terminalSoon(program, args, cols, rows) {
+    let script: string | undefined;
+    if (!MACOS) {
+      for (const p of SCRIPTS) {
+        if ((await stat(p).catch(() => null)) !== null) {
+          script = p;
+          break;
+        }
+      }
     }
-    const script = ["/usr/bin/script", "/bin/script"].find((p) => existsSync(p));
-    return script === undefined ? null : [script, ["-qfec", inner.map(quoted).join(" "), "/dev/null"]];
+    return inTerminal(script, program, args, cols, rows);
   },
   descendants,
   async inputIdleMs() {
@@ -616,7 +710,7 @@ export const unix: Platform = {
     if (!MACOS) {
       for (const pid of pids) {
         try {
-          out.set(pid, readlinkSync(`/proc/${pid}/cwd`));
+          out.set(pid, await readlink(`/proc/${pid}/cwd`));
         } catch {}
       }
       return out;
@@ -644,7 +738,7 @@ export const unix: Platform = {
       const error = e as NodeJS.ErrnoException & { stdout?: string; code?: unknown };
       // lsof says nothing found by its exit 1.
       if (typeof error.code === "number" && error.code === 1) return parseLsof(error.stdout ?? "", port);
-      return MACOS ? null : procListening(pids, port);
+      return MACOS ? null : await procListening(pids, port);
     }
   },
   async commands(pids) {

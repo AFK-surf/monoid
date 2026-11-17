@@ -33,14 +33,20 @@ item comes back first, stopped, then the item), and goes on as that arrives.
 
 How to go about it:
 
-1. `plan {to}`: read every item, what it needs, what cannot move and why, and what moving an item alone would stop here.
-   Tell the person what you found before moving anything big.
+1. `plan {to}`: a summary, the same size however many chats the station has: each module's counts (here, there,
+   moving, stopped, failed, cannot), what cannot move grouped by why (a count and a few examples each), what moving an
+   item alone would stop here, what is lent there and what is stopped here (grouped by what it waits for). A module's
+   items a page at a time: `plan {to, module, limit}` (at most 200; `more` names the last, give it as `after` for the
+   next page); one item: `plan {to, module, item}`. `room` says the chats' files in bytes (as far as measured: a
+   plan read starts measuring what changed) and what is free there. A whole move that would not leave that station
+   20 GB (or a tenth of its disk) free is refused before anything moves, counting only what it lacks (a room it has
+   already is not sent again); so is each chat. Tell the person what you found before moving anything big.
 2. One chat (try an unimportant one first on real stations): `move {to, module: "chats", item: "<session key>"}`. An
    account it needs that is not there yet is named in the answer: move it first (`withNeeds: true` does it in order).
 3. A batch: one `move` per item, or `withNeeds`. A whole station: `move {to, all: true}` posts a card in this chat that
    an owner or admin confirms in the still.fail app; then every item moves in order, those that cannot are listed with
    why, and it stops at the first failure and says which. Connects and logins go last by their needs.
-4. `status {to}` says where each stands (`stopped` items name what they wait for).
+4. `status {to}` says where each stands, as `plan` does (a summary; a module's items a page at a time).
 5. `station: <another station>` has that station do any of these with its own items (`all` excepted: ask from a
    chat there). `wait: false` refuses a chat that is in a turn rather than waiting for it.
 6. `back {to: <the station it is on>, module, item}` moves it back here; an item something there still needs is

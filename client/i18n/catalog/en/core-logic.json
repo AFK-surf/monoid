@@ -316,15 +316,6 @@
   "core-logic.history.step.running": "Running",
   "core-logic.history.steps": "{doing} · {n} steps",
   "core-logic.history.thinking": "Thinking: {text}",
-  "core-logic.history.turn.posts": {
-    "one": "sent 1 message",
-    "other": "sent {n} messages"
-  },
-  "core-logic.history.turn.silent": "sent nothing",
-  "core-logic.history.turn.steps": {
-    "one": "1 step",
-    "other": "{n} steps"
-  },
   "core-logic.history.usage.cached": "Cached",
   "core-logic.history.usage.calls": "Model calls",
   "core-logic.history.usage.calls.value": "{n}",
@@ -611,6 +602,7 @@
   "core-logic.choose.borrow.managers": "Only an owner or admin can borrow",
   "core-logic.choose.borrow.pending": "{station} shares it with every station; it is on its way to this one",
   "core-logic.choose.borrow.first": "Borrow an account for this model first",
+  "core-logic.choose.borrow.coming": "{model}'s account is still on its way to this station: send again in a moment, or pick another model",
   "core-logic.choose.borrow.nothing": "The model picked needs no borrowing",
   "core-logic.transfer.queued": "Queued",
   "core-logic.transfer.walking": "Counting files…",
@@ -643,5 +635,8 @@
   "core-logic.notice.run.speed": "Speed: {change}",
   "core-logic.notice.run.to": "Now {now}",
   "core-logic.notice.run.toLead": "Now",
-  "core-logic.notice.run.was": "Before: {run}"
+  "core-logic.notice.run.was": "Before: {run}",
+  "core-logic.format.connection.no_group": "No Group",
+  "core-logic.choose.error.station_model_speeds": "Update this station to use Ultrafast, or choose Standard or Fast.",
+  "core-logic.choose.error.ultrafast_unavailable": "Choose GPT-6 Astra or GPT-6.1 Sol in Codex with a ChatGPT subscription to use Ultrafast, or choose Standard or Fast."
 }

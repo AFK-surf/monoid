@@ -51,6 +51,11 @@ set -eu
 [ "$MOON_HOME" = "$RUNNER_TOOL_CACHE/moon-ci" ]
 touch "$RUNNER_TEMP/app-built"
 [ "${FAIL_APP:-0}" = 0 ] || exit 8
+# (the app, with libghostty-vt's calls unless NO_GHOSTTY: the app's mac.sh fails one without them)
+exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
+mkdir -p "$(dirname "$exe")"
+if [ "${NO_GHOSTTY:-0}" = 0 ]; then c='int ghostty_terminal_new(void) { return 0; } int main(void) { return 0; }'; else c='int main(void) { return 0; }'; fi
+printf '%s\n' "$c" | cc -x c - -o "$exe"
 EOF
 }
 case_dir exit_race
@@ -86,11 +91,22 @@ bash "$script" wait
 [ -f "$RUNNER_TEMP/app-built" ]
 [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo 'core bytecode was not prepared before packaging' >&2; exit 1; }
 
-case_dir uncached
-bash "$script" start
-bash "$script" ready
-bash "$script" wait
-[ ! -e "$RUNNER_TEMP/app-built" ]
+# No Moon build for this macOS restored (none, or another's): what was built for another goes, the marker is written,
+# the core just built is kept, and the app is built here all the same.
+for before in none 11.0; do
+  case_dir "uncached-$before"
+  mkdir -p "$GITHUB_WORKSPACE/apps/mbui/out/mbc"
+  touch "$GITHUB_WORKSPACE/apps/mbui/_build/old-unit" "$GITHUB_WORKSPACE/apps/mbui/out/mbc/old-object"
+  [ "$before" = none ] || echo "$before" > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+  bash "$script" start
+  bash "$script" ready
+  bash "$script" packages
+  bash "$script" wait
+  [ "$(cat "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min")" = 12.0 ] || { echo "uncached-$before: no marker for 12.0" >&2; exit 1; }
+  [ ! -e "$GITHUB_WORKSPACE/apps/mbui/_build/old-unit" ] && [ ! -e "$GITHUB_WORKSPACE/apps/mbui/out/mbc/old-object" ] || { echo "uncached-$before: another macOS's build kept" >&2; exit 1; }
+  [ -d "$GITHUB_WORKSPACE/apps/mbui/out/core" ] && [ -f "$RUNNER_TEMP/core-finished" ] || { echo "uncached-$before: the core built was taken away" >&2; exit 1; }
+  [ -f "$RUNNER_TEMP/app-built" ] && [ -f "$RUNNER_TEMP/bytecode-built" ] || { echo "uncached-$before: the app was not built" >&2; exit 1; }
+done
 
 case_dir core_failure
 export FAIL_CORE=1
@@ -106,6 +122,15 @@ bash "$script" ready
 bash "$script" packages
 if bash "$script" wait; then echo 'app failure was not reported' >&2; exit 1; fi
 unset FAIL_APP
+
+case_dir no_terminal
+echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+export NO_GHOSTTY=1
+bash "$script" start
+bash "$script" ready
+bash "$script" packages
+if bash "$script" wait; then echo 'an app without libghostty-vt was not reported' >&2; exit 1; fi
+unset NO_GHOSTTY
 
 case_dir bytecode_failure
 echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"

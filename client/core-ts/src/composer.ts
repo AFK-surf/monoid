@@ -302,13 +302,39 @@ export class Composers {
     for (const l of Array.isArray(kept.links) ? kept.links : []) {
       if (isObject(l) && typeof l.url === "string") s.files.push(linkFile(localId("kept"), l as ComposerLink));
     }
+    // Named paths need no uploaded attachment, but are part of the draft all the same. Keep the drive location too,
+    // so one restored can still be switched to a file without holding a page's Blob or FileSource across a restart.
+    for (const p of Array.isArray(kept.paths) ? kept.paths : []) {
+      if (!isObject(p) || !isObject(p.ref) || typeof p.ref.station !== "string" || typeof p.ref.path !== "string") continue;
+      const ref: ComposerRef = { station: p.ref.station, stationName: typeof p.ref.stationName === "string" ? p.ref.stationName : p.ref.station, path: p.ref.path, dir: p.ref.dir === true, mode: "path" };
+      const id = localId("kept"), name = String(p.name ?? ""), size = Number(p.size ?? 0);
+      const done = isObject(p.done) ? p.done : null;
+      s.files.push({ id, name, size, ref, done, error: null });
+      if (typeof p.station !== "string") continue;
+      const drive = isObject(p.drive) && typeof p.drive.root === "string" && typeof p.drive.path === "string"
+        ? { station: typeof p.drive.station === "string" ? p.drive.station : p.station, root: p.drive.root, path: p.drive.path } : undefined;
+      const file: FileIn = { id, name, size, ref, ...(drive ? { drive } : {}) };
+      this.#held.set(id, { station: p.station, file });
+      if (drive) this.#sources.set(id, file);
+      if (done) {
+        const ready = Deferred.makeUnsafe<J, CoreError>();
+        Deferred.doneUnsafe(ready, Effect.succeed(done));
+        this.#uploads.set(id, { station: p.station, file: null, done: ready, error: false });
+      }
+    }
     return s;
   }
 
   #draft(s: State) {
     const links = s.files.flatMap((f) => (f.link ? [f.link] : []));
     const waiting = s.files.filter((f) => f.waits).map(({ id, name, size, width, height, pasted }) => ({ id, name, size, ...(width && height ? { width, height } : {}), ...(pasted ? { pasted } : {}) }));
-    return { text: s.text, quotes: s.quotes.map((q) => sentQuote(q, s.files)), files: upOnce(s.files), ...(waiting.length ? { waiting } : {}), ...(links.length ? { links } : {}), ...(s.id ? { id: s.id } : {}) };
+    const paths = s.files.filter((f) => f.ref?.mode === "path").map(({ id, name, size, ref, done }) => {
+      const held = this.#held.get(id);
+      const upload = this.#uploads.get(id);
+      const drive = (held?.file ?? this.#sources.get(id) ?? upload?.file)?.drive;
+      return { name, size, ref, station: upload?.station ?? held?.station ?? ref!.station, ...(done ? { done } : {}), ...(drive ? { drive } : {}) };
+    });
+    return { text: s.text, quotes: s.quotes.map((q) => sentQuote(q, s.files)), files: upOnce(s.files.filter((f) => f.ref?.mode !== "path")), ...(waiting.length ? { waiting } : {}), ...(links.length ? { links } : {}), ...(paths.length ? { paths } : {}), ...(s.id ? { id: s.id } : {}) };
   }
 
   /// The draft's name, given the first time it is asked for (`State.id`): the core's, as its other names are (random:
@@ -328,7 +354,7 @@ export class Composers {
     if (!at || s.db !== this.#db(key)) return;
     const topic = { topic: "draft", station: at[0], chat: at[1] };
     const draft = this.#draft(s);
-    if (!draft.text.trim() && draft.quotes.length === 0 && draft.files.length === 0 && !draft.waiting && !draft.links) this.#inner.data.forgetTopic(topic);
+    if (!draft.text.trim() && draft.quotes.length === 0 && draft.files.length === 0 && !draft.waiting && !draft.links && !draft.paths) this.#inner.data.forgetTopic(topic);
     else if (immediate) this.#inner.data.set(topic, draft, false);
     else this.#inner.data.setSoon(topic, draft);
   }
@@ -859,22 +885,30 @@ export class Composers {
   }
 
   /// What was taken comes back (a chat that could not be made, a message never sent), saying why; with `unlessWritten`,
-  /// only while nothing new is written there.
-  restore(key: string, error: string | null, unlessWritten: boolean): number {
+  /// only while nothing new is written there. Whether it came back (`back`): where it did not, the page says why it did
+  /// not go some other way, for what is written there now is decided here, not as the page last drew it.
+  restore(key: string, error: string | null, unlessWritten: boolean): { version: number; back: boolean } {
     const s = this.#state(key);
     const back = s.taken;
-    if (!back) return s.version;
-    if (unlessWritten && (s.text.trim() || s.files.length || s.quotes.length)) return s.version;
+    if (!back) return { version: s.version, back: false };
+    // Something new written there: it stays, and what was taken is let go (the page says why it did not go).
+    if (unlessWritten && (s.text.trim() || s.files.length || s.quotes.length)) {
+      s.taken = null;
+      return { version: s.version, back: false };
+    }
     s.taken = null;
     this.#say(s, back.text);
     s.quotes = back.quotes;
     s.files = back.files;
     s.id = back.id;
     s.error = error;
-    return this.#changed(key, s);
+    return { version: this.#changed(key, s), back: true };
   }
 
-  /// What is written in `from` goes on into `to` (a new chat becoming the chat it made), `from` left empty.
+  /// What is written in `from` goes on into `to` (a new chat becoming the chat it made, and back where it could not be
+  /// made), `from` left empty. What was taken of `from` to be sent goes with it, so that it is put back where the
+  /// words now are: into the chat's composer as its first message is refused, into the new chat's as the chat could
+  /// not be made after all (carried there and back).
   carry(from: string, to: string): number {
     from = this.#keys(from)[0]!;
     to = this.#keys(to)[0]!;
@@ -882,9 +916,9 @@ export class Composers {
     if (from === to) return s.version;
     // Counted on from where `to` was: what was shown of it before is older than this.
     const was = this.#state(to);
-    const next = { ...empty(was.db), joined: was.joined, text: s.text, rev: was.rev + 1, quotes: s.quotes, files: s.files, version: was.version, id: s.id };
+    const next = { ...empty(was.db), joined: was.joined, text: s.text, rev: was.rev + 1, quotes: s.quotes, files: s.files, version: was.version, id: s.id, taken: s.taken ?? was.taken };
     this.#all.set(to, next);
-    this.#all.set(from, { ...empty(s.db), joined: s.joined, rev: s.rev + 1, version: s.version, taken: s.taken });
+    this.#all.set(from, { ...empty(s.db), joined: s.joined, rev: s.rev + 1, version: s.version });
     this.#changed(from, this.#all.get(from)!);
     return this.#changed(to, next);
   }
@@ -1021,7 +1055,7 @@ export function install(): void {
       if ("retry" in a) return { version: all.retry(c.key, a.retry) };
       if ("mode" in a) return { version: all.mode(c.key, a.file, a.mode) };
       if ("take" in a) return all.take(c.key, a.station);
-      if ("restore" in a) return { version: all.restore(c.key, a.error, a.unlessWritten) };
+      if ("restore" in a) return all.restore(c.key, a.error, a.unlessWritten);
       if ("carry" in a) return { version: all.carry(c.key, a.carry) };
       return null;
     });

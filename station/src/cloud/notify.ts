@@ -62,6 +62,9 @@ export class Notifier {
     const ended = this.store.lastTurn(key)?.endedAt;
     if (typeof ended !== "number" || ended < this.since || this.ended.get(key) === ended) return;
     this.ended.set(key, ended);
+    // A chat an agent leads (chat_create `for: "me"`) tells its leader how its turns end, not its people's phones: the
+    // leader takes up what it says and asks (sessions/opened.ts).
+    if (this.store.openerOf(key)?.led === true) return;
     this.ask("turnNotices", { key, since: this.since, ended: null, lang: stationLang() });
   }
 

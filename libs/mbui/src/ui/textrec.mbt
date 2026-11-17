@@ -265,7 +265,14 @@ fn kept_key(text : String, size : Double, weight : Int, style : Int) -> Int? {
 ///|
 fn kept_glyph(key : Int, out : FixedArray[Double]) -> Bool {
   guard text_table.val is Some(t) else { return false }
-  match t.glyphs.get(key) {
+  // Its phase's own box first (bits 26..27: a phase's bounds take its shift in); a run kept before phases were told
+  // apart has only its base's.
+  let base = if key >= 0 { key & 0x03FFFFFF } else { key }
+  let kept = match t.glyphs.get(key) {
+    None => t.glyphs.get(base)
+    r => r
+  }
+  match kept {
     Some(r) => {
       for i in 0..<r.length() {
         out[i] = r[i]
@@ -273,7 +280,7 @@ fn kept_glyph(key : Int, out : FixedArray[Double]) -> Bool {
       true
     }
     None => {
-      text_lacks(t, "glyph \{key}")
+      text_lacks(t, "glyph \{base}")
       false
     }
   }

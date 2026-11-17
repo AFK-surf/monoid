@@ -281,3 +281,70 @@ test "scrolls_window reused: a block taken for another key as the column's fill 
   }
   assert_eq((seen > 0, wrong), (true, []))
 }
+
+///|
+test "scrolls_window reused: a taller spare block in a slot whose height is forgotten on width change is parked and does not overflow est" {
+  let scroll = @view.Scroll::list()
+  let box_w = @signals.signal(300.0)
+  let lines : Array[(@view.View, () -> Int)] = []
+  let mut made_blocks = 0
+  let tree = @view.Tree::new(fn(root) {
+    root.box(fn(o) {
+      o.width(By(fn() { Some(box_w.get()) })).height(Is(Some(100.0))) |> ignore
+      o.scrolls_window(
+        scroll,
+        fn() { [0, 1, 2, 3, 4, 5] },
+        est=40.0,
+        fn(_, _) { @halt.saying("every block is of a kind another may take") },
+        reused=fn(_) { Some(0) },
+        make_reused=fn(b, key) {
+          made_blocks = made_blocks + 1
+          b.box(fn(pad) {
+            pad.height(By(fn() { Some(if key() == 0 { 90.0 } else { 10.0 }) })) |> ignore
+          })
+          |> ignore
+          b.box(fn(line) {
+            lines.push((line, key))
+            line.height(Is(Some(30.0))).words(By(fn() { "row \{key()}" })) |> ignore
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  tree.frame(390.0, 844.0) |> ignore
+  // (row 0 measured 120; scroll 130 so row 0 [0..120] leaves sight and sits put by in its slot while row 1..4 show)
+  tree.wheel_at(150.0, 50.0, 0.0, 130.0, 0, 10.0) |> ignore
+  tree.frame(390.0, 844.0) |> ignore
+  let made_after_down = made_blocks
+  // (width changes: unshown row 0's height 120 is forgotten, shrinking its slot to est=40 just above row 1; row 0's
+  // 120-tall spare view must be parked rather than overflowing 80px out of its 40px slot over row 1 and row 2)
+  box_w.set(280.0)
+  tree.frame(390.0, 844.0) |> ignore
+  let mut row0_drawn = false
+  for l in lines {
+    let (line, _) = l
+    if line.alive() {
+      match tree.drawn_of(line.id()) {
+        Some(d) if d.words == "row 0" => row0_drawn = true
+        _ => ()
+      }
+    }
+  }
+  assert_eq(row0_drawn, false)
+  // (scrolling back to top reuses the parked spare block without making a new one)
+  tree.wheel_at(140.0, 50.0, 0.0, -130.0, 0, 20.0) |> ignore
+  tree.frame(390.0, 844.0) |> ignore
+  for l in lines {
+    let (line, _) = l
+    if line.alive() {
+      match tree.drawn_of(line.id()) {
+        Some(d) if d.words == "row 0" => row0_drawn = true
+        _ => ()
+      }
+    }
+  }
+  assert_eq((row0_drawn, made_blocks), (true, made_after_down))
+}

@@ -348,10 +348,15 @@ export function quotaFor(quota: J, m: string | null): J {
     return groupFiltered.length !== baseWins.length ? { ...quota, windows: groupFiltered } : quota;
   }
   const { scoped, ...rest } = quota;
-  const family = m !== null ? model.family(m)?.toLowerCase() : undefined;
-  const own = family === undefined ? [] : scoped.filter((w: J) => str(get(w, "scope"))?.toLowerCase() === family);
+  const words = m !== null ? modelWords(model.key(m)) : [];
+  const own = words.length === 0 ? [] : scoped.filter((w: J) => {
+    const sw = modelWords(str(get(w, "scope")) ?? "");
+    return sw.length > 0 && sw.every((x) => words.includes(x));
+  });
   return { ...rest, windows: [...groupFiltered, ...own] };
 }
+
+const modelWords = (s: string): string[] => s.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w !== "");
 
 /// When an allowance (quotaFor's, of the model asked about) with a window used up can be run on again; null when
 /// nothing of it is used up.

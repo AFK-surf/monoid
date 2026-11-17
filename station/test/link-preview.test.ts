@@ -1,6 +1,7 @@
 // A web link's preview (src/links/preview.ts): what a page's head says, and which addresses are fetched at all.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
+import http, { createServer } from "node:http";
+import { syncBuiltinESMExports } from "node:module";
 import type { AddressInfo } from "node:net";
 import { test } from "node:test";
 import { brotliCompressSync } from "node:zlib";
@@ -52,6 +53,44 @@ test("only the internet's addresses are fetched", async () => {
   assert.equal(await linkPreview("http://127.0.0.1:1/"), null);
   assert.equal(await linkPreview("http://localhost:1/x"), null);
   assert.equal(await linkPreview("file:///etc/passwd"), null);
+});
+
+test("mapped IPv4 addresses keep their public-address decision in every IPv6 spelling and after URL parsing", () => {
+  const privateAddresses = ["0.0.0.0", "10.1.2.3", "127.0.0.1", "100.64.0.1", "100.127.255.255", "169.254.1.1", "172.16.0.1", "172.31.255.255", "192.168.1.1", "224.0.0.1", "255.255.255.255"];
+  const publicAddresses = ["1.1.1.1", "100.63.255.255", "100.128.0.1", "172.15.255.255", "172.32.0.1", "192.169.1.1", "223.255.255.255"];
+  for (const [addresses, allowed] of [[privateAddresses, false], [publicAddresses, true]] as const) {
+    for (const address of addresses) {
+      const bytes = address.split(".").map(Number);
+      const high = ((bytes[0]! << 8) | bytes[1]!).toString(16);
+      const low = ((bytes[2]! << 8) | bytes[3]!).toString(16);
+      for (const mapped of [`::ffff:${address}`, `::ffff:${high}:${low}`, `::FFFF:${high.toUpperCase()}:${low.toUpperCase()}`, `0:0:0:0:0:ffff:${high.padStart(4, "0")}:${low.padStart(4, "0")}`, `0:0::ffff:${address}`]) {
+        assert.equal(isPublic(mapped), allowed, mapped);
+        // fetchPublic receives URL's canonical hostname, including when the link was written with dotted IPv4.
+        const host = new URL(`http://[${mapped}]/`).hostname.slice(1, -1);
+        assert.equal(isPublic(host), allowed, `${mapped} parsed as ${host}`);
+      }
+    }
+  }
+  for (const address of ["0:0:0:0:0:0:0:1", "0:0:0:0:0:0:0:0", "::1%lo0", "not-an-address"]) assert.equal(isPublic(address), false, address);
+  assert.equal(isPublic("::ffff:0:0:1"), true, "an IPv6 address outside the mapped /96 is not an IPv4 address");
+});
+
+test("mapped local links are refused before opening a connection", async (t) => {
+  let asked = 0;
+  const request = t.mock.method(http, "request", () => {
+    asked++;
+    throw new Error("test transport: no network request is made");
+  });
+  syncBuiltinESMExports();
+  try {
+    for (const address of ["::ffff:127.0.0.1", "::ffff:7f00:1", "0:0:0:0:0:FFFF:7F00:0001", "::ffff:192.168.1.1"]) {
+      assert.equal(await linkPreview(`http://[${address}]/private`), null, address);
+    }
+    assert.equal(asked, 0, "a private mapped address must not reach the HTTP transport");
+  } finally {
+    request.mock.restore();
+    syncBuiltinESMExports();
+  }
 });
 
 test("a page's body is read as sent, from the address checked; one in any encoding is not read (no decoder reached)", async () => {

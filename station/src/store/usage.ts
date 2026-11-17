@@ -2,10 +2,10 @@
 // turn it was in, whom that turn worked for, in which thread and on which profile. The Store's usage methods call these.
 import type { DatabaseSync } from "node:sqlite";
 import { type Json, STILLFAIL_SURFACE } from "./rows.ts";
-import { detailQuery, usageDetailGeneration, usageDetailReady, usageDetailSince, usageTotalsComplete, USAGE_DETAIL_PENDING } from "./usage-detail.ts";
+import { usageTotalsComplete } from "./usage-totals-source.ts";
 import { usageCompactionsReady } from "./usage-compactions.ts";
-import { type ContextSnapshot, compactQuery, compactScopeReady, compactUsageSince, hasCompactUsage, noteCompactContexts, compactContexts, seedCompactContext } from "./usage-compact.ts";
-import { retiredUsage } from "./usage-retire.ts";
+import { type ContextSnapshot, hasCompactUsage, noteCompactContexts, compactContexts, seedCompactContext } from "./usage-compact.ts";
+import { usage15mQuery, usage15mSince } from "./usage-15m.ts";
 
 /// A model call read from a transcript (or a turn's calls, told at once: `calls` of them). Tokens as the provider bills
 /// them. `context`: of a main-thread call, what its session's context held after it (null: not told); `window`: the
@@ -97,9 +97,10 @@ export function recordUsage(db: DatabaseSync, path: string, file: UsageFile, run
     let seeded = false;
     // What the seed read of its context, for the note after the calls (the same transaction's).
     let snapshot: ContextSnapshot | null = null;
+    // (counted in its quarter as it is written: store/usage-15m.ts)
     const insert = db.prepare(
-      `INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window${compact ? ", compact_counted" : ""})
-       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19${compact ? ", 1" : ""})
+      `INSERT INTO usage (id, at, session, turn, thread, person, profile, runtime, model, subagent, fast, input, cache_read, cache_write, cache_write_long, output, calls, context, context_window, rollup_counted${compact ? ", compact_counted" : ""})
+       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, 1${compact ? ", 1" : ""})
        ${compact ? "" : "ON CONFLICT (id) DO UPDATE SET output = MAX(output, excluded.output)"}`,
     );
     const known = db.prepare("SELECT output FROM usage WHERE id = ?");
@@ -240,17 +241,9 @@ export function usageGroupOf(r: Json): UsageGroup {
 }
 
 /// usage_groups: the calls from `from` until `to` (ms), added up by day in the asker's time zone (`utcOffsetMin`) and
-/// by thread, person, profile and model.
+/// by thread, person, profile and model, from their quarters (store/usage-15m.ts).
 export function usageGroups(db: DatabaseSync, from: number, to: number, utcOffsetMin: number): UsageGroup[] {
-  if (hasCompactUsage(db)) {
-    if (!compactScopeReady(db, null)) throw new Error("usage statistics are moving between workspaces");
-    const query = compactQuery(BigInt(Math.trunc(from)), BigInt(Math.trunc(to)), BigInt(Math.trunc(utcOffsetMin)), null);
-    return (db.prepare(query.sql).all(...query.args) as Json[]).map(usageGroupOf);
-  }
-  if (retiredUsage(db)) throw new Error("usage detail statistics are unavailable");
-  const generation = usageDetailGeneration(db);
-  if (!usageDetailReady(db, null, generation)) throw new Error(USAGE_DETAIL_PENDING);
-  const query = detailQuery(BigInt(Math.trunc(from)), BigInt(Math.trunc(to)), BigInt(Math.trunc(utcOffsetMin)), null, generation);
+  const query = usage15mQuery(BigInt(Math.trunc(from)), BigInt(Math.trunc(to)), BigInt(Math.trunc(utcOffsetMin)), null);
   return query === null ? [] : (db.prepare(query.sql).all(...query.args) as Json[]).map(usageGroupOf);
 }
 
@@ -269,10 +262,10 @@ export function usageOfSession(db: DatabaseSync, session: string): UsageGroup[] 
   ).map((r) => usageGroupOf({ ...r, session }));
 }
 
-/// usage_since: when the earliest call recorded was made.
+/// usage_since: from when every call recorded is counted: the earliest's time, or, where the calls from before the
+/// quarters are still being taken in, from when they hold every call (store/usage-15m.ts `usage15mSince`).
 export function usageSince(db: DatabaseSync): number | null {
-  if (hasCompactUsage(db)) return compactUsageSince(db);
-  const first = (db.prepare("SELECT first_at FROM usage_span WHERE id = 1").get() as Json).first_at as number | null;
-  const cutover = usageDetailSince(db);
-  return cutover === null ? first : Math.max(first ?? cutover, cutover);
+  const first = (db.prepare("SELECT first_at FROM usage_span WHERE id = 1").get() as Json | undefined)?.first_at as number | null ?? null;
+  const since = usage15mSince(db);
+  return since === null ? first : Math.max(first ?? since, since);
 }

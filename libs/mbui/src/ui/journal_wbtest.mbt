@@ -85,7 +85,7 @@ test "an event and the frame it asked for, each under the budget, together over 
   }, what="key")
   assert_eq(journal_dirty_at.val, 1015.0)
   assert_false(journal().any(fn(e) { e is Boundary(_, _) }))
-  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 12.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "built" }), 1020.0, 1034.0)
+  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 12.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "built" }), 1020.0, 1034.0)
   journal_work(Present, 1034.0, 1035.0)
   journal_seal(Presented, 1035.0)
   let h = hangs()
@@ -102,7 +102,7 @@ test "a frame whose work is under its budget is no hang, however long since it w
   let (_, _) = journal_start()
   defer set_work_clock(None)
   journal_dirty_at.val = 1000.0
-  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 8.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "" }), 1200.0, 1210.0)
+  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 8.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "" }), 1200.0, 1210.0)
   journal_work(Present, 1210.0, 1211.0)
   journal_seal(Presented, 1211.0)
   assert_eq(hangs(), [])
@@ -129,7 +129,7 @@ test "short events are folded, their count and work kept, and still count toward
     let s = 1000.0 + i.to_double()
     journal_work(Event("touch-move"), s, s + 0.5)
   }
-  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 4.0, layout: 0.0, paint: 1.0, nodes: 1, insts: 1, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "" }), 1040.0, 1045.0)
+  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 4.0, layout: 0.0, paint: 1.0, nodes: 1, insts: 1, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "" }), 1040.0, 1045.0)
   journal_seal(Presented, 1045.0)
   let j = journal()
   assert_eq(j[0], Work({ what: Small(40, 20.0), start: 1000.0, end: 1039.5, notes: [] }))
@@ -198,7 +198,7 @@ test "every frame presented is counted by what it waited on, a finger's moves an
   assert_eq(journal_bands.length(), 4 * (frame_band_ms.length() + 1))
   let frame = fn(start : Double, ms : Double, laid : Bool) {
     journal_laid.val = laid
-    journal_work(Frame({ tree: 0.0, messages: 0.0, build: ms, layout: 0.0, paint: 0.0, nodes: 1, insts: 1, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "" }), start, start + ms)
+    journal_work(Frame({ tree: 0.0, messages: 0.0, build: ms, layout: 0.0, paint: 0.0, nodes: 1, insts: 1, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "" }), start, start + ms)
     journal_seal(Presented, start + ms)
     journal_dirty_at.val = -1.0
   }
@@ -248,7 +248,7 @@ test "of a frame's why, the code it names alone: no key of what is shown" {
 test "a hang as JSON: its rule, times from its start, each contributor's kind and a frame's parts" {
   let (_, _) = journal_start()
   defer set_work_clock(None)
-  journal_work(Frame({ tree: 1.0, messages: 2.0, build: 50.0, layout: 3.0, paint: 4.0, nodes: 7, insts: 8, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "built a.mbt:1" }), 1000.0, 1060.0)
+  journal_work(Frame({ tree: 1.0, messages: 2.0, build: 50.0, layout: 3.0, paint: 4.0, nodes: 7, insts: 8, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "built a.mbt:1" }), 1000.0, 1060.0)
   journal_seal(Presented, 1061.0)
   let j = hangs()[0].json().stringify()
   assert_true(j.contains("\"trigger\":\"stall\""), msg=j)
@@ -291,7 +291,7 @@ test "a hang says what the app showed as its interval was sealed, not what it sh
     clock.val += 15.0
     h_request_frame()
   }, what="key")
-  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 40.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", why: "" }), 1080.0, 1122.0)
+  journal_work(Frame({ tree: 0.0, messages: 0.0, build: 40.0, layout: 1.0, paint: 1.0, nodes: 3, insts: 9, made: 0, let_go: 0, laid: 0, measured: 0, passes: 0, again: "", bindings: 0, why: "" }), 1080.0, 1122.0)
   journal_shows("Setting Usage")
   journal_seal(Presented, 1123.0)
   assert_eq(told.length(), 2)
@@ -392,4 +392,80 @@ test "past 32 names what the app shows is other; a run begun again keeps none" {
   assert_true(shown_counts.iter().all(fn(k) { k == 0 }))
   journal_shows("Chat")
   assert_eq(journal_shown(), "Chat")
+}
+
+///|
+test "what the window's tree took as a frame brought it is that frame's (FramePerf's tree_ms), as the journal has it, none of the old view's build, layout or paint" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  let wide = @signals.signal(100.0)
+  set_view_app(fn(root) {
+    root.box(fn(b) {
+      b
+      .width(
+        By(fn() {
+          let w = wide.get()
+          // (each time it is worked out: 7 ms by the work clock)
+          clock.val += 7.0
+          Some(w)
+        }),
+      )
+      .height(Is(Some(20.0)))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let laid_before = view_app.val.unwrap().work().laid
+  wide.set(200.0)
+  t.frame()
+  let p = t.frame_perf()
+  // (worked out again as the frame brought the tree, before the old view's own work: its 7 ms the tree's)
+  assert_eq(p.tree_ms, 7.0)
+  assert_eq(p.build_ms + p.layout_ms + p.paint_ms, 0.0)
+  assert_eq(p.tree_laid, view_app.val.unwrap().work().laid - laid_before)
+  assert_true(p.tree_laid > 0, msg=Repr(p).to_string())
+  // (the journal's frame says the same of it)
+  let trees = journal().filter_map(fn(e) {
+    match e {
+      Work({ what: Frame(f), .. }) => Some(f.tree)
+      _ => None
+    }
+  })
+  assert_eq(trees.last(), Some(7.0))
+}
+
+///|
+/// A run of six nodes in the window's tree begun (Tester::new) and drawn: what its first frame's perf says of the tree's
+/// nodes laid out and the steps' time.
+fn perf_first_frame() -> (Int, Double) {
+  let t = Tester::new(journal_scene)
+  set_view_app(fn(root) {
+    for i in 0..<6 {
+      root.box(fn(b) { b.width(Is(Some(10.0 + i.to_double()))).height(Is(Some(20.0))) |> ignore }) |> ignore
+    }
+  })
+  let first : Ref[(Int, Double)?] = Ref(None)
+  t.each_frame(
+    Some(fn() {
+      if first.val is None {
+        let p = t.frame_perf()
+        first.val = Some((p.tree_laid, p.input_ms))
+      }
+    }),
+  )
+  t.draw()
+  t.each_frame(None)
+  first.val.unwrap()
+}
+
+///|
+test "a run begun again takes nothing of the run before's into its first frame's perf: no steps' time, its tree's nodes laid out counted from none" {
+  let (laid, input) = perf_first_frame()
+  assert_true(laid >= 3, msg="nodes laid out by the first frame: \{laid}")
+  assert_eq(input, 0.0)
+  // (as a run before left them: its steps' time no frame took yet, its tree's count of nodes laid out at 3)
+  perf_tree.laid_at = 3
+  perf_tree.input_since = 5.0
+  assert_eq(perf_first_frame(), (laid, 0.0))
 }

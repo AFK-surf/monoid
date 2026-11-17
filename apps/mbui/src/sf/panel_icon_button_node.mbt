@@ -17,9 +17,9 @@ pub fn panel_icon_button_node(
 ) -> @view.View {
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, _) {
     style_node(v, fn() { panel_icon_box })
+    v.focus_ring_theme() |> ignore
     let hot = fn() { lit_node(v) }
-    // (its hovered{bg=Hover}: the hover's ground where the hand is on it)
-    v.ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
+    hover_ground_node(v)
     icon_node(v, icon, panel_icon_size, By(fn() { if hot() { theme().p.text } else { theme().p.muted } })) |> ignore
     panel_tip_node(v, label)
   })

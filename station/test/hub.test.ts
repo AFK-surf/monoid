@@ -9,9 +9,8 @@ import { test } from "node:test";
 import { GO_ON_AFTER_AUTH, GO_ON_AFTER_FAILED, GO_ON_AFTER_OVERLOADED, GO_ON_AFTER_REFILL, GO_ON_AFTER_SPENT, GO_ON_AFTER_UNANSWERED, NUDGE, TOOLS_LOST } from "../src/agents/instructions.ts";
 import { retryable } from "../src/sessions/actor.ts";
 import { latest } from "../src/agents/migrations.ts";
-import { classifyResult } from "../src/agents/claude.ts";
-import { claudeProject, homesFirst, transcriptPaths } from "../src/read/transcript.ts";
-import { marksDir, stateOf } from "../src/read/transcripts.ts";
+import { claudeProject, homesFirst, transcriptPaths } from "./reference/transcript-paths.ts";
+import { marksDir, stateOf } from "./reference/transcripts.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { addToThread, autoArchive, archive, archiveBy, archiveChat, bindSingle, configure, deleteSession, newSession, openChat, say as sayIn } from "../src/sessions/lifecycle.ts";
@@ -20,6 +19,10 @@ import { FakeDriver, Rig, matches, message, reply, say, settle, testClock } from
 
 const chat = (runtime: "claude" | "codex" = "claude") => ({ runtime, createdBy: "local" });
 const untimed = (text: string) => text.replace(/^\[Delivered at [^\n]+\]\n/, "");
+
+/// The process `driver` opened for session `key`: sessions accepted together open in whatever order their looks at the
+/// disk come back (off the station's thread), not in the order they came.
+const opened = (driver: FakeDriver, key: string) => driver.sessions.find((s) => s.options.route === key);
 
 test("a new session first says where it can be followed, multi-session connects only", async () => {
   const r = new Rig({ link: true });
@@ -727,24 +730,21 @@ test("a turn that cannot start is not left starting, and stop clears what is sti
   await r.accept(m);
   await settle();
   const key = sessionKey("cl", "C1", m.threadTs);
-  const phase = () => {
-    let said: unknown = "untold";
-    const id = r.hub.live.subscribe(key, 0, 0, (l: any) => {
-      if (l.type === "steps") said = l.phase;
-    });
-    r.hub.live.unsubscribe(key, id);
-    return said;
+  // (what a stream opening is told of it now: its steps and what is said to be under way)
+  const phase = async () => {
+    await r.hub.live.idle();
+    return (((await r.hub.live.nowOf([key]))[key] ?? []).find((l: any) => l.type === "steps") as any)?.phase;
   };
-  assert.equal(phase(), null, "the failed start ended what was said to be starting");
+  assert.equal(await phase(), null, "the failed start ended what was said to be starting");
   assert.equal(r.hub.processState(key), "cold");
   // What the station said of it is its own, in English: not said; that it could not start is.
   assert.equal(r.chat.lastText(), "⚠️ 无法启动 agent\n\n```\nthe station this subscription is signed in on did not lend it: station mesh is not ready\n```");
   // Said to be under way some other way: stop, with nothing running, clears it.
   r.hub.live.event(key, { kind: "phase", phase: "starting" });
-  assert.notEqual(phase(), null);
+  assert.notEqual(await phase(), null);
   await r.hub.stop(key);
   await settle();
-  assert.equal(phase(), null);
+  assert.equal(await phase(), null);
   await r.close();
 });
 
@@ -1336,7 +1336,7 @@ test("taken up by a station whose tools are elsewhere, a process told the old ad
   await first.accept(busy);
   await first.accept(idle);
   await settle();
-  const [runningOld, idleOld] = first.claude.sessions;
+  const [runningOld, idleOld] = [busy, idle].map((m) => opened(first.claude, sessionKey("cl", "C1", m.threadTs)));
   idleOld!.complete();
   await settle();
   await first.call(sessionKey("cl", "C1", idle.threadTs), "chat_state", { kind: "all_done", done: "answered" });
@@ -1349,7 +1349,7 @@ test("taken up by a station whose tools are elsewhere, a process told the old ad
   const moved = "http://127.0.0.1:2/mcp";
   const hub = first.newHub({ chats: (id) => (id === "cl" ? first.chat : undefined), drivers: [claude, new FakeDriver("codex")], internal: false, mcpUrl: moved });
   await hub.takeUp();
-  const [running, idleTaken] = claude.sessions;
+  const [running, idleTaken] = [runningOld, idleOld].map((old) => claude.sessions.find((s) => s.sessionId === old!.sessionId));
   assert.equal(running!.toolsUrl, "http://127.0.0.1:1/mcp", "as it was told");
   hub.toolsAt(moved);
   hub.recover();
@@ -1470,7 +1470,7 @@ test("a process that exits while its turn waits on its background work: it goes 
   await r.close();
 });
 
-test("a turn given up on after its nudges shows the agent's last words, unless it posted", async () => {
+test("a turn given up on after its nudges shows the agent's last words; one that posted ends done after one reminder", async () => {
   const r = new Rig({ maxNudges: 1 });
   const m = message();
   await r.accept(m);
@@ -1491,7 +1491,72 @@ test("a turn given up on after its nudges shows the agent's last words, unless i
   await settle();
   s.complete();
   await settle();
-  assert.ok(r.chat.lastText().includes("未产出结果"), r.chat.lastText());
+  // (it answered: no ⚠️ under its answer, the turn ends done)
+  assert.equal(r.chat.lastText(), "Now it fails.");
+  assert.equal(r.store.lastTurn(sessionKey("cl", "C1", m.threadTs))!.ending, "all_done");
+  await r.close();
+});
+
+test("a turn that posted and said no state is asked once, whatever the most nudges, then ends done", async () => {
+  const r = new Rig({ maxNudges: 3 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const s = r.claude.last();
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "答好了。" });
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 2, "asked once");
+  s.complete();
+  await settle();
+  assert.equal(s.prompts.length, 2, "not asked again");
+  assert.equal(r.store.lastTurn(key)!.ending, "all_done");
+  assert.ok(!r.chat.texts().some((t) => t.startsWith("⚠️")), r.chat.texts().join("\n"));
+  await r.close();
+});
+
+test("a turn with no state is never told stopped before it is asked again", async () => {
+  const r = new Rig({ maxNudges: 1 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  // (what a device would read as each change is told: cold, its last turn ended with no state, is 意外停止)
+  const cold: unknown[] = [];
+  const stop = r.store.subscribe((c) => {
+    if (c.type !== "session" || c.key !== key) return;
+    const t = r.store.lastTurn(key);
+    if (r.store.getSession(key)?.running !== true && t !== null && t.endedAt !== null && t.declared === null) cold.push(t);
+  });
+  r.claude.last().complete();
+  await settle();
+  assert.equal(r.claude.last().prompts.length, 2, "asked again");
+  assert.deepEqual(cold, []);
+  stop();
+  await r.close();
+});
+
+test("a turn its background work woke that only waits on keeps asking what the turn before it asked", async () => {
+  const r = new Rig({ maxNudges: 0 });
+  const m = message();
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  const to = `C1/${m.threadTs}`;
+  await r.call(key, "chat_post", { to, text: "要不要清理旧的缓存？", kind: "need_human", need: "清理缓存" });
+  r.claude.last().complete();
+  await settle();
+  assert.equal(r.store.lastTurn(key)!.ending, "need_help");
+  r.hub.notify(key, "a job ended: build 3 passed");
+  await settle();
+  await r.call(key, "chat_state", { kind: "waiting", seconds: 600, for: "构建" });
+  r.claude.last().complete();
+  await settle();
+  const kept = r.store.lastTurn(key)!;
+  assert.equal(kept.ending, "need_help");
+  assert.equal(kept.need, "清理缓存");
+  assert.notEqual(kept.about, null);
   await r.close();
 });
 
@@ -1717,7 +1782,7 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.accept(say("<@UTEAM> one"), "team");
   await settle();
   const old = r.store.binding("team")!;
-  const fresh = bindSingle(r.hub, "team", null, "值班", null);
+  const fresh = await bindSingle(r.hub, "team", null, "值班", null);
   assert.notEqual(fresh, old);
   assert.equal(r.session(fresh).title, "值班");
   await r.accept(say("<@UTEAM> two"), "team");
@@ -1730,7 +1795,7 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.accept(m);
   await settle();
   const clKey = sessionKey("cl", "C1", m.threadTs);
-  bindSingle(r.hub, "team", clKey, null, null);
+  await bindSingle(r.hub, "team", clKey, null, null);
   const t = say("<@UTEAM> via team", { channel: "C7" });
   await r.accept(t, "team");
   await settle();
@@ -1746,8 +1811,8 @@ test("a single-session connect can be pointed at a new or an existing session", 
   await r.call(clKey, "chat_post", { to: `C1/${m.threadTs}`, text: "to cl thread" });
   assert.deepEqual(r.teamChat.texts(), ["to team thread"]);
   assert.deepEqual(r.chat.texts(), ["to cl thread"]);
-  assert.throws(() => bindSingle(r.hub, "team", sessionKey("gpt", "C1", "1.1"), null, null), /unknown session/);
-  assert.throws(() => bindSingle(r.hub, "cl", null, null, null), /not single-session/);
+  await assert.rejects(async () => await bindSingle(r.hub, "team", sessionKey("gpt", "C1", "1.1"), null, null), /unknown session/);
+  await assert.rejects(async () => await bindSingle(r.hub, "cl", null, null, null), /not single-session/);
   await r.close();
 });
 
@@ -1785,8 +1850,8 @@ test("a chat opened on the admin page reaches the session like Slack, and the ag
 
 test("a person's message in a chat with several agents reaches each of them once", async () => {
   const r = new Rig();
-  const one = newSession(r.hub, chat("claude"));
-  const two = newSession(r.hub, chat("codex"));
+  const one = await newSession(r.hub, chat("claude"));
+  const two = await newSession(r.hub, chat("codex"));
   addToThread(r.hub, one[1].id, two[0]);
   const quote = { author: "Claude", role: "agent", ts: "1.000001", text: "上一条", comment: "这里" };
   sayIn(r.hub, one[1].id, "a@example.com", "你们俩分一下工", [], [quote]);
@@ -1938,7 +2003,7 @@ test("idle chats that are done are archived by the station; busy, blocked, unrea
   await r.call(blocked, "chat_state", { kind: "block" });
   r.claude.last().complete();
   await settle();
-  const [web, thread] = newSession(r.hub, chat());
+  const [web, thread] = await newSession(r.hub, chat());
   sayIn(r.hub, thread.id, "local", "hi");
   await settle();
   // The agent's answer is unread: the chat stays.
@@ -2005,7 +2070,7 @@ test("a session heard only in Slack is archived after three idle days even when 
   await r.call(blocked, "chat_state", { kind: "block" });
   r.claude.last().complete();
   await settle();
-  const [web, thread] = newSession(r.hub, chat());
+  const [web, thread] = await newSession(r.hub, chat());
   sayIn(r.hub, thread.id, "local", "hi");
   await settle();
   await r.call(web, "chat_state", { kind: "block" });
@@ -2029,7 +2094,7 @@ test("a session heard only in Slack is archived after three idle days even when 
 
 test("pinned chats survive idle archiving, their agent's other chats too, but can be archived by hand", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.store.setPin("alice", key, true);
   autoArchive(r.hub, Date.now() + 3 * 86_400_000);
   assert.equal(r.session(key).archivedAt, null);
@@ -2047,7 +2112,7 @@ test("pinned chats survive idle archiving, their agent's other chats too, but ca
 
 test("kept chats survive idle archiving but can be archived by hand", async () => {
   const r = new Rig();
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.store.keepChat("alice", thread.id);
   autoArchive(r.hub, Date.now() + 3 * 86_400_000);
   assert.equal(r.session(key).archivedAt, null);
@@ -2067,7 +2132,7 @@ test("kept chats survive idle archiving but can be archived by hand", async () =
 test("where only what the archive review recommended is archived on its own, an idle chat waits for its recommendation", async () => {
   const r = new Rig();
   const later = Date.now() + 3 * 86_400_000;
-  const [key, thread] = newSession(r.hub, chat());
+  const [key, thread] = await newSession(r.hub, chat());
   r.edit((raw: any) => { raw.autoArchiveReviewed = true; });
   autoArchive(r.hub, later);
   assert.equal(r.session(key).archivedAt, null, "the review is off: nothing goes");
@@ -2439,6 +2504,38 @@ test("a runtime updated from the pages: its sessions' processes end now if idle,
   await r.close();
 });
 
+test("a profile signed in anew: its sessions' processes end now if idle, else before their next turn; another profile's are left", async () => {
+  const r = new Rig();
+  const m = say("<@UBOT> fix the build");
+  await r.accept(m);
+  await settle();
+  const key = sessionKey("cl", "C1", m.threadTs);
+  assert.equal(r.session(key).profile, "cc");
+  const running = r.claude.last();
+  // Another profile signed in: nothing of this session's ends.
+  r.hub.profileLoginChanged("cc2");
+  // Signed in while a turn runs: that turn goes on; its process ends before the next, which starts on the new sign-in.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(!running.disposed && running.aborts === 0, "the running turn is not cut off");
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  running.complete();
+  await settle();
+  await r.accept({ ...say("<@UBOT> once more"), threadTs: m.threadTs });
+  await settle();
+  assert.ok(running.disposed, "its process ended before the next turn");
+  const next = r.claude.last();
+  assert.notEqual(next, running);
+  await r.call(key, "chat_post", { to: `C1/${m.threadTs}`, text: "done", kind: "final" });
+  next.complete();
+  await settle();
+  // Idle: it ends at once.
+  r.hub.profileLoginChanged("cc");
+  await settle();
+  assert.ok(next.disposed);
+  await r.close();
+});
+
 test("a deleted profile's sessions go on on another, and stop when no other can run them", async () => {
   const r = new Rig();
   const m = say("<@UBOT> fix the build");
@@ -2475,6 +2572,33 @@ test("a deleted profile's sessions go on on another, and stop when no other can 
   await r.close();
 });
 
+test("a deleted profile moves no session nobody is using: it picks another at its next turn, said then", async () => {
+  const r = new Rig();
+  try {
+    const old = say("<@UBOT> long ago");
+    await r.accept(old);
+    await settle();
+    const oldKey = sessionKey("cl", "C1", old.threadTs);
+    await r.call(oldKey, "chat_state", { kind: "all_done", done: "answered" });
+    r.claude.last().complete();
+    await settle();
+    await r.hub.evict(oldKey);
+    await settle();
+    r.edit(withProfile("cc2", "another", ["opus"]));
+    r.edit((raw) => (raw.profiles = raw.profiles.filter((p: any) => p.id !== "cc")));
+    await r.hub.profileGone("cc");
+    await settle();
+    assert.equal(r.session(oldKey).profile, "cc", "left where it was");
+    assert.deepEqual(r.chat.texts().filter((t) => t.startsWith("已切换")), [], r.chat.texts().join("\n"));
+    // Someone writes in it again: it goes on on the other one, and says so there.
+    await r.accept({ ...say("<@UBOT> again"), threadTs: old.threadTs });
+    await settle();
+    assert.equal(r.session(oldKey).profile, "cc2");
+    assert.equal(r.claude.last().options.profile.id, "cc2");
+    assert.equal(r.chat.texts().filter((t) => t.startsWith("已切换账号：")).length, 1, r.chat.texts().join("\n"));
+  } finally { await r.close(); }
+});
+
 test("a disabled profile cannot run a new or pinned session, and its existing session moves", async () => {
   const r = new Rig();
   try {
@@ -2489,8 +2613,8 @@ test("a disabled profile cannot run a new or pinned session, and its existing se
     assert.deepEqual([r.session(key).profile, r.session(key).profilePinned], ["cc2", false]);
     assert.ok(!r.hub.profilesIn(null).some((p) => p.id === "cc"));
     assert.throws(() => r.hub.accounts.change(key, { profile: "cc" }), /停用/);
-    assert.throws(() => newSession(r.hub, { ...chat(), model: "opus", profile: "cc" }), /停用/);
-    const [next] = newSession(r.hub, { ...chat(), model: "opus" });
+    await assert.rejects(async () => await newSession(r.hub, { ...chat(), model: "opus", profile: "cc" }), /停用/);
+    const [next] = await newSession(r.hub, { ...chat(), model: "opus" });
     assert.equal(r.session(next).profile, "cc2");
     r.edit((raw) => { delete raw.profiles.find((p: any) => p.id === "cc").enabled; });
     assert.ok(r.hub.profilesIn(null).some((p) => p.id === "cc"), "enabled again without deleting its settings");
@@ -2510,10 +2634,10 @@ test("a connect or a new chat can keep its sessions to one profile; otherwise th
   assert.deepEqual([row.profile, row.profilePinned], ["cc2", true]);
   // A new chat given a profile keeps to it; one that has not the model on is refused.
   const pinned = (model: string) => ({ ...chat(), model, profile: "cc2" });
-  const [key] = newSession(r.hub, pinned("opus"));
+  const [key] = await newSession(r.hub, pinned("opus"));
   assert.deepEqual([r.session(key).profile, r.session(key).profilePinned], ["cc2", true]);
-  assert.throws(() => newSession(r.hub, pinned("sonnet")), /无法运行 sonnet/);
-  const [auto] = newSession(r.hub, chat());
+  await assert.rejects(async () => await newSession(r.hub, pinned("sonnet")), /无法运行 sonnet/);
+  const [auto] = await newSession(r.hub, chat());
   assert.ok(!r.session(auto).profilePinned);
   await r.close();
 });
@@ -2565,8 +2689,8 @@ test("agents in one thread hear each other: a post reaches the thread's other se
 
 test("in a chat on the station's page with several agents, what one posts reaches the others", async () => {
   const r = new Rig();
-  const one = newSession(r.hub, chat("claude"));
-  const two = newSession(r.hub, chat("codex"));
+  const one = await newSession(r.hub, chat("claude"));
+  const two = await newSession(r.hub, chat("codex"));
   addToThread(r.hub, one[1].id, two[0]);
   sayIn(r.hub, one[1].id, "local", "分一下工");
   await settle();
@@ -2602,7 +2726,7 @@ test("a turn that runs out of allowance goes on on another account, or once the 
     raw.profiles[0].models = ["opus"];
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
-  const spent = (text: string) => ({ kind: "failed" as const, reason: classifyResult(text), message: text });
+  const spent = (text: string) => ({ kind: "failed" as const, reason: "rate_limit" as const, message: text });
   const m = message();
   await r.accept(m);
   await settle();
@@ -2660,7 +2784,7 @@ test("a model's own limit is said as the model's, not the account's: the quota l
   await r.accept(m);
   await settle();
   const agent = r.claude.last();
-  agent.end({ kind: "failed", reason: classifyResult(said), message: said });
+  agent.end({ kind: "failed", reason: "rate_limit", message: said });
   await settle();
   assert.equal(r.chat.lastText(), `⚠️ Fable 自身限额已用完（非账号额度），恢复后自动继续\n\n\`\`\`\n${said}\n\`\`\``);
   // Woken meanwhile, it runs into it again: said once, as an account's is.
@@ -2678,7 +2802,7 @@ test("a model's own limit passes over that model alone on its account: its other
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
   const said = "You've reached your Opus limit. Switch to another model, or manage usage credits at https://claude.ai/settings/usage?from=cc_cli_limit_message, to continue.";
-  const limited = { kind: "failed" as const, reason: classifyResult(said), message: said };
+  const limited = { kind: "failed" as const, reason: "rate_limit" as const, message: said };
   const claude = () => r.config.profiles.filter((p) => p.runtime === "claude");
   await r.accept(message());
   await settle();
@@ -2731,7 +2855,6 @@ test("a failure whose words name no limit, where the allowance asked again shows
   const opus = { label: "每周 · Opus", usedPercent: 100, resetsAt: now + week, minutes: 10080, scope: "Opus" };
   r.hub.accounts.setHealth((id) => (read && id === "cc" ? { account: "a1", quota: { state: "ok", windows: [{ label: "5 小时", usedPercent: 10, resetsAt: now + 3_600_000, minutes: 300 }], scoped: [opus], detail: null, checkedAt: now } } : {}));
   const said = "Opus is out of its week: switch to another model to continue.";
-  assert.equal(classifyResult(said), "model");
   const m = message();
   await r.accept(m);
   await settle();
@@ -2739,7 +2862,7 @@ test("a failure whose words name no limit, where the allowance asked again shows
   const key = first.options.route;
   const thread = r.thread("C1", m.threadTs);
   assert.equal(first.options.profile.id, "cc");
-  first.end({ kind: "failed", reason: classifyResult(said), message: said });
+  first.end({ kind: "failed", reason: "model", message: said });
   await settle();
   assert.deepEqual(asked, ["cc"]);
   // Not moved by itself: said what the allowance shows, the notice bound to the turn, which 重试 no longer takes.
@@ -2813,7 +2936,7 @@ test("an account spent with none to move to is said once; what wakes it waits fo
   const HOUR = 60 * 60 * 1000;
   const now = time.clock.currentTimeMillisUnsafe();
   r.hub.accounts.setHealth(() => ({ quota: { state: "ok", windows: [{ label: "5h", usedPercent: 100, resetsAt: now + 2 * HOUR, minutes: 300 }], detail: null, checkedAt: now } }));
-  const spent = { kind: "failed" as const, reason: classifyResult("usage limit reached"), message: "You've hit your limit · resets 5pm" };
+  const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "You've hit your limit · resets 5pm" };
   const said = () => r.chat.texts().filter((t) => t.includes("额度已用完"));
   const m = message();
   await r.accept(m);
@@ -2970,7 +3093,7 @@ test("after a station restart, a reset resumes a recorded allowance wait but not
   await r.accept(first);
   await r.accept(stopped);
   await settle();
-  const [waitingAgent, stoppedAgent] = r.claude.sessions;
+  const [waitingAgent, stoppedAgent] = [first, stopped].map((m) => opened(r.claude, sessionKey("cl", "C1", m.threadTs)));
   const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "usage limit reached" };
   waitingAgent!.end(spent);
   stoppedAgent!.end(spent);
@@ -3094,7 +3217,7 @@ test("a model at capacity is no account's limit: said once, tried again after lo
   const r = new Rig({ clock: time.clock });
   r.edit((raw) => raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" }));
   const text = "Selected model is at capacity. Please try a different model.";
-  const full = { kind: "failed" as const, reason: classifyResult(text), message: text };
+  const full = { kind: "failed" as const, reason: "overloaded" as const, message: text };
   const said = () => r.chat.texts().filter((t) => t.includes("模型满载"));
   const m = message();
   await r.accept(m);
@@ -3178,7 +3301,7 @@ test("taken up by the next station, a process runs on the account it was started
   await r.accept(busy);
   await r.accept(idle);
   await settle();
-  const [busyOld, idleOld] = r.claude.sessions;
+  const [busyOld, idleOld] = [busy, idle].map((m) => opened(r.claude, sessionKey("cl", "C1", m.threadTs)));
   const busyKey = busyOld!.options.route;
   const idleKey = idleOld!.options.route;
   assert.ok(busyOld!.options.profile.id === "cc" && idleOld!.options.profile.id === "cc");
@@ -3200,7 +3323,7 @@ test("taken up by the next station, a process runs on the account it was started
   assert.ok(busyTaken.options.profile.id === "cc" && idleTaken.options.profile.id === "cc", "taken up where their processes run");
   assert.ok(r.session(busyKey).profile === "cc" && r.session(idleKey).profile === "cc", "not moved by being taken up");
   // The running turn runs into the first account's allowance: the second takes it on.
-  busyTaken.end({ kind: "failed", reason: classifyResult("usage limit reached"), message: "You've hit your weekly limit · resets Oct 26 at 9pm" });
+  busyTaken.end({ kind: "failed", reason: "rate_limit" as const, message: "You've hit your weekly limit · resets Oct 26 at 9pm" });
   await settle();
   assert.ok(busyTaken.disposed);
   const busyNext = claude.last();
@@ -3264,7 +3387,7 @@ test("on another account a conversation goes on in a new runtime session, its hi
     raw.profiles[0].models = ["opus"];
     raw.profiles.push({ ...raw.profiles[0], id: "cc2", name: "second" });
   });
-  const spent = { kind: "failed" as const, reason: classifyResult("usage limit reached"), message: "usage limit reached" };
+  const spent = { kind: "failed" as const, reason: "rate_limit" as const, message: "usage limit reached" };
   // The profiles share a home here, so their transcripts, in the project of the session's workspace.
   const transcript = (id: string, said: string, context: number) => {
     const path = join(r.config.profiles[0]!.home, "projects", claudeProject(r.session(key).workspace)!, `${id}.jsonl`);
@@ -3392,11 +3515,11 @@ test("codex model efforts validate new chats, changes and pinned accounts", asyn
     },
   }));
   const fresh = (profile: string | null, effort: string) => ({ runtime: "codex" as const, profile, model: "openai/gpt-6-astra", effort, createdBy: "local" });
-  const [key] = newSession(r.hub, fresh(null, "max"));
+  const [key] = await newSession(r.hub, fresh(null, "max"));
   assert.equal(r.session(key).effort, "max");
-  assert.throws(() => newSession(r.hub, fresh(null, "minimal")));
-  assert.throws(() => newSession(r.hub, fresh(null, "ultra")));
-  const [pinned] = newSession(r.hub, fresh("cx", "ultra"));
+  await assert.rejects(async () => await newSession(r.hub, fresh(null, "minimal")));
+  await assert.rejects(async () => await newSession(r.hub, fresh(null, "ultra")));
+  const [pinned] = await newSession(r.hub, fresh("cx", "ultra"));
   assert.equal(r.session(pinned).effort, "ultra");
   // A profile change must not carry an unsupported depth to the destination.
   await assert.rejects(configure(r.hub, pinned, { profile: "limited" }));
@@ -3440,8 +3563,8 @@ test("a session from before a change is told it once, and a new one never", asyn
 
 test("fast is per session, on Codex and Claude Code, and null restores the account's default", async () => {
   const r = new Rig();
-  const [a] = newSession(r.hub, { ...chat("codex"), fast: true });
-  const [b] = newSession(r.hub, chat("codex"));
+  const [a] = await newSession(r.hub, { ...chat("codex"), fast: true });
+  const [b] = await newSession(r.hub, chat("codex"));
   assert.equal(r.session(a).fast, true);
   assert.equal(r.session(b).fast, null);
   r.store.setRuntimeSessionId(a, "thread-a");
@@ -3454,10 +3577,37 @@ test("fast is per session, on Codex and Claude Code, and null restores the accou
   await configure(r.hub, a, { fast: null });
   assert.equal(r.session(a).fast, null);
   // Claude Code takes it too (on an Anthropic key: its driver says fastMode as it starts).
-  const [claude] = newSession(r.hub, { ...chat("claude"), fast: true });
+  const [claude] = await newSession(r.hub, { ...chat("claude"), fast: true });
   assert.equal(r.session(claude).fast, true);
   await configure(r.hub, claude, { fast: false });
   assert.equal(r.session(claude).fast, false);
+  await r.close();
+});
+
+test("Ultrafast is per chat, persists through other changes and legacy Fast clears it", async () => {
+  const r = new Rig();
+  Object.assign(r.raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6-astra", "gpt-6.1-sol", "gpt-5.5"] });
+  r.config = hubConfig(r.raw, r.dir);
+  const [a] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra", speed: "ultrafast" });
+  const [b] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra" });
+  r.store.setRuntimeSessionId(a, "thread-ultra");
+  r.store.setRuntimeSessionId(b, "thread-default");
+  assert.equal(r.session(a).speed, "ultrafast");
+  assert.equal(r.session(a).fast, true, "old clients still see accelerated speed");
+  await configure(r.hub, a, {});
+  assert.equal(r.store.codexSessionSpeed("thread-ultra"), "ultrafast");
+  assert.equal(r.store.codexSessionSpeed("thread-default"), null);
+  await configure(r.hub, a, { fast: false });
+  assert.equal(r.store.codexSessionSpeed("thread-ultra"), null);
+  assert.equal(r.store.codexSessionFast("thread-ultra"), false);
+  await configure(r.hub, a, { speed: "ultrafast" });
+  await configure(r.hub, a, { speed: "standard" });
+  assert.equal(r.session(a).fast, false);
+  await configure(r.hub, a, { speed: null });
+  assert.equal(r.session(a).fast, null, "null restores the account default");
+  await assert.rejects(configure(r.hub, a, { model: "gpt-5.5", speed: "ultrafast" }), /Ultrafast/);
+  assert.equal(r.session(a).model, "gpt-6-astra", "invalid settings leave the chat intact");
+  await assert.rejects(newSession(r.hub, { ...chat("claude"), speed: "ultrafast" }), /Ultrafast/);
   await r.close();
 });
 
@@ -3502,9 +3652,9 @@ function machine(root: string, project: string) {
 }
 
 test("a session the machine kept goes on in a chat, run in its own directory, with what was said in it", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
-  const { readTimeline } = await import("../src/read/transcript.ts");
+  const { readTimeline } = await import("./reference/transcript.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
   const project = join(root, "app");
@@ -3561,7 +3711,7 @@ test("a session the machine kept goes on in a chat, run in its own directory, wi
 });
 
 test("a continued session that cannot be resumed is told to read the terminal's own transcript", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3586,7 +3736,7 @@ test("a continued session that cannot be resumed is told to read the terminal's 
 // root reads a directory whatever its mode says.
 // Windows has no chmod that keeps the owner out.
 test("a directory the station may not read is told as that, not left to the agent to fail in", { skip: process.getuid?.() === 0 || process.platform === "win32" }, async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");
@@ -3616,7 +3766,7 @@ test("a directory the station may not read is told as that, not left to the agen
 });
 
 test("a session whose directory is gone is not continued", async () => {
-  const { find } = await import("../src/read/machine.ts");
+  const { find } = await import("./reference/machine.ts");
   const { continueMachineSession } = await import("../src/sessions/lifecycle.ts");
   const r = new Rig();
   const root = join(r.dir, "machine");

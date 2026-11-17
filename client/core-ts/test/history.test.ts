@@ -58,6 +58,10 @@ test("a_slack_place_is_named_with_its_workspace_and_links_to_its_thread", () => 
   // A thread whose team the station did not know yet ("slack:<connect id>") has no way into the app.
   const early = format.place([{ ...threads[0], surface: "slack:cl" }], "C1/1.000200", c.offsetMin, c.workspaces) as J;
   assert.equal(early.app, undefined);
+  // A team this station has no connect of (a thread of a connect another station of the workspace lent it) is reached
+  // by its id, in Slack's web client and its app.
+  const lent = format.place([{ ...threads[0], surface: "slack:T09LH8NN1QR" }], "C1/1.000200", c.offsetMin, c.workspaces) as J;
+  assert.deepEqual([lent.name, lent.url, lent.app], ["#ops", "https://app.slack.com/client/T09LH8NN1QR/C1/thread/C1-1.000200", "slack://channel?team=T09LH8NN1QR&id=C1&message=1.000200"]);
 });
 
 test("a_feishu_place_is_named_by_its_chat_and_opens_in_feishu_or_lark", () => {
@@ -296,7 +300,7 @@ test("boundaries_stand_alone_and_the_work_between_folds_into_a_group", () => {
   // A Slack person it mentions, by the name the station's agents heard them by.
   assert.deepEqual([items[2].body.content.text, items[2].body.content.md], ["@Ada done", markdown("@Ada done")]);
   assert.deepEqual([items[3].body.content.text, items[3].body.content.ends], ["标记为已完成", "done"]);
-  assert.deepEqual(items[0].turn, { text: "3 步 · 发出 1 条" });
+  assert.deepEqual(items[0].turn, {});
   const waits = (a: string, next: string | null) => {
     const timeline: J[] = [{ kind: "tool_call", tool: "mcp__ember__chat_state", text: a, at: "2026-09-27T00:00:00.000Z" }];
     if (next !== null) timeline.push({ kind: "user", text: '<message via="ember">done</message>', at: next });
@@ -423,7 +427,7 @@ test("a_post_read_from_the_transcript_stands_where_it_was_made", () => {
   assert.equal(items[1].body.content.text, "done");
 });
 
-test("each_prompt_that_woke_the_agent_begins_a_turn_saying_when_and_what_it_did", () => {
+test("each_prompt_that_woke_the_agent_begins_a_turn_and_merges_times_within_five_minutes", () => {
   const timeline = [
     { kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', callId: "z" },
     { kind: "user", text: '<message via="web" from="Ada (a@x.com)" ts="1.2" thread="CHAT/1.0">\nhi\n</message>', at: "2026-09-27T01:02:00.000Z" },
@@ -432,21 +436,25 @@ test("each_prompt_that_woke_the_agent_begins_a_turn_saying_when_and_what_it_did"
     { kind: "user", text: "do this", subagent: true },
     { kind: "tool_call", tool: "Bash", text: '{"command":"ls"}', callId: "b", subagent: true },
     { kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"CHAT/1.0","text":"done","kind":"all_done"}', callId: "p" },
+    { kind: "user", text: "Your turn ended without a state.", at: "2026-09-27T01:04:00.000Z" },
+    { kind: "assistant", text: "retrying" },
     { kind: "user", text: "Your turn ended without a state.", at: "2026-09-28T03:00:00.000Z" },
     { kind: "tool_call", tool: "mcp__stillfail__chat_state", text: '{"kind":"waiting","seconds":60,"for":"CI"}', at: "2026-09-28T03:00:01.000Z" },
     { kind: "assistant", text: "waiting on CI" },
   ];
   const at = (iso: string) => Date.parse(iso);
   const items = presentHistory({ loaded: true, timeline }, { ...cx([], [], []), now: at("2026-09-28T04:00:00.000Z") }).items;
-  assert.deepEqual(items.map((i: J) => i.body.kind), ["group", "received", "group", "received", "group", "post", "received", "mark", "text"]);
+  assert.deepEqual(items.map((i: J) => i.body.kind), ["group", "received", "group", "received", "group", "post", "received", "text", "received", "mark", "text"]);
   // A page that begins mid-turn has no turn for what came before its first prompt; a sub-agent's prompt begins none.
-  assert.deepEqual(items.map((i: J) => i.turn === undefined ? null : i.turn.text), [null, "2 步 · 发出 1 条", null, null, null, null, "未发消息", null, null]);
-  // Said in the viewer's time (UTC+8 here): today's by its clock alone, an earlier day's with its date.
-  assert.deepEqual([items[1].turn.at, items[1].turn.time], [at("2026-09-27T01:02:00.000Z"), "9/27 09:02"]);
-  assert.equal(items[6].turn.time, "11:00");
+  // A turn within 5 minutes of the previous shown time still begins a turn (breaking the rail) without repeating `time`.
+  assert.deepEqual(items.map((i: J) => i.turn === undefined ? null : i.turn.time ?? ""), [null, "9/27 09:02", null, null, null, null, "", null, "11:00", null, null]);
+  // Said in the viewer's time (UTC+8 here): today's by its clock alone, an earlier day's with its date; no step/post summary text.
+  assert.deepEqual(items[1].turn, { at: at("2026-09-27T01:02:00.000Z"), time: "9/27 09:02" });
+  assert.deepEqual(items[6].turn, { at: at("2026-09-27T01:04:00.000Z") });
+  assert.deepEqual(items[8].turn, { at: at("2026-09-28T03:00:00.000Z"), time: "11:00" });
   // How each post and mark left the turn.
   assert.equal(items[5].body.content.ends, "done");
-  assert.equal(items[7].body.content.ends, "waiting");
+  assert.equal(items[9].body.content.ends, "waiting");
   const state = (kind: string) => presentHistory({ loaded: true, timeline: [{ kind: "tool_call", tool: "mcp__stillfail__chat_state", text: `{"kind":"${kind}"}` }] }, cx([], [], [])).items[0].body.content;
   assert.deepEqual([state("all_done").ends, state("need_human").ends, state("need_human").text, state("odd").ends], ["done", "human", "已暂停，等待人工处理", undefined]);
   const post = presentHistory({ loaded: true, timeline: [{ kind: "tool_call", tool: "mcp__stillfail__chat_post", text: '{"to":"x","text":"t"}' }] }, cx([], [], [])).items[0].body.content;
@@ -805,13 +813,14 @@ test("codex_exec_wrappers_and_multi_runtime_tools_are_unwrapped_and_labeled", ()
   assert.equal(multi.items[3].body.content.failed, true);
   assert.equal(multi.items[3].body.content.ends, undefined);
 
-  // 6. <card-state> prompt tags are stripped from note, and [Quote] From ... / Attached files wrappers are cleaned in received messages
+  // 6. <card-state> and [Delivered at ...] prompt wrappers are stripped from note, and [Quote] From ... / Attached files wrappers are cleaned in received messages
   const withQuoteAndCard = presentHistory(
     {
       timeline: [
         {
           kind: "user",
           text:
+            "[Delivered at 2026-11-15T09:44:25.449Z (UTC)]\n" +
             '<message via="web" connect="ember" thread="CHAT/1794537623.780000" from="Peng Xiao (pengxiao@cue.surf)" ts="1794646800.000000">\n' +
             "[Quote] From your own earlier message 1794646762.896000 in this conversation:\n" +
             "> 根因找到了。不是 Remotion 渲染慢，是 **Claude Code 的 Bash 工具把后台进程 stdout 管道握住了 12 分钟**。\n" +
@@ -829,9 +838,35 @@ test("codex_exec_wrappers_and_multi_runtime_tools_are_unwrapped_and_labeled", ()
     cx([], [], []),
   );
   const rec = withQuoteAndCard.items[0].body.content;
-  assert.equal(rec.note, null, "<card-state> tag must not leak as a still.fail reminder note");
+  assert.equal(rec.note, null, "<card-state> and [Delivered at ...] must not leak as a still.fail reminder note");
   assert.equal(
     rec.messages[0].text,
     "> 根因找到了。不是 Remotion 渲染慢，是 **Claude Code 的 Bash 工具把后台进程 stdout 管道握住了 12 分钟**。 …\n\n那现在怎么修？\n[附件: shot.png]",
   );
+
+  // 7. Turn-state marks preserve full multi-line / >200-char reasons uncut so the UI can fold to one line and expand the whole text
+  const longDoneReason =
+    "已完成全部执行历史条目的展开收起统一与对齐修复：\n" +
+    "1. 发送消息与收到消息超过 3 行默认折叠，展开与收起按钮固定在标题右侧原位不跳动，收起态保留三行完整预览不裁半行；\n" +
+    "2. 结束、等待人工与等待中状态说明保留完整原因不再在 200 字处硬截断，单行放不下时折叠为单行省略并支持点开在下方浅底圆角框查看全文；\n" +
+    "3. 全部行首图标、行内平台小图标与右侧箭头统一锁在 20pt 首行文字中线上，单行与折行均严格居中对齐（commit 82f108a5，测试版 0.1.9450 已发版并在大屏与小屏实测验证通过）。";
+  assert.ok(longDoneReason.length > 200);
+  const withLongMark = presentHistory(
+    {
+      timeline: [
+        { kind: "user", text: '<message via="web" thread="CHAT/1" from="Ada (ada@x)" ts="1.0">check</message>' },
+        {
+          kind: "tool_call",
+          tool: "mcp__stillfail__chat_state",
+          callId: "st1",
+          text: JSON.stringify({ kind: "all_done", done: longDoneReason }),
+        },
+        { kind: "tool_result", callId: "st1", ok: true, text: "Recorded state all_done." },
+      ],
+    },
+    cx([], [], []),
+  );
+  assert.equal(withLongMark.items[1].body.kind, "mark");
+  assert.equal(withLongMark.items[1].body.content.ends, "done");
+  assert.ok(withLongMark.items[1].body.content.text.endsWith(`：${longDoneReason}`), "full mark reason must be preserved uncut");
 });

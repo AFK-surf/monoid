@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
-import { compactStart } from './compact.mjs';
+import { compactStart, hasStartSection } from './compact.mjs';
 const started = performance.now();
 function mark(stage) {
   if (process.env.MBUI_WASM_TRACE === '1') {
@@ -57,7 +57,8 @@ const strings = [process.env.MBUI_FIXTURE ?? '', process.env.MBUI_LOCALE ?? '', 
   process.env.MBUI_FAILED ?? '', process.env.MBUI_FAILED_WHY ?? '', process.env.MBUI_SAID ?? '',
   process.env.MBUI_UPDATE ?? '', process.env.MBUI_FILM_AUTOFILL ?? '',
   process.env.MBUI_CORE_MS ?? '', process.env.MBUI_UPDATES_MS ?? '',
-  process.env.MBUI_FIX_PACE ?? '', process.env.MBUI_FIX_CORE ?? '', fixtureJson].map(s => Array.from(s, c => c.codePointAt(0)));
+  process.env.MBUI_FIX_PACE ?? '', process.env.MBUI_FIX_CORE ?? '', fixtureJson, process.env.MBUI_OPEN_WHOLE ?? '',
+  process.env.MBUI_FILM_LOCAL_FONTS ?? '', process.env.MBUI_CHAT_PAGE ?? ''].map(s => Array.from(s, c => c.codePointAt(0)));
 const numbers = [size[0], size[1], scale, platform, dark, at, fps, max, frame, fontScale, inset, corner, nav, cornersKept];
 let core, scratch = [], pixels;
 function text() {
@@ -191,7 +192,7 @@ const imports = { probe, film, mbhost, __moonbit_fs_unstable: fsUnstable, __moon
 } } };
 const source = fs.readFileSync(path.join(directory, 'scene.wasm'));
 mark('read');
-if (!WebAssembly.validate(source)) throw new Error('invalid source Wasm module');
+// V8's WebAssembly.validate rejects a start function past 50,000 locals before compactStart folds them.
 const wasm = compactStart(source);
 if (!WebAssembly.validate(wasm)) throw new Error('invalid compacted Wasm module');
 mark('compact');
@@ -199,6 +200,16 @@ const module = await WebAssembly.compile(wasm);
 mark('compile');
 core = new WebAssembly.Instance(module, imports).exports;
 mark('instantiate');
+// moonc v0.10.21 writes no start section: the packages' initializers run only when its exported `_start` is called
+// (compact.mjs). Without it every package-level value is unset as the film or the scene is drawn.
+if (!hasStartSection(wasm) && typeof core._start === 'function') {
+  try {
+    core._start();
+  } catch (e) {
+    if (!(e instanceof Exit) || e.code !== 0) throw e;
+  }
+  mark('start');
+}
 if (filming) {
   let code = 1;
   try {

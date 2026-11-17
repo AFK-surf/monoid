@@ -5,8 +5,8 @@ import { TestClock } from "effect/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Roots } from "../src/read/machine.ts";
-import { CommandMissing } from "../src/agents/runner.ts";
+import type { Roots } from "./reference/machine.ts";
+import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 import { type ChatMessage, type ChatSurface, type InboundFile, type InboundMessage, NOTICE_MARK, type ThreadRef } from "../src/sessions/chat.ts";
 import { type HubConfig, hubConfig } from "../src/sessions/config.ts";
@@ -16,7 +16,7 @@ import { answerFiles } from "../src/slack/surface.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
 import { letterMessage } from "../src/store/rows.ts";
-import { CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
 import { actorsBusy } from "../src/sessions/mb-actor.ts";
 
 type Json = any;
@@ -223,6 +223,8 @@ export class FakeDriver implements AgentDriver {
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
+  /// What resuming a runtime session fails with the next time it is asked (once), as the network or a borrowing does.
+  resumeFailsOnce = new Map<string, Error>();
   /// Why every process it is asked to start does not (like a borrowed login its host did not lend).
   refuses: string | null = null;
   /// Its command is not on PATH: every start fails as the runner says it (not installed).
@@ -232,6 +234,11 @@ export class FakeDriver implements AgentDriver {
   shutdowns = 0;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
+  /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
+  /// its runtime's (hub.ts `ownsRunner`).
+  ownedRunners?: () => ReadonlySet<string>;
+  /// What it ends of what it keeps idle, the machine short of memory, where a test has it (agents/runtime.ts `evictIdle`).
+  evictIdle?: () => Promise<number>;
 
   constructor(kind: "claude" | "codex") {
     this.kind = kind;
@@ -251,6 +258,11 @@ export class FakeDriver implements AgentDriver {
     if (this.missing) throw new CommandMissing(this.kind);
     if (this.refuses !== null) throw new Error(this.refuses);
     if (options.resume !== undefined && this.unresumable.has(options.resume)) throw new Error("no such session");
+    const once = options.resume === undefined ? undefined : this.resumeFailsOnce.get(options.resume);
+    if (once !== undefined) {
+      this.resumeFailsOnce.delete(options.resume!);
+      throw once;
+    }
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
     this.sessions.push(session);
     return session;
@@ -390,7 +402,7 @@ export class Rig {
   workspaces: string[] | undefined;
 
   /// A hub over this rig's store and config (another station's, after a restart: given its own drivers).
-  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[] }) {
+  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown> }) {
     const hub = new Hub({
       config: () => this.config,
       store: this.store,
@@ -402,6 +414,7 @@ export class Rig {
       workspaces: this.workspaces ? () => this.workspaces! : undefined,
       station: () => this.place.station,
       runners: () => o.runners ?? [],
+      endRunner: o.endRunner,
       cold: o.cold,
       clock: this.clock,
       machineRoots: () => this.roots ?? { claude: join(this.dir, "no-machine/claude"), codex: join(this.dir, "no-machine/codex") },
@@ -412,6 +425,13 @@ export class Rig {
     });
     // Its sessions' processes are fakes that load no skills and are told no memory: a hub's tests open them at once
     // (tests of the skills and the memory read them themselves: hub-parts, multi-workspace-agents, instructions).
+    // (each hub made is shut as the rig closes, the ones a test put another in place of too: a hub's program of the
+    // sessions, `stillfail-reader --sessions`, was left running after its file's tests, which setup-env.mjs found once
+    // it looked on Linux, 2026-11-17; a hub shut down by the test before is shut once)
+    const shutdown = hub.shutdown.bind(hub);
+    let shut: Promise<void> | undefined;
+    hub.shutdown = () => (shut ??= shutdown());
+    this.hubs.push(hub);
     hub.skillsLinker = async () => "";
     const cc = new CcIndexPreparation();
     hub.prepareCcSessions = async (sessions) => {
@@ -469,8 +489,11 @@ export class Rig {
       await settle();
     } while (![...this.hub.actors.values()].every((a) => a.settled()));
   }
+  /// Every hub made over this rig, `hub` the last put in its place.
+  private hubs: Hub[] = [];
   async close() {
     await this.hub.shutdown();
+    for (const hub of this.hubs) await hub.shutdown();
     while (this.background.size > 0) await Promise.allSettled([...this.background]);
     this.store.close();
     rmSync(this.dir, { recursive: true, force: true });

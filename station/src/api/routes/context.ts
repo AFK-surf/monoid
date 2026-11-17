@@ -37,7 +37,7 @@ export const routes = ({ config, changed }: ContextDeps): Route[] => [
       if (on === undefined && above === undefined) return error(400, "no context setting given");
       if (on !== undefined && typeof on !== "boolean") return error(400, "afreshWhenCold is true or false");
       if (above !== undefined && (typeof above !== "number" || !Number.isFinite(above) || above < 0)) return error(400, "afreshAbove is a nonnegative amount in USD");
-      config.update((raw) => {
+      await config.updateSoon((raw) => {
         if (on !== undefined) {
           if (on) raw.afreshWhenCold = true;
           else delete raw.afreshWhenCold;

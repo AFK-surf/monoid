@@ -4,13 +4,14 @@
 import { execFileSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { mkdirSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from "node:fs";
+import { rm } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterEach } from "node:test";
 import { PeerBus, bytesOf, withBytes } from "../src/mesh/bus.ts";
 import { WorkspaceConnects } from "../src/connects/workspace.ts";
 import { Fibers } from "../src/ops/fibers.ts";
-import { gather, place } from "../src/replica/carry-worker.ts";
-import type { CarriedJob } from "../src/replica/carry-worker.ts";
+import { type CarriedJob, gatherSoon, placeSoon, sizesSoon } from "../src/replica/carry.ts";
+import { flushesOnce } from "../src/replica/sending.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
 import { Moves } from "../src/move/station.ts";
@@ -56,13 +57,31 @@ export type Station = {
   placing?: (index: string) => Promise<void>;
   /// Called as a placing here ended.
   placed?: () => void;
+  /// What a placing here took written out (sending.ts `flushOnce`), each its directory: none, nothing done.
+  flushing?: (dir: string) => Promise<void>;
+  /// When its machine started (handover.ts `boot`; none: 0).
+  boot?: number;
+  /// Waited for before a gathering here (each, the room's scratch), before git runs here (each command), before a drop
+  /// here takes its files out, and before a clone here is removed: work that takes long.
+  gathering?: (scratch: string) => Promise<void>;
+  /// The most bytes one `handover.lacking` hashes here (none: the station's own).
+  hashMost?: number;
+  /// The most files and bytes of a pack sent from here (none: the station's own).
+  packMost?: { files?: number; bytes?: number };
+  /// What it answers a request, changed on its way back (a test's: a station from before).
+  answered?: (request: Json, answer: Json) => Json;
+  gitting?: (args: string[]) => Promise<void>;
+  dropping?: (id: string) => Promise<void>;
+  removing?: (dir: string) => Promise<void>;
   /// Its routes of move/routes.ts, as a device asks them.
   ask(method: string, path: string, body: Json, role?: string, query?: [string, string][]): Promise<{ status: number; body: Json }>;
-  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; fails: Set<string>; onFail: ((step: string) => void) | null;
+  jobs: (CarriedJob & { id: string })[]; started: string[]; free: number; total?: number; sized: string[]; fails: Set<string>; onFail: ((step: string) => void | Promise<void>) | null;
+  /// The jobs' rows read so far, as the store reads them (live.ts `up`): a session's by its index, a workspace's whole.
+  jobsRead: number;
   /// Its own connects' surfaces, by their id here; git run as the station runs it.
   local: Map<string, Json>;
   git: (dir: string, args: string[]) => Promise<string>;
-  make(): Moves;
+  make(previous?: Promise<void>): Moves;
 };
 
 const open: (() => Promise<void>)[] = [];
@@ -70,22 +89,51 @@ afterEach(async () => {
   for (const c of open.splice(0).reverse()) await c().catch(() => {});
 });
 
+/// How long a request's answer is waited for between stations (mesh/peer.ts ANSWER_MS).
+export const ANSWER_MS = 30_000;
+
 /// Stations of workspace "ws" (each its own Rig, its connects and its moves); A has the Slack connects cl and gpt.
-export function world(ids: string[] = [A, B]) {
+/// `answerMs`: each request between them fails as mesh/peer.ts fails it when its answer did not come within ANSWER_MS
+/// on the test's clock (the station asked goes on with it).
+export function world(ids: string[] = [A, B], o: { answerMs?: boolean; packMost?: { files?: number; bytes?: number } } = {}) {
   const t = testClock();
   const stations = new Map<string, Station>();
   const roster = ids.map((id) => ({ id, name: id.slice(0, 1).toUpperCase() }));
   /// A request on its way, changed (a test's: a hash refused).
   let tamper: ((to: string, request: Json) => Json) | null = null;
+  /// After a request was taken there, whether its answer is lost on the way back (a test's: what it fails with then).
+  let lose: ((to: string, request: Json) => Error | null) | null = null;
+  /// Each request asked between the stations, as it went and as it was answered (on the test's clock): what a test of
+  /// the answers' bounds reads.
+  const heard: { from: string; to: string; method: string; name?: string; at: number; answered: number | null; failed: string | null }[] = [];
   const make = (id: string): Station => {
     const rig = new Rig({ place: { workspace: WS, station: id }, workspaces: [WS], fileStore: true, clock: t.clock });
-    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, fails: new Set<string>(), onFail: null } as unknown as Station;
+    const st = { id, rig, up: true, on: true, holds: 0, jobs: [], started: [], free: 1e15, sized: [], fails: new Set<string>(), onFail: null, jobsRead: 0, ...(o.packMost !== undefined ? { packMost: o.packMost } : {}) } as unknown as Station;
     st.bus = new PeerBus({ sleep: async () => {} });
     st.bus.attach(async (to, ws, request) => {
       const there = stations.get(to);
       if (there === undefined || !there.up || !st.up) throw new Error("station unreachable");
       const sent = tamper === null ? request : tamper(to, request);
-      return across(await there.bus.handle(ws ?? WS, id, across(sent)));
+      const seen = { from: id, to, method: String(request?.method ?? ""), ...(typeof request?.name === "string" ? { name: request.name as string } : {}), at: st.fibers.now(), answered: null as number | null, failed: null as string | null };
+      heard.push(seen);
+      const handled = there.bus.handle(ws ?? WS, id, across(sent));
+      let late = () => {};
+      const deadline = o.answerMs !== true ? null : new Promise<never>((_, reject) => (late = st.fibers.after(ANSWER_MS, () => reject(new Error("peer request timed out; execution may have happened — query the same task key"))))); // timer: a deadline (an answer's, as mesh/peer.ts waits for it)
+      let answer: Json;
+      try {
+        answer = across(await (deadline === null ? handled : Promise.race([handled, deadline])));
+        if (there.answered !== undefined) answer = there.answered(sent, answer);
+        seen.answered = st.fibers.now();
+      } catch (e) {
+        seen.failed = (e as Error).message;
+        handled.catch(() => {});
+        throw e;
+      } finally {
+        late();
+      }
+      const lost = lose === null ? null : lose(to, sent);
+      if (lost !== null) throw lost;
+      return answer;
     });
     const tag = id.slice(0, 1);
     rig.raw.profiles = id === A
@@ -102,15 +150,16 @@ export function world(ids: string[] = [A, B]) {
     Object.defineProperty(rig, "config", { get: config, configurable: true });
     rig.hub = rig.newHub({ chats: (c) => (rig.raw.connects.some((e: Json) => e.id === c) ? st.local.get(c) : undefined) ?? st.connects.remote.surface(c) });
     st.connects = new WorkspaceConnects({
-      data: rig.dir, hub: () => rig.hub, store: rig.store, config: { raw: () => rig.raw, update: (f) => f(rig.raw) }, bus: st.bus,
+      data: rig.dir, hub: () => rig.hub, store: rig.store, config: { raw: () => rig.raw, updateSoon: async (f) => f(rig.raw) }, bus: st.bus,
       here: () => id, home: () => WS, stations: (ws) => (ws === WS ? roster : []), names: () => null,
     });
     st.fibers = new Fibers("move", t.clock);
     st.admin = new Admin({ names: new Map(), read: async () => "{}" } as Json, { store: rig.store, agents: () => ({ hub: rig.hub }) as Json, clock: t.clock });
-    st.make = () => {
+    st.make = (previous?: Promise<void>) => {
       const wc = st.connects;
       const hub = rig.hub;
       const moves = new Moves({
+        previous,
         data: rig.dir, store: rig.store, fibers: st.fibers, here: () => id, home: () => WS, roster: () => roster,
         ask: (s, r) => st.bus.ask(s, r),
         hub: { holdChat: (k, w, n) => hub.holdChat(k, w, n), releaseChat: (k) => hub.releaseChat(k), wakeChat: (k) => hub.wakeChat(k), busy: (k) => hub.busy(k), turnEnded: (k) => hub.turnEnded(k), drained: (c, ch, ts) => hub.drained(c, ch, ts), wsOf: (k) => hub.wsOf(k) },
@@ -119,7 +168,11 @@ export function world(ids: string[] = [A, B]) {
           own: () => wc.ownIds(), ownIn: (ws) => wc.ownKinds(ws), runsOn: (c) => wc.runsOn(c), move: (c, to, awaiting) => wc.move(c, to, null, undefined, undefined, awaiting ?? []), movedAway: (ws) => wc.movedAway(ws), arrived: (keys) => wc.arrived(keys),
         },
         jobs: {
-          up: (keys, ws) => st.jobs.filter((j) => (keys === null ? ws === undefined || hub.ofWorkspace(j.session, ws) : keys.includes(j.session))),
+          up: (keys, ws) => {
+            const up = st.jobs.filter((j) => (keys === null ? ws === undefined || hub.ofWorkspace(j.session, ws) : keys.includes(j.session)));
+            st.jobsRead += keys === null ? st.jobs.length : up.length;
+            return up;
+          },
           stop: async (jid) => void (st.jobs = st.jobs.filter((j) => j.id !== jid)),
           start: (j) => {
             st.jobs.push({ ...j, id: `${tag}-job-${st.started.length}` });
@@ -140,26 +193,45 @@ export function world(ids: string[] = [A, B]) {
         sessionsIn: (ws, after, limit) => rig.store.sessionPageOfWs(ws === WS ? null : ws, WS, after, limit),
         reposDir: join(rig.dir, "repos"),
         clonesElsewhere: async () => st.elsewhere ?? [],
-        room: async () => ({ free: st.free }),
+        room: async () => ({ free: st.free, total: st.total ?? null }),
+        // (sized as a move would gather them, at once; each session sized here named, the other side's by its places)
+        sizes: async (keys, sizing) => {
+          st.sized.push(...keys, ...(sizing.places ?? []).map((p) => `there:${p.key}`));
+          return sizesSoon(rig.dir, join(rig.dir, "stillfail.db"), keys, sizing);
+        },
         hasGit: async () => true,
+        // (the machine's own flush is sending-flush.test.ts's: here only what a test says)
+        flush: flushesOnce ? (dir) => (st.flushing ?? (async () => {}))(dir) : null,
+        boot: () => st.boot ?? 0,
         lackMost: 50,
+        hashMost: st.hashMost,
+        packMost: st.packMost,
+        remove: async (dir) => {
+          await st.removing?.(dir);
+          await rm(dir, { recursive: true, force: true });
+        },
         work: {
-          gather: async (dataDir, db, ws, home, scratch, _signal, agent, keys) => gather(dataDir, db, ws, home, scratch, agent ?? null, keys ?? null),
+          gather: async (...args) => {
+            await st.gathering?.(args[4]);
+            return gatherSoon(...args);
+          },
+          drop: async (hid) => void (await st.dropping?.(hid)),
           place: async (dataDir, index, from, made, aside, placed, projects) => {
             await st.placing?.(index);
             try {
-              return place(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
+              return await placeSoon(dataDir, index, from, made ?? null, aside ?? null, placed ?? null, projects ?? false);
             } finally {
               st.placed?.();
             }
           },
         },
         fail: (step) => {
-          st.onFail?.(step);
+          const waited = st.onFail?.(step);
           if (st.fails.delete(step)) throw new Error(`the test failed ${step}`);
+          return waited;
         },
         git: st.git,
-        config: { raw: () => rig.raw, update: (f) => (st.onUpdate?.(), f(rig.raw)) },
+        config: { raw: () => rig.raw, updateSoon: async (f) => (st.onUpdate?.(), f(rig.raw)) },
         moveOn: () => st.on,
         planPage: st.page,
         hold: () => {
@@ -180,7 +252,7 @@ export function world(ids: string[] = [A, B]) {
       st.bus.on("move.", moves.answers(() => true));
       return moves;
     };
-    st.git = async (dir: string, args: string[]) => execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim();
+    st.git = async (dir: string, args: string[]) => (await st.gitting?.(args), execFileSync("git", ["-C", dir, ...args], { encoding: "utf8", env: gitEnv(rig.dir), stdio: ["ignore", "pipe", "pipe"] }).trim());
     st.moves = st.make();
     const routes = moveRoutes({
       scheduler: { busy: () => st.moves.scheduler.busy(), last: (ws: string) => st.moves.scheduler.last(ws), plan: (ws: string, to: string) => st.moves.scheduler.plan(ws, to), planShown: (ws: string, to: string) => st.moves.scheduler.planShown(ws, to), held: (ws: string, to: string) => st.moves.scheduler.held(ws, to), stopped: () => st.moves.scheduler.stopped(), move: (...a: Parameters<Moves["scheduler"]["move"]>) => st.moves.scheduler.move(...a), back: (...a: Parameters<Moves["scheduler"]["back"]>) => st.moves.scheduler.back(...a), stopTurn: (by: string | null) => st.moves.scheduler.stopTurn(by), stopping: () => st.moves.scheduler.stopping(), current: () => st.moves.scheduler.current() } as Json,
@@ -218,7 +290,7 @@ export function world(ids: string[] = [A, B]) {
       await s.rig.quiet();
     }
   };
-  return { t, stations, get: (id: string) => stations.get(id)!, quiet, tamper: (f: typeof tamper) => void (tamper = f) };
+  return { t, stations, get: (id: string) => stations.get(id)!, quiet, heard, tamper: (f: typeof tamper) => void (tamper = f), lose: (f: typeof lose) => void (lose = f) };
 }
 
 /// The running turn of a station's session ended with a state, as its agent would.
@@ -234,7 +306,7 @@ export async function endTurn(st: Station, key: string, driver: "claude" | "code
 
 /// A still.fail chat of A's with a turn behind it (its runtime session `claude-1` on account cc) and a file of its own.
 export async function stillfailChat(st: Station) {
-  const [key, thread] = newSession(st.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
+  const [key, thread] = await newSession(st.rig.hub, { runtime: "claude", profile: "cc", createdBy: "p@x" });
   say(st.rig.hub, thread.id, "p@x", "look at the build");
   await st.rig.quiet();
   await endTurn(st, key);
