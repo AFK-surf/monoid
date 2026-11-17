@@ -275,6 +275,8 @@
   "core-logic.jobs.long.services": "长时间运行的网页服务",
   "core-logic.jobs.long.shutdown": "关闭",
   "core-logic.jobs.long.simulators": "长时间开着的模拟器",
+  "core-logic.jobs.long.terminals": "长时间开着的终端",
+  "core-logic.jobs.long.endTerminal": "结束",
   "core-logic.jobs.long.views": "长时间开着的远程连接",
   "core-logic.jobs.no_notice": "暂无通知 · 最后输出 {ago}",
   "core-logic.jobs.notices": "{n} 条通知",

@@ -109,7 +109,7 @@ pub fn pick_node(
         s.alpha(By(words_in)) |> ignore
         search.val = Some(
           input_node(s, line, placeholder_by=fn() { t("common.search") }, small=true, submitted=fn(_) {
-            match @signals.untracked(found).get(0) {
+            match @signals.untracked(found).iter().find_first(fn(x) { !x.disabled }) {
               Some(x) => go(x.key)
               None => ()
             }
@@ -200,10 +200,13 @@ fn pick_row_node(
     .gap(Is(gap))
     .radius(Is(small_panel_inner(r_menu)))
     // det-ok(raw-hover-ground): roving radio picker bar moves at once across items without trailing fade
-    .ground(By(fn() { if r.pointed() || (r.focused() && r.focus_shown()) { library_theme().p.hover } else { 0L } }))
-    .presses(Is(true))
-    .focusable(Is(true))
-    .on_press(go)
+    .ground(By(fn() {
+      if !x.disabled && (r.pointed() || (r.focused() && r.focus_shown())) { library_theme().p.hover } else { 0L }
+    }))
+    // (one not to be chosen: faint, taking no press and no focus, its note saying why)
+    .presses(Is(!x.disabled))
+    .focusable(Is(!x.disabled))
+    .on_press(fn() { if !x.disabled { go() } })
     .says(Is(Some(@view.said(MenuItemRadio, label=said.join(" "), check=if on { On } else { Off }))))
     |> ignore
     let first_line = fn(into : @view.View) {
@@ -222,7 +225,15 @@ fn pick_row_node(
         .grow(Is(1.0))
         // (20 a line, as menu_item sets its words)
         .words(Is(x.label), look={ ..toast_words_look(Ui, L5, if on { 500 } else { 400 }, false), line: pick_row_line })
-        .ink(By(fn() { if on { library_theme().p.accent_text } else { library_theme().p.text } }))
+        .ink(By(fn() {
+          if x.disabled {
+            @ui.tree_theme().color(Subtle)
+          } else if on {
+            library_theme().p.accent_text
+          } else {
+            library_theme().p.text
+          }
+        }))
         |> ignore
       })
       |> ignore

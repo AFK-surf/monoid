@@ -151,7 +151,8 @@ export type AccountsDeps = {
   /// what the overview says of each profile's sharing.
   shared?: {
     status(profile: Profile): Promise<{ check: Json; quota: Json }>;
-    view(profile: Json): Json | null;
+    /// `workspace`: the viewer's, whose stations alone it names (null: all).
+    view(profile: Json, workspace: string | null): Json | null;
     lendCodex?(profile: Profile, rejected: boolean): Promise<number>;
     /// A borrowed Antigravity CLI subscription's sign-in written with what its host lends now.
     lendAgy?(profile: Profile, rejected: boolean): Promise<number>;
@@ -1860,7 +1861,7 @@ export class Accounts {
         login: this.logins.get(p.id),
         quota: this.quotas.get(p.id) ?? null,
         // Shared with the workspace's other stations, or another station's (absent: neither; old clients ignore it).
-        share: this.deps.shared?.view(p) ?? null,
+        share: this.deps.shared?.view(p, viewer?.workspace ?? null) ?? null,
         // Whether its login can be lent to the workspace's other stations (share/index.ts shareRefusal): its page says
         // so where it cannot, rather than a switch that is refused.
         shareable: shareRefusal(p) === null,

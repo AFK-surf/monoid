@@ -55,6 +55,12 @@ fn tab_let_go(src : Source, r : ChatRef, tab : String) -> Unit {
     @sfbase.tab_full_close()
   }
   panel_screen_pages.remove(tabs_key(r) + "/" + tab)
+  panel_terminal_pages.remove(tabs_key(r) + "/" + tab)
+  match station_tab(tab) {
+    Some(("screen", station, screen)) if !@sfpages.farview_screen(screen) => @sfpages.screen_left(src, station, screen)
+    Some(("terminal", station, terminal)) => @sfpages.terminal_left(station, terminal)
+    _ => ()
+  }
   // (a file in the viewer: what it read)
   @sfbase.tab_viewer_let_go(tabs_key(r), tab)
   match tab_job(tab) {

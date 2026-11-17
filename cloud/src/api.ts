@@ -290,8 +290,12 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
   if (path === "/v1/me" && method === "GET") {
     // (`operator`: whether `/v1/admin/me` would answer this same request (on the console's host, index.ts), so that a device reads the operator's lists only
     // where it is one: every device of everyone asked it at every open of its events socket, the locks' end to end,
-    // 2026-11-15)
-    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator: adminOrigins(env).includes(new URL(request.url).origin) && (await consoleAdmin(request, env, claims.email)) }));
+    // 2026-11-15). `console`: asked on the console's host, which serves no workspace's calls (index.ts CONSOLE_CALLS).
+    // An operator is noted, to be told when the console's lists change (directory.ts `noteOperator`).
+    const onConsole = adminOrigins(env).includes(new URL(request.url).origin);
+    const operator = onConsole && (await consoleAdmin(request, env, claims.email));
+    if (operator) await dir.noteOperator(sub, claims.email);
+    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator, ...(onConsole ? { console: true as const } : {}) }));
   }
   // The person's own lock, which the cloud keeps and carries but does not decide (personal-lock.ts).
   if (path === "/v1/me/personal-lock") {
@@ -507,6 +511,7 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     return reply({ error: "invalid_request" }, 400);
   }
   const dir = env.DIRECTORY.getByName("primary");
+  await dir.noteOperator(claims.sub, claims.email);
   if (path === "/v1/admin/me" && method === "GET") return reply({ email: claims.email });
   // With the emails given rights before anyone signed in with them (`pending`; a console from before reads no such list).
   if (path === "/v1/admin/users" && method === "GET") return directory(async () => ({ users: await dir.adminUsers(), pending: await dir.adminPending() }));
@@ -529,11 +534,12 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
     return directory(() => dir.setMayCreate(mayCreate[1]!, input.on as boolean));
   }
-  // Blocks an account (signs it out everywhere) or lets it back: { on: boolean }. Not the admin's own.
+  // Blocks an account (signs it out everywhere) or lets it back: { on: boolean }. Not the operator's own, nor ADMIN_EMAIL's
+  // (with Access, others of the team operate the console too).
   const block = /^\/v1\/admin\/users\/([A-Za-z0-9_-]{1,128})\/block$/.exec(path);
   if (block && method === "POST") {
     if (typeof input.on !== "boolean") return reply({ error: "invalid_request" }, 400);
-    if (block[1] === claims.sub) return reply({ error: "forbidden" }, 403);
+    if (block[1] === claims.sub || (await dir.isAdminAccount(block[1]!))) return reply({ error: "forbidden" }, 403);
     return blockAccount(env, block[1]!, input.on as boolean);
   }
   if (path === "/v1/admin/workspaces" && method === "GET") return directory(async () => ({ workspaces: await dir.adminWorkspaces() }));
