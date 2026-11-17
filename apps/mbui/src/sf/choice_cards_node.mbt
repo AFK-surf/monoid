@@ -1,4 +1,4 @@
-// A choice of a few ways of showing one thing, as cards side by side (a panel's 列表 | 看板 at its top): each an icon
+// A choice of a few ways of showing one thing, as cards side by side (列表 | 看板, say, at a panel's top): each an icon
 // over its one line of words in its middle, as wide as the others, the one chosen lifted (the theme's lifted, a
 // hairline round it and its shadow, as a segmented choice's thumb), the others quiet on a faint ground that the hand
 // warms; each chosen by a press, the arrows along them, a screen reader's Activate, read out as a radio of a group

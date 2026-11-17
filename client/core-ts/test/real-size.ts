@@ -829,9 +829,10 @@ function usageOf(now: number, station: number): J {
 }
 
 /// A station's jobs (its `GET /jobs`): the chat's agent's dev server and its watch of the PR's CI, a Slack chat's agent's
-/// watch of a deploy, and the rest a chat each; a soak that has run a day telling how it goes (`stillfail-job notify`).
+/// watch of a deploy, and the rest a chat each, one of them another member's (its logs tailed: jobs.ts `longJobs`'
+/// `otherGroups`); a soak that has run a day telling how it goes (`stillfail-job notify`).
 function jobsOf(now: number, station: number): J[] {
-  const sessions = [0, 0, 6, 9, 12, 15, 1];
+  const sessions = [0, 0, 6, 9, 13, 15, 1];
   return Array.from({ length: 7 }, (_, j) => ({
     id: `job-${STATIONS[station]!.id}-${j}`, session: keyOf(station, sessions[j]!), name: pick(["dev server", "watch CI #5244", "storybook", "e2e soak", "tail prod logs", "benchmark", "watch deploy #812"], j),
     state: j === 5 ? "exited" : "running", port: j === 0 ? 5173 : j === 2 ? 6006 : null, exitCode: j === 5 ? 0 : null, startedAt: now - (j + 1) * 5 * HOUR, endedAt: j === 5 ? now - HOUR : null,
@@ -840,6 +841,8 @@ function jobsOf(now: number, station: number): J[] {
     // (the soak tells each round, `stillfail-job notify`: as many as the station shows, station/src/jobs/jobs.ts NOTICES_SHOWN)
     notices: j === 1
       ? [{ at: now - 20 * MIN, text: "CI 绿了：check-mbui native 5 分 12 秒" }]
+      : j === 4
+      ? [{ at: now - 2 * HOUR, text: "错误率回到 0.1% 以下" }]
       : j === 3
       ? Array.from({ length: 20 }, (_, r) => ({ at: now - (20 - r) * 45 * MIN, text: r % 6 === 5 ? `第 ${393 + r} 轮：1 个失败，chat-scroll 第 3 次重试后通过` : `第 ${393 + r} 轮：全部通过（平均 3 分 ${String(8 + (r % 5)).padStart(2, "0")} 秒）` }))
       : [],

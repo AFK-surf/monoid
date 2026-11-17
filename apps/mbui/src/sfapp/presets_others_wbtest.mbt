@@ -48,13 +48,20 @@ test "其他成员的预设 asks for them at the press and opens once every stat
     choose(t, "其他成员的预设")
     t.run_for(@ui.move_most_ms)
     assert_true(asked.contains("otherPresets"), msg="\{Repr(asked)}")
-    // (still asked: not opened on what has come so far)
+    // (still asked: not opened on what has come so far, the menu it was chosen in held as it was meanwhile)
     assert_false(shows_start(t, "线上排障") || shows(t, "其他成员还没有预设"), msg=runs(t))
+    assert_true(shows(t, "web-app + backend") && shows(t, "其他成员的预设"), msg="wide \{wide}: the menu let go of as it waits: \{runs(t)}")
     @sffixture.fix_others_say()
     t.run_for(@ui.move_most_ms)
     assert_true(shows(t, "线上排障 · 林夏") && shows(t, "文档站 · Mia Chen"), msg="wide \{wide}: \{runs(t)}")
     // (one's own not among them)
     assert_false(shows(t, "web-app + backend"), msg=runs(t))
+    // (on a sheet a level of the menu it was chosen in, as one answered already is: back is that one again)
+    if !wide {
+      t.back()
+      t.run_for(@ui.move_most_ms)
+      assert_true(shows(t, "web-app + backend") && shows(t, "其他成员的预设"), msg=runs(t))
+    }
   }
 }
 

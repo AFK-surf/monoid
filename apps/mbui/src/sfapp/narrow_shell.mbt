@@ -586,6 +586,8 @@ fn narrow_made_as(
                   stint~,
                   shows~,
                   cover=fn() { bar_foot_live(col, r) },
+                  // (and what it comes to, its second row measured or pressed open: where the list was put, under it)
+                  cover_to=fn() { bar_foot_coming(r) },
                   room=list_room,
                   foot=list_foot,
                   composer~,

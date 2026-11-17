@@ -390,6 +390,18 @@ fn file_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w : 
 }
 
 ///|
+/// The message a file is of (`by`'s time: the message's own files, not a quote's picture, an outbox's or one sent
+/// elsewhere, which say none), for what it offers of itself in the file's menu after the file's own (its link copied
+/// and 多选 its turn shared: @sfbase.message_items; as nodes, message_items_after): its link, its thread and its seq,
+/// where it is a message of the chat's list with a thread (message_row's `share`); none otherwise. Read as the menu
+/// opens.
+fn file_message_of(here : MessageHere, by : (String, String, String)?) -> (String, Double, Double)? {
+  guard here.list is Some(_) && here.view.thread is Some(thread) && by is Some((_, _, ts)) && ts != "" else { return None }
+  guard here.view.messages.iter().find_first(fn(m) { m.ts == ts }) is Some(m) else { return None }
+  Some((@sfbase.message_link(here.station, here.session, m.seq), thread, m.seq))
+}
+
+///|
 /// Its message's file `a` quoted into the chat's draft, where it is a message's (`by`: whose, their role, its ts).
 fn quote_of(here : MessageHere, a : Attachment, owner : String, by : (String, String, String)?) -> (() -> Unit)? {
   by.map(fn(b) {
@@ -465,7 +477,12 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   })
   let thumb = @sfbase.thumb_place(here.station + "/" + owner + "/" + a.path, here.station, here.session, at)
   let downloading = download_of(src, here.station, owner, stored_name(a.path))
-  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
+  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), after=fn() {
+    match file_message_of(here, by) {
+      Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
+      None => []
+    }
+  })
   // the picture covering the whole box; a letterboxed one's covering its own proportions centred in it, all it and
   // what it waits on take, the box's corners cutting it (imageBox.ts letterbox; any: its frame's, concentric with
   // what holds it where it is in a corner of that, a quote's card)
@@ -671,7 +688,12 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   }
   let more = file_options([beside_option(here, a, at), download_option(src, here, a, owner)])
   more.append(load)
-  file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~)
+  file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~, after=fn() {
+    match file_message_of(here, by) {
+      Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
+      None => []
+    }
+  })
   // (its name, which nothing over its picture says)
   @sf.tip(c, "msg-file/" + place + "/" + @sfbase.file_key(a), open, a.name, repeats=true)
   let (bw, bh, letterbox) = image_box(a, video_least)
@@ -747,7 +769,12 @@ fn card_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, by~ 
   let failed = text(dl, "state") == "failed"
   let place = @sfbase.thumb_occurrence(here.station, here.session, at)
   let key = "msg-card/" + place + "/" + @sfbase.file_key(a)
-  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
+  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]), after=fn() {
+    match file_message_of(here, by) {
+      Some((link, thread, seq)) => @sfbase.message_items(link, "", fn() { open_publish(src, here_ref(here), thread, picked=Some(seq)) })
+      None => []
+    }
+  })
   let id = text(dl, "id")
   @sf.file_card(
     c,

@@ -705,6 +705,7 @@ common.link.open
 common.login.confirmClaudeAction
 common.login.confirmClaudeBody
 common.login.confirmClaudeTitle
+common.login.confirmClaudeWarning
 common.more
 common.noMatch
 common.opening
@@ -848,6 +849,7 @@ web-main.chat.keep
 web-main.chat.keep.done
 web-main.chat.keep.what
 web-main.chat.linkCopied
+web-main.chat.messageGone
 web-main.chat.newMessages
 web-main.chat.notSent
 web-main.chat.offline
@@ -994,6 +996,7 @@ web-main.jobs.noneInChat
 web-main.jobs.noneNote
 web-main.jobs.notices
 web-main.jobs.output
+web-main.jobs.others
 web-main.jobs.services
 web-main.jobs.show
 web-main.jobs.stop
@@ -1169,6 +1172,7 @@ web-main.quota.unchecked
 web-main.quota.unknown
 web-main.quote.author
 web-main.quote.commentPlaceholder
+web-main.quote.gone
 web-main.quote.jump
 web-main.quote.remove
 web-main.rail.add
@@ -2857,6 +2861,8 @@ web-main.board.drop_start
 web-main.board.full
 web-main.board.close
 web-main.board.placeholder
+web-main.board.files_unavailable
+web-main.board.paste_image
 web-main.board.empty
 web-main.board.empty_draft
 web-main.board.pinned
@@ -2871,3 +2877,7 @@ web-main.board.lane.run
 web-main.board.lane.done
 web-main.board.lane.watch
 core-views.new_chat
+web-main.composer.filesLocked
+web-main.composer.filesOffline
+web-main.decisions.reply
+web-main.decisions.replyPlaceholder

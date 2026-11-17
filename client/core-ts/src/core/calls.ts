@@ -77,7 +77,7 @@ export type Call =
   /// How many of a chat's messages its page opens on at its end (views.ts `chatFirstRows`): the chat as its topic
   /// `chat` names it (its thread, or its agent's session), its rows.
   | { kind: "chatWindow"; station: string; thread: number | null; session: string | null; rows: number }
-  | { kind: "chatAround"; station: string; thread: number; seq: number }
+  | { kind: "chatAround"; station: string; thread: number; seq: number | null; ts: string | null }
   | { kind: "chatFind"; station: string; thread: number; query: string; bring: boolean }
   /// A chat's outline: the rest of the chat read onto the device; what it lists for words looked for.
   | { kind: "chatBring"; station: string; thread: number }
@@ -667,9 +667,12 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
       const p = read(params, [
         ["station", S, "req"],
         ["thread", "u64", "req"],
-        ["seq", "u64", "req"],
+        ["seq", "u64", "opt"],
+        ["ts", S, "opt"],
       ]);
-      return { kind: "chatAround", station: p.station as string, thread: p.thread as number, seq: p.seq as number };
+      // An entry by its number, or a message by its time (a quote's: it names the message it quotes so).
+      if (p.seq === null && (p.ts === null || p.ts === "")) throw CoreError.invalid(t("core-misc.params.missing", { field: "seq" }));
+      return { kind: "chatAround", station: p.station as string, thread: p.thread as number, seq: p.seq as number | null, ts: p.ts as string | null };
     }
     case "chat.find": {
       const p = read(params, [

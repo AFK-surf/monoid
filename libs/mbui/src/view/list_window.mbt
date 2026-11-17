@@ -4861,6 +4861,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         fs.set_inset_top(Auto)
         // (as tall as the room under the last block, on the grid: what the page builds in it at its top, as the head's)
         f.height(By(fn() { Some(foot_h.get()) })).shrink(Is(0.0)) |> ignore
+        // (what flies from a thing in it may be drawn under it: Scroll's foot_at)
+        let foot_at = f.at
+        s.foot_at = foot_at
+        f.owns(fn() { if s.foot_at == foot_at { s.foot_at = -1 } }) |> ignore
         // (what comes, goes or resizes in it goes in the list's one way, as what its blocks hold does, unless it is said
         // at once: Tree::come_group_join by Tree's list_feet)
         if !at_once && held_node.val >= 0 {

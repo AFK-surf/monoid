@@ -300,6 +300,14 @@ pub(all) struct Viewer {
   mut in_tree : Bool
   /// how many layers of the window's tree it has been drawn in (viewer_node): the last the one it is in
   mut tree_layers : Int
+  /// closed back into its thumbnail drawn by the window's tree (Viewer::shut): its picture's node let go of at once,
+  /// flown back by the tree (viewer_tree.mbt's image_layer, film_shared)
+  tree_back : @signals.Signal[Bool]
+  /// its picture flown by the window's tree, from a thumbnail of a chat's page made as nodes or back into it
+  /// (View::shared's `told`: Viewer::tree_way_told): its fade that flight's growing, its picture none of it
+  tree_way : @signals.Signal[Bool]
+  /// when that flight ends (the clock's ms), as it is told (Viewer::tree_way_told)
+  mut tree_way_end : Double
   /// the fingers on its stage by their ids (Drag's `finger`), where each is now; how fast the one moving it goes, by
   /// its events' own moments; what calls off the hold waited for (its picture's menu)
   fingers : Map[Int, (Double, Double)]
@@ -727,19 +735,13 @@ pub fn note_list(c : @ui.Ctx, node : Int, key : String, bar : Double, room : Dou
 /// list is laid out, noted so, before what it shows is pressed); what the graph follows of the flight is the viewer's
 /// own (Viewer::fly, its `flies`).
 fn Viewer::flies_from_page(self : Viewer) -> Int {
-  let id = self.thumb_id()
-  match pv_thumbs.get(id) {
+  match pv_thumbs.get(self.thumb_id()) {
     Some(l) =>
       match pv_lists.get(l.list) {
         Some((_, _, page)) => page
         None => 0
       }
-    // (a thumbnail of a chat's page made as nodes: the page it is in, whose bar is its nodes)
-    None =>
-      match pv_tree_thumbs.get(id) {
-        Some(t) => page_of_node(t.node)
-        None => 0
-      }
+    None => 0
   }
 }
 
@@ -770,136 +772,19 @@ pub fn over_flight(c : @ui.Ctx, i : Int) -> Unit {
 }
 
 ///|
-/// A thumbnail of a chat's page made as nodes (note_thumb_node): its node, how round it is, how its picture sits in it
-/// and which picture it is, and how long a film it is (its capsule, carried as its picture flies: film_flight).
-priv struct TreeThumb {
-  node : @view.View
-  radius : Double
-  letterbox : () -> Bool
-  start_crop : () -> Bool
-  picture : () -> String
-  duration : () -> Double
-}
-
-///|
-/// The thumbnails of the chat's pages made as nodes by their place (Viewer::thumb_id), each while its node lives: what
-/// the viewer flies from and back into (thumb_of), as the old view's are pv_thumbs.
-// kept across runs: each let go with its node; put back by file_viewer_reset
-let pv_tree_thumbs : Map[String, TreeThumb] = Map([])
-
-///|
-/// Node `v` of a chat's page made as nodes is the thumbnail `id()` names (thumb_place's, as it is now), `radius` round,
-/// its picture `picture()` (an image's key, "" none) letterboxed in it where `letterbox()` says, cropped from its start
-/// where `start_crop()` says, a film `duration()` long (0: a picture): where the viewer flies from as it is opened from
-/// it and back into as it closes (thumb_of: where the window's tree lays it out and what of it shows then, read as
-/// what draws the flight is drawn), hidden while the viewer is its picture (one picture on the screen, never two:
-/// pv_hidden). Said as its node is made, let go with it. What it gives back says it is the one its id names, as it is
-/// pressed to open the viewer: one file shown twice in a message (placed twice in its words) is one id, the one
-/// pressed what the viewer flies from and back into.
-pub fn note_thumb_node(
-  v : @view.View,
-  id : () -> String,
-  radius~ : Double,
-  letterbox~ : () -> Bool,
-  start_crop? : () -> Bool = fn() { false },
-  picture~ : () -> String,
-  duration? : () -> Double = fn() { 0.0 },
-) -> () -> Unit {
-  let thumb : TreeThumb = { node: v, radius, letterbox, start_crop, picture, duration }
-  let was = Ref("")
-  let off = fn() {
-    match pv_tree_thumbs.get(was.val) {
-      Some(t) if physical_equal(t, thumb) => pv_tree_thumbs.remove(was.val)
-      _ => ()
-    }
-  }
-  // (its place as it is now: a message sent from here named by the chat's once the chat has it)
-  v.reacts(id, fn(now) {
-    off()
-    pv_tree_thumbs[now] = thumb
-    was.val = now
-  })
-  v.owns(off) |> ignore
-  v.alpha(By(fn() { thumb_shows(id()) })) |> ignore
-  fn() { if was.val != "" { pv_tree_thumbs[was.val] = thumb } }
-}
-
-///|
-/// Thumbnail `id` of a chat's page made as nodes (note_thumb_node) where the window's tree has it now, while some of it
-/// is in the window: its box, what shows of it, where its list leaves it clear, read as what asks is drawn.
-fn tree_thumb_of(id : String) -> Thumb? {
-  guard pv_tree_thumbs.get(id) is Some(t) && t.node.seen_place() is Some(p) else { return None }
-  let (x, y, w, h) = p.box
-  Some({
-    x,
-    y,
-    w,
-    h,
-    corners: @motion.MeasuredCorners::uniform(t.radius),
-    letterbox: (t.letterbox)(),
-    start_crop: (t.start_crop)(),
-    picture: (t.picture)(),
-    seen: p.seen,
-    over: None,
-    clear: p.clear,
-  })
-}
-
-///|
-/// The picture thumbnail `id` shows (its image's key), the old view's or a node's: "" none, or none known.
-fn thumb_picture(id : String) -> String {
-  match pv_thumbs.get(id) {
-    Some(l) => l.picture
-    None =>
-      match pv_tree_thumbs.get(id) {
-        Some(t) => (t.picture)()
-        None => ""
-      }
+/// Whether the thumbnail of `id` is a node of the window's tree drawn now (a chat's page made as nodes: its end of the
+/// picture's flight that stays, View::shared's `stays`), to be flown back into by the tree.
+fn tree_thumb_seen(id : String) -> Bool {
+  match @ui.view_tree() {
+    Some(tree) => tree.stays_seen(id)
+    None => false
   }
 }
 
 ///|
-/// How long a film thumbnail `id` of a chat's page made as nodes is (its capsule's length, carried as it flies): 0
-/// none, or no such thumbnail.
-fn tree_thumb_duration(id : String) -> Double {
-  match pv_tree_thumbs.get(id) {
-    Some(t) => (t.duration)()
-    None => 0.0
-  }
-}
-
-///|
-/// The pages (their stack entries) whose chat is made as nodes, by the node that holds both their list and their
-/// flight's slot (viewer_flight_slot's): what a thumbnail of one is in.
-// kept across runs: each let go with its slot
-let flight_pages : Map[@view.NodeId, Int] = Map([])
-
-///|
-/// The page (its stack entry) node `v` is in, where its flight's slot is (flight_pages); 0 none.
-fn page_of_node(v : @view.View) -> Int {
-  let mut at = v.parent()
-  while at is Some(p) {
-    match flight_pages.get(p.id()) {
-      Some(serial) => return serial
-      None => at = p.parent()
-    }
-  }
-  0
-}
-
-///|
-/// The thumbnail of `id` where it was last laid out, while some of it is on the screen: the old view's, else one of a
-/// chat's page made as nodes (tree_thumb_of).
+/// The old view's thumbnail of `id` (note_thumb's) where it was last laid out, while some of it is on the screen (a
+/// chat's page made as nodes flies its own: View::shared, tree_thumb_seen).
 pub fn thumb_of(c : @ui.Ctx, id : String) -> Thumb? {
-  match old_thumb_of(c, id) {
-    Some(t) => Some(t)
-    None => tree_thumb_of(id)
-  }
-}
-
-///|
-/// The old view's thumbnail of `id` (note_thumb's) where it was last laid out, while some of it is on the screen.
-fn old_thumb_of(c : @ui.Ctx, id : String) -> Thumb? {
   match (pv_thumbs.get(id), @motion.measured_rect(c, "pv-thumb/" + id)) {
     (Some(l), Some((x, y, w, h))) if w > 0.0 && h > 0.0 && x < c.width && x + w > 0.0 && y < c.height && y + h > 0.0 =>
       Some({
@@ -970,6 +855,109 @@ fn fly_way(t : Thumb, to : (Double, Double, Double, Double)?, window : (Double, 
   }
   (if lift > 0.0 { lift / (lift + grow) } else { 0.0 }, lift + grow)
 }
+
+///|
+/// How the viewer's picture flies from a thumbnail of a chat's page made as nodes and back into it (View::shared's
+/// `route`, said here, the app's: the user, 2026-11-17, 「应该让使用的地方去控制飞行轨迹和高度（层级）」), as the old page's
+/// flight goes (fly_way): out from under the chat's bar or composer at its own size first, as far as lift_of says, drawn
+/// under them meanwhile (FlightLevel's UnderFoot: the composer and the bar over it, as over_flight lifted them over the
+/// old page's flight), then grown to where the viewer shows it, over all of the page; one Move as long as all of it is
+/// far, the going out its share by how far it goes, the one handed to the other (route_handed) so that nothing stops or
+/// sets off in a step where they meet. The room the thumbnail is cut to (by its list, its card) opened as it grows.
+/// `window`: the window's size. With it, how far what goes with the flight it is told of is at each moment (its ground,
+/// a film's bars: Viewer::tree_way_told): none of it while the picture is under the bar or composer (drawn under the
+/// page's foot, so a ground over the page would be over it too), then in as it grows, to all of it at the viewer
+/// (route_seen).
+fn viewer_route(window : () -> (Double, Double)) -> (@view.FlightRoute, (Bool, (Double) -> Double) -> (Double) -> Double) {
+  // (the going out's share of the way, as the flight set out last worked it out)
+  let share = Ref(0.0)
+  let thumb_of_ends = fn(ends : @view.FlightEnds) -> Thumb {
+    let (x, y, w, h) = if ends.from_stays { ends.from } else { ends.to }
+    {
+      x,
+      y,
+      w,
+      h,
+      corners: @motion.MeasuredCorners::uniform(0.0),
+      letterbox: false,
+      start_crop: false,
+      picture: "",
+      seen: None,
+      over: None,
+      clear: ends.clear,
+    }
+  }
+  let other = fn(ends : @view.FlightEnds) { if ends.from_stays { ends.to } else { ends.from } }
+  // (how far from the thumbnail `p` of the way is)
+  let from_thumb = fn(ends : @view.FlightEnds, p : Double) { if ends.from_stays { p } else { 1.0 - p } }
+  let route : @view.FlightRoute = {
+    far: fn(ends) {
+      let (s, far) = fly_way(thumb_of_ends(ends), Some(other(ends)), window())
+      share.val = s
+      far
+    },
+    place: fn(ends, p) {
+      let t = thumb_of_ends(ends)
+      let (out, grown) = route_handed(from_thumb(ends, p), share.val)
+      let y = t.y + lift_of(t) * out
+      let (ox, oy, ow, oh) = other(ends)
+      (t.x + (ox - t.x) * grown, y + (oy - y) * grown, t.w + (ow - t.w) * grown, t.h + (oh - t.h) * grown)
+    },
+    opened: fn(ends, p) { route_handed(from_thumb(ends, p), share.val).1 },
+    level: fn(ends, p) {
+      if route_handed(from_thumb(ends, p), share.val).0 < 1.0 {
+        UnderFoot
+      } else {
+        Held
+      }
+    },
+  }
+  (route, fn(back, along) { fn(t) { route_seen(if back { 1.0 - along(t) } else { along(t) }, share.val) } })
+}
+
+///|
+/// How far what goes with the viewer's flight (its ground, a film's bars) is `q` of the way from the thumbnail, its
+/// going out `s` of it (route_handed): none while the picture is still going out from under the bar or composer, drawn
+/// under the page's foot (a ground drawn over the page then would be drawn over it as well, the picture seen faded
+/// through it and whole again as it comes over all), then at one pace from there to all of it at the viewer.
+fn route_seen(q : Double, s : Double) -> Double {
+  if s <= 0.0 {
+    return dmin(1.0, dmax(0.0, q))
+  }
+  if s >= 1.0 {
+    return 0.0
+  }
+  let l = dmin(1.0, dmax(2.0 * s, route_out_least))
+  if q <= l || l >= 1.0 {
+    0.0
+  } else {
+    dmin(1.0, (q - l) / (1.0 - l))
+  }
+}
+
+///|
+/// How far gone out from under the bar or composer and how far grown from the thumbnail (each 0 to 1) the viewer's flight
+/// is `q` of its way from the thumbnail, its going out `s` of the whole way by how far it goes (viewer_route). Its edge
+/// going furthest goes at the way's own pace all the way (the going out and the growing together as far as the way: q =
+/// s * out + (1 - s) * grown), the going out from its own pace slowing to rest over `l` of the way (twice its share,
+/// at least route_out_least: a short one not stopped within a frame or two), the growing taking up what it gives: no
+/// stop and no step where they meet. None to go out from (s 0): out all along, grown as far as the way.
+fn route_handed(q : Double, s : Double) -> (Double, Double) {
+  if s <= 0.0 {
+    return (1.0, q)
+  }
+  if s >= 1.0 {
+    return (dmin(1.0, q), 0.0)
+  }
+  let l = dmin(1.0, dmax(2.0 * s, route_out_least))
+  let out = if q >= l { 1.0 } else { 2.0 * q / l - q * q / (l * l) }
+  (out, dmin(1.0, dmax(0.0, (q - s * out) / (1.0 - s))))
+}
+
+///|
+/// The least share of the way the viewer's flight goes out from under the bar or composer over (route_handed), slowing
+/// to rest as it is done.
+let route_out_least : Double = 0.4
 
 ///|
 /// The viewer fading in and out where there is no thumbnail to grow from.
@@ -1198,6 +1186,9 @@ pub fn new_viewer(
     },
     in_tree: false,
     tree_layers: 0,
+    tree_back: @signals.signal(false),
+    tree_way: @signals.signal(false),
+    tree_way_end: 0.0,
     fingers: Map([]),
     speed: @ui.Velocity::new(),
     hold_off: fn() {  },
@@ -2032,6 +2023,26 @@ pub fn Viewer::shut(self : Viewer, c : @ui.Ctx) -> Unit {
           _ => self.fly_home("", viewer_moment(c), (c.width, c.height))
         }
       }
+      // an image of a chat's page made as nodes, its thumbnail drawn: let go of at once, its picture flown back into
+      // it by the window's tree (viewer_tree.mbt's image_layer: View::shared, the thumbnail's end that stays), out of
+      // the way of the chat's bar and composer as that end is (Tree::stays_clear)
+      (None, Some(KImage), _) if self.in_tree && tree_thumb_seen(self.thumb_id()) => {
+        self.tree_back.set(true)
+        self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
+      }
+      // a film of a chat's page made as nodes, its thumbnail drawn: the frame it shows grabbed first (its player is the
+      // host's, drawn by none of the tree: the thumbnail keeps that frame, Viewer::left_with_frame), then let go of, the
+      // thumbnail flown back from where its player drew it by the window's tree (viewer_tree.mbt's film_shared); none
+      // to grab, at once with its still
+      (None, Some(KVideo), _) if self.in_tree && self.chat_file() && tree_thumb_seen(self.thumb_id()) =>
+        match self.view() {
+          Some(n) if n.here() && n.shown() && !n.grabbing() => {
+            self.grab_set(true)
+            self.left_at = left_from(n)
+            c.tell("preview-grab", fn() { n.grab_shown(kept_frame_side) })
+          }
+          _ => self.tree_film_back(viewer_moment(c))
+        }
       // the way in played backwards (web's fp: ease-out on the way in, the same curve run back on the way out): the
       // ground and the picture stay nearly whole at first, then go
       _ => self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at=viewer_moment(c))
@@ -2063,6 +2074,11 @@ fn viewer_moment(c : @ui.Ctx) -> Double {
 /// moment `at`, in a window `window` (w, h): from where its player draws it now (flung, it went on while its frame was
 /// grabbed).
 pub fn Viewer::fly_home(self : Viewer, picture : String, at : Double, window : (Double, Double)) -> Unit {
+  // (its thumbnail a node of the window's tree: flown back into by the tree, viewer_tree.mbt's film_shared)
+  if self.fly_from is None && self.in_tree && self.shown_kind() == Some(KVideo) {
+    self.tree_film_back(at)
+    return
+  }
   self.fly_pic = picture
   if self.player_place() is Some(r) {
     self.fly_to = Some(r)
@@ -2073,6 +2089,32 @@ pub fn Viewer::fly_home(self : Viewer, picture : String, at : Double, window : (
     None => ()
   }
   pv_hidden.set(self.thumb_id())
+}
+
+///|
+/// Its picture's flight by the window's tree set out (View::shared's `told`): from `start` till `end` (the clock's ms),
+/// `grown` how far it has grown from its thumbnail at each moment. Its fade, all that is drawn round its picture (its
+/// ground over the page, its bars), goes that one way from that moment: in as the picture grows out of its thumbnail,
+/// none of it while that goes out from under the chat's bar or composer, out as it shrinks back into it; gone, the
+/// viewer let go of, as the flight ends (image_ends).
+fn Viewer::tree_way_told(self : Viewer, start : Double, end : Double, grown : (Double) -> Double) -> Unit {
+  let ms = end - start
+  guard ms > 0.0 else { return }
+  self.tree_way_end = end
+  self.tree_way.set(true)
+  if self.tree_back.untracked() {
+    self.fade.go(0.0, @motion.tween_to(duration=ms, ease=fn(x) { 1.0 - grown(start + x * ms) }), at=start)
+  } else {
+    self.fade.go(1.0, @motion.tween_to(duration=ms, ease=fn(x) { grown(start + x * ms) }), at=start)
+  }
+}
+
+///|
+/// A film whose thumbnail is a node of the window's tree let go of from the moment `at` (its frame grabbed and kept for
+/// that thumbnail, or none to grab): flown back into it by the tree (viewer_tree.mbt's film_shared) as the rest fades.
+fn Viewer::tree_film_back(self : Viewer, at : Double) -> Unit {
+  self.tree_back.set(true)
+  self.fade.go(0.0, @motion.tween(pv_fade_ms, ease=Leave), at~)
 }
 
 ///|
@@ -2779,9 +2821,9 @@ pub fn Viewer::picture(self : Viewer, src : Source) -> String {
 /// shows (the same picture, decoded already: it flies out as the chat drew it, one sent from here the picture picked),
 /// else the station's thumbnail of it, else its likeness; "" none.
 pub fn Viewer::stand_in(self : Viewer, src : Source) -> String {
-  match thumb_picture(self.thumb_id()) {
-    "" | "!" => ()
-    k => return k
+  match pv_thumbs.get(self.thumb_id()) {
+    Some(l) if l.picture != "" => return l.picture
+    _ => ()
   }
   let thumb = if self.chat_file() { (src.file)(self.station, self.key, self.name) } else { "" }
   if thumb != "" && thumb != "!" {
@@ -3009,9 +3051,9 @@ pub fn Viewer::still(self : Viewer, src : Source) -> String {
     _ => ()
   }
   // what its thumbnail in the chat shows (video_still: one sent from here, the host's picture of it as it was picked)
-  match thumb_picture(self.thumb_id()) {
-    "" | "!" => ()
-    k => return k
+  match pv_thumbs.get(self.thumb_id()) {
+    Some(l) if l.picture != "" => return l.picture
+    _ => ()
   }
   match (src.poster)(self.station, self.key, self.name) {
     // none made by the station: the first frame the chat drew of it, if it did
@@ -3229,7 +3271,6 @@ pub fn file_viewer_reset() -> Unit {
   marking.note_field.set("")
   marks_changed()
   pv_thumbs.clear()
-  pv_tree_thumbs.clear()
   thumbs_said.clear()
   pv_lists.clear()
   pv_frames.clear()

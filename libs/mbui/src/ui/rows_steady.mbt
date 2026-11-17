@@ -15,7 +15,8 @@
 // none of them), by their keys where the list is given them (ListRows) and else by their index; not while the list
 // is scrolled by the hand or put elsewhere at once by the app (a frame it did so starts it anew), nor across a gap of
 // more than a few frames in the frames' times, nor across the window made another size (what it lays out anew for that
-// is there at once, no move of its rows: from that frame on anew).
+// is there at once, no move of its rows: from that frame on anew), nor across the list itself laid out at another width
+// (a column its edge drags, the old view's list in it: the same, as the window's tree's says it by View::lays_anew).
 //
 // What steps now is known, a file at a time (`rows_steady_known`, given by the app's tests as their package starts): a
 // Tester made in a file shows at most as many as its file's bar, which only falls as they are mended.
@@ -179,6 +180,14 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
     rows_steady.lists[ln.id] = if shown_since < 0.0 { -1.0e9 } else { shown_since }
     let settled = shown_since < 0.0 || now > shown_since + rows_first_ms
     let free = settled && !(st.held || st.moving() || st.easing() || now - st.put_at <= 1.5 * period)
+    // (laid out at another width than in the frame before, as the window made another size is: its rows' step its own;
+    // kept beside the window's tree's lists' by an id of its own, under none of theirs)
+    let laid_key = -1 - ln.id
+    let laid_anew = match rows_steady.laids.get(laid_key) {
+      Some(w) => w != ln.fw
+      None => false
+    }
+    rows_steady.laids[laid_key] = ln.fw
     let view = st.vp_h
     let keys = match st.causes {
       Some(c) => c.keys
@@ -213,7 +222,7 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
           }
         _ => false
       }
-      if !free || gap || anew || resized {
+      if !free || gap || anew || resized || laid_anew {
         seen.clear()
         rows_steady.went.remove(key)
       }

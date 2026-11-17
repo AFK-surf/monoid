@@ -17,7 +17,7 @@ pub(all) struct MessageHere {
   station : String
   session : String
   view : ChatView
-  go : ((Double, String) -> Unit)?
+  go : ((String, String) -> Unit)?
   inline : Bool
   gutter : Double
   list : ListMotion?
@@ -1158,18 +1158,15 @@ pub fn quotes(
   c.box(style~, fn() {
     for i, q in quotes {
       let own = quote_file(q, files)
-      let seq = match here.view.messages.iter().find_first(fn(m) { q.ts != "" && m.ts == q.ts }) {
-        Some(m) => m.seq
-        None => -1.0
-      }
       let flight = flight_here(here)
       let (words_key, words_width) = match flight {
         Some(f) => @sfbase.flight_quote_words(c, f, @sfbase.quote_key(i))
         None => ("", None)
       }
-      // (the passage it quotes lit there alone, where that message's words have it)
+      // (the passage it quotes lit there alone, where that message's words have it; where the chat's window holds it
+      // not, the window moved about it first: sfbase's go_to_quoted)
       let jump = match here.go {
-        Some(go) if q.ts != "" => Some(fn() { if seq >= 0.0 { go(seq, q.text) } })
+        Some(go) if q.ts != "" => Some(fn() { go(q.ts, q.text) })
         _ => None
       }
       let card = @sf.quote_card(

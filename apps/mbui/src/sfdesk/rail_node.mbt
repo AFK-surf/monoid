@@ -184,12 +184,15 @@ fn rail_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailA
           col.each(
             fn() {
               match ws() {
-                Some(w) => rail_shown(src, w)
+                Some(w) => rail_shown_entries(src, w)
                 None => []
               }
             },
-            fn(p) { p },
-            fn(item, place) { rail_place_node(item, src, tips, place.untracked(), at) },
+            fn(e) { e },
+            fn(item, entry) {
+              let (added, place) = entry.untracked()
+              rail_place_node(item, src, tips, place, added, at)
+            },
           )
         })
         |> ignore
@@ -366,8 +369,16 @@ fn rail_dot_node(ring : @view.View) -> Unit {
 /// it hung on its corner (a list's rows' mark while the sidebar is folded; 待处理's red dot); pressed, its page (the
 /// lit place pressed again: its sidebar folded or opened); right clicked, the rail's menu beside it; dragged up or down
 /// while the rail is changed or with ⌘ held as it was pressed, to another place in the rail; while the rail is changed,
-/// outlined, its − at its top left corner. Its tip, or 对话's and 用量's card as the pointer rests on it.
-fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place : String, at : () -> RailAt) -> Unit {
+/// outlined, its − at its top left corner. Its tip, or 对话's and 用量's card as the pointer rests on it. `added`: the
+/// place in view added at the places' foot (rail_shown_entries), not dragged.
+fn rail_place_node(
+  item : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  place : String,
+  added : Bool,
+  at : () -> RailAt,
+) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
   let t = fn() { @sf.theme() }
   // (as its key went down, whether ⌘ was held; how far the hold had gone as this place took it over from its key: each
@@ -379,14 +390,15 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
   // moved with its drag
   .offset(By(fn() {
     match wide.rail_drag.get() {
-      Some((p, _, dy)) if p == place && dy.abs() > rail_slop => (0.0, dy)
+      Some((p, _, dy)) if !added && p == place && dy.abs() > rail_slop => (0.0, dy)
       _ => (0.0, 0.0)
     }
   }))
   // dragged up or down past the slop while the rail is changed or with ⌘ held as it was pressed: the hold taken over
-  // from its key (whose press is called off), to another place in the rail, the others as they were until let go
+  // from its key (whose press is called off), to another place in the rail, the others as they were until let go (not
+  // the one in view added at their foot: not the rail's, not moved)
   .claims(fn(_, dy) {
-    let takes = dy.abs() > rail_slop && (wide.editing.untracked() || cmd_down.val)
+    let takes = !added && dy.abs() > rail_slop && (wide.editing.untracked() || cmd_down.val)
     if takes {
       claimed.val = true
       claimed_dy.val = dy
@@ -463,7 +475,8 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
     guard ws() is Some(w) else { return }
     // the lit place pressed again (not 待处理, a panel): its sidebar folded or opened, not gone to; folded so with the
     // pointer on the rail, it is shown a while; on the tape, the page brought over
-    if rail_lit(src, w, place) && place != "attention" && !place_bare_now(lit_place()) {
+    // (看板 pressed again: its board brought over on the tape, board_go's)
+    if rail_lit(src, w, place) && place != "attention" && place != "board" && !place_bare_now(lit_place()) {
       if wide.crowded {
         wide.peeking.set(!wide.peeking.get())
       } else {
@@ -474,7 +487,7 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
       rail_go_told(src, w, place, fn(_, g) { g() })
       // (pressed into a place whose sidebar is folded for the page's room: shown a while from the start, as the web's
       // pressed into a folded one)
-      wide.peek_next.set(wide.crowded && !place_bare_now(place) && place != "attention")
+      wide.peek_next.set(wide.crowded && !place_bare_now(place) && place != "attention" && place != "board")
     }
   }
   // what wants the person in a list, as its rows' marks: while the sidebar is folded (open, the rows show it;
@@ -539,7 +552,7 @@ fn rail_place_node(item : @view.View, src : Source, tips : @sf.TipLayer, place :
     if down {
       cmd_down.val = (@ui.mods_held() & @ui.mod_cmd) != 0
       claimed.val = false
-      if wide.editing.untracked() || cmd_down.val {
+      if !added && (wide.editing.untracked() || cmd_down.val) {
         wide.rail_drag.set(Some((place, 0.0, 0.0)))
       }
     } else if !claimed.val {

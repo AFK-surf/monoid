@@ -336,7 +336,7 @@ test("a session at work is followed by the station itself: told from where it en
   assert.ok(told.some((m) => m.type === "steps"));
   assert.deepEqual(lengths, [["s", 2]]);
   // As a stream that opens finds it.
-  assert.deepEqual((await hub.nowOf(["s"])).s!.map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null]]);
+  assert.deepEqual((await hub.nowOf(["s"])).s!.map((m: any) => [m.type, m.start ?? null]), [["timeline", 2], ["steps", null], ["work", null], ["rate", null]]);
   told.length = 0;
   // Its last entry, written as its turn ends, is told before it is told to be done (no 40 ms wait).
   appendFileSync(path, line("three", "m3"));
@@ -533,10 +533,40 @@ test("what is said while a listener joins is told it after what it lacks", async
   release();
   await settle();
   await hub.idle();
-  assert.deepEqual(got.map((m) => m.type), ["timeline", "steps", "work", "step"]);
+  assert.deepEqual(got.map((m) => m.type), ["timeline", "steps", "work", "step", "rate"]);
   assert.deepEqual((got[0] as any).entries.map((e: any) => e.text), ["one", "two"]);
   hub.close();
   rmSync(dir, { recursive: true, force: true });
+});
+
+test("a listener waiting for history ends with the current rate after queued changes", async (t) => {
+  const dir = temp();
+  const path = join(dir, "t.jsonl");
+  writeFileSync(path, line("one", "m1"));
+  const time = testClock();
+  await time.adjust(10_000);
+  const hub = new LiveHub(() => ({ runtime: "claude", paths: [path] }), time.clock);
+  t.after(() => {
+    hub.close();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  let release = () => {};
+  hub.history = historyOf(path, [], new Promise<void>((resolve) => (release = resolve)));
+  const got: LiveMessage[] = [];
+  hub.subscribe("s", 0, null, (m) => void got.push(m));
+  await settle();
+  hub.event("s", { kind: "start", id: "thinking", step: "thinking" });
+  await settle();
+  await time.adjust(1000);
+  hub.event("s", { kind: "delta", id: "thinking", field: "text", text: "", tokens: 50 });
+  await settle();
+  hub.event("s", { kind: "end", id: "thinking" });
+  await settle();
+  assert.equal(got.length, 0, "history is still being read");
+  release();
+  await settle();
+  await hub.idle();
+  assert.deepEqual(got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : [])), [50, 0, 0], "queued changes are followed by the current stopped rate");
 });
 
 test("a watcher can take only the latest entries, and ask for those before", async () => {
@@ -782,18 +812,19 @@ test("how fast the model writes is told once half a second of it has come", asyn
   const hub = new LiveHub(() => null);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
+  await hub.idle();
   hub.event("s", { kind: "start", id: "x", step: "text" });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   const rates = () => got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : []));
   await hub.idle();
-  assert.deepEqual(rates(), [], "a first few bytes say nothing of the pace");
+  assert.deepEqual(rates(), [0], "a first few bytes say nothing of the pace");
   t.mock.timers.tick(600);
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
   await hub.idle();
-  assert.equal(rates().length, 1, "then told, and not again within the second");
+  assert.equal(rates().length, 2, "then told, and not again within the second");
   await hub.idle();
-  assert.ok(rates()[0]! > 0);
+  assert.ok(rates()[1]! > 0);
   hub.event("s", { kind: "end", id: "x" });
   await hub.idle();
   assert.equal(rates().at(-1), 0);
@@ -815,6 +846,7 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   const hub = new LiveHub(() => null);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
+  await hub.idle();
   const rates = () => got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : []));
   hub.event("s", started!);
   t.mock.timers.tick(1000);
@@ -822,7 +854,7 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   assert.deepEqual(first, { kind: "delta", id: "m:0", field: "text", text: "", tokens: 50 });
   hub.event("s", first!);
   await hub.idle();
-  assert.deepEqual(rates(), [50], "50 tokens in the second since the block began");
+  assert.deepEqual(rates(), [0, 50], "50 tokens in the second since the block began");
   // A pause of four seconds, then 100 tokens: 25 a second, not 100 in a quarter.
   t.mock.timers.tick(4000);
   for (const e of delta(100)) hub.event("s", e);
@@ -847,11 +879,44 @@ test("thinking left out of the stream has a rate too, by the tokens its empty de
   await settle(1);
 });
 
+test("a listener joining a thinking step gets its current rate and a stopped step has none", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const hub = new LiveHub(() => null);
+  t.after(async () => {
+    hub.close();
+    await settle(1);
+  });
+  const first: LiveMessage[] = [];
+  hub.subscribe("s", 0, null, (m) => void first.push(m));
+  await hub.idle();
+  hub.event("s", { kind: "start", id: "thinking", step: "thinking" });
+  await hub.idle();
+  t.mock.timers.tick(1000);
+  hub.event("s", { kind: "delta", id: "thinking", field: "text", text: "", tokens: 50 });
+  await hub.idle();
+  assert.equal(first.filter((m) => m.type === "rate").at(-1)?.tokensPerSecond, 50);
+
+  const later: LiveMessage[] = [];
+  hub.subscribe("s", 0, null, (m) => void later.push(m));
+  await hub.idle();
+  assert.equal(later.filter((m) => m.type === "rate").at(-1)?.tokensPerSecond, 50, "a newly opened chat sees the current rate before another delta");
+  assert.equal((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate").at(-1)?.tokensPerSecond, 50, "a newly opened event stream sees it too");
+
+  hub.event("s", { kind: "end", id: "thinking" });
+  await hub.idle();
+  assert.equal(later.filter((m) => m.type === "rate").at(-1)?.tokensPerSecond, 0);
+  const after: LiveMessage[] = [];
+  hub.subscribe("s", 0, null, (m) => void after.push(m));
+  await hub.idle();
+  assert.equal(after.filter((m) => m.type === "rate").at(-1)?.tokensPerSecond, 0, "reconnecting after the step stopped clears an old rate");
+});
+
 test("the rate counts what the model writes, not what a call outputs, in tokens of its script, its steps side by side added up", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   const hub = new LiveHub(() => null);
   const got: LiveMessage[] = [];
   hub.subscribe("s", 0, null, (m) => void got.push(m));
+  await hub.idle();
   const rates = () => got.flatMap((m) => (m.type === "rate" ? [m.tokensPerSecond] : []));
   // A command's output as it runs is not the model writing.
   hub.event("s", { kind: "start", id: "cmd", step: "tool", tool: "Bash", input: "{}" });
@@ -860,7 +925,7 @@ test("the rate counts what the model writes, not what a call outputs, in tokens 
     t.mock.timers.tick(500);
   }
   await hub.idle();
-  assert.deepEqual(rates(), [], "a call's output is no rate");
+  assert.deepEqual(rates(), [0], "a call's output is no rate");
   // 40 tokens a quarter second of English, then of Chinese: 160 token/s each (each long enough to fill the window).
   hub.event("s", { kind: "start", id: "a", step: "text" });
   for (let i = 0; i < 12; i++) {

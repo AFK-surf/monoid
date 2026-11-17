@@ -211,6 +211,7 @@ fn reset_globals() -> Unit {
   code_clears.clear()
   bars_hand.clear()
   clock_moments.clear()
+  clock_tree_read.val = -1.0e9
   perf_bytes_said.set(-1.0)
   image_data.clear()
   image_vector_drawers.clear()
@@ -2854,7 +2855,8 @@ pub fn Tester::glyphs_seen(self : Tester) -> Array[(Double, Double, Double, Doub
       if x1 > x0 && y1 > y0 {
         let px = (x0 + x1) / 2.0
         let py = (y0 + y1) / 2.0
-        let mut hidden = false
+        // (none of it seen past its clip's rounded corner: in_inst_clip)
+        let mut hidden = !in_inst_clip(a, b, px, py)
         for j in (k + 1)..<c.ninst {
           if words_over_hides(a, j, px, py) {
             hidden = true

@@ -121,7 +121,9 @@ fn notice_pill_node(
       let ts = @signals.untracked(m).ts
       opened[ts] = !opened.get(ts).unwrap_or(false)
     })
-    p.says(By(fn() { Some(@view.said(Button, label=notice_label(m()))) })) |> ignore
+    // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
+    // press_stays)
+    p.says(By(fn() { Some(@view.said(Button, label=notice_label(m()), expanded=open())) })) |> ignore
     p.box(fn(line) {
       @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
       line.box(fn(room) {

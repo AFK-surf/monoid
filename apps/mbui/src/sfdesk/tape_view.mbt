@@ -1439,7 +1439,7 @@ fn tape_edge_at(
   edge : @ui.Side,
   gap : (Double) -> Double,
   on : TapeEdgeOn,
-  made : (@view.View) -> @view.View,
+  made : (@view.View, @sf.EdgePull) -> @view.View,
 ) -> Unit {
   n
   .width(By(fn() {
@@ -1452,7 +1452,9 @@ fn tape_edge_at(
     (gap(tape_drawn_at(holder)) - before, tape_room_now().panel_top)
   }))
   |> ignore
-  let e = made(n)
+  // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go: @sf.EdgePull)
+  let pull = @sf.EdgePull::new()
+  let e = made(n, pull)
   e.box(fn(g) {
     g
     .over(Is(true))
@@ -1461,7 +1463,7 @@ fn tape_edge_at(
       (before + (bar_gap_now() - @sf.handle_w) / 2.0, 0.0, 0.0, 0.0)
     }))
     |> ignore
-    @sf.edge_look_node(g, @sf.edge_over, fn() { e.pointed() || on.held.get() }, fn() { on.held.get() })
+    @sf.edge_look_node(g, @sf.edge_over, fn() { e.pointed() || on.held.get() }, fn() { on.held.get() }, pull~)
     |> ignore
   })
   |> ignore
@@ -1480,7 +1482,7 @@ fn tape_side_edge(
   tips : @sf.TipLayer,
   on : TapeEdgeOn,
 ) -> Unit {
-  tape_edge_at(n, holder, Right, fn(t) { tape_col_at(t) - bar_gap_now() }, on, fn(n) {
+  tape_edge_at(n, holder, Right, fn(t) { tape_col_at(t) - bar_gap_now() }, on, fn(n, pull) {
     @sf.edge_node(
       n,
       fn() { @sf.t("web-pages.workspace.resizeSidebar") },
@@ -1511,6 +1513,7 @@ fn tape_side_edge(
       },
       tips~,
       side=Right,
+      pull~,
     )
   })
 }
@@ -1520,7 +1523,7 @@ fn tape_side_edge(
 /// panel's width, the page beside it showing what it leaves; the second of two presses, its own width again; a press
 /// where it lies over what shows of the page, the page brought over.
 fn tape_panel_edge(n : @view.View, holder : @view.View, tips : @sf.TipLayer, on : TapeEdgeOn) -> Unit {
-  tape_edge_at(n, holder, Left, fn(t) { tape_col_at(t) + tape_page_at(t) }, on, fn(n) {
+  tape_edge_at(n, holder, Left, fn(t) { tape_col_at(t) + tape_page_at(t) }, on, fn(n, pull) {
     @sf.edge_node(
       n,
       fn() { @sf.t("web-pages.chat.resizePanel") },
@@ -1546,6 +1549,7 @@ fn tape_panel_edge(n : @view.View, holder : @view.View, tips : @sf.TipLayer, on 
       },
       tips~,
       side=Left,
+      pull~,
     )
   })
 }
