@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 117.8 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.53 | 65.33 | 95.75 | 119.56 |
 | [5af32b80c](https://github.com/AFK-surf/monoid/commit/5af32b80ca0ae9f2a3107cdbfe14533ba12ca274) station: disk, mounts, /proc and unchanged plane f | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.53 | 65.33 | 95.68 | 123.07 |
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.51 | 65.33 | 95.83 | 115.71 |
-| [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.83 | 120.14 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.28 |
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [029b596fb](https://github.com/AFK-surf/monoid/commit/029b596fbb7b4d887e0bbf83b4c19f39fd0627e6) station: name event entries from memory and drop s | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [5af32b80c](https://github.com/AFK-surf/monoid/commit/5af32b80ca0ae9f2a3107cdbfe14533ba12ca274) station: disk, mounts, /proc and unchanged plane f | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
-| [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
