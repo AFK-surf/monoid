@@ -551,8 +551,8 @@ pub fn board_node(
 /// The wide board: its bar over its columns side by side (whole columns where they have not all the room, going
 /// sideways to the rest), the archive's place at its foot while a chat's card is dragged; the chat of the card picked
 /// beside all of it, the window's whole height, where there is the room. The chat slides in and out from the board's
-/// end (a Move as far as it is wide), the columns going from their width to the one they come to over the same way, and
-/// the columns brought sideways to where they are to show over it too: one motion, its three parts each worked out of it.
+/// end (a Move as far as it is wide). The columns keep their width as the chat opens or closes; only the least sideways
+/// scroll needed to keep the chosen column in sight moves with it.
 fn board_wide(
   p : @view.View,
   src : Source,
@@ -585,10 +585,9 @@ fn board_wide(
       (way.value_at(t) - from) / (to - from)
     }
   }
-  // (each column's width as the chat beside them is to be: laid out at it at once as it is opened or closed, its cards'
-  // words broken anew once, at the width they come to, never along the way (View::lays_anew), the chat sliding in
-  // over the board's end as the pane's sidebar does beside a page, sfdesk board.mbt)
-  let laid_w = fn() { board_col_w(width() - (if split() { board_beside_w } else { 0.0 }), count()) }
+  // (the chat changes how much of the board is seen, not the width of every column: opening or closing it must not
+  // reflow all the cards under the reader)
+  let laid_w = fn() { board_col_w(width(), count()) }
   p.row(Is(true)) |> ignore
   p.box(fn(left) {
     left.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -601,21 +600,29 @@ fn board_wide(
     left.box(fn(area) {
       area.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       let across = @view.Scroll::across()
-      // (brought sideways to `to` over the chat's way: drawn moved by what is left of the way, put there as it ends)
-      let glide_to = fn(to : Double) {
-        let at = area.cause_at()
-        let now = across.at(area.tree) + (if glide.goes_at(at) {
-          let (f, t) = glides.val
-          (t - f) * along(glide, at) - (t - f)
+      // (the part of the scroll drawn apart from its anchor while the columns are on their way)
+      let glide_extra = fn(at : Double) {
+        if glide.goes_at(at) {
+          let (from, to) = glides.val
+          from - from.min(to) + (to - from) * along(glide, at)
         } else {
           0.0
-        })
+        }
+      }
+      // (anchor at the lesser end so it stays in range while the chat opens or closes; draw the rest of the scroll
+      // over the way, then put it at the destination. Anchoring at the old end on close let the growing viewport clamp
+      // it before the way had finished.)
+      let glide_to = fn(to : Double) {
+        let at = area.cause_at()
+        let now = across.at(area.tree) + glide_extra(at)
         // (as far as it goes there once laid out so)
         let to = if to < 0.0 { 0.0 } else { to }
         if (to - now).abs() < 0.5 {
+          glide.put(1.0)
+          across.put(to)
           return
         }
-        across.put(now)
+        across.put(now.min(to))
         glides.val = (now, to)
         glide.put(0.0)
         glide.go(1.0, spec, at~)
@@ -625,23 +632,23 @@ fn board_wide(
       // (where the columns are to be for column `key`'s to show whole, the chat beside them as it is to be)
       own.reveal = fn(key) {
         let cols = @signals.untracked(own.columns)
-        let n = cols.length()
         let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
         let r = width() - (if @signals.untracked(own.side) && key != "draft" { board_beside_w } else { 0.0 })
-        let w = board_col_w(r, n)
-        let avail = r - 2.0 * board_pad
-        let fits = ((avail + board_gap) / (board_col_least + board_gap)).floor().to_int()
-        let shown_n = if fits < 1 { 1 } else if fits > n { n } else { fits }
-        let first = if i >= shown_n { i - shown_n + 1 } else { 0 }
-        let now = across.at(area.tree)
+        let w = laid_w()
+        let now = across.at(area.tree) + glide_extra(area.cause_at())
         let stride = w + board_gap
-        // (where it shows whole already, left as it is)
-        let first_now = (now / stride).round().to_int()
-        let first = if i >= first_now && i < first_now + shown_n && key != "draft" { first_now } else { first }
-        glide_to(first.to_double() * stride)
+        let start = i.to_double() * stride
+        let end = start + w
+        let room = r - 2.0 * board_pad
+        // (only as far as needed, keeping the existing position where the column already fits)
+        let to = if key == "draft" { 0.0 } else if start < now { start } else if end > now + room { end - room } else { now }
+        glide_to(to)
       }
-      own.to_start = fn() { across.put(0.0) }
-      // (the chat beside them opened or closed: the three set off together, from that moment)
+      own.to_start = fn() {
+        glide.put(1.0)
+        across.put(0.0)
+      }
+      // (the chat beside them opened or closed: its way starts at that moment)
       area.reacts(split, fn(open) {
         let at = area.cause_at()
         if open {
@@ -660,10 +667,8 @@ fn board_wide(
           let w = board_col_w(width(), count())
           let n = count().to_double()
           let most = 2.0 * board_pad + n * w + (n - 1.0) * board_gap - width()
-          let now = across.at(area.tree)
-          if now > most {
-            glide_to(if most < 0.0 { 0.0 } else { most })
-          }
+          let now = across.at(area.tree) + glide_extra(at)
+          glide_to(if now > most { if most < 0.0 { 0.0 } else { most } } else { now })
         }
       }, at_start=false)
       // (another chat picked while it is open: shown in its place)
@@ -685,8 +690,7 @@ fn board_wide(
             if t == @double.infinity || !glide.goes_at(t) {
               (0.0, 0.0)
             } else {
-              let (f, to) = glides.val
-              (-(to - f) * along(glide, t), 0.0)
+              (-glide_extra(t), 0.0)
             }
           }))
           |> ignore

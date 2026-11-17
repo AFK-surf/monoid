@@ -208,6 +208,60 @@ test "大屏 1280: a card of the fourth column opened, its column brought whole 
 }
 
 ///|
+test "大屏: opening and closing a 待收口 chat keeps the board's column widths, and moving focus leaves it where it is" {
+  let (t, _) = board_at("board", 1280.0, 800.0)
+  let title = "给设置页加一个深色模式开关"
+  let (before_x, _, before_w, _) = t.get(Button, label=title).rect
+  t.click(Button, label=title)
+  let (opening_x, _, opening_w, _) = t.get(Button, label=title).rect
+  assert_true((opening_x - before_x).abs() < 1.0 && (opening_w - before_w).abs() < 1.0, msg="board jumped as the chat opened")
+  t.run_for(@ui.move_most_ms)
+  let (open_x, _, open_w, _) = t.get(Button, label=title).rect
+  assert_true((open_w - before_w).abs() < 1.0, msg="column width changed from \{before_w} to \{open_w}")
+  assert_true(open_x >= 0.0 && open_x + open_w <= 1280.0 - 460.0, msg="selected card outside the board")
+  let nearest_x = before_x.min(1280.0 - 460.0 - 16.0 - before_w)
+  assert_true((open_x - nearest_x).abs() < 1.0, msg="board scrolled farther than needed: \{open_x}, expected \{nearest_x}")
+  t.click(TextField, label="发消息")
+  t.run_for(@ui.move_most_ms)
+  let (focused_x, _, focused_w, _) = t.get(Button, label=title).rect
+  assert_true((focused_x - open_x).abs() < 1.0 && (focused_w - open_w).abs() < 1.0, msg="board moved as focus changed")
+  t.click(Button, label="关闭")
+  let (closing_x, _, closing_w, _) = t.get(Button, label=title).rect
+  assert_true((closing_x - open_x).abs() < 1.0 && (closing_w - open_w).abs() < 1.0, msg="board jumped as the chat closed")
+  t.run_for(@ui.move_most_ms)
+  let (_, _, closed_w, _) = t.get(Button, label=title).rect
+  assert_true((closed_w - before_w).abs() < 1.0, msg="column width changed on close")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: a card already fitting beside its chat opens without moving the board" {
+  let (t, _) = board_at("board", 1280.0, 800.0)
+  let title = "整理发布清单"
+  let (x, _, w, _) = t.get(Button, label=title).rect
+  t.click(Button, label=title)
+  t.run_for(@ui.move_most_ms)
+  let (after_x, _, after_w, _) = t.get(Button, label=title).rect
+  assert_true((after_x - x).abs() < 1.0 && (after_w - w).abs() < 1.0, msg="a visible column moved as its chat opened")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: closing a 待收口 chat while the board is moving reverses from its current place" {
+  let (t, _) = board_at("board", 1280.0, 800.0)
+  let title = "给设置页加一个深色模式开关"
+  t.click(Button, label=title)
+  t.run_for(@ui.move_most_ms / 4.0)
+  let (before_x, _, before_w, _) = t.get(Button, label=title).rect
+  t.click(Button, label=title)
+  let (after_x, _, after_w, _) = t.get(Button, label=title).rect
+  assert_true((after_x - before_x).abs() < 1.0 && (after_w - before_w).abs() < 1.0, msg="board jumped when the chat was closed on its way in")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is None)
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "中屏 760: the board in the tape's page panel, its bar that panel's bar's, all of it there" {
   let (t, _) = board_at("board", 760.0, 800.0)
   // (the tape holds, the board the page's panel's: brought over as the app starts on a workspace that shows it)
