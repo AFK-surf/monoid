@@ -405,6 +405,10 @@ export class RemoteConnects {
   }
 
   /// Once what was changed is written down (or failed).
+  writing(): boolean {
+    return !this.loaded || this.file.writing();
+  }
+
   async written(): Promise<void> {
     await this.loading;
     await this.file.written();

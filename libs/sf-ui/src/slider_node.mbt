@@ -4,7 +4,8 @@
 // a white knob. Held, the knob and its part are one drop of ink held by its surface (@paint.meniscus_outline: the
 // accent swelling round the knob and drawn into it from the track by a neck), springing to it as it is pressed (lift_spring)
 // and eased back as it is let go, and over the knob a bubble with the value in it (rolling_number_node: rolling as the keys step it, each
-// step under the hand there at once), round as small_corner says. All of it drawn by the width it is given (View::by_room), nothing
+// step under the hand there at once), round as small_corner says. Stepped by the keys, the knob and its part go there
+// over a control's answer (dur_ms) from where they are drawn; in the hand they are where the hand has them. All of it drawn by the width it is given (View::by_room), nothing
 // read back of its layout and nothing laid out again as the knob goes.
 
 ///|
@@ -28,6 +29,25 @@ pub fn value_slider_node(
   tips? : TipLayer,
   loc~ : SourceLoc,
 ) -> @view.View {
+  // (how far behind where it rests the knob is drawn, a part of the way: none at rest, the knob where its value lays it
+  // out, as it is moved there by the hand or from outside. Stepped by the keys (an arrow, Home, End, a page), it is
+  // drawn from where it was then, that far behind, coming to none over a control's answer, so it never jumps across
+  // the track in a frame; set off at the step itself, as `change` is told)
+  let lag = @motion.NodeWay::new(0.0)
+  let made : Ref[(@view.View, @headless.Slider)?] = Ref(None)
+  let span_of = max - min
+  let part_of = fn(x : Double) { if span_of <= 0.0 { 0.0 } else { dmax(0.0, dmin(1.0, (x - min) / span_of)) } }
+  let change = fn(x : Double) {
+    match made.val {
+      Some((v, sl)) if !sl.in_hand() => {
+        let was = sl.part() + lag.value_at(v.cause_at())
+        lag.put(was - part_of(x))
+        lag.go_ms(v, 0.0, dur_ms)
+      }
+      _ => lag.put(0.0)
+    }
+    change(x)
+  }
   @headless.slider(
     made_for=loc,
     parent,
@@ -52,6 +72,7 @@ pub fn value_slider_node(
         }
       })
       let hold = fn() { dmax(0.0, held.shown(v)) }
+      made.val = Some((v, sl))
       v
       .height(Is(Some(vslider_h)))
       .min_width(Is(Some(vslider_least_w)))
@@ -63,7 +84,13 @@ pub fn value_slider_node(
         let r = vslider_knob_d / 2.0
         let cy = vslider_h / 2.0
         // (the knob's middle across: its part of the way between its ends' middles)
-        let cx = fn() { r + sl.part() * dmax(0.0, room.width() - vslider_knob_d) }
+        let span = fn() { dmax(0.0, room.width() - vslider_knob_d) }
+        let cx = fn() { r + sl.part() * span() }
+        // (as it is drawn at `at`: how far off where it rests the knob is then; asked again as a step sets it off)
+        let off_at = fn(at : Double) {
+          lag.target() |> ignore
+          lag.value_at(at) * span()
+        }
         // its track
         row.box(fn(t) {
           t
@@ -80,7 +107,7 @@ pub fn value_slider_node(
           .over(Is(true))
           .shapes(By(fn() {
             let k = dmin(1.0, hold())
-            let x = cx()
+            let x = r + (sl.part() + lag.shown(f)) * span()
             let ink = theme().p.accent
             let part = vslider_capsule(0.0, x, cy, vslider_track_h)
             if k <= 0.01 {
@@ -94,7 +121,8 @@ pub fn value_slider_node(
         })
         |> ignore
         // its knob: laid out where its value has it along (a lane over all of it, room before it as far as that), so
-        // what stands beside it (its bubble, in the tips' layer) goes where it is; moved only as its value changes
+        // what stands beside it (its bubble, in the tips' layer) goes where it is; laid out anew only as its value
+        // changes, drawn off that on its way there as the keys step it (`lag`)
         let knob : Ref[@view.View?] = Ref(None)
         row.box(fn(lane) {
           lane.over(Is(true)).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
@@ -107,6 +135,7 @@ pub fn value_slider_node(
               .radius(Is(r))
               .ground(Is(0xFFFFFFFFL))
               .shadow(Is((2.0, 1.0, 0x00000033L)))
+              .moved_by(fn(_w, _h, at) { (off_at(at), 0.0) }, fn(_w, _h) { lag.end() })
               |> ignore
             }),
           )
@@ -154,7 +183,7 @@ pub fn value_slider_node(
               o
               .over(Is(true), edges=(None, Some(-vslider_bubble_gap), None, None))
               .scale(By(fn() { dmin(1.0, 0.6 + 0.4 * hold()) }), about=At(0.5, 1.0))
-              .moved_by(fn(w, h, _at) { (cx() - w / 2.0, -h) }, fn(_w, _h) { 0.0 })
+              .moved_by(fn(w, h, at) { (cx() + off_at(at) - w / 2.0, -h) }, fn(_w, _h) { lag.end() })
               |> ignore
               bubble_in(o)
             })

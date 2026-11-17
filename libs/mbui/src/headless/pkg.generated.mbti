@@ -274,6 +274,7 @@ pub struct Slider {
 pub fn Slider::disabled(Self) -> Bool
 pub fn Slider::focus_shown(Self) -> Bool
 pub fn Slider::hovered(Self) -> Bool
+pub fn Slider::in_hand(Self) -> Bool
 pub fn Slider::part(Self) -> Double
 pub fn Slider::pressed(Self) -> Bool
 pub fn Slider::value(Self) -> Double

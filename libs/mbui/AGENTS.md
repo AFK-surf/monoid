@@ -231,7 +231,8 @@ yet and you can add one, add it.
   `scripts/fps_check.sh`; on `main` after merge, and on PR branches for changed app test files at 120/60/24 via
   `rates-changed`), and must produce identical results. Screen sweeps at rest (`screens`, `squeeze_said`, `words_large`,
   `corners`, `contrast`) run at the default rate only.
-- Frame-to-frame motion smoothness (`sizes_steady`, `rows_steady`, `words_over`, `gaps_steady`) is checked on the
+- Frame-to-frame motion smoothness (`sizes_steady`, down and across: `sizes_across`; `rows_steady`, `words_over`,
+  `gaps_steady`) is checked on the
   default run and via `MBUI_TEST_MOTION` at 60/120 fps (`src/ui/tester_fps.mbt`, `scripts/motion_bars.sh`). The
   `*_known` bars and `@ui.motion_counted` list may only shrink as faults are fixed; never add a file to
   `motion_counted` or raise a bar. Immediate data answers (`@view.answering`, `src/view/answer_marked.mbt`) are treated

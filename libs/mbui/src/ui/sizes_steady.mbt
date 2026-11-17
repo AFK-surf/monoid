@@ -16,16 +16,25 @@
 // key takes the column as far as it says in that frame, its thumb along with it, as what it holds is measured with the
 // scroll taken out; nor while it does not show. Held on every frame a Tester draws, as rows_steady.mbt's rule; its
 // known faults a file at a time (`sizes_steady_known`), each bar only falling.
+//
+// Across as down (the user, 2026-11-17, after 刚刚 under one's own message jumped 39 pt to its end with every test green:
+// 「感觉是系统性问题吧」): what draws on the screen steps no more along a row than down a column, so a ground's left edge
+// and width, and where words start, are measured by the same rule as its top and height, from the left of the
+// row they are in where they are in one (a list's, what scrolls). Words whose own words change are new words there: where
+// they stand along their line is laid out anew at once for them. Its faults are counted apart (`sizes_across_known`, the
+// check `sizes_across`), each file's bar only falling, as they were found when it came.
 
 ///|
 priv struct SizesSteady {
   mut held : Bool
   mut file : String
-  /// each measure's last frames (rows_steady_fault's samples), by node and measure
-  mut seen : Map[(Int, Int, Int64, Bool), Array[(Double, Double, Double)]]
-  /// when each last turned back (rows_turn_ms)
-  mut turned : Map[(Int, Int, Int64, Bool), Double]
+  /// what each node drawn was seen at in its last frames, by who it is (its ident, kind and ground): one lookup a node a
+  /// frame, all it is measured by in it (SizesSeen)
+  mut seen : Map[(Int, Int, Int64), SizesSeen]
   mut found : Set[String]
+  /// what this Tester found across (MEASURE_WIDTH, MEASURE_LEFT), counted apart against
+  /// `sizes_across_known`'s bars
+  mut found_across : Set[String]
   mut window : (Double, Double)
   /// the system's bars round the window as the last frame was drawn (system_bars): what they take of it laid out anew
   /// at once, as for the window made another size
@@ -51,8 +60,8 @@ let sizes_steady : SizesSteady = {
   held: true,
   file: "",
   seen: {},
-  turned: {},
   found: Set([]),
+  found_across: Set([]),
   window: (-1.0, -1.0),
   bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
@@ -63,9 +72,86 @@ let sizes_steady : SizesSteady = {
 }
 
 ///|
+/// What is measured of a node: its height, its top (in its row or the window), its width and its left edge.
+const MEASURE_HEIGHT : Int = 0
+
+///|
+const MEASURE_TOP : Int = 1
+
+///|
+const MEASURE_WIDTH : Int = 2
+
+///|
+const MEASURE_LEFT : Int = 3
+
+///|
+/// What a node drawn was seen at in its last frames, each measure where it is (measure_slot): its samples
+/// (rows_steady_fault's) and when it last turned back (rows_turn_ms); the words it said (words are new words across
+/// where they say another thing: their place across seen anew); which slots this frame measured (`touched`, as of
+/// `at`): one it did not is let go as the frame ends, as one never seen.
+priv struct SizesSeen {
+  seen : FixedArray[Array[(Double, Double, Double)]]
+  turned : FixedArray[Double]
+  mut text : String
+  mut at : Double
+  mut touched : Int
+}
+
+///|
+fn SizesSeen::new(text : String) -> SizesSeen {
+  {
+    seen: FixedArray::makei(6, fn(_) { [] }),
+    turned: FixedArray::make(6, -1.0e9),
+    text,
+    at: -1.0e9,
+    touched: 0,
+  }
+}
+
+///|
+/// Where measure `m` of a node is kept in SizesSeen: a place in a row and one in the window two, never one stepping
+/// from the other (what holds it starting or stopping to scroll moves nothing).
+fn measure_slot(m : Int, in_row : Bool) -> Int {
+  match m {
+    MEASURE_HEIGHT => 0
+    MEASURE_WIDTH => 1
+    MEASURE_TOP => if in_row { 3 } else { 2 }
+    _ => if in_row { 5 } else { 4 }
+  }
+}
+
+///|
+/// Whether a measure is along a row (sizes_across), not down a column.
+fn measure_across(m : Int) -> Bool {
+  m >= MEASURE_WIDTH
+}
+
+///|
+/// Whether a measure is a place (an edge), not a size: what goes as what holds it went, by as far, is carried by it.
+fn measure_place(m : Int) -> Bool {
+  m == MEASURE_TOP || m == MEASURE_LEFT
+}
+
+///|
 /// Each file's bar: how many faults a Tester made there may show.
 // kept across runs: said once as a test program starts (its packages' `init`)
 let sizes_steady_bars : Map[String, Int] = Map([])
+
+///|
+/// Each file's bar of what steps along a row (measure_across): how many faults a Tester made there may show.
+// kept across runs: said once as a test program starts (its packages' `init`)
+let sizes_across_bars : Map[String, Int] = Map([])
+
+///|
+/// The faults along a row known in the tests of the files `bars` names, each how many a Tester made there may show (as
+/// sizes_steady_known): those there were as the check came (2026-11-17). Said by a test package as it starts (`fn
+/// init`); only falls.
+pub fn sizes_across_known(bars : Array[(String, Int)]) -> Unit {
+  motion_bars_said("sizes_across", bars)
+  for b in bars {
+    sizes_across_bars.set(b.0, b.1)
+  }
+}
 
 ///|
 /// The faults known in the tests of the files `bars` names, each how many a Tester made there may show (as
@@ -81,8 +167,8 @@ pub fn sizes_steady_known(bars : Array[(String, Int)]) -> Unit {
 fn sizes_steady_begin(loc : String, held : Bool) -> Unit {
   sizes_steady.held = held
   sizes_steady.seen.clear()
-  sizes_steady.turned.clear()
   sizes_steady.found.clear()
+  sizes_steady.found_across.clear()
   sizes_steady.window = (-1.0, -1.0)
   sizes_steady.bars = (-1.0, -1.0, -1.0, -1.0)
   sizes_steady.words = -1.0
@@ -302,9 +388,19 @@ fn sizes_steady_fault(
 let tree_scroll_held_at : Set[Int] = Set([])
 
 ///|
-/// The faults the frame just drawn (at `now`, the display's frames `period` apart) shows, each said once: of whom, how.
+/// The faults down a column the frame just drawn (at `now`, the display's frames `period` apart) shows, each said once: of
+/// whom, how (Ctx::sizes_faults, those along a row left out).
+// (held by its tests: a Tester holds both through Ctx::sizes_faults)
+#warnings("-unused_value")
 fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[String] {
-  let out : Array[String] = []
+  self.sizes_faults(now, period).filter(fn(f) { !f.0 }).map(fn(f) { f.1 })
+}
+
+///|
+/// The faults the frame just drawn (at `now`, the display's frames `period` apart) shows, each said once: whether it is
+/// along a row (measure_across), of whom, how.
+fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, String)] {
+  let out : Array[(Bool, String)] = []
   let words = @signals.untracked(font_scale)
   // (the system's bars said otherwise: the room they leave the window laid out anew at once, no motion of anything in
   // it, as the window made another size is)
@@ -317,7 +413,7 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
   // (the hand did something since the frame before was judged (rows_steady_hand: the wheel, a key, a press, let go))
   let hand_now = rows_steady.hand != sizes_steady.hand
   sizes_steady.hand = rows_steady.hand
-  let here : Set[(Int, Int, Int64, Bool)] = Set([])
+  let here : Set[(Int, Int, Int64)] = Set([])
   self.with_tree_nodes(fn() {
     let tree = view_tree()
     // (one ident twice in the frame: who either is, unsaid)
@@ -326,8 +422,8 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
       let id = self.nodes[i].ident
       count[id] = count.get(id).unwrap_or(0) + 1
     }
-    // (each with whether it is of its height, and how far it went in the last frame)
-    let faults : Array[(Int, String, Bool, Double)] = []
+    // (each with what it measures (measure_*), and how far it went in the last frame)
+    let faults : Array[(Int, String, Int, Double)] = []
     // (each node's drawn down the window as its looks and theirs over it have it, y -> a * y + b; how opaque; what
     // of the window its holders' clips leave it; its row's top as drawn, where it is in a list's row, or in what a node of
     // the tree scrolls (View::scrolls) or an old view's scroll: there the one node it holds, drawn moved by how far it is
@@ -346,6 +442,8 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
     let c_left = Array::make(k, -1.0e9)
     let c_right = Array::make(k, 1.0e9)
     let row_at = Array::make(k, 0.0)
+    // (and its row's left edge as drawn, where it is in one: what is in it measured from there across)
+    let col_at = Array::make(k, 0.0)
     let in_row = Array::make(k, false)
     // (and when the rows' way of the list it is in last set out: list_size.mbt's RowCauses, -1 none)
     let set_out = Array::make(k, -1.0)
@@ -446,6 +544,7 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
           // (a row of a page's list of the window's tree: its place the list's (rows_steady.mbt, Scroll::grew_above),
           // what is in it measured from its top)
           row_at[i] = ya[i] * n.y + yb[i]
+          col_at[i] = n.x + xb[i]
           in_row[i] = true
           set_out[i] = -1.0
         } else if pn.kind == kind_list || pn.kind == kind_scroll || pn.scroller != 0 ||
@@ -453,6 +552,7 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
           // (less how far its scroll was put for what came out another height over what shows: what is under that moved
           // down in it as far, held where it was)
           row_at[i] = ya[i] * (n.y + pn.tree_corrected) + yb[i]
+          col_at[i] = n.x + xb[i]
           in_row[i] = true
           // (the moment its rows' way set out; or an old list's put elsewhere at once, Ctx::app_scrolled's `put_at`, as
           // rows_steady.mbt has it for the rows themselves: what it holds at its top, a head stuck under its edge
@@ -469,6 +569,7 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
           }
         } else {
           row_at[i] = row_at[p]
+          col_at[i] = col_at[p]
           in_row[i] = in_row[p]
           set_out[i] = set_out[p]
         }
@@ -552,11 +653,22 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
     }
     for i in 0..<k {
       let n = self.nodes[i]
-      if count.get(n.ident).unwrap_or(0) != 1 || !n.draws_own() {
+      // (words the window's tree draws in a box of its own, laid out as that box, no size of their own (ident 0, width
+      // 0): where they stand is that box's, who they are its; measured across alone, as down they never were)
+      let words = n.kind == kind_text || n.kind == kind_rich || n.kind == kind_editor
+      let p = n.parent
+      let boxed = words && n.fw <= 0.0 && p >= 0 && p < k
+      let (ident, nx, nw, ny, nh) = if boxed {
+        let pn = self.nodes[p]
+        (pn.ident, pn.x + xb[p] - xb[i], pn.fw, (ya[p] * pn.y + yb[p] - yb[i]) / ya[i], pn.fh * ya[p] / ya[i])
+      } else {
+        (n.ident, n.x, n.fw, n.y, n.fh)
+      }
+      if count.get(ident).unwrap_or(0) != 1 || !n.draws_own() {
         continue
       }
-      let gy = ya[i] * n.y + yb[i]
-      let gh = ya[i] * n.fh
+      let gy = ya[i] * ny + yb[i]
+      let gh = ya[i] * nh
       let (top0, bot0) = match self.drawn_entry(i) {
         Some({ ground: Some((_, y, _, h, _)), .. }) => (y, y + h)
         // (a node of the window's tree: its ground as drawn, off where it is laid out (Tree::ground_drawn_of: a
@@ -570,7 +682,7 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
             _ => (gy, gy + gh)
           }
       }
-      let left0 = n.x + xb[i]
+      let left0 = nx + xb[i]
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)
       let placed = match n.island {
         Some(id) => old_placed.iter().any(fn(p) { p.0 == id })
@@ -578,30 +690,58 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
       }
       let shows = placed &&
         al[i] > 0.05 &&
-        n.fw > 0.0 &&
+        nw > 0.0 &&
         dmin(bot0, c_bot[i]) > dmax(top0, c_top[i]) &&
-        dmin(left0 + n.fw, c_right[i]) > dmax(left0, c_left[i]) &&
+        dmin(left0 + nw, c_right[i]) > dmax(left0, c_left[i]) &&
         // (nor what is off the window to a side: a page slid off out of its sheet, an old view's held in it)
-        left0 + n.fw > 0.0 &&
+        left0 + nw > 0.0 &&
         left0 < self.width
       let row_top = row_at[i]
+      let row_left = if in_row[i] { col_at[i] } else { 0.0 }
       let in_row = in_row[i]
-      // (words: where they stand; how tall is how many lines they take, no motion's)
-      let words = n.kind == kind_text || n.kind == kind_rich || n.kind == kind_editor
-      let measures = if words { [(false, top0 - row_top)] } else { [(true, bot0 - top0), (false, top0 - row_top)] }
-      for m in measures {
-        // (a place in a row and one in the window are two measures, never one stepping from the other: what holds it
-        // starting or stopping to scroll, as what it holds comes to be taller than it or not, moves nothing)
-        let key = (n.ident, if !m.0 && in_row { -1 - n.kind } else { n.kind }, n.bg, m.0)
-        here.add(key)
-        let seen = match sizes_steady.seen.get(key) {
-          Some(s) => s
-          None => {
-            let s = []
-            sizes_steady.seen[key] = s
-            s
-          }
+      // (words: where they stand, down and where they start across; how tall is how many lines they take, no motion's;
+      // words are drawn from the start of their box, and how far their ink goes on is how wide what they say is or where
+      // they are cut short, never the box's other edge, which a box grown in its row moves with what is beside it, the
+      // words staying where they are; words that say another thing are new words where they stand across, keyed by what
+      // they say)
+      let measures = if boxed {
+        [(MEASURE_LEFT, left0 - row_left)]
+      } else if words {
+        [(MEASURE_TOP, top0 - row_top), (MEASURE_LEFT, left0 - row_left)]
+      } else {
+        [
+          (MEASURE_HEIGHT, bot0 - top0),
+          (MEASURE_TOP, top0 - row_top),
+          (MEASURE_WIDTH, nw),
+          (MEASURE_LEFT, left0 - row_left),
+        ]
+      }
+      let key = (ident, n.kind, n.bg)
+      here.add(key)
+      let ns = match sizes_steady.seen.get(key) {
+        Some(s) => s
+        None => {
+          let s = SizesSeen::new(n.text)
+          sizes_steady.seen[key] = s
+          s
         }
+      }
+      if ns.at != now {
+        ns.at = now
+        ns.touched = 0
+      }
+      // (words saying another thing: new words where they stand across)
+      if words && !physical_equal(ns.text, n.text) && ns.text != n.text {
+        ns.text = n.text
+        for s in [4, 5] {
+          ns.seen[s].clear()
+          ns.turned[s] = -1.0e9
+        }
+      }
+      for m in measures {
+        let slot = measure_slot(m.0, in_row)
+        ns.touched = ns.touched | (1 << slot)
+        let seen = ns.seen[slot]
         let gap = seen.length() > 0 && now - seen[seen.length() - 1].1 > 2.5 * period
         // (what the hand's scroll moves by its offset alone, in the frame it did: as far as the hand took it; and in the
         // frame its column was put at once, or its list's keys changed by data, as far as that took it)
@@ -618,38 +758,40 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
         while seen.length() > 5 {
           seen.remove(0) |> ignore
         }
-        let turned = sizes_steady.turned.get(key).unwrap_or(-1.0e9)
+        let turned = ns.turned[slot]
         let (fault, turn) = sizes_steady_fault(seen, period, turned~, set_out=set_out[i])
-        if turn != turned {
-          sizes_steady.turned[key] = turn
-        }
+        ns.turned[slot] = turn
         match fault {
           Some(f) => {
             let went = if seen.length() >= 2 { seen[seen.length() - 1].2 - seen[seen.length() - 2].2 } else { 0.0 }
-            faults.push(
-              (i, (if m.0 { "its height " } else if in_row { "its place in its row " } else { "its place " }) + f, m.0, went),
-            )
+            let said = match m.0 {
+              MEASURE_HEIGHT => "its height "
+              MEASURE_WIDTH => "its width "
+              MEASURE_LEFT => if in_row { "its left edge in its row " } else { "its left edge " }
+              _ => if in_row { "its place in its row " } else { "its place " }
+            }
+            faults.push((i, said + f, m.0, went))
           }
           None => ()
         }
       }
     }
     // (what goes as what holds it went, by as far in the frame, carried by it: that one said, the outermost so carried,
-    // not each thing in it)
-    let placed : Map[Int, Double] = Map([])
+    // not each thing in it; down by its top, across by its left edge)
+    let placed : Map[(Int, Bool), Double] = Map([])
     for f in faults {
-      if !f.2 {
-        placed[f.0] = f.3
+      if measure_place(f.2) {
+        placed[(f.0, measure_across(f.2))] = f.3
       }
     }
     let carried : Set[Int] = Set([])
     for k, f in faults {
-      if f.2 {
+      if !measure_place(f.2) {
         continue
       }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        match placed.get(p) {
+        match placed.get((p, measure_across(f.2))) {
           Some(w) if (w - f.3).abs() < 0.01 => {
             carried.add(k)
             break
@@ -659,30 +801,41 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
         p = self.nodes[p].parent
       }
     }
-    // (else the innermost of what goes together: what holds it goes with it)
-    let holds : Set[Int] = Set([])
+    // (else the innermost of what goes together, down or across: what holds it goes with it)
+    let holds : Set[(Int, Bool)] = Set([])
     for k, f in faults {
       if carried.contains(k) {
         continue
       }
       let mut p = self.nodes[f.0].parent
       while p >= 0 {
-        holds.add(p)
+        holds.add((p, measure_across(f.2)))
         p = self.nodes[p].parent
       }
     }
     for k, f in faults {
-      if !carried.contains(k) && !holds.contains(f.0) {
-        out.push(self.sizes_steady_said(f.0) + ": " + f.1 + self.sizes_steady_made(f.0))
+      if !carried.contains(k) && !holds.contains((f.0, measure_across(f.2))) {
+        out.push((measure_across(f.2), self.sizes_steady_said(f.0) + ": " + f.1 + self.sizes_steady_made(f.0)))
       }
     }
   })
   sizes_steady.judged = now
-  let gone : Array[(Int, Int, Int64, Bool)] = []
-  sizes_steady.seen.each(fn(k, _) { if !here.contains(k) { gone.push(k) } })
+  let gone : Array[(Int, Int, Int64)] = []
+  sizes_steady.seen.each(fn(k, ns) {
+    if !here.contains(k) {
+      gone.push(k)
+    } else {
+      // (a measure not taken this frame is let go, as one never seen)
+      for s in 0..<6 {
+        if (ns.touched & (1 << s)) == 0 {
+          ns.seen[s].clear()
+          ns.turned[s] = -1.0e9
+        }
+      }
+    }
+  })
   for k in gone {
     sizes_steady.seen.remove(k)
-    sizes_steady.turned.remove(k)
   }
   out
 }
@@ -691,29 +844,35 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
 /// The rule held on the frame just drawn: a fault not found before by this Tester, past its file's bar, fails the test
 /// at once, with what and where.
 fn Tester::hold_sizes_steady(self : Tester) -> Unit {
-  let faults = g().sizes_steady_faults(self.fake.time, self.motion_period())
+  let faults = g().sizes_faults(self.fake.time, self.motion_period())
   if !sizes_steady.held {
     return
   }
-  for f in faults {
+  for fa in faults {
+    let (across, f) = fa
     // (each one's once)
     let who = match f.find(": ") {
       Some(i) => f.unsafe_substring(start=0, end=i)
       None => f
     }
-    if sizes_steady.found.contains(who) {
+    let (check, found, bars) = if across {
+      ("sizes_across", sizes_steady.found_across, sizes_across_bars)
+    } else {
+      ("sizes_steady", sizes_steady.found, sizes_steady_bars)
+    }
+    if found.contains(who) {
       continue
     }
-    sizes_steady.found.add(who)
-    let bar = sizes_steady_bars.get(sizes_steady.file).unwrap_or(0)
-    motion_known_said("sizes_steady", sizes_steady.file, sizes_steady.found.length(), bar, f)
+    found.add(who)
+    let bar = bars.get(sizes_steady.file).unwrap_or(0)
+    motion_known_said(check, sizes_steady.file, found.length(), bar, f)
     if self.motion == Count {
-      println("MOTION sizes_steady \{sizes_steady.file}: \{f} (the Tester made at \{looks_made_at.val})")
+      println("MOTION \{check} \{sizes_steady.file}: \{f} (the Tester made at \{looks_made_at.val})")
       continue
     }
-    if sizes_steady.found.length() > bar {
-      let said = "sizes not steady (sizes_steady.mbt), on a frame drawn \{self.w}×\{self.h} at \{self.fake.time}, the Tester made at \{looks_made_at.val}: " +
-        "\{f}; \{sizes_steady.found.length()} now, \{bar} known in \{sizes_steady.file}"
+    if found.length() > bar {
+      let said = "sizes not steady (sizes_steady.mbt, \{check}), on a frame drawn \{self.w}×\{self.h} at \{self.fake.time}, the Tester made at \{looks_made_at.val}: " +
+        "\{f}; \{found.length()} now, \{bar} known in \{sizes_steady.file}"
       @halt.saying(said)
     }
   }
