@@ -40,6 +40,7 @@ fn screen_rig(
   os? : String = "",
   screens? : Json,
   in_tab? : Bool = false,
+  net? : Json,
 ) -> ScreenRig {
   @sfbase.reset()
   // this machine's station, as its host says (`here`); none by default
@@ -57,6 +58,9 @@ fn screen_rig(
         Some(Json::object({}))
       } else if name == "screens" {
         screens
+      } else if name == "stationNet" {
+        // how this device reaches the station (`net`), as the core says it; none by default
+        net
       } else {
         None
       }

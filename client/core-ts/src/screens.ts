@@ -1027,6 +1027,9 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 if (Array.isArray(s.views)) onViews = s.views;
                 const ms = (v: unknown): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0 && v < 600_000;
                 if (isObject(s.latency) && ms(s.latency.frame) && ms(s.latency.before)) state.latency = { frame: Math.round(s.latency.frame), before: Math.round(s.latency.before) };
+                // What the station counts of the link lost (the pictures all go its way: what this device sends and loses is
+                // only its acknowledgements), in percent to a tenth.
+                if (typeof s.loss === "number" && Number.isFinite(s.loss) && s.loss >= 0 && s.loss <= 100) state.loss = Math.round(s.loss * 10) / 10;
                 if (isObject(s.video) && typeof s.video.capture === "string") {
                   state.video = {
                     capture: s.video.capture.slice(0, 80),

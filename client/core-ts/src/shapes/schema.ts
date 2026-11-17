@@ -2647,6 +2647,7 @@ export const SHAPES: Record<string, Shape> = {
     ["clipboard", vec("String"), { default: true, doc: "While driving it: the clipboard types it carries both ways (`text`, `png`): a paste goes with\n`screen.clipboard`, a copy made on it comes as the call's `{clipboard}` value. None while only looking." }],
     ["drop", opt("ScreenDrop"), { doc: "While driving it: where a file dropped into the view goes (none while only looking, or from a station before files)." }],
     ["latency", opt("ScreenLatency"), { doc: "How late its frames are, said each second while they come (none from a station before it)." }],
+    ["loss", opt("f64"), { doc: "Share of packets lost on the view's link over the last minute, in percent (0..100), as its station counts\nwhat went out and was lost (none from a station before it, or before enough went)." }],
     ["video", opt("ScreenVideo"), { doc: "How its pictures are made, as the station said as the view opened (none from a station before it)." }],
     ["scale", opt("ScreenScale"), { doc: "While driving it: its display's scale, set with `screen.input` `{t: \"scale\", percent}` and put back as it was\nonce nobody views it (a Windows station's desktop; none elsewhere, or while only looking)." }],
     ["resolution", opt("ScreenResolution"), { doc: "While driving it: its display's resolution, set with `screen.input` `{t: \"resolution\", width, height}`\nand put back as it was once nobody views it (a Windows station's desktop; none elsewhere, or while only looking)." }],

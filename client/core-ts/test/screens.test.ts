@@ -539,6 +539,21 @@ each("a_view_brings_its_frames_with_their_bytes_and_takes_acks_key_frames_and_in
   await host.settle();
   said(host, log);
   assert.deepEqual(lastState(log, 1).latency, { frame: 87, before: 12 });
+  // What the link lost, as the station counts it (the pictures all go its way): none from a station before it; a share
+  // to a tenth; one out of 0..100 or no number taken for nothing.
+  assert.equal(lastState(log, 1).loss, undefined, "a station that says no loss: none");
+  v!.send(stateFrame({ loss: 28.64 }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).loss, 28.6);
+  for (const bad of [-1, 100.5, null, "12%"]) v!.send(stateFrame({ loss: bad }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).loss, 28.6);
+  v!.send(stateFrame({ loss: 0 }));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).loss, 0);
   // How its pictures are made, as the station says it.
   v!.send(stateFrame({ video: { capture: "ScreenCaptureKit", encoder: "hardware, low latency, HEVC_Main_AutoLevel", hardware: true } }));
   await host.settle();

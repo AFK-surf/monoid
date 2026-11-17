@@ -83,6 +83,95 @@ fn screen_net(s : ScreenSess) -> Json? {
 }
 
 ///|
+/// The share a station's link line says was lost (`stationNet`'s `loss.text`: 丢包 12.5%, 12.5% loss): its number alone,
+/// None where it says none.
+fn loss_pct_of_words(w : String) -> Double? {
+  let mut whole = 0.0
+  let mut frac = 0.0
+  let mut scale = 1.0
+  let mut in_frac = false
+  let mut any = false
+  for ch in w {
+    if ch >= '0' && ch <= '9' {
+      let d = (ch.to_int() - '0'.to_int()).to_double()
+      if in_frac {
+        scale = scale / 10.0
+        frac = frac + d * scale
+      } else {
+        whole = whole * 10.0 + d
+      }
+      any = true
+    } else if ch == '.' && any && !in_frac {
+      in_frac = true
+    } else if any {
+      break
+    }
+  }
+  if any { Some(whole + frac) } else { None }
+}
+
+///|
+/// A share lost, as 丢包率 says it (to a tenth: 28.6%, 0%) and its level: red from 10%, amber from 1%, plain below.
+fn loss_words(pct : Double) -> (String, String) {
+  let clamped = if pct < 0.0 { 0.0 } else if pct > 100.0 { 100.0 } else { pct }
+  let tenths = (clamped * 10.0).round().to_int()
+  if tenths <= 0 {
+    return ("0%", "")
+  }
+  ("\{tenths / 10}.\{tenths % 10}%", if tenths >= 100 { "red" } else if tenths >= 10 { "amber" } else { "" })
+}
+
+///|
+/// What the view's link lost (丢包率) and its level: the most of what the station counts of the view's link (the view's
+/// state's `loss`: the pictures all go its way) and of what this device counts of its own connection (`stationNet`'s,
+/// a station before the view's count); 0% where neither says one, — before either is known.
+fn screen_loss(st : Json?, net : Json?) -> (String, String) {
+  let down = match field(st, "loss") {
+    Some(Number(n, ..)) => Some(n)
+    _ => None
+  }
+  let up = match field(net, "loss") {
+    Some(Object(_)) as f => loss_pct_of_words(text(f, "text"))
+    _ => None
+  }
+  match (down, up) {
+    (Some(d), Some(u)) => loss_words(if d > u { d } else { u })
+    (Some(d), None) => loss_words(d)
+    (None, Some(u)) => loss_words(u)
+    (None, None) => if net is Some(_) { ("0%", "") } else { ("—", "") }
+  }
+}
+
+///|
+/// How bad a level is: red, then amber, then ok, then none.
+fn level_rank(level : String) -> Int {
+  match level {
+    "red" => 3
+    "amber" => 2
+    "ok" => 1
+    _ => 0
+  }
+}
+
+///|
+/// How the view's link goes, as the signal mark and the viewer's bar say it: the worst of its round trip's level and
+/// what it lost (a link of 57 ms that loses a quarter of what goes is not good: pengxiao, 2026-11-17). What it lost
+/// only makes it worse; before the round trip is known, none.
+fn screen_link_level(st : Json?, net : Json?) -> String {
+  let mut worst = text(field(net, "rtt"), "level")
+  let down = match field(st, "loss") {
+    Some(Number(n, ..)) => loss_words(n).1
+    _ => ""
+  }
+  for l in [down, text(field(net, "loss"), "level")] {
+    if level_rank(l) > level_rank(worst) {
+      worst = l
+    }
+  }
+  worst
+}
+
+///|
 /// 画质's choices, the default first: its key in the prefs ("" none), its words' key.
 // kept across runs: a table, never written
 let screen_qualities : Array[(String, String)] = [("", "auto"), ("smooth", "smooth"), ("hd", "hd"), ("original", "original")]
@@ -147,6 +236,16 @@ fn level_color(level : String, plain : @ui.Color) -> @ui.Color {
 }
 
 ///|
+/// The colour of a figure's words as its level is: the mark's, but amber's ink that reads on the panel (Warn itself is
+/// too light for words).
+fn figure_ink(level : String) -> @ui.Color {
+  match level {
+    "amber" => WarnInk
+    l => level_color(l, Fg)
+  }
+}
+
+///|
 /// Native events arrive before this frame rebuilds native_over; use the page and system bars, not that transient flag.
 fn screen_panel_side() -> @ui.Side {
   if @sf.native_side() && app.nav.top() is Screen(_) { Left } else { Bottom }
@@ -200,7 +299,7 @@ fn net_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
     @sf.style_node(b, fn() { net_panel_box })
     b.box(fn(head) {
       @sf.style_node(head, fn() { net_head_box })
-      signal_bars_node(head, fn() { text(field(net(), "rtt"), "level") })
+      signal_bars_node(head, fn() { screen_link_level(st(), net()) })
       @sf.words_node(head, fn() {
         @sf.t("web-pages.screen.stat.rttHead").replace_all(old="{rtt}", new=or_dash(text(field(net(), "rtt"), "text")))
       }, fn() { net_head_words })
@@ -221,7 +320,7 @@ fn net_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
                 @sf.words_node(n, fn() { @sf.t(name) }, fn() { net_name_words }) |> ignore
               })
               |> ignore
-              @sf.words_node(row, value, fn() { net_value_words.then(@ui.text_style(color=level_color(level(), Fg))) })
+              @sf.words_node(row, value, fn() { net_value_words.then(@ui.text_style(color=figure_ink(level()))) })
               |> ignore
             })
             |> ignore
@@ -240,12 +339,7 @@ fn net_node(v : @view.View, s : ScreenSess, u : ScreenUi) -> Unit {
       }
     }
     let plain = fn() { "" }
-    let loss = fn() {
-      match field(net(), "loss") {
-        Some(Object(_)) as f => (text(f, "text"), text(f, "level"))
-        _ => ("0%", "")
-      }
-    }
+    let loss = fn() { screen_loss(st(), net()) }
     group([
       ("web-pages.screen.stat.frameLatency", ms("frame"), plain),
       ("web-pages.screen.stat.beforeSent", ms("before"), plain),
@@ -340,12 +434,10 @@ fn diagnosis(s : ScreenSess, u : ScreenUi, net : Json?, os : String) -> Json {
       Some(t) => Json::string(t)
       None => Json::null()
     },
-    "loss": Json::string(
-      match opt_text(field(net, "loss"), "text") {
-        Some(t) => t
-        None => "0%"
-      },
-    ),
+    "loss": match screen_loss(st, net).0 {
+      "—" => Json::null()
+      t => Json::string(t)
+    },
     "path": match opt_text(net, "path") {
       Some(t) => Json::string(t)
       None => Json::null()
