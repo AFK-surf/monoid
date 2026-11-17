@@ -50,6 +50,7 @@ import {
   "station/memory",
   "station/packed",
   "station/front",
+  "station/browser",
   "station/jsjson",
   "station/jscase",
   "station/events",

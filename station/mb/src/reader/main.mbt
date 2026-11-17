@@ -975,6 +975,8 @@ fn main {
       }))
     (Some("usage-counter"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => usage_counter(host, db))
+    (Some("harness-browser"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @browser.harness(host))
     (Some("signin-save"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "sign-in index", (db, ask) => match ask {
         String(session) => Some(@signin.step(db, session))
