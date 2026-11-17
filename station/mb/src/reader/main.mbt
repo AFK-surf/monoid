@@ -841,6 +841,8 @@ async fn search_program(host : @host.Host, db_path : String, data : String, sep 
 ///|
 fn main {
   let code = match (flag("--builder"), flag("--db"), flag("--data")) {
+    (Some("harness-session-hub"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_hub.harness(host))
     (Some("archive-marks"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "archive mark", all(db => @marks.step(db))))
     (Some("harness-store-schema"), Some(db), _) =>

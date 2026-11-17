@@ -1,5 +1,6 @@
 import {
   "station/host",
+  "station/session_hub",
   "station/wire",
   "station/sql",
   "station/mcp_tools",
