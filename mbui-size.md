@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
 | [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
 | [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [719a050d0](https://github.com/AFK-surf/monoid/commit/719a050d043ed11baf37af4b7e07ab21c8782561) app: the board reaches the foot on every screen, i | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
-| [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 2.5 | 3.52 | 15.23 | 36.58 | 60.19 | 32.03 | 67.17 | 95.83 | 118.99 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.53 |
 | [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.48 |
 | [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.49 |
 | [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [719a050d0](https://github.com/AFK-surf/monoid/commit/719a050d043ed11baf37af4b7e07ab21c8782561) app: the board reaches the foot on every screen, i | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.28 |
 | [0bd535f45](https://github.com/AFK-surf/monoid/commit/0bd535f459d70f46a132707058ecf3af0686cd14) mbui: a page's list's fill takes no pass more for  | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.27 |
 | [dd71385de](https://github.com/AFK-surf/monoid/commit/dd71385deb23159910ef84eb7719248bd4b4e71d) mbui: the glyph atlas emptied a shelf at a time; A | 0.43 | 0.56 | 2.13 | 3.23 | 5.09 | 1.57 | 4.18 | 53.3 |
-| [54ee7e22c](https://github.com/AFK-surf/monoid/commit/54ee7e22cd52a32b788c8969c9059b8d00ccbd39) cloud: the relays' list is the cloud's, kept by it | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
