@@ -42,6 +42,7 @@ import {
   "station/replica",
   "station/mesh_door",
   "station/footprint",
+  "station/session_chats",
   "station/memory",
   "station/packed",
   "station/front",

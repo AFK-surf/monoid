@@ -1036,6 +1036,8 @@ fn main {
         }
         host.say(line)
       })
+    (Some("harness-session-chats"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_chats.harness(host))
     (Some("replica-carry"), _, _) =>
       // (the shell's own files, which this asks for none of, in `--shell-dir`)
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => replica_carry(host, flag("--sep").unwrap_or("/")))

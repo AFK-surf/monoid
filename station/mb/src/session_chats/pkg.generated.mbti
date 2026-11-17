@@ -1,0 +1,537 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/session_chats"
+
+import {
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn about_ts(@jsjson.JValue) -> String?
+
+pub fn accepts_completion(@jsjson.JValue, Double) -> Bool
+
+pub fn allowed_in(@jsjson.JValue, String?, String?) -> Bool
+
+pub fn arr_of(@jsjson.JValue?) -> Array[@jsjson.JValue]?
+
+pub fn at(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn at_i(@jsjson.JValue?, Int32) -> @jsjson.JValue?
+
+pub async fn attach(World, String, Array[String], String) -> @jsjson.JValue
+
+pub fn bool_of(@jsjson.JValue?) -> Bool?
+
+pub fn by_decision_priority(String, String) -> Int32
+
+pub fn byte_length(String) -> Int32
+
+pub async fn call_api(World, String, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn candidates(World, String, Array[@jsjson.JValue], Array[@jsjson.JValue], async (String) -> Bool) -> Array[@jsjson.JValue]
+
+pub fn canonical(@jsjson.JValue) -> String
+
+pub async fn card_header_if_ready(World, @jsjson.JValue) -> @jsjson.JValue?
+
+pub let card_occupied : String
+
+pub async fn card_place(World, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue?
+
+pub async fn cc(World, @jsjson.JValue, String, String, String, @jsjson.JValue, Array[@jsjson.JValue]) -> Unit
+
+pub fn cc_text(Words, String, String, String) -> String
+
+pub fn char_count(String) -> Int32
+
+pub fn chars(String) -> Array[String]
+
+pub async fn chat_create(World, String, @jsjson.JValue) -> String
+
+pub async fn chat_history(World, String, @jsjson.JValue) -> String
+
+pub fn chat_key(String, made? : (String) -> Bool) -> String
+
+pub let chat_key_prefix : String
+
+pub async fn chat_leave(World, String, @jsjson.JValue) -> String
+
+pub fn chat_named(String, String, String?) -> String
+
+pub async fn chat_post(World, String, @jsjson.JValue, Held) -> String
+
+pub async fn chat_state(World, String, @jsjson.JValue) -> String
+
+pub fn chat_workspace(String, String, sep? : String) -> String
+
+pub fn clean_title(String) -> String
+
+pub fn codex_config(String) -> @jsjson.JValue?
+
+pub async fn complete_title(World, @jsjson.JValue, String, String) -> String
+
+pub fn completion_question() -> @jsjson.JValue
+
+pub async fn create_for_peer(World, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub let create_method : String
+
+pub let create_preset_method : String
+
+pub let create_preset_speed_method : String
+
+pub let create_speed_method : String
+
+pub async fn decide(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn decision_connection(World, @jsjson.JValue) -> @jsjson.JValue?
+
+pub fn decision_parse(@jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue raise Thrown
+
+pub fn decision_priority(String) -> Int32
+
+pub fn decision_request(@jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue raise Thrown
+
+pub fn decision_transport(@jsjson.JValue, String) -> @jsjson.JValue
+
+pub fn declared_str(@jsjson.JValue) -> String
+
+pub let dirs_max : Int32
+
+pub async fn discover(World, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn encode_uri_component(String) -> String
+
+pub fn ends(String, String) -> Bool
+
+pub fn exif_turned(BytesView) -> Bool?
+
+pub fn facts_of(Bytes) -> Facts?
+
+pub fn fail_(String) -> Thrown
+
+pub async fn fingerprint(World, @jsjson.JValue) -> String
+
+pub fn first_chars(String, Int32) -> String
+
+pub async fn from_peer(World, String, @jsjson.JValue, String?) -> @jsjson.JValue
+
+pub fn gone_kept(Array[@jsjson.JValue]) -> Array[@jsjson.JValue]
+
+pub let gone_kept_most : Int32
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn header_size(BytesView) -> Facts?
+
+pub async fn hub_config(World, @jsjson.JValue, String, (String) -> Array[String]?) -> @jsjson.JValue
+
+pub fn index_of(String, String, from? : Int32) -> Int32
+
+pub let instructions_max : Int32
+
+pub let internal_bot_user : String
+
+pub let internal_channel : String
+
+pub let internal_connect : String
+
+pub fn internal_post(String, String, Double) -> String raise Thrown
+
+pub fn internal_user_name(String) -> String?
+
+pub fn is_gone(@jsjson.JValue) -> Bool
+
+pub fn is_internal_channel(String) -> Bool
+
+pub fn is_js_space(Int32) -> Bool
+
+pub fn is_notice(String) -> Bool
+
+pub fn is_null(@jsjson.JValue?) -> Bool
+
+pub fn is_obj(@jsjson.JValue?) -> Bool
+
+pub fn is_undefined(@jsjson.JValue) -> Bool
+
+pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn jb(Bool) -> @jsjson.JValue
+
+pub fn jeq(@jsjson.JValue, @jsjson.JValue) -> Bool
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jincludes(Array[@jsjson.JValue], @jsjson.JValue) -> Bool
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn join_path(Array[String], sep? : String) -> String
+
+pub fn jopt(String?) -> @jsjson.JValue
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_compare(String, String) -> Int32
+
+pub fn js_number(@jsjson.JValue) -> Double?
+
+pub fn js_round(Double) -> Double
+
+pub fn js_string(@jsjson.JValue) -> String
+
+pub fn js_string_of(@jsjson.JValue?) -> String
+
+pub fn jsa(Array[String]) -> @jsjson.JValue
+
+pub async fn keep_copy(World, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn keys_of(@jsjson.JValue?) -> Array[String]
+
+pub fn last_index_of(String, String) -> Int32
+
+pub fn links(String) -> Array[Found]
+
+pub let live_most : Int32
+
+pub fn lower(String) -> String
+
+pub fn mark_notice(String) -> String
+
+pub async fn may_stage(World, @jsjson.JValue, Bool) -> Bool
+
+pub fn message_header(Words, String, String, String, String?, Bool, Bool?) -> String
+
+pub async fn message_identity(World, String) -> @jsjson.JValue?
+
+pub fn model_of(@jsjson.JValue?) -> @jsjson.JValue?
+
+pub fn model_speed(@jsjson.JValue?) -> String?
+
+pub async fn name_chat(World, @jsjson.JValue, String) -> String
+
+pub let name_max : Int32
+
+pub async fn named_local_paths(World, String) -> Array[(String, String)]
+
+pub let need_visible_question : String
+
+pub fn newer_record(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn next_ts_at(Double) -> String
+
+pub fn normalize_path(String, sep? : String) -> String
+
+pub let not_posted : String
+
+pub async fn notice_for_peer(World, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub let notice_mark : String
+
+pub let notice_method : String
+
+pub fn nullish(@jsjson.JValue?) -> Bool
+
+pub fn num_of(@jsjson.JValue?) -> Double?
+
+pub fn num_text(Double) -> String
+
+pub fn object_from(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn opened_notice(String, String?, String, String?, Bool?) -> String
+
+pub fn origin_in(String) -> String?
+
+pub async fn origin_of(World, String) -> String?
+
+pub fn page_origin(String, String) -> String
+
+pub fn parse_js(String) -> @jsjson.JValue raise Thrown
+
+pub fn parse_opt(String) -> @jsjson.JValue?
+
+pub fn parse_thread_address(String) -> (String, String)?
+
+pub fn percent_decode(String) -> String
+
+pub async fn policy_stamp(World, String) -> @jsjson.JValue
+
+pub async fn policy_ws(World, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn post_block_answered(Bool, Double?, Double) -> Bool
+
+pub fn post_block_threads(Array[@jsjson.JValue]) -> Array[(@jsjson.JValue, Double)]
+
+pub async fn post_card(World, String, @jsjson.JValue, String, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?) -> @jsjson.JValue
+
+pub async fn post_from(World, @jsjson.JValue, String, String, String?, String, Array[String], @jsjson.JValue, Bool) -> String
+
+pub async fn prepare(World, String, Array[String], String) -> String
+
+pub fn preset_copy_input(@jsjson.JValue) -> @jsjson.JValue raise Thrown
+
+pub async fn preset_copy_of(World, String) -> @jsjson.JValue
+
+pub async fn preset_input(World, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn preset_instructions(@jsjson.JValue) -> String
+
+pub fn preset_refusal(Words, @jsjson.JValue, String?, @jsjson.JValue, String) -> String?
+
+pub async fn presets_add(World, @jsjson.JValue, @jsjson.JValue, String, String) -> @jsjson.JValue
+
+pub async fn presets_carry(World, @jsjson.JValue, @jsjson.JValue, Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub async fn presets_delete(World, @jsjson.JValue, String, @jsjson.JValue?) -> Unit
+
+pub async fn presets_get(World, @jsjson.JValue, String) -> @jsjson.JValue
+
+pub async fn presets_is_here(World, String) -> Bool
+
+pub async fn presets_keep_for(World, String, @jsjson.JValue, String) -> @jsjson.JValue
+
+pub async fn presets_kept(World, @jsjson.JValue, @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub async fn presets_list(World, @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub async fn presets_listed(World, @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub async fn presets_me(World) -> String
+
+pub async fn presets_name_of(World, String, String?) -> String
+
+pub async fn presets_others(World, @jsjson.JValue, @jsjson.JValue) -> Array[@jsjson.JValue]
+
+pub async fn presets_put(World, @jsjson.JValue, String, @jsjson.JValue, @jsjson.JValue?) -> @jsjson.JValue
+
+pub async fn presets_record(World, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn presets_theirs(@jsjson.JValue, @jsjson.JValue) -> Bool
+
+pub fn profiles_for(@jsjson.JValue, @jsjson.JValue, String?) -> Array[@jsjson.JValue]
+
+pub fn quoted(String) -> String
+
+pub async fn read_presets_file(World, String, String) -> PresetsFile
+
+pub fn record_of(@jsjson.JValue) -> @jsjson.JValue raise Thrown
+
+pub async fn record_posted_card(World, String, @jsjson.JValue, String, @jsjson.JValue, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?, @jsjson.JValue?) -> @jsjson.JValue
+
+pub fn records_kept(Array[(String, @jsjson.JValue)]) -> Array[(String, @jsjson.JValue)]
+
+pub async fn regenerate_title(World, @jsjson.JValue, Array[@jsjson.JValue]) -> String
+
+pub fn replace_all(String, String, String) -> String
+
+pub async fn repo_icon(World, String) -> String?
+
+pub fn repo_name(String) -> String
+
+pub fn reset_ts(Double) -> Unit
+
+pub async fn resolved_model(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue?
+
+pub async fn review(World, String) -> Unit
+
+pub async fn review_undecided_once(World) -> Unit
+
+pub async fn runs(World, @jsjson.JValue, String) -> Bool
+
+pub fn runtime_kind(@jsjson.JValue?) -> String?
+
+pub let runtime_kinds : Array[String]
+
+pub fn runtime_named(String) -> String?
+
+pub fn runtime_title(String) -> String
+
+pub fn said_as(@jsjson.JValue) -> String
+
+pub async fn same_model(World, String, String) -> Bool
+
+pub async fn sender(World, String) -> (String, String?)
+
+pub async fn sender_title_if_ready(World, String) -> @jsjson.JValue?
+
+pub let session_message_method : String
+
+pub fn session_page(PageBase, String, String) -> String
+
+pub async fn session_send(World, String, @jsjson.JValue) -> String
+
+pub fn set_field(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn settled(World, String, String, String?) -> Unit
+
+pub async fn short_path(World, String) -> String
+
+pub fn size_of(Bytes) -> (Double, Double)?
+
+pub async fn slack_api(World, String, String, @jsjson.JValue, String?, String?, Bool) -> String
+
+pub async fn slack_connect_of(World, String, String?) -> String
+
+pub fn slice(String, Int32, b? : Int32) -> String
+
+pub async fn spelling(World, @jsjson.JValue, String) -> String?
+
+pub fn split(String, String) -> Array[String]
+
+pub fn split_for_slack(String, Int32) -> Array[String]
+
+pub fn spread(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn staged(World, String, @jsjson.JValue, Bool) -> (@jsjson.JValue, Array[String])
+
+pub async fn staged_done(World, Array[String]) -> Unit
+
+pub async fn start_review(World) -> Double?
+
+pub fn starts(String, String) -> Bool
+
+pub let station_author : String
+
+pub fn station_fields((Bool, String?, Array[String]?)) -> Array[(String, @jsjson.JValue)]
+
+pub fn stations_of(@jsjson.JValue?) -> (Bool, String?, Array[String]?)
+
+pub let stillfail_surface : String
+
+pub fn str_of(@jsjson.JValue?) -> String?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub async fn suggest_archive(World, String) -> Unit
+
+pub async fn target(World, String, @jsjson.JValue?) -> @jsjson.JValue
+
+pub fn thread_address(String, String) -> String
+
+pub async fn thread_history(World, String, @jsjson.JValue, String, String, @jsjson.JValue, Array[@jsjson.JValue]?) -> String
+
+pub fn thrown_kind(Error) -> String
+
+pub fn thrown_message(Error) -> String
+
+pub async fn title_completion(World, @jsjson.JValue, String?, String) -> @jsjson.JValue?
+
+pub let title_timeout_ms : Double
+
+pub fn tool_status(Words, String, String) -> String
+
+pub fn trim(String) -> String
+
+pub fn trim_end(String) -> String
+
+pub fn trim_start(String) -> String
+
+pub fn truthy(@jsjson.JValue?) -> Bool
+
+pub async fn undecided(World) -> Array[String]
+
+pub fn undefined_j() -> @jsjson.JValue
+
+pub async fn unheld(World, String, @jsjson.JValue) -> Held
+
+pub fn units_compare(Array[Int32], Array[Int32]) -> Int32
+
+pub async fn untitled_chat(World, String) -> String?
+
+pub fn utf8(String) -> Bytes
+
+pub async fn validate_decision(World, @jsjson.JValue) -> Unit
+
+pub fn without(@jsjson.JValue, Array[String]) -> @jsjson.JValue
+
+// Errors
+pub(all) suberror Thrown {
+  Thrown(String, String)
+}
+pub impl Show for Thrown
+
+// Types and methods
+#derive(Eq, Show)
+pub struct Facts {
+  width : Double
+  height : Double
+  duration : Double?
+  frames : Double?
+}
+pub fn Facts::to_j(Self) -> @jsjson.JValue
+
+#derive(Eq, Show)
+pub struct Found {
+  inline : Bool
+  destination : String
+  start : Int32
+  end : Int32
+}
+pub fn Found::to_j(Self) -> @jsjson.JValue
+
+pub struct Held {
+  id : String?
+  args : @jsjson.JValue
+}
+
+pub struct PageBase {
+  origin : String
+  workspace : String
+  station : String
+}
+
+pub struct PresetsFile {
+  presets : Array[@jsjson.JValue]
+  gone : Array[@jsjson.JValue]
+}
+
+pub struct RepoIndex {
+  mut held : @jsjson.JValue?
+  mut read : Bool
+}
+pub fn RepoIndex::new() -> Self
+pub async fn RepoIndex::repos(Self, World) -> (Array[@jsjson.JValue], Bool)
+pub async fn RepoIndex::walk(Self, World) -> Unit
+
+pub struct Words {
+  zh : @jsjson.JValue
+  en : @jsjson.JValue
+  product : String
+}
+pub fn Words::empty() -> Self
+pub fn Words::new(@jsjson.JValue, @jsjson.JValue, product? : String) -> Self
+pub fn Words::tr(Self, String, String, args? : Array[(String, String)]) -> String
+
+pub struct World {
+  call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  callback : (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
+  words : Words
+  lang : @ref.Ref[String]
+  thrown : @ref.Ref[@jsjson.JValue]
+}
+pub async fn World::actor(Self, String, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::ask_u(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
+pub async fn World::call_fn(Self, @jsjson.JValue, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::chat(Self, String, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::config(Self) -> @jsjson.JValue
+pub async fn World::dep(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::has(Self, String) -> Bool
+pub async fn World::has_actor(Self, String) -> Bool
+pub async fn World::hub(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::log(Self, String, String, String, @jsjson.JValue) -> Unit
+pub async fn World::now(Self) -> Double
+pub async fn World::sleep(Self, Double) -> Unit
+pub async fn World::state(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::store(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::store_has(Self, String) -> Bool
+pub async fn World::store_u(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue?
+pub fn World::tr(Self, String, args? : Array[(String, String)]) -> String
+
+// Type aliases
+
+// Traits
