@@ -708,7 +708,7 @@ for t in $targets; do
     local d=$1 exe=$2 t0 said=" " name arg pid
     t0=$(date +%s)
     while :; do
-      sleep 10 # timer: a deadline, the part's MBUI_PART_SAYS
+      sleep 10 # det-ok(script-wait): a watchdog's look at the parts still running, never a wait a test passes by
       [ $(($(date +%s) - t0)) -ge "${MBUI_PART_SAYS:-150}" ] || continue
       while read -r name arg; do
         [ -f "$d/$name.out" ] && [ ! -f "$d/$name.code" ] || continue

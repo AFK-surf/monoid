@@ -550,7 +550,8 @@
     "settle": {},
     "flow-wait": {},
     "script-wait": {
-      "e2e/move.ts": 1
+      "e2e/move.ts": 1,
+      "scripts/test.sh": 1
     },
     "page-settle": {},
     "device-shot": {},
