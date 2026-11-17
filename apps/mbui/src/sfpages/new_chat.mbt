@@ -1026,37 +1026,23 @@ fn new_send(
     match taken.val {
       Some(t) if made.val && sending.val => {
         sending.val = false
-        let params : Map[String, Json] = {
-          "station": Json::string(station),
-          "session": Json::string(key),
-          "text": Json::string(text(Some(t), "text")),
-          "attachments": Json::array(items(Some(t), "attachments")),
-          "quotes": Json::array(items(Some(t), "quotes")),
-        }
-        let going = items(Some(t), "uploads")
-        if going.length() > 0 {
-          params["uploads"] = Json::array(going)
-        }
-        (src.call)("chat.send", Json::object(params), fn(res) {
-          match res {
-            Err(e) =>
-              match text(Some(e), "code") {
-                // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
-                "invalid_params" | "core_restarted" | "closed" => not_sent(text(Some(e), "message"))
-                // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
-                // back in the composer too were sent twice, 2026-11-16)
-                _ => {
-                  @ui.haptic(Reject)
-                  if ours() {
-                    fresh.starting.set(false)
-                  }
-                  @sfbase.flight_carry_gone(draft)
-                  @sfbase.writing_starting(src, d, false)
-                  @sfbase.sent_local_gone(rk, row)
-                  toast_later(@sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))]))
-                }
+        send_taken(src, station, ToSession(key), t, fn(said) {
+          match said {
+            // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
+            SentRefused(why) => not_sent(why)
+            // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
+            // back in the composer too were sent twice, 2026-11-16)
+            SentKept(why) => {
+              @ui.haptic(Reject)
+              if ours() {
+                fresh.starting.set(false)
               }
-            Ok(_) => {
+              @sfbase.flight_carry_gone(draft)
+              @sfbase.writing_starting(src, d, false)
+              @sfbase.sent_local_gone(rk, row)
+              toast_later(@sf.t("web-main.draft.notSent", args=[("error", why)]))
+            }
+            SentTaken => {
               if ours() {
                 fresh.starting.set(false)
               }

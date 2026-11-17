@@ -2345,32 +2345,23 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       sent_local_gone(rk, row)
       return
     }
-    let params : Map[String, Json] = {
-      "station": Json::string(r.station),
-      "text": Json::string(text(taken, "text")),
-      "attachments": Json::array(items(taken, "attachments")),
-      "quotes": Json::array(items(taken, "quotes")),
+    let to = match v.thread {
+      Some(th) => ToThread(th)
+      None => ToSession(r.session)
     }
-    let going = items(taken, "uploads")
-    if going.length() > 0 {
-      params["uploads"] = Json::array(going)
-    }
-    match v.thread {
-      Some(th) => params["thread"] = Json::number(th)
-      None => params["session"] = Json::string(r.session)
-    }
-    (src.call)("chat.send", Json::object(params), fn(res) {
-      match res {
-        Err(e) => {
+    send_taken(src, r.station, to, taken.unwrap(), fn(said) {
+      match said {
+        SentTaken => ()
+        SentRefused(e) | SentKept(e) => {
           sent_local_gone(rk, row)
           @ui.haptic(Reject)
-          let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
-          match text(Some(e), "code") {
-            "invalid_params" | "core_restarted" | "closed" => writing_restore(src, w, why, unless_written=true)
-            _ => toast_later(why)
+          let why = @sf.t("web-main.draft.notSent", args=[("error", e)])
+          if said is SentRefused(_) {
+            writing_restore(src, w, why, unless_written=true)
+          } else {
+            toast_later(why)
           }
         }
-        Ok(_) => ()
       }
     })
   })
