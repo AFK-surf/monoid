@@ -443,6 +443,7 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   hand: -1.0e9,
   judged: -1.0e9,
   laids: {},
+  old_widths: {},
 })
       rows_steady.held = held
       rows_steady.file = file
@@ -874,6 +875,7 @@ fn RowsSteady::window_put(self : RowsSteady, o : RowsSteady) -> Unit {
   self.hand = o.hand
   self.judged = o.judged
   self.laids = o.laids
+  self.old_widths = o.old_widths
 }
 
 ///|

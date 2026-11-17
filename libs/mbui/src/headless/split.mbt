@@ -110,8 +110,9 @@ let split_key_end : Int = 9
 /// by `step` on arrow keys and screen-reader actions, `change` told the new value as it is dragged or stepped. `axis`
 /// chooses whether dragging and arrow keys move horizontally (`d.wx`, ←/→) or vertically (`d.wy`, ↑/↓). `span` gives
 /// the pixel span corresponding to `max - min` when `value` is normalized (default: `max - min`, 1 point per unit).
-/// `reset` runs on a double click or double tap without dragging. `look` is given the handle's node and its `Split`
-/// state. The handle's node.
+/// `reverse` makes a leftward or upward move increase the value (a right or bottom pane's size), while the screen
+/// reader's Increment still increases it. `reset` runs on a double click or double tap without dragging. `look` is
+/// given the handle's node and its `Split` state. The handle's node.
 #callsite(autofill(loc))
 pub fn split(
   parent : @view.View,
@@ -124,6 +125,7 @@ pub fn split(
   look : (@view.View, Split) -> Unit,
   axis? : SplitAxis = Horizontal,
   span? : () -> Double,
+  reverse? : Bool = false,
   reset? : () -> Unit,
   said_value? : (Double) -> String = fn(x) { x.to_string() },
   disabled? : () -> Bool = fn() { false },
@@ -182,7 +184,7 @@ pub fn split(
             None => hi - lo
           }
           if px_span > 0.0 {
-            let delta_val = delta_px / px_span * (hi - lo)
+            let delta_val = delta_px / px_span * (hi - lo) * (if reverse { -1.0 } else { 1.0 })
             tell(start_val.val + delta_val, step > 0.0)
           }
         }
@@ -215,10 +217,10 @@ pub fn split(
         Vertical => k.code == split_key_down
       }
       if dec {
-        tell(cur - step_by, true)
+        tell(cur + (if reverse { step_by } else { -step_by }), true)
         true
       } else if inc {
-        tell(cur + step_by, true)
+        tell(cur + (if reverse { -step_by } else { step_by }), true)
         true
       } else if k.code == split_key_home {
         tell(lo, false)

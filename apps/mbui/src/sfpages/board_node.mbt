@@ -2,7 +2,7 @@
 // its title standing on the paper and its cards under it; a card the chat's title, where it stands now, and where it
 // runs, who and what is in it. Wide (720 and over) every column side by side under the board's bar (列表 | 看板, its
 // filter, how it is grouped, 新待办), going sideways where they have not the room; a card pressed opens its chat beside
-// the board at 960 and over (the shell's, `beside`), else as its page. Narrow a column at a time under chips choosing
+// the board at 1040 and over (the shell's, `beside`), else as its page. Narrow a column at a time under chips choosing
 // it, the columns on a track a finger swipes across, no card dragged. A card goes to another column as its chat goes
 // on (its node flies there: View::shared), never because it is dragged: dragged (wide), a draft starts where 进行中
 // takes it, a chat goes to the archive where the archive's place takes it, nothing else lights up to take it; a draft
@@ -173,11 +173,21 @@ let board_bar_end : Double = 20.0
 let board_drop_place_w : Double = 240.0
 
 ///|
-/// How wide the chat open beside the board is, and from what width the board has it beside it.
+/// The chat beside the board's initial width, and from what width the board has it beside it.
 pub let board_beside_w : Double = 460.0
 
 ///|
 pub let board_beside_from : Double = 1040.0
+
+///|
+/// The chat's width while dragged, and the room kept for the board beside it.
+let board_beside_min : Double = 320.0
+
+///|
+let board_beside_max : Double = 960.0
+
+///|
+let board_room_min : Double = 360.0
 
 ///|
 /// How tall the board's bar is (the pane's bars': @sf.wide_bar_h's 50).
@@ -564,7 +574,12 @@ fn board_wide(
 ) -> Unit {
   own.side = fn() { beside is Some(_) && width() >= board_beside_from }
   let split = fn() { beside is Some(_) && width() >= board_beside_from && @sfbase.board_pick.get() is Some(_) }
-  let spec = @motion.moved(over=board_beside_w)
+  // (the width chosen in this board, kept when a chat is closed; a narrow window limits what is shown, without
+  // forgetting the width chosen when the window was wider)
+  let wanted_w = @signals.signal(board_beside_w)
+  let most_w = fn() { dmax(board_beside_min, dmin(board_beside_max, width() - board_room_min)) }
+  let beside_w = fn() { dmax(board_beside_min, dmin(wanted_w.get(), most_w())) }
+  let spec = fn() { @motion.moved(over=beside_w()) }
   // (how far open the chat beside it is, 0 to 1; the chat it shows, kept as it slides out; where the columns are
   // brought sideways from and to, how far along that is)
   let opened = @motion.Way::new(if @signals.untracked(split) { 1.0 } else { 0.0 })
@@ -588,7 +603,7 @@ fn board_wide(
   // (each column's width as the chat beside them is to be: laid out at it at once as it is opened or closed, its cards'
   // words broken anew once, at the width they come to, never along the way (View::lays_anew), the chat sliding in
   // over the board's end as the pane's sidebar does beside a page, sfdesk board.mbt)
-  let laid_w = fn() { board_col_w(width() - (if split() { board_beside_w } else { 0.0 }), count()) }
+  let laid_w = fn() { board_col_w(width() - (if split() { beside_w() } else { 0.0 }), count()) }
   p.row(Is(true)) |> ignore
   p.box(fn(left) {
     left.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -618,7 +633,7 @@ fn board_wide(
         across.put(now)
         glides.val = (now, to)
         glide.put(0.0)
-        glide.go(1.0, spec, at~)
+        glide.go(1.0, spec(), at~)
         let end = glide.end()
         area.at_moment(end, fn() { if glide.end() == end { across.put(to) } }) |> ignore
       }
@@ -627,7 +642,7 @@ fn board_wide(
         let cols = @signals.untracked(own.columns)
         let n = cols.length()
         let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
-        let r = width() - (if @signals.untracked(own.side) && key != "draft" { board_beside_w } else { 0.0 })
+        let r = width() - (if @signals.untracked(own.side) && key != "draft" { @signals.untracked(beside_w) } else { 0.0 })
         let w = board_col_w(r, n)
         let avail = r - 2.0 * board_pad
         let fits = ((avail + board_gap) / (board_col_least + board_gap)).floor().to_int()
@@ -647,7 +662,7 @@ fn board_wide(
         if open {
           shown.set(@sfbase.board_pick.untracked())
         }
-        opened.go(if open { 1.0 } else { 0.0 }, spec, at~)
+        opened.go(if open { 1.0 } else { 0.0 }, spec(), at~)
         let end = opened.end()
         area.at_moment(end, fn() {
           if opened.end() == end && !@signals.untracked(split) {
@@ -723,13 +738,13 @@ fn board_wide(
       // (as wide as it is open, what it shows as wide as it is all the way: cut to its room as it slides)
       p.show(fn() { shown.get() is Some(_) }, fn(s) {
         s
-        .width(By(fn() { Some(board_beside_w * opened.shown_on(s)) }))
+        .width(By(fn() { Some(beside_w() * opened.shown_on(s)) }))
         .shrink(Is(0.0))
         .min_height(Is(Some(0.0)))
         .clips(Is(true))
         |> ignore
         s.box(fn(inner) {
-          inner.width(Is(Some(board_beside_w))).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          inner.width(By(fn() { Some(beside_w()) })).grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           inner.pick(fn() { shown.get() }, fn(b, r) {
             b.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             match r {
@@ -739,6 +754,20 @@ fn board_wide(
           }, at_once=true)
         })
         |> ignore
+        // (the panel's left edge: on the panel side of the boundary, over the chat, while it is open)
+        s.show(at_once=true, split, fn(edge) {
+          edge.over(Is(true)).width(Is(Some(@sf.handle_w))) |> ignore
+          @sf.split_edge_node(
+            edge,
+            fn() { @sf.t("web-pages.chat.resizePanel") },
+            beside_w,
+            fn() { board_beside_min },
+            most_w,
+            fn(w) { wanted_w.set(w) },
+            fn() { wanted_w.set(board_beside_w) },
+            tips~,
+          ) |> ignore
+        })
       }, at_once=true)
     None => ()
   }

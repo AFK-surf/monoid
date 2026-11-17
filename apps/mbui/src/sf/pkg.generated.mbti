@@ -2083,6 +2083,9 @@ pub let spinner_size : Double
 
 pub let spinner_turn_ms : Double
 
+#callsite(autofill(loc))
+pub fn split_edge_node(@view.View, () -> String, () -> Double, () -> Double, () -> Double, (Double) -> Unit, () -> Unit, tips~ : TipLayer, loc~ : SourceLoc) -> @view.View
+
 pub let spoke_step_ms : Double
 
 pub fn spokes(@ui.Ctx, Double, Int64, box? : Double) -> Int32

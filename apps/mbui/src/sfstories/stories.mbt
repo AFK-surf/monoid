@@ -863,6 +863,45 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
+      key: "split-edge",
+      group: "布局",
+      name: "调整面板宽度 SplitEdge",
+      file: "split_edge_node.mbt",
+      api: [("split_edge_node.mbt", "split_edge_node")],
+      play: None,
+      about: "拖动右侧面板的左边缘调整宽度；也可用方向键调整，双击恢复。",
+      cases: [
+        (
+          "拖动边缘",
+          fn(card) {
+            let width = kept(160.0)
+            card.box(fn(row) {
+              row.row(Is(true)).height(Is(Some(140.0))).width(Is(Some(360.0))) |> ignore
+              row.box(fn(left) {
+                left.grow(Is(1.0)).padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+                @sf.words_node(left, fn() { "内容" }, fn() { @sf.paragraph }) |> ignore
+              }) |> ignore
+              row.box(fn(right) {
+                right.width(By(fn() { Some(width.get()) })).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+                right.box(fn(edge) {
+                  edge.over(Is(true)).width(Is(Some(@sf.handle_w))) |> ignore
+                  @sf.split_edge_node(edge, fn() { "调整面板宽度" }, fn() { width.get() }, fn() { 100.0 }, fn() { 240.0 }, fn(w) {
+                    width.set(w)
+                  }, fn() {
+                    width.set(160.0)
+                  }, tips~) |> ignore
+                }) |> ignore
+                right.box(fn(body) {
+                  body.padding(Is((16.0, 16.0, 16.0, 16.0))) |> ignore
+                  @sf.words_node(body, fn() { "右侧面板" }, fn() { @sf.paragraph }) |> ignore
+                }) |> ignore
+              }) |> ignore
+            }) |> ignore
+          },
+        ),
+      ],
+    },
+    {
       key: "presenters",
       group: "弹层",
       name: "菜单与弹层 Menu · Pick · Panel",

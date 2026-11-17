@@ -73,3 +73,40 @@ test "a horizontal split handle between two panes: read out a Separator with ran
     ((210.0, true), 220.0, 210.0, 100.0, 300.0, 290.0, 150.0, 150.0),
   )
 }
+
+///|
+test "a reversed split measures the right pane: left widens it and Increment increases its value" {
+  let width = @signals.signal(150.0)
+  let t = window(fn(root) {
+    root.row(Is(true)) |> ignore
+    root.box(fn(left) {
+      left.width(By(fn() { Some(400.0 - width.get()) })).height(Is(Some(200.0))) |> ignore
+    }) |> ignore
+    @headless.split(
+      root,
+      fn() { "右侧宽度" },
+      fn() { width.get() },
+      min=100.0,
+      max=300.0,
+      step=10.0,
+      fn(to) { width.set(to) },
+      reverse=true,
+      fn(v, _) { v.width(Is(Some(8.0))).height(Is(Some(200.0))) |> ignore },
+    ) |> ignore
+  })
+  t.press_at(254.0, 100.0)
+  t.move_to(194.0, 100.0)
+  t.release(194.0, 100.0)
+  assert_eq(width.get(), 210.0)
+  t.act(Separator, Focus, label="右侧宽度")
+  t.key(@ui.key_code_left)
+  assert_eq(width.get(), 220.0)
+  t.key(@ui.key_code_right)
+  assert_eq(width.get(), 210.0)
+  t.act(Separator, Increment, label="右侧宽度")
+  assert_eq(width.get(), 220.0)
+  t.key(@ui.key_code_end)
+  assert_eq(width.get(), 300.0)
+  t.key(@ui.key_code_home)
+  assert_eq(width.get(), 100.0)
+}

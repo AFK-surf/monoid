@@ -75,6 +75,8 @@ priv struct RowsSteady {
   /// the width each list of the window's tree was laid out at as the last frame was judged (Tree::lists_steady's
   /// `laid`, View::lays_anew): where it steps, its rows laid out anew in that frame, their step its own
   mut laids : Map[Int, Double]
+  /// the width each old-view list was laid out at as the last frame was judged
+  mut old_widths : Map[Int, Double]
 }
 
 
@@ -93,6 +95,7 @@ let rows_steady : RowsSteady = {
   hand: -1.0e9,
   judged: -1.0e9,
   laids: {},
+  old_widths: {},
 }
 
 ///|
@@ -122,6 +125,7 @@ fn rows_steady_begin(loc : String, held : Bool) -> Unit {
   rows_steady.hand = -1.0e9
   rows_steady.judged = -1.0e9
   rows_steady.laids.clear()
+  rows_steady.old_widths.clear()
   rows_steady.window = (-1.0, -1.0)
   rows_steady.words = -1.0
   rows_steady.file = match loc.find(":") {
@@ -151,6 +155,13 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
       Some(st) => st
       None => continue
     }
+    // A list whose column is resized lays its rows out at the new width immediately, just as when the window is
+    // resized. Text reflow can move rows in that frame; it is not a step in a row's own motion.
+    let laid_anew = match rows_steady.old_widths.get(ln.id) {
+      Some(w) => w != ln.fw
+      None => false
+    }
+    rows_steady.old_widths[ln.id] = ln.fw
     // (scrolled by the hand or eased by a wheel, or put elsewhere by the app or the hand this frame or the one before (put
     // as it is laid out next): what moves it is no row's;
     // nor in its first frames shown, its rows laid out at the heights they are guessed at, then at their own)
@@ -199,7 +210,7 @@ fn Ctx::rows_steady_faults(self : Ctx, now : Double, period : Double) -> Array[S
           }
         _ => false
       }
-      if !free || gap || anew || resized {
+      if !free || gap || anew || resized || laid_anew {
         seen.clear()
         rows_steady.went.remove(key)
       }

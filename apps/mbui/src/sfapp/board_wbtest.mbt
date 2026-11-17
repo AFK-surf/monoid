@@ -147,6 +147,69 @@ test "大屏: a card pressed opens its chat beside the board; its decision made,
 }
 
 ///|
+test "大屏: the chat beside the board is resized at its edge, keeps its width, and fits a narrower window" {
+  let (t, _) = board_at("board", 1800.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  let label = "调整侧栏宽度"
+  let edge = t.get(Separator, label~)
+  assert_eq(edge.value, "460 px")
+  let (x, y, w, h) = edge.rect
+  t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0 - 200.0, y + h / 2.0)
+  assert_eq(t.get(Separator, label~).value, "660 px")
+  assert_eq(board_faults(t), [])
+  // Closing and reopening a card retains the width in this board.
+  t.click(Button, label="关闭")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.get(Separator, label~).value, "660 px")
+  // The keyboard moves the same edge; the left arrow widens the right-hand chat.
+  let before = t.get(Separator, label~).rect.0
+  t.act(Separator, Focus, label~)
+  t.key(@ui.key_code_left)
+  assert_true(t.get(Separator, label~).rect.0 < before)
+  let before = t.get(Separator, label~).rect.0
+  t.act(Separator, Increment, label~)
+  assert_true(t.get(Separator, label~).rect.0 < before)
+  let edge = t.get(Separator, label~)
+  let (x, y, w, h) = edge.rect
+  t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0 - 200.0, y + h / 2.0)
+  let wide = t.get(Separator, label~).value
+  t.resize(1250.0, 900.0)
+  assert_true(t.get(Separator, label~).value != wide)
+  t.resize(1800.0, 900.0)
+  assert_eq(t.get(Separator, label~).value, wide)
+  // Double-click restores the original width.
+  let (x, y, w, h) = t.get(Separator, label~).rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.tap(x + w / 2.0, y + h / 2.0)
+  assert_eq(t.get(Separator, label~).value, "460 px")
+  let (x, y, w, h) = t.get(Separator, label~).rect
+  t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0 + 500.0, y + h / 2.0)
+  assert_eq(t.get(Separator, label~).value, "320 px")
+  let (x, y, w, h) = t.get(Separator, label~).rect
+  t.drag(x + w / 2.0, y + h / 2.0, x + w / 2.0 - 1000.0, y + h / 2.0)
+  assert_eq(t.get(Separator, label~).value, "960 px")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏 with touch: dragging the edge widens the chat beside the board" {
+  let (t, _) = board_at("board", 1440.0, 900.0, platform=2)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  let label = "调整侧栏宽度"
+  let (x, y, w, h) = t.get(Separator, label~).rect
+  let (x, y) = (x + w / 2.0, y + h / 2.0)
+  t.touch(0, x, y)
+  t.touch(1, x - 120.0, y)
+  t.touch(2, x - 120.0, y)
+  assert_eq(t.get(Separator, label~).value, "580 px")
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: a done chat's 归档 takes it off the board, 撤销 said; grouped by station and by person" {
   let (t, src) = board_at("board", 1440.0, 900.0)
   let keys = t.all(Button, label="归档")
