@@ -92,6 +92,12 @@ const plain = (v: unknown) => (v === undefined ? null : JSON.parse(JSON.stringif
 
 // ── one world for both sides: the clock, the processes, the ids ──
 
+/// What `until` waits on, woken whenever what it looks at may have changed: a timer set, a line a runner's socket was told.
+const waiters: (() => void)[] = [];
+const wake = () => {
+  for (const w of waiters.splice(0)) w();
+};
+
 /// The machine's clock (`wall`) as the case has it: its timers run as it is moved on.
 const time = {
   now: 0,
@@ -100,6 +106,7 @@ const time = {
   after(ms: number, f: () => void) {
     const t = { at: time.now + Math.max(0, ms), seq: ++time.seq, f };
     time.timers.push(t);
+    wake();
     return () => void (time.timers = time.timers.filter((x) => x !== t));
   },
   async advance(ms: number) {
@@ -146,14 +153,10 @@ async function settle(rounds = 40) {
 }
 
 /// Until `ready` holds: what real I/O sets going (a read on libuv's threads, a line on a real socket) is waited for by
-/// what it does. Turns of the loop first, which is all it takes on a machine with nothing else to do; then the loop is
-/// let sleep a little at a time (the real timers: only `wall` is the case's), so that a busy machine's disk and
-/// socket get their turn rather than a loop spinning against them. What never comes fails within seconds saying so,
-/// not at the runner's limit.
-async function until(ready: () => boolean, what: string) {
-  for (let i = 0; i < 200 && !ready(); i++) await new Promise((resolve) => setImmediate(resolve));
-  for (const end = Date.now() + 5000; !ready() && Date.now() < end; ) await new Promise((resolve) => setTimeout(resolve, 2));
-  if (!ready()) throw new Error(`never came: ${what}`);
+/// what it does, woken by `wake` where that lands, never by a time or a count of turns. What never comes is the test's
+/// `timeout`, which ends it and leaves its sockets to the file's after().
+async function until(ready: () => boolean, _what: string) {
+  while (!ready()) await new Promise<void>((resolve) => waiters.push(resolve));
 }
 
 function world(c: { now?: number; alive?: number[]; startTimes?: Record<string, number>; ids?: string[] }) {
@@ -224,7 +227,10 @@ async function runnerSocket(path: string, script: string[]): Promise<{ told: Jso
       for (let i = carry.indexOf("\n"); i >= 0; i = carry.indexOf("\n")) {
         const line = carry.slice(0, i);
         carry = carry.slice(i + 1);
-        if (line !== "") told.push(JSON.parse(line));
+        if (line !== "") {
+          told.push(JSON.parse(line));
+          wake();
+        }
         if (!said) {
           said = true;
           for (const l of script) socket.write(`${l}\n`);
@@ -451,7 +457,7 @@ test("a runner's connection: its lines handed on in order and acknowledged, its 
   assert.deepEqual(said, { lines, exit: plain(exit), told });
 });
 
-test("where a runner left off: its attach answered, its output's size where it says nothing, and its output read again", { skip }, async () => {
+test("where a runner left off: its attach answered, its output's size where it says nothing, and its output read again", { skip, timeout: 15_000 }, async () => {
   const root = fresh();
   const file = join(root, "o.out");
   put(file, Buffer.concat([Buffer.alloc(5, 0), Buffer.from("cut\nline one\r\n"), Buffer.from("x".repeat(30)), Buffer.from("\nlast")]));
@@ -497,7 +503,7 @@ test("where a runner left off: its attach answered, its output's size where it s
   }
 });
 
-test("a runner an earlier station left ended: asked to stop, killed where its group goes on, waited for", { skip }, async () => {
+test("a runner an earlier station left ended: asked to stop, killed where its group goes on, waited for", { skip, timeout: 15_000 }, async () => {
   const data = fresh();
   const dir = join(data, "run", "runners");
   const sock = join(dir, "claude-x.sock");
