@@ -31,7 +31,7 @@ fn repr(t : BytesView, n : Int) -> String {
 /// moonc's file-scope item: kind 0 a preprocessor line, 1 a function definition, 2 anything ending in `;`
 struct Item {
   kind : Int
-  text : Bytes
+  text : BytesView // (of the C file: copied once, as what the split keeps of it is made)
   line : Int
 }
 
@@ -117,7 +117,7 @@ fn items_of(
           i += 1
           te = ls[i + 1]
         }
-        out.push({ kind: 0, text: sub(src, a, te), line: i + 1 - lnbase })
+        out.push({ kind: 0, text: src[a:te], line: i + 1 - lnbase })
         i += 1
         continue
       }
@@ -221,7 +221,7 @@ fn items_of(
           "line \{i + 1 - lnbase}: an item that does not end its line (\{repr(rest, 40)} after it)",
         )
       }
-      out.push({ kind: ended_kind, text: sub(src, buf_start, e), line: first })
+      out.push({ kind: ended_kind, text: src[buf_start:e], line: first })
       buf_start = -1
     }
     i += 1
@@ -237,7 +237,7 @@ fn items_of(
 
 ///|
 /// `text` without its leading `static`/`inline` (`mark` in their place), and whether it had them.
-fn strip_static(text : Bytes, mark : Bytes) -> (Bytes, Bool) {
+fn strip_static(text : BytesView, mark : Bytes) -> (Bytes, Bool) {
   let a = lskip(text, 0)
   let mut i = a
   let mut changed = false
@@ -252,18 +252,14 @@ fn strip_static(text : Bytes, mark : Bytes) -> (Bytes, Bool) {
     i = lskip(text, e)
     changed = true
   }
-  (
-    cat([
-      sub(text, 0, a),
-      if changed {
-        mark
-      } else {
-        b""
-      },
-      sub(text, i, text.length()),
-    ]),
-    changed,
-  )
+  if !changed {
+    return (text.to_owned(), false)
+  }
+  let buf = Buffer(capacity=text.length() + mark.length())
+  buf.write_bytesview(text[0:a])
+  buf.write_bytes(mark)
+  buf.write_bytesview(text[i:])
+  (buf.to_bytes(), true)
 }
 
 ///|
@@ -337,18 +333,27 @@ fn libc_declared(name : Bytes, text : Bytes) -> Bytes {
 
 ///|
 fn classify(text : Bytes, line : Int) -> Decl raise SplitError {
-  let t = strip(text)
+  // (the text stripped, as a view of it: a global's initialiser, megabytes of it, is not copied)
+  let a = lskip(text, 0)
+  let t = text[a:imax(a, rskip(text, text.length()))]
   if word_at(t, 0, b"typedef") >= 0 {
     return Type
   }
-  let flat = top_level(t)
-  // struct/union/enum declarations and definitions without a declarator
-  if tag_decl_only(flat) {
-    return Type
+  // the first `=` at file scope: the declarator's end. Only what is before it is looked at, as top_level made of
+  // it is top_level(t) there (a `=` outside any comment, literal or directive is in none). With one, what
+  // tag_decl_only matches is not: its `;` is the last, nothing but the tag's braces before it
+  let eq = top_eq(t)
+  let (decl, flat_decl) = if eq >= 0 {
+    let decl = t[0:eq].to_owned()
+    (decl, top_level(decl))
+  } else {
+    let flat = top_level(t)
+    // struct/union/enum declarations and definitions without a declarator
+    if tag_decl_only(flat) {
+      return Type
+    }
+    (pyslice(t.to_owned(), 0, -1), pyslice(flat, 0, -1))
   }
-  let eq = find_byte(flat, b'=', 0)
-  let decl = if eq >= 0 { sub(t, 0, eq) } else { pyslice(t, 0, -1) }
-  let flat_decl = if eq >= 0 { sub(flat, 0, eq) } else { pyslice(flat, 0, -1) }
   if has_byte(flat_decl, b',') {
     raise SplitError(
       "line \{line}: more than one declarator in \{repr(t, 80)}",
@@ -485,7 +490,7 @@ fn prelude_definitions(prelude : Bytes) -> (Bytes, Int) {
         out.write_bytes(text)
         continue
       }
-      let code = sub(text, li, text.length()) // past the comments before it
+      let code = text[li:].to_owned() // past the comments before it
       let decl = if it.kind == 1 {
         cat([rstrip(sub(code, 0, find_byte(code, b'{', 0))), b";\n"])
       } else {
@@ -559,7 +564,7 @@ fn ifdef_cplusplus(d : Bytes) -> Bool {
 ///|
 struct Func {
   name : Bytes
-  text : Bytes
+  text : BytesView // (all the functions' in one text: a job's process reads them without making their pages its own)
 }
 
 ///|
@@ -633,7 +638,7 @@ fn split(src : Bytes, outdir : Bytes, unit_bytes? : Int = 0) -> Split raise Spli
   let mut pp_open = 0
   for it in items {
     if it.kind == 0 {
-      let d = strip(it.text)
+      let d = strip(it.text.to_owned())
       if directive_is(d, [b"if", b"ifdef", b"ifndef"]) {
         pp_open += 1
       } else if directive_is(d, [b"endif"]) {
@@ -649,7 +654,7 @@ fn split(src : Bytes, outdir : Bytes, unit_bytes? : Int = 0) -> Split raise Spli
           "line \{it.line}: \{repr(d, 60)} after the first function definition (line \{first_func}): it would move before code that came before it",
         )
       }
-      decls.push(it.text)
+      decls.push(it.text.to_owned())
       decl_kinds.push((0, b""))
       npp += 1
       continue
@@ -673,7 +678,7 @@ fn split(src : Bytes, outdir : Bytes, unit_bytes? : Int = 0) -> Split raise Spli
       if dropped {
         static_names.add(name)
       }
-      funcs.push({ name, text })
+      funcs.push({ name, text: text[:] })
       if first_func < 0 {
         first_func = it.line
       }
@@ -724,21 +729,30 @@ fn split(src : Bytes, outdir : Bytes, unit_bytes? : Int = 0) -> Split raise Spli
   for f in funcs {
     if !protos.has(f.name) && f.name != b"main" {
       decls.push(
-        cat([rstrip(sub(f.text, 0, find_byte(f.text, b'{', 0))), b";\n"]),
+        cat([rstrip(f.text[0:find_byte(f.text, b'{', 0)].to_owned()), b";\n"]),
       )
       decl_kinds.push((2, f.name))
       synth += 1
     }
   }
-  let inits = funcs.filter(fn(f) { f.name == b"moonbit_init" })
-  if inits.length() != 1 {
-    raise SplitError(
-      "\{inits.length()} definitions of moonbit_init (expected 1)",
-    )
+  let ninits = funcs.filter(fn(f) { f.name == b"moonbit_init" }).length()
+  if ninits != 1 {
+    raise SplitError("\{ninits} definitions of moonbit_init (expected 1)")
   }
   if !funcs.iter().any(fn(f) { f.name == b"main" }) {
     raise SplitError("no main")
   }
+  // the functions' texts in one: a process a job runs in shares its parent's memory till it writes to it, and
+  // reading an object of its own (a text) counts a reference to it, a write: 100,000 texts were 100,000 pages copied
+  // into each of them (J4 on a 483 MB program: 18 s of the system's against J1's 6)
+  let whole = concat(funcs.map(fn(f) { f.text }))
+  let mut at = 0
+  let funcs = funcs.map(fn(f) {
+    let n = f.text.length()
+    at += n
+    { name: f.name, text: whole[at - n:at] }
+  })
+  let inits = funcs.filter(fn(f) { f.name == b"moonbit_init" })
   let rest = funcs.filter(fn(f) { f.name != b"moonbit_init" })
   let stats : Array[(String, Int)] = [
     ("statics_dropped", statics_dropped),

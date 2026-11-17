@@ -210,6 +210,12 @@ fn open_where(src : Source, p : Page) -> Unit {
     Chat(r) => if @sfdesk.station_page_beside(src, r, p) { return }
     _ => ()
   }
+  // (a chat put in the page pane's place from the board (待处理's, ⌘K's, ⌘N, a row of the list beside it): the list
+  // again, so that the board shows as Home again only as 看板 is pressed; on the tape over the board in use, back
+  // coming to it again: page_goes_on's)
+  if (p is Chat(_) || p is NewChat) && !@sfdesk.page_goes_on() && @sfbase.board_on_now(src) {
+    @sfbase.board_set(src, false)
+  }
   match p {
     Chat(r) => open_chat_beside(r)
     NewChat => new_chat_beside()
@@ -330,8 +336,14 @@ fn pages_left(src : Source) -> Unit {
       // (a drive's film played: where it was kept and its player closed as its page's nodes are let go, sfpages'
       // play_page_node)
       DrivePlay(_) => ()
-      Service(station, job) => service_left(src, station, job)
-      PreviewFile(station, key, path, _) => service_left(src, station, "file:" + key + "\n" + path)
+      // (one put beside its chat as a tab, drawn there or over the whole window: the tab's, let go as it closes)
+      Service(station, job) => if !@sfdesk.service_tab_held(station, job) { service_left(src, station, job) }
+      PreviewFile(station, key, path, _) => {
+        let job = "file:" + key + "\n" + path
+        if !@sfdesk.service_tab_held(station, job) {
+          service_left(src, station, job)
+        }
+      }
       History(r, key, _) => history_left(src, r, key)
       // the drive's folders read, watched for changes while shown: let go of once no page of the drive is left on
       // the stack (a folder entered over another, its columns reading those above it, keeps them)

@@ -160,6 +160,7 @@ fn rigs_fixture_call(name : String, p : Json?) -> Result[Json, Json]? {
             ("token", str("made-up")),
             ("install", str("curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b rig:9d2e6a41c07b")),
             ("installWindows", str("& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b rig:9d2e6a41c07b")),
+            ("installDocker", str("docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b rig:9d2e6a41c07b")),
             ("command", str("stillfail station enroll https://still.fail 4f7c2a9e1b --rig 9d2e6a41c07b")),
           ]),
         ),

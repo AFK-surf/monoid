@@ -85,8 +85,9 @@ fn Mesh::hedge(self : Mesh, place : Place, opening : Opening) -> Unit {
 ///|
 /// Whether nothing is on the endpoint: no link whose connection has not ended (`live`: a place's, one another took
 /// the place of and not yet closed, one a race opened; a stream of its peer's waited for is a link's), no opening
-/// under way (with the dial tried beside it), no race, no connection a peer dialled that its program took and that
-/// has not ended (`incomings`, bind.mbt). What comes to hold the endpoint otherwise is counted here.
+/// under way (with the dial tried beside it, and one of no link's, `Mesh::connect`), no race, no connection a peer
+/// dialled, or dialled from here as one, that its program took and that has not ended (`incomings`, bind.mbt).
+/// What comes to hold the endpoint otherwise is counted here.
 fn Mesh::idle(self : Mesh) -> Bool {
   // (a link on an endpoint of a way's own is not on this one: ways.mbt)
   self.live.iter().all(link => link.pin is Some(_)) &&

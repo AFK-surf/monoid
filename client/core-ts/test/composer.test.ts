@@ -414,6 +414,37 @@ test("a_new_chats_file_waiting_as_the_app_ended_comes_back_with_its_draft_and_go
   } finally { again.close(); }
 });
 
+test("board_task_files_are_kept_separately_from_each_other_and_the_new_chat_across_restart", async () => {
+  const t = await setup();
+  const first = "new:ws:board:new:board-1";
+  const second = "new:ws:board:new:board-2";
+  await t.ask("add", { key: first, station: "ws/st", files: [{ id: "board-f1", name: "one.png", size: 3, blob: new Blob(["one"], { type: "image/png" }) }] });
+  await t.ask("add", { key: second, station: "ws/st", files: [{ id: "board-f2", name: "two.png", size: 3, blob: new Blob(["two"], { type: "image/png" }) }] });
+  await t.ask("text", { key: "new:ws", text: "ordinary new chat" });
+  await t.host.time.pass(SOON_MS + 50);
+  await t.host.settle();
+  await Effect.runPromise(t.core.inner.data.written);
+  t.core.close();
+  t.host.takeEmitted();
+  const again = await Core.create(t.host, { clock: t.host.time.clock, sample: 0, wire: () => new HostWire(t.host) });
+  try {
+    const went: string[] = [];
+    (again.inner.stations.requests as J).uploadPart = (addr: J, q: J, bytes: Uint8Array) => {
+      if (q.sha256 !== undefined) return Effect.succeed({ have: 0 });
+      went.push(`${addr.station} ${new TextDecoder().decode(bytes)}`);
+      return Effect.succeed({ have: bytes.length, file: { name: q.name, size: bytes.length, path: `/u/${q.name}` } });
+    };
+    const names = (key: string) => (again.inner.composers.value(key) as J).files.map((f: J) => f.name);
+    assert.deepEqual([names(first), names(second), names("new:ws")], [["one.png"], ["two.png"], []]);
+    assert.equal((again.inner.composers.value("new:ws") as J).text, "ordinary new chat");
+    const taken = again.inner.composers.take(first, "ws/other");
+    assert.deepEqual(taken.uploads.map((f) => f.name), ["one.png"]);
+    const up = await Effect.runPromise(again.inner.composers.uploaded("ws/other", taken.uploads));
+    assert.deepEqual([up[0].path, went], ["/u/one.png", ["other one"]]);
+    assert.deepEqual(names(second), ["two.png"]);
+  } finally { again.close(); }
+});
+
 test("a_drafts_pictures_kept_as_the_app_ended_are_read_from_the_device_waiting_or_up", async () => {
   const t = await setup();
   const png = Uint8Array.from({ length: 24 }, (_, i) => i);

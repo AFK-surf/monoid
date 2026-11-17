@@ -965,9 +965,14 @@ class HubPair {
     }
   }
   /// Once B's world has seen what `seen` waits for (each thing the program tells or asks is looked at as it comes).
-  untilB(seen: (log: Json[]) => boolean, why: string): Promise<void> {
-    if (seen(this.b.log)) return Promise.resolve();
-    return given(new Promise<void>((resolve) => this.#bWaits.push(() => (seen(this.b.log) ? (resolve(), true) : false))), why);
+  async untilB(seen: (log: Json[]) => boolean, why: string): Promise<void> {
+    if (seen(this.b.log)) return;
+    const waited = new Promise<void>((resolve) => this.#bWaits.push(() => (seen(this.b.log) ? (resolve(), true) : false)));
+    // (what was sent the program before is taken, and what it told of it heard here, once a call of its own sent after it
+    // is answered: it runs the calls' fibers in turn and says all on one stdout. `given` counts this process's work
+    // alone, not the program's: on a busy runner what it told came after `given` gave up, 2026-11-17)
+    await this.askB("moveOn");
+    return given(waited, why);
   }
   #bWaits: (() => boolean)[] = [];
   #bHeard() {
@@ -1187,6 +1192,7 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
   await pair.advance(1_800_000_000_000);
   await pair.call("accept", "cl", msg({ threadTs: "1000.000001", ts: "1000.000001" }));
   await pair.call("accept", "cl", msg({ threadTs: "1100.000001", ts: "1100.000001" }));
+  await pair.call("accept", "cl", msg({ threadTs: "1300.000001", ts: "1300.000001" }));
   await pair.call("accept", "gpt", msg({ threadTs: "1200.000001", ts: "1200.000001", text: "<@UGPT> go" }));
   pair.both((s) => s.setRunning("gpt:C1:1200.000001", true));
   pair.both((s) => s.startTurn("t-1", "gpt:C1:1200.000001", "normal"));
@@ -1194,10 +1200,12 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
     pair.a.states = {
       "cl:C1:1000.000001": { state: "warm", idleSince: pair.now - 1000 },
       "cl:C1:1100.000001": { state: "cold", holds: true },
+      "cl:C1:1300.000001": { state: "running" },
       "gpt:C1:1200.000001": { state: "running" },
     };
   });
-  // A profile gone under its sessions: moved where another runs them.
+  // A profile gone under its sessions (#6948): only the one with a turn under way moved where another runs it; the idle
+  // one's process ended, the cold one left as it is.
   await pair.call("profileGone", "cc");
   pair.compareStores("a profile gone");
   // Handed over: held, every actor's snapshot taken (those cold and holding nothing closed), the drivers let go.

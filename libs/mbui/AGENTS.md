@@ -55,7 +55,11 @@ yet and you can add one, add it.
   2026-11-09). A way turned back slows at one rate to rest and from there sets back out still and gaining as it slowed,
   its place, speed and gain going on where the two meet (flex's `come_turned`, `come_back_path`). Along a row it is the
   same way on its width (flex's `come_across`, `src/view/along_row.mbt`). What makes its way, down a column or along a
-  row, is cut to itself as it goes (`Content::clips_self`).
+  row, is cut to itself as it goes, along its way alone, never across where nothing goes (`Content::clips_self`,
+  `clips_way`). What is laid out is where things rest; how they get there is drawn: no structure holds a size while it
+  changes (a pick's place is laid out at once as the change has it, what it showed drawn where it stood as it fades:
+  `src/view/pick_leave.mbt`; the user, 2026-11-17, after 刚刚 came in from the start of a place held as wide as what it
+  took the place of and jumped to its end).
 - A structure can keep what it switches off, at rest: `View::each`'s `keeps` puts a row whose key left by
   (`View::park`: held by no node, so not laid out, drawn, pressed, focused or read out; what it binds `@signals.rest`ed)
   and takes the same nodes in again as the key comes back, at once, no way in (`src/view/each_kept.mbt`); a stack's

@@ -1,0 +1,22 @@
+import {
+  "station/host",
+  "station/jsjson",
+  "station/jscase",
+  "station/sql",
+  "station/nodepath",
+  "station/memory",
+  "station/session_chats",
+  "mbui/effect",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/cmp",
+  "moonbitlang/core/double",
+}
+
+import {
+  "station/adb_devices",
+  "station/session_chats",
+  "station/jsjson",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/utf8",
+} for "test"

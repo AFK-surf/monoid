@@ -5,11 +5,21 @@
 ///|
 /// The fixture's chat with `out` (the core's ChatView `outbox`) after its messages, its calls kept in `calls`;
 /// `offline`: its station not reached.
-fn outbox_chat(calls : Array[Made], out : Json, offline? : Bool = false) -> @ui.Tester {
-  fake_core(calls, over=fn(name, tp) {
+fn outbox_chat(calls : Array[Made], out : Json, offline? : Bool = false, nodes? : Bool = false) -> @ui.Tester {
+  // (dropped once the core is asked to (chat.discard, by its id), as the core drops it: a signal, so the chat's topic
+  // read over it is told)
+  let gone = @signals.signal(false)
+  let id = text(Some(out), "id")
+  fake_core(calls, nodes~, on_call=fn(name, params) {
+    if name == "chat.discard" && text(Some(params), "id") == id {
+      gone.set(true)
+    }
+  }, over=fn(name, tp) {
     guard name == "chat" && tp.value is Some(Object(m)) else { return tp }
     let o = m.copy()
-    o["outbox"] = Json::array([out])
+    if !gone.get() {
+      o["outbox"] = Json::array([out])
+    }
     o["askClear"] = Json::boolean(false)
     if offline {
       o["offline"] = Json::boolean(true)
@@ -25,10 +35,12 @@ fn outgoing(
   error? : String = "",
   waits? : String = "",
   at? : Double = 0.0,
+  quotes? : Array[Json] = [],
 ) -> Json {
   {
     "id": "o-1",
     "text": "这条还在路上",
+    "quotes": Json::array(quotes),
     "state": Json::string(state),
     "final": Json::boolean(refused),
     "error": Json::string(error),
@@ -82,6 +94,10 @@ test "what was refused as it is says why, and 编辑 in place of 重试 puts its
   unsent_press(t, "编辑")
   assert_eq(named(calls, "chat.discard").length(), 1)
   assert_eq(named(calls, "chat.retry").length(), 0)
+  // (dropped from the list as it is from the core: its bubble and why it was refused gone)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("发送失败：a.jpg 的上传源已丢失") is None)
+  assert_true(t.find("a.jpg 的上传源已丢失") is None)
   // (its words in the composer's field, to be sent anew)
   let typed = named(calls, "composer.text").map(fn(m) { text(Some(m.params), "text") })
   assert_true(typed.contains("这条还在路上"), msg="\{Repr(typed)}")
@@ -130,4 +146,47 @@ test "once the station has it, what was sent says its time under it, not 正在�
   assert_true(!outbox_seen(t, "正在发送"))
   assert_true(outbox_seen(t, "刚刚"), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
   assert_true(t.find("未发送") is None)
+}
+
+///|
+/// 编辑 once lost what was refused (2026-11-17): its words were told the core alone, the field's own words (none, or
+/// a draft begun) told back over them as the composer was next built, its quotes not put back at all.
+test "编辑 on what was refused puts its words after the draft begun and its quotes back in the composer, on both pages, and they stay" {
+  for nodes in [false, true] {
+    let calls : Array[Made] = []
+    let quote : Json = {
+      "author": "Claude",
+      "text": "引用的那一段",
+      "comment": "再看看",
+      "ts": "1.0",
+      "role": "agent",
+    }
+    let t = outbox_chat(
+      calls,
+      outgoing("failed", refused=true, error="a.jpg 的上传源已丢失", quotes=[quote]),
+      nodes~,
+    )
+    t.run_for(@ui.move_most_ms)
+    t.tap_text("发消息")
+    t.type_text("刚写的草稿")
+    unsent_press(t, "编辑")
+    t.run_for(@ui.move_most_ms)
+    let merged = "刚写的草稿\n这条还在路上"
+    // (in the field, as the composer has been built again since, and as the core keeps it)
+    let (active, words, _, _) = t.ime()
+    assert_true(active, msg="nodes=\{nodes}")
+    assert_eq(words, merged)
+    let typed = named(calls, "composer.text")
+    assert_eq(text(Some(typed[typed.length() - 1].params), "text"), merged)
+    // its quote put back as it was said
+    let quoted = named(calls, "composer.quote")
+    assert_eq(quoted.length(), 1, msg="nodes=\{nodes}")
+    let q = field(Some(quoted[0].params), "quote")
+    assert_eq(text(q, "text"), "引用的那一段")
+    assert_eq(text(q, "comment"), "再看看")
+    assert_eq(text(q, "ts"), "1.0")
+    assert_eq(named(calls, "chat.discard").length(), 1)
+    assert_true(t.find("发送失败：a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
+    assert_true(t.find("a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
+  }
 }

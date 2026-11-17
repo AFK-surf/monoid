@@ -192,3 +192,16 @@ pub fn NodeWay::shown(self : NodeWay, n : @view.View) -> Double {
   self.ended.get() |> ignore
   self.way.shown_on(n)
 }
+
+///|
+/// When it set out, as it was told; -1 for one put there at once.
+pub fn NodeWay::starts_at(self : NodeWay) -> Double {
+  self.way.starts_at()
+}
+
+///|
+/// Where it is as `n` is drawn and how fast it goes then (per second): Way::motion_on's, still (0) once it is there.
+pub fn NodeWay::motion(self : NodeWay, n : @view.View) -> (Double, Double) {
+  self.ended.get() |> ignore
+  self.way.motion_on(n)
+}

@@ -658,13 +658,7 @@ pub fn viz_file_of(
         // under the page, out of its way: the ways to open it on its own, icons in the chat's grey
         c.box(style=viz_ways, fn() {
           let full = c.id("viz/full/" + place)
-          c.on_press(full, fn() {
-            if is_mbui_viz(a.name) {
-              open_preview(station, key, a, steps=InChat(None, session), beside=false)
-            } else {
-              viz_open_full(a.name, station, key, a.path, session)
-            }
-          })
+          c.on_press(full, fn() { viz_open_full(a.name, station, key, a.path, session) })
           viz_icon(c, full, "expand", viz_tr("android-misc.viz.fullscreen"), subtle)
           let aside = c.id("viz/aside/" + place)
           c.on_press(aside, fn() {
@@ -746,7 +740,21 @@ pub(all) struct VizFull {
 pub let viz_full : @signals.Signal[VizFull?] = @signals.signal(None)
 
 ///|
-pub fn viz_open_full(name : String, station : String, key : String, path : String, session : String, linked? : Bool = false) -> Unit {
+/// Visualization `name` (at `path`, sent by session `key` of chat `session` on `station`) opened as a press asks: where
+/// the shell has a side panel for the page in view, a tab there (a page's: PreviewFile; a `.mbui` / `.wasm` mini-program
+/// a file's), over the whole window as that tab where `full` asks it (its 全屏; by default the command key held:
+/// full_held); else, or beside the system's bars (an iPhone Duo's), over the whole window on its own (`linked`: opened
+/// by a link in a sentence, its wait said under the words).
+pub fn viz_open(
+  name : String,
+  station : String,
+  key : String,
+  path : String,
+  session : String,
+  linked? : Bool = false,
+  full? : Bool,
+) -> Unit {
+  let full = full.unwrap_or(full_held())
   if is_mbui_viz(name) || is_mbui_viz(path) {
     let a : Attachment = {
       name: if name != "" { name } else { base_name(path) },
@@ -761,11 +769,27 @@ pub fn viz_open_full(name : String, station : String, key : String, path : Strin
       frames: 0,
       held: false,
     }
-    open_preview(station, key, a, steps=InChat(None, session), beside=beside_held())
+    open_preview(station, key, a, steps=InChat(None, session), full~)
+    return
+  }
+  // (beside the system's bars, an iPhone Duo's on its side, its own whole window, whose actions are theirs)
+  if beside_room_now.untracked() && !@sf.native_on() {
+    let p = PreviewFile(station, key, path, name)
+    if full {
+      open_page_full(p)
+    } else {
+      open_page(p)
+    }
     return
   }
   viz_close("full/")
   viz_full.set(Some({ name, station, key, path, session, linked }))
+}
+
+///|
+/// Visualization `name` asked over the whole window (its 全屏): viz_open's.
+pub fn viz_open_full(name : String, station : String, key : String, path : String, session : String) -> Unit {
+  viz_open(name, station, key, path, session, full=true)
 }
 
 ///|

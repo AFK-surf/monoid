@@ -266,45 +266,6 @@ pub fn action_node(
 }
 
 ///|
-/// A command to copy (copy_command's, as a node) in `parent`: `text` in the code face (12) on one line, its copy button
-/// at its end, on the paper, 14 in at its start; pressed, the words copied and a check for a moment (copied_ms from the
-/// press: `copied` its name then, `copy` before).
-#callsite(autofill(loc))
-pub fn copy_command_node(
-  parent : @view.View,
-  text : () -> String,
-  copy~ : String,
-  copied~ : String,
-  loc~ : SourceLoc,
-) -> Unit {
-  parent.box(made_for=loc, fn(b) {
-    // (已复制 from each press till copied_ms after it, a press while it shows starting it again: the box's own, let go
-    // with it; a time it shows for, not waited for)
-    let (copied_now, just) = b.holds_for(copied_ms, later=true)
-    style_node(b, fn() { command_box })
-    b.ground(By(fn() { theme().p.paper })) |> ignore
-    b.box(fn(w) {
-      style_node(w, fn() { command_words_at }, in_row=true)
-      w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-      words_node(w, text, fn() { command_words }) |> ignore
-    })
-    |> ignore
-    icon_button_node(
-      b,
-      "copy",
-      fn() { if just() { copied } else { copy } },
-      fn() {
-        @ui.clipboard_set(@signals.untracked(text))
-        copied_now()
-      },
-      icon_now=fn() { if just() { "check" } else { "copy" } },
-    )
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
 /// What a section holds that is neither rows nor a card (loose's, as a node: its chips, a field with its button) in
 /// `parent`, what `body` makes in it 12 apart: narrow, as far in as the page's headings' words, 10 under it; wide, at
 /// the column's edges.

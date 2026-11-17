@@ -845,16 +845,33 @@ pub fn Store::put_model_stars(
 }
 
 ///|
+/// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after. Read
+/// without the write lock where it is kept; the first write waits for no other writer (store.ts `#tryNow`: the mesh
+/// tries again after a failed start), refused "device builds write is busy" where one holds the lock.
 pub fn Store::device_builds_since(self : Store, now : Json) -> Json raise {
-  ignore(
-    self.run(
-      "INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)",
-      [now],
-    ),
-  )
   match self.one("SELECT at FROM device_builds_since WHERE one = 1", []) {
-    Some(r) => js_number(or_else(col(r, "at"), now))
-    None => js_number(now)
+    Some(r) => return js_number(or_else(col(r, "at"), now))
+    None => ()
+  }
+  let timeout = match self.one("PRAGMA busy_timeout", []) {
+    Some(r) => num_of(col(r, "timeout")).unwrap_or(0.0).to_int()
+    None => 0
+  }
+  self.db.exec("PRAGMA busy_timeout=0")
+  let made : Result[Json, Error] = try {
+    ignore(self.run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", [now]))
+    match self.one("SELECT at FROM device_builds_since WHERE one = 1", []) {
+      Some(r) => Ok(js_number(or_else(col(r, "at"), now)))
+      None => Ok(js_number(now))
+    }
+  } catch {
+    e => Err(e)
+  }
+  self.db.exec("PRAGMA busy_timeout=\{timeout}")
+  match made {
+    Ok(at) => at
+    Err(e) if @sql.busy(e) => raise store_error("device builds write is busy")
+    Err(e) => raise e
   }
 }
 

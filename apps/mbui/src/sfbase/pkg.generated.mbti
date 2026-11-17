@@ -1146,7 +1146,7 @@ pub fn open_page(Page) -> Unit
 
 pub fn open_page_over(Page) -> Unit
 
-pub fn open_preview(String, String, Attachment, drive? : DriveFile?, steps? : Stepping, named? : Bool, at? : String) -> Unit
+pub fn open_preview(String, String, Attachment, drive? : DriveFile?, steps? : Stepping, named? : Bool, at? : String, beside? : Bool, full? : Bool, start? : Double) -> Unit
 
 pub fn open_screen(String, String, String?) -> Unit
 
@@ -1925,7 +1925,9 @@ pub fn viz_mermaid_node(@view.View, Source, String, () -> String, () -> Int64, @
 
 pub let viz_mermaid_box : @ui.Style
 
-pub fn viz_open_full(String, String, String, String, String, linked? : Bool) -> Unit
+pub fn viz_open(String, String, String, String, String, linked? : Bool, full? : Bool) -> Unit
+
+pub fn viz_open_full(String, String, String, String, String) -> Unit
 
 pub fn viz_page_document(String) -> String
 
