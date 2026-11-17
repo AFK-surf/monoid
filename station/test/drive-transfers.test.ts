@@ -157,6 +157,46 @@ test("from another station with its grant: read in parts, the originals let go o
   assert.deepEqual([...new Set(told.map((x) => x.state))], ["queued", "walking", "copying", "done"]);
 });
 
+for (const remote of [false, true]) for (const move of [false, true]) test(`a ${remote ? "remote" : "local"} ${move ? "move" : "copy"} refuses an incomplete folder listing before replacing anything`, async () => {
+  const a = station("truncated-src");
+  const b = remote ? station("truncated-dst") : a;
+  mkdirSync(join(a.root, "project", "deep"), { recursive: true });
+  writeFileSync(join(a.root, "project", "deep", "shown.txt"), "shown");
+  writeFileSync(join(a.root, "project", "deep", "unseen.txt"), "unseen");
+  mkdirSync(join(b.root, "dst", "project"), { recursive: true });
+  writeFileSync(join(b.root, "dst", "project", "old.txt"), "old");
+  const list = a.drive.list.bind(a.drive);
+  a.drive.list = async (...args) => {
+    const got = await list(...args);
+    // A folder beyond the listing limit: the transfer must not treat its first page as the whole folder.
+    return args[1] === "project/deep" ? { ...got, entries: got.entries.filter((e) => e.name !== "unseen.txt"), truncated: true } : got;
+  };
+  const transfers = transfersInto(b, remote ? { A: { drive: a.drive, key: KEY } } : {});
+  try {
+    const t = transfers.start(spec({ move, from: { station: remote ? "A" : null, grant: remote ? grantOf(a, { names: ["project"], move }) : undefined, root: a.root, path: "", names: ["project"] }, to: { root: b.root, path: "dst" }, conflicts: { project: "replace" } }));
+    await transfers.idle();
+    assert.deepEqual({
+      state: transfers.get(t.id)!.state,
+      sourceShown: existsSync(join(a.root, "project", "deep", "shown.txt")),
+      sourceUnseen: existsSync(join(a.root, "project", "deep", "unseen.txt")),
+      destinationOld: existsSync(join(b.root, "dst", "project", "old.txt")),
+      destinationShown: existsSync(join(b.root, "dst", "project", "deep", "shown.txt")),
+    }, { state: "failed", sourceShown: true, sourceUnseen: true, destinationOld: true, destinationShown: false });
+    assert.match(transfers.get(t.id)!.error!, /project\/deep.*too many entries/);
+    assert.deepEqual(transfers.get(t.id)!.items, [], "a partial walk is not kept for retry");
+    a.drive.list = list;
+    transfers.retry("a@x", t.id);
+    await transfers.idle();
+    assert.equal(transfers.get(t.id)!.state, "done", transfers.get(t.id)!.error);
+    assert.equal(readFileSync(join(b.root, "dst", "project", "deep", "shown.txt"), "utf8"), "shown");
+    assert.equal(readFileSync(join(b.root, "dst", "project", "deep", "unseen.txt"), "utf8"), "unseen");
+    assert.equal(existsSync(join(a.root, "project")), !move);
+  } finally {
+    a.drive.list = list;
+    await transfers.close();
+  }
+});
+
 test("a transfer whose station went away fails, and is taken up again where it was", async () => {
   const a = station("away-src");
   const b = station("away-dst");

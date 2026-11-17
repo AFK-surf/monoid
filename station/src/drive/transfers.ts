@@ -106,6 +106,7 @@ export async function walkDrive(drive: Drive, root: string, path: string, names:
   };
   const into = async (rel: string): Promise<void> => {
     const listed = await drive.list(root, join2(path, rel), anywhere);
+    if (listed.truncated) throw new DriveError("too_large", `${rel}: too many entries to list; select fewer files or smaller folders`);
     for (const e of listed.entries) await one(join2(rel, e.name), e);
   };
   const one = async (rel: string, e: Entry): Promise<void> => {
