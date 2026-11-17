@@ -816,13 +816,17 @@ fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?
 
 ///|
 /// Live output in the workspace: the total includes every session, the rows show the fastest ones as the core says them.
+/// Its card is the page's last, under what was spent, so the period's figures, legends and chart stand where they did
+/// without it; the total on the title's line, as a row's cost, where a hero's figure would be cut on a phone.
 fn usage_rates_node(parent : @view.View, rates : () -> Json?) -> Unit {
   parent.show(fn() { rates() is Some(Object(_)) }, fn(at) {
     ug_card_node(at, fn(k) {
-      @sf.words_node(k, fn() { text(rates(), "title") }, fn() { ug_card_title }) |> ignore
       k.box(fn(summary) {
         summary.gap(Is(4.0)) |> ignore
-        @sf.words_node(summary, fn() { text(rates(), "total") }, fn() { ug_hero_value }) |> ignore
+        ug_line_node(summary, fn(line) {
+          ug_grow_words(line, fn() { text(rates(), "title") }, ug_named_title) |> ignore
+          @sf.words_node(line, fn() { text(rates(), "total") }, fn() { ug_cost }) |> ignore
+        }, first=true)
         @sf.words_node(summary, fn() { text(rates(), "status") }, fn() { ug_row_sub_lines }) |> ignore
       }) |> ignore
       k.each(fn() { items(rates(), "rows") }, fn(r) { text(Some(r), "key") }, fn(row, r) {
@@ -859,7 +863,6 @@ fn usage_body_node(
   let details_pending = fn() { flag(v(), "detailsPreparing") || flag(chart(), "detailsPreparing") }
   parent.box(fn(b) {
     b.gap(Is(ug_body_gap)) |> ignore
-    usage_rates_node(b, rates)
     b.pick(fn() { usage_pick.summary.get() }, fn(body, is_sum) {
       if is_sum {
         usage_summary_node(body, chart, page_w, tips?)
@@ -900,6 +903,7 @@ fn usage_body_node(
         usage_notes_node(body, v)
       }
     })
+    usage_rates_node(b, rates)
   })
   |> ignore
 }

@@ -571,6 +571,9 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-slack-app profiles/down": 12,
   "phone settings-usage profiles/down": 12,
   "phone settings-usage usage/usage": 117,
+  // Added 2026-11-17: 用量's live output card (sfpages usage_node.mbt usage_rates_node): a change of the rates runs
+  // the bindings of its total and of each row's rate.
+  "phone settings-usage agentRates/rates": 63,
   "phone settings-prices usage/usage": 2,
   "phone archived archive/down": 72,
   "phone archived archive/archived": 72,
@@ -1504,6 +1507,9 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-memory-doc profiles/down": 6,
   "wide settings-usage profiles/down": 6,
   "wide settings-usage usage/usage": 134,
+  // Added 2026-11-17: 用量's live output card (sfpages usage_node.mbt usage_rates_node): a change of the rates runs
+  // the bindings of its total and of each row's rate.
+  "wide settings-usage agentRates/rates": 63,
   "wide settings-prices usage/usage": 3,
   "wide settings-archive archive/down": 112,
   "wide settings-archive archive/archived": 72,

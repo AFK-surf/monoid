@@ -1180,6 +1180,9 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-usage profiles/quota": (0, 0, 0, 0, 0, 0),
   "phone settings-usage profiles/down": (0, 0, 7, 0, 0, 0),
   "phone settings-usage usage/usage": (0, 0, 41, 4, 0, 0),
+  // Added 2026-11-17: 用量's live output card (sfpages usage_node.mbt usage_rates_node): a change of the rates
+  // lays out and measures its total and each row's rate again, nothing made or let go.
+  "phone settings-usage agentRates/rates": (0, 0, 70, 21, 0, 0),
   "phone settings-prices usage/usage": (0, 0, 0, 0, 0, 0),
   "phone settings-archive connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-archive vaults/item": (0, 0, 0, 0, 0, 0),
@@ -2874,6 +2877,9 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide settings-usage profiles/quota": (0, 0, 0, 0, 0, 0),
   "wide settings-usage profiles/down": (0, 0, 22, 2, 0, 0),
   "wide settings-usage usage/usage": (0, 0, 43, 4, 0, 0),
+  // Added 2026-11-17: 用量's live output card (sfpages usage_node.mbt usage_rates_node): a change of the rates
+  // lays out and measures its total and each row's rate again, nothing made or let go.
+  "wide settings-usage agentRates/rates": (0, 0, 72, 21, 0, 0),
   "wide settings-prices usage/usage": (0, 0, 0, 0, 0, 0),
   "wide settings-archive archive/down": (101, 97, 85, 15, 0, 0),
   "wide settings-archive archive/archived": (69, 87, 71, 12, 0, 0),

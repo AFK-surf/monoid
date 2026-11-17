@@ -393,7 +393,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone settings-slack-app": (610, 436, 126),
   "phone settings-memory": (477, 343, 95),
   "phone settings-memory-doc": (370, 266, 63),
-  "phone settings-usage": (656, 473, 90),
+  // Raised once, 2026-11-17: 用量 shows the workspace's live output rates as its last card (sfpages usage_node.mbt
+  // usage_rates_node): its total and the twenty fastest sessions the core lists on a workspace of real size, made,
+  // laid out and measured as the page opens.
+  "phone settings-usage": (780, 584, 155),
   "phone settings-archive": (615, 403, 76),
   "phone settings-kept": (524, 368, 57),
   "phone settings-kept-many": (544, 375, 52),
@@ -793,7 +796,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-slack-app": (694, 541, 110),
   "wide settings-memory": (620, 500, 116),
   "wide settings-memory-doc": (527, 424, 76),
-  "wide settings-usage": (749, 609, 130),
+  // Raised once, 2026-11-17: 用量 shows the workspace's live output rates as its last card (sfpages usage_node.mbt
+  // usage_rates_node): its total and the twenty fastest sessions the core lists on a workspace of real size, made,
+  // laid out and measured as the page opens.
+  "wide settings-usage": (887, 720, 239),
   "wide settings-archive": (814, 603, 106),
   "wide settings-kept": (634, 496, 94),
   "wide settings-kept-many": (725, 567, 93),
