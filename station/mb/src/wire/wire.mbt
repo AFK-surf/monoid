@@ -17,6 +17,14 @@ pub impl Show for ShellError with output(self, logger) {
 }
 
 ///|
+/// Its words (moonc 0.10.21 gives a suberror no `to_string` of its own)
+pub fn ShellError::to_string(self : ShellError) -> String {
+  match self {
+    ShellError(m) => m
+  }
+}
+
+///|
 /// Bytes as they come, made lines (each without its newline); what is left is kept for the next.
 pub struct Lines {
   priv partial : Array[Byte]
