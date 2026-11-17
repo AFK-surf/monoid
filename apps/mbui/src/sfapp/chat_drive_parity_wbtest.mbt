@@ -2809,7 +2809,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-video", what: Key("old alone 「Claude」"), from: 2333.0, to: 2333.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_quote_flight },
   { drive: "send-quote-video", what: Key("nodes alone 「0:13」"), from: 2483.0, to: 2583.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_quote_flight },
   { drive: "send-quote-video", what: Key("alpha 「0:13」"), from: 2600.0, to: 2633.0, dx: 0.2, dy: 0.2, dw: 0.8, why: pa_why_send },
-  { drive: "send-quote-video", what: Key("old alone 「做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。」"), from: 2650.0, to: 2667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-video", what: Key("old alone 「刚刚」"), from: 2650.0, to: 2717.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_timein },
   { drive: "send-quote-video", what: Key("ring old alone"), from: 2650.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "send-quote-video", what: Key("old alone 「0s」"), from: 2667.0, to: 2700.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },

@@ -7,7 +7,8 @@
 ///|
 /// What a message quotes (`quotes`, of its `files`: the one each names in its card) in `v`, as they change: the
 /// viewer's (`mine`) at the column's end, as wide as the widest needs and at most as its bubble may be; anyone
-/// else's across the column. `at` names where its message is (message_place: its quotes' pictures `at/q:<i>`); `said`
+/// else's across the column. `at` names where its message is, as it is now (message_place: its quotes' pictures
+/// `at/q:<i>`; another message's, a block put by and taken for another row, each card made again for it); `said`
 /// its `said` (MessageFilesAt's). Sent from here a moment ago (`from`: where each card stood in the composer, in their
 /// order), each card flies from there as its words' bubble does from the field, at its own width all the way and from
 /// the height it stood at there to its own; its own picture from its square in that card (`flies_of`: by
@@ -19,7 +20,7 @@ fn message_quotes_node(
   quotes : () -> Array[Quote],
   files : () -> Array[Attachment],
   mine : Bool,
-  at : String,
+  at : () -> String,
   said? : () -> Bool = fn() { false },
   from? : Array[(Double, Double, Double, Double)?] = [],
   flies_of? : (String) -> (Double, Double, Double, Double)? = fn(_) { None },
@@ -34,7 +35,10 @@ fn message_quotes_node(
           quote_cards
         }
       })
-      let keys = fn() { quotes().mapi(fn(i, q) { q.ts + "/" + i.to_string() }) }
+      let keys = fn() {
+        let place = at()
+        quotes().mapi(fn(i, q) { place + "|" + q.ts + "/" + i.to_string() })
+      }
       cards.each(keys, fn(k) { k }, fn(slot, k) {
         // (its row as wide as the cards' column, as the old card is, w=Full in it: quote_box)
         @sf.style_node(slot, fn() { quote_card_row })
@@ -72,7 +76,7 @@ fn message_quotes_node(
           pictured=fn() { own() is Some(_) },
           picture=fn(b) {
             let n = @signals.untracked(i)
-            quote_picture_node(b, src, here, place, own, at + "/q:" + n.to_string(), flies_of=fn() {
+            quote_picture_node(b, src, here, place, own, @signals.untracked(at) + "/q:" + n.to_string(), flies_of=fn() {
               flies_of(@sfbase.quote_picture_key(n))
             })
           },

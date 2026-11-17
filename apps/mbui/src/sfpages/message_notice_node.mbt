@@ -19,13 +19,13 @@ fn notice_said_node(
   v : @view.View,
   src : Source,
   here : MessageNodeHere,
-  key : String,
+  key : () -> String,
   side : () -> Double,
   top : () -> Double,
   m : () -> Message,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   message_row_frame_node(v, key, side, top, over~, fn(r) {
     notice_body_node(r, src, here, m, opened, copied)

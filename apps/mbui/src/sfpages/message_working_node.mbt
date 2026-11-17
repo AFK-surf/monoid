@@ -86,7 +86,7 @@ fn working_said_node(
   a : () -> Agent,
   came : () -> Double?,
   steadies : ActivitySteadies,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   faces? : Map[String, AgentFace] = Map([]),
 ) -> MessageRowNode {
   let live = fn() {
@@ -102,7 +102,7 @@ fn working_said_node(
   let away = @signals.signal(false)
   let last : Ref[AgentOutPlan?] = Ref(None)
   let pic : Ref[@view.View?] = Ref(None)
-  message_row_frame_node(v, key, side, top, over~, fn(r) {
+  message_row_frame_node(v, fn() { key }, side, top, over~, fn(r) {
     // (a later turn of the same agent at work on this line: whatever a message of the turn before left it as (folded,
     // its picture away: a turn ended by it), shown again, nothing of that message's dropped on from)
     let turn_seen = Ref(@signals.untracked(a).last_turn)

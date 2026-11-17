@@ -213,9 +213,9 @@ fn said_new_row(
     let top = fn() { 0.0 }
     made.val = Some(
       if @signals.untracked(m).mine {
-        mine_said_node(f, src, here, "m:ts5", side, top, m)
+        mine_said_node(f, src, here, fn() { "m:ts5" }, side, top, m)
       } else {
-        person_said_node(f, src, here, "m:ts5", side, top, m, share~)
+        person_said_node(f, src, here, fn() { "m:ts5" }, side, top, m, share~)
       },
     )
   })
@@ -417,7 +417,7 @@ test "someone else's: their picture out in the margin before the name, the time 
   let picture = t.drawn_rects().filter(fn(r) { r.2 == 18.0 && r.3 == 18.0 })
   assert_true(picture.length() == 1 && picture[0].0 + picture[0].2 <= nx, msg="\{Repr(picture)}")
   guard made.val is Some(row) else { fail("no row") }
-  assert_eq(row.key, "m:ts5")
+  assert_eq((row.key)(), "m:ts5")
   assert_true(row.node.alive())
   let faults = said_audit(t, 1)
   assert_true(faults.is_empty(), msg=faults.join(" | "))
@@ -428,7 +428,7 @@ test "someone else's: their picture out in the margin before the name, the time 
 /// What the fixture's message offers of itself (MessageShare): its key, a link, its words; its turn shared counted in
 /// `went`.
 fn said_share(m : Message, went : Ref[Int]) -> MessageShare {
-  { key: "m:ts5", link: fn() { "https://app.still.fail/m/5" }, words: fn() { m.text }, go: fn() { went.val += 1 } }
+  { key: fn() { "m:ts5" }, link: fn() { "https://app.still.fail/m/5" }, words: fn() { m.text }, go: fn() { went.val += 1 } }
 }
 
 ///|

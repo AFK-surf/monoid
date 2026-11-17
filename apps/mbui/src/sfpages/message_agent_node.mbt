@@ -28,10 +28,13 @@ fn agent_card_kind(m : Message) -> String {
 
 ///|
 /// A station's screens' cards in what message `m` says (screen_links_node), each one's preview by the message and its
-/// link, as the old view's (message.mbt's screen_links).
+/// link, as the old view's (message.mbt's screen_links): by the message it is as each card is made (a block put by and
+/// taken for another row's message: View::scrolls_window's `reused`).
 fn agent_screens(src : Source, here : MessageNodeHere, m : () -> Message) -> @sf.ScreensNode {
-  let ts = @signals.untracked(m).ts
-  @sfbase.screen_links_node(src, message=here.station + "/" + here.session + "/" + ts)
+  let of = fn() {
+    @sfbase.screen_links_node(src, message=here.station + "/" + here.session + "/" + @signals.untracked(m).ts)
+  }
+  { card: fn(v, href, to, words) { (of().card)(v, href, to, words) }, title: fn(href, to) { (of().title)(href, to) } }
 }
 
 ///|
@@ -47,7 +50,7 @@ fn agent_said_node(
   v : @view.View,
   src : Source,
   here : MessageNodeHere,
-  key : String,
+  key : () -> String,
   side : () -> Double,
   top : () -> Double,
   m : () -> Message,
@@ -55,20 +58,24 @@ fn agent_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   core? : @settings.Core? = None,
   out_of? : (AgentFace, AgentOutPlan)? = None,
-  piece? : @sf.MdPiece? = None,
+  piece? : () -> @sf.MdPiece? = fn() { None },
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   pieces_pointed? : () -> Bool = fn() { false },
   piece_made? : (@view.View) -> Unit = fn(_) {  },
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
   // (a piece of a long message after its first (chat_body_pieces): its blocks alone, under where its words are drawn,
-  // its files and what it asks under them where it is its last; its head, picture and what it quotes the first's)
+  // its files and what it asks under them where it is its last; its head, picture and what it quotes the first's.
+  // Which it is as it is made; the block taken for another row's piece (View::scrolls_window's `reused`) taken for one
+  // of the same make (chat_body_shape), what it draws of the message read through `piece` as it is now)
+  let piece_by = piece
+  let piece = @signals.untracked(piece_by)
   match piece {
     Some(pc) if pc.from > 0 || (pc.rows is Some((r, _)) && r > 0) => {
       let last = pc.last
@@ -88,12 +95,12 @@ fn agent_said_node(
             None => ()
           }
           col.box(fn(p) {
-            @ui.picked_of(p, key, whole=true) |> ignore
+            picked_of_by(p, key)
             @sf.style_node(p, fn() { agent_prose_piece })
             // (a piece of a message coming out of its agent's picture: its words a glyph at a time as the first's,
             // on the same clock, not there whole while the first's are still coming)
             let glyphs = out_of.bind(fn(o) { o.1.glyphs.val })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), across_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, files_too=last)
           })
           |> ignore
           if last {
@@ -165,7 +172,7 @@ fn agent_said_node(
       None,
       fn(b) {
         // (what it quotes ahead of its words, as the old body's)
-        message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, message_place(@signals.untracked(m)), said=fn() { m().said })
+        message_quotes_node(b, src, here, fn() { m().quotes }, fn() { m().attachments }, false, fn() { message_place(m()) }, said=fn() { m().said })
         // (its words, or the card in their place: one in the other's place as the post says)
         b.pick(fn() { agent_card_kind(m()) == "" }, fn(p, words) {
           // (what is read in it starts here, its words or the card in their place, under its head line and what it
@@ -173,12 +180,12 @@ fn agent_said_node(
           p.read_from() |> ignore
           // (and what is picked of it is of its key, what is read of it alone, not its head line: quoted by it, all of
           // it taken by 全选, chat_quote_node)
-          @ui.picked_of(p, key, whole=true) |> ignore
+          picked_of_by(p, key)
           if words {
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, across_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, files_too=last)
           } else {
             message_card_node(p, here, core, m)
           }
@@ -240,7 +247,8 @@ fn agent_asks_node(b : @view.View, src : Source, here : MessageNodeHere, m : () 
 /// to a chat read as that chat's title; its paths its agent's files' chips; the files it places drawn where it places
 /// them (their cards); the rest of its files under its words. `code`: what draws a fenced block of a language another
 /// way (none: as code); `screens`: links to a station's screens as cards (none: as links); `shown`: its links told as
-/// they change (what a card over one is drawn by).
+/// they change (what a card over one is drawn by). `piece`: which of its blocks it draws as it is made; `piece_by`, as
+/// it is now (markdown_node's).
 fn agent_prose_node(
   v : @view.View,
   src : Source,
@@ -254,6 +262,7 @@ fn agent_prose_node(
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
   piece? : @sf.MdPiece? = None,
+  piece_by? : () -> @sf.MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   files_too? : Bool = true,
 ) -> Unit {
@@ -368,6 +377,7 @@ fn agent_prose_node(
       code~,
       screens?,
       piece~,
+      piece_by?,
       across_of~,
     )
     |> ignore
@@ -376,12 +386,14 @@ fn agent_prose_node(
     // its way, as the old list's Changed did); the same height, nothing (View::resizes). An answer's first words are
     // there at once, as ever (answering.mbt). Only words streamed on (the words before them still there at their start):
     // a message's words set again to others are no stream, nothing of the list set out for them, none of its other
-    // rows read again)
-    let streamed = Ref(@signals.untracked(m).text)
-    w.reacts(fn() { m().text }, fn(text) {
-      let was = streamed.val
-      streamed.val = text
-      if text.length() > was.length() && text.has_prefix(was) {
+    // rows read again; nor another message's, a block put by and taken for another row (View::scrolls_window's
+    // `reused`), whatever its words begin with)
+    let streamed = Ref(@signals.untracked(fn() { (m().ts, m().text) }))
+    w.reacts(fn() { (m().ts, m().text) }, fn(now) {
+      let (ts, text) = now
+      let (was_ts, was) = streamed.val
+      streamed.val = now
+      if ts == was_ts && text.length() > was.length() && text.has_prefix(was) {
         w.resizes() |> ignore
       }
     }, at_start=false)

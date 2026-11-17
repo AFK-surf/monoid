@@ -489,6 +489,64 @@ fn chat_body_gap_room(gap : ChatBodyGap, w : Double) -> Double {
 }
 
 ///|
+/// How row `r` is made (chat_body_row's): its kind, and of an agent's message read before the chat showed it, which make
+/// of piece it is (chat_body_piece_make), what such a row's nodes are made as (a long message's first piece, under its
+/// head; a piece after it, its block alone; the last, its files and what it asks under it); -1 for any other. Made again
+/// only as that changes.
+fn chat_body_made_as(r : ChatBodyRow) -> (ChatBodyKind, Int) {
+  let kind = chat_body_kind(r.entry)
+  match r.entry {
+    Said(m) if kind == KAgent && !m.said => (kind, chat_body_piece_make(r.piece))
+    _ => (kind, -1)
+  }
+}
+
+///|
+/// Which make of piece of a message a row is (ChatBodyRow's `piece`): 0 all of it; one block alone, 1 its first, 2 one
+/// after it, 3 its last; 4 some rows of a table or items of a list.
+fn chat_body_piece_make(piece : @sf.MdPiece?) -> Int {
+  match piece {
+    None => 0
+    Some(pc) if pc.rows is None && pc.upto == pc.from + 1 => if pc.from == 0 { 1 } else if pc.last { 3 } else { 2 }
+    Some(_) => 4
+  }
+}
+
+///|
+/// The make of block row `r` of chat `here`'s list is put by as and taken for (View::scrolls_window's `reused`): a
+/// message read before the chat showed it (not `said`: nothing of it moves as it comes) with no files (what files draw
+/// is made by them), by who said it (the viewer, a person, still.fail's notice, an agent) and, an agent's with no card
+/// and nothing asked, which make of piece (chat_body_piece_make: no table's rows or list's items); whether its agent is
+/// one, and one of the chat's (its paths its files, its name's card), and whether the chat offers its messages (its
+/// thread: message_share_of), each made by it as the block is made. None for any other row: made and let go as it shows.
+/// A block taken for another row of its make shows it as one made for it would (chat_body_row, through its key).
+fn chat_body_shape(here : MessageNodeHere, r : ChatBodyRow) -> Int? {
+  guard r.entry is Said(m) && !m.said && m.attachments.is_empty() else { return None }
+  let made = if m.mine {
+    0
+  } else if m.system {
+    1
+  } else if m.author_kind == "person" {
+    2
+  } else {
+    guard m.card is None && m.options is None && !m.asked else { return None }
+    match chat_body_piece_make(r.piece) {
+      4 => return None
+      p => 3 + p
+    }
+  }
+  let agent = if made < 3 || m.by.agent == "" {
+    0
+  } else if @signals.untracked(fn() { message_agent_of(here, m.by.agent) }) == "" {
+    1
+  } else {
+    2
+  }
+  let shares = if @signals.untracked(here.view).thread is Some(_) { 1 } else { 0 }
+  Some((made * 3 + agent) * 2 + shares)
+}
+
+///|
 /// What kind of row an entry is drawn as (entry_row's and message_row's cases): what is made again only as a row of
 /// one key comes to be another kind (what was sent from here coming to be the core's message).
 #derive(Eq)
@@ -878,6 +936,24 @@ fn chat_body_node(
       }
     })
   }
+  // (a row's block in `slot`, of the row whose key `key` says as it is now: chat_body_row's)
+  let row_of = fn(slot : @view.View, key : () -> String) {
+    chat_body_row(slot, src, here, key, list, side, top, core, keeps, made, jump, fn() { came_at.get(key()) }, fn() {
+      let k = @signals.untracked(key)
+      let base = chat_piece_of(k)
+      if base == k {
+        let plan = out_plans.get(k)
+        out_plans.remove(k)
+        match plan {
+          Some(p) => out_taken[k] = p
+          None => ()
+        }
+        plan
+      } else {
+        out_taken.get(base)
+      }
+    })
+  }
   // (the list's head, a block of what it holds: what tells it its rows are laid out anew, at
   // another width, as the page sets off to another (column_laid))
   let head_v : Ref[@view.View?] = Ref(None)
@@ -1012,22 +1088,19 @@ fn chat_body_node(
       place~,
       near_top=(1.0, wants_older, fn() { ask_older(true) }),
       near_foot=(1.0, wants_newer, ask_newer),
-      fn(slot, k) {
-        chat_body_row(slot, src, here, k, list, side, top, core, keeps, made, jump, fn() { came_at.get(k) }, fn() {
-          let base = chat_piece_of(k)
-          if base == k {
-            let plan = out_plans.get(k)
-            out_plans.remove(k)
-            match plan {
-              Some(p) => out_taken[k] = p
-              None => ()
-            }
-            plan
-          } else {
-            out_taken.get(base)
-          }
-        })
+      // (a message read before the chat showed it, as it no more shows put by for the next of its make to come to show,
+      // its key that one's: what a hand scrolling through a chat's history comes to, nothing made or let go for it
+      // (chat_body_shape); what moves as it comes (what came by data, what was sent from here), what has files and the
+      // rest made and let go as before)
+      reused=fn(k) {
+        guard !came_at.contains(k) && !out_plans.contains(chat_piece_of(k)) && !out_taken.contains(chat_piece_of(k)) &&
+          !@sfbase.sent_from_waits(k) else {
+          return None
+        }
+        @signals.untracked(fn() { (list.row)(k) }).bind(fn(r) { chat_body_shape(here, r) })
       },
+      make_reused=fn(slot, key) { row_of(slot, key) },
+      fn(slot, k) { row_of(slot, fn() { k }) },
     )
     |> ignore
     // (cut to itself at rest; not while its column is laid out narrower than it is drawn, the page on its way to another
@@ -1194,12 +1267,15 @@ fn chat_body_node(
 /// Row `k` of a chat's list in `slot` (entry_row's, its row's room round it: message_row_frame_node), as its kind's
 /// row draws it, reading what it is by its key in `rows` as that changes; made again only as it comes to be another
 /// kind. What it shows of being gone to (its flash, a search's words marked in it) as `jump` says; `came`, when its key
-/// came into the list by data (an agent's line's first words in glyph by glyph from then; none: simply there).
+/// came into the list by data (an agent's line's first words in glyph by glyph from then; none: simply there). Its key
+/// as it is now (`key`): one key all along for a block made for it, or the key of each row a block put by is taken for
+/// in turn (View::scrolls_window's `reused`, chat_body_shape), what it shows of its row read through it, so the block
+/// shows a row taken for it as one made for that row would.
 fn chat_body_row(
   slot : @view.View,
   src : Source,
   here : MessageNodeHere,
-  k : String,
+  key : () -> String,
   rows : ChatBodyList,
   side : () -> Double,
   list_top : () -> Double,
@@ -1210,11 +1286,20 @@ fn chat_body_row(
   came : () -> Double?,
   out_plan : () -> AgentOutPlan?,
 ) -> Unit {
-  let first = @signals.untracked(fn() { (rows.row)(k) })
+  let first = @signals.untracked(fn() { (rows.row)(key()) })
   guard first is Some(first) else { return }
   // (as the list says it now, only as that row changed (chat_body_row_same): what changed in another row reads none of
-  // this one again; one let go as its key goes reads what it last was)
-  let now = @signals.computed_by(fn(_) { (rows.row)(k).unwrap_or(first) }, same=chat_body_row_same)
+  // this one again; one let go as its key goes reads what it last was; taken for another key, that key's)
+  let last = Ref(first)
+  let now = @signals.computed_by(fn(_) {
+    match (rows.row)(key()) {
+      Some(r) => {
+        last.val = r
+        r
+      }
+      None => last.val
+    }
+  }, same=chat_body_row_same)
   let row = fn() { now.get() }
   let entry = fn() { row().entry }
   let top = fn() { chat_body_gap_room(row().gap, (here.width)()) }
@@ -1227,22 +1312,25 @@ fn chat_body_row(
       return find_words_in(chat)
     }
     match jump.found.get() {
-      (at, marked) if at == k => marked
+      (at, marked) if at == key() => marked
       _ => []
     }
   }
   let found_at = fn() -> Int? {
     guard find_chat() == chat else {
-      return if jump.found.get().0 == k { Some(@sf.found_all) } else { None }
+      return if jump.found.get().0 == key() { Some(@sf.found_all) } else { None }
     }
     match entry() {
       Said(m) => Some(find_at_in(chat, m.seq))
       _ => Some(-1)
     }
   }
-  slot.pick(fn() { chat_body_kind(entry()) }, fn(p, kind) {
-    made(k, p)
-    let whole_key = chat_piece_of(k)
+  slot.pick(fn() { chat_body_made_as(row()) }, fn(p, made_as) {
+    let kind = made_as.0
+    // (told what holds it as it is made, and again as it is taken for another key)
+    made(@signals.untracked(key), p)
+    p.reacts(key, fn(k) { made(k, p) }, at_start=false)
+    let whole_key = fn() { chat_piece_of(key()) }
     let band_room = fn() -> (Double, Double) {
       let r = row()
       let w = (here.width)()
@@ -1305,12 +1393,12 @@ fn chat_body_row(
         _ => m0
       }
     }
-    let frame = fn(body : (@view.View) -> Unit) { message_row_frame_node(p, k, side, top, body) |> ignore }
+    let frame = fn(body : (@view.View) -> Unit) { message_row_frame_node(p, key, side, top, body) |> ignore }
     // (a message's: its flash, and over it its band while its menu shows, right clicked or its ⋯'s, as the row says
     // that: both its content line node's ground, chat_row_lit_node's, expanded symmetrically into half the gaps above
     // and below while lit)
     let more : Ref[() -> Bool] = Ref(fn() { false })
-    let over = fn(row : @view.View, key : String) {
+    let over = fn(row : @view.View, key : () -> String) {
       row_mid.val = Some(row)
       let band = message_menu_band_way(row, key, more, on_active=fn(on) {
         menu_on_band.val = on
@@ -1372,12 +1460,12 @@ fn chat_body_row(
             }
           })
         }
-        more.val = mine_said_node(p, src, here, k, side, top, mine, found~, found_at~, lit~, share=message_share_of(src, here, mine), over~, out~, since=fn() { since.get() }).menu_on
+        more.val = mine_said_node(p, src, here, key, side, top, mine, found~, found_at~, lit~, share=message_share_of(src, here, mine), over~, out~, since=fn() { since.get() }).menu_on
       }
       KNotice => {
         // (its words, picked with the pointer, are of its key, as a message's are from where they are read: quoted by
         // it, all of them taken by 全选, chat_quote_node)
-        @ui.picked_of(p, k, whole=true) |> ignore
+        picked_of_by(p, key)
         // (across the column's middle as it is drawn, on the page's way to another width: as a message of one's own
         // goes with the right edge (by - 2·across past where it is laid out) and the words at the left with the left
         // (no more than the column's own across), its pill goes half of the one, its middle with the drawn middle,
@@ -1387,13 +1475,13 @@ fn chat_body_row(
           (c.by / 2.0 - c.across, 0.0)
         }))
         |> ignore
-        notice_said_node(p, src, here, k, side, top, m, keeps.opened, keeps.copied, over~) |> ignore
+        notice_said_node(p, src, here, key, side, top, m, keeps.opened, keeps.copied, over~) |> ignore
       }
       KPerson =>
-        more.val = person_said_node(p, src, here, k, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
+        more.val = person_said_node(p, src, here, key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
       KAgent =>
-        more.val = agent_said_node(p, src, here, chat_piece_of(k), side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=@signals.untracked(row).piece, across_of=fn(b) {
-          let tk = chat_piece_of(k) + "#" + b.to_string()
+        more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
+          let tk = @signals.untracked(whole_key) + "#" + b.to_string()
           match keeps.tables.get(tk) {
             Some(s) => s
             None => {
@@ -1403,11 +1491,25 @@ fn chat_body_row(
             }
           }
         }, pieces_pointed=fn() {
-          chat_pieces_of(keeps.pieces, chat_piece_of(k)).get().iter().any(@sf.hovered_in_node)
+          chat_pieces_of(keeps.pieces, whole_key()).get().iter().any(@sf.hovered_in_node)
         }, piece_made=fn(at) {
-          let held = chat_pieces_of(keeps.pieces, chat_piece_of(k))
-          held.set(@signals.untracked(fn() { held.get() }) + [at])
-          at.owns(fn() { held.set(@signals.untracked(fn() { held.get() }).filter(fn(o) { o.id() != at.id() })) }) |> ignore
+          // (among the pieces of the message it is a piece of now: of another, taken for a piece of that one)
+          let put = fn(whole : String) {
+            let held = chat_pieces_of(keeps.pieces, whole)
+            held.set(@signals.untracked(fn() { held.get() }) + [at])
+          }
+          let take = fn(whole : String) {
+            let held = chat_pieces_of(keeps.pieces, whole)
+            held.set(@signals.untracked(fn() { held.get() }).filter(fn(o) { o.id() != at.id() }))
+          }
+          let of = Ref(@signals.untracked(whole_key))
+          put(of.val)
+          at.reacts(whole_key, fn(now) {
+            take(of.val)
+            of.val = now
+            put(now)
+          }, at_start=false)
+          at.owns(fn() { take(of.val) }) |> ignore
         }, code=fn(lang) {
           let tag = (match lang.find(" ") {
             Some(i) => lang.clamped_view(end=i).to_owned()
@@ -1424,7 +1526,7 @@ fn chat_body_row(
           Sent(s) => s
           _ => @sfbase.elsewhere_of({})
         }
-        sent_elsewhere_node(p, src, here, k, side, top, fn() {
+        sent_elsewhere_node(p, src, here, @signals.untracked(key), side, top, fn() {
           match entry() {
             Sent(s) => s
             _ => s0
@@ -1450,7 +1552,7 @@ fn chat_body_row(
           p,
           src,
           here,
-          k,
+          @signals.untracked(key),
           side,
           top,
           fn() {

@@ -1019,13 +1019,13 @@ fn publish_said_node(parent : @view.View, src : Source, here : MessageNodeHere, 
   let none = fn() { 0.0 }
   let now = fn() { m }
   if m.mine {
-    mine_said_node(parent, src, here, key, none, none, now) |> ignore
+    mine_said_node(parent, src, here, fn() { key }, none, none, now) |> ignore
   } else if m.system {
-    notice_said_node(parent, src, here, key, none, none, now, @sf.LiveMap::new(), @sf.LiveMap::new()) |> ignore
+    notice_said_node(parent, src, here, fn() { key }, none, none, now, @sf.LiveMap::new(), @sf.LiveMap::new()) |> ignore
   } else if m.author_kind == "person" {
-    person_said_node(parent, src, here, key, none, none, now) |> ignore
+    person_said_node(parent, src, here, fn() { key }, none, none, now) |> ignore
   } else {
-    agent_said_node(parent, src, here, key, none, none, now, code=fn(lang) {
+    agent_said_node(parent, src, here, fn() { key }, none, none, now, code=fn(lang) {
       if lang == "mermaid" {
         Some(fn(b, code) { @sfbase.viz_mermaid_node(b, src, here.station, code, fn() { @sf.theme().p.subtle }, here.tips) })
       } else {

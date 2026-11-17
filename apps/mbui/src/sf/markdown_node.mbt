@@ -25,7 +25,9 @@
 /// changes); `files`, the files it names by their names, drawn where it names them (a paragraph of only a link to one,
 /// or its images); `screens`, its links to screens: a paragraph of only one its card, one bare in a sentence its title.
 /// `serif`: its words (not its code) in the serif face, as it says now (a reader's layout); `nodes`: its blocks as the core
-/// read them told, its nodes of `text` (a reader's block of a book: none asked of the core).
+/// read them told, its nodes of `text` (a reader's block of a book: none asked of the core). `piece_by`: the piece it
+/// draws as it is now, where `piece` is one block alone (a page's list's block put by and taken for another message's
+/// piece of one block: View::scrolls_window's `reused`), which block it is read through it, the same nodes.
 /// The node.
 #callsite(autofill(loc))
 pub fn markdown_node(
@@ -55,6 +57,7 @@ pub fn markdown_node(
   screens? : ScreensNode,
   glyphs? : ((@view.View) -> Double, (Double, @view.GlyphAt) -> @view.GlyphLook)? = None,
   piece? : MdPiece? = None,
+  piece_by? : () -> MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   text_face? : () -> Int? = fn() { None },
   code_face? : () -> Int? = fn() { None },
@@ -125,7 +128,11 @@ pub fn markdown_node(
       // (its first block's words on one line, cut short: markdown's one_line)
       md_words_node(col, md, fn() { first_words(blocks.get()) }, md.size, 0, wrap=false, cut=true)
     } else {
-      md_blocks_node(col, md, fn() { blocks.get() }, false, range=piece.map(fn(p) { (p.from, p.upto) }))
+      let from_by = match (piece, piece_by) {
+        (Some(p), Some(by)) => Some(fn() { by().map(fn(n) { n.from }).unwrap_or(p.from) })
+        _ => None
+      }
+      md_blocks_node(col, md, fn() { blocks.get() }, false, range=piece.map(fn(p) { (p.from, p.upto) }), from_by?)
     }
   })
 }
@@ -287,7 +294,8 @@ fn md_node_blocks(text : String, tree : Json?) -> Array[MdBlock] {
 /// tight list's item's (its paragraphs keep no margin of their own). Each by its place among them, made again where its
 /// kind changes. `range`: only those from its first up to (not) its second, the first as far under the one before it as
 /// among all (a piece of a long message, a block of a page's list: the margin between two blocks of it the piece's own,
-/// so the pieces one under another are the message as drawn whole).
+/// so the pieces one under another are the message as drawn whole). `from_by`, where `range` is one block: which block
+/// that is as it is now (markdown_node's `piece_by`).
 #callsite(autofill(loc))
 fn md_blocks_node(
   col : @view.View,
@@ -295,6 +303,7 @@ fn md_blocks_node(
   blocks : () -> Array[MdBlock],
   tight : Bool,
   range? : (Int, Int)? = None,
+  from_by? : () -> Int,
   loc~ : SourceLoc,
 ) -> Unit {
   // (block `i` (`block`, as it is now) in its box `slot`: as far under the one before as the larger of the margins
@@ -334,8 +343,51 @@ fn md_blocks_node(
   // (a piece of one block, as a long message's pieces each are (markdown_pieces): that block alone in a box of its own,
   // as the one the list below would make it, read through what it is now, so what changes in the others tells it
   // nothing; where the blocks hold it no more, nothing in it and no room kept for it, as the list would have none)
-  match range {
-    Some((from, upto)) if upto == from + 1 => {
+  match (range, from_by) {
+    // (which block it is read as it is now: as far under the one before it as among all, its matches before it, and
+    // drawn as its kind draws it, as were it made for that block; a table made again for another, its pieces scrolled
+    // across as one by the block it is)
+    (Some((from, upto)), Some(at)) if upto == from + 1 && md.table_rows is None => {
+      let block = @signals.computed(fn(_) { blocks().get(at()) })
+      col.box(made_for=loc, fn(slot) {
+        let top_pad = @signals.computed(fn(_) {
+          let i = at()
+          let bs = blocks()
+          if i == 0 {
+            match bs.get(0) {
+              Some(b) if md.apart => dmax(paragraph_after, md_node_margins(md, b, tight).0)
+              _ => 0.0
+            }
+          } else {
+            match (bs.get(i - 1), bs.get(i)) {
+              (Some(a), Some(b)) => dmax(md_node_margins(md, a, tight).1, md_node_margins(md, b, tight).0)
+              _ => 0.0
+            }
+          }
+        }, same=fn(a, b) { a == b })
+        slot.padding(By(fn() { (0.0, top_pad.get(), 0.0, 0.0) })) |> ignore
+        let kind_sig = @signals.computed(
+          fn(_) {
+            match block.get() {
+              Some(x) => {
+                let kind = md_block_kind(md, x)
+                (kind, if kind == 7 { at() } else { -1 })
+              }
+              None => (-1, -1)
+            }
+          },
+          same=fn(a, b) { a == b },
+        )
+        slot.pick(fn() { kind_sig.get() }, fn(p, made_as) {
+          let i = if made_as.1 >= 0 { made_as.1 } else { @signals.untracked(at) }
+          let here = { ..md, before: fn() { (md.before)() + md_found_in(md, blocks(), at()) }, block_at: i }
+          md_block_node(p, here, made_as.0, fn() { block.get() }, tight)
+        })
+      })
+      |> ignore
+      return
+    }
+    (Some((from, upto)), _) if upto == from + 1 => {
       let block = @signals.computed(fn(_) { blocks().get(from) })
       col.box(made_for=loc, fn(slot) { block_slot(slot, fn() { block.get() }, from) }) |> ignore
       return

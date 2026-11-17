@@ -12,9 +12,17 @@
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_field")
 priv struct MessageRowNode {
-  key : String
+  key : () -> String
   node : @view.View
   menu_on : () -> Bool
+}
+
+///|
+/// What the words node `v` holds are of, said whole (@ui.picked_of's: quoted by it, all of them taken by 全选,
+/// chat_quote_node), as its row's key `of` is now: a block put by and taken for another row (View::scrolls_window's
+/// `reused`) that row's.
+fn picked_of_by(v : @view.View, of : () -> String) -> Unit {
+  v.reacts(of, fn(k) { @ui.picked_of(v, k, whole=true) |> ignore })
 }
 
 ///|
@@ -35,14 +43,15 @@ fn row_top_kind(room : Double) -> Int {
 /// in from the pane's sides by `side` each (as the list's width gives it: row_side's; the trailing side the system's
 /// inset beside its bars, native_row_inset's), its body made by `body` in the column's middle, as wide as is left.
 /// `over`, told the row's content line node (`m`, excluding `top` gap above it) and `key` once as it is made, before
-/// what it holds: what is laid over it (the bands) hung there, under its words and enclosed surfaces.
+/// what it holds: what is laid over it (the bands) hung there, under its words and enclosed surfaces. Its key as it is
+/// now: a block put by and taken for another row (View::scrolls_window's `reused`) that row's.
 fn message_row_frame_node(
   parent : @view.View,
-  key : String,
+  key : () -> String,
   side : () -> Double,
   top : () -> Double,
   body : (@view.View) -> Unit,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let node = parent.box(fn(root) {
     // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never

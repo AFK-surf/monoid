@@ -700,11 +700,11 @@ fn chat_ask_node(
 /// edge to edge, under what it holds: no node of its own, as most rows are never gone to nor have their menu open):
 /// its flash in the theme's secondary emphasis ground (`flash` chat_flash_way's, row `key` gone to and no passage
 /// of it lit), and over that its menu's band (`band` message_menu_band_way's, the pointer's ground as lit as it is).
-fn chat_row_lit_node(row : @view.View, key : String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
+fn chat_row_lit_node(row : @view.View, key : () -> String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
   row.ground(
     By(fn() {
       let lit = match chat_gone(jump) {
-        (k, _, "") if k == key => lit_by(@sf.theme().flash_bg(), flash.shown_on(row))
+        (k, _, "") if k == key() => lit_by(@sf.theme().flash_bg(), flash.shown_on(row))
         _ => 0L
       }
       ground_over(lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)), lit)
@@ -741,10 +741,10 @@ fn ground_over(top : Int64, under : Int64) -> Int64 {
 /// accent's as a passage picked in a message is (picked_alpha), as lit as the flash is; ("", clear) for another row, or
 /// one lit whole. What a message's words mark it by (passage_marks). As lit as the row's flash is (`flash`, read in
 /// node `v`: chat_flash_way's for it).
-fn chat_passage_lit(v : @view.View, key : String, jump : ChatJump, flash : @motion.Way) -> () -> (String, Int64) {
+fn chat_passage_lit(v : @view.View, key : () -> String, jump : ChatJump, flash : @motion.Way) -> () -> (String, Int64) {
   fn() {
     match chat_gone(jump) {
-      (k, _, passage) if k == key && passage != "" =>
+      (k, _, passage) if k == key() && passage != "" =>
         (passage, lit_by(@sf.alpha(@sf.theme().p.accent, @sfbase.picked_alpha), flash.shown_on(v)))
       _ => ("", 0L)
     }
@@ -754,28 +754,47 @@ fn chat_passage_lit(v : @view.View, key : String, jump : ChatJump, flash : @moti
 ///|
 /// How lit row `key` gone to is (0 to 1), followed in node `b` (what makes the row): coming in over flash_in_ms on the
 /// ease-out, held to flash_held_ms, gone by flash_ms on Leave, from the moment the chat went to it (ChatJump's
-/// `flashed`: the press's, its cause), made then or later; with motion reduced lit whole for flash_ms, then not.
+/// `flashed`: the press's, its cause), made then or later; with motion reduced lit whole for flash_ms, then not. Its
+/// row's key as it is now (`key`): taken for another row's (a block put by and taken again: View::scrolls_window's
+/// `reused`), the flash of the one before let go at once, and that row's as a row made for it would have it.
 fn chat_flash_way(
   b : @view.View,
-  key : String,
+  key : () -> String,
   jump : ChatJump,
   on_active? : (Bool) -> Unit = fn(_) {  },
 ) -> @motion.Way {
   let way = @motion.Way::new(0.0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
   let rest : Ref[() -> Unit] = Ref(fn() {  })
-  b.reacts(fn() { chat_gone(jump) }, fn(g) {
-    let (k, at, _) = g
-    guard k == key && at >= 0.0 && b.cause_at() < at + @sfbase.flash_ms else { return }
+  let lit = Ref(false)
+  let key_was = Ref(@signals.untracked(key))
+  b.reacts(fn() { (chat_gone(jump), key()) }, fn(g) {
+    let ((k, at, _), now) = g
+    // (taken for another row: what lit the one before gone at once, none of it going on over this one)
+    if now != key_was.val {
+      key_was.val = now
+      (due.val)()
+      (rest.val)()
+      way.put(0.0)
+      if lit.val {
+        lit.val = false
+        on_active(false)
+      }
+    }
+    guard k == now && at >= 0.0 && b.cause_at() < at + @sfbase.flash_ms else { return }
     (due.val)()
     (rest.val)()
+    lit.val = true
     on_active(true)
     way.go(1.0, @motion.tween(@sfbase.flash_in_ms, ease=Out), at~)
     let out = at + (if @ui.reduced_motion() { @sfbase.flash_ms } else { @sfbase.flash_held_ms })
     due.val = b.at_moment(out, fn() {
       way.go(0.0, @motion.tween(@sfbase.flash_ms - @sfbase.flash_held_ms, ease=Leave), at=out)
     })
-    rest.val = b.at_moment(at + @sfbase.flash_ms, fn() { on_active(false) }, later=true)
+    rest.val = b.at_moment(at + @sfbase.flash_ms, fn() {
+      lit.val = false
+      on_active(false)
+    }, later=true)
   })
   b.owns(fn() {
     (due.val)()

@@ -199,8 +199,8 @@ fn nt_new(
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        notice_said_node(f, src, here, "m:ts9", fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied, over=fn(r, k) {
-          row.val = Some((r, k))
+        notice_said_node(f, src, here, fn() { "m:ts9" }, fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied, over=fn(r, k) {
+          row.val = Some((r, k()))
         })
         |> ignore
       })

@@ -421,6 +421,13 @@ pub fn sent_quotes_from_take(key : String) -> Array[(Double, Double, Double, Dou
 }
 
 ///|
+/// Whether anything of what was sent from here as `key` (its words, its quotes' cards, its parts) waits for its row to
+/// fly from where it stood (sent_from_take, sent_quotes_from_take, sent_part_take), not taken.
+pub fn sent_from_waits(key : String) -> Bool {
+  sent_from_at.contains(key) || sent_quotes_from_at.contains(key) || sent_parts_at.contains(key)
+}
+
+///|
 /// Where the words of what was sent from here as `key` stood as they were sent (sent_from_said), taken: told once.
 pub fn sent_from_take(key : String) -> (Double, Double)? {
   let at = sent_from_at.get(key)

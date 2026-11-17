@@ -180,7 +180,7 @@ fn card_new(
       let core = Some(@sfbase.settings_core(src, card_ws))
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        message_row_frame_node(f, "m:ts63", fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
+        message_row_frame_node(f, fn() { "m:ts63" }, fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
           message_others_node(
             r,
             here,
@@ -892,7 +892,7 @@ fn card_row_new(w : Double, src : Source, m : Message) -> @ui.Tester {
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
         // (offering itself as the old list's row does: message_row's share)
-        agent_said_node(f, src, here, "m:" + m.ts, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }, share=message_share_of(
+        agent_said_node(f, src, here, fn() { "m:" + m.ts }, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }, share=message_share_of(
           src,
           here,
           fn() { m },

@@ -10,7 +10,7 @@
 /// right click on it says it: what the menu that opens is open for, @sfbase.message_menu_on), its link and its words
 /// as they are, and its turn's picture shared (`go`).
 pub(all) struct MessageShare {
-  key : String
+  key : () -> String
   link : () -> String
   words : () -> String
   go : () -> Unit
@@ -145,9 +145,9 @@ fn sent_elsewhere_node(
   side : () -> Double,
   top : () -> Double,
   s : () -> Elsewhere,
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  message_row_frame_node(v, key, side, top, over~, fn(m) { sent_elsewhere_body(m, src, here, key, s) })
+  message_row_frame_node(v, fn() { key }, side, top, over~, fn(m) { sent_elsewhere_body(m, src, here, key, s) })
 }
 
 ///|

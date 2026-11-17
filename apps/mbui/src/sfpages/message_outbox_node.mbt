@@ -53,9 +53,9 @@ fn outbox_said_node(
   o : () -> Outgoing,
   since : () -> Double,
   flying? : () -> Bool = fn() { false },
-  over? : (@view.View, String) -> Unit = fn(_, _) {  },
+  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  mine_said_node(v, src, here, key, side, top, fn() { outgoing_row(o()) }, over~, out=fn() { Some(o()) }, since~, flying~)
+  mine_said_node(v, src, here, fn() { key }, side, top, fn() { outgoing_row(o()) }, over~, out=fn() { Some(o()) }, since~, flying~)
 }
 
 ///|

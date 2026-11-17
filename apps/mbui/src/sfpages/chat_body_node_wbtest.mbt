@@ -322,17 +322,34 @@ fn body_old_rows(old : @ui.Tester, v : ChatView, read : Array[Entry]) -> Array[(
 }
 
 ///|
+/// The block `p` holds row `k` now (chat_body_node's `made`: made for it, or a block put by and taken for it), what
+/// `views` says of each row's block: none other said to be held by it.
+fn body_view_holds(views : Map[String, @view.View], k : String, p : @view.View) -> Unit {
+  let gone : Array[String] = []
+  for kv in views {
+    if kv.0 != k && kv.1.id() == p.id() {
+      gone.push(kv.0)
+    }
+  }
+  for g in gone {
+    views.remove(g)
+  }
+  views[k] = p
+}
+
+///|
 /// The nodes' rows, each the node its row was made in (`views`, chat_body_node's `made`) while it is: its key, its top,
 /// its height on whole pixels `g` a point (row_slot's, as the list lays its blocks on the pixels).
-fn body_new_rows(views : Map[String, @view.View], g : Double) -> Array[(String, Double, Double)] {
+fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Array[(String, Double, Double)] {
   // (a long message's pieces (chat_body_pieces) one row, as the old list draws the message: from its first's top to
   // its last's foot, by its first's key)
   let spans : Map[String, (Double, Double)] = Map([])
   let order : Array[String] = []
   body_piece_counts.clear()
   for kv in views {
-    if kv.1.alive() {
-      let r = kv.1.placed_window_now()
+    // (one put by out of sight for the next of its make (chat_body_shape) is no row that shows)
+    let r = kv.1.placed_window_now()
+    if kv.1.alive() && !kv.1.shown_nowhere() && r.1 < h && r.1 + r.3 > 0.0 {
       let k = chat_piece_of(kv.0)
       body_piece_counts[k] = body_piece_counts.get(k).unwrap_or(0) + 1
       let foot = r.1 + (r.3 * g - 0.000001).ceil() / g
@@ -430,7 +447,7 @@ fn body_both(mode : String, s : (String, Double, Double, Int), at : String, scal
   let entries = @signals.signal(read0)
   let views : Map[String, @view.View] = Map([])
   let place : @view.ListPlace[String] = @view.ListPlace::new()
-  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { views[k] = p }, unjudged=true)
+  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { body_view_holds(views, k, p) }, unjudged=true)
   t.set_font_scale(scale)
   t.run_for(rest)
   if at != "end" {
@@ -449,7 +466,7 @@ fn body_both(mode : String, s : (String, Double, Double, Int), at : String, scal
     entries.set(read)
     t.run_for(@ui.move_most_ms)
   }
-  let now = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0))
+  let now = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
   // (where both are put: the list's end; the row put at the top; once a page came in over it, the row the old list
   // held where it was, its first message then)
   let anchor = if at == "end" {
@@ -1058,7 +1075,7 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
       entries,
       made=fn(k, p) {
         made[k] = made.get(k).unwrap_or(0) + 1
-        views[k] = p
+        body_view_holds(views, k, p)
       },
       unjudged=true,
     )
@@ -1070,7 +1087,7 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
       view.set(st.1)
       entries.set(read)
       t.run_for(@ui.move_most_ms)
-      let drawn = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0))
+      let drawn = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
       // (its turn over, its agent's line gone with nothing in its place: turned on purpose from the old list's, which
       // comes down by the line's height; the page made as nodes leaves its room under the last row, each row that stays
       // where it was at the step before (the user, 2026-11-12: a turn that ends with no answer must not carry what is
@@ -1361,7 +1378,7 @@ test "the page before read in over a chat's list as nodes at its top: what is re
   let entries = @signals.signal(read0)
   let views : Map[String, @view.View] = Map([])
   let place : @view.ListPlace[String] = @view.ListPlace::new()
-  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { views[k] = p })
+  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { body_view_holds(views, k, p) })
   t.run_for(@ui.move_most_ms)
   let keys0 = body_keys(v0, read0)
   // (at its very top: its first row under its head, the chat's bar's room, as far as the list goes: a bring's offset

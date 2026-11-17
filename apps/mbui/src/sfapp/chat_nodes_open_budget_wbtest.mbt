@@ -8,7 +8,9 @@
 
 ///|
 /// Each window's bars, "<window> cold" and "<window> again": made, let go, laid out, measured, bindings run, in the
-/// heaviest frame (the most made); "<window> up": all of them in every frame as the chat is scrolled up through its
+/// heaviest frame (the most made); "<window> up frame": the most any one frame did of each (made, let go, laid out,
+/// measured, each its own frame's) as the chat is scrolled up through its older messages, at every rate of frames;
+/// "<window> up": all of them in every frame as the chat is scrolled up through its
 /// older messages (chat_nodes_scrolled), each row made as it comes into view (its bindings run not held: as many as the
 /// frames a rate draws: 1052 to 1072 wide at 7 to 120 a second, 2026-11-16). Counted 2026-11-16, once a paragraph's
 /// links are made only as it has one (sf words_links_node: till then the room for their cards alone), a long message's
@@ -32,12 +34,20 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // cold 2570 made and 2750 bindings)
   // (made 2 more, 795, and wide cold 1 more, 2573, 2026-11-17: each shell holds ⌘K's panel, and a phone's the search
   // over its page, as a closed `show` made as the shell is, sfdesk switcher_node and sfpages search_page_node)
-  "phone cold": (795, 38, 859, 148, 784),
-  "phone again": (342, 26, 245, 29, 301),
-  "wide cold": (2573, 483, 3682, 560, 2662),
-  "wide again": (897, 130, 882, 124, 1202),
-  "phone up": (667, 762, 644, 92, 0),
-  "wide up": (973, 795, 966, 129, 0),
+  // (2026-11-17: the blocks of the messages read before the chat showed them put by as they leave what shows and taken
+  // for the next of their make to come into it (sfpages chat_body_shape, View::scrolls_window's `reused`): before it
+  // phone cold 791 and 38 let go, again 339 and 26, wide cold 2570, again 895 made; scrolling up phone 667 made, 760
+  // let go, 644 laid, 90 measured, wide 973, 793, 966, 126; the most one frame of it did phone 146, 150, 126, 17 and
+  // wide 150, 149, 134, 23, the same at 60, 120, 24 and 7. What one frame still makes scrolling up is the first of
+  // each make to come before one of it has left, a long message's pieces most)
+  "phone cold": (779, 29, 852, 146, 778),
+  "phone again": (327, 17, 242, 28, 301),
+  "wide cold": (2557, 483, 3674, 557, 2649),
+  "wide again": (882, 130, 881, 123, 1049),
+  "phone up": (565, 366, 618, 84, 0),
+  "wide up": (698, 382, 910, 113, 0),
+  "phone up frame": (141, 102, 126, 17, 0),
+  "wide up frame": (137, 105, 130, 17, 0),
 }
 
 ///|
@@ -71,28 +81,128 @@ fn chat_nodes_all(from : Int) -> (Int, Int, Int, Int, Int) {
 }
 
 ///|
+/// The most any one frame the journal holds from its `from`th entry on did of each, apart: made, let go, laid, measured
+/// (each its own frame's most; bindings not held: as many as the rate draws).
+fn chat_nodes_frame_most(from : Int) -> (Int, Int, Int, Int, Int) {
+  let mut most = (0, 0, 0, 0, 0)
+  for i, e in @ui.journal() {
+    guard i >= from else { continue }
+    match e {
+      Work({ what: Frame(f), .. }) =>
+        most = (
+          @cmp.maximum(most.0, f.made),
+          @cmp.maximum(most.1, f.let_go),
+          @cmp.maximum(most.2, f.laid),
+          @cmp.maximum(most.3, f.measured),
+          0,
+        )
+      _ => ()
+    }
+  }
+  most
+}
+
+///|
+/// Words dragged over with the mouse in what shows of the chat `r` open in `t` (a window `h` tall), scrolled up through
+/// its history far enough that the blocks of the messages read before are put by and taken for others (sfpages
+/// chat_body_shape): what is picked of each message's words is of the message that shows them, not of one its block
+/// showed before it was taken for another; what is not so, said.
+fn chat_nodes_reused_picked(t : @ui.Tester, src : Source, r : ChatRef, h : Double) -> Array[String] {
+  // (the chat's messages as the page holds them, by their keys)
+  let said : Array[(String, String)] = @signals.untracked(fn() {
+    match @sfbase.chat_messages(src, r) {
+      Some(ms) => ms.peek_keys().filter_map(fn(k) { ms.peek(k) }).map(fn(m) { ("m:" + m.ts, m.text) })
+      None => []
+    }
+  })
+  guard said.length() > 0 else { return ["the chat's messages by key: none"] }
+  // (the start of each paragraph of each message's words, where it shows wholly in sight under the bar and over the
+  // composer (a message's words in pieces, Tester::run_rects), top to bottom: a real chat says the same words in many
+  // messages, so which message each is is told by where it shows as well, the keys going down the list in their order)
+  let lines : Array[(String, Double, Double, Double, Double, Double)] = []
+  let tried : Map[String, Bool] = Map([])
+  for m in said {
+    // (each paragraph's start: a long message's pieces each one)
+    for para in m.1.split("\n\n") {
+      let start = para.to_owned().clamped_view(end=6).to_owned()
+      guard start.length() >= 4 && !start.contains("\n") && !start.contains("#") && !start.contains("`") &&
+        !start.contains("*") && !start.contains("|") && !start.has_prefix("-") && !start.has_prefix("[") &&
+        !tried.contains(start) else {
+        continue
+      }
+      tried[start] = true
+      for r in t.run_rects(start) {
+        if r.1 > 120.0 && r.1 + r.3 < h - 160.0 && r.2 > 30.0 {
+          lines.push((start, r.0, r.1, r.2, r.3, 1.0))
+        }
+      }
+    }
+  }
+  lines.sort_by(fn(a, b) { a.2.compare(b.2) })
+  let wrong : Array[String] = []
+  let mut last = ""
+  let mut checked = 0
+  for s in lines {
+    t.run_for(@ui.double_click_ms)
+    let y = s.2 + s.4 / 2.0
+    t.drag(s.1 + 1.0, y, s.1 + s.3 - 1.0, y)
+    t.frame()
+    match @ui.picked_now() {
+      Some({ of: [key], text, .. }) => {
+        // (what is picked one message's words: that message's, and none over it in the list after one under it)
+        if said.iter().any(fn(m) { m.1.contains(text) }) {
+          checked = checked + 1
+          if !said.iter().any(fn(m) { m.0 == key && m.1.contains(text) }) || key < last {
+            wrong.push("「\{text}」 at \{y}: picked of \{key}, the one before \{last}")
+          }
+          last = key
+        }
+      }
+      Some(p) => wrong.push("「\{s.0}」 at \{y}: picked of \{@ui.list_text(p.of)}")
+      None => ()
+    }
+    @ui.picked_let_go()
+  }
+  if checked < 3 {
+    wrong.push("words picked in the messages that show: \{checked} of \{lines.length()} lines")
+  }
+  wrong
+}
+
+///|
 /// How long after one notch of the wheel the next comes, scrolling a chat up (chat_nodes_scrolled): a hand turning it.
 let chat_nodes_notch_ms : Double = 100.0
 
 ///|
 /// The chat open in `t`, a window `w` by `h`, scrolled up through its older messages by the wheel over its middle: 10
-/// notches of 300, each a tenth of a second after the one before; all its frames did.
-fn chat_nodes_scrolled(t : @ui.Tester, w : Double, h : Double) -> (Int, Int, Int, Int, Int) {
+/// notches of 300, each a tenth of a second after the one before; all its frames did, and the most one of them did.
+fn chat_nodes_scrolled(
+  t : @ui.Tester,
+  w : Double,
+  h : Double,
+) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) {
   let from = @ui.journal().length()
   for _ in 0..<10 {
     t.wheel(w * 0.7, h / 2.0, -300.0)
     t.run_for(chat_nodes_notch_ms)
   }
   t.run_for(@ui.move_most_ms)
-  chat_nodes_all(from)
+  (chat_nodes_all(from), chat_nodes_frame_most(from))
 }
 
 ///|
 /// The fixture's chat (s-c1) on the workspace of real size, made as nodes, in window `win` (name, width, height,
-/// platform): the heaviest frame of its opening, of its opening again from Home, and all of scrolling it up then.
+/// platform): the heaviest frame of its opening, of its opening again from Home, and all of scrolling it up then;
+/// `after` told the Tester, its source and the chat once it is scrolled up, what it says is wrong said with them.
 fn chat_nodes_open_measured(
   win : (String, Double, Double, Int),
-) -> ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)) raise {
+  after? : (@ui.Tester, Source, ChatRef) -> Array[String] = fn(_, _, _) { [] },
+) -> (
+  (Int, Int, Int, Int, Int),
+  (Int, Int, Int, Int, Int),
+  ((Int, Int, Int, Int, Int), (Int, Int, Int, Int, Int)),
+  Array[String],
+) raise {
   let (_, w, h, platform) = win
   let src : Ref[Source?] = Ref(None)
   let made = fn() {
@@ -135,21 +245,25 @@ fn chat_nodes_open_measured(
   t.frame()
   assert_true(app.nav.top() is Chat(_), msg="the chat again")
   let again = chat_nodes_heaviest(from)
-  (cold, again, chat_nodes_scrolled(t, w, h))
+  let up = chat_nodes_scrolled(t, w, h)
+  (cold, again, up, after(t, made(), r))
 }
 
 ///|
-test "a real chat as nodes, opened cold and again from Home and scrolled up: what its frames do within its bar" {
+test "a real chat as nodes, opened cold and again from Home and scrolled up: what its frames do within its bar, and 大屏 words picked in what shows then the message's that shows them" {
   let wrong : Array[String] = []
   for win in [("phone", 360.0, 740.0, 2), ("wide", 1280.0, 800.0, 0)] {
-    let (cold, again, up) = chat_nodes_open_measured(win)
-    for k in [("cold", cold), ("again", again), ("up", up)] {
+    // (大屏, a mouse's: what is picked in a block taken for another message, once scrolled up)
+    let after = if win.3 == 0 { Some(fn(t, src, r) { chat_nodes_reused_picked(t, src, r, win.2) }) } else { None }
+    let (cold, again, (up, up_frame), said) = chat_nodes_open_measured(win, after?)
+    wrong.append(said.map(fn(s) { "\{win.0}: \{s}" }))
+    for k in [("cold", cold), ("again", again), ("up", up), ("up frame", up_frame)] {
       let key = "\{win.0} \{k.0}"
       let n = k.1
       println("chat nodes \{key}: made \{n.0} let_go \{n.1} laid \{n.2} measured \{n.3} bindings \{n.4}")
       let bar = chat_nodes_open_budget.get(key).unwrap_or((0, 0, 0, 0, 0))
       // (bindings run scrolling up not held: they run again in each frame drawn, as many as the rate draws)
-      let bindings_over = k.0 != "up" && n.4 > bar.4
+      let bindings_over = !k.0.has_prefix("up") && n.4 > bar.4
       if n.0 > bar.0 || n.1 > bar.1 || n.2 > bar.2 || n.3 > bar.3 || bindings_over {
         wrong.push("\{key}: \{Repr(n)} over \{Repr(bar)}")
       }

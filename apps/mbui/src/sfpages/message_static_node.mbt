@@ -18,12 +18,12 @@ pub fn message_static_node(
   let said = fn() { m }
   let none = fn() { 0.0 }
   if m.mine {
-    mine_said_node(v, src, here, key, none, none, said) |> ignore
+    mine_said_node(v, src, here, fn() { key }, none, none, said) |> ignore
   } else if m.system {
-    notice_said_node(v, src, here, key, none, none, said, opened, copied) |> ignore
+    notice_said_node(v, src, here, fn() { key }, none, none, said, opened, copied) |> ignore
   } else if m.author_kind == "person" {
-    person_said_node(v, src, here, key, none, none, said) |> ignore
+    person_said_node(v, src, here, fn() { key }, none, none, said) |> ignore
   } else {
-    agent_said_node(v, src, here, key, none, none, said) |> ignore
+    agent_said_node(v, src, here, fn() { key }, none, none, said) |> ignore
   }
 }

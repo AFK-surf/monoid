@@ -157,11 +157,11 @@ fn qt_seen(
           let side = fn() { row_side(w) }
           let top = fn() { 0.0 }
           if s.m.mine {
-            mine_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            mine_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           } else if s.m.author_kind == "agent" {
-            agent_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            agent_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           } else {
-            person_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            person_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           }
         })
         |> ignore
