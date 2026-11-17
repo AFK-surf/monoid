@@ -219,7 +219,7 @@ pub fn save_entry(c : @ui.Ctx, src : Source, at : DriveAt, e : DvEntry) -> Unit 
 /// meanwhile (drive_fetch), then the system's share sheet; said when nothing takes it.
 pub fn share_entry(c : @ui.Ctx, src : Source, at : DriveAt, e : DvEntry) -> Unit {
   let root = at.root.unwrap_or("")
-  let all = Buffer(size_hint=if e.size > 0.0 { e.size.to_int() } else { 0 })
+  let all = Buffer(capacity=if e.size > 0.0 { e.size.to_int() } else { 0 })
   c.tell("share/" + at.station + "/" + root + "/" + dv_join(at.path, e.name), fn() {
     drive_fetch(
       src,
