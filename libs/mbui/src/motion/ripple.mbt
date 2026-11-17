@@ -11,6 +11,10 @@
 // large it is: press_sink), and springs back as it lifts (sf/motion.mbt kind 7, a control answering: pressed): a box
 // that stands on a ground of its own (a button, a card: Ctx::own_ground), not a row lying in a list or a card, whose
 // press is its ground lit (a row sunk in its card is drawn in from the card's edges, as if pressed out of it).
+// Pressed by a pointer (keyboard and mouse: @ui.pointing), no disc: a pointer's press needs no telling where it landed,
+// so the whole box is pressed at once, its ink over it evenly (pointer_veil_part of it) in over pointer_enter_ms and out
+// over pointer_exit_ms once the button is up and that way in is over (a click however short shown whole), and a box on
+// a ground of its own drawn a little smaller with it (pointer_sink_most at most; a row lying in a list or a card not).
 
 ///|
 /// One press's ripple: where in its box the finger went down, how far it has gone (RippleShader's progress), when it
@@ -43,6 +47,54 @@ pub let ripple_exit_ms : Double = 375.0
 ///|
 /// How long a tap's ripple lasts, shown whole: its way in, then out.
 pub let ripple_tap_ms : Double = ripple_enter_ms + ripple_exit_ms
+
+///|
+/// One pointer's press of a box (no disc: see the file's head): how far its veil and sink are in (0 to 1), when the
+/// button went down, when it went up and whether it is on its way out.
+priv struct PointerPress {
+  k : Anim
+  at : Double
+  mut lifted : Bool
+  mut lifted_at : Double
+  mut leaving : Bool
+}
+
+///|
+/// The pointers' presses going, by the id of what was pressed (put back by layer.mbt's reset, as `ripples`).
+let pointer_presses : Map[Int, PointerPress] = Map([])
+
+///|
+/// How long a pointer's press takes to show whole as the button goes down.
+pub let pointer_enter_ms : Double = 70.0
+
+///|
+/// How long it takes from there to gone once the button is up (and its way in is over).
+pub let pointer_exit_ms : Double = 160.0
+
+///|
+/// How long a click's press lasts, shown whole: its way in, then out.
+pub let pointer_tap_ms : Double = pointer_enter_ms + pointer_exit_ms
+
+///|
+/// How far a box on a ground of its own is drawn smaller under a pointer's press, a share of it at most (as a finger's
+/// sink, by press_sink across its longer side, no more than this).
+pub let pointer_sink_most : Double = 0.01
+
+///|
+/// How much of the ink's alpha a pointer's press lays over the box, evenly.
+pub let pointer_veil_part : Double = 0.8
+
+///|
+/// The ink a pointer's press lays over a box, whole (pointer_veil_part of `ink`'s alpha, in whole steps of 255).
+pub fn pointer_veil(ink : Int64) -> Int64 {
+  (ink & 0xFFFFFF00L) | ((ink & 0xFFL).to_double() * pointer_veil_part).round().to_int64()
+}
+
+///|
+/// How far a box `w` by `h` is drawn smaller at most under a pointer's press, standing on a ground of its own.
+pub fn pointer_sink(w : Double, h : Double) -> Double {
+  dmin(pointer_sink_most, press_sink / dmax(dmax(w, h), 1.0))
+}
 
 ///|
 /// A ripple's colour: black at Material 3's pressed alpha (RippleDefaults: StateTokens.PressedStateLayerOpacity .1).
@@ -101,6 +153,10 @@ pub fn ripple(
   let bottom = out_bottom.unwrap_or(out_y)
   // (the box it is called in: what sinks)
   let holder = c.building()
+  if @ui.pointing() is Mouse && ripples.get(id) is None {
+    pointer_press(c, id, holder, corner, ink, out_x, top, bottom)
+    return
+  }
   let list = match ripples.get(id) {
     Some(l) => l
     None => []
@@ -174,7 +230,7 @@ pub fn ripple(
   // is painted: a look scales its corner and its blur with it, so it is the disc that reach would build)
   let across = most * 2.0
   c.layer(fn() {
-    c.box(w=Px(w), h=Px(h), tx=-out_x, ty=-top, clip=true, radius=corner, fn() {
+    over_box(c, w, h, out_x, top, corner, fn() {
       for r in list {
         let mut disc = -1
         c.layer(fn() {
@@ -218,4 +274,81 @@ pub fn ripple(
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// `ripple`'s pointer's press (see the file's head): a press of `id` watched as a finger's is (a click let go before
+/// it showed shown whole too), its way in from its moment, out from as the button is up or its way in is over,
+/// whichever is later; what is drawn over the box (`holder`) as far as that way has it as each frame is painted.
+fn pointer_press(
+  c : @ui.Ctx,
+  id : Int,
+  holder : Int,
+  corner : Double,
+  ink : Int64,
+  out_x : Double,
+  top : Double,
+  bottom : Double,
+) -> Unit {
+  let down = c.pressed(id)
+  // the button down on it, or a click let go before its frame (watched: what takes the press is what `id` is drawn
+  // for): its way in from where the one before had got to
+  let now = pointer_presses.get(id)
+  if c.watch_press(id) && (now is None || now.map(fn(p) { p.lifted }).unwrap_or(true)) {
+    // (pressed again on its way out: in again from where that way has it, the same value going on)
+    let k = match now {
+      Some(p) => p.k
+      None => {
+        let k = Anim::new(0.0)
+        k.name = "pointer press"
+        k
+      }
+    }
+    k.animate(c, 1.0, tween(pointer_enter_ms, ease=Out))
+    pointer_presses[id] = { k, at: c.moment(), lifted: false, lifted_at: 0.0, leaving: false }
+  }
+  guard pointer_presses.get(id) is Some(p) else { return }
+  // let go: out from then, or from its way in's end where that is later (the way in's own end brings the frame that
+  // sees it)
+  if !down && !p.lifted {
+    p.lifted = true
+    p.lifted_at = c.moment()
+  }
+  let out_at = dmax(p.lifted_at, p.at + pointer_enter_ms)
+  if p.lifted && !p.leaving && c.moment() >= out_at {
+    p.leaving = true
+    p.k.animate(c, 0.0, tween(pointer_exit_ms, ease=Out), start_at=out_at)
+  } else if p.lifted && !p.leaving {
+    // (what holds it built again at that moment, as it changes then: kept_part.mbt)
+    c.shows_until(out_at)
+  }
+  // gone by its way out's declared end (built again then: Anim::over)
+  if p.leaving && p.k.over(c) {
+    pointer_presses.remove(id)
+    return
+  }
+  guard c.laid_size(id) is Some((bw, bh)) else { return }
+  let k = p.k
+  // (on a ground of its own: drawn smaller about its middle; a row lying in a list or a card, not)
+  if c.own_ground(holder) {
+    let most = pointer_sink(bw, bh)
+    c.look_by(holder, fn() { @ui.look(scale=1.0 - most * k.get(c)) })
+  }
+  let w = bw + 2.0 * out_x
+  let h = bh + top + bottom
+  c.layer(fn() {
+    over_box(c, w, h, out_x, top, corner, fn() {
+      let veil = c.box(style=@ui.style(w=Full, h=Full, bg=Data(pointer_veil(ink))), fn() {  })
+      c.look_by(veil, fn() { @ui.look(alpha=k.get(c)) })
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// What a press draws over a box `w` by `h` (its ground past it by `out_x` each side, `top` over it), cut to its
+/// corners `corner`: a ripple's discs, a pointer's veil.
+fn over_box(c : @ui.Ctx, w : Double, h : Double, out_x : Double, top : Double, corner : Double, body : () -> Unit) -> Int {
+  c.box(w=Px(w), h=Px(h), tx=-out_x, ty=-top, clip=true, radius=corner, body)
 }

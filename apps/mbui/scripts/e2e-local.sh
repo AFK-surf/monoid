@@ -26,6 +26,15 @@
 #   scripts/e2e-local.sh rigs       a rig end to end against what `up` started (e2e/rigs.ts: a machine enrolled as
 #                                   alice's rig beside the test station, asked for, granted, used, taken back)
 #   scripts/e2e-local.sh rigs-all   up, rigs, down (the side run's, scripts/side.sh rigs); rigs failed, kept the same
+#   scripts/e2e-local.sh move       a station's things moved to another and back, with faults, against what `up`
+#                                   started (e2e/move.ts: alice's device, the test station A, B and a third enrolled
+#                                   beside it, each on the test channel so that moving is on there: E2E_STATION_EXTRA, E2E_MORE_EXTRA)
+#   scripts/e2e-local.sh move-all   up, move, down (the side run's, scripts/side.sh move); move failed, kept as locks-all's
+#   scripts/e2e-local.sh crash NAME   that station's machine as it loses power: every process of its own SIGKILLed at
+#                                   once (its launcher, Node, runners, agents and jobs: what runs on its data directory
+#                                   or in it); NAME station (the test station) or as second-station names them
+#   scripts/e2e-local.sh again NAME   and started again on its data, nothing enrolled
+#   scripts/e2e-local.sh halt NAME    that station stopped as `down` stops it (its data kept, for `again`)
 #   scripts/e2e-local.sh kept locks|rigs   what this run wrote, copied to $E2E_WORK/kept (emptied first, and by up):
 #                                   the cloud's and relay's logs, each station's (station, second, third, rig: its
 #                                   launcher's, its enrollment's, its data/logs, its kept locks of data/mesh), each
@@ -140,12 +149,17 @@ sources() {
   local want
   want=$(git -C "$SF_SRC" rev-parse --verify HEAD) || die "no source revision in $SF_SRC"
   if [ ! -d $E/.git ]; then
-    git clone -q "$SF_SRC" $E
+    # (its tree alone, as below: from a partial clone, git 2.43 clones through upload-pack, which serves no blob the
+    # checkout lacks)
+    git clone -q --depth 1 "file://$(cd "$SF_SRC" && pwd)" $E
   fi
   if [ "$(git -C $E rev-parse HEAD)" != "$want" ]; then
     # (the revision wanted alone: a checkout that shares its repository with others has branches whose objects it may
-    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before)
-    git -C $E fetch -q "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
+    # lack, and fetching them all fails; failed, the run stops, never going on with the revision before. Its tree
+    # alone, --depth 1: a checkout made as a partial clone (ci-1's, whose work directory the pipeline's jobs check out
+    # with `filter: blob:none`) has only that tree's blobs, and its upload-pack fetches no others: the history was what
+    # side 43803791237's locks and rigs could not have, 2026-11-16)
+    git -C $E fetch -q --depth 1 "$SF_SRC" HEAD || die "the source revision could not be fetched from $SF_SRC"
     git -C $E -c advice.detachedHead=false checkout -q --detach $want || die "no source revision $want in $E"
     rm -f $WORK/stillfail.ready
   fi
@@ -189,6 +203,9 @@ start_cloud() {
 }
 
 # the test station (enrolled), its launcher over its own data
+# Where a station's Slack is: the move drill's stand-in for it (e2e/slack-stand-in.ts), a port a station, as
+# `<its dir>/slack-api` names it (the station's own seam, $STILLFAIL_SLACK_API, station/src/slack/web.ts); none, Slack.
+slack_api() { [ ! -f "$1/slack-api" ] || export STILLFAIL_SLACK_API="$(cat "$1/slack-api")"; }
 start_station() {
   local launcher=$(native launcher)
   # The launcher's takeover means the station has initialized and is serving. Deliver that event directly: the
@@ -196,7 +213,7 @@ start_station() {
   rm -f "$RUN/station.ready"
   mkfifo "$RUN/station.ready"
   exec 9<> "$RUN/station.ready"
-  (. $RUN/station-env.sh && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
+  (. $RUN/station-env.sh && slack_api $STATION && detach node "$D/waitfor.mjs" --tee "$RUN/station.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/station.ready" -- \
     "$launcher" run --app "$STATION/app" --data "$STATION/data" 9>&- & echo $! > "$RUN/station.pid")
   if ! IFS= read -r -t 60 ready <&9; then
@@ -289,7 +306,8 @@ EOF
   ln -s $E/station/dist $STATION/app/station
   ln -s "$(command -v node)" $STATION/app/node/bin/node
   # its one profile with a model enabled, so a new chat can be made there (newChat.create refuses a station with none)
-  echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false}' > $STATION/data/config.json
+  # (E2E_STATION_EXTRA: more of it, `,"key":value…`: the move drill's test channel, e2e/move.ts)
+  echo '{"profiles":[{"id":"cc","runtime":"claude","home":"homes/cc","models":["claude-sonnet-5-5"]}],"autoUpdate":false'"${E2E_STATION_EXTRA:-}"'}' > $STATION/data/config.json
   echo '{}' > $STATION/data/homes/cc/.credentials.json
   # (what this shell has of the machine's own station, a job's notify address and token, is not the test station's)
   cat > $RUN/station-env.sh <<EOF
@@ -305,6 +323,8 @@ export STILLFAIL_RUNNER=$(native runner)
 # endpoint across handovers (station/native/launcher/src/front.rs)
 export STILLFAIL_MB_READER=$(native reader)
 export FAKE_DUMP=$STATION/fake-claude.jsonl
+# (E2E_DRILL_HOLD: the move drill's hold at a hand-over's step, given to a build of the station that has it: e2e/move.ts 9m)
+${E2E_DRILL_HOLD:+export STILLFAIL_DRILL_HOLD=$E2E_DRILL_HOLD}
 EOF
   (. $RUN/station-env.sh && node $E/station/dist/main.js enroll $ORIGIN $token --data $STATION/data >$RUN/enroll.log 2>&1) \
     || { cat $RUN/enroll.log; die "enrolling the station failed"; }
@@ -395,11 +415,70 @@ rigs() {
      E2E_RELAY=$RELAY_PORT node $ROOT/e2e/rigs.ts </dev/null)
 }
 
+# e2e/move.ts the same way (a station's things moved to another and back, with faults), its devices' data under
+# $WORK/move
+# (E2E_DRILL_NODE: options for the drill's own node, `--cpu-prof --cpu-prof-dir=…` to see where its time goes.)
+# The run has a limit (E2E_MOVE_LIMIT seconds, 4 h unless set): the drill keeps its own a minute less, and each of its
+# parts one of its own (e2e/move.ts `limit`), each failing by name with what it waited for; this one bounds it where a
+# step holds the drill's thread itself (a synchronous child that never ends: drill 8 sat 2 h 38 min so).
+move() {
+  local most=${E2E_MOVE_LIMIT:-14400}
+  (export E2E_HOME=$HOME; . $RUN/station-env.sh 2>/dev/null; export HOME=$WORK/move-home; mkdir -p $HOME
+   E2E_SF_SRC=$E E2E_ORIGIN=$ORIGIN E2E_PEER_DATA=$WORK/move E2E_WORK=$WORK E2E_STATION=$STATION E2E_PORT=$PORT \
+     E2E_RELAY=$RELAY_PORT E2E_MOVE_LIMIT=$most node ${E2E_DRILL_NODE:-} $ROOT/e2e/move.ts </dev/null &
+   local pid=$! rc
+   # (the drill's end as the system tells it, mbui's scripts/chk logwait --pid; past the run's limit, 2: killed, given
+   # 10 s to end on TERM)
+   (rc=0; "$MBUI_DIR/scripts/chk" logwait --pid $pid --deadline $most > /dev/null 2>&1 || rc=$?
+    [ $rc = 2 ] || exit 0
+    echo "FAIL the run: over its limit of $most s (scripts/e2e-local.sh move); the drill's process killed, its last line above"
+    kill -TERM $pid
+    "$MBUI_DIR/scripts/chk" logwait --pid $pid --deadline 10 > /dev/null 2>&1 || kill -KILL $pid 2>/dev/null) &
+   local dog=$!
+   wait $pid; rc=$?
+   pkill -P $dog 2>/dev/null; kill $dog 2>/dev/null
+   exit $rc)
+}
+# A station's machine losing power (`crash NAME`): its process group SIGKILLed (the launcher and what it started), and
+# whatever else runs on its data directory or in it (its runners and agents, its jobs, which run in groups of their
+# own), by their command line or their working directory; only this run's own station's, never another's.
+station_dir() { [ "$1" = station ] && echo $STATION || more_dir $1; }
+crash() {
+  local n=${1:?a station}; local d=$(station_dir $n)
+  [ -n "$d" ] && [ -d "$d/data" ] || die "no station $n"
+  local real=$(cd "$d" && pwd -P) p cwd
+  if alive $n; then kill -KILL -- -$(cat $RUN/$n.pid) 2>/dev/null || true; fi
+  pkill -KILL -f "$d/data" 2>/dev/null || true
+  # (one listing of every process's working directory: p<pid> then n<path>)
+  lsof -nP -a -d cwd -u $(id -u) -Fpn 2>/dev/null | while IFS= read -r l; do
+    case "$l" in
+      p*) p=${l#p} ;;
+      n*) cwd=${l#n}; case "$cwd" in "$d/"*|"$real/"*|"/private$d/"*) kill -KILL $p 2>/dev/null || true ;; esac ;;
+    esac
+  done
+  rm -f $RUN/$n.pid
+  say "$n crashed (every process of its own killed)"
+}
+again() {
+  local n=${1:?a station}
+  # (its launcher's log is written anew as it starts, waitfor's tee: what it said before is kept beside, and by `kept`)
+  [ ! -f $RUN/$n.log ] || { echo "--- started again $(date -u +%FT%TZ)" >> $RUN/$n.before.log; cat $RUN/$n.log >> $RUN/$n.before.log; }
+  # (the test station's waitfor is detached with this shell's stdout, which `up` leaves on the terminal: a caller that
+  # reads this command's output to its end, e2e/move.ts's execFileSync, would wait as long as the station runs; drill
+  # 8 sat 2 h 38 min there. What start_station says goes to a file, shown where it fails)
+  if [ $n = station ]; then
+    start_station >"$RUN/station-again.out" 2>&1 </dev/null || { cat "$RUN/station-again.out"; die "the station did not start again"; }
+  else more_launch $n; fi
+  say "$n up again ($(cat $RUN/$n.pid))"
+}
+
 # What a failed locks or rigs leaves to be read (the side run uploads it: .github/workflows/side.yml), copied before
 # down ends it all: the logs of this run, the cloud's, the relay's and each station's apart (side run 42815367472's
 # job's log had a device's handshake refused five times and did not say which process refused it), each device's
 # record of what its links did (e2e/device.ts), and the locks each station kept as they stood (public keys and signed
-# entries of the test accounts). Nothing else of the data directories: no database, keys, config or sealed values.
+# entries of the test accounts). Nothing else of the data directories: no database, keys, config or sealed values,
+# but a move's (the drill's own stations, never uploaded): each station's database (a `.backup` copy, as it stood),
+# its hand-overs in and out (replica/handover) and a listing of its transcripts, to read what moved where.
 # Only files written since this run's up (its auth-key), so another run's left in $WORK never pass for this one's. A
 # copy that fails is let be: what the run ended with is what it says.
 KEPT=$WORK/kept
@@ -408,6 +487,17 @@ keep() {
   mkdir -p "$(dirname "$KEPT/$2")" || return 0
   if [ "$(wc -c < "$1" | tr -d ' ')" -gt 5242880 ]; then tail -c 5242880 "$1" > "$KEPT/$2"; else cp "$1" "$KEPT/$2"; fi
 }
+moved_kept() {
+  local data=$1 n=$2
+  mkdir -p $KEPT/$n || return 0
+  if [ -f $data/stillfail.db ]; then
+    if command -v sqlite3 >/dev/null; then sqlite3 $data/stillfail.db ".backup '$KEPT/$n/stillfail.db'" 2>/dev/null || true
+    else for f in stillfail.db stillfail.db-wal stillfail.db-shm; do [ -f $data/$f ] && cp $data/$f $KEPT/$n/$f; done; fi
+  fi
+  for f in in out; do [ -d $data/replica/handover/$f ] && mkdir -p $KEPT/$n/handover && cp -R $data/replica/handover/$f $KEPT/$n/handover/$f; done
+  [ -d $data/transcripts ] && (cd $data && find transcripts -exec ls -ld {} + > $KEPT/$n/transcripts.txt 2>&1)
+  return 0
+}
 kept() {
   local part=${1:?locks or rigs} n d f
   rm -rf $KEPT && mkdir -p $KEPT || return 0
@@ -415,11 +505,13 @@ kept() {
   keep $RUN/relay.log relay.log
   for n in station second third fourth rig; do
     if [ $n = station ]; then d=$STATION; f=enroll; else d=$(more_dir $n); f=$n-enroll; fi
+    keep $RUN/$n.before.log $n/launcher-before.log
     keep $RUN/$n.log $n/launcher.log
     keep $RUN/$f.log $n/enroll.log
     for f in "$d"/data/logs/*.log; do keep "$f" $n/logs/"$(basename "$f")"; done
     keep "$d"/data/mesh/lock.json $n/mesh/lock.json
     keep "$d"/data/mesh/person-chains.json $n/mesh/person-chains.json
+    [ "$part" = move ] && [ -d "$d"/data ] && moved_kept "$d"/data $n
   done
   for f in $WORK/$part/*/record.log; do keep "$f" devices/"$(basename "$(dirname "$f")")".log; done
   say "kept $KEPT ($(find $KEPT -type f | wc -l | tr -d ' ') files)"
@@ -729,7 +821,8 @@ second_station() {
   [ ! -f $RUN/$n.seed ] || { mkdir -p $B/data/mesh && cp $RUN/$n.seed $B/data/mesh/secret.key && chmod 600 $B/data/mesh/secret.key; }
   ln -s $E/station/dist $B/app/station
   ln -s "$(command -v node)" $B/app/node/bin/node
-  echo '{"autoUpdate":false}' > $B/data/config.json
+  # (E2E_MORE_EXTRA: more of it, as E2E_STATION_EXTRA for the test station's)
+  echo '{"autoUpdate":false'"${E2E_MORE_EXTRA:-}"'}' > $B/data/config.json
   (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && \
     node $E/station/dist/main.js enroll $ORIGIN $token ${lock:+--lock $lock} ${rig:+--rig $rig} --data $B/data >$RUN/$n-enroll.log 2>&1) \
     || { cat $RUN/$n-enroll.log; die "enrolling the $n station failed"; }
@@ -744,7 +837,7 @@ more_launch() {
   rm -f "$RUN/$n.ready"
   mkfifo "$RUN/$n.ready"
   exec 9<> "$RUN/$n.ready"
-  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
+  (. $RUN/station-env.sh && export HOME=$B/home STILLFAIL_DATA=$B/data && slack_api $B && detach node "$D/waitfor.mjs" --tee "$RUN/$n.log" \
     --line 'Node [0-9]+ has taken over' --mark "$RUN/$n.ready" -- \
     "$launcher" run --app $B/app --data $B/data 9>&- >/dev/null 2>&1 & echo $! > $RUN/$n.pid)
   if ! IFS= read -r -t 60 ready <&9; then
@@ -923,6 +1016,17 @@ case "${1:-all}" in
     trap down EXIT
     up
     locks_moved || { rc=$?; kept locks-moved || true; exit $rc; } ;;
+  move) move ;;
+  move-all)
+    export E2E_STATION_EXTRA=${E2E_STATION_EXTRA-',"updateChannel":"beta","maxNudges":7'} E2E_MORE_EXTRA=${E2E_MORE_EXTRA-',"updateChannel":"beta"'}
+    trap down EXIT
+    up
+    rm -f $RUN/*.before.log
+    move || { rc=$?; kept move || true; exit $rc; }
+    kept move || true ;;
+  crash) shift; crash "$@" ;;
+  again) shift; again "$@" ;;
+  halt) shift; if [ "${1:?a station}" = station ]; then stop station; pkill -f "$STATION/data" 2>/dev/null || true; say "station halted"; else second_stop $1; fi ;;
   rigs) rigs ;;
   rigs-all)
     trap down EXIT

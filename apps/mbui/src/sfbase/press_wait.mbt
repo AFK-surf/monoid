@@ -33,8 +33,10 @@ fn press_still(stay : (Int, Int), shown : Int) -> Bool {
 /// more, does nothing and lets go of what it asked (`let_go`). Made in a press's handler (a system bar's choice is told
 /// once the frame's builds are over: sfdesk rail_native.mbt) or before any frame (a fixture's ask), never as a view
 /// builds, since `go` may run at once (a build asks through Ctx::after_build, as model_triple.mbt's does); what waits
-/// is owned by nothing and read outside what reads now.
-pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn() {  }) -> PressWait {
+/// is owned by nothing and read outside what reads now. `most`: it waits that long at most (a moment of the window's
+/// tree's timeline from now), then does `go` as it is, while what it was pressed in stays as it was: what opens where
+/// a card or a panel waits for what it reads of the device (@sf.open_hold_ms), never held longer than they are.
+pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn() {  }, most? : Double) -> PressWait {
   let w : PressWait = {
     waiting: true,
     stop: None,
@@ -66,7 +68,26 @@ pub fn press_wait(ready : () -> Bool, go : () -> Unit, let_go? : () -> Unit = fn
   })
   @signals.set_owner(owner) |> ignore
   if w.waiting {
-    w.stop = Some(stop)
+    // (`most` gone by, still waiting: done as it is, where what it was pressed in stays as it was)
+    let cap = match (most, @ui.view_tree()) {
+      (Some(ms), Some(tree)) => {
+        let root = tree.root()
+        root.at_moment(root.cause_at() + ms, fn() {
+          guard w.waiting else { return }
+          if @signals.untracked(fn() { press_still(w.stay, w.shown) }) {
+            w.end()
+            go()
+          } else {
+            w.give_up()
+          }
+        })
+      }
+      _ => fn() {  }
+    }
+    w.stop = Some(fn() {
+      cap()
+      stop()
+    })
   } else {
     stop()
   }

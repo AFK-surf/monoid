@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { recentChatPage } from "../src/read/recent-chat.ts";
+import { recentChatPage } from "./reference/recent-chat.ts";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { RecentChatPreparation, type RecentChatScope } from "../src/store/chat-list-prepare.ts";
+import { RecentChatPreparation, type RecentChatScope } from "./reference/chat-list/chat-list-prepare.ts";
 import { Store } from "../src/store/store.ts";
 
 test("prepared recent pages read only their limited order rows as unrelated chats grow", () => {

@@ -166,7 +166,7 @@ let night_ink : ViewerInk = {
 ///|
 test "a tool as a node beside the old one, in each state and as what it says changes once made (at rest, pointed at, on, on and pointed at, unable; another icon and words; another ink): drawn the same, as big, read out as it is (what can be done to it said, as the old one does not)" {
   let said = @signals.signal({ icon: "copy", label: "复制", on: false, disabled: false }, same=fn(a, b) { a == b })
-  let ink = @signals.signal(page_viewer_ink(), same=fn(a, b) { physical_equal(a, b) })
+  let ink = @signals.signal(page_viewer_ink())
   let t = tools_tester(said, ink, {})
   let old = t.get(Button, label="复制 old")
   let new = t.get(Button, label="复制 new")

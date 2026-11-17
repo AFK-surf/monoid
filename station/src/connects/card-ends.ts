@@ -1,6 +1,7 @@
 // Cards that stop waiting where a platform shows them (Slack's and Feishu's buttons): as in still.fail, a card is no
-// longer pending once a person writes after it, a newer card replaces it, its agent withdraws it or someone closes it
-// (store.ts pendingCard). A press of its own button changes it there already; these change it for the rest, so nothing
+// longer pending once a person's message after it reaches its agent (handed to a session there, `answered`), a newer
+// card replaces it, its agent withdraws it or someone closes it (store.ts pendingCard); a system card (a login, a
+// vault's secret...) only as it is closed (store/card-kinds.ts). A press of its own button changes it there already; these change it for the rest, so nothing
 // is left to press that would answer a question gone by.
 import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -37,6 +38,10 @@ export function cardsEnded(store: Cards, change: StoreChange): EndedCard[] {
       if (replaced !== null) out.push({ message: replaced[0], card: replaced[1], end: { why: "replaced" } });
     }
   }
+  if (change.answered !== undefined) {
+    const ended = store.cardEndedByMessage(change.id, change.answered.n);
+    if (ended !== null) out.push({ message: ended[0], card: ended[1], end: { why: "message", by: change.answered.author, byTs: change.answered.ts } });
+  }
   if (change.closed !== undefined) {
     const closed = store.closedCard(change.id, change.closed);
     if (closed !== null) out.push({ message: closed[0], card: closed[1], end: { why: closed[2] === closed[0].author ? "withdrawn" : "closed" } });
@@ -47,7 +52,7 @@ export function cardsEnded(store: Cards, change: StoreChange): EndedCard[] {
 /// The cards a change of the store ended, changed where their thread's platform shows them (`chat`: a connect's
 /// surface, where it is connected). Not waited on.
 export function showEnded(store: Cards, chat: (connect: string) => ChatSurface | undefined, change: StoreChange): void {
-  if (change.type !== "thread" || (change.entries.length === 0 && change.closed === undefined)) return;
+  if (change.type !== "thread" || (change.entries.length === 0 && change.closed === undefined && change.answered === undefined)) return;
   const t = store.getThread(change.id);
   if (t === null || t.surface === STILLFAIL_SURFACE) return;
   const connect = store.threadSessions(change.id).map((m) => m.connect).find((c) => c !== INTERNAL_CONNECT);

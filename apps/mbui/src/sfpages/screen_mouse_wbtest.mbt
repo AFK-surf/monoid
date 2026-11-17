@@ -45,7 +45,7 @@ test "with keyboard and mouse: the viewer's bar across the top, the picture unde
   assert_true(r.labelled("Esc") is None)
   // the picture under the bar, the window's width
   let u = r.ui()
-  assert_true(u.stage_y >= @sf.viewer_bar_h)
+  assert_true(u.stage_xy().1 >= @sf.viewer_bar_h)
   assert_eq(u.box_w.get(), 1280.0)
   assert_eq(r.t.squeeze_faults(), [])
   r.tap_label(tr("common.back"))
@@ -409,7 +409,7 @@ test "a mouse's press on a drop row's 在访达中显示 over the picture is its
   let u = r.ui()
   let sh = u.shown(r.t.ctx())
   assert_true(
-    x > u.stage_x + sh.x && x < u.stage_x + sh.x + sh.w && y > u.stage_y + sh.y && y < u.stage_y + sh.y + sh.h,
+    x > u.stage_xy().0 + sh.x && x < u.stage_xy().0 + sh.x + sh.w && y > u.stage_xy().1 + sh.y && y < u.stage_xy().1 + sh.y + sh.h,
     msg="\{x},\{y}",
   )
   let before = r.inputs().filter(fn(j) { text(Some(j), "t") == "pointer" && kind_of_input(j) != "move" }).length()
@@ -421,4 +421,36 @@ test "a mouse's press on a drop row's 在访达中显示 over the picture is its
   assert_eq(r.inputs().filter(fn(j) { text(Some(j), "t") == "reveal" }).length(), 1)
   r.t.run_for(@sf.toast_ms)
   mouse_done(r)
+}
+
+///|
+test "in a chat's side panel with keyboard and mouse: one compact toolbar row (no traffic-light indent, no back, no duplicate title), with 控制中心 on a browser tab and 组合键 on a desktop" {
+  // browser tab in side panel (373 wide, as in a 1280x800 chat window)
+  let b = screen_rig(w=373.0, h=756.0, platform=0, in_tab=true)
+  b.t.run_for(@sf.later_ms)
+  b.state("live", more={ "openUrl": Json::boolean(true), "address": Json::string("https://console.anthropic.com/login") })
+  b.t.draw()
+  assert_true(b.labelled(tr("common.back")) is None)
+  assert_true(b.t.find("still.fail — Chrome") is None)
+  assert_true(b.labelled(tr("web-pages.screen.back")) is Some(_))
+  assert_true(b.labelled(tr("web-pages.screen.panel")) is Some(_))
+  assert_eq(b.ui().stage_xy().1, 48.0)
+  assert_eq(b.t.squeeze_faults(), [])
+  assert_eq(b.t.audit(), [])
+  mouse_done(b)
+
+  // desktop screen in side panel: status line + 组合键 + 控制中心 in one 48px row
+  let d = screen_rig(w=373.0, h=756.0, platform=0, screen="desktop", in_tab=true)
+  d.t.run_for(@sf.later_ms)
+  d.state("live", more={ "kind": Json::string("desktop"), "title": Json::string("桌面") })
+  d.t.draw()
+  assert_true(d.labelled(tr("common.back")) is None)
+  assert_true(d.t.find("桌面") is None)
+  assert_true(d.t.find("控制 · 李雷也在看") is Some(_))
+  assert_true(d.labelled(tr("web-pages.screen.combos")) is Some(_))
+  assert_true(d.labelled(tr("web-pages.screen.panel")) is Some(_))
+  assert_eq(d.ui().stage_xy().1, 48.0)
+  assert_eq(d.t.squeeze_faults(), [])
+  assert_eq(d.t.audit(), [])
+  mouse_done(d)
 }

@@ -16,7 +16,8 @@
 //   says only how it looks). The window's tree's rooms are not worked out so but asked of its hit test
 //   (Tester::tree_room_faults).
 // apart: two such in one layer, neither holding the other, are never drawn over each other: a press there would be
-//   either's.
+//   either's. Where one is under a cover the other is drawn in (a bar's glass, or a ground of its own, over what
+//   scrolls under it: @view.Tree::covered_under), the press there is the cover's, as the hit test has it: not said.
 // hover: what is shown only under the hand (Ctx::hand_shown: a row's ⋯ under a resting pointer) and takes presses is a
 //   mouse's way; touch has one as easy only where what it stands on asks for a menu (Ctx::menu_asked: a hold opens
 //   it).
@@ -281,7 +282,14 @@ pub fn Tester::tree_room_faults(self : Tester) -> Array[String] {
         by0 >= ay0 - gap_slack &&
         bx1 <= ax1 + gap_slack &&
         by1 <= ay1 + gap_slack
-      if gx < -gap_slack && gy < -gap_slack && !within {
+      // (where one is under a cover the other is drawn in or with, a bar's glass over what scrolls under it, the part
+      // they share is the cover's to a press, as the hit test has it: Tree::covered_under)
+      let part = (dmax(ax0, bx0), dmax(ay0, by0), dmin(ax1, bx1), dmin(ay1, by1))
+      if gx < -gap_slack &&
+        gy < -gap_slack &&
+        !within &&
+        !tree.covered_under(targets[j].0, targets[k].0, part) &&
+        !tree.covered_under(targets[k].0, targets[j].0, part) {
         out.push("apart: \{named(j)} and \{named(k)} are drawn over each other by \{(-gx).round()}×\{(-gy).round()}")
       }
     }

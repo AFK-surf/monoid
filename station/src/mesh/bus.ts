@@ -117,6 +117,12 @@ export class PeerBus {
     return call(station, typeof request?.workspace === "string" ? request.workspace : null, request);
   }
 
+  /// Whether a request naming `station` comes back to this station: it is this one, or one whose place it took.
+  cameHere(station: string, workspace: string | null = null): boolean {
+    if (station === "" || this.self === "") return false;
+    return station === this.self || (this.now !== null && this.now(station, workspace) === this.self);
+  }
+
   /// Which station took a lost one's place (`now`); `self`, this station's id.
   formerly(now: (station: string, workspace: string | null) => string, self: string): void {
     this.now = now;
@@ -149,7 +155,19 @@ export class PeerBus {
   }
 
   /// A request of a station of `workspace` (the transport authenticated it and checked it belongs).
+  /// Who is told each time another station is heard from (it asked something here: its link is open), by station:
+  /// what is owed to it is told now rather than at its backoff's next try (replica/handover.ts `reached`).
+  private readonly hearers: ((peer: string) => void)[] = [];
+  heard(f: (peer: string) => void): void {
+    this.hearers.push(f);
+  }
+
   handle(workspace: string, peer: string, request: Json): Promise<Json> {
+    for (const f of this.hearers) {
+      try {
+        f(peer);
+      } catch {}
+    }
     const method = methodOf(request);
     const dot = method.indexOf(".");
     const inbox = this.handlers.get(method) ?? (dot > 0 ? this.handlers.get(method.slice(0, dot + 1)) : undefined) ?? this.rest;

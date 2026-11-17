@@ -67,8 +67,14 @@ export function installRemoteRuns(db: DatabaseSync): void {
 export const DELETE_EXPIRED_REMOTE_RUNS = `DELETE FROM remote_runs WHERE job IN
   (SELECT job FROM remote_run_by_time WHERE at < ? ORDER BY at, seq)`;
 
-export const REMOTE_RUNS_OF = "SELECT at, session FROM remote_run_lookup WHERE ws = ?1 AND at >= ?2 ORDER BY at, seq";
-export const REMOTE_RUNS_ALL = "SELECT at, session FROM remote_run_by_time WHERE at >= ? ORDER BY at, seq";
+/// The tasks of a workspace's chats (`?1`) from `?2` until `?3` (ms) a day (`?4` minutes east of UTC) and chat: when
+/// the last of them ran, and how many. By the index on their workspace and time: a day's tasks of a chat are one row,
+/// however many it ran (a station's three days were 6,170 rows, 1 MB of JSON, as one row a task).
+export const REMOTE_RUNS_OF = `SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_lookup WHERE ws = ?1 AND at >= ?2 AND at < ?3
+  GROUP BY strftime('%Y-%m-%d', (at + ?4 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session`;
+/// Every workspace's, from `?1` until `?2` a day (`?3`) and chat, by the index on their time.
+export const REMOTE_RUNS_ALL = `SELECT MAX(at) AS at, session, COUNT(*) AS n FROM remote_run_by_time WHERE at >= ?1 AND at < ?2
+  GROUP BY strftime('%Y-%m-%d', (at + ?3 * 60000) / 1000.0, 'unixepoch'), session ORDER BY at, session`;
 /// Fill no more than `limit` old rows; writes, deletions, and the cursor commit together.
 export function backfillRemoteRuns(db: DatabaseSync, limit = 32): { done: boolean; processed: number } {
   db.exec("BEGIN IMMEDIATE");

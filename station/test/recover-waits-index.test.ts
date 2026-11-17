@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installRecoverWaits, recoverWaitsReady, recoverWaitsStep, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "../src/store/recover-waits.ts";
+import { installRecoverWaits, recoverWaitsReady, recoverWaitsStep, RECOVER_BACKFILL_FIRST, RECOVER_BACKFILL_NEXT, RECOVER_WAITS } from "./reference/backfill/recover-waits.ts";
 
 function fixture(path = ":memory:") {
   const db = new DatabaseSync(path);

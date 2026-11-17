@@ -126,82 +126,118 @@ fn viewer_head(
 }
 
 ///|
-/// What is opened over the whole window to be done one way (a chat shared as a picture: sfpages' publish.mbt): on a
-/// wide screen the bar a file opened has (viewer_bar: back to `back` by name, `name` and `meta`), the doing a button in
-/// words (`label`) at its end; on a small screen no bar over it, but a band of glass along the window's foot with 取消
-/// and the doing side by side, as wide as each other (2026-10-26 用户「应该放下面，俩按钮，一个取消一个保存到相册」「pc 的话直接跟附件
-/// 预览一样，有顶栏」「pc 也用文字按钮，不要用图标」). `copy`: a second doing before it, copying (a phone's 复制图片 beside
-/// its 保存到相册, 2026-11-06 用户「手机上都加复制」), at the foot 取消 and it as wide as their words, the doing the
-/// rest. `busy`: a doing under way (`busy_copy`: the copying), the other not pressed meanwhile; `disabled`: nothing to
-/// do it to yet. As they are pressed: `on_close` (its way back, 取消), `on_act` (the doing), `on_copy` (the copying).
-pub fn viewer_frame_act(
-  c : @ui.Ctx,
-  key : String,
-  back : String,
-  name : String,
-  meta : String,
-  ink : ViewerInk,
-  label : String,
-  copy? : String,
-  busy? : Bool = false,
-  busy_copy? : Bool = false,
-  disabled? : Bool = false,
+/// What is opened over the whole window to be done one way (a chat shared as a picture: sfpages' publish.mbt), in
+/// `parent` (a layer over what it is for, all of its room): laid out Small (the window's `width` says the screen's tier:
+/// the arrangement of what is opened over the whole window, as a file opened has its, never the room a part is given),
+/// no bar over it, but a band of glass along the window's foot with 取消 and the doing (`label`) side by side, as wide
+/// as each other (2026-10-26 用户「应该放下面，俩按钮，一个取消一个保存到相册」「pc 的话直接跟附件预览一样，有顶栏」「pc 也用文字
+/// 按钮，不要用图标」); else the bar a file opened has across the top (viewer_bar_node: back to `back` by name, `name` and
+/// `meta`), the doing a button in words at its end. `copy`: a second doing before it, copying (a phone's 复制图片 beside
+/// its 保存到相册, 2026-11-06 用户「手机上都加复制」), at the foot 取消 and it as wide as their words, the doing the rest.
+/// `busy`: a doing under way (`busy_copy`: the copying), the other not pressed meanwhile; `disabled`: nothing to do it
+/// to yet. As they are pressed: `on_close` (its way back, 取消), `on_act` (the doing), `on_copy` (the copying). Each as it
+/// changes; its tips in `tips`.
+#callsite(autofill(loc))
+pub fn viewer_frame_act_node(
+  parent : @view.View,
+  back : () -> String,
+  name : () -> String,
+  meta : () -> String,
+  ink : () -> ViewerInk,
+  label : () -> String,
+  width : () -> Double,
+  tips : TipLayer,
+  copy? : () -> String,
+  busy? : () -> Bool = fn() { false },
+  busy_copy? : () -> Bool = fn() { false },
+  disabled? : () -> Bool = fn() { false },
   on_close~ : () -> Unit,
   on_act~ : () -> Unit,
   on_copy? : () -> Unit = fn() {  },
+  loc~ : SourceLoc,
 ) -> Unit {
-  let act_busy = busy && !busy_copy
-  let act_off = disabled || (busy && busy_copy)
-  let copy_busy = busy && busy_copy
-  let copy_off = disabled || (busy && !busy_copy)
-  if layout(c.width) is Small {
-    c.box(style=vfr_act_room, fn() {
-      c.spacer()
-      let foot = (viewer_host().room)().1
-      // A small layout can also be shown inside a rounded window (for example after zooming in). Its long buttons
-      // keep their shape and stand past each window corner when the foot has not already brought them past it.
-      let bottom = vfr_act_in + foot
-      let left = vfr_act_side_at(@ui.window_corner_at(3), bottom)
-      let right = vfr_act_side_at(@ui.window_corner_at(2), bottom)
-      c.box(style=vfr_act_band.then(@ui.style(pl=room(left), pr=room(right), pb=room(bottom))), glass=glass_foot(), fn() {
-        c.box(style=vfr_act_row, fn() {
-          // (with a copying beside it, 取消 and it as wide as their words, the doing the rest: three as wide as each
-          // other cut 保存到相册 short on a phone, 保存到…, as the Mac's text drew it at 390, and Save to Photos further,
-          // 2026-11-06)
-          button(c, t("common.cancel"), key=key + "/cancel", w=if copy is Some(_) { Auto } else { Fill(1.0) }, on_press=on_close) |> ignore
-          match copy {
-            Some(words) =>
-              button(c, words, key=key + "/copy", busy=copy_busy, disabled=copy_off, on_press=on_copy) |> ignore
-            None => ()
-          }
-          button(c, label, key=key + "/act", tone=Primary, busy=act_busy, disabled=act_off, w=Fill(1.0), on_press=on_act) |> ignore
+  let act_busy = fn() { busy() && !busy_copy() }
+  let act_off = fn() { disabled() || (busy() && busy_copy()) }
+  let copy_busy = fn() { busy() && busy_copy() }
+  let copy_off = fn() { disabled() || (busy() && !busy_copy()) }
+  parent.box(made_for=loc, fn(room) {
+    room.over(Is(true)) |> ignore
+    room.pick(fn() { layout(width()) is Small }, fn(p, small) {
+      if small {
+        // (the window's whole, the band at its foot)
+        p.over(Is(true)).lies_along(Is(End)) |> ignore
+        p.box(fn(band) {
+          band
+          .fills_across(Is(true))
+          .glass(By(fn() { Some(glass_foot()) }))
+          .padding(By(fn() {
+            // (a long button keeps its shape and stands past a rounded window's corner where the foot has not brought
+            // it past it already: viewer_frame_act's)
+            let bottom = vfr_act_in + (viewer_host().room)().1
+            let left = vfr_act_side_at(@ui.window_corner_at(3), bottom)
+            let right = vfr_act_side_at(@ui.window_corner_at(2), bottom)
+            (left, vfr_act_in, right, bottom)
+          }))
+          |> ignore
+          band.box(fn(row) {
+            row.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::px(S2))) |> ignore
+            // (with a copying beside it, 取消 and it as wide as their words, the doing the rest: viewer_frame_act's)
+            let fill = fn(make : (@view.View) -> Unit) {
+              row.box(fn(f) {
+                f.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+                make(f)
+              })
+              |> ignore
+            }
+            match copy {
+              Some(words) => {
+                button_node(row, fn() { t("common.cancel") }, on_close) |> ignore
+                button_node(row, words, on_copy, busy=copy_busy, disabled=copy_off) |> ignore
+              }
+              None => fill(fn(f) { button_node(f, fn() { t("common.cancel") }, on_close, across=true) |> ignore })
+            }
+            fill(fn(f) { button_node(f, label, on_act, tone=Primary, busy=act_busy, disabled=act_off, across=true) |> ignore })
+          })
+          |> ignore
         })
         |> ignore
-      })
-      |> ignore
+      } else {
+        viewer_bar_node(
+          p,
+          back,
+          name,
+          meta,
+          fn() { "" },
+          fn() { false },
+          fn(_) { 1.0 },
+          fn() { (viewer_host().room)().0 },
+          width,
+          ink,
+          fn(row, _) {
+            match copy {
+              Some(words) => button_node(row, words, on_copy, busy=copy_busy, disabled=copy_off) |> ignore
+              None => ()
+            }
+            button_node(row, label, on_act, tone=Primary, busy=act_busy, disabled=act_off) |> ignore
+          },
+          on_close,
+          tips,
+          // (its last a capsule of words, past the window's corner)
+          capsule_end=true,
+        )
+        |> ignore
+      }
     })
-    |> ignore
-  } else {
-    c.box(style=vfr_layer, fn() {
-      viewer_bar(c, key + "/bar", back, name, meta, false, ink, fn() {
-        match copy {
-          Some(words) =>
-            button(c, words, key=key + "/copy", busy=copy_busy, disabled=copy_off, on_press=on_copy) |> ignore
-          None => ()
-        }
-        button(c, label, key=key + "/act", tone=Primary, busy=act_busy, disabled=act_off, on_press=on_act) |> ignore
-      }, capsule_end=true, on_back=on_close)
-    })
-    |> ignore
-  }
+  })
+  |> ignore
 }
 
 ///|
-/// How much of the window's top what a thing opened to be done one way has over it takes (viewer_frame_act): the bar on
-/// a wide screen (viewer_bar_under), on a small one nothing of its own, only the page's bars over the window (a phone's
-/// status bar). What is under it starts that far down.
-pub fn viewer_act_head(c : @ui.Ctx) -> Double {
-  if layout(c.width) is Small {
+/// How much of the window's top what a thing opened to be done one way has over it takes (viewer_frame_act_node), the
+/// window `w` wide: the bar on a wide screen (viewer_bar_under), on a small one nothing of its own, only the page's bars
+/// over the window (a phone's status bar). What is under it starts that far down.
+pub fn viewer_act_head(w : Double) -> Double {
+  if layout(w) is Small {
     (viewer_host().room)().0
   } else {
     viewer_bar_under()
@@ -210,10 +246,10 @@ pub fn viewer_act_head(c : @ui.Ctx) -> Double {
 
 ///|
 /// How much of the window's foot the band of a thing opened to be done one way takes on a small screen
-/// (viewer_frame_act), the page's bar under it with it (a phone's navigation bar): what is under it is laid out that much
-/// clear of the foot. None on a wide screen (its bar is at the top).
-pub fn viewer_act_foot(c : @ui.Ctx) -> Double {
-  if layout(c.width) is Small {
+/// (viewer_frame_act_node), the window `w` wide, the page's bar under it with it (a phone's navigation bar): what is
+/// under it is laid out that much clear of the foot. None on a wide screen (its bar is at the top).
+pub fn viewer_act_foot(w : Double) -> Double {
+  if layout(w) is Small {
     vfr_act_in * 2.0 + button_height() + (viewer_host().room)().1
   } else {
     0.0
@@ -238,21 +274,6 @@ fn vfr_act_side_at(corner : Double, bottom : Double) -> Double {
     vfr_act_side
   }
 }
-
-///|
-/// What lays the band at the window's foot: the window's whole, the band at its end.
-// kept across runs: a value (no field of it changes)
-let vfr_act_room : @ui.Style = @ui.css("w=Full h=Full")
-
-///|
-/// The band: across the window, its buttons 16 in from its sides, 12 from its top, square at the window's foot.
-// kept across runs: a value (no field of it changes)
-let vfr_act_band : @ui.Style = @ui.css("w=Full pt=S3 px=S4 radius=InnerOr(Sharp)")
-
-///|
-/// Its two buttons side by side, 8 apart.
-// kept across runs: a value (no field of it changes)
-let vfr_act_row : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter")
 
 ///|
 /// Frosted glass over a page of the theme's colours: the surface at 72% (dark, the

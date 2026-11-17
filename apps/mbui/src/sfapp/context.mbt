@@ -20,23 +20,28 @@ priv struct ContextTile {
 }
 
 ///|
-/// The card's entry for its context (canCompact, canClear), none when nothing can be done to it; opened, the card
-/// closed (`close`) for it, a step further in from it.
-fn context_entry(c : @ui.Ctx, src : Source, r : ChatRef, key : String, s : Json?, close : () -> Unit) -> ContextTile? {
-  if !flag(s, "canCompact") && !flag(s, "canClear") {
-    return None
-  }
+/// The card's entry for its context (canCompact, canClear) as its session `s` says it now, read in node `v`: none when
+/// nothing can be done to it; opened, the card closed (`close`) for it, a step further in from it.
+fn context_entry_node(v : @view.View, src : Source, r : ChatRef, key : String, s : () -> Json?, close : () -> Unit) -> () -> ContextTile? {
   let compacting = context_key("session.compact", r.station, key)
   let clearing = context_key("session.clear", r.station, key)
-  Some({
-    open: fn() {
-      close()
-      open_context(src, r, key)
-    },
-    busy: doing(compacting) || doing(clearing),
-    failed: failed_lately(c, compacting) || failed_lately(c, clearing),
-    compacts: flag(s, "canCompact"),
-  })
+  let compact_failed = @sfbase.failed_lately_node(v, compacting)
+  let clear_failed = @sfbase.failed_lately_node(v, clearing)
+  fn() {
+    let sv = s()
+    if !flag(sv, "canCompact") && !flag(sv, "canClear") {
+      return None
+    }
+    Some({
+      open: fn() {
+        close()
+        open_context(src, r, key)
+      },
+      busy: doing(compacting) || doing(clearing),
+      failed: compact_failed() || clear_failed(),
+      compacts: flag(sv, "canCompact"),
+    })
+  }
 }
 
 ///|
@@ -49,23 +54,41 @@ fn context_tile_label(entry : ContextTile?, level : String) -> String {
 }
 
 ///|
-/// A tile's name under its figure (12/16, muted); its context's ending in › when something can be done to it, or a
-/// spinner, or the failure's mark.
-fn context_tile_name(c : @ui.Ctx, name : String, open : ContextTile?) -> Unit {
-  match open {
-    None => c.text(name, style=tile_name) |> ignore
-    Some(o) =>
-      c.box(style=tile_name_row, fn() {
-        c.text(name, style=tile_name) |> ignore
-        if o.busy || o.failed {
-          @settings.doing_mark(c, o.busy, if o.failed { Some("") } else { None })
-        } else {
-          @sf.icon(c, "chevron-right", size=11.0, color=@sf.theme().p.muted) |> ignore
+/// A tile's name under its figure (12/16, muted) in `v`, as `name` and `open` say it now; its context's ending in ›
+/// when something can be done to it, or a spinner, or the failure's mark.
+fn context_tile_name_node(v : @view.View, name : () -> String, open : () -> ContextTile?) -> Unit {
+  v.box(fn(row) {
+    @sf.style_node(row, fn() { tile_name_row })
+    @sf.words_node(row, name, fn() { tile_name }) |> ignore
+    row.pick(
+      fn() {
+        match open() {
+          None => 0
+          Some(o) if o.busy || o.failed => 1
+          Some(_) => 2
         }
-      })
-      |> ignore
-  }
+      },
+      fn(m, what) {
+        match what {
+          1 =>
+            @sfpages.doing_mark_node(m, fn() { open().map_or(false, fn(o) { o.busy }) }, fn() {
+              if open().map_or(false, fn(o) { o.failed }) {
+                Some("")
+              } else {
+                None
+              }
+            })
+          2 => @sf.icon_node(m, "chevron-right", tile_chevron, By(fn() { @sf.theme().p.muted })) |> ignore
+          _ => ()
+        }
+      },
+    )
+  })
+  |> ignore
 }
+
+///|
+let tile_chevron : Double = 11.0
 
 ///|
 /// What can be done to its context by hand, the library's panel (nodes of the window's tree, made once as it opens:

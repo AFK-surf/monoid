@@ -117,7 +117,7 @@ test "a device's case: round the picture once its pictures have come, its button
   assert_true(r.labelled(tr("web-pages.screen.device.lock")) is Some(_))
   // pressed where it is on the case (the picture on its side: over it), told going down and coming up, and no finger on the picture
   let (_, y) = r.labelled(tr("web-pages.screen.debug.volumeUp")).unwrap()
-  assert_true(y < r.ui().stage_y + shown.y)
+  assert_true(y < r.ui().stage_xy().1 + shown.y)
   r.tap_label(tr("web-pages.screen.debug.volumeUp"))
   r.t.draw()
   let sent = r.inputs().filter(fn(i) { text(Some(i), "t") == "button" })
@@ -133,13 +133,12 @@ test "a device's case: round the picture once its pictures have come, its button
 test "turned as the station says, or as the picture stands while that has not come" {
   // the rig's picture is wider than tall: on its side, whichever way is said
   let r = case_rig(3)
-  let c = r.t.ctx()
-  let k = device_case(c, r.sess(), r.sess().frame_size()).unwrap()
+  let k = device_case_now(r.ui().stage_node.unwrap(), r.sess(), r.sess().frame_size()).unwrap()
   assert_eq(k.turn, 3)
   assert_eq(k.frame_w, 680.0)
   screen_done(r.t)
   let r0 = case_rig(0)
-  let k0 = device_case(r0.t.ctx(), r0.sess(), r0.sess().frame_size()).unwrap()
+  let k0 = device_case_now(r0.ui().stage_node.unwrap(), r0.sess(), r0.sess().frame_size()).unwrap()
   assert_eq(k0.turn, 1)
   screen_done(r0.t)
 }

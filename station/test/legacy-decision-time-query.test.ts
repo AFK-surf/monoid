@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { decisionTimeIndexStep, installDecisionTimeIndex } from "../src/store/legacy-decision-time.ts";
+import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/backfill/legacy-decision-time.ts";
 import { LATEST_DECISIONS, LATEST_DECISIONS_SCOPED_NO_TIME, LEGACY_LATEST_DECISIONS, LEGACY_LATEST_DECISIONS_SCOPED,
   LEGACY_LATEST_DECISIONS_SCOPED_FALLBACK, Store } from "../src/store/store.ts";
 

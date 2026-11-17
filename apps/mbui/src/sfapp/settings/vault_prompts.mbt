@@ -23,7 +23,7 @@ fn vault_prompts_reset() -> Unit {
 
 ///|
 /// The latest device waiting on this one for a key, put up in a sheet when nothing else is (`free`: no sheet of the
-/// app's up): call each frame, over the pages.
+/// app's up): done as what it reads changes, over the pages (sfapp's signed_in_prompts).
 pub fn vault_prompts(core : Core, free : Bool) -> Unit {
   let prompts = (core.topic)("lockPrompts", Map([])).get().value
   let asks = items(prompts, "asks")

@@ -1,0 +1,1088 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/agent_drivers"
+
+import {
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn access_kind(@jsjson.JValue) -> String
+
+pub fn access_of(@jsjson.JValue) -> @jsjson.JValue?
+
+pub fn account_limit(String) -> Bool
+
+pub fn acked_offset(Machine, RunnerInfo, String) -> Later[(Int32, Int32?)]
+
+pub fn agy_account_file(Machine, String) -> String
+
+pub fn agy_args(Machine, String) -> Array[String]
+
+pub fn agy_base_model(String) -> (String, String?)
+
+pub fn agy_bring_in(Machine, String, String) -> Later[String?]
+
+pub fn agy_catalog(Array[String], String?) -> @jsjson.JValue
+
+pub fn agy_classify_failure(String) -> String
+
+pub fn agy_company(String) -> Bool
+
+pub fn agy_conversations(Machine, String) -> String
+
+pub fn agy_email_in(String) -> String?
+
+pub fn agy_expiry(Machine, String) -> Later[Double]
+
+pub fn agy_expiry_in(String) -> Double
+
+pub fn agy_home(Machine, String) -> String
+
+pub fn agy_hooks_file(Machine, String) -> String
+
+pub fn agy_lent_file(@jsjson.JValue) -> String
+
+pub fn agy_models(@jsjson.JValue?) -> Array[String]
+
+pub fn agy_noted_email(Machine, String) -> Later[String?]
+
+pub fn agy_notice_failure(String) -> String?
+
+pub fn agy_opening(String) -> @jsjson.JValue
+
+pub fn agy_plan(String?, company? : Bool) -> String?
+
+pub fn agy_plan_in(String, enterprise? : Bool) -> String?
+
+pub fn agy_session_id(String) -> Bool
+
+pub fn agy_skills(Machine, String, String?) -> Later[Unit]
+
+pub fn agy_tier_in(@jsjson.JValue?) -> String?
+
+pub fn agy_token(Machine, String) -> String
+
+pub fn agy_token_in(Machine, String) -> String
+
+pub fn agy_token_ready(String, Bool) -> Bool
+
+pub fn agy_variant(String, String?, Array[String], String?) -> String?
+
+pub fn alive_in(Machine, String) -> RunnerInfo?
+
+pub fn[T] all(Loop, Array[Later[T]]) -> Later[Array[T]]
+
+pub fn arr(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn arr_at(@jsjson.JValue?, String) -> Array[@jsjson.JValue]?
+
+pub fn arr_of(@jsjson.JValue?) -> Array[@jsjson.JValue]?
+
+pub fn ascii_word(Int32) -> Bool
+
+pub fn at_word(Array[Int32], Int32, String) -> Bool
+
+pub fn b(Bool) -> @jsjson.JValue
+
+pub fn background_of(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn base64url_decode(String) -> Bytes
+
+pub fn bool_at(@jsjson.JValue?, String) -> Bool?
+
+pub fn boundary(Array[Int32], Int32) -> Bool
+
+pub fn bring_transcript(Machine, String, String, String, String) -> Later[Unit]
+
+pub fn bytes_within(Machine, String, Int32, Int32, chunk? : Int32) -> Later[Array[(Bytes, Int32)]]
+
+pub fn chars(String, Int32) -> String
+
+pub fn chars_js(String, Int32) -> String
+
+pub fn claude_file_token(Machine, String) -> Later[String?]
+
+pub fn claude_project(String) -> String?
+
+pub fn claude_settings(Words) -> @jsjson.JValue
+
+pub fn claude_settings_hooks(Words) -> @jsjson.JValue
+
+pub fn command_missing(String) -> Error
+
+pub fn company_method(@jsjson.JValue?) -> Bool
+
+pub fn compare_paths(String, String) -> Int32
+
+pub fn d(Double) -> @jsjson.JValue
+
+pub fn date_parse(String) -> Double?
+
+pub fn days_from_civil(Int32, Int32, Int32) -> Int32
+
+pub fn del(@jsjson.JValue, String) -> @jsjson.JValue
+
+pub fn describe_exit(Int32?, String?) -> String
+
+pub fn dirname_of(Machine, String) -> String
+
+pub fn done(Loop) -> Later[Unit]
+
+pub fn each_in_turn(Loop, Int32, (Int32) -> Later[Unit]) -> Later[Unit]
+
+pub fn either(Env, String) -> String?
+
+pub fn end_runner(Machine, String, String, String, only? : RunnerInfo) -> Later[Bool]
+
+pub fn entries_of(@jsjson.JValue?) -> Array[(String, @jsjson.JValue)]
+
+pub fn error_text(@jsjson.JValue?) -> String
+
+pub fn expand_route(Array[(String, String)], String) -> Array[(String, String)]
+
+pub fn failure_of(String, auth_codes? : Array[String], auth? : Array[String], limit_codes? : Array[String], limit? : Array[String]) -> String
+
+pub fn failure_rest(String) -> String
+
+pub fn fast_for(@jsjson.JValue) -> Bool?
+
+pub fn fast_of(Array[String]) -> Bool?
+
+pub fn filled(@jsjson.JValue?, String) -> String?
+
+pub fn find_runner(Machine, String, String) -> Later[RunnerInfo?]
+
+pub fn flag_of(Array[String], String) -> String?
+
+pub fn gemini_dir(Machine, String) -> String
+
+pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn go_keyring_value(String) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn harness_case(String) -> String
+
+pub fn has_word_ci(String, String) -> Bool
+
+pub fn hooks_of(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn is_debug() -> Bool
+
+pub fn is_machine(@jsjson.JValue) -> Bool
+
+pub fn is_terminal_runner(String) -> Bool
+
+pub fn is_true(@jsjson.JValue?, String) -> Bool
+
+pub fn js_compare(String, String) -> Int32
+
+pub fn js_less(String, String) -> Bool
+
+pub fn js_string_of(@jsjson.JValue) -> String
+
+pub fn json_text(@jsjson.JValue) -> String
+
+pub fn keep_local(Env) -> Env
+
+pub fn key_file(Machine, @jsjson.JValue) -> String?
+
+pub fn key_part(String) -> String
+
+pub fn kimi_signed_in(@jsjson.JValue) -> Bool
+
+pub fn last_written(Machine, String, String) -> Later[Double?]
+
+pub fn lent_expiry(Machine, String) -> Later[Double]
+
+pub fn listening_soon(Machine, RunnerInfo) -> Later[Bool]
+
+pub fn live_runner(Machine, RunnerInfo) -> Later[Bool]
+
+pub fn live_runners(Machine, String, strict? : Bool) -> Later[Array[RunnerInfo]]
+
+pub fn lower_ascii(Int32) -> Int32
+
+pub fn map_json(Array[(String, String)]) -> @jsjson.JValue
+
+pub fn mcp_inventory(Host, thread_id? : String) -> Later[Array[(String, @jsjson.JValue)]]
+
+pub fn mcp_servers(String, String) -> @jsjson.JValue
+
+pub fn mcp_url_of(Array[String]) -> String?
+
+pub fn model_limit_of(String) -> String?
+
+pub fn models_of(Host) -> Later[ModelCatalog]
+
+pub fn n(Int32) -> @jsjson.JValue
+
+pub fn no_hooks() -> OwnHooks
+
+pub fn no_live_state() -> @jsjson.JValue
+
+pub fn normalized(String) -> String
+
+pub fn note_agy_email(Machine, String, String) -> Later[String?]
+
+pub fn num_at(@jsjson.JValue?, String) -> Double?
+
+pub fn num_of(@jsjson.JValue?) -> Double?
+
+pub fn obj(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn opt_s(String?) -> @jsjson.JValue
+
+pub fn out_file(Machine, String, String) -> String
+
+pub fn parse_json(String) -> @jsjson.JValue?
+
+pub fn peer_http_base(String) -> String
+
+pub fn profile_fast(@jsjson.JValue) -> Bool
+
+pub fn profile_home(@jsjson.JValue) -> String
+
+pub fn profile_id(@jsjson.JValue) -> String
+
+pub fn profile_model(@jsjson.JValue) -> String?
+
+pub fn[T] put_pair(Array[(String, T)], String, T) -> Unit
+
+pub fn race_sleep(Machine, Later[Exit], Double) -> Later[Unit]
+
+pub fn remember_rollout(Machine, (String, Array[String], String) -> Unit, String, String, @jsjson.JValue) -> Later[String?]
+
+pub fn rpc(String, String, @jsjson.JValue) -> String
+
+pub fn runner_args(Machine, String, String, String, String, Array[String], pty? : (Int32, Int32)) -> Array[String]
+
+pub fn runner_id(String, String) -> String
+
+pub fn runner_of(Machine, String, String) -> Later[RunnerInfo?]
+
+pub fn runner_ready(String, String) -> RunnerInfo raise
+
+pub fn runners_dir(Machine, String) -> String
+
+pub fn runtime_kind(@jsjson.JValue?) -> String?
+
+pub fn runtime_label(String) -> String
+
+pub fn s(String) -> @jsjson.JValue
+
+pub fn safe_integer(@jsjson.JValue?) -> Bool
+
+pub fn set(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn silent_subagents(Words) -> @jsjson.JValue
+
+pub fn skills_off(Array[String]) -> @jsjson.JValue
+
+pub fn sorted_pairs(Array[(String, String)]) -> Array[(String, String)]
+
+pub fn spread(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn start_env(Env, Array[String]) -> Env
+
+pub fn station_tool(String) -> Bool
+
+pub fn station_tools_failed(Host, String) -> Later[Bool]
+
+pub fn str_at(@jsjson.JValue?, String) -> String?
+
+pub fn str_of(@jsjson.JValue?) -> String?
+
+pub fn string_entries(@jsjson.JValue?) -> Array[(String, String)]
+
+pub fn strings_in(@jsjson.JValue?) -> Array[String]
+
+pub fn strs(Array[String]) -> @jsjson.JValue
+
+pub fn sweep_runners(Machine, String, Double, orphan? : (RunnerInfo) -> Later[Bool]) -> Later[Array[String]]
+
+pub fn takes_fast(@jsjson.JValue) -> Bool
+
+pub fn to_base36(Int64) -> String
+
+pub fn tools_lost_in(@jsjson.JValue, Array[Array[Int32]]) -> String?
+
+pub fn tools_unreachable(String) -> Bool
+
+pub fn transcript_at(Machine, String, String, String) -> Later[String?]
+
+pub fn truthy(@jsjson.JValue) -> Bool
+
+pub fn turn_usage(@jsjson.JValue?) -> @jsjson.JValue?
+
+pub fn untold(Bytes) -> Bool
+
+pub fn user_agent_version(@jsjson.JValue?) -> String?
+
+pub fn user_message(String) -> String
+
+pub fn utf8_text(BytesView) -> String
+
+pub fn version_in(String) -> String?
+
+pub fn wait_gone(Machine, Int32, Int32) -> Later[Unit]
+
+pub fn with_ca_bundle(Machine, Env, String) -> Later[Unit]
+
+pub fn words_of(Error) -> String
+
+// Errors
+pub(all) suberror DriverError {
+  Failed(String)
+  Said(String)
+  RenewRefused(String)
+}
+
+// Types and methods
+pub struct AcpHooks {
+  updated : (@jsjson.JValue, String?) -> Unit
+  ending : (String, @jsjson.JValue) -> Unit
+  ignored : (String, @jsjson.JValue) -> Unit
+  prompt_text : (String) -> String
+  kept : () -> Array[(String, @jsjson.JValue)]
+  taken : (@jsjson.JValue) -> Unit
+  opened : (@jsjson.JValue?) -> Unit
+  named : (String) -> Unit raise
+}
+
+pub struct AcpSession {
+  own : OwnSession
+  ids : Ids
+  mut model : String?
+  transcript : KeptTranscript?
+  mut is_open : Bool
+  mut acp : AcpHooks
+}
+pub fn AcpSession::abort(Self) -> Later[Unit]
+pub fn AcpSession::attached(Self) -> Unit
+pub fn AcpSession::began(Self, String) -> Unit
+pub fn AcpSession::handed(Self, @jsjson.JValue) -> Unit
+pub fn AcpSession::heard(Self, String) -> Unit
+pub fn AcpSession::inject_prompt(Self, String, Bool) -> Bool
+pub fn AcpSession::lp(Self) -> Loop
+pub fn AcpSession::named(Self, String) -> Unit raise
+pub fn AcpSession::new(Loop, String, Ids, (@jsjson.JValue) -> Unit, KeptTranscript?) -> Self
+pub fn AcpSession::opened(Self, @jsjson.JValue?) -> Unit
+pub fn AcpSession::permit(Self, @jsjson.JValue, @jsjson.JValue?) -> Unit
+pub fn AcpSession::prompt(Self, String) -> Later[Unit]
+pub fn AcpSession::prompt_into(Self, String) -> Bool
+pub fn AcpSession::prompt_params(Self, String) -> @jsjson.JValue
+pub fn AcpSession::prompt_takeover(Self, String) -> Bool
+pub fn AcpSession::replayed(Self, @jsjson.JValue, String?) -> Unit
+pub fn AcpSession::request(Self, String, String, @jsjson.JValue, timeout_ms? : Double) -> Later[@jsjson.JValue]
+pub fn AcpSession::say(Self, String, @jsjson.JValue) -> Unit
+pub fn AcpSession::send(Self, String, @jsjson.JValue) -> Unit
+pub fn AcpSession::snapshot(Self) -> @jsjson.JValue
+pub fn AcpSession::took(Self, @jsjson.JValue) -> Bool
+
+pub struct AcpStart {
+  command : String
+  args : Array[String]
+  env : Env
+  meta : @jsjson.JValue?
+  opening : @jsjson.JValue?
+  initialize_timeout_ms : Double?
+}
+
+pub struct Adopting {
+  handed_over : (@jsjson.JValue, RunnerInfo) -> OwnSession
+  crashed : (@jsjson.JValue, RunnerInfo) -> Later[OwnSession]
+  hosting_kind : String
+  flavor : String?
+  kept : Bool
+  replaying : @jsjson.JValue
+  label : (OwnSession) -> String
+  options_of : (OwnSession, String) -> HostedOptions
+  adopted : (OwnSession) -> Later[Unit]
+}
+
+pub struct AgyDriver {
+  own : OwnDriver
+  command : String
+  world : AgyWorld
+  profiles : ProfileSays
+  words : Words
+  ids : Ids
+  lost : Array[String]
+  sessions : Array[AgySession]
+}
+pub fn AgyDriver::acp_begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
+pub fn AgyDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[AgySession]
+pub fn AgyDriver::begin(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
+pub fn AgyDriver::begin_once(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit, Bool) -> Later[AgySession]
+pub fn AgyDriver::borrowed(Self, @jsjson.JValue) -> Bool
+pub fn AgyDriver::catalog(Self, @jsjson.JValue) -> Later[@jsjson.JValue]
+pub fn AgyDriver::ensure_conversation(Self, String, String) -> Later[Unit]
+pub fn AgyDriver::env_for(Self, @jsjson.JValue) -> Env
+pub fn AgyDriver::hooks(Self, String) -> Later[Unit]
+pub fn AgyDriver::initialized(Self, AgySession, @jsjson.JValue, @jsjson.JValue) -> Later[Unit]
+pub fn AgyDriver::lp(Self) -> Loop
+pub fn AgyDriver::m(Self) -> Machine
+pub fn AgyDriver::new(Machine, String, Procs, command? : String, AgyWorld, ProfileSays, Words, Ids) -> Self
+pub fn AgyDriver::note_lost(Self, String) -> Unit
+pub fn AgyDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[AgySession]
+pub fn AgyDriver::ready(Self, AgySession, @jsjson.JValue, Bool) -> Later[Unit]
+pub fn AgyDriver::renew(Self, String) -> Later[Unit]
+pub fn AgyDriver::renew_lent(Self, @jsjson.JValue) -> Later[Unit]
+pub fn AgyDriver::session(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> AgySession
+pub fn AgyDriver::starting(Self, @jsjson.JValue) -> Later[AcpStart]
+pub fn AgyDriver::take_back(Self, String) -> Later[Bool]
+
+pub struct AgySession {
+  acp : AcpSession
+  driver : AgyDriver
+  mut available_models : Array[String]
+  mut current_model_id : String?
+  mut default_model_id : String?
+  mut tier : String?
+  mut context_used : Double
+  mut context_size : Double
+  mut sign_in_until : Double?
+}
+pub fn AgySession::ending(Self, String, @jsjson.JValue) -> Unit
+pub fn AgySession::kept(Self) -> Array[(String, @jsjson.JValue)]
+pub fn AgySession::opened(Self, @jsjson.JValue?) -> Unit
+pub fn AgySession::outlived(Self) -> Bool
+pub fn AgySession::retune(Self, @jsjson.JValue) -> Bool
+pub fn AgySession::sign_in_expired(Self) -> Bool
+pub fn AgySession::steer(Self, String) -> Later[Bool]
+pub fn AgySession::taken(Self, @jsjson.JValue) -> Unit
+pub fn AgySession::updated(Self, @jsjson.JValue) -> Unit
+
+pub struct AgyWorld {
+  raw_env : Env
+  has_keychain : Bool
+  keychain_read : () -> Later[String?]
+  lent_borrowed : ((@jsjson.JValue) -> Bool)?
+  lent_write : ((@jsjson.JValue) -> Later[Double])?
+  run : (String, Array[String], Env, String, Double) -> Later[Unit]
+  sleep : (Double) -> Later[Unit]
+}
+
+pub struct ClaudeDriver {
+  own : OwnDriver
+  command : String
+  raw_env : Env
+  words : Words
+  profiles : ProfileSays
+  logins : ClaudeLogins
+  ids : Ids
+  sessions : Array[ClaudeSession]
+}
+pub fn ClaudeDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[ClaudeSession]
+pub fn ClaudeDriver::args_for(Self, @jsjson.JValue, String, Bool?, String?) -> Array[String]
+pub fn ClaudeDriver::borrowed(Self, @jsjson.JValue) -> Bool
+pub fn ClaudeDriver::crashed(Self, @jsjson.JValue, @jsjson.JValue, RunnerInfo, (@jsjson.JValue) -> Unit) -> ClaudeSession
+pub fn ClaudeDriver::handed_over(Self, @jsjson.JValue, @jsjson.JValue, RunnerInfo, (@jsjson.JValue) -> Unit) -> ClaudeSession
+pub fn ClaudeDriver::lp(Self) -> Loop
+pub fn ClaudeDriver::new(Machine, String, Procs, command? : String, Env, Words, ProfileSays, ClaudeLogins, Ids) -> Self
+pub fn ClaudeDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[ClaudeSession]
+pub fn ClaudeDriver::renewer(Self, @jsjson.JValue) -> ((String?) -> Later[(String, Double)])?
+
+pub struct ClaudeLogins {
+  machine_token : (String?) -> Later[(String, Double)]
+  subscription_token : ((@jsjson.JValue) -> ((String?) -> Later[(String, Double)]))?
+  lent_borrowed : ((@jsjson.JValue) -> Bool)?
+  lent_token : ((@jsjson.JValue) -> ((String?) -> Later[(String, Double)]))?
+  has_keychain : Bool
+  stub_dir : () -> Later[String]
+  take_back : (String) -> Later[Unit]
+  take_back_missing : (String) -> Later[Bool]
+}
+
+pub struct ClaudeSession {
+  own : OwnSession
+  driver : ClaudeDriver
+  machine_expires : Double?
+  effort : String?
+  mut fast : Bool?
+  renew : ((String?) -> Later[(String, Double)])?
+  mut token : String?
+}
+pub fn ClaudeSession::abort(Self) -> Later[Unit]
+pub fn ClaudeSession::background(Self) -> @jsjson.JValue
+pub fn ClaudeSession::background_tools(Self) -> Later[Unit]
+pub fn ClaudeSession::begin(Self) -> Unit raise
+pub fn ClaudeSession::compact(Self) -> Later[Unit]
+pub fn ClaudeSession::detach(Self) -> Unit
+pub fn ClaudeSession::dispose(Self) -> Later[Unit]
+pub fn ClaudeSession::make(ClaudeDriver, String, @jsjson.JValue, Double?, @jsjson.JValue, (@jsjson.JValue) -> Unit, String?, ((String?) -> Later[(String, Double)])?, String?) -> Self
+pub fn ClaudeSession::prompt(Self, String) -> Later[Unit]
+pub fn ClaudeSession::renew_token(Self, String) -> Unit
+pub fn ClaudeSession::retune(Self, @jsjson.JValue) -> Bool
+pub fn ClaudeSession::snapshot(Self) -> @jsjson.JValue
+pub fn ClaudeSession::steer(Self, String) -> Later[Bool]
+
+pub struct CodexDriver {
+  m : Machine
+  data : String
+  procs : Procs
+  command : String
+  world : CodexWorld
+  profiles : ProfileSays
+  words : Words
+  hosts : Array[(String, Host)]
+  draining : Array[Host]
+  mut host_queue : Later[Unit]
+  mut stopped : Bool
+  claimed : Array[String]
+  mut installed : (String?, Double)?
+  mut installed_reading : Later[String?]?
+}
+pub fn CodexDriver::adopt(Self, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit) -> Later[CodexSession]
+pub fn CodexDriver::adopt_host(Self, String, RunnerInfo, String, Double, Bool, Array[(String, Recovered)]?, String, Int32?) -> Host
+pub fn CodexDriver::adopt_on(Self, Host, @jsjson.JValue, @jsjson.JValue?, (@jsjson.JValue) -> Unit, String) -> CodexSession raise
+pub fn CodexDriver::adopted_host(Self, @jsjson.JValue, @jsjson.JValue?, String, String) -> Later[Host]
+pub fn CodexDriver::borrowed(Self, @jsjson.JValue) -> Bool
+pub fn CodexDriver::child_env(Self, @jsjson.JValue) -> Env
+pub fn CodexDriver::detach(Self) -> Unit
+pub fn CodexDriver::drain(Self, Host) -> Later[Unit]
+pub fn CodexDriver::drain_soon(Self, Host, String) -> Unit
+pub fn CodexDriver::draining_add(Self, Host) -> Unit
+pub fn CodexDriver::draining_delete(Self, Host) -> Unit
+pub fn CodexDriver::end_idle(Self, Host, String) -> Later[Bool]
+pub fn CodexDriver::evict_idle(Self) -> Later[Int32]
+pub fn CodexDriver::freeze(Self) -> Later[Unit]
+pub fn CodexDriver::hold_left(Self, @jsjson.JValue, RunnerInfo, String) -> Host
+pub fn CodexDriver::host(Self, @jsjson.JValue, cwd? : String) -> Later[Host]
+pub fn CodexDriver::host_args(Self, @jsjson.JValue) -> Array[String]
+pub fn CodexDriver::host_at(Self, String) -> Host?
+pub fn CodexDriver::host_delete(Self, String) -> Unit
+pub fn CodexDriver::host_idle(Self, Host) -> Unit
+pub fn CodexDriver::host_set(Self, String, Host) -> Unit
+pub fn CodexDriver::host_signature(Self, @jsjson.JValue) -> String
+pub fn CodexDriver::hosted_procs(Self) -> Array[Proc]
+pub fn CodexDriver::idle(Self, Host) -> Bool
+pub fn CodexDriver::idle_later(Self, Host) -> Unit
+pub fn CodexDriver::info(Self, String, @jsjson.JValue) -> Unit
+pub fn CodexDriver::installed_version(Self, fresh? : Bool) -> Later[String?]
+pub fn CodexDriver::is_current(Self, Host) -> Bool
+pub fn CodexDriver::keep_draining(Self, Host) -> Unit
+pub fn[T] CodexDriver::lease(Self, @jsjson.JValue, (Host) -> Later[T], cwd? : String) -> Later[T]
+pub fn CodexDriver::left_runners(Self, String) -> Later[Array[RunnerInfo]]
+pub fn CodexDriver::let_go(Self, Host) -> Unit
+pub fn CodexDriver::login_changed(Self, String) -> Later[Unit]
+pub fn CodexDriver::lp(Self) -> Loop
+pub fn CodexDriver::models(Self, @jsjson.JValue) -> Later[ModelCatalog]
+pub fn CodexDriver::new(Machine, String, Procs, command? : String, CodexWorld, ProfileSays, Words) -> Self
+pub fn CodexDriver::open(Self, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[CodexSession]
+pub fn CodexDriver::open_on(Self, Host, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> Later[CodexSession]
+pub fn CodexDriver::outdated(Self, Host, @jsjson.JValue?) -> Later[Bool]
+pub fn CodexDriver::outgrown(Self, Host) -> Later[Int32?]
+pub fn CodexDriver::owned_runners(Self) -> Array[String]
+pub fn CodexDriver::rate_limits(Self, @jsjson.JValue) -> Later[@jsjson.JValue]
+pub fn CodexDriver::read_version(Self, Host, String) -> Unit
+pub fn CodexDriver::released_elsewhere(Self, @jsjson.JValue, String, String, Host) -> Later[Unit]
+pub fn CodexDriver::renew_lent(Self, Host, @jsjson.JValue) -> Later[Unit]
+pub fn CodexDriver::renew_login(Self, String) -> Later[Bool]
+pub fn CodexDriver::reset_quota(Self, @jsjson.JValue, String) -> Later[@jsjson.JValue]
+pub fn CodexDriver::retire(Self, Host) -> Later[Unit]
+pub fn CodexDriver::retire_stale(Self, String, String?) -> Later[Unit]
+pub fn CodexDriver::runner_for(Self, String) -> Later[String]
+pub fn CodexDriver::runtime_changed(Self, replaced? : Bool, drain_busy? : Bool) -> Later[Unit]
+pub fn[T] CodexDriver::serial(Self, () -> Later[T]) -> Later[T]
+pub fn CodexDriver::session(Self, String, Host, @jsjson.JValue, Bool, String?, @jsjson.JValue, (@jsjson.JValue) -> Unit) -> CodexSession
+pub fn CodexDriver::shutdown(Self, again? : Bool) -> Later[Unit]
+pub fn CodexDriver::stale(Self, Host) -> Bool
+pub fn CodexDriver::start_host(Self, @jsjson.JValue, String, String, String) -> Later[Host]
+pub fn CodexDriver::sweep_left(Self, @jsjson.JValue, String) -> Unit
+pub fn CodexDriver::take_up(Self, @jsjson.JValue, RunnerInfo, String) -> Later[Host]
+pub fn CodexDriver::take_up_left(Self, @jsjson.JValue, String) -> Later[Host?]
+pub fn CodexDriver::thaw(Self) -> Unit
+pub fn CodexDriver::update_matches_station(Self, @jsjson.JValue) -> Later[Bool]
+pub fn CodexDriver::warn(Self, String, @jsjson.JValue) -> Unit
+pub fn CodexDriver::words_repo(Self) -> String
+
+pub struct CodexSession {
+  driver : CodexDriver
+  thread_id : String
+  host : Host
+  profile : @jsjson.JValue
+  mut busy : Bool
+  mut turn_id : String?
+  mut closed : Bool
+  mut live : @jsjson.JValue
+  events : (@jsjson.JValue) -> Unit
+  mut tuned : (String, String)?
+  mut running : (String?, String?)?
+  mut tools_url : String?
+  mut transcript_path : String?
+  mut transcript_known : Later[Unit]
+  mut transcript_asked : Int32
+}
+pub fn CodexSession::abort(Self) -> Later[Unit]
+pub fn CodexSession::compact(Self) -> Later[Unit]
+pub fn CodexSession::detach(Self) -> Unit
+pub fn CodexSession::dispose(Self) -> Later[Unit]
+pub fn CodexSession::end_turn(Self, @jsjson.JValue, routed? : Bool) -> Unit
+pub fn CodexSession::lp(Self) -> Loop
+pub fn CodexSession::prompt(Self, String) -> Later[Unit]
+pub fn CodexSession::recover_transcript(Self) -> Unit
+pub fn CodexSession::remember_transcript(Self, @jsjson.JValue?) -> Later[Unit]
+pub fn CodexSession::retune(Self, @jsjson.JValue) -> Bool
+pub fn CodexSession::route(Self, ((Int32) -> Bool)?) -> Unit
+pub fn CodexSession::sink(Self) -> (Notice) -> Unit
+pub fn CodexSession::snapshot(Self) -> @jsjson.JValue
+pub fn CodexSession::steer(Self, String) -> Later[Bool]
+
+pub struct CodexWorld {
+  raw_env : Env
+  agent_env : () -> Array[(String, String)]
+  walk_skills : (String) -> Later[Array[String]]
+  host_skills : String
+  ca_bundle : String
+  fast : ((String) -> Bool?)?
+  speed : ((String) -> String?)?
+  current_profile : ((String) -> @jsjson.JValue?)?
+  lent_borrowed : ((@jsjson.JValue) -> Bool)?
+  lent_write : ((@jsjson.JValue) -> Later[Double])?
+  installed_version : () -> Later[String?]
+  missing_host : (String, Env) -> Later[Bool]
+  incomplete_installation : () -> Unit
+  link_auth : (String) -> Later[Unit]
+  remember_rollout : (String, Array[String], String) -> Unit
+  update_matches : (@jsjson.JValue) -> Later[Bool]
+  taken_up : Later[Unit]?
+  taking : () -> Unit
+  output_limit : Int32
+  take_up_bytes : Int32
+  warm_ms : Double
+}
+
+pub struct Env {
+  pairs : Array[(String, String)]
+}
+pub fn Env::delete(Self, String) -> Unit
+pub fn Env::get(Self, String) -> String?
+pub fn Env::has(Self, String) -> Bool
+pub fn Env::merge(Self, Array[(String, String)]) -> Unit
+pub fn Env::new(Array[(String, String)]) -> Self
+pub fn Env::set(Self, String, String) -> Unit
+pub fn Env::set_unset(Self, String, String) -> Unit
+pub fn Env::to_json(Self) -> @jsjson.JValue
+
+pub struct Exit {
+  code : Int32?
+  signal : String?
+}
+
+pub struct FileStat {
+  dev : Double
+  ino : Double
+  size : Double
+  mtime : Double
+  file : Bool
+  directory : Bool
+  symlink : Bool
+}
+
+pub struct Heard {
+  json : @jsjson.JValue
+}
+pub fn Heard::events(Self) -> Array[@jsjson.JValue]
+pub fn Heard::lines(Self) -> Array[String]
+pub fn Heard::routed(Self) -> Bool
+pub fn Heard::to(Self) -> Int32
+pub fn Heard::turn(Self) -> @jsjson.JValue?
+
+pub enum HeardSaid {
+  Took(Bool)
+  Writing(Later[Unit])
+}
+
+pub struct Host {
+  lp : Loop
+  m : Machine
+  mut proc : Proc?
+  pending : Array[(Double, String, (@jsjson.JValue) -> Unit, (Error) -> Unit)]
+  threads : Array[(String, (Notice) -> Unit)]
+  turns : Array[String]
+  mut login_stale : Bool
+  mut runtime_stale : Bool
+  mut draining : Bool
+  mut version : String?
+  mut ready : Bool
+  mut readying : Later[Unit]?
+  lives : Array[(String, @jsjson.JValue)]
+  routers : Array[(String, (Int32) -> Bool)]
+  mut recovered : Array[(String, Recovered)]
+  mut used_at : Double
+  mut opening : Int32
+  mut idle_watched : Bool
+  turn_from : Array[(String, Int32)]
+  mut stop_orphans : () -> Unit
+  mut kept_from : Int32
+  mut read_to : Int32
+  mut handed_from : Int32
+  profile : String
+  key : String
+  signature : String
+  mut next_id : Double
+  mut lent_until : Double?
+}
+pub fn Host::add_thread(Self, String, (Notice) -> Unit, @jsjson.JValue) -> Unit
+pub fn Host::alive(Self) -> Bool
+pub fn Host::attached(Self) -> Unit
+pub fn Host::detach(Self) -> Unit
+pub fn Host::drop_all(Self) -> Unit
+pub fn Host::drop_thread(Self, String) -> Unit
+pub fn Host::ensure_ready(Self) -> Later[Unit]
+pub fn Host::forget(Self, String) -> Unit
+pub fn Host::freeze(Self) -> Unit
+pub fn Host::has_thread(Self, String) -> Bool
+pub fn Host::heard(Self, Heard) -> Bool
+pub fn Host::hosted_options(Self, String, orphans? : Bool) -> HostedOptions
+pub fn Host::new(Machine, String, String, Double, Bool, String) -> Self
+pub fn Host::note_turn(Self, String, Bool, Int32, Int32) -> Unit
+pub fn Host::on_exit(Self, String, String) -> Unit
+pub fn Host::on_line(Self, String) -> Unit
+pub fn Host::p(Self) -> Proc
+pub fn Host::reckon(Self, Int32) -> Unit
+pub fn Host::request(Self, String, @jsjson.JValue) -> Later[@jsjson.JValue]
+pub fn Host::route(Self, String, ((Int32) -> Bool)?) -> Unit
+pub fn Host::running(Self, String, Int32) -> Unit
+pub fn Host::sink_of(Self, String) -> ((Notice) -> Unit)?
+pub fn Host::snapshot(Self) -> @jsjson.JValue
+pub fn Host::turn_add(Self, String) -> Unit
+pub fn Host::turn_delete(Self, String) -> Unit
+pub fn Host::turn_from_delete(Self, String) -> Bool
+pub fn Host::turning(Self, String) -> Bool
+
+pub struct HostedOptions {
+  label : String
+  kind : String
+  flavor : String?
+  kept : Bool
+  orphans : Bool
+  heard : (Heard) -> HeardSaid
+  attached : () -> Unit
+  exit : (String, String) -> Later[Unit]
+}
+
+pub struct Ids {
+  next : () -> String
+}
+
+pub struct KeptTranscript {
+  m : Machine
+  kind : String
+  dir : String
+  mut quiet : Bool
+  mut writing : Later[Unit]?
+}
+pub fn KeptTranscript::ended(Self, String, @jsjson.JValue) -> Unit
+pub fn KeptTranscript::keep(Self, String, @jsjson.JValue) -> Unit
+pub fn KeptTranscript::new(Machine, String, String) -> Self
+pub fn KeptTranscript::quietly(Self, () -> Unit) -> Unit
+pub fn KeptTranscript::settled(Self) -> Later[Unit]?
+
+pub struct Later[T] {
+  lp : Loop
+  mut state : LaterState[T]
+  then : Array[(Result[T, Error]) -> Unit]
+}
+pub fn[T] Later::always(Self[T], () -> Unit) -> Self[T]
+pub fn[T, U] Later::bind(Self[T], (T) -> Self[U] raise) -> Self[U]
+pub fn[T] Later::fail(Loop, Error) -> Self[T]
+pub fn[T, U] Later::map(Self[T], (T) -> U raise) -> Self[U]
+pub fn[T] Later::new(Loop) -> Self[T]
+pub fn[T] Later::ok(Loop, T) -> Self[T]
+pub fn[T] Later::on(Self[T], (Result[T, Error]) -> Unit) -> Unit
+pub fn[T] Later::recover(Self[T], (Error) -> Self[T] raise) -> Self[T]
+pub fn[T] Later::reject(Self[T], Error) -> Unit
+pub fn[T] Later::resolve(Self[T], T) -> Unit
+pub fn[T] Later::settled(Self[T]) -> Bool
+pub fn[T] Later::tell(Self[T], Result[T, Error]) -> Unit
+
+pub enum LaterState[T] {
+  Waiting
+  Done(T)
+  Broke(Error)
+}
+
+pub struct Lines {
+  parts : Array[Bytes]
+  mut size : Int32
+}
+pub fn Lines::drop(Self) -> Unit
+pub fn Lines::new() -> Self
+pub fn Lines::take(Self, BytesView) -> Array[Bytes]
+
+pub struct Loop {
+  queue : Array[() -> Unit]
+  timers : Array[(Double, Int32, () -> Unit)]
+  mut seq : Int32
+  mut now : Double
+}
+pub fn Loop::advance(Self, Double) -> Unit
+pub fn Loop::after(Self, Double, () -> Unit) -> () -> Unit
+pub fn Loop::new(now? : Double) -> Self
+pub fn Loop::run(Self) -> Unit
+pub fn Loop::soon(Self, () -> Unit) -> Unit
+
+pub struct Machine {
+  lp : Loop
+  sep : String
+  socket_visible : Bool
+  says_leave : Bool
+  read_dir : (String) -> Later[Array[String]]
+  read_file : (String) -> Later[String]
+  mtime : (String) -> Later[Double?]
+  size : (String) -> Later[Int32?]
+  read_at : (String, Int32, Int32) -> Later[Bytes]
+  remove : (String) -> Later[Unit]
+  there : (String) -> Later[Bool]
+  is_file : (String) -> Later[Bool]
+  realpath : (String) -> Later[String?]
+  make_dir : (String) -> Later[Unit]
+  link : (String, String) -> Later[Unit]
+  stat : (String, Bool) -> Later[FileStat?]
+  write_file : (String, String, Bool) -> Later[Unit]
+  append_file : (String, String) -> Later[Unit]
+  remove_tree : (String) -> Later[Unit]
+  rename : (String, String) -> Later[Unit]
+  copy : (String, String) -> Later[Unit]
+  copy_file : (String, String) -> Later[Unit]
+  hard_link : (String, String) -> Later[Unit]
+  link_path : (String, String) -> Later[Unit]
+  pid_alive : (Int32) -> Bool
+  group_alive : (Int32) -> Bool
+  start_time : (Int32) -> Later[Double?]
+  connect : (String, SocketEvents) -> Socket
+  sleep : (Double) -> Later[Unit]
+  now : () -> Double
+  log : (String, String, String, @jsjson.JValue) -> Unit
+}
+pub fn Machine::append_file(Self, String, String) -> Later[Unit]
+pub fn Machine::connect(Self, String, SocketEvents) -> Socket
+pub fn Machine::copy(Self, String, String) -> Later[Unit]
+pub fn Machine::copy_file(Self, String, String) -> Later[Unit]
+pub fn Machine::group_alive(Self, Int32) -> Bool
+pub fn Machine::hard_link(Self, String, String) -> Later[Unit]
+pub fn Machine::is_file(Self, String) -> Later[Bool]
+pub fn Machine::join(Self, Array[String]) -> String
+pub fn Machine::link(Self, String, String) -> Later[Unit]
+pub fn Machine::link_path(Self, String, String) -> Later[Unit]
+pub fn Machine::log(Self, String, String, String, @jsjson.JValue) -> Unit
+pub fn Machine::make_dir(Self, String) -> Later[Unit]
+pub fn Machine::mtime(Self, String) -> Later[Double?]
+pub fn Machine::now(Self) -> Double
+pub fn Machine::pid_alive(Self, Int32) -> Bool
+pub fn Machine::read_at(Self, String, Int32, Int32) -> Later[Bytes]
+pub fn Machine::read_dir(Self, String) -> Later[Array[String]]
+pub fn Machine::read_file(Self, String) -> Later[String]
+pub fn Machine::realpath(Self, String) -> Later[String?]
+pub fn Machine::remove(Self, String) -> Later[Unit]
+pub fn Machine::remove_tree(Self, String) -> Later[Unit]
+pub fn Machine::rename(Self, String, String) -> Later[Unit]
+pub fn Machine::size(Self, String) -> Later[Int32?]
+pub fn Machine::sleep(Self, Double) -> Later[Unit]
+pub fn Machine::start_time(Self, Int32) -> Later[Double?]
+pub fn Machine::stat(Self, String, follow? : Bool) -> Later[FileStat?]
+pub fn Machine::there(Self, String) -> Later[Bool]
+pub fn Machine::write_file(Self, String, String, private? : Bool) -> Later[Unit]
+
+pub struct ModelCatalog {
+  mut models : Array[String]
+  efforts : Array[(String, Array[String])]
+  defaults : Array[(String, String)]
+}
+pub fn ModelCatalog::new() -> Self
+pub fn ModelCatalog::take_page(Self, @jsjson.JValue?) -> Unit raise
+pub fn ModelCatalog::to_json(Self) -> @jsjson.JValue
+
+pub enum Notice {
+  Events(Array[@jsjson.JValue], @jsjson.JValue, Bool)
+  HostExited(String)
+}
+
+pub struct OwnDriver {
+  m : Machine
+  data : String
+  procs : Procs
+  kind : String
+  live : Array[OwnSession]
+  claimed : Array[String]
+}
+pub fn OwnDriver::add(Self, OwnSession) -> Unit
+pub fn OwnDriver::adopt(Self, String, @jsjson.JValue?, (@jsjson.JValue) -> Unit, Adopting) -> Later[OwnSession]
+pub fn[T] OwnDriver::claiming(Self, String, () -> Later[T]) -> Later[T]
+pub fn OwnDriver::detach(Self) -> Unit
+pub fn OwnDriver::forget(Self, OwnSession) -> Unit
+pub fn OwnDriver::freeze(Self) -> Later[Unit]
+pub fn OwnDriver::hosted(Self) -> Array[Proc]
+pub fn OwnDriver::new(Machine, String, Procs, String) -> Self
+pub fn OwnDriver::owned_runners(Self) -> Array[String]
+pub fn OwnDriver::shutdown(Self, again? : Bool) -> Later[Unit]
+pub fn OwnDriver::start(Self, OwnSession, String, String, String, Array[String], Env, HostedOptions) -> Later[Unit]
+pub fn OwnDriver::thaw(Self) -> Unit
+
+pub struct OwnHooks {
+  heard : (String) -> Unit
+  took : (@jsjson.JValue) -> Bool
+  settled : () -> Later[Unit]?
+  cut_short : (String) -> Unit
+  attached : () -> Unit
+}
+
+pub struct OwnSession {
+  lp : Loop
+  kind : String
+  mut proc : Proc?
+  mut session_id : String
+  mut turn : @jsjson.JValue
+  mut live_state : @jsjson.JValue
+  events : (@jsjson.JValue) -> Unit
+  waiting : Waiting
+  mut tools_url : String?
+  mut hooks : OwnHooks
+  mut forget : () -> Unit
+}
+pub fn OwnSession::busy(Self) -> Bool
+pub fn OwnSession::closed(Self) -> Bool
+pub fn OwnSession::detach(Self) -> Unit
+pub fn OwnSession::dispose(Self) -> Later[Unit]
+pub fn OwnSession::event(Self, Heard, @jsjson.JValue) -> Unit
+pub fn OwnSession::exited(Self, String, String) -> Later[Unit]
+pub fn OwnSession::flag(Self, String) -> Bool
+pub fn OwnSession::hand_over(Self) -> (@jsjson.JValue, @jsjson.JValue)?
+pub fn OwnSession::heard_hosted(Self, Heard) -> HeardSaid
+pub fn OwnSession::hosted_options(Self, String, String, flavor? : String, kept? : Bool) -> HostedOptions
+pub fn OwnSession::new(Loop, String, String, @jsjson.JValue, (@jsjson.JValue) -> Unit, live? : @jsjson.JValue) -> Self
+pub fn OwnSession::p(Self) -> Proc
+pub fn OwnSession::runner(Self) -> String?
+pub fn OwnSession::set_flag(Self, String, @jsjson.JValue) -> Unit
+pub fn OwnSession::settled(Self) -> Later[Unit]?
+pub fn OwnSession::startable(Self) -> Unit raise
+pub fn OwnSession::take(Self, @jsjson.JValue?) -> Unit
+pub fn OwnSession::told(Self, Heard, Int32) -> Later[Unit]?
+pub fn OwnSession::turn_now(Self) -> @jsjson.JValue
+
+pub struct Proc {
+  info : RunnerInfo
+  write : (String) -> Unit
+  tell : (String) -> Unit
+  say : (String, @jsjson.JValue) -> Unit
+  keep_from : (Int32) -> Unit
+  freeze : () -> Unit
+  frozen_state : () -> (@jsjson.JValue, @jsjson.JValue)?
+  detach : () -> Unit
+  kill : (Double) -> Later[Unit]
+  released : () -> Later[Unit]
+  has_exited : () -> Bool
+  handed : () -> Bool
+  thread : (String, @jsjson.JValue) -> Unit
+  drop_thread : (String) -> Unit
+  route_thread : (String, Bool, Bool) -> Bool
+  route : (Bool) -> Unit
+  orphans_off : () -> Unit
+}
+
+pub struct Procs {
+  start : (String, String, Array[String], Env, String, HostedOptions, @jsjson.JValue) -> Later[Proc]
+  adopt : (RunnerInfo, HostedOptions, @jsjson.JValue, @jsjson.JValue) -> Proc
+  replay_own : (String, String, Int32, @jsjson.JValue) -> Later[@jsjson.JValue]
+  replay : (Array[Array[@jsjson.JValue]]) -> Later[@jsjson.JValue]
+  freeze : (Array[Proc]) -> Later[Unit]
+  thaw : (Array[Proc]) -> Unit
+  close : () -> Later[Unit]
+}
+
+pub struct ProfileSays {
+  env : (@jsjson.JValue, String) -> Array[(String, String)]
+  codex_overrides : (@jsjson.JValue) -> Array[(String, String)]
+}
+
+pub struct Recovered {
+  mut busy : Bool
+  mut turn_id : String?
+  mut live : @jsjson.JValue
+}
+
+pub struct RunnerConnection {
+  m : Machine
+  info : RunnerInfo
+  socket : Socket
+  mut carry : String
+  out_lines : Lines
+  err_lines : Lines
+  mut out_at : Int32
+  mut err_at : Int32
+  mut acked_out : Int32
+  mut acked_err : Int32
+  mut keep : Int32?
+  mut queue : Later[Unit]
+  mut left : Bool
+  exited : Later[Exit]
+  line : (String, String, Int32, Int32) -> Later[Unit]
+  closed : Later[Unit]
+}
+pub fn RunnerConnection::close_stdin(Self) -> Unit
+pub fn RunnerConnection::data(Self, String, Int32, Bytes) -> Unit
+pub fn RunnerConnection::detach(Self) -> Later[Unit]
+pub fn RunnerConnection::finish(Self) -> Unit
+pub fn RunnerConnection::heard(Self, String) -> Unit
+pub fn RunnerConnection::keep_from(Self, Int32) -> Unit
+pub fn RunnerConnection::open(Machine, RunnerInfo, (String, String, Int32, Int32) -> Later[Unit]) -> Self
+pub fn RunnerConnection::send(Self, @jsjson.JValue) -> Unit
+pub fn RunnerConnection::signal(Self, String, group? : Bool) -> Unit
+pub fn RunnerConnection::write(Self, String) -> Unit
+
+pub struct RunnerInfo {
+  json : @jsjson.JValue
+}
+pub fn RunnerInfo::args(Self) -> Array[String]
+pub fn RunnerInfo::id(Self) -> String
+pub fn RunnerInfo::keeps(Self) -> Bool
+pub fn RunnerInfo::pgid(Self) -> Int32
+pub fn RunnerInfo::runner(Self) -> Int32
+pub fn RunnerInfo::socket(Self) -> String
+pub fn RunnerInfo::started_at(Self) -> Double?
+
+pub struct Socket {
+  write : (String) -> Unit
+  end : () -> Unit
+  destroy : () -> Unit
+  writable : () -> Bool
+  destroyed : () -> Bool
+}
+
+pub struct SocketEvents {
+  connected : () -> Unit
+  data : (String) -> Unit
+  error : (String) -> Unit
+  closed : () -> Unit
+}
+
+pub struct Waiting {
+  lp : Loop
+  waits : Array[(String, (@jsjson.JValue) -> Unit, (Error) -> Unit)]
+}
+pub fn Waiting::answer(Self, @jsjson.JValue?, @jsjson.JValue) -> Bool
+pub fn Waiting::drop(Self, String) -> ((@jsjson.JValue) -> Unit, (Error) -> Unit)?
+pub fn Waiting::fail(Self, String, Error) -> Unit
+pub fn Waiting::fail_all(Self, Error) -> Unit
+pub fn Waiting::new(Loop) -> Self
+pub fn Waiting::wait(Self, String, (@jsjson.JValue) -> Error?, late? : String, ms? : Double) -> Later[@jsjson.JValue]
+
+pub struct Words {
+  repo_rules_command : String
+  agy_repo_rules_command : String
+  subagent_hook_command : String
+  speaks : Array[String]
+  speaks_writing : String
+}
+
+// Type aliases
+pub type Renew = (String?) -> Later[(String, Double)]
+
+pub type Sink = (Notice) -> Unit
+
+// Traits

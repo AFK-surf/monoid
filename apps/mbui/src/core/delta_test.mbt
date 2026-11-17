@@ -85,3 +85,63 @@ test "a run of patches on one list is as each applied alone" {
   )
   assert_eq(old.stringify(), before)
 }
+
+///|
+/// A keyed list `n` long, item `i` keyed "k<i>" but item 30's keyed as item 5 is ("k5" twice: the first is the one found).
+fn long_keyed(n : Int) -> Json {
+  Json::object({
+    "items": Json::array(Array::makei(n, fn(i) {
+      let k = if i == 30 { 5 } else { i }
+      Json::object({ "id": Json::string("k\{k}"), "n": Json::number(i.to_double()) })
+    })),
+  })
+}
+
+///|
+/// What keyed ops `ops` make of `old`, one delta each, as a subscription takes them one after another.
+fn each_delta(old : Json, ops : Array[Json]) -> Json {
+  let mut v = old
+  for op in ops {
+    v = @core.apply_delta(v, [op])
+  }
+  v
+}
+
+///|
+test "a long keyed list's ops, each its own delta, find their items as the short list's do" {
+  let ops : Array[Json] = [
+    { "path": ["items"], "key": ["id"], "patch": "k5", "ops": [{ "path": ["n"], "set": 500 }] },
+    { "path": ["items"], "key": ["id"], "put": { "id": "k99", "n": 99 } },
+    { "path": ["items"], "key": ["id"], "patch": "k99", "ops": [{ "path": ["n"], "set": 990 }] },
+    { "path": ["items"], "key": ["id"], "patch": "k39", "ops": [{ "path": ["n"], "set": 390 }] },
+    { "path": ["items"], "key": ["id"], "drop": "k2" },
+    { "path": ["items"], "key": ["id"], "patch": "k39", "ops": [{ "path": ["n"], "set": 391 }] },
+    { "path": ["items"], "key": ["id"], "put": { "id": "k7", "n": 70 } },
+    { "path": ["items"], "key": ["id"], "move": "k99", "before": "k0" },
+    { "path": ["items"], "key": ["id"], "patch": "k99", "ops": [{ "path": ["n"], "set": 991 }] },
+  ]
+  let got = each_delta(long_keyed(40), ops)
+  // (the same ops on the list walked from its start, a short one's way: its items one at a time)
+  let want = long_keyed(40)
+  guard want is Object(w) && w.get("items") is Some(Array(items)) else { fail("no items") }
+  let list = items.copy()
+  let at = fn(k : String) { list.search_by(fn(x) { x is Object(o) && o.get("id") == Some(Json::string(k)) }).unwrap() }
+  let set_n = fn(k : String, n : Double) {
+    let i = at(k)
+    guard list[i] is Object(o) else { return }
+    let c = o.copy()
+    c["n"] = Json::number(n)
+    list[i] = Json::object(c)
+  }
+  set_n("k5", 500.0)
+  list.push({ "id": "k99", "n": 99 })
+  set_n("k99", 990.0)
+  set_n("k39", 390.0)
+  list.remove(at("k2")) |> ignore
+  set_n("k39", 391.0)
+  list[at("k7")] = { "id": "k7", "n": 70 }
+  let moved = list.remove(at("k99"))
+  list.insert(at("k0"), moved)
+  set_n("k99", 991.0)
+  assert_eq(got.stringify(), Json::object({ "items": Json::array(list) }).stringify())
+}

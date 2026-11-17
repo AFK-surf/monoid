@@ -566,12 +566,12 @@ test "a pose pressed shows as chosen at once, before the picture has come" {
   r.t.draw()
   r.tap_label(tr("web-pages.screen.device.pose.open"))
   r.t.draw()
-  assert_eq(r.ui().logs.pose_asked, 2)
+  assert_eq(r.ui().logs.pose_asked.get(), 2)
   // the picture of the inner panel come: it says which, nothing asked any longer
   r.say({ "config": { "codec": "jpeg", "width": 1426.0, "height": 1004.0 } })
   r.t.stream_shows(r.sess().stream.unwrap().id(), 3.0, 1426, 1004)
   r.t.draw()
-  assert_eq(r.ui().logs.pose_asked, -1)
+  assert_eq(r.ui().logs.pose_asked.get(), -1)
   // (a choice's thumb gone to the one chosen: a cover's slide, @ui.cover_slide_ms)
   r.t.run_for(@ui.cover_slide_ms)
   screen_done(r.t)
@@ -705,6 +705,8 @@ test "a device wider than tall: what it has itself in a row under it, App first;
   let (_, by, _, _) = r.labelled(tr("web-pages.screen.device.home")).map(fn(p) { (p.0, p.1, 0.0, 0.0) }).unwrap()
   let shown = r.ui().shown(r.t.ctx())
   assert_true(by > shown.y + shown.h)
+  // in the room kept for it, in the window
+  assert_true(by + 44.0 <= 600.0)
   // App first, its log asked for only once it is looked at
   assert_true(r.told("screen.logs").is_empty())
   assert_true(r.t.rect_of(tr("web-pages.screen.debug.install")) is Some(_) || r.t.rect_of(tr("web-pages.screen.debug.relaunch")) is Some(_))
@@ -836,8 +838,8 @@ test "重启 App: the list the first time, and the app chosen at one press after
 ///|
 /// What the address bar of tab `screen` holds (the fixture station's).
 fn address_of(screen : String) -> String {
-  match screen_ui(screen_key("ws-1/st-1", screen)).address {
-    Some((_, f)) => f.text()
+  match screen_ui(screen_key("ws-1/st-1", screen)).address_field {
+    Some(f) => f.text()
     None => ""
   }
 }
@@ -974,7 +976,8 @@ test "words typed in the address bar go to the tab on Enter" {
   assert_true(r.labelled("收件箱 - Proton Mail") is None)
   assert_eq(address_of("browser:tab-1"), "https://console.anthropic.com/login")
   // the keys given it (as ⌘L gives them), its words written over
-  screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked = true
+  let asked = screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).address_asked
+  asked.set(asked.untracked() + 1)
   r.frame(1050.0)
   r.t.type_text("proton mail")
   r.t.enter()

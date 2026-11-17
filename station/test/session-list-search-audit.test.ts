@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { SESSION_LIST_FIRST, SESSION_LIST_NEXT, SESSION_LIST_SEE_POSITION, auditSessionListStep } from "../src/store/session-list-index.ts";
+import { SESSION_LIST_FIRST, SESSION_LIST_NEXT, SESSION_LIST_SEE_POSITION, auditSessionListStep } from "./reference/backfill/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const missing = `SELECT key, CASE WHEN ws IS NULL THEN 0 ELSE 1 END, COALESCE(ws, ''),

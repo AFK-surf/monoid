@@ -1,14 +1,15 @@
 // The sidebar made once over the block (pane_view's and tape_view's `sides`): where the block lays its sidebar out
 // (SideAt), the sidebar the block holds now (side_place), each made as nodes of the window's tree: the chats' lists for
-// the chats' places. Those not made once yet are the block's old view's (lists.mbt sidebar).
+// the chats' places (with 已归档 among them, the band over them and the foot under them), the settings' list for the
+// settings', the stations' and the profiles' lists for the rail's places of theirs (places_side_node.mbt), the files'
+// for theirs (files_side_node.mbt).
 
 ///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
 /// has it: cut to the block's room, its corners the block's (its line over it, dock_edge_node's); shown while what is in
 /// it is drawn.
 fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
-  // (in the place of an old view's sidebar drawn where it is (sidebar's): at once, as one sidebar for another)
-  n.show(at_once=true, fn() { side_made(side_place()) }, fn(cut) {
+  n.box(fn(cut) {
     cut
     // (not shown, as the device waits in the lock: laid out nowhere, the same nodes, what had the focus in it given
     // it back as it is shown again, as an old view's focus waits for its node)
@@ -21,12 +22,18 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     dock_round_node(cut, at)
     cut.box(fn(side) {
       side
-      .width(By(fn() { Some(at().box.2) }))
+      .width(By(fn() { Some(at().laid_w) }))
       .height(By(fn() { Some(at().box.3) }))
       .offset(By(fn() { (at().box.0 - at().block.0, at().box.1 - at().block.1) }))
       |> ignore
       side.pick(at_once=true, fn() { if side_place() == "archive" { "chats" } else { side_place() } }, fn(s, place) {
         match place {
+          // (the settings' list beside their pages: settings_frame.mbt)
+          "settings" => settings_side_node(s, src, tips, at)
+          // (the files' places: files_side_node.mbt; the rail's Station and Profile places' lists: places_side_node.mbt)
+          "files" => files_side_node(s, src, tips, at)
+          "stations" => stations_side_node(s, src, tips, at)
+          "profiles" => profiles_side_node(s, src, tips, at)
           // (the chats' lists: a place of the rail's of theirs, or what the frame shows by default)
           _ => lists_side_node(s, src, tips, at)
         }
@@ -34,6 +41,7 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     })
     |> ignore
   })
+  |> ignore
 }
 
 ///|
@@ -52,15 +60,9 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
 }
 
 ///|
-/// Whether the sidebar of `place` (side_place's) is made once over the block, not drawn by its old view (sidebar's).
-fn side_made(place : String) -> Bool {
-  !(place is ("files" | "settings" | "stations" | "profiles"))
-}
-
-///|
 /// The chats' sidebar (lists_side's) in node `s` as wide as the sidebar: the lists (sfpages' chats_lists_node: 全部,
-/// 我参与的, 监控中, then 已归档 on its track) under the band (新建对话 and the filter) and over the foot; the band, the
-/// foot and 已归档's list their old views, hosted.
+/// 我参与的, 监控中, then 已归档 on its track: archive_pane_node) under the band (新建对话 and the filter: lists_band_node)
+/// and over the foot (lists_foot_node).
 fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
   let workspace = fn() { @sfbase.workspace_in_view(src).0 }
   // (the tape's side column or one beside the page: the block's, each its own sidebar made once)
@@ -71,24 +73,26 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
       None => 0
     }
   }
+  // (under the band and its top row: on the block's way between open and folded the taller end's all the way, the band
+  // moving over them as it goes, so their rows are not laid out again each frame: list_band_h, list_top_h; read again
+  // as the block is said to stand otherwise)
+  let lists_top = fn() {
+    at() |> ignore
+    lists_room.get() |> ignore
+    match workspace() {
+      Some(w) => list_band_h(src, w)
+      None => 0.0
+    }
+  }
   let frame : @sfpages.ListsNodeFrame = {
-    // (under the band and its top row: on the block's way between open and folded the taller end's all the way, the
-    // band moving over them as it goes, so their rows are not laid out again each frame: list_band_h, list_top_h; read
-    // again as the block is said to stand otherwise)
-    top: fn() {
-      at() |> ignore
-      lists_room.get() |> ignore
-      match workspace() {
-        Some(w) => list_band_h(src, w)
-        None => 0.0
-      }
-    },
+    top: lists_top,
     under: fn() {
       at() |> ignore
       lists_room.get() |> ignore
       list_top_h()
     },
-    foot: fn() { 0.0 },
+    // (over the foot's band where it shows: their last row clear of it, their bar too, lists_foot_h)
+    foot: fn() { lists_foot_h(src, workspace) },
     // (on the tape the block's, a step darker behind the panel in use: tape_side_at)
     ground: fn() {
       if wide.tape.get() {
@@ -103,15 +107,26 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     after: fn(_, _) { [] },
     others: [
       fn(p) {
-        // (all of its lane, as a list is)
-        @ui.old(p, fn(c) {
-          match workspace() {
-            Some(w) => archive_pane(c, src, w)
-            None => ()
-          }
-        })
-        .grow(Is(1.0))
-        |> ignore
+        // (已归档, all of its lane, as a list is: under all of the band (band_h: its top row's room too, as the old lane
+        // had it, its search field where it stood beside a folded sidebar's way), over the foot's band, of the workspace
+        // in view as it changes)
+        archive_pane_node(
+          p,
+          src,
+          fn() { workspace().map(fn(w) { w.id }).unwrap_or("") },
+          fn() {
+            at() |> ignore
+            lists_room.get() |> ignore
+            match workspace() {
+              Some(w) => band_h(src, w)
+              None => 0.0
+            }
+          },
+          fn() { lists_foot_h(src, workspace) },
+          list_at,
+          tips,
+          fn() { 0 },
+        )
       },
     ],
     shown: mode,
@@ -139,34 +154,13 @@ fn lists_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : () ->
     @sfpages.chats_lists_node(lists, src, workspace, frame, tips, fn() { 0 })
   })
   |> ignore
-  // the band over the lists (beside the system's tabs, its old view), the foot under them (its old view): each only
-  // as tall as it is, the lists under them the rest (what the pointer is over and a press takes there)
+  // the band over the lists, the foot under them: each only as tall as it is, the lists under them the rest (what the
+  // pointer is over and a press takes there)
   s.box(fn(o) {
     o.over(Is(true)).alpha(By(fn() { 1.0 - away() })) |> ignore
-    // (beside the system's bars as they come to be, or as they go: the one or the other, as the system says it now)
-    o.pick(@sf.native_on, fn(b, native) {
-      if native {
-        @ui.old(b, fn(c) {
-          match workspace() {
-            Some(w) => lists_band(c, src, w)
-            None => ()
-          }
-        }, natural=true)
-        |> @ui.old_takes_own
-        |> ignore
-      } else {
-        lists_band_node(b, src, tips, workspace, at)
-      }
-    })
+    lists_band_node(o, src, tips, workspace, at)
     o.box(fn(between) { between.grow(Is(1.0)) |> ignore }) |> ignore
-    @ui.old(o, fn(c) {
-      match workspace() {
-        Some(w) => lists_foot(c, src, w)
-        None => ()
-      }
-    }, natural=true)
-    |> @ui.old_takes_own
-    |> ignore
+    lists_foot_node(o, src, workspace, at)
   })
   |> ignore
   s.show(@sfpages.search_on_lists, fn(k) {
@@ -215,9 +209,20 @@ fn lists_band_node(
       })
       line.box(fn(full) {
         full.row(Is(true)).grow(Is(1.0)) |> ignore
-        @sf.band_row_node(full, fn() { app.nav.top() is NewChat }, fn() { @sf.t("web-main.sidebar.newChat") }, new_chat, list_at, fn(r) {
-          @sf.icon_node(r, "compose", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-          @sf.nav_words_node(r, fn() { @sf.t("web-main.sidebar.newChat") })
+        // (beside the system's bars, the workspace's button in their glass in its place, as high as its row: 新建对话 the
+        // system's tab bar's own action there, rail_native.mbt)
+        full.pick(@sf.native_on, fn(r, native) {
+          r.row(Is(true)).grow(Is(1.0)) |> ignore
+          if native {
+            workspace_glass_node(r, src, workspace)
+          } else {
+            @sf.band_row_node(r, fn() { app.nav.top() is NewChat }, fn() { @sf.t("web-main.sidebar.newChat") }, new_chat, list_at, fn(
+              b,
+            ) {
+              @sf.icon_node(b, "compose", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
+              @sf.nav_words_node(b, fn() { @sf.t("web-main.sidebar.newChat") })
+            })
+          }
         })
       })
       |> ignore
@@ -230,26 +235,8 @@ fn lists_band_node(
           }
         })
       })
-      // 更新 before the filter where one is offered (brand.mbt update_in_row)
-      line.show(at_once=true, update_shown, fn(k) {
-        @sf.update_key_node(
-          k,
-          tips,
-          update_key_side,
-          update_key_mark,
-          fn() { update_said().0 },
-          fn() { update_said().1 },
-          fn() { update_said().2 },
-          fn() {
-            match update_now() {
-              Coming(_, part) => Some(part)
-              _ => None
-            }
-          },
-          fn() { update_pressed(src) },
-          offered=fn() { update_now() is Offered(_, ..) },
-        )
-      })
+      // 更新 before the filter where one is offered (brand.mbt update_key_of)
+      line.show(at_once=true, update_shown, fn(k) { update_key_of(k, src, tips) })
       // the stations' newer releases waiting for this person beside it, as the app's own is offered; pressed, their
       // dialog (sfpages station_updates.mbt)
       let stations_said = fn() {
@@ -267,8 +254,35 @@ fn lists_band_node(
           }
         }, offered=fn() { true })
       })
+      // the chats as a board (board.mbt): the sidebar closed to its bar, the board the pane's whole
+      // (the first to go where the line has not the room: the stations' newer releases beside it, on the tape)
+      line.fits(Is(true)) |> ignore
+      // (列表 | 看板 only while 实验性功能's 对话列表看板视图 is on)
+      line.show(at_once=true, fn() { @sfbase.board_feature.get() && !band_at().in_bar && !@sf.native_on() }, fn(k) {
+        k.drops(Is(1)) |> ignore
+        k.box(fn(f) { board_key_node(f, src, tips) }) |> ignore
+      })
+      // beside the system's bars, the search and the filter in their glass (rail_native.mbt: what each does there)
+      line.show(at_once=true, @sf.native_on, fn(k) {
+        sidebar_glass_node(k, "sidebar/search", fn() { @sf.t("android-chat.search.field") }, "search", fn() { [] })
+      })
+      line.show(at_once=true, fn() { @sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
+        let shown = fn() {
+          match workspace() {
+            Some(w) => list_place(list_mode(src, w))
+            None => "chats"
+          }
+        }
+        sidebar_glass_node(
+          k,
+          "sidebar/filter",
+          fn() { @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]) },
+          "filter",
+          fn() { filter_glass_rows(shown()) },
+        )
+      })
       // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list
-      line.show(at_once=true, fn() { view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
+      line.show(at_once=true, fn() { !@sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
         k.box(fn(f) {
           let shown = fn() {
             match workspace() {
@@ -354,3 +368,78 @@ fn lists_band_node(
   |> ignore
 }
 
+
+///|
+/// The button of the workspace in view (`workspace`, as it changes: its icon and name in the system's glass,
+/// rail_native.mbt) in the band's row `r`, where
+/// 新建对话 stands elsewhere: as wide as the row, as high as a band's row; its place handed to the system's glass as it is
+/// read out (native_sidebar_items, by its node's id), what the workspaces' sheet opens beside, let go with it.
+fn workspace_glass_node(r : @view.View, src : Source, workspace : () -> Workspace?) -> Unit {
+  r.box(fn(b) {
+    b
+    .grow(Is(1.0))
+    .height(By(fn() { Some(@sf.band_row_h()) }))
+    .says(By(fn() { Some(@view.said(Button, label=workspace().map(fn(w) { w.name }).unwrap_or(""))) }))
+    |> ignore
+    let id = @ui.tree_read_out_id(b)
+    native_workspace_hooked()
+    // (the workspace in view's, as it changes: its name, its mark)
+    b.reacts(fn() { workspace().map(fn(w) { native_workspace_item(src, w) }) }, fn(item) {
+      match item {
+        Some(item) => native_sidebar_items[id] = item
+        None => native_sidebar_items.remove(id)
+      }
+      native_workspace_anchor.val = Node(b)
+    })
+    b.owns(fn() {
+      native_sidebar_items.remove(id)
+      match native_workspace_anchor.val {
+        Node(n) if n.id() == b.id() => native_workspace_anchor.val = Unanchored
+        _ => ()
+      }
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// An icon-only control in the system's glass beside the workspace's button (sidebar_glass's) in `k`: a band's row
+/// square, read out a button named `title()`; its place, its icon and its menu's rows (`menu()`: each its id, its words,
+/// whether it is the one now, its icon) handed to the host as it is read out, by `key` (what rail_native.mbt does as it
+/// is chosen there), let go with it.
+fn sidebar_glass_node(
+  k : @view.View,
+  key : String,
+  title : () -> String,
+  icon : String,
+  menu : () -> Array[(String, String, Bool, String)],
+) -> Unit {
+  k.box(fn(b) {
+    b
+    .width(By(fn() { Some(@sf.band_row_h()) }))
+    .height(By(fn() { Some(@sf.band_row_h()) }))
+    .says(By(fn() { Some(@view.said(Button, label=title())) }))
+    |> ignore
+    let id = @ui.tree_read_out_id(b)
+    native_workspace_hooked()
+    b.reacts(fn() { (title(), menu()) }, fn(now) {
+      native_sidebar_items[id] = { id: key, title: now.0, icon: @sf.icon_path(icon), dot: false, prominent: false, menu: now.1 }
+    })
+    b.owns(fn() { native_sidebar_items.remove(id) }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The filter's menu in the system's glass (filter_button's there): each list it shows, the one `shown` now ticked.
+fn filter_glass_rows(shown : String) -> Array[(String, String, Bool, String)] {
+  let now = if shown == "chats" { "all" } else { shown }
+  [
+    ("all", "web-main.filter.chats.all"),
+    ("mine", "web-main.filter.chats.mine"),
+    ("watching", "web-main.filter.watching"),
+    ("hidden", "web-main.filter.hidden"),
+    ("archive", "web-main.filter.archived"),
+  ].map(fn(p) { ("sidebar/filter/" + p.0, @sf.t(p.1), p.0 == now, "") })
+}

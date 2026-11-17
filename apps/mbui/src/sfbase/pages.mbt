@@ -83,6 +83,34 @@ pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_node
 let chat_page_nodes_at_start : Bool = false
 
 ///|
+/// The kind a chat's page is made as by a shell's `made` (nav_view's: a kind changed, the page made again in its
+/// place): its nodes' or its old view's as chat_page_nodes says now, so 实验性功能's 试用新对话页 turned either way makes
+/// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
+pub fn chat_page_kind() -> String {
+  if chat_page_nodes.get() {
+    "chat"
+  } else {
+    "chat-old"
+  }
+}
+
+///|
+/// Whether Farview browser tabs (`browser:fv_…`) are drawn natively on this device (实验性功能 › Farview 原生标签页渲染).
+// kept across runs: false as a run begins (reset)
+pub let farview_native : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether Home offers and shows the board view on this device (实验性功能 › 对话列表看板视图).
+// kept across runs: false as a run begins (reset)
+pub let board_feature : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
+/// Whether the device's own feature `id` is on (the prefs' `features`, as the core says them).
+pub fn feature_on(src : Source, id : String) -> Bool {
+  @settings.feature_from(src.topic("prefs", {}).get().value, id)
+}
+
+///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
 /// steps, all it holds is laid out anew at once, View::lays_anew). None at rest but the width.
@@ -90,6 +118,86 @@ pub(all) struct ColumnLaid {
   by : Double
   across : Double
   laid : Double
+}
+
+///|
+/// Each chat's column on the page's way to another width, by its station and session (`\u{1}` between): how it is laid
+/// out at a node's moment, chat_page_made's `narrower`, said as its column is made and let go with it.
+// kept across runs: said by each chat's page made, let go with its column
+let columns_laid : Map[String, (@view.View) -> ColumnLaid] = Map([])
+
+///|
+/// What each chat's list does as its column sets off on the page's way to another width (by its station and session,
+/// `\u{1}` between: said by the list as it is made, let go with it): its rows laid out anew there going on its one way.
+// kept across runs: said by each chat's list made, let go with it
+let columns_set_off : Map[String, () -> Unit] = Map([])
+
+///|
+/// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it.
+pub fn column_sets_off(chat : String) -> Unit {
+  columns_set_off_said.set(columns_set_off_said.untracked() + 1)
+  match columns_set_off.get(chat) {
+    Some(f) => f()
+    None => ()
+  }
+  // (each row's room over it told after its list, in the same change: column_set_off_each)
+  for _, f in columns_set_off_each.copy() {
+    f()
+  }
+}
+
+///|
+/// What a row's room over it does as a chat's column sets off on the page's way (column_sets_off), by the order it was
+/// said in: told directly, no binding of each row's following the count (columns_set_off_said).
+// kept across runs: said by each row's room as it is made, let go with it
+let columns_set_off_each : Map[Int, () -> Unit] = Map([])
+
+///|
+// kept across runs: the order the next one said is told in
+let columns_set_off_next : Ref[Int] = Ref(0)
+
+///|
+/// `f` done as any chat's column sets off on the page's way (column_sets_off), till node `n` goes: what a row's room over
+/// it, worked out of the width the column is laid out at, says then (its height's change made on its list's way).
+pub fn column_set_off_each(n : @view.View, f : () -> Unit) -> Unit {
+  let k = columns_set_off_next.val
+  columns_set_off_next.val = k + 1
+  columns_set_off_each[k] = f
+  n.owns(fn() { columns_set_off_each.remove(k) }) |> ignore
+}
+
+///|
+/// How many times a chat's column has set off on the page's way to another width (column_sets_off): what is bound to the
+/// column's place on that way only once it has set off follows it (chat_jump_node's stands).
+// kept across runs: a count what follows it reads as it changes, never its value
+let columns_set_off_said : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+/// What follows a chat's column setting off on the page's way (columns_set_off_said).
+pub fn column_set_off_count() -> Int {
+  columns_set_off_said.get()
+}
+
+///|
+/// What chat `chat`'s list in node `n` does as its column sets off on the page's way (column_sets_off), till `n` goes.
+pub fn column_set_off_by(chat : String, n : @view.View, f : () -> Unit) -> Unit {
+  columns_set_off[chat] = f
+  n.owns(fn() { if columns_set_off.get(chat) is Some(g) && physical_equal(g, f) { columns_set_off.remove(chat) } })
+  |> ignore
+}
+
+///|
+/// How chat `chat`'s column is laid out as node `n` is drawn (column_laid's `narrower`): none of it narrower or moved at
+/// rest, or where its page says none. What stands at its right (a message of one's own, the round buttons over the
+/// composer, the rail at its right) is laid out where its column is laid out, at the narrower end of its way, and drawn
+/// moved by as much more as it would stand further right at the width the column is drawn at: past `across`, the rest
+/// of how much wider it is drawn (`by`), so that it goes with the page's right edge as the words at its left go with
+/// its left, none of it stepping where the column is laid out anew (the panel opened, shut).
+pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
+  match columns_laid.get(chat) {
+    Some(f) => f(n)
+    None => { by: 0.0, across: 0.0, laid: 0.0 }
+  }
 }
 
 ///|
@@ -110,7 +218,8 @@ pub(all) struct ColumnLaid {
 /// laid out anew only at those two (as the old list's laid_w had it held), and moved across by as much as its rows'
 /// words start further in at the width it is drawn at than at the one it is laid out at, so that they go across with
 /// the page, never stepping where it is laid out anew: both the shell's to say, at a node's moment (`narrower`: how much
-/// narrower, how far across; none at rest). Its composer, in the list's foot, an old view as yet, is laid out at the
+/// narrower, how far across; none at rest), and moved aside with all of it (`aside`, as a node is drawn: the pane's page
+/// moved off what is folded over it), in the one offset of its column. Its composer, in the list's foot, an old view as yet, is laid out at the
 /// width the column is drawn at all the way, and goes its way to another as with_side has it, by itself.
 pub fn chat_page_made(
   v : @view.View,
@@ -124,10 +233,17 @@ pub fn chat_page_made(
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
   foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (@view.View) -> ColumnLaid,
+  aside? : (@view.View) -> Double,
 ) -> Source {
   let retained = page_entry_source(src, v, serial)
   let page_read = page_chat_reader(retained, v, serial)
   let shown = src.owned_by(v)
+  let aside_of = fn(n : @view.View) {
+    match aside {
+      Some(f) => f(n)
+      None => 0.0
+    }
+  }
   v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
   // (with chat_page_nodes on as the page is made, a chat's made as nodes inside, as what the page is: a new chat its old
   // view, a chat once it has become one in place, Nav::become, its nodes, at once, the one in the other's place)
@@ -161,13 +277,37 @@ pub fn chat_page_made(
               // moved across as its rows' words would be: the shell's to say, `narrower`, read as it is drawn; none at
               // rest)
               match narrower {
-                Some(by) =>
+                Some(by) => {
+                  // (what of it stands at its right, or by the width it is drawn at, read by its parts: column_laid)
+                  let chat = r.station + "\u{1}" + r.session
+                  columns_laid[chat] = by
+                  col.owns(fn() { if columns_laid.get(chat) is Some(f) && physical_equal(f, by) { columns_laid.remove(chat) } })
+                  |> ignore
+                  // (laid out narrower than drawn: room at its right; wider (on its way to where the panel is gone):
+                  // past its right, cut there by what holds it)
+                  // (none of that at rest, by none: bound once a column has first set off on such a way, at that cause)
                   col
-                  .padding(By(fn() { (0.0, 0.0, by(col).by, 0.0) }))
-                  .offset(By(fn() { (by(col).across, 0.0) }))
+                  .offset(By(fn() { (by(col).across + aside_of(col), 0.0) }))
                   .lays_anew(By(fn() { by(col).laid }))
                   |> ignore
-                None => ()
+                  let bound = Ref(false)
+                  col.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
+                    if going && !bound.val && col.alive() {
+                      bound.val = true
+                      col
+                      .padding(By(fn() { (0.0, 0.0, @sf.dmax(0.0, by(col).by), 0.0) }))
+                      .margin(By(fn() { (0.0, 0.0, @sf.dmin(0.0, by(col).by), 0.0) }))
+                      |> ignore
+                      v.clips(By(fn() { by(v).by < -0.5 })) |> ignore
+                    }
+                  })
+                }
+                // (moved aside alone, where something moves it: its one offset, a node's one binding of it, not one a
+                // later one let go of)
+                None =>
+                  if aside is Some(_) {
+                    col.offset(By(fn() { (aside_of(col), 0.0) })) |> ignore
+                  }
               }
               // (coming to need the viewer while open, felt, as its old view felt it)
               feel_needed_node(col, retained, r)
@@ -198,12 +338,20 @@ pub fn chat_page_made(
                 |> Some
                 // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
                 // at: its own way to another width with_side's)
+                // (none of it at rest: bound once a column has first set off on such a way, at that cause)
                 match narrower {
-                  Some(by) =>
-                    n
-                    .margin(By(fn() { (0.0, 0.0, -by(n).by, 0.0) }))
-                    .offset(By(fn() { (-by(n).across, 0.0) }))
-                    |> ignore
+                  Some(by) => {
+                    let bound = Ref(false)
+                    n.reacts(fn() { column_set_off_count() > 0 }, fn(going) {
+                      if going && !bound.val && n.alive() {
+                        bound.val = true
+                        n
+                        .margin(By(fn() { (0.0, 0.0, -by(n).by, 0.0) }))
+                        .offset(By(fn() { (-by(n).across, 0.0) }))
+                        |> ignore
+                      }
+                    })
+                  }
                   None => ()
                 }
               }, fn() { drawn(serial) })
@@ -264,7 +412,7 @@ pub fn chat_page_made(
 /// once the frame that set it off is laid out). Said by the composer's build at that cause, none for words sent from
 /// it (their row carries its room) nor once a later build sets out on none; taken by the one height change of its node
 /// in a list's foot it comes out as (foot_resizes).
-// kept across runs: said again by each composer's build, taken once
+// put back as a run starts (reset), said again by each composer's build, taken once
 pub let composer_set_out : Ref[(String, Double, () -> (Double, Double, (Double) -> Double)?)?] = Ref(None)
 
 ///|
@@ -769,6 +917,7 @@ fn setting_kind(r : @settings.Route) -> String {
     Home => "Home"
     Me => "Me"
     Appearance => "Appearance"
+    Experimental => "Experimental"
     Fonts => "Fonts"
     Workspace => "Workspace"
     Security => "Security"
@@ -804,6 +953,7 @@ fn setting_kind(r : @settings.Route) -> String {
     Permissions => "Permissions"
     Archiving => "Archiving"
     StationArchiving(_) => "StationArchiving"
+    StationMove(_) => "StationMove"
     UsagePrices(_) => "UsagePrices"
     RunSettings(_, _) => "RunSettings"
   }
@@ -850,8 +1000,9 @@ pub(all) struct App {
   mut held : Int
   mut held_long : Bool
   /// what was said last of a write (a toast): its words, which saying it is (one said again is a new one), what it
-  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later)
-  toast : @signals.Signal[ToastSaid]
+  /// offers to do (its button's words, "" none: an archive's 撤销) and what that does, said together (toast_later);
+  /// each window's of the run its own (window.mbt: said in the window it was said in)
+  mut toast : @signals.Signal[ToastSaid]
 }
 
 ///|
@@ -877,7 +1028,12 @@ pub let app : App = {
   switch_way: 0,
   held: 0,
   held_long: false,
-  toast: @signals.signal(toast_none, same=fn(a, b) { physical_equal(a, b) }),
+  toast: toast_said_new(),
+}
+
+///|
+fn toast_said_new() -> @signals.Signal[ToastSaid] {
+  @signals.signal_ref(toast_none)
 }
 
 ///|
@@ -905,6 +1061,18 @@ fn page_entry_left(serial : Int, p : Page) -> Unit {
     }
     page_sources.remove(serial)
     release_pending_chat(serial)
+    // (what was handed to it and never taken, its view made in the open that handed it, before the handing (a page
+    // made once as nodes, put up in a frame: an account's page's station, account and memberships its press asked):
+    // held while it showed, let go as it leaves, not by the tree's root for good)
+    match handed_readers.get(serial) {
+      Some(readers) => {
+        handed_readers.remove(serial)
+        for reader in readers {
+          reader.release()
+        }
+      }
+      None => ()
+    }
     match p {
       Chat(_) => left_page_sources[left_pages.length()] = chat
       _ => ()
@@ -916,11 +1084,7 @@ fn page_entry_left(serial : Int, p : Page) -> Unit {
       Archived => @settings.left(@settings.Route::Archive)
       Settings => @settings.left(@settings.Route::Home)
       // a place of the bar's whose page is the settings' (bar.mbt place_page)
-      Place(name) =>
-        match @settings.route_of(name) {
-          Some(r) => @settings.left(r)
-          None => ()
-        }
+      Place(name) => @settings.place_left(name)
       _ => ()
     }
 }
@@ -965,6 +1129,7 @@ pub fn open_setting(name : String) -> Unit {
 fn setting_way(r : @settings.Route) -> Array[@settings.Route] {
   match r {
     Memory(_) => [Memories]
+    StationMove(a) => [Stations, Station(a)]
     MemoryDoc(a, _, _) => [Memories, Memory(a)]
     AutoCompletion => [AutoDecisions]
     AutoPolicy(_) => [AutoDecisions, AutoCompletion]
@@ -1073,6 +1238,7 @@ pub fn reset() -> Unit {
   mermaid_begin()
   // (no page on its way: a frame with no wide page in it says none, the last run's left as it was)
   page_way_said("", 0.0, ends=0.0)
+  columns_laid.clear()
   // where it has been (app_history.mbt)
   history_reset()
   last_reset()
@@ -1082,6 +1248,7 @@ pub fn reset() -> Unit {
   @ui.set_motion_chosen(None)
   @ui.set_haptics(true)
   felt_reset()
+  board_reset()
   app.filters.clear()
   app.menu = false
   app.switch_way = 0
@@ -1167,14 +1334,18 @@ pub fn reset() -> Unit {
   fresh_reset()
   // how times are said (message_words.mbt)
   absolute_times.set(false)
-  // whether a chat's page is made as nodes inside (chat_page_nodes)
+  // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
+  farview_native.set(false)
+  board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)
   turns_by.clear()
   emits.clear()
   // words sent flying (flight.mbt)
   flights_reset()
+  composer_set_out.val = None
   sent_from_at.clear()
+  sent_quotes_from_at.clear()
   // the chats' lists as kept while they show and where they were left (chat_list.mbt)
   readings.clear()
   kept_places.clear()
@@ -1194,7 +1365,9 @@ pub fn reset() -> Unit {
   beside_room_now.set(false)
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
+  lone_shown.val = @signals.signal(None)
   windows_open.clear()
+  windows_here_show.clear()
 }
 
 ///|
@@ -1232,7 +1405,12 @@ pub fn back_label(p : Page) -> String {
     Setting(@settings.Route::Security) => @sf.t("web-pages.security.title")
     Setting(@settings.Route::Vault) => @sf.t("web-pages.vault.title")
     Setting(@settings.Route::VaultItems) => @sf.t("web-pages.vault.all")
+    Setting(@settings.Route::KeptFiles) => @sf.t("android-settings.files.title")
     Setting(@settings.Route::Connects(_)) | Place("connects") => @sf.t("android-settings.connects.title")
+    // (the stations' and the profiles' lists, as their old pages said them to what they led to: an account on several
+    // stations, a station's own page)
+    Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
+    Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
     _ => @sf.t("common.back")

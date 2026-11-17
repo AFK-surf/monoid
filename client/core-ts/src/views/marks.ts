@@ -2,7 +2,9 @@
 // they take part in, those that want them and those with something unread; the chat last open in it. Only how many
 // and how urgent goes past a workspace.
 import { decodeComponent } from "../accounts.ts";
+import { failedForViewer } from "../chat-stage.ts";
 import * as decisions from "../decisions.ts";
+import * as format from "../format.ts";
 import { tr, current, type Lang } from "../i18n.ts";
 import { badgeKindsOf, failsGoneOf, type BadgeKinds } from "../prefs.ts";
 import * as present from "../present.ts";
@@ -31,15 +33,8 @@ export function workspaceIds(workspaces: J): string[] {
 export function rowTone(row: J, me: J = null): string | null {
   if (get(row, "mine") !== true) return null;
   const state = present.rowState(arr(get(row, "agents")));
-  if (state === "failed") return startedBy(row, me) ? "alert" : null;
+  if (state === "failed") return failedForViewer(row, me) ? "alert" : null;
   return get(row, "unread") === true && state !== "run" && state !== "block" ? "done" : null;
-}
-
-/// Whether the viewer started a chat (a row that does not say: whether they take part in it).
-function startedBy(row: J, me: J): boolean {
-  const creator = get(row, "creator");
-  const who = typeof creator === "string" ? creator : (str(get(creator, "email")) ?? str(get(creator, "id")));
-  return me === null || who === null ? get(row, "mine") === true : present.isViewer(me, who, []);
 }
 
 /// A failure of a chat's (its row's tone alert), as 待处理 names it to be let go (`failsGone`): the chat, and when its
@@ -66,10 +61,17 @@ function stateText(row: J): [string, string] {
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
 
-/// What the badge counts (the prefs' `badgeKinds`, or as their `badge` says), of what came since the person last looked
-/// (`c`; `said`: of its unread, those someone else said last): the cards waiting for them, the chats of theirs that went
-/// wrong, the unread an agent said last, the unread someone else did. A chat looked at is not counted until it wants
-/// them anew.
+/// What a message that did not go says in 待处理 (未发送：…, as its row's line: views.ts #unsentRow), and without its lead.
+function unsentText(m: J): [string, string] {
+  const said = format.cleanText(format.plainText(str(get(m, "text")) ?? ""));
+  const what = said === "" ? tr(current(), "core-views.file") : said;
+  return [tr(current(), "core-views.unsent", { text: what }), what];
+}
+
+/// What the badge counts (the prefs' `badgeKinds`, or as their `badge` says), of `c` (`said`: of its unread, those
+/// someone else said last): the cards and needs waiting for them and the chats of theirs that went wrong, looked at or
+/// not, until they are answered or let go (chat-stage.ts `needsViewer`: the bell's 待处理 holds the same); the unread an
+/// agent said last, the unread someone else did.
 export function badgeOf(prefs: J, c: Counts, said = 0): number {
   const k = badgeKindsOf(prefs);
   if (!k.on) return 0;
@@ -229,14 +231,22 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
   // (their addresses and names alone: not each one's link, which comes and goes: Views `stationsNamed`)
   const stations = views.stationsNamed(id);
   const nameOf = new Map(stations.map((s) => [s.address, s.name]));
+  // A message of theirs sent into a chat that did not go (its outbox's failed: local.ts failedOutboxes) needs them as a
+  // failure does, its row red (views.ts #unsentRow, chat-stage.ts needsViewer): counted and listed so, once a chat.
+  const unsentIn = new Map(stations.map((s) => [s.address, local.failedOutboxes(s.address)]));
+  const unsentSaid = new Set<string>();
   for (const [address, row] of views.marked(stations.map((s) => s.address))) {
     if (local.beingArchived(address, row)) continue;
+    // (a chat an agent leads asks that agent: no person is told of it, counted or listed)
+    if (decisions.led(row)) continue;
     const made = rowMade(address, row, me);
     const thread = get(row, "thread");
     const waits = made.asks && !(typeof thread === "number" && local.answered(address, thread, typeof made.seq === "number" ? made.seq : 0));
-    const asked = waits ? "wait" : made.tone;
+    const unsent = typeof thread === "number" ? unsentIn.get(address)?.get(thread) : undefined;
+    if (unsent !== undefined) unsentSaid.add(`${address} ${thread}`);
+    const asked = unsent !== undefined ? "alert" : waits ? "wait" : made.tone;
     // a failure let go (忽略) wants them no more, here or in 待处理, until the chat fails again
-    const failure = asked === "alert" ? made.failure : null;
+    const failure = asked === "alert" && unsent === undefined ? made.failure : null;
     const tone = failure !== null && gone.has(failure) ? null : asked;
     const seen = get(row, "unread") !== true;
     const lists = [counts];
@@ -247,21 +257,20 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
       else if (tone === "wait") c.wait++;
       else if (tone === "done") c.unread++;
     }
-    if (!seen && (tone === "alert" || tone === "wait" || tone === "done")) fresh[tone === "done" ? "unread" : tone]++;
+    // (what waits for them counts read or not, until it is answered or let go; the unread, until read)
+    if (tone === "alert" || tone === "wait" || (!seen && tone === "done")) fresh[tone === "done" ? "unread" : tone]++;
     const byPerson = !seen && tone === "done" && made.byPerson;
     if (byPerson) said++;
     else if (made.block) elsewhere++;
     // 待处理 (`items`), of what the badge counts: its failures until they run again, are archived or let go, read or
-    // not (a chat read is still broken: pengxiao, 2026-10-28), as the workspace's mark counts them; its cards that
-    // came to want them and were not looked at since (one looked at: its row still says it); its unread the badge
-    // counts, so every number on it can be found there.
-    if ((tone === "alert" && kinds.failed) || (!seen && tone === "wait" && kinds.wait) || (!seen && tone === "done" && (byPerson ? kinds.message : kinds.done))) {
-      const [text, what] = made.text;
+    // not (a chat read is still broken: pengxiao, 2026-10-28), as the workspace's mark counts them; its cards and needs
+    // until answered or let go, looked at or not (2026-11-16: one looked at and not answered left the list while the
+    // sidebar still counted it); its unread the badge counts, so every number on it can be found there.
+    if ((tone === "alert" && kinds.failed) || (tone === "wait" && kinds.wait) || (!seen && tone === "done" && (byPerson ? kinds.message : kinds.done))) {
+      const [text, what] = unsent !== undefined ? unsentText(unsent) : made.text;
       const item: J = {
         kind: tone,
         workspace: id,
-        workspaceName: name,
-        ...look,
         station: address,
         stationName: nameOf.get(address) ?? address,
         session: get(row, "id") ?? null,
@@ -277,11 +286,31 @@ export function workspaceMark(views: Views, local: Local, id: string, prefs: J):
       items.push(item);
     }
   }
+  // (a chat whose message did not go and that asks nothing else, unread or not: not among those found by their columns)
+  for (const [address, failed] of unsentIn) {
+    for (const [thread, unsent] of failed) {
+      if (unsentSaid.has(`${address} ${thread}`)) continue;
+      const row = views.chatOfThread(address, thread);
+      if (!isObject(row) || local.beingArchived(address, row) || decisions.led(row)) continue;
+      const lists = [counts];
+      if (get(row, "mine") === true) lists.push(mine);
+      if (present.rowWatch(arr(get(row, "agents"))) !== null) lists.push(watching);
+      for (const c of lists) c.alert++;
+      fresh.alert++;
+      if (!kinds.failed) continue;
+      const [text, what] = unsentText(unsent);
+      items.push({
+        kind: "alert", workspace: id, station: address, stationName: nameOf.get(address) ?? address, session: get(row, "id") ?? null,
+        thread, title: str(get(row, "title")) ?? "", text, what, at: typeof get(row, "lastActiveAt") === "number" ? row.lastActiveAt : 0,
+      });
+    }
+  }
   // Most urgent first, the latest first within.
   const urgency = (kind: string) => ["alert", "wait", "done"].indexOf(kind);
   items.sort((a, b) => urgency(a.kind) - urgency(b.kind) || b.at - a.at);
   const badge = badgeOf(prefs, fresh, said);
-  const mark: J = { alert: counts.alert, unread: counts.unread, badge, items };
+  // (its name and mark once, for 待处理's group of it: not on each of its items, 2026-11-16)
+  const mark: J = { alert: counts.alert, unread: counts.unread, badge, items, workspaceName: name, ...look };
   if (counts.wait > 0) mark.wait = counts.wait;
   if (elsewhere > 0) mark.elsewhere = elsewhere;
   const tone = counts.tone();

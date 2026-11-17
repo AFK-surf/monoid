@@ -4,7 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { tail } from "../src/read/jobs.ts";
+import { tail } from "./reference/jobs.ts";
 
 test("a log tail stops at the file end seen before the read even as the job writes more", () => {
   const dir = fs.mkdtempSync(join(tmpdir(), "job-tail-bound-"));

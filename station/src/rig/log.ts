@@ -1,7 +1,7 @@
 // What a rig was told to run (a station that only runs tasks): a line for each command a station prepared on it and each one run with a
 // secret, with the chat that asked, kept on the rig itself (<data>/rig/commands.log), where no station or agent
 // writes. Its person reads the last of it from their app (through a station); `stillfail status` names the file.
-import { appendFileSync, closeSync, existsSync, fstatSync, mkdirSync, openSync, readSync, renameSync, statSync } from "node:fs";
+import { appendFile, mkdir, open, rename, stat } from "node:fs/promises";
 import { dirname } from "node:path";
 
 /// `device`: a chat's connection to one of the rig's devices (`name` the device's, `command` how it was reached).
@@ -16,35 +16,50 @@ const TAIL_BYTES = 256 * 1024;
 
 export class CommandLog {
   readonly #path: string;
+  /// The lines asked for, appended in turn off the main thread (two going past FILE_MAX at once would each move the
+  /// file aside, the second taking the first's line with it).
+  #queue: Promise<void>;
 
   constructor(path: string) {
     this.#path = path;
-    mkdirSync(dirname(path), { recursive: true });
+    this.#queue = mkdir(dirname(path), { recursive: true }).then(() => {}, () => {});
   }
 
   add(c: Command): void {
+    const line = JSON.stringify({ ...c, command: c.command.slice(0, COMMAND_MAX) }) + "\n";
+    this.#queue = this.#queue.then(() => this.#append(line));
+  }
+
+  async #append(line: string): Promise<void> {
     try {
-      if (existsSync(this.#path) && statSync(this.#path).size > FILE_MAX) renameSync(this.#path, `${this.#path}.1`);
-      appendFileSync(this.#path, JSON.stringify({ ...c, command: c.command.slice(0, COMMAND_MAX) }) + "\n", { mode: 0o600 });
+      const size = await stat(this.#path).then((s) => s.size, () => 0);
+      if (size > FILE_MAX) await rename(this.#path, `${this.#path}.1`);
+      await appendFile(this.#path, line, { mode: 0o600 });
     } catch {
       // A full disk does not stop the task: the station's own log says what it ran too.
     }
   }
 
-  /// Its last `limit` lines, newest first.
-  last(limit: number): Command[] {
-    let fd: number;
+  /// Once every line asked for so far is written (or failed).
+  written(): Promise<void> {
+    return this.#queue;
+  }
+
+  /// Its last `limit` lines, newest first (those asked for before it among them).
+  async last(limit: number): Promise<Command[]> {
+    await this.#queue;
+    let fh: Awaited<ReturnType<typeof open>>;
     try {
-      fd = openSync(this.#path, "r");
+      fh = await open(this.#path, "r");
     } catch {
       return [];
     }
     try {
-      const size = fstatSync(fd).size;
+      const size = (await fh.stat()).size;
       const from = Math.max(0, size - TAIL_BYTES);
       const buffer = Buffer.alloc(size - from);
-      readSync(fd, buffer, 0, buffer.length, from);
-      const lines = buffer.toString("utf8").split("\n");
+      const { bytesRead } = await fh.read(buffer, 0, buffer.length, from);
+      const lines = buffer.subarray(0, bytesRead).toString("utf8").split("\n");
       // Read from the middle of the file: its first line is the end of one.
       if (from > 0) lines.shift();
       const out: Command[] = [];
@@ -56,7 +71,7 @@ export class CommandLog {
       }
       return out;
     } finally {
-      closeSync(fd);
+      await fh.close().catch(() => {});
     }
   }
 }

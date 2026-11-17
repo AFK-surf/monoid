@@ -137,11 +137,9 @@ let writing_n : Ref[Int] = { val: 0 }
 
 ///|
 pub fn writings_reset() -> Unit {
-  quoted_into.clear()
-  files_put.clear()
+  given_reset()
   drafts_given.set([])
   writing_stations.clear()
-  shared_into.clear()
   for cached in writing_cache.val {
     cached.value.following.dispose()
   }
@@ -158,7 +156,7 @@ pub fn writings_reset() -> Unit {
 ///|
 /// Read one field and follow the shared core resource for as long as the computed has graph readers.
 fn[T] writing_value(value : @signals.Signal[T], following : @signals.Computed[Unit], same : (T, T) -> Bool) -> @signals.Computed[T] {
-  @signals.computed_following(fn(_) { value.get() }, following, same~)
+  @signals.computed_following_by(fn(_) { value.get() }, following, same~)
 }
 
 ///|
@@ -185,7 +183,9 @@ fn writing_cached(src : Source, key : String) -> Writing {
         composing_base: None,
       }
       let topic = src.topic("composer", { "key": Json::string(key) })
-      let following = @signals.computed(fn(_) {
+      // (the draft's own reactions, held while a field of it is read, stopped as the last reader leaves: the
+      // field's words followed for what the core reads of them, and the core's composer topic adopted)
+      let following = @signals.held_while_read(fn() {
         // (what the core reads of its field's words: its marks, its `@` words, refs.mbt)
         refs_follow(src, key, state.field)
         @signals.effect(fn() {
@@ -196,7 +196,8 @@ fn writing_cached(src : Source, key : String) -> Writing {
             let (generation, fresh) = (src.generation)("composer", { "key": Json::string(key) })
             writing_adopt(state, t.value, t.version, generation, fresh, composing)
           })
-        }) |> ignore
+        })
+        |> ignore
       })
       let w : Writing = {
         key,
@@ -554,11 +555,6 @@ pub fn host_picture(name : String, src : String) -> String {
   }
 }
 
-///|
-/// Files shared into the app from another (Android's share sheet), waiting for their chat's composer to take them, by
-/// its draft's key.
-// kept across runs: put back by writings_reset (sfbase's reset)
-pub let shared_into : Map[String, Array[@hostapi.Picked]] = Map([])
 
 ///|
 /// The station files' picker (＋ → Station 文件) put up for draft `key` (`src` what it reads the stations by): sfdesk's
@@ -816,8 +812,31 @@ pub fn writing_restore(src : Source, w : Writing, error : String, unless_written
 }
 
 ///|
+/// What `take` took of `w` put back where a message did not go, saying why (`why`), unless something new is written
+/// there by now: then that stays, and why it did not go is said as a toast, so that it is never lost unsaid (a chat's
+/// message refused, a new chat's first one whose chat could not be made). Whether something is written there is the
+/// core's to say, as it has the draft then (what the page last drew of it may be another page's, or not yet carried
+/// there): so nothing is shown before it answers, its words come back as it puts them back.
+pub fn writing_back_or_said(src : Source, w : Writing, why : String) -> Unit {
+  w.taken = None
+  writing_act(
+    src,
+    w,
+    "restore",
+    { "error": Json::string(why), "unlessWritten": Json::boolean(true) },
+    done=fn(r) {
+      match r {
+        // (a core from before, which does not say, put it back)
+        Ok(v) => if field(Some(v), "back") is Some(False) { toast_later(why) }
+        Err(_) => toast_later(why)
+      }
+    },
+  )
+}
+
+///|
 /// What is written in `from` goes on into `to` (a new chat becoming the chat it made, or its station changed): `from`
-/// left empty (`composer.carry`).
+/// left empty, and what was taken of it to be sent goes with it, put back there if it does not go (`composer.carry`).
 pub fn writing_carry(src : Source, from : String, to : String) -> Unit {
   let w = writing(src, from)
   writing_act(src, w, "carry", { "to": Json::string(to) })
@@ -828,6 +847,15 @@ pub fn writing_carry(src : Source, from : String, to : String) -> Unit {
 /// again there).
 pub fn writing_went_to(id : String) -> (String, String, Bytes)? {
   writing_went.get(id)
+}
+
+///|
+/// A kept draft's picture read back from the core (`composer.picture`): its bytes kept so tapping its tile opens the
+/// viewer and sending to another station puts it up there.
+pub fn writing_kept(id : String, bytes : Bytes) -> Unit {
+  if !writing_went.contains(id) {
+    writing_went[id] = ("", "", bytes)
+  }
 }
 
 ///|
@@ -899,29 +927,14 @@ pub fn attachment_json(a : Attachment, owner : String) -> Json {
 /// message's `ts`, its role, the file as the core gives it; taken by whichever composer the draft's is, as it is next
 /// drawn (its quote with the file in its card, the file going again with the message as the station has it).
 pub fn quote_file_into(draft : String, author : String, ts : String, role : String, file : Json) -> Unit {
-  let list = quoted_into.get(draft).unwrap_or([])
-  list.push((author, ts, role, file))
-  quoted_into[draft] = list
-  draft_given(draft)
+  draft_give(draft, Quoted(author, ts, role, file))
 }
 
 ///|
 /// Files (a 文件 row) put into a chat's message from elsewhere (the files' tab: 添加到消息, a row let go on the chat), by
-/// the chat's key; taken by its composer as it is next drawn (files_taken).
+/// the chat's key; taken by its composer (compose_given.mbt).
 pub fn files_into(chat : String, d : Dragged) -> Unit {
-  files_put.push((chat, d))
-  draft_given(chat)
-}
-
-///|
-/// What was put into the chat `chat`'s message since it was last asked, taken; the last of what is put into that draft
-/// to be taken (its composer takes the rest before), so nothing waits for it any more (drafts_given).
-pub fn files_taken(chat : String) -> Array[Dragged] {
-  drafts_given_read(chat)
-  let out = files_put.filter(fn(x) { x.0 == chat }).map(fn(x) { x.1 })
-  files_put.retain(fn(x) { x.0 != chat })
-  drafts_given.remove(chat)
-  out
+  draft_give(chat, Dropped(d))
 }
 
 ///|
@@ -973,13 +986,9 @@ pub fn finder_dragged(src : Source, paths : Array[@ui.DroppedPath]) -> Array[Dra
   })
 }
 
-///|
-// kept across runs: put back by writings_reset (sfbase's reset)
-let files_put : Array[(String, Dragged)] = []
 
 ///|
-/// The drafts (by key) something was put into from elsewhere (files_into, quote_file_into, shared_into, marked_into,
-/// followed_into) not yet taken: what takes a draft's (its composer as it is built) built again as its key comes in.
+/// The drafts (by key) something was put into from elsewhere (draft_give, compose_given.mbt) not yet taken: what takes a draft's (its composer as it is built) built again as its key comes in.
 // kept across runs: emptied by writings_reset (sfbase's reset)
 let drafts_given : @signals.Keyed[String] = @signals.keyed()
 
@@ -996,7 +1005,7 @@ pub fn drafts_given_read(key : String) -> Unit {
 }
 
 ///|
-/// What a row dragged now carries, as the frame that drags it says (sfdesk's drag.mbt), for a composer it goes over.
+/// What a row dragged now carries, as the frame that drags it says (sfpages files_drag.mbt, sfdesk drive_tab_rows.mbt), for a composer it goes over.
 // kept across runs: what the app says once as it starts
 pub let drag_carried : Ref[() -> Dragged?] = Ref(fn() { None })
 
@@ -1011,7 +1020,3 @@ pub let neighbour_go : Ref[(Source, Workspace, Int) -> Unit] = Ref(fn(_, _, _) {
 // kept across runs: what the app says once as it starts
 pub let neighbour_held : Ref[() -> Bool] = Ref(fn() { false })
 
-///|
-/// The files quoted, by draft key, not yet taken by a composer.
-// kept across runs: put back by writings_reset (sfbase's reset)
-pub let quoted_into : Map[String, Array[(String, String, String, Json)]] = Map([])

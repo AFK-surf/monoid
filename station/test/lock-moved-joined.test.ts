@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { mock, test } from "node:test";
 import { type Entry, LockRefusal, entryHash } from "../src/cloud/lock.ts";
 import { applyState } from "../src/cloud/presence.ts";
-import { Cloud, type Joined, writeState } from "../src/cloud/state.ts";
+import { Cloud, type Joined, personChainsOf, writeState } from "../src/cloud/state.ts";
 import { wall } from "../src/ops/fibers.ts";
 import { inLock } from "../src/mesh/serve.ts";
 import { joinWorkspace } from "../src/cli.ts";
@@ -118,6 +118,7 @@ test("joining from a home whose chain moved: refused before the plane is asked w
   handover(w);
   const c = stationIn(w, WS, joinedTo(w, WS2, false));
   for (const l of [w.alice, w.bob, w.carol]) bring(c, l);
+  await personChainsOf(c).written();
   const asked: string[] = [];
   const fetched = mock.method(globalThis, "fetch", async (url: string) => {
     asked.push(String(url));
@@ -130,6 +131,8 @@ test("joining from a home whose chain moved: refused before the plane is asked w
     assert.deepEqual(asked, [], "the plane not asked");
     w.alice.say("off", {});
     bring(c, w.alice);
+    // (on the machine, its files: the person's logs written by the time a station answers that it kept them)
+    await personChainsOf(c).written();
     for (const opts of [{ atMachine: true }, { cloud: c }]) await assert.rejects(joinWorkspace(c.data, "tok", undefined, opts), (e: Error) => !LOCKED.test(e.message), "off: asked");
     assert.equal(asked.length, 2, "the plane asked, once each way");
   } finally {

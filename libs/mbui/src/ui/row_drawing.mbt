@@ -8,6 +8,8 @@ priv struct RowDrawing {
   mut valid : Bool
   mut x : Double
   mut y : Double
+  mut carried_x : Double
+  mut carried_y : Double
   mut alpha : Double
   mut words_alpha : Double
   mut surface_alpha : Double
@@ -74,6 +76,8 @@ fn row_drawing_new() -> RowDrawing {
     valid: false,
     x: 0.0,
     y: 0.0,
+    carried_x: 0.0,
+    carried_y: 0.0,
     alpha: 1.0,
     words_alpha: 1.0,
     surface_alpha: 1.0,
@@ -546,6 +550,8 @@ fn Ctx::paint_list_row(self : Ctx, i : Int, alpha : Double) -> Unit {
     (if d.whole { row_reach(d, dx, dy, k) } else { row_cuts_inside(d, dx, dy) && row_inside_band(d, n, dx, dy) }) &&
     (dx * self.scale - (dx * self.scale).round()).abs() < 0.000001 &&
     (dy * self.scale - (dy * self.scale).round()).abs() < 0.000001 &&
+    (((glyphs_carried[0] - d.carried_x) * self.scale - ((glyphs_carried[0] - d.carried_x) * self.scale).round()).abs() < 0.000001) &&
+    (((glyphs_carried[1] - d.carried_y) * self.scale - ((glyphs_carried[1] - d.carried_y) * self.scale).round()).abs() < 0.000001) &&
     glyphs_still(d.glyphs, self.scale)
   if again && self.row_replay(d, i, dx, dy, k) {
     return
@@ -619,6 +625,8 @@ fn Ctx::paint_list_row(self : Ctx, i : Int, alpha : Double) -> Unit {
   self.paint_take(marks, d.said)
   d.x = n.x
   d.y = n.y
+  d.carried_x = glyphs_carried[0]
+  d.carried_y = glyphs_carried[1]
   d.n = rn.n
   d.alpha = alpha
   d.words_alpha = words_alpha.val

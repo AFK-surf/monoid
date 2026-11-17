@@ -26,7 +26,8 @@ export type Load = {
 };
 
 export type LoadParts = {
-  host: { sample(): Promise<any>; recentBusy(): { busy: number; seconds: number } | null };
+  /// (its sample says the GPUs too, as far as they answered within a moment: api/host.ts `sample`)
+  host: { sample(): Promise<any>; recentBusy(): Promise<{ busy: number; seconds: number } | null> | { busy: number; seconds: number } | null };
   gpus: { read(): Promise<Gpu[] | null> };
   running(): Load["running"];
   relay(): Load["relay"];
@@ -34,10 +35,13 @@ export type LoadParts = {
 
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
-/// The station's load now.
+/// The station's load now: the host's sample, its GPUs too (`gpus` read only where it says none at all). Read beside
+/// it again, the GPUs were asked twice, and a GPU command slower than LOAD_WAIT_MS (jobs/remote.ts) lost the whole
+/// measure, CPU, memory and disk too (2026-11-15: station_list said `not measured within 1 s` of a busy Mac).
 export async function measure(parts: LoadParts): Promise<Load> {
-  const [info, gpus] = await Promise.all([parts.host.sample(), parts.gpus.read().catch(() => null)]);
-  const recent = parts.host.recentBusy();
+  const info = await parts.host.sample();
+  const gpus: Gpu[] | null = info?.gpus !== undefined ? info.gpus : await parts.gpus.read().catch(() => null);
+  const recent = await parts.host.recentBusy();
   const cpus = num(info?.cpus);
   const total = num(info?.memory?.totalBytes);
   const used = num(info?.memory?.usedBytes);

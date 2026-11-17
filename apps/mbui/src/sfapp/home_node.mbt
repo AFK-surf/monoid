@@ -5,7 +5,7 @@
 ///|
 /// Home in node `v` for `src` (as the narrow frame makes it once: narrow_made_as's Home): the lists under the top bar's
 /// room, over the bottom bar's; the top bar over them. Tips in `tips`, pictures asked for on `stint`.
-fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
+fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> Int, shown? : () -> Bool = fn() { true }) -> Unit {
   let workspace = fn() { workspace_in_view(src).0 }
   let view = fn() {
     match workspace() {
@@ -62,12 +62,34 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
   let away = @sfpages.search_away_node(v)
   v.box(fn(lists) {
     lists.over(Is(true)) |> ignore
-    @sfpages.chats_lists_node(lists, src, workspace, frame, tips, stint)
+    // (the chats as a board where it is chosen: sfpages' board_node, under the bar, over the bottom bar; the one not
+    // chosen, once made, put by as it was (View::each's `keeps`), taken in again at once as it is chosen again: the
+    // board's cards and the lists' rows not made anew at each switch)
+    lists.each(fn() { [@sfbase.board_on_now(src)] }, fn(k) { k }, keeps=fn() { [true, false] }, at_once=true, fn(l, on) {
+      let board = @signals.untracked(fn() { on.get() })
+      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if board {
+        // (the window's whole height, as the list: what its columns scroll passing under the top bar, the board's chips
+        // under it on the same glass, and under the bottom bar)
+        @sfpages.board_node(
+          l,
+          src,
+          tips,
+          workspace,
+          fn() { l.window().0 },
+          top=fn() { (frame.under)() + @sfpages.board_chips_h(l) },
+          foot=fn() { (frame.foot)() },
+          stint~,
+        )
+      } else {
+        @sfpages.chats_lists_node(l, src, workspace, frame, tips, stint)
+      }
+    })
   })
   |> ignore
   v.box(fn(bar) {
     bar.over(Is(true)).lies_along(Is(Start)).alpha(By(fn() { 1.0 - away() })) |> ignore
-    home_top_bar_node(bar, src, tips, workspace, view)
+    home_top_bar_node(bar, src, tips, workspace, view, shown~)
   })
   |> ignore
   v.show(@sfpages.search_on_lists, fn(s) {
@@ -89,7 +111,9 @@ fn home_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
   // (and what the narrow shell round it reads as it is first built, asked with it and not waited for: Home shows,
   // and the splash goes, as it did before they were asked here: sfbase's shell_opens)
   @sfbase.shell_opens(src, ws, ask) |> ignore
-  list && news && long
+  // (the board where the workspace shows it: its chats, all of them, and its stations)
+  let board = @sfbase.board_opens(src, ws, ask)
+  list && news && long && board
 }
 
 ///|
@@ -104,6 +128,7 @@ fn home_top_bar_node(
   workspace : () -> Workspace?,
   view : () -> ChatsView?,
   bell? : Bool = true,
+  shown? : () -> Bool = fn() { true },
 ) -> Unit {
   v.box(fn(g) {
     g.glass(By(fn() { Some(@sf.glass_bar()) })) |> ignore
@@ -114,6 +139,7 @@ fn home_top_bar_node(
       .min_height(By(fn() { Some(status_top_now(row.window().0) + bar_h) }))
       .gap(Is(10.0))
       .lines_up(Is(Some(Middle)))
+      .fits(Is(true))
       |> ignore
       // 待处理, first on the bar: as a system's bar has it (no rail here to hold its bell)
       if bell {
@@ -134,66 +160,82 @@ fn home_top_bar_node(
         })
         |> ignore
       }
-      // the filter, and the archive in its menu: nothing to narrow or look back on with no station
-      row.show(fn() { view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(f) {
+      // the filter, and the archive in its menu: nothing to narrow or look back on with no station; on the board as on
+      // the list (its menu the board's: 全部会话 or 我参与的 on it, 已隐藏 and 已归档 off it: home_filter_go)
+      let keyed = fn() { @sfbase.board_on_now(src) || view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }
+      row.show(keyed, fn(f) {
         let key : Ref[@view.View?] = Ref(None)
         let opener = @sf.Opener::new()
-        f.box(fn(k) {
-          key.val = Some(k)
-          @sf.round_key_node(
-            k,
-            "filter",
-            fn() {
-              let filter = match workspace() {
-                Some(w) => filter_of(src, w.id)
-                None => "all"
-              }
-              fill("android-chat.home.filter.label", [
-                (
-                  "filter",
-                  tr(
-                    match filter {
-                      "mine" => "android-chat.home.filter.mine"
-                      "watching" => "android-chat.home.filter.watching"
-                      "hidden" => "web-main.filter.hidden"
-                      _ => "android-chat.home.filter.all"
-                    },
-                  ),
+        let shown = fn(w : Workspace) {
+          if @sfbase.board_on_now(src) {
+            @sfbase.board_filter_of(src, w.id)
+          } else {
+            filter_of(src, w.id)
+          }
+        }
+        key.val = Some(f)
+        @sf.round_key_node(
+          f,
+          "filter",
+          fn() {
+            let filter = match workspace() {
+              Some(w) => shown(w)
+              None => "all"
+            }
+            fill("android-chat.home.filter.label", [
+              (
+                "filter",
+                tr(
+                  match filter {
+                    "mine" => "android-chat.home.filter.mine"
+                    "watching" => "android-chat.home.filter.watching"
+                    "hidden" => "web-main.filter.hidden"
+                    _ => "android-chat.home.filter.all"
+                  },
                 ),
-              ])
-            },
-            fn() {
-              guard @signals.untracked(workspace) is Some(w) else { return }
-              let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
-              @sfpages.filter_menu(At(x, y, wd, h), filter_of(src, w.id), fn(f) { home_filter_go(src, w, f) })
-              opener.mark()
-            },
-            icon_size=20.0,
-            opener~,
-          )
-        })
-        |> ignore
+              ),
+            ])
+          },
+          fn() {
+            guard @signals.untracked(workspace) is Some(w) else { return }
+            let (x, y, wd, h) = key.val.map(fn(k) { k.placed_window_now() }).unwrap_or((0.0, 0.0, 0.0, 0.0))
+            let board = @sfbase.board_on_now(src)
+            @sfpages.filter_menu(At(x, y, wd, h), shown(w), fn(f) { home_filter_go(src, w, f, board~) }, in_board=board)
+            opener.mark()
+          },
+          icon_size=20.0,
+          opener~,
+        )
       })
-      // catching up beside the filter (laid nowhere while it is not there)
+      // 列表 | 看板, its own key beside the filter: 看板 on the list, 列表 on the board; 看板 the second to leave where
+      // the bar has not the room (catching up and transfers both beside it on a narrow phone, till they are done), 列表
+      // never (the way back to the list); only while 实验性功能's 对话列表看板视图 is on
+      row.show(fn() { @sfbase.board_feature.get() && keyed() }, fn(m) {
+        m.drops(By(fn() { if @sfbase.board_on_now(src) { 0 } else { 2 } })) |> ignore
+        // (one key, its icon and words following the mode: nothing made again as it turns)
+        let on = fn() { @sfbase.board_on_now(src) }
+        @sf.round_key_node(
+          m,
+          "view-columns",
+          fn() { if on() { @sf.t("web-main.board.list") } else { @sf.t("web-main.board.board") } },
+          fn() { @sfbase.board_set(src, !@signals.untracked(on)) },
+          icon_size=20.0,
+          icon_now=fn() { if on() { "list" } else { "view-columns" } },
+        )
+      })
+      // catching up beside them (laid nowhere while it is not there): it and transfers stay, the workspace's name giving
+      // way to them; the stations' releases the first to leave where the bar has not the room (their dialog in 设置 as
+      // well), 看板 the second (end's, below)
       @sf.sync_key_node(row, tips, 34.0, 20.0, fn() {
         match view() {
           Some({ syncing: Some(y), .. }) => Some(y)
           _ => None
         }
       })
-      // transfers beside it (its old view, hosted)
+      // transfers beside it (sfdesk's transfers_key_node: there only while something comes or goes)
       row.box(fn(k) {
-        // (as wide as it is laid out, told by the old frame: what gives way is the workspace's name)
-        let wide : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
-        k.shrink(Is(0.0)).width(By(fn() { wide.get() })) |> ignore
-        @ui.old(k, fn(c) {
-          match workspace() {
-            Some(w) => @sfdesk.transfers_key(c, src, w.id, 34.0, 20.0)
-            None => ()
-          }
-        }, natural=true, fits=(home_transfers_most, wide))
-        |> @ui.old_takes_own
-        |> ignore
+        k.shrink(Is(0.0)) |> ignore
+        @sfdesk.transfers_key_node(k, src, fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }, 34.0, 20.0, tips, shown~)
       })
       |> ignore
       // the stations' newer releases waiting for this person, in the app's own update mark as the wide frames' sidebar
@@ -205,18 +247,18 @@ fn home_top_bar_node(
         }
       }
       row.show(fn() { stations_said() != "" }, fn(s) {
-        s.box(fn(k) {
-          @sf.round_key_node(k, "download", stations_said, fn() {
-            match @signals.untracked(workspace) {
-              Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
-              None => ()
-            }
-          }, icon_size=20.0)
-        })
-        |> ignore
+        s.drops(Is(1)) |> ignore
+        @sf.round_key_node(s, "download", stations_said, fn() {
+          match @signals.untracked(workspace) {
+            Some(w) => @sfpages.station_updates_dialog(src, settings_core(src, w), w.id)
+            None => ()
+          }
+        }, icon_size=20.0)
       })
       row.box(fn(end) {
-        end.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(10.0)).lines_up(Is(Some(Middle))).lies_along(Is(End))
+        // (giving way, its name cut short: what may leave the bar leaves only once that name is down to four of its
+        // size, not while it is whole)
+        end.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(10.0)).lines_up(Is(Some(Middle))).lies_along(Is(End))
         |> ignore
         // the workspace's switcher: its mark, its name, what the others have waiting
         end.box(fn(s) {
@@ -246,8 +288,9 @@ fn home_top_bar_node(
               fn() { 0 },
             )
           })
+          // (a row, its name cut short along it: what the bar keeps of it, four of its size, above)
           s.box(fn(t) {
-            t.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+            t.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
             let name = fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }
             @sf.top_bar_title_node(t, name, look=@sf.home_workspace_title_look) |> ignore
           })
@@ -281,6 +324,3 @@ fn home_top_bar_node(
 /// How far in from its corner the bell's dot is.
 let home_bell_dot_at : Double = 5.0
 
-///|
-/// How wide the transfers' key beside the filter may be at most (the key, as its old view lays it out).
-let home_transfers_most : Double = 34.0

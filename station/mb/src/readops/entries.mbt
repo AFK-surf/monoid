@@ -127,21 +127,12 @@ priv struct Paging {
 ///|
 fn paging(args : Json) -> Paging raise {
   let params = args.value("params").unwrap_or(Json::null())
-  let words = args.value("words").unwrap_or(Json::null())
   let number = (name : String) => {
     guard param_of(params, name) is Some(v) else { return None }
     match parse_f64(v) {
       Some(n) if !n.is_nan() && !n.is_inf() && n.floor() == n && n >= 0.0 => Some(as_i64(n))
       _ => {
-        let said = match words.value("notInteger") {
-          Some(w) =>
-            match w.value(name) {
-              Some(String(s)) => s
-              _ => name
-            }
-          None => name
-        }
-        raise Refused(400, said)
+        raise Refused(400, name + " must be an integer")
       }
     }
   }
@@ -163,7 +154,7 @@ fn paging(args : Json) -> Paging raise {
     c.to_int()
   }
   if (from is Some(_)) != (to is Some(_)) {
-    raise Refused(400, match words.value("fromAndTo") { Some(String(s)) => s; _ => "from and to" })
+    raise Refused(400, "Provide from and to together")
   }
   { after, before, from, to, limit_given: asked is Some(_), limit }
 }

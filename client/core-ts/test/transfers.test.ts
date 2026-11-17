@@ -7,10 +7,10 @@ import { test } from "node:test";
 import type { HttpRequest } from "../src/host.ts";
 import { HostWire, type RequestHead, type StationWire } from "../src/station/wire.ts";
 import type { StationAddr } from "../src/station/addr.ts";
-import type { FakeHost } from "../src/testing.ts";
+import { type FakeHost, jsonResponse } from "../src/testing.ts";
 import { apply as applyOps } from "../src/delta.ts";
-import { call, subscribe } from "./helpers.ts";
-import { started, stationReplies, status } from "./station-fixture.ts";
+import { apply, call, subscribe, v } from "./helpers.ts";
+import { base, started, stationLater, stationReplies, status } from "./station-fixture.ts";
 
 /// Which station a request is for, as the wire says it (both answer at the same origin here).
 const AT = "x-test-station";
@@ -90,6 +90,210 @@ test("the person's transfers on every station, in words; told as they change", a
   const name = nine.station === "ws/st" ? "studio" : "mini";
   assert.deepEqual([nine.fromStation, nine.title, nine.statusText, nine.progress, nine.active, nine.toText], [nine.station, "b.txt", "已完成 · 3 B", 1, false, `${name} › a`]);
   r.core.close();
+});
+
+test("a transfer list read keeps changes told while its answer was on the way", async () => {
+  const answers = { ...base(), "GET /drive/transfers": { transfers: [transfer(), transfer({ id: "old", createdAt: 1 })] } };
+  const held: (() => void)[] = [];
+  const s = await started(answers, 0, undefined, ({ host }) => {
+    stationLater(host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      const response = jsonResponse(200, answers["GET /drive/transfers"]);
+      return new Promise((resolve) => held.push(() => resolve(response)));
+    });
+  });
+  try {
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    assert.ok(held.length > 0, "the station's list has not arrived yet");
+    const done = transfer({ state: "done", copied: 2 * 1024 * 1024, endedAt: 10 });
+    const added = transfer({ id: "new", createdAt: 11 });
+    s.push("drive-transfers", { transfer: transfer({ copied: 1536 * 1024 }) });
+    s.push("drive-transfers", { transfer: done });
+    s.push("drive-transfers", { transfer: added });
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), [["new", "copying"], ["t1", "done"]]);
+    for (const answer of held.splice(0)) answer();
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), [["new", "copying"], ["t1", "done"], ["old", "copying"]], "the read adds old rows without losing the new transfer or rolling back completion");
+    // A later read with no intervening event still replaces the list, including transfers the station no longer keeps.
+    answers["GET /drive/transfers"] = { transfers: [added] };
+    stationLater(s.host, () => undefined);
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => t.id), ["new"]);
+  } finally { s.core.close(); }
+});
+
+test("a transfer list read keeps new events first without moving updated rows", async () => {
+  // Transfers created in the same millisecond keep the order established by their events.
+  const answers = { ...base(), "GET /drive/transfers": { transfers: [transfer(), transfer({ id: "old" })] } };
+  const s = await started(answers);
+  const held: (() => void)[] = [];
+  try {
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => t.id), ["t1", "old"]);
+    stationLater(s.host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      const response = jsonResponse(200, answers["GET /drive/transfers"]);
+      return new Promise((resolve) => held.push(() => resolve(response)));
+    });
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.equal(held.length, 1);
+    s.push("drive-transfers", { transfer: transfer({ id: "new-1" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "new-2" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "old", state: "done" }) });
+    s.push("drive-transfers", { transfer: transfer({ id: "new-1", state: "done" }) });
+    await s.host.settle();
+    const expected = [["new-2", "copying"], ["new-1", "done"], ["t1", "copying"], ["old", "done"]];
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), expected, "updates keep existing rows in place");
+    held[0]!();
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), expected,
+      "the delayed list keeps multiple new events newest first and updates old rows in place");
+  } finally { s.core.close(); }
+});
+
+for (const newerFirst of [false, true]) test(`overlapping transfer reads keep the newer list (${newerFirst ? "newer" : "older"} answer first)`, async () => {
+  const answers = { ...base(), "GET /drive/transfers": { transfers: [transfer(), transfer({ id: "old", createdAt: 1 })] } };
+  const s = await started(answers);
+  const held: (() => void)[] = [];
+  try {
+    stationLater(s.host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      const response = jsonResponse(200, answers["GET /drive/transfers"]);
+      return new Promise((resolve) => held.push(() => resolve(response)));
+    });
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.equal(held.length, 1);
+    answers["GET /drive/transfers"] = { transfers: [transfer({ state: "done", copied: 2 * 1024 * 1024, endedAt: 10 })] };
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    assert.equal(held.length, 2, "the sync and shown-topic reads use separate scheduler keys");
+    held[newerFirst ? 1 : 0]!();
+    await s.host.settle();
+    held[newerFirst ? 0 : 1]!();
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), [["t1", "done"]], "the newer read supplies progress and removes expired rows, in either arrival order");
+  } finally { s.core.close(); }
+});
+
+test("a late 404 cannot clear transfers told while the read was in flight", async () => {
+  const held: (() => void)[] = [];
+  const s = await started(undefined, 0, undefined, ({ host }) => {
+    stationLater(host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      return new Promise((resolve) => held.push(() => resolve(jsonResponse(404, { error: "no route" }))));
+    });
+  });
+  try {
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    assert.ok(held.length > 0);
+    s.push("drive-transfers", { transfer: transfer({ state: "done" }) });
+    await s.host.settle();
+    assert.equal(now().supported, true);
+    for (const answer of held.splice(0)) answer();
+    await s.host.settle();
+    assert.equal(now().supported, true);
+    assert.deepEqual(now().transfers.map((t: any) => [t.id, t.state]), [["t1", "done"]]);
+  } finally { s.core.close(); }
+});
+
+test("a transfer read from a removed link cannot replace the same station's new link", async () => {
+  const s = await started({ ...base(), "GET /drive/transfers": { transfers: [] } });
+  const held: (() => void)[] = [];
+  try {
+    stationLater(s.host, (req) => {
+      if (req.method !== "GET" || !req.url.endsWith("/drive/transfers")) return undefined;
+      const response = jsonResponse(200, { transfers: [transfer({ id: "old" })] });
+      return new Promise((resolve) => held.push(() => resolve(response)));
+    });
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.equal(held.length, 1);
+    const old = s.core.inner.stations.link("ws/st");
+    const topic = { topic: "workspace", workspace: "ws" } as const;
+    const workspace = s.core.inner.data.shared(topic);
+    s.core.inner.data.update(topic, (w) => ({ ...(w as object), stations: [] }));
+    s.core.inner.stations.reconcile();
+    await s.host.settle();
+    assert.equal(s.core.inner.stations.link("ws/st"), undefined);
+    s.core.inner.data.set(topic, workspace);
+    s.core.inner.stations.reconcile();
+    await s.host.settle();
+    assert.notEqual(s.core.inner.stations.link("ws/st"), old);
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    s.push("drive-transfers", { transfer: transfer({ id: "new", state: "done" }) });
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => t.id), ["new"]);
+    held[0]!();
+    await s.host.settle();
+    assert.deepEqual(now().transfers.map((t: any) => t.id), ["new"]);
+  } finally { s.core.close(); }
+});
+
+for (const eventBeforeRead of [true, false]) test(`a delayed start response is not a new event (${eventBeforeRead ? "before" : "during"} the list read)`, async () => {
+  const s = await started({ ...base(), "GET /drive/transfers": { transfers: [] } });
+  try {
+    const ui = s.core.connect();
+    const values = new Map();
+    const now = () => (apply(s.host, values), v(values, 1));
+    subscribe(s.core, ui, 1, { topic: "driveTransfers", workspace: "ws" } as never);
+    await s.host.settle();
+    let startResponse: (() => void) | undefined;
+    let listResponse: (() => void) | undefined;
+    const done = transfer({ state: "done", copied: 2 * 1024 * 1024, endedAt: 10 });
+    stationLater(s.host, (req) => {
+      if (!req.url.endsWith("/drive/transfers")) return undefined;
+      if (req.method === "POST") {
+        const response = jsonResponse(200, { transfer: transfer({ state: "queued", copied: 0 }) });
+        return new Promise((resolve) => { startResponse = () => resolve(response); });
+      }
+      if (req.method === "GET") {
+        const response = jsonResponse(200, { transfers: [done] });
+        return new Promise((resolve) => { listResponse = () => resolve(response); });
+      }
+      return undefined;
+    });
+    call(s.core, ui, 100, "drive.transfer", {
+      from: { station: "ws/st", root: "/from", path: "", names: ["a.txt"] },
+      to: { station: "ws/st", root: "/to", path: "" },
+    });
+    await s.host.settle();
+    assert.ok(startResponse);
+    if (eventBeforeRead) s.push("drive-transfers", { transfer: done });
+    await s.host.settle();
+    s.core.inner.stations.snapshot("ws/st");
+    await s.host.settle();
+    assert.ok(listResponse);
+    if (!eventBeforeRead) s.push("drive-transfers", { transfer: done });
+    await s.host.settle();
+    assert.equal(now().transfers[0].state, "done");
+    startResponse();
+    await s.host.settle();
+    listResponse();
+    await s.host.settle();
+    assert.equal(now().transfers[0].state, "done", "a delayed operation result must not override the completed snapshot or its event");
+  } finally { s.core.close(); }
 });
 
 test("a copy from another station: granted where the files are, then copied where they go; within one, asked of it alone", async () => {

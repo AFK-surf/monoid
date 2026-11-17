@@ -10,9 +10,9 @@
 ///|
 /// A look's picture `art` as a file of the looks (@sfbase.looks_file: had from still.fail's site through the core, kept
 /// on the device), each drawing under its number (a file had is never had again: a picture drawn anew goes under the
-/// next); while the look is drawn small (the looks' strip, senren_small), its small one, a quarter as wide.
-fn senren_art_file(art : String) -> String {
-  senren_drawn.to_string() + "/" + art + (if senren_small.val { ".small.webp" } else { ".webp" })
+/// next); `small`, its small one, a quarter as wide (a look's tile in the looks' strip: senren_tile).
+fn senren_art_file(art : String, small? : Bool = false) -> String {
+  senren_drawn.to_string() + "/" + art + (if small { ".small.webp" } else { ".webp" })
 }
 
 ///|
@@ -23,7 +23,7 @@ let senren_drew : Ref[Array[String]?] = Ref(None)
 ///|
 /// `draw` as it draws a look, and the files of the looks it needs (its pictures as it drew them: senren_drew; the
 /// whole share face's), each asked of the core the first time (@sfbase.looks_file), given as a picture once here.
-fn senren_drawing(src : Source, draw : () -> Int) -> (Int, Array[String]) {
+fn senren_drawing(src : Source, draw : () -> Pen) -> (Pen, Array[String]) {
   let was = senren_drew.val
   let drew : Array[String] = []
   senren_drew.val = Some(drew)
@@ -33,10 +33,22 @@ fn senren_drawing(src : Source, draw : () -> Int) -> (Int, Array[String]) {
   for file in drew {
     if !files.contains(file) {
       files.push(file)
-      @sfbase.looks_file(src, file, fn(bytes) { @ui.add_image(senren_art_key(file), bytes) }) |> ignore
     }
   }
+  senren_asked(src, files)
   (b, files)
+}
+
+///|
+/// The files of the looks `files` asked of the core the first time (@sfbase.looks_file), each given as a picture once here;
+/// one given before but let go of since (@ui.has_image) asked again.
+fn senren_asked(src : Source, files : Array[String]) -> Unit {
+  for file in files {
+    @sfbase.looks_file(src, file, fn(bytes) { @ui.add_image(senren_art_key(file), bytes) }, kept=fn() {
+      @ui.has_image(senren_art_key(file))
+    })
+    |> ignore
+  }
 }
 
 ///|
@@ -55,40 +67,31 @@ let senren_drawn : Int = 1
 let senren_prefix : String = "senren-"
 
 ///|
-/// Whether the look being drawn is drawn small, in the looks' strip (sr_box as box 0: share_looks.mbt look_tile): its
-/// pictures had small, not thirty of them whole for tiles 72 wide.
-// kept across runs: set only while a look is drawn small, and put back
-let senren_small : Ref[Bool] = Ref(false)
-
-///|
 /// A line of share_looks for 千恋＊万花's look `key`, drawn by `draw`, its picture `art`. On the stage and handed out, the
 /// card said to be a picture (Role Image), named by its look and its figures: what it draws is the game's things in
 /// their own corners, grounds and inks, a drawing of something else, not the theme's (the corners', gaps' and
-/// contrast's rules leave it to itself, as they leave 终端's palette). Drawn small in the looks' strip (look_tile:
-/// look_tile_now), its picture alone as the card's top, small: not thirty cards laid out and drawn each frame for tiles
-/// 72 wide.
-fn senren(key : String, art : String, draw : (@ui.Ctx, Json?, Int, Bool) -> Int) -> ShareLook {
+/// contrast's rules leave it to itself, as they leave 终端's palette). Its tile in the looks' strip is its picture alone
+/// (senren_tile), small: not thirty cards made for tiles 72 wide.
+fn senren(key : String, art : String, draw : (Pen, Json?, Bool) -> Pen) -> ShareLook {
   {
     key,
     group: "senren",
-    draw: fn(c, fleet, id, flat) {
-      // (its tile in the strip: what is handed out, box 0 too (share_card_open's shot), is the card)
-      if look_tile_now.val {
-        let was = senren_small.val
-        senren_small.val = true
-        let b = sr_box(c, id, true, senren_tile_ground, fn() {
-          sr_art(c, art, @sf.share_w_most, senren_tile_h, at=0.0) |> ignore
-        })
-        senren_small.val = was
-        return b
-      }
-      let b = draw(c, fleet, id, flat)
+    art,
+    draw: fn(c, fleet, flat) {
+      let b = draw(c, fleet, flat)
       let args = sr_args(fleet)
       args.push(("name", @sf.t("web-main.stations.shareLook." + key)))
-      c.semantics(b, Image, label=sr_plain("web-main.stations.shareSenren.picture", args))
+      b.says(Image, sr_plain("web-main.stations.shareSenren.picture", args))
       b
     },
   }
+}
+
+///|
+/// A look's tile in the looks' strip (share_looks.mbt look_tile): its picture `art`, small, as the card's top as wide
+/// as it is handed out (the tile drawing it smaller), on the card's ground while it is on its way.
+fn senren_tile(c : Pen, art : String) -> Pen {
+  sr_box(c, true, senren_tile_ground, fn(c) { sr_art(c, art, @sf.share_w_most, senren_tile_h, at=0.0, small=true) })
 }
 
 ///|
@@ -101,17 +104,17 @@ let senren_tile_h : Double = 480.0
 
 ///|
 /// A 穗织画报 cover's look (sr_gahou, one drawing over each heroine's table) as a line of share_looks draws it.
-fn sr_gahou_of(look : String) -> (@ui.Ctx, Json?, Int, Bool) -> Int {
-  fn(c, fleet, id, flat) { sr_gahou(c, look, fleet, id, flat) }
+fn sr_gahou_of(look : String) -> (Pen, Json?, Bool) -> Pen {
+  fn(c, fleet, flat) { sr_gahou(c, look, fleet, flat) }
 }
 
 // ── what the looks share ─────────────────────────────────────────────────
 
 ///|
-/// The card as box `id` in `ground`, its parts laid out by `inner` from its very edges (a look pads its own: most lay a
-/// picture to the edges): round as a card on the stage, or `flat` (handed out: its ground to its edges).
-fn sr_box(c : @ui.Ctx, id : Int, flat : Bool, ground : Int64, inner : () -> Unit) -> Int {
-  c.box(style=(if flat { sr_box_flat } else { sr_box_round }).then(@ui.style(bg=Data(ground))), id~, inner)
+/// The card in `ground`, its parts laid out by `inner` from its very edges (a look pads its own: most lay a picture to
+/// the edges): round as a card on the stage, or `flat` (handed out: its ground to its edges).
+fn sr_box(c : Pen, flat : Bool, ground : Int64, inner : (Pen) -> Unit) -> Pen {
+  c.box(style=(if flat { sr_box_flat } else { sr_box_round }).then(@ui.style(bg=Data(ground))), inner)
 }
 
 ///|
@@ -124,25 +127,26 @@ let sr_box_round : @ui.Style = @ui.css("w=Full radius=Xl3 clip border=B1").then(
 let sr_box_flat : @ui.Style = sr_box_round.then(@ui.css("radius=Sharp border=B0"))
 
 ///|
-/// Picture `art` `w` by `h` points, cut to that with its vertical crop at `at` (0 its top, 1 its foot); nothing under
-/// it while it is on its way (the card's ground shows), no fade: a picture handed out is drawn whole (Ctx::shot waits).
-fn sr_art(c : @ui.Ctx, art : String, w : Double, h : Double, at? : Double = 0.5) -> Int {
-  let file = senren_art_file(art)
+/// Picture `art` `w` by `h` points, cut to that with its vertical crop at `at` (0 its top, 1 its foot); `small`, its
+/// small one (senren_art_file); nothing under it while it is on its way (the card's ground shows), no fade: a picture
+/// handed out is drawn whole (@ui.take_picture waits for it).
+fn sr_art(c : Pen, art : String, w : Double, h : Double, at? : Double = 0.5, small? : Bool = false) -> Unit {
+  let file = senren_art_file(art, small~)
   if senren_drew.val is Some(drew) {
     drew.push(file)
   }
-  c.image(senren_art_key(file), w=Px(w), h=Px(h), fit=FitCoverAt(at), bg=0L, fade=false)
+  c.image(senren_art_key(file), w, h, at~)
 }
 
 ///|
 /// Words in the card's own face (霞鹜文楷 with EB Garamond: @sfbase.share_face_given), as every look's are.
-fn sr_words(c : @ui.Ctx, words : String, style : @ui.TextStyle) -> Unit {
+fn sr_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
   c.rich([@ui.span(words)], style~, face=@sfbase.share_face_given()) |> ignore
 }
 
 ///|
 /// Words in the card's face from runs (`@ui.span`s: a figure in another colour, larger, bolder).
-fn sr_rich(c : @ui.Ctx, runs : Array[@ui.Run], style : @ui.TextStyle) -> Unit {
+fn sr_rich(c : Pen, runs : Array[@ui.Run], style : @ui.TextStyle) -> Unit {
   c.rich(runs, style~, face=@sfbase.share_face_given()) |> ignore
 }
 
@@ -194,7 +198,7 @@ fn sr_plain(key : String, args : Array[(String, String)]) -> String {
 
 ///|
 /// still.fail's name (its dot orange), in `ink`.
-fn sr_brand(c : @ui.Ctx, style : @ui.TextStyle) -> Unit {
+fn sr_brand(c : Pen, style : @ui.TextStyle) -> Unit {
   sr_rich(c, [@ui.span("still"), @ui.span(".", color=@sf.share_orange), @ui.span("fail")], style)
 }
 

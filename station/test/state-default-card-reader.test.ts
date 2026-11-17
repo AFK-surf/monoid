@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
-import * as readStore from "../src/read/store.ts";
+import * as readStore from "./reference/store.ts";
 import { newSession, say } from "../src/sessions/lifecycle.ts";
-import { CARD_POST_LATEST, CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";
+import { CARD_POSTS_PENDING } from "../src/store/card-post-index.ts";
+import { CONVERSATION_CARD_LATEST } from "../src/store/card-kinds.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig, settle } from "./hub-fakes.ts";
 
@@ -53,7 +54,7 @@ test("default cards and their answer checks use the same snapshot", () => {
     let changed = false;
     const observed = new Proxy(store.db, { get(target, property) {
       if (property === "prepare") return (sql: string) => {
-        if (sql === CARD_POST_LATEST && !changed) {
+        if (sql === CONVERSATION_CARD_LATEST && !changed) {
           changed = true;
           writer.prepare("INSERT INTO entries(thread,n,kind,ts,author_kind,author,text,at) VALUES(?,2,'message','answer','person','p','yes',2)").run(thread);
         }
@@ -73,7 +74,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
   test(`${tool} finds its default card without the station's merged lookup`, async () => {
     const r = new Rig();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const to = `CHAT/${thread.threadTs}`;
@@ -99,7 +100,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
 test("an answer while the default card is being read is checked before recording a need", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?", card });
@@ -124,7 +125,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
   test(`${tool}: an answer after the default-card read is checked when the state is recorded`, async () => {
     const r = new Rig(), release = Promise.withResolvers<void>();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       const to = `CHAT/${thread.threadTs}`;
@@ -154,7 +155,7 @@ for (const tool of ["chat_state", "chat_post"] as const) {
 test("a posted default-card read cannot declare a later turn", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -187,7 +188,7 @@ test("a posted default-card read cannot declare a later turn", async () => {
 test("a post reports if its default-card reader failed after the post was sent", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     r.hub.statePendingCard = async () => { throw new Error("card reader unavailable"); };
@@ -200,7 +201,7 @@ test("a post reports if its default-card reader failed after the post was sent",
 test("a newer default card is selected when it arrives before the state is recorded", async () => {
   const r = new Rig(), release = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const to = `CHAT/${thread.threadTs}`;
@@ -225,7 +226,7 @@ test("a newer default card is selected when it arrives before the state is recor
 test("a posted plain question can still end need_human without a card", async () => {
   const r = new Rig();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     const read = readStore.makeStore(r.store.db, r.dir);
@@ -248,7 +249,7 @@ test("a busy external writer is waited for outside the actor queue before confir
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
   const original = r.store.db, blocked = Promise.withResolvers<void>();
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?", card });
@@ -285,7 +286,7 @@ for (const mode of ["named", "default"] as const) {
   test(`a ${mode} question read cannot declare a later turn`, async () => {
     const r = new Rig(), release = Promise.withResolvers<void>();
     try {
-      const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+      const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
       say(r.hub, thread.id, "ada@x.com", "please do this");
       await settle();
       await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?", card });
@@ -331,7 +332,7 @@ test("unrelated external writes do not keep the default card from being recorded
   r.hub = r.newHub({ chats: () => undefined });
   const readers = new Readers(r.dir, 1, undefined, 1), writer = new DatabaseSync(path);
   try {
-    const [key, thread] = newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
+    const [key, thread] = await newSession(r.hub, { runtime: "claude", createdBy: "ada@x.com" });
     say(r.hub, thread.id, "ada@x.com", "please do this");
     await settle();
     await r.call(key, "chat_post", { to: `CHAT/${thread.threadTs}`, text: "May I continue?", card });

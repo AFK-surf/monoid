@@ -17,6 +17,8 @@ pub struct WordsPicked {
   /// the node of the tree's whose words it ends in (where the pointer let it go: dragged down, its last; dragged up,
   /// its first), as it was shown when that paragraph was last found (picked_end_piece: where in it)
   ends_in : @view.NodeId
+  /// the pointer let go at the start of what is picked, rather than its end
+  ends_at_start : Bool
   /// picked by a finger (held on its words: its handles and the system's text menu over it)
   finger : Bool
   /// which selection it is (Ctx::selection_made): another number for each a press begins
@@ -114,20 +116,20 @@ fn picked_in_order() -> (Array[(SelKey, SelSpan)], SelKey)? {
 ///|
 /// What is picked now, as picked_now says it.
 // kept across runs: said again as what is picked changes
-let picked_now_said : @signals.Signal[WordsPicked?] = @signals.signal(None, same=fn(a, b) { a == b })
+let picked_now_said : Ref[@signals.Signal[WordsPicked?]] = Ref(@signals.signal(None, same=fn(a, b) { a == b }))
 
 ///|
 /// What of the window's tree's words is picked with the pointer, followed as it changes: once the pointer has let it go
 /// (a mouse's button let up, a finger lifted off it or its handle); None while it is dragged, where none is, or where
 /// what is picked is an old view's.
 pub fn picked_now() -> WordsPicked? {
-  picked_now_said.get()
+  picked_now_said.val.get()
 }
 
 ///|
 /// What is picked with the pointer told to what follows it (picked_now), as it changes and as the pointer lets it go.
 fn picked_now_tell() -> Unit {
-  picked_now_said.set(picked_now_worked())
+  picked_now_said.val.set(picked_now_worked())
 }
 
 ///|
@@ -143,7 +145,7 @@ fn picked_now_worked() -> WordsPicked? {
       _ => ()
     }
   }
-  Some({ text: selected_words(), of, ends_in, finger: picked.finger, made: picked.made })
+  Some({ text: selected_words(), of, ends_in, ends_at_start: spot_cmp(picked.from, picked.to) > 0, finger: picked.finger, made: picked.made })
 }
 
 ///|

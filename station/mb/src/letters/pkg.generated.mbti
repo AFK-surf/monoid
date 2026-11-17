@@ -1,0 +1,24 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/letters"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn ready_token(@sql.Db, @json.Json) -> String? raise
+
+// Errors
+
+// Types and methods
+pub struct Letters {
+  // private fields
+}
+pub fn Letters::gc_step(Self, limit? : Int32) -> Bool raise
+pub fn Letters::new(@sql.Db) -> Self
+pub fn Letters::step(Self, Int64, limit? : Int32) -> Bool raise
+
+// Type aliases
+
+// Traits

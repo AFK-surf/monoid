@@ -8,7 +8,7 @@ import { DurableObject } from "cloudflare:workers";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import { bearerToken, denied, nowSeconds, reply } from "./auth";
 import type { Env } from "./env";
-import { relayUrls } from "./relays";
+import { relayName, relayUrls, type Relays } from "./relays";
 
 /** How many days the page shows. */
 export const DAYS = 30;
@@ -83,6 +83,17 @@ export class ServiceStatus extends DurableObject<Env> {
     this.ctx.storage.sql.exec("DELETE FROM days WHERE day <= ?", today - DAYS);
   }
 
+  /** The cloud's relays as the last round of checks found them listed (relay-registry.ts), each with its name: what the
+   * page shows, so that reading it asks the Directory nothing. */
+  keepRelays(relays: { url: string; name: string }[]): void {
+    this.ctx.storage.sql.exec("INSERT OR REPLACE INTO kept (key, value) VALUES ('relays', ?)", JSON.stringify(relays));
+  }
+
+  relays(): { url: string; name: string }[] {
+    const kept = this.ctx.storage.sql.exec<{ value: string }>("SELECT value FROM kept WHERE key = 'relays'").toArray()[0]?.value;
+    return kept ? (JSON.parse(kept) as { url: string; name: string }[]) : [];
+  }
+
   keepIncidents(incidents: Incident[]): void {
     this.ctx.storage.sql.exec("INSERT OR REPLACE INTO kept (key, value) VALUES ('incidents', ?)", JSON.stringify(incidents));
   }
@@ -106,8 +117,8 @@ export class ServiceStatus extends DurableObject<Env> {
 }
 
 /** The services, in the order the page shows them: the pages STATUS_PAGES names, the API, the releases, then the relays. */
-function serviceIds(env: Env): string[] {
-  return [...Object.keys(env.STATUS_PAGES ?? {}), "api", ...(env.RELEASES && !env.RELEASES_UPSTREAM ? ["releases"] : []), ...relayUrls(env).map((url) => `relay:${url}`)];
+function serviceIds(env: Env, relays: string[]): string[] {
+  return [...Object.keys(env.STATUS_PAGES ?? {}), "api", ...(env.RELEASES && !env.RELEASES_UPSTREAM ? ["releases"] : []), ...relays.map((url) => `relay:${url}`)];
 }
 
 const passes = async (check: () => Promise<boolean>) => (await check().catch(() => false)) ? "up" : "down";
@@ -168,26 +179,33 @@ export async function checkServices(env: Env, full: string[]): Promise<void> {
     id,
     found: await passes(async () => (await fetch(url, { method: "HEAD", signal: AbortSignal.timeout(CHECK_MS) })).ok),
   }));
-  // The API: this Worker runs, as the cron shows, and reaches the object every signed-in call goes through.
-  const api = passes(async () => (await env.DIRECTORY.getByName("primary").isBeta("status"), true)).then((found): Check => ({ id: "api", found }));
+  // The API: this Worker runs, as the cron shows, and reaches the object every signed-in call goes through, which
+  // answers which relays are listed (relay-registry.ts); none checked while it does not.
+  const got: { relays?: Relays } = {};
+  const api = passes(async () => ((got.relays = await env.DIRECTORY.getByName("primary").relaysNow()), true)).then((found): Check => ({ id: "api", found }));
   // What installing and updating read first.
   const releases = env.RELEASES && !env.RELEASES_UPSTREAM ? [passes(async () => (await env.RELEASES!.head("station.json")) !== null).then((found): Check => ({ id: "releases", found }))] : [];
-  const relays = relayUrls(env).map(async (url, i): Promise<Check> => {
+  const asked = await api;
+  const listed = got.relays ?? null;
+  const status = env.SERVICE_STATUS.getByName("primary");
+  const relays = listed === null ? [] : relayUrls(listed).map(async (url, i): Promise<Check> => {
     const at = await loads.lastSampled(url);
     const found = at === null || now - at > RELAY_SAMPLED ? "down" : i === 0 && full.length > 0 ? "degraded" : "up";
     return { id: `relay:${url}`, found };
   });
-  await env.SERVICE_STATUS.getByName("primary").record(await Promise.all([...pages, api, ...releases, ...relays]));
+  if (listed !== null) await status.keepRelays(relayUrls(listed).map((url) => ({ url, name: relayName(listed, url) })));
+  await status.record(await Promise.all([...pages, asked, ...releases, ...relays]));
 }
 
 /** GET /v1/status. From any page, as the site's status page is on a host of its own; what it says is no secret. */
 export async function serveStatus(env: Env): Promise<Response> {
   const status = env.SERVICE_STATUS.getByName("primary");
-  const [views, incidents] = await Promise.all([status.view(serviceIds(env)), status.incidents()]);
+  const relays = await status.relays();
+  const [views, incidents] = await Promise.all([status.view(serviceIds(env, relays.map((r) => r.url))), status.incidents()]);
   const services = views.map((view): ServiceView => {
     if (!view.id.startsWith("relay:")) return view;
     const relay = view.id.slice("relay:".length);
-    return { ...view, id: "relay", relay, name: env.RELAY_NAMES?.[relay] ?? new URL(relay).host };
+    return { ...view, id: "relay", relay, name: relays.find((r) => r.url === relay)?.name ?? new URL(relay).host };
   });
   return reply({ now: nowSeconds(), days: DAYS, services, incidents }, 200, { "access-control-allow-origin": "*", "cache-control": "public, max-age=30" });
 }

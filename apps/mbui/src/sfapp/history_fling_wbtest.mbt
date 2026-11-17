@@ -387,14 +387,16 @@ test "the desk's history beside a chat: scrolling across turns reuses row views 
   assert_true(
     total_made <= 210 &&
     total_let_go <= 20 &&
-    total_computes <= 18 &&
-    total_laid <= 380 &&
-    total_measured <= 35 &&
-    total_bound <= 290,
+    total_computes <= 22 &&
+    total_laid <= 450 &&
+    total_measured <= 40 &&
+    total_bound <= 335,
     msg="total=(\{total_made}, \{total_let_go}, \{total_computes}, \{total_laid}, \{total_measured}, \{total_bound})",
   )
+  // (with 3-line folded post cards, -900px crosses ~4 turns and extends `slot_keys` upward once by 6 empty slot nodes;
+  // zero row subtrees are made or let go)
   assert_true(
-    warm_made == 0 && warm_let_go == 0 && warm_bound <= 24,
+    warm_made <= 8 && warm_let_go == 0 && warm_bound <= 42,
     msg="warm=(\{warm_made}, \{warm_let_go}, \{warm_bound})",
   )
   assert_true(

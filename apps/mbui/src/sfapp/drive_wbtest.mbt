@@ -224,8 +224,7 @@ test "a text read where it was left goes there, then asks for no frame more" {
   nav_rested(t)
   t.run_for(@sf.reader_still_ms)
   let r = @sf.reading_for(reader_key({ station: "ws1/st1", root: Some(fix_docs), path: "长篇小说.txt" }))
-  assert_eq(r.jump_step, 0)
-  assert_eq(r.chunk, 2)
+  assert_eq(r.place.get().0, 2)
   t.assert_idle()
 }
 
@@ -241,14 +240,15 @@ test "a Markdown file read as a chat's Markdown is drawn, its words searched whe
   assert_true(t.find("release.log") is Some(_))
   // searched: 每一项 is in bold in the text, found as drawn
   let r = @sf.reading_for(reader_key({ station: "ws1/st1", root: Some(fix_docs), path: "发布清单.md" }))
-  r.query = "每一项"
-  r.typed_n += 1
-  t.draw()
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sf.reader_open_panel(r, @sf.ReaderPanel::Find) })
+  t.run_for(@ui.move_most_ms)
+  t.type_text("每一项")
   t.run_for(@sf.reader_search_ms)
   t.draw()
-  assert_eq(r.matches.length(), 1)
-  assert_eq(r.matches[0].chunk, 0)
-  assert_eq(fixture_markdown().exact_view(start=r.matches[0].start).has_prefix("每一项"), true)
+  let found = r.matches.get()
+  assert_eq(found.length(), 1)
+  assert_eq(found[0].chunk, 0)
+  assert_eq(fixture_markdown().exact_view(start=found[0].start).has_prefix("每一项"), true)
 }
 
 ///|

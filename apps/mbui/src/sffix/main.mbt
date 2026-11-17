@@ -57,7 +57,7 @@ fn main {
   }
   // no machine of its own among the made-up stations (the files' places list this machine's first): as the Tester has
   // none
-  @sfdesk.set_this_machine("")
+  @sfpages.set_this_machine("")
   // the faces the app carries (code's JetBrains Mono), as the app has them
   @sf.give_faces()
   @sfapp.host_setup()

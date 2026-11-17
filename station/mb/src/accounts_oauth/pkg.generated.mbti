@@ -1,0 +1,501 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/accounts_oauth"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+}
+
+// Values
+pub fn access_kinds(String) -> Array[String]
+
+pub fn agy_base_model(String) -> (String, String?)
+
+pub fn agy_callback_code(String?, String?) -> String?
+
+pub fn agy_home(String) -> String
+
+pub fn agy_token(String) -> String
+
+pub fn agy_token_in(String) -> String
+
+pub fn capitalized(String) -> String
+
+pub async fn check_profile(Io, ProfileDeps, ClaudeAuth, Words, CheckOptions) -> @json.Json
+
+pub fn claude_code_of(Words, String, String?, String) -> String raise Failed
+
+pub fn claude_plan(@json.Json?, @json.Json?) -> String?
+
+pub async fn claude_token(Io, String) -> String?
+
+pub fn codex_claims_in(String) -> @json.Json?
+
+pub async fn codex_claims_soon(Io, String) -> @json.Json?
+
+pub fn commands_on(@host.Host, posix? : Bool) -> Commands
+
+pub let console_file : String
+
+pub fn console_in(String) -> ConsoleLogin?
+
+pub let console_url : String
+
+pub fn device_code(String) -> String?
+
+pub async fn device_token(Io, String, String) -> DeviceAnswer
+
+pub fn devin_account_file(String) -> String
+
+pub fn devin_data(String) -> String
+
+pub async fn devin_email(Io, String) -> String?
+
+pub fn devin_email_in(String) -> String?
+
+pub fn devin_fusion_base(String) -> (String, String?)
+
+pub fn devin_noted_in(String) -> String? raise JsonError
+
+pub fn facts_of(@json.Json) -> @json.Json?
+
+pub fn form_encoded(Array[(String, String)]) -> String
+
+pub fn grok_auth_file(String) -> String
+
+pub async fn grok_email(Io, String) -> String?
+
+pub fn grok_email_in(String) -> String? raise JsonError
+
+pub fn grok_models(String) -> Array[String]
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn harness_case(@json.Json) -> @json.Json
+
+pub fn host_io(@host.Host) -> Io
+
+pub fn join(Array[String]) -> String
+
+pub fn keyed(String) -> Bool
+
+pub let lend_bound_ms : Int64
+
+pub fn line_of(String) -> (String, Array[Double])
+
+pub let login_browser_file : String
+
+pub fn login_command(String, String, machine? : Bool) -> String
+
+pub fn message_of(Error) -> String
+
+pub async fn models_live(Io, Catalog, String, () -> String?, ((@json.Json) -> Unit) -> Unit, (Array[String]) -> Unit) -> ModelCatalog
+
+pub fn needs_key(ProfileDeps, String, String?) -> Bool
+
+pub fn newer_of(String, Array[String]) -> String?
+
+pub fn opencode_session(ProfileDeps) -> (String, String)
+
+pub fn parse_login(LoginJob, String) -> Bool
+
+pub fn poll_answer(Token?, () -> String) -> DeviceAnswer
+
+pub async fn post_form(Io, String, Array[(String, String)], Array[(String, String)]) -> (Int32, @json.Json)
+
+pub async fn read_console(Io, String) -> ConsoleLogin?
+
+pub fn renew_answer(Int32, Token?, () -> String) -> Token raise
+
+pub async fn renew_token(Io, String, String) -> Token
+
+pub fn runtimes_for(ProfileDeps, @json.Json, @json.Json?) -> Array[String]
+
+pub fn runtimes_of(String, String?) -> Array[String]
+
+pub fn sees_images(Catalog, String) -> Bool
+
+pub async fn start_device(Io, String) -> Device
+
+pub fn strip_ansi(String) -> String
+
+pub fn uncheck_outdated(@json.Json, (String) -> Array[String]?, Array[String]) -> (Array[Unchecked], Array[String])
+
+pub let urls : Urls
+
+pub fn urls_in(String) -> Array[String]
+
+pub let verify_wait_ms : Int64
+
+pub let vision : Array[String]
+
+pub async fn who_is(Io, String, String, String?) -> (String?, String?)
+
+pub async fn write_console(Io, String, ConsoleLogin) -> Unit
+
+// Errors
+pub(all) suberror Failed {
+  Failed(String)
+}
+
+pub(all) suberror FsError {
+  FsError(String, String)
+}
+
+pub(all) suberror JsonError {
+  JsonError(String)
+}
+
+pub(all) suberror RenewRefused {
+  RenewRefused(Int32?, String)
+}
+
+pub(all) suberror Said {
+  Said(String)
+}
+
+// Types and methods
+pub(all) struct Bound {
+  ms : Int64
+  after : (Int64, () -> Unit) -> () -> Unit
+}
+
+pub struct Catalog {
+  // private fields
+}
+pub fn Catalog::facts(Self, String) -> @json.Json?
+pub fn Catalog::learn(Self, @json.Json?) -> Int32
+pub fn Catalog::named(Self) -> Array[String]
+pub fn Catalog::new() -> Self
+pub fn Catalog::snapshot(Self) -> @json.Json
+
+pub(all) struct CheckOptions {
+  runtime : String
+  kind : String
+  key : String
+  provider : String?
+  endpoint : String?
+  protocol : String?
+  home : String
+  env : Map[String, String]
+  machine : Bool
+  login : Bool
+  machine_token : (async (Map[String, String]) -> String)?
+  urls : Urls?
+  lang : String
+}
+
+pub(all) struct Child {
+  pid : Int32?
+  writable : () -> Bool
+  write : async (String) -> Unit
+  send : (String) -> Unit
+  kill : () -> Unit
+}
+
+pub(all) struct ChildEvents {
+  output : (String) -> Unit
+  close : (Int32?, String?) -> Unit
+}
+
+pub struct ClaudeAuth {
+  // private fields
+}
+pub fn ClaudeAuth::new(Io, ClaudeStore, Words) -> Self
+pub async fn ClaudeAuth::renewed_behind(Self, String) -> Unit
+pub async fn ClaudeAuth::token(Self, Map[String, String], String?, String?, String, String, margin? : Int64, bound? : Bound) -> (String, Int64)
+
+pub(all) struct ClaudeStore {
+  has_keychain : Bool
+  read_keychain : async (Map[String, String]) -> KeychainRead
+  take_back_missing : async (String) -> Bool
+  home_of : (Map[String, String]) -> String?
+  user_name : async () -> (Bool, String)?
+  security : async (Map[String, String], String, Int32) -> SecurityEnd
+}
+
+pub struct CodexIds {
+  // private fields
+}
+pub async fn CodexIds::identity(Self, Io, String) -> String?
+pub fn CodexIds::new() -> Self
+
+pub(all) struct Commands {
+  run : async (String, Array[String], Map[String, String], Int32) -> Ran
+}
+
+pub(all) struct ConsoleLogin {
+  access : String
+  refresh : String
+  expires_at : Double
+  org : String?
+  email : String?
+  workspace : String?
+}
+pub fn ConsoleLogin::to_json(Self) -> @json.Json
+
+pub(all) struct Device {
+  device_code : String
+  user_code : String
+  url : String
+  expires_in_ms : Double
+  interval_ms : Double
+}
+pub fn Device::to_json(Self) -> @json.Json
+
+pub(all) enum DeviceAnswer {
+  Pending(Bool)
+  Signed(Token)
+  Refused(String)
+}
+pub fn DeviceAnswer::to_json(Self) -> @json.Json
+
+pub(all) struct DeviceSteps {
+  start : async () -> Device
+  ask : async (String) -> DeviceAnswer
+  keep : async (Token) -> (async () -> Unit)
+}
+
+pub(all) struct Held {
+  stat : async () -> Stat
+  utimes : async (Int64) -> Unit
+  close : async () -> Unit
+}
+
+pub(all) struct Io {
+  now : () -> Int64
+  wall : () -> Int64
+  sleep : async (Int32) -> Unit
+  after : (Int64, () -> Unit) -> () -> Unit
+  every : (Int64, () -> Unit) -> () -> Unit
+  spawn : (async () -> Unit) -> Unit
+  fetch : async (Request) -> Response
+  read : async (String) -> String
+  write_private : async (String, String) -> Unit
+  write : async (String, String) -> Unit
+  mkdir : async (String, Bool) -> Unit
+  rmdir : async (String) -> Unit
+  rm : async (String, Bool) -> Unit
+  stat : async (String) -> Stat
+  exists : async (String) -> Bool
+  realpath : async (String) -> String
+  readdir : async (String) -> Array[String]
+  hold : async (String) -> Held
+  log : (String, String, String, @json.Json) -> Unit
+}
+
+pub(all) enum KeychainRead {
+  KeychainFound(String)
+  KeychainMissing
+  KeychainUnreadable
+}
+
+pub(all) struct LoginCommands {
+  claude : String
+  codex : String
+  grok : String?
+  devin : String?
+  agy : String?
+}
+
+pub(all) struct LoginDeps {
+  platform : LoginPlatform
+  env : () -> Map[String, String]
+  kimi : async (String) -> DeviceSteps
+  cursor_handshake : () -> @json.Json
+  poll_cursor : async (@json.Json) -> @json.Json?
+  mint_cursor_key : async (String, String) -> @json.Json
+  write_cursor : async (String, @json.Json) -> Unit
+  agy_token_ready : (String, Bool) -> Bool
+  note_agy_email : async (String, String) -> Unit
+  loopback_of : (String) -> Bool
+  key_name : () -> String
+}
+
+pub(all) struct LoginJob {
+  profile : String
+  runtime : String
+  provider : String?
+  mut state : String
+  mut url : String?
+  mut user_code : String?
+  mut error : String?
+  started_at : Int64
+  mut expires_at : Int64
+  mut browser : Bool
+  mut screen : String?
+}
+pub fn LoginJob::to_json(Self) -> @json.Json
+
+pub struct LoginManager {
+  // private fields
+}
+pub fn LoginManager::attach(Self, LoginPages) -> Unit
+pub fn LoginManager::cancel(Self, String) -> Unit
+pub fn LoginManager::changes(Self, (String) -> Unit) -> () -> Unit
+pub fn LoginManager::get(Self, String) -> LoginJob?
+pub fn LoginManager::new(Io, LoginDeps, Words, String, commands? : LoginCommands, console? : String) -> Self
+pub async fn LoginManager::open_page(Self, String, String) -> String
+pub fn LoginManager::set_state_file(Self, (String) -> String?) -> Unit
+pub async fn LoginManager::start(Self, LoginProfile, String) -> LoginJob
+pub async fn LoginManager::start_console(Self, String, String, String) -> LoginJob
+pub async fn LoginManager::start_cursor(Self, String, String, String) -> LoginJob
+pub async fn LoginManager::start_kimi(Self, String, String, String) -> LoginJob
+pub fn LoginManager::stop_all(Self) -> Unit
+pub async fn LoginManager::submit_code(Self, String, String, String) -> LoginJob
+
+pub(all) struct LoginPages {
+  changes : ((String) -> Unit) -> Unit
+  url_of : (String) -> String?
+  close : (String) -> Unit
+  screen_of : (String) -> String?
+  can : () -> Bool
+  open : async (String, String, () -> String?) -> String
+}
+
+pub(all) struct LoginPlatform {
+  terminal : async (String, Array[String], Int32, Int32) -> (String, Array[String])?
+  prepend_path : (Map[String, String], String) -> Map[String, String]
+  runnable : async (String, Array[String], Map[String, String]) -> (String, Array[String])
+  make_command : async (String, String) -> String
+  with_shell_command : async (String, Map[String, String], Map[String, String]) -> Map[String, String]?
+  file_credentials : async (Map[String, String]) -> Unit
+  spawn : async (String, Array[String], String, Map[String, String], ChildEvents) -> Child
+  descendants : async (Int32) -> Array[Int32]
+  kill : (Int32) -> Unit
+}
+
+pub(all) struct LoginProfile {
+  id : String
+  runtime : String
+  home : String
+  email : String?
+  enterprise : Bool
+}
+
+pub(all) struct MachineDeps {
+  commands : Commands
+  claude_credentials : async (Map[String, String]) -> @json.Json?
+  codex_home : (Map[String, String]) -> String
+  usage : (async (String, Map[String, String]) -> @json.Json)?
+}
+
+pub(all) struct MachineLogin {
+  runtime : String
+  installed : Bool
+  logged_in : Bool
+  email : String?
+  plan : String?
+  usable : Bool
+  mut quota : @json.Json
+  text : String
+}
+pub fn MachineLogin::to_json(Self) -> @json.Json
+
+pub struct MachineLogins {
+  env : Map[String, String]
+  // private fields
+}
+pub fn MachineLogins::changes(Self, () -> Unit) -> () -> Unit
+pub fn MachineLogins::get(Self) -> Array[MachineLogin]
+pub fn MachineLogins::new(Io, MachineDeps, Words, Map[String, String], () -> String) -> Self
+pub async fn MachineLogins::refresh(Self) -> Unit
+
+pub struct ModelCatalog {
+  // private fields
+}
+pub async fn ModelCatalog::open(Io, Catalog, String, () -> String?, asker? : async (Request) -> Response, added? : (Array[String]) -> Unit) -> Self
+pub async fn ModelCatalog::refresh(Self, etag? : String) -> Unit
+pub async fn ModelCatalog::written(Self) -> Unit
+
+pub(all) struct ProfileDeps {
+  commands : Commands
+  find : (String) -> @json.Json?
+  endpoints : (@json.Json, String?, String?) -> @json.Json?
+  profile_runtimes : (@json.Json, @json.Json?) -> Array[String]
+  take_back : async (String) -> Unit
+  file_credentials : async (Map[String, String]) -> Unit
+  link_codex_auth : async (String, Map[String, String]) -> Unit
+  parse_claude_credentials : (String) -> @json.Json?
+  read_cursor : async (String) -> @json.Json?
+  cursor_me : async (String) -> @json.Json?
+  cursor_models : async (String) -> @json.Json
+  devin_catalog : (@json.Json) -> @json.Json raise
+  agy_take_back : async (String) -> Bool
+  note_agy_email : async (String, String) -> String?
+  agy_token_ready : (String, Bool) -> Bool
+  agy_plan_in : (String) -> String?
+  uuid : () -> String
+}
+
+pub(all) enum Ran {
+  NotFound(String)
+  TimedOut
+  Ended(Int32?, String, String)
+}
+
+pub struct RefreshLock {
+  // private fields
+}
+pub async fn RefreshLock::acquire(Io, Words, String, String) -> Self
+pub async fn RefreshLock::release(Self) -> Unit
+
+pub(all) struct Request {
+  url : String
+  method_ : String
+  headers : Array[(String, String)]
+  body : String?
+  timeout_ms : Int32
+  manual : Bool
+}
+
+pub(all) struct Response {
+  status : Int32
+  headers : Array[(String, String)]
+  body : String
+}
+
+pub(all) enum SecurityEnd {
+  SecurityExited(Int32?)
+  SecurityUnstarted
+  SecurityTimedOut
+}
+
+pub(all) struct Stat {
+  dev : Double
+  ino : Double
+  size : Double
+  mtime_ms : Double
+}
+
+pub(all) struct Token {
+  access : String
+  refresh : String
+  expires_in_ms : Double
+  org : String?
+}
+pub fn Token::to_json(Self) -> @json.Json
+
+pub(all) struct Unchecked {
+  profile : String
+  removed : Array[String]
+  added : Array[String]
+}
+pub fn Unchecked::to_json(Self) -> @json.Json
+
+pub(all) struct Urls {
+  opencode : String
+  anthropic : String
+  chatgpt : String
+  claude_token : String
+  console : String
+}
+
+pub(all) struct Words {
+  tr : (String, String, Array[(String, String)]) -> String
+}
+
+// Type aliases
+pub type Env = Map[String, String]
+
+// Traits

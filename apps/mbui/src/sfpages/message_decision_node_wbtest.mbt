@@ -185,6 +185,7 @@ fn dec_new(
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
@@ -229,12 +230,12 @@ fn dec_old_row(w : Double, src : Source, m : Message, platform? : Int = 0) -> @u
 /// under them), `m` as it changes.
 fn dec_new_row(w : Double, src : Source, m : () -> Message, platform? : Int = 0) -> @ui.Tester {
   dec_new(w, fn() { dec_view() }, platform~, fn(f, here) {
-    message_row_frame_node(f, "m:ts8", fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
+    message_row_frame_node(f, fn() { "m:ts8" }, fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
       message_others_node(
         r,
         here,
         fn() { m().time },
-        fn(av) { agent_avatar_node(av, fn() { m().by.maker }, fn() { m().by.runtime }, fn() { "" }) |> ignore },
+        fn(av) { agent_avatar_node(av, fn() { m().by.maker }, fn() { m().by.runtime }) |> ignore },
         fn(h) {
           message_name_node(h, src, here, fn() { m().by.name }, fn() { message_agent_of(here, m().by.agent) }, fn() {
             m().by.from
@@ -300,7 +301,7 @@ fn dec_new_state(
 ) -> @ui.Tester {
   dec_new(w, view, platform~, begun~, fn(f, here) {
     let st = fn() { (here.view)().state.unwrap_or(("", "", "")) }
-    message_row_frame_node(f, "state", fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
+    message_row_frame_node(f, fn() { "state" }, fn() { row_side(w) }, fn() { 0.0 }, fn(r) {
       chat_state_node(r, src, here, fn() { st().0 }, fn() { st().1 }, fn() { st().2 })
     })
     |> ignore

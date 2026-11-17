@@ -88,7 +88,8 @@ fn chooser_by(
         (x, 0.0, x, 0.0)
       }))
       .gap(Is(chooser_gap_in))
-      .radius(By(fn() { if capsule { chooser_h / 2.0 } else { @ui.tree_theme().corner(Lg) } }))
+      // (a capsule: a pill as the app's others are, not a corner of its own its height comes to)
+      .radius(By(fn() { if capsule { 1.0e6 } else { @ui.tree_theme().corner(Lg) } }))
       .lines_up(Is(Some(Middle)))
       .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
       |> ignore
@@ -100,8 +101,34 @@ fn chooser_by(
       b.owns(fn() { open.set(false) }) |> ignore
     },
   )
-  // (its menu made as it opens, in the layer, living as long as the chooser does; the focus given back to it as it goes)
-  let holder = layer.box(fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
+  // (its menu made as it opens, in the layer, living as long as the chooser does; the focus given back to it as it goes.
+  // What holds it in the layer made as it first opens, not with the chooser: made with it, as a card's choosers are
+  // made in what is laid out by its room (View::by_room), it was made outside that room, and the tree laid out all of it
+  // again in the same frame for it, a pass more for a menu not open (a vault's ask's three, opening a chat))
+  let made = Ref(false)
+  b.reacts(fn() { open.get() }, fn(on) {
+    guard on && !made.val else { return }
+    made.val = true
+    chooser_menu_node(layer, b, open, by_key, choices, chosen, choose, loc~)
+  })
+  b
+}
+
+///|
+/// What holds chooser `b`'s menu in `layer` (chooser_by's: as it first opens), living as long as `b` does, and its menu
+/// while `open`: chooser_by's `by_key`, `choices`, `chosen`, `choose`; asked for at `loc` (the chooser's).
+#callsite(autofill(loc))
+fn chooser_menu_node(
+  layer : @view.View,
+  b : @view.View,
+  open : @signals.Signal[Bool],
+  by_key : Ref[Bool],
+  choices : () -> Array[(String, String)],
+  chosen : () -> String,
+  choose : (String) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  let holder = layer.box(made_for=loc, fn(h) { h.over(Is(true)) |> ignore }).lives_with(b)
   holder.show(fn() { open.get() }, at_once=true, fn(m) {
     m.over(Is(true)).opened_by(@view.ByNode(b.id())) |> ignore
     let now = chosen()
@@ -126,7 +153,6 @@ fn chooser_by(
       min_w=chooser_menu_w,
     )
   })
-  b
 }
 
 ///|

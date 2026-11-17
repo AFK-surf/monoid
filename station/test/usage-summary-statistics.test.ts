@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
-import { usageHistory } from "../src/read/usage.ts";
+import { makeStore } from "./reference/store.ts";
+import { usageHistory } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 import { backfillUsageChatStats } from "../src/store/usage-chat-stats.ts";
 

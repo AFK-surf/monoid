@@ -10,12 +10,25 @@ pub(all) struct Topic {
 }
 
 ///|
+/// The same topic as it stood: what derive(Eq) says, its version looked at first and its value last, the one JSON or
+/// equal (a value set again is mostly the one it was).
+pub impl Eq for Topic with equal(a, b) {
+  a.version == b.version && a.error == b.error && @signals.same_value(a.value, b.value)
+}
+
+///|
 /// A topic as a value a signal can carry, including whether its first value waits on a station.
 pub(all) struct TopicState {
   value : Json?
   error : Json?
   version : Int
   waiting : Bool
+}
+
+///|
+/// As Topic's, and whether it waits.
+pub impl Eq for TopicState with equal(a, b) {
+  a.version == b.version && a.waiting == b.waiting && a.error == b.error && @signals.same_value(a.value, b.value)
 }
 
 ///|
@@ -82,6 +95,12 @@ pub(all) struct Source {
   topic_read : (String, Map[String, Json]) -> Topic
   /// This source's subscription identity, after any parameter normalization; equal keys share a subscription.
   topic_key : (String, Map[String, Json]) -> String
+  /// A topic's keyed list (the field of its value the core keys by `keys`: a chat's `messages` by `seq` and
+  /// `outgoing`), kept by key as the core changes it item by item (@core.Sub::keyed): what reads an item told only as
+  /// it changes. None where the source keeps none (a made-up core that gives values whole) or the topic is not held:
+  /// its reader works it out of the value as before. Of the subscription `topic` reads, acquiring none (what reads it
+  /// reads the topic, which holds it).
+  topic_keyed : (String, Map[String, Json], String, Array[String]) -> @signals.KeyedList[String, Json]?
   /// A view source distinguishes graph evaluation from an independent read.
   topic_scope : ((TopicReadMode, () -> TopicState) -> TopicState)?
   /// Whether the source can still create a reader (a view-owned source ends with its view).
@@ -116,6 +135,11 @@ pub(all) struct Source {
   /// a picture by its URL (a person's, a station's icon) as it is put up on its page's time on top `stint`
   /// (Ctx::page_stint): an image's src once it is here, "" until then (the core's `picture`: core_pictures.mbt)
   picture : (String, Int) -> String
+  /// whether a page opening waits for the picture at a URL (sfbase's pictures_in): one the device holds, asked of the
+  /// core as it holds it by this if it was not, while the core reads it or it is not decoded yet. False of one the device
+  /// has not (the network's to bring), one that could not be had, and where pages wait for no picture
+  /// (core_pictures.mbt's `waits`)
+  picture_waits : (String) -> Bool
   /// what the core said when it stopped, if it did
   fatal : () -> String?
   /// a file of a chat as its messages show it (`station.file`, an image's thumbnail): by its station, the session
@@ -158,18 +182,113 @@ pub(all) struct Source {
   /// whether the stations' newer releases waiting for this person are asked for (`stationUpdates`: their key beside
   /// the app's update, sfpages station_updates.mbt): not of a run seen again that was recorded before the app did
   asks_station_updates : () -> Bool
+  /// whether a station's page asks what of it moves (`stationMove`: its 迁移 row while a move runs, something is
+  /// stopped or a turn failed, sfpages station_node.mbt): not of a run seen again that was recorded before the app did
+  asks_station_move : () -> Bool
   /// whether a station's terminals are asked for (`terminals`, among its screens: sfpages station_terminals_node.mbt):
   /// not of a run seen again that was recorded before the app did
   asks_terminals : () -> Bool
+  /// whether a page's, a panel's or a card's own view reads what makes it whole at once (a chat's services' pop its
+  /// bar's summary till its own comes, an agent's card what its model's menu lists, asked ahead): not of a run seen
+  /// again that was recorded before the app did (MBUI_SWR_VIEWS)
+  swr_views : () -> Bool
+  /// whether a card, a panel or a sheet opened the first time waits for what it reads of the device before it comes in, and
+  /// a page opened by a press for what it shows (@sf.OpenGate: as made, Source::topic; route_open_asks): not of a run seen
+  /// again that was recorded before the app did (MBUI_OPEN_WHOLE), nor of a fixture, whose tests say what a page shows
+  /// before the core answers
+  gates_opens : () -> Bool
 }
 
 ///|
 /// A read-only signal of one core subscription. Readers of the same source, name and params share its subscription;
 /// the graph releases it when the last reader leaves. An immediate-mode page holds its untracked frame read until it leaves.
 pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState] {
+  src.topic_said(name, params, topic_key(name, params))
+}
+
+///|
+/// Source::topic, its key (topic_key) worked out already: what reads a topic by its key too (Derived) writes it once.
+fn Source::topic_said(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said : String,
+) -> @signals.Computed[TopicState] {
+  // (read as a card, a panel or a sheet is made: waited for by it before it comes in, @sf.OpenGate)
+  if @sf.open_gate_collecting() && (src.gates_opens)() {
+    let sig = topic_read_by(src, name, params, said)
+    @sf.open_gate_note(fn() { topic_told(sig.get()) })
+    return sig
+  }
+  topic_read_by(src, name, params, said)
+}
+
+///|
+/// Whether what the core said of a topic lets what waits for it go on (@sf.OpenGate, a page opened by a press): its
+/// value or why not, or that it waits on a station for it (what shows that it waits, at once, never held for a station).
+pub fn topic_told(st : TopicState) -> Bool {
+  st.value is Some(_) || st.error is Some(_) || st.waiting
+}
+
+///|
+/// Picture `key` (an image's key, "" none) put up as what a card, a panel or a sheet holds is made: waited for by it where
+/// the device holds it not decoded yet (@sf.OpenGate), as a source that gates opens (gates_opens) has its pictures.
+pub fn picture_gated(key : String) -> Unit {
+  @sf.open_gate_picture(key)
+}
+
+///|
+/// Source::topic's, its key `said`.
+fn topic_read_by(src : Source, name : String, params : Map[String, Json], said : String) -> @signals.Computed[TopicState] {
+  // (read by what follows it, as a binding or a computed reads it again at each of its evaluations: the same signal as
+  // the last such read of it, so the reader's link to it is the one it had (no signal made, followed and let go of
+  // again each time). One read outside any reader, which may keep it and let it go itself, is a signal of its own.)
+  if @signals.active_sub() is Some(_) {
+    match topic_readers.get(said) {
+      Some(readers) =>
+        match readers.search_by(fn(r) { physical_equal(r.0, src) }) {
+          Some(i) => return readers[i].1
+          None => ()
+        }
+      None => ()
+    }
+    let made = topic_signal(src, name, params, said)
+    match topic_readers.get(said) {
+      Some(readers) => readers.push((src, made))
+      None => topic_readers[said] = [(src, made)]
+    }
+    return made
+  }
+  topic_signal(src, name, params, said)
+}
+
+///|
+// kept across runs: each made of the source it is kept with, let go of as that source's topic is (topic_readers_drop)
+/// The signal of each topic Source::topic made for what follows it, by its key (topic_key) and source.
+let topic_readers : Map[String, Array[(Source, @signals.Computed[TopicState])]] = Map([])
+
+///|
+/// Topic `said` of `src` let go of: the signal Source::topic kept for it with it, so one made anew follows the next.
+fn topic_readers_drop(src : Source, said : String) -> Unit {
+  match topic_readers.get(said) {
+    Some(readers) => {
+      let left = readers.filter(fn(r) { !physical_equal(r.0, src) })
+      if left.is_empty() {
+        topic_readers.remove(said)
+      } else {
+        topic_readers[said] = left
+      }
+    }
+    None => ()
+  }
+}
+
+///|
+/// Topic `name` with `params` (its key `said`) of `src` as a signal (Source::topic's).
+fn topic_signal(src : Source, name : String, params : Map[String, Json], said : String) -> @signals.Computed[TopicState] {
   let key = params.copy()
   @signals.computed_scoped(fn(_) {
-    followed_topic(src, name, key).get()
+    followed_topic(src, name, key, said~).get()
   }, untracked_read=Some(fn() {
     if !held_building.val && src.topic_scope is None {
       return None
@@ -178,7 +297,7 @@ pub fn Source::topic(src : Source, name : String, params : Map[String, Json]) ->
     // can an event of a view's (a press on what its page shows, outside any build) through that view's source: as it
     // is then, held no longer than the graph holds it, not for as long as the view lives (Source::owned_by's raw read).
     if src.topic_scope is None || !held_building.val {
-      match existing_followed_topic(src, name, key) {
+      match existing_followed_topic(src, name, key, said~) {
         Some(holder) if holder.watched() => return Some(holder.get())
         _ => ()
       }
@@ -219,7 +338,7 @@ fn read_topic_state(src : Source, name : String, params : Map[String, Json]) -> 
   }
   // (a view's own source reads through the one it is of, which keeps them: topic_scope none)
   if src.topic_scope is None && lasting.contains(name) && !params.contains("q") && (src.reads_ahead)() {
-    let key = name + "\u{1}" + Json::object(params).stringify()
+    let key = topic_key(name, params)
     match (topic.value, topic.error) {
       (Some(value), _) => last_put(src, key, value)
       (None, None) =>
@@ -272,21 +391,87 @@ pub fn home_lasting_of(name : String) -> Bool {
 /// on (`lasting`, as many as last_said keeps), and a chat however it is asked (its session, a thread, `compact`):
 /// `chats_kept` of those, a decoded chat being the largest tree the app holds. Unlike the lists (last_said), a chat's
 /// value kept is never shown before the core's answer: a chat's page and a row's read ahead have it only as that comes.
+///
+/// A page's, a panel's or a card's own read-only topic too (`views_kept`, as many as it says), shown again at once as it
+/// is asked again (topic_shown_kept), till the core answers: a pop, a card or a page opened again draws what it drew,
+/// not its bones nor an empty list while the core answers.
 pub fn topic_kept(name : String, params : Json) -> Int {
+  topic_kept_by(name, params, true)
+}
+
+///|
+/// topic_kept, with the views' own (`views_kept`, a chat's last 8) where `views` (MBUI_SWR_VIEWS): a replay of a run
+/// from before it keeps what that run's app did.
+pub fn topic_kept_by(name : String, params : Json, views : Bool) -> Int {
+  let typed = params is Object(p) && p.contains("q")
   if name == "chat" {
-    chats_kept
-  } else if lasting.contains(name) && !(params is Object(p) && p.contains("q")) {
+    if views { chats_kept } else { chats_kept_before }
+  } else if lasting.contains(name) && !typed {
     last_most
+  } else if views && !typed {
+    views_kept_of(name)
   } else {
     0
   }
 }
 
 ///|
+/// Whether topic `name`'s value kept is shown at once as it is asked again, before the core answers
+/// (@core.Client::show_kept): a view's own (`views_kept`). Not a chat's (its page places its rows by its first value),
+/// nor the lists the places open on (`lasting`: shown again by the source that read them, last_said, never to what names
+/// a station by them, station_marks).
+pub fn topic_shown_kept(name : String) -> Bool {
+  views_kept_of(name) > 0
+}
+
+///|
+/// How many values the core's client keeps of every name together (@core.Client::keep's `most`): as many as the core
+/// remembers for it (client/core-ts store.ts KEPT_PER_CLIENT) where `views` (MBUI_SWR_VIEWS), its 64 of before else.
+pub fn kept_most_by(views : Bool) -> Int {
+  if views { 96 } else { 64 }
+}
+
+///|
 /// How many chats' values are kept at a time (topic_kept), the oldest forgotten: a chat opened again, or read ahead
 /// again from its row, among the last few is answered with what changed in it, not the whole of it (a phone's ~180 KB,
 /// 17-21 ms to decode).
-let chats_kept : Int = 4
+let chats_kept : Int = 8
+
+///|
+/// chats_kept before MBUI_SWR_VIEWS (topic_kept_by)
+let chats_kept_before : Int = 4
+
+///|
+/// The read-only topics of a page, a panel, a pop or a card (none typed for, nothing written in) kept as they are let go
+/// of and shown again at once (topic_kept, topic_shown_kept), with how many of each name: a chat's row (its menu, its
+/// swipe), its services and jobs (its bar's summary and its pop), an agent's card, the rail's cards, a station whole
+/// and a part of its overview, an account, a connect and what its choice of a session lists, what a model's menu lists
+/// (`pick`), a drive's place, a chat's outline.
+// kept across runs: a value (nothing of it changes)
+let views_kept : Array[(String, Int)] = [
+  ("chatRow", 32),
+  ("chatJobs", 16),
+  ("agentCard", 16),
+  ("railCard", 16),
+  ("station", 16),
+  ("stationPart", 24),
+  ("profile", 16),
+  ("connect", 16),
+  ("connectCandidates", 8),
+  ("pick", 12),
+  ("drivePlace", 24),
+  ("chatOutline", 8),
+]
+
+///|
+fn views_kept_of(name : String) -> Int {
+  for kv in views_kept {
+    if kv.0 == name {
+      return kv.1
+    }
+  }
+  0
+}
 
 ///|
 /// What a source last said of a lasting topic. `version` is below every core's (those count up from 0), another for
@@ -338,7 +523,8 @@ fn last_reset() -> Unit {
 /// A page scope already has a graph reader and must not also acquire an untracked frame hold.
 fn scoped_topic(src : Source, name : String, params : Map[String, Json], independent? : Bool = false) -> @signals.Computed[TopicState] {
   let key = params.copy()
-  @signals.computed_scoped(fn(_) { followed_topic(src, name, key, independent~).get() })
+  let said = topic_key(name, key)
+  @signals.computed_scoped(fn(_) { followed_topic(src, name, key, said~, independent~).get() })
 }
 
 ///|
@@ -354,6 +540,16 @@ priv struct FollowedTopic {
 }
 
 ///|
+/// Topic `name` with `params` as one key: what tells its followers (FollowedTopic's `key`) from another's.
+fn topic_key(name : String, params : Map[String, Json]) -> String {
+  // (none: what an empty object is written as, the same text)
+  if params.is_empty() {
+    return name + "\u{1}{}"
+  }
+  name + "\u{1}" + Json::object(params).stringify()
+}
+
+///|
 // kept across runs: an active graph reader may outlive an app reset; its last reader removes the entry.
 let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 
@@ -361,7 +557,7 @@ let followed_topics : Ref[Array[FollowedTopic]] = Ref([])
 /// Whether a reader holds topic `name` with `params` now (a page's, a graph's: followed and watched). It asks nothing
 /// of the core and acquires nothing.
 fn topic_held(name : String, params : Map[String, Json]) -> Bool {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+  let key = topic_key(name, params)
   followed_topics.val.iter().any(fn(t) { t.key == key && t.holder.watched() })
 }
 
@@ -381,9 +577,10 @@ fn topics_held() -> Array[(Source, String, Map[String, Json])] {
 }
 
 ///|
-/// What is declared (declare_topic) and not let go of: each by its source, name and parameters.
+/// What is declared (declare_topic) and not let go of: each by its source, name and parameters, and its key (topic_key,
+/// written once as it is declared: what is declared again is looked for by it).
 // kept across runs: put back as a run begins (declared_reset)
-let declared_topics : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
+let declared_topics : Ref[Array[(Source, String, Map[String, Json], String)]] = Ref([])
 
 ///|
 /// Topic `name` with `params` of `src` declared: asked of the core now, outside any build, and kept asked with no
@@ -393,12 +590,12 @@ let declared_topics : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// or after (the coordinator of the migration, 2026-11-12): a read of its own would be a reader that holds it past its
 /// readers' leaving, its unsubscribe never sent.
 pub fn declare_topic(src : Source, name : String, params : Map[String, Json]) -> TopicState {
-  let key = name + "\u{1}" + Json::object(params).stringify()
-  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && d.1 + "\u{1}" + Json::object(d.2).stringify() == key }) {
-    declared_topics.val.push((src, name, params.copy()))
+  let key = topic_key(name, params)
+  if !declared_topics.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
+    declared_topics.val.push((src, name, params.copy(), key))
   }
   let owner = @signals.set_owner(None)
-  let state = @signals.untracked(fn() { followed_topic(src, name, params).get() })
+  let state = @signals.untracked(fn() { followed_topic(src, name, params, said=key).get() })
   @signals.set_owner(owner) |> ignore
   state
 }
@@ -414,14 +611,14 @@ pub fn declared_let_go() -> Unit {
 
 ///|
 /// Each of `declared` that no reader took over let go of now (declared_let_go's, page_declared_let_go's).
-fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit {
+fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) -> Unit {
   for d in declared {
-    let (src, name, params) = d
-    let key = name + "\u{1}" + Json::object(params).stringify()
+    let (src, name, params, key) = d
     match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }) {
       Some(i) if !followed_topics.val[i].holder.watched() => {
         let holder = followed_topics.val[i].holder
         followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
+        topic_readers_drop(src, key)
         (src.release)(name, params)
         // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
         // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
@@ -435,9 +632,10 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json])]) -> Unit 
 }
 
 ///|
-/// What the page on top declared as it came on top (declare_page_topic) and no reader took yet.
+/// What the page on top declared as it came on top (declare_page_topic) and no reader took yet, each with its key, as
+/// declared_topics.
 // kept across runs: put back as a run begins (declared_reset)
-let page_declared : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
+let page_declared : Ref[Array[(Source, String, Map[String, Json], String)]] = Ref([])
 
 ///|
 /// Topic `name` with `params` of `src` declared as a page comes on top (page_opens_node: page_opens), as declare_topic
@@ -445,13 +643,13 @@ let page_declared : Ref[Array[(Source, String, Map[String, Json])]] = Ref([])
 /// page runs, and taken over by the page's reader as it reads, the same subscription all along. One no reader comes
 /// to is let go of as another page comes on top (page_declared_let_go), or another workspace comes in view.
 pub fn declare_page_topic(src : Source, name : String, params : Map[String, Json]) -> Unit {
-  let key = name + "\u{1}" + Json::object(params).stringify()
-  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && d.1 + "\u{1}" + Json::object(d.2).stringify() == key }) {
+  let key = topic_key(name, params)
+  if page_declared.val.iter().any(fn(d) { physical_equal(d.0, src) && d.3 == key }) {
     return
   }
-  page_declared.val.push((src, name, params.copy()))
+  page_declared.val.push((src, name, params.copy(), key))
   let owner = @signals.set_owner(None)
-  @signals.untracked(fn() { followed_topic(src, name, params).get() }) |> ignore
+  @signals.untracked(fn() { followed_topic(src, name, params, said=key).get() }) |> ignore
   @signals.set_owner(owner) |> ignore
   page_declared_told.set(page_declared_told.get() + 1)
 }
@@ -474,6 +672,10 @@ pub fn page_declared_let_go() -> Unit {
   let was = page_declared.val
   page_declared.val = []
   let_go_unread(was)
+  // (told: what declared them in the change that let them go declares again what is still to be read, page_opens_node)
+  if was.length() > 0 {
+    page_declared_told.set(page_declared_told.get() + 1)
+  }
 }
 
 ///|
@@ -481,9 +683,9 @@ pub fn page_declared_let_go() -> Unit {
 /// shown whole, none; one here is declared and not read, a fault of the declaration (sfapp's declared_read_wbtest).
 pub fn declared_unread() -> Array[String] {
   [..declared_topics.val, ..page_declared.val].filter_map(fn(d) {
-    let (src, name, params) = d
+    let (src, name, params, key) = d
     // (one no longer followed was taken by its reader and let go of as that left: read, not a fault)
-    match existing_followed_topic(src, name, params) {
+    match existing_followed_topic(src, name, params, said=key) {
       Some(h) if !h.watched() => Some(name + " " + Json::object(params).stringify())
       _ => None
     }
@@ -500,33 +702,37 @@ fn declared_reset() -> Unit {
 }
 
 ///|
-/// Topics asked as the core holds them now for what follows them, asking for none (one nothing follows yet is answered
-/// by nothing): what reads it follows its value and error while it reads, holding nothing it would not hold else
-/// (sfapp's first_page_node, reading between frames whether what a page builds is answered).
-pub fn read_held(src : Source) -> (String, Map[String, Json]) -> TopicState {
-  fn(name, params) {
-    match existing_followed_topic(src, name, params) {
-      Some(h) => h.get()
-      None => { value: None, error: None, version: -1, waiting: false }
-    }
-  }
-}
-
-///|
 /// What `src` holds of a topic followed now, as read_held reads it; None where nothing follows it.
 pub fn read_held_found(src : Source) -> (String, Map[String, Json]) -> TopicState? {
   fn(name, params) { existing_followed_topic(src, name, params).map(fn(h) { h.get() }) }
 }
 
 ///|
-fn existing_followed_topic(src : Source, name : String, params : Map[String, Json]) -> @signals.Computed[TopicState]? {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+fn existing_followed_topic(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said? : String,
+) -> @signals.Computed[TopicState]? {
+  let key = match said {
+    Some(k) => k
+    None => topic_key(name, params)
+  }
   followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && !t.independent }).map(fn(i) { followed_topics.val[i].holder })
 }
 
 ///|
-fn followed_topic(src : Source, name : String, params : Map[String, Json], independent? : Bool = false) -> @signals.Computed[TopicState] {
-  let key = name + "\u{1}" + Json::object(params).stringify()
+fn followed_topic(
+  src : Source,
+  name : String,
+  params : Map[String, Json],
+  said? : String,
+  independent? : Bool = false,
+) -> @signals.Computed[TopicState] {
+  let key = match said {
+    Some(k) => k
+    None => topic_key(name, params)
+  }
   match followed_topics.val.search_by(fn(t) { physical_equal(t.source, src) && t.key == key && t.independent == independent }) {
     Some(i) => followed_topics.val[i].holder
     None => {
@@ -541,6 +747,9 @@ fn followed_topic(src : Source, name : String, params : Map[String, Json], indep
               Some(i) if !followed_topics.val[i].holder.watched() => {
                 // A removed Array slot keeps its old value alive; replace the array before releasing.
                 followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
+                if !independent {
+                  topic_readers_drop(src, key)
+                }
                 (src.release)(name, params)
               }
               _ => ()
@@ -634,6 +843,7 @@ pub fn made_source(
       }
     },
     topic_key: exact_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,
@@ -652,6 +862,7 @@ pub fn made_source(
     signing_in: fn() { false },
     sign_in_step: fn() { Idle },
     picture: fn(_, _) { "" },
+    picture_waits: fn(_) { false },
     fatal: fn() { None },
     file: fn(_, _, _) { "" },
     poster: fn(_, _, _) { "" },
@@ -669,7 +880,10 @@ pub fn made_source(
     asks_outline: fn() { true },
     switches_ahead: fn() { true },
     asks_station_updates: fn() { true },
+    asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    swr_views: fn() { true },
+    gates_opens: fn() { true },
   }
 }
 

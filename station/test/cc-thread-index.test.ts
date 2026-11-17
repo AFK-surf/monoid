@@ -9,7 +9,7 @@ import { CC_THREADS_SQL } from "../src/store/rows.ts";
 import {
   CC_INDEXED_THREADS, CC_SESSION_KEYS, CC_SESSION_ROWS, CcIndexPreparation, CcSessionsUnavailable, ccSessionReady, ccSessionRows, dispatchCcOrderStep, indexedCcThreads, installCcIndex,
   scanCcSessionStep, settleCcSessionStep, trackCcSession,
-} from "../src/store/cc-thread-index.ts";
+} from "./reference/backfill/cc-thread-index.ts";
 
 function finish(db: DatabaseSync, session: string, size = 4): void {
   for (let n = 0; n < 1_000 && !ccSessionReady(db, session); n++) {

@@ -103,7 +103,7 @@ fn new_profile_flow_node(
   }
   let sign = fn() { field(d(), "signIn") }
   let install = fn() { field(d(), "install") }
-  let plan = fn() { step() == "connect" && text(d(), "method") == "plan" }
+  let plan = fn() { step() == "connect" && (text(d(), "method") == "plan" || text(d(), "method") == "enterprise") }
   let planning = fn() { plan() && !(install() is Some(Object(_))) && sign() is Some(Object(_)) }
   // a plan's sign-in starts as its step comes; left unfinished, let go as it goes
   v.reacts(planning, fn(on) {
@@ -233,6 +233,23 @@ fn new_profile_asks(here : Here, station : String, form : String) -> Array[(Stri
 }
 
 ///|
+/// A new profile on station `address` opened by a press from outside its page (the profiles' sidebar's offer of a
+/// station's login), by `open` (what puts it up): where what opens waits for what it shows (gates_opens), its draft
+/// opened and what it shows asked first, as this page's own choice of another station does, the screen as it was
+/// meanwhile; else at once.
+pub fn open_new_profile(src : Source, core : Core, here : Here, address : String, open : () -> Unit) -> Unit {
+  if !(src.gates_opens)() {
+    open()
+    return
+  }
+  let n = @settings.new_profile_opened(core, address, add_profile_start.get(address))
+  @sfbase.open_answered(src, new_profile_asks(here, address, n.form), open, let_go=fn() {
+    @settings.left(NewProfile(address))
+  })
+  |> ignore
+}
+
+///|
 /// Which station it is added on (its online ones, a choice each) in node `b`: another is another draft, its page in
 /// this one's place. Pressed, that station's draft is opened and its flow asked (`src`), this page as it is meanwhile;
 /// its page comes in this one's place once the flow is answered, whole in the frame it comes, what was asked handed to
@@ -359,8 +376,9 @@ fn providers_sample_node(b : @view.View) -> Unit {
 }
 
 ///|
-/// The two ways to connect a vendor that has both (methods) in node `b`, as the core says them (`d`'s choices): each
-/// its title and what it is (ways_node), the plan's by the subscription's mark, a key's by the provider's.
+/// The ways to connect a vendor that has more than one (methods: a plan, Google's company plan too, a key) in node `b`,
+/// as the core says them (`d`'s choices): each its title and what it is (ways_node), a plan's by the subscription's
+/// mark, a key's by the provider's.
 fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -> Unit) -> Unit {
   let tile = fn() { field(d(), "tile") }
   @sf.ways_node(
@@ -370,7 +388,7 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
     mark=fn(m, id) {
       provider_mark_node(m, fn() {
         let t = tile()
-        let kind = if id == "plan" && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
+        let kind = if (id == "plan" || id == "enterprise") && text(t, "kind") != "opencode-go" && text(t, "id") != "moonshotai" {
           "subscription"
         } else {
           match text(t, "kind") {
@@ -378,7 +396,9 @@ fn new_profile_methods_node(b : @view.View, d : () -> Json?, choose : (String) -
             k => k
           }
         }
-        (text(field(d(), "signIn"), "runtime"), kind, text(t, "mark"))
+        // (a plan's mark is its runtime's: while its way is chosen there is no sign-in yet, the tile's)
+        let signed = text(field(d(), "signIn"), "runtime")
+        (if signed == "" { text(t, "runtime") } else { signed }, kind, text(t, "mark"))
       }, ap_way_glyph)
     },
   )
@@ -439,16 +459,10 @@ fn new_profile_plan_node(
             job,
             fn() { text(field(d(), "signIn"), "provider") },
             fn() { is_doing(core, ["login.code"], on()) },
-            fn(code, sent) {
+            fn(code, sent, refused) {
               let id = n.login.untracked()
               if id != "" {
-                @settings.act(
-                  core,
-                  @sf.t("web-pages.profiles.finish"),
-                  "login.code",
-                  obj([("station", str(station)), ("id", str(id)), ("code", str(code))]),
-                  then=fn(_) { sent() },
-                )
+                login_code_sent(core, "login.code", obj([("station", str(station)), ("id", str(id)), ("code", str(code))]), sent, refused)
               }
             },
             copied,

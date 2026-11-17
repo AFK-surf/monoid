@@ -3,6 +3,7 @@
 // what the one says the other can take in itself. Each part uses it (`use`) and lets it go (`release`); it ends once
 // none uses it. What it says goes to the part it is of: the actors' lines say where the program stands (`active`), the
 // agents' never.
+import { sep } from "node:path";
 import { MbProcess, mbReaderBinary } from "../read/mb-reader.ts";
 
 type Json = any;
@@ -25,7 +26,7 @@ export class SessionsProgram {
 
   private constructor(data: string) {
     this.#data = data;
-    this.#proc = new MbProcess(mbReaderBinary()!, ["--sessions", "1", "--data", data]);
+    this.#proc = new MbProcess(mbReaderBinary()!, ["--sessions", "1", "--data", data, "--sep", sep]);
     // (held on to by the station's process only while a part of it has something going: `hold`)
     this.#proc.ref(false);
     this.#proc.on("message", (said: Json) => {

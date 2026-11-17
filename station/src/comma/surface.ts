@@ -17,7 +17,7 @@
 // - task.read, task.say: the Router reads a chat of the Task index, or writes in it as itself (`chats`, module.ts).
 // Comma's heartbeat is answered with one. Whatever else Comma asks (files, commands: a Comma station's) is refused.
 import { randomUUID } from "node:crypto";
-import { closeSync, openSync, readSync, statSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { arch, platform } from "node:os";
 import { Effect } from "effect";
 import type WebSocket from "ws";
@@ -101,21 +101,22 @@ export function questionOf(card: Json | null | undefined, prompt: string): Json 
   };
 }
 
-/// A part of `path` from `offset`, at most FILE_PART bytes (base64); `missing` when it is no longer there.
-function readPart(file: Attachment, offset: number): Json {
-  let fd: number;
+/// A part of `path` from `offset`, at most FILE_PART bytes (base64); `missing` when it is no longer there. Read off the
+/// main thread: a Router reads a file a part at a time, and a disk kept busy would hold every request meanwhile.
+async function readPart(file: Attachment, offset: number): Promise<Json> {
+  let fh: Awaited<ReturnType<typeof open>>;
   try {
-    fd = openSync(file.path, "r");
+    fh = await open(file.path, "r");
   } catch {
     return { missing: "no longer on its station" };
   }
   try {
-    const size = statSync(file.path).size;
+    const size = (await fh.stat()).size;
     const part = Buffer.alloc(Math.max(0, Math.min(FILE_PART, size - offset)));
-    const read = part.length > 0 ? readSync(fd, part, 0, part.length, offset) : 0;
-    return { name: file.name, size, offset, data: part.subarray(0, read).toString("base64") };
+    const { bytesRead } = part.length > 0 ? await fh.read(part, 0, part.length, offset) : { bytesRead: 0 };
+    return { name: file.name, size, offset, data: part.subarray(0, bytesRead).toString("base64") };
   } finally {
-    closeSync(fd);
+    await fh.close().catch(() => {});
   }
 }
 
@@ -448,7 +449,7 @@ export class CommaSurface extends ConnectedSurface {
       case "task.leave":
         return this.leave(params);
       case "task.posted_file":
-        return this.postedFile(params);
+        return await this.postedFile(params);
       case "task.read": {
         if (this.chats === null || !this.inScope()) throw new Error("task.read is not something this station does in this workspace");
         const after = typeof params?.after === "number" && params.after >= 0 ? params.after : 0;
@@ -575,12 +576,12 @@ export class CommaSurface extends ConnectedSurface {
   }
 
   /// task.posted_file: a part of a file of a post Comma has not answered yet.
-  private postedFile(params: Json): Json {
+  private async postedFile(params: Json): Promise<Json> {
     const posting = this.posting.get(text(params, "key"));
     const index = count(params?.index);
     if (!posting || posting.task !== text(params, "task") || index === null) return { missing: "no such post" };
     const file = posting.files[index];
-    return file ? readPart(file, count(params?.offset) ?? 0) : { missing: "no such file" };
+    return file ? await readPart(file, count(params?.offset) ?? 0) : { missing: "no such file" };
   }
 
   // ── the surface ────────────────────────────────────────────────────────────────────────────────────────────────

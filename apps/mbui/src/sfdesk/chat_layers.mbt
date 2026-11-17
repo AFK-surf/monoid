@@ -35,14 +35,14 @@ pub fn chat_drop(c : @ui.Ctx, src : Source, station : String, draft : String, pa
 }
 
 ///|
-/// The hint while a row of the 文件 tab is carried over box `pane`: drawn only (what it is let go on is the tab's to
-/// say).
+/// The hint while a row of the 文件 tab is carried over box `pane`, where the drag says the pointer carries it (built
+/// again as it moves): drawn only (what it is let go on is the tab's to say).
 pub fn drop_hint(c : @ui.Ctx, pane : Int) -> Unit {
   let item = match dragged() {
     Some(i) => i
     None => return
   }
-  let (px, py, _) = c.pointer()
+  let (px, py) = tdrag.at.get()
   if !inside(c.rect_of(pane), px, py) {
     return
   }

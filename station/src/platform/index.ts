@@ -40,8 +40,9 @@ export type HostSample = {
 
 /// How the host page says the machine (GET /host): memory, CPU, uptime, the OS.
 export type Host = {
-  /// CPU time since boot, all CPUs together: (busy, total); none when it cannot be read.
-  cpuTicks(): [busy: number, total: number] | null;
+  /// CPU time since boot, all CPUs together: (busy, total); none when it cannot be read. At once where the system's
+  /// counters give it (os.cpus: macOS, Windows), else a file read off the station's thread (Linux's /proc/stat).
+  cpuTicks(): [busy: number, total: number] | null | Promise<[busy: number, total: number] | null>;
   /// The rest, read with commands and files not waited on: it is read on the main thread (api/host.ts).
   sample(): Promise<HostSample>;
 };
@@ -59,6 +60,10 @@ export type Platform = {
   buildOs: string | null;
   /// Whether a file copied on a disk of this machine can be a clone of it, taking no room of its own (APFS: macOS).
   clonesFiles: boolean;
+  /// The machine's cache of native parts, which scripts/native.ts keeps and every worktree and station process shares:
+  /// $STILLFAIL_NATIVE_CACHE, else ~/Library/Caches/stillfail-native (macOS), $XDG_CACHE_HOME/stillfail-native or
+  /// ~/.cache/stillfail-native (Linux), %LOCALAPPDATA%\stillfail-native (Windows).
+  nativeCache: (env: Env, home: string) => string;
 
   // Commands and their environment.
   /// An executable's file name (`stillfail-runner` → `stillfail-runner.exe` on Windows).
@@ -73,22 +78,48 @@ export type Platform = {
   appendPath(env: Env, dir: string): void;
   /// A command on `env`'s PATH as a shell finds it (with PATHEXT's extensions on Windows).
   findCommand(name: string, env: Env): Found | null;
+  /// `findCommand` off the station's thread: each place on PATH looked at in turn, the first found.
+  findCommandSoon(name: string, env: Env): Promise<Found | null>;
   /// The user's interactive shell, when this machine has one to read a PATH from.
   userShell(env: Env): string | null;
+  /// The PATH a process started now would be given, where the machine keeps it apart from a shell (Windows' registry:
+  /// the machine's, then the user's, each `%VAR%` expanded): what an installer put there after this process started,
+  /// which a running process is never given. None on Unix, where the shell's startup files say it (`userShell`).
+  savedPath(env: Env): Promise<string[] | null>;
   /// How Node runs a command (a name on PATH, or a path) with `args`: on Windows a .cmd is run around cmd when it can
   /// be (npm's, Vite+'s), else through it, quoted.
   runnable(command: string, args: string[], env: NodeJS.ProcessEnv): { file: string; args: string[]; windowsVerbatimArguments?: true };
-  /// The shell jobs and device commands run under (/bin/sh; Git for Windows' sh).
+  /// `runnable` off the station's thread (on Windows, PATH looked in and a shim read).
+  runnableSoon(command: string, args: string[], env: NodeJS.ProcessEnv): Promise<{ file: string; args: string[]; windowsVerbatimArguments?: true }>;
+  /// The shell jobs, device commands and the vault's runs go under (/bin/sh; Git for Windows' sh, found by `env`: an
+  /// error that says how to get it where there is none). On Windows it looks on disk on the station's thread: only for
+  /// what runs before the station serves (`makeCommand`); what runs after asks `posixShellSoon`
+  /// (test/src-sync-calls.test.ts holds it).
   posixShell(env?: NodeJS.ProcessEnv): string;
+  /// `posixShell` off the station's thread; on Windows, where `env` finds none, by the PATH the registry gives a
+  /// process started now too (`savedPath`: Git installed since the station started).
+  posixShellSoon(env?: NodeJS.ProcessEnv): Promise<string>;
   /// A command as a group of its own, ended whole (as spawned detached on Unix; under `stillfail-runner --job` on
   /// Windows).
   grouped(program: string, args: string[]): [string, string[]];
   /// A command started `by` lower in CPU priority than this process (ops/nice.ts): under nice where there is one; as
   /// it is on Windows (no nice).
   lowered(program: string, args: string[], by: number): [string, string[]];
+  /// A command started as the system's background work (the station's own builders and indexers, read/mb-reader.ts):
+  /// its CPU and its disk's reads and writes both yield to the foreground's. macOS: under `/usr/sbin/taskpolicy -b`
+  /// (PRIO_DARWIN_BG: background CPU QoS and IOPOL_THROTTLE, for it and all it starts), where nice alone leaves APFS's
+  /// IO as it was; Linux: under `ionice -t -c2 -n7` and `nice -n 10` (best-effort's lowest IO, a lower CPU priority);
+  /// else as `lowered` by 10; as it is on Windows. Each wrapper execs the command, which keeps its pid.
+  backgrounded(program: string, args: string[]): [string, string[]];
+  /// The command that writes out what the file system holding `dir` has of written files (replica/sending.ts
+  /// `flushOnce`): Linux's `sync -f <dir>`, that file system only; macOS's `sync`, every one; none on Windows.
+  flushing(dir: string): [string, string[]] | null;
   /// A shell script at `path` runnable by name from any shell: on Windows a `.cmd` beside it too, running it with the
   /// POSIX shell, or doing nothing when `noop`. The name a program is to be given for it (the .cmd on Windows).
   makeCommand(path: string, script: string, noop?: boolean): string;
+  /// `makeCommand` off the station's thread, each file written beside and renamed into place: a command that runs it
+  /// meanwhile finds the one before or this one whole, never half of it. One already as it is to be is left alone.
+  makeCommandSoon(path: string, script: string, noop?: boolean): Promise<string>;
 
   // Process groups (ops/group.ts).
   /// Signals a whole group; one already gone is no error. On Windows any signal ends it.
@@ -141,14 +172,16 @@ export type Platform = {
   /// Where file systems other than the machine's own volumes are mounted (a network share, OrbStack's NFS in the home,
   /// a disk), wherever that is: macOS asks the person before a process opens one, so the station never does itself
   /// (drive/fs.ts protectedPlace). macOS's, as `mount` says them (read again in the background when asked a while
-  /// after the last read); none elsewhere.
+  /// after the last read, never on the thread: none until the first read, which asking starts, is in); none elsewhere.
   mounts(): string[];
+  /// `mounts`, read first (off the thread) where it was not yet or is stale.
+  mountsSoon(): Promise<string[]>;
   /// Whether making a symbolic link was refused for want of the privilege (Windows without Developer Mode).
   linkRefused(error: unknown): boolean;
   /// Whether a directory's entries can be made durable by syncing it (not on Windows: NTFS journals them).
   syncsDirectories: boolean;
   /// `link` the same file as `target`, kept so: a symbolic link, or where one is refused a hard link.
-  shareFile(target: string, link: string): void;
+  shareFile(target: string, link: string): Promise<void>;
 
   // The runner (agents/runner.ts).
   /// Whether a runner's socket is a file that can be looked at without connecting (not a Windows pipe).
@@ -187,10 +220,10 @@ export type Platform = {
   startInstaller(script: string, runDir: string, env: Record<string, string>, app: string): Promise<boolean>;
   /// How a runtime found as a package manager's of this machine's kind is updated (Windows: winget's package, Vite+'s
   /// shim beside vp.exe, npm's .cmd in its prefix), none for the shared rules.
-  shimUpdate(found: Found, pkg: string, env: Env): How | "no-npm" | null;
+  shimUpdate(found: Found, pkg: string, env: Env): Promise<How | "no-npm" | null>;
   /// `command` (a command npm installed in its global prefix) linked into `dir` under its name, where nothing of that
   /// name is: whether it now is (not on Windows: npm's .cmd finds its package beside itself, and its prefix is on PATH).
-  linkCommand(command: string, dir: string): boolean;
+  linkCommand(command: string, dir: string): Promise<boolean>;
   /// Whether Codex's standalone install updates by its installer here, and installs by it (a shell script: not on
   /// Windows).
   codexStandalone: boolean;
@@ -208,14 +241,16 @@ export type Platform = {
   /// Where a Chrome may be on this machine, best first: Google Chrome's, then Chromium's and Edge's (each a file that
   /// is there).
   browsers(env: Env): string[];
+  /// `browsers` off the station's thread.
+  browsersSoon(env: Env): Promise<string[]>;
   /// Whether a program here can show windows (a browser with its own): a Mac's or Windows' desktop; on Linux a display
   /// the environment names (DISPLAY, WAYLAND_DISPLAY).
   hasDisplay(env: Env): boolean;
   // Logins to command-line tools (logins/run.ts, logins/relay.ts).
   /// `program` with `args` in a pseudo-terminal of `cols` × `rows` (stdin a pipe, kept open: closing it ends the
   /// command), as the system's `script` gives one: the program and arguments to start; none where there is no such way
-  /// (Windows: the command runs on pipes).
-  terminal(program: string, args: string[], cols: number, rows: number): [string, string[]] | null;
+  /// (Windows: the command runs on pipes). Where `script` is is looked for off the station's thread.
+  terminalSoon(program: string, args: string[], cols: number, rows: number): Promise<[string, string[]] | null>;
   /// The processes `pid` started, and theirs (not itself).
   descendants(pid: number): Promise<number[]>;
   // Memory, as the station's queue and its watch over the agents' processes read it (jobs/admit.ts, jobs/memory.ts).

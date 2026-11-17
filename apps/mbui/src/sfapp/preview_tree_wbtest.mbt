@@ -1746,7 +1746,7 @@ fn wide_bar_top(t : @ui.Tester) -> Double? {
 }
 
 ///|
-/// A picture opened in a wide window, clicked on (the bars hidden by it, at the click's moment), and `after` ms later
+/// A picture opened in a wide window, its bars hidden (as a click on another kind hides them), and `after` ms later
 /// drawn (`frames`: the frames between at the display's pace; else none between): where the bar across the top is
 /// drawn then.
 fn wide_bar_after_click(frames : Bool, after : Double) -> Double? raise {
@@ -1754,9 +1754,8 @@ fn wide_bar_after_click(frames : Bool, after : Double) -> Double? raise {
   let v = viewer.get().unwrap()
   assert_true(v.in_tree, msg="the tree's viewer")
   assert_eq(wide_bar_top(t), Some(0.0), msg="the bar across the top, there as it opens")
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
-  t.touch(0, x + w / 2.0, y + h / 2.0)
-  t.touch(2, x + w / 2.0, y + h / 2.0)
+  // (a click on a picture closes it: its bars hidden as a click on another kind hides them, at that moment)
+  v.toggle()
   assert_true(!v.bars_shown(), msg="clicked: its bars hidden")
   if frames {
     t.run_for(after)
@@ -1768,7 +1767,7 @@ fn wide_bar_after_click(frames : Bool, after : Double) -> Double? raise {
 }
 
 ///|
-test "viewer on the tree, a wide window, a mouse: a click on the picture hides the bar across the top from the click's moment, going up as far by a moment the frames drawn between or none" {
+test "viewer on the tree, a wide window, a mouse: its bars hidden, the bar across the top goes from that moment, going up as far by a moment the frames drawn between or none" {
   // (half its way: as far as the bar's own way has gone by then)
   let half = @sf.viewer_bar_ms / 2.0
   let drawn = wide_bar_after_click(true, half)
@@ -1890,7 +1889,7 @@ fn wide_bar_out(t : @ui.Tester) -> Bool {
 }
 
 ///|
-test "viewer on the tree, a wide window, a mouse, motion reduced: a click on the picture hides the bar across the top at once, the next shows it at once, the first frame after each where it goes; nothing read of the clock after" {
+test "viewer on the tree, a wide window, a mouse, motion reduced: its bars hidden, the bar across the top goes at once, shown again it is back at once, the first frame after each where it goes; nothing read of the clock after" {
   let t = wide_preview()
   // (as the settings set it: this device's motion reduced, read by the app each frame)
   (preview_src.val.unwrap().call)("prefs.set", { "motion": "reduce" }, fn(_) {  })
@@ -1898,10 +1897,9 @@ test "viewer on the tree, a wide window, a mouse, motion reduced: a click on the
   assert_true(t.ctx().still(), msg="motion reduced")
   let v = viewer.get().unwrap()
   assert_eq(wide_bar_top(t), Some(0.0), msg="there")
-  let (x, y, w, h) = v.zoom.rect(t.ctx()).unwrap()
+  // (a click on a picture closes it: its bars hidden and shown as a click on another kind does it)
   let click = fn() {
-    t.touch(0, x + w / 2.0, y + h / 2.0)
-    t.touch(2, x + w / 2.0, y + h / 2.0)
+    v.toggle()
     t.draw()
   }
   click()
@@ -2210,10 +2208,9 @@ test "viewer on the tree, a wide window, a mouse: its bars hidden, the way to th
   let v = viewer.get().unwrap()
   let (x, y, w, h) = t.get(Button, label=@sf.t("web-main.preview.nextKey")).rect
   let (dx, dy) = (x + w / 2.0, y + h / 2.0)
-  // (the bars hidden by a click on the picture, the pointer on the disc as it goes: kept)
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
-  t.touch(0, rx + rw / 2.0, ry + rh / 2.0)
-  t.touch(2, rx + rw / 2.0, ry + rh / 2.0)
+  // (the bars hidden (a click on the picture closes it: as a click on another kind hides them), the pointer on the
+  // disc as it goes: kept)
+  v.toggle()
   t.draw()
   assert_true(!v.bars_shown(), msg="its bars hidden")
   t.move_to(dx, dy)
@@ -2252,22 +2249,21 @@ test "viewer on the tree, a wide window, a mouse: the way to the one after gone 
 }
 
 ///|
-test "viewer on the tree, a wide window, motion reduced: its bars hidden by a click, the way to the one after gone in the first frame; the viewer closed as it would go, nothing read of the clock after" {
+test "viewer on the tree, a wide window, motion reduced: its bars hidden, the way to the one after gone in the first frame; the viewer closed as it would go, nothing read of the clock after" {
   let t = preview_tester("step", w=1280.0, platform=0)
   (preview_src.val.unwrap().call)("prefs.set", { "motion": "reduce" }, fn(_) {  })
   t.draw()
   let v = viewer.get().unwrap()
-  let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
-  t.touch(0, rx + rw / 2.0, ry + rh / 2.0)
-  t.touch(2, rx + rw / 2.0, ry + rh / 2.0)
+  // (a click on a picture closes it: its bars hidden as a click on another kind hides them)
+  v.toggle()
   t.draw()
   let gone = after_disc(t)
   (preview_src.val.unwrap().call)("prefs.set", { "motion": Json::null() }, fn(_) {  })
   t.draw()
   assert_eq(gone.unwrap_or(0.0), 0.0, msg="gone in the first frame")
   // (its bars shown again, going in; closed by Escape meanwhile: nothing owed once it has gone)
-  t.touch(0, rx + rw / 2.0, ry + rh / 2.0)
-  t.touch(2, rx + rw / 2.0, ry + rh / 2.0)
+  v.toggle()
+  t.draw()
   t.advance(@sf.wake_ms / 2.0)
   t.key_told(@ui.key_escape, 0, t.time())
   t.run_for(@ui.move_most_ms)
@@ -2994,13 +2990,13 @@ fn head_drawn() -> Double {
 }
 
 ///|
-test "viewer on a phone's width, a mouse: its bars hidden by a click, shown by the pointer along the top, marking begun there, the pointer back on the picture; Escape leaves marking: the floating bar goes as hidden bars do" {
+test "viewer on a phone's width, a mouse: its bars hidden, shown by the pointer along the top, marking begun there, the pointer back on the picture; Escape leaves marking: the floating bar goes as hidden bars do" {
   let t = preview_tester("image", w=390.0, platform=0)
   let v = viewer.get().unwrap()
   let (rx, ry, rw, rh) = v.zoom.rect(t.ctx()).unwrap()
   let (px, py) = (rx + rw / 2.0, ry + rh / 2.0)
-  t.touch(0, px, py)
-  t.touch(2, px, py)
+  // (a click on a picture closes it: its bars hidden as a click on another kind hides them)
+  v.toggle()
   t.run_for(@sf.sleep_ms * 2.0)
   assert_true(!v.bars_shown(), msg="hidden by a click")
   assert_eq(head_drawn(), 0.0, msg="hidden: gone")

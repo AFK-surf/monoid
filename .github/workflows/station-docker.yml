@@ -1,0 +1,81 @@
+# still.fail's station container (station/docker): the machine a station runs on, the release installed into its volume
+# by the entrypoint and updated there by the station itself (station/docker/AGENTS.md). Built for x64 and arm64 on
+# their own runners (no emulation: each build stays inside its job's minutes), each checked by station/docker/smoke.sh,
+# and on main pushed to ghcr.io/afk-surf/stillfail-station under a tag of the run's, then tagged `latest` and with the
+# commit as one image for both. Weekly too, for Debian's security updates: a new image changes no station running, only what
+# `docker pull` gives.
+name: station-docker
+on:
+  push:
+    paths: [station/docker/**, .github/workflows/station-docker.yml]
+  schedule:
+    - cron: "17 3 * * 1"
+  workflow_dispatch:
+permissions:
+  contents: read
+env:
+  IMAGE: ghcr.io/afk-surf/stillfail-station
+jobs:
+  build:
+    if: github.repository_owner == 'AFK-surf'
+    strategy:
+      matrix:
+        include:
+          - { platform: linux/amd64, arch: amd64, runner: ubuntu-24.04 }
+          - { platform: linux/arm64, arch: arm64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v5
+        with: { sparse-checkout: station/docker }
+      - uses: docker/setup-buildx-action@v3
+      - name: build
+        run: |
+          docker buildx build --platform ${{ matrix.platform }} --load -t stillfail-station:smoke \
+            --cache-from type=gha,scope=station-${{ matrix.arch }} --cache-to type=gha,mode=max,scope=station-${{ matrix.arch }} \
+            station/docker
+      - name: smoke (entrypoint)
+        run: sh station/docker/smoke.sh stillfail-station:smoke entrypoint
+      - if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      # (under the run's tag: `merge` names both as one image)
+      - if: github.ref == 'refs/heads/main'
+        id: push
+        run: |
+          docker tag stillfail-station:smoke "$IMAGE:build-${{ github.run_id }}-${{ matrix.arch }}"
+          docker push "$IMAGE:build-${{ github.run_id }}-${{ matrix.arch }}"
+  # The cloud's release installed and run on the image: what the image is for, apart from the steps above for its
+  # minutes (the release and its Node downloaded, the station started).
+  release:
+    if: github.repository_owner == 'AFK-surf'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v5
+        with: { sparse-checkout: station/docker }
+      - uses: docker/setup-buildx-action@v3
+      - name: build
+        run: |
+          docker buildx build --platform linux/amd64 --load -t stillfail-station:smoke \
+            --cache-from type=gha,scope=station-amd64 station/docker
+      - name: smoke (release)
+        run: sh station/docker/smoke.sh stillfail-station:smoke release
+  merge:
+    if: github.repository_owner == 'AFK-surf' && github.ref == 'refs/heads/main'
+    needs: [build, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with: { registry: ghcr.io, username: "${{ github.actor }}", password: "${{ secrets.GITHUB_TOKEN }}" }
+      - run: |
+          docker buildx imagetools create -t "$IMAGE:latest" -t "$IMAGE:${GITHUB_SHA::12}" \
+            "$IMAGE:build-${{ github.run_id }}-amd64" "$IMAGE:build-${{ github.run_id }}-arm64"
+          docker buildx imagetools inspect "$IMAGE:latest"

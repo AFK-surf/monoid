@@ -17,6 +17,14 @@ test("the session instructions name the session's places, and a project only whe
   assert.ok(!plain.includes("<memory"), "no memory where there is none");
 });
 
+test("stillfail-move is named only where moving is on here (a beta feature of the station's), nothing else changed", () => {
+  const on = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "");
+  const off = ts.sessionInstructions("/ws/c", null, "/repos", "/m/MEMORY.md", "", "", "", false);
+  assert.ok(on.includes(ts.MOVE_LINE));
+  assert.ok(!off.includes("stillfail-move"));
+  assert.equal(off, on.replace(ts.MOVE_LINE, ""));
+});
+
 test("the session instructions tell the memory they name, as it is now", async () => {
   const dir = mkdtempSync(join(tmpdir(), "instructions-"));
   const path = join(dir, "MEMORY.md");
@@ -73,9 +81,9 @@ test("a session is opened with what the deployment adds to its instructions", as
   const row = { key: "k", workspace: "/w/s/workspace", token: "t", cwd: null };
   const deps = { mcpUrl: () => "http://127.0.0.1:1/mcp", reposDir: () => "/w/repos", memoryPath: () => "/w/agent/MEMORY.md" };
   const profile = { id: "p", runtime: "claude", runtimes: ["claude"], home: "/h", models: [], named: [], name: "p", backgroundOnMessage: true, enabled: true } as never;
-  const without = openOptions(row, profile, deps, "").instructions;
+  const without = (await openOptions(row, profile, deps, "")).instructions;
   assert.ok(!without.includes("Monoid"));
-  const site = openOptions(row, profile, { ...deps, siteInstructions: () => "This machine is a Monoid Machine." }, "").instructions;
+  const site = (await openOptions(row, profile, { ...deps, siteInstructions: () => "This machine is a Monoid Machine." }, "")).instructions;
   assert.equal(site, `${without}\n\nThis machine is a Monoid Machine.`);
 });
 

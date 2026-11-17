@@ -67,6 +67,8 @@ fn Stream::reset(self : Stream) -> Unit {
 priv struct Lines {
   stream : Stream
   carry : @wire.Carry
+  /// How long a line may be.
+  most : Int
 }
 
 ///|
@@ -76,7 +78,7 @@ async fn Lines::next(self : Lines) -> String? {
     if self.carry.line() is Some(line) {
       return Some(line)
     }
-    if self.carry.length() > max_head {
+    if self.carry.length() > self.most {
       raise failed("head_too_long")
     }
     let chunk = self.stream.read() catch { e => raise cut(e) }
@@ -105,8 +107,8 @@ priv struct Control {
 }
 
 ///|
-async fn Control::send(self : Control, credential : String, also? : Map[String, Json]) -> Unit {
-  self.stream.write(@utf8.encode(@wire.hello_line(credential, says?=self.says, also?))) catch {
+async fn Control::send(self : Control, credential : String, also? : Map[String, Json], traceparent? : String) -> Unit {
+  self.stream.write(@utf8.encode(@wire.hello_line(credential, says?=self.says, also?, traceparent?))) catch {
     e => raise cut(e)
   }
 }
@@ -197,6 +199,7 @@ pub struct Link {
   /// replies had brought as it was last pinged.
   priv mut missed : Int
   priv mut pinging : Bool
+  priv mut pinged_at : Int64
   priv mut rx : Int
   /// Its pings' round trips (`Link::note`): how many were counted, their mean and mean deviation smoothed, how long
   /// the last one answered took (none answered: none), and whether one was answered yet (the first is not counted).
@@ -205,12 +208,21 @@ pub struct Link {
   priv mut dev : Double
   priv mut answered_ms : Int?
   priv mut warm : Bool
+  /// What its connection carried both ways as it was last counted (speed.mbt).
+  priv mut counted : (Int64, Int64)
+  /// How long its dial took to get onto a relay, to be dialled, to have its credential (ms from its start); and what
+  /// its record's last `conn ways` line counted of it (trace.mbt).
+  priv opened : (Int, Int, Int)
+  priv mut recorded : (Int64, Int64, Map[String, (Int64, Int64)])
+  /// Where the peer said it is dialled straight, in its answer to the first line (addrs.mbt).
+  priv mut lan : Array[String]
+  priv mut tailnet : Array[String]
+  /// The endpoint of a way's own it is on (ways.mbt: a relay, "lan", "tailnet"); none: the endpoint.
+  priv pin : String?
   /// The mesh's fibers: where the wait for a stream the peer opens runs (`Link::accept`).
   priv fibers : @effect.Scope
-  /// One asks for the next stream the peer opens at a time; and the shell's answer to the wait under way, kept
-  /// until someone takes it (none: no wait is under way).
-  priv accepts : @effect.Semaphore
-  priv mut coming : @effect.Deferred[Json?]?
+  /// The waits for the streams the peer opens (`Link::accept`).
+  priv accepting : Accepting
 }
 
 ///|
@@ -243,12 +255,16 @@ pub struct Reply {
   priv stream : Stream
   /// What came with the head line and was not taken yet.
   priv mut carry : Bytes?
+  /// Its body was asked for (`take`, `rest`): nothing of it is the shell's to read for another (`tap`) after.
+  priv mut started : Bool
   priv mut done : Bool
   /// Let go of (`cancel`, a read that failed): nothing more goes out on its stream either (`Out`).
   priv mut gone : Bool
   /// Done as it is let go of, however it is: whether for something that failed (a read, a write, a body too long)
   /// and not by its program's own `cancel`. What a wait on its stream is told then (`Out::stopped`).
   priv went : @effect.Deferred[Bool]
+  /// Told each piece of its body as it is taken, and its end (`Mesh::timed`).
+  priv mut on_piece : ((Bytes?) -> Unit)?
 }
 
 ///|
@@ -267,6 +283,16 @@ pub fn Reply::header(self : Reply, name : String) -> String? {
 /// given up while it waits is to be cancelled, not taken again; one whose `take` failed is let go of here (its stream
 /// reset: the shell keeps a stream until it is, or is read to its end), and has ended.
 pub async fn Reply::take(self : Reply) -> Bytes? {
+  let chunk = self.taken()
+  if self.on_piece is Some(told) {
+    told(chunk)
+  }
+  chunk
+}
+
+///|
+async fn Reply::taken(self : Reply) -> Bytes? {
+  self.started = true
   if self.carry is Some(carry) {
     self.carry = None
     return Some(carry)
@@ -328,6 +354,33 @@ fn joined(pieces : Array[Bytes], length : Int) -> Bytes {
 ///|
 /// `all` as the bytes they are, not copied: nothing writes it after.
 fn as_bytes(all : FixedArray[Byte]) -> Bytes = "%identity"
+
+///|
+/// Hands what follows its head to the shell to read itself (`istream.tap`), for its program's call `call`: what
+/// came with the head line goes with it, so the shell reads from the body's first byte. True where the shell took
+/// it: what `take` gives after is what the shell reads on past it for the program. False, with nothing changed (its
+/// body still read whole from its first byte), where the shell would not or has no such op (a page's), or where it
+/// is too late: its body was asked for already (`take`, `rest`), it ended or was let go of, or `call` is negative.
+pub async fn Reply::tap(self : Reply, call : Int64) -> Bool {
+  if self.started || self.done || self.gone || call < 0L {
+    return false
+  }
+  let prefix = self.carry.unwrap_or(b"")
+  self.carry = None
+  let said = attempt(() => self.stream.shell.call(
+    "istream.tap",
+    { "id": self.stream.id, "call": Json::number(call.to_double()) },
+    bytes=prefix,
+  ))
+  if said is Did({ json: { "tapped": True, .. }, .. }) {
+    return true
+  }
+  // (not taken: what came with the head is its program's again, unless something took the body meanwhile)
+  if prefix.length() > 0 && !self.started && !self.gone {
+    self.carry = Some(prefix)
+  }
+  false
+}
 
 ///|
 /// Lets go of it: its stream is stopped both ways (nothing more is read, the peer stops sending).
@@ -457,7 +510,7 @@ async fn Link::sent(self : Link, head : String, body : Bytes, finish : Bool, wro
   } catch {
     e => raise cut(e)
   }
-  let lines : Lines = { stream, carry: @wire.Carry::new() }
+  let lines : Lines = { stream, carry: @wire.Carry::new(), most: max_head }
   guard lines.next() is Some(line) else { raise failed("no_reply") }
   match @wire.reply_head(line) {
     Unreadable(why) => raise MeshError(code="mesh", message=say("reply_unreadable"), cause=why)
@@ -471,26 +524,34 @@ async fn Link::sent(self : Link, head : String, body : Bytes, finish : Bool, wro
         link: self,
         stream,
         carry: if with_head.length() > 0 { Some(with_head) } else { None },
+        started: false,
         done: false,
         gone: false,
         went: @effect.Deferred::new(),
+        on_piece: None,
       }
     }
   }
 }
 
 ///|
-/// A stream opened on the link. The shell's wait for it (`conn.openBi`) is a fiber of the mesh's, not the asker's:
-/// the shell opens it whoever waits, so for an asker gone meanwhile the stream that comes is reset there, and none
-/// is left open for nobody. Whoever waits for it waits for the link's end beside it (which the close says of every
-/// link: that fiber, cut before its first step, says nothing).
+/// A stream opened on the link (`open_on`).
 async fn Link::stream(self : Link) -> Stream {
+  open_on(self.shell, self.conn, self.fibers, self.gone)
+}
+
+///|
+/// A stream opened on the connection `conn`, whose end `gone` says. The shell's wait for it (`conn.openBi`) is a
+/// fiber of `fibers` (the mesh's), not the asker's: the shell opens it whoever waits, so for an asker gone meanwhile
+/// the stream that comes is reset there, and none is left open for nobody. Whoever waits for it waits for the
+/// connection's end beside it (which the mesh's close says of every connection: that fiber, cut before its first
+/// step, says nothing).
+async fn open_on(shell : @shell.Shell, conn : Json, fibers : @effect.Scope, gone : @effect.Deferred[Closed]) -> Stream {
   let coming : @effect.Deferred[Json] = @effect.Deferred::new()
   let wanted = Ref(true)
-  let shell = self.shell
   ignore(
-    self.fibers.fork(name="mesh stream", () => {
-      let opened = attempt(() => shell.call("conn.openBi", { "id": self.conn }))
+    fibers.fork(name="mesh stream", () => {
+      let opened = attempt(() => shell.call("conn.openBi", { "id": conn }))
       match opened {
         Did({ json: { "id": id, .. }, .. }) =>
           if wanted.val {
@@ -515,7 +576,7 @@ async fn Link::stream(self : Link) -> Stream {
     }
   }
   let id = @effect.race_first(() => coming.wait(), () => {
-    let why = self.gone.wait()
+    let why = gone.wait()
     raise MeshError(code="mesh", message=say("cut"), cause="connection closed: \{why.reason}")
   })
   taken.val = true
@@ -630,6 +691,8 @@ pub async fn Out::stopped(self : Out) -> Int? {
 pub struct Inbound {
   out : Out
   priv stream : Stream
+  /// What came with a line read off it first (`Incoming::first`) and was not taken yet.
+  priv mut carry : Bytes?
   priv mut done : Bool
   priv mut gone : Bool
   /// As a reply's: done as it is let go of, whether for something that failed.
@@ -637,9 +700,32 @@ pub struct Inbound {
 }
 
 ///|
+/// A stream its peer opened, as its program's to read and answer; `carry`: what was read of it already and is
+/// its program's.
+fn inbound_of(stream : Stream, carry : Bytes?) -> Inbound {
+  let inbound : Ref[Inbound?] = Ref(None)
+  let went : @effect.Deferred[Bool] = @effect.Deferred::new()
+  let out : Out = {
+    stream,
+    let_go: () => if inbound.val is Some(inbound) { inbound.let_go(true) },
+    is_gone: () => inbound.val is Some(inbound) && inbound.gone,
+    went,
+    is_read: () => inbound.val is Some(inbound) && inbound.done,
+    finished: false,
+  }
+  let taken : Inbound = { out, stream, carry, done: false, gone: false, went }
+  inbound.val = Some(taken)
+  taken
+}
+
+///|
 /// The next of what the peer sent on it; None once it ended. As a reply's (`Reply::take`): one whose `take` is given
 /// up while it waits is to be cancelled, not taken again; one whose `take` failed is let go of here, and has ended.
 pub async fn Inbound::take(self : Inbound) -> Bytes? {
+  if self.carry is Some(carry) {
+    self.carry = None
+    return Some(carry)
+  }
   if self.done {
     return None
   }
@@ -666,65 +752,95 @@ pub fn Inbound::cancel(self : Inbound) -> Unit {
 fn Inbound::let_go(self : Inbound, broke : Bool) -> Unit {
   self.done = true
   self.gone = true
+  self.carry = None
   ignore(self.went.succeed(broke))
   self.stream.reset()
 }
 
 ///|
-/// The next stream the peer opens on the link; None once the connection ended, or the mesh closed. One asker at a
-/// time: another waits its turn.
-///
-/// The shell's wait for it (`conn.acceptBi`) is a fiber of the mesh's, not the asker's, and one is under way at
-/// most: an asker that gives up loses nothing, and the stream that wait brings is the next asker's. With nobody
-/// asking again it is kept at the shell until the connection ends, as every stream of it is.
+/// The next stream the peer opens on the link; None once the connection ended, or the mesh closed (`accept_on`).
 pub async fn Link::accept(self : Link) -> Inbound? {
-  self.accepts.with_permit(() => {
+  accept_on(self.shell, self.conn, self.fibers, self.gone, self.accepting)
+}
+
+///|
+/// The waits for the streams a peer opens on one connection: one asks at a time (`lock`), and the shell's answer to
+/// the wait under way is kept until someone takes it (none: no wait is under way).
+priv struct Accepting {
+  lock : @effect.Semaphore
+  mut coming : @effect.Deferred[Json?]?
+}
+
+///|
+fn Accepting::new() -> Accepting {
+  { lock: @effect.Semaphore::new(1), coming: None }
+}
+
+///|
+/// As the connection's end is told: a stream the wait brought that nobody took is reset, and the wait let go of. A
+/// wait still out is left to its fiber, which resets what it brings once the connection ended (`accept_on`).
+fn Accepting::drop_kept(self : Accepting, shell : @shell.Shell) -> Unit {
+  guard self.coming is Some(coming) else { return }
+  let kept : Json?? = coming.poll() catch { _ => None }
+  guard kept is Some(came) else { return }
+  self.coming = None
+  if came is Some(id) {
+    shell.tell("istream.reset", { "id": id, "code": 0 })
+  }
+}
+
+///|
+/// The next stream the peer opens on the connection `conn`, whose end `gone` says; None once it ended, or the mesh
+/// closed. One asker at a time: another waits its turn.
+///
+/// The shell's wait for it (`conn.acceptBi`) is a fiber of `fibers` (the mesh's), not the asker's, and one is under
+/// way at most: an asker that gives up loses nothing, and the stream that wait brings is the next asker's. With
+/// nobody asking again it is kept at the shell until the connection ends, as every stream of it is; one that comes
+/// after the end was told is reset there.
+async fn accept_on(
+  shell : @shell.Shell,
+  conn : Json,
+  fibers : @effect.Scope,
+  gone : @effect.Deferred[Closed],
+  accepting : Accepting,
+) -> Inbound? {
+  accepting.lock.with_permit(() => {
     // (ended, and the mesh told so: the shell is asked nothing of its connection after)
-    guard self.ended_as_told() is None else { return None }
-    let coming = match self.coming {
+    guard !gone.is_done() else { return None }
+    let coming = match accepting.coming {
       Some(coming) => coming
       None => {
         let coming : @effect.Deferred[Json?] = @effect.Deferred::new()
-        self.coming = Some(coming)
+        accepting.coming = Some(coming)
         // (cut as the mesh closes, before its first step even, it says nothing: whoever waits below is told by
-        // the link's end, which the close says of every link)
+        // the connection's end, which the close says of every one)
         ignore(
-          self.fibers.fork(name="mesh accept", () => {
-            let said = attempt(() => self.shell.call("conn.acceptBi", { "id": self.conn }))
-            ignore(
-              coming.succeed(
-                match said {
-                  Did({ json: { "id": id, .. }, .. }) => Some(id)
-                  _ => None
-                },
-              ),
-            )
+          fibers.fork(name="mesh accept", () => {
+            let said = attempt(() => shell.call("conn.acceptBi", { "id": conn }))
+            let came = match said {
+              Did({ json: { "id": id, .. }, .. }) =>
+                if gone.is_done() {
+                  shell.tell("istream.reset", { "id": id, "code": 0 })
+                  None
+                } else {
+                  Some(id)
+                }
+              _ => None
+            }
+            ignore(coming.succeed(came))
           }),
         )
         coming
       }
     }
     let next = @effect.race_first(() => coming.wait(), () => {
-      ignore(self.gone.wait())
+      ignore(gone.wait())
       None
     })
     guard next is Some(id) else { return None }
     // (taken: the next asker's wait is another)
-    self.coming = None
-    let stream : Stream = { shell: self.shell, id }
-    let inbound : Ref[Inbound?] = Ref(None)
-    let went : @effect.Deferred[Bool] = @effect.Deferred::new()
-    let out : Out = {
-      stream,
-      let_go: () => if inbound.val is Some(inbound) { inbound.let_go(true) },
-      is_gone: () => inbound.val is Some(inbound) && inbound.gone,
-      went,
-      is_read: () => inbound.val is Some(inbound) && inbound.done,
-      finished: false,
-    }
-    let taken : Inbound = { out, stream, done: false, gone: false, went }
-    inbound.val = Some(taken)
-    Some(taken)
+    accepting.coming = None
+    Some(inbound_of({ shell, id }, None))
   })
 }
 

@@ -6,15 +6,16 @@
 //
 // Unlike the Rust command, Node cannot try run/station.lock (flock): whether a station runs is told by run/station.json
 // (its pid there, alive, a station's command, and saying it takes the ask: `channel: 1`), as the installer tells it.
-import { existsSync, mkdirSync, readFileSync, rmSync, watch } from "node:fs";
+import { watch } from "node:fs";
+import { mkdir, readFile, rm } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { Effect, Latch, Option } from "effect";
 import { ConfigFile } from "../ops/config.ts";
 import { flag } from "../ops/files.ts";
 import { stationLang, tr } from "../ops/i18n.ts";
-import { readJsonFile } from "../ops/json-file.ts";
+import { InvalidJsonFile } from "../ops/json-file.ts";
 import { CHANNEL_ANSWER, CHANNEL_ASK, writeWhole } from "./updates.ts";
-import { type Channel, channelOf, channelOfId } from "./versions.ts";
+import { type Channel, channelOfId, channelOfSoon } from "./versions.ts";
 import { platform } from "../platform/index.ts";
 
 const configPath = (data: string) => process.env.STILLFAIL_CONFIG || join(data, "config.json");
@@ -44,49 +45,51 @@ export function setChannelIn(data: string, channel: Channel) {
 /// config written here. Its refusal is thrown with its words.
 export async function setChannel(data: string, channel: Channel, waitMs: number, station: (pid: number) => boolean | Promise<boolean> = isStation): Promise<void> {
   const run = join(data, "run");
-  mkdirSync(run, { recursive: true });
-  let said: any = null;
-  try {
-    said = JSON.parse(readFileSync(join(run, "station.json"), "utf8"));
-  } catch {}
+  await mkdir(run, { recursive: true });
+  const said: any = await readJson(join(run, "station.json"));
   const pid = Number.isSafeInteger(said?.pid) && said.pid > 0 ? (said.pid as number) : null;
   if (pid === null || said?.channel !== 1 || !alive(pid) || !(await station(pid))) return setChannelIn(data, channel);
   // (the channel its config already says: nothing to ask. `stillfail update --beta` on a station on beta, each
   // release's, waited on the running station and failed when it was too busy to answer in time, 2026-10-31)
-  try {
-    if (readJsonFile(configPath(data))?.updateChannel === channel) return;
-  } catch {}
+  if ((await readJson(configPath(data)))?.updateChannel === channel) return;
   const answer = join(run, CHANNEL_ANSWER);
-  rmSync(answer, { force: true });
-  writeWhole(join(run, CHANNEL_ASK), channel);
+  await rm(answer, { force: true });
+  await writeWhole(join(run, CHANNEL_ASK), channel);
   try {
     // The launcher hears it (Unix's SIGHUP, a line on Windows' pipe) and tells the station's process.
     await platform.askLauncher(pid, "hup");
   } catch (e) {
-    rmSync(join(run, CHANNEL_ASK), { force: true });
+    await rm(join(run, CHANNEL_ASK), { force: true });
     throw new Error(tr(stationLang(), "station.cli.signalFailed", { pid, error: (e as Error).message }));
   }
   const text = Option.getOrNull(await Effect.runPromise(answerIn(answer, waitMs)));
   if (text !== null) {
-    rmSync(answer, { force: true });
+    await rm(answer, { force: true });
     const t = text.trim();
     if (t.startsWith("ok")) return;
     throw new Error(t.startsWith("error ") ? t.slice(6) : t);
   }
-  rmSync(join(run, CHANNEL_ASK), { force: true });
+  await rm(join(run, CHANNEL_ASK), { force: true });
   throw new Error(tr(stationLang(), "station.cli.noAnswer"));
 }
+
+/// The JSON in `path`; null where it is not there or not JSON.
+const readJson = (path: string): Promise<any> =>
+  readFile(path, "utf8").then(
+    (t) => {
+      try {
+        return JSON.parse(t);
+      } catch {
+        return null;
+      }
+    },
+    () => null,
+  );
 
 /// The running station's answer in `path`, once it is there: looked at as its directory changes (the answer is written
 /// aside and moved in) and every 100 ms besides (a change can go unheard); none after `waitMs`.
 function answerIn(path: string, waitMs: number): Effect.Effect<Option.Option<string>> {
-  const read = () => {
-    try {
-      return readFileSync(path, "utf8");
-    } catch {
-      return null;
-    }
-  };
+  const read = Effect.promise(() => readFile(path, "utf8").catch(() => null));
   return Effect.scoped(
     Effect.gen(function* () {
       const changed = Latch.makeUnsafe(false);
@@ -106,7 +109,7 @@ function answerIn(path: string, waitMs: number): Effect.Effect<Option.Option<str
       );
       for (;;) {
         changed.closeUnsafe();
-        const text = read();
+        const text = yield* read;
         if (text !== null) return text;
         yield* Effect.raceFirst(Effect.sleep(100), changed.await);
       }
@@ -127,11 +130,22 @@ export async function channelCommand(args: string[], data: string): Promise<numb
       if (channel === null) throw new Error(tr(stationLang(), "station.cli.badChannel", { channel: named[0] }));
       await setChannel(data, channel, 10_000);
     }
-    let raw: any = {};
+    // (a config that is there but not JSON is refused, as before: only one that is not there is `{}`)
     const path = configPath(data);
-    if (existsSync(path)) raw = readJsonFile(path);
+    const text = await readFile(path, "utf8").catch((e: NodeJS.ErrnoException) => {
+      if (e.code === "ENOENT") return null;
+      throw e;
+    });
+    let raw: any = {};
+    if (text !== null) {
+      try {
+        raw = JSON.parse(text);
+      } catch {
+        throw new InvalidJsonFile(path);
+      }
+    }
     // No --app: as the Rust command, the release is "" (a CHANNEL beside where it runs).
-    console.log(channelOf(raw, app ?? ""));
+    console.log(await channelOfSoon(raw, app ?? ""));
     return 0;
   } catch (e) {
     console.error(`Error: ${(e as Error).message}`);

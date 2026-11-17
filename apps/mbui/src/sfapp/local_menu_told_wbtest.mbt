@@ -62,3 +62,19 @@ test "大屏: 本机 Station's ⋯ pressed again with its menu open, then Escape
   }
   assert_eq((run(false), run(true)), ([false, false, false], [false, false, false]))
 }
+
+///|
+test "大屏: 本机 Station's menu chosen from (停止): closed as it is chosen, its ⋯ no longer said open" {
+  let t = local_tester()
+  t.click(Button, label="更多操作")
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfpages.local_menu_open())
+  let (x, y) = t.find_last("停止").unwrap()
+  t.tap(x, y)
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.app_told("local_station_act"), ["stop"])
+  assert_false(@sfpages.local_menu_open())
+  assert_true(t.query(Button, label="更多操作", expanded=false) is Some(_))
+}

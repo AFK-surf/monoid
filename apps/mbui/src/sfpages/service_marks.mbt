@@ -3,36 +3,8 @@
 // (service_marks.mbt).
 
 ///|
-/// The bar's edit key (Preview.kt BarIcon(Icons.Edit, pressed)): 28 round, a 14 icon; picking, the accent's 14% under
-/// it and its icon in the accent's ink. Named 标注 for a screen reader, what it does said on hover (Marks.tsx: 停止点选
-/// while picking).
-fn page_mark_key(c : @ui.Ctx, on : Bool, on_press? : () -> Unit) -> Unit {
-  let t = @sf.theme()
-  let id = c.id("service/mark")
-  let b = c.box(style=if on { mark_key_on } else { mark_key }, id~, fn() {
-    @sf.icon(c, "edit", size=bar_icon_size, color=if on { t.p.accent_text } else { t.p.text }) |> ignore
-    // Preview.kt BarKey: clip(CircleShape).clickable
-    @motion.ripple(c, id, 14.0)
-  })
-  c.semantics(b, Button, id~, label=@sf.t("web-main.annotate.mark"))
-  @sf.tip(c, "service/mark/tip", id, @sf.t(if on { "web-main.annotate.stopPicking" } else { "web-main.annotate.pageTip" }))
-  match on_press {
-    Some(f) => c.on_press(id, f)
-    None => ()
-  }
-}
-
-///|
 /// A bar key's icon.
 let bar_icon_size : Double = 14.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_key : @ui.Style = @ui.css("w=S7 h=S7 radius=Full align=ACenter justify=JCenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let mark_key_on : @ui.Style = mark_key.then(@ui.style(bg=@sf.mark_key_on))
 
 ///|
 /// The address's place while marking (all the room there is).
@@ -129,71 +101,6 @@ let mark_put_words : @ui.TextStyle = @ui.text_style(
 let mark_small_icon : Double = 12.0
 
 ///|
-/// In the address's place while marking: what to do or how many, then putting them into the
-/// chat.
-fn page_mark_mode(c : @ui.Ctx, src : Source, p : ServicePage, site : @ui.NativeView) -> Unit {
-  let t = @sf.theme()
-  let m = p.marks
-  let n = m.marks.length()
-  let busy = m.shot is Some(_)
-  c.box(style=mark_mode_bar, keep=true, fn() {
-    c.box(style=if m.marking { mark_dot_ring } else { mark_dot_box }, fn() {
-      c.box(style=if m.marking { mark_dot_on } else { mark_dot }, fn() {  }) |> ignore
-    })
-    |> ignore
-    c.box(style=mark_words_box, keep=true, fn() {
-      if m.error != "" {
-        c.text(m.error, style=mark_error_words) |> ignore
-      } else {
-        let said = if n > 0 {
-          svc("android-chat.preview.marked", args=[("n", n.to_string())])
-        } else {
-          svc("android-chat.preview.pick")
-        }
-        c.text(said, style=mark_count_words) |> ignore
-        if m.marking && n > 0 {
-          c.text(svc("android-chat.preview.pickMore"), style=mark_more_words) |> ignore
-        }
-      }
-    })
-    |> ignore
-    // ×: marking left
-    let close = c.id("service/mark-close")
-    c.on_press(close, fn() {
-      if !busy {
-        page_marks_leave(p, site)
-      }
-    })
-    c.box(style=mark_close, id=if busy { 0 } else { close }, fn() {
-      @sf.icon(c, "close", size=mark_small_icon, color=t.p.muted) |> ignore
-    })
-    |> ignore
-    // 添加到对话 (正在截图 while it is)
-    let able = !busy && n > 0
-    let put = c.id("service/mark-put")
-    c.on_press(put, fn() {
-      if able {
-        page_marks_put(p, site, src)
-      }
-    })
-    let ink = if t.dark { t.p.bg } else { 0xFFFFFFFFL }
-    c.box(style=if able { mark_put_pill } else { mark_put_off }, id=if able { put } else { 0 }, fn() {
-      @sf.icon(c, "send", size=mark_small_icon, color=ink) |> ignore
-      let words = svc(if busy { "android-chat.preview.shooting" } else { "android-chat.preview.put" })
-      c.text(words, style=mark_put_words) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A mark's box on its element: 4 round, its edge the accent's 55% (1.5), open the accent (2)
-/// over its 8%.
-// kept across runs: a value (no field of it changes)
-let mark_box_open : @ui.Style = @ui.style(radius=Base, border=B2, border_color=Accent, bg=@sf.mark_open_bg)
-
-///|
 /// A mark's box not open: 4 round, its edge 1.5 of the accent's 55%.
 let mark_box_r : Double = 4.0
 
@@ -204,9 +111,9 @@ let mark_edge : Double = 1.5
 let mark_edge_a : Double = 0.55
 
 ///|
-/// A mark's pin: 24, round, white, 2 in, a shadow; the accent inside, its number 11 bold in white.
+/// A mark's pin: 24, round, white, 2 in (its shadow raised_node's); the accent inside, its number 11 bold in white.
 // kept across runs: a value (no field of it changes)
-let mark_pin : @ui.Style = @ui.style(w=S6, h=S6, radius=Full, bg=OnAccent, p=S0_5, shadow=@sf.pin_raised.cast())
+let mark_pin : @ui.Style = @ui.css("w=S6 h=S6 radius=Full bg=OnAccent p=S0_5")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -217,99 +124,14 @@ let mark_pin_in : @ui.Style = @ui.css("w=Full h=Full radius=Full bg=Accent align
 let mark_pin_words : @ui.TextStyle = @ui.text_style(size=@sf.mark_pin_size, weight=Bold, color=OnAccent, wrap=false)
 
 ///|
-/// What is said of a mark beside its pin: 26 high, round, frosted, a shadow, 10 in; 12 in the ink, one line.
+/// What is said of a mark beside its pin: 26 high, round, 10 in; 12 in the ink, one line (its ground and shadow
+/// mark_bubble_node's, mark_said_node's).
 // kept across runs: a value (no field of it changes)
-let mark_said : @ui.Style = @ui.style(
-  h=@sf.mark_said_h,
-  radius=Full,
-  bg=@sf.mark_bubble,
-  shadow=@sf.pin_raised.cast(),
-  px=S2_5,
-  justify=JCenter,
-  clip=true,
-  dark=@ui.patch(bg=@sf.mark_bubble_dark),
-)
+let mark_said : @ui.Style = @ui.style(h=@sf.mark_said_h, radius=Full, px=S2_5, justify=JCenter, clip=true)
 
 ///|
 // kept across runs: a value (no field of it changes)
 let mark_said_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Fg, wrap=false)
-
-///|
-/// The marks over the page, where it is drawn: each a box on its element, a numbered pin on its
-/// corner (kept in sight at the page's edges), what is said of it beside the pin, or its note open. `ox`, `oy`: the
-/// page's top left on the stage; `view_w` its width there before its scale; `stage_w` the stage's width.
-fn page_marks_over(
-  c : @ui.Ctx,
-  p : ServicePage,
-  site : @ui.NativeView,
-  ox : Double,
-  oy : Double,
-  view_w : Double,
-  scale : Double,
-  stage_w : Double,
-) -> Unit {
-  let t = @sf.theme()
-  let m = p.marks
-  // CSS pixels to the stage's: the page's own ratio, then the stage's scale
-  let k = if m.css_w > 0.0 { view_w / m.css_w * scale } else { scale }
-  c.layer(fn() {
-    for mark in m.marks {
-      let (bx, by, bw, bh) = m.at.get(mark.n).unwrap_or(mark.rect)
-      let x = ox + bx * k
-      let y = oy + by * k
-      let open = m.editing == Some(mark.n)
-      let size = @ui.style(w=Fixed(bw * k), h=Fixed(bh * k))
-      if open {
-        c.box(style=mark_box_open.then(size), tx=x, ty=y, fn() {  }) |> ignore
-      } else {
-        // (its edge 1.5, which no Stroke of the scale says: said loosely)
-        c.box(style=size, tx=x, ty=y, radius=mark_box_r, border=mark_edge, border_color=@sf.alpha(t.p.accent, mark_edge_a), fn() {  })
-        |> ignore
-      }
-      // the pin's point on the element's top-left corner
-      let pin_x = dmax(pin_edge, x)
-      let pin_y = dmax(pin_top, y)
-      let pin = c.id("service/pin/\{mark.n}")
-      c.on_press(pin, fn() {
-        m.editing = if open { None } else { Some(mark.n) }
-        if !open {
-          m.note.set(mark.comment)
-          c.focus_field(m.note)
-        }
-      })
-      c.box(style=mark_pin, tx=pin_x - pin_edge, ty=pin_y - pin_rise, id=pin, fn() {
-        c.box(style=mark_pin_in, fn() { c.text("\{mark.n}", style=mark_pin_words) |> ignore }) |> ignore
-      })
-      |> ignore
-      if open {
-        page_mark_note(c, p, site, mark, pin_x, pin_y, stage_w)
-      } else if mark.comment != "" {
-        // beside the pin, on its left when the right has too little room
-        let right = stage_w - pin_x - said_from >= dmin(said_room, pin_x - said_left)
-        let max_w = dmax(said_least, if right { stage_w - pin_x - said_from } else { pin_x - said_left })
-        let said = c.id("service/said/\{mark.n}")
-        c.on_press(said, fn() {
-          m.editing = Some(mark.n)
-          m.note.set(mark.comment)
-          c.focus_field(m.note)
-        })
-        let row = @ui.style(row=true, w=Fixed(if right { max_w } else { pin_x - said_beside }), justify=if right {
-          JStart
-        } else {
-          JEnd
-        })
-        c.box(style=row, tx=if right { pin_x + pin_w + pin_edge * 2.0 } else { 0.0 }, ty=pin_y - pin_rise - 1.0, fn() {
-          c.box(style=mark_said.then(@ui.style(max_w=Fixed(max_w))), id=said, fn() {
-            c.text(mark.comment, style=mark_said_words) |> ignore
-          })
-          |> ignore
-        })
-        |> ignore
-      }
-    }
-  })
-  |> ignore
-}
 
 ///|
 /// Where a pin sits: 24 wide, its point 2 in from its left and 22 down, kept 2 from the
@@ -342,22 +164,11 @@ let said_beside : Double = 6.0
 let said_least : Double = 40.0
 
 ///|
-/// A mark's note: 280 wide at most (8 clear of the stage's sides), 36 high, round, frosted, a
-/// stronger shadow, 12 in at its start and 4 at its end, 6 apart; 28 right of the pin's point and 28 above it (8 from
+/// A mark's note: 280 wide at most (8 clear of the stage's sides), 36 high, round (its ground and stronger shadow
+/// mark_bubble_node's), 12 in at its start and 4 at its end, 6 apart; 28 right of the pin's point and 28 above it (8 from
 /// the stage's top at least).
 // kept across runs: a value (no field of it changes)
-let mark_note : @ui.Style = @ui.style(
-  row=true,
-  h=S9,
-  radius=Full,
-  bg=@sf.mark_bubble,
-  shadow=@sf.bubble_raised.cast(),
-  pl=S3,
-  pr=S1,
-  gap=S1_5,
-  align=ACenter,
-  dark=@ui.patch(bg=@sf.mark_bubble_dark),
-)
+let mark_note : @ui.Style = @ui.css("row h=S9 radius=Full pl=S3 pr=S1 gap=S1_5 align=ACenter")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -382,55 +193,3 @@ let note_font : Double = 13.0
 
 ///|
 let note_icon : Double = 14.0
-
-///|
-/// What is said about one mark, in a bubble beside its pin: what it is for while empty; done, closed;
-/// its remove key takes the mark off the page too.
-fn page_mark_note(
-  c : @ui.Ctx,
-  p : ServicePage,
-  site : @ui.NativeView,
-  mark : PageMark,
-  x : Double,
-  y : Double,
-  stage_w : Double,
-) -> Unit {
-  let t = @sf.theme()
-  let width = dmin(note_most, stage_w - 2.0 * note_clear)
-  let left = dmin(dmax(note_clear, x + note_off), dmax(note_clear, stage_w - width - note_clear))
-  let top = dmax(note_clear, y - note_off)
-  c.box(style=mark_note.then(@ui.style(w=Fixed(width))), tx=left, ty=top, fn() {
-    c.box(style=mark_note_field, fn() {
-      let r = c.editor(
-        "service/note",
-        font_size=note_font,
-        max_lines=1,
-        plain=true,
-        color=t.p.text,
-        caret_color=t.p.accent,
-        placeholder=svc("android-chat.preview.mark.comment", args=[("kind", mark.kind)]),
-        placeholder_color=t.p.muted,
-        field=p.marks.note,
-      )
-      mark.comment = r.text
-      match r.submitted {
-        Some(_) => {
-          p.marks.editing = None
-          c.blur()
-        }
-        None => ()
-      }
-    })
-    |> ignore
-    let remove = c.id("service/note-remove")
-    c.on_press(remove, fn() {
-      page_marks_remove(p, site, mark.n)
-      c.blur()
-    })
-    c.box(style=mark_note_remove, id=remove, fn() {
-      @sf.icon(c, "trash", size=note_icon, color=t.p.muted) |> ignore
-    })
-    |> ignore
-  })
-  |> ignore
-}

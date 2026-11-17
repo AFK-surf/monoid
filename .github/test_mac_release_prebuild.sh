@@ -51,6 +51,11 @@ set -eu
 [ "$MOON_HOME" = "$RUNNER_TOOL_CACHE/moon-ci" ]
 touch "$RUNNER_TEMP/app-built"
 [ "${FAIL_APP:-0}" = 0 ] || exit 8
+# (the app, with libghostty-vt's calls unless NO_GHOSTTY: the app's mac.sh fails one without them)
+exe="$A/_build/native/release/build/stillfail/stillfail/stillfail.exe"
+mkdir -p "$(dirname "$exe")"
+if [ "${NO_GHOSTTY:-0}" = 0 ]; then c='int ghostty_terminal_new(void) { return 0; } int main(void) { return 0; }'; else c='int main(void) { return 0; }'; fi
+printf '%s\n' "$c" | cc -x c - -o "$exe"
 EOF
 }
 case_dir exit_race
@@ -106,6 +111,15 @@ bash "$script" ready
 bash "$script" packages
 if bash "$script" wait; then echo 'app failure was not reported' >&2; exit 1; fi
 unset FAIL_APP
+
+case_dir no_terminal
+echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"
+export NO_GHOSTTY=1
+bash "$script" start
+bash "$script" ready
+bash "$script" packages
+if bash "$script" wait; then echo 'an app without libghostty-vt was not reported' >&2; exit 1; fi
+unset NO_GHOSTTY
 
 case_dir bytecode_failure
 echo 12.0 > "$GITHUB_WORKSPACE/apps/mbui/_build/.macos-min"

@@ -7,11 +7,11 @@
 // - Claude Code reads that file for its key (its `apiKeyHelper`, agents/claude.ts), again every minute and after a 401;
 // - every request of the sign-in carries the device it was made on (X-Msh-Device-Id): Kimi renews a token only for it.
 // It stays on the station it was signed in on (share/index.ts does not lend it).
-import { readFileSync } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { arch, hostname, release, type } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { writePrivate } from "../ops/files.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import { type Device, type DeviceAnswer, pollAnswer, postForm, renewAnswer } from "./console.ts";
 
 type Json = any;
@@ -45,9 +45,9 @@ export function kimiHeaders(deviceId: string): Record<string, string> {
   };
 }
 
-export function readKimi(home: string): KimiLogin | null {
+export async function readKimi(home: string): Promise<KimiLogin | null> {
   try {
-    const j: Json = JSON.parse(readFileSync(join(home, KIMI_FILE), "utf8"));
+    const j: Json = JSON.parse(await readFile(join(home, KIMI_FILE), "utf8"));
     const ok = typeof j?.access === "string" && typeof j?.refresh === "string" && typeof j?.expiresAt === "number" && typeof j?.deviceId === "string";
     return ok ? { access: j.access, refresh: j.refresh, expiresAt: j.expiresAt, lifeMs: typeof j.lifeMs === "number" ? j.lifeMs : 0, deviceId: j.deviceId } : null;
   } catch {
@@ -56,9 +56,9 @@ export function readKimi(home: string): KimiLogin | null {
 }
 
 /// The sign-in written, then its access token for Claude Code (a reader between the two gets the one before, still valid).
-export function writeKimi(home: string, login: KimiLogin) {
-  writePrivate(join(home, KIMI_FILE), `${JSON.stringify(login, null, 2)}\n`);
-  writePrivate(join(home, KIMI_TOKEN_FILE), login.access);
+export async function writeKimi(home: string, login: KimiLogin): Promise<void> {
+  await writePrivateSoon(join(home, KIMI_FILE), `${JSON.stringify(login, null, 2)}\n`);
+  await writePrivateSoon(join(home, KIMI_TOKEN_FILE), login.access);
 }
 
 /// Whether a sign-in's token is to be renewed now: less than half its life left (at least 5 minutes, as kimi-cli).

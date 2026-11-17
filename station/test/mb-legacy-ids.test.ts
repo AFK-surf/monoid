@@ -8,9 +8,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { archivePolicyIndexStep, installArchivePolicyIndex } from "../src/store/archive-policy-index.ts";
-import { decisionSessionIndexStep, decisionSessionRepairStep, installDecisionSessionIndex } from "../src/store/legacy-decision-session.ts";
-import { decisionTimeIndexStep, installDecisionTimeIndex } from "../src/store/legacy-decision-time.ts";
+import { archivePolicyIndexStep, installArchivePolicyIndex } from "./reference/backfill/archive-policy-index.ts";
+import { decisionSessionIndexStep, decisionSessionRepairStep, installDecisionSessionIndex } from "./reference/backfill/legacy-decision-session.ts";
+import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/backfill/legacy-decision-time.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

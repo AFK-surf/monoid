@@ -83,7 +83,11 @@ pub fn setting_switch_node(
 ) -> Unit {
   let control = fn(r : @view.View) { switch_node(r, on, turn, title, small=true) }
   match look_node(parent) {
-    Wide => setting_node(loc~, parent, title, control, note~)
+    // (on its title's line, the note under it: never across the middle of the two)
+    Wide =>
+      wide_control_row_node(loc~, parent, title, note, None, control, first_line=true, looks=(fn() { setting_title() }, fn() {
+        theme().rows.note
+      }))
     Narrow => {
       heading_node(parent, title, ends=control)
       parent.show(fn() { note() != "" }, fn(n) { page_note_node(n, note) })
@@ -108,5 +112,34 @@ pub fn setting_link_node(
     Wide => link_row_node(loc~, parent, title, press, value~, note~, wide_title=fn() { setting_title() })
     Narrow =>
       section_node(parent, title, about=note, fn(s) { group_node(s, fn(g) { link_row_node(g, value, press) }) })
+  }
+}
+
+///|
+/// A page of settings' keys as its list has them at its `width` (none: narrow): wide, one block, a list card of them all
+/// (settings_block's "settings"); narrow, a block each, a section of its own (setting_switch_node's, setting_node's);
+/// none, none.
+pub fn settings_keys(width : (() -> Double)?, keys : Array[String]) -> Array[String] {
+  match width {
+    Some(w) if !keys.is_empty() && look_for(w()) is Wide => ["settings"]
+    _ => keys
+  }
+}
+
+///|
+/// A block of a page of settings by its key (settings_keys'): "settings", the list card of all of `keys`, each made by
+/// `item`; any other, that one setting alone.
+#callsite(autofill(loc))
+pub fn settings_block(
+  b : @view.View,
+  key : String,
+  keys : () -> Array[String],
+  item : (@view.View, String) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
+  if key == "settings" {
+    group_node(loc~, b, fn(g) { g.each(keys, fn(k) { k }, fn(r, k) { item(r, k.untracked()) }) })
+  } else {
+    item(b, key)
   }
 }

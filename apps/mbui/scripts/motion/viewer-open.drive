@@ -3,7 +3,11 @@ until 整理发布清单
 wait 600
 tap 整理发布清单
 wait 1000
-wheel -900
+wheel -300
+wait 200
+wheel -300
+wait 200
+wheel -300
 wait 1800
 until img:compare.png
 tap img:compare.png

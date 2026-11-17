@@ -29,9 +29,27 @@ export function installChoose(inner: Inner): Choose {
   inner.router.owners.push(choose);
   // A profile its station has not checked since it started is checked, once a run.
   const checked = new Set<string>();
+  // A model borrowed from a control's panel, saved as its copy comes to the station (choose.ts `lentNow`).
+  // (run as the scheduler's turn comes, not inside the write that told it)
+  const lentNow = (station: string) => {
+    if (!choose.lentOn(station)) return;
+    const work = Effect.suspend(() =>
+      Effect.forEach(
+        choose.lentNow(station),
+        ({ of, op }) =>
+          Effect.ensuring(
+            Effect.tapError(Effect.asVoid(inner.stations.perform(op, null)), () => Effect.sync(() => choose.unsaved(station, of))),
+            Effect.sync(() => choose.settled(station, of)),
+          ),
+        { discard: true },
+      ),
+    );
+    inner.scheduler.enqueue(station, `${station} pick.lent`, Priority.asked, work);
+  };
   inner.data.onChange((topic) => {
     if (topic.topic !== "overview") return;
     const station = topic.station as string;
+    lentNow(station);
     for (const p of arr(get(inner.data.get(topic), "profiles"))) {
       const id = typeof get(p, "id") === "string" ? p.id : "";
       if (id === "" || get(p, "enabled") === false || (get(p, "check") !== undefined && p.check !== null)) continue;
@@ -77,8 +95,10 @@ export function installChoose(inner: Inner): Choose {
           });
         case "pick.borrow":
           return Effect.gen(function* () {
-            const op = yield* attempt(() => choose.borrow(field("station"), field("of")));
+            const { op, picks } = yield* attempt(() => choose.borrow(field("station"), field("of")));
             yield* handlers.op!(inner, { kind: "op", op }, progress, at, ctx);
+            choose.lent(field("station"), field("of"), picks);
+            lentNow(field("station"));
             return { borrowed: true };
           });
         default:

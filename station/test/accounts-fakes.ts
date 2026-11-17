@@ -23,7 +23,7 @@ export type Asked = { method: string; url: string; headers: Record<string, strin
 export type Reply = { status: number; body: unknown; delayMs?: number };
 
 /// A provider at a local address: `answer` says what each request gets; `asked` keeps the requests in order.
-export async function provider(answer: (asked: Asked) => Reply) {
+export async function provider(answer: (asked: Asked) => Reply | Promise<Reply>) {
   const asked: Asked[] = [];
   const server = createServer(async (req: IncomingMessage, res) => {
     const chunks: Buffer[] = [];
@@ -36,7 +36,7 @@ export async function provider(answer: (asked: Asked) => Reply) {
     const form = Object.fromEntries(new URLSearchParams(String(req.headers["content-type"] ?? "").startsWith("application/x-www-form-urlencoded") ? text : ""));
     const one: Asked = { method: req.method ?? "", url: req.url ?? "", headers: Object.fromEntries(Object.entries(req.headers).map(([k, v]) => [k, String(v)])), body, form };
     asked.push(one);
-    const reply = answer(one);
+    const reply = await answer(one);
     if (reply.delayMs) await new Promise((r) => setTimeout(r, reply.delayMs));
     const out = typeof reply.body === "string" ? reply.body : JSON.stringify(reply.body);
     res.writeHead(reply.status, { "content-type": "application/json", connection: "close" });
@@ -129,14 +129,24 @@ export function approval(dir: string): { path: string; approve: () => Promise<vo
 
 /// The stand-in login command: Claude's prints a link and reads a code; Codex's prints a device
 /// link and a code, then finishes once the person approved (when an `approval` fifo is given, once it is written).
+/// Claude's as `claude auth login` 2.1.321 takes one: one with no `#` (or nothing on a side of it) it says it would
+/// not take and reads another, never ending; `good-code#y` signs in; `refused#y` it says it would not take either;
+/// `silent#y` it says nothing of and reads on; any other it fails on.
 export const fakeLogin = (approval?: string) => `#!/bin/sh
 if [ "$1" = "auth" ]; then
   echo "Opening browser to sign in…"
   echo "If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&client_id=x&state=y"
   printf "Paste code here if prompted > "
-  read code
-  [ "$code" = "good-code" ] && { echo "Login successful"; exit 0; }
-  echo "OAuth error: invalid code"; exit 1
+  while read code; do
+    left="\${code%%#*}"; right="\${code#*#}"
+    if [ "$left" = "$code" ] || [ -z "$left" ] || [ -z "$right" ] || [ "$code" = "refused#y" ]; then
+      echo "Invalid code. Please make sure the full code was copied"; continue
+    fi
+    [ "$code" = "silent#y" ] && continue
+    [ "$code" = "good-code#y" ] && { echo "Login successful"; exit 0; }
+    echo "OAuth error: invalid code"; exit 1
+  done
+  exit 1
 fi
 printf "1. Open this link\\n   \\033[94mhttps://auth.openai.com/codex/device\\033[0m\\n2. Enter this one-time code\\n   \\033[94mABCD-12345\\033[0m\\n"
 ${approval === undefined ? "" : `while [ ! -e '${approval}' ]; do sleep 0.05; done; read approved < '${approval}'`}
@@ -190,7 +200,7 @@ export const idToken = (claims: unknown) => `x.${Buffer.from(JSON.stringify(clai
 
 /// The station's browser as the logins see it (logins/pages.ts): its tabs in memory (`T1`, `T2`…, each at the page it
 /// opened), each page visited by `visit` as Chrome would load it; `gone` closes one as a
-/// person would.
+/// person would, `went` moves one to another page.
 export function fakeBrowser(visit: (url: string) => void = () => {}, available = true) {
   const tabs = new Map<string, string>();
   const options = new Map<string, OpenTabOptions | undefined>();
@@ -210,6 +220,7 @@ export function fakeBrowser(visit: (url: string) => void = () => {}, available =
     async closeTab(id) {
       if (tabs.delete(id)) changed();
     },
+    tabUrl: (id) => tabs.get(id) ?? null,
   };
   const pages = new LoginPages(browser, (c) => {
     changed = c;
@@ -221,6 +232,11 @@ export function fakeBrowser(visit: (url: string) => void = () => {}, available =
     options,
     gone: (id: string) => {
       tabs.delete(id);
+      changed();
+    },
+    /// The page in tab `id` gone on to `url` (a redirect, a link followed), as Chrome tells it.
+    went: (id: string, url: string) => {
+      tabs.set(id, url);
       changed();
     },
   };

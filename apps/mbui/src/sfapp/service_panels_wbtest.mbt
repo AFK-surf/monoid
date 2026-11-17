@@ -65,12 +65,17 @@ fn svc_page(
 }
 
 ///|
-/// The panel `title` opened from its key in the bar where the bar holds it, else from the ⋯'s line; at the frame that
-/// opened it.
+/// The panel `title` opened from its key in the bar where the bar holds it (named so, or saying so as its value: how far
+/// the resources came, named 资源加载), else from the ⋯'s line; at the frame that opened it.
 fn svc_open(t : @ui.Tester, title : String) -> Unit raise {
-  match t.query(Button, label=title) {
-    Some(_) => t.click(Button, label=title)
-    None => {
+  let by_value = t.semantics().iter().find_first(fn(s) { !s.hidden && s.role == @ui.Role::Button && s.value == title })
+  match (t.query(Button, label=title), by_value) {
+    (Some(_), _) => t.click(Button, label=title)
+    (None, Some(k)) => {
+      let (x, y, w, h) = k.rect
+      t.tap(x + w / 2.0, y + h / 2.0)
+    }
+    (None, None) => {
       t.click(Button, label="更多操作")
       t.run_for(@ui.move_most_ms)
       t.tap_text(title)

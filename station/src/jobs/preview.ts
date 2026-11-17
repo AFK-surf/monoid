@@ -80,8 +80,11 @@ export function proxyPreview(method: string, headers: [string, string][], body: 
         if (HOP.includes(name) || (!peer && FRAMING.includes(name))) continue;
         // A redirect to the service itself stays on the preview's path.
         if (name === "location") {
-          const origin = service.find((o) => value.startsWith(o));
-          if (origin) value = value.slice(origin.length);
+          const origin = service.find((o) => value.startsWith(o) && /^(?:[/?#]|$)/.test(value.slice(o.length)));
+          if (origin) {
+            value = value.slice(origin.length);
+            if (!value.startsWith("/")) value = `/${value}`;
+          }
         }
         out.push([name, value]);
       }

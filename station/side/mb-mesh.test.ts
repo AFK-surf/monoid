@@ -6,15 +6,18 @@
 // endpoint closes only those. And a front that ended, another started in its place: the Node links to it again, bound
 // as before, and takes what comes. Real processes and sockets: the side run's.
 import assert from "node:assert/strict";
+import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { createSocket } from "node:dgram";
-import { mkdtempSync } from "node:fs";
+import { closeSync, constants, existsSync, mkdtempSync, openSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { withFront } from "../src/mesh/front.ts";
+import { Front, Incoming, withFront } from "../src/mesh/front.ts";
+import { createServer } from "node:net";
 import { hearLines } from "../src/ops/log.ts";
+import type { Socket } from "node:net";
 import { type Connection, type Endpoint, type Mesh, type Stream, loadMesh } from "../src/mesh/native.ts";
 
 const binary = mbReaderBinary();
@@ -270,6 +273,260 @@ test("a front that ended, another in its place: the Node links to it again and t
   } finally {
     await device.close();
     await station.close();
+    await f.stop();
+  }
+});
+
+test("a front whose stdout nobody reads lives on: a write to a pipe gone fails, SIGPIPE ends nothing", { skip }, async () => {
+  // Its stdout a FIFO whose one reader closed before it started: the line it says as it listens is written where
+  // nobody reads, on every system (a stream's Unix socket, below, is SO_NOSIGPIPE on macOS by tokio's mio).
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  const fifo = join(dir, "out");
+  spawnSync("mkfifo", [fifo]);
+  const reader = openSync(fifo, constants.O_RDONLY | constants.O_NONBLOCK);
+  const out = openSync(fifo, constants.O_WRONLY);
+  closeSync(reader);
+  const socket = join(dir, "front.sock");
+  const child = spawn(binary!, ["--builder", "mesh", "--socket", socket, "--shell-dir", join(dir, "shell")], { stdio: ["pipe", out, "inherit"] });
+  closeSync(out);
+  let ended: string | null = null;
+  const end = new Promise<string>((resolve) => child.on("exit", (code, signal) => resolve((ended = signal ?? `exit ${code}`))));
+  // It listens and then says so: a while of real time for both.
+  for (let i = 0; i < 100 && !existsSync(socket) && ended === null; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+  await Promise.race([end, new Promise((resolve) => setTimeout(resolve, 1000))]);
+  try {
+    assert.equal(ended, null, "the front lives on");
+    const station = await bindOn(withFront(loadMesh(), socket), randomBytes(32));
+    assert.equal(typeof station.id(), "string", "and serves");
+    await station.close();
+  } finally {
+    child.kill("SIGTERM");
+    await end;
+  }
+});
+
+test("a stream whose Node end closed first is written to: only that stream goes, the front lives on (no SIGPIPE)", { skip }, async () => {
+  // The front as the launcher starts it, its end (a signal's name, or its exit code) seen here.
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  const socket = join(dir, "front.sock");
+  const child = spawn(binary!, ["--builder", "mesh", "--socket", socket, "--shell-dir", join(dir, "shell")], { stdio: ["pipe", "pipe", "inherit"] });
+  let ended: string | null = null;
+  const end = new Promise<string>((resolve) => child.on("exit", (code, signal) => resolve((ended = signal ?? `exit ${code}`))));
+  await new Promise<void>((resolve, reject) => {
+    let line = "";
+    child.stdout!.on("data", (b: Buffer) => {
+      line += b.toString();
+      if (line.includes("\n")) (JSON.parse(line.split("\n")[0]!).listening === socket ? resolve() : reject(new Error(line)));
+    });
+    void end.then((how) => reject(new Error(`the front ended before it listened (${how})`)));
+  });
+  // Each socket the front hands this process a stream on, as it comes (what FrontStream keeps to itself).
+  const handed: Socket[] = [];
+  const give = Incoming.prototype.give;
+  Incoming.prototype.give = function (this: Incoming, came: Parameters<typeof give>[0]) {
+    handed.push(came.socket);
+    return give.call(this, came);
+  };
+  const addon = loadMesh();
+  const station = await bindOn(withFront(addon, socket), randomBytes(32));
+  const device = await bindOn(addon, randomBytes(32));
+  try {
+    const accepting = station.accept();
+    const theirs = await device.connect(addrOf(station), ALPN);
+    const conn = (await accepting)!;
+    const other = await theirs.openBi();
+    await other.write(Buffer.from("other"));
+    const otherHere = (await conn.acceptBi())!;
+    assert.equal((await otherHere.read())?.toString(), "other");
+
+    const doomed = await theirs.openBi();
+    await doomed.write(Buffer.from("first"));
+    const doomedHere = (await conn.acceptBi())!;
+    assert.equal((await doomedHere.read())?.toString(), "first");
+    // Node's end of it closed, the front not told (as a Node that ended does): the next bytes the device sends on it
+    // the front writes to a socket nobody reads.
+    const nodeEnd = handed.at(-1)!;
+    await new Promise<void>((resolve) => { nodeEnd.once("close", () => resolve()); nodeEnd.destroy(); });
+    // (Linux's case: on macOS the shell's Unix sockets are SO_NOSIGPIPE, so this passes there with or without the fix.)
+  // Nothing tells the device when the front took them (its write fails, and the stream's way to Node is let go
+    // only on the device's side), so a while of real time: SIGPIPE, where it is not ignored, ends it within it.
+    for (let i = 0; i < 8; i++) await doomed.write(randomBytes(1 << 16)).catch(() => {});
+    await Promise.race([end, new Promise((resolve) => setTimeout(resolve, 2000))]);
+    assert.equal(ended, null, "the front lives on");
+    assert.equal(await conn.answers?.(5000), true, "and answers");
+
+    // the stream beside it, and one opened after, carry on
+    await other.write(Buffer.from(" still"));
+    await other.finish();
+    assert.equal((await readAll(otherHere)).toString(), " still");
+    const after = await theirs.openBi();
+    await after.write(Buffer.from("after"));
+    await after.finish();
+    assert.equal((await readAll((await conn.acceptBi())!)).toString(), "after");
+    assert.equal(ended, null, "the front lives on");
+    theirs.close(0, "");
+  } finally {
+    Incoming.prototype.give = give;
+    await device.close();
+    await station.close();
+    child.kill("SIGTERM");
+    await end;
+  }
+});
+
+test("a Node binding again with other relays and another congestion controller takes the endpoint as it is: the connections on it stay", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const key = randomBytes(32);
+  const options = { secretKey: key, alpns: [ALPN], relayUrls: [] as string[], discovery: false };
+  const first = await withFront(addon, f.socket).bind(options);
+  const device = await bindOn(addon, randomBytes(32));
+  let second: Endpoint | undefined;
+  try {
+    const accepting = first.accept();
+    const theirs = await device.connect(addrOf(first), ALPN);
+    const conn = (await accepting)!;
+    // (the next Node of a handover binds with what the station has now: a relay the cloud added meanwhile, the
+    // congestion controller changed in its settings)
+    second = await withFront(addon, f.socket).bind({ ...options, relayUrls: ["http://127.0.0.1:9/"], congestion: "bbr" });
+    assert.equal(second.id(), first.id());
+    assert.deepEqual(second.sockets(), first.sockets(), "the same endpoint, not one bound anew");
+    // The first Node's connection lives on, both ways.
+    const opened = await theirs.openBi();
+    await opened.write(Buffer.from("still here"));
+    await opened.finish();
+    const s = (await conn.acceptBi())!;
+    assert.equal((await readAll(s)).toString(), "still here");
+    assert.equal(conn.isClosed(), false);
+    // And the second Node takes what comes from then on, with the relays named last; bound with none again, none.
+    const next = second.accept();
+    const again = await device.connect(addrOf(second), ALPN);
+    assert.equal((await next)!.remoteId(), device.id());
+    again.close(0, "");
+    const third = await withFront(addon, f.socket).bind(options);
+    assert.equal(third.id(), first.id());
+    assert.deepEqual(third.sockets(), first.sockets());
+    await third.close();
+    theirs.close(0, "");
+  } finally {
+    await device.close();
+    await second?.close();
+    await first.close();
+    await f.stop();
+  }
+});
+
+test("a connection whose end its Node was told is let go at the front: nothing of it is kept", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const node = await Front.open(f.socket);
+  const device = await bindOn(addon, randomBytes(32));
+  try {
+    const said = await node.ask("bind", { streams: node.streamsPath, key: randomBytes(32).toString("hex"), options: { alpns: [ALPN.toString("hex")], relayUrls: [], discovery: false } });
+    const accepting = node.ask("accept");
+    const theirs = await device.connect({ id: said.id, ips: (said.sockets as string[]).filter((s) => /^\d/.test(s)).map((s) => s.replace(/^0\.0\.0\.0/, "127.0.0.1")) }, ALPN);
+    const seen = await accepting;
+    assert.equal(seen.remote, device.id());
+    // (as front.ts's FrontConnection asks it of each connection, and asks nothing more of it once told)
+    const closed = node.ask("conn.closed", { conn: seen.conn });
+    theirs.close(5, "bye");
+    assert.equal((await closed).reason, "bye");
+    await assert.rejects(node.ask("conn.seen", { conn: seen.conn }), /no handle/, "let go at the shell, not kept as gone");
+    // A close asked after (the Node's own, crossing the end) is answered as before.
+    assert.deepEqual(await node.ask("conn.close", { conn: seen.conn, code: 0, reason: "" }), {});
+  } finally {
+    await node.ask("close").catch(() => {});
+    node.close();
+    await device.close();
+    await f.stop();
+  }
+});
+
+test("a connection that came before its Node said its routes goes by them once that Node takes it", { skip }, async () => {
+  const addon = loadMesh();
+  const f = await front();
+  const key = randomBytes(32);
+  const dir = mkdtempSync(join(tmpdir(), "mbm-"));
+  // what a route's program would be (served.ts): the request handed it, its head line first
+  const routedAt = join(dir, "routed.sock");
+  let routed!: (b: Buffer) => void;
+  const routedGot = new Promise<Buffer>((resolve) => (routed = resolve));
+  const server = createServer((c) => {
+    const parts: Buffer[] = [];
+    c.on("data", (b: Buffer) => {
+      parts.push(b);
+      if (Buffer.concat(parts).includes("/routed")) routed(Buffer.concat(parts));
+    });
+  });
+  await new Promise<void>((resolve) => server.listen(routedAt, resolve));
+  const options = { secretKey: key, alpns: [ALPN], relayUrls: [] as string[], discovery: false };
+  const device = await bindOn(addon, randomBytes(32));
+  // The Node before, gone: what comes waits for the next.
+  const before = await withFront(addon, f.socket).bind(options);
+  const addr = addrOf(before);
+  await before.close();
+  let station: Endpoint | undefined;
+  try {
+    const theirs = await device.connect(addr, ALPN);
+    // The next binds (given what waited) and only then says its routes (mesh.ts: once its programs listen).
+    station = await withFront(addon, f.socket).bind(options);
+    assert.equal(await station.route!(ALPN, [routedAt], ["GET /routed"]), true);
+    const conn = (await station.accept())!;
+    assert.equal(conn.remoteId(), device.id());
+    // its first stream the Node's, as always; the next a routed request
+    const first = await theirs.openBi();
+    await first.write(Buffer.from("hello"));
+    const asked = await theirs.openBi();
+    await asked.write(Buffer.from(`${JSON.stringify({ method: "GET", path: "/routed" })}\n`));
+    assert.equal((await (await conn.acceptBi())!.read())?.toString(), "hello");
+    const where = await Promise.race([
+      routedGot.then(() => "routed"),
+      conn.acceptBi().then((s) => (s === null ? "ended" : "given the Node")),
+    ]);
+    assert.equal(where, "routed");
+    theirs.close(0, "");
+  } finally {
+    server.close();
+    await device.close();
+    await station?.close();
+    await f.stop();
+  }
+});
+
+test("a bind is reconciled with the relays on the endpoint as a Node changed them, not as the last bind named them", { skip }, async () => {
+  const f = await front();
+  const node = await Front.open(f.socket);
+  const [R1, R2, R3] = ["http://127.0.0.1:9/", "http://127.0.0.1:10/", "http://127.0.0.1:11/"];
+  const key = randomBytes(32).toString("hex");
+  const bind = (relayUrls: string[]) => node.ask("bind", { streams: node.streamsPath, key, options: { alpns: [ALPN.toString("hex")], relayUrls, discovery: false } });
+  // What the front changes of the endpoint's relays as a Node binds: its log's lines.
+  const changed: string[] = [];
+  let last!: () => void;
+  const lastSaid = new Promise<void>((resolve) => (last = resolve));
+  hearLines((l) => {
+    const m = /^mesh: relay (\S+) (added|removed) as a Node bound$/.exec(String((l.fields as { line?: string } | undefined)?.line ?? ""));
+    if (m) changed.push(`${m[2]} ${m[1]}`);
+    if (m?.[2] === "removed" && m[1] === R1) last();
+  });
+  try {
+    const said = await bind([R1, R2]);
+    // A Node takes R2 off (the cloud no longer names it); by the next handover the cloud names it again: given back.
+    await node.ask("removeRelay", { args: { url: R2 } });
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // A Node puts R3 in; the next bind does not name it: it goes.
+    await node.ask("insertRelay", { args: { url: R3 } });
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // The same relays again: nothing to change.
+    assert.equal((await bind([R1, R2])).id, said.id);
+    // R1 no longer named: what is said last (its log's lines come on the program's stderr, apart from its answers, in
+    // the order it changed them)
+    assert.equal((await bind([R2])).id, said.id);
+    await lastSaid;
+    assert.deepEqual(changed, [`added ${R2}`, `removed ${R3}`, `removed ${R1}`]);
+  } finally {
+    hearLines(null);
+    await node.ask("close").catch(() => {});
+    node.close();
     await f.stop();
   }
 });

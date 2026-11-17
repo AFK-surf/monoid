@@ -63,16 +63,6 @@ fn init {
 }
 
 ///|
-fn px_of(c : @ui.Ctx, size : Double) -> Int {
-  let p = (size * c.scale).ceil().to_int()
-  if p < 1 {
-    1
-  } else {
-    p
-  }
-}
-
-///|
 /// An icon's shapes as its data has them (icon_data: a 24 grid's strokes), for a host to draw it in its own controls
 /// (@hostapi.nav_bar's tabs and items); "" for none of that name.
 pub fn icon_path(name : String) -> String {
@@ -105,11 +95,20 @@ pub fn icon(c : @ui.Ctx, name : String, size? : Double = 16.0, color? : Int64, b
 let play_mark_share : Double = 0.64
 
 ///|
-/// A video's play mark over its picture (the web's msgVideoPlay): a disc `side` across of `shade`, the solid triangle
-/// in it white, its weight (where the triangle balances, not its box) in the disc's middle: play-mark draws it so.
-pub fn play_mark(c : @ui.Ctx, side : Double, shade : @ui.Color) -> Int {
-  c.box(style=@ui.style(w=Fixed(side), h=Fixed(side), radius=Full, bg=shade, align=ACenter, justify=JCenter), fn() {
-    icon(c, "play-mark", size=side * play_mark_share, color=white) |> ignore
+/// A video's play mark over its picture in `parent` (play_mark's, as nodes): a disc `side` across of `shade`, the solid
+/// triangle in it white, its weight in the disc's middle. The node.
+#callsite(autofill(loc))
+pub fn play_mark_node(parent : @view.View, side : Double, shade : @ui.Color, loc~ : SourceLoc) -> @view.View {
+  parent.box(made_for=loc, fn(d) {
+    d
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .radius(Is(side / 2.0))
+    .ground(By(fn() { @ui.tree_theme().color(shade) }))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    |> ignore
+    icon_node(d, "play-mark", side * play_mark_share, Is(white)) |> ignore
   })
 }
 
@@ -388,22 +387,6 @@ fn icon_parts_shapes(name : String, parts : Array[Int], size : Double, ink : Int
 }
 
 ///|
-/// Icon `name` with its lines drawn as `trace` gives them (each line's place among them, from 0, and its points in the
-/// 24 grid: the lines to draw for it, none for nothing), as `icon` draws it whole: a mark drawn on or drawn back along
-/// its strokes (sync_key's tick). Its lines only: built each frame it is asked for, for what moves.
-fn icon_traced(
-  c : @ui.Ctx,
-  name : String,
-  trace : (Int, Array[Double]) -> Array[Array[Double]],
-  size? : Double = 16.0,
-  color? : Int64,
-) -> Int {
-  let color = color.unwrap_or(theme().p.text)
-  let data = icon_traced_data(name, trace)
-  c.shapes(icon_shapes(data, size / 24.0, color), w=Px(size), h=Px(size), name="sf/icon/\{name}/\{size}/\{color}")
-}
-
-///|
 /// Icon `name`'s numbers with its lines as `trace` gives them (icon_traced's), for icon_shapes: a mark drawn on or back
 /// along its strokes, in an old view or a node (sync_key_node).
 fn icon_traced_data(name : String, trace : (Int, Array[Double]) -> Array[Array[Double]]) -> Array[Double] {
@@ -555,6 +538,18 @@ fn read_numbers(text : String) -> Array[Double] {
 }
 
 ///|
+/// How an icon drawn `k` points a unit (its size over 24) widens its strokes: under 1, by k^0.58, not by k, so a bar's
+/// 14–16 and a rail's 20 are drawn in one weight of ink (20's 1.75 stroke 1.57, 16's 1.38, 14's 1.28; by k they were
+/// 1.46, 1.17 and 1.02), and none thinner than the eye takes for the same line; at 24 and over, by k (their points too).
+fn stroke_k(k : Double) -> Double {
+  if k < 1.0 {
+    @dmath.pow(k, 0.58)
+  } else {
+    k
+  }
+}
+
+///|
 /// An icon's parts as icon_data.mbt has them (0 a line, 1 a closed one, 2 a fill's outline: one with a width the
 /// first of a fill), `k` points a unit, in `color`: its strokes of a width one shape (their pieces' nearest the one
 /// that covers a pixel, as one stroke), each fill one.
@@ -585,8 +580,9 @@ fn icon_shapes(data : Array[Double], k : Double, color : Int64) -> Array[@ui.Sha
   for f in fills {
     out.push(@ui.shape_of(f, fill=color))
   }
+  let width_k = stroke_k(k)
   for s in strokes {
-    out.push(@ui.shape_of(s.1, stroke=color, width=s.0 * k))
+    out.push(@ui.shape_of(s.1, stroke=color, width=s.0 * width_k))
   }
   out
 }

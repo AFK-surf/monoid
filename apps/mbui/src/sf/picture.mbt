@@ -94,14 +94,15 @@ pub fn drawable(c : @ui.Ctx, name : String, w : Double, tint? : Int64) -> Int {
 let mono_makers : Array[String] = [
   "anthropic", "openai", "kimi", "xai", "mistral", "xiaomi", "ant-ling", "openrouter",
   "vercel", "cloudflare", "azure", "groq", "together", "fireworks", "cerebras", "huggingface",
-  "nvidia", "baseten", "dsh", "cursor", "devin", "hermes", "meta", "stepfun", "tencent",
+  "nvidia", "baseten", "dsh", "cursor", "devin", "hermes", "pi", "meta", "stepfun", "tencent",
   "meituan",
 ]
 
 ///|
 /// The mark of the company that made a model: the core's
 /// `maker` id when there is a mark for it, else its runtime's maker's
-/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's and Devin's their own, else Anthropic's).
+/// (codex: OpenAI's, dsh its own, grok xAI's, Cursor's, Devin's, Hermes Agent's, the Antigravity CLI's and Pi's their own,
+/// else Anthropic's).
 pub fn maker_mark(
   c : @ui.Ctx,
   maker : String,
@@ -111,19 +112,6 @@ pub fn maker_mark(
   let id = maker_of(maker, runtime)
   let tint = if mono_makers.contains(id) { Some(theme().p.text) } else { None }
   drawable(c, "maker_" + id.replace_all(old="-", new="_"), size, tint?=tint)
-}
-
-///|
-/// A program a station logs in to (the core's `MachineLoginTool.mark`): its
-/// maker's mark in its colours, those whose colour is black in the page's ink; a terminal's where it has none.
-pub fn tool_mark(c : @ui.Ctx, mark : String, size : Double) -> Unit {
-  let name = "tool_" + mark.replace_all(old="-", new="_")
-  if mark == "" || !drawables.contains(name) {
-    station_mark(c, "", "glyph:terminal", size, theme().p.muted)
-    return
-  }
-  let tint = if ink_tools.contains(mark) { Some(theme().p.text) } else { None }
-  drawable(c, name, size, tint?=tint) |> ignore
 }
 
 ///|
@@ -143,6 +131,7 @@ pub fn origin_mark_name(kind : String) -> String {
   match kind {
     "feishu" => "feishu"
     "comma" => "comma"
+    "group" => "group"
     _ => "slack"
   }
 }
@@ -412,47 +401,6 @@ fn glyph_paths(name : String) -> (Array[String], Array[String])? {
 let glyphs_read : Map[String, (Array[String], Array[String])] = Map([])
 
 ///|
-/// Whose service a profile runs on (ProviderLogo): OpenCode's square, a listed provider's maker
-/// (`mark`; the plug where there is none), else Anthropic, xAI, Cursor, Devin, Hermes or OpenAI by its runtime (`kind`
-/// the profile's access: an API provider's, OpenCode Go's, Anthropic's API).
-pub fn provider_logo(c : @ui.Ctx, runtime : String, kind : String, size : Double, mark : String) -> Unit {
-  let t = theme()
-  if kind == "opencode-go" || mark == "opencode" {
-    // (OpenCodeMark: a frame half as wide as its size and two thirds as high)
-    c.box(style=logo_room.then(@ui.style(w=Fixed(size), h=Fixed(size))), fn() {
-      c.box(style=opencode_frame.then(@ui.style(w=Fixed(size * opencode_w), h=Fixed(size * opencode_h))), fn() {  })
-      |> ignore
-    })
-    |> ignore
-    return
-  }
-  // (a profile of the environment's own keys: the sliders)
-  if kind == "env" {
-    icon(c, "sliders", size~, color=t.p.text) |> ignore
-    return
-  }
-  let maker = if kind == "api-provider" {
-    mark
-  } else if runtime == "claude" || kind == "anthropic-api" {
-    "anthropic"
-  } else {
-    match runtime {
-      "grok" => "xai"
-      "cursor" => "cursor"
-      "devin" => "devin"
-      "hermes" => "hermes"
-      "agy" => "agy"
-      _ => "openai"
-    }
-  }
-  if maker == "" || !has_drawable("maker_" + maker.replace_all(old="-", new="_")) {
-    icon(c, "plug", size~, color=t.p.text) |> ignore
-  } else {
-    maker_mark(c, maker, runtime, size) |> ignore
-  }
-}
-
-///|
 /// OpenCode's mark: a frame in the words' ink, half as wide as the mark and two thirds as high.
 let opencode_w : Double = 0.5
 
@@ -464,10 +412,6 @@ let opencode_h : Double = 0.6667
 let opencode_frame : @ui.Style = @ui.css("border=B1_5 border_color=Fg")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let logo_room : @ui.Style = @ui.css("align=ACenter justify=JCenter")
-
-///|
 /// Rings one inside another (Activity's), `side` across, with the room for `most` of them (as many as are ever drawn
 /// there: fewer stand where those would, the outer ones): each as wide as the hole they leave in their middle is round
 /// (ring_hole), ring_apart of that from the next, so the innermost is a ring still (2026-10-26 用户 of three in 88,
@@ -476,6 +420,28 @@ let logo_room : @ui.Style = @ui.css("align=ACenter justify=JCenter")
 /// at its ends; a share past 1 (two accounts' quota past one's) goes round again over it, each turn past the first
 /// deeper (ring_turn_keep), the last whole one under what is left of it.
 pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track : Int64, most~ : Int) -> Int {
+  let (key, d) = rings_drawn(shares, side, track, most)
+  vector(c, key, d, side)
+}
+
+///|
+/// The rings (rings') as a node of the window's tree in `parent`, `side` across. The node.
+#callsite(autofill(loc))
+pub fn rings_node(
+  parent : @view.View,
+  shares : Array[(Double, Int64)],
+  side : Double,
+  track : Int64,
+  most~ : Int,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let (_, d) = rings_drawn(shares, side, track, most)
+  parent.box(made_for=loc, fn(v) { v.width(Is(Some(side))).height(Is(Some(side))).picture(Is(Some(d))) |> ignore })
+}
+
+///|
+/// The rings' picture (rings'), and the key it is kept by.
+fn rings_drawn(shares : Array[(Double, Int64)], side : Double, track : Int64, most : Int) -> (String, @pixels.Vector) {
   let mid = side / 2.0
   let n = (if most > 1 { most } else { 1 }).to_double()
   let width = mid / (n + ring_hole + ring_apart * (n - 1.0))
@@ -515,7 +481,7 @@ pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track 
       layers.push(path("M \{mid} \{mid - r} A \{r} \{r} 0 \{large} 1 \{x} \{y}", turn(whole.to_int())))
     }
   }
-  vector(c, "rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers }, side)
+  ("rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers })
 }
 
 ///|

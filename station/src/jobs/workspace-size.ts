@@ -33,8 +33,8 @@ const atWork = (jobs: string) => `SELECT s.key, s.workspace FROM (SELECT rowid A
     OR (SELECT declared FROM turns INDEXED BY turns_by_session WHERE session_key = s.key ORDER BY started_at DESC, rowid DESC LIMIT 1) = 'waiting'
   ORDER BY s.last_active_at DESC, s.rid DESC`;
 /// The sessions shown that are at work (a turn running, its process running, a job of its running, or waiting on what
-/// it started), each by its own index entries: a reader's (read/ops-sessions.ts), off the main thread, where it read
-/// every session shown and each one's latest turn, held up to 18 s on a station short of memory (2026-11-06).
+/// it started), each by its own index entries: a reader's (test/reference/ops-sessions.ts), off the main thread, where
+/// it read every session shown and each one's latest turn, held up to 18 s on a station short of memory (2026-11-06).
 export const SESSIONS_AT_WORK = atWork(`EXISTS (SELECT 1 FROM active_watch_jobs INDEXED BY active_watch_jobs_session WHERE session = s.key)
     OR EXISTS (SELECT 1 FROM active_other_jobs WHERE session = s.key)`);
 /// The same on a store whose running jobs' lookup is still being prepared (store/active-jobs-upgrade.ts).
@@ -53,7 +53,9 @@ export function workspaceSessionsToMeasure(db: DatabaseSync, processes: readonly
   return rows.map((r) => ({ key: (r as { key: string }).key, workspace: (r as { workspace: string }).workspace }));
 }
 
-export type WorkspaceSize = { bytes: number; complete: boolean };
+/// `truncated`: a lower bound for the walk's own limits (sessions/footprint.ts MEASURE_UP_TO), not the soft limit: walked
+/// again only after CHECK_MS, as a complete one is.
+export type WorkspaceSize = { bytes: number; complete: boolean; truncated?: true };
 type Measurement = { size: WorkspaceSize | null; at: number; pending: boolean; limit: number };
 
 /// A single asynchronous disk walk at a time, shared by local and incoming remote requests. A caller never waits for
@@ -73,8 +75,9 @@ export class WorkspaceReader {
 
   size(path: string, limit = DEFAULT_LIMIT): WorkspaceSize | null {
     if (this.#abort.signal.aborted) return null;
+    this.#sweep();
     let entry = this.#entries.get(path);
-    if (entry?.size && this.#now() - entry.at < CHECK_MS && (entry.size.complete || entry.size.bytes > limit)) return entry.size;
+    if (entry?.size && this.#now() - entry.at < CHECK_MS && (entry.size.complete || entry.size.truncated || entry.size.bytes > limit)) return entry.size;
     if (!entry) {
       entry = { size: null, at: 0, pending: false, limit };
       this.#entries.set(path, entry);
@@ -105,8 +108,23 @@ export class WorkspaceReader {
           entry.pending = false;
         }
       }
+      this.#sweep();
     } finally {
       this.#running = false;
+    }
+  }
+
+  /// How many workspaces it keeps a measure of (or is measuring).
+  get kept(): number {
+    return this.#entries.size;
+  }
+
+  /// Lets go of what no round asked for again: a measure not under way and older than two rounds (a chat archived or
+  /// deleted, a workspace moved, a remote one no longer followed), which would be measured again anyway.
+  #sweep(): void {
+    const now = this.#now();
+    for (const [path, entry] of this.#entries) {
+      if (!entry.pending && now - entry.at >= 2 * CHECK_MS) this.#entries.delete(path);
     }
   }
 

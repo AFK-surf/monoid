@@ -732,3 +732,28 @@ test "at the run's pace, a step taken later than the run's moment: all after it 
   // before its tap)
   assert_eq(r.step_at("until 发消息"), Some(215.0))
 }
+
+///|
+test "tapxy measured on the current layout matches the recorded tapxy step" {
+  let r = @core.Replay::parse((
+    #|CORETRACE {"out":{"id":7,"subscribe":{"topic":"accounts"},"keyed":true},"w":900}
+    #|CORETRACE {"in":{"id":7,"value":[]},"w":1000}
+    #|CORETRACE {"step":"now tapxy 195 729","w":1100}
+    #|CORETRACE {"out":{"id":9,"call":"pick.save","params":{"effort":"high"}},"w":1101}
+    #|CORETRACE {"step":"now tapxy 195 729","acted":true,"w":1102}
+    #|CORETRACE {"in":{"id":9,"ok":{"saved":false}},"w":1120}
+  ))
+  let now : Ref[Double] = { val: 0.0 }
+  r.clock(fn() { now.val })
+  r.pace(@core.AsRun(1.0))
+  let c = r.client()
+  ignore(c.subscribe("accounts"))
+  assert_eq(r.deliver(now=100.0), 1)
+  assert_eq(r.step_at("tapxy 231 749"), Some(202.0))
+  assert_eq(r.step_wall("tapxy 231 749"), Some(1102.0))
+  now.val = 202.0
+  c.call("pick.save", params={ "effort": "high" }, on_done=fn(_) {  }) |> ignore
+  assert_true(r.step_taken("tapxy 231 749"))
+  assert_eq(r.deliver(now=220.0), 1)
+  assert_eq(r.left(), 0)
+}

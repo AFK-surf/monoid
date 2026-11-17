@@ -5,6 +5,7 @@
 // InputConnection and KEYCODE_PASTE); else straight to the app's handlers.
 //
 //   # a comment                 wait MS                   timeout MS (for until/gone/field after it; 20000 to start)
+//   window N                    the steps after it act in window N of the run (window_slots.mbt; 0 the first)
 //   until TEXT                  words containing TEXT on screen (a text, rich text, a field's placeholder, or
 //                               icon:NAME, an @sf icon; img:NAME an image whose source has NAME in it; switch:LABEL
 //                               the switch that turns LABEL), within the
@@ -48,6 +49,9 @@
 //                               host says it while it moves (Tester::set_ime_inset); a real host's is its own
 //   viewsaid JSON               under a Tester (a film's run), its host says JSON of a native view, as Tester::view_said
 //                               has it (a frame grabbed: {"still":{"view":N},"b":HEX}); a real host's views say their own
+//   appsaid NAME TEXT           under a Tester (a film's run), the app's own native call NAME says TEXT from here on,
+//                               posted on its channel as a host tells a change (@hostapi.app_said); a real host's says
+//                               its own
 //   system JSON                 under a Tester (a film's run), the system says JSON on its channel as a host says it
 //                               (@hostapi.system_channel: a size class, the hinge and its fold, the bars), taken at
 //                               the next frame; a real host's system says its own, and the run fails
@@ -56,6 +60,9 @@
 //   dragon DX DY MS TEXT        the same from the lowest TEXT on screen, where the frame has it
 //   holdon MS DX DY MOVE TEXT   held still on the lowest TEXT (or @X,Y) MS, then dragged DX DY over MOVE ms and held
 //                               there MS again before it is lifted (a long press slid on)
+//   samples N [apart]           the drags after it move N times a frame, the way from the frame before cut in N, as a
+//                               phone's system hands a frame's samples in one batch (touches.mbt: each but the last
+//                               with more after it); apart: each a move of its own, as hosts did before batches (1)
 //   backswipe DX [MS] [right] [off]  the system's back gesture (Android's predictive back) from the left edge (right:
 //                               the right's), DX across over MS (300 by default), a step a frame, then gone through
 //                               (off: called off)
@@ -68,7 +75,8 @@
 //                               own drop, @hostapi.drive 13: Linux's)
 //   log TEXT                    DRIVE LOG TEXT on the log (a mark for whoever watches it)
 //   picks NAME:SIZE …           what the system's pickers give from then on, under a Tester (film): files so named, of
-//                               so many bytes each (none: called off); a host's own pickers are not stood in for
+//                               so many bytes each, or NAME:WxH a picture so many pixels across and down (a PNG)
+//                               (none: called off); a host's own pickers are not stood in for
 //   exit                        ends the run: DRIVE PASS, exit 0
 //   ends                        the app ends by itself, its host quitting it (an update handed to its installer), within
 //                               the timeout; else the run fails. What follows it is never reached
@@ -126,6 +134,8 @@
 priv struct Driver {
   steps : Array[String]
   mut at : Int
+  // the window of the run its steps act in and wait on (`window N`: window_slots.mbt; 0 the first)
+  mut wid : Int
   mut since : Double
   mut timeout : Double
   mut release_at : Double
@@ -139,6 +149,11 @@ priv struct Driver {
   mut gt0 : Double
   // (`holdon`: how long it stays held where it ends, before it is lifted)
   mut gstay : Double
+  // (`samples`: how many moves a frame a drag makes, the last frame's way cut so, and whether they go as one batch)
+  mut gsamples : Int
+  mut gapart : Bool
+  // (where the drag's last move was: the next frame's samples go on from it)
+  mut gfrom : Double
   mut gms : Double
   // the system's back gesture under way (backswipe): how far across it goes, from which edge (1 the right), whether
   // it is called off at the end, since when, over how long (0: none)
@@ -282,6 +297,7 @@ fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
     since: -1.0,
     timeout: 20000.0,
     release_at: -1.0,
+    wid: 0,
     rx: 0.0,
     ry: 0.0,
     gx: 0.0,
@@ -290,6 +306,9 @@ fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
     gdy: 0.0,
     gt0: 0.0,
     gstay: 0.0,
+    gsamples: 1,
+    gapart: false,
+    gfrom: 0.0,
     gms: 0.0,
     bdx: 0.0,
     bedge: 0,
@@ -371,12 +390,17 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
     } else if what.has_prefix("=") && what.length() > 1 {
       let exact = what.unsafe_substring(start=1, end=what.length())
       words == exact || (label != "" && label == exact)
-    } else if what.contains(":") {
+    } else if step_kind_of(what) {
       false
     } else {
       (words != "" && words.contains(what)) || (label != "" && label == what)
     }
-    let (x, y) = (d.x + d.w / 2.0, d.y + d.h / 2.0)
+    // (words in pieces by their own middle, as on_screen_nodes finds the words looked for in an old view's rich text:
+    // a short message's words in a node as wide as its column are drawn at its start, its middle nothing of them)
+    let (x, y) = match (by_words && hit, d.runs.is_empty()) {
+      (true, false) => tree_words_middle(tree, d.id, what).unwrap_or((d.x + d.w / 2.0, d.y + d.h / 2.0))
+      _ => (d.x + d.w / 2.0, d.y + d.h / 2.0)
+    }
     if hit && !tree.leaving(d.id) && d.w > 0.0 && d.h > 0.0 && x >= 0.0 && x <= c.width && y >= 0.0 && y <= c.height {
       hits.push((x, y, d.id, by_words))
     }
@@ -386,6 +410,45 @@ fn tree_on_screen(c : Ctx, what : String) -> Array[(Double, Double, @view.NodeId
   hits
   .filter(fn(h) { h.3 || !hits.iter().any(fn(w) { w.3 && w.2 != h.2 && tree.holds(h.2, w.2) }) })
   .map(fn(h) { (h.0, h.1, h.2) })
+}
+
+///|
+/// The middle of the words `what` (`=WORDS`: all of them) of node `id` of `tree`'s words in pieces where they are drawn,
+/// laid out as it lays them out now (tree_run_rects'), their first line's: None where they hold no such words.
+fn tree_words_middle(tree : @view.Tree, id : @view.NodeId, what : String) -> (Double, Double)? {
+  let mut at : (Double, Double)? = None
+  tree.each_drawn_scaled(fn(c, x, y, a, sc) {
+    if at is Some(_) || c.id != id || c.runs.is_empty() || a <= 0.0 {
+      return
+    }
+    let (_, lay, _) = view_runs_laid(c.runs, c.words_look, c.runs_look, c.w, tree.words_scale_of(c.id), kept=c.words_breaks)
+    let (from, to) = if what.has_prefix("=") {
+      (0, lay.text.length())
+    } else {
+      match lay.text.find(what) {
+        Some(i) => (i, i + what.length())
+        None => return
+      }
+    }
+    match lay.rects(from, to).get(0) {
+      Some(r) => {
+        let dx = rich_shift_at(lay, r.1 + r.3 / 2.0, if c.words_center { c.w } else { -1.0 })
+        at = Some((x + (r.0 + dx + r.2 / 2.0) * sc, y + (r.1 + r.3 / 2.0) * sc))
+      }
+      None => ()
+    }
+  })
+  at
+}
+
+///|
+/// Whether `what` names a kind of thing a step looks for (`kind:`, the letters before its first colon), not words: a
+/// time's words (`0:00 / 0:04`) are words, as an old view's are found by them.
+fn step_kind_of(what : String) -> Bool {
+  match what.find(":") {
+    Some(k) if k > 0 => what.unsafe_substring(start=0, end=k).iter().all(fn(ch) { ch >= 'a' && ch <= 'z' })
+    _ => false
+  }
 }
 
 ///|
@@ -406,6 +469,11 @@ fn reachable(c : Ctx, what : String) -> Array[(Double, Double)] {
       for p in tree_on_screen(c, what) {
         match view_presses_at(p.0, p.1) {
           Some(id) if tree.holds(id, p.2) => at.push((p.0, p.1))
+          // (words that take no press of their own, nothing that does over them: a press there goes to nothing, and
+          // what is found there first is they or what holds them, nothing lying over them)
+          None if !old_root_hit(c, p.0, p.1, pressed=true) &&
+            tree.drop_at(p.0, p.1) is Some(OnNode(id)) &&
+            (tree.holds(id, p.2) || tree.holds(p.2, id)) => at.push((p.0, p.1))
           _ => ()
         }
       }
@@ -803,6 +871,11 @@ fn press(x : Double, y : Double, up : Bool) -> Unit {
 /// own: what it waits for on screen comes with a frame (an input's, a message's, a motion's, the host's event); what
 /// it waits for in time (a step's timeout, a hold let go, a pause, a shot taken by another) is a wake at that time.
 fn drive_frame(c : Ctx) -> Unit {
+  // (its steps that window's of the run they act in: taken by its frames alone)
+  match driver.val {
+    Some(d) if d.wid != window_now.now => return
+    _ => ()
+  }
   drive_steps(c)
   guard driver.val is Some(d) else { return }
   // (on the frames that come after it, none asked for of its own: what the wheel set moving draws them)
@@ -986,6 +1059,13 @@ fn drive_steps(c : Ctx) -> Unit {
     let f = dmin((now - d.gt0) / d.gms, 1.0)
     let x = d.gx + d.gdx * f
     let y = d.gy + d.gdy * f
+    // (a frame's samples, the way since the last move cut in `gsamples`, each but the last with more after it)
+    let n = d.gsamples
+    for k in 1..<n {
+      let fk = d.gfrom + (f - d.gfrom) * k.to_double() / n.to_double()
+      pointer_in(1, d.gx + d.gdx * fk, d.gy + d.gdy * fk, 0, 0, more=!d.gapart)
+    }
+    d.gfrom = f
     on_pointer(1, x, y, 0)
     if f >= 1.0 && now >= d.gt0 + d.gms + d.gstay {
       d.gstay = 0.0
@@ -1053,6 +1133,18 @@ fn drive_steps(c : Ctx) -> Unit {
         }
       "timeout" => {
         d.timeout = number(arg)
+        next()
+      }
+      "samples" => {
+        let words = arg.split(" ").map(fn(v) { v.to_owned() }).to_array()
+        let n = number(words[0]).to_int()
+        d.gsamples = if n < 1 { 1 } else { n }
+        d.gapart = words.length() > 1 && words[1] == "apart"
+        next()
+      }
+      // the steps after it act in window N of the run (0 the first), taken by that window's frames
+      "window" => {
+        d.wid = number(arg).to_int()
         next()
       }
       "empty" if arg == "now" =>
@@ -1319,6 +1411,7 @@ fn drive_steps(c : Ctx) -> Unit {
         d.gdy = number(words[2])
         d.gms = dmax(number(words[3]), 16.0)
         d.gt0 = now + number(words[0])
+        d.gfrom = 0.0
         d.gstay = number(words[0])
         h_log("DRIVE holdon \{arg} from \{x.to_int()},\{y.to_int()}")
         tell_step(d.steps[d.at], Acted)
@@ -1361,6 +1454,7 @@ fn drive_steps(c : Ctx) -> Unit {
         d.gdy = if rest.length() > 1 { number(rest[1]) } else { 0.0 }
         d.gms = if rest.length() > 2 { dmax(number(rest[2]), 16.0) } else { 300.0 }
         d.gt0 = now
+        d.gfrom = 0.0
         h_log("DRIVE \{cmd} \{arg} from \{x.to_int()},\{y.to_int()}")
         tell_step(d.steps[d.at], Acted)
         on_pointer(0, x, y, 0)
@@ -1579,7 +1673,7 @@ fn drive_steps(c : Ctx) -> Unit {
             return
           }
         }
-      "system" | "viewsaid" | "ime" => {
+      "system" | "viewsaid" | "appsaid" | "ime" => {
         // (what only some hosts take of a script: a Tester's says what its system, its native views' host and its
         // keyboard do as it is told; a host that takes no such step says why)
         let failed = @hostapi.script_step(cmd, arg)

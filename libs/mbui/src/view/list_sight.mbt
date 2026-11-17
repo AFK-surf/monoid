@@ -24,11 +24,14 @@
 /// top, its foot over the foot's top, where it has them; none where none is) and drawn whole (before the first in
 /// sight still on its way in), `from_foot` how far it is scrolled from its foot, `shows` how tall what shows is,
 /// `at_foot` whether it is at its foot (where the list is, as it lays out: what follows it, a way back to it),
-/// `foot_whole` whether it is at its foot with none from the first in sight on still on its way in (its end seen).
+/// `foot_whole` whether it is at its foot with none from the first in sight on still on its way in (its end seen);
+/// `tall` how tall `first`'s block is as it is counted (how far down it `into` is, as a share: a reader's place in a
+/// block of its text).
 #derive(Eq, Debug)
 pub(all) struct Sight[K] {
   first : K
   into : Double
+  tall : Double
   last : K
   whole : K?
   from_foot : Double
@@ -96,7 +99,7 @@ fn[K] sight_counted(
       _ => s.where_at(t)
     }
   }
-  let x = dclamp(x, 0.0, most)
+  let x = dclamp(x, dmin(s.top_now(), most), most)
   let below = x + vh
   // (the first with something showing under what covers its top (Scroll::top_covered: the bar it runs under), how far
   // down it that edge is)
@@ -117,6 +120,7 @@ fn[K] sight_counted(
   Some({
     first: all.key(i),
     into: under - all.top(i),
+    tall: all.h(i),
     last: all.key(j),
     whole,
     from_foot: most - x,

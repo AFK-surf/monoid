@@ -200,10 +200,11 @@ fn tell_device() -> Unit {
 
 ///|
 /// Each frame, with the `accounts` topic: what the environment asked once the accounts are read, and a browser login
-/// come back.
+/// come back (a sign-in's, a vault's: vault_oauth.mbt).
 pub fn frame(accounts : @core.Sub) -> Unit {
   // (by the accounts the core says and the environment's: the same in each build of the frame)
   if accounts.value is Some(list) {
+    accounts_told(list)
     if state.account != "" {
       let account = state.account
       state.account = ""
@@ -230,6 +231,49 @@ pub fn frame(accounts : @core.Sub) -> Unit {
     }
   }
   login_back()
+  oauth_back()
+}
+
+///|
+/// Who was signed in as the accounts were last said (accounts_told): None before they are.
+let signed_in : Ref[String?] = Ref(None)
+
+///|
+fn init {
+  @ui.on_reset(fn() { signed_in.val = None })
+}
+
+///|
+/// The accounts said: one signed in or out since they were last, nothing kept of what the one before was shown is
+/// shown to the next (@core.Client::forget_kept), as the source keeps none of what it last said (sfbase's
+/// read_topic_state). A replay of a run from before MBUI_SWR_VIEWS forgets nothing, as its run's app did not.
+fn accounts_told(list : Json) -> Unit {
+  let who = match list {
+    Array(items) =>
+      items
+      .map(fn(a) {
+        match a {
+          Object(m) =>
+            match (m.get("sub"), m.get("account")) {
+              (Some(String(sub)), _) => sub
+              (_, Some(Object(acc))) =>
+                match acc.get("sub") {
+                  Some(String(sub)) => sub
+                  _ => a.stringify()
+                }
+              _ => a.stringify()
+            }
+          _ => a.stringify()
+        }
+      })
+      .join("\u{1}")
+    _ => list.stringify()
+  }
+  match signed_in.val {
+    Some(was) if was != who && trace_switch("MBUI_SWR_VIEWS") => @core.client.forget_kept()
+    _ => ()
+  }
+  signed_in.val = Some(who)
 }
 
 /// The first account answer decides the web's entry. Later sign-outs can use the normal retry page.
@@ -548,9 +592,32 @@ pub let trace_switches : Array[String] = [
   // (the stations' newer releases waiting for this person, `stationUpdates`, asked with the shell and read by their key
   // beside the app's update: sfpages station_updates.mbt. A trace without it has none asked, as its run's app did)
   "MBUI_STATION_UPDATES",
+  // (a station's page asks what of it moves, `stationMove` with no station named: its 迁移 row while a move runs,
+  // something is stopped or a turn failed, sfpages station_node.mbt. A trace without it has none asked, as its run's
+  // app did)
+  "MBUI_STATION_MOVE",
   // (a station's terminals among its screens on its page, `terminals`: sfpages station_terminals_node.mbt. A trace
   // without it has none asked, as its run's app did)
   "MBUI_TERMINALS",
+  // (a page's, a panel's or a card's read-only topic let go of is kept as it is and shown again at once as it is asked
+  // again, till the core answers (sfbase's `topic_kept`, `topic_shown_kept`; @core.Client::show_kept); a chat's last 8
+  // kept, not 4; what a pop over a chat's services shows read from its bar's summary till its own comes, an agent's
+  // card asking ahead what its model's menu lists (`pick`), and what the accounts said anew forgets of what is kept.
+  // A trace without it has none of these, as its run's app did)
+  "MBUI_SWR_VIEWS",
+  // (a card, a panel or a sheet opened the first time comes in once what it reads of the device is answered (@sf.OpenGate,
+  // open_hold_ms at most), and a station's or a connect's page opened by a press once what it shows is (sfbase's
+  // route_open_asks). A trace without it opens each at once, as its run's app did)
+  "MBUI_OPEN_WHOLE",
+  // (a chat's page opening waits as well for the faces it shows that the device holds: on their way from the core, or
+  // not decoded yet (sfbase's pictures_in, Source.picture_waits). A trace without it opens each chat as what it reads is
+  // answered, as its run's app did)
+  "MBUI_PAGE_PICTURES",
+  // (the page a scripted run's app was started on (`#env MBUI_OPEN_PAGE`, src/stillfail/main.mbt), opened as its replay's
+  // app starts too, before its first frame, as the run's was: what a page made once as nodes asks as it is made then
+  // asked with the start. Only the replay reads it: a trace without it has its replay open the page as a step
+  // (Flow::open_page), as its run's old view, built only once drawn, asked nothing of it till then)
+  "MBUI_START_PAGE",
 ]
 
 ///|

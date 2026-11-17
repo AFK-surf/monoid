@@ -77,13 +77,14 @@ fn rc_case(
   goes? : (Int) -> Bool = fn(_) { true },
   from_end? : Bool = false,
   reduced? : Bool = false,
+  flips? : Bool = false,
 ) -> RcCase {
   let scroll = @view.Scroll::list()
   let keys = @signals.signal(keys, same=fn(a, b) { a == b })
   let tree = @view.Tree::new(fn(root) {
     root.box(fn(o) {
       o.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
-      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, comes~, goes~, from_end~, fn(b, k) {
+      o.scrolls_window(scroll, fn() { keys.get() }, est=40.0, follows=fn() { true }, comes~, goes~, from_end~, flips~, fn(b, k) {
         b.height(Is(Some(rc_tall(k)))).words(Is("行\{k}")) |> ignore
       })
       |> ignore

@@ -14,7 +14,6 @@
 // - each background command and subagent is told as it starts (system/task_started, is_backgrounded; or task_updated
 //   with it later) and as it ends (task_notification, or task_updated with a final status); a subagent's own commands
 //   say owned_by_subagent. They all end with the process.
-import { mkdirSync } from "node:fs";
 import { link, mkdir, readdir, realpath, stat, symlink } from "node:fs/promises";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,15 +23,14 @@ import { RenewRefused } from "../accounts/console.ts";
 import { claudeToken as claudeFileToken } from "../accounts/oauth.ts";
 import { log } from "../ops/log.ts";
 import { claudeProject } from "../read/transcript.ts";
-import { LiveFromClaude, chars, type ClaudeLiveState } from "./live.ts";
+import { chars } from "./live.ts";
 import { CLAUDE_TOKEN_MARGIN_MS, machineClaudeToken, type Env, type MachineToken } from "./machine-logins.ts";
-import { fileCredentials, takeBack, takeBackMissing } from "./no-keychain.ts";
-import { type Events, OwnProcessDriver, OwnProcessSession, parseLine } from "./own-process.ts";
+import { fileCredentialsSoon, takeBack, takeBackMissing } from "./no-keychain.ts";
+import { type Events, type Replayed, OwnProcessDriver, OwnProcessSession } from "./own-process.ts";
 import { accessKind, expandRoute, isMachine, keyFile, profileEnv, profileFast, profileModel, takesFast } from "./profiles.ts";
 import type { RunnerInfo } from "./runner.ts";
-import { AgentsHost, HostedProcess, type Heard } from "./mb-agents.ts";
-import { ackedOffset, findRunner, linesBefore, outFile, runnerId } from "./process.ts";
-import { OVERLOADED, TOOL_SERVERS, cleanEnv, failureRest, unreachable, uuid, type BackgroundTask, type FailureReason, type OpenOptions, type Profile, type RuntimeEvent, type TurnOutcome } from "./runtime.ts";
+import type { AgentsHost } from "./mb-agents.ts";
+import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile } from "./runtime.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
@@ -77,6 +75,7 @@ export function mcpUrlOf(args: string[]): string | null {
 /// What a frame says of the station's tools being out of reach (null: nothing): their server failed to connect as a
 /// turn started, or a call to one of them (`calls`: the ids of those made, noted here as they are) failed as
 /// unreachable. Seen in the field as `ECONNREFUSED: Unable to connect…`, then `MCP server "stillfail" is not connected`.
+/// What the program reads a process by does this (mb/src/claude/frames.mbt); this is what it is held to (tools-reach.test.ts).
 export function toolsLostIn(frame: Json, calls: Set<string>): string | null {
   const kind = frame?.type;
   const content: Json[] = Array.isArray(frame?.message?.content) ? frame.message.content : [];
@@ -99,13 +98,14 @@ export function toolsLostIn(frame: Json, calls: Set<string>): string | null {
 
 export const userMessage = (text: string) => JSON.stringify({ type: "user", message: { role: "user", content: [{ type: "text", text }] } });
 
-/// Claude keeps a session at $CLAUDE_CONFIG_DIR/projects/<encoded cwd>/<id>.jsonl: looked for in the directory of `cwd`
-/// (where it runs on), then in every project's (it ran elsewhere before: many directories on a station, each looked at).
-/// Where it is, or null.
+/// Claude keeps a session at $CLAUDE_CONFIG_DIR/projects/<encoded cwd>/<id>.jsonl, the cwd as it sees it (its real
+/// path, as `bringTranscript` names it): looked for in that project first, then in the one of `cwd` as given, then in
+/// every project's (it ran elsewhere before: many directories on a station, each looked at). Where it is, or null.
 export async function transcriptAt(home: string, sessionId: string, cwd: string): Promise<string | null> {
-  const project = claudeProject(cwd);
-  const here = project === null ? null : join(home, "projects", project, `${sessionId}.jsonl`);
-  if (here !== null && (await isFile(here))) return here;
+  for (const project of new Set([claudeProject(await realpath(cwd).catch(() => cwd)), claudeProject(cwd)])) {
+    const here = project === null ? null : join(home, "projects", project, `${sessionId}.jsonl`);
+    if (here !== null && (await isFile(here))) return here;
+  }
   let dirs: string[];
   try {
     dirs = await readdir(join(home, "projects"));
@@ -140,44 +140,12 @@ export async function bringTranscript(home: string, sessionId: string, cwd: stri
   }
 }
 
-/// Anthropic turning the request away before any account is looked at (a region it does not serve, a proxy's address
-/// it refuses): a 403 "Request not allowed", "forbidden". Signing in again changes nothing; the network does.
-export function refused(text: string): boolean {
-  const lower = text.toLowerCase();
-  return lower.includes("request not allowed") || /\bforbidden\b/.test(lower);
-}
-
-export function classifyResult(text: string): FailureReason {
-  const lower = text.toLowerCase();
-  const words = lower.split(/[^\p{L}\p{N}]+/u);
-  const word = (w: string) => words.includes(w);
-  if (refused(text)) return "refused";
-  if (word("401") || word("403") || lower.includes("authenticat") || lower.includes("api key")) return "auth";
-  if (
-    word("429") ||
-    ["rate limit", "rate-limit", "rate_limit", "ratelimit", "usage limit"].some((s) => lower.includes(s)) ||
-    ["session", "weekly", "daily"].some((window) => lower.includes(`hit your ${window} limit`)) ||
-    /\bhit your \d+[- ]hour limit\b/.test(lower) ||
-    // A model's own allowance: "You've reached your Fable limit. Switch to another model, or manage usage credits…",
-    // since 2026-11-14 also "You've hit your Fable limit · resets Nov 20 at 9am (Asia/Tokyo). Switch to another model…"
-    /\b(?:reached|hit) your [\w.\- ]+ limit\b/.test(lower) ||
-    lower.includes("you've hit your limit")
-  ) {
-    return "rate_limit";
-  }
-  if (word("529") || OVERLOADED.some((s) => lower.includes(s))) return "overloaded";
-  return failureRest(text);
-}
-
 /// `renews`: its token is handed over and renewed while it runs (RENEWED): a first 401 is left to that.
 /// `renewed`: a new token was given it in this turn, so another 401 is not the old token's.
 /// `tasks`: the commands and subagents it runs that have not ended, by id (`background` once moved there).
 /// `compacting`: the turn is a `/compact` asked for by hand, and `compactError` why it compacted nothing.
 export type Turn = { busy: boolean; aborting: boolean; authFailure: string | null; closed: boolean; renews?: boolean; renewed?: boolean; tasks?: Record<string, Task>; compacting?: boolean; compactError?: string | null };
 export type Task = BackgroundTask & { background: boolean };
-
-/// A task's statuses once it has ended.
-const ENDED = new Set(["completed", "failed", "killed", "stopped"]);
 
 /// What its tasks as the turn leaves them run in the background.
 export const backgroundOf = (turn: Turn): BackgroundTask[] =>
@@ -191,8 +159,8 @@ export const backgroundOf = (turn: Turn): BackgroundTask[] =>
 /// honours them only for a few entrypoints; claude-desktop changes neither its prompt nor its tools (only the entrypoint
 /// named in its requests), as checked on 2.1.299.
 const RENEWED = { CLAUDE_CODE_SDK_HAS_OAUTH_REFRESH: "1", CLAUDE_CODE_ENTRYPOINT: "claude-desktop" };
-/// A CLI that does not ask (one too old) retries a 401 on its own: past this attempt it is stopped as before.
-const RENEW_ATTEMPTS = 2;
+/// A CLI that does not ask (one too old) retries a 401 on its own: past the program's RENEW_ATTEMPTS (mb/src/claude
+/// frames.mbt, 2) it is stopped as before.
 
 /// What Claude Code reads on a tool of an MCP server's list as "never deferred" (tools/mcp.ts `Listing.loaded`). By
 /// itself it keeps every MCP tool behind its ToolSearch: the first request of a session carries none of the station's
@@ -271,6 +239,9 @@ const SETTINGS = {
   },
 };
 
+/// Its live steps as the program keeps them (mb/src/claude `Live::state`): the message, its blocks, the calls running.
+export type ClaudeLiveState = { message: string; blocks: [number, Json][]; tools: string[] };
+
 /// A session as a next station takes it up.
 export type ClaudeSnapshot = {
   runtime: "claude";
@@ -294,9 +265,8 @@ export type ClaudeDriverOptions = {
   /// A local subscription profile's current token, renewed under one lock by the station so concurrent `claude -p`
   /// processes neither race on a single-use refresh token nor delete `.credentials.json` on failure.
   subscriptionToken?: (profile: Profile, rejected?: string) => Promise<MachineToken>;
-  /// What reads its processes' output off the station's thread (mb-agents.ts): by default the MoonBit program where it
-  /// is there; null reads it here.
-  agents?: AgentsHost | null;
+  /// What reads its processes' output off the station's thread (mb-agents.ts): the MoonBit program by default.
+  agents?: AgentsHost;
   /// Another station's subscription, borrowed (share/index.ts): a token lent by the station signed in on it, handed
   /// to the process as the machine's is.
   lent?: { borrowed(profile: Profile): boolean; token(profile: Profile, rejected?: string): Promise<MachineToken> };
@@ -304,83 +274,15 @@ export type ClaudeDriverOptions = {
 
 const interruptRequest = () => JSON.stringify({ type: "control_request", request_id: `interrupt-${uuid()}`, request: { subtype: "interrupt" } });
 
-/// What a frame does to the turn. `interrupt` is how an auth failure stops the turn; `now` when a
-/// task it tells of starts. What it has going in the background, said again (a `tasks` live event) as it changes.
-export function onFrame(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void, interrupt: () => void, now: () => number = wall.now) {
-  const before = JSON.stringify(backgroundOf(turn));
-  frameDoes(frame, turn, emit, interrupt, now);
-  const tasks = backgroundOf(turn);
-  if (JSON.stringify(tasks) !== before) emit({ type: "live", event: { kind: "tasks", tasks } });
-}
-
-function frameDoes(frame: Json, turn: Turn, emit: (event: RuntimeEvent) => void, interrupt: () => void, now: () => number) {
-  const kind = typeof frame?.type === "string" ? frame.type : "";
-  const subtype = typeof frame?.subtype === "string" ? frame.subtype : "";
-  // A control request it refused (a model it cannot switch to, say): the turns go on as they were.
-  if (kind === "control_response" && frame.response?.subtype === "error") log.warn("agents::claude", "claude refused a control request", { request: String(frame.response.request_id ?? ""), error: String(frame.response.error ?? "") });
-  if (kind === "system" && subtype === "init") {
-    const was = turn.busy;
-    turn.busy = true;
-    if (!was) emit({ type: "turnStarted" });
-  } else if (kind === "system" && subtype === "api_retry") {
-    const status = Number.isInteger(frame.error_status) ? (frame.error_status as number) : 0;
-    const attempt = Number.isInteger(frame.attempt) ? (frame.attempt as number) : 1;
-    // A token renewed while it runs asks for a new one (RENEWED); stopped only when that one fails too.
-    const renewing = status === 401 && turn.renews === true && turn.renewed !== true && attempt <= RENEW_ATTEMPTS;
-    if ((status === 401 || status === 403) && turn.authFailure === null && !renewing) {
-      const error = frame.error === undefined ? "authentication failed" : typeof frame.error === "string" ? frame.error : JSON.stringify(frame.error);
-      turn.authFailure = `${status} ${error}`;
-      interrupt();
-      turn.aborting = true;
-    }
-  } else if (kind === "system" && subtype === "task_started" && typeof frame.task_id === "string" && frame.owned_by_subagent !== true) {
-    const description = typeof frame.description === "string" ? frame.description : "";
-    turn.tasks = { ...turn.tasks, [frame.task_id]: { id: frame.task_id, kind: frame.task_type === "local_agent" ? "agent" : "command", description, background: frame.is_backgrounded === true, startedAt: now() } };
-  } else if (kind === "system" && (subtype === "task_notification" || subtype === "task_updated") && typeof frame.task_id === "string" && turn.tasks?.[frame.task_id]) {
-    const status = subtype === "task_notification" ? frame.status : frame.patch?.status;
-    const { [frame.task_id]: task, ...rest } = turn.tasks;
-    if (subtype === "task_notification" || ENDED.has(status)) turn.tasks = rest;
-    else if (frame.patch?.is_backgrounded === true) turn.tasks = { ...rest, [frame.task_id]: { ...task!, background: true } };
-  } else if (kind === "system" && subtype === "status" && turn.compacting === true && frame.compact_result === "failed") {
-    // `/compact` that compacted nothing still ends in a result of success: only this says so (2.1.289).
-    turn.compactError = typeof frame.compact_error === "string" && frame.compact_error !== "" ? frame.compact_error : "compaction failed";
-  } else if (kind === "system" && subtype === "compact_boundary") {
-    emit({ type: "compacted" });
-  } else if (kind === "result") {
-    // A turn that failed outside the model's reply (`error_during_execution`: a session it could not resume, a request
-    // it could not make) has no `result`; what went wrong is in `errors`, the subtype only says that something did.
-    const errors = Array.isArray(frame.errors) ? frame.errors.filter((e: unknown): e is string => typeof e === "string" && e.trim() !== "") : [];
-    const text = typeof frame.result === "string" && frame.result.trim() !== "" ? frame.result : errors.length > 0 ? errors.join("\n") : subtype;
-    let outcome: TurnOutcome;
-    if (turn.authFailure !== null) outcome = { kind: "failed", reason: refused(turn.authFailure) ? "refused" : "auth", message: turn.authFailure };
-    else if (turn.aborting) outcome = { kind: "aborted" };
-    else if (frame.is_error === true) outcome = { kind: "failed", reason: classifyResult(text), message: chars(text, 1000) };
-    else if (turn.compactError) outcome = { kind: "failed", reason: "other", message: chars(turn.compactError, 1000) };
-    else outcome = { kind: "completed" };
-    turn.busy = false;
-    turn.aborting = false;
-    turn.authFailure = null;
-    turn.renewed = false;
-    turn.compacting = false;
-    turn.compactError = null;
-    // What it waited on in the turn has ended with it; what goes on is in the background.
-    if (turn.tasks) turn.tasks = Object.fromEntries(Object.entries(turn.tasks).filter(([, t]) => t.background));
-    emit({ type: "turnEnded", outcome });
-  }
-}
-
 export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   private readonly command: string;
   private readonly env: Env;
   private readonly machineToken: (env: Env, rejected?: string) => Promise<MachineToken>;
   private readonly subscriptionToken: ClaudeDriverOptions["subscriptionToken"];
   private readonly lent: ClaudeDriverOptions["lent"];
-  private readonly agents: AgentsHost | null;
 
   constructor(options: ClaudeDriverOptions) {
-    super(options.data);
-    this.agents = options.agents === undefined ? AgentsHost.where(options.data) : options.agents;
-    this.agents?.use(this);
+    super(options.data, options.agents);
     this.command = options.command ?? "claude";
     this.env = options.env ?? process.env;
     this.machineToken = options.machineToken ?? machineClaudeToken;
@@ -397,57 +299,13 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     return `claude ${session.id()}`;
   }
 
-  /// Read by the program where it is there (mb-agents.ts), else as every such driver reads.
-  protected async start(session: ClaudeSession, options: OpenOptions, command: string, args: string[], env: Record<string, string>) {
-    if (this.agents === null) return super.start(session, options, command, args, env);
-    const id = runnerId("claude", options.key);
-    session.attach(await HostedProcess.start(this.agents, this.data, id, command, args, env, options.cwd, session.hostedOptions(this.label(options, session)), session.turnNow()));
-    this.live.add(session);
-  }
-
-  async adopt(options: OpenOptions, snapshot: unknown | null, events: Events): Promise<ClaudeSession> {
-    if (this.agents === null) return super.adopt(options, snapshot, events);
-    const handed = snapshot as ClaudeSnapshot | null;
-    const id = handed?.runner ?? runnerId("claude", options.key);
-    const info = await findRunner(this.data, id);
-    if (!info) throw new Error(`no runner keeps claude for ${options.key}`);
-    let session: ClaudeSession;
-    if (handed) {
-      log.info("agents::claude", "taking up a claude process handed over", { session: handed.id, pgid: info.pgid, busy: handed.turn.busy });
-      session = this.handedOver(options, handed, info, events);
-    } else {
-      const { at } = await ackedOffset(info, outFile(this.data, id));
-      session = await this.crashed(options, linesBefore(outFile(this.data, id), at), info, events);
-      log.info("agents::claude", "taking up a claude process after a crash", { session: session.id(), pgid: info.pgid, busy: session.busy(), from: at });
-      if (session.busy()) events({ type: "turnStarted" });
-    }
-    session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow()));
-    this.live.add(session);
-    return session;
-  }
-
-  /// Its processes' lines held while the station hands over (hub.ts `handOver`), and read on where it does not.
-  async freeze() {
-    await this.agents?.freeze(this.hostedProcs());
-  }
-
-  thaw() {
-    this.agents?.thaw(this.hostedProcs());
-  }
-
-  /// Its sessions' processes the program reads.
-  private hostedProcs(): HostedProcess[] {
-    return [...this.live].flatMap((s) => s.hostedProc() ?? []);
-  }
-
-  async shutdown() {
-    await super.shutdown();
-    await this.agents?.close(this);
+  hosting() {
+    return { kind: "claude" as const };
   }
 
   async open(options: OpenOptions, events: Events): Promise<ClaudeSession> {
     const home = options.profile.home;
-    mkdirSync(home, { recursive: true });
+    await mkdir(home, { recursive: true });
     if (options.resume !== undefined) {
       const found = await transcriptAt(home, options.resume, options.cwd);
       // claude would start and exit at once; failing here lets the caller start fresh.
@@ -494,7 +352,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     // Lets the agent name its own transcript, e.g. for an independent reviewer (codex has CODEX_THREAD_ID).
     env.STILLFAIL_RUNTIME_SESSION_ID = sessionId;
     const localSub = !isMachine(options.profile) && !this.lent?.borrowed(options.profile) && accessKind(options.profile) === "subscription";
-    if (!isMachine(options.profile)) fileCredentials(env);
+    if (!isMachine(options.profile)) await fileCredentialsSoon(env);
     // A machine profile runs on the machine's own login, handed over as its current token; a local subscription on its
     // own login renewed here under one lock; another station's subscription on the token that station lends.
     const renew = this.renewer(options.profile);
@@ -538,7 +396,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
 
     // Renewed while it runs, it is never started again for its token; one read from a file again after a 401 is not
     // stopped at the first.
-    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (machine !== undefined && renews) || file !== undefined }, null, new LiveFromClaude(), events, options.effort, renews ? renew : null, machine?.token ?? null);
+    const session = new ClaudeSession(this, sessionId, { busy: false, aborting: false, authFailure: null, closed: false, renews: (machine !== undefined && renews) || file !== undefined }, null, null, events, options.effort, renews ? renew : null, machine?.token ?? null);
     session.toolsUrl = options.mcpUrl;
     session.fast = fast;
     await this.start(session, options, this.command, args, env);
@@ -559,29 +417,23 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
   }
 
   protected handedOver(options: OpenOptions, handed: ClaudeSnapshot, info: RunnerInfo, events: Events) {
-    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, new LiveFromClaude(handed.live), events, flagOf(info.args, "--effort"), this.renewer(options.profile), null);
+    const session = new ClaudeSession(this, handed.id, { ...handed.turn, closed: false }, handed.machineExpires, handed.live, events, flagOf(info.args, "--effort"), this.renewer(options.profile), null);
     // The address it was told is in its arguments: the station's may have moved since (hub.ts `toolsAt`).
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
     return session;
   }
 
-  /// What the station before had handled (stdout up to where it acknowledged) says where the turn stands.
-  protected async crashed(options: OpenOptions, lines: AsyncIterable<string>, info: RunnerInfo, events: Events) {
-    const turn: Turn = { busy: false, aborting: false, authFailure: null, closed: false };
-    const live = new LiveFromClaude();
-    for await (const line of lines) {
-      const frame = parseLine("claude", line);
-      if (frame === undefined) continue;
-      live.feed(frame);
-      onFrame(frame, turn, () => {}, () => {});
-    }
+  /// What the station before had handled (stdout up to where it acknowledged), read again by the program, says where
+  /// the turn stands and its live steps (mb agents_own.mbt `own_replay`: its frames as on_frame and Live::feed read them).
+  protected crashed(options: OpenOptions, replayed: Replayed, info: RunnerInfo, events: Events) {
+    const turn: Turn = { busy: false, aborting: false, authFailure: null, ...(replayed.turn ?? {}), closed: false };
     const flag = info.args.findIndex((a) => a === "--session-id" || a === "--resume");
     const sessionId = flag >= 0 ? info.args[flag + 1]! : (options.resume ?? "");
     // Its token is not known, nor whether it asks for a new one: as if about to run out, so its next turn starts it
     // again with a current one (a machine login's or a lent one).
     const renew = this.renewer(options.profile);
-    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, live, events, flagOf(info.args, "--effort"), renew, null);
+    const session = new ClaudeSession(this, sessionId, turn, renew ? wall.now() : null, replayed.live ?? null, events, flagOf(info.args, "--effort"), renew, null);
     session.toolsUrl = mcpUrlOf(info.args);
     session.fast = fastOf(info.args);
     return session;
@@ -594,70 +446,31 @@ type Renew = (rejected?: string) => Promise<MachineToken>;
 export class ClaudeSession extends OwnProcessSession<Turn> {
   /// The machine login's token this process runs on (machine profiles): when it runs out.
   private machineExpires: number | null;
-  private live: LiveFromClaude;
   /// The effort it was started with: fixed for the process (`--effort` has no switch while it runs).
   private effort: string | undefined;
   /// The Fast it was started with (fastFor; none: an account that does not take it), fixed for the process too.
   fast: boolean | undefined;
-  /// Its calls to the station's tools not answered yet (toolsLostIn).
-  private calls = new Set<string>();
   /// Where it gets a new token when it asks (RENEWED), and the one it was given last (null when not known here).
   private renew: Renew | null;
   private token: string | null;
 
-  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: LiveFromClaude, events: Events, effort: string | undefined, renew: Renew | null, token: string | null) {
-    super(driver, sessionId, turn, events);
+  constructor(driver: ClaudeDriver, sessionId: string, turn: Turn, machineExpires: number | null, live: ClaudeLiveState | null, events: Events, effort: string | undefined, renew: Renew | null, token: string | null) {
+    super(driver, sessionId, turn, events, live);
     this.renew = renew;
     this.token = token;
     this.effort = effort;
     this.machineExpires = machineExpires;
-    this.live = live;
   }
 
-  /// What its process's lines are read with by the program (mb-agents.ts).
-  hostedOptions(label: string) {
-    return { label, heard: (heard: Heard) => this.heardHosted(heard), exit: (said: string, stderr: string) => this.exited(said, stderr) };
+  /// A new token asked for (RENEWED): the program says it to the session's owner alone.
+  protected took(e: Json) {
+    if (e?.type !== "renew") return false;
+    void this.renewToken(String(e.requestId ?? ""));
+    return true;
   }
 
-  /// The turn as the program is told it (it keeps it from then on).
-  turnNow() {
-    const { closed: _, ...turn } = this.turn;
-    return turn;
-  }
-
-  liveNow() {
-    return this.live.state();
-  }
-
-  /// What the program read of its lines: the turn as each event left it, the events as `heard` emits them.
-  private heardHosted(heard: Heard) {
-    const take = (t: Json) => {
-      if (t === null || typeof t !== "object") return;
-      const closed = this.turn.closed;
-      this.turn = { ...t, closed } as Turn;
-    };
-    for (const e of heard.events) {
-      if (e?.type === "renew") {
-        void this.renewToken(String(e.requestId ?? ""));
-        continue;
-      }
-      const { turn, ...event } = e;
-      if (turn !== undefined) take(turn);
-      if (event.type === "turnEnded") event.outcome = outcomeOf(event.outcome);
-      this.events(event as RuntimeEvent);
-    }
-    take(heard.turn);
-  }
-
-  protected heard(line: string) {
-    const frame = parseLine("claude", line);
-    if (frame === undefined) return;
-    for (const event of this.live.feed(frame)) this.events({ type: "live", event });
-    const lost = toolsLostIn(frame, this.calls);
-    if (lost !== null) this.events({ type: "toolsLost", why: lost });
-    if (frame?.type === "control_request" && frame.request?.subtype === "oauth_token_refresh") void this.renewToken(String(frame.request_id ?? ""));
-    onFrame(frame, this.turn, this.events, () => this.proc.write(interruptRequest()));
-  }
+  /// Never called: its lines are the program's to read, none given here as a line.
+  protected heard(_line: string) {}
 
   /// It was refused with its token and asks for a new one (RENEWED): given one other than the token refused, or told
   /// why not, when its turn ends failed on authentication as before.
@@ -669,7 +482,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       if (got.token === this.token) throw new Error("no newer token");
       this.token = got.token;
       this.turn.renewed = true;
-      this.hosted()?.tell("renewed");
+      this.proc.tell("renewed");
       response = { accessToken: got.token };
       log.info("agents::claude", "gave claude a new token", { session: this.sessionId });
     } catch (error) {
@@ -694,7 +507,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     this.begin();
     this.turn.compacting = true;
     this.turn.compactError = null;
-    this.hosted()?.tell("compact");
+    this.proc.tell("compact");
     this.proc.write(userMessage("/compact"));
   }
 
@@ -705,16 +518,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
     if (this.machineExpires !== null && this.machineExpires - wall.now() < CLAUDE_TOKEN_MARGIN_MS) throw new Said(tr(stationLang(), "station.claudeAuth.machineRunsOut"));
     this.turn.renewed = false;
     this.turn.busy = true;
-    this.hosted()?.tell("begin");
-  }
-
-  hostedProc(): HostedProcess | null {
-    return this.hosted();
-  }
-
-  /// Its process as the program reads it, if it is.
-  private hosted(): HostedProcess | null {
-    return this.proc instanceof HostedProcess ? this.proc : null;
+    this.proc.tell("begin");
   }
 
   async steer(text: string) {
@@ -733,7 +537,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   async abort() {
     if (this.turn.closed || !this.turn.busy || this.turn.aborting) return;
     this.turn.aborting = true;
-    this.hosted()?.tell("aborting");
+    this.proc.tell("aborting");
     this.proc.write(interruptRequest());
   }
 
@@ -747,9 +551,8 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
   }
 
   snapshot(): ClaudeSnapshot {
-    this.handOver();
     // (read by the program: where it stood as its lines were held)
-    const frozen = this.hosted()?.frozenState();
+    const frozen = this.handOver();
     if (frozen) {
       const t = frozen.turn ?? {};
       return { runtime: "claude", id: this.sessionId, runner: this.proc.info.id, turn: { busy: t.busy === true, aborting: t.aborting === true, authFailure: t.authFailure ?? null, renews: t.renews, tasks: t.tasks, compacting: t.compacting, compactError: t.compactError }, machineExpires: this.machineExpires, live: frozen.live };
@@ -760,15 +563,7 @@ export class ClaudeSession extends OwnProcessSession<Turn> {
       runner: this.proc.info.id,
       turn: { busy: this.turn.busy, aborting: this.turn.aborting, authFailure: this.turn.authFailure, renews: this.turn.renews, tasks: this.turn.tasks, compacting: this.turn.compacting, compactError: this.turn.compactError },
       machineExpires: this.machineExpires,
-      live: this.live.state(),
+      live: this.liveState,
     };
   }
-}
-
-/// A turn's outcome as the program says it, with what it leaves to the TypeScript (mb/src/claude: `auth`, a failure on
-/// authentication whose words say whether it was refused; `classify`, a failed result whose words say why).
-function outcomeOf(said: Json): TurnOutcome {
-  if (said?.kind === "failed" && typeof said.auth === "string") return { kind: "failed", reason: refused(said.auth) ? "refused" : "auth", message: said.auth };
-  if (said?.kind === "failed" && typeof said.classify === "string") return { kind: "failed", reason: classifyResult(said.classify), message: chars(said.classify, 1000) };
-  return said as TurnOutcome;
 }

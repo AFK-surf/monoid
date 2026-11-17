@@ -12,7 +12,7 @@ test "each_of: a row for each object, made once, kept across a set and a move, g
   let a : EachOfRow = { name: "" }
   let b : EachOfRow = { name: "" }
   let c : EachOfRow = { name: "c" }
-  let items = @signals.signal([a, b], same=fn(x, y) { physical_equal(x, y) })
+  let items = @signals.signal_ref([a, b])
   let made : Array[String] = []
   let gone : Array[String] = []
   let t = @view.Tree::new(fn(root) {

@@ -71,16 +71,26 @@ fn logged(name : String, v : Json) -> String {
 
 ///|
 /// Pictures by their address as the core gives them (`picture`): kept as images, one that could not be had asked
-/// again when it is put up anew (@sfapp.core_pictures).
-let picture : (String, Int) -> String = @sfapp.core_pictures(fn(url, done) {
-  let params : Map[String, Json] = { "url": Json::string(url) }
-  @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
-    match r {
-      Ok((_, bytes)) => done(bytes)
-      Err(_) => done(None)
+/// again when it is put up anew, and what a page opening waits for of them (@sfapp.core_pictures_waited).
+let pictures : @sfapp.CorePictures = @sfapp.core_pictures_waited(picture_asked(false), picture_asked(true))
+
+///|
+/// The core's `picture` asked for the bytes at a URL: `done` gets them, or None when it could not be had. `kept`: as the
+/// device holds it, at once (no bytes where it has none: core-ts asks.ts pictureKept).
+fn picture_asked(kept : Bool) -> (String, (Bytes?) -> Unit) -> Unit {
+  fn(url, done) {
+    let params : Map[String, Json] = { "url": Json::string(url) }
+    if kept {
+      params["kept"] = Json::boolean(true)
     }
-  })
-})
+    @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
+      match r {
+        Ok((_, bytes)) => done(bytes)
+        Err(_) => done(None)
+      }
+    })
+  }
+}
 
 ///|
 /// Chats' images as their messages show them (`station.file` with `thumb`: the station's thumbnail where it keeps one,
@@ -127,7 +137,13 @@ fn draft_picture(key : String, id : String) -> String {
   let at = "draft\u{1}" + key + "\u{1}" + id
   let params : Map[String, Json] = { "key": Json::string(key), "id": Json::string(id) }
   chat_images.get("", at, "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}", fn(_, done) {
-    @core.call_bytes("composer.picture", params=Json::object(params), on_done=done)
+    @core.call_bytes("composer.picture", params=Json::object(params), on_done=fn(r) {
+      match r {
+        Ok((_, Some(b))) if b.length() > 0 => @sfbase.writing_kept(id, b)
+        _ => ()
+      }
+      done(r)
+    })
   })
 }
 
@@ -159,6 +175,9 @@ fn refused(name : String) -> Json {
 let core_source : @sfapp.Source = {
   topic_read: core_topic,
   topic_key: fn(name, params) { @sfbase.wire_topic_key(name, @sfbase.core_topic_params(name, params)) },
+  topic_keyed: fn(name, params, field, keys) {
+    @core.keyed_of(name, @sfbase.core_topic_params(name, params), field, keys)
+  },
   topic_scope: None,
   topic_alive: fn() { true },
   topic_lease_own: None,
@@ -297,7 +316,14 @@ let core_source : @sfapp.Source = {
     let s = @sfcore.sign_in_now()
     @sfbase.SignInStep::of(busy=s.busy, verifying=s.verifying, waiting=s.waiting, failed=s.failed)
   },
-  picture,
+  // (a picture the device holds, put up as a card, a panel or a sheet is made: waited for by it till decoded, @sf.OpenGate)
+  picture: fn(url, stint) {
+    let key = (pictures.shown)(url, stint)
+    @sfbase.picture_gated(key)
+    key
+  },
+  // (a page opening waits for a picture it shows the device holds: on its way from the core, or not decoded yet)
+  picture_waits: pictures.waits,
   fatal: fn() { @core.fatal() },
   file: chat_file,
   poster: chat_poster,
@@ -315,7 +341,10 @@ let core_source : @sfapp.Source = {
   asks_outline: fn() { true },
   switches_ahead: fn() { true },
   asks_station_updates: fn() { true },
+  asks_station_move: fn() { true },
   asks_terminals: fn() { true },
+  swr_views: fn() { true },
+  gates_opens: fn() { true },
 }
 
 ///|
@@ -387,7 +416,9 @@ fn main {
   @hostapi.set_site_name("stillfail")
   // what the places open on, and the last few chats, are kept by the core's client as they are let go of, asked again
   // with their version
-  @core.client.keep(@sfbase.topic_kept)
+  @core.client.keep(@sfbase.topic_kept, most=fn() { @sfbase.kept_most_by(true) })
+  // (a page's, a panel's or a card's own topic opened again shown at once as it was, till the core answers)
+  @core.client.show_kept(@sfbase.topic_shown_kept)
   // (a chat list's first window told the core before the list is asked, each time it is; a chat's before the chat)
   @core.client.tells_before(@sfbase.chats_told_before)
   // SVG pictures (a chat's .svg files) drawn by mbui's own SVG renderer, whatever the system decodes
@@ -481,6 +512,8 @@ fn main {
   // a window of its own (sfbase's window.mbt, MBUI_WINDOW: started by the app's run beside it, @ui.window_open): the
   // page it was started for alone, none of what follows (the app's run beside it has them)
   @sfbase.lone_page.val = @sfbase.window_page(@ui.env("MBUI_WINDOW"))
+  // 添加 › Slack 账号: the sign-in on this host's browser (sfcore's vault_oauth.mbt)
+  @sfbase.vault_oauth_of.val = @sfcore.vault_oauth
   if @sfbase.lone_page.val is None {
     // scripted runs: a chat opened by words in its title once Home lists it (MBUI_OPEN_CHAT), or by its station and
     // session at once (MBUI_OPEN_SESSION=<workspace>/<station>|<session>)

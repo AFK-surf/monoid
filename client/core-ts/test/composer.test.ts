@@ -1181,7 +1181,29 @@ test("a_file_ended_part_way_up_is_kept_whole_and_its_message_sent_from_it", asyn
   }
 });
 
-test("carrying_a_taken_new_chat_draft_keeps_it_empty_and_preserves_taken_for_restore", async () => {
+test("a_restore_says_whether_what_was_taken_came_back", async () => {
+  const t = await setup();
+  const restored = async (id: number, params: J) => {
+    call(t.core, t.ui, id, "composer.restore", params);
+    await t.host.settle();
+    return (answers(t.host.takeEmitted(), id)?.ok as J)?.back;
+  };
+  await t.ask("text", { key: "ws/st:k", text: "发出去" });
+  call(t.core, t.ui, 801, "composer.take", { key: "ws/st:k" });
+  await t.settle();
+  // nothing written since: back
+  assert.equal(await restored(802, { key: "ws/st:k", error: "发不出去", unlessWritten: true }), true);
+  // nothing taken: not
+  assert.equal(await restored(803, { key: "ws/st:k", error: "发不出去" }), false);
+  // taken, something written since: not, the page says why it did not go
+  call(t.core, t.ui, 804, "composer.take", { key: "ws/st:k" });
+  await t.settle();
+  await t.ask("text", { key: "ws/st:k", text: "新的" });
+  assert.equal(await restored(805, { key: "ws/st:k", error: "发不出去", unlessWritten: true }), false);
+  t.core.close();
+});
+
+test("what_a_new_chat_took_to_send_goes_with_its_draft_and_comes_back_where_the_words_are_carried", async () => {
   const t = await setup();
   await t.watch(1, "new:ws");
   await t.ask("text", { key: "new:ws", text: "立即发出去" });
@@ -1190,9 +1212,27 @@ test("carrying_a_taken_new_chat_draft_keeps_it_empty_and_preserves_taken_for_res
   await t.ask("carry", { key: "new:ws", to: "ws/st:pending" });
   await t.watch(2, "ws/st:pending");
   assert.equal(v(t.values, 1).text, "");
-  await t.ask("restore", { key: "new:ws", error: "连接失败" });
-  assert.equal(v(t.values, 1).text, "立即发出去");
-  assert.equal(v(t.values, 1).error, "连接失败");
+  assert.equal(v(t.values, 2).text, "");
+  // The message refused once the page is the chat: its words back in the chat's composer, the new chat's left empty.
+  await t.ask("restore", { key: "ws/st:pending", error: "发不出去" });
+  assert.deepEqual([v(t.values, 2).text, v(t.values, 2).error], ["立即发出去", "发不出去"]);
+  assert.equal(v(t.values, 1).text, "");
+  // Taken again; the chat not made after all: what was written meanwhile carried back to the new chat, and what was
+  // taken with it, put back there (only while nothing new is written there: here, nothing).
+  call(t.core, t.ui, 702, "composer.take", { key: "ws/st:pending" });
+  await t.settle();
+  await t.ask("carry", { key: "ws/st:pending", to: "new:ws" });
+  await t.ask("restore", { key: "new:ws", error: "连接失败", unlessWritten: true });
+  assert.deepEqual([v(t.values, 1).text, v(t.values, 1).error], ["立即发出去", "连接失败"]);
+  assert.equal(v(t.values, 2).text, "");
+  // Taken and carried there and back with something written meanwhile: not put back over it.
+  call(t.core, t.ui, 703, "composer.take", { key: "new:ws" });
+  await t.settle();
+  await t.ask("carry", { key: "new:ws", to: "ws/st:pending" });
+  await t.ask("text", { key: "ws/st:pending", text: "接着写" });
+  await t.ask("carry", { key: "ws/st:pending", to: "new:ws" });
+  await t.ask("restore", { key: "new:ws", error: "连接失败", unlessWritten: true });
+  assert.equal(v(t.values, 1).text, "接着写");
   // newChat.create works even before station overview is in the store
   call(t.core, t.ui, 702, "newChat.create", { station: "ws/unloaded" });
   await t.host.settle();

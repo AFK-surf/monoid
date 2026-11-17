@@ -7,42 +7,42 @@
 
 ///|
 /// 建实神社's ema rack: the week's offerings, the top model, four heroines' wishes on four plaques, the chats at work.
-fn sr_ema(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_ema(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = sr_args(fleet)
   args.push(("n", sr_num(sr_arg(args, "archived"))))
-  sr_box(c, id, flat, ema_ground, fn() {
+  sr_box(c, flat, ema_ground, fn(c) {
     ema_wall(c)
     ema_petals(c)
     ema_streamers(c)
     ema_rope(c)
-    c.box(style=ema_head, fn() {
+    c.box(style=ema_head, fn(c) {
       sr_words(c, ema_t("shrine"), ema_kick)
-      c.box(style=ema_title_box, fn() { sr_words(c, ema_t("title"), ema_title) }) |> ignore
-      c.box(style=ema_koh_under, fn() {
-        c.box(style=ema_koh, fn() {
+      c.box(style=ema_title_box, fn(c) { sr_words(c, ema_t("title"), ema_title) }) |> ignore
+      c.box(style=ema_koh_under, fn(c) {
+        c.box(style=ema_koh, fn(c) {
           sr_words(c, ema_t("offerings"), ema_koh_words)
           sr_words(c, sr_arg(args, "weekCost"), ema_koh_cost)
         })
         |> ignore
       })
       |> ignore
-      c.box(style=ema_top_box, fn() {
+      c.box(style=ema_top_box, fn(c) {
         sr_rich(c, ema_runs(ema_t("top"), args, ema_title_ink, 1.0, plain=["model"]), ema_top)
       })
       |> ignore
     })
     |> ignore
     ema_rack(c, args)
-    c.box(style=ema_end, fn() {
-      c.box(style=ema_now_box, fn() {
+    c.box(style=ema_end, fn(c) {
+      c.box(style=ema_now_box, fn(c) {
         sr_rich(c, ema_runs(ema_t("now"), args, ema_red, ema_now_hi), ema_now)
       })
       |> ignore
-      c.box(style=ema_foot, fn() {
+      c.box(style=ema_foot, fn(c) {
         sr_brand(c, ema_brand)
         c.spacer()
         sr_words(c, @sf.t("web-main.stations.shareTagline"), ema_foot_words)
-        c.box(style=ema_foot_gap, fn() {  }) |> ignore
+        c.box(style=ema_foot_gap, fn(_) {  }) |> ignore
         sr_words(c, sr_arg(args, "at"), ema_foot_words)
       })
       |> ignore
@@ -121,35 +121,35 @@ fn ema_mix(a : Int64, b : Int64, t : Double) -> Int64 {
 ///|
 /// The warm wall: from its top colour into the card's ground at ema_wall_mid of the way down, and into its foot's
 /// colour at the bottom (the mockup's gradient, in bands).
-fn ema_wall(c : @ui.Ctx) -> Unit {
+fn ema_wall(c : Pen) -> Unit {
   let top_h = ema_card_h * ema_wall_mid
   let foot_h = ema_card_h - top_h
-  c.box(left=ema_zero, right=ema_zero, top=ema_zero, fn() { ema_bands(c, ema_wall_top, ema_ground, top_h) }) |> ignore
-  c.box(left=ema_zero, right=ema_zero, bottom=ema_zero, fn() { ema_bands(c, ema_ground, ema_wall_foot, foot_h) })
+  c.box(left=ema_zero, right=ema_zero, top=ema_zero, fn(c) { ema_bands(c, ema_wall_top, ema_ground, top_h) }) |> ignore
+  c.box(left=ema_zero, right=ema_zero, bottom=ema_zero, fn(c) { ema_bands(c, ema_ground, ema_wall_foot, foot_h) })
   |> ignore
 }
 
 ///|
 /// From `a` down into `b` over `h`, in bands about ema_band tall.
-fn ema_bands(c : @ui.Ctx, a : Int64, b : Int64, h : Double) -> Unit {
+fn ema_bands(c : Pen, a : Int64, b : Int64, h : Double) -> Unit {
   let n = (h / ema_band).to_int()
   let bh = h / n.to_double()
   for i in 0..<n {
     let ink = ema_mix(a, b, (i.to_double() + 0.5) / n.to_double())
-    c.box(style=@ui.style(w=Full, h=Fixed(bh), bg=Data(ink)), fn() {  }) |> ignore
+    c.box(style=@ui.style(w=Full, h=Fixed(bh), bg=Data(ink)), fn(_) {  }) |> ignore
   }
 }
 
 ///|
 /// The cherry petals fallen on the wall, behind everything else.
-fn ema_petals(c : @ui.Ctx) -> Unit {
+fn ema_petals(c : Pen) -> Unit {
   for p in ema_petal_spots {
     let (x, y, rx, ry, ink) = p
     let w = rx * ema_petal_solid * 2.0
     let h = ry * ema_petal_solid * 2.0
     let left = x * @sf.share_w_most - w / 2.0
     let top = y * ema_card_h - h / 2.0
-    c.box(style=ema_petal.then(@ui.style(w=Fixed(w), h=Fixed(h), bg=Data(ink))), left~, top~, fn() {  }) |> ignore
+    c.box(style=ema_petal.then(@ui.style(w=Fixed(w), h=Fixed(h), bg=Data(ink))), left~, top~, fn(_) {  }) |> ignore
   }
 }
 
@@ -163,7 +163,7 @@ fn ema_rope_y(x : Double) -> Double {
 ///|
 /// The zigzag paper streamers (shide) hanging from the rope, drawn before it (it covers their tops): each its pieces
 /// in their outline's colour a little larger, then in white over them.
-fn ema_streamers(c : @ui.Ctx) -> Unit {
+fn ema_streamers(c : Pen) -> Unit {
   for s in ema_shide_spots {
     let (x, k) = s
     let left = x - ema_shide_half
@@ -175,7 +175,7 @@ fn ema_streamers(c : @ui.Ctx) -> Unit {
         let (x0, y0, x1, y1) = r
         let (across, high) = ((x1 - x0) * k + grow * 2.0, (y1 - y0) * k + grow * 2.0)
         let st = @ui.style(w=Fixed(across), h=Fixed(high), bg=Data(ink))
-        c.box(style=st, left=left + x0 * k - grow, top=top + y0 * k - grow, fn() {  }) |> ignore
+        c.box(style=st, left=left + x0 * k - grow, top=top + y0 * k - grow, fn(_) {  }) |> ignore
       }
     }
   }
@@ -185,13 +185,13 @@ fn ema_streamers(c : @ui.Ctx) -> Unit {
 /// The sacred rope across the top, sagging: its straw in slabs along it with its shadow under it, its twist's dark and
 /// light bands leaning down to the right (the mockup's pattern turned -38°) laid row by row across it, its light line
 /// along its top.
-fn ema_rope(c : @ui.Ctx) -> Unit {
+fn ema_rope(c : Pen) -> Unit {
   let mut x = 0.0
   while x < @sf.share_w_most {
     let mid = ema_rope_y(x + ema_rope_step / 2.0)
-    c.box(left=x, top=mid - ema_rope_thick / 2.0, fn() {
-      c.box(style=ema_rope_straw, fn() {  }) |> ignore
-      c.box(style=ema_rope_shade, fn() {  }) |> ignore
+    c.box(left=x, top=mid - ema_rope_thick / 2.0, fn(c) {
+      c.box(style=ema_rope_straw, fn(_) {  }) |> ignore
+      c.box(style=ema_rope_shade, fn(_) {  }) |> ignore
     })
     |> ignore
     x = x + ema_rope_step
@@ -204,15 +204,15 @@ fn ema_rope(c : @ui.Ctx) -> Unit {
       let top = ema_rope_y(left + ema_twist_dark_w / 2.0) - ema_rope_thick / 2.0 + r.to_double() * row_h
       let dark = @ui.style(w=Fixed(ema_twist_dark_w), h=Fixed(row_h), bg=Data(ema_twist_dark))
       let light = @ui.style(w=Fixed(ema_twist_light_w), h=Fixed(row_h), bg=Data(ema_twist_light))
-      c.box(style=dark, left~, top~, fn() {  }) |> ignore
-      c.box(style=light, left=left + ema_twist_dark_w, top~, fn() {  }) |> ignore
+      c.box(style=dark, left~, top~, fn(_) {  }) |> ignore
+      c.box(style=light, left=left + ema_twist_dark_w, top~, fn(_) {  }) |> ignore
     }
     at = at + ema_twist_period
   }
   x = 0.0
   while x < @sf.share_w_most {
     let mid = ema_rope_y(x + ema_rope_step / 2.0)
-    c.box(style=ema_rope_shine, left=x, top=mid - ema_rope_shine_up, fn() {  }) |> ignore
+    c.box(style=ema_rope_shine, left=x, top=mid - ema_rope_shine_up, fn(_) {  }) |> ignore
     x = x + ema_rope_step
   }
 }
@@ -220,20 +220,20 @@ fn ema_rope(c : @ui.Ctx) -> Unit {
 ///|
 /// The rack: two red posts, two beams with their black caps, and on each beam two plaques hung on red-and-white cords,
 /// each with its heroine's wish and her name.
-fn ema_rack(c : @ui.Ctx, args : Array[(String, String)]) -> Unit {
-  c.box(style=ema_rack_box, fn() {
-    c.box(style=ema_post, left=ema_post_at, top=ema_zero, fn() { ema_post_bands(c) }) |> ignore
-    c.box(style=ema_post, right=ema_post_at, top=ema_zero, fn() { ema_post_bands(c) }) |> ignore
+fn ema_rack(c : Pen, args : Array[(String, String)]) -> Unit {
+  c.box(style=ema_rack_box, fn(c) {
+    c.box(style=ema_post, left=ema_post_at, top=ema_zero, fn(c) { ema_post_bands(c) }) |> ignore
+    c.box(style=ema_post, right=ema_post_at, top=ema_zero, fn(c) { ema_post_bands(c) }) |> ignore
     for top in ema_beams {
-      c.box(style=ema_beam_shade, left=ema_post_at, right=ema_post_at, top=top + ema_beam_h, fn() {  }) |> ignore
-      c.box(style=ema_beam, left=ema_post_at, right=ema_post_at, top~, fn() {
+      c.box(style=ema_beam_shade, left=ema_post_at, right=ema_post_at, top=top + ema_beam_h, fn(_) {  }) |> ignore
+      c.box(style=ema_beam, left=ema_post_at, right=ema_post_at, top~, fn(c) {
         for b in ema_beam_bands {
-          c.box(style=@ui.style(w=Full, h=Fixed(ema_beam_band_h), bg=Data(b)), fn() {  }) |> ignore
+          c.box(style=@ui.style(w=Full, h=Fixed(ema_beam_band_h), bg=Data(b)), fn(_) {  }) |> ignore
         }
       })
       |> ignore
-      c.box(style=ema_cap, left=ema_cap_at, top=top - ema_cap_up, fn() {  }) |> ignore
-      c.box(style=ema_cap, right=ema_cap_at, top=top - ema_cap_up, fn() {  }) |> ignore
+      c.box(style=ema_cap, left=ema_cap_at, top=top - ema_cap_up, fn(_) {  }) |> ignore
+      c.box(style=ema_cap, right=ema_cap_at, top=top - ema_cap_up, fn(_) {  }) |> ignore
     }
     for i, p in ema_plaques {
       ema_plaque(c, args, i, p)
@@ -244,9 +244,9 @@ fn ema_rack(c : @ui.Ctx, args : Array[(String, String)]) -> Unit {
 
 ///|
 /// A post's red, darker at its sides (the mockup's gradient across it, in bands).
-fn ema_post_bands(c : @ui.Ctx) -> Unit {
+fn ema_post_bands(c : Pen) -> Unit {
   for b in ema_post_inks {
-    c.box(style=@ui.style(w=Fixed(ema_post_band_w), h=Fixed(ema_rack_h), bg=Data(b)), fn() {  }) |> ignore
+    c.box(style=@ui.style(w=Fixed(ema_post_band_w), h=Fixed(ema_rack_h), bg=Data(b)), fn(_) {  }) |> ignore
   }
 }
 
@@ -254,7 +254,7 @@ fn ema_post_bands(c : @ui.Ctx) -> Unit {
 /// Plaque `i` (of ema_plaques): its cord from the beam, its picture (turned, its shadow in it), its wish's lines in the
 /// middle of its wood and its heroine's name at its lower right, both upright where the turn carries them.
 fn ema_plaque(
-  c : @ui.Ctx,
+  c : Pen,
   args : Array[(String, String)],
   i : Int,
   p : (Double, Double, Double, Double, Double, Double, Double, String, Int, Int64),
@@ -262,27 +262,27 @@ fn ema_plaque(
   let (x, y, beam, wdx, wdy, ndx, ndy, who, lines, ink) = p
   let cord_h = y - beam + ema_pl * ema_pl_pivot - ema_cord_from
   let cord_x = x + ema_pl / 2.0 - ema_cord_w / 2.0
-  c.box(style=ema_cord.then(@ui.style(h=Fixed(cord_h))), left=cord_x, top=beam + ema_cord_from, fn() {
+  c.box(style=ema_cord.then(@ui.style(h=Fixed(cord_h))), left=cord_x, top=beam + ema_cord_from, fn(c) {
     let mut at = 0.0
     while at < cord_h {
-      c.box(style=ema_cord_red, fn() {  }) |> ignore
-      c.box(style=ema_cord_white, fn() {  }) |> ignore
+      c.box(style=ema_cord_red, fn(_) {  }) |> ignore
+      c.box(style=ema_cord_white, fn(_) {  }) |> ignore
       at = at + ema_cord_red_h + ema_cord_white_h
     }
   })
   |> ignore
-  c.box(left=x - ema_pl_pad, top=y - ema_pl_pad, fn() {
+  c.box(left=x - ema_pl_pad, top=y - ema_pl_pad, fn(c) {
     sr_art(c, "d4-ema-" + (i + 1).to_string(), ema_pl + ema_pl_pad * 2.0, ema_pl + ema_pl_pad * 2.0) |> ignore
   })
   |> ignore
-  c.box(style=ema_wish, left=x + ema_wish_left + wdx, top=y + ema_wish_top + wdy, fn() {
+  c.box(style=ema_wish, left=x + ema_wish_left + wdx, top=y + ema_wish_top + wdy, fn(c) {
     for n in 1..=lines {
       sr_rich(c, ema_runs(ema_t(who + n.to_string()), args, ema_wish_ink, ema_wish_hi), ema_wish_words)
     }
   })
   |> ignore
-  c.box(style=ema_pl_box, left=x, top=y, fn() {
-    c.box(right=ema_who_right - ndx, bottom=ema_who_bottom - ndy, fn() {
+  c.box(style=ema_pl_box, left=x, top=y, fn(c) {
+    c.box(right=ema_who_right - ndx, bottom=ema_who_bottom - ndy, fn(c) {
       sr_rich(
         c,
         [@ui.span(ema_dash, color=(ink & ema_rgb) | ema_dash_alpha), @ui.span(ema_t(who), color=ink, weight=600)],

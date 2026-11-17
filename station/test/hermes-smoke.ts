@@ -5,7 +5,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { HermesDriver } from "../src/agents/hermes.ts";
-import { isPosting, transcriptPath } from "../src/read/transcript.ts";
+import { isPosting, transcriptPath } from "./reference/transcript.ts";
 import type { OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
 
 const data = mkdtempSync(process.platform === "win32" ? join(tmpdir(), "hm-real-") : "/tmp/hm-real-");

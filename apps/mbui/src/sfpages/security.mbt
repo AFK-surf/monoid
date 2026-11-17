@@ -254,9 +254,8 @@ fn lock_on_node(parent : @view.View, lock : () -> Json?) -> Unit {
 }
 
 ///|
-/// This device's own pairing, where it waits or was let in without signing: what is so, then the steps (pair_steps,
-/// the waiting page's too: its old view, hosted, as tall as it lays out, waiting for a code's boxes as nodes), last on
-/// the card, in its foot corner.
+/// This device's own pairing, where it waits or was let in without signing: what is so, then the steps (the waiting
+/// page's: lock_wait_node's pair_steps_node), last on the card, in its foot corner.
 fn pair_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?) -> Unit {
   sec_lead_node(parent, fn(k) {
     @sf.words_node(
@@ -273,18 +272,8 @@ fn pair_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> J
       fn() { sec_state_lines },
     )
     |> ignore
-    let look = @sf.look_node(k)
-    // (out to the card's sides and foot, the same room inside it: its button reaching into the card's foot corner,
-    // concentric with it (foot_reach), within the island's bounds, which cut what it holds)
-    let pad = @sf.card_pad
-    @ui.old(k, natural=true, fn(c) {
-      c.box(style=@ui.style(w=Full, px=@sf.room_of(pad), pb=@sf.room_of(pad)), fn() {
-        @sf.with_look(look, fn() { pair_steps(c, core, ws(), in_card=true) })
-      })
-      |> ignore
-    })
-    .margin(Is((-pad, 0.0, -pad, -pad)))
-    |> ignore
+    // (last on the card, its action reaching into the card's foot corner, concentric with it)
+    pair_steps_node(k, core, ws, in_card=true)
   })
 }
 
@@ -1171,26 +1160,6 @@ fn open_block_node(parent : @view.View, core : Core, ws : () -> String, draft : 
 }
 
 ///|
-/// A section whose title says how many it holds (narrow: after its title, quieter; wide: the accent's count beside it).
-pub fn sec_section(c : @ui.Ctx, look : Look, title : String, count~ : Int, body : () -> Unit) -> Unit {
-  match look {
-    Narrow => {
-      @sf.heading(c, title + " · " + count.to_string())
-      body()
-    }
-    Wide =>
-      @sf.section(
-        c,
-        title,
-        title_after=fn() {
-          c.box(style=sec_count, fn() { c.text(count.to_string(), style=sec_count_words) |> ignore }) |> ignore
-        },
-        body,
-      )
-  }
-}
-
-///|
 /// 移除「…」？: a device taken out of the lock, said what that means first.
 pub fn remove_dialog(core : Core, ws : String, device : String, name : String) -> Unit {
   @sf.confirm(
@@ -1226,74 +1195,67 @@ fn open_sample() -> Json {
 }
 
 ///|
-/// A station of the workspace not in the lock, taken in once its owner says it is theirs.
-pub fn join_dialog(core : Core, ws : String, station : String, name : String) -> Unit {
-  @sf.confirm(
-    @sf.t("web-pages.security.joinTitle", args=[("name", name)]),
-    @sf.t("web-pages.security.joinBody"),
-    @sf.t("web-pages.security.join"),
-    fn() {
-      lock_call(
-        core,
-        ws,
-        "joinStation",
-        @sf.t("web-pages.security.join"),
-        [("station", station)],
-        done=@sf.t("web-pages.security.joined", args=[("name", name)]),
-      )
-    },
-  )
-}
-
-///|
 /// 关闭安全模式？: what turning it off gives up, a line each, and the workspace's name typed
 /// before it can go (`lock.disable`, Enter too); written in as it opens.
 pub fn turn_off_dialog(core : Core, ws : String, name : String) -> Unit {
-  let key = "lock-off/" + (desk_dialogs.val + 1).to_string()
-  let named = fn() { field_of(key).text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
-  let typed_in = Ref(false)
-  let go = fn(c : @ui.Ctx, shut : () -> Unit) {
-    c.blur()
+  let typed = @ui.Field::new()
+  let named = fn() { typed.text().trim(chars=" \t\n").to_owned() == name.trim(chars=" \t\n").to_owned() }
+  let go = fn(v : @view.View, shut : () -> Unit) {
+    v.focus_let_go()
     shut()
     @settings.act(core, @sf.t("web-pages.security.turnOff"), "lock.disable", obj([("workspace", str(ws))]))
   }
-  open_dialog(
+  open_dialog_nodes(
     @sf.t("web-pages.security.turnOffTitle"),
     description=@sf.t("web-pages.security.turnOffBody"),
-    fn(c, shut) {
-      c.box(style=sec_points, fn() {
-        sec_off_point(c, "server", @sf.t("web-pages.security.nowRisk"))
-        sec_off_point(c, "devices", @sf.t("web-pages.security.turnOffApproval"))
-        sec_off_point(c, "key", @sf.t("web-pages.security.turnOffVault"))
+    fn(v, shut) {
+      v.box(fn(l) {
+        @sf.style_node(l, fn() { sec_points })
+        sec_off_point_node(l, "server", fn() { @sf.t("web-pages.security.nowRisk") })
+        sec_off_point_node(l, "devices", fn() { @sf.t("web-pages.security.turnOffApproval") })
+        sec_off_point_node(l, "key", fn() { @sf.t("web-pages.security.turnOffVault") })
       })
       |> ignore
-      @sf.field(c, @sf.t("web-pages.security.turnOffType", args=[("name", name)]), fn() {
-        @sf.input(c, key, field=field_of(key), on_submit=fn(_) { if named() { go(c, shut) } }) |> ignore
+      let label = @sf.t("web-pages.security.turnOffType", args=[("name", name)])
+      @sf.field_node(v, fn() { label }, fn(f) {
+        // (written in as it opens: the keyboard's focus on it, on a sheet too, as the old dialog's focus_editor)
+        @sf.panel_opens_in_node(@sf.input_node(f, typed, label~, submitted=fn(_) { if named() { go(f, shut) } }))
       })
-      if !typed_in.val {
-        typed_in.val = true
-        c.focus_editor(key)
-      }
     },
-    fn(c, shut) {
-      @sf.button(c, @sf.t("common.cancel"), key="off-cancel", tone=Ghost, on_press=fn() {
-        c.blur()
-        shut()
-      }) |> ignore
-      @sf.button(c, @sf.t("web-pages.security.turnOff"), key="off-go", tone=DangerSolid, disabled=!named(), on_press=fn() {
-        go(c, shut)
-      }) |> ignore
+    fn(v, shut) {
+      @sf.button_node(
+        v,
+        fn() { @sf.t("common.cancel") },
+        fn() {
+          v.focus_let_go()
+          shut()
+        },
+        tone=Ghost,
+      )
+      |> ignore
+      @sf.button_node(v, fn() { @sf.t("web-pages.security.turnOff") }, fn() { go(v, shut) }, tone=DangerSolid, disabled=fn() { !named() })
+      |> ignore
     },
   )
 }
 
 ///|
-/// One thing turning it off gives up: its icon, muted, beside a line of it.
-fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
-  let t = @sf.theme()
-  c.box(style=sec_point_line, fn() {
-    c.box(style=sec_point_icon, fn() { @sf.icon(c, icon, size=sec_point_glyph, color=t.p.muted) |> ignore }) |> ignore
-    c.box(style=sec_point_words, fn() { c.text(words, style=sec_point_text) |> ignore }) |> ignore
+/// One thing turning it off gives up (sec_point_node's, its words alone): its icon, muted, on its first line, beside
+/// a line of it.
+fn sec_off_point_node(parent : @view.View, icon : String, words : () -> String) -> Unit {
+  parent.box(fn(l) {
+    @sf.style_node(l, fn() { sec_point_line })
+    // (on its first line, across its middle: sec_point_text's)
+    @sf.first_line_node(l, Body, leading=L7, fn(i) {
+      i.width(Is(Some(sec_point_column))) |> ignore
+      @sf.icon_node(i, icon, sec_point_glyph, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
+    |> ignore
+    l.box(fn(w) {
+      @sf.style_node(w, fn() { sec_point_words }, in_row=true)
+      @sf.words_node(w, words, fn() { sec_point_text }) |> ignore
+    })
+    |> ignore
   })
   |> ignore
 }
@@ -1301,6 +1263,10 @@ fn sec_off_point(c : @ui.Ctx, icon : String, words : String) -> Unit {
 ///|
 /// The sizes: what it changes, its marks 18 in a column of 20; a device's mark 16.
 let sec_point_glyph : Double = 18.0
+
+///|
+/// The column a mark of what it changes stands in (sec_point_icon's w=S5).
+let sec_point_column : Double = 20.0
 
 ///|
 let sec_device_glyph : Double = 16.0
@@ -1507,15 +1473,6 @@ let sec_over_apart : @ui.Style = @ui.css("w=Full pt=S1_5")
 let sec_over_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=Muted, wrap=false, w=Cut)
 
 ///|
-/// The count of those waiting (count: the meta's 12 in 500 on the accent's ground, 7 in, round).
-// kept across runs: a value (no field of it changes)
-let sec_count : @ui.Style = @ui.css("px=S1_5 radius=Full bg=AccentBg")
-
-///|
-// kept across runs: a value (no field of it changes)
-let sec_count_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weight=Medium, color=AccentText, wrap=false)
-
-///|
 /// A station's dot (dot: 7 round, the online green, amber where it is not protected).
 // kept across runs: a value (no field of it changes)
 let sec_dot_on : @ui.Style = @ui.style(w=Fixed(sec_dot_side), h=Fixed(sec_dot_side), radius=Full, bg=Positive)
@@ -1579,3 +1536,13 @@ let sec_open_foot_narrow : @ui.Style = @ui.css("row w=Full px=S1 pt=S4 gap=S3 al
 ///|
 // kept across runs: a value (no field of it changes)
 let sec_open_foot_note : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Muted)
+
+///|
+/// On 设置 › 安全's card: from where the card's words start.
+// kept across runs: a value (no field of it changes)
+let lock_devices_carded : @ui.Style = @ui.css("w=Full align=AStart")
+
+///|
+/// On 设置 › 安全's card: the rows, no ground of their own.
+// kept across runs: a value (no field of it changes)
+let lock_devices_rows : @ui.Style = @ui.css("gap=S3")

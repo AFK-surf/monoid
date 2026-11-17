@@ -15,13 +15,7 @@
 /// head). Said as the change saying it is committed: what it holds with the focus let go of then.
 pub fn View::in_use(self : View, on : Live[Bool]) -> View {
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::InUse.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::InUse.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::InUse.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
     guard n.behind == on else { return }
@@ -45,7 +39,7 @@ pub fn View::in_use(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::InUse.ord()] = stop
+        n.prop_set(Prop::InUse.ord(), stop)
       })
   }
   self

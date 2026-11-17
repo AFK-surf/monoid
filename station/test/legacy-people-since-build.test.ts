@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { hasLegacyPeopleSince, hasNativePeopleSince, installPeopleSinceIndex, LEGACY_PEOPLE_SINCE,
-  peopleSinceReady, peopleSinceStep } from "../src/store/legacy-people-since.ts";
+  peopleSinceReady, peopleSinceStep } from "./reference/backfill/legacy-people-since.ts";
 
 const schema = `CREATE TABLE threads(id INTEGER PRIMARY KEY);
   CREATE TABLE entries(thread INTEGER NOT NULL,n INTEGER NOT NULL,kind TEXT NOT NULL,ts TEXT,

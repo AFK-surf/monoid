@@ -144,7 +144,9 @@ fn tn_copied(tree : Bool) -> (String, String, Int?, Array[Array[String]], Array[
     @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=300.0, h=400.0, platform=0)
   } else {
     @ui.Tester::new(
-      fn(c) {
+      @ui.old_views_here,
+      // (its menu, on 小屏 a sheet of the window's tree: presented_tree)
+      tree=presented_tree(fn(c) {
         begin(c) |> ignore
         c.with_theme(ui_theme(), fn() {
           // (once the core is said: a build before then reads what is kept of its answers)
@@ -154,7 +156,7 @@ fn tn_copied(tree : Bool) -> (String, String, Int?, Array[Array[String]], Array[
           // (its menu, as what presents it draws it)
           presented(c)
         })
-      },
+      }),
       w=300.0,
       h=400.0,
       platform=0,

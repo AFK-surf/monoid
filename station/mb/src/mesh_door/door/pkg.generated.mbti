@@ -1,0 +1,199 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/mesh_door/door"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub async fn accept(async () -> Connection?, Taken, @effect.Scope) -> Unit
+
+pub fn add_words((Error) -> String?) -> Unit
+
+pub fn after(@effect.Runtime, Int32, () -> Unit) -> () -> Unit
+
+pub fn asks_zstd(Array[(String, String)]) -> Bool
+
+pub let batch_level : Int32
+
+pub fn closed_with(Connection) -> (String, String)?
+
+pub async fn compressed(Packer, Answer, Array[(String, String)], String) -> Answer
+
+pub fn concat(Array[Bytes]) -> Bytes
+
+pub async fn door(Connection, async (@json.Json, Connection) -> Said) -> Unit
+
+pub fn ending(String, Int32, String, line? : @json.Json) -> Error
+
+pub fn header_of(Array[(String, String)], String) -> String?
+
+pub fn headers_json(Array[(String, String)]) -> @json.Json
+
+pub let hop : Array[String]
+
+pub let level : Int32
+
+pub fn line_bytes(@json.Json) -> Bytes
+
+pub fn link(String, String, alpn? : String) -> Wire
+
+pub fn log(String, String, String, @json.Json) -> Unit
+
+pub let max_body : Int32
+
+pub let max_head : Int32
+
+pub fn message_of(Error) -> String
+
+pub fn own(BytesView) -> Bytes
+
+pub fn pair(String, String, alpn? : String) -> (Connection, Connection)
+
+pub let refused_close_ms : Int32
+
+pub async fn request(Stream, (Asked) -> Unit) -> Unit
+
+pub async fn send(Stream, Answer) -> Unit
+
+pub fn set_log((String, String, String, @json.Json) -> Unit) -> Unit
+
+pub let small : Int32
+
+pub let window_log : Int32
+
+pub async fn write_line(Stream, @json.Json) -> Unit
+
+pub let zstd : String
+
+// Errors
+pub(all) suberror DoorError {
+  DoorError(String)
+}
+
+pub(all) suberror Ending {
+  Ending(String, Int32, String, @json.Json)
+}
+
+pub(all) suberror WireError {
+  WireError(String)
+}
+
+// Types and methods
+pub(all) struct Answer {
+  status : Int32
+  headers : Array[(String, String)]
+  body : Body
+}
+
+pub(all) struct Asked {
+  head : @json.Json
+  reader : Reader
+  stream : Stream
+  accepted : Int64
+}
+
+pub(all) enum Body {
+  Whole(Bytes)
+  Coming(Chunks)
+}
+
+pub(all) struct Chunks {
+  next : async () -> Bytes?
+  stop : () -> Unit
+}
+
+pub(all) struct Connection {
+  remote_id : () -> String
+  alpn : () -> String
+  via : () -> String?
+  paths : (() -> Array[Path])?
+  accept_bi : async () -> Stream?
+  open_bi : async () -> Stream
+  answers : (async (Int32) -> Bool)?
+  stats : (() -> Map[String, Double])?
+  close : (Int32, String) -> Unit
+  is_closed : () -> Bool
+  closed : async () -> String
+  close_reason : (() -> (String, String)?)?
+  handed : Int32?
+}
+
+pub(all) struct In {
+  line : @json.Json
+  opened : () -> Unit
+  renew : async (@json.Json) -> @json.Json
+  stream : () -> (async (Asked) -> Unit)?
+  ended : () -> Unit
+}
+
+pub(all) struct Packer {
+  whole : async (Bytes, Int32) -> Bytes
+  stream : async () -> Packing
+}
+
+pub(all) struct Packing {
+  push : async (Bytes) -> Bytes
+  close : () -> Unit
+}
+
+pub(all) struct Path {
+  selected : Bool
+  relay : String?
+  ip : String?
+  rtt_ms : Double?
+  tx_packets : Double
+  lost_packets : Double
+}
+
+pub struct Reader {
+  mut carry : Bytes
+  mut stream : Stream
+  max_line : Int32
+}
+pub async fn Reader::chunk(Self) -> Bytes?
+pub async fn Reader::line(Self) -> @json.Json?
+pub fn Reader::new(Stream, max_line? : Int32) -> Self
+pub async fn Reader::rest(Self) -> Bytes
+pub fn Reader::set_stream(Self, Stream) -> Unit
+pub fn Reader::take_carry(Self) -> Bytes
+
+pub(all) struct Refusal {
+  line : @json.Json
+  code : Int32
+  reason : String
+  error : Error
+}
+
+pub(all) enum Said {
+  Let(In)
+  Refused(Refusal)
+}
+
+pub(all) struct Stream {
+  read : async () -> Bytes?
+  write : async (Bytes) -> Unit
+  finish : async () -> Unit
+  stopped : async () -> Int32?
+  reset : async (Int32) -> Unit
+}
+
+pub(all) struct Taken {
+  arrived : (Connection) -> Unit
+  serve : async (Connection) -> Unit
+  failed : ((Error, Connection) -> Unit)?
+  closing : String
+}
+
+type Wire
+pub fn Wire::closed_by(Self) -> (Int32, Int32, String)?
+pub fn Wire::connection(Self, Int32) -> Connection
+pub fn Wire::set_answers(Self, Int32, Bool) -> Unit
+
+// Type aliases
+pub type Admit = async (@json.Json, Connection) -> Said
+
+pub type Answering = async (Asked) -> Unit
+
+// Traits

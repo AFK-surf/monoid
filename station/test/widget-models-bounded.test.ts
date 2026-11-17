@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { WIDGET_SOURCE, widgetSourcesStep } from "../src/store/widget-sources.ts";
+import { WIDGET_SOURCE, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 
 test("widget models name the latest matching message as edits and membership change", () => {
   const store = Store.open(":memory:"), db = store.db;

@@ -3,15 +3,16 @@
 // would have the whole of it read again at full price; instead the agent reads back what it needs (session_history,
 // chat_history). The runtime sessions a session ran in are kept in order (store `runtime_sessions`), and its history
 // reads them as one (read/tail.ts ChainTail).
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { access, copyFile, mkdir } from "node:fs/promises";
 import { basename, dirname, join } from "node:path";
 import { coldAfresh, coldWorth } from "../../../client/core-ts/src/cache-policy.ts";
 import { LONG_CHAT, afresh, cleared, longChat, resumeLost, threadAddress } from "../agents/instructions.ts";
 import type { Profile } from "../agents/runtime.ts";
 import { log } from "../ops/log.ts";
-import { find as findMachineSession } from "../read/machine.ts";
+import { transcriptOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
-import { homesFirst, transcriptPaths } from "../read/transcript.ts";
+import { homesFirst } from "../read/transcript.ts";
+import { transcriptPathsSoon } from "../read/transcript-soon.ts";
 import type { Hub } from "./hub.ts";
 
 /// The addresses of a session's threads its agent is told to read back: the recent ones (store `recentSessionThreads`),
@@ -59,13 +60,13 @@ export function goesAfresh(hub: Hub, key: string, now: number): boolean {
 /// What a session whose runtime session could not be resumed is told as its new one starts: where its earlier
 /// conversation is, to read back.
 /// One continued from a terminal is told where that conversation is on the machine: its own transcript there (not the
-/// station's copy, which may be what failed).
-export function toldResumeLost(hub: Hub, key: string): string {
+/// station's copy, which may be what failed), found off the station's thread (read/machine.ts `transcriptOf`).
+export async function toldResumeLost(hub: Hub, key: string): Promise<string> {
   const threads = threadsToldOf(hub, key);
   const row = hub.store.getSession(key);
   const first = hub.store.runtimeSessions(key)[0];
   const runtime = row?.runtime === "claude" || row?.runtime === "codex" ? row.runtime : null;
-  const terminal = row?.cwd && first !== undefined && runtime !== null ? (findMachineSession(hub.machineRoots(), runtime, first)?.path ?? null) : null;
+  const terminal = row?.cwd && first !== undefined && runtime !== null ? await transcriptOf(hub.machineRoots(), runtime, first) : null;
   return resumeLost(key, threads, terminal);
 }
 
@@ -80,11 +81,12 @@ export function toldLongChat(hub: Hub, key: string): string | null {
 
 /// Claude's subagents `ids` of runtime session `from`, stopped with its process, copied to session `to` (just started on
 /// `on`) so that SendMessage takes them up there where they stopped: a subagent's transcript is in its session's
-/// (<project>/<session>/subagents/agent-<id>.jsonl, with its .meta.json). The ids copied.
-export function carrySubagents(hub: Hub, from: string, to: string, on: Profile, ids: string[]): string[] {
+/// (<project>/<session>/subagents/agent-<id>.jsonl, with its .meta.json). The ids copied. Nothing of it on the
+/// station's thread.
+export async function carrySubagents(hub: Hub, from: string, to: string, on: Profile, ids: string[]): Promise<string[]> {
   if (ids.length === 0 || on.runtime !== "claude") return [];
   const { dataDir, profiles } = hub.config();
-  const main = transcriptPaths("claude", dataDir, homesFirst(profiles, on.id), [from]).paths[0];
+  const main = (await transcriptPathsSoon("claude", dataDir, homesFirst(profiles, on.id), [from])).paths[0];
   if (!main) return [];
   const source = join(dirname(main), from, "subagents");
   // The same project's in the home it starts in (the shared one, where homes share their transcripts).
@@ -92,9 +94,9 @@ export function carrySubagents(hub: Hub, from: string, to: string, on: Profile, 
   const carried: string[] = [];
   for (const id of ids) {
     try {
-      if (!existsSync(join(source, `agent-${id}.jsonl`))) continue;
-      mkdirSync(target, { recursive: true });
-      for (const ext of ["jsonl", "meta.json"]) if (existsSync(join(source, `agent-${id}.${ext}`))) copyFileSync(join(source, `agent-${id}.${ext}`), join(target, `agent-${id}.${ext}`));
+      if (!(await there(join(source, `agent-${id}.jsonl`)))) continue;
+      await mkdir(target, { recursive: true });
+      for (const ext of ["jsonl", "meta.json"]) if (await there(join(source, `agent-${id}.${ext}`))) await copyFile(join(source, `agent-${id}.${ext}`), join(target, `agent-${id}.${ext}`));
       carried.push(id);
     } catch (error) {
       log.warn("session", "could not carry a subagent to the new runtime session", { from, to, subagent: id, error: (error as Error).message });
@@ -102,3 +104,5 @@ export function carrySubagents(hub: Hub, from: string, to: string, on: Profile, 
   }
   return carried;
 }
+
+const there = (path: string) => access(path).then(() => true, () => false);

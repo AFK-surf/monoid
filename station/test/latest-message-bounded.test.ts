@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { lastMessage as readLastMessage, makeStore } from "../src/read/store.ts";
+import { lastMessage as readLastMessage, makeStore } from "./reference/store.ts";
 import { LAST_MESSAGE, toMessage } from "../src/store/rows.ts";
 import { MERGED } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";

@@ -1,7 +1,7 @@
 // Linux desktop views made with GStreamer. Wayland uses the session's XDG RemoteDesktop and ScreenCast portals;
 // X11 can use this path when ffmpeg and xdotool are unavailable. Each helper sends complete JPEGs.
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { existsSync } from "node:fs";
+import { access } from "node:fs/promises";
 import { hostname } from "node:os";
 import { fileURLToPath } from "node:url";
 import { wall } from "../ops/fibers.ts";
@@ -57,10 +57,12 @@ export class LinuxGstDesktop implements ScreenSource {
     if (!options.codecs.includes("jpeg")) throw new ScreenRefused(415, "station.screen.codec", { codec: "JPEG" });
     const failure = this.#o.mode === "x11" ? "linuxX11FallbackUnavailable" : "linuxPortalUnavailable";
     if (this.#closed) throw new ScreenRefused(503, `station.screen.${failure}`);
+    const helper = this.#o.helper ?? helperPath(this.#o.mode);
+    // (looked at off the station's thread, and only where no helper is up: a concurrent open's is taken after)
+    if (!this.#pending && !(await access(helper).then(() => true, () => false))) throw new ScreenRefused(503, `station.screen.${failure}`, {}, { capture: false, control: false, reason: failure });
+    if (this.#closed) throw new ScreenRefused(503, `station.screen.${failure}`);
     if (!this.#pending) {
       this.#failed = false;
-      const helper = this.#o.helper ?? helperPath(this.#o.mode);
-      if (!existsSync(helper)) throw new ScreenRefused(503, `station.screen.${failure}`, {}, { capture: false, control: false, reason: failure });
       const process = new PortalProcess(this.#o.python ?? "/usr/bin/python3", helper, this.#o.env,
         (size) => { this.#size = size; this.#o.changed(); },
         () => {
@@ -128,6 +130,7 @@ class PortalProcess implements ScreenView {
   #shown: Size | null = null;
   #waiting: { resolve: (frame: Frame | null) => void; reject: (error: Error) => void }[] = [];
   #failure: ScreenRefused | null = null;
+  #why: string | undefined;
   #config = true;
   #lastTs = 0;
   #input: Promise<void> = Promise.resolve();
@@ -272,6 +275,7 @@ class PortalProcess implements ScreenView {
     if (this.#ended) return;
     this.#ended = true;
     if (error instanceof ScreenRefused) this.#failure = error;
+    if (!this.#normal) this.#why = error.message;
     if (!this.#ready) this.#rejectReady(error);
     if (!this.#opened) this.#rejectFirst(error);
     if (terminate) this.#child.kill();
@@ -284,6 +288,7 @@ class PortalProcess implements ScreenView {
     }
     this.#gone();
   }
+  why(): string | undefined { return this.#why; }
   close(): void {
     if (this.#ended) return;
     this.#normal = true;

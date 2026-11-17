@@ -2,7 +2,7 @@
 // same viewer as over the whole window (viewer.mbt) made for the tab (Viewer's `beside`), one a tab, kept by the chat's
 // tabs' key and the tab while the tab is open, let go as it is closed. What it shows is the whole window's: a picture
 // fitted, zoomed by the wheel, two fingers or a double press, panned by a finger (the zoom's: @kit.Zoom); a PDF, a page,
-// a table, code, words read in the reader, as Viewer::content shows them (an old view hosted in the panel's island);
+// a table, code, words read in the reader, as the whole window's stage shows them (viewer_stage_node, by the tab's width);
 // a film or a song in the one player embedded in the stage as part of the pane (@sf.player_view's `embedded`: on the
 // pane's own ground, its picture or a song's cover fitted in the room over its controls as a tab's picture is, the
 // controls always there under it in the pane's colours, laid out by the stage's width; its own player and view, not
@@ -13,7 +13,7 @@
 // was). Nothing of the whole window's is the tab's: no marking, no stepping to the pictures beside it, no flight from a
 // thumbnail, no keys of the window's.
 //
-// How a file comes here: open_preview asked beside (the command key held as it is pressed: beside_held; a menu's
+// How a file comes here: open_preview defaults text files beside, or is asked beside (the command key held: beside_held; a menu's
 // 在侧边打开; the whole window's 移到侧边), said to the shell (Shell's `beside`), which puts it where the layout has a side
 // panel for the page in view, and says whether it did. A film or a song asked so plays at once (the whole window's from
 // where it was); a tab only shown again (the app begun, the chat opened, the tab or the panel back) plays from its play
@@ -99,6 +99,27 @@ pub(all) struct ViewTab {
 ///|
 /// The file tab `tab` is (None: no file's tab, or one that does not read).
 pub fn view_tab_file(tab : String) -> ViewTab? {
+  if tab.has_prefix("file:") {
+    match (try Some(@json.parse(tab.exact_view(start="file:".length()).to_owned())) catch { _ => None }) {
+      Some(Array([String(session), String(path), String(name)])) if (is_mbui_viz(name) || is_mbui_viz(path)) && path != "" => {
+        let file : Attachment = {
+          name: if name != "" { name } else { base_name(path) },
+          path,
+          size: 0.0,
+          width: 0.0,
+          height: 0.0,
+          thumbhash: "",
+          owner: "",
+          upload: "",
+          duration: 0.0,
+          frames: 0,
+          held: false,
+        }
+        return Some({ station: "", key: session, file, drive: None, named: false })
+      }
+      _ => return None
+    }
+  }
   guard tab.has_prefix("view:") else { return None }
   let v = @json.parse(tab.exact_view(start="view:".length()).to_owned()) catch { _ => return None }
   guard v is Array(xs) && xs.length() >= 6 else { return None }
@@ -143,7 +164,7 @@ pub fn view_tab_file(tab : String) -> ViewTab? {
 /// Whether two files' tabs are of the same file, whatever its size said (a drive's changed since it was opened): which
 /// of the three, its station, its session (a drive's root), its path.
 pub fn ViewTab::same_file(self : ViewTab, other : ViewTab) -> Bool {
-  self.station == other.station &&
+  (self.station == other.station || self.station == "" || other.station == "") &&
   self.key == other.key &&
   self.file.path == other.file.path &&
   self.named == other.named &&
@@ -169,6 +190,23 @@ fn tab_viewer_id(chat : String, tab : String) -> String {
 }
 
 ///|
+/// What a film opened beside a chat was known to be as it was opened there (its picture's size, its length and frames:
+/// the message's Attachment), by its tab (view_tab_key, which says none of it: the shell matches tabs by it as
+/// it is), till its tab's viewer is made (tab_viewer), so the tab's player and its size are its file's from the first
+/// frame, not 0 till the station reads its header again.
+// kept across runs: put back by tab_viewers_reset (file_viewer_reset)
+let tab_facts : Map[String, (Double, Double, Double, Int)] = Map([])
+
+///|
+/// File `a` opened beside a chat as tab `tab`: what is known of it kept for its viewer (tab_facts).
+fn tab_facts_said(tab : String, a : Attachment) -> Unit {
+  // (a film's or a song's: a picture is fitted by what its bytes decode to, as over the whole window)
+  if a.duration > 0.0 || a.frames > 0 {
+    tab_facts[tab] = (a.width, a.height, a.duration, a.frames)
+  }
+}
+
+///|
 /// The viewer of tab `tab` of the chat whose tabs are kept by `chat`: made as it is first shown (of the tab alone: its
 /// file read again after a restart), kept while the tab is open. None: no file's tab, or one of a draft's.
 pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
@@ -178,7 +216,31 @@ pub fn tab_viewer(chat : String, tab : String) -> Viewer? {
     None =>
       match view_tab_file(tab) {
         Some(f) if opens_beside(f.file.path, f.file.name) => {
-          let v = new_viewer(f.station, f.key, f.file, f.drive, NoSteps, named=f.named, beside=true)
+          let (chat_station, chat_session) = match chat.find(":") {
+            Some(i) => (chat.exact_view(end=i).to_owned(), chat.exact_view(start=i + 1).to_owned())
+            None => ("", chat)
+          }
+          let station = if f.station != "" { f.station } else { chat_station }
+          // (moved here from the whole window (移到侧边): what it stepped through and how big its picture is, as it
+          // showed them, so the tab comes in saying what the window said; else stepping through its chat's pictures)
+          let (steps, file) = match tab_moved.get(tab) {
+            Some(m) => {
+              tab_moved.remove(tab)
+              // (what the window read held till the tab, made in this frame, has read it: let go at its end)
+              match m.near {
+                Some(l) => @ui.after_frame(fn() { l.release() })
+                None => ()
+              }
+              (m.steps, { ..f.file, width: m.width, height: m.height })
+            }
+            None => (if chat_session != "" { InChat(None, chat_session) } else { NoSteps }, f.file)
+          }
+          // (a film's or a song's as it was known as it was opened beside: tab_facts)
+          let file = match tab_facts.get(tab) {
+            Some((width, height, duration, frames)) => { ..file, width, height, duration, frames }
+            None => file
+          }
+          let v = new_viewer(station, f.key, file, f.drive, steps, named=f.named, beside=true)
           tab_viewers[id] = { viewer: v, drawn: 0, closing: false }
           Some(v)
         }
@@ -224,21 +286,62 @@ fn tab_viewers_reset() -> Unit {
   tab_viewers.each(fn(_, t) { t.viewer.let_go() })
   tab_viewers.clear()
   tab_asked.clear()
+  tab_moved.each(fn(_, m) { m.release() })
+  tab_moved.clear()
+  tab_facts.clear()
 }
+
+///|
+/// What a file moved beside held for its tab let go (its tab never made).
+fn TabMoved::release(self : TabMoved) -> Unit {
+  match self.near {
+    Some(l) => l.release()
+    None => ()
+  }
+}
+
+///|
+/// What a file moved beside from the whole window (移到侧边) was shown with there: what its picture stepped through and
+/// how big it is (0: not known), for its tab's viewer as it is made (tab_viewer).
+priv struct TabMoved {
+  steps : Stepping
+  width : Double
+  height : Double
+  /// where its picture is among its chat's, as the window read it (imageNear), held for the tab till it reads it
+  near : TopicLease?
+}
+
+///|
+/// The files moved beside from the whole window just now, by their tab, till the tab's viewer is made (tab_viewer):
+/// a press opens the tab saying what the window said of the file, never the tab's own asks answered a moment later
+/// (main's switches sweep, 2026-11-16: 「1 / 2 · … · 400×300」 came 800 ms after the press).
+// kept across runs: put back by tab_viewers_reset (file_viewer_reset)
+let tab_moved : Map[String, TabMoved] = Map([])
 
 ///|
 /// The files the person asked beside the page just now (a press with the command key held, a menu's 在侧边打开, the
 /// whole window's 移到侧边), by their tab: where a film's or a song's player starts there (ms; 0 where it was left),
 /// taken by its tab's viewer as the tab's node is made (viewer_tab_node), its player played at once.
 // kept across runs: put back by tab_viewers_reset (file_viewer_reset)
-let tab_asked : Map[String, Double] = Map([])
+let tab_asked : Map[String, PlayAsked] = Map([])
+
+///|
+/// What a film or a song asked beside the page plays as (tab_asked): from where (ms; 0 where it was left), played at
+/// once or left paused there (moved from the whole window's player paused: kept paused), and, moved so, the speed it
+/// played at and how loud (its sound off or not) there, carried on; None, as the tab's player has them.
+priv struct PlayAsked {
+  at : Double
+  plays : Bool
+  how : (Double, Double, Bool)?
+}
 
 ///|
 /// File tab `tab` asked beside the page in view by the person (Shell's `beside`), a film or a song in it to play at once
 /// from `at` (ms; 0 where it was left): whether the shell put it there. The tab the shell put in front may be another
 /// of the same file (opened by another key: sfdesk's view_beside), the one asked of then. Its tab drawn in front
 /// already (the same file asked again), no node is made for it: its viewer told here.
-fn beside_open(tab : String, at : Double) -> Bool {
+fn beside_open(tab : String, at : Double, plays? : Bool = true, how? : (Double, Double, Bool)? = None) -> Bool {
+  let at : PlayAsked = { at, plays, how }
   // (said before the shell is asked: its tab's node may be made as the shell puts it there)
   tab_asked[tab] = at
   let put = match (shell.val.beside)(tab) {
@@ -262,24 +365,43 @@ fn beside_open(tab : String, at : Double) -> Bool {
 }
 
 ///|
-/// A tab's viewer asked beside by the person just now (tab_asked): its film or song played at once, from `at` (ms; 0
+/// A tab's viewer asked beside by the person just now (tab_asked): its film or song played at once (or left paused, as
+/// `asked` says), at the speed and as loud as it says where it says, from its `at` (ms; 0
 /// where it is): its player sent there and played where it is open already, else opened so (Viewer::fetch).
-fn Viewer::play_asked(self : Viewer, at : Double) -> Unit {
-  self.plays_now = true
+fn Viewer::play_asked(self : Viewer, asked : PlayAsked) -> Unit {
+  let at = asked.at
+  self.plays_now = asked.plays
   match self.media {
     Some(m) => {
       if at > 0.0 {
         m.seek(at)
       }
+      match asked.how {
+        Some(how) => media_as(m, how)
+        None => ()
+      }
       match m.native() {
-        Some(n) => n.play()
+        Some(n) => if asked.plays { n.play() } else { n.pause() }
         None => ()
       }
     }
-    None =>
+    None => {
       if at > 0.0 {
         self.start_at = at
       }
+      self.play_how = asked.how
+    }
+  }
+}
+
+///|
+/// Player `m` at the speed and as loud as `how` says (its speed, how loud, its sound off or not).
+fn media_as(m : @kit.Media, how : (Double, Double, Bool)) -> Unit {
+  let (speed, volume, muted) = how
+  m.set_speed(speed)
+  m.set_volume(volume)
+  if muted != m.volume().1 {
+    m.toggle_mute()
   }
 }
 
@@ -307,13 +429,48 @@ pub fn tab_players_pause(chat? : String = "") -> Unit {
 ///|
 /// 移到侧边 (the whole window's bar): viewer `vw`'s file beside the page, it closed at once (no flight back: it goes to
 /// the tab); a film or a song played there from where it was. Where the shell has nowhere to put it, it stays.
-pub fn Viewer::move_beside(self : Viewer) -> Unit {
-  let at = match self.media {
-    Some(m) => m.position()
-    None => 0.0
+pub fn Viewer::move_beside(self : Viewer, src : Source) -> Unit {
+  // (where it is, played on there only where it plays here: paused here, there paused; at the speed and as loud as
+  // here)
+  let (at, plays, how) = match self.media {
+    Some(m) => {
+      let s = m.status()
+      let (volume, muted) = m.volume()
+      (m.position(), s.playing && !s.ended, Some((m.speed(), volume, muted)))
+    }
+    None => (0.0, true, None)
   }
-  if beside_open(self.view_tab(), at) {
+  // (what the window showed of it, handed to the tab's viewer: what it stepped through, its picture's size)
+  let (width, height) = if self.file.width > 0.0 && self.file.height > 0.0 {
+    (self.file.width, self.file.height)
+  } else if self.image != "" {
+    @ui.image_natural(self.image).unwrap_or((0.0, 0.0))
+  } else {
+    (0.0, 0.0)
+  }
+  let tab = self.view_tab()
+  // (none where its tab is open already: its viewer is kept as it is)
+  if !tab_viewers.keys().any(fn(id) { id.has_suffix("\n" + tab) }) {
+    let near = if self.shown_kind() == Some(KImage) {
+      image_near_params(self).map(fn(p) { src.lease_topic("imageNear", p) })
+    } else {
+      None
+    }
+    match tab_moved.get(tab) {
+      Some(was) => was.release()
+      None => ()
+    }
+    tab_moved[tab] = { steps: self.steps, width, height, near }
+  }
+  tab_facts_said(tab, self.file)
+  if beside_open(tab, at, plays~, how~) {
     close_now()
+  } else {
+    match tab_moved.get(tab) {
+      Some(m) => m.release()
+      None => ()
+    }
+    tab_moved.remove(tab)
   }
 }
 
@@ -340,18 +497,18 @@ pub fn Viewer::full_window(self : Viewer, steps : Stepping) -> Unit {
 ///|
 /// The file of tab `tab` beside the chat whose tabs are kept by `chat`, in node `q` (the panel under its bar): its tools
 /// (tab_tools_node), then its stage, the rest: a picture its nodes (tab_picture_node), anything else as the whole
-/// window's stage shows it, its old views hosted in `island` (the panel's), told of, coming or failed its nodes
-/// (viewer_note_node); a film or a song its player embedded (Viewer::player_stage, hosted in `island` too). What it reads
+/// window's stage shows it (viewer_stage_node), told of, coming or failed its nodes
+/// (viewer_note_node); a film or a song its player embedded (tab_player_node). What it reads
 /// asked of the core as what it needs comes; 下载 told the core as it is asked. Made as the person asked the file beside
 /// just now (tab_asked), its film or song plays at once; let go (the tab no longer shown), it is paused. `steps`: what
-/// its picture steps through over the whole window (全屏).
+/// its picture steps through over the whole window (全屏); `width()`, how wide the tab is.
 pub fn viewer_tab_node(
   q : @view.View,
   src : Source,
   chat : String,
   tab : String,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
   steps : () -> Stepping,
+  width : () -> Double,
 ) -> Unit {
   guard tab_viewer(chat, tab) is Some(vw) else { return }
   let id = tab_viewer_id(chat, tab)
@@ -383,8 +540,11 @@ pub fn viewer_tab_node(
   })
   |> ignore
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed, 下载 asked)
+  // (its film's or song's player made as it is asked for: what plays it there from then)
+  let media_made = @signals.signal(false)
   q.reacts(fn() { (vw.sniffed.get(), vw.bytes.get() is Some(_), vw.error.get() is Some(_), vw.fetching.get(), vw.asked_told.get()) }, fn(_) {
     vw.fetch(src)
+    media_made.set(vw.media is Some(_))
   })
   // 下载 asked: a chat's file's download said to the core at that change; what was asked before it was here saved, or
   // installed, as its whole comes; each once
@@ -404,7 +564,9 @@ pub fn viewer_tab_node(
   })
   let tips_at : Ref[@view.View?] = Ref(None)
   let tips = @sf.TipLayer::new(fn() { tips_at.val })
-  q.box(fn(row) { tab_tools_node(row, src, vw, fn() { vw.full_window(steps()) }, tips) }) |> ignore
+  if !is_mbui_viz(vw.file.name) {
+    q.box(fn(row) { tab_tools_node(row, src, vw, fn() { vw.full_window(steps()) }, tips) }) |> ignore
+  }
   q.box(fn(s) {
     s
     .grow(Is(1.0))
@@ -413,47 +575,22 @@ pub fn viewer_tab_node(
     .min_height(Is(Some(0.0)))
     .clips(Is(true))
     |> ignore
-    // a film or a song: the one player embedded, hosted in the panel's island (no keys, nothing of the window's)
+    // a film or a song: the one player embedded (no keys, nothing of the window's)
     let played = vw.played()
     if played {
-      s.box(fn(h) {
+      s.show(fn() { media_made.get() }, fn(h) {
         h.over(Is(true)) |> ignore
-        island(
-          h,
-          fn(c) {
-            src_now.val = src.now
-            let stage = c.id("preview/beside-player")
-            c.cursor(stage, Arrow)
-            c.box(style=stage_whole, id=stage, fn() { vw.player_stage(c, src, stage) }) |> ignore
-          },
-          false,
-        )
-        .over(Is(true))
-        |> ignore
+        tab_player_node(h, src, vw)
       })
-      |> ignore
     }
     let picture = fn() { vw.markable() }
     s.show(picture, fn(p) { tab_picture_node(p, src, vw) })
     let stage = fn() { vw.outer_stage() }
-    // (what the old views show of it: hosted in the panel's island, its words picked as a page's are)
-    s.show(fn() { !played && !picture() && stage() == Hosted }, fn(h) {
-      h.over(Is(true)) |> ignore
-      island(
-        h,
-        fn(c) {
-          src_now.val = src.now
-          let stage = c.id("preview/beside-stage")
-          c.cursor(stage, Arrow)
-          @ui.capture(c, stage, zooms=true)
-          c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
-            c.box(style=stage_whole, id=stage, fn() { vw.content(c, src, stage) }) |> ignore
-          })
-        },
-        false,
-      )
-      .over(Is(true))
-      |> ignore
+    let mbui = fn() { !played && !picture() && stage() == Hosted && viewer_mbui_rendered(vw) }
+    s.show(mbui, fn(m) { viewer_mbui_node(m, src, vw) })
+    // (what its stage's nodes show of it, its words picked as a page's are: viewer_stage_node)
+    s.show(fn() { !played && !picture() && stage() == Hosted && !viewer_mbui_rendered(vw) }, fn(h) {
+      viewer_stage_node(h, src, vw, width)
     })
     s.show(fn() { !played && !picture() && stage() != Hosted }, fn(note) {
       viewer_note_node(note, src, vw, stage, bars=false)
@@ -518,9 +655,9 @@ fn tab_tools_node(
   |> ignore
   row.box(fn(r) {
     r.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@sf.keys_apart())).shrink(Is(0.0)) |> ignore
-    // 预览 / 源码: a table's, a page's, once read (the library's segmented choice, what it chooses told:
+    // 预览 / 源码: a table's, a page's, an mbui widget's, once read (the library's segmented choice, what it chooses told:
     // Viewer::set_source)
-    r.show(fn() { vw.bytes.get() is Some(_) && (vw.shown_kind() == Some(KCsv) || vw.shown_kind() == Some(KHtml)) }, fn(x) {
+    r.show(fn() { vw.bytes.get() is Some(_) && vf_has_source(vw) }, fn(x) {
       x.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       @sf.seg_node(
         x,
@@ -605,6 +742,49 @@ fn tab_words(size : @ui.TextSize, line : @ui.Leading, weight : Int) -> @view.Wor
   let th = @ui.tree_theme()
   let (px, own) = th.text_size(size)
   { size: px, weight, line: th.leading(line).unwrap_or(own), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
+}
+
+///|
+/// A tab's film or song in `h` (its stage, all of it), in the one player embedded in it as part of the pane
+/// (@sf.player_node's `embedded`: on the pane's own ground, its picture or a song's cover fitted in the room over its
+/// controls as far in as a tab's picture is, tab_picture_margin, the controls always there under it in the pane's
+/// colours, laid out by the stage's size as it is given): its own player and view, not the whole window's; no keys, no
+/// flight, nothing to close (the tab's tools have its name, 下载 and 全屏).
+fn tab_player_node(h : @view.View, src : Source, vw : Viewer) -> Unit {
+  guard vw.media is Some(m) else { return }
+  // (a fixture's: how it stands pinned, the same on every run)
+  match vw.pinned {
+    Some(p) => m.pin(p)
+    None => ()
+  }
+  h.by_room(fn(held, room) {
+    // (as wide as the stage is given and as tall; the window's till it is first laid out)
+    let size = fn() { (room.width(), room.height().unwrap_or(held.window().1)) }
+    held.box(fn(k) {
+      k.height(By(fn() { Some(size().1) })) |> ignore
+      @sf.player_node(
+        k,
+        m,
+        vw.player_file(),
+        size,
+        back_label=fn() { "" },
+        on_back=fn() {  },
+        // (a song has no picture: no still of it is asked for)
+        still=fn() { if vw.shown_kind() == Some(KVideo) { vw.still(src) } else { "" } },
+        flying=fn() { false },
+        going=fn() { false },
+        move_beside=fn() { None },
+        embedded=true,
+        margin=tab_picture_margin,
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  .grow(Is(1.0))
+  .basis(Is(Some(0.0)))
+  .min_height(Is(Some(0.0)))
+  |> ignore
 }
 
 ///|
@@ -783,4 +963,111 @@ fn tab_picture_node(s : @view.View, src : Source, vw : Viewer) -> Unit {
     |> ignore
     f.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
   })
+}
+
+///|
+/// A `.mbui` / `.wasm` side-panel tab's resolved `(title, icon)`, kicking off `vw.fetch(src)` if not yet started so
+/// synchronous fixtures resolve on the very first frame and background `.mbui` tabs show their app title and icon.
+pub fn tab_mbui_meta(
+  src : Source,
+  chat : String,
+  tab : String,
+  f : ViewTab,
+  fallback_station : String,
+) -> (String, String) {
+  let station = if f.station != "" { f.station } else { fallback_station }
+  let bytes = match tab_viewer(chat, tab) {
+    Some(vw) => {
+      if vw.bytes.untracked() is None && !vw.fetching.untracked() && vw.error.untracked() is None {
+        vw.fetch(src)
+      }
+      vw.bytes.get()
+    }
+    None => None
+  }
+  viz_mbui_meta_of(station, f.key, f.file.path, f.file.name, bytes)
+}
+
+///|
+/// Whether viewer `vw` shows a rendered native `.mbui` / `.wasm` widget in the window's tree.
+pub fn viewer_mbui_rendered(vw : Viewer) -> Bool {
+  vw.source_told.get() |> ignore
+  vw.shown_kind() == Some(KMbui) &&
+  !vw.source &&
+  !vw.told_of() &&
+  vw.bytes.get() is Some(b) &&
+  viz_mbui_parse_bytes(vw.file.name, b) is Some(_)
+}
+
+///|
+/// A rendered `.mbui` / `.wasm` widget in viewer `vw`'s stage (`bars`: true over the whole window under `image_bar`,
+/// false in a side-panel tab under `tab_tools_node`).
+pub fn viewer_mbui_node(parent : @view.View, src : Source, vw : Viewer, bars? : Bool = false) -> Unit {
+  parent.over(Is(true)) |> ignore
+  let session = vw.chat_session()
+  let state_sig = viz_ensure_state(src, vw.station, vw.key, vw.file.path)
+  let place = (if vw.beside { "beside/" } else { "viewer/" }) + vw.id()
+  let scroll = @view.Scroll::new()
+  parent.scrolls(scroll, fn(s) {
+    s.padding(
+      By(fn() {
+        let s3 = @ui.Space::px(S3)
+        if bars {
+          let (top, foot) = (@sf.viewer_host().room)()
+          let (w, _) = s.window()
+          let under = if @sf.native_over.up {
+            top + s3
+          } else if w <= @sf.viewer_small_w {
+            top + page_small_top
+          } else {
+            top + desk_page_top
+          }
+          let side = if w >= 960.0 { dmax(s3, (w - 880.0) / 2.0) } else { s3 }
+          (side, under, side + @sf.native_clear(), foot + s3 * 2.0)
+        } else {
+          (s3, s3, s3, s3)
+        }
+      }),
+    )
+    |> ignore
+    s.pick(
+      fn() {
+        match vw.bytes.get() {
+          Some(b) => b.length()
+          None => 0
+        }
+      },
+      fn(p, _) {
+        @sf.style_node(p, fn() { @ui.style(w=Full) })
+        match vw.bytes.untracked() {
+          Some(b) =>
+            match viz_mbui_parse_bytes(vw.file.name, b) {
+              Some(widget) =>
+                viz_mbui_node(
+                  p,
+                  place,
+                  widget,
+                  fn() { state_sig.get().unwrap_or(Json::null()) },
+                  {
+                    keep: if vw.station != "" && vw.key != "" {
+                      Some(fn(st) { viz_keep(src, vw.station, vw.key, vw.file.path, st) })
+                    } else {
+                      None
+                    },
+                    failed: None,
+                    follow_up: if vw.station != "" && session != "" {
+                      Some(viz_follow_up(vw.station, session))
+                    } else {
+                      None
+                    },
+                  },
+                )
+              None => ()
+            }
+          None => ()
+        }
+      },
+    )
+  })
+  |> ignore
 }

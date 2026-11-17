@@ -30,7 +30,7 @@ let corner_windows : Array[(String, Double, Double, Int, String)] = [
 let corner_modes : Array[String] = {
   let modes = [
     // (webdemo: the web's demo workspace, its chats' rows with people's faces, which chat's fixture has none)
-    "webdemo", "home", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
+    "webdemo", "home", "board", "home-bars", "home-jobs", "home-sheet", "home-news", "new-workspace", "new-workspace-code", "rail-menu", "landing", "landing-invited", "blocked", "place",
     "switcher", "switcher-found", "keys-dialog", "search", "search-jobs", "search-results", "chat", "chat-agent",
     "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
@@ -55,7 +55,7 @@ let corner_modes : Array[String] = {
     "newchat-preset-new-clone", "newchat-preset-new-clones",
     // (the presets' menu: one's own; the other members', a level further in, and none of them; someone else's picked)
     "newchat-preset", "newchat-preset-others", "newchat-preset-others-none", "newchat-preset-theirs",
-    "newchat-preset-theirs-long", "player-audio", "player-ended",
+    "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
     "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized", "service-stopped", "share-in",
     "share-in-files", "share-in-stations", "lock-checking", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
     "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong",
@@ -64,9 +64,9 @@ let corner_modes : Array[String] = {
     "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
     "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
     "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",
-    "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance",
+    "screen-reconnecting", "screen-trackpad", "screen-trackpad-command", "screen-user-pages", "screen-user-tabs", "screen-windows", "screen-window", "settings-home", "settings-appearance", "settings-experimental",
     "settings-me", "settings-me-reading", "settings-workspace", "settings-security", "settings-vault",
-    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-station", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
+    "settings-vault-items", "settings-vault-item", "settings-stations", "settings-stations-unprotected", "settings-station", "settings-station-unprotected", "settings-station-terminals", "settings-station-offline", "settings-station-env", "settings-station-processes",
     "settings-station-mark", "settings-station-lower", "settings-station-versions", "settings-station-updated", "settings-station-network", "settings-station-copies", "settings-station-copies-alone",
     "settings-station-restore", "settings-station-restore-offer", "settings-station-restore-confirm", "settings-station-restore-confirm-long",
     "settings-station-restored",
@@ -74,7 +74,7 @@ let corner_modes : Array[String] = {
     // then 迁移's steps as it goes, sending, all sent waiting for the hand-over, back there after one failed, paused,
     // failed, its accounts moving, done, done with accounts left; and a
     // station taking retired ones' chats in)
-    "settings-station-retire-panel", "settings-station-retire-panel-pick", "settings-station-retire-panel-none", "settings-station-retire-panel-joined", "settings-station-retire-panel-long", "settings-station-retire-sending", "settings-station-retire-sent", "settings-station-retire-sent-failed", "settings-station-retire-quiet", "settings-station-retire-failed", "settings-station-retire-accounts", "settings-station-retire-done", "settings-station-retire-done-left", "settings-station-taking", "settings-profile-move", "settings-profile-move-key",
+    "settings-station-retire-panel", "settings-station-retire-panel-pick", "settings-station-retire-panel-none", "settings-station-retire-panel-joined", "settings-station-retire-panel-long", "settings-station-retire-sending", "settings-station-retire-sent", "settings-station-retire-sent-failed", "settings-station-retire-quiet", "settings-station-retire-failed", "settings-station-retire-accounts", "settings-station-retire-done", "settings-station-retire-done-left", "settings-station-taking", "settings-station-move", "settings-station-move-chats", "settings-station-move-ended", "settings-station-move-empty", "settings-station-move-none", "settings-station-move-all", "settings-station-move-section", "settings-station-move-offered", "settings-profile-move", "settings-profile-move-key",
     "settings-stations-add",
     "settings-stations-existing", "settings-stations-command", "settings-first-station", "settings-adb", "settings-adb-unpaired", "settings-adb-pairing", "settings-adb-connected", "settings-adb-failed", "settings-adb-chats", "settings-adb-chats-long", "settings-adb-lock-two", "settings-adb-idle", "settings-adb-desk",
     // (a request for the phone waiting on a phone that lacks something; granted, the card under it for each kind of step
@@ -84,8 +84,9 @@ let corner_modes : Array[String] = {
     "chat-phone-step-refused", "chat-phone-step-code", "chat-phone-linked-unpaired", "chat-phone-linked-unauthorized",
     "chat-phone-linked-connected",
     "settings-profiles", "settings-profiles-monthly", "settings-profiles-fable", "settings-profiles-own3", "settings-profiles-week-fable", "settings-profiles-several",
+    "settings-profile-account", "settings-profiles-station",
     "settings-profile", "settings-profile-fable", "settings-profile-own3", "settings-profile-week-fable", "settings-profile-quota", "settings-profile-quota-kinds",
-    "settings-profile-lower", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-copy",
+    "settings-profile-lower", "settings-profile-unshareable", "settings-profile-login", "settings-profile-login-failed", "settings-profile-quota-failed", "settings-profile-copy",
     "settings-profile-blocked", "settings-profile-signin", "settings-profile-key", "settings-new-profile",
     // (添加账号 with three stations up to choose from, #6030; a key's form with a region and a protocol to choose)
     "settings-new-profile-stations", "settings-new-profile-key",
@@ -93,6 +94,8 @@ let corner_modes : Array[String] = {
     "settings-new-connect", "settings-new-connect-platform", "settings-new-connect-scan", "settings-new-connect-app",
     // (a Comma connect's model step, and the pages of a Comma and a Feishu connect, none of their sessions yet)
     "settings-new-connect-comma", "settings-connect-comma", "settings-connect-feishu",
+    // (Group offered and picked, a new group connect's server filled in, and a group connect's page)
+    "settings-new-connect-platform-group", "settings-new-connect-group", "settings-connect-group",
     "settings-slack-app", "settings-memory", "settings-memory-doc", "settings-usage", "settings-archive", "settings-kept",
     "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-words", "settings-vault-add",
     "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-add-people",
@@ -114,11 +117,14 @@ let corner_modes : Array[String] = {
 }
 
 ///|
-/// `lang`'s screens in every window, each against its bars: the corners' and, the squeeze's ones, the squeeze's; and
+/// `lang`'s screens in every other window (`half`: the first, third…, or the second, fourth…), each against its bars: the corners' and, the squeeze's ones, the squeeze's; and
 /// (`press_room`, Chinese) a press's room and the light theme's contrast too, on the same screen opened once. (Apart, a
 /// sweep each, Chinese's screens were opened twice: of a sweep's 1939 screens, opening them was some seven tenths of
-/// its time, the checks the rest, none of them long (27 ms each at the median, 0.3 s the longest), 2026-11-05.)
-fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
+/// its time, the checks the rest, none of them long (27 ms each at the median, 0.3 s the longest), 2026-11-05.) (In two
+/// halves of the windows, a run each: one run a language was 150-165 s of one core on main and 253-277 s on a slow runner,
+/// app corners 289 and 292 s of its 5 minutes on feat/history-turn-time 43714223337 and mbui-player-node 43717281884,
+/// 2026-11-15, two of the runner's four cores idle.)
+fn corners_check(lang : String, half : Int, press_room~ : Bool = false) -> Unit raise {
   let wrong : Array[String] = []
   let gaps : Array[String] = []
   let moves : Array[String] = []
@@ -126,11 +132,14 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
   let heights : Array[String] = []
   let first_lines : Array[String] = []
   let line_starts : Array[String] = []
-  for win in corner_windows {
+  for k, win in corner_windows {
+    if k % 2 != half {
+      continue
+    }
     let squeezed = squeeze_windows.contains(win.0)
     for mode in corner_modes {
       let at = "\{win.0}-\{lang} \{mode}"
-      let t = screen_in(mode, win, lang, motion_judged=false)
+      let t = screen_in(mode, win, lang)
       if press_room {
         // (a press's room, at rest and with what shows only under the hand shown: rooms_known_wbtest.mbt; and the
         // contrast's, in the light theme, once: contrast_wbtest.mbt)
@@ -234,7 +243,7 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
     }
   }
   if press_room {
-    match rooms_wrong(rooms) {
+    match rooms_wrong(half, rooms) {
       Some(w) => wrong.push(w)
       None => ()
     }
@@ -242,7 +251,7 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
   wrong.append(heights)
   wrong.append(first_lines)
   wrong.append(line_starts)
-  match gaps_wrong(lang, gaps) {
+  match gaps_wrong("\{lang} \{half}/2", gaps) {
     Some(w) => wrong.push(w)
     None => ()
   }
@@ -260,13 +269,23 @@ fn corners_check(lang : String, press_room~ : Bool = false) -> Unit raise {
 }
 
 ///|
-test "corners and squeeze, a press's room and the light theme's contrast: every screen in every window, in Chinese" {
-  corners_check("zh", press_room=true)
+test "corners and squeeze, a press's room and the light theme's contrast: every screen in the windows 1, 3, 5 and 7, in Chinese" {
+  corners_check("zh", 0, press_room=true)
 }
 
 ///|
-test "corners and squeeze: every screen in every window keeps the corner rule and fits, in English" {
-  corners_check("en")
+test "corners and squeeze, a press's room and the light theme's contrast: every screen in the windows 2, 4 and 6, in Chinese" {
+  corners_check("zh", 1, press_room=true)
+}
+
+///|
+test "corners and squeeze: every screen in the windows 1, 3, 5 and 7 keeps the corner rule and fits, in English" {
+  corners_check("en", 0)
+}
+
+///|
+test "corners and squeeze: every screen in the windows 2, 4 and 6 keeps the corner rule and fits, in English" {
+  corners_check("en", 1)
 }
 
 ///|

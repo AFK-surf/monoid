@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { RECENT_CHAT_LIST } from "../src/store/chat-list.ts";
-import { installRecentChatIndex, readGlobalRecentChatIndex, stepRecentChatIndex } from "../src/store/chat-list-index.ts";
+import { installRecentChatIndex, readGlobalRecentChatIndex, stepRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
 import { Store } from "../src/store/store.ts";
 
 test("installing recent chat writers avoids old message and membership history, and a failed install can retry", () => {

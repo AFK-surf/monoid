@@ -1,0 +1,43 @@
+The move drill's hold at a hand-over's step (apps/mbui/e2e/move.ts, part 9m), for a COPY of the tree the drill
+builds, never the product: nothing of it is committed under station/. Applied with `git apply` to a checkout of main
+from before the fix of 2026-11-16 (move-two-processes: one process at a time acts on a hand-over), that copy's station
+built (`pnpm run build` in its station/), the drill is run with
+  E2E_MOVE_LIMBO_DIST=<that copy>/station/dist   the build A is handed to while the limbo is made
+  E2E_DRILL_HOLD=counts:<path>                    where the hold's files go (<path>.arm, .held, .go)
+and the harness gives the stations STILLFAIL_DRILL_HOLD from it (scripts/e2e-local.sh's env file). With <path>.arm
+there, the next hand-over to reach `counts` (B answered its counts, before it writes gone) holds that process's main
+thread until <path>.go is there, having written <path>.held; 9m makes the real run's limbo so on real processes.
+
+--- a/station/src/replica/handover.ts
++++ b/station/src/replica/handover.ts
+@@ -22,7 +22,7 @@
+ // nothing is undone: A tells B again until it answers (on start, on failure with a backoff; never polled).
+ // Nothing is posted in its threads nor said in the chat; its agent is told once as its next turn starts (moved_notes).
+ import { createHash, randomBytes } from "node:crypto";
+-import { createReadStream, readFileSync, readdirSync } from "node:fs";
++import { createReadStream, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+ import { appendFile, mkdir, readFile, readdir, realpath, rename, rm, rmdir, stat, statfs, writeFile } from "node:fs/promises";
+ import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
+ import { type Bytes, Refused, bytesOf, withBytes } from "../mesh/bus.ts";
+@@ -303,7 +303,20 @@
+   /// Where each side stood, read before the station serves: a chat being handed over is held again before its agents
+   /// are taken up.
+   constructor(d: HandoverDeps) {
+-    this.#d = d;
++    // drill-hold (the move drill's build of this code only, e2e/move.ts part 9m): with STILLFAIL_DRILL_HOLD=<step>:<path>
++    // and <path>.arm there, the next hand-over to reach <step> holds this process there (its main thread waits) until
++    // <path>.go is there, having said <path>.held
++    const hold = process.env.STILLFAIL_DRILL_HOLD ?? "";
++    if (hold.includes(":")) process.stderr.write(`drill-hold: the hand-over's hold at ${hold} (fail given before: ${d.fail !== undefined})\n`);
++    this.#d = d.fail === undefined && hold.includes(":") ? { ...d, fail: (step: string) => {
++      const at = hold.slice(0, hold.indexOf(":")), path = hold.slice(hold.indexOf(":") + 1);
++      if (step !== at || !existsSync(`${path}.arm`)) return;
++      rmSync(`${path}.arm`, { force: true });
++      writeFileSync(`${path}.held`, String(process.pid));
++      const cell = new Int32Array(new SharedArrayBuffer(4));
++      while (!existsSync(`${path}.go`)) Atomics.wait(cell, 0, 0, 20);
++      rmSync(`${path}.go`, { force: true });
++    } } : d;
+     this.#work = d.work ?? { gather: gatherSoon, place: placeSoon };
+     this.#reads = {
+       session: (k) => d.store.getSession(k),

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Store } from "../src/store/store.ts";
-import { retireUsageIndexes } from "../src/store/usage-retire.ts";
+import { retireUsageIndexes } from "./reference/backfill/usage-retire.ts";
 
 for (const retired of [false, true]) test(`replaying unchanged usage writes nothing ${retired ? "after" : "before"} index retirement`, () => {
   const store = Store.open(":memory:");

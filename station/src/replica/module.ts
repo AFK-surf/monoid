@@ -17,7 +17,7 @@ import { Retire } from "./retire.ts";
 import { RetireAsks, chatCards } from "./retire-asks.ts";
 import { retireTools } from "../tools/retire.ts";
 import { wall } from "../ops/fibers.ts";
-import { WorkerRunner } from "./runner.ts";
+import { ProgramRunner } from "./runner.ts";
 
 type Json = any;
 
@@ -40,7 +40,7 @@ export const CopiesLive = Layer.effectDiscard(
     const agents = yield* Agents;
     const fibers = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("copies")), (f) => Effect.promise(() => f.close()));
     const runner = yield* Effect.acquireRelease(
-      Effect.sync(() => new WorkerRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: key.id })),
+      Effect.sync(() => new ProgramRunner({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin: key.id })),
       (r) => Effect.promise(() => r.close()),
     );
     const copies = new Copies({
@@ -101,6 +101,7 @@ export const CopiesLive = Layer.effectDiscard(
         own: () => ownProfiles().map((p: Json) => ({ id: String(p.id), name: typeof p.name === "string" && p.name !== "" ? p.name : String(p.id) })),
         move: (id, to) => agents.sharing.moveProfile(id, to),
       },
+      followAccounts: (keys, map) => agents.hub.followAccounts(keys, map),
       // (what their platforms said meanwhile taken here, in order, as it would have been)
       unquiet: (ws) => {
         agents.hub.unquiet(ws);

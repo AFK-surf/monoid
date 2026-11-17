@@ -24,7 +24,20 @@ pub fn float_button_node(
     .min_width(Is(Some(float_button_side + 2.0 * room)))
     |> ignore
     o.box(fn(b) {
-      style_node(b, fn() { if lit_node(o) { float_button_lit } else { float_button_look } })
+      style_node(b, fn() { float_button_look })
+      hover_ground_node(b, by=o)
+      b
+      .ring(
+        By(fn() {
+          if o.focus_shown() {
+            let t = @ui.tree_theme()
+            (t.focus_w, t.focus_gap, t.focus)
+          } else {
+            (0.0, 0.0, 0L)
+          }
+        }),
+      )
+      |> ignore
       icon_node(b, icon, float_button_icon, By(fn() { theme().p.text })) |> ignore
       b.show(fn() { count() != "" }, fn(w) { words_node(w, count, fn() { float_button_count }) |> ignore })
     })
@@ -53,10 +66,6 @@ pub let float_button_reach : Double = 6.0
 let float_button_look : @ui.Style = @ui.css((
   #|row h=S8 min_w=S8 px=S2 gap=S1 radius=Full border=B1 border_color=Line bg=Surface shadow=Md align=ACenter justify=JCenter
 ))
-
-///|
-// kept across runs: a value (no field of it changes)
-let float_button_lit : @ui.Style = float_button_look.then(@ui.css("bg=Over(Surface, Hover)"))
 
 ///|
 // kept across runs: a value (no field of it changes)

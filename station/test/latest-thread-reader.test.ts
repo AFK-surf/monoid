@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { followLatestThreadRequests } from "../src/read/latest-thread-requests.ts";
 import { Readers } from "../src/read/pool.ts";
-import { latestThreadReady } from "../src/store/latest-thread-index.ts";
+import { latestThreadReady } from "./reference/backfill/latest-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a store read requests its latest order once and uses it after handover", async () => {

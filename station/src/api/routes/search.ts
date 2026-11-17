@@ -34,7 +34,7 @@ export const routes = ({ search, config, events }: { search: Search; config: Con
         return error(400, "invalid JSON");
       }
       if (typeof personal !== "boolean") return error(400, "personal is true or false");
-      config.update((raw) => {
+      await config.updateSoon((raw) => {
         raw.search = { ...(raw.search !== null && typeof raw.search === "object" ? raw.search : {}), personal };
       });
       events?.overviewChanged();

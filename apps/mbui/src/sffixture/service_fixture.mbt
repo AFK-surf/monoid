@@ -81,6 +81,9 @@ pub fn fixture_stream(
   if name == "terminal.view" {
     return fixture_terminal_view(params, on_value)
   }
+  if name == "farview.view" {
+    return fixture_farview_view(on_value)
+  }
   if name != "station.preview" {
     done(Err({ "code": "unknown_call", "message": "这份假数据没有 " + name }))
     return 0
@@ -100,3 +103,39 @@ pub fn fixture_stream(
 
 ///|
 pub let fix_stream_ids : Ref[Int] = Ref(0)
+
+///|
+/// A chat's Farview tab as its host shows it (farview_tab.mbt): live, a sign-in page sent whole on Farview's doc wire
+/// (fvclient/doc's Mirror, as a host makes it), and an agent driving the tab.
+fn fixture_farview_view(on_value : (Json, Bytes?) -> Unit) -> Int {
+  on_value({ "state": { "phase": "live", "opens": 1 } }, None)
+  let doc = @html.parse(fix_farview_html)
+  let state : @doc.DocState = {
+    base: "https://mail.example.test/",
+    root: doc,
+    frames: [],
+    sheets: [("https://mail.example.test/s.css", fix_farview_css)],
+    cssom: [],
+    defined: fn(_) { false },
+    states: fn(_) { 0 },
+    target: "",
+  }
+  on_value({ "data": true }, Some(@proto.encode_host(Meta("https://mail.example.test/login", "登录", false, false, false))))
+  on_value({ "data": true }, Some(@proto.encode_host(Reset(1, 0, @doc.Mirror::new().reset(state)))))
+  on_value({ "data": true }, Some(@proto.encode_host(AgentOn(true))))
+  fix_stream_ids.val += 1
+  fix_stream_ids.val
+}
+
+///|
+let fix_farview_html : String = "<!doctype html><html><head><link rel=stylesheet href=s.css></head><body>" +
+  "<main class=card><h1>登录</h1><p class=sub>继续前往邮箱</p><label>邮箱或用户名</label>" +
+  "<input class=field value=\"\"><button class=go>继续</button></main></body></html>"
+
+///|
+let fix_farview_css : String = "body { margin: 0; background: rgb(244, 241, 252); font-family: sans-serif } " +
+  ".card { box-sizing: border-box; margin: 40px auto; max-width: 400px; padding: 32px; background: white; border-radius: 24px } " +
+  "h1 { margin: 0 0 8px; font-size: 28px } .sub { margin: 0 0 24px; color: rgb(90, 90, 100) } " +
+  "label { display: block; margin-bottom: 8px; font-weight: 600 } " +
+  ".field { display: block; box-sizing: border-box; width: 100%; height: 44px; border: 1px solid rgb(109, 74, 255); border-radius: 8px } " +
+  ".go { display: flex; align-items: center; justify-content: center; width: 100%; height: 44px; margin-top: 24px; border: 0; border-radius: 8px; background: rgb(109, 74, 255); color: white; font-size: 16px }"

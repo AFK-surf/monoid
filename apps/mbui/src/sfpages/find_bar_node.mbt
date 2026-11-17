@@ -185,9 +185,9 @@ fn find_button_node(
     .lines_up(Is(Some(Middle)))
     .lies_along(Is(Middle))
     .alpha(By(fn() { if on() { 1.0 } else { find_button_faint } }))
-    .ground(By(fn() { if on() && @sf.lit_node(b) { @ui.tree_theme().color(Hover) } else { 0L } }))
     .says(By(fn() { Some(@view.said(Button, label=label())) }))
     |> ignore
+    @sf.hover_ground_node(b, on~)
     @sf.icon_node(b, icon, 16.0, By(fn() { @sf.theme().p.text })) |> ignore
     @sf.tip_node(tips, b, label, side=Bottom) |> ignore
   })

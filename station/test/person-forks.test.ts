@@ -110,7 +110,7 @@ test("a winning branch of a person's lock that comes later moves the chain: a de
   assert.deepEqual(said.head, { seq: 2, hash: entryHash(removal) });
 });
 
-test("a person's lock kept comes back after a restart: the chain gone by under `chains`, as a station from before reads it, the rest beside", () => {
+test("a person's lock kept comes back after a restart: the chain gone by under `chains`, as a station from before reads it, the rest beside", async () => {
   const path = join(mkdtempSync(join(tmpdir(), "person-forks-")), "person-chains.json");
   const c = carols();
   const phone = c.device(c.added, c.dev(), c.q.key);
@@ -118,6 +118,7 @@ test("a person's lock kept comes back after a restart: the chain gone by under `
   const chains = new PersonChains(path);
   chains.keep(c.genesis, [c.g, c.added, phone], "w1");
   chains.keep(c.genesis, [c.g, c.added, removal], "w1", true);
+  await chains.written();
   const raw = JSON.parse(readFileSync(path, "utf8"));
   assert.deepEqual(hashes(raw.chains[c.genesis]), hashes([c.g, c.added, removal]));
   const again = new PersonChains(path);

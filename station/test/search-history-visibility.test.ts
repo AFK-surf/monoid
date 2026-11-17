@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { makeStore, openStore } from "../src/read/store.ts";
+import { makeStore, openStore } from "./reference/store.ts";
 import { historyHits } from "./reference/search-sources.ts";
 import { Store } from "../src/store/store.ts";
 

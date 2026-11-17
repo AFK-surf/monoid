@@ -9,8 +9,8 @@ const ROOTS = /^\/(?:Users|Volumes|home|tmp|private|opt|var|etc|srv|mnt|workspac
 /**
  * The file (or directory) a bit of inline code names, with the line it points at (`src/a.ts:12`, `a.ts:12:4`,
  * `a.ts#L12`); null when it is not a path. Paths only: absolute ones under the machine's roots or with a file's
- * extension, `~/…`, `./…`, `../…`, or relative ones with a directory and an extension; a bare name with a code file's
- * extension, which is read under the session's working directory.
+ * extension, an absolute Windows drive path, `~/…`, `./…`, `../…`, or relative ones with a directory and an extension;
+ * a bare name with a code file's extension, which is read under the session's working directory.
  */
 export function pathIn(code: string): { path: string; line: number | null } | null {
   const text = code.trim();
@@ -18,11 +18,15 @@ export function pathIn(code: string): { path: string; line: number | null } | nu
   const m = /^(.*?)(?::(\d+)(?::\d+)?|#L(\d+)(?:-L?\d+)?)?$/.exec(text)!;
   const path = m[1]!;
   const line = m[2] ?? m[3];
+  // A drive's colon is part of its absolute path, not a scheme or a line number. Read either separator, but keep
+  // the path as the message wrote it: the station, which may be Windows whichever client reads it, opens that.
+  const drive = /^[a-z]:[\\/]/i.test(path);
+  const place = drive ? path.slice(2).replace(/\\/g, "/") : path;
   // `~/.stillfail/agent/...`, `src/…`: a place left out, not a file.
-  if (path === "" || path.includes(":") || /(?:^|\/)(?:\.{3,}|…)$/.test(path) || path.includes("…")) return null;
-  const last = path.replace(/\/$/, "").split("/").at(-1) ?? "";
+  if (place === "" || place.includes(":") || /(?:^|\/)(?:\.{3,}|…)$/.test(place) || place.includes("…")) return null;
+  const last = place.replace(/\/$/, "").split("/").at(-1) ?? "";
   const ext = /\.[A-Za-z0-9]{1,10}$/.test(last) && !/^\.+$/.test(last);
-  const ok =
+  const ok = drive ? place.length > 1 :
     path.startsWith("~/") || path.startsWith("./") || path.startsWith("../")
       ? path.length > 2
       : path.startsWith("/")

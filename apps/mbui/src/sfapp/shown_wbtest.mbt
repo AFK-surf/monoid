@@ -11,9 +11,9 @@
 /// (Starting, Sign in and Share are sfbase's shown_kind's too, though no mode of corner_modes opens on them.)
 let shown_known : Array[String] = [
   "Starting", "Sign in", "Landing", "Share", "Home", "Chat", "Archived", "History", "NewChat", "Files", "Drive",
-  "DriveRead", "DrivePlay", "Service", "Screen", "Terminal", "Place stations", "Place profiles", "Settings", "Setting Appearance",
+  "DriveRead", "DrivePlay", "Service", "Screen", "Terminal", "Place stations", "Place profiles", "Settings", "Setting Appearance", "Setting Experimental",
   "Setting Me", "Setting Workspace", "Setting Security", "Setting Vault", "Setting VaultItems", "Setting VaultItem",
-  "Setting Stations", "Setting Station", "Setting AdbShare", "Setting Profiles", "Setting Profile",
+  "Setting Stations", "Setting Station", "Setting StationMove", "Setting AdbShare", "Setting Profiles", "Setting Profile", "Setting ProfileAccount",
   "Setting NewProfile", "Setting Connects", "Setting Connect", "Setting Memory", "Setting MemoryDoc", "Setting Usage",
   "Setting Archive", "Setting KeptFiles", "Setting Fonts", "Setting AutoPolicy", "Setting RunSettings",
   "Setting AutoDecisions", "Setting AutoCompletion", "Setting BarSettings", "Setting About", "Setting Changelog",

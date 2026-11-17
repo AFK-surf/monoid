@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { Effect, Layer } from "effect";
 import { learn, named as namedKeys } from "../accounts/catalog.ts";
 import { Fibers } from "../ops/fibers.ts";
-import { writePrivate } from "../ops/files.ts";
+import { PrivateFile } from "../ops/files.ts";
 import { log } from "../ops/log.ts";
 import { AgentsSide, ControlPlane, Paths } from "../services.ts";
 
@@ -21,7 +21,7 @@ export class ModelCatalog {
   #asking: Promise<void> | null = null;
   /// Asked for again while an ask went on: asked once more after it.
   #again = false;
-  readonly #file: string;
+  readonly #file: PrivateFile;
   readonly #origin: () => string | null;
   readonly #get: Get;
   readonly #added: (keys: string[]) => void;
@@ -29,12 +29,12 @@ export class ModelCatalog {
   /// `file`: where it is kept; `origin`: still.fail cloud's, none when the station is in no still.fail cloud; `added`:
   /// told the keys of the models a catalog the cloud sent names that the one before did not (none the first time).
   constructor(file: string, origin: () => string | null, _now: () => number, get: Get = (url, init) => fetch(url, init), added: (keys: string[]) => void = () => {}) {
-    this.#file = file;
+    this.#file = new PrivateFile(file);
     this.#origin = origin;
     this.#get = get;
     this.#added = added;
     try {
-      const kept = JSON.parse(readFileSync(file, "utf8"));
+      const kept = JSON.parse(readFileSync(file, "utf8")); // sync: read once, before the station serves
       learn(kept?.models);
       if (typeof kept?.etag === "string") this.#etag = kept.etag;
     } catch {
@@ -76,9 +76,15 @@ export class ModelCatalog {
     const named = learn(body?.models);
     const added = before.size === 0 ? [] : namedKeys().filter((k) => !before.has(k));
     this.#etag = response.headers.get("etag");
-    writePrivate(this.#file, JSON.stringify({ etag: this.#etag, models: body?.models ?? {} }));
+    // Written off the station's thread; one ask at a time (`refresh`), so in order.
+    await this.#file.write(JSON.stringify({ etag: this.#etag, models: body?.models ?? {} }));
     log.info("models", "the model catalog was read", { models: named });
     if (added.length > 0) this.#added(added);
+  }
+
+  /// Once what it read of the cloud is written (the station stopping).
+  written(): Promise<void> {
+    return this.#file.written();
   }
 }
 
@@ -91,6 +97,7 @@ export const ModelsLive = Layer.effectDiscard(
     const time = yield* Effect.acquireRelease(Effect.sync(() => new Fibers("models")), (t) => Effect.promise(() => t.close()));
     const origin = () => (plane.spec().provider === "stillfail" ? (plane.state.state?.origin ?? null) : null);
     const catalog = new ModelCatalog(join(data, "model-catalog.json"), origin, () => time.now(), undefined, (keys) => side.current?.accounts.newModels(keys));
+    yield* Effect.addFinalizer(() => Effect.promise(() => catalog.written()));
     time.after(0, () => void catalog.refresh());
     plane.told("models", (said) => void catalog.refresh(said.type === "models" ? said.etag : undefined));
   }),

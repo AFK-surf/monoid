@@ -46,9 +46,9 @@ fn system_took(json : String) -> Unit {
           None => ()
         }
       }
-      SizeClasses(width~, height~) => system_size_class_now.val = Some({ width, height })
+      SizeClasses(width~, height~) => system_size_class_now.set(Some({ width, height }))
       Fold(hinge~, divisions~) => system_fold_now.set({ hinge, divisions })
-      NavAction(x~, y~, w~, h~) => system_nav_action_now.val = if w > 0.0 && h > 0.0 { Some((x, y, w, h)) } else { None }
+      NavAction(x~, y~, w~, h~) => system_nav_action_now.set(if w > 0.0 && h > 0.0 { Some((x, y, w, h)) } else { None })
       _ => ()
     }
   }
@@ -57,14 +57,19 @@ fn system_took(json : String) -> Unit {
 ///|
 /// Where the system's bars put the app's action of its own (`nav_action`), as the host last said it. Put back by each
 /// Tester (messages_reset).
-let system_nav_action_now : Ref[(Double, Double, Double, Double)?] = Ref(None)
+// kept across runs: put back as a run begins (messages_reset); a signal: what is laid out by it (a composer as high as
+// that action, its foot's corner) follows it, kept or not (2026-11-17: a part kept as it was read it as a plain value and
+// was not built again as an iPhone Duo's action came)
+let system_nav_action_now : @signals.Signal[(Double, Double, Double, Double)?] = @signals.signal(None, same=fn(a, b) {
+  a == b
+})
 
 ///|
 /// Where the system's bars put the app's action of its own in the view (x, y, w, h: iOS 27's prominent tab, an iPhone
 /// Duo's round one at its column's foot), as the host last said it: None where none is shown, from a host that says
 /// none, and in a Tester until a test posts it.
 pub fn system_nav_action() -> (Double, Double, Double, Double)? {
-  system_nav_action_now.val
+  system_nav_action_now.get()
 }
 
 ///|
@@ -77,13 +82,15 @@ pub(all) struct SystemSizeClass {
 
 ///|
 /// The size classes as the host last said them (none yet: None). Put back by each Tester (messages_reset).
-let system_size_class_now : Ref[SystemSizeClass?] = Ref(None)
+// kept across runs: put back as a run begins (messages_reset); a signal: what is laid out by them follows them, kept or
+// not
+let system_size_class_now : @signals.Signal[SystemSizeClass?] = @signals.signal(None, same=fn(a, b) { a == b })
 
 ///|
 /// How much room the window has as the system classes it, as the host last said it: None from a host that says none
 /// (a desktop's, the web's) and in a Tester until a test posts it.
 pub fn system_size_class() -> SystemSizeClass? {
-  system_size_class_now.val
+  system_size_class_now.get()
 }
 
 ///|

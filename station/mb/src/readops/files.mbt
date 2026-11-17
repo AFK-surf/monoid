@@ -1,5 +1,5 @@
 // What the reads of this machine's files (memory.mbt, machine.mbt) ask of the filesystem, through the shell
-// (client/shell `fs.*`), as Node's calls in station/src/read/memory.ts and machine.ts answer.
+// (client/shell `fs.*`), as Node's calls in station/test/reference/memory.ts and machine.ts answer.
 
 ///|
 /// A file's text: `strict` as TextDecoder("utf-8", { fatal: true }) reads it (a leading byte order mark dropped, none

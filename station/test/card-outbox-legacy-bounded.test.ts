@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { cardOutcomeHeads, installCardOutbox, saveWithCardOutcome } from "../src/store/card-outbox.ts";
-import { installLegacyEdits, legacyEditsMaintenanceStep, legacyMergedReadReady } from "../src/store/legacy-edits-build.ts";
+import { installLegacyEdits, legacyEditsMaintenanceStep, legacyMergedReadReady } from "./reference/backfill/legacy-edits-build.ts";
 import { addClientColumn } from "../src/store/schema.ts";
 import { Store } from "../src/store/store.ts";
 import { installWidgetSources } from "../src/store/widget-sources.ts";

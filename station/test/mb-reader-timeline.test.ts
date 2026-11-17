@@ -11,9 +11,9 @@ import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { zstdCompressSync } from "node:zlib";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
-import { seekTable } from "../src/read/packed.ts";
+import { seekTable } from "./reference/packed.ts";
 import { Readers } from "../src/read/pool.ts";
-import { MARK_EVERY } from "../src/read/tail.ts";
+import { MARK_EVERY } from "./reference/tail.ts";
 import { Store } from "../src/store/store.ts";
 import { readersOf } from "./reference.ts";
 
@@ -178,7 +178,7 @@ test("the MoonBit reader reads a session's history as the worker does", { skip: 
   try {
     const first = await both("as written");
     const sign = JSON.stringify(first.worker);
-    for (const s of ["\"brief\":true", "（结果在脚本的输出里）", "(Result is in the script output)", "codex 119", "post 2 ", "unknown session missing", "\"partial\":\"", "\"states\":null"])
+    for (const s of ["\"brief\":true", "\"inScript\":true", "codex 119", "post 2 ", "unknown session missing", "\"partial\":\"", "\"states\":null"])
       assert.ok(sign.includes(s), s);
     // Grown, the same readers going on from what they keep in memory: the line half written ends, more come.
     appendFileSync(long, said("half", "h").slice(30) + claudeLines(MARK_EVERY + 5, "g").join(""));

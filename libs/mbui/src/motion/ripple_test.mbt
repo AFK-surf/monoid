@@ -6,12 +6,26 @@ fn ripple_near(a : Double, b : Double) -> Bool {
 }
 
 ///|
-/// A 200 × 50 box at the window's corner that ripples as it is pressed.
-fn ripple_tester() -> @ui.Tester {
-  @ui.Tester::new(fn(c) {
-    let id = c.id("row")
-    c.box(w=Px(200.0), h=Px(50.0), id~, fn() { @motion.ripple(c, id, 0.0) }) |> ignore
-  })
+/// A 200 × 50 box at the window's corner that ripples as it is pressed (by a finger, unless `pointing` says), on a
+/// ground of its own where `ground` is said.
+fn ripple_tester(pointing? : @ui.Pointing = Finger, ground? : Int64 = 0L) -> @ui.Tester {
+  @ui.Tester::new(
+    fn(c) {
+      let id = c.id("row")
+      c.box(w=Px(200.0), h=Px(50.0), bg=ground, id~, fn() { @motion.ripple(c, id, 0.0) }) |> ignore
+    },
+    pointing~,
+  )
+}
+
+///|
+/// The veil a pointer's press lays over the 200 × 50 box (its ink, its alpha as drawn), if one is drawn.
+fn pointer_veil_drawn(t : @ui.Tester) -> Int64? {
+  t
+  .drawn_rects()
+  .iter()
+  .find_first(fn(r) { r.2 == 200.0 && r.3 == 50.0 && (r.4 & 0xFFFFFF00L) == 0L && (r.4 & 0xFFL) > 0L })
+  .map(fn(r) { r.4 })
 }
 
 ///|
@@ -61,4 +75,47 @@ test "a tap however short is shown whole: its way in, then out" {
   t.run_for(@motion.ripple_exit_ms)
   assert_eq(t.drawn_shadows().length(), 0)
   t.assert_idle()
+}
+
+///|
+test "a pointer's press draws no disc: its ink over the whole box evenly, in from the press, out once let go; a click however short shown whole" {
+  let t = ripple_tester(pointing=Mouse)
+  let whole = @motion.pointer_veil(@motion.ripple_ink)
+  // held: in over pointer_enter_ms, then there whole while held
+  t.press_at(20.0, 25.0)
+  t.run_for(@motion.pointer_enter_ms)
+  assert_eq((t.drawn_shadows().length(), pointer_veil_drawn(t)), (0, Some(whole)))
+  t.run_for(@motion.pointer_enter_ms)
+  assert_eq(pointer_veil_drawn(t), Some(whole))
+  // let go: gone by its way out's end
+  t.release(20.0, 25.0)
+  t.run_for(@motion.pointer_exit_ms / 2.0)
+  let half = pointer_veil_drawn(t)
+  assert_true(half is Some(c) && (c & 0xFFL) < (whole & 0xFFL), msg="on its way out: \{Repr(half)}")
+  t.run_for(@motion.pointer_exit_ms / 2.0)
+  assert_eq(pointer_veil_drawn(t), None)
+  t.assert_idle()
+  // a click let go in its own frame: its way in whole first, then out, gone after pointer_tap_ms
+  t.tap(180.0, 10.0)
+  t.run_for(@motion.pointer_enter_ms)
+  assert_eq((t.drawn_shadows().length(), pointer_veil_drawn(t)), (0, Some(whole)))
+  t.run_for(@motion.pointer_exit_ms)
+  assert_eq(pointer_veil_drawn(t), None)
+  t.assert_idle()
+}
+
+///|
+test "a pointer's press sinks a box on a ground of its own by pointer_sink, not a row lying in a list or a card" {
+  for ground in [0xFFFFFFFFL, 0L] {
+    let t = ripple_tester(pointing=Mouse, ground~)
+    t.press_at(20.0, 25.0)
+    t.run_for(@motion.pointer_enter_ms)
+    let held = t.look_of("row").map(fn(l) { l.0 }).unwrap_or(1.0)
+    t.release(20.0, 25.0)
+    t.run_for(@motion.pointer_tap_ms)
+    let after = t.look_of("row").map(fn(l) { l.0 }).unwrap_or(1.0)
+    let sunk = if ground == 0L { 1.0 } else { 1.0 - @motion.pointer_sink(200.0, 50.0) }
+    assert_true((held - sunk).abs() < 1.0e-9 && (after - 1.0).abs() < 1.0e-9, msg="ground \{ground}: \{held}, \{after}")
+    t.assert_idle()
+  }
 }

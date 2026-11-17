@@ -192,9 +192,69 @@ test "on the tape what shows of the page pulled across and let go brings it over
   assert_eq(tape_pulled_over(6, 360.0, 6), @sfdesk.TapePane::Page)
   assert_eq(tape_pulled_over(0, 360.0, 6), @sfdesk.TapePane::Page)
   // a short flick, down and let go a little way across soon after, no move told: flung over by its speed from its down
-  assert_eq(tape_pulled_over(0, 720.0 - @sfdesk.tape_shows / 2.0 - 60.0, 2), @sfdesk.TapePane::Page)
-  // as far, let go slowly: not flung, back
-  assert_eq(tape_pulled_over(0, 720.0 - @sfdesk.tape_shows / 2.0 - 60.0, 60), @sfdesk.TapePane::Side)
+  assert_eq(tape_pulled_over(0, 720.0 - @sfdesk.tape_shows / 2.0 - 40.0, 2), @sfdesk.TapePane::Page)
+  // as far, let go slowly: not flung, back (short of a fifth of its way, 238 over)
+  assert_eq(tape_pulled_over(0, 720.0 - @sfdesk.tape_shows / 2.0 - 40.0, 60), @sfdesk.TapePane::Side)
+}
+
+///|
+/// What shows of the page at the right pulled `dx` across by a finger in `steps` moves input_step_ms apart, let go
+/// `held` ms after its last move where that move was, as a device's lift always comes (iOS's touchesEnded, Android's
+/// ACTION_UP: later, at the last place again): the panel in use at rest.
+fn tape_pulled_lifted(dx : Double, steps : Int, held : Double) -> @sfdesk.TapePane raise {
+  let t = tape_chat(2, 720.0, 840.0, width="medium", height="medium")
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+  let x0 = 720.0 - @sfdesk.tape_shows / 2.0
+  t.touch(0, x0, 300.0)
+  for i in 1..=steps {
+    t.advance(@ui.input_step_ms)
+    t.touch(1, x0 + dx * i.to_double() / steps.to_double(), 300.0)
+  }
+  t.advance(held)
+  t.touch(2, x0 + dx, 300.0)
+  t.run_for(@ui.move_most_ms)
+  @sfdesk.wide.tape_at.get()
+}
+
+///|
+test "on the tape a finger pulling the page over let go as a device lets go, later where it last moved: as fast as it went then, not stopped" {
+  // (55 in four moves, let go half a move later: over, not taken to have stopped there)
+  assert_eq(tape_pulled_lifted(-55.0, 4, @ui.input_step_ms / 2.0), @sfdesk.TapePane::Page)
+  // (30 in two: flung over)
+  assert_eq(tape_pulled_lifted(-30.0, 2, @ui.input_step_ms / 2.0), @sfdesk.TapePane::Page)
+  // (30 in two, held still there past a pause before it is let go: stopped, short of a fifth of the way, back)
+  assert_eq(tape_pulled_lifted(-30.0, 2, @ui.input_step_ms * 3.0), @sfdesk.TapePane::Side)
+}
+
+///|
+/// On the tape with touch the chat's page in use, its side panel open (its way over from the page 550 and more), a
+/// finger dragged slowly from the middle of the page `dx` across, 2 a move, held still there a while and let go.
+fn tape_panel_pulled_slowly(dx : Double) -> @sfdesk.TapePane raise {
+  let t = tape_chat(2, 720.0, 840.0, width="medium", height="medium")
+  page_over(t, 720.0)
+  tap_said(t, "打开侧栏")
+  t.leave()
+  t.run_for(@ui.move_most_ms)
+  @sfdesk.bring_page()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  let steps = (dx.abs() / 2.0).to_int()
+  t.touch(0, 400.0, 400.0)
+  for i in 1..=steps {
+    t.advance(@ui.input_step_ms)
+    t.touch(1, 400.0 + dx * i.to_double() / steps.to_double(), 400.0)
+  }
+  t.advance(@ui.input_step_ms * 6.0)
+  t.touch(2, 400.0 + dx, 400.0)
+  t.run_for(@ui.move_most_ms)
+  @sfdesk.wide.tape_at.get()
+}
+
+///|
+test "on the tape the side panel pulled over from the page slowly: past tape_pull_far of its long way over it comes, short of it back" {
+  // (taken past the slop, 80 of it in the hand)
+  assert_eq(tape_panel_pulled_slowly(-90.0), @sfdesk.TapePane::Panel)
+  assert_eq(tape_panel_pulled_slowly(-60.0), @sfdesk.TapePane::Page)
 }
 
 ///|

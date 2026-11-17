@@ -6,8 +6,17 @@
 /// now, the caption's size, medium, muted, on one line: as high as their line where the system's size of words draws
 /// it higher than 18 (box_at).
 #callsite(autofill(loc))
-pub fn tag_node(tag : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
+pub fn tag_node(
+  tag : @view.View,
+  words : () -> String,
+  lead? : (@view.View) -> Unit,
+  loc~ : SourceLoc,
+) -> Unit {
   style_node(tag, fn() { box_at(tag_kept, tag_box, tag_h, tag_words, tag.words_scale()) }, loc~)
+  match lead {
+    Some(f) => f(tag)
+    None => ()
+  }
   words_node(tag, words, fn() { tag_words }, loc~) |> ignore
 }
 
@@ -18,7 +27,7 @@ let tag_h : Double = 18.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tag_box : @ui.Style = @ui.css("row h=S4_5 px=S1 gap=SPx align=ACenter radius=Base bg=Hover")
+let tag_box : @ui.Style = @ui.css("row h=S4_5 px=S1 gap=S1 align=ACenter radius=Base bg=Hover")
 
 ///|
 // kept across runs: a value (no field of it changes)

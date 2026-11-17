@@ -27,7 +27,9 @@ pub using @text {
 }
 
 ///|
-/// A paragraph as its node keeps it: its runs and its own look.
+/// A paragraph as its node keeps it: its runs and its own look (each of it what it is laid out by: layout_rich keeps a
+/// layout for a paragraph the same in all of it).
+#derive(Eq)
 priv struct Rich {
   runs : Array[Run]
   size : Double
@@ -302,7 +304,193 @@ fn torn_outline(w : Double, h : Double, corner : Double, from : Bool, on : Bool)
 }
 
 ///|
+/// Paragraph `r` laid out in `max_w`: as it was where it was laid out before the same, at the same scale, its lines set
+/// the same way and its faces measured the same (rich_kept), in a width that gives it the same lines; else what any
+/// width shares of it as it was (its text, where it breaks, its bidi levels), laid out in this one.
 fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
+  let k = rich_kept_of(r)
+  // (greedy wrapping gives the same lines in any width from the widest line up to the one they were made in, a label
+  // kept whole in it too: what is not wrapped, in any)
+  for i, e in k.lays {
+    let (made, lay) = e
+    if !r.wrap || (lay.w <= max_w + 0.01 && max_w <= made) {
+      if i > 0 {
+        k.lays.remove(i) |> ignore
+        k.lays.insert(0, e)
+      }
+      return lay
+    }
+  }
+  let lay = rich_lines(r, k.prep, max_w)
+  k.lays.insert(0, (max_w, lay))
+  if k.lays.length() > rich_lays_most {
+    k.lays.pop() |> ignore
+  }
+  lay
+}
+
+///|
+/// What is kept of paragraph `r` as it is laid out now (layout_rich's: at the scale, the lines' way and the faces
+/// measured in now), made as it is first asked for, said used this frame.
+fn rich_kept_of(r : Rich) -> RichKept {
+  let sc = g().scale
+  let web = web_lines.val
+  let gen = text_cache.generation
+  let key = rich_key(r)
+  let k = match rich_kept.get(key) {
+    Some(k) if k.sc == sc && k.web == web && k.gen == gen && k.r == r => k
+    _ => {
+      if !rich_kept.contains(key) && rich_kept.length() >= rich_kept_most {
+        rich_kept_thin()
+      }
+      // (its runs as they are now: what it was given may be changed in place after)
+      let k = { r: { ..r, runs: r.runs.copy() }, sc, web, gen, prep: rich_prep(r), lays: [], used: 0 }
+      rich_kept[key] = k
+      k
+    }
+  }
+  k.used = text_cache.frame
+  k
+}
+
+///|
+/// How narrow paragraph `r` may be laid out wrapped: the widest of what lies between two places its lines may break
+/// (UAX #14, as rich_lines breaks them), the blanks a piece ends in left out: a browser's min-content.
+fn rich_least_w(r : Rich) -> Double {
+  let p = rich_kept_of(r).prep
+  let n = p.starts.length()
+  let mut widest = 0.0
+  let mut w = 0.0
+  // (the piece so far without the blanks it ends in)
+  let mut inked = 0.0
+  for i in 0..<n {
+    if i > 0 && p.brk[i] != 0 {
+      widest = dmax(widest, inked)
+      w = 0.0
+      inked = 0.0
+    }
+    w = w + p.adv[i]
+    if p.cu[i] != 32 && !is_nl(p.cu[i]) {
+      inked = w
+    }
+  }
+  dmax(widest, inked)
+}
+
+///|
+/// What of a paragraph is the same in whatever width it is laid out in: its runs' clusters and metrics end to end, its
+/// text, where UAX #14 lets its lines break, its bidirectional levels (UAX #9, None: all left to right).
+priv struct RichPrep {
+  text : String
+  run_start : Array[Int]
+  run_c0 : Array[Int]
+  run_c1 : Array[Int]
+  run_size : Array[Double]
+  run_a : Array[Double]
+  run_d : Array[Double]
+  run_lasc : Array[Double]
+  run_ldesc : Array[Double]
+  drawings : Array[InlineDrawing?]
+  starts : Array[Int]
+  lens : Array[Int]
+  adv : Array[Double]
+  pre : Array[Double]
+  keys : Array[Int]
+  cu : Array[Int]
+  brk : Array[Int]
+  run_of : Array[Int]
+  len : Int
+  base_asc : Double
+  base_desc : Double
+  extra : Double
+  bidi : @text.Bidi?
+}
+
+///|
+/// A paragraph laid out before (layout_rich), as it was given then (`r`, at the scale, the lines' way and the faces
+/// measured in then), what of it any width shares, the layouts made of it (the latest asked first, each with the width
+/// it was made in) and the last frame that asked for it.
+priv struct RichKept {
+  r : Rich
+  sc : Double
+  web : Bool
+  gen : Int
+  prep : RichPrep
+  lays : Array[(Double, RichLayout)]
+  mut used : Int
+}
+
+///|
+/// The paragraphs laid out, by rich_key: a frame measures a node's paragraph as the tree is laid out and lays it out
+/// again to draw it (view_runs_measure_set, view_runs_laid), in a width or two, frame after frame; each of those after
+/// the first is what it was. Kept till they come to rich_kept_most, then those the frame did not ask for let go.
+// put back as a Tester begins (its shapes and their glyphs' keys another run's)
+let rich_kept : Map[Int64, RichKept] = Map([])
+
+///|
+let rich_kept_most : Int = 1024
+
+///|
+let rich_lays_most : Int = 3
+
+///|
+/// What tells a paragraph from others (rich_kept's key; its whole compared as it is found).
+fn rich_key(r : Rich) -> Int64 {
+  let mix = fn(h : Int64, v : Int64) { h * 1099511628211L + v }
+  let mut h = r.size.reinterpret_as_int64()
+  h = mix(h, r.weight.to_int64())
+  h = mix(h, r.line.reinterpret_as_int64())
+  h = mix(h, if r.wrap { 1L } else { 0L })
+  h = mix(h, r.spacing.reinterpret_as_int64())
+  h = mix(h, r.faces.to_int64())
+  h = mix(h, r.shaped_in.to_int64())
+  for run in r.runs {
+    h = mix(h, stable_hash(run.text))
+    h = mix(h, run.weight.to_int64())
+    h = mix(h, run.scale.reinterpret_as_int64())
+  }
+  h
+}
+
+///|
+/// What the frame did not ask for of the paragraphs laid out let go; all of them where it asked for each.
+fn rich_kept_thin() -> Unit {
+  let now = text_cache.frame
+  let old = []
+  for key, k in rich_kept {
+    if k.used != now {
+      old.push(key)
+    }
+  }
+  if old.length() == 0 {
+    rich_kept.clear()
+  }
+  for key in old {
+    rich_kept.remove(key)
+  }
+}
+
+///|
+/// Whether run `run` of paragraph `r` (in `style`, its r.run_style) is words that an eighth of an em parts from the
+/// words of the run beside it where a Han character or kana meets a Latin letter or a digit, as words_spaced_in parts
+/// them within one run: not a drawing, not code or on a ground of its own (its room round it parts it already), not in
+/// the code face (a grid), and not where nobody spaces words (@hostapi.words_spaced_none). Where the host's shaper
+/// spaces them (@hostapi.words_spaced_by_host) it does so only within what it is given, one run.
+fn rich_spaced_run(r : Rich, run : Run, style : Int) -> Bool {
+  run.drawing is None &&
+  !run.code &&
+  run.ground is None &&
+  r.run_bg(run) == 0L &&
+  (style & @hostapi.style_mono) == 0 &&
+  @hostapi.face_of_style(style) != @hostapi.face_code &&
+  spaced_now() != @hostapi.words_spaced_none
+}
+
+///|
+/// What of paragraph `r` any width shares (RichPrep).
+/// (`one`: a paragraph of one run of words made as rich_prep_one makes it; false only in a test, which holds the two the
+/// same)
+fn rich_prep(r : Rich, one? : Bool = true) -> RichPrep {
   let sc = g().scale
   let (_, _, own0) = font_metrics(r.size, r.weight)
   // Chinese in it: measured by the CJK font's too (taller), as Android measures a line by the fonts it draws in (as a
@@ -313,6 +501,12 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
   let px = whole_pixel_lines(r.size, r.weight)
   let (pitch0, base_asc, extra) = set_line(lh, a0, d0, sc, px, trim=r.trim)
   let base_desc = pitch0 - base_asc
+  // one run of words (a paragraph, a heading, an item, most of what a chat's message is made of): its clusters, their
+  // breaks and its levels are its shape's, as they are (nothing laid out of a paragraph writes in them), not copied
+  // out and worked out again of the same words
+  if one && r.runs.length() == 1 && r.runs[0].drawing is None {
+    return rich_prep_one(r, r.runs[0], lh, sc, px, base_asc, base_desc, extra)
+  }
   let sb = StringBuilder()
   let run_start = []
   let run_c0 = []
@@ -331,6 +525,10 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
   let cu = []
   let run_of = []
   let mut off = 0
+  // the last cluster of the run of words before (its index, its first code unit, the run's size), where an eighth of
+  // an em may part it from this run's first (rich_spaced_run): each run is shaped on its own, so neither the host's
+  // shaper nor words_spaced_in sees where two runs meet
+  let mut spaced_before : (Int, Int, Double)? = None
   for k, run in r.runs {
     let size = r.run_size(run)
     match run.drawing {
@@ -359,6 +557,7 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
           paths: d.paths.map(fn(path) { path.map(fn(p) { (p.0.map(fn(v) { v * size }), p.1) }) }),
           words: d.words.map(fn(w) { (w.0, w.1 * size, w.2 * size, w.3 * size) }),
         } : InlineDrawing)))
+        spaced_before = None
         continue
       }
       None => drawings.push(None)
@@ -377,6 +576,14 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     run_c0.push(starts.length())
     let n = s.starts.length()
     let (room, after) = r.run_room(run, size)
+    let spaced = rich_spaced_run(r, run, style)
+    if spaced && n > 0 {
+      match spaced_before {
+        Some((c, before, before_size)) if spaced_pair(before, s.cu[0]) =>
+          adv[c] = adv[c] + before_size * 0.125
+        _ => ()
+      }
+    }
     for i in 0..<n {
       starts.push(s.starts[i] + off)
       lens.push(s.lens[i])
@@ -395,6 +602,9 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
       cu.push(s.cu[i])
       run_of.push(k)
     }
+    if n > 0 {
+      spaced_before = if spaced { Some((starts.length() - 1, s.cu[n - 1], size)) } else { None }
+    }
     run_c1.push(starts.length())
     sb.write_string(run.text)
     off = off + run.text.length()
@@ -409,6 +619,121 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     }
   }
   // a label (a run on a ground of its own shape) is one thing, as CSS's inline-block is: a line breaks before it
+  // (right to left: each line's clusters put in their visual order, rich_lines)
+  let bd = @text.bidi_mixed(text)
+  {
+    text,
+    run_start,
+    run_c0,
+    run_c1,
+    run_size,
+    run_a,
+    run_d,
+    run_lasc,
+    run_ldesc,
+    drawings,
+    starts,
+    lens,
+    adv,
+    pre,
+    keys,
+    cu,
+    brk,
+    run_of,
+    len: off,
+    base_asc,
+    base_desc,
+    extra,
+    bidi: bd,
+  }
+}
+
+///|
+/// rich_prep of a paragraph of one run, `run`, of words: what it is the same as rich_prep's loop makes of it (its
+/// shape's clusters, the room round it on its first and last, its shape's breaks and levels), the shape's arrays taken
+/// as they are where nothing is added to them.
+fn rich_prep_one(
+  r : Rich,
+  run : Run,
+  lh : Double,
+  sc : Double,
+  px : Bool,
+  base_asc : Double,
+  base_desc : Double,
+  extra : Double,
+) -> RichPrep {
+  let size = r.run_size(run)
+  let weight = r.run_weight(run)
+  let style = r.run_style(run)
+  let s = shape(run.text, size, weight, style~, spacing=r.spacing)
+  let (a, d) = line_metrics(size, weight, words_cjk(run.text), style~)
+  let (l, lasc, _) = set_line(lh * size / r.size, a, d, sc, px)
+  let n = s.starts.length()
+  let (room, after) = r.run_room(run, size)
+  let (adv, pre) = if room == 0.0 && after == 0.0 {
+    (s.adv, Array::make(n, s.pad))
+  } else {
+    let adv = s.adv.copy()
+    let pre = Array::make(n, s.pad)
+    if n > 0 {
+      adv[0] = adv[0] + room
+      pre[0] = pre[0] + room
+      adv[n - 1] = adv[n - 1] + room + after
+    }
+    (adv, pre)
+  }
+  {
+    text: run.text,
+    run_start: [0],
+    run_c0: [0],
+    run_c1: [n],
+    run_size: [size],
+    run_a: [a],
+    run_d: [d],
+    run_lasc: [lasc],
+    run_ldesc: [l - lasc],
+    drawings: [None],
+    starts: s.starts,
+    lens: s.lens,
+    adv,
+    pre,
+    keys: s.keys,
+    cu: s.cu,
+    brk: s.brk,
+    run_of: Array::make(n, 0),
+    len: run.text.length(),
+    base_asc,
+    base_desc,
+    extra,
+    bidi: s.bidi,
+  }
+}
+
+///|
+/// Paragraph `r` (what any width shares of it: `p`) laid out in `max_w`.
+fn rich_lines(r : Rich, p : RichPrep, max_w : Double) -> RichLayout {
+  let text = p.text
+  let run_start = p.run_start
+  let run_c0 = p.run_c0
+  let run_c1 = p.run_c1
+  let run_size = p.run_size
+  let run_a = p.run_a
+  let run_d = p.run_d
+  let run_lasc = p.run_lasc
+  let run_ldesc = p.run_ldesc
+  let drawings = p.drawings
+  let starts = p.starts
+  let lens = p.lens
+  let adv = p.adv
+  let pre = p.pre
+  let keys = p.keys
+  let cu = p.cu
+  let brk = p.brk
+  let run_of = p.run_of
+  let base_asc = p.base_asc
+  let base_desc = p.base_desc
+  let extra = p.extra
+  let n = starts.length()
   // rather than within it, unless it is wider than a whole line; each cluster in one kept whole: where it starts
   let whole = Array::make(n, -1)
   if r.wrap {
@@ -462,7 +787,7 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     line_h: [],
     line_base: [],
     lv: [],
-    len: off,
+    len: p.len,
     w: 0.0,
     h: 0.0,
   }
@@ -521,19 +846,22 @@ fn layout_rich(r : Rich, max_w : Double) -> RichLayout {
     finish(ls, n)
   }
   // right to left: each line's clusters in their visual order
-  let bd = @text.Bidi::new(text)
-  if bd.is_mixed() {
-    for _ in 0..<n {
-      lay.lv.push(0)
-    }
-    for l in 0..<line_start.length() {
-      let a = line_start[l]
-      let mut e = line_end[l]
-      while e > a && (cu[e - 1] == 32 || is_nl(cu[e - 1])) {
-        e = e - 1
+  // right to left: each line's clusters in their visual order
+  match p.bidi {
+    Some(bd) => {
+      for _ in 0..<n {
+        lay.lv.push(0)
       }
-      bidi_line(bd, starts, lens, adv, xs, lay.lv, a, e, 0.0)
+      for l in 0..<line_start.length() {
+        let a = line_start[l]
+        let mut e = line_end[l]
+        while e > a && (cu[e - 1] == 32 || is_nl(cu[e - 1])) {
+          e = e - 1
+        }
+        bidi_line(bd, starts, lens, adv, xs, lay.lv, a, e, 0.0)
+      }
     }
+    None => ()
   }
   // each line as high as its tallest run needs, its baseline shared
   let mut y = 0.0
@@ -1289,7 +1617,7 @@ fn Ctx::emit_rich_glyphs(
   alpha : Double,
   cy0 : Double,
   cy1 : Double,
-  unplaced? : Array[(Int, Double, Double, Double, Double, Double)],
+  unplaced? : Array[UnplacedGlyph],
   center_in? : Double = -1.0,
 ) -> Unit {
   let sc = self.scale
@@ -1322,7 +1650,7 @@ fn Ctx::emit_rich_glyphs(
           for path in d.paths { self.emit_shape(x, y, path, true, 0.0, false, color, alpha) }
           for word in d.words {
             let tl = layout_text(word.0, word.3, 400, 100000.0, false, style=@hostapi.style_serif)
-            self.emit_text(tl, x + word.1, y + word.2 - tl.ascent, color, alpha, font=(word.3, 400, @hostapi.style_serif, 0.0))
+            self.emit_text(tl, x + word.1, y + word.2 - tl.ascent, color, alpha, font=(word.3, 400, @hostapi.style_serif, 0.0), unplaced?)
           }
         }
         None => ()
@@ -1349,10 +1677,11 @@ fn Ctx::emit_rich_glyphs(
     }
     // (made at the host's pixels a point; in a shot drawn at more, made that much larger and drawn that much smaller:
     // emit_text)
-    let (key, z) = match zoomed {
+    let (base_key, z) = match zoomed {
       Some(big) if big[c] >= 0 => (big[c], zoom)
       _ => (key, 1.0)
     }
+    let key = glyph_sub(base_key, ox + lay.xs[c] + lay.pre[c], sc, z)
     if rec_glyph_early(key, sc / zoom, ox + lay.xs[c], top, ox + lay.xs[c] + lay.adv[c], top + lay.line_h[l]) {
       rec_skip(top, top + lay.line_h[l])
       continue
@@ -1361,7 +1690,7 @@ fn Ctx::emit_rich_glyphs(
     if g.gw <= 0.0 {
       continue
     }
-    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c] + g.ox / z, sc)
+    let gx = glyph_x(ox + lay.xs[c] + lay.pre[c], g.ox / z, sc)
     let gy = glyph_row(oy, lay.line_y[l] + lay.line_base[l], g.oy / z, sc)
     let (gw, gh) = (g.gw / z, g.gh / z)
     // (the uniform scale is about its ink's middle; an extra horizontal scale is about its advance's middle, so a
@@ -1379,7 +1708,18 @@ fn Ctx::emit_rich_glyphs(
     // (where it is before it is set on the pixels, for what places it again elsewhere (view_blit), and what its own
     // look moves it by after that)
     match unplaced {
-      Some(u) => u.push((self.ninst, ox + lay.xs[c] + lay.pre[c] + g.ox / z, top + lay.line_base[l], g.oy / z, gx - set_x, gy - set_y))
+      Some(u) =>
+        u.push({
+          at: self.ninst,
+          x: ox + lay.xs[c] + lay.pre[c],
+          ox: g.ox / z,
+          base: top + lay.line_base[l],
+          oy: g.oy / z,
+          own_x: gx - set_x,
+          own_y: gy - set_y,
+          key: base_key,
+          z,
+        })
       None => ()
     }
     // (its halo's, where its words have one: halo.mbt)

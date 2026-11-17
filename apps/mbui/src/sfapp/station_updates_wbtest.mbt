@@ -40,7 +40,7 @@ test "the stations' newer releases, in a wide window and a phone's: their key sa
     }
     // (but the dialog's own ×, a pixel over the body of a dialog with no line under its title: the presenter's,
     // panel_centred_node.mbt, where its × stands: the presenter's layout, not what this one holds)
-    let faults = added(t.audit()).filter(fn(f) { !f.contains("panel_centred_node.mbt:137") })
+    let faults = added(t.audit()).filter(fn(f) { !f.contains("panel_centred_node.mbt:147") })
     assert_true(faults.is_empty(), msg=at + ": " + faults.join(" | "))
     t.click(Button, label="更新")
     t.frame()

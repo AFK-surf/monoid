@@ -112,7 +112,11 @@ export async function apnsPushAny(keys: ApnsKey[], token: string, sandbox: boole
   const order = [...keys.filter((k) => k.topic === known), ...keys.filter((k) => k.topic !== known)];
   let failed = false, gone = false;
   for (const key of order) {
-    const outcome = await apnsPush(key, token, sandbox, data);
+    // A transport or signing failure for one app must still let the token reach its own app.
+    const outcome = await apnsPush(key, token, sandbox, data).catch((error) => {
+      console.warn(`apns push: ${error}`);
+      return "failed" as const;
+    });
     if (outcome === "sent") return { outcome, app: key.topic };
     if (outcome === "failed") failed = true;
     if (outcome === "gone") gone = true;

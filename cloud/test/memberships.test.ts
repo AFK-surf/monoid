@@ -144,6 +144,7 @@ test("a station joins a second workspace: named there; its home's at the top of 
     assert.deepEqual(both.peers.map((p: any) => p.id), [x.id, y.id]);
     assert.deepEqual(both.workspaces, [{ workspace: lab, workspace_name: "Lab", name: "lab box", peers: [{ id: x.id, name: "lab box", version: "0.5.0" }], revocations: [], lock: null, ways: { relays: ["https://relay-b.example", "https://relay-a.example"], off: [] } }]);
     assert.deepEqual(both.relay_urls, [h.origin, "https://relay-a.example", "https://relay-b.example"], "every workspace's relays, each once");
+    assert.deepEqual(both.stillfail_relays, [h.origin], "still.fail's said apart from the workspaces' own");
     assert.equal((await sy.state())?.workspaces.length ?? 0, 0, "the home's other station hears nothing of the lab");
 
     // Each workspace lists it under its own name; the lab's says it is joined there.
@@ -361,6 +362,26 @@ test("notices and reports are of the workspace the station names, one it is in; 
     assert.equal((await report("k3", other)).status, 403);
     const listed = ((await (await h.as(aliceTokens, "admin")("GET", "/v1/admin/feedback")).json()) as any).feedback;
     assert.deepEqual(listed.map((f: any) => [f.number, f.workspace?.id, f.station?.name]), [[2, lab, "lab box"], [1, home, "willow"]]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a relay a workspace added as its own before it became one of still.fail's is told as still.fail's alone (2026-11-16, 上海 in hypershell-算法)", async () => {
+  const h = await harness();
+  const x = await key();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const ws = await create(alice, "Lab");
+    assert.equal((await alice("PUT", `/v1/workspaces/${ws}/relays`, { relays: ["https://pvg.example:8445"] })).status, 200);
+    assert.equal((await enroll(h, x, await token(alice, ws, "box"))).status, 200);
+    // The operator puts it on the cloud's list (src/relay-registry.ts).
+    const put = await h.fetch("/v1/admin/relays/put", { method: "POST", headers: { authorization: `Bearer ${h.adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ url: "https://pvg.example:8445", name: "上海" }) });
+    assert.equal(put.status, 200);
+    const state = await (await connect(h, x)).state();
+    assert.deepEqual(state.ways.relays, [], "not the workspace's any more");
+    assert.deepEqual(state.stillfail_relays, [h.origin, "https://pvg.example:8445"]);
+    assert.deepEqual(state.relay_urls, [h.origin, "https://pvg.example:8445"], "each once");
   } finally {
     await h.close();
   }

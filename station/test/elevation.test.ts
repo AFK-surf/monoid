@@ -79,62 +79,68 @@ test("the overview says the setting, how it runs and whether its user can be ele
   assert.deepEqual(a.e.view(true), { on: true, elevated: true, canElevate: true, manage: true });
   const b = await station({ admin: false });
   assert.deepEqual(b.e.view(false), { on: false, elevated: false, canElevate: false, manage: false });
-  assert.throws(() => b.e.change(true), { key: "notAdmin" });
+  await assert.rejects(b.e.change(true), { key: "notAdmin" });
   assert.equal(b.shell.ran.length, 0);
 });
 
 test("switched on: Windows asks in a PowerShell of the station's, which a refusal ends with the station as it was", async () => {
   const s = await station({ windows: { task: "apart" } });
-  s.e.change(true);
+  await s.e.change(true);
   assert.equal(s.shell.ran.length, 1);
   assert.match(s.shell.ran[0]!.script, /-Verb RunAs/);
   assert.equal(s.e.view(true).step, "asking");
-  assert.throws(() => s.e.change(false), { key: "busy" }, "one change at a time");
+  await assert.rejects(s.e.change(false), { key: "busy" }, "one change at a time");
   // The scripts it runs elevated name the station's own task (windows.json's).
   const apply = readFileSync(join(s.paths.data, "run", "elevation-apply.ps1"), "utf8");
   assert.match(apply, /Level 'apart' 'Highest'/);
   assert.match(apply, /Register-ScheduledTask -TaskName 'apart elevation'/);
   s.shell.ran[0]!.child.emit("exit", 4);
+  await s.e.settled();
   const v = s.e.view(true);
   assert.equal(v.failed, "declined");
   assert.equal(v.step, undefined);
   assert.equal(v.on, false, "nothing changed");
-  s.e.stop();
+  await s.e.stop();
 });
 
 test("a prompt nobody answers (the secure desktop no remote screen shows) is given up, the station as it was", async () => {
   const c = clock();
   const s = await station({ c });
-  s.e.change(true);
+  await s.e.change(true);
   c.pass(ASK_MS - 1);
+  await s.e.settled();
   assert.equal(s.e.view(true).step, "asking");
   c.pass(1);
   assert.equal(s.shell.ran[0]!.killed, true);
+  await s.e.settled();
   assert.equal(s.e.view(true).failed, "unanswered");
   // Answered after all, late: the elevated side does nothing past the deadline it was given.
   const apply = readFileSync(join(s.paths.data, "run", "elevation-apply.ps1"), "utf8");
   const deadline = Number(/-gt (\d+)\) \{ exit 3 \}/.exec(apply)![1]);
   assert.equal(deadline, c.now());
   assert.ok(apply.indexOf("exit 3") < apply.indexOf("Level 'still.fail station'"), "checked before anything is changed");
-  s.e.stop();
+  await s.e.stop();
 });
 
 test("answered: what the elevated side says is shown; nothing heard from it in a minute, the change is over", async () => {
   const c = clock();
   const s = await station({ c });
-  s.e.change(true);
+  await s.e.change(true);
   s.shell.ran[0]!.child.emit("exit", 0);
   elevated(s.paths.data, "applying");
   c.pass(1000);
+  await s.e.settled();
   assert.equal(s.e.view(true).step, "applying");
   c.pass(60_000);
+  await s.e.settled();
   assert.equal(s.e.view(true).failed, "error");
   // Said restarting: left so for the station that comes up.
   const r = await station({ c });
-  r.e.change(true);
+  await r.e.change(true);
   r.shell.ran[0]!.child.emit("exit", 0);
   elevated(r.paths.data, "restarting");
   c.pass(120_000);
+  await r.e.settled();
   assert.equal(r.e.view(true).step, "restarting");
 });
 
@@ -156,16 +162,16 @@ test("after the restart: running as wanted is done; not, it is said not to have 
 
 test("an elevated station goes back without a prompt, and one already running as wanted is not restarted", async () => {
   const s = await station({ windows: { admin: true }, elevated: true });
-  s.e.change(false);
+  await s.e.change(false);
   assert.doesNotMatch(s.shell.ran[0]!.script, /RunAs/);
   const apply = readFileSync(join(s.paths.data, "run", "elevation-apply.ps1"), "utf8");
   assert.match(apply, /Level 'still\.fail station' 'Limited'/);
   assert.match(apply, /Start-ScheduledTask/);
-  s.e.stop();
+  await s.e.stop();
   const same = await station({ elevated: true });
-  same.e.change(true);
+  await same.e.change(true);
   assert.doesNotMatch(readFileSync(join(same.paths.data, "run", "elevation-apply.ps1"), "utf8"), /Start-ScheduledTask/);
-  same.e.stop();
+  await same.e.stop();
 });
 
 test("the scripts: a refused prompt exits 4; the restart puts the task back when the station does not come up", () => {
@@ -198,5 +204,5 @@ test("PUT /elevation: the workspace's owners and admins only; refused while a ch
   assert.equal(status, 200);
   assert.equal(view.step, "asking");
   assert.equal((await put({ on: false }))[0], 409);
-  s.e.stop();
+  await s.e.stop();
 });

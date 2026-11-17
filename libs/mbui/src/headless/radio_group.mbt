@@ -6,7 +6,8 @@
 // enabled item when none matches `chosen()`. While any item of the group has the keyboard's focus, the arrow keys along
 // `axis` (`Horizontal`: ← and →; `Vertical`: ↑ and ↓; `Both`: all four) step to the enabled item before or after,
 // wrapping around the ends, and Home and End go to the first and the last enabled item, each choosing what it comes to
-// (`choose` told its key when it is not chosen already) and moving visible focus there. Pressing an item (by the
+// (`choose` told its key when it is not chosen already; not with `manual`, where only a press chooses) and moving
+// visible focus there. Pressing an item (by the
 // pointer, by Space or Enter while it has focus, or by a screen reader's Activate) chooses it when it is not chosen
 // already, and does nothing when it already is or while disabled.
 
@@ -122,7 +123,9 @@ let group_key_end : Int = 9
 ///|
 /// A radio group or tab list in `parent`, called `label` (what a screen reader says), `chosen` saying which key `K` is
 /// chosen now and `choose` told the key chosen by a press or an arrow key; `kind` whether it is a `Radio` group or a
-/// `Tab` list; `axis` which arrow keys step along it; `disabled` while the whole group takes no press and no focus.
+/// `Tab` list; `axis` which arrow keys step along it; `disabled` while the whole group takes no press and no focus;
+/// `manual`: the arrow keys and Home and End move the focus alone, what has it chosen by Space or Enter (WAI-ARIA's
+/// tabs with manual activation, kit's tabs' `manual`: a tab whose panel is slow to show).
 /// `look` is given the group's node and the `RadioGroup[K]` with which its items are made (`RadioGroup::item`, directly
 /// or inside `View::each`). The group's node.
 #callsite(autofill(loc))
@@ -138,6 +141,7 @@ pub fn[K : Eq] radio_group(
   selected? : Bool = false,
   in_node? : Bool = false,
   disabled? : () -> Bool = fn() { false },
+  manual? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -202,7 +206,7 @@ pub fn[K : Eq] radio_group(
         Some(j) => {
           let target = live[j]
           let next_key = (target.key)()
-          if next_key != chosen() {
+          if !manual && next_key != chosen() {
             choose(next_key)
           }
           target.node.ask_focus(visible=true) |> ignore

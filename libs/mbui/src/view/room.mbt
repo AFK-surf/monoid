@@ -13,6 +13,8 @@ pub struct Room {
   /// the node it is the room of (View::by_room's own)
   priv at : Int
   priv wide : @signals.Signal[Double]
+  /// how tall it is given to be (Room::height); None till it is first laid out
+  priv high : @signals.Signal[Double?]
   /// what is measured in it, each with how tall it comes to (Room::tall)
   priv measured : Array[(View, @signals.Signal[Double])]
 }
@@ -36,16 +38,22 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
       tree,
       at: x.at,
       wide: @signals.signal(0.0, same=fn(a, b) { a == b }),
+      high: @signals.signal(None, same=fn(a, b) { a == b }),
       measured: [],
     }
     let made = Ref(false)
     let held = x.box(loc~, fn(_) {  })
     n.flex.room = true
-    n.flex.measure = Some(fn(w, wm, _h, _hm) {
+    n.flex.measure = Some(fn(w, wm, h, hm) {
       if wm is Undefined || !held.alive() {
         return (0.0, 0.0)
       }
       let changed = tree.in_room(x.at, fn() {
+        // (its height where it is given one; a measure that asks without one, as a column works out how tall what
+        // it holds would be, leaves the one given last as it was)
+        if hm is Exactly {
+          room.high.set(Some(h))
+        }
         if !made.val {
           made.val = true
           room.wide.set(w)
@@ -66,6 +74,16 @@ pub fn View::by_room(self : View, make : (View, Room) -> Unit, loc~ : SourceLoc)
 /// followed: what reads it made and said again as it comes out otherwise, in that same layout.
 pub fn Room::width(self : Room) -> Double {
   self.wide.get()
+}
+
+///|
+/// How tall it is given to be (the content box of View::by_room's node, as the layout comes to it): what holds it gives
+/// it (grown down a column whose height is known, or said), else as tall as what it holds came to. None till it is
+/// first laid out, then the height given last, followed as the width is. What is made in it by that is laid out in the
+/// same layout. Read only where what holds it gives the height: where it is as tall as what it holds, what it holds
+/// made by it would be made by itself.
+pub fn Room::height(self : Room) -> Double? {
+  self.high.get()
 }
 
 ///|
@@ -138,19 +156,40 @@ fn Room::height_at(self : Room, v : View, w : Double) -> Double {
 /// padding), as each is stretched across what holds it. Measured, as it stands (@flex.measured_height).
 fn Tree::height_in(self : Tree, at : Int, top : Int, w : Double) -> Double {
   let pt = fn(k : Int, x : Double) { if k == @flex.LEN_PT { x } else { 0.0 } }
+  let side = fn(k : Int) {
+    let s = self.nodes[k].flex.style
+    pt(s.margin_left_kind(), s.margin_left_value()) + pt(s.margin_right_kind(), s.margin_right_value())
+  }
   let mut across = 0.0
   let mut i = at
   while i >= 0 && i != top {
     let s = self.nodes[i].flex.style
-    across = across +
-      pt(s.margin_left_kind(), s.margin_left_value()) +
-      pt(s.margin_right_kind(), s.margin_right_value())
+    across = across + side(i)
     if i != at {
       across = across +
         pt(s.padding_left_kind(), s.padding_left_value()) +
         pt(s.padding_right_kind(), s.padding_right_value())
     }
-    i = self.nodes[i].parent
+    // (growing in a row: what the row leaves it beside the others as wide as they are, and its gaps; Tree::width_in's)
+    let p = self.nodes[i].parent
+    if p >= 0 && p != top && !self.nodes[i].slot {
+      let ps = self.nodes[p].flex.style
+      if ps.direction is (Row | RowReverse) && s.grow > 0.0 {
+        let items = self.column_items(p).filter(fn(o) {
+          let os = self.nodes[o].flex.style
+          self.nodes[o].live &&
+          os.display != @flex.Display::DisplayNone &&
+          !(os.position is @flex.PositionType::Absolute)
+        })
+        for o in items {
+          if o != i {
+            across = across + @flex.measured_width(self.nodes[o].flex, 0.0 / 0.0) + side(o)
+          }
+        }
+        across = across + pt(ps.gap_col_kind(), ps.gap_col_value()) * (items.length() - 1).to_double()
+      }
+    }
+    i = p
   }
   @flex.measured_height(self.nodes[at].flex, dmax(0.0, w - across))
 }

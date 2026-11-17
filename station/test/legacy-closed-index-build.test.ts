@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { CLOSED_CARDS_INDEXED, CLOSED_CHAT_SAMPLE, CLOSED_TIME_SAMPLE, LEGACY_CLOSED_CARDS, closedCardsReady, closedCardsStep, hasLegacyClosedCards, installClosedCardsIndex } from "../src/store/legacy-closed-cards.ts";
+import { CLOSED_CARDS_INDEXED, CLOSED_CHAT_SAMPLE, CLOSED_TIME_SAMPLE, LEGACY_CLOSED_CARDS, closedCardsReady, closedCardsStep, hasLegacyClosedCards, installClosedCardsIndex } from "./reference/backfill/legacy-closed-cards.ts";
 
 const schema = `CREATE TABLE closed_cards(thread INTEGER NOT NULL,n INTEGER NOT NULL,viewer TEXT NOT NULL,at INTEGER NOT NULL,
   PRIMARY KEY(thread,n));`;

@@ -53,9 +53,9 @@ pub fn rail_card_node(
           }
         })
         // (its ground the hover's as the hand is on it)
-        .ground(By(fn() { if to() != "" && @sf.lit_node(st) { @sf.theme().p.hover } else { 0L } }))
         .radius(By(fn() { if to() == "" { 0.0 } else { rc_stat_corner() } }))
         |> ignore
+        @sf.hover_ground_node(st, on=fn() { to() != "" })
         @sf.words_node(st, fn() { text(Some(s.get()), "value") }, fn() { rc_value.then(toned(text(Some(s.get()), "tone"))) })
         |> ignore
         @sf.words_node(st, fn() { text(Some(s.get()), "label") }, fn() { rc_label }) |> ignore
@@ -80,6 +80,7 @@ pub fn rail_card_node(
       k
       .presses(Is(true))
       .focusable(Is(true))
+      .focus_ring_theme()
       .says(By(fn() { Some(@view.said(Button, label=label())) }))
       .on_press(fn() {
         match @signals.untracked(ws) {
@@ -87,10 +88,11 @@ pub fn rail_card_node(
           None => ()
         }
       })
-      // (its ground the hover's as the hand is on it: rc_share's hovered; its corner concentric with the card's)
-      .ground(By(fn() { if @sf.lit_node(k) { @sf.theme().p.hover } else { @sf.alpha(@sf.theme().p.text, 0.05) } }))
+      // (its ground the hover's over its base tint as the hand is on it; its corner concentric with the card's)
+      .ground(By(fn() { @sf.alpha(@sf.theme().p.text, 0.05) }))
       .radius(By(fn() { rc_stat_corner() }))
       |> ignore
+      @sf.hover_ground_node(k)
       @sf.icon_node(k, "share", 16.0, By(fn() { @sf.theme().p.text })) |> ignore
       @sf.words_node(k, label, fn() { rc_share_words }) |> ignore
     })

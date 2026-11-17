@@ -46,7 +46,6 @@ fn signed_out_tree(v : @view.View, src : Source) -> Unit {
     if links_wait() {
       c.tell("links", fn() { signed_out_links(src) })
     }
-    sheet_contents(fn(kind) { if kind == InviteLink { invite_sheet(c, src) } })
     @sf.presented(c)
   })
 }
@@ -61,7 +60,6 @@ fn landing_tree(v : @view.View, src : Source) -> Unit {
       @sfpages.no_workspace_node(body, src, fn() { src.topic("workspaces", {}).get().value }, open_invite_link) |> ignore
     },
     fn(c) {
-      sheet_contents(fn(kind) { if kind == InviteLink { invite_sheet(c, src) } })
       @sf.presented(c)
       finger_loupe(c)
     },

@@ -288,10 +288,11 @@ export class ScrcpyStream {
 /// it finds on the network, a phone lent to one chat among them (that chat's server alone has it).
 export const adbEnv = (env: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv => ({ ...env, ADB_MDNS_AUTO_CONNECT: "0" });
 
-/// adb started: a .cmd (a shim) through what runs it, no window on Windows.
-function adbSpawn(path: string, args: string[]): ChildProcessWithoutNullStreams {
-  const env = adbEnv();
-  const r = platform.runnable(path, args, env);
+/// adb started: a .cmd (a shim) through what runs it, no window on Windows. `r`, how it is run: looked for off the main
+/// thread by a caller that can wait (runnableSoon); else here, for what is started where nothing waits (a shell's
+/// stream, the devices' tracking), which reads nothing on Unix and only a shim's file on Windows (adb is found by its
+/// path).
+function adbSpawn(path: string, args: string[], env = adbEnv(), r = platform.runnable(path, args, env)): ChildProcessWithoutNullStreams {
   return spawn(r.file, r.args, { windowsHide: true, windowsVerbatimArguments: r.windowsVerbatimArguments, env });
 }
 
@@ -308,9 +309,10 @@ function adbOf(path: string, serial: string): Adb {
   };
 }
 
-function adbRun(path: string, args: string[]): Promise<string> {
+async function adbRun(path: string, args: string[]): Promise<string> {
+  const env = adbEnv();
+  const child = adbSpawn(path, args, env, await platform.runnableSoon(path, args, env));
   return new Promise((resolve, reject) => {
-    const child = adbSpawn(path, args);
     let out = "", err = "";
     const stop = wall.after(ADB_TIMEOUT, () => child.kill());
     child.stdout.on("data", (d) => (out += d));

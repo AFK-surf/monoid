@@ -12,12 +12,13 @@ import { stationTools } from "./station-tools.ts";
 const SPEAK = ["chat_post", "chat_state", "session_send", "chat_create", "chat_leave", "chat_archive"];
 /// Speaks where its method writes, reads otherwise: a subagent's writes are refused.
 const SPEAKS_IN_WRITES = "slack_api";
-/// These put a card before a person (a request to approve, a sign-in, a login, a retirement's step), close or renew
+/// These put a card before a person (a request to approve, a sign-in, a login, a retirement's step, a whole station's
+/// move: station_move, which also moves one chat or item with no card), close or renew
 /// one, or send a report to the still.fail team: no message of the caller's own in the chat, though a card says its
 /// reason. A subagent is not kept from them; whether it should be is the owner's to decide (not decided, 2026-11-14).
 const ASKS = [
   "secret_use", "secret_save", "secret_describe", "secret_delete", "secret_reask", "secret_cancel", "sign_in", "login", "station_use", "device_use", "phone_use",
-  "station_retire", "feedback_send", "feedback_reply",
+  "station_retire", "station_move", "feedback_send", "feedback_reply",
 ];
 /// These say nothing in any chat: they read, or work on the station, its jobs, its screens, its devices and its other
 /// stations. feishu_api among them: it refuses to send, answer or change a message, and adds only reactions.

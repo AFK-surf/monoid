@@ -544,9 +544,43 @@ function safeHeld(inner: Inner, ws: string): boolean | null {
 /// clock), and as a refusal brings logs and bodies (`heardOut`); written only where it changed.
 function keepSafe(inner: Inner, ws: string): void {
   const on = safeHeld(inner, ws);
+  const { stations, keys } = on === true ? guardHeld(inner, ws) : { stations: [], keys: [] };
   const k = inner.data.record(SAFE, ws);
-  if (isObject(k) && k.on === on) return;
-  inner.data.put(SAFE, ws, { on });
+  if (isObject(k) && k.on === on && equal(k.stations, stations) && equal(k.keys, keys)) return;
+  inner.data.put(SAFE, ws, { on, stations, keys });
+}
+
+/// What the stations' lists say of safe mode kept beside `safeHeld` (`lockSafe`'s `stations` and `keys`): the stations
+/// the state in force names, and the signing keys of its devices not run out, each in order.
+function guardHeld(inner: Inner, ws: string): { stations: string[]; keys: string[] } {
+  const h = held(inner, ws);
+  const force = inForceOf(inner, ws, h?.entries ?? []);
+  if (force.said === "waiting") return { stations: [], keys: [] };
+  const at = now(inner);
+  const keys = [...force.f.devices.values()].flatMap((d) => (live(d, at) !== undefined && typeof d.sign_key === "string" ? [d.sign_key as string] : []));
+  return { stations: [...force.f.stations.keys()].sort(), keys: keys.sort() };
+}
+
+/// Safe mode in `ws` as a station's row and page say it (views.ts `#stationsOf`): null where it is off, or not known
+/// to name its stations yet (kept by a core from before, the state in force not come yet); else whether it names a
+/// station (`protects`) and whether the viewer could protect one from here (`can`: an owner on a device that signs,
+/// as the security page offers 保护, `lock.joinStation`), so one it does not name is offered 加入安全模式 where it is
+/// shown, not only on 设置 › 安全 (the user, 2026-11-15). Read of the few bytes kept (`lockSafe`), never the chain.
+export function stationsGuard(inner: Inner, ws: string): { protects: (id: string) => boolean; can: () => boolean } | null {
+  if (inner.provider.kind !== "stillfail" || !safeMode(inner, ws)) return null;
+  const k = inner.data.record(SAFE, ws);
+  // (kept by a core from before, without them: kept again, in a turn of its own, as `safeMode` keeps it)
+  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+  if (!isObject(k) || !Array.isArray(k.stations) || !Array.isArray(k.keys) || k.stations.length === 0) return null;
+  const named = new Set<unknown>(k.stations);
+  const keys = k.keys as unknown[];
+  // (read only where a station is not named: what the rows read otherwise is what they read before)
+  const can = () => {
+    lockSeen(inner).read("self");
+    const signer = signers.get(inner) ?? null;
+    return signer !== null && keys.includes(signer) && get(view(inner, ws), "role") === "owner";
+  };
+  return { protects: (id) => named.has(id), can };
 }
 
 /// A workspace's name as the person knows it: as its view says, else as the account's list does.

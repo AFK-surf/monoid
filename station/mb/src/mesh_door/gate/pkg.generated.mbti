@@ -1,0 +1,707 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/mesh_door/gate"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/mesh_door/door",
+}
+
+// Values
+pub fn admission(Members, String) -> async (@json.Json, @door.Connection) -> @door.Said
+
+pub let alpn : String
+
+pub async fn answer_asked(Members, @door.Asked, Viewer, @door.Connection) -> Unit
+
+pub async fn answer_bodies(Keeper, @json.Json, String, String?) -> @json.Json
+
+pub async fn answer_given(Members, Viewer, @json.Json, Bytes) -> @door.Answer
+
+pub async fn answer_lock(Keeper, @json.Json, String?, String?) -> @json.Json
+
+pub let answer_ms : Int32
+
+pub async fn answer_person(Keeper, @json.Json, String) -> @json.Json
+
+pub let approvers_most : Int32
+
+pub let aside_most : Int32
+
+pub let at_odds : String
+
+pub fn b64url(String) -> Bytes?
+
+pub async fn bodies_given(Keeper, String, String) -> Array[(String, @json.Json)]
+
+pub let bodies_most : Int32
+
+pub let bodies_offered : Int32
+
+pub async fn bodies_sync_with(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), String, String) -> Unit
+
+pub async fn bodies_taken(Keeper, Viewer, Array[@json.Json]) -> @json.Json
+
+pub fn body_json(Bytes) -> @json.Json?
+
+pub async fn brought(Keeper, @json.Json, String, String?) -> Bool
+
+pub async fn brought_for_state(Keeper, @json.Json, String) -> Bool
+
+pub let brought_most : Int32
+
+pub fn build_of(String?) -> Int32?
+
+pub fn build_said(@json.Json) -> Int32?
+
+pub let bytes_idle_ms : Int32
+
+pub let chain_most : Int32
+
+pub let check_ms : Int32
+
+pub fn claimed(@json.Json) -> String
+
+pub fn claimed_ws(String) -> String
+
+pub let connect_ms : Int32
+
+pub fn core_too_old(Keeper, @json.Json) -> Bool
+
+pub let down_ms : Int32
+
+pub async fn fold_chain(Keeper, @json.Json, String?) -> (String, String)
+
+pub fn follow_lock(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), @effect.Runtime) -> () -> Unit
+
+pub fn follow_persons(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), @effect.Runtime) -> () -> Unit
+
+pub let fork_words : String
+
+pub let forward_idle_ms : Int32
+
+pub async fn gives_device(Keeper, String?, Viewer) -> Bool
+
+pub let gone_code : Int32
+
+pub async fn handled_of(Members, String, String, @json.Json, Bytes, Viewer, (() -> Bool)?) -> (@door.Answer, Array[(String, String)], String, Bool)
+
+pub let head_ms : Int32
+
+pub fn headers_of(@json.Json) -> Array[(String, String)]
+
+pub let heard_ms : Int32
+
+pub async fn heard_waiting(Keeper, @json.Json?) -> Bool
+
+pub let http_hop : Array[String]
+
+pub let http_max_head : Int32
+
+pub fn http_pairs(@json.Json?) -> Array[(String, String)]
+
+pub async fn in_lock(Keeper, Admitted, String, String, hello? : @json.Json) -> Admitted
+
+pub async fn in_lock_bringing(Keeper, Admitted, String, String, @json.Json) -> Admitted
+
+pub async fn joined_of(Keeper, String) -> String?
+
+pub fn js_compare(String, String) -> Int32
+
+pub fn js_length(@json.Json) -> Int32
+
+pub fn js_number(String) -> Double?
+
+pub fn lang_of_core(Array[(String, String)]) -> String
+
+pub async fn left_of(Keeper, String?, String, @json.Json, String) -> @json.Json?
+
+pub async fn left_out_for(Keeper, @json.Json, String, Accepted) -> String?
+
+pub fn left_out_words(String) -> String
+
+pub async fn lock_device_ids(Keeper, String?) -> Array[String]
+
+pub async fn lock_head_json(Keeper, String?) -> @json.Json
+
+pub async fn lock_part_route(Keeper, String, String, Bytes, Viewer) -> (Int32, @json.Json)
+
+pub fn lock_proof(@json.Json?) -> (String, String)?
+
+pub async fn lock_route(Keeper, String, Array[(String, String)], Bytes, Viewer) -> (Int32, @json.Json)
+
+pub fn lower_role(String, String) -> String
+
+pub fn manages_station(String) -> Bool
+
+pub let max_message : Int32
+
+pub let max_refusal : Int32
+
+pub let mesh_wait_ms : Int32
+
+pub async fn moved_floor(Keeper, String) -> Int32?
+
+pub async fn moved_too_old(Keeper, Viewer, Int32?) -> Bool
+
+pub async fn name_of(Keeper, String) -> String
+
+pub let not_given : String
+
+pub async fn offer_off(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), String, String?, (Array[@json.Json], Array[@json.Json])) -> Unit
+
+pub async fn own_chains_of(Keeper, String, String?) -> Array[(String, Array[@json.Json])]
+
+pub fn parent_trace(String?) -> String?
+
+pub fn passed(Array[String]) -> Array[(String, String)]
+
+pub fn paths_of(@door.Connection) -> String
+
+pub let peer_alpn : String
+
+pub let peer_bytes_alpn : String
+
+pub fn peer_call(Keeper, Dialing, @effect.Runtime, outside? : (String, String) -> Bool, answer_wait? : Int32, check_wait? : Int32, heard_wait? : Int32, idle_wait? : Int32) -> StationCall
+
+pub let peer_gone_words : String
+
+pub let peer_http_alpn : String
+
+pub async fn peer_member(Keeper, String, String?) -> String
+
+pub async fn peer_named(Keeper, String) -> (String, String)
+
+pub let peer_stopped_words : String
+
+pub async fn person_device_ids(Keeper, String) -> Array[String]
+
+pub async fn person_sync_with(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), String, String) -> Unit
+
+pub fn query_pairs(String) -> Array[(String, String)]
+
+pub fn raised(@json.Json) -> Error
+
+pub fn read_only(String) -> Bool
+
+pub let read_only_roles : Array[String]
+
+pub fn reads_of(String, String) -> Bool
+
+pub let refusal_entries_bytes : Int32
+
+pub async fn refusal_of(Keeper, @json.Json, String, Error, Accepted, String?) -> @json.Json
+
+pub let refusal_out_bytes : Int32
+
+pub let refusal_person_bytes : Int32
+
+pub fn refused_words(Error) -> String?
+
+pub let retry_most_ms : Int32
+
+pub let retry_ms : Int32
+
+pub fn revoked(Admitted, Array[Revocation]) -> Bool
+
+pub let rig_tells : Array[String]
+
+pub let roles : Array[String]
+
+pub async fn roster(Keeper, String?) -> @json.Json
+
+pub fn route_of(String) -> String
+
+pub async fn saw_build(Keeper, Viewer, @json.Json) -> Int32?
+
+pub let seen_most : Int32
+
+pub let seen_secs : Int64
+
+pub async fn serve(Members, @door.Connection) -> Unit
+
+pub async fn serve_http(Keeper, @door.Connection, HereLocal) -> Unit
+
+pub async fn serve_peer(Keeper, @door.Connection, PeerBus) -> Unit
+
+pub let stalled : String
+
+pub async fn station_marks_route(Keeper, String, Bytes, Viewer, Bool) -> (Int32, @json.Json)
+
+pub async fn still_in(Keeper, Admitted, String, String) -> Admitted
+
+pub let stillfail_credential : Accepted
+
+pub let stopping : String
+
+pub let storm_code : Int32
+
+pub let storm_packets : Int32
+
+pub let storm_seconds : Int32
+
+pub fn sub_of(Array[@json.Json]) -> String?
+
+pub let supersede_ms : Int32
+
+pub async fn sync_with(Keeper, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), String, String?) -> Unit
+
+pub async fn take_chain(Keeper, @json.Json, String?, String?, fork? : Bool) -> (String, ChainTaken)
+
+pub async fn told_out(Keeper, String?, String, @json.Json) -> @json.Json?
+
+pub fn unknown_method(Error) -> Bool
+
+pub let unprotected_words : String
+
+pub fn verify_member(String, @json.Json, String, String, Array[Revocation], Int64, (Bytes, Bytes, Bytes) -> Bool, accepted? : Accepted) -> Admitted raise Refused
+
+pub fn verify_member_of(String, (String) -> @json.Json, Array[Membership], String, Int64, (Bytes, Bytes, Bytes) -> Bool, accepted? : Accepted) -> Admitted raise Refused
+
+pub async fn ways_route(Keeper, String, Bytes, Viewer) -> (Int32, @json.Json)
+
+pub async fn[X] within(Int32, async () -> X, String) -> X
+
+pub fn words_of(Error) -> String
+
+// Errors
+pub(all) suberror DeviceRefused {
+  DeviceRefused(Int32, String)
+}
+
+pub(all) suberror HttpRefusal {
+  HttpRefusal(Int32, String, Bool)
+}
+
+pub(all) suberror LockRefusal {
+  LockRefusal(String)
+}
+
+pub(all) suberror MarkRefusal {
+  MarkRefusal(String)
+}
+
+pub(all) suberror NoBytes {
+  NoBytes(String)
+}
+
+pub(all) suberror NoLink {
+  NoLink(String)
+}
+
+pub(all) suberror PeerGone {
+  PeerGone(String, Bool)
+}
+
+pub(all) suberror PeerRefused {
+  PeerRefused(String)
+}
+
+pub(all) suberror Refused {
+  Refused(String)
+}
+
+pub(all) suberror WaysRefusal {
+  WaysRefusal(String)
+}
+
+// Types and methods
+pub(all) struct Accepted {
+  issuers : Array[String]
+  types : Array[String]
+}
+
+pub(all) struct AdminAsk {
+  verb : String
+  path : String
+  query : Array[(String, String)]
+  search : String
+  headers : Array[(String, String)]
+  body : Bytes
+  viewer : Viewer
+  lang : String
+  aborted : (() -> Bool)?
+}
+
+pub(all) struct Admitted {
+  viewer : Viewer
+  exp : Int64
+  iat : Int64
+  sid : String
+}
+pub fn Admitted::from_json(@json.Json) -> Self
+pub fn Admitted::to_json(Self) -> @json.Json
+
+pub(all) struct Body {
+  next : async () -> Bytes?
+  stop : async () -> Unit
+  check : (() -> Unit raise)?
+}
+
+pub(all) struct ChainTaken {
+  taken : Int32
+  chain : Array[@json.Json]
+  on : Bool
+  off : Array[@json.Json]
+}
+
+pub(all) struct DeviceTarget {
+  id : String
+  name : String
+  here : (async () -> Socket)?
+  admit : (async (Array[Int32]) -> String?)?
+}
+
+pub(all) struct Dialing {
+  connect : async (String, String?, @effect.Deferred[Unit]) -> @door.Connection
+  hold : (async (String) -> Unit)?
+  goes_off : ((@door.Connection, String, String?) -> Bool)?
+  relays_changed : ((() -> Unit) -> (() -> Unit))?
+}
+
+pub(all) struct Floors {
+  oldest_core : Int32
+  counted_from : Int32
+  moved_from : Int32
+  root_out_from : Int32
+  logs_before : Int32
+  logs_any_from : Int32
+}
+
+pub struct Forwards {
+  // private fields
+}
+pub fn Forwards::close(Self) -> Unit
+pub fn Forwards::close_device(Self, String?, String?, String) -> Unit
+pub fn Forwards::close_session(Self, String) -> Unit
+pub fn Forwards::count(Self, session? : String) -> Int32
+pub fn Forwards::forwarded(Self, Int32) -> Bool
+pub fn Forwards::job_changed(Self, String) -> Unit
+pub async fn Forwards::list(Self, String) -> Array[@json.Json]
+pub fn Forwards::new(@effect.Runtime, () -> Tunnels?, async (String) -> (String, String), Sockets, job? : (String) -> JobState?, idle_ms? : Int32, down_wait? : Int32) -> Self
+pub async fn Forwards::open(Self, String, String, Int32, local? : Int32, job? : String) -> @json.Json
+pub async fn Forwards::open_device(Self, String, String, DeviceTarget, Bool) -> @json.Json
+pub fn Forwards::remove(Self, String, Int32) -> @json.Json raise
+
+pub(all) struct HereLocal {
+  reach : (async (Int32) -> (async (@door.Stream, Bytes) -> Unit))?
+  own : (Int32) -> Bool
+  forwarded : ((Int32) -> Bool)?
+  allowed : ((String, String) -> String?)?
+  device : (async (String, String, String, String, Bool) -> (async (@door.Stream, Bytes) -> Unit)?)?
+  proxy : async (String, Array[(String, String)], Body?, Int32, String) -> (Int32, Array[(String, String)], Body)
+  socket : async (Array[(String, String)], Int32, String, @door.Stream, Bytes) -> Unit raise HttpRefusal
+}
+
+type Incoming
+
+pub(all) struct JobState {
+  session : String
+  state : String
+  port : Int32?
+}
+
+pub(all) struct Keeper {
+  now_secs : () -> Int64
+  floors : Floors
+  verify : (Bytes, Bytes, Bytes) -> Bool
+  listen : (() -> Unit) -> () -> Unit
+  persons_listen : (() -> Unit) -> () -> Unit
+  home : async () -> String?
+  removed : async () -> Bool
+  station : async () -> String
+  name : async () -> String
+  membership : async (String) -> (String, Array[Revocation])?
+  memberships : async () -> Array[Membership]
+  grant_keys : async (String?) -> @json.Json
+  state_grant_keys : async () -> @json.Json
+  joined_revocations : async (String) -> Array[Revocation]
+  accepted : async () -> Accepted
+  left_out : async (String) -> String?
+  chain : async (String?) -> (Bool, LockState?)
+  locked : async (String?) -> Locked?
+  list : async (String?) -> Locked?
+  root_out : async (String?) -> Bool
+  needs : async (String?) -> Int32
+  take_lock : async (Array[@json.Json], String?) -> Int32
+  keep_lock : async (Array[@json.Json], String?, Bool) -> Kept
+  lock_after : async (Int32, String?) -> Array[@json.Json]
+  take_bodies : async (String?, Array[@json.Json]) -> (Int32, Array[@json.Json])
+  bodies : async (String?) -> Array[(String, @json.Json)]
+  lacking : async (String?) -> @json.Json
+  logs_of : async (String?) -> Array[String]
+  given_to : async (String?, String) -> Array[String]?
+  pin_brought : async (String?, String, Array[@json.Json], @json.Json, @json.Json, Who, String) -> Unit
+  person_of : async (String) -> Array[(String, Array[@json.Json])]
+  person_kept : async (String) -> Array[@json.Json]?
+  person_chosen : async (String, String, Array[@json.Json]) -> Array[@json.Json]
+  person_keep : async (String, Array[@json.Json], String) -> Unit
+  person_take : async (String, String, Array[@json.Json], String?, Bool) -> ChainTaken
+  person_every : async () -> Array[(String, Array[@json.Json])]
+  persons_written : async () -> Unit
+  admit : async (LockState, Who, Int64) -> (LockDevice, String)
+  admit_person : async (LockState, Who, Array[@json.Json]) -> (String, String)
+  person_fold : async (Array[@json.Json], String?) -> (String, Array[String])
+  fold : async (Array[@json.Json], Int64?) -> LockState
+  endpoint_proof : async (String, String, String, String) -> Bool
+  as_entry : async (@json.Json) -> @json.Json?
+  hash_of : async (@json.Json) -> String
+  check_chain : async (@json.Json, String?) -> (String, Array[@json.Json])
+  lock_kept : async (String?) -> Array[@json.Json]
+  lock_off : async (String?) -> (Array[@json.Json], Array[@json.Json])?
+  person_heard_in : async (String) -> Array[(String, Array[@json.Json])]
+  person_all : async (String) -> Array[@json.Json]
+  person_aside_of : async (String) -> Int32
+  force_word : async (String?) -> String
+  peers_current : async () -> Bool
+  has_state : async () -> Bool
+  is_rig : async () -> Bool
+  member_of : async (String) -> @json.Json?
+  members_all : async () -> Array[@json.Json]
+  joined : async () -> Array[@json.Json]
+  unprotected : async (String) -> Array[@json.Json]
+  rig_of : async (String, String?) -> @json.Json?
+  rigs : async (String) -> Array[@json.Json]
+  rigs_named : async (String) -> Array[@json.Json]
+  rig_vouched : async (String, @json.Json) -> Bool
+  moved_offered : async (String) -> Bool
+  waiting : async (String?) -> Bool
+  answer_ways : async (@json.Json, String) -> @json.Json
+  answer_marks : async (@json.Json, String) -> @json.Json
+  pin_moved : async (async (String, String?, @json.Json, Body?) -> (@json.Json, Body?), String, Array[String], String) -> Bool
+  builds_saw : async (String, Int32?, Int64) -> Unit
+  builds_of : async (Array[String]) -> @json.Json
+  seen : SeenDevices
+  ways_view : async (String) -> @json.Json
+  ways_set_relays : async (String, @json.Json, String?) -> @json.Json
+  ways_set_way : async (String, String, Bool) -> @json.Json
+  marks_of : async (String) -> @json.Json
+  marks_change : async (@json.Json, @json.Json) -> @json.Json
+}
+pub fn Keeper::asking(async (String, @json.Json) -> @json.Json, () -> Int64, Floors, (Bytes, Bytes, Bytes) -> Bool, SeenDevices, (() -> Unit) -> () -> Unit, (() -> Unit) -> () -> Unit) -> Self
+
+pub(all) struct Kept {
+  taken : Int32
+  off : Array[@json.Json]
+  refusal : String?
+}
+
+pub(all) struct LocalAnswer {
+  head : (Int32, Array[String]) -> Unit
+  write : async (Bytes) -> Unit
+  end : () -> Unit
+  destroy : () -> Unit
+  gone : () -> Bool
+  sent_head : () -> Bool
+}
+
+pub(all) struct LocalAsk {
+  verb : String
+  path : String
+  raw_headers : Array[String]
+  body : Body?
+}
+
+pub(all) struct LockDevice {
+  id : String
+  sub : String
+  kind : String
+  by : String?
+  sign_key : String?
+}
+
+pub(all) struct LockState {
+  ref_ : @json.Json
+  seq : Int32
+  head : String
+  genesis : String
+  moved : String?
+  devices : Map[String, LockDevice]
+  members : Map[String, String]
+  stations : Array[String]
+  persons : Map[String, String]
+}
+pub fn LockState::from_json(@json.Json) -> Self
+
+pub(all) struct Locked {
+  state : LockState?
+  waiting : Bool
+}
+
+pub(all) struct MemberAsk {
+  conn : @door.Connection
+  viewer : Viewer
+  head : @json.Json
+  stream : @door.Stream
+  reader : @door.Reader
+}
+
+pub(all) struct Members {
+  keeper : Keeper
+  packer : @door.Packer
+  up : () -> Bool
+  admin : async (AdminAsk) -> @door.Answer
+  remember_name : (String, String) -> Unit
+  streams : ((@json.Json) -> (async (MemberAsk) -> Unit)?)?
+  screens : (async (@door.Stream, Bytes, @json.Json, Viewer, () -> Bool) -> Unit)?
+  socket : (async (@door.Stream, @door.Reader, @json.Json, String) -> Unit)?
+  traces : Traces?
+  lan : () -> Array[String]
+  tailnet : () -> Array[String]
+  connected : () -> Unit
+  served : ((Int32, Viewer?, Bool, Int32?) -> Unit)?
+  lang_of : (Array[(String, String)]) -> String
+  update_words : (String) -> String
+}
+
+pub(all) struct Membership {
+  workspace : String
+  revocations : Array[Revocation]
+}
+
+pub struct PeerBus {
+  // private fields
+}
+pub async fn PeerBus::ask(Self, String, @json.Json, bytes? : Body) -> (@json.Json, Body?)
+pub async fn PeerBus::ask_itself(Self, String, @json.Json, bytes? : Body) -> (@json.Json, Body?)
+pub fn PeerBus::attach(Self, async (String, String?, @json.Json, Body?) -> (@json.Json, Body?)) -> Unit
+pub fn PeerBus::came_here(Self, String, workspace? : String?) -> Bool
+pub fn PeerBus::formerly(Self, (String, String?) -> String, String) -> Unit
+pub fn PeerBus::guarded(Self, (String, String, @json.Json) -> Unit raise) -> Unit
+pub async fn PeerBus::handle(Self, String, String, @json.Json, Body?) -> (@json.Json, Body?)
+pub async fn PeerBus::handle_outside(Self, String, @json.Json, Body?, String) -> (@json.Json, Body?)
+pub fn PeerBus::heard(Self, (String) -> Unit) -> Unit
+pub fn PeerBus::hears_outside(Self) -> Bool
+pub fn PeerBus::new(wait_ms? : Int32) -> Self
+pub fn PeerBus::on(Self, Array[String], async (String, @json.Json, Body?, String) -> (@json.Json, Body?)) -> Unit
+pub fn PeerBus::otherwise(Self, async (String, @json.Json, Body?, String) -> (@json.Json, Body?)) -> Unit
+pub fn PeerBus::outside(Self, async (String, @json.Json, Body?, String) -> (@json.Json, Body?)) -> Unit
+pub fn PeerBus::when_attached(Self, () -> Unit) -> Unit
+
+pub struct PeerHttp {
+  // private fields
+}
+pub fn PeerHttp::close(Self) -> Unit
+pub fn PeerHttp::new(Keeper, Dialing, @effect.Runtime, connect_wait? : Int32) -> Self
+pub async fn PeerHttp::request(Self, LocalAsk, LocalAnswer, String, Int32, String) -> Unit
+pub async fn PeerHttp::tunnel(Self, String, @json.Json, probe? : Bool) -> (@door.Stream, Bytes)?
+
+pub(all) struct Revocation {
+  kind : String
+  id : String
+  at : Int64
+}
+
+pub(all) struct Seen {
+  workspace : String
+  sub : String
+  email : String
+  device : String
+  base : String?
+  kind : String?
+  label : String?
+  first_seen : Int64
+  last_seen : Int64
+}
+pub fn Seen::from_json(@json.Json) -> Self?
+pub fn Seen::to_json(Self) -> @json.Json
+
+pub struct SeenDevices {
+  rows : Map[String, Seen]
+  write : (String) -> Unit
+}
+pub fn SeenDevices::all_json(Self) -> @json.Json
+pub fn SeenDevices::new(String?, (String) -> Unit) -> Self
+pub fn SeenDevices::of(Self, String, Int64, String, Bool) -> Array[Seen]
+pub fn SeenDevices::saw(Self, Int64, String, String, String, String, String?, @json.Json) -> Unit
+
+pub(all) struct Server {
+  port : Int32
+  close : () -> Unit
+}
+
+pub(all) struct Socket {
+  remote_port : Int32?
+  abort : () -> Unit
+  destroyed : () -> Bool
+  closed : async () -> Unit
+  pipe : async (@door.Stream, Bytes) -> Unit
+  join : async (Socket) -> Unit
+}
+
+pub(all) struct Sockets {
+  listen : async (Int32, Bool, (Socket) -> Unit) -> Server?
+  holders : async (Int32) -> Array[Int32]
+}
+
+pub(all) struct StationCall {
+  call : async (String, String?, @json.Json, Body?) -> (@json.Json, Body?)
+  arrived : (@door.Connection) -> Unit
+  close : () -> Unit
+}
+
+pub struct Storms {
+  now : () -> Int64
+  watched : Array[Watched]
+}
+pub fn Storms::look(Self) -> Unit
+pub fn Storms::new(() -> Int64) -> Self
+pub fn Storms::size(Self) -> Int32
+pub async fn Storms::start(Self) -> Unit
+pub fn Storms::watch(Self, @door.Connection) -> Unit
+
+pub struct Superseded {
+  open : Map[String, Array[@door.Connection]]
+  within : Int32
+}
+pub async fn Superseded::arrived(Self, @door.Connection) -> Unit
+pub fn Superseded::new(within? : Int32) -> Self
+pub fn Superseded::of(Self, String) -> Int32
+
+pub(all) struct Traces {
+  start : (String?) -> @json.Json?
+  traceparent : (@json.Json) -> String
+  end : (@json.Json, Int64, String, Array[(String, @json.Json)], Bool) -> Unit
+}
+
+pub(all) struct Tunnels {
+  tunnel : async (String, Int32, Bool) -> (@door.Stream, Bytes)?
+  tunnel_device : (async (String, String, String, Bool) -> (@door.Stream, Bytes)?)?
+}
+
+pub(all) struct Viewer {
+  sub : String
+  email : String
+  name : String
+  role : String
+  workspace : String
+  device : String
+  lock_device : (String, String)?
+  home : Bool?
+  lock_id : String?
+}
+pub fn Viewer::from_json(@json.Json) -> Self
+pub fn Viewer::to_json(Self) -> @json.Json
+pub fn Viewer::with_role(Self, String) -> Self
+
+type Watched
+
+pub(all) struct Who {
+  sub : String
+  endpoint : String
+  base : String?
+  proof : String?
+}
+
+// Type aliases
+pub type Inbox = async (String, @json.Json, Body?, String) -> (@json.Json, Body?)
+
+pub type Outside = (String, String) -> Bool
+
+pub type PeerCall = async (String, String?, @json.Json, Body?) -> (@json.Json, Body?)
+
+pub type ToldViewer = (Int32, Viewer?, Bool, Int32?) -> Unit
+
+pub type Verify = (Bytes, Bytes, Bytes) -> Bool
+
+// Traits

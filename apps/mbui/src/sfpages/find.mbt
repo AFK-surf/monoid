@@ -9,6 +9,7 @@
 ///|
 /// What the core found (`chat.find`): the words looked for, the messages that have them (oldest first, each with how
 /// many times), how many of the chat's entries were looked in of how many, and whether that was all of them.
+#derive(Eq)
 pub(all) struct Found {
   words : Array[String]
   hits : Array[(Double, Int)]

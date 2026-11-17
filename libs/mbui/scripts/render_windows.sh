@@ -28,6 +28,8 @@ case "${1:-run}" in
     # loads it before the system's: the pictures drawn by one WARP whatever the runner's image has (an image rolled
     # out to some runners and not others drew the same commit two ways, 39416332991)
     if [ -n "${WARP_DLL:-}" ]; then cp "$WARP_DLL" "$(dirname $EXE)/d3d10warp.dll"; fi
+    # Warm DirectWrite's FontCache service for controls.dl's fonts on a fresh runner VM before comparing runs 1 and 2
+    MBUI_DL="$(cygpath -w "$PWD/$O/controls.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/controls-1.png")" ./$EXE 2> /dev/null
     for n in 1 2; do
       MBUI_DL="$(cygpath -w "$PWD/$O/controls.dl")" MBUI_DL_PNG="$(cygpath -w "$PWD/$O/controls-$n.png")" ./$EXE 2> $O/run-$n.err ||
         { cat $O/run-$n.err; exit 1; }

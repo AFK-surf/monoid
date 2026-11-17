@@ -17,7 +17,9 @@ export type { LinkNet, RequestHead, SocketOut };
 /// `ended`: why the station ended the connection it came on, as it said in closing it (its reason, station/src/mesh/
 /// serve.ts: `lock_unconfirmed`, `credential_revoked`…); null while the connection is open or it went otherwise (a
 /// timeout, the network). None on a wire with no connection of its own.
-export type WireReply = { status: number; headers: [string, string][]; body: Pull<Uint8Array>; via: string | null; relay?: string | null; ended?: () => string | null };
+/// `drop`: the way it came on taken for gone (its stream went silent), what else is open to the station kept where it
+/// answers (`reset` takes the way requests go on now). None on a wire with no connection of its own.
+export type WireReply = { status: number; headers: [string, string][]; body: Pull<Uint8Array>; via: string | null; relay?: string | null; ended?: () => string | null; drop?: () => void };
 
 export function replyHeader(reply: { headers: [string, string][] }, name: string): string | undefined {
   return reply.headers.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
@@ -57,7 +59,8 @@ export type WireSocket = { reply: WireReply; send: SocketOut; tap?: (call: numbe
 export interface StationWire {
   /// `wrote`: how much of the body has gone out, now and then as it goes (a wire that sends it whole says nothing).
   request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<WireReply, CoreError, Scope.Scope>;
-  /// The way to the station is taken for gone: what is open to it closes.
+  /// The way to the station requests go on now is taken for gone: it closes, and requests go on another way open to
+  /// it that answers, where there is one (else all that is open to it closes).
   reset?(station: StationAddr): void;
   /// Whether the wire itself finds another way to a station when the UI comes back.
   races?(): boolean;

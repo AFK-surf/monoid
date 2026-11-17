@@ -7,13 +7,12 @@
 // ops and as a working directory (`protect`); `exec` and `process.*` under `full` run as the station's user and can
 // reach what that user can, which is why they need `full`.
 import { type ChildProcess, execFile } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { appendFile, lstat, mkdir, open, readdir, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, lstat, mkdir, open, readFile, readdir, realpath, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, resolve, sep } from "node:path";
 import { Data, Effect } from "effect";
 import { claudeCredentialsFile, codexAuthFile } from "../agents/machine-logins.ts";
-import { findCommand } from "../updates/runtimes.ts";
+import { findCommandSoon } from "../updates/runtimes.ts";
 import { versionIn } from "../updates/versions.ts";
 import { wall } from "../ops/fibers.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
@@ -108,16 +107,21 @@ const io = <A>(f: () => Promise<A>) =>
     },
   });
 
+/// The POSIX shell a command is run by (platform.posixShellSoon), or the command's failure saying how to get one.
+const shellOf = (env: NodeJS.ProcessEnv) =>
+  Effect.tryPromise({ try: () => platform.posixShellSoon(env), catch: (e) => new ToolError({ code: "failed", message: (e as Error).message }) });
+
 const kindOf = (s: { isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean }) => (s.isFile() ? "file" : s.isDirectory() ? "dir" : s.isSymbolicLink() ? "symlink" : "other");
 
 /// A path as the file system has it: its links followed and each name as it is on disk (a case-insensitive file system
-/// takes `DATA` for `data`), as far as it exists (what is not there yet is under its nearest parent that is).
-function real(path: string): string {
+/// takes `DATA` for `data`), as far as it exists (what is not there yet is under its nearest parent that is). Looked
+/// at off the station's thread.
+async function real(path: string): Promise<string> {
   try {
-    return realpathSync.native(path);
+    return await realpath(path);
   } catch {
     const parent = dirname(path);
-    return parent === path ? path : resolve(real(parent), basename(path));
+    return parent === path ? path : resolve(await real(parent), basename(path));
   }
 }
 
@@ -155,12 +159,17 @@ export class DeviceTools {
   /// name or through a link.
   private allowed(path: string): Effect.Effect<string, ToolError> {
     const asked = pathOf(this.home, path);
-    const found = real(asked);
-    for (const root of this.protect()) {
-      const r = real(root);
-      if (within(asked, root) || within(found, r) || within(asked, r) || within(found, root)) return fail("forbidden", "the station's own data and the machine's logins are not reachable through device tools");
-    }
-    return Effect.succeed(asked);
+    return Effect.flatMap(
+      Effect.promise(async () => {
+        const found = await real(asked);
+        for (const root of this.protect()) {
+          const r = await real(root);
+          if (within(asked, root) || within(found, r) || within(asked, r) || within(found, root)) return false;
+        }
+        return true;
+      }),
+      (ok) => (ok ? Effect.succeed(asked) : fail("forbidden", "the station's own data and the machine's logins are not reachable through device tools")),
+    );
   }
 
   private path(a: Args, k: string) {
@@ -221,10 +230,13 @@ export class DeviceTools {
       if (env === null) return yield* fail("invalid_request", "env must be a map of strings");
       const timeout = Math.min(int(a, "timeout_ms") ?? EXEC_TIMEOUT_MS, EXEC_TIMEOUT_MAX_MS);
       const cwd = yield* self.cwd(a);
+      // Found off the station's thread (on Windows, Git's sh installed since the station started too); none found is
+      // the command's failure, as before.
+      const sh = yield* shellOf(self.env);
       return yield* Effect.callback<{ exit_code: number | null; stdout: string; stderr: string; truncated: boolean; timed_out?: boolean }, ToolError>((resume) => {
         let child: ChildProcess;
         try {
-          child = startCommand(platform.posixShell(self.env), ["-c", command], { cwd, env: { ...self.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+          child = startCommand(sh, ["-c", command], { cwd, env: { ...self.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
         } catch (e) {
           resume(fail("failed", (e as Error).message));
           return;
@@ -339,9 +351,10 @@ export class DeviceTools {
         if (self.processes.size >= MAX_PROCESSES) return yield* fail("too_many_processes", `at most ${MAX_PROCESSES} processes are kept; stop one first`);
       }
       const cwd = yield* self.cwd(a);
+      const sh = yield* shellOf(self.env);
       const id = `p${self.next++}`;
       const child = yield* Effect.try({
-        try: () => startCommand(platform.posixShell(self.env), ["-c", command], { cwd, env: { ...self.env, ...env }, stdio: ["pipe", "pipe", "pipe"] }),
+        try: () => startCommand(sh, ["-c", command], { cwd, env: { ...self.env, ...env }, stdio: ["pipe", "pipe", "pipe"] }),
         catch: (e) => new ToolError({ code: "failed", message: (e as Error).message }),
       });
       const kept: Kept = { id, command, child, startedAt: self.now(), chunks: [], base: 0, total: 0, exited: false, exitCode: null };
@@ -418,13 +431,13 @@ export class DeviceTools {
       const runtimes = [];
       for (const kind of ["claude", "codex"] as const) {
         const env = await withShellCommand(kind, this.env);
-        const found = findCommand(kind, env);
+        const found = await findCommandSoon(kind, env);
         if (found === null) continue;
-        const r = platform.runnable(found.real, ["--version"], env as NodeJS.ProcessEnv);
+        const r = await platform.runnableSoon(found.real, ["--version"], env as NodeJS.ProcessEnv);
         const said = await new Promise<string>((done) =>
           execFile(r.file, r.args, { timeout: 10_000, env: env as NodeJS.ProcessEnv, windowsVerbatimArguments: r.windowsVerbatimArguments }, (_e, out) => done(String(out ?? ""))),
         );
-        runtimes.push({ kind, path: found.onPath, version: versionIn(said), signed_in: signedIn(kind, env) });
+        runtimes.push({ kind, path: found.onPath, version: versionIn(said), signed_in: await signedIn(kind, env) });
       }
       return { runtimes };
     });
@@ -465,12 +478,11 @@ export class DeviceTools {
 }
 
 /// Signed in on this machine, as the runtime keeps it (the machine's own login; profiles keep theirs apart).
-function signedIn(kind: "claude" | "codex", env: Record<string, string | undefined>): boolean {
+async function signedIn(kind: "claude" | "codex", env: Record<string, string | undefined>): Promise<boolean> {
   try {
-    if (kind === "codex") return existsSync(codexAuthFile(env));
+    if (kind === "codex") return await access(codexAuthFile(env)).then(() => true, () => false);
     if (env.ANTHROPIC_API_KEY) return true;
-    const file = claudeCredentialsFile(env);
-    return existsSync(file) && readFileSync(file, "utf8").includes("accessToken");
+    return (await readFile(claudeCredentialsFile(env), "utf8")).includes("accessToken");
   } catch {
     return false;
   }

@@ -167,15 +167,25 @@ pub let wide : Wide = {
 ///|
 /// The archive's list as it is looked at: the words looked for, how many asked for, the last read (shown while
 /// another is asked for); whether the newest was opened beside it since the archive was opened.
+/// What 已归档's list of the sidebar keeps while the app runs (archive_side_node.mbt): the words looked for and how many
+/// are asked (its field's, its foot's), what the core last answered (read by ⌥↑ ⌥↓ as they are pressed: keys.mbt
+/// neighbour) and its note (archive_main_node's), whether its newest was opened beside it since it was last opened.
 pub(all) struct ArchiveSide {
-  mut q : String
-  mut limit : Int
+  q : @signals.Signal[String]
+  limit : @signals.Signal[Int]
   mut last : Json?
+  note : @signals.Signal[String]
   mut landed : Bool
 }
 
 ///|
-pub let archive_side : ArchiveSide = { q: "", limit: archive_side_page, last: None, landed: false }
+pub let archive_side : ArchiveSide = {
+  q: @signals.signal(""),
+  limit: @signals.signal(archive_side_page),
+  last: None,
+  note: @signals.signal(""),
+  landed: false,
+}
 
 ///|
 /// How many the archive's list shows at first, and how many more each time it is scrolled near its end (Archive.tsx
@@ -184,9 +194,10 @@ pub let archive_side_page : Int = 60
 
 ///|
 fn wide_reset() -> Unit {
-  archive_side.q = ""
-  archive_side.limit = archive_side_page
+  archive_side.q.set("")
+  archive_side.limit.set(archive_side_page)
   archive_side.last = None
+  archive_side.note.set("")
   archive_side.landed = false
   wide.side_w.set(side_own)
   wide.folded.set(false)
@@ -197,6 +208,8 @@ fn wide_reset() -> Unit {
   wide.peek_top.set(None)
   wide.side_place = "chats"
   wide.side_key = ""
+  board_frame_src.val = None
+  room_held.val = None
   wide.kept_w.set(0.0)
   wide.kept_folded.set(false)
   wide.in_bar = false
@@ -426,11 +439,11 @@ fn dock_side_at(
   }
   {
     box: (inside + rail, top + f.mt, f.side_w, dock_h),
+    laid_w: f.side_w,
     block: (inside, top + f.mt, dock_w, dock_h),
     // (on the tape, open, a panel of its own: the ground it floats on; else where the move has its ground)
     ground: if wide.tape.get() && !bar { dock_ground(bar) } else { f.ground },
     shadow: (f.blur, f.fall, @sf.alpha(@sf.theme().p.shadow, f.shade)),
-    held_w: f.side_w,
     links,
     round,
     edge: (dock_line, @sf.alpha(@sf.theme().p.line, f.line)),
@@ -444,7 +457,7 @@ fn dock_side_at(
 
 ///|
 /// The block's line as a node in `n` (as large as what holds the block, over it), where `at` says the block is: drawn
-/// after all the block holds, its rail and sidebar the old view's or the tree's (side_node), as an old view's
+/// after all the block holds, its rail and its sidebar (side_node), as an old view's
 /// box's border is drawn over what it holds; the block's own box draws none (dock).
 fn dock_edge_node(n : @view.View, at : () -> SideAt) -> Unit {
   n.box(fn(e) {
@@ -463,19 +476,8 @@ fn dock_edge_node(n : @view.View, at : () -> SideAt) -> Unit {
 /// The block (shell.css.ts dock: the rail and the sidebar on one ground) as nodes in `n` (as large as what holds the
 /// block, over it), where `at` says it is: a node with its ground and its shadow, as round as its corners are
 /// (dock_round_node), holding, cut to it, the rail (`rail`'s nodes: rail_node, as wide as the rail is drawn; none
-/// beside the system's tabs) and the sidebar of a place not made once over the block (side_made: `side`'s old view, as
-/// wide as the sidebar is laid out, built only while what is in it is drawn; `before` built in it first, each build,
-/// whether or not the sidebar is: what the frame works out of the block before its sidebar builds). Its line is drawn
-/// over all it holds by dock_edge_node, its chats' lists by side_node. The sidebar's old view's node (what a list's
-/// thumb of it is shown by: pane_edge).
-fn dock_node(
-  n : @view.View,
-  at : () -> SideAt,
-  rail : (@view.View) -> Unit,
-  side : (@ui.Ctx, Bool) -> Unit,
-  before? : (@ui.Ctx) -> Unit = fn(_) {  },
-) -> @view.View {
-  let held : Ref[@view.View?] = Ref(None)
+/// beside the system's tabs). Its line is drawn over all it holds by dock_edge_node, every place's sidebar by side_node.
+fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> Unit {
   n.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (laid out where the block is, not drawn off where it is laid out: the old views in it laid out where they are
@@ -519,36 +521,10 @@ fn dock_node(
         })
       })
       |> ignore
-      // the sidebar of a place not made once over the block, as wide as it is laid out, beside the rail
-      g.box(fn(s) {
-        s
-        .width(By(fn() { Some(at().held_w) }))
-        .height(By(fn() { Some(at().block.3) }))
-        .shrink(Is(0.0))
-        // (where the rail is drawn narrower than nothing, under the sidebar: from where the sidebar starts)
-        .margin(By(fn() {
-          let a = at()
-          (dmin(0.0, a.box.0 - a.block.0), 0.0, 0.0, 0.0)
-        }))
-        |> ignore
-        held.val = Some(
-          @ui.old(s, fn(c) {
-            before(c)
-            let a = at()
-            if a.shown && !side_made(side_place()) {
-              side(c, a.bar)
-            }
-          }, key=tape_island_key)
-          .over(Is(true))
-          |> @ui.old_takes_own,
-        )
-      })
-      |> ignore
     })
     |> ignore
   })
   |> ignore
-  held.val.unwrap_or(n)
 }
 
 ///|
@@ -569,14 +545,16 @@ let dock_line : Double = 1.0
 /// (x, y, w, h), its corners (linked as its look's are, else one radius: dock_round_node) and its line (how wide, its
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
 /// move has got: fold_bars'), where that move has got between open and the floating bar (the band's), whether the
-/// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour); how wide the
-/// sidebar is laid out in it (its box's, or on the block's way between showing it and not the larger end's: fold_held).
+/// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
 priv struct SideAt {
   box : (Double, Double, Double, Double)
+  /// how wide what the sidebar holds is laid out: `box`'s, but on a move between where it is shown and where it is not
+  /// (pane_side_at's), as wide as where it is shown all the way, `box` only cutting and placing it, so its rows are not
+  /// laid out and their words not measured again at each frame the block folds to its bar or opens from it
+  laid_w : Double
   block : (Double, Double, Double, Double)
   ground : Int64
   shadow : (Double, Double, Int64)
-  held_w : Double
   links : FixedArray[@ui.CornerOf]?
   round : Double
   edge : (Double, Int64)
@@ -592,17 +570,6 @@ priv struct SideAt {
 /// @sf.band_pad_in), else in a side column beside the page.
 fn side_list_at(at : SideAt) -> @sf.ListAt {
   if at.tape {
-    Tape
-  } else {
-    Side
-  }
-}
-
-///|
-/// Where the sidebar's lists stand as the frame draws its old views now: in the tape's side column while the frame is
-/// the tape (wide.tape: laid out Medium, with a sidebar to show), else in a side column beside the page.
-fn side_at() -> @sf.ListAt {
-  if wide.tape.get() {
     Tape
   } else {
     Side
@@ -727,7 +694,7 @@ pub let tape_shows : Double = 56.0
 /// (the user, 2026-10-26: 红绿灯没有一个空位可以放).
 pub fn tape_shows_left() -> Double {
   if @ui.window_keys_left() {
-    dmax(tape_shows, window_buttons_in + window_buttons_w + window_buttons_in)
+    dmax(tape_shows, @ui.window_points_to_content_now(window_buttons_in + window_buttons_w + window_buttons_in))
   } else {
     tape_shows
   }
@@ -909,12 +876,17 @@ pub fn laid_beside(p : Page) -> Bool {
 }
 
 ///|
-/// How much of the way a panel pulled over must have come to be brought over when let go, and how fast a finger
-/// leaving it (px/s) flings it over or back whatever the way it came.
-let tape_pull_over : Double = 0.3
+/// How much of the way a panel pulled over must have come to be brought over when let go (a fifth, as a strip's
+/// step: viewer_tree's strip_step), as far as tape_pull_far at most (a page's way to the side panel is 550-750 wide),
+/// and how fast a finger leaving it (px/s) flings it over or back whatever the way it came (0.4 a ms, as the app's
+/// other swipes).
+let tape_pull_over : Double = 0.2
 
 ///|
-let tape_fling : Double = 900.0
+let tape_pull_far : Double = 72.0
+
+///|
+let tape_fling : Double = 400.0
 
 ///|
 /// How many times further across than up or down a finger on the panel in use has gone to be a swipe to the one beside
@@ -972,9 +944,6 @@ let frame_main : @ui.Style = @ui.css("h=Full clip")
 // kept across runs: a value (no field of it changes)
 let page_aside : @ui.Style = @ui.css("w=Full h=Full")
 
-///|
-// kept across runs: a value (no field of it changes)
-let frame_gate : @ui.Style = @ui.css("bg=Bg")
 
 ///|
 /// A page's bar's padding at its left and its right (styles/sidebar.css.ts pageBar: 12, at its right where the window's
@@ -1037,14 +1006,14 @@ pub let closed_edge : Double = 46.0
 /// Whether the chats' place of workspace `w` has nothing open yet and is still to land on its chat (land: the core's
 /// mark of it not come): what is beside the list is not known till then.
 pub fn landing(w : Workspace) -> Bool {
-  app.nav.depth() == 1 && app.nav.top() == Home && wide.landed.get() != w.id
+  app.nav.depth() == 1 && app.nav.top() == Home && wide.landed.get() != w.id && !board_on_in(w.id)
 }
 
 ///|
 /// The chats' place with nothing open: the chat the core says was open last in this workspace, else a new chat
 /// (once per workspace, so closing the chat goes back to the list on a phone).
 fn land(src : Source, w : Workspace) -> Unit {
-  if app.nav.depth() != 1 || app.nav.top() != Home {
+  if app.nav.depth() != 1 || app.nav.top() != Home || @sfbase.board_on_of(src, w.id) {
     return
   }
   // come back to the chats (a chat closed, settings left): a new chat, as the web's empty place is
@@ -1075,14 +1044,27 @@ fn land_page(ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicStat
 
 ///|
 /// What page `p` of workspace `ws` in the wide frame's pane opens on, asked of `ask` (sfbase's opens_answered): a chat
-/// its view (sfbase's chat_opens), a new chat its stations as read (sfpages' new_chat_opens); any other page nothing
-/// waited for. The pane shows a page come on top once it is answered (sfapp's pane_ready), a workspace switched waits
-/// for the page its pane lands on (frame_opens).
-pub fn pane_opens(ws : String, p : Page, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
+/// its view (sfbase's chat_opens: where what opens waits for what it shows, its draft, stations and jobs' summary too),
+/// a new chat its stations as read (sfpages' new_chat_opens); where what opens waits for what it shows (gates_opens,
+/// MBUI_OPEN_WHOLE), every other page what it reads as it is first drawn (sfbase's page_reads, with the settings' list
+/// beside a settings' page; a place with a list of its own, what is picked in it: place_reads), else nothing waited
+/// for. The pane shows a page come on top once it is answered (sfapp's pane_ready), a workspace switched waits for the
+/// page its pane lands on (frame_opens).
+pub fn pane_opens(
+  src : Source,
+  ws : String,
+  p : Page,
+  ask : (String, Map[String, Json]) -> @sfbase.TopicState,
+) -> Bool {
+  let whole = (src.gates_opens)()
   match p {
-    Chat(r) => @sfbase.chat_opens(r, ask)
+    Chat(r) => @sfbase.chat_opens(r, ask, whole~)
     NewChat => @sfpages.new_chat_opens(ws, ask)
-    _ => true
+    // (every other page, where what opens waits for what it shows: all it reads as it is first drawn, sfbase's
+    // page_reads, the table a press opening it asks by too; a place with a list of its own what is picked in it,
+    // place_reads)
+    Place(name) if whole => @sfbase.reads_told(place_reads(src, ws, name), ask)
+    _ => !whole || @sfbase.reads_told(@sfbase.page_reads(src, ws, p, true), ask)
   }
 }
 
@@ -1093,7 +1075,14 @@ pub fn pane_opens(ws : String, p : Page, ask : (String, Map[String, Json]) -> @s
 /// waits for it (sfapp's tape_shell.mbt: sfbase's workspace_switch_node).
 pub fn frame_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
   // (come back to a workspace landed on last: a new chat, as land has it)
-  let landed : Page? = if wide.landed.get() == ws { Some(NewChat) } else { land_page(ws, ask) }
+  // (the board where the workspace shows it: Home itself, landing nowhere)
+  let landed : Page? = if @sfbase.board_on_of(src, ws) {
+    Some(Home)
+  } else if wide.landed.get() == ws {
+    Some(NewChat)
+  } else {
+    land_page(ws, ask)
+  }
   frame_opens_on(src, ws, landed, ask)
 }
 
@@ -1103,7 +1092,7 @@ pub fn frame_opens(src : Source, ws : String, ask : (String, Map[String, Json]) 
 /// declared), for what waits for the first screen as it is answered, not as a frame lands the pane (sfapp's
 /// first_page_node).
 pub fn landing_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @sfbase.TopicState) -> Bool {
-  frame_opens_on(src, ws, land_page(ws, ask), ask)
+  frame_opens_on(src, ws, if @sfbase.board_on_of(src, ws) { Some(Home) } else { land_page(ws, ask) }, ask)
 }
 
 ///|
@@ -1118,14 +1107,16 @@ pub fn frame_opens_on(
   let rail = rail_opens(ask)
   let side = side_opens(src, ws, ask)
   let pane = match landed {
-    Some(p) => pane_opens(ws, p, ask)
+    Some(p) => pane_opens(src, ws, p, ask)
     // (the marks could not be read: nothing it lands on to wait for)
     None => ask("workspaceMarks", @sfbase.marks_asked()).error is Some(_)
   }
   // (and what the wide frame round them reads as it is first built, asked with it and not waited for: sfbase's
   // shell_opens)
   @sfbase.shell_opens(src, ws, ask) |> ignore
-  rail && side && pane
+  // (the board where the workspace shows it: its chats, all of them, and its stations)
+  let board = @sfbase.board_opens(src, ws, ask)
+  rail && side && pane && board
 }
 
 ///|
@@ -1142,6 +1133,9 @@ fn main_page(
     // an agent's history, asked as a page (a link's `?history=…&entry=…`), and a visualization: never on top here,
     // their chat put in their place with them beside it as they come on top (service_tab.mbt beside_follow)
     History(_, _, _) | PreviewFile(_, _, _, _) => ()
+    // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
+    // (made once: pane_made's, tape_made's service_beside_node)
+    Service(_, _) => ()
     // the chats' list is the sidebar's: nothing open (yet), the page's ground
     Home => ()
     // the settings come to beside their list: its first row's page (settings_frame.mbt settings_landing)
@@ -1149,18 +1143,15 @@ fn main_page(
     Setting(r) => setting_page(c, src, w, r)
     // a place of the rail's other than the chats': its page, under its title
     Place(p) => place_page(c, src, w, p)
-    // 文件: a folder under its bar, as the web's
-    Files => files_home(c, src, w, settings_core(src, w), files_room(c))
-    Drive(at) => files_station(c, src, w, settings_core(src, w), at, files_room(c))
+    // 文件 and a station's drive: made once as nodes (pane_made, tape_made: sfpages' files_page_node.mbt)
+    Files | Drive(_) => ()
     // a new chat (newchat.mbt)
     NewChat => new_chat_page(c, src, w)
     // a station's screen, a drive's text read, a film played are over the whole window (sfapp's signed_in), not in
     // the pane
     Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_) => ()
-    // 已归档, none of its chats open beside the list: what it is
-    Archived => archive_main(c)
-    // a web service: as those above once the station says whose chat runs it; till then nothing, not found said so
-    Service(station, job) => service_beside(c, src, station, job)
+    // 已归档, none of its chats open beside the list: what it is, made once as nodes (pane_made, tape_made)
+    Archived => ()
   }
 }
 

@@ -161,9 +161,9 @@ export function endpoints(source: Source, endpoint: string | undefined, protocol
 }
 
 /// The runtimes a provider's profile can run, from where it speaks: Anthropic's protocol is Claude Code's, Responses
-/// Codex's; DeepSeek Harness speaks all three (chat completions too).
+/// Codex's; DeepSeek Harness and Pi speak all three (chat completions too: both on pi-ai).
 export const runtimesOf = (at: Endpoints): RuntimeKind[] => [
   ...(at.anthropic !== undefined ? (["claude"] as const) : []),
   ...(at.responses !== undefined ? (["codex"] as const) : []),
-  ...(at.chat !== undefined || at.anthropic !== undefined || at.responses !== undefined ? (["dsh"] as const) : []),
+  ...(at.chat !== undefined || at.anthropic !== undefined || at.responses !== undefined ? (["dsh", "pi"] as const) : []),
 ];

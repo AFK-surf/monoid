@@ -71,9 +71,13 @@ priv struct RideKept {
   /// turn (ride_put_out); how many it draws out to
   heads : Bool
   out : Int
-  /// a list drawn whole as one (ListRiding) with what is drawn anew each time it is drawn in it (a picture, one not seen
-  /// asked for): drawn again only by going through it
+  /// a list drawn whole as one (ListRiding) with what is drawn anew each time it is drawn in it and cannot be held to
+  /// what it drew (a field, a native view, a stream): drawn again only by going through it
   anew : Bool
+  /// a list drawn whole as one: its pictures (a picture drawn, one not seen asked for), each where its instances are
+  /// among the list's kept (`at`, `end`): drawn again as kept only where each draws what it drew then
+  /// (Ctx::list_pictures_same); a row's none (its `spots`)
+  pictures : Array[RideSpot]
   /// how many scrims the old frame had as it was drawn (ride_scrims): what of it is said to be drawn over a scrim
   /// (View::over_scrim) is moved after one as it is gone through (raising), never as it is drawn again, so it is drawn
   /// again only under as many (a scrim come or gone: gone through once, kept again after)
@@ -122,6 +126,8 @@ priv struct ListRiding {
   mut anew : Bool
   mut nodes : Int
   kept : Array[Array[(Int, Double, Double)]]
+  /// its pictures as each is drawn (Ctx::ride_spot, or again in a row drawn again), where among the frame's
+  pictures : Array[RideSpot]
 }
 
 ///|
@@ -257,7 +263,8 @@ let ride_groups : Map[Int, RideKept] = Map([])
 
 ///|
 /// The groups made so far: a group's number is never another's, so the same header is never another's instances
-/// (frame_watch.mbt's insts_said, @damage's frames compared).
+/// (frame_watch.mbt's insts_said, @damage's frames compared), whichever window of the run made it (the host keeps one
+/// table of them for all its windows: window_slots.mbt).
 // kept across runs: a group's number is never one a run before had
 let ride_groups_made : Ref[Int] = Ref(0)
 
@@ -436,7 +443,7 @@ fn ride_put_out(
 /// (push_box_clip, clamp_inst_clip: a corner the cut moves square); else its outer. Never the header's as its outer
 /// where it has none: an outer with no corner's radius is none (scene.mbt 40-51), what it cut drawn whole (a row's
 /// words in a round box scrolled past the list's top, over what is above it). As the host draws a header out
-/// (groups.h's mb_groups_draw_out), the same.
+/// (groups.h's mb_groups_floats), the same.
 fn inst_cut_to(s : FixedArray[Double], b : Int, h0 : Double, h1 : Double, h2 : Double, h3 : Double) -> Unit {
   if h0 == 0.0 && h1 == 0.0 && h2 == 0.0 && h3 == 0.0 {
     return
@@ -556,28 +563,39 @@ fn ride_clip_square(c : FixedArray[Double]) -> Bool {
 /// fades), so it moves with them (a field's words fading at its edges, in a list scrolled: drawn where the field was
 /// laid out, faded out wholly where it is drawn, till 2026-11-13).
 fn ride_moves(a : FixedArray[Double], b : Int, e : FixedArray[Double]) -> Int {
+  // (read unchecked, once known to lie in `a`: worked out for each instance of each row and list kept, each frame
+  // one is drawn anew)
+  guard b >= 0 && b + inst_size <= a.length() && e.length() >= 16 else {
+    @halt.saying("ride_moves: an instance past its frame")
+  }
   let mut m = 0
   for j in 0..<4 {
-    if a[b + 16 + j] != e[j] {
+    if a.unsafe_get(b + 16 + j) != e.unsafe_get(j) {
       m = m | (1 << j)
     }
   }
-  let none = a[b + 40] == 0.0 && a[b + 41] == 0.0 && a[b + 42] == 0.0 && a[b + 43] == 0.0
+  let none = a.unsafe_get(b + 40) == 0.0 &&
+    a.unsafe_get(b + 41) == 0.0 &&
+    a.unsafe_get(b + 42) == 0.0 &&
+    a.unsafe_get(b + 43) == 0.0
   // (`e`'s own outer, where it has one: none, every edge of the instance's its own)
-  let e_none = e[12] == 0.0 && e[13] == 0.0 && e[14] == 0.0 && e[15] == 0.0
+  let e_none = e.unsafe_get(12) == 0.0 &&
+    e.unsafe_get(13) == 0.0 &&
+    e.unsafe_get(14) == 0.0 &&
+    e.unsafe_get(15) == 0.0
   if !none {
     for j in 0..<4 {
-      let v = a[b + 40 + j]
-      if v != e[j] && (e_none || v != e[12 + j]) {
+      let v = a.unsafe_get(b + 40 + j)
+      if v != e.unsafe_get(j) && (e_none || v != e.unsafe_get(12 + j)) {
         m = m | (1 << (4 + j))
       }
     }
   }
-  if a[b + 32] != 0.0 {
+  if a.unsafe_get(b + 32) != 0.0 {
     m = m | 256
   }
   for j in 0..<4 {
-    if a[b + 53 + 2 * j] > 0.0 {
+    if a.unsafe_get(b + 53 + 2 * j) > 0.0 {
       m = m | (512 << j)
     }
   }
@@ -740,6 +758,7 @@ fn Ctx::ride_end(self : Ctx) -> Unit {
     heads: false,
     out: n,
     anew: false,
+    pictures: [],
     scrims: ride_scrims(),
   }
   ride_keep(r.id, kept)
@@ -783,7 +802,10 @@ fn ride_node(c : @view.Content, x : Double, y : Double, s : Double, moved_not : 
 
 ///|
 /// Content `c`'s picture drawn here (`seen`), or, one not seen, asked for (Ctx::view_unseen); of the row being drawn,
-/// what it draws anew each time, where it was among its instances kept (no closure made for it: one a node).
+/// what it draws anew each time, where it was among its instances kept (no closure made for it: one a node); of the
+/// list drawn whole as one, one of its pictures (ListRiding's). What is no picture, or is in its bones, draws nothing
+/// here and asks for none (Ctx::view_picture, Ctx::view_unseen): none of the row's nor the list's (a list holding a
+/// node seen through or cut off wholly was drawn anew every frame for it, till 2026-11-15).
 fn Ctx::ride_spot(
   self : Ctx,
   c : @view.Content,
@@ -793,27 +815,32 @@ fn Ctx::ride_spot(
   a : Double,
   seen : Bool,
 ) -> Unit {
-  list_drawn_anew()
-  match riding_now() {
-    Some(r) => {
-      let at = self.ninst
-      let k = clip_top()
-      self.ride_draw(c, x, y, s, a, seen)
-      r.spots.push({
-        at,
-        end: self.ninst,
-        c,
-        x,
-        y,
-        s,
-        a,
-        clip: if seen { Some(ride_clip_at(k)) } else { None },
-        apart: clip_is_apart(k),
-        window: clip_is_window(k),
-      })
-    }
-    None => self.ride_draw(c, x, y, s, a, seen)
+  guard c.image is Some(_) && c.bones == 0L else { return }
+  let riding = riding_now()
+  if riding is None && list_riding.val is None {
+    self.ride_draw(c, x, y, s, a, seen)
+    return
   }
+  let at = self.ninst
+  let k = clip_top()
+  self.ride_draw(c, x, y, s, a, seen)
+  let spot = {
+    at,
+    end: self.ninst,
+    c,
+    x,
+    y,
+    s,
+    a,
+    clip: if seen { Some(ride_clip_at(k)) } else { None },
+    apart: clip_is_apart(k),
+    window: clip_is_window(k),
+  }
+  match riding {
+    Some(r) => r.spots.push(spot)
+    None => ()
+  }
+  list_picture(spot)
 }
 
 ///|
@@ -881,9 +908,6 @@ fn Ctx::ride_kept_for(
 /// so in its place among them.
 fn Ctx::ride_again(self : Ctx, k : RideKept, dx : Double, dy : Double) -> Unit {
   ride_drawn.val = ride_drawn.val + 1
-  if !k.spots.is_empty() {
-    list_drawn_anew()
-  }
   ride_caps.clear()
   self.segs_whole()
   let seg_by = (self.segs.length() / 4 - k.seg0).to_double()
@@ -900,10 +924,13 @@ fn Ctx::ride_again(self : Ctx, k : RideKept, dx : Double, dy : Double) -> Unit {
     match sp.clip {
       None => {
         self.view_unseen(sp.c, sp.s)
+        let drawn = { ..sp, at, end: self.ninst, x: sp.x + dx, y: sp.y + dy }
         match outer {
-          Some(r) => r.spots.push({ ..sp, at, end: self.ninst, x: sp.x + dx, y: sp.y + dy })
+          Some(r) => r.spots.push(drawn)
           None => ()
         }
+        // (of the list drawn whole as one it is in, one of its pictures: ListRiding's)
+        list_picture(drawn)
       }
       Some(cl) => {
         // (the clip it was drawn in, moved where it is the row's own)
@@ -923,17 +950,20 @@ fn Ctx::ride_again(self : Ctx, k : RideKept, dx : Double, dy : Double) -> Unit {
         clip_say_apart(sp.apart)
         clip_say_window(sp.window)
         self.view_picture(sp.c, sp.x + dx, sp.y + dy, sp.s, sp.a)
-        match outer {
-          Some(r) =>
-            r.spots.push({
-              ..sp,
-              at,
-              end: self.ninst,
-              x: sp.x + dx,
-              y: sp.y + dy,
-              clip: Some(ride_clip_at(clip_top())),
-            })
-          None => ()
+        if outer is Some(_) || list_riding.val is Some(_) {
+          let drawn = {
+            ..sp,
+            at,
+            end: self.ninst,
+            x: sp.x + dx,
+            y: sp.y + dy,
+            clip: Some(ride_clip_at(clip_top())),
+          }
+          match outer {
+            Some(r) => r.spots.push(drawn)
+            None => ()
+          }
+          list_picture(drawn)
         }
         pop_clip()
       }
@@ -1032,7 +1062,7 @@ let ride_head_blank : FixedArray[Double] = FixedArray::make(inst_size, 0.0)
 ///|
 /// Row kept `k`'s instances from `i0`, `n` of them, written into `s` from instance `at`, moved by (dx, dy), their
 /// shapes' pieces `seg_by` on, cut to (h0, h1, h2, h3) as well (none: all 0; inst_cut_to): what a header of its group
-/// stands for (the host's mb_groups_draw_out, groups.h).
+/// stands for (the host's mb_groups_floats, groups.h).
 fn ride_put(
   k : RideKept,
   i0 : Int,
@@ -1113,9 +1143,11 @@ fn ride_spoil() -> Unit {
 /// Whether node `c`, not a list's row, is begun to be kept with what it holds as it is drawn (Riding's `holder`), at
 /// (x, y) as opaque as `a`, as of the count of changes `rev` it is drawn at: gone through to paint it ride_holder_after
 /// times running with nothing of it changed, where it was and as opaque (it would be drawn as it was; what changes or
-/// moves each time it is drawn never kept, its recording never drawn again), holding others; not an old view, in its
-/// bones, glass, what a column scrolls by its offset alone, nor what was found holding such (ride_unkept). Each node
-/// gone through is marked so; one that changed lets go of what it kept.
+/// moves each time it is drawn never kept, its recording never drawn again), holding others or drawing words (a
+/// paragraph's node of words, alone or alone in what holds it: else its glyphs set and drawn again each time what holds
+/// it is gone through, as a message streamed into does at its every word; a box drawing a ground alone is not worth
+/// keeping); not an old view, in its bones, glass, what a column scrolls by its offset alone, nor what was found holding
+/// such (ride_unkept). Each node gone through is marked so; one that changed lets go of what it kept.
 fn ride_holder(
   tree : @view.Tree,
   c : @view.Content,
@@ -1137,7 +1169,7 @@ fn ride_holder(
   !c.hosted &&
   c.bones == 0L &&
   c.glass is None &&
-  tree.held_count(id) >= 2 &&
+  (tree.held_count(id) >= 2 || c.words != "" || !c.runs.is_empty()) &&
   tree.scroll_off_by(id) < 0
 }
 
@@ -1323,11 +1355,21 @@ fn island_watches_clear() -> Unit {
 }
 
 ///|
-/// What is drawn now draws something anew each time it is drawn (a picture, one not seen asked for): the list drawn
-/// whole as one it is in (ListRiding) drawn again only by going through it.
+/// What is drawn now draws something anew each time it is drawn that what it drew cannot be held to (a field, a native
+/// view, a stream): the list drawn whole as one it is in (ListRiding) drawn again only by going through it.
 fn list_drawn_anew() -> Unit {
   match list_riding.val {
     Some(l) => l.anew = true
+    None => ()
+  }
+}
+
+///|
+/// A picture drawn now, or one not seen asked for (`spot`, where among the frame's): of the list drawn whole as one it is
+/// in (ListRiding), drawn again as kept only where it draws what it drew (Ctx::list_pictures_same).
+fn list_picture(spot : RideSpot) -> Unit {
+  match list_riding.val {
+    Some(l) => l.pictures.push(spot)
     None => ()
   }
 }
@@ -1392,6 +1434,7 @@ fn Ctx::list_ride_begin(
     anew: false,
     nodes: 0,
     kept: [],
+    pictures: [],
   })
 }
 
@@ -1410,51 +1453,11 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     return
   }
   let e = l.clip
-  // (its instances, each of its rows kept among them by a header (Ctx::ride_head) in one place, the room after it
-  // passed over: kept so by the host, drawn out whole by a header of it, n of them)
-  let src = self.inst
-  let mut m = 0
-  let mut heads = false
-  let mut q = 0
-  while q < n {
-    let b = (l.k0 + q) * inst_size
-    let c = if src[b + 5] == 13.0 {
-      heads = true
-      src[b + 14].to_int()
-    } else {
-      1
-    }
-    q = q + (if c < 1 { 1 } else { c })
-    m = m + 1
-  }
-  let inst = FixedArray::make(m * inst_size, 0.0)
-  let moves = FixedArray::make(m, 0)
-  let mut q = 0
-  let mut i = 0
-  while q < n {
-    let b = (l.k0 + q) * inst_size
-    if src[b + 5] == 13.0 {
-      src.blit_to(inst, len=inst_size, src_offset=b, dst_offset=i * inst_size)
-      let c = src[b + 14].to_int()
-      q = q + (if c < 1 { 1 } else { c })
-      i = i + 1
-    } else {
-      let mut r = q + 1
-      while r < n && src[(l.k0 + r) * inst_size + 5] != 13.0 {
-        r = r + 1
-      }
-      src.blit_to(inst, len=(r - q) * inst_size, src_offset=b, dst_offset=i * inst_size)
-      for j in i..<(i + r - q) {
-        moves[j] = ride_moves(inst, j * inst_size, e)
-      }
-      i = i + r - q
-      q = r
-    }
-  }
   let (h0, h1, h2, h3) = (l.hc[0], l.hc[1], l.hc[2], l.hc[3])
-  if l.spoiled || !groups_on() || dr.mode != 0 || shooting.val || !ride_groupable(inst, m) {
+  // drawn out moved and cut in its place: its rows' headers drawn out first, each instance then moved and cut in its
+  // place
+  let flat = fn() {
     ride_let_go(l.id)
-    // (its rows' headers drawn out first, each instance then moved and cut in its place)
     self.flat_from(l.k0)
     let s = self.inst
     for i in 0..<n {
@@ -1472,7 +1475,74 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
         }
       None => ()
     }
+  }
+  // (what is never kept as one group, known before its instances are gathered for it: drawn out at once, none of them
+  // copied nor their moves worked out for a group it is not, each frame a list holds an old view)
+  if l.spoiled || !groups_on() || dr.mode != 0 || shooting.val {
+    flat()
     return
+  }
+  // (its instances, each of its rows kept among them by a header (Ctx::ride_head) in one place, the room after it
+  // passed over: kept so by the host, drawn out whole by a header of it, n of them)
+  let src = self.inst
+  let mut m = 0
+  let mut heads = false
+  let mut q = 0
+  list_ride_at.clear()
+  while q < n {
+    let b = (l.k0 + q) * inst_size
+    list_ride_at.push(b)
+    let c = if src[b + 5] == 13.0 {
+      heads = true
+      src[b + 14].to_int()
+    } else {
+      1
+    }
+    q = q + (if c < 1 { 1 } else { c })
+    m = m + 1
+  }
+  // (the group it was kept as before, where it drew the same (its instances, their moves): read where they are against
+  // that one's, none of them copied, its own kept again as they were; else, or where none was kept, gathered anew)
+  let was = match ride_kept.get(l.id) {
+    Some(k) if k.group >= 0 &&
+      k.moves.length() == m &&
+      k.inst.length() == m * inst_size &&
+      list_ride_same(src, list_ride_at, k.inst, k.moves, e) => Some(k)
+    _ => None
+  }
+  let (inst, moves) = match was {
+    Some(k) => (k.inst, k.moves)
+    None => {
+      let inst = FixedArray::make(m * inst_size, 0.0)
+      let moves = FixedArray::make(m, 0)
+      let mut q = 0
+      let mut i = 0
+      while q < n {
+        let b = (l.k0 + q) * inst_size
+        if src[b + 5] == 13.0 {
+          src.blit_to(inst, len=inst_size, src_offset=b, dst_offset=i * inst_size)
+          let c = src[b + 14].to_int()
+          q = q + (if c < 1 { 1 } else { c })
+          i = i + 1
+        } else {
+          let mut r = q + 1
+          while r < n && src[(l.k0 + r) * inst_size + 5] != 13.0 {
+            r = r + 1
+          }
+          src.blit_to(inst, len=(r - q) * inst_size, src_offset=b, dst_offset=i * inst_size)
+          for j in i..<(i + r - q) {
+            moves[j] = ride_moves(inst, j * inst_size, e)
+          }
+          i = i + r - q
+          q = r
+        }
+      }
+      if !ride_groupable(inst, m) {
+        flat()
+        return
+      }
+      (inst, moves)
+    }
   }
   let owned = inst_owners_kept()
   let owners : Array[(Int, (Double, Double), @view.NodeId?, Int)] = []
@@ -1493,13 +1563,12 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     }
   }
   let segs = self.segs_from(l.seg0)
-  // (the group it was kept as before, where it drew the same: the host's kept, nothing told it again)
-  let was = match ride_kept.get(l.id) {
-    Some(k) if k.group >= 0 && k.moves == moves && k.inst == inst => Some(k.group)
-    _ => None
-  }
+  // (its pictures where their instances are among its own, as gathered: where one is not found so, drawn again only by
+  // going through it)
+  let pictures = list_pictures_gathered(l.pictures, list_ride_at)
+  // (where it drew the same as the group it was kept as: the host's kept, nothing told it again)
   let group = match was {
-    Some(g) => g
+    Some(k) => k.group
     None => {
       ride_groups_made.val = ride_groups_made.val + 1
       ride_groups_made.val
@@ -1533,7 +1602,8 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
     group,
     heads,
     out: n,
-    anew: l.anew,
+    anew: l.anew || pictures is None,
+    pictures: pictures.unwrap_or([]),
     scrims: ride_scrims(),
   }
   if was is Some(_) {
@@ -1553,6 +1623,129 @@ fn Ctx::list_ride_end(self : Ctx) -> Unit {
   ride_spans.push(l.k0)
   ride_heads.val = ride_heads.val + 1
   self.list_head_put(l.k0, group, 0, n, 0.0, 0.0, 0.0, l.id, l.s, l.dx, l.dy, l.hc)
+}
+
+///|
+/// Where each instance a list drawn whole as one gathers lies among the frame's (Ctx::list_ride_end): its rows' headers
+/// each standing for those it holds. Worked out anew by each list as it ends.
+// kept across runs: emptied as each list drawn whole as one ends
+let list_ride_at : Array[Int] = []
+
+///|
+/// Whether the instances of `src` gathered for a list drawn whole as one (each where `at` says) are `inst` and their
+/// moves in clip `e` `moves`: read where they lie, none copied, up to the first number that differs. Its first looked at
+/// first, then from its last back: what moves the whole of it (a page sliding) moves its first, and what changes in it as
+/// it stays (a mark turning, a line coming in) is most often at its foot, so a list that changed is found to have soon.
+/// `inst` and `moves` are as many as gathered (said by the caller).
+fn list_ride_same(
+  src : FixedArray[Double],
+  at : Array[Int],
+  inst : FixedArray[Double],
+  moves : FixedArray[Int],
+  e : FixedArray[Double],
+) -> Bool {
+  let m = at.length()
+  guard m * inst_size == inst.length() && m == moves.length() else { return false }
+  for t in 0..<m {
+    let i = if t == 0 { 0 } else { m - t }
+    let b = at[i]
+    guard b >= 0 && b + inst_size <= src.length() else { return false }
+    let o = i * inst_size
+    for j in 0..<inst_size {
+      if src.unsafe_get(b + j) != inst.unsafe_get(o + j) {
+        return false
+      }
+    }
+    // (a header: its moves none)
+    let mv = if src.unsafe_get(b + 5) == 13.0 { 0 } else { ride_moves(src, b, e) }
+    if moves[i] != mv {
+      return false
+    }
+  }
+  true
+}
+
+///|
+/// The pictures of a list drawn whole as one (ListRiding's, each where its instances are among the frame's) where their
+/// instances are among those gathered for it (each where `at` says it lies among the frame's, list_ride_at): none where
+/// one's are not found there one after another (drawn again only by going through it).
+fn list_pictures_gathered(pictures : Array[RideSpot], at : Array[Int]) -> Array[RideSpot]? {
+  let out : Array[RideSpot] = []
+  for sp in pictures {
+    let n = sp.end - sp.at
+    if n <= 0 {
+      // (one not seen, or one that drew nothing: none of its instances among them)
+      out.push({ ..sp, at: 0, end: 0 })
+      continue
+    }
+    let b = sp.at * inst_size
+    let mut lo = 0
+    let mut hi = at.length()
+    while lo < hi {
+      let mid = (lo + hi) / 2
+      if at[mid] < b {
+        lo = mid + 1
+      } else {
+        hi = mid
+      }
+    }
+    guard lo + n <= at.length() else { return None }
+    for j in 0..<n {
+      if at[lo + j] != b + j * inst_size {
+        return None
+      }
+    }
+    out.push({ ..sp, at: lo, end: lo + n })
+  }
+  Some(out)
+}
+
+///|
+/// Whether each picture of list kept `k` (its `pictures`) draws now what it drew as it was kept, among the instances
+/// kept for it: each drawn once more where it was drawn then, in the clip it was drawn in, after the frame's, and
+/// taken off again (what drawing it asks, a decode of the size it is drawn at, its being drawn this frame
+/// (ImageEntry's `used`), done so as when it is drawn); one not seen asked for again. A picture decoded since, fading
+/// in, a frame of a GIF that moves, one standing in for another: drawn otherwise, the list gone through again.
+fn Ctx::list_pictures_same(self : Ctx, k : RideKept) -> Bool {
+  let n0 = self.ninst
+  let mut same = true
+  for sp in k.pictures {
+    match sp.clip {
+      None => self.view_unseen(sp.c, sp.s)
+      Some(cl) => {
+        for j in 0..<clip_n {
+          clip_stack.push(cl[j])
+        }
+        clip_say_apart(sp.apart)
+        clip_say_window(sp.window)
+        let at = self.ninst
+        self.view_picture(sp.c, sp.x, sp.y, sp.s, sp.a)
+        let n = self.ninst - at
+        pop_clip()
+        if n != sp.end - sp.at {
+          same = false
+        } else {
+          let s = self.inst
+          let a = k.inst
+          let b = at * inst_size
+          let o = sp.at * inst_size
+          guard o + n * inst_size <= a.length() else { @halt.saying("list_pictures_same: a picture past its list") }
+          for j in 0..<(n * inst_size) {
+            if s.unsafe_get(b + j) != a.unsafe_get(o + j) {
+              same = false
+              break
+            }
+          }
+        }
+        self.ninst = n0
+      }
+    }
+    if !same {
+      break
+    }
+  }
+  self.ninst = n0
+  same
 }
 
 ///|
@@ -1652,8 +1845,9 @@ fn Ctx::island_in_list(self : Ctx, k0 : Int) -> Unit {
 ///|
 /// What list `c` (ListRiding's) kept as one, where it may be drawn again by its header alone, moved by where it is
 /// placed now (x, y) from where it was, `s` the window's scale of it: nothing of it changed since (its count of changes no
-/// more than what was kept's), nothing in it drawn anew each time, as opaque, laid out, as big, set on the pixels and its
-/// words as big as then, moved by whole pixels; the host keeping its group.
+/// more than what was kept's), nothing in it drawn anew each time but its pictures, each drawing what it drew, as
+/// opaque, laid out, as big, set on the pixels and its words as big as then, moved by whole pixels; the host keeping its
+/// group.
 fn Ctx::list_kept_for(
   self : Ctx,
   tree : @view.Tree,
@@ -1679,7 +1873,8 @@ fn Ctx::list_kept_for(
     ride_scrims() == k.scrims &&
     ride_whole(x - k.x, self.scale) &&
     ride_whole(y - k.y, self.scale)
-  if fits {
+  // (its pictures drawing what they drew: Ctx::list_pictures_same)
+  if fits && (k.pictures.is_empty() || self.list_pictures_same(k)) {
     Some(k)
   } else {
     None

@@ -9,11 +9,11 @@
 // and device-displays.ts, Apache-2.0: vendor/README.md), changed so a client has one picture to draw.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { access, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
-import { deflate, inflateSync } from "node:zlib";
+import { deflate, inflate } from "node:zlib";
 import { panelOf } from "./sim-mask.ts";
 
 const CHROME_ROOT = "/Library/Developer/DeviceKit/Chrome";
@@ -22,6 +22,26 @@ const CACHE = join(tmpdir(), "stillfail-device-chrome");
 /// Pictures made by an older way of making them are not used: said in their names.
 const CACHE_WAY = 1;
 const deflated = promisify(deflate);
+const inflated = promisify(inflate);
+const exists = (path: string) => access(path).then(() => true, () => false);
+
+/// Draws a PDF's page (`from`) as a PNG at `out`, its longest side `longest` pixels (null: as the page says).
+export type Draw = (from: string, out: string, longest: number | null) => Promise<void>;
+
+/// Where pictures are kept and what draws them: this Mac's temporary files and `sips` (what every Mac has: Apple's PDFs
+/// are drawn again at the size asked, not scaled from a picture); a test's own.
+export type Drawing = { cache: string; draw: Draw };
+
+export const SIPS: Drawing = {
+  cache: CACHE,
+  draw: async (from, out, longest) => {
+    await promisify(execFile)("sips", ["-s", "format", "png", ...(longest !== null ? ["-Z", String(longest)] : []), from, "--out", out], { timeout: 20_000 });
+  },
+};
+
+/// Each temporary file's own number in this process: two pictures made at once never write the same one.
+let written = 0;
+const tmpOf = (path: string, ext: string) => `${path}.${process.pid}.${++written}.${ext}`;
 
 export type Size = { width: number; height: number };
 export type Rect = Size & { x: number; y: number };
@@ -83,30 +103,31 @@ export function displaysOf(capabilities: unknown, profile: unknown): ChromeDispl
 
 /// A display's case laid out, from its device type's bundle (`bundle`: its Contents/Resources); null where Xcode has none
 /// for it or what it has cannot be read: the app draws what it did before.
-export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: string | null, root = CHROME_ROOT): Promise<ChromeSource | null> {
+export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: string | null, root = CHROME_ROOT, how: Drawing = SIPS): Promise<ChromeSource | null> {
   const bare = display.chrome.startsWith(CHROME_PREFIX) ? display.chrome.slice(CHROME_PREFIX.length) : display.chrome;
   if (!/^[A-Za-z0-9_-]+$/.test(bare)) return null;
   const dir = join(root, `${bare}.devicechrome`, "Contents", "Resources");
   let json: Record<string, unknown>;
   try {
-    json = JSON.parse(readFileSync(join(dir, "chrome.json"), "utf8")) as Record<string, unknown>;
+    json = JSON.parse(await readFile(join(dir, "chrome.json"), "utf8")) as Record<string, unknown>;
   } catch {
     return null;
   }
   const images = record(json.images);
   const sizing = insetsOf(record(images.sizing), "leftWidth", "topHeight", "rightWidth", "bottomHeight");
   const padding = insetsOf(record(images.devicePadding), "left", "top", "right", "bottom");
-  const pdf = (name: unknown) => (typeof name === "string" && existsSync(join(dir, `${name}.pdf`)) ? name : null);
-  const composite = pdf(images.composite);
-  const slice = sliceOf(images, pdf);
-  const mask = display.mask !== null && existsSync(join(bundle, `${display.mask}.pdf`)) ? join(bundle, `${display.mask}.pdf`) : null;
-  const maskSize = mask ? pageSize(readFileSync(mask)) : null;
+  const pdf = async (name: unknown) => (typeof name === "string" && (await exists(join(dir, `${name}.pdf`))) ? name : null);
+  const composite = await pdf(images.composite);
+  const slice = await sliceOf(images, pdf);
+  const mask = display.mask !== null && (await exists(join(bundle, `${display.mask}.pdf`))) ? join(bundle, `${display.mask}.pdf`) : null;
+  const maskBytes = mask ? await readFile(mask) : null;
+  const maskSize = maskBytes ? pageSize(maskBytes) : null;
   let bodySize: Size | null = null;
   let screen: Size = { width: display.width / display.scale, height: display.height / display.scale };
   let centre: { x: number; y: number } | null = null;
   if (composite !== null) {
-    bodySize = pageSize(readFileSync(join(dir, `${composite}.pdf`)));
-    const opening = await openingOf(join(dir, `${composite}.pdf`));
+    bodySize = pageSize(await readFile(join(dir, `${composite}.pdf`)));
+    const opening = await openingOf(join(dir, `${composite}.pdf`), how);
     if (opening) {
       // (Apple's mask is the panel's shape in units that differ from one device to another: the composite's own opening says which)
       if (maskSize) {
@@ -126,9 +147,9 @@ export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: s
   const pictured: ChromeSource["images"] = [];
   for (const entry of Array.isArray(json.inputs) ? json.inputs : []) {
     const b = record(entry);
-    const image = pdf(b.image);
+    const image = await pdf(b.image);
     if (image === null || typeof b.name !== "string") continue;
-    const size = pageSize(readFileSync(join(dir, `${image}.pdf`)));
+    const size = pageSize(await readFile(join(dir, `${image}.pdf`)));
     if (!size) continue;
     const offsets = record(b.offsets);
     const normal = pointOf(record(offsets.normal));
@@ -144,7 +165,7 @@ export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: s
       ...(b.onTop === true ? { front: true } : {}),
       ...(page > 0 && usage > 0 ? { page, usage } : {}),
     });
-    pictured.push({ name: b.name, image, down: pdf(b.imageDown), under: b.imageDownDrawMode === "compositeUnder" });
+    pictured.push({ name: b.name, image, down: await pdf(b.imageDown), under: b.imageDownDrawMode === "compositeUnder" });
   }
   // (a mask whose name is another device's would be the same case with another shape cut out of it)
   const key = createHash("sha1").update(`${bare}\0${display.mask ?? ""}\0${sensor ?? ""}\0${display.width}x${display.height}`).digest("hex").slice(0, 16);
@@ -154,7 +175,7 @@ export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: s
     height: display.height,
     frame,
     screen: placed,
-    corners: mask ? (panelOf(readFileSync(mask))?.corners ?? []) : [],
+    corners: maskBytes ? ((await panelOf(maskBytes))?.corners ?? []) : [],
     buttons,
     dir,
     body,
@@ -162,7 +183,7 @@ export async function chromeOf(display: ChromeDisplay, bundle: string, sensor: s
     slice,
     sizing,
     mask,
-    sensor: sensor !== null && existsSync(join(bundle, `${sensor}.pdf`)) ? join(bundle, `${sensor}.pdf`) : null,
+    sensor: sensor !== null && (await exists(join(bundle, `${sensor}.pdf`))) ? join(bundle, `${sensor}.pdf`) : null,
     images: pictured,
   };
 }
@@ -202,29 +223,30 @@ export type ChromePictures = { body: string; buttons: Record<string, { up: strin
 const making = new Map<string, Promise<ChromePictures>>();
 
 /// A panel's pictures, turned `turn` quarters clockwise, as base64 PNGs. Made once and kept in this Mac's temporary files.
-export function picturesOf(c: ChromeSource, turn: number): Promise<ChromePictures> {
-  const id = `${c.key}/${turn}`;
+export function picturesOf(c: ChromeSource, turn: number, how: Drawing = SIPS): Promise<ChromePictures> {
+  const id = `${how.cache}\0${c.key}/${turn}`;
   let made = making.get(id);
   if (!made) {
-    made = make(c, turn);
+    made = make(c, turn, how);
     making.set(id, made);
     made.catch(() => making.delete(id));
   }
   return made;
 }
 
-async function make(c: ChromeSource, turn: number): Promise<ChromePictures> {
-  const stamp = statSync(join(c.dir, "chrome.json"));
+async function make(c: ChromeSource, turn: number, how: Drawing): Promise<ChromePictures> {
+  const stamp = await stat(join(c.dir, "chrome.json"));
   const stem = createHash("sha1").update(`${CACHE_WAY}\0${c.key}\0${stamp.mtimeMs}\0${turn}`).digest("hex");
-  mkdirSync(CACHE, { recursive: true });
-  const kept = join(CACHE, `${stem}.json`);
-  if (existsSync(kept)) return JSON.parse(readFileSync(kept, "utf8")) as ChromePictures;
+  await mkdir(how.cache, { recursive: true });
+  const kept = join(how.cache, `${stem}.json`);
+  const before = await readFile(kept, "utf8").catch(() => null);
+  if (before !== null) return JSON.parse(before) as ChromePictures;
   const scale = pixelsOf(c);
-  const pictures: ChromePictures = { body: (await encode(turned(await bodyOf(c, scale), turn))).toString("base64"), buttons: {} };
+  const pictures: ChromePictures = { body: (await encode(turned(await bodyOf(c, scale, how), turn))).toString("base64"), buttons: {} };
   for (const b of c.buttons) {
     const names = c.images.find((i) => i.name === b.name)!;
     const size = { width: Math.round(b.width * scale), height: Math.round(b.height * scale) };
-    const drawn = (name: string) => rendered(join(c.dir, `${name}.pdf`), size);
+    const drawn = (name: string) => rendered(join(c.dir, `${name}.pdf`), size, how);
     const one = async (p: Pixels) => (await encode(turned(p, turn))).toString("base64");
     const up = await drawn(names.image);
     let down: Pixels | null = names.down ? await drawn(names.down) : null;
@@ -235,30 +257,31 @@ async function make(c: ChromeSource, turn: number): Promise<ChromePictures> {
     }
     pictures.buttons[b.name] = { up: await one(up), ...(down ? { down: await one(down) } : {}) };
   }
-  const tmp = `${kept}.${process.pid}.tmp`;
-  writeFileSync(tmp, JSON.stringify(pictures));
-  renameSync(tmp, kept);
+  const tmp = tmpOf(kept, "tmp");
+  await writeFile(tmp, JSON.stringify(pictures));
+  await rename(tmp, kept);
   return pictures;
 }
 
 /// The case over its frame: composite, or its pieces with the sides stretched; the panel's shape cut out; the sensor bar over that.
-async function bodyOf(c: ChromeSource, scale: number): Promise<Pixels> {
+async function bodyOf(c: ChromeSource, scale: number, how: Drawing): Promise<Pixels> {
   const frame = blank(Math.round(c.frame.width * scale), Math.round(c.frame.height * scale));
   const x = Math.round(c.body.x * scale);
   const y = Math.round(c.body.y * scale);
   const w = Math.round(c.body.width * scale);
   const h = Math.round(c.body.height * scale);
   if (c.composite !== null) {
-    paint(frame, await rendered(join(c.dir, `${c.composite}.pdf`), { width: w, height: h }), x, y);
+    paint(frame, await rendered(join(c.dir, `${c.composite}.pdf`), { width: w, height: h }, how), x, y);
   } else if (c.slice !== null) {
     const pdf = (name: string) => join(c.dir, `${name}.pdf`);
-    const corner = pageSize(readFileSync(pdf(c.slice.topLeft)))!;
+    const sized = async (name: string) => pageSize(await readFile(pdf(name)))!;
+    const corner = await sized(c.slice.topLeft);
     const [cw, ch] = [Math.round(corner.width * scale), Math.round(corner.height * scale)];
-    const piece = (name: string, width: number, height: number) => rendered(pdf(name), { width, height });
-    paint(frame, stretched(await piece(c.slice.top, Math.round(pageSize(readFileSync(pdf(c.slice.top)))!.width * scale), ch), w - 2 * cw, ch), x + cw, y);
-    paint(frame, stretched(await piece(c.slice.bottom, Math.round(pageSize(readFileSync(pdf(c.slice.bottom)))!.width * scale), ch), w - 2 * cw, ch), x + cw, y + h - ch);
-    paint(frame, stretched(await piece(c.slice.left, cw, Math.round(pageSize(readFileSync(pdf(c.slice.left)))!.height * scale)), cw, h - 2 * ch), x, y + ch);
-    paint(frame, stretched(await piece(c.slice.right, cw, Math.round(pageSize(readFileSync(pdf(c.slice.right)))!.height * scale)), cw, h - 2 * ch), x + w - cw, y + ch);
+    const piece = (name: string, width: number, height: number) => rendered(pdf(name), { width, height }, how);
+    paint(frame, stretched(await piece(c.slice.top, Math.round((await sized(c.slice.top)).width * scale), ch), w - 2 * cw, ch), x + cw, y);
+    paint(frame, stretched(await piece(c.slice.bottom, Math.round((await sized(c.slice.bottom)).width * scale), ch), w - 2 * cw, ch), x + cw, y + h - ch);
+    paint(frame, stretched(await piece(c.slice.left, cw, Math.round((await sized(c.slice.left)).height * scale)), cw, h - 2 * ch), x, y + ch);
+    paint(frame, stretched(await piece(c.slice.right, cw, Math.round((await sized(c.slice.right)).height * scale)), cw, h - 2 * ch), x + w - cw, y + ch);
     paint(frame, await piece(c.slice.topLeft, cw, ch), x, y);
     paint(frame, await piece(c.slice.topRight, cw, ch), x + w - cw, y);
     paint(frame, await piece(c.slice.bottomLeft, cw, ch), x, y + h - ch);
@@ -272,7 +295,7 @@ async function bodyOf(c: ChromeSource, scale: number): Promise<Pixels> {
   const sh = Math.round(c.screen.height * scale);
   if (c.mask !== null) {
     // Inside the mask nothing of the case is left; at its edge as much as the mask leaves.
-    const mask = await rendered(c.mask, { width: sw, height: sh });
+    const mask = await rendered(c.mask, { width: sw, height: sh }, how);
     for (let j = 0; j < sh; j++) {
       for (let i = 0; i < sw; i++) {
         const p = ((sy + j) * frame.width + sx + i) * 4 + 3;
@@ -285,9 +308,9 @@ async function bodyOf(c: ChromeSource, scale: number): Promise<Pixels> {
   if (c.sensor !== null) {
     // In the panel's points, at the middle of its top: a notch's. (A Dynamic Island's has nothing in it: the device draws that
     // in its own picture.)
-    const size = pageSize(readFileSync(c.sensor));
+    const size = pageSize(await readFile(c.sensor));
     if (size) {
-      const bar = await rendered(c.sensor, { width: Math.round(size.width * scale), height: Math.round(size.height * scale) });
+      const bar = await rendered(c.sensor, { width: Math.round(size.width * scale), height: Math.round(size.height * scale) }, how);
       paint(frame, bar, sx + Math.round((sw - bar.width) / 2), sy);
     }
   }
@@ -309,10 +332,10 @@ const pageTurn = (text: string) => Number(/\/Rotate\s+(\d+)/.exec(text)?.[1] ?? 
 
 /// A composite's opening, the opaque black it has for a screen: walked out from its middle along its middle row and column,
 /// so the dark metal elsewhere is not taken for it. In its own points.
-async function openingOf(pdf: string): Promise<Rect | null> {
-  const size = pageSize(readFileSync(pdf));
+async function openingOf(pdf: string, how: Drawing): Promise<Rect | null> {
+  const size = pageSize(await readFile(pdf));
   if (!size) return null;
-  const { width, height, data } = await rendered(pdf, { width: Math.round(size.width), height: Math.round(size.height) });
+  const { width, height, data } = await rendered(pdf, { width: Math.round(size.width), height: Math.round(size.height) }, how);
   const dark = (x: number, y: number) => {
     if (x < 0 || y < 0 || x >= width || y >= height) return false;
     const p = (y * width + x) * 4;
@@ -389,39 +412,55 @@ export function turned(p: Pixels, turn: number): Pixels {
   return out;
 }
 
-/// A PDF's page at `size`, drawn by `sips` (what every Mac has: Apple's PDFs are drawn again at that size, not scaled from a
+/// The pictures being drawn, by where each is kept: two asking for one at once (a panel's pictures made for two turns, its
+/// buttons' the same in each) are given the one drawing, never two writing the same files.
+const drawing = new Map<string, Promise<Pixels>>();
+
+/// A PDF's page at `size`, drawn by `how` (`sips`: Apple's PDFs are drawn again at that size, not scaled from a
 /// picture). `sips` draws a page with a /Rotate squeezed into the wrong shape: its page is drawn as it lies, then turned here.
-async function rendered(pdf: string, size: Size): Promise<Pixels> {
-  mkdirSync(CACHE, { recursive: true });
-  const stem = createHash("sha1").update(`${pdf}\0${statSync(pdf).mtimeMs}\0${size.width}x${size.height}`).digest("hex");
-  const png = join(CACHE, `${stem}.png`);
-  const bytes = readFileSync(pdf);
+async function rendered(pdf: string, size: Size, how: Drawing): Promise<Pixels> {
+  const stem = createHash("sha1").update(`${pdf}\0${(await stat(pdf)).mtimeMs}\0${size.width}x${size.height}`).digest("hex");
+  const png = join(how.cache, `${stem}.png`);
+  let made = drawing.get(png);
+  if (!made) {
+    made = drawn(pdf, png, size, how).finally(() => drawing.delete(png));
+    drawing.set(png, made);
+  }
+  return made;
+}
+
+async function drawn(pdf: string, png: string, size: Size, how: Drawing): Promise<Pixels> {
+  await mkdir(how.cache, { recursive: true });
+  const bytes = await readFile(pdf);
   const turn = pageTurn(bytes.toString("latin1"));
   const lying = turn % 2 === 1 ? { width: size.height, height: size.width } : size;
-  if (!existsSync(png)) {
+  if (!(await exists(png))) {
     const page = pageSize(bytes)!;
     const longest = Math.max(size.width, size.height);
-    const tmp = `${png}.${process.pid}.png`;
+    const tmp = tmpOf(png, "png");
     let from = pdf;
     if (turn !== 0) {
       // (the same bytes, the turn said as none: nothing else in the file moves)
-      from = `${png}.${process.pid}.pdf`;
-      writeFileSync(from, Buffer.from(bytes.toString("latin1").replace(/\/Rotate\s+\d+/, (said) => `/Rotate ${"0".repeat(said.length - 8)}`), "latin1"));
+      from = tmpOf(png, "pdf");
+      await writeFile(from, Buffer.from(bytes.toString("latin1").replace(/\/Rotate\s+\d+/, (said) => `/Rotate ${"0".repeat(said.length - 8)}`), "latin1"));
     }
     try {
-      await promisify(execFile)("sips", ["-s", "format", "png", ...(Math.round(Math.max(page.width, page.height)) !== longest ? ["-Z", String(longest)] : []), from, "--out", tmp], { timeout: 20_000 });
+      await how.draw(from, tmp, Math.round(Math.max(page.width, page.height)) !== longest ? longest : null);
+      await rename(tmp, png);
+    } catch (error) {
+      await rm(tmp, { force: true });
+      throw error;
     } finally {
-      if (from !== pdf) rmSync(from, { force: true });
+      if (from !== pdf) await rm(from, { force: true });
     }
-    renameSync(tmp, png);
   }
-  const got = decode(readFileSync(png));
+  const got = await decode(await readFile(png));
   // (rounding: a pixel off in a side, where what is asked is what is placed)
   return turned(got.width === lying.width && got.height === lying.height ? got : stretched(got, lying.width, lying.height), turn);
 }
 
 /// An 8-bit PNG as RGBA.
-export function decode(png: Buffer): Pixels {
+export async function decode(png: Buffer): Promise<Pixels> {
   if (png.length < 26 || png.toString("latin1", 1, 4) !== "PNG") throw new Error("not a PNG");
   const [width, height] = [png.readUInt32BE(16), png.readUInt32BE(20)];
   if (png[24] !== 8) throw new Error(`a PNG of ${png[24]} bits`);
@@ -433,7 +472,7 @@ export function decode(png: Buffer): Pixels {
     if (png.toString("latin1", at + 4, at + 8) === "IDAT") parts.push(png.subarray(at + 8, at + 8 + n));
     at += 12 + n;
   }
-  const raw = inflateSync(Buffer.concat(parts));
+  const raw = await inflated(Buffer.concat(parts));
   const out = new Uint8Array(width * height * 4);
   const stride = width * channels;
   let prior = new Uint8Array(stride);
@@ -507,7 +546,7 @@ const stringOf = (v: unknown) => (typeof v === "string" && v !== "" ? v : null);
 const pointOf = (r: Record<string, unknown>) => (typeof r.x === "number" && typeof r.y === "number" ? { x: r.x, y: r.y } : null);
 const insetsOf = (r: Record<string, unknown>, left: string, top: string, right: string, bottom: string): Insets => ({ left: num(r[left]), top: num(r[top]), right: num(r[right]), bottom: num(r[bottom]) });
 
-function sliceOf(images: Record<string, unknown>, pdf: (name: unknown) => string | null): Slice | null {
-  const [topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left] = ["topLeft", "top", "topRight", "right", "bottomRight", "bottom", "bottomLeft", "left"].map((k) => pdf(images[k]));
+async function sliceOf(images: Record<string, unknown>, pdf: (name: unknown) => Promise<string | null>): Promise<Slice | null> {
+  const [topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left] = await Promise.all(["topLeft", "top", "topRight", "right", "bottomRight", "bottom", "bottomLeft", "left"].map((k) => pdf(images[k])));
   return topLeft && top && topRight && right && bottomRight && bottom && bottomLeft && left ? { topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left } : null;
 }

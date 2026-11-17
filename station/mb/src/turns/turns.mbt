@@ -1,4 +1,4 @@
-// A session's exact count of turns (station/src/store/turn-state.ts): counted in short indexed slices from the
+// A session's exact count of turns (station/test/reference/turn-state.ts): counted in short indexed slices from the
 // newest back, a guard in the database that the session's writes invalidate, the count published only by a last
 // write that finds its guard still there, as `turnCountStep` does, here for the MoonBit builder. Only the writes take
 // the backfill permit (`may_write`): the slices read without it.

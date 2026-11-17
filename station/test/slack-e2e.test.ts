@@ -15,6 +15,7 @@ import { ConfigFile } from "../src/ops/config.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
+import { markNotice } from "../src/sessions/chat.ts";
 import { makeConnections } from "../src/slack/index.ts";
 import { slackManifest } from "../src/slack/apps.ts";
 import { SlackClient } from "../src/slack/web.ts";
@@ -125,7 +126,8 @@ test("Slack Socket Mode starts a Claude turn, receives its post, and stops a lat
     slackStandIn.event("env-stop", { type: "agent_session_stopped", channel: "C1", thread_ts: "1700000000.000100", event_ts: (Date.now() / 1000).toFixed(6), user: "U42" });
     await slackStandIn.until("stop acknowledged", () => slackStandIn.acks.some((a) => a.envelope_id === "env-stop"));
     await slackStandIn.until("stopped", () => store.lastTurn(key)?.outcome === "aborted");
-    await slackStandIn.until("stop confirmed", () => slackStandIn.calls("chat.postMessage").some((p) => p.params.text === "已停止当前任务"));
+    // (a station's notice, so it ends with the mark that tells it from a person's message: sessions/chat.ts NOTICE_MARK)
+    await slackStandIn.until("stop confirmed", () => slackStandIn.calls("chat.postMessage").some((p) => p.params.text === markNotice("已停止当前任务")));
     await hub.actor(store.getSession(key)!).flushed();
     await settle();
     await Effect.runPromise(clock.adjust("2 seconds"));

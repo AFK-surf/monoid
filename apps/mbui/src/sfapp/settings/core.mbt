@@ -12,6 +12,13 @@ pub(all) struct Read {
 }
 
 ///|
+/// The same topic as it stood: what derive(Eq) says, its version looked at first and its value last, the one JSON or
+/// equal (a value set again is mostly the one it was).
+pub impl Eq for Read with equal(a, b) {
+  a.version == b.version && a.error == b.error && @signals.same_value(a.value, b.value)
+}
+
+///|
 /// What the pages need of the app around them.
 pub(all) struct Core {
   /// the topic `name` with its params (the core's `subscribe`)
@@ -29,7 +36,7 @@ pub(all) struct Core {
   home : () -> Unit
   /// a chat opened: its station, its session, its title
   open_chat : (String, String, String) -> Unit
-  /// a station's drive opened (its folders lent: src/sfapp/drive.mbt), by its address
+  /// a station's drive opened (its folders lent: src/sfapp/files_narrow.mbt), by its address
   open_drive : (String) -> Unit
   /// A pinned folder opened in the same destination as the station's files.
   open_folder : (String, String) -> Unit
@@ -61,6 +68,10 @@ pub(all) struct Core {
   /// a web page to open (a sign-in's, Slack's): handed to the system's browser (@ui.open_url), said so where nothing
   /// took it
   open_link : (String) -> Unit
+  /// a sign-in to a service as the person, its token kept in their vault (添加 › Slack 账号, an agent's card asking for
+  /// one): by workspace, vault ("plain": the plain library), provider and the agent's request it answers ("" none);
+  /// `done` the item's name, "" where the web's own page finishes it, or why not ("cancelled": given up)
+  vault_oauth : (String, String, String, String, (Result[String, String]) -> Unit) -> Unit
   /// a page opened in the station's own browser (a sign-in's): its tab's screen in the viewer, by station and screen,
   /// gone back from by itself once the tab is gone (closed as the sign-in ends)
   open_screen : (String, String) -> Unit
@@ -71,8 +82,6 @@ pub(all) struct Core {
   bars : () -> (Array[Array[String]], Int)
   /// the bars changed (kept as the workspace's), the one shown
   set_bars : (Array[Array[String]], Int) -> Unit
-  /// a place's icon, 28 high in a colour (Station's the stations' glyph, one on)
-  place_icon : (@ui.Ctx, String, Int64) -> Unit
   /// whether usage statistics and error reports go out from this device (Crashes.reporting); None where nothing is
   /// sent anyway (no host takes them, a build without PostHog's key): no row then
   reporting : () -> Bool?
@@ -98,7 +107,12 @@ pub(all) struct Core {
   read_only : String
   /// whether the workspace's devices are asked for (the source's `asks_devices`: not in a replay of a run from before)
   devices_on : () -> Bool
-  /// whether a station's terminals are asked for (the source's `asks_terminals`: not in a replay of a run from before)
+  /// whether a station's page asks what of it moves (its 迁移 row: sfpages station_node.mbt): the source's
+  /// `asks_station_move`, not in a replay of a run from before; where the station offers it is its own to say
+  /// (`station_feature(s, "stationMove")`)
+  move_on : () -> Bool
+  /// whether a station's terminals are asked for (the source's `asks_terminals`: not in a replay of a run from before);
+  /// where the station offers them is its own to say (`station_feature(s, "terminal")`)
   terminals_on : () -> Bool
 }
 
@@ -110,6 +124,8 @@ pub(all) enum Route {
   Home
   Me
   Appearance
+  /// 设置 › 实验性功能
+  Experimental
   /// 外观 › 字体
   Fonts
   /// the workspace: its name, its people, its invitations
@@ -172,6 +188,8 @@ pub(all) enum Route {
   Permissions
   Archiving
   StationArchiving(String)
+  /// moving a station's things to another, module by module (src/sfpages station_move_node.mbt), by its address
+  StationMove(String)
   /// the prices the usage is counted at, over its days (UsagePricesScreen)
   UsagePrices(Int)
   /// how a chat's agent runs (RunSettingsScreen): its station, its session's key
@@ -506,8 +524,8 @@ let left_core : Ref[Core?] = Ref(None)
 /// A page of the settings left the stack: what it kept goes (its words looked for, a sheet of its own).
 pub fn left(route : Route) -> Unit {
   match route {
-    Archive => archive_reset()
     Connects(_) => connects_mine.val = false
+    Profiles("") => profiles_narrow_overview.set(false)
     Station(a) => station_parts.remove(a)
     NewProfile(a) =>
       match left_core.val {
@@ -537,9 +555,23 @@ pub fn left(route : Route) -> Unit {
 }
 
 ///|
+/// A place of the bottom bar's left the stack for good: what its page kept goes (Profile's 概览 its own).
+pub fn place_left(name : String) -> Unit {
+  if name == "profiles" {
+    profiles_place_overview.set(false)
+  }
+  match route_of(name) {
+    Some(r) => left(r)
+    None => ()
+  }
+}
+
+///|
 /// As at the start: nothing chosen, no sheet (tests).
 pub fn reset() -> Unit {
-  archive_reset()
+  local_said_kept.val = None
+  profiles_place_overview.set(false)
+  profiles_narrow_overview.set(false)
   browser_tabs_seen.clear()
   tabs_made.val = 0
   page_rows.clear()
@@ -557,6 +589,7 @@ pub fn reset() -> Unit {
   notify_switched.set(None)
   connects_mine.val = false
   chosen.clear()
+  features_reset()
   builtin_open.clear()
   panels_core.set(None)
   frame_core.val = None
@@ -610,9 +643,9 @@ pub fn reset() -> Unit {
   kept_all.set(false)
   run_opened.clear()
   run_list.clear()
+  run_model_find.set("")
   new_profiles.clear()
   bar_adding.set(false)
-  bar_moves.clear()
   opened.plain.clear()
   opened.opening.clear()
   opened.shown.clear()
@@ -624,18 +657,19 @@ pub fn reset() -> Unit {
 /// Whether every frame makes `r`'s page once as nodes of the window's tree (narrow_made, pane_made, tape_made), as a page
 /// of the stack and as a place: its old view gone.
 pub fn made_once(r : Route) -> Bool {
-  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archiving | StationArchiving(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | LocalStation | Security | SecurityOpen | Workspace | VaultItems | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_))
+  r is (About | Changelog | Memories | Memory(_) | MemoryDoc(_, _, _) | Archive | Archiving | StationArchiving(_) | StationMove(_) | AutoDecisions | Usage | UsagePrices(_) | Shortcuts | Notifications | AutoCompletion | Permissions | AutoPolicy(_) | Appearance | Experimental | LocalStation | Security | SecurityOpen | Workspace | Vault | VaultItems | VaultItem(_, _) | AdbShare(_) | KeptFiles | KeptChat(_, _) | RunSettings(_, _) | Connects(_) | Connect(_, _) | Profile(_, _) | NewProfile(_) | Station(_) | Me | Fonts | BarSettings | Home | Stations | Profiles(_) | ProfileAccount(_))
 }
 
 ///|
 /// A page by its name, for opening one from the start (MBUI_FIXTURE=settings-<name>, a scripted run): home, me,
-/// appearance, fonts, workspace, security, vault, vault-items, stations, station:<address>, profiles, connects, memories, memory:<address>,
+/// appearance, fonts, workspace, security, vault, vault-items, stations, station:<address>, profiles, profile-account:<key>, connects, memories, memory:<address>,
 /// usage, archive.
 pub fn route_of(name : String) -> Route? {
   match name {
     "" | "home" => Some(Home)
     "me" => Some(Me)
     "appearance" => Some(Appearance)
+    "experimental" => Some(Experimental)
     "fonts" => Some(Fonts)
     "workspace" => Some(Workspace)
     "security" => Some(Security)
@@ -681,12 +715,15 @@ pub fn route_of(name : String) -> Route? {
             "vault-item" => Some(VaultItem(address, id))
             "policy" => Some(AutoPolicy(arg))
             "archiving" => Some(StationArchiving(arg))
+            "move" => Some(StationMove(arg))
             "prices" => Some(UsagePrices(int_of(arg, 7)))
             "run" => Some(RunSettings(address, id))
             "memory" => Some(Memory(arg))
             "memory-doc" => Some(MemoryDoc(address, id, 0))
             "profiles" => Some(Profiles(arg))
             "profile" => Some(Profile(address, id))
+            // (an account on several stations, by its key in the workspace's profiles)
+            "profile-account" => Some(ProfileAccount(arg))
             // (the pages its models were ticked on, gone: every model it lists runs, 2026-11-02)
             "pick-models" | "profile-models" => Some(Profile(address, id))
             "connects" => Some(Connects(arg))

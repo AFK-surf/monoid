@@ -27,8 +27,8 @@ final class Script {
             float x = 100, y = v.getHeight() / v.density - 30;
             Host.log("script ime: tap composer at " + x + "," + y);
             double t = android.os.SystemClock.uptimeMillis();
-            v.toGL(() -> Native.pointer(0, x, y, t));
-            v.toGL(() -> Native.pointer(2, x, y, t));
+            v.toApp(() -> Native.pointer(0, x, y, t));
+            v.toApp(() -> Native.pointer(2, x, y, t));
         }, 2000);
         Host.main.postDelayed(() -> ic(Host.view).setComposingText("ni'hao", 1), 3500);
         Host.main.postDelayed(() -> {

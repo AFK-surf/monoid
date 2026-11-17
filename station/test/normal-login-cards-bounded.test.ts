@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { hasLegacyLoginCards, LEGACY_LOGIN_CARDS, LEGACY_LOGIN_CARDS_NATIVE, legacyLoginCardsStep } from "../src/store/legacy-login-cards.ts";
+import { hasLegacyLoginCards, LEGACY_LOGIN_CARDS, LEGACY_LOGIN_CARDS_NATIVE, legacyLoginCardsStep } from "./reference/backfill/legacy-login-cards.ts";
 import { LOGIN_CARDS, Store } from "../src/store/store.ts";
 import { withoutLoginKeys } from "./legacy-login-fixture.ts";
 

@@ -47,6 +47,16 @@ test("only_the_assignee_gets_a_card_but_anyone_can_answer_in_chat", () => {
   assert.equal(old.assigneeText, "尚未指定决策人");
 });
 
+test("what a chat an agent leads asks waits for its leader, not a person", () => {
+  const starter = { id: "owner@x.com", name: "小王", email: "owner@x.com", via: "cloud" };
+  const asked: J = { card: textCard(6), creator: starter, opener: { session: "lead", title: "性能", led: true } };
+  assert.equal(d.forViewer(asked, { email: "owner@x.com" }), null);
+  assert.equal(d.askOf(asked, d.asked(asked), { email: "owner@x.com" }).mine, false);
+  // one an agent opened for its person (no led) is theirs as any chat is
+  const theirs: J = { ...asked, opener: { session: "lead", title: "性能" } };
+  assert.notEqual(d.forViewer(theirs, { email: "owner@x.com" }), null);
+});
+
 test("a_card_no_one_was_assigned_is_its_starters", () => {
   const starter = { id: "owner@x.com", name: "小王", email: "owner@x.com", via: "cloud" };
   const row: J = { card: textCard(6), creator: starter };
@@ -78,6 +88,10 @@ test("a_need_without_a_card_is_asked_as_a_text_card", () => {
   dismissed.need.dismissed = true;
   assert.equal(d.forViewer(dismissed, { email: "owner@x.com" }), null);
   assert.notEqual(d.asked(dismissed), null, "still answered in its chat");
+  // (the person it was answering, as its station says: theirs to decide, not the starter's)
+  const answering: J = { need: { ...need, decider: "helper@x.com" }, creator: starter };
+  assert.equal(d.forViewer(answering, { email: "owner@x.com" }), null);
+  assert.equal(d.forViewer(answering, { email: "helper@x.com" })?.seq, 8);
 });
 
 test("options_show_the_recommended_one_last", () => {
@@ -172,6 +186,24 @@ test("a_row_with_a_card_says_so_and_is_marked_wait_until_dismissed", () => {
   row = { state: null, decision: null };
   row = d.presentRow(row);
   assert.deepEqual([row.decision, row.tone], [undefined, undefined]);
+});
+
+test("a_rows_mark_for_its_viewer_waits_only_on_what_they_decide", () => {
+  const lin = { id: "lin@x.com", email: "lin@x.com" };
+  const ana = { id: "ana@x.com", email: "ana@x.com" };
+  const row: J = { state: "block", creator: { email: "lin@x.com" }, card: { ...textCard(5), card: { type: "text", assignee: "ana@x.com" } } };
+  assert.equal(d.tone(row, ana), "wait");
+  assert.equal(d.tone(row, lin), "busy", "a colleague decides it: at work for the viewer");
+  assert.equal(d.tone(row), "wait", "with no viewer said: whoever looks");
+  assert.equal(d.presentRow(row, lin).tone, "busy");
+  assert.equal(d.presentRow(row, ana).tone, "wait");
+  // (a need its starter decides; one a chat's agent leads asks that agent: at work for every person)
+  const need: J = { state: "block", creator: { email: "ana@x.com" }, need: { seq: 7, message: { seq: 7, text: "要 key" } } };
+  assert.deepEqual([d.tone(need, ana), d.tone(need, lin)], ["wait", "busy"]);
+  assert.equal(d.tone({ ...need, opener: { led: true } }, ana), "busy");
+  // (an agent needing someone where its station says not what: whoever looks, as before)
+  assert.equal(d.tone({ state: "block" }, lin), "wait");
+  assert.equal(d.tone({ state: "failed", card: row.card }, lin), "alert");
 });
 
 const said = (seq: number, kind: string, text: string): J => ({ seq, ts: `9.00000${seq}`, authorKind: kind, text, quotes: [], mine: false, by: { name: kind === "person" ? "林晓" : "Claude" } });

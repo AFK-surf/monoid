@@ -6,8 +6,9 @@
 // context (signins.ts) and taken out again when its grant ends, its cookies as they were then given back to the vault.
 // The context goes when its chat is archived or deleted, and with Chrome when Chrome ends (idle, a crash): a chat asking
 // again then has a new one, its sign-ins still granted put in again. The default context is the station's own, for the
-// tabs it opens itself (a login's page), no chat's. Where the station's config makes Farview the chats' browser
-// (farview.ts, `useFarview`), a chat's sign-ins, tabs and sign-in form are its Farview tab's instead.
+// tabs it opens itself (a login's page), no chat's. Where Farview is a chat's browser (farview.ts
+// `activeFor`: the station's config, or its agent's choice; `useFarview`), its sign-ins, tabs and sign-in form are its
+// Farview's instead.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Fibers } from "../ops/fibers.ts";
@@ -83,8 +84,10 @@ export class Browsers {
     this.#farview = f;
   }
 
-  #fv(): FarviewTabs | null {
-    return this.#farview?.active() ? this.#farview : null;
+  /// The chats' Farview where it is `session`'s chat's browser (farview.ts `activeFor`: the config's, or its agent's
+  /// choice), else null: its Chrome context.
+  #fv(session: string): FarviewTabs | null {
+    return this.#farview?.activeFor(session) ? this.#farview : null;
   }
 
   /// Hears each sign-in taken out of a chat's context, with its cookies as they were.
@@ -196,7 +199,7 @@ export class Browsers {
 
   /// The tabs of `session`'s chat.
   tabs(session: string): TabInfo[] {
-    const fv = this.#fv();
+    const fv = this.#fv(session);
     if (fv !== null) return fv.tabs(session);
     return this.station.tabs().filter((t) => t.session === session);
   }
@@ -205,8 +208,8 @@ export class Browsers {
   /// tab not its chat's.
   async form(session: string, targetId: string): Promise<SignInForm> {
     if (!this.tabs(session).some((t) => t.id === targetId)) throw new Error("no such tab in this chat's browser");
-    const fv = this.#fv();
-    if (fv !== null) return fv.form(session);
+    const fv = this.#fv(session);
+    if (fv !== null) return fv.form(session, targetId);
     const { cdp, session: tab } = await this.station.attach(targetId);
     return new TabForm(cdp, tab, targetId);
   }
@@ -250,7 +253,7 @@ export class Browsers {
   /// (signins.ts `keptOf`): its cookies, and its passkeys (a chat's context only: the station's has no authenticator);
   /// the browser started if it is not running.
   async cookies(session: string, sites: string[], station: boolean): Promise<string> {
-    const fv = this.#fv();
+    const fv = this.#fv(session);
     if (fv !== null && !station) return keptOf({ cookies: siteCookies(await fv.cookies(session), sites), passkeys: [] });
     const ctx = station ? undefined : await this.context(session);
     const { cookies } = await this.station.send("Storage.getCookies", ctx ? { browserContextId: ctx } : {});
@@ -264,7 +267,7 @@ export class Browsers {
     const state = stateOf(d.cookies);
     const cookies = siteCookies(state.cookies, d.sites);
     const passkeys = sitePasskeys(state.passkeys, d.sites);
-    const fv = this.#fv();
+    const fv = this.#fv(session);
     if (fv !== null) {
       const x: SignedIn = { request: d.request, ...(d.workspace === undefined ? {} : { workspace: d.workspace }), sites: d.sites, until: d.until };
       this.#signedIn.set(session, [...(this.#signedIn.get(session) ?? []).filter((y) => y.request !== d.request), x]);
@@ -289,7 +292,7 @@ export class Browsers {
     const now = this.#fibers.now() / 1000;
     const ended = (this.#signedIn.get(session) ?? []).filter((x) => x.until <= now);
     if (ended.length === 0) return;
-    const fv = this.#fv();
+    const fv = this.#fv(session);
     if (fv !== null) {
       this.#signedIn.set(session, (this.#signedIn.get(session) ?? []).filter((x) => x.until > now));
       this.#write();

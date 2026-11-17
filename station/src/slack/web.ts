@@ -42,6 +42,8 @@ export class SlackClient {
   private timeoutMs: number;
   /// Slack's HTTP Date is rounded down to a second. This is the lower bound on Slack time minus local time.
   private serverOffsetLower: number | null = null;
+  /// The scopes each token was last answered with (Slack's `x-oauth-scopes`), as granted now.
+  private granted = new Map<string, Set<string>>();
 
   constructor(base: string = apiBase(), timeoutMs = 30_000) {
     this.base = base.replace(/\/+$/, "");
@@ -63,6 +65,8 @@ export class SlackClient {
       const date = response.headers.get("date");
       const server = date === null ? NaN : Date.parse(date);
       if (Number.isFinite(server)) this.serverOffsetLower = server - wall.now();
+      const scopes = response.headers.get("x-oauth-scopes");
+      if (scopes !== null && token !== null) this.granted.set(token, new Set(scopes.split(",").map((x) => x.trim()).filter((x) => x !== "")));
       if (response.status === 429 && attempt < RETRIES) {
         const said = response.headers.get("retry-after") ?? "";
         await response.body?.cancel();
@@ -77,6 +81,11 @@ export class SlackClient {
   /// has not supplied a Date header. The upper bound avoids rejecting a stop just because the station clock is ahead.
   localTimeUpper(ts: string): number | null {
     return this.serverOffsetLower === null ? null : Number(ts) * 1000 - this.serverOffsetLower;
+  }
+
+  /// Whether `token` was granted `scope`, as Slack said with its last answer to it; false before any.
+  hasScope(token: string, scope: string): boolean {
+    return this.granted.get(token)?.has(scope) ?? false;
   }
 
   /// A Web API call as the bot (or app-level token): its answer, or an error `slack <method>: <error>`.

@@ -5,7 +5,7 @@
 /// A page 360 wide whose words are picked with the mouse (@ui.words_picked): words in pieces, a quote's card leading
 /// to its message, words in pieces; dragged over from the first's start to the last's end. What is picked then (what
 /// ⌘C copies), and the quote's words as its card says them.
-fn quote_dragged_over() -> (String, String) {
+fn quote_dragged_over() -> (String, String) raise {
   let tr = @ui.Tester::new(
     fn(c) { begin(c) |> ignore },
     tree=fn(root) {
@@ -35,6 +35,11 @@ fn quote_dragged_over() -> (String, String) {
     platform=0,
   )
   tr.run_for(@ui.move_most_ms)
+  let open_mark = match @ui.view_tree() {
+    Some(tree) => tree.drawn().iter().any(fn(d) { tree.drawn_name(d.id) == "/icon/quote-open/" })
+    None => false
+  }
+  assert_true(open_mark, msg="the quote starts with an opening mark")
   let at = fn(s : String) {
     match tr.words().iter().find_first(fn(w) { w.0 == s }) {
       Some(w) => w

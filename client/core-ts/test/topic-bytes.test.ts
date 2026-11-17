@@ -69,7 +69,6 @@ const OVER_DELTA: Record<string, number> = {
   "usage/down": 88,
   "drive/file": 72,
   "chatLetters/letter": 40,
-  "usage/usage": 40,
   "devices/device": 24,
   "connects/down": 24,
   "connect/session": 24,
@@ -82,7 +81,6 @@ const OVER_DELTA: Record<string, number> = {
   "driveBrowse columns/file": 16,
   "archive/down": 16,
   "notices/card": 16,
-  "workspaceMarks/card": 8,
   "longJobs/job": 16,
   "resources/sample": 8,
   "connects mine/down": 8,
@@ -100,7 +98,7 @@ const UNBOUNDED = "nothing in the core bounds it (to weigh)";
 const NOT_MEASURED: Record<string, string> = {
   link: RAW, overview: RAW, sessions: RAW, session: RAW, host: RAW, memory: RAW, net: RAW, way: RAW, threads: RAW, thread: RAW, letters: RAW, chatRows: RAW,
   slackApp: RAW, jobs: RAW, machineLogins: RAW, machineLogin: RAW, machineLoginScreen: RAW, archivedRows: RAW, stationUsage: RAW, stationResources: RAW,
-  stationSearch: RAW,
+  stationSearch: RAW, profilePace: RAW,
   slackTokens: FORM, connectFlow: FORM, decisionForm: FORM, policyForm: FORM, agentEnvForm: FORM, profileFlow: FORM, lockDraft: FORM,
   adbCard: "four fields, its line a word of the core's or the phone's message (adb.ts card)", releases: "one number (core.ts `told`)",
   fonts: "the fonts of a fixed catalogue, by id (font-files.ts, fonts.ids, SHARE_LOOKS_FILES)", drivePlace: "three fields (DrivePlace)",
@@ -156,6 +154,9 @@ const EMPTY: Record<string, Record<string, string>> = {
     "overview.copies.offers": STATE, "overview.copies.formerly": NONE, "overview.copies.taking": STATE,
     "overview.copies.retire.steps": STATE,
   },
+  // (no module open: its items are the open one's alone, move.ts)
+  "stationMove station": { "modules[].items": ASKED_SO },
+  "stationMove": { "modules[].items": ASKED_SO },
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
@@ -171,11 +172,11 @@ const EMPTY: Record<string, Record<string, string>> = {
   "profile": { "profile.usedBy": NONE },
   "profile key": { "profile.quota.resets": NONE },
   "connects": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
-  "connects mine": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
+  "connects mine": { "items[].connect.group.relays": "the viewer made no group connect (another member made the one there is)", "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
   // (asked for its last line alone, a job's row: no lines, jobs.ts log)
   "jobLog line": { lines: ASKED_SO },
   // (a single-session connect's session, and the one weighed is many sessions')
-  "connect": { "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
+  "connect": { "connect.group.relays": "the page weighed is a Slack connect's (c-slack-1), which has no group server", "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
   "newChat": { "pick.value.profiles": STATE },
   // (a new chat's pick names no account's allowance, choose.ts `#now` quiet; the model it takes with nothing chosen,
   // Fable, runs on one runtime and takes no Devin sidekick; borrow: a model only another station has, picked)

@@ -503,8 +503,9 @@ test "profiles on a phone: a short plan stays whole beside a long account email"
       (s.has_suffix("…") && email.has_prefix(s[:s.length() - 1].to_owned()))
     })
     assert_true(email_shown, msg="\{Repr(spec)}: \{Repr(shown)}")
+    // (cut short on its line as it is laid out: a node's words are said whole, drawn cut)
     if spec.3 {
-      assert_false(shown.contains(email), msg="expected email clipped at \{Repr(spec)}: \{Repr(shown)}")
+      assert_false(t.lines_of(email) == [email], msg="expected email clipped at \{Repr(spec)}: \{Repr(t.lines_of(email))}")
     }
     assert_eq(t.squeeze_faults(), [], msg=Repr(spec).to_string())
     assert_eq(t.words_over_now(), [], msg=Repr(spec).to_string())
@@ -525,7 +526,8 @@ test "profiles on a phone: an allowance of three windows said one way for all, e
   // (on one line 5 小时剩余 62%, 本周剩余 19% and 每月剩余 97% were cut to 5 小时剩…, 本周剩余…, 每月剩余…, 2026-10-31)
   // a phone's 390 has the room for all three in full: each its name and what is left, whole
   let shown = t.words().filter(fn(w) { w.5 > 0.5 }).map(fn(w) { w.0 })
-  for words in ["5 小时", "剩 62%", "本周", "剩 19%", "每月", "剩 97%"] {
+  // (a name run on into what is left, 5 小时剩 62%: one line of words, fill_chip's chip_joined)
+  for words in ["5 小时剩 62%", "本周剩 19%", "每月剩 97%"] {
     assert_true(shown.contains(words), msg="\{words}: \{Repr(shown)}")
     assert_eq(t.lines_of(words), [words], msg=words)
   }
@@ -537,9 +539,12 @@ test "a model's own week (Fable's) is a chip and a dial of its own, after the ac
   let t = settings_tester("profiles", shows="settings-profiles-fable")
   // (its chips one way for all, the longest the row has the room for: each its name whole, then what is left)
   let shown = fn(t : @ui.Tester) { t.words().filter(fn(w) { w.5 > 0.5 }) }
-  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { w.0 == words })[0] }
+  // (the account's week its name run on into what is left on its chip, 每周剩 …: fill_chip's chip_joined; Fable's
+  // not, its name ending in a Latin letter; a dial's name alone)
+  let means = fn(w : String, words : String) { w == words || (words == "每周" && w.has_prefix("每周剩")) }
+  let at = fn(t : @ui.Tester, words : String) { shown(t).filter(fn(w) { means(w.0, words) })[0] }
   for words in ["每周", "每周 · Fable"] {
-    assert_eq(shown(t).filter(fn(w) { w.0 == words }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
+    assert_eq(shown(t).filter(fn(w) { means(w.0, words) }).length(), 1, msg="\{words}: \{Repr(shown(t).map(fn(w) { w.0 }))}")
   }
   assert_true(shown(t).iter().any(fn(w) { w.0.has_suffix("46%") && w.1 > at(t, "每周 · Fable").1 }))
   assert_true(at(t, "每周 · Fable").1 > at(t, "每周").1 && at(t, "每周 · Fable").2 == at(t, "每周").2)
@@ -664,9 +669,14 @@ test "飞书: scanning, its QR code drawn on white and 在飞书中打开 handed
   let t = settings_tester("connects", mode="settings-new-connect-scan", shows="settings-new-connect-scan")
   assert_true(t.find("使用飞书扫描二维码，按提示创建机器人") is Some(_))
   assert_true(t.find("本机已登录飞书时，也可直接打开") is Some(_))
-  // the code's dark runs, black on the white square
-  let dark = t.drawn_rects().filter(fn(r) { r.4 == 0x000000FFL })
-  assert_true(dark.length() > 25)
+  // the code's dark runs, black on the white square (its one shape), all of them in it
+  let code = t.query(Image, label="创建飞书机器人的二维码").unwrap().rect
+  let dark = t.drawn_shapes().filter(fn(r) { r.5 == 0x000000FFL })
+  assert_true(dark.length() > 10, msg="\{dark.length()}")
+  assert_true(
+    dark.iter().all(fn(r) { r.0 >= code.0 && r.1 >= code.1 && r.0 + r.2 <= code.0 + code.2 + 0.5 && r.1 + r.3 <= code.1 + code.3 + 0.5 }),
+    msg="\{Repr(code)}",
+  )
   t.tap_text("在飞书中打开")
   assert_eq(t.opened(), ["https://open.feishu.cn/page/launcher?code=made-up"])
 }
@@ -841,10 +851,10 @@ test "settings: a station's network not open yet (stationNet's null) waits as it
 ///|
 test "settings: a station's network not open yet waits where its line goes (StationBody): its bones over the line's room, 10 under the load's boxes" {
   let t = stations_unread_net()
-  // Willow's: its low box (20 high round its words), the line's room 10 under it, two lines of 18 2 apart
+  // Willow's: its low box (a chip high round its words), the line's room 10 under it
   let (_, box_mid) = t.find("剩 5.8 G").unwrap()
   let room = unseen_lines(t)[0]
-  assert_true((room - (box_mid + 10.0 + 10.0)).abs() < 0.5, msg="the line's room from \{room}, the box's middle \{box_mid}")
+  assert_true((room - (box_mid + @sf.fill_chip_h / 2.0 + 10.0)).abs() < 0.5, msg="the line's room from \{room}, the box's middle \{box_mid}")
   // its bones the line it keeps the room of (the same made-up one, unseen): a bar where each of its words starts, in
   // that word's line
   let unseen = t.words().filter(fn(w) { w.5 == 0.0 && w.2 >= room - 0.5 && w.2 < room + 38.0 && w.0 != " " })
@@ -862,10 +872,12 @@ test "settings: a station's network not open yet waits where its line goes (Stat
 ///|
 test "settings: an offline station's picture and line centred across its card's room (StationBody), not over the 10 above it" {
   let t = stations_unread_net()
-  // Maple's room: its load's 20 and 10 over its unseen line, the line's 18
-  let room = unseen_lines(t)[1] - 30.0
+  // Maple's room: its load's chip and 10 over its unseen line, the line's own
+  let line = t.words().filter(fn(w) { w.0 == "直连" && w.5 == 0.0 }).map(fn(w) { w.4 })[0]
+  let room = unseen_lines(t)[1] - @sf.fill_chip_h - 10.0
+  let middle = room + (@sf.fill_chip_h + 10.0 + line) / 2.0
   let (_, said) = t.find("长时间未连接").unwrap()
-  assert_true((said - (room + 24.0)).abs() < 0.5, msg="the line's middle \{said}, the room's \{room + 24.0}")
+  assert_true((said - middle).abs() < 0.5, msg="the line's middle \{said}, the room's \{middle}")
 }
 
 ///|
@@ -877,7 +889,8 @@ test "settings: a station's card with its CPU, memory and disk all low shows eac
     t.draw()
     let shown = t.words().filter(fn(x) { x.5 > 0.5 }).map(fn(x) { x.0 })
     // in words where the line has the room for all three, else all by their figures: one way for all of them
-    let worded = ["空闲 8%", "剩 5.8 G", "剩 19.4 G"].iter().all(fn(x) { shown.contains(x) })
+    // (a name run on into what is left, 内存剩 5.8 G: fill_chip's chip_joined)
+    let worded = ["空闲 8%", "内存剩 5.8 G", "磁盘剩 19.4 G"].iter().all(fn(x) { shown.contains(x) })
     let figured = ["8%", "5.8G", "19.4G"].iter().all(fn(x) { shown.contains(x) })
     assert_true(worded != figured, msg="\{w}: \{Repr(shown)}")
     assert_true(!shown.iter().any(fn(x) { x.contains("…") }), msg="\{w}: \{Repr(shown)}")
@@ -935,10 +948,52 @@ test "a subscription signing in: what to do in the browser, then the code typed 
   // nothing typed: 完成登录 there, but not to be pressed
   assert_true(t.find("完成登录") is Some(_))
   t.tap_text("粘贴授权码")
-  t.type_text("abc-123")
+  t.type_text("abc-123#st8")
   t.tap_text("完成登录")
   t.draw()
-  assert_true(t.find("abc-123") is None, msg="sent, its field emptied")
+  assert_true(t.semantics().iter().all(fn(s) { s.value != "abc-123#st8" }), msg="sent, its field emptied")
+}
+
+///|
+test "a subscription's code the station refuses (no # and what follows) is said under its field, kept there to mend, gone as it is edited, then the whole code signs in" {
+  let incomplete = "授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）"
+  let phone = corner_windows[corner_windows.search_by(w => w.0 == "phone").unwrap()]
+  let wide = corner_windows[corner_windows.search_by(w => w.0 == "wide").unwrap()]
+  for mode in ["settings-profile-login", "settings-new-profile-login"] {
+    for c in [(phone, 1.0), (wide, 1.0), (phone, words_large_scale)] {
+      let (win, scale) = c
+      let at = "\{mode} \{win.0} at \{scale}"
+      let t = screen_in(mode, win, "zh", font_scale=scale)
+      // (the code's field, by what is in it)
+      let field = fn(value : String) { t.semantics().iter().find_first(fn(s) { s.role == TextField && s.value == value }) }
+      let before = t.audit()
+      t.tap_text("粘贴授权码")
+      t.type_text("abc123")
+      t.tap_text("完成登录")
+      t.run_for(@ui.move_most_ms)
+      // refused: still at the code's step, the code kept in its field, why said right under it
+      assert_true(t.find("正在完成登录") is None, msg="\{at}: not waiting on the station")
+      guard field("abc123") is Some(code) else { fail("\{at}: the code not kept in its field") }
+      guard t.find(incomplete) is Some((_, bad_y)) else { fail("\{at}: no reason under the field") }
+      assert_true(bad_y > code.rect.1 + code.rect.3 / 2.0, msg="\{at}: why \{bad_y} under the field \{Repr(code.rect)}")
+      assert_eq(t.audit().filter(fn(f) { !before.map(aw_plain).contains(aw_plain(f)) }), [], msg=at)
+      assert_eq(t.squeeze_faults() + t.words_over_now() + t.fixed_outgrown(), [], msg=at)
+      // edited: the reason gone
+      t.tap(code.rect.0 + code.rect.2 - 8.0, code.rect.1 + code.rect.3 / 2.0)
+      t.type_text("#st8")
+      t.run_for(@ui.move_most_ms)
+      assert_true(field("abc123#st8") is Some(_), msg="\{at}: the code mended")
+      assert_true(t.find(incomplete) is None, msg="\{at}: gone as it is edited")
+      // the whole code: signed in
+      t.tap_text("完成登录")
+      t.run_for(@ui.move_most_ms)
+      t.draw()
+      t.run_for(@ui.move_most_ms)
+      assert_true(field("abc123#st8") is None, msg="\{at}: taken")
+      assert_true(t.find("完成登录") is None, msg="\{at}: no code asked any more")
+      assert_true(t.find(incomplete) is None, msg=at)
+    }
+  }
 }
 
 ///|
@@ -949,6 +1004,34 @@ test "a subscription signing in: its page's address copied from the ⋯ beside �
   t.tap_text("复制链接")
   assert_true(t.clipboard().has_prefix("https://"), msg=t.clipboard())
   assert_true(t.opened().is_empty(), msg="copied, nothing opened")
+}
+
+///|
+test "adding a company's Google account: Google's three ways, its sign-in's code, then the Google Cloud project it asks for, sent as a code is" {
+  let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-google-ways", platform=2)
+  let y = fn(words : String) { t.find(words).unwrap().1 }
+  assert_true(y("订阅 · Google AI") < y("企业版 · Gemini Enterprise") && y("企业版 · Gemini Enterprise") < y("API key"))
+  t.tap_text("企业版 · Gemini Enterprise")
+  t.run_for(@ui.move_most_ms)
+  // the person's Google account, not Claude's, in its step
+  assert_true(t.find("打开授权页面，用 still.fail 要使用的 Google 账号登录并同意授权") is Some(_))
+  t.tap_text("粘贴授权码")
+  t.type_text("4/0Ab-code")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // no licence: its project asked, under what it is for
+  assert_true(y("项目 ID，例如 my-project") > y("这个账号没有分到 Gemini Enterprise 许可证。填写要使用的 Google Cloud 项目 ID："))
+  assert_true(t.find("粘贴授权码") is None)
+  t.tap_text("项目 ID，例如 my-project")
+  t.type_text("my-project")
+  t.tap_text("完成登录")
+  t.run_for(@ui.move_most_ms)
+  // its project taken: signed in, on to the profile it made, its plan beside it
+  assert_true(t.find("my-project") is None)
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("订阅账号 · Enterprise Ultra") is Some(_))
+  assert_true(t.find("已登录，已添加 Profile") is Some(_))
 }
 
 ///|
@@ -984,9 +1067,10 @@ test "本机缓存: the drives' files kept, counted with the chats', let go when
     Some((_, x, y, w, h, _)) => t.tap(x + w / 2.0, y + h / 2.0)
     None => fail("no 删除")
   }
-  // (asked again once it is let go, drawn with the answer: nothing of it left, its row gone)
+  // (asked again once it is let go, drawn with the answer: nothing of it left, its row gone on its way)
   t.draw()
   t.draw()
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("38.5 MB") is None)
   assert_true(t.find("19.2 MB") is Some(_))
 }
@@ -1502,4 +1586,14 @@ test "the station's page's parts pressed: the page as it was till the part press
     }
   }
   assert_eq(failed, [], msg="presses not as at the press till the part came, then whole")
+}
+
+///|
+test "关闭安全模式: its dialog has the keys in the field the workspace's name is typed in as it opens, on a sheet and in the window's middle (as the old dialog's focus_editor)" {
+  for way in [("小屏", 390.0, 844.0), ("大屏", 1280.0, 800.0)] {
+    let (at, w, h) = way
+    let t = settings_tester("security", shows="settings-security-off", w~, h~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.focus_said().has_prefix("TextField"), msg="\{at}: \{t.focus_said()}")
+  }
 }

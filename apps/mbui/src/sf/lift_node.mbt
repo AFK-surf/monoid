@@ -7,8 +7,16 @@
 ///|
 /// Node `v` lifted while `held` by a finger a while (lift_held of the way) or while `open` says its menu is up (all the
 /// way), as each changes: drawn `scale` times as large all the way up, over the scrim of the menu up and under it.
+/// What it gives: how far up it is as it is drawn (0 … 1, past neither end the spring's give), for what it holds to
+/// look lifted by (a card's raised ground and held_raised's shadow).
 #callsite(autofill(loc))
-pub fn lift_node(v : @view.View, held : () -> Bool, open : () -> Bool, scale : Double, loc~ : SourceLoc) -> Unit {
+pub fn lift_node(
+  v : @view.View,
+  held : () -> Bool,
+  open : () -> Bool,
+  scale : Double,
+  loc~ : SourceLoc,
+) -> () -> Double {
   let lift = EdgeWay::new(0.0)
   // (as lift_of's: past none and back as its spring gives, over the scrim till it is at none)
   let lifted = fn() { lift.shown(v) }
@@ -25,4 +33,14 @@ pub fn lift_node(v : @view.View, held : () -> Bool, open : () -> Bool, scale : D
     fn(to) { lift.go_by(v, to, lift_spring) },
   )
   v.scale(By(fn() { 1.0 + (scale - 1.0) * lifted() }), loc~).over_scrim(By(fn() { lifted() != 0.0 }), loc~) |> ignore
+  fn() {
+    let k = lifted()
+    if k < 0.0 {
+      0.0
+    } else if k > 1.0 {
+      1.0
+    } else {
+      k
+    }
+  }
 }

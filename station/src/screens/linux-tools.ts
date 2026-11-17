@@ -1,7 +1,7 @@
 // Programs for the Linux X11 desktop. Prefer the machine's pair; on Debian-family systems the station can prepare
 // its own pair without installing packages into the operating system or requiring an administrator.
-import { accessSync, constants } from "node:fs";
-import { mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { access, mkdir, mkdtemp, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { delimiter, isAbsolute, join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { endCommand, startCommand } from "../ops/processes.ts";
@@ -45,18 +45,18 @@ function run(program: string, args: string[], o: Running): Promise<{ stdout: str
 }
 
 /// Resolve only executables, without invoking a shell or consulting a different user's environment.
-export function executable(name: string, env: NodeJS.ProcessEnv): string | null {
+/// Looked at off the station's thread.
+export async function executable(name: string, env: NodeJS.ProcessEnv): Promise<string | null> {
   const paths = isAbsolute(name) || name.includes("/") ? [name] : (env.PATH ?? "").split(delimiter).filter(Boolean).map((dir) => join(dir, name));
-  return paths.find((path) => {
-    try { accessSync(path, constants.X_OK); return true; } catch { return false; }
-  }) ?? null;
+  for (const path of paths) if (await access(path, constants.X_OK).then(() => true, () => false)) return path;
+  return null;
 }
 
 export type LinuxToolPair = { ffmpeg: string; xdotool: string; env: NodeJS.ProcessEnv };
 
-function pairAt(root: string, env: NodeJS.ProcessEnv): LinuxToolPair | null {
-  const ffmpeg = executable(join(root, "usr/bin/ffmpeg"), env);
-  const xdotool = executable(join(root, "usr/bin/xdotool"), env);
+async function pairAt(root: string, env: NodeJS.ProcessEnv): Promise<LinuxToolPair | null> {
+  const ffmpeg = await executable(join(root, "usr/bin/ffmpeg"), env);
+  const xdotool = await executable(join(root, "usr/bin/xdotool"), env);
   const arch = process.arch === "x64" ? "x86_64-linux-gnu" : process.arch === "arm64" ? "aarch64-linux-gnu" : null;
   if (!ffmpeg || !xdotool || !arch) return null;
   const libraries = [join(root, "usr/lib", arch), join(root, "lib", arch), join(root, "usr/lib"), join(root, "lib"), env.LD_LIBRARY_PATH].filter(Boolean).join(delimiter);
@@ -74,24 +74,26 @@ export class LinuxScreenTools {
   constructor(data: string) { this.#dir = join(data, "screen-tools", "apt"); }
 
   /// The pair prepared here, with its libraries searched only by its own child processes.
-  prepared(env: NodeJS.ProcessEnv): LinuxToolPair | null {
-    try { accessSync(join(this.#dir, "ready"), constants.R_OK); } catch { return null; }
+  async prepared(env: NodeJS.ProcessEnv): Promise<LinuxToolPair | null> {
+    if (!(await access(join(this.#dir, "ready"), constants.R_OK).then(() => true, () => false))) return null;
     return pairAt(join(this.#dir, "root"), env);
   }
 
   /// Whether this machine has the Debian package tools and an architecture the station ships for.
-  canPrepare(env: NodeJS.ProcessEnv): boolean {
-    return (process.arch === "x64" || process.arch === "arm64") && !!executable("apt-get", env) && !!executable("dpkg-deb", env);
+  async canPrepare(env: NodeJS.ProcessEnv): Promise<boolean> {
+    return (process.arch === "x64" || process.arch === "arm64") && !!(await executable("apt-get", env)) && !!(await executable("dpkg-deb", env));
   }
 
   /// Concurrent requests in one station share the download; an interrupted or failed preparation can be tried again.
   prepare(env: NodeJS.ProcessEnv): Promise<void> {
     if (this.#closed) return Promise.reject(new Error("screen tools closed"));
-    if (this.prepared(env)) return Promise.resolve();
     if (!this.#preparing) {
       const abort = new AbortController();
       this.#abort = abort;
-      this.#preparing = this.#install(env, abort.signal).finally(() => { this.#preparing = null; this.#abort = null; });
+      this.#preparing = (async () => {
+        if (await this.prepared(env)) return;
+        await this.#install(env, abort.signal);
+      })().finally(() => { this.#preparing = null; this.#abort = null; });
     }
     return this.#preparing;
   }
@@ -99,8 +101,8 @@ export class LinuxScreenTools {
   close(): void { this.#closed = true; this.#abort?.abort(); }
 
   async #install(env: NodeJS.ProcessEnv, signal: AbortSignal): Promise<void> {
-    const apt = executable("apt-get", env), dpkg = executable("dpkg-deb", env);
-    if (!apt || !dpkg || !this.canPrepare(env)) throw new Error("APT package tools are unavailable");
+    const apt = await executable("apt-get", env), dpkg = await executable("dpkg-deb", env);
+    if (!apt || !dpkg || !(await this.canPrepare(env))) throw new Error("APT package tools are unavailable");
     const parent = join(this.#dir, "..");
     await mkdir(parent, { recursive: true, mode: 0o700 });
     const stage = await mkdtemp(join(parent, ".apt-"));
@@ -117,7 +119,7 @@ export class LinuxScreenTools {
       if (!packages.length) throw new Error("APT returned no packages");
       await mkdir(root, { mode: 0o700 });
       for (const file of packages) await run(dpkg, ["--extract", join(archives, file), root], { env, signal, timeout: 30_000 });
-      const pair = pairAt(root, env);
+      const pair = await pairAt(root, env);
       if (!pair) throw new Error("APT packages lack the screen programs");
       const [devices] = await Promise.all([
         run(pair.ffmpeg, ["-hide_banner", "-devices"], { env: pair.env, signal, timeout: 30_000 }),
@@ -129,7 +131,7 @@ export class LinuxScreenTools {
       signal.throwIfAborted();
       // Do not replace a pair another station process finished preparing during a handover.
       try { await rename(stage, this.#dir); }
-      catch (error) { if (!this.prepared(env)) throw error; }
+      catch (error) { if (!(await this.prepared(env))) throw error; }
     } finally {
       await rm(stage, { recursive: true, force: true });
     }

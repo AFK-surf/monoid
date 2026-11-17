@@ -91,7 +91,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  * WebView into its picture (TouchFrame.draw) as the WebView changes, not as it moves; a page taller than a picture can
  * be, a part of it at a time (Page).
  *
- * Called on the GL thread (MoonBit's); views are made and moved on the main thread.
+ * Called on the app's thread (MoonBit's: MBView's); views are made and moved on the main thread, what is of the GL
+ * context (each picture's textures) done on the GL thread (MBView.toRender, Picture.latch).
  */
 @OptIn(markerClass = UnstableApi.class)
 final class NativeViews {
@@ -172,10 +173,10 @@ final class NativeViews {
         android.content.MutableContextWrapper context;
         TouchFrame clip;
         View content;
-        /** What it shows, drawn by the canvas (made on the GL thread as it opens). */
+        /** What it shows, drawn by the canvas (made on the app's thread as it opens). */
         Picture picture;
         volatile boolean closed;
-        // how it stands, for info (the GL thread reads these)
+        // how it stands, for info (the app's thread reads these)
         volatile int state;
         volatile double duration = -1, position, playing, nw, nh, bytes, framed, buffering, buffered, ended;
         // placed: x y w h cx0 cy0 cx1 cy1, the content's roundest corner, the part of the content its frame is (its
@@ -186,7 +187,7 @@ final class NativeViews {
         float[] pendingTo;
         boolean pendingShown;
         /**
-         * (GL thread) Where it was last told to go (device pixels, as `at`) and whether shown; moved there in the frame
+         * (the app's thread) Where it was last told to go (device pixels, as `at`) and whether shown; moved there in the frame
          * being drawn; told and not put there yet (it moves with what holds it: its frame follows once it rests, settle).
          */
         float[] toldTo;
@@ -207,14 +208,14 @@ final class NativeViews {
 
         /**
          * Its readiness told to the app, once (android_host.c's mb_host_set_outside: kind 2, state 1 ready, -1
-         * failed): on the GL thread, between frames, from any thread here.
+         * failed): on the app's thread, between frames, from any thread here.
          */
         void tell(int st) {
             synchronized (this) {
                 if (told || closed) return;
                 told = true;
             }
-            Host.view.toGL(() -> Native.outside(Native.OUTSIDE_VIEW, id, st));
+            Host.view.toApp(() -> Native.outside(Native.OUTSIDE_VIEW, id, st));
             Host.main.post(() -> {
                 doneOnce = true;
                 drawnWhenBoth();
@@ -222,21 +223,21 @@ final class NativeViews {
             stood();
         }
 
-        /** (GL thread) How it stands (info's numbers and its state) as the app was last told, and as it is now. */
+        /** (the app's thread) How it stands (info's numbers and its state) as the app was last told, and as it is now. */
         private final double[] stoodSaid = new double[10], stoodNow = new double[10];
         private int stoodState = Integer.MIN_VALUE;
-        /** Whether a look at how it stands is on its way to the GL thread. */
+        /** Whether a look at how it stands is on its way to the app's thread. */
         private final AtomicBoolean stoodAsked = new AtomicBoolean();
 
         /**
-         * How it stands may have changed (any thread here): looked at on the GL thread, between frames, and the app told
+         * How it stands may have changed (any thread here): looked at on the app's thread, between frames, and the app told
          * where it did (android_host.c's mb_host_set_outside: kind 13, src/ui/hostcall.mbt's outside_stood), which reads
          * it then, not each frame. Asked as often as anything changes: told only where something did.
          */
         void stood() {
             MBView mv = Host.view;
             if (closed || mv == null || !stoodAsked.compareAndSet(false, true)) return;
-            mv.toGL(() -> {
+            mv.toApp(() -> {
                 stoodAsked.set(false);
                 if (closed) return;
                 int st = info(id, stoodNow);
@@ -279,13 +280,13 @@ final class NativeViews {
 
         /**
          * What it asks of the app (a player's read or its letting one go, a site's request) put where the app finds it
-         * (`ask`), on the GL thread between frames, and the app told it waits on it (state 0), which takes a player's
-         * reads at once: no frame comes while the window is off the screen (onStop pauses the GL thread; its events
-         * still run), and a read untaken there failed the player (STALL_NS). One event: no frame sees the ask before
+         * (`ask`), on the app's thread between frames, and the app told it waits on it (state 0), which takes a player's
+         * reads at once: no frame comes while the window is off the screen (onStop pauses the drawing; the app's thread
+         * still runs), and a read untaken there failed the player (STALL_NS). One event: no frame sees the ask before
          * the word.
          */
         void askApp(Runnable ask) {
-            Host.view.toGL(() -> {
+            Host.view.toApp(() -> {
                 boolean say;
                 synchronized (this) {
                     say = !closed;
@@ -336,7 +337,7 @@ final class NativeViews {
         void moved() {}
 
         /**
-         * The part of its content its frame is, and so its picture (GL thread, as it is told where it goes): `to`'s
+         * The part of its content its frame is, and so its picture (the app's thread, as it is told where it goes): `to`'s
          * last two, from where it is to go (`to`) and the part it was (`was`, null at first). All of it; a tall page's
          * is a part of it (Page.partOf).
          */
@@ -364,7 +365,7 @@ final class NativeViews {
 
         // ---- a page's (kind 2) and a site's (kind 3) ----
 
-        /** What it says to the app (siteNext, on the GL thread), oldest first. */
+        /** What it says to the app (siteNext, on the app's thread), oldest first. */
         final ConcurrentLinkedQueue<String> said = new ConcurrentLinkedQueue<>();
         /** Its WebView (a page's, a site's). */
         WebView web;
@@ -647,7 +648,7 @@ final class NativeViews {
         }
     }
 
-    // ---- the GL thread ----
+    // ---- the app's thread ----
 
     /** Whether the WebView's cookies are being cleared (a run's start: clearCookies), and the sites waiting for it (main thread). */
     static boolean cookiesClearing;
@@ -686,7 +687,7 @@ final class NativeViews {
         // a stream's picture on a layer of its own under the canvas (kind 4, `arg` the stream's id): StreamLayer's
         if (kind == 4) return StreamLayer.open(id, arg) ? id : 0;
         NView v = kind == 1 ? new Video(id, arg) : kind == 2 ? new Page(id, arg) : new Site(id, arg);
-        // (its picture's SurfaceTexture is of the GL context, made here, on its thread, before the view is)
+        // (its picture's SurfaceTexture made here, before the view is: attached to the GL context as it is first latched)
         v.picture = new Picture(id);
         v.picture.make();
         views.put(id, v);
@@ -745,7 +746,7 @@ final class NativeViews {
     }
 
     /**
-     * Where the app says view `id` shows (GL thread, as the frame is drawn). Moved only (as large, as round, still shown;
+     * Where the app says view `id` shows (the app's thread, as the frame is made). Moved only (as large, as round, still shown;
      * cut anew or not: a list scrolled under it, its edge), nothing is done for it now: the canvas draws its picture
      * there in this frame, as cut as it is, and its frame, which takes the touches on it, follows once it rests
      * (framed): a move of a system view makes the window draw again, each frame of a scroll. Shown, hidden or sized
@@ -782,7 +783,7 @@ final class NativeViews {
     }
 
     /**
-     * A frame drawn (MBView, GL thread): `more` whether another follows at once (the app asks for one). A view moved in
+     * A frame made (MBView, the app's thread): `more` whether another follows at once (the app asks for one). A view moved in
      * it rests once a frame passes that does not move it, or none follows: its frame put where it shows.
      */
     static void framed(boolean more) {
@@ -903,12 +904,12 @@ final class NativeViews {
         }
         // (no frame draws its picture from now on; its surface let go once nothing draws on it)
         Picture p = v.picture;
-        int ext = p.drop();
+        p.drop();
         Host.main.post(() -> {
             v.destroy();
             // out of whichever layer it is in (an activity's other than the one resumed now, not yet moved)
             if (v.clip != null && v.clip.getParent() != null) ((android.view.ViewGroup) v.clip.getParent()).removeView(v.clip);
-            p.letGo(ext);
+            p.letGo();
         });
     }
 
@@ -926,21 +927,33 @@ final class NativeViews {
     /** All of a view's content. */
     static final float[] WHOLE = {0f, 1f};
 
-    /** The largest texture the GL context takes, in pixels a side (GL thread, as the first picture is made). */
+    /** The largest texture the GL context takes, in pixels a side (read as drawing is set up: textureMostRead). */
     static volatile int textureMost;
 
-    /** Pictures done with, their SurfaceTextures let go of on the GL thread as it next latches. */
+    /** The largest texture the GL context now current takes read (GL thread, MBView.onSurfaceCreated). */
+    static void textureMostRead() {
+        if (textureMost != 0) return;
+        int[] most = {0};
+        GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, most, 0);
+        textureMost = most[0] > 0 ? most[0] : 2048;
+    }
+
+    /**
+     * Pictures done with (a SurfaceTexture and its picture), let go of on the GL thread as it next latches: with the
+     * external texture it was attached to, where it was in this context.
+     */
     private static final ConcurrentLinkedQueue<Object[]> doneWith = new ConcurrentLinkedQueue<>();
 
     /**
-     * As a frame begins (MBView.onDrawFrame, GL thread): each view's new picture, if any, latched and drawn into its
+     * As a frame begins (MBView's drawing, GL thread): each view's new picture, if any, latched and drawn into its
      * texture, for the frame to draw it where it shows; the SurfaceTextures done with let go.
      */
     static void latch() {
         for (Object[] d; (d = doneWith.poll()) != null; ) {
-            ((SurfaceTexture) d[0]).release();
-            int ext = (Integer) d[1];
-            if (ext != 0) GLES30.glDeleteTextures(1, new int[] {ext}, 0);
+            SurfaceTexture t = (SurfaceTexture) d[0];
+            Picture p = (Picture) d[1];
+            if (p != null && p.attached == t) p.detached();
+            t.release();
         }
         for (NView v : views.values()) {
             Picture p = v.picture;
@@ -960,11 +973,13 @@ final class NativeViews {
             if (p == null || v.closed) continue;
             SurfaceTexture oldSt = p.st;
             Surface oldSurface = p.surface;
+            // (what it had of the old context gone with it: its textures, its SurfaceTexture's attachment)
+            p.contextLost();
             p.make();
             Host.main.post(() -> {
                 if (!v.closed) v.pictureAnew();
                 oldSurface.release();
-                doneWith.add(new Object[] {oldSt, 0});
+                doneWith.add(new Object[] {oldSt, null});
                 Host.requestFrame();
             });
         }
@@ -980,10 +995,15 @@ final class NativeViews {
      */
     static final class Picture {
         final int id;
-        /** Its SurfaceTexture and the surface on it its producer draws on (made on the GL thread, read on any). */
+        /**
+         * Its SurfaceTexture and the surface on it its producer draws on (made on the app's thread, detached from any
+         * GL context: attached to the GL thread's as it is first latched; read on any).
+         */
         volatile SurfaceTexture st;
         volatile Surface surface;
-        // (GL thread) the external texture under the SurfaceTexture; the plain texture drawn, and its size
+        // (GL thread) the SurfaceTexture attached to the context and the external texture it is attached to; the plain
+        // texture drawn, and its size
+        private SurfaceTexture attached;
         private int ext, tex, texW, texH;
         /**
          * The frames its SurfaceTexture has said have come, and those of them latched (GL thread). A frame sent before
@@ -1041,15 +1061,12 @@ final class NativeViews {
             return latchedPart;
         }
 
-        /** Its SurfaceTexture made (anew) on a new external texture of the context there is (GL thread). */
+        /**
+         * Its SurfaceTexture made (anew), detached (the app's thread as the view opens; the GL thread's as its context
+         * is new): attached to the context as it is first latched (latch).
+         */
         void make() {
-            if (textureMost == 0) {
-                int[] most = {0};
-                GLES30.glGetIntegerv(GLES30.GL_MAX_TEXTURE_SIZE, most, 0);
-                textureMost = most[0] > 0 ? most[0] : 2048;
-            }
-            ext = Streams.external();
-            SurfaceTexture t = new SurfaceTexture(ext);
+            SurfaceTexture t = new SurfaceTexture(false);
             arrived.set(0);
             latched = 0;
             // (said on the main thread; one from a SurfaceTexture let go is not this one's)
@@ -1061,9 +1078,22 @@ final class NativeViews {
             }, Host.main);
             st = t;
             surface = new Surface(t);
+        }
+
+        /** A new GL context (GL thread): its textures, and its SurfaceTexture's attachment, gone with the old. */
+        void contextLost() {
             if (tex != 0) texture(id, 0);
             tex = 0;
             texW = texH = 0;
+            attached = null;
+            ext = 0;
+        }
+
+        /** The SurfaceTexture attached let go (GL thread): its external texture with it. */
+        void detached() {
+            if (ext != 0) GLES30.glDeleteTextures(1, new int[] {ext}, 0);
+            ext = 0;
+            attached = null;
         }
 
         /** Its frames come since the last latched, the last of them drawn into its texture (GL thread). */
@@ -1071,7 +1101,18 @@ final class NativeViews {
             SurfaceTexture t = st;
             int a = arrived.get();
             int pw = w, ph = h;
-            if (t != null && a > latched && pw > 0 && ph > 0) {
+            if (t != null && t != attached && !dropped) {
+                // (attached to this context as it is first latched: made detached, on the app's thread)
+                if (ext == 0) ext = Streams.external();
+                try {
+                    t.attachToGLContext(ext);
+                    attached = t;
+                } catch (RuntimeException e) {
+                    Host.log("view " + id + ": attachToGLContext: " + e);
+                    return;
+                }
+            }
+            if (t != null && t == attached && a > latched && pw > 0 && ph > 0) {
                 boolean got = true;
                 for (; latched < a; latched++) {
                     try {
@@ -1109,23 +1150,32 @@ final class NativeViews {
             }
         }
 
-        /** The view closed (GL thread): no frame draws it from now on. Its external texture, let go of with it. */
-        int drop() {
-            texture(id, 0);
-            part(id, 0, 1);
-            if (tex != 0) GLES30.glDeleteTextures(1, new int[] {tex}, 0);
-            tex = 0;
-            return ext;
+        /** Whether the view closed (dropped): its picture no longer latched. */
+        private volatile boolean dropped;
+
+        /**
+         * The view closed (the app's thread): no frame draws it from now on (said on the GL thread once a frame made
+         * after this is on the screen, the frame kept till then drawing it as it was: MBView.toRetire), its plain
+         * texture let go of there.
+         */
+        void drop() {
+            dropped = true;
+            MBView.toRetire(() -> {
+                texture(id, 0);
+                part(id, 0, 1);
+                if (tex != 0) GLES30.glDeleteTextures(1, new int[] {tex}, 0);
+                tex = 0;
+            });
         }
 
-        /** Its producer stopped (main thread): its surface let go of, its SurfaceTexture and `ext` on the GL thread. */
-        void letGo(int ext) {
+        /** Its producer stopped (main thread): its surface let go of, its SurfaceTexture (and what it is attached to) on the GL thread. */
+        void letGo() {
             Surface s = surface;
             SurfaceTexture t = st;
             st = null;
             surface = null;
             if (s != null) s.release();
-            if (t != null) doneWith.add(new Object[] {t, ext});
+            if (t != null) doneWith.add(new Object[] {t, this});
             Host.requestFrame();
         }
 
@@ -1360,7 +1410,7 @@ final class NativeViews {
         }
     }
 
-    // ---- a site's (kind 3), on the GL thread ----
+    // ---- a site's (kind 3), on the app's thread ----
 
     static String siteNext(int id) {
         NView v = views.get(id);
@@ -1975,7 +2025,7 @@ final class NativeViews {
         /**
          * The frame showing now, its picture's (its content at the video's proportions, not the transform the app's
          * zoom puts on it), at most `side` pixels on its longer side, as a JPEG: `still` once it is made (main thread;
-         * read on the GL thread).
+         * read on the app's thread).
          * As still.fail's Android app keeps the frame a video was left at.
          */
         void grabShown(double side) {
@@ -1988,7 +2038,7 @@ final class NativeViews {
             }
             double k = Math.min(1.0, side / Math.max(nw, nh));
             int gw = Math.max(1, (int) Math.round(nw * k)), gh = Math.max(1, (int) Math.round(nh * k));
-            Host.view.toGL(() -> {
+            MBView.toRender(() -> {
                 Bitmap b = null;
                 try {
                     b = p.read();
@@ -2457,7 +2507,7 @@ final class NativeViews {
 
     /**
      * A site served by the app (still.fail's preview of a service): a WebView at a host of
-     * its own; every request it makes of that host is said to the app (`siteNext`, on the GL thread), which answers it
+     * its own; every request it makes of that host is said to the app (`siteNext`, on the app's thread), which answers it
      * (`siteHead`, `siteChunk`s, `siteEnd`) from the station through the core while the WebView's thread waits here for
      * the head (a minute at most) and then reads the body as it comes. A body the page lets go of is said (`gone`). A
      * link to anywhere else is not followed, only said (`leave`). Scripts and DOM storage on, as the Android app's.

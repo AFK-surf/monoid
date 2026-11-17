@@ -92,3 +92,13 @@ test("a commit's agent says the parts people see it in; one that does not, or na
   assert.equal(refused("Subject\n\nChangelog: 修复：……\nChangelog-parts: mac, desktop\n").length, 1);
   assert.equal(refused("Subject\n\nChangelog: none\nChangelog-parts: web\n").length, 1);
 });
+
+test("a commit said for the test channel alone is read so, and a channel that is none refused", () => {
+  const beta = "Terminal\n\nChangelog: 新增：终端\nChangelog-parts: web, android\nChangelog-channel: beta\n";
+  assert.deepEqual(readMessage(beta), { text: ["新增：终端"], fixes: [], parts: ["web", "android"], channel: ["beta"] });
+  assert.deepEqual(refused(beta), []);
+  // none said: no channel at all (every line of before reads as it did)
+  assert.equal("channel" in readMessage("X\n\nChangelog: 修复：一件\nChangelog-parts: web\n"), false);
+  const wrong = "X\n\nChangelog: 修复：一件\nChangelog-parts: web\nChangelog-channel: stable, nightly\n";
+  assert.deepEqual(refused(wrong), ['"Changelog-channel: stable, nightly": only beta is supported']);
+});

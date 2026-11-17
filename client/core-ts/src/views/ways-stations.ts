@@ -43,22 +43,43 @@ export function keptWays(inner: Inner, ws: string): KeptWays | null {
   return keptOf(inner.data.record("ways", ws));
 }
 
-/// `said`, kept where it is newer than what is (one of `at` 0 is as the cloud kept them: kept only where none is).
+/// `said`, kept where it is newer than what is (one of `at` 0 is as the cloud kept them: kept only where none is), and
+/// told the mesh at once for each of the workspace's stations: the links open go the ways it says now, not the ways
+/// they were opened with until a request opens one again (2026-11-16: a workspace's own relay added and still.fail's
+/// turned off, its stations' streams stayed on still.fail's relays).
 function keep(inner: Inner, ws: string, said: KeptWays): void {
   const was = keptWays(inner, ws);
   if (was !== null && !newer(said, was)) return;
   inner.data.put("ways", ws, said);
+  const mesh = inner.meshNow();
+  if (mesh === null) return;
+  const relays = said.relays.map((r) => r.url);
+  for (const address of stationsOf(inner, ws)) mesh.setWays(address, relays, said.off);
+}
+
+/// The workspace's stations, by address.
+function stationsOf(inner: Inner, ws: string): string[] {
+  const stations = arr(get(inner.data.shared({ topic: "workspace", workspace: ws }), "stations")) ?? [];
+  return stations.flatMap((s) => {
+    const id = get(s, "id");
+    return typeof id === "string" ? [`${ws}/${id}`] : [];
+  });
 }
 
 const ask = (inner: Inner, address: string, method: string, body: unknown = null) =>
   inner.stations.requests.call(StationAddr.parse(address), method, "/ways", body, { quiet: true });
 
-/// A station's ways read and kept; one from before keeps none (404): nothing.
-function readStation(inner: Inner, address: string): Effect.Effect<void, CoreError> {
+/// A station's ways read and kept; one from before keeps none (404): nothing. `answered`: the stations that answered
+/// this run, kept or none.
+function readStation(inner: Inner, address: string, answered?: Set<string>): Effect.Effect<void, CoreError> {
   return Effect.gen(function* () {
     if (inner.provider.kind !== "stillfail" || !inner.stations.link(address) || !inner.stations.reachable(address)) return;
     const said = yield* Effect.result(ask(inner, address, "GET"));
-    if (said._tag === "Failure") return;
+    if (said._tag === "Failure") {
+      if (said.failure.status === 404) answered?.add(address);
+      return;
+    }
+    answered?.add(address);
     const kept = keptOf(said.success);
     if (kept !== null) keep(inner, ofAddress(address), kept);
   });
@@ -66,13 +87,7 @@ function readStation(inner: Inner, address: string): Effect.Effect<void, CoreErr
 
 /// The workspace's stations this device reaches now, by address.
 function reached(inner: Inner, ws: string): string[] {
-  const stations = arr(get(inner.data.shared({ topic: "workspace", workspace: ws }), "stations")) ?? [];
-  return stations.flatMap((s) => {
-    const id = get(s, "id");
-    if (typeof id !== "string") return [];
-    const address = `${ws}/${id}`;
-    return inner.stations.link(address) && inner.stations.reachable(address) ? [address] : [];
-  });
+  return stationsOf(inner, ws).filter((address) => inner.stations.link(address) && inner.stations.reachable(address));
 }
 
 /// A change of the ways made on a station of the workspace that keeps them (the first that does); on still.fail cloud
@@ -104,12 +119,17 @@ function run(inner: Inner, c: Of, progress: Parameters<Handler>[2], at: Paramete
 
 export function install(inner: Inner): void {
   handlers.ways = (core, call, progress, at, ctx) => run(core, call as Of, progress, at, ctx);
+  const answered = new Set<string>();
   inner.stations.also.push({
-    read: (address) => readStation(inner, address),
+    read: (address) => readStation(inner, address, answered),
     event: (address, name, data) => {
       const ws = ofAddress(address);
-      if (name === "ways" && get(data, "workspace") === ws) inner.scheduler.enqueue(address, `ways/${address}`, Priority.background, Effect.ignore(readStation(inner, address)));
+      if (name === "ways" && get(data, "workspace") === ws) inner.scheduler.enqueue(address, `ways/${address}`, Priority.background, Effect.ignore(readStation(inner, address, answered)));
     },
-    // (not read again after an absence: a stream that came back says each change it missed, `ways` among them)
+    // Not read again after an absence (a stream that came back says each change it missed, `ways` among them), but
+    // where the device keeps none for the workspace and the station has not answered this run: a core updated to this,
+    // its stream restored from the cursor its last one kept, was never told the ways changed before it (as presets.ts
+    // `met`).
+    resumed: (address) => (keptWays(inner, ofAddress(address)) !== null || answered.has(address) ? Effect.void : readStation(inner, address, answered)),
   });
 }

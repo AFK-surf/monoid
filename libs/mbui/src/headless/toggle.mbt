@@ -1,6 +1,7 @@
 // The toggle: what is on or off, turned by a press. A checkbox or a switch (its kind: what a screen reader calls it),
 // pressed as the button is (a tap or a click on it, Enter or Space while it has the keyboard's focus, a screen
-// reader's Activate: the framework's, all of them its on_press). The component's: that it says it is its kind, called
+// reader's Activate: the framework's, all of them its on_press), but a checkbox by Space alone (WAI-ARIA's: Enter is
+// what holds it's). The component's: that it says it is its kind, called
 // by its label, on or off as its caller says; that it takes a press and the focus only while it is not disabled (the
 // focus let go of at the cause that disables it, Tab passing it by, read out disabled then); that a press, however it
 // came, tells its caller what it is to be (the other of what it is then), once, and never while it is disabled; and
@@ -24,6 +25,7 @@ pub(all) enum ToggleKind {
 pub struct Toggle {
   priv node : @view.View
   priv now : () -> Bool
+  priv some : () -> Bool
   priv off : () -> Bool
 }
 
@@ -31,6 +33,12 @@ pub struct Toggle {
 /// Whether it is on now (as its caller says).
 pub fn Toggle::on(self : Toggle) -> Bool {
   (self.now)()
+}
+
+///|
+/// Whether a checkbox is neither on nor off now (some of what it stands for is on: `mixed`, as its caller says).
+pub fn Toggle::mixed(self : Toggle) -> Bool {
+  (self.some)()
 }
 
 ///|
@@ -67,7 +75,9 @@ pub fn Toggle::press(self : Toggle) -> Unit {
 
 ///|
 /// A toggle of `kind` in `parent`, called `label` (what a screen reader says, as it changes), on or off as `on` says;
-/// pressed, `turn` told what it is to be (not `on()` as it is pressed); `disabled` while it cannot be pressed. `look`
+/// pressed, `turn` told what it is to be (not `on()` as it is pressed); `disabled` while it cannot be pressed; `mixed`
+/// while a checkbox is neither (read out Mixed, pressed turned on, as Radix's indeterminate; a switch or a toggle
+/// button is never so, `mixed` not read). `look`
 /// is run once as it is made, given its node and what it reads of it: all that is drawn of it, and how it is laid
 /// out. Its node is made at `loc` (`made_for` where a library's part over it was asked for), as the button's is. The
 /// node.
@@ -80,6 +90,7 @@ pub fn toggle(
   turn : (Bool) -> Unit,
   look : (@view.View, Toggle) -> Unit,
   disabled? : () -> Bool = fn() { false },
+  mixed? : () -> Bool = fn() { false },
   hold? : Hold,
   hold_press? : (Double, Double),
   made_for? : SourceLoc,
@@ -87,7 +98,8 @@ pub fn toggle(
 ) -> @view.View {
   parent.box(loc~, made_for=made_for.unwrap_or(loc), fn(v) {
     let able = fn() { !disabled() }
-    look(v, { node: v, now: on, off: disabled })
+    let some = fn() { kind == Checkbox && mixed() }
+    look(v, { node: v, now: on, some, off: disabled })
     match hold {
       Some(h) => attach_hold(v, h)
       None =>
@@ -103,14 +115,21 @@ pub fn toggle(
         }
     }
     // (its own words of the node, said after its look, as the button's)
+    // (a checkbox turns by Space alone, as WAI-ARIA has it and kit's checkbox does: Enter is left to what holds it, a
+    // form's or a dialog's own; a switch and a toggle button by both)
+    let keys = match kind {
+      Checkbox => @view.focus_space
+      Switch | Button => @view.focus_enter | @view.focus_space
+    }
     v
     .presses(By(able))
-    .focusable(By(able))
+    .focusable(By(able), keys~)
     .says(By(fn() {
       let now = on()
       Some(
         match kind {
-          Checkbox => @view.said(Checkbox, label=label(), check=if now { On } else { Off })
+          Checkbox =>
+            @view.said(Checkbox, label=label(), check=if some() { Mixed } else if now { On } else { Off })
           Switch => @view.said(Switch, label=label(), check=if now { On } else { Off })
           Button => @view.said(Button, label=label(), pressed=now)
         },
@@ -120,7 +139,7 @@ pub fn toggle(
     // never while disabled, the tree not yet told)
     .on_press(fn() {
       if !disabled() {
-        turn(!on())
+        turn(some() || !on())
       }
     })
     |> ignore

@@ -7,12 +7,15 @@
 #   stillfail station id
 #   stillfail lock status|reset                   the workspace lock on this station
 #   stillfail lock reset --workspace <id>         the lock of a workspace it joined
+#   stillfail uninstall [--purge]                 stops the station for good: its scheduled tasks, its processes, its
+#                                                 release and ~\.local\bin's command gone; its chats, memory and secrets
+#                                                 kept in the data (<data>\uninstalled says so) unless --purge
 # The data is in $env:STILLFAIL_DATA, default ~\.stillfail.
 $ErrorActionPreference = 'Stop'
 $here = Split-Path -Parent $PSScriptRoot
 $data = if ($env:STILLFAIL_DATA) { $env:STILLFAIL_DATA } else { Join-Path $env:USERPROFILE '.stillfail' }
 $station = if ($env:STILLFAIL_STATION_BIN) { $env:STILLFAIL_STATION_BIN } else { Join-Path $here 'mesh\target\release\stillfail-station.exe' }
-$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>]'
+$usage = 'usage: stillfail start [--port N] | stillfail status | stillfail update [--beta|--stable] | stillfail station enroll <cloud-origin> <token> [--provider comma] | stillfail station id | stillfail lock status | stillfail lock reset [--workspace <id>] | stillfail uninstall [--purge]'
 $a = @($args)
 
 function Run([string[]] $more) {
@@ -20,7 +23,74 @@ function Run([string[]] $more) {
   exit $LASTEXITCODE
 }
 
+# The station here taken away (the app's 卸载本机 Station does the same: apps/mbui/src/host/win_station.c, and the app's
+# own uninstaller: apps/mbui/windows/setup.c). Its tasks as install.ps1 named them (cloud/src/install-windows.ts,
+# windows.json for a station apart): for a data directory of its own ($env:STILLFAIL_DATA, a test's), only a task that
+# runs that directory, never the person's own station beside it.
+function Uninstall([bool] $purge) {
+  $ProgressPreference = 'SilentlyContinue'
+  $full = try { [IO.Path]::GetFullPath($data).TrimEnd('\', '/') } catch { '' }
+  if (-not $full -or $full -eq [IO.Path]::GetPathRoot($full).TrimEnd('\', '/') -or $full -eq $env:USERPROFILE.TrimEnd('\', '/')) {
+    [Console]::Error.WriteLine("stillfail uninstall: refusing to remove $data"); exit 2
+  }
+  $product = 'stillfail'; $productName = 'still.fail'
+  if ((Split-Path -Leaf $full) -eq '.monoid') { $product = 'monoid'; $productName = 'monoid' }
+  $apart = $full -ne (Join-Path $env:USERPROFILE ".$product")
+  $kept = $null
+  try { $kept = Get-Content -Raw (Join-Path $full 'windows.json') | ConvertFrom-Json } catch {}
+  $task = if ($kept.task) { $kept.task } else { "$productName station" }
+  $bin = if ($kept.bin) { $kept.bin } else { Join-Path $env:USERPROFILE '.local\bin' }
+  $app = Join-Path $full 'app'
+  foreach ($name in @($task, "$task update", "$task elevation")) {
+    $t = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    if (-not $t) { continue }
+    if ($apart -and -not (@($t.Actions) | Where-Object { ([string]$_.Execute + ' ' + [string]$_.Arguments).Contains($full) })) { continue }
+    Stop-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
+    try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction Stop } catch { [Console]::Error.WriteLine("stillfail uninstall: task $name not removed: $($_.Exception.Message)") }
+  }
+  # What still runs of it: the launcher by its pid as it said it, and whatever runs from its release (by <app> in their
+  # command lines, as install.ps1 ends them before it replaces a release).
+  $said = $null
+  try { $said = Get-Content (Join-Path $full 'run\station.json') -Raw | ConvertFrom-Json } catch {}
+  $ours = { Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -and ($_.CommandLine.Contains($app) -or ($said.pid -and $_.ProcessId -eq [int]$said.pid -and $_.CommandLine.Contains($full))) -and $_.Name -in 'node.exe', 'stillfail-station.exe', 'stillfail-station-w.exe' } }
+  & $ours | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+  $deadline = (Get-Date).AddSeconds(5)
+  while ((& $ours) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 250 }
+  # its command (install.ps1's WriteCmd): where it runs this release
+  $cmd = Join-Path $bin "$product.cmd"
+  if (Test-Path -LiteralPath $cmd) {
+    $runs = Get-Content -Raw -LiteralPath $cmd -ErrorAction SilentlyContinue
+    if ($runs -and ($runs.Contains($app) -or $runs.Contains("%USERPROFILE%\.$product\app"))) { Remove-Item -LiteralPath $cmd -Force -ErrorAction SilentlyContinue }
+  }
+  if (-not $kept.bin -and (Test-Path -LiteralPath $bin) -and -not (Get-ChildItem -Force -LiteralPath $bin)) {
+    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+    if ($userPath -and (($userPath -split ';') -contains $bin)) {
+      [Environment]::SetEnvironmentVariable('Path', ((@($userPath -split ';') | Where-Object { $_ -and $_ -ne $bin }) -join ';'), 'User')
+    }
+    Remove-Item -LiteralPath $bin -Force -ErrorAction SilentlyContinue
+  }
+  # (out of the release: this script and its command are in it)
+  Set-Location $env:TEMP
+  if ($purge) {
+    Remove-Item -LiteralPath $full -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "stillfail: uninstalled, $full removed"
+  } else {
+    foreach ($part in @('app', 'app.failed', 'node', 'helper', 'run', 'windows.json')) {
+      Remove-Item -LiteralPath (Join-Path $full $part) -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Get-ChildItem -LiteralPath $full -Directory -Filter 'app.old*' -ErrorAction SilentlyContinue | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+    if (Test-Path -LiteralPath $full) { New-Item -ItemType File -Force (Join-Path $full 'uninstalled') | Out-Null }
+    Write-Host "stillfail: uninstalled; chats, memory and secrets kept in $full"
+  }
+  exit 0
+}
+
 switch ("$($a[0]) $($a[1])".Trim()) {
+  { $a[0] -eq 'uninstall' } {
+    if ($a.Count -eq 1) { Uninstall $false }
+    if ($a.Count -eq 2 -and $a[1] -eq '--purge') { Uninstall $true }
+    [Console]::Error.WriteLine('usage: stillfail uninstall [--purge]'); exit 2
+  }
   { $a[0] -eq 'start' } { Run (@('run', '--app', $here, '--data', $data) + $a[1..($a.Count)]) }
   { $a[0] -eq 'status' -or $_ -eq 'station status' } { Run @('status', '--data', $data) }
   'station id' { Run @('id', '--data', $data) }

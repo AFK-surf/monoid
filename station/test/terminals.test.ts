@@ -8,7 +8,7 @@ import type { Viewer } from "../src/mesh/credential.ts";
 import { frame } from "../src/mesh/screens.ts";
 import type { Stream } from "../src/mesh/native.ts";
 import { TerminalLink, type Wire, pastScreen } from "../src/terminals/link.ts";
-import { KIND, MOST, TERMINAL_TYPE, Terminals, asked, sizeOf } from "../src/terminals/terminals.ts";
+import { KIND, MOST, TERMINAL_TYPE, Terminals, asked, controlOf, sizeOf } from "../src/terminals/terminals.ts";
 import { given, settle } from "./hub-fakes.ts";
 
 /// A runner as its link sees it: what it was sent, and what it says.
@@ -134,7 +134,13 @@ test("a new terminal is given its screen first, then only what came after it", a
   // Opened in its chat's folder, at its size, typed into by the one who opened it.
   assert.deepEqual(terminals.list("w1").map((t) => [t.id, t.cwd, t.chat, t.by, t.typing]), [["term-1", "/work/c1", "c1", "ann", "ann"]]);
   assert.deepEqual(r.ops("resize").at(-1), { op: "resize", cols: 80, rows: 24 });
-  // Typing reaches the runner; a resize too, and the screen is given again.
+  // A watching view gets the resized screen, while the typing view that initiated resize keeps its local terminal (no destructive screen echo).
+  const w = new FakeStream();
+  const wd = terminals.answer(w, Buffer.alloc(0), head("term-1", { cols: 80, rows: 24, control: false }), viewer("bob"));
+  await settle();
+  r.screen("[screen:initial-bob]");
+  await settle();
+  const shownBeforeResize = s.shown().length;
   s.send(frame(KIND.input, Buffer.from("ls\r")));
   s.send(frame(KIND.resize, Buffer.from(JSON.stringify({ cols: 100, rows: 30 }))));
   await settle();
@@ -142,10 +148,54 @@ test("a new terminal is given its screen first, then only what came after it", a
   assert.deepEqual(r.ops("resize").at(-1), { op: "resize", cols: 100, rows: 30 });
   r.screen("[screen:resized]");
   await settle();
-  assert.equal(s.shown().at(-1), "screen:[screen:resized]");
+  assert.equal(s.shown().length, shownBeforeResize, "typing view is not echoed a screen snapshot on its own resize");
+  assert.equal(w.shown().at(-1), "screen:[screen:resized]", "watching view receives resized screen snapshot");
   s.send(null);
-  await given(done, "the view ends with its stream");
+  w.send(null);
+  await given(Promise.all([done, wd]), "the views end with their streams");
   assert.ok(s.finished);
+});
+
+test("in-band KIND.control releases typing (只看) and takes over (接管) without reopening the stream", async () => {
+  const { terminals, runners } = station();
+  const a = new FakeStream();
+  const ad = terminals.answer(a, Buffer.alloc(0), head("new", { cols: 80, rows: 24 }), viewer("ann"));
+  await settle();
+  const r = runners[0]!;
+  r.screen("s1");
+  await settle();
+  const b = new FakeStream();
+  const bd = terminals.answer(b, Buffer.alloc(0), head("term-1", { cols: 90, rows: 28, control: false }), viewer("bob"));
+  await settle();
+  r.screen("s2");
+  await settle();
+  assert.equal(a.states().at(-1).types, true);
+  assert.equal(a.states().at(-1).inband, true);
+  assert.equal(b.states().at(-1).types, false);
+
+  // Ann steps back to 只看 in-band without closing stream `a`.
+  a.send(frame(KIND.control, Buffer.from(JSON.stringify({ control: false }))));
+  await settle();
+  assert.equal(a.states().at(-1).types, false);
+  assert.equal(a.states().at(-1).typing, null);
+  assert.equal(terminals.list("w1")[0]!.typing, null);
+
+  // Bob takes control in-band on stream `b` and resizes to 90x28; Ann gets the resized screen snapshot.
+  b.send(frame(KIND.control, Buffer.from(JSON.stringify({ control: true, taken: true, cols: 90, rows: 28 }))));
+  await settle();
+  r.screen("s-90x28");
+  await settle();
+  assert.equal(b.states().at(-1).types, true);
+  assert.equal(b.states().at(-1).cols, 90);
+  assert.equal(b.states().at(-1).rows, 28);
+  assert.equal(a.states().at(-1).types, false);
+  assert.equal(a.states().at(-1).typing, "bob");
+  assert.equal(a.shown().at(-1), "screen:s-90x28");
+  assert.deepEqual(r.ops("resize").at(-1), { op: "resize", cols: 90, rows: 28 });
+
+  a.send(null);
+  b.send(null);
+  await given(Promise.all([ad, bd]), "the views end");
 });
 
 test("one view types, the others look; 接管 takes it and the one before is told", async () => {
@@ -259,6 +309,9 @@ test("what a view asks is checked", () => {
   assert.deepEqual(asked({ cols: 80, rows: 24 }), { cols: 80, rows: 24, control: true, taken: false });
   assert.equal(sizeOf(Buffer.from("nope")), null);
   assert.deepEqual(sizeOf(Buffer.from('{"cols":10,"rows":5}')), { cols: 10, rows: 5 });
+  assert.equal(controlOf(Buffer.from("nope")), null);
+  assert.deepEqual(controlOf(Buffer.from('{"control":false}')), { control: false, taken: false });
+  assert.deepEqual(controlOf(Buffer.from('{"control":true,"taken":true,"cols":120,"rows":40}')), { control: true, taken: true, cols: 120, rows: 40 });
   assert.equal(pastScreen({ at: 0, bytes: Buffer.from("abc") }, 3), null);
   assert.equal(pastScreen({ at: 0, bytes: Buffer.from("abcdef") }, 3)!.toString(), "def");
   assert.equal(pastScreen({ at: 5, bytes: Buffer.from("xy") }, 3)!.toString(), "xy");

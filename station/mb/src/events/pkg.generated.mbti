@@ -1,0 +1,448 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/events"
+
+import {
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn asked_of(Array[(String, String)], Viewer, (String) -> Bool, SeenStore?) -> (Asked, String?)
+
+pub let build_header : String
+
+pub fn build_of(String?) -> Double?
+
+pub fn client_runtimes(Array[(String, String)]) -> Map[String, Unit]
+
+pub fn compat_frame(String, Map[String, Unit]) -> String
+
+pub fn core_too_old(Array[(String, @jsjson.JValue)], oldest? : Int32) -> Bool
+
+pub let counted_from : Int32
+
+pub let cpu_every_ms : Double
+
+pub fn cpu_share(Ticks, Ticks) -> Double?
+
+pub let cpu_span_ms : Double
+
+pub fn elsewhere(SeenStore, String, Viewer) -> String?
+
+pub fn entries_view(@jsjson.JValue, Map[String, Unit]) -> @jsjson.JValue
+
+pub let follows_header : String
+
+pub let gpu_sample_ms : Double
+
+pub async fn harness(@host.Host) -> Unit
+
+pub let head_header : String
+
+pub fn host_info(HostDeps, String, Seen?, (@jsjson.JValue, Seen?, Bool) -> Unit) -> Unit
+
+pub let info_wait_ms : Double
+
+pub fn is_for(@jsjson.JValue, Viewer, String, ((Viewer, Of) -> Bool)?, ((Viewer, String) -> Bool)?) -> Bool
+
+pub fn job_seen(SeenStore, Viewer, String) -> Bool
+
+pub fn js_number(String) -> Double
+
+pub let kept_bytes : Int32
+
+pub let kept_most : Int32
+
+pub let kept_ms : Double
+
+pub fn manages_station(String) -> Bool
+
+pub fn mesh_status(OverviewDeps, Viewer?) -> @jsjson.JValue
+
+pub fn model_makers(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn model_windows(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub let oldest_core : Int32
+
+pub fn overview(OverviewDeps, OverviewKept, Viewer, String, (Result[@jsjson.JValue, String]) -> Unit) -> Unit
+
+pub fn percent_decode(String) -> String
+
+pub fn read_only(String) -> Bool
+
+pub let resumed_header : String
+
+pub fn route_of(String?, String?) -> StatusRoute
+
+pub fn runtime_compatible(String, Array[(String, String)], String, String, JsonAnswer) -> JsonAnswer
+
+pub let runtime_kinds : Array[String]
+
+pub fn runtime_view(@jsjson.JValue, @jsjson.JValue?, Map[String, Unit]) -> View
+
+pub let runtimes_header : String
+
+pub fn seen_of(SeenStore, Viewer, Of) -> Bool
+
+pub fn sees(Viewer, @jsjson.JValue) -> Bool
+
+pub fn sees_ws(Viewer, String?) -> Bool
+
+pub fn segment(String) -> String
+
+pub fn session_seen(SeenStore, Viewer, String) -> Bool
+
+pub let settle_ms : Double
+
+pub let stale_ms : Double
+
+pub fn status_of(StatusInput) -> @jsjson.JValue
+
+pub fn takes_every(Map[String, Unit]) -> Bool
+
+pub let tasks_most : Int32
+
+pub fn thread_seen(SeenStore, Viewer, Double) -> Bool
+
+pub fn viewer_key(Viewer, String) -> String
+
+pub let waiting_days : Double
+
+pub fn went(SeenStore, String, Viewer) -> @jsjson.JValue?
+
+// Errors
+pub suberror NotALog {
+  NotALog
+}
+
+// Types and methods
+pub(all) struct AccountsDeps {
+  homes_read_soon : ((() -> Unit) -> Unit)?
+  profiles_view : (Viewer) -> @jsjson.JValue
+  logins_view : (Viewer) -> @jsjson.JValue
+  api_providers : () -> @jsjson.JValue
+  machine_logins : () -> @jsjson.JValue
+  decision_models : () -> @jsjson.JValue
+  automatic_decisions_view : (Viewer, (@jsjson.JValue) -> Bool, (String) -> String) -> @jsjson.JValue?
+}
+
+pub struct Answer {
+  headers : Array[(String, String)]
+  stream : Stream
+}
+
+pub(all) struct Asked {
+  host : Bool
+  live : Array[(String, Double, Double?)]
+  logs : Array[(String, Int32)]
+  since : String?
+  brief : Bool
+  logins : Array[String]
+  running : Bool
+  shared : Bool
+}
+
+type Client
+
+pub struct CompatStream {
+  supported : Map[String, Unit]
+  mut pending : String
+}
+pub fn CompatStream::end(Self) -> String?
+pub fn CompatStream::new(Map[String, Unit]) -> Self
+pub fn CompatStream::push(Self, String) -> Array[String]
+
+pub(all) struct ConnectKind {
+  shown : (@jsjson.JValue) -> @jsjson.JValue
+  connection : (@jsjson.JValue) -> @jsjson.JValue?
+}
+
+pub struct CpuWindow {
+  seen : Array[Seen]
+}
+pub fn CpuWindow::busy(Self, Double, Ticks?) -> @jsjson.JValue
+pub fn CpuWindow::latest(Self) -> Seen?
+pub fn CpuWindow::new() -> Self
+pub fn CpuWindow::note(Self, Double, Ticks?) -> Unit
+
+pub(all) struct Deps {
+  read : (String, @jsjson.JValue, (Result[String, String]) -> Unit) -> Unit
+  said : (@jsjson.JValue, Array[@jsjson.JValue], String) -> Result[Array[@jsjson.JValue], String]
+  host : ((@jsjson.JValue?) -> Unit) -> Unit
+  job_log : (String) -> String?
+  log_now : (String, Int32, (@jsjson.JValue?) -> Unit) -> Unit
+  mut live : ((String, Double, Double?, (@jsjson.JValue) -> Unit, Bool) -> (() -> Unit)?)?
+  mut held : (() -> Array[String])?
+  mut held_now : ((Array[String], (Result[@jsjson.JValue, String]) -> Unit) -> Unit)?
+  session_exists : (String) -> Bool
+  live_seen : ((Viewer, String) -> Bool)?
+  mut overview : ((Viewer, String, (Result[@jsjson.JValue, String]) -> Unit) -> Unit)?
+  mut process_state : ((String) -> String?)?
+  mut followed : (() -> Unit)?
+  seen : ((Viewer, Of) -> Bool)?
+  mut login_screen : ((String, (Screen) -> Unit) -> (() -> Unit)?)?
+  mut in_vault : ((Viewer, String) -> Bool)?
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  every : (Double, () -> Unit) -> () -> Unit
+  immediate : (() -> Unit) -> Unit
+  watch : (String, () -> Unit) -> (() -> Unit)?
+  warn : (String, @jsjson.JValue) -> Unit
+}
+
+type Dirty
+
+pub struct EventLog {
+  run : String
+  mut seq : Double
+  mut kept : Array[Logged]
+  mut bytes : Int32
+  mut forgotten : Double
+  latest : Map[String, Logged]
+  ms : Double
+  most : Int32
+  most_bytes : Int32
+}
+pub fn EventLog::after(Self, String) -> Array[Logged]
+pub fn EventLog::append(Self, String, String, @jsjson.JValue, Double, of? : String) -> Logged
+pub fn EventLog::at(Self) -> String
+pub fn EventLog::clear(Self) -> Unit
+pub fn EventLog::from(@jsjson.JValue, Double, ms? : Double, most? : Int32, bytes? : Int32) -> Self raise NotALog
+pub fn EventLog::has(Self, String) -> Bool
+pub fn EventLog::kept(Self) -> @jsjson.JValue
+pub fn EventLog::new(String, ms? : Double, most? : Int32, bytes? : Int32) -> Self
+pub fn EventLog::state(Self) -> @jsjson.JValue
+
+pub struct Events {
+  deps : Deps
+  mut clients : Array[Client]
+  mut next : Int32
+  mut log : EventLog
+  mut lingering : (() -> Unit)?
+  mut last : (Viewer, String)?
+  mut shared_told : Map[String, String]?
+  mut shared_until : Double
+  mut shared_reading : Array[(Bool) -> Unit]?
+  mut opening_shared : Int32
+  overview_told : Map[String, String]
+  mut dirty : Dirty
+  states : Map[String, String]
+  taken : Map[String, Int32]
+  mut flushing : Bool
+  mut timers : Array[() -> Unit]
+  mut last_host : String
+  mut usage_told : Double
+  mut usage_later : (() -> Unit)?
+  mut usage_from : UsageFrom
+  mut reading : Int32
+  idle_waiters : Array[() -> Unit]
+  mut taking : Bool
+  mut early : Array[() -> Unit]
+  taking_waiters : Array[() -> Unit]
+  mut handed : Bool
+  timer_stops : Map[Int32, () -> Unit]
+  mut timer_next : Int32
+  mut time_closed : Bool
+  mut held_making : Int32
+}
+pub fn Events::follow(Self, live? : (String, Double, Double?, (@jsjson.JValue) -> Unit, Bool) -> (() -> Unit)?, held? : () -> Array[String], held_now? : (Array[String], (Result[@jsjson.JValue, String]) -> Unit) -> Unit, overview? : (Viewer, String, (Result[@jsjson.JValue, String]) -> Unit) -> Unit, process_state? : (String) -> String?, followed? : () -> Unit, login_screen? : (String, (Screen) -> Unit) -> (() -> Unit)?, in_vault? : (Viewer, String) -> Bool) -> Unit
+pub fn Events::hand_over(Self, Int32, (Handed) -> Unit) -> Unit
+pub fn Events::held_told(Self, String, @jsjson.JValue) -> Unit
+pub fn Events::in_use(Self) -> Bool
+pub fn Events::log(Self) -> EventLog
+pub fn Events::machine_logins(Self, @jsjson.JValue, @jsjson.JValue, String) -> Unit
+pub fn Events::new(Deps, String, taking? : Bool) -> Self
+pub fn Events::open(Self, Viewer, String, Asked, (Result[Answer, String]) -> Unit) -> Unit
+pub fn Events::overview_changed(Self) -> Unit
+pub fn Events::presets_changed(Self) -> Unit
+pub fn Events::rows_changed(Self, String?, made? : Bool) -> Unit
+pub fn Events::screens(Self, (String) -> @jsjson.JValue) -> Unit
+pub fn Events::store_changed(Self, @jsjson.JValue) -> Unit
+pub fn Events::take_up(Self, String?, unread? : Bool, from? : Int32) -> Unit
+pub fn Events::tell(Self, String, @jsjson.JValue, String, @jsjson.JValue) -> Unit
+
+pub(all) enum Handed {
+  Nothing
+  Removed
+  Written(String)
+}
+
+pub struct Host {
+  deps : HostDeps
+  data_dir : String
+  mut cached : (Double, @jsjson.JValue)?
+  mut seen : Seen?
+  mut reading : Array[(@jsjson.JValue) -> Unit]?
+  mut sampling : Array[(@jsjson.JValue) -> Unit]?
+  cpu : CpuWindow
+}
+pub fn Host::follow(Self, (Double, () -> Unit) -> () -> Unit) -> () -> Unit
+pub fn Host::new(HostDeps, String) -> Self
+pub fn Host::recent_busy(Self, (@jsjson.JValue) -> Unit) -> Unit
+pub fn Host::sample(Self, (@jsjson.JValue) -> Unit) -> Unit
+
+pub(all) struct HostDeps {
+  test_host : () -> Bool
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  cpu_ticks : ((Ticks?) -> Unit) -> Unit
+  sample : ((@jsjson.JValue) -> Unit) -> Unit
+  statfs : (String, (@jsjson.JValue?) -> Unit) -> Unit
+  hostname : () -> String
+  parallelism : () -> Int32
+  loadavg : () -> Array[Double]
+  arch : String
+  os : () -> String
+  gpus_read : ((@jsjson.JValue?) -> Unit) -> Unit
+  gpus_cached : (() -> @jsjson.JValue?)?
+}
+
+pub(all) struct JsonAnswer {
+  status : Int32
+  headers : Array[(String, String)]
+  body : String
+}
+
+pub(all) struct Logged {
+  n : Double
+  to : @jsjson.JValue
+  mut text : String
+  at : Double
+  of : String?
+}
+
+pub(all) enum Of {
+  Session(String)
+  Thread(@jsjson.JValue)
+  Job(String)
+  Ws(@jsjson.JValue)
+}
+
+pub(all) struct OverviewDeps {
+  config : () -> @jsjson.JValue
+  session_counts : (Viewer, Array[@jsjson.JValue]) -> (Double, Map[String, Double])?
+  wait_for_session_counts : (((Bool) -> Unit) -> Unit)?
+  hub_processes : () -> Array[(String, String)]
+  session_ws : (String) -> @jsjson.JValue?
+  list_processes : () -> Array[@jsjson.JValue]
+  data_dir : String
+  group_memory : (Array[@jsjson.JValue], (Map[String, Double]) -> Unit) -> Unit
+  disk_room : (String, (@jsjson.JValue) -> Unit) -> Unit
+  store_now : () -> Double
+  binding : (String) -> @jsjson.JValue
+  connect_kind : (String) -> ConnectKind?
+  accounts : AccountsDeps?
+  updates : ((String) -> @jsjson.JValue)?
+  slack_identities : (String) -> @jsjson.JValue
+  root_view : (String, (@jsjson.JValue) -> Unit) -> Unit
+  homedir : String
+  has_spotlight : Bool
+  permissions : ((Viewer) -> @jsjson.JValue?)?
+  cloud_state : () -> @jsjson.JValue?
+  membership : (String) -> @jsjson.JValue?
+  reached : () -> Bool
+  catalog : () -> @jsjson.JValue
+  decisions_version : () -> @jsjson.JValue
+  policy_checks : ((Double, Viewer, (@jsjson.JValue) -> Unit) -> Unit)?
+  policy_view : (@jsjson.JValue, (@jsjson.JValue) -> Bool, (String) -> String, Viewer, @jsjson.JValue?) -> @jsjson.JValue
+  prepare_decision_sessions : (() -> Unit) -> Unit
+  prepare_session_chat_names : ((Array[String], () -> Unit) -> Unit)?
+  session_there : (String) -> Bool
+  chat_readable : (String) -> Bool
+  chat_title : (String) -> String
+  rooted : (String) -> Bool
+  clean : (String) -> String
+}
+
+pub struct OverviewKept {
+  mut memory : (Double, String, Map[String, Double])?
+  decisions : Map[String, (Double, String, @jsjson.JValue)]
+}
+pub fn OverviewKept::new() -> Self
+
+pub(all) struct Screen {
+  rows : Array[String]
+  cursor : @jsjson.JValue
+  echo : Bool
+  live : Bool
+}
+
+pub(all) struct Seen {
+  at : Double
+  ticks : Ticks
+}
+
+pub(all) struct SeenStore {
+  session_ws : (String) -> @jsjson.JValue?
+  thread_sessions : (Double) -> Array[String]
+  job_session : (String) -> String?
+  session_there : (String) -> Bool
+  thread_there : (Double) -> Bool
+  handed_to : (String) -> @jsjson.JValue?
+}
+
+pub(all) struct StatusInput {
+  version : String
+  cloud : @jsjson.JValue?
+  reached : Bool
+  running : Array[@jsjson.JValue]
+  processes : Array[(String, String)]
+  waiting : Array[@jsjson.JValue]
+  health : @jsjson.JValue?
+}
+
+pub(all) enum StatusRoute {
+  Status
+  Watch
+  Health
+  NotFound
+}
+
+pub struct StatusTeller {
+  now : () -> @jsjson.JValue?
+  after : (Double, () -> Unit) -> () -> Unit
+  watchers : Map[Int32, (String) -> Unit]
+  mut next : Int32
+  mut last : String
+  mut pending : (() -> Unit)?
+}
+pub fn StatusTeller::answer(Self, StatusRoute, (String) -> Unit) -> (Int32, String, String, (() -> Unit)?)
+pub fn StatusTeller::changed(Self) -> Unit
+pub fn StatusTeller::close(Self) -> Unit
+pub fn StatusTeller::new(() -> @jsjson.JValue?, (Double, () -> Unit) -> () -> Unit) -> Self
+
+pub struct Stream {
+  queue : Array[String]
+  mut closed : Bool
+  mut carried : ((String) -> Unit, () -> Unit)?
+  mut remove : () -> Unit
+}
+pub fn Stream::close(Self) -> Unit
+pub fn Stream::relay(Self, (String) -> Unit, () -> Unit) -> Unit
+
+pub(all) struct Ticks {
+  busy : Double
+  total : Double
+}
+
+type UsageFrom
+
+pub(all) enum View {
+  Omit
+  Value(@jsjson.JValue?)
+}
+
+pub struct Viewer {
+  raw : @jsjson.JValue
+  sub : String
+  email : String
+  role : String
+  workspace : String
+  home : Bool?
+}
+pub fn Viewer::of(@jsjson.JValue) -> Self
+
+// Type aliases
+
+// Traits

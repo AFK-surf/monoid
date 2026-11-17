@@ -5,7 +5,7 @@
 // summary, threads, turns and jobs.
 
 ///|
-/// A session whose up jobs' lookup the pool is to prepare once this read is answered (read/worker.ts `Answer`
+/// A session whose up jobs' lookup the pool is to prepare once this read is answered (read/mb-reader.ts `Answer`
 /// `prepareUpJobs`), set by `jobsNow`, taken by the reader.
 pub let prepare_up_jobs : Ref[String?] = Ref(None)
 

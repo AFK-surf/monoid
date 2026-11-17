@@ -10,13 +10,15 @@
 /// the words picked there with them: share_offer).
 fn message_menu_node(row : @view.View, s : MessageShare) -> Unit {
   row.on_menu(fn(m) {
-    @sfbase.share_offer(m.wx, m.wy, s.go, @signals.untracked(s.link), @signals.untracked(s.words), s.key)
+    @sfbase.share_offer(m.wx, m.wy, s.go, @signals.untracked(s.link), @signals.untracked(s.words), (s.key)())
   })
   |> ignore
 }
 
 ///|
-/// Agent `agent`'s card (agent_hover's: agent_card_node, in a tile) over `trigger` while a mouse's pointer rests on it,
+/// Agent `agent()`'s card (agent_hover's: agent_card_node, in a tile, of the agent it names as it opens) over `trigger`
+/// while a mouse's pointer rests on it and it names one (one the chat's agents come to name after the row was made
+/// has its card from then),
 /// to a finger as it holds it (not `pointed`), in the chat `here` is; kept open while what was opened from it is.
 /// `words_along`: a trigger that is words (its name), the card's words starting where they start. `press`: what a press
 /// on `trigger` does (its name's: its history), which the card's hand then takes (one gesture a node); none, the
@@ -27,7 +29,7 @@ fn message_agent_card_node(
   trigger : @view.View,
   src : Source,
   here : MessageNodeHere,
-  agent : String,
+  agent : () -> String,
   words_along? : Bool = false,
   press? : () -> Unit,
   pointed? : Bool = false,
@@ -47,34 +49,45 @@ fn message_agent_card_node(
     @sf.hover_card_node(
       here.tips,
       trigger,
-      fn(c) { held.val = agent_card_node(c, src, message_node_ref(here), agent, here.tips, card) },
+      fn(c) { held.val = agent_card_node(c, src, message_node_ref(here), @signals.untracked(agent), here.tips, card) },
       tile=true,
       along_offset=if words_along { -@sf.panel_pad - hover_words_in } else { 0.0 },
       held=fn() { (held.val)() },
       press?,
-      pointed?=if pointed { Some(fn() { trigger.pointed_in() }) } else { None },
+      pointed?=if pointed { Some(fn() { agent() != "" && trigger.pointed_in() }) } else { None },
     ),
   )
 }
 
 ///|
-/// What a message whose menu is open shows of it (the old list's band for it, chat_list's `msg-menu/`): the pointer's
-/// ground under what `row` holds (its outermost node: across the list), easing in as its menu opens and out as it goes
-/// (nav_fade, from the moment of each), while its right click's menu shows (@sfbase.message_menu_on, by its key `key`)
-/// or its ⋯'s (`more`, the row's own: what it says once the row is made; a menu presented is told to what reads it).
-fn message_menu_band_node(row : @view.View, key : String, more : Ref[() -> Bool]) -> Unit {
-  row.box(fn(b) {
-    let way = @motion.Way::new(0.0)
-    b.over(Is(true)).presses(Is(false)) |> ignore
-    b.reacts(
-      fn() {
-        // (a menu presented or let go tells this again: the row's ⋯ read as it is then)
-        @sf.presenting() |> ignore
-        @sfbase.message_menu_on(key) || (more.val)()
-      },
-      fn(on) { way.go(if on { 1.0 } else { 0.0 }, @sf.nav_fade, at=b.cause_at()) },
-    )
-    b.ground(By(fn() { lit_by(@ui.tree_theme().color(Hover), way.shown_on(b)) })) |> ignore
-  })
-  |> ignore
+/// How lit what a message whose menu is open shows of it is (the old list's band for it, chat_list's `msg-menu/`: the
+/// pointer's ground under all its row holds, chat_row_band_node's), followed in `row` (its outermost node): easing in
+/// as its menu opens and out as it goes (nav_fade, from the moment of each), while its right click's menu shows
+/// (@sfbase.message_menu_on, by its message's key `key`, every piece of a long one the same) or its ⋯'s (`more`, the
+/// row's own: what it says once the row is made; a menu presented is told to what reads it). Its key as it is now:
+/// taken for another row's (a block put by and taken again: View::scrolls_window's `reused`), as lit as that row's is
+/// at once, as were it made for it.
+fn message_menu_band_way(row : @view.View, key : () -> String, more : Ref[() -> Bool]) -> @motion.Way {
+  let read = fn() {
+    // (a menu presented or let go tells this again: the row's ⋯ read as it is then)
+    @sf.presenting() |> ignore
+    @sfbase.message_menu_on(key()) || (more.val)()
+  }
+  let way = @motion.Way::new(if @signals.untracked(read) { 1.0 } else { 0.0 })
+  let key_was = Ref(@signals.untracked(key))
+  row.reacts(
+    fn() { (read(), key()) },
+    fn(now) {
+      let (on, k) = now
+      // (taken for another row: as lit as that one is, at once)
+      if k != key_was.val {
+        key_was.val = k
+        way.put(if on { 1.0 } else { 0.0 })
+        return
+      }
+      way.go(if on { 1.0 } else { 0.0 }, @sf.nav_fade, at=row.cause_at())
+    },
+    at_start=false,
+  )
+  way
 }

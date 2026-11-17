@@ -55,9 +55,9 @@ test "a message's label longer than its line goes on in the next, each part whol
   let who = t.rect_of("Zijian Zuo").unwrap()
   let after = t.rect_of("的消息").unwrap()
   let place = t.rect_of("安卓执行历史").unwrap()
-  // (each in one line, 18 high: the name and the place were in two, 36)
+  // (each in one line, 20 high matching the 20 gutter icon so line 1 and the icon share the exact same center)
   for r in [before, who, after, place] {
-    assert_eq(r.3, 18.0)
+    assert_eq(r.3, 20.0)
   }
   // (the words around the name whole: cut they were 36.5 and 28.4 wide, whole 58.5 and 45.5)
   assert_eq(before.2, 58.5)
@@ -66,5 +66,5 @@ test "a message's label longer than its line goes on in the next, each part whol
   assert_eq(who.1, before.1)
   assert_eq(after.1, before.1)
   assert_true(before.0 + before.2 <= who.0 && who.0 + who.2 <= after.0)
-  assert_eq(place.1, before.1 + 18.0)
+  assert_eq(place.1, before.1 + 20.0)
 }

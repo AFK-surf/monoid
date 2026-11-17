@@ -73,7 +73,7 @@ test "wide: a vault request's outcome line has its dot in the middle of its word
   assert_true(lines.length() > 0 && lines.all(fn(r) { r.text == "已允许使用 Axiom 查询 token · 本对话内" }), msg="\{Repr(lines)}")
   for r in lines {
     let mid = (r.top + r.bottom) / 2.0
-    let dots = t.boxes().filter(fn(b) { b.w == 6.0 && b.h == 6.0 && b.x < r.x0 && b.y >= r.top - 6.0 && b.y <= r.bottom })
+    let dots = t.boxes_held().filter(fn(b) { b.w == 6.0 && b.h == 6.0 && b.x < r.x0 && b.y >= r.top - 6.0 && b.y <= r.bottom })
     assert_eq(dots.map(fn(b) { b.y + b.h / 2.0 }), [mid])
   }
 }

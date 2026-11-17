@@ -11,6 +11,7 @@ fn wide_tester(
   window_corner? : Double = 0.0,
   window_inset? : Bool = false,
   before? : (Source) -> Unit = fn(_) {  },
+  env? : Array[(String, String)] = [],
 ) -> @ui.Tester {
   new_run()
   let base = fixture(mode)
@@ -26,7 +27,7 @@ fn wide_tester(
   }
   // (what the run is made with, said after it is begun and before the window is: a window of its own's page)
   before(src)
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_corner~, window_inset~)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, window_corner~, window_inset~, env~)
   t
 }
 
@@ -146,7 +147,7 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
   assert_true(t.find("重命名") is Some(_))
-  assert_true(t.find("分享…") is Some(_))
+  assert_true(t.find("分享") is Some(_))
   match t.find("固定") {
     Some(_) => {
       t.tap_text("固定")
@@ -156,7 +157,10 @@ test "wide: a row's menu from its right click pins it (chat.pin) and closes" {
     None => ()
   }
   t.key(@ui.key_escape)
-  assert_true(t.find("分享…") is None)
+  // (closed: nothing of it read out at once, drawn back over pop_out_ms)
+  assert_true(t.query(Menu) is None)
+  t.run_for(@kit.pop_out_ms)
+  assert_true(t.find("分享") is None)
 }
 
 ///|
@@ -165,7 +169,7 @@ test "wide: a row's menu offers what its page's \"…\" does besides (分享给�
   let t = wide_tester(calls, mode="home-share")
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
-  // (in its 分享…, with the rest of what shares it)
+  // (in its 分享, with the rest of what shares it)
   open_share(t)
   assert_true(t.query(MenuItem, label="分享给其他 workspace") is Some(_), msg=t.drawn_text())
   assert_true(t.query(MenuItem, label="在 Slack 中打开") is Some(_), msg=t.drawn_text())
@@ -423,7 +427,7 @@ test "wide: where this machine is a station, files from the Finder let go on the
 /// Where the chat's find colours its matches in, in the window (x, y, w, h): the highlighter's bands (a shape, the old
 /// page's) or a mark's ground under the words (View::runs_marks: a rect), in its colour on the light theme.
 fn find_coloured_in(t : @ui.Tester) -> Array[(Double, Double, Double, Double)] {
-  let ink = 0xFFCC00D9L
+  let ink = @sf.theme().find_bg()
   let out = t.drawn_shapes().filter(fn(r) { r.5 == ink }).map(fn(r) { (r.0, r.1, r.2, r.3) })
   out.append(t.drawn_rects().filter(fn(r) { r.4 == ink }).map(fn(r) { (r.0, r.1, r.2, r.3) }))
   out
@@ -1516,6 +1520,9 @@ test "wide: ⌘K and a row's menu open again right after Esc closed them" {
   t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
   t.type_text("签名")
   t.frame()
+  // (Esc clears what is typed first, as a Mac's search field; again, closed)
+  t.key(@ui.key_escape)
+  t.frame()
   t.key(@ui.key_escape)
   t.frame()
   assert_true(t.find("搜索全部内容和操作") is None, msg="closed")
@@ -1574,7 +1581,7 @@ test "wide: ⌘⇧G goes to a folder by its path (~ the home: the core's files.g
   t.run_for(@ui.move_most_ms)
   t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   t.frame()
-  assert_true(t.find("前往文件夹…") is Some(_))
+  assert_true(t.find("前往文件夹") is Some(_))
   t.type_text("~/项目")
   t.frame()
   assert_true(t.find("Willow › /Users/lin/项目") is Some(_), msg="where it goes")
@@ -1586,7 +1593,7 @@ test "wide: ⌘⇧G goes to a folder by its path (~ the home: the core's files.g
     Drive(at) => assert_eq(at.root, Some("/Users/lin/项目"))
     _ => fail("no folder open")
   }
-  assert_true(t.find("前往文件夹…") is None, msg="closed")
+  assert_true(t.find("前往文件夹") is None, msg="closed")
   // its station's button: the stations
   t.click(Button, label="换 station")
   t.frame()
@@ -2914,11 +2921,11 @@ fn with_row(v : Json, id : String, more : Map[String, Json]) -> Json {
 /// Whether the message with `words` flashes as a message gone to does: the accent's ground drawn under all of its words'
 /// first line, as either page lights a row gone to (what is drawn, not which row a list says it lit).
 fn gone_lit(t : @ui.Tester, words : String) -> Bool {
-  let accent = @ui.tree_theme().color(AccentBg)
+  let flash = @sf.theme().flash_bg()
   match t.run_rects(words) {
     [(wx, wy, ww, wh), ..] =>
       t.drawn_rects().iter().any(fn(r) {
-        (r.4 >> 8) == (accent >> 8) && (r.4 & 0xFFL) > 0L && r.0 <= wx && r.0 + r.2 >= wx + ww && r.1 <= wy && r.1 + r.3 >= wy + wh
+        (r.4 >> 8) == (flash >> 8) && (r.4 & 0xFFL) > 0L && r.0 <= wx && r.0 + r.2 >= wx + ww && r.1 <= wy && r.1 + r.3 >= wy + wh
       })
     _ => false
   }
@@ -2978,11 +2985,13 @@ test "wide: Esc goes to what the frame opened first (a row's menu), then to the 
   assert_true(@sfpages.find_chat() != "")
   let (x, y) = t.find("夜里的构建又失败了").unwrap()
   t.right_click(x, y)
-  assert_true(t.find("分享…") is Some(_))
-  // the menu closed, the bar still open
+  assert_true(t.find("分享") is Some(_))
+  // the menu closed (drawn back over pop_out_ms), the bar still open
   t.key(@ui.key_escape)
   t.frame()
-  assert_true(t.find("分享…") is None)
+  assert_true(t.query(Menu) is None)
+  t.run_for(@kit.pop_out_ms)
+  assert_true(t.find("分享") is None)
   assert_true(@sfpages.find_chat() != "")
   // then the bar
   t.key(@ui.key_escape)

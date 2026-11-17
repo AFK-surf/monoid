@@ -12,7 +12,7 @@ for (const column of ["card", "options"] as const) for (const event of ["answer"
     for (const size of [40, 400]) {
       const store = Store.open(":memory:"), db = store.db;
       try {
-        const thread = store.openThread("slack:T", "C", `old-${column}-${event}-${size}`, null, null).id;
+        const thread = store.openThread("ember", "C", `old-${column}-${event}-${size}`, null, null).id;
         db.prepare("DELETE FROM card_post_scopes WHERE thread=?").run(thread);
         const value = column === "card" ? '{"type":"text"}' : '["yes"]';
         const put = db.prepare(`INSERT INTO entries(thread,n,kind,target,author_kind,author,text,at,${column})
@@ -55,7 +55,7 @@ for (const column of ["card", "options"] as const) for (const missingIndexes of 
   test(`an unprepared ${column} keeps event order${missingIndexes ? " without the old indexes" : ""}`, () => {
     const store = Store.open(":memory:"), db = store.db;
     try {
-      const thread = store.openThread("slack:T", "C", `order-${column}-${missingIndexes}`, null, null).id;
+      const thread = store.openThread("ember", "C", `order-${column}-${missingIndexes}`, null, null).id;
       db.prepare("DELETE FROM card_post_scopes WHERE thread=?").run(thread);
       const card = column === "card" ? '{"type":"text"}' : '["yes"]';
       const put = db.prepare(`INSERT INTO entries(thread,n,kind,author_kind,author,text,at,${column})
@@ -92,7 +92,7 @@ test("the last person and older card are read from one snapshot", () => {
   const dir = mkdtempSync(join(tmpdir(), "card-before-snapshot-")), path = join(dir, "station.db");
   const store = Store.open(path), db = store.db;
   try {
-    const thread = store.openThread("slack:T", "C", "snapshot", null, null).id;
+    const thread = store.openThread("ember", "C", "snapshot", null, null).id;
     db.prepare("DELETE FROM card_post_scopes WHERE thread=?").run(thread);
     const put = db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at,card) VALUES(?,?,'message',?,?,?,?,?)");
     put.run(thread, 1, "person", "p", "first", 1, null);

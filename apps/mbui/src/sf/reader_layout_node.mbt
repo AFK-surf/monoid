@@ -1,10 +1,10 @@
 // The reader's layout (排版: Reader.tsx Layout) as nodes of the window's tree, laid over the reader where its panel is
-// (reader.mbt's, an old view): the day's papers, the size with its keys, the lines and the margins on sliders, the
+// (reader_node.mbt's): the day's papers, the size with its keys, the lines and the margins on sliders, the
 // face and the indent each a choice (seg_node), each changed as it is picked (the host's set_reader_style). While a
 // reading's layout is open (layout_open, reader_panel_set): on 小屏 a sheet from the window's foot, half of it tall, on
 // the page's own ground (sheet_node, as the reader's other panels are the host's sheets there); else docked at the
 // window's right under the reader's bar, 320 wide, on its paper (the old panel's place, desk_panel's: the text kept
-// clear of it as reader_column has it), its head the title and its close. It follows the tier as the window changes,
+// clear of it as reader_sides has it), its head the title and its close. It follows the tier as the window changes,
 // as the old panel did; closed (Escape, its close, the sheet let go, gone back), it goes as the sheet goes, or at once.
 // A reader in a tab beside a chat has the same docked panel in the tab's own stage (reader_layout_docked, laid by
 // sfbase's viewer_tab_node), going and coming back with the tab.
@@ -24,7 +24,9 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     let r = reading()
     // The reader can itself be inside the viewer's modal layer. Its panel must take input above that layer, while
     // presenters (whose serials start at 1) still open above the panel.
-    o.over(Is(true)).stacked(Is(0)) |> ignore
+    // (clear of the column of the system's bars down the window's trailing edge, an iPhone Duo's on its side, as the
+    // reader under it is: native_clear)
+    o.over(Is(true)).stacked(Is(0)).padding(By(fn() { (0.0, 0.0, native_clear(), 0.0) })) |> ignore
     o.box(fn(top) { top.height(By(fn() { Some(viewer_bar_under()) })) |> ignore }) |> ignore
     reader_layout_docked(o, close(r))
   })
@@ -60,7 +62,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       body: fn(col, _) {
         col.box(fn(head) {
           style_node(head, fn() { layout_sheet_head })
-          // (its words' own line, as the host's sheet sets its title: dv_sheet_frame's, no line of the size's)
+          // (its words' own line, as the old host's sheet set its title, no line of the size's)
           head.box(fn(w) {
             w
             .words(By(fn() { t("web-pages.drive.reader.layout") }))
@@ -75,6 +77,13 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       },
       foot: None,
       hugs: false,
+      hugs_centred: false,
+      steps: false,
+      sheet_heads: true,
+      heads: false,
+      top: 0.0,
+      most: None,
+      flush: false,
     }),
   }
   let shut = fn() {
@@ -133,12 +142,20 @@ pub fn reader_layout_docked(parent : @view.View, close : () -> Unit, fits? : Boo
 
 ///|
 /// The layout's controls in `col` (desk_layout's as it was): in the panel's 280 (320 less 20 either side), or a sheet's
-/// width less 20 either side (`narrow`, the face and the indent side by side there); on paper `p`.
+/// width less 20 either side (`narrow`, the face and the indent side by side there: the sheet between the system's bars
+/// down the window's sides, View::clear, as sheet_node lays it); on paper `p`.
 #callsite(autofill(loc))
 fn layout_body(col : @view.View, narrow : Bool, p : () -> ReaderPaper, loc~ : SourceLoc) -> Unit {
   let style = fn() { (viewer_host().reader_style)() }
   let set = fn(change : ReaderStyleChange) { (viewer_host().set_reader_style)(change) }
-  let inner = fn() { if narrow { dmax(desk_none, col.window().0 - 2.0 * desk_layout_in) } else { desk_layout_inner } }
+  let inner = fn() {
+    if narrow {
+      let (_, right, _, left) = col.clear()
+      dmax(desk_none, col.window().0 - left - right - 2.0 * desk_layout_in)
+    } else {
+      desk_layout_inner
+    }
+  }
   let swatch = fn() { (inner() - desk_papers_gaps) / desk_papers_row }
   let half = fn() { (inner() - desk_pair_gap) / 2.0 }
   // (each option at least half its half less its track's room, a sheet's; the panel's 138: made again as that changes)
@@ -319,8 +336,10 @@ fn layout_size_key(
     k
     .alpha(By(fn() { if on() { desk_whole } else { desk_size_key_off } }))
     .radius(By(desk_size_key_corner))
-    .ground(By(fn() { if on() && lit_node(k) { @ui.tree_theme().color(Tint) } else { no_ground } }))
+    .ground(Is(no_ground))
+    .focus_ring_theme()
     |> ignore
+    hover_ground_node(k, on~, color=fn() { @ui.tree_theme().color(Tint) })
     words_node(k, fn() { words }, fn() { desk_size_key_words.then(@ui.text_style(color=Data(p().ink))) }) |> ignore
   })
   |> ignore
@@ -506,22 +525,19 @@ fn slider_node(
           .radius(By(fn() { side() / 2.0 }))
           .ground(By(fn() { p().accent }))
           .edge(By(fn() { (slider_ring, p().ground) }))
+          .ring(
+            By(fn() {
+              if s.focus_shown() {
+                let t = @ui.tree_theme()
+                (t.focus_w, t.focus_gap, t.focus)
+              } else {
+                (0.0, 0.0, 0L)
+              }
+            }),
+          )
           |> ignore
         })
         |> ignore
-        // (the keyboard's focus on it: a ring round the knob, its gap and width the theme's: focus_ring's)
-        k.show(fn() { s.focus_shown() }, fn(ring) {
-          let out = fn() {
-            let t = @ui.tree_theme()
-            t.focus_gap + t.focus_w
-          }
-          ring
-          .over(Is(true))
-          .margin(By(fn() { (-out(), -out(), -out(), -out()) }))
-          .radius(By(fn() { slider_thumb_d / 2.0 + out() }))
-          .edge(By(fn() { (@ui.tree_theme().focus_w, @ui.tree_theme().focus) }))
-          |> ignore
-        })
       })
       |> ignore
       o.box(fn(b) { b.grow(By(fn() { desk_whole - at() })).basis(Is(Some(0.0))) |> ignore }) |> ignore
@@ -556,6 +572,6 @@ let slider_rest : Double = 0.16
 let slider_thumb_room : Double = 22.0
 
 ///|
-/// The layout's sheet's title's row (the host's reader sheet's, dv_sheet_frame: 18 in, 4 over, 10 under).
+/// The layout's sheet's title's row (the old host's reader sheet's: 18 in, 4 over, 10 under).
 // kept across runs: a value (no field of it changes)
 let layout_sheet_head : @ui.Style = @ui.css("row w=Full px=S4_5 pt=S1 pb=S2_5 align=ACenter")

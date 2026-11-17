@@ -339,3 +339,44 @@ test "a layer presented over all else (a hover card under its trigger) covering 
     msg="in the layer: \{Repr(faults)}",
   )
 }
+
+///|
+/// A column 300 by 200 that scrolls, its rows 300 by 40 that take presses, and over its top a bar 300 by 60 holding,
+/// 25 down it, a key 40 by 30 across the first two rows' meeting (`glass`: frosted, as a page's bar over what scrolls under it; else a bar of no ground of its own).
+fn rr_bar_over_list(v : @view.View, glass : Bool) -> Unit {
+  v.box(fn(blk) {
+    blk.width(Is(Some(300.0))).height(Is(Some(200.0))) |> ignore
+    blk.box(fn(l) {
+      l.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      l.scrolls(@view.Scroll::new(), fn(held) {
+        for k in 0..<6 {
+          rr_key(held, 300.0, 40.0, "行\{k}")
+        }
+      })
+      |> ignore
+    })
+    |> ignore
+    blk.box(fn(o) {
+      o.over(Is(true)).height(Is(Some(60.0))).padding(Is((250.0, 25.0, 0.0, 0.0))).lines_up(Is(Some(Start))) |> ignore
+      if glass {
+        o.glass(Is(Some(@paint.Glass::frosted(blur=12.0, tint=0xFFFFFF40L, solid=0xEEEEEEFFL)))) |> ignore
+      }
+      rr_key(o, 40.0, 30.0, "钥")
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+test "rooms: a row of what scrolls under a bar's glass is not drawn over that bar's key there, as a press there is the bar's; with no glass over it, it is" {
+  let (t, tree) = rr_tester(0, fn(b) { rr_bar_over_list(b, true) })
+  let (key, (kx0, ky0, kx1, ky1)) = rr_box(tree, "钥")
+  assert_true(rr_on(tree, key, (kx0 + kx1) / 2.0, (ky0 + ky1) / 2.0), msg="the key pressed where it is drawn")
+  assert_eq(rr_faults(t), [])
+  let (t, _) = rr_tester(0, fn(b) { rr_bar_over_list(b, false) })
+  assert_eq(rr_faults(t), [
+    "apart: a box (a node of the window's tree's at 16,40 300×40) and a box (a node of the window's tree's at 266,65 40×30) are drawn over each other by 50×15",
+    "apart: a box (a node of the window's tree's at 16,80 300×40) and a box (a node of the window's tree's at 266,65 40×30) are drawn over each other by 50×15",
+  ])
+}

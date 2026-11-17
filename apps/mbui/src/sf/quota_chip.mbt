@@ -13,6 +13,15 @@ pub fn has_quota(q : Json?) -> Bool {
 }
 
 ///|
+/// An allowance's chips (quota_chips', marked) in words, as a screen reader is told them where they are part of what is
+/// pressed (a chat's agent's row of its account): each window's mark and what is left in it, `5H 62% W 18%`; "" where
+/// it shows none (has_quota).
+pub fn quota_chips_said(q : Json?) -> String {
+  guard has_quota(q) && chip_field(q, "windows") is Some(Array(windows)) else { return "" }
+  windows.map(fn(w) { chip_str(Some(w), "mark") + " " + chip_left(Some(w)).to_string() + "%" }).join(" ")
+}
+
+///|
 /// An allowance's windows (QuotaChip each): a chip per
 /// window, what is left in it, filled as far as that, its mark before it where `marked` (the web's default; a chat's
 /// agents only with more than one), or `worded`, its name and what is left in words, as a machine's chips say theirs
@@ -149,16 +158,16 @@ fn quota_parts(windows : Array[Json]) -> Array[(String, Array[Json])] {
   } else if base.length() > 0 {
     parts.push(("", base))
   }
+  let has_pool = base.length() == 0 && order.iter().any(fn(s) { counts.get(s).unwrap_or(0) > 1 })
   let single : Array[Json] = []
   for s in order {
-    if counts.get(s).unwrap_or(0) > 1 {
-      let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
-      parts.push((quota_group_name(group_wins[0]), group_wins))
+    let group_wins = windows.filter(fn(w) { chip_str(Some(w), "scope") == s })
+    let gname = if group_wins.length() > 0 { quota_group_name(group_wins[0]) } else { "" }
+    if counts.get(s).unwrap_or(0) > 1 || (has_pool && gname != "" && chip_str(Some(group_wins[0]), "mark").has_prefix(gname + " ")) {
+      parts.push((gname, group_wins))
     } else {
-      for w in windows {
-        if chip_str(Some(w), "scope") == s {
-          single.push(w)
-        }
+      for w in group_wins {
+        single.push(w)
       }
     }
   }
@@ -245,9 +254,10 @@ let nav_quota_group : @ui.TextStyle = @ui.text_style(size=Caption, color=Muted, 
 /// `Claude / GPT`) align their pool name in a left column and their short `[5H %] [W %]` capsules on the right (the
 /// user, 2026-11-13: 「按账号类型来搞，不要所有全用同一种」「相同供应商的账号用同一种就行」「感觉极端情况就应该多行」「感觉这
 /// 里还是要分组」「方案 A：左组名列 + 右短胶囊对齐」). Every way stands from the start, its chips the same gap apart, never
-/// spread to the row's ends (the user, 2026-11-10: 「怎么一会儿左对齐一会儿两端对齐」). Its nav_item gives it the whole
+/// spread to the row's ends (the user, 2026-11-10: 「怎么一会儿左对齐一会儿两端对齐」). Its row gives it the whole
 /// row as `foot` and says foot_capsule=fill_chip_small_h so the capsules are at the same inset from the row's foot.
-/// `at`: where its row's list stands (its words' room: band_pad_in).
+/// `at`: where its row's list stands (its words' room: band_pad_in). Held by its tests (quota_chip_wbtest.mbt): the
+/// app's sidebars draw nav_quota_chips_node, its way as nodes.
 pub fn nav_quota_chips(
   c : @ui.Ctx,
   q : Json?,

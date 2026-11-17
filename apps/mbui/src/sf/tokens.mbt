@@ -10,6 +10,29 @@
 // (markdown.mbt `web`).
 
 ///|
+/// `p` as the system asking for more contrast has it (`more`: macOS's and iOS's Increase Contrast, Windows' high
+/// contrast; @ui.more_contrast), as Apple's own colours go then (the owner, 2026-11-16: 照苹果的来): the quiet words
+/// (muted, subtle) half way to the words' own ink, the lines that only part things (line, line_strong) twice as seen.
+/// What is the same whatever is asked (the accent, the grounds, the tones) stays.
+fn contrasted(p : Palette, more : Bool) -> Palette {
+  guard more else { return p }
+  {
+    ..p,
+    muted: mix(p.text, 0.5, p.muted),
+    subtle: mix(p.text, 0.5, p.subtle),
+    line: twice_seen(p.line),
+    line_strong: twice_seen(p.line_strong),
+  }
+}
+
+///|
+/// `c` twice as opaque, opaque at most.
+fn twice_seen(c : Int64) -> Int64 {
+  let a = (c & 0xFFL) * 2L
+  (c & 0xFFFFFF00L) | (if a > 255L { 255L } else { a })
+}
+
+///|
 /// The colours a view reads (the web's names: `text` is --text, `bg` the
 /// page's ground, the warm paper; `card` and `canvas` what stands on it, white).
 pub(all) struct Palette {
@@ -49,6 +72,10 @@ pub(all) struct Palette {
   online : Int64
   /// a quiet ground under what is in it (a pill's, a bubble's): the ink at an opacity, a step off whatever it lies on
   neutral_bg : Int64
+  /// secondary emphasis ground (a jumped-to row's flash band, a quiet emphasis step above `hover` and `neutral_bg`,
+  /// tuned separately in light and dark): neutral ink at an opacity so neutral bubbles/cards stack one step over it
+  /// while chromatic grounds (`Over(Bg, DangerBg)`) stay untinted
+  secondary_bg : Int64
   overlay : Int64
   shadow : Int64
   primary : Int64
@@ -758,18 +785,6 @@ pub let card_top_end_out : @ui.Style = @ui.style(
 )
 
 ///|
-/// A tile with a ground leading a row (a maker's mark): out from the row's words (text_in) to the ladder's inset (8)
-/// from its start and top, concentric with its corner there (a row's 18 less 8, the small block's 10).
-pub fn row_lead_out() -> @ui.Style {
-  // (a narrow row's words `text_in` under its top, a wide one's 10: the web's list row's)
-  let top = match look() {
-    Narrow => text_in
-    Wide => 10.0
-  }
-  @ui.style(ml=room(corner_inset - text_in), mt=room(corner_inset - top))
-}
-
-///|
 /// What ends a card with small blocks with grounds at its foot (a field's buttons on its last line): its foot out from
 /// the card's words to where the ladder's small corner is concentric with the card's (16 in), as card_end_out at its end.
 pub let card_foot_out : @ui.Style = @ui.style(mb=room(card_corner - small_corner - card_pad))
@@ -811,32 +826,6 @@ pub let empty_in : @ui.Space = room(30.0)
 pub let identity_mark : Double = 46.0
 
 ///|
-/// A tile leading a row with a note (the workspace's mark on its card atop settings): the account's picture's size, or,
-/// narrow, its words' two lines (each one line, cut short) where the system's size of words makes them taller, so the
-/// ladder's inset over and under it whatever that size (link_row's `tile`, link_row_node's LeadTile).
-fn row_tile_side(c : @ui.Ctx, look : Look) -> Double {
-  match look {
-    Narrow => dmax(identity_mark, c.sp(c.text_size(Body).1) + c.sp(c.text_size(Meta).1))
-    Wide => identity_mark
-  }
-}
-
-///|
-/// A row's lead tile as the old view draws it (row_tile_side): out from the row's words to the ladder's inset from its
-/// start; wide, in its corner at any size of words (the row's lead is put in the middle of its first line, row_lead,
-/// which the tile, as tall as that line at least by its foot's margin, fills).
-pub fn row_tile(c : @ui.Ctx) -> @ui.Style {
-  let look = look()
-  let out = corner_inset - text_in
-  let (top, foot) = match look {
-    Narrow => (0.0, 0.0)
-    Wide => (out, dmax(out, row_lead_line(c) - identity_mark - out))
-  }
-  let side = row_tile_side(c, look)
-  workspace_tile.then(@ui.style(w=Fixed(side), h=Fixed(side), ml=room(out), mt=room(top), mb=room(foot)))
-}
-
-///|
 /// A row's lead tile's side as nodes (row_tile_side), in `parent`'s look, for the tile `t`: as the system's size of
 /// words changes, in the theme the window's tree is drawn in.
 pub fn row_tile_side_node(parent : @view.View, t : @view.View) -> () -> Double? {
@@ -852,19 +841,6 @@ pub fn row_tile_side_node(parent : @view.View, t : @view.View) -> () -> Double? 
     }
   }
 }
-
-///|
-/// The workspace's mark's square: the account's picture's size beside it, in its row's
-/// corners the ladder's inset in (a row's 18, 10 in), so concentric with them: the small block's 10, all four alike;
-/// what it holds in its middle.
-pub let workspace_tile : @ui.Style = @ui.style(
-  w=Fixed(identity_mark),
-  h=Fixed(identity_mark),
-  radius=small_radius,
-  align=ACenter,
-  justify=JCenter,
-  clip=true,
-)
 
 ///|
 /// A mark of the workspace's own (one of still.fail's icons, an emoji) in its square: 26.
@@ -946,6 +922,8 @@ let light_palette : Palette = {
   green_bg: alpha(0x045B33FFL, tone_light),
   // its placeholders in its bubbles' grey, a step darker than the page
   neutral_bg: 0x322D2413L,
+  // warm stone secondary emphasis (10.2% of #2B2822 -> #E0DEDA on #F5F3EF, matching selected luminance)
+  secondary_bg: 0x2B28221AL,
   card: 0xFFFFFFFFL,
   // Android's C.chip, what the app on a phone matches, not the narrow web's EFECE6
   chip: 0xE8E4DCFFL,
@@ -980,6 +958,8 @@ let dark_palette : Palette = {
   blue_bg: alpha(0x8EB8FEFFL, tone_dark),
   amber_bg: alpha(0xEEAA44FFL, tone_dark),
   neutral_bg: 0xECECED1BL,
+  // neutral secondary emphasis (10.6% of #F2F3F5 -> #323336 on #1B1C1F, matching selected luminance)
+  secondary_bg: 0xF2F3F51BL,
   // an outline a step lighter than the web's (3D3F44), as the grounds it lies on are (its canvas 1F2023 → 26272B): a
   // quote's bar on a card's chip still seen
   line_strong: 0x44464BFFL,
@@ -1215,7 +1195,7 @@ fn screen_layout(width : Double) -> Layout {
 /// or dark as set: call at the top of a view.
 pub fn begin(_c : @ui.Ctx) -> Theme {
   let dark = dark_set.untracked().unwrap_or(false)
-  current.val = theme_of(dark)
+  current.val = theme_of(dark, @signals.untracked(@ui.more_contrast))
   current.val
 }
 
@@ -1471,18 +1451,18 @@ fn accented(p : Palette, dark : Bool, key : String) -> Palette {
 ///|
 /// The theme light or dark as `dark` says, its sizes by the native input (begin's): what it is made of known whenever it
 /// is asked, not only as a frame begins.
-fn theme_of(dark : Bool) -> Theme {
+fn theme_of(dark : Bool, more : Bool) -> Theme {
   let touch = native_input() is Finger
   let accent = accent_set.untracked()
   // (one of each: the same whenever it is asked, what is made of it kept as long as it is)
-  match themes_made.get((dark, touch, accent)) {
+  match themes_made.get((dark, touch, accent, more)) {
     Some(t) => return t
     None => ()
   }
   let t : Theme = {
     dark,
     touch,
-    p: accented(if dark { dark_palette } else { light_palette }, dark, accent),
+    p: contrasted(accented(if dark { dark_palette } else { light_palette }, dark, accent), more),
     t: if touch { narrow_type } else { wide_type },
     rows: if touch { narrow_rows } else { wide_rows },
     control_h: if touch { narrow_control_h } else { wide_control_h },
@@ -1491,14 +1471,14 @@ fn theme_of(dark : Bool) -> Theme {
     items: if touch { narrow_items } else { wide_items },
     chat_list: if touch { touch_chat_list } else { mouse_chat_list },
   }
-  themes_made[(dark, touch, accent)] = t
+  themes_made[(dark, touch, accent, more)] = t
   t
 }
 
 ///|
-/// The themes made (theme_of), by light or dark, the native input and the accent.
+/// The themes made (theme_of), by light or dark, the native input, the accent and whether more contrast is asked.
 // kept across runs: each a value of what it is made of
-let themes_made : Map[(Bool, Bool, String), Theme] = Map([])
+let themes_made : Map[(Bool, Bool, String, Bool), Theme] = Map([])
 
 ///|
 /// Whether a ground is drawn on in place of the page's now (with_ground): the theme is current's, as it says, till then.
@@ -1548,10 +1528,12 @@ pub fn theme() -> Theme {
   let dark = dark_set.get().unwrap_or(false)
   // (read as a signal too: what is made once of the accent follows it)
   accent_set.get() |> ignore
+  // (and the system asking for more contrast: @ui.more_contrast, followed as it changes)
+  let more = @ui.more_contrast()
   if ground_over.val > 0 {
     current.val
   } else {
-    theme_of(dark)
+    theme_of(dark, more)
   }
 }
 
@@ -1861,8 +1843,8 @@ pub let share_ground : Int64 = 0x111114FFL
 ///|
 /// How wide it is laid out: one picture whatever it is seen on (2026-10-26 用户「感觉分享图片不应该分电脑和手机…按最合理的
 /// 布局生成」), a portrait poster as a phone shows what is shared (1080 pixels across at a phone's 3), laid out the one
-/// way (narrower only where its room is), drawn smaller where it has not the room's height (a short window:
-/// @sf.whole_fitted).
+/// way whatever its room, drawn smaller where it has not the room's width or height (a phone, a short window: the
+/// stage's stage_fit_node).
 pub let share_w_most : Double = 360.0
 
 ///|
@@ -2049,11 +2031,6 @@ pub let found_start : @ui.Space = Exact(22.0)
 pub let grow : @ui.Len = Grow(1.0)
 
 ///|
-/// Words on one line given the room left in their row, cut there with an ellipsis (Compose's Text with maxLines = 1
-/// in a Row: measured in what is left).
-pub let line_left : @ui.Size = Fill(1.0)
-
-///|
 /// A card as wide as what holds it (card's `fill`): one whose words change as it is answered, its width not with them.
 pub let card_across : @ui.Size = Fill(1.0)
 
@@ -2109,9 +2086,6 @@ pub let mark_key_on : @ui.Color = A(Accent, Exact(0.14))
 
 ///|
 pub let mark_ring_bg : @ui.Color = A(Accent, Exact(0.22))
-
-///|
-pub let mark_open_bg : @ui.Color = A(Accent, Exact(0.08))
 
 ///|
 pub let mark_bubble : @ui.Color = A(Card, Exact(0.94))
@@ -2499,17 +2473,6 @@ pub fn bar_keys_top() -> Double {
 }
 
 ///|
-/// How far in from its start a bar whose first thing stands wherever the room left puts it (the files' bar: what is done
-/// to the folder, at its end) keeps clear of the panel's top left corner: as far in as it is round, or `alone`, if that
-/// is further.
-pub fn tape_bar_clear_start(alone : Double) -> Double {
-  match pane_radii() {
-    Some(k) => dmax(alone, k[0])
-    None => alone
-  }
-}
-
-///|
 pub fn tape_bar_over() -> Double {
   dmax(0.0, tape_line - (wide_bar_h - hairline_h - 32.0) / 2.0)
 }
@@ -2801,12 +2764,6 @@ pub let mark_red : @ui.Color = Exact(0xE5484DFFL)
 pub let mark_yellow : Int64 = 0xF2B01EFFL
 
 ///|
-/// The rail's places 8 from its edges open (Rail.css.ts rail: 9 under the last, its 38s 9 in; here where they stand in
-/// the closed bar, 6 + its 2, so folding moves none and their grounds, 12 in, are concentric with a Mac window's corner
-/// as the bar's are through it: rail_ground_radius).
-pub let rail_in : @ui.Space = room(8.0)
-
-///|
 /// The same as the sidebar's panel on the tape (laid out Medium, its left corners tape_side_corners'): the places in
 /// its left corners (a 38 to press, its ground 30 round in its middle) as far in as makes their grounds concentric with
 /// them; where the corner is too square for a circle (it follows a Mac window's), as far in as makes a ground's corner
@@ -2839,11 +2796,6 @@ pub fn rail_in_tape() -> Double {
       _ => box_fit(corner, 9.0 + ground_in, 0.0).0 - ground_in
     }
   }
-}
-
-///|
-pub fn rail_in_tape_room() -> @ui.Space {
-  room(rail_in_tape())
 }
 
 ///|
@@ -3040,11 +2992,6 @@ pub fn usage_series(i : Int) -> Int64 {
 }
 
 ///|
-/// An agent's history's steps: the turn's rail 9.5 in, how much of a wait
-/// has gone a bar 3 high; a diff's line 22 in, its mark 9.
-pub let history_rail_in : @ui.Space = room(9.5)
-
-///|
 pub let wait_bar_h : @ui.Len = Fixed(3.0)
 
 ///|
@@ -3115,4 +3062,32 @@ pub let home_workspace_title_look : @view.WordsLook = {
   tracking: ScaledPoints(-0.4),
   balance: false,
   max_lines: 0,
+}
+
+///|
+/// Secondary emphasis ground in `Theme` (`self.p.secondary_bg`).
+pub fn Theme::secondary_bg(self : Theme) -> Int64 {
+  self.p.secondary_bg
+}
+
+///|
+/// In-page find (`⌘F`) match highlight ground for `dark` or light themes.
+pub fn find_marker_bg(dark : Bool) -> Int64 {
+  if dark {
+    0xFF700047L
+  } else {
+    0xFFCC00D9L
+  }
+}
+
+///|
+/// In-page find (`⌘F`) match highlight ground in `Theme`.
+pub fn Theme::find_bg(self : Theme) -> Int64 {
+  find_marker_bg(self.dark)
+}
+
+///|
+/// Full-row jump flash band ground in `Theme` (`self.p.secondary_bg`).
+pub fn Theme::flash_bg(self : Theme) -> Int64 {
+  self.p.secondary_bg
 }

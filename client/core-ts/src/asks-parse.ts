@@ -6,7 +6,7 @@ import { get } from "./util.ts";
 export type Ask =
   | { kind: "linkParse"; url: string }
   | { kind: "appUpdate"; platform: string; version: number; now: boolean; keys: string[] }
-  | { kind: "picture"; url: string }
+  | { kind: "picture"; url: string; kept: boolean }
   | { kind: "buddies" }
   | { kind: "devSignIn"; user: string };
 
@@ -35,7 +35,8 @@ export function parseAsk(name: string, params: unknown): Ask | null {
       };
     }
     case "picture":
-      return { kind: "picture", url: text("url") };
+      // (kept: answered from the device alone, Asks.pictureKept)
+      return { kind: "picture", url: text("url"), kept: get(params, "kept") === true };
     case "buddies":
       return { kind: "buddies" };
     case "dev.signIn":

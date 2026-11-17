@@ -35,11 +35,11 @@ const b64 = (b: Buffer) => b.toString("base64url");
 export function grantKey(data: string): Buffer {
   const path = join(data, "drive-grant.key");
   try {
-    const key = readFileSync(path);
+    const key = readFileSync(path); // sync: read once, before the station serves (drive/module.ts)
     if (key.length >= 32) return key;
   } catch {}
   const key = randomBytes(32);
-  writeFileSync(path, key, { mode: 0o600 });
+  writeFileSync(path, key, { mode: 0o600 }); // sync: made once, before the station serves
   return key;
 }
 

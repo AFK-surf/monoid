@@ -43,7 +43,7 @@ export class StationParts {
   readonly #made = new WeakMap<Tools, { of: number; routes: Route[] }>();
   readonly #viewerMay: ((r: { method: string; path: string }) => boolean)[] = [];
   readonly #overview = new Map<string, (viewer: Viewer, lang: Lang) => unknown>();
-  readonly #tools: Tool[] = [];
+  readonly #tools: { tool: Tool; offered?: () => boolean }[] = [];
   readonly #door: DoorRoute[] = [];
   readonly #ended: ((session: string) => void)[] = [];
   readonly #streams = new Map<string, (ask: MemberAsk) => Promise<void>>();
@@ -94,9 +94,10 @@ export class StationParts {
     this.#overview.set(field, view);
   }
 
-  /// A part's tools for the agents (their MCP door, tools/mcp.ts).
-  tools(tools: Tool[]): void {
-    this.#tools.push(...tools);
+  /// A part's tools for the agents (their MCP door, tools/mcp.ts); `offered`: while it says so (a `beta` feature's
+  /// tools on a station on the test channel alone, features.ts), else neither listed nor called.
+  tools(tools: Tool[], offered?: () => boolean): void {
+    for (const tool of tools) this.#tools.push(offered === undefined ? { tool } : { tool, offered });
   }
 
   /// A part's routes on the agents' door.
@@ -116,7 +117,7 @@ export class StationParts {
 
   /// What a part holds only in memory and carries over to the next process at a handover (an update), never written
   /// down: `give` it as this process hands over, `take` what the process before gave.
-  carry<T>(name: string, give: () => T, take: (what: T) => void): void {
+  carry<T>(name: string, give: () => T | Promise<T>, take: (what: T) => void): void {
     if (this.#carries.has(name)) throw new Error(`${name} is carried over twice`);
     this.#carries.set(name, { give, take });
     if (this.#came.has(name)) {
@@ -129,15 +130,15 @@ export class StationParts {
   // ── what is asked of them ──
 
   /// What the parts carry over to the next process, by part.
-  carried(): Record<string, unknown> {
+  async carried(): Promise<Record<string, unknown>> {
     const out: Record<string, unknown> = {};
-    for (const [name, { give }] of this.#carries) {
+    await Promise.all([...this.#carries].map(async ([name, { give }]) => {
       try {
-        out[name] = give();
+        out[name] = await give();
       } catch (error) {
         log.warn("station", "a part's memory is not carried over", { part: name, error: (error as Error).message });
       }
-    }
+    }));
     return out;
   }
 
@@ -207,6 +208,6 @@ export class StationParts {
   }
 
   allTools(): readonly Tool[] {
-    return this.#tools;
+    return this.#tools.filter((t) => t.offered === undefined || t.offered()).map((t) => t.tool);
   }
 }

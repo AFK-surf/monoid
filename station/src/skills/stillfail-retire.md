@@ -31,13 +31,15 @@ both are refused and post no card; `preview`, `status`, `cancel` and `again` ans
 - Once confirmed, files are sent while chats still work; you are told when it reaches `sent`, with the numbers.
 - `hand_over` posts 暂停聊天并交接 with those numbers. Confirmed, every chat of the station in this workspace pauses
   (yours too, if you are on it) until the other station took them.
-- A hand-over that fails puts the chats back to work by itself and waits at `sent`; you are told why. Fix it, then
+- A hand-over that fails (the other station could not put them in place, a file sent is not there, its disk is about
+  full) puts the chats back to work by itself and waits at `sent`; you are told why. Fix it, then
   `hand_over` again (confirmed again): only what changed is sent. `again` never pauses the chats.
 - Only drive this from a still.fail chat: the cards are confirmed in the app.
 
 ## After the chats were taken
 
-You are told on the station they went to (your own chat moved too, if it was on the retired one). Check there:
+You are told on the station they went to (your own chat moved too, if it was on the retired one), once the retired
+station's accounts are there too, or two minutes after the chats were taken saying they are not yet. Check there:
 - a moved chat goes on (its first reply), its directory under the new data directory;
 - a worktree: `git status`, `git worktree list` in it (`git worktree repair` where it names the old place);
 - jobs: `job_list` shows those started again; start what was refused (a port taken, a directory that stayed);

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { installRecentHomeIndex, readPreparedDefaultHome, scanRecentHomeChatsStep, settleRecentHomeChatStep, settleRecentHomeOrderStep, settleRecentHomeSessionStep } from "../src/store/chat-list-home-index.ts";
+import { installRecentHomeIndex, readPreparedDefaultHome, scanRecentHomeChatsStep, settleRecentHomeChatStep, settleRecentHomeOrderStep, settleRecentHomeSessionStep } from "./reference/chat-list/chat-list-home-index.ts";
 import { Store } from "../src/store/store.ts";
 
 test("old default-home chats are built in bounded steps while new chats arrive behind the cursor", () => {

@@ -9,13 +9,14 @@
 // child) by its exit file appearing (a watch on jobs/exit), with a look at its leader once a second for the one end
 // that writes no file (its shell killed) — Node has no exit event for a process that is not its child.
 import { randomBytes } from "node:crypto";
-import { type FSWatcher, existsSync, mkdirSync, readFileSync, rmSync, watch } from "node:fs";
-import { access, appendFile, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { type FSWatcher, existsSync, mkdirSync, readFileSync, watch } from "node:fs";
+import { access, appendFile, lstat, open, readdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join, sep } from "node:path";
 import { Clock, Effect, Exit, FiberSet, Schedule, Scope } from "effect";
 import { startEnv } from "../ops/agent-env.ts";
 import { liveClock } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
+import { JOB_LOG_CAP, rotateInPlace } from "../ops/storage.ts";
 import { niced } from "../ops/nice.ts";
 import { startLasting } from "../ops/processes.ts";
 import { platform } from "../platform/index.ts";
@@ -27,6 +28,11 @@ import { endGroup, groupAlive, pidAlive, signalGroup, stillOurs } from "../ops/g
 import type { Pressure, Why } from "./admit.ts";
 
 export { outputAt, tail };
+
+/// A job's log, and what is left of it, kept this long after its job ended (`collect`).
+export const JOB_LOGS_KEPT_MS = 14 * 24 * 3600_000;
+/// A job's files whose job the store no longer has (its session deleted, its record cleared) kept this long.
+export const JOB_FILES_ORPHAN_MS = 3600_000;
 
 /// How many lines job_log gives by default.
 export const LOG_LINES = 50;
@@ -47,7 +53,10 @@ export const NOTIFY_BODY_LIMIT = 64 * 1024;
 
 /// How a job's command runs: under a shell that writes its exit code to a file when it ends, so a station that did not
 /// start it (it outlived the one that did) still learns how it ended.
-export const WRAPPER = `/bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2"; exit "$code"`;
+// The exit code is written aside and moved into place: a watch on jobs/exit hears a file as it is made, and on Linux
+// (inotify) a `>` made it empty before printf wrote it, so a job an earlier station started was read ended with no
+// code (CI, 2026-11-17). The move makes it there whole or not at all.
+export const WRAPPER = `/bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2.tmp" && mv -f "$2.tmp" "$2"; exit "$code"`;
 
 /// A word for sh, as it is.
 const quoted = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
@@ -175,41 +184,16 @@ export function jobJson(j: JobRow): Json {
 export const queues = (job: JobRow): boolean => job.id.startsWith("remote_");
 
 /// A job as the pages show it: its record, what it said lately (newest first) and when its output last grew.
-export function shown(store: Store, job: JobRow): Json {
+export async function shown(store: Store, job: JobRow): Promise<Json> {
   const v = jobJson(job);
   v.notices = store.jobNotices(job.id, NOTICES_SHOWN);
-  v.outputAt = outputAt(job.log);
+  v.outputAt = await outputAt(job.log);
   return v;
 }
 
-/// The watches running, by session: what the pages show of a watching chat's agent (its session's `watch`): the
-/// watches' names (oldest first), since when the first runs, when one last gave word (`at`: its latest notice, else its
-/// start; a notice is news to the pages, output is not).
-export function watching(store: Store): Map<string, { names: string[]; since: number; at: number }> {
-  const by = new Map<string, JobRow[]>();
-  for (const job of store.jobsRunning().filter((j) => j.watch)) {
-    const list = by.get(job.sessionKey) ?? [];
-    list.push(job);
-    by.set(job.sessionKey, list);
-  }
-  const out = new Map<string, { names: string[]; since: number; at: number }>();
-  for (const [key, jobs] of by) {
-    // A stable sort, as sort_by_key is.
-    jobs.sort((a, b) => a.startedAt - b.startedAt);
-    const at = Math.max(...jobs.map((j) => Math.max(store.jobNotices(j.id, 1)[0]?.at ?? j.startedAt, j.startedAt)));
-    out.set(key, { names: jobs.map((j) => j.name), since: jobs[0].startedAt, at });
-  }
-  return out;
-}
-
 /// The exit code a job's shell wrote when it ended, if it did.
-export function readExit(path: string): number | null {
-  try {
-    const text = readFileSync(path, "utf8").trim();
-    return /^[+-]?\d+$/.test(text) ? Number(text) : null;
-  } catch {
-    return null;
-  }
+async function readExitFile(path: string): Promise<number | null> {
+  return await readFile(path, "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
 }
 
 /// Where the claims that hold the screen are kept, in jobs/.
@@ -218,7 +202,7 @@ const SCREEN_FILE = "screen.json";
 /// The claims an earlier station left holding the screen (what it wrote of them: none when there is nothing to read).
 function heldClaims(path: string): Json[] {
   try {
-    const kept: unknown = JSON.parse(readFileSync(path, "utf8"));
+    const kept: unknown = JSON.parse(readFileSync(path, "utf8")); // sync: read once, as Jobs is made, before the station serves
     if (!Array.isArray(kept)) return [];
     return kept.flatMap((c) =>
       typeof c?.job === "string" && Number.isInteger(c?.pid) && typeof c?.at === "number"
@@ -296,14 +280,14 @@ export class Jobs {
     const dir = join(options.data, "jobs");
     this.dir = dir;
     this.data = options.data;
-    for (const sub of ["logs", "bin", "exit"]) mkdirSync(join(dir, sub), { recursive: true });
+    for (const sub of ["logs", "bin", "exit"]) mkdirSync(join(dir, sub), { recursive: true }); // sync: once, as Jobs is made, before the station serves
     // Runnable by name from any shell (on Windows from cmd or PowerShell, Codex's shell there, too).
     const script = join(dir, "bin", JOB_COMMAND_NAME);
     try {
       platform.makeCommand(script, JOB_COMMAND);
     } catch (error) {
       // The script is there for a POSIX shell; only another shell's way to it (no Git's sh on Windows) is missing.
-      if (!existsSync(script)) throw error;
+      if (!existsSync(script)) throw error; // sync: once, as Jobs is made, before the station serves
       log.warn("jobs", "no stillfail-job for cmd and PowerShell", { error: String(error) });
     }
     this.scope = Effect.runSync(Scope.make());
@@ -403,7 +387,7 @@ export class Jobs {
         await this.keepClaims(a);
         return null;
       case "node.tail":
-        return tail(a, b);
+        return await tail(a, b);
       case "node.lost":
         return await access(this.lostFile(a)).then(() => true, () => false);
       case "node.append":
@@ -437,7 +421,7 @@ export class Jobs {
         this.follow(this.store.getJob(a)!, b);
         return null;
       case "node.readExit":
-        return await readFile(this.exitFile(a), "utf8").then((t) => /^[+-]?\d+$/.test(t.trim()) ? Number(t.trim()) : null, () => null);
+        return await readExitFile(this.exitFile(a));
     }
     throw new Error(`no jobs' ask ${f}`);
   }
@@ -565,7 +549,63 @@ export class Jobs {
         if (this.running.get(id) === running) this.running.delete(id);
         running.settle();
       }
+      // Its shell ended, and what it started and left running in its group was told to end (the program's SIGTERM):
+      // what does not is made to, as a stop does. Left, they went on as orphans of nobody's (ppid 1) for good.
+      if (!this.closing && groupAlive(running.pgid)) await this.timed(endGroup(running.pgid, STOP_GRACE_MS));
+      const job = this.store.getJob(id);
+      if (job !== null) await this.capLog(job.log);
     });
+  }
+
+  /// A job's log held to JOB_LOG_CAP where it is (its shell appends to it: `exec >>`), what it had kept in `<log>.1`.
+  private async capLog(path: string): Promise<boolean> {
+    if (!path.startsWith(this.dir + sep)) return false;
+    try {
+      return await rotateInPlace(path, JOB_LOG_CAP);
+    } catch (error) {
+      log.warn("jobs", "a job's log not held to its bound", { log: path, error: (error as Error).message });
+      return false;
+    }
+  }
+
+  /// The logs of the jobs up held to their bound (ops/storage.ts Upkeep), and the files of jobs long over or gone
+  /// collected (`collect`).
+  async upkeep(now: number): Promise<{ capped: number; collected: string[] }> {
+    let capped = 0;
+    for (const job of this.store.jobsUp()) if (await this.capLog(job.log)) capped++;
+    return { capped, collected: await this.collect(now) };
+  }
+
+  /// The files in jobs/logs and jobs/exit of a job the store no longer has, unchanged for JOB_FILES_ORPHAN_MS (its
+  /// session deleted: 1,702 logs, 1.0 GB, on a station, 2026-11-15), and the log of a job that ended JOB_LOGS_KEPT_MS
+  /// ago, removed: its record stays, its log reads as empty (job_log). Of one up (running, or a service to start again)
+  /// nothing. The job ids whose files went.
+  async collect(now: number): Promise<string[]> {
+    const gone = new Set<string>();
+    const up = new Set(this.store.jobsUp().map((j) => j.id));
+    const looked = new Map<string, JobRow | null>();
+    const jobOf = (id: string) => {
+      if (!looked.has(id)) looked.set(id, this.store.getJob(id));
+      return looked.get(id)!;
+    };
+    const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.(lost|tmp))?$/.exec(name)?.[1]) ?? null;
+    for (const sub of ["logs", "exit"] as const) {
+      const dir = join(this.dir, sub);
+      for (const name of await readdir(dir).catch(() => [] as string[])) {
+        const id = idOf(name, sub);
+        if (id === null) continue;
+        const job = jobOf(id);
+        const file = join(dir, name);
+        if (job === null) {
+          const st = await lstat(file).catch(() => null);
+          if (st === null || now - st.mtimeMs < JOB_FILES_ORPHAN_MS) continue;
+        } else if (up.has(id) || this.running.has(id) || job.state === "running" || job.endedAt === null || now - job.endedAt < JOB_LOGS_KEPT_MS) continue;
+        await rm(file, { force: true }).catch(() => undefined);
+        gone.add(id);
+      }
+    }
+    if (gone.size > 0) log.info("jobs", "files of jobs long over or gone removed", { jobs: gone.size });
+    return [...gone];
   }
 
   /// Runs a job's command, and follows it to its end: its group. `extra`: variables it is given besides (the queue's
@@ -575,6 +615,7 @@ export class Jobs {
     await (await open(job.log, "a")).close();
     const exit = this.exitFile(job.id);
     await rm(exit, { force: true });
+    await rm(`${exit}.tmp`, { force: true });
     await rm(this.lostFile(job.id), { force: true });
     // With the variables the station's owners set for what it starts for its agents (ops/agent-env.ts).
     const env: NodeJS.ProcessEnv = { ...platform.prependPath(startEnv(), join(this.dir, "bin")), ...extra };
@@ -588,7 +629,7 @@ export class Jobs {
     // station. The shell appends to the log itself: Git's sh on Windows cannot write to a file Node opened for
     // appending (its handle may only append). Lower than the station (ops/nice.ts): nice runs the shell in its own
     // process, the pid the same.
-    const shell: [string, string[]] = [platform.posixShell(env), ["-c", `exec >>"$3" 2>&1; ${WRAPPER}`, JOB_COMMAND_NAME, job.command, exit, job.log]];
+    const shell: [string, string[]] = [await platform.posixShellSoon(env), ["-c", `exec >>"$3" 2>&1; ${WRAPPER}`, JOB_COMMAND_NAME, job.command, exit, job.log]];
     // A sandbox's task (agents/sandbox.ts): its command runs there through the bridge, which the shell here runs
     // in its place: its output comes back to the log here, its exit code to the exit file here.
     if (job.sandbox !== undefined) {
@@ -619,17 +660,34 @@ export class Jobs {
 
   /// The end of a job an earlier station started (not this one's child): its exit file appearing (heard from the watch
   /// on jobs/exit), or its leader gone (looked at once a second: that end writes no file and has no event). The file is
-  /// looked for once a second too only where the directory is not watched: each look waits on the disk on the main
-  /// thread (four jobs followed on a station, 2026-10-25).
+  /// looked for once a second too only where the directory is not watched (four jobs followed on a station,
+  /// 2026-10-25). Every look at the file is off the main thread; one asked while another is out is made once that one
+  /// comes back, so a write it may have missed is not.
   private leaderGone(id: string, pgid: number): Effect.Effect<void> {
     const exit = this.exitFile(id);
-    const over = () => !pidAlive(pgid) || (this.exitWatch === null && existsSync(exit));
+    const there = () => access(exit).then(() => true, () => false);
     const heard = Effect.callback<void>((resume) => {
       let done = false;
-      const look = () => {
-        if (done || !existsSync(exit)) return;
-        done = true;
-        resume(Effect.void);
+      let looking = false;
+      let again = false;
+      const look = (): void => {
+        if (done) return;
+        if (looking) {
+          again = true;
+          return;
+        }
+        looking = true;
+        void there().then((is) => {
+          looking = false;
+          if (done) return;
+          if (is) {
+            done = true;
+            resume(Effect.void);
+          } else if (again) {
+            again = false;
+            look();
+          }
+        });
       };
       this.exitHeard.set(id, look);
       this.watchExits();
@@ -640,7 +698,7 @@ export class Jobs {
         if (this.exitHeard.get(id) === look) this.exitHeard.delete(id);
       });
     });
-    const looked = Effect.sync(over).pipe(
+    const looked = Effect.promise(async () => !pidAlive(pgid) || (this.exitWatch === null && (await there()))).pipe(
       Effect.repeat({ schedule: Schedule.spaced(FOLLOW_LOOK_MS), until: (gone) => gone }),
       Effect.asVoid,
     );
@@ -651,8 +709,11 @@ export class Jobs {
   private watchExits(): void {
     if (this.exitWatch !== null) return;
     try {
+      // No name: the system let events go or ran them together (an overflowed inotify queue, FSEvents' coalescing), so
+      // every job followed looks again.
       this.exitWatch = watch(join(this.dir, "exit"), (_event, file) => {
         if (file) this.exitHeard.get(file.toString())?.();
+        else for (const look of [...this.exitHeard.values()]) look();
       });
       this.exitWatch.unref();
       this.exitWatch.on("error", () => {});
@@ -672,7 +733,8 @@ export class Jobs {
       this.leaderGone(id, pgid).pipe(
         Effect.andThen(Effect.sync(() => heard())),
         // What its shell wrote, if it did.
-        Effect.andThen(Effect.suspend(() => this.ended(id, running, readExit(this.exitFile(id)), this.store.now() - began))),
+        Effect.andThen(Effect.promise(() => readExitFile(this.exitFile(id)))),
+        Effect.flatMap((code) => this.ended(id, running, code, this.store.now() - began)),
       ),
     ).catch(() => undefined);
   }
@@ -735,12 +797,13 @@ export class Jobs {
   }
 
   /// Takes a session's jobs that are over off its record (the pages' 清掉已结束的), their logs with them: the ids gone.
-  clearEnded(session: string): string[] {
+  async clearEnded(session: string): Promise<string[]> {
     const gone = this.store.clearEndedJobs(session);
-    for (const [id, file] of gone) {
-      if (file.startsWith(this.dir + sep)) rmSync(file, { force: true });
-      rmSync(this.exitFile(id), { force: true });
-    }
+    await Promise.all(gone.map(async ([id, file]) => {
+      if (file.startsWith(this.dir + sep)) await rm(file, { force: true });
+      await rm(this.exitFile(id), { force: true });
+      await rm(`${this.exitFile(id)}.tmp`, { force: true });
+    }));
     return gone.map(([id]) => id);
   }
 

@@ -109,6 +109,10 @@ export function ChevronsUpDown(props: IconProps) {
   return <Svg {...props}><path d="M8 8L12 4L16 8 M8 16L12 20L16 16" /></Svg>;
 }
 
+export function Clips(props: IconProps) {
+  return <Svg {...props}><path d="M6 7.5H14Q16.5 7.5 16.5 10V18Q16.5 20.5 14 20.5H6Q3.5 20.5 3.5 18V10Q3.5 7.5 6 7.5Z M7.5 4.5H17.5Q20.5 4.5 20.5 7.5V17.5 M8.7 12.2Q8.7 11.4 9.4 11.8L12.4 13.6Q13.1 14.1 12.4 14.6L9.4 16.4Q8.7 16.8 8.7 16Z" /></Svg>;
+}
+
 export function Close(props: IconProps) {
   return <Svg {...props}><path d="M6 6L18 18 M18 6L6 18" /></Svg>;
 }
@@ -406,7 +410,7 @@ export function PlayMark(props: IconProps) {
 }
 
 export function Play(props: IconProps) {
-  return <Svg {...props}><path d="M7 5.8Q7 4.3 8.3 5L18.4 11Q19.6 12 18.4 13L8.3 19Q7 19.7 7 18.2Z" /></Svg>;
+  return <Svg {...props}><path d="M6.7 8.3C6.7 5.04 8.03 4.27 10.86 5.9L17.24 9.6C20.07 11.23 20.07 12.77 17.24 14.4L10.86 18.1C8.03 19.73 6.7 18.96 6.7 15.7Z" /></Svg>;
 }
 
 export function Plug(props: IconProps) {
@@ -425,6 +429,10 @@ export function Quota(props: IconProps) {
   return <Svg {...props}><path d="M6.5 6H16Q19.5 6 19.5 9.5V14.5Q19.5 18 16 18H6.5Q3 18 3 14.5V9.5Q3 6 6.5 6Z M22 10V14 M7 10V14 M11 10V14" /></Svg>;
 }
 
+export function QuoteOpen(props: IconProps) {
+  return <Svg {...props}><path d="M4.5 13H9.5V18.5H4.5V12Q4.5 7.5 9 5.5 M15 13H20V18.5H15V12Q15 7.5 19.5 5.5" /></Svg>;
+}
+
 export function Quote(props: IconProps) {
   return <Svg {...props}><path d="M9.5 11H4.5V5.5H9.5V12Q9.5 16.5 5 18.5 M20 11H15V5.5H20V12Q20 16.5 15.5 18.5" /></Svg>;
 }
@@ -434,7 +442,7 @@ export function Read(props: IconProps) {
 }
 
 export function Received(props: IconProps) {
-  return <Svg {...props}><path d="M12 3.5V14 M7.5 10L12 14.5L16.5 10 M4 15V17Q4 20.5 7.5 20.5H16.5Q20 20.5 20 17V15" /></Svg>;
+  return <Svg {...props}><path d="M6.5 5H17.5Q20.5 5 20.5 8V16Q20.5 19 17.5 19H6.5Q3.5 19 3.5 16V8Q3.5 5 6.5 5Z M4 7.5L12 13L20 7.5" /></Svg>;
 }
 
 export function Redo(props: IconProps) {
@@ -450,7 +458,7 @@ export function Retry(props: IconProps) {
 }
 
 export function Said(props: IconProps) {
-  return <Svg {...props}><path d="M8 4H16Q20.5 4 20.5 8.5V14Q20.5 18 16.5 18H10L5 20.5V17.5Q3.5 16.5 3.5 14V8.5Q3.5 4 8 4Z M8 9H16 M8 13H13" /></Svg>;
+  return <Svg {...props}><path d="M8 4.5H16Q20.5 4.5 20.5 9V13.5Q20.5 18 16.5 18H10L5 20.5V17.5Q3.5 16.5 3.5 13.5V9Q3.5 4.5 8 4.5Z" /></Svg>;
 }
 
 export function ScreenRotate(props: IconProps) {
@@ -647,6 +655,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "chevron-right": ChevronRight,
   "chevron-up": ChevronUp,
   "chevrons-up-down": ChevronsUpDown,
+  "clips": Clips,
   "close": Close,
   "command": Command,
   "compose": Compose,
@@ -726,6 +735,7 @@ export const ICONS: Record<string, (props: IconProps) => React.JSX.Element> = {
   "plus": Plus,
   "power": Power,
   "quota": Quota,
+  "quote-open": QuoteOpen,
   "quote": Quote,
   "read": Read,
   "received": Received,

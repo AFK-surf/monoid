@@ -400,3 +400,82 @@ test "价目表, at each width and with either hand: unified model pricing card,
     assert_true(t.find("Haiku 5") is Some(_), msg=at)
   }
 }
+
+///|
+/// The vertical middle of `words` as drawn.
+fn usage_middle_of(t : @ui.Tester, words : String) -> Double? {
+  match t.rect_of(words) {
+    Some((_, y, _, h)) => Some(y + h / 2.0)
+    None => None
+  }
+}
+
+///|
+test "用量 of a workspace spread over stations, as the core makes it and shapes it to go out (settings-usage-real): what is said under each figure, the deleted chats' one row with what they cost and nothing to open, a choice beside its block's first line" {
+  for case in [(390.0, 2), (1280.0, 0)] {
+    let (w, platform) = case
+    let t = setting_tester(Usage, w, platform~, mode="settings-usage-real", h=2400.0)
+    let at = "\{w} platform \{platform}"
+    let value = @settings.usage_real(7, "")
+    // (every rule of what is drawn, on the page as the core's value has it)
+    // (but where the parts of a day's bar meet, as a stacked bar's do by design)
+    let faults = t.audit().filter(fn(f) { !(f.has_prefix("rule 3:") && f.contains(" meet, in a box in ")) })
+    assert_true(faults.length() == 0, msg="\{at} 7 days: \{faults.join("\n")}")
+    // what the core says under each figure, kept as it goes out (UsageTile `sub`): drawn
+    for tile in items(value, "tiles").iter().drop(1) {
+      let sub = text(Some(tile), "sub")
+      assert_true(sub != "" && t.find(sub) is Some(_), msg="\{at}: \{sub} \{t.drawn_text()}")
+    }
+    // the chats no station names any more: one row, its cost as the core counts it, nothing to open
+    let chats = match items(value, "lists").search_by(fn(l) { text(Some(l), "key") == "chats" }) {
+      Some(i) => items(Some(items(value, "lists")[i]), "items")
+      None => []
+    }
+    let gone = chats.filter(fn(c) { flag(Some(c), "deleted") })
+    assert_eq(gone.length(), 1, msg=at)
+    assert_eq(text(Some(gone[0]), "costText"), "$428", msg=at)
+    // (last in the list, past its first few: all of it shown)
+    assert_eq(text(Some(chats[chats.length() - 1]), "key"), "deleted/all", msg=at)
+    t.tap_text(@sf.t("web-main.usage.showAll", args=[("n", chats.length().to_string())]))
+    t.draw()
+    assert_true(t.find("已删除的对话") is Some(_) && t.find("$428") is Some(_), msg="\{at}: \{t.drawn_text()}")
+    assert_true(t.query(Link, label="已删除的对话") is None, msg=at)
+    assert_true(t.query(Link, label=text(Some(chats.filter(fn(c) { !flag(Some(c), "deleted") })[0]), "title")) is Some(_), msg=at)
+    // the days' legend beside the split's choice: the choice on the legend's first line, however many it takes
+    let first = text(Some(items(value, "series")[0]), "name")
+    match (usage_middle_of(t, first), usage_middle_of(t, "按人")) {
+      (Some(a), Some(b)) => assert_true((a - b).abs() < 1.0, msg="\{at}: legend \{a}, choice \{b}")
+      _ => fail("\{at}: no legend or choice")
+    }
+    // 30 days: every day of the stations that have them (none dropped for the station come six days ago), what the
+    // most spent day spent said whole over the days too narrow for it
+    t.tap_text("30 天")
+    // (at rest: what the switch moves gone its way)
+    t.run_for(@ui.move_most_ms)
+    let month = @settings.usage_real(30, "")
+    assert_true(items(month, "daily").iter().all(fn(d) { text(Some(d), "costText") != "—" }), msg=at)
+    // (but where the parts of a day's bar meet, as a stacked bar's do by design)
+    let faults = t.audit().filter(fn(f) { !(f.has_prefix("rule 3:") && f.contains(" meet, in a box in ")) })
+    assert_true(faults.length() == 0, msg="\{at} 30 days: \{faults.join("\n")}")
+    // a multi-line subtitle in the breakdown stays whole across the row's width while share and cost sit on the title's line
+    t.click(Radio, label="账号")
+    t.run_for(@ui.move_most_ms)
+    match (usage_middle_of(t, "team@cue.surf"), usage_middle_of(t, "49%"), usage_middle_of(t, "$755")) {
+      (Some(ty), Some(py), Some(cy)) => assert_true((ty - py).abs() < 1.0 && (ty - cy).abs() < 1.0, msg="\{at}: title \{ty}, share \{py}, cost \{cy}")
+      _ => fail("\{at}: no account title, share or cost")
+    }
+    assert_true(t.find("5360 万 token") is Some(_), msg=at)
+    let faults = t.audit().filter(fn(f) { !(f.has_prefix("rule 3:") && f.contains(" meet, in a box in ")) })
+    assert_true(faults.length() == 0, msg="\{at} 30 days accounts: \{faults.join("\n")}")
+    // the year: how it is drawn chosen on its title's line
+    t.tap_text("累计")
+    t.run_for(@ui.move_most_ms)
+    match (usage_middle_of(t, "Token 活跃度"), usage_middle_of(t, "按天")) {
+      (Some(a), Some(b)) => assert_true((a - b).abs() < 1.0, msg="\{at}: title \{a}, choice \{b}")
+      _ => fail("\{at}: no year's title or choice \{t.drawn_text()}")
+    }
+    // (but where the parts of a day's bar meet, as a stacked bar's do by design)
+    let faults = t.audit().filter(fn(f) { !(f.has_prefix("rule 3:") && f.contains(" meet, in a box in ")) })
+    assert_true(faults.length() == 0, msg="\{at} all time: \{faults.join("\n")}")
+  }
+}

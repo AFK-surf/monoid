@@ -44,12 +44,13 @@ pub struct Shell {
 }
 
 ///|
-/// The target's shell for the fibers of `rt`, once it is started (`Shell::start`).
-fn Shell::of_target(rt : @effect.Runtime) -> Shell {
+/// The target's shell for the fibers of `rt`, once it is started (`Shell::start`). Its calls' ids follow `base`:
+/// past it, where another caller of the same shell numbers its own below (`Shell::attached`).
+fn Shell::of_target(rt : @effect.Runtime, base? : Int64 = 0L) -> Shell {
   {
     rt,
     waiting: Map([]),
-    next: 0L,
+    next: base,
     calls: (id, op, args, bytes) => send(id, op, args.stringify(), bytes),
     asks: (op, args) => {
       let json : Json = @json.parse(asked(op, args.stringify())) catch {

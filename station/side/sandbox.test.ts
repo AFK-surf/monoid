@@ -4,7 +4,7 @@
 // copied here. Real processes, signals and sockets on real time: the side run's (scripts/side.sh); what of sandboxes
 // is the same every run is test/sandbox.test.ts.
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { after, test } from "node:test";
 import type { Sandbox } from "../src/agents/sandbox.ts";
@@ -139,6 +139,26 @@ test("station_list shows a sandbox, and station_task runs its task in the chat's
   // What it brought back, here in the chat's workspace.
   await until("its results are here", () => existsSync(join(home, "station-back", "k1", "out.txt")));
   assert.equal(readFileSync(join(home, "station-back", "k1", "out.txt"), "utf8"), "from here\n");
+});
+
+test("a file's executable bit is copied to the sandbox, and back", async () => {
+  const { dir, use } = stationWithBox();
+  const src = join(dir, "src");
+  mkdirSync(src);
+  writeFileSync(join(src, "run.sh"), "#!/bin/sh\necho ran\n");
+  chmodSync(join(src, "run.sh"), 0o755);
+  const task = { station: "box", key: "x1" };
+  await use("station_task", { ...task, action: "prepare", command: "./run.sh; printf '#!/bin/sh\\n' > made.sh; chmod +x made.sh", dir: src, back: ["made.sh"] });
+  let started = await use("station_task", { ...task, action: "start" });
+  while (started.syncing === true) started = await use("station_task", { ...task, action: "start" });
+  await until("it ends", async () => ["exited", "failed"].includes((await use("station_task", { ...task, action: "get" })).job?.state));
+  const got = await use("station_task", { ...task, action: "get" });
+  assert.equal(got.job.exitCode, 0, JSON.stringify(got));
+  assert.match((await use("station_task", { ...task, action: "log" })).log, /ran/);
+  // Copied back to the mirror here (the task's directory), runnable as it was made there.
+  const made = join(got.job.cwd, "made.sh");
+  await until("it is copied back", () => existsSync(made));
+  assert.ok((statSync(made).mode & 0o100) !== 0, `made.sh came back ${(statSync(made).mode & 0o777).toString(8)}`);
 });
 
 test("a sandbox has no screen: a task that asks for one is refused", async () => {

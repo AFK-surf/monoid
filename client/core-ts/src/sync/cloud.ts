@@ -224,7 +224,9 @@ export class CloudSync {
       const inside = ws !== null && ws[2] !== undefined && ws[2] !== "feedback" && view === null && !reaches && core.workspaces.owner(id!) === sub;
       if (inside) reads.push(Effect.ignore(scheduler.ask("cloud", `workspace/${id}`, Priority.asked, this.#workspace(id!)), { log: "Unhandled", message: "workspace read" }));
       if (at.startsWith("/v1/auth/") && core.provider.supports("loginSessions")) reads.push(Effect.ignore(scheduler.ask("cloud", `sessions/${sub}`, Priority.asked, this.#loginSessions(sub)), { log: "Unhandled", message: "login sessions read" }));
-      if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}`, Priority.asked, this.#admin(sub)), { log: "Unhandled", message: "admin read" }));
+      // (the relays' page is read apart, while it shows: sync/admin-relays.ts)
+      if (at.startsWith("/v1/admin/relays/")) this.onRelayLoad(sub);
+      else if (at.startsWith("/v1/admin/") && this.#admins.has(sub)) reads.push(Effect.ignore(scheduler.ask("cloud", `admin/${sub}`, Priority.asked, this.#admin(sub)), { log: "Unhandled", message: "admin read" }));
       yield* Effect.all(reads, { concurrency: "unbounded", discard: true });
     });
   }

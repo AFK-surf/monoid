@@ -465,10 +465,11 @@ test "a profile's models, a narrow page with a mouse: how many in a row; all of 
   t.frame()
   t.frame()
   assert_true(t.query(Button, label="移除 MY-MODEL") is Some(_), msg="the model named, among the rest")
-  // its × takes it off again
+  // its × takes it off again (the sheet grown to hold it, on its way from as tall as it was: at rest)
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 MY-MODEL")
-  t.frame()
-  t.frame()
+  // (its row closing its room on its way)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="移除 MY-MODEL") is None, msg="taken off")
 }
 
@@ -479,7 +480,9 @@ test "a profile model's id appears beside the option the pointer is over" {
   t.tap_text("可用模型")
   t.run_for(@kit.presence_in_ms)
   for (name, id) in [("Opus 5.5", "claude-opus-5-5"), ("Sonnet 5", "claude-sonnet-5")] {
-    let (x, y, w, h) = t.rect_of(name).unwrap()
+    // (its name on its box's row in the panel, not where the page under it says it)
+    let (bx, by, _, bh) = t.get(Checkbox, label="喜欢 \{name}").rect
+    let (_, x, y, w, h, _) = t.words().filter(fn(e) { e.0 == name && e.1 > bx && (e.2 + e.4 / 2.0 - (by + bh / 2.0)).abs() < 2.0 })[0]
     t.move_to(x + w / 2.0, y + h / 2.0)
     t.run_for(@sf.tip_delay_ms + @kit.presence_in_ms)
     let tip = t.get(Tooltip, label=id).rect
@@ -670,4 +673,170 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   let uid = "fusion-gpt-6-sol-sidekick-swe-2-medium"
   assert_true(calls[3].1.stringify().contains(uid), msg="profile.put saves \{uid}: \{calls[3].1.stringify()}")
   assert_true(calls[4].1.stringify().contains("\"liked\":true"), msg="pick.like likes \{uid}: \{calls[4].1.stringify()}")
+}
+
+///|
+test "profile page shows non-quota explanations and intermediate checking states" {
+  // 1. Subscription with unsupported quota (e.g. Devin / Kimi Code) and no usedBy still shows the quota card and detail.
+  let t_unsupported = setting_tester(Profile("ws1/st1", "cc"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = {
+            "state": "unsupported",
+            "detail": "Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看",
+            "windows": [],
+          }
+          Json::object(p)
+        }
+        Object(o) if o.get("connects") is Some(_) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          p["connects"] = Json::array([])
+          p["presets"] = Json::array([])
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_unsupported.find("额度") is Some(_))
+  assert_true(t_unsupported.find("Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看") is Some(_))
+
+  // 2. Subscription with unchecked quota (quota: null) shows 尚未查询额度, modelsReading shows 正在读取, and clicking 重新检查 dispatches both profile.check and profile.quota.
+  let calls : Array[String] = []
+  let t_unchecked = setting_tester(Profile("ws1/st1", "cc"), 1280.0, h=2400.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = Json::null()
+          p["available"] = Json::array([])
+          p["modelsReading"] = Json::boolean(true)
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.check" || name == "profile.quota" {
+          calls.push(name)
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  assert_true(t_unchecked.find("订阅账号 · Ultra") is Some(_))
+  assert_true(t_unchecked.find("尚未查询额度") is Some(_))
+  assert_true(t_unchecked.find("正在读取") is Some(_))
+  t_unchecked.click(Button, label="重新检查")
+  t_unchecked.frame()
+  assert_eq(calls, ["profile.check", "profile.quota"])
+
+  // 3. Plain API key with check.state == "ok" and quota.detail shows its capabilities in the facts line and quota.detail in the header state line without a quota card.
+  let t_key = setting_tester(Profile("ws1/st1", "k2"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("k2")) => {
+          let p = o.copy()
+          p["checkTone"] = Json::string("green")
+          p["checkText"] = Json::string("可用")
+          p["checkLine"] = Json::string("8 个模型")
+          p["check"] = { "state": "ok", "time": { "checkedAt": { "ago": "5 分钟前" } } }
+          p["quota"] = { "state": "unsupported", "detail": "按量计费，无额度上限", "windows": [] }
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_key.find("API key · Anthropic") is Some(_))
+  assert_true(t_key.find("可用于：") is Some(_))
+  assert_true(t_key.find("Claude Code") is Some(_))
+  assert_true(t_key.find("按量计费，无额度上限 · 5 分钟前检查") is Some(_))
+  assert_true(t_key.boxes_held().filter(fn(b) { b.text == "额度" }).is_empty())
+}
+
+///|
+test "a wide profile head aligns its 32 mark with the name's first line and starts the lines below at the mark's left edge" {
+  let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
+  assert_eq(t.first_line_faults(), [])
+  assert_eq(t.line_start_faults(), [])
+  let name_word = t.words().filter(fn(w) { w.0 == "Claude 主账号" })[0]
+  let facts_word = t.words().filter(fn(w) { w.0 == "订阅账号 · Ultra" })[0]
+  let uses_word = t.words().filter(fn(w) { w.0 == "可用于：" })[0]
+  let state_word = t.words().filter(fn(w) { w.0.contains("订阅有效") })[0]
+  let mark_boxes = t.boxes_held().filter(fn(b) {
+    (b.w - 32.0).abs() <= 0.5 &&
+    (b.h - 32.0).abs() <= 0.5 &&
+    b.x < name_word.1 &&
+    (b.y - name_word.2).abs() < 20.0
+  })
+  assert_true(mark_boxes.length() > 0)
+  let mark = mark_boxes[0]
+  let mark_mid = mark.y + mark.h / 2.0
+  let name_mid = name_word.2 + name_word.4 / 2.0
+  assert_true(
+    (mark_mid - name_mid).abs() <= 2.0,
+    msg="mark_mid=\{mark_mid} name_mid=\{name_mid}",
+  )
+  assert_true(
+    (facts_word.1 - mark.x).abs() <= 1.0,
+    msg="facts_x=\{facts_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    (uses_word.1 - mark.x).abs() <= 1.0,
+    msg="uses_x=\{uses_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    state_word.1 < name_word.1,
+    msg="state_x=\{state_word.1} name_x=\{name_word.1}",
+  )
 }

@@ -41,7 +41,7 @@ import java.security.MessageDigest;
  * may open itself again from behind), and the newer build says so in a notification that opens it. Installing apps
  * needs the person's leave (安装未知应用): asked now without it, the system's page for it opens and, once given, the
  * build goes in; found missing while away, the app is told (phase allow) and the build waits. How it goes the app
- * reads (`state`, on the GL thread: the phase, how far, what went wrong, the build), told each time it changes
+ * reads (`state`, on the app's thread: the phase, how far, what went wrong, the build), told each time it changes
  * (`changed`). What it asked for and the build ready are kept in the app's files: a job of a later run takes them up.
  *
  * Where the core names a delta from this build (`delta`, scripts/delta.ts's format), it is tried first, on the same

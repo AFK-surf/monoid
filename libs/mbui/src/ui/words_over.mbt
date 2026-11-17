@@ -26,9 +26,9 @@ let words_over_seen_least : Double = 0.12
 priv struct WordsOver {
   mut held : Bool
   mut file : String
-  pairs : Set[String]
+  mut pairs : Set[String]
   // (not held: each frame's, as it was found: Tester::words_over_frames)
-  frames : Array[WordsOverAt]
+  mut frames : Array[WordsOverAt]
 }
 
 ///|

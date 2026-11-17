@@ -7,7 +7,8 @@ export type Catalog = Record<string, Record<string, string[]>>;
 export function fallback(runtime: string): string[] {
   if (runtime === "codex") return ["minimal", "low", "medium", "high", "xhigh"];
   if (runtime === "dsh") return ["low", "medium", "high", "max"];
-  if (runtime === "grok") return ["low", "medium", "high", "xhigh", "max"];
+  // Pi takes any of these and clamps it to what its model supports.
+  if (runtime === "grok" || runtime === "pi") return ["low", "medium", "high", "xhigh", "max"];
   // Cursor sets no effort: its models are picked by name alone.
   if (runtime === "cursor" || runtime === "hermes" || runtime === "agy") return [];
   // Devin's models are a family at its thinking levels: each model's own list comes with it (modelEfforts).

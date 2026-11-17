@@ -1,0 +1,10 @@
+// Made by client/core-ts/test/real-size-app.test.ts (REAL_SIZE_WRITE=1): what the core sends `stationMove chats` as `moving`
+// happens (real-size-asked.ts CAUSES), each message the ops applied to what it holds, in order.
+///|
+fn init {
+  let asked =
+    #|{"topic":"stationMove","station":"ws/maple","to":"willow","module":"chats"}
+  let messages =
+    #|[[{"path":["count"],"set":"42 / 273"},{"path":["modules"],"key":["id"],"patch":"chats","ops":[{"path":["count"],"set":"31 / 240"},{"path":["done"],"set":31},{"path":["items"],"key":["id"],"patch":"k-maple-41","ops":[{"path":["note"],"set":"它要的连接「Slack · Acme」还没迁到 Willow：先迁连接，或用全部迁移"}]},{"path":["items"],"key":["id"],"patch":"k-maple-40","ops":[{"path":["note"],"set":""}]},{"path":["items"],"key":["id"],"patch":"k-maple-38","ops":[{"path":["note"],"set":"它的工作目录在 station 之外（/Volumes/Work/app）：把目录移进 station 的工作区再迁"},{"path":["state"],"set":"cannot"},{"path":["stateText"],"set":"无法迁移"}]},{"path":["items"],"key":["id"],"patch":"k-maple-36","ops":[{"path":["note"],"set":"Willow 的磁盘只剩 2.1 GB，这个聊天的文件要 3.4 GB：在 Willow 上腾出空间再试"},{"path":["state"],"set":"failed"},{"path":["stateText"],"set":"失败"}]},{"path":["items"],"key":["id"],"patch":"k-maple-34","ops":[{"path":["note"],"set":""},{"path":["state"],"set":"stopped"},{"path":["stateText"],"set":"已停 · 等「Claude · me@x.com」"}]},{"path":["items"],"key":["id"],"patch":"k-maple-31","ops":[{"path":["progress"],"set":{"done":109051904,"total":432013312,"text":"104 MB / 412 MB"}},{"path":["state"],"set":"moving"},{"path":["stateText"],"set":"迁移中"}]},{"path":["items"],"key":["id"],"patch":"k-maple-30","ops":[{"path":["state"],"set":"there"},{"path":["stateText"],"set":"已迁移"},{"path":["progress"],"remove":true}]}]},{"path":["moving","item"],"set":"k-maple-31"},{"path":["moving","line"],"set":"聊天 · 把 chat 的图片缩略图改成 thumbhash · 104 MB / 412 MB"},{"path":["moving","progress","done"],"set":109051904},{"path":["moving","progress","text"],"set":"104 MB / 412 MB"},{"path":["note"],"set":"2 项失败 · 3 项已停 · 迁移中 · 聊天「把 chat 的图片缩略图改成 thumbhash」"}]]
+  put_changes(asked, "moving", messages)
+}

@@ -163,3 +163,26 @@ fn presented_in(t : @ui.Tester) -> Unit {
   let rest = @sf.presented_rest()
   t.run_for(if rest > t.time() { rest - t.time() } else { @ui.move_most_ms })
 }
+
+///|
+test "全部密钥's 添加 as the page is given another width: the same button while its arrangement stays (wide, its words after its mark; narrow, its mark alone, round)" {
+  for case in [(1280.0, 1100.0, 0), (390.0, 360.0, 2)] {
+    let (w, other, platform) = case
+    let width = @signals.signal(w)
+    let t = setting_tester(VaultItems, w, platform~, width=fn() { width.get() })
+    let at = "\{w} platform \{platform}"
+    let first = page_add(t).unwrap()
+    let (_, _, bw, bh) = first.rect
+    if laid_wide(w) {
+      assert_true(bw > bh + 8.0, msg="\{at}: its words after its mark: \{bw}x\{bh}")
+    } else {
+      assert_eq(bw, bh, msg="\{at}: its mark alone, round")
+    }
+    for now in [other, w] {
+      width.set(now)
+      t.resize(now, 900.0)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(page_add(t).unwrap().id, first.id, msg="\{at} to \{now}: the same button")
+    }
+  }
+}

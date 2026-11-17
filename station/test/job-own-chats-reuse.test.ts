@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
-import { makeStore } from "../src/read/store.ts";
+import { openJobs } from "./reference/jobs.ts";
+import { makeStore } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const count of [4, 400]) for (const archived of [false, true]) test(`job chat names reuse members of ${count} chats within one read (archived ${archived})`, () => {

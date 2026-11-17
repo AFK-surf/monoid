@@ -7,10 +7,11 @@
 // downloaded and applied to the installed release, and the installer is handed what it made (STILLFAIL_ARCHIVE, where it
 // takes a handed archive from) with the raw form's hash to check instead of the archive's. Anything wrong with it is a
 // line in the log, and the installer downloads the whole archive as without one.
+import type { CloudFetch } from "../cloud/transport.ts";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { createReadStream, createWriteStream, existsSync } from "node:fs";
-import { mkdir, rm } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { access, mkdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,16 +19,44 @@ import { type Lang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
 import { platform as machine } from "../platform/index.ts";
 import { type Build, type Release, Unverified, allowed, expected, trustedKeys, verifyFeed } from "./signed.ts";
-import { type Channel, feed, platform, stationVersion } from "./versions.ts";
+import { type Channel, feed, platform, stationVersionSoon } from "./versions.ts";
 
 const UA = { "user-agent": "stillfail-station" };
 
-/// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served.
-export async function readFeed(channel: Channel, base: string, ms = 15_000): Promise<any> {
+/// The pauses before each try again of a feed read, or a delta's download, that failed on the way (`readFeed`'s and
+/// `takeDelta`'s `wait`): three more at most.
+export const FEED_AGAIN_MS = [1_000, 2_000, 4_000];
+
+/// What failed on the way, not of what was asked: the network (fetch's own TypeError, "fetch failed", and "terminated"
+/// for a body broken off as it was read; its deadline), a gateway that could not reach it (502, 503, 504), a body that
+/// ended short of its size. A refusal (4xx, 500), a size or sha256 not the feed's, a feed that does not verify or an
+/// older release is the same when asked again.
+const onTheWay = (e: unknown) => e instanceof OnTheWay || e instanceof TypeError || (e as Error)?.name === "TimeoutError";
+
+class OnTheWay extends Error {}
+
+/// The feed of `channel` at `base` (where the releases are: the cloud's origin, Comma's /stations), as served. Given
+/// `wait` (how a pause is waited), a read that failed on the way is tried again after each of `FEED_AGAIN_MS`:
+/// `stillfail update`'s one read failed on a connection broken once ("fetch failed", main f094fa11's station-update,
+/// 43845073551, 2026-11-16).
+export async function readFeed(channel: Channel, base: string, ms = 15_000, request: CloudFetch = fetch, wait?: (ms: number) => Promise<void>): Promise<any> {
   const url = feed(channel, base);
-  const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(ms) });
-  if (!response.ok) throw new Error(`${url}: ${response.status}`);
-  return response.json();
+  const once = async () => {
+    const response = await request(url, { headers: UA, signal: AbortSignal.timeout(ms) });
+    if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${url}: ${response.status}`);
+    if (!response.ok) throw new Error(`${url}: ${response.status}`);
+    return response.json();
+  };
+  for (let i = 0; ; i++) {
+    try {
+      return await once();
+    } catch (e) {
+      if (wait === undefined || i >= FEED_AGAIN_MS.length || !onTheWay(e)) throw e;
+      log.warn("updates", "the feed not read, tried again", { url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+      // timer: a retry after a failure, with a backoff (the caller's clock).
+      await wait(FEED_AGAIN_MS[i]!);
+    }
+  }
 }
 
 /// The release `said` (a feed as served) names, verified; null when it does not verify (said in the log by the caller:
@@ -77,11 +106,12 @@ export function deltaFor(said: any, build: Build, platform: string | null, curre
 /// What updating the station of `app` (from `installed`'s channel) to `channel`'s latest at `base` runs. Refusals are
 /// thrown in `lang`: a feed that does not verify, an older release (but back to the stable one from the beta), none
 /// for this machine, no installer in this release.
-export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string> }): Promise<Plan> {
-  const said = await readFeed(o.channel, o.base);
+/// `wait`: the feed read again after a failure on the way (readFeed).
+export async function planUpdate(o: { base: string; channel: Channel; app: string; installed: Channel; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Plan> {
+  const said = await readFeed(o.channel, o.base, 15_000, o.request, o.wait);
   const { release, why } = verifiedOrNull(said, o.trusted);
   if (release === null) throw new Error(tr(o.lang, "station.updates.unverified", { why }));
-  const version = stationVersion(o.app) ?? null;
+  const version = (await stationVersionSoon(o.app)) ?? null;
   const current = version === null ? null : Number(/^0\.\d+\.(\d+)$/.exec(version)?.[1] ?? NaN);
   if (!allowed(release, current, o.channel, o.installed)) throw new Error(tr(o.lang, "station.updates.older", { version: release.version, current: version }));
   let build;
@@ -91,7 +121,7 @@ export async function planUpdate(o: { base: string; channel: Channel; app: strin
     throw new Error(tr(o.lang, "station.updates.noBuild", { version: release.version }));
   }
   const script = bundledInstaller(o.app, o.lang);
-  if (!existsSync(script)) throw new Error(tr(o.lang, "station.updates.noInstaller"));
+  if (!(await access(script).then(() => true, () => false))) throw new Error(tr(o.lang, "station.updates.noInstaller"));
   return {
     release,
     script,
@@ -153,9 +183,11 @@ function hashFile(file: string): Promise<{ sha256: string; size: number }> {
   });
 }
 
-/// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says.
-async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void) {
-  const response = await fetch(d.url, { headers: UA, signal });
+/// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says (failed on the way: OnTheWay, a
+/// TypeError or a TimeoutError).
+async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void, request: CloudFetch) {
+  const response = await request(d.url, { headers: UA, signal });
+  if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${d.url}: ${response.status}`);
   if (!response.ok || !response.body) throw new Error(`${d.url}: ${response.status}`);
   const length = response.headers.get("content-length");
   if (length !== null && Number(length) !== d.size) throw new Error(`the delta is ${length} bytes, the feed says ${d.size}`);
@@ -175,7 +207,7 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
   } finally {
     await new Promise<void>((r, j) => out.end((e?: Error | null) => (e ? j(e) : r())));
   }
-  if (got !== d.size) throw new Error(`the delta is ${got} bytes, the feed says ${d.size}`);
+  if (got < d.size) throw new OnTheWay(`the delta broke off at ${got} of the ${d.size} bytes the feed says`);
   if (hash.digest("hex") !== d.sha256) throw new Error("the delta's sha256 is not the feed's");
 }
 
@@ -183,8 +215,10 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
 /// (STILLFAIL_ARCHIVE) and what it hashes to (STILLFAIL_RELEASE_SHA256, the signed raw form's). Never fails: a delta
 /// not used (none, a download or an applying that failed, what it made not the signed raw form) is a line in the log,
 /// what it left removed, and nothing told (the installer downloads the whole archive, checked against its own hash).
-/// `signal` ends it (the caller's deadline); `progress` hears how much of the delta is in (0–100).
-export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void }): Promise<Record<string, string>> {
+/// `signal` ends it (the caller's deadline); `progress` hears how much of the delta is in (0–100). Given `wait` (how a
+/// pause is waited), a download that failed on the way is tried again after each of `FEED_AGAIN_MS`, what it left
+/// removed first: main 0a099ace's station-update (43880021498, 2026-11-16) failed on a TLS connection broken once.
+export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; signal: AbortSignal; progress?: (percent: number) => void; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Record<string, string>> {
   const d = plan.delta;
   if (d === null) return {};
   const { dir, archive } = handedArchive();
@@ -192,7 +226,19 @@ export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; si
   try {
     await mkdir(dir, { mode: 0o700 });
     const file = join(dir, "delta");
-    await download(d, file, o.signal, o.progress ?? (() => {}));
+    for (let i = 0; ; i++) {
+      try {
+        await download(d, file, o.signal, o.progress ?? (() => {}), o.request ?? fetch);
+        break;
+      } catch (e) {
+        await rm(file, { force: true });
+        // (the caller's deadline is not on the way: it ends the delta)
+        if (o.wait === undefined || i >= FEED_AGAIN_MS.length || o.signal.aborted || !onTheWay(e)) throw e;
+        log.warn("updates", "the delta not downloaded, tried again", { url: d.url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+        // timer: a retry after a failure, with a backoff (the caller's clock).
+        await o.wait(FEED_AGAIN_MS[i]!);
+      }
+    }
     await o.apply(o.app, file, made, o.signal);
     await rm(file, { force: true });
     o.signal.throwIfAborted();

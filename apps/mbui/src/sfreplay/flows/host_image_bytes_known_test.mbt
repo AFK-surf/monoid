@@ -7,8 +7,8 @@
 fn init {
   @ui.host_image_bytes_known([
     ("src/sfreplay/flows/notify_off_test.mbt", 10862),
-    ("src/sfreplay/flows/share_files_test.mbt", 33156),
-    ("src/sfreplay/flows/share_new_chat_test.mbt", 33156),
+    ("src/sfreplay/flows/share_files_test.mbt", 27630),
+    ("src/sfreplay/flows/share_new_chat_test.mbt", 27630),
     ("src/sfreplay/flows/video_frames_test.mbt", 26649),
     ("src/sfreplay/flows/viewer_test.mbt", 130305),
   ])

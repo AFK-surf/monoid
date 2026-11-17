@@ -170,10 +170,10 @@ priv struct NodesRun {
   /// how many rows of lists that show only what they read were built since the run began (a test's:
   /// Tester::rows_read_built)
   mut built_read : Int
-  kept_at : Array[(Int, Int)]
+  mut kept_at : Array[(Int, Int)]
   /// the rows and parts the frames built since a test last took them, as kept_at (not those a build keeping none built:
   /// Tester::rows_built)
-  built_at : Array[(Int, Int)]
+  mut built_at : Array[(Int, Int)]
   mut on : Bool
 }
 

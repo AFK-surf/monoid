@@ -103,7 +103,7 @@ pub fn Tree::laid_facts(self : Tree, id : NodeId) -> LaidFacts? {
     apart,
     off: (n.look.dx + n.moved.0, n.look.dy + n.moved.1),
     // (a binding of its offset is kept among its properties while it is bound: View::bind's `props`)
-    moves_own: n.props.contains(Prop::Offset.ord()) || n.moved_by is Some(_),
+    moves_own: n.prop_has(Prop::Offset.ord()) || n.moved_by is Some(_),
     scrolls: if n.scroll_held < 0 {
       0
     } else if n.scroll_across {

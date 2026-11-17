@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installSigninSaveIndex, stepSigninSaveIndex } from "../src/vault/signin-save-index.ts";
+import { installSigninSaveIndex, stepSigninSaveIndex } from "./reference/backfill/signin-save-index.ts";
 
 const binary = mbReaderBinary();
 

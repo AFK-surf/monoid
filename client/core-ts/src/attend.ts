@@ -309,11 +309,13 @@ export class Attend {
     const known = typeof value.thread.read === "number" ? value.thread.read : 0;
     const messages: J[] = Array.isArray(value.messages) ? value.messages : [];
     const seq = (m: J) => (typeof m?.seq === "number" ? m.seq : 0);
+    // (a notice folding failures said alike stands for them all, to its last: views.ts foldNotices)
+    const endSeq = (m: J) => (typeof m?.notice?.lastSeq === "number" ? m.notice.lastSeq : seq(m));
     const now = this.#host.nowMs();
     const more = value.more === true;
     const unreadLine = (read: number, opened: number) => {
       if (more && (messages.length === 0 || seq(messages[0]) > read + 1)) return null;
-      const m = messages.find((x) => seq(x) > read && typeof x.createdAt === "number" && x.createdAt <= opened && x.mine !== true);
+      const m = messages.find((x) => endSeq(x) > read && typeof x.createdAt === "number" && x.createdAt <= opened && x.mine !== true);
       return m === undefined ? null : seq(m);
     };
     const out: J = { ...value, unreadAbove: false };
@@ -322,7 +324,7 @@ export class Attend {
       return { due, value: out };
     }
     const key = `${station}\u0001${thread}`;
-    const newest = messages.length > 0 ? seq(messages[messages.length - 1]) : 0;
+    const newest = messages.length > 0 ? endSeq(messages[messages.length - 1]) : 0;
     let visit = this.visits.get(key);
     if (!visit) {
       const made = session !== null && this.#making.delete(`${station}\u0001${session}`);

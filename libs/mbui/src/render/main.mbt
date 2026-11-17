@@ -132,6 +132,35 @@ fn parse(text : String) -> Dl {
 }
 
 ///|
+/// The faces the words are set in, as an app gives them (MBUI_FACES: `face:path` or `face:local:family`, apart by `;`,
+/// as ui's faces.mbt reads it): none, the host's own.
+fn faces_given() -> Unit {
+  for item in arg("MBUI_FACES").split(";") {
+    let parts = item.split(":").map(fn(p) { p.to_owned() }).to_array()
+    if parts.length() < 2 {
+      continue
+    }
+    let face = num(parts[0]).to_int()
+    let ok = if parts[1] == "local" && parts.length() > 2 {
+      @hostapi.face_add_family(face, parts[2])
+    } else {
+      // (a Windows path's drive letter is a `:` too)
+      let path = StringBuilder()
+      for i in 1..<parts.length() {
+        if i > 1 {
+          path.write_string(":")
+        }
+        path.write_string(parts[i])
+      }
+      @hostapi.face_add(face, path.to_string(), 0)
+    }
+    if !ok {
+      say("mbui-render: face \{face} not given: \{item}")
+    }
+  }
+}
+
+///|
 fn main {
   if !supported {
     return
@@ -158,6 +187,7 @@ fn main {
     _ => ()
   }
   init_offscreen(dl.w, dl.h, dl.scale)
+  faces_given()
   let atlas = @hostapi.Atlas::new(@hostapi.atlas_size(false))
   let colour_atlas = @hostapi.Atlas::new(@hostapi.atlas_size(true))
   let (r, gg, b) = dl.clear
@@ -246,7 +276,7 @@ fn main {
 
 ///|
 /// The glyphs placed, by their keys (instances).
-let placed : Map[Int, (Double, Double, Double, Double)] = Map([])
+let placed : Map[Int, (Double, Double, Double, Double, Double)] = Map([])
 
 ///|
 /// The parts of the next frame drawn again told to the renderer (as a host's frame tells them: src/ui/hostcall.mbt).
@@ -281,8 +311,12 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
   // each glyph made again: its atlas place here (placed as an app places it: @hostapi.Atlas), by the list's
   let shaped = FixedArray::make(4096, 0.0)
   let g = FixedArray::make(8, 0.0)
-  let places : Map[Int, (Double, Double, Double, Double)] = Map([])
+  let places : Map[Int, (Double, Double, Double, Double, Double)] = Map([])
+  let glyph_info : Map[Int, (Int, Double, Double, Double)] = Map([])
   let mut unknown = 0
+  // (each glyph put where this host's own advances put it, as the hosts without a colour atlas of their own do; with
+  // MBUI_DL_PEN=1 on every host: a list a Tester drew with no host's text, its words laid out by this host's)
+  let pens = !colour_atlas.sized() || arg("MBUI_DL_PEN") == "1"
   dl.glyphs.each(fn(no, gl) {
     let (size, weight, style, cluster, text) = gl
     // (a glyph of nothing: a list a Tester drew without the host's text, none to make; not asked of the host, which
@@ -291,20 +325,31 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
       unknown = unknown + 1
       return
     }
-    let key = if cluster < 0 {
-      @hostapi.text_key(text, size, weight, style)
+    let sadv = if pens && @hostapi.shape(" ", size, weight, style, shaped) > 0 {
+      shaped[2]
+    } else {
+      0.0
+    }
+    let (key, gadv) = if cluster < 0 {
+      let adv = if pens && @hostapi.shape(text, size, weight, style, shaped) > 0 {
+        shaped[2]
+      } else {
+        0.0
+      }
+      (@hostapi.text_key(text, size, weight, style), adv)
     } else {
       let n = @hostapi.shape(text, size, weight, style, shaped)
       if cluster < n {
-        shaped[cluster * 4 + 3].to_int()
+        (shaped[cluster * 4 + 3].to_int(), shaped[cluster * 4 + 2])
       } else {
-        -1
+        (-1, 0.0)
       }
     }
     if key < 0 {
       unknown = unknown + 1
     } else {
       @hostapi.glyph(key, g)
+      glyph_info[no] = (key, gadv, sadv, g[4])
       let (gw, gh) = (g[2] * dl.scale, g[3] * dl.scale)
       // (in colour glyphs' own atlas where the host keeps one: text.mbt atlas_for; one frame's glyphs, none let go for
       // another)
@@ -320,7 +365,7 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
           match a.place(key, gw.round().to_int(), gh.round().to_int(), fn(_) {  }) {
             Some((_, x, y)) => {
               @hostapi.glyph_put(key, x + across, y)
-              places[no] = ((x + across).to_double(), y.to_double(), gw, gh)
+              places[no] = ((x + across).to_double(), y.to_double(), gw, gh, g[5])
               placed[key] = places[no]
             }
             None => if gw > 0.0 && gh > 0.0 { unknown = unknown + 1 }
@@ -353,6 +398,11 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
   let n = dl.inst.length()
   let inst = FixedArray::make(n * inst_size, 0.0)
   let mut resized = 0
+  let mut line_base = -1.0e9
+  let mut prev_x = 1.0e9
+  let mut prev_gadv = 0.0
+  let mut prev_sadv = 0.0
+  let mut pen = 0.0
   for k, t in dl.inst {
     // (3's 28: how smooth its clip's corners are, 28-31, left 0: round; 4's 32: not turned, 32-35 left 0; 5's 36: a
     // box's corners all its radius, 4; 6's 40: no outer clip, 40-51 left 0; 7's 52: nothing fading, 52-59 left 0; 8's 56: nothing fading across, 56-59 left 0)
@@ -366,10 +416,82 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
     }
     let kind = inst[k * inst_size + 5]
     if kind == 1.0 || kind == 3.0 || kind == 7.0 {
-      match places.get(inst[k * inst_size + 12].to_int()) {
-        Some((u, v, gw, gh)) => {
+      let no = inst[k * inst_size + 12].to_int()
+      match places.get(no) {
+        Some((u, v, gw, gh, goy)) => {
+          let mut u = u
+          let mut v = v
+          let mut gw = gw
+          let mut gh = gh
+          let mut goy = goy
+          if pens {
+            let (base_key, gadv, sadv, gox) = match glyph_info.get(no) {
+              Some(gi) => gi
+              None => (-1, 0.0, 0.0, 0.0)
+            }
+            let x = inst[k * inst_size]
+            let y = inst[k * inst_size + 1]
+            let b = y - goy
+            if x < prev_x || (b - line_base).abs() > 2.0 || x - prev_x > prev_gadv + 6.0 {
+              // (on a whole pixel, as an app's words are put: ui's on_pixels; else a row of each glyph is sampled
+              // twice where the half pixel falls)
+              line_base = (b * dl.scale).round() / dl.scale
+              pen = if gox < 0.0 { x - gox } else { x }
+            } else if x - prev_x > prev_gadv + 2.7 {
+              pen = pen + prev_gadv + prev_sadv
+            } else {
+              pen = pen + prev_gadv
+            }
+            prev_x = x
+            prev_gadv = gadv
+            prev_sadv = sadv
+            let tx = pen * dl.scale
+            let rx = tx.round()
+            let q = ((tx - rx) * 4.0).round().to_int()
+            let sub = match q {
+              1 => 1
+              2 => 2
+              -1 => 3
+              -2 => 4
+              _ => 0
+            }
+            if sub != 0 && base_key >= 0 {
+              let sub_key = (base_key & 0x03FFFFFF) | (sub << 26)
+              match placed.get(sub_key) {
+                Some((su, sv, sgw, sgh, sgoy)) => {
+                  u = su
+                  v = sv
+                  gw = sgw
+                  gh = sgh
+                  goy = sgoy
+                }
+                None => {
+                  @hostapi.glyph(sub_key, g)
+                  let (sgw, sgh) = (g[2] * dl.scale, g[3] * dl.scale)
+                  match atlas.place(sub_key, sgw.round().to_int(), sgh.round().to_int(), fn(_) {  }) {
+                    Some((_, sx, sy)) => {
+                      @hostapi.glyph_put(sub_key, sx, sy)
+                      u = sx.to_double()
+                      v = sy.to_double()
+                      gw = sgw
+                      gh = sgh
+                      goy = g[5]
+                      placed[sub_key] = (u, v, gw, gh, goy)
+                    }
+                    None => ()
+                  }
+                }
+              }
+            }
+            inst[k * inst_size] = rx / dl.scale + gox
+            inst[k * inst_size + 1] = line_base + goy
+          }
           if gw != inst[k * inst_size + 14] || gh != inst[k * inst_size + 15] {
             resized = resized + 1
+            if pens {
+              inst[k * inst_size + 2] = gw / dl.scale
+              inst[k * inst_size + 3] = gh / dl.scale
+            }
           }
           inst[k * inst_size + 12] = u
           inst[k * inst_size + 13] = v
@@ -378,10 +500,13 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
         }
         None => unknown = unknown + 1
       }
-    } else if kind == 4.0 {
-      match ids.get(inst[k * inst_size + 20].to_int()) {
-        Some(mine) => inst[k * inst_size + 20] = mine.to_double()
-        None => ()
+    } else {
+      prev_x = 1.0e9
+      if kind == 4.0 {
+        match ids.get(inst[k * inst_size + 20].to_int()) {
+          Some(mine) => inst[k * inst_size + 20] = mine.to_double()
+          None => ()
+        }
       }
     }
   }

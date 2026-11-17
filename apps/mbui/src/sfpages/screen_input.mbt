@@ -181,19 +181,37 @@ fn cursor_of_shape(shape : String) -> @ui.Cursor {
 /// character, then let go, as a phone's own shift is.
 priv struct HeldKeys {
   mut mods : Int
+  /// each change of `mods` (what shows them held reads it)
+  told : @signals.Signal[Int]
+}
+
+///|
+fn held_keys_new() -> HeldKeys {
+  { mods: 0, told: @signals.signal(0) }
 }
 
 ///|
 fn HeldKeys::toggle(self : HeldKeys, bit : Int) -> Unit {
   self.mods = self.mods ^ bit
+  self.told.set(self.told.untracked() + 1)
 }
 
 ///|
 /// What is held, for a key now: let go of after it.
 fn HeldKeys::take(self : HeldKeys) -> Int {
   let m = self.mods
-  self.mods = 0
+  if m != 0 {
+    self.mods = 0
+    self.told.set(self.told.untracked() + 1)
+  }
   m
+}
+
+///|
+/// What is held now, as it is told (what shows a modifier held reads it).
+fn HeldKeys::held_said(self : HeldKeys) -> Int {
+  self.told.get() |> ignore
+  self.mods
 }
 
 ///|
@@ -263,25 +281,28 @@ fn screen_zoom() -> @kit.Zoom {
 let screen_max_zoom : Double = 5.0
 
 ///|
-/// Where the frame is drawn on the stage now (zoomed), as the old view `c` has it; nothing before its size is known.
-fn ScreenUi::shown(self : ScreenUi, c : @ui.Ctx) -> SRect {
-  match self.zoom.rect(c) {
+/// Where the frame is drawn on the stage at `at` (zoomed, its glide or fling as far as it has gone then); nothing before
+/// its size is known.
+fn ScreenUi::shown_at(self : ScreenUi, at : Double) -> SRect {
+  match self.zoom.rect_at(at) {
     Some((x, y, w, h)) => cased_in({ x, y, w, h }, self.case_x, self.case_y)
     None => srect_zero
   }
 }
 
 ///|
-/// The part of the frame in sight while it is zoomed in (0..1 of it each way); None while it is not (all of it is).
-fn ScreenUi::in_sight(self : ScreenUi, c : @ui.Ctx) -> Part? {
-  let s = self.shown(c)
-  if !self.zoom.zoomed(c) || s.w <= 0.0 || s.h <= 0.0 || self.box_w.get() <= 0.0 || self.box_h.get() <= 0.0 {
+/// The part of the frame in sight at `at` while it is zoomed in (0..1 of it each way); None while it is not (all of it
+/// is).
+fn ScreenUi::in_sight_at(self : ScreenUi, at : Double) -> Part? {
+  let s = self.shown_at(at)
+  let (bw, bh) = (self.box_w.untracked(), self.box_h.untracked())
+  if !self.zoom.zoomed_at(at) || s.w <= 0.0 || s.h <= 0.0 || bw <= 0.0 || bh <= 0.0 {
     return None
   }
   let x0 = dmax(0.0, -s.x / s.w)
   let y0 = dmax(0.0, -s.y / s.h)
-  let x1 = dmin(1.0, (self.box_w.get() - s.x) / s.w)
-  let y1 = dmin(1.0, (self.box_h.get() - s.y) / s.h)
+  let x1 = dmin(1.0, (bw - s.x) / s.w)
+  let y1 = dmin(1.0, (bh - s.y) / s.h)
   if x1 <= x0 || y1 <= y0 {
     None
   } else {
@@ -304,6 +325,13 @@ priv struct PadPointer {
   mut x : Double
   mut y : Double
   mut placed : Bool
+  /// each move of it (what draws it reads it)
+  told : @signals.Signal[Int]
+}
+
+///|
+fn pad_pointer_new() -> PadPointer {
+  { x: 0.5, y: 0.5, placed: false, told: @signals.signal(0) }
 }
 
 ///|
@@ -313,6 +341,7 @@ fn PadPointer::start_at(self : PadPointer, at : (Double, Double)?) -> Unit {
   self.x = clamp01(x)
   self.y = clamp01(y)
   self.placed = true
+  self.told.set(self.told.untracked() + 1)
 }
 
 ///|
@@ -321,8 +350,16 @@ fn PadPointer::at(self : PadPointer) -> (Double, Double) {
 }
 
 ///|
+/// Where it is and whether it was placed, as it is told (what draws it reads it).
+fn PadPointer::placed_said(self : PadPointer) -> ((Double, Double), Bool) {
+  self.told.get() |> ignore
+  ((self.x, self.y), self.placed)
+}
+
+///|
 fn PadPointer::by(self : PadPointer, dx : Double, dy : Double) -> Unit {
   self.placed = true
   self.x = clamp01(self.x + dx)
   self.y = clamp01(self.y + dy)
+  self.told.set(self.told.untracked() + 1)
 }

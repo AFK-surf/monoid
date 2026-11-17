@@ -1,4 +1,4 @@
-// The player's speeds (speed_menu) dismissed by the hand, Escape or a press beside them, at that input's moment, and
+// The player's speeds (speed_node's menu) dismissed by the hand, Escape or a press beside them, at that input's moment, and
 // its speed pressed again as it is let go; the frame after closing nothing more.
 
 ///|
@@ -102,9 +102,11 @@ test "a desktop's speed pressed again with its speeds open, then Escape at once:
 }
 
 ///|
-test "a phone's speed pressed again with its speeds open, then Escape at once: closed as it is let go, and stays closed, a frame between or none" {
+test "a phone's speed pressed again with its speeds open, then Escape at once: closed as it is let go, and stays closed, a frame between or none; that Escape the player's own, leaving it" {
+  // (a phone's player takes the keymap's keys as a desktop's does (player_node's keys, on every layout): the Escape
+  // after the speeds closed is its way back)
   assert_eq(
     (speed_again_then_escape(false, narrow=true), speed_again_then_escape(true, narrow=true)),
-    (([false, false, false], 0, 0), ([false, false, false], 0, 0)),
+    (([false, false, false], 1, 1), ([false, false, false], 1, 1)),
   )
 }

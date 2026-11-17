@@ -13,7 +13,7 @@ import { ColdRooms } from "../src/sessions/cold.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { hubConfig } from "../src/sessions/config.ts";
 import { archive, autoArchive, deleteSession, expireArchived, relieveArchived } from "../src/sessions/lifecycle.ts";
-import { TranscriptTail } from "../src/sessions/live.ts";
+import { TranscriptTail } from "./reference/tail.ts";
 import { writeCompressed } from "../src/store/archive.ts";
 import { MANUAL } from "../src/store/store.ts";
 import { Rig, type Setup, message, reply, settle, testClock } from "./hub-fakes.ts";

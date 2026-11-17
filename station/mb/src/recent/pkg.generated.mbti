@@ -1,0 +1,41 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/recent"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn global_schema() -> String
+
+pub fn home_schema() -> String
+
+pub fn install_global(@sql.Db) -> Unit raise
+
+pub fn install_home(@sql.Db) -> Unit raise
+
+pub fn install_overlap(@sql.Db) -> Unit raise
+
+pub fn install_scope(@sql.Db) -> Unit raise
+
+pub fn overlap_schema() -> String
+
+pub fn page(@sql.Db, String?, String?, Int32) -> (Array[@json.Json], Double)? raise
+
+pub fn scope_schema() -> String
+
+// Errors
+
+// Types and methods
+pub struct Preparation {
+  // private fields
+}
+pub fn Preparation::new(@sql.Db, limit? : Int32) -> Self raise
+pub fn Preparation::step(Self, String?, String?) -> Bool raise
+
+type Threads
+
+// Type aliases
+
+// Traits

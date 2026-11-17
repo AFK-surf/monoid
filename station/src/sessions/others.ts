@@ -9,7 +9,7 @@ import { type Args, jsNumber, jsString } from "./args.ts";
 import { threadHistory } from "./conversations.ts";
 import { threadsToldOf } from "./afresh.ts";
 import type { Hub } from "./hub.ts";
-import { Refused } from "./neighbours.ts";
+import { Refused } from "../jobs/remote.ts";
 import { fetchAttachments, type Listed } from "./peer-files.ts";
 import { percentDecode } from "../api/request.ts";
 

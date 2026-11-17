@@ -50,6 +50,7 @@ fn address_shown(s : ScreenSess) -> String {
 /// One of a view's tabs (view_tabs): a person's page on the station's browser, or the whole of a desktop or one of its
 /// windows; its words, what its tip says, whether it is the one shown, what pressing it does, and its × (none: kept).
 /// What is done is said as a value and done by tab_do in the press's handler, never as a frame is built.
+#derive(Eq)
 priv struct ViewTab {
   key : String
   words : String
@@ -62,6 +63,7 @@ priv struct ViewTab {
 ///|
 /// What one of the view's tabs does pressed: a person's page shown (its id, its title), a desktop's window shown alone
 /// (none: the whole display), a page closed (its id), a new tab.
+#derive(Eq)
 priv enum TabAct {
   Show(String, String)
   Window(Double?)
@@ -147,59 +149,97 @@ fn view_tabs(s : ScreenSess) -> (Array[ViewTab], Bool) {
 }
 
 ///|
-/// The view's tabs in a row (the viewer's bar's middle with keyboard and mouse): each a capsule, the one shown pressed,
-/// then ＋ where there is one to add.
-fn tabs_row(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, tabs : Array[ViewTab], add : Bool, close : () -> Unit) -> Unit {
-  c.box(style=browser_tabs_row, fn() {
-    for t in tabs {
-      view_tab(c, s, u, t, close)
-    }
-    if add {
-      round_button(c, "browser-new-tab", "plus", @sf.t("web-pages.screen.newTab"), on_press=fn() { tab_do(s, u, Add, close) })
-    }
+/// Whether the viewer shows the browser's bar now (browser_shown), followed as the state is told.
+fn browser_shown_now(s : ScreenSess) -> Bool {
+  s.said.get() |> ignore
+  s.failure.get() |> ignore
+  s.finished.get() |> ignore
+  browser_shown(s)
+}
+
+///|
+/// The view's tabs in a row in `m` (the viewer's bar's middle with keyboard and mouse): each a capsule, the one shown
+/// pressed, then ＋ where there is one to add.
+fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let tabs = fn() {
+    s.said.get() |> ignore
+    view_tabs(s)
+  }
+  m.box(fn(row) {
+    @sf.style_node(row, fn() { browser_tabs_row }, in_row=true)
+    row.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    // (each by what it shows: its key, words, note, whether it is the one shown and whether it closes; what pressing it
+    // does looked up as it is pressed)
+    row.each(at_once=true, fn() { tabs().0 }, fn(t) { t.key }, fn(slot, t) {
+      let act = fn(close : Bool) {
+        let x = t.untracked()
+        if close {
+          match x.close {
+            Some(a) => tab_do(s, u, a, pg.close)
+            None => ()
+          }
+        } else {
+          tab_do(s, u, x.press, pg.close)
+        }
+      }
+      view_tab_node(slot, pg, fn() {
+        let x = t.get()
+        (x.key, x.words, x.note, x.current, x.close is Some(_))
+      }, act)
+    })
+    row.show(at_once=true, fn() { tabs().1 }, fn(k) {
+      // (as tall as the tabs beside it: what is pressed side by side is one height)
+      screen_round_node(k, pg, fn() { "plus" }, fn() { @sf.t("web-pages.screen.newTab") }, fn(_) { tab_do(s, u, Add, pg.close) }, side=browser_tab_h) |> ignore
+    })
   })
   |> ignore
 }
 
 ///|
-/// Whether the view's bar is laid out narrow: beside its chat in a panel's tab, or in a narrow window.
-fn view_narrow(c : @ui.Ctx, u : ScreenUi) -> Bool {
-  u.in_tab || c.window_size().0 < browser_wide_at
+/// Whether the view's bar is laid out narrow: beside its chat in a panel's tab, or in a narrow window (`v`'s), followed.
+fn view_narrow(v : @view.View, u : ScreenUi) -> Bool {
+  u.in_tab || v.window().0 < browser_wide_at
 }
 
 ///|
-/// The browser's row over the page (see the file's head): ← → ⟳ and the address bar; narrow, ← and the address bar,
-/// the tabs folded into the button counting them (`tabs`) at its end.
-fn browser_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, close : () -> Unit) -> Unit {
-  browser_seen(s)
-  let narrow = view_narrow(c, u)
-  c.box(style=browser_bar_box, fn() {
-    c.box(style=browser_tools_row, fn() { browser_tools(c, s, u, close, narrow) }) |> ignore
+/// The browser's row over the page in `b` (see the file's head): ← → ⟳ and the address bar; narrow, ← and the address
+/// bar, the tabs folded into the button counting them at its end.
+fn browser_bar_node(b : @view.View, pg : ScreenPage) -> Unit {
+  browser_seen(pg.s)
+  b.box(fn(bar) {
+    @sf.style_node(bar, fn() { browser_bar_box })
+    bar.box(fn(row) {
+      @sf.style_node(row, fn() { browser_tools_row })
+      browser_tools_node(row, pg, narrow=fn() { view_narrow(row, pg.u) })
+    })
+    |> ignore
   })
   |> ignore
 }
 
 ///|
-/// ← (→ ⟳ where there is the room) and the address bar; narrow, the tabs' button after it.
-fn browser_tools(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, close : () -> Unit, narrow : Bool) -> Unit {
-  round_button(c, "browser-back", "arrow-left", @sf.t("web-pages.screen.back"), on_press=fn() {
+/// ← (→ ⟳ where there is the room, not `narrow`) and the address bar in `row`; narrow, the tabs' button after it.
+fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -> Unit {
+  let s = pg.s
+  screen_round_node(row, pg, fn() { "arrow-left" }, fn() { @sf.t("web-pages.screen.back") }, fn(_) {
     browser_act(s, "screen.back", @sf.t("web-pages.screen.backWhat"))
   })
-  if !narrow {
-    round_button(c, "browser-forward", "arrow-right", @sf.t("web-pages.screen.forward"), on_press=fn() {
+  |> ignore
+  row.show(at_once=true, fn() { !narrow() }, fn(k) {
+    k.row(Is(true)).lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
+    screen_round_node(k, pg, fn() { "arrow-right" }, fn() { @sf.t("web-pages.screen.forward") }, fn(_) {
       browser_act(s, "screen.forward", @sf.t("web-pages.screen.forwardWhat"))
     })
-    round_button(c, "browser-reload", "refresh", @sf.t("web-pages.screen.reload"), on_press=fn() {
+    |> ignore
+    screen_round_node(k, pg, fn() { "refresh" }, fn() { @sf.t("web-pages.screen.reload") }, fn(_) {
       browser_act(s, "screen.reload", @sf.t("web-pages.screen.reloadWhat"))
     })
-  }
-  address_bar(c, s, u)
-  if narrow {
-    let (tabs, _) = view_tabs(s)
-    if !tabs.is_empty() {
-      tabs_button(c, s, u, tabs.length(), close)
-    }
-  }
+    |> ignore
+  })
+  address_bar_node(row, pg)
+  row.show(at_once=true, fn() { narrow() && !view_tabs(s).0.is_empty() }, fn(k) { tabs_button_node(k, pg) })
 }
 
 ///|
@@ -211,104 +251,128 @@ fn browser_seen(s : ScreenSess) -> Unit {
 }
 
 ///|
-/// One tab of the row: its name (cut short), pressed the page shown; its × closes it.
-fn view_tab(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, t : ViewTab, close : () -> Unit) -> Unit {
-  let key = "view-tab/" + t.key
-  let tid = c.id(key)
-  let b = c.box(style=if t.close is Some(_) { browser_tab_box } else { browser_tab_box_kept }, selected=t.current, id=tid, fn() {
-    c.text(t.words, style=browser_tab_words) |> ignore
-    match t.close {
-      Some(act) => {
-        let xid = c.id(key + "/close")
-        let x = c.box(style=browser_tab_close_box, id=xid, fn() {
-          @sf.icon(c, "close", size=browser_tab_close_icon, color=c.color(Muted)) |> ignore
-        })
-        let closing = @sf.t("web-pages.screen.closeTab")
-        c.semantics(x, Button, id=xid, label=closing, actions=[Activate])
-        @sf.tip(c, key + "/close", xid, closing)
-        c.on_press(xid, fn() { tab_do(s, u, act, close) })
-      }
-      None => ()
-    }
+/// One tab of the row in `slot`: its name (cut short), the one shown pressed; pressed the page shown (`act(false)`), its
+/// × closing it (`act(true)`).
+fn view_tab_node(
+  slot : @view.View,
+  pg : ScreenPage,
+  t : () -> (String, String, String, Bool, Bool),
+  act : (Bool) -> Unit,
+) -> Unit {
+  let b = @headless.toggle(slot, Button, fn() { t().1 }, fn() { t().3 }, fn(_) { act(false) }, fn(v, _) {
+    @sf.style_node(v, fn() { if t().4 { browser_tab_box } else { browser_tab_box_kept } }, in_row=true)
+    v.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    v.ground(By(fn() { if t().3 { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } })) |> ignore
+    @sf.hover_ground_node(v)
+    @sf.words_node(v, fn() { t().1 }, fn() { browser_tab_words }) |> ignore
+    v.show(at_once=true, fn() { t().4 }, fn(k) {
+      let x = @headless.button(k, fn() { @sf.t("web-pages.screen.closeTab") }, fn(_) { act(true) }, fn(x, _) {
+        @sf.style_node(x, fn() { browser_tab_close_box }, in_row=true)
+        @sf.hover_ground_node(x)
+        @sf.icon_node(x, "close", browser_tab_close_icon, By(fn() { @ui.tree_theme().color(Muted) })) |> ignore
+      })
+      @sf.tip_node(pg.tips, x, fn() { @sf.t("web-pages.screen.closeTab") }) |> ignore
+    })
   })
-  c.semantics(b, Button, id=tid, label=t.words, pressed=t.current, actions=[Activate])
-  @sf.tip(c, key, tid, if t.note != "" { t.note } else { t.words })
-  c.on_press(tid, fn() { tab_do(s, u, t.press, close) })
+  @sf.tip_node(pg.tips, b, fn() { if t().2 != "" { t().2 } else { t().1 } }) |> ignore
 }
 
 ///|
-/// The address bar: the page's whole address while it is not written in, the words written in it gone to on Enter;
-/// picked whole as it is pressed into, as a browser's is.
-fn address_bar(c : @ui.Ctx, s : ScreenSess, u : ScreenUi) -> Unit {
-  let shown = address_shown(s)
-  // not written in: a field holding the page's address as the station last said it, made anew as that changes (its
-  // editor's key with it, so it shows it from its first frame)
-  let field = match u.address {
-    Some((was, f)) if was == shown || f.focused() => f
-    _ => {
-      // (its caret at its start: the address read from its site on, not scrolled to its end)
-      let f = @ui.Field::new()
-      f.set(shown, caret=0)
-      u.address = Some((shown, f))
-      u.address_made += 1
-      f
+/// The address bar in `row`: the page's whole address while it is not written in (its field holding the address as the
+/// station last said it, set again as that changes), the words written in it gone to on Enter; picked whole as it is
+/// pressed into, as a browser's is; taking the keys where it was asked to (⌘L, a new tab).
+fn address_bar_node(row : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let field = @ui.Field::new()
+  u.address_field = Some(field)
+  row.box(fn(b) {
+    @sf.style_node(b, fn() { browser_address_box }, in_row=true)
+    b.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    let shown = fn() {
+      s.said.get() |> ignore
+      address_shown(s)
     }
-  }
-  let key = "browser-address/" + s.screen + "/\{u.address_made}"
-  c.box(style=browser_address_box, fn() {
-    let focused = field.focused()
-    // pressed into: all of it picked, to be written over
-    if focused && !u.address_in {
-      field.pick(0, field.text().length())
-    }
-    u.address_in = focused
-    if u.address_asked {
-      u.address_asked = false
-      field.focus()
-    }
-    @sf.input(c, key, placeholder=@sf.t("web-pages.screen.addressHint"), field~, small=true, high=round_side, on_submit=fn(words) {
-      let go = words.trim().to_owned()
-      if go == "" {
-        return
+    // (its caret at its start: the address read from its site on, not scrolled to its end)
+    b.reacts(shown, fn(a) {
+      if !field.focused() {
+        field.set(a, caret=0)
       }
-      field.let_go()
-      // (the station's address again once it says it, not the words given up)
-      u.address = None
-      let p : Map[String, Json] = {
-        "station": Json::string(s.station),
-        "screen": Json::string(s.screen),
-        "url": Json::string(go),
-      }
-      (s.src.call)("screen.openUrl", Json::object(p), screen_act(c, @sf.t("web-pages.screen.goUrlWhat")))
     })
-    |> ignore
+    let input = @sf.input_node(
+      b,
+      field,
+      placeholder=@sf.t("web-pages.screen.addressHint"),
+      small=true,
+      submitted=fn(words) {
+        let go = words.trim().to_owned()
+        if go == "" {
+          return
+        }
+        field.let_go()
+        // (the station's address again once it says it, not the words given up)
+        field.set(@signals.untracked(shown), caret=0)
+        let p : Map[String, Json] = {
+          "station": Json::string(s.station),
+          "screen": Json::string(s.screen),
+          "url": Json::string(go),
+        }
+        (s.src.call)("screen.openUrl", Json::object(p), screen_act(@sf.t("web-pages.screen.goUrlWhat")))
+      },
+    )
+    // pressed into: all of it picked, to be written over
+    input.reacts(fn() { field.focused() }, fn(on) {
+      if on {
+        field.pick(0, field.text().length())
+      }
+    }, at_start=false)
+    // asked to take the keys (⌘L, a new tab), here as it is made or as it is asked
+    input.reacts(fn() { u.address_asked.get() }, fn(n) {
+      if n > u.address_done {
+        u.address_done = n
+        field.focus()
+      }
+    })
   })
   |> ignore
 }
 
 ///|
-/// Where the bar is narrow: the view's tabs folded into one button counting them; pressed, they are listed in a panel
-/// (each pressed shown) with 新标签页 at its head and, a person's page shown, 关闭此标签页 at its foot.
-fn tabs_button(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, count : Int, close : () -> Unit) -> Unit {
-  let key = "view-tabs"
-  let id = c.id(key)
-  let label = @sf.t(if s.user_tab() { "web-pages.screen.tabs" } else { "web-pages.screen.windows" })
-  let b = c.box(style=browser_count_box, id~, fn() {
-    c.box(style=browser_count_square, fn() { c.text("\{count}", style=browser_count_words) |> ignore }) |> ignore
-  })
-  c.semantics(b, Button, id~, label=label + " \{count}", actions=[Activate])
-  @sf.tip(c, key, id, label)
-  let open = fn() {
+/// Where the bar is narrow, in `k`: the view's tabs folded into one button counting them; pressed, they are listed in a
+/// panel (each pressed shown) with 新标签页 at its head and, a person's page shown, 关闭此标签页 at its foot.
+fn tabs_button_node(k : @view.View, pg : ScreenPage, side? : Double) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let label = fn() {
+    s.said.get() |> ignore
+    @sf.t(if s.user_tab() { "web-pages.screen.tabs" } else { "web-pages.screen.windows" })
+  }
+  let count = fn() {
+    s.said.get() |> ignore
+    view_tabs(s).0.length()
+  }
+  let open = fn(from : @view.View) {
+    let l = @signals.untracked(label)
     screen_panel_toggle(u, "tabs", fn() {
-      @sf.panel_nodes(label, fn(v, done) { tabs_node(v, s, u, done, close) }, from=Of(id), side=screen_panel_side(), focus=false)
+      @sf.panel_nodes(l, fn(v, done) { tabs_node(v, s, u, done, pg.close) }, from=Node(from), side=screen_panel_side(), focus=false)
     })
   }
-  c.on_press(id, open)
-  // (asked from elsewhere, a fixture's: opened as it is seen)
-  if u.asked_panel == "tabs" {
-    u.asked_panel = ""
-    open()
-  }
+  let b = @headless.button(k, fn() { label() + " \{count()}" }, open, fn(b, _) {
+    @sf.style_node(b, fn() { browser_count_box }, in_row=true)
+    // (in a bar of tools, as big as they are: what is pressed side by side is one height)
+    if side is Some(d) {
+      b.width(Is(Some(d))).height(Is(Some(d))) |> ignore
+    }
+    @sf.hover_ground_node(b)
+    b.box(fn(sq) {
+      @sf.style_node(sq, fn() { browser_count_square }, in_row=true)
+      @sf.mark_words_node(sq, fn() { "\{count()}" }, fn() { browser_count_words }) |> ignore
+    })
+    |> ignore
+  })
+  @sf.tip_node(pg.tips, b, label) |> ignore
+  // (asked from elsewhere, a fixture's: opened as it is made)
+  screen_asked(b, pg, ["tabs"], fn(_) { open(b) })
 }
 
 ///|
@@ -321,7 +385,7 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
     view_tabs(s)
   }
   @sf.panel_group_node(v, fn() { "" }, fn(g) {
-    g.show(fn() { tabs().1 }, fn(n) {
+    g.show(at_once=true, fn() { tabs().1 }, fn(n) {
       @sf.panel_row_node(
         n,
         fn() { @sf.t("web-pages.screen.newTab") },
@@ -334,7 +398,7 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
     })
     // (each by what it shows: its key, words, note and whether it is the one shown; what pressing it does looked up as
     // it is pressed)
-    g.each(fn() { tabs().0.map(fn(t) { (t.key, t.words, t.note, t.current) }) }, fn(t) { t.0 }, fn(row, t) {
+    g.each(at_once=true, fn() { tabs().0.map(fn(t) { (t.key, t.words, t.note, t.current) }) }, fn(t) { t.0 }, fn(row, t) {
       @sf.panel_row_node(
         row,
         fn() { t.get().1 },
@@ -352,7 +416,7 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
       )
     })
   })
-  v.show(fn() { s.said.get() |> ignore; s.user_tab() }, fn(f) {
+  v.show(at_once=true, fn() { s.said.get() |> ignore; s.user_tab() }, fn(f) {
     @sf.panel_group_node(f, fn() { "" }, fn(g) {
       @sf.panel_row_node(
         g,
@@ -373,7 +437,8 @@ fn tabs_node(v : @view.View, s : ScreenSess, u : ScreenUi, done : () -> Unit, cl
 fn new_tab_from(s : ScreenSess, u : ScreenUi) -> Unit {
   let listed = user_tabs_of(s).map(fn(t) { text(Some(t), "id") })
   let next = @settings.new_browser_tab(s.src.call, s.station, listed, failed_said(@sf.t("web-pages.screen.openBrowserWhat")))
-  screen_ui(screen_key(s.station, next)).address_asked = true
+  let nu = screen_ui(screen_key(s.station, next))
+  nu.address_asked.set(nu.address_asked.untracked() + 1)
   switch_screen_to(s, u, next, "", false)
 }
 
@@ -404,9 +469,9 @@ fn browser_act(s : ScreenSess, call : String, what : String) -> Unit {
 }
 
 ///|
-/// A browser's own keys (⌘ or Ctrl with L, T, W, R, [ and ]) on a tab of the station's browser: what they do here,
+/// A browser's own keys (⌘ or Ctrl with L, T, W, R, [ and ]) on a tab of the station's browser: what they do here, at
 /// their key-down; true where `code` is one of them (its keys not sent to the page).
-fn browser_key(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, code : String, mods : Int, down : Bool) -> Bool {
+fn browser_key(s : ScreenSess, u : ScreenUi, code : String, mods : Int, down : Bool) -> Bool {
   if !browser_shown(s) || (mods & (mod_meta | mod_ctrl)) == 0 || (mods & mod_alt) != 0 {
     return false
   }
@@ -417,10 +482,8 @@ fn browser_key(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, code : String, mods : 
   }
   match act {
     Some(key) => {
-      // (done once the frame's builds are over, as a key's press is: what it opens is another page)
       if down {
-        u.browser_keys += 1
-        c.tell("browser-key/" + s.view + "/\{u.browser_keys}", fn() { browser_key_do(s, u, key) })
+        browser_key_do(s, u, key)
       }
       true
     }
@@ -429,10 +492,10 @@ fn browser_key(c : @ui.Ctx, s : ScreenSess, u : ScreenUi, code : String, mods : 
 }
 
 ///|
-/// What a browser's key (browser_key's) does, once the frame's builds are over.
+/// What a browser's key (browser_key's) does.
 fn browser_key_do(s : ScreenSess, u : ScreenUi, code : String) -> Unit {
   match code {
-    "KeyL" => u.address_asked = true
+    "KeyL" => u.address_asked.set(u.address_asked.untracked() + 1)
     "KeyR" => browser_act(s, "screen.reload", @sf.t("web-pages.screen.reloadWhat"))
     "BracketLeft" => browser_act(s, "screen.back", @sf.t("web-pages.screen.backWhat"))
     "BracketRight" => browser_act(s, "screen.forward", @sf.t("web-pages.screen.forwardWhat"))
@@ -443,8 +506,7 @@ fn browser_key_do(s : ScreenSess, u : ScreenUi, code : String) -> Unit {
 }
 
 ///|
-/// What failed of a call said as a toast (`what` it was meant to do, and why): screen_act's, for what is done outside a
-/// build (tab_do's, a key's) where no build's Ctx is to hand.
+/// What failed of a call said as a toast (`what` it was meant to do, and why), as screen_act's.
 fn failed_said(what : String) -> (Result[Json, Json]) -> Unit {
   fn(r) {
     match r {

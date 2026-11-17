@@ -35,7 +35,7 @@ test "a quote's card pressed: the list goes to the message it quotes, and only t
   assert_eq(rd.flash, "ts3")
   let p = @sf.theme().p
   // no band across the list: the message is not lit whole
-  assert_eq(grounds_in(t, p.accent_bg).length(), 0)
+  assert_eq(grounds_in(t, @sf.theme().flash_bg()).length(), 0)
   // the passage's lines on the accent's ground, as a passage picked is, over the words that have it
   let marks = grounds_in(t, p.accent)
   assert_true(marks.length() >= 1)

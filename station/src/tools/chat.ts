@@ -4,6 +4,7 @@
 // skills' (src/skills/), and are held under ceilings (test/tools-weight.test.ts). What they do is src/sessions/.
 // chat_post still takes `options` beside `text` and kind need_decision, from before cards (sessions/args.ts), and
 // declares neither: with them its schema was over what Codex keeps the parameter descriptions of.
+import { NOTICE_MARK } from "../sessions/chat.ts";
 import { RUNTIME_KINDS } from "../agents/runtime.ts";
 import { chatHistory, chatLeave, chatPost, chatState, mayStage, staged, target, unheld, NOT_POSTED } from "../sessions/conversations.ts";
 import type { Hub } from "../sessions/hub.ts";
@@ -11,7 +12,7 @@ import { sessionSend } from "../sessions/messages.ts";
 import { chatCreate } from "../sessions/opened.ts";
 import { chatArchive } from "../sessions/chat-archive.ts";
 import type { Args } from "../sessions/args.ts";
-import { chatList, chatRead, elsewhere, readAfar, scopeOf, sessionHistory } from "../sessions/others.ts";
+import { chatList, chatRead, elsewhere, linkedSession, readAfar, scopeOf, sessionHistory } from "../sessions/others.ts";
 import { suggestArchive } from "../sessions/review.ts";
 import { STILLFAIL_SURFACE } from "../store/store.ts";
 import type { Tool } from "./mcp.ts";
@@ -198,7 +199,7 @@ export const CHAT_STATE = {
 export const CHAT_LEAVE = {
   name: "chat_leave",
   description:
-    "Stop following a Slack or Feishu thread you take part in, when people there tell you to (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
+    "Stop following a Slack, Feishu or group thread you are in, when people there ask (stop watching, 别跟了): its messages stop reaching you until someone mentions you there again, which brings you back. Tell them so in the thread first. You can still read it with chat_history and post there.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -335,13 +336,18 @@ export const SESSION_SEND = {
 export const CHAT_CREATE = {
   name: "chat_create",
   description:
-    "Open a new still.fail chat with an agent of its own, on this station or another station of the workspace, for work that should go on visibly beside yours (a part to do in parallel, something another machine is better placed for). It begins with your message. You are told how each of its turns ends: to wait for it, end your turn waiting. Write to its agent with session_send to its link. When an answer was uncertain, call again with the same key, which gives the chat made then rather than opening another. Skill stillfail-chats (Other agents) says more.",
+    "Open a still.fail chat with its own agent, here or on another workspace station. for: me means you lead it (it asks you and reports each turn; end waiting to await it); person means your person owns it (no reports to you). text starts it; session_send writes to its link. Retry uncertain calls with the same key. See skills stillfail-chats and stillfail-leading.",
   inputSchema: {
     "type": "object",
     "properties": {
+      "for": {
+        "type": "string",
+        "enum": ["me", "person"],
+        "description": "me: you lead it; person: your person's."
+      },
       "key": {
         "type": "string",
-        "description": "A name of your choosing for this chat (e.g. build-android): the same key again gives the same chat; a new one opens another."
+        "description": "Your name for it: the same key again gives the same chat."
       },
       "text": {
         "type": "string",
@@ -349,7 +355,7 @@ export const CHAT_CREATE = {
       },
       "title": {
         "type": "string",
-        "description": "The chat's name in still.fail lists: a few words, in their language (at most 120 characters). Its agent names it when left out."
+        "description": "The chat's name, in their language (up to 120 characters). Its agent names it when left out."
       },
       "station": {
         "type": "string",
@@ -358,7 +364,7 @@ export const CHAT_CREATE = {
       "runtime": {
         "type": "string",
         "enum": RUNTIME_KINDS,
-        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI). Default: that of its model."
+        "description": "Its agent's runtime (dsh: DeepSeek Harness, grok: Grok Build, cursor: Cursor, devin: Devin, hermes: Hermes Agent, agy: Antigravity CLI, pi: Pi). Default: that of its model."
       },
       "model": {
         "type": "string",
@@ -367,6 +373,11 @@ export const CHAT_CREATE = {
       "effort": {
         "type": "string",
         "description": "Its agent's reasoning effort. Default: the one that person has opened most chats with on that runtime and model there lately, else its model's."
+      },
+      "speed": {
+        "type": "string",
+        "enum": ["standard", "fast", "ultrafast"],
+        "description": "Overrides fast. Ultrafast needs a supported Codex model and eligible ChatGPT plan."
       },
       "fast": {
         "type": "boolean",
@@ -389,6 +400,7 @@ export const CHAT_CREATE = {
       }
     },
     "required": [
+      "for",
       "key",
       "text"
     ],
@@ -449,7 +461,11 @@ export const SESSION_HISTORY = {
 /// here.
 function afar(hub: Hub, key: string, tool: "chat_read" | "session_history", args: Args): Promise<string> | null {
   const station = typeof args.chat === "string" ? elsewhere(hub, key, args.chat) : null;
-  return station !== null ? readAfar(hub, key, station, tool, args) : null;
+  if (station !== null) return readAfar(hub, key, station, tool, args);
+  // (a chat handed from here to another station is read where it is now: replica/handover.ts)
+  const ref = typeof args.chat === "string" ? (linkedSession(args.chat)?.[0] ?? args.chat.trim()) : "";
+  const moved = ref === "" ? null : hub.store.handedTo(ref);
+  return moved === null ? null : readAfar(hub, key, moved.station, tool, { ...args, chat: ref });
 }
 
 /// `run` with `args`' files (and with `links` its text's local links) in folders macOS protects copied first
@@ -466,7 +482,7 @@ function stagedRun(hub: Hub, key: string, args: Args, links: boolean, run: (args
     try {
       return await run(given);
     } finally {
-      done();
+      await done();
     }
   })();
 }
@@ -476,7 +492,9 @@ export function chatTools(hub: Hub): Tool[] {
   return [
     {
       ...CHAT_POST,
-      run: async (key, args) => {
+      run: async (key, given) => {
+        // (what an agent says never ends as a station's notice does: chat.ts NOTICE_MARK)
+        const args = typeof given.text === "string" && given.text.includes(NOTICE_MARK) ? { ...given, text: given.text.replaceAll(NOTICE_MARK, "") } : given;
         // Its files and local links in a folder macOS protects copied first, never touched on the station's thread
         // (conversations.ts `staged`); links only where they become attachments (still.fail chats).
         let stillfail = false;

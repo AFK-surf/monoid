@@ -20,6 +20,28 @@ export async function restarter(data: string): Promise<(() => Promise<void>) | n
   return () => platform.askLauncher(pid, "handover");
 }
 
+/// How long after the page's restart was answered the launcher is asked to start the front anew: the answer leaves
+/// through the front (a device's request comes in through it, and its connection ends with it).
+export const FRONT_AFTER_MS = 150;
+
+/// What `POST /station/restart` does (api/routes/network.ts): where the launcher keeps a front it can start anew
+/// (`restartFront`, ops/launcher.ts), that too, the Node handed over with it (lifecycle.rs `restart_front`), so a
+/// front gone wrong inside (its endpoint's state, its memory) is mended by the page's restart as Node is; elsewhere
+/// (Windows, a launcher from before) the handover alone. Null where no launcher would hear either.
+export function pageRestart(
+  data: string,
+  restartFront: (() => void) | undefined,
+  o: { find?: typeof restarter; later?: (ms: number, f: () => void) => void } = {},
+): () => Promise<(() => Promise<void>) | null> {
+  const find = o.find ?? restarter;
+  const later = o.later ?? ((ms, f) => void wall.after(ms, f)); // timer: a deadline (the answer's time to leave through the front before it ends)
+  return async () => {
+    const handover = await find(data);
+    if (handover === null || restartFront === undefined) return handover;
+    return async () => later(FRONT_AFTER_MS, restartFront);
+  };
+}
+
 /// How long after its launcher was asked to hand over a process still there asks again.
 const AGAIN_MS = 5000;
 

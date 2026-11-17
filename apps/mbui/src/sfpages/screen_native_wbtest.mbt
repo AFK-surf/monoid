@@ -4,12 +4,10 @@ test "Duo remote screen fits clear of its system column with native controls; fu
   r.live()
   @sf.native_bars.on.set(true)
   @sf.native_bars.side.set(84.0)
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   assert_true(@sf.native_over.up)
-  let c = r.t.ctx()
-  let stage = c.id("screen-stage/" + screen_key("ws-1/st-1", "browser:tab-1"))
-  let (x, _, w, _) = c.rect_of(stage).unwrap()
+  let stage = fn() { r.ui().stage_node.unwrap().rect() }
+  let (x, _, w, _) = stage()
   assert_true(x + w <= 951.0 - 84.0, msg="stage \{x} + \{w}")
   assert_true(r.labelled(tr("android-misc.screen.close")) is None)
   for id in ["lead/over/screen-close", "over/screen-mode", "over/screen-keyboard", "over/screen-center"] {
@@ -21,13 +19,12 @@ test "Duo remote screen fits clear of its system column with native controls; fu
   r.tap_label(tr("android-misc.screen.full"))
   r.t.run_for(@ui.move_most_ms)
   assert_false(@sf.presenting())
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   assert_true(r.ui().full.get())
   assert_true(@sf.native_over.up)
   assert_eq(@sf.native_over.title, "")
   assert_eq(@sf.native_over.acts.length(), 0)
-  let (x, _, w, _) = c.rect_of(stage).unwrap()
+  let (x, _, w, _) = stage()
   assert_true(x <= 0.1 && x + w >= 951.0 - 0.1, msg="stage \{x} + \{w}")
   assert_true(r.labelled(tr("android-misc.screen.tools")) is Some(_))
   // the folded tools dragged off the corner: where they were let go, a drag past the window's edge kept inside it
@@ -36,7 +33,7 @@ test "Duo remote screen fits clear of its system column with native controls; fu
   r.t.draw()
   let (mx, my) = r.labelled(tr("android-misc.screen.tools")).unwrap()
   assert_true((mx - (tx - 300.0)).abs() < 2.0 && (my - (ty + 200.0)).abs() < 2.0, msg="moved to \{mx}, \{my}")
-  assert_false(r.ui().tools_open)
+  assert_false(r.ui().tools_open.get())
   r.t.drag(mx, my, 2.0, 667.0)
   r.t.draw()
   let (lx, ly) = r.labelled(tr("android-misc.screen.tools")).unwrap()
@@ -44,7 +41,6 @@ test "Duo remote screen fits clear of its system column with native controls; fu
   // back out of it from the folded tools: the column again
   r.tap_label(tr("android-misc.screen.tools"))
   r.tap_label(tr("android-misc.screen.unfull"))
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   assert_false(r.ui().full.get())
   assert_true(@sf.native_over.acts.iter().any(fn(a) { a.0 == "lead/over/screen-close" }))
@@ -56,7 +52,6 @@ test "Duo native screen control mode action still asks the core and close leaves
   r.live()
   @sf.native_bars.on.set(true)
   @sf.native_bars.side.set(84.0)
-  @sf.native_over_clear()
   r.t.draw()
   for a in @sf.native_over.acts.copy() {
     if a.0 == "over/screen-mode" { (a.3)() }
@@ -81,7 +76,6 @@ test "a late system column refits the whole picture and its control panel opens 
   r.t.run_for(late_column_ms)
   @sf.native_bars.on.set(true)
   @sf.native_bars.side.set(84.0)
-  @sf.native_over_clear()
   r.t.run_for(late_column_ms)
   let u = r.ui()
   let shown = u.shown(r.t.ctx())
@@ -195,7 +189,6 @@ fn native_live(r : ScreenRig, others? : Array[String] = []) -> Unit {
   r.frame(1000.0)
   @sf.native_bars.on.set(true)
   @sf.native_bars.side.set(84.0)
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
 }
 
@@ -219,7 +212,6 @@ test "the system bar's screen, driving with the keyboard down: the mouse's butto
   // the keyboard taken: on, the keys row over the frame's foot in the mouse's buttons' place once it is up
   native_pressed(r, "over/screen-keyboard")
   r.t.set_ime_inset(300.0)
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   assert_true(r.t.key_catching())
   assert_eq(native_act("screen-keyboard").map(fn(a) { a.2 }), Some(true))
@@ -229,7 +221,6 @@ test "the system bar's screen, driving with the keyboard down: the mouse's butto
   // 只看 chosen: 只看 (the eye), off; nothing to drive: no keyboard, no 按键
   native_pressed(r, "over/screen-mode")
   r.state("live", control=false, others=["李雷"], more={ "kind": "desktop" })
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   assert_eq(native_act("screen-mode"), Some((tr("android-misc.screen.look"), "eye", false)))
   assert_eq(@sf.native_over.acts.map(fn(a) { a.0 }), ["lead/over/screen-close", "over/screen-mode", "over/screen-center"])
@@ -250,7 +241,6 @@ test "控制中心 open by the system bar: its keyboard, 只看/控制 and 按�
   // its own action: open, lit; again, closed
   native_pressed(r, "over/screen-center")
   assert_true(r.t.find(tr("web-pages.screen.panel")) is Some(_))
-  @sf.native_over_clear()
   r.t.draw()
   assert_eq(native_act("screen-center").map(fn(a) { a.2 }), Some(true))
   native_pressed(r, "over/screen-center")
@@ -289,7 +279,6 @@ test "控制中心 open by the system bar: 全屏's tile leaves nothing of it up
   // back from 全屏 (its folded tools), 按键 open, then closed by the bar's close
   r.tap_label(tr("android-misc.screen.tools"))
   r.tap_label(tr("android-misc.screen.unfull"))
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   native_pressed(r, "over/screen-keys")
   assert_true(native_panel_up(r))
@@ -318,7 +307,6 @@ test "控制中心 → 连接 by the system bar: a step further in, its back key
   assert_true(r.t.find(tr("web-pages.screen.panel")) is None)
   assert_true(r.labelled(tr("common.back")) is Some(_))
   // (its action lit still: what is up is 控制中心's)
-  @sf.native_over_clear()
   r.t.draw()
   assert_eq(native_act("screen-center").map(fn(a) { a.2 }), Some(true))
   r.tap_label(tr("common.back"))
@@ -332,12 +320,17 @@ test "控制中心 → 连接 by the system bar: a step further in, its back key
 }
 
 ///|
-/// The rectangle of `id` (a box of the old view, by its key) where it was laid out.
+/// The rectangle of what `key` names (the files' panel, the mouse's buttons) where it is drawn.
 fn rect_of_key(r : ScreenRig, key : String) -> (Double, Double, Double, Double) {
-  let c = r.t.ctx()
-  match c.rect_of(c.id(key)) {
-    Some(rect) => rect
-    None => @halt.saying("no " + key)
+  let u = r.ui()
+  let v = match key {
+    "screen-drops" => u.drops_card
+    "screen-mouse-capsule" => u.mouse_pair
+    _ => None
+  }
+  match v {
+    Some(v) if v.alive() => v.rect()
+    _ => @halt.saying("no " + key)
   }
 }
 
@@ -354,7 +347,6 @@ test "the files sent at the stage's foot and the mouse's buttons there never ove
   r.live(others=[], clipboard=["text", "png"], drop={ "folder": "/Users/alice/Downloads", "reveal": true })
   @sf.native_bars.on.set(true)
   @sf.native_bars.side.set(0.0)
-  @sf.native_over_clear()
   r.t.run_for(@ui.move_most_ms)
   screen_fix_drops(true)
   r.t.draw()

@@ -29,7 +29,7 @@ pub async fn keep(endpoint: Endpoint, relay: RelayUrl) {
     loop {
         let started = Instant::now();
         if let Err(error) = hold(&endpoint, &relay).await {
-            eprintln!("mesh: not held on {relay}: {error:#}");
+            crate::log::info(&format!("mesh: not held on {relay}: {error:#}"));
         }
         if started.elapsed() >= MAX_BACKOFF {
             backoff = Duration::from_secs(1);
@@ -60,7 +60,7 @@ async fn hold(endpoint: &Endpoint, relay: &RelayUrl) -> Result<()> {
         let (conn, _accepted) = tokio::time::timeout(SETUP, async { tokio::try_join!(dialed, accepted) })
             .await
             .map_err(|_| anyhow!("no connection through the relay after {SETUP:?}"))??;
-        eprintln!("mesh: held on {relay}");
+        crate::log::info(&format!("mesh: held on {relay}"));
         let reason = conn.closed().await;
         Err::<(), _>(anyhow!("connection through the relay ended: {reason}"))
     }

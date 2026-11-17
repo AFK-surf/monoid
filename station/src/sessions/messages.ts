@@ -9,7 +9,7 @@ import { type Attachment, STILLFAIL_SURFACE, type SessionRow, type SessionThread
 import { type Args, jsString, slackWithFiles } from "./args.ts";
 import { attach } from "./conversations.ts";
 import type { Hub } from "./hub.ts";
-import { Refused } from "./neighbours.ts";
+import { Refused } from "../jobs/remote.ts";
 import { fromBefore, linkedSession, linkedStation, named, peersOf, reachable, scopeOf, sessionThreadOf } from "./others.ts";
 import { claim, sendable, sendAlong } from "./peer-files.ts";
 import { dir as thumbsDir, keep } from "../drive/thumbs.ts";
@@ -35,9 +35,11 @@ export function chatNamed(surface: string, title: string, link: string | null): 
 }
 
 /// Who a message comes from, as its header shows it: the sender's chat by its title, linked when it has a link. The
-/// first message of a chat an agent opened (chat_create) says it opened it.
-function header(surface: string, title: string, link: string | null, opened = false): string {
-  return tr(stationLang(), opened ? "station.session.openedBy" : "station.session.from", { from: chatNamed(surface, title, link) });
+/// first message of a chat an agent opened (chat_create) says it opened it, and how (`led`: it leads it; false: opened
+/// for its person; null: from before that was said).
+function header(surface: string, title: string, link: string | null, opened = false, led: boolean | null = null): string {
+  const key = !opened ? "station.session.from" : led === true ? "station.session.ledBy" : led === false ? "station.session.openedForYou" : "station.session.openedBy";
+  return tr(stationLang(), key, { from: chatNamed(surface, title, link) });
 }
 
 /// The name of a session once its preferred conversation is known.
@@ -96,13 +98,16 @@ export async function sessionSend(hub: Hub, key: string, args: Args): Promise<st
   const paths: string[] = Array.isArray(args.files) ? args.files.map(jsString) : [];
   const [title, link] = sender(hub, key);
   const here = link !== null ? linkedStation(link) : null;
-  const there = linkedStation(to);
+  // (a chat handed from here to another station is written to where it is now: replica/handover.ts)
+  const named0 = linkedSession(to)?.[0] ?? to;
+  const handed = (linkedStation(to) === null || linkedStation(to) === here) ? hub.store.handedTo(named0) : null;
+  const there = handed !== null ? handed.station : linkedStation(to);
   if (there !== null && there !== here) {
-    const target = linkedSession(to)?.[0];
+    const target = handed !== null ? named0 : linkedSession(to)?.[0];
     if (target === undefined) throw new Error(`${to} names no chat`);
     const call = peersOf(hub, key);
     if (!call) throw new Error("other stations cannot be reached from this one yet");
-    const files = sendable(hub, key, paths);
+    const files = await sendable(hub, key, paths);
     const request: Json = { method: METHOD, session: key, to: target, text, from: { title, link } };
     let answer: Json;
     try {
@@ -157,12 +162,15 @@ export async function fromPeer(hub: Hub, peer: string, request: Json, ws: string
   const target = typeof request?.to === "string" ? request.to : "";
   const from = typeof request?.session === "string" ? request.session : "";
   if (text === "" || target === "" || from === "" || chars(text) > MAX_TEXT) throw new Error(`a message needs to, session and text (at most ${MAX_TEXT} characters)`);
+  // (a chat handed from here to another station takes it there, as the sender would have sent it)
+  const handed = hub.store.handedTo(target);
+  if (handed !== null && hub.peers() !== null && handed.station !== peer) return await hub.peers()!(handed.station, { ...request, ...(ws !== null ? { workspace: ws } : {}) });
   if (hub.store.getSession(target) === null || !reachable(hub, target, ws, true)) throw new Error(`no session ${target} on this station (it may have been deleted)`);
   const thread = sessionThreadOf(hub, target);
   if (hub.store.manuallyArchived(thread.thread.id)) throw new Error(`that chat was archived by hand: it takes no messages until someone restores it`);
   const targets = hub.store.threadSessions(thread.thread.id).map((m) => m.session);
   // Files sent ahead of it (session.put), into the uploads of the session the chat's files are read from.
-  const files = claim(hub, peer, from, targets[0] ?? target, request?.files);
+  const files = await claim(hub, peer, from, targets[0] ?? target, request?.files);
   const title = typeof request?.from?.title === "string" && request.from.title.trim() !== "" ? request.from.title : from;
   const link = typeof request?.from?.link === "string" && request.from.link !== "" ? request.from.link : null;
   // The first message of a chat that session opened here (chat_create there): headed as its opening.
@@ -181,7 +189,8 @@ export async function fromPeer(hub: Hub, peer: string, request: Json, ws: string
 export async function postFrom(hub: Hub, thread: SessionThread, author: string, title: string, link: string | null, text: string, targets: string[], given: Attachment[] = [], opened = false): Promise<string> {
   const identity = hub.actors.get(author)?.messageIdentity() ?? undefined;
   const row = thread.thread;
-  let said = `${header(row.surface, title, link, opened)}\n\n${text}`;
+  const led = opened && targets[0] !== undefined ? (hub.store.openerOf(targets[0])?.led ?? null) : null;
+  let said = `${header(row.surface, title, link, opened, led)}\n\n${text}`;
   const files = await keep(given, thumbsDir(hub.config().dataDir));
   const here = { channel: row.channel, threadTs: row.threadTs };
   let ts: string;

@@ -1,10 +1,13 @@
-// Where a chat is relayed: what the picker shows of the places `chat.relayPlaces` read (web/src/Relay.tsx,
-// the mbui app's sfdesk/relay.mbt and its phone's sheet). The bot to go on through (the one picked, else the chat's
-// own, else the first), the bots offered when there are several, a Slack message's link typed in place of a search,
-// and the places of that bot: those whose name has what was typed (those starting with it first), relayed to before
-// (the latest first), then by name; nothing typed, of more than FEW places with some relayed to before, only the first
-// RECENT of those unless all were asked for. Asked of the core as `chat.relayView`; self-contained: the web imports it,
-// typechecked as the web is.
+// Where a chat is relayed: what the picker shows of the places `chat.relayPlaces` read (the mbui app's sfpages
+// relay.mbt). The places of every bot in one list, each once however many bots of its workspace are in it (a channel is
+// what a person picks; the bot is a step after it, pengxiao 2026-11-16): those whose name has what was typed (those
+// starting with it first), relayed to before (the latest first), then by name; nothing typed, of more than FEW places
+// with some relayed to before, only the first RECENT of those unless all were asked for; public channels no bot is in
+// yet where a bot of theirs may join one (`open`), marked so. A Slack message's link typed in place of a search. For the
+// place picked (`via`): the bot that replies there (the one picked, else the chat's own, else one in it, else one that
+// joins it), and every bot of its workspace with where it stands there: in it, joins it as it relays (a public channel,
+// the bot let join: channels:join), not in it, or (a private one) only a person there can invite it. Asked of the core as
+// `chat.relayView`; self-contained.
 
 /// A place a connect's bot is in: a channel (a new thread there), a topic group (a new topic) or a group (its
 /// conversation taken over); `used`, when it was last relayed to (ms).
@@ -15,16 +18,32 @@ export type RelayConnect = {
   kind: "slack" | "feishu" | "lark";
   name: string;
   team: string | null;
+  /// Its workspace's id (a Slack team's, a Feishu tenant's): the places of bots of one are the same places.
+  teamId?: string | null;
   botImage?: string | null;
   preferred?: boolean;
   places: RelayPlace[];
+  /// Whether its bot may join a public channel itself (Slack's channels:join).
+  joins?: boolean;
+  /// The public channels of its workspace it is not in, where it `joins`.
+  open?: RelayPlace[];
   error?: string;
 };
 
 /// A place offered: its connect's id and kind, the place, its name as people know it (`#name`, 🔒 before a private
 /// channel's), what relaying there does (`note`: a new thread, a new topic, the group's conversation taken over) and
 /// what its row says of it at its end in the list (`aside`: none for a channel's new thread).
-export type RelayRow = { connect: string; kind: RelayConnect["kind"]; place: RelayPlace; name: string; note: string; aside: string | null };
+/// `key`: the place in its workspace (what the picker asks `via` of); `connect`: the bot that replies there unless
+/// another is picked.
+export type RelayRow = { key: string; connect: string; kind: RelayConnect["kind"]; place: RelayPlace; name: string; note: string; aside: string | null };
+
+/// Where a bot stands in the place picked: in it, joins it as it relays, not in it (and cannot join it), or only a
+/// person there can invite it (a private channel: `invite`, what they send there).
+export type RelayBotState = "in" | "join" | "out" | "invite";
+
+/// Who replies in the place picked: the bot (`joins`: it joins the place as it relays), and every bot of its workspace
+/// with where it stands there.
+export type RelayVia = { bot: string; joins: boolean; bots: { id: string; label: string; state: RelayBotState; invite?: string }[] };
 
 /// What the picker shows: the Slack message's link typed (its thread offered instead), the bot gone on through, the
 /// bots to pick from (several only), the places offered, whether they are only those relayed to before (`recent`, of
@@ -38,6 +57,7 @@ export type RelayView = {
   total: number;
   empty: "noPlaces" | "noMatch" | null;
   unread: string[];
+  via?: RelayVia;
 };
 
 type Words = (key: string, args?: Record<string, string | number>) => string;
@@ -87,24 +107,94 @@ export function arrange(connects: readonly RelayConnect[], query: string, all: b
   return { rows: shown, recent: false, total };
 }
 
-/** What the picker shows of `connects` for what was typed, all asked for or not, and the bot picked (null: none yet). */
-export function relayView(connects: readonly RelayConnect[], query: string, all: boolean, chosen: string | null, t: Words): RelayView {
+/** The workspace a connect's bot is in: its id where known, else its name. */
+const teamOf = (c: RelayConnect): string => c.teamId || c.team || c.id;
+
+/** A place in its workspace, as the picker asks of it. */
+const keyOf = (c: RelayConnect, p: RelayPlace): string => `${c.kind}:${teamOf(c)}/${p.id}`;
+
+/** A place, the bots of its workspace in it, and those that would join it (none in it yet). */
+type Gathered = { key: string; place: RelayPlace; first: RelayConnect; in: RelayConnect[]; open: boolean };
+
+/** Every place once: those some bot is in (`used` the latest of theirs), then public channels a bot may join that none is in. */
+function gather(connects: readonly RelayConnect[]): Gathered[] {
+  const by = new Map<string, Gathered>();
+  for (const c of connects)
+    for (const p of c.places) {
+      const key = keyOf(c, p);
+      const g = by.get(key);
+      if (g === undefined) by.set(key, { key, place: p, first: c, in: [c], open: false });
+      else {
+        g.in.push(c);
+        if ((p.used ?? -1) > (g.place.used ?? -1)) g.place = { ...g.place, used: p.used! };
+      }
+    }
+  for (const c of connects)
+    if (c.joins === true)
+      for (const p of c.open ?? []) {
+        const key = keyOf(c, p);
+        if (!by.has(key)) by.set(key, { key, place: p, first: c, in: [], open: true });
+      }
+  return [...by.values()];
+}
+
+/** The bot that replies in a place unless another is picked: the chat's own where it is in it, else the first in it, else the first that joins it. */
+const replier = (g: Gathered, connects: readonly RelayConnect[]): RelayConnect =>
+  g.in.find((c) => c.preferred === true) ?? g.in[0] ?? connects.find((c) => c.preferred === true && teamOf(c) === teamOf(g.first) && c.joins === true) ?? g.first;
+
+/** Where a bot of the place's workspace stands there. */
+function stateIn(g: Gathered, c: RelayConnect): RelayBotState {
+  if (g.in.includes(c)) return "in";
+  if (g.place.private === true) return c.kind === "slack" ? "invite" : "out";
+  return c.kind === "slack" && g.place.kind === "channel" && c.joins === true ? "join" : "out";
+}
+
+/** Who replies in the place picked (`key`): the bot picked where it can, else as `replier` says; every bot of its workspace with where it stands. */
+export function relayVia(connects: readonly RelayConnect[], key: string, chosen: string | null): RelayVia | null {
+  const g = gather(connects).find((x) => x.key === key);
+  if (g === undefined) return null;
+  const team = connects.filter((c) => c.kind === g.first.kind && teamOf(c) === teamOf(g.first));
+  const bots = team.map((c) => {
+    const state = stateIn(g, c);
+    return { id: c.id, label: c.name, state, ...(state === "invite" ? { invite: `/invite @${c.name}` } : {}) };
+  });
+  const picked = bots.find((b) => b.id === chosen && (b.state === "in" || b.state === "join"));
+  const bot = picked?.id ?? replier(g, connects).id;
+  return { bot, joins: bots.find((b) => b.id === bot)?.state === "join", bots };
+}
+
+/** What the picker shows of `connects` for what was typed, all asked for or not, the bot picked (null: none yet), and the place picked (`place`, its key: who replies there). */
+export function relayView(connects: readonly RelayConnect[], query: string, all: boolean, chosen: string | null, t: Words, place: string | null = null): RelayView {
+  const gathered = gather(connects);
+  const several = new Set(connects.map((c) => teamOf(c))).size > 1;
+  const q = query.trim().toLowerCase();
+  const total = gathered.length;
+  const shown = q === "" ? gathered : gathered.filter((g) => g.place.name.toLowerCase().includes(q));
+  const first = (g: Gathered) => (q !== "" && g.place.name.toLowerCase().startsWith(q) ? 0 : 1);
+  shown.sort((a, b) => first(a) - first(b) || Number(a.open) - Number(b.open) || (b.place.used ?? -1) - (a.place.used ?? -1) || byName(a.place.name.toLowerCase(), b.place.name.toLowerCase()));
+  const used = shown.filter((g) => g.place.used !== undefined);
+  const recent = q === "" && !all && total > FEW && used.length > 0;
+  const rows = recent ? used.slice(0, RECENT) : shown;
+  // (the bot a Slack message's link is gone on through: the one picked, else the chat's own)
   const bot = relayBot(connects, chosen);
-  const looked = bot === null ? [] : [bot];
-  const { rows, recent, total } = arrange(looked, query, all);
-  return {
+  const view: RelayView = {
     link: slackLink(query),
     bot: bot?.id ?? null,
-    bots: connects.length > 1 ? connects.map((c) => ({ id: c.id, label: botLabel(c, connects) })) : [],
-    rows: rows.map((r) => {
-      const note = kindNote(r.place, t);
-      return { connect: r.connect.id, kind: r.connect.kind, place: r.place, name: placeName(r.place), note, aside: r.place.kind === "channel" ? null : note };
+    bots: [],
+    rows: rows.map((g) => {
+      const note = kindNote(g.place, t);
+      const by = replier(g, connects);
+      const aside = g.open ? t("web-main.relay.unjoined") : g.place.kind !== "channel" ? note : several ? (by.team ?? null) : null;
+      return { key: g.key, connect: by.id, kind: by.kind, place: g.place, name: placeName(g.place), note, aside };
     }),
     recent,
     total,
-    empty: rows.length > 0 || bot === null ? null : query.trim() === "" ? "noPlaces" : "noMatch",
-    unread: looked.flatMap((c) => (c.error !== undefined ? [c.error] : [])),
+    empty: rows.length > 0 || connects.length === 0 ? null : q === "" ? "noPlaces" : "noMatch",
+    unread: connects.flatMap((c) => (c.error !== undefined ? [c.error] : [])),
   };
+  const via = place === null ? null : relayVia(connects, place, chosen);
+  if (via !== null) view.via = via;
+  return view;
 }
 
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
@@ -122,6 +212,11 @@ export function readConnects(v: unknown): RelayConnect[] {
       return place;
     });
     const connect: RelayConnect = { id: str(c.id), kind, name: str(c.name), team: typeof c.team === "string" ? c.team : null, places };
+    if (typeof c.teamId === "string" && c.teamId !== "") connect.teamId = c.teamId;
+    if (c.joins === true) {
+      connect.joins = true;
+      connect.open = (Array.isArray(c.open) ? c.open : []).filter(isObj).map((p) => ({ id: str(p.id), name: str(p.name), kind: "channel" as const }));
+    }
     if (typeof c.botImage === "string") connect.botImage = c.botImage;
     if (c.preferred === true) connect.preferred = true;
     if (typeof c.error === "string") connect.error = c.error;

@@ -11,28 +11,32 @@
 //   is in blobs/ by hash, a file's recent ones too (what a merge reads as the version both were made from).
 // - An edit here is found by the station looking at the files (a watch, settled a moment) and made a record of its own.
 //   A version from another station that comes after this one's is written over it; one made beside it is merged
-//   (memory-merge.ts), each station computing the same from the same two, so they come to one with no station to decide.
+//   (station/mb src/memory, the MoonBit program's: memory-mb.ts), each station computing the same from the same two, so
+//   they come to one with no station to decide. The files are read, hashed and kept in blobs/ there too, none of their
+//   bytes on the station's thread but those it writes or sends.
 // - No station is the one to follow: a station off keeps its copy, and is brought level when it is back. What a station
 //   was given goes on to the others as anything changed here does.
 // - Each workspace's own: a station in two keeps each one's apart (sessions/agent-home.ts `workspaceAgentHome`), and
 //   gives one only to the stations of its workspace (the transport says which a request is of).
 import { createHash } from "node:crypto";
-import { type Dirent, watch } from "node:fs";
+import type { Dirent } from "node:fs";
 import { chmod, copyFile, lstat, mkdir, readdir, readFile, rename, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import type { Clock } from "effect";
 import type { Cloud } from "../cloud/state.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { PrivateFile, writePrivateSoon } from "../ops/files.ts";
+import { FollowedTree, type Watch } from "../ops/follow.ts";
 import { log } from "../ops/log.ts";
 import { portableName } from "../ops/paths.ts";
 import { BUILTIN_SKILLS, FEEDBACK_SKILL, workspaceAgentHome } from "../sessions/agent-home.ts";
-import { alike, conflictPath, isText, merge3, stationTag, unionLines } from "./memory-merge.ts";
+import { MemoryProgram } from "./memory-mb.ts";
 
 type Json = any;
 
 /// A file of the memory, as each station keeps and tells it. `hash` "" once deleted; `size` of its content; `mode` its
-/// permission bits (0o644 or 0o755: a file only its owner may read, a key's, stays on its machine); `origin`: what a station had before the memory was shared (its first
+/// permission bits (0o644 or 0o755: a file of a skill only its owner may read, a key's, stays on its machine; MEMORY.md
+/// is shared whatever its own); `origin`: what a station had before the memory was shared (its first
 /// look), merged with another such without a version both were made from.
 export type Rec = { hash: string; at: number; by: string; prev: string[]; size: number; mode: number; origin?: true };
 type Kept = { clock: number; files: Record<string, Rec> };
@@ -49,18 +53,20 @@ const PREV_MOST = 16;
 /// Edits are looked at once they have settled this long.
 const SETTLE_MS = 2000;
 /// A station not brought level is tried again after this, twice as long each time up to RETRY_MOST_MS.
-const RETRY_MS = 5_000;
+export const RETRY_MS = 5_000;
 const RETRY_MOST_MS = 10 * 60_000;
 /// What a station writes in a MEMORY.md of nothing yet (agent-home.ts and stations of before): no memory of its own.
 const EMPTY = new Set(["", "# still.fail memory", "# ember memory"]);
 /// What is never part of a skill as shared: what a program makes beside its files.
-const SKIPPED = new Set(["__pycache__", "node_modules", ".venv", ".git", ".DS_Store"]);
+export const SKIPPED = new Set(["__pycache__", "node_modules", ".venv", ".git", ".DS_Store"]);
+/// The most directories of the agents' home watched (an inotify watch each on Linux, of the user's
+/// fs.inotify.max_user_watches, 8192 on older kernels, shared with every program of theirs).
+const FOLLOW_MOST = 1000;
 
 const sha = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 const HEX64 = /^[0-9a-f]{64}$/;
 const isObject = (v: unknown): v is Record<string, any> => v !== null && typeof v === "object" && !Array.isArray(v);
 const BUILTIN = new Set([...BUILTIN_SKILLS, FEEDBACK_SKILL]);
-const modeOf = (m: number) => ((m & 0o100) !== 0 ? 0o755 : 0o644);
 /// A file only its owner may read (a key, a host's address kept beside a skill): this machine's alone, never shared.
 const own = (m: number) => (m & 0o077) === 0;
 
@@ -84,68 +90,17 @@ export function recOf(raw: unknown): Rec | null {
   return { hash, at, by, prev: [...prev], size, mode, ...(raw.origin === true ? { origin: true as const } : {}) };
 }
 
-/// Which of two records is the newer: the later, then the station of the greater id, then the greater hash.
-const newer = (a: Rec, b: Rec) => (a.at !== b.at ? a.at > b.at : a.by !== b.by ? a.by > b.by : a.hash > b.hash);
 const history = (r: Rec) => [r.hash, ...r.prev].filter((h) => h !== "");
 const after = (r: Rec, prev: string[]) => [...new Set([r.hash, ...prev, ...r.prev].filter((h) => h !== ""))].slice(0, PREV_MOST);
 
-/// What one station's record of a file and another's make: the one that comes after the other, or, made beside each
-/// other, a merge (`merged`) both stations compute alike. `contentOf` gives what this station keeps of a version (null:
-/// none).
-export type Outcome = { kind: "keep" } | { kind: "take"; rec: Rec } | { kind: "merge"; rec: Rec; content: Buffer | null; beside: { path: string; rec: Rec; content: Buffer } | null };
+/// What one station's record of a file and another's make, as the program decides it (mb/src/memory decide.mbt): the
+/// one that comes after the other, or, made beside each other, a merge both stations compute alike (its content kept in
+/// blobs/ by then; `beside`: the other's version kept beside it, where it could not be merged).
+type Outcome = { kind: "keep" } | { kind: "take"; content: boolean } | { kind: "merge"; rec: Rec; beside: { path: string; rec: Rec } | null };
 
-export function decide(path: string, mine: Rec | undefined, theirs: Rec, contentOf: (hash: string) => Buffer | null, nameOf: (station: string) => string): Outcome {
-  if (mine === undefined) return { kind: "take", rec: theirs };
-  if (mine.hash === theirs.hash) return newer(theirs, mine) ? { kind: "take", rec: theirs } : { kind: "keep" };
-  if (theirs.prev.includes(mine.hash) && mine.hash !== "") return { kind: "take", rec: theirs };
-  if (mine.prev.includes(theirs.hash) && theirs.hash !== "") return { kind: "keep" };
-  // Deleted on one and still there on the other: what is there stays (an edit is not lost to a delete).
-  if (theirs.hash === "" && mine.hash === "") return newer(theirs, mine) ? { kind: "take", rec: theirs } : { kind: "keep" };
-  const [w, l] = newer(theirs, mine) ? [theirs, mine] : [mine, theirs];
-  const at = Math.max(w.at, l.at) + 1;
-  const made = (content: Buffer | null, prevOf: Rec[]): Rec => ({
-    hash: content === null ? "" : sha(content),
-    at,
-    by: w.by,
-    prev: [...new Set(prevOf.flatMap(history))].slice(0, PREV_MOST * 2),
-    size: content?.length ?? 0,
-    mode: (w.hash !== "" ? w : l).mode,
-  });
-  if (w.hash === "" || l.hash === "") {
-    const kept = w.hash === "" ? l : w;
-    const content = contentOf(kept.hash);
-    if (content === null) return { kind: "keep" };
-    return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
-  }
-  const wc = contentOf(w.hash);
-  const lc = contentOf(l.hash);
-  if (wc === null || lc === null) return { kind: "keep" };
-  const lh = history(l);
-  const common = lh.find((h) => history(w).includes(h));
-  const base = common === undefined ? null : contentOf(common);
-  let text: string | null = null;
-  if (isText(wc) && isText(lc)) {
-    if (base !== null && isText(base)) text = merge3(base.toString("utf8"), wc.toString("utf8"), lc.toString("utf8"));
-    else if (common !== undefined) {
-      // Of one history but the version both came from not here (neither station kept it, or it was not brought):
-      // their lines together, each once, so that nothing either had is lost.
-      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
-    } else if (path === "MEMORY.md") {
-      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), w.origin ? nameOf(w.by) : null, l.origin ? nameOf(l.by) : null);
-    } else if (alike(wc.toString("utf8"), lc.toString("utf8"))) {
-      // One file each kept on apart (a skill copied once, edited on both since): their lines together, each once.
-      text = unionLines(wc.toString("utf8"), lc.toString("utf8"), null, null);
-    }
-  }
-  if (text !== null) {
-    const content = Buffer.from(text, "utf8");
-    return { kind: "merge", rec: made(content, [w, l]), content, beside: null };
-  }
-  // Not merged: the newer's, the other's beside it for an agent to merge.
-  const besidePath = conflictPath(path, nameOf(l.by));
-  const besideRec: Rec = { hash: sha(lc), at, by: w.by, prev: [], size: lc.length, mode: l.mode };
-  return { kind: "merge", rec: made(wc, [w, l]), content: wc, beside: memoryPath(besidePath) ? { path: besidePath, rec: besideRec, content: lc } : null };
-}
+/// What the program found of a file of the memory (mb/src/memory files.mbt `scan`): its content's hash (kept in
+/// blobs/ where it changed), size, shared mode and mtime; `empty`: a MEMORY.md of nothing yet, not kept.
+type Found = { path: string; hash: string; size: number; mode: number; mtime: number; empty?: true };
 
 export type MemoryDeps = {
   data: string;
@@ -158,7 +113,29 @@ export type MemoryDeps = {
   clock?: Clock.Clock;
   /// Tests: nothing set going by itself (no watch, no station brought level but by `levelNow`).
   still?: boolean;
+  /// Tests: a directory's watch (ops/follow.ts).
+  watch?: Watch;
+  /// Tests: the MoonBit program (readerBinary's where none is given).
+  binary?: string;
 };
+
+/// Whether the agents' home's directory at `rel` is followed: skills/ and what is shared of each skill in it, of the home
+/// workspace and of each joined one (workspaces/<id>/skills/…), MEMORY.md being seen by its directory's watch. Nothing
+/// else in the home (a repository, a cache an agent put there) is listed or watched.
+export function memoryFollowed(rel: string): boolean {
+  const parts = rel.split("/");
+  let i = 0;
+  if (parts[0] === "workspaces") {
+    if (parts.length === 1) return true;
+    if (!/^[0-9A-Za-z_-]{1,128}$/.test(parts[1]!)) return false;
+    if (parts.length === 2) return true;
+    i = 2;
+  }
+  if (parts[i] !== "skills") return false;
+  if (parts.length === i + 1) return true;
+  if (BUILTIN.has(parts[i + 1]!)) return false;
+  return parts.slice(i + 1).every((n) => portableName(n) && !SKIPPED.has(n));
+}
 
 /// A station from before the memory was shared: nothing to bring level with it.
 /// (Before 0.1.9133 a station answers a method it does not know as a task's request it lacks the keys of.)
@@ -167,6 +144,7 @@ const before = (e: unknown) => /unsupported peer method|unknown memory method|se
 export class MemorySync {
   readonly #deps: MemoryDeps;
   readonly #time: Fibers;
+  readonly #program: MemoryProgram;
   readonly #kept = new Map<string, Kept>();
   readonly #files = new Map<string, PrivateFile>();
   /// One look, merge or write at a time a workspace: what the station does to its files there goes in this order.
@@ -175,14 +153,21 @@ export class MemorySync {
   readonly #going = new Set<string>();
   readonly #retries = new Map<string, { wait: number; due: boolean; cancel: () => void }>();
   readonly #settle = new Map<string, () => void>();
-  #watcher: { close(): void } | null = null;
-  #watched: string | null = null;
+  #tree: FollowedTree | null = null;
+  #followRetry: { wait: number; due: boolean; cancel: () => void } | null = null;
+  #followOver = false;
   #stops: (() => void)[] = [];
   #stopped = false;
 
   constructor(deps: MemoryDeps) {
     this.#deps = deps;
     this.#time = new Fibers("memory", deps.clock);
+    this.#program = new MemoryProgram(this.#root(), deps.binary === undefined ? {} : { binary: deps.binary });
+  }
+
+  /// The program let go if nothing is asked of it (read/pool.ts `onTrim`): 1, else 0.
+  trimIdle(): number {
+    return this.#program.trimIdle();
   }
 
   get #me(): string {
@@ -193,8 +178,8 @@ export class MemorySync {
     return join(this.#deps.data, "share", "memory");
   }
 
-  /// Where workspace `ws`'s memory is.
-  #home(ws: string): string {
+  /// Where workspace `ws`'s memory is, made where it is a joined one's not made yet.
+  #home(ws: string): Promise<string> {
     return workspaceAgentHome(this.#deps.agentHome(), ws, this.#deps.cloud.home());
   }
 
@@ -269,70 +254,32 @@ export class MemorySync {
     }
   }
 
-  async #keepBlob(bytes: Buffer): Promise<string> {
-    const hash = sha(bytes);
+  /// `bytes`, of version `hash`, kept unless they are already.
+  async #keepBlob(hash: string, bytes: Buffer): Promise<void> {
     try {
       await lstat(this.#blob(hash));
     } catch {
       await writePrivateSoon(this.#blob(hash), bytes);
     }
-    return hash;
+  }
+
+  /// A version's bytes to write: what a peer brought, else what blobs/ keeps of it (the program read it or made it
+  /// there); null when neither has it.
+  async #bytes(hash: string, given: Map<string, Buffer>): Promise<Buffer | null> {
+    return given.get(hash) ?? (await readFile(this.#blob(hash)).catch(() => null));
   }
 
   // ── the files as they are ──
 
-  /// The memory's files in `dir` as they are now (path → bytes and mode), and the skills that are not shared as they
-  /// are (too large, a link): their records stay as they were.
-  async #read(dir: string): Promise<{ files: Map<string, { bytes: Buffer; mode: number; mtime: number }>; held: Set<string> }> {
-    const files = new Map<string, { bytes: Buffer; mode: number; mtime: number }>();
-    const held = new Set<string>();
-    try {
-      const st = await lstat(join(dir, "MEMORY.md"));
-      if (!st.isFile() || own(st.mode)) {}
-      else if (st.size <= FILE_MOST) files.set("MEMORY.md", { bytes: await readFile(join(dir, "MEMORY.md")), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
-      else held.add("MEMORY.md");
-    } catch {}
-    let skills: Dirent[] = [];
-    try {
-      skills = await readdir(join(dir, "skills"), { withFileTypes: true });
-    } catch {}
-    for (const skill of skills) {
-      const prefix = `skills/${skill.name}/`;
-      if (BUILTIN.has(skill.name) || !portableName(skill.name) || SKIPPED.has(skill.name)) continue;
-      if (!skill.isDirectory()) {
-        held.add(prefix);
-        continue;
-      }
-      const found = new Map<string, { bytes: Buffer; mode: number; mtime: number }>();
-      let bytes = 0;
-      let over = false;
-      const walk = async (rel: string) => {
-        let entries: Dirent[] = [];
-        try {
-          entries = await readdir(join(dir, "skills", skill.name, rel), { withFileTypes: true });
-        } catch {
-          return;
-        }
-        for (const e of entries) {
-          if (over || !portableName(e.name) || SKIPPED.has(e.name)) continue;
-          const sub = rel === "" ? e.name : `${rel}/${e.name}`;
-          if (e.isDirectory()) await walk(sub);
-          else if (e.isFile()) {
-            const full = join(dir, "skills", skill.name, sub);
-            const st = await lstat(full);
-            if (own(st.mode)) continue;
-            bytes += st.size;
-            if (st.size > FILE_MOST || bytes > SKILL_MOST || found.size >= SKILL_FILES) over = true;
-            else found.set(prefix + sub, { bytes: await readFile(full), mode: modeOf(st.mode), mtime: Math.round(st.mtimeMs) });
-          }
-        }
-      };
-      await walk("");
-      // A skill without its SKILL.md yet (being written, or no skill) waits until it has one.
-      if (over || !found.has(`${prefix}SKILL.md`)) held.add(prefix);
-      else for (const [p, f] of found) files.set(p, f);
-    }
-    return { files, held };
+  /// The memory's files in `dir` as they are now, in the order they were read, those changed since the station kept
+  /// them kept in blobs/, and the skills that are not shared as they are (too large, a link): their records stay as they
+  /// were. Read by the program (mb/src/memory files.mbt `scan`, as test/reference/memory-merge.ts `readMemory`).
+  async #read(dir: string, kept: Record<string, Rec>): Promise<{ files: Map<string, Found>; held: Set<string> }> {
+    const answer = await this.#program.ask<{ files: Found[]; held: string[] }>("scan", {
+      dir, blobs: join(this.#root(), "blobs"), kept: Object.fromEntries(Object.entries(kept).map(([p, r]) => [p, r.hash])),
+      builtin: [...BUILTIN], skipped: [...SKIPPED], fileMost: FILE_MOST, skillMost: SKILL_MOST, skillFiles: SKILL_FILES,
+    });
+    return { files: new Map(answer.files.map((f) => [f.path, f])), held: new Set(answer.held) };
   }
 
   /// Records made of what changed in `ws`'s files since the last look (whether any did).
@@ -341,19 +288,18 @@ export class MemorySync {
     const kept = this.#kept.get(ws)!;
     const me = this.#me;
     if (me === "") return false;
-    const { files, held } = await this.#read(this.#home(ws));
+    const { files, held } = await this.#read(await this.#home(ws), kept.files);
     const isHeld = (path: string) => held.has(path) || [...held].some((h) => h.endsWith("/") && path.startsWith(h));
     let changed = false;
     for (const [path, f] of files) {
-      const hash = sha(f.bytes);
+      const hash = f.hash;
       const rec = kept.files[path];
       if (rec?.hash === hash) continue;
-      if (rec === undefined && path === "MEMORY.md" && EMPTY.has(f.bytes.toString("utf8").trim())) continue;
-      await this.#keepBlob(f.bytes);
+      if (rec === undefined && path === "MEMORY.md" && f.empty === true) continue;
       // What it had before the memory was shared (its first look) goes as when it was last changed; anything after, as now.
       const origin = state.fresh && rec === undefined;
       const at = origin ? this.#tick(ws, f.mtime) : this.#tick(ws);
-      kept.files[path] = { hash, at, by: me, prev: rec === undefined ? [] : after(rec, []), size: f.bytes.length, mode: f.mode, ...(origin ? { origin: true as const } : {}) };
+      kept.files[path] = { hash, at, by: me, prev: rec === undefined ? [] : after(rec, []), size: f.size, mode: f.mode, ...(origin ? { origin: true as const } : {}) };
       changed = true;
     }
     for (const [path, rec] of Object.entries(kept.files)) {
@@ -373,22 +319,15 @@ export class MemorySync {
   /// into one kept apart is put back beside the skill it came from as well (where what is outside the station reads it).
   async #mend(ws: string): Promise<boolean> {
     const kept = this.#kept.get(ws)!;
-    const body = (t: string) => t.replace(/^---\n[\s\S]*?\n---\n?/, "");
-    // Skills kept apart: `<base>-<tag>` whose front matter names it so and says `[<station>]` of that tag.
-    const aside: { skill: string; base: string; tag: string; author: string; body: string }[] = [];
+    // Skills kept apart: `<base>-<tag>` whose front matter names it so and says `[<station>]` of that tag (each
+    // SKILL.md read by the program: mb/src/memory answer.mbt `asides`).
+    const skills: { skill: string; hash: string; author: string }[] = [];
     for (const [path, rec] of Object.entries(kept.files)) {
       const m = /^skills\/([^/]+)\/SKILL\.md$/.exec(path);
       if (m === null || rec.hash === "") continue;
-      const content = await this.#content(rec.hash);
-      if (content === null) continue;
-      const text = content.toString("utf8");
-      const front = /^---\n([\s\S]*?)\n---/.exec(text)?.[1];
-      const said = front === undefined ? null : /^description: \[([^\]\n]{1,80})\] /m.exec(front);
-      if (front === undefined || said === null || !front.split("\n").includes(`name: ${m[1]}`)) continue;
-      const tag = stationTag(said[1]!);
-      if (!m[1]!.endsWith(`-${tag}`) || m[1]!.length === tag.length + 1) continue;
-      aside.push({ skill: m[1]!, base: m[1]!.slice(0, -tag.length - 1), tag, author: stationTag(this.#nameOf(ws, rec.by)), body: body(text) });
+      skills.push({ skill: m[1]!, hash: rec.hash, author: this.#nameOf(ws, rec.by) });
     }
+    const aside = skills.length === 0 ? [] : (await this.#program.ask<{ asides: { skill: string; base: string; tag: string; author: string; body: string }[] }>("asides", { blobs: join(this.#root(), "blobs"), skills })).asides;
     let changed = false;
     const gone = new Set<string>();
     const groups = new Map<string, typeof aside>();
@@ -407,8 +346,8 @@ export class MemorySync {
     }
     for (const a of aside) {
       if (gone.has(a.skill)) continue;
-      const from = join(this.#home(ws), "skills", a.skill);
-      const to = join(this.#home(ws), "skills", a.base);
+      const from = join(await this.#home(ws), "skills", a.skill);
+      const to = join(await this.#home(ws), "skills", a.base);
       try {
         if (!(await lstat(to)).isDirectory()) continue;
       } catch {
@@ -436,7 +375,7 @@ export class MemorySync {
   /// (an edit not yet looked at: it is looked at first, and merged). Whether it was.
   async #write(ws: string, path: string, rec: Rec, content: Buffer | null): Promise<boolean> {
     const kept = this.#kept.get(ws)!;
-    const dir = this.#home(ws);
+    const dir = await this.#home(ws);
     const full = join(dir, ...path.split("/"));
     const parts = path.split("/");
     // A skill this station has as a link (a deployment's, one borrowed from a share) stays as it is: the record is kept.
@@ -448,13 +387,11 @@ export class MemorySync {
         }
       } catch {}
     }
-    let now: Buffer | null = null;
-    try {
-      now = await readFile(full);
-    } catch {}
+    const nowHash = (await this.#program.ask<{ hash: string | null }>("hash", { path: full })).hash ?? "";
     const was = kept.files[path];
-    const nowHash = now === null ? "" : sha(now);
-    if (nowHash !== (was?.hash ?? "") && !(was === undefined && path === "MEMORY.md" && now !== null && EMPTY.has(now.toString("utf8").trim()))) {
+    // (a MEMORY.md of nothing yet is read only where it may be one: no record of it, something there)
+    const empty = async () => EMPTY.has(((await readFile(full).catch(() => null))?.toString("utf8") ?? "\0").trim());
+    if (nowHash !== (was?.hash ?? "") && !(was === undefined && path === "MEMORY.md" && nowHash !== "" && (await empty()))) {
       // Edited here since it was looked at: looked at again (and merged, made beside it) before anything is written.
       this.#again(ws);
       return false;
@@ -471,7 +408,7 @@ export class MemorySync {
       await writeFile(tmp, content, { mode: rec.mode });
       await chmod(tmp, rec.mode);
       await rename(tmp, full);
-      await this.#keepBlob(content);
+      await this.#keepBlob(rec.hash, content);
     }
     kept.files[path] = rec;
     return true;
@@ -483,12 +420,19 @@ export class MemorySync {
     const kept = this.#kept.get(ws)!;
     let changed = await this.#apart(ws, theirs, given);
     for (const [path, rec] of Object.entries(theirs)) {
-      const contents = new Map<string, Buffer | null>();
-      for (const h of new Set([rec.hash, ...rec.prev, ...history(kept.files[path] ?? rec)])) contents.set(h, given.get(h) ?? (await this.#content(h)));
-      const outcome = decide(path, kept.files[path], rec, (h) => contents.get(h) ?? null, (s) => this.#nameOf(ws, s));
+      const mine = kept.files[path];
+      // What it brought of the versions this decision may read (the rest are blobs/'s), and the stations' names.
+      const brought: Record<string, string> = {};
+      for (const h of new Set([rec.hash, ...rec.prev, ...history(mine ?? rec)])) {
+        const b = given.get(h);
+        if (b !== undefined) brought[h] = b.toString("hex");
+      }
+      const names: Record<string, string> = { [rec.by]: this.#nameOf(ws, rec.by), ...(mine ? { [mine.by]: this.#nameOf(ws, mine.by) } : {}) };
+      const outcome = await this.#program.ask<Outcome>("decide", { path, mine: mine ?? null, theirs: rec, names, given: brought, blobs: join(this.#root(), "blobs"), prevMost: PREV_MOST });
       if (outcome.kind === "keep") continue;
       if (outcome.kind === "take") {
-        const content = rec.hash === "" ? null : (contents.get(rec.hash) ?? null);
+        // (`content`: the program found it, brought or kept, as what it is)
+        const content = rec.hash === "" || !outcome.content ? null : await this.#bytes(rec.hash, given);
         if (rec.hash !== "" && content === null) continue;
         if (kept.files[path]?.hash === rec.hash) kept.files[path] = rec;
         else if (!(await this.#write(ws, path, rec, content))) continue;
@@ -496,10 +440,16 @@ export class MemorySync {
         changed = true;
         continue;
       }
-      if (!(await this.#write(ws, path, outcome.rec, outcome.content))) continue;
+      const content = await this.#bytes(outcome.rec.hash, given);
+      if (content === null) continue;
+      if (!(await this.#write(ws, path, outcome.rec, content))) continue;
       kept.clock = Math.max(kept.clock, outcome.rec.at);
-      if (outcome.beside !== null && kept.files[outcome.beside.path]?.hash !== outcome.beside.rec.hash) await this.#write(ws, outcome.beside.path, outcome.beside.rec, outcome.beside.content);
-      log.info("memory", "a file of the memory made apart merged", { workspace: ws, path, beside: outcome.beside?.path ?? null });
+      const beside = outcome.beside !== null && memoryPath(outcome.beside.path) ? outcome.beside : null;
+      if (beside !== null && kept.files[beside.path]?.hash !== beside.rec.hash) {
+        const lc = await this.#bytes(beside.rec.hash, given);
+        if (lc !== null) await this.#write(ws, beside.path, beside.rec, lc);
+      }
+      log.info("memory", "a file of the memory made apart merged", { workspace: ws, path, beside: beside?.path ?? null });
       changed = true;
     }
     if (changed) this.#save(ws);
@@ -534,14 +484,15 @@ export class MemorySync {
       if (!ms || !ts || ms.hash === ts.hash || [...mine, ...their].some(([, r]) => r.origin !== true)) continue;
       if (history(ms).some((h) => history(ts).includes(h))) continue;
       // One skill each kept on (copied once, edited on both since): merged file by file, not kept apart.
-      const [mc, tc] = [await this.#content(ms.hash), given.get(ts.hash) ?? (await this.#content(ts.hash))];
-      if (mc === null || tc === null || alike(mc.toString("utf8"), tc.toString("utf8"))) continue;
+      const tb = given.get(ts.hash);
+      const { alike } = await this.#program.ask<{ alike: boolean | null }>("alikeKept", { blobs: join(this.#root(), "blobs"), a: ms.hash, b: ts.hash, given: tb === undefined ? {} : { [ts.hash]: tb.toString("hex") } });
+      if (alike !== false) continue;
       const size = (files: [string, Rec][]) => files.reduce((n, [, r]) => n + r.size, 0);
       const [sm, st] = [size(mine), size(their)];
       const mineAside = sm !== st ? sm < st : me < ts.by;
       // Named for the station that made it, not the one keeping it (a station that took another's copy first).
       const owner = (mineAside ? ms : ts).by;
-      const aside = `${name}-${stationTag(this.#nameOf(ws, owner))}`;
+      const aside = `${name}-${(await this.#program.ask<{ tags: string[] }>("tags", { names: [this.#nameOf(ws, owner)] })).tags[0]}`;
       if (!portableName(aside) || BUILTIN.has(aside)) continue;
       const moved: [string, Rec, Buffer][] = [];
       for (const [path, r] of mineAside ? mine : their) {
@@ -571,8 +522,8 @@ export class MemorySync {
   /// leaves this machine): copied beside them, where the skill says it is, and left where it was too, since what is
   /// outside the station may read it there (Mini1's release job reads `skills/stillfail/station-update-host`).
   async #copyRest(ws: string, name: string, aside: string): Promise<void> {
-    const from = join(this.#home(ws), "skills", name);
-    const to = join(this.#home(ws), "skills", aside);
+    const from = join(await this.#home(ws), "skills", name);
+    const to = join(await this.#home(ws), "skills", aside);
     const walk = async (rel: string): Promise<void> => {
       let entries: Dirent[] = [];
       try {
@@ -659,18 +610,21 @@ export class MemorySync {
       await this.#look(ws);
       const kept = this.#kept.get(ws)!;
       // Their versions this station has not: fetched, a batch at a time.
-      const wanted: Rec[] = [];
+      const maybe: Rec[] = [];
       for (const [path, rec] of Object.entries(theirs)) {
         const mine = kept.files[path];
         if (rec.hash === "" || mine?.hash === rec.hash || mine?.prev.includes(rec.hash)) continue;
-        if ((await this.#content(rec.hash)) === null) wanted.push(rec);
+        maybe.push(rec);
         // Made beside this station's: the version both came from too, where this station keeps it not (what a merge
         // reads to take only what each changed).
         if (mine !== undefined && mine.hash !== "" && !rec.prev.includes(mine.hash)) {
           const common = history(mine).find((h) => history(rec).includes(h));
-          if (common !== undefined && (await this.#content(common)) === null) wanted.push({ ...rec, hash: common });
+          if (common !== undefined) maybe.push({ ...rec, hash: common });
         }
       }
+      // (which of them blobs/ keeps, the program says: none of their bytes read here)
+      const have = maybe.length === 0 ? [] : (await this.#program.ask<{ have: boolean[] }>("have", { blobs: join(this.#root(), "blobs"), hashes: maybe.map((r) => r.hash) })).have;
+      const wanted = maybe.filter((_, i) => have[i] !== true);
       const given = new Map<string, Buffer>();
       for (let i = 0; i < wanted.length;) {
         const batch: string[] = [];
@@ -765,31 +719,79 @@ export class MemorySync {
     void this.#lane(ws, () => this.#look(ws)).then(() => this.#lookAll(), (e) => log.warn("memory", "the memory's files not read", { workspace: ws, error: (e as Error).message }));
   }
 
-  /// The agents' home watched: an edit in a workspace's memory, settled, is looked at.
+  /// The agents' home watched: an edit in a workspace's memory, settled, is looked at. Made once for a home (not again
+  /// at each frame of the cloud's): a watch the system would not make is tried again after a while (`#refollow`).
   #follow(): void {
     const root = this.#deps.agentHome();
-    if (this.#watched === root && this.#watcher !== null) return;
-    this.#watcher?.close();
-    this.#watcher = null;
-    this.#watched = root;
-    try {
-      const w = watch(root, { recursive: true, persistent: false }, (_event, name) => {
-        const rel = String(name ?? "").split(/[\\/]/);
-        const home = this.#deps.cloud.home();
-        const ws = rel[0] === "workspaces" ? rel[1] : home;
-        const what = rel[0] === "workspaces" ? rel[2] : rel[0];
-        if (!ws || (what !== "MEMORY.md" && what !== "skills")) return;
-        this.#settle.get(ws)?.();
-        this.#settle.set(ws, this.#time.after(SETTLE_MS, () => (this.#settle.delete(ws), this.#again(ws)))); // timer: a debounce of a burst
-      });
-      w.on("error", (e) => {
+    if (this.#tree?.root === root) return;
+    this.#tree?.close();
+    this.#followRetry?.cancel();
+    this.#followRetry = null;
+    this.#followOver = false;
+    this.#tree = new FollowedTree({
+      root,
+      into: memoryFollowed,
+      most: FOLLOW_MOST,
+      ...(this.#deps.watch ? { watch: this.#deps.watch } : {}),
+      changed: (rel) => this.#changed(rel),
+      failed: (e) => {
         log.warn("memory", "the agents' home no longer followed", { error: e.message });
-        if (this.#watcher === w) this.#watcher = null;
-      });
-      this.#watcher = w;
-    } catch (e) {
-      log.warn("memory", "the agents' home cannot be followed", { error: (e as Error).message });
-    }
+        this.#refollow();
+      },
+    });
+    this.#scanTree();
+  }
+
+  /// The directories followed found again (a directory made or gone, a retry).
+  #scanTree(): void {
+    const tree = this.#tree;
+    if (tree === null || this.#stopped) return;
+    void tree.scan().then((r) => {
+      if (tree !== this.#tree || this.#stopped) return;
+      if (r.over && !this.#followOver) log.warn("memory", "the agents' home has more directories than are followed", { most: FOLLOW_MOST });
+      this.#followOver = r.over === true;
+      if (r.failed === undefined) {
+        if (this.#followRetry?.due) this.#followRetry = null;
+        return;
+      }
+      log.warn("memory", "the agents' home cannot be followed", { error: r.failed.message });
+      this.#refollow();
+    });
+  }
+
+  /// A scan again after a watch failed, twice as long each time up to RETRY_MOST_MS.
+  #refollow(): void {
+    if (this.#stopped) return;
+    const was = this.#followRetry;
+    if (was !== null && !was.due) return;
+    const wait = was === null ? RETRY_MS : Math.min(was.wait * 2, RETRY_MOST_MS);
+    const next = { wait, due: false, cancel: () => {} };
+    next.cancel = this.#time.after(wait, () => { // timer: a retry after a failure, with a backoff
+      next.due = true;
+      this.#scanTree();
+    });
+    this.#followRetry = next;
+  }
+
+  /// What changed at `rel` of the agents' home: an edit of a workspace's memory looked at once it settled.
+  #changed(rel: string): void {
+    const parts = rel.split("/");
+    const ws = parts[0] === "workspaces" ? parts[1] : this.#deps.cloud.home();
+    const what = parts[0] === "workspaces" ? parts[2] : parts[0];
+    // workspaces/<id> made: followed from now on
+    if (parts[0] === "workspaces" && parts.length <= 2) return this.#settleScan();
+    if (!ws || (what !== "MEMORY.md" && what !== "skills")) return;
+    this.#settle.get(ws)?.();
+    this.#settle.set(ws, this.#time.after(SETTLE_MS, () => { // timer: a debounce of a burst
+      this.#settle.delete(ws);
+      this.#scanTree();
+      this.#again(ws);
+    }));
+  }
+
+  #settleScan(): void {
+    this.#settle.get("")?.();
+    this.#settle.set("", this.#time.after(SETTLE_MS, () => (this.#settle.delete(""), this.#scanTree()))); // timer: a debounce of a burst
   }
 
   /// Followed from now on: the files, the rosters (a station come, one back).
@@ -801,10 +803,12 @@ export class MemorySync {
   async stop(): Promise<void> {
     this.#stopped = true;
     for (const s of this.#stops) s();
-    this.#watcher?.close();
+    this.#tree?.close();
+    this.#followRetry?.cancel();
     for (const r of this.#retries.values()) r.cancel();
     await this.#time.close();
     await this.written();
+    await this.#program.close();
   }
 
   /// Each workspace's files looked at and each station of it brought level, one after another (tests); a station that

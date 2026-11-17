@@ -138,25 +138,64 @@ fn rail_transfers_list(src : Source, w : Workspace) -> Unit {
 }
 
 ///|
-/// In a small screen's home's top bar: what comes to this device and goes between the stations, as one key
-/// (@sf.progress_key: the download's mark, a ring as far as what comes has come, red's dot when one failed); pressed,
-/// their list (from the foot). Nothing while there is none. (A newer build of the app is not among it: the host
-/// brings it by itself, sfbase updates.mbt.)
-pub fn transfers_key(c : @ui.Ctx, src : Source, ws : String, side : Double, mark : Double) -> Unit {
-  let all = coming(src, ws)
-  let id = c.id("home/transfers")
-  let go = fn(at : DriveAt) { open_page(Drive(at)) }
-  if all.none() {
-    transfers_list(src, ws, Of(id), go, true)
-    return
-  }
-  let (n, percent, failed) = all.going()
-  let ring = if n > 0 { Some(percent.to_double() / 100.0) } else { None }
-  let label = if n > 0 { coming_words(n, percent) } else { @sf.t("web-pages.files.transfers") }
-  @sf.progress_key(c, "home/transfers", side, mark, "download", label, ring, failed~, on_press=fn() {
-    ftransfers.open.set(!ftransfers.open.get())
+/// In a small screen's home's top bar, in `parent`: what comes to this device and goes between the stations of workspace
+/// `ws()`, as one key (@sf.progress_key_node: the download's mark, a ring as far as what comes has come, red's dot when
+/// one failed); pressed, their list (from the foot, the library's panel), closed once there is none. Laid out nowhere
+/// while there is none. (A newer build of the app is not among it: the host brings it by itself, sfbase updates.mbt.)
+pub fn transfers_key_node(
+  parent : @view.View,
+  src : Source,
+  ws : () -> String,
+  side : Double,
+  mark : Double,
+  tips : @sf.TipLayer,
+  shown? : () -> Bool = fn() { true },
+) -> Unit {
+  // (what comes and goes read only while the page it is on shows: let go of while another covers it, read anew, as it
+  // is now, as it shows again, as the old view's island read it only while it was built)
+  // (laid out nowhere while there is none, or while its page does not show: what comes and goes not read then)
+  parent.laid_nowhere(By(fn() { !shown() || coming(src, ws()).none() })) |> ignore
+  @sfpages.shown_at_rest(parent, shown, grows=false, fn(holder) {
+    let going = fn() { coming(src, ws()).going() }
+    let none = fn() { coming(src, ws()).none() }
+    let key = @sf.progress_key_node(
+      holder,
+      tips,
+      side,
+      mark,
+      "download",
+      fn() {
+        let (n, percent, _) = going()
+        coming_words(n, percent)
+      },
+      fn() {
+        let (n, percent, _) = going()
+        if n > 0 { Some(percent.to_double() / 100.0) } else { None }
+      },
+      fn() { going().2 },
+      fn() { ftransfers.open.set(!ftransfers.open.untracked()) },
+    )
+    // (its list: put up from the key as it is opened, closed as it is shut or once there is none)
+    holder.reacts(fn() { ftransfers.open.get() && !none() }, fn(open) {
+      if open && ftransfers.shown == 0 {
+        @sf.panel_nodes(
+          @sf.t("web-pages.files.transfers"),
+          fn(v, _) { transfers_body(v, src, @signals.untracked(ws), fn(at) { open_page(Drive(at)) }) },
+          from=Node(key),
+          w=ftransfers_w,
+          gone=fn() {
+            ftransfers.open.set(false)
+            ftransfers.shown = 0
+          },
+        )
+        ftransfers.shown = @sf.last_presented()
+      } else if !open && ftransfers.shown > 0 {
+        @sf.close_presented_of(ftransfers.shown)
+        ftransfers.shown = 0
+        ftransfers.open.set(false)
+      }
+    })
   })
-  transfers_list(src, ws, Of(id), go, false)
 }
 
 ///|
@@ -329,7 +368,7 @@ fn transfer_row(row : @view.View, src : Source, x : @signals.Signal[Json], go : 
     }
   }
   let call = fn(name : String) {
-    (src.call)(name, { "station": Json::string(station), "id": Json::string(tid) }, act_said(@sf.t("web-pages.files.transferWhat")))
+    (src.call)(name, { "station": Json::string(station), "id": Json::string(tid) }, @sfpages.act_said(@sf.t("web-pages.files.transferWhat")))
   }
   let mark = fn() {
     let t = @sf.theme()

@@ -38,6 +38,21 @@ pub fn Tree::answered_between(self : Tree, from : Double, to : Double) -> Array[
 }
 
 ///|
+/// The nodes an answer changed at once at a moment from `from` to `to`, each once, still in the tree, as
+/// Tree::answered_between finds them but none let go of: for a judge that reads them on a frame before the one that
+/// takes them (ui's rows_steady.mbt, whose page's lists are judged on the frame ahead of sizes_steady.mbt, which takes
+/// them: read so there, they were gone for it, and each answer's step at once was said a jolt).
+pub fn Tree::answered_seen(self : Tree, from : Double, to : Double) -> Array[Int] {
+  let out : Array[Int] = []
+  for m in self.answer_marks {
+    if m.1 >= from && m.1 <= to && m.0 < self.nodes.length() && self.nodes[m.0].live && !out.contains(m.0) {
+      out.push(m.0)
+    }
+  }
+  out
+}
+
+///|
 /// Whether node `at` is on a way at `t` not yet at its end: its own way in or out, or a move it is drawn by (View::comes,
 /// View::moved_by), or one of what holds it, or a way in or out of what is beside it or beside what holds it, or of
 /// anything in those, in that column, carrying it along. What a step of it then is: one in the middle of a way, said as ever where an answer

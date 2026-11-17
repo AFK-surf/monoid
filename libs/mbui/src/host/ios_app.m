@@ -301,7 +301,10 @@ static double drawn_for;
   drawn_for = target;
   CGSize s = self.bounds.size;
   self.drawnSize = s;
-  double scale = self.window.screen.scale ?: 3.0;
+  // (the display's scale as this view's traits have it, said again as it changes: MBController's viewDidLoad; before
+  // the view has one, the scale it was drawn at last)
+  double scale = self.traitCollection.displayScale;
+  if (scale <= 0) scale = self.layer.contentsScale;
   self.layer.contentsScale = scale;
   mb_text_set_scale(scale);
   mb_render_set_size(s.width, s.height, scale);
@@ -367,7 +370,7 @@ static int touch_id(UITouch *u) {
   }
   return n.intValue;
 }
-// finger `u`'s event (`kind` 10-13) where sample `at` of it was, at its time
+// finger `u`'s event (`kind` 10-14) where sample `at` of it was, at its time
 static void touch_at(int kind, UITouch *u, UITouch *at, UIView *v) {
   CGPoint p = [at locationInView:v];
   event_time = touch_ms(at.timestamp);
@@ -377,7 +380,8 @@ static void touch_at(int kind, UITouch *u, UITouch *at, UIView *v) {
 // One callback's touches `t` handed on as `kind` in the order they were taken: by their times, one moment's by the
 // fingers' ids (given as each went down: touch_id), one finger's samples in their own order (a move's coalesced into
 // it, 120 Hz digitizers); never by the order the set lists them in, which is none. Fingers going down at one moment
-// take their ids in the order of where they are (top to bottom, then left to right).
+// take their ids in the order of where they are (top to bottom, then left to right). A move's samples but the last of
+// them all go as 14, more of the batch after it, so what they do is laid out once, as the last is taken (touches.mbt).
 static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
   if (kind == 10) {
     touches_begun(t, e);
@@ -403,7 +407,10 @@ static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
     NSComparisonResult by = [(NSNumber *)a[2] compare:(NSNumber *)b[2]];
     return by != NSOrderedSame ? by : [(NSNumber *)a[3] compare:(NSNumber *)b[3]];
   }];
-  for (NSArray *s in all) touch_at(kind, s[0], s[1], v);
+  for (NSUInteger k = 0; k < all.count; k++) {
+    NSArray *s = all[k];
+    touch_at(kind == 11 && k + 1 < all.count ? 14 : kind, s[0], s[1], v);
+  }
 }
 - (void)touchesBegan:(NSSet<UITouch *> *)t withEvent:(UIEvent *)e {
   touches_sent(10, t, e, self);
@@ -776,10 +783,10 @@ static void touches_sent(int kind, NSSet<UITouch *> *t, UIEvent *e, UIView *v) {
 // ---------------------------------------------------------------------------
 
 // Which way the app is held while it has not turned itself: a phone upright only (an iPhone), a tablet as the person
-// turns it. A foldable (an iPhone Duo) turns as it is held on either panel (MBController's `held`).
-static UIInterfaceOrientationMask mb_upright(void) {
-  return UIDevice.currentDevice.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll
-                                                                                 : UIInterfaceOrientationMaskPortrait;
+// turns it. A foldable (an iPhone Duo) turns as it is held on either panel (MBController's `held`). The idiom is the
+// controller's traits', not the device's.
+static UIInterfaceOrientationMask mb_upright(UITraitCollection *t) {
+  return t.userInterfaceIdiom == UIUserInterfaceIdiomPad ? UIInterfaceOrientationMaskAll : UIInterfaceOrientationMaskPortrait;
 }
 
 @interface MBController : UIViewController
@@ -818,15 +825,17 @@ static MBController *the_controller;
 - (UIInterfaceOrientationMask)held {
   if (self.sideways) return UIInterfaceOrientationMaskLandscape;
   if (self.hinge >= 0) return UIInterfaceOrientationMaskAllButUpsideDown;
-  return self.turnable ? UIInterfaceOrientationMaskAllButUpsideDown | mb_upright() : mb_upright();
+  UIInterfaceOrientationMask upright = mb_upright(self.traitCollection);
+  return self.turnable ? UIInterfaceOrientationMaskAllButUpsideDown | upright : upright;
 }
 - (BOOL)prefersStatusBarHidden { return self.sideways; }
 - (BOOL)prefersHomeIndicatorAutoHidden { return self.sideways; }
-// the system's light or dark changed (@hostapi.system_dark, read as frames are built): a frame; the window's size
+// the system's light or dark changed (@hostapi.system_dark, read as frames are built), or the display's scale (the
+// view's drawn at: MBView's drawFor): a frame; the window's size
 // classes changed (an iPhone Duo opened or closed, the app put beside another): said to the app; the hinge moved: said
 - (void)viewDidLoad {
   [super viewDidLoad];
-  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class ]
+  [self registerForTraitChanges:@[ UITraitUserInterfaceStyle.class, UITraitDisplayScale.class ]
                      withHandler:^(id<UITraitEnvironment> env, UITraitCollection *was) { [the_view requestFrame]; }];
   [self registerForTraitChanges:@[ UITraitHorizontalSizeClass.class, UITraitVerticalSizeClass.class ]
                      withHandler:^(id<UITraitEnvironment> env, UITraitCollection *was) { [(MBController *)env saySizeClasses]; }];
@@ -1711,7 +1720,8 @@ void mb_host_wake_after(double ms) {
 // as any frame asked for, in a scripted run (its frames are its steps') and where the frame asks for it besides (the
 // soft keyboard moving: drawFor).
 void mb_host_frames_paced(double hz) {
-  double top = (double)(the_view.window.screen ?: UIScreen.mainScreen).maximumFramesPerSecond;
+  // (the screen the view's scene is on; none yet: 0, a frame at the next tick)
+  double top = (double)the_view.window.windowScene.screen.maximumFramesPerSecond;
   double every = top > 0 && hz > 0 ? round(top / hz) : 1;
   if (script || building_for < 0 || the_view.wantFrame || every <= 1) {
     mb_host_request_frame();
@@ -1722,10 +1732,9 @@ void mb_host_frames_paced(double hz) {
   mb_host_wake_after((every - 0.5) * 1000.0 / top);
 }
 
-#include "groups.h"
-
+// (the frame as the app gave it, its groups' headers drawn out by the renderer as it takes it: groups.h)
 void mb_host_present(double *buf, int32_t count, double r, double g, double b) {
-  mb_render_present(mb_groups_draw_out(buf, count), count, r, g, b);
+  mb_render_present(buf, count, r, g, b);
 }
 
 #include "ios_ime.h"
@@ -1869,6 +1878,8 @@ void mb_host_exit(int32_t code) { exit(code); }
 
 // The system's Reduce Transparency (glass drawn solid).
 int32_t mb_host_reduce_transparency(void) { return UIAccessibilityIsReduceTransparencyEnabled() ? 1 : 0; }
+// The system's Increase Contrast (its darker system colours): lines and quiet words drawn stronger.
+int32_t mb_host_increase_contrast(void) { return UIAccessibilityDarkerSystemColorsEnabled() ? 1 : 0; }
 
 // The CPU's time the whole process has had, every thread's (@hostapi.cpu_ms: MBUI_PROBE's share of a CPU), in ms.
 double mb_host_cpu_ms(void) {
@@ -2439,7 +2450,9 @@ void mb_host_a11y_tree(moonbit_string_t s) {
 }
 
 int32_t mb_host_system_dark(void) {
-  return UIScreen.mainScreen.traitCollection.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0;
+  // (the view's traits, which nothing overrides: the system's light or dark where the app is shown)
+  UITraitCollection *t = the_view ? the_view.traitCollection : UITraitCollection.currentTraitCollection;
+  return t.userInterfaceStyle == UIUserInterfaceStyleDark ? 1 : 0;
 }
 
 // Sharing out (@hostapi.share): the system's share sheet over the app, the words or the file (kept in a folder of the app's
@@ -2582,7 +2595,8 @@ void mb_host_set_sideways(int32_t on) {
 // one held upright (not an iPad).
 int32_t mb_host_set_turnable(int32_t on) {
   MBController *c = the_controller;
-  BOOL phone = UIDevice.currentDevice.userInterfaceIdiom != UIUserInterfaceIdiomPad;
+  UITraitCollection *t = c ? c.traitCollection : UITraitCollection.currentTraitCollection;
+  BOOL phone = t.userInterfaceIdiom != UIUserInterfaceIdiomPad;
   if (!c || c.turnable == (on != 0)) return phone ? 1 : 0;
   c.turnable = on != 0;
   [c setNeedsUpdateOfSupportedInterfaceOrientations];
@@ -2743,6 +2757,18 @@ void mb_host_notice_cancel(moonbit_string_t tag) {
   UNUserNotificationCenter *center = [UNUserNotificationCenter currentNotificationCenter];
   [center removeDeliveredNotificationsWithIdentifiers:@[ t ]];
   [center removePendingNotificationRequestsWithIdentifiers:@[ t ]];
+  // a push the system showed is not under the tag: its identifier is the push's collapse id (a digest of the tag), and
+  // the tag is its thread and its payload's `tag`
+  [center getDeliveredNotificationsWithCompletionHandler:^(NSArray<UNNotification *> *shown) {
+    NSMutableArray<NSString *> *gone = [NSMutableArray array];
+    for (UNNotification *n in shown) {
+      UNNotificationContent *c = n.request.content;
+      id said = c.userInfo[@"tag"];
+      if ([c.threadIdentifier isEqualToString:t] || ([said isKindOfClass:NSString.class] && [said isEqualToString:t]))
+        [gone addObject:n.request.identifier];
+    }
+    if (gone.count) [center removeDeliveredNotificationsWithIdentifiers:gone];
+  }];
 }
 
 // 0: what the system allows (1 granted, 2 denied, 3 not asked, 0 not known yet); 1: asked (the system's alert), when
@@ -2861,6 +2887,12 @@ int32_t mb_host_window_snap_state(void) { return 0; }
 int32_t mb_host_window_opens(void) { return 0; }
 int32_t mb_host_window_open(moonbit_string_t what) { (void)what; return 0; }
 int32_t mb_host_window_front(moonbit_string_t what) { (void)what; return 0; }
+// The windows of this run (@hostapi.windows_in_process and the rest: host_native.mbt's `windows`): none but its own
+// here.
+int32_t mb_host_windows(int32_t op, int32_t wid, moonbit_string_t what) {
+  (void)op, (void)wid, (void)what;
+  return 0;
+}
 void mb_host_set_cursor(int32_t kind) { (void)kind; }
 // The number on the app's icon on the home screen (@hostapi.set_badge): what waits for the person; 0 none. (Shown once
 // the person let the app's notifications show badges: asked with them.)

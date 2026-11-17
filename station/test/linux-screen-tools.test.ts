@@ -78,7 +78,7 @@ test("a Linux screen prepares a private pair once and uses it for capture and in
   assert.match(args, /--download-only/);
   assert.match(args, /--no-remove/);
   assert.match(args, /Dir::Cache::archives=/);
-  assert.equal(tools.prepared(r.env)?.env.LD_LIBRARY_PATH?.startsWith(join(r.data, "screen-tools", "apt", "root")), true);
+  assert.equal((await tools.prepared(r.env))?.env.LD_LIBRARY_PATH?.startsWith(join(r.data, "screen-tools", "apt", "root")), true);
   assert.deepEqual(await readdir(join(r.data, "screen-tools")), ["apt"]);
   view.close();
 });
@@ -91,7 +91,7 @@ test("a failed preparation leaves no pair and a later opening retries it", { ski
   const desktop = new X11Desktop({ env: r.env, tools, changed: () => {}, prepareWaitMs: 30_000 });
   t.after(() => desktop.close());
   await assert.rejects(desktop.open({ maxWidth: 400, maxHeight: 300, codecs: ["jpeg"] }), /could not be prepared automatically/);
-  assert.equal(tools.prepared(r.env), null);
+  assert.equal(await tools.prepared(r.env), null);
   assert.deepEqual(await readdir(join(r.data, "screen-tools")), []);
   delete r.env.APT_TEST_BAD_FFMPEG;
   const view = await desktop.open({ maxWidth: 400, maxHeight: 300, codecs: ["jpeg"] });
@@ -108,7 +108,7 @@ test("concurrent requests share a preparation and a stopped station cancels it",
   assert.equal(a, b);
   tools.close();
   await assert.rejects(a);
-  assert.equal(tools.prepared(r.env), null);
+  assert.equal(await tools.prepared(r.env), null);
   assert.deepEqual(await readdir(join(r.data, "screen-tools")), []);
 });
 
@@ -139,7 +139,7 @@ wait
   tools.close();
   await assert.rejects(preparing);
   await assert.rejects(told.write("go\n"), { code: "EPIPE" }, "a process of the command still read what it waited for");
-  assert.equal(tools.prepared(r.env), null);
+  assert.equal(await tools.prepared(r.env), null);
   assert.deepEqual(await readdir(join(r.data, "screen-tools")), []);
 });
 
@@ -149,7 +149,7 @@ test("the private APT pair captures and controls a disposable X11 desktop", { sk
   if (!kept) t.after(() => rm(data, { recursive: true, force: true }));
   const tools = new LinuxScreenTools(data);
   await tools.prepare(process.env);
-  const pair = tools.prepared(process.env);
+  const pair = await tools.prepared(process.env);
   assert.ok(pair);
   const desktop = new X11Desktop({ env: pair.env, ffmpeg: pair.ffmpeg, xdotool: pair.xdotool, changed: () => {} });
   t.after(() => desktop.close());

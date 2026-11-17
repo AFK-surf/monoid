@@ -11,10 +11,10 @@ export const threadFile = (archiveDir: string, thread: number): string => join(a
 
 /// write_compressed: a file compressed with zstd, written aside first, then renamed into place.
 export function writeCompressed(path: string, text: string): void {
-  mkdirSync(dirname(path), { recursive: true });
+  mkdirSync(dirname(path), { recursive: true }); // sync: the tests' archives of before, and none the station writes
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, zstdCompressSync(Buffer.from(text, "utf8"), { params: { [constants.ZSTD_c_compressionLevel]: 3 } }));
-  renameSync(tmp, path);
+  writeFileSync(tmp, zstdCompressSync(Buffer.from(text, "utf8"), { params: { [constants.ZSTD_c_compressionLevel]: 3 } })); // sync: as above
+  renameSync(tmp, path); // sync: as above
 }
 
 /// An entry as serde writes EntryRow: agentIdentity, client, profile, runtime, options and card left out when None.
@@ -56,12 +56,12 @@ export function archivedEntry(e: Json): EntryRow {
 export function readArchive(path: string): EntryRow[] {
   let bytes: Buffer;
   try {
-    bytes = readFileSync(path);
+    bytes = readFileSync(path); // sync: once, as a database of version 12 is brought up (Store.open), before the station serves
   } catch (e) {
     if ((e as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw e;
   }
-  return archiveEntries(zstdDecompressSync(bytes).toString("utf8"));
+  return archiveEntries(zstdDecompressSync(bytes).toString("utf8")); // sync: as above
 }
 
 /// An archive file's text as entries (each a line of JSON).

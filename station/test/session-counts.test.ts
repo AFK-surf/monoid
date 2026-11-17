@@ -6,8 +6,9 @@ import { test } from "node:test";
 import { DatabaseSync } from "node:sqlite";
 import { overview } from "../src/api/overview.ts";
 import { buildSessionCounts } from "../src/sessions/session-count-builder.ts";
-import { installSessionCounts, sessionCountsReady, sessionCountsStep, SESSION_COUNT_TOTAL } from "../src/store/session-counts.ts";
+import { installSessionCounts, sessionCountsReady, sessionCountsStep, SESSION_COUNT_TOTAL } from "./reference/backfill/session-counts.ts";
 import { Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 function withoutCounts(db: DatabaseSync) {
   for (const row of db.prepare("SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'session_count_%'").all() as { name: string }[]) {
@@ -230,7 +231,7 @@ test("closing the count builder releases an overview waiting for handover", asyn
 });
 
 test("an old overview waits for complete counts after handover", async () => {
-  const { store, db, add } = fixture();
+  const { store, db, add } = fixture(Store.open(dbFile("counts-overview-")));
   let builder: ReturnType<typeof buildSessionCounts> | null = null;
   try {
     withoutCounts(db);

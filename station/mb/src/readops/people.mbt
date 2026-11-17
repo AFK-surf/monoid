@@ -23,9 +23,10 @@ priv struct Known {
   names : Map[String, String]
   processes : Map[String, String]
   client_keys : Map[String, String]
-  /// The words for the local page and its admin, in the language asked (`words`: `localPage`, `admin`).
-  local_page : String
-  admin : String
+  /// The words for the local page and its admin where the pool gives them (`words`: `localPage`, `admin`: what the station
+  /// says to Comma). None for a device: the client names them in its own language (core-ts present.ts, entries.ts).
+  local_page : String?
+  admin : String?
   /// The time of day as the read was asked, ms (`args.now`).
   now : Double
   mut places : Map[String, Place]?
@@ -47,16 +48,16 @@ fn pairs_of(v : Json?) -> Map[String, String] {
 }
 
 ///|
-/// What the pool gave with a read (read/worker.ts `Ask`: `names`, `processes`, `clientKeys`; `args.words`).
+/// What the pool gave with a read (read/mb-reader.ts `Ask`: `names`, `processes`, `clientKeys`; `args.words`).
 fn Known::of(host : @host.Host, data : String, sep : String, ask : Json) -> Known {
   let words = ask.value("args").unwrap_or(Json::null()).value("words")
   let word = (k : String) => match words {
     Some(w) =>
       match w.value(k) {
-        Some(String(s)) => s
-        _ => ""
+        Some(String(s)) => Some(s)
+        _ => None
       }
-    None => ""
+    None => None
   }
   {
     host,
@@ -111,6 +112,7 @@ fn Known::places(self : Known) -> Map[String, Place] raise {
         Some("feishu") =>
           out[id] = { id, name: text(jget(jget(jget(Some(c), "feishu"), "tenant"), "name")).unwrap_or(""), book: "feishu" }
         Some("comma") => out[id] = { id, name: "", book: "comma" }
+        Some("group") => out[id] = { id, name: "", book: "group" }
         _ => {
           let team = jget(jget(Some(c), "slack"), "team")
           match text(jget(team, "id")) {
@@ -131,6 +133,7 @@ fn Known::book(self : Known, platform : String) -> @jsjson.JValue raise {
   let file = match platform {
     "feishu" => "feishu-names.json"
     "comma" => "comma-names.json"
+    "group" => "group-names.json"
     _ => "slack-names.json"
   }
   if self.books.get(file) is Some(b) {
@@ -180,10 +183,25 @@ fn Known::config(self : Known) -> (Array[(String, String)], Bool) raise {
 }
 
 ///|
+/// slack-known.ts `teamOf`: a connect's place by its id, or, for one named `<connect>@<station>` (a connect moved here
+/// from another station, as its chats said it before), by the connect of that name here.
+fn Known::place(self : Known, connect : String) -> Place? raise {
+  let places = self.places()
+  match places.get(connect) {
+    Some(p) => Some(p)
+    None =>
+      match connect.find("@") {
+        Some(at) if at > 0 => places.get(connect.view(end_offset=at).to_owned())
+        _ => None
+      }
+  }
+}
+
+///|
 /// slack-known.ts `knownPerson`: a person of a connect's platform, as far as known: (name, email, picture), "" for
 /// what is not.
 fn Known::person(self : Known, connect : String, user : String) -> (String, String, String)? raise {
-  let place = self.places().get(connect)
+  let place = self.place(connect)
   let book = self.book(match place { Some(p) => p.book; None => "slack" })
   let person = jget(jget(Some(book), "u:\{match place { Some(p) => p.id; None => "?" }}:\{user}"), "person")
   guard jget(person, "name") is Some(Str(name)) else { return None }
@@ -198,7 +216,7 @@ fn Known::person(self : Known, connect : String, user : String) -> (String, Stri
 /// slack-known.ts `knownChannel`.
 fn Known::channel(self : Known, connect : String?, channel : Json) -> Json raise {
   guard connect is Some(connect) else { return Json::null() }
-  let place = self.places().get(connect)
+  let place = self.place(connect)
   let book = self.book(match place { Some(p) => p.book; None => "slack" })
   match jget(jget(Some(book), "c:\{match place { Some(p) => p.id; None => "?" }}:\{js_text(channel)}"), "channel") {
     Some(Str(name)) => Json::string(@jsjson.text(name))
@@ -220,7 +238,7 @@ fn Known::team_name(self : Known, connect : String) -> Json raise {
 fn Known::creator(self : Known, reference : Json) -> Json raise {
   guard reference is String(r) else { return Json::null() }
   if r == "local" {
-    return { "id": "local", "name": Json::string(self.local_page), "email": Json::null(), "via": "local" }
+    return { "id": "local", "name": match self.local_page { Some(w) => Json::string(w); None => Json::null() }, "email": Json::null(), "via": "local" }
   }
   if r.has_prefix("slack:") {
     let rest = r.view(start_offset=6).to_owned()
@@ -233,7 +251,7 @@ fn Known::creator(self : Known, reference : Json) -> Json raise {
           "id": Json::string(r),
           "name": Json::string(match person { Some((n, _, _)) if n != "" => n; _ => user }),
           "email": match person { Some((_, e, _)) if e != "" => Json::string(e); _ => Json::null() },
-          "via": Json::string(match self.places().get(connect) { Some(p) => p.book; None => "slack" }),
+          "via": Json::string(match self.place(connect) { Some(p) => p.book; None => "slack" }),
         }
         if person is Some((_, _, p)) && p != "" {
           out["picture"] = Json::string(p)
@@ -354,7 +372,7 @@ fn Names::name(self : Names, kind : String, author : String) -> Json raise {
     }
   } else if self.surface == Json::string("ember") {
     if author == "local" {
-      Json::string(self.known.admin)
+      match self.known.admin { Some(w) => Json::string(w); None => Json::null() }
     } else {
       Json::string(self.known.names.get(author).unwrap_or(author))
     }

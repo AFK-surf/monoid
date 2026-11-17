@@ -3,7 +3,7 @@
 // session the next turn starts.
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { usageNow } from "../src/read/usage.ts";
+import { usageNow } from "./reference/usage.ts";
 import { goesAfresh } from "../src/sessions/afresh.ts";
 import { sessionKey } from "../src/sessions/hub.ts";
 import { configure } from "../src/sessions/lifecycle.ts";

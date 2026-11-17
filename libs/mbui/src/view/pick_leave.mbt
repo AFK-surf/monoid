@@ -16,7 +16,9 @@
 // with what comes then; and what it showed and what it shows now are drawn as a key going and a key coming are, held by
 // how far the place has gone from the one's size to the other's (row_held_at: as big as that about its start and top,
 // none at half or less): never both seen, never cut, never fading over a place already closed (the coordinator of the
-// migration, 2026-11-14; the user, 2026-11-09: 同一件事换样子是同一行换内容, 进和出是同一个动作的正放和倒放).
+// migration, 2026-11-14; the user, 2026-11-09: 同一件事换样子是同一行换内容, 进和出是同一个动作的正放和倒放). So too in a
+// block of a list said `flips`, whose insides change on the list's way drawn (FlipWay), held by how far that way has gone
+// where the block is drawn (Tree's flip_gone).
 
 ///|
 /// How much of a fade `x` (0 … 1 of its time) is done: eased out, fast at first, as the old view's tween's Out.
@@ -34,7 +36,14 @@ fn leave_eased(x : Double) -> Double {
 /// How far place `p` has gone on its way from the size it set out from to the one it goes to, 0 to 1, where it is
 /// drawn (read by the clock, View::drawn_while): 1 off its way; 0 where how far it goes is not measured yet.
 fn leave_held_progress(p : View) -> Double {
-  guard p.live() is Some(m) && m.coming else { return 1.0 }
+  guard p.live() is Some(m) else { return 1.0 }
+  // (in a block of a page's list said `flips`: by how far the list's way has gone, where its block is drawn)
+  if !m.coming {
+    return match p.tree.flip_gone_of(p.at) {
+      Some(gone) => gone(p)
+      None => 1.0
+    }
+  }
   let st = m.flex.style
   let ends = st.come_ends
   guard ends == ends else { return 0.0 }
@@ -129,6 +138,39 @@ priv struct LeaveShown {
 ///|
 /// View::pick with `leave` > 0 (its slot `slot`): its place made once, what each key shows made in a fader in it,
 /// what went fading out over it as what comes waits to be seen (the file's head).
+///|
+/// How far the way of the page's list said `flips` whose block node `at` lies in has gone, where that block is drawn
+/// (Tree's flip_gone), none where it lies in none.
+fn Tree::flip_gone_of(self : Tree, at : Int) -> ((View) -> Double)? {
+  let mut i = at
+  while i >= 0 {
+    match self.flip_gone.get(i) {
+      Some(f) => return Some(f)
+      None => ()
+    }
+    i = self.nodes[i].parent
+  }
+  None
+}
+
+///|
+/// Fader `f` of place `p`, held by its place's way under a page's list (LeaveShown's `held`): as big as its place has
+/// gone toward it (1) or away from it (2), about its start and top, as that way goes; bound as it is first so held.
+fn held_scaled(f : View, p : View, held : @signals.Signal[Int], progress : (View) -> Double) -> Unit {
+  f.scale(
+    By(fn() {
+      match held.get() {
+        1 => row_held_at(progress(p)).1
+        2 => row_held_at(1.0 - progress(p)).1
+        _ => 1.0
+      }
+    }),
+    about=DrawnSide(0.0),
+  )
+  |> ignore
+}
+
+///|
 fn[K : Eq] View::pick_leaving(
   slot : View,
   which : () -> K,
@@ -160,18 +202,8 @@ fn[K : Eq] View::pick_leaving(
     let held = @signals.signal(0, same=fn(a, b) { a == b })
     let said = Ref(tree.said_count)
     let f = p.box(fn(f) {
-      // (under a page's list: as big as its place has gone toward it, or away from it, about its start and top)
-      f.scale(
-        By(fn() {
-          match held.get() {
-            1 => row_held_at(held_progress(p)).1
-            2 => row_held_at(1.0 - held_progress(p)).1
-            _ => 1.0
-          }
-        }),
-        about=DrawnSide(0.0),
-      )
-      |> ignore
+      // (under a page's list: as big as its place has gone toward it, or away from it, about its start and top; bound
+      // only once it is so held (held_scaled), nothing of it bound or laid out again by it at rest)
       f.alpha(
         By(fn() {
           match held.get() {
@@ -206,7 +238,8 @@ fn[K : Eq] View::pick_leaving(
         guard place.val is Some(p) && p.live() is Some(_) else { return }
         let at = tree.cause_now()
         // (under a page's list, its way not said at once: held by its place's way, waiting for nothing: the file's head)
-        let in_list = !at_once && tree.pick_held(p)
+        // (or in a block of one said `flips`, held by that list's way: Tree::flip_gone_of)
+        let in_list = !at_once && (tree.pick_held(p) || tree.flip_gone_of(p.at) is Some(_))
         changes.val = changes.val + 1
         let change = changes.val
         // (laid out again where it rested holding nothing: its way from nothing)
@@ -262,6 +295,7 @@ fn[K : Eq] View::pick_leaving(
           if in_list {
             // (drawn going as its place goes from its size, let go once that way is over at the longest)
             old.held.set(2)
+            held_scaled(old.fader, p, old.held, held_progress)
             p.leave(old.fader, dmax(leave, @flex.move_most_ms))
           } else {
             p.leave(old.fader, leave)
@@ -272,6 +306,7 @@ fn[K : Eq] View::pick_leaving(
         let now = fader(p, k, waits)
         if in_list {
           now.held.set(1)
+          held_scaled(now.fader, p, now.held, held_progress)
         }
         had.val = Some((k, now))
         // (holding nothing once what fades is gone and its way is over (at `ends`): laid out nowhere, no gap of its own

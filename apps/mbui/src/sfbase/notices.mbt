@@ -265,13 +265,16 @@ pub fn notices_frame(src : Source, w : Workspace) -> Unit {
 
 ///|
 /// The system said the app was hidden or shown again, between frames (Android's activity stopping: no frame comes
-/// after it): hidden, what the system allows is told again once shown; behind for good (not going on: `awake`), the
+/// after it): hidden, what the system allows is told again once shown, and the chat on top's notification taken off
+/// again; behind for good (not going on: `awake`), the
 /// notices are not followed any more.
 fn notices_app_change(shown : Bool, awake : Bool) -> Unit {
   if shown {
     return
   }
   notice_state.told = false
+  // what came for the chat on top while hidden is taken off as the app is shown on it again
+  notice_state.cancelled = ""
   match notice_state.src {
     Some(src) if !awake => leave_notices(src)
     _ => ()
