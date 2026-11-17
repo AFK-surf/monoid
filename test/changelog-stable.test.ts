@@ -58,7 +58,7 @@ test("what is the test channel's alone is left out of the stable channel's fixes
     git("commit", "-q", "-m", message);
     return git("rev-parse", "HEAD").trim();
   };
-  commit("a", "a\n\nChangelog: 修复：给所有人\nChangelog-parts: web\n");
+  const base = commit("a", "a\n\nChangelog: 修复：给所有人\nChangelog-parts: web\n");
   commit("b", "b\n\nChangelog: 新增：只在测试版\nChangelog-parts: web\nChangelog-channel: beta\n");
   const c = commit("c", "c\n\nChangelog: 新增：后来才说只在测试版\nChangelog-parts: web\n");
   mkdirSync(join(repo, "docs"), { recursive: true });
@@ -75,4 +75,11 @@ test("what is the test channel's alone is left out of the stable channel's fixes
   assert.match(drafted, /修复：给所有人/);
   assert.match(drafted, /改进：也给所有人/);
   assert.doesNotMatch(drafted, /只在测试版/);
+
+  // A branch's build number can coincide with main's later commit d without containing it.
+  mkdirSync(join(repo, "docs/releases"));
+  writeFileSync(join(repo, "docs/releases/0.1.4.md"), note(4).replace("parts:", `base: ${base}\nparts:`));
+  assert.equal(lastBase(repo), 1);
+  assert.match(draft(repo), /改进：也给所有人/);
+  assert.doesNotMatch(draft(repo), /修复：给所有人/);
 });

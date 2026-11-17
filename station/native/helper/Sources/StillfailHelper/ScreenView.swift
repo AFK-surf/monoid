@@ -830,8 +830,10 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
 
   /// The windows looked at each second while the view lasts (macOS tells nothing of them coming, going or moving): said
   /// as they change (message 4 `windows`); the one shown alone followed where it moves or is resized (its capture's
-  /// size with it), the whole display again where it closed.
+  /// size with it), the whole display again where it closed. Called on `queue` (from `start`'s `queue.sync`): a
+  /// `queue.sync` here again would trap.
   func followWindows() {
+    dispatchPrecondition(condition: .onQueue(queue))
     let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
     timer.schedule(deadline: .now() + 1, repeating: 1)
     timer.setEventHandler { [weak self] in
@@ -859,7 +861,7 @@ class ScreenView: NSObject, SCStreamOutput, SCStreamDelegate {
       }
     }
     timer.resume()
-    queue.sync { windowsTimer = timer }
+    windowsTimer = timer
   }
 
   /// The pictures from now on fitted into `width`×`height`, of `region` of the display alone (nil: the whole): the

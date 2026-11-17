@@ -365,7 +365,11 @@ class TsWorld {
         Object.assign(this.wsNames, c.wsNames ?? {});
         Object.assign(this.names, c.names ?? {});
         if (typeof c.peersCurrent === "boolean") this.peersCurrent = c.peersCurrent;
-        if (c.tell === true) for (const f of [...this.listeners]) f();
+        if (c.tell === true) {
+          for (const f of [...this.listeners]) f();
+          // The next snapshot includes the writes these roster listeners start.
+          await this.idle();
+        }
         return null;
       case "set":
         if (typeof c.renewRunning === "boolean") this.renewRunning = c.renewRunning;

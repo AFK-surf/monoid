@@ -80,3 +80,60 @@ test("let go where its runner cannot see a one-way close, it is asked to leave a
   assert.deepEqual(heard, ["one", "two"]);
   assert.deepEqual(ops[1]!.slice(0, 2), ["attach", "ack"]);
 });
+
+test("let go while its session still writes what it took, that is acknowledged before it leaves", { skip }, async () => {
+  const data = mkdtempSync(process.platform === "darwin" ? "/tmp/mbw-" : join(tmpdir(), "mbw-"));
+  const socket = join(data, "r.sock");
+  const ops: string[] = [];
+  const conns: Socket[] = [];
+  const server = createServer({ allowHalfOpen: true }, (conn) => {
+    conns.push(conn);
+    let carry = "";
+    conn.on("data", (chunk) => {
+      carry += chunk.toString("utf8");
+      for (let i = carry.indexOf("\n"); i >= 0; i = carry.indexOf("\n")) {
+        const message = JSON.parse(carry.slice(0, i));
+        carry = carry.slice(i + 1);
+        ops.push(message.op);
+        if (message.op === "attach") conn.write(JSON.stringify({ op: "out", stream: "out", at: 0, data: Buffer.from("one\n").toString("base64") }) + "\n");
+        if (message.op === "leave") conn.end();
+      }
+    });
+    conn.on("error", () => {});
+  });
+  await new Promise<void>((resolve) => server.listen(socket, resolve));
+  const was = platform.runnerSaysLeave;
+  platform.runnerSaysLeave = true;
+  const host = AgentsHost.where(data)!;
+  const owner = {};
+  host.use(owner);
+  after(async () => {
+    platform.runnerSaysLeave = was;
+    await host.close(owner);
+    for (const c of conns) c.destroy();
+    server.close();
+  });
+  const info: RunnerInfo = { id: "f2", runner: process.pid, pid: process.pid, pgid: process.pid, startedAt: 0, program: "fake", args: [], socket };
+  // (its session writes what it took on the disk: done when the test says, as a transcript's append, own-process.ts `settled`)
+  let written!: () => void;
+  const writing = new Promise<void>((resolve) => (written = resolve));
+  const heard: string[] = [];
+  const options: HostedOptions = {
+    label: "test",
+    kind: "codex",
+    heard: (h) => {
+      heard.push(...(h.lines ?? []).map((l) => l.text));
+      return writing;
+    },
+    exit: () => {},
+  };
+
+  const a = HostedProcess.adopt(host, info, options, null, null);
+  await until(() => heard.length === 1);
+  // (let go as the next driver takes over, devin.test.ts: before the line is on the disk)
+  a.detach();
+  assert.deepEqual(ops, ["attach"], "nothing acknowledged or let go before its session wrote it");
+  written();
+  await allLeft();
+  assert.deepEqual(ops, ["attach", "ack", "leave"], "acknowledged once written, then let go");
+});

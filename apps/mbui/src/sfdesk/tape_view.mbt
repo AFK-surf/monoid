@@ -1227,6 +1227,8 @@ fn tape_side_at(side : @view.View) -> SideAt {
     ground: if k <= 0.0 { apart_ground() } else { @sf.behind_ground(k~) },
     brand: side_brand_h(false, r.top),
     band: 1.0,
+    list_brand: side_brand_h(false, r.top),
+    list_band: 1.0,
     tape: true,
   }
 }
@@ -1593,10 +1595,7 @@ pub fn tape_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
   wide.bar_ml = 0.0
   wide.bar_mr = 0.0
   wide.brand_h = side_brand_h(false, r.top)
-  wide.list_top = wide.brand_h
-  wide.list_band = 1.0
   wide.band = 1.0
-  list_room_told()
   wide.mark = 0.0
   land(src, w)
   // (beside the system's action at the column's foot, the cards' foot corners the one the composer stands concentric in

@@ -227,7 +227,7 @@ fn call_pure(words : Words, name : String, x : Array[Json]) -> Json raise Refuse
     "billedPerUse" => Json::boolean(billed_per_use(arg(x, 0).unwrap_or(Json::null())))
     "modelName" => Json::string(model_name(a_str(x, 0)))
     "chosenSpeed" => opt_str(chosen_speed(arg(x, 0).unwrap_or(Json::null())))
-    "ultrafastModel" => Json::boolean(ultrafast_model(arg(x, 0)))
+    "ultrafastModel" => Json::boolean(ultrafast_model(arg(x, 0), arg(x, 1)))
     "tr" => {
       let given = a_map(x, 2)
       let pairs = []

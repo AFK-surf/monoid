@@ -162,11 +162,12 @@ pub struct ModelCatalog {
   mut models : Array[String]
   efforts : Array[(String, Array[String])]
   defaults : Array[(String, String)]
+  mut ultrafast_models : Array[String]?
 }
 
 ///|
 pub fn ModelCatalog::new() -> ModelCatalog {
-  { models: [], efforts: [], defaults: [] }
+  { models: [], efforts: [], defaults: [], ultrafast_models: None }
 }
 
 ///|
@@ -192,6 +193,17 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
     }
     guard id is Some(id) && id != "" else { continue }
     self.models.push(id)
+    let tiers = match arr_at(Some(m), "serviceTiers") {
+      Some(tiers) => Some(tiers.filter_map(tier => str_at(Some(tier), "id")))
+      None => arr_at(Some(m), "additionalSpeedTiers").map(tiers => tiers.filter_map(tier => str_of(Some(tier))))
+    }
+    if tiers is Some(tiers) {
+      let models = self.ultrafast_models.unwrap_or([])
+      if tiers.contains("ultrafast") && !models.contains(id) {
+        models.push(id)
+      }
+      self.ultrafast_models = Some(models)
+    }
     match arr_at(Some(m), "supportedReasoningEfforts") {
       Some(levels) => {
         let efforts = []
@@ -214,11 +226,15 @@ pub fn ModelCatalog::take_page(self : ModelCatalog, answer : JValue?) -> Unit ra
 
 ///|
 pub fn ModelCatalog::to_json(self : ModelCatalog) -> JValue {
-  obj([
+  let fields = [
     ("models", strs(self.models)),
     ("efforts", obj(self.efforts.map(e => (e.0, strs(e.1))))),
     ("defaults", obj(self.defaults.map(e => (e.0, s(e.1))))),
-  ])
+  ]
+  if self.ultrafast_models is Some(models) {
+    fields.push(("ultrafastModels", strs(models)))
+  }
+  obj(fields)
 }
 
 ///|

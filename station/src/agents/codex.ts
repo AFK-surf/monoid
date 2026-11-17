@@ -81,6 +81,7 @@ export class ModelCatalog {
   efforts = new Map<string, string[]>();
   /// Each model's own reasoning level, where it says one (model/list's defaultReasoningEffort).
   defaults = new Map<string, string>();
+  ultrafastModels?: string[];
 
   extend(answer: Json) {
     const rows = answer?.data;
@@ -89,6 +90,13 @@ export class ModelCatalog {
       const id = typeof m?.id === "string" ? m.id : typeof m?.model === "string" && m?.id === undefined ? m.model : undefined;
       if (!id) continue;
       this.models.push(id);
+      const tiers: unknown = Array.isArray(m.serviceTiers)
+        ? m.serviceTiers.map((tier: Json) => tier?.id)
+        : m.additionalSpeedTiers;
+      if (Array.isArray(tiers)) {
+        this.ultrafastModels ??= [];
+        if (tiers.includes("ultrafast") && !this.ultrafastModels.includes(id)) this.ultrafastModels.push(id);
+      }
       if (Array.isArray(m.supportedReasoningEfforts)) {
         const efforts: string[] = [];
         for (const level of m.supportedReasoningEfforts) {

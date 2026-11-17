@@ -479,6 +479,7 @@ fn fix_maker_name(id : String) -> String {
 ///|
 pub fn fix_model(model : String) -> Json {
   match model {
+    "gpt-6.2-sol" => fix_crowded_model(model, "GPT-6.2 Sol", "Sol", "openai", ["codex"])
     "gpt-6-astra" => fix_crowded_model(model, "GPT-6 Astra", "Astra", "openai", ["codex"])
     "deepseek-v4-1-flash" => fix_crowded_model(model, "DeepSeek V4.1 Flash", "DeepSeek", "deepseek", ["claude", "codex", "dsh"])
     "grok-4-7-build-fast" => fix_crowded_model(model, "Grok 4.7 Build Fast", "Grok", "xai", ["grok"])
@@ -535,7 +536,9 @@ pub fn fix_runtime_of(model : String) -> String {
 /// The models the model control offers, in the core's order.
 fn fix_shown_models() -> Array[Json] {
   let n = new_fix
-  if n.tall {
+  if n.ultrafast {
+    fix_crowded_models.map(fix_model) + [fix_model("gpt-6.2-sol")]
+  } else if n.tall {
     fix_crowded_models.map(fix_model) + fix_tall_models.map(fix_model)
   } else if n.providers {
     fix_crowded_models.map(fix_model) + fix_providers.map(fn(p) { fix_model(p.0) })
@@ -718,7 +721,7 @@ pub fn fix_pick() -> Json {
       ["low", "medium", "high"]
     },
     "fastAvailable": n.tall || n.ultrafast,
-    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6-astra",
+    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6.2-sol",
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {

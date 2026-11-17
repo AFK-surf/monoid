@@ -574,7 +574,8 @@ fn Tree::stays_bounds(self : Tree, at : Int) -> (Double, Double, Double, Double)
   let mut i = n.parent
   while i >= 0 {
     match self.scrolls_at.get(i) {
-      Some(sc) if !sc.across => {
+      // (not where it is in that foot itself: a composer's own picture is not under its composer)
+      Some(sc) if !sc.across && !self.in_scroll_foot(at, sc) => {
         let (_, y, s) = self.placed(i, drawn=true)
         let h = self.nodes[i].flex.height * s
         let (over, under) = @signals.untracked(fn() { (sc.top_covered(), sc.foot_hides_now()) })
@@ -596,6 +597,8 @@ fn Tree::stays_clear(self : Tree, at : Int) -> (Double, Double)? {
   let mut i = self.nodes[at].parent
   while i >= 0 {
     match self.scrolls_at.get(i) {
+      // (none for one in that foot itself: nothing pinned over it there)
+      Some(sc) if !sc.across && self.in_scroll_foot(at, sc) => return None
       Some(sc) if !sc.across => {
         let (_, y, s) = self.placed(i, drawn=true)
         let h = self.nodes[i].flex.height * s
@@ -610,17 +613,46 @@ fn Tree::stays_clear(self : Tree, at : Int) -> (Double, Double)? {
 }
 
 ///|
+/// Whether node `at` is in the foot pinned over the column `sc` scrolls (a page's list's foot, Scroll's foot_at, or
+/// what of it is drawn over a flight under it, under_at): its composer's own.
+fn Tree::in_scroll_foot(self : Tree, at : Int, sc : Scroll) -> Bool {
+  let mut i = at
+  while i >= 0 {
+    if i == sc.foot_at || i == sc.under_at {
+      return true
+    }
+    i = self.nodes[i].parent
+  }
+  false
+}
+
+///|
 /// The foot pinned over the column that scrolls node `at` (a page's list's foot: Scroll's foot_at), -1 none.
 fn Tree::stays_foot(self : Tree, at : Int) -> Int {
   let mut i = self.nodes[at].parent
   while i >= 0 {
     match self.scrolls_at.get(i) {
+      // (none for one in that foot itself: what flies from it is not drawn under where it is)
+      Some(sc) if !sc.across && self.in_scroll_foot(at, sc) => return -1
       Some(sc) if !sc.across => return if sc.under_at >= 0 { sc.under_at } else { sc.foot_at }
       _ => ()
     }
     i = self.nodes[i].parent
   }
   -1
+}
+
+///|
+/// Where the one of id `id` that stays (View::shared's `stays`) and would be flown to now (Tree::stays_seen) is drawn in
+/// the window (x, y, w, h), and its corners there (top left, then round it); none where none is.
+pub fn Tree::stays_drawn(
+  self : Tree,
+  id : String,
+) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
+  guard self.stays_end(id) is Some(at) else { return None }
+  let n = self.nodes[at]
+  let (x, y, _, s) = self.projected(at, drawn=true)
+  Some(((x, y, n.lw * s, n.lh * s), self.look_from(at, 1.0).corners))
 }
 
 ///|

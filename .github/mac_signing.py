@@ -28,6 +28,7 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import time
 
 root = Path(__file__).resolve().parents[1]
 # AFK's Developer ID, named without its kind ("Developer ID Application:"): found() finds its full name.
@@ -114,6 +115,35 @@ def signing_env(opened, env=None):
     return env
 
 
+# (Apple's notary service answers now and then with its own failure, which a later try does not meet: "HTTP status
+# code: 500. Internal Server Error ... Please try again at a later time", main's desktop 134246107006 and
+# 134251773444, 2026-11-17, the Mac's beta held at 0.1.9871 meanwhile. Tried again after these many seconds; a verdict,
+# Invalid as well as Accepted, is never asked again)
+SUBMIT_AGAIN_AFTER = (5, 12)
+
+
+def submitted(args, wait=time.sleep):
+    """notarytool submit's verdict (its JSON), the command run again where it failed without one, after each of
+    SUBMIT_AGAIN_AFTER's seconds; a failure with a verdict, or the last, ends this process as `run` does."""
+    for again in (*SUBMIT_AGAIN_AFTER, None):
+        result = subprocess.run(args, capture_output=True, text=True)
+        try:
+            verdict = json.loads(result.stdout)
+        except ValueError:
+            verdict = None
+        if isinstance(verdict, dict) and verdict.get('status'):
+            return verdict
+        if not result.returncode:
+            raise SystemExit(f'mac_signing: notarytool submit said no verdict: {result.stdout!r}')
+        for said in (result.stdout, result.stderr):
+            if said:
+                print(said, file=sys.stderr, flush=True)
+        if again is None:
+            raise SystemExit(f'mac_signing: failed: {" ".join(args[:3])} (exit {result.returncode}), {len(SUBMIT_AGAIN_AFTER) + 1} tries')
+        print(f'mac_signing: notarytool submit failed with no verdict (exit {result.returncode}): again in {again} s', file=sys.stderr, flush=True)
+        wait(again)
+
+
 def notarize(app, staple=True):
     """Sends `app` to Apple's notary service, waits for its verdict (its log printed when not Accepted) and staples the
     ticket to it, so Gatekeeper lets it open downloaded, offline too. In `run`'s keychain (STILLFAIL_NOTARY_PROFILE)."""
@@ -124,8 +154,7 @@ def notarize(app, staple=True):
     with tempfile.TemporaryDirectory(prefix='stillfail-notarize-', dir=os.environ.get('RUNNER_TEMP')) as directory:
         archive = str(Path(directory) / (Path(app).stem + '.zip'))
         run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', app, archive])
-        out = run(['xcrun', 'notarytool', 'submit', archive, *auth, '--wait', '--output-format', 'json'], capture_output=True, text=True).stdout
-    verdict = json.loads(out)
+        verdict = submitted(['xcrun', 'notarytool', 'submit', archive, *auth, '--wait', '--output-format', 'json'])
     print(f"notarytool: {verdict.get('id')} {verdict.get('status')}", flush=True)
     if verdict.get('status') != 'Accepted':
         subprocess.run(['xcrun', 'notarytool', 'log', verdict.get('id', ''), *auth])

@@ -712,9 +712,10 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
   let tree_lines : Map[(@view.NodeId, Int), (Double, String)] = Map([])
   let tree_order : Array[(@view.NodeId, Int)] = []
   // (what a node of the window's tree said disabled holds, as an old view's in a widget said disabled: asked nothing;
-  // its own presses off, not what a modal layer over it takes them from)
+  // its own presses off, under a modal layer as well (a send with nothing to send behind a menu opened over it), not
+  // what is only a modal layer's taking them from it)
   let tree_off : Array[@view.NodeId] = match view_app.val {
-    Some(tree) => tree.said_order().filter(fn(s) { s.disabled && s.allowed }).map(fn(s) { s.id })
+    Some(tree) => tree.said_order().filter(fn(s) { tree.node_pressless_own(s.id) }).map(fn(s) { s.id })
     None => []
   }
   let tree_off_holds = fn(id : @view.NodeId) {

@@ -1099,8 +1099,8 @@ test("an account's topic gives the app each station once when it has two copies"
 
 /// A core whose station has three profiles: p1 (unchecked) and p2 run Claude Code, p3 Codex (core/tests.rs
 /// `choosing_core`); `speed`: its session on Codex with `fast` as given, p3 offering `fast` as `profileFast`.
-async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds = false) {
-  const s = (key: string) => (speed ? { ...session(key), runtime: "codex", model: "gpt-6-astra", profile: "p3", fast: sessionFast } : session(key));
+async function choosing(speed = false, profileFast = false, sessionFast: boolean | null = null, switchRuntime = false, contexts = false, modelSpeeds: boolean | readonly string[] = false, codexModel = "gpt-6-astra") {
+  const s = (key: string) => (speed ? { ...session(key), runtime: "codex", model: codexModel, profile: "p3", fast: sessionFast } : session(key));
   return started({
     ...base(),
     "GET /overview": {
@@ -1113,7 +1113,10 @@ async function choosing(speed = false, profileFast = false, sessionFast: boolean
       profiles: [
         profile("p1", "claude", ["claude-opus-5-5", "claude-sonnet-5"], false, 10),
         profile("p2", "claude", ["claude-opus-5-5"], true, 80),
-        profile("p3", "codex", ["gpt-6-astra"], true, 0, speed ? { fast: profileFast } : {}),
+        profile("p3", "codex", [codexModel], true, 0, speed ? {
+          fast: profileFast,
+          ...(typeof modelSpeeds !== "boolean" ? { check: { state: "ok", detail: "", checkedAt: 1, codexUltrafastModels: modelSpeeds } } : {}),
+        } : {}),
       ],
     },
     "GET /sessions": [s("k1")],
@@ -4101,8 +4104,16 @@ test("profile_fusion_is_asked_on_demand_and_legacy_tiered_agy_picks_resolve_to_b
 
 
 test("Ultrafast round trips through the picker, new chats and presets; older stations refuse it", async () => {
-  for (const available of [true, false]) {
-    const { host, core } = await choosing(true, false, null, false, false, available);
+  for (const [codexModel, speeds, available] of [
+    ["gpt-6-astra", true, true],
+    ["gpt-6.2-sol", ["gpt-6.2-sol"], true],
+    ["gpt-6.3-sol", ["gpt-6.3-sol"], true],
+    ["gpt-6.2-sol", [], false],
+    ["gpt-6-astra", [], false],
+    ["gpt-6.2-sol", true, false],
+    ["gpt-6-astra", false, false],
+  ] as const) {
+    const { host, core } = await choosing(true, false, null, false, false, speeds, codexModel);
     const ui = core.connect();
     subscribe(core, ui, 1, { topic: "pick", station: "ws/st", of: "session:k1" });
     subscribe(core, ui, 9, { topic: "newChat", scope: "ws" });
@@ -4111,7 +4122,7 @@ test("Ultrafast round trips through the picker, new chats and presets; older sta
     apply(host, values);
     assert.equal(v(values, 1).ultrafastAvailable === true, available);
     if (!available) {
-      await assert.rejects(ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" }), /station/);
+      await assert.rejects(ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" }), /Ultrafast/);
     } else {
       await ask(host, core, ui, 2, "pick.save", { station: "ws/st", of: "session:k1", speed: "ultrafast" });
       assert.equal(stationPosted(host, "/sessions/k1/settings").at(-1).speed, "ultrafast");
@@ -4119,7 +4130,7 @@ test("Ultrafast round trips through the picker, new chats and presets; older sta
       const back = stationPosted(host, "/sessions/k1/settings").at(-1);
       assert.equal(back.fast, false);
       assert.equal(back.speed, undefined, "the old Fast switch clears the explicit tier");
-      await ask(host, core, ui, 4, "newChat.pick", { scope: "ws", station: "st", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      await ask(host, core, ui, 4, "newChat.pick", { scope: "ws", station: "st", model: codexModel, runtime: "codex", speed: "ultrafast" });
       await ask(host, core, ui, 5, "newChat.create", { station: "ws/st" });
       assert.equal(stationPosted(host, "/sessions").at(-1).speed, "ultrafast");
       apply(host, values);
@@ -4128,7 +4139,7 @@ test("Ultrafast round trips through the picker, new chats and presets; older sta
       assert.equal(frequent[0].speed, "ultrafast");
       subscribe(core, ui, 7, { topic: "pick", station: "ws/st", of: "connect-new:preset" });
       await host.settle();
-      await ask(host, core, ui, 6, "pick.save", { station: "ws/st", of: "connect-new:preset", model: "gpt-6-astra", runtime: "codex", speed: "ultrafast" });
+      await ask(host, core, ui, 6, "pick.save", { station: "ws/st", of: "connect-new:preset", model: codexModel, runtime: "codex", speed: "ultrafast" });
       apply(host, values);
       assert.equal(v(values, 7).value.speed, "ultrafast");
     }

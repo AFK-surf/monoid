@@ -1430,6 +1430,8 @@ pub fn panel_card_out_node(@view.View) -> @ui.Style
 
 pub fn panel_column(@ui.Ctx, String, Double, @ui.Style, () -> Unit) -> Unit
 
+pub fn panel_content_row_node(@view.View, () -> String, (@view.View) -> Unit, (@view.View) -> Unit, highlighted? : (@view.View) -> Bool, loc~ : SourceLoc) -> Unit
+
 pub fn panel_corner_foot() -> @ui.Style
 
 pub fn panel_field_in_node(@view.View) -> @ui.Style
@@ -1685,6 +1687,9 @@ pub fn presenter_visible() -> Bool
 pub fn presenters_reset() -> Unit
 
 pub fn presenting() -> Bool
+
+#callsite(autofill(loc))
+pub fn press_chip_node(@view.View, () -> String, () -> Unit, icon? : String, disabled? : () -> Bool, loc~ : SourceLoc) -> @view.View
 
 pub fn press_ripple(@ui.Ctx, Int32, Double) -> Unit
 

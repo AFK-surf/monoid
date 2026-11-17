@@ -41,6 +41,8 @@ export interface FixedReport {
   thread: string | null;
 }
 
+type PlatformReleases = Released & { macos: number | null; windows: number | null };
+
 type Bucket = ReleaseBucket | undefined;
 
 /** A file of the bucket; with `upstream` (RELEASES_UPSTREAM), one of still.fail's it lacks read there, as index.ts serves it. */
@@ -91,19 +93,23 @@ const json = (text: string | null): Record<string, unknown> => {
  * What each part has out on a channel, from the feeds the updaters read (scripts/release.sh) and the web app's (deploy.py);
  * the station's from `upstream` where the bucket has none (monoid's cloud: its station is still.fail's, index.ts).
  */
-export async function released(bucket: Bucket, channel: Channel, upstream?: string): Promise<Released> {
+export async function released(bucket: Bucket, channel: Channel, upstream?: string): Promise<PlatformReleases> {
   const beta = channel === "beta";
-  const [station, android, desktop, web] = await Promise.all([
+  const [station, android, mac, win, web] = await Promise.all([
     read(bucket, beta ? "station-beta.json" : "station.json", upstream),
     read(bucket, beta ? "android/beta/latest.json" : "android/latest.json"),
     // (the Mac app's own updater's feed, which every product's has: monoid's never had electron-updater's .yml)
     read(bucket, beta ? "mac/beta/latest.json" : "mac/latest.json"),
+    read(bucket, beta ? "win/beta/latest.json" : "win/latest.json"),
     read(bucket, beta ? "web-beta.json" : "web.json"),
   ]);
+  const macos = build(json(mac).versionCode);
+  const windows = build(json(win).versionCode);
   return {
     station: build(json(station).build ?? json(station).version),
     android: build(json(android).versionCode),
-    desktop: build(json(desktop).versionCode),
+    macos, windows,
+    desktop: macos !== null && windows !== null ? Math.min(macos, windows) : null,
     web: build(json(web).build ?? json(web).version),
   };
 }
@@ -129,11 +135,15 @@ export async function fixedFor(env: Env, station: string, told: string[]): Promi
   await dir.markFixed(entries.flatMap((e) => e.fixes.map((number) => ({ number, version: e.version, parts: e.parts }))));
   if (told.length) await dir.toldFixed(station, told);
   const reports = await dir.fixedUntold(station);
-  const have: Partial<Record<Channel, Released>> = {};
+  const have: Partial<Record<Channel, PlatformReleases>> = {};
   const fixed: FixedReport[] = [];
   for (const report of reports) {
     have[report.channel] ??= await released(env.RELEASES, report.channel, env.RELEASES_UPSTREAM);
-    if (out(report, have[report.channel]!)) fixed.push({ ...report, released: have[report.channel]! });
+    const { desktopPlatform, ...details } = report;
+    const { macos, windows, ...parts } = have[report.channel]!;
+    if (desktopPlatform === "macos") parts.desktop = macos;
+    if (desktopPlatform === "windows") parts.desktop = windows;
+    if (out(details, parts)) fixed.push({ ...details, released: parts });
   }
   return fixed;
 }

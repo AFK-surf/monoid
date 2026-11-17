@@ -133,6 +133,9 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
   const webBuilds = keys.map((key) => Number(key.match(WEB_ARCHIVE)?.[1])).filter((n) => Number.isSafeInteger(n)).sort((a, b) => b - a);
 
   return keys.filter((key) => {
+    // A branch's native chunks stay as long as the run's receipts (seven days).
+    const native = /^staged\/ci-natives\/(\d+)-/.exec(key);
+    if (native) return Number(native[1]) < now - 7 * 86400;
     const staged = Number(key.match(STAGED)?.[1]);
     if (Number.isSafeInteger(staged)) return staged < now - STAGED_SECONDS;
     if (SYMBOLS.test(key)) {

@@ -9,7 +9,7 @@
 # The native parts (scripts/native.ts: the station's mesh addon, launcher and runner, the web's iroh, Android's shell
 # and engine, the media service's ffmpeg) are prebuilt: the natives job builds those whose key the release
 # native-artifacts lacks, on macos-ci, and on main publishes them there; every other job gets them from the release (a
-# branch's: from its natives job's run artifact), so a change that is not to a native part compiles no Rust. The mbui
+# branch's: from R2 using the receipts in its natives job's run artifact), so a change that is not to a native part compiles no Rust. The mbui
 # app's Windows shell and engine are prebuilt on a development Mac instead (node scripts/native.ts prebuild: cross-built,
 # put in the releases bucket by their keys) and never built here: windows-natives fetches them and runs the shell's tests.
 # Stable: the manual Publish stable workflow. Relay remains manual (deploying it drops every connection).
@@ -109,10 +109,9 @@ jobs:
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh or shell-apple (iroh's crates built anew: 228 and 323 s with three jobs and no sccache, past a job's 5
-          # minutes); GitHub's macos-26 for a branch missing only the light parts (launcher 14 s, archive-rs 25, reader
-          # 72, helper 33), and for every run while vars.MINI1 is 'off'.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+          # mesh, shell-apple or reader. On macos-26 a cold reader took 223 s before packing; the job hit its deadline
+          # before upload (run 44160716571). The lighter parts and every run while vars.MINI1 is 'off' use macos-26.
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
@@ -131,6 +130,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
     steps:
       - uses: actions/checkout@v5
       - if: runner.os == 'Linux'
@@ -162,9 +162,12 @@ jobs:
           else
             node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES
           fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
+        with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
   # A branch's the rest of what main builds on ci-1 (linux-arm64, launcher:linux-x64, shell-station), into ci-1's cache,
   # which main's natives job takes them from without holding main's jobs back.
@@ -194,7 +197,7 @@ jobs:
 
   # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac), built only when an Apple
   # native part is missing, where plan's natives_mac_runner says: Mini1's quick runner for main and for a branch's
-  # mesh or shell-apple, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
+  # mesh, shell-apple or reader, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
   # 2026-11-17).
   natives-mac:
     needs: plan
@@ -203,6 +206,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
     steps:
       # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
@@ -244,9 +248,12 @@ jobs:
           else
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_MAC_NATIVES
           fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
+        with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives-mac.r2.json", if-no-files-found: ignore, retention-days: 7 }
       - if: always() && runner.environment != 'self-hosted'
         run: find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
@@ -893,20 +900,26 @@ jobs:
   station:
     needs: [plan, natives, natives-mac]
     if: ${{ !cancelled() && !failure() && github.ref == 'refs/heads/main' && needs.plan.outputs.station == 'true' }}
-    runs-on: [self-hosted, macos-ci]
+    # (GitHub's Mac, as desktop's signing: on Mini1 its four packages, ~150 MB, went up to the bucket over the home
+    # line in what was left of its five minutes after 31 s of building, cut there, and took that line from android's
+    # upload beside it, cut too: main 44147606865, 2026-11-17)
+    runs-on: macos-26
     outputs:
       hand: ${{ steps.hand.outputs.key }}
     environment: production
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0 } # the release's number is the commits in the history
-      - uses: ./.github/actions/setup-mac
+        with: { fetch-depth: 0, filter: "blob:none" } # the release's number is the commits in the history
+      - uses: ./.github/actions/setup
+      - uses: ./.github/actions/natives
       # (MoonBit for the station's reader, station/mb/build.sh, built here where the natives' cache lacks it: pruned on
       # the runner, the stable's station job of 0487f79c found `moon: command not found` four times, 43616763857)
       - uses: ./.github/actions/mbui-moonbit
       - name: Build the station's release (darwin-arm64, linux-x64, linux-arm64, win32-x64)
         env:
+          # (the native parts this commit's natives jobs published, downloaded by scripts/native.ts with GitHub's token)
+          GH_TOKEN: ${{ github.token }}
           POSTHOG_JSON: ${{ secrets.POSTHOG_JSON }}
           # AFK's Developer ID and notary profile (.github/mac_signing.py).
           MACOS_DEVELOPER_ID_KEYCHAIN_B64_1: ${{ secrets.MACOS_DEVELOPER_ID_KEYCHAIN_B64_1 }}
@@ -916,8 +929,7 @@ jobs:
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
           RELEASE_DIR: ${{ runner.temp }}/release
         run: sh .github/release.sh station
-      # Its files into the bucket from here, staged (scripts/release-put.sh --stage): put takes them back. In the run
-      # artifact they went up through the proxy macos-ci's DNS sends GitHub to, 40 MB a release (2026-10-23).
+      # Its files into the bucket from here, staged (scripts/release-put.sh --stage): put takes them back.
       - name: Stage its files in the bucket
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -1637,10 +1649,13 @@ jobs:
   # none out for over an hour and a half. A desktop failed or cancelled leaves the Mac's feed as it was, handing nothing;
   # it is main's red as any job's, and `done` waits for it, so deployed/beta stays and the next run plans the Mac again.
   # So with its build, desktop-build: it hands put nothing, and one cut at its five minutes would hold every part's release
-  # back as the notary did; its Mac build ran 276-287 s on main's releases of 2026-11-14 and 15)
+  # back as the notary did; its Mac build ran 276-287 s on main's releases of 2026-11-14 and 15. Nor does the station's
+  # or Android's: each hands put only what it finished (release-put.sh --hand), and one cut at its five minutes held
+  # back the Mac's and Windows' betas, signed and ready: main 44147606865, 2026-11-17. `done` still waits for every
+  # part, so deployed/beta stays and the next run plans the one that failed again)
   put:
     needs: [plan, check, check-mac, check-linux, check-station, check-core, api, static, station, android, desktop-build, desktop, desktop-win, deltas-station, deltas-android, deltas-desktop, deltas-desktop-win]
-    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && contains(fromJSON('["success","skipped"]'), needs.station.result) && contains(fromJSON('["success","skipped"]'), needs.android.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
+    if: always() && github.ref == 'refs/heads/main' && needs.check.result == 'success' && (needs.plan.outputs.check_mac != 'true' || vars.CI_1 == 'off' || needs.check-mac.result == 'success') && needs.check-linux.result == 'success' && (needs.plan.outputs.station_tests != 'true' || needs.check-station.result == 'success') && (needs.plan.outputs.core_tests != 'true' || needs.check-core.result == 'success') && contains(fromJSON('["success","skipped"]'), needs.api.result) && contains(fromJSON('["success","skipped"]'), needs.static.result) && (needs.station.result == 'success' || needs.android.result == 'success' || needs.desktop.result == 'success' || needs.desktop-win.result == 'success')
     runs-on: ubuntu-24.04
     environment: production
     timeout-minutes: 5

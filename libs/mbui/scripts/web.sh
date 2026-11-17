@@ -8,8 +8,13 @@ D="$(cd "$(dirname "$0")" && pwd)"
 # MBUI_APP_MOD: an app of a module outside this repository (its moon.work naming mbui; scripts/android.sh says more)
 ROOT=$(cd "$D/.." && pwd)
 CALLER_PWD=$PWD
+# (MBUI_OUT: the build there, out/ of the module built otherwise; the tools it runs built under MBUI_TOOLS_OUT,
+# scripts/mbc, for an app of another module its out/mbui-tools: mbui left as it is)
+O=out; [ -z "${MBUI_OUT:-}" ] || O=$(mkdir -p "$MBUI_OUT" && cd "$MBUI_OUT" && pwd)
 cd "${MBUI_APP_MOD:-$ROOT}"
-OUT=out/web
+if [ -n "${MBUI_OUT:-}" ]; then export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$O/tools}
+elif [ -n "${MBUI_APP_MOD:-}" ]; then export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$PWD/out/mbui-tools}; fi
+OUT=$O/web
 APP=${APP:-demo}
 MODE=${MODE:-release}
 FLAG=; [ "$MODE" = release ] && FLAG=--release

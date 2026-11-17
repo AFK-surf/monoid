@@ -23,22 +23,35 @@ pub fn lock_wait_node(
     parent,
     "shield-check",
     fn() {
-      @sf.t(
-        if @settings.lock_needs_app(core, here.workspace) != "" {
-          "web-pages.security.needsAppTitle"
-        } else {
-          "web-pages.security.waitingTitle"
-        },
-      )
+      // (its person's own lock begun anew on another device: what happened, the core's `me.replacedTitleText`)
+      if @settings.lock_needs_app(core, here.workspace) != "" {
+        @sf.t("web-pages.security.needsAppTitle")
+      } else {
+        match lock_me_text(core, here.workspace, "replacedTitleText") {
+          "" => @sf.t("web-pages.security.waitingTitle")
+          title => title
+        }
+      }
     },
     fn() {
-      match @settings.lock_needs_app(core, here.workspace) {
-        // (its person taken out of an upgraded workspace: by whom and when, and whom to ask, the core's `me.outText`;
-        // asked again by the steps once added back)
+      // (first of the core's words that it says: a web page nobody can approve; its person's lock begun anew elsewhere,
+      // and what that means; made their only trusted device here, whom to ask to take them out and add them again; its
+      // person taken out of an upgraded workspace, by whom and when, and whom to ask, asked again by the steps once
+      // added back)
+      let ws = here.workspace
+      match @settings.lock_needs_app(core, ws) {
         "" =>
-          match lock_out_text(core, here.workspace) {
-            "" => @sf.t("web-pages.security.waitingLead", args=[("name", here.name)])
-            out => out
+          match lock_me_text(core, ws, "replacedNoteText") {
+            "" =>
+              match lock_me_text(core, ws, "reboundText") {
+                "" =>
+                  match lock_me_text(core, ws, "outText") {
+                    "" => @sf.t("web-pages.security.waitingLead", args=[("name", here.name)])
+                    out => out
+                  }
+                rebound => rebound
+              }
+            note => note
           }
         words => words
       }
@@ -49,16 +62,18 @@ pub fn lock_wait_node(
 }
 
 ///|
-/// Who took this device's person out of workspace `ws` and when, and whom to ask, as the core's `lock` says it now
-/// (`me.outText`), "" none.
-fn lock_out_text(core : Core, ws : String) -> String {
-  text(field((core.topic)("lock", { "workspace": Json::string(ws) }).get().value, "me"), "outText")
+/// What the core's `lock` says of this device in workspace `ws` now, by `key` of its `me` (`outText`: who took its
+/// person out and when, and whom to ask; `reboundText`, `replacedTitleText`, `replacedNoteText`), "" none.
+fn lock_me_text(core : Core, ws : String, key : String) -> String {
+  text(field((core.topic)("lock", { "workspace": Json::string(ws) }).get().value, "me"), key)
 }
 
 ///|
 /// Which of the steps shows: the code typed, one being found, or what is so and the request;
-/// or, the code approved but no station of the lock having taken it yet, what it waits for (`Waits`); or, a web page
-/// nobody can approve here (the core's `me.needsAppText`, said as the page's lead), nothing to ask (`NeedsApp`).
+/// or, the code approved but no station of the lock having taken it yet, what it waits for (`Waits`); or, nothing to
+/// ask, the page's lead saying why (`NeedsApp`: a web page nobody can approve here, the core's `me.needsAppText`; or
+/// made its person's only trusted device while the workspace binds the lock of before, `me.reboundText`); or its
+/// person's own lock begun anew on another device, 是我做的，继续 alone (`Replaced`, the core's `me.forgetText`).
 #derive(Eq)
 priv enum PairShows {
   Typing
@@ -66,6 +81,7 @@ priv enum PairShows {
   Asked
   Waits
   NeedsApp
+  Replaced
 }
 
 ///|
@@ -85,10 +101,11 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
   let checking = fn() { @settings.is_doing(core, ["lock.pairCode"], on()) || state() == "checking" }
   // (the code approved, no station having taken it yet: the call's pending sentence, "" none)
   let waits : @signals.Signal[String] = @signals.signal("")
-  let needs_app = fn() { @settings.lock_needs_app(core, ws()) }
+  let needs_app = fn() { @settings.lock_needs_app(core, ws()) != "" || text(me(), "reboundText") != "" }
   let shows = fn() {
     match state() {
-      _ if needs_app() != "" => NeedsApp
+      _ if needs_app() => NeedsApp
+      _ if text(me(), "forgetText") != "" => Replaced
       _ if waits.get() != "" => Waits
       "code" | "wrong" | "checking" => Typing
       "finding" => Finding
@@ -176,6 +193,20 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
       // (nobody could answer an ask: no button that asks, the core's words the page's lead; the owner, 2026-11-13: 「开了
       // 安全模式那就需要 app」)
       NeedsApp => ()
+      // (what happened is the page's title and lead; the one press that says it was them, `lock.forgetOwn`, after
+      // which it asks to join the lock begun anew)
+      Replaced =>
+        lock_actions_node(v, in_card, fn() { [] }, fn(a) {
+          @sf.button_node(
+            a,
+            fn() { text(me(), "forgetText") },
+            fn() { @settings.lock_call(core, ws(), "forgetOwn", text(me(), "forgetText"), []) },
+            tone=Primary,
+            busy=fn() { @settings.is_doing(core, ["lock.forgetOwn"], on()) },
+            card_words=in_card,
+          )
+          |> ignore
+        })
       Asked => {
         v.show(fn() { state() == "failed" }, fn(n) {
           @sf.words_node(n, fn() { text(pair(), "error") }, fn() { lock_failed }).words_centered(Is(!in_card)) |> ignore
@@ -190,12 +221,27 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
         })
         // (none found: which they are, its note having said to open one)
         let asked_devices = fn() { if state() == "none" { dialled() } else { [] } }
-        lock_actions_node(v, in_card, asked_devices, fn(a) {
+        // (none of its person's own devices answered: this device made their only trusted one, `lock.restartOwn`, a
+        // second action beside the request, what it does said under them)
+        let can_restart = fn() { text(me(), "restartText") != "" && (state() == "none" || state() == "failed") }
+        lock_actions_node(v, in_card, asked_devices, below=can_restart, fn(a) {
           @sf.button_node(a, fn() { @sf.t("web-pages.security.request") }, fn() {
             @settings.lock_call(core, ws(), "pair", @sf.t("web-pages.security.request"), [])
           }, tone=Primary, card_words=in_card)
           |> ignore
+          a.show(can_restart, fn(b) {
+            @sf.button_node(
+              b,
+              fn() { text(me(), "restartText") },
+              fn() { @settings.lock_call(core, ws(), "restartOwn", text(me(), "restartText"), []) },
+              tone=Ghost,
+              busy=fn() { @settings.is_doing(core, ["lock.restartOwn"], on()) },
+              card_words=in_card,
+            )
+            |> ignore
+          })
         })
+        v.show(can_restart, fn(n) { lock_note_node(n, fn() { text(me(), "restartNoteText") }, in_card~) })
         lock_devices_node(v, asked_devices, in_card)
       }
     }
@@ -265,23 +311,28 @@ fn lock_devices_node(parent : @view.View, list : () -> Array[Json], in_card : Bo
 
 ///|
 /// The actions' row (lock_actions'), what `make` puts in it; `in_card`, last on the card (devices under it: `devices()`
-/// says none) into its foot corner, concentric with it, else out to its sides alone (@sf.foot_reach, over_foot_reach).
+/// says none, nor anything else, `below()`) into its foot corner, concentric with it, else out to its sides alone
+/// (@sf.foot_reach, over_foot_reach). Two that have not the room side by side go one over the other: on the card the
+/// first (its main one) kept last, in the foot corner, the other over it (wrapped the other way); on the waiting page
+/// each line in the middle.
 fn lock_actions_node(
   parent : @view.View,
   in_card : Bool,
   devices : () -> Array[Json],
+  below? : () -> Bool = fn() { false },
   make : (@view.View) -> Unit,
 ) -> Unit {
   parent.box(fn(row) {
     @sf.style_node(row, fn() {
       if !in_card {
-        lock_actions
-      } else if devices().is_empty() {
+        lock_actions_centred
+      } else if devices().is_empty() && !below() {
         lock_actions.then(@sf.foot_reach(@sf.button_height()))
       } else {
         lock_actions.then(@sf.over_foot_reach(@sf.button_height()))
       }
     })
+    row.wraps(Is(Some(@ui.Space::S2_5.px())), reverse=in_card) |> ignore
     make(row)
   })
   |> ignore
@@ -332,3 +383,8 @@ fn lock_device_icon(d : Json?) -> String {
 /// 发送批准请求's row (actions: 10 apart).
 // kept across runs: a value (no field of it changes)
 let lock_actions : @ui.Style = @ui.css("row gap=S2_5 align=ACenter")
+
+///|
+/// On the waiting page: each line of them in the middle, where two go one over the other.
+// kept across runs: a value (no field of it changes)
+let lock_actions_centred : @ui.Style = @ui.css("row gap=S2_5 align=ACenter justify=JCenter")

@@ -89,7 +89,7 @@ fn web_link_card(l : @sf.LinkOf, src : Source, station : String, href : String, 
   let params = link_params(station, href)
   link_card_reads(l, src, scope, "linkPreview", params, warm=fn(v) { @sfbase.link_pictures_ask(src, station, href, v) })
   {
-    tile: peek == "",
+    tile: peek == "" || peek == "run",
     body: fn(b) {
       let read = @sfbase.hold(src, scope, "linkPreview", params)
       link_card_node(b, src, station, read, fn() { href }, l.words, fn() { peek }, fn(at) {

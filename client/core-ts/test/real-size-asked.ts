@@ -153,6 +153,7 @@ export const ASKED: Record<string, Record<string, unknown> & { topic: string }> 
   "stationMove chats": { topic: "stationMove", station, ...MOVES_ASKED[2]! },
   "stationMove chats most": { topic: "stationMove", station, ...MOVES_ASKED[3]! },
   "linkPreview page": { topic: "linkPreview", station, url: PEEKS.page },
+  "linkPreview run": { topic: "linkPreview", station, url: PEEKS.run },
   "linkPreview pull": { topic: "linkPreview", station, url: PEEKS.pull },
   "filePeek picture": { topic: "filePeek", station, key, path: PEEKS.picture },
   "filePeek text": { topic: "filePeek", station, key, path: PEEKS.text },

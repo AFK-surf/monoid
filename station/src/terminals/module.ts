@@ -41,7 +41,7 @@ function shellEnv(): NodeJS.ProcessEnv {
 
 const metaOf = (v: any): TerminalMeta | null =>
   v !== null && typeof v === "object" && typeof v.by === "string" && typeof v.at === "number" && typeof v.cwd === "string" && typeof v.workspace === "string"
-    ? { by: v.by, at: v.at, cwd: v.cwd, workspace: v.workspace, ...(typeof v.chat === "string" ? { chat: v.chat } : {}) }
+    ? { by: v.by, ...(typeof v.byEmail === "string" ? { byEmail: v.byEmail } : {}), at: v.at, cwd: v.cwd, workspace: v.workspace, ...(typeof v.chat === "string" ? { chat: v.chat } : {}) }
     : null;
 
 export const TerminalsLive = Layer.effectDiscard(
@@ -54,9 +54,9 @@ export const TerminalsLive = Layer.effectDiscard(
     const metaDir = join(data, "run", "terminals");
     const metaFile = (id: string) => join(metaDir, `${id}.json`);
     let terminals: Terminals | null = null;
-    const tell = () => {
+    const tell = (workspace: string) => {
       if (terminals === null) return;
-      for (const workspace of terminals.workspaces()) events.tell("terminals", { terminals: terminals.list(workspace) }, `terminals\0${workspace}`, { workspace });
+      events.tell("terminals", { terminals: terminals.list(workspace) }, `terminals\0${workspace}`, { workspace });
     };
     terminals = new Terminals({
       home: homedir(),

@@ -1031,7 +1031,7 @@ function defineCases() {
   fn("probeRelay, a web server", "probeRelay", ["https://relay.example"], (w) => w.on("fetch", () => ({ status: 200 })));
 
   // ── feedback
-  call("feedback_send", "feedback_send", { to: " C/1 ", title: " It broke ", body: "When x", area: "web", reporter: "Ann", logs: "line" });
+  call("feedback_send", "feedback_send", { to: " C/1 ", title: " It broke ", body: "When x", area: "desktop", desktopPlatform: "windows", reporter: "Ann", logs: "line" });
   call("feedback_send, odd area", "feedback_send", { title: "t", body: "b", area: "moon" }, "t2");
   call("feedback_send, no session", "feedback_send", { title: "t", body: "b" }, "t3");
   call("feedback_send, no title", "feedback_send", { title: " ", body: "b" });
