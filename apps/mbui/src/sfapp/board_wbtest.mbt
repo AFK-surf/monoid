@@ -246,6 +246,88 @@ fn board_kept_drafts() -> Array[String] {
 }
 
 ///|
+test "待派发: a pasted picture is kept with an image-only task and sent after a refused start" {
+  new_run()
+  let sent : Array[Json] = []
+  let base = fixture("board")
+  let src : Source = { ..base, call: fn(name, params, done) {
+    if name == "chat.send" { sent.push(params) }
+    (base.call)(name, params, done)
+  } }
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  t.frame()
+  t.frame()
+  assert_true(t.query(Button, label="移除 image.png") is Some(_))
+  t.click(Button, label="添加")
+  t.run_for(@ui.move_most_ms)
+  let drafts = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })
+  assert_eq(drafts[0].title, "")
+  assert_eq(drafts[0].files.map(fn(f) { f.name }), ["image.png"])
+  // Read the saved board again, then fail creation: the task and its file must still be there.
+  @sfbase.board_reset()
+  @sffixture.board_create_refused.val = "不能开始"
+  let (x1, y1, w1, h1) = t.all(Button, label="开始")[0].rect
+  t.tap(x1 + w1 / 2.0, y1 + h1 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0].files.length(), 1)
+  let file_key = @sfbase.board_file_key("ws1", drafts[0].id)
+  assert_eq(@sffixture.fix_composers.get(file_key).unwrap_or([]).length(), 1)
+  assert_eq(sent.length(), 0)
+  @sffixture.board_create_refused.val = ""
+  let (x2, y2, w2, h2) = t.all(Button, label="开始")[0].rect
+  t.tap(x2 + w2 / 2.0, y2 + h2 / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(sent.length(), 1)
+  assert_eq(text(Some(sent[0]), "text"), "")
+  assert_eq(items(Some(sent[0]), "attachments").length() + items(Some(sent[0]), "uploads").length(), 1)
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "待派发: removing a pasted picture leaves the words and sends no file" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("只保留文字")
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  t.frame()
+  t.frame()
+  t.click(Button, label="移除 image.png")
+  t.frame()
+  t.click(Button, label="添加")
+  t.run_for(@ui.move_most_ms)
+  let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
+  assert_eq((draft.title, draft.files.length()), ("只保留文字", 0))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "小屏: a picture pasted with words is kept in 待派发" {
+  let (t, src) = board_at("board", 390.0, 844.0, platform=2)
+  t.click(Tab, label="待派发 2")
+  t.run_for(@ui.move_most_ms)
+  t.click(TextField, label="要做什么？")
+  t.type_text("检查图片")
+  t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
+  t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  t.frame()
+  t.frame()
+  t.click(Button, label="添加")
+  t.run_for(@ui.move_most_ms)
+  let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
+  assert_eq(draft.title, "检查图片")
+  assert_eq(draft.files.map(fn(f) { f.name }), ["image.png"])
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: what the board is kept as, the core's prefs: its grouping and a draft written kept there, shown so as the app starts again" {
   let (t, src) = board_at("board", 1440.0, 900.0)
   board_group_by(t, "按机器")

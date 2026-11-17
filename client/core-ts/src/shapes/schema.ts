@@ -1954,11 +1954,16 @@ export const SHAPES: Record<string, Shape> = {
   RowPictureSetting: words(["auto","agents","people"], { doc: "Whose pictures lead a chat's row: by how many people the scope has (the default), or always the agents', or the\npeople's.", default: "auto" }),
   ListFilter: words(["all","mine","watching","hidden","archive"], { doc: "What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档).", default: "all" }),
   BoardGroup: words(["state","station","person"], { doc: "How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it." }),
+  BoardFile: struct([
+    ["id", "String"],
+    ["name", "String"],
+  ], { doc: "A queued task's file, named by its composer id; its bytes stay in the device's draft store." }),
   BoardDraft: struct([
     ["id", "String"],
     ["title", "String"],
     ["station", "String"],
     ["stationName", "String"],
+    ["files", opt(vec("BoardFile"))],
   ], { doc: "An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name." }),
   Lead: words(["agents","people"], { doc: "Whose pictures lead the rows of a list (`ChatsView::leading`)." }),
   KeptTabs: struct([
