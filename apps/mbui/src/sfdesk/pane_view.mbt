@@ -177,7 +177,9 @@ fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
       (physical_equal(h.w, w) || h.w == w) &&
       same_board(h.board, board_frame_src.val) => h.room
     _ => {
-      let room = @signals.untracked(fn() { @signals.computed(fn(_) { pane_room_now(src, w, ww) }) })
+      // (scoped: read one-off outside the graph too (pane_under's), it keeps none of what it read after, the lock's
+      // topic among them, so the narrow window lets that go once the wide frame's readers are gone: 66-wide-resize)
+      let room = @signals.untracked(fn() { @signals.computed_scoped(fn(_) { pane_room_now(src, w, ww) }) })
       room_held.val = Some({ src, board: board_frame_src.val, w, ww, room })
       room
     }
