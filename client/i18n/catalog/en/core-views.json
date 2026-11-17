@@ -692,6 +692,8 @@
   "core-views.opener": "Created by “{title}”",
   "core-views.subchats_running_one": "1 sub-chat running",
   "core-views.subchats_running": "{n} sub-chats running",
+  "core-views.subchats_asking_one": "1 sub-chat waiting on it",
+  "core-views.subchats_asking": "{n} sub-chats waiting on it",
   "core-views.waits_on": "Waiting on {name}: {text}",
   "core-views.search.archived": "Archived",
   "core-views.feishu": "Feishu",

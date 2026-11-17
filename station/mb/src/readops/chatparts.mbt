@@ -720,7 +720,7 @@ fn archive_verdict(db : @sql.Db, thread : Json) -> Json raise {
 
 ///|
 /// views.ts `named`: a chat opened or opened from, as a row names it.
-fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = false, active~ : Bool = false) -> Json {
+fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = false, active~ : Bool = false, asks~ : Bool = false) -> Json {
   let out : Map[String, Json] = Map([])
   if !(station is Null) {
     out["station"] = station
@@ -734,6 +734,9 @@ fn opened_named(station : Json, session : Json, title : Json, led~ : Bool = fals
   }
   if active {
     out["active"] = Json::boolean(true)
+  }
+  if asks {
+    out["asks"] = Json::boolean(true)
   }
   Json::object(out)
 }
@@ -771,7 +774,9 @@ fn openers_opened(db : @sql.Db, ids : Array[String]?) -> (Map[String, Json], Map
       let led = field(r, "led") is Number(1.0, ..)
       let state = field(r, "state")
       let active = led && field(r, "child_archived") is Null && state != Json::string("all_done") && state != Json::string("stopped")
-      let item = opened_named(station(field(r, "child_station")), field(r, "child"), or_else(field(r, "title"), field(r, "child_title")), led~, active~)
+      // (of those, one that ended asking its leader or gone wrong waits on it: its leader's to take up)
+      let asks = active && (state == Json::string("need_human") || state == Json::string("failed"))
+      let item = opened_named(station(field(r, "child_station")), field(r, "child"), or_else(field(r, "title"), field(r, "child_title")), led~, active~, asks~)
       let key = js_text(field(r, "parent"))
       match opened.get(key) {
         Some(a) => a.push(item)

@@ -58,6 +58,29 @@ let conversation_card_latest_sql : String = "SELECT CAST(c.n AS TEXT) AS n FROM 
 let system_card_waiting_sql : String = "SELECT CAST(s.n AS TEXT) AS n FROM pending_system_cards s WHERE s.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 1"
 
 ///|
+/// card-kinds.ts SYSTEM_CARDS_WAITING.
+let system_cards_waiting_sql : String = "SELECT CAST(s.n AS TEXT) AS n FROM pending_system_cards s WHERE s.thread = ?1 AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 16"
+
+///|
+/// What thread `thread` asks and waits on: its system cards still waiting, the latest first, then its latest
+/// conversational card while it waits (no person's message reached its agent since, not closed), by their numbers.
+pub fn asks_waiting(db : @sql.Db, thread : Json) -> Array[Json] raise {
+  let out : Array[Json] = []
+  for r in db.all(system_cards_waiting_sql, [thread]) {
+    if n_of(Some(r)) is Some(n) {
+      out.push(n)
+    }
+  }
+  guard n_of(one(db, conversation_card_latest_sql, [thread])) is Some(n) else { return out }
+  if one(db, answer_after_sql, [thread, n]) is Some(_) ||
+    one(db, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", [thread, n]) is Some(_) {
+    return out
+  }
+  out.push(n)
+  out
+}
+
+///|
 /// card-kinds.ts SYSTEM_CARD_AT.
 let system_card_at_sql : String = "SELECT 1 AS x FROM entries e WHERE e.thread = ?1 AND e.n = ?2 AND e.kind = 'message' AND " +
   system_card_sql("e.card")

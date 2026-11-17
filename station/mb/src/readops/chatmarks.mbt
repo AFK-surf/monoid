@@ -205,7 +205,7 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
       Some((_, before)) if before.contains(js_text(id)) => None
       Some((at, _)) => Some(at.get(js_text(id)).unwrap_or(Json::null()))
     }
-    let c = card_view(db, id, names, dismissed~, kept?)
+    let c = mine_first(db, id, names, dismissed, email, card_view(db, id, names, dismissed~, kept?))
     if !(c is Null) {
       card[js_text(id)] = c
     } else {
@@ -329,5 +329,41 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
     "selves": Json::array(selves.map(Json::string)),
     "dismissed": Json::array(dismissed_list),
     "reads": by_thread(reads),
+  }
+}
+
+///|
+/// The card a viewer's marks show of thread `thread` (`shown`, the one its row shows): where it is not asked of them by
+/// name and another waiting there is (its `assignee`, theirs), that one, so that what a colleague's card asks hides
+/// nothing asked of them (2026-11-17, a chat asking two people at once). views.ts `mineFirst`.
+fn mine_first(db : @sql.Db, thread : Json, names : Names, dismissed : Set[String], email : String, shown : Json) -> Json raise {
+  guard shown is Object(_) && email != "" else { return shown }
+  let mine = (card : Json) => match card.value("assignee") {
+    Some(String(a)) => @jscase.lower(a) == @jscase.lower(email)
+    _ => false
+  }
+  if mine(shown.value("card").unwrap_or(Json::null())) {
+    return shown
+  }
+  let seq = shown.value("seq").unwrap_or(Json::null())
+  for n in asks_waiting(db, thread) {
+    if n_text(n) == n_text(seq) {
+      continue
+    }
+    match card_at(db, thread, n) {
+      Array([_, card]) if mine(card) => return card_view(db, thread, names, dismissed~, kept=n)
+      _ => ()
+    }
+  }
+  shown
+}
+
+///|
+/// A number as text, whether read as one or as text (CAST(n AS TEXT)).
+fn n_text(n : Json) -> String {
+  match n {
+    String(s) => s
+    Number(x, ..) => x.to_int64().to_string()
+    _ => ""
   }
 }

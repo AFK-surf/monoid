@@ -130,10 +130,14 @@ export function settledOf(row: J, stage: BoardStage): boolean {
   return stage === "done" && get(row, "unread") !== true;
 }
 
-/// The chats it leads still at work, in words (1 个子会话进行中), for its row; null when none is.
+/// The chats it leads still at work, in words (1 个子会话进行中), for its row; those of them that ended asking it or gone
+/// wrong said first (1 个子会话在等它处理: its own agent's to take up, never a person's, so said on its row); null when none is.
 export function subchatsLabel(row: J): string | null {
-  const n = arr(get(row, "opened")).filter((o) => get(o, "led") === true && get(o, "active") === true).length;
-  if (n === 0) return null;
+  const active = arr(get(row, "opened")).filter((o) => get(o, "led") === true && get(o, "active") === true);
+  if (active.length === 0) return null;
+  const asking = active.filter((o) => get(o, "asks") === true).length;
+  if (asking > 0) return asking === 1 ? t("core-views.subchats_asking_one") : t("core-views.subchats_asking", { n: asking });
+  const n = active.length;
   return n === 1 ? t("core-views.subchats_running_one") : t("core-views.subchats_running", { n });
 }
 

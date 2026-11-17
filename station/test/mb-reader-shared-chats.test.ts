@@ -85,6 +85,12 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
   say(twice, "agent", "t1", "one", { card: options });
   say(twice, "agent", "t1", "two", { card: options });
   say(twice, "person", "slack:team:U1", "two it is");
+  // Two asks waiting at once, each of its own person: a secret's request of q's (a system card, shown first on its row)
+  // and a question of p's after it. Each viewer's marks show the one asked of them (chatmarks.mbt mine_first).
+  session("duo", { ws: "w", lastActiveAt: 1400 });
+  const two = chat("two", "Two asks", ["duo"]);
+  say(two, "agent", "duo", "may I use the key?", { card: { type: "text", assignee: "q@x", vault: { request: "r1", name: "KEY", mode: "env", hosts: [] } } });
+  say(two, "agent", "duo", "and which branch?", { card: { ...options, assignee: "p@x" } });
   // A Slack thread an agent came from (s1 has no chat of its own), its people by the names book.
   const slack = store.openThread("slack:T1", "C1", "1000.1", null, null).id;
   store.joinThread(slack, "s1", "team");
@@ -172,7 +178,7 @@ test("the MoonBit reader reads the shared chat list as the worker does", { skip:
     for (const sign of ["\"decision\":", "\"answeredBy\":", "\"closed\":true", "\"quoted\":true", "\"need\":", "\"quotedOnly\":true", "\"name\":\"Una\"",
       "\"channelName\":\"general\"", "\"teamName\":\"Team One\"", "\"authorName\":\"Pat\"", "\"watch\":", "\"opener\":", "\"opened\":", "\"xshare\":",
       "\"archiveRecommended\":true", "\"archiveCheck\":", "\"process\":\"running\"", "\"clientKey\":\"ck-1\"", "\"title\":\"Lone\"", "\"authorModel\":\"opus\"",
-      "\"authorRuntime\":", "\"said\":{", "\"via\":\"local\"", "\"picture\":\"https://p/una.png\"", "\"via\":\"feishu\"", "\"authorName\":\"blank\"", "\"dismissed\":true", "\"selves\":[\"U1\"]", "\"team\":\"Team One\"", "\"fs\":\"Co\"", "\"hidden\":[", "\"muted\":[", "\"pins\":{\"a1\":5}"])
+      "\"authorRuntime\":", "\"said\":{", "\"via\":\"local\"", "\"picture\":\"https://p/una.png\"", "\"via\":\"feishu\"", "\"authorName\":\"blank\"", "\"dismissed\":true", "\"selves\":[\"U1\"]", "\"team\":\"Team One\"", "\"fs\":\"Co\"", "\"hidden\":[", "\"muted\":[", "\"pins\":{\"a1\":5}", "\"assignee\":\"p@x\"", "\"assignee\":\"q@x\""])
       assert.ok(said.includes(sign), sign);
     // Put away apart, put away whole: no row of either in the list; each in the archive as its chat.
     const shown = JSON.stringify(await read(program, "sharedOf", { sessions: null, threads: null }, "en"));

@@ -611,6 +611,8 @@
   "core-views.opener": "由「{title}」创建",
   "core-views.subchats_running_one": "1 个子会话进行中",
   "core-views.subchats_running": "{n} 个子会话进行中",
+  "core-views.subchats_asking_one": "1 个子会话在等它处理",
+  "core-views.subchats_asking": "{n} 个子会话在等它处理",
   "core-views.waits_on": "等 {name} 处理：{text}",
   "core-views.search.archived": "已归档",
   "core-views.feishu": "飞书",

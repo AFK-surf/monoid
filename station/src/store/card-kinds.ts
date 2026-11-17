@@ -57,6 +57,11 @@ export const CONVERSATION_CARD_LATEST = `SELECT c.n AS n FROM card_posts c JOIN 
 export const SYSTEM_CARD_WAITING = `SELECT s.n AS n FROM pending_system_cards s WHERE s.thread = ?1
   AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 1`;
 
+/// Thread ?1's system cards still waiting, the latest first: what a chat asks besides the one its row shows, each of its
+/// own person (a viewer's marks show the one asked of them first: read/views chatMarks).
+export const SYSTEM_CARDS_WAITING = `SELECT s.n AS n FROM pending_system_cards s WHERE s.thread = ?1
+  AND NOT EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = s.thread AND c.n = s.n) ORDER BY s.n DESC LIMIT 16`;
+
 /// Whether the post at ?2 of thread ?1 is a system card.
 export const SYSTEM_CARD_AT = `SELECT 1 AS x FROM entries e WHERE e.thread = ?1 AND e.n = ?2 AND e.kind = 'message' AND ${systemCardSql("e.card")}`;
 

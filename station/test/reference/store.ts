@@ -1169,20 +1169,22 @@ export function openers(s: Store, children: string[] | null = null): Map<string,
 /// Of those `parents` name alone (a sidebar's items a change touched), or of all.
 /// One it leads (chat_create for me: `led`) is `active` while not archived and not ended done or stopped: what keeps its
 /// leader at work (client/core-ts chat-stage.ts).
-export function openedChats(s: Store, parents: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true }[]> {
+export function openedChats(s: Store, parents: string[] | null = null): Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true; asks?: true }[]> {
   let rows: Json[];
   try {
     rows = parents === null ? all(s, `${OPENED} WHERE o.parent_station = '' ORDER BY o.created_at, o.rowid`) : all(s, OPENED_OF, JSON.stringify(parents));
   } catch {
     return new Map();
   }
-  const out = new Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true }[]>();
+  const out = new Map<string, { station: string | null; session: string; title: string | null; led?: true; active?: true; asks?: true }[]>();
   for (const r of rows) {
     const list = out.get(r.parent) ?? [];
     const led = Number(r.led) === 1;
     const active = led && r.child_archived == null && r.state !== "all_done" && r.state !== "stopped";
+    // (of those, one that ended asking its leader or gone wrong waits on it: its leader's to take up)
+    const asks = active && (r.state === "need_human" || r.state === "failed");
     list.push({ station: r.child_station === "" ? null : (r.child_station as string), session: r.child as string, title: (r.title ?? r.child_title ?? null) as string | null,
-      ...(led ? { led: true as const } : {}), ...(active ? { active: true as const } : {}) });
+      ...(led ? { led: true as const } : {}), ...(active ? { active: true as const } : {}), ...(asks ? { asks: true as const } : {}) });
     out.set(r.parent, list);
   }
   return out;
