@@ -150,7 +150,6 @@ fn mine_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   out? : () -> Outgoing? = fn() { None },
   since? : () -> Double = fn() { 0.0 },
   flying? : () -> Bool = fn() { false },
@@ -165,7 +164,7 @@ fn mine_said_node(
   let lands = flies_from.map(fn(_) { v.cause_at() + @sfbase.flight_desk_ms })
   // (and its quotes' cards from where they stood in the composer: message_quotes_node's)
   let quotes_from = @sfbase.sent_quotes_from_take(@signals.untracked(key))
-  message_row_frame_node(v, key, side, top, over~, fn(r) {
+  message_row_frame_node(v, key, side, top, fn(r) {
     r.box(fn(col) {
       @sf.style_node(col, fn() { mine_column })
       // (what it quotes ahead of its files and words, in the order the composer held them: mine_message's; its place
@@ -367,10 +366,9 @@ fn person_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
-  let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
+  let row = message_row_frame_node(v, key, side, top, fn(r) {
     let (_, on) = message_others_node(
       r,
       here,

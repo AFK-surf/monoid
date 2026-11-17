@@ -65,6 +65,14 @@ let round_button_box : @ui.Style = @ui.css((
 let round_icon : Double = 20.0
 
 ///|
+/// A round button's icon in a pane's own bar (screen_round_node's, ScreenPage's `tab_pads`): a bar's key's, 16.
+let round_bar_icon : Double = 16.0
+
+///|
+/// A round button in a pane's own bar: a bar's key, 32 square; the tabs' count beside it as big.
+let round_bar_side : Double = 32.0
+
+///|
 /// How high a round button is (round_button_box's S10): what is pressed beside it in its row is as high (the address
 /// field beside ← → ⟳, 36 till 2026-11-15: what is pressed side by side is one height, the user, 2026-10-30).
 let round_side : Double = 40.0
@@ -79,6 +87,13 @@ let screen_bar : @ui.Style = @ui.css("row w=Full h=S14 pl=S1_5 pr=S2_5 gap=S2 al
 /// under the panel's close.
 // kept across runs: a value (no field of it changes)
 let screen_bar_in_tabs : @ui.Style = @ui.css("row w=Full h=S11 pl=S10 pr=S6 gap=S2 align=ACenter")
+
+///|
+/// Shown at a pane's top with no row of tabs over it (远程's): the pane's own bar, as high as a page's (45, its line's
+/// 1 under it, so its 32 keys stand 6 under its top as a page's bar's do: @sf.bar_keys_top), on the page's ground; how
+/// far in its keys stand from its ends is the pane's (screen_tab_bar).
+// kept across runs: a value (no field of it changes)
+let screen_pane_bar : @ui.Style = @ui.style(row=true, w=Full, h=@sf.wide_bar_h_size, pb=SPx, gap=S1, align=ACenter)
 
 ///|
 /// With keyboard and mouse in a chat's side panel (its tab bar above already names the tab, closes it and pops it out):

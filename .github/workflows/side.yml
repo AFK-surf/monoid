@@ -57,6 +57,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup-mac
+      - uses: ./.github/actions/mbui-moonbit
       - uses: ./.github/actions/natives
       - run: pnpm install --frozen-lockfile && cd station && pnpm install --frozen-lockfile
       # (the simulators' pictures as the tests took them, kept when one fails: a tap on the Duo's inner panel that opened

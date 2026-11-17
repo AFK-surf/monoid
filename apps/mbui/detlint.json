@@ -589,7 +589,9 @@
       "src/sfpages/station_node.mbt": 1,
       "src/sfpages/terminal_view_node.mbt": 3,
       "src/sfpages/vault.mbt": 1
-    }
+    },
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   },
   "excused": {
     "frame-request": {},
@@ -695,6 +697,8 @@
     },
     "reused-untracked-key": {},
     "manual-fade-way": {},
-    "page-at-moment": {}
+    "page-at-moment": {},
+    "along-row-at-once": {},
+    "headless-on-drag": {}
   }
 }

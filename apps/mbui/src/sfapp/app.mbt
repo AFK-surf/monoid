@@ -208,6 +208,7 @@ fn open_where(src : Source, p : Page) -> Unit {
   }
   match app.nav.top() {
     Chat(r) => if @sfdesk.station_page_beside(src, r, p) { return }
+    Place("remote") => if @sfdesk.remote_page_in_workbench(src, p) { return }
     _ => ()
   }
   // (a chat put in the page pane's place from the board (待处理's, ⌘K's, ⌘N, a row of the list beside it): the list
@@ -808,8 +809,9 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   // a Farview tab, while 实验性功能's Farview 原生标签页渲染 is on: drawn here (sfpages' farview_tab_node), under the
   // window's top band, as the panel and the phone's page draw it: its page laid out at this window's width as it
   // changes, not a picture of the tab; any other station's screen (and a Farview tab with it turned off) its page,
-  // sfpages' screen_node, closing it closing the window. Made again for another page put in its place (a child
-  // popup followed, another tab chosen: sfbase's lone_page_replace)
+  // sfpages' screen_node, a terminal its own (sfpages' terminal_node), closing it closing the window. Made again for
+  // another page put in its place (a child popup followed, another tab chosen, another of the station's switched to
+  // from its bar: sfbase's lone_page_replace)
   // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
   let shown = @sfbase.lone_shown.val
   shown.set(@sfbase.lone_page.val)
@@ -818,22 +820,44 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     fn() {
       let native = @sfbase.farview_native.get()
       match shown.get() {
-        Some(Screen(at)) => Some((at, native && @sfpages.farview_screen(at.screen)))
+        Some(Screen(at)) => Some((@sfbase.Page::Screen(at), native && @sfpages.farview_screen(at.screen)))
+        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), false))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((at, true)) => {
+        Some((Screen(at), true)) => {
           // (padding's order: left, top, right, bottom)
           q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
-          @sfpages.farview_tab_node(q, src, at.station, at.screen)
+          @sfpages.farview_pane_node(
+            q,
+            src,
+            at.station,
+            at.screen,
+            title=at.title,
+            on_back=fn() { lone_closed(q) },
+            on_switch=@sfbase.lone_page_replace,
+            on_close=fn() { lone_closed(q) },
+          )
         }
-        Some((at, false)) => {
+        Some((Screen(at), false)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
         }
+        Some((Terminal(at), _)) =>
+          @sfpages.terminal_pane_node(
+            q,
+            src,
+            at,
+            back=fn() { @sf.t("common.close") },
+            on_back=fn() { lone_closed(q) },
+            top=window_band_now,
+            width=fn() { q.window().0 },
+            on_switch_page=@sfbase.lone_page_replace,
+          )
+        Some(_) => ()
         None => ()
       }
     },

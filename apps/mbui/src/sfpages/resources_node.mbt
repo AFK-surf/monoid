@@ -722,30 +722,37 @@ fn rs_figures_node_of(
 
 ///|
 /// Whose a row is (rs_title's): a chat's, its chat opened from its title, underlined under the pointer, cut short where
-/// its row has less room; else its title.
+/// its row has less room; a station's own group has the station mark after its title.
 fn rs_title_node(p : @view.View, core : Core, g : () -> Json?, style : @ui.TextStyle) -> Unit {
   let chat = fn() { field(g(), "chat") }
   let session = fn() { text(chat(), "session") }
-  p.pick(fn() { chat() is Some(Object(_)) && session() != "" }, fn(x, link) {
-    x.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
-    if link {
-      @sf.presses_node(x, fn() { (core.open_chat)(text(chat(), "station"), session(), text(g(), "title")) })
-      x.says(By(fn() { Some(@view.said(Link, label=text(g(), "title"))) })) |> ignore
-      x.box(fn(w) {
-        w
-        .words_runs(By(fn() { [@ui.span(text(g(), "title"), underline=@sf.lit_node(x))] }))
-        .words_look(Is(@ui.style_words(style)))
-        .ink(By(fn() { @ui.style_ink(style) }))
-        .cuts(Is(true))
-        .min_width(Is(Some(0.0)))
-        .allow_ellipsis(Is(true))
+  p.box(fn(title) {
+    title.row(Is(true)).gap(Is(@ui.Space::S1.px())).lines_up(Is(Some(Middle))).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+    title.pick(fn() { chat() is Some(Object(_)) && session() != "" }, fn(x, link) {
+      x.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+      if link {
+        @sf.presses_node(x, fn() { (core.open_chat)(text(chat(), "station"), session(), text(g(), "title")) })
+        x.says(By(fn() { Some(@view.said(Link, label=text(g(), "title"))) })) |> ignore
+        x.box(fn(w) {
+          w
+          .words_runs(By(fn() { [@ui.span(text(g(), "title"), underline=@sf.lit_node(x))] }))
+          .words_look(Is(@ui.style_words(style)))
+          .ink(By(fn() { @ui.style_ink(style) }))
+          .cuts(Is(true))
+          .min_width(Is(Some(0.0)))
+          .allow_ellipsis(Is(true))
+          |> ignore
+        })
         |> ignore
-      })
-      |> ignore
-    } else {
-      @sf.words_node(x, fn() { text(g(), "title") }, fn() { style }) |> ignore
-    }
+      } else {
+        @sf.words_node(x, fn() { text(g(), "title") }, fn() { style }) |> ignore
+      }
+    })
+    title.show(fn() { text(g(), "kind") == "station" }, fn(mark) {
+      @sf.icon_node(mark, "server", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
   })
+  |> ignore
 }
 
 ///|

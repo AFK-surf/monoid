@@ -7,29 +7,39 @@
 # frameworks. MBUI_APP_MOD=<a module outside this repository whose moon.work names mbui> (still.fail's apps/mbui): its
 # app APP, built from a copy of it in out/linux/app whose workspace names that copy of mbui instead, its apps linking
 # GTK too; a package whose stubs are Apple's own (.m: a core host's) takes its linux_engine.c in their place where it
-# has one, else is left out.
+# has one, else is left out. MBUI_OUT=<a directory>: all of it there in place of out/ (scripts/ext-film.sh says why).
 set -e
 D="$(cd "$(dirname "$0")" && pwd)"
 . "$D/env.sh"
+APPMOD=${MBUI_APP_MOD:+$(cd "$MBUI_APP_MOD" && pwd)}
+# (MBUI_OUT: where the copies, the build and what it says go, in place of mbui's out: mbui left as it is, a
+# repository's read-only submodule; the tools it runs built beside them, or for an app of another module in its
+# out/mbui-tools: MBUI_TOOLS_OUT, scripts/mbc)
+if [ -n "${MBUI_OUT:-}" ]; then
+  O=$(mkdir -p "$MBUI_OUT" && cd "$MBUI_OUT" && pwd)
+  export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$O/tools}
+else
+  O=out
+  [ -z "$APPMOD" ] || export MBUI_TOOLS_OUT=${MBUI_TOOLS_OUT:-$APPMOD/out/mbui-tools}
+fi
 cd "$D/.."
 MODE=${MODE:-release}
 FLAG=""; [ "$MODE" = release ] && FLAG=--release
 PKG=${APP:-demo}
-M=out/linux/mod
-EXE=$M/_build/native/$MODE/build/$PKG/$PKG.exe
-APPMOD=${MBUI_APP_MOD:+$(cd "$MBUI_APP_MOD" && pwd)}
-AM=out/linux/app
-SM=out/linux/stage/mod
-SA=out/linux/stage/app
+M=$O/linux/mod
+EXE=$M/_build/native/$MODE/build/$PKG/$(basename $PKG).exe
+AM=$O/linux/app
+SM=$O/linux/stage/mod
+SA=$O/linux/stage/app
 if [ -n "$APPMOD" ]; then
-  EXE=$AM/_build/native/$MODE/build/$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$APPMOD/moon.mod")/$PKG/$PKG.exe
+  EXE=$AM/_build/native/$MODE/build/$(sed -n 's/^name *= *"\(.*\)"/\1/p' "$APPMOD/moon.mod")/$PKG/$(basename $PKG).exe
 fi
 [ -z "${MBUI_LINUX_HOOK:-}" ] || . "$MBUI_LINUX_HOOK"
 # GTK 4 and what the host files use beside it; an app's own (MBUI_LINUX_CFLAGS, MBUI_LINUX_LDFLAGS) after them
 LIBS="gtk4 epoxy pangocairo pangoft2 fontconfig gdk-pixbuf-2.0 libsoup-3.0 zlib"
 CFLAGS="$(pkg-config --cflags $LIBS) ${MBUI_LINUX_CFLAGS:-}"
 LDFLAGS="$(pkg-config --libs $LIBS) -lm -lpthread ${MBUI_LINUX_LDFLAGS:-}"
-STUBS='"linux_app.c", "linux_render.c", "linux_text.c", "linux_image.c", "linux_views.c", "linux_stream.c", "linux_listen.c", "linux_browser_login.c"'
+STUBS='"linux_app.c", "linux_render.c", "linux_text.c", "linux_image.c", "linux_views.c", "linux_stream.c", "linux_listen.c", "linux_browser_login.c", "linux_film.c"'
 
 # A package's moon.pkg for Linux: its native stubs compiled with GTK's flags (Objective-C's ARC flag dropped), a
 # main's linking GTK's libraries in place of Apple's frameworks.
@@ -81,32 +91,34 @@ sync_app() {
   "$D/mbc" mirror $SA $AM
 }
 
+# (the program as a command: out's is a path from here)
+case $EXE in /*) X=$EXE ;; *) X=./$EXE ;; esac
 case "${1:-build}" in
   build)
     if type app_prebuild >/dev/null 2>&1; then app_prebuild; fi
     sync
     # moon's build, with the C that moonc generates split and compiled in parallel (scripts/mbc: a `cc` first on PATH
     # that moon uses for every C step, all but that one passed through; MBC_SPLIT=0 compiles it whole)
-    rm -f out/mbc.log
+    rm -f $O/mbc.log
     export MBC_REAL_CC=${MBC_REAL_CC:-$(command -v clang || command -v cc)}
     B=$M; [ -z "$APPMOD" ] || B=$AM
     code=0
-    (cd $B && PATH="$("$D/mbc" shim "$PWD/../../mbc/linux"):$PATH" MBC_LOG="$PWD/../../mbc.log" \
+    (cd $B && PATH="$("$D/mbc" shim "$(cd ../.. && pwd)/mbc/linux"):$PATH" MBC_LOG="$(cd ../.. && pwd)/mbc.log" \
       moon build --target native $FLAG src/$PKG) || code=$?
-    cat out/mbc.log 2>/dev/null || true
+    cat $O/mbc.log 2>/dev/null || true
     [ $code = 0 ] || exit $code
     if type app_postbuild >/dev/null 2>&1; then app_postbuild; fi
     ls -la $EXE ;;
   run)
-    on_screen ./$EXE ;;
+    on_screen "$X" ;;
   script)
-    rm -rf out/$2 && mkdir -p out/$2
-    MBUI_SCRIPT=$2 MBUI_SHOT_DIR=$PWD/out/$2 on_screen ./$EXE ;;
+    rm -rf $O/$2 && mkdir -p $O/$2
+    MBUI_SCRIPT=$2 MBUI_SHOT_DIR=$(cd $O/$2 && pwd) on_screen "$X" ;;
   shot)
-    rm -rf out/shot-linux && mkdir -p out/shot-linux
-    MBUI_BENCH=${MBUI_BENCH:--1} MBUI_SCRIPT=shot MBUI_SHOT_DIR=$PWD/out/shot-linux on_screen ./$EXE ;;
+    rm -rf $O/shot-linux && mkdir -p $O/shot-linux
+    MBUI_BENCH=${MBUI_BENCH:--1} MBUI_SCRIPT=shot MBUI_SHOT_DIR=$(cd $O/shot-linux && pwd) on_screen "$X" ;;
   bench)
-    MBUI_BENCH=1 on_screen ./$EXE ;;
+    MBUI_BENCH=1 on_screen "$X" ;;
   *)
     if type app_cmd >/dev/null 2>&1; then app_cmd "$@"; else echo "linux.sh: no command $1" >&2; exit 1; fi ;;
 esac

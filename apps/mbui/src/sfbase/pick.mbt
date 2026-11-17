@@ -106,9 +106,16 @@ pub let share_offered : @signals.Signal[(Double, Double, () -> Unit, String, Str
 pub let message_menu : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
 
 ///|
-/// Whether message `key`'s menu is open: its right click's, or its ⋯'s (share_turn_tool).
+/// The message whose ⋯'s menu is open on the page made as nodes (its key, as its MessageShare says it; "" none), told
+/// by its ⋯ as it opens that menu and as the menu goes: the message lit meanwhile, every piece of a long one, whichever
+/// piece's ⋯ opened it (message_menu_on).
+// kept across runs: none as a run begins (pick_reset)
+pub let message_more : @signals.Signal[String] = @signals.signal("", same=fn(a, b) { a == b })
+
+///|
+/// Whether message `key`'s menu is open: its right click's, or its ⋯'s (share_turn_tool's, message_more's).
 pub fn message_menu_on(key : String) -> Bool {
-  message_menu.get() == key || @sf.menu_shown(key + "/message-menu")
+  message_menu.get() == key || message_more.get() == key || @sf.menu_shown(key + "/message-menu")
 }
 
 ///|
@@ -200,6 +207,7 @@ pub fn pick_reset() -> Unit {
   pk.link = ""
   share_offered.set(None)
   message_menu.set("")
+  message_more.set("")
   pk.taken_at = -1
   pk.sel.reset()
   picked_at.val = -1.0

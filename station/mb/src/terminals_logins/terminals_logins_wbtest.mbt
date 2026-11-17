@@ -152,7 +152,7 @@ test "a new terminal: its screen first, then only what came after it; one typing
       n.val += 1
       "term-\{n.val}"
     },
-    changed: () => changes.val += 1,
+    changed: _ => changes.val += 1,
     gone: _ => (),
     offered: None,
     now: () => 0.0,

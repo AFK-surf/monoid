@@ -61,19 +61,13 @@ fn message_agent_card_node(
 }
 
 ///|
-/// How lit what a message whose menu is open shows of it is (the old list's band for it, chat_list's `msg-menu/`: the
-/// pointer's ground under all its row holds, chat_row_band_node's), followed in `row` (its outermost node): easing in
-/// as its menu opens and out as it goes (nav_fade, from the moment of each), while its right click's menu shows
-/// (@sfbase.message_menu_on, by its message's key `key`, every piece of a long one the same) or its ⋯'s (`more`, the
-/// row's own: what it says once the row is made; a menu presented is told to what reads it). Its key as it is now:
-/// taken for another row's (a block put by and taken again: View::scrolls_window's `reused`), as lit as that row's is
-/// at once, as were it made for it.
-fn message_menu_band_way(row : @view.View, key : () -> String, more : Ref[() -> Bool]) -> @motion.Way {
-  let read = fn() {
-    // (a menu presented or let go tells this again: the row's ⋯ read as it is then)
-    @sf.presenting() |> ignore
-    @sfbase.message_menu_on(key()) || (more.val)()
-  }
+/// How lit a message whose menu is open is (the old list's band for it, chat_list's `msg-menu/`: the pointer's ground
+/// under all of it, chat_band_lit's), followed in `row` (the node its band is drawn in): easing in as its menu opens
+/// and out as it goes (nav_fade, from the moment of each), while its right click's menu shows or its ⋯'s
+/// (@sfbase.message_menu_on, by its message's key `key`, whichever piece of a long one the menu was opened from). Its key
+/// as it is now: taken for another's, as lit as that one is at once.
+fn message_menu_band_way(row : @view.View, key : () -> String) -> @motion.Way {
+  let read = fn() { @sfbase.message_menu_on(key()) }
   let way = @motion.Way::new(if @signals.untracked(read) { 1.0 } else { 0.0 })
   let key_was = Ref(@signals.untracked(key))
   row.reacts(

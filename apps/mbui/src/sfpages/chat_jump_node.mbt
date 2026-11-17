@@ -966,36 +966,18 @@ fn chat_ask_node(
 }
 
 ///|
-/// A message's row lit as all of it (its band): the ground of its own node `row` (all of it, the room over it too),
-/// under all it holds, across the list from edge to edge, from the middle of the room over it (`top`, the row's own)
-/// to the middle of the room over the row under it (`under`: that row's, as the list has it; none under it, as far
-/// again as it starts under its own top), so the bands of two rows meet and those of a long message's pieces are one.
-/// Its flash (row `key` gone to, `flash` chat_flash_way's, not a passage of it: chat_passage_lit's then) in the theme's
-/// secondary emphasis ground, and over that its menu's band (`band` message_menu_band_way's) in the pointer's ground,
-/// composited as View::ground_over is. One binding: where it shows, then too what shape it takes.
-fn chat_row_band_node(
-  row : @view.View,
-  key : () -> String,
-  jump : ChatJump,
-  top : () -> Double,
-  under : () -> Double?,
-  flash : @motion.Way,
-  band : @motion.Way,
-) -> Unit {
-  row.ground_lit(
+/// A message lit as all of it, in `v` (the node the list draws its band in, under all the rows of the message, across
+/// the list from edge to edge: chat_body_bands): its flash (message `key` gone to, `flash` chat_flash_way's, not a
+/// passage of it: chat_passage_lit's then) in the theme's secondary emphasis ground, and over that its menu's band
+/// (`band` message_menu_band_way's) in the pointer's ground, composited as View::ground_over is. One binding.
+fn chat_band_lit(v : @view.View, key : () -> String, jump : ChatJump, flash : @motion.Way, band : @motion.Way) -> Unit {
+  v.ground(
     By(fn() {
       let flashed = match chat_gone(jump) {
-        (k, _, "") if k == key() => lit_by(@sf.theme().flash_bg(), flash.shown_on(row))
+        (k, _, "") if k == key() => lit_by(@sf.theme().flash_bg(), flash.shown_on(v))
         _ => 0L
       }
-      let ink = @view.blend_ground(flashed, lit_by(@ui.tree_theme().color(Hover), band.shown_on(row)))
-      guard ink != 0L else { return (0L, @view.ground_as_laid) }
-      let over = top() / 2.0
-      let to = match under() {
-        Some(u) => u / 2.0
-        None => over
-      }
-      (ink, { dx: 0.0, dy: over, dw: 0.0, dh: to - over, corners: None })
+      @view.blend_ground(flashed, lit_by(@ui.tree_theme().color(Hover), band.shown_on(v)))
     }),
   )
   |> ignore

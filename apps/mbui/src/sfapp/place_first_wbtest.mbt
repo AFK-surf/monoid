@@ -2,7 +2,7 @@
 
 ///|
 test "each place comes in the same way the first time and again" {
-  for place in ["files", "profiles", "stations", "usage", "connects", "archive", "vault"] {
+  for place in ["files", "remote", "profiles", "stations", "usage", "connects", "archive", "vault"] {
     let t = tester("home")
     bars_picked.set(Some(([["chats", place]], 0)))
     t.frame()
@@ -291,7 +291,7 @@ fn bones_at(t : @ui.Tester, place : String) -> Int {
 ///|
 test "a place of the bar in view shows what the device holds the first time it is switched to, and each time after" {
   let t = late_phone(place_core_late_ms)
-  let bars = [["chats", "files", "profiles", "stations"], ["archive", "usage", "connects", "vault"]]
+  let bars = [["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]]
   for bar in 0..<bars.length() {
     // (the other bar brought into view: its places asked ahead in turn)
     if bar > 0 {

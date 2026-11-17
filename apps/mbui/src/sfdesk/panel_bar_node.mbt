@@ -1,8 +1,8 @@
 // A chat's side panel's bar (sideBar: panel.mbt's styles) as nodes of the window's tree, made once over whatever tab is
 // in front, beside the page (side_panel_node) and on the tape (tape_side_node): its tabs, each its mark, its name and
 // its ×, the one in front on the selected ground (or on the tape, a tab alone, its title), a mini-program's 全屏, the
-// agent in front's stop while it works, the station's screen to a window of its own, the panel's switch at its end; its
-// empty part the app's own top row, moving the window.
+// station's screen to a window of its own, the panel's switch at its end; its empty part the app's own top row, moving
+// the window.
 
 ///|
 /// What a tab's mark is (side_mark_of): an icon by its name, an agent's maker's mark, a web service's dot of how its
@@ -19,11 +19,23 @@ priv enum SideMark {
 /// service's its job's dot, a mini-program its own (`.mbui` / `.wasm`: its manifest's), else the icon of what it shows.
 fn side_mark_of(src : Source, r : ChatRef, v : ChatView?, tab : String) -> SideMark {
   match station_tab(tab) {
-    Some((kind, _, _)) =>
+    Some((kind, station, screen)) =>
       return Icon(
         match kind {
           "drive" => "folder"
           "adb" => "phone"
+          "terminal" => "terminal"
+          "screen" => {
+            let card = src.topic("screenCard", { "station": Json::string(station), "screen": Json::string(screen) }).get().value
+            let sk = text(card, "kind")
+            if sk == "simulator" {
+              "phone"
+            } else if sk == "browser" || screen.has_prefix("browser:") {
+              "web"
+            } else {
+              "monitor"
+            }
+          }
           _ => "monitor"
         },
       )
@@ -127,51 +139,29 @@ fn side_bar_node(
         })
       }
     })
-    // an agent's history in front while it works (or waits to): its turn stopped (session.stop, as its card's stop),
-    // an icon button of the bar's as those after it are, faded while asked (2026-11-14: 「右侧需要有一个停止按钮」; not in
-    // the head's row of 只看收发 and 详情, whose chips its circle did not match: the maintainer, 2026-11-14)
-    let working = fn() {
-      let tab = front()
-      match view() {
-        Some(v) =>
-          v.agents.iter().find_first(fn(a) { a.key == tab && (a.status == "running" || a.status == "queued") }).map(fn(a) {
-            a.key
-          })
-        None => None
+    // the station's screen or terminal in front: expand to full window, or pop out to a window of its own (a screen's
+    // with touch its own 全屏 does it, over all of it with the system's bars put away: sfpages' full_asked, so not
+    // twice)
+    let bar_linked = fn() { if on_tape { None } else { @sf.bar_keys_link() } }
+    let expandable_page = fn() {
+      match station_tab_page(r, front()) {
+        Some(Screen(_)) if @sf.soft_keyboard() => None
+        p => p
       }
     }
-    bar.show(at_once=true, fn() { working() is Some(_) }, fn(e) {
+    bar.show(at_once=true, fn() { expandable_page() is Some(_) }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
-      let asked = fn() {
-        match working() {
-          Some(key) => @sfbase.doing("stop/" + r.station + "/" + key)
-          None => false
-        }
-      }
-      @sf.icon_button_node(
-        e,
-        "stop",
-        fn() { @sf.t("web-pages.chat.stopTurn") },
-        fn() {
-          guard working() is Some(key) else { return }
-          let skey = "stop/" + r.station + "/" + key
-          if !@sfbase.doing(skey) {
-            @sfbase.act(
-              src,
-              @sf.t("web-pages.chat.stop"),
-              skey,
-              "session.stop",
-              { "station": Json::string(r.station), "key": Json::string(key) },
-              done=@sf.t("web-pages.chat.stopAsked"),
-            )
+      @sf.icon_button_node(e, "expand", fn() { @sf.t("web-main.preview.fullWindow") }, fn() {
+        match expandable_page() {
+          Some(p) => {
+            @sfbase.history_push()
+            app.nav.push(p)
           }
-        },
-        tips~,
-        disabled=asked,
-      )
+          None => ()
+        }
+      }, tips~, linked=bar_linked)
       |> ignore
     })
-    // the station's screen in front: to a window of its own (a desktop's), its tab closed here (station_tabs.mbt)
     let window_page = fn() {
       match station_tab_page(r, front()) {
         Some(p) if @sfbase.window_opens_for(p) => Some(p)
@@ -186,7 +176,7 @@ fn side_bar_node(
           Some(p) if @sfbase.open_window(p) => side_change(src, r, "close", Some(tab))
           _ => ()
         }
-      }, tips~)
+      }, tips~, linked=bar_linked)
       |> ignore
     })
     // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row under it; any other

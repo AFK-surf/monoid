@@ -398,6 +398,7 @@ fn fixture_reset() -> Unit {
   fx.elevation = None
   fx.copies = None
   fixture_retire_asked.clear()
+  fx_remote_made.clear()
   fx.gpus = false
   fx.more_gpus = false
   fx.low_meters = false
@@ -620,6 +621,60 @@ pub fn fixture_scanned() -> Unit {
 /// Willow a Windows station, running as administrator as `v` says (the core's `StationElevation`), or not.
 pub fn fixture_elevation(v : Json?) -> Unit {
   fx.elevation = v
+}
+
+///|
+/// 远程's place-remote modes: Maple online beside Willow, each under its heading with its ＋ (Willow's screens and
+/// terminals, Maple's display and a terminal).
+pub fn fixture_place_remote() -> Unit {
+  fx.mba_online = true
+}
+
+///|
+/// What 远程's ＋ made this run (place-remote modes), by station: its terminals (`terminal.view` of `new`) and its
+/// browser's tabs (`screen.openBrowser`), as the station would list them after (fixture_remote_made_said).
+// kept across runs: emptied by fixture_reset
+let fx_remote_made : Map[String, Array[String]] = Map([])
+
+///|
+/// 远程's ＋ made `id` (a terminal's, or a tab's screen `browser:<id>`) on station `station`: listed from now on, told
+/// to what follows the made-up core's topics.
+pub fn fixture_remote_made_said(station : String, id : String) -> Unit {
+  let made = match fx_remote_made.get(station) {
+    Some(a) => a
+    None => {
+      let a : Array[String] = []
+      fx_remote_made[station] = a
+      a
+    }
+  }
+  if !made.contains(id) {
+    made.push(id)
+    fx_changed()
+  }
+}
+
+///|
+/// What 远程's ＋ made this run on station `station` (fixture_remote_made_said), in the order made.
+pub fn fixture_remote_made(station : String) -> Array[String] {
+  fx_remote_made.get(station).unwrap_or([])
+}
+
+///|
+/// Station `station`'s `screens` as listed (`listed`), then the tabs 远程's ＋ made on it: a new tab each, blank.
+fn fx_remote_listed(listed : Json, station : String) -> Json {
+  match listed {
+    Array(a) => Json::array(a + fx_remote_tabs(station))
+    _ => listed
+  }
+}
+
+///|
+/// The tabs 远程's ＋ made on station `station`, as its `screens` lists them: a new tab each, blank.
+fn fx_remote_tabs(station : String) -> Array[Json] {
+  fixture_remote_made(station).filter(fn(id) { id.has_prefix("browser:") }).map(fn(id) {
+    obj([("id", str(id)), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("")), ("title", str("新标签页")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("空白标签页")), ("link", str(""))])
+  })
 }
 
 ///|
@@ -2947,6 +3002,22 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    // (远程's Maple, online beside Willow: its display, its browser to make a tab of)
+    "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" && mode.has_prefix("place-remote") =>
+      Some(
+        obj([
+          (
+            "screens",
+            [
+              obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Maple 的屏幕")), ("width", Json::number(2560.0)), ("height", Json::number(1440.0)), ("line", str("2560 × 1440 · 无人在看")), ("link", str(""))]),
+            ] |> fx_remote_listed("ws1/st2"),
+          ),
+          ("browser", Json::boolean(true)),
+          ("outdated", Json::boolean(false)),
+          ("control", Json::boolean(true)),
+          ("known", Json::boolean(true)),
+        ]),
+      )
     // (Willow's: Maple is away, none of its own known)
     "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
       Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
@@ -2963,6 +3034,25 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 obj([("id", str("browser:u_gh")), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("sleeping", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("github.com")), ("title", str("GitHub")), ("width", Json::number(0.0)), ("height", Json::number(0.0)), ("line", str("github.com")), ("link", str(""))]),
                 obj([("id", str("browser:tab-1")), ("kind", str("browser")), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("title", str("Sign in · Anthropic")), ("width", Json::number(1280.0)), ("height", Json::number(720.0)), ("line", str("浏览器标签页 · 1280 × 720")), ("link", str(""))]),
               ],
+            ),
+            ("browser", Json::boolean(true)),
+            ("outdated", Json::boolean(false)),
+            ("control", Json::boolean(true)),
+            ("known", Json::boolean(true)),
+          ]),
+        )
+      } else if m.has_prefix("place-remote") {
+        // (远程: Willow's display, an iOS simulator, a tab an agent drives and one of its own)
+        Some(
+          obj([
+            (
+              "screens",
+              [
+                obj([("id", str("desktop")), ("kind", str("desktop")), ("title", str("Willow 的屏幕")), ("width", Json::number(3024.0)), ("height", Json::number(1964.0)), ("line", str("3024 × 1964 · 无人在看")), ("link", str(""))]),
+                obj([("id", str("sim:iphone")), ("kind", str("simulator")), ("title", str("iPhone 17 Pro")), ("width", Json::number(1206.0)), ("height", Json::number(2622.0)), ("line", str("iOS 26 · 1206 × 2622")), ("link", str(""))]),
+                obj([("id", str("browser:T1")), ("kind", str("browser")), ("agent", Json::boolean(true)), ("closable", Json::boolean(true)), ("site", str("localhost:5173")), ("title", str("发布清单 - localhost:5173")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("浏览器标签页 · 1280 × 800")), ("link", str(""))]),
+                obj([("id", str("browser:u_mail")), ("kind", str("browser")), ("userTab", Json::boolean(true)), ("closable", Json::boolean(true)), ("openUrl", Json::boolean(true)), ("site", str("mail.proton.me")), ("title", str("收件箱 - Proton Mail")), ("width", Json::number(1280.0)), ("height", Json::number(800.0)), ("line", str("mail.proton.me")), ("link", str(""))]),
+              ] |> fx_remote_listed("ws1/st1"),
             ),
             ("browser", Json::boolean(true)),
             ("outdated", Json::boolean(false)),
