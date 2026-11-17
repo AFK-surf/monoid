@@ -35,6 +35,8 @@ export const RESUMED = "stillfail-resumed";
 export const HEAD = "stillfail-head";
 /// A stream's answer when it follows the sessions at work itself (api/events.ts FOLLOWS): `running`.
 export const FOLLOWS = "stillfail-follows";
+/// A running-session snapshot carries current output rates (station/src/api/events.ts LIVE_RATES).
+export const LIVE_RATES = "stillfail-live-rates";
 /// What every request asks its answer compressed as (`accept-encoding`), but a preview's (its page reads what the service
 /// sent): zstd, an event stream flushed after each event and compressed against the last megabyte of it (station/src/mesh/
 /// compress.ts). On a slow link the bytes are the wait: JSON goes to a fifth or less, an events stream to a tenth. A

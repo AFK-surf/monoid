@@ -1428,6 +1428,19 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
     // (one chat's whole row, of the same made-up chats: what the list's rows are cut from)
     "chatRow" => fixture_chat_row(f, params)
     "fleet" => Some(fixture_fleet(f))
+    "agentRates" => Some({
+      "title": "实时输出速度",
+      "total": "≈ 154 token/s",
+      "status": "3 个会话正在输出",
+      "basis": "按模型输出估算；每个会话包含并行的子 agent。",
+      "rows": [
+        { "key": "1", "title": "准备发布说明", "sub": "Studio · GPT-6", "rate": "≈ 72 token/s", "station": "studio", "chat": "1" },
+        { "key": "2", "title": "排查构建失败", "sub": "Studio · Claude", "rate": "≈ 49 token/s", "station": "studio", "chat": "2" },
+        { "key": "3", "title": "改进工作区搜索", "sub": "Laptop · GPT-6", "rate": "≈ 33 token/s", "station": "laptop", "chat": "3" },
+      ],
+      "more": "",
+      "notes": [],
+    })
     // (the Profile overview's pools, as the core makes them of the made-up accounts: the settings' fixture_overview)
     "profilesOverview" => Some(@settings.fixture_overview())
     "railCard" => fixture_rail_card(params)
@@ -2596,6 +2609,7 @@ pub fn fixture(mode : String) -> Source {
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    asks_agent_rates: fn() { true },
     swr_views: fn() { false },
     gates_opens: fn() { false },
   }

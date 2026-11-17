@@ -688,6 +688,7 @@ pub fn source() -> @sfapp.Source {
     asks_station_updates: fn() { @sfcore.trace_switch("MBUI_STATION_UPDATES") },
     asks_station_move: fn() { @sfcore.trace_switch("MBUI_STATION_MOVE") },
     asks_terminals: fn() { @sfcore.trace_switch("MBUI_TERMINALS") },
+    asks_agent_rates: fn() { @sfcore.trace_switch("MBUI_AGENT_RATES") },
     swr_views: fn() { @sfcore.trace_switch("MBUI_SWR_VIEWS") },
     gates_opens: fn() { @sfcore.trace_switch("MBUI_OPEN_WHOLE") },
   }

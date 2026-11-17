@@ -3689,6 +3689,14 @@ export const SHAPES: Record<string, Shape> = {
     ["head", "String", { doc: "开了很久的网页服务 · 3" }],
     ["jobs", vec("Job")],
   ], { keepNone: true }),
+  AgentRatesView: struct([
+    ["title", "String"], ["total", "String"], ["status", "String"], ["basis", "String"],
+    ["rows", vec("AgentRateRow")], ["more", "String"], ["notes", vec("String")],
+  ], { doc: "The workspace's current estimated model output rate, summed over reached stations; at most 20 session rows.", keepNone: true }),
+  AgentRateRow: struct([
+    ["key", "String"], ["title", "String"], ["sub", "String"], ["rate", "String"],
+    ["station", "String"], ["chat", opt("String")],
+  ], { keepNone: true }),
   UsageView: struct([
     ["split", "String", { default: true, doc: "The list each day's bar is split by (people, chats, profiles, models): the one asked for, else\nthe people's where several spent, the models' where one did." }],
     ["only", opt("UsageOnly"), { doc: "The one person, account or model everything is of, when one was asked for." }],
@@ -4774,6 +4782,7 @@ export const TOPIC_SHAPES: Record<string, Ty> = {
   profilesOverview: "ProfilesOverviewView",
   profile: { opt: "WorkspaceProfile" },
   usage: "UsageView",
+  agentRates: "AgentRatesView",
   fleet: "FleetView",
   railCard: "RailCard",
   stationUpdates: "StationUpdates",

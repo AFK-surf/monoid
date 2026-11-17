@@ -45,7 +45,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationRates", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -60,7 +60,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "stationRates", "screens", "terminals", "screenCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -296,6 +296,9 @@ export class StationTopics implements Owner {
       case "live":
         seen.read(station, "live", topic.key as string);
         return this.#live(topic);
+      case "stationRates":
+        seen.read(station, "rates");
+        return { ok: { online: link?.state.state === "online", supported: link?.ratesSupported === true, items: link?.state.state === "online" && link.ratesSupported === true ? [...link.rates].map(([key, rate]) => ({ key, rate })) : [] } };
       case "machineLogins":
       case "machineLogin":
         seen.read(station, "logins");

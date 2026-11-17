@@ -188,6 +188,8 @@ pub(all) struct Source {
   /// whether a station's terminals are asked for (`terminals`, among its screens: sfpages station_terminals_node.mbt):
   /// not of a run seen again that was recorded before the app did
   asks_terminals : () -> Bool
+  /// Whether the usage page asks for the workspace's live output rates (not in older recorded runs).
+  asks_agent_rates : () -> Bool
   /// whether a page's, a panel's or a card's own view reads what makes it whole at once (a chat's services' pop its
   /// bar's summary till its own comes, an agent's card what its model's menu lists, asked ahead): not of a run seen
   /// again that was recorded before the app did (MBUI_SWR_VIEWS)
@@ -449,6 +451,7 @@ let chats_kept_before : Int = 4
 /// (`pick`), a drive's place, a chat's outline.
 // kept across runs: a value (nothing of it changes)
 let views_kept : Array[(String, Int)] = [
+  ("agentRates", 4),
   ("chatRow", 32),
   ("chatJobs", 16),
   ("agentCard", 16),
@@ -882,6 +885,7 @@ pub fn made_source(
     asks_station_updates: fn() { true },
     asks_station_move: fn() { true },
     asks_terminals: fn() { true },
+    asks_agent_rates: fn() { true },
     swr_views: fn() { true },
     gates_opens: fn() { true },
   }

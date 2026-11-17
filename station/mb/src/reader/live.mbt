@@ -24,6 +24,8 @@ priv struct LRate {
   mut told_at : Double
   mut told : Int
   last : Map[String, Double]
+  mut last_delta : Double
+  mut quiet : (() -> Unit)?
 }
 
 ///|
@@ -651,6 +653,9 @@ fn Actors::live_now(self : Actors, key : String) -> Json {
   }
   out.push(self.steps_now(key))
   out.push(self.work_now(key))
+  if self.live.rates.get(key) is Some(rate) && rate.told > 0 {
+    out.push({ "type": jstr("rate"), "tokensPerSecond": jnum(rate.told.to_double()) })
+  }
   Json::array(out)
 }
 
@@ -772,10 +777,13 @@ fn Actors::live_event(self : Actors, key : String, event : Json) -> Unit {
         rate.buckets = left
         rate.last.remove(id)
         if rate.buckets.length() == 0 {
+          if rate.quiet is Some(cancel) { cancel() }
           l.rates.remove(key)
           if rate.told > 0 {
             self.lemit(key, { "type": jstr("rate"), "tokensPerSecond": jnum(0.0) })
           }
+        } else if rate.told > 0 {
+          self.tell_rate(key, rate, now)
         }
       }
       self.lsoon(key)
@@ -787,14 +795,19 @@ fn Actors::live_event(self : Actors, key : String, event : Json) -> Unit {
 ///|
 /// Output written (live.ts `counted`): its rate told once half a second of it has come, then at most once a second.
 fn Actors::counted(self : Actors, key : String, id : String, tokens : Double, counted : Bool) -> Unit {
+  if tokens <= 0.0 { return }
   let now = self.now
   let rate = match self.live.rates.get(key) {
     Some(r) => r
     None => {
-      let r = { buckets: [], told_at: 0.0, told: 0, last: Map([]) }
+      let r = { buckets: [], told_at: 0.0, told: 0, last: Map([]), last_delta: now, quiet: None }
       self.live.rates[key] = r
       r
     }
+  }
+  rate.last_delta = now
+  if rate.quiet is None {
+    self.rate_deadline(key, rate, rate_window_ms)
   }
   let at = (now / 250.0).floor() * 250.0
   if counted {
@@ -819,26 +832,52 @@ fn Actors::counted(self : Actors, key : String, id : String, tokens : Double, co
     return
   }
   let mut first = never
+  for b in rate.buckets {
+    let s = b.since.unwrap_or(b.at)
+    if s < first { first = s }
+  }
+  if rate.told_at == 0.0 && now - first < rate_first_ms {
+    return
+  }
+  self.tell_rate(key, rate, now)
+}
+
+///|
+/// A silence deadline; a busy stream extends it without making a timer per delta. Keep the last counted time so a
+/// later thinking count still covers its pause. timer: deadline for the last model output.
+fn Actors::rate_deadline(self : Actors, key : String, rate : LRate, ms : Double) -> Unit {
+  rate.quiet = Some(self.after(ms, () => {
+    let left = rate.last_delta + rate_window_ms - self.now
+    if left > 0.0 {
+      self.rate_deadline(key, rate, left)
+    } else {
+      rate.quiet = None
+      rate.buckets = []
+      rate.told_at = 0.0
+      if rate.told > 0 {
+        rate.told = 0
+        self.lemit(key, { "type": jstr("rate"), "tokensPerSecond": jnum(0.0) })
+      }
+    }
+  }))
+}
+
+///|
+/// Tell the rate of the buckets still in the window (also after one parallel step ends).
+fn Actors::tell_rate(self : Actors, key : String, rate : LRate, now : Double) -> Unit {
   let mut written = never
   let mut counts = never
   let mut total = 0.0
   for b in rate.buckets {
-    let s = b.since.unwrap_or(b.at)
-    if s < first {
-      first = s
-    }
     match b.since {
       None => if b.at < written { written = b.at }
       Some(s) => if s < counts { counts = s }
     }
     total += b.tokens
   }
-  if rate.told_at == 0.0 && now - first < rate_first_ms {
-    return
-  }
   let w = if written == never { 0.0 } else { (now - written + 250.0).min(rate_window_ms) }
   let c = if counts == never { 0.0 } else { now - counts }
-  let span = w.max(c)
+  let span = w.max(c).max(1.0)
   let per = (total * 1000.0 / span).round()
   let tps = if per < 1.0 { 1 } else { per.to_int() }
   rate.told_at = now
@@ -851,6 +890,7 @@ fn Actors::counted(self : Actors, key : String, id : String, tokens : Double, co
 async fn Actors::live_turn_end(self : Actors, key : String) -> Unit {
   self.live.steps.remove(key)
   self.live.phase.remove(key)
+  if self.live.rates.get(key) is Some(rate) && rate.quiet is Some(cancel) { cancel() }
   self.live.rates.remove(key)
   self.read_now(key)
   self.lemit(key, { "type": jstr("clear") })
@@ -1620,6 +1660,7 @@ fn Actors::live_forget(self : Actors, key : String) -> Unit {
   l.said_plans.remove(key)
   l.steps.remove(key)
   l.phase.remove(key)
+  if l.rates.get(key) is Some(rate) && rate.quiet is Some(cancel) { cancel() }
   l.rates.remove(key)
   self.lemit(key, { "type": jstr("clear") })
   if l.releases.get(key) is Some(release) {

@@ -213,7 +213,11 @@ pub fn route_reads(src : Source, ws : String, r : @settings.Route) -> OpenReads 
     Memory(address) => reads_of([stations, ("memory", { "station": Json::string(address) })])
     MemoryDoc(address, _, _) => reads_of([("memory", { "station": Json::string(address) })])
     // (as it opens with nothing chosen in it: sfpages usage_ask's seven days)
-    Usage => reads_of([("usage", { "scope": of, "days": Json::number(7.0) })])
+    Usage => {
+      let asks = [("usage", { "scope": of, "days": Json::number(7.0) })]
+      if (src.asks_agent_rates)() { asks.push(("agentRates", { "scope": of })) }
+      reads_of(asks)
+    }
     UsagePrices(days) => reads_of([("usage", { "scope": of, "days": Json::number(days.to_double()) })])
     // (its first page: sfbase bars.mbt place_reads')
     Archive => reads_of([("archive", { "scope": of, "limit": Json::number(60.0) })])

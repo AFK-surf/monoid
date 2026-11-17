@@ -215,6 +215,13 @@ export class StationsSync {
       event: (address, name, raw, again) => this.onEvent(address, name, raw, again),
       toldMissed: (address) => this.#tally(address),
       changed: (address, what) => this.onChange(address, what),
+      ratesOpened: (address, supported) => {
+        const link = this.#links.get(address);
+        if (!link) return;
+        link.rates.clear();
+        link.ratesSupported = supported;
+        this.seen.touch(address, "rates");
+      },
       gone: (address) => this.channels.forget(address),
     });
     // A thread caught up on brought its latest: one less to catch up on.
@@ -2399,8 +2406,13 @@ export class StationsSync {
         view.loaded = true;
       } else if (kind === "clear") {
         Object.assign(view, { steps: [], phase: null, rate: 0 });
+        if (link.rates.delete(key)) this.seen.touch(address, "rates");
       } else if (kind === "rate") {
         view.rate = u64(get(message, "tokensPerSecond")) ?? 0;
+        const before = link.rates.get(key) ?? 0;
+        if (view.rate > 0) link.rates.set(key, view.rate);
+        else link.rates.delete(key);
+        if (before !== view.rate) this.seen.touch(address, "rates");
       } else if (kind === "work") {
         // Whole each time: how long each task has run, as since when on this device's clock.
         view.tasks = ((get(message, "tasks") as unknown[] | undefined) ?? []).map((task) => ({ ...(task as object), since: Math.round(now - (typeof get(task, "elapsedMs") === "number" ? (get(task, "elapsedMs") as number) : 0)) }));

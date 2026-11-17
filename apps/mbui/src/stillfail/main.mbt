@@ -343,6 +343,7 @@ let core_source : @sfapp.Source = {
   asks_station_updates: fn() { true },
   asks_station_move: fn() { true },
   asks_terminals: fn() { true },
+  asks_agent_rates: fn() { true },
   swr_views: fn() { true },
   gates_opens: fn() { true },
 }

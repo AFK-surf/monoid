@@ -599,6 +599,8 @@ pub let trace_switches : Array[String] = [
   // (a station's terminals among its screens on its page, `terminals`: sfpages station_terminals_node.mbt. A trace
   // without it has none asked, as its run's app did)
   "MBUI_TERMINALS",
+  // (the usage page's live output rates; a run from before it asks nothing of them)
+  "MBUI_AGENT_RATES",
   // (a page's, a panel's or a card's read-only topic let go of is kept as it is and shown again at once as it is asked
   // again, till the core answers (sfbase's `topic_kept`, `topic_shown_kept`; @core.Client::show_kept); a chat's last 8
   // kept, not 4; what a pop over a chat's services shows read from its bar's summary till its own comes, an agent's

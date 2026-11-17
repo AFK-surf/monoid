@@ -660,6 +660,7 @@ test("a stream that follows the sessions at work is told what each its viewer se
   (events as any).deps.seen = (v: any, of: any) => !("session" in of) || seen[of.session] === v.email;
   const answer = await events.open(viewer("a@x"), "zh", false, [["k", 0, 200]], [], null, true, [], true);
   assert.equal(answer.headers?.["stillfail-follows"], "running");
+  assert.equal(answer.headers?.["stillfail-live-rates"], "1");
   // (done before it was told how it is now: told after that)
   events.heldTold("k", { type: "rate", tokensPerSecond: 3 });
   const a = reader(answer.body as AsyncIterable<Buffer>);

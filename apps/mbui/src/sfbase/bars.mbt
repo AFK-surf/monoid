@@ -130,7 +130,11 @@ fn place_reads(src : Source, ws : String, scope : String, place : String, shown 
     "connects" => [("stations", stations), ("connects", { "scope": of, "mine": Json::boolean(false) })]
     "vault" => [("vaults", { "workspace": of })]
     // (as their pages ask them with nothing chosen in them: sfpages usage_ask's seven days, the archive's first page)
-    "usage" if shown => [("usage", { "scope": of, "days": Json::number(7.0) })]
+    "usage" if shown => {
+      let asks = [("usage", { "scope": of, "days": Json::number(7.0) })]
+      if (src.asks_agent_rates)() { asks.push(("agentRates", { "scope": of })) }
+      asks
+    }
     "archive" if shown => [("archive", { "scope": of, "limit": Json::number(60.0) })]
     _ => []
   }

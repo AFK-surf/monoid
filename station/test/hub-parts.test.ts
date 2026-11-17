@@ -803,6 +803,38 @@ test("how fast the model writes is told once half a second of it has come", asyn
   await settle(1);
 });
 
+test("a live rate is in a new snapshot and clears after output has been quiet", async () => {
+  const time = testClock();
+  await time.adjust(1_000_000);
+  const hub = new LiveHub(() => null, time.clock);
+  const got: LiveMessage[] = [];
+  hub.subscribe("s", 0, null, (m) => void got.push(m));
+  hub.event("s", { kind: "start", id: "x", step: "text" });
+  hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
+  await hub.idle();
+  await time.begun(1);
+  await time.adjust(600);
+  hub.event("s", { kind: "delta", id: "x", field: "text", text: "x".repeat(400) });
+  await hub.idle();
+  const rates = () => got.flatMap((m) => m.type === "rate" ? [m.tokensPerSecond] : []);
+  const rate = rates().at(-1)!;
+  assert.ok(rate > 0);
+  assert.deepEqual((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate"), [{ type: "rate", tokensPerSecond: rate }]);
+  // The first deadline extends to the last delta, then the rate is zero without waiting for a step to end.
+  await time.adjust(1400);
+  await settle();
+  await hub.idle();
+  assert.equal(rates().at(-1), rate);
+  hub.event("s", { kind: "delta", id: "x", field: "text", text: "" });
+  await hub.idle();
+  await time.adjust(600);
+  await settle();
+  await hub.idle();
+  assert.equal(rates().at(-1), 0, "an empty delta does not keep the speed alive");
+  assert.deepEqual((await hub.nowOf(["s"])).s!.filter((m) => m.type === "rate"), []);
+  hub.close();
+});
+
 test("thinking left out of the stream has a rate too, by the tokens its empty deltas say, over the time each covers", async (t) => {
   t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
   // As Claude Code 2.1 streams an Opus 5.5 turn: a thinking block whose deltas say no words, only `estimated_tokens`.

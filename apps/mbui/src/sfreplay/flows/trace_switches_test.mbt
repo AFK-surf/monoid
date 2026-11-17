@@ -76,6 +76,7 @@ let switches_known : Map[String, Int] = {
   "MBUI_STATION_UPDATES": 77,
   "MBUI_STATION_MOVE": 78,
   "MBUI_TERMINALS": 77,
+  "MBUI_AGENT_RATES": 81,
   "MBUI_SWR_VIEWS": 78,
   "MBUI_OPEN_WHOLE": 78,
   "MBUI_PAGE_PICTURES": 78,

@@ -813,6 +813,33 @@ fn usage_narrowed_node(parent : @view.View, v : () -> Json?, chart : () -> Json?
 }
 
 ///|
+/// Live output in the workspace: the total includes every session, the rows show the fastest ones as the core says them.
+fn usage_rates_node(parent : @view.View, rates : () -> Json?) -> Unit {
+  parent.show(fn() { rates() is Some(Object(_)) }, fn(at) {
+    ug_card_node(at, fn(k) {
+      @sf.words_node(k, fn() { text(rates(), "title") }, fn() { ug_card_title }) |> ignore
+      k.box(fn(summary) {
+        summary.gap(Is(4.0)) |> ignore
+        @sf.words_node(summary, fn() { text(rates(), "total") }, fn() { ug_hero_value }) |> ignore
+        @sf.words_node(summary, fn() { text(rates(), "status") }, fn() { ug_row_sub_lines }) |> ignore
+      }) |> ignore
+      k.each(fn() { items(rates(), "rows") }, fn(r) { text(Some(r), "key") }, fn(row, r) {
+        row.gap(Is(2.0)) |> ignore
+        ug_line_node(row, fn(line) {
+          ug_grow_words(line, fn() { text(Some(r.get()), "title") }, ug_row_title) |> ignore
+          @sf.words_node(line, fn() { text(Some(r.get()), "rate") }, fn() { ug_cost }) |> ignore
+        }, first=true)
+        @sf.words_node(row, fn() { text(Some(r.get()), "sub") }, fn() { ug_row_sub_lines }) |> ignore
+      })
+      k.show(fn() { text(rates(), "more") != "" }, fn(m) {
+        @sf.words_node(m, fn() { text(rates(), "more") }, fn() { ug_note }) |> ignore
+      })
+      usage_notes_node(k, rates)
+    })
+  })
+}
+
+///|
 /// The page's body under its head: for `7 天` / `30 天`, the period overview + daily trend card first, then the
 /// 4-tab spending breakdown card (`对话 | 人 | 模型 | 账号`), then basis notes; for `累计`, the clean all-time summary
 /// & 12-month heatmap card.
@@ -821,6 +848,7 @@ fn usage_body_node(
   core : Core,
   v : () -> Json?,
   chart : () -> Json?,
+  rates : () -> Json?,
   error : () -> Json?,
   page_w : () -> Double,
   press : UsagePress,
@@ -829,6 +857,7 @@ fn usage_body_node(
   let details_pending = fn() { flag(v(), "detailsPreparing") || flag(chart(), "detailsPreparing") }
   parent.box(fn(b) {
     b.gap(Is(ug_body_gap)) |> ignore
+    usage_rates_node(b, rates)
     b.pick(fn() { usage_pick.summary.get() }, fn(body, is_sum) {
       if is_sum {
         usage_summary_node(body, chart, page_w, tips?)
@@ -1178,6 +1207,14 @@ pub fn usage_node(
   let chart_ask = fn() { usage_ask(here(), usage_pick.days.get(), usage_pick.split.get()) }
   let chart_read = fn() { read_of(chart_ask()) }
   let chart = fn() { chart_read().value }
+  // A separate live topic keeps fast rate updates from rebuilding the historical usage view.
+  let rates = fn() {
+    if (src.asks_agent_rates)() {
+      (core.topic)("agentRates", { "scope": str(here().workspace) }).get().value
+    } else {
+      None
+    }
+  }
   // (a choice pressed and what waits for what it reads: one at a time)
   let pressed : @signals.Signal[(Int, String)?] = @signals.signal(None)
   let waiting : Ref[@sfbase.PressWait?] = Ref(None)
@@ -1282,7 +1319,7 @@ pub fn usage_node(
         },
         fn(p, state) {
           match state {
-            0 => usage_body_node(p, core, value, chart, fn() { read().error }, page_w, choice, tips~)
+            0 => usage_body_node(p, core, value, chart, rates, fn() { read().error }, page_w, choice, tips~)
             1 =>
               @sf.words_node(p, fn() {
                 match chart_read().error {
@@ -1294,7 +1331,7 @@ pub fn usage_node(
             _ => {
               let quiet = core.quiet()
               let sample = fn() { Some(usage_sample()) }
-              @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, page_w, choice) })
+              @sf.waiting_node(p, fn(s) { usage_body_node(s, quiet, sample, sample, fn() { None }, fn() { None }, page_w, choice) })
             }
           }
         },

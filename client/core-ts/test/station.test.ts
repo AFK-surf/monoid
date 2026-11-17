@@ -14,6 +14,32 @@ import { run } from "./run.ts";
 import { type Answers, base, entries, entry, overview, session, started, stationHost, stationLater, status, threadView } from "./station-fixture.ts";
 import { retryAfter } from "../src/station/sync.ts";
 
+test("live rates follow station events, clear on reconnect, and distinguish older stations", async () => {
+  const { host, core, push, end, gate } = await started(base(), 0, undefined, (s) => { s.gate.rates = true; });
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "agentRates", scope: "ws" });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 0 token/s");
+  push("live", { key: "k1", type: "rate", tokensPerSecond: 20 });
+  push("live", { key: "k2", type: "rate", tokensPerSecond: 30 });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 50 token/s");
+  push("live", { key: "k1", type: "clear" });
+  await host.time.pass(100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "≈ 30 token/s");
+  gate.rates = false;
+  end();
+  await host.time.pass(2000, 100);
+  apply(host, values);
+  assert.equal(v(values, 1).total, "—");
+  assert.equal(v(values, 1).rows.length, 0);
+  core.close();
+});
+
 const gets = (host: FakeHost, path: string) => host.requests.flatMap(readsOf).filter((url) => url.endsWith(path)).length;
 
 test("a_reached_station_is_linked_read_as_its_stream_opens_and_its_topics_read_only_what_is_held", async () => {
