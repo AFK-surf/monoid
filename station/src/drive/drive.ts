@@ -374,6 +374,15 @@ export class Drive {
     return { root: named, top, asked, found, entry, parts, fs, scope: scopes[0]! };
   }
 
+  /// Where a transfer reads a path (`found`) and removes it (`entry`: the last link itself), with the same permission
+  /// prompt as reading it. Roots and parent folders may be aliases of another source or destination.
+  locate(root: string, path: string, anywhere = false): Promise<Pick<Place, "found" | "entry">> {
+    return this.#run(async () => {
+      const { found, entry } = await this.place(root, path, anywhere);
+      return { found, entry };
+    });
+  }
+
   /// A folder's entries, folders first, each part by name; what is protected or leads out of the root left out.
   list(root: string, path: string, anywhere = false): Promise<{ path: string; entries: Entry[]; truncated: boolean }> {
     return this.#run(async () => {

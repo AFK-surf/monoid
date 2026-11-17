@@ -2,7 +2,7 @@
 // what it granted, a name already there replaced, kept beside or skipped, a move letting the originals go, a transfer
 // that failed taken up where it was, and a grant read only as it was given.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -83,6 +83,56 @@ test("within a station: files and folders copied, what is there already kept bes
   await transfers.idle();
   assert.equal(transfers.get(asked.id)!.state, "failed");
   assert.match(transfers.get(asked.id)!.error!, /already/);
+});
+
+for (const alias of [false, true]) test(`replacing a local source through ${alias ? "an aliased" : "the same"} root keeps the source`, async () => {
+  const s = station("self-replace");
+  writeFileSync(join(s.root, "note.txt"), "the only copy");
+  const root = alias ? join(s.base, "alias") : s.root;
+  if (alias) symlinkSync(s.root, root, process.platform === "win32" ? "junction" : "dir");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "", names: ["note.txt"] }, to: { root, path: "" }, conflicts: { "note.txt": "replace" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "the only copy");
+});
+
+for (const move of [false, true]) test(`a local ${move ? "move" : "copy"} into the source's child is refused before writing`, async () => {
+  const s = station("into-self");
+  mkdirSync(join(s.root, "project", "child"), { recursive: true });
+  writeFileSync(join(s.root, "project", "note.txt"), "original");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ move, from: { station: null, root: s.root, path: "", names: ["project"] }, to: { root: s.root, path: "project/child" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "project", "note.txt"), "utf8"), "original");
+  assert.equal(existsSync(join(s.root, "project", "child", "project")), false);
+});
+
+test("a replacement containing a later source is refused before replacing any destination", async () => {
+  const s = station("replace-parent");
+  mkdirSync(join(s.root, "folder", "folder"), { recursive: true });
+  writeFileSync(join(s.root, "folder", "note.txt"), "new note");
+  writeFileSync(join(s.root, "folder", "folder", "only.txt"), "only copy");
+  writeFileSync(join(s.root, "note.txt"), "old note");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "folder", names: ["note.txt", "folder"] }, to: { root: s.root, path: "" }, conflicts: { "note.txt": "replace", folder: "replace" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "old note", "an earlier destination was not trashed");
+  assert.equal(readFileSync(join(s.root, "folder", "note.txt"), "utf8"), "new note");
+  assert.equal(readFileSync(join(s.root, "folder", "folder", "only.txt"), "utf8"), "only copy");
+});
+
+test("keeping both can still duplicate a local file in its own folder", async () => {
+  const s = station("self-keep");
+  writeFileSync(join(s.root, "note.txt"), "original");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "", names: ["note.txt"] }, to: { root: s.root, path: "" }, conflicts: { "note.txt": "keep" } }));
+  await transfers.idle();
+  assert.equal(t.state, "done", t.error);
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "original");
+  assert.equal(readFileSync(join(s.root, "note 2.txt"), "utf8"), "original");
 });
 
 test("from another station with its grant: read in parts, the originals let go once moved", async () => {
