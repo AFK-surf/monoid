@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 | [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 2.52 | 3.56 | 15.39 | 36.78 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 | [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 | [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 2.5 | 3.52 | 15.2 | 36.55 | 60.12 | 31.7 | 65.98 | 95.9 | 121.93 |
-| [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 95.9 | 120.37 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
-| [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
