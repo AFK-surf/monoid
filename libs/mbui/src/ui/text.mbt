@@ -1166,18 +1166,12 @@ fn bidi_offset_at(
 let glyphs_ahead_most : Int = 4096
 
 ///|
-/// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase.
+/// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase (glyph_sub_at).
 fn glyph_drawn_any_sub(k : Int) -> Bool {
   text_cache.glyphs.contains(k) ||
-  (
-    h_platform() == 3 &&
-    (
-      text_cache.glyphs.contains(k | (1 << 26)) ||
-      text_cache.glyphs.contains(k | (2 << 26)) ||
-      text_cache.glyphs.contains(k | (3 << 26)) ||
-      text_cache.glyphs.contains(k | (4 << 26))
-    )
-  )
+  text_cache.glyphs.contains(k | (1 << 26)) ||
+  text_cache.glyphs.contains(k | (2 << 26)) ||
+  text_cache.glyphs.contains(k | (3 << 26))
 }
 
 ///|
@@ -1229,30 +1223,82 @@ fn glyph_keys() -> Map[String, Int] {
 }
 
 ///|
+/// The glyphs in the atlas by their places, as `glyph_keys`: their whole keys, the phase (bits 26..27) kept.
+fn glyph_full_keys() -> Map[String, Int] {
+  let at : Map[String, Int] = Map([])
+  text_cache.glyphs.each(fn(key, g) { if g.plot >= 0 { at["\{g.u} \{g.v}"] = key } })
+  at
+}
+
+///|
 /// The horizontal origin (in points) of the View node being built in `view_made` (`ux`, which `view_blit`
 /// rounds from as `lx`), 0 outside `view_made`.
 // kept across runs: set and put back around view_made
 let glyph_origin_x : Ref[Double] = Ref(0.0)
 
 ///|
-/// Glyph `key` with its horizontal quarter-pixel phase on Windows (bits 26..28: 0 for 0, 1 for +1/4, 2 for
-/// +1/2, 3 for -1/4, 4 for -1/2 of a device pixel) for a cluster laid out at `laid_x` points (`sc` pixels a point,
-/// `z` zoom), so its quad stays on the whole pixel `on_pixels` puts it on while DirectWrite draws its ink within
-/// 1/8 px of `laid_x * sc`. Unchanged on other platforms or when zoomed.
-fn glyph_sub_at(key : Int, laid_x : Double, sc : Double, z : Double) -> Int {
-  if key < 0 || z != 1.0 || h_platform() != 3 {
-    return key
+/// How far (device pixels) a glyph drawn at horizontal subpixel phase `sub` (bits 26..27 of its key: glyph_sub_at) is
+/// drawn right of the whole pixel column its quad is put on: 0, +1/4, -1/2, -1/4. Every host draws a phase so
+/// (win_text.cpp, apple_text.m, MBText.java, linux_text.c, the web's host.js: their `sub_dx`).
+// (held by its tests: what each phase is drawn at, the hosts' own number)
+#warnings("-unused_value")
+fn glyph_sub_dx(sub : Int) -> Double {
+  match sub {
+    1 => 0.25
+    2 => -0.5
+    3 => -0.25
+    _ => 0.0
   }
-  let tx = laid_x * sc
-  let q = ((tx - tx.round()) * 4.0).round().to_int()
-  let sub = match q {
+}
+
+///|
+/// The quarter-pixel step nearest a glyph's pen at `tx` device pixels: what its column and its phase are both of
+/// (glyph_col_of, glyph_sub_of), so `col + glyph_sub_dx(sub)` is `qf / 4` wherever `tx` is and a pen moving right only
+/// ever moves its glyph right, a quarter of a pixel at a time, within an eighth of a pixel of where it is laid out. A
+/// half pixel (`k + 1/2`, where a rounding of the column alone went one way for one glyph and the other for the next) is
+/// a phase like the others (2, on the column to its right), an eighth of a pixel from where its step changes; and a pen
+/// moved by whole pixels keeps its phase. (Two numbers of one step, not a pair: what composes every glyph each frame
+/// makes no allocation of it.)
+fn glyph_qf(tx : Double) -> Double {
+  (tx * 4.0 + 0.5).floor()
+}
+
+///|
+/// The whole device pixel column a glyph of quarter-pixel step `qf` (glyph_qf) is put on.
+fn glyph_col_of(qf : Double) -> Double {
+  ((qf + 2.0) * 0.25).floor()
+}
+
+///|
+/// The quarter-pixel phase a glyph of quarter-pixel step `qf` (glyph_qf) is drawn at on its column (glyph_sub_dx).
+fn glyph_sub_of(qf : Double) -> Int {
+  match (qf - glyph_col_of(qf) * 4.0).to_int() {
     1 => 1
-    2 => 2
+    -2 => 2
     -1 => 3
-    -2 => 4
     _ => 0
   }
-  (key & 0x03FFFFFF) | (sub << 26)
+}
+
+///|
+/// A glyph's pen at `tx` device pixels: its column and its phase (glyph_qf).
+// (held by its tests: the two together, as a test reads them)
+#warnings("-unused_value")
+fn glyph_col_sub(tx : Double) -> (Double, Int) {
+  let qf = glyph_qf(tx)
+  (glyph_col_of(qf), glyph_sub_of(qf))
+}
+
+///|
+/// Glyph `key` with its horizontal quarter-pixel phase (bits 26..27: glyph_sub_of's) for a cluster laid out at
+/// `laid_x` points (`sc` pixels a point, `z` zoom), so its quad stays on the whole pixel column `on_glyph_col` puts it
+/// on while the host draws its ink within 1/8 px of `laid_x * sc`: on every host. Unchanged when zoomed (a glyph drawn
+/// bigger and shown smaller: its quad on the pixels, on_glyph_col).
+fn glyph_sub_at(key : Int, laid_x : Double, sc : Double, z : Double) -> Int {
+  if key < 0 || z != 1.0 || sc <= 0.0 {
+    return key
+  }
+  (key & 0x03FFFFFF) | (glyph_sub_of(glyph_qf(laid_x * sc)) << 26)
 }
 
 ///|
