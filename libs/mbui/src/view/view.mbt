@@ -145,6 +145,9 @@ pub(all) struct Look {
   /// how far past its foot that cut reaches (View::clips_past: a block of a page's list closing, cut as tall as it is
   /// drawn, not as it rests)
   mut clips_past : Double
+  /// whether that cut follows its ground as it is drawn, not as it is laid out (View::clips_drawn: a menu growing out
+  /// of a button cut to the drop of glass it is drawn as)
+  mut clips_drawn : Bool
   /// whether its words' lines each stand in the middle of its width (View::words_centered)
   mut words_center : Bool
   /// whether its words, not wrapped, keep their line breaks, each line as it is (View::words_breaks)
@@ -2006,7 +2009,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         gen: 0,
         live: true,
         flex: @flex.Node::new(),
-        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
+        look: { ground: 0L, ground_over: 0L, ink: 0L, words: "", words_drawn: None, words_look: words_plain, runs: [], runs_look: runs_plain, runs_pressed: -1, runs_picked: (0, 0), runs_marks: [], shadow: (0.0, 0.0, 0L), halo: (0.0, 0L), shapes: [], tint: 0L, lines: [], edge: (0.0, 0L), ring: (0.0, 0.0, 0L), focus_ring: None, image: None, image_for: (0.0, 0.0), image_cover: false, image_contain: false, image_cover_at: None, image_fade: false, stretch: 0.0, image_in: None, radius: 0.0, corners: None, glass: None, alpha: 1.0, dx: 0.0, dy: 0.0, sx: 0.0, sy: 0.0, scale: 1.0, pivot: At(0.5, 0.5), turn: 0.0, turn_drawn: false, fades: (0.0, 0.0, 0.0, 0.0), drawn_off: (0.0, 0.0), drawn_exact: false, ground_drawn: ground_as_laid, cut_soft: false, drawn_as: "", clips: false, clips_past: 0.0, clips_drawn: false, words_center: false, words_breaks: false, glyphs_said: 0, ellipsis_past: false, picture: None },
         parent,
         allow_ellipsis: false,
         words_as_said,
@@ -3735,6 +3738,7 @@ priv enum Prop {
   InUse
   FlipIn
   ClipsPast
+  ClipsDrawn
   LaysAnew
   DefaultPress
   GroundOver
@@ -3843,6 +3847,7 @@ impl Show for Prop with output(self, logger) {
       InUse => "InUse"
       FlipIn => "FlipIn"
       ClipsPast => "ClipsPast"
+      ClipsDrawn => "ClipsDrawn"
       LaysAnew => "LaysAnew"
       DefaultPress => "DefaultPress"
       GroundOver => "GroundOver"
@@ -3981,6 +3986,7 @@ fn Prop::ord(self : Prop) -> Int {
     Ring => 92
     FocusRing => 93
     BesideOf => 97
+    ClipsDrawn => 98
   }
 }
 
@@ -4526,6 +4532,23 @@ pub fn View::clips(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
 pub fn View::clips_past(self : View, past : Live[Double], loc~ : SourceLoc) -> View {
   self.bind(loc~, ClipsPast, past, Paint, fn(past) { self.tree.nodes[self.at].look.clips_past = past })
   self
+}
+
+///|
+/// Whether what it holds is cut to its ground as that is drawn (View::ground_drawn: off, bigger or smaller, rounder)
+/// where it clips (View::clips), as it changes: drawn only, nothing laid out again (paint's). What it holds stays where
+/// its layout puts it, the cut going with the shape: a menu laid out whole as it comes out of the button it was opened
+/// from, its rows shown only within the drop of glass it is drawn as on its way, as iOS's menus come out of their glass.
+#callsite(autofill(loc))
+pub fn View::clips_drawn(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
+  self.bind(loc~, ClipsDrawn, on, Paint, fn(on) { self.tree.nodes[self.at].look.clips_drawn = on })
+  self
+}
+
+///|
+/// Whether node `id` cuts what it holds to its ground as drawn (View::clips_drawn; not for one let go).
+pub fn Tree::clips_drawn_of(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.nodes[id.at].look.clips_drawn
 }
 
 ///|

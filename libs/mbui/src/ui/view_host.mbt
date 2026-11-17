@@ -1839,9 +1839,19 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     if c.clips && !c.clips_self {
       let r = c.radius * s
       let ch = dmax(0.0, c.h + tree.clips_past_of(c.id)) * s
-      match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, ch, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(x, y, c.w * s, ch, r, r, r, r)
+      if tree.clips_drawn_of(c.id) && ground_drawn.reshaped() {
+        // (to its ground as it is drawn: View::clips_drawn)
+        let g = ground_drawn
+        let (tl, tr, br, bl) = match g.corners {
+          Some(k) => k
+          None => c.corners.unwrap_or((c.radius, c.radius, c.radius, c.radius))
+        }
+        push_box_clip(x + g.dx * s, y + g.dy * s, dmax(0.0, c.w + g.dw) * s, dmax(0.0, c.h + g.dh) * s, tl * s, tr * s, br * s, bl * s)
+      } else {
+        match c.corners {
+          Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, ch, tl * s, tr * s, br * s, bl * s)
+          None => push_box_clip(x, y, c.w * s, ch, r, r, r, r)
+        }
       }
       clipping.push(c.id)
     }

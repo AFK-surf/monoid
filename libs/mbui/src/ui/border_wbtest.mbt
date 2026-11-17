@@ -90,6 +90,38 @@ test "a node of the window's tree that clips, with an edge, cuts what it holds a
 }
 
 ///|
+test "a node that clips to its ground as drawn cuts what it holds to that shape, not to its box; one that does not, to its box" {
+  // (a menu laid out whole, drawn as a drop 40 wide and 20 tall at its foot, round 10: what it holds cut to the drop)
+  let cut_of = fn(drawn : Bool) -> Array[Double] {
+    let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+    set_view_app(fn(root) {
+      root.box(fn(n) {
+        n
+        .offset(Is((100.0, 100.0)))
+        .width(Is(Some(100.0)))
+        .height(Is(Some(60.0)))
+        .radius(Is(16.0))
+        .ground(Is(0xFFFFFFFFL))
+        .clips(Is(true))
+        .clips_drawn(Is(drawn))
+        .ground_drawn(Is({ dx: 60.0, dy: 40.0, dw: -60.0, dh: -40.0, corners: Some((10.0, 10.0, 10.0, 10.0)) }))
+        |> ignore
+        n.box(fn(k) { k.width(Is(Some(100.0))).height(Is(Some(60.0))).ground(Is(0x2233AAFFL)) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    t.draw()
+    let c = g()
+    let k = (0).until(c.ninst).iter().find_first(fn(k) { c.inst[k * inst_size + 5] == 0.0 && c.inst[k * inst_size + 9] == 51.0 / 255.0 })
+    guard k is Some(k) else { return [] }
+    let at = k * inst_size
+    [c.inst[at + 16], c.inst[at + 17], c.inst[at + 18], c.inst[at + 19], c.inst[at + 24]]
+  }
+  assert_eq(cut_of(true), [160.0, 140.0, 200.0, 160.0, 10.0])
+  assert_eq(cut_of(false), [100.0, 100.0, 200.0, 160.0, 16.0])
+}
+
+///|
 test "a round node that clips, in one that clips to the same edge worked out another way, keeps its corners there" {
   // (the outside's far edge 10.1 + 60.3, the inside's 10.1 + 0.3 + 60: the same place, a float's last bit apart, as a
   // picture's flight has its cut and its box some frames)
