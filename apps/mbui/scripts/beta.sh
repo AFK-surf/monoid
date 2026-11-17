@@ -28,7 +28,7 @@
 #   apps/mbui/scripts/beta.sh publish win|linux|linux-arm64
 #                                        what `win` or `linux` made put (scripts/release-put.sh) with the deltas to it
 #                                        from the builds before (scripts/release-deltas.ts, STILLFAIL_DELTAS_SECONDS: 60 s
-#                                        at most, and no later than 25 s before the job's end, JOB_END, when it is
+#                                        at most, and no later than 35 s before the job's end, JOB_END, when it is
 #                                        set; none at all when that leaves none: never a reason not to put it),
 #                                        fetched back from where it is served and checked (size, SHA-256), then its
 #                                        feed: https://app.still.fail/releases/latest/win-mbui (linux-mbui) is the
@@ -365,16 +365,18 @@ check_put() {
 }
 
 # The seconds the deltas may take at NOW ($1, epoch seconds; now when none): STILLFAIL_DELTAS_SECONDS (60), and no
-# more than leaves 25 s of the job (JOB_END, written by its first step) for the put after them (release-put.sh --files
-# ~5 s, check_put, --feeds ~2 s, the job's end: 10-12 s in all). 0 or less: no deltas, the package put without them.
+# more than leaves 35 s of the job (JOB_END, written by its first step) for the put after them (release-put.sh --files
+# ~5 s, check_put, --feeds ~2 s: 10-12 s in all) and the job's end (upload-artifact ~2 s; on Windows its post steps
+# ~5 s more). 0 or less: no deltas, the package put without them.
 # (main 44efbac9, preview 43981921907, 2026-11-17: linux x64 began its put with 60 s of the job left, gave them all to
 # its deltas and was cancelled 11 ms after its feed was put; the Windows app's, 24 s left, spent them on its deltas
-# and its signed installer never went out)
+# and its signed installer never went out. With 25 s: the Windows app's put, 12 s, its upload and post steps, 7 s, all
+# done and the job cancelled at its 300 s as it completed, main bd0f01ab, 43990130513, 2026-11-17)
 deltas_deadline() {
   local dl=${STILLFAIL_DELTAS_SECONDS:-60} t=${1:-} room
   [ -n "$t" ] || t=$(date +%s)
   if [ -n "${JOB_END:-}" ]; then
-    room=$(( JOB_END - t - 25 ))
+    room=$(( JOB_END - t - 35 ))
     [ "$room" -ge "$dl" ] || dl=$room
   fi
   echo "$dl"

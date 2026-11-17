@@ -316,6 +316,10 @@ if part ts; then
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
   fi
+  # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
+  if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then
+    step "natives: a download asked again after a 5xx" node scripts/native-download-test.mjs
+  fi
   # A release's deltas within the job's end, the package and its feed put after them (apps/mbui/scripts/beta.sh publish).
   if touches '^apps/mbui/scripts/beta\.sh$|^scripts/beta-deadline'; then
     step "preview publish: deltas bounded by the job's end" bash scripts/beta-deadline-test.sh

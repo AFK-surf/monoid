@@ -1239,10 +1239,12 @@ jobs:
       # (main's units, preview.yml's windows job's and this job's: what a build cut short compiled, kept below)
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
     steps:
-      # (the natives' keys are git's blobs: the checkout as git has it; when the job began, for monoid's deadline below)
+      # (the natives' keys are git's blobs: the checkout as git has it; when the job began, for monoid's deadline below,
+      # and when it is cut, for the build's own limit to the second, scripts/with-timeout.sh)
       - run: |
           git config --global core.autocrlf false
           echo "JOB_BEGAN=$(date +%s)" >> "$GITHUB_ENV"
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       - uses: ./.github/actions/setup
@@ -1279,12 +1281,11 @@ jobs:
           key: mbui-win-store-m-${{ github.sha }}
           restore-keys: mbui-win-store-m-
       - run: touch "$RUNNER_TEMP/start"
-      # (a push's stopped by its own limit, before the job's, so what it compiled is kept (the units' step, last): cut
-      # at the job's 5 minutes, it kept none, the next run as far behind. 3 minutes: it begins some 67-75 s in, and the
-      # stop, the key and the save take some 30 s)
+      # (stopped by its own limit, 35 s before the job's end (JOB_END), so what it compiled is kept (the units' step,
+      # last): cut at the job's 5 minutes, it kept none, the next run as far behind. Its step's timeout-minutes, 3, began
+      # some 68 s in and cut it at 180 s with 42-50 s of the job unused, main 43989081015 and 43989980382, 2026-11-17)
       - name: Build, pack and sign the beta Windows app
         id: build
-        timeout-minutes: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'push') && 3 || 8 }}
         env:
           # The installer's signature (its .sig): none is an error.
           RELEASE_SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
@@ -1298,7 +1299,7 @@ jobs:
           fi
           unset POSTHOG_JSON
           (cd client/core-ts && pnpm install --frozen-lockfile --prefer-offline > /dev/null)
-          sh scripts/release.sh --beta desktop-win
+          bash scripts/with-timeout.sh @$((JOB_END - 35)) sh scripts/release.sh --beta desktop-win
       - name: Put its files (named by its version, nothing points at them until put writes the feeds)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

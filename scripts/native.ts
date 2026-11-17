@@ -71,6 +71,9 @@ const RELEASE = process.env.STILLFAIL_NATIVE_RELEASE ?? "native-artifacts";
 /// The store of the parts prebuilt on a development machine (`prebuild`): the releases bucket's natives/, served by
 /// still.fail cloud (install.ts releaseType) to anyone, as the release is by GitHub.
 const STORE = process.env.STILLFAIL_NATIVE_STORE ?? "https://app.still.fail/releases/natives";
+/// GitHub and its API, where the release is (others only for scripts/native-download-test.mjs's server of its own).
+const GITHUB = process.env.STILLFAIL_NATIVE_GITHUB ?? "https://github.com";
+const GITHUB_API = process.env.STILLFAIL_NATIVE_GITHUB_API ?? "https://api.github.com";
 
 /// the CI Mac's CI may resolve the release store directly, just as release-put.sh does for Cloudflare's API. Keep the
 /// original Host and TLS name, and leave GitHub and any other store or redirect to the machine's usual routing.
@@ -1092,13 +1095,24 @@ const STALLED_MS = 15_000;
 /// station job, each cut at its 10 minutes by one such part); every part is at most tens of MB.
 const SLOW_AFTER_MS = 20_000;
 const SLOWEST_BYTES_PER_S = 200_000;
+/// A download given up on as stalled or too slow (STALLED_MS, SLOWEST_BYTES_PER_S): the next place is asked, not this.
+class Stalled extends Error {}
+const stalledOut = (e: unknown) => e instanceof Stalled || (e as Error | undefined)?.name === "TimeoutError";
+/// A place that answered 5xx or 429, or whose connection or stream broke off (not a stall), is asked again, ATTEMPTS
+/// times in all, RETRY_MS × the tries so far between: a gateway's one 504 said a part was not prebuilt, the release's
+/// download and then its API each asked once (preview's ios, main eb3f3a3a, 43992166607, 2026-11-17: 504, then 403
+/// without GH_TOKEN). A 404 is an answer: never asked again.
+const ATTEMPTS = 3;
+const RETRY_MS = Number(process.env.STILLFAIL_NATIVE_RETRY_MS ?? 2_000);
+const passing = (status: number) => status >= 500 || status === 429;
+const pause = (ms: number) => new Promise<void>((done) => setTimeout(done, ms)); // timer: a retry after a failure, with a backoff
 
 async function fetchWatchedBytes(getResponse: (signal: AbortSignal) => Promise<Response>): Promise<{ response: Response; bytes: Buffer | null }> {
   const stalled = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
   const moved = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => stalled.abort(new Error(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
+    timer = setTimeout(() => stalled.abort(new Stalled(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
   };
   moved();
   const begun = Date.now();
@@ -1106,7 +1120,7 @@ async function fetchWatchedBytes(getResponse: (signal: AbortSignal) => Promise<R
   const slow = setInterval(() => { // timer: a deadline, the download's rate looked at
     const ms = Date.now() - begun;
     if (ms >= SLOW_AFTER_MS && got / (ms / 1000) < SLOWEST_BYTES_PER_S) {
-      stalled.abort(new Error(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
+      stalled.abort(new Stalled(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
     }
   }, 1_000);
   try {
@@ -1130,9 +1144,18 @@ async function fetchWatchedBytes(getResponse: (signal: AbortSignal) => Promise<R
 // The browser download endpoint can fail while GitHub's release API and the asset itself are still available. Only
 // try this after that endpoint fails, so an unpublished part does not spend an API request on every build.
 async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: string } | null> {
+  for (let n = 1; ; n++) {
+    const got = await releaseThroughApiOnce(name);
+    if (got !== "again") return got;
+    if (n >= ATTEMPTS) return null;
+    await pause(RETRY_MS * n);
+  }
+}
+/// One try of it: "again" where what failed may pass (5xx, 429, a connection or a stream broken off).
+async function releaseThroughApiOnce(name: string): Promise<{ bytes: Buffer; url: string } | null | "again"> {
   const [owner, repo, extra] = REPO.split("/");
   if (!owner || !repo || extra !== undefined) return null;
-  const root = `https://api.github.com/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases`;
+  const root = `${GITHUB_API}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/releases`;
   const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   const api = async (url: string, accept: string, signal: AbortSignal): Promise<Response> => {
     const get = (authenticated: boolean) => fetch(url, {
@@ -1145,7 +1168,11 @@ async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: st
   };
   try {
     const found = await api(`${root}/tags/${encodeURIComponent(RELEASE)}`, "application/vnd.github+json", AbortSignal.timeout(30_000));
-    if (!found.ok) { log(`release API answered ${found.status}`); return null; }
+    if (!found.ok) {
+      log(`release API answered ${found.status}`);
+      await found.body?.cancel().catch(() => {});
+      return passing(found.status) ? "again" : null;
+    }
     const release = await found.json() as { assets?: { name?: unknown; id?: unknown; digest?: unknown }[] };
     const asset = Array.isArray(release.assets) ? release.assets.find((a) => a.name === name) : undefined;
     if (!asset || typeof asset.id !== "number" || !Number.isSafeInteger(asset.id) || asset.id <= 0) return null;
@@ -1158,17 +1185,18 @@ async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: st
       await initial.body?.cancel().catch(() => {});
       if (location === null) return null;
       const destination = new URL(location, url);
-      if (destination.protocol !== "https:") return null;
+      // (https: only, as the API's own is; http: only for the test's server)
+      if (destination.protocol !== new URL(root).protocol) return null;
       ({ response, bytes } = await fetchWatchedBytes((signal) =>
         fetch(destination, { headers: { accept: "application/octet-stream" }, redirect: "follow", signal })));
     } else if (!initial.ok) {
       log(`release asset API answered ${initial.status}`);
       await initial.body?.cancel().catch(() => {});
-      return null;
+      return passing(initial.status) ? "again" : null;
     } else {
       ({ response, bytes } = await fetchWatchedBytes(async () => initial));
     }
-    if (!response.ok || !bytes) { log(`release asset API answered ${response.status}`); return null; }
+    if (!response.ok || !bytes) { log(`release asset API answered ${response.status}`); return passing(response.status) ? "again" : null; }
     // Some GitHub API versions answer metadata rather than bytes when they cannot serve the asset.
     if (bytes[0] !== 0x1f || bytes[1] !== 0x8b) { log("release asset API did not give a gzip archive"); return null; }
     if (typeof asset.digest === "string" && asset.digest.startsWith("sha256:") &&
@@ -1179,7 +1207,7 @@ async function releaseThroughApi(name: string): Promise<{ bytes: Buffer; url: st
     return { bytes, url };
   } catch (e) {
     log(`release API could not give ${name} (${(e as Error).message})`);
-    return null;
+    return stalledOut(e) ? null : "again";
   }
 }
 
@@ -1194,15 +1222,18 @@ async function download(part: string, target: Target, k: string): Promise<string
   const started = Date.now();
   let url = "";
   let bytes: Buffer | null = null;
-  let releaseFailed = false;
-  const releaseUrl = `https://github.com/${REPO}/releases/download/${RELEASE}/${name}`;
+  // (set from inside each try, below)
+  const release = { failed: false };
+  const releaseUrl = `${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`;
   // (each place in turn: one that answers and then breaks off is said so, and the next one asked: a body cut short
   // failed the whole job with only the socket's error, 39431384793)
   // (the store by the direct route where the CI Mac has one, then by the usual route, then the release)
   const places: [string, boolean][] = [[`${STORE}/${name}`, true]];
   if (process.env.STILLFAIL_DIRECT_DNS) places.push([`${STORE}/${name}`, false]);
   places.push([releaseUrl, false]);
-  for (const [at, direct] of places) {
+  // One try of a place: its bytes, "next" (its answer, or a stall: the next place asked) or "again" (5xx, 429,
+  // a connection or a stream broken off: this place asked again, ATTEMPTS in all)
+  const once = async (at: string, direct: boolean): Promise<Buffer | "next" | "again"> => {
     let answered = false;
     // (given up on once nothing came for STALLED_MS, the connection's or a byte's, or once it still comes slower than
     // SLOWEST_BYTES_PER_S after SLOW_AFTER_MS, and the next place asked)
@@ -1210,7 +1241,7 @@ async function download(part: string, target: Target, k: string): Promise<string
     let timer: ReturnType<typeof setTimeout> | undefined;
     const moved = () => {
       clearTimeout(timer);
-      timer = setTimeout(() => stalled.abort(new Error(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
+      timer = setTimeout(() => stalled.abort(new Stalled(`nothing came for ${STALLED_MS / 1000} s`)), STALLED_MS);
     };
     moved();
     const begun = Date.now();
@@ -1218,7 +1249,7 @@ async function download(part: string, target: Target, k: string): Promise<string
     const slow = setInterval(() => { // timer: a deadline, the download's rate looked at
       const ms = Date.now() - begun;
       if (ms >= SLOW_AFTER_MS && got / (ms / 1000) < SLOWEST_BYTES_PER_S) {
-        stalled.abort(new Error(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
+        stalled.abort(new Stalled(`${(got / 1e6).toFixed(1)} MB in ${(ms / 1000).toFixed(0)} s`));
       }
     }, 1_000);
     try {
@@ -1226,10 +1257,10 @@ async function download(part: string, target: Target, k: string): Promise<string
       const r = direct ? await fetchNative(at, { redirect: "follow", signal }) : await fetch(at, { redirect: "follow", signal });
       moved();
       if (!r.ok) {
-        if (at === releaseUrl && r.status !== 404) releaseFailed = true;
+        if (at === releaseUrl && r.status !== 404) release.failed = true;
         if (r.status !== 404) log(`${part} ${target}: ${at} answered ${r.status}`);
         await r.body?.cancel().catch(() => {});
-        continue;
+        return passing(r.status) ? "again" : "next";
       }
       answered = true;
       const chunks: Uint8Array[] = [];
@@ -1237,16 +1268,23 @@ async function download(part: string, target: Target, k: string): Promise<string
         const reader = r.body.getReader();
         for (let next = await reader.read(); !next.done; next = await reader.read()) { chunks.push(next.value); got += next.value.length; moved(); }
       }
-      bytes = Buffer.concat(chunks);
-      url = at;
-      break;
+      return Buffer.concat(chunks);
     } catch (e) {
-      if (at === releaseUrl) releaseFailed = true;
+      if (at === releaseUrl) release.failed = true;
       const cause = (e as Error & { cause?: Error }).cause?.message;
       log(`${part} ${target}: ${answered ? `${at} broke off while sending it` : `could not reach ${new URL(at).host}`} (${(e as Error).message}${cause ? `: ${cause}` : ""})`);
+      return stalledOut(e) ? "next" : "again";
     } finally { clearTimeout(timer); clearInterval(slow); }
+  };
+  places: for (const [at, direct] of places) {
+    for (let n = 1; ; n++) {
+      const tried = await once(at, direct);
+      if (Buffer.isBuffer(tried)) { bytes = tried; url = at; break places; }
+      if (tried === "next" || n >= ATTEMPTS) break;
+      await pause(RETRY_MS * n);
+    }
   }
-  if (!bytes && releaseFailed) {
+  if (!bytes && release.failed) {
     const fromApi = await releaseThroughApi(name);
     if (fromApi !== null) { bytes = fromApi.bytes; url = fromApi.url; }
   }
@@ -1451,7 +1489,7 @@ async function published(): Promise<Set<string> | null> {
   const token = process.env.GH_TOKEN ?? process.env.GITHUB_TOKEN;
   if (token) {
     try {
-      const r = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${RELEASE}`, {
+      const r = await fetch(`${GITHUB_API}/repos/${REPO}/releases/tags/${RELEASE}`, {
         headers: { authorization: `Bearer ${token}`, accept: "application/vnd.github+json" },
         signal: AbortSignal.timeout(30_000),
       });
@@ -1464,7 +1502,7 @@ async function published(): Promise<Set<string> | null> {
   return out ? new Set(out.split("\n").filter(Boolean)) : null;
 }
 async function exists(name: string): Promise<boolean> {
-  const r = await fetch(`https://github.com/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
+  const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { method: "HEAD", redirect: "manual" });
   return r.status === 302 || r.status === 200;
 }
 /// Whether the store of prebuilt parts has it.
@@ -1706,7 +1744,7 @@ async function main(argv: string[]) {
           const name = asset(p, t, key(p, t));
           if (await inStore(name)) { console.log(`${name}: in the store`); continue; }
           if (!(await exists(name))) { console.log(`${name}: in neither (prebuild it: the prebuild workflow, or node scripts/native.ts prebuild ${p}:${t})`); continue; }
-          const r = await fetch(`https://github.com/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
+          const r = await fetch(`${GITHUB}/${REPO}/releases/download/${RELEASE}/${name}`, { redirect: "follow", signal: AbortSignal.timeout(300_000) });
           // (one the release does not give now is left for main's next run, as prune leaves one GitHub dropped)
           if (!r.ok) { console.log(`${name}: the release answered ${r.status}; the next run copies it`); continue; }
           writeFileSync(join(work, "natives", name), Buffer.from(await r.arrayBuffer()));

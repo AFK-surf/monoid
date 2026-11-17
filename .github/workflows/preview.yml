@@ -137,6 +137,9 @@ jobs:
     # libs/mbui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes did not see it through)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
+      # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token, not
+      # the runners' shared address's anonymous quota: 403 there, main eb3f3a3a's ios, 43992166607)
+      GH_TOKEN: ${{ github.token }}
       MBUI_FRESH: 1
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
@@ -307,6 +310,9 @@ jobs:
     # libs/mbui, 2026-11-13, none of the store's were theirs, and a push's 5 minutes saw 3 of it go)
     timeout-minutes: ${{ github.event_name == 'push' && 5 || 10 }}
     env:
+      # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token, not
+      # the runners' shared address's anonymous quota: 403 there, main eb3f3a3a's ios, 43992166607)
+      GH_TOKEN: ${{ github.token }}
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
       DEVELOPER_DIR: /Applications/Xcode_27.1.app/Contents/Developer
@@ -373,6 +379,15 @@ jobs:
         with:
           path: ~/Library/Caches/stillfail-native/shell-apple
           key: ${{ steps.native-keys.outputs.key }}
+      # (libghostty-vt ios-arm64 the same, by its own key: core.sh apple fetched it on every fresh runner, and the
+      # release's one 504 failed main eb3f3a3a's, 43992166607, 2026-11-17)
+      - name: The iOS libghostty-vt's key
+        id: ghostty-key
+        run: echo "key=natives-ghostty-vt-ios-arm64-$(node scripts/native.ts key ghostty-vt ios-arm64)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/Library/Caches/stillfail-native/ghostty-vt
+          key: ${{ steps.ghostty-key.outputs.key }}
       - uses: ./.github/actions/mbui-moonbit
       # moon's own build of the app (moonc's C, what it checked) as main's newest run left it, as check-mbui keeps its
       # own: without, moonc made all of it again each run, ~2 of the .ipa step's 2-3 minutes, the release's longest job
@@ -487,6 +502,9 @@ jobs:
       run:
         shell: bash
     env:
+      # (scripts/native.ts: GitHub's release API, asked when the release's download fails, with the job's token, not
+      # the runners' shared address's anonymous quota: 403 there, main eb3f3a3a's ios, 43992166607)
+      GH_TOKEN: ${{ github.token }}
       MSYS: winsymlinks:nativestrict
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
       # the units kept for the next push (MBC_STORE, beside the app's build cache, which is main's alone): main's (m-)
@@ -498,6 +516,12 @@ jobs:
       # ci"; on a push its flow was the last ~40 s of the job, the handoff 1-2 minutes more)
       E2E: ${{ github.event_name != 'push' && '1' || '' }}
     steps:
+      # (when the job is cut, as the Linux and iOS jobs say it: the installer's put gives its deltas only what leaves it
+      # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on
+      # them. The job's first step: after Defender's, pwsh's start put it 8 s past the job's real end, main bd0f01ab's,
+      # 43990130513, and its put, all done, was cancelled at that end)
+      - name: The job's end
+        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
       # Defender's real-time scan kept off what the job writes and runs: each new file and each program's first start was
       # scanned, MoonBit's 114 MB (206 MB of programs) put in in 12-25 s against 2 s for as much of the build's, 2026-10-30
       - shell: pwsh
@@ -505,10 +529,6 @@ jobs:
           $t = Get-Date
           Add-MpPreference -ExclusionPath $env:GITHUB_WORKSPACE, $env:RUNNER_TEMP, $env:RUNNER_TOOL_CACHE, $env:LOCALAPPDATA, "$env:USERPROFILE\.cargo", "$env:USERPROFILE\.rustup"
           "Defender kept off them in $([int]((Get-Date) - $t).TotalMilliseconds) ms"
-      # (when the job is cut, as the Linux and iOS jobs say it: the installer's put gives its deltas only what leaves it
-      # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on them)
-      - name: The job's end
-        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
       # the natives' keys are git's blobs: the checkout as git has it
       - run: git config --global core.autocrlf false
       - uses: actions/checkout@v5
@@ -735,11 +755,17 @@ jobs:
           trap '[ -s "$E/app" ] || echo failed > "$E/app"' EXIT
           # the installer's own program made while the app compiles (win.sh setup takes it), not beside the e2e flow
           bash apps/mbui/scripts/win.sh setup-bare
-          # (a push's 115 s, inside its 5 minutes with room for what the build compiled to be kept (the units' step
-          # below): waited 420 s, a push's build that had much to compile was cut at the job's 5 minutes and kept none
-          # of it, the next push as far behind; 150 s, it began some 130 s in and one cut at its end left too little
-          # for the steps that keep it)
-          wait=$([ "$GITHUB_EVENT_NAME" = push ] && echo 115 || echo 420)
+          # (a push's till 45 s before the job's end (JOB_END), the room for what the build compiled to be kept: the
+          # stop, the key and the save after a cut ~10 s, its upload 2 s, the post steps 6 s. Waited 420 s, a push's
+          # build that had much to compile was cut at the job's 5 minutes and kept none of it, the next push as far
+          # behind; a fixed 115 s, it was cut with 39-64 s of the job unused, main 6c66e773, 21ec95ea and eb3f3a3a in
+          # a row, 2026-11-17: 43989080704, 43989906170, 43992166607)
+          if [ "$GITHUB_EVENT_NAME" = push ]; then
+            wait=$(( JOB_END - $(date +%s) - 45 ))
+            [ "$wait" -ge 30 ] || wait=30
+          else
+            wait=420
+          fi
           t0=$SECONDS
           while [ ! -s "$B/status" ]; do
             [ $((SECONDS - t0)) -lt $wait ] || { echo "::error::the build not done after $wait s"; tail -60 "$B/log"; exit 1; }
