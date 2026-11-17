@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 2.57 | 3.64 | 15.96 | 37.31 | 63.51 | 32.51 | 68.98 | 96.26 | 123.8 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [b1ca91efa](https://github.com/AFK-surf/monoid/commit/b1ca91efaeee3bf1d5a27f78125ddf4cfda615d4) mbui: two-finger swipe back and scrollable executi | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
 | [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
 | [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
 | [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
-| [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [b1ca91efa](https://github.com/AFK-surf/monoid/commit/b1ca91efaeee3bf1d5a27f78125ddf4cfda615d4) mbui: two-finger swipe back and scrollable executi | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.33 |
 | [183c0c53f](https://github.com/AFK-surf/monoid/commit/183c0c53fc9ce1437e9673f01fe39306dccb27f1) Android: upload the glyphs a picture draws before  | 0.43 | 0.56 | 2.17 | 3.26 | 5.19 | 1.59 | 4.26 | 53.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.53 |
 | [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.48 |
 | [e2ccb5500](https://github.com/AFK-surf/monoid/commit/e2ccb5500177690f985336d005b97c078647b54d) ci: cache-prune's concurrency is its job's, so a s | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.49 |
-| [7e883537b](https://github.com/AFK-surf/monoid/commit/7e883537b8998055fceb0ad7557b3ea27e2224af) mbui web: a glyph drawn in one canvas grown, not o | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.63 |
