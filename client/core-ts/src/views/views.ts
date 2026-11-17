@@ -2081,7 +2081,9 @@ export class Views implements Owner {
         // the viewer's own chats run (`mine` of their columns) and their own views, a shared station's others' (its
         // simulators the viewer's where a view of theirs is on it). (Machines that only run tasks, a member's own, are
         // no station of the list: the workspace's `rigs`.)
-        const multi = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members")).length > 1;
+        const members = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members"));
+        const multi = members.length > 1;
+        const email = this.#core.emailOf(view.scope as string)?.toLowerCase();
         // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no
         // more), the chat it is among the agents of where it has none of its own (`chat_agent`).
         const named = (address: string, j: J): J => {
@@ -2107,7 +2109,13 @@ export class Views implements Owner {
           arr(get(this.ok({ topic: "terminals", station: s.address }), "terminals")).map((item) => {
             const chat = str(get(item, "chat"));
             const found = chat === null ? undefined : this.#core.data.chatTitled(s.address, chat);
-            return found === undefined ? item : { ...item, chatObj: { id: found.id, title: found.title, archived: found.archived } };
+            // Old runners only kept a display name. Attribute it only when the roster identifies one opener.
+            const recorded = str(get(item, "byEmail"));
+            const by = str(get(item, "by"));
+            const matches = !recorded && by ? members.filter((m) => (m.name || m.email) === by) : [];
+            const opener = recorded || (matches.length === 1 ? str(matches[0].email) : null);
+            const mine = members.length === 1 || (!!email && opener?.toLowerCase() === email);
+            return { ...item, mine, ...(found ? { chatObj: { id: found.id, title: found.title, archived: found.archived } } : {}) };
           }),
         ] as jobs.HeldTerminals);
         const prefs = this.ok({ topic: "prefs" }) ?? null;

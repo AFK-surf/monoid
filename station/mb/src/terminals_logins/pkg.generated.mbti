@@ -361,6 +361,7 @@ pub(all) struct Opening {
   cwd : String?
   chat : String?
   by : String
+  by_email : String?
   workspace : String
 }
 
@@ -505,6 +506,7 @@ pub fn TerminalLink::type_(Self, Bytes) -> Unit
 
 pub(all) struct TerminalMeta {
   by : String
+  by_email : String?
   at : Double
   cwd : String
   chat : String?

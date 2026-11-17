@@ -202,14 +202,14 @@ test "a new terminal: its screen first, then only what came after it; one typing
   assert_eq(text.contains("hello"), false)
   assert_eq(text.contains("world"), true)
   let listed = stringify(terminals.list("w1"))
-  assert_eq(listed, "[{\"id\":\"term-1\",\"by\":\"ann\",\"at\":0,\"cwd\":\"/work/c1\",\"chat\":\"c1\",\"typing\":\"ann\",\"looking\":[]}]")
+  assert_eq(listed, "[{\"id\":\"term-1\",\"by\":\"ann\",\"at\":0,\"cwd\":\"/work/c1\",\"byEmail\":\"ann@x\",\"chat\":\"c1\",\"typing\":\"ann\",\"looking\":[]}]")
   assert_eq(r.sent.contains("{\"op\":\"resize\",\"cols\":80,\"rows\":24}\n"), true)
   // typed into, then the stream ends: the view goes, the terminal stays
   inbox.try_offer(Some(frame(KIND_INPUT, b"ls\r"))) |> ignore
   inbox.try_offer(None) |> ignore
   rt.advance(0)
   assert_eq(r.sent.contains("{\"op\":\"write\",\"data\":\"\{base64_of(b"ls\r")}\"}\n"), true)
-  assert_eq(stringify(terminals.list("w1")), "[{\"id\":\"term-1\",\"by\":\"ann\",\"at\":0,\"cwd\":\"/work/c1\",\"chat\":\"c1\",\"typing\":null,\"looking\":[]}]")
+  assert_eq(stringify(terminals.list("w1")), "[{\"id\":\"term-1\",\"by\":\"ann\",\"at\":0,\"cwd\":\"/work/c1\",\"byEmail\":\"ann@x\",\"chat\":\"c1\",\"typing\":null,\"looking\":[]}]")
   assert_eq(terminals.end("term-1", "bob", "w2"), false)
   assert_eq(terminals.end("term-1", "bob", "w1"), true)
   assert_eq(r.sent.contains("{\"op\":\"signal\",\"signal\":\"KILL\",\"group\":true}\n"), true)
@@ -295,7 +295,7 @@ test "the terminals' part: those of before taken up as their runners and meta sa
   assert_eq(started, ["term-0123456789abcdef /bin/zsh [-l] /home/a 80x24"])
   assert_eq(
     files.get("/data/run/terminals/term-0123456789abcdef.json"),
-    Some("{\"by\":\"bo@x\",\"at\":7,\"cwd\":\"/home/a\",\"workspace\":\"w1\"}"),
+    Some("{\"by\":\"bo@x\",\"at\":7,\"cwd\":\"/home/a\",\"byEmail\":\"bo@x\",\"workspace\":\"w1\"}"),
   )
   assert_eq(told.length() > 0, true)
   assert_eq(shell_of("windows", Some("/bin/zsh")), ("powershell.exe", ["-NoLogo"]))

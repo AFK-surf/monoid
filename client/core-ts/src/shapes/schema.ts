@@ -2544,6 +2544,7 @@ export const SHAPES: Record<string, Shape> = {
   TerminalItem: struct([
     ["id", "String", { doc: "The station's id of it (`term-…`)." }],
     ["by", "String", { doc: "Who opened it." }],
+    ["byEmail", opt("String"), { doc: "The opener’s email when recorded." }],
     ["at", "f64", { doc: "When it was opened (ms)." }],
     ["cwd", "String", { doc: "The folder it opened in." }],
     ["chat", opt("String"), { doc: "The chat it was opened from, if one." }],
