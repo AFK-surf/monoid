@@ -115,8 +115,14 @@ for rt,ds in d.items():
     if x['name']=='$DEV_NAME' and x.get('isAvailable'): print(x['udid']); sys.exit()
 ")
   if [ -z "$id" ]; then
-    local rt=$(xcrun simctl list runtimes -j | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']];print(r[-1]['identifier'])")
-    local dt=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys;t=[x for x in json.load(sys.stdin)['devicetypes'] if x['name'].startswith('iPhone 1') and 'Pro' in x['name'] and 'Max' not in x['name']];print(t[-1]['identifier'])")
+    # (an iPhone Pro of those the runtime itself supports, the oldest: a runtime drops the oldest types as it comes,
+    # iOS 27.1 the iPhone 11 Pro the whole list's last one was, its create refused as an incompatible device)
+    local rt_dt=$(xcrun simctl list runtimes -j | python3 -c "
+import json,re,sys
+r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']][-1]
+t=sorted((x for x in r['supportedDeviceTypes'] if re.fullmatch(r'iPhone \\d+ Pro',x['name'])),key=lambda x:int(x['name'].split()[1]))
+print(r['identifier'],t[0]['identifier'])")
+    local rt=${rt_dt% *} dt=${rt_dt#* }
     id=$(xcrun simctl create "$DEV_NAME" "$dt" "$rt")
   fi
   xcrun simctl boot "$id" 2>/dev/null || true
