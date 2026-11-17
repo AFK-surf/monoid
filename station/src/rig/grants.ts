@@ -455,9 +455,12 @@ export class RigGrants {
     if (next !== Infinity) this.#armed = this.#fibers.after(Math.max(1, next - now) * 1000, () => this.#look());
   }
 
+  /// (once what it kept is written too: a write on its way after it closed raced its directory's removal, ENOTEMPTY,
+  /// rig-grants.test.ts on main 44000780520)
   async close(): Promise<void> {
     this.#armed?.();
     if (this.#d.fibers === undefined) await this.#fibers.close();
+    await this.#file.written();
   }
 }
 

@@ -54,17 +54,23 @@ async function world() {
   const ended: Ended[] = [];
   const cuts: string[] = [];
   let changes = 0;
-  const make = () => new RigGrants({
-    path: join(dir, "grants.json"),
-    self: () => ({ id: RIG, workspace: WS, owner: "pat", person: owner.genesis() }),
-    busy: (station, session) => busy.has(`${station}/${session}`),
-    stop: (station, session) => void stopped.push(`${station}/${session}`),
-    running: () => [...busy].map((k) => ({ station: k.split("/")[0]!, session: k.split("/")[1]! })),
-    ended: (e) => void ended.push(e),
-    changed: () => void changes++,
-    cut: (device, station, session) => void cuts.push(`${device}:${station ?? "*"}/${session ?? "*"}`),
-    fibers,
-  });
+  // (each closed before the directory is removed: what one kept may still be on its way to it)
+  const made: RigGrants[] = [];
+  const make = () => {
+    const rig = new RigGrants({
+      path: join(dir, "grants.json"),
+      self: () => ({ id: RIG, workspace: WS, owner: "pat", person: owner.genesis() }),
+      busy: (station, session) => busy.has(`${station}/${session}`),
+      stop: (station, session) => void stopped.push(`${station}/${session}`),
+      running: () => [...busy].map((k) => ({ station: k.split("/")[0]!, session: k.split("/")[1]! })),
+      ended: (e) => void ended.push(e),
+      changed: () => void changes++,
+      cut: (device, station, session) => void cuts.push(`${device}:${station ?? "*"}/${session ?? "*"}`),
+      fibers,
+    });
+    made.push(rig);
+    return rig;
+  };
   const now = () => Math.floor(fibers.now() / 1000);
   const grant = (request: string, session: string, timeout: Timeout, more: Partial<GrantBody> = {}, by?: Key) => {
     const at = now();
@@ -75,6 +81,7 @@ async function world() {
     pass: (ms: number) => time.adjust(ms),
     close: async () => {
       await fibers.close();
+      for (const r of made) await r.close();
       rmSync(dir, { recursive: true, force: true });
     },
   };
