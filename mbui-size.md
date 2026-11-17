@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.29 | 129.87 |
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.5 | 68.98 | 96.21 | 126.98 |
 | [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 | [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 122.81 |
-| [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 125.31 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
 | [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
 | [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.77 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
-| [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
