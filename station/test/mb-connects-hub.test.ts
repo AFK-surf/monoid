@@ -107,6 +107,7 @@ class Program {
   #closing = false;
   #say(v: Json) {
     if (this.#closing) return;
+    if ("re" in v) this.#answered++;
     this.#child.stdin!.write(`${JSON.stringify(v)}\n`);
   }
   #heard(said: Json) {
@@ -144,16 +145,23 @@ class Program {
   }
   /// What the program asked of the files and the test has not answered yet (a file removed, written, read).
   #answering = new Set<Promise<void>>();
+  /// The answers written to the program so far, of any call.
+  #answered = 0;
   /// Until the program, and what the test answers it, are at rest: what it asked answered too (a fiber of the
   /// program's waiting on the test's answer is no work of its own to settle, and the file it asked to remove was still
   /// there as the test looked, 2026-11-17).
+  /// An answer written after the ask to settle reaches the program after it: it said it was at rest before that
+  /// answer woke what waited on it, and what that does next it says after, in its own time; so it is asked again
+  /// (a peer's answer heard in the same read as a case's answer, written after the settle the case's caller asked,
+  /// check-station on #7023 and #6966, 2026-11-17).
   async settle() {
     for (;;) {
       while (this.#answering.size > 0) await Promise.all([...this.#answering]);
       const before = this.traffic;
+      const answered = this.#answered;
       await this.ask({ op: "settle" });
       for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
-      if (this.traffic === before + 1 && this.#answering.size === 0) return;
+      if (this.traffic === before + 1 && this.#answering.size === 0 && this.#answered === answered) return;
     }
   }
   close(): Promise<void> {
@@ -1630,11 +1638,11 @@ test("the workspace's connects: a connect moved to another station and back, its
     await handle("connect.take", "Z", { connect: { id: "cm2", origin: "H" }, entry, threads: [] }, "ws");
     await call("receive", (c) => c.receive("cm", event("kept 1")), ["cm", event("kept 1")]);
     await call("receive", (c) => c.receive("cm", event("kept 2")), ["cm", event("kept 2")]);
-    await w.sameFiles("kept for its chats on their way");
+    await w.sameFiles("kept for its chats on their way", () => ts.remote.written());
     await call("arrived", (c) => c.arrived(["k1"]), [["k1"]]);
     await call("arrived", (c) => c.arrived(["k2", "x"]), [["k2", "x"]]);
     await w.same("all there: what was kept taken, in order");
-    await w.sameFiles("nothing kept");
+    await w.sameFiles("nothing kept", () => ts.remote.written());
     // what the other stations ask of it
     const known = (id: string, origin = "H") => ({ id, origin });
     await handle("connect.holds", "S", { connect: known("cm") }, "ws");
