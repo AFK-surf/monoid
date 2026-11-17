@@ -45,6 +45,7 @@ import {
   "station/mesh_door",
   "station/footprint",
   "station/session_chats",
+  "station/slack",
   "station/memory",
   "station/packed",
   "station/front",

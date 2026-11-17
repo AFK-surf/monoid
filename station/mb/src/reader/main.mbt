@@ -994,6 +994,8 @@ fn main {
         _ => None
       }))
     }
+    (Some("harness-slack"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @slack.harness(host))
     (Some("live-locator"), Some(db), Some(data)) =>
       @host.run(shell_dir=beside(db, "shell"), host => live_locator(host, db, data, flag("--sep").unwrap_or("/")))
     (Some("harness-mesh-door"), _, _) =>
