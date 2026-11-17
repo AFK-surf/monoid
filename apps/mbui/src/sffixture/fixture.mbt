@@ -2118,7 +2118,7 @@ pub fn fixture(mode : String) -> Source {
   let read_bytes = fn(name : String, params : Json, done : (Result[(Json, Bytes), Json]) -> Unit) {
     match fixture_kept(name, params, None) {
       Some(r) => {
-        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::new(0))) }))
+        done(r.map(fn(a) { (a.0, a.1.unwrap_or(Bytes::make(0, b'\x00'))) }))
         return
       }
       None => ()
