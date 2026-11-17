@@ -113,6 +113,56 @@ test("a member adds a rig of their own: listed apart from the stations, told to 
   }
 });
 
+for (const leaving of ["removed", "leave", "delete account"] as const) test(`a departed rig owner's unused tokens stay revoked after ${leaving}, even if they join again`, async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    let bob = h.as(await h.login("bob"));
+    const bobSub = ((await (await bob("GET", "/v1/me")).json()) as any).user.sub as string;
+    const home = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    const other = ((await (await alice("POST", "/v1/workspaces", { name: "Other" })).json()) as any).id as string;
+    const add = (workspace: string) => alice("POST", `/v1/workspaces/${workspace}/members`, { emails: ["bob@example.test"] });
+    for (const workspace of [home, other]) assert.equal((await add(workspace)).status, 200);
+    const pending = async (who: As, workspace: string) => {
+      const made = await who("POST", `/v1/workspaces/${workspace}/rigs/enrollments`, { name: "build-box" });
+      assert.equal(made.status, 200);
+      return ((await made.json()) as any).token as string;
+    };
+    const before = await pending(bob, home), afterRejoin = await pending(bob, home);
+    const elsewhere = await pending(bob, other), alices = await pending(alice, home);
+    const left = leaving === "delete account" ? await bob("DELETE", "/v1/me") : await (leaving === "leave" ? bob : alice)("DELETE", `/v1/workspaces/${home}/members/${bobSub}`);
+    assert.equal(left.status, 200);
+    assert.deepEqual(await enroll(h, await key(), before, { rig: true }), { status: 404, body: { error: "enrollment_not_found" } });
+    assert.equal((await view(alice, home)).rigs, undefined);
+    const otherResult = await enroll(h, await key(), elsewhere, { rig: true });
+    assert.equal(otherResult.status, leaving === "delete account" ? 404 : 200, "leaving one workspace does not revoke another's token; deleting the account leaves both");
+    assert.equal((await enroll(h, await key(), alices, { rig: true })).status, 200, "another member's pending rig stays theirs");
+
+    if (leaving === "delete account") bob = h.as(await h.login("bob"));
+    assert.equal((await add(home)).status, 200);
+    assert.deepEqual(await enroll(h, await key(), afterRejoin, { rig: true }), { status: 404, body: { error: "enrollment_not_found" } }, "joining again never brings back a token from before leaving");
+    assert.equal((await enroll(h, await key(), await pending(bob, home), { rig: true })).status, 200, "a new member's new token works");
+  } finally {
+    await h.close();
+  }
+});
+
+test("an unused rig token left by an older Directory cannot enroll for someone no longer a member", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice")), bob = h.as(await h.login("bob"));
+    const bobSub = ((await (await bob("GET", "/v1/me")).json()) as any).user.sub as string;
+    const home = ((await (await alice("POST", "/v1/workspaces", { name: "Home" })).json()) as any).id as string;
+    assert.equal((await alice("POST", `/v1/workspaces/${home}/members`, { emails: ["bob@example.test"] })).status, 200);
+    const token = ((await (await bob("POST", `/v1/workspaces/${home}/rigs/enrollments`, { name: "old-box" })).json()) as any).token as string;
+    await (await h.object("DIRECTORY", "primary")).leaveWithRigTokenFromBefore(home, bobSub);
+    assert.deepEqual(await enroll(h, await key(), token, { rig: true }), { status: 404, body: { error: "enrollment_not_found" } });
+    assert.equal((await view(alice, home)).rigs, undefined);
+  } finally {
+    await h.close();
+  }
+});
+
 test("a station's mode is its owner's, who added it: made one that only runs tasks, still theirs, and whole again", async () => {
   const h = await harness();
   try {
