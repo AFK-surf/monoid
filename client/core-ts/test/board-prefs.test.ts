@@ -65,6 +65,10 @@ test("a_workspaces_drafts_are_kept_whole_the_newest_200_none_left_as_an_empty_li
   await ask(host, core, ui, 2, "prefs.set", { boardDrafts: { w1: [draft(2), draft(1)], w2: [draft(9)] } });
   apply(host, values);
   assert.deepEqual(v(values, 1).boardDrafts.w1, [draft(2), draft(1)]);
+  const pictured = draft(3, { title: "", files: [{ id: "f1", name: "image.png" }] });
+  await ask(host, core, ui, 20, "prefs.set", { boardDrafts: { w1: [pictured] } });
+  apply(host, values);
+  assert.deepEqual(v(values, 1).boardDrafts.w1, [pictured]);
   // (newest first: the 200 newest kept)
   const many = Array.from({ length: 230 }, (_, i) => draft(230 - i));
   await ask(host, core, ui, 3, "prefs.set", { boardDrafts: { w1: many } });
@@ -79,6 +83,8 @@ test("a_workspaces_drafts_are_kept_whole_the_newest_200_none_left_as_an_empty_li
     [draft(1, { id: "" })],
     [draft(1, { id: "x".repeat(121) })],
     [draft(1, { title: "   " })],
+    [draft(1, { title: "", files: [{ id: "", name: "image.png" }] })],
+    [draft(1, { title: "", files: [{ id: "f1" }] })],
     [draft(1, { title: "x".repeat(4001) })],
     [draft(1, { station: "" })],
     [draft(1, { stationName: 7 })],

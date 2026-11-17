@@ -69,11 +69,11 @@ function world() {
         if (!s.up) return Effect.fail(new CoreError("network", "not reached"));
         return Effect.succeed(method === "GET" && path === "/rigs" ? { workspace: WS, rigs: s.rigs } : { ok: true, delivered: true });
       }),
-    cloud: (_sub, method, path, body) => Effect.sync(() => (cloudAsked.push({ method, path, body }), { token: "tok", install: "curl -fsSL https://x/install.sh | sh -s -- tok", installWindows: "& (irm https://x/install.ps1) tok", command: "stillfail station enroll https://x tok", rig: true })),
+    cloud: (_sub, method, path, body) => Effect.sync(() => (cloudAsked.push({ method, path, body }), { token: "tok", install: "curl -fsSL https://x/install.sh | sh -s -- tok", installWindows: "& (irm https://x/install.ps1) tok", installDocker: "docker run x tok", command: "stillfail station enroll https://x tok", rig: true })),
     first: (asks) => Effect.all(asks.map((a) => Effect.result(a)), { concurrency: "unbounded" }),
     lock: {
       locked: () => lock.locked,
-      enrolled: (_sub, _ws, made: any) => Effect.succeed(lock.locked ? { ...made, install: `${made.install} LOCKHASH`, installWindows: `${made.installWindows} LOCKHASH`, command: `${made.command} --lock LOCKHASH` } : made),
+      enrolled: (_sub, _ws, made: any) => Effect.succeed(lock.locked ? { ...made, install: `${made.install} LOCKHASH`, installWindows: `${made.installWindows} LOCKHASH`, installDocker: `${made.installDocker} LOCKHASH`, command: `${made.command} --lock LOCKHASH` } : made),
       signsAs: () => lock.as,
       signAdd: () => Effect.succeed({ key: "ed25519:lockkey", sig: "00" }),
     },
@@ -95,11 +95,13 @@ test("a rig is added by a command that names its person's own lock, begun with t
     assert.deepEqual(w.cloudAsked, [{ method: "POST", path: `/v1/workspaces/${WS}/rigs/enrollments`, body: { name: "build-box" } }]);
     assert.equal(made.install, `curl -fsSL https://x/install.sh | sh -s -- tok rig:${root}`);
     assert.equal(made.installWindows, `& (irm https://x/install.ps1) tok rig:${root}`);
+    assert.equal(made.installDocker, `docker run x tok rig:${root}`);
     assert.equal(made.command, `stillfail station enroll https://x tok --rig ${root}`);
     // Security mode: the workspace lock's hash first, as a station's command has it.
     w.lock.locked = true;
     const locked: any = await w.run(w.rigs.run(call("rig.add", { workspace: WS, name: "gpu" })));
     assert.equal(locked.install, `curl -fsSL https://x/install.sh | sh -s -- tok LOCKHASH rig:${root}`);
+    assert.equal(locked.installDocker, `docker run x tok LOCKHASH rig:${root}`);
     assert.equal(locked.command, `stillfail station enroll https://x tok --lock LOCKHASH --rig ${root}`);
     // A web page keeps no key of their own lock.
     w.host.appKeys = false;

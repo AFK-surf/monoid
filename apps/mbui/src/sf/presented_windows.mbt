@@ -11,7 +11,7 @@ fn init {
   @ui.window_kept_ref(presented_drawn_said, fn() { @signals.keyed() })
   @ui.window_kept_ref(presented_alone, fn() { false })
   @ui.window_kept_array(presented_how)
-  @ui.window_kept_map(lists_of)
+  @ui.window_kept_ref(presented_sheets, fn() { false })
   @ui.window_kept_set(tree_presented)
   @ui.window_kept_map(tree_as_sheet)
   @ui.window_kept_ref(window_tips_at, fn() { None })

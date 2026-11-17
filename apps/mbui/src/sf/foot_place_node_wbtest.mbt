@@ -1,32 +1,23 @@
-// A place in a panel's foot that comes and goes (foot_place_node) beside the old foot drawing a button or not each frame:
-// one button and two, at a sheet's foot with a finger and with a mouse and at a dialog's in the middle of a window, each
-// where the old one's is and as wide; one going, the other's width at once.
+// A place in a panel's foot that comes and goes (foot_place_node): one button and two, at a sheet's foot with a finger
+// and with a mouse and at a dialog's in the middle of a window, each where it stood when it stood where the old foot's
+// (drawing a button or not each frame) did, and as wide; one going, the other's width at once.
 
 ///|
 /// Where each of the foot's buttons stands (by its words), a panel opened by nothing on a window `at`, its foot holding 稍后
-/// while `two` says so and 下载 always: the old foot's (`old`), else the node foot's (foot_place_node), at rest; then,
-/// `two` turned, at that frame and at rest. Closed after, gone.
-fn foot_place_stood(at : (Int, Double, Double), old : Bool) -> Array[String] raise {
+/// while `two` says so and 下载 always (foot_place_node), at rest; then, `two` turned, at that frame and at rest. Closed
+/// after, gone.
+fn foot_place_stood(at : (Int, Double, Double)) -> Array[String] raise {
   let two = @signals.signal(true)
   let open = fn(_from : Anchor) {
-    if old {
-      panel("一个", from=Unanchored, fn(c, _) { c.text("它说的话", style=secondary) |> ignore }, foot=fn(c, _) {
-        if two.get() {
-          button(c, "稍后", key="foot-place/later", tone=Ghost)
-        }
-        button(c, "下载", key="foot-place/go", tone=Primary)
-      })
-    } else {
-      panel_nodes(
-        "一个",
-        from=Unanchored,
-        fn(v, _) { words_node(v, fn() { "它说的话" }, fn() { secondary }) |> ignore },
-        foot=fn(v, _) {
-          foot_place_node(v, fn() { two.get() }, fn(p) { button_node(p, fn() { "稍后" }, fn() {  }, tone=Ghost) |> ignore })
-          button_node(v, fn() { "下载" }, fn() {  }, tone=Primary) |> ignore
-        },
-      )
-    }
+    panel_nodes(
+      "一个",
+      from=Unanchored,
+      fn(v, _) { words_node(v, fn() { "它说的话" }, fn() { secondary }) |> ignore },
+      foot=fn(v, _) {
+        foot_place_node(v, fn() { two.get() }, fn(p) { button_node(p, fn() { "稍后" }, fn() {  }, tone=Ghost) |> ignore })
+        button_node(v, fn() { "下载" }, fn() {  }, tone=Primary) |> ignore
+      },
+    )
   }
   presenters_reset()
   let (platform, w, h) = at
@@ -68,22 +59,42 @@ fn foot_place_stood(at : (Int, Double, Double), old : Bool) -> Array[String] rai
 }
 
 ///|
-test "a place in a panel's foot that comes and goes, where the old foot draws a button or not: a sheet's with a finger and with a mouse, a dialog's in the middle of a window" {
+test "a place in a panel's foot that comes and goes: a sheet's with a finger and with a mouse, a dialog's in the middle of a window" {
+  let seen : Array[String] = []
   for screen in [("sheet", phone), ("sheet, with a mouse", (0, 390.0, 844.0)), ("dialog", (0, 800.0, 600.0))] {
     let (about, at) = screen
-    let old = foot_place_stood(at, true)
-    let new = foot_place_stood(at, false)
-    let differs : Array[String] = []
-    for i, line in old {
-      let n = new.get(i).unwrap_or("-")
-      if n != line {
-        differs.push("\{about}: old \{line} / new \{n}")
-      }
-    }
-    if !differs.is_empty() || new.length() != old.length() {
-      fail(differs.join(" | "))
-    }
+    seen.push("\{about}:")
+    seen.append(foot_place_stood(at))
   }
+  inspect(seen.join("\n"), content=(
+    #|sheet:
+    #|two: 稍后 20,784 171x36
+    #|two: 下载 199,784 171x36
+    #|one, at once: 稍后 0 of it
+    #|one, at once: 下载 20,784 350x36
+    #|one: 稍后 0 of it
+    #|one: 下载 20,784 350x36
+    #|two again, at once: 稍后 20,784 171x36
+    #|two again, at once: 下载 199,784 171x36
+    #|sheet, with a mouse:
+    #|two: 稍后 20,784 171x36
+    #|two: 下载 199,784 171x36
+    #|one, at once: 稍后 0 of it
+    #|one, at once: 下载 20,784 350x36
+    #|one: 稍后 0 of it
+    #|one: 下载 20,784 350x36
+    #|two again, at once: 稍后 20,784 171x36
+    #|two again, at once: 下载 199,784 171x36
+    #|dialog:
+    #|two: 稍后 512,328.5 58x36
+    #|two: 下载 578,328.5 58x36
+    #|one, at once: 稍后 0 of it
+    #|one, at once: 下载 578,328.5 58x36
+    #|one: 稍后 0 of it
+    #|one: 下载 578,328.5 58x36
+    #|two again, at once: 稍后 512,328.5 58x36
+    #|two again, at once: 下载 578,328.5 58x36
+  ))
 }
 
 ///|

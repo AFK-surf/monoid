@@ -65,6 +65,11 @@ size() { wc -c < "$1" | tr -d ' '; }
 # as long to decode it and 5 times as long to let it go (a phone: 7.3-15 ms and 2.4-4.9 against 2.6-5.3 and
 # 0.7-0.85). What is given up, and why it stays so: mbui's AGENTS.md, The Android app's allocator.
 CFLAGS="-I$MOON_HOME/include -I$ROOT/src/host -fPIC -fwrapv -fno-strict-aliasing -Wno-unused-value -O2 -DMOONBIT_ALLOCATOR=MOONBIT_ALLOCATOR_MIMALLOC"
+# MODE=debug or MBUI_QUICK=1: a build to look at while working, the C (moonc's, the host's, an app's) at -O0, compiled in
+# seconds where -O2 takes a minute; the allocator the same (above: every compile of the app's C says it), mimalloc as it
+# is. A debug APK (VARIANT's default) has no R8 already (its apk.json's variants). CI and releases say neither.
+QUICK=${MBUI_QUICK:-0}; [ "${MODE:-}" = debug ] && QUICK=1
+[ "$QUICK" != 1 ] || CFLAGS=${CFLAGS/ -O2 / -O0 }
 
 sync() {
   mkdir -p $M/src
@@ -150,8 +155,8 @@ mimalloc_obj() {
     $ROOT/src/host/mimalloc_android.c
 }
 
-now() { python3 -c 'import time;print(time.time())'; }
-secs() { python3 -c "print(f'{$2-$1:.1f}')"; }
+now() { node -p "Date.now() / 1000"; }
+secs() { node -p "($2 - $1).toFixed(1)"; }
 
 case "${1:-build}" in
   build)

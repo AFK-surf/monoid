@@ -61,7 +61,7 @@ fn sheet_shows_panel(p : Presented) -> PanelOf {
 /// level a menu's item opened (present's, headed by its back key whatever its title).
 fn menu_sheet_panel(serial : Int, title : String, items : () -> Array[MenuItem?]) -> PanelOf {
   sheet_nodes_panel(title, 0.0, fn(col, close) {
-    sheet_menu_node(col, fn() { menu_clean_items(items()) }, close, fn() { presented_open_of(serial) })
+    sheet_menu_node(col, fn() { menu_clean_items(items()) }, close, fn() { presented_open_of(serial) }, serial~)
   })
 }
 
@@ -72,8 +72,6 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
   {
     title,
     description: "",
-    body: fn(_, _) {  },
-    foot: None,
     w: panel_w,
     fits: false,
     wide: false,
@@ -82,21 +80,17 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
     grows: false,
     focus: true,
     ruled: false,
-    lists: false,
     fade_out_together: false,
     form: false,
-    field: "",
     stage: false,
     above: None,
-    title_row: None,
     heads_itself: false,
     side: Bottom,
     along: Start,
     offset: panel_offset,
     match_panel: 0,
-    steps: false,
     on_back: None,
-    nodes: Some({
+    nodes: {
       body,
       foot: None,
       hugs: false,
@@ -107,7 +101,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       top: 0.0,
       most: None,
       flush: true,
-    }),
+    },
   }
 }
 
@@ -218,13 +212,15 @@ let sheet_actions_at : @ui.Style = @ui.css("row w=Full pt=S1_5 gap=S2 justify=JE
 
 ///|
 /// A menu's rows in `col` of its sheet (menu_rows'): each of `items()` by its place and its kind, a row pressed while
-/// its sheet is `open()` closing it (`close`) and then doing what it does; a heading a sheet's title, None a line between parts.
+/// its sheet is `open()` closing it (`close`) and then doing what it does (chosen in the sheet presented as `serial`:
+/// what it waits for may hold it open, choice_held); a heading a sheet's title, None a line between parts.
 #callsite(autofill(loc))
 fn sheet_menu_node(
   col : @view.View,
   items : () -> Array[MenuItem?],
   close : () -> Unit,
   open : () -> Bool,
+  serial~ : Int,
   loc~ : SourceLoc,
 ) -> Unit {
   col.box(made_for=loc, fn(rows) {
@@ -266,7 +262,7 @@ fn sheet_menu_node(
               // (once, while its sheet is open: a page gone back to is open again, chosen in anew)
               if open() {
                 close()
-                (it.select)()
+                chosen_in(serial, it.select)
               }
             },
             icon=fn() { item().icon },

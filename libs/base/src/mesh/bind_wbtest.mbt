@@ -887,3 +887,231 @@ test "a stream opened from this side of a connection a peer dialled: written and
   assert_true(ended_as(after).has_prefix("mesh: "))
   assert_eq(stood.times("conn.openBi \{conn}"), 3)
 }
+
+// ── connections dialled from the endpoint itself ──
+
+///|
+/// A mesh that takes no connection, and a connection it dialled from its endpoint to `peer` on "side/1", handed
+/// out: its handle at the shell too.
+fn connected() -> (Stood, Peer, Mesh, Incoming, Int) raise {
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  let incoming = gave(stood.go(() => mesh.connect(peer, "side/1")))
+  (stood, far, mesh, incoming, incoming.conn_handle())
+}
+
+///|
+test "connected from the endpoint itself: none bound for it, its protocol as written, the peer dialled straight where the caller and the mesh say, each once; handed out as one taken, no link, on the endpoint; streams both ways; closed, let go of, the endpoint left" {
+  let (stood, far) = Stood::with_peer()
+  // (it takes no connection itself: the peer's endpoint is the one to take the protocol)
+  let mesh = stood.made([r1])
+  mesh.add_addr(peer, ips=["10.0.0.9:7"])
+  let ips = ["10.0.0.5:1", "10.0.0.9:7"]
+  let connecting = stood.go(() => mesh.connect(peer, "side/1", ips~))
+  // (what its program does to the array after is not the mesh's)
+  ips.push("10.0.0.6:1")
+  let incoming = gave(connecting)
+  assert_eq((incoming.peer, incoming.alpn), (peer, "side/1"))
+  // On the device's endpoint: nothing bound but it, dialled there with the protocol's bytes.
+  assert_eq((stood.binds.length(), stood.times("iroh.connect 1")), (1, 1))
+  assert_true(stood.dial_alpns[0] == @utf8.encode("side/1"))
+  assert_eq(stood.addrs[0], ({ "id": peer, "relays": [r1], "ips": ["10.0.0.5:1", "10.0.0.9:7"] } : Json).stringify())
+  let conn = incoming.conn_handle()
+  // Kept as one taken: no link, no place, and on the endpoint while it is open.
+  assert_eq((mesh.links.length(), mesh.live.length(), mesh.incomings.length(), mesh.idle()), (0, 0, 1, false))
+  assert_true(mesh.current(peer) is None)
+  // The peer's stream, taken; one opened from here: each read and written as a taken connection's are.
+  let s1 = far.open(conn)
+  far.sends(s1, b"hi")
+  let theirs = gave(stood.go(() => incoming.accept())).unwrap()
+  assert_eq(theirs.handle(), s1)
+  assert_true(gave(stood.go(() => theirs.take())) == Some(b"hi"))
+  let ours = gave(stood.go(() => incoming.open()))
+  assert_eq(ended_as(stood.go(() => ours.out.write(b"ask"))), "ok")
+  assert_true(far.got(ours.handle()) == b"ask")
+  far.sends(ours.handle(), b"answer")
+  assert_true(gave(stood.go(() => ours.take())) == Some(b"answer"))
+  // Closed: the peer told why, the connection let go of as its end is told; the endpoint left be.
+  let ended = stood.go(() => incoming.closed())
+  incoming.close(reason="done")
+  stood.run()
+  assert_eq((far.closes, ended_as(ended), mesh.incomings.length()), (["\{conn} done"], "ok", 0))
+  assert_true(stood.forgot.contains(conn) && mesh.idle())
+  assert_false(stood.unbound.contains(1))
+  assert_eq(stood.forgot_ends.length(), 0)
+}
+
+///|
+test "connected with no answer in time: given up at the shell, nothing kept, the endpoint not taken for stuck; refused by the shell: unreached; a peer that is no id or no protocol: nothing dialled; held to relays: dialled through them alone" {
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  far.away = true
+  let connecting = stood.go(() => mesh.connect(peer, "side/1", within=2_000))
+  // (on the endpoint while it dials: it is not bound anew under it)
+  assert_eq((ended_as(connecting), mesh.idle()), ("waiting", false))
+  stood.rt.advance(1_999)
+  assert_eq(ended_as(connecting), "waiting")
+  stood.rt.advance(1)
+  assert_eq(ended_as(connecting), "mesh: " + say("no_answer"))
+  assert_false(stood.held.iter().any(call => call.1 == "iroh.connect"))
+  assert_eq((mesh.idle(), mesh.stuck, mesh.incomings.length()), (true, false, 0))
+  // The shell refusing the dial.
+  far.away = false
+  stood.holding = "iroh.connect"
+  let refused = stood.go(() => mesh.connect(peer, "side/1"))
+  stood.refuse("iroh.connect", "no route")
+  assert_eq(ended_as(refused), "mesh: " + say("unreached"))
+  assert_true(mesh.idle())
+  stood.holding = ""
+  let dials = stood.times("iroh.connect 1")
+  assert_true(ended_as(stood.go(() => mesh.connect("nope", "side/1"))).has_prefix("invalid_params: "))
+  assert_true(ended_as(stood.go(() => mesh.connect(peer, ""))).has_prefix("invalid_params: "))
+  assert_eq(stood.times("iroh.connect 1"), dials)
+  // Held to relays: neither the caller's addresses nor the mesh's are told.
+  let (stood, _) = Stood::with_peer()
+  let mesh = stood.made([r1], relay_only=true)
+  mesh.add_addr(peer, ips=["10.0.0.9:7"])
+  ignore(gave(stood.go(() => mesh.connect(peer, "side/1", ips=["10.0.0.5:1"]))))
+  assert_eq(stood.addrs[0], ({ "id": peer, "relays": [r1] } : Json).stringify())
+}
+
+///|
+test "connected and cut by its caller, while it dials and in the turn its connection comes: the dial given up at the shell, a connection that comes closed to be forgotten, nothing kept, the endpoint free again" {
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  far.away = true
+  let cutting = stood.go(() => mesh.connect(peer, "side/1"))
+  cutting.interrupt()
+  stood.run()
+  assert_eq(ended_as(cutting), "interrupted")
+  assert_false(stood.held.iter().any(call => call.1 == "iroh.connect"))
+  assert_eq((mesh.idle(), mesh.incomings.length()), (true, 0))
+  // Cut in the turn its connection comes: whichever runs first, the connection is closed to be forgotten.
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  far.away = true
+  let cutting = stood.go(() => mesh.connect(peer, "side/1"))
+  stood.dial_answered()
+  cutting.interrupt()
+  stood.run()
+  assert_eq(ended_as(cutting), "interrupted")
+  assert_true(stood.forgot.contains(stood.last))
+  assert_eq((mesh.idle(), mesh.incomings.length()), (true, 0))
+}
+
+///|
+test "connected as the endpoint is bound anew: asked while the shell binds, dialled on the endpoint that comes; bound anew under its dial, dialled again on the new one; taken for stuck with nothing on it, bound anew first" {
+  // Asked while the shell binds for other relays: it waits, and dials on the one bound, through them.
+  let (stood, _) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  stood.holding = "iroh.bind"
+  mesh.retune([r2])
+  stood.run()
+  let connecting = stood.go(() => mesh.connect(peer, "side/1"))
+  assert_eq((ended_as(connecting), stood.times("iroh.connect 1")), ("waiting", 0))
+  stood.holding = ""
+  stood.bound()
+  let incoming = gave(connecting)
+  assert_eq((mesh.endpoint_handle(), stood.times("iroh.connect 2")), (2, 1))
+  assert_eq(stood.addrs[0], ({ "id": peer, "relays": [r2] } : Json).stringify())
+  assert_eq(mesh.incomings.length(), 1)
+  assert_true(physical_equal(mesh.incomings[0], incoming))
+  // Other relays told under its dial: the endpoint goes, the dial on it failing with it, and the one bound is dialled.
+  let (stood, _) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  stood.holding = "iroh.connect"
+  let connecting = stood.go(() => mesh.connect(peer, "side/1"))
+  assert_eq(stood.times("iroh.connect 1"), 1)
+  mesh.retune([r2])
+  stood.run()
+  assert_eq((mesh.endpoint_handle(), stood.times("iroh.connect 2"), ended_as(connecting)), (2, 1, "waiting"))
+  assert_true(stood.unbound.contains(1))
+  stood.holding = ""
+  stood.dialled()
+  let incoming = gave(connecting)
+  assert_eq((incoming.conn_handle(), mesh.incomings.length()), (3, 1))
+  assert_eq(stood.addrs[1], ({ "id": peer, "relays": [r2] } : Json).stringify())
+  // Its connection coming while the endpoint is being bound anew: closed to be forgotten (it is on the one that
+  // goes), and the one bound dialled.
+  let (stood, _) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  stood.holding = "iroh.connect"
+  let connecting = stood.go(() => mesh.connect(peer, "side/1"))
+  stood.holding = "iroh.bind"
+  mesh.retune([r2])
+  stood.run()
+  stood.dial_answered()
+  stood.run()
+  assert_eq((ended_as(connecting), mesh.incomings.length()), ("waiting", 0))
+  assert_true(stood.forgot.contains(2))
+  stood.holding = ""
+  stood.bound()
+  let incoming = gave(connecting)
+  assert_eq((mesh.endpoint_handle(), stood.times("iroh.connect 3"), incoming.conn_handle()), (3, 1, 4))
+  assert_eq(mesh.incomings.length(), 1)
+  // Taken for stuck with nothing on it: bound anew before it dials, as a link does.
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  far.away = true
+  let failing = stood.go(() => mesh.link(peer, Source::new().gives()))
+  stood.rt.advance(connect_timeout_ms)
+  assert_eq((ended_as(failing), mesh.stuck), ("mesh: " + say("no_answer"), true))
+  far.away = false
+  let incoming = gave(stood.go(() => mesh.connect(peer, "side/1")))
+  let endpoint = mesh.endpoint_handle()
+  assert_eq((stood.binds.length(), mesh.stuck, stood.times("iroh.connect \{endpoint}")), (2, false, 1))
+  assert_true(endpoint != 1 && stood.unbound.contains(1))
+  assert_eq(incoming.peer, peer)
+}
+
+///|
+test "connected and on the endpoint: taken for stuck, the endpoint is not bound anew under it; other relays told, it is closed with the reason and the endpoint bound as its end is told; the mesh closed, one under way fails as closed, one handed out is told its end and let go of" {
+  // On the endpoint: a link that finds it stuck dials on it as it is.
+  let (stood, far, mesh, incoming, _) = connected()
+  far.away = true
+  let failing = stood.go(() => mesh.link(peer, Source::new().gives()))
+  stood.rt.advance(connect_timeout_ms)
+  assert_eq((ended_as(failing), mesh.stuck, mesh.idle()), ("mesh: " + say("no_answer"), true, false))
+  let dialling = stood.go(() => mesh.link(peer, Source::new().gives()))
+  assert_eq((stood.binds.length(), stood.times("iroh.connect 1"), ended_as(dialling)), (1, 3, "waiting"))
+  stood.rt.advance(connect_timeout_ms)
+  incoming.close()
+  stood.run()
+  assert_true(mesh.idle())
+  // Other relays told: closed with the reason, the endpoint bound as its end is told.
+  let (stood, far, mesh, _, conn) = connected()
+  mesh.retune([r2], reason="moved")
+  stood.run()
+  assert_eq((far.closes, mesh.incomings.length(), mesh.endpoint_handle()), (["\{conn} moved"], 0, conn + 1))
+  assert_true(stood.forgot.contains(conn) && stood.unbound.contains(1))
+  // The mesh closed under its dial.
+  let (stood, far) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  far.away = true
+  let connecting = stood.go(() => mesh.connect(peer, "side/1"))
+  assert_eq(ended_as(stood.go(() => mesh.close())), "ok")
+  assert_eq(ended_as(connecting), "mesh: " + say("closed"))
+  assert_false(stood.held.iter().any(call => call.1 == "iroh.connect"))
+  assert_eq(ended_as(stood.go(() => mesh.connect(peer, "side/1"))), "mesh: " + say("closed"))
+  // The mesh closed while it waits for the endpoint being bound anew.
+  let (stood, _) = Stood::with_peer()
+  let mesh = stood.made([r1])
+  stood.holding = "iroh.bind"
+  mesh.retune([r2])
+  stood.run()
+  let connecting = stood.go(() => mesh.connect(peer, "side/1"))
+  let closing = stood.go(() => mesh.close())
+  stood.holding = ""
+  stood.bound()
+  assert_eq((ended_as(closing), ended_as(connecting)), ("ok", "mesh: " + say("closed")))
+  assert_eq(stood.said.filter(one => one.has_prefix("iroh.connect")).length(), 0)
+  // Handed out: told its end, its streams' askers told none, let go of.
+  let (stood, _, mesh, incoming, conn) = connected()
+  let accepting = stood.go(() => incoming.accept())
+  let ended = stood.go(() => incoming.closed())
+  assert_eq(ended_as(stood.go(() => mesh.close())), "ok")
+  assert_eq(gave(ended).kind, "local")
+  assert_true(gave(accepting) is None)
+  assert_true(stood.forgot.contains(conn) && mesh.incomings.length() == 0)
+  assert_eq(stood.times("conn.close \{conn}"), 1)
+}

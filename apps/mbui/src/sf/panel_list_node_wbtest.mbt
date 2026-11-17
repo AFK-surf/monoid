@@ -1,6 +1,7 @@
-// panel_list_node and capped_node beside the old view's panel_list and Ctx::capped, in one window: the old at its left
-// (an old view hosted in a node: @ui.old), the node at its right, 200 further across, each holding the same rows. What
-// each draws, at the same moments, is the same: where each row's words stand and how faded, the bar, which rows are made.
+// panel_list_node and capped_node, in one window, at its right, 200 across from its left; capped_node beside the old
+// view's Ctx::capped there (an old view hosted in a node: @ui.old), each holding the same rows: what each draws, at the
+// same moments, is the same (where each row's words stand and how faded, the bar). panel_list_node's rows, its bar and
+// which rows are made at each moment are held as they were when they stood where the old view's panel_list's did.
 
 ///|
 /// A row's height: 30, 40 and 50 in turn.
@@ -45,14 +46,12 @@ let lists_apart : Double = 200.0
 let lists_room : Double = 300.0
 
 ///|
-/// A window 400 wide holding at its left an old view's panel_list (`capped`: a Ctx::capped holding all its rows, then
-/// words under it) and at its right panel_list_node (capped_node), each 180 wide, from 10 across, `n` rows of
-/// lists_row_h each; a list in a room lists_room tall filling it, capped in a column 400 tall. The rows the old one made
-/// as it was last built, and how many of the node one's are made now.
-fn lists_tester(n : Int, capped? : Bool = false, platform? : Int = 0) -> (@ui.Tester, Array[Int], Ref[Int]) {
+/// A window 400 wide holding at its right panel_list_node (`capped`: capped_node holding all its rows, then words under
+/// it, and at its left a Ctx::capped holding the same), each 180 wide, from 10 across, `n` rows of lists_row_h each; a
+/// list in a room lists_room tall filling it, capped in a column 400 tall. How many of the node one's rows are made now.
+fn lists_tester(n : Int, capped? : Bool = false, platform? : Int = 0) -> (@ui.Tester, Ref[Int]) {
   let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=500.0, platform~)
   t.check_looks(false)
-  let old_made : Array[Int] = []
   let new_made = Ref(0)
   let column = if capped { 400.0 } else { lists_room }
   @ui.set_view_app(fn(root) {
@@ -60,13 +59,12 @@ fn lists_tester(n : Int, capped? : Bool = false, platform? : Int = 0) -> (@ui.Te
     root.box(fn(g) { g.width(Is(Some(10.0))) |> ignore }) |> ignore
     root.box(fn(h) {
       h.width(Is(Some(180.0))).height(Is(Some(column))) |> ignore
-      @ui.old(h, fn(c) {
-        old_made.clear()
-        let row = fn(i : Int) {
-          c.box(style=@ui.style(w=Full, h=Fixed(lists_row_h(i))), fn() { c.text("old \{i}", style=lists_words) |> ignore })
-          |> ignore
-        }
-        if capped {
+      if capped {
+        @ui.old(h, fn(c) {
+          let row = fn(i : Int) {
+            c.box(style=@ui.style(w=Full, h=Fixed(lists_row_h(i))), fn() { c.text("old \{i}", style=lists_words) |> ignore })
+            |> ignore
+          }
           c.capped("lists/old", lists_room, fn() {
             for i in 0..<n {
               row(i)
@@ -74,15 +72,9 @@ fn lists_tester(n : Int, capped? : Bool = false, platform? : Int = 0) -> (@ui.Te
           })
           |> ignore
           c.text("old end", style=lists_words) |> ignore
-        } else {
-          panel_list(c, "lists/old", n, 40.0, fn(i) {
-            old_made.push(i)
-            row(i)
-          })
-          |> ignore
-        }
-      }).grow(Is(1.0))
-      |> ignore
+        }).grow(Is(1.0))
+        |> ignore
+      }
     })
     |> ignore
     root.box(fn(g) { g.width(Is(Some(lists_apart - 180.0))) |> ignore }) |> ignore
@@ -118,7 +110,17 @@ fn lists_tester(n : Int, capped? : Bool = false, platform? : Int = 0) -> (@ui.Te
     |> ignore
   })
   t.draw()
-  (t, old_made, new_made)
+  (t, new_made)
+}
+
+///|
+/// What the node's column draws (`at`: the moment, said): each row's words where they meet its room, in its own terms,
+/// how faded, then its rectangles and their alphas.
+fn lists_new_said(t : @ui.Tester, at : String) -> String {
+  let k = fn(v : Double) { (v * 100.0).round() / 100.0 }
+  let words = lists_words_of(t, "new").iter().map(fn(e) { "\{e.0}@\{k(e.1.0)},\{k(e.1.1)} a\{k(e.1.2)}" }).collect()
+  words.sort()
+  "\{at}: \{words.join(" ")} | \{lists_rects_of(t, "new").join(" ")} | \{Repr(lists_alphas(t, "new"))}"
 }
 
 ///|
@@ -215,31 +217,33 @@ fn lists_scrolled(t : @ui.Tester, n : Int, first_y : Double) -> Double {
 }
 
 ///|
-test "panel_list_node: at rest, its rows where the old list's are, those that meet its room alone made" {
+test "panel_list_node: at rest, its rows where they stood beside the old list's, those that meet its room alone made" {
+  let seen : Array[String] = []
   for platform in [0, 2] {
-    let (t, old_made, new_made) = lists_tester(60, platform~)
+    let (t, new_made) = lists_tester(60, platform~)
     t.run_for(@ui.move_most_ms)
-    lists_same_words(t, "at rest, platform \{platform}")
     let meeting = lists_meeting(60, 0.0, lists_room)
     assert_eq(meeting, 8)
     assert_true(new_made.val <= meeting, msg="platform \{platform}: \{new_made.val} made, \{meeting} meet its room")
-    assert_eq(new_made.val, old_made.length(), msg="platform \{platform}: made")
-    lists_same_rects(t, "at rest, platform \{platform}")
+    seen.push(lists_new_said(t, "at rest, platform \{platform}, \{new_made.val} made"))
   }
+  inspect(seen.join("\n"), content=(
+    #|at rest, platform 0, 8 made: 0@0,0 a1 1@0,30 a1 2@0,70 a1 3@0,120 a1 4@0,150 a1 5@0,190 a1 6@0,240 a1 7@0,270 a1 |  | []
+    #|at rest, platform 2, 8 made: 0@0,0 a1 1@0,30 a1 2@0,70 a1 3@0,120 a1 4@0,150 a1 5@0,190 a1 6@0,240 a1 7@0,270 a1 |  | []
+  ))
 }
 
 ///|
-test "panel_list_node: the wheel over each at the same moment, the same at each moment after, no more made than meet its room" {
-  let (t, _, new_made) = lists_tester(60)
+test "panel_list_node: the wheel over it, at each moment after as it was beside the old list's, no more made than meet its room" {
+  let (t, new_made) = lists_tester(60)
   t.run_for(@ui.move_most_ms)
   let first_y = lists_words_of(t, "new").get("0").unwrap().1
-  t.wheel(100.0, 150.0, 400.0)
   t.wheel(100.0 + lists_apart, 150.0, 400.0)
   let from = t.time()
+  let seen : Array[String] = []
   for ms in [0.0, 50.0, 100.0, 200.0, 400.0, 800.0] {
     t.run_for(from + ms - t.time())
-    lists_same_words(t, "\{ms} after the wheel")
-    lists_same_rects(t, "\{ms} after the wheel")
+    seen.push(lists_new_said(t, "\{ms} after the wheel"))
     // (no more made than meet its room; not as many as the old list built: it builds the rows along the wheel's way too,
     // 18 as the wheel is turned where 8 show)
     let meeting = lists_meeting(60, lists_scrolled(t, 60, first_y), lists_room)
@@ -247,6 +251,14 @@ test "panel_list_node: the wheel over each at the same moment, the same at each 
     assert_true(new_made.val >= 1, msg="\{ms}: none made")
   }
   assert_true(lists_scrolled(t, 60, first_y) > 0.0, msg="scrolled")
+  inspect(seen.join("\n"), content=(
+    #|0 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 |  | []
+    #|50 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 | 175,52 3x33.5 2369323 | [48]
+    #|100 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 | 175,52 3x33.5 2369323 | [61]
+    #|200 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 | 175,52 3x33.5 2369323 | [66]
+    #|400 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 | 175,52 3x33.5 2369323 | [66]
+    #|800 after the wheel: 11@0,30 a1 12@0,80 a1 10@0,-10 a1 13@0,110 a1 14@0,150 a1 15@0,200 a1 16@0,230 a1 17@0,270 a1 | 175,52 3x33.5 2369323 | [66]
+  ))
 }
 
 ///|
@@ -265,33 +277,30 @@ fn lists_flung(t : @ui.Tester, side : String, by : Double) -> Array[Map[String, 
 }
 
 ///|
-test "panel_list_node: dragged and let go with a finger, where its rows are at each moment after as the old list's" {
-  let (t, _, new_made) = lists_tester(60, platform=2)
+test "panel_list_node: dragged and let go with a finger, where its rows are at each moment after as they were beside the old list's" {
+  let (t, new_made) = lists_tester(60, platform=2)
   t.run_for(@ui.move_most_ms)
   let first_y = lists_words_of(t, "new").get("0").unwrap().1
-  let old = lists_flung(t, "old", 200.0)
-  let new = lists_flung(t, "new", 200.0)
-  for i, o in old {
-    let n = new[i]
-    let keys_old = o.keys().collect()
-    keys_old.sort()
-    let keys_new = n.keys().collect()
-    keys_new.sort()
-    assert_eq(keys_new, keys_old, msg="moment \{i}: rows drawn new \{Repr(keys_new)} old \{Repr(keys_old)}")
-    for k, ov in o {
-      let nv = n.get(k).unwrap()
-      // (the node's scroll put on the window's pixels as it is flung (half a point at 2), the old one's anywhere between
-      // them: within one)
-      assert_true((nv.1 - ov.1).abs() <= 0.5 && (nv.2 - ov.2).abs() < 0.01, msg="moment \{i}: row \{k} old \{Repr(ov)} new \{Repr(nv)}")
-    }
-  }
+  let k = fn(v : Double) { (v * 100.0).round() / 100.0 }
+  let new = lists_flung(t, "new", 200.0).mapi(fn(i, n) {
+    let words = n.iter().map(fn(e) { "\{e.0}@\{k(e.1.0)},\{k(e.1.1)} a\{k(e.1.2)}" }).collect()
+    words.sort()
+    "moment \{i}: \{words.join(" ")}"
+  })
   let meeting = lists_meeting(60, lists_scrolled(t, 60, first_y), lists_room)
   assert_true(new_made.val <= meeting && new_made.val >= 1, msg="\{new_made.val} made, \{meeting} meet its room")
+  inspect(new.join("\n"), content=(
+    #|moment 0: 5@0,-2 a1 6@0,48 a1 7@0,78 a1 8@0,118 a1 9@0,168 a1 10@0,198 a1 11@0,238 a1 12@0,288 a1
+    #|moment 1: 8@0,9 a1 9@0,59 a1 10@0,89 a1 11@0,129 a1 12@0,179 a1 13@0,209 a1 14@0,249 a1 15@0,299 a1
+    #|moment 2: 11@0,14.5 a1 12@0,64.5 a1 13@0,94.5 a1 14@0,134.5 a1 15@0,184.5 a1 16@0,214.5 a1 17@0,254.5 a1
+    #|moment 3: 12@0,21.5 a1 13@0,51.5 a1 14@0,91.5 a1 15@0,141.5 a1 16@0,171.5 a1 17@0,211.5 a1 18@0,261.5 a1 19@0,291.5 a1
+    #|moment 4: 12@0,21.5 a1 13@0,51.5 a1 14@0,91.5 a1 15@0,141.5 a1 16@0,171.5 a1 17@0,211.5 a1 18@0,261.5 a1 19@0,291.5 a1
+  ))
 }
 
 ///|
 test "capped_node: as tall as what it holds under its most, its words under it where the old one's are" {
-  let (t, _, _) = lists_tester(3, capped=true)
+  let (t, _) = lists_tester(3, capped=true)
   t.run_for(@ui.move_most_ms)
   lists_same_words(t, "short")
   let end = lists_words_of(t, "new").get("end").unwrap()
@@ -301,14 +310,14 @@ test "capped_node: as tall as what it holds under its most, its words under it w
 ///|
 test "capped_node: past its most, kept to it, scrolled by the wheel as the old one is at each moment" {
   for platform in [0, 2] {
-    let (t, _, _) = lists_tester(20, capped=true, platform~)
+    let (t, _) = lists_tester(20, capped=true, platform~)
     t.run_for(@ui.move_most_ms)
     lists_same_words(t, "at rest, platform \{platform}")
     lists_same_rects(t, "capped at rest, platform \{platform}")
     let end = lists_words_of(t, "new").get("end").unwrap()
     assert_true((end.1 - lists_room).abs() < 0.01, msg="its words under its most: \{Repr(end)}")
   }
-  let (t, _, _) = lists_tester(20, capped=true)
+  let (t, _) = lists_tester(20, capped=true)
   t.run_for(@ui.move_most_ms)
   t.wheel(100.0, 150.0, 200.0)
   t.wheel(100.0 + lists_apart, 150.0, 200.0)

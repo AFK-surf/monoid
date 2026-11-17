@@ -122,6 +122,8 @@ jobs:
   # built on any of ci-1's runners (falling back to macos-ci's quick runner when vars.CI_1 == 'off'), decoupling
   # check, check-linux, check-station, check-core, bundle, ui-windows, static and android from Mini1. Not linux-quick's
   # alone: one runner, natives waited 16-26 minutes behind one another there while ci-1's others were idle (2026-11-17).
+  # STILLFAIL_NATIVE_READERS: the readers built side by side here, among which station/mb/build.sh shares the cores (a
+  # branch's: the reader:* of BRANCH_NATIVES; main's three).
   natives:
     needs: plan
     if: needs.plan.outputs.natives == 'needed'
@@ -141,6 +143,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          if [ "$GITHUB_REF" = refs/heads/main ]; then
+            export STILLFAIL_NATIVE_READERS=3
+          else
+            r=$(printf '%s\n' $BRANCH_NATIVES | grep -c '^reader:' || true)
+            [ "$r" -ge 1 ] || r=1
+            [ "$r" -le 3 ] || r=3
+            export STILLFAIL_NATIVE_READERS=$r
+          fi
           if [ "${{ vars.CI_1 }}" = off ]; then
             if [ "$GITHUB_REF" = refs/heads/main ]; then
               node scripts/native.ts ensure --publish
@@ -173,6 +183,8 @@ jobs:
       - name: Build what main builds besides the branch's (into ci-1's cache)
         env:
           GH_TOKEN: ${{ github.token }}
+          # (one reader here, linux-arm64: every core its)
+          STILLFAIL_NATIVE_READERS: "1"
         run: |
           if [ "${{ vars.CI_1 }}" = off ]; then
             node scripts/native.ts ensure
@@ -192,6 +204,8 @@ jobs:
     permissions:
       contents: write # the release native-artifacts' assets, on main only
     steps:
+      # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
+      - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
@@ -205,26 +219,41 @@ jobs:
           echo "CARGO_TARGET_DIR=$RUNNER_TEMP/target" >> "$GITHUB_ENV"
           echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
       # (the reader's compiled MoonBit packages by their content, station/mb/build.sh's MBC_STORE: tens of MB, which
-      # take its build from 72 s to about 20)
+      # take its build from 72 s to about 20. Restored here and saved at the end whatever came of the build, a cut one
+      # too: as one step, actions/cache saved nothing of a build cut at the job's five minutes, 134032580996)
       - if: runner.environment != 'self-hosted'
-        uses: actions/cache@v4
+        id: reader-store
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/stillfail-reader-mbc
           key: mbui-reader-mac-${{ github.sha }}
           restore-keys: mbui-reader-mac-
       - uses: ./.github/actions/mbui-moonbit
+      # STILLFAIL_NATIVE_READERS: the one reader of the Apple parts, every core its (3 readers' share gave -j 1 on
+      # macos-26's 3 cores, 134032580996 cut at its 5 minutes; a branch's compiles -O0 there, station/mb/build.sh).
       - name: Get or build the Apple native parts
         env:
           GH_TOKEN: ${{ github.token }}
+          STILLFAIL_NATIVE_READERS: "1"
+          GITHUB_RUNNER: ${{ runner.environment }}
         run: |
+          limit=()
+          [ "$GITHUB_RUNNER" = self-hosted ] || limit=(bash scripts/with-timeout.sh @$((JOB_END - 25)))
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            node scripts/native.ts ensure --mac --publish
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --mac --publish
           else
-            node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_MAC_NATIVES
+            ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_MAC_NATIVES
           fi
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
         with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
+      - if: always() && runner.environment != 'self-hosted'
+        run: find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
+      - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/stillfail-reader-mbc
+          key: mbui-reader-mac-${{ github.sha }}
 
   # A branch's the rest of main's Apple parts, into macos-ci's cache, only while vars.MINI1 is 'on': a job queued for
   # macos-ci with Mini1 away held the branch's run in progress, its concurrency group with it (2026-11-17), and a
@@ -1080,6 +1109,24 @@ jobs:
           units=$(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' ')
           if [ "$units" -ge 800 ]; then echo "main's store holds $units units: the app's C at -O2, taken from it"
           else echo "main's store holds $units units: the app's C at -O0"; echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"; fi
+      # (a branch's own store over main's, as preview.yml's Linux build: what a cut build of the branch's compiled is kept
+      # and gone on from, not dropped with the run, 870 of 1119 units in 134053849540, 2026-11-17;
+      # after main's units are counted above, which decide -O2 or -O0)
+      - if: github.ref != 'refs/heads/main'
+        run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-store-main"
+      - uses: actions/cache/restore@v4
+        id: own
+        if: github.ref != 'refs/heads/main'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
+          restore-keys: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-store-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-store-main"
+          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
@@ -1176,13 +1223,14 @@ jobs:
       # limit holds it)
       - name: Finish the Mac app build
         id: finish
-        # (a branch's cut 20 s before its job, saying where the worker had got to: cut by the job, its log was never
+        # (a branch's cut 40 s before its job, its store's key and save after it, saying where the worker had got to: cut
+        # by the job, its log was never
         # said and nothing told where its five minutes went, #6955's 133997881250, 2026-11-17)
         run: |
           if [ "$GITHUB_REF" = refs/heads/main ]; then
             bash scripts/with-timeout.sh @$((JOB_END - 60)) bash .github/mac-release-prebuild.sh wait
           else
-            bash scripts/with-timeout.sh @$((JOB_END - 20)) bash .github/mac-release-prebuild.sh wait || {
+            bash scripts/with-timeout.sh @$((JOB_END - 40)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
               tail -80 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
@@ -1208,6 +1256,8 @@ jobs:
           fi
           unset POSTHOG_JSON
           trap 'rm -f "$RUNNER_TEMP/posthog.json"' EXIT
+          # (the prebuild's app and core.hbc as it made them, where it says it built them whole: mac-release-prebuild.sh)
+          [ ! -f "$RUNNER_TEMP/mac-prebuild/built" ] || export MBUI_BUILT=1
           MBUI_VARIANT=beta MBUI_SIGN_AFTER_BUILD=1 bash apps/mbui/scripts/mac-app.sh build
           mkdir -p "$RUNNER_TEMP/mac-unsigned"
           ditto -c -k --sequesterRsrc --keepParent apps/mbui/out/mac/youdid.wtf.app "$RUNNER_TEMP/mac-unsigned/bundle.zip"
@@ -1225,7 +1275,7 @@ jobs:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
       - name: The cache's key, by what it holds
-        if: always() && github.ref == 'refs/heads/main' && steps.finish.outcome != 'skipped'
+        if: always() && steps.finish.outcome != 'skipped'
         run: |
           # (what the build did not use taken out only of a whole build: one cut in its bundling left compilers writing
           # units as used.sh took out all it had not seen used yet, and main's store was 24 MB after, 2026-11-17)
@@ -1238,8 +1288,8 @@ jobs:
             bash .github/mac-release-prebuild.sh stop
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
           fi
-          echo "STORE_KEY=mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
-      - if: always() && github.ref == 'refs/heads/main' && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key
+          echo "STORE_KEY=mbui-mac-cc-${{ github.ref != 'refs/heads/main' && 'b-' || '' }}${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
+      - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |

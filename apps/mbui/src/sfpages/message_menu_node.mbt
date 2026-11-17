@@ -2,8 +2,9 @@
 // share_turn_tool, agent_hover): its own items (@sfbase.message_items: its words, its link, its turn shared) right
 // clicked into the window's menu as the old row's are (@sfbase.share_offer); an agent's card over its picture and its
 // name (hover.mbt's agent_hover: @sf.hover_card_node, its card agent_card_node), a finger's hold on its name too.
-// Not here yet: touch's way to what the ⋯ offers (@sf.more_held: the bar over words held, pick_layer's, the chat's
-// overlays' to come; a hold on the row itself is not taken in the chat's list as made now).
+// Touch's way to what the ⋯ offers (@sf.more_held): the bar over words held (chat_quote_node's), and where a message
+// has none, its pictures', files' and films' menus (message_items_after). Not here yet: a hold on the row itself (a
+// card the agent asks by, which has neither).
 
 ///|
 /// Row `row` of a message offering `s`: right clicked, its items offered to the window's menu at the click (its link,

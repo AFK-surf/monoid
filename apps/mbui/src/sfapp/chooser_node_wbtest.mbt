@@ -1,13 +1,12 @@
-// A choice that opens a menu of what it can be (@sf.chooser_node, chooser's as a node) set beside the old one
-// (@sf.chooser) in the same panel, on a phone's window with touch and with keyboard and mouse (a sheet) and on a wide one
-// (a dialog in its middle): where it and its menu stand, what it draws at rest, pointed at and open, how its menu opens,
-// chooses and closes, by the hand and by the keys, and what it is read out as.
+// A choice that opens a menu of what it can be (@sf.chooser_node, chooser's as a node) in a panel, on a phone's window
+// with touch and with keyboard and mouse (a sheet) and on a wide one (a dialog in its middle): where it and its menu
+// stand, what it draws at rest, pointed at and open, how its menu opens, chooses and closes, by the hand and by the keys,
+// and what it is read out as, as it was when it stood where the old view's chooser (@sf.chooser) did.
 
 ///|
 /// The app over the fixture's chat `w` by `h` as `platform` plays it, a panel opened by nothing over it holding words,
-/// then a chooser of 小时 and 分钟 (小时 chosen), then words again; the old view's chooser (`old`) or the window's tree's.
-/// What is chosen is put in `chosen`.
-fn ch_panel(old : Bool, chosen : Array[String], platform~ : Int, wide~ : Bool) -> @ui.Tester {
+/// then a chooser of 小时 and 分钟 (小时 chosen), then words again. What is chosen is put in `chosen`.
+fn ch_panel(chosen : Array[String], platform~ : Int, wide~ : Bool) -> @ui.Tester {
   new_run()
   @sf.presenters_reset()
   let src = fixture("chat")
@@ -19,48 +18,25 @@ fn ch_panel(old : Bool, chosen : Array[String], platform~ : Int, wide~ : Bool) -
   }
   t.run_for(@ui.move_most_ms)
   let words = fn(u : String) { if u == "hours" { "小时" } else { "分钟" } }
-  if old {
-    let unit = Ref("hours")
-    let open = Ref(false)
-    @sf.panel(
-      "单位",
-      fn(c, _) {
-        c.text("说明文字", style=@sf.meta) |> ignore
-        let entries = ["hours", "minutes"].map(fn(u) { @kit.menu_radio(u, u == unit.val, label=words(u)) })
-        let m = @sf.chooser(c, "ch-test", words(unit.val), entries, fn() { open.val }, fn(on) { open.val = on })
-        match m.chosen {
-          Some(u) => {
-            unit.val = u
-            open.val = false
-            chosen.push(u)
-          }
-          None => ()
-        }
-        c.text("末尾文字", style=@sf.meta) |> ignore
-      },
-      from=Unanchored,
-    )
-  } else {
-    let unit = @signals.signal("hours", same=fn(a, b) { a == b })
-    @sf.panel_nodes(
-      "单位",
-      fn(v, _) {
-        @sf.words_node(v, fn() { "说明文字" }, fn() { @sf.meta }) |> ignore
-        v.box(fn(b) {
-          @sf.chooser_node(b, fn() { words(unit.get()) }, fn() { [("hours", "小时"), ("minutes", "分钟")] }, fn() {
-            unit.get()
-          }, fn(u) {
-            unit.set(u)
-            chosen.push(u)
-          })
-          |> ignore
+  let unit = @signals.signal("hours", same=fn(a, b) { a == b })
+  @sf.panel_nodes(
+    "单位",
+    fn(v, _) {
+      @sf.words_node(v, fn() { "说明文字" }, fn() { @sf.meta }) |> ignore
+      v.box(fn(b) {
+        @sf.chooser_node(b, fn() { words(unit.get()) }, fn() { [("hours", "小时"), ("minutes", "分钟")] }, fn() {
+          unit.get()
+        }, fn(u) {
+          unit.set(u)
+          chosen.push(u)
         })
         |> ignore
-        @sf.words_node(v, fn() { "末尾文字" }, fn() { @sf.meta }) |> ignore
-      },
-      from=Unanchored,
-    )
-  }
+      })
+      |> ignore
+      @sf.words_node(v, fn() { "末尾文字" }, fn() { @sf.meta }) |> ignore
+    },
+    from=Unanchored,
+  )
   t.run_for(@ui.move_most_ms)
   t
 }
@@ -105,9 +81,9 @@ fn ch_seen(t : @ui.Tester, words : String) -> (Double, Double)? {
 ///|
 /// What the hand finds of it on a screen: at rest, pointed at (with a mouse), pressed open, a choice pressed, opened and
 /// Escape. Each fact a line.
-fn ch_hand(old : Bool, platform : Int, wide : Bool) -> Array[String] {
+fn ch_hand(platform : Int, wide : Bool) -> Array[String] {
   let chosen : Array[String] = []
-  let t = ch_panel(old, chosen, platform~, wide~)
+  let t = ch_panel(chosen, platform~, wide~)
   let out : Array[String] = []
   guard ch_button(t, "小时") is Some(b) else {
     out.push("rest: no 小时 \{@ui.list_text(ch_at(t, ["小时", "单位"]))}")
@@ -165,9 +141,9 @@ fn ch_hand(old : Bool, platform : Int, wide : Bool) -> Array[String] {
 ///|
 /// What the keys find of it, with keyboard and mouse: Tab's way to it, Enter on it, Escape, Down on it, Down in its
 /// menu and Enter there. Each fact a line.
-fn ch_keys(old : Bool, wide : Bool) -> Array[String] {
+fn ch_keys(wide : Bool) -> Array[String] {
   let chosen : Array[String] = []
-  let t = ch_panel(old, chosen, platform=0, wide~)
+  let t = ch_panel(chosen, platform=0, wide~)
   let out : Array[String] = []
   let mut n = 0
   while n < 8 && !(t.focused() is Some(s) && s.label == "小时") {
@@ -198,29 +174,83 @@ fn ch_keys(old : Bool, wide : Bool) -> Array[String] {
 }
 
 ///|
-test "a chooser, old and as nodes, on the three screens: where it stands, what it draws at rest, pointed at and open, its menu under it read out a choice each, a choice pressed, Escape and a press outside closing its menu alone, a press just over its edge" {
+test "a chooser as nodes, on the three screens: where it stands, what it draws at rest, pointed at and open, its menu under it read out a choice each, a choice pressed, Escape and a press outside closing its menu alone, a press just over its edge" {
+  let seen : Array[String] = []
   for s in ch_screens {
     let (platform, wide) = s
     let at = "platform \{platform} wide \{wide}"
-    let old = ch_hand(true, platform, wide)
-    let made = ch_hand(false, platform, wide)
-    let same = fn(l : Array[String]) { l.filter(fn(x) { !x.has_prefix("escape focus:") }) }
-    assert_eq(same(made), same(old), msg=at)
+    let made = ch_hand(platform, wide)
     assert_true(made.length() > 8, msg="\{at}: \{Repr(made)}")
     // (its menu closed by Escape, the focus back on it, on a sheet too: the old one's left it nowhere there)
     assert_true(made.contains("escape focus: Some(分钟)"), msg="\{at}: \{Repr(made)}")
+    seen.push("\{at}:")
+    seen.append(made)
   }
+  inspect(seen.join("\n"), content=(
+    #|platform 2 wide false:
+    #|rest: (24, 764, 342, 28) expanded Some(false) [小时 (32, 769, 26, 18), 说明文字 (24, 736, 342, 18), 末尾文字 (24, 802, 342, 18)]
+    #|rest drawn: []
+    #|open: expanded None [小时 (66, 677, 30, 18), 分钟 (66, 721, 30, 18)]
+    #|open drawn: [(24, 764, 342, 28) 606546703]
+    #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
+    #|chosen: [minutes] [小时 -, 分钟 (32, 769, 26, 18), 单位 (24, 702, 32, 24)]
+    #|again: [小时 (66, 677, 30, 18), 分钟 (66, 721, 30, 18)]
+    #|escape: [小时 -, 分钟 (32, 769, 26, 18), 单位 (24, 702, 32, 24)]
+    #|escape focus: Some(分钟)
+    #|outside: [小时 -, 分钟 (32, 769, 26, 18), 单位 (24, 702, 32, 24)] chosen [minutes, minutes]
+    #|over its edge: [小时 (66, 677, 30, 18), 分钟 (66, 721, 30, 18)]
+    #|platform 0 wide false:
+    #|rest: (24, 764, 342, 28) expanded Some(false) [小时 (32, 769, 24, 18), 说明文字 (24, 736, 342, 18), 末尾文字 (24, 802, 342, 18)]
+    #|rest drawn: []
+    #|pointed drawn: [(24, 764, 342, 28) 606546703]
+    #|open: expanded None [小时 (66, 689, 26, 18), 分钟 (66, 725, 26, 18)]
+    #|open drawn: [(24, 764, 342, 28) 606546703]
+    #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
+    #|chosen: [minutes] [小时 -, 分钟 (32, 769, 24, 18), 单位 (24, 702, 32, 24)]
+    #|again: [小时 (66, 689, 26, 18), 分钟 (66, 725, 26, 18)]
+    #|escape: [小时 -, 分钟 (32, 769, 24, 18), 单位 (24, 702, 32, 24)]
+    #|escape focus: Some(分钟)
+    #|outside: [小时 (32, 769, 24, 18), 分钟 -, 单位 (24, 702, 32, 24)] chosen [minutes, hours]
+    #|over its edge: [小时 (66, 689, 26, 18), 分钟 (66, 725, 26, 18)]
+    #|platform 0 wide true:
+    #|rest: (364, 411.5, 472, 28) expanded Some(false) [小时 (372, 416.5, 24, 18), 说明文字 (364, 377.5, 472, 18), 末尾文字 (364, 455.5, 472, 18)]
+    #|rest drawn: []
+    #|pointed drawn: [(364, 411.5, 472, 28) 606546703]
+    #|open: expanded None [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+    #|open drawn: [(364, 411.5, 472, 28) 606546703]
+    #|menu: [(MenuItemRadio, 小时, Some(On)), (MenuItemRadio, 分钟, Some(Off))]
+    #|chosen: [minutes] [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)]
+    #|again: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+    #|escape: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)]
+    #|escape focus: Some(分钟)
+    #|outside: [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] chosen [minutes]
+    #|over its edge: [小时 (406, 460.5, 26, 18), 分钟 (406, 496.5, 26, 18)]
+  ))
 }
 
 ///|
-test "a chooser, old and as nodes, with keyboard and mouse: Tab to it, Enter opening its menu, Escape, Down opening it, a choice by the keys" {
+test "a chooser as nodes, with keyboard and mouse: Tab to it, Enter opening its menu, Escape, Down opening it, a choice by the keys" {
+  let seen : Array[String] = []
   for wide in [false, true] {
-    let old = ch_keys(true, wide)
-    let made = ch_keys(false, wide)
-    // (in a dialog in the window's middle the old panel gives its first part the focus as it opens, unshown; a panel
-    // of nodes gives it none: that is the dialog's, not the chooser's, so how it came to the focus is not compared there)
-    let same = fn(l : Array[String]) { l.filter(fn(x) { !wide || !(x.has_prefix("tab:") || x.has_prefix("focused drawn:")) }) }
-    assert_eq(same(made), same(old), msg="wide \{wide}")
+    let made = ch_keys(wide)
     assert_true(made.length() == 6 && made[0].has_suffix("Some(小时)"), msg="wide \{wide}: \{Repr(made)}")
+    seen.push("wide \{wide}:")
+    seen.append(made)
   }
+  inspect(seen.join("\n"), content=(
+    #|wide false:
+    #|tab: 1 Some(小时)
+    #|focused drawn: [(24, 764, 342, 28) 606546703]
+    #|enter: [分钟 (66, 725, 26, 18)] focus Some(小时)
+    #|escape: [分钟 -, 单位 (24, 702, 32, 24)] focus Some(小时)
+    #|down: [分钟 (66, 725, 26, 18)] focus Some(小时)
+    #|chosen by keys: [minutes] [小时 -, 分钟 (32, 769, 24, 18), 单位 (24, 702, 32, 24)] focus Some(分钟)
+    #|wide true:
+    #|tab: 1 Some(小时)
+    #|focused drawn: [(364, 411.5, 472, 28) 606546703]
+    #|enter: [分钟 (406, 496.5, 26, 18)] focus Some(小时)
+    #|escape: [分钟 -, 单位 (364, 328.5, 44, 30)] focus Some(小时)
+    #|down: [分钟 (406, 496.5, 26, 18)] focus Some(小时)
+    #|chosen by keys: [minutes] [小时 -, 分钟 (372, 416.5, 24, 18), 单位 (364, 328.5, 44, 30)] focus Some(分钟)
+  ))
 }

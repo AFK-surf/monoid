@@ -268,7 +268,7 @@ export function install(): void {
   };
   handlers.chatAround = (inner, call) => {
     const c = call as Extract<Call, { kind: "chatAround" }>;
-    return Effect.andThen(parse(c.station), Effect.as(inner.stationTopics.around(c.station, c.thread, c.seq), null));
+    return Effect.andThen(parse(c.station), inner.stationTopics.around(c.station, c.thread, c.seq, c.ts));
   };
   handlers.chatFind = (inner, call) => {
     const c = call as Extract<Call, { kind: "chatFind" }>;

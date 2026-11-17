@@ -315,6 +315,10 @@ if part ts; then
   if touches '^scripts/with-timeout'; then
     step "a command's limit to the second" bash scripts/with-timeout-test.sh
   fi
+  # The station's reader's build (station/mb/build.sh): mbc's jobs by the readers built side by side, MoonBit's runtime kept.
+  if touches '^station/mb/build\.sh$|^scripts/station-mb-build-test\.sh$'; then
+    step "station reader build: mbc's jobs, the runtime kept" bash scripts/station-mb-build-test.sh
+  fi
   # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh

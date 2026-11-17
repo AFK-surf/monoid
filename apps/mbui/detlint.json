@@ -184,6 +184,7 @@
     "later": [
       "@sf.menu",
       "@sf.menu_item_of",
+      "@sfbase.message_items",
       "@sf.pick",
       "@sf.panel",
       "@sf.confirm",
@@ -255,7 +256,7 @@
       "src/coredemo/main.mbt": 39,
       "src/sf/glass.mbt": 1,
       "src/sf/markdown.mbt": 34,
-      "src/sf/parts.mbt": 47,
+      "src/sf/parts.mbt": 46,
       "src/sf/picture.mbt": 1,
       "src/sf/waiting.mbt": 10,
       "src/sfapp/app.mbt": 2,
@@ -357,7 +358,6 @@
     "layout-read-back": {
       "src/sf/markdown.mbt": 1,
       "src/sf/parts.mbt": 5,
-      "src/sf/presenters.mbt": 6,
       "src/sf/seg.mbt": 1,
       "src/sf/submenu.mbt": 1,
       "src/sf/viewer_frame.mbt": 1,
@@ -378,7 +378,6 @@
     "frame-number": {},
     "ui-current": {
       "src/sf/presented_node.mbt": 1,
-      "src/sf/presenters.mbt": 1,
       "src/sfapp/app.mbt": 5,
       "src/sfapp/bar.mbt": 4,
       "src/sfapp/bars.mbt": 2,
@@ -398,7 +397,6 @@
       "src/sf/lift.mbt": 1,
       "src/sf/marked.mbt": 1,
       "src/sf/parts.mbt": 1,
-      "src/sf/presenters.mbt": 4,
       "src/sf/waiting.mbt": 1,
       "src/sfapp/chat.mbt": 1,
       "src/sfbase/chat_list.mbt": 4,
@@ -419,8 +417,7 @@
       "src/sfpages/message_files.mbt": 2
     },
     "old-list": {
-      "src/sf/page.mbt": 3,
-      "src/sf/presenters.mbt": 1,
+      "src/sf/page.mbt": 1,
       "src/sfkit/glass.mbt": 1,
       "src/sfkit/kit.mbt": 2,
       "src/sfpages/chat_list.mbt": 1,
@@ -430,10 +427,7 @@
       "src/sfpages/history_steps_node.mbt": 1
     },
     "old-island": {
-      "src/sf/panel_centred_node.mbt": 5,
-      "src/sf/panel_node.mbt": 4,
       "src/sf/presented_node.mbt": 1,
-      "src/sf/sheet_node.mbt": 1,
       "src/sfapp/app.mbt": 2,
       "src/sfapp/entry_tree.mbt": 1,
       "src/sfapp/narrow_shell.mbt": 2,
@@ -558,7 +552,7 @@
       "src/sfpages/activity_steady_node.mbt": 1,
       "src/sfpages/agent_card_node.mbt": 1,
       "src/sfpages/automatic_decisions.mbt": 1,
-      "src/sfpages/board_node.mbt": 8,
+      "src/sfpages/board_node.mbt": 7,
       "src/sfpages/chat_body_node.mbt": 5,
       "src/sfpages/chat_jump_node.mbt": 2,
       "src/sfpages/chat_read_node.mbt": 1,
@@ -574,8 +568,8 @@
       "src/sfpages/message_media_node.mbt": 1,
       "src/sfpages/message_notice_node.mbt": 1,
       "src/sfpages/message_small_rows_node.mbt": 1,
-      "src/sfpages/message_viz_node.mbt": 1,
       "src/sfpages/message_video_node.mbt": 1,
+      "src/sfpages/message_viz_node.mbt": 1,
       "src/sfpages/message_working_node.mbt": 1,
       "src/sfpages/model_triple.mbt": 2,
       "src/sfpages/new_profile.mbt": 1,

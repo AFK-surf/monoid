@@ -1,7 +1,7 @@
 // A modal layer open over a field with the keyboard's focus: the focus is not left under it. Its keys are the topmost
 // layer's (Escape closes it), what is typed goes into nothing under it, the field's input method is put away; as it goes,
 // the focus, the input method and what is typed are the field's again, what was written in it still there. The same
-// the four ways (the field an old view's or a node's, the layer an old panel or one of nodes), on 小屏 with a keyboard
+// both ways (the field an old view's or a node's, the layer a panel of nodes), on 小屏 with a keyboard
 // and mouse and with a finger. A layer that is not modal (a list beside a field) leaves the field its focus and keys.
 
 ///|
@@ -54,34 +54,25 @@ fn focus_page_field(t : @ui.Tester, at : String) -> Unit raise {
 }
 
 ///|
-/// A panel "盖住" (`nodes`: of nodes) opened over the page with the focus where it is, as a key or a shortcut opens one.
-fn open_over(t : @ui.Tester, nodes : Bool) -> Unit {
-  if nodes {
-    panel_nodes("盖住", fn(v, _) { words_node(v, fn() { "盖住的字" }, fn() { desk_muted }) |> ignore }, from=Unanchored)
-  } else {
-    panel("盖住", fn(c, _) { c.text("盖住的字") |> ignore }, from=Unanchored)
-  }
+/// A panel "盖住" opened over the page with the focus where it is, as a key or a shortcut opens one.
+fn open_over(t : @ui.Tester) -> Unit {
+  panel_nodes("盖住", fn(v, _) { words_node(v, fn() { "盖住的字" }, fn() { desk_muted }) |> ignore }, from=Unanchored)
   t.frame()
   come_to_rest(t)
 }
 
 ///|
-let modal_focus_ways : Array[(Bool, Bool, String)] = [
-  (true, false, "old panel over an old field"),
-  (true, true, "panel of nodes over an old field"),
-  (false, false, "old panel over a node field"),
-  (false, true, "panel of nodes over a node field"),
-]
+let modal_focus_ways : Array[(Bool, String)] = [(true, "panel of nodes over an old field"), (false, "panel of nodes over a node field")]
 
 ///|
-test "a modal layer over a field with the focus: its keys, nothing typed under it, the input method away; closed, all the field's again, the four ways" {
+test "a modal layer over a field with the focus: its keys, nothing typed under it, the input method away; closed, all the field's again, both ways" {
   // (each way on its own: what fails in each said, all of them)
   let failed : Array[String] = []
   for at in [(0, 390.0, 844.0), phone] {
     for way in modal_focus_ways {
-      let (old_field, nodes, name) = way
+      let (old_field, name) = way
       let msg = "\{name}, platform \{at.0}"
-      try modal_focus_way(at, old_field, nodes, msg) catch {
+      try modal_focus_way(at, old_field, msg) catch {
         e => failed.push(e.to_string())
       }
     }
@@ -92,7 +83,7 @@ test "a modal layer over a field with the focus: its keys, nothing typed under i
 ///|
 /// One way of modal_focus_ways at the window of `at`: the field focused and written in, the layer opened over it,
 /// typed, Escape, typed again.
-fn modal_focus_way(at : (Int, Double, Double), old_field : Bool, nodes : Bool, msg : String) -> Unit raise {
+fn modal_focus_way(at : (Int, Double, Double), old_field : Bool, msg : String) -> Unit raise {
   let f = @ui.Field::new()
   let t = field_page_tester(at, old_field, f)
   focus_page_field(t, msg)
@@ -100,7 +91,7 @@ fn modal_focus_way(at : (Int, Double, Double), old_field : Bool, nodes : Bool, m
   t.draw()
   assert_eq(f.text(), "写", msg~)
   assert_true(t.ime().0, msg="\{msg}: the host told of the field")
-  open_over(t, nodes)
+  open_over(t)
   assert_true(t.find("盖住的字") is Some(_), msg="\{msg}: open")
   // (up: not the field's focus, nor what is typed, nor its input method)
   assert_false(t.focused().map(fn(s) { s.label }) == Some("页面输入框"), msg="\{msg}: focus under it")

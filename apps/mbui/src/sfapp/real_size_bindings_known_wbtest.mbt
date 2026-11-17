@@ -4,6 +4,10 @@
 // floor; the lines to write are printed by the test). Counted 2026-11-16 (on main after #6556) on the values and changes of
 // client/core-ts/test/real-size.ts.
 
+// Raised once, 2026-11-17: 小屏 Home's list no longer opens under what is left up long (moved into 待处理, sfdesk
+// open_jobs.mbt): a change of the chats' list (chats/down, card, archived) runs the bindings of the rows of a screen more
+// of chats shown in their place; what is left up long changing (longJobs/job) runs none on Home.
+
 // Added 2026-11-17: the screens of safe mode after its upgrade (fixture_open.mbt: lock-out-security, settings-vault-
 // syncing and -confirm, settings-lock-prompt-role, settings-security-again, -root-off, -root and -confirm), new screens
 // each holding the profiles' list as the settings' pages beside them do, at their bar.
@@ -66,10 +70,9 @@
 ///|
 let real_size_bindings_known : Map[String, Int] = {
   "wide place workspace/member": 17,
-  "phone home chats/down": 27,
+  "phone home chats/down": 53,
   "phone home chats/card": 3,
   "phone home chats/archived": 2,
-  "phone home longJobs/job": 6,
   "phone chat chat compact/thing": 3,
   "phone chat chat compact/screen": 3,
   "phone chat chat compact/message": 3,

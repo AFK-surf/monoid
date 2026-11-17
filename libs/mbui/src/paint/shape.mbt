@@ -115,6 +115,74 @@ pub fn dashed_outlines(w : Double, h : Double, r : Double, line : Double) -> Arr
 
 
 ///|
+/// The outline of a slider's knob drawn into its filled track as one drop of ink held by its surface (`tension`, 0 …
+/// 1: how hard it is held): the track from `x0` (its end round), `track_h` thick about the line `cy`, going into the
+/// knob's disc about (`cx`, `cy`) of radius `r` by a neck that leaves the track's edges along them and meets the disc
+/// along it (a cubic each side, no corner where it leaves or meets), the more held the further back it starts and the
+/// higher up the disc it meets. Hardly held (0.01 or less), or the knob's disc reaching back to the track's start:
+/// the disc alone (what is drawn with the track under it). Its curves cut as fine as an arc's (arc_sag).
+pub fn meniscus_outline(
+  x0 : Double,
+  cy : Double,
+  track_h : Double,
+  cx : Double,
+  r : Double,
+  tension : Double,
+) -> Array[(Array[Double], Bool)] {
+  let pi = @math.PI
+  let flat = fn(pts : Array[(Double, Double)], out : Array[Double]) {
+    for p in pts {
+      out.push(p.0)
+      out.push(p.1)
+    }
+  }
+  if r <= 0.0 {
+    return []
+  }
+  if tension <= 0.01 || cx - x0 <= r {
+    let disc : Array[Double] = []
+    flat(arc(cx, cy, r, from=0.0, sweep=2.0 * pi), disc)
+    return [(disc, true)]
+  }
+  let k = dclamp(tension, 0.0, 1.0)
+  let half = dclamp(track_h / 2.0, 0.0, r)
+  // (where on the disc the neck meets it, up from its left: where the track's edge would cut it, higher as it is held)
+  let phi0 = @dmath.asin(half / r)
+  let phi = phi0 + (dmax(1.05, phi0) - phi0) * k
+  let (px, py) = (cx - r * @dmath.cos(phi), cy - r * @dmath.sin(phi))
+  // (where on the track's edge it leaves it: back from the disc as far as it is held, never past the track's start)
+  let xa = dmax(x0 + half, px - r * 1.8 * k)
+  let (top, foot) = (cy - half, cy + half)
+  let reach = dmax(px - xa, 0.0)
+  let c = reach * 0.5
+  // (the neck's cubic from the track's edge at (xa, ey) to the disc at (qx, qy), along the edge and along the disc)
+  let neck = fn(ey : Double, qy : Double, dir_y : Double) -> Array[(Double, Double)] {
+    let (c1x, c1y) = (xa + c, ey)
+    let (c2x, c2y) = (px - c * @dmath.sin(phi), qy - c * dir_y)
+    let chord = ((px - xa) * (px - xa) + (qy - ey) * (qy - ey)).sqrt()
+    let n = dmax(4.0, (chord / (8.0 * arc_sag).sqrt() / 2.0).ceil()).to_int()
+    let pts = []
+    for i in 0..=n {
+      let t = i.to_double() / n.to_double()
+      let u = 1.0 - t
+      let x = u * u * u * xa + 3.0 * u * u * t * c1x + 3.0 * u * t * t * c2x + t * t * t * px
+      let y = u * u * u * ey + 3.0 * u * u * t * c1y + 3.0 * u * t * t * c2y + t * t * t * qy
+      pts.push((x, y))
+    }
+    pts
+  }
+  let out : Array[Double] = []
+  // the track's round start, its top edge, the neck up to the disc, the disc over its right to the neck under, back
+  flat(arc(x0 + half, cy, half, from=pi / 2.0, sweep=pi), out)
+  flat(neck(top, py, -@dmath.cos(phi)), out)
+  flat(arc(cx, cy, r, from=pi + phi, sweep=2.0 * pi - 2.0 * phi), out)
+  let under = neck(foot, cy + r * @dmath.sin(phi), @dmath.cos(phi))
+  under.rev_in_place()
+  flat(under, out)
+  [(out, true)]
+}
+
+///|
 fn dclamp(x : Double, lo : Double, hi : Double) -> Double {
   if x < lo {
     lo
