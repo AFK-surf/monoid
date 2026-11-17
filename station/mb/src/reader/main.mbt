@@ -857,6 +857,20 @@ fn main {
       }))
     (Some("harness-mcp-tools"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @mcp_tools.harness(host))
+    (Some("harness-session-hub"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_hub.harness(host))
+    (Some("harness-vault-service"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @vault_service.harness(host))
+    (Some("harness-replica-coord"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @replica_coord.harness(host))
+    (Some("harness-connects-hub"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @connects_hub.harness(host))
+    (Some("harness-feishu"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @feishu.harness(host))
+    (Some("harness-comma"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @comma.harness(host))
+    (Some("harness-rigs-mode"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @rigs_mode.harness(host))
     (Some("workspace-up-jobs"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "workspace up jobs", all(db => @upjobs.workspace_step(db))))
     (Some("widget-sources"), Some(db), _) =>

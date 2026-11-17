@@ -113,12 +113,19 @@ if [ ! -f "$moon_inc/moonbit.h" ]; then
   cp "$moon_home"/include/*.h "$tmp_inc/"
   mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
 fi
-flags=(-I"$moon_inc" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
-cflags="-I\"$moon_inc\" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
+# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
+# job's 5 minutes; main and self-hosted runners stay -O2.
+opt=-O2
+if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+  opt=-O0
+fi
+flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
+cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
 
-# scripts/native.ts builds the targets at once on one machine (STILLFAIL_NATIVE_ONE): each takes half its cores.
+# scripts/native.ts builds the targets at once on one machine (STILLFAIL_NATIVE_ONE): each takes half its cores (the
+# Mac's, its only reader target there, all of them).
 jobs=()
-if [ "${STILLFAIL_NATIVE_ONE:-}" = 1 ]; then
+if [ "${STILLFAIL_NATIVE_ONE:-}" = 1 ] && [ "$target" != darwin-arm64 ]; then
   ncpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
   jobs=("-j=$(( (ncpu + 1) / 2 ))")
 fi

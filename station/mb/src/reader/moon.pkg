@@ -75,6 +75,13 @@ import {
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",
   "mbui/effect",
+  "station/session_hub",
+  "station/vault_service",
+  "station/replica_coord",
+  "station/connects_hub",
+  "station/feishu",
+  "station/comma",
+  "station/rigs_mode",
 }
 
 pkgtype(kind: "executable")
