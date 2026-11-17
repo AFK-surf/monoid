@@ -860,6 +860,8 @@ fn main {
         { "thread": Number(thread, ..), .. } => Some(@widgets.step(db, thread.to_int64()))
         _ => None
       }))
+    (Some("harness-store-sessions"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => @store_sessions.harness(host, db))
     (Some("card-posts"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "card post", (db, ask) => match ask {
         { "thread": Number(thread, ..), .. } => Some(@cards.step(db, thread.to_int64()))
