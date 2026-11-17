@@ -381,6 +381,43 @@ pub fn View::words_halo(self : View, halo : Live[(Double, Int64)], loc~ : Source
 }
 
 ///|
+/// The edge round its words, as it changes (`out`: how far out in points, `ink` its colour; 0: none): its words drawn
+/// in that colour `out` off each of the eight ways (across, up and down, and corner to corner), under them, as a mark's
+/// words are edged to be read on any picture; drawn by its own node with its words, as they are laid out, opaque, cut
+/// and big as they are, on every host. Its words are read as one (what is seen of them, words over words), not nine.
+#callsite(autofill(loc))
+pub fn View::words_edge(self : View, edge : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
+  guard self.live() is Some(n) else { return self }
+  let (m, at, gen) = (self.tree.words_edges, self.at, n.gen)
+  // (let go of with this making of the node: Tree::words_edge_of reads none of another)
+  self.owns(fn() {
+    match m.get(at) {
+      Some((g, _)) if g == gen => m.remove(at)
+      _ => ()
+    }
+  })
+  |> ignore
+  self.bind(loc~, WordsEdge, edge, Paint, fn(e) {
+    if e.0 > 0.0 && (e.1 & 0xFFL) != 0L {
+      m[at] = (gen, e)
+    } else {
+      m.remove(at)
+    }
+  })
+  self
+}
+
+///|
+/// The edge round node `id`'s words (View::words_edge: how far out, its colour), as this making of it said; (0, 0)
+/// none.
+pub fn Tree::words_edge_of(self : Tree, id : NodeId) -> (Double, Int64) {
+  match self.words_edges.get(id.at) {
+    Some((g, e)) if g == id.gen => e
+    _ => (0.0, 0L)
+  }
+}
+
+///|
 /// How wide it may grow at most (points; None: as wide as its holder lets it), as it changes; `within`: no wider than
 /// the width what holds it gives it where that is less (CSS's `max-width: min(100%, w)`). Layout's.
 #callsite(autofill(loc))

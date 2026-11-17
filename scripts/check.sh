@@ -166,6 +166,9 @@ report() {
       # (what a test file said of itself as it ended, before its summary: a process it left running, its station
       # ending; a file that failed whole says nothing more in the summary's last lines)
       grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
+      # (what Node's test runner and MoonBit's said failed, wherever it is: a subtest's assertion early in a long log
+      # was past the tail's 40 lines below)
+      grep -E "^✖ |AssertionError|ERR_ASSERTION|Error:" "$tmp/step.$i.log" | head -30 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
@@ -315,6 +318,10 @@ if part ts; then
   # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
   if touches '^scripts/download-artifact'; then
     step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
+  fi
+  # A run attempted again goes through only where what failed before was GitHub's or the network's (pipeline.yml's gate).
+  if touches '^scripts/gate-rerun-check'; then
+    step "CI gate: a rerun only after GitHub's or the network's failure" node --test scripts/gate-rerun-check.test.mjs
   fi
   # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
   if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then

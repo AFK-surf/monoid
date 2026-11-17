@@ -31,6 +31,9 @@ priv struct ScreenUi {
   pad : PadPointer
   held : HeldKeys
   full : @signals.Signal[Bool]
+  /// its 全屏 asked beside its chat with touch: the page of it put on top over all of it (filling the window, the
+  /// system's bars put away), taken off again as 全屏 is let go of (screen_unfull)
+  mut full_from_tab : Bool
   /// the window made to fill the screen by its 全屏 (keyboard and mouse's), put back as it closes
   mut fulled : Bool
   /// shown as a tab beside its chat, whose tab closes it: no close of its own (the same thing twice)
@@ -126,6 +129,7 @@ fn screen_ui(key : String) -> ScreenUi {
         pad: pad_pointer_new(),
         held: held_keys_new(),
         full: @signals.signal(false),
+        full_from_tab: false,
         fulled: false,
         in_tab: false,
         tools_open: @signals.signal(false),
@@ -306,8 +310,19 @@ pub fn screen_node(
     // back in 全屏 leaves it first
     root.show(at_once=true, fn() { u.full.get() }, fn(b) {
       b.over(Is(true)) |> ignore
-      b.takes_back(fn() { u.full.set(false) }) |> ignore
+      b.takes_back(fn() { screen_unfull(u) }) |> ignore
     })
+    // the page its 全屏 beside its chat put on top, closed otherwise (its tab closed, the chat left): back beside the
+    // chat as it was, not full
+    if !in_tab {
+      root.owns(fn() {
+        if u.full_from_tab {
+          u.full_from_tab = false
+          u.full.set(false)
+        }
+      })
+      |> ignore
+    }
     let look = fn() {
       let full = u.full.get()
       if !in_tab && @sf.native_on() && !full {
@@ -415,18 +430,25 @@ fn screen_viewer_look(p : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
-/// Sideways with touch: the rail down its side (screen_rail_node), the picture beside it, 接管 floating over its top, the
-/// keys row over its foot while the keyboard is up; the rail's line said beside it once the people on it are tapped.
+/// Sideways with touch: the rail down its side (screen_rail_node), beside it the browser's bar where it has one (its
+/// page's ← → ⟳ and address, as the picture's center takes it to be over it: screen_center_node) and the picture under
+/// it, 接管 floating over its top, the keys row over its foot while the keyboard is up; the rail's line said beside it
+/// once the people on it are tapped.
 fn screen_sideways_look(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   p.row(Is(true)) |> ignore
   let said = screen_rail_node(p, pg)
-  p.box(fn(fill) {
-    fill.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    // (the mouse's buttons, the keyboard down, floating over its foot's corner: the stage's foot's)
-    screen_content_node(fill, pg, pair=fn() { !(s.driving_now() && typing_now(fill)) && mouse_shown_now(s) })
-    take_over_over_node(fill, pg)
-    keys_capsule_over_node(fill, pg, sides=false)
+  p.box(fn(col) {
+    col.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    col.show(at_once=true, fn() { browser_shown_now(s) }, fn(b) { browser_bar_node(b, pg) })
+    col.box(fn(fill) {
+      fill.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      // (the mouse's buttons, the keyboard down, floating over its foot's corner: the stage's foot's)
+      screen_content_node(fill, pg, pair=fn() { !(s.driving_now() && typing_now(fill)) && mouse_shown_now(s) })
+      take_over_over_node(fill, pg)
+      keys_capsule_over_node(fill, pg, sides=false)
+    })
+    |> ignore
   })
   |> ignore
   rail_said_node(p, pg, said)
@@ -622,7 +644,7 @@ fn screen_life_node(root : @view.View, pg : ScreenPage, src : Source, at : Scree
   // over (ended, gone…): out of 全屏
   root.reacts(fn() { !s.open_said() }, fn(over) {
     if over && u.full.untracked() {
-      u.full.set(false)
+      screen_unfull(u)
     }
   })
   // 全屏 in sight: the window sideways (a phone's)

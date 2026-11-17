@@ -1,11 +1,7 @@
 // How a column's edge looks as a node of the window's tree (edge_look's, its made-once form): its bar and its line in
 // its middle, each moving between what it shows as its state changes, from the moment of what changed it (a pointer come
-// onto it, a press of it, its end), each on its own way (@motion.Way), from where the one before had it then; drawn
+// onto it, a press of it, its end), each on its own way (@motion.NodeWay), from where the one before had it then; drawn
 // where it is at the moment it is drawn while it goes, where it went once it is there. Made as its state is then, still.
-
-///|
-/// One of what a look moves (a bar's height, how much it shows, its ink, the line's), over mbui's `@motion.Eased`.
-pub type EdgeWay = @motion.Eased
 
 ///|
 /// A column's edge's look in a node of `parent`'s (as tall as it, `handle_w` across, its middle that of `parent`), as
@@ -27,22 +23,16 @@ pub fn edge_look_node(
     let state = fn() { edge_state(over(), on(), active(), line()) }
     let now = @signals.untracked(state)
     // (each as the state is as it is made: still)
-    let shows = EdgeWay::new(if (now & 1) != 0 { 1.0 } else { 0.0 })
-    let long = EdgeWay::new(if (now & 2) != 0 { 1.0 } else { 0.0 })
-    let ink = EdgeWay::new(if (now & 4) != 0 { 1.0 } else { 0.0 })
-    let lit = EdgeWay::new(if (now & 8) != 0 { 1.0 } else { 0.0 })
+    let shows = @motion.NodeWay::new(if (now & 1) != 0 { 1.0 } else { 0.0 })
+    let long = @motion.NodeWay::new(if (now & 2) != 0 { 1.0 } else { 0.0 })
+    let ink = @motion.NodeWay::new(if (now & 4) != 0 { 1.0 } else { 0.0 })
+    let lit = @motion.NodeWay::new(if (now & 8) != 0 { 1.0 } else { 0.0 })
     v.reacts(state, fn(s) {
-      shows.go(v, if (s & 1) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
-      long.go(v, if (s & 2) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
-      ink.go(v, if (s & 4) != 0 { 1.0 } else { 0.0 }, edge_ink_ms)
-      lit.go(v, if (s & 8) != 0 { 1.0 } else { 0.0 }, edge_line_ms)
+      shows.go_ms(v, if (s & 1) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
+      long.go_ms(v, if (s & 2) != 0 { 1.0 } else { 0.0 }, edge_bar_ms)
+      ink.go_ms(v, if (s & 4) != 0 { 1.0 } else { 0.0 }, edge_ink_ms)
+      lit.go_ms(v, if (s & 8) != 0 { 1.0 } else { 0.0 }, edge_line_ms)
     })
-    v.owns(fn() {
-      for w in [shows, long, ink, lit] {
-        (w.due)()
-      }
-    })
-    |> ignore
     v.width(Is(Some(handle_w))).grow(Is(1.0)).presses(Is(false)) |> ignore
     // its line, over all of it but S2 at each end, its grey whole at its middle, clear toward its ends
     v.box(fn(l) {

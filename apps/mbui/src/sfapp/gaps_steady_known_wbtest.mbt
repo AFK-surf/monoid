@@ -28,6 +28,8 @@ fn init {
     // out by #5256 till the list's motion is made again)
     ("src/sfapp/send_steady_wbtest.mbt", 1),
     ("src/sfapp/station_peek_wbtest.mbt", 1),
+    // (send_steady_wbtest's, 94→117→115: emit_kept_wbtest's 大屏 sends, both, on a Tester wide_wbtest's wide_tester
+    // makes)
     ("src/sfapp/wide_wbtest.mbt", 2),
   ])
 }

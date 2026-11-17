@@ -39,7 +39,7 @@ fn panel_node(
       })
       |> ignore
       // (how far in it is, from the moment it opened; out from the moment it closed)
-      let way = EdgeWay::new(0.0)
+      let way = @motion.NodeWay::new(0.0)
       let leave_from = Ref(0.0)
       let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
@@ -49,13 +49,13 @@ fn panel_node(
           gate.stop()
           if x.fade_out_together {
             // Keep the appearance reached if it is closed before its entrance finishes.
-            let p = way.way.value_at(layer.cause_at())
+            let p = way.value_at(layer.cause_at())
             leave_from.val = p
             leave_look.val = @kit.pop_in.at(p, p)
           }
-          way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
+          way.go_ms(layer, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
-          gate.go(layer, fn() { way.go(layer, 1.0, @kit.pop_ms) })
+          gate.go(layer, fn() { way.go_ms(layer, 1.0, @kit.pop_ms) })
         }
       })
       let look = fn() {
@@ -169,6 +169,7 @@ fn panel_node(
         .clips(Is(true))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }), about=FromBeside)
+        .carries_until(fn() { way.ends_at() })
         .says(Is(Some(@view.said(Dialog, label=x.title))))
         // (a press on it its own: not outside it)
         |> ground_node

@@ -69,6 +69,9 @@ priv struct Actor {
   mut turn : Turn?
   mut codex_update : CodexUpdate?
   mut codex_next : Int
+  /// the Codex thread taken up again from its rollout after its turn was refused with a bare Bad Request (FB-26;
+  /// actor_run.mbt `refused_thread`): refused again, the next turn starts afresh
+  mut codex_reloaded : String?
   mut nudges : Int
   asked_to_name : Array[String]
   mut overloads : Int
@@ -264,6 +267,7 @@ fn Actors::actor(self : Actors, key : String, runtime : String) -> Actor {
         turn: None,
         codex_update: None,
         codex_next: 0,
+        codex_reloaded: None,
         nudges: 0,
         asked_to_name: [],
         overloads: 0,

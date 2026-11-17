@@ -425,18 +425,24 @@ pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track 
 }
 
 ///|
-/// The rings (rings') as a node of the window's tree in `parent`, `side` across. The node.
+/// The rings (rings') as a node of the window's tree in `parent`, `side` across, of the shares `shares` says as it
+/// changes (drawn again as they come out otherwise). The node.
 #callsite(autofill(loc))
 pub fn rings_node(
   parent : @view.View,
-  shares : Array[(Double, Int64)],
+  shares : () -> Array[(Double, Int64)],
   side : Double,
   track : Int64,
   most~ : Int,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let (_, d) = rings_drawn(shares, side, track, most)
-  parent.box(made_for=loc, fn(v) { v.width(Is(Some(side))).height(Is(Some(side))).picture(Is(Some(d))) |> ignore })
+  parent.box(made_for=loc, fn(v) {
+    v
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .picture(By(fn() { Some(rings_drawn(shares(), side, track, most).1) }))
+    |> ignore
+  })
 }
 
 ///|

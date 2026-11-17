@@ -66,6 +66,7 @@ fn agent_said_node(
   out_of? : (AgentFace, AgentOutPlan)? = None,
   piece? : () -> @sf.MdPiece? = fn() { None },
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   pieces_pointed? : () -> Bool = fn() { false },
   piece_made? : (@view.View) -> Unit = fn(_) {  },
 ) -> MessageRowNode {
@@ -100,7 +101,7 @@ fn agent_said_node(
             // (a piece of a message coming out of its agent's picture: its words a glyph at a time as the first's,
             // on the same clock, not there whole while the first's are still coming)
             let glyphs = out_of.bind(fn(o) { o.1.glyphs.val })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, tracks_of~, files_too=last)
           })
           |> ignore
           if last {
@@ -185,7 +186,7 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=last)
           } else {
             message_card_node(p, here, core, m)
           }
@@ -264,6 +265,7 @@ fn agent_prose_node(
   piece? : @sf.MdPiece? = None,
   piece_by? : () -> @sf.MdPiece?,
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
+  tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   files_too? : Bool = true,
 ) -> Unit {
   let place = message_files_at(here, fn() { m().said })
@@ -379,6 +381,7 @@ fn agent_prose_node(
       piece~,
       piece_by?,
       across_of~,
+      tracks_of~,
     )
     |> ignore
     // (words streamed in by the core, each a change of what it had answered: where they come out another height (a

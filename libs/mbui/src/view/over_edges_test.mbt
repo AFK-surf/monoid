@@ -39,3 +39,35 @@ test "over by its edges: by its top left, by its foot right, and between its lef
   assert_eq(at("b"), (170.0, 85.0, 20.0, 10.0))
   assert_eq(at("c"), (10.0, -4.0, 160.0, 10.0))
 }
+
+///|
+test "over where its edges say as they change: laid out there again, nothing made again" {
+  let top = @signals.signal(5.0)
+  let id : Ref[@view.NodeId?] = Ref(None)
+  let t = @view.Tree::new(
+    fn(root) {
+      root.box(fn(p) {
+        p.width(Is(Some(200.0))).height(Is(Some(100.0))) |> ignore
+        p.box(fn(a) {
+          id.val = Some(a.id())
+          a.over_at(By(fn() { (Some(10.0), Some(top.get()), None, None) })).width(Is(Some(20.0))).height(Is(Some(10.0)))
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  t.frame(400.0, 300.0) |> ignore
+  let at = fn() {
+    let d = t.drawn_of(id.val.unwrap()).unwrap()
+    (d.x, d.y, d.w, d.h)
+  }
+  assert_eq(at(), (10.0, 5.0, 20.0, 10.0))
+  let made = t.work().made
+  top.set(42.0)
+  t.frame(400.0, 300.0) |> ignore
+  assert_eq(at(), (10.0, 42.0, 20.0, 10.0))
+  assert_eq(t.work().made, made)
+}

@@ -22,7 +22,7 @@ priv struct PlayerNode {
   awake : @signals.Signal[Bool]
   near_top : @signals.Signal[Bool]
   near_foot : @signals.Signal[Bool]
-  shown : EdgeWay
+  shown : @motion.NodeWay
   faded : @signals.Signal[Bool]
   note : @signals.Signal[@kit.MediaNote?]
   waited : @signals.Signal[Bool]
@@ -70,7 +70,7 @@ fn PlayerNode::new(p : @kit.Media, v : PlayerView, embedded : Bool, inset : Doub
     awake: @signals.signal(true, same=same_b),
     near_top: @signals.signal(false, same=same_b),
     near_foot: @signals.signal(false, same=same_b),
-    shown: EdgeWay::new(1.0),
+    shown: @motion.NodeWay::new(1.0),
     faded: @signals.signal(false, same=same_b),
     note: @signals.signal(None, same=fn(a, b) { a == b }),
     waited: @signals.signal(false, same=same_b),
@@ -369,9 +369,9 @@ fn PlayerNode::follow(self : PlayerNode, n : @view.View, name : String) -> Unit 
     fade_end.val = fn() {  }
     if on {
       pn.faded.set(false)
-      pn.shown.go(n, 1.0, wake_ms, ease=Out)
+      pn.shown.go_ms(n, 1.0, wake_ms, ease=Out)
     } else {
-      pn.shown.go(n, 0.0, sleep_ms, ease=Out)
+      pn.shown.go_ms(n, 0.0, sleep_ms, ease=Out)
       fade_end.val = n.at_moment(pn.shown.end(), fn() { pn.faded.set(true) })
     }
   })
@@ -903,8 +903,8 @@ fn night_button_node(
   let night = fn() { ink().text == media_dark_text }
   @headless.button(made_for=loc, parent, label, fn(_) { press() }, fn(v, b) {
     let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
-    let hand = EdgeWay::new(0.0)
-    v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let hand = @motion.NodeWay::new(0.0)
+    v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
     let h = button_height()
     // (its share of the foot, kept at what it holds where it goes on to another line: button_node's across a foot)
     v

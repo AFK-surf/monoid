@@ -35,9 +35,9 @@ pub fn[T : Eq, K : Hash + Eq] keyed_rows_node(
   let made_at = parent.cause_at()
   parent.each(items, key, leave=@ui.row_size_ms, fn(r, item) {
     let came = r.cause_at() > made_at
-    let open = EdgeWay::new(if came { 0.0 } else { 1.0 })
+    let open = @motion.NodeWay::new(if came { 0.0 } else { 1.0 })
     if came {
-      open.go(r, 1.0, @ui.row_size_ms)
+      open.go_ms(r, 1.0, @ui.row_size_ms)
     }
     let share = fn() { dmin(open.shown(r), 1.0 - r.going()) }
     r.opens(By(fn() { Some(share()) })) |> ignore

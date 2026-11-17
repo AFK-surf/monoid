@@ -503,7 +503,7 @@ fn Acp::ending(self : Acp, _id : String, answer : J?) -> Unit {
 /// `promptText`: what a message of the person's is given to it as (Hermes': the station's instructions before it).
 fn Acp::prompt_text(self : Acp, text : String) -> String {
   if self.flavor == "hermes" && self.instructions != "" {
-    "<stillfail-context>\n\{self.instructions}\n</stillfail-context>\n\n\{text}"
+    "<stillfail-context>\n\{self.instructions}\n\nYour Hermes persona and communication preferences from SOUL.md and memories apply to the text you send with chat_post, including progress updates. Use the configured form of address and tone in those tool arguments: they are the messages people read; ordinary assistant output stays internal.\n</stillfail-context>\n\n\{text}"
   } else {
     text
   }

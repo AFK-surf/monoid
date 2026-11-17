@@ -89,8 +89,8 @@ fn icon_button_by(
     fn(v, b) {
       // (the hand on it: a pointer over it, a finger or the pointer held on it; the keyboard's focus shown on it)
       let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
-      let hand = EdgeWay::new(0.0)
-      v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let hand = @motion.NodeWay::new(0.0)
+      v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       let pad = (size - icon_size) / 2.0
       v
       .focus_ring_theme()

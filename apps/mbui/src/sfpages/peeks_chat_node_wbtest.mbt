@@ -2,7 +2,8 @@
 // chat_card) in the same room, as the same core reads the link and the list: the words where they were and the
 // rectangles drawn the same, in each state it shows (a chat alone, where it stands; the one message its link names,
 // said, read, gone; its agent's execution history; another station's; one archived; one gone; its bones while the link
-// is read; its bones while its whole row, when it was last active, is read).
+// is read; its bones while its whole row is read); and a chat the workspace's list does not show (one another chat
+// leads, one hidden, one far down) found by its whole row alone, the list never asked.
 
 ///|
 /// The source the card reads: the fixture's, the message its link names as `said` says it (its value, its error), the
@@ -13,15 +14,32 @@ fn pc_src(said : (Json?, Json?), parsed : Bool, whole~ : Bool = true) -> Source 
   @sf.set_words(@sfbase.fill)
   // (what the core said of each link, asked again in each: chats_named is kept across runs)
   chats_named.clear()
+  pc_asked.clear()
   let made = @sffixture.fixture("rich-chat")
   {
     ..made,
     topic_read: fn(name, params) {
+      pc_asked.push(name)
       if name == "messagePeek" {
         let (value, error) = said
         { value, error, version: if value is None && error is None { 0 } else { 1 } }
       } else if name == "chatRow" && !whole {
         { value: None, error: None, version: 0 }
+      } else if name == "chatRow" && @settings.text(Some(Json::object(params)), "session") == pc_unlisted {
+        // (a chat the list does not show: s-c2's row as another, as the core gives one it reads by its key)
+        let of = params.copy()
+        of["session"] = Json::string("s-c2")
+        let row = match made.topic(name, of).get().value {
+          Some(Object(m)) => {
+            let r = m.copy()
+            r["id"] = Json::string(pc_unlisted)
+            r["session"] = Json::string(pc_unlisted)
+            r["title"] = Json::string(pc_unlisted_title)
+            Some(Json::object(r))
+          }
+          v => v
+        }
+        { value: row, error: None, version: if row is None { 0 } else { 1 } }
       } else {
         made.topic(name, params).get().snapshot()
       }
@@ -35,6 +53,19 @@ fn pc_src(said : (Json?, Json?), parsed : Bool, whole~ : Bool = true) -> Source 
     },
   }
 }
+
+///|
+/// The topics the card's source was asked, by name, in the order asked.
+// kept across runs: cleared as each source is made (pc_src)
+let pc_asked : Array[String] = []
+
+///|
+/// A chat the workspace's list does not show (its session, its title): one another chat leads (`chat_create`'s
+/// `for: me`), one hidden, one far down the list; its whole row the core reads by its key.
+let pc_unlisted : String = "s-led"
+
+///|
+let pc_unlisted_title : String = "子对话：整理构建日志"
 
 ///|
 /// The old view's card (chat_card) of `href` read in a chat of `here`, as its message says it (`linked`).
@@ -172,4 +203,46 @@ fn fixture_message_obj() -> Map[String, Json] {
     Object(m) => m.copy()
     _ => {}
   }
+}
+
+///|
+test "a chat's card says the chat the workspace's list does not show (one another chat leads, one hidden) by its whole row, never the list, the same in both views" {
+  let href = "https://app.still.fail/o/ws1/st1/" + pc_unlisted
+  let old = pc_old("ws1/st1", href, None, (None, None), true, true)
+  assert_true(pc_says(old, pc_unlisted_title), msg="old: \{Repr(pc_words(old))}")
+  assert_false(pc_says(old, @sf.t("web-main.chatRef.previewGone")), msg="old")
+  assert_false(pc_asked.contains("chats"), msg="old: \{Repr(pc_asked)}")
+  let was = pf_drawn(old)
+  let t = pc_new("ws1/st1", href, None, (None, None), true, true)
+  assert_true(pc_says(t, pc_unlisted_title), msg="new: \{Repr(pc_words(t))}")
+  assert_false(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="new")
+  assert_false(pc_asked.contains("chats"), msg="new: \{Repr(pc_asked)}")
+  assert_eq(pf_drawn(t), was)
+  assert_eq(t.audit(), [])
+}
+
+///|
+test "a chat's card of another workspace's chat says only that it is not in the list, asking nothing of its row" {
+  let href = "https://app.still.fail/o/ws2/st1/s-c2"
+  for new in [false, true] {
+    let t = if new {
+      pc_new("ws1/st1", href, None, (None, None), true, true)
+    } else {
+      pc_old("ws1/st1", href, None, (None, None), true, true)
+    }
+    assert_true(pc_says(t, @sf.t("web-main.chatRef.previewGone")), msg="new \{new}: \{Repr(pc_words(t))}")
+    assert_false(pc_asked.contains("chatRow") || pc_asked.contains("chats"), msg="new \{new}: \{Repr(pc_asked)}")
+  }
+}
+
+///|
+/// The words `t` draws, each run of them as drawn.
+fn pc_words(t : @ui.Tester) -> Array[String] {
+  t.words().map(fn(w) { w.0 })
+}
+
+///|
+/// Whether `t` draws `words` (in a run of its words).
+fn pc_says(t : @ui.Tester, words : String) -> Bool {
+  pc_words(t).iter().any(fn(w) { w.contains(words) })
 }

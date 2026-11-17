@@ -42,7 +42,7 @@ let chat_bar_collapse_ms : Double = 260.0
 ///|
 priv struct ChatBarState {
   manual_expanded : @signals.Signal[Bool]
-  open_way : @sf.EdgeWay
+  open_way : @motion.NodeWay
   row2_h : @signals.Signal[Double]
   extra_target : @signals.Signal[Double]
   mut settled_initial : Bool
@@ -69,7 +69,7 @@ fn chat_bar_state(r : ChatRef) -> ChatBarState {
     None => {
       let s = {
         manual_expanded: @signals.signal(false, same=fn(a, b) { a == b }),
-        open_way: @sf.EdgeWay::new(0.0),
+        open_way: @motion.NodeWay::new(0.0),
         row2_h: @signals.signal(0.0, same=fn(a, b) { a == b }),
         extra_target: @signals.signal(0.0, same=fn(a, b) { a == b }),
         settled_initial: false,
@@ -205,7 +205,7 @@ fn chat_bar_of(b : @view.View, src : Source, r : ChatRef, stint : () -> Int) -> 
         state.extra_target.set(if cur.1 { cur.2 } else { 0.0 })
       } else if state.settled_initial {
         if cur.1 != (state.open_way.target() >= 0.5) {
-          state.open_way.go(
+          state.open_way.go_ms(
             g,
             if cur.1 { 1.0 } else { 0.0 },
             if cur.1 { chat_bar_expand_ms } else { chat_bar_collapse_ms },
@@ -510,8 +510,8 @@ fn bar_end_node(e : @view.View, src : Source, r : ChatRef, view : () -> ChatView
   e.box(fn(k) {
     // (there as it is made where it is so; set off as it becomes so or stops, at that cause's moment: reacts' first
     // run, as it is made, goes nowhere, the way already there)
-    let share = @sf.EdgeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
-    k.reacts(archivable, fn(on) { share.go_by(k, if on { 1.0 } else { 0.0 }, archive_tween) })
+    let share = @motion.NodeWay::new(if @signals.untracked(archivable) { 1.0 } else { 0.0 })
+    k.reacts(archivable, fn(on) { share.go(k, if on { 1.0 } else { 0.0 }, archive_tween) })
     let s = fn() { share.shown(k) }
     k
     .row(Is(true))

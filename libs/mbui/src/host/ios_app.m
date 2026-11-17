@@ -2148,7 +2148,7 @@ int32_t mb_host_keyboard(void) {
 @implementation MBA11yNode
 @end
 
-@interface MBA11yElement : UIAccessibilityElement
+@interface MBA11yElement : UIAccessibilityElement <UIAccessibilityContainerDataTable, UIAccessibilityContainerDataTableCell>
 @property(nonatomic) int nid;
 @end
 
@@ -2193,7 +2193,7 @@ static BOOL a11y_groups(MBA11yNode *n) {
   if (!groups)
     groups = [NSSet setWithArray:@[
       @"Group", @"RadioGroup", @"TabList", @"TabPanel", @"Dialog", @"AlertDialog", @"Menu", @"MenuBar", @"Listbox",
-      @"Toolbar", @"Region", @"Navigation", @"Form", @"ScrollArea"
+      @"Toolbar", @"Region", @"Navigation", @"Form", @"ScrollArea", @"Table", @"Row", @"Cell", @"ColumnHeader"
     ]];
   return [groups containsObject:n.role] && a11y_shown_kids(n.nid).count > 0;
 }
@@ -2249,6 +2249,7 @@ static void a11y_ask(MBA11yNode *n, NSString *action) {
     return UIAccessibilityContainerTypeList;
   if ([r isEqualToString:@"Navigation"] || [r isEqualToString:@"Region"] || [r isEqualToString:@"Form"])
     return UIAccessibilityContainerTypeLandmark;
+  if ([r isEqualToString:@"Table"]) return UIAccessibilityContainerTypeDataTable;
   return UIAccessibilityContainerTypeSemanticGroup;
 }
 - (NSString *)accessibilityLabel {
@@ -2279,7 +2280,7 @@ static void a11y_ask(MBA11yNode *n, NSString *action) {
   UIAccessibilityTraits t = UIAccessibilityTraitNone;
   if ([buttons containsObject:r]) t |= UIAccessibilityTraitButton;
   if ([r isEqualToString:@"Link"]) t |= UIAccessibilityTraitLink;
-  if ([r isEqualToString:@"Heading"]) t |= UIAccessibilityTraitHeader;
+  if ([r isEqualToString:@"Heading"] || [r isEqualToString:@"ColumnHeader"]) t |= UIAccessibilityTraitHeader;
   if ([r isEqualToString:@"Image"]) t |= UIAccessibilityTraitImage;
   if ([r isEqualToString:@"Text"] || [r isEqualToString:@"Status"]) t |= UIAccessibilityTraitStaticText;
   if ([r isEqualToString:@"ProgressBar"]) t |= UIAccessibilityTraitUpdatesFrequently;
@@ -2319,6 +2320,44 @@ static void a11y_ask(MBA11yNode *n, NSString *action) {
   if (!n || !a11y_has(n.actions, 'x')) return NO;
   a11y_ask(n, @"dismiss");
   return YES;
+}
+// a table (its container type DataTable) as UIKit reads one: its kids said Row its rows, each row's kids its cells
+- (NSArray<NSNumber *> *)a11y_rows {
+  NSMutableArray<NSNumber *> *out = [NSMutableArray array];
+  if (![self.node.role isEqualToString:@"Table"]) return out;
+  for (NSNumber *k in a11y_shown_kids(self.nid))
+    if ([a11y_nodes[k].role isEqualToString:@"Row"]) [out addObject:k];
+  return out;
+}
+- (NSInteger)accessibilityRowCount {
+  return (NSInteger)[self a11y_rows].count;
+}
+- (NSInteger)accessibilityColumnCount {
+  NSUInteger most = 0;
+  for (NSNumber *r in [self a11y_rows]) most = MAX(most, a11y_shown_kids(r.intValue).count);
+  return (NSInteger)most;
+}
+- (id<UIAccessibilityContainerDataTableCell>)accessibilityDataTableCellElementForRow:(NSUInteger)row
+                                                                              column:(NSUInteger)column {
+  NSArray<NSNumber *> *rows = [self a11y_rows];
+  if (row >= rows.count) return nil;
+  NSArray<NSNumber *> *cells = a11y_shown_kids(rows[row].intValue);
+  return column < cells.count ? a11y_element(cells[column].intValue) : nil;
+}
+// a cell's place in its table: which of its row's kids it is, which of the table's rows its row is
+- (NSRange)accessibilityRowRange {
+  MBA11yNode *n = self.node;
+  int row = n ? a11y_shown_holder(n) : 0;
+  MBA11yNode *r = a11y_nodes[@(row)];
+  int table = r ? a11y_shown_holder(r) : 0;
+  NSUInteger at = table ? [[a11y_element(table) a11y_rows] indexOfObject:@(row)] : NSNotFound;
+  return NSMakeRange(at == NSNotFound ? 0 : at, 1);
+}
+- (NSRange)accessibilityColumnRange {
+  MBA11yNode *n = self.node;
+  int row = n ? a11y_shown_holder(n) : 0;
+  NSUInteger at = row ? [a11y_shown_kids(row) indexOfObject:@(self.nid)] : NSNotFound;
+  return NSMakeRange(at == NSNotFound ? 0 : at, 1);
 }
 @end
 

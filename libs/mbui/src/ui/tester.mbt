@@ -3744,7 +3744,7 @@ fn Find::takes(self : Find, s : SemNode) -> Bool {
 /// What `f` finds, said in a line (for what a test fails with).
 fn Find::said(self : Find) -> String {
   let sb = StringBuilder()
-  sb.write_string(self.role.to_string())
+  sb.write_string(Show::to_string(self.role))
   if self.label != "" {
     sb.write_string(" \{self.label.escape()}")
   }
