@@ -229,6 +229,8 @@ pub fn fix_browse_topic(f : Fixture, name : String, params : Map[String, Json]) 
       let v = match fix_browse_step(Some(f), f.mode, { "topic": Json::object(topic) }) {
         Ok(a) =>
           match field(Some(a), "value") {
+            // (no tabs kept: said so, as the core's filesTabs answers null; a folder's browsing while read, unsaid)
+            Some(Null) if name == "filesTabs" => Some(Json::null())
             Some(Null) | None => None
             Some(v) => Some(v)
           }

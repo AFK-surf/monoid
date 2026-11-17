@@ -40,7 +40,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "drive-play": [7, 120],
   "drive-rename": [7],
   "drive-zip": [7],
-  "reader": [7],
   // 6: unsub {"topic":"status"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "dismiss": [7],
   "paste-long": [7],
@@ -49,11 +48,9 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "station-files": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
-  "settings-station-mark": [7],
   "settings-station-settings": [7],
   "settings-workspace-people": [7],
   "station-rename": [7],
-  "settings-decisions": [7],
   // 4: - | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "notice-looking": [7],
   // wide-answer-reply at 120 (#5519): the new chat page sends its composer, machineSessions.list and status's
@@ -88,7 +85,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 1: - | strict call link.parse {"url":…}
   "notice-failed": [7],
   // 1: - | strict sub {"topic":"stationNet","station":…}
-  "settings-add-station": [7],
   // 1: unsub {"topic":"doing"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "settings-run-settings": [7],
   // 1: - | strict call composer.starting {"key":…,"starting":true}
@@ -121,7 +117,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
 // kept across runs: a value
 let pace_splits_untraced : Map[String, Array[Int]] = {
   // (each split as PACE says it in the flow's run)
-  "drive-sheet-closing": [7],
   "wide-switcher": [120],
 }
 
@@ -132,29 +127,17 @@ let pace_splits_untraced : Map[String, Array[Int]] = {
 /// again over one).
 // kept across runs: a value
 let strict_diverged_known : Map[String, Array[(Double, String)]] = {
-  // drive-download-many (recorded again for bell_lit): its run's app was started on the files' page (the trace's
-  // `MBUI_OPEN_PAGE=files`), the replay's opens it as a step (Flow::open_page) once the first screen is up. So the
-  // replay's app first lands the wide frame's pane, declaring the new chat as the marks are answered (1093.9), and lets
-  // go of it as the files' page comes on top, a frame's moment there, the shell's `doing` handed over from the page
-  // before let go of and asked again with it. The run's app asked none of it. The replay's way of opening the page, not
-  // the app's: goes as Flow::open_page starts the replay's app on the page as its run's was
-  "drive-download-many": [
-    (1093.92529296875, "{\"id\":19,\"subscribe\":{\"topic\":\"newChat\",\"scope\":\"01M76NSCTQ86BGR7W0YS3R5G21\"},\"keyed\":true}"),
-    (1566.6666666666665, "{\"id\":19,\"unsubscribe\":true}"),
-    (1566.6666666666665, "{\"id\":12,\"unsubscribe\":true}"),
-    (1583.3333333333333, "{\"id\":26,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
-  ],
   // lock-wait (#5519; anew with what the first screen reads declared, #5589; anew with notify.permission told as
   // notify is answered, between frames, #5613: it takes the id before doing's and driveTransfers', and what the
   // replay held for it comes a frame sooner): at 22116.7 the lock's delta (safe mode off) takes the waiting page away
   // and with it what it had taken over of what was declared as the workspace came in view, doing and driveTransfers
-  // (taken over, then its reader gone, the next not come yet: a gap a declaration does not mend); Home's frame at
+  // (taken over, then its reader gone, the next not come yet: a gap a declaration does not mend; driveTransfers no
+  // longer since Home's transfers key is made as nodes, at rest while it does not show); Home's frame at
   // 22133.3 asks doing again. The run's device took it in the frame that built the next page, behind a message before
   // it, so nothing was let go. Gone with #5135 (what is read kept by its topic while a page is covered), whose merge
   // takes this out.
   "lock-wait": [
     (23096.97412109375, "{\"id\":13,\"unsubscribe\":true}"),
-    (23096.97412109375, "{\"id\":14,\"unsubscribe\":true}"),
     (23100.0, "{\"id\":24,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
   ],
 }
@@ -266,8 +249,8 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "drive-download-many",
     (
-      "src/sfreplay/flows/drive_download_many_test.mbt:38:5-38:22@stillfail: not so at 3544.971435546875 ms, the run's moment for it (its timeline 0 ms later from its first step): so at 3665.17822265625 ms, 120.206787109375 ms later",
-      "untraced (probed frame by frame): nothing moving but the download's toast; what it waits for is the core's answers to the folder opened, which the replay gives later than the run's moment (3580.1 to 3649.2 ms): the replay's moment of giving, it seems, not the app's",
+      "src/sfreplay/flows/drive_download_many_test.mbt:38:5-38:22@stillfail: not so at 2934.93408203125 ms, the run's moment for it (its timeline 0 ms later from its first step): so at 3070.395263671875 ms, 135.461181640625 ms later",
+      "untraced (probed frame by frame): nothing moving but the download's toast; what it waits for is the core's answers to the download begun (download.take, download.read), which the replay gives later than the run's moment (2991.2 to 3046.3 ms): the replay's moment of giving, it seems, not the app's",
     ),
   ),
   (
@@ -315,8 +298,8 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "wide-places",
     (
-      "src/sfreplay/flows/wide_places_test.mbt:12:5-12:17@stillfail: not so at 1132.15087890625 ms, the run's moment for it (its timeline 11.18603515625 ms later from its first step): so at 1149.0439453125 ms, 16.89306640625 ms later",
-      "untraced (probed frame by frame): nothing moving at that moment; what it waits for is the core's next message, which the replay gives later than the run's moment (1132.9 ms): the replay's moment of giving, it seems, not the app's",
+      "src/sfreplay/flows/wide_places_test.mbt:12:5-12:17@stillfail: not so at 1092.735107421875 ms, the run's moment for it (its timeline 14.4169921875 ms later from its first step): so at 2084.735107421875 ms, 992 ms later",
+      "traced (recorded again 2026-11-17, its 文件 made once as nodes; main's app replays it the same): the run's app asked 文件's folder (driveBrowse, drive.browse, drive) before the core answered its `workspace`, so the trace has that answer after those asks, and the replay gives it only once they are made again (core/replay.mbt Replay::ready); the replay's app shows 文件, and makes its folder, once what it reads at rest is answered, `workspace` among it (sfbase/page_reads.mbt page_reads, sfdesk/frame.mbt pane_opens): each waits for the other till page_local_ms (1000 ms) lets the page show, 992 ms after the run's moment",
     ),
   ),
 ])

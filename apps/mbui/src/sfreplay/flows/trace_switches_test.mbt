@@ -57,6 +57,8 @@
 /// a station's or a connect's page opened once what it shows is) off in all 81 as it came.
 /// MBUI_PAGE_PICTURES (2026-11-16: a chat's page opening waits as well for the faces it shows the device holds) off in
 /// all 81 as it came.
+/// MBUI_START_PAGE (2026-11-17: the page a scripted run's app was started on opened as its replay's starts, before its
+/// first frame) off in all but drive-download-many and wide-places, recorded again with it as 文件 was made once as nodes.
 let switches_known : Map[String, Int] = {
   "MBUI_PLACES_BAR": 71,
   "MBUI_DEVICES": 72,
@@ -68,15 +70,16 @@ let switches_known : Map[String, Int] = {
   "MBUI_CHAT_ROW": 73,
   "MBUI_CHATS_WINDOW": 73,
   "MBUI_MARKS_ONE": 73,
-  "MBUI_PROFILE_ROWS": 80,
-  "MBUI_HOME_SAME": 80,
-  "MBUI_SWITCH_AHEAD": 80,
-  "MBUI_STATION_UPDATES": 80,
-  "MBUI_STATION_MOVE": 81,
-  "MBUI_TERMINALS": 80,
-  "MBUI_SWR_VIEWS": 81,
-  "MBUI_OPEN_WHOLE": 81,
-  "MBUI_PAGE_PICTURES": 81,
+  "MBUI_PROFILE_ROWS": 78,
+  "MBUI_HOME_SAME": 78,
+  "MBUI_SWITCH_AHEAD": 78,
+  "MBUI_STATION_UPDATES": 78,
+  "MBUI_STATION_MOVE": 79,
+  "MBUI_TERMINALS": 78,
+  "MBUI_SWR_VIEWS": 79,
+  "MBUI_OPEN_WHOLE": 79,
+  "MBUI_PAGE_PICTURES": 79,
+  "MBUI_START_PAGE": 79,
 }
 
 ///|

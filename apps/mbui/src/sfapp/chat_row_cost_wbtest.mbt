@@ -15,8 +15,10 @@ let row_nodes_large_most : Int = 85
 /// The most the frame a workspace is switched in on 小屏 may make, let go and lay out (the list 25 ms late).
 // (2026-11-14: 551, 545, 407 before Home's bar held its key of the stations' newer releases, let go of in the workspace
 // left and made in the one come to); 2026-11-16: 560, 554, 414 before Home's bar held its 看板 key beside 筛选 (the same
-// way: let go of and made again), the filter's and the stations' releases' keys no box of their own)
-let switch_frame_most : (Int, Int, Int) = (562, 556, 412)
+// way: let go of and made again), the filter's and the stations' releases' keys no box of their own); 2026-11-17: 562,
+// 556 made and let go before Home's transfers key was made as nodes (sfdesk transfers_key_node), not hosted as an old
+// view: made and let go with the workspace's Home as its bar's other keys are
+let switch_frame_most : (Int, Int, Int) = (567, 561, 412)
 
 ///|
 /// The nodes each of the first `n` rows of the real workspace's list is made of, alone, at rest, in a window `w` by

@@ -36,7 +36,7 @@ pub(all) struct Core {
   home : () -> Unit
   /// a chat opened: its station, its session, its title
   open_chat : (String, String, String) -> Unit
-  /// a station's drive opened (its folders lent: src/sfapp/drive.mbt), by its address
+  /// a station's drive opened (its folders lent: src/sfapp/files_narrow.mbt), by its address
   open_drive : (String) -> Unit
   /// A pinned folder opened in the same destination as the station's files.
   open_folder : (String, String) -> Unit

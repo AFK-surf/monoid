@@ -7,13 +7,15 @@
 /// last a way back to it (`go`, given its index). Where the line has not the room, steps leave it whole, never cut
 /// short: those between the first and the last first (the one after the first first, the one before the last last),
 /// then the first; a … where they were offers them instead (a menu of those left out as it is pressed, in their order).
-/// Only where the last alone has not the room are its words cut short. Made anew as the steps change. Its node.
+/// Only where the last alone has not the room are its words cut short. Made anew as the steps change. `last_link`: the
+/// last a way back to it too, in the steps' words (a folder's trail of the folders over it alone: way_line's). Its node.
 #callsite(autofill(loc))
 pub fn way_line_node(
   parent : @view.View,
   steps : () -> Array[String],
   look : () -> WayLook,
   go : (Int) -> Unit,
+  last_link? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(line) {
@@ -41,7 +43,12 @@ pub fn way_line_node(
           }
           p.box(fn(s) {
             style_node(s, fn() { look().step }, in_row=true)
-            if last {
+            if last && last_link {
+              s.min_width(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
+              presses_node(s, fn() { go(i) })
+              s.says(Is(Some(@view.said(Link, label=name)))) |> ignore
+              words_node(s, fn() { name }, fn() { look().words.then(way_last) }).min_width(Is(Some(0.0))) |> ignore
+            } else if last {
               s.min_width(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
               words_node(s, fn() { name }, fn() { look().here.then(way_last) }).min_width(Is(Some(0.0))) |> ignore
             } else {

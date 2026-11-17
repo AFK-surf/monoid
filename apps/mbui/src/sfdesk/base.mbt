@@ -3,11 +3,11 @@ using @sfbase {
   place_pick,
   place_key,
   files_into,
-  workspace_of,
+  
   open_page,
-  this_machine,
+  
   open_link,
-  open_drive_file,
+  
   over_flight,
   flight_frame,
   flight_files,
@@ -55,83 +55,75 @@ using @sfbase {
   fresh_reset,
   new_fade,
   new_leave,
-  arrangement_none,
-  browse_topic,
-  browse_where,
-  chosen_none,
+  
+  
+  
+  
   count,
   coming_of,
   keeping_stop,
   download_cancel,
-  download_drive_file,
-  download_drive_zip,
+  
+  
   download_of_drive,
   download_retry,
-  drive_fetch,
-  drive_keep,
-  drive_part,
+  
+  
+  
   dv_absolute,
-  dv_arrange,
-  dv_drive_stations,
-  dv_error,
-  dv_file,
-  dv_keep_both,
+  
+  
+  
+  
+  
   dv_join,
   dv_kind_icon,
   dv_name,
-  dv_check_name,
+  
   dv_parent,
-  dv_trouble,
-  dv_words,
-  dv_pump,
-  dv_rights,
-  dv_root_label,
+  
+  
+  
+  
+  
   dv_stations,
-  dv_upload,
+  
   field,
   filter_of,
   flag,
   items,
   number,
-  say,
+  
   stations_at_glance,
   text,
-  ups,
-  type Arrangement,
-  type BrowseView,
+    
   type ChatItem,
-  type ChatRef,
-  type Chosen,
+  type ChatRef, 
   type DriveAt,
-  type DvEntry,
-  type DvRights,
-  type DvRoot,
-  type DvStation,
-  type DvUpload,
+  type DvEntry,  
+  type DvStation, 
   type Dragged,
   type Page,
   type PageFrame,
   type Source,
   type Workspace,
   settings_core,
-  // the files' tabs as the core keeps them (files_tabs.mbt)
-  type FilesTab,
-  type FilesTabs,
-  files_tabs,
-  files_tabs_act,
-  same_pane,
+  // the files' tabs as the core keeps them (files_tabs.mbt)  
+  
+  
+  
 }
 
 ///|
 /// A sidebar's rows, the library's (src/sf side_rows.mbt).
 using @sf {
   nav_fade,
-  nav_row,
-  nav_apart,
+  
+  
   nav_item,
   nav_title,
   nav_meta,
-  nav_words,
+  
   nav_mark_side,
   nav_action,
   nav_new,

@@ -23,10 +23,12 @@
 /// words_links_node: nothing made for them till a link comes), the same at 60, 120, 24 and 7: before it 784, 343, 2569
 /// and 898 made, 683 and 998 made scrolling up. Wide cold made 2 more (2568 before) once the sidebar's band and foot are
 /// made as nodes (lists_band_node beside the system's bars too, lists_foot_node) and not hosted as old views: laid out
-/// 11 fewer (3693) and bindings 2 (2752).
+/// 11 fewer (3693) and bindings 2 (2752). "phone cold" made 5 more (783) and "phone again" 2 bindings more (299) once
+/// Home's transfers key is made as nodes (sfdesk transfers_key_node), not hosted as an old view, at rest while a chat
+/// covers Home: laid out 38 fewer (894), the same at 60, 120, 24 and 7.
 let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
-  "phone cold": (783, 38, 894, 148, 784),
-  "phone again": (342, 26, 245, 29, 299),
+  "phone cold": (788, 38, 856, 148, 784),
+  "phone again": (342, 26, 245, 29, 301),
   "wide cold": (2570, 483, 3682, 560, 2750),
   "wide again": (897, 130, 882, 124, 1202),
   "phone up": (667, 762, 644, 92, 0),

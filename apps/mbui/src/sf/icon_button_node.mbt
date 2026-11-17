@@ -40,9 +40,10 @@ pub fn icon_button_opens_node(
   icon : String,
   label : () -> String,
   open : (@view.View) -> Unit,
+  size? : Double = icon_button_side,
   loc~ : SourceLoc,
 ) -> @view.View {
-  icon_button_by(loc~, parent, icon, label, open, None, icon_button_side, 16.0, None, fn() { false })
+  icon_button_by(loc~, parent, icon, label, open, None, size, 16.0, None, fn() { false })
 }
 
 ///|

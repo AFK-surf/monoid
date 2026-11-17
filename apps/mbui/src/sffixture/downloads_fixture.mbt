@@ -407,18 +407,22 @@ pub fn fixture_download_read(params : Json, done : (Result[(Json, Bytes), Json])
 ///|
 /// MBUI_FIXTURE=drive-download: a file of the drive downloading (40% here), a folder of it being zipped for it.
 pub fn fix_drive_downloads(station : String, root : String) -> Unit {
-  fix_downloads.push({
-    station,
-    key: "",
-    root,
-    path: "首页截图.png",
-    zip: false,
-    name: "首页截图.png",
-    size: 1000.0,
-    loaded: 400.0,
-    state: "going",
+  // (done by the made-up station now and told, as the core tells a change: what read the downloads before they came, a
+  // page made as it was put on, reads them anew: fix_now)
+  fix_now(fn() {
+    fix_downloads.push({
+      station,
+      key: "",
+      root,
+      path: "首页截图.png",
+      zip: false,
+      name: "首页截图.png",
+      size: 1000.0,
+      loaded: 400.0,
+      state: "going",
+    })
+    fix_downloads.push({ station, key: "", root, path: "设计稿", zip: true, name: "设计稿.zip", size: 0.0, loaded: 0.0, state: "going" })
   })
-  fix_downloads.push({ station, key: "", root, path: "设计稿", zip: true, name: "设计稿.zip", size: 0.0, loaded: 0.0, state: "going" })
 }
 
 ///|

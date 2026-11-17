@@ -38,8 +38,12 @@
 // page_wide_node.mbt): a block added or removed wakes only the block coming to be or ceasing to be first, not every
 // block's padding in view (49 wide rows: vaultItems/item 19 to 7, station-move station/* 9/13 to 1/2, profiles/quota
 // 38 to 25, changelog/release 48 to 37, archive/archived 82 to 72).
+// Added 2026-11-17: 文件's place in a wide window made once as nodes (its sidebar, sfdesk files_side_node.mbt, and the
+// files' page, sfpages files_page_node.mbt): a member of the workspace come or gone runs what of them reads the
+// workspace's stations' rows (17), where the old view built it again uncounted.
 ///|
 let real_size_bindings_known : Map[String, Int] = {
+  "wide place workspace/member": 17,
   "phone home chats/down": 27,
   "phone home chats/card": 18,
   "phone home chats/archived": 17,

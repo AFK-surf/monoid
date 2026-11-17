@@ -5,7 +5,7 @@
 ///|
 /// Home in node `v` for `src` (as the narrow frame makes it once: narrow_made_as's Home): the lists under the top bar's
 /// room, over the bottom bar's; the top bar over them. Tips in `tips`, pictures asked for on `stint`.
-fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> Int) -> Unit {
+fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> Int, shown? : () -> Bool = fn() { true }) -> Unit {
   let workspace = fn() { workspace_in_view(src).0 }
   let view = fn() {
     match workspace() {
@@ -78,7 +78,7 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
   |> ignore
   v.box(fn(bar) {
     bar.over(Is(true)).lies_along(Is(Start)).alpha(By(fn() { 1.0 - away() })) |> ignore
-    home_top_bar_node(bar, src, tips, workspace, view)
+    home_top_bar_node(bar, src, tips, workspace, view, shown~)
   })
   |> ignore
   v.show(@sfpages.search_on_lists, fn(s) {
@@ -117,6 +117,7 @@ fn home_top_bar_node(
   workspace : () -> Workspace?,
   view : () -> ChatsView?,
   bell? : Bool = true,
+  shown? : () -> Bool = fn() { true },
 ) -> Unit {
   v.box(fn(g) {
     g.glass(By(fn() { Some(@sf.glass_bar()) })) |> ignore
@@ -220,19 +221,10 @@ fn home_top_bar_node(
           _ => None
         }
       })
-      // transfers beside it (its old view, hosted)
+      // transfers beside it (sfdesk's transfers_key_node: there only while something comes or goes)
       row.box(fn(k) {
-        // (as wide as it is laid out, told by the old frame: what gives way is the workspace's name)
-        let wide : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
-        k.shrink(Is(0.0)).width(By(fn() { wide.get() })) |> ignore
-        @ui.old(k, fn(c) {
-          match workspace() {
-            Some(w) => @sfdesk.transfers_key(c, src, w.id, 34.0, 20.0)
-            None => ()
-          }
-        }, natural=true, fits=(home_transfers_most, wide))
-        |> @ui.old_takes_own
-        |> ignore
+        k.shrink(Is(0.0)) |> ignore
+        @sfdesk.transfers_key_node(k, src, fn() { workspace().map(fn(w) { w.id }).unwrap_or("") }, 34.0, 20.0, tips, shown~)
       })
       |> ignore
       // the stations' newer releases waiting for this person, in the app's own update mark as the wide frames' sidebar
@@ -321,6 +313,3 @@ fn home_top_bar_node(
 /// How far in from its corner the bell's dot is.
 let home_bell_dot_at : Double = 5.0
 
-///|
-/// How wide the transfers' key beside the filter may be at most (the key, as its old view lays it out).
-let home_transfers_most : Double = 34.0

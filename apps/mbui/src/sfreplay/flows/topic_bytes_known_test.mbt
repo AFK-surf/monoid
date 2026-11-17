@@ -25,7 +25,7 @@ fn init {
     ("draft", 66, 6, 0),
     ("draft-restart", 42, 0, 0),
     ("drive-delete", 43, 1, 0),
-    ("drive-download-many", 21, 2, 0),
+    ("drive-download-many", 21, 1, 0),
     ("drive-lend", 50, 1, 0),
     ("drive-list", 43, 4, 0),
     ("drive-play", 117, 14, 0),
@@ -84,7 +84,10 @@ fn init {
     ("wide-answer-reply", 26, 4, 0),
     ("wide-new-chat", 22, 3, 0),
     ("wide-newline", 26, 3, 0),
-    ("wide-places", 30, 6, 0),
+    // (wide-places recorded again 2026-11-17, 文件 made once as nodes: its home folder's listing and browsing now come
+    // before the run goes on to the chats (drive 0.4 KB, driveBrowse 0.3 KB, what 主目录 shows; the old run let go of
+    // them unanswered), and stationUpdates, which the shell asks since the last recording (0.15 KB): 31 KB)
+    ("wide-places", 31, 6, 0),
     ("wide-resize", 51, 5, 0),
     ("wide-row-menu", 55, 0, 0),
     ("wide-send", 26, 3, 0),

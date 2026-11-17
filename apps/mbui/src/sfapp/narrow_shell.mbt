@@ -391,6 +391,8 @@ fn narrow_made(src : Source, page : Page) -> (String, (@view.View, () -> Page, P
           narrow_made_as(src, Setting(r), true).map(fn(m) { ("place/" + m.0, m.1) })
         _ => None
       }
+    // (文件 at the root of the stack: the bottom bar's place)
+    Files if @signals.untracked(fn() { app.nav.pages().get(0) }) == Some(Files) => narrow_made_as(src, page, true)
     _ => narrow_made_as(src, page, false)
   }
 }
@@ -491,6 +493,7 @@ fn narrow_made_as(
                 fn() {
                   match page() {
                     Place(n) => n
+                    Files => "files"
                     _ => ""
                   }
                 },
@@ -565,7 +568,7 @@ fn narrow_made_as(
     // the chats' lists under Home's top bar (home_node); a device waiting to be confirmed in the workspace's safe mode
     // sees that instead (lock_gate_node)
     Home =>
-      made("home", fn(p, core, _here, _frame, stint, _acts) {
+      made_at("home", place, fn(p, core, _here, _frame, stint, _acts, serial) {
         let tips = @sf.TipLayer::new(fn() { None })
         p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         // (the bar's first place: coming in as a place switched to does, all of it but its ground, told built then:
@@ -584,7 +587,7 @@ fn narrow_made_as(
           if waiting {
             lock_gate_node(q, src, core)
           } else {
-            home_node(q, src, tips, stint)
+            home_node(q, src, tips, stint, shown=fn() { app.nav.shows(serial) })
           }
         })
       })
@@ -693,6 +696,30 @@ fn narrow_made_as(
     Setting(Connect(station, id)) =>
       made("connect/" + station + "/" + id, fn(p, core, here, frame, stint, _acts) {
         @sfpages.connect_node(p, src, core, here, station, id, on_back=core.pop, frame~, stint~)
+      })
+    // 文件: its places (files_narrow.mbt); at the root of the stack a place of the bottom bar's (narrow_made)
+    Files =>
+      made_at(if place { "place/files" } else { "files" }, place, fn(p, _core, _here, frame, _stint, _acts, serial) {
+        guard workspace_in_view(src).0 is Some(w) else { return }
+        files_narrow_node(p, src, w.id, place, frame, shown=fn() { app.nav.shows(serial) })
+      })
+    // a page of a station's drive (by its folder: another folder another page), laid out by its width (sfpages'
+    // drive_page_node), a folder gone into a page over it (or back to it where it is in the stack)
+    Drive(at) =>
+      made_at("drive/" + at.station + "/" + at.root.unwrap_or("") + "/" + at.path, false, fn(p, _core, _here, frame, _stint, _acts, serial) {
+        guard workspace_in_view(src).0 is Some(w) else { return }
+        let under = app.nav.under()
+        @sfpages.drive_page_node(
+          p,
+          src,
+          w.id,
+          fn() { at },
+          frame=fn() { { ..frame(), back: under.map(fn(u) { drive_back_label(src, w, u) }) } },
+          width=fn() { p.window().0 },
+          on_back=fn() { @sfbase.go_back() |> ignore },
+          go=drive_go_back_to,
+          shown=fn() { app.nav.shows(serial) },
+        )
       })
     // a drive's text read: the whole window, the reader's own bars over it (sfpages' reader_page_node)
     DriveRead(at) =>

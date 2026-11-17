@@ -14,9 +14,9 @@ let reset_by_hand : Ref[Bool] = Ref(false)
 fn init {
   // ＋'s Station 文件 (a composer's, sfpages): the station files' picker (sfdesk's station_pick.mbt). Said once, as the
   // app starts (reset runs only as a Tester starts: a wire set there is never set in the app)
-  station_files_asked.val = @sfdesk.station_files_pick
+  station_files_asked.val = @sfpages.station_files_pick
   // 浏览文件夹 of a preset's folders (sfpages presets.mbt): the files' page's folder picker, a step further in
-  @sfbase.folder_pick_asked.val = @sfdesk.folder_pick
+  @sfbase.folder_pick_asked.val = @sfpages.folder_pick
   // a page's own key made as nodes (sfpages' chat page: Space): the tape's page brought over first, as the old page's
   @sfbase.page_for_key.val = @sfdesk.tape_page_for_key
   // an agent's card's jobs (sfpages): the chat's services and jobs as the screen shows them
@@ -109,6 +109,7 @@ fn reset() -> Unit {
   first_answered.set(false)
   first_from.val = -1.0
   first_top.val = None
+  first_left.val = false
   first_wide.val = None
   frame_bare.val = false
   window_shown.val = false
@@ -120,7 +121,6 @@ fn reset() -> Unit {
   dv_reset()
   decide_reset()
   @settings.reset()
-  @sfdesk.drive_rows_reset()
   ask_turns.clear()
   wide_reset()
   invite_reset()
@@ -919,9 +919,8 @@ fn page_view(
         }
         NewChat => new_chat_page(c, src, w)
         Place(p) => place_page(c, src, w, p)
-        // 文件: a place of the bar at the stack's root, else a page pushed
-        Files => files_page(c, src, w, place=root)
-        Drive(at) => drive_page(c, src, w, at)
+        // 文件 and a station's drive: made once (narrow_shell.mbt's narrow_made_as: files_narrow.mbt)
+        Files | Drive(_) => ()
         // (made once: narrow_shell.mbt's reader_page_node)
         DriveRead(_) => ()
         DrivePlay(at) => @sfpages.play_page(c, src, at)
@@ -1428,7 +1427,17 @@ fn first_page_node(v : @view.View, src : Source) -> Unit {
       }
       // (what it read held on to till the first page shows, answered or not: its readers are built by then, and
       // what was declared and read by this alone, let go of as this stops, would be asked again by them)
-      if first_page_ready_by(src, w, wide, ask) || answered {
+      // (in the wide frame a place of the rail's gone to before the first page is shown: the first page is not shown at
+      // all, so waited for no more; what that place reads is its own wait, the pane's. Not the page the frame lands on,
+      // a chat or a new chat put over Home (sfdesk's land): that is the first page, waited for as ever)
+      // (once gone, gone: back to the chats after is no first page shown again)
+      if wide &&
+        (match first_top.val { Some(p) => p != app.nav.top(); None => false }) &&
+        !(app.nav.top() is (Home | Chat(_) | NewChat)) {
+        first_left.val = true
+      }
+      let left = first_left.val
+      if left || first_page_ready_by(src, w, wide, ask) || answered {
         Some(None)
       } else {
         Some(Some(t_reading_workspaces(src)))
@@ -1472,6 +1481,12 @@ let first_from : Ref[Double] = Ref(-1.0)
 /// waits for (first_page_ready_by), whatever is opened over it meanwhile.
 // kept across runs: put back as a run begins (new_run)
 let first_top : Ref[Page?] = Ref(None)
+
+///|
+/// Whether a place of the rail's was gone to in the wide frame before the first page was shown (first_page_node): its
+/// wait over for good.
+// kept across runs: put back as a run begins (reset)
+let first_left : Ref[Bool] = Ref(false)
 
 ///|
 /// Whether the shell whose function was declared as the workspace came into view (opens_ahead_node) is the wide frame,

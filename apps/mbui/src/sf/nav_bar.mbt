@@ -181,7 +181,7 @@ let nav_sub_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4, col
 /// The bar (nav_bar's) as nodes in `parent`: back to where `back` says (nav_back_node), `on_back` as it is pressed;
 /// `title` in the middle (and `sub` under it where said), 84 clear of either side, cut short where it has less; what
 /// `trailing` makes at its end, on back's 32 line; on the page's ground, from `top` above it down (the status bar's
-/// height as it is).
+/// height as it is). `back_most`: how wide back's word may be (nav_back's `max_w`), there whole or not at all.
 #callsite(autofill(loc))
 pub fn nav_bar_node(
   parent : @view.View,
@@ -191,6 +191,7 @@ pub fn nav_bar_node(
   sub? : () -> String = fn() { "" },
   top? : () -> Double = fn() { 0.0 },
   trailing? : (@view.View) -> Unit,
+  back_most? : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(b) {
@@ -209,9 +210,17 @@ pub fn nav_bar_node(
         .lines_up(Is(Some(Middle)))
         .shrink(Is(1.0))
         .min_width(Is(Some(0.0)))
+        .max_width(Is(Some(1.0e9)), within=true)
         |> ignore
         col.box(fn(l) {
-          l.height(Is(Some(nav_line_h))).lies_along(Is(Middle)).clips(Is(true)).min_width(Is(Some(0.0))) |> ignore
+          // (no wider than the room between its sides: a long name is cut there, not centred past back and the end)
+          l
+          .height(Is(Some(nav_line_h)))
+          .lies_along(Is(Middle))
+          .clips(Is(true))
+          .min_width(Is(Some(0.0)))
+          .max_width(Is(Some(1.0e9)), within=true)
+          |> ignore
           l.box(fn(w) {
             styled_words(w, title, fn() { nav_title_words }).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
           })
@@ -227,7 +236,7 @@ pub fn nav_bar_node(
       // back and what is at the end, on the 32 line at its top
       i.box(fn(e) {
         e.over(Is(true)).row(Is(true)).height(Is(Some(nav_line_h))).lines_up(Is(Some(Middle))) |> ignore
-        nav_back_node(e, back, on_back)
+        nav_back_node(e, back, on_back, most?=back_most)
         e.box(fn(gap) { gap.grow(Is(1.0)) |> ignore }) |> ignore
         match trailing {
           Some(f) =>
