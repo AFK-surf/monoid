@@ -43,7 +43,8 @@
   delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
   a part that needs more is made faster or gets fewer bases, not longer (10 bases: the owner, 2026-11-11).
 - The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
-  notary service, which can take a job's five minutes (2026-11-12, four runs in a row). A failed or cancelled
+  notary service, which can take a job's five minutes (2026-11-12, four runs in a row). Nor does Windows' (`desktop-win`): a new MoonBit's cold
+  build was cut at its five minutes run after run and held every part's beta back (the user, 2026-11-17). A failed or cancelled
   `desktop` leaves the Mac's feed as it was; it is main's red, and `done` waits for it, so the next run plans it again.
 - The Android delta's deflater is part of the format: JZlib's version (`libs/mbui/android/jzlib`) and the level and settings
   `Delta.java` deflates with must be what every installed app carries, or what it makes no longer is the release's APK
