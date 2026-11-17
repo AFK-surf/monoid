@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
 | [8aa48a00c](https://github.com/AFK-surf/monoid/commit/8aa48a00c6a2fa69d3d45b1b873aa1de75626e9e) release: resolve the previous stable base SHA when | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.14 | 125.72 |
 | [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.34 | 125.46 |
 | [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.29 | 129.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 2.52 | 3.56 | 15.39 | 36.78 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 | [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
-| [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7f8b43bd1](https://github.com/AFK-surf/monoid/commit/7f8b43bd1f84373744e88f3abada311916279df8) app: what lights a message whole is one band the l | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.53 |
 | [8aa48a00c](https://github.com/AFK-surf/monoid/commit/8aa48a00c6a2fa69d3d45b1b873aa1de75626e9e) release: resolve the previous stable base SHA when | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
 | [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
 | [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13ab0302a](https://github.com/AFK-surf/monoid/commit/13ab0302acf60f9e6ee626e2ee34d1e98d36072a) CI: 分支 Mac 检查与轻量 Apple natives 上 macos-26、natives  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
-| [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
