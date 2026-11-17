@@ -378,6 +378,8 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
         guard entry_of(borrowed_all, id) is Some(same) && physical_equal(same, had) else { continue }
         if had.get("kind") is Some(String("profile")) {
           self.placed_home(self.place_profile(id, had, got))
+          // (lent meanwhile, or heard of again, while it was placed: that one's copy in its place, as above)
+          guard entry_of(borrowed_all, id) is Some(same) && physical_equal(same, had) else { continue }
           let revision = num_or0(get(Some(got), "quotaRevision"))
           if js_num(had.get("version")) >= 0.0 {
             let before = match had.get("quotaRevision") {
@@ -390,6 +392,7 @@ async fn Sharing::reconcile_once(self : Sharing) -> Unit {
           had["quotaRevision"] = jnum_js(revision)
         } else {
           self.place_skill(id, had, got)
+          guard entry_of(borrowed_all, id) is Some(same) && physical_equal(same, had) else { continue }
         }
         had["version"] = jnum_js(num_or0(get(Some(got), "version")))
         had["allow"] = allow_of(get(Some(got), "allow"))

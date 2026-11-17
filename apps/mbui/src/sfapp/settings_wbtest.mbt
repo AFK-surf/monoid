@@ -1043,14 +1043,15 @@ test "adding an Anthropic subscription asks before opening its authorization pag
   let t = settings_tester("new-profile:ws1/st1", shows="settings-new-profile-login", platform=2)
   t.click(Button, label="打开授权页面")
   sheet_rested(t, "sf-present")
-  assert_true(t.find("打开 Claude 授权页面？") is Some(_))
+  assert_true(t.find("请确认登录环境") is Some(_))
+  assert_true(t.find(@sf.t("common.login.confirmClaudeWarning")) is Some(_))
   assert_true(t.opened().is_empty(), msg="nothing opened before confirmation")
   t.back()
   sheet_rested(t, "sf-present")
   assert_true(t.opened().is_empty(), msg="cancelling leaves the page closed")
   t.click(Button, label="打开授权页面")
   sheet_rested(t, "sf-present")
-  t.tap_text("继续打开")
+  t.tap_text("确认并登录")
   assert_eq(t.opened().length(), 1)
 }
 

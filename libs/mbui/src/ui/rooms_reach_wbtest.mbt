@@ -380,3 +380,19 @@ test "rooms: a row of what scrolls under a bar's glass is not drawn over that ba
     "apart: a box (a node of the window's tree's at 16,80 300×40) and a box (a node of the window's tree's at 266,65 40×30) are drawn over each other by 50×15",
   ])
 }
+
+///|
+test "rooms: an app's rules for its presses' room, its least by a mouse and a finger and from what width a window looks for no finger" {
+  let was = press_rules_now()
+  let (_, _) = rr_tester(0, fn(b) { rr_key(b, 24.0, 24.0, "钥") })
+  assert_eq(room_least(), 36.0, msg="mbui's own, a keyboard and mouse")
+  set_press_rules({ finger: 44.0, mouse: 28.0, large_from: None })
+  assert_eq(room_least(), 28.0, msg="the app's own, a keyboard and mouse")
+  let (_, _) = rr_tester(2, fn(b) { rr_key(b, 24.0, 24.0, "钥") })
+  assert_eq(room_least(), 44.0, msg="a finger's, every window looked at for one")
+  set_press_rules({ finger: 44.0, mouse: 28.0, large_from: Some(300.0) })
+  assert_eq(room_least(), 28.0, msg="a finger on a window 400 wide, a large screen's from 300: the mouse's")
+  set_press_rules({ finger: 44.0, mouse: 28.0, large_from: Some(500.0) })
+  assert_eq(room_least(), 44.0, msg="a finger on a window 400 wide, a large screen's from 500 only: a finger's")
+  set_press_rules(was)
+}

@@ -73,6 +73,10 @@
       requestAnimationFrame(tick);
     }
   };
+  // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
+  // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
+  // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
+  H.framesPaced = (_hz) => H.requestFrame();
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two
@@ -365,6 +369,8 @@
       canvas.width = w;
       canvas.height = h;
     }
+    // (the system's bars as the page's size changes: a phone turned, a window moved)
+    if (barsSetUp) barsNow();
   }
 
   // ---- WebGL2 renderer ----
@@ -915,29 +921,35 @@
         float qx = floor(q * 0.000244140625);
         float qy = q - qx * 4096.0;
         vec2 gp = v_rect.xy + vec2(qx * 0.5 - 256.0, qy * 0.5 - 256.0);
-        float gr = max(min(v_rect.z, v_rect.w) * 1.65, 44.0);
-        spot = 1.0 - smoothstep(gr * 0.12, gr, length(p - gp));
+        float gr = max(min(v_rect.z, v_rect.w) * 2.2, 88.0);
+        spot = 1.0 - smoothstep(gr * 0.08, gr, length(p - gp));
       }
       float ndl = dot(n2, vec2(-0.6, -0.8));
       float rim = v_c2.x;
       // (1) the body of the meniscus a little cooler, never darker than a shade: room for the ridge to show white
       float body_ring = r2 * (1.0 - 0.35 * r);
       c = mix(c, c * vec3(0.92, 0.945, 0.98), rim * 0.42 * body_ring);
-      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, more near the pointer,
-      // and a Fresnel sheen; a soft sheen over the face under the pointer: towards white itself, not by what is left of
-      // white, so a light ground does not swallow it
-      float rim_lit = rim * (1.0 + 0.42 * spot);
+      // (under the pointer the meniscus a clear ice blue, as light bent through it is: none where it is not)
+      c = mix(c, c * vec3(0.74, 0.86, 1.0), rim * 0.72 * spot * body_ring);
+      // (2) a ridge of light 0.8 in from the edge, most at the top left and some across from it, and a Fresnel sheen;
+      // near the pointer more of both, and the face lit round it: what shows on #F5F5F7 as on what is dark (it was
+      // white towards white there, under a pixel's step, and the ridge already at its ceiling)
+      // (a sheen over the face round the pointer: white over what is dark, a cool white over a light ground,
+      // where white on white would not show; less towards the rim, where the ridge lights)
+      vec3 spot_sheen = mix(vec3(1.0, 1.0, 1.0), vec3(0.84, 0.92, 1.0), smoothstep(0.72, 0.94, luma(c)));
+      c = mix(c, spot_sheen, spot * spot * (0.28 - 0.12 * r));
       float spec_band = clamp(1.0 - abs(d + 0.8) / 1.05, 0.0, 1.0);
       spec_band *= spec_band;
       float fresnel = pow(clamp(1.0 - Nz, 0.0, 1.0), 2.5);
-      float spec = rim_lit * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22) +
-                              0.28 * fresnel * max(ndl + 0.3, 0.0)) +
-                   0.14 * spot * (0.45 + 0.55 * r);
-      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, 0.92));
-      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white
+      // (near the pointer the ridge lit all the way round, whichever way it faces, nearly to white)
+      float spec = rim * (spec_band * (0.92 * pow(max(ndl, 0.0), 1.8) + 0.48 * pow(max(-ndl, 0.0), 2.2) + 0.22 + 0.85 * spot) +
+                          0.28 * fresnel * max(ndl + 0.3, 0.0) + 0.42 * fresnel * spot);
+      c = mix(c, vec3(1.0, 1.0, 1.0), clamp(spec, 0.0, mix(0.92, 0.99, spot)));
+      // (3) its outermost 0.85 a sharp cool edge outside the ridge, so its outline holds on white; giving way where the
+      // pointer lights the edge
       float edge_b = clamp(1.0 + d / 0.85, 0.0, 1.0);
       edge_b *= edge_b;
-      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0));
+      float struct_rim = rim * edge_b * (0.165 * (1.0 - 0.50 * max(ndl, 0.0)) + 0.045 * max(-ndl, 0.0)) * (1.0 - 0.72 * spot);
       c = mix(c, c * vec3(0.36, 0.41, 0.50), clamp(struct_rim, 0.0, 0.34));
       c += mb_dither(p * u_scale) / 255.0;
       o = vec4(c, 1.0) * (a * v_c2.w);
@@ -2194,8 +2206,17 @@
   let generation = 0;
   // the glyph drawn last (H.glyph), its picture until it is put in the atlas (H.glyphPut)
   let held = null;
+  // where a glyph is drawn to be read back: one canvas, grown and never shrunk, each glyph drawn in its top left
+  // corner and only that much of it cleared and read. Sizing it to each glyph (as till 2026-11-17) gave the canvas a
+  // new backing store per glyph: on a phone's CPU an issue's page of Han opened in one 300 ms frame, two thirds of it
+  // that (clearRect 138 ms, getImageData 36 ms of a 4x slowed Chrome).
   const rc = document.createElement('canvas');
   const rctx = rc.getContext('2d', { willReadFrequently: true });
+  rc.width = rc.height = 0;
+  // a canvas's font set only as it changes: the setter parses the CSS font each time, set or not (mctxFont, rctxFont:
+  // what each was last set to; forgotten as a face comes or goes, so the new one is found)
+  let mctxFont = '', rctxFont = '';
+  const setMFont = (f) => { if (f !== mctxFont) { mctx.font = f; mctxFont = f; } };
   // the faces given (faceAdd, style.mbt), loaded: each a family of its own ahead of the place's own
   const faces = new Set();
   // the face a style is set in: the one it names; else code's (style bit 2), what people wrote's (bit 16), the app's
@@ -2244,6 +2265,7 @@
   // what was shaped and drawn before a face or the scale changed, forgotten (MoonBit drops its glyphs as the
   // generation moves on)
   const textChanged = () => {
+    mctxFont = rctxFont = '';
     advCache.clear();
     held = null;
     generation++;
@@ -2292,7 +2314,7 @@
   };
 
   H.fontMetrics = (size, weight, style, out) => {
-    mctx.font = font(size, weight, style);
+    setMFont(font(size, weight, style));
     const m = mctx.measureText('Hg国');
     out[0] = m.fontBoundingBoxAscent;
     out[1] = m.fontBoundingBoxDescent;
@@ -2330,10 +2352,16 @@
   // advances as the widest of the ten and is drawn centred in it (rasterize)
   const isDigit = (c) => c.length === 1 && c >= '0' && c <= '9';
   const tabWidth = (f) => Math.max(...'0123456789'.split('').map((d) => width(f, d)));
+  // a cluster that is a CJK unified ideograph (its first code point: the basic block and extension A, the
+  // compatibility ideographs, the supplementary planes' extensions)
+  const han = (c) => {
+    const cp = c.codePointAt(0);
+    return (cp >= 0x3400 && cp <= 0x9FFF) || (cp >= 0xF900 && cp <= 0xFAFF) || (cp >= 0x20000 && cp <= 0x323AF);
+  };
 
   H.shape = (text, size, weight, style, out) => {
     const f = font(size, weight, style);
-    mctx.font = f;
+    setMFont(f);
     const cap = out.length / 4;
     const segs = [...seg.segment(text)];
     // the canvas says no more of a cluster than its width alone; within a word, a cluster starts where the word up
@@ -2345,14 +2373,21 @@
     const upTo = style & 8
       ? (w, i) => segs.slice(w, i + 1).map((s) => s.segment).join('\u200C')
       : (w, i) => text.slice(segs[w].index, segs[i].index + segs[i].segment.length);
+    // A Han character after a Han character starts a word of its own: no kerning pair joins two of them, so it
+    // advances by its own width, and a paragraph with no spaces is measured cluster by cluster, not as a prefix
+    // growing to its end at each (500 characters were 125,000 measured, a frame of 70-110 ms). Punctuation beside Han
+    // stays in its word, the spacing the browser trims there trimmed as before.
+    const starts = new Uint8Array(segs.length);
+    for (let i = 0; i < segs.length; i++) {
+      const c = segs[i].segment;
+      starts[i] = i === 0 || blank(segs[i - 1].segment) || (han(c) && han(segs[i - 1].segment)) ? 1 : 0;
+    }
     const xs = new Array(segs.length);
     let word = 0;
     for (let i = 0; i < segs.length; i++) {
       const c = segs[i].segment;
-      if (blank(c)) {
-        word = i + 1;
-        continue;
-      }
+      if (blank(c)) continue;
+      if (starts[i]) word = i;
       xs[i] = width(f, upTo(word, i)) - width(f, c);
     }
     let k = 0;
@@ -2364,11 +2399,11 @@
       if (blank(c)) {
         adv = width(f, c);
       } else {
-        const last = i + 1 >= segs.length || blank(segs[i + 1].segment);
+        if (starts[i]) word = i;
+        const last = i + 1 >= segs.length || blank(segs[i + 1].segment) || starts[i + 1];
         const end = last ? width(f, upTo(word, i)) : xs[i + 1];
         adv = Math.max(0, end - xs[i]);
       }
-      if (blank(c)) word = i + 1;
       if (style & 32 && isDigit(c)) adv = tabWidth(f);
       let key = -1;
       if (c === '\n') adv = 0;
@@ -2399,7 +2434,7 @@
     held = null;
     const sc = dpr;
     const sub = (fullKey >>> 26) & 7;
-    mctx.font = font(e.size, e.weight, e.style);
+    setMFont(font(e.size, e.weight, e.style));
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
@@ -2417,15 +2452,20 @@
     const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
-    rc.width = pw;
-    rc.height = ph;
+    if (pw > rc.width || ph > rc.height) {
+      // (grown by 64 px steps, to the largest glyph yet: a canvas sized anew forgets its state, set again here)
+      rc.width = Math.max(rc.width, Math.ceil(pw / 64) * 64);
+      rc.height = Math.max(rc.height, Math.ceil(ph / 64) * 64);
+      rctxFont = '';
+      // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
+      // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
+      // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
+      rctx.fillStyle = '#000';
+      rctx.textBaseline = 'alphabetic';
+    }
     rctx.clearRect(0, 0, pw, ph);
-    rctx.font = font(e.size * sc, e.weight, e.style);
-    // drawn in black, as words are mostly dark on light: a canvas makes light words on nothing heavier (its text's
-    // contrast and gamma for light ink), and words drawn from a white glyph were a sixth bolder than the Mac's app
-    // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
-    rctx.fillStyle = '#000';
-    rctx.textBaseline = 'alphabetic';
+    const rf = font(e.size * sc, e.weight, e.style);
+    if (rf !== rctxFont) { rctx.font = rf; rctxFont = rf; }
     rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
@@ -3460,6 +3500,7 @@
     canvas.addEventListener('webglcontextrestored', contextRestored);
     setupGL();
     setupInput();
+    setupPage();
     cb = { frame, pointer, wheel, key, text };
     window.__mb = cb;
     resize();
@@ -3469,6 +3510,84 @@
       H.requestFrame();
     });
   };
+
+  // ---- the page round the app: the keys held, the system's bars, its title and colour, its history ----
+  // The keys held down that change what a press does (@hostapi.mods_held: shift 1, control 2, alt 4, command 8, as a
+  // key's own are told), as the last input the window had says them; none once it is left (blurred, hidden), where its
+  // keys' going up is never seen.
+  let modsNow = 0;
+  H.modsHeld = () => modsNow;
+  // How far the system reaches in over the canvas (a phone's notch, its home indicator: the page laid out under them,
+  // index.html's viewport-fit=cover), as CSS's env(safe-area-inset-*) says, read off a probe padded by them; said on
+  // the system's channel (@hostapi.system_said's `bars`) as it changes, none said while it is none. The soft keyboard
+  // up, the app is laid out above it already (keyboardOver): nothing under it is the system's. (Said as it is found:
+  // as the page's size is measured for a frame, resize, the app takes it between that frame and the next.)
+  let barsProbe = null, barsSaid = '0,0,0,0', barsSetUp = false;
+  function barsNow() {
+    if (!barsProbe && document.body && document.body.appendChild) {
+      barsProbe = document.createElement('div');
+      const st = barsProbe.style;
+      st.position = 'fixed';
+      st.left = st.top = '0';
+      st.width = st.height = '0';
+      st.visibility = 'hidden';
+      st.pointerEvents = 'none';
+      st.paddingTop = 'env(safe-area-inset-top, 0px)';
+      st.paddingRight = 'env(safe-area-inset-right, 0px)';
+      st.paddingBottom = 'env(safe-area-inset-bottom, 0px)';
+      st.paddingLeft = 'env(safe-area-inset-left, 0px)';
+      document.body.appendChild(barsProbe);
+    }
+    if (!barsProbe || !window.getComputedStyle) return;
+    const cs = window.getComputedStyle(barsProbe);
+    const px = (v) => { const n = parseFloat(v); return n > 0 ? n : 0; };
+    const top = px(cs.paddingTop), right = px(cs.paddingRight), left = px(cs.paddingLeft);
+    const bottom = keyboardOver() > 0 ? 0 : px(cs.paddingBottom);
+    const now = [top, bottom, left, right].join(',');
+    if (now === barsSaid) return;
+    barsSaid = now;
+    H.post('system', JSON.stringify({ bars: { top, bottom, left, right } }));
+  }
+  H.barsNow = barsNow;
+  // The page's history (@webpage.location, history_*: the app's calls `mbui.page.*`, host_js.mbt): where it is (its
+  // path, query and fragment), a place put on or in place of the one it is at, and back; a place the browser went to
+  // itself (its back and forward, a person's swipe) said on @webpage.history_channel as `{"location": …}`.
+  const where = () => location.pathname + location.search + location.hash;
+  H.historyLocation = where;
+  H.historyPush = (to) => { history.pushState(null, '', to); };
+  H.historyReplace = (to) => { history.replaceState(null, '', to); };
+  H.historyBack = () => { history.back(); };
+  // The page's title and the colour of what the browser draws round it (its bar, what shows past the page's edges):
+  // @webpage.set_title, set_theme_color (a CSS colour; "" the page's own again).
+  H.setPageTitle = (t) => { document.title = t; };
+  H.setThemeColor = (c) => {
+    const meta = document.querySelector && document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', c);
+    document.documentElement.style.backgroundColor = c;
+    if (document.body) document.body.style.backgroundColor = c;
+  };
+  function setupPage() {
+    const held = (e) => { modsNow = (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0); };
+    for (const name of ['pointerdown', 'pointermove', 'pointerup', 'keydown', 'keyup', 'wheel']) {
+      window.addEventListener(name, held, { capture: true, passive: true });
+    }
+    const none = () => { modsNow = 0; };
+    window.addEventListener('blur', none);
+    document.addEventListener('visibilitychange', none);
+    // Escape is the app's (a layer closed): kept from the browser, which would take it for its own (leaving its full
+    // screen, its focus), but not from an input method composing, whose Escape calls its words off. The app is still
+    // told it (setupInput's keydown).
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && !e.isComposing && e.keyCode !== 229) e.preventDefault();
+    }, { capture: true });
+    // (and as the page's size is measured again: resize)
+    const barsChanged = () => { barsNow(); };
+    window.addEventListener('orientationchange', barsChanged);
+    window.visualViewport?.addEventListener('resize', barsChanged);
+    window.addEventListener('popstate', () => { H.post('history', JSON.stringify({ location: where() })); });
+    barsSetUp = true;
+    barsNow();
+  }
 
   // ---- mbui-render (src/render, scripts/render_web.mjs): no frames, no input ----
   // The canvas the size a window's would be, its text at the list's scale; a frame is drawn into it as any

@@ -25,11 +25,14 @@ fn dec_options() -> Json {
 fn dec_msg(state : String) -> Message {
   let card : Json = if state == "alone" {
     Json::null()
+  } else if state.has_prefix("text") || state == "replied" {
+    { "type": "text", "assigneeText": "等 林 决定", "placeholder": "比如：对话页更顺滑了" }
   } else {
     { "type": "options", "assigneeText": "等 林 决定", "options": dec_options() }
   }
   let decision : Json = match state {
     "answered" => { "resolved": true, "chosen": "一起换", "text": "你 选择了「一起换」" }
+    "replied" => { "resolved": true, "text": "你 已回复" }
     "dismissed" => { "resolved": false, "dismissed": true, "text": "已忽略" }
     _ => { "resolved": false }
   }
@@ -48,7 +51,7 @@ fn dec_msg(state : String) -> Message {
     "by": { "name": "Claude", "agent": "s-c1", "maker": "anthropic", "runtime": "claude" },
     "card": card,
     "decision": decision,
-    "asked": state == "asked" || state == "alone",
+    "asked": state == "asked" || state == "alone" || state == "text",
     "time": @sffixture.ago("30 分钟前", "2026-11-11 20:40"),
   })
 }
@@ -558,5 +561,64 @@ test "under a mouse, as the old view's: an option's row lit, 忽略 underlined i
   t.run_for(@ui.move_most_ms)
   assert_eq(head_drawn(t), was, msg="the need's 忽略")
   dec_audit(t, "the need's 忽略")
+}
+
+///|
+/// A text card (the agent asks for words, not one of its options: `type` text) was drawn as one of options with none,
+/// who decides and 忽略 alone, nothing to answer it with but the chat (2026-11-17).
+test "a text card: who decides, a field with the agent's hint and 回复 in the card's foot corner, 忽略 under it; 回复 with nothing written does nothing; written, it sends it (decision.reply), felt; replied, how it went in its place" {
+  @sf.presenters_reset()
+  rows_reset()
+  let doing : @signals.Signal[Json?] = @signals.signal(None)
+  let calls : Array[(String, Json)] = []
+  let m = @signals.signal(dec_msg("text"))
+  let t = dec_new_row(390.0, dec_src(doing, calls), fn() { m.get() }, platform=2)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("等 林 决定") is Some(_))
+  assert_true(t.find("比如：对话页更顺滑了") is Some(_))
+  assert_true(t.find("忽略") is Some(_))
+  dec_audit(t, "text card")
+  let replies = fn() { calls.filter(fn(c) { c.0 == "decision.reply" }) }
+  // (nothing written: nothing sent)
+  t.click(Button, label="回复")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(replies().length(), 0)
+  t.tap_text("比如：对话页更顺滑了")
+  t.type_text("  对话页滑起来更顺了  ")
+  t.draw()
+  let felt = t.haptics().length()
+  t.click(Button, label="回复")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(replies().length(), 1)
+  let p = Some(replies()[0].1)
+  assert_eq(text(p, "text"), "对话页滑起来更顺了")
+  assert_eq(number(p, "seq"), 8.0)
+  assert_eq(number(p, "thread"), 7.0)
+  assert_eq(text(p, "station"), "ws1/st1")
+  assert_eq(t.haptics()[felt:].to_owned(), [@ui.Confirm])
+  // replied: the card and 忽略 gone, how it went in their place, at the end of their way out
+  m.set(dec_msg("replied"))
+  t.run_for(msg_part_leave_ms + @ui.move_most_ms)
+  assert_true(t.find("比如：对话页更顺滑了") is None)
+  assert_true(t.query(Button, label="回复") is None)
+  assert_true(t.find("你 已回复") is Some(_))
+  dec_audit(t, "replied")
+}
+
+///|
+/// A text card where it is narrowest and its words largest: nothing out of its card, nothing cut short.
+test "a text card at 320 wide and at 390 with the words at 1.3, and at 760: its hint and 回复 whole, nothing out of its card" {
+  for at in [(320.0, 1.0, 2), (390.0, 1.3, 2), (760.0, 1.0, 0)] {
+    let (w, scale, platform) = at
+    let name = "\{w} at \{scale}"
+    let t = dec_new_row(w, dec_src(@signals.signal(None), []), fn() { dec_msg("text") }, platform~)
+    t.set_font_scale(scale)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("比如：对话页更顺滑了") is Some(_), msg=name)
+    assert_true(t.query(Button, label="回复") is Some(_), msg=name)
+    let cut = t.words().filter(fn(x) { x.0.has_suffix("…") })
+    assert_true(cut.is_empty(), msg="\{name}: \{Repr(cut.map(fn(x) { x.0 }))}")
+    dec_audit(t, name)
+  }
 }
 

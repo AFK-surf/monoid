@@ -187,8 +187,8 @@ test "scroll bar: a box kept to a height has one along its right, a box scrolled
   t.run_for(@ui.scrollbar_fade_ms)
   let wide = thumbs(t).filter(fn(r) { r.3 == 3.0 })
   assert_eq(wide.length(), 1, msg="\{Repr(thumbs(t))}")
-  // (under what it holds (200 to 300), not over it: the box keeps its foot clear for it)
-  assert_eq(wide[0].1, 300.0 + 2.0)
+  // (over the foot of what it holds (200 to 300), no room kept for it: its inset and itself in from that foot)
+  assert_eq(wide[0].1, 300.0 - 2.0 - 3.0)
   assert_true(wide[0].0 > 2.0, msg="\{Repr(wide)}")
 }
 
@@ -221,7 +221,7 @@ test "scroll bar: a box scrolled sideways out past the view it is for has its ba
 }
 
 ///|
-test "scroll bar: a box scrolled sideways keeps room at its foot for its bar while it can scroll, none once what it holds fits" {
+test "scroll bar: a box scrolled sideways keeps no room for its bar, which lies over its foot" {
   let content = Ref(1000.0)
   let t = @ui.Tester::new(
     fn(c) {
@@ -236,14 +236,10 @@ test "scroll bar: a box scrolled sideways keeps room at its foot for its bar whi
   )
   t.draw()
   let under = fn() { t.rect_of("under").unwrap().1 }
-  assert_eq(under(), 100.0 + @ui.scroll_bar_room)
+  assert_eq(under(), 100.0)
   content.val = 200.0
   t.draw()
   assert_eq(under(), 100.0)
-  // (wider again: the room again)
-  content.val = 1000.0
-  t.draw()
-  assert_eq(under(), 100.0 + @ui.scroll_bar_room)
 }
 
 ///|

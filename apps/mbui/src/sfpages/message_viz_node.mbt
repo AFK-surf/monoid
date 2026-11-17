@@ -98,13 +98,7 @@ fn viz_shown_node(
         ways,
         "expand",
         fn() { @sfbase.viz_tr("android-misc.viz.fullscreen") },
-        fn() {
-          if @sfbase.is_mbui_viz(a.name) {
-            @sfbase.open_preview(station, key, a, steps=@sfbase.InChat(None, session), beside=false)
-          } else {
-            viz_open_full(a.name, station, key, a.path, session)
-          }
-        },
+        fn() { viz_open_full(a.name, station, key, a.path, session) },
         tips~,
         size=viz_way_px,
         icon_size=14.0,

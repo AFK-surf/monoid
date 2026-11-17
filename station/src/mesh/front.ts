@@ -97,9 +97,14 @@ export class Front {
     const server = createServer({ allowHalfOpen: true });
     // what the front gives this process its streams on
     await new Promise<void>((resolve, reject) => server.once("error", reject).listen(streamsPath, () => resolve())); // a Unix socket, by its path
+    // (the front not reached: what was listened on for its streams is let go, not left open for each try)
     const control = await new Promise<Socket>((resolve, reject) => {
       const s = connect(socket);
       s.once("connect", () => resolve(s)).once("error", reject);
+    }).catch((e) => {
+      server.close();
+      void rm(streamsPath, { force: true });
+      throw e;
     });
     return new Front(control, server, streamsPath);
   }

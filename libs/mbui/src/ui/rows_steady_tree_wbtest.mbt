@@ -3,6 +3,10 @@
 
 ///|
 test "rows steady: a row in View::scrolls_window stepping height in one frame pushes the rows under it in one frame and is caught" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let tall = @signals.signal(40.0)
   let t = Tester::new(fn(_c) {  }, w=300.0, h=300.0, platform=0)
   rows_steady_bars[rows_steady.file] = 99
@@ -74,6 +78,10 @@ test "rows steady: a page's list let go of and another made in its place (the po
 
 ///|
 test "rows steady: a page's list held at its foot, its top pushed down from outside a little more each frame (what is over it opening its own way): its rows held where they show, no step of theirs" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let over = @signals.signal(0.0, same=fn(a, b) { a == b })
   let t = Tester::new(fn(_c) {  }, w=300.0, h=300.0, platform=0)
   rows_steady_bars[rows_steady.file] = 99
@@ -114,6 +122,10 @@ test "rows steady: a page's list held at its foot, its top pushed down from outs
 
 ///|
 test "rows steady: a page's list's rows out of sight guessed at a height, measured anew as they come into sight while the list grows over its foot: followed from the frame each shows, no step of theirs" {
+  // (frames it walks itself, judged by the default run alone: at a rate none of them is judged, test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
   let over = @signals.signal(200.0, same=fn(a, b) { a == b })
   let t = Tester::new(fn(_c) {  }, w=300.0, h=300.0, platform=0)
   rows_steady_bars[rows_steady.file] = 99

@@ -24,6 +24,7 @@ fn fake_core(
   platform? : Int = 2,
   nodes? : Bool = false,
   composed? : Bool = false,
+  on_call? : (String, Json) -> Unit = fn(_, _) {  },
 ) -> @ui.Tester {
   new_run()
   // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too, `composed`:
@@ -41,6 +42,7 @@ fn fake_core(
     ..base,
     call: fn(name, params, done) {
       calls.push({ name, params, bytes: None, done })
+      on_call(name, params)
       match name {
         "draft.get" => done(Ok(kept))
         // the core's name for the draft (DraftView.id): another once it is put back empty
@@ -909,4 +911,36 @@ test "the core's bound for words pasted, answered between frames: words pasted p
     assert_eq(w.field.text(), "", msg=at)
     assert_eq(w.files.get().length(), 1, msg=at)
   })
+}
+
+///|
+/// Files put into a chat's draft while its station is not reached (a 文件 tab's row added to it, files let go on it)
+/// were taken and let go of with nothing said (2026-11-17): every refusal says what to do next.
+test "files put into the draft of a chat whose station is not reached: none goes up, and a toast says why and what to do, with either composer" {
+  // (the old one, and the one made as nodes: sfbase's composer_nodes)
+  for composed in [false, true] {
+    let calls : Array[Made] = []
+    let t = fake_core(calls, composed~, over=fn(name, tp) {
+      guard name == "chat" && tp.value is Some(Object(m)) else { return tp }
+      let o = m.copy()
+      o["offline"] = Json::boolean(true)
+      { ..tp, value: Some(Json::object(o)) }
+    })
+    t.run_for(@ui.move_most_ms)
+    @ui.view_tree().unwrap().event(t.time(), fn() {
+      @sfbase.files_into("ws1/st1:s-c1", {
+        station: "ws1/st1",
+        station_name: "Willow",
+        root: "/w",
+        path: "a.txt",
+        abs: "/w/a.txt",
+        name: "a.txt",
+        size: 12.0,
+        dir: false,
+      })
+    })
+    t.run_for(@ui.move_most_ms)
+    assert_eq(named(calls, "composer.drop").length() + named(calls, "composer.add").length(), 0, msg="composed=\{composed}")
+    assert_true(t.find("无法连接此 station，文件没有添加。连上后再添加一次") is Some(_), msg="composed=\{composed}")
+  }
 }

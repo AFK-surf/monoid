@@ -3370,6 +3370,18 @@ test("what_a_chats_agent_sent_to_slack_shows_after_the_message_it_followed_witho
     // Someone none of the station's agents heard from: by their Slack id.
     [2, "@U7 补一句", true],
   ]);
+  // A chat_post the station refused, to an address not of its session (`CHT/…` for `CHAT/…`), went nowhere: it is not
+  // shown as sent to Slack. One refused on its way to a thread of its session still says it failed.
+  t.data.putItems("transcript", "ws/a", "k", [
+    [8, call("mcp__stillfail__chat_post", { to: "CHT/1.0", text: "x" }, "1970-01-01T00:00:06Z", "c5")],
+    [9, { at: "1970-01-01T00:00:06Z", kind: "tool_result", text: "CHT/1.0 is not a conversation of this session. Its threads: CHAT/1.0", ok: false, callId: "c5" }],
+    [10, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "再说一句" }, "1970-01-01T00:00:07Z", "c6")],
+    [11, { at: "1970-01-01T00:00:07Z", kind: "tool_result", text: "Slack refused it", ok: false, callId: "c6" }],
+  ]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { connect: "ember" }), threads: [thread(7, ["k"], now), { ...thread(8, ["k"], now), surface: "slack:T1", channel: "C0OPS", threadTs: "1727.0001" }], turns: [] });
+  await t.read(u, 1);
+  const shown = sent(u.value).map((s: J) => [s.text, s.failed]);
+  assert.deepEqual(shown.filter(([text]: J[]) => text === "x" || text === "再说一句"), [["再说一句", true]]);
 });
 
 test("a_chat_updates_a_slack_mention_when_another_agent_learns_the_name", async () => {

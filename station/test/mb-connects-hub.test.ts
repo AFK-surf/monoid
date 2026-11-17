@@ -113,10 +113,15 @@ class Program {
     this.traffic++;
     if (typeof said.note === "string") return this.note(said.note, said.args);
     if (typeof said.call === "string") {
-      void this.world(said.call, said.args).then(
+      const answered = this.world(said.call, said.args).then(
         (v) => this.#say({ re: said.cid, result: wire(v) }),
         (e) => this.#say({ re: said.cid, threw: e instanceof Error ? e.message : String(e), kind: (e as Json)?.wireKind ?? kindOf(e) }),
       );
+      // (a file's: answered once its disk is done with it, never held back by a test as an ask of a peer may be)
+      if (said.call.startsWith("fs.")) {
+        this.#answering.add(answered);
+        void answered.finally(() => this.#answering.delete(answered));
+      }
       return;
     }
     const answer = this.#cases.get(said.id);
@@ -137,13 +142,18 @@ class Program {
     if ("error" in got) throw Object.assign(new Error(got.error), { kind: got.kind });
     return got.ok;
   }
-  /// Until the program, and what the test answers it, are at rest.
+  /// What the program asked of the files and the test has not answered yet (a file removed, written, read).
+  #answering = new Set<Promise<void>>();
+  /// Until the program, and what the test answers it, are at rest: what it asked answered too (a fiber of the
+  /// program's waiting on the test's answer is no work of its own to settle, and the file it asked to remove was still
+  /// there as the test looked, 2026-11-17).
   async settle() {
     for (;;) {
+      while (this.#answering.size > 0) await Promise.all([...this.#answering]);
       const before = this.traffic;
       await this.ask({ op: "settle" });
       for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r));
-      if (this.traffic === before + 1) return;
+      if (this.traffic === before + 1 && this.#answering.size === 0) return;
     }
   }
   close(): Promise<void> {

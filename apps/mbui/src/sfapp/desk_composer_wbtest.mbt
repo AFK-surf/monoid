@@ -98,6 +98,24 @@ test "desk composer: typed words are the core's draft (composer.text); Enter sen
 }
 
 ///|
+test "desk composer: ⌘Z and ⇧⌘Z undo and redo one word at a time in the field and its draft" {
+  let calls : Array[Made] = []
+  let (t, src) = desk_composer_tester(calls)
+  t.draw()
+  t.tap(450.0, 500.0 - 16.0 - 22.0)
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  for ch in "hello world" {
+    t.type_text(ch.to_string())
+  }
+  t.key(@ui.key_of_char('z'), mods=@ui.mod_cmd)
+  assert_eq(w.field.text(), "hello ")
+  assert_eq(w.text.get(), "hello ")
+  t.key(@ui.key_of_char('z'), mods=@ui.mod_cmd | @ui.mod_shift_key)
+  assert_eq(w.field.text(), "hello world")
+  assert_eq(w.text.get(), "hello world")
+}
+
+///|
 test "desk composer: ⌘Enter 发送 chosen in 快捷键 (prefs sendKey), Enter and ⇧Enter are new lines and ⌘Enter sends; Ctrl+Enter on Windows" {
   for one in [(0, @ui.mod_cmd), (3, @ui.mod_ctrl)] {
     let (platform, command) = one

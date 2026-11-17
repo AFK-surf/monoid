@@ -1,6 +1,7 @@
 // Home made once (home.mbt's home_page as nodes of the window's tree): the workspace's chats' lists (sfpages'
-// chats_lists_node) under the top bar (the filter · the workspace's switcher and settings), what the last update
-// brought and what the update wants over the rows, what is left up long after their words.
+// chats_lists_node) under the top bar (待处理, the filter · the workspace's switcher and settings), what the last
+// update brought and what the update wants over the rows. What is left up long is 待处理's (its bell lit by the viewer's
+// own not looked at yet), not the list's: the chats come first on Home.
 
 ///|
 /// Home in node `v` for `src` (as the narrow frame makes it once: narrow_made_as's Home): the lists under the top bar's
@@ -30,14 +31,7 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
       }
       parts
     },
-    // what is left up a long while on the stations: nothing while there is none
-    after: fn(_, _) {
-      match workspace() {
-        Some(w) if items(src.topic("longJobs", @sfbase.long_jobs_asked(w.id)).get().value, "groups").length() > 0 =>
-          [{ key: "open-jobs", make: fn(p) { open_jobs_node(p, src, w) } }]
-        _ => []
-      }
-    },
+    after: fn(_, _) { [] },
     others: [],
     shown: fn() {
       match workspace() {
@@ -50,7 +44,7 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
     watched: fn() { app.nav.top() is Home },
   }
   // (what is left up long asked with the lists from the start, not once they have come: Home opens on both,
-  // home_opens)
+  // home_opens; its bell's dot reads it)
   @sfbase.long_jobs_read(v, src, workspace)
   // (a search the app starts with open: sfpages' search.mbt)
   @sfpages.search_start_now()
@@ -149,7 +143,7 @@ fn home_top_bar_node(
             let (x, y, wd, h) = k.placed_window_now()
             @sfdesk.open_attention_panel(src, w, At(x, y, wd, h))
           })
-          k.show(fn() { workspace().map(fn(w) { @sfdesk.attention_any(src, w) }).unwrap_or(false) }, fn(m) {
+          k.show(fn() { workspace().map(fn(w) { @sfdesk.bell_lit(src, w) }).unwrap_or(false) }, fn(m) {
             m.over(Is(true)).row(Is(true)).lies_along(Is(End)).lines_up(Is(Some(Start))) |> ignore
             m.box(fn(at) {
               at.offset(Is((-home_bell_dot_at, home_bell_dot_at))) |> ignore

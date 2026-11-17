@@ -1474,8 +1474,6 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
     {
       title,
       description: "",
-      body: fn(_, _) {  },
-      foot: None,
       w: panel_w,
       fits: false,
       wide: false,
@@ -1484,21 +1482,17 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
       grows: false,
       focus: panel == Find,
       ruled: false,
-      lists: false,
       fade_out_together: false,
       form: false,
-      field: "",
       stage: false,
       above: None,
-      title_row: None,
       heads_itself: true,
       side: Bottom,
       along: Start,
       offset: panel_offset,
       match_panel: 0,
-      steps: false,
       on_back: None,
-      nodes: Some({
+      nodes: {
         body: fn(col, _) {
           col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           col.box(fn(head) {
@@ -1539,27 +1533,26 @@ fn reader_sheets(parent : @view.View, r : Reading, paper : () -> ReaderPaper, lo
         top: 0.0,
         most: None,
         flush: false,
-      }),
+      },
     }
   }
-  let sheet = fn(panel : ReaderPanel, key : String) {
+  let sheet = fn(panel : ReaderPanel) {
     parent.box(made_for=loc, fn(layer) {
       layer.over(Is(true)).stacked(Is(0)) |> ignore
       sheet_node(
         layer,
-        key,
         fn() { r.panel.get() == panel },
         fn() {
           let x = sheet_of(panel)
-          [{ n: 0, x, nodes: x.nodes, close, from: Unanchored, lists: -1 }]
+          [{ n: 0, x, close, from: Unanchored }]
         },
         close,
       )
     })
     |> ignore
   }
-  sheet(Contents, "sf-reader-sheet/contents")
-  sheet(Find, "sf-reader-sheet/find")
+  sheet(Contents)
+  sheet(Find)
 }
 
 ///|

@@ -206,8 +206,18 @@ fn composer_node(
             _ => given_into(src, spec.station, w, no_files(), g)
           }
         }
-        if !dropped.is_empty() && !no_files() {
-          writing_drop(src, w, spec.station, dropped, drops_as_files(src, w.key))
+        if !dropped.is_empty() {
+          if no_files() {
+            // (not taken in where none goes up now: said why, and what to do, never let go of with nothing said)
+            let why = if (spec.offline)() {
+              @sf.t("web-main.composer.filesOffline")
+            } else {
+              @sf.t("web-main.composer.filesLocked")
+            }
+            toast_later(why)
+          } else {
+            writing_drop(src, w, spec.station, dropped, drops_as_files(src, w.key))
+          }
         }
       })
     }

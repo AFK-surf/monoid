@@ -96,7 +96,8 @@ test "sideways: what it holds fades out towards an edge it goes on past, each pi
   let y = t.rect_of("xxxx").unwrap().1
   // (its glyphs: from its top, how they fade from their left and their right)
   let fades = fn() {
-    t.drawn_fades_across().filter(fn(d) { d.0 == 1 && (d.1 - y).abs() < 20.0 }).map(fn(d) { (d.3, d.5) })
+    // (its own line's: the next row's under it, 14 lower as its bar keeps no room under it, not)
+    t.drawn_fades_across().filter(fn(d) { d.0 == 1 && (d.1 - y).abs() < 8.0 }).map(fn(d) { (d.3, d.5) })
   }
   assert_true(fades().length() > 0, msg="no glyphs")
   // at its start: towards its end only
@@ -344,7 +345,9 @@ test "sideways filling: what it holds as wide as the box where it needs no more,
   t.draw()
   assert_eq(t.rect_of("bbbb").unwrap().0, 200.0)
   t.drag(290.0, 10.0, 0.0, 10.0)
-  t.drag(290.0, 10.0, 0.0, 10.0)
+  // (and on, from left of its bar's thumb, out over the words at its end now: that is the thumb's, which the hand moves
+  // back)
+  t.drag(100.0, 10.0, 0.0, 10.0)
   t.draw()
   assert_eq(at.val, 300.0)
   assert_eq(t.rect_of("cccc").unwrap().0, 100.0)

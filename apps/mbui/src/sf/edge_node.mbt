@@ -14,7 +14,9 @@
 /// done with it as it is done, at its moment (Dragging, Dropped, Pressed, Twice; `on_beside` said for a press at
 /// across (its own terms) that lands where it lies over what is beside the column: that one's, `beside` told of it
 /// instead); `held` told as a press of it goes down and as it ends (let go, called off, passed on to what lies under
-/// it); its words `label()`, its tip in `tips` on `side`. The node.
+/// it); its words `label()`, its tip in `tips` on `side`. `pull`: dragged on past its least or its most, how far past
+/// told to it, given way to (EdgePull: a string held at both ends, drawn aside by the finger, edge_look_node's line
+/// bending so), sprung back as it is let go. The node.
 #callsite(autofill(loc))
 pub fn edge_node(
   parent : @view.View,
@@ -29,6 +31,7 @@ pub fn edge_node(
   beside? : (Double) -> Unit = fn(_) {  },
   tips? : TipLayer,
   side? : @view.Side = Right,
+  pull? : EdgePull,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(v) {
@@ -107,6 +110,19 @@ pub fn edge_node(
           Down | Moved => {
             moved.val = true
             said(Dragging(dragged(d.wx)), d.at)
+            // (past either end: how far, across the window as the hand went, to the pull)
+            // (one that gives nothing between its ends, a column folded, its least its most: never drawn aside)
+            if pull is Some(p) {
+              let (lo, hi) = (@signals.untracked(least), @signals.untracked(most))
+              if hi > lo {
+                let (x0, w0) = from.val
+                let raw = w0 + (if edge is Left { x0 - d.wx } else { d.wx - x0 })
+                let past = raw - dmax(lo, dmin(hi, raw))
+                p.drag(if edge is Left { -past } else { past }, d.y, d.h)
+              } else {
+                p.drag(0.0, d.y, d.h)
+              }
+            }
           }
           Up if !moved.val &&
             @ui.pointing() is Mouse &&
@@ -115,8 +131,16 @@ pub fn edge_node(
           Up => {
             said(Dropped(@signals.untracked(fn() { to(d.wx) })), d.at)
             held(false)
+            if pull is Some(p) {
+              p.let_go(v)
+            }
           }
-          Off => held(false)
+          Off => {
+            held(false)
+            if pull is Some(p) {
+              p.let_go(v)
+            }
+          }
         }
       },
     )
@@ -125,3 +149,58 @@ pub fn edge_node(
     v.owns(fn() { held(false) }) |> ignore
   })
 }
+
+///|
+/// An edge dragged on past its least or its most (edge_node's `pull`), as its look draws it (edge_look_node's `pull`):
+/// how far aside the hand has drawn its line (across the window, given way to: never past edge_pull_most however far
+/// the hand goes), at what height along it, and how tall the edge was as the drag went down (its Drag's, nothing read
+/// of its layout); let go, back to its rest on lift_spring from where it was. At rest, none.
+pub struct EdgePull {
+  priv aside : @motion.NodeWay
+  priv mut y : Double
+  priv mut h : Double
+  /// told as its height along the edge changes with nothing aside changed: what draws it follows
+  priv told : @signals.Signal[Int]
+}
+
+///|
+/// An edge's pull at rest.
+pub fn EdgePull::new() -> EdgePull {
+  { aside: @motion.NodeWay::new(0.0), y: 0.0, h: 0.0, told: @signals.signal(0) }
+}
+
+///|
+/// Drawn aside `past` across the window (past its end, as far as the hand went) at `y` along an edge `h` tall: given
+/// way to, there at once (in the hand).
+fn EdgePull::drag(self : EdgePull, past : Double, y : Double, h : Double) -> Unit {
+  let aside = past / (1.0 + past.abs() / edge_pull_most)
+  if self.y != y || self.h != h {
+    self.y = y
+    self.h = h
+    self.told.set(self.told.untracked() + 1)
+  }
+  self.aside.put(aside)
+}
+
+///|
+/// Let go: back to rest from where it is (lift_spring, a little past it), from `v`'s cause's moment.
+fn EdgePull::let_go(self : EdgePull, v : @view.View) -> Unit {
+  self.aside.go(v, 0.0, @motion.lift_spring)
+}
+
+///|
+/// Whether it is drawn aside now or has been told to be (in the hand past its end): read by no clock.
+fn EdgePull::taken(self : EdgePull) -> Bool {
+  self.aside.target() != 0.0
+}
+
+///|
+/// How far aside its line is drawn as `n` is drawn, at what height along it, and how tall the edge was: (aside, y, h).
+pub fn EdgePull::shown_on(self : EdgePull, n : @view.View) -> (Double, Double, Double) {
+  self.told.get() |> ignore
+  (self.aside.shown(n), self.y, self.h)
+}
+
+///|
+/// How far aside an edge's line is ever drawn (points): past it the hand going on gives nothing more.
+let edge_pull_most : Double = 6.0

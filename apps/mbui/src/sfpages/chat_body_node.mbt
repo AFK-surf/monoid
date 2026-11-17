@@ -738,7 +738,10 @@ fn chat_table_kept(
 /// is made (a block made, or made again as its key comes to be another kind of row). `read`, given `place`, `scroll` and
 /// its rows, for what is told the core of what is read (chat_read_node). `to`: the chat it is (none in a list's own tests), its
 /// way to the newest in the list's foot over the composer and the message it is told to go to brought in
-/// (chat_jump_node's), while `shows` (it is drawn) where the reader is kept for a go-to inside it.
+/// (chat_jump_node's), while `shows` (it is drawn) where the reader is kept for a go-to inside it. `cover_to`: how tall
+/// what covers the list's top comes to be (the bar's second row measured as the bar is laid out, after the list was
+/// made, or pressed open or shut; none: never another), where the list the page put somewhere and the reader has not
+/// moved since glides on with it, what it put there not under it (chat_stand_again).
 fn chat_body_node(
   v : @view.View,
   src : Source,
@@ -747,6 +750,7 @@ fn chat_body_node(
   sending? : () -> Array[@sfbase.LocalSent] = fn() { [] },
   core? : @settings.Core? = None,
   cover? : () -> Double = fn() { bar_foot },
+  cover_to? : () -> Double,
   room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
   composer? : (@view.View) -> Unit,
@@ -796,25 +800,36 @@ fn chat_body_node(
   // (by key where the chat's messages are kept so (chat_body_keyed: a message's change reads that message's rows alone,
   // what is sent from here and the outbox too); else made whole of its entries, chat_body_rows')
   // (the messages by key as `msgs` comes to give them: a chat a new chat became reads its entries whole till the core's
-  // view of it comes, then by key, the same list going on; the first given kept, its rows made of it once)
+  // view of it comes, then by key, the same list going on; the list given kept, its rows made of it once, made anew of
+  // another the source comes to keep in its place (its chat read again: chat_messages), the rows' era another with it;
+  // given none after, the one given goes on)
   let msgs_given : Ref[@sfbase.ChatMessages?] = Ref(None)
-  let keyed_now = @signals.computed(
-    fn(_) {
+  let by_key_made : Ref[ChatBodyList?] = Ref(None)
+  // (0 none given yet; counted up as each other list is given)
+  let keyed_gen = @signals.computed(
+    fn(was) {
+      let n = was.unwrap_or(0)
       match (msgs_given.val, msgs()) {
-        (Some(_), _) => true
+        (Some(g), Some(m)) if !physical_equal(g, m) => {
+          msgs_given.val = Some(m)
+          by_key_made.val = None
+          n + 1
+        }
+        (Some(_), _) => n
         (None, Some(m)) => {
           msgs_given.val = Some(m)
-          true
+          n + 1
         }
-        (None, None) => false
+        (None, None) => n
       }
     },
     same=fn(a, b) { a == b },
   )
+  let keyed_now = fn() { keyed_gen.get() > 0 }
   let era = @signals.computed(
     fn(_) {
-      keyed_now.get() |> ignore
-      made_whole.val
+      // (both only counting up: another as either does)
+      keyed_gen.get() + made_whole.val
     },
     same=fn(a, b) { a == b },
   )
@@ -832,10 +847,9 @@ fn chat_body_node(
     let card = @signals.computed(fn(_) { card_of.get().map(fn(c) { (c.0, @sfbase.chat_card_answered(c.1)) }) })
     chat_body_keyed(kept, era, here.view, m, sending~, card=fn() { card.get() }, turns~)
   }
-  // (made as the messages by key are first given, read only once they are)
-  let by_key_made : Ref[ChatBodyList?] = Ref(None)
+  // (made as the messages by key are given, read only once they are)
   let by_key = fn() -> ChatBodyList? {
-    guard keyed_now.get() else { return None }
+    guard keyed_now() else { return None }
     match by_key_made.val {
       Some(l) => Some(l)
       None => {
@@ -1059,7 +1073,7 @@ fn chat_body_node(
           Some(r) => {
             chat_to_newest_node(f, src, r, jump, place, here.view, width, here.tips)
             chat_outline_node(f, src, r, jump, here.view, width, here.tips, here.stint)
-            chat_ask_node(f, r, src, jump, here.view, list, width, here.tips)
+            chat_ask_node(f, r, src, jump, place, here.view, list, width, here.tips)
           }
           None => ()
         }
@@ -1177,17 +1191,44 @@ fn chat_body_node(
   // (put in place once, as it is made: chat_open_place's; else at its end, where it is made; at a message the chat is
   // to go to first, chat_goes_to's)
   let chat = here.station + "\u{1}" + here.session
-  let opens = @signals.untracked(fn() {
-    chat_open_place(list, (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), cover(), top(), lead)
+  let opens = fn() {
+    @signals.untracked(fn() {
+      chat_open_place(list, (here.view)(), @sfbase.kept_places.get(chat), v.pixel_scale(), cover(), top(), lead, width())
+    })
+  }
+  let opened = opens()
+  if opened is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
+    chat_stand(jump, place, k, offset)
+  }
+  // (where the core says the chat was left come only after the list was made at its end, nothing done there since (the
+  // hand, a go-to, words sent): put there then, once)
+  let late = Ref(opened is None && @signals.untracked(here.view).at is None)
+  let sent_then = @signals.untracked(fn() { @sfbase.sent_here_count(chat) })
+  v.reacts(fn() { (here.view)().at }, at_start=false, fn(at) {
+    guard late.val && at is Some(_) else { return }
+    late.val = false
+    guard !scroll.in_hand() &&
+      scroll.at_foot_now() &&
+      !@sfbase.go_tos.contains(chat) &&
+      @sfbase.sent_here_count(chat) == sent_then else {
+      return
+    }
+    match opens() {
+      Some((k, offset)) => chat_stand(jump, place, k, offset)
+      None => ()
+    }
   })
-  if opens is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
-    place.bring(k, offset~)
+  v.reacts(fn() { scroll.in_hand() }, at_start=false, fn(held) { if held { late.val = false } })
+  // (what covers its top come to be taller, the bar's second row measured: where the page put the list, under it)
+  match cover_to {
+    Some(to) => v.reacts(to, at_start=false, fn(to) { chat_stand_again(jump, place, to, @signals.untracked(cover)) })
+    None => ()
   }
   match to {
     Some(r) => {
-      chat_goes_to(v, src, r, jump, place, list, here.view, cover, top, fn() { ask_older(false) }, shows)
+      chat_goes_to(v, src, r, jump, place, scroll, list, here.view, cover, top, width, shows)
       // (over the list: a passage a mouse picked in a message quoted by its pill)
-      chat_quote_node(v, src, r, here, list)
+      chat_quote_node(v, src, r, here, list, place)
       // (a picture's 复制图片 chosen in its menu: read whole and put on the clipboard)
       menus_image_node(v)
       // something sent from here into the chat (words, an answer picked on a card: sfbase's sent_here_told), read up
@@ -1245,7 +1286,17 @@ fn chat_body_node(
       guard has && !lined.val else { return }
       lined.val = true
       if scroll.at_foot_now() && !@sfbase.go_tos.contains(chat) {
-        place.bring("line", offset=@sfbase.kept_place_under(@signals.untracked(top) + lead, @signals.untracked(cover)))
+        // (the line itself `lead` under the list's top, the room over its block over that: chat_open_place's)
+        let gap = match (list.row)("line") {
+          Some(row) => chat_body_gap_room(row.gap, width())
+          None => 0.0
+        }
+        chat_stand(
+          jump,
+          place,
+          "line",
+          @sfbase.kept_place_under(@signals.untracked(top) + lead - gap, @signals.untracked(cover)),
+        )
       }
     },
     at_start=false,
@@ -1262,6 +1313,8 @@ fn chat_body_node(
   // (whether a key came by the change that gave these keys, as last found: the same keys and key, not looked for among
   // all of them again for each word streamed into a row)
   let came_last : Ref[(Array[String], String, Bool)?] = Ref(None)
+  // (a message by its key, its first piece's: a long message streamed on into another piece is the message it was, its
+  // top what is followed from, never a piece of it come)
   let newest = fn() -> (String, Bool, Bool)? {
     let rs_keys = keys.get()
     if !physical_equal(rs_keys, keys_now.val) {
@@ -1271,7 +1324,7 @@ fn chat_body_node(
     let before = keys_before.val
     let mut i = rs_keys.length() - 1
     while i >= 0 {
-      let k = rs_keys[i]
+      let k = chat_piece_of(rs_keys[i])
       let came = match came_last.val {
         Some((b, ck, c)) if physical_equal(b, before) && ck == k => c
         _ => {
@@ -1363,13 +1416,13 @@ fn chat_body_row(
       return find_words_in(chat)
     }
     match jump.found.get() {
-      (at, marked) if at == key() => marked
+      (at, marked) if at == chat_piece_of(key()) => marked
       _ => []
     }
   }
   let found_at = fn() -> Int? {
     guard find_chat() == chat else {
-      return if jump.found.get().0 == key() { Some(@sf.found_all) } else { None }
+      return if jump.found.get().0 == chat_piece_of(key()) { Some(@sf.found_all) } else { None }
     }
     match entry() {
       Said(m) => Some(find_at_in(chat, m.seq))
@@ -1481,7 +1534,7 @@ fn chat_body_row(
       KPerson =>
         more.val = person_said_node(p, src, here, key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), over~).menu_on
       KAgent =>
-        more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
+        more.val = agent_said_node(p, src, here, whole_key, side, top, m, found~, found_at~, lit~, share=message_share_of(src, here, m), core~, over~, ask_sought=fn() { jump.asked_card.get() == whole_key() }, out_of=agent_out_of(keeps.faces, here, m, out_plan), piece=fn() { row().piece }, across_of=fn(b) {
           // (by the message it is of now, followed: a block taken for another's row scrolls that one's table across)
           // (a long table's alone, cut a few rows a piece: one in a block scrolls across on its own, the list's)
           chat_table_kept(keeps.tables, whole_key(), b).0

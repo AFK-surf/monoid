@@ -142,7 +142,7 @@ pub fn open_fixture(mode : String) -> Unit {
       @sfdesk.open_jobs_pop()
       @sfdesk.open_job_pop("j-ci")
     }
-    "home-attention" => @sfdesk.open_attention()
+    "home-attention" | "home-shared-bell" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
       @sfdesk.letters_to_list(r)
@@ -458,6 +458,17 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   // (share-card-dark: over the dark theme; share-card-<key>: in that look, share_looks.mbt)
   if mode == "share-card" || mode.has_prefix("share-card-") {
     @sfpages.share_card_open(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" })
+  }
+  // (the subscriptions' allowances to share, and the overview's pool to share, of the four kinds' accounts:
+  // share_quota.mbt)
+  if mode == "share-accounts" || mode == "share-pool" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    let ws : Workspace = { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }
+    if mode == "share-accounts" {
+      @sfpages.accounts_share_open(settings_core(src, ws), fn() { "ws1" })
+    } else {
+      @sfpages.pool_share_open(settings_core(src, ws), fn() { "ws1" })
+    }
   }
   if mode == "chat-station-files" {
     fixture_station_files(src)

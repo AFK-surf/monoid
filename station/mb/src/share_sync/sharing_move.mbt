@@ -551,8 +551,16 @@ async fn Sharing::borrow(self : Sharing, peer : String, id : String, request : J
     raise Failed("this station is not among those it is shared with")
   }
   let borrowed_all = self.borrowed()
+  // (a copy put in the place of what was had, never that one changed where it is: a pass of `reconcile` waiting on its
+  // host holds it, and finds by that it was taken over, as `heard` does)
   let had = match entry_of(borrowed_all, id) {
-    Some(h) => h
+    Some(h) => {
+      let c : Map[String, Json] = Map([])
+      for k, v in h {
+        c[k] = v
+      }
+      c
+    }
     None => {
       let h : Map[String, Json] = Map([])
       h["version"] = jnum(-1.0)

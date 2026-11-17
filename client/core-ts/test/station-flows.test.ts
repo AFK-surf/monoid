@@ -1169,6 +1169,30 @@ test("jobs_are_put_in_place_from_their_events_and_from_stopping_them", async () 
   push("job-removed", { id: "j2", session: "a" });
   await host.time.pass(EVENTS_COALESCE_MS + 100);
   assert.deepEqual(sessionOf(core, "a").jobs.map((j: J) => j.id), ["j1"]);
+  // One still up removed (its station dropped it): no longer among the open ones at once, nothing read again.
+  const before = gets(host, "/admin/api/jobs?chats=0");
+  push("job-removed", { id: "j1", session: "a" });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.deepEqual(sessionOf(core, "a").jobs, []);
+  assert.deepEqual(open(), []);
+  assert.equal(gets(host, "/admin/api/jobs?chats=0"), before);
+  core.close();
+});
+
+test("a_sessions_jobs_leave_the_open_ones_as_it_is_removed", async () => {
+  const job = (id: string, session: string) => ({ id, session, name: id, state: "running", port: 4817, startedAt: 1 });
+  const answers: J = {
+    ...base(),
+    "GET /sessions": [summary("a", 0), summary("b", 0)],
+    "GET /jobs": [job("j1", "a"), job("j2", "b")],
+  };
+  const { host, core, push } = await started(answers);
+  await host.settle();
+  const open = () => (core.inner.data.get({ topic: "jobs", station: ST }) as J[]).map((j: J) => j.id);
+  assert.deepEqual(open().sort(), ["j1", "j2"]);
+  push("session-removed", { key: "a" });
+  await host.time.pass(EVENTS_COALESCE_MS + 100);
+  assert.deepEqual(open(), ["j2"], "the other session's stays");
   core.close();
 });
 

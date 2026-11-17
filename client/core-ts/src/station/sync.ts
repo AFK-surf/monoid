@@ -465,6 +465,25 @@ export class StationsSync {
     });
   }
 
+  /// What is held of a station's screens but `screen` (closed from here), or but its view `view` (ended from here).
+  #screensWithout(address: string, screen: string, view: string | null): void {
+    const held = this.#links.get(address)?.memory.get("screens") as { screens: unknown[]; outdated: boolean; browser?: boolean } | undefined;
+    if (held === undefined) return;
+    let changed = false;
+    const screens = held.screens.flatMap((s) => {
+      if (get(s, "id") !== screen) return [s];
+      if (view === null) {
+        changed = true;
+        return [];
+      }
+      const views = get(s, "views");
+      if (!Array.isArray(views) || !views.some((v) => get(v, "id") === view)) return [s];
+      changed = true;
+      return [{ ...(s as object), views: views.filter((v) => get(v, "id") !== view) }];
+    });
+    if (changed) this.#heldScreens(address, { ...held, screens });
+  }
+
   #heldScreens(address: string, held: { screens: unknown[]; outdated: boolean; browser?: boolean }): void {
     const link = this.#links.get(address);
     if (!link) return;
@@ -1960,6 +1979,8 @@ export class StationsSync {
             if (isObject(detail) && Array.isArray(detail.jobs)) detail.jobs = detail.jobs.filter((j) => get(j, "id") !== id);
           });
         }
+        // (off the station's open ones too, at once: left there, it stayed listed as up till the list was read again)
+        if (id) core.data.dropJob(address, id);
         return;
       }
       case "overview":
@@ -2242,6 +2263,8 @@ export class StationsSync {
   #onSessionRemoved(address: string, key: string): void {
     const core = this.#core;
     core.data.dropSession(address, key);
+    // (its jobs go with it: no longer among the station's open ones)
+    core.data.closeSessionJobs(address, key);
     this.#remake(address, { ids: [key] });
     const link = this.#links.get(address);
     if (link) {
@@ -2512,6 +2535,11 @@ export class StationsSync {
         case "none":
         // (its list read before it answered: perform's)
         case "tab":
+          return;
+        // A screen closed, a view of one ended: gone from what is held of the station's screens at once (its station
+        // tells its list as it goes, `screens` on its stream).
+        case "screenGone":
+          this.#screensWithout(address, effect.screen, effect.view);
           return;
         case "session": {
           if (effect.key !== null) reads.push([`session/${effect.key}`, this.#session(address, effect.key)]);

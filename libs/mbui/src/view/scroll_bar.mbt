@@ -172,6 +172,55 @@ pub fn bar_track_of(
 }
 
 ///|
+/// How far in from either end of the edge its bar runs along (across: its foot, from its left and from its right;
+/// else its right, from its top and from its foot) the round corners of what cuts it take its bar: the nearest of it
+/// and what holds it that clips (View::clips) with a corner round, where its edge runs through that corner's rounding
+/// (the user, 2026-11-17: 「要注意避让圆角」, every bar so unless its caller says more). None past what scrolls over it:
+/// what is under that moves.
+fn View::corner_clear(self : View, across : Bool) -> (Double, Double) {
+  let tree = self.tree
+  let me = tree.nodes[self.at]
+  let (w, h) = (me.lw, me.lh)
+  // (where it is in the node come to, as laid out)
+  let mut x = 0.0
+  let mut y = 0.0
+  let mut i = self.at
+  while i >= 0 {
+    let m = tree.nodes[i]
+    if i != self.at && m.scroll_off is Some(_) {
+      return (0.0, 0.0)
+    }
+    if !m.slot && m.look.clips {
+      let (tl, tr, br, bl) = match m.look.corners {
+        Some(k) => k
+        None => (m.look.radius, m.look.radius, m.look.radius, m.look.radius)
+      }
+      if tl > 0.0 || tr > 0.0 || br > 0.0 || bl > 0.0 {
+        let left = x
+        let top = y
+        let right = m.lw - x - w
+        let foot = m.lh - y - h
+        // (a corner its edge runs through: the edge nearer that corner's side than it is round)
+        let past = fn(r : Double, along : Double, side : Double) {
+          if side < r { dmax(0.0, r - along) } else { 0.0 }
+        }
+        return if across {
+          (past(bl, left, foot), past(br, right, foot))
+        } else {
+          (past(tr, top, right), past(br, foot, right))
+        }
+      }
+    }
+    if !m.slot {
+      x = x + m.lx
+      y = y + m.ly
+    }
+    i = m.parent
+  }
+  (0.0, 0.0)
+}
+
+///|
 /// The bar of column `v` (View::scrolls'), scrolled by `s`, as `b` says: a thumb along its right, its edge's strip
 /// bringing it out where the pointer is along it. Across (Scroll::across): along its foot, `bar_in` in from either end,
 /// the pointer along its foot bringing it out.
@@ -196,13 +245,29 @@ fn View::scroll_bar(
     bar_track_of(ends, vh - 2.0 * ends, vh - 2.0 * ends, content - 2.0 * ends, x, start, end, b.least, b.inset)
   }
   let track = fn(x : Double) {
+    // (clear of the round corners of what cuts it where its edge runs through them, as ui's bar_track has its clip's:
+    // View::corner_clear)
+    let (c0, c1) = match s.seen.get() {
+      Some(_) => self.corner_clear(across)
+      None => (0.0, 0.0)
+    }
     let (vh, ends) = match s.seen.get() {
-      Some((w, h)) => if across { (w, dclamp(bar_in, 0.0, dmax(0.0, w / 2.0 - b.least))) } else { (h, 0.0) }
+      Some((w, h)) =>
+        if across {
+          (w, dclamp(dmax(bar_in, dmax(c0, c1)), 0.0, dmax(0.0, w / 2.0 - b.least)))
+        } else {
+          (h, 0.0)
+        }
       None => (0.0, 0.0)
     }
     let content = vh + s.most_now()
     // (down a column, what lies over its top and its foot kept clear: `bar_clear`, as ui's bar_track's start and end)
-    let (start, end) = if across { (0.0, 0.0) } else { bar_clear() }
+    let (start, end) = if across {
+      (0.0, 0.0)
+    } else {
+      let (t, f) = bar_clear()
+      (dmax(t, c0), dmax(f, c1))
+    }
     along.val = (vh, ends, content, start, end)
     track_along(x)
   }

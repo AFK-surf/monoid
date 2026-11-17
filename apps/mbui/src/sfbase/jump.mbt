@@ -34,6 +34,44 @@ pub fn go_to(r : ChatRef, seq : Double, passage? : String = "", keep_place? : Bo
 }
 
 ///|
+/// The message each chat's window was moved about as it was asked to go to it (go_to_quoted's `chat.around`), by chat:
+/// what goes there (a chat's page made as nodes, chat_goes_to) asks it no more.
+pub let go_to_around : Map[String, Double] = Map([])
+
+///|
+/// The message of chat `r` a quote's card quotes (its `ts`) gone to, the `passage` it quotes lit there (go_to): where
+/// what is shown holds it (`shown`: its seq, none where not) at once; else the chat's window moved about it
+/// (`chat.around` by its ts, the chat's `thread`: read onto the device where it is not), then gone to; where the chat has
+/// it nowhere (or the core could not say), said in a toast.
+pub fn go_to_quoted(src : Source, r : ChatRef, thread : Double?, shown : Double?, ts : String, passage : String) -> Unit {
+  match shown {
+    Some(seq) => {
+      go_to(r, seq, passage~)
+      return
+    }
+    None => ()
+  }
+  let gone = fn() { toast_later(@sf.t("web-main.quote.gone")) }
+  guard thread is Some(th) && ts != "" else { return gone() }
+  act(
+    src,
+    @sf.t("web-main.quote.jump"),
+    "",
+    "chat.around",
+    { "station": Json::string(r.station), "thread": Json::number(th), "ts": Json::string(ts) },
+    ok=fn(v) {
+      match v {
+        Object(o) if o.get("seq") is Some(Number(seq, ..)) => {
+          go_to_around[r.station + "\u{1}" + r.session] = seq
+          go_to(r, seq, passage~)
+        }
+        _ => gone()
+      }
+    },
+  )
+}
+
+///|
 /// The passage of the message each chat is to go to that is to flash alone (go_to), by chat.
 pub let go_to_passages : Map[String, String] = Map([])
 
