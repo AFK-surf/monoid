@@ -1303,6 +1303,17 @@ pub fn fixture_link_preview(url : String) -> Json {
         "icon": "fix-icon",
         "image": "fix-image",
       }
+    "https://github.com/acme/shop/actions/runs/9001" =>
+      {
+        "kind": "github_actions_run", "url": url, "repository": "acme/shop", "number": 42,
+        "title": "Build and publish the desktop app", "workflow": "pipeline", "state": "in_progress",
+        "branch": "main", "commit": "bc074d6", "elapsed": "11 分 0 秒",
+        "counts": { "passed": 7, "running": 16, "skipped": 6 },
+        "jobs": [
+          { "name": "desktop-win", "step": "Build, pack and sign the beta Windows app", "url": url + "/job/123#step:2:1" },
+          { "name": "check-linux", "step": "Full check (ts)", "url": url + "/job/456#step:3:1" },
+        ],
+      }
     "https://github.com/acme/shop/pull/128" =>
       {
         "kind": "github_pull_request",
@@ -2031,10 +2042,12 @@ fn fixture_experimental_items_json(test_channel : Bool, on : Map[String, Bool]) 
 
 ///|
 /// The experimental switches a fixture of `mode` begins with on: the board's in the board's modes (a test's of the
-/// board sees it).
+/// board sees it), Farview's own tabs in `farview` (a film of a Farview tab, MBUI_WINDOW its screen).
 fn fixture_experimental(mode : String) -> Map[String, Bool] {
   if board_mode(mode) {
     { "board": true }
+  } else if mode == "farview" {
+    { "farviewNative": true }
   } else {
     Map([])
   }
@@ -2700,6 +2713,11 @@ pub fn fixture(mode : String) -> Source {
     waits: fn(_, _) { false },
     generation: fn(_, _) { (0, true) },
     call_bytes: fn(name, params, bytes, done) {
+      // (a Farview tab's stage: its bar's ← → and address done as a host does them)
+      if name == "farview.send" && fixture_farview_said(bytes) {
+        done(Ok(Json::null()))
+        return
+      }
       match fixture_kept(name, params, Some(bytes)) {
         Some(r) => {
           done(r.map(fn(a) { a.0 }))

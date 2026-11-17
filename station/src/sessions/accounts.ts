@@ -27,7 +27,7 @@ const CALLS_LOOKED_AT = 200;
 /// How a session runs from its next turn on. A field left out: unchanged; null: back to the default. `profiles`: the set
 /// of profiles it may run on (one keeps it to that one; null: all of them). `repick`: its account picked again now, as a
 /// new session's would be (`Accounts.repick`).
-export type SessionChange = { runtime?: string; profile?: string | null; profiles?: string[] | null; model?: string | null; effort?: string | null; fast?: boolean | null; speed?: ModelSpeed | null; context?: number | null; repick?: boolean; afresh?: boolean | null };
+export type SessionChange = { runtime?: string; profile?: string | null; profiles?: string[] | null; model?: string | null; effort?: string | null; fast?: boolean | null; speed?: ModelSpeed | null; tui?: boolean; context?: number | null; repick?: boolean; afresh?: boolean | null };
 
 /// A profile as a session's runtime starts on it, with its spelling of the session's model.
 export type RunOn = Profile & { spelling(model: string): string | null };

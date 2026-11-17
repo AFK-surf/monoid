@@ -633,6 +633,7 @@
   "core-logic.notice.run.toLead": "Now",
   "core-logic.notice.run.was": "Before: {run}",
   "core-logic.format.connection.no_group": "No Group",
+  "core-logic.choose.error.station_claude_tui": "Update the station to use Claude TUI mode.",
   "core-logic.choose.error.station_model_speeds": "Update this station to use Ultrafast, or choose Standard or Fast.",
   "core-logic.choose.error.ultrafast_unavailable": "To use Ultrafast, choose a supported Codex model and an eligible ChatGPT subscription, or choose Standard or Fast."
 }

@@ -9,7 +9,7 @@
 # The native parts (scripts/native.ts: the station's mesh addon, launcher and runner, the web's iroh, Android's shell
 # and engine, the media service's ffmpeg) are prebuilt: the natives job builds those whose key the release
 # native-artifacts lacks, on macos-ci, and on main publishes them there; every other job gets them from the release (a
-# branch's: from its natives job's run artifact), so a change that is not to a native part compiles no Rust. The mbui
+# branch's: from R2 using the receipts in its natives job's run artifact), so a change that is not to a native part compiles no Rust. The mbui
 # app's Windows shell and engine are prebuilt on a development Mac instead (node scripts/native.ts prebuild: cross-built,
 # put in the releases bucket by their keys) and never built here: windows-natives fetches them and runs the shell's tests.
 # Stable: the manual Publish stable workflow. Relay remains manual (deploying it drops every connection).
@@ -109,10 +109,9 @@ jobs:
             echo "natives_mac=$([ -n "$missing_mac" ] && echo needed || echo ready)" >> "$GITHUB_OUTPUT"
           fi
           # Where natives-mac builds (its runs-on, as JSON): Mini1's quick runner for main, and for a branch missing
-          # mesh or shell-apple (iroh's crates built anew: 228 and 323 s with three jobs and no sccache, past a job's 5
-          # minutes); GitHub's macos-26 for a branch missing only the light parts (launcher 14 s, archive-rs 25, reader
-          # 72, helper 33), and for every run while vars.MINI1 is 'off'.
-          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple):darwin-arm64$'; }; then
+          # mesh, shell-apple or reader. On macos-26 a cold reader took 223 s before packing; the job hit its deadline
+          # before upload (run 44160716571). The lighter parts and every run while vars.MINI1 is 'off' use macos-26.
+          if [ "${{ vars.MINI1 }}" != off ] && { [ "$GITHUB_REF" = refs/heads/main ] || printf '%s\n' ${missing_mac:-} | grep -qE '^(mesh|shell-apple|reader):darwin-arm64$'; }; then
             echo 'natives_mac_runner=["self-hosted","quick"]' >> "$GITHUB_OUTPUT"
           else
             echo 'natives_mac_runner="macos-26"' >> "$GITHUB_OUTPUT"
@@ -131,6 +130,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
     steps:
       - uses: actions/checkout@v5
       - if: runner.os == 'Linux'
@@ -162,9 +162,12 @@ jobs:
           else
             node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_NATIVES
           fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
+        with: { name: "natives-${{ github.sha }}", path: "${{ runner.temp }}/natives.r2.json", if-no-files-found: ignore, retention-days: 7 }
 
   # A branch's the rest of what main builds on ci-1 (linux-arm64, launcher:linux-x64, shell-station), into ci-1's cache,
   # which main's natives job takes them from without holding main's jobs back.
@@ -194,7 +197,7 @@ jobs:
 
   # The Apple native parts (darwin-arm64, ios-arm64, ios-sim-arm64: scripts/native.ts --mac), built only when an Apple
   # native part is missing, where plan's natives_mac_runner says: Mini1's quick runner for main and for a branch's
-  # mesh or shell-apple, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
+  # mesh, shell-apple or reader, GitHub's macos-26 for a branch's lighter parts (a branch waited on Mini1 while it was away,
   # 2026-11-17).
   natives-mac:
     needs: plan
@@ -203,6 +206,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write # the release native-artifacts' assets, on main only
+      id-token: write # the branch job can stage its native archives in R2
     steps:
       # (when the job is cut, for the build's own limit on GitHub's runner and the reader's units saved after it)
       - run: echo "JOB_END=$(( $(date +%s) + 5 * 60 - 5 ))" >> "$GITHUB_ENV"
@@ -244,9 +248,12 @@ jobs:
           else
             ${limit[@]+"${limit[@]}"} node scripts/native.ts ensure --outbox "$RUNNER_TEMP/natives" $BRANCH_MAC_NATIVES
           fi
+      - name: Stage native archives in R2
+        if: github.ref != 'refs/heads/main'
+        run: node scripts/native-handoff.mjs put "$RUNNER_TEMP/natives" "$RUNNER_TEMP/natives-mac.r2.json"
       - if: github.ref != 'refs/heads/main'
         uses: actions/upload-artifact@v4
-        with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives", if-no-files-found: ignore, retention-days: 7 }
+        with: { name: "natives-mac-${{ github.sha }}", path: "${{ runner.temp }}/natives-mac.r2.json", if-no-files-found: ignore, retention-days: 7 }
       - if: always() && runner.environment != 'self-hosted'
         run: find ~/.cache/stillfail-reader-mbc -name '*.lock' -delete 2>/dev/null || true
       - if: always() && runner.environment != 'self-hosted' && steps.reader-store.outputs.cache-hit != 'true'

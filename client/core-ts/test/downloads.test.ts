@@ -10,7 +10,7 @@ import { Deferred, Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
 import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
-import { chatKeptId } from "../src/drive-kept.ts";
+import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { HostError } from "../src/error.ts";
 import { HostWire } from "../src/station/wire.ts";
@@ -123,6 +123,124 @@ test("a chat's file downloaded a part at a time, ready for the page that takes i
   await r.ask("station.file.part", { station: ST, key: "k1", name: "build.zip", offset: 0, length: 4 * MB, keep: true, size: zip.length });
   assert.equal(r.parts("build.zip"), 3);
   r.core.close();
+});
+
+for (const first of ["download", "preview"] as const) test(`a save and installer share outstanding parts, ${first} first`, async () => {
+  const name = "2026-11-17T19-15-04-build.apk";
+  const file = new Uint8Array(9 * MB).fill(7);
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: file.length, from: { session: "k1", file: { name: "build.apk", path: "uploads/" + name, size: file.length } } };
+  const hold = r.host.hold(`offset=${4 * MB}&length=${4 * MB}`);
+  const install = () => r.ask("station.file", { ...params, progress: true, keep: true });
+  const save = () => r.ask("download.start", params);
+  try {
+    if (first === "download") { await save(); await install(); }
+    else { await install(); await save(); }
+    const view = r.core.inner.downloads.view();
+    assert.equal(view.downloads.length + view.keeping.length, 1, "only one transfer of the file is listed");
+    hold();
+    await r.host.settle();
+    assert.equal(r.parts(name), 3, "the same missing bytes never requested twice");
+    assert.deepEqual((await install()).bytes, file);
+    assert.equal(r.parts(name), 3);
+  } finally {
+    hold();
+    r.core.close();
+  }
+});
+
+for (const drive of [false, true]) test(`overlapping ${drive ? "drive" : "attachment"} ranges share only their intersection when a save is cancelled`, async () => {
+  const file = Uint8Array.from({ length: 96 }, (_, i) => i);
+  const t = await started();
+  const name = "data.bin";
+  const stationFile = { root: "/docs", path: name, mtime: 8 };
+  const source = drive ? stationFile : { key: "k1" };
+  files(t.host, new Map([[name, file]]), new Set(), new Set(), {
+    files: new Map([["/docs\n" + name, { bytes: file, mtime: 8 }]]), zips: new Map(),
+  });
+  const r = await watch(t);
+  const params = { station: ST, ...source, name, size: file.length };
+  const ui = t.core.connect();
+  const release = t.host.hold("offset=32&length=32");
+  try {
+    call(t.core, ui, 10, drive ? "drive.read" : "station.file.part", { ...params, offset: 32, length: 32, keep: drive ? "file" : true });
+    await t.host.settle();
+    const { ok } = await r.ask("download.start", params);
+    // The player owns the middle of the range; the download only fetches the gap before it, then waits for it.
+    const endpoint = drive ? "/drive/read?" : "/sessions/k1/parts?";
+    const ranges = () => t.host.requests.filter((q) => q.url.includes(endpoint)).map((q) => {
+      const p = new URL(q.url).searchParams;
+      return [Number(p.get("offset")), Number(p.get("length"))];
+    });
+    assert.deepEqual(ranges(), [[32, 32], [0, 32]]);
+    await r.ask("download.cancel", { id: ok.download.id });
+    release();
+    await t.host.settle();
+    const got = await r.ask(drive ? "drive.read" : "station.file.part", { ...params, offset: 32, length: 32, keep: drive ? "file" : true });
+    assert.deepEqual(got.bytes, file.slice(32, 64));
+    assert.equal(ranges().length, 2, "the player completed even though the save stopped");
+  } finally {
+    release();
+    t.core.close();
+  }
+});
+
+test("cancelling the save that started a range leaves its installer reading", async () => {
+  const file = new Uint8Array(16384).fill(2);
+  const name = "tiny.apk";
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: file.length };
+  const release = r.host.hold(`offset=0&length=${file.length}`);
+  try {
+    const { ok } = await r.ask("download.start", params);
+    await r.ask("station.file", { ...params, keep: true });
+    await r.ask("download.cancel", { id: ok.download.id });
+    release();
+    await r.host.settle();
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    release();
+    r.core.close();
+  }
+});
+
+test("an installer with no listed size shares and reuses the bytes of the download", async () => {
+  const file = new Uint8Array(65536).fill(3);
+  const name = "old.apk";
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: 0 };
+  const release = r.host.hold(`offset=0&length=${4 * MB}`);
+  try {
+    await r.ask("download.start", params);
+    await r.ask("station.file", { ...params, keep: true });
+    release();
+    await r.host.settle();
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    release();
+    r.core.close();
+  }
+});
+
+test("a second reader takes a completed range while the device is still writing it", async () => {
+  const file = new Uint8Array(32768).fill(9);
+  const name = "pending.apk";
+  const r = await rig(new Map([[name, file]]));
+  const write = Deferred.makeUnsafe<void>();
+  const put = r.host.storageSet.bind(r.host);
+  r.host.storageSet = (key, value) => key.startsWith("drive-kept-") ? Effect.andThen(Deferred.await(write), put(key, value)) : put(key, value);
+  const params = { station: ST, key: "k1", name, size: file.length };
+  try {
+    await r.ask("download.start", params);
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    Deferred.doneUnsafe(write, Effect.void);
+    await r.host.settle();
+    r.core.close();
+  }
 });
 
 test("a chat file without a recorded size is read before it is ready, including an empty or missing file", async () => {
@@ -492,11 +610,54 @@ test("saved where the app can read it back, that is the file's copy on the devic
   const read = await r.ask("station.file.part", { station: ST, key: "k1", name: "build.zip", offset: 4 * MB, length: 4 * MB, keep: true, size: zip.length });
   assert.deepEqual([...read.bytes], [...zip.slice(4 * MB)]);
   assert.equal(r.parts("build.zip"), before);
+  const again = (await r.ask("download.start", { station: ST, key: "k1", name: "build.zip", size: zip.length })).ok.download.id;
+  assert.equal((await r.view())[0].state, "ready");
+  assert.equal(r.parts("build.zip"), before, "a second save reuses the same system copy as the preview");
+  await r.ask("download.cancel", { id: again });
   // deleted from there: read from the station again, and kept as any other
   r.host.saved.delete(at);
   await r.ask("station.file.part", { station: ST, key: "k1", name: "build.zip", offset: 0, length: 4 * MB, keep: true, size: zip.length });
   assert.equal(r.parts("build.zip"), before + 1);
   assert.equal(kept(), 1);
+  r.core.close();
+});
+
+test("saving an attachment sent from this device reads the uploaded bytes locally", async () => {
+  const r = await rig(new Map());
+  const name = "posted.apk";
+  const bytes = bytesOf(300, 9);
+  await Effect.runPromise(r.core.inner.driveKept.keep(sentKeptId(ST, name), "sent", 0, bytes.length, "application/octet-stream", 0, bytes));
+  const id = (await r.ask("download.start", { station: ST, key: "k1", name, size: 0 })).ok.download.id;
+  const [d] = await r.view();
+  assert.deepEqual([d.state, d.size], ["ready", bytes.length]);
+  const read = await r.ask("download.read", { id, offset: 0, length: bytes.length });
+  assert.deepEqual(read.bytes, bytes);
+  assert.equal(r.parts(name), 0);
+  r.core.close();
+});
+
+test("a saved drive copy is reused only for the same version, even at the same size", async () => {
+  const old = bytesOf(32, 1), fresh = bytesOf(32, 9);
+  const drive: Drive = { files: new Map([["docs\nlog", { bytes: old, mtime: 1 }]]), zips: new Map() };
+  const r = await started();
+  files(r.host, new Map(), new Set(), new Set(), drive);
+  const t = await watch(r);
+  const save = (mtime: number) => t.ask("download.start", { station: ST, root: "docs", path: "log", name: "log", size: old.length, mtime });
+  const id = (await save(1)).ok.download.id;
+  assert.equal((await t.view())[0].state, "ready");
+  const at = "/Downloads/log";
+  r.host.saved.set(at, old);
+  await t.ask("download.done", { id, at });
+  const reads = () => r.host.requests.filter((q) => q.url.includes("/drive/read")).length;
+  await save(1);
+  assert.equal((await t.view())[0].state, "ready");
+  assert.equal(reads(), 1);
+  await t.ask("download.done", { id });
+  drive.files.set("docs\nlog", { bytes: fresh, mtime: 2 });
+  await save(2);
+  assert.equal((await t.view())[0].state, "ready");
+  assert.equal(reads(), 2);
+  assert.deepEqual((await t.ask("download.read", { id, offset: 0, length: old.length })).bytes, fresh);
   r.core.close();
 });
 

@@ -95,3 +95,10 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
   assert.deepEqual(linkTo("https://github.com/a/b/issues/3#c"), { peek: "issue" });
   assert.equal(linkTo("https://github.com/a/b/pulls"), null);
 });
+
+test("a workflow run or a specific attempt in a message opens a rich preview", () => {
+  const url = "https://github.com/acme/shop/actions/runs/44147606865";
+  assert.deepEqual(linkTo(url), { peek: "run" });
+  assert.deepEqual(linkTo(url + "/attempts/2#summary"), { peek: "run" });
+  assert.equal(linkTo(url + "/job/123"), null);
+});

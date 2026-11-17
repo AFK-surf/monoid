@@ -2962,6 +2962,7 @@ pub fn Tester::hand_moves(Self) -> Array[String]
 pub fn Tester::haptics(Self) -> Array[Haptic]
 pub fn Tester::height_faults(Self) -> Array[String]
 pub fn Tester::hold_drag(Self, Double, Double, Double, Double, steps? : Int32) -> Unit
+pub fn Tester::hold_faults(Self) -> Array[String]
 pub fn Tester::hold_files(Self, (Double, Double)?) -> Unit
 pub fn Tester::hold_mods(Self, Int32) -> Unit
 pub fn Tester::hold_move(Self, Double, Double) -> Unit
@@ -3195,6 +3196,7 @@ pub fn Tester::views(Self) -> Array[String]
 pub fn Tester::visible(Self) -> (Int32, Int32)
 pub fn Tester::wanted_after(Self) -> Double
 pub fn Tester::wanted_why(Self) -> String
+pub fn Tester::waterfall_faults(Self) -> Array[String]
 pub fn Tester::ways_set_out(Self) -> Array[@view.WaySet]
 pub fn Tester::wheel(Self, Double, Double, Double) -> Unit
 pub fn Tester::wheel_kept(Self) -> Bool

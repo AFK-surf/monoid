@@ -166,7 +166,7 @@ export function githubOf(url: string): { kind: "pull" | "issue"; repository: str
 /// pull request's or an issue's (`peek`: its card over it is that one's, bars while it is read). Null for any other
 /// link. The clients take it from the core with each link (markdown.ts, personWords, things.ts), reading none of it
 /// themselves.
-export type LinkTo = { chat?: true; card?: "screen" | "terminal" | "adb" | "service"; station?: string; screen?: string; terminal?: string; job?: string; peek?: "pull" | "issue" };
+export type LinkTo = { chat?: true; card?: "screen" | "terminal" | "adb" | "service"; station?: string; screen?: string; terminal?: string; job?: string; peek?: "pull" | "issue" | "run" };
 export function linkTo(href: string): LinkTo | null {
   const chat = isChatLink(href) ? { chat: true as const } : {};
   const screen = screenOfLink(href);
@@ -177,6 +177,7 @@ export function linkTo(href: string): LinkTo | null {
   if (adb) return { ...chat, card: "adb", station: adb };
   const service = serviceOfLink(href);
   if (service) return { ...chat, card: "service", station: service.station, job: service.job };
+  if (/^https?:\/\/github\.com\/[\w.-]+\/[\w.-]+\/actions\/runs\/\d+(?:\/attempts\/\d+)?\/?(?:[?#]|$)/i.test(href)) return { ...chat, peek: "run" };
   const github = githubOf(href);
   if (github) return { ...chat, peek: github.kind };
   return chat.chat ? chat : null;

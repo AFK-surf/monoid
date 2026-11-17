@@ -66,9 +66,20 @@ pub let ground_read_focus : Int32
 
 pub let ground_read_hand : Int32
 
+pub fn hold_collecting() -> Bool
+
+pub fn hold_marks_left() -> Bool
+
+#callsite(autofill(loc))
+pub fn hold_note(() -> Bool, loc~ : SourceLoc) -> Unit
+
+pub fn hold_reset() -> Unit
+
 pub let ios_decel : Double
 
 pub let letters_own : Spacing
+
+pub let long_hold_ms : Double
 
 pub fn place_beside((Double, Double, Double, Double), Double, Double, Double, Double, side? : Side, along? : Along, offset? : Double, along_offset? : Double, padding? : Double, flip? : Bool, on? : Side, rtl? : Bool, clear? : (Double, Double, Double, Double)) -> (Double, Double, Side)
 
@@ -117,6 +128,8 @@ pub let scroll_page_down : String
 pub let scroll_page_up : String
 
 pub let scroll_top : String
+
+pub let silent_hold_ms : Double
 
 pub fn source_place(SourceLoc) -> String
 
@@ -465,6 +478,22 @@ pub(all) enum Handed {
   Held
   Moved(Double, Double)
 }
+
+pub struct HoldGate {
+  // private fields
+}
+pub fn HoldGate::acknowledge(Self) -> Unit
+pub fn HoldGate::cancel(Self, give_up? : Bool) -> Unit
+pub fn HoldGate::collect(Self, () -> Unit) -> Unit
+#callsite(autofill(loc))
+pub fn HoldGate::go(Self, View, most~ : Double, while_still? : () -> Bool, on_give_up? : () -> Unit, () -> Unit, loc~ : SourceLoc) -> Unit
+pub fn HoldGate::is_pending(Self) -> Bool
+#callsite(autofill(loc))
+pub fn HoldGate::new(acknowledged? : Bool, once? : Bool, loc~ : SourceLoc) -> Self
+#callsite(autofill(loc))
+pub fn HoldGate::open_when(Self, View, most~ : Double, () -> Bool, while_still? : () -> Bool, on_give_up? : () -> Unit, () -> Unit, loc~ : SourceLoc) -> Unit
+pub fn HoldGate::seal(Self, View) -> Unit
+pub fn HoldGate::stop(Self, give_up? : Bool) -> Unit
 
 type HoldIn
 
@@ -1201,6 +1230,7 @@ pub fn Tree::held_under_by(Self, () -> Int32) -> Unit
 pub fn Tree::held_walked(Self) -> Int32
 pub fn Tree::hits_said(Self) -> Int32
 pub fn Tree::hold_at(Self, Double, Double) -> NodeId?
+pub fn Tree::hold_faults(Self) -> Array[String]
 pub fn Tree::hold_goes_through(Self, NodeId) -> Bool
 pub fn Tree::hold_in_found(Self, Double, Double, Double) -> Unit
 pub fn Tree::hold_in_let_go(Self) -> Unit
@@ -1370,6 +1400,7 @@ pub fn Tree::view_of(Self, NodeId) -> View?
 pub fn Tree::wake(Self) -> Double?
 pub fn Tree::wake_waited(Self) -> Double?
 pub fn Tree::wake_waited_by(Self) -> String
+pub fn Tree::waterfall_faults(Self) -> Array[String]
 pub fn Tree::ways_end(Self) -> Double
 pub fn Tree::ways_set_out(Self) -> Array[WaySet]
 pub fn Tree::went_down(Self, Double, x? : Double, y? : Double) -> Unit

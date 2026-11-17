@@ -399,6 +399,7 @@ async fn Hub::session_made(self : Hub, key : String, client : String?, options :
     "effort": opt_str(effort),
     "fast": fast,
     "speed": opt_str(speed),
+    "tui": Json::boolean(runtime == "claude" && field(options, "tui") == Some(Json::boolean(true))),
     "context": match context { Some(c) => num(c); None => Json::null() },
     "workspace": Json::string(workspace),
     "cwd": Json::null(),
@@ -689,11 +690,15 @@ pub async fn Hub::configure(self : Hub, key : String, change : Json, lang? : Str
       ignore((self.world.ask)("accounts.runOn", { "key": Json::string(key), "holding": Json::boolean(false), "quiet": Json::boolean(true) }))
     }
   }
+  let was_tui = field(row, "tui") == Some(Json::boolean(true))
+  let tui = runtime == "claude" && field(change, "tui").unwrap_or(Json::boolean(was_tui)) == Json::boolean(true)
+  let mode_changed = tui != was_tui
+  if mode_changed { self.store.set_session_tui(key, tui) }
   if moved_runtime && speed != Json::null() {
     self.store.set_session_speed(key, speed)
   }
   if self.actors.contains(key) {
-    ignore(self.ask_actor(key, "changed", args=[Json::boolean(moved_runtime || recapped)]))
+    ignore(self.ask_actor(key, "changed", args=[Json::boolean(moved_runtime || recapped || mode_changed)]))
   }
   match self.get_session(key) {
     Some(now) => {

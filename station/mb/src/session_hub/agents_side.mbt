@@ -157,7 +157,7 @@ pub fn peer_route(call_name : String) -> String {
     "session.read" => "read"
     "session.file" => "file"
     "session.put" => "put"
-    "session.create" | "session.create.preset" | "session.create.speed" | "session.create.preset.speed" => "create"
+    "session.create" | "session.create.preset" | "session.create.speed" | "session.create.preset.speed" | "session.create.preset.tui" => "create"
     "session.archive" => "archive"
     "session.notice" => "notice"
     _ => "message"

@@ -149,6 +149,8 @@ struct Box {
   // same in any containing block
   mut of_cb_w : Bool
   mut of_cb_h : Bool
+  // In the box a root keeps, the pixel grid of its last unrounded compute.
+  mut laid_grid : Double
 }
 
 ///|
@@ -256,6 +258,7 @@ fn box_of(
       max_h,
       of_cb_w,
       of_cb_h,
+      laid_grid: undef,
     }
   }
 }
@@ -437,7 +440,11 @@ pub fn compute(
   grid? : Double = 0.0,
 ) -> Unit {
   generation.val = generation.val + 1
-  reusing.val = reuse && !round && grid == placing_grid.val
+  // The old views and the window tree alternate on Android, each on its own grid.
+  reusing.val = reuse && !round && (match root.box_memo {
+    Some(box) => grid == box.laid_grid
+    None => grid == 0.0
+  })
   placing_grid.val = grid
   absolute_seen.val = false
   let b = box_of(root.style, width, height)
@@ -472,6 +479,9 @@ pub fn compute(
   }
   if round {
     round_layout(root, 0.0, 0.0)
+  }
+  if root.box_memo is Some(box) {
+    box.laid_grid = if round { undef } else { grid }
   }
 }
 

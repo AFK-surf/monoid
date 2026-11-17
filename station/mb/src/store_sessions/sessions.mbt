@@ -444,8 +444,8 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
     ignore(
       self.run(
         (
-          #|INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
-          #|         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          #|INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed, tui)
+          #|         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ),
         [
           nullish(get("key")),
@@ -470,6 +470,7 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
           nullish(get("ws")),
           nullish(get("context")),
           nullish(get("speed")),
+          flag(get("tui") == Some(Json::boolean(true))),
         ],
       ),
     )
@@ -537,7 +538,7 @@ pub fn Store::set_session_runtime(
   }
   self.update_session(
     key,
-    "UPDATE sessions SET original_runtime = COALESCE(original_runtime, \{first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9",
+    "UPDATE sessions SET original_runtime = COALESCE(original_runtime, \{first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, tui = NULL, context = ?8 WHERE key = ?9",
     [
       runtime,
       profile,
@@ -614,6 +615,11 @@ pub fn Store::set_session_afresh(
     opt_flag(afresh),
     jstr(key),
   ])
+}
+
+///|
+pub fn Store::set_session_tui(self : Store, key : String, tui : Bool) -> Unit raise {
+  self.update_session(key, "UPDATE sessions SET tui = ?1 WHERE key = ?2", [flag(tui), jstr(key)])
 }
 
 ///|

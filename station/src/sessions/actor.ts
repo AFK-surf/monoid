@@ -599,6 +599,7 @@ export async function openOptions(row: any, profile: Profile & { spelling?(model
     model,
     effort: row.effort ?? undefined,
     ...(typeof row.context === "number" ? { context: row.context } : {}),
+    ...(row.tui ? { tui: true } : {}),
     ...(typeof row.fast === "boolean" ? { fast: row.fast } : {}),
     // A session continued from a terminal keeps the system prompt it began with (its cache holds).
     instructions: row.cwd ? "" : sessionInstructions(row.workspace, null, deps.reposDir(), deps.memoryPath(row.key), memory, deps.siteInstructions?.(), deps.ownName?.(), deps.moveOn?.() ?? true) + (preset ? presetInstructions(preset) : ""),

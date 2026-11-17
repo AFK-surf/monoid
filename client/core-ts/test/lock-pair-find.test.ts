@@ -627,6 +627,32 @@ test("where its person bound a lock of their own that this device is not on, it 
   assert.deepEqual([started.waiting, started.confirmed], [false, true]);
 });
 
+// 2026-11-17: made its person's only trusted device (`lock.restartOwn`) where the workspace's lock (not moved) binds them
+// by the lock of before, and in the workspace's lock itself all the same (approved the old way, or before they were
+// bound): every station lets their app devices in on the lock they are bound by alone (station/src/mesh/serve.ts
+// `inLock`), so it is not confirmed, says whom to ask, and asks nobody.
+test("its person's lock begun anew here while the workspace's lock binds the one of before, this device in the workspace's lock all the same: not confirmed, whom to ask, nothing asked", async () => {
+  const w = await waiting({ [PHONE_APP]: "code" });
+  const inner = w.core.inner;
+  stationReplies(w.host, (req) => (req.method === "GET" && req.url.endsWith("/v1/me/personal-lock") ? { entries: [] } : w.cloud.reply(req)));
+  // Their lock as this device holds it: begun here, this device on it (`member`), not the one the workspace binds.
+  inner.adb.personal = () => ({
+    makeKey: () => Effect.succeed(`ed25519:${"11".repeat(32)}`),
+    approvers: () => [], standing: () => "member", root: () => "cd".repeat(32), entries: () => [], chain: () => null,
+    refresh: () => Effect.void, mayBeginQuietly: () => false, signerUnsaid: () => false, pinnedOf: () => null,
+    pendingShown: () => [], stationsChanged: () => {},
+  }) as never;
+  await signedIn(w, "device", { id: ME, sub: "s1", kind: "app", label: "this", sign_key: signerOf(inner) });
+  await signedIn(w, "person", { sub: "s1", person: "ab".repeat(32) });
+  const me = (await w.lock()).me;
+  assert.deepEqual([me.confirmed, me.waiting, me.pair ?? null], [false, true, null], "waiting, nothing to ask");
+  assert.match(me.reboundText ?? "", /先将你移出再重新添加/, "whom to ask");
+  assert.match(me.reboundText ?? "", /另一位 owner/, "an owner's words: another owner");
+  await assert.rejects(w.ask("lock.pair", { workspace: "ws" }), (e: CoreError) => e.code === "lock_rebound" && e.message === me.reboundText, "asking refused with the same words");
+  await w.host.time.pass(1_000);
+  assert.deepEqual(w.dials, {}, "nobody dialled");
+});
+
 // 2026-11-14, the locks' end to end on CI (09719be0): D typed the code its second trusted device (B) showed while D had
 // heard only the first's (A's), which said it was wrong, and the code B showed was never tried. A device reached and
 // still to answer with its code is waited for (its dial's own wait) and tried with the same code.

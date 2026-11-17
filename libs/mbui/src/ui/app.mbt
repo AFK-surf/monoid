@@ -1971,6 +1971,18 @@ let wheel_old_target : Ref[Int] = Ref(0)
 
 ///|
 fn on_wheel_now(x : Double, y : Double, dx : Double, dy : Double, phase : Int) -> Unit {
+  // (a trackpad's two fingers swept right where nothing scrolls that way: back, wheel_back.mbt; a wheel handler under
+  // it has first refusal and receives both deltas, just as with any other wheel)
+  if wheel_back_take(x, y, dx, dy, phase, fn() { wheel_routed(x, y, dx, dy, phase, for_back=true) }) {
+    return
+  }
+  wheel_routed(x, y, dx, dy, phase) |> ignore
+}
+
+///|
+/// A wheel turned at (x, y) as the window takes it (on_wheel_now's): the window's tree's, or an old view's in it, else
+/// the old frame's. Whether something took it (moved by it, or takes the pointer and so the wheel).
+fn wheel_routed(x : Double, y : Double, dx : Double, dy : Double, phase : Int, for_back? : Bool = false) -> Bool {
   // what was held with it, above its phase (wheel_mod_*: ⇧ ⌃ ⌥ ⌘, and a trackpad's pinch as a wheel with ⌃ held)
   let mods = phase / 16
   // (over a node of the window's tree's that takes the wheel, or what holds it: its, at the wheel's own moment, where it
@@ -1980,9 +1992,9 @@ fn on_wheel_now(x : Double, y : Double, dx : Double, dy : Double, phase : Int) -
   // the old frame's, as ever)
   let old_took = Ref(false)
   let old = fn(island : @view.NodeId) {
-    guard old_wheel_takes(x, y, dx, dy, phase, island=Some(island)) else { return false }
+    guard old_wheel_takes(x, y, dx, dy, phase, for_back~, island=Some(island)) else { return false }
     old_took.val = true
-    old_wheel(x, y, dx, dy, phase, island=Some(island))
+    old_wheel(x, y, dx, dy, phase, for_back~, island=Some(island))
     true
   }
   // (a wheel's notch said so to the tree's: a page's list of it eases it in, as an old view's list does)
@@ -1995,10 +2007,12 @@ fn on_wheel_now(x : Double, y : Double, dx : Double, dy : Double, phase : Int) -
     } else {
       wheel_went.val = 2
     }
-    return
+    return old_took.val || @view.wheel_last.took_at >= 0
   }
   wheel_went.val = 3
-  old_wheel(x, y, dx, dy, phase)
+  let took = for_back && old_wheel_takes(x, y, dx, dy, phase, for_back~)
+  old_wheel(x, y, dx, dy, phase, for_back~)
+  took
 }
 
 ///|
@@ -2053,6 +2067,7 @@ fn old_wheel_takes(
   dx : Double,
   dy : Double,
   phase : Int,
+  for_back~ : Bool,
   island? : @view.NodeId? = None,
 ) -> Bool {
   let c = g()
@@ -2076,6 +2091,9 @@ fn old_wheel_takes(
   if ((phase / 16) & wheel_mod_pinch) != 0 {
     return true
   }
+  // Lists in the old frame scroll vertically. During swipe recognition, only the sideways scrollers and captures above
+  // can claim a horizontal wheel here. Normal wheel routing keeps giving these lists the vertical delta.
+  guard !for_back else { return false }
   match c.lists.get(target) {
     Some(st) => st.wheel_moves(dy)
     None => false
@@ -2091,6 +2109,7 @@ fn old_wheel(
   dx : Double,
   dy : Double,
   phase : Int,
+  for_back~ : Bool,
   island? : @view.NodeId? = None,
 ) -> Unit {
   let mods = phase / 16
@@ -2129,6 +2148,10 @@ fn old_wheel(
   }
   // a pinch is what holds a page's own (a picture's zoom): no list scrolls by it
   if (mods & wheel_mod_pinch) != 0 {
+    wheel_taken()
+    return
+  }
+  if for_back {
     wheel_taken()
     return
   }

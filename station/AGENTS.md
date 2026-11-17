@@ -180,7 +180,9 @@
   `mb/src/usagecount`: the transcripts read and their calls written there, Node only told what changed; started at a
   read, let go idle), with no reading in TypeScript to fall back to: the one it replaced is the tests' only, which
   the program's reads are compared with (`test/mb-usage-counter.test.ts`).
-- Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session;
+- Runtimes are drivers behind one seam (`src/agents/runtime.ts`): Claude Code a `claude -p` process per session, or a PTY
+  with its lifecycle hooks recorded by `src/agents/claude-tui.mjs` when the agent environment selects
+  the model picker’s TUI run mode (chat sessions only);
   Codex one app-server per account, a thread per session, whose per-session settings go in `thread/start`'s config,
   never the process's environment, ended once idle (`WARM_MS`, its threads opened again with their next turn); the
   others in `src/agents/`. A driver owns its child's stdin. Claude Code's output is read by the MoonBit program

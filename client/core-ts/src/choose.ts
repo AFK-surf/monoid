@@ -40,9 +40,9 @@ function offersUltrafast(overview: unknown, modelId: unknown, accounts: J[], all
 const TABLE = "choice";
 /// How many of the combinations used most a model control's panel keeps nearest what opened it.
 const NEAR = 4;
-const FIELDS = ["runtime", "model", "effort", "profile", "profiles", "fast", "speed", "context"];
+const FIELDS = ["runtime", "model", "effort", "profile", "profiles", "fast", "speed", "tui", "context"];
 /// How a model runs, apart from who runs it: what is set by hand in a control's panel (`Choose`'s `#hand`).
-const HOW = ["runtime", "effort", "fast", "speed", "context"];
+const HOW = ["runtime", "effort", "fast", "speed", "tui", "context"];
 
 const normProfiles = (v: unknown): string[] | null => {
   if (!Array.isArray(v)) return null;
@@ -91,6 +91,10 @@ function presetBinds(p: J): { model: J | null; stations: string[] | null } {
   return { model, stations: one !== null ? [stationId(one)] : some.length > 0 ? some : null };
 }
 
+function tuiFields(value: J): { tui?: true } {
+  return get(value, "tui") === true ? { tui: true } : {};
+}
+
 /// A station's choice `base` as a preset's model configuration `pm` makes it: all of it the preset's, what the
 /// preset leaves out the model's own (its first runtime where the one kept does not run it, its default effort).
 function boundChoice(pm: J, base: J): J {
@@ -99,6 +103,7 @@ function boundChoice(pm: J, base: J): J {
     model: pm.model,
     runtime: text(get(pm, "runtime")) ?? (get(base, "model") === pm.model ? get(base, "runtime") : ""),
     effort: text(get(pm, "effort")) ?? "",
+    tui: get(pm, "tui") === true ? true : undefined,
     fast: typeof get(pm, "fast") === "boolean" ? pm.fast : null,
     speed: modelSpeed(get(pm, "speed")),
     context: get(pm, "context") ?? null,
@@ -189,7 +194,7 @@ function resolveAccounts(accounts: J[], asked: string[], multi: boolean): { prof
 }
 
 /// A choice as the station has it now.
-export type Resolved = { entry: J; runtime: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed; context: number | null; profile: string | null; profiles: string[] | null; efforts: J[]; contexts: number[]; accounts: J[] };
+export type Resolved = { entry: J; runtime: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed; tui?: boolean; context: number | null; profile: string | null; profiles: string[] | null; efforts: J[]; contexts: number[]; accounts: J[] };
 
 export function resolve(options: J[], choice: J, subsets = true): Resolved {
   const rawModel = typeof get(choice, "model") === "string" ? choice.model : null;
@@ -223,7 +228,7 @@ export function resolve(options: J[], choice: J, subsets = true): Resolved {
   const contexts = at("contexts").filter((n): n is number => typeof n === "number");
   const c = contextOf(get(choice, "context"));
   const context = c !== null && contexts.includes(c) ? c : null;
-  return { entry: entry === undefined ? null : entry, runtime, effort, fast, ...speedFields({ speed }), context, profile, profiles, efforts, contexts, accounts };
+  return { entry: entry === undefined ? null : entry, runtime, effort, fast, ...speedFields({ speed }), ...(runtime === "claude" ? tuiFields(choice) : {}), context, profile, profiles, efforts, contexts, accounts };
 }
 
 function picked(r: Resolved): J {
@@ -232,7 +237,7 @@ function picked(r: Resolved): J {
     runtime: r.runtime ?? "claude",
     effort: r.effort,
     fast: r.fast,
-    ...speedFields(r),
+    ...speedFields(r), ...tuiFields(r),
     context: r.context,
     profile: r.profile,
     ...(r.profiles !== null ? { profiles: r.profiles } : {}),
@@ -294,7 +299,7 @@ const comboFast = (v: J): boolean | null => fastRuntime(get(v, "runtime")) && ch
 /// Whether `a` and `b` are the same combination used here (`ws:<scope>:frequent`): the same model, runtime, how hard it
 /// thinks, how fast and how much context (none, an entry kept before context was: its model's whole window).
 export function sameCombo(a: J, b: J): boolean {
-  return ["model", "runtime", "effort"].every((f) => text(get(a, f)) === text(get(b, f))) && (fastRuntime(get(a, "runtime")) ? chosenSpeed(a) : null) === (fastRuntime(get(b, "runtime")) ? chosenSpeed(b) : null) && contextOf(get(a, "context")) === contextOf(get(b, "context"));
+  return ["model", "runtime", "effort"].every((f) => text(get(a, f)) === text(get(b, f))) && (fastRuntime(get(a, "runtime")) ? chosenSpeed(a) : null) === (fastRuntime(get(b, "runtime")) ? chosenSpeed(b) : null) && (get(a, "tui") === true) === (get(b, "tui") === true) && contextOf(get(a, "context")) === contextOf(get(b, "context"));
 }
 
 /// A combination used here, kept by what it is (sameCombo). Usage stays bounded on the device; ties favour the most
@@ -304,7 +309,7 @@ export function recordCombo(history: J[], choice: J, now: number): J[] {
   const found = history.find(same);
   const count = (typeof get(found, "count") === "number" ? found.count : 0) + 1;
   const out = history.filter((v) => !same(v));
-  out.push({ model: get(choice, "model") ?? null, runtime: get(choice, "runtime") ?? null, effort: text(get(choice, "effort")), fast: comboFast(choice), ...speedFields(choice), context: contextOf(get(choice, "context")), count, last: now });
+  out.push({ model: get(choice, "model") ?? null, runtime: get(choice, "runtime") ?? null, effort: text(get(choice, "effort")), fast: comboFast(choice), ...speedFields(choice), ...tuiFields(choice), context: contextOf(get(choice, "context")), count, last: now });
   out.sort((a, b) => (typeof b.last === "number" ? b.last : 0) - (typeof a.last === "number" ? a.last : 0));
   return out.slice(0, 64);
 }
@@ -314,7 +319,7 @@ export function recordCombo(history: J[], choice: J, now: number): J[] {
 /// exact, still runnable ones are offered: never silently change a remembered depth, runtime or context; one only
 /// another station has (borrowable) is left out. `fixed`: the runtime the control cannot leave, only its own offered
 /// and none said by it. `selected`: `current` is exactly it.
-export function frequentCombos(history: J[], options: J[], current: Resolved, fixed: string | null = null, showRuntime = false, ultrafastAvailable: (id: string) => boolean = () => true): J[] {
+export function frequentCombos(history: J[], options: J[], current: Resolved, fixed: string | null = null, showRuntime = false, ultrafastAvailable: (id: string) => boolean = () => true, claudeTui = false): J[] {
   const sorted = [...history].sort(
     (a, b) => (typeof b.count === "number" ? b.count : -1) - (typeof a.count === "number" ? a.count : -1) || (typeof b.last === "number" ? b.last : 0) - (typeof a.last === "number" ? a.last : 0),
   );
@@ -330,6 +335,7 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
     if (entry === undefined || entry.availability === "borrowable") continue;
     if (typeof runtime !== "string" || !arr(entry.runtimes).some((r) => r === runtime)) continue;
     if (fixed !== null && runtime !== fixed) continue;
+    if (v.tui === true && (runtime !== "claude" || !claudeTui)) continue;
     const effort =
       text(get(v, "effort")) ??
       (useTiered && arr(get(get(entry, "efforts"), runtime)).includes(tiered.effort) ? tiered.effort : null);
@@ -337,11 +343,11 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
     const speed = modelSpeed(get(v, "speed"));
     if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastAvailable(entry.model))) continue;
     const context = contextOf(get(v, "context"));
-    const r = resolve(options, { model: entry.model, runtime, effort, fast, ...speedFields(v), context, profile: current.profile, profiles: current.profiles });
+    const r = resolve(options, { model: entry.model, runtime, effort, fast, ...speedFields(v), ...tuiFields(v), context, profile: current.profile, profiles: current.profiles });
     if (r.effort !== effort || r.context !== context) continue;
     const m = typeof entry.model === "string" ? entry.model : null;
     if (m === null) continue;
-    const key = JSON.stringify([m, runtime, effort, chosenSpeed(v), context]);
+    const key = JSON.stringify([m, runtime, effort, chosenSpeed(v), v.tui === true, context]);
     if (seen.has(key)) continue;
     seen.add(key);
     // (the effort as the picker says it; none, the runtime's own)
@@ -351,13 +357,13 @@ export function frequentCombos(history: J[], options: J[], current: Resolved, fi
     const runtimeText = arr(entry.runtimes).length > 1 ? format.runtimeLabel(runtime) : null;
     const speedText = speed === "ultrafast" ? "Ultrafast" : fast === null ? null : fast ? "Fast" : t("core-logic.choose.speed.standard");
     const baseLabel = runtimeText === null ? `${name} · ${effortText}` : `${name} · ${runtimeText} · ${effortText}`;
-    const label = speedText === null ? baseLabel : `${baseLabel} · ${speedText}`;
+    const label = [baseLabel, speedText, v.tui === true ? "TUI" : null].filter(Boolean).join(" · ");
     // how it runs in words, after its name: the runtime where it can be another or the station runs several (its short
     // name, format.runtimeShort), the effort, the speed, the context
     const runtimeShown = arr(entry.runtimes).length > 1 || (showRuntime && fixed === null);
-    const parts = [fixed === null && runtimeShown ? format.runtimeShort(runtime) : null, effortText, speedText, context === null ? null : format.compactNumber(context)].filter((x): x is string => x !== null);
-    const selected = current.entry !== null && current.entry.model === m && current.runtime === runtime && current.effort === effort && chosenSpeed(current) === chosenSpeed(v) && current.context === context;
-    out.push({ model: m, runtime, effort, fast, ...speedFields(v), context, ...(speedText === null ? {} : { speedText }), label, text: parts.join(" · "), name, ...(runtimeText === null ? {} : { runtimeText }), effortText, selected });
+    const parts = [fixed === null && runtimeShown ? format.runtimeShort(runtime) : null, effortText, speedText, v.tui === true ? "TUI" : null, context === null ? null : format.compactNumber(context)].filter((x): x is string => x !== null);
+    const selected = current.entry !== null && current.entry.model === m && current.runtime === runtime && current.effort === effort && chosenSpeed(current) === chosenSpeed(v) && (current.tui === true) === (v.tui === true) && current.context === context;
+    out.push({ model: m, runtime, effort, fast, ...speedFields(v), ...tuiFields(v), context, ...(speedText === null ? {} : { speedText }), label, text: parts.join(" · "), name, ...(runtimeText === null ? {} : { runtimeText }), effortText, selected });
   }
   return out;
 }
@@ -462,6 +468,7 @@ export class Choose implements Owner {
     const entry = optionOf(this.#onStation(addr)[0], text(get(pm, "model")));
     if (entry === undefined) return false;
     const rt = text(get(pm, "runtime"));
+    if (pm.tui === true && ((rt !== null && rt !== "claude") || !arr(entry.runtimes).includes("claude") || get(this.#env.store.get({ topic: "overview", station: addr }), "claudeTui") !== true)) return false;
     if (pm.speed === "ultrafast") {
       const overview = this.#env.store.get({ topic: "overview", station: addr });
       const allowed = normProfiles(pm.profiles) ?? (typeof pm.profile === "string" && pm.profile !== "" ? [pm.profile] : null);
@@ -473,6 +480,10 @@ export class Choose implements Owner {
   #keepChoice(scope: string, id: string, choice: J, key = `ws:${scope}:station:${id}`): void {
     const kept: J = {};
     for (const f of FIELDS) {
+      if (f === "tui") {
+        if (choice.tui === true) kept.tui = true;
+        continue;
+      }
       if (f === "speed" && modelSpeed(get(choice, f)) === null) continue;
       kept[f] =
         f === "fast"
@@ -550,7 +561,7 @@ export class Choose implements Owner {
     const options = overview !== null ? models(served, this.#env.now()) : [];
     const r = resolve(options, this.#choice(scope, id), raw !== undefined ? get(raw, "accountSubsets") === true : overview === null || get(overview, "accountSubsets") === true);
     view.frequent = frequentCombos(arr(this.#record(`ws:${scope}:frequent`)), options, r, null, false,
-      (id) => offersUltrafast(raw, id, arr(get(get(optionOf(options, id), "accounts"), "codex"))));
+      (id) => offersUltrafast(raw, id, arr(get(get(optionOf(options, id), "accounts"), "codex"))), get(raw, "claudeTui") === true);
     // A station this workspace joined runs its chats on the profiles open to it: with some, but
     // none open, one is turned on rather than added.
     const joined = station.joined === true;
@@ -584,7 +595,7 @@ export class Choose implements Owner {
     view.runtime = r.runtime;
     view.effort = r.effort;
     view.fast = r.fast;
-    Object.assign(view, speedFields(r));
+    Object.assign(view, speedFields(r), tuiFields(r));
     view.profile = r.profile;
     view.efforts = r.efforts;
     view.accounts = r.accounts;
@@ -835,7 +846,7 @@ export class Choose implements Owner {
         if (ov !== undefined && get(ov, "accountSubsets") !== true) throw CoreError.invalid(t("core-logic.choose.error.station_account_subsets"));
       }
       const [options, now] = this.#onStation(addr);
-      const next: J = { runtime: now.runtime, model: now.entry !== null ? now.entry.model : null, effort: now.effort, fast: now.fast, ...speedFields(now), context: now.context, profile: now.profile, profiles: now.profiles };
+      const next: J = { runtime: now.runtime, model: now.entry !== null ? now.entry.model : null, effort: now.effort, fast: now.fast, ...speedFields(now), ...tuiFields(now), context: now.context, profile: now.profile, profiles: now.profiles };
       const m = text(get(params, "model"));
       if (m !== null) {
         const runs = arr(get(optionOf(options, m), "runtimes"));
@@ -856,8 +867,9 @@ export class Choose implements Owner {
       }
       if (get(params, "profiles") !== undefined && get(params, "profile") === undefined) next.profile = "";
       if (get(params, "profile") !== undefined && get(params, "profiles") === undefined) next.profiles = null;
-      for (const field of ["effort", "profile", "profiles", "fast", "speed", "context"]) if (get(params, field) !== undefined) next[field] = params[field];
+      for (const field of ["effort", "profile", "profiles", "fast", "speed", "tui", "context"]) if (get(params, field) !== undefined) next[field] = params[field];
       if (get(params, "fast") !== undefined && get(params, "speed") === undefined) delete next.speed;
+      if (next.runtime !== "claude") delete next.tui;
       if (next.speed === "ultrafast" && get(params, "speed") === undefined) {
         const overview = this.#env.store.get({ topic: "overview", station: addr });
         const accounts = arr(get(get(optionOf(options, next.model), "accounts"), "codex"));
@@ -883,6 +895,7 @@ export class Choose implements Owner {
     let profile = r.profile;
     let profiles = r.profiles;
     let fast = r.fast;
+    let tui = r.tui === true;
     let speed = r.speed;
     let context = r.context;
     if ((r.entry === null || runtime === null) && overview === undefined) {
@@ -896,6 +909,7 @@ export class Choose implements Owner {
       profile = text(get(saved, "profile"));
       profiles = Array.isArray(get(saved, "profiles")) ? arr(get(saved, "profiles")).filter((x: unknown): x is string => typeof x === "string") : null;
       fast = typeof get(saved, "fast") === "boolean" ? Boolean(get(saved, "fast")) : null;
+      tui = saved.tui === true;
       speed = modelSpeed(get(saved, "speed")) ?? undefined;
       context = typeof get(saved, "context") === "number" ? Number(get(saved, "context")) : null;
     } else if (r.entry === null || runtime === null) {
@@ -908,6 +922,10 @@ export class Choose implements Owner {
       }
     }
     const ask: J = { runtime, model: chosenModel, ...(get(overview, "modelSpeeds") === true ? speedFields({ speed }) : {}) };
+    if (tui && runtime === "claude") {
+      if (get(overview, "claudeTui") !== true) throw CoreError.invalid(t("core-logic.choose.error.station_claude_tui"));
+      ask.tui = true;
+    }
     if (effort !== null) ask.effort = effort;
     if (profile !== null) ask.profile = profile;
     else if (profiles !== null && profiles.length > 1) ask.profiles = profiles;
@@ -1049,7 +1067,7 @@ export class Choose implements Owner {
           runtime: get(s, "runtime") ?? null,
           effort: text(get(s, "effort")),
           fast: get(s, "fast") ?? null,
-          ...speedFields(s),
+          ...speedFields(s), ...tuiFields(s),
           context: contextOf(get(s, "context")),
           profile: sProfile,
           ...(sMulti !== null ? { profiles: sMulti } : {}),
@@ -1180,6 +1198,9 @@ export class Choose implements Owner {
       fastRuntime(onName) &&
       (o.kind === "new" || o.kind === "session" || isPreset) &&
       arr(get(overview, "profiles")).some((p) => typeof p.fast === "boolean" && (allowedIds === null || allowedIds.includes(p.id)) && accounts.some((a) => a.id === p.id));
+    const offersTui = get(overview, "claudeTui") === true && (o.kind === "new" || o.kind === "session" || isPreset);
+    const claudeModeAvailable = offersTui && onName === "claude";
+    const tui = claudeModeAvailable && ("tui" in draft ? draft.tui : value.tui) === true;
     const ultrafastOffered = (id: string) => offersUltrafast(overview, id, arr(get(get(optionOf(options, id), "accounts"), "codex")), allowedIds);
     const ultrafastAvailable = fastAvailable && onName === "codex" && offersUltrafast(overview, nextModel, accounts, allowedIds);
     // How fast it runs where none is picked: its account's own (the one drafted, else the one it is on), said as what
@@ -1191,7 +1212,7 @@ export class Choose implements Owner {
     const speed = fastRuntime(onName) ? modelSpeed("speed" in draft ? draft.speed : get(value, "speed")) : null;
     const fast = speed !== null ? speed !== "standard" : typeof fastRaw === "boolean" && fastRuntime(onName) ? fastRaw : null;
     const speedText = (f: boolean | null, s?: unknown) => (s === "ultrafast" ? "Ultrafast" : f === true ? "Fast" : f === false ? t("core-logic.choose.speed.standard") : t("core-logic.choose.speed.plan"));
-    const next = { model: nextModel, runtime: on ?? null, effort, profile, ...(profiles !== null ? { profiles } : {}), fast, ...speedFields({ speed }), context };
+    const next = { model: nextModel, runtime: on ?? null, effort, profile, ...(profiles !== null ? { profiles } : {}), fast, ...speedFields({ speed }), ...tuiFields({ tui }), context };
     const changed = !nonePicked && FIELDS.some((f) => !equal((next as J)[f] ?? null, value[f] ?? null));
     const { kept, keptProfiles, low, account: accountView } = named(value, valueOption, current, quiet);
     const effectiveFast = (o.kind === "new" || o.kind === "session" || isPreset) && value.model !== null && runsFast(overview, value, current);
@@ -1295,17 +1316,18 @@ export class Choose implements Owner {
         runtime: rt,
         effort: e !== null && has("efforts").some((x) => x === e) ? e : null,
         fast: typeof hand.fast === "boolean" && fastRuntime(at) ? hand.fast : null,
+        ...(at === "claude" ? tuiFields(hand) : {}),
         ...speedFields(fastRuntime(at) && (hand.speed !== "ultrafast" || (at === "codex" && ultrafastOffered(opt.model))) ? hand : null),
         context: c !== null && (o.kind === "new" || o.kind === "session" || isPreset) && has("contexts").some((n) => n === c) ? c : null,
       };
-      return took.runtime === null && took.effort === null && took.fast === null && took.speed === undefined && took.context === null ? undefined : took;
+      return took.runtime === null && took.effort === null && took.fast === null && took.tui === undefined && took.speed === undefined && took.context === null ? undefined : took;
     };
     const multiRuntime = !fixed && new Set(options.flatMap((opt: J) => arr(opt.runtimes))).size > 1;
     work.annotated += options.length;
     const annotated = options.map((opt: J) => {
       const id = typeof opt.model === "string" ? opt.model : "";
-      const ran = id === m || id === panelOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
-      const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), context: ran.context });
+      const ran = id === m || id === panelOption ? { runtime: on ?? null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context } : (this.#usual(scope, id, history) ?? byHand(opt));
+      const r = ran === undefined ? null : resolve(options, { model: id, runtime: fixed ? value.runtime : ran.runtime, effort: ran.effort, fast: ran.fast, ...speedFields(ran), ...(offersTui ? tuiFields(ran) : {}), context: ran.context });
       const rts = arr(opt.runtimes);
       const parts: string[] = [];
       if (r !== null) {
@@ -1316,6 +1338,7 @@ export class Choose implements Owner {
           parts.push(format.runtimeShort(r.runtime));
         }
         if (r.effort !== null) parts.push(format.effortLabel(r.effort));
+        if (r.tui) parts.push("TUI");
         if (r.speed === "ultrafast") parts.push("Ultrafast");
         else if (r.fast === true) parts.push("Fast");
         if (r.context !== null && (o.kind === "new" || o.kind === "session" || isPreset)) parts.push(format.compactNumber(r.context));
@@ -1324,7 +1347,7 @@ export class Choose implements Owner {
       } else if (multiRuntime && rts.length === 1) {
         parts.push(format.runtimeShort(String(rts[0])));
       }
-      const usual = r === null ? null : { runtime: r.runtime, effort: r.effort, fast: r.fast, ...speedFields(r), context: o.kind === "new" || o.kind === "session" || isPreset ? r.context : null };
+      const usual = r === null ? null : { runtime: r.runtime, effort: r.effort, fast: r.fast, ...speedFields(r), ...tuiFields(r), context: o.kind === "new" || o.kind === "session" || isPreset ? r.context : null };
       return { ...opt, usual, usualText: parts.length > 0 ? parts.join(" · ") : null, liked: likedKeys.includes(model.key(id)) };
     });
     // Two things, apart (the user, 2026-11-10: 「收藏跟常用不一样」「常用包括了思考深度和速度还有上下文长度」「是一种
@@ -1332,14 +1355,14 @@ export class Choose implements Owner {
     // run two ways two of them, starred or not), a chat's or a new chat's, of its runtime alone where that is fixed;
     // and the starred models (`liked`), in the order they were starred, every one of them, one of those used most or
     // not. Then every model, by its maker (`makers`).
-    const draftNow: Resolved = { entry: value.model !== null || "model" in draft ? (option ?? null) : null, runtime: typeof on === "string" ? on : null, effort, fast, ...speedFields({ speed }), context, profile, profiles, efforts, contexts, accounts };
+    const draftNow: Resolved = { entry: value.model !== null || "model" in draft ? (option ?? null) : null, runtime: typeof on === "string" ? on : null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context, profile, profiles, efforts, contexts, accounts };
     const combos = o.kind === "new" || o.kind === "session" || isPreset
-      ? frequentCombos(history, options, draftNow, fixed && typeof value.runtime === "string" ? value.runtime : null, multiRuntime, ultrafastOffered).map((c: J) => ({
+      ? frequentCombos(history, options, draftNow, fixed && typeof value.runtime === "string" ? value.runtime : null, multiRuntime, ultrafastOffered, offersTui).map((c: J) => ({
           model: c.model,
           runtime: c.runtime,
           effort: c.effort,
           fast: c.fast,
-          ...speedFields(c),
+          ...speedFields(c), ...tuiFields(c),
           context: c.context,
           name: c.name,
           text: c.text,
@@ -1378,10 +1401,12 @@ export class Choose implements Owner {
         : [];
     const sidekickNow = fusionSplit !== null && onName === "devin" ? fusionSplit.side : "";
     let saveText = changed ? t("core-logic.choose.save", { model: modelName ?? t("core-logic.format.default_model"), effort: effortText, account: chosenText }) : t("core-logic.choose.save.unchanged");
+    if (changed && tui) saveText += " · TUI";
     if (changed && fastAvailable) saveText = `${saveText} · ${speedText(fast, speed)}`;
     return {
       ok: {
         fastAvailable,
+        ...(claudeModeAvailable ? { claudeModeAvailable: true } : {}),
         ...(ultrafastAvailable ? { ultrafastAvailable: true } : {}),
         effortDefault: (() => {
           const level = effortDefault(overview, onName, option !== undefined ? (option.model ?? null) : null, allowedIds);
@@ -1398,7 +1423,7 @@ export class Choose implements Owner {
         value,
         valueOption: valueOption ?? null,
         account: accountView,
-        draft: { model: m, runtime: on ?? null, effort, profile, ...(nonePicked ? { profiles: [] } : profiles !== null ? { profiles } : {}), fast, ...speedFields({ speed }), context },
+        draft: { model: m, runtime: on ?? null, effort, profile, ...(nonePicked ? { profiles: [] } : profiles !== null ? { profiles } : {}), fast, ...speedFields({ speed }), ...tuiFields({ tui }), context },
         option: panelOption,
         runtimes: !fixed && leadRuntimes.length > 1 ? leadRuntimes : [],
         ...(sidekicks.length > 0 ? { sidekicks, sidekickNow } : {}),
@@ -1564,13 +1589,13 @@ export class Choose implements Owner {
         newest = splitEffort !== null && text(get(h, "effort")) === null ? { ...h, effort: splitEffort } : h;
       }
     }
-    return newest === undefined ? undefined : { runtime: newest.runtime ?? null, effort: text(newest.effort), fast: comboFast(newest), ...speedFields(newest), context: null };
+    return newest === undefined ? undefined : { runtime: newest.runtime ?? null, effort: text(newest.effort), fast: comboFast(newest), ...speedFields(newest), ...tuiFields(newest), context: null };
   }
 
   #keepUsual(scope: string, choice: J): void {
     const model = text(get(choice, "model"));
     if (model === null) return;
-    this.#env.data.put(TABLE, `ws:${scope}:usual:${model}`, { runtime: get(choice, "runtime") ?? null, effort: text(get(choice, "effort")), fast: typeof get(choice, "fast") === "boolean" ? choice.fast : null, ...speedFields(choice), context: contextOf(get(choice, "context")) }, false);
+    this.#env.data.put(TABLE, `ws:${scope}:usual:${model}`, { runtime: get(choice, "runtime") ?? null, effort: text(get(choice, "effort")), fast: typeof get(choice, "fast") === "boolean" ? choice.fast : null, ...speedFields(choice), ...tuiFields(choice), context: contextOf(get(choice, "context")) }, false);
   }
 
   /// `pick.save`: what the panel picked, made what it runs on; with picks of its own (a frequent combination's), those
@@ -1603,6 +1628,10 @@ export class Choose implements Owner {
       this.unsaved(station, oName);
       throw CoreError.invalid(t("core-logic.choose.error.station_account_subsets"));
     }
+    if (params.tui === true && !v.claudeModeAvailable) {
+      this.unsaved(station, oName);
+      throw CoreError.invalid(t("core-logic.choose.error.station_claude_tui"));
+    }
     if (next.speed === "ultrafast" && v.ultrafastAvailable !== true) {
       this.unsaved(station, oName);
       throw CoreError.invalid(t(get(overview, "modelSpeeds") !== true ? "core-logic.choose.error.station_model_speeds" : "core-logic.choose.error.ultrafast_unavailable"));
@@ -1619,8 +1648,10 @@ export class Choose implements Owner {
     } else {
       this.#handWas.delete(key);
     }
+    // A chat can run Claude's default model. Its mode alone can change without naming a model or touching its account.
+    const modeOnly = o.kind === "session" && typeof params.tui === "boolean" && set.length === 1 && get(params, "model") === undefined;
     const inFlight = (this.#saving.get(key) ?? 0) > 0;
-    if ((!inFlight && v.changed !== true) || v.option === null) {
+    if ((!inFlight && v.changed !== true) || (v.option === null && !modeOnly)) {
       this.#drafts.delete(key);
       this.#env.store.invalidate(topic);
       return { done: { saved: false } };
@@ -1639,6 +1670,7 @@ export class Choose implements Owner {
           profiles: next.profiles ?? null,
           fast: next.fast,
           speed: next.speed ?? null,
+          tui: next.tui === true,
           context: next.context,
         });
         saved = { done: { saved: true } };
@@ -1651,10 +1683,11 @@ export class Choose implements Owner {
         const params: J = { station, key: o.key, model: next.model, effort: next.effort, profile: next.profile };
         if (Array.isArray(next.profiles) && next.profiles.length > 1) params.profiles = next.profiles;
         if (next.runtime !== v.value.runtime) params.runtime = next.runtime;
+        if (v.claudeModeAvailable && (next.tui === true) !== (v.value.tui === true)) params.tui = next.tui === true;
         if (v.fastAvailable === true) params.fast = next.fast;
         if (get(overview, "modelSpeeds") === true && next.speed !== undefined) params.speed = next.speed;
         if (arr(v.contexts).length > 0) params.context = next.context;
-        const op = ops.request("session.settings", params);
+        const op = ops.request("session.settings", modeOnly ? { station, key: o.key, tui: next.tui === true } : params);
         if (op === null) throw CoreError.invalid("session.settings");
         saved = { op };
         break;

@@ -66,7 +66,7 @@ pub fn web_peek(
   let params = link_params(station, href)
   // (its pictures asked as it is read, so that they are mostly here as its card opens)
   peek_read(c, src, scope, "linkPreview", params, id, warm=fn(v) { @sfbase.link_pictures_here(src, station, href, v) |> ignore }, fn(read) {
-    hover(c, scope, id, tile=peek == "", side~, fn() {
+    hover(c, scope, id, tile=peek == "" || peek == "run", side~, fn() {
       read()
       link_card(c, src, scope, station, params, href, words, peek~, copy=fn() { link_copy(c, href) })
     })
@@ -143,6 +143,8 @@ fn link_card(
   let picture = fn(which) { @sfbase.picture_drawn(@sfbase.link_picture(src, station, href, v, which)) }
   match text(v, "kind") {
     "github_pull_request" => change_card(c, v, true, copy, avatar=picture("avatar"))
+    "github_actions_run" => run_card(c, v, href, copy)
+    _ if v is None && read.error is None && peek == "run" => @sf.bones(c, fn() { run_card(c, peek_sample(), href, fn() {  }) })
     "github_issue" => change_card(c, v, false, copy, avatar=picture("avatar"))
     _ =>
       if v is None && read.error is None && peek != "" {
@@ -342,9 +344,9 @@ fn fact_chip(c : @ui.Ctx, words : String) -> Unit {
 /// A state in a tinted pill: its glyph (GitHub's, 12) and its name, 500, in the state's colours:
 /// open and passed green, merged and completed purple, closed and failed red, pending amber, a draft or not planned
 /// grey.
-fn state_pill(c : @ui.Ctx, state : String, glyph : String?, words : String) -> Unit {
+fn state_pill(c : @ui.Ctx, state : String, glyph : String?, words : String, style? : @ui.Style = peek_state) -> Unit {
   let (ink, ground) = state_colours(state)
-  c.box(style=peek_state.then(@ui.style(bg=Data(ground))), fn() {
+  c.box(style=style.then(@ui.style(bg=Data(ground))), fn() {
     match glyph {
       Some(d) => @sf.vector(c, "peek-state/" + state, glyph_of(d, ink), peek_glyph) |> ignore
       None => ()

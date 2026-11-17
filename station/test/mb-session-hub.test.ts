@@ -337,7 +337,7 @@ test("models, profiles and the words of a run changed, as the TypeScript has the
   // run-change.ts, context-cap.ts
   const row = (o: Json) => ({ runtime: "claude", model: "claude-opus-5-5", effort: "high", fast: null, speed: null, profile: "cc", profilePinned: false, context: null, ...o });
   const names = { cc: "Claude A", cx: "Codex" };
-  const rows = [row({}), row({ model: null }), row({ effort: null }), row({ fast: true }), row({ speed: "ultrafast" }), row({ profile: "cx" }), row({ runtime: "codex", model: "gpt-6-astra", profile: "cx" }), row({ profile: "gone" }), row({ runtime: "nope" })];
+  const rows = [row({}), row({ model: null }), row({ effort: null }), row({ fast: true }), row({ speed: "ultrafast" }), row({ tui: true }), row({ profile: "cx" }), row({ runtime: "codex", model: "gpt-6-astra", profile: "cx" }), row({ profile: "gone" }), row({ runtime: "nope" })];
   for (const r of rows) await both(p, "runShown", (x: Json, n: Json) => runChange.runShown(x, (id) => n[id] ?? null), r, names);
   for (const a of rows) {
     for (const b of rows) {
@@ -1307,6 +1307,9 @@ test("how a session runs changed, its usage now, and going on afresh, as lifecyc
   }
   for (let i = 0; i < 22; i++) await pair.call("say", made[1].id, "a@x.com", `message ${i}`);
   await pair.call("toldLongChat", key);
+  await pair.call("configure", key, { tui: true });
+  await pair.call("configure", key, { effort: "high" });
+  await pair.call("configure", key, { tui: false });
   // Changed: going on afresh alone, another model and effort, a profile pinned, back to the pool, another runtime, a
   // most context under what it holds, a speed, refused ones.
   await pair.call("configure", key, { afresh: true });

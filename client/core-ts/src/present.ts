@@ -1450,6 +1450,11 @@ export function decorate(topic: Topic, value: unknown, c: Clock): unknown {
     // their bytes asked beside (peek-pictures.ts).
     case "linkPreview": {
       const shown = linkShown(v);
+      if (shown?.kind === "github_actions_run" && shown.startedAt > 0) {
+        if (!shown.finishedAt) byMinute();
+        value = { ...shown, elapsed: format.duration(Math.max(0, (shown.finishedAt ?? c.now) - shown.startedAt)) };
+        break;
+      }
       value = isObject(shown) && typeof shown.updatedAt === "number" && shown.updatedAt > 0 ? { ...shown, time: { updatedAt: stamp(shown.updatedAt, c) } } : shown;
       break;
     }

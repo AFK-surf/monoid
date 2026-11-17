@@ -186,6 +186,9 @@ test("where_others_are_members_only_the_viewers_own_light_the_bell_the_rest_fold
   assert.ok([...v.groups, ...v.otherGroups].every((g: J) => g.jobs.every((j: J) => !("mine" in j))));
   assert.ok("ok" in conform("LongJobsView", v), JSON.stringify(conform("LongJobsView", v)));
   // Only others' up: listed apart, lighting nothing, nothing to keep as shown.
+  const term = { id: "term-1", at: NOW - 2 * LONG, cwd: "/work", mine: false };
+  const othersTerminal = longJobs([], c(), undefined, undefined, [], [["w/s1", null, [term]]]);
+  assert.deepEqual([othersTerminal.lit, othersTerminal.ids, othersTerminal.otherGroups[0].jobs[0].id], [false, [], "terminal:term-1"]);
   const others = longJobs([["w/s1", null, [up("theirs", { port: 2, mine: false })]]], c());
   assert.deepEqual([others.groups, others.lit, others.ids, others.otherCount], [[], false, [], 1]);
   // A task run for another station's chat that is not the viewer's goes with the others.

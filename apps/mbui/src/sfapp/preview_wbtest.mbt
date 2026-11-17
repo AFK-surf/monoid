@@ -631,13 +631,17 @@ test "a file of no kind it can show: told of, with the download" {
 
 ///|
 test "an APK told of: 安装 first, handed to the system's installer once its bytes are here; 下载 beside it" {
-  let t = preview_tester("apk")
+  let t = preview_tester("apk", platform=2)
   assert_true(t.find("安装") is Some(_))
   assert_true(t.find("下载") is Some(_))
   t.tap_text("安装")
   // read through the core first (the fixture answers at once), then handed over
   t.frame()
   assert_eq(t.installs(), ["测试版.apk"])
+  let reads = fix_fetches.filter(fn(f) { f.0 == "station.file" && text(Some(f.1), "name") == "测试版.apk" })
+  assert_eq(reads.length(), 1)
+  assert_true(flag(Some(reads[0].1), "keep"))
+  assert_eq(number(Some(reads[0].1), "size"), 8192.0)
 }
 
 ///|
