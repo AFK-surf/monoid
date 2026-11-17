@@ -53,7 +53,10 @@ export const NOTIFY_BODY_LIMIT = 64 * 1024;
 
 /// How a job's command runs: under a shell that writes its exit code to a file when it ends, so a station that did not
 /// start it (it outlived the one that did) still learns how it ended.
-export const WRAPPER = `/bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2"; exit "$code"`;
+// The exit code is written aside and moved into place: a watch on jobs/exit hears a file as it is made, and on Linux
+// (inotify) a `>` made it empty before printf wrote it, so a job an earlier station started was read ended with no
+// code (CI, 2026-11-17). The move makes it there whole or not at all.
+export const WRAPPER = `/bin/sh -c "$1"; code=$?; printf '%s' "$code" > "$2.tmp" && mv -f "$2.tmp" "$2"; exit "$code"`;
 
 /// A word for sh, as it is.
 const quoted = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
@@ -585,7 +588,7 @@ export class Jobs {
       if (!looked.has(id)) looked.set(id, this.store.getJob(id));
       return looked.get(id)!;
     };
-    const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.lost)?$/.exec(name)?.[1]) ?? null;
+    const idOf = (name: string, sub: "logs" | "exit") => (sub === "logs" ? /^(.+?)\.log(\.1(\.tmp)?)?$/.exec(name)?.[1] : /^(.+?)(\.(lost|tmp))?$/.exec(name)?.[1]) ?? null;
     for (const sub of ["logs", "exit"] as const) {
       const dir = join(this.dir, sub);
       for (const name of await readdir(dir).catch(() => [] as string[])) {
@@ -612,6 +615,7 @@ export class Jobs {
     await (await open(job.log, "a")).close();
     const exit = this.exitFile(job.id);
     await rm(exit, { force: true });
+    await rm(`${exit}.tmp`, { force: true });
     await rm(this.lostFile(job.id), { force: true });
     // With the variables the station's owners set for what it starts for its agents (ops/agent-env.ts).
     const env: NodeJS.ProcessEnv = { ...platform.prependPath(startEnv(), join(this.dir, "bin")), ...extra };
@@ -798,6 +802,7 @@ export class Jobs {
     await Promise.all(gone.map(async ([id, file]) => {
       if (file.startsWith(this.dir + sep)) await rm(file, { force: true });
       await rm(this.exitFile(id), { force: true });
+      await rm(`${this.exitFile(id)}.tmp`, { force: true });
     }));
     return gone.map(([id]) => id);
   }

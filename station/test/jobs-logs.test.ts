@@ -2,14 +2,14 @@
 // to it, and read on across the cut; the files of jobs long over or gone collected; and what a job left running in its
 // group when its shell ended made to end (a VM's jobs left orphans of ppid 1, 2026-11-15). Real jobs, as jobs.test.ts.
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from "node:fs";
 import { appendFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { groupAlive, signalGroup } from "../src/ops/group.ts";
-import { JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, tail } from "../src/jobs/jobs.ts";
+import { JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
 import { JOB_LOG_CAP } from "../src/ops/storage.ts";
 import { Store } from "../src/store/store.ts";
 import { WINDOWS } from "../src/platform/index.ts";
@@ -92,7 +92,9 @@ describe("jobs' files", { concurrency: true }, () => {
     writeFileSync(join(logs, "ghost.log"), "x");
     writeFileSync(join(logs, "ghost.log.1"), "x");
     writeFileSync(join(exits, "ghost"), "0");
-    for (const f of [join(logs, "ghost.log"), join(logs, "ghost.log.1"), join(exits, "ghost")]) utimesSync(f, (now - JOB_FILES_ORPHAN_MS - 1000) / 1000, (now - JOB_FILES_ORPHAN_MS - 1000) / 1000);
+    // (and what its shell was writing aside when it was killed)
+    writeFileSync(join(exits, "ghost.tmp"), "");
+    for (const f of [join(logs, "ghost.log"), join(logs, "ghost.log.1"), join(exits, "ghost"), join(exits, "ghost.tmp")]) utimesSync(f, (now - JOB_FILES_ORPHAN_MS - 1000) / 1000, (now - JOB_FILES_ORPHAN_MS - 1000) / 1000);
     writeFileSync(join(logs, "fresh.log"), "x");
     utimesSync(join(logs, "fresh.log"), (now - 1000) / 1000, (now - 1000) / 1000);
     // Within its time, an ended job's log stays.
@@ -101,12 +103,32 @@ describe("jobs' files", { concurrency: true }, () => {
     const gone = await r.jobs.collect(now);
     assert.deepEqual(gone.sort(), [done.id, "ghost"].sort());
     assert.ok(!existsSync(done.log) && !existsSync(join(logs, "ghost.log")) && !existsSync(join(logs, "ghost.log.1")) && !existsSync(join(exits, "ghost")));
+    assert.ok(!existsSync(join(exits, "ghost.tmp")));
     assert.ok(existsSync(join(logs, "fresh.log")), "a gone job's file written just now stays a while");
     assert.ok(existsSync(live.log), "a running job's log stays");
     assert.equal(await tail(done.log, 10), "", "its record stays, its log reads as empty");
     assert.equal(r.store.getJob(done.id)!.state, "exited");
     await g.open();
     await r.jobs.stop(live.id);
+  });
+
+  test("a job's exit code is there whole or not at all: written aside, then moved into place", { skip: WINDOWS && "the wrapper's sh and mv" }, () => {
+    // A watch on jobs/exit hears the file as it is made: on Linux one made empty by `>` and written after was read as
+    // no code (a job an earlier station started, CI 2026-11-17). Here mv says what it found as it moved it.
+    const dir = mkdtempSync(join(tmpdir(), "jobs-exit-"));
+    dirs.push(dir);
+    const bin = join(dir, "bin"), exit = join(dir, "exit"), seen = join(dir, "seen");
+    mkdirSync(bin);
+    writeFileSync(join(bin, "mv"), `#!/bin/sh
+[ -e "$3" ] && echo "there before" >> '${seen}'
+echo "aside: $(cat "$2")" >> '${seen}'
+exec /bin/mv "$@"
+`, { mode: 0o755 });
+    const run = spawnSync("/bin/sh", ["-c", WRAPPER, "job", "exit 7", exit], { env: { ...process.env, PATH: `${bin}:${process.env.PATH}` } });
+    assert.equal(run.status, 7);
+    assert.equal(readFileSync(seen, "utf8"), "aside: 7\n", "not there until moved, and whole as it was");
+    assert.equal(readFileSync(exit, "utf8"), "7");
+    assert.ok(!existsSync(`${exit}.tmp`));
   });
 
   test("what a job left running in its group when its shell ended is made to end, a TERM ignored too", { skip: WINDOWS && "process groups as Unix has them" }, async (t) => {
