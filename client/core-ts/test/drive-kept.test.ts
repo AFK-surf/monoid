@@ -490,6 +490,36 @@ test("a chat picture opened again after the core restarts is read from the devic
   }
 });
 
+test("a chat picture of a station from before parts, read whole, is kept though the page takes its bytes away", async () => {
+  const t = await started();
+  const picture = bytesOf(40, 3);
+  const params = { station: ST, key: "k1", name: "old.png", keep: true, size: picture.length };
+  stationReplies(t.host, (req) => {
+    const path = new URL(req.url).pathname;
+    if (path.endsWith("/sessions/k1/parts")) return status(404, { error: `no route GET ${path}` });
+    if (path.endsWith("/sessions/k1/files")) return new Raw({ status: 200, headers: [["content-type", "image/png"]], body: picture.slice() });
+    return undefined;
+  });
+  const asked = () => t.host.requests.filter((r) => r.url.includes("/sessions/k1/files")).length;
+  // (a browser's storage puts once its transaction is open, after the answer went to the page: web.ts `#tx`)
+  const put = t.host.storageSet.bind(t.host);
+  t.host.storageSet = (key, value) => Effect.andThen(Effect.promise(() => Promise.resolve()), put(key, value));
+  const ui = t.core.connect();
+  call(t.core, ui, 1, "station.file", params);
+  await t.host.settle();
+  const first = answers(t.host.takeEmitted(), 1) as { ok?: { type: string }; bytes?: Uint8Array };
+  assert.deepEqual([first.ok?.type, [...(first.bytes ?? [])]], ["image/png", [...picture]], "read whole");
+  assert.equal(asked(), 1);
+  // opened again with the station gone: from the device
+  stationReplies(t.host, (req) => (new URL(req.url).pathname.includes("/sessions/k1/") ? status(503, { error: "offline" }) : undefined));
+  call(t.core, ui, 2, "station.file", params);
+  await t.host.settle();
+  const again = answers(t.host.takeEmitted(), 2) as { ok?: { type: string }; bytes?: Uint8Array };
+  assert.deepEqual([again.ok?.type, [...(again.bytes ?? [])]], ["image/png", [...picture]], "kept");
+  assert.equal(asked(), 1, "not read of the station again");
+  t.core.close();
+});
+
 test("a chat's video streamed to a page that takes its bytes away (the web's worker moves them to the page): played, and kept all the same", async () => {
   const t = await started();
   const film = bytesOf(64, 30);
@@ -500,12 +530,7 @@ test("a chat's video streamed to a page that takes its bytes away (the web's wor
     return new Raw({ status: 200, headers: [["content-type", "video/mp4"], ["stillfail-total", "64"]], body: film.slice(offset, offset + Number(u.searchParams.get("length"))) });
   });
   const asked = () => t.host.requests.filter((r) => r.url.includes("/sessions/k1/")).length;
-  // (what the page is given is the page's: its buffer moved there, nothing of it left here)
-  const emit = t.host.emit.bind(t.host);
-  t.host.emit = (client, message) => {
-    emit(client, message);
-    if ("bytes" in message && message.bytes !== undefined) structuredClone(message.bytes.buffer, { transfer: [message.bytes.buffer as ArrayBuffer] });
-  };
+  // (what the page is given is the page's: FakeHost.emit moves its buffer there, as the web's worker does)
   const ui = t.core.connect();
   call(t.core, ui, 1, "station.file.part", { station: ST, key: "k1", name: "film.mp4", offset: 0, length: 32, stream: true, keep: true, size: 64 });
   await t.host.settle();

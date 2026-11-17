@@ -1,4 +1,4 @@
-// A group connect's link to its IM server (AFK-surf/group, protocol `im/1`): an iroh endpoint of the connect's own key,
+// A group connect's link to its IM anchor (AFK-surf/group, protocol `im/2`): an iroh endpoint of the connect's own key,
 // dialled to the server's endpoint through its relays, let in by its hello, then a request a stream. The framing is the
 // mesh's (mesh/wire.ts, the door's: mesh/door.ts): the first stream is the control stream, one JSON line each way at a
 // time (the hello `{credential, name}` and its answer, then a ping and its answer), every other stream one request, a
@@ -6,13 +6,16 @@
 //
 // The device is the connect's key, which the connection proves; its hello says a code only where the device joins by
 // one (an invitation, a device code). What answers it is the server's (its `LetIn`, or `{error, code, why}`).
+//
+// The same endpoint takes the connections other members' devices dial it by to hand it a secret (`im-secret/1`: one
+// stream, one JSON line each way), which the surface serves (`accepted`).
 import type { Addr, Connection, Endpoint, Endpoints, Stream } from "../mesh/endpoint.ts";
 import { Reader, writeLine } from "../mesh/wire.ts";
 
-/// The IM's protocol (its protocol.ts `ALPN`).
-export const ALPN = "im/1";
-/// The header of an event stream's answer that says it went on from the `since` it was asked with.
-export const RESUMED = "im-resumed";
+/// The IM's protocol (its anchor.mbt `alpn`).
+export const ALPN = "im/2";
+/// What a device dials another member's device by to hand it a secret, end to end.
+export const SECRET_ALPN = "im-secret/1";
 
 /// Who the server let this device in as (its protocol.ts `LetIn`).
 export type LetIn = { member: string; name: string; owner: boolean; joined: boolean };
@@ -71,9 +74,15 @@ export class GroupLink {
   }
 
   #bound(): Promise<Endpoint> {
-    const bound = this.#endpoint ?? this.#o.endpoints.bind({ secretKey: this.#o.secretKey, alpns: [], relayUrls: this.#o.relays, discovery: false });
+    const bound = this.#endpoint ?? this.#o.endpoints.bind({ secretKey: this.#o.secretKey, alpns: [Buffer.from(SECRET_ALPN)], relayUrls: this.#o.relays, discovery: false });
     this.#endpoint = bound;
     return bound;
+  }
+
+  /// The connections dialled to this device (`im-secret/1`), as they come; null once its endpoint is closed.
+  async accepted(): Promise<Connection | null> {
+    if (this.#closed) return null;
+    return (await this.#bound()).accept();
   }
 
   /// Whether a connection let in is up.

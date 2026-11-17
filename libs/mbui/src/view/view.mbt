@@ -528,6 +528,9 @@ struct Node {
   /// whether the pointer over it, or over what it holds that takes it not, is over it (View::points): pointed at,
   /// never pressed nor held
   mut points : Bool
+  /// whether View::points was said of it at all: said false, it is pointed at as it takes a press only, read as
+  /// pointed at or not (Node::points_alone)
+  mut points_said : Bool
   mut bar_near_cell : @signals.Signal[Bool]?
   /// whether it takes a finger or the pointer some way (pressed, held, hosting the old view, a top row, pointed at,
   /// taking holds over: Tree::inputs_own_said), and how many of what it holds, it with them, do: what finds what
@@ -1872,6 +1875,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.bar_near = 0.0
       n.bar_across = false
       n.points = false
+      n.points_said = false
       n.bar_near_cell = None
       n.inputs_own = false
       n.inputs_in = 0
@@ -2006,6 +2010,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         bar_near: 0.0,
         bar_across: false,
         points: false,
+        points_said: false,
         bar_near_cell: None,
         inputs_own: false,
         inputs_in: 0,
@@ -3645,6 +3650,7 @@ priv enum Prop {
   CutsSoftly
   DrawnOff
   GroundDrawn
+  GroundLit
   MinHeight
   Aspect
   Nowhere
@@ -3750,6 +3756,7 @@ impl Show for Prop with output(self, logger) {
       CutsSoftly => "CutsSoftly"
       DrawnOff => "DrawnOff"
       GroundDrawn => "GroundDrawn"
+      GroundLit => "GroundLit"
       MinHeight => "MinHeight"
       Aspect => "Aspect"
       Nowhere => "Nowhere"
@@ -3885,6 +3892,7 @@ fn Prop::ord(self : Prop) -> Int {
     CutsSoftly => 65
     DrawnOff => 66
     GroundDrawn => 67
+    GroundLit => 96
     MinHeight => 68
     Aspect => 69
     Nowhere => 70
@@ -4366,17 +4374,42 @@ pub fn Tree::clear_of(self : Tree, top : Double, right : Double, foot : Double, 
 /// Laid out over what holds it (true), filling all of its room whatever else it holds, or in its turn among them: what
 /// lies one over another (a stack's pages, what floats over them) said so, drawn in the order they are held.
 /// `from_top`: over it from its top across all of its width, as tall as what it holds rather than as tall as it (a page
-/// of a stack laid aside as another shows, kept as tall as it stood).
+/// of a stack laid aside as another shows, kept as tall as it stood). `edges`: put where it says over what holds it,
+/// so far in from its left, top, right and foot (CSS's position: absolute, an old view's box `left`, `top`, `right`,
+/// `bottom`), each it says none of left to its size and the others (a picture's sticker put by its corner), in place
+/// of filling all of it.
 #callsite(autofill(loc))
-pub fn View::over(self : View, on : Live[Bool], from_top? : Bool = false, loc~ : SourceLoc) -> View {
+pub fn View::over(
+  self : View,
+  on : Live[Bool],
+  from_top? : Bool = false,
+  edges? : (Double?, Double?, Double?, Double?),
+  loc~ : SourceLoc,
+) -> View {
   self.bind(loc~, Over, on, Layout, fn(on) {
     let s = self.tree.nodes[self.at].flex.style
     let inset : @flex.Dim = if on { Pt(0.0) } else { Auto }
+    let at = fn(d : Double?) -> @flex.Dim {
+      match d {
+        Some(p) if on => Pt(p)
+        _ => Auto
+      }
+    }
     s.position = if on { Absolute } else { Relative }
-    s.set_inset_left(inset)
-    s.set_inset_top(inset)
-    s.set_inset_right(inset)
-    s.set_inset_bottom(if from_top { Auto } else { inset })
+    match edges {
+      Some((l, t, r, b)) => {
+        s.set_inset_left(at(l))
+        s.set_inset_top(at(t))
+        s.set_inset_right(at(r))
+        s.set_inset_bottom(at(b))
+      }
+      None => {
+        s.set_inset_left(inset)
+        s.set_inset_top(inset)
+        s.set_inset_right(inset)
+        s.set_inset_bottom(if from_top { Auto } else { inset })
+      }
+    }
   })
   self
 }
@@ -4792,7 +4825,7 @@ pub fn View::ground_over(self : View, ink : Live[Int64], loc~ : SourceLoc) -> Vi
 
 ///|
 /// Colour `top` composited over `under` (each 0xRRGGBBAA).
-fn blend_ground(under : Int64, top : Int64) -> Int64 {
+pub fn blend_ground(under : Int64, top : Int64) -> Int64 {
   let ta = (top & 0xFFL).to_double() / 255.0
   if ta <= 0.0 {
     return under
@@ -5523,6 +5556,25 @@ pub fn GroundShape::reshaped(self : GroundShape) -> Bool {
 #callsite(autofill(loc))
 pub fn View::ground_drawn(self : View, d : Live[GroundShape], loc~ : SourceLoc) -> View {
   self.bind(loc~, GroundDrawn, d, Place, fn(d) { self.tree.nodes[self.at].look.ground_drawn = d })
+  self
+}
+
+///|
+/// Its ground and how it is drawn (View::ground's colour, View::ground_drawn's shape) said by one binding: a ground that
+/// shows only now and then (a list's row lit as it is gone to, or as its menu shows) bound once, what shape it takes
+/// worked out only while it shows (the binding saying ground_as_laid with no colour). Paint's and place's both, as
+/// View::ground and View::ground_drawn are: nothing laid out again. Not with View::ground or View::ground_drawn on the
+/// same node.
+#callsite(autofill(loc))
+pub fn View::ground_lit(self : View, d : Live[(Int64, GroundShape)], loc~ : SourceLoc) -> View {
+  self.bind(loc~, GroundLit, d, Paint, fn(d) {
+    let look = self.tree.nodes[self.at].look
+    look.ground = d.0
+    if look.ground_drawn != d.1 {
+      look.ground_drawn = d.1
+      self.tree.place_marked_at(self.at)
+    }
+  })
   self
 }
 
@@ -8234,6 +8286,7 @@ fn View::let_go(self : View) -> Unit {
   n.bar_near = 0.0
   n.bar_across = false
   n.points = false
+  n.points_said = false
   n.bar_near_cell = None
   self.drag_ended()
   n.on_drag = None
@@ -13071,11 +13124,29 @@ fn Tree::inputs_own_said(self : Tree, at : Int) -> Unit {
     n.hosted ||
     n.top_row ||
     n.points ||
+    n.pointed_cell is Some(_) ||
     n.claims is Some(_)
   if own != n.inputs_own {
     n.inputs_own = own
     self.inputs_count(at, if own { 1 } else { -1 })
   }
+}
+
+///|
+/// Whether the pointer over it is over it alone, taking no press nor hold there for it: said to point (View::points), or
+/// read as pointed at (View::pointed) where it takes nothing else of the hand and was never said whether it points
+/// (said not to, as the web's `pointer-events: none`, it is not).
+fn Node::points_alone(self : Node) -> Bool {
+  self.points ||
+  (
+    !self.points_said &&
+    self.pointed_cell is Some(_) &&
+    self.on_press is None &&
+    self.on_drag is None &&
+    !self.hosted &&
+    !self.top_row &&
+    self.claims is None
+  )
 }
 
 ///|
@@ -13245,7 +13316,7 @@ fn Tree::points_over(self : Tree, x : Double, y : Double) -> NodeId? {
   self.each_drawn_scaled(fn(c, cx, cy, a, s) {
     if self.finger_on(c, cx, cy, s, x, y, at, tracked=true) {
       let n = self.nodes[c.id.at]
-      if n.points {
+      if n.points_alone() {
         found.val = Some(c.id)
       } else if (n.on_drag is Some(_) && n.claims is None && n.hold_only is None) ||
         n.on_press is Some(_) ||
@@ -13732,7 +13803,10 @@ pub fn View::pressed(self : View) -> Bool {
 
 ///|
 /// Whether the pointer is over it now, of what takes a press there the topmost (Tree::point_at): what reads it told only
-/// as the pointer comes over it or leaves it. Its cell made as first read, let go with it.
+/// as the pointer comes over it or leaves it. Its cell made as first read, let go with it. Read so, it is pointed at
+/// whatever else it takes: one that takes no press nor hold is pointed at alone, as one said to point (View::points),
+/// what is pressed there as it was (Node::points_alone; a tip of what is no control: Android's setTooltipText, the
+/// web's :hover).
 pub fn View::pointed(self : View) -> Bool {
   guard self.live() is Some(n) else { return false }
   self.tree.ground_reads(ground_read_hand)
@@ -13741,6 +13815,12 @@ pub fn View::pointed(self : View) -> Bool {
     None => {
       let s = @signals.signal(self.tree.lit_every || self.tree.pointed == Some(self.id()), same=fn(a, b) { a == b })
       n.pointed_cell = Some(s)
+      // (read as pointed at, it is: what takes no press nor hold is pointed at alone from now (Node::points_alone),
+      // what is where found anew)
+      if !n.inputs_own {
+        self.tree.inputs_own_said(self.at)
+        self.tree.hits_bump()
+      }
       s
     }
   }
@@ -13798,14 +13878,15 @@ fn Tree::pointed_fallback_above(self : Tree, at : Int) -> NodeId? {
   while p > 0 {
     let m = self.nodes[p]
     if m.live && !m.slot && !self.letting.contains(p) {
-      let takes = m.points ||
+      let alone = m.points_alone()
+      let takes = alone ||
         (m.on_drag is Some(_) && m.claims is None && m.hold_only is None) ||
         m.on_press is Some(_)
       if takes && m.content is Some(c) {
         let (cx, cy, _, s) = self.projected(p)
         if self.finger_on(c, cx, cy, s, px, py, self.logic_said(), tracked=false) {
           let id : NodeId = { at: p, gen: m.gen }
-          self.points_hover = if m.points { Some(id) } else { None }
+          self.points_hover = if alone { Some(id) } else { None }
           return Some(id)
         }
       }

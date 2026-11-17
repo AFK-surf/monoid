@@ -106,6 +106,7 @@ export async function walkDrive(drive: Drive, root: string, path: string, names:
   };
   const into = async (rel: string): Promise<void> => {
     const listed = await drive.list(root, join2(path, rel), anywhere);
+    if (listed.truncated) throw new DriveError("too_large", `${rel}: too many entries to list; select fewer files or smaller folders`);
     for (const e of listed.entries) await one(join2(rel, e.name), e);
   };
   const one = async (rel: string, e: Entry): Promise<void> => {
@@ -299,6 +300,8 @@ export class Transfers {
     const source = t.from.station === null ? localSource(drive, t.from.root, t.from.path, t.anywhere) : this.#deps.remote(t);
     const stopped = () => this.#stop.has(t.id) || this.#closed;
     try {
+      await this.#separate(t, drive);
+      if (stopped()) return;
       if (t.items.length === 0) {
         t.state = "walking";
         this.#save(t, true);
@@ -327,6 +330,27 @@ export class Transfers {
       const message = e instanceof Error ? e.message : String(e);
       log.warn("drive", "a transfer failed", { id: t.id, error: message });
       this.#end(t, "failed", message);
+    }
+  }
+
+  /// A local copy must not replace what it still reads; a move must not put its result inside what it later removes.
+  /// Check every selected source before any destination is changed, by their real paths (roots may be aliases).
+  async #separate(t: Transfer, drive: Drive): Promise<void> {
+    if (t.from.station !== null) return;
+    const inside = (path: string, dir: string) => platform.paths.within(key(path), key(dir));
+    const into = await drive.locate(t.to.root, t.to.path, t.anywhere);
+    const names = t.from.names.filter((name) => t.conflicts[name] !== "skip");
+    const sources = await Promise.all(names.map((name) => drive.locate(t.from.root, join2(t.from.path, name), t.anywhere)));
+    if (sources.some((from) => inside(into.found, from.found))) {
+      throw new DriveError("invalid_request", "choose a different destination folder: a folder cannot go into itself");
+    }
+    for (const name of names) {
+      // Keeping both chooses a fresh name in #place; a resumed copy already knows that name.
+      if (t.conflicts[name] === "keep" && t.placed[name] === undefined) continue;
+      const to = await drive.locate(t.to.root, join2(t.to.path, t.placed[name] ?? name), t.anywhere);
+      if (sources.some((from) => inside(from.entry, to.entry) || inside(from.found, to.entry))) {
+        throw new DriveError("invalid_request", "choose a different destination or keep both: replacing it would remove a source");
+      }
     }
   }
 

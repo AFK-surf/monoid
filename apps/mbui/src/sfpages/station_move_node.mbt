@@ -27,14 +27,14 @@ pub fn station_move_node(
   width? : () -> Double,
   tips? : @sf.TipLayer,
 ) -> Unit {
-  // (moving is the test channel's (core's move_on): where it is not, as a link opened on a stable app, the page goes
-  // back to where it was opened from, never one of a turn that would be refused)
-  v.reacts(fn() { (core.move_on)() }, fn(on) {
+  let s = fn() { station_of(core, here(), address) }
+  // (moving is a station's on the test channel (its overview's `features`): where the station says it is not, as a link
+  // opened of a stable one, the page goes back to where it was opened from, never one of a turn that would be refused)
+  v.reacts(fn() { (core.move_on)() && (s() is None || @settings.station_feature(s(), "stationMove")) }, fn(on) {
     if !on {
       on_back()
     }
   })
-  let s = fn() { station_of(core, here(), address) }
   let title = fn() {
     match text(s(), "name") {
       "" => @sf.t("web-pages.stations.move.title")

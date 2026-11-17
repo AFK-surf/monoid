@@ -4,7 +4,7 @@
 # pieces from the checkout and runs a headless smoke test..
 #   scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET]
 #                   | smoke [build|run] | listen | exit | fairness | sealed | collate | login-test | vectors | sizes | clean | all
-#                   | chat-open | ws-switch | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read
+#                   | chat-open | ws-switch | new-chat | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read
 # SF_SRC: the still.fail checkout (default: this one, scripts/env.sh); out/core/ gets everything built.
 # TARGET: a Rust target (default aarch64-apple-darwin; aarch64-apple-ios, aarch64-apple-ios-sim for iOS).
 set -e
@@ -564,6 +564,22 @@ ws_switch() {
   return $code
 }
 
+# A new chat sent, in Hermes (core/newchat.m over client/core-ts/bench/ws-switch-seed.ts's two workspaces of real size):
+# what each step's calls cost the core's one thread (mb_core_perf_line), plain words, `@` typed and two marks, links
+# pasted, a file of 24 MB, a list of 600 rows. SCALE as ws-switch's; run twice on the same data, the second the one to read.
+new_chat() {
+  core_program newchat || return 1
+  local dir=$(mktemp -d /tmp/mbui-new-chat.XXXXXX) code=0
+  (cd $CORE_TS && node bench/ws-switch-seed.ts "$dir" ${SCALE:-1}) || code=1
+  for run in first again; do
+    [ $code = 0 ] || break
+    echo "== $run run =="
+    MB_CORE_BUNDLE=$OUT/core.hbc $OUT/newchat "$dir" || code=1
+  done
+  rm -rf "$dir"
+  return $code
+}
+
 # Markdown read in Hermes as the core reads it (client/core-ts/bench/md-parse.ts over the bench's replies), bundled as the
 # core is, run by Hermes's own command: characters read a second, and a chat's page (80 000 of them) in ms.
 md_parse() {
@@ -802,6 +818,7 @@ case "${1:-all}" in
   listen) listen_test ;;
   chat-open) chat_open ;;
   ws-switch) ws_switch ;;
+  new-chat) new_chat ;;
   md-parse) md_parse ;;
   mermaid) mermaid_bench ;;
   mermaid-lib) mermaid_lib ;;
@@ -822,5 +839,5 @@ case "${1:-all}" in
   sizes) sizes ;;
   clean) rm -rf "$CARGO_TARGET_DIR"; echo "removed $CARGO_TARGET_DIR (out/core kept)" ;;
   all) deps; shell; smoke_build; smoke_run; sizes ;;
-  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
+  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | new-chat | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
 esac

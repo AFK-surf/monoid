@@ -58,18 +58,34 @@ static pid_t local_pid(NSString *data, NSString **version) {
   if ([s[@"version"] isKindOfClass:NSString.class]) *version = s[@"version"];
   return [pid intValue];
 }
+// Where its data is when it was moved (bin/stillfail's move: ~/.stillfail a link to it), nil where it is not a link.
+static NSString *local_moved_to(NSString *data) {
+  return [NSFileManager.defaultManager destinationOfSymbolicLinkAtPath:data error:nil];
+}
+// Whether its release's command moves its data (bin/stillfail's `move`, a release from before has none).
+static BOOL local_moves(NSString *data) {
+  NSString *command = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"app/bin/stillfail"] encoding:NSUTF8StringEncoding error:nil];
+  return [command containsString:@"stillfail move <folder>"];
+}
 static moonbit_string_t sf_station_said(void) {
   // An isolated end-to-end run must not inspect the person's installed station.
   if (getenv("MBUI_ISOLATED_STATION")) return mb_string_from_ns(@"");
   NSString *data = local_data();
   NSString *service = local_service();
-  BOOL there = [NSFileManager.defaultManager fileExistsAtPath:data];
+  NSString *moved = local_moved_to(data);
+  // (moved to a disk not connected: its link is there, what it names not)
+  BOOL there = [NSFileManager.defaultManager fileExistsAtPath:data] || moved != nil;
   // none here, and nothing being done or gone wrong about it: ""; one being installed is said before it is there
   if (!there && !service && !local_doing && !local_failed) return mb_string_from_ns(@"");
   NSString *version = nil;
   pid_t pid = local_pid(data, &version);
   NSMutableDictionary *o = [NSMutableDictionary dictionary];
   if (there || service) o[@"data"] = [data stringByAbbreviatingWithTildeInPath];
+  if (moved) {
+    o[@"at"] = [moved stringByAbbreviatingWithTildeInPath];
+    if (![NSFileManager.defaultManager fileExistsAtPath:data]) o[@"away"] = @YES;
+  }
+  if (local_moves(data)) o[@"moves"] = @YES;
   o[@"runner"] = pid == 0 ? @"none" : service ? @"service" : @"other";
   if (!version && service) {
     NSString *build = [NSString stringWithContentsOfFile:[data stringByAppendingPathComponent:@"app/BUILD"] encoding:NSUTF8StringEncoding error:nil];
@@ -254,6 +270,59 @@ static NSString *local_install(NSString *json) {
   return last.length ? last : [NSString stringWithFormat:@"install.sh %d", t.terminationStatus];
 }
 
+// 更改存储位置: its data moved into `folder` by its release's own command (bin/stillfail's `move`), as the person would
+// run it (their shell's PATH, no STILLFAIL_DATA of the app's), what it says of the copy shown as it goes (its "NN%"
+// lines: local_percent). nil when it did, else "move.<its exit>" (2 to 8: bin/stillfail says each), or "move:" and the
+// last it said.
+static NSString *local_move(NSString *data, NSString *folder) {
+  NSMutableDictionary *env = [NSProcessInfo.processInfo.environment mutableCopy];
+  [env addEntriesFromDictionary:login_env()];
+  [env removeObjectForKey:@"STILLFAIL_DATA"];
+  NSTask *t = [NSTask new];
+  t.executableURL = [NSURL fileURLWithPath:@"/bin/sh"];
+  t.arguments = @[ [data stringByAppendingPathComponent:@"app/bin/stillfail"], @"move", folder ];
+  t.environment = env;
+  t.standardInput = [NSFileHandle fileHandleWithNullDevice];
+  NSPipe *out = [NSPipe pipe];
+  t.standardOutput = out;
+  t.standardError = out;
+  NSError *e = nil;
+  if (![t launchAndReturnError:&e]) return [@"move:" stringByAppendingString:e.localizedDescription ?: @"sh"];
+  NSMutableData *said = [NSMutableData data];
+  NSUInteger from = 0;
+  for (;;) {
+    NSData *d = [out.fileHandleForReading availableData];
+    if (d.length == 0) break;
+    [said appendData:d];
+    const uint8_t *b = (const uint8_t *)said.bytes;
+    for (NSUInteger i = from; i < said.length; i++) {
+      if (b[i] != '\n') continue;
+      NSString *line = [[NSString alloc] initWithData:[said subdataWithRange:NSMakeRange(from, i - from)] encoding:NSUTF8StringEncoding];
+      from = i + 1;
+      if ([line hasSuffix:@"%"] && line.intValue >= 0 && line.length <= 4) {
+        int percent = line.intValue;
+        dispatch_async(dispatch_get_main_queue(), ^{
+          local_percent = percent;
+          station_changed();
+        });
+      }
+    }
+  }
+  [t waitUntilExit];
+  NSString *s = [[NSString alloc] initWithData:said encoding:NSUTF8StringEncoding] ?: @"";
+  fprintf(stdout, "mac: the station's move exited %d\n%s\n", t.terminationStatus, s.UTF8String);
+  fflush(stdout);
+  int code = t.terminationStatus;
+  if (code == 0) return nil;
+  if (code >= 2 && code <= 8) return [NSString stringWithFormat:@"move.%d", code];
+  NSString *last = @"";
+  for (NSString *line in [s componentsSeparatedByString:@"\n"]) {
+    NSString *l = [line stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (l.length) last = l;
+  }
+  return [@"move:" stringByAppendingString:last.length ? last : [NSString stringWithFormat:@"%d", code]];
+}
+
 // still.fail Helper (station/native/helper: the macOS app the station starts) told to quit, on its socket with its token
 // (main.swift's `quit`): what answers in 3 s, or nothing.
 static void local_helper_quit(NSString *data) {
@@ -359,6 +428,39 @@ static void sf_station_act(moonbit_string_t action) {
   }
   if ([a isEqualToString:@"folder"]) {
     [NSWorkspace.sharedWorkspace openURL:[NSURL fileURLWithPath:data]];
+    return;
+  }
+  // 更改存储位置 (asked first on its page): a folder chosen (the system's panel, not over the window: the app goes on
+  // drawing), then its data moved there off the main thread (local_move)
+  if ([a isEqualToString:@"move"]) {
+    if (local_doing) {
+      local_failed = @"busy";
+      station_changed();
+      return;
+    }
+    NSOpenPanel *panel = [NSOpenPanel openPanel];
+    panel.canChooseFiles = NO;
+    panel.canChooseDirectories = YES;
+    panel.canCreateDirectories = YES;
+    panel.allowsMultipleSelection = NO;
+    [panel beginWithCompletionHandler:^(NSModalResponse r) {
+      NSURL *picked = panel.URLs.firstObject;
+      if (r != NSModalResponseOK || !picked || local_doing) return;
+      local_doing = @"move";
+      local_failed = nil;
+      local_percent = -1;
+      local_said = nil;
+      station_changed();
+      NSString *folder = picked.path;
+      dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        NSString *failed = local_move(data, folder);
+        dispatch_async(dispatch_get_main_queue(), ^{
+          local_doing = nil;
+          local_failed = failed;
+          station_changed();
+        });
+      });
+    }];
     return;
   }
   if (![@[ @"start", @"stop", @"restart", @"uninstall" ] containsObject:a]) return;

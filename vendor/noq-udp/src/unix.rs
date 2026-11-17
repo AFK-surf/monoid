@@ -207,7 +207,7 @@ impl UdpSocketState {
     /// If you would like to handle these errors yourself, use [`UdpSocketState::try_send`]
     /// instead.
     pub fn send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        match send(self, socket.0, transmit) {
+        match send(self, socket.0, transmit, crate::dscp()) {
             Ok(()) => Ok(()),
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => Err(e),
             // - EMSGSIZE is expected for MTU probes. Future work might be able to avoid these by
@@ -223,7 +223,19 @@ impl UdpSocketState {
 
     /// Sends a [`Transmit`] on the given socket without any additional error handling.
     pub fn try_send(&self, socket: UdpSockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-        send(self, socket.0, transmit)
+        send(self, socket.0, transmit, crate::dscp())
+    }
+
+    /// stillfail: [`UdpSocketState::try_send`] with the DSCP `dscp` (as [`crate::set_dscp`] takes it) rather than the
+    /// process's, so a test sees the bytes sent without touching what the process sends.
+    #[doc(hidden)]
+    pub fn try_send_with_dscp(
+        &self,
+        socket: UdpSockRef<'_>,
+        transmit: &Transmit<'_>,
+        dscp: u8,
+    ) -> io::Result<()> {
+        send(self, socket.0, transmit, dscp & 0x3f)
     }
 
     #[cfg(not(any(
@@ -389,6 +401,7 @@ fn send(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
+    dscp: u8,
 ) -> io::Result<()> {
     #[allow(unused_mut)] // only mutable on FreeBSD
     let mut encode_src_ip = true;
@@ -414,6 +427,7 @@ fn send(
         &mut cmsgs,
         encode_src_ip,
         state.sendmsg_einval(),
+        dscp,
     );
 
     loop {
@@ -456,6 +470,7 @@ fn send(
                         &mut cmsgs,
                         encode_src_ip,
                         state.sendmsg_einval(),
+                        dscp,
                     );
                     continue;
                 }
@@ -467,8 +482,13 @@ fn send(
 }
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", apple_slow))]
-fn send(state: &UdpSocketState, io: SockRef<'_>, transmit: &Transmit<'_>) -> io::Result<()> {
-    send_single(state, io, transmit)
+fn send(
+    state: &UdpSocketState,
+    io: SockRef<'_>,
+    transmit: &Transmit<'_>,
+    dscp: u8,
+) -> io::Result<()> {
+    send_single(state, io, transmit, dscp)
 }
 
 #[cfg(any(target_os = "openbsd", target_os = "netbsd", apple))]
@@ -477,6 +497,7 @@ pub(crate) fn send_single(
     state: &UdpSocketState,
     io: SockRef<'_>,
     transmit: &Transmit<'_>,
+    dscp: u8,
 ) -> io::Result<()> {
     let mut hdr: libc::msghdr = unsafe { mem::zeroed() };
     let mut iov: libc::iovec = unsafe { mem::zeroed() };
@@ -490,6 +511,7 @@ pub(crate) fn send_single(
         &mut ctrl,
         cfg!(apple) || cfg!(target_os = "openbsd") || cfg!(target_os = "netbsd"),
         state.sendmsg_einval(),
+        dscp,
     );
     retry_if_interrupted(|| unsafe { libc::sendmsg(io.as_raw_fd(), &hdr, 0) })?;
     Ok(())
@@ -586,6 +608,7 @@ fn prepare_msg(
     #[allow(unused_variables)] // only used on FreeBSD & macOS
     encode_src_ip: bool,
     sendmsg_einval: bool,
+    dscp: u8,
 ) {
     iov.iov_base = transmit.contents.as_ptr() as *const _ as *mut _;
     iov.iov_len = transmit.contents.len();
@@ -605,7 +628,9 @@ fn prepare_msg(
     hdr.msg_control = ctrl.0.as_mut_ptr() as _;
     hdr.msg_controllen = cmsg::LEN as _;
     let mut encoder = unsafe { cmsg::Encoder::new(hdr) };
-    let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int);
+    // stillfail: the DSCP (`crate::set_dscp`) above the ECN bits. This message sets the whole byte of the datagram (on
+    // Linux in place of the socket's IP_TOS), so it is the one place to mark it; with none it is the ECN bits alone.
+    let ecn = transmit.ecn.map_or(0, |x| x as libc::c_int) | (libc::c_int::from(dscp) << 2);
     // True for IPv4 or IPv4-Mapped IPv6
     let is_ipv4 = transmit.destination.is_ipv4()
         || matches!(transmit.destination.ip(), IpAddr::V6(addr) if addr.to_ipv4_mapped().is_some());

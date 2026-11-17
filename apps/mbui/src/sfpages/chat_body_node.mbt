@@ -936,9 +936,24 @@ fn chat_body_node(
       }
     })
   }
+  // (the key of the row under each, as the list's keys are: what a row's band reaches down to, read only while it is
+  // lit; worked out again only as the keys change)
+  let under_keys = @signals.computed_by(
+    fn(_) {
+      let ks = (list.keys)()
+      let m : Map[String, String] = Map([])
+      for i in 1..<ks.length() {
+        m[ks[i - 1]] = ks[i]
+      }
+      m
+    },
+    // (a map made anew as the keys change: no value to compare)
+    same=fn(a, b) { physical_equal(a, b) },
+  )
+  let under = fn(k : String) { under_keys.get().get(k) }
   // (a row's block in `slot`, of the row whose key `key` says as it is now: chat_body_row's)
   let row_of = fn(slot : @view.View, key : () -> String) {
-    chat_body_row(slot, src, here, key, list, side, top, core, keeps, made, jump, fn() { came_at.get(key()) }, fn() {
+    chat_body_row(slot, src, here, key, list, under, side, top, core, keeps, made, jump, fn() { came_at.get(key()) }, fn() {
       let k = @signals.untracked(key)
       let base = chat_piece_of(k)
       if base == k {
@@ -1277,6 +1292,7 @@ fn chat_body_row(
   here : MessageNodeHere,
   key : () -> String,
   rows : ChatBodyList,
+  under : (String) -> String?,
   side : () -> Double,
   list_top : () -> Double,
   core : @settings.Core?,
@@ -1331,57 +1347,10 @@ fn chat_body_row(
     made(@signals.untracked(key), p)
     p.reacts(key, fn(k) { made(k, p) }, at_start=false)
     let whole_key = fn() { chat_piece_of(key()) }
-    let band_room = fn() -> (Double, Double) {
-      let r = row()
-      let w = (here.width)()
-      let apart = chat_body_gap_room(Apart, w)
-      let over_pad = match r.piece {
-        Some(pc) if pc.from > 0 => 0.0
-        _ =>
-          match r.gap {
-            NoGap => apart / 2.0
-            _ => chat_body_gap_room(r.gap, w) / 2.0
-          }
-      }
-      let followed = match r.entry {
-        Said(m) => m.followed
-        Out(o) => o.followed
-        _ => false
-      }
-      let under_pad = match r.piece {
-        Some(pc) if !pc.last => 0.0
-        _ => if followed { joined_gap / 2.0 } else { apart / 2.0 }
-      }
-      (over_pad, under_pad)
-    }
-    let flash_on = Ref(false)
-    let menu_on_band = Ref(false)
-    let row_mid : Ref[@view.View?] = Ref(None)
-    let shaped = Ref(false)
-    let sync_band_shape = fn() {
-      guard row_mid.val is Some(r) && r.alive() else { return }
-      let want = flash_on.val || menu_on_band.val
-      if want && !shaped.val {
-        shaped.val = true
-        r.ground_drawn(
-          By(fn() {
-            let (o, u) = band_room()
-            { dx: 0.0, dy: -o, dw: 0.0, dh: o + u, corners: None }
-          }),
-        )
-        |> ignore
-      } else if !want && shaped.val {
-        shaped.val = false
-        r.ground_drawn(Is(@view.ground_as_laid)) |> ignore
-      }
-    }
     // (gone to: how lit it is as its flash goes, one way for the row; every message kind, notices included, lights its
     // full-width row band across the list, or the passage a quote that led here quoted in its words alone:
     // chat_passage_lit; a piece of a long message gone to as the message is, all its pieces lit as one)
-    let flash = chat_flash_way(p, whole_key, jump, on_active=fn(on) {
-      flash_on.val = on
-      sync_band_shape()
-    })
+    let flash = chat_flash_way(p, whole_key, jump)
     let lit = chat_passage_lit(p, whole_key, jump, flash)
     let m0 = match @signals.untracked(entry) {
       Said(m) => m
@@ -1394,18 +1363,15 @@ fn chat_body_row(
       }
     }
     let frame = fn(body : (@view.View) -> Unit) { message_row_frame_node(p, key, side, top, body) |> ignore }
-    // (a message's: its flash, and over it its band while its menu shows, right clicked or its ⋯'s, as the row says
-    // that: both its content line node's ground, chat_row_lit_node's, expanded symmetrically into half the gaps above
-    // and below while lit)
+    // (a message's: its band, the ground of all of it while it is lit, its flash and over it its menu's band (right
+    // clicked or its ⋯'s), each by the message's key, so every piece of a long one is lit as one (chat_row_band_node);
+    // down to the middle of the room over the row under it, as the list has that row)
     let more : Ref[() -> Bool] = Ref(fn() { false })
-    let over = fn(row : @view.View, key : () -> String) {
-      row_mid.val = Some(row)
-      let band = message_menu_band_way(row, key, more, on_active=fn(on) {
-        menu_on_band.val = on
-        sync_band_shape()
-      })
-      sync_band_shape()
-      chat_row_lit_node(row, key, jump, flash, band)
+    let over = fn(row : @view.View, _key : () -> String) {
+      let band = message_menu_band_way(row, whole_key, more)
+      chat_row_band_node(row, whole_key, jump, top, fn() {
+        (under)(key()).bind(fn(k) { (rows.row)(k) }).map(fn(r) { chat_body_gap_room(r.gap, (here.width)()) })
+      }, flash, band)
     }
     match kind {
       KTop => p.box(fn(b) { b.height(By(fn() { Some(list_top()) })) |> ignore }) |> ignore

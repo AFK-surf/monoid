@@ -2357,6 +2357,27 @@ test "key-read" {
 }
 
 ///|
+test "submitted-read" {
+  // the words a field gave up read by a build outside mbui's ui and kit: counted (a read each); in ui, in kit, in a
+  // test, a field of that name declared or given (no `.` before it), a method of that name, not
+  let fs = found(
+    [
+      (
+        "src/sfpages/x.mbt",
+        "fn d(c : Ctx) -> Unit {\n  let res = c.editor(\"k\")\n  match res.submitted {\n    Some(w) => go(w)\n    None => ()\n  }\n  if c.editor(\"j\").submitted is Some(_) {\n    go(\"\")\n  }\n}\n",
+      ),
+      ("src/ui/editor.mbt", "fn n(st : EditorState) -> Unit {\n  st.submitted = Some(st.text)\n}\n"),
+      ("src/kit/field.mbt", "fn n(e : EditorResult) -> Bool {\n  e.submitted is Some(_)\n}\n"),
+      ("src/sfapp/y_wbtest.mbt", "test \"t\" {\n  ignore(r.submitted)\n}\n"),
+      ("src/sfapp/z.mbt", "struct Z {\n  submitted : Bool\n}\nfn z() -> Z {\n  { submitted: false }\n}\nfn w(f : Form) -> Unit {\n  f.submitted(1)\n}\n"),
+    ],
+    "submitted-read",
+    2,
+  )
+  assert_eq(lines(fs), [3, 7])
+}
+
+///|
 test "build-clock: what a frame's paint reads is not counted" {
   // read in what a paint taker is given, in a function only that calls, in one only paint's root calls: not counted;
   // in a function also called as it is built: counted

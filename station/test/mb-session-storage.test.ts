@@ -1115,6 +1115,10 @@ async function main() {
     }
     await both("writeBuiltinSkills", a, b, () => agentHome.writeBuiltinSkills(home(a), false, join(a.root, "site")), "writeBuiltinSkills", home, false, source, (w: World) => join(w.root, "site"));
     same("skills written", a, b, (rel) => rel.startsWith("skills-src"));
+    // (moving off here: stillfail-move taken away, then written again as it is on)
+    await both("writeBuiltinSkills, moving off", a, b, () => agentHome.writeBuiltinSkills(home(a), false, join(a.root, "site"), false), "writeBuiltinSkills", home, false, source, (w: World) => join(w.root, "site"), false);
+    same("skills written, moving off", a, b, (rel) => rel.startsWith("skills-src"));
+    await both("writeBuiltinSkills, moving on", a, b, () => agentHome.writeBuiltinSkills(home(a), false, join(a.root, "site"), true), "writeBuiltinSkills", home, false, source, (w: World) => join(w.root, "site"), true);
     await both("workspaceAgentHome", a, b, () => agentHome.workspaceAgentHome(home(a), "W2", "W1"), "workspaceAgentHome", home, "W2", "W1", source, null);
     await both("workspaceAgentHome (made)", a, b, () => agentHome.workspaceAgentHome(home(a), "W2", "W1"), "workspaceAgentHome", home, "W2", "W1", source, null);
     await both("agentHomes", a, b, () => agentHome.agentHomes(home(a)), "agentHomes", home);

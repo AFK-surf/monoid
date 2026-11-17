@@ -670,11 +670,10 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   |> ignore
   // the sidebar's edge, the tree's, over the block (its rows under its strip), but where a list's thumb of the
   // sidebar's is shown there: the thumb's (@ui.yield_thumbs)
-  v.box(fn(edges) {
-    edges.over(Is(true)) |> ignore
-    edges.show(fn() { pane_edge_stands(src, edges) }, fn(n) { pane_edge(n, edges, src, tips) })
+  v.show(fn() { pane_edge_stands(src, v) }, fn(n) {
+    n.over(Is(true)) |> ignore
+    pane_edge(n, v, src, tips)
   })
-  |> ignore
 }
 
 ///|

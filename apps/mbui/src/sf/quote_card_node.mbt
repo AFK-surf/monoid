@@ -29,66 +29,13 @@ pub fn quote_card_node(
     style_node(card, fn() { quote_box_message.then(@ui.style(clip=true)) })
     // (its words none of what is picked: what holds the list lends its picker to every words in pieces in it)
     card.lends(@view.runs_picker, fn(_) { Is((0, 0)) }) |> ignore
-    card.box(fn(source) {
-      // (a pin in its top corner: there the ladder's inset from both its edges, concentric with it)
-      style_node(source, fn() { if pin() != "" { quote_source_pin } else { quote_source } })
-      // (where it leads nowhere, a pin's tip says its words whole, shown by the pointer within it: tip_node's `within`,
-      // what is pressed in it taking no press then)
-      tip_node(tips, source, fn() { if !jumps() && pin() != "" { words() } else { "" } }, within=true) |> ignore
-      // (what is pressed where it leads: all of its words' box, laid over it (what is pressed found past its words,
-      // which take none); taking no press where it leads nowhere, and so not the words' box itself, whose tip a pin's
-      // words have then)
-      let hit = source.box(fn(h) {
-        h.over(Is(true)) |> ignore
-        presses_node(h, jump, on=jumps)
-        h.says(By(fn() { if jumps() { Some(@view.said(Button, label=t("web-main.quote.jump"))) } else { None } })) |> ignore
-        // (its tip saying where it leads, as a control's)
-        tip_node(tips, h, fn() { if jumps() { t("web-main.quote.jump") } else { "" } }) |> ignore
-      })
-      // (its words' row, made anew as it comes to be a pin's or not: the pick's own box is the row, as quote_words')
-      source.pick(fn() { pin() != "" }, fn(p, pinned) {
-        style_node(p, fn() { quote_words })
-        if pinned {
-          p.box(fn(mark) {
-            style_node(mark, fn() { quote_pin })
-            // (its number part of a mark of a size said: at its size whatever the system's size of words, as a
-            // badge's, apps/mbui/AGENTS.md; the old pin's grew out of it at 1.3, the coordinator of the migration,
-            // 2026-11-12)
-            mark_words_node(mark, pin, fn() { quote_pin_words }) |> ignore
-          })
-          |> ignore
-          words_node(p, fn() { words().split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or("") }, fn() {
-            quote_text
-          })
-          |> ignore
-        } else {
-          p.box(fn(mark) {
-            style_node(mark, fn() { quote_mark })
-            icon_node(mark, "quote-open", quote_icon, By(fn() { theme().p.accent })) |> ignore
-          })
-          |> ignore
-          let look = fn() { if jumps() && lit_node(hit) { quote_text_hot } else { quote_text } }
-          // (beside its mark, in the room the row leaves it, as an old view's words in a row are)
-          p.box(fn(w) {
-            w
-            .shrink(Is(1.0))
-            .min_width(Is(Some(0.0)))
-            .words_runs(By(fn() {
-              [
-                @ui.span(t("web-main.quote.author", args=[("author", author())]), weight=500, color=theme().p.text),
-                @ui.span(words()),
-              ]
-            }))
-            .words_look(By(fn() { @ui.style_words(quote_text) }))
-            .ink(By(fn() { @ui.style_ink(look()) }))
-            .allow_ellipsis(Is(true))
-            |> ignore
-          })
-          |> ignore
-        }
-      })
+    quote_source_node(card, tips, author, words, pin, jumps, jump, fn() {
+      if pin() != "" {
+        quote_source_pin
+      } else {
+        quote_source
+      }
     })
-    |> ignore
     card.show(pictured, fn(s) {
       s.box(fn(b) {
         style_node(b, fn() { quote_picture })
@@ -104,4 +51,134 @@ pub fn quote_card_node(
       |> ignore
     })
   })
+}
+
+///|
+/// A quote card's head (its source) in `card`: its mark and whose it is (a pin's number and first line instead), laid
+/// out by `look` (a message's or the composer's room round it); where it `jumps`, pressed it does `jump`, its tip says
+/// so and its words take the text's ink under the pointer; a pin's that does not, its tip its words whole.
+#callsite(autofill(loc))
+fn quote_source_node(
+  card : @view.View,
+  tips : TipLayer,
+  author : () -> String,
+  words : () -> String,
+  pin : () -> String,
+  jumps : () -> Bool,
+  jump : () -> Unit,
+  look : () -> @ui.Style,
+  loc~ : SourceLoc,
+) -> Unit {
+  card.box(made_for=loc, fn(source) {
+    // (a pin in its top corner: there the ladder's inset from both its edges, concentric with it)
+    style_node(source, look)
+    // (where it leads nowhere, a pin's tip says its words whole, shown by the pointer within it: tip_node's `within`,
+    // what is pressed in it taking no press then)
+    tip_node(tips, source, fn() { if !jumps() && pin() != "" { words() } else { "" } }, within=true) |> ignore
+    // (what is pressed where it leads: all of its words' box, laid over it (what is pressed found past its words,
+    // which take none); taking no press where it leads nowhere, and so not the words' box itself, whose tip a pin's
+    // words have then)
+    let hit = source.box(fn(h) {
+      h.over(Is(true)) |> ignore
+      presses_node(h, jump, on=jumps)
+      h.says(By(fn() { if jumps() { Some(@view.said(Button, label=t("web-main.quote.jump"))) } else { None } })) |> ignore
+      // (its tip saying where it leads, as a control's)
+      tip_node(tips, h, fn() { if jumps() { t("web-main.quote.jump") } else { "" } }) |> ignore
+    })
+    // (its words' row, made anew as it comes to be a pin's or not: the pick's own box is the row, as quote_words')
+    source.pick(fn() { pin() != "" }, fn(p, pinned) {
+      style_node(p, fn() { quote_words })
+      if pinned {
+        p.box(fn(mark) {
+          style_node(mark, fn() { quote_pin })
+          // (its number part of a mark of a size said: at its size whatever the system's size of words, as a
+          // badge's, apps/mbui/AGENTS.md; the old pin's grew out of it at 1.3, the coordinator of the migration,
+          // 2026-11-12)
+          mark_words_node(mark, pin, fn() { quote_pin_words }) |> ignore
+        })
+        |> ignore
+        words_node(p, fn() { words().split("\n").next().map(fn(s) { s.to_owned() }).unwrap_or("") }, fn() {
+          quote_text
+        })
+        |> ignore
+      } else {
+        p.box(fn(mark) {
+          style_node(mark, fn() { quote_mark })
+          icon_node(mark, "quote-open", quote_icon, By(fn() { theme().p.accent })) |> ignore
+        })
+        |> ignore
+        let look = fn() { if jumps() && lit_node(hit) { quote_text_hot } else { quote_text } }
+        // (beside its mark, in the room the row leaves it, as an old view's words in a row are)
+        p.box(fn(w) {
+          w
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .words_runs(By(fn() {
+            [
+              @ui.span(t("web-main.quote.author", args=[("author", author())]), weight=500, color=theme().p.text),
+              @ui.span(words()),
+            ]
+          }))
+          .words_look(By(fn() { @ui.style_words(quote_text) }))
+          .ink(By(fn() { @ui.style_ink(look()) }))
+          .allow_ellipsis(Is(true))
+          |> ignore
+        })
+        |> ignore
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// A quote waiting in the composer (quote_card's `composer`) in `parent`: as a message's card, its corner the
+/// composer's inner, its words further in, leading nowhere; its own picture where it `pictured` (`picture` makes it, in
+/// the composer's room for it); under it the line for what is said about it, made by `comment_field`; its ✕ hung on its
+/// corner (with_corner_remove_node), `remove` what a press on it does, named `remove_label`. The card's node.
+#callsite(autofill(loc))
+pub fn composer_quote_card_node(
+  parent : @view.View,
+  tips : TipLayer,
+  author : () -> String,
+  words : () -> String,
+  role : () -> String,
+  comment_field : (@view.View) -> Unit,
+  remove : () -> Unit,
+  remove_label : () -> String,
+  pictured? : () -> Bool = fn() { false },
+  picture? : (@view.View) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> @view.View {
+  let pin = fn() { pin_of(author(), role()) }
+  let made : Ref[@view.View?] = Ref(None)
+  with_corner_remove_node(parent, remove_label, composer_inner(), fn(hung) {
+    hung.box(made_for=loc, fn(card) {
+      made.val = Some(card)
+      style_node(card, fn() { quote_box_composer().then(composer_card()).then(@ui.style(clip=true)) })
+      card.lends(@view.runs_picker, fn(_) { Is((0, 0)) }) |> ignore
+      quote_source_node(card, tips, author, words, pin, fn() { false }, fn() {  }, fn() {
+        if pin() != "" {
+          quote_source_hung_pin
+        } else {
+          quote_source_hung
+        }
+      })
+      card.show(pictured, fn(s) {
+        s.box(fn(b) {
+          style_node(b, fn() { quote_picture_composer })
+          picture(b)
+        })
+        |> ignore
+      })
+      card.box(fn(b) {
+        style_node(b, fn() { quote_comment_composer })
+        comment_field(b)
+      })
+      |> ignore
+    })
+    |> ignore
+  }, remove)
+  |> ignore
+  made.val.unwrap()
 }

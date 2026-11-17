@@ -14,7 +14,7 @@ type Answer = Awaited<ReturnType<H["fetch"]>>;
 test("the config names none of still.fail's hosts: every name and key is read from the environment", () => {
   const config = workerdConfig();
   assert.doesNotMatch(config, /still\.fail|monoid\.build|youdid\.wtf|3720\.org|39\.105|cloudflareaccess/);
-  for (const name of ["PUBLIC_ORIGIN", "ADMIN_ORIGIN", "RELAY_URL", "AUTH_SIGNING_KEY", "GRANT_SIGNING_JWK", "OIDC_ISSUER", "EMAIL_FROM"]) {
+  for (const name of ["PUBLIC_ORIGIN", "ADMIN_ORIGIN", "RELAY_URL", "AUTH_SIGNING_KEY", "GRANT_SIGNING_JWK", "OIDC_ISSUER", "EMAIL_FROM", "GCP_TELEMETRY", "FCM_SERVICE_ACCOUNT", "FCM_SERVICE_ACCOUNT_MORE", "APNS_KEY", "APNS_KEY_MORE"]) {
     assert.match(config, new RegExp(`\\(name = "${name}", fromEnvironment = "${name}"\\)`), name);
   }
   // Each of the API's Durable Objects, SQLite where its migration says so; the relay's own is not there (it is iroh-relay).

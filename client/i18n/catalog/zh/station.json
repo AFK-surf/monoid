@@ -817,6 +817,7 @@
   "station.move.restarted": "迁移进行中这台 station 重启了：已迁走的保持迁走，其余仍在原处。再发起一次即可继续。",
   "station.group.answerOptions": "回复编号或选项文字即可回答。",
   "station.group.answerText": "直接回复即可回答。",
+  "station.group.secretReceived": "{name} 端到端交给你一个密钥「{label}」：它的值只在附件文件里（不在任何消息和日志里）。从文件里取用，绝不要在聊天里复述。",
   "station.group.badServer": "Server ID 是服务器的 64 位十六进制 ID",
   "station.group.noRelay": "至少需要一个中继地址",
   "station.group.badRelay": "中继地址要以 https:// 或 http:// 开头",

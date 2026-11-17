@@ -21,7 +21,7 @@ import { trim } from "../../../client/core-ts/src/whitespace.ts";
 import * as chatRow from "../../../client/core-ts/src/chat-row.ts";
 import { knownChannel, knownPerson, slackCreator, teamName } from "./slack-known.ts";
 import { log } from "../../src/ops/log.ts";
-import { ASKER_BEFORE, WAITS_ON_JOB, WAITS_ON_LED } from "../../src/store/card-kinds.ts";
+import { ANSWER_AFTER, ASKER_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARDS_WAITING, WAITS_ON_JOB, WAITS_ON_LED } from "../../src/store/card-kinds.ts";
 import { type AuthorKind, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, STILLFAIL_SURFACE, takeChars } from "./store.ts";
 import { STILLFAIL_CONNECT } from "../../src/store/rows.ts";
 import { readFileSync, statSync } from "node:fs";
@@ -206,6 +206,31 @@ function cardView(api: Api, thread: number, dismissed: Set<string>, names: Names
   const v: Json = { seq: m.n, card, message, before };
   if (dismissed.has(`${thread}:${m.n}`)) v.dismissed = true;
   return v;
+}
+
+/// What thread `thread` asks and waits on: its system cards still waiting, the latest first, then its latest
+/// conversational card while it waits, by their numbers (station/mb cards.mbt `asks_waiting`).
+function asksWaiting(s: Store, thread: number): number[] {
+  const out = store.all(s, SYSTEM_CARDS_WAITING, thread).map((r: Json) => Number(r.n));
+  const latest = store.one(s, CONVERSATION_CARD_LATEST, thread) as Json;
+  if (latest === undefined || latest === null) return out;
+  const n = Number(latest.n);
+  if (store.one(s, ANSWER_AFTER, thread, n) !== undefined || store.one(s, "SELECT 1 AS x FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined) return out;
+  return [...out, n];
+}
+
+/// The card a viewer's marks show of a thread (`shown`, the one its row shows): where it is not asked of them by name
+/// and another waiting there is, that one (station/mb chatmarks.mbt `mine_first`).
+function mineFirst(api: Api, thread: number, dismissed: Set<string>, names: Names, email: string, shown: Json | null): Json | null {
+  if (shown === null || email === "") return shown;
+  const mine = (card: Json) => typeof field(card, "assignee") === "string" && (field(card, "assignee") as string).toLowerCase() === email.toLowerCase();
+  if (mine(field(shown, "card"))) return shown;
+  for (const n of asksWaiting(api.store, thread)) {
+    if (n === Number(field(shown, "seq"))) continue;
+    const at = store.cardAt(api.store, thread, n);
+    if (at !== null && mine(at[1])) return cardView(api, thread, dismissed, names, n);
+  }
+  return shown;
 }
 
 /// serde_json's `value[key]`: null for a key it lacks or a value that is no object.
@@ -413,7 +438,7 @@ export function chatMarks(station: Store, viewer: Viewer, scope: { sessions: str
     let known: Names | null = null;
     const namesOf = () => (known ??= authorNames(api, id));
     const names = Object.assign((kind: AuthorKind, author: string) => namesOf()(kind, author), { picture: (kind: AuthorKind, author: string) => namesOf().picture?.(kind, author) ?? null });
-    const c = cardView(api, id, dismissed, names, keptCard(id));
+    const c = mineFirst(api, id, dismissed, names, viewer.email ?? "", cardView(api, id, dismissed, names, keptCard(id)));
     if (c !== null) card[id] = c;
     else {
       // its agents in lists, as its row has them (`chats`)

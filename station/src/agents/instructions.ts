@@ -8,12 +8,17 @@ import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
 
 
+/// What points an agent at moving a station's things, said only where moving is on (features.ts stationMoveOn).
+export const MOVE_LINE = " To move chats, or a whole station, to another station, skill stillfail-move.";
+
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
-/// `station`: this station's name ("" where it has none).
-export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = ""): string {
+/// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (a `beta`
+/// feature of the station's, features.ts): where it is not, its skill is not named.
+export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
-  return instructions(projectLine, workspace, repos_dir, memory_path, station) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
+  const told = instructions(projectLine, workspace, repos_dir, memory_path, station);
+  return (move ? told : told.replace(MOVE_LINE, "")) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
 }
 
 /// The most of the deployment's text an agent is told: a few lines that point at its skills, not a manual.
@@ -213,8 +218,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
   const [channel, ts] = [v.slice(0, at), v.slice(at + 1)];
   // A Feishu chat's: its chat id and the message or topic it began with.
   if (/^oc_[A-Za-z0-9]+$/.test(channel) && /^om(t)?_[A-Za-z0-9]+$/.test(ts)) return [channel, ts];
-  // A group connect's: its conversation's id, twice (src/group: a conversation is one thread).
-  if (/^[0-9a-f]{16}$/.test(channel) && ts === channel) return [channel, ts];
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  if (/^[ds]_[0-9a-f]{24}$/.test(channel) && (ts === channel || /^t_[0-9a-f]{16}$/.test(ts))) return [channel, ts];
   const dot = ts.indexOf(".");
   if (dot < 0) return null;
   const [secs, micros] = [ts.slice(0, dot), ts.slice(dot + 1)];

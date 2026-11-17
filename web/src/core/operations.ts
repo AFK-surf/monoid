@@ -188,6 +188,8 @@ export interface OperationParams {
   "admin.setLimits": { workspace: string; members: number; stations: number };
   "admin.enroll": { workspace: string; name: string };
   "admin.feedbackStatus": { id: string; status?: string | null | undefined };
+  "admin.relayToken": { name: string; url?: string | null | undefined };
+  "admin.relayRemove": { url: string };
 }
 
 export const UNTRACKED_OPERATIONS = new Set(["admin.me", "chat.relayPeople", "chat.relayPlaces", "chats.archived", "copies.retirePreview", "drive.folders", "file.peek", "job.get", "job.log", "link.preview", "login.drop", "machineSessions.list", "machineSessions.read", "memory.get", "profile.fusion", "screen.apps", "screen.chrome", "screen.logs", "screen.settings", "session.transcript", "session.warm", "slack.createAppUrl", "slack.people", "tools.access", "widget.setState", "widget.state"]);
@@ -389,5 +391,7 @@ export function bindCloudOperations(call: Call) {
     adminSetLimits: <T = unknown>(params: OperationParams["admin.setLimits"]) => call("admin.setLimits", params) as Promise<T>,
     adminEnroll: <T = unknown>(params: OperationParams["admin.enroll"]) => call("admin.enroll", params) as Promise<T>,
     adminFeedbackStatus: <T = unknown>(params: OperationParams["admin.feedbackStatus"]) => call("admin.feedbackStatus", params) as Promise<T>,
+    adminRelayToken: <T = unknown>(params: OperationParams["admin.relayToken"]) => call("admin.relayToken", params) as Promise<T>,
+    adminRelayRemove: <T = unknown>(params: OperationParams["admin.relayRemove"]) => call("admin.relayRemove", params) as Promise<T>,
   };
 }

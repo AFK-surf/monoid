@@ -70,7 +70,10 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         let s = if arg("MBUI_SAID") == "1" { @sffixture.said_longest_source(s) } else { s }
         // (a film's pictures decoded as a device's are, a picture sent from the composer among them: what its host holds
         // of them at once is theirs, as the bench's real chat's, not a test file's few small ones)
-        @ui.host_image_bytes_known([("src/film/scene.mbt", 262144)])
+        @ui.host_image_bytes_known([
+          ("src/film/scene.mbt", 262144),
+          ("src/sfwasmfilm/main.mbt", 262144),
+        ])
         // MBUI_FILM_FACE_MS=N: the people's faces the core gives at once (the fixture's ana_face among them), the host
         // decoding each N ms after it is asked; MBUI_FILM_FACE_WAITS=1: a page opening waits for them, as the app does
         // (Source.picture_waits; sfapp's page_pictures_wbtest)

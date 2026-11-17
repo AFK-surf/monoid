@@ -310,12 +310,17 @@ test "marking: the edit key picks, a mark picked is boxed and pinned, put into t
   assert_eq(number(Some(m), "n"), 1.0)
   t.frame()
   t.frame()
-  let into = marked_into.get("ws1/st1:s-c1").unwrap()
+  let into = draft_waiting("ws1/st1:s-c1").filter_map(fn(g) {
+    match g {
+      Marked(name, _, quotes, kind) => Some((name, quotes, kind))
+      _ => None
+    }
+  })
   assert_eq(into.length(), 1)
   assert_true(into[0].0.has_prefix("web-标注1-"))
-  assert_eq(into[0].3, "page")
-  assert_eq(into[0].2[0].0, "网页 web 标注 1")
-  assert_true(into[0].2[0].1.has_prefix("按钮「构建」\n元素：button.go · 选择器：main > button\n页面：/（视口 390×600）"))
+  assert_eq(into[0].2, "page")
+  assert_eq(into[0].1[0].0, "网页 web 标注 1")
+  assert_true(into[0].1[0].1.has_prefix("按钮「构建」\n元素：button.go · 选择器：main > button\n页面：/（视口 390×600）"))
   assert_true(t.find("点选页面上的元素") is None)
 }
 

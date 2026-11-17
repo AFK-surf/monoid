@@ -191,11 +191,13 @@ fn station_view_node(
   }
   // (what its blocks are worked out of: the station as their keys read it, so a change of what no key reads runs none
   // of what reads them; and the blocks worked out once, told only as one comes, goes or moves)
-  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation"])
+  // (and the `beta` features it runs: its terminals' rows are keys of its overview's parts)
+  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "features"])
   let blocks_now = @signals.computed(fn(_) {
     let s = keyed
     // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
-    // of it moved to another station, moving, stopped or failed: station_move_node.mbt's)
+    // of it moved to another station, moving, stopped or failed: station_move_node.mbt's; whether or not the station
+    // offers moving now, a stable one that never moved having none)
     let out = if station_moving_shown(s()) {
       ["moving", "parts"]
     } else if flag(s(), "online") && (core.move_on)() && @settings.move_shown(core, address) {
@@ -215,8 +217,9 @@ fn station_view_node(
     out
   })
   let blocks = fn() { blocks_now.get() }
-  // (what most parts read of it: all it says of itself, none of its overview, whether it has a machine)
-  let top = station_narrowed(s, [])
+  // (what most parts read of it: all it says of itself, of its overview only the `beta` features it runs (its terminals),
+  // whether it has a machine)
+  let top = station_narrowed(s, ["features"])
   let block = fn(b : @view.View, key : String) {
     match key {
       "parts" => station_parts_node(b, chosen, press)
@@ -452,7 +455,7 @@ fn station_env_form_ask(address : String, form : String) -> (String, Map[String,
 fn station_block_asks(core : Core, here : Here, address : String, s : Json?, manager : Bool, key : String) -> Array[(String, Map[String, Json])] {
   match key {
     "resources" => [station_net_ask(address), resources_ask(here, address)]
-    "allScreens" => [station_screens_ask(address), ..if (core.terminals_on)() { [terminals_ask(address)] } else { [] }]
+    "allScreens" => [station_screens_ask(address), ..if terminals_offered(core, s) { [terminals_ask(address)] } else { [] }]
     "userPages" | "agentPages" | "screens" => [station_screens_ask(address)]
     "devices" => if (core.devices_on)() { [@settings.devices_ask(here)] } else { [] }
     "processes" => if flag(s, "online") { [resources_ask(here, address)] } else { [] }
@@ -479,7 +482,7 @@ fn station_part_asks(core : Core, here : Here, address : String, s : Json?, mana
     "processes" => ["processes"]
     "settings" => station_settings_keys(s, manager)
     "machine" => []
-    _ => ["screens", ..station_overview_keys_by(s, None, terminals=(core.terminals_on)())]
+    _ => ["screens", ..station_overview_keys_by(s, None, terminals=terminals_offered(core, s))]
   }
   let out : Array[(String, Map[String, Json])] = []
   let said : Map[String, Bool] = Map([])
@@ -787,7 +790,7 @@ fn screen_row_icon(sv : Json?) -> String {
 #warnings("-unused_value")
 fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
   let address = text(@signals.untracked(s), "station")
-  st_section_node(b, fn() { all_screens_title(core) }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
+  st_section_node(b, fn() { all_screens_title(core, s()) }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
     @sf.group_node(sec, fn(g) {
       g.each(fn() { all_screens_rows(core, address, s()) }, fn(k) { k }, fn(row, k) {
         all_screens_row_node(row, core, here, s, k.untracked())
@@ -797,9 +800,10 @@ fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : 
 }
 
 ///|
-/// Its heading: 屏幕、浏览器与终端 where its terminals are offered (a `beta` feature: core's terminals_on), else 屏幕与浏览器.
-fn all_screens_title(core : Core) -> String {
-  if (core.terminals_on)() {
+/// Its heading: 屏幕、浏览器与终端 where its terminals are offered (a `beta` feature of the station's: terminals_offered),
+/// else 屏幕与浏览器.
+fn all_screens_title(core : Core, s : Json?) -> String {
+  if terminals_offered(core, s) {
     @sf.t("web-pages.stations.screensAndTerminals")
   } else {
     @sf.t("web-pages.stations.screensTitle")
@@ -818,7 +822,7 @@ fn all_screens_count(core : Core, address : String, s : () -> Json?) -> Int {
   let v = all_screens_v(core, address)
   let screens = items(v, "screens").filter(fn(sc) { !is_browser_screen(Some(sc)) }).length()
   let tabs = items(v, "screens").filter(fn(sc) { is_agent_screen(Some(sc)) }).length()
-  let terminals = if (core.terminals_on)() && flag(s(), "online") {
+  let terminals = if terminals_offered(core, s()) && flag(s(), "online") {
     let tv = (core.topic)("terminals", { "station": str(address) }).get().value
     if terminals_shown(s(), tv) { items(tv, "terminals").length() } else { 0 }
   } else {
@@ -935,7 +939,7 @@ fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : ()
 fn all_screens_block(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
   let address = text(@signals.untracked(s), "station")
   if key == "allScreens" {
-    @sf.section_heading_node(b, fn() { all_screens_title(core) }, title_after=fn(l) {
+    @sf.section_heading_node(b, fn() { all_screens_title(core, s()) }, title_after=fn(l) {
       l.show(fn() { all_screens_count(core, address, s) > 0 }, fn(n) {
         @sf.words_node(n, fn() { all_screens_count(core, address, s).to_string() }, fn() { st_count }) |> ignore
       })

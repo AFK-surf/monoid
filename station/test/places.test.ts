@@ -126,6 +126,27 @@ test("a directory in a protected folder is asked of still.fail Helper, not looke
   rmSync(h, { recursive: true });
 });
 
+test("the station's own data, moved to a disk (its name a link into a folder macOS protects), is its own: looked at directly, nothing asked", { skip: WINDOWS }, async () => {
+  // (stillfail move: ~/.stillfail a link to /Volumes/<disk>/stillfail, here a protected folder of the test's home)
+  const h = home();
+  const disk = join(h, "Desktop", "stillfail");
+  mkdirSync(join(disk, "sessions", "chat", "c-1", "workspace"), { recursive: true });
+  writeFileSync(join(disk, "sessions", "chat", "c-1", "workspace", "a.txt"), "a");
+  const own = join(h, ".stillfail");
+  symlinkSync(disk, own);
+  const helper = fakeHelper(() => ({ dir: true, file: false, link: false, size: 0, mtime: 0 }));
+  const places = new Places({ mac: true, home: h, helper, own, probe: { command: "/nonexistent-never-run", args: () => [] } });
+  const workspace = join(own, "sessions", "chat", "c-1", "workspace");
+  assert.equal(await places.directory(workspace, { lang: "en" }), workspace);
+  assert.equal(places.protects(join(workspace, "a.txt")), false);
+  assert.equal(await places.file(join(workspace, "a.txt"), h, { lang: "en" }, 10), join(workspace, "a.txt"));
+  assert.deepEqual(helper.asked, [], "the helper never asked");
+  // what is in the protected folder by any other name is as before
+  assert.equal(await places.directory(join(h, "Desktop", "stillfail"), { lang: "en" }), join(h, "Desktop", "stillfail"));
+  assert.equal(helper.asked.length, 1);
+  rmSync(h, { recursive: true });
+});
+
 test("with no helper, a protected folder is looked at by a child process, killed after its time: the station keeps answering", { skip: WINDOWS }, async () => {
   const h = home();
   const pids: number[] = [];

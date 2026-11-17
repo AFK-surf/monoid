@@ -42,9 +42,9 @@ fn row_top_kind(room : Double) -> Int {
 /// A row's room in `parent` (row_box's, but its bands): `top` over it (as that changes: none, joined_gap, list_gap),
 /// in from the pane's sides by `side` each (as the list's width gives it: row_side's; the trailing side the system's
 /// inset beside its bars, native_row_inset's), its body made by `body` in the column's middle, as wide as is left.
-/// `over`, told the row's content line node (`m`, excluding `top` gap above it) and `key` once as it is made, before
-/// what it holds: what is laid over it (the bands) hung there, under its words and enclosed surfaces. Its key as it is
-/// now: a block put by and taken for another row (View::scrolls_window's `reused`) that row's.
+/// `over`, told the row's own node (all of it, the room over it too) and `key` once as it is made, before what it holds:
+/// what is laid under all of it (its band, chat_row_band_node) hung there, drawn first. Its key as it is now: a block
+/// put by and taken for another row (View::scrolls_window's `reused`) that row's.
 fn message_row_frame_node(
   parent : @view.View,
   key : () -> String,
@@ -57,6 +57,7 @@ fn message_row_frame_node(
     // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never
     // changes)
     root.fills_across(Is(true)) |> ignore
+    over(root, key)
     // (the room over it, as the row before it says: one kind of room in the other's place as that changes (none, a
     // joined one's, the gap between messages), the row's own structure, its way the column's; the list's way of it with
     // its neighbours' once it holds a block's. How tall that kind is follows the list's width at once: the narrow
@@ -73,7 +74,6 @@ fn message_row_frame_node(
     // (its middle, as wide as the list less its sides, those its padding: the old row's line and its middle
     // (row_line, row_middle) one node, no box of room either side)
     root.box(fn(m) {
-      over(m, key)
       m
       .fills_across(Is(true))
       .padding(By(fn() { (side(), 0.0, if @sf.native_side() { native_row_inset() } else { side() }, 0.0) }))

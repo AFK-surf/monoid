@@ -870,3 +870,38 @@ test "send pressed before a frame has shown the words typed: they go all the sam
   assert_eq(sent.length(), 1)
   assert_eq(text(Some(sent[0].params), "text"), "马上发出去")
 }
+
+// What the composer draws by and is bounded by that the core answers between frames, after all else it asked (sfbase's
+// refs.mbt): read as it is built, so the answer builds it again, its island kept as it was (a device's) or not, the
+// frames' check of what was kept on and off (outside_wbtest.mbt's outside_round_trip, outside_each).
+
+///|
+test "the core's marks for words typed, answered between frames: the field draws them as marks at once" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["ref.marks"])
+    t.tap_text("发消息")
+    t.type_text("同一个工作区的 @[发布清单]")
+    t.run_for(outside_enter_ms)
+    assert_true(outside_called(heard, "ref.marks") > 0, msg=at)
+    let drawn = t.words().map(fn(w) { w.0 }).join("|")
+    assert_true(drawn.contains("发布清单") && !drawn.contains("[发布清单]"), msg="\{at}: \{drawn}")
+  })
+}
+
+///|
+test "the core's bound for words pasted, answered between frames: words pasted past it at once go as a file" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["paste.info"])
+    t.tap_text("发消息")
+    t.run_for(outside_enter_ms)
+    assert_true(outside_called(heard, "paste.info") > 0, msg=at)
+    t.paste(long_paste())
+    // (what the core says of them, asked as they are pasted, as late)
+    t.run_for(outside_enter_ms)
+    guard @sfbase.writings.get("ws1/st1:s-c1") is Some(w) else { fail("\{at}: no draft") }
+    assert_eq(w.field.text(), "", msg=at)
+    assert_eq(w.files.get().length(), 1, msg=at)
+  })
+}

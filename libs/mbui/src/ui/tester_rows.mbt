@@ -3,11 +3,28 @@
 // Nothing of the app's frames asks it: the Tester does, as each pass is over (pass_looked).
 
 ///|
-/// A pass of a frame's build that kept rows, as laid out (frame_said_lines), and where the rows it kept were among its
-/// nodes (list, item, first node, how many): compared once the frame is built again keeping none (rows_check_end).
+/// A row or a part kept by a pass (kept_nodes.mbt's RowNodes as the pass put it back): its list and item (-1 a part), its
+/// first node and how many, when it was built, whether it was made once by what puts it there (`own`: an island, read
+/// as it came, not as what holds it is built), and its name and where it was made, to say it by.
+priv struct KeptRow {
+  list : Int
+  item : Int
+  base : Int
+  n : Int
+  built_at : Double
+  own : Bool
+  named : String
+  made_at : String
+}
+
+///|
+/// A pass of a frame's build that kept rows, as laid out (frame_said_lines), its nodes in the order its lines say them
+/// (Ctx::tree_order), and the rows it kept (KeptRow): compared once the frame is built again keeping none
+/// (rows_check_end).
 priv struct RowsCheck {
   lines : Array[String]
-  rows : Array[(Int, Int, Int, Int, Double)]
+  order : Array[Int]
+  rows : Array[KeptRow]
   /// where it parted from the first build keeping none: that build's lines and the first line apart; the second such
   /// build says whether they part because rows were kept or because what was built changed as it was built
   mut whole : Array[String]?
@@ -39,10 +56,29 @@ fn Ctx::rows_check_begin(self : Ctx, kept0 : Int) -> Bool {
   let rows = []
   for key, rn in kept_nodes {
     if rn.in_pool {
-      rows.push((key.0, key.1, rn.base, rn.n, rn.built_at))
+      rows.push({
+        list: key.0,
+        item: key.1,
+        base: rn.base,
+        n: rn.n,
+        built_at: rn.built_at,
+        own: rn.own,
+        named: rn.named,
+        made_at: match rn.made_at {
+          Some(at) => at.to_string()
+          None => ""
+        },
+      })
     }
   }
-  rows_checking.val = Some({ lines: self.frame_said_lines(), rows, whole: None, at: -1, tells: self.tells.copy() })
+  rows_checking.val = Some({
+    lines: self.frame_said_lines(),
+    order: self.tree_order(),
+    rows,
+    whole: None,
+    at: -1,
+    tells: self.tells.copy(),
+  })
   nodes_run.fresh = true
   nodes_run.whole = true
   // (one pass of the frame, as a host builds it: not counted, FramePerf's `passes`)
@@ -52,13 +88,18 @@ fn Ctx::rows_check_begin(self : Ctx, kept0 : Int) -> Bool {
 
 ///|
 /// The frame built again keeping no row (rows_check_begin) is laid out: what it built and said must be what the pass
-/// that kept rows built and said. Where it is not, it is built once more keeping none (true: the caller builds it
-/// again): that coming out as the first such build did, the rows kept are what parts them, and the test fails, saying
-/// the first line they part at and the row kept that holds it; coming out otherwise, what was built changed as it was
-/// built (from what no signal says), kept rows or not, and the next frame builds it so.
+/// that kept rows built and said. Where it is not, and building it so wrote what was read as it was built (what the
+/// pass that kept rows did not: rows_check_begin), what the rows kept were built from had changed unread, a device
+/// keeping them (doing nothing of what building them does: an island's one time, a send) and the Tester's build
+/// doing it for it: the test fails. Else it is built once more keeping none (true: the caller builds it again): that
+/// coming out as the first such build did, the rows kept are what parts them, and the test fails, saying the first
+/// line they part at and the row kept that holds it; coming out otherwise, what was built changed as it was built
+/// (from what no signal says): kept rows or not, the next frame builds it so, unless where the first two parted is in a
+/// row kept, which built otherwise than it was kept: the test fails too.
 fn Ctx::rows_check_end(self : Ctx) -> Bool {
   guard rows_checking.val is Some(was) else { return false }
   let now = self.frame_said_lines()
+  let mut why = "the rows kept are what parts them"
   match was.whole {
     None => {
       let at = lines_apart(was.lines, now)
@@ -68,47 +109,74 @@ fn Ctx::rows_check_end(self : Ctx) -> Bool {
         self.tells.append(was.tells)
         return false
       }
-      // (apart: built once more keeping none, to know whether what parts them is the rows kept)
       was.whole = Some(now)
       was.at = at
-      perf_at[3] = perf_at[3] - 1
-      return true
+      let wrote = rows_whole_wrote()
+      if wrote == "" {
+        // (apart: built once more keeping none, to know whether what parts them is the rows kept)
+        perf_at[3] = perf_at[3] - 1
+        return true
+      }
+      // (apart, and built keeping none it wrote what it read: what the rows kept do as they are built, done by the
+      // Tester's build alone)
+      rows_checking.val = None
+      self.tells.clear()
+      self.tells.append(was.tells)
+      why = "built keeping none, it wrote what it read as it was built (\{wrote}), which the pass keeping rows did not: what a row or part kept does as it is built (a one time, a send) done by the Tester's build alone, never by a device's, from what changed unread (no signal it follows)"
     }
     Some(whole) => {
       rows_checking.val = None
+      self.tells.clear()
+      self.tells.append(was.tells)
       // (built again keeping none, it built otherwise again: what it built changed as it was built, from what it
-      // read that no signal says, kept rows or not; the next frame builds it so)
+      // read that no signal says, kept rows or not; the next frame builds it so, unless the first two part in a row
+      // kept: that one built otherwise than it was kept, from what changed unread, kept or not)
       if lines_apart(whole, now) >= 0 {
-        self.tells.clear()
-        self.tells.append(was.tells)
-        return false
+        if kept_row_at(was, was.at) is None {
+          return false
+        }
+        why = "built keeping none twice, it built otherwise each time, and the first time otherwise than the row kept that holds where they part: built from what changed unread (no signal it follows), what building it does done by the Tester's builds alone"
       }
     }
   }
   let now = was.whole.unwrap()
   let at = was.at
   let line = fn(a : Array[String], j : Int) { if j < a.length() { a[j] } else { "none" } }
-  // (the row kept that holds the node, where the line is a node's)
+  // (the row kept that holds the node, where the line is a node's: the innermost)
   let mut holder = "none of the rows kept"
-  for r in was.rows {
-    if at >= r.2 && at < r.2 + r.3 {
+  match kept_row_at(was, at) {
+    Some(r) => {
       // (and the words it holds as built now, to know it by)
       let words = []
-      for j in r.2..<imin(r.2 + r.3, self.count) {
+      for j in r.base..<imin(r.base + r.n, self.count) {
         let t = self.nodes[j]
         if (t.kind == kind_text || t.kind == kind_rich) && t.text != "" && words.length() < 6 {
           words.push(t.text)
         }
       }
-      holder = "list \{r.0}'s row \{r.1} (its node \{at - r.2}; its words: \{words.join(" | ")}; built at \{r.4.to_int()} ms)"
+      let node = was.order[at] - r.base
+      let what = if r.item >= 0 {
+        "list \{r.list}'s row \{r.item}"
+      } else if r.named != "" {
+        "the island \"\{r.named}\"" + (if r.own { " (made once: own)" } else { "" })
+      } else if r.made_at != "" {
+        "the part kept at \{r.made_at}" + (if r.own { " (made once: own)" } else { "" })
+      } else {
+        "part \{r.list}" + (if r.own { " (made once: own)" } else { "" })
+      }
+      holder = "\{what} (its node \{node}; its words: \{words.join(" | ")}; built at \{r.built_at.to_int()} ms)"
       // (all of it, both ways, where the Tester's said log asks: MBUI_ROWS_PARTED=1)
       if @hostapi.env("MBUI_ROWS_PARTED") == "1" {
-        for j in r.2..<(r.2 + r.3) {
-          println("ROWS-PARTED kept  \{line(was.lines, j)}")
-          println("ROWS-PARTED built \{line(now, j)}")
+        for j in 0..<was.order.length() {
+          let i = was.order[j]
+          if i >= r.base && i < r.base + r.n {
+            println("ROWS-PARTED kept  \{line(was.lines, j)}")
+            println("ROWS-PARTED built \{line(now, j)}")
+          }
         }
       }
     }
+    None => ()
   }
   // (every line the two part at, the first 40, each way: what was kept that building anew did not make)
   let parted = StringBuilder()
@@ -122,11 +190,54 @@ fn Ctx::rows_check_end(self : Ctx) -> Bool {
       parted.write_string("\nPARTED built " + b)
     }
   }
-  looks_fail(
-    "the frame at \{self.clock.to_int()} ms, built keeping \{was.rows.length()} rows, (\{built_why.val}), parts from it built keeping none at line \{at} (\{holder}): kept \{line(was.lines, at)} / \{line(was.lines, at + 1)}; built \{line(now, at)} / \{line(now, at + 1)}" + parted.to_string(),
-  )
+  let said = "the frame at \{self.clock.to_int()} ms, built keeping \{was.rows.length()} rows, (\{built_why.val}), parts from it built keeping none at line \{at} (\{holder}): \{why}; kept \{line(was.lines, at)} / \{line(was.lines, at + 1)}; built \{line(now, at)} / \{line(now, at + 1)}" +
+    parted.to_string()
+  rows_parted_said.val = said
+  looks_fail(said)
   false
 }
+
+///|
+/// What a frame's build keeping no row (rows_check_begin's) wrote of what it read as it was built, said ("" none):
+/// a row's or a part's watch told, the frame's or its layout's, a value it read changed as it read it. The pass that
+/// kept rows wrote none (rows_check_begin looks first).
+fn rows_whole_wrote() -> String {
+  if nodes_run.told {
+    "a row's or a part's watch told: \{g().told_said()}"
+  } else if watch_said.val != "" {
+    watch_said.val
+  } else if layout_said.val != "" {
+    layout_said.val
+  } else if frame_watch_of().changed_as_read() {
+    "a value the frame read changed as it was read"
+  } else {
+    ""
+  }
+}
+
+///|
+/// The row kept (by the pass `was` compared) that holds the node line `at` says, the innermost; none where the line is
+/// no node's or none kept holds it.
+fn kept_row_at(was : RowsCheck, at : Int) -> KeptRow? {
+  guard at >= 0 && at < was.order.length() else { return None }
+  let i = was.order[at]
+  let mut found : KeptRow? = None
+  for r in was.rows {
+    if i >= r.base && i < r.base + r.n {
+      match found {
+        Some(f) if f.n <= r.n => ()
+        _ => found = Some(r)
+      }
+    }
+  }
+  found
+}
+
+///|
+/// What the last rows check that failed said (rows_check_end), "" none since the Tester was made: what a test of the
+/// check asserts, its frames not judged (Tester::frames_unjudged).
+// kept across runs: put back as each Tester is made
+let rows_parted_said : Ref[String] = Ref("")
 
 ///|
 /// The first line where `a` and `b` part (-1: none).

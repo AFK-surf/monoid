@@ -713,7 +713,15 @@ fn app_state_tree(root : @view.View, src : Source) -> Unit {
         // signed in, the shell it is laid out in a node picked by the window's width and what is in view
         // (narrow_shell.mbt): laid out Small with a workspace, the narrow shell's nodes; on the tape, its panels' nodes
         // (tape_shell.mbt); the ways in, the splash, a window of its own; nothing before the window has a width
+        let shell_was : Ref[ShellIs] = Ref(Unsized)
         v.pick(fn() { shell_is(src, v.window().0) }, fn(s, shell) {
+          // Resizing into the tape keeps the page being read in front, not the sidebar's old selection.
+          if shell is Taped && shell_was.val is (Stacked | Paned) && !@sf.native_able() &&
+            app.nav.top() != Home && pane_ready(src, app.nav.top()) {
+            @sfdesk.wide.tape_at.set(Page)
+            @sfdesk.wide.tape_ask.set(None)
+          }
+          shell_was.val = shell
           s.grow(Is(1.0)) |> ignore
           // the app's keys, in every tier with a workspace in view (sfdesk's keys.mbt): what is the wide frame's alone
           // passes the key on laid out Small

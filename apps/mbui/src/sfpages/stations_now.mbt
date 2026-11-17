@@ -4,62 +4,76 @@
 // picture of the agents at work on the person's stations, copied whole to paste where others see it (a chat, a post):
 // a poster (the `fleet` view): the tokens each kind of account used as rings, today and the last 7 days, the chats at
 // work now, still.fail's line (no QR code: 2026-10-26 用户「不用放 still fail 的二维码」); 复制图片 under it puts it on the
-// clipboard, drawn apart as sharp on any screen (Ctx::take_shot at share_scale).
+// clipboard, the same poster made apart and drawn as sharp on any screen (@ui.take_picture at share_scale). All of it
+// is made once as nodes of the window's tree (share_pen.mbt), made anew only as the look chosen or what it says does.
 
 // ── the card to share ────────────────────────────────────────────────────
 
 ///|
 /// The card to share of workspace `w`'s agents at work, opened by nothing, on a stage of its own on every screen (a
 /// panel's `stage`: the picture alone in the window's middle over the night, no dialog round it: 2026-10-26 用户「分享的
-/// 弹窗有点丑，感觉应该给分享特制一个逼格高点的」): the picture (share_picture), under it 关闭 and 复制图片, or on a phone
-/// (iOS, Android) 保存到相册: a phone keeps pictures in its photo album, where a post or a chat picks them from
-/// (2026-10-26 用户：「手机上能复制图片吗？」「是不是应该是下载」「保存」).
+/// 弹窗有点丑，感觉应该给分享特制一个逼格高点的」): the picture (share_poster_node), under it 关闭 and 复制图片, or on a
+/// phone (iOS, Android) 保存到相册: a phone keeps pictures in its photo album, where a post or a chat picks them from
+/// (2026-10-26 用户：「手机上能复制图片吗？」「是不是应该是下载」「保存」). It comes in once what its poster reads (the
+/// `fleet` view) is answered, as any panel of nodes does (@sf open_gate.mbt).
 pub fn share_card_open(src : Source, w : Workspace) -> Unit {
-  // (once its poster's figures are answered (share_fleet): sfbase's open_old_whole)
-  @sfbase.open_old_whole(src, [("fleet", { "scope": Json::string(w.id) })], fn() { share_card_panel(src, w) })
+  @sf.panel_nodes(
+    @sf.t("web-main.stations.shareCard"),
+    fn(v, _) { share_poster_node(v, src, w, false) },
+    from=Unanchored,
+    // (laid out as wide as it is handed out; past the window's room, drawn smaller: the stage's)
+    stage=true,
+    w=@sf.share_w_most,
+    // the looks it can be drawn in, over its buttons (share_looks.mbt)
+    above=fn(v) { share_looks_pick_node(v, src, w) },
+    // (its title said as it is drawn, in the language then)
+    live=fn() { (@sf.t("web-main.stations.shareCard"), "", "") },
+    foot=fn(f, _) { share_out_node(f, src, w) },
+  )
 }
 
 ///|
-/// share_card_open's panel, put up.
-fn share_card_panel(src : Source, w : Workspace) -> Unit {
-  @sf.panel(
-    @sf.t("web-main.stations.shareCard"),
-    fn(c, _) {
-      share_picture(c, src, w)
-      // what is handed out: the same poster drawn apart, all of it, its ground to its edges (Ctx::shot)
-      c.shot(share_shot, @sf.share_w_most, fn() { share_poster(c, src, w, 0, flat=true) |> ignore })
-    },
-    from=Unanchored,
-    // (as large as the picture while the window has the room; past it, the picture drawn smaller: @sf.whole_fitted)
-    stage=true,
-    // the looks it can be drawn in, over its buttons (share_looks.mbt)
-    above=fn(c) { share_looks_pick(c, src, w) },
-    // (its title said as it is drawn, in the language then)
-    live=fn() { (@sf.t("web-main.stations.shareCard"), "", "") },
-    // what is handed out only once all the look draws is here (its pictures, its face: share_stand), how far they are
-    // said on the button meanwhile (2026-11-03 用户：「在没有准备好资源的时候不让保存」「每张独立下载并提供进度」); one not had,
-    // 下载失败，重试 in its place
-    foot=fn(c, _) {
-      let (label, icon) = @sf.picture_out_way()
-      match share_stand(src) {
-        LooksReady =>
-          @sf.button(c, label, key="share-card/copy", tone=Primary, icon~, on_press=fn() {
-            c.take_shot(share_shot, fn(png) { picture_out(c, png) |> ignore }, scale=share_scale)
-          }) |> ignore
-        LooksGoing(part) => {
-          let going = match part {
-            Some(p) => @sf.t("web-main.stations.shareFetching", args=[("percent", (p * 100.0).to_int().to_string())])
-            None => @sf.t("web-main.stations.shareFetchingSoon")
+/// The button that hands the picture out, at the stage's foot: only once all the look draws is here (its pictures, its
+/// face: share_stand), how far they are said on the button meanwhile (2026-11-03 用户：「在没有准备好资源的时候不让保存」
+/// 「每张独立下载并提供进度」); one not had, 下载失败，重试 in its place. Pressed, the poster made apart, all of it, its
+/// ground to its edges, as wide as it is laid out and share_scale pixels a point (@ui.take_picture), handed out as the
+/// button says (picture_out_now).
+fn share_out_node(f : @view.View, src : Source, w : Workspace) -> Unit {
+  let (label, icon) = @sf.picture_out_way()
+  // (which button: ready, on its way (its words how far), not had; made anew only as that changes)
+  let stand = fn() {
+    match share_stand(src) {
+      LooksReady => 0
+      LooksGoing(_) => 1
+      LooksNotHad(_) => 2
+    }
+  }
+  f.pick(stand, at_once=true, fn(b, k) {
+    match k {
+      0 =>
+        @sf.button_node(b, fn() { label }, tone=Primary, icon~, on_night=true, fn() {
+          @ui.take_picture(share_shot, @sf.share_w_most, fn(paper) { share_poster_node(paper, src, w, true) }, fn(png) {
+            picture_out_now(png) |> ignore
+          }, scale=share_scale)
+        })
+        |> ignore
+      1 => {
+        let going = fn() {
+          match share_stand(src) {
+            LooksGoing(Some(p)) =>
+              @sf.t("web-main.stations.shareFetching", args=[("percent", (p * 100.0).to_int().to_string())])
+            _ => @sf.t("web-main.stations.shareFetchingSoon")
           }
-          @sf.button(c, going, key="share-card/copy", tone=Primary, busy=true, disabled=true) |> ignore
         }
-        LooksNotHad(_) =>
-          @sf.button(c, @sf.t("web-main.stations.shareFetchFailed"), key="share-card/copy", tone=Primary, icon="retry", on_press=fn() {
-            share_fetch_again(src)
-          }) |> ignore
+        @sf.button_node(b, going, fn() {  }, tone=Primary, busy=fn() { true }, disabled=fn() { true }, on_night=true) |> ignore
       }
-    },
-  )
+      _ =>
+        @sf.button_node(b, fn() { @sf.t("web-main.stations.shareFetchFailed") }, tone=Primary, icon="retry", on_night=true, fn() {
+          share_fetch_again(src)
+        })
+        |> ignore
+    }
+  })
 }
 
 ///|
@@ -74,11 +88,7 @@ fn share_fetch_again(src : Source) -> Unit {
 }
 
 ///|
-/// The picture's key, as the panel fits it in.
-let share_picture_key : String = "share-card/picture"
-
-///|
-/// The picture handed out (Ctx::shot).
+/// The picture handed out (@ui.take_picture).
 let share_shot : String = "share-card/shot"
 
 ///|
@@ -88,44 +98,42 @@ let share_shot : String = "share-card/shot"
 let share_scale : Double = 3.0
 
 ///|
-/// The picture shared, a poster of what the agents did (the `fleet` view; 2026-10-26 用户：「改成 xx 个 xx 订阅账号的 xx% 周额度，
-/// 分天和周统计，还有当前 chat 数量」「不要小机器人」「这玩意儿是会超过 100% 的」「不如归档 chat 多少个」): on night, the same in
-/// either theme (@sf.share_ground: 「分享卡片的颜色搞高级点」), and laid out one way whatever it is seen on (a portrait poster
-/// @sf.share_w_most wide: 「分享图片不应该分电脑和手机…按最合理的布局生成」), seen whole in the panel, drawn smaller where the
-/// window has not the room for it (@sf.whole_fitted): what is copied is all of it, as it is laid out everywhere. Read down: still.fail's name (its dot orange) and when it is; what leads the first kind's share (用 6 个 Claude
-/// 订阅账号消耗了, its ring's dot before it); the tokens each kind of account used over the 7 days as rings, a kind each
-/// (Activity's rings: each its share of all kinds' tokens; 2026-10-29 用户「只算 token 和价格」, where it was a week's
-/// quota), beside them the first kind's first model's tokens large, the model and what they would cost (2.1 亿 | Opus 5.5 |
-/// token，折合 $1,420); each other model a line with its own, each other kind a line over its models (no kind's models
-/// added up: 2026-10-30 用户「按模型分开写 token 和钱」); today over the last 7 days (the
-/// chats archived, what was spent), each day's chats archived a bar under them (today's orange, each day's date under
-/// its bar); the chats at work now, a dot before them, and the tasks agents ran across devices over the 7 days (how
-/// many, and under it how many a chat on average), the devices' icon before them; still.fail's line. With nothing
-/// used: the chats at work large in its place.
-fn share_picture(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  @sf.whole_fitted(c, share_picture_key, c.id(share_picture_key), @sf.share_w_most, fn(whole) {
-    share_poster(c, src, w, whole)
+/// The picture shared in `v`, a poster of what the agents did (the `fleet` view; 2026-10-26 用户：「改成 xx 个 xx 订阅账号的
+/// xx% 周额度，分天和周统计，还有当前 chat 数量」「不要小机器人」「这玩意儿是会超过 100% 的」「不如归档 chat 多少个」): on night, the
+/// same in either theme (@sf.share_ground: 「分享卡片的颜色搞高级点」), and laid out one way whatever it is seen on (a
+/// portrait poster @sf.share_w_most wide: 「分享图片不应该分电脑和手机…按最合理的布局生成」), seen whole on the stage, drawn
+/// smaller where the window has not the room for it (the stage's): what is handed out is all of it, as it is laid out
+/// everywhere. Round as a card, or `flat` (handed out: its ground to its edges), in the look chosen under it
+/// (share_look: the night's here, the others' share_looks.mbt), made anew as the look chosen, what the view says or
+/// the language does. The night's read down: still.fail's name (its dot orange) and when it is; what leads the first
+/// kind's share (用 6 个 Claude 订阅账号消耗了, its ring's dot before it); the tokens each kind of account used over the 7
+/// days as rings, a kind each (Activity's rings: each its share of all kinds' tokens; 2026-10-29 用户「只算 token 和价格」,
+/// where it was a week's quota), beside them the first kind's first model's tokens large, the model and what they would
+/// cost (2.1 亿 | Opus 5.5 | token，折合 $1,420); each other model a line with its own, each other kind a line over its
+/// models (no kind's models added up: 2026-10-30 用户「按模型分开写 token 和钱」); today over the last 7 days (the chats
+/// archived, what was spent), each day's chats archived a bar under them (today's orange, each day's date under its
+/// bar); the chats at work now, a dot before them, and the tasks agents ran across devices over the 7 days (how many,
+/// and under it how many a chat on average), the devices' icon before them; still.fail's line. With nothing used: the
+/// chats at work large in its place.
+fn share_poster_node(v : @view.View, src : Source, w : Workspace, flat : Bool) -> Unit {
+  v.pick(at_once=true, fn() { (share_look(src).key, share_fleet(src, w), @sf.t("web-main.stations.shareTagline")) }, fn(
+    p,
+    k,
+  ) {
+    let look = share_look_of(k.0)
+    // (千恋＊万花's words in a face the app does not carry: had from the site as their pictures are, share_senren.mbt)
+    if look.key.has_prefix(senren_prefix) {
+      @sfbase.share_face_whole(src, senren_drawn)
+    }
+    let files = senren_drawing(src, fn() { (look.draw)(Pen::of(p), k.1, flat) }).1
+    if look_needs.get(look.key) != Some(files) {
+      look_needs[look.key] = files
+    }
   })
 }
 
 ///|
-/// The poster (share_picture) as box `id`: round as a card, or `flat` (handed out: its ground to its edges), in the look
-/// chosen under it (share_look: the night's here, the others' share_looks.mbt).
-fn share_poster(c : @ui.Ctx, src : Source, w : Workspace, id : Int, flat? : Bool = false) -> Int {
-  let look = share_look(src)
-  // (千恋＊万花's words in a face the app does not carry: had from the site as their pictures are, share_senren.mbt)
-  if look.key.has_prefix(senren_prefix) {
-    @sfbase.share_face_whole(src, senren_drawn)
-  }
-  let (b, files) = senren_drawing(src, fn() { (look.draw)(c, share_fleet(src, w), id, flat) })
-  if look_needs.get(look.key) != Some(files) {
-    look_needs[look.key] = files
-  }
-  b
-}
-
-///|
-/// The files of the looks (@sfbase.looks_file) each look drew its card with as it was last drawn, by its key: those it
+/// The files of the looks (@sfbase.looks_file) each look drew its card with as it was last made, by its key: those it
 /// is handed out only once they are here (share_stand). None for a look of the app's own alone.
 // kept across runs: what a look draws its card with is the same in every run
 let look_needs : @sf.LiveMap[String, Array[String]] = @sf.LiveMap::new()
@@ -158,11 +166,11 @@ fn share_fleet(src : Source, w : Workspace) -> Json? {
 
 ///|
 /// The night's look: still.fail's own colours, the kinds' tokens as rings.
-fn night_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn night_look(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let spent = items(fleet, "spent")
-  c.box(style=if flat { pic_box_flat } else { pic_box }, id~, fn() {
-    c.box(style=pic_head, fn() {
-      c.box(style=pic_grow, fn() {
+  c.box(style=if flat { pic_box_flat } else { pic_box }, fn(c) {
+    c.box(style=pic_head, fn(c) {
+      c.box(style=pic_grow, fn(c) {
         let words = [@ui.span("still"), @ui.span(".", color=@sf.share_orange), @ui.span("fail")]
         c.rich(words, style=pic_brand, face=@sfbase.share_face_given()) |> ignore
       })
@@ -177,9 +185,9 @@ fn night_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       let first = Some(spent[0])
       let top = items(first, "models").get(0)
       pic_lead(c, first)
-      c.box(style=pic_hero, fn() {
+      c.box(style=pic_hero, fn(c) {
         pic_rings(c, spent)
-        c.box(style=pic_hero_words, fn() {
+        c.box(style=pic_hero_words, fn(c) {
           pic_words(c, text(top, "tokensText"), pic_number)
           // (the model a line of its own: with what they would cost after it, a line too long beside the rings)
           pic_words(c, text(top, "name"), pic_unit)
@@ -190,15 +198,15 @@ fn night_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
       pic_models(c, spent)
     } else {
-      c.box(style=pic_hero, fn() {
+      c.box(style=pic_hero, fn(c) {
         pic_words(c, count(fleet, "chats").to_string(), pic_number)
-        c.box(style=pic_hero_words, fn() { pic_words(c, text(fleet, "chatsText"), pic_unit) }) |> ignore
+        c.box(style=pic_hero_words, fn(c) { pic_words(c, text(fleet, "chatsText"), pic_unit) }) |> ignore
       })
       |> ignore
     }
     match (field(fleet, "today"), field(fleet, "week")) {
       (Some(Object(_)) as today, Some(Object(_)) as week) => {
-        c.box(style=pic_spans, fn() {
+        c.box(style=pic_spans, fn(c) {
           pic_span(c, today)
           pic_span(c, week)
         })
@@ -210,12 +218,12 @@ fn night_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
     // the chats at work now (with the tokens large: said here), the tasks chats ran on other stations over the week
     let tasks = text(fleet, "tasksText")
     if spent.length() > 0 || tasks != "" {
-      c.box(style=pic_lines, fn() {
+      c.box(style=pic_lines, fn(c) {
         if spent.length() > 0 {
-          pic_line(c, fn() { c.box(style=pic_live_dot, fn() {  }) |> ignore }, text(fleet, "chatsText"), text(fleet, "where"), false)
+          pic_line(c, fn(c) { c.box(style=pic_live_dot, fn(_) {  }) |> ignore }, text(fleet, "chatsText"), text(fleet, "where"), false)
         }
         if tasks != "" {
-          pic_line(c, fn() { @sf.icon(c, "devices", size=pic_mark_side, color=@sf.share_ink) |> ignore }, tasks, text(fleet, "tasksPer"), true)
+          pic_line(c, fn(c) { @sf.icon_node(c.v, "devices", pic_mark_side, Is(@sf.share_ink)) |> ignore }, tasks, text(fleet, "tasksPer"), true)
         }
       })
       |> ignore
@@ -227,7 +235,7 @@ fn night_look(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// Words on the night's card, in the card's own face (@sfbase.share_face_given: EB Garamond and 霞鹜文楷, 2026-10-31
 /// 用户 chose it from drawn versions, 「就用右边这版」), the same on every device whatever face its app is set in.
-fn pic_words(c : @ui.Ctx, words : String, style : @ui.TextStyle) -> Unit {
+fn pic_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
   c.rich([@ui.span(words)], style~, face=@sfbase.share_face_given()) |> ignore
 }
 
@@ -235,11 +243,11 @@ fn pic_words(c : @ui.Ctx, words : String, style : @ui.TextStyle) -> Unit {
 /// A line under the days: its mark (in a square of its own, the lines' words starting together), what it says, and
 /// more of it after a dot, dimmer; `apart`, the more under it (a line as long as the tasks' is broken inside a word on
 /// one line: 「…312 个任」「务」).
-fn pic_line(c : @ui.Ctx, mark : () -> Unit, words : String, more : String, apart : Bool) -> Unit {
-  c.box(style=if apart { pic_live_apart } else { pic_live }, fn() {
+fn pic_line(c : Pen, mark : (Pen) -> Unit, words : String, more : String, apart : Bool) -> Unit {
+  c.box(style=if apart { pic_live_apart } else { pic_live }, fn(c) {
     c.box(style=pic_mark_box, mark) |> ignore
     if apart {
-      c.box(style=pic_line_words, fn() {
+      c.box(style=pic_line_words, fn(c) {
         pic_words(c, words, pic_line_lead)
         pic_words(c, more, pic_line_more)
       })
@@ -262,9 +270,9 @@ fn ring_color(k : Int) -> Int64 {
 ///|
 /// What leads the first kind's share (用 6 个 Claude 订阅账号消耗了), its ring's dot before it as each other kind's line has
 /// (the share under it in white, as the second ring is: the dot says whose it is).
-fn pic_lead(c : @ui.Ctx, first : Json?) -> Unit {
-  c.box(style=pic_lead_row, fn() {
-    c.box(style=pic_lead_dot, fn() {  }) |> ignore
+fn pic_lead(c : Pen, first : Json?) -> Unit {
+  c.box(style=pic_lead_row, fn(c) {
+    c.box(style=pic_lead_dot, fn(_) {  }) |> ignore
     pic_words(c, text(first, "lead"), pic_unit)
   })
   |> ignore
@@ -277,16 +285,16 @@ fn pic_lead(c : @ui.Ctx, first : Json?) -> Unit {
 /// (2026-10-30 用户「按模型分开写 token 和钱」). One line each whatever its name: said as a sentence, a name long enough
 /// broke it, a character on a line of its own (2026-10-26 用户：「这里折行了不太好看」); a name too long for its line cut
 /// short, nothing else.
-fn pic_models(c : @ui.Ctx, spent : Array[Json]) -> Unit {
+fn pic_models(c : Pen, spent : Array[Json]) -> Unit {
   if spent.length() < 2 && items(Some(spent[0]), "models").length() < 2 {
     return
   }
-  c.box(style=pic_models_box, fn() {
+  c.box(style=pic_models_box, fn(c) {
     for k, q in spent {
       let q = Some(q)
       if k > 0 {
-        c.box(style=pic_other, fn() {
-          c.box(style=pic_key_dot.then(@ui.style(bg=Data(ring_color(k)))), fn() {  }) |> ignore
+        c.box(style=pic_other, fn(c) {
+          c.box(style=pic_key_dot.then(@ui.style(bg=Data(ring_color(k)))), fn(_) {  }) |> ignore
           pic_words(c, text(q, "name"), pic_key_name)
           pic_words(c, text(q, "accountsText"), pic_key_accounts)
         })
@@ -297,10 +305,10 @@ fn pic_models(c : @ui.Ctx, spent : Array[Json]) -> Unit {
           continue
         }
         let m = Some(m)
-        c.box(style=pic_model, fn() {
-          c.box(style=pic_key_dot, fn() {  }) |> ignore
+        c.box(style=pic_model, fn(c) {
+          c.box(style=pic_key_dot, fn(_) {  }) |> ignore
           pic_words(c, text(m, "name"), pic_key_name)
-          c.box(style=pic_grow, fn() {  }) |> ignore
+          c.box(style=pic_grow, fn(_) {  }) |> ignore
           pic_words(c, text(m, "lineText"), pic_key_share)
         })
         |> ignore
@@ -313,7 +321,7 @@ fn pic_models(c : @ui.Ctx, spent : Array[Json]) -> Unit {
 ///|
 /// The rings: a kind of account each, from the outside in (as many as there are colours), as much of each drawn as its
 /// share of all kinds' tokens (the core's `share`: @sf.rings).
-fn pic_rings(c : @ui.Ctx, spent : Array[Json]) -> Unit {
+fn pic_rings(c : Pen, spent : Array[Json]) -> Unit {
   let rings : Array[(Double, Int64)] = []
   for k, q in spent {
     if k >= @sf.share_rings.length() {
@@ -321,19 +329,18 @@ fn pic_rings(c : @ui.Ctx, spent : Array[Json]) -> Unit {
     }
     rings.push((number(Some(q), "share"), ring_color(k)))
   }
-  @sf.rings(c, rings, pic_rings_side, pic_track_alpha, most=@sf.share_rings.length())
-  |> ignore
+  @sf.rings_node(c.v, rings, pic_rings_side, pic_track_alpha, most=@sf.share_rings.length()) |> ignore
 }
 
 ///|
 /// A span of days (today, the last 7) on a card: its title, then each figure over what it is.
-fn pic_span(c : @ui.Ctx, span : Json?) -> Unit {
-  c.box(style=pic_span_box, fn() {
+fn pic_span(c : Pen, span : Json?) -> Unit {
+  c.box(style=pic_span_box, fn(c) {
     pic_words(c, text(span, "title"), pic_span_title)
-    c.box(style=pic_stats, fn() {
+    c.box(style=pic_stats, fn(c) {
       for x in items(span, "stats") {
         let x = Some(x)
-        c.box(style=pic_stat, fn() {
+        c.box(style=pic_stat, fn(c) {
           pic_words(c, text(x, "value"), pic_stat_value)
           pic_words(c, text(x, "label"), pic_stat_label)
         })
@@ -348,15 +355,15 @@ fn pic_span(c : @ui.Ctx, span : Json?) -> Unit {
 ///|
 /// Each day's chats archived a bar, as tall as its share of the most on a day (4 at least: a day with none still seen), today's
 /// orange, its date under it.
-fn pic_bars(c : @ui.Ctx, week : Json?) -> Unit {
-  c.box(style=pic_bars_row, fn() {
+fn pic_bars(c : Pen, week : Json?) -> Unit {
+  c.box(style=pic_bars_row, fn(c) {
     for d in items(week, "days") {
       let d = Some(d)
       let h = dmax(pic_bar_least, number(d, "share") * pic_bars_h)
       let today = flag(d, "today")
-      c.box(style=pic_day, fn() {
-        c.box(style=pic_bar_room, fn() {
-          c.box(style=pic_bar.then(@ui.style(h=Fixed(h), bg=Data(if today { @sf.share_orange } else { @sf.share_bar }))), fn() {  })
+      c.box(style=pic_day, fn(c) {
+        c.box(style=pic_bar_room, fn(c) {
+          c.box(style=pic_bar.then(@ui.style(h=Fixed(h), bg=Data(if today { @sf.share_orange } else { @sf.share_bar }))), fn(_) {  })
           |> ignore
         })
         |> ignore
@@ -369,7 +376,7 @@ fn pic_bars(c : @ui.Ctx, week : Json?) -> Unit {
 }
 
 ///|
-/// The picture: as wide as @sf.whole_fitted lays it out (@sf.share_w_most), 20 in (nothing at its corners but words: the
+/// The picture: as wide as the stage lays it out (@sf.share_w_most), 20 in (nothing at its corners but words: the
 /// corners' rule asks nothing of them), its parts 12 apart, round as a card, on night (what is drawn on it seen against
 /// that), its edge a hairline (@sf.stage_edge: on the stage's night, where it ends).
 // kept across runs: a value (no field of it changes)

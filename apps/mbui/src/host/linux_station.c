@@ -82,6 +82,7 @@ static GMutex local_lock;
 static char local_doing[16];  // what is being done ("": nothing), under local_lock
 static char *local_failed;    // what went wrong last (NULL: nothing), under local_lock
 static char *local_said;      // the last the installer said, under local_lock
+static int local_percent = -1; // how far a move's copy is (its "NN%" lines), -1 not said, under local_lock
 
 static void local_set(char **at, const char *s) {
   g_free(*at);
@@ -125,15 +126,28 @@ static void local_field(GString *o, const char *key, const char *value) {
   g_string_append_c(o, '"');
 }
 
+// Whether its release's command moves its data (bin/stillfail's `move`, a release from before has none).
+static int local_moves(const char *data) {
+  char *path = g_build_filename(data, "app", "bin", "stillfail", NULL), *text = NULL;
+  int moves = g_file_get_contents(path, &text, NULL, NULL) && strstr(text, "stillfail move <folder>");
+  g_free(text);
+  g_free(path);
+  return moves;
+}
+
 static moonbit_string_t sf_station_said(void) {
   char *data = local_data();
-  int there = g_file_test(data, G_FILE_TEST_IS_DIR), service = local_service();
+  // where its data is when it was moved (bin/stillfail's move: ~/.stillfail a link to it), NULL where not a link; its
+  // link there while what it names is not (a disk not connected)
+  char *moved = g_file_test(data, G_FILE_TEST_IS_SYMLINK) ? g_file_read_link(data, NULL) : NULL;
+  int there = g_file_test(data, G_FILE_TEST_IS_DIR) || moved, service = local_service();
   g_mutex_lock(&local_lock);
   int busy = local_doing[0] || local_failed;
   g_mutex_unlock(&local_lock);
   // none here, and nothing being done or gone wrong about it: ""; one being installed is said before it is there
   if (!there && !service && !busy) {
     g_free(data);
+    g_free(moved);
     return moonbit_make_string_raw(0);
   }
   GString *o = g_string_new("{");
@@ -141,6 +155,12 @@ static moonbit_string_t sf_station_said(void) {
   int alive = local_alive(jnum(&run, "pid", -1));
   g_string_append_printf(o, "\"runner\":\"%s\"", !alive ? "none" : service ? "service" : "other");
   if (there || service) local_field(o, "data", data);
+  if (moved) {
+    local_field(o, "at", moved);
+    if (!g_file_test(data, G_FILE_TEST_IS_DIR)) g_string_append(o, ",\"away\":true");
+  }
+  g_free(moved);
+  if (local_moves(data)) g_string_append(o, ",\"moves\":true");
   const char *version = alive ? jtext(&run, "version") : "";
   char *build = NULL;
   if (!*version && service) {
@@ -181,6 +201,7 @@ static moonbit_string_t sf_station_said(void) {
   if (local_doing[0]) {
     g_string_append_printf(o, ",\"doing\":\"%s\"", local_doing);
     if (local_said) local_field(o, "said", local_said);
+    if (local_percent >= 0) g_string_append_printf(o, ",\"percent\":%d", local_percent);
   }
   if (local_failed) local_field(o, "failed", local_failed);
   g_mutex_unlock(&local_lock);
@@ -194,6 +215,8 @@ static moonbit_string_t sf_station_said(void) {
 typedef struct {
   char **argv;
   char *channel;  // the installer's release channel (STILLFAIL_CHANNEL), NULL none
+  int move;       // bin/stillfail's move: its "NN%" lines how far (local_percent), its other lines not shown, how it
+                  // ended its exit ("move.<n>", 2 to 8: bin/stillfail says each; else "move:" and its last line)
 } local_job;
 
 // `argv` run, what it says read as it comes (the installer's steps: its last line, local_said); NULL when it ended well,
@@ -201,6 +224,7 @@ typedef struct {
 static char *local_run(local_job *j) {
   GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE);
   if (j->channel) g_subprocess_launcher_setenv(l, "STILLFAIL_CHANNEL", j->channel, TRUE);
+  if (j->move) g_subprocess_launcher_unsetenv(l, "STILLFAIL_DATA");
   GError *e = NULL;
   GSubprocess *p = g_subprocess_launcher_spawnv(l, (const char *const *)j->argv, &e);
   g_object_unref(l);
@@ -219,8 +243,10 @@ static char *local_run(local_job *j) {
     }
     g_free(last);
     last = g_strdup(line);
+    size_t n = strlen(line);
     g_mutex_lock(&local_lock);
-    local_set(&local_said, line);
+    if (!j->move) local_set(&local_said, line);
+    else if (n >= 2 && n <= 4 && line[n - 1] == '%' && g_ascii_isdigit(line[0])) local_percent = atoi(line);
     g_mutex_unlock(&local_lock);
     g_free(line);
     station_changed();
@@ -236,6 +262,11 @@ static char *local_run(local_job *j) {
     g_free(last);
     return NULL;
   }
+  if (j->move) {
+    char *why = code >= 2 && code <= 8 ? g_strdup_printf("move.%d", code) : g_strdup_printf("move:%s", last ? last : "");
+    g_free(last);
+    return why;
+  }
   return last ? last : g_strdup_printf("exit %d", code);
 }
 
@@ -246,6 +277,7 @@ static gpointer local_thread(gpointer arg) {
   local_doing[0] = 0;
   local_set(&local_failed, failed);
   local_set(&local_said, NULL);
+  local_percent = -1;
   g_mutex_unlock(&local_lock);
   g_free(failed);
   g_strfreev(j->argv);
@@ -256,7 +288,7 @@ static gpointer local_thread(gpointer arg) {
 }
 
 // `verb` begun with `argv` (taken) on a thread of its own, unless something is being done already ("busy")
-static void local_begin(const char *verb, char **argv, const char *channel) {
+static void local_begin_job(const char *verb, char **argv, const char *channel, int move) {
   g_mutex_lock(&local_lock);
   if (local_doing[0]) {
     local_set(&local_failed, "busy");
@@ -272,8 +304,26 @@ static void local_begin(const char *verb, char **argv, const char *channel) {
   local_job *j = g_new0(local_job, 1);
   j->argv = argv;
   j->channel = g_strdup(channel);
+  j->move = move;
   g_thread_unref(g_thread_new("station", local_thread, j));
   station_changed();
+}
+
+static void local_begin(const char *verb, char **argv, const char *channel) { local_begin_job(verb, argv, channel, 0); }
+
+// 更改存储位置's folder chosen (the system's dialog): its data moved there by its release's own command
+static void local_move_picked(GObject *dialog, GAsyncResult *r, gpointer data) {
+  GFile *f = gtk_file_dialog_select_folder_finish(GTK_FILE_DIALOG(dialog), r, NULL);
+  char *folder = f ? g_file_get_path(f) : NULL;
+  if (folder) {
+    char **argv = g_new0(char *, 5);
+    argv[0] = g_strdup("sh"), argv[1] = g_build_filename(data, "app", "bin", "stillfail", NULL);
+    argv[2] = g_strdup("move"), argv[3] = folder;
+    local_begin_job("move", argv, NULL, 1);
+  }
+  if (f) g_object_unref(f);
+  g_object_unref(dialog);
+  g_free(data);
 }
 
 static void local_fail(const char *why) {
@@ -328,6 +378,11 @@ static void sf_station_act(moonbit_string_t action) {
     g_object_unref(l);
     g_object_unref(f);
     g_free(path);
+  } else if (!strcmp(a, "move")) {
+    // 更改存储位置 (asked first on its page): a folder chosen, then its data moved there (local_move_picked)
+    GtkFileDialog *d = gtk_file_dialog_new();
+    gtk_file_dialog_set_modal(d, FALSE);
+    gtk_file_dialog_select_folder(d, NULL, NULL, local_move_picked, g_strdup(data));
   } else if (!strcmp(a, "uninstall")) {
     // its service, what runs of it, its command's link and its release taken away, its data kept (bin/stillfail's
     // uninstall, the same): by sh with the paths as its arguments, never in its words; done with no release there too

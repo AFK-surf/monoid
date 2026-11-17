@@ -633,6 +633,7 @@ pub fn Tester::new(
     }
   }
   looks_unjudged.val = false
+  rows_parted_said.val = ""
   motion_unjudged.val = false
   words_over_begin(loc.to_string(), words_over_held)
   rows_steady_begin(loc.to_string(), words_over_held)

@@ -1560,3 +1560,89 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message 
     assert_true(m < from - 2.0 && m > e + 2.0, msg="\{name}: from \{from} to \{e}, at \{m} on its way")
   }
 }
+
+///|
+/// The bands drawn in colour `c` (whatever its alpha) across the list (wider than any part of a row), as (top, foot),
+/// top to foot.
+fn row_bands(t : @ui.Tester, c : Int64) -> Array[(Double, Double)] {
+  let out = t
+    .drawn_rects()
+    .filter(fn(r) { r.4 >> 8 == c >> 8 && (r.4 & 0xFFL) != 0L && r.2 > 300.0 })
+    .map(fn(r) { (r.1, r.1 + r.3) })
+  out.sort_by(fn(a, b) { a.0.compare(b.0) })
+  out
+}
+
+///|
+/// Whether `bands` lie one on another from the first to the last, nothing between them, and hold all of `from` to `to`.
+fn bands_hold(bands : Array[(Double, Double)], from : Double, to : Double) -> Bool {
+  guard bands.length() > 0 else { return false }
+  for i in 1..<bands.length() {
+    if (bands[i].0 - bands[i - 1].1).abs() > 0.5 {
+      return false
+    }
+  }
+  bands[0].0 <= from && bands[bands.length() - 1].1 >= to
+}
+
+///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands of rows gone to one after another meet, from the middle of the room over each to the middle of the room over the next, whatever room that is" {
+  for s in long_screens {
+    let (name, _, _, _) = s
+    let l = long_chat()
+    let t = place_long_open(l, s)
+    let flash = @sf.theme().flash_bg()
+    let first = l.first.get() + 3
+    // (each gone to in turn: its band's top and foot, each from the top of the words of the row it is in, as drawn
+    // then: the list is moved as each is gone to)
+    let tops : Array[Double] = []
+    let foots : Array[Double] = []
+    for n in first..<(first + 5) {
+      go_to(long_ref, n.to_double())
+      @ui.came_from_outside()
+      t.run_for(@sfbase.flash_in_ms + 100.0)
+      let bands = row_bands(t, flash)
+      guard (bands.length(), t.rect_of("第\{n}条："), t.rect_of("第\{n + 1}条：")) is (1, Some(r), Some(u)) else {
+        fail("\{name}: \{n} gone to: \{Repr(bands)}")
+      }
+      tops.push(bands[0].0 - r.1)
+      foots.push(bands[0].1 - u.1)
+      long_run(t, l, @sfbase.flash_ms + long_rest_ms)
+    }
+    for i in 1..<tops.length() {
+      assert_true(
+        (foots[i - 1] - tops[i]).abs() <= 0.5,
+        msg="\{name}: \{first + i - 1}'s band ends \{foots[i - 1]} from the words under it, \{first + i}'s starts \{tops[i]}",
+      )
+    }
+  }
+}
+
+///|
+test "a chat's page made with its inside nodes, 大屏: a long answer in pieces gone to, or right clicked in a piece after its first, is lit as one band from its head to its foot" {
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, [])
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @signals.start_batch()
+  @sfbase.go_to(r, 3.0)
+  @signals.end_batch()
+  t.run_for(@sfbase.flash_in_ms + 100.0)
+  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+    fail("its head and its last line not drawn")
+  }
+  let flashed = row_bands(t, @sf.theme().flash_bg())
+  assert_true(bands_hold(flashed, head.1, last.1 + last.3), msg="gone to: \{Repr(flashed)}, \{head.1}…\{last.1 + last.3}")
+  t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
+  assert_eq(row_bands(t, @sf.theme().flash_bg()), [], msg="at rest")
+  // (right clicked in a piece after its first, over the composer)
+  guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("a line of a later piece not drawn") }
+  t.move_to(x + 8.0, y + 8.0)
+  t.frame()
+  t.right_click(x + 8.0, y + 8.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息链接") is Some(_), msg="its menu")
+  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+    fail("its head and its last line not drawn, its menu open")
+  }
+  let lit = row_bands(t, @ui.tree_theme().color(Hover))
+  assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}, \{head.1}…\{last.1 + last.3}")
+}

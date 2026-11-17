@@ -119,7 +119,7 @@ test("link head, htmlText, isPublic, isIP and oEmbed say what the TypeScript say
   ] as const;
   for (const [html, base] of htmls) assert.deepEqual(await mb({ op: "links.head", html, base }), plain(headOf(html, new URL(base))), html);
   for (const text of ["a&nbsp;b &bogus; c", "A&#x26;B  &#169;", "x\n  y\tz "]) assert.equal(await mb({ op: "links.text", text }), htmlText(text), text);
-  for (const a of ["127.0.0.1", "10.1.2.3", "192.168.1.1", "172.20.0.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "1.1.1.1", "140.82.112.3", "2606:4700::1111", "172.32.0.1"]) {
+  for (const a of ["127.0.0.1", "10.1.2.3", "192.168.1.1", "172.20.0.1", "169.254.1.1", "100.64.0.1", "0.0.0.0", "::1", "fd00::1", "fe80::1", "::ffff:127.0.0.1", "1.1.1.1", "140.82.112.3", "2606:4700::1111", "172.32.0.1", "::ffff:7f00:1", "0:0:0:0:0:FFFF:7F00:0001", "0:0::ffff:192.168.1.1", "::ffff:a01:203", "::ffff:101:101", "0:0::ffff:1.1.1.1", "::ffff:0:0:1", "0:0:0:0:0:0:0:1", "::1%lo0", "not-an-address"]) {
     assert.equal(await mb({ op: "links.public", address: a }), isPublic(a), a);
     assert.equal(await mb({ op: "links.ip", address: a }), isIP(a), a);
   }

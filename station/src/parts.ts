@@ -43,7 +43,7 @@ export class StationParts {
   readonly #made = new WeakMap<Tools, { of: number; routes: Route[] }>();
   readonly #viewerMay: ((r: { method: string; path: string }) => boolean)[] = [];
   readonly #overview = new Map<string, (viewer: Viewer, lang: Lang) => unknown>();
-  readonly #tools: Tool[] = [];
+  readonly #tools: { tool: Tool; offered?: () => boolean }[] = [];
   readonly #door: DoorRoute[] = [];
   readonly #ended: ((session: string) => void)[] = [];
   readonly #streams = new Map<string, (ask: MemberAsk) => Promise<void>>();
@@ -94,9 +94,10 @@ export class StationParts {
     this.#overview.set(field, view);
   }
 
-  /// A part's tools for the agents (their MCP door, tools/mcp.ts).
-  tools(tools: Tool[]): void {
-    this.#tools.push(...tools);
+  /// A part's tools for the agents (their MCP door, tools/mcp.ts); `offered`: while it says so (a `beta` feature's
+  /// tools on a station on the test channel alone, features.ts), else neither listed nor called.
+  tools(tools: Tool[], offered?: () => boolean): void {
+    for (const tool of tools) this.#tools.push(offered === undefined ? { tool } : { tool, offered });
   }
 
   /// A part's routes on the agents' door.
@@ -207,6 +208,6 @@ export class StationParts {
   }
 
   allTools(): readonly Tool[] {
-    return this.#tools;
+    return this.#tools.filter((t) => t.offered === undefined || t.offered()).map((t) => t.tool);
   }
 }

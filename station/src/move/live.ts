@@ -98,7 +98,7 @@ export const MovesLive = Layer.effectDiscard(
       hasGit: gitHere,
       changed: () => changed(),
       config: agents.config,
-      // (a beta-channel feature, config.json's `move` said over it either way: features.ts stationMoveOn)
+      // (a beta feature of the station's: features.ts stationMoveOn)
       moveOn: () => stationMoveOn(agents.config.raw(), app),
       keptSends: (threads) => admin.keptSends(threads),
       keepSends: (sends) => admin.keepSends(sends),
@@ -174,7 +174,8 @@ export const MovesLive = Layer.effectDiscard(
     // (whether the app offers moving here: the switch; GET /move answers either way)
     parts.overview("move", () => ({ offered: moves.on() }));
     parts.cardChoice("move", { may: (viewer, card, at) => asks.may(viewer, card, at), chosen: (viewer, card, option, at) => asks.chosen(viewer, card, option, at) });
-    parts.tools(moveTools(asks));
+    // (station_move is an agent's only where moving is on here)
+    parts.tools(moveTools(asks), () => moves.on());
     bus.whenAttached(() => void moves.start().catch((e) => log.warn("move", "the migrations did not go on", { error: (e as Error).message })));
   }),
 );

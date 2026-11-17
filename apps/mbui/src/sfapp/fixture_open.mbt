@@ -385,11 +385,14 @@ pub fn open_fixture_mode(mode : String) -> Unit {
 }
 
 ///|
-/// The app as src/sffix starts it for `mode`, for a Tester made next (screens_wbtest.mbt): the app as at the start (reset:
-/// whatever ran before in the process), the made-up source of the mode and what it opens before the first frame
-/// (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
+/// The app as src/sffix starts it for `mode`, for a Tester made next (screens_wbtest.mbt): a run begun (new_run: the run
+/// before let go of, then the app as at the start, whatever ran before in the process), the made-up source of the mode
+/// and what it opens before the first frame (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
+/// The run before let go of first: its window's tree, still there till the next Tester is made, followed what this one
+/// opens (⌘/'s `keys_open`) and put up a panel of its own in this run's presenters, closed (open said false) as that
+/// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
 pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
-  reset()
+  new_run()
   // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
   // which is made as the choice stands then)
   if chat_nodes {

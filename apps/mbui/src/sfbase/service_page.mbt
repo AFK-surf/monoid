@@ -853,7 +853,6 @@ pub fn service_pages_reset() -> Unit {
   svc_viewports.clear()
   service_files.clear()
   svc_keep.val = fn(_) {  }
-  marked_into.clear()
   src_now.val = fn() { 0.0 }
   viz_loads.clear()
 }

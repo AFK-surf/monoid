@@ -1,11 +1,12 @@
 // The station's `beta` features (src/features.ts): on as the station is updated on the test channel (config.json's
-// `updateChannel`, else the CHANNEL its installer wrote), off on stable; moving's own switch said over it either way.
+// `updateChannel`, else the CHANNEL its installer wrote), off on stable, nothing said over it; the overview's `features`
+// says those on.
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { stationFeature, stationMoveOn } from "../src/features.ts";
+import { stationFeature, stationFeatures, stationMoveOn } from "../src/features.ts";
 
 /// An app directory whose installer wrote `channel` (none: an install from before channels).
 function app(channel: string | null): string {
@@ -31,15 +32,16 @@ test("a_beta_feature_follows_the_station_s_channel", () => {
   assert.equal(stationFeature("chatPage", { updateChannel: "beta" }, beta), false);
 });
 
-test("moving_is_on_on_beta_stations_and_where_config_says_so", () => {
+test("moving_follows_the_channel_alone_and_the_overview_says_what_is_on", () => {
   const beta = app("beta");
   const stable = app("stable");
   assert.equal(stationMoveOn({}, beta), true);
   assert.equal(stationMoveOn(null, beta), true);
-  assert.equal(stationMoveOn({ move: false }, beta), false);
   assert.equal(stationMoveOn({}, stable), false);
-  // apps/mbui/e2e/move.ts's stations, whatever their channel
-  assert.equal(stationMoveOn({ move: true }, stable), true);
-  assert.equal(stationMoveOn({ move: true, updateChannel: "stable" }, beta), true);
+  // config.json's `move` of before says nothing any more: a stable station's e2e is one on the test channel
+  assert.equal(stationMoveOn({ move: true }, stable), false);
+  assert.equal(stationMoveOn({ move: false }, beta), true);
   assert.equal(stationMoveOn({ updateChannel: "beta" }, stable), true);
+  assert.deepEqual(stationFeatures({}, beta), ["terminal", "stationMove"]);
+  assert.deepEqual(stationFeatures({}, stable), []);
 });

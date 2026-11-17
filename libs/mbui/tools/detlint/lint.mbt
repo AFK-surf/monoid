@@ -391,6 +391,21 @@ fn lint_mbt(
       }
     }
   }
+  // the words a field gave up read by a build (`res.submitted` of what Ctx::editor gave it: Enter taken the frame after
+  // it) outside mbui's ui and kit, which take keys, and outside the tests: what giving them up does is said by the
+  // editor's `on_submit`, done as Enter is taken, outside any build
+  if !f.rel.has_prefix("src/ui/") && !f.rel.has_prefix("src/kit/") {
+    for k, tk in toks {
+      if tk.kind == "ident" &&
+        tk.text == "submitted" &&
+        k > 0 &&
+        toks[k - 1].text == "." &&
+        !(k + 1 < toks.length() && toks[k + 1].text == "(") &&
+        !f.in_test(k) {
+        add("submitted-read", k, f.line_text(k))
+      }
+    }
+  }
   // a page reading the shell's own state by its fields (`wide.tape`): the shell's files alone do (not in a page's tests)
   if under(f.rel, cfg.pages) && !under(f.rel, cfg.shell) && cfg.shell_state.length() > 0 {
     for k, tk in toks {

@@ -29,6 +29,8 @@ if [ -z "${GITHUB_ACTIONS:-}" ] && [ "${MBUI_WHOLE_SUITE:-}" != 1 ]; then
   exit 2
 fi
 cd "$A"
+# (fd 9: the script's own stderr, for what is said while runs go on: parts_watch)
+exec 9>&2
 F='^Warning\|^ *│\|^ *╭\|^ *╰\|^─\|^ *[0-9]* │'
 code=0
 if [ -n "${GITHUB_ACTIONS:-}" ]; then targets=${TARGETS:-native}; else targets=${TARGETS:-wasm-gc}; fi
@@ -696,6 +698,34 @@ for t in $targets; do
       *) [ $# -le 2 ] && echo $(basename -a "$@") || echo "$# files ($(basename "$1") ...)" ;;
     esac
   }
+  # parts_watch DIR EXE: in CI, a part of exe_run's still running after MBUI_PART_SAYS seconds (150) is said at once on
+  # the job's log (fd 9, the script's own stderr), never only in its run's output, which is printed after it ends: what
+  # it runs, its process's state and CPU time, the last of what it printed, and its threads' stacks where gdb is there.
+  # Why: app 1/4 was cut at its 5 minutes with nothing said of which file had not ended, #6837 b68070c9c and main
+  # d77015c89, 2026-11-17, its runs 137 s otherwise.
+  parts_watch() {
+    [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+    local d=$1 exe=$2 t0 said=" " name arg pid
+    t0=$(date +%s)
+    while :; do
+      sleep 10 # det-ok(script-wait): a watchdog's look at the parts still running, never a wait a test passes by
+      [ $(($(date +%s) - t0)) -ge "${MBUI_PART_SAYS:-150}" ] || continue
+      while read -r name arg; do
+        [ -f "$d/$name.out" ] && [ ! -f "$d/$name.code" ] || continue
+        case "$said" in *" $name "*) continue ;; esac
+        said="$said$name "
+        {
+          echo "test.sh: still running after $(($(date +%s) - t0)) s: $(basename "$exe") $arg"
+          pid=$(ps -eo pid=,args= | awk -v e="$exe" -v a="$arg" 'index($0, e " " a) && !/ sh -c / { print $1; exit }')
+          [ -z "$pid" ] || ps -o pid=,stat=,etime=,time=,wchan= -p "$pid" | sed 's/^/  ps: /'
+          tail -20 "$d/$name.out" | sed 's/^/  said: /'
+          if [ -n "$pid" ] && command -v gdb > /dev/null; then
+            timeout 30 sudo -n gdb -batch -p "$pid" -ex 'thread apply all bt 40' 2>&1 | grep -a '^#\|^Thread' | head -80 | sed 's/^/  gdb: /'
+          fi
+        } >&9
+      done < "$d/parts"
+    done
+  }
   # exe_run EXE INFO JOBS PKG FILE… | FILE --index FROM-TO: a run on a test program built already, JOBS of it side by
   # side, each taking the next part when done with one (xargs -P); tools/testexe says what to ask it and what it said.
   # JOBS as Neach: a process a file even on one (testexe says each file's seconds only of a run in more than one part)
@@ -705,8 +735,14 @@ for t in $targets; do
     case $j in *each) j=${j%each} split=$((j > 1 ? j : 2)) ;; esac
     d=$(mktemp -d)
     "$TESTEXE" parts "$info" "$split" "$@" > "$d/parts" || { rm -rf "$d"; return 2; }
-    [ ! -s "$d/parts" ] || sed "s|^|$d/|" "$d/parts" | xargs -P "$j" -L 1 sh -c \
-      's=$(date +%s); "$0" "$2" > "$1.out" 2>&1; echo "$? $(($(date +%s) - s))" > "$1.code"' "$exe"
+    if [ -s "$d/parts" ]; then
+      parts_watch "$d" "$exe" &
+      local w=$!
+      sed "s|^|$d/|" "$d/parts" | xargs -P "$j" -L 1 sh -c \
+        's=$(date +%s); "$0" "$2" > "$1.out" 2>&1; echo "$? $(($(date +%s) - s))" > "$1.code"' "$exe"
+      kill $w 2>/dev/null
+      wait $w 2>/dev/null
+    fi
     "$TESTEXE" said "$info" "$d" "$pkg"
     c=$?
     rm -rf "$d"

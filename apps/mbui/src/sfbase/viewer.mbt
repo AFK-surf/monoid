@@ -2292,10 +2292,7 @@ pub fn Viewer::marks_frame(self : Viewer, c : @ui.Ctx) -> Unit {
             let z = self.zoom
             let quotes = marks_quotes(marking.job_name, self.file.name, z.nw, z.nh)
             let key = self.draft_key()
-            let list = marked_into.get(key).unwrap_or([])
-            list.push((marking.job_name, png, quotes, "image"))
-            marked_into[key] = list
-            draft_given(key)
+            draft_give(key, Marked(marking.job_name, png, quotes, "image"))
             marks_leave()
             // (closed back to the chat, where the picture and its quotes show in the composer: nothing said of it)
             self.shut(c)

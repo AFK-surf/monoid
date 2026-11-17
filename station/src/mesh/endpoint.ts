@@ -87,8 +87,8 @@ export type Endpoint = {
   route?(alpn: Buffer, to: string[], routes: string[]): Promise<boolean>;
 };
 /// What an endpoint is bound with. `relayOnly`: through the relays alone, no IP transports (what measures the way
-/// through a relay).
-export type Bind = { secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; relayOnly?: boolean; congestion?: "cubic" | "bbr" };
+/// through a relay). `dscp`: the DSCP (1 to 63) every packet of the process's iroh is marked with from this bind on.
+export type Bind = { secretKey: Buffer; alpns: Buffer[]; relayUrls: string[]; discovery?: boolean; bindAddr?: string; relayOnly?: boolean; congestion?: "cubic" | "bbr"; dscp?: number };
 /// What binds endpoints: the addon, or what stands in for it (a test's mesh in memory).
 export type Endpoints = { bind(options: Bind): Promise<Endpoint> };
 

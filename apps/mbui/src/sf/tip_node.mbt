@@ -36,8 +36,9 @@ let tip_out_scale : Double = 0.97
 /// pointer rests on it before it shows; `skip`: shown at once where another of the layer went a moment before; `gap`:
 /// how far from what it is beside; `at_pointer`: beside the pointer as it moves along the control, its middle level with
 /// it (a tall thin thing's: an edge, usePointerTip), not the control's middle. `within`: shown by the pointer within
-/// `anchor` as it is placed (View::pointer_within), where it is no control and takes no press (a bar's name, what is
-/// pressed there the bar's), not by its being pointed at. `repeats`: it says words the control shows itself (a file's
+/// `anchor` as it is placed (View::pointer_within), over what it holds as over itself (a bar's name, what is pressed
+/// there the bar's), not by its being pointed at; without it, by `anchor` pointed at (View::pointed), whatever it takes
+/// of the hand, a control or none (a mark, a status). `repeats`: it says words the control shows itself (a file's
 /// name on its card), whole: shown only where they show cut short there as it would show (View::words_cut_now: any words
 /// in `anchor`, as the old tip's Ctx::shows_cut), none where they show whole; once shown, it goes as any does, not as
 /// they come to show whole. `shortcut`: the action that does what the control does, its keys said after the words

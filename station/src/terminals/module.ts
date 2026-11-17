@@ -13,7 +13,8 @@ import { error, json } from "../api/request.ts";
 import type { Request } from "../api/request.ts";
 import { log } from "../ops/log.ts";
 import { platform } from "../platform/index.ts";
-import { Events, Parts, Paths, Store } from "../services.ts";
+import { stationFeature } from "../features.ts";
+import { Events, Parts, Paths, StationConfig, Store } from "../services.ts";
 import { TerminalLink, runnerWire } from "./link.ts";
 import { type TerminalMeta, Terminals } from "./terminals.ts";
 
@@ -33,7 +34,8 @@ export const TerminalsLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const events = yield* Events;
     const store = yield* Store;
-    const { data } = yield* Paths;
+    const { app, data } = yield* Paths;
+    const config = yield* StationConfig;
     const metaDir = join(data, "run", "terminals");
     const metaFile = (id: string) => join(metaDir, `${id}.json`);
     let terminals: Terminals | null = null;
@@ -45,6 +47,7 @@ export const TerminalsLive = Layer.effectDiscard(
       home: homedir(),
       chatDir: (chat) => { const row = store.getSession(chat); return row ? (row.cwd ?? row.workspace) : undefined; },
       newId: () => `${TERMINAL_RUNNER}${randomBytes(8).toString("hex")}`,
+      offered: () => stationFeature("terminal", config.raw(), app),
       changed: tell,
       gone: (id) => void rm(metaFile(id), { force: true }).catch(() => undefined),
       async start(id, o, meta) {

@@ -54,7 +54,8 @@ pub fn move_shown(core : Core, address : String) -> Bool {
 }
 
 ///|
-/// Whether its ⋯ offers 迁移到另一台 station (station `s`): it is online and offers moving (its overview's `move.offered`).
+/// Whether its ⋯ offers 迁移到另一台 station (station `s`): it is online and offers moving (a `beta` feature of the station's:
+/// its overview's `features`).
 pub fn move_offered(s : Json?) -> Bool {
-  flag(s, "online") && flag(field(field(s, "overview"), "move"), "offered")
+  flag(s, "online") && station_feature(s, "stationMove")
 }

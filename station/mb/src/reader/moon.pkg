@@ -15,6 +15,7 @@ import {
   "station/outflow",
   "station/turns",
   "station/said",
+  "station/move_coord",
   "station/archivelast",
   "station/accounts_pool",
   "station/letters",

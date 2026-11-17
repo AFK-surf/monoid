@@ -16,7 +16,7 @@ import { DurableObject } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { STATIONS_PER_WORKSPACE } from "../../client/limits.ts";
 import { CODE_TTL_DAYS, isAdmin, newCode, normalizeCode } from "./admin";
-import { clock, digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
+import { clock, denied, digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
 import { header, publicOrigins } from "./compat";
 import type { Env } from "./env";
 import { grantKeys } from "./grants";
@@ -77,7 +77,7 @@ const FEEDBACK_SHOWN = 200;
 const LIST: AccountEvent = { type: "workspaces" };
 /** The picture an account is shown with, of its row in users: the one it put up for itself (setOwnPicture), else its sign-in's. */
 const SHOWN_PICTURE = "COALESCE(own_picture, picture)";
-type Attachment = { station: string; at: number; dropped?: boolean } | { sub: string };
+type Attachment = { station: string; at: number; dropped?: boolean } | { sub: string; sid?: string };
 
 /**
  * Where devices' events sockets and stations' presence sockets open, and who says whether a station is enrolled: their
@@ -1268,9 +1268,9 @@ export class Directory extends DurableObject<Env> {
     if (email === null || !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(email)) fail(400, "invalid_email");
     if (this.#one("SELECT 1 AS x FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = lower(?)", workspace, email!)) fail(409, "already_member");
     const open = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND expires_at > ?", workspace, nowSeconds())!.n as number;
-    if (open >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     // Every open invitation holds a seat, but a newer one to the same email takes the older one's.
     const replaces = this.#one("SELECT 1 AS x FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, email!.toLowerCase(), nowSeconds()) ? 1 : 0;
+    if (open - replaces >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) fail(429, "too_many_members");
     const token = randomSecret();
     const id = ulid();
@@ -1676,6 +1676,10 @@ export class Directory extends DurableObject<Env> {
 
   /** Sessions signed out (all of an account's with none named): their credentials go, in every workspace of the account. */
   async revokeSessions(sub: string, sids: string[] | null): Promise<void> {
+    for (const ws of this.ctx.getWebSockets(`sub:${sub}`)) {
+      const { sid } = ws.deserializeAttachment() as { sid?: string };
+      if (ws.readyState === WebSocket.OPEN && (sids === null || sid === undefined || sids.includes(sid))) ws.close(1008, "session ended");
+    }
     if (sids === null) this.#run("DELETE FROM push WHERE sub = ?", sub);
     else for (const sid of sids) this.#run("DELETE FROM push WHERE sub = ? AND sid = ?", sub, sid);
     for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", sub)) {
@@ -1897,6 +1901,8 @@ export class Directory extends DurableObject<Env> {
     }
     for (const station of stations) this.#sendState(station);
     this.tellAll({ type: "workspaces" }, null);
+    // (the operator's console shows the list: its 中继 page read again, as the minute's sample has it)
+    if (this.env.ADMIN_EMAIL) this.#tell(this.#byEmail(this.env.ADMIN_EMAIL), { type: "relays" });
   }
 
   // ── the admin's console ─────────────────────────────────────────────────
@@ -2404,10 +2410,24 @@ export class Directory extends DurableObject<Env> {
     const pair = new WebSocketPair();
     if (path === "/events") {
       const sub = header(request, "sub")!;
+      const sid = header(request, "sid") ?? "";
       // Every device opens this when it starts: the nearest thing to "last seen" that costs no write per request.
       this.#run("UPDATE users SET last_seen = ? WHERE sub = ?", nowSeconds(), sub);
       this.ctx.acceptWebSocket(pair[1], [`sub:${sub}`]);
-      pair[1].serializeAttachment({ sub } satisfies Attachment);
+      pair[1].serializeAttachment({ sub, sid } satisfies Attachment);
+      // Registered before checking, so a revocation during that call closes it too. The client receives no socket
+      // until checked: the Worker's earlier check may have preceded a revocation on the way here.
+      let live: boolean;
+      try {
+        live = await this.env.ACCOUNTS.getByName(sub).signedIn({ sub, sid });
+      } catch (error) {
+        if (pair[1].readyState === WebSocket.OPEN) pair[1].close(1011, "session check failed");
+        throw error;
+      }
+      if (!live || pair[1].readyState !== WebSocket.OPEN) {
+        if (pair[1].readyState === WebSocket.OPEN) pair[1].close(1008, "session ended");
+        return denied();
+      }
       return new Response(null, { status: 101, webSocket: pair[0], headers: { "sec-websocket-protocol": header(request, "protocol") ?? EVENTS_PROTOCOLS[0] } });
     }
     const station = header(request, "station")!;

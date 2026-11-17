@@ -76,7 +76,7 @@ fn chat_page(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, barred? : Bo
   // words dragged in from another app and let go anywhere on it but a field (a field takes them where they were let
   // go): into the composer's field at its caret, as a paste's
   // files from this machine's Finder let go anywhere on it but another field, where it is a station: into the draft by
-  // their station and path, as a row of the 文件 tab put there (its composer takes them, files_taken); elsewhere as
+  // their station and path, as a row of the 文件 tab put there (its composer takes them: draft_give); elsewhere as
   // words, as above
   if @sfbase.finder_by_station() {
     match c.paths_into(page, @sfpages.composer_field_key) {

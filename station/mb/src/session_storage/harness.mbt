@@ -145,7 +145,7 @@ async fn Harness::answer(self : Harness, s : Storage, op : String, a : Array[Jso
     "workspaceAgentHomePath" => js(fs.workspace_agent_home_path(text(0), ws_at(1), ws_at(2)))
     "workspaceAgentHome" => js(s.workspace_agent_home(text(0), ws_at(1), ws_at(2), text(3), ws_at(4)))
     "agentHomes" => ja(fs.agent_homes(text(0)).map(x => js(x)))
-    "writeBuiltinSkills" => { s.write_builtin_skills(text(0), arg(1) is Some(True), text(2), ws_at(3)); Json::null() }
+    "writeBuiltinSkills" => { s.write_builtin_skills(text(0), arg(1) is Some(True), text(2), ws_at(3), move=!(arg(4) is Some(False))); Json::null() }
     "linkSiteSkills" => { s.link_site_skills(text(0), text(1)); Json::null() }
     "unlinkAgentHome" => { fs.unlink_agent_home(text(0), profiles_of(arg(1))); Json::null() }
     "sessionSkills" => { fs.session_skills(text(0), text(1)); Json::null() }

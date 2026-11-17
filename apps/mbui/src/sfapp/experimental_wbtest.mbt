@@ -1,7 +1,8 @@
 // 设置 › 实验性功能 (sfpages' experimental.mbt, settings' features.mbt over the core's features.ts): the device's last
 // row, saying how many are on; found by the settings' search by each switch's words; each switch taking effect at once
 // where what it changes is shown (看板 put back to the list on 小屏, 中屏 and 大屏; a Farview tab back to its pictures),
-// and the test channel's own features (远程终端, 迁移) gone from a stable app.
+// what still replaces a working path offered on the test channel alone, and a station's own features (远程终端, 迁移)
+// as that station's channel says, whatever the app's. (A mode's -stable is an app and Willow both on stable.)
 
 ///|
 /// The app over `mode` in a window `w` × `h` (`platform`: 2 a phone's), what the mode opens open, at rest.
@@ -213,18 +214,15 @@ test "Farview 原生标签页渲染 off by default: a Farview tab is its station
 }
 
 ///|
-test "a stable app: a station's page has no terminals (屏幕与浏览器) and no 迁移 row or 迁移到另一台 station; the test channel's has them" {
+test "a stable station: its page has no terminals (屏幕与浏览器) and its ⋯ no 迁移到另一台 station; the test channel's has them" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-terminals")
   assert_true(t.find("屏幕、浏览器与终端") is Some(_), msg="beta: " + move_all_words(t))
   let t = move_tester(calls, "settings-station-terminals-stable")
   assert_true(t.find("屏幕与浏览器") is Some(_), msg="stable: " + move_all_words(t))
   assert_true(t.find("屏幕、浏览器与终端") is None, msg="stable: " + move_all_words(t))
-  // 迁移: its page's row while a move runs, its ⋯'s 迁移到另一台 station
-  let t = move_tester(calls, "settings-station-move-section")
-  assert_true(move_said(t, "迁移到 Maple"), msg="beta: " + move_all_words(t))
-  let t = move_tester(calls, "settings-station-move-section-stable")
-  assert_true(!move_said(t, "迁移到 Maple"), msg="stable: " + move_all_words(t))
+  // 迁移: its ⋯'s 迁移到另一台 station (its page's row is what a move left there, which a stable station that never moved has
+  // none of: station_move_wbtest's)
   let t = move_tester(calls, "settings-station-move-offered")
   t.click(Button, label="更多")
   t.run_for(@ui.move_most_ms)
@@ -234,6 +232,41 @@ test "a stable app: a station's page has no terminals (屏幕与浏览器) and n
   t.run_for(@ui.move_most_ms)
   assert_true(!move_said(t, "迁移到另一台 station"), msg="stable: " + move_all_words(t))
   assert_true(move_said(t, "从 workspace 移除"), msg="stable: its ⋯ as ever: " + move_all_words(t))
+}
+
+///|
+test "a station's terminals and 迁移 are as the station's channel says, never the app's: a stable app sees a beta station's, a beta app none of a stable one's" {
+  let calls : Array[Made] = []
+  // the app on stable, Willow on the test channel
+  let t = move_tester(calls, "settings-station-terminals-stable")
+  @settings.fixture_station_channel(true)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("屏幕、浏览器与终端") is Some(_), msg="stable app, beta station: " + move_all_words(t))
+  let t = move_tester(calls, "settings-station-move-offered-stable")
+  @settings.fixture_station_channel(true)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  assert_true(move_said(t, "迁移到另一台 station"), msg="stable app, beta station: " + move_all_words(t))
+  // the app on the test channel, Willow on stable
+  let t = move_tester(calls, "settings-station-terminals")
+  @settings.fixture_station_channel(false)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("屏幕与浏览器") is Some(_) && t.find("屏幕、浏览器与终端") is None, msg="beta app, stable station: " + move_all_words(t))
+  let t = move_tester(calls, "settings-station-move-offered")
+  @settings.fixture_station_channel(false)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="更多")
+  t.run_for(@ui.move_most_ms)
+  assert_true(!move_said(t, "迁移到另一台 station"), msg="beta app, stable station: " + move_all_words(t))
+}
+
+///|
+test "a stable app's 实验性功能: 对话列表看板视图 alone, not what still replaces a working path (试用新对话页, Farview 原生标签页渲染)" {
+  let (t, _) = exp_at("settings-experimental-stable", 390.0, 844.0, platform=2)
+  assert_true(t.query(Switch, label="对话列表看板视图") is Some(_), msg="stable: " + t.words().map(fn(x) { x.0 }).join("|"))
+  assert_true(t.query(Switch, label="试用新对话页") is None, msg="stable: no 试用新对话页")
+  assert_true(t.query(Switch, label="Farview 原生标签页渲染") is None, msg="stable: no Farview 原生标签页渲染")
 }
 
 ///|
@@ -305,7 +338,7 @@ test "设置: no 实验性功能 row where the core says the channel shows none 
 }
 
 ///|
-test "a stable app: 迁移's page opened by its route goes back at once; the test channel's stays" {
+test "a stable station: 迁移's page opened by its route goes back at once; the test channel's stays" {
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move")
   assert_true(app.nav.top() is Setting(StationMove(_)), msg="beta: 迁移's page")
@@ -322,7 +355,7 @@ fn exp_rules(t : @ui.Tester) -> Int {
 }
 
 ///|
-test "a station's ⋯: one line, over what takes it away, never two, on the test channel and a stable app, up or away, on a phone and a large window" {
+test "a station's ⋯: one line, over what takes it away, never two, on the test channel and a stable station, up or away, on a phone and a large window" {
   for mode in ["settings-station-move-offered", "settings-station-move-offered-stable", "settings-station-away", "settings-station-offline"] {
     for win in [(390.0, 844.0, 2), (1280.0, 800.0, 0)] {
       let (w, h, platform) = win

@@ -169,7 +169,6 @@ let composing : Composing = {
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
   composer_set_off.val = ("", 0.0)
-  picked_waiting.clear()
   composing.let_go.set(false)
   composing.let_go_at = @double.neg_infinity
   composing.warmed.clear()
@@ -332,12 +331,10 @@ pub fn composer(
   // nothing sent)
   let ready_now = fn() { (w.ready.get() || (w.field.text().trim() != "" && !w.starting.get())) && !spec.locked }
   let ready = ready_now()
-  // sent once what it refers to can be read in this workspace (sfbase's outside.mbt): at once when
-  // it refers to nothing of another workspace, else once the viewer has said so (outside.mbt's dialog)
-  @sfbase.sharing_go(w.key)
   let quote_had = quote_has_focus(c, w)
-  // (asked again as send is pressed, of the field: words typed since this build, a frame not drawn yet, told to the
-  // core first and go with it)
+  // (asked again as send is pressed or Enter taken, of the field: words typed since this build, a frame not drawn yet,
+  // told to the core first and go with it; sent once what it refers to can be read in this workspace, sfbase's
+  // outside.mbt: at once when it refers to nothing of another workspace, else as the core or the viewer says so)
   let submit = fn() {
     if ready_now() {
       writing_text(src, w, w.field.text())
@@ -617,32 +614,80 @@ fn with_composer(c : @ui.Ctx, i : Int, key : String, shaped : (String, @motion.S
 /// web's paste takes the clipboard's files), the rows the 文件 tab's 添加到消息 put in (named by their path, or as files where this chat
 /// takes what is dragged in so).
 fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files : Bool) -> Unit {
-  // (what was put into the draft from elsewhere: built again as it is)
-  @sfbase.drafts_given_read(w.key)
-  match picked_waiting.get(w.key) {
-    Some(list) => {
-      picked_waiting.remove(w.key)
-      if !no_files {
-        @signals.untracked(fn() {
-          for f in list {
-            writing_add_picked(src, w, spec.station, f)
-          }
-        })
-      }
-    }
-    None => ()
-  }
-  // files shared into the app from another, for this draft (share.mbt)
-  match shared_into.get(w.key) {
-    Some(list) if !no_files => {
-      shared_into.remove(w.key)
-      c.tell("composer/shared/" + w.key, fn() {
-        for f in list {
-          writing_add_picked(src, w, spec.station, f)
+  // what was put into the draft from elsewhere (sfbase's compose_given.mbt), as it was given: each as before, what
+  // writes to the core told after the build (Ctx::tell) but what the system's picker answered, taken in before the
+  // box is laid out (the host's word that it answered brings this frame)
+  let dropped : Array[Dragged] = []
+  for g in @sfbase.draft_taken(w.key) {
+    match g {
+      Picked(list) =>
+        if !no_files {
+          @signals.untracked(fn() {
+            for f in list {
+              writing_add_picked(src, w, spec.station, f)
+            }
+          })
         }
-      })
+      // files shared into the app from another, for this draft (share.mbt)
+      Shared(list) =>
+        if !no_files {
+          c.tell("composer/shared/" + w.key, fn() {
+            for f in list {
+              writing_add_picked(src, w, spec.station, f)
+            }
+          })
+        }
+      // a message's file quoted from its menu (sfpages menus.mbt): a quote with its file in its card
+      Quoted(author, ts, role, file) =>
+        if !no_files {
+          c.tell("composer/quoted/" + w.key, fn() {
+            writing_quote(
+              src,
+              w,
+              {
+                "author": Json::string(author),
+                "text": Json::string(text(Some(file), "name")),
+                "ts": Json::string(ts),
+                "role": Json::string(role),
+              },
+              file~,
+            )
+          })
+        }
+      // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
+      Followed(words) => {
+        let now = w.field.text()
+        let said = if now.trim() == "" { words } else { now.trim_end().to_owned() + "\n" + words }
+        w.field.set(said)
+        c.tell("composer/followed/" + w.key, fn() { writing_text(src, w, said) })
+        c.focus_field(w.field)
+      }
+      // a picture marked for this chat (a service's page, an image viewed), going up with a quote per mark (what is
+      // said of it its comment): a page's mark's screenshot as its quote's picture, an image's as a file beside them
+      Marked(name, bytes, quotes, kind) =>
+        if !no_files {
+          c.tell("composer/marked/" + w.key, fn() {
+            if kind != "page" {
+              writing_add(src, w, spec.station, name, bytes)
+            }
+            for q in quotes {
+              let quote : Json = {
+                "author": Json::string(q.0),
+                "text": Json::string(q.1),
+                "comment": Json::string(q.2),
+                "role": Json::string(kind),
+              }
+              if kind == "page" {
+                writing_quote(src, w, quote, picture=(spec.station, name, bytes))
+              } else {
+                writing_quote(src, w, quote)
+              }
+            }
+          })
+        }
+      // a 文件 row put in (添加到消息) or let go on the chat
+      Dropped(d) => dropped.push(d)
     }
-    _ => ()
   }
   match c.field_files(composer_field_key) {
     Some(files) if !no_files =>
@@ -653,74 +698,8 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   }
   // the videos waiting that the host has no picture of: their first frames, made from their bytes
   @sfbase.writing_stills(c)
-  // a message's files quoted from their menus (sfpages menus.mbt): each a quote with its file in its card
-  match quoted_into.get(w.key) {
-    Some(list) if !no_files => {
-      quoted_into.remove(w.key)
-      c.tell("composer/quoted/" + w.key, fn() {
-        for q in list {
-          let name = text(Some(q.3), "name")
-          writing_quote(
-            src,
-            w,
-            {
-              "author": Json::string(q.0),
-              "text": Json::string(name),
-              "ts": Json::string(q.1),
-              "role": Json::string(q.2),
-            },
-            file=q.3,
-          )
-        }
-      })
-    }
-    _ => ()
-  }
-  // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
-  match followed_into.get(w.key) {
-    Some(words) => {
-      followed_into.remove(w.key)
-      let now = w.text.get()
-      let said = if now.trim() == "" { words } else { now.trim_end().to_owned() + "\n" + words }
-      w.field.set(said)
-      c.tell("composer/followed/" + w.key, fn() { writing_text(src, w, said) })
-      c.focus_field(w.field)
-    }
-    None => ()
-  }
-  // pictures marked for this chat (a service's page, an image viewed: sfbase's marked_into), each going up with a quote
-  // per mark (what is said of it its comment): a page's mark's screenshot as its quote's picture, an image's as a file
-  // beside its marks' quotes; taken once, whichever build takes them
-  match marked_into.get(w.key) {
-    Some(list) if !no_files => {
-      marked_into.remove(w.key)
-      c.tell("composer/marked/" + w.key, fn() {
-        for x in list {
-          let (name, bytes, quotes, kind) = x
-          if kind != "page" {
-            writing_add(src, w, spec.station, name, bytes)
-          }
-          for q in quotes {
-            let quote : Json = {
-              "author": Json::string(q.0),
-              "text": Json::string(q.1),
-              "comment": Json::string(q.2),
-              "role": Json::string(kind),
-            }
-            if kind == "page" {
-              writing_quote(src, w, quote, picture=(spec.station, name, bytes))
-            } else {
-              writing_quote(src, w, quote)
-            }
-          }
-        }
-      })
-    }
-    _ => ()
-  }
-  let sent = @sfbase.files_taken(w.key)
-  if !sent.is_empty() && !no_files {
-    writing_drop(src, w, spec.station, sent.map(dropped_of), drops_as_files(src, w.key))
+  if !dropped.is_empty() && !no_files {
+    writing_drop(src, w, spec.station, dropped.map(dropped_of), drops_as_files(src, w.key))
   }
 }
 
@@ -867,6 +846,16 @@ fn composer_text(
             composing.typed = true
           }
         },
+        // (Enter giving them up: sent as it is taken, outside the build, as send's press is (send_button), never left
+        // for the build to read; they stay in the field until they go)
+        on_submit=fn(words) {
+          if !w.starting.get() && !(spec.draft.has_prefix("new:") && @sfbase.fresh.starting.get()) {
+            if words != w.text.get() {
+              writing_text(src, w, words)
+            }
+            submit()
+          }
+        },
       )
       match res.pasted {
         Some(words) => @sfbase.writing_paste(src, w, spec.station, words)
@@ -874,22 +863,12 @@ fn composer_text(
       }
       // `@` and a few letters: the chats they find over the composer (Enter picks one there)
       let menu = ref_menu(c, src, spec, w, cap, res.focused)
-      match res.submitted {
-        // (they stay in the field until they go)
-        Some(words) => if !w.starting.get() && !(spec.draft.has_prefix("new:") && @sfbase.fresh.starting.get()) {
-          if words != w.text.get() {
-            writing_text(src, w, words)
-          }
-          submit()
-        }
-        None =>
-          if res.text != w.text.get() && !w.starting.get() {
-            writing_text(src, w, res.text)
-            warm(c, src, spec)
-          } else if composing.typed {
-            composing.typed = false
-            warm(c, src, spec)
-          }
+      if res.text != w.text.get() && !w.starting.get() {
+        writing_text(src, w, res.text)
+        warm(c, src, spec)
+      } else if composing.typed {
+        composing.typed = false
+        warm(c, src, spec)
       }
       // nothing typed: ↑ ↓ the chat above or below, as the list shows them now, each as it comes, before the field
       // sees it (Ctx::on_key: what is typed then, whether the chat beside is held then)
@@ -1006,20 +985,12 @@ fn attach(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files 
 }
 
 ///|
-/// Files the system's picker answered for each draft, waiting for its composer (`take_in`).
-// kept across runs: cleared by composing_reset
-let picked_waiting : Map[String, Array[@hostapi.Picked]] = Map([])
-
-///|
-/// Files the system's picker answered for draft `key`, put where its composer takes them (`take_in`) and told (`draft_given`).
+/// Files the system's picker answered for draft `key`, given to its composer (sfbase's draft_give).
 fn picked_into(key : String, files : Array[@hostapi.Picked]) -> Unit {
   if files.is_empty() {
     return
   }
-  let list = picked_waiting.get(key).unwrap_or([])
-  list.push_iter(files.iter())
-  picked_waiting[key] = list
-  @sfbase.draft_given(key)
+  @sfbase.draft_give(key, Picked(files))
 }
 
 ///|
@@ -1063,7 +1034,13 @@ fn send_button(c : @ui.Ctx, ready : Bool, starting : Bool, submit : () -> Unit) 
 
 ///|
 /// A quote's comment, laid out and drawn the same in the composer and as its card sets out.
-fn quote_comment_field(c : @ui.Ctx, key : String, f : @ui.Field, hint? : Bool = true) -> @ui.EditorResult {
+fn quote_comment_field(
+  c : @ui.Ctx,
+  key : String,
+  f : @ui.Field,
+  hint? : Bool = true,
+  on_submit? : (String) -> Unit,
+) -> @ui.EditorResult {
   c.editor(
     key,
     placeholder=@sf.t("web-main.quote.commentPlaceholder"),
@@ -1075,6 +1052,7 @@ fn quote_comment_field(c : @ui.Ctx, key : String, f : @ui.Field, hint? : Bool = 
     placeholder_color=if hint { @sf.theme().p.subtle } else { 0L },
     caret_color=@sf.theme().p.accent,
     field=f,
+    on_submit?,
   )
 }
 
@@ -1165,12 +1143,10 @@ fn composer_extra_items(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writ
               }
             }),
             comment_field=fn() {
-              let res = quote_comment_field(c, key, f)
+              // (Enter in it: the words' field given the focus, as it is taken)
+              let res = quote_comment_field(c, key, f, on_submit=fn(_) { c.focus_field(w.field) })
               if res.text != text(v, "comment") {
                 writing_comment(src, w, id, res.text)
-              }
-              if res.submitted is Some(_) {
-                c.focus_field(w.field)
               }
             },
           )
@@ -2342,32 +2318,23 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
       sent_local_gone(rk, row)
       return
     }
-    let params : Map[String, Json] = {
-      "station": Json::string(r.station),
-      "text": Json::string(text(taken, "text")),
-      "attachments": Json::array(items(taken, "attachments")),
-      "quotes": Json::array(items(taken, "quotes")),
+    let to = match v.thread {
+      Some(th) => ToThread(th)
+      None => ToSession(r.session)
     }
-    let going = items(taken, "uploads")
-    if going.length() > 0 {
-      params["uploads"] = Json::array(going)
-    }
-    match v.thread {
-      Some(th) => params["thread"] = Json::number(th)
-      None => params["session"] = Json::string(r.session)
-    }
-    (src.call)("chat.send", Json::object(params), fn(res) {
-      match res {
-        Err(e) => {
+    send_taken(src, r.station, to, taken.unwrap(), fn(said) {
+      match said {
+        SentTaken => ()
+        SentRefused(e) | SentKept(e) => {
           sent_local_gone(rk, row)
           @ui.haptic(Reject)
-          let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
-          match text(Some(e), "code") {
-            "invalid_params" | "core_restarted" | "closed" => writing_restore(src, w, why, unless_written=true)
-            _ => toast_later(why)
+          let why = @sf.t("web-main.draft.notSent", args=[("error", e)])
+          if said is SentRefused(_) {
+            writing_restore(src, w, why, unless_written=true)
+          } else {
+            toast_later(why)
           }
         }
-        Ok(_) => ()
       }
     })
   })

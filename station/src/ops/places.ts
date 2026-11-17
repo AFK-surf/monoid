@@ -174,6 +174,10 @@ export type PlacesOptions = {
   timeoutMs?: number;
   /// Told of each child process started (tests).
   started?: (pid: number) => void;
+  /// The station's data directory as it is named (~/.stillfail): what is under that name is the station's own, read
+  /// and written by it on its thread wherever it is (moved to another disk, `stillfail move`, the name a link into
+  /// /Volumes), so never taken for a folder macOS protects.
+  own?: string;
 };
 
 /// Who is told why a directory may not be used: a person (in their language) or an agent (in English, told what to do
@@ -188,6 +192,7 @@ export class Places {
   readonly #probe: Probe;
   readonly #timeoutMs: number;
   readonly #started: ((pid: number) => void) | undefined;
+  readonly #own: string | null;
   /// Looks under way, by path and how: one at a time for the same, whoever asks.
   readonly #looking = new Map<string, Promise<Look>>();
 
@@ -198,6 +203,14 @@ export class Places {
     this.#probe = options.probe ?? nodeProbe;
     this.#timeoutMs = options.timeoutMs ?? TIMEOUT_MS;
     this.#started = options.started;
+    this.#own = options.own ? resolve(options.own) : null;
+  }
+
+  /// Whether `path` is, by its name, in the station's own data directory (`own`).
+  #ofOwn(path: string): boolean {
+    if (this.#own === null) return false;
+    const p = resolve(path);
+    return p === this.#own || p.startsWith(`${this.#own}/`);
   }
 
   /// Whether macOS's privacy protection applies here.
@@ -208,13 +221,13 @@ export class Places {
   /// Whether `path` is in a folder macOS protects, by its name (nothing looked at: a place in /Volumes not known yet is
   /// taken for a disk, and `file` looks before it copies anything).
   protects(path: string): boolean {
-    return this.#mac && protectedPlace(path, this.#home) !== null;
+    return this.#mac && !this.#ofOwn(path) && protectedPlace(path, this.#home) !== null;
   }
 
   /// `dir` as a folder something may start in: there, a folder, one the station may list (or, in a protected folder,
   /// still.fail Helper may), or refused (PlaceRefused) saying why in `asker`'s words. Its links followed where known.
   async directory(dir: string, asker: Asker): Promise<string> {
-    if (!this.#mac) {
+    if (!this.#mac || this.#ofOwn(dir)) {
       const s = await stat(dir).catch((e: NodeJS.ErrnoException) => {
         if (e.code === "ENOENT" || e.code === "ENOTDIR") return null;
         throw e;
@@ -237,7 +250,7 @@ export class Places {
   /// folders macOS protects (its caller looks at it as before); else copied into `into` (a new folder there, the same
   /// name) by still.fail Helper or a child process, at most `most` bytes, and that copy given, or refused saying why.
   async file(path: string, into: string, asker: Asker, most: number): Promise<string> {
-    if (!this.#mac) return path;
+    if (!this.#mac || this.#ofOwn(path)) return path;
     const where = await this.#fileWhere(path);
     if (where === null) return path;
     const dir = join(into, `.stillfail-staged-${randomUUID()}`);

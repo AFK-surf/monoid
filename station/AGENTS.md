@@ -415,7 +415,8 @@
   runners leaves those (`isTerminalRunner`). Every member but a read-only one opens one and types (one at a time, 接管
   as a screen's); a read-only member looks. A workspace sees only its own. A view is given the runner's screen first
   (libghostty-vt's, native/runner `screen`), then only the output past it. Not on a station that only runs tasks yet
-  (it serves no device): that is a step of its own.
+  (it serves no device): that is a step of its own. A `beta` feature of the station's (`src/features.ts`): a new one is opened only on a
+  station on the test channel, which says so in its overview (`features`); one open already is looked at and ended.
 
 ## Devices (设备)
 

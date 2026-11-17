@@ -442,12 +442,9 @@ pub fn png_size(b : Bytes) -> (Int, Int)? {
 /// All the marks drawn: their pictures and quotes into the chat's draft, said so, marking left.
 pub fn shot_done(p : ServicePage, site : @ui.NativeView, s : Shooting) -> Unit {
   let key = p.station + ":" + p.session
-  let list = marked_into.get(key).unwrap_or([])
   for x in s.pictures {
-    list.push((x.0, x.1, [x.2], "page"))
+    draft_give(key, Marked(x.0, x.1, [x.2], "page"))
   }
-  marked_into[key] = list
-  draft_given(key)
   p.marks.shot = None
   page_marks_leave(p, site)
   toast_later(svc("android-chat.preview.put.done"))
@@ -480,10 +477,6 @@ pub fn mark_where(m : PageMark, shot : String) -> String {
 // ── what marking shows ─
 
 
-///|
-/// Marked images waiting for their chat's composer: by its draft's key, the file and the quotes (title, what, comment),
-/// whose they are ("image": an image's marks; "page": a service's page's, each quote with its screenshot's name).
-pub let marked_into : Map[String, Array[(String, Bytes, Array[(String, String, String)], String)]] = Map([])
 
 ///|
 /// The time of day as HHmmss (what a marked image's name carries; UTC: the hosts tell no time zone yet).

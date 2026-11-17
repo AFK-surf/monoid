@@ -46,8 +46,13 @@ fn instructions(project : String, workspace : String, repos_dir : String, memory
 }
 
 ///|
+/// `MOVE_LINE`: what points an agent at moving a station's things, said only where moving is on.
+let move_line : String = " To move chats, or a whole station, to another station, skill stillfail-move."
+
+///|
 /// `sessionInstructions`: `project` the directory of a session begun in a terminal and continued here; `memory` the
-/// workspace's memory as it is now; `site` what the deployment adds; `station` this station's name ("" where none).
+/// workspace's memory as it is now; `site` what the deployment adds; `station` this station's name ("" where none);
+/// `move` whether moving to another station is on here (its skill named only then).
 pub fn session_instructions(
   workspace : String,
   project : String?,
@@ -56,13 +61,15 @@ pub fn session_instructions(
   memory : String,
   site? : String = "",
   station? : String = "",
+  move? : Bool = true,
 ) -> String {
   let project_line = match project {
     None => ""
     Some(p) =>
       "- Project directory: \{p}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n"
   }
-  instructions(project_line, workspace, repos_dir, memory_path, station) +
+  let told = instructions(project_line, workspace, repos_dir, memory_path, station)
+  (if move { told } else { replace_first(told, move_line, "") }) +
   (if site == "" { "" } else { "\n\n\{site}" }) +
   (if memory == "" { "" } else { "\n\n<memory path=\"\{memory_path}\">\n\{memory}\n</memory>" })
 }

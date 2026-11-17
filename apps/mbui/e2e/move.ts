@@ -816,10 +816,10 @@ try {
     await a.until({ topic: "stations", scope: ws }, (v) => (v ?? []).find((s: J) => s.id === id && s.online), 120_000);
     return id;
   };
-  await check("setup: B enrolled beside A with the app's command, moving switched on there, online", async () => {
+  await check("setup: B enrolled beside A with the app's command, on the test channel (moving is on there), online", async () => {
     bId = await enroll("B", "move-b");
     B = `${ws}/${bId}`;
-    if (!/"move":true/.test(readFileSync(`${DATA.B}/config.json`, "utf8"))) throw new Error(`B's config: ${readFileSync(`${DATA.B}/config.json`, "utf8")}`);
+    if (!/"updateChannel":"beta"/.test(readFileSync(`${DATA.B}/config.json`, "utf8"))) throw new Error(`B's config: ${readFileSync(`${DATA.B}/config.json`, "utf8")}`);
     log(`  B ${bId}`);
   });
   if (bId === "") throw new Error("no B: nothing to move to");

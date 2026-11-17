@@ -14,6 +14,8 @@
 /// begin (card_foot_words's: its padding as far in as that corner leaves them; one with an icon keeps its ends).
 /// `default_on`: while it is its layer's default, pressed by Enter that nothing with the focus takes (a dialog's primary
 /// button; never one that cannot be undone: @view.View::default_press).
+/// `on_night`: on a stage, on the night whatever the theme (the old button's `on_night`: the primary the white, its words
+/// the night; the others the white at 12%).
 /// The node.
 #callsite(autofill(loc))
 pub fn button_node(
@@ -27,9 +29,10 @@ pub fn button_node(
   icon? : String = "",
   card_words? : Bool = false,
   default_on? : () -> Bool,
+  on_night? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
-  button_by(loc~, parent, label, fn(_) { press() }, tone, busy, disabled, across, icon, card_words, default_on~)
+  button_by(loc~, parent, label, fn(_) { press() }, tone, busy, disabled, across, icon, card_words, default_on~, on_night~)
 }
 
 ///|
@@ -61,6 +64,7 @@ fn button_by(
   icon : String,
   card_words : Bool,
   default_on~ : (() -> Bool)?,
+  on_night? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let live = fn() { !disabled() && !busy() }
@@ -100,6 +104,19 @@ fn button_by(
       let t = theme()
       let p = t.p
       let h = hand.shown(v)
+      if on_night {
+        // (on a stage: the night under it whatever the theme, the primary the white, the others the white thinned)
+        return match tone {
+          Primary | DangerSolid => {
+            let g = mix(0xFFFFFFFFL, h, share_ink)
+            (g, g, share_ground)
+          }
+          _ => {
+            let g = mix(stage_plain_lit, h, stage_plain)
+            (g, g, share_ink)
+          }
+        }
+      }
       match tone {
         Primary => {
           let g = mix(p.primary_hover, h, p.primary)

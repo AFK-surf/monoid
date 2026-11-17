@@ -63,8 +63,13 @@ let loaded: Mesh | undefined;
 
 /// A fixed UDP address lets an operator admit LAN connections through an egress firewall. The native bind rejects
 /// invalid or occupied addresses; never fall back to a random port when an address was explicitly configured.
-export function bindStation(mesh: Endpoints, options: Bind, env: NodeJS.ProcessEnv = process.env): Promise<Endpoint> {
-  return mesh.bind({ ...options, bindAddr: env.STILLFAIL_MESH_BIND_ADDR });
+/// `STILLFAIL_MESH_DSCP` marks every iroh packet of the station with that DSCP, its relays' connections too, for a
+/// router that sends them their own way (docs/station-lan-firewall.md); the native bind rejects one outside 1 to 63,
+/// and anything not a number is rejected here: never a station silently unmarked.
+export async function bindStation(mesh: Endpoints, options: Bind, env: NodeJS.ProcessEnv = process.env): Promise<Endpoint> {
+  const dscp = env.STILLFAIL_MESH_DSCP;
+  if (dscp !== undefined && !/^[0-9]{1,3}$/.test(dscp)) throw new Error(`STILLFAIL_MESH_DSCP must be a DSCP, 1 to 63, not ${JSON.stringify(dscp)}`);
+  return mesh.bind({ ...options, bindAddr: env.STILLFAIL_MESH_BIND_ADDR, ...(dscp !== undefined ? { dscp: Number(dscp) } : {}) });
 }
 
 export function loadMesh(): Mesh {

@@ -58,6 +58,10 @@ test("a_leader_waiting_on_a_chat_it_leads_or_a_job_is_at_work", () => {
   const leads: J = { ...ended, opened: [{ session: "c", led: true, active: true }] };
   assert.equal(stage.boardStageOf(leads, me), "run");
   assert.equal(stage.subchatsLabel(leads), "1 个子会话进行中");
+  // (one that ended asking its leader, or gone wrong: its leader's to take up, said first on its row, at work still)
+  const asking: J = { ...ended, opened: [{ session: "c", led: true, active: true }, { session: "d", led: true, active: true, asks: true }] };
+  assert.equal(stage.boardStageOf(asking, me), "run");
+  assert.equal(stage.subchatsLabel(asking), "1 个子会话在等它处理");
   const finished: J = { ...ended, opened: [{ session: "c", led: true }] };
   assert.equal(stage.boardStageOf(finished, me), "done");
   assert.equal(stage.subchatsLabel(finished), null);

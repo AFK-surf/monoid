@@ -95,6 +95,7 @@ import { reviewUndecided, startReview } from "./review.ts";
 import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
 import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
+import { stationMoveOn } from "../features.ts";
 
 /// server.rs `encode` (encodeURIComponent).
 const encode = encodeURIComponent;
@@ -246,7 +247,7 @@ export const AgentsLive = (control: Control) =>
       // The folders macOS protects (Documents, Desktop, Downloads, disks) through still.fail Helper: the drive's and
       // the directories people and agents name (ops/places.ts), never touched on the station's thread.
       const helperFiles = yield* HelperFolders;
-      const places = new Places({ helper: helperFiles });
+      const places = new Places({ helper: helperFiles, own: data });
       // What other stations of the workspace share with this one, and what it shares (made below, once the accounts are).
       let sharing: Sharing | null = null;
       const borrowed = (p: unknown) => sharing?.borrowedSubscription(p) === true;
@@ -285,6 +286,7 @@ export const AgentsLive = (control: Control) =>
       const hub = new Hub({
         config: settings,
         siteInstructions,
+        moveOn: () => stationMoveOn(config.raw(), app),
         taking: () => control.taking(),
         store,
         previous,

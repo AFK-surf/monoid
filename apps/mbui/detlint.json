@@ -358,7 +358,7 @@
     "layout-read-back": {
       "src/sf/markdown.mbt": 1,
       "src/sf/parts.mbt": 5,
-      "src/sf/presenters.mbt": 8,
+      "src/sf/presenters.mbt": 6,
       "src/sf/seg.mbt": 1,
       "src/sf/submenu.mbt": 1,
       "src/sf/viewer_frame.mbt": 1,
@@ -444,7 +444,6 @@
       "src/sf/panel_node.mbt": 4,
       "src/sf/presented_node.mbt": 1,
       "src/sf/sheet_node.mbt": 1,
-      "src/sf/stage_node.mbt": 2,
       "src/sfapp/app.mbt": 3,
       "src/sfapp/entry_tree.mbt": 1,
       "src/sfapp/narrow_shell.mbt": 2,
@@ -453,11 +452,15 @@
       "src/sfdesk/tape_view.mbt": 1
     },
     "old-panel": {
-      "src/sfpages/screen_debug.mbt": 1,
-      "src/sfpages/stations_now.mbt": 1
+      "src/sfpages/screen_debug.mbt": 1
     },
     "click-read": {},
     "key-read": {},
+    "submitted-read": {
+      "src/sfapp/settings/vault_ask.mbt": 1,
+      "src/sfpages/chat_row.mbt": 1,
+      "src/sfpages/login_card.mbt": 1
+    },
     "part-place": {},
     "button-by-hand": {
       "src/sf/own_head_node.mbt": 1,
@@ -547,7 +550,8 @@
     "settle": {},
     "flow-wait": {},
     "script-wait": {
-      "e2e/move.ts": 1
+      "e2e/move.ts": 1,
+      "scripts/test.sh": 1
     },
     "page-settle": {},
     "device-shot": {},
@@ -618,6 +622,7 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},

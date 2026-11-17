@@ -174,6 +174,10 @@ fn Ctx::squeeze_said(self : Ctx) -> Array[(Int, String)] {
     if !seen[i] {
       continue
     }
+    // (in a picture of a part drawn another size than laid out: its places drawn, its words laid out, tree_drawn_scaled)
+    if tree_drawn_scaled.contains(i) || (b.parent >= 0 && tree_drawn_scaled.contains(b.parent)) {
+      continue
+    }
     // words cut down to nothing
     match b.squeeze_kept() {
       Some((kept, need)) if self.squeeze_words_visible(i) &&

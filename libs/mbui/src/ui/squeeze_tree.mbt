@@ -54,6 +54,14 @@ let tree_field_boxes : Map[Int, FieldBox] = Map([])
 let tree_scaled_at : Set[Int] = Set([])
 
 ///|
+/// The nodes of the window's tree among the frame's drawn another size than they are laid out, by their own scale or
+/// what holds them (View::scale): where each is put is as drawn, the words in them as laid out, so what the squeeze
+/// and the gaps measure of words against boxes there (cut, overlapping, wrapped, apart) is not said of them: a picture
+/// of a part (a look's tile, a card drawn smaller on a stage), judged where it is drawn its own size.
+// kept across runs: filled and emptied round one asking of the squeeze (Ctx::with_tree_nodes)
+let tree_drawn_scaled : Set[Int] = Set([])
+
+///|
 /// The first of the frame's nodes put there for the window's tree's (Ctx::with_tree_nodes `facts`), -1 none.
 // kept across runs: set round one asking of the squeeze (Ctx::with_tree_nodes)
 let tree_nodes_from : Ref[Int] = Ref(-1)

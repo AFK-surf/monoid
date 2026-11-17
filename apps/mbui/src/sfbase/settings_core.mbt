@@ -166,8 +166,8 @@ fn settings_core_of(
     own_code_face: own_code_preview,
     read_only: if src.read_only { read_only_words } else { "" },
     devices_on: src.asks_devices,
-    move_on: fn() { (src.asks_station_move)() && feature_on(src, "stationMove") },
-    terminals_on: fn() { (src.asks_terminals)() && feature_on(src, "terminal") },
+    move_on: fn() { (src.asks_station_move)() },
+    terminals_on: fn() { (src.asks_terminals)() },
   }
 }
 

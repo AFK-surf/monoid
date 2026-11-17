@@ -826,6 +826,7 @@
   "station.move.restarted": "This station restarted during the move: what had moved stays moved, the rest is here as it was. Ask again to go on.",
   "station.group.answerOptions": "Reply with a number or an option's words to answer.",
   "station.group.answerText": "Reply to answer.",
+  "station.group.secretReceived": "{name} handed you the secret \"{label}\" end to end: its value is the attached file alone (it is in no message and in no log). Use it from there; never repeat it in the chat.",
   "station.group.badServer": "The server ID is the server's 64-character hex ID",
   "station.group.noRelay": "Give at least one relay address",
   "station.group.badRelay": "A relay address starts with https:// or http://",

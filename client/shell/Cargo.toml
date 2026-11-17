@@ -33,6 +33,8 @@ n0-future = "0.3"
 # A datagram that asks whether a connection's other end is still there (`conn.answers`).
 bytes = "1"
 noq-proto = { version = "1", default-features = false }
+# The station's front marks its datagrams with a DSCP (`iroh.bind`'s `dscp`): the vendored one ([patch.crates-io]).
+noq-udp = { version = "=1.3.0", default-features = false }
 # The lock's and the vault's signatures checked here (`crypto.verify`) by formally verified implementations (Cryspen's
 # libcrux: HACL*'s Ed25519 and P-256, proved in F*), not the core's JS (@noble's), and off Hermes' slow arithmetic.
 libcrux-ed25519 = { version = "=0.0.10", default-features = false }

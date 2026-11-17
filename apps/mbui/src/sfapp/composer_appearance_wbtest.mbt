@@ -176,7 +176,7 @@ test "an image's marks come into the room the composer opens" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat")
   t.run_for(@ui.move_most_ms)
-  marked_into["ws1/st1:s-c1"] = [("图片-标注.png", png_head(), [("图片 标注 1", quote_passage, "这里对齐")], "image")]
+  draft_give("ws1/st1:s-c1", Marked("图片-标注.png", png_head(), [("图片 标注 1", quote_passage, "这里对齐")], "image"))
   t.run_for(composer_sample_ms)
   assert_eq(named(calls, "composer.quote").length(), 1, msg="the mark was not put in the composer")
   let (_, ground_y, _, _) = composer_glass(t)

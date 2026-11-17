@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync, spawn, spawnSync } from "node:child_process";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createServer } from "node:net";
 import { dirname, join } from "node:path";
@@ -767,5 +767,132 @@ test("stillfail uninstall of a data directory of its own leaves the person's sta
     } finally {
       m.done();
     }
+  }
+});
+
+/**
+ * A machine's station installed and its data made up (a database, a session's files, a socket of its run), its
+ * launchctl and systemctl saying what they were asked, the service started writing Node's word (run/health.json, now)
+ * where `starts`, as a station that runs from its data does.
+ */
+async function moving(os: "mac" | "linux", starts = true) {
+  const m = machine(os, true, "/tmp");
+  assert.equal(m.run(["tok"]).status, 0);
+  const data = join(m.home, ".stillfail");
+  mkdirSync(join(data, "sessions", "chat", "c-1", "workspace"), { recursive: true });
+  writeFileSync(join(data, "stillfail.db"), "the chats");
+  writeFileSync(join(data, "sessions", "chat", "c-1", "workspace", "notes.md"), "kept");
+  mkdirSync(join(data, "run"), { recursive: true });
+  const sock = createServer();
+  await new Promise<void>((r) => sock.listen(join(data, "run", "s.sock"), r));
+  sock.close();
+  const healthy = starts ? `printf '{"pid":1,"updatedAt":%s}\\n' "$(( $(date +%s) * 1000 + 1000 ))" > "$HOME/.stillfail/run/health.json"\n` : "";
+  for (const [name, start] of [["launchctl", "bootstrap"], ["systemctl", "start"]]) {
+    writeFileSync(join(m.root, "stub", name), `#!/bin/sh\necho "${name} $*" >> "$HOME/said"\n[ "$1" = print ] && exit 1\ncase "$*" in *${start}*) mkdir -p "$HOME/.stillfail/run"; ${healthy || ":"} ;; esac\nexit 0\n`, { mode: 0o755 });
+  }
+  return { m, data };
+}
+
+test("stillfail move takes the station's data to another disk, its name left a link to it, and back home again", async () => {
+  for (const os of ["mac", "linux"] as const) {
+    const { m, data } = await moving(os);
+    try {
+      const disk = join(m.root, "disk");
+      mkdirSync(disk);
+      const station = launcher(data);
+      writeFileSync(join(m.home, "said"), "");
+      const done = await uninstall(m, ["move", disk], { STILLFAIL_MOVE_APART: "1" });
+      const running = station.child.exitCode === null && station.child.signalCode === null;
+      if (running) station.child.kill();
+      assert.equal(done.status, 0, done.out);
+      assert.ok(!running, `${os}: what ran of its data stopped`);
+      assert.equal(readlinkSync(data), join(realpathSync(disk), "stillfail"), os);
+      assert.equal(readFileSync(join(data, "stillfail.db"), "utf8"), "the chats");
+      assert.equal(readFileSync(join(disk, "stillfail", "sessions", "chat", "c-1", "workspace", "notes.md"), "utf8"), "kept");
+      assert.ok(!existsSync(join(m.home, ".stillfail.moved")) && !existsSync(join(disk, "stillfail.moving")), `${os}: nothing left of the old place`);
+      if (os === "mac") {
+        assert.match(done.said, /^launchctl bootout gui\/\d+\/fail\.still\.station$/m);
+        assert.match(done.said, /^launchctl bootstrap gui\/\d+ \S+fail\.still\.station\.plist$/m);
+      } else {
+        assert.match(done.said, /^systemctl --user stop stillfail-station\.service$/m);
+        assert.match(done.said, /^systemctl --user start stillfail-station\.service$/m);
+      }
+      assert.match(done.out, /^100%$/m);
+      assert.match(done.out, /moved to/);
+
+      // moved again where it is: nothing done; to a folder holding one: refused
+      assert.equal((await uninstall(m, ["move", disk], { STILLFAIL_MOVE_APART: "1" })).status, 0);
+      const other = join(m.root, "other");
+      mkdirSync(join(other, "stillfail"), { recursive: true });
+      writeFileSync(join(other, "stillfail", "x"), "");
+      const there = await uninstall(m, ["move", other], { STILLFAIL_MOVE_APART: "1" });
+      assert.equal(there.status, 3, there.out);
+      assert.match(there.out, /is there already/);
+
+      // back home: a directory of its own again
+      const back = await uninstall(m, ["move", m.home], { STILLFAIL_MOVE_APART: "1" });
+      assert.equal(back.status, 0, back.out);
+      assert.ok(lstatSync(data).isDirectory(), `${os}: home again`);
+      assert.equal(readFileSync(join(data, "stillfail.db"), "utf8"), "the chats");
+      assert.ok(!existsSync(join(disk, "stillfail")), `${os}: the disk's copy given back`);
+    } finally {
+      m.done();
+    }
+  }
+});
+
+test("stillfail move on the same disk renames it, nothing copied", async () => {
+  // (each system's stat asked its way: GNU's -f is the file system's figures, its %d free inodes)
+  for (const os of ["mac", "linux"] as const) {
+    const { m, data } = await moving(os);
+    try {
+      const folder = join(m.root, "folder");
+      mkdirSync(folder);
+      const done = await uninstall(m, ["move", folder]);
+      assert.equal(done.status, 0, done.out);
+      assert.equal(readlinkSync(data), join(realpathSync(folder), "stillfail"), os);
+      assert.doesNotMatch(done.out, /copying/, os);
+      assert.equal(readFileSync(join(data, "stillfail.db"), "utf8"), "the chats");
+    } finally {
+      m.done();
+    }
+  }
+});
+
+test("a station that does not start from where its data was moved stays where it was", async () => {
+  const { m, data } = await moving("mac", false);
+  try {
+    const disk = join(m.root, "disk");
+    mkdirSync(disk);
+    writeFileSync(join(m.home, "said"), "");
+    const done = await uninstall(m, ["move", disk], { STILLFAIL_MOVE_APART: "1", STILLFAIL_MOVE_WAIT: "1" });
+    assert.equal(done.status, 7, done.out);
+    assert.match(done.out, /stays in/);
+    assert.ok(lstatSync(data).isDirectory(), "its own directory, as before");
+    assert.equal(readFileSync(join(data, "stillfail.db"), "utf8"), "the chats");
+    assert.ok(!existsSync(join(disk, "stillfail")), "the copy removed");
+    assert.equal(done.said.match(/launchctl bootstrap/g)?.length, 2, "started again where it was");
+  } finally {
+    m.done();
+  }
+});
+
+test("stillfail move refuses what it cannot do, and uninstall --purge takes the data where it was moved", async () => {
+  const { m, data } = await moving("linux");
+  try {
+    assert.equal((await uninstall(m, ["move", "disk"])).status, 2, "a path not whole");
+    assert.equal((await uninstall(m, ["move", join(m.root, "none")])).status, 2, "no such folder");
+    assert.equal((await uninstall(m, ["move", join(data, "sessions")])).status, 2, "inside its data");
+    const apart = await uninstall(m, ["move", m.root], { STILLFAIL_DATA: join(m.root, "apart") });
+    assert.equal(apart.status, 2, apart.out);
+    assert.ok(lstatSync(data).isDirectory(), "nothing moved");
+    const disk = join(m.root, "disk");
+    mkdirSync(disk);
+    assert.equal((await uninstall(m, ["move", disk], { STILLFAIL_MOVE_APART: "1" })).status, 0);
+    const purged = await uninstall(m, ["uninstall", "--purge"]);
+    assert.equal(purged.status, 0, purged.out);
+    assert.ok(!existsSync(join(disk, "stillfail")) && !existsSync(data));
+  } finally {
+    m.done();
   }
 });

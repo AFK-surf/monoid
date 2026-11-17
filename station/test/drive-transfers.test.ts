@@ -2,7 +2,7 @@
 // what it granted, a name already there replaced, kept beside or skipped, a move letting the originals go, a transfer
 // that failed taken up where it was, and a grant read only as it was given.
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -85,6 +85,56 @@ test("within a station: files and folders copied, what is there already kept bes
   assert.match(transfers.get(asked.id)!.error!, /already/);
 });
 
+for (const alias of [false, true]) test(`replacing a local source through ${alias ? "an aliased" : "the same"} root keeps the source`, async () => {
+  const s = station("self-replace");
+  writeFileSync(join(s.root, "note.txt"), "the only copy");
+  const root = alias ? join(s.base, "alias") : s.root;
+  if (alias) symlinkSync(s.root, root, process.platform === "win32" ? "junction" : "dir");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "", names: ["note.txt"] }, to: { root, path: "" }, conflicts: { "note.txt": "replace" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "the only copy");
+});
+
+for (const move of [false, true]) test(`a local ${move ? "move" : "copy"} into the source's child is refused before writing`, async () => {
+  const s = station("into-self");
+  mkdirSync(join(s.root, "project", "child"), { recursive: true });
+  writeFileSync(join(s.root, "project", "note.txt"), "original");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ move, from: { station: null, root: s.root, path: "", names: ["project"] }, to: { root: s.root, path: "project/child" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "project", "note.txt"), "utf8"), "original");
+  assert.equal(existsSync(join(s.root, "project", "child", "project")), false);
+});
+
+test("a replacement containing a later source is refused before replacing any destination", async () => {
+  const s = station("replace-parent");
+  mkdirSync(join(s.root, "folder", "folder"), { recursive: true });
+  writeFileSync(join(s.root, "folder", "note.txt"), "new note");
+  writeFileSync(join(s.root, "folder", "folder", "only.txt"), "only copy");
+  writeFileSync(join(s.root, "note.txt"), "old note");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "folder", names: ["note.txt", "folder"] }, to: { root: s.root, path: "" }, conflicts: { "note.txt": "replace", folder: "replace" } }));
+  await transfers.idle();
+  assert.equal(t.state, "failed");
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "old note", "an earlier destination was not trashed");
+  assert.equal(readFileSync(join(s.root, "folder", "note.txt"), "utf8"), "new note");
+  assert.equal(readFileSync(join(s.root, "folder", "folder", "only.txt"), "utf8"), "only copy");
+});
+
+test("keeping both can still duplicate a local file in its own folder", async () => {
+  const s = station("self-keep");
+  writeFileSync(join(s.root, "note.txt"), "original");
+  const transfers = transfersInto(s);
+  const t = transfers.start(spec({ from: { station: null, root: s.root, path: "", names: ["note.txt"] }, to: { root: s.root, path: "" }, conflicts: { "note.txt": "keep" } }));
+  await transfers.idle();
+  assert.equal(t.state, "done", t.error);
+  assert.equal(readFileSync(join(s.root, "note.txt"), "utf8"), "original");
+  assert.equal(readFileSync(join(s.root, "note 2.txt"), "utf8"), "original");
+});
+
 test("from another station with its grant: read in parts, the originals let go once moved", async () => {
   const a = station("src");
   const b = station("dst");
@@ -106,6 +156,46 @@ test("from another station with its grant: read in parts, the originals let go o
   assert.equal(existsSync(join(a.root, "note.md")), false);
   // Told as it went: walked, then copying, each file's end, done.
   assert.deepEqual([...new Set(told.map((x) => x.state))], ["queued", "walking", "copying", "done"]);
+});
+
+for (const remote of [false, true]) for (const move of [false, true]) test(`a ${remote ? "remote" : "local"} ${move ? "move" : "copy"} refuses an incomplete folder listing before replacing anything`, async () => {
+  const a = station("truncated-src");
+  const b = remote ? station("truncated-dst") : a;
+  mkdirSync(join(a.root, "project", "deep"), { recursive: true });
+  writeFileSync(join(a.root, "project", "deep", "shown.txt"), "shown");
+  writeFileSync(join(a.root, "project", "deep", "unseen.txt"), "unseen");
+  mkdirSync(join(b.root, "dst", "project"), { recursive: true });
+  writeFileSync(join(b.root, "dst", "project", "old.txt"), "old");
+  const list = a.drive.list.bind(a.drive);
+  a.drive.list = async (...args) => {
+    const got = await list(...args);
+    // A folder beyond the listing limit: the transfer must not treat its first page as the whole folder.
+    return args[1] === "project/deep" ? { ...got, entries: got.entries.filter((e) => e.name !== "unseen.txt"), truncated: true } : got;
+  };
+  const transfers = transfersInto(b, remote ? { A: { drive: a.drive, key: KEY } } : {});
+  try {
+    const t = transfers.start(spec({ move, from: { station: remote ? "A" : null, grant: remote ? grantOf(a, { names: ["project"], move }) : undefined, root: a.root, path: "", names: ["project"] }, to: { root: b.root, path: "dst" }, conflicts: { project: "replace" } }));
+    await transfers.idle();
+    assert.deepEqual({
+      state: transfers.get(t.id)!.state,
+      sourceShown: existsSync(join(a.root, "project", "deep", "shown.txt")),
+      sourceUnseen: existsSync(join(a.root, "project", "deep", "unseen.txt")),
+      destinationOld: existsSync(join(b.root, "dst", "project", "old.txt")),
+      destinationShown: existsSync(join(b.root, "dst", "project", "deep", "shown.txt")),
+    }, { state: "failed", sourceShown: true, sourceUnseen: true, destinationOld: true, destinationShown: false });
+    assert.match(transfers.get(t.id)!.error!, /project\/deep.*too many entries/);
+    assert.deepEqual(transfers.get(t.id)!.items, [], "a partial walk is not kept for retry");
+    a.drive.list = list;
+    transfers.retry("a@x", t.id);
+    await transfers.idle();
+    assert.equal(transfers.get(t.id)!.state, "done", transfers.get(t.id)!.error);
+    assert.equal(readFileSync(join(b.root, "dst", "project", "deep", "shown.txt"), "utf8"), "shown");
+    assert.equal(readFileSync(join(b.root, "dst", "project", "deep", "unseen.txt"), "utf8"), "unseen");
+    assert.equal(existsSync(join(a.root, "project")), !move);
+  } finally {
+    a.drive.list = list;
+    await transfers.close();
+  }
 });
 
 test("a transfer whose station went away fails, and is taken up again where it was", async () => {

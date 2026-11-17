@@ -1168,7 +1168,7 @@ pub let options_out_ms : Double
 
 pub let options_scale : Double
 
-pub let outside_ask : @ref.Ref[OutsideAsk?]
+pub let outside_ask : @signals.Signal[OutsideAsk?]
 
 pub fn outside_asking(String) -> OutsideAsk?
 
@@ -1621,8 +1621,6 @@ pub fn share_offer(Double, Double, () -> Unit, String, String, String) -> Unit
 pub fn share_turn_tool(@ui.Ctx, String, Int32, String, String, () -> Unit) -> Unit
 
 pub let shared_into : Map[String, Array[@hostapi.Picked]]
-
-pub fn sharing_go(String) -> Unit
 
 pub let shell : @ref.Ref[Shell]
 
@@ -2919,7 +2917,6 @@ pub(all) struct OutsideAsk {
   send : () -> Unit
   chats : @sf.LiveArray[OutsideRef]
   checking : @signals.Signal[Bool]
-  go : @signals.Signal[Bool]
   open : @signals.Signal[Bool]
   busy : @signals.Signal[Bool]
   error : @signals.Signal[String]

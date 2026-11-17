@@ -137,11 +137,9 @@ let writing_n : Ref[Int] = { val: 0 }
 
 ///|
 pub fn writings_reset() -> Unit {
-  quoted_into.clear()
-  files_put.clear()
+  given_reset()
   drafts_given.set([])
   writing_stations.clear()
-  shared_into.clear()
   for cached in writing_cache.val {
     cached.value.following.dispose()
   }
@@ -557,11 +555,6 @@ pub fn host_picture(name : String, src : String) -> String {
   }
 }
 
-///|
-/// Files shared into the app from another (Android's share sheet), waiting for their chat's composer to take them, by
-/// its draft's key.
-// kept across runs: put back by writings_reset (sfbase's reset)
-pub let shared_into : Map[String, Array[@hostapi.Picked]] = Map([])
 
 ///|
 /// The station files' picker (＋ → Station 文件) put up for draft `key` (`src` what it reads the stations by): sfdesk's
@@ -934,29 +927,14 @@ pub fn attachment_json(a : Attachment, owner : String) -> Json {
 /// message's `ts`, its role, the file as the core gives it; taken by whichever composer the draft's is, as it is next
 /// drawn (its quote with the file in its card, the file going again with the message as the station has it).
 pub fn quote_file_into(draft : String, author : String, ts : String, role : String, file : Json) -> Unit {
-  let list = quoted_into.get(draft).unwrap_or([])
-  list.push((author, ts, role, file))
-  quoted_into[draft] = list
-  draft_given(draft)
+  draft_give(draft, Quoted(author, ts, role, file))
 }
 
 ///|
 /// Files (a 文件 row) put into a chat's message from elsewhere (the files' tab: 添加到消息, a row let go on the chat), by
-/// the chat's key; taken by its composer as it is next drawn (files_taken).
+/// the chat's key; taken by its composer (compose_given.mbt).
 pub fn files_into(chat : String, d : Dragged) -> Unit {
-  files_put.push((chat, d))
-  draft_given(chat)
-}
-
-///|
-/// What was put into the chat `chat`'s message since it was last asked, taken; the last of what is put into that draft
-/// to be taken (its composer takes the rest before), so nothing waits for it any more (drafts_given).
-pub fn files_taken(chat : String) -> Array[Dragged] {
-  drafts_given_read(chat)
-  let out = files_put.filter(fn(x) { x.0 == chat }).map(fn(x) { x.1 })
-  files_put.retain(fn(x) { x.0 != chat })
-  drafts_given.remove(chat)
-  out
+  draft_give(chat, Dropped(d))
 }
 
 ///|
@@ -1008,13 +986,9 @@ pub fn finder_dragged(src : Source, paths : Array[@ui.DroppedPath]) -> Array[Dra
   })
 }
 
-///|
-// kept across runs: put back by writings_reset (sfbase's reset)
-let files_put : Array[(String, Dragged)] = []
 
 ///|
-/// The drafts (by key) something was put into from elsewhere (files_into, quote_file_into, shared_into, marked_into,
-/// followed_into) not yet taken: what takes a draft's (its composer as it is built) built again as its key comes in.
+/// The drafts (by key) something was put into from elsewhere (draft_give, compose_given.mbt) not yet taken: what takes a draft's (its composer as it is built) built again as its key comes in.
 // kept across runs: emptied by writings_reset (sfbase's reset)
 let drafts_given : @signals.Keyed[String] = @signals.keyed()
 
@@ -1046,7 +1020,3 @@ pub let neighbour_go : Ref[(Source, Workspace, Int) -> Unit] = Ref(fn(_, _, _) {
 // kept across runs: what the app says once as it starts
 pub let neighbour_held : Ref[() -> Bool] = Ref(fn() { false })
 
-///|
-/// The files quoted, by draft key, not yet taken by a composer.
-// kept across runs: put back by writings_reset (sfbase's reset)
-pub let quoted_into : Map[String, Array[(String, String, String, Json)]] = Map([])

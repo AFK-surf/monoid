@@ -354,6 +354,10 @@ export class Account extends ProductionAccount {
     else session.expires = nowSeconds();
     this.ctx.storage.kv.put("account", account);
   }
+  /** The session alarm, run by the test after it expires a session. */
+  sweepSessions() {
+    return this.alarm();
+  }
   /** Moves the session's last rotation `seconds` into the past (past its retry window, say). */
   age(id: string, seconds: number) {
     const account = this.ctx.storage.kv.get<any>("account");

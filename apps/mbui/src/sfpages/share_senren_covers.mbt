@@ -107,7 +107,7 @@ let gh_covers : Array[SrCover] = [
 /// lines down its left; the masthead (its issue the week's chats archived); the cover lines (the feature: the top
 /// model's tokens; two of hers; the chats at work now); her name, her title and her line; at the foot a barcode made of
 /// what it says, still.fail and its line, and the week's spend its price.
-fn sr_gahou(c : @ui.Ctx, look : String, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_gahou(c : Pen, look : String, fleet : Json?, flat : Bool) -> Pen {
   let g = match gh_covers.iter().find_first(fn(x) { x.look == look }) {
     Some(g) => g
     None => gh_covers[0]
@@ -116,9 +116,9 @@ fn sr_gahou(c : @ui.Ctx, look : String, fleet : Json?, id : Int, flat : Bool) ->
   let w = @sf.share_w_most
   let ink = @ui.text_style(color=Data(g.ink))
   let name = gh_t(g.who + ".name", [])
-  sr_box(c, id, flat, g.sky, fn() {
-    c.box(style=gh_frame, fn() {
-      c.box(top=g.drop, left=0.0, fn() { sr_art(c, g.art, w, gh_h, at=0.0) |> ignore }) |> ignore
+  sr_box(c, flat, g.sky, fn(c) {
+    c.box(style=gh_frame, fn(c) {
+      c.box(top=g.drop, left=0.0, fn(c) { sr_art(c, g.art, w, gh_h, at=0.0) |> ignore }) |> ignore
       if g.drop > 0.0 {
         gh_shade(c, "sky", g.sky, w, gh_sky_h, g.drop, 0.0, fn(_, y) { 1.0 - y })
       }
@@ -141,34 +141,34 @@ fn sr_gahou(c : @ui.Ctx, look : String, fleet : Json?, id : Int, flat : Bool) ->
         gh_side_most * (1.0 - x) * fade
       })
       // the masthead
-      c.box(style=gh_mast, top=gh_mast_top, left=gh_edge, right=gh_edge, fn() {
+      c.box(style=gh_mast, top=gh_mast_top, left=gh_edge, right=gh_edge, fn(c) {
         let small = gh_en.then(@ui.text_style(color=Data(gh_dim(g.ink))))
-        c.box(style=gh_row, fn() {
+        c.box(style=gh_row, fn(c) {
           sr_words(c, gh_spaced(gh_t("gahou.en", [])), small)
-          c.box(style=gh_grow, fn() {  }) |> ignore
+          c.box(style=gh_grow, fn(_) {  }) |> ignore
           sr_words(c, gh_spaced(gh_t("gahou.en2", [])), small)
         })
         |> ignore
         // (as tall as its size, as the mockup's line: its face reaches past that, which a browser shares out above
         // and below and mbui leaves below, so it is lifted by half of it)
-        c.box(style=gh_title_box, ty=-gh_title_lift, fn() { sr_words(c, gh_t("gahou.title", []), gh_title.then(ink)) })
+        c.box(style=gh_title_box, ty=-gh_title_lift, fn(c) { sr_words(c, gh_t("gahou.title", []), gh_title.then(ink)) })
         |> ignore
-        c.box(style=gh_issue_row, fn() {
+        c.box(style=gh_issue_row, fn(c) {
           if sr_arg(args, "month") != "" {
             sr_words(c, gh_t("gahou.month", args), gh_issue)
           }
           sr_rich(c, gh_said("gahou.issue", args, g.ink), gh_issue)
-          c.box(style=gh_grow, fn() {  }) |> ignore
+          c.box(style=gh_grow, fn(_) {  }) |> ignore
           sr_words(c, gh_t(g.own + ".note", []), gh_issue)
         })
         |> ignore
       })
       |> ignore
       // the cover lines
-      c.box(style=gh_lines, top=g.lines_top, left=gh_edge, fn() {
+      c.box(style=gh_lines, top=g.lines_top, left=gh_edge, fn(c) {
         let lines = [("gahou.feature", "gahou.featureLine"), ..g.lines, ("gahou.live", "gahou.liveLine")]
         for line in lines {
-          c.box(style=gh_line, fn() {
+          c.box(style=gh_line, fn(c) {
             sr_words(c, gh_t(line.0, []), gh_what.then(ink))
             sr_rich(c, gh_said(line.1, args, g.ink, hi_scale=gh_said_scale), gh_says)
           })
@@ -177,7 +177,7 @@ fn sr_gahou(c : @ui.Ctx, look : String, fleet : Json?, id : Int, flat : Bool) ->
       })
       |> ignore
       // her name, her title, her line
-      c.box(style=gh_hero, bottom=gh_hero_bottom, left=gh_edge, right=gh_edge, fn() {
+      c.box(style=gh_hero, bottom=gh_hero_bottom, left=gh_edge, right=gh_edge, fn(c) {
         sr_rich(
           c,
           [
@@ -190,15 +190,15 @@ fn sr_gahou(c : @ui.Ctx, look : String, fleet : Json?, id : Int, flat : Bool) ->
       })
       |> ignore
       // the barcode, still.fail, the price
-      c.box(style=gh_foot, bottom=gh_foot_bottom, left=gh_edge, right=gh_edge, fn() {
+      c.box(style=gh_foot, bottom=gh_foot_bottom, left=gh_edge, right=gh_edge, fn(c) {
         gh_barcode(c, sr_arg(args, "at") + sr_arg(args, "weekCost") + name, gh_figures(sr_arg(args, "at")))
-        c.box(style=gh_meta, fn() {
+        c.box(style=gh_meta, fn(c) {
           sr_brand(c, gh_brand)
           sr_words(c, @sf.t("web-main.stations.shareTagline"), gh_small)
         })
         |> ignore
-        c.box(style=gh_grow, fn() {  }) |> ignore
-        c.box(style=gh_price, fn() {
+        c.box(style=gh_grow, fn(_) {  }) |> ignore
+        c.box(style=gh_price, fn(c) {
           sr_words(c, gh_t("gahou.price", []), gh_small)
           sr_words(c, sr_arg(args, "weekCost"), gh_price_figure.then(ink))
         })
@@ -288,7 +288,7 @@ let gh_plain : Array[String] = ["accounts", "kind", "model", "tasksPer", "month"
 /// (the side shade is a gradient across faded at its top and foot), so it is a small picture of its pixels, made once
 /// (by `name` and `ink`: the same each time), laid stretched.
 fn gh_shade(
-  c : @ui.Ctx,
+  c : Pen,
   name : String,
   ink : Int64,
   w : Double,
@@ -314,7 +314,7 @@ fn gh_shade(
     }
     @ui.add_image(key, @pixels.png(n, n, px))
   }
-  c.box(top~, left~, fn() { c.image(key, w=Px(w), h=Px(h), fit=FitFill, bg=0L, fade=false) |> ignore }) |> ignore
+  c.box(top~, left~, fn(c) { c.image(key, w, h) |> ignore }) |> ignore
 }
 
 ///|
@@ -354,9 +354,9 @@ fn gh_figures(words : String) -> String {
 ///|
 /// The cover's barcode on its white: a bar for each character of `words` (its first gh_code_most), 1 to 3 wide and 1
 /// or 2 from the next as its code says (the mockup's), `figures` under it.
-fn gh_barcode(c : @ui.Ctx, words : String, figures : String) -> Unit {
-  c.box(style=gh_code, fn() {
-    c.box(style=gh_bars, fn() {
+fn gh_barcode(c : Pen, words : String, figures : String) -> Unit {
+  c.box(style=gh_code, fn(c) {
+    c.box(style=gh_bars, fn(c) {
       let mut n = 0
       for ch in words {
         if n >= gh_code_most {
@@ -365,8 +365,8 @@ fn gh_barcode(c : @ui.Ctx, words : String, figures : String) -> Unit {
         let k = ch.to_int()
         let w = (k % 3 + 1).to_double()
         let gap = ((k >> 2) % 2 + 1).to_double()
-        c.box(style=gh_bar.then(@ui.style(w=Fixed(w))), fn() {  }) |> ignore
-        c.box(style=@ui.style(w=Fixed(gap)), fn() {  }) |> ignore
+        c.box(style=gh_bar.then(@ui.style(w=Fixed(w))), fn(_) {  }) |> ignore
+        c.box(style=@ui.style(w=Fixed(gap)), fn(_) {  }) |> ignore
         n = n + 1
       }
     })
@@ -783,17 +783,17 @@ let map_ring_dashes : String = "M42.00 35.30 L41.95 36.20 M41.52 38.76 L41.27 39
 /// chats running tonight, the academy the week's chats archived, the sweets shop the week's spend, the red bridge the
 /// tasks across devices, the hot spring the devices), a compass at its foot; under it a legend: the week's chats
 /// archived and their days as bars, still.fail, when and its line.
-fn sr_map(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_map(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gh_args(fleet)
   let w = @sf.share_w_most
-  sr_box(c, id, flat, map_ground, fn() {
-    c.box(style=map_frame, fn() {
+  sr_box(c, flat, map_ground, fn(c) {
+    c.box(style=map_frame, fn(c) {
       sr_art(c, "d3-hoori-map", w, map_h) |> ignore
       // the leaders, under the cards
-      c.box(left=0.0, top=0.0, fn() { c.shapes(map_leaders(), w=Px(w), h=Px(map_h)) |> ignore }) |> ignore
+      c.box(left=0.0, top=0.0, fn(c) { c.shapes(map_leaders(), w, map_h) |> ignore }) |> ignore
       // the title: a little hanging scroll, a rod at either end
-      c.box(style=map_cart, right=map_cart_side, top=map_cart_side, fn() {
-        c.box(style=map_cart_inner, fn() {
+      c.box(style=map_cart, right=map_cart_side, top=map_cart_side, fn(c) {
+        c.box(style=map_cart_inner, fn(c) {
           sr_rich(
             c,
             [
@@ -805,53 +805,53 @@ fn sr_map(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
           sr_words(c, gh_t("map.sub", []), map_cart_sub)
         })
         |> ignore
-        c.box(style=map_rod, left=map_rod_out, top=map_rod_over, bottom=map_rod_over, fn() {
-          c.box(style=map_rod_shine, fn() {  }) |> ignore
+        c.box(style=map_rod, left=map_rod_out, top=map_rod_over, bottom=map_rod_over, fn(c) {
+          c.box(style=map_rod_shine, fn(_) {  }) |> ignore
         })
         |> ignore
-        c.box(style=map_rod, right=map_rod_out, top=map_rod_over, bottom=map_rod_over, fn() {
-          c.box(style=map_rod_shine, fn() {  }) |> ignore
+        c.box(style=map_rod, right=map_rod_out, top=map_rod_over, bottom=map_rod_over, fn(c) {
+          c.box(style=map_rod_shine, fn(_) {  }) |> ignore
         })
         |> ignore
       })
       |> ignore
       // the places: each its card (on its shadow, laid that far right and down of it) and its dot
       for p in map_places {
-        let card = fn() { map_card(c, p, args) }
+        let card = fn(c) { map_card(c, p, args) }
         if p.right {
           c.box(style=map_card_shadow, right=p.side - map_card_drop, top=p.top + map_card_drop, card) |> ignore
         } else {
           c.box(style=map_card_shadow, left=p.side + map_card_drop, top=p.top + map_card_drop, card) |> ignore
         }
-        c.box(style=map_dot, left=p.x - map_dot_r, top=p.y - map_dot_r, fn() {  }) |> ignore
+        c.box(style=map_dot, left=p.x - map_dot_r, top=p.y - map_dot_r, fn(_) {  }) |> ignore
       }
       // the compass
-      c.box(left=map_compass_left, top=map_compass_top, fn() {
-        c.shapes(map_shapes(map_compass), w=Px(map_compass_w), h=Px(map_compass_h)) |> ignore
-        c.box(left=0.0, right=0.0, top=map_north_top, fn() { sr_words(c, gh_t("map.north", []), map_north) }) |> ignore
+      c.box(left=map_compass_left, top=map_compass_top, fn(c) {
+        c.shapes(map_shapes(map_compass), map_compass_w, map_compass_h) |> ignore
+        c.box(left=0.0, right=0.0, top=map_north_top, fn(c) { sr_words(c, gh_t("map.north", []), map_north) }) |> ignore
       })
       |> ignore
     })
     |> ignore
     // the legend: the week's visitors as bars, still.fail and when
-    c.box(style=map_rule, fn() {  }) |> ignore
-    c.box(style=map_legend, fn() {
+    c.box(style=map_rule, fn(_) {  }) |> ignore
+    c.box(style=map_legend, fn(c) {
       // (the label wraps where the room beside still.fail runs out: in English it is long)
-      c.box(style=map_flow, fn() {
+      c.box(style=map_flow, fn(c) {
         sr_rich(c, [@ui.span(gh_t("map.flow", args), scale=map_small_k)], map_small_wrap)
-        c.box(style=map_bars, fn() {
+        c.box(style=map_bars, fn(c) {
           for d in sr_days(fleet) {
             let (_, _, _, share, today) = d
             let h = if share * map_bars_h > map_bar_least { share * map_bars_h } else { map_bar_least }
             let bar = if today { map_bar_today } else { map_bar }
-            c.box(style=bar.then(@ui.style(h=Fixed(h))), fn() {  }) |> ignore
+            c.box(style=bar.then(@ui.style(h=Fixed(h))), fn(_) {  }) |> ignore
           }
         })
         |> ignore
       })
       |> ignore
       // (as wide as its widest line, each a line of its own: nothing of it cut short in either language)
-      c.box(style=map_info, fn() {
+      c.box(style=map_info, fn(c) {
         sr_brand(c, map_brand)
         sr_rich(c, [@ui.span(sr_arg(args, "at"), scale=map_small_k)], map_small)
         sr_rich(c, [@ui.span(@sf.t("web-main.stations.shareTagline"), scale=map_small_k)], map_small)
@@ -865,10 +865,10 @@ fn sr_map(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// A place's label card, moved up and left by its shadow's offset (it is laid in its shadow): its symbol and name in
 /// red over its lines, their figures bolder and larger.
-fn map_card(c : @ui.Ctx, p : MapPlace, args : Array[(String, String)]) -> Unit {
-  c.box(style=map_card_box, tx=-map_card_drop, ty=-map_card_drop, fn() {
-    c.box(style=map_card_head, fn() {
-      c.shapes(map_shapes(p.icon), w=Px(map_icon), h=Px(map_icon)) |> ignore
+fn map_card(c : Pen, p : MapPlace, args : Array[(String, String)]) -> Unit {
+  c.box(style=map_card_box, tx=-map_card_drop, ty=-map_card_drop, fn(c) {
+    c.box(style=map_card_head, fn(c) {
+      c.shapes(map_shapes(p.icon), map_icon, map_icon) |> ignore
       sr_rich(c, [@ui.span(gh_t(p.name, []), scale=map_k)], map_card_name)
     })
     |> ignore

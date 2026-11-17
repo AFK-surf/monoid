@@ -42,7 +42,7 @@ export type Route = { role: Role; path: string; to: "api" | Site };
  * What deploy.py puts as the API's secrets, and what a self-hosted cloud sets besides the vars: each read from the
  * environment as well (env.ts says what each is).
  */
-const SECRETS = ["GOOGLE_CLIENT_SECRET", "AUTH_SIGNING_KEY", "ADMIN_TOKEN", "GRANT_SIGNING_JWK", "FEEDBACK_TOKEN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "FCM_SERVICE_ACCOUNT", "APNS_KEY", "AXIOM_TOKEN", "AXIOM_DATASET", "REVIEW_ACCOUNTS", "ADMIN_EMAIL", "RELAY_URL", "OIDC_ISSUER", "OIDC_NAME"];
+const SECRETS = ["GOOGLE_CLIENT_SECRET", "AUTH_SIGNING_KEY", "ADMIN_TOKEN", "GRANT_SIGNING_JWK", "FEEDBACK_TOKEN", "VAPID_PUBLIC_KEY", "VAPID_PRIVATE_KEY", "VAPID_SUBJECT", "FCM_SERVICE_ACCOUNT", "FCM_SERVICE_ACCOUNT_MORE", "APNS_KEY", "APNS_KEY_MORE", "GCP_TELEMETRY", "REVIEW_ACCOUNTS", "ADMIN_EMAIL", "RELAY_URL", "OIDC_ISSUER", "OIDC_NAME"];
 
 /**
  * The cloud's routes from the wrangler files. Each static site's first custom domain is its host (app.still.fail the

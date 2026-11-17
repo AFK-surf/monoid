@@ -154,6 +154,8 @@ export type HubOptions = {
   /// What the deployment adds to every session's instructions, as the station read it at its start
   /// (agents/instructions.ts `readSiteInstructions`); none by default.
   siteInstructions?: string;
+  /// Whether moving to another station is on here (features.ts stationMoveOn); on where none is said.
+  moveOn?: () => boolean;
 };
 
 /// The handover file, in the data directory.
@@ -1758,6 +1760,7 @@ export class Hub {
       mcpUrl: () => (typeof this.options.mcpUrl === "string" ? this.options.mcpUrl : this.options.mcpUrl()),
       reposDir: () => this.reposDir(),
       siteInstructions: () => this.options.siteInstructions ?? "",
+      moveOn: () => this.options.moveOn?.() ?? true,
       ownName: () => {
         const me = this.options.station?.() ?? null;
         return me === null ? "" : (this.options.stationName?.(me) ?? "");

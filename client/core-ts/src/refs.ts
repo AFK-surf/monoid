@@ -172,20 +172,24 @@ export function search(chats: J, query: string, station: string | null | undefin
     return Math.min(of("id"), of("session"));
   };
   const active = (i: J): number => (typeof get(i, "lastActiveAt") === "number" ? (get(i, "lastActiveAt") as number) : 0);
-  const ordered = rows
-    .filter((i) => get(i, "pending") !== true)
-    .filter((i) => exclude == null || ["id", "session"].every((f) => get(i, f) !== exclude))
-    .map((row, index) => ({ row, index, rank: rank(row), active: active(row) }))
-    .sort((a, b) => a.rank - b.rank || b.active - a.active || a.index - b.index);
-  const candidates = ordered.map(({ row: i }) => (station != null && get(i, "station") !== station ? { ...i, otherStation: true } : i));
-  const titled = candidates.filter((i) => q === "" || has(get(i, "title")));
-  const rest = candidates.filter(
-    (i) =>
-      q !== "" &&
-      !has(get(i, "title")) &&
-      (arr(get(i, "agents")).some((a) => has(get(a, "agentText"))) || has(get(i, "stationName")) || has(get(i, "originText")) || has(get(get(i, "last"), "preview"))),
-  );
-  return { items: [...titled, ...rest].slice(0, limit ?? Infinity) };
+  // (only what it finds is ranked, cut to `limit` and copied: a letter typed in the `@` menu walked every chat of the
+  // workspace's and its others' whole, each copied, 2026-11-17)
+  const titledOf = (i: J) => q === "" || has(get(i, "title"));
+  const restOf = (i: J) =>
+    q !== "" &&
+    (arr(get(i, "agents")).some((a) => has(get(a, "agentText"))) || has(get(i, "stationName")) || has(get(i, "originText")) || has(get(get(i, "last"), "preview")));
+  const titled: { row: J; index: number; rank: number; active: number }[] = [];
+  const rest: { row: J; index: number; rank: number; active: number }[] = [];
+  rows.forEach((row, index) => {
+    if (get(row, "pending") === true || (exclude != null && !["id", "session"].every((f) => get(row, f) !== exclude))) return;
+    const into = titledOf(row) ? titled : restOf(row) ? rest : null;
+    into?.push({ row, index, rank: rank(row), active: active(row) });
+  });
+  const order = (a: { index: number; rank: number; active: number }, b: { index: number; rank: number; active: number }) => a.rank - b.rank || b.active - a.active || a.index - b.index;
+  titled.sort(order);
+  rest.sort(order);
+  const found = [...titled, ...rest].slice(0, limit ?? Infinity);
+  return { items: found.map(({ row: i }) => (station != null && get(i, "station") !== station ? { ...i, otherStation: true } : i)) };
 }
 
 /// At most this many chats of the viewer's other workspaces the `@` menu offers at once.

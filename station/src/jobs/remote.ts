@@ -333,7 +333,7 @@ export class Remote {
     this.workspaceReader = new WorkspaceReader(() => this.store.now());
     this.jobs = options.jobs;
     this.notify = options.notify;
-    this.places = options.places ?? new Places();
+    this.places = options.places ?? new Places({ own: options.data });
     this.diskFree = options.diskFree ?? diskFree;
     this.removeMirror = options.removeMirror ?? ((path) => rm(path, { recursive: true, force: true }));
     this.removeTask = options.removeTask ?? ((path) => rm(path, { recursive: true, force: true }));

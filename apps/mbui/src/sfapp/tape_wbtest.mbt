@@ -1552,3 +1552,22 @@ test "on an iPad's whole screen nothing of the wide frame is pressed or drawn un
     fail(bad.join("\n"))
   }
 }
+
+///|
+test "a window resized into Medium keeps the open page in the foreground" {
+  for platform in [0, 1, 2] {
+    let t = tape_chat(platform, 1280.0, 900.0)
+    t.resize(669.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    page_over(t, 669.0)
+    t.resize(515.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sfdesk.is_wide(t.ctx()))
+    assert_true(on_first_chat())
+    t.resize(669.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    assert_true(on_first_chat())
+  }
+}

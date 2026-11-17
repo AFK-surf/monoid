@@ -213,6 +213,14 @@ function stationsOn(chats: J): J {
   return { ...chats, days: arr(get(chats, "days")).map((d) => ({ ...d, items: arr(get(d, "items")).map((row) => stationOn(row, words.get(str(get(row, "station")) ?? ""))) })) };
 }
 
+/// What a search found among a list's rows (refs.search's `items`), each as its station's state makes it (stationOn): as
+/// stationsOn would have made them, the rows it did not find left as they are.
+function foundOn(chats: J, found: J): J {
+  const words = new Map(arr(get(chats, "stations")).map((s) => [str(get(s, "station")) ?? "", s]));
+  if (![...words.values()].some((w) => get(w, "offline") !== undefined || get(w, "reconnecting") !== undefined)) return found;
+  return { ...found, items: arr(get(found, "items")).map((row) => stationOn(row, words.get(str(get(row, "station")) ?? ""))) };
+}
+
 /// Which of a list's rows went and came since it was last made (`#chats`): `whole` when it was made again whole.
 type RowsChanged = { whole: boolean; gone: J[]; come: J[] };
 /// How many rows going and coming a list's days take one by one (`#daysOf`); more, they are made again whole.
@@ -1793,11 +1801,12 @@ export class Views implements Owner {
       case "chatSearch": {
         const listed = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "all" : "visible");
         if (listed === undefined || !("ok" in listed)) return listed;
-        const chats = { ok: stationsOn(wholeRows(listed.ok)) };
+        // (each row as its station's state makes it, of those it finds alone: stationsOn, foundOn)
+        const rows = wholeRows(listed.ok);
         const elsewhere = view.elsewhere === true && String(view.query ?? "").trim() !== "";
         // The chats opened on this device first, the latest first, then the rest by when they were last active (refs.ts).
         const opened = refs.openedIn(this.#core.data, view.scope as string);
-        const found = refs.search(chats.ok, view.query as string, view.station as string | undefined, view.exclude as string | undefined, elsewhere ? undefined : (view.limit as number | undefined), opened);
+        const found = foundOn(rows, refs.search(rows, view.query as string, view.station as string | undefined, view.exclude as string | undefined, elsewhere ? undefined : (view.limit as number | undefined), opened));
         // With something typed (`elsewhere`, the `@` menu), those of the viewer's other workspaces whose title has it
         // too, each saying whose, ranked so as not to crowd this workspace's (refs.ts withOutside).
         if (elsewhere) {
@@ -1806,14 +1815,15 @@ export class Views implements Owner {
             if (place.id === view.scope) continue;
             const theirs = this.#chatsWhole(place.id, false, false, "all");
             if (theirs === undefined || !("ok" in theirs)) continue;
-            for (const item of arr(refs.search(stationsOn(wholeRows(theirs.ok)), view.query as string, undefined, undefined, undefined, refs.openedIn(this.#core.data, place.id)).items)) others.push({ ...item, outside: place.name, ...xshare.markOf(place, "outside") });
+            const theirRows = wholeRows(theirs.ok);
+            for (const item of arr(foundOn(theirRows, refs.search(theirRows, view.query as string, undefined, undefined, undefined, refs.openedIn(this.#core.data, place.id))).items)) others.push({ ...item, outside: place.name, ...xshare.markOf(place, "outside") });
           }
           found.items = refs.withOutside(arr(found.items), others, view.query as string, view.scope as string, view.limit as number | undefined);
         }
         // (what it lists whole, as its rows were before the list's were what a row draws: wholeFor)
         found.items = arr(found.items).map((i) => this.wholeFor(i));
         if (typeof view.messages === "number" && view.messages > 0) {
-          found.messages = this.#foundMessages(chats.ok, view);
+          found.messages = this.#foundMessages(stationsOn(rows), view);
           found.words = refs.terms(view.query as string);
         }
         return { ok: found };

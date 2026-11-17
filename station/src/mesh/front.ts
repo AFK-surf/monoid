@@ -547,6 +547,7 @@ class FrontEndpoint implements Endpoint {
         ...(options.bindAddr ? { bindAddr: options.bindAddr } : {}),
         ...(options.relayOnly ? { relayOnly: true } : {}),
         ...(options.congestion ? { congestion: options.congestion } : {}),
+        ...(options.dscp !== undefined ? { dscp: options.dscp } : {}),
       },
     };
     const { front, said } = await FrontEndpoint.#link(socket, bind);
