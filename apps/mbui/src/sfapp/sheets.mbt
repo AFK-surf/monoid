@@ -255,12 +255,16 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     })
     |> ignore
     // its agents, each a row of a card: its mark, its name, how it is and its allowance, a tap to its card
-    col.pick(fn() { items(chat(), "agents").map(fn(a) { text(field(Some(a), "session"), "key") }) }, fn(p, keys) {
-      guard keys.length() > 0 else { return }
+    // (the card there while it has any; its agents kept by their session's key once, each row reading its own, told
+    // only as that one changes: an agent come or gone makes or lets go its row alone)
+    let agents = fn() { items(chat(), "agents") }
+    let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
+    col.show(fn() { agents().length() > 0 }, fn(p) {
       info_list_node(p, fn(k) {
-        k.each_of(fn() { keys }, fn(row, key) {
-          let a = fn() { agent_json(chat(), key) }
-          info_agent_row_node(row, src, a, fn() {
+        let by_key = k.keyed_by(agents, agent_key)
+        k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
+          let key = key.untracked()
+          info_agent_row_node(row, src, fn() { by_key.get(key) }, fn() {
             close()
             open_agent(src, r, key)
           })
@@ -1052,7 +1056,7 @@ fn reveal_part_node(
 ) -> Unit {
   // (where it starts said as it is made, by what a reader reads: a topic read outside any reader would be held by the
   // core's client for good)
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   // (while it closes, what it holds still there, let go once it has)
   let closing = @signals.signal(false)
@@ -1085,7 +1089,7 @@ fn reveal_part_node(
       }
       // (as far as it is tall once made: what has not been laid out yet goes as a row of words does)
       let far = dmax(@signals.untracked(tall), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
       (stop.val)()
       stop.val = fn() {  }
       if !on {
@@ -1108,7 +1112,7 @@ fn swap_part_node(
   first : (@view.View) -> Unit,
   later : (@view.View) -> Unit,
 ) -> Unit {
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   parent.by_room(fn(b, room) {
     let one : Ref[@view.View?] = Ref(None)
@@ -1135,7 +1139,7 @@ fn swap_part_node(
         return
       }
       let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
     })
     one.val = Some(
       b.box(fn(i) {
@@ -1239,21 +1243,26 @@ let agent_stop_words : @ui.TextStyle = @ui.text_style(size=Meta, weight=Medium, 
 fn agent_lines_node(v : @view.View, card : () -> Json?) -> Unit {
   @sf.style_node(v, fn() { agent_lines })
   // (its lines made with it, all at once: the block comes in whole as the card is read, never its room first and its
-  // lines a frame after)
-  v.pick(fn() { items(card(), "latest").map(fn(l) { (text(Some(l), "text"), flag(Some(l), "now")) }) }, fn(col, lines) {
+  // lines a frame after; each by its place, what it says bound: a line said anew makes nothing again)
+  v.box(fn(col) {
     col.gap(Is(agent_lines_gap)) |> ignore
-    col.each_of(fn() { lines }, at_once=true, fn(row, l) {
-      let (words, now) = l
-      job_runs_node(row, fn() { [@ui.span(words)] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
-        let t = @sf.theme()
-        if now {
-          t.p.text
-        } else {
-          t.p.muted
-        }
-      })
-    })
+    col.each(
+      fn() { items(card(), "latest").mapi(fn(i, l) { (i, text(Some(l), "text"), flag(Some(l), "now")) }) },
+      fn(l) { l.0 },
+      at_once=true,
+      fn(row, l) {
+        job_runs_node(row, fn() { [@ui.span(l.get().1)] }, fn() { job_words(@sf.theme().t.meta, wrap=false, line=agent_line_h) }, fn() {
+          let t = @sf.theme()
+          if l.get().2 {
+            t.p.text
+          } else {
+            t.p.muted
+          }
+        })
+      },
+    )
   })
+  |> ignore
 }
 
 ///|

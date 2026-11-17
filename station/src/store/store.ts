@@ -1276,8 +1276,19 @@ export class Store {
 
   /// Since when this station keeps the devices' builds: `now` the first time it is asked, the same ever after.
   deviceBuildsSince(now: number): number {
-    this.#run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", now);
-    return Number(this.#one("SELECT at FROM device_builds_since WHERE one = 1")?.at ?? now);
+    const saved = this.#one("SELECT at FROM device_builds_since WHERE one = 1");
+    if (saved !== undefined) return Number(saved.at);
+    // The first start may be beside another writer. Do not hold the main thread for SQLite's busy timeout: the mesh
+    // retries after a failed start. INSERT OR IGNORE also keeps the first value if two starts race to make it.
+    try {
+      return this.#tryNow(() => {
+        this.#run("INSERT OR IGNORE INTO device_builds_since (one, at) VALUES (1, ?1)", now);
+        return Number(this.#one("SELECT at FROM device_builds_since WHERE one = 1")?.at ?? now);
+      });
+    } catch (error) {
+      if (error instanceof MessageWriteBusy) throw new MessageWriteBusy("device builds write is busy");
+      throw error;
+    }
   }
 
   /// What a session's calls used as last kept (`setSessionUsage`); null before any.
@@ -4007,9 +4018,10 @@ export class Store {
     });
   }
 
-  /// A job started (again): running, in this process group.
+  /// A job started (again): running, in this process group. One that waited in the queue (`queued`) starts now: what it
+  /// says of when it started was when it was queued.
   jobStarted(id: string, pgid: number, restarted: boolean): void {
-    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, queued = 0 WHERE id = ?3", pgid, flag(restarted), id);
+    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, started_at = CASE WHEN ?2 = 0 AND COALESCE(queued, 0) <> 0 THEN ?4 ELSE started_at END, queued = 0 WHERE id = ?3", pgid, flag(restarted), id, this.now());
   }
 
   /// A job ended: `state` exited, stopped or failed.

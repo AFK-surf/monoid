@@ -5,7 +5,7 @@ import path from 'node:path';
 import { createRequire } from 'node:module';
 import { performance } from 'node:perf_hooks';
 import { fileURLToPath } from 'node:url';
-import { compactStart } from './compact.mjs';
+import { compactStart, hasStartSection } from './compact.mjs';
 const started = performance.now();
 function mark(stage) {
   if (process.env.MBUI_WASM_TRACE === '1') {
@@ -200,6 +200,16 @@ const module = await WebAssembly.compile(wasm);
 mark('compile');
 core = new WebAssembly.Instance(module, imports).exports;
 mark('instantiate');
+// moonc v0.10.21 writes no start section: the packages' initializers run only when its exported `_start` is called
+// (compact.mjs). Without it every package-level value is unset as the film or the scene is drawn.
+if (!hasStartSection(wasm) && typeof core._start === 'function') {
+  try {
+    core._start();
+  } catch (e) {
+    if (!(e instanceof Exit) || e.code !== 0) throw e;
+  }
+  mark('start');
+}
 if (filming) {
   let code = 1;
   try {

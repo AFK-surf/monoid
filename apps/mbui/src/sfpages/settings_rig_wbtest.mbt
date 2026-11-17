@@ -13,7 +13,8 @@ let rig_workspace : Workspace = { id: "ws1", name: "星火工作室", emoji: "",
 /// says (2 a phone's finger, 0 a Mac's mouse), `h` high: opened under settings, drawn alone while it is the stack's top
 /// (another of them opened from it, that one), back over it to settings, the presenters over it. `ready`: what the test
 /// sets before it is first drawn (the settings' own state: a station's part shown, a login marked); `host`, what the
-/// device's host says from the start, its Tester made (a performance record kept, newer builds asked for).
+/// device's host says from the start, its Tester made (a performance record kept, newer builds asked for). `width`: how
+/// wide the page is given to be as it changes (`w` by default).
 fn setting_tester(
   route : @settings.Route,
   w : Double,
@@ -24,6 +25,7 @@ fn setting_tester(
   ready? : () -> Unit = fn() {  },
   host? : (@ui.Tester) -> Unit = fn(_) {  },
   env? : Array[(String, String)] = [],
+  width? : () -> Double = fn() { w },
 ) -> @ui.Tester {
   @sfbase.reset()
   reset()
@@ -66,7 +68,7 @@ fn setting_tester(
         root.pick(fn() { app.nav.top() }, fn(p, page) {
           @ui.words_picked(p)
           match page {
-            Setting(r) => setting_made(p, src, r, fn() { w })
+            Setting(r) => setting_made(p, src, r, width)
             _ => ()
           }
         })

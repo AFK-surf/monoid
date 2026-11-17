@@ -490,8 +490,10 @@ test "wide: ⌘F's bar in the chat's bar looks in all of it (chat.find), Enter t
   assert_false(find_stroke_under(t, "截图", @sf.alpha(@sf.theme().p.accent, @sfpages.find_faint), @sf.message_stroke.width))
   t.key(@ui.key_escape)
   t.frame()
-  assert_true(t.find("在对话中查找") is None)
   assert_eq(@sfpages.find_chat(), "")
+  // (the bar faded out over its time, the chat's buttons back in its place)
+  t.run_for(@sfpages.find_in_ms)
+  assert_true(t.find("在对话中查找") is None)
   // opened again: empty
   t.key(@ui.key_of_char('f'), mods=@ui.mod_cmd)
   assert_eq(@sfpages.find_query(), "")
@@ -1887,7 +1889,7 @@ test "wide: 文件 from the computer held over the folder say where they go; let
   t.frame()
   assert_true(t.find("松开上传到「文档」") is Some(_), msg="where they go")
   t.drop_files(at.0, at.1, [
-    ("新的/", Bytes::new(0)),
+    ("新的/", Bytes::make(0, b'\x00')),
     ("新的/记录.txt", @utf8.encode("一行字\n")),
     ("清单.txt", @utf8.encode("另一行\n")),
   ])
@@ -1919,7 +1921,7 @@ test "wide: 文件 from the computer let go on the folder, their reading done a 
   // (the host reads them a while, as a device's does: what they hold told when the test says)
   t.picks_by_hand()
   t.drop_files(at.0, at.1, [
-    ("新的/", Bytes::new(0)),
+    ("新的/", Bytes::make(0, b'\x00')),
     ("新的/记录.txt", @utf8.encode("一行字\n")),
     ("清单.txt", @utf8.encode("另一行\n")),
   ])
@@ -2468,7 +2470,7 @@ test "wide: a file an agent names by its path opens itself in the preview as its
 }
 
 ///|
-test "wide: a reference to a chat in a message has the chat's card while the pointer rests on it, as the list has it (RefPreview)" {
+test "wide: a reference to a chat in a message has the chat's card while the pointer rests on it, as its whole row has it (RefPreview)" {
   let calls : Array[Made] = []
   let t = wide_tester(calls, mode="chat-peeks")
   let word = fn(s : String) { t.words().filter(fn(w) { w.0 == s && w.5 > 0.5 }) }
@@ -2479,7 +2481,7 @@ test "wide: a reference to a chat in a message has the chat's card while the poi
   t.move_to(x, y)
   t.run_for(@sfpages.hover_open_ms * 2.0)
   // read by the core as the pointer came onto it, once each link in the run (peeks.mbt chats_named: kept across runs,
-  // so asked again by none after one has read it), the chat found in the workspace's list: where it stands
+  // so asked again by none after one has read it), the chat found by its whole row (`chatRow`): where it stands
   assert_true(calls.filter(fn(m) { m.name == "link.parse" }).length() <= 1)
   assert_eq(word(said).length(), 1, msg="where it stands")
   t.move_to(900.0, 100.0)
@@ -3008,7 +3010,8 @@ test "wide: 通知's 服务开着很久, the bell's alone: 点亮铃铛 on every
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("服务开着很久") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   t.click(Button, label="服务开着很久")
-  t.draw()
+  // (its row opening its way under it, the page's list's: there once it has)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("点亮铃铛") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
   assert_true(t.find("计入红点") is None)
   t.click(Switch, label="点亮铃铛")

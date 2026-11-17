@@ -217,7 +217,7 @@ let view_blocks : ByNode[ViewBlock] = ByNode::new()
 
 ///|
 /// A glyph in a node's `ViewBlock` before it is set on the pixels, with its base key and zoom so its horizontal
-/// subpixel phase on Windows can be updated in place without rebuilding the block.
+/// subpixel phase (glyph_sub_at) can be updated in place without rebuilding the block.
 priv struct UnplacedGlyph {
   mut at : Int
   x : Double
@@ -273,7 +273,7 @@ priv struct ViewBlock {
   glyphs : Array[UnplacedGlyph]
   /// the glyphs it draws from, each where it was in the atlas as it was made (key, u, v): kept there as it is composed
   /// frame after frame, made again once one is not (view_glyphs_held)
-  kept : Array[(Int, Double, Double)]
+  mut kept : Array[(Int, Double, Double)]
 }
 
 ///|
@@ -1724,7 +1724,7 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       raise_close(None)
       paint_layers_under(stack)
     }
-    if raising.val is None && !dr.scrims.is_empty() && tree.over_scrim_of(c.id) {
+    if raising.val is None && (!dr.scrims.is_empty() || tree.scrims_up()) && tree.over_scrim_of(c.id) {
       ride_spoil()
       // (its instances moved among the frame's after it is drawn: no list round it drawn whole as one)
       match list_riding.val {
@@ -1813,11 +1813,12 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       !ground_drawn.reshaped() &&
       (c.shadow.2 & 0xFFL) == 0L &&
       c.ring.0 == 0.0 &&
-      c.halo.0 <= 0.0 {
+      c.halo.0 <= 0.0 &&
+      tree.words_edge_of(c.id).0 <= 0.0 {
       // (wholly outside the clip it is drawn in, where it is drawn (moved, grown, what holds it scrolled): nothing of its own
       // drawn or made, no glyph of its words asked of the host, as the old frame paints nothing of what lies outside its
       // clip where it is drawn (scene.mbt's paint, what is moved carried: draw_carries); not where what it draws may lie
-      // elsewhere than its box: turned, shadowed, its words on a halo (View::words_halo), its ground drawn in a box of its
+      // elsewhere than its box: turned, shadowed, its words on a halo or edged (View::words_halo, words_edge), its ground drawn in a box of its
       // own (View::ground_drawn), or in what is drawn
       // stretched (Android's list at an end, moved after it is drawn). What it holds each looked at where it is.)
       self.ride_spot(c, x, y, s, a, false)
@@ -1910,6 +1911,21 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       let (held, by) = self.view_ring_take(ring_at)
       rings.push((c.id, held, by))
     }
+    // (its ground a scrim of the tree's (View::scrim_under): what of the tree is drawn over a scrim put over it now, under
+    // what it holds, as an old scrim has it as it is painted (scene.mbt's))
+    if dr.mode != mode_hits && tree.scrim_of(c.id) {
+      // (and what an old view put over a scrim (Stratum's OverScrim), as an old scrim paints it: Ctx::paint_raised)
+      if !dr.raised.is_empty() {
+        self.paint_raised()
+      }
+      raise_close(None)
+      if !tree_over_scrim.is_empty() {
+        self.tree_over_scrim_clear()
+        self.raise_ranges(tree_over_scrim)
+        tree_over_scrim.clear()
+        tree_over_scrim_cut.clear()
+      }
+    }
     false
   }, draws=view_draws, offsets~, draws_rev=tree_fields_rev.val + tree_natives_rev.val + tree_streams_rev.val + tree_terminals_rev.val)
   while riding_now() is Some(r) {
@@ -1986,13 +2002,13 @@ fn Ctx::view_drawn(
   let plain_glyphs = c.halo.0 <= 0.0 && tree.glyphs_of(c.id) is None
   let block = match view_blocks.get(c.id) {
     // (made as glass was drawn then: solid or not; a picture or glyphs for the pixels it is drawn at now; its edge where
-    // it was; with a halo or per-glyph look, made at this horizontal pixel phase; on Windows with plain glyphs, its
-    // glyph slots re-phased in place when `origin_x` crosses a subpixel phase without rebuilding the block)
+    // it was; with a halo or per-glyph look, made at this horizontal pixel phase; with plain glyphs, its glyph slots
+    // re-phased in place when `origin_x` moves them to another quarter-pixel phase, the block not made again)
     Some(b) if (c.glass is None || b.solid == glass_paint.solid) &&
       (c.picture is None || b.scale == self.scale) &&
       (b.glyphs.is_empty() ||
         (b.scale == self.scale &&
-          (ride_whole(origin_x - b.ux, self.scale) || (plain_glyphs && (h_platform() != 3 || self.view_rephase(b, origin_x)))))) &&
+          (ride_whole(origin_x - b.ux, self.scale) || (plain_glyphs && self.view_rephase(b, origin_x))))) &&
       b.edge_after == edge_after => b
     _ => {
       // (made where it is its own, cut by nothing it is drawn in: what cuts it is the clip it is composed in, as each
@@ -2694,6 +2710,26 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     // halo.mbt)
     let halo_at = self.halo_start(c.halo.0, c.halo.1)
     let from = self.ninst - start
+    // (the edge round them, under them: they in its colour, as far off each of the eight ways, each glyph its own look
+    // as theirs (numbered again from where theirs are): View::words_edge)
+    let (edge_out, edge_ink) = tree.words_edge_of(c.id)
+    if edge_out > 0.0 && (edge_ink & 0xFFL) != 0L {
+      let n_was = glyph_n.val
+      for o in words_edge_ways {
+        glyph_n.val = n_was
+        self.emit_text(
+          tl,
+          o.0 * edge_out,
+          o.1 * edge_out,
+          edge_ink,
+          1.0,
+          unplaced=glyphs,
+          center_in=if c.words_center { c.w } else { -1.0 },
+          font=(size, k.weight, style, spacing),
+        )
+      }
+      glyph_n.val = n_was
+    }
     // (each line in the middle of its width where it says so, as an old view's centred words: Ctx::text's `center`)
     self.emit_text(
       tl,
@@ -2842,50 +2878,90 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
 }
 
 ///|
-/// Updates a cached `ViewBlock`'s Windows subpixel glyph keys, offsets, and atlas rects in place when `origin_x`
+/// Glyph `gl` of block `b` taken at `key` (another phase of it: view_rephase) and its slot written anew; None where it
+/// has nothing to draw now.
+fn rephased(b : ViewBlock, gl : UnplacedGlyph, key : Int, sc : Double, zoom : Double) -> Glyph? {
+  let g = glyph(key, sc / zoom)
+  if g.gw <= 0.0 {
+    return None
+  }
+  gl.ox = g.ox / gl.z
+  gl.oy = g.oy / gl.z
+  let off = gl.at * inst_size
+  b.inst[off + 2] = g.gw / gl.z
+  b.inst[off + 3] = g.gh / gl.z
+  b.inst[off + 12] = g.u
+  b.inst[off + 13] = g.v
+  b.inst[off + 14] = g.gw * (sc / zoom)
+  b.inst[off + 15] = g.gh * (sc / zoom)
+  Some(g)
+}
+
+///|
+/// Updates a cached `ViewBlock`'s subpixel glyph keys (glyph_sub_at), offsets, and atlas rects in place when `origin_x`
 /// (`ux - glyphs_carried[0]`) shifts by a non-integer pixel amount, avoiding a full `view_made` rebuild.
 fn Ctx::view_rephase(self : Ctx, b : ViewBlock, origin_x : Double) -> Bool {
   let sc = self.scale
   let n = b.glyphs.length()
+  let zoom = words_zoom.val
   if b.kept.length() == n {
-    let mut same = true
+    // (one kept a glyph, in the glyphs' order: view_made's. A glyph at another phase than it was made at is taken
+    // again, its slot written anew; the rest stay as they were, nothing looked up for them: as a page slides in, most
+    // frames move a few of a block's glyphs to their next phase)
+    // (the array it kept is never written: a frame's ride (ride_glyphs_kept) may still hold it as what an older frame
+    // drew, the atlas keeping those cells till it is let go; the first glyph moved copies it, nothing made while none
+    // does)
+    let was_kept = glyphs_kept.val
+    glyphs_kept.val = None
+    let mut next : Array[(Int, Double, Double)]? = None
+    let mut ok = true
     for i in 0..<n {
       let gl = b.glyphs[i]
-      if glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z) != b.kept[i].0 {
-        same = false
-        break
+      let key = glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z)
+      if key == b.kept[i].0 {
+        continue
+      }
+      match rephased(b, gl, key, sc, zoom) {
+        Some(g) => {
+          let a = match next {
+            Some(a) => a
+            None => {
+              let a = b.kept.copy()
+              next = Some(a)
+              a
+            }
+          }
+          a[i] = (key, g.u, g.v)
+        }
+        None => {
+          ok = false
+          break
+        }
       }
     }
-    if same {
+    glyphs_kept.val = was_kept
+    if ok {
+      if next is Some(a) {
+        b.kept = a
+      }
       b.ux = origin_x
-      return true
     }
+    return ok
   }
-  let zoom = words_zoom.val
   let was_kept = glyphs_kept.val
-  b.kept.clear()
-  glyphs_kept.val = Some(b.kept)
+  let next : Array[(Int, Double, Double)] = []
+  glyphs_kept.val = Some(next)
   let mut ok = true
   for i in 0..<n {
     let gl = b.glyphs[i]
-    let key = glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z)
-    let g = glyph(key, sc / zoom)
-    if g.gw <= 0.0 {
+    if rephased(b, gl, glyph_sub_at(gl.key, origin_x + gl.x, sc, gl.z), sc, zoom) is None {
       ok = false
       break
     }
-    gl.ox = g.ox / gl.z
-    gl.oy = g.oy / gl.z
-    let off = gl.at * inst_size
-    b.inst[off + 2] = g.gw / gl.z
-    b.inst[off + 3] = g.gh / gl.z
-    b.inst[off + 12] = g.u
-    b.inst[off + 13] = g.v
-    b.inst[off + 14] = g.gw * (sc / zoom)
-    b.inst[off + 15] = g.gh * (sc / zoom)
   }
   glyphs_kept.val = was_kept
   if ok {
+    b.kept = next
     b.ux = origin_x
   }
   ok
@@ -2967,7 +3043,7 @@ fn Ctx::view_blit(
   for gl in made.glyphs {
     // (and moved by its own look after that, View::glyphs_by: as an old view's glyph is, after it is set on the pixels)
     let b = at + gl.at * inst_size
-    s.unsafe_set(b, (if lx == x { on_glyph_col(x + gl.x, gl.ox, sc) } else { x + on_glyph_col(lx + gl.x, gl.ox, sc) - lx }) + gl.own_x)
+    s.unsafe_set(b, (if lx == x { on_glyph_col(x + gl.x, gl.ox, sc, z=gl.z) } else { x + on_glyph_col(lx + gl.x, gl.ox, sc, z=gl.z) - lx }) + gl.own_x)
     s.unsafe_set(b + 1, (if ly == y { on_glyph_row(y, gl.base, gl.oy, sc) } else { y + on_glyph_row(ly, gl.base, gl.oy, sc) - ly }) + gl.own_y)
   }
   // (its own ground drawn off where it is laid out, bigger and as round as it says (View::ground_drawn): before its
@@ -3689,6 +3765,21 @@ fn view_frame_end(c : Ctx) -> Unit {
     None => ()
   }
 }
+
+///|
+/// The eight ways a node's words are drawn off for the edge round them (View::words_edge): across, up and down, and
+/// corner to corner.
+// kept across runs: a table, never written
+let words_edge_ways : Array[(Double, Double)] = [
+  (-1.0, 0.0),
+  (1.0, 0.0),
+  (0.0, -1.0),
+  (0.0, 1.0),
+  (-1.0, -1.0),
+  (1.0, 1.0),
+  (-1.0, 1.0),
+  (1.0, -1.0),
+]
 
 ///|
 /// An old view in node `v`: a node of `v`'s (as big and as placed as it is said to be: `.grow(Is(1.0))` for the room
@@ -5612,7 +5703,7 @@ fn Ctx::semantics_spliced(self : Ctx, tree : @view.Tree) -> Array[SemNode] {
       Some(s) => {
         // (none of its own: what it and what it holds say, an old view it hosts by what its widgets say, as an old
         // box with none is called: Ctx::words_in)
-        let label = if s.label != "" {
+        let label = if s.label != "" || !s.role.named_by_held() {
           s.label
         } else {
           tree.words_within(

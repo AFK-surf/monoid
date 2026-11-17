@@ -340,7 +340,11 @@ fn pages_left(src : Source) -> Unit {
         if !app.nav.pages().iter().any(fn(q) { q is (Files | Drive(_) | DriveRead(_) | DrivePlay(_)) }) {
           @sfbase.let_go(src, @sfbase.drive_scope)
         }
-      Screen(at) => @sfpages.screen_left(src, at.station, at.screen)
+      // (shown still in its chat's side panel, its 全屏 from there gone back to it: kept for the panel)
+      Screen(at) =>
+        if !@sfdesk.side_screen_shown(src, at.station, at.screen) {
+          @sfpages.screen_left(src, at.station, at.screen)
+        }
       _ => ()
     }
   }
@@ -528,12 +532,41 @@ fn shown_now(src : Source, width : Double) -> @sfbase.Shown {
 }
 
 ///|
+/// What the old frame (view) says each build of how everything looks and what words are set in, told the window's tree
+/// `root` as it is made and as each of it changes, before any page of nodes is made, laid out or measured: light or
+/// dark, the accent, motion and haptics (sfbase's appearance_from_prefs) and a tip's keys, as the prefs and the system
+/// say them; and, with `words_set`, the wide frame's or not as the window is first given (Tree::frame tells its size
+/// before it lays anything out), its lines set as a browser's or not and the places' faces given the host (sfbase's
+/// faces). So the first frame measures its words once, in what they are drawn in, never in the system's face and lines
+/// and then all of them again as the old frame says otherwise; the old frame saying the same after it does nothing.
+fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> Unit {
+  root.reacts(fn() { (src.topic("prefs", {}).get().value, @ui.system_dark()) }, fn(a) {
+    @sfbase.appearance_from_prefs(a.0, a.1) |> ignore
+    @sf.set_shortcuts(@sfdesk.tip_keys(src))
+  })
+  guard words_set else { return }
+  root.reacts(fn() { (src.topic("prefs", {}).get().value, root.window().0, @sf.native_able()) }, fn(a) {
+    // (none before the first frame gives the window: told as anything there would be laid out by the wide frame's
+    // being otherwise and its faces then changed with nothing measured yet)
+    if a.1 > 0.0 {
+      let wide = @sfdesk.wide_at(a.1)
+      shell_set(pages_shell(src, wide))
+      @settings.wide.val = wide
+      @ui.set_web_lines(wide)
+      faces(src, wide)
+    }
+  })
+}
+
+///|
 /// The window as a tree made once (mbui's view_host.mbt, the way there's 4: from the outside in): the
 /// state the app is in (app_is) a node picked by it, made as it comes and let go as it goes, the app in that state an old
 /// view in it, built the old way on the window's ground (`view` the old frame around it: what every state shares, the
 /// theme, the window's sides, the layers over it).
 pub fn app_tree(src : Source) -> (@view.View) -> Unit {
   fn(root) {
+    // (how it looks and what it is set in, told first of all, before any page of nodes is made: app_looks_told)
+    app_looks_told(root, src)
     // (the source the sheets show what they show of, said before one is put up: sheet.mbt)
     sheet_src.val = Some(src)
     // (the library's words, the app's catalog's, and their language as the core's prefs say it, said before any page of
@@ -553,6 +586,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         (
           p,
           @settings.feature_from(p, "chatPage"),
+          @settings.feature_from(p, "composerNodes"),
           @settings.feature_from(p, "farviewNative"),
           @settings.feature_from(p, "board"),
         )
@@ -818,6 +852,9 @@ fn lone_closed(q : @view.View) -> Unit {
 /// presenters: each window's apart), none of the first window's history, splash or first page.
 pub fn lone_window_tree(src : Source, wid : Int) -> (@view.View) -> Unit {
   fn(root) {
+    // (light or dark, the accent and a tip's keys as the first window's tree tells them, before its page is made: the
+    // faces and lines its words are set in are the run's, told by the first window's (app_looks_told's `words_set`))
+    app_looks_told(root, src, words_set=false)
     @sfbase.lone_page.val = @sfbase.window_here_page(wid)
     // (the library's words and their language as the first window's tree says them: app_tree's)
     @sf.set_words(fill)

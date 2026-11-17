@@ -766,6 +766,7 @@ async fn Actors::clear_now(
   a.stopped_note = None
   a.resume_lost = false
   a.afresh = None
+  a.codex_reloaded = None
   a.compacted_untold = false
   a.nudges = 0
   a.tools_restarts = 0
@@ -1228,6 +1229,9 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
     self.deps(a, "coldAfresh", [jstr(a.key), jnum(self.now)]) is True {
     ignore(self.clear_now(a, true, said="station.notice.afreshCold", by="as its cache is over", keep_jobs=true))
   }
+  if (kind == "input" || kind == "resume" || kind == "job") && a.runtime == "codex" && !self.busy(a) {
+    self.refused_thread(a)
+  }
   let mut agent = self.ensure_agent(a)
   let lost = a.resume_lost
   a.resume_lost = false
@@ -1272,6 +1276,35 @@ async fn Actors::start_turn_body(self : Actors, a : Actor, kind : String, text :
     }
   }
   self.told(a, told_choices)
+}
+
+///|
+/// Its last turn refused by Codex with a bare Bad Request (FB-26, `bare_bad_request`), and it is asked to go on (重试, a
+/// message, its work's report): never on the thread as it is loaded, which refuses every turn. First that thread is let
+/// go and taken up again from its rollout (codex.ts `thread/unload`, then `resume`: its context and cache kept, the
+/// account's app-server and its other threads untouched); where the one taken up again is refused too, its history
+/// itself is what the backend refuses, and it starts afresh (its jobs kept), told to read back what it needs.
+async fn Actors::refused_thread(self : Actors, a : Actor) -> Unit raise {
+  if !refused_bad_request(self.last_turn(a)) {
+    return
+  }
+  let id = match str_of(self.store(a, "getSession", [jstr(a.key)]).value("runtimeSessionId")) {
+    Some(id) if id != "" => id
+    _ => return
+  }
+  if a.codex_reloaded == Some(id) {
+    a.codex_reloaded = None
+    self.log(a, "warn", "its Codex thread, taken up again, was refused again with Bad Request: starting afresh", fields={ "thread": jstr(id) })
+    ignore(self.clear_now(a, true, said="station.notice.afreshRefused", by="as its Codex thread taken up again was refused with Bad Request", keep_jobs=true))
+    return
+  }
+  a.codex_reloaded = Some(id)
+  self.log(a, "warn", "its Codex thread was refused with Bad Request: taking it up again from its rollout", fields={ "thread": jstr(id) })
+  guard a.agent is Some(_) else { return }
+  let agent = a.agent
+  self.set_agent(a, None)
+  self.end_process(a, agent)
+  self.notify_store(a)
 }
 
 ///|
@@ -1565,6 +1598,11 @@ async fn Actors::on_turn_ended(self : Actors, a : Actor, generation : Int, outco
   let turn = a.turn
   a.turn = None
   a.phase = "idle"
+  // (a thread taken up again that ends otherwise than refused so is one that works: refused later, it is taken up
+  // again first, `refused_thread`)
+  if !(a.runtime == "codex" && kind == "failed" && reason == "model" && limit is None && bare_bad_request(message)) {
+    a.codex_reloaded = None
+  }
   let stop_requested = a.stop_requested
   a.stop_requested = false
   // How a turn that said no state ends (2026-11-16, the status refactor): one that posted a card still waiting ends

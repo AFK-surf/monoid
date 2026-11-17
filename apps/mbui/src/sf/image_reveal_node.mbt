@@ -73,7 +73,7 @@ pub fn image_reveal_node(
     // has nothing decoded)
     let ready = fn() { key() != "" && b.image_ready(key(), px()) }
     let phase = @signals.signal(Waiting)
-    let way = EdgeWay::new(0.0)
+    let way = @motion.NodeWay::new(0.0)
     // (the end of the way of the picture being brushed in, called off when it is given another)
     let ends : Ref[() -> Unit] = Ref(fn() {  })
     // (how far in, eased out, at the moment drawn: reveal's `e`)
@@ -129,7 +129,7 @@ pub fn image_reveal_node(
         phase.set(There)
       } else if r && @signals.untracked(fn() { phase.get() }) == Waiting {
         let from = b.cause_at()
-        way.go(b, 1.0, reveal_ms, ease=Linear)
+        way.go_ms(b, 1.0, reveal_ms, ease=Linear)
         phase.set(Going)
         ends.val = b.at_moment(from + reveal_ms, fn() { phase.set(There) })
       }

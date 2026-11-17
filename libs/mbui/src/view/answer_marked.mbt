@@ -20,6 +20,21 @@ fn Tree::answer_mark(self : Tree, at : Int) -> Unit {
 
 ///|
 /// The nodes an answer changed at once at a moment from `from` to `to` (Tree::answer_mark), each once, still in the
+/// tree, none let go of: for a judge of the frame that reads them beside the one that takes them (ui's rows_steady.mbt
+/// reads them, its sizes_steady.mbt then takes them with Tree::answered_between: taken by the first, the second found
+/// none and an answer's first value done at once was said a jolt).
+pub fn Tree::answered_in(self : Tree, from : Double, to : Double) -> Array[Int] {
+  let out : Array[Int] = []
+  for m in self.answer_marks {
+    if m.1 >= from && m.1 <= to && m.0 < self.nodes.length() && self.nodes[m.0].live && !out.contains(m.0) {
+      out.push(m.0)
+    }
+  }
+  out
+}
+
+///|
+/// The nodes an answer changed at once at a moment from `from` to `to` (Tree::answer_mark), each once, still in the
 /// tree; each read so let go of, and those before `from` (a frame judged at `from` read what was marked by then: what is
 /// left marked at `from` was told after it, between frames at that one moment).
 pub fn Tree::answered_between(self : Tree, from : Double, to : Double) -> Array[Int] {
@@ -57,8 +72,10 @@ pub fn Tree::answered_seen(self : Tree, from : Double, to : Double) -> Array[Int
 /// View::moved_by), or one of what holds it, or a way in or out of what is beside it or beside what holds it, or of
 /// anything in those, in that column, carrying it along. What a step of it then is: one in the middle of a way, said as ever where an answer
 /// changed what it is in (the coordinator of the migration, 2026-11-14: what goes beside it its own way, a control's
-/// thumb, a fade, carries it nowhere, and an answer's step done at once before is no way).
-pub fn Tree::on_way_at(self : Tree, at : Int, t : Double) -> Bool {
+/// thumb, a fade, carries it nowhere, and an answer's step done at once before is no way). `within`: the column the
+/// answer's change is judged in (what scrolls round it, the page it is on): looked at up to it and no further, its own
+/// way the last that counts; what holds that column moving it whole (a stack's page sliding in) moves no step inside it.
+pub fn Tree::on_way_at(self : Tree, at : Int, t : Double, within? : Int = -1) -> Bool {
   let going = fn(q : Int) {
     let n = self.nodes[q]
     let e = n.flex.style.come_ends
@@ -76,6 +93,16 @@ pub fn Tree::on_way_at(self : Tree, at : Int, t : Double) -> Bool {
       Some(ends) if ends(n.flex.width, n.flex.height) > t => return true
       _ => ()
     }
+    match self.carried_ends(q) {
+      Some(ends) if @signals.untracked(ends) > t => return true
+      _ => ()
+    }
+    if n.lift is Some(_) && self.flights.iter().any(fn(f) { f.node.at == q && f.start + f.dur > t }) {
+      return true
+    }
+    if q == within {
+      return false
+    }
     let p = n.parent
     if p >= 0 && p < self.nodes.length() {
       for k in self.nodes[p].kids {
@@ -87,4 +114,36 @@ pub fn Tree::on_way_at(self : Tree, at : Int, t : Double) -> Bool {
     q = p
   }
   false
+}
+
+///|
+/// Node `self` carried, with what it holds, by a way over at `ends` (-1 at rest): what was said of it before put by
+/// this, let go of with the node.
+fn View::carried_by(self : View, ends : () -> Double) -> Unit {
+  guard self.live() is Some(n) else { return }
+  let m = self.tree.carried
+  let gen = n.gen
+  let said = match m.get(self.at) {
+    Some((g, _)) => g == gen
+    None => false
+  }
+  m[self.at] = (gen, ends)
+  guard !said else { return }
+  let at = self.at
+  self.owns(fn() {
+    match m.get(at) {
+      Some((g, _)) if g == gen => m.remove(at)
+      _ => ()
+    }
+  })
+  |> ignore
+}
+
+///|
+/// When the way carrying node `at` as it is now is over (Tree::on_way_at): none where none was said of this making of it.
+fn Tree::carried_ends(self : Tree, at : Int) -> (() -> Double)? {
+  match self.carried.get(at) {
+    Some((g, ends)) if at < self.nodes.length() && self.nodes[at].gen == g => Some(ends)
+    _ => None
+  }
 }

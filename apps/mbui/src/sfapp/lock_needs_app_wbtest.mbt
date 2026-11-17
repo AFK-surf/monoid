@@ -37,3 +37,32 @@ test "a web page nobody can approve: the core's words where the ask would be, no
   }
   assert_eq(faults, [])
 }
+
+///|
+/// The words the fixture gives as the core's (core-misc.lock.out), a piece of them as a line holds it.
+let out_piece : String = "将你移出了此 workspace 的安全模式"
+
+///|
+test "its person taken out of an upgraded workspace: who and when, and whom to ask, above the ask for once added back, on every screen" {
+  let faults : Array[String] = []
+  for mode in ["lock-out", "lock-out-security"] {
+    for win in corner_windows {
+      let t = screen_in(mode, win, "zh")
+      let words = t.words().map(fn(w) { w.0 }).join("")
+      let at = "\{mode} \{win.0}"
+      assert_true(words.contains(out_piece), msg="\{at}: the core's words drawn (\{words})")
+      // (the ask still there: once added back, it is how this device comes in again)
+      assert_true(words.contains(@sf.t("web-pages.security.request")), msg="\{at}: the ask (\{words})")
+      assert_true(!words.contains(@sf.t("web-pages.security.needsAppTitle")), msg="\{at}: not 请先安装客户端")
+      for f in t.audit() {
+        if f.contains("sfpages/lock_wait") || f.contains("sfpages/security") {
+          faults.push("\{at}: \{f}")
+        }
+      }
+    }
+  }
+  if faults.length() > 0 {
+    println(faults.join("\n"))
+  }
+  assert_eq(faults, [])
+}

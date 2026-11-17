@@ -15,4 +15,5 @@ fn init {
   @ui.window_kept_set(tree_presented)
   @ui.window_kept_map(tree_as_sheet)
   @ui.window_kept_ref(window_tips_at, fn() { None })
+  @ui.window_kept_ref(tree_sheet_place, fn() { None })
 }
