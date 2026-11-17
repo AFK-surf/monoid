@@ -268,3 +268,36 @@ test("an account over its requests a minute still signs in a new device: its oth
     await h.close();
   }
 });
+
+
+test("replacing an invitation at the open-invitation limit keeps its seat and invalidates its old link", async () => {
+  const h = await harness();
+  try {
+    const alice = h.as(await h.login("alice"));
+    const bob = h.as(await h.login("bob"));
+    const home = await (await alice("POST", "/v1/workspaces", { name: "Home" })).json() as { id: string };
+    const invite = (email: string, role = "member") => alice("POST", `/v1/workspaces/${home.id}/invitations`, { role, email });
+    const first = await (await invite("bob@example.test")).json() as { id: string; token: string };
+    for (let i = 1; i < 50; i++) assert.equal((await invite(`person${i}@example.test`)).status, 200);
+    const extra = await invite("extra@example.test");
+    assert.equal(extra.status, 429);
+    assert.equal((await extra.json() as any).error, "too_many_invitations");
+
+    const response = await invite("Bob@Example.test", "admin");
+    assert.equal(response.status, 200, "replacing one of the fifty invitations adds no invitation");
+    const replacement = await response.json() as { id: string; token: string };
+    assert.notEqual(replacement.id, first.id);
+    assert.notEqual(replacement.token, first.token);
+    const view = await (await alice("GET", `/v1/workspaces/${home.id}`)).json() as any;
+    assert.equal(view.invitations.length, 50);
+    assert.deepEqual(view.invitations.filter((i: any) => i.email === "bob@example.test").map((i: any) => [i.id, i.role]), [[replacement.id, "admin"]]);
+    assert.equal((await bob("POST", "/v1/invitations/preview", { token: first.token })).status, 404);
+    assert.equal((await bob("POST", `/v1/invitations/${first.id}/accept`)).status, 404);
+    assert.equal((await invite("another@example.test")).status, 429, "replacement never raises the cap");
+    const accepted = await bob("POST", "/v1/invitations/accept", { token: replacement.token });
+    assert.equal(accepted.status, 200);
+    assert.equal((await accepted.json() as any).role, "admin");
+  } finally {
+    await h.close();
+  }
+});

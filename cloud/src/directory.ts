@@ -1268,9 +1268,9 @@ export class Directory extends DurableObject<Env> {
     if (email === null || !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(email)) fail(400, "invalid_email");
     if (this.#one("SELECT 1 AS x FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = lower(?)", workspace, email!)) fail(409, "already_member");
     const open = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND expires_at > ?", workspace, nowSeconds())!.n as number;
-    if (open >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     // Every open invitation holds a seat, but a newer one to the same email takes the older one's.
     const replaces = this.#one("SELECT 1 AS x FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, email!.toLowerCase(), nowSeconds()) ? 1 : 0;
+    if (open - replaces >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) fail(429, "too_many_members");
     const token = randomSecret();
     const id = ulid();
