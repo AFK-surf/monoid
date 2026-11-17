@@ -122,6 +122,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(building, fn() { false }),
     kept_ref(wheel_went, fn() { 0 }),
     kept_ref(wheel_old_target, fn() { 0 }),
+    kept_ref(wheel_back, wheel_back_fresh),
     kept_set(bone_insts),
     kept_map(code_fields),
     kept_array(code_clears, fn() { [] }),

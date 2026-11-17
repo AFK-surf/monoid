@@ -156,6 +156,7 @@ fn reset_globals() -> Unit {
   driver.val = None
   track_x.reset()
   track_y.reset()
+  wheel_back.val = wheel_back_fresh()
   reset_glass()
   reveal_reset()
   clear_shapes()
