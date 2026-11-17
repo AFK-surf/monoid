@@ -631,13 +631,29 @@ test "a file of no kind it can show: told of, with the download" {
 
 ///|
 test "an APK told of: 安装 first, handed to the system's installer once its bytes are here; 下载 beside it" {
-  let t = preview_tester("apk")
+  new_run()
+  let base = fixture("chat-preview-apk")
+  let reads : Array[Json] = []
+  let src : Source = {
+    ..base,
+    read_going: fn(name, params, progress, done) {
+      if name == "station.file" { reads.push(params) }
+      (base.read_going)(name, params, progress, done)
+    },
+  }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("安装") is Some(_))
   assert_true(t.find("下载") is Some(_))
   t.tap_text("安装")
   // read through the core first (the fixture answers at once), then handed over
   t.frame()
   assert_eq(t.installs(), ["测试版.apk"])
+  assert_eq(reads.length(), 1)
+  assert_true(flag(Some(reads[0]), "keep"))
+  assert_eq(number(Some(reads[0]), "size"), 8192.0)
 }
 
 ///|

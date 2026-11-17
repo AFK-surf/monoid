@@ -10,7 +10,7 @@ import { Deferred, Effect } from "effect";
 import type { FakeHost } from "../src/testing.ts";
 import { Core } from "../src/core.ts";
 import { AGAIN_MS, titleOf } from "../src/views/downloads.ts";
-import { chatKeptId } from "../src/drive-kept.ts";
+import { chatKeptId, sentKeptId } from "../src/drive-kept.ts";
 import { RECONNECT_MS } from "../src/station/sync.ts";
 import { HostError } from "../src/error.ts";
 import { HostWire } from "../src/station/wire.ts";
@@ -610,11 +610,54 @@ test("saved where the app can read it back, that is the file's copy on the devic
   const read = await r.ask("station.file.part", { station: ST, key: "k1", name: "build.zip", offset: 4 * MB, length: 4 * MB, keep: true, size: zip.length });
   assert.deepEqual([...read.bytes], [...zip.slice(4 * MB)]);
   assert.equal(r.parts("build.zip"), before);
+  const again = (await r.ask("download.start", { station: ST, key: "k1", name: "build.zip", size: zip.length })).ok.download.id;
+  assert.equal((await r.view())[0].state, "ready");
+  assert.equal(r.parts("build.zip"), before, "a second save reuses the same system copy as the preview");
+  await r.ask("download.cancel", { id: again });
   // deleted from there: read from the station again, and kept as any other
   r.host.saved.delete(at);
   await r.ask("station.file.part", { station: ST, key: "k1", name: "build.zip", offset: 0, length: 4 * MB, keep: true, size: zip.length });
   assert.equal(r.parts("build.zip"), before + 1);
   assert.equal(kept(), 1);
+  r.core.close();
+});
+
+test("saving an attachment sent from this device reads the uploaded bytes locally", async () => {
+  const r = await rig(new Map());
+  const name = "posted.apk";
+  const bytes = bytesOf(300, 9);
+  await Effect.runPromise(r.core.inner.driveKept.keep(sentKeptId(ST, name), "sent", 0, bytes.length, "application/octet-stream", 0, bytes));
+  const id = (await r.ask("download.start", { station: ST, key: "k1", name, size: 0 })).ok.download.id;
+  const [d] = await r.view();
+  assert.deepEqual([d.state, d.size], ["ready", bytes.length]);
+  const read = await r.ask("download.read", { id, offset: 0, length: bytes.length });
+  assert.deepEqual(read.bytes, bytes);
+  assert.equal(r.parts(name), 0);
+  r.core.close();
+});
+
+test("a saved drive copy is reused only for the same version, even at the same size", async () => {
+  const old = bytesOf(32, 1), fresh = bytesOf(32, 9);
+  const drive: Drive = { files: new Map([["docs\nlog", { bytes: old, mtime: 1 }]]), zips: new Map() };
+  const r = await started();
+  files(r.host, new Map(), new Set(), new Set(), drive);
+  const t = await watch(r);
+  const save = (mtime: number) => t.ask("download.start", { station: ST, root: "docs", path: "log", name: "log", size: old.length, mtime });
+  const id = (await save(1)).ok.download.id;
+  assert.equal((await t.view())[0].state, "ready");
+  const at = "/Downloads/log";
+  r.host.saved.set(at, old);
+  await t.ask("download.done", { id, at });
+  const reads = () => r.host.requests.filter((q) => q.url.includes("/drive/read")).length;
+  await save(1);
+  assert.equal((await t.view())[0].state, "ready");
+  assert.equal(reads(), 1);
+  await t.ask("download.done", { id });
+  drive.files.set("docs\nlog", { bytes: fresh, mtime: 2 });
+  await save(2);
+  assert.equal((await t.view())[0].state, "ready");
+  assert.equal(reads(), 2);
+  assert.deepEqual((await t.ask("download.read", { id, offset: 0, length: old.length })).bytes, fresh);
   r.core.close();
 });
 

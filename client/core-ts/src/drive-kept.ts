@@ -180,11 +180,14 @@ export class DriveKept {
         ); CREATE TABLE IF NOT EXISTS part (
           id TEXT NOT NULL, at INTEGER NOT NULL, length INTEGER NOT NULL, key TEXT NOT NULL, PRIMARY KEY (id, at, length)
         ); CREATE TABLE IF NOT EXISTS download (id TEXT PRIMARY KEY, json TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS saved (id TEXT PRIMARY KEY, at TEXT NOT NULL, size INTEGER NOT NULL, type TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS saved (id TEXT PRIMARY KEY, at TEXT NOT NULL, size INTEGER NOT NULL, type TEXT NOT NULL, mtime INTEGER);
         CREATE TABLE IF NOT EXISTS upload (id TEXT PRIMARY KEY, json TEXT NOT NULL, at INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS origin (id TEXT PRIMARY KEY, json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS wanted (id TEXT PRIMARY KEY, kind TEXT NOT NULL, size INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS kept_read ON kept (kind, used);`);
+        if (!opened.success.all("PRAGMA table_info(saved)").some((column) => column[1] === "mtime")) {
+          opened.success.exec("ALTER TABLE saved ADD COLUMN mtime INTEGER");
+        }
         this.#partBytes = ensurePartBytes(opened.success);
         return (this.#sql = opened.success);
       } catch {
@@ -249,7 +252,7 @@ export class DriveKept {
     return Effect.gen({ self: this }, function* () {
       const sql = yield* this.#db();
       if (sql === null) return null;
-      const saved = yield* this.#savedRead(sql, id, size, offset, length);
+      const saved = yield* this.#savedRead(sql, id, mtime, size, offset, length);
       if (saved !== null) return saved;
       const kept = this.#kept(sql, id);
       if (kept === null) return null;
@@ -502,30 +505,37 @@ export class DriveKept {
 
   /// Bytes `offset` to `offset + length` of the file `id` read from where it was saved, when it was (at its `size`) and
   /// they are all still there; else null, and once it is found gone or changed it is no longer taken as saved.
-  #savedRead(sql: Sql, id: string, size: number, offset: number, length: number): Effect.Effect<{ type: string; bytes: Uint8Array } | null> {
-    const r = sql.all("SELECT at, size, type FROM saved WHERE id = ?", [id])[0];
+  #savedRead(sql: Sql, id: string, mtime: number, size: number, offset: number, length: number): Effect.Effect<{ type: string; bytes: Uint8Array } | null> {
+    const r = sql.all("SELECT at, size, type, mtime FROM saved WHERE id = ?", [id])[0];
     const read = this.#host.savedRead;
     if (r === undefined || read === undefined) return Effect.succeed(null);
     const [at, was, type] = [String(r[0]), Number(r[1]), String(r[2])];
     const end = Math.min(offset + length, size);
-    const gone = () => { sql.run("DELETE FROM saved WHERE id = ?", [id]); return null; };
-    if (was !== size) return Effect.sync(gone);
+    const gone = () => { sql.run("DELETE FROM saved WHERE id = ? AND at = ? AND size = ? AND mtime IS ?", [id, at, was, r[3]]); return null; };
+    // A saved row from before versions were recorded identifies only an immutable attachment.
+    if (was !== size || (r[3] === null ? !id.startsWith("chat\n") : Number(r[3]) !== mtime)) return Effect.succeed(null);
     return Effect.map(Effect.orElseSucceed(read.call(this.#host, at, offset, end), () => null), (bytes) =>
       bytes !== null && bytes.length === Math.max(0, end - offset) ? { type, bytes } : gone());
+  }
+
+  /// A save can consume the same system copy as a preview. Verify it still exists before reporting ready.
+  savedHere(id: string, mtime: number, size: number): Effect.Effect<boolean> {
+    return Effect.flatMap(this.#db(), (sql) => sql === null ? Effect.succeed(false)
+      : Effect.map(this.#savedRead(sql, id, mtime, size, Math.max(0, size - 1), 1), (part) => part !== null));
   }
 
   /// The chat's file `id` saved where the person keeps files (`at`, as the system named it), its whole `size`: when it
   /// can be read back there (its last byte read), that is its copy on the device and what was kept of it goes (true);
   /// else nothing changes (false).
-  saved(id: string, at: string, size: number): Effect.Effect<boolean> {
+  saved(id: string, at: string, size: number, mtime: number): Effect.Effect<boolean> {
     return Effect.gen({ self: this }, function* () {
       const sql = yield* this.#db();
       const read = this.#host.savedRead;
       if (sql === null || read === undefined || at === "" || size <= 0) return false;
       const last = yield* Effect.orElseSucceed(read.call(this.#host, at, size - 1, size), () => null);
       if (last === null || last.length !== 1) return false;
-      const type = this.#kept(sql, id)?.type ?? "";
-      sql.run("INSERT OR REPLACE INTO saved (id, at, size, type) VALUES (?, ?, ?, ?)", [id, at, size, type]);
+      const type = this.#kept(sql, id)?.type ?? String(sql.all("SELECT type FROM saved WHERE id = ?", [id])[0]?.[0] ?? "");
+      sql.run("INSERT OR REPLACE INTO saved (id, at, size, type, mtime) VALUES (?, ?, ?, ?, ?)", [id, at, size, type, mtime]);
       if (!this.#writing.has(id)) yield* this.#drop(sql, id);
       return true;
     });
