@@ -563,8 +563,18 @@ let rs_page_gap : Double = @ui.Space::S3_5.px()
 
 
 ///|
+/// A row's end (rs_end_node's, or nothing for a group's) in its cell, in `parent`.
+fn rs_end_cell_node(parent : @view.View, end : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(e) {
+    @sf.style_node(e, fn() { rs_end_cell }, in_row=true)
+    end(e)
+  })
+  |> ignore
+}
+
+///|
 /// A row of the table (rs_table_row's, rs_line's) in `row`: its names, its figures and its end on one line; stacked,
-/// its names on a line of their own and its figures under them, its end beside both; a row's least height at least.
+/// its names on a line of their own with its end, and its figures under them; a row's least height at least.
 /// `group`: lit under the pointer, pressed (`press`), read out as `said` says.
 fn rs_row_node(
   row : @view.View,
@@ -595,9 +605,12 @@ fn rs_row_node(
     if stacked {
       r.box(fn(s) {
         @sf.style_node(s, fn() { rs_stack }, in_row=true)
+        // (its end on its names' line, centred on that line and not on both: what stands beside a block of lines
+        // sits on its first, apps/mbui/AGENTS.md)
         s.box(fn(n) {
           @sf.style_node(n, fn() { rs_row })
           names(n)
+          rs_end_cell_node(n, end)
         })
         |> ignore
         s.box(fn(f) {
@@ -610,13 +623,9 @@ fn rs_row_node(
     } else {
       names(r)
       figures(r)
+      rs_end_cell_node(r, end)
     }
   })
-  row.box(fn(e) {
-    @sf.style_node(e, fn() { rs_end_cell }, in_row=true)
-    end(e)
-  })
-  |> ignore
 }
 
 ///|

@@ -67,8 +67,11 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // 382, 909, 125 and a frame 137, 105, 130, 28 before it; with a spacer as tall as the bar in the keys' place a block
   // makes fewer nodes than it did)
   // (1 made more in each on a phone, 2026-11-17: the chat bar's 远程 key, made while it is closed)
-  "phone cold": (1014, 29, 673, 79, 943),
-  "phone again": (325, 17, 239, 27, 321),
+  // (a node more made in each, 2026-11-17, its bindings 2 fewer: what lights a message whole the list's band, drawn
+  // under all the rows of it once (View::scrolls_window's `bands`, its each's slot), no more each row's own ground; before
+  // it 1014 and 943, 325 and 321)
+  "phone cold": (1015, 29, 673, 79, 941),
+  "phone again": (326, 17, 239, 27, 319),
   "wide cold": (2443, 483, 2011, 217, 2447),
   "wide again": (882, 130, 881, 123, 1050),
   "phone up": (564, 366, 617, 96, 0),

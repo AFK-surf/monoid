@@ -487,74 +487,59 @@ fn board_kept_drafts() -> Array[String] {
 }
 
 ///|
-test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps its identity and destination, and can be cancelled" {
-  for (w, h, platform) in [(1440.0, 900.0, 0), (390.0, 844.0, 2)] {
-    let (t, src) = board_at("board", w, h, platform~)
-    if platform == 2 {
-      t.click(Tab, label="待派发 2")
-      t.run_for(@ui.move_most_ms)
+test "⌘N on the board writes a 待派发 draft, including when grouped by station or a chat is open beside it" {
+  for w in [760.0, 1440.0] {
+    let (t, src) = board_at("board", w, 900.0)
+    if w == 1440.0 {
+      board_group_by(t, "按机器")
     }
-    let before = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
-    t.click(Button, label=before.title)
+    t.ctx().blur()
+    t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
     t.run_for(@ui.move_most_ms)
-    assert_eq(t.focused().map(fn(f) { (f.role, f.value) }), Some((TextField, before.title)))
+    assert_true(app.nav.top() is Home, msg="\{w}: stays on the board")
+    assert_true(@sfbase.board_on_of(src, "ws1"), msg="\{w}: board still chosen")
+    assert_eq(@signals.untracked(fn() { @sfbase.board_group_of(src, "ws1") }), "state")
+    t.type_text("用快捷键")
+    // A second shortcut returns to the unfinished line without clearing it.
+    t.ctx().blur()
+    t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+    t.run_for(@ui.move_most_ms)
+    t.type_text("新建待办")
+    t.enter()
+    t.run_for(@ui.move_most_ms)
+    assert_eq(board_kept_drafts()[0], "用快捷键新建待办", msg="\{w}: saved in 待派发")
     assert_eq(board_faults(t), [])
-    t.type_text("，包括 CSV")
-    t.click(Button, label="保存")
-    t.run_for(@ui.move_most_ms)
-    let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
-    assert_eq((after.id, after.station, after.station_name), (before.id, before.station, before.station_name))
-    assert_eq(after.title, before.title + "，包括 CSV")
-    assert_eq(board_kept_drafts()[0], after.title)
-    t.click(Button, label=after.title)
-    t.run_for(@ui.move_most_ms)
-    t.type_text(" 不保存")
-    t.key(@ui.key_escape)
-    t.run_for(@ui.move_most_ms)
-    assert_eq(board_kept_drafts()[0], after.title)
-    assert_true(t.query(Button, label=after.title) is Some(_))
-    assert_eq(board_faults(t), [])
-    if platform == 0 {
-      // The same card can be reached and activated from the keyboard.
-      t.act(Button, Focus, label=after.title)
-      t.enter()
-      t.run_for(@ui.move_most_ms)
-      assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
-      t.click(Button, label="取消")
-      t.run_for(@ui.move_most_ms)
-      let starts = t.all(Button, label="开始")
-      let (sx, sy, sw, sh) = starts[0].rect
-      t.tap(sx + sw / 2.0, sy + sh / 2.0)
-      t.run_for(@ui.move_most_ms)
-      assert_eq(board_lane_now(src, after.title), "run")
-    }
   }
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.board_pick.get() is Some(_))
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  t.type_text("查看对话时的新待办")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "查看对话时的新待办")
+  assert_true(@sfbase.board_pick.get() is Some(_))
 }
 
 ///|
-test "大屏: Enter or pressing another card keeps edited words; an empty edit does not replace the draft" {
-  let (t, _) = board_at("board", 1440.0, 900.0)
-  t.click(Button, label="给导出加上按月份筛选")
+test "the new action on 小屏 brings 待派发 into view; on the list it still opens a new chat" {
+  let (t, src) = board_at("board", 390.0, 844.0, platform=2)
+  @settings.ask_action("chat.new")
   t.run_for(@ui.move_most_ms)
-  t.type_text("，并导出 CSV")
+  assert_true(app.nav.top() is Home)
+  assert_true(@sfbase.board_on_of(src, "ws1"))
+  assert_eq(@sfbase.board_lane.get(), "draft")
+  t.type_text("小屏上的待办")
   t.enter()
   t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
-  t.click(Button, label=board_kept_drafts()[0])
+  assert_eq(board_kept_drafts()[0], "小屏上的待办")
+  let (t, src) = board_at("board-list", 1440.0, 900.0)
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
   t.run_for(@ui.move_most_ms)
-  t.type_text(" 文件")
-  t.click(Button, label="看一下 Android 冷启动为什么慢了 300ms")
-  t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV 文件")
-  assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
-  t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
-  t.type_text(" ")
-  t.enter()
-  t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[1], "看一下 Android 冷启动为什么慢了 300ms")
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(board_faults(t), [])
+  assert_false(@sfbase.board_on_of(src, "ws1"))
+  assert_true(app.nav.top() is NewChat)
 }
 
 ///|
@@ -1126,8 +1111,8 @@ test "大屏: 显示空列 off leaves the empty columns out, kept in the core's 
   t.run_for(@ui.move_most_ms)
   // (显示 on a ground of its own: the board not as it starts)
   assert_true(t.query(Button, label="显示") is Some(_))
-  // 新待办: 待派发 in while its line is open, out again as it is closed
-  t.click(Button, label="新待办")
+  // ⌘N: 待派发 in while its line is open, out again as it is closed
+  t.key(@ui.key_of_char('n'), mods=@ui.mod_cmd)
   t.run_for(@ui.move_most_ms)
   assert_true(board_words_at(t, "待派发") is Some(_))
   assert_eq(board_faults(t), [])
@@ -1607,6 +1592,79 @@ test "大屏: the columns gone sideways to their end, the chat beside narrowed b
   guard t.query(Button, label="盯着 CI，绿了告诉我") is Some(card) else { fail("监控中's card not shown") }
   let end = card.rect.0 + card.rect.2
   assert_true(end >= gx - 40.0, msg="the last column ends at \{end}, the board's room at \{gx}")
+  assert_eq(board_faults(t), [])
+}
+
+
+///|
+test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps its identity and destination, and can be cancelled" {
+  for (w, h, platform) in [(1440.0, 900.0, 0), (390.0, 844.0, 2)] {
+    let (t, src) = board_at("board", w, h, platform~)
+    if platform == 2 {
+      t.click(Tab, label="待派发 2")
+      t.run_for(@ui.move_most_ms)
+    }
+    let before = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
+    t.click(Button, label=before.title)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(t.focused().map(fn(f) { (f.role, f.value) }), Some((TextField, before.title)))
+    assert_eq(board_faults(t), [])
+    t.type_text("，包括 CSV")
+    t.click(Button, label="保存")
+    t.run_for(@ui.move_most_ms)
+    let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
+    assert_eq((after.id, after.station, after.station_name), (before.id, before.station, before.station_name))
+    assert_eq(after.title, before.title + "，包括 CSV")
+    assert_eq(board_kept_drafts()[0], after.title)
+    t.click(Button, label=after.title)
+    t.run_for(@ui.move_most_ms)
+    t.type_text(" 不保存")
+    t.key(@ui.key_escape)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(board_kept_drafts()[0], after.title)
+    assert_true(t.query(Button, label=after.title) is Some(_))
+    assert_eq(board_faults(t), [])
+    if platform == 0 {
+      // The same card can be reached and activated from the keyboard.
+      t.act(Button, Focus, label=after.title)
+      t.enter()
+      t.run_for(@ui.move_most_ms)
+      assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
+      t.click(Button, label="取消")
+      t.run_for(@ui.move_most_ms)
+      let starts = t.all(Button, label="开始")
+      let (sx, sy, sw, sh) = starts[0].rect
+      t.tap(sx + sw / 2.0, sy + sh / 2.0)
+      t.run_for(@ui.move_most_ms)
+      assert_eq(board_lane_now(src, after.title), "run")
+    }
+  }
+}
+
+
+///|
+test "大屏: Enter or pressing another card keeps edited words; an empty edit does not replace the draft" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="给导出加上按月份筛选")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("，并导出 CSV")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
+  t.click(Button, label=board_kept_drafts()[0])
+  t.run_for(@ui.move_most_ms)
+  t.type_text(" 文件")
+  t.click(Button, label="看一下 Android 冷启动为什么慢了 300ms")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV 文件")
+  assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
+  t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
+  t.type_text(" ")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[1], "看一下 Android 冷启动为什么慢了 300ms")
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
   assert_eq(board_faults(t), [])
 }
 

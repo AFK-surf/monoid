@@ -912,16 +912,20 @@ pub let page_js : String =
   #|      if (this.readyState !== 1) return;
   #|      // In the order sent, a Blob read first.
   #|      this._sending = this._sending.then(async () => {
-  #|        if (this.readyState !== 1) return;
+  #|        if (this.readyState === 3) return;
   #|        if (typeof data === "string") return this._link.send(data);
   #|        const buffer = data instanceof Blob ? await data.arrayBuffer() : ArrayBuffer.isView(data) ? data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) : data.slice(0);
-  #|        this._link.send(new Uint8Array(buffer));
+  #|        if (this.readyState !== 3) this._link.send(new Uint8Array(buffer));
   #|      });
   #|    }
   #|    close(code, reason) {
   #|      if (this.readyState >= 2) return;
+  #|      const connecting = this.readyState === 0;
   #|      this.readyState = 2;
-  #|      this._link.close(code ?? 1000, reason ?? "");
+  #|      const finish = () => { if (this.readyState === 2) return this._link.close(code ?? 1000, reason ?? ""); };
+  #|      // Closing an open socket follows the messages it accepted, including a Blob still being read.
+  #|      if (connecting) finish();
+  #|      else this._sending = this._sending.then(finish, finish);
   #|    }
   #|  }
   #|  Object.assign(PreviewSocket.prototype, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });

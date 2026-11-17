@@ -166,7 +166,7 @@ fn nt_old(w : Double, src : Source, m : Message, view? : ChatView = nt_view(), p
 
 ///|
 /// The same notice as the nodes draw it in its row (notice_said_node), `m` as it changes, kept open in `opened`; what
-/// is presented over it drawn; `row`, the row's middle node and key as they are told.
+/// is presented over it drawn; `row`, the row's node and key as it is made.
 fn nt_new(
   w : Double,
   src : Source,
@@ -199,10 +199,8 @@ fn nt_new(
       }
       root.box(fn(f) {
         @sf.style_node(f, fn() { head_frame })
-        notice_said_node(f, src, here, fn() { "m:ts9" }, fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied, over=fn(r, k) {
-          row.val = Some((r, k()))
-        })
-        |> ignore
+        let made = notice_said_node(f, src, here, fn() { "m:ts9" }, fn() { row_side(w) }, fn() { 0.0 }, m, opened, copied)
+        row.val = Some((made.node, (made.key)()))
       })
       |> ignore
       @sf.presented_nodes(root)
@@ -571,7 +569,7 @@ test "a notice about a profile: what went wrong leads to the profile's page" {
 }
 
 ///|
-test "the row's middle told with the row's key as it is made, across the list, for what lights the row as the notice is gone to" {
+test "the row's node, with the row's key as it is made, across the list round its pill" {
   let row : Ref[(@view.View, String)?] = Ref(None)
   let t = nt_new(760.0, nt_src(None, []), fn() { nt_msg() }, row~)
   t.run_for(@ui.move_most_ms)
