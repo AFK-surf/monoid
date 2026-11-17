@@ -4,8 +4,8 @@
 # without. After each of main's runs of the workflows that save them, however it ended (one failed or cancelled had
 # saved its caches by `always()` all the same: skipped, 2 GB of them stayed, and the repository's 12.15 GB had GitHub
 # evict main's mbui-moon-build-app and mbui-mac-moon, 2026-11-17), and each quarter hour: a branch's run started one
-# each (a run every minute, 37% of the repository's runs, 2026-11-17), its job skipped; a newer prune takes the place
-# of one still running.
+# each (a run every minute, 37% of the repository's runs, 2026-11-17), its job skipped; a newer prune waits for one
+# still running.
 name: cache-prune
 on:
   workflow_run:
@@ -28,10 +28,13 @@ jobs:
   prune:
     if: github.repository_owner == 'AFK-surf' && (github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'main')
     # (the job's, not the workflow's: a workflow's concurrency is taken before its jobs' `if`, so each run the `if` left
-    # nothing to do cancelled the prune under way, none of them through since #6955, 44084525729 by 44084606362)
+    # nothing to do cancelled the prune under way, none of them through since #6955, 44084525729 by 44084606362). One
+    # under way goes on to its end, the newest waiting after it (one waiting replaced by a newer): cancelled as each of
+    # main's runs ended, six or seven to a merge, the prunes after #7029 got through none while the caches came to
+    # 13 GB, main's older ones half deleted (44120431363).
     concurrency:
       group: cache-prune
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
