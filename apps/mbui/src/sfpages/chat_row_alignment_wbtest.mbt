@@ -477,3 +477,65 @@ test "the last chat-row mark and its agent stand in the archive column for every
     }
   }
 }
+
+///|
+/// A drawn station mark is never taken for an undrawn one: an offline chat on a station with its own glyph (the
+/// fixture's 迁移数据库的演练 on Maple) shows the unplugged icon and the station's mark both, the station's last, in the
+/// end column, the unplugged icon a slot before it.
+fn offline_with_glyph_check(t : @ui.Tester, column : Double, context : String) -> Unit raise {
+  let station = t.get(Image, label="Station").rect
+  let mark = alignment_center(station)
+  assert_true((mark - column).abs() < 0.5, msg="\{context}: station \{mark}, column \{column}")
+  let (_, sy, _, sh) = station
+  let drawn = t.shape_boxes().iter().any(fn(s) {
+    (s.1 + s.3 / 2.0 - column).abs() < 0.5 && s.2 + s.4 / 2.0 >= sy && s.2 + s.4 / 2.0 <= sy + sh
+  })
+  assert_true(drawn, msg="\{context}: the station's glyph is not drawn on the column: \{Repr(t.shape_boxes())}")
+  let unplug = alignment_unplug(t)
+  // (the slot before the station's: clear of it, and no empty slot between them)
+  assert_true(unplug <= mark - kind_slot_w && unplug > mark - 2.0 * kind_slot_w, msg="\{context}: unplug \{unplug}, station \{mark}")
+}
+
+///|
+test "an offline row on a station with its own glyph shows the unplugged icon and the station's mark, the last in the column" {
+  for platform in [0, 2] {
+    for at in [@sf.ListAt::Side, Tape, Whole] {
+      @sfbase.reset()
+      reset()
+      @sf.set_words(@sfbase.fill)
+      let item = {
+        ..sample_chat(0), title: "Offline glyph row", station_name: "Station", station_icon: "glyph:laptop:teal",
+        offline: Some("Offline"),
+      }
+      let t = @ui.Tester::new(fn(c) { @sf.begin(c) |> ignore }, w=320.0, h=200.0, platform~)
+      @ui.set_view_app(fn(root) {
+        @ui.set_tree_theme(@sf.ui_theme_now)
+        let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+        let tips = @sf.TipLayer::new(fn() { Some(popup) })
+        chat_row_node(root, @sfbase.sample_source, tips, fn() { item }, "agents", fn() { false }, at, fn() { 0 }) |> ignore
+      })
+      t.draw()
+      let (x, _, w, _) = t.get(Link, label="Offline glyph row").rect
+      let place = match at { Side => "side"; Tape => "tape"; Whole => "whole" }
+      offline_with_glyph_check(t, x + w - @sf.row_corner, "platform \{platform}, \{place}")
+      assert_eq(t.audit(), [])
+    }
+  }
+  // the old frame's row alike
+  for platform in [0, 2] {
+    @sfbase.reset()
+    reset()
+    @sf.set_words(@sfbase.fill)
+    let item = {
+      ..sample_chat(0), title: "Old offline glyph row", station_name: "Station", station_icon: "glyph:laptop:teal",
+      offline: Some("Offline"),
+    }
+    let t = @ui.Tester::new(fn(c) {
+      @sf.begin(c) |> ignore
+      chat_row(c, @sfbase.sample_source, item, "agents", at=Side) |> ignore
+    }, w=320.0, h=200.0, platform~)
+    t.draw()
+    let (x, _, w, _) = t.get(Button, has="Old offline glyph row").rect
+    offline_with_glyph_check(t, x + w - @sf.row_corner, "old frame, platform \{platform}")
+  }
+}
