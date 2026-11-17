@@ -1745,6 +1745,9 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await both("online again", () => ep.online(), "online");
     await both("linked", () => ep.linked!(), "linked");
     await both("home", () => ep.home(), "home");
+    // (home triggers a background relayStatus ask as keep and setCongestion above do: wait for both fronts to receive it
+    // before disabledRelays, or the MoonBit client's disabledRelays can arrive ahead of its relayStatus)
+    await Promise.all([tsFront, mbFront].map((f) => f.until(() => f.asks.filter((a) => a.op === "relayStatus").length >= 2, `"relayStatus" from home at the front (${f === tsFront ? "TypeScript" : "MoonBit"})`)));
     tsFront.refuse.add("disabledRelays");
     mbFront.refuse.add("disabledRelays");
     await both("refused by a front from before", () => ep.disabledRelays!("peer-c", ["https://r9/"], false), "disabledRelays", { peer: "peer-c", relays: ["https://r9/"], public: false });

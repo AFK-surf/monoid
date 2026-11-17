@@ -2126,9 +2126,11 @@ pub fn station_icon(@ui.Ctx, String, String, Double, Int64, here? : Bool) -> Uni
 
 pub fn station_lead(() -> Bool, () -> String, () -> String, () -> Int32) -> RowLead
 
-pub fn station_mark(@ui.Ctx, String, String, Double, Int64, none? : String, still? : Bool) -> Unit
+pub fn station_mark(@ui.Ctx, String, String, Double, Int64, none? : String, still? : Bool, visible_only? : Bool) -> Unit
 
-pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32) -> Unit
+pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> Int64, () -> Int32, visible_only? : Bool) -> Unit
+
+pub fn station_mark_visible(@ui.Ctx, String, String, Double) -> Bool
 
 pub fn status_dot(@ui.Ctx, String) -> Unit
 

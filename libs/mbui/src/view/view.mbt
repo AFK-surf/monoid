@@ -7046,6 +7046,19 @@ pub fn Tree::menu_at(self : Tree, x : Double, y : Double, at : Double) -> Bool {
 }
 
 ///|
+/// Hand a secondary press on this view to what is now at its place, once the event that closed it is committed. It
+/// goes no further while this view still takes presses; another modal layer remains in the way as usual.
+pub fn View::menu_behind(self : View, m : Menu) -> Unit {
+  let tree = self.tree
+  let id = self.id()
+  tree.after_event(fn() {
+    if !tree.alive_id(id) || tree.pressless_own_at(id.at) {
+      tree.menu_at(m.wx, m.wy, m.at) |> ignore
+    }
+  })
+}
+
+///|
 /// A wheel turned over a node at (x, y): how far across and down (`dx`, `dy`, as the host says it), what was held
 /// with it (`mods`, the host's wheel_mod_*), in the node's own terms as it is drawn then, in the window's, and when;
 /// how wide and how tall the node is laid out as of then, in its own terms (`w`, `h`: a Drag's, what the wheel zooms or

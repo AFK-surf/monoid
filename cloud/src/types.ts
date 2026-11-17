@@ -63,7 +63,21 @@ export type AccountEvent =
   | { type: "feedback"; workspace: string };
 
 /** The operator's console's lists (AccountEvent `admin`). */
-export type AdminList = "users" | "workspaces" | "invite-codes" | "feedback";
+export type AdminList = "users" | "workspaces" | "invite-codes" | "feedback" | "audit";
+
+/** What an operator of the console changed (GET /v1/admin/audit): who, what, of what. Times in seconds. */
+export interface AdminAuditEntry {
+  id: string;
+  created_at: number;
+  /** The operator's email, `admin-token` (scripts with ADMIN_TOKEN) or `feedback-monitor` (FEEDBACK_TOKEN). */
+  actor: string;
+  /** What was done (`user.beta`, `code.create`, `feedback.reply`, `relay.token`…). */
+  action: string;
+  /** What it was done to: an email, a workspace's name, a code, FB-<n>, a relay's name. */
+  target: string;
+  /** What else it said (`on`, `off`, a status, limits). */
+  detail: string;
+}
 
 /** What a station's presence socket is told besides its state: a release is out (its feed, and its reporters' fixed
  * reports, read again); the models' catalog changed (read again). */
@@ -123,6 +137,8 @@ export interface AdminWorkspace {
   added?: AddedView[];
   /** Whether the admin may put a station in it: made for a company, none of its owners signed in yet. */
   enrollable?: boolean;
+  /** Its machines that only run tasks (each its member's), apart from its stations. None said with none. */
+  rigs?: RigView[];
 }
 /** What a bug report is about (feedback.ts). */
 export type FeedbackArea = "station" | "web" | "android" | "desktop" | "slack" | "cloud" | "unknown";
@@ -148,6 +164,8 @@ export interface AdminFeedback {
   /** What the station added: its version, runtime, the session and thread, trace ids. */
   context: Record<string, unknown> | null;
   logs: string | null;
+  /** Whether it came with logs: the console's list says this and leaves `logs` out (a report's own page reads them). */
+  has_logs?: boolean;
   status: FeedbackStatus;
   /** The version its fix came in (the changelog's `Fixes: FB-<n>`), and when its station told the reporter; null before. Missing from a cloud from before. */
   fixed_in?: number | null;

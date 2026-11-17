@@ -225,6 +225,7 @@
   "web-main.history.ends.human": "Stopped for human input",
   "web-main.history.sendFailed": "Send failed",
   "web-main.history.sentTo": "Sent to ",
+  "web-main.history.tool.web": "Web",
   "web-main.history.thinking": "Thinking",
   "web-main.jobs.chip": "Running {n}",
   "web-main.stations.shareCard": "Share card",

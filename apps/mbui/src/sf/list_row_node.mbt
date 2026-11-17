@@ -11,8 +11,9 @@
 /// what a caller lays over it there: 归档); `corner`: what stands in its foot's end corner while `corner_shown` says,
 /// `corner_w` wide (a chat's people and agents), placed there by the corner rule in a side column (aside_end in from the
 /// row's end and foot, its room kept at the end of the lines under the first); `end_slot`: how wide what stands at its
-/// first line's end is, in one column with the last of what stands in its corner (`corner_end` wide: a face's where it
-/// says none). The caller has the row before these bindings run, so they can read its state directly.
+/// first line's end is, in one column with the last of what stands in its corner (`corner_end` is twice the distance
+/// from that part's centre to the end of the corner; a face's width where it says none). The caller has the row before
+/// these bindings run, so they can read its state directly.
 #callsite(autofill(loc))
 pub fn list_row_node(
   row : @view.View,
@@ -46,7 +47,8 @@ pub fn list_row_node(
     style_node(text, fn() { theme().chat_list.text }, in_row=true)
     // (its first line: in a side column, what stands at its end (`end_slot` wide: a chat's station) in one column with
     // what stands in its foot's end corner (a chat's people and agents, concentric with the row's corner: aside_end),
-    // the line reaching into the row's room for it where it must; a row with a mark: the mark beside its first line
+    // the line reaching into the row's room for it where it must, it and the corner sharing the corner's centre whatever
+    // size the last mark is; a row with a mark: the mark beside its first line
     // only, never across the middle of its lines however high the row is, the lines under it from the mark's edge, as
     // the old view's list_row puts them: the user, 2026-11-10)
     let head_box = fn(line : @view.View) {
@@ -54,9 +56,9 @@ pub fn list_row_node(
         style_node(h, fn() { list_looks(h).head })
         let reach = fn() {
           let l = theme().chat_list
-          if at != Whole && end_slot > 0.0 {
-            let last = if corner_end() > 0.0 { corner_end() } else { l.face_d }
-            band_pad_in(at) + end_slot / 2.0 - (l.aside_end + last / 2.0)
+          if end_slot > 0.0 {
+            let inset = if at == Whole { @ui.Space::S4.px() } else { band_pad_in(at) }
+            inset + end_slot / 2.0 - (l.aside_end + l.face_d / 2.0)
           } else {
             0.0
           }
@@ -121,8 +123,10 @@ pub fn list_row_node(
         o.box(fn(b) {
           b
           .margin(By(fn() {
-            let e = theme().chat_list.aside_end
-            (0.0, 0.0, e, e)
+            let l = theme().chat_list
+            let last = if corner_end() > 0.0 { corner_end() } else { l.face_d }
+            let right = if end_slot > 0.0 { l.aside_end + (l.face_d - last) / 2.0 } else { l.aside_end }
+            (0.0, 0.0, right, l.aside_end)
           }))
           |> ignore
           k(b)

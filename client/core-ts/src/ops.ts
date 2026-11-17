@@ -254,10 +254,15 @@ export const PARAMS: Record<string, string> = {
   "admin.removePending": "email:string",
   "admin.deleteWorkspace": "workspace:string",
   "admin.createWorkspace": "name:string owners:strings members:number stations:number",
-  "admin.setLimits": "workspace:string members:number stations:number",
+  "admin.setLimits": "workspace:string members?:number stations?:number reset?:boolean",
+  "admin.addOwners": "workspace:string emails:strings",
+  "admin.removeAdded": "workspace:string email:string",
   "admin.enroll": "workspace:string name:string",
   "admin.feedbackStatus": "id:string status?:string",
-  "admin.relayToken": "name:string url?:string",
+  "admin.feedbackReply": "id:string text:string",
+  "admin.relayToken": "name:string url?:string target?:string",
+  "admin.relayTokenRevoke": "id:string",
+  "admin.relayPut": "url:string name:string target?:string",
   "admin.relayRemove": "url:string",
 };
 
@@ -878,15 +883,27 @@ function cloudOp(name: string, params: unknown): Request | null {
     case "admin.createWorkspace":
       return op("POST", () => "/v1/admin/workspaces", p.pick(["name", "owners", "members", "stations"]));
     case "admin.setLimits":
-      return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/limits`, p.pick(["members", "stations"]));
+      return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/limits`, p.pick(["members", "stations", "reset"]));
+    // Owners the admin puts in (a company whose owner left); an email added not signed in yet taken back.
+    case "admin.addOwners":
+      return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/owners`, p.pick(["emails"]));
+    case "admin.removeAdded":
+      return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/added/remove`, p.pick(["email"]));
     case "admin.enroll":
       return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/enrollments`, p.pick(["name"]));
     case "admin.feedbackStatus":
       return op("POST", () => `/v1/admin/feedback/${p.at("id")}/status`, p.pick(["status"]));
+    // The team's reply to the chat a report came from (shown to its people, never to a station or its agents).
+    case "admin.feedbackReply":
+      return op("POST", () => `/v1/admin/feedback/${p.at("id")}/reply`, p.pick(["text"]));
     // The cloud's list of relays (cloud/src/relay-registry.ts): a token for a relay to put itself on it with, and the
     // command its machine runs; one taken off it, the ways into it with it.
     case "admin.relayToken":
-      return op("POST", () => "/v1/admin/relays/token", p.pick(["name", "url"]));
+      return op("POST", () => "/v1/admin/relays/token", p.pick(["name", "url", "target"]));
+    case "admin.relayTokenRevoke":
+      return op("POST", () => "/v1/admin/relays/token/revoke", p.pick(["id"]));
+    case "admin.relayPut":
+      return op("POST", () => "/v1/admin/relays/put", p.pick(["url", "name", "target"]));
     case "admin.relayRemove":
       return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
     default:

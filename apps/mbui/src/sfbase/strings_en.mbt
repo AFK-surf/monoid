@@ -1005,6 +1005,7 @@ let en : Map[String, String] = {
   "web-main.history.stepUnread": "Couldn't load: {error}",
   "web-main.history.subagent": "Subagent",
   "web-main.history.thinking": "Thinking",
+  "web-main.history.tool.web": "Web",
   "web-main.jobs.chip": "Running {n}",
   "web-main.jobs.inPanel": "Open in panel",
   "web-main.jobs.jobs": "Jobs",

@@ -3,9 +3,12 @@
 
 ///|
 /// The fixture's `mode` in a desktop's window, its model's panel open beside its control.
-fn model_pop(mode : String) -> @ui.Tester {
+fn model_pop(mode : String, font_scale? : Double = 1.0) -> @ui.Tester {
   let src = fixture_app(mode)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  if font_scale != 1.0 {
+    t.set_font_scale(font_scale)
+  }
   t.run_for(squeeze_opening)
   t
 }
@@ -358,6 +361,21 @@ test "wide, models of many makers: each a row of its own in the list of them, no
   t.run_for(@kit.presence_in_ms)
   assert_true(t.query(Button, label="Gemini 3 Pro") is Some(_) && t.query(Button, label="Opus 5.5") is None)
   assert_eq(t.squeeze_faults(), [])
+}
+
+///|
+test "wide, all models: the open panel makes room for a model and how it runs on one line" {
+  let t = model_pop("newchat-providers-model", font_scale=1.5)
+  t.click(Button, label="全部模型")
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="OpenAI")
+  t.run_for(@ui.move_most_ms)
+  let panel = t.get(@ui.Role::Dialog).rect
+  let model = t.get(Button, label="GPT-6 Astra").rect
+  let name = words_whole(t, "GPT-6 Astra", model)
+  let runtime = words_whole(t, "Codex · 中 · Ultrafast · 1.1M", model)
+  assert_true(name is Some(n) && runtime is Some(r) && (n.1 - r.1).abs() < 4.0, msg="\{Repr((model, name, runtime))}")
+  assert_true(panel.0 >= 0.0 && panel.0 + panel.2 <= 1280.0 && panel.2 < 960.0, msg="\{Repr(panel)}")
 }
 
 ///|

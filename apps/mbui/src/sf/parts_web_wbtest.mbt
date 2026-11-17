@@ -423,6 +423,7 @@ test "a list's row as a node in a side column: what stands at its first line's e
       let corner = at(0x00FF00FFL)
       assert_true(end > 0.0 && corner > 0.0, msg="\{Repr(t.drawn_rects())}")
       assert_true((end - corner).abs() < 0.5, msg="platform \{platform}, last \{last}: the first line's end at \{end}, the corner's at \{corner}")
+      assert_true((end - (280.0 - row_corner)).abs() < 0.5, msg="platform \{platform}, last \{last}: the column moved to \{end}")
     }
   }
 }

@@ -831,17 +831,24 @@ fn fix_pick_options(all : Array[Json]) -> Json {
           let ran = if model == n.d_model { Some((n.d_runtime, n.d_effort)) } else { used.get(model) }
           match ran {
             Some((runtime, effort)) => {
+              let astra_run = n.providers && model == "gpt-6-astra"
               m["usual"] = {
                 "runtime": Json::string(runtime),
                 "effort": if effort == "" { Json::null() } else { Json::string(effort) },
                 "fast": Json::null(),
+                "speed": if astra_run { Json::string("ultrafast") } else { Json::null() },
+                "context": if astra_run { Json::number(1100000.0) } else { Json::null() },
               }
               let parts = []
-              if many {
+              if many || astra_run {
                 parts.push(fix_runtime_short(runtime))
               }
               if effort_word(effort) != "" {
                 parts.push(effort_word(effort))
+              }
+              if astra_run {
+                parts.push("Ultrafast")
+                parts.push("1.1M")
               }
               if parts.length() > 0 {
                 m["usualText"] = Json::string(parts.join(" · "))

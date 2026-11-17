@@ -163,6 +163,11 @@ async function mbOutcome(f: () => Promise<Json>): Promise<Json> {
 
 // ── the program ──
 
+// Socket and program messages wake waits for facts delivered from outside this process.
+const farviewEvents = new EventEmitter();
+let farviewVersion = 0;
+function wakeFarview() { farviewVersion++; farviewEvents.emit("changed"); }
+
 class Program {
   readonly child: ChildProcessWithoutNullStreams;
   #next = 0;
@@ -215,13 +220,14 @@ class Program {
         this.due.set(m.timer, clockFibers.now() + Math.max(0, m.ms));
         this.#timers.set(m.timer, clockFibers.after(m.ms, () => (this.due.delete(m.timer), void this.cmd("fire", { timer: m.timer })))); // timer: the program's own, armed on the test's clock
       } else if (m.tell === "cancel") (this.#timers.get(m.timer)?.(), this.#timers.delete(m.timer), this.due.delete(m.timer));
-      else this.entries.push(tellEntry(m.tell, m.inst, m.args));
+      else { this.entries.push(tellEntry(m.tell, m.inst, m.args)); wakeFarview(); }
       return;
     }
     if (typeof m.call === "string") {
       this.#asked++;
       if (m.call === "connect") this.conns.push(m.args[0]);
       this.entries.push(askEntry(m.call, m.inst, m.args));
+      wakeFarview();
       const run = (async () => {
         try {
           const ok = await this.world(m.call, m.inst, m.args);
@@ -1719,10 +1725,27 @@ test("the browser tool: endpoint by default, tabs, status, stop, each the chat's
 
 // ── a chat's Farview tab, over ports served here ──
 
-/// Until `f` holds, turning the loop (what the sockets carry comes in its own time); bounded.
-async function until(what: string, f: () => boolean) {
-  for (let i = 0; i < 5000 && !f(); i++) await new Promise((r) => setImmediate(r));
-  assert.ok(f(), `${what}: it did not come`);
+/// Wait for socket or program events; an async query also yields to the OS between checks.
+async function until(what: string, f: () => boolean | Promise<boolean>) {
+  const end = Date.now() + 15_000;
+  for (;;) {
+    const version = farviewVersion;
+    const result = f();
+    const asynchronous = result instanceof Promise;
+    const left = end - Date.now();
+    if (left <= 0) throw new Error(`${what}: it did not come`);
+    let limit: ReturnType<typeof setTimeout> | undefined;
+    const timed = new Promise<never>((_, reject) => { limit = setTimeout(() => reject(new Error(`${what}: it did not come`)), left); });
+    try { if (await Promise.race([Promise.resolve(result), timed])) return; }
+    finally { clearTimeout(limit); }
+    if (farviewVersion !== version) continue;
+    await new Promise<void>((resolve) => {
+      const wake = () => { clearTimeout(timer); farviewEvents.off("changed", wake); resolve(); };
+      const timer = setTimeout(wake, asynchronous ? Math.min(5, left) : left);
+      farviewEvents.once("changed", wake);
+      if (farviewVersion !== version) wake();
+    });
+  }
 }
 
 /// An agent port as a Farview host's: each ask read off its wire and written down, answered as `answer` says.
@@ -1833,6 +1856,7 @@ async function framePortOf(picture: Buffer) {
   const server = createServer((s) => {
     const k = sockets.length;
     sockets.push(s);
+    wakeFarview();
     let buf = "";
     s.on("data", (d) => {
       buf += d.toString("latin1");
@@ -1841,6 +1865,7 @@ async function framePortOf(picture: Buffer) {
         const m = JSON.parse(Buffer.from(buf.slice(0, nl), "latin1").toString("utf8"));
         buf = buf.slice(nl + 1);
         heard.push([k, m]);
+        wakeFarview();
         if (m.frame) {
           s.write(`${JSON.stringify({ frame: { seq: seq++, width: 640, height: 450, format: "jpeg", bytes: picture.length } })}\n`);
           s.write(picture.subarray(0, 2));
@@ -1871,7 +1896,7 @@ test("a Farview tab as a screen: its page and size heard, a view's size, a pictu
     // a link alone: a picture asked for, the lines after it heard, nothing after its end
     const link = new FrameLink(portTs.port);
     const linkHeard: Json[] = [];
-    link.heard = (m) => linkHeard.push(m);
+    link.heard = (m) => { linkHeard.push(m); wakeFarview(); };
     await p.make("frameLink", "link1", { port: portMb.port });
     const pic = await link.picture();
     const mbPic = await p.call("link1", "picture");
@@ -1887,7 +1912,7 @@ test("a Farview tab as a screen: its page and size heard, a view's size, a pictu
     // the screen and a view of it
     const screen = new FarviewScreen({ session: "chat:c-1", port: portTs.port, n: 2 });
     const opened: string[] = [];
-    screen.opened = (url) => opened.push(url);
+    screen.opened = (url) => { opened.push(url); wakeFarview(); };
     await p.make("farviewScreen", "fs1", { session: "chat:c-1", port: portMb.port, n: 2 });
     screen.watch();
     await p.call("fs1", "watch");
@@ -1919,13 +1944,13 @@ test("a Farview tab as a screen: its page and size heard, a view's size, a pictu
       await p.call(mbView, "input", input);
     }
     for (const port of [portTs, portMb]) port.said({ size: { width: 500, height: 900 } });
-    await until("the size heard", () => portTs.heard.length === portMb.heard.length);
+    await until("the size heard", async () => portTs.heard.length >= 6 && portMb.heard.length === portTs.heard.length && screen.size().height === 1800 && (await p.call("fs1", "info")).size.height === 1800);
     await view.setClipboard!({ type: "text", text: "pasted" } as never, true);
     await p.call(mbView, "setClipboard", { type: "text", text: "pasted" }, true);
     await view.setClipboard!({ type: "text", text: "" } as never, true);
     await p.call(mbView, "setClipboard", { type: "text", text: "" }, true);
     const copiedTs: Json[] = [];
-    view.watchClipboard!((c) => copiedTs.push(plain(c)));
+    view.watchClipboard!((c) => { copiedTs.push(plain(c)); wakeFarview(); });
     await p.call(mbView, "watchClipboard");
     for (const port of [portTs, portMb]) port.said({ copied: "copied words" });
     await until("the copy heard", () => copiedTs.length === 1 && p.entries.some((e) => e[0] === "clip"));

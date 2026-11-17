@@ -6,7 +6,9 @@
 // dist/cloud-web, dist/cloud-admin and dist/cloud-preview (`pnpm run build:cloud`) as on Cloudflare.
 // WebSockets (/v1/events, the relay) are piped to miniflare itself, listening on PORT + 1.
 //   RELAY=http://127.0.0.1:3340 pnpm exec tsx test/dev.ts
-// The console's admin is alice (ADMIN_EMAIL=bob@example.test makes it bob). SEED=600 fills it with made-up people.
+// The console's admin is alice (ADMIN_EMAIL=bob@example.test makes it bob). SEED=600 fills it with made-up people;
+// SEED=console with a cloud in use as the console shows it, the same each run (test/console-seed.ts). GUESTS (JSON, as
+// the deploy's) has it answer as another product too: the console's codes say each product's link.
 // Development-only routes (never in the Worker), on either port:
 //   /__dev/login?user=alice  signs that account into the browser (on that origin), as the sign-in page does
 //                            (web/src/login/signin.ts: for the next page's core to take), and goes to /
@@ -83,7 +85,7 @@ const pushes = pushLog ? {
 const persisted = process.env.PERSIST ? join(process.env.PERSIST, "dev.json") : "";
 const resumed: { grantJwk: JsonWebKey; workspace: string } | null =
   process.env.RESUME && persisted ? JSON.parse(await readFile(persisted, "utf8").catch(() => "null")) : null;
-const h = await harness({ clock: "real", ...(resumed ? { grantJwk: resumed.grantJwk } : {}), ...pushes, origin, adminOrigin, previewOrigin, betaOrigin, assets, port: port + 1, relayUrl: process.env.RELAY ?? "http://127.0.0.1:3340", ...(process.env.RELAY_URLS ? { relayUrls: process.env.RELAY_URLS } : {}), ...(process.env.RELAY_NAMES ? { relayNames: JSON.parse(process.env.RELAY_NAMES) } : {}), adminEmail: process.env.ADMIN_EMAIL ?? "alice@example.test", ...(process.env.GCP_TELEMETRY ? { telemetry: "real" as const } : {}), ...(process.env.REVIEW_ACCOUNTS ? { reviewAccounts: process.env.REVIEW_ACCOUNTS } : {}), ...(Number(process.env.LOGIN_LIMIT_TIMES) > 1 ? { loginLimitTimes: Number(process.env.LOGIN_LIMIT_TIMES) } : {}), ...(process.env.MAIL ? { mail: (m: { to: string; subject: string }) => (console.log(`mail to ${m.to}: ${m.subject}`), true) } : {}), ...(process.env.PERSIST ? { persist: process.env.PERSIST } : {}), ...(process.env.AUTH_KEY ? { signingKey: process.env.AUTH_KEY } : {}) });
+const h = await harness({ clock: "real", ...(resumed ? { grantJwk: resumed.grantJwk } : {}), ...pushes, origin, adminOrigin, previewOrigin, betaOrigin, assets, port: port + 1, relayUrl: process.env.RELAY ?? "http://127.0.0.1:3340", ...(process.env.RELAY_URLS ? { relayUrls: process.env.RELAY_URLS } : {}), ...(process.env.RELAY_NAMES ? { relayNames: JSON.parse(process.env.RELAY_NAMES) } : {}), adminEmail: process.env.ADMIN_EMAIL ?? "alice@example.test", ...(process.env.GCP_TELEMETRY ? { telemetry: "real" as const } : {}), ...(process.env.REVIEW_ACCOUNTS ? { reviewAccounts: process.env.REVIEW_ACCOUNTS } : {}), ...(Number(process.env.LOGIN_LIMIT_TIMES) > 1 ? { loginLimitTimes: Number(process.env.LOGIN_LIMIT_TIMES) } : {}), ...(process.env.MAIL ? { mail: (m: { to: string; subject: string }) => (console.log(`mail to ${m.to}: ${m.subject}`), true) } : {}), ...(process.env.PERSIST ? { persist: process.env.PERSIST } : {}), ...(process.env.AUTH_KEY ? { signingKey: process.env.AUTH_KEY } : {}), ...(process.env.GUESTS ? { guests: JSON.parse(process.env.GUESTS) } : {}) });
 const aliceTokens = await h.login("alice");
 const alice = h.as(aliceTokens);
 // alice may use the test channel (the console's switch does the same).
@@ -94,6 +96,12 @@ if (persisted && !resumed) writeFileSync(persisted, JSON.stringify({ grantJwk: h
 if (Number(process.env.SEED) > 0) {
   const directories: any = await h.mf.getDurableObjectNamespace("DIRECTORY", "api");
   await directories.get(directories.idFromName("primary")).seedPeople(Number(process.env.SEED));
+}
+if (process.env.SEED === "console") {
+  const directories: any = await h.mf.getDurableObjectNamespace("DIRECTORY", "api");
+  await directories.get(directories.idFromName("primary")).seedConsole({ sub: aliceTokens.subject, email: aliceTokens.email });
+  const loads: any = await h.mf.getDurableObjectNamespace("RELAY_LOAD", "api");
+  await loads.get(loads.idFromName("primary")).seedLoad(process.env.RELAY ?? "http://127.0.0.1:3340");
 }
 // What dist/releases holds goes into the Worker's bucket too, for what the API reads of it: the changelog
 // (changelog.json, `node scripts/changelog.ts`) and what each part has out (station.json, android/latest.json, web.json…).
@@ -194,7 +202,13 @@ server.on("upgrade", (req, socket, head) => {
   if (process.env.LOG_REQUESTS && offered) console.log(`REQ ${new Date().toISOString().slice(11, 23)} 101 GET ${new URL(req.url ?? "/", origin).pathname} ${offered.slice(-6)} ${whose(offered)}`);
   const upstream = connect(port + 1, "127.0.0.1", () => {
     const lines = [`${req.method} ${req.url} HTTP/1.1`];
-    for (let i = 0; i < req.rawHeaders.length; i += 2) lines.push(`${req.rawHeaders[i]}: ${req.rawHeaders[i + 1]}`);
+    // (a console opened on another name of this machine, monoid's admin.monoid.build mapped to it, goes on as the
+    // console's own origin: the Worker knows only that one)
+    const as = (req as IncomingMessage & { as?: string }).as;
+    for (let i = 0; i < req.rawHeaders.length; i += 2) {
+      const name = req.rawHeaders[i]!.toLowerCase();
+      lines.push(`${req.rawHeaders[i]}: ${as && name === "host" ? new URL(as).host : as && name === "origin" ? as : req.rawHeaders[i + 1]}`);
+    }
     upstream.write(lines.join("\r\n") + "\r\n\r\n");
     upstream.write(head);
     socket.pipe(upstream).pipe(socket);
@@ -203,7 +217,10 @@ server.on("upgrade", (req, socket, head) => {
   socket.on("error", () => upstream.destroy());
 });
 server.listen(port, "127.0.0.1", () => console.log(`READY still.fail cloud (dev) on :${port}`));
-createServer(handle(adminOrigin)).listen(adminPort, "127.0.0.1", () => console.log(`READY admin console (dev) on :${adminPort}`));
+// The console's events socket goes to miniflare as the main one's does (its lists read again as they change).
+const adminServer = createServer(handle(adminOrigin));
+adminServer.on("upgrade", (req, socket, head) => server.emit("upgrade", Object.assign(req, { as: adminOrigin }), socket, head));
+adminServer.listen(adminPort, "127.0.0.1", () => console.log(`READY admin console (dev) on :${adminPort}`));
 createServer(handle(previewOrigin)).listen(previewPort, "127.0.0.1", () => console.log(`READY preview host (dev) on :${previewPort}`));
 // The test channel's events socket goes to miniflare as the main one's does.
 const betaServer = createServer(handle(betaOrigin));

@@ -567,9 +567,10 @@ if [ $full = 1 ]; then
   if part station-tests && touches "$station_paths"; then
     prep station deps station
     slice=${STILLFAIL_STATION_SHARD:-}
+    # Node --test sorts its file arguments; run-files preserves the slice's longest-first order.
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node --import ./test/setup-env.mjs --test ${STILLFAIL_NODE_TEST_JOBS:+--test-concurrency="$STILLFAIL_NODE_TEST_JOBS"} --test-timeout=600000 $files'
+    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node ./test/run-files.mjs $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.

@@ -133,7 +133,7 @@ fn panel_node(
         .beside(at.id(), side=x.side, along=x.along, offset=x.offset, padding=8.0, holds_side=true)
         // (`fits`: as wide as what it holds is laid out, `w` at most, the tree sizing it by it)
         .width(Is(if x.fits { None } else { Some(x.w) }))
-        .max_width(Is(if x.fits { Some(x.w) } else { None }))
+        .max_width(if x.fits { By(fn() { Some(dmin(x.w, dmax(0.0, over_room(layer).0 - 16.0))) }) } else { Is(None) })
         .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
         // (`tall`: a share of the window, no taller than the room beside what opened it, small_panel's `h`)
         .height(By(fn() { if x.tall > 0.0 { Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0))) } else { None } }))

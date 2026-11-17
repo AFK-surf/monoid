@@ -990,6 +990,7 @@ let zh : Map[String, String] = {
   "web-main.history.stepUnread": "无法读取：{error}",
   "web-main.history.subagent": "子 agent",
   "web-main.history.thinking": "思考",
+  "web-main.history.tool.web": "联网",
   "web-main.jobs.chip": "运行中 {n}",
   "web-main.jobs.inPanel": "在侧栏查看",
   "web-main.jobs.jobs": "后台任务",

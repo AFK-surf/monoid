@@ -44,6 +44,7 @@ priv struct Run {
   mut notify_index : Int
   mut queued_length : Int
   mut active_sub : ReactiveNode?
+  mut untracked_depth : Int
   /// what owns what is made now (an effect, a scope): what is reading where something is, else this (Solid's Owner
   /// apart from its Listener: `untracked` stops following reads, never owning)
   mut owner : ReactiveNode?
@@ -71,6 +72,7 @@ let run : Run = {
   notify_index: 0,
   queued_length: 0,
   active_sub: None,
+  untracked_depth: 0,
   owner: None,
   queued: [],
   flushing: 0,
@@ -810,6 +812,34 @@ fn computed_afters_due() -> Unit {
 }
 
 ///|
+/// Called when a graph node is read with no subscriber and outside an explicit untracked block.
+// kept across runs: wire set by view/tester
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+pub let on_untracked_read : Ref[((ReactiveNode) -> Unit)?] = Ref(None)
+
+///|
+fn report_untracked_read(node : ReactiveNode) -> Unit {
+  if run.untracked_depth == 0 && on_untracked_read.val is Some(tell) {
+    tell(node)
+  }
+}
+
+///|
+/// Number of newly queued readers at which a propagation is reported. Zero disables reporting.
+// kept across runs: configured by the diagnostic consumer
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+pub let fanout_limit : Ref[Int] = Ref(0)
+
+///|
+/// Called after propagation queues at least `fanout_limit` readers. The callback observes the graph without changing it.
+// kept across runs: wire set by view/tester
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+pub let on_fanout : Ref[((SourceLoc?, Int) -> Unit)?] = Ref(None)
+
+///|
 /// The computed's value, worked out again first if what it read changed since (computedOper).
 pub fn[T] Computed::get(self : Computed[T]) -> T {
   let node = self.0
@@ -893,6 +923,14 @@ pub fn[T] Signal::get(self : Signal[T]) -> T {
 }
 
 ///|
+/// Where this computed was made.
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+pub fn[T] Computed::made_at(self : Computed[T]) -> SourceLoc {
+  self.1.made_at
+}
+
+///|
 /// The signal set (signalOper write): what follows it told, unless it is the same as what was set.
 #callsite(autofill(loc))
 pub fn[T] Signal::set(self : Signal[T], value : T, loc~ : SourceLoc) -> Unit {
@@ -900,27 +938,28 @@ pub fn[T] Signal::set(self : Signal[T], value : T, loc~ : SourceLoc) -> Unit {
   let changed = !(state.same)(state.pending, value)
   state.pending = value
   if changed {
-    // (set as a watch reads: where, for it to say what changed what it read as it read, Watch::set_as_read)
-    if watch_reading.depth > 0 && watch_reading.sets.length() < 4 {
-      watch_reading.sets.push(loc.to_string())
-    }
-    // (where, for what it tells to say: Signal::set_at)
-    set_at.val = Some(loc)
-    sets_count.val += 1
     let node = self.0
     node.flags = MUTABLE | DIRTY
-    match node.subs {
-      Some(subs) => {
-        let was = setting.val
-        setting.val = Some(loc)
-        propagate(subs, run.run_depth != 0)
-        if run.batch_depth == 0 {
-          flush()
-        }
-        setting.val = was
-      }
-      None => ()
+    tell_set(node, loc)
+  }
+}
+
+///|
+/// Record a changed write and tell what follows it, keeping the write's location through propagation and flush.
+fn tell_set(node : ReactiveNode, loc : SourceLoc) -> Unit {
+  if watch_reading.depth > 0 && watch_reading.sets.length() < 4 {
+    watch_reading.sets.push(loc.to_string())
+  }
+  set_at.val = Some(loc)
+  sets_count.val += 1
+  if node.subs is Some(subs) {
+    let was = setting.val
+    setting.val = Some(loc)
+    propagate(subs, run.run_depth != 0)
+    if run.batch_depth == 0 {
+      flush()
     }
+    setting.val = was
   }
 }
 
@@ -951,7 +990,7 @@ fn track(dep : ReactiveNode) -> Unit {
       }
       link(dep, sub, run.cycle)
     }
-    None => ()
+    None => report_untracked_read(dep)
   }
 }
 
@@ -1065,28 +1104,73 @@ pub fn[T] Computed::watched(self : Computed[T]) -> Bool {
 ///|
 /// What `f` makes, nothing it reads followed by what is reading now.
 pub fn[T] untracked(f : () -> T) -> T {
-  let prev_sub = set_active_sub(None)
+  let prev_sub = start_untracked()
   let v = f()
-  run.active_sub = prev_sub
+  end_untracked(prev_sub)
   v
+}
+
+///|
+/// Nesting depth of the explicit untracked read or block under way.
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+pub fn untracked_depth() -> Int {
+  run.untracked_depth
+}
+
+///|
+fn start_untracked() -> ReactiveNode? {
+  run.untracked_depth += 1
+  set_active_sub(None)
+}
+
+///|
+fn end_untracked(prev_sub : ReactiveNode?) -> Unit {
+  run.untracked_depth -= 1
+  run.active_sub = prev_sub
 }
 
 ///|
 /// The signal's value as `untracked(fn() { s.get() })` reads it, with no function made to read it in.
 pub fn[T] Signal::untracked(self : Signal[T]) -> T {
-  let prev_sub = set_active_sub(None)
+  let prev_sub = start_untracked()
   let v = self.get()
-  run.active_sub = prev_sub
+  end_untracked(prev_sub)
   v
 }
 
 ///|
 /// The computed's value as `untracked(fn() { c.get() })` reads it, with no function made to read it in.
 pub fn[T] Computed::untracked(self : Computed[T]) -> T {
-  let prev_sub = set_active_sub(None)
+  let prev_sub = start_untracked()
   let v = self.get()
-  run.active_sub = prev_sub
+  end_untracked(prev_sub)
   v
+}
+
+///|
+fn release_unwatched_resource(node : ReactiveNode) -> Unit {
+  if node.holds && node.subs is None {
+    unwatched(node)
+  }
+}
+
+///|
+/// Keep one-off values cached when they hold no resource. A resource only stays held while a subscriber reads it.
+fn[T] Computed::get_releasing(self : Computed[T]) -> T {
+  let value = self.get()
+  if run.active_sub is None {
+    release_unwatched_resource(self.0)
+  }
+  value
+}
+
+///|
+fn[T] Computed::untracked_releasing(self : Computed[T]) -> T {
+  let prev_sub = start_untracked()
+  let value = self.get_releasing()
+  end_untracked(prev_sub)
+  value
 }
 
 ///|

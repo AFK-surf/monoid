@@ -122,7 +122,7 @@ pub fn state_line_node(
           }
         }
         p.box(fn(line) {
-          @sf.style_node(line, fn() { state_lead_line })
+          @sf.style_node(line, state_lead_line)
           // (read out whole)
           line.says(By(fn() { Some(@view.said(Text, label=text())) })) |> ignore
           line.box(fn(slot) {
@@ -205,6 +205,7 @@ fn lead_icon_node(parent : @view.View, lead : String, ink : () -> Int64, centred
 /// people's faces (each 3 over the one before with a pixel of `ground` round it as it is now; who started it, of more
 /// than one, ringed in ink a pixel past that, over the others), those that lead first, 6 apart; their tips in `tips`.
 /// `stint`: the page's time on top, what the faces' pictures are asked for on.
+/// `reach`: how far it reaches past the end of `parent` (its last part in the column of the row's end), set with its style.
 pub fn row_aside_node(
   parent : @view.View,
   src : Source,
@@ -213,6 +214,7 @@ pub fn row_aside_node(
   lead : String,
   ground : () -> Int64,
   stint : () -> Int,
+  reach? : () -> Double,
 ) -> Unit {
   let groups = fn() { @sfbase.row_agent_groups(item()) }
   let with_people = fn() { row_with_people(item(), lead) }
@@ -297,7 +299,13 @@ pub fn row_aside_node(
   }
   // (in the box it is given, a box of its own: no box round it)
   let row = parent
-  @sf.style_node(row, fn() { aside_row })
+  // (`reach`: how far its end reaches out past the end of the box it is given, row_aside's)
+  @sf.style_node(row, fn() {
+    match reach {
+      Some(r) => aside_row.then(@sf.outset_end(r()))
+      None => aside_row
+    }
+  })
   if lead == "people" {
     faces(row)
     agents(row)

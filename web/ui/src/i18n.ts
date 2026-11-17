@@ -47,13 +47,21 @@ export function useLang(): Lang {
 
 type Args = Record<string, string | number>;
 
+let said: (text: string) => string = (text) => text;
+
+/** Transforms catalog text before `{name}` arguments are substituted (e.g. another product's name for still.fail's):
+ * what is put in for them (an email at still.fail, say) is left as it is. */
+export function setSaid(fn: (text: string) => string): void {
+  said = fn;
+}
+
 /** The words for `key` in a language, with `args` put in for `{name}`; `n` chooses between `one` and `other`. */
 export function tr(language: Lang, key: string, args?: Args): string {
   const found = CATALOG[language][key] ?? CATALOG.zh[key];
   let text: string;
   if (found === undefined) text = key;
-  else if (typeof found === "string") text = found;
-  else text = (args && Number(args.n) === 1 ? found.one : undefined) ?? found.other;
+  else if (typeof found === "string") text = said(found);
+  else text = said((args && Number(args.n) === 1 ? found.one : undefined) ?? found.other);
   if (!args) return text;
   return text.replace(/\{(\w+)\}/g, (all, name: string) => (name in args ? String(args[name]) : all));
 }
