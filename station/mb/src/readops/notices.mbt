@@ -230,6 +230,45 @@ fn notice(
 }
 
 ///|
+/// Whoever started thread `t`, by their address (none: it says no one the workspace knows).
+fn starter_of(known : Known, t : Map[String, Json]) -> String? raise {
+  guard !(field(t, "created_by") is Null) else { return None }
+  for p in known.people(Json::array([field(t, "created_by")])) {
+    if p.value("email") is Some(String(e)) {
+      return Some(e)
+    }
+  }
+  None
+}
+
+///|
+/// Whom what thread `t` asks now is asked of (its last message `last` the asking one): its card's assignee; for what an
+/// agent needs with no card, the person it was answering (card-kinds.ts ASKER_BEFORE); else whoever started it.
+fn asked_of(db : @sql.Db, known : Known, t : Map[String, Json], last : Json) -> String? raise {
+  let id = field(t, "id")
+  let n = pending_card_number(db, id)
+  if !(n is Null) {
+    match card_at(db, id, n) {
+      Array([_, card]) =>
+        match card.value("assignee") {
+          Some(String(a)) if a.contains("@") => return Some(a)
+          _ => return starter_of(known, t)
+        }
+      _ => ()
+    }
+  }
+  match one(db, asker_before_sql, [id, last.value("n").unwrap_or(Json::null())]) {
+    Some(r) =>
+      match field(r, "author") {
+        String(a) if a.contains("@") => return Some(a)
+        _ => ()
+      }
+    None => ()
+  }
+  starter_of(known, t)
+}
+
+///|
 fn word_of(args : Json, k : String) -> String {
   match args.value("words") {
     Some(w) =>
@@ -288,18 +327,8 @@ pub fn turn_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
     let fresh = turn.value("declared") == Some(Json::string("block")) && blocked_fresh(db, id, key, turn)
     guard turn_notice(turn, last, key, word_of(args, "file"), fresh) is Some((kind, text)) else { continue }
     let by = match known.author_names(db, id).name("agent", key) { String(s) => s; _ => "" }
-    let only = if kind == "block" {
-      match review_pending_card(db, { "thread": id }) {
-        Array([_, card]) =>
-          match card.value("assignee") {
-            Some(String(a)) if a.contains("@") => Some(a)
-            _ => None
-          }
-        _ => None
-      }
-    } else {
-      None
-    }
+    // (what it asks is told to whom it asks, as the core counts it for them alone: client/core-ts decisions.ts decider)
+    let only = if kind == "block" { asked_of(db, known, t, last) } else { None }
     if notice(db, known, word_of(args, "untitled"), id, last.value("n").unwrap_or(Json::null()), Json::string(key), kind, by, text, None, only?) is Some(n) {
       out.push(n)
     }
@@ -347,8 +376,9 @@ pub fn said_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
       out.push(n)
     }
   }
-  if wrong is Some((n, what)) {
-    if notice(db, known, untitled, id, n, session, "failed", "", what, None) is Some(x) {
+  // (gone wrong, told to whoever started it alone: client/core-ts chat-stage.ts failedForViewer)
+  if wrong is Some((n, what)) && starter_of(known, t) is Some(starter) {
+    if notice(db, known, untitled, id, n, session, "failed", "", what, None, only=starter) is Some(x) {
       out.push(x)
     }
   }

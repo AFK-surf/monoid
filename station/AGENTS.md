@@ -246,6 +246,10 @@
   conversational one (options, a text field) until a person's message reaches its agent, in a platform's thread only one
   handed to a session (a colleague's word there not mentioning it leaves it waiting). The station's store, its reads in
   `mb/` and `test/reference/` go by that one text.
+- What a chat asks is asked of one person, the same for the station's push and the app (client/core-ts decisions.ts
+  `decider`): a card's assignee; for what an agent needs with no card, the person whose message it answered (a need's
+  `decider`, card-kinds.ts `ASKER_BEFORE`); else whoever started the chat. Its notice goes to them alone, and one of a
+  chat gone wrong to whoever started it (`mb/src/readops/notices.mbt` `asked_of`, `starter_of`; 2026-11-17).
 
 ## The agents' memory
 

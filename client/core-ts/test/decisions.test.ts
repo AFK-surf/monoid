@@ -88,6 +88,10 @@ test("a_need_without_a_card_is_asked_as_a_text_card", () => {
   dismissed.need.dismissed = true;
   assert.equal(d.forViewer(dismissed, { email: "owner@x.com" }), null);
   assert.notEqual(d.asked(dismissed), null, "still answered in its chat");
+  // (the person it was answering, as its station says: theirs to decide, not the starter's)
+  const answering: J = { need: { ...need, decider: "helper@x.com" }, creator: starter };
+  assert.equal(d.forViewer(answering, { email: "owner@x.com" }), null);
+  assert.equal(d.forViewer(answering, { email: "helper@x.com" })?.seq, 8);
 });
 
 test("options_show_the_recommended_one_last", () => {

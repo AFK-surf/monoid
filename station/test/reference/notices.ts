@@ -11,6 +11,7 @@ import * as store from "./store.ts";
 import { apiOf, authorNames, people, titleOf, useNames } from "./views.ts";
 import { wall } from "../../src/ops/fibers.ts";
 import { STATION_AUTHOR } from "../../src/store/rows.ts";
+import { ASKER_BEFORE } from "../../src/store/card-kinds.ts";
 import { type Notice } from "../../src/read/notices.ts";
 
 export * from "../../src/read/notices.ts";
@@ -69,6 +70,26 @@ function notice(s: Store, thread: number, seq: number | null, session: string, k
   return { to, kind, session, thread, seq, title: titleOf(t, first, null), by, text: [...text].slice(0, TEXT).join(""), at: wall.now() };
 }
 
+/// Whoever started a chat, by their address (null: no one the workspace knows).
+function starterOf(createdBy: string | null): string | null {
+  if (createdBy === null) return null;
+  const email = people([createdBy]).find((p) => typeof p.email === "string")?.email;
+  return typeof email === "string" ? email : null;
+}
+
+/// Whom what a chat asks now is asked of (its last message, at `n`, the asking one): its card's assignee; for what an
+/// agent needs with no card, the person it was answering (card-kinds.ts ASKER_BEFORE); else whoever started it.
+function askedOf(s: Store, thread: number, createdBy: string | null, n: number | null): string | null {
+  const card = store.pendingCard(s, thread);
+  if (card !== null && card !== undefined) {
+    const assignee = card[1]?.assignee;
+    return typeof assignee === "string" && assignee.includes("@") ? assignee : starterOf(createdBy);
+  }
+  const asker = n === null ? undefined : store.one(s, ASKER_BEFORE, thread, n) as { author?: unknown } | undefined;
+  if (typeof asker?.author === "string" && asker.author.includes("@")) return asker.author;
+  return starterOf(createdBy);
+}
+
 /// A session changed: its last turn, if it ended since `since` and is not `ended` (the end already told), told to its
 /// chats. Gives the end it saw.
 export function turnNotices(s: Store, key: string, since: number, ended: number | null, lang: Lang): { ended: number | null; notices: Notice[] } {
@@ -100,9 +121,8 @@ export function turnNotices(s: Store, key: string, since: number, ended: number 
     const told = turnNotice(turn, last, key, translate(lang, "station.notice.file"), fresh);
     if (told === null) continue;
     const by = authorNames(api, thread.id)("agent", key) ?? "";
-    const card = told[0] === "block" ? store.pendingCard(s, thread.id)?.[1] : undefined;
-    const assignee = typeof card?.assignee === "string" && card.assignee.includes("@") ? card.assignee as string : null;
-    const n = notice(s, thread.id, last?.n ?? null, key, told[0], by, told[1], null, assignee);
+    const asked = told[0] === "block" ? askedOf(s, thread.id, thread.createdBy, last?.n ?? null) : null;
+    const n = notice(s, thread.id, last?.n ?? null, key, told[0], by, told[1], null, asked);
     if (n !== null) out.push(n);
   }
   return { ended: at, notices: out };
@@ -130,8 +150,9 @@ export function saidNotices(s: Store, id: number, entries: EntryRow[], since: nu
     const n = notice(s, id, person.n, session, "message", by, text, person.author);
     if (n !== null) out.push(n);
   }
-  if (wrong !== undefined) {
-    const n = notice(s, id, wrong.n, session, "failed", "", wrong.what, null);
+  const starter = starterOf(thread.createdBy);
+  if (wrong !== undefined && starter !== null) {
+    const n = notice(s, id, wrong.n, session, "failed", "", wrong.what, null, starter);
     if (n !== null) out.push(n);
   }
   return out;
