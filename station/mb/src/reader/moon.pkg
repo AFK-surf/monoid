@@ -15,6 +15,7 @@ import {
   "station/turns",
   "station/said",
   "station/archivelast",
+  "station/accounts_pool",
   "station/letters",
   "station/cc",
   "station/store_threads",

@@ -888,6 +888,8 @@ fn main {
         { "thread": Number(_, ..), .. } => Some(@legacy.edits_step(db))
         _ => None
       }))
+    (Some("harness-accounts-pool"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @accounts_pool.harness(host))
     (Some("legacy-said"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "legacy said", (db, ask) => match ask {
         { "thread": Number(_, ..), .. } => Some(@legacy.said_step(db))
