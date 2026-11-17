@@ -95,6 +95,7 @@ fn session_json(r : Map[String, Json]) -> Json {
   put_col(out, "model", col(r, "model"))
   put_col(out, "effort", col(r, "effort"))
   out["fast"] = flag_or_null(col(r, "fast"))
+  if col(r, "tui") == Some(Json::number(1.0)) { out["tui"] = Json::boolean(true) }
   match col(r, "speed") { Some(String(s)) => out["speed"] = Json::string(s); _ => () }
   out["afresh"] = flag_or_null(col(r, "afresh"))
   out["context"] = number_or_null(col(r, "context"))

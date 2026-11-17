@@ -26,6 +26,11 @@ let corners_everywhere_known : Map[String, Int] = {
   // how it keeps its secrets, as its old view had it). Where it ends is its words' and the window's, as 安全's above:
   // gone as the page's height is any other (English's has none).
   known["touch-zh settings-vault-waits"] = 3
+  // 安全 made its person's only trusted device (lock-rebound-security) in the 600 wide window touch is in, in Chinese: the rail's
+  // one, and its page, which does not fill its panel, ending with 网页版's card 17 over the panel's foot, 16 in, its foot
+  // corners where the panel's 42 would want them 25. Where it ends is its words' and the window's, as 密钥's above: gone
+  // as the page's height is any other (English's has none).
+  known["touch-zh lock-rebound-security"] = 3
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the
@@ -88,7 +93,9 @@ let corners_tape_rail : Array[String] = [
   "archived", "history", "history-details", "drive",
   "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
-  "files-transfers", "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents",
+  "files-transfers", "files-tree", "place-stations", "place-profiles",
+  // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
+  "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
   "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
   // (a preset's dialog over 新对话 and its steps further in: the rail behind them, not the panel)
@@ -99,6 +106,7 @@ let corners_tape_rail : Array[String] = [
     "newchat-preset-theirs-long", "player-audio", "player-audio-failed", "player-ended",
   "player-failed", "player-opening", "player-video", "service", "service-restart", "service-sized",
   "service-stopped", "share-in", "share-in-files", "share-in-stations", "lock-security", "lock-upgrade", "lock-needs-app-security", "lock-out-security",
+  "lock-restart-security", "lock-rebound-security", "lock-replaced-security",
   "screen-agent-driving",
   "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
   "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",

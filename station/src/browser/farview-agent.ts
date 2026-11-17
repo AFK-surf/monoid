@@ -1,8 +1,9 @@
 // What the station itself asks of a chat's Farview tab on its agent port (127.0.0.1), as agent.exe does: a script's
-// value, the cookies read, set or cleared, a step (a field typed, a click, a key) and what the page says after it.
+// value, the cookies and the passkeys read, set or cleared, a step (a field typed, a click, a key) and what the page
+// says after it.
 // Farview's wire (its src/proto): a message is a 4-byte big-endian length and a body, the body a kind and its fields,
 // each integer a zigzag varint, each string its UTF-8 length and bytes. Used for the sign-ins put into the tab and for
-// filling its sign-in form, so nothing of them (a cookie, a password) is ever on a command line.
+// filling its sign-in form, so nothing of them (a cookie, a passkey's key, a password) is ever on a command line.
 import { connect } from "node:net";
 import { wall } from "../ops/fibers.ts";
 
@@ -10,6 +11,7 @@ import { wall } from "../ops/fibers.ts";
 export type AgentAsk =
   | { kind: "eval"; script: string }
   | { kind: "cookies"; verb: "get" | "set" | "clear"; arg: string }
+  | { kind: "passkeys"; verb: "get" | "set" | "clear"; arg: string }
   | { kind: "act"; verb: "click" | "type" | "key" | "enter"; selector: string; text: string }
   | { kind: "look" };
 
@@ -17,7 +19,7 @@ export type AgentAsk =
 /// took the tab back.
 export type AgentAnswer = { kind: "value"; value: string } | { kind: "seen"; url: string; title: string; outline: string } | { kind: "taken" };
 
-const KIND = { look: 19, seen: 20, taken: 21, act: 18, eval: 32, value: 33, cookies: 35 } as const;
+const KIND = { look: 19, seen: 20, taken: 21, act: 18, eval: 32, value: 33, cookies: 35, passkeys: 42 } as const;
 
 function varint(out: number[], v: number) {
   let u = ((v << 1) ^ (v >> 31)) >>> 0;
@@ -46,7 +48,8 @@ export function encodeAsk(a: AgentAsk): Buffer {
       str(body, a.script);
       break;
     case "cookies":
-      varint(body, KIND.cookies);
+    case "passkeys":
+      varint(body, KIND[a.kind]);
       str(body, a.verb);
       str(body, a.arg);
       break;

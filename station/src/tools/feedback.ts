@@ -14,7 +14,7 @@ type Json = any;
 export const FEEDBACK_SEND = {
   name: "feedback_send",
   description:
-    "Send a bug report about still.fail itself (the station, its tools, the still.fail apps, web or cloud, its Slack side) to the still.fail team. Only after the person you work for agreed to it and saw what is sent; the stillfail-feedback skill says when and how. Not for bugs in their own code or other services.",
+    "Report a bug in still.fail itself to its team after the person has seen and approved what will be sent. See the stillfail-feedback skill.",
   inputSchema: {
     "type": "object",
     "properties": {
@@ -42,6 +42,11 @@ export const FEEDBACK_SEND = {
           "unknown"
         ],
         "description": "The part of still.fail it is in, as far as you can tell."
+      },
+      "desktopPlatform": {
+        "type": "string",
+        "enum": ["macos", "windows"],
+        "description": "Affected desktop app OS, when known."
       },
       "reporter": {
         "type": "string",
@@ -110,6 +115,8 @@ export function report(session: SessionRow, args: Record<string, Json>, link: st
   for (const [name, value] of [["model", session.model], ["thread", text("to") === "" ? null : text("to")], ["link", link]] as const) {
     if (value !== null) context[name] = value;
   }
+  const os = text("desktopPlatform");
+  if (os === "macos" || os === "windows") context.desktopPlatform = os;
   const out: Json = { key, title, body, area, reporter: text("reporter"), context };
   if (text("logs") !== "") out.logs = text("logs");
   return out;

@@ -402,7 +402,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
   // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
   // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" {
+  // lock-restart-security, lock-rebound-security, lock-replaced-security (its person's own lock: its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
@@ -492,6 +493,20 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   }
   if mode == "new-workspace-code" {
     @sfpages.new_workspace_put(src, name="产品团队", code="ABCD-1234-EFGH", error_code="invite_code_invalid")
+  }
+  if mode.has_prefix("place-remote") {
+    @settings.fixture_place_remote()
+    // (远程 is the first of the second bar: reached by sliding up to it, so that bar is the one in view, its ball on 远程;
+    // place-remote-home stays on Home, the first bar in view, for a finger to slide up to 远程 from there)
+    if mode != "place-remote-home" {
+      let (sets, _) = @sfbase.bars_in(src, "ws1")
+      @sfbase.bars_picked.set(Some((sets, 1)))
+    }
+  }
+  if mode == "place-remote-tabs" {
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "desktop", title: "Willow 的桌面", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "browser:T1", title: "发布清单 - localhost:5173", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Terminal({ station: "ws1/st1", terminal: "term-2", watch: false, cwd: "~/still.fail" })) |> ignore
   }
 }
 
@@ -618,11 +633,12 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
+    if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
     if mode == "newchat-ultrafast-model" {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
-      n.model = "gpt-6-astra"
+      n.model = "gpt-6.2-sol"
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
@@ -706,7 +722,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }
@@ -757,6 +773,11 @@ pub fn open_mode(mode : String) -> Unit {
     }
     open_setting("station:ws1/st1")
     app.nav.push(Terminal({ station: "ws1/st1", terminal: tid, watch: false, cwd: "" }))
+  } else if mode == "place-remote-tabs" {
+    app.nav.replace(Place("remote"))
+  } else if mode == "place-remote-home" {
+    // (Home, as the app starts, over 远程's stations: Maple online beside Willow)
+    ()
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage

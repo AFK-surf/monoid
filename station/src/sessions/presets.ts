@@ -56,6 +56,7 @@ export type PresetModel = {
   effort?: string;
   fast?: boolean;
   speed?: ModelSpeed;
+  tui?: boolean;
   context?: number;
   profile?: string;
   profiles?: string[];

@@ -16,18 +16,18 @@ const APPEARANCE = "stillfail.appearance";
 const MOTION = "stillfail.motion";
 
 /** The prefs with what the core fills in when nothing was chosen (its shape leaves them optional). */
-export type Prefs = Required<Omit<PrefsView, "productName" | "product" | "workspace" | "invite" | "device" | "windowZoom" | "language" | "lang" | "badge" | "badgeKinds" | "rail" | "dropAs" | "archiveHint" | "accent" | "motion" | "haptics" | "appUpdate" | "screenTouch" | "screenQuality" | "screenFps" | "screenCodec" | "screenMouse" | "faces" | "keymap" | "railView" | "fillOff" | "fillMax" | "shareLook" | "sendKey" | "testChannel" | "reports" | "counted">> & Pick<PrefsView, "workspace" | "invite" | "windowZoom" | "language" | "lang" | "badge" | "badgeKinds" | "rail" | "dropAs" | "archiveHint" | "accent" | "motion" | "haptics" | "appUpdate" | "screenTouch" | "screenQuality" | "screenFps" | "screenCodec" | "screenMouse" | "faces" | "keymap" | "railView" | "fillOff" | "fillMax" | "shareLook" | "sendKey" | "testChannel" | "reports" | "counted"> & { device: Required<Omit<DeviceView, "locale">> & Pick<DeviceView, "locale"> };
+export type Prefs = Required<Omit<PrefsView, "productName" | "product" | "workspace" | "invite" | "device" | "windowZoom" | "terminalZoom" | "language" | "lang" | "badge" | "badgeKinds" | "rail" | "dropAs" | "archiveHint" | "accent" | "motion" | "haptics" | "appUpdate" | "screenTouch" | "screenQuality" | "screenFps" | "screenCodec" | "screenMouse" | "faces" | "keymap" | "railView" | "fillOff" | "fillMax" | "shareLook" | "sendKey" | "testChannel" | "reports" | "counted">> & Pick<PrefsView, "workspace" | "invite" | "windowZoom" | "terminalZoom" | "language" | "lang" | "badge" | "badgeKinds" | "rail" | "dropAs" | "archiveHint" | "accent" | "motion" | "haptics" | "appUpdate" | "screenTouch" | "screenQuality" | "screenFps" | "screenCodec" | "screenMouse" | "faces" | "keymap" | "railView" | "fillOff" | "fillMax" | "shareLook" | "sendKey" | "testChannel" | "reports" | "counted"> & { device: Required<Omit<DeviceView, "locale">> & Pick<DeviceView, "locale"> };
 /** What `prefs.set` takes: a field, or a map's entries (null: gone). */
 type PrefsPatch = { [K in keyof Omit<Prefs, "device">]?: NonNullable<Prefs[K]> extends Record<string, infer V> ? Record<string, V | null> : Prefs[K] | null };
 
 const DEFAULTS: Prefs = {
-  onlyMine: false, onlyWatching: false, listFilter: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {}, moveTo: {}, boardViews: {}, boardGroups: {}, boardShowEmpty: {}, boardDrafts: {},
+  onlyMine: false, onlyWatching: false, listFilter: {}, appearance: "system", rowPicture: "auto", absoluteTime: false, keys: {}, lastChat: {}, openChat: {}, chatTabs: {}, remoteTabs: {}, dropFiles: {}, driveViews: {}, filesTabs: {}, driveFavorites: {}, driveFavoritesHidden: {}, resume: {}, stationUpdatesDismissed: {}, rails: {}, barsBy: {}, fonts: {}, previewSizes: {}, sidebars: {}, trouble: {}, jobsSeen: {}, failsGone: {}, moveTo: {}, boardViews: {}, boardGroups: {}, boardShowEmpty: {}, boardDrafts: {},
   // 实验性功能, as the core fills them in (features.ts), before it has answered: none on.
   experimental: {}, features: {}, experimentalItems: [],
   // As the core fills it in (prefs.ts readerOf), before it has answered.
   reader: { size: 16, line: 1.7, margin: 22, face: "sans", indent: true, paper: "follow" },
   // As the core fills it in (prefs.ts barsOf).
-  bars: { sets: [["chats", "files", "profiles", "stations"], ["usage", "connects", "archive"]], current: 0 },
+  bars: { sets: [["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]], current: 0 },
   device: { app: "", phone: false, handoff: false },
 };
 

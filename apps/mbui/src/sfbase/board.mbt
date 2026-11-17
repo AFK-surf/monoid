@@ -373,6 +373,16 @@ pub fn board_draft_add(
 }
 
 ///|
+/// The words of draft `id` changed in place, keeping its key, order and destination.
+pub fn board_draft_edit(src : Source, ws : String, id : String, title : String) -> Unit {
+  let words = title.trim(chars=" \n\r\t").to_owned()
+  guard words != "" else { return }
+  let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
+  guard was.iter().any(fn(d) { d.id == id && d.title != words }) else { return }
+  board_drafts_put(src, ws, was.map(fn(d) { if d.id == id { { ..d, title: words } } else { d } }))
+}
+
+///|
 /// Draft `id` of workspace `ws` let go of (deleted, or its chat made).
 pub fn board_draft_remove(src : Source, ws : String, id : String, discard_files? : Bool = true) -> Unit {
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })

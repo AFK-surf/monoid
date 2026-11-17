@@ -310,6 +310,26 @@ pub fn panel_row_opens_node(
 let foot_rows_lent : @view.Lent[() -> Double] = @view.Lent::new()
 
 ///|
+/// A pressable panel row whose caller lays out its contents. The row owns its button semantics
+/// and draws the hover ink over its ground, including over pointer-only children such as quota
+/// chips. A list with a separate keyboard selection supplies its own rule for the highlight.
+#callsite(autofill(loc))
+pub fn panel_content_row_node(
+  parent : @view.View,
+  label : () -> String,
+  press : (@view.View) -> Unit,
+  content : (@view.View) -> Unit,
+  highlighted? : (@view.View) -> Bool = lit_in_node,
+  loc~ : SourceLoc,
+) -> Unit {
+  @headless.button(made_for=loc, parent, label, press, fn(row, _) {
+    hover_ground_node(row, lit=Some(fn() { highlighted(row) }))
+    content(row)
+  })
+  |> ignore
+}
+
+///|
 /// panel_row_node's row, `press` given the row itself as it is pressed. `plain`: a menu's row (menu_item's, not its
 /// `panel` one): its icon 16 with no column of its own, 8 from its words. At a dialog's foot (foot_rows_lent) a capsule
 /// out to where it is concentric with the dialog's foot corners, its words on the dialog's line. `made`: given the row
@@ -333,8 +353,8 @@ fn panel_row_by(
 ) -> Unit {
   let at = panel_in_of(parent)
   let foot = parent.lent(foot_rows_lent)
-  @headless.button(
-    made_for=loc,
+  panel_content_row_node(
+    loc~,
     parent,
     fn() {
       let n = note()
@@ -345,7 +365,7 @@ fn panel_row_by(
       }
     },
     press,
-    fn(r, _) {
+    fn(r) {
       let t = fn() { theme() }
       // (at a dialog's foot, out to where it is concentric with its foot corners, its words on its line; out across the
       // room a large panel leaves, a card's corner there; else a capsule in a small panel's corners, past its padding to
@@ -407,14 +427,6 @@ fn panel_row_by(
       .padding(By(fn() { (face_in(), menu_row_over, words_at(), menu_row_over) }))
       .gap(Is(if plain { menu_row_gap } else { panel_row_gap }))
       .lines_up(Is(Some(Middle)))
-      // (the hand's ground, and the one the keys are at only where the hand rests (a pointer and keys): a finger moves no
-      // keys' row, and on it that ground stood under the reader's row at rest, a second beside the one pressed. Where the
-      // pointer moving onto a row takes the keys there (`point`), the pointer's own is that one: one ground, never two)
-      // det-ok(raw-hover-ground): roving panel filter row bar moves at once with arrow keys and pointer
-      .ground(By(fn() {
-        let hand = if point is Some(_) { lit_node(r) && !hovered_node(r) } else { lit_node(r) }
-        if hand || (lit() && pointer_rests()) { t().p.hover } else { 0L }
-      }))
       |> ignore
       // (the pointer's own moving onto it, never a list scrolled under a pointer at rest: what the keys move stays theirs)
       if point is Some(p) {
@@ -472,8 +484,12 @@ fn panel_row_by(
       }
       made(r)
     },
+    highlighted=fn(r) {
+      // The filter's roving highlight follows pointer moves or the keyboard selection.
+      let hand = if point is Some(_) { lit_node(r) && !hovered_node(r) } else { lit_node(r) }
+      hand || (lit() && pointer_rests())
+    },
   )
-  |> ignore
 }
 
 ///|

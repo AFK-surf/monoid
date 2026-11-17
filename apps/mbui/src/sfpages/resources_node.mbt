@@ -563,8 +563,18 @@ let rs_page_gap : Double = @ui.Space::S3_5.px()
 
 
 ///|
+/// A row's end (rs_end_node's, or nothing for a group's) in its cell, in `parent`.
+fn rs_end_cell_node(parent : @view.View, end : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(e) {
+    @sf.style_node(e, fn() { rs_end_cell }, in_row=true)
+    end(e)
+  })
+  |> ignore
+}
+
+///|
 /// A row of the table (rs_table_row's, rs_line's) in `row`: its names, its figures and its end on one line; stacked,
-/// its names on a line of their own and its figures under them, its end beside both; a row's least height at least.
+/// its names on a line of their own with its end, and its figures under them; a row's least height at least.
 /// `group`: lit under the pointer, pressed (`press`), read out as `said` says.
 fn rs_row_node(
   row : @view.View,
@@ -595,9 +605,12 @@ fn rs_row_node(
     if stacked {
       r.box(fn(s) {
         @sf.style_node(s, fn() { rs_stack }, in_row=true)
+        // (its end on its names' line, centred on that line and not on both: what stands beside a block of lines
+        // sits on its first, apps/mbui/AGENTS.md)
         s.box(fn(n) {
           @sf.style_node(n, fn() { rs_row })
           names(n)
+          rs_end_cell_node(n, end)
         })
         |> ignore
         s.box(fn(f) {
@@ -610,13 +623,9 @@ fn rs_row_node(
     } else {
       names(r)
       figures(r)
+      rs_end_cell_node(r, end)
     }
   })
-  row.box(fn(e) {
-    @sf.style_node(e, fn() { rs_end_cell }, in_row=true)
-    end(e)
-  })
-  |> ignore
 }
 
 ///|
@@ -722,30 +731,37 @@ fn rs_figures_node_of(
 
 ///|
 /// Whose a row is (rs_title's): a chat's, its chat opened from its title, underlined under the pointer, cut short where
-/// its row has less room; else its title.
+/// its row has less room; a station's own group has the station mark after its title.
 fn rs_title_node(p : @view.View, core : Core, g : () -> Json?, style : @ui.TextStyle) -> Unit {
   let chat = fn() { field(g(), "chat") }
   let session = fn() { text(chat(), "session") }
-  p.pick(fn() { chat() is Some(Object(_)) && session() != "" }, fn(x, link) {
-    x.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
-    if link {
-      @sf.presses_node(x, fn() { (core.open_chat)(text(chat(), "station"), session(), text(g(), "title")) })
-      x.says(By(fn() { Some(@view.said(Link, label=text(g(), "title"))) })) |> ignore
-      x.box(fn(w) {
-        w
-        .words_runs(By(fn() { [@ui.span(text(g(), "title"), underline=@sf.lit_node(x))] }))
-        .words_look(Is(@ui.style_words(style)))
-        .ink(By(fn() { @ui.style_ink(style) }))
-        .cuts(Is(true))
-        .min_width(Is(Some(0.0)))
-        .allow_ellipsis(Is(true))
+  p.box(fn(title) {
+    title.row(Is(true)).gap(Is(@ui.Space::S1.px())).lines_up(Is(Some(Middle))).cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+    title.pick(fn() { chat() is Some(Object(_)) && session() != "" }, fn(x, link) {
+      x.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
+      if link {
+        @sf.presses_node(x, fn() { (core.open_chat)(text(chat(), "station"), session(), text(g(), "title")) })
+        x.says(By(fn() { Some(@view.said(Link, label=text(g(), "title"))) })) |> ignore
+        x.box(fn(w) {
+          w
+          .words_runs(By(fn() { [@ui.span(text(g(), "title"), underline=@sf.lit_node(x))] }))
+          .words_look(Is(@ui.style_words(style)))
+          .ink(By(fn() { @ui.style_ink(style) }))
+          .cuts(Is(true))
+          .min_width(Is(Some(0.0)))
+          .allow_ellipsis(Is(true))
+          |> ignore
+        })
         |> ignore
-      })
-      |> ignore
-    } else {
-      @sf.words_node(x, fn() { text(g(), "title") }, fn() { style }) |> ignore
-    }
+      } else {
+        @sf.words_node(x, fn() { text(g(), "title") }, fn() { style }) |> ignore
+      }
+    })
+    title.show(fn() { text(g(), "kind") == "station" }, fn(mark) {
+      @sf.icon_node(mark, "server", 14.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    })
   })
+  |> ignore
 }
 
 ///|

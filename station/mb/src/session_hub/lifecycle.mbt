@@ -284,6 +284,21 @@ async fn Hub::session_made(self : Hub, key : String, client : String?, options :
       _ => ()
     }
   }
+  let speed = model_speed(field(options, "speed"))
+  let pick_account = (candidates : Array[Json]) => {
+    if speed != Some("ultrafast") {
+      self.pick(candidates, model, true)
+    } else {
+      let eligible = []
+      for candidate in candidates {
+        if self.supports_ultrafast(candidate, model) {
+          eligible.push(candidate)
+        }
+      }
+      check_speed(self.words, runtime, field(options, "speed"), !eligible.is_empty(), lang)
+      self.pick(eligible, model, true)
+    }
+  }
   let profile = match wanted {
     Some(ids) => {
       let subset = []
@@ -307,17 +322,16 @@ async fn Hub::session_made(self : Hub, key : String, client : String?, options :
       if subset.length() == 1 {
         subset[0]
       } else {
-        self.pick(subset, model, true)
+        pick_account(subset)
       }
     }
-    None => self.pick(profiles, model, true)
+    None => pick_account(profiles)
   }
   let effort = match str_of(options, "effort") {
     Some(e) if e != "" => Some(e)
     _ => None
   }
-  let speed = model_speed(field(options, "speed"))
-  check_speed(self.words, runtime, match model { Some(m) => Some(m); None => str_of(profile, "model") }, field(options, "speed"), Some(profile), lang)
+  check_speed(self.words, runtime, field(options, "speed"), speed == Some("ultrafast") && self.supports_ultrafast(profile, model), lang)
   let context = num_of(options, "context")
   check_context(self.words, runtime, context, lang)
   match effort {
@@ -385,6 +399,7 @@ async fn Hub::session_made(self : Hub, key : String, client : String?, options :
     "effort": opt_str(effort),
     "fast": fast,
     "speed": opt_str(speed),
+    "tui": Json::boolean(runtime == "claude" && field(options, "tui") == Some(Json::boolean(true))),
     "context": match context { Some(c) => num(c); None => Json::null() },
     "workspace": Json::string(workspace),
     "cwd": Json::null(),
@@ -413,7 +428,7 @@ async fn Hub::pick(self : Hub, candidates : Array[Json], model : String?, strict
 
 ///|
 /// lifecycle.ts `checkSpeed`: a speed asked of a runtime and model that take it.
-pub fn check_speed(words : Words, runtime : String, model : String?, speed : Json?, profile : Json?, lang : String) -> Unit raise Refused {
+pub fn check_speed(words : Words, runtime : String, speed : Json?, supports_ultrafast : Bool, lang : String) -> Unit raise Refused {
   match speed {
     None | Some(Null) => return
     _ => ()
@@ -421,17 +436,19 @@ pub fn check_speed(words : Words, runtime : String, model : String?, speed : Jso
   if model_speed(speed) is None || !fast_runtimes.contains(runtime) {
     raise Refused(words.tr("station.speed.invalid", lang~))
   }
-  if speed == Some(Json::string("ultrafast")) {
-    let ok = runtime == "codex" &&
-      ultrafast_model(model.map(Json::string)) &&
-      (match profile {
-        Some(p) => access_kind(p) == "subscription"
-        None => false
-      })
-    if !ok {
-      raise Refused(words.tr("station.speed.ultrafast_unavailable", lang~))
-    }
+  if speed == Some(Json::string("ultrafast")) && (runtime != "codex" || !supports_ultrafast) {
+    raise Refused(words.tr("station.speed.ultrafast_unavailable", lang~))
   }
+}
+
+///|
+fn Hub::supports_ultrafast(self : Hub, profile : Json, model : String?) -> Bool raise {
+  if access_kind(profile) != "subscription" {
+    return false
+  }
+  let model = match model { Some(m) => Some(m); None => str_of(profile, "model") }
+  let reported = self.store.profile_check(profile_id(profile)).bind(check => field(check, "codexUltrafastModels"))
+  ultrafast_model(model.map(Json::string), reported)
 }
 
 ///|
@@ -555,27 +572,43 @@ pub async fn Hub::configure(self : Hub, key : String, change : Json, lang? : Str
   let repick = is_true(decided, "repick")
   let row_profile = str_of(row, "profile").unwrap_or("")
   let account = self.profile_named(match profile { String(p) => p; _ => row_profile })
-  let speed_model = match model {
-    String(m) => Some(m)
-    _ =>
-      match account {
-        Some(a) => str_of(a, "model")
-        None => None
-      }
-  }
   let row_speed = field(row, "speed").unwrap_or(Json::null())
+  let fixed = profile is String(_) || (profiles is None && is_true(row, "profilePinned"))
+  let wants_ultrafast = row_speed == Json::string("ultrafast") ||
+    field(change, "speed") == Some(Json::string("ultrafast"))
+  let supports_ultrafast = if !wants_ultrafast || runtime != "codex" {
+    false
+  } else if fixed {
+    match account {
+      Some(a) => self.supports_ultrafast(a, str_of(decided, "model"))
+      None => false
+    }
+  } else {
+    let kept = items(match profiles { None => field(row, "profiles"); Some(_) => profiles })
+    let mut supported = false
+    for p in self.profiles_in(str_of(row, "ws")) {
+      if profile_runtimes(p).contains("codex") &&
+        (kept.is_empty() || kept.contains(Json::string(profile_id(p)))) &&
+        (match model { String(m) => runs(p, m); _ => true }) &&
+        self.supports_ultrafast(p, str_of(decided, "model")) {
+        supported = true
+        break
+      }
+    }
+    supported
+  }
   let speed : Json = match field(change, "speed") {
     Some(s) => s
     None =>
       if field(change, "fast") is Some(_) ||
         Some(runtime) != str_of(row, "runtime") ||
-        (row_speed == Json::string("ultrafast") && !ultrafast_model(speed_model.map(Json::string))) {
+        (row_speed == Json::string("ultrafast") && !supports_ultrafast) {
         Json::null()
       } else {
         row_speed
       }
   }
-  check_speed(self.words, runtime, speed_model, Some(speed), account, lang)
+  check_speed(self.words, runtime, Some(speed), supports_ultrafast, lang)
   let moved_runtime = Some(runtime) != str_of(row, "runtime") && profile is String(_)
   let row_context = field(row, "context").unwrap_or(Json::null())
   let recapped = match field(change, "context") {
@@ -648,22 +681,24 @@ pub async fn Hub::configure(self : Hub, key : String, change : Json, lang? : Str
         },
       )
     }
+    if field(change, "speed") is Some(_) || (field(change, "fast") is None && row_speed != speed) {
+      self.store.set_session_speed(key, speed)
+    }
     if repick || left_pool {
       ignore((self.world.ask)("accounts.repick", Json::string(key)))
-    } else if profile == Json::null() {
+    } else if profile == Json::null() || (!fixed && speed == Json::string("ultrafast") && field(change, "speed") is Some(_)) {
       ignore((self.world.ask)("accounts.runOn", { "key": Json::string(key), "holding": Json::boolean(false), "quiet": Json::boolean(true) }))
     }
   }
-  match field(change, "speed") {
-    Some(s) => self.store.set_session_speed(key, s)
-    None =>
-      if row_speed == Json::string("ultrafast") &&
-        (runtime != "codex" || !ultrafast_model(speed_model.map(Json::string))) {
-        self.store.set_session_speed(key, Json::null())
-      }
+  let was_tui = field(row, "tui") == Some(Json::boolean(true))
+  let tui = runtime == "claude" && field(change, "tui").unwrap_or(Json::boolean(was_tui)) == Json::boolean(true)
+  let mode_changed = tui != was_tui
+  if mode_changed { self.store.set_session_tui(key, tui) }
+  if moved_runtime && speed != Json::null() {
+    self.store.set_session_speed(key, speed)
   }
   if self.actors.contains(key) {
-    ignore(self.ask_actor(key, "changed", args=[Json::boolean(moved_runtime || recapped)]))
+    ignore(self.ask_actor(key, "changed", args=[Json::boolean(moved_runtime || recapped || mode_changed)]))
   }
   match self.get_session(key) {
     Some(now) => {

@@ -47,7 +47,7 @@ let corner_modes : Array[String] = {
     "chat-outline-away", "chat-outline", "chat-outline-find", "archived",
     "history", "history-details", "drive", "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload",
     "files", "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split", "files-transfers",
-    "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
+    "files-tree", "place-stations", "place-profiles", "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents", "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
     "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
     // (a preset's dialog and its steps further in: 添加目录, the folder picker at a station's home and in a folder of
     // repositories, 从 Git 克隆, a clone under way and one failed among its folders)
@@ -60,7 +60,11 @@ let corner_modes : Array[String] = {
     "share-in-files", "share-in-stations", "lock-checking", "lock-code", "lock-failed", "lock-finding", "lock-nocode",
     "lock-none", "lock-security", "lock-upgrade", "lock-waiting", "lock-wrong",
     // (a web page left out of an upgraded workspace that nobody can approve there: its waiting page, its 安全)
-    "lock-needs-app", "lock-needs-app-security", "lock-out", "lock-out-security", "screen-agent-driving",
+    "lock-needs-app", "lock-needs-app-security", "lock-out", "lock-out-security",
+    // (its person's own lock: none of their devices answering, 我的其它设备都不在了 offered; made their only trusted
+    // device, whom to ask; begun anew on another device, 是我做的，继续; each its waiting page and its 安全)
+    "lock-restart", "lock-restart-security", "lock-rebound", "lock-rebound-security", "lock-replaced",
+    "lock-replaced-security", "screen-agent-driving",
     "screen-agent-paused", "screen-clipboard-driving", "screen-clipboard-old-station", "screen-connecting",
     "screen-denied", "screen-ended", "screen-failed", "screen-files-done", "screen-files-going", "screen-full",
     "screen-full-tools", "screen-gone", "screen-keys", "screen-live", "screen-login-fill", "screen-login-pick", "screen-not-drivable", "screen-outdated", "screen-pages", "screen-read-only",

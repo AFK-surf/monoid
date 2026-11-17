@@ -1866,7 +1866,10 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     }
     if start > 0.0 || top > 0.0 || end > 0.0 || foot > 0.0 {
       ride_spoil()
-      fading.push((c.id, (x, y, x + c.w * s, y + c.h * s), (start * s, top * s, end * s, foot * s)))
+      // (towards its foot where it cuts what it holds: past it as far as it says, View::clips_past)
+      let past = if c.clips && !c.clips_self { tree.clips_past_of(c.id) } else { 0.0 }
+      let fh = dmax(0.0, c.h + past)
+      fading.push((c.id, (x, y, x + c.w * s, y + fh * s), (start * s, top * s, end * s, foot * s)))
     }
     // (what it draws, and an old view it hosts, as each that holds it stretched shows it, the innermost first: as an
     // old view's list's rows, Ctx::stretch_rows; then what it holds in its own, not its own drawing)
@@ -2532,6 +2535,13 @@ fn Ctx::view_made(self : Ctx, tree : @view.Tree, c : @view.Content, edge_after? 
     let ec = if (ground_c & 0xFFL) != 0L { over(ground_c, ec) } else { ec }
     self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, 0L, ew, ec, 1.0)
     each()
+  } else if edged && tree.edge_dashed_of(c.id) {
+    // (its edge as dashes round its ground, as an old view's box's `dashed` border: its ground filled alone, then them)
+    if (ground_c & 0xFFL) != 0L {
+      self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, ground_c, 0.0, 0L, 1.0)
+      each()
+    }
+    self.emit_dashes(0.0, 0.0, c.w, c.h, c.radius, ew, ec, 1.0)
   } else if (ground_c & 0xFFL) != 0L || edged {
     // (its edge's colour as it says it, drawn or not, as an old view's box's border_color is given whatever its border)
     self.emit_rect(0.0, 0.0, c.w, c.h, c.radius, ground_c, if edged { ew } else { 0.0 }, ec, 1.0)

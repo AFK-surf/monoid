@@ -54,7 +54,7 @@ pub fn check_context(Words, String, Double?, String) -> Unit raise Refused
 
 pub let check_idle_ms : Double
 
-pub fn check_speed(Words, String, String?, @json.Json?, @json.Json?, String) -> Unit raise Refused
+pub fn check_speed(Words, String, @json.Json?, Bool, String) -> Unit raise Refused
 
 pub fn choose(Array[@json.Json], Array[@json.Json], leads? : Array[@json.Json]) -> @json.Json
 
@@ -320,7 +320,7 @@ pub fn trim(String) -> String
 
 pub fn u(String, Int32) -> Int32
 
-pub fn ultrafast_model(@json.Json?) -> Bool
+pub fn ultrafast_model(@json.Json?, @json.Json?) -> Bool
 
 pub fn undefined() -> @json.Json
 

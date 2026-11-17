@@ -1135,12 +1135,12 @@ export class Store {
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
     this.#with((changes) => {
       this.#run(
-        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed, tui)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null,
+        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null, flag(s.tui === true),
       );
       changes.push({ type: "session", key: s.key });
       this.#sessionWorkspaceChanged();
@@ -1161,7 +1161,7 @@ export class Store {
     // transcript recovers the original. Without the index no older station could have made such a change.
     const first = hasRuntimeOrderIndex(this.db)
       ? "(SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = ?9 ORDER BY at, rowid LIMIT 1), " : "";
-    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
+    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, tui = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
   }
 
   /// A session's model and effort from its next start on (null: the runtime's default).
@@ -1187,6 +1187,10 @@ export class Store {
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
+  }
+
+  setSessionTui(key: string, tui: boolean): void {
+    this.#updateSession(key, "UPDATE sessions SET tui = ?1 WHERE key = ?2", flag(tui), key);
   }
 
   setSessionSpeed(key: string, speed: ModelSpeed | null): void {

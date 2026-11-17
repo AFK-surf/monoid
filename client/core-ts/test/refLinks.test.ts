@@ -86,6 +86,7 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
   ]);
   // What a link is to, as every client draws it: a screen's, a station's 共享调试, a chat's web service's.
   assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/screen/browser%3Atab1"), { card: "screen", station: "ws1/st1", screen: "browser:tab1" });
+  assert.deepEqual(linkTo("https://app.still.fail/w/ws1/s/st1/terminal/term-1"), { card: "terminal", station: "ws1/st1", terminal: "term-1" });
   assert.deepEqual(linkTo("/w/ws1/s/st1/adb"), { card: "adb", station: "ws1/st1" });
   assert.deepEqual(linkTo("https://app.still.fail/o/ws1/st1/c-1?service=job_1"), { chat: true, card: "service", station: "ws1/st1", job: "job_1" });
   assert.equal(linkTo("https://example.com/a"), null);
@@ -93,4 +94,11 @@ test("a person's words in runs: a chat referenced, a web address written bare, a
   assert.deepEqual(linkTo("https://github.com/a/b/pull/12?x=1"), { peek: "pull" });
   assert.deepEqual(linkTo("https://github.com/a/b/issues/3#c"), { peek: "issue" });
   assert.equal(linkTo("https://github.com/a/b/pulls"), null);
+});
+
+test("a workflow run or a specific attempt in a message opens a rich preview", () => {
+  const url = "https://github.com/acme/shop/actions/runs/44147606865";
+  assert.deepEqual(linkTo(url), { peek: "run" });
+  assert.deepEqual(linkTo(url + "/attempts/2#summary"), { peek: "run" });
+  assert.equal(linkTo(url + "/job/123"), null);
 });

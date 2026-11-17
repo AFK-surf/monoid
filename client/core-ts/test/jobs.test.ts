@@ -122,15 +122,16 @@ test("simulators_and_peoples_views_up_long_are_listed_with_how_each_is_stopped",
     { id: "desktop", title: "Mac", views: [view("v5", { may: false })] },
     { id: "simulator:C", title: "theirs", since: NOW - 3 * LONG },
   ];
-  const v = longJobs([], c(), undefined, undefined, [["w/s1", "orchard", screens]]);
-  const [sims, views] = v.groups;
-  assert.deepEqual([sims.key, sims.head, views.key, views.head], ["simulators", "长时间开着的模拟器 · 2", "views", "长时间开着的远程连接 · 1"]);
+  const v = longJobs([], c(), undefined, undefined, [["w/s1", "orchard", screens]], [["w/s1", "orchard", [{ id: "term-1", cwd: "/Users/ann/monoid", at: NOW - 2 * LONG, typing: "Ann" }]]]);
+  const [sims, terms, views] = v.groups;
+  assert.deepEqual([sims.key, sims.head, terms.key, terms.head, views.key, views.head], ["simulators", "长时间开着的模拟器 · 2", "terminals", "长时间开着的终端 · 1", "views", "长时间开着的远程连接 · 1"]);
   assert.deepEqual(sims.jobs.map((j: J) => [j.id, j.whereText, j.age, j.stop]), [
     ["screen:simulator:A", "orchard · iOS 模拟器", "3 小时", { call: "screen.close", screen: "simulator:A", word: "关闭" }],
     ["screen:android:emulator-5580", "orchard · 安卓模拟器", "2 小时", { call: "screen.close", screen: "android:emulator-5580", word: "关闭" }],
   ]);
+  assert.deepEqual([terms.jobs[0].id, terms.jobs[0].name, terms.jobs[0].whereText, terms.jobs[0].stop], ["terminal:term-1", "monoid", "orchard · /Users/ann/monoid · Ann 正在输入", { call: "terminal.end", terminal: "term-1", word: "结束" }]);
   assert.deepEqual([views.jobs[0].id, views.jobs[0].name, views.jobs[0].whereText, views.jobs[0].stop], ["view:simulator:A/v1", "Demo iPhone · iOS 27.2", "orchard · Peng · MacBook", { call: "screen.endView", screen: "simulator:A", view: "v1", word: "断开" }]);
-  assert.deepEqual(v.ids, ["w/s1/screen:simulator:A", "w/s1/screen:android:emulator-5580", "w/s1/view:simulator:A/v1"]);
+  assert.deepEqual(v.ids, ["w/s1/screen:simulator:A", "w/s1/screen:android:emulator-5580", "w/s1/terminal:term-1", "w/s1/view:simulator:A/v1"]);
   assert.equal(v.lit, true);
   // Asked again as the next is up an hour: simulator:B's, a minute in; v4 the same.
   assert.equal(longNext([], [["w/s1", null, screens]], NOW), LONG - 60_000);
@@ -185,6 +186,9 @@ test("where_others_are_members_only_the_viewers_own_light_the_bell_the_rest_fold
   assert.ok([...v.groups, ...v.otherGroups].every((g: J) => g.jobs.every((j: J) => !("mine" in j))));
   assert.ok("ok" in conform("LongJobsView", v), JSON.stringify(conform("LongJobsView", v)));
   // Only others' up: listed apart, lighting nothing, nothing to keep as shown.
+  const term = { id: "term-1", at: NOW - 2 * LONG, cwd: "/work", mine: false };
+  const othersTerminal = longJobs([], c(), undefined, undefined, [], [["w/s1", null, [term]]]);
+  assert.deepEqual([othersTerminal.lit, othersTerminal.ids, othersTerminal.otherGroups[0].jobs[0].id], [false, [], "terminal:term-1"]);
   const others = longJobs([["w/s1", null, [up("theirs", { port: 2, mine: false })]]], c());
   assert.deepEqual([others.groups, others.lit, others.ids, others.otherCount], [[], false, [], 1]);
   // A task run for another station's chat that is not the viewer's goes with the others.

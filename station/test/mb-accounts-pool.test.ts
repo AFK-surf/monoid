@@ -1163,7 +1163,7 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
           loginUpdated: (id?: string) => void told.push(["loginUpdated", id ?? null]),
           hostName: () => "host-1",
         },
-        codex: { rateLimits: async () => ({ rateLimits: { primary: { usedPercent: 3 } } }), resetQuota: async () => ({ outcome: "reset" }), models: async () => ({ models: ["gpt-6.1-terra", "gpt-6-luna"], efforts: new Map([["gpt-6.1-terra", ["low", "high"]]]), defaults: new Map([["gpt-6.1-terra", "high"]]) }), loginChanged: async (id: string) => void told.push(["codexLoginChanged", id]) },
+        codex: { rateLimits: async () => ({ rateLimits: { primary: { usedPercent: 3 } } }), resetQuota: async () => ({ outcome: "reset" }), models: async () => ({ models: ["gpt-6.1-terra", "gpt-6-luna"], efforts: new Map([["gpt-6.1-terra", ["low", "high"]]]), defaults: new Map([["gpt-6.1-terra", "high"]]), ultrafastModels: ["gpt-6-luna"] }), loginChanged: async (id: string) => void told.push(["codexLoginChanged", id]) },
         hermes: { models: async () => ["h1", "h2"] },
         agy: { models: async () => ["gemini-4-carbon"], catalog: async () => ({ models: ["gemini-4-carbon", "claude-opus-5-5"], efforts: { "gemini-4-carbon": ["low", "high"] }, defaults: { "gemini-4-carbon": "high" }, tier: "gcp-ge-plus-tier" }) },
         hub: { accounts: { setHealth() {}, healthOf: () => ({}), setRecheck() {}, setQuotaAgain() {} }, profileGone: async (id: string) => void told.push(["gone", id]), allowanceReset: async (id: string) => void told.push(["reset", id]), profileLoginChanged: async (id: string) => void told.push(["loginChanged", id]) },
@@ -1201,7 +1201,7 @@ describe("accounts_pool: sign-ins, renewals, borrowed profiles, the machine's lo
         case "shared.loginUpdated": m.shared.loginUpdated(args[0]); return null;
         case "shared.hostName": return m.shared.hostName();
         case "codex.rateLimits": return m.codex.rateLimits();
-        case "codex.models": { const c = await m.codex.models(); return { models: c.models, efforts: Object.fromEntries(c.efforts), defaults: Object.fromEntries(c.defaults) }; }
+        case "codex.models": { const c = await m.codex.models(); return { models: c.models, efforts: Object.fromEntries(c.efforts), defaults: Object.fromEntries(c.defaults), ultrafastModels: c.ultrafastModels }; }
         case "codex.loginChanged": await m.codex.loginChanged(args[0]); return null;
         case "codex.accountIdentity": return codexAccountIdentity(args[0]);
         case "codex.claimsIn": return codexClaimsIn(args[0]) ?? { $undef: 1 };

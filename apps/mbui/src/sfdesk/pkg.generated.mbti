@@ -626,7 +626,6 @@ pub(all) struct Wide {
   mut bar_pl : Double
   mut bar_ml : Double
   mut bar_mr : Double
-  mut page_from : Double
   landed : @signals.Signal[String]
   rail_menu : @signals.Signal[(String, Double, Double)?]
   rail_drag : @signals.Signal[(String, Double, Double)?]

@@ -31,6 +31,10 @@ design rules (the user, 2026-10-03):
    one change is counted (`test/view-work.test.ts`).
 7. **Workspaces are isolated** from each other.
 
+File readers share both kept bytes and outstanding ranges of the same version (the owner, 2026-11-18).
+A new consumer uses the core's station file reads. Test it alongside a save with the wire held mid-part,
+counting requested intervals in both orders and after either reader leaves (test/downloads.test.ts).
+
 ## What a topic sends is bounded
 
 The app parses every message of the core on its frame thread: on the owner's phone a `stations` of 463 KB took 25–86 ms
@@ -242,6 +246,16 @@ another; the accounts' list's merge across stations and its refills.
     (`core-misc.lock.notSigner`, views/lock.ts `notTrustedHere`), one of another member's app devices says it is
     theirs alone (`core-misc.lock.othersDevice`). A device refused where the chain moved asks that station again at its
     link's own retry: nobody is to open the app or press because of a move (the lead, 2026-11-14).
+  - A person's own lock is begun anew (`lock.restartOwn`, 我的其它设备都不在了) or one begun elsewhere taken as theirs
+    (`lock.forgetOwn`) only by their press, offered once none of their devices answered (`restartText`) or the lock was
+    `replaced` (`forgetText`): never by itself, which would tell their devices left elsewhere it was `replaced`.
+    While a workspace still binds them by the lock of before, this device asks nobody and says who takes them out and
+    adds them again (views/lock.ts `reboundIn`, by the refusal's `left.apps`: a station names every log of theirs it
+    keeps in `person`, the one of before too after they are taken out).
+  - A station the chain named as it moved, or seen keeping it since (`lockServes`' `pinned`), that keeps none now was
+    reset on its machine (`stillfail lock reset`): never brought the lock again by a read (`bringMoved`), only by an
+    owner's 保护 (`stationMoved`). Every station the state in force names keeping none lets the lock go here, and an
+    owner's device drops the cloud's copy (DELETE), which a genesis turned on anew meets again too (`lock_exists`).
 - **Seamless handover (`handOver`, 无感迁移)**:
   - `handOver` (`src/lock-handover.ts`, `src/views/lock.ts`) runs automatically from `HAND_OVER_FROM` once all stations named
     by the chain advertise the required capabilities (`bodies`, `logs`, `builds`, `carried`, `bind`, plus `heads` for

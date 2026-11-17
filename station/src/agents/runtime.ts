@@ -73,6 +73,8 @@ export type OpenOptions = {
   context?: number;
   /// Fast as the session is set (none: as its profile is), for a runtime that takes it as it starts (Claude Code).
   fast?: boolean;
+  /// Run Claude Code interactively for this chat.
+  tui?: boolean;
   /// Appended to the runtime's own system prompt.
   instructions: string;
   /// The skills of the session's workspace (its agent home's skills/, sessions/agent-home.ts), for a runtime that

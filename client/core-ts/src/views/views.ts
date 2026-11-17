@@ -38,6 +38,7 @@ import { presentHistory } from "../history.ts";
 import { sentFrom, sentHead } from "../sent-from.ts";
 export { sentFrom };
 import { archiveHintOf, badgeKindsOf, failsGoneOf, jobsSeenOf, type ArchiveHint } from "../prefs.ts";
+import { stationFeature } from "../features.ts";
 import { markdown, type MdStore } from "../markdown.ts";
 import { heardFiles } from "../elsewhere.ts";
 import { isImage, near, placeFiles } from "../placed.ts";
@@ -1331,6 +1332,7 @@ export class Views implements Owner {
         perStation = (s) => [
           { topic: "jobs", station: s },
           { topic: "screens", station: s },
+          { topic: "terminals", station: s },
           ...arr(this.ok({ topic: "jobs", station: s })).flatMap((j) => {
             const owner = jobs.remoteOwner(str(get(j, "session")) ?? "");
             return owner === null ? [] : [{ topic: "chatRows", station: owner.station }];
@@ -1761,9 +1763,12 @@ export class Views implements Owner {
     v.stationUpdate = looks.stationUpdate(overview, v, typeof dismissed === "string" ? dismissed : null, this.#noticeOpen(station), manager, this.stationName(station));
     if (Array.isArray(v.outbox)) v.outbox = looks.outboxWaits(v.outbox, v.stationUpdate);
     // The screens of the machine it runs on, a press away from its bar: its own display first (screens.ts screensView),
-    // each marked while an agent drives it.
-    const screens = arr(get(this.ok({ topic: "screens", station }), "screens")).map((s) => ({ id: s.id, kind: s.kind, title: s.title, line: s.line, ...(s.agent === true ? { agent: true } : {}) }));
+    // each marked while an agent drives it; and whether a browser tab or terminal may be opened there (`canBrowser`, `canTerminal`).
+    const screensHeld = this.ok({ topic: "screens", station });
+    const screens = arr(get(screensHeld, "screens")).map((s) => ({ id: s.id, kind: s.kind, title: s.title, line: s.line, ...(s.agent === true ? { agent: true } : {}) }));
     if (screens.length > 0) v.screens = screens;
+    if (v.offline !== true && get(screensHeld, "browser") === true && get(screensHeld, "control") === true) v.canBrowser = true;
+    if (v.offline !== true && stationFeature(overview, "terminal") && role !== "viewer") v.canTerminal = true;
     if (v.offline === true) {
       v.offlineNote = looks.offlineNote(v.link, this.stationName(station));
       if (get(v.link, "cause") === "updating") v.updating = true;
@@ -2076,7 +2081,9 @@ export class Views implements Owner {
         // the viewer's own chats run (`mine` of their columns) and their own views, a shared station's others' (its
         // simulators the viewer's where a view of theirs is on it). (Machines that only run tasks, a member's own, are
         // no station of the list: the workspace's `rigs`.)
-        const multi = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members")).length > 1;
+        const members = arr(get(this.ok({ topic: "workspace", workspace: view.scope as string }), "members"));
+        const multi = members.length > 1;
+        const email = this.#core.emailOf(view.scope as string)?.toLowerCase();
         // Each in the chat its session's row is, from the sidebar held, listed or archived (the station names it no
         // more), the chat it is among the agents of where it has none of its own (`chat_agent`).
         const named = (address: string, j: J): J => {
@@ -2094,16 +2101,31 @@ export class Views implements Owner {
           return found === undefined ? (mine ? j : { ...j, mine }) : { ...j, chat: { id: found.id, title: found.title, archived: found.archived }, ...(mine ? {} : { mine }) };
         };
         const open = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(this.ok({ topic: "jobs", station: s.address })).map((j) => named(s.address, j as J))] as [string, string | null, J[]]);
-        // Their simulators and the views of their screens too (jobs.ts `longScreens`).
+        // Their simulators, open terminals and the views of their screens too (jobs.ts `longScreens`, `longTerminals`).
         const screens = stations.filter((s) => s.online).map((s) => [s.address, several ? s.name : null, arr(get(this.ok({ topic: "screens", station: s.address }), "screens")), !multi] as jobs.HeldScreens);
+        const terminals = stations.filter((s) => s.online).map((s) => [
+          s.address,
+          several ? s.name : null,
+          arr(get(this.ok({ topic: "terminals", station: s.address }), "terminals")).map((item) => {
+            const chat = str(get(item, "chat"));
+            const found = chat === null ? undefined : this.#core.data.chatTitled(s.address, chat);
+            // Old runners only kept a display name. Attribute it only when the roster identifies one opener.
+            const recorded = str(get(item, "byEmail"));
+            const by = str(get(item, "by"));
+            const matches = !recorded && by ? members.filter((m) => (m.name || m.email) === by) : [];
+            const opener = recorded || (matches.length === 1 ? str(matches[0].email) : null);
+            const mine = members.length === 1 || (!!email && opener?.toLowerCase() === email);
+            return { ...item, mine, ...(found ? { chatObj: { id: found.id, title: found.title, archived: found.archived } } : {}) };
+          }),
+        ] as jobs.HeldTerminals);
         const prefs = this.ok({ topic: "prefs" }) ?? null;
         const bell = { on: badgeKindsOf(prefs).services, seen: jobsSeenOf(prefs, view.scope as string) };
         const clock = this.#clock();
         // Asked again as the next of them has been up an hour, or as how long one has says something else (nothing else
         // would say it: present.ts NO_TICK).
-        const next = jobs.longNext(open, screens, clock.now);
+        const next = jobs.longNext(open, screens, clock.now, terminals);
         if (next !== null) this.#againIn(next);
-        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session, multi), bell, screens) };
+        return { ok: jobs.longJobs(open, clock, (session) => this.#ranFrom(stations, session, multi), bell, screens, terminals) };
       }
     }
     return undefined;

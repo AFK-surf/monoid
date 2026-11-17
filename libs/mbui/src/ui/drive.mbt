@@ -63,6 +63,9 @@
 //   samples N [apart]           the drags after it move N times a frame, the way from the frame before cut in N, as a
 //                               phone's system hands a frame's samples in one batch (touches.mbt: each but the last
 //                               with more after it); apart: each a move of its own, as hosts did before batches (1)
+//   swipe DX [MS]               a trackpad's two fingers swept across the middle of the window by DX (to the right
+//                               positive) over MS (300 by default), the wheel a frame apart as a browser's page is
+//                               told it (no phase), then lifted: the wheel still after (wheel_back.mbt)
 //   backswipe DX [MS] [right] [off]  the system's back gesture (Android's predictive back) from the left edge (right:
 //                               the right's), DX across over MS (300 by default), a step a frame, then gone through
 //                               (off: called off)
@@ -162,6 +165,12 @@ priv struct Driver {
   mut boff : Bool
   mut bt0 : Double
   mut bms : Double
+  // a trackpad's sweep under way (swipe): how far across (to the right positive), since when, over how long (0: none),
+  // and the share of it given so far
+  mut sdx : Double
+  mut st0 : Double
+  mut sms : Double
+  mut sdone : Double
   // when a shot the host cannot take was asked for (logged "SHOT NAME": whoever takes it has 1.5 s), -1 before
   mut shot_at : Double
   // answered, decoded, ready: how many waits on outside had ended as the last step that acted did (or the run began:
@@ -315,6 +324,10 @@ fn drive_start(script : String, dir : String, done_dir? : String = "") -> Unit {
     boff: false,
     bt0: 0.0,
     bms: 0.0,
+    sdx: 0.0,
+    st0: 0.0,
+    sms: 0.0,
+    sdone: 0.0,
     shot_at: -1.0,
     mark: runtime().outside_ended(),
     shown_mark: 0,
@@ -1051,6 +1064,18 @@ fn drive_steps(c : Ctx) -> Unit {
     }
     return
   }
+  if d.sms > 0.0 {
+    // a trackpad's sweep on its way: the wheel this frame by what of it is owed since the last, done once all the way
+    let f = dmin((now - d.st0) / d.sms, 1.0)
+    on_wheel(c.width / 2.0, c.height / 2.0, -d.sdx * (f - d.sdone), 0.0, 0)
+    d.sdone = f
+    if f >= 1.0 {
+      d.sms = 0.0
+      d.at = d.at + 1
+      d.since = -1.0
+    }
+    return
+  }
   if d.gms > 0.0 {
     // a drag on its way: a move this frame, lifted once all the way (`holdon`'s held still till it sets out)
     if now < d.gt0 {
@@ -1458,6 +1483,16 @@ fn drive_steps(c : Ctx) -> Unit {
         h_log("DRIVE \{cmd} \{arg} from \{x.to_int()},\{y.to_int()}")
         tell_step(d.steps[d.at], Acted)
         on_pointer(0, x, y, 0)
+        return
+      }
+      "swipe" => {
+        let words = arg.split(" ").map(fn(v) { v.to_owned() }).to_array()
+        d.sdx = number(words[0])
+        d.sms = if words.length() > 1 { dmax(number(words[1]), 16.0) } else { 300.0 }
+        d.sdone = 0.0
+        d.st0 = now
+        h_log("DRIVE swipe \{arg}")
+        tell_step(d.steps[d.at], Acted)
         return
       }
       "backswipe" => {

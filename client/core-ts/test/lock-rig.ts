@@ -78,6 +78,11 @@ export function lockCloud() {
       requests.set(ws, [...(requests.get(ws) ?? []).filter((x) => x.base !== body.base), r]);
       return r;
     }
+    // (the owner lets the lock kept here go: cloud/src/directory.ts `clearLock`)
+    if (req.method === "DELETE") {
+      chains.delete(ws);
+      return { ok: true };
+    }
     if (req.method === "GET") {
       const after = Number(new URL(req.url).searchParams.get("after") ?? -1);
       return { head: head(ws), entries: (chains.get(ws) ?? []).filter((e) => e.seq > after) };

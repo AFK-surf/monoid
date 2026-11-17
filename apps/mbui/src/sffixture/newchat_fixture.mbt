@@ -13,6 +13,8 @@ pub(all) struct NewFix {
   mut model : String
   mut runtime : String
   mut effort : String
+  mut claude_mode : Bool
+  mut tui : Bool
   mut speed : String
   mut d_model : String
   mut d_runtime : String
@@ -68,6 +70,8 @@ pub let new_fix : NewFix = {
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
+  claude_mode: false,
+  tui: false,
   speed: "",
   d_model: "claude-opus-5-5",
   d_runtime: "claude",
@@ -479,6 +483,7 @@ fn fix_maker_name(id : String) -> String {
 ///|
 pub fn fix_model(model : String) -> Json {
   match model {
+    "gpt-6.2-sol" => fix_crowded_model(model, "GPT-6.2 Sol", "Sol", "openai", ["codex"])
     "gpt-6-astra" => fix_crowded_model(model, "GPT-6 Astra", "Astra", "openai", ["codex"])
     "deepseek-v4-1-flash" => fix_crowded_model(model, "DeepSeek V4.1 Flash", "DeepSeek", "deepseek", ["claude", "codex", "dsh"])
     "grok-4-7-build-fast" => fix_crowded_model(model, "Grok 4.7 Build Fast", "Grok", "xai", ["grok"])
@@ -535,7 +540,9 @@ pub fn fix_runtime_of(model : String) -> String {
 /// The models the model control offers, in the core's order.
 fn fix_shown_models() -> Array[Json] {
   let n = new_fix
-  if n.tall {
+  if n.ultrafast {
+    fix_crowded_models.map(fix_model) + [fix_model("gpt-6.2-sol")]
+  } else if n.tall {
     fix_crowded_models.map(fix_model) + fix_tall_models.map(fix_model)
   } else if n.providers {
     fix_crowded_models.map(fix_model) + fix_providers.map(fn(p) { fix_model(p.0) })
@@ -654,6 +661,7 @@ pub fn fix_pick() -> Json {
       "model": Json::string(model),
       "runtime": Json::string(runtime),
     }
+    if n.tui && runtime == "claude" { o["tui"] = Json::boolean(true) }
     if n.speed != "" { o["speed"] = Json::string(n.speed) }
     if effort != "" {
       o["effort"] = Json::string(effort)
@@ -717,8 +725,9 @@ pub fn fix_pick() -> Json {
     } else {
       ["low", "medium", "high"]
     },
+    "claudeModeAvailable": n.claude_mode && n.d_runtime == "claude",
     "fastAvailable": n.tall || n.ultrafast,
-    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6-astra",
+    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6.2-sol",
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {
@@ -1271,6 +1280,7 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       Some(Ok(Json::object({})))
     }
     "pick.save" => {
+      if field(p, "tui") is Some(b) { n.tui = b is True }
       take("speed", fn(s) { n.speed = s })
       match field(p, "fast") {
         Some(True) => n.speed = "fast"

@@ -40,11 +40,12 @@ import type { Call } from "../core/calls.ts";
 import type { ClientId, RequestId } from "../protocol.ts";
 import type { SpanContext } from "../trace.ts";
 import type { Owner } from "../core/routing.ts";
-import { chatKeptId, keptId } from "../drive-kept.ts";
+import { chatKeptId, keptId, sentKeptId } from "../drive-kept.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import { bytes } from "../format.ts";
 import { t } from "../i18n.ts";
 import type { Topic } from "../protocol.ts";
+import { wholeFile } from "../station/whole-file.ts";
 import { StationAddr } from "../station/addr.ts";
 import { request } from "../ops.ts";
 import { conform } from "../conform.ts";
@@ -188,7 +189,7 @@ export class Downloads {
 
   /// The `downloads` topic: newest first.
   view(): { downloads: Record<string, unknown>[]; keeping: Record<string, unknown>[] } {
-    return { downloads: [...this.#held.values()].sort((a, b) => b.startedAt - a.startedAt).map(shown), keeping: this.#inner.fill?.shown() ?? [] };
+    return { downloads: [...this.#held.values()].sort((a, b) => b.startedAt - a.startedAt).map(shown), keeping: (this.#inner.fill?.shown() ?? []).filter((f) => !this.#held.has(String(f.id))) };
   }
 
   /// How far it has come: told again as it moves on a whole percent.
@@ -247,9 +248,16 @@ export class Downloads {
       const file = kept(d.station, from)!;
       // Old messages can omit a file's size (represented as 0). Ask for its first part to find the real size before
       // deciding it is ready: otherwise download.read would see a zero-length kept file even if it has contents.
+      if (from.kind === "chat" && d.size === 0) d.size = (yield* inner.driveKept.sizeOf(file.id)) ?? 0;
+      if (yield* inner.driveKept.savedHere(file.id, file.mtime, d.size)) return;
+      if (from.kind === "chat") {
+        const sent = sentKeptId(d.station, from.file);
+        if (d.size === 0) d.size = (yield* inner.driveKept.sizeOf(sent)) ?? 0;
+        if (yield* inner.driveKept.whole(sent, d.size)) return;
+      }
       if (from.kind === "chat" && d.size === 0) {
         const { part: first, bytes } = yield* receivedPart<FileHead, FilePart>(
-          (take, said) => inner.stations.requests.filePart(addr, from.key, from.file, 0, DOWNLOAD_PART, null, undefined, take, said, false, true),
+          (take, said) => inner.stations.requests.filePart(addr, from.key, from.file, 0, DOWNLOAD_PART, null, undefined, take, said),
           (head, came) => Effect.gen(function* () {
             if (head.total < came.length) return;
             d.size = head.total;
@@ -277,13 +285,14 @@ export class Downloads {
         const heard = (n: number) => self.#moved(d, was + n);
         if (from.kind === "chat") {
           const got = yield* Effect.result(receivedPart<FileHead, FilePart>(
-            (take, said) => inner.stations.requests.filePart(addr, from.key, from.file, at, length, null, heard, take, said, false, true),
+            (take, said) => inner.stations.requests.filePart(addr, from.key, from.file, at, length, null, heard, take, said),
             (head, came) => head.total === d.size && at + came.length <= d.size
               ? inner.driveKept.keep(file.id, "chat", 0, d.size, head.type, at, came) : Effect.void,
           ));
           if (got._tag === "Failure") {
             if (at === 0 && got.failure.code === "unsupported" && d.size <= WHOLE_MAX) {
-              const [type, whole] = yield* inner.stations.requests.file(addr, from.key, from.file, false, (loaded) => self.#moved(d, loaded), null);
+              const { value, bytes: whole } = yield* wholeFile(inner, addr, from.key, from.file, false, (p) => self.#moved(d, Number(get(p, "loaded"))), null);
+              const { type } = value as { type: string };
               d.size = whole.length;
               yield* inner.driveKept.keep(file.id, "chat", 0, d.size, type, 0, whole);
               self.#moved(d, d.size);
@@ -303,7 +312,7 @@ export class Downloads {
         } else {
           const where = from.kind === "drive" ? from : from.made!;
           const read = yield* Effect.result(receivedPart<DriveHead, DrivePart>(
-            (take, said) => inner.stations.requests.driveRead(addr, where.root, where.path, at, length, null, heard, take, said, false, true),
+            (take, said) => inner.stations.requests.driveRead(addr, where.root, where.path, at, length, null, heard, take, said, false, [file.mtime, d.size]),
             (head, came) => head.total === d.size && (head.mtime === null || head.mtime === file.mtime) && at + came.length <= d.size
               ? inner.driveKept.keep(file.id, "file", file.mtime, d.size, head.type, at, came) : Effect.void,
           ));
@@ -472,7 +481,7 @@ export class Downloads {
       const where = typeof p.at === "string" ? p.at : "";
       const file = kept(d.station, d.from);
       // (where it can be read back from where it was saved, that is its copy: what was kept of it goes there)
-      return Effect.as(Effect.andThen(where === "" || file === null ? Effect.void : this.#inner.driveKept.saved(file.id, where, d.size), this.#drop(d)), {});
+      return Effect.as(Effect.andThen(where === "" || file === null ? Effect.void : this.#inner.driveKept.saved(file.id, where, d.size, file.mtime), this.#drop(d)), {});
     }
     // called off: stopped (its part being kept written whole first), then let go
     const fiber = d.fiber;

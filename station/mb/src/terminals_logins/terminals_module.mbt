@@ -31,7 +31,7 @@ pub fn shell_of(os : String, shell : String?) -> (String, Array[String]) {
 pub fn meta_of(v : J?) -> TerminalMeta? {
   guard v is Some(Obj(_) | Arr(_)) else { return None }
   match (text(get(v, "by")), num(get(v, "at")), text(get(v, "cwd")), text(get(v, "workspace"))) {
-    (Some(by), Some(at), Some(cwd), Some(workspace)) => Some({ by, at, cwd, chat: text(get(v, "chat")), workspace })
+    (Some(by), Some(at), Some(cwd), Some(workspace)) => Some({ by, by_email: text(get(v, "byEmail")), at, cwd, chat: text(get(v, "chat")), workspace })
     _ => None
   }
 }
@@ -128,12 +128,9 @@ fn meta_file(data : String, id : String) -> String {
 /// The part made: its terminals (told as they change), and those a station before this one opened taken up.
 pub async fn TerminalsPart::start(io : TerminalsIo) -> TerminalsPart {
   let holder : Ref[Terminals?] = Ref(None)
-  let tell = () => match holder.val {
+  let tell = workspace => match holder.val {
     None => ()
-    Some(t) =>
-      for workspace in t.workspaces() {
-        (io.tell)(workspace, jo([("terminals", t.list(workspace))]))
-      }
+    Some(t) => (io.tell)(workspace, jo([("terminals", t.list(workspace))]))
   }
   let terminals = Terminals::new({
     home: io.home,

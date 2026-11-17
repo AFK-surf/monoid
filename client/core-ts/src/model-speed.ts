@@ -10,9 +10,14 @@ export function chosenSpeed(v: { speed?: unknown; fast?: unknown } | null | unde
   return modelSpeed(v?.speed) ?? (v?.fast === true ? "fast" : v?.fast === false ? "standard" : null);
 }
 
-// OpenAI's supported Ultrafast models (https://learn.chatgpt.com/docs/agent-configuration/speed).
-export function ultrafastModel(model: unknown): boolean {
-  return typeof model === "string" && ["gpt-6-astra", "gpt-6.1-sol"].includes(key(model));
+// Compatibility for stations and cached account checks from before Codex reported model speed tiers.
+const LEGACY_ULTRAFAST_MODELS = ["gpt-6-astra", "gpt-6.1-sol"];
+
+export function ultrafastModel(model: unknown, reported: unknown): boolean {
+  if (typeof model !== "string") return false;
+  const models = Array.isArray(reported) ? reported : LEGACY_ULTRAFAST_MODELS;
+  const wanted = key(model);
+  return models.some((id) => typeof id === "string" && key(id) === wanted);
 }
 
 /// Omit the new field on records made by clients that only knew the Fast switch.

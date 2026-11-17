@@ -12,7 +12,7 @@ import { modelSpeed, type ModelSpeed } from "./model-speed.ts";
 export type RecordDir = { path: string; repo: string | null; station: string };
 
 /// How a preset runs its chats' model, where it names one (as station/src/sessions/presets.ts `PresetModel`).
-export type RecordModel = { model: string; runtime?: string; effort?: string; fast?: boolean; speed?: ModelSpeed; context?: number; profile?: string; profiles?: string[] };
+export type RecordModel = { model: string; runtime?: string; effort?: string; fast?: boolean; speed?: ModelSpeed; tui?: boolean; context?: number; profile?: string; profiles?: string[] };
 
 /// A preset as kept and carried. `owner`: the `sub` of the person it is of ("" on one from before, until their device
 /// says it); `rev`: how many times it was changed, from 1; `home`: the id of the station it was made on (the one that
@@ -121,6 +121,7 @@ export function modelOf(v: unknown): RecordModel | undefined {
   const eff = (str(o.effort) ?? "").trim();
   if (eff !== "") out.effort = eff;
   if (typeof o.fast === "boolean") out.fast = o.fast;
+  if (o.tui === true) out.tui = true;
   const speed = modelSpeed(o.speed);
   if (speed !== null) out.speed = speed;
   if (typeof o.context === "number" && Number.isInteger(o.context) && o.context > 0) out.context = o.context;

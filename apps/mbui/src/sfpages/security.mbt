@@ -43,8 +43,14 @@ pub fn security_node(
           out.push("on")
           // not confirmed yet, or in the lock without signing (let in before it kept a key): asked for here too; let in
           // by its person's own lock that does not say its signer, verified once in its place (`confirmText`); a web
-          // page nobody can approve here says so in its place (`needsAppText`)
-          if flag(me, "waiting") || flag(me, "unsigned") {
+          // page nobody can approve here says so in its place (`needsAppText`); made its person's only trusted device
+          // while the workspace binds the lock of before, whom to ask, nothing to press (`reboundText`); its person's
+          // own lock begun anew elsewhere, what happened and 是我做的，继续 (`forgetText`)
+          if text(me, "reboundText") != "" {
+            out.push("rebound")
+          } else if text(me, "forgetText") != "" {
+            out.push("replaced")
+          } else if flag(me, "waiting") || flag(me, "unsigned") {
             out.push("pair")
           } else if text(me, "confirmText") != "" {
             out.push("confirm-signer")
@@ -101,6 +107,8 @@ pub fn security_node(
         "pair" => pair_node(b, core, ws, lock)
         "confirm-signer" => confirm_signer_node(b, core, ws, lock)
         "needs-app" => needs_app_node(b, lock)
+        "rebound" => rebound_node(b, lock)
+        "replaced" => replaced_node(b, core, ws, lock)
         "upgrade" => @sf.section_heading_node(b, fn() { text(field(lock(), "upgrade"), "titleText") })
         k if k.has_prefix(upgrade_key) =>
           upgrade_line_node(b, core, lock, @string.parse_int(k[upgrade_key.length():]) catch { _ => 0 })
@@ -353,6 +361,47 @@ fn needs_app_node(parent : @view.View, lock : () -> Json?) -> Unit {
   sec_lead_node(parent, fn(k) {
     @sf.words_node(k, fn() { @sf.t("web-pages.security.needsAppTitle") }, fn() { sec_state_lines }) |> ignore
     @sf.words_node(k, fn() { text(field(lock(), "me"), "needsAppText") }, fn() { sec_said }) |> ignore
+  })
+}
+
+///|
+/// Made its person's only trusted device (`lock.restartOwn`) while the workspace binds the lock of before (the core's
+/// `me.reboundText`): in the pair's place, 等待批准 and whom to ask to take them out and add them again, with no button
+/// (no approval lets it in till then).
+fn rebound_node(parent : @view.View, lock : () -> Json?) -> Unit {
+  sec_lead_node(parent, fn(k) {
+    @sf.words_node(k, fn() { @sf.t("web-pages.security.waitingTitle") }, fn() { sec_state_lines }) |> ignore
+    @sf.words_node(k, fn() { text(field(lock(), "me"), "reboundText") }, fn() { sec_said }) |> ignore
+  })
+}
+
+///|
+/// Its person's own lock begun anew on another device (the core's `me.forgetText`): in the pair's place, what happened
+/// (`replacedTitleText`), what that means (`replacedNoteText`), and 是我做的，继续 (`lock.forgetOwn`) last on the card,
+/// in its foot corner, concentric with it, a ring on it while that goes; after it, the pair's steps ask to join.
+fn replaced_node(parent : @view.View, core : Core, ws : () -> String, lock : () -> Json?) -> Unit {
+  let me = fn() { field(lock(), "me") }
+  let label = fn() { text(me(), "forgetText") }
+  sec_lead_node(parent, fn(k) {
+    @sf.words_node(k, fn() { text(me(), "replacedTitleText") }, fn() { sec_state_lines }) |> ignore
+    k.box(fn(v) {
+      lock_steps_node(v, true)
+      lock_note_node(v, fn() { text(me(), "replacedNoteText") }, in_card=true)
+      v.box(fn(a) {
+        @sf.style_node(a, fn() { lock_actions.then(@sf.foot_reach(@sf.button_height())) })
+        @sf.button_node(
+          a,
+          label,
+          fn() { lock_call(core, @signals.untracked(ws), "forgetOwn", @signals.untracked(label), []) },
+          tone=Primary,
+          busy=fn() { is_doing(core, ["lock.forgetOwn"], [("workspace", ws())]) },
+          card_words=true,
+        )
+        |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
   })
 }
 

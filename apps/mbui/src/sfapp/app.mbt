@@ -151,7 +151,7 @@ fn reset() -> Unit {
 /// What the app's own doings ask of the pages (sfbase shell.mbt): home and what is over the pages put their sheets
 /// down too, an invitation's link shows its sheet, the screens live in their cards stop as the app goes behind; a file
 /// asked beside, in the side panel of the chat in view where the frame is the wide one (`wide`, this frame's).
-fn pages_shell(src : Source, wide : Bool) -> Shell {
+fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
   {
     home,
     close_overlays,
@@ -174,6 +174,7 @@ fn pages_shell(src : Source, wide : Bool) -> Shell {
         @sfdesk.bring_page()
       }
     },
+    notice_on_board: fn(r) { wide && @sfdesk.notice_on_board(src, r, window_width) },
     edit_rail: fn() { @sfdesk.wide.editing.set(true) },
   }
 }
@@ -208,6 +209,7 @@ fn open_where(src : Source, p : Page) -> Unit {
   }
   match app.nav.top() {
     Chat(r) => if @sfdesk.station_page_beside(src, r, p) { return }
+    Place("remote") => if @sfdesk.remote_page_in_workbench(src, p) { return }
     _ => ()
   }
   // (a chat put in the page pane's place from the board (待处理's, ⌘K's, ⌘N, a row of the list beside it): the list
@@ -374,7 +376,7 @@ pub fn view(c : @ui.Ctx, src : Source) -> Unit {
   (@sfbase.made_frame.val)(c)
   @sfbase.held_build()
   c.after_build("held/end", fn() { @sfbase.held_end() })
-  shell_set(pages_shell(src, @sfdesk.is_wide(c)))
+  shell_set(pages_shell(src, @sfdesk.is_wide(c), c.window_size().0))
   // the Mac's menu bar, in the app's words (menu_bar.mbt); an item of the pages' chosen is done as its action is, at
   // that moment (@settings.ask_action)
   menu_bar(c, src)
@@ -561,7 +563,7 @@ fn app_looks_told(root : @view.View, src : Source, words_set~ : Bool = true) -> 
     // being otherwise and its faces then changed with nothing measured yet)
     if a.1 > 0.0 {
       let wide = @sfdesk.wide_at(a.1)
-      shell_set(pages_shell(src, wide))
+      shell_set(pages_shell(src, wide, a.1))
       @settings.wide.val = wide
       @ui.set_web_lines(wide)
       faces(src, wide)
@@ -808,8 +810,9 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
   // a Farview tab, while 实验性功能's Farview 原生标签页渲染 is on: drawn here (sfpages' farview_tab_node), under the
   // window's top band, as the panel and the phone's page draw it: its page laid out at this window's width as it
   // changes, not a picture of the tab; any other station's screen (and a Farview tab with it turned off) its page,
-  // sfpages' screen_node, closing it closing the window. Made again for another page put in its place (a child
-  // popup followed, another tab chosen: sfbase's lone_page_replace)
+  // sfpages' screen_node, a terminal its own (sfpages' terminal_node), closing it closing the window. Made again for
+  // another page put in its place (a child popup followed, another tab chosen, another of the station's switched to
+  // from its bar: sfbase's lone_page_replace)
   // (the window's own, as what started it put it: lone_page, the run's own for a run of its own)
   let shown = @sfbase.lone_shown.val
   shown.set(@sfbase.lone_page.val)
@@ -818,22 +821,44 @@ fn lone_tree(v : @view.View, src : Source) -> Unit {
     fn() {
       let native = @sfbase.farview_native.get()
       match shown.get() {
-        Some(Screen(at)) => Some((at, native && @sfpages.farview_screen(at.screen)))
+        Some(Screen(at)) => Some((@sfbase.Page::Screen(at), native && @sfpages.farview_screen(at.screen)))
+        Some(Terminal(at)) => Some((@sfbase.Page::Terminal(at), false))
         _ => None
       }
     },
     fn(q, shown) {
       q.over(Is(true)) |> ignore
       match shown {
-        Some((at, true)) => {
+        Some((Screen(at), true)) => {
           // (padding's order: left, top, right, bottom)
           q.padding(By(fn() { (0.0, window_band_now(), 0.0, 0.0) })) |> ignore
-          @sfpages.farview_tab_node(q, src, at.station, at.screen)
+          @sfpages.farview_pane_node(
+            q,
+            src,
+            at.station,
+            at.screen,
+            title=at.title,
+            on_back=fn() { lone_closed(q) },
+            on_switch=@sfbase.lone_page_replace,
+            on_close=fn() { lone_closed(q) },
+          )
         }
-        Some((at, false)) => {
+        Some((Screen(at), false)) => {
           q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
           @sfpages.screen_node(q, src, at, fn() { system_frame() }, on_close=fn() { lone_closed(q) })
         }
+        Some((Terminal(at), _)) =>
+          @sfpages.terminal_pane_node(
+            q,
+            src,
+            at,
+            back=fn() { @sf.t("common.close") },
+            on_back=fn() { lone_closed(q) },
+            top=window_band_now,
+            width=fn() { q.window().0 },
+            on_switch_page=@sfbase.lone_page_replace,
+          )
+        Some(_) => ()
         None => ()
       }
     },

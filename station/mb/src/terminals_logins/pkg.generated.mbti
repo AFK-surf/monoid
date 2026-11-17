@@ -361,6 +361,7 @@ pub(all) struct Opening {
   cwd : String?
   chat : String?
   by : String
+  by_email : String?
   workspace : String
 }
 
@@ -481,7 +482,7 @@ pub(all) struct TerminalDeps {
   start : async (String, Opening, String, TerminalMeta) -> TerminalLink
   home : String
   chat_dir : (String) -> String?
-  changed : () -> Unit
+  changed : (String) -> Unit
   gone : (String) -> Unit
   new_id : () -> String
   offered : (() -> Bool)?
@@ -505,6 +506,7 @@ pub fn TerminalLink::type_(Self, Bytes) -> Unit
 
 pub(all) struct TerminalMeta {
   by : String
+  by_email : String?
   at : Double
   cwd : String
   chat : String?

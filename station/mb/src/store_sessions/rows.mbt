@@ -88,6 +88,7 @@ fn to_session(r : Map[String, Json]) -> Json {
   o["profiles"] = parse_profiles(col(r, "profiles"), col(r, "profile"), pinned)
   o["model"] = col(r, "model")
   o["effort"] = col(r, "effort")
+  if col(r, "tui") == Json::number(1.0) { o["tui"] = Json::boolean(true) }
   if col(r, "speed") is String(_) {
     o["speed"] = col(r, "speed")
   }

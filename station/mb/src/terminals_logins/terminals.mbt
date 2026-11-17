@@ -91,6 +91,7 @@ pub(all) struct Opening {
   cwd : String?
   chat : String?
   by : String
+  by_email : String?
   workspace : String
 }
 
@@ -98,6 +99,7 @@ pub(all) struct Opening {
 /// What is kept of a terminal beside its runner, so a station after this one says the same of it.
 pub(all) struct TerminalMeta {
   by : String
+  by_email : String?
   at : Double
   cwd : String
   chat : String?
@@ -108,6 +110,9 @@ pub(all) struct TerminalMeta {
 /// The meta as it is written (`JSON.stringify(meta)`).
 pub fn TerminalMeta::to_json(self : TerminalMeta) -> J {
   let ps = [("by", js(self.by)), ("at", jn(self.at)), ("cwd", js(self.cwd))]
+  if self.by_email is Some(email) {
+    ps.push(("byEmail", js(email)))
+  }
   if self.chat is Some(c) {
     ps.push(("chat", js(c)))
   }
@@ -130,7 +135,7 @@ pub(all) struct TerminalDeps {
   home : String
   /// A chat's folder, if it is one of this station's.
   chat_dir : (String) -> String?
-  changed : () -> Unit
+  changed : (String) -> Unit
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone : (String) -> Unit
   new_id : () -> String
@@ -166,6 +171,7 @@ priv struct Terminal {
   id : String
   link : TerminalLink
   by : String
+  by_email : String?
   at : Double
   cwd : String
   chat : String?
@@ -191,6 +197,9 @@ fn Terminal::shown(self : Terminal) -> J {
     }
   }
   let ps = [("id", js(self.id)), ("by", js(self.by)), ("at", jn(self.at)), ("cwd", js(self.cwd))]
+  if self.by_email is Some(email) {
+    ps.push(("byEmail", js(email)))
+  }
   if self.chat is Some(c) && c != "" {
     ps.push(("chat", js(c)))
   }
@@ -262,6 +271,7 @@ pub fn Terminals::keep(
     id,
     link,
     by: meta.by,
+    by_email: meta.by_email,
     at: meta.at,
     cwd: meta.cwd,
     chat: meta.chat,
@@ -291,10 +301,10 @@ fn Terminals::add(self : Terminals, t : Terminal) -> Unit {
     if t.views.length() == 0 {
       self.drop(t)
     }
-    (self.deps.changed)()
+    (self.deps.changed)(t.workspace)
   })
   |> ignore
-  (self.deps.changed)()
+  (self.deps.changed)(t.workspace)
 }
 
 ///|
@@ -326,7 +336,7 @@ async fn Terminals::open(self : Terminals, o : Opening) -> Terminal {
     Some(c) if c != "" => Some(c)
     _ => None
   }
-  let link = (self.deps.start)(id, o, cwd, { by: o.by, at, cwd, chat, workspace: o.workspace })
+  let link = (self.deps.start)(id, o, cwd, { by: o.by, by_email: o.by_email, at, cwd, chat, workspace: o.workspace })
   let t : Terminal = {
     views: {},
     typing: None,
@@ -334,6 +344,7 @@ async fn Terminals::open(self : Terminals, o : Opening) -> Terminal {
     id,
     link,
     by: o.by,
+    by_email: o.by_email,
     at,
     cwd,
     chat,
@@ -356,7 +367,7 @@ pub fn Terminals::end(self : Terminals, id : String, by : String, workspace : St
   (self.deps.log)("ended by a member", jo([("id", js(id)), ("by", js(by))]))
   if t.link.over() {
     self.drop(t)
-    (self.deps.changed)()
+    (self.deps.changed)(t.workspace)
   } else {
     t.link.kill()
   }
@@ -407,7 +418,7 @@ fn Terminals::tell_all(self : Terminals, t : Terminal) -> Unit {
   for _, v in t.views {
     (v.tell)(self.state(t, v))
   }
-  (self.deps.changed)()
+  (self.deps.changed)(t.workspace)
 }
 
 ///|
@@ -490,6 +501,7 @@ pub async fn Terminals::answer(self : Terminals, stream : Stream, carry : Bytes,
         cwd: ask.cwd,
         chat: ask.chat,
         by: name,
+        by_email: Some(viewer.email),
         workspace: viewer.workspace,
       }
       match (try Ok(self.open(opening)) catch { e => Err(e) }) {

@@ -51,6 +51,10 @@ fn settings_core_of(
   login_card~ : (@ui.Ctx, String, String, Bool) -> Unit,
   share_card~ : () -> Unit,
 ) -> @settings.Core {
+  // (a station's terminal from its page: the page it is)
+  @settings.open_terminal_of.val = fn(station, terminal, cwd) {
+    open_page(Terminal({ station, terminal, watch: false, cwd }))
+  }
   // (概览 switched to from the accounts' list once what it shows is answered, the list meanwhile, and what was asked
   // handed to it as the list's pages hand theirs: the shells' shown_read of "profiles-list")
   @settings.overview_switch.val = fn(ws, go) {

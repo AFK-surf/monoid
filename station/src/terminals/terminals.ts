@@ -34,6 +34,7 @@ export type TerminalShown = {
   id: string;
   /// Who opened it, and when (ms).
   by: string;
+  byEmail?: string;
   at: number;
   cwd: string;
   /// The chat it was opened from, if one.
@@ -47,18 +48,20 @@ export type TerminalShown = {
 
 /// What opens a terminal: where its runner starts it, as whom, how large.
 /// `workspace`: the opener's; only its members see the terminal (workspaces are kept apart, station AGENTS.md).
-export type Opening = { cols: number; rows: number; cwd?: string; chat?: string; by: string; workspace: string };
+export type Opening = { cols: number; rows: number; cwd?: string; chat?: string; by: string; byEmail?: string; workspace: string };
 /// What the station gives the terminals: how one is started (its runner, its link), the folder one opens in when none is
 /// asked, what is told as they change.
 /// What is kept of a terminal beside its runner, so a station after this one says the same of it.
-export type TerminalMeta = { by: string; at: number; cwd: string; chat?: string; workspace: string };
+export type TerminalMeta = { by: string; byEmail?: string; at: number; cwd: string; chat?: string; workspace: string };
 export type TerminalDeps = {
   /// Starts its runner, keeps its meta, and links to it.
   start(id: string, o: Opening & { cwd: string }, meta: TerminalMeta): Promise<TerminalLink>;
   home: string;
   /// A chat's folder, if it is one of this station's.
   chatDir(chat: string): string | undefined;
-  changed(): void;
+  changed(workspace: string): void;
+  /// Updates what is kept of an open terminal (e.g. its live folder after `cd`).
+  meta?(id: string, meta: TerminalMeta): void;
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
   gone(id: string): void;
   newId(): string;
@@ -78,24 +81,31 @@ class Terminal {
   readonly id: string;
   readonly link: TerminalLink;
   readonly by: string;
+  readonly byEmail: string | undefined;
   readonly at: number;
-  readonly cwd: string;
+  cwd: string;
+  oscTail = "";
   readonly chat: string | undefined;
   readonly workspace: string;
-  constructor(id: string, link: TerminalLink, by: string, at: number, cwd: string, chat: string | undefined, workspace: string) {
+  constructor(id: string, link: TerminalLink, by: string, at: number, cwd: string, chat: string | undefined, workspace: string, byEmail?: string) {
     this.id = id;
     this.link = link;
     this.by = by;
+    this.byEmail = byEmail;
     this.at = at;
     this.cwd = cwd;
     this.chat = chat;
     this.workspace = workspace;
   }
 
+  meta(): TerminalMeta {
+    return { by: this.by, ...(this.byEmail ? { byEmail: this.byEmail } : {}), at: this.at, cwd: this.cwd, ...(this.chat ? { chat: this.chat } : {}), workspace: this.workspace };
+  }
+
   shown(): TerminalShown {
     const typing = this.typing === null ? null : (this.views.get(this.typing)?.name ?? null);
     const looking = [...this.views.values()].filter((v) => v.id !== this.typing).map((v) => v.name);
-    return { id: this.id, by: this.by, at: this.at, cwd: this.cwd, ...(this.chat ? { chat: this.chat } : {}), typing, looking, ...(this.link.over ? { ended: this.#ended } : {}) };
+    return { id: this.id, by: this.by, ...(this.byEmail ? { byEmail: this.byEmail } : {}), at: this.at, cwd: this.cwd, ...(this.chat ? { chat: this.chat } : {}), typing, looking, ...(this.link.over ? { ended: this.#ended } : {}) };
   }
 
   #ended: Ended | null = null;
@@ -125,22 +135,31 @@ export class Terminals {
 
   /// One a runner kept from before this station (adopted as it starts).
   keep(id: string, link: TerminalLink, meta: TerminalMeta, size?: { cols?: number; rows?: number }) {
-    const t = new Terminal(id, link, meta.by, meta.at, meta.cwd, meta.chat, meta.workspace);
+    const t = new Terminal(id, link, meta.by, meta.at, meta.cwd, meta.chat, meta.workspace, meta.byEmail);
     if (within(size?.cols, SIZE.cols) && within(size?.rows, SIZE.rows)) t.size = { cols: size.cols, rows: size.rows };
     this.#add(t);
   }
 
   #add(t: Terminal) {
     this.#terminals.set(t.id, t);
+    t.link.listen((out) => {
+      const parsed = oscCwd(t.oscTail + out.bytes.toString("utf8"));
+      t.oscTail = parsed.tail;
+      if (parsed.cwd !== null && parsed.cwd !== t.cwd) {
+        t.cwd = parsed.cwd;
+        this.#deps.meta?.(t.id, t.meta());
+        this.#tellAll(t);
+      }
+    });
     t.link.ended((e) => {
       t.setEnded(e);
       log.info("terminal", "ended", { id: t.id, code: e?.code ?? null, signal: e?.signal ?? null });
       for (const v of t.views.values()) v.tell(this.#state(t, v));
       // Its views say how it ended; it leaves the list once none is left.
       if (t.views.size === 0) this.#drop(t);
-      this.#deps.changed();
+      this.#deps.changed(t.workspace);
     });
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   async open(o: Opening): Promise<Terminal> {
@@ -148,8 +167,8 @@ export class Terminals {
     const cwd = o.cwd ?? (o.chat ? this.#deps.chatDir(o.chat) : undefined) ?? this.#deps.home;
     const id = this.#deps.newId();
     const at = wall.now();
-    const link = await this.#deps.start(id, { ...o, cwd }, { by: o.by, at, cwd, ...(o.chat ? { chat: o.chat } : {}), workspace: o.workspace });
-    const t = new Terminal(id, link, o.by, at, cwd, o.chat, o.workspace);
+    const link = await this.#deps.start(id, { ...o, cwd }, { by: o.by, ...(o.byEmail ? { byEmail: o.byEmail } : {}), at, cwd, ...(o.chat ? { chat: o.chat } : {}), workspace: o.workspace });
+    const t = new Terminal(id, link, o.by, at, cwd, o.chat, o.workspace, o.byEmail);
     t.size = { cols: o.cols, rows: o.rows };
     log.info("terminal", "opened", { id, by: o.by, cwd, ...(o.chat ? { chat: o.chat } : {}) });
     this.#add(t);
@@ -161,7 +180,7 @@ export class Terminals {
     const t = this.#terminals.get(id);
     if (t === undefined || t.workspace !== workspace) return false;
     log.info("terminal", "ended by a member", { id, by });
-    if (t.link.over) this.#drop(t), this.#deps.changed();
+    if (t.link.over) this.#drop(t), this.#deps.changed(t.workspace);
     else t.link.kill();
     return true;
   }
@@ -185,7 +204,7 @@ export class Terminals {
 
   #tellAll(t: Terminal) {
     for (const v of t.views.values()) v.tell(this.#state(t, v));
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   /// A view of a terminal, for as long as its stream lasts.
@@ -207,7 +226,7 @@ export class Terminals {
       if (this.#deps.offered?.() === false) return refuse(404, "no route: terminals are opened on stations updated on the test channel alone");
       if (looksOnly) return refuse(403, "a read-only member does not open a terminal");
       try {
-        t = await this.open({ cols: ask.cols, rows: ask.rows, ...(ask.cwd ? { cwd: ask.cwd } : {}), ...(ask.chat ? { chat: ask.chat } : {}), by: name, workspace: viewer.workspace });
+        t = await this.open({ cols: ask.cols, rows: ask.rows, ...(ask.cwd ? { cwd: ask.cwd } : {}), ...(ask.chat ? { chat: ask.chat } : {}), by: name, byEmail: viewer.email, workspace: viewer.workspace });
       } catch (error) {
         return refuse(error instanceof TerminalRefused ? error.status : 503, (error as Error).message);
       }
@@ -375,6 +394,43 @@ export function controlOf(payload: Buffer): { control: boolean; taken: boolean; 
   } catch {
     return null;
   }
+}
+
+const OSC_CWD = /\x1b\](?:7;file:\/\/[^/\x07\x1b]*(\/[^\x07\x1b]*)|9;9;([^\x07\x1b]+))(?:\x07|\x1b\\)/g;
+const OSC_MAX_TAIL = 2048;
+
+function decodeOscPath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    return raw;
+  }
+}
+
+/// Live working directory announced by the shell (`OSC 7` `file://host/path` or ConPTY `OSC 9;9;path`), plus any
+/// unfinished escape tail to prepend to the next output chunk.
+export function oscCwd(text: string): { cwd: string | null; tail: string } {
+  let cwd: string | null = null;
+  let consumed = 0;
+  for (const m of text.matchAll(OSC_CWD)) {
+    consumed = m.index + m[0].length;
+    if (m[1] !== undefined) {
+      let decoded = decodeOscPath(m[1]);
+      if (/^\/[A-Za-z]:[\\/]/.test(decoded)) decoded = decoded.slice(1);
+      if (decoded !== "" && decoded.length <= 4096) cwd = decoded;
+    } else if (m[2] !== undefined) {
+      const unquoted = m[2].startsWith('"') && m[2].endsWith('"') && m[2].length >= 2 ? m[2].slice(1, -1) : m[2];
+      if (unquoted !== "" && unquoted.length <= 4096) cwd = unquoted;
+    }
+  }
+  const rest = text.slice(consumed);
+  const esc = rest.lastIndexOf("\x1b");
+  if (esc < 0 || rest.length - esc > OSC_MAX_TAIL) return { cwd, tail: "" };
+  const candidate = rest.slice(esc);
+  if (candidate === "\x1b" || candidate === "\x1b]" || /^\x1b\](?:7(?:;[^\x07\x1b]*)?|9(?:;9(?:;[^\x07\x1b]*)?)?)?$/.test(candidate)) {
+    return { cwd, tail: candidate };
+  }
+  return { cwd, tail: "" };
 }
 
 /// Frames from a client, after what came with the head line (mesh/screens.ts FrameIn, with a terminal's bound).

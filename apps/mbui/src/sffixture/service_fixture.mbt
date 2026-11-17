@@ -70,6 +70,7 @@ pub fn fixture_stream(
   params : Json,
   on_value : (Json, Bytes?) -> Unit,
   done : (Result[Json, Json]) -> Unit,
+  mode? : String = "",
 ) -> Int {
   if name == "screen.view" {
     // a link's card's preview (screen_links.mbt: peek), or the viewer's (screen.mbt)
@@ -79,7 +80,7 @@ pub fn fixture_stream(
     return (@sfbase.screen_made_stream.val)(params, on_value, done)
   }
   if name == "terminal.view" {
-    return fixture_terminal_view(params, on_value)
+    return fixture_terminal_view(params, on_value, mode~)
   }
   if name == "farview.view" {
     return fixture_farview_view(on_value)
@@ -108,6 +109,10 @@ pub let fix_stream_ids : Ref[Int] = Ref(0)
 /// A chat's Farview tab as its host shows it (farview_tab.mbt): live, a sign-in page sent whole on Farview's doc wire
 /// (fvclient/doc's Mirror, as a host makes it), and an agent driving the tab.
 fn fixture_farview_view(on_value : (Json, Bytes?) -> Unit) -> Int {
+  fix_farview_tell.val = Some(on_value)
+  fix_farview_went.clear()
+  fix_farview_went.push("https://mail.example.test/login")
+  fix_farview_at.val = 0
   on_value({ "state": { "phase": "live", "opens": 1 } }, None)
   let doc = @html.parse(fix_farview_html)
   let state : @doc.DocState = {
@@ -126,6 +131,50 @@ fn fixture_farview_view(on_value : (Json, Bytes?) -> Unit) -> Int {
   fix_stream_ids.val += 1
   fix_stream_ids.val
 }
+
+///|
+/// What the tab's stage said (`farview.send`, its client wire), done as its host does what moves the tab through what
+/// it was shown: an address gone to, back and forward, its bar told where it is and which ways it can go (Meta). True
+/// where it was such.
+fn fixture_farview_said(bytes : Bytes) -> Bool {
+  guard fix_farview_tell.val is Some(tell) else { return false }
+  let framer = @proto.Framer::new()
+  framer.push(bytes[:])
+  let mut said = false
+  while framer.next() is Some(body) {
+    guard @proto.decode_client(body) is Some(Nav(kind, url)) else { continue }
+    let went = fix_farview_went
+    if kind == @proto.NAV_GO && url != "" {
+      while went.length() > fix_farview_at.val + 1 {
+        went.pop() |> ignore
+      }
+      went.push(if url.contains("://") { url } else { "https://" + url + "/" })
+      fix_farview_at.val = went.length() - 1
+    } else if kind == @proto.NAV_BACK && fix_farview_at.val > 0 {
+      fix_farview_at.val -= 1
+    } else if kind == @proto.NAV_FORWARD && fix_farview_at.val + 1 < went.length() {
+      fix_farview_at.val += 1
+    } else {
+      continue
+    }
+    let at = fix_farview_at.val
+    tell({ "data": true }, Some(@proto.encode_host(Meta(went[at], "登录", false, at > 0, at + 1 < went.length()))))
+    said = true
+  }
+  said
+}
+
+///|
+// kept across runs: the tab a fixture's farview.view opened last, reset with the fixture (made.mbt)
+let fix_farview_tell : Ref[((Json, Bytes?) -> Unit)?] = Ref(None)
+
+///|
+// kept across runs: where that tab went and where it is, reset with the fixture (made.mbt)
+let fix_farview_went : Array[String] = []
+
+///|
+// kept across runs: reset with the fixture (made.mbt)
+let fix_farview_at : Ref[Int] = Ref(0)
 
 ///|
 let fix_farview_html : String = "<!doctype html><html><head><link rel=stylesheet href=s.css></head><body>" +

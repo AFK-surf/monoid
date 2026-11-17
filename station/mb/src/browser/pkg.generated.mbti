@@ -295,6 +295,7 @@ pub(all) enum AgentAsk {
   Look
   Eval(String)
   Cookies(String, String)
+  Passkeys(String, String)
   Act(String, String, String)
 }
 
@@ -545,13 +546,15 @@ pub async fn FarviewTabs::endpoint(Self, String) -> BrowserStatus
 pub async fn FarviewTabs::form(Self, String, id? : String) -> SignInForm
 pub fn FarviewTabs::new(FarviewOptions) -> Self
 pub async fn FarviewTabs::open(Self, String, String) -> FarviewTab
+pub async fn FarviewTabs::passkeys(Self, String) -> Array[Passkey]
 pub async fn FarviewTabs::put_cookies(Self, String, Array[@jsjson.JValue]) -> Unit
+pub async fn FarviewTabs::put_passkeys(Self, String, Array[Passkey]) -> Unit
 pub async fn FarviewTabs::ready(Self, FarviewConfig) -> Unit
 pub async fn FarviewTabs::resume(Self) -> Unit
 pub fn FarviewTabs::status(Self, String) -> BrowserStatus
 pub async fn FarviewTabs::stop(Self, String) -> Unit
 pub fn FarviewTabs::tabs(Self, String) -> Array[FarviewTab]
-pub async fn FarviewTabs::take_out(Self, String, Array[String]) -> Array[@jsjson.JValue]
+pub async fn FarviewTabs::take_out(Self, String, Array[String]) -> (Array[@jsjson.JValue], Array[Passkey])
 
 pub struct FarviewView {
   peek : Bool

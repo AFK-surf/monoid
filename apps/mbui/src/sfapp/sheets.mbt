@@ -685,8 +685,15 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       c.box(fn(g) { @sf.style_node(g, fn() { info_card_under }) }) |> ignore
     })
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
+    let chat_cv = fn() { view_of_chat(src, r).0 }
+    let has_remote = fn() {
+      match chat_cv() {
+        Some(cv) => chat_has_remote(cv)
+        None => false
+      }
+    }
     let screens = fn() {
-      match view_of_chat(src, r).0 {
+      match chat_cv() {
         Some(cv) => cv.screens
         None => []
       }
@@ -701,7 +708,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       if station() is Some(_) {
         labels.push(tr("android-chat.agent.station"))
       }
-      if screens().length() > 0 {
+      if has_remote() {
         labels.push(tr("android-chat.agent.screen"))
       }
       if context_row() {
@@ -750,9 +757,8 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
           )
           |> ignore
         })
-        // the screens of that station a tap away (chat_screens.mbt): its own display named, or that an agent drives one;
-        // the one alone opened, more a menu of them, this card gone first
-        list.show(fn() { screens().length() > 0 }, fn(p) {
+        // the screens, browser and workspace terminal of that station a tap away (chat_screens.mbt)
+        list.show(has_remote, fn(p) {
           let at : Ref[@view.View?] = Ref(None)
           at.val = Some(
             agent_row_node(
@@ -763,18 +769,17 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
                 if chat_screens_driven(sc) {
                   tr("web-pages.chat.screenAgent")
                 } else {
-                  sc.get(0).map_or("", fn(x) { x.title })
+                  sc.get(0).map_or(tr("web-main.rail.remote"), fn(x) { x.title })
                 }
               },
               label_w,
               fn() {
-                let sc = @signals.untracked(screens)
-                match at.val {
-                  Some(from) => {
+                match (@signals.untracked(chat_cv), at.val) {
+                  (Some(cv), Some(from)) => {
                     close()
-                    chat_screens_open(r, sc, from=Node(from))
+                    chat_remote_open(src, r, cv, from=Node(from))
                   }
-                  None => ()
+                  _ => ()
                 }
               },
             ),

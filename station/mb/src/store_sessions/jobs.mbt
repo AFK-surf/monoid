@@ -27,6 +27,14 @@ pub fn Store::profile_status(self : Store) -> Json raise {
 }
 
 ///|
+pub fn Store::profile_check(self : Store, id : String) -> Json? raise {
+  match self.all("SELECT check_json FROM profile_status WHERE profile = ?", [Json::string(id)]).get(0) {
+    Some(row) => parsed(col(row, "check_json"))
+    None => None
+  }
+}
+
+///|
 /// store.ts `checkedAt`: `value.checkedAt` where it is an integer.
 fn checked_at(v : Json) -> Json {
   match field(v, "checkedAt") {

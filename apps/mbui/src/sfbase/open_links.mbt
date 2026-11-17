@@ -55,7 +55,15 @@ pub fn link_target(v : Json) -> LinkTarget {
       Some(Number(n, ..)) if n > 0.0 => Some(n)
       _ => None
     },
-    screen: text(j, "screen"),
+    // (a terminal's link says its id as `terminal`: kept as `screen`, told apart by `opens`)
+    screen: {
+      let s = text(j, "screen")
+      if s != "" {
+        s
+      } else {
+        text(j, "terminal")
+      }
+    },
     login: text(j, "login"),
   }
 }
@@ -139,18 +147,18 @@ pub fn signed_out_links(src : Source) -> Unit {
 
 ///|
 /// Opens one of still.fail's links (AppState.openLink): what the core says it opens (`link.parse`), else `or_else`.
-/// `outside`: a link from outside the app (a notification, another app), whose item opens over the list; `at`: the
-/// message a notification is about, its chat opened there.
+/// `outside`: a link from outside the app; `notice`: one a notification opened; `at`: the message it is about.
 pub fn open_link_in(
   src : Source,
   url : String,
   outside? : Bool = false,
   at? : Double? = None,
+  notice? : Bool = false,
   or_else? : () -> Unit = fn() {  },
 ) -> Unit {
   (src.call)("link.parse", { "url": Json::string(url) }, fn(r) {
     match r {
-      Ok(Object(_) as t) => if !open_target(src, link_target(t), outside, at) { or_else() }
+      Ok(Object(_) as t) => if !open_target(src, link_target(t), outside, at, notice~) { or_else() }
       Ok(_) => or_else()
       Err(e) => {
         @hostapi.log("link.parse failed: " + text(Some(e), "message"))
@@ -163,14 +171,14 @@ pub fn open_link_in(
 ///|
 /// What a link opens, opened (AppState.open): false when it opens nothing here. One act, all its steps (a workspace
 /// switched, the stack put down, a page opened): an entry for where it left from, of where it lands (history_act).
-pub fn open_target(src : Source, t : LinkTarget, outside : Bool, at : Double?) -> Bool {
+pub fn open_target(src : Source, t : LinkTarget, outside : Bool, at : Double?, notice? : Bool = false) -> Bool {
   let opened = Ref(false)
-  history_act(fn() { opened.val = open_target_now(src, t, outside, at) })
+  history_act(fn() { opened.val = open_target_now(src, t, outside, at, notice) })
   opened.val
 }
 
 ///|
-fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?) -> Bool {
+fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?, notice : Bool) -> Bool {
   let at = match at { Some(_) => at; None => t.message }
   let ws = t.workspace
   let address = ws + "/" + t.station
@@ -195,6 +203,11 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?) -
         return false
       }
       let r = chat_ref(address, t.chat)
+      if notice && ws == current && t.history == "" && notice_on_board(r) {
+        (shell.val.close_overlays)()
+        match at { Some(seq) => go_to(r, seq, keep_place=false); None => () }
+        return true
+      }
       match at { Some(seq) => go_to(r, seq); None => () }
       match app.nav.top() {
         Chat(top) if top.station == address && top.session == t.chat => ()
@@ -222,7 +235,13 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?) -
       if t.session == "" {
         return false
       }
-      match at { Some(seq) => go_to(chat_ref(address, t.session), seq); None => () }
+      let r = chat_ref(address, t.session)
+      if notice && ws == current && t.service == "" && t.history == "" && notice_on_board(r) {
+        (shell.val.close_overlays)()
+        match at { Some(seq) => go_to(r, seq, keep_place=false); None => () }
+        return true
+      }
+      match at { Some(seq) => go_to(r, seq); None => () }
       let service = if t.service == "" { None } else { Some(t.service) }
       let top = app.nav.top()
       let here = match top {
@@ -317,6 +336,12 @@ fn open_target_now(src : Source, t : LinkTarget, outside : Bool, at : Double?) -
       }
       open_screen(address, t.screen, None)
     }
+    "terminal" => {
+      if t.screen == "" || t.station == "" {
+        return false
+      }
+      open_terminal(address, t.screen, "", "")
+    }
     _ => return false
   }
   if outside && t.opens != "invite" {
@@ -402,6 +427,12 @@ pub fn open_item(
 /// until the core says one (screen_view.mbt).
 pub fn open_screen(station : String, screen : String, title : String?) -> Unit {
   open_page(Screen({ station, screen, title: title.unwrap_or(""), until_gone: false }))
+}
+
+///|
+/// One of a station's terminals in the viewer (`terminal` "new" opens one).
+pub fn open_terminal(station : String, terminal : String, cwd : String, chat : String, watch? : Bool = false) -> Unit {
+  open_page(Terminal({ station, terminal: terminal_with_chat(terminal, chat), watch, cwd }))
 }
 
 ///|

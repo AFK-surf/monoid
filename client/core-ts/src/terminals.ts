@@ -10,6 +10,7 @@
 import { Deferred, Effect, Queue } from "effect";
 import type { Inner, Progress } from "./core.ts";
 import { handlers } from "./core/execute.ts";
+import { encodeComponent } from "./accounts.ts";
 import { CoreError, asCoreError } from "./error.ts";
 import { t } from "./i18n.ts";
 import { mayDrive } from "./screens.ts";
@@ -180,15 +181,42 @@ function verdict(error: CoreError): { phase: string; message: string } | null {
   return null;
 }
 
+/// A terminal's page in the app (`/w/<workspace>/s/<station>/terminal/<id>`).
+export function terminalPath(station: string, id: string): string {
+  const addr = StationAddr.parse(station);
+  return `/w/${encodeComponent(addr.workspace)}/s/${encodeComponent(addr.station)}/terminal/${encodeComponent(id)}`;
+}
+
+function folderName(cwd: string): string {
+  const trimmed = cwd.replace(/[\\/]+$/, "");
+  if (trimmed === "") return "/";
+  const i = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+  return i >= 0 ? trimmed.slice(i + 1) : trimmed;
+}
+
 /// The `terminals` topic: the station's terminals as it said them last (kept: there as the app opens again while it is
 /// reached anew), and whether the viewer may open one and type.
 export function terminalsView(inner: Inner, station: string, held: { terminals: unknown[]; outdated: boolean } | undefined): J {
   const terminals = (held?.terminals ?? []).flatMap((v) => {
     if (!isObject(v) || typeof v.id !== "string" || typeof v.by !== "string" || typeof v.cwd !== "string") return [];
     const looking = Array.isArray(v.looking) ? v.looking.filter((n: unknown): n is string => typeof n === "string") : [];
-    return [{ id: v.id, by: v.by, at: typeof v.at === "number" ? v.at : 0, cwd: v.cwd, ...(typeof v.chat === "string" ? { chat: v.chat } : {}), ...(typeof v.typing === "string" ? { typing: v.typing } : {}), looking, ...("ended" in v ? { ended: true } : {}) }];
+    return [{ id: v.id, by: v.by, ...(typeof v.byEmail === "string" ? { byEmail: v.byEmail } : {}), at: typeof v.at === "number" ? v.at : 0, cwd: v.cwd, ...(typeof v.chat === "string" ? { chat: v.chat } : {}), ...(typeof v.typing === "string" ? { typing: v.typing } : {}), looking, ...("ended" in v ? { ended: true } : {}) }];
   });
   return { terminals, outdated: held?.outdated === true, open: mayDrive(inner, station), known: held !== undefined };
+}
+
+/// What a link to one of a station's terminals shows in a message (the `terminalCard` topic).
+export function terminalCard(inner: Inner, station: string, id: string, held: { terminals: unknown[]; outdated: boolean } | undefined, online: boolean): J {
+  const listed = online ? terminalsView(inner, station, held).terminals.find((item: J) => item.id === id && item.ended !== true) : undefined;
+  if (listed) {
+    const title = folderName(listed.cwd);
+    const parts = [listed.cwd];
+    if (typeof listed.typing === "string" && listed.typing !== "") parts.push(t("core-views.terminal.typing", { name: listed.typing }));
+    return { id, title, line: parts.join(" · "), link: terminalPath(station, id), gone: false, cwd: listed.cwd };
+  }
+  const gone = held !== undefined && !held.outdated && online;
+  const line = gone ? t("core-views.terminal.gone") : held?.outdated ? t("core-views.terminal.outdated") : t("core-views.terminal.remote");
+  return { id, title: t("core-views.terminal.title"), line, link: terminalPath(station, id), gone, cwd: "" };
 }
 
 export function install(): void {
