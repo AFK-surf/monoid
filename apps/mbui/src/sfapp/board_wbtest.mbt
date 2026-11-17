@@ -147,6 +147,42 @@ test "大屏: a card pressed opens its chat beside the board; its decision made,
 }
 
 ///|
+test "大屏: words in a chat opened beside the board can be picked, copied and quoted" {
+  new_run()
+  let calls : Array[Made] = []
+  let base = fixture("board")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  t.click(Button, label="给设置页加一个深色模式开关")
+  t.run_for(@ui.move_most_ms)
+  guard t.run_rects("做完了：开关") is [(x, y, w, h), ..] else { fail("the message's words are not drawn") }
+  t.drag(x + 1.0, y + h / 2.0, x + w - 1.0, y + h / 2.0)
+  t.frame()
+  let selected = t.ctx().selected_text()
+  assert_true(selected != "", msg="the message's words were not picked")
+  assert_true("做完了：开关和三处颜色都改好了，已合进 main（a3f9c21）。".contains(selected), msg=selected)
+  assert_eq(t.picking().map(fn(p) { p.text }), Some(selected))
+  t.key(@ui.key_code_copy, mods=@ui.mod_cmd)
+  assert_eq(t.clipboard(), selected)
+  guard t.words().filter(fn(word) { word.0 == "引用" }) is [(_, qx, qy, qw, qh, _), ..] else {
+    fail("no 引用 over what was picked")
+  }
+  t.tap(qx + qw / 2.0, qy + qh / 2.0)
+  let quoted = named(calls, "composer.quote")
+  assert_eq(quoted.length(), 1)
+  assert_eq(text(field(Some(quoted[0].params), "quote"), "text"), selected.trim(chars=" \n\t").to_owned())
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: a done chat's 归档 takes it off the board, 撤销 said; grouped by station and by person" {
   let (t, src) = board_at("board", 1440.0, 900.0)
   let keys = t.all(Button, label="归档")

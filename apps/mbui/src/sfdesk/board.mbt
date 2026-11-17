@@ -165,10 +165,13 @@ fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, 
       page.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
       // (the chat's page as the pane draws it, its old view in Home's entry's island: let go with it, as a side panel's)
       app.nav.page_island(page, serial, fn(c, _page) {
-        match @sfbase.workspace_in_view(src).0 {
-          Some(w) => chat_page(c, src, w, r)
-          None => ()
-        }
+        // (as page_one does for a chat in the pane: a mouse can pick its words and copy or quote them)
+        c.selectable(color=@sf.alpha(@sf.theme().p.blue, 0.28), fn() {
+          match @sfbase.workspace_in_view(src).0 {
+            Some(w) => chat_page(c, src, w, r)
+            None => ()
+          }
+        })
       }, key=fn() { tape_island_key() + " board " + r.station + ":" + r.session })
       .grow(Is(1.0))
       |> ignore
