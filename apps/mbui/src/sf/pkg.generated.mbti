@@ -265,6 +265,8 @@ pub fn choice(String, String, note? : String, value? : String, icon? : String, m
 
 pub let choice_gap : Double
 
+pub fn choice_held() -> ChoiceHeld?
+
 pub fn choice_mark_node(@view.View, ChoiceMark, Double, loc~ : SourceLoc) -> Unit
 
 pub fn choice_row(@ui.Ctx, String, Bool, String, body? : () -> Unit, note? : String, lead? : () -> Unit, tag? : () -> Unit, trail? : () -> Unit, ink? : Int64, disabled? : Bool, busy? : Bool, on_press? : () -> Unit) -> Bool
@@ -2672,6 +2674,13 @@ pub(all) struct Choice {
   icon : String
   mark : ChoiceMark?
 }
+
+pub struct ChoiceHeld {
+  // private fields
+}
+pub fn ChoiceHeld::answer(Self, () -> Bool, () -> Unit, () -> Unit) -> Unit
+pub fn ChoiceHeld::close(Self, chosen~ : Bool) -> Unit
+pub fn ChoiceHeld::still(Self) -> Bool
 
 pub(all) enum ChoiceMark {
   OfStation(String, String, Bool, () -> Int64)

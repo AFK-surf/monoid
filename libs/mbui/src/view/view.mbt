@@ -821,6 +821,9 @@ pub struct Tree {
   /// step of what goes by steps (View::steps); and how many were ever told (each one's place among those due together)
   timeline : Array[Due]
   mut told : Int
+  /// the moment the last of what is said `later` came due (View::at_moment's, View::holds_for's end): what only the
+  /// clock brought while it is seen, no cause's (Tree::clock_brought)
+  mut clock_came_at : Double
   /// the nodes whose move holds what is leaving that holds them till it is over (View::moved_by's `holds_leaving`)
   leave_holders : Array[NodeId]
   /// what a show set making or closing its way down a column at the moment of the change being made (View::arrives,
@@ -1502,6 +1505,7 @@ pub fn Tree::new(
     shown_bys: {},
     shown_followers: {},
     told: 0,
+    clock_came_at: -1.0e9,
     advancing: false,
     logic: start,
     layout_due: true,
@@ -10487,6 +10491,14 @@ pub fn Tree::wake_waited_by(self : Tree) -> String {
 }
 
 ///|
+/// The moment the last of what is said `later` came due (View::at_moment's `f`, View::holds_for's end), or -1e9 none:
+/// what only the clock brings while it is seen (a count's next second, a time on screen run out), as an old view's wait
+/// said `later` is, told apart so from what a cause sets going (ui's Tester::clock_came).
+pub fn Tree::clock_brought(self : Tree) -> Double {
+  self.clock_came_at
+}
+
+///|
 /// The soonest moment what is yet to be done is done with, if anything is: a leaving or coming back ending, a moment's
 /// `f` not said `later` (View::at_moment), what goes by steps at its last step (View::steps: a stretch, its steps all
 /// done by then; Tree::wake still each step's). What a test's run goes on to and is not idle before (an old view's wake,
@@ -10908,6 +10920,9 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       Once(o, _) => {
         self.timeline.remove(next) |> ignore
         o.live.val = false
+        if o.later {
+          self.clock_came_at = next_at
+        }
         @signals.start_batch()
         @signals.untracked(fn() { (o.f)() })
         @signals.end_batch()
@@ -10917,6 +10932,9 @@ fn Tree::advance_loop(self : Tree, upto : Double) -> Unit {
       Holds(h, _) => {
         self.timeline.remove(next) |> ignore
         h.until = -1.0
+        if h.later {
+          self.clock_came_at = next_at
+        }
         @signals.start_batch()
         h.on.set(false)
         @signals.end_batch()

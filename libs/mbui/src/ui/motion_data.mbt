@@ -239,6 +239,11 @@ pub fn Ctx::every(
 let clock_moments : Array[Double] = []
 
 ///|
+/// The window's tree's last moment of what it said `later` come due (Tree::clock_brought) that Tester::clock_came took.
+// kept across runs: put back as each Tester is made
+let clock_tree_read : Ref[Double] = Ref(-1.0e9)
+
+///|
 /// Moment `at`, one only the clock brings (clock_moments), kept once.
 fn clock_moment_said(at : Double) -> Unit {
   let mut i = 0
@@ -256,6 +261,17 @@ fn clock_moment_said(at : Double) -> Unit {
 /// taken off as they are read.
 pub fn Tester::clock_came(self : Tester, to : Double) -> Bool {
   self.reads_own()
+  // (and the window's tree's: the last of what it said `later` that came due, a moment gone by as it was done)
+  match view_tree() {
+    Some(tr) => {
+      let at = tr.clock_brought()
+      if at > clock_tree_read.val {
+        clock_tree_read.val = at
+        clock_moment_said(at)
+      }
+    }
+    None => ()
+  }
   let mut n = 0
   while n < clock_moments.length() && clock_moments[n] <= to {
     n = n + 1
