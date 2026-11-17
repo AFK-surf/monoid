@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b1dc126d0](https://github.com/AFK-surf/monoid/commit/b1dc126d0b58739fa50b010e6382d1fdc0306d02) app, core: a new chat's words referring to this wo | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [1f2f741b2](https://github.com/AFK-surf/monoid/commit/1f2f741b2a409ad62fe9d26d71bcd1f60e27189d) console: issue relay tokens and take relays off th | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [281668b9d](https://github.com/AFK-surf/monoid/commit/281668b9d95d5b266db2c1b787614e4940023620) station: an official Docker image, the release in  | 2.5 | 3.53 | 15.27 | 36.62 | 60.32 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [fbd27db4d](https://github.com/AFK-surf/monoid/commit/fbd27db4db8f6009ffdee1e138e903ba825e96a1) app: the catching-up key's tip shows again as the  | 2.5 | 3.53 | 15.26 | 36.62 | 60.32 | 32.07 | 67.25 | 95.65 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.72 | 113.41 |
 | [394d2729d](https://github.com/AFK-surf/monoid/commit/394d2729da1b2a5f3a95d5c8b6175fcca37f519f) mbui: retry transient GitHub API failures in chk c | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 96 | 117.26 |
 | [f2d9c3e37](https://github.com/AFK-surf/monoid/commit/f2d9c3e37b6608d5dbda9f9611715e0b558342f9) mbui: Windows streams decode on a device of their  | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 96 | 117.26 |
-| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 2.46 | 3.45 | 14.75 | 35.98 | 57.86 | 31.53 | 65.35 | 95.78 | 118.76 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b1dc126d0](https://github.com/AFK-surf/monoid/commit/b1dc126d0b58739fa50b010e6382d1fdc0306d02) app, core: a new chat's words referring to this wo | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.48 |
 | [1f2f741b2](https://github.com/AFK-surf/monoid/commit/1f2f741b2a409ad62fe9d26d71bcd1f60e27189d) console: issue relay tokens and take relays off th | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.23 |
 | [281668b9d](https://github.com/AFK-surf/monoid/commit/281668b9d95d5b266db2c1b787614e4940023620) station: an official Docker image, the release in  | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.41 |
 | [fbd27db4d](https://github.com/AFK-surf/monoid/commit/fbd27db4db8f6009ffdee1e138e903ba825e96a1) app: the catching-up key's tip shows again as the  | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.41 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [99fe051d0](https://github.com/AFK-surf/monoid/commit/99fe051d0bd4e75e7e45c78154a7546b9dd90e1a) app: the wide frame's room worked out once a chang | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
 | [394d2729d](https://github.com/AFK-surf/monoid/commit/394d2729da1b2a5f3a95d5c8b6175fcca37f519f) mbui: retry transient GitHub API failures in chk c | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.17 |
 | [f2d9c3e37](https://github.com/AFK-surf/monoid/commit/f2d9c3e37b6608d5dbda9f9611715e0b558342f9) mbui: Windows streams decode on a device of their  | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.05 |
-| [51a13af8b](https://github.com/AFK-surf/monoid/commit/51a13af8b627b88753c5953b6d3826dd575e153f) core-ts: keep slowB's ping delay at 0 in side rela | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.13 |
