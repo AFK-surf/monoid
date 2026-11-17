@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 | [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 | [2247d01a6](https://github.com/AFK-surf/monoid/commit/2247d01a695c896ee8ac4ce9f5870b82fa9bee82) mbui app: a check mark's half-ticked bar goes at o | 2.54 | 3.59 | 15.69 | 37.05 | 62.35 | 32.34 | 68.4 | 96.03 | 122.8 |
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 2.54 | 3.59 | 15.69 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 128.71 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 125.31 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 2.51 | 3.54 | 15.21 | 36.6 | 60.53 | 32.07 | 67.25 | 95.83 | 122.38 |
 | [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 2.51 | 3.54 | 15.21 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
-| [cc51d6fc6](https://github.com/AFK-surf/monoid/commit/cc51d6fc6dfdb0d7965eb15d303936f27d1b60d3) mbui: a table's columns sized by the tree's own me | 2.51 | 3.54 | 15.21 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [e4e2a579e](https://github.com/AFK-surf/monoid/commit/e4e2a579eb242a77c9fcc8fd0ecd3069579c6ad7) mbui: a finger's long press asks for View::on_menu | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.77 |
 | [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [2247d01a6](https://github.com/AFK-surf/monoid/commit/2247d01a695c896ee8ac4ce9f5870b82fa9bee82) mbui app: a check mark's half-ticked bar goes at o | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
 | [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
-| [cc51d6fc6](https://github.com/AFK-surf/monoid/commit/cc51d6fc6dfdb0d7965eb15d303936f27d1b60d3) mbui: a table's columns sized by the tree's own me | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 54.84 |
