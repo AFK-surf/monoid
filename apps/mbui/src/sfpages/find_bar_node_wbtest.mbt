@@ -19,7 +19,7 @@ fn find_row(w : Double) -> @ui.Style {
 ///|
 /// The list it goes along: none.
 fn find_list_none() -> FindList {
-  { showing: fn() { (-1.0, -1.0) }, go: fn(_, _) {  }, forget: fn() {  } }
+  { showing: fn() { (-1.0, -1.0) }, go: fn(_, _) {  }, forget: fn() {  }, drawn: fn(_, _) { Map([]) } }
 }
 
 ///|

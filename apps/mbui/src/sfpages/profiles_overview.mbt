@@ -722,6 +722,8 @@ fn ov_pools_card_node(
   open_profile : ((String, String) -> Unit)?,
   pools : () -> Array[ModelPool],
   api_keys : () -> Array[(Json, String)],
+  share : () -> Unit,
+  tips : @sf.TipLayer?,
 ) -> Unit {
   // (the pool shown: the one picked, else the one running down fastest; worked out once for all that shows it, told
   // only as it comes out otherwise, never as another pool changes)
@@ -790,157 +792,7 @@ fn ov_pools_card_node(
       |> ignore
 
       // 2. Reactive Two Synchronized Charts (stacked on narrow panes, 2 columns side-by-side when >= 564px)
-      has_pools.box(fn(body) {
-        body.padding(Is((12.0, 10.0, 12.0, 10.0))) |> ignore
-        let c1_badge = fn() {
-          match active_pool() {
-            Some(active) =>
-              match active.exhaust_hours {
-                Some(eh) if eh <= 0 => active.now_pct.to_string() + (if ov_en() { "% · out now" } else { "% · 已断档" })
-                Some(eh) =>
-                  if ov_en() {
-                    active.now_pct.to_string() + "% · out in " + ov_hours_short(eh)
-                  } else {
-                    active.now_pct.to_string() + "% · " + ov_hours_short(eh) + "后断档"
-                  }
-                None => active.now_pct.to_string() + "%"
-              }
-            None => ""
-          }
-        }
-
-        body.grid(fn() { 2 }, min_col_w=270.0, gap=24.0, row_gap=16.0, max_cols=2, fn(col, idx) {
-          if idx == 0 {
-            // Chart 1: 额度与恢复
-            col.gap(Is(6.0)) |> ignore
-            ug_line_node(col, fn(h1) {
-              @sf.words_node(h1, fn() { if ov_en() { "Quota" } else { "额度与恢复" } }, fn() { ug_named_title })
-              .grow(Is(1.0))
-              .basis(Is(Some(0.0)))
-              .shrink(Is(1.0))
-              .min_width(Is(Some(0.0)))
-              .allow_ellipsis(Is(true))
-              |> ignore
-              @sf.words_node(h1, c1_badge, fn() {
-                let t = @sf.theme()
-                let is_bad = match active_pool() {
-                  Some(ap) => ap.exhaust_hours is Some(_)
-                  None => false
-                }
-                ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
-              })
-              .shrink(Is(0.0))
-              |> ignore
-            })
-
-            col.box(fn(plot1) {
-              plot1.row(Is(true)).gap(Is(6.0)) |> ignore
-              plot1.box(fn(ys) {
-                ys.min_width(Is(Some(ov_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
-                @sf.words_node(ys, fn() { "100%" }, fn() { ug_scale_label }) |> ignore
-                @sf.words_node(ys, fn() { "50%" }, fn() { ug_scale_label }) |> ignore
-                @sf.words_node(ys, fn() { "0%" }, fn() { ug_scale_label }) |> ignore
-              })
-              |> ignore
-              plot1.box(fn(cv1) {
-                cv1.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-                cv1.by_room(fn(canvas, room) {
-                  canvas
-                  .height(Is(Some(ov_chart_h)))
-                  .shapes(By(fn() {
-                    match active_pool() {
-                      Some(ap) => ov_trajectory_shapes(ap, room.width(), ov_chart_h)
-                      None => []
-                    }
-                  }))
-                  |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-            })
-            |> ignore
-            ov_time_axis_node(col, ov_axis_w, ov_quota_hours, 1)
-          } else {
-            // Chart 2: 消耗速度
-            col.gap(Is(6.0)) |> ignore
-            ug_line_node(col, fn(h2) {
-              @sf.words_node(h2, fn() { if ov_en() { "Net Pace" } else { "消耗速度" } }, fn() { ug_named_title })
-              .grow(Is(1.0))
-              .basis(Is(Some(0.0)))
-              .shrink(Is(1.0))
-              .min_width(Is(Some(0.0)))
-              .allow_ellipsis(Is(true))
-              |> ignore
-              @sf.words_node(
-                h2,
-                fn() {
-                  match active_pool() {
-                    Some(ap) => ov_rate(ap.net_now, signed=true)
-                    None => ""
-                  }
-                },
-                fn() {
-                  let t = @sf.theme()
-                  let is_bad = match active_pool() {
-                    Some(ap) => ap.net_now < 0.0
-                    None => false
-                  }
-                  ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
-                },
-              )
-              .shrink(Is(0.0))
-              |> ignore
-            })
-
-            col.box(fn(plot2) {
-              plot2.row(Is(true)).gap(Is(6.0)) |> ignore
-              let top = fn() {
-                match active_pool() {
-                  Some(ap) => ov_net_top(ap)
-                  None => 1.0
-                }
-              }
-              plot2.box(fn(ys) {
-                ys.min_width(Is(Some(ov_burn_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
-                @sf.words_node(ys, fn() { ov_rate(top(), signed=true) }, fn() { ug_scale_label }) |> ignore
-                @sf.words_node(ys, fn() { "0" }, fn() { ug_scale_label }) |> ignore
-                @sf.words_node(ys, fn() { ov_rate(-top()) }, fn() { ug_scale_label }) |> ignore
-              })
-              |> ignore
-              plot2.box(fn(cv2) {
-                cv2.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-                cv2.by_room(fn(canvas, room) {
-                  canvas
-                  .height(Is(Some(ov_chart_h)))
-                  .shapes(By(fn() {
-                    match active_pool() {
-                      Some(ap) => ov_net_shapes(ap, ov_net_top(ap), room.width(), ov_chart_h)
-                      None => []
-                    }
-                  }))
-                  |> ignore
-                })
-                |> ignore
-              })
-              |> ignore
-            })
-            |> ignore
-            ov_time_axis_node(col, ov_burn_axis_w, ov_burn_hours, 2)
-          }
-        })
-        |> ignore
-        // (how many more accounts would keep it going, under both charts: only where it does not keep up as it is; at once
-        // as another pool is picked, as the charts over it are)
-        body.show(fn() { active_pool().map(fn(p) { p.needed_accounts > 0 }).unwrap_or(false) }, at_once=true, fn(hint) {
-          hint.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
-          @sf.words_node(hint, fn() { ov_needed_words(active_pool().map(fn(p) { p.needed_accounts }).unwrap_or(0)) }, fn() {
-            @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.red))
-          })
-          |> ignore
-        })
-      })
-      |> ignore
+      ov_charts_node(has_pools, active_pool, Some(share), tips)
     })
 
     // 3. Deduplicated Pay-as-you-go API Balance Rows
@@ -987,6 +839,181 @@ fn ov_pools_card_node(
 }
 
 ///|
+/// A pool's two charts (额度与恢复, 消耗速度: stacked on narrow panes, side by side from 564 wide), `active_pool` the pool
+/// they draw as it is now, what it would take more under them; `share` at the first's head (the page's, the pool
+/// shown; none in the picture shared of them all, share_quota.mbt).
+fn ov_charts_node(
+  parent : @view.View,
+  active_pool : () -> ModelPool?,
+  share : (() -> Unit)?,
+  tips : @sf.TipLayer?,
+) -> Unit {
+  parent.box(fn(body) {
+    body.padding(Is((12.0, 10.0, 12.0, 10.0))) |> ignore
+    let c1_badge = fn() {
+      match active_pool() {
+        Some(active) =>
+          match active.exhaust_hours {
+            Some(eh) if eh <= 0 => active.now_pct.to_string() + (if ov_en() { "% · out now" } else { "% · 已断档" })
+            Some(eh) =>
+              if ov_en() {
+                active.now_pct.to_string() + "% · out in " + ov_hours_short(eh)
+              } else {
+                active.now_pct.to_string() + "% · " + ov_hours_short(eh) + "后断档"
+              }
+            None => active.now_pct.to_string() + "%"
+          }
+        None => ""
+      }
+    }
+
+    body.grid(fn() { 2 }, min_col_w=270.0, gap=24.0, row_gap=16.0, max_cols=2, fn(col, idx) {
+      if idx == 0 {
+        // Chart 1: 额度与恢复
+        col.gap(Is(6.0)) |> ignore
+        ug_line_node(col, fn(h1) {
+          @sf.words_node(h1, fn() { if ov_en() { "Quota" } else { "额度与恢复" } }, fn() { ug_named_title })
+          .grow(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .allow_ellipsis(Is(true))
+          |> ignore
+          @sf.words_node(h1, c1_badge, fn() {
+            let t = @sf.theme()
+            let is_bad = match active_pool() {
+              Some(ap) => ap.exhaust_hours is Some(_)
+              None => false
+            }
+            ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
+          })
+          .shrink(Is(0.0))
+          |> ignore
+          // (its charts as a picture to share, where it is shown on the page: share_quota.mbt; the line as tall as its
+          // button, the pace chart's beside it too, so the two charts stand level)
+          match share {
+            Some(go) => {
+              h1.min_height(Is(Some(@sf.icon_button_side))) |> ignore
+              @sf.icon_button_node(h1, "share", fn() { @sf.t("web-main.share.pool") }, go, tips?).shrink(Is(0.0)) |> ignore
+            }
+            None => ()
+          }
+        })
+
+        col.box(fn(plot1) {
+          plot1.row(Is(true)).gap(Is(6.0)) |> ignore
+          plot1.box(fn(ys) {
+            ys.min_width(Is(Some(ov_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
+            @sf.words_node(ys, fn() { "100%" }, fn() { ug_scale_label }) |> ignore
+            @sf.words_node(ys, fn() { "50%" }, fn() { ug_scale_label }) |> ignore
+            @sf.words_node(ys, fn() { "0%" }, fn() { ug_scale_label }) |> ignore
+          })
+          |> ignore
+          plot1.box(fn(cv1) {
+            cv1.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+            cv1.by_room(fn(canvas, room) {
+              canvas
+              .height(Is(Some(ov_chart_h)))
+              .shapes(By(fn() {
+                match active_pool() {
+                  Some(ap) => ov_trajectory_shapes(ap, room.width(), ov_chart_h)
+                  None => []
+                }
+              }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        ov_time_axis_node(col, ov_axis_w, ov_quota_hours, 1)
+      } else {
+        // Chart 2: 消耗速度
+        col.gap(Is(6.0)) |> ignore
+        ug_line_node(col, fn(h2) {
+          if share is Some(_) {
+            h2.min_height(Is(Some(@sf.icon_button_side))) |> ignore
+          }
+          @sf.words_node(h2, fn() { if ov_en() { "Net Pace" } else { "消耗速度" } }, fn() { ug_named_title })
+          .grow(Is(1.0))
+          .basis(Is(Some(0.0)))
+          .shrink(Is(1.0))
+          .min_width(Is(Some(0.0)))
+          .allow_ellipsis(Is(true))
+          |> ignore
+          @sf.words_node(
+            h2,
+            fn() {
+              match active_pool() {
+                Some(ap) => ov_rate(ap.net_now, signed=true)
+                None => ""
+              }
+            },
+            fn() {
+              let t = @sf.theme()
+              let is_bad = match active_pool() {
+                Some(ap) => ap.net_now < 0.0
+                None => false
+              }
+              ug_peak.then(@ui.text_style(color=Data(if is_bad { t.p.red } else { t.p.green_ink })))
+            },
+          )
+          .shrink(Is(0.0))
+          |> ignore
+        })
+
+        col.box(fn(plot2) {
+          plot2.row(Is(true)).gap(Is(6.0)) |> ignore
+          let top = fn() {
+            match active_pool() {
+              Some(ap) => ov_net_top(ap)
+              None => 1.0
+            }
+          }
+          plot2.box(fn(ys) {
+            ys.min_width(Is(Some(ov_burn_axis_w))).min_height(Is(Some(ov_chart_h))).lies_along(Is(Between)).shrink(Is(0.0)) |> ignore
+            @sf.words_node(ys, fn() { ov_rate(top(), signed=true) }, fn() { ug_scale_label }) |> ignore
+            @sf.words_node(ys, fn() { "0" }, fn() { ug_scale_label }) |> ignore
+            @sf.words_node(ys, fn() { ov_rate(-top()) }, fn() { ug_scale_label }) |> ignore
+          })
+          |> ignore
+          plot2.box(fn(cv2) {
+            cv2.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+            cv2.by_room(fn(canvas, room) {
+              canvas
+              .height(Is(Some(ov_chart_h)))
+              .shapes(By(fn() {
+                match active_pool() {
+                  Some(ap) => ov_net_shapes(ap, ov_net_top(ap), room.width(), ov_chart_h)
+                  None => []
+                }
+              }))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+        ov_time_axis_node(col, ov_burn_axis_w, ov_burn_hours, 2)
+      }
+    })
+    |> ignore
+    // (how many more accounts would keep it going, under both charts: only where it does not keep up as it is; at once
+    // as another pool is picked, as the charts over it are)
+    body.show(fn() { active_pool().map(fn(p) { p.needed_accounts > 0 }).unwrap_or(false) }, at_once=true, fn(hint) {
+      hint.padding(Is((0.0, 8.0, 0.0, 0.0))) |> ignore
+      @sf.words_node(hint, fn() { ov_needed_words(active_pool().map(fn(p) { p.needed_accounts }).unwrap_or(0)) }, fn() {
+        @ui.text_style(size=Meta, leading=L5, wrap=true, w=Full, color=Data(@sf.theme().p.red))
+      })
+      |> ignore
+    })
+  })
+  |> ignore
+}
+
+///|
 pub fn profiles_overview_node(
   v : @view.View,
   core : Core,
@@ -996,6 +1023,7 @@ pub fn profiles_overview_node(
   open_profile? : (String, String) -> Unit,
   on_show_accounts? : () -> Unit,
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
+  bar_add? : Bool = true,
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
@@ -1057,11 +1085,22 @@ pub fn profiles_overview_node(
     }
   }
   let label = fn() { @sf.t("android-misc.bar.action.profiles") }
+  // (the subscriptions' allowances shared as a picture: share_quota.mbt)
   let add_actions = fn(l : @view.View) {
+    accounts_share_node(l, core, here, fn() { !frame().named }, tips)
     l.show(fn() { add() && !frame().named }, fn(a) { @sf.page_add_node(a, label, adding) })
   }
   match bar_actions {
-    Some(f) => f(fn(l) { l.show(add, fn(a) { @sf.page_add_node(a, label, adding) }) }, fn(_) { @sf.button_height() })
+    Some(f) =>
+      f(
+        fn(l) {
+          accounts_share_node(l, core, here, fn() { true }, tips, bar=true)
+          if bar_add {
+            l.show(add, fn(a) { @sf.page_add_node(a, label, adding) })
+          }
+        },
+        fn(_) { @sf.button_height() },
+      )
     None => ()
   }
   @sf.page_node(
@@ -1092,7 +1131,7 @@ pub fn profiles_overview_node(
       } else if key == "pools" {
         b.box(fn(sec) {
           sec.padding(Is((0.0, 0.0, 0.0, if has_accounts_tab { 10.0 } else { 24.0 }))) |> ignore
-          ov_pools_card_node(sec, core, open_profile, pools, balance_keys)
+          ov_pools_card_node(sec, core, open_profile, pools, balance_keys, fn() { pool_share_open(core, fn() { here().workspace }) }, tips)
         })
         |> ignore
       } else if key == "alerts" {

@@ -14,6 +14,7 @@ fn chat_bar_node_tester(
   w? : Double = 390.0,
   h? : Double = 844.0,
   msg_count? : Int = 0,
+  at? : Double,
 ) -> (@ui.Tester, @signals.Signal[String]) {
   new_run()
   @sfbase.chat_page_nodes.set(true)
@@ -65,10 +66,18 @@ fn chat_bar_node_tester(
             m["seq"] = Json::number(base_seq + idx.to_double())
             m["ts"] = Json::string("ts\{idx + 1}")
             m["id"] = Json::string("m-\{idx + 1}")
+            // (where the core says it was left: each its own words, to be found by)
+            if at is Some(_) {
+              m["text"] = Json::string("第\{idx + 1}条：这一条讲清单里的一项，写得长一些，占两三行。")
+            }
             built.push(Json::object(m))
           }
           changed["messages"] = Json::array(built)
         }
+      }
+      match at {
+        Some(a) => changed["at"] = Json::number(a)
+        None => ()
       }
       { ..got, value: Some(Json::object(changed)) }
     },
@@ -258,4 +267,20 @@ test "小屏顶栏：对话有服务和后台任务时，打开它们的圆键�
   let (t, _) = chat_bar_node_tester("短标题", has_jobs=true)
   let keys = t.all(Button, label="服务和后台任务")
   assert_eq(keys.length(), 1, msg="the jobs key, by its name")
+}
+
+///|
+test "小屏顶栏：放不下而直接展开到第 2 行的对话，打开在上次离开的消息：那条消息整条在展开后的顶栏下，不被第 2 行盖住" {
+  let tight_title = "极窄标题测试：当第 1 行连三个汉字加省略号都放不下时自动展开"
+  let (t, _) = chat_bar_node_tester(tight_title, has_jobs=true, w=290.0, msg_count=14, at=14.0)
+  let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title: tight_title, station_name: "Willow" }
+  t.run_for(@ui.move_most_ms)
+  let extra = bar_extra_target(bar_ref)
+  assert_true(extra > 30.0, msg="must auto-expand on mount")
+  let foot = bar_foot() + extra
+  let at = t.words().filter(fn(w) { w.0.has_prefix("第4条：") && w.5 > 0.5 }).map(fn(w) { w.2 })
+  assert_true(at.length() > 0, msg="the message left at not drawn: \{Repr(t.words().map(fn(w) { (w.0, w.2) }))}")
+  assert_true(at[0] >= foot, msg="its first line at \{at[0]}, the bar's foot at \{foot}")
+  // (and just under it, as where it was left puts it: not further down by the second row twice)
+  assert_true(at[0] < foot + 60.0, msg="its first line at \{at[0]}, the bar's foot at \{foot}")
 }

@@ -818,3 +818,139 @@ test "function types the same are one type, a new one beside them renaming none"
   assert_eq(occurs(one["decls.h"], "(* code)"), 1) // (defined once)
   assert_eq(occurs(two["decls.h"], "(* code)"), 1)
 }
+
+///|
+/// blank as it was written in MoonBit, a byte at a time: io.c's mbc_blank is held to it
+fn blank_ref(t : BytesView) -> Bytes {
+  let n = t.length()
+  let out : FixedArray[Byte] = FixedArray::make(n, b'\x00')
+  let mut last = 0
+  let mut p = 0
+  while p < n {
+    let me = if may_blank(t, p) { blank_end(t, p) } else { -1 }
+    if me < 0 {
+      p += 1
+      continue
+    }
+    let c = t[p]
+    out.blit_from_bytesview(last, t[last:p])
+    if c == b'"' || c == b'\'' {
+      // (a literal: its quotes kept)
+      out[p] = c
+      write_spaces(out, t, p + 1, me - 1)
+      out[me - 1] = t[me - 1]
+    } else {
+      write_spaces(out, t, p, me)
+    }
+    last = me
+    p = me
+  }
+  out.blit_from_bytesview(last, t[last:n])
+  made_text(out)
+}
+
+///|
+/// (blank_ref's)
+fn write_spaces(out : FixedArray[Byte], t : BytesView, i : Int, j : Int) -> Unit {
+  for k in i..<j {
+    out[k] = if t[k] == b'\n' { b'\n' } else { b' ' }
+  }
+}
+
+///|
+test "blank in C is blank_ref" {
+  let texts = [
+    prelude_src, items_src, "a /* b */ c // d\n  # e\nf", "x = \"a\\\"b\" + 'c' + \"un\nend\";", "/* open",
+    "'\\", "#\n#x\n  #y", "s = \"\\\n\"", "/*/ x */ y", "\"\"''//", "", "a",
+  ]
+  for t in texts {
+    let b = utf8(t)
+    assert_eq(blank(b), blank_ref(b))
+    // (a view not at its text's start: what a line or an item is)
+    for k in 0..<imin(b.length(), 12) {
+      assert_eq(blank(b[k:]), blank_ref(b[k:]))
+      assert_eq(blank(b[0:b.length() - k]), blank_ref(b[0:b.length() - k]))
+    }
+  }
+}
+
+///|
+/// line_starts as it was written in MoonBit: io.c's mbc_line_starts is held to it
+fn line_starts_ref(t : Bytes) -> Array[Int] {
+  let n = t.length()
+  let out = [0]
+  let mut i = 0
+  while i < n {
+    let c = t[i]
+    let e = if c == b'\n' ||
+      c == b'\x0b' ||
+      c == b'\x0c' ||
+      c == b'\x1c' ||
+      c == b'\x1d' ||
+      c == b'\x1e' {
+      i + 1
+    } else if c == b'\r' {
+      if i + 1 < n && t[i + 1] == b'\n' {
+        i + 2
+      } else {
+        i + 1
+      }
+    } else if c == b'\xc2' && i + 1 < n && t[i + 1] == b'\x85' {
+      i + 2
+    } else if c == b'\xe2' &&
+      i + 2 < n &&
+      t[i + 1] == b'\x80' &&
+      (t[i + 2] == b'\xa8' || t[i + 2] == b'\xa9') {
+      i + 3
+    } else {
+      -1
+    }
+    if e >= 0 {
+      out.push(e)
+      i = e
+    } else {
+      i += 1
+    }
+  }
+  if out[out.length() - 1] != n {
+    out.push(n)
+  }
+  out
+}
+
+///|
+test "line_starts in C is line_starts_ref" {
+  let texts : Array[Bytes] = [
+    utf8(prelude_src),
+    utf8(items_src),
+    b"",
+    b"a",
+    b"\n",
+    b"a\r\nb\rc\x0bd\x0ce\x1cf\x1dg\x1eh",
+    b"x\xc2\x85y\xe2\x80\xa8z\xe2\x80\xa9",
+    b"end\r",
+    b"\xe2\x80",
+    b"\xc2",
+    b"no break at its end",
+  ]
+  for b in texts {
+    assert_eq(line_starts(b), line_starts_ref(b))
+  }
+}
+
+///|
+test "clen in C is the characters" {
+  for t in ["", "abc", "\u{e9}t\u{e9}", "\u{1F600}x", "\u{4E2D}\u{6587}"] {
+    let b = utf8(t)
+    assert_eq(clen(b), t.length() - (t.iter().filter(fn(c) { c.to_int() > 0xFFFF }).count()))
+    for k in 0..<b.length() {
+      let mut n = 0
+      for i in k..<b.length() {
+        if (b[i].to_int() & 0xC0) != 0x80 {
+          n += 1
+        }
+      }
+      assert_eq(clen(b[k:]), n)
+    }
+  }
+}

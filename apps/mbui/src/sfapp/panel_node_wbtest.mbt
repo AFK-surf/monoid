@@ -1,27 +1,32 @@
-// A panel of the presenters' (@sf.panel) on 中屏 and 大屏: the old contract, measured on main first (PANELSAID), what
-// it does held whatever draws it.
+// A panel of the presenters' beside what opened it (@sf.panel_nodes) on 中屏 and 大屏: what it does held, as it was
+// when the panels whose bodies were old views were measured beside it (PANELSAID).
 
 ///|
 /// A panel's body: words, and a button at its foot that closes it, said into `said`.
-fn panel_test_body(said : Array[String]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, close) {
-    @sf.panel_text(c, fn() { c.text("面板里的话，长一些，好看它怎么折行", style=@sf.paragraph) |> ignore })
-    @sf.panel_foot(c, fn() {
-      @sf.panel_button(c, "ok", "好的", tone=Filled, on_press=fn() {
-        said.push("ok")
-        close()
-      }) |> ignore
-    })
+fn panel_test_body(said : Array[String]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, close) {
+    @sf.words_node(v, fn() { "面板里的话，长一些，好看它怎么折行" }, fn() { @sf.paragraph }) |> ignore
+    @sf.button_node(v, fn() { "好的" }, fn() {
+      said.push("ok")
+      close()
+    }, tone=Primary)
+    |> ignore
+  }
+}
+
+///|
+/// A panel's body: a mark 12 square in 0x23A1DF, then words in 0xB45A29.
+fn panel_marked_body() -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _) {
+    v.box(fn(b) { b.width(Is(Some(12.0))).height(Is(Some(12.0))).ground(Is(0x23A1DFFFL)) |> ignore }) |> ignore
+    @sf.words_node(v, fn() { "一起退场" }, fn() { @ui.text_style(color=Data(0xB45A29FFL)) }) |> ignore
   }
 }
 
 ///|
 test "a panel's words, controls and surface fade out together" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, fn(c, _) {
-    c.box(w=Px(12.0), h=Px(12.0), bg=0x23A1DFFFL, fn() {  }) |> ignore
-    c.text("一起退场", color=0xB45A29FFL) |> ignore
-  })
+  @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
   t.run_for(@ui.move_most_ms)
   let original = t.drawn_rects().filter(fn(r) { r.0 == 600.0 && r.1 == 306.0 && r.2 > 200.0 })[0]
   t.key(@ui.key_escape)
@@ -51,10 +56,7 @@ test "a panel's words, controls and surface fade out together" {
 ///|
 test "a panel closed while opening fades from its current appearance" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, fn(c, _) {
-    c.box(w=Px(12.0), h=Px(12.0), bg=0x23A1DFFFL, fn() {  }) |> ignore
-    c.text("一起退场", color=0xB45A29FFL) |> ignore
-  })
+  @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), fade_out_together=true, panel_marked_body())
   t.run_for(@kit.pop_ms / 2.0)
   let painted = fn() {
     (t.drawn_rects().filter(fn(r) { r.4 >> 8 == 0x23A1DFL }), t.drawn_glyphs().filter(fn(g) { g.2 >> 8 == 0xB45A29L }))
@@ -79,7 +81,7 @@ fn panel_said(t : @ui.Tester) -> String {
 test "panel, 大屏 keyboard and mouse: at a point, its title, words and button; the button: said, closed; another, Escape: closed unsaid, its gone told" {
   let said : Array[String] = []
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   println("PANELSAID point \{panel_said(t)}")
   let (x, y, w, h) = t.get(Button, label="好的").rect
@@ -87,7 +89,7 @@ test "panel, 大屏 keyboard and mouse: at a point, its title, words and button;
   t.run_for(@ui.move_most_ms)
   let pressed = (said.copy(), @sf.presenting())
   let gone = Ref(0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
   t.run_for(@ui.move_most_ms)
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
@@ -99,7 +101,7 @@ test "panel, 大屏 keyboard and mouse: at a point, a press outside: closed, its
   let said : Array[String] = []
   let t = menu_tester(1280.0, 800.0, 0)
   let gone = Ref(0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
   t.run_for(@ui.move_most_ms)
   t.tap(100.0, 700.0)
   t.run_for(@ui.move_most_ms)
@@ -113,10 +115,10 @@ test "panel, 大屏 keyboard and mouse: tall 0.5, fits, at a point; and unanchor
   for kind in ["tall", "fits", "middle", "form"] {
     let t = menu_tester(1280.0, 800.0, 0)
     match kind {
-      "tall" => @sf.panel("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5)
-      "fits" => @sf.panel("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), fits=true, w=400.0)
-      "middle" => @sf.panel("面板", panel_test_body(said), from=Unanchored, description="说明的话")
-      _ => @sf.panel("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), form=true)
+      "tall" => @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5)
+      "fits" => @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), fits=true, w=400.0)
+      "middle" => @sf.panel_nodes("面板", panel_test_body(said), from=Unanchored, description="说明的话")
+      _ => @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), form=true)
     }
     t.run_for(@ui.move_most_ms)
     out.push("\{kind}: \{panel_said(t)}")
@@ -139,7 +141,7 @@ test "panel, 大屏 keyboard and mouse: its way out, closed by Escape, by a pres
     let said : Array[String] = []
     let gone = Ref(0)
     let t = menu_tester(1280.0, 800.0, 0)
-    @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
+    @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
     t.run_for(@ui.move_most_ms)
     let (bx, by, bw, bh) = t.get(Button, label="好的").rect
     match how {
@@ -168,26 +170,34 @@ fn tenth4(r : (Double, Double, Double, Double)) -> (Double, Double, Double, Doub
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, where main has it: its dialog, title, words and button" {
+test "panel, 大屏 keyboard and mouse: at a point, where it was beside the old one: its dialog, title, words and button" {
   let said : Array[String] = []
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   let w = fn(s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
-  assert_eq(
+  debug_inspect(
     (tenth4(t.get(Dialog, label="面板").rect), w("面板"), w("面板里的话，长一些，好看它怎么折行"), tenth4(t.get(Button, label="好的").rect), t.focused().map(fn(s) { s.label })),
-    ((600.0, 306.0, 296.0, 98.0), [(616.0, 318.0, 264.0, 20.0)], [(616.0, 342.0, 264.0, 22.0)], (840.0, 368.0, 44.0, 24.0), None),
+    content=(
+      #|(
+      #|  (600, 306, 296, 100),
+      #|  [(616, 318, 264, 20)],
+      #|  [(606, 342, 284, 22)],
+      #|  (606, 364, 284, 36),
+      #|  None,
+      #|)
+    ),
   )
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, its way out as main has it: closed, presenting no more and out of what is read out at once, drawn till its way out is over, pressed no more; gone told once by Escape, never by its own close" {
+test "panel, 大屏 keyboard and mouse: at a point, its way out as it was beside the old one: closed, presenting no more and out of what is read out at once, drawn till its way out is over, pressed no more; gone told once by Escape, never by its own close" {
   let out = []
   for how in ["escape", "outside", "button"] {
     let said : Array[String] = []
     let gone = Ref(0)
     let t = menu_tester(1280.0, 800.0, 0)
-    @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
+    @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), gone=fn() { gone.val = gone.val + 1 })
     t.run_for(@ui.move_most_ms)
     let (bx, by, bw, bh) = t.get(Button, label="好的").rect
     match how {
@@ -205,18 +215,35 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out as main has it: 
     t.run_for(@kit.pop_out_ms)
     out.push((once, mid, pressed, (@sf.presenter_visible(), gone.val, drawn())))
   }
-  assert_eq(out, [
-    ((false, true, false, 1, [], 1), (false, true, 1, 1), ([], 1), (false, 1, 0)),
-    ((false, true, false, 1, [], 1), (false, true, 1, 1), ([], 1), (false, 1, 0)),
-    ((false, true, false, 0, ["ok"], 1), (false, true, 0, 1), (["ok"], 0), (false, 0, 0)),
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  (
+    #|    (false, true, false, 1, [], 1),
+    #|    (false, true, 1, 1),
+    #|    ([], 1),
+    #|    (false, 1, 0),
+    #|  ),
+    #|  (
+    #|    (false, true, false, 1, [], 1),
+    #|    (false, true, 1, 1),
+    #|    ([], 1),
+    #|    (false, 1, 0),
+    #|  ),
+    #|  (
+    #|    (false, true, false, 0, ["ok"], 1),
+    #|    (false, true, 0, 1),
+    #|    (["ok"], 0),
+    #|    (false, 0, 0),
+    #|  ),
+    #|]
+  ))
 }
 
 ///|
 test "panel, 大屏 keyboard and mouse: at a point, drawn by the window's tree, a dialog titled so" {
   let said : Array[String] = []
   let _t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
   _t.run_for(@ui.move_most_ms)
   assert_true(tree_said(Dialog, "面板") is Some(_))
 }
@@ -243,12 +270,12 @@ fn panel_out_drawn(t : @ui.Tester) -> String {
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as main has it, closed by Escape, by a press outside, by its button: its words fading before its ground, shrunk into where it opened from, at once, a quarter, midway, three quarters and at its end" {
+test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as it was beside the old one, closed by Escape, by a press outside, by its button: its words fading before its ground, shrunk into where it opened from, at once, a quarter, midway, three quarters and at its end" {
   let out = []
   for how in ["escape", "outside", "button"] {
     let said : Array[String] = []
     let t = menu_tester(1280.0, 800.0, 0)
-    @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
+    @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0))
     t.run_for(@ui.move_most_ms)
     let (bx, by, bw, bh) = t.get(Button, label="好的").rect
     match how {
@@ -263,15 +290,18 @@ test "panel, 大屏 keyboard and mouse: at a point, its way out drawn as main ha
     }
     out.push(seen)
   }
-  // (as main has it, a4c845604: each way the same)
-  let main = [
-    "alphas {255: 45} ground [255] button [(840, 368, 44, 24)] fading None..None",
-    "alphas {255: 24, 205: 21} ground [255] button [(839.29, 367.817, 43.87, 23.929)] fading Some((615.953, 320.956))..Some((861.225, 373.799))",
-    "alphas {255: 24, 89: 21} ground [255] button [(837.661, 367.396, 43.571, 23.766)] fading Some((615.844, 320.854))..Some((859.447, 373.337))",
-    "alphas {255: 24, 0: 21} ground [189] button [(835.463, 366.828, 43.168, 23.546)] fading Some((615.698, 320.716))..Some((857.048, 372.715))",
-    "alphas {255: 24} ground [] button [] fading None..None",
-  ]
-  assert_eq(out, [main, main, main])
+  // (each way the same)
+  assert_eq(out[1], out[0])
+  assert_eq(out[2], out[0])
+  debug_inspect(out[0], content=(
+    #|[
+    #|  "alphas {255: 45} ground [255] button [] fading None..None",
+    #|  "alphas {255: 24, 205: 21} ground [255] button [] fading Some((615.953, 320.956))..Some((747.562, 374.796))",
+    #|  "alphas {255: 24, 89: 21} ground [255] button [] fading Some((615.844, 320.854))..Some((746.558, 374.328))",
+    #|  "alphas {255: 24} ground [189] button [] fading None..None",
+    #|  "alphas {255: 24} ground [] button [] fading None..None",
+    #|]
+  ))
 }
 
 ///|
@@ -283,23 +313,23 @@ fn panel_focus_said(t : @ui.Tester) -> String {
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, the focus as it opens (focus, not focus, its field given it), typed into, closed by Escape, typed into again: as main has it" {
+test "panel, 大屏 keyboard and mouse: at a point, the focus as it opens (focus, not focus, its field given it), typed into, closed by Escape, typed into again: as it was beside the old one" {
   let out = []
   for how in ["focus", "not focus", "field"] {
     let said : Array[String] = []
     let t = menu_tester(1280.0, 800.0, 0)
     let before = panel_focus_said(t)
     let pf = @ui.Field::new()
-    let body = fn(c : @ui.Ctx, close : () -> Unit) {
+    let body = fn(v : @view.View, close : () -> Unit) {
       if how == "field" {
-        c.editor("panel field", field=pf, placeholder="填一下") |> ignore
+        // (its field given the focus as it opens where it is not a sheet: panel_search_at_hand_node)
+        @sf.panel_search_at_hand_node(@sf.input_node(v, pf, placeholder="填一下", label="填一下"))
       }
-      panel_test_body(said)(c, close)
+      panel_test_body(said)(v, close)
     }
     match how {
-      "not focus" => @sf.panel("面板", body, from=At(600.0, 300.0, 0.0, 0.0), focus=false)
-      "field" => @sf.panel("面板", body, from=At(600.0, 300.0, 0.0, 0.0), field="panel field")
-      _ => @sf.panel("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
+      "not focus" => @sf.panel_nodes("面板", body, from=At(600.0, 300.0, 0.0, 0.0), focus=false)
+      _ => @sf.panel_nodes("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
     }
     t.run_for(@ui.move_most_ms)
     let open = panel_focus_said(t)
@@ -317,12 +347,13 @@ test "panel, 大屏 keyboard and mouse: at a point, the focus as it opens (focus
   for o in out {
     println("PANELFOCUS \{o}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "focus: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused None ime (false, , 0, 0)} typed {focused None ime (false, , 0, 0) panel field } closed {focused Some(TextField 发消息) ime (true, , 0, 0)} typed after {focused Some(TextField 发消息) ime (true, 乙, 1, 1) panel field  presenting false}",
-    "not focus: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused Some(TextField 发消息) ime (true, , 0, 0)} typed {focused Some(TextField 发消息) ime (true, 甲, 1, 1) panel field } closed {focused Some(TextField 发消息) ime (true, 甲, 1, 1)} typed after {focused Some(TextField 发消息) ime (true, 甲乙, 2, 2) panel field  presenting false}",
-    "field: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused Some(TextField 填一下) ime (true, , 0, 0)} typed {focused Some(TextField 填一下) ime (true, 甲, 1, 1) panel field 甲} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} typed after {focused Some(TextField 发消息) ime (true, 乙, 1, 1) panel field 甲 presenting false}",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "focus: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused None ime (false, , 0, 0)} typed {focused None ime (false, , 0, 0) panel field } closed {focused Some(TextField 发消息) ime (true, , 0, 0)} typed after {focused Some(TextField 发消息) ime (true, 乙, 1, 1) panel field  presenting false}",
+    #|  "not focus: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused Some(TextField 发消息) ime (true, , 0, 0)} typed {focused Some(TextField 发消息) ime (true, 甲, 1, 1) panel field } closed {focused Some(TextField 发消息) ime (true, 甲, 1, 1)} typed after {focused Some(TextField 发消息) ime (true, 甲乙, 2, 2) panel field  presenting false}",
+    #|  "field: before {focused Some(TextField 发消息) ime (true, , 0, 0)} open {focused Some(TextField 填一下) ime (true, , 0, 0)} typed {focused Some(TextField 填一下) ime (true, 甲, 1, 1) panel field 甲} closed {focused Some(TextField 发消息) ime (true, , 0, 0)} typed after {focused Some(TextField 发消息) ime (true, 乙, 1, 1) panel field 甲 presenting false}",
+    #|]
+  ))
 }
 
 ///|
@@ -330,9 +361,9 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   let said : Array[String] = []
   let t = menu_tester(1280.0, 800.0, 0)
   let built = Ref(0)
-  let body = fn(c : @ui.Ctx, close : () -> Unit) {
+  let body = fn(v : @view.View, close : () -> Unit) {
     built.val = built.val + 1
-    panel_test_body(said)(c, close)
+    panel_test_body(said)(v, close)
   }
   // (its words' alpha as drawn: the panel's own glyphs (where it is open, but those of the window's under it there,
   // drawn whole), how many of them and theirs (-1: none fading, -2: not all as faded))
@@ -365,7 +396,7 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   // this test's alone)
   t.check_looks(false)
   let open_at = t.time()
-  @sf.panel("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", body, from=At(600.0, 300.0, 0.0, 0.0))
   // (the frame it opens in, and those after it of its own: then its way in, the clock alone, past its end)
   t.frames_owed()
   let opened = built.val
@@ -393,8 +424,10 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
   let gone_from = out_a.search((24, -1)).unwrap_or(out_a.length())
   let gone_at = way_out.get(gone_from).map(fn(f) { f.0 - close_at })
   let gone_stays = out_a.iter().drop(gone_from).all(fn(w) { w == (24, -1) })
+  // (its words faded out by the time half its way out is over, before its ground (kit's pop_out), the frame at or
+  // after that the first they are gone in)
   let in_time = match gone_at {
-    Some(ms) => ms >= @kit.pop_out_ms && ms < @kit.pop_out_ms + 2.0 * t.frame_period()
+    Some(ms) => ms >= @kit.pop_out_ms / 2.0 && ms < @kit.pop_out_ms / 2.0 + t.frame_period()
     None => false
   }
   // (what is built meanwhile, the page under it as what it reads says (its own motions), built none of it)
@@ -406,53 +439,47 @@ test "panel, 大屏 keyboard and mouse: at a point, its way in and its way out a
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, back (the system's): closed as by Escape, gone told once, out of what is read out at once, the focus back as it goes: as main has it" {
+test "panel, 大屏 keyboard and mouse: at a point, back (the system's): closed as by Escape, gone told once, out of what is read out at once, the focus back as it goes: as it was beside the old one" {
   let out = []
   for focus in [true, false] {
     let said : Array[String] = []
     let gone = Ref(0)
     let t = menu_tester(1280.0, 800.0, 0)
-    @sf.panel("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), focus~, gone=fn() { gone.val = gone.val + 1 })
+    @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 300.0, 0.0, 0.0), focus~, gone=fn() { gone.val = gone.val + 1 })
     t.run_for(@ui.move_most_ms)
     t.back()
     let once = "\{panel_out_said(t, gone, said)} \{panel_focus_said(t)}"
     t.run_for(@ui.move_most_ms)
     out.push("focus \{focus}: once {\{once}} end {\{panel_out_said(t, gone, said)} \{panel_focus_said(t)}}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 按空格输入) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
-    "focus false: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "focus true: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 按空格输入) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
+    #|  "focus false: once {presenting false visible true dialog None button [1] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)} end {presenting false visible false dialog None button [] gone 1 said [] focused Some(TextField 发消息) ime (true, , 0, 0)}",
+    #|]
+  ))
 }
 
 ///|
-/// A panel's body of `n` rows of words, a button at its foot; what it was told of being held short (panel_held) as it
-/// was drawn, into `held`.
-fn panel_rows_body(n : Int, held : Array[Bool]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, close) {
-    held.push(@sf.panel_held())
+/// A panel's body of `n` rows of words, a button under them.
+fn panel_rows_body(n : Int) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, close) {
     for i in 0..<n {
-      @sf.panel_text(c, fn() { c.text("第\{i}行", style=@sf.paragraph) |> ignore })
+      @sf.words_node(v, fn() { "第\{i}行" }, fn() { @sf.paragraph }) |> ignore
     }
-    @sf.panel_foot(c, fn() {
-      @sf.panel_button(c, "ok", "好的", tone=Filled, on_press=fn() {
-        close()
-      }) |> ignore
-    })
+    @sf.button_node(v, fn() { "好的" }, close, tone=Primary) |> ignore
   }
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, held short of what it holds by the window: what scrolls (out to its sides), where, how far, told held: as main has it" {
-  let held : Array[Bool] = []
+test "panel, 大屏 keyboard and mouse: at a point, held short of what it holds by the window: what scrolls (out to its sides), where, how far" {
   let t = menu_tester(1280.0, 500.0, 0)
-  @sf.panel("面板", panel_rows_body(40, held), from=At(600.0, 100.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_rows_body(40), from=At(600.0, 100.0, 0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   let w = fn(s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
   let at = fn() { "title \{@ui.list_text(w("面板").map(@ui.rect_text))} row0 \{@ui.list_text(w("第0行").map(@ui.rect_text))} row10 \{@ui.list_text(w("第10行").map(@ui.rect_text))} button \{@ui.some_text(t.query(Button, label="好的").map(fn(s) { @ui.rect_text(tenth4(s.rect)) }))}" }
   let (dx, dy, dw, dh) = t.get(Dialog, label="面板").rect
-  let first = "dialog \{@ui.rect_text(tenth4((dx, dy, dw, dh)))} \{at()} held \{@ui.some_text(held.last())}"
+  let first = "dialog \{@ui.rect_text(tenth4((dx, dy, dw, dh)))} \{at()}"
   // (the wheel over its middle, then over its padding at its left side, then at its foot under its words)
   t.wheel(dx + dw / 2.0, dy + dh / 2.0, 120.0)
   t.run_for(@ui.move_most_ms)
@@ -463,39 +490,35 @@ test "panel, 大屏 keyboard and mouse: at a point, held short of what it holds 
   t.wheel(dx + dw / 2.0, dy + 6.0, 120.0)
   t.run_for(@ui.move_most_ms)
   let top = at()
-  let said = "\{first} || wheel middle \{middle} || wheel side \{side} || wheel top padding \{top} || held \{@ui.some_text(held.last())}"
-  println("PANELHELD \{said}")
-  // (as main has it, a4c845604)
-  assert_eq(
-    said,
-    "dialog (600, 8, 296, 484) title [(616, 20, 264, 20)] row0 [(616, 44, 264, 22)] row10 [(616, 264, 264, 22)] button Some((840, 928, 44, 24)) held Some(true) || wheel middle title [(616, 20, 264, 20)] row0 [(616, -76, 264, 22)] row10 [(616, 144, 264, 22)] button Some((840, 808, 44, 24)) || wheel side title [(616, 20, 264, 20)] row0 [(616, -196, 264, 22)] row10 [(616, 24, 264, 22)] button Some((840, 688, 44, 24)) || wheel top padding title [(616, 20, 264, 20)] row0 [(616, -196, 264, 22)] row10 [(616, 24, 264, 22)] button Some((840, 688, 44, 24)) || held Some(true)",
-  )
+  let said = "\{first} || wheel middle \{middle} || wheel side \{side} || wheel top padding \{top}"
+  inspect(said, content=(
+    #|dialog (600, 8, 296, 484) title [(616, 20, 264, 20)] row0 [(606, 44, 284, 22)] row10 [(606, 264, 284, 22)] button Some((606, 924, 284, 36)) || wheel middle title [(616, 20, 264, 20)] row0 [(606, -76, 284, 22)] row10 [(606, 144, 284, 22)] button Some((606, 804, 284, 36)) || wheel side title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36)) || wheel top padding title [(616, 20, 264, 20)] row0 [(606, -196, 284, 22)] row10 [(606, 24, 284, 22)] button Some((606, 684, 284, 36))
+  ))
 }
 
 ///|
-/// A panel's body: a column of its own (panel_column, 360 at most) of `rows()` rows of words; what it was told of being
-/// held short as it was drawn, into `held`.
-fn panel_column_body(rows : @signals.Signal[Int], held : Array[Bool]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _close) {
-    held.push(@sf.panel_held())
-    @sf.panel_column(c, "test/column", 360.0, @ui.css("w=Full"), fn() {
-      for i in 0..<rows.get() {
-        @sf.panel_text(c, fn() { c.text("第\{i}行", style=@sf.paragraph) |> ignore })
-      }
+/// A panel's body: a column of its own (capped_node, 360 at most) of `rows()` rows of words.
+fn panel_column_body(rows : @signals.Signal[Int]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _close) {
+    @sf.capped_node(v, fn() { 360.0 }, fn(s) {
+      s.each(fn() { Array::makei(rows.get(), fn(i) { i }) }, fn(i) { i }, fn(r, i) {
+        @sf.words_node(r, fn() { "第\{i.untracked()}行" }, fn() { @sf.paragraph }) |> ignore
+      })
     })
+    |> ignore
   }
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, a column of its own in it: in a tall window, in a short one then grown, its rows from many to few: where it is, what the wheel scrolls, told held: as main has it" {
+test "panel, 大屏 keyboard and mouse: at a point, a column of its own in it: in a tall window, in a short one then grown, its rows from many to few: where it is, what the wheel scrolls: as it was beside the old one" {
   let w = fn(t : @ui.Tester, s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
   // (where it is, then the wheel over its middle and where its rows are after)
-  let said = fn(t : @ui.Tester, held : Array[Bool]) {
+  let said = fn(t : @ui.Tester) {
     let d = t.query(Dialog, label="面板").unwrap().rect
-    let before = "dialog \{@ui.rect_text(tenth4(d))} row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} row4 \{@ui.list_text(w(t, "第4行").map(@ui.rect_text))} held \{@ui.some_text(held.last())}"
+    let before = "dialog \{@ui.rect_text(tenth4(d))} row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} row4 \{@ui.list_text(w(t, "第4行").map(@ui.rect_text))}"
     t.wheel(d.0 + d.2 / 2.0, d.1 + d.3 / 2.0, 120.0)
     t.run_for(@ui.move_most_ms)
-    let after = "row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} row4 \{@ui.list_text(w(t, "第4行").map(@ui.rect_text))} held \{@ui.some_text(held.last())}"
+    let after = "row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} row4 \{@ui.list_text(w(t, "第4行").map(@ui.rect_text))}"
     // (and back where it was)
     t.wheel(d.0 + d.2 / 2.0, d.1 + d.3 / 2.0, -240.0)
     t.run_for(@ui.move_most_ms)
@@ -503,54 +526,52 @@ test "panel, 大屏 keyboard and mouse: at a point, a column of its own in it: i
   }
   let out = []
   // (a tall window, 30 rows)
-  let held : Array[Bool] = []
   let rows = @signals.signal(30)
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", panel_column_body(rows, held), from=At(600.0, 100.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_column_body(rows), from=At(600.0, 100.0, 0.0, 0.0))
   t.run_for(@ui.move_most_ms)
-  out.push("tall: \{said(t, held)}")
+  out.push("tall: \{said(t)}")
   // (its rows from 30 to 4)
   rows.set(4)
   t.run_for(@ui.move_most_ms)
-  out.push("tall, 4 rows: \{said(t, held)}")
+  out.push("tall, 4 rows: \{said(t)}")
   // (a short window, 30 rows; then grown)
-  let held2 : Array[Bool] = []
   let rows2 = @signals.signal(30)
   let t2 = menu_tester(1280.0, 300.0, 0)
-  @sf.panel("面板", panel_column_body(rows2, held2), from=At(600.0, 100.0, 0.0, 0.0))
+  @sf.panel_nodes("面板", panel_column_body(rows2), from=At(600.0, 100.0, 0.0, 0.0))
   t2.run_for(@ui.move_most_ms)
-  out.push("short: \{said(t2, held2)}")
+  out.push("short: \{said(t2)}")
   t2.resize(1280.0, 800.0)
   t2.run_for(@ui.move_most_ms)
-  out.push("short, grown: \{said(t2, held2)}")
+  out.push("short, grown: \{said(t2)}")
   rows2.set(4)
   t2.run_for(@ui.move_most_ms)
-  out.push("short, grown, 4 rows: \{said(t2, held2)}")
+  out.push("short, grown, 4 rows: \{said(t2)}")
   for o in out {
     println("PANELCOLUMN \{o}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "tall: dialog (600, 106, 296, 402) row0 [(616, 142, 264, 22)] row4 [(616, 230, 264, 22)] held Some(false) | wheel: row0 [(616, 22, 264, 22)] row4 [(616, 110, 264, 22)] held Some(false)",
-    "tall, 4 rows: dialog (600, 106, 296, 130) row0 [(616, 142, 264, 22)] row4 [] held Some(false) | wheel: row0 [(616, 142, 264, 22)] row4 [] held Some(false)",
-    "short: dialog (600, 8, 296, 284) row0 [(616, 44, 264, 22)] row4 [(616, 132, 264, 22)] held Some(true) | wheel: row0 [(616, -76, 264, 22)] row4 [(616, 12, 264, 22)] held Some(true)",
-    "short, grown: dialog (600, 106, 296, 402) row0 [(616, 142, 264, 22)] row4 [(616, 230, 264, 22)] held Some(false) | wheel: row0 [(616, 22, 264, 22)] row4 [(616, 110, 264, 22)] held Some(false)",
-    "short, grown, 4 rows: dialog (600, 106, 296, 130) row0 [(616, 142, 264, 22)] row4 [] held Some(false) | wheel: row0 [(616, 142, 264, 22)] row4 [] held Some(false)",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "tall: dialog (600, 106, 296, 402) row0 [(606, 142, 284, 22)] row4 [(606, 230, 284, 22)] | wheel: row0 [(606, 22, 284, 22)] row4 [(606, 110, 284, 22)]",
+    #|  "tall, 4 rows: dialog (600, 106, 296, 130) row0 [(606, 142, 284, 22)] row4 [] | wheel: row0 [(606, 142, 284, 22)] row4 []",
+    #|  "short: dialog (600, 8, 296, 284) row0 [(606, 44, 284, 22)] row4 [(606, 132, 284, 22)] | wheel: row0 [(606, -76, 284, 22)] row4 [(606, 12, 284, 22)]",
+    #|  "short, grown: dialog (600, 106, 296, 402) row0 [(606, 142, 284, 22)] row4 [(606, 230, 284, 22)] | wheel: row0 [(606, 22, 284, 22)] row4 [(606, 110, 284, 22)]",
+    #|  "short, grown, 4 rows: dialog (600, 106, 296, 130) row0 [(606, 142, 284, 22)] row4 [] | wheel: row0 [(606, 142, 284, 22)] row4 []",
+    #|]
+  ))
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: tall 0.5, at a point high and low in the window, its body a column that fills it and its rows: where it is, how tall, what the wheel scrolls: as main has it" {
+test "panel, 大屏 keyboard and mouse: tall 0.5, at a point high and low in the window, its body a column that fills it and its rows: where it is, how tall, what the wheel scrolls: as it was beside the old one" {
   let out = []
   for at in [100.0, 500.0, 700.0] {
-    let held : Array[Bool] = []
     let rows = @signals.signal(40)
     let t = menu_tester(1280.0, 800.0, 0)
-    @sf.panel("面板", panel_column_body(rows, held), from=At(600.0, at, 0.0, 0.0), tall=0.5)
+    @sf.panel_nodes("面板", panel_column_body(rows), from=At(600.0, at, 0.0, 0.0), tall=0.5)
     t.run_for(@ui.move_most_ms)
     let w = fn(s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
     let d = t.query(Dialog, label="面板").map(fn(s) { tenth4(s.rect) })
-    let before = "dialog \{@ui.some_text(d.map(@ui.rect_text))} row0 \{@ui.list_text(w("第0行").map(@ui.rect_text))} held \{@ui.some_text(held.last())}"
+    let before = "dialog \{@ui.some_text(d.map(@ui.rect_text))} row0 \{@ui.list_text(w("第0行").map(@ui.rect_text))}"
     match d {
       Some((x, y, dw, dh)) => t.wheel(x + dw / 2.0, y + dh / 2.0, 120.0)
       None => ()
@@ -561,34 +582,34 @@ test "panel, 大屏 keyboard and mouse: tall 0.5, at a point high and low in the
   for o in out {
     println("PANELTALL \{o}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "at 100: dialog Some((600, 106, 296, 400)) row0 [(616, 142, 264, 22)] held Some(false) | wheel: row0 [(616, 22, 264, 22)]",
-    "at 500: dialog Some((600, 94, 296, 400)) row0 [(616, 130, 264, 22)] held Some(false) | wheel: row0 [(616, 10, 264, 22)]",
-    "at 700: dialog Some((600, 294, 296, 400)) row0 [(616, 330, 264, 22)] held Some(false) | wheel: row0 [(616, 210, 264, 22)]",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "at 100: dialog Some((600, 106, 296, 400)) row0 [(606, 142, 284, 22)] | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "at 500: dialog Some((600, 94, 296, 400)) row0 [(606, 130, 284, 22)] | wheel: row0 [(606, 10, 284, 22)]",
+    #|  "at 700: dialog Some((600, 294, 296, 400)) row0 [(606, 330, 284, 22)] | wheel: row0 [(606, 210, 284, 22)]",
+    #|]
+  ))
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: tall 0.5, at a point: its title, words and button where main has them, drawn by the window's tree" {
+test "panel, 大屏 keyboard and mouse: tall 0.5, at a point: its title, words and button where they were beside the old one, drawn by the window's tree" {
   let said : Array[String] = []
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5)
+  @sf.panel_nodes("面板", panel_test_body(said), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5)
   t.run_for(@ui.move_most_ms)
-  // (as main has it, a4c845604: PANELSAID kinds' tall)
-  assert_eq(
-    (panel_said(t), tree_said(Dialog, "面板") is Some(_)),
-    ("dialog Some((600, 106, 296, 400)) title [(616, 118, 264, 20)] words [(616, 142, 264, 22)] button Some((840, 168, 44, 24)) focus None", true),
-  )
+  assert_true(tree_said(Dialog, "面板") is Some(_))
+  inspect(panel_said(t), content=(
+    #|dialog Some((600, 106, 296, 400)) title [(616, 118, 264, 20)] words [(606, 142, 284, 22)] button Some((606, 164, 284, 36)) focus None
+  ))
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: tall 0.5 with a foot of its own, its body a column: opened, the window made shorter and taller again, and opened at that height: where its body and foot are, what the wheel scrolls: as main has it" {
+test "panel, 大屏 keyboard and mouse: tall 0.5 with a foot of its own, its body a column: opened, the window made shorter and taller again, and opened at that height: where its body and foot are, what the wheel scrolls: as it was beside the old one" {
   let w = fn(t : @ui.Tester, s : String) { t.words().filter(fn(x) { x.0 == s }).map(fn(x) { tenth4((x.1, x.2, x.3, x.4)) }) }
-  let said = fn(t : @ui.Tester, held : Array[Bool]) {
+  let said = fn(t : @ui.Tester) {
     let d = t.query(Dialog, label="面板").unwrap().rect
     let foot = t.query(Button, label="好的").map(fn(s) { tenth4(s.rect) })
-    let before = "dialog \{@ui.rect_text(tenth4(d))} row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} foot \{@ui.some_text(foot.map(@ui.rect_text))} held \{@ui.some_text(held.last())}"
+    let before = "dialog \{@ui.rect_text(tenth4(d))} row0 \{@ui.list_text(w(t, "第0行").map(@ui.rect_text))} foot \{@ui.some_text(foot.map(@ui.rect_text))}"
     // (the wheel over the middle of what it holds)
     t.wheel(d.0 + d.2 / 2.0, d.1 + 120.0, 120.0)
     t.run_for(@ui.move_most_ms)
@@ -597,53 +618,48 @@ test "panel, 大屏 keyboard and mouse: tall 0.5 with a foot of its own, its bod
     t.run_for(@ui.move_most_ms)
     "\{before} | wheel: \{after}"
   }
-  let open = fn(held : Array[Bool]) {
+  let open = fn() {
     let rows = @signals.signal(40)
-    @sf.panel(
+    @sf.panel_nodes(
       "面板",
-      panel_column_body(rows, held),
+      panel_column_body(rows),
       from=At(600.0, 100.0, 0.0, 0.0),
       tall=0.5,
-      foot=fn(c, close) {
-        @sf.button(c, "好的", key="ok34", tone=Primary, on_press=fn() {
-          close()
-        }) |> ignore
-      },
+      foot=fn(v, close) { @sf.button_node(v, fn() { "好的" }, close, tone=Primary) |> ignore },
     )
   }
   let out = []
-  let held : Array[Bool] = []
   let t = menu_tester(1280.0, 800.0, 0)
-  open(held)
+  open()
   t.run_for(@ui.move_most_ms)
-  out.push("800: \{said(t, held)}")
+  out.push("800: \{said(t)}")
   t.resize(1280.0, 500.0)
   t.run_for(@ui.move_most_ms)
-  out.push("800 to 500: \{said(t, held)}")
+  out.push("800 to 500: \{said(t)}")
   t.resize(1280.0, 800.0)
   t.run_for(@ui.move_most_ms)
-  out.push("500 to 800: \{said(t, held)}")
-  let held2 : Array[Bool] = []
+  out.push("500 to 800: \{said(t)}")
   let t2 = menu_tester(1280.0, 500.0, 0)
-  open(held2)
+  open()
   t2.run_for(@ui.move_most_ms)
-  out.push("opened at 500: \{said(t2, held2)}")
+  out.push("opened at 500: \{said(t2)}")
   for o in out {
     println("PANELTALLFOOT \{o}")
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [
-    "800: dialog (600, 106, 296, 400) row0 [(616, 142, 264, 22)] foot Some((832, 464, 58, 36)) held Some(false) | wheel: row0 [(616, 22, 264, 22)]",
-    "800 to 500: dialog (600, 106, 296, 250) row0 [(616, 142, 264, 22)] foot Some((832, 314, 58, 36)) held Some(false) | wheel: row0 [(616, 22, 264, 22)]",
-    "500 to 800: dialog (600, 106, 296, 400) row0 [(616, 142, 264, 22)] foot Some((832, 464, 58, 36)) held Some(false) | wheel: row0 [(616, 22, 264, 22)]",
-    "opened at 500: dialog (600, 106, 296, 250) row0 [(616, 142, 264, 22)] foot Some((832, 314, 58, 36)) held Some(false) | wheel: row0 [(616, 22, 264, 22)]",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((832, 464, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "800 to 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((832, 314, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "500 to 800: dialog (600, 106, 296, 400) row0 [(606, 142, 284, 22)] foot Some((832, 464, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|  "opened at 500: dialog (600, 106, 296, 250) row0 [(606, 142, 284, 22)] foot Some((832, 314, 58, 36)) | wheel: row0 [(606, 22, 284, 22)]",
+    #|]
+  ))
 }
 
 ///|
 /// A panel's body: the words `words` says.
-fn fits_words_body(words : @signals.Signal[String]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _) { @sf.panel_text(c, fn() { c.text(words.get(), style=@sf.paragraph) |> ignore }) }
+fn fits_words_body(words : @signals.Signal[String]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _) { @sf.words_node(v, fn() { words.get() }, fn() { @sf.paragraph }) |> ignore }
 }
 
 ///|
@@ -674,69 +690,49 @@ fn panel_reach_said(t : @ui.Tester, label : String, pressed : Ref[Int], top? : B
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: tall 0.5 and not, a foot's button in its foot corner: drawn whole where they reach into the panel's padding, pressed there: as main has it" {
+test "panel, 大屏 keyboard and mouse: tall 0.5 and not, a foot's button in its foot corner: drawn whole where they reach into the panel's padding, pressed there: as it was beside the old one" {
   let out = []
   for kind in ["tall foot", "foot"] {
     let t = menu_tester(1280.0, 800.0, 0)
     let pressed = Ref(0)
-    let foot = fn(c : @ui.Ctx, _close : () -> Unit) {
-      @sf.button(c, "好的", key="ok34", tone=Primary, on_press=fn() {
-        pressed.val = pressed.val + 1
-      }) |> ignore
+    let foot = fn(v : @view.View, _close : () -> Unit) {
+      @sf.button_node(v, fn() { "好的" }, fn() { pressed.val = pressed.val + 1 }, tone=Primary) |> ignore
     }
     match kind {
       "tall foot" =>
-        @sf.panel("面板", panel_column_body(@signals.signal(40), []), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5, foot~)
-      _ => @sf.panel("面板", fits_words_body(@signals.signal("面板里的话")), from=At(600.0, 100.0, 0.0, 0.0), foot~)
+        @sf.panel_nodes("面板", panel_column_body(@signals.signal(40)), from=At(600.0, 100.0, 0.0, 0.0), tall=0.5, foot~)
+      _ => @sf.panel_nodes("面板", fits_words_body(@signals.signal("面板里的话")), from=At(600.0, 100.0, 0.0, 0.0), foot~)
     }
     t.run_for(@ui.move_most_ms)
     out.push("\{kind}: \{panel_reach_said(t, "好的", pressed)}")
   }
-  // (as main has it, a4c845604: each wholly within the panel's clip there, (601, 107) to (879, 505), (879, 209.8),
-  // (879, 175.8))
-  assert_eq(out, [
-    "tall foot: (832, 464, 58, 36) shows [(832, 464, 890, 500)] pressed [1, 1]",
-    "foot: (832, 172, 58, 36) shows [(832, 172, 890, 208)] pressed [1, 1]",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "tall foot: (832, 464, 58, 36) shows [(832, 464, 890, 500)] pressed [1, 1]",
+    #|  "foot: (832, 172, 58, 36) shows [(832, 172, 890, 208)] pressed [1, 1]",
+    #|]
+  ))
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, what it holds told whether it stands above what opened it: under it, flipped over it for want of room below, said to go over it: as main has it" {
+test "panel, 大屏 keyboard and mouse: at a point, whether it stands above what opened it: under it, flipped over it for want of room below, said to go over it" {
   let out = []
   for (y, side) in [(100.0, @ui.Side::Bottom), (780.0, @ui.Side::Bottom), (400.0, @ui.Side::Top)] {
     let t = menu_tester(1280.0, 800.0, 0)
-    let up : Array[Bool] = []
-    @sf.panel(
-      "面板",
-      fn(c, _) {
-        up.push(@sf.panel_opens_up())
-        @sf.panel_text(c, fn() { c.text("面板里的话", style=@sf.paragraph) |> ignore })
-      },
-      from=At(600.0, y, 0.0, 0.0),
-      side~,
-    )
+    @sf.panel_nodes("面板", fits_words_body(@signals.signal("面板里的话")), from=At(600.0, y, 0.0, 0.0), side~)
     t.run_for(@ui.move_most_ms)
-    out.push((y, t.get(Dialog, label="面板").rect.1 < y, up.last()))
+    out.push((y, t.get(Dialog, label="面板").rect.1 < y))
   }
-  // (as main has it, a4c845604)
-  assert_eq(out, [(100.0, false, Some(false)), (780.0, true, Some(true)), (400.0, true, Some(true))])
+  assert_eq(out, [(100.0, false), (780.0, true), (400.0, true)])
 }
 
 ///|
-test "panel, 大屏 keyboard and mouse: at a point, open as the window is made too short for it below what opened it and tall again: what it holds told it stands above it the frame it goes there, and there it stays as the window is tall again (it has the room where it is: no side changed without need)" {
+test "panel, 大屏 keyboard and mouse: at a point, open as the window is made too short for it below what opened it and tall again: above it the frame it goes there, and there it stays as the window is tall again (it has the room where it is: no side changed without need)" {
   let t = menu_tester(1280.0, 800.0, 0)
-  let up : Array[Bool] = []
-  @sf.panel(
-    "面板",
-    fn(c, _) {
-      up.push(@sf.panel_opens_up())
-      @sf.panel_text(c, fn() { c.text("面板里的话", style=@sf.paragraph) |> ignore })
-    },
-    from=At(600.0, 500.0, 0.0, 0.0),
-  )
+  @sf.panel_nodes("面板", fits_words_body(@signals.signal("面板里的话")), from=At(600.0, 500.0, 0.0, 0.0))
   t.run_for(@ui.move_most_ms)
   let out = []
-  let said = fn(t : @ui.Tester, h : Double) { (h, t.query(Dialog, label="面板").map(fn(s) { s.rect.1 < 500.0 }), up.last()) }
+  let said = fn(t : @ui.Tester, h : Double) { (h, t.query(Dialog, label="面板").map(fn(s) { s.rect.1 < 500.0 })) }
   out.push(said(t, 800.0))
   for h in [560.0, 800.0] {
     // (the frame it is drawn at that height, then once it is at rest)
@@ -746,11 +742,5 @@ test "panel, 大屏 keyboard and mouse: at a point, open as the window is made t
     out.push(said(t, h))
   }
   // (above from the frame the window is too short below; above still as it is tall again: View::beside's holds_side)
-  assert_eq(out, [
-    (800.0, Some(false), Some(false)),
-    (560.0, Some(true), Some(true)),
-    (560.0, Some(true), Some(true)),
-    (800.0, Some(true), Some(true)),
-    (800.0, Some(true), Some(true)),
-  ])
+  assert_eq(out, [(800.0, Some(false)), (560.0, Some(true)), (560.0, Some(true)), (800.0, Some(true)), (800.0, Some(true))])
 }

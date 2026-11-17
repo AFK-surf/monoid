@@ -965,6 +965,7 @@ pub fn link_row_node(
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -1005,6 +1006,7 @@ pub fn link_row_node(
     value_wraps~,
     chevron_room~,
     lines_from_lead~,
+    title_masked?,
   )
 }
 
@@ -1132,6 +1134,7 @@ fn link_row_made(
   value_wraps? : Bool = false,
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
+  title_masked? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
@@ -1173,7 +1176,7 @@ fn link_row_made(
       parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead,
       face || by_side, by_side,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?,
     )
     return
   }
@@ -1291,7 +1294,8 @@ fn link_row_made(
               // where the line leaves it less, link_row's title_line; its title the same words all along)
               let after_now = fn() { title_after is Some(_) && title_after_shown() }
               t.row(Is(true)).lines_up(Is(Some(Middle))).fits(Is(title_after is Some(_))) |> ignore
-              t.box(fn(w) {
+              // (hidden by dots where it says so: a picture shared, masked_words_box)
+              masked_words_box(t, title_masked, fn(w) {
                 w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
                 styled_words(w, title, fn() {
                   if after_now() || (note_cut_now() && value() == "") || title_cut { plain().then(cut_words) } else { plain() }
@@ -1301,7 +1305,6 @@ fn link_row_made(
                   w.ink(By(fn() { link_ink() })) |> ignore
                 }
               })
-              |> ignore
               match title_after {
                 Some(after) =>
                   t.show(title_after_shown, fn(a) {

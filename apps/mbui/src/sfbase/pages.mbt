@@ -1228,6 +1228,7 @@ pub fn open_page(p : Page) -> Unit {
   if window_front(p) {
     return
   }
+  full_page_noted(p)
   history_act(fn() { (shell.val.open)(p) })
 }
 
@@ -1380,6 +1381,7 @@ pub fn reset() -> Unit {
   go_tos.clear()
   go_to_passages.clear()
   go_to_words.clear()
+  go_to_around.clear()
   // and where each chat's reader was as a go-to took its list away (jump.mbt)
   places_back.clear()
   go_back_offsets.clear()
@@ -1420,6 +1422,7 @@ pub fn reset() -> Unit {
   menu_bar_given.val = ""
   shell.val = bare_shell()
   beside_room_now.set(false)
+  tab_full_reset()
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
   lone_shown.val = @signals.signal(None)

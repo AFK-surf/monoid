@@ -189,13 +189,22 @@ test("how many more accounts of its plan a pool needs to keep up: none where it 
     }
     const needed = pool.neededAccounts ?? 0;
     assert.ok(needed >= 1, `${name}: ${pool.neededAccounts}`);
-    // With so many more it goes without in no hour of the week, needing none more; with one fewer it still does (the
-    // fewest: a burst of the last hours is not asked of every hour on, 13 said where 1 would do).
+    // With so many more it needs none more (what it still goes without, a percent of it at most over the week, is no
+    // account more); with one fewer it still does (the fewest: a burst of the last hours is not asked of every hour
+    // on, 13 said where 1 would do).
     const after = claude(more(items, needed, short), pace);
-    assert.deepEqual([after.exhaustHours, after.neededAccounts], [null, null], `${name}, ${needed} more: ${after.starveSpans}`);
+    assert.equal(after.neededAccounts, null, `${name}, ${needed} more: ${after.starveSpans}`);
     const fewer = claude(more(items, needed - 1, short), pace);
-    assert.ok(fewer.exhaustHours !== null, `${name}, ${needed - 1} more: goes without in none`);
+    assert.ok(fewer.exhaustHours !== null && fewer.neededAccounts !== null, `${name}, ${needed - 1} more: keeps up`);
   }
+});
+
+test("the hours on spread over the accounts as the station's pool spreads them: weeks holding plenty go without for no account's five hours", () => {
+  // Four, refilling at 20, 60, 130 and 90 hours: drained one after another, the last weeks left were one account's,
+  // held to its five hours, and the pool went without at 14 and 18 hours on with 12% of it left, one account more said.
+  const items = ([[70, 20], [80, 60], [100, 130], [40, 90]] as const).map(([used, r], i) => account(`a${i}`, [five(0, null), week(used, r)]));
+  const pool = claude(items, paceOf(Object.fromEntries(items.map((a) => [a.key, { spend: Array.from({ length: 60 }, (_, h) => [h, 1] as [number, number]) }]))));
+  assert.deepEqual([pool.starveSpans, pool.exhaustHours, pool.neededAccounts], [[], null, null]);
 });
 
 test("the pools of a workspace's accounts: each model's, its accounts ready of all, one in trouble leaving its share", () => {

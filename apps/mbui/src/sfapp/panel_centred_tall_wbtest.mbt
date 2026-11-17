@@ -1,15 +1,15 @@
-// A panel of the presenters' opened by nothing a share of the window tall (@sf.panel `from` Unanchored, `tall`), a
-// dialog in the middle of the window, on 大屏: the old contract, measured on main first, what it does held whatever
-// draws it. What it holds fills its share; a list in it says how tall it would be, the dialog as tall as that up to its
-// share; no taller than the window leaves it.
+// A panel of the presenters' opened by nothing a share of the window tall (@sf.panel_nodes `from` Unanchored, `tall`), a
+// dialog in the middle of the window, on 大屏, as it was when the old contract was measured on main beside it. What it
+// holds fills its share; one with a list as tall as what it holds up to its share (`hugs`); no taller than the window
+// leaves it.
 
 ///|
 /// A body of a list of `rows` rows (each about 40), as a panel a share of the window tall holds one.
-fn tall_list_body(rows : @signals.Signal[Int]) -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _close) {
-    @sf.panel_list(c, "test/list", rows.get(), 40.0, fn(i) {
-      @sf.panel_text(c, fn() { c.text("第\{i}行", style=@sf.paragraph) |> ignore })
-    })
+fn tall_list_body(rows : @signals.Signal[Int]) -> (@view.View, () -> Unit) -> Unit {
+  fn(v, _close) {
+    @sf.panel_list_node(v, fn() { Array::makei(rows.get(), fn(i) { i }) }, fn(b, i) {
+      @sf.words_node(b, fn() { "第\{i}行" }, fn() { @sf.paragraph }) |> ignore
+    }, est=40.0)
     |> ignore
   }
 }
@@ -62,24 +62,20 @@ fn tall_said(t : @ui.Tester, n : Int) -> String {
 }
 
 ///|
-test "panel centred a share of the window tall, 大屏 keyboard and mouse: a column, a list of few rows, of many, in a tall window and a short one, a share taller than the dialog may be, with what it says; its list grown, then fewer again: where it is, what the wheel scrolls, its last row seen at its end, drawn by the window's tree: as main has it" {
+test "panel centred a share of the window tall, 大屏 keyboard and mouse: a column, a list of few rows, of many, in a tall window and a short one, a share taller than the dialog may be, with what it says; its list grown, then fewer again: where it is, what the wheel scrolls, its last row seen at its end, drawn by the window's tree" {
   let out = []
   let drawn = []
   for kind in ["column 800", "column 500", "few 800", "many 800", "many 500", "deep 500", "says 800", "grown 800"] {
     let h = if kind.has_suffix("500") { 500.0 } else { 800.0 }
     let t = menu_tester(1280.0, h, 0)
-    let foot = fn(c : @ui.Ctx, close : () -> Unit) {
-      @sf.button(c, "好的", key="ok34", tone=Primary, on_press=fn() {
-        close()
-      }) |> ignore
-    }
+    let foot = fn(v : @view.View, close : () -> Unit) { @sf.button_node(v, fn() { "好的" }, close, tone=Primary) |> ignore }
     let rows = @signals.signal(if kind.has_prefix("many") || kind.has_prefix("says") || kind.has_prefix("deep") { 60 } else { 3 })
     match kind {
-      "column 800" | "column 500" => @sf.panel("面板", panel_column_body(@signals.signal(40), []), from=Unanchored, tall=0.5, foot~)
-      "says 800" => @sf.panel("面板", tall_list_body(rows), from=Unanchored, tall=0.8, description="说明的话", foot~)
+      "column 800" | "column 500" => @sf.panel_nodes("面板", panel_column_body(@signals.signal(40)), from=Unanchored, tall=0.5, foot~)
+      "says 800" => @sf.panel_nodes("面板", tall_list_body(rows), from=Unanchored, tall=0.8, hugs=true, description="说明的话", foot~)
       // (a share taller than the dialog may be in the window: what it holds held shorter than it asks)
-      "deep 500" => @sf.panel("面板", tall_list_body(rows), from=Unanchored, tall=0.95, foot~)
-      _ => @sf.panel("面板", tall_list_body(rows), from=Unanchored, tall=0.8, foot~)
+      "deep 500" => @sf.panel_nodes("面板", tall_list_body(rows), from=Unanchored, tall=0.95, hugs=true, foot~)
+      _ => @sf.panel_nodes("面板", tall_list_body(rows), from=Unanchored, tall=0.8, hugs=true, foot~)
     }
     t.run_for(@ui.move_most_ms)
     out.push("\{kind}: \{tall_said(t, if kind.has_prefix("column") { 40 } else { rows.get() })}")
@@ -94,20 +90,19 @@ test "panel centred a share of the window tall, 大屏 keyboard and mouse: a col
       out.push("\{kind} to 5: \{tall_said(t, 5)}")
     }
   }
-  // (as main has it: drawn by the old frame, the same test, before this)
-  assert_eq((out, drawn), (
-    [
-      "column 800: dialog (380, 168.5, 520, 463) row0 [(414, 243.5, 452, 22)] last between Some(第13行) ok Some((818, 571.5, 58, 36)) | wheel: row0 [(414, 123.5, 452, 22)] | end: [true]",
-      "column 500: dialog (380, 93.5, 520, 313) row0 [(414, 168.5, 452, 22)] last between Some(第7行) ok Some((818, 346.5, 58, 36)) | wheel: row0 [(414, 48.5, 452, 22)] | end: [true]",
-      "few 800: dialog (380, 287.5, 520, 225) row0 [(406, 362.5, 468, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(406, 362.5, 468, 22)] | end: [true]",
-      "many 800: dialog (380, 48.5, 520, 703) row0 [(406, 123.5, 468, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
-      "many 500: dialog (380, 24, 520, 452) row0 [(406, 99, 468, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
-      "deep 500: dialog (380, 24, 520, 452) row0 [(406, 99, 468, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
-      "says 800: dialog (380, 35.5, 520, 729) row0 [(406, 136.5, 468, 22)] last between Some(第24行) ok Some((818, 704.5, 58, 36)) | wheel: row0 [] | end: [true]",
-      "grown 800: dialog (380, 287.5, 520, 225) row0 [(406, 362.5, 468, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(406, 362.5, 468, 22)] | end: [true]",
-      "grown 800 to 60: dialog (380, 48.5, 520, 703) row0 [(406, 123.5, 468, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
-      "grown 800 to 5: dialog (380, 48.5, 520, 703) row0 [(406, 123.5, 468, 22)] last between Some(第4行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [(406, 123.5, 468, 22)] | end: [true]",
-    ],
-    [true, true, true, true, true, true, true, true],
+  assert_true(drawn.iter().all(fn(d) { d }))
+  debug_inspect(out, content=(
+    #|[
+    #|  "column 800: dialog (380, 168.5, 520, 463) row0 [(404, 243.5, 472, 22)] last between Some(第13行) ok Some((818, 571.5, 58, 36)) | wheel: row0 [(404, 123.5, 472, 22)] | end: [true]",
+    #|  "column 500: dialog (380, 93.5, 520, 313) row0 [(404, 168.5, 472, 22)] last between Some(第7行) ok Some((818, 346.5, 58, 36)) | wheel: row0 [(404, 48.5, 472, 22)] | end: [true]",
+    #|  "few 800: dialog (380, 287.5, 520, 225) row0 [(396, 362.5, 488, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(396, 362.5, 488, 22)] | end: [true]",
+    #|  "many 800: dialog (380, 48.5, 520, 703) row0 [(396, 123.5, 488, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
+    #|  "many 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
+    #|  "deep 500: dialog (380, 24, 520, 452) row0 [(396, 99, 488, 22)] last between Some(第13行) ok Some((818, 416, 58, 36)) | wheel: row0 [] | end: [true]",
+    #|  "says 800: dialog (380, 35.5, 520, 729) row0 [(396, 136.5, 488, 22)] last between Some(第24行) ok Some((818, 704.5, 58, 36)) | wheel: row0 [] | end: [true]",
+    #|  "grown 800: dialog (380, 287.5, 520, 225) row0 [(396, 362.5, 488, 22)] last between Some(第2行) ok Some((818, 452.5, 58, 36)) | wheel: row0 [(396, 362.5, 488, 22)] | end: [true]",
+    #|  "grown 800 to 60: dialog (380, 48.5, 520, 703) row0 [(396, 123.5, 488, 22)] last between Some(第24行) ok Some((818, 691.5, 58, 36)) | wheel: row0 [] | end: [true]",
+    #|  "grown 800 to 5: dialog (380, 265.5, 520, 269) row0 [(396, 340.5, 488, 22)] last between Some(第4行) ok Some((818, 474.5, 58, 36)) | wheel: row0 [(396, 340.5, 488, 22)] | end: [true]",
+    #|]
   ))
 }

@@ -1036,12 +1036,13 @@ pub fn preview_rest() -> Double {
 }
 
 ///|
-/// Opens `a` of the chat on `station` (kept by the session `key`) over everything; `steps`: what an image steps
-/// through; `named`: a file a message names by its path (`a.path`), not one sent with it. `beside`: asked beside the
-/// page (by default for text files or as the command key is held: beside_held; a menu's 在侧边打开, the preview's
-/// 移到侧边): a tab of the side panel where the shell has one for the page in view (Shell's `beside`; a film or a song
-/// played there at once), else over everything all the same. Over everything, what the tabs beside the page play is
-/// paused; `start`: where a film or a song starts there (ms; a tab's 全屏: where the tab's player was), else where it
+/// Opens `a` of the chat on `station` (kept by the session `key`); `steps`: what an image steps through; `named`: a
+/// file a message names by its path (`a.path`), not one sent with it. Where the shell has a side panel for the page in
+/// view (Shell's `beside`), a tab there (beside_first: what opens there by default; a film or a song played there at
+/// once), over the whole window as that tab (tab_full.mbt) where `full` asks it (a 全屏 pressed; by default as the
+/// command key is held: full_held); `beside`: asked beside the page and no more (a menu's 在侧边打开, the preview's
+/// 移到侧边), or, false, over everything in the viewer of its own. Anything not put in a tab opens over everything in that
+/// viewer, what the tabs beside the page play paused; `start`: where a film or a song starts there (ms), else where it
 /// was left.
 pub fn open_preview(
   station : String,
@@ -1052,17 +1053,22 @@ pub fn open_preview(
   named? : Bool = false,
   at? : String = "",
   beside? : Bool,
+  full? : Bool,
   start? : Double = -1.0,
 ) -> Unit {
+  let full = match (full, beside) {
+    (Some(f), _) => f
+    (None, Some(_)) => false
+    (None, None) => full_held()
+  }
   let beside = match beside {
     Some(asked) => asked
-    None =>
-      beside_held() || (preview_kind(a.name).0 is Some(KMarkdown | KText | KCode | KCsv | KHtml))
+    None => full || beside_first(a)
   }
   if beside && opens_beside(a.path, a.name) {
     let tab = view_tab_key(station, key, a, drive, named)
     tab_facts_said(tab, a)
-    if beside_open(tab, 0.0) {
+    if beside_open(tab, 0.0, full~) {
       return
     }
   }
