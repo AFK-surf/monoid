@@ -265,6 +265,9 @@ export function excerpt(text: string, words: string[], lead = LEAD, max = LINE_M
 export function draftAt(key: string): [string, string] | null {
   if (key.startsWith("new:")) {
     const workspace = key.slice(4);
+    // Each queued board task has its own new-chat composer, kept in its workspace's database.
+    const board = workspace.indexOf(":board:");
+    if (board > 0 && board + 7 < workspace.length) return [workspace.slice(0, board), workspace.slice(board + 1)];
     return workspace !== "" ? [workspace, "new"] : null;
   }
   const at = key.indexOf(":");

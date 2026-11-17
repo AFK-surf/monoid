@@ -2909,6 +2909,8 @@ let en : Map[String, String] = {
   "web-main.board.full": "Open full screen",
   "web-main.board.close": "Close",
   "web-main.board.placeholder": "What needs doing?",
+  "web-main.board.files_unavailable": "An attachment is unavailable. Copy the task's text, then delete the task, create it again and paste the attachment.",
+  "web-main.board.paste_image": "Paste images here",
   "web-main.board.empty": "No chats here yet",
   "web-main.board.empty_draft": "Nothing to do yet",
   "web-main.board.pinned": "Pinned",

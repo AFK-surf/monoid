@@ -2880,6 +2880,8 @@ let zh : Map[String, String] = {
   "web-main.board.full": "全屏打开",
   "web-main.board.close": "关闭",
   "web-main.board.placeholder": "要做什么？",
+  "web-main.board.files_unavailable": "附件暂不可用，请先复制事项文字，再删除该事项并重新创建、粘贴附件。",
+  "web-main.board.paste_image": "可粘贴图片",
   "web-main.board.empty": "这里暂时没有对话",
   "web-main.board.empty_draft": "暂时没有待派发事项",
   "web-main.board.pinned": "已置顶",
