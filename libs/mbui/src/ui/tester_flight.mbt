@@ -16,6 +16,20 @@ pub fn Tester::flight_of(
 }
 
 ///|
+/// Where the one of id `id` that stays (a flight's end at rest, View::shared's `stays`) is drawn in the frame just drawn
+/// (x, y, w, h) and its corners there (top left, then round it); none where none of it would be flown to.
+pub fn Tester::stays_of(
+  self : Tester,
+  id : String,
+) -> ((Double, Double, Double, Double), (Double, Double, Double, Double))? {
+  self.reads_own()
+  match view_tree() {
+    Some(tree) => tree.stays_drawn(id)
+    None => None
+  }
+}
+
+///|
 /// When the flight of the one of id `id` under way ends (ms, the Tester's clock); none where none of it flies.
 pub fn Tester::flight_end(self : Tester, id : String) -> Double? {
   self.reads_own()

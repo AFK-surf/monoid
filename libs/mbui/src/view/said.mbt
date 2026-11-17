@@ -651,3 +651,10 @@ pub fn Tree::said_pass(
   }
   { entries, root }
 }
+
+///|
+/// Whether node `id`'s presses are off of its own (View::presses, leaving, left out of its row, in its bones:
+/// Tree::pressless_own_at), not only taken from it by a modal layer over it as a said node's `disabled` may be.
+pub fn Tree::node_pressless_own(self : Tree, id : NodeId) -> Bool {
+  self.alive_id(id) && self.pressless_own_at(id.at)
+}

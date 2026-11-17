@@ -507,6 +507,8 @@ fn window_kept_ui_6() -> Array[WindowKept] {
     kept_ref(last_touch_x, fn() { 0.0 }),
     kept_ref(last_touch_y, fn() { 0.0 }),
     kept_map(tree_fields),
+    kept_map(tree_field_focus_told),
+    kept_map(@view.dashed_edges_kept()),
     kept_ref(tree_fields_rev, fn() { 0 }),
     kept_ref(tree_fields_drawn, fn() { @signals.signal(0) }),
     kept_ref(tree_field_hovered, fn() { None }),
