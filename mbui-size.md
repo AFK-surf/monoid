@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.62 | 123.22 |
 | [737fff83c](https://github.com/AFK-surf/monoid/commit/737fff83c7af74ae4b86a48269e881339b14d12b) mbui: drive system notifications offscreen (#7101) | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.77 | 61.69 | 96.54 | 122.43 |
 | [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.77 | 61.69 | 96.54 | 122.41 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.76 | 61.69 | 96.55 | 121.64 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 | [2247d01a6](https://github.com/AFK-surf/monoid/commit/2247d01a695c896ee8ac4ce9f5870b82fa9bee82) mbui app: a check mark's half-ticked bar goes at o | 2.54 | 3.59 | 15.69 | 37.05 | 62.35 | 32.34 | 68.4 | 96.03 | 122.8 |
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 2.54 | 3.59 | 15.69 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 128.71 |
-| [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 2.54 | 3.59 | 15.69 | 37.04 | 62.35 | 32.34 | 68.4 | 96.03 | 126.02 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [bbf27a761](https://github.com/AFK-surf/monoid/commit/bbf27a76104fdd6fb314451ad3f5dac026df4034) ci: build Windows release alongside setup (#7002) | 0.43 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.43 |
 | [737fff83c](https://github.com/AFK-surf/monoid/commit/737fff83c7af74ae4b86a48269e881339b14d12b) mbui: drive system notifications offscreen (#7101) | 0.43 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.43 |
 | [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [cd731edfa](https://github.com/AFK-surf/monoid/commit/cd731edfad7b681b2e2f680a54185e94bda8cd33) app tests: the side panel's 全屏 changes once now (# | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [2247d01a6](https://github.com/AFK-surf/monoid/commit/2247d01a695c896ee8ac4ce9f5870b82fa9bee82) mbui app: a check mark's half-ticked bar goes at o | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
 | [3986240c0](https://github.com/AFK-surf/monoid/commit/3986240c04fcee64936f6538681fb5a07c250242) docs: the stable 0.1.9635 notes say their own vers | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
-| [128b9f773](https://github.com/AFK-surf/monoid/commit/128b9f773e52db8a99910c0c85b14e013923d8e4) mbui: a field the keyboard covers in a plain scrol | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.89 |
