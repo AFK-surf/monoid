@@ -3,7 +3,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Data } from "../src/data.ts";
 import { MdAhead } from "../src/md-ahead.ts";
-import { mdKey, parse } from "../src/markdown.ts";
+import { Effect } from "effect";
+import { MD_READING, mdKey, parse } from "../src/markdown.ts";
 import { Runner } from "../src/runtime.ts";
 
 test("a_message_change_keeps_unchanged_readings_ready_without_hashing_their_words_again", () => {
@@ -81,6 +82,31 @@ test("a_reply_is_prepared_again_when_its_cached_reading_has_been_evicted", async
     ahead.thread("w/s", 7);
     await prepared;
     assert.deepEqual(JSON.parse(cached.get(key)!), parse(text));
+  } finally {
+    runner.shutdown();
+  }
+});
+
+test("the_chats_read_ahead_as_the_core_starts_are_looked_up_a_chat_a_turn", async () => {
+  // (all at once it held the core a second and more as a phone's first chat was opened: md-ahead.ts seed)
+  const said: string[] = [];
+  const db = { stations: () => ["w/a", "w/b"], meta: () => String(MD_READING) };
+  const entries = new Map([[1, Object.freeze({ n: 1, kind: "message", thread: 1, authorKind: "agent", text: "kept" })]]);
+  const data = {
+    dbs: () => [db],
+    recentThreads: (station: string) => (station === "w/a" ? [1, 2] : [3]),
+    logSpan: (_t: string, station: string, id: string) => { said.push(`read ${station} ${id}`); return { min: 1, max: 1, count: 1 }; },
+    logRange: () => entries,
+    mdStore: () => ({ has: () => true }),
+  } as unknown as Data;
+  const runner = new Runner();
+  const ahead = new MdAhead(data, runner, () => 0, () => {}, () => Effect.sync(() => said.push("turn")).pipe(Effect.andThen(Effect.yieldNow)));
+  try {
+    ahead.seed();
+    assert.deepEqual(said.filter((s) => s.startsWith("read")), [], "no chat is read as it is asked");
+    while (said.filter((s) => s.startsWith("read")).length < 3) await new Promise((r) => setImmediate(r));
+    assert.deepEqual(said.filter((s) => s.startsWith("read")), ["read w/a 1", "read w/a 2", "read w/b 3"]);
+    for (let i = 0; i < said.length; i++) if (said[i]!.startsWith("read")) assert.equal(said[i - 1], "turn", "each chat after a turn of its own");
   } finally {
     runner.shutdown();
   }

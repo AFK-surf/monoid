@@ -44,22 +44,33 @@ export class MdAhead {
   /// A kept entry is immutable: reuse its text's key while that entry is held, without keeping the entry alive.
   readonly #keys = new WeakMap<object, string>();
   #running = false;
+  /// A background step's turn: after what pages wait for (store.ts `turn`).
+  readonly #turn: () => Effect.Effect<void>;
 
-  constructor(data: Data, runner: Runner, now: () => number, changed: (station: string, of: string) => void = () => {}) {
+  constructor(data: Data, runner: Runner, now: () => number, changed: (station: string, of: string) => void = () => {}, turn: () => Effect.Effect<void> = () => Effect.yieldNow) {
     this.#data = data;
     this.#runner = runner;
     this.#now = now;
     this.#changed = changed;
+    this.#turn = turn;
   }
 
-  /// The chats each station's agents spoke in latest, read ahead.
+  /// The chats each station's agents spoke in latest, read ahead: a chat a turn, after what pages wait for (`turn`).
+  /// In one go it held the core about a second (ten stations, no JIT) just as the first chat was opened (2026-11-17).
   seed(): void {
     const since = this.#now() - AHEAD_MS;
-    for (const db of this.#data.dbs()) {
-      for (const station of db.stations()) {
-        for (const thread of this.#data.recentThreads(station, since, AHEAD_CHATS)) this.thread(station, thread);
+    this.#runner.fork(Effect.gen({ self: this }, function* () {
+      for (const db of [...this.#data.dbs()]) {
+        for (const station of [...db.stations()]) {
+          yield* this.#turn();
+          if (!this.#data.dbs().includes(db)) break;
+          for (const thread of this.#data.recentThreads(station, since, AHEAD_CHATS)) {
+            yield* this.#turn();
+            this.thread(station, thread);
+          }
+        }
       }
-    }
+    }));
     this.#upgrade();
   }
 
