@@ -17,14 +17,14 @@ pub fn answered_in_place_node(
 ) -> Unit {
   let gone = fn() { ended() is Some(_) }
   let first = @signals.untracked(gone)
-  let was = @sf.EdgeWay::new(if first { 0.0 } else { 1.0 })
-  let now = @sf.EdgeWay::new(if first { 1.0 } else { 0.0 })
+  let was = @motion.NodeWay::new(if first { 0.0 } else { 1.0 })
+  let now = @motion.NodeWay::new(if first { 1.0 } else { 0.0 })
   v.box(fn(whole) {
     @sf.style_node(whole, fn() { answered_whole })
     whole.reacts(gone, fn(g) {
       if g {
-        was.go(whole, 0.0, answered_fade_ms, ease=Leave)
-        now.go_by(whole, 1.0, @motion.tween(answered_fade_ms, ease=Out, delay=answered_fade_ms))
+        was.go_ms(whole, 0.0, answered_fade_ms, ease=Leave)
+        now.go(whole, 1.0, @motion.tween(answered_fade_ms, ease=Out, delay=answered_fade_ms))
       } else {
         now.put(0.0)
         was.put(1.0)

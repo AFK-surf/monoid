@@ -48,3 +48,66 @@ test "scrolls beside another: the wheel on either moves both as far as they go; 
   tree.frame(390.0, 844.0, now=now.val) |> ignore
   assert_true(a.at(tree) < 300.0, msg="moved back by the wheel: \{a.at(tree)}")
 }
+
+///|
+/// The bar along a row's foot as drawn (x, y, w, h, opacity): the thumb 3 tall, if it is.
+fn beside_thumb(tree : @view.Tree) -> (Double, Double, Double, Double, Double)? {
+  tree.drawn().iter().find_first(fn(d) { d.h == 3.0 && d.alpha > 0.0 }).map(fn(d) { (d.x, d.y, d.w, d.h, d.alpha) })
+}
+
+///|
+test "scrolls beside another, the bar under the second alone (bar_here): the wheel on the first shows it there; the first keeps no room for a bar, the second its own; said otherwise, the room and the bar go with it" {
+  let shared = @view.Scroll::across()
+  let a = shared.beside()
+  let b = shared.beside()
+  let second_bars = @signals.signal(true, same=fn(x, y) { x == y })
+  let now = Ref(0.0)
+  let rows : Array[@view.View] = []
+  let tree = @view.Tree::new(
+    fn(root) {
+      root.box(fn(col) {
+        col.width(Is(Some(300.0))) |> ignore
+        let cells = fn(rh : @view.View) {
+          rh.row(Is(true)) |> ignore
+          for _ in 0..<10 {
+            rh.box(fn(c) { c.width(Is(Some(60.0))).height(Is(Some(40.0))).ground(Is(0x101010FFL)) |> ignore }) |> ignore
+          }
+        }
+        col.box(fn(r) {
+          rows.push(r)
+          r.scrolls(a, bar=test_bar(), bar_here=fn() { !second_bars.get() }, cells) |> ignore
+        })
+        |> ignore
+        col.box(fn(r) {
+          rows.push(r)
+          r.scrolls(b, bar=test_bar(), bar_here=fn() { second_bars.get() }, cells) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    time=fn() { now.val },
+  )
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  let tall = fn() { rows.map(fn(r) { r.laid_size().1 }) }
+  let first = (beside_thumb(tree), tall())
+  // (the wheel across the first: the bar under the second comes in)
+  tree.wheel_at(150.0, 20.0, 120.0, 0.0, 0, 10.0) |> ignore
+  now.val = 300.0
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  let shown = beside_thumb(tree)
+  // (the bar the first's now: its room and its bar there, none under the second)
+  second_bars.set(false)
+  now.val = 3000.0
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  let moved_tall = tall()
+  tree.wheel_at(150.0, 60.0, 60.0, 0.0, 0, 3010.0) |> ignore
+  now.val = 3300.0
+  tree.frame(390.0, 844.0, now=now.val) |> ignore
+  let shown_first = beside_thumb(tree)
+  // (room under each that has its bar: 3 and 2 either side of it)
+  assert_eq(first, (None, [40.0, 47.0]))
+  assert_true(shown is Some((_, y, _, _, alpha)) && y > 80.0 && y < 87.0 && alpha == 1.0, msg="\{Repr(shown)}")
+  assert_eq(moved_tall, [47.0, 40.0])
+  assert_true(shown_first is Some((_, y, _, _, alpha)) && y > 40.0 && y < 47.0 && alpha == 1.0, msg="\{Repr(shown_first)}")
+}

@@ -6,7 +6,7 @@
 /// across, blue or red, or at work yellow spokes stepping round in 10. One that comes while it shows pops in (scale 0,
 /// 1.3 at 60%, 1: mark_pop_ms, eased out: row_mark's); one there as it is made does not.
 pub fn chat_mark_node(parent : @view.View, tone : () -> String) -> Unit {
-  let pop = @sf.EdgeWay::new(1.0)
+  let pop = @motion.NodeWay::new(1.0)
   parent.box(fn(m) {
     // (one there as it is made does not pop: only one that comes while it shows)
     let first = Ref(true)

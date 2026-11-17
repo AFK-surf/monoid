@@ -46,7 +46,7 @@ pub fn found_words_node(
     out
   }
   // (its strokes drawn in as it is made: one way over all of them, from the moment it is made)
-  let drawn = EdgeWay::new(0.0)
+  let drawn = @motion.NodeWay::new(0.0)
   parent.box(made_for=loc, fn(o) {
     o.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     o.by_room(loc~, fn(held, given) {
@@ -65,7 +65,7 @@ pub fn found_words_node(
         let total = strokes_ms(now.1.length())
         drawn.put(0.0)
         if now.1.length() > 0 {
-          drawn.go(w, total, total, ease=Linear)
+          drawn.go_ms(w, total, total, ease=Linear)
         }
       })
       // (how wide a part of the words is drawn on their one line: the marked ones bold, at the line's size as the

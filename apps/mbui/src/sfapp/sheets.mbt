@@ -1056,7 +1056,7 @@ fn reveal_part_node(
 ) -> Unit {
   // (where it starts said as it is made, by what a reader reads: a topic read outside any reader would be held by the
   // core's client for good)
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   // (while it closes, what it holds still there, let go once it has)
   let closing = @signals.signal(false)
@@ -1089,7 +1089,7 @@ fn reveal_part_node(
       }
       // (as far as it is tall once made: what has not been laid out yet goes as a row of words does)
       let far = dmax(@signals.untracked(tall), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
       (stop.val)()
       stop.val = fn() {  }
       if !on {
@@ -1112,7 +1112,7 @@ fn swap_part_node(
   first : (@view.View) -> Unit,
   later : (@view.View) -> Unit,
 ) -> Unit {
-  let share = @sf.EdgeWay::new(0.0)
+  let share = @motion.NodeWay::new(0.0)
   let made = Ref(false)
   parent.by_room(fn(b, room) {
     let one : Ref[@view.View?] = Ref(None)
@@ -1139,7 +1139,7 @@ fn swap_part_node(
         return
       }
       let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), reveal_least)
-      share.go_by(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
+      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
     })
     one.val = Some(
       b.box(fn(i) {

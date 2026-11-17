@@ -1452,8 +1452,9 @@ export class Directory extends DurableObject<Env> {
     await this.#delivered();
   }
 
-  /** A person no longer in a workspace: the rigs they added there leave it with them. */
+  /** A person no longer in a workspace: their rigs and unused rig enrollment tokens leave it with them. */
   #rigsGone(workspace: string, sub: string): void {
+    this.#run("DELETE FROM enrollments WHERE workspace = ? AND created_by = ? AND rig = 1", workspace, sub);
     for (const r of this.#rows("SELECT station FROM station_members WHERE workspace = ? AND rig = 1 AND enrolled_by = ?", workspace, sub)) {
       const station = r.station as string;
       const home = this.#memberships(station)[0]!;
@@ -1529,8 +1530,11 @@ export class Directory extends DurableObject<Env> {
     // (pasted after a command: never beginning with `-`, auth.ts pastedSecret)
     const token = pastedSecret();
     const expires = nowSeconds() + ENROLLMENT_TTL_SEC;
+    const hash = await digest(token);
+    // They may have left while the token's hash was made: leave no new rig token after #rigsGone took theirs.
+    if (rig) this.#role(sub, workspace);
     this.#run("DELETE FROM enrollments WHERE expires_at <= ?", nowSeconds());
-    this.#run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", await digest(token), workspace, clean, sub, expires, rig ? 1 : null);
+    this.#run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", hash, workspace, clean, sub, expires, rig ? 1 : null);
     return { token, expires_at: expires };
   }
 
@@ -1556,6 +1560,8 @@ export class Directory extends DurableObject<Env> {
     if ((row!.rig === 1) !== rig) fail(409, row!.rig === 1 ? "rig_enrollment" : "station_enrollment");
     if (rig && join) fail(409, "rig_enrollment");
     const workspace = row!.workspace as string;
+    // A token kept by a Directory from before #rigsGone took unused tokens must not bring a departed person's rig back.
+    if (rig && !this.#one("SELECT 1 AS x FROM members WHERE workspace = ? AND sub = ?", workspace, row!.created_by)) fail(404, "enrollment_not_found");
     const was = this.#memberships(station);
     // A rig stays one, a station a station, where it is: its kind changes only by removing it first.
     if (join && this.#one("SELECT 1 AS x FROM station_members WHERE station = ? AND rig = 1", station)) fail(409, "rig_enrollment");

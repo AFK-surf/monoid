@@ -1071,7 +1071,7 @@ fn board_track(
   let n = lanes.length()
   let index_of = fn(lane : String) { lanes.search(lane).unwrap_or(0) }
   let first = index_of(@sfbase.board_lane.untracked())
-  let at = @sf.EdgeWay::new(first.to_double())
+  let at = @motion.NodeWay::new(first.to_double())
   // (those laid out: the one chosen at rest; on the way, from where it set out to where it goes)
   let span : @signals.Signal[(Int, Int)] = @signals.signal((first, first))
   let due = Ref(fn() {  })
@@ -1081,7 +1081,7 @@ fn board_track(
     let hi = if from.ceil().to_int() > k { from.ceil().to_int() } else { k }
     span.set((if lo < 0 { 0 } else { lo }, if hi >= n { n - 1 } else { hi }))
     let (_, _, w, _) = track.laid_window_now()
-    at.go_by(track, k.to_double(), @sf.theme().chat_list.slide.per_unit(w))
+    at.go(track, k.to_double(), @sf.theme().chat_list.slide.per_unit(w))
     (due.val)()
     due.val = track.at_moment(at.end(), fn() { span.set((k, k)) })
   }
@@ -1212,8 +1212,8 @@ fn board_column(
   })
   let settled_n = fn() { settled_now.get() }
   // (lit faintly while a card in hand may be let go on it, coming and going as a control answering does)
-  let lit = @sf.EdgeWay::new(0.0)
-  col.reacts(fn() { (own.over_is)(key) }, fn(on) { lit.go(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
+  let lit = @motion.NodeWay::new(0.0)
+  col.reacts(fn() { (own.over_is)(key) }, fn(on) { lit.go_ms(col, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
   col
   .gap(Is(if wide { 2.0 } else { 0.0 }))
   .grow(Is(if wide { 0.0 } else { 1.0 }))
@@ -1567,7 +1567,7 @@ fn board_chips_node(v : @view.View, src : Source, ws : () -> String) -> Unit {
   // (each chip's node by its column, what is brought into sight)
   let chips : Map[String, @view.View] = Map([])
   // (what is left of a way into sight: drawn so much further back toward where it was, none as it ends)
-  let left = @sf.EdgeWay::new(0.0)
+  let left = @motion.NodeWay::new(0.0)
   v.box(fn(holder) {
     holder.shrink(Is(0.0)).width_share(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
     holder.scrolls(across, slop=@ui.touch_slop(), fn(held) {
@@ -1665,8 +1665,8 @@ fn board_line(v : @view.View, look : @ui.TextStyle) -> Double {
 fn board_chip_look(c : @view.View, item : @headless.RadioItem, lane : String, count : () -> Int) -> Unit {
   let on = fn() { item.chosen() }
   let lit = fn() { !on() && (item.hovered() || item.focus_shown() || item.pressed()) }
-  let hand = @sf.EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-  c.reacts(lit, fn(l) { hand.go(c, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
+  let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+  c.reacts(lit, fn(l) { hand.go_ms(c, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
   c
   .row(Is(true))
   .min_height(Is(Some(board_chip_h)))
@@ -1734,8 +1734,8 @@ fn card_ground(
   lit : () -> Bool,
   lifted : () -> Double,
 ) -> () -> Int64 {
-  let hand = @sf.EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-  card.reacts(lit, fn(l) { hand.go(card, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
+  let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+  card.reacts(lit, fn(l) { hand.go_ms(card, if l { 1.0 } else { 0.0 }, @sf.dur_ms) })
   let ground = fn() {
     let p = @sf.theme().p
     let at_rest = if picked() {
@@ -2041,7 +2041,7 @@ fn draft_card(
     match own.added_from {
       Some((added, from)) if added == id => {
         own.added_from = None
-        let grow = @sf.EdgeWay::new(0.0)
+        let grow = @motion.NodeWay::new(0.0)
         let by = Ref(0.0)
         card.at_moment(card.cause_at(), fn() {
           by.val = from.3 - card.laid_window_now().3
@@ -2314,7 +2314,7 @@ fn board_chat_card(
     own.start_from = None
   }
   // (brought off the board as a draft's chat lands: its hairline and shadow going as it does)
-  let landing = @sf.EdgeWay::new(0.0)
+  let landing = @motion.NodeWay::new(0.0)
   row.box(fn(w) {
   let raised = lift.node(w)
   match came {

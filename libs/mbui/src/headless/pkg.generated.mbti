@@ -26,6 +26,9 @@ pub fn slider(@view.View, () -> String, () -> Double, min~ : Double, max~ : Doub
 pub fn split(@view.View, () -> String, () -> Double, min~ : Double, max~ : Double, step~ : Double, (Double) -> Unit, (@view.View, Split) -> Unit, axis? : SplitAxis, span? : () -> Double, reset? : () -> Unit, said_value? : (Double) -> String, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 #callsite(autofill(loc))
+pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
 pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, (@view.View, Toggle) -> Unit, disabled? : () -> Bool, mixed? : () -> Bool, hold? : Hold, hold_press? : (Double, Double), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 // Errors
@@ -133,6 +136,22 @@ pub(all) enum SplitAxis {
   Horizontal
   Vertical
 }
+
+pub struct Table {
+  // private fields
+}
+pub fn Table::node(Self) -> @view.View
+#callsite(autofill(loc))
+pub fn Table::row(Self, @view.View, (@view.View, TableRow) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub struct TableRow {
+  // private fields
+}
+#callsite(autofill(loc))
+pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+#callsite(autofill(loc))
+pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn TableRow::node(Self) -> @view.View
 
 pub struct Toggle {
   // private fields

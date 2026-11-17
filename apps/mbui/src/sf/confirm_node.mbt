@@ -83,24 +83,24 @@ fn dialog_layer_node(
       shown()
       layer.owns(gone) |> ignore
       // (how far in it is, its look's and its ground's, from the moment it opened; out from the moment it closed)
-      let shown = EdgeWay::new(0.0)
-      let dim = EdgeWay::new(0.0)
+      let shown = @motion.NodeWay::new(0.0)
+      let dim = @motion.NodeWay::new(0.0)
       // (another dialog over it: it takes nothing then, dimmed over itself as what is under them is, coming and going
       // as that one's ground does)
-      let veiled = EdgeWay::new(0.0)
-      layer.reacts(covered, fn(on) { veiled.go(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
+      let veiled = @motion.NodeWay::new(0.0)
+      layer.reacts(covered, fn(on) { veiled.go_ms(layer, if on { 1.0 } else { 0.0 }, confirm_ground_ms) }) |> ignore
       let veil = fn() { confirm_faded(@ui.tree_theme().scrim, veiled.shown(layer)) }
       // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
       let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
-          shown.go(layer, 0.0, go_ms, ease=Leave)
-          dim.go(layer, 0.0, go_ms, ease=Leave)
+          shown.go_ms(layer, 0.0, go_ms, ease=Leave)
+          dim.go_ms(layer, 0.0, go_ms, ease=Leave)
         } else {
           gate.go(layer, fn() {
-            shown.go(layer, 1.0, come_ms)
-            dim.go(layer, 1.0, ground_ms)
+            shown.go_ms(layer, 1.0, come_ms)
+            dim.go_ms(layer, 1.0, ground_ms)
           })
         }
       })

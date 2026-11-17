@@ -53,6 +53,18 @@ export type InWorkspace = { workspace: string; home?: boolean };
 /// member of one workspace sees nothing of another's chats.
 export const sees = (viewer: InWorkspace, ws: string | null): boolean => ws === viewer.workspace || (ws === null && viewer.home !== false);
 
+/// The workspace a task another station sent here runs for, by its job's session key
+/// (`remote:<workspace>:<station>:<session>`: jobs/remote.ts, client/core-ts jobs.ts `remoteOwner`); null for any other
+/// key. No session here has such a key.
+export const remoteWs = (key: string): string | null => /^remote:([^:/]+):[^:/]+:.+$/.exec(key)?.[1] ?? null;
+
+/// Whether `viewer` sees what names a session not here (`sessionWs` undefined): another station's task its
+/// workspace's, whichever this station's home is; anything else the home workspace's.
+export const seesMissing = (viewer: InWorkspace, key: string): boolean => {
+  const ws = remoteWs(key);
+  return ws !== null ? ws === viewer.workspace : sees(viewer, null);
+};
+
 export type SessionRow = {
   /// The station it was handed here from (replica/handover.ts; absent: it began here, or came back to where it began).
   from?: string;

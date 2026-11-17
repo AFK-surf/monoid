@@ -63,6 +63,13 @@ yet and you can add one, add it.
   what it reads lets go of it and reads it anew as it wakes, but a `View::at_moment` still comes due and a way read by
   the clock is where the clock has it on waking (`src/view/at_rest_today_wbtest.mbt`), and a bare `@signals.effect`
   rests not at all: what a kept part holds is held by watches (`View::reacts`, a binding), never by an effect.
+- A block of a page's list taken for another key (`View::scrolls_window`'s `reused`) is a new block to everything but
+  the allocator, what its parts keep of their own too (the coordinator of the migration, 2026-11-17: 「复杂性由框架扛，
+  应用层只写外观」): how far a row or column in it is scrolled (`View::scrolls`, but one scrolled beside others as one,
+  `Scroll::beside`), a switch it keeps (`View::reused_bool`) and what it calls off as the block is taken
+  (`View::on_reused`) are its key's, kept by the list as the block leaves that key and given back as one shows it again
+  (`src/view/reused_state.mbt`), a part passing no key down for it. Never by a closure looked up as a frame reads where
+  it is (`Scroll::where_at` is each row's own as ever), never by making the part again for the key.
 - A page's list holds its head (`View::scrolls_window`'s `head`: over its keys, in what scrolls, never the anchor, where
   its keys start) and its foot (`foot`: pinned over the foot of what shows, as tall as it is laid out the room under
   the last block, nothing to the hand but what it holds that takes it). A page puts no row of room among its keys and

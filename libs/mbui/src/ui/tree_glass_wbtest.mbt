@@ -204,3 +204,50 @@ test "a node's linked corner across the width a theme is picked by: the first fr
   t.frame_at(t.time() + frame_period_default)
   assert_eq(themed_corner(), narrow)
 }
+
+///|
+/// A liquid node whose glass is bound to where the pointer is over it: the number its instance says of that spot (14)
+/// as it moves and as it goes: the node made once, its block (its instances) made again once a change, nothing else.
+test "a liquid node's spot bound: its instance's 14 follows it, the node never made again" {
+  let spot : @signals.Signal[(Double, Double)?] = @signals.signal(None, same=fn(a, b) { a == b })
+  let builds = Ref(0)
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(b) { b.over(Is(true)).ground(Is(0x3366CCFFL)) |> ignore }) |> ignore
+    root.box(fn(n) {
+      builds.val += 1
+      n
+      .over(Is(true))
+      .offset(Is((30.0, 20.0)))
+      .width(Is(Some(120.0)))
+      .height(Is(Some(44.0)))
+      .radius(Is(22.0))
+      .glass(By(fn() { Some(Glass::liquid(spot=spot.get())) }))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let liquid = fn() {
+    let c = g()
+    (0)
+    .until(c.ninst)
+    .filter(fn(k) { c.inst[k * inst_size + 5] == 6.0 })
+    .map(fn(k) { (c.inst[k * inst_size], c.inst[k * inst_size + 1], c.inst[k * inst_size + 14]) })
+    .collect()
+  }
+  assert_eq(liquid(), [(30.0, 20.0, 0.0)])
+  let made = view_painted().made
+  spot.set(Some((12.5, 8.0)))
+  t.frame_at(t.time() + frame_period_default)
+  // (from the node's own top left, wherever it is drawn: the renderers add its rect's)
+  assert_eq(liquid(), [(30.0, 20.0, 537.0 * 4096.0 + 528.0 + 1.0)])
+  spot.set(Some((100.0, 40.0)))
+  t.frame_at(t.time() + frame_period_default)
+  assert_eq(liquid(), [(30.0, 20.0, 712.0 * 4096.0 + 592.0 + 1.0)])
+  spot.set(None)
+  t.frame_at(t.time() + frame_period_default)
+  assert_eq(liquid(), [(30.0, 20.0, 0.0)])
+  assert_eq(builds.val, 1)
+  assert_eq(view_painted().made, made + 3)
+}

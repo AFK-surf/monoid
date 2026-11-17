@@ -258,7 +258,7 @@ fn image_coming_node(
     }
   }
   let shown = @signals.signal(false)
-  let fade = @sf.EdgeWay::new(0.0)
+  let fade = @motion.NodeWay::new(0.0)
   let due : Ref[() -> Unit] = Ref(fn() {  })
   parent.reacts(which, fn(w) {
     (due.val)()
@@ -291,7 +291,7 @@ fn image_coming_node(
           fade.put(0.0)
           shown.set(false)
           due.val = parent.at_moment(from, fn() {
-            fade.go(parent, 1.0, coming_in_ms, ease=Linear)
+            fade.go_ms(parent, 1.0, coming_in_ms, ease=Linear)
             shown.set(true)
           })
         }

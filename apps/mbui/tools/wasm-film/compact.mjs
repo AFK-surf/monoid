@@ -2,6 +2,29 @@
 // tens of thousands of locals, although very few are live at once; V8 then spends seconds and many GiB preparing it.
 // Reuse same-typed locals whose lifetimes cannot overlap. No application code, data or other function is changed.
 // Unsupported instruction encodings fail closed: a new compiler feature must not silently change a picture.
+// moonc v0.10.21 (moon 0.1.20261117) writes no start section: it exports `_start` instead, a wrapper of no locals that
+// guards against a second run, calls the initializer and then `main`. There the initializer is what is compacted, and
+// the host calls `_start` itself after instantiating (run.mjs, libs/mbui/src/host/wasm_shell.c).
+
+// Whether the module has a start section, so that instantiating it already ran the packages' initializers.
+export function hasStartSection(data) {
+  if (!Buffer.isBuffer(data)) data = Buffer.from(data);
+  let p = 8;
+  while (p < data.length) {
+    const type = data[p++];
+    let size = 0;
+    for (let shift = 0; ; shift += 7) {
+      if (p >= data.length || shift > 28) throw new Error('invalid Wasm section size');
+      const c = data[p++];
+      size += (c & 127) * 2 ** shift;
+      if (!(c & 128)) break;
+    }
+    if (type === 8) return true;
+    p += size;
+  }
+  return false;
+}
+
 export function compactStart(data) {
   if (!Buffer.isBuffer(data)) data = Buffer.from(data);
   if (data.length < 8 || !data.subarray(0, 8).equals(Buffer.from([0, 97, 115, 109, 1, 0, 0, 0]))) {
@@ -10,6 +33,7 @@ export function compactStart(data) {
   let p = 8;
   let imported = 0;
   let start = -1;
+  let exportStart = -1;
   let code;
   function uint() {
     let value = 0;
@@ -44,6 +68,41 @@ export function compactStart(data) {
     uint();
     if (flags & 1) uint();
   }
+  // Skip an instruction's immediates; locals and blocks are the callers' own.
+  function immediates(op) {
+    if (op === 0x0c || op === 0x0d || op === 0x10 || op === 0x12 ||
+        op === 0x23 || op === 0x24 || op === 0x25 || op === 0x26 ||
+        op === 0xd2 || op === 0xd5 || op === 0xd6) {
+      uint();
+    } else if (op === 0x0e) {
+      const n = uint();
+      for (let i = 0; i < n; i++) uint();
+      uint();
+    } else if (op === 0x11 || op === 0x13) {
+      uint(); uint();
+    } else if (op === 0x1c) {
+      const n = uint();
+      for (let i = 0; i < n; i++) {
+        if (![0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f].includes(data[p++])) throw new Error('unsupported select type');
+      }
+    } else if (op >= 0x28 && op <= 0x3e) {
+      uint(); uint();
+    } else if (op === 0x3f || op === 0x40) {
+      uint();
+    } else if (op === 0x41 || op === 0x42 || op === 0xd0) {
+      skipSigned();
+    } else if (op === 0x43) p += 4;
+    else if (op === 0x44) p += 8;
+    else if (op === 0xfc) {
+      const sub = uint();
+      if (sub === 8 || sub === 10 || sub === 12 || sub === 14) { uint(); uint(); }
+      else if (sub === 9 || sub === 11 || sub === 13 || sub === 15 || sub === 16 || sub === 17) uint();
+      else if (sub > 7) throw new Error(`unsupported Wasm instruction fc ${sub}`);
+    } else if (!(op === 0x00 || op === 0x01 || op === 0x0f || op === 0x1a || op === 0x1b ||
+               op === 0xd1 || (op >= 0x45 && op <= 0xc4))) {
+      throw new Error(`unsupported Wasm instruction ${op.toString(16)}`);
+    }
+  }
   while (p < data.length) {
     const sectionStart = p;
     const type = data[p++];
@@ -62,6 +121,17 @@ export function compactStart(data) {
         else if (kind === 3) p += 2;
         else throw new Error(`unsupported Wasm import ${kind}`);
       }
+    } else if (type === 7) {
+      const count = uint();
+      for (let i = 0; i < count; i++) {
+        const length = uint();
+        const at = p;
+        p += length;
+        if (p > end) throw new Error('truncated Wasm name');
+        const kind = data[p++];
+        const index = uint();
+        if (kind === 0 && data.subarray(at, at + length).toString('latin1') === '_start') exportStart = index;
+      }
     } else if (type === 8) {
       start = uint();
     } else if (type === 10) {
@@ -70,21 +140,46 @@ export function compactStart(data) {
     if (p > end) throw new Error('invalid Wasm section');
     p = end;
   }
-  if (!code || start < imported) throw new Error('Wasm has no local start function');
+  if (!code) throw new Error('Wasm has no local start function');
   p = code.payload;
   const count = uint();
   const codePrefixEnd = p;
-  let target;
+  const bodies = [];
   for (let i = 0; i < count; i++) {
     const sizeAt = p;
     const size = uint();
     const body = p;
     const end = body + size;
     if (end > code.end) throw new Error('truncated Wasm function');
-    if (i + imported === start) target = { sizeAt, body, end };
+    bodies.push({ sizeAt, body, end });
     p = end;
   }
-  if (!target || p !== code.end) throw new Error('invalid Wasm start function');
+  if (p !== code.end) throw new Error('invalid Wasm start function');
+  let target;
+  if (start >= 0) {
+    if (start < imported) throw new Error('Wasm has no local start function');
+    target = bodies[start - imported];
+  } else if (exportStart >= imported && bodies[exportStart - imported]) {
+    target = bodies[exportStart - imported];
+    p = target.body;
+    let groups = uint();
+    for (let i = 0; i < groups; i++) { uint(); p++; }
+    // `_start` of no locals of its own (moonc v0.10.21's wrapper): its first call of a function of this module is the
+    // packages' initializer, found by decoding its instructions in order, never by searching its bytes.
+    if (groups === 0) {
+      target = undefined;
+      while (p < bodies[exportStart - imported].end) {
+        const op = data[p++];
+        if (op === 0x10) {
+          const callee = uint();
+          if (callee >= imported) { target = bodies[callee - imported]; break; }
+        } else if (op >= 0x20 && op <= 0x22) uint();
+        else if (op === 0x02 || op === 0x03 || op === 0x04) skipSigned();
+        else if (op !== 0x05 && op !== 0x0b) immediates(op);
+      }
+    }
+  }
+  if (!target) throw new Error('Wasm has no local start function');
   p = target.body;
   const groups = uint();
   const types = [];
@@ -147,38 +242,7 @@ export function compactStart(data) {
       scopes[scope].end = at;
       if (frame.op === 0x03 && loops.pop() !== scope) throw new Error('invalid Wasm loop');
       scope = frame.parent;
-    } else if (op === 0x0c || op === 0x0d || op === 0x10 || op === 0x12 ||
-               op === 0x23 || op === 0x24 || op === 0x25 || op === 0x26 ||
-               op === 0xd2 || op === 0xd5 || op === 0xd6) {
-      uint();
-    } else if (op === 0x0e) {
-      const n = uint();
-      for (let i = 0; i < n; i++) uint();
-      uint();
-    } else if (op === 0x11 || op === 0x13) {
-      uint(); uint();
-    } else if (op === 0x1c) {
-      const n = uint();
-      for (let i = 0; i < n; i++) {
-        if (![0x7f, 0x7e, 0x7d, 0x7c, 0x70, 0x6f].includes(data[p++])) throw new Error('unsupported select type');
-      }
-    } else if (op >= 0x28 && op <= 0x3e) {
-      uint(); uint();
-    } else if (op === 0x3f || op === 0x40) {
-      uint();
-    } else if (op === 0x41 || op === 0x42 || op === 0xd0) {
-      skipSigned();
-    } else if (op === 0x43) p += 4;
-    else if (op === 0x44) p += 8;
-    else if (op === 0xfc) {
-      const sub = uint();
-      if (sub === 8 || sub === 10 || sub === 12 || sub === 14) { uint(); uint(); }
-      else if (sub === 9 || sub === 11 || sub === 13 || sub === 15 || sub === 16 || sub === 17) uint();
-      else if (sub > 7) throw new Error(`unsupported Wasm instruction fc ${sub}`);
-    } else if (!(op === 0x00 || op === 0x01 || op === 0x0f || op === 0x1a || op === 0x1b ||
-                 op === 0xd1 || (op >= 0x45 && op <= 0xc4))) {
-      throw new Error(`unsupported Wasm instruction ${op.toString(16)}`);
-    }
+    } else immediates(op);
     if (p > target.end) throw new Error('truncated Wasm instruction');
   }
   if (!ended || frames.length) throw new Error('invalid Wasm start body');

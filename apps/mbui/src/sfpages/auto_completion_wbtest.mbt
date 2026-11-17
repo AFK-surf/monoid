@@ -103,6 +103,8 @@ test "归档建议 made once: its rows follow the draft as the core says it; cha
     form.set(Some({ "enabled": false, "model": "gpt-6-mini", "dirty": true, "pending": false }))
     t.draw()
     assert_eq(t.get(Switch, label=@sf.t("web-pages.automaticDecisions.enabled")).check, Some(Off), msg=at)
+    // (保存修改 on its way in as the draft changed: pressed once it is there)
+    t.run_for(@ui.move_most_ms)
     t.click(Button, label=save)
     t.draw()
     assert_eq(named_calls(calls, "automaticDecisions.form.save").length(), 1, msg=at)

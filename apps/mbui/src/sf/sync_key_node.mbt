@@ -27,10 +27,10 @@ pub fn sync_key_node(
     // (all here: where it rests from, from when; held till its tick has stood)
     let rest : @signals.Signal[(SyncRest, Double)?] = @signals.signal(None)
     let held = @signals.signal(false)
-    let fade = EdgeWay::new(0.0)
-    let resting = EdgeWay::new(0.0)
-    let back = EdgeWay::new(0.0)
-    let ticked = EdgeWay::new(0.0)
+    let fade = @motion.NodeWay::new(0.0)
+    let resting = @motion.NodeWay::new(0.0)
+    let back = @motion.NodeWay::new(0.0)
+    let ticked = @motion.NodeWay::new(0.0)
     let off_wait : Ref[() -> Unit] = Ref(fn() {  })
     let off_held : Ref[() -> Unit] = Ref(fn() {  })
     k.reacts(fn() { syncing() is Some(_) }, fn(on) {
@@ -62,9 +62,9 @@ pub fn sync_key_node(
           let settle = r.ms * sync_rest_gone
           rest.set(Some((r, at)))
           held.set(true)
-          resting.go_by(k, 1.0, @motion.tween_to(duration=r.ms, ease=fn(s) { r.ease(s) }))
-          back.go_by(k, 1.0, @motion.tween(sync_back_ms, ease=InOut, delay=settle))
-          ticked.go_by(k, 1.0, @motion.tween(sync_tick_ms, ease=Out, delay=settle + sync_back_ms * 0.6))
+          resting.go(k, 1.0, @motion.tween_to(duration=r.ms, ease=fn(s) { r.ease(s) }))
+          back.go(k, 1.0, @motion.tween(sync_back_ms, ease=InOut, delay=settle))
+          ticked.go(k, 1.0, @motion.tween(sync_tick_ms, ease=Out, delay=settle + sync_back_ms * 0.6))
           off_held.val = k.at_moment(at + settle + sync_back_ms + sync_tick_ms + sync_done_ms, fn() {
             held.set(false)
             seen.set(false)
@@ -87,10 +87,10 @@ pub fn sync_key_node(
       off_there.val = fn() {  }
       if on {
         there.set(true)
-        fade.go(k, 1.0, @kit.presence_in_ms)
+        fade.go_ms(k, 1.0, @kit.presence_in_ms)
       } else if @signals.untracked(fn() { there.get() }) {
         // (fading out only from where it showed: nothing waited for where it never did)
-        fade.go_by(k, 0.0, @motion.tween(sync_out_ms, ease=Leave))
+        fade.go(k, 0.0, @motion.tween(sync_out_ms, ease=Leave))
         off_there.val = k.at_moment(k.cause_at() + sync_out_ms, fn() { there.set(false) })
       }
     })
@@ -98,9 +98,6 @@ pub fn sync_key_node(
       (off_wait.val)()
       (off_held.val)()
       (off_there.val)()
-      for w in [fade, resting, back, ticked] {
-        (w.due)()
-      }
     })
     |> ignore
     k

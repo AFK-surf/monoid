@@ -1009,7 +1009,7 @@ async function answerRequest(m: Members, stream: Stream, reader: Reader, head: a
   // A view of a screen (mesh/screens.ts): frames both ways for as long as it lasts. A read-only member views only.
   if (head.screen !== null && typeof head.screen === "object" && !Array.isArray(head.screen)) {
     if (m.screens === undefined) return answer(404, { error: "no screens on this station" });
-    return answerScreen(m.screens, stream, reader.carry, head, viewer, m.up);
+    return answerScreen(m.screens, stream, reader.carry, head, viewer, m.up, undefined, conn);
   }
   // A preview page's WebSocket (`"socket": true`): no body to wait for, the stream carries its messages both ways.
   if (head.socket === true) {

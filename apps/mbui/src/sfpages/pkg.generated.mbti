@@ -119,6 +119,8 @@ pub fn composer_foot_room(@ui.Ctx, String, Double, let_go~ : Bool) -> Double
 
 pub fn composer_open_room(@ui.Ctx, Double, corner? : Double) -> Double
 
+pub fn composer_page_left() -> Unit
+
 pub fn composer_place(@ui.Ctx, Double) -> ComposerPlace
 
 pub fn composer_room(@ui.Ctx, String, settled? : Bool, held? : Bool) -> Double
@@ -127,7 +129,7 @@ pub let composer_shape_ms : Double
 
 pub fn composer_side() -> Double
 
-pub fn composer_take_focus() -> Unit
+pub fn composer_take_focus(drafts? : String) -> Unit
 
 pub fn composer_width(Double) -> Double
 
@@ -354,6 +356,8 @@ pub let narrow_row_title : @ui.TextStyle
 pub fn new_chat_ask(String) -> Unit
 
 pub fn new_chat_asked(String) -> Map[String, @json.Json]
+
+pub let new_chat_drafts : String
 
 pub fn new_chat_left(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, NewChatFrame, @json.Json?, @motion.Anim, @motion.Anim) -> Unit
 
