@@ -19,8 +19,26 @@ pub let board_lane : @signals.Signal[String] = @signals.signal("wait")
 pub let board_adding : @signals.Signal[Bool] = @signals.signal(false)
 
 ///|
-/// Whether a card is in the hand (dragged).
-pub let board_drag_active : @signals.Signal[Bool] = @signals.signal(false)
+/// How wide the chat open beside a wide board is as its edge was dragged here (none: as the prefs keep it; 0 or less:
+/// its own width again, the prefs' not read till they say so too), board_chat_w_of's.
+// kept across runs: put back by board_reset as a run starts
+let board_chat_w_here : @signals.Signal[Double?] = @signals.signal(None, same=fn(a, b) { a == b })
+
+///|
+/// How wide the chat beside a wide board is where nothing else is said, and how narrow and how wide its edge drags it
+/// at most (the board's room beside it may leave less: sfpages' board_wide).
+pub let board_chat_w_default : Double = 460.0
+
+///|
+pub let board_chat_least : Double = 360.0
+
+///|
+pub let board_chat_most : Double = 860.0
+
+///|
+/// The prefs' key the width of the chat beside a wide board is kept by (`sidebars`, the person's as a sidebar's width is:
+/// no workspace before the line).
+let board_chat_key : String = "\nboardChat"
 
 ///|
 /// A line written down to start later (待派发): its key (`new:board-…`, the key its chat is made under), its words, the
@@ -89,7 +107,7 @@ pub let board_rev : @signals.Signal[Int] = @signals.signal(0)
 let board_written : Ref[Int] = Ref(0)
 
 ///|
-/// As at the start: nothing chosen here, nothing open, in hand or started.
+/// As at the start: nothing chosen here, nothing open or started.
 pub fn board_reset() -> Unit {
   board_views_here.clear()
   board_groups_here.clear()
@@ -100,16 +118,16 @@ pub fn board_reset() -> Unit {
   board_written.val = 0
   board_rev.set(0)
   board_started.set([])
+  board_chat_w_here.set(None)
   board_transient_reset()
 }
 
 ///|
-/// What is open on the board, in hand or being written put away (another workspace come in view).
+/// What is open on the board or being written put away (another workspace come in view).
 pub fn board_transient_reset() -> Unit {
   board_pick.set(None)
   board_adding.set(false)
   board_lane.set("wait")
-  board_drag_active.set(false)
 }
 
 ///|
@@ -557,4 +575,60 @@ pub fn board_people_of(i : ChatItem, me : String) -> Array[String] {
     names.push(me)
   }
   names
+}
+
+///|
+/// How wide the chat beside a wide board is to be: as its edge was dragged here, else as the prefs keep it (`sidebars`'
+/// board_chat_key), else board_chat_w_default; the board's room beside it may leave less (sfpages' board_wide).
+pub fn board_chat_w_of(src : Source) -> Double {
+  match board_chat_w_here.get() {
+    Some(w) => if w <= 0.0 { board_chat_w_default } else { w }
+    None =>
+      match field(field(src.topic("prefs", {}).get().value, "sidebars"), board_chat_key) {
+        Some(String(s)) =>
+          match board_whole_of(s) {
+            Some(n) if n > 0 => n.to_double()
+            _ => board_chat_w_default
+          }
+        _ => board_chat_w_default
+      }
+  }
+}
+
+///|
+/// The chat beside a wide board made `w` wide by its edge (None: its own width again); `save`, kept in the prefs too
+/// (`sidebars`, a width there whole points in words: core-ts prefs.ts), else shown so alone while the edge is in hand.
+pub fn set_board_chat_w(src : Source, w : Double?, save~ : Bool) -> Unit {
+  match w {
+    Some(x) => {
+      let n = x.round()
+      board_chat_w_here.set(Some(n))
+      if save {
+        (src.call)(
+          "prefs.set",
+          { "sidebars": Json::object(Map::from_array([(board_chat_key, Json::string(n.to_int().to_string()))])) },
+          answer_unread,
+        )
+      }
+    }
+    None => {
+      board_chat_w_here.set(Some(0.0))
+      if save {
+        (src.call)("prefs.set", { "sidebars": Json::object(Map::from_array([(board_chat_key, Json::null())])) }, answer_unread)
+      }
+    }
+  }
+}
+
+///|
+/// A whole number written in decimal digits alone, four at most as the prefs' `sidebars` keep one ("" or anything
+/// else: None).
+fn board_whole_of(s : String) -> Int? {
+  guard s.length() > 0 && s.length() <= 4 else { return None }
+  let mut n = 0
+  for c in s {
+    guard c >= '0' && c <= '9' else { return None }
+    n = n * 10 + (c.to_int() - '0'.to_int())
+  }
+  Some(n)
 }

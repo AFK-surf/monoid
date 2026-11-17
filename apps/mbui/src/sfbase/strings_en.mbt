@@ -1017,6 +1017,7 @@ let en : Map[String, String] = {
   "web-main.jobs.noneNote": "Web pages and long-running jobs started by agents appear here",
   "web-main.jobs.notices": "Notices",
   "web-main.jobs.output": "Output",
+  "web-main.jobs.others": "Other running · {n}",
   "web-main.jobs.services": "Services",
   "web-main.jobs.show": "Show",
   "web-main.jobs.stop": "Stop",

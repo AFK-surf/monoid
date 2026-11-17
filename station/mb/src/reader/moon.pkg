@@ -82,6 +82,13 @@ import {
   "station/feishu",
   "station/comma",
   "station/rigs_mode",
+  "station/browser",
+  "station/screens",
+  "station/adb_devices",
+  "station/terminals_logins",
+  "station/drive",
+  "station/updates",
+  "station/mesh_runtime",
 }
 
 pkgtype(kind: "executable")

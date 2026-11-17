@@ -993,6 +993,7 @@ web-main.jobs.noneInChat
 web-main.jobs.noneNote
 web-main.jobs.notices
 web-main.jobs.output
+web-main.jobs.others
 web-main.jobs.services
 web-main.jobs.show
 web-main.jobs.stop

@@ -55,8 +55,12 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (2026-11-17: a table in a block taken for another message's row the same nodes, scrolled across as that message has
   // it, what a code block or a formula keeps the same, mbui reused_state.mbt, sf md_block_node made again for none:
   // before it phone up 566 made, 618 laid and a frame 142, 126, wide up 699 and 910, the same at 60, 120, 24 and 7)
-  "phone cold": (757, 29, 532, 73, 763),
-  "phone again": (327, 17, 242, 28, 301),
+  // (2026-11-17: 小屏 Home's list no longer opens under what is left up long, moved into 待处理, so the rows of a screen
+  // more are shown in its place: made with the chat's in its cold first frame, their bindings run again as the chat
+  // opens again over Home; phone cold 750 made, 527 laid, 72 measured, 751 bindings before it, again 301 bindings, the
+  // chat's own the same, at 60, 120, 24 and 7 too; again's others brought down to what is done now)
+  "phone cold": (1013, 29, 673, 79, 942),
+  "phone again": (324, 17, 239, 27, 320),
   "wide cold": (2443, 483, 2011, 217, 2446),
   "wide again": (882, 130, 881, 123, 1049),
   "phone up": (564, 366, 617, 96, 0),

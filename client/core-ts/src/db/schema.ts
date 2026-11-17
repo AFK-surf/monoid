@@ -659,9 +659,13 @@ export function ensureSlackSaid(sql: Sql): boolean {
   sql.exec(`CREATE TABLE IF NOT EXISTS slack_said (
     station TEXT NOT NULL, session TEXT NOT NULL, i INTEGER NOT NULL, k INTEGER NOT NULL, out INTEGER NOT NULL, call TEXT,
     user TEXT, who TEXT, at INTEGER NOT NULL, dest TEXT NOT NULL, text TEXT NOT NULL, failed INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (station, session, i, k)
+    refused INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (station, session, i, k)
   )`);
-  return !had;
+  // `refused`: the tool itself refused the call (its result an error, not Slack's answer), so nothing left the station.
+  // Added after the table was: then it is filled again, so that what was kept as failed says which it was.
+  const added = had && !sql.all("PRAGMA table_info(slack_said)").some((c) => c[1] === "refused");
+  if (added) sql.exec("ALTER TABLE slack_said ADD COLUMN refused INTEGER NOT NULL DEFAULT 0");
+  return !had || added;
 }
 
 /// The full-text index an earlier core kept of `said` (`said_index`, FTS5) taken away: a row's words went from it only

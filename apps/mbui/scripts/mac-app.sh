@@ -124,15 +124,22 @@ else
   # scripts/mac.sh makes (the bytecode beside the app's compile). (Not `core.sh shell` first when the .a was missing, as
   # before: that built the shell with cargo, past its prebuilt part, on every CI run whose Actions cache of out/core
   # missed: 253 s of 427, 2026-10-24, 40069429045.)
-  APP=stillfail MODE=release bash "$D/mac.sh" build > "$OUT/build.log" 2>&1 || { tail -40 "$OUT/build.log"; exit 1; }
-  if grep -q 'built for newer macOS version' "$OUT/build.log"; then
-    grep 'built for newer macOS version' "$OUT/build.log" | head -5 >&2
-    echo "mac-app.sh: something was built for a newer macOS than $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1
-  fi
-  # (where the build's time went, said: mbc's account of the app's units and its link, the core's parts; the log
-  # itself kept only for a failure, and the app's 73 s of a release's 185 s Mac job could not be told apart, 2026-10-31)
-  grep -E '^mbc: |^mac\.sh: |^core\.sh|hermes|^real|took|in [0-9.]+ s' "$OUT/build.log" | cut -c1-220 | head -20 || true
   BIN=$A/_build/native/release/build/stillfail/stillfail/stillfail.exe
+  # (MBUI_BUILT: the app and core.hbc this job's build made just before, CI's desktop-build's prebuild, checked there as
+  # here: taken as they are, mac.sh's 12-20 s of finding them up to date cut a build done at the job's five minutes,
+  # 133850663609, 2026-11-17)
+  if [ "${MBUI_BUILT:-}" = 1 ] && [ -f "$BIN" ] && [ -f "$A/out/core/core.hbc" ]; then
+    echo "mac-app.sh: the app and core.hbc as this job's build made them (MBUI_BUILT), not built again"
+  else
+    APP=stillfail MODE=release bash "$D/mac.sh" build > "$OUT/build.log" 2>&1 || { tail -40 "$OUT/build.log"; exit 1; }
+    if grep -q 'built for newer macOS version' "$OUT/build.log"; then
+      grep 'built for newer macOS version' "$OUT/build.log" | head -5 >&2
+      echo "mac-app.sh: something was built for a newer macOS than $MACOSX_DEPLOYMENT_TARGET" >&2; exit 1
+    fi
+    # (where the build's time went, said: mbc's account of the app's units and its link, the core's parts; the log
+    # itself kept only for a failure, and the app's 73 s of a release's 185 s Mac job could not be told apart, 2026-10-31)
+    grep -E '^mbc: |^mac\.sh: |^core\.sh|hermes|^real|took|in [0-9.]+ s' "$OUT/build.log" | cut -c1-220 | head -20 || true
+  fi
   t2=$(now)
 
   # the icon, the app's own (still.fail's face; youdid.wtf's under its tape; still.fail preview's still.fail's), made once

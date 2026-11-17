@@ -484,7 +484,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       file: "choice_cards_node.mbt",
       api: [("choice_cards_node.mbt", "choice_cards_node")],
       play: None,
-      about: "几种呈现方式并排成卡片，图标在上、文字在下，同时只选中一个（看板「显示」弹层里的 列表 | 看板）。",
+      about: "几种呈现方式并排成卡片，图标在上、文字在下，同时只选中一个（如 列表 | 看板）。",
       cases: [
         (
           "列表 | 看板",
