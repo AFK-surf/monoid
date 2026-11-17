@@ -105,7 +105,10 @@ pub fn update_key_node(
 ) -> Unit {
   // (its tip on what holds it: said while busy too, the key taking no press then, as the pointer rests on it)
   parent.box(made_for=loc, fn(o) {
+    // (the key, which a press lands on: its press shuts the tip, as one on what the tip is of does)
+    let key : Ref[@view.View?] = Ref(None)
     @headless.button(o, label, fn(_) { press() }, disabled=busy, fn(k, b) {
+      key.val = Some(k)
       let progress = EdgeWay::new(if @signals.untracked(coming) is Some(_) { 1.0 } else { 0.0 })
       k.reacts(fn() { coming() is Some(_) }, fn(on) { progress.go(k, if on { 1.0 } else { 0.0 }, dur_ms) })
       k
@@ -162,7 +165,14 @@ pub fn update_key_node(
       |> ignore
     })
     |> ignore
-    ignore(tip_node(tips, o, why, within=true))
+    ignore(
+      tip_node(tips, o, why, within=true, pressed=fn() {
+        match key.val {
+          Some(k) => k.pressed()
+          None => false
+        }
+      }),
+    )
   })
   |> ignore
 }

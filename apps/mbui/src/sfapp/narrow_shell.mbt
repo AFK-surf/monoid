@@ -154,6 +154,8 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   // a workspace switched shows once all its Home opens on is answered (home_opens), the screen as it was till then
   // (sfbase's workspace_switch_node)
   @sfbase.workspace_switch_node(v, src, home_opens)
+  // what the person's devices waiting on this one put up (signed_in_prompts)
+  signed_in_prompts(v, src)
   // the bottom bar told what the app's state and the window say of it as that changes, at the moment of what changed it
   // (a page put on the stack, a place come in, the bars' order, the window's width), whatever frames are drawn: the
   // frames only read where it is then (bar_tell)
@@ -188,7 +190,7 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
     match workspace_in_view(src).0 {
       Some(w) => {
         narrow_over(c, src, w)
-        signed_in_over(c, src, w)
+        signed_in_over(c)
       }
       None => ()
     }
@@ -364,19 +366,43 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 }
 
 ///|
-/// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
-/// the settings put up, the presenters, the toasts, the loupe.
-fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
-  // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
-  // : put up when no other sheet is
-  @settings.lock_prompts(settings_core(src, w), !sheet_open())
-  // a device of the person's waiting on this one for a vault's key (settings/vault_prompts.mbt), the same way
-  @settings.vault_prompts(settings_core(src, w), !sheet_open())
-  // (the core what the settings put up over a page draws with, put up by what has none at hand)
-  @settings.panels_frame(settings_core(src, w), w.id)
+/// Over the frame with a workspace in view, in every tier: the presenters, the loupe (what the devices waiting on this
+/// one put up: signed_in_prompts; the core the settings' panels draw with: app.mbt's reaction, panels_frame).
+fn signed_in_over(c : @ui.Ctx) -> Unit {
   // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)
   finger_loupe(c)
+}
+
+///|
+/// What the devices of the person's waiting on this one put up over whichever page is open, with a workspace in view, in
+/// every shell signed in (node `v`'s, done as what it reads changes, at its cause's moment): a new device waiting on
+/// this one's code (settings' lock_prompts), then one waiting for a vault's key (settings' vault_prompts), in any
+/// workspace of the person's (the core's `lockPrompts`), each put up when no other sheet is.
+fn signed_in_prompts(v : @view.View, src : Source) -> Unit {
+  v.reacts(
+    fn() {
+      match workspace_in_view(src).0 {
+        Some(w) => {
+          let core = settings_core(src, w)
+          // (free: no sheet of the app's up, nothing presented)
+          Some((w.id, (core.topic)("lockPrompts", Map([])).get().value, !sheet_open(), !@sf.presenting()))
+        }
+        None => None
+      }
+    },
+    fn(said) {
+      match (said, workspace_in_view(src).0) {
+        (Some((_, _, free, _)), Some(w)) => {
+          let core = settings_core(src, w)
+          @settings.lock_prompts(core, free)
+          // (none put up while the one before put one up: each asks whether anything is presented)
+          @settings.vault_prompts(core, free)
+        }
+        _ => ()
+      }
+    },
+  )
 }
 
 ///|

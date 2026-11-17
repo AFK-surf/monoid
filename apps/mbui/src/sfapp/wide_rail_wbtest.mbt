@@ -1147,3 +1147,34 @@ test "wide: switching rail places with same-width sidebars starts no fold motion
   assert_eq(@sfbase.page_way.id, "")
   assert_true(app.nav.top() != Home)
 }
+
+///|
+test "wide: the sidebar folded, 更新 past the rail says what it offers as the pointer rests on it; pressed, its tip shut" {
+  let t = wide_tester([], mode="chat")
+  @sffixture.fixture_update("0.1.9999")
+  t.frame()
+  t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
+  t.move_to(1000.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.query(Button, label=update_said_now()).unwrap().rect
+  assert_eq(x, @sfdesk.update_closed_in)
+  let tip = fn() { t.words().iter().any(fn(s) { s.0 == update_tip_now() }) }
+  t.move_to(x + w / 2.0, y + h / 2.0)
+  t.run_for(@sf.tip_delay_ms + @ui.move_most_ms)
+  assert_true(tip(), msg="its tip, the pointer resting on it")
+  t.click(Button, label=update_said_now())
+  t.run_for(@ui.move_most_ms)
+  assert_false(tip(), msg="its tip shut by the press, the pointer still on it")
+}
+
+///|
+/// What the update key says now, and its tip (sfdesk brand.mbt's update_said).
+fn update_said_now() -> String {
+  @sfbase.update_stands().label
+}
+
+///|
+fn update_tip_now() -> String {
+  let stands = @sfbase.update_stands()
+  stands.label + (if stands.note == "" { "" } else { " · " + stands.note })
+}

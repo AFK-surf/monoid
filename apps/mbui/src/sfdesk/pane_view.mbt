@@ -648,15 +648,10 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     dock_node(b, fn() { pane_side_at(src, b) }, fn(r) { rail_node(r, src, tips, fn() { pane_rail_at(src, b) }) })
   })
   |> ignore
-  // what the page's bars and the sidebar's parts work out from where the block's move has got (pane_block_built), then
-  // 更新 where the closed bar's start leaves room for it, taking presses where it draws them
-  @ui.old(v, fn(c) {
-    pane_block_built(c, src, v)
-    pane_update_built(c, src)
-  }, key=tape_island_key)
-  .over(Is(true))
-  |> @ui.old_takes_own
-  |> ignore
+  // what the page's bars and the sidebar's parts work out from where the block's move has got (pane_block_built)
+  @ui.old(v, fn(c) { pane_block_built(c, src, v) }, key=tape_island_key).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // 更新 where the closed bar's start leaves room for it (pane_update_node)
+  v.show(at_once=true, fn() { pane_update_shows(src, v) }, fn(o) { pane_update_node(o, src, tips) })
   // the sidebar made once, the tree's, over the block where it lays its sidebar out (side_node)
   v.box(fn(sides) {
     sides.over(Is(true)) |> ignore
@@ -887,15 +882,41 @@ fn pane_block_built(c : @ui.Ctx, src : Source, n : @view.View) -> Unit {
 }
 
 ///|
-/// 更新 off the tape with the sidebar closed, where its first row is not shown: where the bar's start leaves room for it
-/// (its old view, the window's whole).
-fn pane_update_built(c : @ui.Ctx, src : Source) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  let r = pane_room(src, w, c.width)
-  if !r.gated && update_shown() && r.bar && !r.peek {
-    update_button(c, src, @ui.window_inset(), r.top)
+/// Whether 更新 shows off the tape with the sidebar closed, where its first row is not shown, in the workspace in view, a
+/// window as wide as node `n` has it: an update offered (update_shown), the block the closed bar, not shown a while.
+fn pane_update_shows(src : Source, n : @view.View) -> Bool {
+  match @sfbase.workspace_in_view(src).0 {
+    Some(w) => {
+      let r = pane_room(src, w, n.window().0)
+      !r.gated && update_shown() && r.bar && !r.peek
+    }
+    None => false
   }
+}
+
+///|
+/// 更新 off the tape with the sidebar closed (pane_update_shows) in node `o`, over all of the window: where the bar's
+/// start leaves room for it, past the rail (update_closed_in; past the window's buttons where they are in the app's top
+/// row, update_closed_inset), update_top under the system's bars over the window (a phone's status bar, which take what
+/// is pressed under them); its tip in `tips`.
+fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
+  o
+  .over(Is(true))
+  .padding(By(fn() {
+    let top = match @sfbase.workspace_in_view(src).0 {
+      Some(w) => pane_room(src, w, o.window().0).top
+      None => 0.0
+    }
+    let left = if @ui.window_inset_now() { update_closed_inset } else { update_closed_in }
+    (left, top + update_top, 0.0, 0.0)
+  }))
+  |> ignore
+  // (in a row: as wide as the key, its tip and its press on it alone)
+  o.box(fn(row) {
+    row.row(Is(true)) |> ignore
+    update_key_of(row, src, tips)
+  })
+  |> ignore
 }
 
 ///|

@@ -760,7 +760,10 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-vault-add": (859, 1923, 452),
   "wide settings-vault-editor": (877, 1964, 436),
   "wide settings-vault-recover": (777, 1707, 440),
-  "wide settings-lock-prompt": (625, 1279, 320),
+  // (raised once, 2026-11-17: the device asking's panel put up by a reaction of the shell as the workspace is in view
+  // (sfapp's signed_in_prompts), in the frame the screen opens in, not by the old view over the pages a frame after it:
+  // its nodes made, laid out and measured in that frame's count, nothing more shown)
+  "wide settings-lock-prompt": (636, 1408, 364),
   "wide settings-add-people": (869, 1982, 492),
   "wide settings-workspace-mark": (998, 1160, 228),
   "wide settings-local-fonts": (626, 1123, 285),

@@ -22,6 +22,8 @@ fn taped_shell(v : @view.View, src : Source) -> Unit {
   // (page_local_ms at most), as a page pushed on a phone slides in then
   @sfdesk.tape_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
+  signed_in_prompts(v, src)
   // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
@@ -46,6 +48,8 @@ fn paned_shell(v : @view.View, src : Source) -> Unit {
   // a page opened in the pane shows once the core has given what it shows (page_local_ms at most: pane_page_wait, pane_pages)
   @sfdesk.pane_view(v, src, ready=fn(p) { pane_ready(src, p) }, most=page_local_ms)
   @ui.old(v, fn(c) { taped_over(c, src) }).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // what the person's devices waiting on this one put up (narrow_shell's signed_in_prompts)
+  signed_in_prompts(v, src)
   // the chat being shared as a picture, and a visualization over the whole screen: nodes of the tree's of their own
   // (sfpages' publish.mbt, sfbase's viz_page.mbt)
   @sfpages.publish_layer_node(v, src)
@@ -175,7 +179,7 @@ fn taped_over(c : @ui.Ctx, src : Source) -> Unit {
       }
       @sfdesk.overlays(c, src, w)
       pick_back(c)
-      signed_in_over(c, src, w)
+      signed_in_over(c)
     }
     None => ()
   }

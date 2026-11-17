@@ -13,32 +13,29 @@ fn update_shown() -> Bool {
 }
 
 ///|
-/// The desktop app's newer build, the library's update key (one look on every screen), the size of the
-/// filter beside it (32, its mark 16): in the sidebar's first row before the filter (update_in_row); with the sidebar
-/// closed, where the bar's start leaves room for it, past the rail (and the window's buttons). `top`: the system's
-/// bars over the window (a phone's status bar), which take what is pressed under them: it goes below them.
-fn update_button(c : @ui.Ctx, src : Source, inset : Bool, top : Double) -> Unit {
-  let left = if inset { update_closed_inset } else { update_closed_in }
-  c.layer(fn() {
-    c.box(style=update_at, left~, top=top + update_top, fn() { update_in_row(c, src) }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// The update in a row of keys, in its three stages: 有新版本 (a download mark), progress while it comes, then 重启更新.
-/// Pressing the progress opens its details; pressing one offered, ready or failed does what it says (update_go).
-fn update_in_row(c : @ui.Ctx, src : Source) -> Unit {
-  let now = update_now()
-  let coming = match now {
-    Coming(_, part) => Some(part)
-    _ => None
-  }
-  let (label, tip, busy) = update_said()
-  let offered = now is Offered(_, ..)
-  @sf.update_key(c, "side/update", update_key_side, update_key_mark, label, tip, busy, coming~, offered~, on_press=fn() {
-    update_pressed(src)
-  })
+/// The desktop app's newer build, the library's update key (one look on every screen) in node `parent`, the size of the
+/// filter beside it (32, its mark 16), in its three stages: 有新版本 (a download mark), progress while it comes, then
+/// 重启更新; its tip in `tips`. Pressing the progress opens its details; pressing one offered, ready or failed does what
+/// it says (update_pressed). In the sidebar's first row before the filter (side_node's); with the sidebar closed, where
+/// the bar's start leaves room for it (pane_update_node).
+fn update_key_of(parent : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
+  @sf.update_key_node(
+    parent,
+    tips,
+    update_key_side,
+    update_key_mark,
+    fn() { update_said().0 },
+    fn() { update_said().1 },
+    fn() { update_said().2 },
+    fn() {
+      match update_now() {
+        Coming(_, part) => Some(part)
+        _ => None
+      }
+    },
+    fn() { update_pressed(src) },
+    offered=fn() { update_now() is Offered(_, ..) },
+  )
 }
 
 ///|
@@ -118,11 +115,6 @@ pub let update_closed_in : Double = 68.0
 
 ///|
 let update_closed_inset : Double = 80.0
-
-///|
-/// 更新's box with the sidebar closed: its key's size.
-// kept across runs: a value (no field of it changes)
-let update_at : @ui.Style = @ui.css("row")
 
 ///|
 /// The update key pressed: where the stations' newer releases wait too (sfpages station_updates.mbt), the dialog of

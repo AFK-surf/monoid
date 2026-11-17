@@ -660,7 +660,7 @@ test "a station's card put up before the first frame is built: titled its name f
 
 ///|
 /// A window's tree of what is presented alone (no frame of the app round it, so nothing says
-/// the settings' core but `here`: the old frame's build says it while `here` says so, as signed_in_over does), on a
+/// the settings' core but `here`: the old frame's build says it while `here` says so, as app.mbt's reaction does), on a
 /// phone: the Tester and the fixture's chat's source.
 fn peek_core_later_tester(here : @signals.Signal[Bool]) -> (@ui.Tester, Source) {
   let src = fixture_app("chat")

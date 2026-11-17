@@ -235,26 +235,8 @@ fn lists_band_node(
           }
         })
       })
-      // 更新 before the filter where one is offered (brand.mbt update_in_row)
-      line.show(at_once=true, update_shown, fn(k) {
-        @sf.update_key_node(
-          k,
-          tips,
-          update_key_side,
-          update_key_mark,
-          fn() { update_said().0 },
-          fn() { update_said().1 },
-          fn() { update_said().2 },
-          fn() {
-            match update_now() {
-              Coming(_, part) => Some(part)
-              _ => None
-            }
-          },
-          fn() { update_pressed(src) },
-          offered=fn() { update_now() is Offered(_, ..) },
-        )
-      })
+      // 更新 before the filter where one is offered (brand.mbt update_key_of)
+      line.show(at_once=true, update_shown, fn(k) { update_key_of(k, src, tips) })
       // the stations' newer releases waiting for this person beside it, as the app's own is offered; pressed, their
       // dialog (sfpages station_updates.mbt)
       let stations_said = fn() {

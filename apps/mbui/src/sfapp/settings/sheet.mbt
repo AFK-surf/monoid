@@ -6,8 +6,8 @@
 /// The core the settings' panels put up by what has none at hand draw with (a station's card, a device asking), and the
 /// workspace it is of: the frame's, said by panels_frame, followed (what is made once and reads it, as it is first
 /// read, made again as it comes or another workspace's comes: put up before there was one, it is not left without it).
-/// The same workspace's is the same core, told to none again (said every frame).
-// kept across runs: said again by every frame (panels_frame), taken back as a run begins (on_reset) and by reset
+/// The same workspace's is the same core, told to none again.
+// kept across runs: said as the workspace in view changes (panels_frame), taken back as a run begins (on_reset) and by reset
 let panels_core : @signals.Signal[(String, Core)?] = @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
     (None, None) => true
@@ -26,7 +26,7 @@ fn init {
 
 ///|
 /// The settings' core for this frame (what a panel put up by what has none at hand draws with), of workspace
-/// `workspace`: call each frame, before the presenters.
+/// `workspace`: said as the workspace in view changes, before what is presented is made (sfapp's app.mbt).
 pub fn panels_frame(core : Core, workspace : String) -> Unit {
   panels_core.set(Some((workspace, core)))
 }

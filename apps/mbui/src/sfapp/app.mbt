@@ -624,8 +624,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
     })
     // (the core what the settings put up by what has none at hand draws with (a station's card from a chat), said as
     // the tree is made and as the workspace in view changes, before what is presented is made: one put up before the
-    // first frame is built (a fixture's) is made with it, not with none; the old frame says it again each build:
-    // settings' panels_frame)
+    // first frame is built (a fixture's) is made with it, not with none: settings' panels_frame)
     root.reacts(fn() { workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(_) {
       match workspace_in_view(src).0 {
         Some(w) => @settings.panels_frame(settings_core(src, w), w.id)

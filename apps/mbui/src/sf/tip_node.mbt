@@ -41,7 +41,9 @@ let tip_out_scale : Double = 0.97
 /// name on its card), whole: shown only where they show cut short there as it would show (View::words_cut_now: any words
 /// in `anchor`, as the old tip's Ctx::shows_cut), none where they show whole; once shown, it goes as any does, not as
 /// they come to show whole. `shortcut`: the action that does what the control does, its keys said after the words
-/// (tip's: shortcut_keys, as the app says them; none while no keyboard is at hand).
+/// (tip's: shortcut_keys, as the app says them; none while no keyboard is at hand). `pressed`: whether what a press on
+/// it lands on is held (none: `anchor` itself), where that is a control `within` it (an update's key in what holds its
+/// tip): its press shuts it as one on `anchor` does.
 pub fn tip_node(
   tips : TipLayer,
   anchor : @view.View,
@@ -54,6 +56,7 @@ pub fn tip_node(
   within? : Bool = false,
   repeats? : Bool = false,
   shortcut? : String = "",
+  pressed? : () -> Bool,
 ) -> TipHand {
   if within {
     anchor.points(Is(true)) |> ignore
@@ -134,7 +137,10 @@ pub fn tip_node(
     let held = hand.get()
     (
       @ui.pointing() is Mouse && (if within { anchor.pointed_in() } else { anchor.pointed() }),
-      anchor.pressed(),
+      match pressed {
+        Some(f) => f()
+        None => anchor.pressed()
+      },
       anchor.focus_shown(),
       anchor.takes_input(),
       label() != "",
