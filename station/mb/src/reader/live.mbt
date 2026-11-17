@@ -643,6 +643,13 @@ fn Actors::steps_now(self : Actors, key : String) -> Json {
 }
 
 ///|
+/// The last rate told for a session, or zero when no model step is writing.
+fn Actors::rate_now(self : Actors, key : String) -> Json {
+  let rate = self.live.rates.get(key).map(r => r.told).unwrap_or(0)
+  { "type": jstr("rate"), "tokensPerSecond": jnum(rate.to_double()) }
+}
+
+///|
 /// A followed session as it is now, for a stream that opens (live.ts `now`).
 fn Actors::live_now(self : Actors, key : String) -> Json {
   let out : Array[Json] = []
@@ -651,6 +658,7 @@ fn Actors::live_now(self : Actors, key : String) -> Json {
   }
   out.push(self.steps_now(key))
   out.push(self.work_now(key))
+  out.push(self.rate_now(key))
   Json::array(out)
 }
 
@@ -956,6 +964,9 @@ fn Actors::joined(self : Actors, key : String, sub : LSub, first : Array[Json], 
   for m in queued {
     self.ltell(key, [sub], m)
   }
+  // The queue may contain an older rate than the current one, or a step may have ended while the history was read.
+  // Tell the current rate last, including zero so a reconnect clears what the client held before it disconnected.
+  self.ltell(key, [sub], self.rate_now(key))
 }
 
 ///|
