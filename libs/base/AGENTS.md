@@ -17,7 +17,10 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   runs the runtime until nothing is ready, never waiting, and says when its next timer is due. On js iroh is loaded from an address (`Shell::start`) or given, the
   module or what loads it (`Shell::start_with`, `IrohJs`); a worker has no localStorage, so `storage.*` fails there.
   A page keeps keys and their bytes past localStorage's few MB in IndexedDB (`idb.*`, `shell_js.mbt`'s head), in a map
-  of its own where there is none (Node): no other shell has those ops.
+  of its own where there is none (Node): no other shell has those ops. A program whose core must run in one tab of
+  a browser at a time asks for a tab's claim (`claim_tab`, `tab.mbt`): on a page a Web Lock of its name, taken over
+  on a BroadcastChannel of the same (`TabClaim::take_over`: the tab holding it is told `Yielded` before it lets go);
+  natively, and on a page without either, `Held` at once. What a tab does as it yields is its program's.
 - `src/wire`: pure stream framing and event-stream parsing (`lines`, request/reply heads, SSE text) with no transport.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links,
   hello/pings/renewal, requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the
@@ -56,7 +59,8 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   delay, speed and outages), whose head says what it models.
 - No Rust shell or real network is linked in unit tests (`shell.c` is compiled as a stub only, and the `extern "js"`
   iroh glue in `shell_js.mbt` runs in Node against a fake module alone, `shell_js_wbtest.mbt`: its async tests run at
-  once in one process, and a page has one shell, so they are one test). When changing `src/shell` or what `src/mesh`
+  once in one process, and a page has one shell, so they are one test; a tab's claim, which reaches no shell, is
+  tested beside it against Web Locks and a BroadcastChannel of the test's). When changing `src/shell` or what `src/mesh`
   asks of a shell, state what external suite or environment verified it.
 
 ## What a program on it gets with it
