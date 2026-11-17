@@ -256,7 +256,7 @@ test("each desktop report waits for its platform, and a legacy report for both",
     for (const [key, context] of Object.entries({ win: { desktopPlatform: "windows" }, mac: { desktopPlatform: "macos" }, old: { os: "windows" } })) {
       assert.equal((await send(h, station, report({ key, area: "desktop", context }))).status, 201);
     }
-    const bucket = await h.mf.getR2Bucket("RELEASES", "api");
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
     await bucket.put("changelog.json", JSON.stringify([{ version: 1330, commit: "a", at: 1, text: ["fix"], fixes: [1, 2, 3], parts: ["desktop"] }]));
     await bucket.put("win/latest.json", JSON.stringify({ versionCode: 1335 }));
     await bucket.put("mac/latest.json", JSON.stringify({ versionCode: 1329 }));
