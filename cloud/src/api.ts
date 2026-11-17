@@ -19,7 +19,7 @@ import { changelog, serveChangelog, serveFixed } from "./changelog";
 import { serveModels } from "./models";
 import { FEEDBACK_LIMITS, receiveFeedback, receiveReply } from "./feedback";
 import { pushKey, registration, stationNotify } from "./push";
-import { relays, relayUrls } from "./relays";
+import { relays } from "./relays";
 import { receiveLoad, relaysLoad } from "./relay-load";
 import { receiveIncidents, receiveReleased, serveStatus } from "./status";
 import { receiveLogs, receiveTraces } from "./tracing";
@@ -36,6 +36,7 @@ const STATUS: Record<string, number> = {
   invite_code_required: 403, invite_code_invalid: 404, invite_code_used: 409, invite_code_expired: 410,
   invalid_note: 400, invalid_expiry: 400, invalid_limits: 400,
   feedback_not_found: 404,
+  invalid_target: 400, too_many_relays: 429, relay_not_found: 404, invalid_token: 403, wrong_relay: 403, unknown_relay: 400, invalid_secret: 403, not_from_relay: 403, invalid_request: 400,
   invalid_lock_entries: 400, lock_exists: 409, lock_fork: 409, lock_does_not_follow: 409, lock_refused: 409, invalid_device: 400, invalid_kind: 400,
 };
 
@@ -148,6 +149,13 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
 
   // ── the relays on machines of their own: their counters, a minute apart (relay-load.ts) ──
   if (path === "/v1/relays/load" && method === "POST") return receiveLoad(request, env);
+  // A relay putting itself on the cloud's list with a token its operator made (relay-registry.ts, relay-enroll.sh):
+  // { token, url } (url where the token names none). Answers its secret, which its counters come with.
+  if (path === "/v1/relays/enroll" && method === "POST") {
+    const input = await readJson(request).catch(() => null);
+    if (!input) return reply({ error: "invalid_request" }, 400);
+    return directory(() => env.DIRECTORY.getByName("primary").relayEnrolled(input.token, input.url));
+  }
 
   // ── stations, authenticated by their own key ────────────────────────────
   // Enrolling moves the station to the token's workspace, out of any other; joining adds that
@@ -165,7 +173,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       // `rig`: it enrolls as a rig, which a rig's token alone makes (directory.ts `enroll`).
       ...(await env.DIRECTORY.getByName("primary").enroll(input.token as string, input.station as string, version, path === "/v1/stations/join", input.locks === true, input.rig === true)),
       station: input.station,
-      ...relays(env),
+      ...relays(await env.DIRECTORY.getByName("primary").relaysNow()),
       grant_keys: grantKeys(env),
     }));
   }
@@ -276,7 +284,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     // (`operator`: whether `/v1/admin/me` would answer this same request (on the console's host, index.ts), so that a device reads the operator's lists only
     // where it is one: every device of everyone asked it at every open of its events socket, the locks' end to end,
     // 2026-11-15)
-    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), ...relays(env, true), operator: adminOrigins(env).includes(new URL(request.url).origin) && (await consoleAdmin(request, env, claims.email)) }));
+    return directory(async () => ({ ...(await dir.me(sub)), invitations: await dir.invitationsFor(claims.email), operator: adminOrigins(env).includes(new URL(request.url).origin) && (await consoleAdmin(request, env, claims.email)) }));
   }
   // The person's own lock, which the cloud keeps and carries but does not decide (personal-lock.ts).
   if (path === "/v1/me/personal-lock") {
@@ -379,8 +387,8 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
     return directory(async () => {
       const role = await dir.memberRole(sub, ws);
       const signed = await signCredential(env, { sub, email: claims.email, name: claims.name ?? "", ws, role, device: input.device as string, sid: claims.sid });
-      await dir.recordDevice(sub, ws, input.device as string, { base, kind: input.kind === "app" || input.kind === "web" ? input.kind : undefined, label: typeof input.label === "string" ? input.label.slice(0, 120) : undefined });
-      return { ...signed, ...relays(env, true) };
+      const told = await dir.recordDevice(sub, ws, input.device as string, { base, kind: input.kind === "app" || input.kind === "web" ? input.kind : undefined, label: typeof input.label === "string" ? input.label.slice(0, 120) : undefined });
+      return { ...signed, ...told };
     });
   }
   // The workspace lock, which the cloud keeps and carries but does not decide (directory.ts, lock.ts).
@@ -459,6 +467,28 @@ export async function replyToFeedback(env: Env, id: string, by: string, text: un
   }
 }
 
+/**
+ * The cloud's list of relays, its operator's (relay-registry.ts): on the console (adminApi) and with ADMIN_TOKEN
+ * (index.ts), `by` who asked. POST /v1/admin/relays/list: the list and the tokens not used yet; /put { url, name,
+ * target? }: one put on it (or named anew); /remove { url }: one taken off; /token { name, url?, target? }: a token
+ * for a relay to put itself on it with, and the command its machine runs (relay-enroll.sh). Null: not one of these.
+ */
+export async function relayAdmin(env: Env, by: string, path: string, method: string, input: Record<string, unknown>): Promise<Response | null> {
+  if (method !== "POST" || !path.startsWith("/v1/admin/relays/")) return null;
+  const dir = env.DIRECTORY.getByName("primary");
+  const call = path.slice("/v1/admin/relays/".length);
+  if (call === "list") return directory(() => dir.relayList());
+  if (call === "put") return directory(() => dir.relayPut(by, input));
+  if (call === "remove") return directory(async () => (await dir.relayRemove(input.url), { removed: true }));
+  if (call === "token") {
+    return directory(async () => {
+      const made = await dir.relayToken(by, input);
+      return { ...made, command: `sh relay-enroll.sh ${env.PUBLIC_ORIGIN} ${made.token}${made.url ? "" : " <https://this relay's URL>"}` };
+    });
+  }
+  return null;
+}
+
 export async function adminApi(request: Request, env: Env, path: string): Promise<Response> {
   const method = request.method;
   const claims = await account(bearerToken(request), env, request);
@@ -534,6 +564,8 @@ export async function adminApi(request: Request, env: Env, path: string): Promis
   if (replied && method === "POST") return replyToFeedback(env, replied[1]!, claims.email, input.text);
   // How loaded the relays are (relay-load.ts).
   if (path === "/v1/admin/relays" && method === "GET") return reply(await relaysLoad(env));
+  const relayCall = await relayAdmin(env, claims.email, path, method, input);
+  if (relayCall) return relayCall;
   const revoke = /^\/v1\/admin\/invite-codes\/([A-Za-z0-9-]{1,32})\/revoke$/.exec(path);
   if (revoke && method === "POST") return directory(() => dir.revokeInviteCode(revoke[1]!));
   return notFound();

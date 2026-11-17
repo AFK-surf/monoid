@@ -1,18 +1,18 @@
 // How loaded still.fail's relays are, for the admin's console (its 中继 page, GET /v1/admin/relays): each relay's
 // counters (relay-metrics.ts Load) about a minute apart, kept a week. The relays on machines of their own send theirs
-// (POST /v1/relays/load, relay-load.sh run by a timer there, believed by the address they send from); Cloudflare's is read by this Worker's cron from the
+// (POST /v1/relays/load, relay-load.sh run by a timer there: receiveLoad says which each is); Cloudflare's is read by this Worker's cron from the
 // relay process (index.ts). What is shown is worked out from the counters when asked (relay-load-view.ts). What each did
 // in the minute between two samples goes to Cloud Logging as well (a `relay minute` log line), beside the
 // devices' and stations' records of the same minutes.
 import { DurableObject } from "cloudflare:workers";
-import { nowSeconds, reply } from "./auth";
+import { bearerToken, digest, nowSeconds, reply } from "./auth";
 import type { DirectoryLoad } from "./directory";
 import type { Env } from "./env";
 import { LIMITS } from "./limits";
 import { relayConns, relayLoad, type Load } from "./relay-metrics";
 import { GAP, relayLoadView, relayMinute, type RelayLoadView, type RelayMinute } from "./relay-load-view";
 import { relayToTelemetry } from "./tracing";
-import { relayUrls, sameUrl } from "./relays";
+import { ownRelay, relayName, relayUrls } from "./relays";
 
 /** How long samples are kept: the week the console shows, and a day more. */
 const KEEP = 8 * 86_400;
@@ -61,15 +61,22 @@ const MAX_METRICS = 256 * 1024;
 
 /**
  * A relay's counters, from relay-load.sh on its machine: its metrics as iroh-relay gives them, with node_rx, node_tx and
- * node_load1 lines for the machine's; `x-stillfail-relay` says which relay (its URL among RELAY_URLS). Ours are named by
- * their IP, which is where they send from: one is believed when Cloudflare saw the request come from its own address.
+ * node_load1 lines for the machine's. Which relay of the cloud's list it is (relay-registry.ts): the one whose secret it
+ * comes with (`authorization: Bearer`, given as it enrolled); else, one listed with no secret, the one
+ * `x-stillfail-relay` names, believed when Cloudflare saw the request come from its own address (those the deploy's
+ * config listed, named by their IP, which is where they send from).
  */
 export async function receiveLoad(request: Request, env: Env): Promise<Response> {
-  const named = request.headers.get("x-stillfail-relay") ?? "";
-  const url = relayUrls(env).find((u) => sameUrl(u) === sameUrl(named));
-  if (!url) return reply({ error: "unknown_relay" }, 400);
-  const from = request.headers.get("cf-connecting-ip");
-  if (!from || new URL(url).hostname.replace(/^\[|\]$/g, "") !== from) return reply({ error: "not_from_relay" }, 403);
+  const supplied = bearerToken(request);
+  let url: string;
+  try {
+    url = await env.DIRECTORY.getByName("primary").relayHeard(supplied ? await digest(supplied) : null, request.headers.get("x-stillfail-relay") ?? "", request.headers.get("cf-connecting-ip"));
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "";
+    if (code === "unknown_relay") return reply({ error: code }, 400);
+    if (code === "invalid_secret" || code === "not_from_relay") return reply({ error: code }, 403);
+    throw error;
+  }
   if (Number(request.headers.get("content-length") ?? 0) > MAX_METRICS) return reply({ error: "too_large" }, 413);
   const text = await request.text();
   if (text.length > MAX_METRICS) return reply({ error: "too_large" }, 413);
@@ -88,7 +95,7 @@ export async function receiveLoad(request: Request, env: Env): Promise<Response>
 export async function sampleOwnRelay(env: Env): Promise<string[]> {
   if (!env.RELAY || env.RELAY_URL) return [];
   const text = await env.RELAY.getByName("primary").metrics().catch(() => null);
-  const url = relayUrls(env)[0]!;
+  const url = ownRelay(env);
   const loads = env.RELAY_LOAD.getByName("primary");
   const load = text === null ? null : relayLoad(text);
   const minute = load === null ? null : await loads.record(url, load);
@@ -121,13 +128,15 @@ export async function sampleOwnRelay(env: Env): Promise<string[]> {
  * the Directory itself is (directory.ts adminLoad), which the same minute's event has the page read again.
  */
 export async function relaysLoad(env: Env): Promise<{ relays: (RelayLoadView & { name: string; limits?: { bytes: number; frames: number } })[]; directory: DirectoryLoad }> {
-  const urls = relayUrls(env);
-  const [views, directory] = await Promise.all([env.RELAY_LOAD.getByName("primary").view(urls), env.DIRECTORY.getByName("primary").adminLoad()]);
+  const dir = env.DIRECTORY.getByName("primary");
+  const listed = await dir.relaysNow();
+  const urls = relayUrls(listed);
+  const [views, directory] = await Promise.all([env.RELAY_LOAD.getByName("primary").view(urls), dir.adminLoad()]);
   return {
     directory,
     relays: views.map((v, i) => ({
       ...v,
-      name: env.RELAY_NAMES?.[v.url] ?? new URL(v.url).host,
+      name: relayName(listed, v.url),
       ...(i === 0 && !env.RELAY_URL ? { limits: { bytes: LIMITS.bytesPerDay, frames: LIMITS.framesPerDay } } : {}),
     })),
   };

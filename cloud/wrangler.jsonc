@@ -53,6 +53,9 @@
     "ADMIN_ORIGIN_ALIASES": "https://admin.ember.3720.org",
     // The web app's test channel (stillfail-web-beta); removing it turns the channel off (its calls answer 421).
     "BETA_ORIGIN": "https://app.youdid.wtf",
+    // RELAY_URLS, RELAY_ENTRIES, RELAY_ENTRY_TARGETS and RELAY_NAMES are read once, as the cloud's list of relays the
+    // first time its Directory opens without one (src/relay-registry.ts), and kept by its operator from then on: they
+    // go from here once that deploy has run. What they listed:
     // Relays beside still.fail's own (src/relays.ts): one in Beijing (Alibaba Cloud, by its IP: no ICP filing), for
     // stations and devices in mainland China, where Cloudflare's is slow or out of reach; one in Hong Kong (Alibaba
     // Cloud, on a line tuned for the mainland), near enough to both the mainland and abroad; one in Shenzhen (Alibaba

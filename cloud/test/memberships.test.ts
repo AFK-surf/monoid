@@ -3,9 +3,6 @@
 // state says its home (the workspace it joined first) at the top, as before, and the others in `workspaces`.
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import test from "node:test";
 import { exportPKCS8, generateKeyPair } from "jose";
 import type { LockEntry } from "../src/lock.ts";
@@ -371,24 +368,21 @@ test("notices and reports are of the workspace the station names, one it is in; 
 });
 
 test("a relay a workspace added as its own before it became one of still.fail's is told as still.fail's alone (2026-11-16, 上海 in hypershell-算法)", async () => {
-  const persist = mkdtempSync(join(tmpdir(), "relays-"));
-  const before = await harness({ persist });
+  const h = await harness();
   const x = await key();
   try {
-    const alice = before.as(await before.login("alice"));
+    const alice = h.as(await h.login("alice"));
     const ws = await create(alice, "Lab");
     assert.equal((await alice("PUT", `/v1/workspaces/${ws}/relays`, { relays: ["https://pvg.example:8445"] })).status, 200);
-    assert.equal((await enroll(before, x, await token(alice, ws, "box"))).status, 200);
-  } finally {
-    await before.close();
-  }
-  const after = await harness({ persist, relayUrls: "https://pvg.example:8445" });
-  try {
-    const state = await (await connect(after, x)).state();
+    assert.equal((await enroll(h, x, await token(alice, ws, "box"))).status, 200);
+    // The operator puts it on the cloud's list (src/relay-registry.ts).
+    const put = await h.fetch("/v1/admin/relays/put", { method: "POST", headers: { authorization: `Bearer ${h.adminToken}`, "content-type": "application/json" }, body: JSON.stringify({ url: "https://pvg.example:8445", name: "上海" }) });
+    assert.equal(put.status, 200);
+    const state = await (await connect(h, x)).state();
     assert.deepEqual(state.ways.relays, [], "not the workspace's any more");
-    assert.deepEqual(state.stillfail_relays, [after.origin, "https://pvg.example:8445"]);
-    assert.deepEqual(state.relay_urls, [after.origin, "https://pvg.example:8445"], "each once");
+    assert.deepEqual(state.stillfail_relays, [h.origin, "https://pvg.example:8445"]);
+    assert.deepEqual(state.relay_urls, [h.origin, "https://pvg.example:8445"], "each once");
   } finally {
-    await after.close();
+    await h.close();
   }
 });

@@ -59,7 +59,8 @@ export async function harness(
     /** REVIEW_ACCOUNTS: who signs in with a password (password.ts). */
     reviewAccounts?: string;
     relayUrl?: string;
-    /** RELAY_URLS and RELAY_NAMES: relays beside it, and what they are called (the console's 中继 page). */
+    /** RELAY_URLS and RELAY_NAMES: the list of relays beside it the Directory starts with, and what they are called
+     * (relays.ts listedFromConfig, the console's 中继 page). */
     relayUrls?: string;
     relayNames?: Record<string, string>;
     /** STATUS_PAGES: the pages the cron checks for still.fail/status; answered by `push` (they are outside). */

@@ -4,7 +4,9 @@
   workspace's stations, each whole or one that only runs tasks (a rig, listed with the member whose it is; who may
   use it is that member's signature, checked by the machine, never the cloud's to say; listing it as the other kind
   changes nothing on the machine by itself, `station/AGENTS.md`), members' credentials and their revocation,
-  still.fail's relays. A workspace's own relays and the ways it turned off are its stations'
+  still.fail's relays: its own (`RELAY_URL`) and a list its operator keeps as it runs, never a deploy's config (the
+  user, 2026-11-17: 「env 不保留，外部要用让他们自己配」), a relay putting itself on it only with a token the operator
+  made for it (`src/relay-registry.ts`), so deploying a relay puts it on no cloud's list. A workspace's own relays and the ways it turned off are its stations'
   (`station/src/mesh/ways.ts`): what is kept of them here is for the stations and devices from before, and for a
   browser or a device that reaches no station yet (its relays only `/v1/me` names), told to stations once as their
   first. The stations say theirs on their presence sockets (`ways.put`), the newest record kept (`#waysPut`). A

@@ -6,7 +6,7 @@ import path from "node:path";
 import { harness } from "./harness.ts";
 import { TEST_CONNECTIONS } from "./relay-limit.ts";
 import { relayCounters } from "../src/relay-metrics.ts";
-import { relays } from "../src/relays.ts";
+import { listedFromConfig, ownRelay, relays } from "../src/relays.ts";
 
 const upgrade = { upgrade: "websocket", "sec-websocket-protocol": "iroh-relay" };
 
@@ -188,22 +188,23 @@ test("a day's budget counted before reads kept their place starts over", async (
   }
 });
 
-test("the relays handed out: still.fail's first, then RELAY_URLS, each once", () => {
+test("the relays handed out: the cloud's own first, then its list (as the deploy's config said it), each once", () => {
   const env = { PUBLIC_ORIGIN: "https://app.still.fail" };
-  assert.deepEqual(relays(env), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail"], relay_names: {} });
-  assert.deepEqual(relays({ ...env, RELAY_URLS: " https://39.105.157.122 ,,https://app.still.fail" }), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail", "https://39.105.157.122"], relay_names: {} });
-  assert.deepEqual(relays({ ...env, RELAY_URL: "https://relay.example" }).relay_urls, ["https://relay.example"]);
+  const told = (e: Parameters<typeof listedFromConfig>[0], device = false) => relays({ own: ownRelay(e), listed: listedFromConfig(e) }, device);
+  assert.deepEqual(told(env), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail"], relay_names: {} });
+  assert.deepEqual(told({ ...env, RELAY_URLS: " https://39.105.157.122 ,,https://app.still.fail" }), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail", "https://39.105.157.122"], relay_names: {} });
+  assert.deepEqual(told({ ...env, RELAY_URL: "https://relay.example" }).relay_urls, ["https://relay.example"]);
   // The entries: for a device, apart from the relays (one among them would put an endpoint on its relay twice); never
-  // for a station.
-  const entered = { ...env, RELAY_URLS: "https://39.105.157.122", RELAY_ENTRIES: "https://39.105.157.122:8443, https://39.105.157.122" };
-  assert.deepEqual(relays(entered), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail", "https://39.105.157.122"], relay_names: {} });
-  assert.deepEqual(relays(entered, true).relay_urls, ["https://app.still.fail", "https://39.105.157.122"]);
-  assert.deepEqual(relays(entered, true).relay_entries, ["https://39.105.157.122:8443"]);
-  assert.deepEqual(relays(env, true).relay_entries, []);
-  assert.deepEqual(relays({ ...entered, RELAY_ENTRY_TARGETS: { "https://39.105.157.122:8443/": "https://app.still.fail/", "https://elsewhere.test": "https://app.still.fail" } }, true).relay_entry_targets, { "https://39.105.157.122:8443": "https://app.still.fail" });
-  assert.deepEqual(relays({ ...entered, RELAY_ENTRY_TARGETS: { "https://39.105.157.122:8443": "https://unknown.test" } }, true).relay_entry_targets, {});
-  assert.deepEqual(relays({ ...entered, RELAY_NAMES: { "https://39.105.157.122:8443": "北京转香港" } }, true).relay_names, { "https://39.105.157.122:8443": "北京转香港" });
-  // Named as RELAY_NAMES says, only those handed out.
-  const named = { ...env, RELAY_URLS: "https://39.105.157.122", RELAY_NAMES: { "https://39.105.157.122": "北京", "https://gone.example": "旧的" } };
-  assert.deepEqual(relays(named).relay_names, { "https://39.105.157.122": "北京" });
+  // for a station; and only those into a relay of the list.
+  const entered = { ...env, RELAY_URLS: "https://39.105.157.122", RELAY_ENTRIES: "https://39.105.157.122:8443, https://39.105.157.122", RELAY_ENTRY_TARGETS: { "https://39.105.157.122:8443/": "https://app.still.fail/" } };
+  assert.deepEqual(told(entered), { relay_url: "https://app.still.fail", relay_urls: ["https://app.still.fail", "https://39.105.157.122"], relay_names: {} });
+  assert.deepEqual(told(entered, true).relay_urls, ["https://app.still.fail", "https://39.105.157.122"]);
+  assert.deepEqual(told(entered, true).relay_entries, ["https://39.105.157.122:8443"]);
+  assert.deepEqual(told(entered, true).relay_entry_targets, { "https://39.105.157.122:8443": "https://app.still.fail" });
+  assert.deepEqual(told(env, true).relay_entries, []);
+  assert.deepEqual(told({ ...entered, RELAY_ENTRY_TARGETS: { "https://39.105.157.122:8443": "https://unknown.test" } }, true).relay_entries, []);
+  assert.deepEqual(told({ ...entered, RELAY_NAMES: { "https://39.105.157.122:8443": "北京转香港" } }, true).relay_names, { "https://39.105.157.122:8443": "北京转香港" });
+  // Named as RELAY_NAMES says, only those handed out; the cloud's own too.
+  const named = { ...env, RELAY_URLS: "https://39.105.157.122", RELAY_NAMES: { "https://39.105.157.122": "北京", "https://gone.example": "旧的", "https://app.still.fail": "Cloudflare" } };
+  assert.deepEqual(told(named).relay_names, { "https://app.still.fail": "Cloudflare", "https://39.105.157.122": "北京" });
 });

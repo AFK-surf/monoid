@@ -54,18 +54,16 @@ export interface Env {
    * in (`beta` in the console); unset, there is none (index.ts).
    */
   BETA_ORIGIN?: string;
-  /** Where stations and clients find the relay; defaults to PUBLIC_ORIGIN (whose /relay is the relay: relay-worker.ts). */
+  /** This cloud's own relay; defaults to PUBLIC_ORIGIN (whose /relay is the relay: relay-worker.ts). The others are the
+   * cloud's list (relay-registry.ts), its operator's, never a var. */
   RELAY_URL?: string;
-  /** More relays beside it (comma-separated), for where it is slow or out of reach (relays.ts). */
-  RELAY_URLS?: string;
   /** "globalping": the relays are probed from China's networks every half hour (probes.ts). */
   RELAY_PROBES?: string;
-  /** Ways into the relays for devices alone (comma-separated): one relay machine's address forwarding to another's relay
-   * (relays.ts). */
+  /** What a deploy's config said of the relays before the cloud kept its list (relays.ts `listedFromConfig`): taken as
+   * the list once, the first time the Directory opens without one, and read no more; to be taken out of the configs. */
+  RELAY_URLS?: string;
   RELAY_ENTRIES?: string;
-  /** The relay each entry forwards to, keyed by the entry's URL (relays.ts). */
   RELAY_ENTRY_TARGETS?: Record<string, string>;
-  /** What the relays are called (by their URL) where people see which one a connection goes through (relays.ts). */
   RELAY_NAMES?: Record<string, string>;
   /** How loaded the relays are, for the console (relay-load.ts). */
   RELAY_LOAD: DurableObjectNamespace<RelayLoad>;

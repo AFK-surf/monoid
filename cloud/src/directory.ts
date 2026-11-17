@@ -23,7 +23,8 @@ import { grantKeys } from "./grants";
 import { langOf, setCloud, type Lang } from "./i18n.ts";
 import { isIconUrl } from "./icons";
 import { showsOf, type Shows } from "./noticeText";
-import { MAX_RELAYS, parseRelays, relays, relayUrls, sameUrl, WAY_KINDS, waysOf } from "./relays";
+import { listedFromConfig, MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl, WAY_KINDS, waysOf, type Listed, type Relays } from "./relays";
+import { RELAY_TABLES, RELAY_TOKEN_TTL_SEC, relayPut, relayTokenOf, type RelayListed, type RelayTokenInput } from "./relay-registry";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
 import type { AccountEvent, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
@@ -214,6 +215,16 @@ export class Directory extends DurableObject<Env> {
     // who added it: `enrolled_by`). `rig` is 1 on its row and on the enrollment that makes one; absent before them.
     for (const table of ["station_members", "enrollments"]) {
       if (!this.#rows(`PRAGMA table_info(${table})`).some((r) => r.name === "rig")) this.#run(`ALTER TABLE ${table} ADD COLUMN rig INTEGER`);
+    }
+    // The cloud's list of relays (relay-registry.ts), and the tokens made for relays to put themselves on it; the list
+    // the deploy's config said (RELAY_URLS and the rest) taken as its first, once.
+    ctx.storage.sql.exec(RELAY_TABLES);
+    if (!this.#one("SELECT 1 AS x FROM migrations WHERE name = 'relays-listed'")) {
+      this.ctx.storage.transactionSync(() => {
+        const now = nowSeconds();
+        for (const l of listedFromConfig(env)) this.#run("INSERT OR IGNORE INTO relays (url, name, target, added_at, added_by) VALUES (?, ?, ?, ?, 'config')", l.url, l.name, l.target, now);
+        this.#run("INSERT INTO migrations (name, at) VALUES ('relays-listed', ?)", now);
+      });
     }
     if (sockets.where(env) === "objects") this.handOff();
     // What deliveries a restart cut short still owe.
@@ -588,7 +599,7 @@ export class Directory extends DurableObject<Env> {
     const stations = this.#stationViews(id).map(({ workspace: _, ...station }) => station);
     const invitations = this.#rows("SELECT id, role, email, created_by, expires_at FROM invitations WHERE workspace = ? AND expires_at > ? ORDER BY expires_at", id, nowSeconds()) as unknown as InvitationView[];
     const added = this.#rows("SELECT email, role, added_by, added_at FROM added WHERE workspace = ? ORDER BY added_at", id) as unknown as AddedView[];
-    return { id, name: w.name as string, ...marks(w.emoji, w.icon), created_at: w.created_at as number, members, stations, rigs: this.#rigViews(id), invitations, added, relays: parseRelays(w.relays), ...offOf(w.ways_off), ways: waysOf(this.env, parseRelays(w.relays), parseRelays(w.ways_off)), lock: this.#lockHead(id), ...(this.#locked(id) ? { locked: true } : {}) };
+    return { id, name: w.name as string, ...marks(w.emoji, w.icon), created_at: w.created_at as number, members, stations, rigs: this.#rigViews(id), invitations, added, relays: parseRelays(w.relays), ...offOf(w.ways_off), ways: waysOf(this.#relays(), parseRelays(w.relays), parseRelays(w.ways_off)), lock: this.#lockHead(id), ...(this.#locked(id) ? { locked: true } : {}) };
   }
 
   /**
@@ -796,7 +807,7 @@ export class Directory extends DurableObject<Env> {
     return this.#view(sub, workspace);
   }
 
-  me(sub: string): { user: MeView | null; workspaces: WorkspaceSummary[] } {
+  me(sub: string): { user: MeView | null; workspaces: WorkspaceSummary[] } & ReturnType<typeof relays> {
     const row = this.#one(`SELECT sub, email, name, ${SHOWN_PICTURE} AS picture, own_picture, beta FROM users WHERE sub = ?`, sub);
     // beta and own_picture only when set: clients from before them know no such field, and an account without them says
     // nothing.
@@ -807,7 +818,7 @@ export class Directory extends DurableObject<Env> {
         (SELECT COUNT(*) FROM members x WHERE x.workspace = w.id) AS members, w.relays, w.ways_off, w.emoji, w.icon
       FROM members m JOIN workspaces w ON w.id = m.workspace WHERE m.sub = ? ORDER BY w.created_at`, sub)
       .map(({ relays, ways_off, emoji, icon, ...w }) => ({ ...w, relays: parseRelays(relays), ...offOf(ways_off), ...marks(emoji, icon) })) as unknown as WorkspaceSummary[];
-    return { user: user ?? null, workspaces };
+    return { user: user ?? null, workspaces, ...relays(this.#relays(), true) };
   }
 
   /**
@@ -1086,14 +1097,16 @@ export class Directory extends DurableObject<Env> {
     this.#changed(workspace, false);
   }
 
-  /** A device asked for a credential: kept for the owner to check when the lock is turned on. */
-  recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): void {
+  /** A device asked for a credential: kept for the owner to check when the lock is turned on. The relays it is told
+   * with the credential. */
+  recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): ReturnType<typeof relays> {
     const now = nowSeconds();
     this.#run(
       `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
       workspace, sub, device, said.base ?? null, said.kind ?? null, said.label ?? null, now, now,
     );
+    return relays(this.#relays(), true);
   }
 
   /** The devices that asked for credentials in the workspace in the last 31 days: its owners and admins see everyone's
@@ -1160,7 +1173,7 @@ export class Directory extends DurableObject<Env> {
   setRelays(sub: string, id: string, input: unknown): WorkspaceView {
     this.#role(sub, id, MANAGERS);
     if (!Array.isArray(input) || input.length > MAX_RELAYS) fail(400, "invalid_relays");
-    const ours = relayUrls(this.env).map(sameUrl);
+    const ours = relayUrls(this.#relays()).map(sameUrl);
     const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
     const list: string[] = [];
     for (const raw of input as unknown[]) {
@@ -1172,9 +1185,9 @@ export class Directory extends DurableObject<Env> {
     // A relay of its own taken away is no longer among those turned off either; if none of its relays would stay on,
     // still.fail's come back on.
     const off = parseRelays(this.#one("SELECT ways_off FROM workspaces WHERE id = ?", id)?.ways_off);
-    const ways = waysOf(this.env, list, []).map((w) => sameUrl(w.id));
+    const ways = waysOf(this.#relays(), list, []).map((w) => sameUrl(w.id));
     const filtered = off.filter((o) => o === "ours" || ways.includes(sameUrl(o)));
-    const kept = waysOf(this.env, list, filtered).some((w) => w.kind === "relay" && w.on)
+    const kept = waysOf(this.#relays(), list, filtered).some((w) => w.kind === "relay" && w.on)
       ? filtered
       : filtered.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
     this.ctx.storage.transactionSync(() => {
@@ -1198,17 +1211,17 @@ export class Directory extends DurableObject<Env> {
     const row = this.#one("SELECT relays, ways_off FROM workspaces WHERE id = ?", id)!;
     const own = parseRelays(row.relays);
     const nowOff = parseRelays(row.ways_off);
-    const ours = relayUrls(this.env).map(sameUrl);
+    const ours = relayUrls(this.#relays()).map(sameUrl);
     let off: string[];
     if (way === "ours") {
       off = nowOff.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
       if (!on) off.push("ours");
     } else {
-      const ways = waysOf(this.env, own, nowOff);
+      const ways = waysOf(this.#relays(), own, nowOff);
       const target = ways.find((w) => sameUrl(w.id) === sameUrl(way as string)) ?? fail(400, "invalid_way");
       off = ways.filter((w) => (w === target ? !on : !w.on)).map((w) => w.id);
     }
-    if (!waysOf(this.env, own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
+    if (!waysOf(this.#relays(), own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
     this.#run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", off.length ? JSON.stringify(off) : null, clock.now(), id);
     this.#changed(id, true);
     return this.#view(sub, id);
@@ -1781,6 +1794,118 @@ export class Directory extends DurableObject<Env> {
     return this.#rows("SELECT sub FROM users ORDER BY sub").map((r) => r.sub as string);
   }
 
+  // ── the cloud's relays (relays.ts, relay-registry.ts) ───────────────────
+
+  /** The relays as this cloud has them: its own, and its list in the order its relays were put on it. */
+  #relays(): Relays {
+    const listed = this.#rows("SELECT url, name, target FROM relays ORDER BY added_at, rowid").map((r) => ({ url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null }));
+    return { own: ownRelay(this.env), listed };
+  }
+
+  /** The same, for what reads it outside this object (status.ts, relay-load.ts, the probes). */
+  relaysNow(): Relays {
+    return this.#relays();
+  }
+
+  /** The list as the console shows it, and the tokens made for relays not used yet. */
+  relayList(): { own: string; relays: RelayListed[]; tokens: { name: string; url: string | null; target: string | null; expires_at: number }[] } {
+    const now = nowSeconds();
+    this.#run("DELETE FROM relay_tokens WHERE expires_at <= ?", now);
+    return {
+      own: ownRelay(this.env),
+      relays: this.#rows("SELECT url, name, target, secret_hash, added_at, added_by FROM relays ORDER BY added_at, rowid").map((r) => ({
+        url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null, added_at: r.added_at as number, added_by: r.added_by as string, enrolled: r.secret_hash !== null,
+      })),
+      tokens: this.#rows("SELECT name, url, target, expires_at FROM relay_tokens ORDER BY expires_at").map((r) => ({ name: r.name as string, url: (r.url as string | null) ?? null, target: (r.target as string | null) ?? null, expires_at: r.expires_at as number })),
+    };
+  }
+
+  /** The operator puts a relay on the list (or names it anew, or changes what an entry is a way into). */
+  relayPut(by: string, input: RelayTokenInput): Listed {
+    const put = relayPut(input, this.#relays(), this.env.PUBLIC_ORIGIN.startsWith("http:"));
+    if (typeof put === "string") fail(400, put);
+    const { url, name, target } = put as Listed;
+    this.#run(`INSERT INTO relays (url, name, target, added_at, added_by) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (url) DO UPDATE SET name = excluded.name, target = excluded.target`, url, name, target, nowSeconds(), by);
+    this.#relaysChanged();
+    return put as Listed;
+  }
+
+  /** The operator takes a relay off the list, and the ways into it with it; its tokens made for it go too. */
+  relayRemove(url: unknown): void {
+    if (typeof url !== "string") fail(400, "invalid_relay");
+    const found = this.#rows("SELECT url FROM relays").map((r) => r.url as string).find((u) => sameUrl(u) === sameUrl(url as string)) ?? fail(404, "relay_not_found");
+    this.ctx.storage.transactionSync(() => {
+      this.#run("DELETE FROM relays WHERE url = ? OR target = ?", found, found);
+      this.#run("DELETE FROM relay_tokens WHERE url = ? OR target = ?", found, found);
+    });
+    this.#relaysChanged();
+  }
+
+  /** A token for a relay to put itself on the list with (relay-enroll.sh): good for RELAY_TOKEN_TTL_SEC, once. */
+  async relayToken(by: string, input: RelayTokenInput): Promise<{ token: string; name: string; url: string | null; expires_at: number }> {
+    const made = relayTokenOf(input, this.#relays(), this.env.PUBLIC_ORIGIN.startsWith("http:"));
+    if (typeof made === "string") fail(400, made);
+    const { name, url, target } = made as Exclude<typeof made, string>;
+    const token = pastedSecret();
+    const expires = nowSeconds() + RELAY_TOKEN_TTL_SEC;
+    this.#run("DELETE FROM relay_tokens WHERE expires_at <= ?", nowSeconds());
+    this.#run("INSERT INTO relay_tokens (token_hash, name, url, target, made_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)", await digest(token), name, url, target, by, expires);
+    return { token, name, url, expires_at: expires };
+  }
+
+  /**
+   * A relay puts itself on the list with a token the operator made (POST /v1/relays/enroll): at the URL the token names,
+   * or the one it says where the token names none. Given a secret of its own, which its counters come with
+   * (relay-load.ts); one on the list already is given a new one (and the token's name). Nothing awaits between the
+   * token read and its use, so it is used once.
+   */
+  async relayEnrolled(token: unknown, said: unknown): Promise<{ url: string; name: string; secret: string }> {
+    if (typeof token !== "string" || token === "") fail(400, "invalid_request");
+    const hash = await digest(token as string);
+    const secret = randomSecret();
+    const secretHash = await digest(secret);
+    const row = this.#one("SELECT name, url, target, made_by FROM relay_tokens WHERE token_hash = ? AND expires_at > ?", hash, nowSeconds()) ?? fail(403, "invalid_token");
+    const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
+    const url = (row!.url as string | null) ?? relayUrl(said, insecure) ?? fail(400, "invalid_relay");
+    if (said !== undefined && said !== null && said !== "" && sameUrl(String(said)) !== sameUrl(url as string)) fail(403, "wrong_relay");
+    const put = relayPut({ url, name: row!.name, target: row!.target }, this.#relays(), insecure);
+    if (typeof put === "string") fail(400, put);
+    const { name, target } = put as Listed;
+    this.ctx.storage.transactionSync(() => {
+      this.#run("DELETE FROM relay_tokens WHERE token_hash = ?", hash);
+      this.#run(`INSERT INTO relays (url, name, target, secret_hash, added_at, added_by) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (url) DO UPDATE SET name = excluded.name, target = excluded.target, secret_hash = excluded.secret_hash`, (put as Listed).url, name, target, secretHash, nowSeconds(), `token:${row!.made_by as string}`);
+    });
+    this.#relaysChanged();
+    return { url: (put as Listed).url, name, secret };
+  }
+
+  /**
+   * Which relay of the list sent its counters (relay-load.ts): the one whose secret it came with; else, one listed
+   * with no secret of its own (as the deploy's config listed them) named by `named`, believed by the address it came
+   * from (`from`, which Cloudflare saw) being its URL's.
+   */
+  relayHeard(secretHash: string | null, named: string, from: string | null): string {
+    if (secretHash !== null) return (this.#one("SELECT url FROM relays WHERE secret_hash = ?", secretHash)?.url as string | undefined) ?? fail(403, "invalid_secret");
+    const row = this.#rows("SELECT url, secret_hash FROM relays WHERE target IS NULL").find((r) => sameUrl(r.url as string) === sameUrl(named)) ?? fail(400, "unknown_relay");
+    if (row!.secret_hash !== null) fail(403, "not_from_relay");
+    if (!from || new URL(row!.url as string).hostname.replace(/^\[|\]$/g, "") !== from) fail(403, "not_from_relay");
+    return row!.url as string;
+  }
+
+  /** The list changed: every station connected is sent its state again (its relays in it), every device told to read
+   * its `/v1/me` again. */
+  #relaysChanged(): void {
+    const stations = new Set(this.#rows("SELECT key FROM live WHERE kind = 'station'").map((r) => r.key as string));
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as Attachment;
+      if ("station" in attachment && !attachment.dropped) stations.add(attachment.station);
+    }
+    for (const station of stations) this.#sendState(station);
+    this.tellAll({ type: "workspaces" }, null);
+  }
+
   // ── the admin's console ─────────────────────────────────────────────────
   // The caller has checked that the account is the admin's (admin.ts).
 
@@ -2351,7 +2476,7 @@ export class Directory extends DurableObject<Env> {
     // (`ways`: the workspace's own relays and the ways it turned off, as kept here before its stations kept them: what a
     // station takes as its first of them, station/src/mesh/ways.ts), but one of still.fail's a workspace also added as its
     // own before it was still.fail's: kept as both, a station took it for neither (2026-11-16, 上海 in hypershell-算法)
-    const told = relays(this.env);
+    const told = relays(this.#relays());
     const ours = told.relay_urls.map(sameUrl);
     const theirs = (raw: unknown) => parseRelays(raw).filter((u) => !ours.includes(sameUrl(u)));
     const [home, ...joined] = found.map(({ relays, ways_off, rig, enrolled_by, ...row }) => ({
@@ -2434,7 +2559,7 @@ export class Directory extends DurableObject<Env> {
     if (!row) return;
     const was = { at: row.ways_at as number | null, station: (row.ways_station as string | null) ?? "" };
     if (was.at !== null && !((at as number) > was.at || (at === was.at && by > was.station))) return;
-    const ours = relayUrls(this.env);
+    const ours = relayUrls(this.#relays());
     const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
     const list: string[] = [];
     for (const raw of body.relays) {
@@ -2451,7 +2576,7 @@ export class Directory extends DurableObject<Env> {
       if (id !== undefined && !off.includes(id)) off.push(id);
     }
     // (as the stations' keepRelayOn: still.fail's back on rather than none)
-    if (!waysOf(this.env, list, off).some((w) => w.kind === "relay" && w.on)) off = off.filter((o) => o !== "ours" && !ours.some((u) => sameUrl(u) === sameUrl(o)));
+    if (!waysOf(this.#relays(), list, off).some((w) => w.kind === "relay" && w.on)) off = off.filter((o) => o !== "ours" && !ours.some((u) => sameUrl(u) === sameUrl(o)));
     const relays = list.length ? JSON.stringify(list) : null;
     const waysOff = off.length ? JSON.stringify(off) : null;
     this.#run("UPDATE workspaces SET relays = ?, ways_off = ?, ways_at = ?, ways_station = ? WHERE id = ?", relays, waysOff, at as number, by, workspace);
@@ -2537,6 +2662,9 @@ for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", 
  * at a version above any before). */
 const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told"]);
 for (const name of ["moveExport", "moveImport", "moveAccounts"]) FAMILIES[name] = "admin";
+// The relays' list: the operator's (a relay's counters and its enrolling are "other"); the cron's reading of it.
+for (const name of ["relayList", "relayPut", "relayRemove", "relayToken"]) FAMILIES[name] = "admin";
+FAMILIES.relaysNow = "broadcast";
 /** What it runs for itself rather than being called for. */
 const UNCOUNTED = new Set(["constructor", "handOff", "migrateStationMembers", "migrateFreePlan", "send", "settled", "sweep"]);
 
