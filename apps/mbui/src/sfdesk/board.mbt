@@ -175,15 +175,12 @@ fn board_listed_back() -> Unit {
 }
 
 ///|
-/// Chat `r` beside the board: on the page's paper, a line at its start, its bar over its page (the chat's page as the
-/// pane draws it, its old view as yet).
+/// Chat `r` beside the board: on the page's paper, its bar over its page (the chat's page as the pane draws it, its old
+/// view as yet). No line between it and the board: its paper sets it apart, and its edge's own line (sfpages'
+/// board_beside_edge) shows only under a pointer, focused or in hand, as the chat's side panel's (the user, 2026-10-26,
+/// #2012: 「这个分割线不对，去掉，搞坏了宽度调整的样式」; again 2026-11-17 of this one: 「这个分割线怎么又出现了」).
 fn board_beside(s : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
   s.row(Is(true)).grow(Is(1.0)).min_height(Is(Some(0.0))).ground(By(fn() { @sf.theme().p.bg })) |> ignore
-  // (a line the whole height at its start, between it and the board)
-  s.box(fn(line) {
-    line.width(Is(Some(1.0))).shrink(Is(0.0)).ground(By(fn() { @sf.theme().p.line })) |> ignore
-  })
-  |> ignore
   // (its bar's end at the window's corner, as a chat's bar in the pane: pane_chat_bar_ends')
   let ends = pane_chat_bar_ends(src, s)
   s.box(fn(col) {

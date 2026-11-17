@@ -414,6 +414,11 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
+  // the board with its first card's chat (整理发布清单) open beside it, at rest, its edge untouched (board-side:
+  // 大屏's and 中屏's where there is the room, the chat's page over the board where there is none)
+  if mode == "board-side" {
+    @sfbase.board_pick.set(Some(rich))
+  }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
@@ -1049,6 +1054,9 @@ pub fn fixture_corner_modes() -> Array[String] {
     "home-station-updates", "station-updates", "home-station-updates-app", "station-updates-app",
     // (a terminal's page, typed into here and by someone else: terminal_wbtest.mbt; its station's list is settings-station-terminals, beside settings-station)
     "terminal", "terminal-taken",
+    // (the board with a card's chat open beside it, its edge at rest: last, so the real size's sweep gives the shell's
+    // ways a chat reads (chatRow) to chat's screen first, as before it came: sfapp_realsize real_size_test.mbt real_size_given_here)
+    "board-side",
   ]
   // (and the card to share in each of its other looks: share_looks.mbt)
   for k in @sfpages.share_look_keys()[1:] {

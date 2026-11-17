@@ -544,8 +544,8 @@ fn board_wide(
       // (a card going to another column (View::shared, board_chat_card) drawn within the board as it goes, never over
       // its bar, the chat beside it or the window's edge round it)
       area.flights_within() |> ignore
-      // (short of the chat beside it by as much as that chat's edge reaches over the line between them: a press there
-      // the edge's alone)
+      // (short of the chat beside it by as much as that chat's edge reaches over the board: a press there the edge's
+      // alone)
       area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore
       let across = @view.Scroll::across()
       // (the part of the scroll drawn apart from its anchor while the columns are on their way)
@@ -715,9 +715,11 @@ fn board_wide(
 }
 
 ///|
-/// The edge of the chat beside the board in `e` (over its start, its middle on the line between them, half over the
-/// board), as a side panel's is (sfdesk's side_edge_node): dragged, its width, kept as it is let go (sfbase's
-/// set_board_chat_w); pressed twice, its own width again; pressed once, nothing (× in its bar closes it).
+/// The edge of the chat beside the board in `e` (over its start, handle_out of it over the board), as a side panel's is
+/// (sfdesk's side_edge_node): its line and bar only under a pointer, focused or in hand, nothing drawn at rest; dragged,
+/// its width, kept as it is let go (sfbase's set_board_chat_w), dragged on past either end its line drawn aside as a
+/// string, sprung back as it is let go; pressed twice, its own width again; pressed once, nothing (× in its bar closes
+/// it).
 fn board_beside_edge(
   e : @view.View,
   src : Source,
@@ -727,6 +729,7 @@ fn board_beside_edge(
 ) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   e.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-board_edge_reach, 0.0))) |> ignore
+  let pull = @sf.EdgePull::new()
   let edge = @sf.edge_node(
     e,
     fn() { @sf.t("web-pages.chat.resizePanel") },
@@ -745,21 +748,26 @@ fn board_beside_edge(
     fn(h) { held.set(h) },
     tips~,
     side=Left,
+    pull~,
   )
   edge.box(fn(g) {
     g.over(Is(true)) |> ignore
-    @sf.edge_look_node(g, fn() { @sf.edge_over() }, fn() { edge.pointed() || edge.focus_shown() || held.get() }, fn() {
-      held.get()
-    })
+    @sf.edge_look_node(
+      g,
+      fn() { false },
+      fn() { edge.pointed() || edge.focus_shown() || held.get() },
+      fn() { held.get() },
+      pull~,
+    )
     |> ignore
   })
   |> ignore
 }
 
 ///|
-/// How far the edge of the chat beside the board reaches over the board, its middle on the 1 point line between them
-/// (board_beside_edge).
-let board_edge_reach : Double = @sf.handle_w / 2.0 - 0.5
+/// How far the edge of the chat beside the board reaches over the board (board_beside_edge), as a side panel's over its
+/// page (sfdesk's side_edge_node).
+let board_edge_reach : Double = @sf.handle_out
 
 ///|
 /// How wide each of `n` columns is in `room`: as many whole columns as `room` holds at the least, sharing it, at most
