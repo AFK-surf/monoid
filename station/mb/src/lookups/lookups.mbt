@@ -1,5 +1,5 @@
 // A large old store's per-chat lookups, prepared only for the chats a read asks for, here for the MoonBit builder: the
-// closed cards by time (station/src/store/legacy-closed-cards.ts, `closedCardsStep`) and people's messages by time
+// closed cards by time (station/test/reference/backfill/legacy-closed-cards.ts, `closedCardsStep`) and people's messages by time
 // (legacy-people-since.ts, `peopleSinceStep`). A small store gets the native index instead; a large one the lookup's
 // tables and triggers, then each asked chat's old rows copied in batches of at most 64.
 

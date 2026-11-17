@@ -14,3 +14,28 @@
 // known, which kept the builds that took the hold out, 9153 on, from moving anything until main reached it: a wait
 // nothing needed.) A build from 9144 to 9152 reads a moved chain whole and still holds its own back.
 export const MOVED_FROM_BUILD = 9144;
+
+// The first build that reads a removal of the root's person naming the root's log as taking them out (rules/AGENTS.md,
+// the lead's, 2026-11-14: after a move the root's person is a member like any other, `~root`). A core of a release
+// before it reads such a removal as nothing, so it would make another state: it is told to update (mesh/serve.ts
+// `movedTooOld`) only in a workspace whose state in force has the root's person out of `~root` (`Cloud.rootOut`), and
+// nowhere else is anyone told anything. 9244: the build of the commit that brought it (#6319,
+// d77786f19a). (It was 9285 for that commit alone, a margin over main as the change was made ready: until main reached
+// it every core, those that read the rule too, would have been told to update in such a workspace with no release to
+// update to. As MOVED_FROM_BUILD above: only ever the build every reader needs, known once the commit is on main.)
+export const ROOT_OUT_FROM_BUILD = 9244;
+
+// How many person logs a device of a release before LOGS_ANY_FROM_BUILD keeps of a workspace at most (its
+// client/core-ts views/lock.ts `keepLogs` had a bound of its own): one past it was skipped and said nothing, so such a core makes a state of a moved workspace
+// whose state in force is made of more logs that lacks their devices (measured 2026-11-15: of 300 members, 42 listed
+// with none). Read by the station (`movedFloor`, mesh/serve.ts) and by the core (a chain binding more logs is handed over
+// only where every station it names says `heads`, the floor below with it).
+export const LOGS_BEFORE = 256;
+
+// The first build that keeps every log a workspace's stations give and reads them by their heads (GET /lock/heads,
+// POST /lock/given): a core of a release under it is told to update (mesh/serve.ts `movedTooOld`) only in a workspace
+// whose state in force is made of more than LOGS_BEFORE logs (`Cloud.needs`), and nowhere else. 9275: the
+// build of the commit that brought it (#6352, ab5e69b410). (It was 9300 for that commit alone, a margin over main as the
+// change was made ready: as ROOT_OUT_FROM_BUILD above, only ever the build every reader needs, known once the commit is
+// on main. No workspace of that size has moved: the hold of 200 members went with the same commit.)
+export const LOGS_ANY_FROM_BUILD = 9275;

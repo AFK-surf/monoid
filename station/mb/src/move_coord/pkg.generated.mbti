@@ -1,0 +1,882 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/move_coord"
+
+import {
+  "mbui/effect",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn account_item_id(String, @jsjson.JValue?) -> String
+
+pub fn account_of(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn accounts_module(AccountsDeps) -> Accounts
+
+pub fn arr(@jsjson.JValue?) -> Array[@jsjson.JValue]?
+
+pub let arrive_wait_ms : Int32
+
+pub fn bare_item(String, String, Array[Waits]) -> @jsjson.JValue
+
+pub fn called(Say, String, String) -> String
+
+pub fn chats_module(ChatsDeps) -> Module
+
+pub fn clone_login(Say, String, String, String) -> String?
+
+pub let clone_wait_ms : Int32
+
+pub fn connect_item_id(String, String) -> String
+
+pub fn connects_module(ConnectsDeps) -> Module
+
+pub fn del(@jsjson.JValue, String) -> @jsjson.JValue
+
+pub fn error_of(String, String) -> MoveError
+
+pub fn gb(Double) -> String
+
+pub fn get(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub fn grant_owners_of(Array[@jsjson.JValue]) -> Map[String, Array[String]]
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn has_key(@jsjson.JValue, String) -> Bool
+
+pub fn host_clock(@host.Host) -> Clock
+
+pub fn host_disk(@host.Host) -> Disk
+
+pub fn host_fs(@host.Host) -> Fs
+
+pub fn host_random(@host.Host) -> (Int32) -> String
+
+pub fn index_of(String, String) -> Int32
+
+pub fn is_map(@jsjson.JValue?) -> Bool
+
+pub fn is_refused(Error) -> Bool
+
+pub fn is_said(Error) -> Bool
+
+pub fn is_true(@jsjson.JValue?) -> Bool
+
+pub fn is_under(@jsjson.JValue, String) -> Bool
+
+pub fn item_again(@jsjson.JValue) -> Bool
+
+pub fn item_cannot(@jsjson.JValue) -> String?
+
+pub fn item_id(@jsjson.JValue) -> String
+
+pub fn item_label(@jsjson.JValue) -> String
+
+pub fn item_module(@jsjson.JValue) -> String
+
+pub fn item_named(@jsjson.JValue) -> String
+
+pub fn item_need(@jsjson.JValue) -> Need
+
+pub fn item_needs(@jsjson.JValue) -> Array[Need]
+
+pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn jb(Bool) -> @jsjson.JValue
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jl(Int64) -> @jsjson.JValue
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn job_item_id(@jsjson.JValue) -> String
+
+pub async fn jobs_up_as_moves(Array[@jsjson.JValue], Array[String]?, String?, async (String, String) -> Bool) -> Array[@jsjson.JValue]
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_number(String) -> Double?
+
+pub fn js_trim(String) -> String
+
+pub fn jstrs(Array[String]) -> @jsjson.JValue
+
+pub fn keys_of(@jsjson.JValue) -> Array[String]
+
+pub fn kind_of(Error) -> String
+
+pub fn last_index_of(String, String) -> Int32
+
+pub fn locale_compare(String, String) -> Int32
+
+pub fn message_of(Error) -> String
+
+pub let move_page : Int32
+
+pub let move_page_most : Int32
+
+pub fn move_routes(MoveRoutesDeps) -> Array[MoveRoute]
+
+pub async fn move_view(@jsjson.JValue, Array[String], Array[(Need, Waits)], module? : String, after? : String, limit? : Int32, last? : @jsjson.JValue, stopping? : Bool, name? : (String) -> String, current? : Need, held? : (Scheduler, Held)) -> @jsjson.JValue
+
+pub fn moved_path(String, String, String) -> String
+
+pub fn need_of(@jsjson.JValue) -> Need
+
+pub fn new_item(String, String, String, Array[Need], cannot? : String, again? : Bool, leaves? : String) -> @jsjson.JValue
+
+pub fn not_answered(Say, String, String, Error) -> Error
+
+pub fn num(@jsjson.JValue?) -> Double?
+
+pub fn num_text(Double) -> String
+
+pub fn origin_url_of(String) -> String?
+
+pub fn parse(String) -> @jsjson.JValue raise
+
+pub let plan_page : Int32
+
+pub fn present(@jsjson.JValue?) -> Bool
+
+pub fn progress_j(Double, Double, String) -> @jsjson.JValue
+
+pub fn repo_item_id(String) -> String
+
+pub let retry_most_ms : Int32
+
+pub let retry_ms : Int32
+
+pub fn roster_of(@jsjson.JValue?, Bool) -> Array[RosterEntry]?
+
+pub fn same(@jsjson.JValue?, @jsjson.JValue?) -> Bool
+
+pub fn say_of(Say, Error, String) -> String
+
+pub fn set(@jsjson.JValue, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn set_opt(@jsjson.JValue, String, @jsjson.JValue?) -> @jsjson.JValue
+
+pub let settings_that_move : Array[String]
+
+pub fn share_refusal(@jsjson.JValue?) -> String?
+
+pub fn short_key(String) -> String
+
+pub let size_most : Int32
+
+pub let sized_transcripts : Int32
+
+pub let sizes_batch : Int32
+
+pub fn slice(String, Int32, Int32) -> String
+
+pub fn slice_from(String, Int32) -> String
+
+pub fn slice_to(String, Int32) -> String
+
+pub fn spread(@jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn st(String) -> @jsjson.JValue
+
+pub fn stamp_of(@jsjson.JValue?, String?) -> String
+
+pub fn state_name(@jsjson.JValue) -> String
+
+pub fn station_of(Array[RosterEntry]?, String, (String) -> Bool) -> (String, Bool)?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub fn text(@jsjson.JValue?) -> String?
+
+pub let told_changed_ms : Int32
+
+pub let told_every_ms : Int32
+
+pub let told_silent_ms : Int32
+
+pub fn unanswered(Say) -> String
+
+pub fn unanswered_words(String) -> Bool
+
+pub fn vault_item_id(String) -> String
+
+pub fn waits_of(@jsjson.JValue) -> Waits
+
+pub async fn worktree_remote(Fs, String) -> (String, String)?
+
+pub async fn worktrees_in(Fs, String) -> Array[(String, String)]
+
+pub async fn worktrees_kept_of(Fs, String) -> Array[(String, String)]
+
+pub async fn worktrees_of_clones(Fs, String, Array[String], String) -> Map[String, Array[(String, String)]]
+
+// Errors
+pub(all) suberror MoveError {
+  Said(String)
+  AskAgain(String)
+  Gone(String)
+  Refused(String)
+  PeerGone(String)
+  PeerStopped(String)
+  Failed(String)
+}
+
+// Types and methods
+pub struct Accounts {
+  module : Module
+  came_home : async (String, String) -> Unit
+  look_at : async (String, (String, Int32)?) -> Unit
+}
+
+pub(all) struct AccountsDeps {
+  used : async (String) -> Array[(String, @jsjson.JValue?)]
+  shared : async (String) -> Bool
+  move_profile : async (String, String) -> @jsjson.JValue
+  present : (async (String) -> String?)?
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  here : () -> String
+  data : String?
+  profile : (async (String) -> @jsjson.JValue?)?
+  share_moves : ShareMoves?
+  disk : Disk
+  clock : Clock
+  say : Say
+}
+
+pub(all) struct Ask {
+  ask : async (String, @jsjson.JValue, Bytes_?) -> @jsjson.JValue
+}
+
+pub(all) enum Bytes_ {
+  FileBytes(String, Int64, Int64)
+  Came(async () -> Bytes?)
+}
+
+pub struct Changed {
+  // private fields
+}
+pub fn Changed::changed(Self) -> Unit
+pub fn Changed::new(Clock, () -> Unit) -> Self
+
+pub(all) struct ChatsDeps {
+  store : ChatsStore
+  handover : HandoverPort
+  hub : ChatsHub
+  name : ((String) -> String)?
+  keep_jobs : async (Array[String], String) -> Unit
+  start_kept : async (Array[String]) -> Unit
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  told : Told?
+  here : () -> String
+  kind_of : async (String) -> (String, String)?
+  vaults_of : async (Array[String], String) -> Map[String, Array[String]]
+  wait : (() -> Bool)?
+  reads : (String) -> PlanReads
+  sizes : Sizes?
+  random : (Int32) -> String
+  say : Say
+}
+
+pub(all) struct ChatsHub {
+  hold_chat : async (String, String, () -> String) -> Unit
+  release_chat : async (String) -> Bool
+  busy : (async (String) -> Bool)?
+}
+
+pub(all) struct ChatsStore {
+  handed_to : async (String) -> @jsjson.JValue?
+  jobs_mark_of : async (Array[String]) -> Array[(String, String)]
+  get_session : async (String) -> @jsjson.JValue?
+}
+
+pub(all) struct Clock {
+  now : () -> Int64
+  after : (Int32, () -> Unit) -> () -> Unit
+  every : (Int32, async () -> Unit) -> () -> Unit
+  spawn : (async () -> Unit) -> Unit
+}
+
+pub(all) struct Config {
+  raw : async () -> @jsjson.JValue
+  update_soon : async (@jsjson.JValue) -> Unit
+}
+
+pub(all) struct ConnectsDeps {
+  own : async (String) -> Array[OwnConnect]
+  chats_of : async (String) -> Array[String]
+  kind_of : (async (String) -> (String, String)?)?
+  keys_of : (async (String) -> Array[String])?
+  runs_on : async (String) -> String?
+  move : async (String, String, Array[String]) -> Unit
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  here : () -> String
+}
+
+pub(all) struct Disk {
+  read : (String) -> String?
+  write : async (String, String) -> Unit
+  append : async (String, String) -> Unit
+  remove : async (String) -> Unit
+  spawn : (async () -> Unit) -> Unit
+}
+
+pub(all) struct Fs {
+  read_text : async (String) -> String?
+  readdir : async (String) -> Array[String]?
+  mtime : async (String) -> Double?
+  size : async (String) -> Double?
+  realpath : async (String) -> String?
+  mkdir : async (String) -> Unit
+  rename : async (String, String) -> Unit
+  remove : async (String, Bool) -> Unit
+  write_from : async (String, async () -> Bytes?) -> Unit
+}
+
+pub(all) struct HandoverHooks {
+  jobs_of : async (Array[String]) -> Array[@jsjson.JValue]
+  jobs_stop : async (Array[String], String) -> Unit
+  jobs_start : async (@jsjson.JValue) -> Unit
+  account_of : async (String) -> @jsjson.JValue?
+  account_here : async (@jsjson.JValue) -> String?
+  account_present : async (String) -> Bool
+  arrived_stopped : async (Array[String], Waits, String) -> Unit
+  shown : async (Array[String], String?) -> Unit
+  went : async (Array[String]) -> Unit
+  bindings_of : async (Array[String]) -> @jsjson.JValue
+  admits : (String, String) -> Bool
+  ask : Ask
+  told : Told
+  hold : () -> () -> Unit
+  changed : () -> Unit
+}
+
+pub(all) struct HandoverPort {
+  together : async (String, Page?) -> Array[String]
+  chat_of : async (String) -> String
+  accounts_of : async (Array[String], Page?) -> Array[(String, @jsjson.JValue?)]
+  past_left : async (Array[(String, @jsjson.JValue?)], Array[String], Page?) -> Array[String]
+  check : async (String, String, Bool, Page?) -> String?
+  coming_in : async (String) -> Array[Array[String]]
+  abandon : () -> Unit
+  hand_over : async (String, String, Bool, ((@jsjson.JValue) -> Unit)?, Waits?) -> @jsjson.JValue
+  arrived : async (String, Int32) -> Bool
+  out_of : async (String) -> @jsjson.JValue?
+  coming_from : async (String) -> String?
+  waits_for_turn : async (@jsjson.JValue) -> Bool
+  start : async () -> Unit
+  close : async () -> Unit
+  settle : async () -> Unit
+  loaded_within : async () -> Unit
+  answer : async (String, @jsjson.JValue, String?, Bytes_?) -> @jsjson.JValue
+  reached : (String) -> Unit
+}
+
+pub struct Held {
+  ws : String
+  to : String
+  plan : @jsjson.JValue
+  by_module : Map[String, Array[@jsjson.JValue]]
+  at : Map[String, Int32]
+  counts : Map[String, (Int32, Int32, Int32)]
+}
+
+pub struct Items {
+  // private fields
+}
+pub fn Items::find(Self, Need) -> @jsjson.JValue?
+pub fn Items::needing(Self, Need) -> Array[@jsjson.JValue]
+pub fn Items::new(Array[@jsjson.JValue]) -> Self
+
+pub struct Jobs {
+  // private fields
+}
+pub async fn Jobs::keep(Self, Array[String], String) -> Array[@jsjson.JValue]
+pub fn Jobs::module(Self) -> Module
+pub fn Jobs::new(JobsDeps) -> Self
+pub fn Jobs::start_kept(Self, Array[String]) -> Unit
+
+pub(all) struct JobsDeps {
+  data : String
+  disk : Disk
+  up : async (Array[String]?, String?) -> Array[@jsjson.JValue]
+  stop : async (String, String) -> Unit
+  start : async (@jsjson.JValue) -> Unit
+  chat_of : async (String) -> String
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  here : () -> String
+  clock : Clock
+  say : Say
+}
+
+pub struct KeptLog {
+  // private fields
+}
+pub async fn KeptLog::delete(Self, String) -> Unit
+pub fn KeptLog::delete_soon(Self, String) -> (async () -> Unit)?
+pub fn KeptLog::get(Self, String) -> @jsjson.JValue?
+pub fn KeptLog::has(Self, String) -> Bool
+pub fn KeptLog::keys(Self) -> Array[String]
+pub async fn KeptLog::many(Self, Array[(String, @jsjson.JValue?)]) -> Unit
+pub fn KeptLog::new(Disk, String, from? : (String, (@jsjson.JValue) -> Array[(String, @jsjson.JValue)]), later? : Bool) -> Self
+pub async fn KeptLog::set(Self, String, @jsjson.JValue) -> Unit
+pub fn KeptLog::set_soon(Self, String, @jsjson.JValue) -> async () -> Unit
+pub fn KeptLog::size(Self) -> Int32
+pub fn KeptLog::values(Self) -> Array[@jsjson.JValue]
+pub async fn KeptLog::written(Self) -> Unit
+
+pub struct KeptMap {
+  // private fields
+}
+pub async fn KeptMap::delete(Self, String) -> Unit
+pub fn KeptMap::entries(Self) -> Array[(String, @jsjson.JValue)]
+pub fn KeptMap::get(Self, String) -> @jsjson.JValue?
+pub fn KeptMap::new(Disk, String) -> Self
+pub async fn KeptMap::set(Self, String, @jsjson.JValue) -> Unit
+
+pub struct KeptSet {
+  // private fields
+}
+pub async fn KeptSet::add(Self, String) -> Unit
+pub async fn KeptSet::delete(Self, String) -> Unit
+pub fn KeptSet::has(Self, String) -> Bool
+pub fn KeptSet::new(Disk, String) -> Self
+pub fn KeptSet::size(Self) -> Int32
+pub fn KeptSet::values(Self) -> Array[String]
+
+pub struct LentLog {
+  // private fields
+}
+pub fn LentLog::base(Self, String) -> @jsjson.JValue?
+pub async fn LentLog::delete(Self, String) -> Unit
+pub fn LentLog::entries(Self) -> Array[(String, @jsjson.JValue)]
+pub fn LentLog::for_count(Self, String) -> Int32
+pub fn LentLog::get(Self, String) -> @jsjson.JValue?
+pub async fn LentLog::lent_for(Self, String, String) -> Unit
+pub fn LentLog::new(Disk, String, String, later? : Bool) -> Self
+pub async fn LentLog::set(Self, String, @jsjson.JValue) -> Unit
+pub async fn LentLog::set_base(Self, String, @jsjson.JValue) -> Unit
+pub fn LentLog::shares_for(Self, String) -> Array[String]
+pub async fn LentLog::unlent(Self, String, String) -> Unit
+pub async fn LentLog::written(Self) -> Unit
+
+pub(all) struct Module {
+  id : String
+  needs : Array[String]
+  plan : async (String, String, PlanReads?) -> Array[@jsjson.JValue]
+  move : async (@jsjson.JValue, String, (@jsjson.JValue) -> Unit, Waits?) -> Unit
+  back : async (@jsjson.JValue, String, Waits?) -> Unit
+  state : async (@jsjson.JValue) -> @jsjson.JValue
+  usable_here : (async (@jsjson.JValue) -> Bool)?
+  usable_there : (async (@jsjson.JValue) -> Bool)?
+  can_lend : (async (@jsjson.JValue) -> Bool)?
+  lend : (async (@jsjson.JValue, String, Array[Need]) -> Unit)?
+  lent_for : (async (@jsjson.JValue, String, Array[Need]) -> Unit)?
+  left : (async (Array[Need]) -> Unit)?
+  is_here : (async (@jsjson.JValue) -> Bool)?
+  abandon : (() -> Unit)?
+  ready : (async (@jsjson.JValue, String) -> String?)?
+  stop : (async (@jsjson.JValue, Waits) -> Unit)?
+  resume : (async (@jsjson.JValue) -> Unit)?
+}
+
+pub(all) struct MoveRequest {
+  method_ : String
+  path : String
+  query : Array[(String, String)]
+  body : String
+  email : String
+  role : String
+  workspace : String?
+  lang : String
+}
+
+pub(all) struct MoveRoute {
+  method_ : String
+  matches : (String) -> Bool
+  handle : async (MoveRequest) -> (Int32, @jsjson.JValue)
+}
+
+pub(all) struct MoveRoutesDeps {
+  scheduler : Scheduler
+  order : () -> Array[String]
+  home : () -> String?
+  station : (String, String) -> (String, Bool)?
+  here : () -> String?
+  rig : () -> Bool
+  name : ((String, String) -> String?)?
+  refusal : async (String, String, String) -> String?
+  begun : ((@effect.Deferred[@jsjson.JValue]) -> Unit)?
+  say : Say
+}
+
+pub struct Moves {
+  handover : HandoverPort
+  jobs : Jobs
+  scheduler : Scheduler
+  modules : Array[Module]
+  repos : Repos
+  vault : Vault
+  settings : Settings
+  sizes : Sizes
+  told : Told
+  mut wait : Bool
+  // private fields
+}
+pub async fn Moves::account_here(Self, @jsjson.JValue) -> String?
+pub async fn Moves::adds_there(Self, String, String, Array[String]) -> (Double, Int32)?
+pub fn Moves::answers(Self, (String) -> Bool) -> async (String, @jsjson.JValue, String?, Bytes_?) -> @jsjson.JValue
+pub async fn Moves::ask(Self, String, @jsjson.JValue, Bytes_?) -> @jsjson.JValue
+pub async fn Moves::close(Self) -> Unit
+pub fn Moves::heard(Self, String) -> Unit
+pub fn Moves::logins_changed(Self) -> Unit
+pub fn Moves::new(MovesDeps) -> Self raise MoveError
+pub fn Moves::on(Self) -> Bool
+pub fn Moves::reads(Self, String) -> PlanReads
+pub async fn Moves::refusal(Self, String, String, lang? : String) -> String?
+pub async fn Moves::room(Self, String, String, Array[String]) -> @jsjson.JValue
+pub async fn Moves::room_for_all(Self, String, String, @jsjson.JValue) -> String?
+pub async fn Moves::room_there(Self, String, String) -> (Double, Double?)?
+pub fn Moves::set_wait(Self, Bool) -> Unit
+pub async fn Moves::share_came_home(Self, String, String) -> Unit
+pub async fn Moves::start(Self) -> Unit
+
+pub(all) struct MovesConnects {
+  kind_of : async (String) -> (String, String)?
+  own_in : async (String) -> Array[OwnConnect]
+  moved_away : (async (String) -> Array[OwnConnect])?
+  runs_on : async (String) -> String?
+  move : async (String, String, Array[String]) -> Unit
+  arrived : (async (Array[String]) -> Unit)?
+}
+
+pub(all) struct MovesDeps {
+  data : String
+  here : () -> String?
+  home : () -> String?
+  roster : (String) -> Array[RosterEntry]?
+  ask : Ask
+  clock : Clock
+  disk : Disk
+  fs : Fs
+  say : Say
+  random : (Int32) -> String
+  store : MovesStore
+  hub : ChatsHub
+  handover : (HandoverHooks) -> HandoverPort
+  connects : MovesConnects?
+  jobs : MovesJobs
+  profiles : async () -> Array[@jsjson.JValue]
+  move_profile : async (String?, String) -> @jsjson.JValue
+  share_moves : ShareMoves?
+  sessions_in : async (String, String, Int32) -> Page
+  repos_dir : String
+  remove : (async (String) -> Unit)?
+  room : (async () -> @jsjson.JValue)?
+  git : (async (String, Array[String]) -> String)?
+  changed : (() -> Unit)?
+  config : Config?
+  vault : MovesVault?
+  move_on : (() -> Bool)?
+  plan_page : Int32?
+  clones_elsewhere : (async () -> Array[String])?
+  hold : () -> () -> Unit
+  replica : Replica
+}
+
+pub(all) struct MovesJobs {
+  up : async (Array[String]?, String?) -> Array[@jsjson.JValue]
+  stop : async (String, String) -> Unit
+  start : async (@jsjson.JValue) -> Unit
+  stop_named : async (String, String) -> Unit
+}
+
+pub(all) struct MovesStore {
+  subscribe : (((String) -> Unit) -> Unit)?
+  handed_to : async (String) -> @jsjson.JValue?
+  get_session : async (String) -> @jsjson.JValue?
+  jobs_mark_of : async (Array[String]) -> Array[(String, String)]
+  live_sessions_on : async (String, Int32) -> Array[String]
+  live_of : async (Array[String]) -> Array[String]
+  jobs_up_of : async (Array[String]) -> Array[@jsjson.JValue]
+  sessions_of_connect : async (String, Int32, String) -> Array[String]
+  session_page : async (Array[String]) -> Page
+  handed_chats : async (String, Int32) -> Array[@jsjson.JValue]
+  list_bindings : async () -> Array[(String, Array[String])]
+}
+
+pub(all) struct MovesVault {
+  owners : async (String) -> Array[String]
+  grant_owners : async (Array[String]) -> Map[String, Array[String]]
+  stores : VaultStores
+}
+
+#derive(Eq, Hash)
+pub(all) struct Need {
+  module : String
+  id : String
+}
+pub fn Need::named(Self) -> String
+pub fn Need::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct OwnConnect {
+  id : String
+  name : String
+  kind : String
+  mode : String
+}
+
+pub(all) struct Page {
+  keys : Array[String]
+  rows : Array[@jsjson.JValue]
+  session : async (String) -> @jsjson.JValue?
+  handle : @jsjson.JValue
+}
+
+pub(all) struct PlanReads {
+  pages : async (async (Page) -> Unit) -> Unit
+  load : async () -> Unit
+  loaded : () -> Array[Page]
+  worktrees : async (String) -> Array[(String, String)]
+}
+
+pub(all) struct Replica {
+  moved : (String, String, String) -> String
+  carried_to : (String, String, String, String?) -> String
+  floor_of : (Double?) -> Double
+  room_here : async () -> @jsjson.JValue
+  sizes : async (Array[String], @jsjson.JValue) -> Array[Sized]
+}
+
+pub struct Repos {
+  // private fields
+}
+pub async fn Repos::answer(Self, String, @jsjson.JValue, Bytes_?) -> @jsjson.JValue
+pub fn Repos::module(Self) -> Module
+pub fn Repos::new(ReposDeps) -> Self
+
+pub(all) struct ReposDeps {
+  data : String
+  repos_dir : String
+  workspaces : async (String) -> Array[String]
+  git : async (String, Array[String]) -> String
+  ask : Ask
+  here : () -> String
+  after : ((Int32, () -> Unit) -> (() -> Unit))?
+  name : ((String) -> String)?
+  told : Told?
+  remove : (async (String) -> Unit)?
+  fs : Fs
+  disk : Disk
+  clock : Clock
+  random : (Int32) -> String
+  say : Say
+}
+
+pub(all) struct RosterEntry {
+  id : String
+  name : String
+  tasks : Bool
+}
+
+pub(all) struct Say {
+  words : (String, Array[(String, String)]) -> String
+  words_in : (String, String, Array[(String, String)]) -> String
+  logs : (String, String, @jsjson.JValue) -> Unit
+}
+pub fn Say::log(Self, String, String, @jsjson.JValue) -> Unit
+pub fn Say::of((String, String, Array[(String, String)]) -> String, String, log? : (String, String, @jsjson.JValue) -> Unit) -> Self
+pub fn Say::tr(Self, String, Array[(String, String)]) -> String
+pub fn Say::tr_in(Self, String, String, Array[(String, String)]) -> String
+
+pub struct Scheduler {
+  // private fields
+}
+pub async fn Scheduler::arrived(Self, Need) -> Array[Need]
+pub async fn Scheduler::back(Self, String, String, Selection, by? : String) -> @jsjson.JValue
+pub fn Scheduler::back_soon(Self, String, String, Selection, String?) -> @effect.Deferred[@jsjson.JValue]
+pub fn Scheduler::busy(Self) -> Bool
+pub fn Scheduler::current(Self) -> Need?
+pub fn Scheduler::current_item(Self) -> @jsjson.JValue?
+pub async fn Scheduler::forget(Self, Array[Need]) -> Unit
+pub fn Scheduler::has_stopped(Self, at? : String) -> Bool
+pub fn Scheduler::held(Self, String, String) -> Held?
+pub fn Scheduler::last(Self, String) -> @jsjson.JValue?
+pub fn Scheduler::module_ids(Self) -> Array[String]
+pub async fn Scheduler::move(Self, String, String, Selection, by? : String) -> @jsjson.JValue
+pub fn Scheduler::move_soon(Self, String, String, Selection, String?) -> @effect.Deferred[@jsjson.JValue]
+pub fn Scheduler::new(SchedulerDeps) -> Self raise MoveError
+pub async fn Scheduler::note_stopped(Self, Need, Waits, String, hold? : Bool) -> Unit
+pub async fn Scheduler::now_of(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn Scheduler::plan(Self, String, String) -> @jsjson.JValue
+pub async fn Scheduler::plan_shown(Self, String, String) -> @jsjson.JValue
+pub async fn Scheduler::settle(Self) -> Unit
+pub async fn Scheduler::settle_stopped(Self, from? : String, module? : String) -> Array[Need]
+pub async fn Scheduler::start(Self) -> Unit
+pub fn Scheduler::stop_turn(Self, String?) -> Bool
+pub fn Scheduler::stopped_list(Self) -> Array[(Need, Waits)]
+pub fn Scheduler::stopped_looked(Self) -> Int32
+pub fn Scheduler::stopping(Self) -> Bool
+pub fn Scheduler::waits_on(Self, String) -> Bool
+pub async fn Scheduler::written(Self) -> Unit
+
+pub(all) struct SchedulerDeps {
+  data : String
+  disk : Disk
+  clock : Clock
+  say : Say
+  modules : Array[Module]
+  changed : (() -> Unit)?
+  progress : ((Need, @jsjson.JValue) -> Unit)?
+  tell_arrived : (async (String, Need) -> Unit)?
+  now : (() -> Double)?
+  refusal : (async (String, String) -> String?)?
+  room_for_all : (async (String, String, @jsjson.JValue) -> String?)?
+  hold : (() -> (() -> Unit))?
+  restarted : (() -> String)?
+  reads : ((String) -> PlanReads)?
+  turn : ((Bool, String) -> Unit)?
+}
+
+pub(all) struct Selection {
+  module : String?
+  item : String?
+  all : Bool
+  with_needs : Bool
+  follow : Array[String]?
+  arrive_stopped : Bool
+}
+pub fn Selection::of(@jsjson.JValue) -> Self
+
+pub struct Settings {
+  // private fields
+}
+pub async fn Settings::answer(Self, String, @jsjson.JValue) -> @jsjson.JValue
+pub fn Settings::module(Self) -> Module
+pub fn Settings::new(SettingsDeps) -> Self
+
+pub(all) struct SettingsDeps {
+  data : String
+  config : Config
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  disk : Disk
+  say : Say
+}
+
+pub(all) struct ShareMoves {
+  move : async (String, String, async (String) -> Unit) -> @jsjson.JValue
+  unshare : async (String, Array[String]) -> Bool
+  lend : (async (String, String) -> (String, Bool, Bool))?
+  unlend : (async (String, String, Bool, Bool) -> Unit)?
+  uses_there : (async (String, String) -> Int32?)?
+  handed_on : (async (String, String) -> Array[String])?
+}
+
+pub(all) struct Sized {
+  key : String
+  bytes : Double
+  complete : Bool
+  room : String?
+  transcripts : Array[String]
+}
+pub fn Sized::of(@jsjson.JValue) -> Self
+
+pub struct Sizes {
+  mut measured : Int32
+  // private fields
+}
+pub fn Sizes::keys_of(Self, String) -> Array[String]
+pub fn Sizes::line(Self, String) -> @jsjson.JValue?
+pub fn Sizes::new(SizesDeps) -> Self
+pub fn Sizes::places_of(Self, String) -> Array[@jsjson.JValue]
+pub fn Sizes::read(Self) -> Unit
+pub fn Sizes::seen(Self, String, Array[(String, String)]) -> Unit
+pub fn Sizes::set_quiet(Self, Bool) -> Unit
+pub async fn Sizes::settled(Self) -> Unit
+pub fn Sizes::sum(Self, Array[String]) -> Sum
+
+pub(all) struct SizesDeps {
+  data : String
+  disk : Disk
+  measure : async (Array[String]) -> Array[Sized]
+  gone : (async (String) -> Bool)?
+  say : Say
+  clock : Clock
+}
+
+pub(all) struct Sum {
+  bytes : Double
+  known : Int32
+  of : Int32
+  measuring : Int32
+  at_least : Bool
+}
+pub fn Sum::to_j(Self) -> @jsjson.JValue
+
+pub struct Told {
+  // private fields
+}
+pub async fn Told::asked(Self, String, String, () -> (@jsjson.JValue, Bytes_?), progress? : (@jsjson.JValue) -> Unit) -> @jsjson.JValue
+pub fn Told::close(Self) -> Unit
+pub fn Told::heard(Self, String, @jsjson.JValue) -> @jsjson.JValue
+pub fn Told::let_go(Self, String, String, Error) -> Unit
+pub fn Told::new(ToldDeps) -> Self
+pub fn Told::reached(Self, String) -> Unit
+pub fn Told::run(Self, String, String, async ((@jsjson.JValue) -> Unit) -> @jsjson.JValue?, measure? : async () -> @jsjson.JValue, started? : () -> Unit) -> @jsjson.JValue raise MoveError
+pub async fn Told::settle(Self) -> Unit
+
+pub(all) struct ToldDeps {
+  clock : Clock
+  ask : Ask
+  hold : (() -> (() -> Unit))?
+  say : Say
+}
+
+pub struct Vault {
+  // private fields
+}
+pub async fn Vault::answer(Self, @jsjson.JValue) -> @jsjson.JValue
+pub fn Vault::module(Self) -> Module
+pub fn Vault::new(VaultDeps) -> Self
+
+pub(all) struct VaultDeps {
+  data : String
+  owners : async (String) -> Array[String]
+  stores : VaultStores
+  ask : async (String, @jsjson.JValue) -> @jsjson.JValue
+  disk : Disk
+}
+
+pub(all) struct VaultStores {
+  plain_items : async (String, String) -> Array[@jsjson.JValue]
+  plain_item : async (String, String) -> @jsjson.JValue?
+  plain_put : async (@jsjson.JValue) -> Unit
+  plain_forget : async (String, String) -> Unit
+  vaults : async (String) -> Array[@jsjson.JValue]
+  vault : async (String, String) -> @jsjson.JValue?
+  items : async (String, String) -> Array[@jsjson.JValue]
+  item : async (String, String, String) -> @jsjson.JValue?
+  put_vault : async (@jsjson.JValue) -> Unit
+  put_item : async (@jsjson.JValue) -> Unit
+  forget_item : async (String, String, String) -> Unit
+  forget_vault : async (String, String) -> Unit
+}
+
+pub(all) struct Waits {
+  module : String
+  id : String
+  label : String?
+  at : String?
+}
+pub fn Waits::need(Self) -> Need
+pub fn Waits::to_j(Self) -> @jsjson.JValue
+
+// Type aliases
+pub using @jsjson {type JValue as J}
+
+// Traits

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { makeStore } from "../src/read/store.ts";
-import { usage, usageHistory } from "../src/read/usage.ts";
+import { makeStore } from "./reference/store.ts";
+import { usage, usageHistory } from "./reference/usage.ts";
 import { REMOTE_RUNS_OF } from "../src/store/remote-runs.ts";
 import { Store } from "../src/store/store.ts";
 
@@ -50,7 +50,7 @@ test("remote task usage does not read another workspace's growing history", () =
     let examined = 0;
     store.db.function("examined_remote_task", (seq) => { examined++; return seq; });
     const tracked = store.db.prepare(REMOTE_RUNS_OF.replace("AND at >= ?2", "AND examined_remote_task(seq) IS NOT NULL AND at >= ?2"));
-    assert.equal(tracked.all("A", 0).length, 1);
+    assert.equal(tracked.all("A", 0, 9223372036854775807n, 0).length, 1);
     assert.equal(examined, 1, "another workspace's tasks are not examined by the indexed lookup");
   } finally {
     store.close();

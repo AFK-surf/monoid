@@ -20,6 +20,8 @@ struct FakeHost {
   /// how many times the app asked for the host's next frame for what goes on by the clock (h_request_frame_on): owed
   /// no frame at this moment, as a host draws one at its next display frame (Tester::frames_on)
   mut frames_on : Int
+  /// whether its Tester has drawn a frame: its run under way, so a run begun after it is another's (host_let_go)
+  mut drawn : Bool
   /// how many frames a second what moves on by the clock was last said to need (@hostapi.frames_paced), as a host is
   /// told it after the frame it asked for (0: none said since a frame was last asked for: the display's every frame)
   mut paced : Double
@@ -67,6 +69,10 @@ struct FakeHost {
   mut keyboard : Bool
   // the system asks for less transparency (glass drawn solid)
   mut reduce_transparency : Bool
+  // the system asks for more contrast (Tester::set_increase_contrast)
+  mut increase_contrast : Bool
+  // the system slows the device down for its heat (Tester::set_thermal_throttled)
+  mut thermal_throttled : Bool
   // the person's setting for motion: reduced (Tester::set_reduce_motion; or the environment's MBUI_REDUCE_MOTION=1)
   mut reduce_motion : Bool
   logs : Array[String]
@@ -109,6 +115,9 @@ struct FakeHost {
   // whether the marks of East Asian Ambiguous width (U+2010 to U+206F) are a whole em unless set proportional
   // (@hostapi.style_proportional), as a CJK face draws them (false by default: half an em either way)
   mut cjk_marks : Bool
+  // who spaces Chinese and Japanese words (@hostapi.words_spaced; nobody by default, what the fake measures left as it
+  // is): Tester::words_spaced_here for mbui's spacing or a shaper's own
+  mut words_spaced : Int
   // how big each glyph's picture is, in points (6 by 10 by default): what fills an atlas's plots, as large ones do
   mut glyph_box : (Double, Double)
   // what a face given by its number (face_add, a face's preview) adds to a cluster's advance in what is set in it, in
@@ -150,6 +159,15 @@ struct FakeHost {
   windows_opened : Array[String]
   windows_closed : Array[String]
   windows_fronted : Array[String]
+  /// whether its windows open in this run (Tester::set_windows_in_process: the Mac's), the ids given so far, the window
+  /// drawn or handed input now, each open one's size in points (Tester::set_window_beside_size), and the ids the app
+  /// brought to the front and closed, oldest first
+  mut windows_in_process : Bool
+  mut window_ids : Int
+  mut window_at : Int
+  window_sizes : Map[Int, (Double, Double)]
+  window_ids_fronted : Array[Int]
+  window_ids_closed : Array[Int]
   /// the number on the app's icon as last told (@ui.set_badge)
   mut badge : Int
   /// what the app's own native calls say, by name, as its host would hand them on (Tester::set_app_said), and what
@@ -323,9 +341,10 @@ struct FakeHost {
   streams_fed : Map[Int, Array[String]]
   stream_said : Map[Int, Array[String]]
   /// whether it takes a frame not to be shown (Tester::set_stream_hides), and what each stream says of its sound
-  /// (Tester::set_stream_audio_clock: samples played, ms queued)
+  /// (Tester::set_stream_audio_clock: samples played, ms queued; Tester::set_stream_audio_wanted: ms wanted)
   mut stream_hides : Bool
   stream_audio_clock : Map[Int, (Double, Double)]
+  stream_audio_wanted : Map[Int, Double]
   /// the device beyond the window (device.mbt): awake, haptics, the clipboard's picture and reads, the keyboard's height
   dev : FakeDevice
   /// pictures' pixels as the test made them up (Tester::add_pixels), by source; and those of the images loaded from
@@ -477,11 +496,15 @@ fn h_event_finger() -> Int {
 }
 
 ///|
-/// When the input event being handled happened (the host's, else now).
+/// When the input event being handled happened (the host's, else now; in a frame the frame's logic's moment,
+/// view_logic_at: the frame goes no further than that however long its work takes, on a device's host as under a
+/// Tester's, whose clock does not move in a frame).
 fn h_event_time() -> Double {
   let t = @hostapi.event_time()
   if t >= 0.0 {
     t
+  } else if in_frame.val {
+    view_logic_at.val
   } else {
     @hostapi.now()
   }
@@ -599,6 +622,19 @@ fn h_glyph(key : Int, out : FixedArray[Double]) -> Unit {
 /// The picture of glyph `key`, drawn by the h_glyph asked last, put in the atlas at `x`, `y`.
 fn h_glyph_put(key : Int, x : Int, y : Int) -> Unit {
   @hostapi.glyph_put(key, x, y)
+}
+
+///|
+/// The picture of glyph `key`, drawn by the h_glyph asked last, given back into `out` (halo.mbt): false where the host
+/// gives none.
+fn h_glyph_picture(key : Int, out : FixedArray[Byte]) -> Bool {
+  @hostapi.glyph_picture(key, out)
+}
+
+///|
+/// Pixels made here (a halo, halo.mbt) put in the atlas at `x`, `y`: false where the host takes none.
+fn h_atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Bool {
+  @hostapi.atlas_put(x, y, w, h, px)
 }
 
 ///|
@@ -748,6 +784,20 @@ let presented_ms : Ref[Double] = { val: 0.0 }
 ///|
 fn h_reduce_transparency() -> Bool {
   @hostapi.reduce_transparency() || h_env("MBUI_GLASS") == "solid"
+}
+
+///|
+/// Whether glass is drawn solid as the system has it: it asks for less transparency, or it slows the device down for
+/// its heat (@hostapi.thermal_throttled), when the blur's copies and passes each frame of glass costs are let go till it
+/// cools. A tape keeps it as one ("glass": envrec.mbt), so a run is drawn again as it was.
+fn h_glass_solid() -> Bool {
+  h_reduce_transparency() || @hostapi.thermal_throttled()
+}
+
+///|
+/// Whether the system asks for more contrast (MBUI_CONTRAST=more stands in for it in a picture or a film).
+fn h_increase_contrast() -> Bool {
+  @hostapi.increase_contrast() || h_env("MBUI_CONTRAST") == "more"
 }
 
 ///|
@@ -971,6 +1021,10 @@ let outside_op = 15
 let outside_autofill = 16
 
 ///|
+/// A window of this run beside its first closed by the person (id: its id; window_slots.mbt).
+let outside_window = 17
+
+///|
 /// Every kind above, by its name: each its own number (outside_kinds_wbtest.mbt), the hosts' named the same
 /// (Native.java's OUTSIDE_*, apple.h's, win.h's and android_host.c's MB_OUTSIDE_*, web/host.js's OUTSIDE_*), every
 /// `outside_*` here in it: scripts/chk outside-kinds, host_contract.sh HOST kinds
@@ -993,6 +1047,7 @@ fn outside_kinds() -> Array[(String, Int)] {
     ("perf", outside_perf),
     ("op", outside_op),
     ("autofill", outside_autofill),
+    ("window", outside_window),
   ]
 }
 
@@ -1172,6 +1227,11 @@ fn views_told_changed() -> Unit {
 /// The host's event: what it did for the app is done (`state`: 1 done, -1 failed), or (a view, 0) it waits on the
 /// app now: the bytes a player reads, a site's answer. Until the app answers, the host does nothing for it.
 fn on_outside(kind : Int, id : Int, state : Int) -> Unit {
+  // (a window beside the first closed: let go of between frames, the first window's state in place)
+  if kind == outside_window {
+    window_closed_heard(id)
+    return
+  }
   // (one event, at its own moment: view_host.mbt)
   view_event(fn() { on_outside_now(kind, id, state) }, what=if kind == outside_posted { "messages" } else { "host" })
 }

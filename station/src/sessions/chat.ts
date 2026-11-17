@@ -9,6 +9,16 @@ export type Json = any;
 
 export type ThreadRef = { channel: string; threadTs: string };
 
+/// What a station's own words in a thread (sessions/actor.ts `notice`, the hub's and the connects' ⚠️ words, its link
+/// to a new session, what it says of a relay, a chat opened or a copy that failed) end with as they are
+/// posted, and nothing an agent posts does (tools/chat.ts strips it): an invisible separator (U+2063). A station that
+/// sees one come back through another bot's connect, from a bot of the workspace's stations, takes it as no person's
+/// message (hub.ts `stationNotice`): it wakes nothing and brings no chat back. What it cannot tell: a notice edited by
+/// hand, or a platform that drops the character.
+export const NOTICE_MARK = "\u2063";
+export const markNotice = (text: string) => (text.endsWith(NOTICE_MARK) ? text : `${text}${NOTICE_MARK}`);
+export const isNotice = (text: string) => text.trimEnd().endsWith(NOTICE_MARK);
+
 export type InboundMessage = {
   channel: string;
   threadTs: string;
@@ -120,6 +130,12 @@ export interface ChatSurface {
   channelName?(channel: string): Promise<string | null>;
   /// Where the bot can start a conversation (a chat relayed there, sessions/relay.ts): the channels and groups it is in.
   places?(): Promise<Place[]>;
+  /// Whether its bot may join a public channel itself (Slack's channels:join), as last said; read after `places`.
+  joins?(): boolean;
+  /// The public channels of its workspace its bot is not in, at most a couple of thousand.
+  openPlaces?(): Promise<Place[]>;
+  /// Its bot joins a public channel of its workspace.
+  join?(channel: string): Promise<void>;
   /// The people in one of its places (bots left out), at most a couple of thousand: who a note relaying a chat there
   /// can mention.
   peopleIn?(channel: string): Promise<Member[]>;

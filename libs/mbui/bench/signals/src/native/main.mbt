@@ -428,7 +428,8 @@ fn mol_bench() -> Unit {
   let a = @signals.signal(0)
   let b = @signals.signal(0)
   let c = @signals.computed(fn(_) { a.get() % 2 + b.get() % 2 })
-  let d = @signals.computed(fn(_) {
+  // (an array made anew each time, compared as the benchmark's JS compares it: by the object)
+  let d = @signals.computed_ref(fn(_) {
     numbers.map(fn(i) { MolX::{ x: i + a.get() % 2 - b.get() % 2 } })
   })
   let e = @signals.computed(fn(_) { hard(c.get() + a.get() + d.get()[0].x) })

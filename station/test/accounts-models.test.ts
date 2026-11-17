@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { lineOf, newerOf, seesImages, VISION, uncheckOutdated } from "../src/accounts/models.ts";
-import { modelKey } from "../src/read/usage.ts";
+import { modelKey } from "./reference/usage.ts";
 
 test("a model that reads images is known however it is spelled; one that was not checked is not", () => {
   for (const m of ["deepseek-v4.1-flash", "openrouter/deepseek-v4.1-flash", "claude-haiku-5-5", "anthropic/claude-opus-5-5-20261001", "kimi-k3[1m]"]) assert.ok(seesImages(m), m);

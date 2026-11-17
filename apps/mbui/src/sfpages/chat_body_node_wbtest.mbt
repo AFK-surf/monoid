@@ -120,6 +120,7 @@ fn body_new(
         tips,
         stint: fn() { 0 },
         jump: None,
+        picture: None,
       }
       root.box(fn(f) {
         f.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -286,7 +287,8 @@ fn body_src(mode : String) -> Source {
 /// The nodes' key of each of chat view `v`'s entries `read` (chat_body_rows'; its Foot "foot", the list's room under
 /// its rows and no row of the nodes').
 fn body_keys(v : ChatView, read : Array[Entry]) -> Array[String] {
-  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys
+  // (a long message's pieces one row, as the old list draws it: its first piece's key)
+  let keys = chat_body_rows({ sent: {}, sent_as: {}, here: {} }, v, read, []).keys.filter(fn(k) { chat_piece_of(k) == k })
   let out : Array[String] = []
   let mut j = 0
   for e in read {
@@ -320,20 +322,50 @@ fn body_old_rows(old : @ui.Tester, v : ChatView, read : Array[Entry]) -> Array[(
 }
 
 ///|
+/// The block `p` holds row `k` now (chat_body_node's `made`: made for it, or a block put by and taken for it), what
+/// `views` says of each row's block: none other said to be held by it.
+fn body_view_holds(views : Map[String, @view.View], k : String, p : @view.View) -> Unit {
+  let gone : Array[String] = []
+  for kv in views {
+    if kv.0 != k && kv.1.id() == p.id() {
+      gone.push(kv.0)
+    }
+  }
+  for g in gone {
+    views.remove(g)
+  }
+  views[k] = p
+}
+
+///|
 /// The nodes' rows, each the node its row was made in (`views`, chat_body_node's `made`) while it is: its key, its top,
 /// its height on whole pixels `g` a point (row_slot's, as the list lays its blocks on the pixels).
-fn body_new_rows(views : Map[String, @view.View], g : Double) -> Array[(String, Double, Double)] {
-  views
-  .iter()
-  .filter_map(fn(kv) {
-    if kv.1.alive() {
-      let r = kv.1.placed_window_now()
-      Some((kv.0, r.1, (r.3 * g - 0.000001).ceil() / g))
-    } else {
-      None
+fn body_new_rows(views : Map[String, @view.View], g : Double, h : Double) -> Array[(String, Double, Double)] {
+  // (a long message's pieces (chat_body_pieces) one row, as the old list draws the message: from its first's top to
+  // its last's foot, by its first's key)
+  let spans : Map[String, (Double, Double)] = Map([])
+  let order : Array[String] = []
+  body_piece_counts.clear()
+  for kv in views {
+    // (one put by out of sight for the next of its make (chat_body_shape) is no row that shows)
+    let r = kv.1.placed_window_now()
+    if kv.1.alive() && !kv.1.shown_nowhere() && r.1 < h && r.1 + r.3 > 0.0 {
+      let k = chat_piece_of(kv.0)
+      body_piece_counts[k] = body_piece_counts.get(k).unwrap_or(0) + 1
+      let foot = r.1 + (r.3 * g - 0.000001).ceil() / g
+      match spans.get(k) {
+        Some((top, bottom)) => spans[k] = (dmin(top, r.1), dmax(bottom, foot))
+        None => {
+          spans[k] = (r.1, foot)
+          order.push(k)
+        }
+      }
     }
+  }
+  order.map(fn(k) {
+    let (top, bottom) = spans[k]
+    (k, top, bottom - top)
   })
-  .collect()
 }
 
 ///|
@@ -415,7 +447,7 @@ fn body_both(mode : String, s : (String, Double, Double, Int), at : String, scal
   let entries = @signals.signal(read0)
   let views : Map[String, @view.View] = Map([])
   let place : @view.ListPlace[String] = @view.ListPlace::new()
-  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { views[k] = p }, unjudged=true)
+  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { body_view_holds(views, k, p) }, unjudged=true)
   t.set_font_scale(scale)
   t.run_for(rest)
   if at != "end" {
@@ -434,7 +466,7 @@ fn body_both(mode : String, s : (String, Double, Double, Int), at : String, scal
     entries.set(read)
     t.run_for(@ui.move_most_ms)
   }
-  let now = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0))
+  let now = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
   // (where both are put: the list's end; the row put at the top; once a page came in over it, the row the old list
   // held where it was, its first message then)
   let anchor = if at == "end" {
@@ -534,6 +566,43 @@ fn body_held_picture(o : BodyRow, n : BodyRow, lo : Double, hi : Double) -> Bool
 /// body_grown_capsule's: every box holds its words. At the system's own size the row is the old one's, compared whole.
 fn body_grown_card(c : BodyCase, o : BodyRow, n : BodyRow) -> Bool {
   c.mode == "chat-screens" && o.key == "m:ts12" && body_r(n.h - o.h) == body_r(8.0)
+}
+
+///|
+/// How many pieces each long message's row was drawn in by the nodes (body_new_rows'), by its first piece's key.
+// kept across runs: written by body_new_rows as each case is read
+let body_piece_counts : Map[String, Int] = Map([])
+
+///|
+/// Whether old row `o` and the nodes' `n` of a long message drawn in `pc` pieces show the same things where both are
+/// seen in the window (by what each is, not where), and are as tall to within a few tenths of a point a piece (each
+/// piece on the list's whole pixels) past what a larger size of words grows a card by (body_grown_card's 8).
+fn body_pieces_same(c : BodyCase, o : BodyRow, n : BodyRow, pc : Int) -> Bool {
+  let seen = fn(r : BodyRow) {
+    let out = r.items.filter(fn(i) { i.y + i.h > 0.0 && i.y < c.h }).map(fn(i) { (i.line)(0.0) })
+    out.sort()
+    out
+  }
+  let drift = pc.to_double() * 0.5
+  let dh = n.h - o.h
+  // (what the old one shows that the nodes' does not, where the message's top is out of what shows: its picture held
+  // under the list's top (c.stick, body_held_picture's), which the nodes' first piece, out of what shows, is not made
+  // to hold)
+  let held = fn(line : String) {
+    o.top < 0.0 &&
+    o.items.iter().any(fn(i) { (i.line)(0.0) == line && i.y >= 0.0 && body_r(i.y) <= body_r(body_held_y) })
+  }
+  // (a screen's card with its preview grown with its words at a larger size: body_grown_card's, as wide, taller)
+  let grown = fn(a : String, b : String) {
+    c.mode == "chat-screens" && o.key == "m:ts12" && a.split("x").to_array().get(0) == b.split("x").to_array().get(0)
+  }
+  let (only_o, only_n) = body_apart(seen(o), seen(n))
+  let rest_o = only_o.filter(fn(l) { !held(l) && !only_n.iter().any(fn(m) { grown(l, m) }) })
+  let rest_n = only_n.filter(fn(m) { !only_o.iter().any(fn(l) { grown(l, m) }) })
+  let whole = n.top >= 0.0 && n.top + n.h <= c.h && o.top >= 0.0 && o.top + o.h <= c.h
+  rest_o.is_empty() &&
+  rest_n.is_empty() &&
+  (!whole || (dh >= -drift && dh <= drift) || (dh - 8.0 >= -drift && dh - 8.0 <= drift))
 }
 
 ///|
@@ -681,6 +750,20 @@ fn body_cmp(c : BodyCase, known : Map[String, Int], said : Array[String]) -> Uni
     if body_r(n.h) == body_r(o.h) && body_row_lines(o, lo~, hi~) == body_row_lines(n, lo~, hi~) {
       continue
     }
+    // (a long message drawn a block a piece (chat_body_pieces): the same things in what shows, each piece on the
+    // list's whole pixels, so what is under its first as much as a few tenths of a point lower a piece; those out of
+    // what shows not made)
+    let pieces = match c.entries.get(o.key) {
+      Some(e) => chat_body_pieces(e).map_or(1, fn(ps) { ps.length() })
+      None => 1
+    }
+    match body_piece_counts.get(o.key) {
+      Some(pc) if pieces > 1 && body_pieces_same(c, o, n, pc) => {
+        tally("a long message a block a piece, each on the list's whole pixels (meant)", 1)
+        continue
+      }
+      _ => ()
+    }
     if body_route_down(c, o, n, lo, hi) {
       tally("where it went, narrow, route_line_down further down (meant)", 1)
     } else if body_held_picture(o, n, lo, hi) {
@@ -812,11 +895,16 @@ fn body_held(which : BodyHeld) -> String {
   let lines = match which {
     HeldMain => [
     "an HTML page it places, as high, not compared (P12): 6",
-    "its picture held under the list's top (c.stick): 43",
+    // (43 till a message's parts were 4 apart again and its files and how it went 8 under what is over them: its
+    // rows taller, four more of the places swept have a row's picture across the list's top; no other kind came)
+    "its picture held under the list's top (c.stick): 45",
+    // (chat-screens' m:ts12 drawn a block a piece since 2026-11-15, 2 of those held pictures among them)
+    "a long message a block a piece, each on the list's whole pixels (meant): 6",
   ]
     HeldLarge => [
     "a pill or a capsule as high as its words at a larger size (meant): 2",
-    "a screen's card's lines as high as their words at a larger size (meant): 1",
+    // (the screen's card's row, m:ts12, a long message drawn a block a piece since 2026-11-15: its card's growth there)
+    "a long message a block a piece, each on the list's whole pixels (meant): 1",
     "an HTML page it places, as high, not compared (P12): 1",
   ]
     // (its turn over no more compared with the old list, which came down there (the changes' sweep, turned on
@@ -889,6 +977,12 @@ test "a chat's messages made once as nodes at the system's words set to 1.3, on 
 /// A paragraph of the core's Markdown saying `words`.
 fn body_md(words : String) -> Json {
   Json::array([Json::array([Json::string("p"), Json::array([Json::string(words)])])])
+}
+
+///|
+/// A paragraph of the core's Markdown saying `words`, a block of it.
+fn body_para(words : String) -> Json {
+  Json::array([Json::string("p"), Json::array([Json::string(words)])])
 }
 
 ///|
@@ -981,7 +1075,7 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
       entries,
       made=fn(k, p) {
         made[k] = made.get(k).unwrap_or(0) + 1
-        views[k] = p
+        body_view_holds(views, k, p)
       },
       unjudged=true,
     )
@@ -993,7 +1087,7 @@ test "a chat's messages as nodes as its view changes, at rest after each: the sa
       view.set(st.1)
       entries.set(read)
       t.run_for(@ui.move_most_ms)
-      let drawn = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0))
+      let drawn = body_drawn(t, s.1, s.2, body_new_rows(views, 2.0, s.2))
       // (its turn over, its agent's line gone with nothing in its place: turned on purpose from the old list's, which
       // comes down by the line's height; the page made as nodes leaves its room under the last row, each row that stays
       // where it was at the step before (the user, 2026-11-12: a turn that ends with no answer must not carry what is
@@ -1284,7 +1378,7 @@ test "the page before read in over a chat's list as nodes at its top: what is re
   let entries = @signals.signal(read0)
   let views : Map[String, @view.View] = Map([])
   let place : @view.ListPlace[String] = @view.ListPlace::new()
-  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { views[k] = p })
+  let t = body_new(src, s.1, s.2, s.3, view, entries, place~, made=fn(k, p) { body_view_holds(views, k, p) })
   t.run_for(@ui.move_most_ms)
   let keys0 = body_keys(v0, read0)
   // (at its very top: its first row under its head, the chat's bar's room, as far as the list goes: a bring's offset
@@ -1354,10 +1448,26 @@ test "a chat's list as nodes given the same entries again reads none of its rows
   t.run_for(@ui.move_most_ms)
   let one_row = body_bound() - b1
   assert_true(t.find(words) is Some(_), msg="its new words drawn")
-  // every message another (each as it was, read anew): every row's
-  let all = one.map(fn(e : Entry) -> Entry {
+  // every message made anew as it was (read again from its JSON): the same, no row's binding looked at again
+  let anew = one.map(fn(e : Entry) -> Entry {
     match e {
       Said(m) => Said({ ..m, text: m.text })
+      e => e
+    }
+  })
+  let b_anew = body_bound()
+  entries.set(anew)
+  t.run_for(@ui.move_most_ms)
+  let anew_rows = body_bound() - b_anew
+  assert_eq(anew_rows, 0, msg="every message made anew as it was looked at \{anew_rows} bindings")
+  // every message another: every row's
+  let all = one.map(fn(e : Entry) -> Entry {
+    match e {
+      Said(m) => {
+        // (its Markdown made here, as the one changed above: nothing asked of the core)
+        let words = m.text + "。"
+        Said({ ..m, text: words, md: Some(body_md(words)) })
+      }
       e => e
     }
   })
@@ -1370,4 +1480,171 @@ test "a chat's list as nodes given the same entries again reads none of its rows
     msg="one row changed looked at \{one_row} bindings, every row \{every}",
   )
   assert_eq(made, made0, msg="no row made again")
+}
+
+///|
+test "a long message a block a piece: the pointer on any of its pieces shows its ⋯, as on its first" {
+  @sfbase.reset()
+  reset()
+  @sf.presenters_reset()
+  let src = @sffixture.fixture("chat")
+  let s = body_screens()[1]
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, s.1, s.2, s.3, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  // (its last agent's message three paragraphs, a piece each)
+  let mut last = -1
+  for i, e in read0 {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "a\n\nb", md: Some(Json::array([body_para("a"), body_para("b")])) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read0[last] is Said(m) else { fail("no agent's message") }
+  let ps = ["头一段：列表一块是一行。", "第二段：长消息按块拆开。", "第三段：指针在哪一块上，⋯ 都在。"]
+  let md = Json::array(ps.map(body_para))
+  let read = read0.copy()
+  read[last] = Said({ ..m, text: ps.join("\n\n"), md: Some(md) })
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), @signals.signal(read))
+  t.run_for(@ui.move_most_ms)
+  let more = fn() { t.query(Button, label=@sf.t("web-main.menu.more")) is Some(_) }
+  assert_false(more(), msg="no ⋯ with the pointer off it")
+  let at = fn(words : String) -> (Double, Double) {
+    match t.run_rects(words).get(0) {
+      Some(r) => (r.0 + r.2 / 2.0, r.1 + r.3 / 2.0)
+      None => @halt.saying("no words drawn holding \{words}")
+    }
+  }
+  for p in ps {
+    let (x, y) = at(p)
+    t.move_to(x, y)
+    t.run_for(@ui.move_most_ms)
+    assert_true(more(), msg="its ⋯ with the pointer on " + p)
+  }
+  t.move_to(2.0, 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_false(more(), msg="no ⋯ with the pointer gone")
+}
+
+///|
+/// The core's reading of a paragraph `words` and a table under it of `rows` rows (its head's not counted) and `cols`
+/// columns, each cell's words `r<row>c<col>` and a long run of x, so that it is wider than a pane and scrolls across.
+fn body_long_table(words : String, rows : Int, cols : Int) -> Json {
+  let cell = fn(r : Int, c : Int) {
+    Json::array([Json::string("td"), Json::array([Json::string("r\{r}c\{c}xxxxxxxxxxxxxxxxxxxxxxxxxxxx")])])
+  }
+  let line = fn(r : Int) { Json::array([Json::string("tr"), Json::array(Array::makei(cols, fn(c) { cell(r, c) }))]) }
+  Json::array([
+    body_para(words),
+    Json::array([
+      Json::string("table"),
+      Json::array(Array::makei(rows + 1, line)),
+      Json::object({ "md": Json::string(""), "csv": Json::string("") }),
+    ]),
+  ])
+}
+
+///|
+test "a long table a few rows a piece: each piece a block of the list, all of them scrolled across as one" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let s = body_screens()[1]
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, s.1, s.2, s.3, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let md = body_long_table("表格在下面。", 13, 8)
+  let mut last = -1
+  for i, e in read0 {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "表格在下面。\n\n| a |", md: Some(md) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read0[last] is Said(m) else { fail("no agent's message") }
+  let said : Entry = Said({ ..m, text: "表格在下面。\n\n| a |", md: Some(md) })
+  // (its paragraph, then its 14 rows (its head's with them) 4 a piece: 4, 4, 4, 2)
+  let ps = chat_body_pieces(said).unwrap()
+  assert_eq(ps.map(fn(p) { p.rows }), [None, Some((0, 4)), Some((4, 8)), Some((8, 12)), Some((12, 14))])
+  assert_true(ps[4].last && !ps[3].last)
+  let read = read0.copy()
+  read[last] = said
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), @signals.signal(read))
+  t.run_for(@ui.move_most_ms)
+  let x_of = fn(words : String) -> Double {
+    match t.run_rects(words).get(0) {
+      Some(r) => r.0
+      None => @halt.saying("no words drawn holding \{words}")
+    }
+  }
+  // (every row drawn, each piece's under the one before, its first column at one place)
+  let first = x_of("r1c0")
+  let low = x_of("r13c0")
+  assert_eq(low, first)
+  // (the wheel across over its first rows: its last rows moved as far)
+  let (_, y, _, _) = t.run_rects("r1c0").get(0).unwrap()
+  t.wheel_with(first + 40.0, y + 4.0, 200.0, 0.0, 0)
+  t.run_for(@ui.move_most_ms)
+  let moved = first - x_of("r1c0")
+  assert_true(moved > 0.0, msg="its first rows scrolled across: \{moved}")
+  assert_eq(first - x_of("r13c0"), moved, msg="its last rows scrolled as far as its first")
+  assert_eq(first - x_of("r7c0"), moved, msg="its middle rows too")
+}
+
+///|
+test "a long list a few items a piece: each piece a block of the list, numbered on and in one indent as drawn whole" {
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let s = body_screens()[1]
+  let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+  body_old(src, s.1, s.2, s.3, seen~) |> ignore
+  let (v0, read0) = seen.val.unwrap()
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let item = fn(i : Int) { Json::array([Json::string("li"), Json::array([Json::string("第\{i + 1}项要做的事")])]) }
+  let md = Json::array([
+    body_para("要做的有十件。"),
+    Json::array([
+      Json::string("list"),
+      Json::array(Array::makei(10, item)),
+      Json::object({ "ordered": Json::boolean(true), "start": Json::number(1.0) }),
+    ]),
+  ])
+  let mut last = -1
+  for i, e in read0 {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "要做的有十件。\n\n1. a", md: Some(md) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read0[last] is Said(m) else { fail("no agent's message") }
+  let said : Entry = Said({ ..m, text: "要做的有十件。\n\n1. a", md: Some(md) })
+  // (its paragraph, then its ten items 3 a piece: 3, 3, 3, 1)
+  let ps = chat_body_pieces(said).unwrap()
+  assert_eq(ps.map(fn(p) { p.rows }), [None, Some((0, 3)), Some((3, 6)), Some((6, 9)), Some((9, 10))])
+  let read = read0.copy()
+  read[last] = said
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), @signals.signal(read))
+  t.run_for(@ui.move_most_ms)
+  let rect = fn(words : String) {
+    match t.run_rects(words).get(0) {
+      Some(r) => r
+      None => @halt.saying("no words drawn holding \{words}")
+    }
+  }
+  // (numbered on across its pieces, every item's words in one indent, each under the one before)
+  assert_true(t.find("10.") is Some(_), msg="its last item numbered 10")
+  let first = rect("第1项")
+  let mut y = first.1
+  for i in 1..<10 {
+    let r = rect("第\{i + 1}项")
+    assert_eq(r.0, first.0, msg="item \{i + 1} in the first's indent")
+    assert_true(r.1 > y, msg="item \{i + 1} under the one before")
+    y = r.1
+  }
 }

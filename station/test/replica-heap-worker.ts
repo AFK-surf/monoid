@@ -2,8 +2,8 @@
 // run in a worker whose heap is that small.
 import { join } from "node:path";
 import { parentPort, workerData } from "node:worker_threads";
-import { Exporter, genDir, nothingTold, ownDir } from "../src/replica/export.ts";
-import { build } from "../src/replica/restore.ts";
+import { Exporter, genDir, nothingTold, ownDir } from "./reference/replica-export.ts";
+import { build } from "./reference/replica-restore.ts";
 
 const { data, to, origin, home } = workerData as { data: string; to: string; origin: string; home: string };
 const e = new Exporter({ db: join(data, "stillfail.db"), replica: join(data, "replica"), dataDir: data, origin, now: () => 1, batchBytes: 1 << 20 });

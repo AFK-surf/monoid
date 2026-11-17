@@ -221,7 +221,7 @@ test "window zoom: window corners stay consistent at every size" {
 /// they say one measure of it (mbui's to mend, not the bar's).
 // kept across runs: a value (no field of it changes)
 let zoom_bar_corners_known : Array[String] = [
-  "a box in 「整理发布清单 你 A」 (at 815,6 32×32, node 227) (corner 4.666666666666666) in the top right of 「整理发布清单 你 A 星 个 今天 整理发布清单…」 (at 0,0 853×533, node 159) (corner 10.666666666666666): 6 from its edges, a corner the theme's ranges do not let it have; 4.666666666666666 in, it would be 6",
+  "a box in 「整理发布清单 你 A」 (at 815,6 32×32, node 232) (corner 4.666666666666666) in the top right of 「整理发布清单 你 A 星 个 搜索全部内容 今天…」 (at 0,0 853×533, node 164) (corner 10.666666666666666): 6 from its edges, a corner the theme's ranges do not let it have; 4.666666666666666 in, it would be 6",
 ]
 
 ///|
@@ -315,6 +315,9 @@ test "window zoom: a short rail keeps settings visible and scrolls its places" {
   for _ in 0..<4 { t.key(@ui.key_of_char('='), mods=@ui.mod_cmd) }
   t.frame_at(t.time() + @ui.move_most_ms)
   assert_true((@ui.window_zoom() - 1.75).abs() < 0.001)
+  // Resizing into Medium keeps the chat in front; bring the rail over before testing its controls.
+  t.click(Button, label="展开侧边栏")
+  t.run_for(@ui.move_most_ms)
   let gear = t.query(Button, label=@sf.t("web-pages.settings.title")).unwrap().rect
   let (_, height) = t.ctx().window_size()
   assert_true(gear.1 >= 0.0 && gear.1 + gear.3 <= height, msg="settings is outside the window: \{Repr(gear)}")

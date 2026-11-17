@@ -15,7 +15,6 @@
 /// drawn in as well (login_field), a login's card being in its chat and on its station's page at once.
 priv struct LoginsHere {
   pressed : @sf.LiveMap[String, Bool]
-  typed : Map[String, Bool]
   fields : Map[String, @ui.Field]
   /// each login's card as it last showed under way, by station and id: what it shows as it closes once ended (an old
   /// view's, decision.mbt's message_decision)
@@ -23,13 +22,12 @@ priv struct LoginsHere {
 }
 
 ///|
-let logins_here : LoginsHere = { pressed: @sf.LiveMap::new(), typed: {}, fields: {}, last: {} }
+let logins_here : LoginsHere = { pressed: @sf.LiveMap::new(), fields: {}, last: {} }
 
 ///|
 /// As at the start (tests).
 pub fn login_cards_reset() -> Unit {
   logins_here.pressed.clear()
-  logins_here.typed.clear()
   logins_here.fields.clear()
   logins_here.last.clear()
   st_logins_open.clear()
@@ -366,14 +364,29 @@ pub fn login_card(
     return
   }
   let all = logins_of(core, station)
-  c.box(style=lc_room, fn() {
-    c.box(style=if marked { lc_card_marked } else { lc_card }, fn() {
+  let in_sheet = place == "sheet"
+  let room = if in_sheet {
+    lc_room_sheet.then(@sf.panel_card_out()).then(@sf.panel_card_last())
+  } else {
+    lc_room
+  }
+  let card = if in_sheet {
+    if marked { lc_card_sheet_marked } else { lc_card_sheet }
+  } else {
+    if marked { lc_card_marked } else { lc_card }
+  }
+  c.box(style=room, fn() {
+    c.box(style=card, fn() {
       if flag(all, "canLogin") {
-        c.box(style=lc_head, fn() {
+        if in_sheet {
           c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
-          login_cancel(c, core, station, id)
-        })
-        |> ignore
+        } else {
+          c.box(style=lc_head, fn() {
+            c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
+            login_cancel(c, core, station, id)
+          })
+          |> ignore
+        }
         login_active(c, core, station, l, flag(all, "canRelay"), place)
       } else {
         c.box(style=lc_title_room, fn() { c.text(text(l, "title"), style=lc_title) |> ignore }) |> ignore
@@ -469,15 +482,15 @@ fn login_step(c : @ui.Ctx, s : LoginStep) -> Unit {
   }
   let foot = fn(style : @ui.Style) { if s.last { style.then(lc_foot_reach) } else { style } }
   if s.more.is_empty() {
-    step(foot(if s.solid { lc_step_solid } else { lc_step }))
+    step(foot(if s.solid { lc_step_solid } else { lc_step }).then(lc_inner_round))
   } else {
     // the other ways of doing the step, seldom used, in a ⋯ at the row's end (sf/align.mbt: what is used least
     // goes into the row's ⋯)
     c.box(style=foot(lc_step_row), fn() {
-      step(if s.solid { lc_step_solid_in_row } else { lc_step_in_row })
+      step((if s.solid { lc_step_solid_in_row } else { lc_step_in_row }).then(lc_inner_round))
       let mid = c.id(s.key + "/more")
       let what = @sf.t("common.login.otherWays")
-      let b = c.box(style=lc_more, id=mid, fn() { @sf.icon(c, "more", size=lc_icon, color=p.text) |> ignore })
+      let b = c.box(style=lc_more.then(lc_inner_round), id=mid, fn() { @sf.icon(c, "more", size=lc_icon, color=p.text) |> ignore })
       c.semantics(b, Button, id=mid, label=what)
       c.on_press(mid, fn() {
         @sf.menu(s.more.map(fn(i) { Some(i) }), from=Of(mid), along=End)
@@ -631,7 +644,8 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
   let p = @sf.theme().p
   let id = text(l, "id")
   let here = place + "\u{1}" + station + "\u{1}" + id
-  let shows = login_paste_shows(core, station, l, logins_here.typed.get(here).unwrap_or(false))
+  let field = login_field(here)
+  let shows = login_paste_shows(core, station, l, field.text().trim(chars=" \n").to_owned() != "")
   let busy = shows.busy
   login_said(c, shows.lead)
   login_step(c, shows.step)
@@ -640,7 +654,7 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
     c.blur()
     c.tell("login-answer/" + id, fn() { login_answer(core, station, id, code) })
   }
-  c.box(style=lc_paste, fn() {
+  c.box(style=lc_paste.then(lc_inner_round), fn() {
     let mut words = ""
     c.box(style=lc_paste_words, fn() {
       let r = c.editor(
@@ -654,10 +668,9 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
         placeholder_color=p.muted,
         caret_color=p.accent,
         enter_sends=true,
-        field=login_field(here),
+        field~,
       )
       words = r.text.trim(chars=" \n").to_owned()
-      logins_here.typed[here] = words != ""
       match r.submitted {
         Some(sent) if sent.trim(chars=" \n").to_owned() != "" && !busy => send(sent.trim(chars=" \n").to_owned())
         _ => ()
@@ -671,7 +684,7 @@ fn login_paste(c : @ui.Ctx, core : Core, station : String, l : Json?, place : St
           send(words)
         }
       })
-      c.box(style=lc_done, id=go, fn() {
+      c.box(style=lc_done.then(lc_done_round), id=go, fn() {
         // busy: a spinner over its word, as wide as before
         let w = c.text(@sf.t("web-main.logins.finish"), style=lc_done_words)
         if busy {
@@ -736,21 +749,40 @@ pub fn login_card_node(
         |> ignore
       _ =>
         x.box(fn(room) {
-          @sf.style_node(room, fn() { lc_room })
+          // (in a panel's body (its login sheet): all of its width, concentric with its sides and its foot)
+          let in_sheet = place == "sheet"
+          @sf.style_node(room, fn() {
+            if in_sheet {
+              lc_room_sheet.then(@sf.panel_card_out_node(room)).then(@sf.panel_card_last_node(room))
+            } else {
+              lc_room
+            }
+          })
           room.box(fn(card) {
-            @sf.style_node(card, fn() { if marked { lc_card_body_marked } else { lc_card_body } })
+            @sf.style_node(card, fn() {
+              match (in_sheet, marked) {
+                (true, true) => lc_card_body_marked.then(lc_card_across)
+                (true, false) => lc_card_body.then(lc_card_across)
+                (false, true) => lc_card_body_marked
+                (false, false) => lc_card_body
+              }
+            })
             // (what is on it as wide as it, a step's button the card's width: its own lines up at the start)
             card.lines_up(Is(None)) |> ignore
             // (as wide as what it holds, 360 at least where there is the room: within the width its place gives it)
             card.min_width(Is(Some(lc_card_least)), within=true).max_width(Is(Some(lc_card_most)), within=true) |> ignore
             let title = fn(t : @view.View) {
               t.box(fn(r) {
-                @sf.style_node(r, fn() { lc_title_room }, in_row=k == 2)
+                @sf.style_node(r, fn() { lc_title_room }, in_row=k == 2 && !in_sheet)
                 @sf.words_node(r, fn() { text(l(), "title") }, fn() { lc_title }) |> ignore
               })
               |> ignore
             }
-            if k == 2 {
+            if k == 2 && in_sheet {
+              // (in its login sheet its title alone: the sheet's own close is how it is put away)
+              title(card)
+              login_active_node(card, core, station, l, fn() { flag(all(), "canRelay") }, place)
+            } else if k == 2 {
               card.box(fn(h) {
                 @sf.style_node(h, fn() { lc_head })
                 title(h)
@@ -811,7 +843,8 @@ fn login_active_node(card : @view.View, core : Core, station : String, l : () ->
       login_paste_node(x, core, station, l, place)
       return
     }
-    let shows = @signals.computed(fn(_) { login_shows(core, station, l(), relay()) })
+    // (by the one it made: its step's press is a function made with it, no value to compare)
+    let shows = @signals.computed_ref(fn(_) { login_shows(core, station, l(), relay()) })
     let shows = fn() { shows.get() }
     x.each(fn() { shows().said.mapi(fn(i, _) { i }) }, fn(i) { i }, fn(r, i) {
       let i = i.untracked()
@@ -914,7 +947,8 @@ fn login_paste_node(x : @view.View, core : Core, station : String, l : () -> Jso
   let id = text(@signals.untracked(l), "id")
   let field = login_field(place + "\u{1}" + station + "\u{1}" + id)
   let words = fn() { field.text().trim(chars=" \n").to_owned() }
-  let shows = @signals.computed(fn(_) { login_paste_shows(core, station, l(), words() != "") })
+  // (by the one it made: its step's press is a function made with it, no value to compare)
+  let shows = @signals.computed_ref(fn(_) { login_paste_shows(core, station, l(), words() != "") })
   let shows = fn() { shows.get() }
   login_said_node(x, fn() { shows().lead })
   login_step_node(x, fn() { shows().step })
@@ -1010,6 +1044,23 @@ let lc_card_most : Double = 560.0
 /// Where it is: all of the column's width, 8 under what is above it (the card in it as wide as it says).
 // kept across runs: a value (no field of it changes)
 let lc_room : @ui.Style = @ui.css("w=Full pt=S2 align=AStart")
+
+///|
+/// In a panel's body (place="sheet"): full width, concentric with the panel's sides and foot; its card across it.
+// kept across runs: a value (no field of it changes)
+let lc_room_sheet : @ui.Style = @ui.css("w=Full align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_across : @ui.Style = @ui.css("w=Full")
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_sheet : @ui.Style = lc_card_body.then(@ui.css("w=Full"))
+
+///|
+// kept across runs: a value (no field of it changes)
+let lc_card_sheet_marked : @ui.Style = lc_card_body_marked.then(@ui.css("w=Full"))
 
 ///|
 /// A step's card (step_card): pressed as a whole, lit under a pointer.

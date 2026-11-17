@@ -23,6 +23,8 @@ export type Effect =
   | { kind: "memory" }
   /// The workspace's presets on the station (the `presets` topic): read again.
   | { kind: "presets" }
+  /// What moves to another station (the `stationMove` topic): read again where shown.
+  | { kind: "move" }
   | { kind: "identity" }
   /// Folders of the station's drive under `root` (paths relative to it): read again where held or shown.
   | { kind: "drive"; root: string; paths: string[] }
@@ -30,8 +32,8 @@ export type Effect =
   | { kind: "machineLogins" }
   /// A sign-in for a new profile (the overview's `logins`) started, given its code or dropped: as the station answered,
   /// in place at once until the overview says as much. `id`: the login's (null: the answer names it, as it starts);
-  /// `from`: the state the step moves it on from (null: not listed yet).
-  | { kind: "login"; id: string | null; from: string | null }
+  /// `from`: the state the step moves it on from, or the states it may (null: not listed yet).
+  | { kind: "login"; id: string | null; from: string | string[] | null }
   /// A tab of the station's browser opened here by the id this device made for it (`screen`): listed at once, a view of
   /// it waiting for the station, until the station lists it or refuses it.
   | { kind: "tab"; screen: string };
@@ -79,6 +81,9 @@ export const PARAMS: Record<string, string> = {
   "copies.retireCancel": "",
   "copies.retireAgain": "",
   "copies.retirePreview": "",
+  "move.start": "to:string module?:string item?:string all?:boolean withNeeds?:boolean",
+  "move.back": "from:string module?:string item?:string all?:boolean",
+  "move.stop": "",
   "station.restart": "",
   "context.setAfresh": "afreshWhenCold?:boolean afreshAbove?:number",
   "diagnostics.setLogs": "logs:boolean",
@@ -88,7 +93,7 @@ export const PARAMS: Record<string, string> = {
   "session.compact": "key:string",
   "session.clear": "key:string readBack?:boolean",
   "session.delete": "key:string",
-  "session.settings": "key:string runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean context?:number repick?:boolean afresh?:boolean",
+  "session.settings": "key:string runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean speed?:string context?:number repick?:boolean afresh?:boolean",
   "chat.archive": "archived?:boolean session:string thread?:number",
   "chat.keep": "kept?:boolean thread:number",
   "chat.hide": "hidden:boolean thread:number",
@@ -97,12 +102,12 @@ export const PARAMS: Record<string, string> = {
   "chat.regenerateTitle": "thread:number",
   "chat.pin": "pinned?:boolean session:string",
   "chat.relayPlaces": "thread:number",
-  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string",
+  "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string join?:boolean",
   "chat.relayPeople": "thread:number connect?:string channel?:string link?:string",
   "decision.dismiss": "thread:number seq:number",
   "decision.close": "thread:number seq:number option:string",
   "chat.report": "thread:number seq:number",
-  "session.new": "runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean context?:number preset?:string",
+  "session.new": "runtime?:string profile?:string profiles?:strings model?:string effort?:string fast?:boolean speed?:string context?:number preset?:string",
   "preset.add": "name:string dirs:json instructions?:string autoStation?:boolean stations?:strings model?:json",
   "preset.put": "id:string name:string dirs:json instructions?:string autoStation?:boolean stations?:strings model?:json",
   "preset.delete": "id:string",
@@ -136,6 +141,7 @@ export const PARAMS: Record<string, string> = {
   "feishu.createConnect": "feishu:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "feishu.putSecret": "id:string appSecret:string",
   "comma.createConnect": "line:string bind?:json",
+  "group.createConnect": "group:json bind?:json mode?:string requireMention?:boolean owner?:json",
   "slack.verify": "connect?:string install?:string appToken?:string botToken?:string",
   "slack.makeApp": "team?:string settings?:json icon?:string",
   "slack.dropApp": "appId:string",
@@ -170,6 +176,7 @@ export const PARAMS: Record<string, string> = {
   "job.stop": "id:string",
   "screen.openBrowser": "url:string id?:string",
   "screen.close": "screen:string",
+  "terminal.end": "terminal:string",
   "screen.sleep": "screen:string",
   "screen.reload": "screen:string",
   "screen.back": "screen:string",
@@ -248,6 +255,8 @@ export const PARAMS: Record<string, string> = {
   "admin.setLimits": "workspace:string members:number stations:number",
   "admin.enroll": "workspace:string name:string",
   "admin.feedbackStatus": "id:string status?:string",
+  "admin.relayToken": "name:string url?:string",
+  "admin.relayRemove": "url:string",
 };
 
 /// Writes that are not shown as under way (`doing`): quick and quiet.
@@ -363,6 +372,18 @@ function stationOp(name: string, params: unknown): Request | null {
     // What retiring it would take along and leave, as its panel shows them (schema.ts RetirePreview), read as it opens.
     case "copies.retirePreview":
       return op("GET", () => "/retire/preview", null, NONE);
+    // What of the station moves to another of its workspace (`to`, its id), module by module (its move/routes.ts): one
+    // item, a module's (with what it needs first, `withNeeds`) or all of it; or moved back here from `from`. By its
+    // owners and admins; answered at once (202), what it does told as `move` (the `stationMove` topic), a refusal in
+    // its words (`station.move.off` where the station does not offer moving).
+    case "move.start":
+      return op("POST", () => "/move", { to: p.str("to"), ...p.pick(["module", "item", "all", "withNeeds"]) }, { kind: "move" });
+    case "move.back":
+      return op("POST", () => "/move/back", { from: p.str("from"), ...p.pick(["module", "item", "all"]) }, { kind: "move" });
+    // The turn under way stopped after the item it is on (that one let go and undone where it is not held yet); nothing
+    // else starts (`moving.stopping` meanwhile).
+    case "move.stop":
+      return op("POST", () => "/move/stop", {}, { kind: "move" });
     // The station started again by its launcher (its routes/network.ts), managers only.
     case "station.restart":
       return op("POST", () => "/station/restart", null, OVERVIEW);
@@ -401,7 +422,7 @@ function stationOp(name: string, params: unknown): Request | null {
     case "session.delete":
       return op("DELETE", () => `/sessions/${p.at("key")}`, null, session("key"));
     case "session.settings":
-      return op("POST", () => `/sessions/${p.at("key")}/settings`, p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "context", "repick", "afresh"]), session("key"));
+      return op("POST", () => `/sessions/${p.at("key")}/settings`, p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "speed", "context", "repick", "afresh"]), session("key"));
     case "chat.archive": {
       const method = p.bool("archived") ? "POST" : "DELETE";
       const fallback = op(method, () => `/sessions/${p.at("session")}/archive`, null, session("session"));
@@ -441,11 +462,11 @@ function stationOp(name: string, params: unknown): Request | null {
       const thread = p.u64("thread");
       return op("GET", () => `/threads/${thread}/relay`, null, NONE);
     }
-    // The chat relayed to one of them (`connect`, `channel`) or to the Slack thread of a message's `link`, the person's
-    // note said with it: where it went on.
+    // The chat relayed to one of them (`connect`, `channel`; `join`: its bot joins that public channel first) or to the
+    // Slack thread of a message's `link`, the person's note said with it: where it went on.
     case "chat.relay": {
       const thread = p.u64("thread");
-      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note"]), { kind: "thread", archived: false });
+      return op("POST", () => `/threads/${thread}/relay`, p.pick(["connect", "channel", "link", "note", "join"]), { kind: "thread", archived: false });
     }
     // The people of where it would be relayed (a connect's channel or group, or the thread of a message's `link`), for
     // the note to mention, read as asked.
@@ -470,8 +491,10 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/threads/${thread}/report`, { n: p.u64("seq") }, NONE);
     }
     case "session.new":
-      return op("POST", () => "/sessions", p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "context", "preset"]), { kind: "session", key: null });
-    // The workspace's presets on the station: what a chat starts knowing, chosen as it is opened.
+      return op("POST", () => "/sessions", p.pick(["runtime", "profile", "profiles", "model", "effort", "fast", "speed", "context", "preset"]), { kind: "session", key: null });
+    // The workspace's presets on the station: what a chat starts knowing, chosen as it is opened. A person's own are
+    // made, changed and deleted on the device and carried to the stations (views/presets.ts, core/calls.ts `presets`):
+    // these requests are what is still sent to a station from before (one that serves no /presets/kept), as before.
     case "preset.add":
       return op("POST", () => "/presets", { name: p.str("name"), dirs: p.value("dirs"), instructions: p.word("instructions") ?? "", ...p.pick(["autoStation", "stations", "model"]) }, { kind: "presets" });
     case "preset.put":
@@ -556,6 +579,9 @@ function stationOp(name: string, params: unknown): Request | null {
     // A Comma connect: made of the line Comma's still.fail plugin shows.
     case "comma.createConnect":
       return op("POST", () => "/comma/connects", p.pick(["line", "bind"]), { kind: "connect", id: null });
+    // A group connect: an IM server of AFK-surf/group joined as a member, by its endpoint id, relays and a code.
+    case "group.createConnect":
+      return op("POST", () => "/group/connects", p.pick(["group", "bind", "mode", "requireMention", "owner"]), { kind: "connect", id: null });
     // A Feishu connect's App Secret replaced (verified there first).
     case "feishu.putSecret":
       return op("PUT", () => `/feishu/connects/${p.at("id")}/secret`, p.pick(["appSecret"]), connect("id"));
@@ -611,9 +637,10 @@ function stationOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/profiles/${p.at("id")}/login-code`, p.pick(["code"]), OVERVIEW);
     case "login.new":
       return op("POST", () => "/logins", p.pick(["runtime", "access"]), { kind: "login", id: null, from: null });
-    // A code is taken only while its sign-in waits for one.
+    // A code is taken only while its sign-in waits for one (or, a company's Google account with no licence, for its
+    // Google Cloud project, given the same way).
     case "login.code":
-      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: "needs_code" });
+      return op("POST", () => `/logins/${p.at("id")}/code`, p.pick(["code"]), { kind: "login", id: p.str("id"), from: ["needs_code", "needs_project"] });
     case "login.drop":
       return op("DELETE", () => `/logins/${p.at("id")}`, null, { kind: "login", id: p.str("id"), from: null });
     // A sign-in's page opened in the station's own browser (在 station 的浏览器中登录), for the
@@ -641,6 +668,9 @@ function stationOp(name: string, params: unknown): Request | null {
     // the station tells it (`screens` on its stream).
     case "screen.close":
       return op("POST", () => `/screens/${p.at("screen")}/close`, null, NONE);
+    // A terminal ended, its program and what it started (station/src/terminals/): it leaves the list as it goes.
+    case "terminal.end":
+      return op("POST", () => `/terminals/${p.at("terminal")}/end`, null, NONE);
     case "screen.sleep":
       return op("POST", () => `/screens/${p.at("screen")}/sleep`, null, NONE);
     case "screen.reload":
@@ -851,6 +881,12 @@ function cloudOp(name: string, params: unknown): Request | null {
       return op("POST", () => `/v1/admin/workspaces/${p.at("workspace")}/enrollments`, p.pick(["name"]));
     case "admin.feedbackStatus":
       return op("POST", () => `/v1/admin/feedback/${p.at("id")}/status`, p.pick(["status"]));
+    // The cloud's list of relays (cloud/src/relay-registry.ts): a token for a relay to put itself on it with, and the
+    // command its machine runs; one taken off it, the ways into it with it.
+    case "admin.relayToken":
+      return op("POST", () => "/v1/admin/relays/token", p.pick(["name", "url"]));
+    case "admin.relayRemove":
+      return op("POST", () => "/v1/admin/relays/remove", p.pick(["url"]));
     default:
       return null;
   }

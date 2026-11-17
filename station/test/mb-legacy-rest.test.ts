@@ -7,9 +7,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installLegacyAgent, legacyAgentMaintenanceStep } from "../src/store/legacy-agent-build.ts";
-import { installLegacyLoginCards, legacyLoginCardsMaintenanceStep } from "../src/store/legacy-login-cards.ts";
-import { installPageLetterIndex, pageLetterGcStep } from "../src/store/page-letter-index.ts";
+import { installLegacyAgent, legacyAgentMaintenanceStep } from "./reference/backfill/legacy-agent-build.ts";
+import { installLegacyLoginCards, legacyLoginCardsMaintenanceStep } from "./reference/backfill/legacy-login-cards.ts";
+import { installPageLetterIndex, pageLetterGcStep } from "./reference/backfill/page-letter-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

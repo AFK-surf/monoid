@@ -25,28 +25,11 @@ pub(all) struct ReadBook {
 }
 
 ///|
-/// A phone's sheet over the page (host.ts ViewerSheet): its title and what is said beside it, how much of the page it
-/// takes, whether its grabber drags it, what is in it; drawn each frame while it is open and while it sinks away
-/// (`closing`), `close` asking it to go, `gone` told once it has.
-pub(all) struct ViewerSheet {
-  title : String
-  trailing : String
-  height : Double
-  draggable : Bool
-  closing : Bool
-  close : () -> Unit
-  gone : () -> Unit
-  body : () -> Unit
-}
-
-///|
 /// What the viewer asks of the page (ViewerHost).
 pub(all) struct ViewerHost {
   /// how far the page's own bars reach in over a viewer, at its top and at its foot (the web's --m-top, --m-foot: a
   /// phone's status and navigation bars)
   room : () -> (Double, Double)
-  /// a phone's sheet drawn (None where there are none: the panels are drawn beside the text)
-  sheet : ((@ui.Ctx, ViewerSheet) -> Unit)?
   /// a link in a text's Markdown opened
   on_link : (String) -> Unit
   /// how the reader lays text out on this device, and one of it changed
@@ -73,7 +56,6 @@ let style_here : @signals.Signal[ReaderStyle] = @signals.signal(reader_style_def
 fn viewer_host_default() -> ViewerHost {
   {
     room: fn() { (0.0, 0.0) },
-    sheet: None,
     on_link: fn(_) {  },
     reader_style: fn() { style_here.get() },
     set_reader_style: fn(change) { style_here.set(style_here.untracked().changed(change)) },

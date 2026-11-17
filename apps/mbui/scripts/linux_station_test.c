@@ -1,7 +1,7 @@
 // src/host/linux_station.c as the app's native call answers it (scripts/linux_station_test.sh runs it in a home of its
-// own): `read` says this machine's station (`STATIONCHECK read <json>`); `stop` the same, then stops it and, once
-// nothing is being done to it (told by what it posts as it changes, never a wait of a time), says it again
-// (`STATIONCHECK after <json>`).
+// own): `read` says this machine's station (`STATIONCHECK read <json>`); an act (`stop`, `start`, `restart`,
+// `uninstall`) the same, then does it and, once nothing is being done to it (told by what it posts as it changes, never
+// a wait of a time), says it again (`STATIONCHECK after <json>`).
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,11 +31,11 @@ int main(int argc, char **argv) {
   const char *how = argc > 1 ? argv[1] : "read";
   char *now = said();
   printf("STATIONCHECK read %s\n", now);
-  if (strcmp(how, "stop") != 0) return 0;
+  if (!strcmp(how, "read")) return 0;
   pthread_mutex_lock(&posted_lock);
   int seen = posted;
   pthread_mutex_unlock(&posted_lock);
-  sf_station_act(station_mstr("stop"));
+  sf_station_act(station_mstr(how));
   for (;;) {
     g_free(now);
     now = said();

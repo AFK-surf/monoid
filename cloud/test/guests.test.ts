@@ -53,6 +53,88 @@ test("signing in on a guest's origin goes by its Google client and calls back th
   }
 });
 
+test("devices and stations asking on a guest's origin are handed this cloud's own relay, matching the stations' state frames", async () => {
+  const HOST = "https://app.monoid.build";
+  const HK = "https://47.76.247.168";
+  const h = await harness({
+    origin: HOST,
+    guests,
+    forwardSecret: SECRET,
+    relayUrls: HK,
+    relayNames: { [HOST]: "Cloudflare", [HK]: "香港" },
+  });
+  try {
+    const tokens = await h.login("alice");
+    await h.as(tokens, "admin")("POST", `/v1/admin/users/${tokens.subject}/beta`, { on: true });
+    const auth = { authorization: `Bearer ${tokens.access_token}` };
+    const created = (await (await h.fetch("/v1/workspaces", { method: "POST", headers: { "content-type": "application/json", ...auth, ...forwarded() }, body: JSON.stringify({ name: "Hypershell" }) })).json()) as { id: string };
+
+    // Both the guest's stable and beta origins hand devices this cloud's Cloudflare relay (not the guest's unforwarded one).
+    for (const guestOrigin of [GUEST, GUEST_BETA]) {
+      const me = (await (await h.fetch("/v1/me", { headers: { ...auth, ...forwarded(guestOrigin) } })).json()) as any;
+      assert.equal(me.relay_url, HOST);
+      assert.deepEqual(me.relay_urls, [HOST, HK]);
+      assert.deepEqual(me.relay_names, { [HOST]: "Cloudflare", [HK]: "香港" });
+    }
+
+    // A station enrolling and connecting through the guest's origin keeps its guest origin, while its relay matches devices'.
+    const enrollment = (await (await h.fetch(`/v1/workspaces/${created.id}/enrollments`, { method: "POST", headers: { "content-type": "application/json", ...auth, ...forwarded() }, body: JSON.stringify({ name: "tokyo" }) })).json()) as { token: string; command: string };
+    assert.match(enrollment.command, /https:\/\/app\.still\.fail/, "enrollment command stays on the guest's origin");
+
+    const hex = (bytes: ArrayBuffer) => Buffer.from(bytes).toString("hex");
+    const pair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const stationId = hex((await crypto.subtle.exportKey("raw", pair.publicKey)) as ArrayBuffer);
+    const sign = async (msg: string) => hex(await crypto.subtle.sign("Ed25519", pair.privateKey, new TextEncoder().encode(msg)));
+
+    const enrolled = (await (
+      await h.fetch("/v1/stations/enroll", {
+        method: "POST",
+        headers: { "content-type": "application/json", ...forwarded() },
+        body: JSON.stringify({ token: enrollment.token, station: stationId, signature: await sign(`stillfail-station-enroll-v1:${GUEST}:${enrollment.token}:${stationId}`), version: "0.1.9230" }),
+      })
+    ).json()) as any;
+    assert.equal(enrolled.relay_url, HOST);
+    assert.deepEqual(enrolled.relay_urls, [HOST, HK]);
+
+    const ts = h.now();
+    const presence = await h.fetch("/v1/stations/connect", {
+      headers: {
+        upgrade: "websocket",
+        "x-stillfail-station": stationId,
+        "x-stillfail-ts": String(ts),
+        "x-stillfail-signature": await sign(`stillfail-station-connect-v1:${GUEST}:${stationId}:${ts}`),
+        ...forwarded(),
+      },
+    });
+    assert.equal(presence.status, 101);
+    const frames: any[] = [];
+    presence.webSocket!.accept();
+    presence.webSocket!.addEventListener("message", (ev) => {
+      if (typeof ev.data === "string" && ev.data !== "pong") frames.push(JSON.parse(ev.data));
+    });
+    await h.heard(presence.webSocket!);
+    assert.equal(frames[0]?.origin, GUEST, "station stays on the guest's origin");
+    assert.equal(frames[0]?.relay_url, HOST);
+    assert.deepEqual(frames[0]?.relay_urls, [HOST, HK]);
+    assert.deepEqual(frames[0]?.stillfail_relays, [HOST, HK]);
+
+    // A member's workspace credential request on the guest's origin also names the same relay.
+    const devPair = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+    const devId = hex((await crypto.subtle.exportKey("raw", devPair.publicKey)) as ArrayBuffer);
+    const cred = (await (
+      await h.fetch(`/v1/workspaces/${created.id}/credential`, {
+        method: "POST",
+        headers: { "content-type": "application/json", ...auth, ...forwarded() },
+        body: JSON.stringify({ device: devId }),
+      })
+    ).json()) as any;
+    assert.equal(cred.relay_url, HOST);
+    assert.deepEqual(cred.relay_urls, [HOST, HK]);
+  } finally {
+    await h.close();
+  }
+});
+
 test("a cloud that moved forwards what reaches it, saying its origin and client, but keeps answering its releases", async () => {
   const got: OutboundRequest[] = [];
   const h = await harness({

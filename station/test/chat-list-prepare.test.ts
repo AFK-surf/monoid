@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { readPreparedRecentHome } from "../src/store/chat-list-home-overlap.ts";
-import { readGlobalRecentChatIndex } from "../src/store/chat-list-index.ts";
-import { RecentChatPreparation, type RecentChatScope } from "../src/store/chat-list-prepare.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
+import { readPreparedRecentHome } from "./reference/chat-list/chat-list-home-overlap.ts";
+import { readGlobalRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
+import { RecentChatPreparation, type RecentChatScope } from "./reference/chat-list/chat-list-prepare.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const recursive of [false, true]) test(`requested recent pages prepare in bounded interleaved steps (recursive triggers ${recursive})`, () => {

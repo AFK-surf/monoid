@@ -126,12 +126,13 @@ pub fn list_row_node(
 
 ///|
 /// A row's looks at a size of words (list_looks_at): a chat's row's, its first line's and the lines' under it, and its
-/// first line's height.
+/// first line's height and theirs.
 priv struct ListLooks {
   row : @ui.Style
   head : @ui.Style
   meta : @ui.Style
   head_h : Double
+  meta_h : Double
 }
 
 ///|
@@ -170,9 +171,10 @@ fn list_looks_at(l : ChatList, scale : Double) -> ListLooks {
       head: l.head.then(@ui.style(h=Fixed(head_h))),
       meta: l.meta.then(@ui.style(h=Fixed(meta_h))),
       head_h,
+      meta_h,
     }
   } else {
-    { row: l.row, head: l.head, meta: l.meta, head_h: l.head_h }
+    { row: l.row, head: l.head, meta: l.meta, head_h: l.head_h, meta_h: l.meta_h }
   }
   list_looks_kept.val = Some((l, scale, looks))
   looks

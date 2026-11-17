@@ -15,6 +15,11 @@ O=out/render
 case "${1:-run}" in
   run)
     rm -rf $O
+    mkdir -p out
+    # the renderer's window path first (src/host/gles_render.h as Android's surface and Linux's window draw it)
+    cc -Wall -Wno-unused-function -I src/host -I "$MOON_HOME/include" scripts/gles_render_test.c \
+      $(pkg-config --cflags --libs epoxy zlib) -lm -o out/gles_render_test
+    LIBGL_ALWAYS_SOFTWARE=1 GALLIUM_DRIVER=llvmpipe out/gles_render_test
     render_dl $O/controls.dl
     APP=render bash "$D/linux.sh" build
     EXE=out/linux/mod/_build/native/release/build/render/render.exe

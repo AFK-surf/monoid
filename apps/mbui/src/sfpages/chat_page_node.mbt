@@ -40,7 +40,7 @@ pub fn chat_page_body_node(
     true
   })
   .on_action("composer.file", fn(_) {
-    guard @sfbase.view_of_chat(src, r).0 is Some(cv) && !cv.offline else { return false }
+    guard @sfbase.chat_view_now(src, r) is Some(cv) && !cv.offline else { return false }
     pick_files(w)
     true
   })
@@ -48,7 +48,7 @@ pub fn chat_page_body_node(
   // what is let go on it from outside, wherever (a message, its ground; mbui's Tree::drop_at), but on a field (a field
   // takes words where they were let go) or on the composer (its old view's capsule takes them itself): files from this
   // machine's Finder, where it is a station, into the draft by their station and path, as a row of the 文件 tab put
-  // there (its composer takes them, files_taken); words dragged in from another app into the composer's field at its
+  // there (its composer takes them: draft_give); words dragged in from another app into the composer's field at its
   // caret, as a paste's
   // (by where they are only where this machine is a station, finder_by_station: elsewhere their paths, as words)
   @ui.paths_into(
@@ -68,14 +68,35 @@ pub fn chat_page_body_node(
   // message quoted from there (chat_quote_node)
   @ui.words_picked(v)
   // (its view and entries as last read: once read, never none again while the page is)
+  // (the chat's messages by key where the source keeps them so (sfbase's ChatMessages): then, while nothing sent from
+  // here is on its way and its outbox is empty, its view is its head alone (sfbase's chat_head: a word streamed into a
+  // message reads none of it again) and its rows are by key (chat_body_keyed); else its view and entries whole, as
+  // view_of_chat works them out)
+  let sending = fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) }
   let read : @signals.Computed[(ChatView, Array[Entry])?] = @signals.computed(
     fn(was) {
-      match @sfbase.view_of_chat(src, r) {
-        (Some(view), entries, _) => Some((view, entries))
-        _ =>
-          match was {
-            Some(w) => w
-            None => None
+      // (the head read first: what holds the topic, whose messages by key are then there; the chat a new chat became
+      // as view_of_chat makes it, never said to be empty, till the core's view of it holds a message: sfbase's
+      // chat_keyed_now)
+      let head = match @sfbase.chat_head(src, r) {
+        (Some(h), _) =>
+          match @sfbase.chat_messages(src, r) {
+            // (what is on its way from here answering its last card: as the core will say once it has it)
+            Some(ms) if @sfbase.chat_keyed_now(r, ms) => Some((@sfbase.chat_sent_here(r, h, ms).0, chat_no_entries))
+            _ => None
+          }
+        _ => None
+      }
+      match head {
+        Some(h) => Some(h)
+        None =>
+          match @sfbase.view_of_chat(src, r) {
+            (Some(view), entries, _) => Some((view, entries))
+            _ =>
+              match was {
+                Some(w) => w
+                None => None
+              }
           }
       }
     },
@@ -108,7 +129,8 @@ pub fn chat_page_body_node(
     // (the composer at the foot of the room before the view is read, in the list's foot once it is)
     match composer {
       Some(build) =>
-        b.show(fn() { read.get() is None }, fn(o) {
+        // (at once: the composer is in one place at a time, never in both as the view is read)
+        b.show(at_once=true, fn() { read.get() is None }, fn(o) {
           o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
           o.box(fn(s) { s.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore }) |> ignore
           build(o)
@@ -116,7 +138,7 @@ pub fn chat_page_body_node(
         |> ignore
       None => ()
     }
-    b.show(fn() { read.get() is Some(_) }, fn(o) {
+    b.show(at_once=true, fn() { read.get() is Some(_) }, fn(o) {
       o.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       let first = @signals.untracked(fn() { read.get().unwrap() })
       let view = fn() {
@@ -132,9 +154,34 @@ pub fn chat_page_body_node(
         width,
         tips,
         stint,
-        jump: None,
+        // (a quote's card pressed: the message it quotes gone to, where the chat holds it, and the passage it quotes lit
+        // there alone where its words have it, as the old page's cards (message.mbt quote_cards): chat_goes_to)
+        jump: Some(fn(ts, passage) {
+          match chat_said_all(src, r, view).iter().find_first(fn(m) { m.ts == ts }) {
+            Some(m) => @sfbase.go_to(r, m.seq, passage~)
+            None => ()
+          }
+        }),
+        picture: None,
       }
-      let core = @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }).map(fn(w) { @sfbase.settings_core(src, w) })
+      // (the workspace in view, else, where none is read yet, the one the chat's station is of)
+      let ws = @signals.untracked(fn() {
+        let (now, all, _, _) = @sfbase.workspace_in_view(src)
+        match now {
+          Some(w) => Some(w)
+          None =>
+            match r.station.find("/") {
+              Some(i) => {
+                let id = r.station.exact_view(end=i).to_owned()
+                all.iter().find_first(fn(w) { w.id == id })
+              }
+              None => None
+            }
+        }
+      })
+      // (none read yet at all: the chat's station's workspace by its id alone, so the chat's settings still reach it)
+      let ws = ws.unwrap_or({ id: @sfbase.workspace_of(r.station), name: "", emoji: "", icon: "", email: "" })
+      let core = Some(@sfbase.settings_core(src, ws))
       chat_body_node(
         o,
         src,
@@ -145,16 +192,28 @@ pub fn chat_page_body_node(
             None => first.1
           }
         },
-        sending=fn() { @sfbase.sending_now(r.station + "\u{1}" + r.session) },
+        sending~,
         core~,
         cover~,
         room~,
-        foot~,
+        // (and while something waits to be decided whose bell may float over the list's end, its room over it: the last
+        // row as far over the bell as it is over the composer without it, as the page before kept it (chat_list's
+        // `ask_clear`))
+        foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
         composer?,
         lead~,
-        read=fn(place, rows) { chat_read_node(o, src, r, view, place, rows, shows, cover) },
+        read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover) },
         to=r,
         shows~,
+        // (by key once the view is the chat's head (its entries none: chat_no_entries), as the core's view of a chat a
+        // new chat became comes, the same list going on from what was sent from here)
+        msgs=fn() {
+          match read.get() {
+            Some((_, entries)) if physical_equal(entries, chat_no_entries) =>
+              @signals.untracked(fn() { @sfbase.chat_messages(src, r) })
+            _ => None
+          }
+        },
       )
       |> ignore
     })

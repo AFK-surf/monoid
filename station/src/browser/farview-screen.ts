@@ -9,9 +9,12 @@
 //                                                  in CSS pixels): it takes the tab from an agent
 //   from the host: {"changed":seq}  the picture changed (asked for then: nothing is polled)
 //                  {"page":{url,title}} {"size":{…}} {"taken":"agent"|"person"}
+//                  {"copied":text}  what a person's copy or cut on that view took (its clipboard's text)
+//                  {"openTab":url}  the page asked for a new tab (to every connection: heard on the watch's alone)
+// A person's paste is text sent as typed ({"text":…}, where the focus is).
 import { connect, type Socket } from "node:net";
 import { log } from "../ops/log.ts";
-import type { Frame, FrameConfig, ScreenInput, ScreenSource, ScreenView, ViewOptions } from "../screens/source.ts";
+import { type Clip, type ClipType, type Frame, type FrameConfig, type ScreenInput, type ScreenSource, type ScreenView, type ViewOptions, CLIP_TEXT_MAX } from "../screens/source.ts";
 import { chatDir } from "./farview.ts";
 
 export type FramePage = { url: string; title: string };
@@ -133,6 +136,7 @@ export class FarviewScreen implements ScreenSource {
   readonly id: string;
   readonly kind = "browser" as const;
   readonly peek = true;
+  readonly farview = true;
   readonly #session: string;
   readonly #port: number;
   #page: FramePage = { url: "", title: "" };
@@ -141,18 +145,24 @@ export class FarviewScreen implements ScreenSource {
   readonly #views = new Set<FarviewView>();
   #closed = false;
   changed: () => void = () => {};
+  /// Hears each new tab the page asks for, by its address.
+  opened: (url: string) => void = () => {};
 
-  constructor(o: { session: string; port: number }) {
+  /// `n`: which of its chat's tabs (0 its first, whose id is the chat's alone).
+  constructor(o: { session: string; port: number; n?: number }) {
     this.#session = o.session;
     this.#port = o.port;
-    this.id = `browser:fv_${chatDir(o.session)}`;
+    this.id = `browser:fv_${chatDir(o.session)}${o.n ? `_${o.n}` : ""}`;
   }
 
   /// Hears the tab's page and size on a connection of its own while the host runs.
   watch() {
     if (this.#closed || this.#watch !== null) return;
     const link = new FrameLink(this.#port);
-    link.heard = (m) => this.heard(m);
+    link.heard = (m) => {
+      this.heard(m);
+      if (typeof m?.openTab === "string" && m.openTab !== "") this.opened(m.openTab);
+    };
     link.ended = () => {
       if (this.#watch === link) this.#watch = null;
     };
@@ -167,7 +177,7 @@ export class FarviewScreen implements ScreenSource {
         this.changed();
       }
     }
-    if (m?.size && typeof m.size === "object" && m.size.width > 0 && m.size.height > 0) this.#size = { width: m.size.width, height: m.size.height, scale: m.size.scale > 0 ? m.size.scale : 1 };
+    if (m?.size && typeof m.size === "object" && m.size.width > 0 && m.size.height > 0) this.#size = { width: m.size.width, height: m.size.height, scale: m.size.scale > 0 ? m.size.scale : this.#size.scale };
   }
 
   page(): FramePage {
@@ -184,6 +194,11 @@ export class FarviewScreen implements ScreenSource {
 
   openedBy() {
     return this.#session;
+  }
+
+  /// Text both ways: what a person copies on the tab reaches their clipboard, what they paste is put where its focus is.
+  clipboard(): ClipType[] {
+    return ["text"];
   }
 
   site() {
@@ -223,6 +238,8 @@ class FarviewView implements ScreenView {
   readonly #screen: FarviewScreen;
   readonly #gone: () => void;
   #size: Size;
+  /// Who hears what this view's person copies on the tab.
+  #copied: ((clip: Clip) => void) | null = null;
   /// The newest picture the host said it has, and the one last sent.
   #seq = 1;
   #sent = 0;
@@ -239,8 +256,11 @@ class FarviewView implements ScreenView {
     this.#size = sizeFor(o);
     link.heard = (m) => {
       screen.heard(m);
+      if (typeof m?.copied === "string" && m.copied !== "" && Buffer.byteLength(m.copied, "utf8") <= CLIP_TEXT_MAX) this.#copied?.({ type: "text", text: m.copied });
       if (typeof m?.changed === "number" && m.changed > this.#seq) this.#seq = m.changed;
-      if (m?.size && typeof m.size === "object" && m.size.width > 0 && m.size.height > 0) this.#size = { width: m.size.width, height: m.size.height, scale: m.size.scale > 0 ? m.size.scale : 1 };
+      // (the host tells the tab's viewport, never this view's scale: its pictures stay at the scale it asked, and a
+      // person's pointer is of them. Taken as 1, every tap of a 2x view landed at half its place)
+      if (m?.size && typeof m.size === "object" && m.size.width > 0 && m.size.height > 0) this.#size = { width: m.size.width, height: m.size.height, scale: this.#size.scale };
       this.#poke();
     };
     link.ended = () => this.close();
@@ -279,6 +299,18 @@ class FarviewView implements ScreenView {
   async input(event: ScreenInput): Promise<void> {
     const m = inputOf(event, this.#size);
     if (m !== null) this.#link.send(m);
+  }
+
+  /// A paste: the text put where the tab's focus is, as typed (the host has no clipboard of its own).
+  async setClipboard(clip: Clip, paste: boolean): Promise<void> {
+    if (clip.type === "text" && paste && clip.text !== "") this.#link.send({ text: clip.text });
+  }
+
+  watchClipboard(heard: (clip: Clip) => void): () => void {
+    this.#copied = heard;
+    return () => {
+      if (this.#copied === heard) this.#copied = null;
+    };
   }
 
   bounds(maxWidth: number, maxHeight: number) {

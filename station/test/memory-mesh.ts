@@ -13,10 +13,17 @@ function idOf(secret: Buffer): string {
 }
 
 /// One end of a stream: what it writes, its `peer` reads. `window`: how many unread bytes its peer may hold before a
-/// write waits for it to read (QUIC's flow control); 0: no limit.
+/// write waits for it to read (QUIC's flow control); 0: no limit. `held`: a reset waits for a write waiting for room,
+/// as the shell's does (client/shell's `istream.reset` takes the sending half's lock its `write_all` holds).
 class End implements Stream {
   peer!: End;
+  /// The connection it is on: what is written to this end is counted as received there.
+  conn?: Conn;
   readonly window: number;
+  readonly held: boolean;
+  /// The writes waiting for room now, and the resets waiting for them (`held`).
+  #writing = 0;
+  #written: (() => void)[] = [];
   #queue: (Buffer | null)[] = [];
   /// Bytes in the queue, unread; and the writes waiting for them to be read.
   #queued = 0;
@@ -27,8 +34,9 @@ class End implements Stream {
   #waiting: (() => void) | null = null;
   #stopped: Promise<void>;
   #stop!: () => void;
-  constructor(window = 0) {
+  constructor(window = 0, held = false) {
     this.window = window;
+    this.held = held;
     this.#stopped = new Promise((r) => (this.#stop = r));
   }
   /// The writes waiting for room in this end's queue go on (to write, or to find the stream failed).
@@ -71,10 +79,16 @@ class End implements Stream {
   }
   async write(bytes: Buffer): Promise<void> {
     if (this.#error) throw this.#error;
-    while (this.window > 0 && this.peer.#queued >= this.window && !this.peer.#reset) {
-      await new Promise<void>((r) => this.peer.#room.push(r));
-      if (this.#error) throw this.#error;
+    this.#writing++;
+    try {
+      while (this.window > 0 && this.peer.#queued >= this.window && !this.peer.#reset) {
+        await new Promise<void>((r) => this.peer.#room.push(r));
+        if (this.#error) throw this.#error;
+      }
+    } finally {
+      if (--this.#writing === 0) for (const go of this.#written.splice(0)) go();
     }
+    if (this.peer.conn) this.peer.conn.received += bytes.length;
     this.peer.push(Buffer.from(bytes));
   }
   async finish(): Promise<void> {
@@ -84,6 +98,7 @@ class End implements Stream {
     return this.#stopped;
   }
   async reset(code: number): Promise<void> {
+    if (this.held && this.#writing > 0) await new Promise<void>((r) => this.#written.push(r));
     this.#reset = true;
     this.#wake();
     this.#stop();
@@ -96,19 +111,28 @@ class Conn implements Connection {
   peer!: Conn;
   /// Its process is gone without a word (killed): it answers nothing, and nothing tells its peer.
   silent = false;
+  /// The bytes it received (its `stats`), which a test may raise as a packet heard.
+  received = 0;
+  /// How `answers` is answered where a test says (a slow relay: true once it lets it); the times it was asked.
+  answering: ((withinMs: number) => Promise<boolean>) | null = null;
+  asked = 0;
   #incoming: End[] = [];
   #accepting: ((s: End | null) => void) | null = null;
   #ends: End[] = [];
   #reason: string | null = null;
+  /// How it went (the addon's CloseInfo kind): closed here, or by its other end.
+  #kind = "application";
   #closed: Promise<string>;
   #resolve!: (r: string) => void;
   readonly #remote: string;
   readonly #alpn: Buffer;
   readonly #window: number;
-  constructor(remote: string, alpn: Buffer, window = 0) {
+  readonly #held: boolean;
+  constructor(remote: string, alpn: Buffer, window = 0, held = false) {
     this.#remote = remote;
     this.#alpn = alpn;
     this.#window = window;
+    this.#held = held;
     this.#closed = new Promise((r) => (this.#resolve = r));
   }
   remoteId(): string {
@@ -133,17 +157,20 @@ class Conn implements Connection {
   }
   async openBi(): Promise<Stream> {
     if (this.#reason !== null) throw new Error("connection lost");
-    const [mine, theirs] = [new End(this.#window), new End(this.#window)];
+    const [mine, theirs] = [new End(this.#window, this.#held), new End(this.#window, this.#held)];
     mine.peer = theirs;
     theirs.peer = mine;
+    mine.conn = this;
+    theirs.conn = this.peer;
     this.#ends.push(mine);
     this.peer.#ends.push(theirs);
     this.peer.#offer(theirs);
     return mine;
   }
-  gone(reason: string) {
+  gone(reason: string, kind = "application") {
     if (this.#reason !== null) return;
     this.#reason = reason;
+    this.#kind = kind;
     for (const e of this.#ends) e.fail(new Error("connection lost"));
     const take = this.#accepting;
     this.#accepting = null;
@@ -151,15 +178,23 @@ class Conn implements Connection {
     this.#resolve(reason);
   }
   close(_code: number, reason: string): void {
-    this.gone(reason);
+    this.gone(reason, "local");
     if (!this.silent) this.peer.gone(reason);
   }
   /// The addon's: whether the other end is still there, at once (nothing here takes time).
-  async answers(_withinMs: number): Promise<boolean> {
+  async answers(withinMs: number): Promise<boolean> {
+    this.asked++;
+    if (this.answering !== null && this.#reason === null && !this.peer.silent) return this.answering(withinMs);
     return this.#reason === null && !this.peer.silent;
+  }
+  stats() {
+    return { rxBytes: this.received, txBytes: 0 };
   }
   isClosed(): boolean {
     return this.#reason !== null;
+  }
+  closeReason(): { kind: string; reason: string } | null {
+    return this.#reason === null ? null : { kind: this.#kind, reason: this.#reason };
   }
   closed(): Promise<string> {
     return this.#closed;
@@ -172,16 +207,18 @@ class MemoryEndpoint implements Endpoint {
   readonly #alpns: Buffer[];
   readonly #port: number;
   readonly #window: number;
+  readonly #held: boolean;
   #incoming: Conn[] = [];
   #accepting: ((c: Conn | null) => void) | null = null;
   #conns: Conn[] = [];
   #closed = false;
-  constructor(net: Map<string, MemoryEndpoint>, secret: Buffer, alpns: Buffer[], port: number, window = 0) {
+  constructor(net: Map<string, MemoryEndpoint>, secret: Buffer, alpns: Buffer[], port: number, window = 0, held = false) {
     this.#net = net;
     this.#id = idOf(secret);
     this.#alpns = alpns;
     this.#port = port;
     this.#window = window;
+    this.#held = held;
   }
   id(): string {
     return this.#id;
@@ -215,7 +252,7 @@ class MemoryEndpoint implements Endpoint {
     // The other's first protocol that is offered: the accepting side's order decides, as with iroh (rustls).
     const alpn = there.#alpns.find((b) => [offered, ...additional].some((a) => a.equals(b)));
     if (alpn === undefined) throw new Error("peer doesn't support any known protocol");
-    const [mine, theirs] = [new Conn(addr.id, alpn, this.#window), new Conn(this.#id, alpn, this.#window)];
+    const [mine, theirs] = [new Conn(addr.id, alpn, this.#window, this.#held), new Conn(this.#id, alpn, this.#window, this.#held)];
     mine.peer = theirs;
     theirs.peer = mine;
     this.#conns.push(mine);
@@ -240,13 +277,13 @@ class MemoryEndpoint implements Endpoint {
 }
 
 /// A mesh of its own: endpoints bound on it reach each other, and only each other. `window`: each stream's flow control
-/// (End), none by default.
-export function memoryMesh(options: { window?: number } = {}): Pick<Mesh, "bind"> {
+/// (End), none by default; `held`: a stream's reset waits for its writes waiting for room, as the shell's does.
+export function memoryMesh(options: { window?: number; held?: boolean } = {}): Pick<Mesh, "bind"> {
   const net = new Map<string, MemoryEndpoint>();
   let port = 40000;
   return {
     bind: async (o) => {
-      const e = new MemoryEndpoint(net, o.secretKey, o.alpns, ++port, options.window);
+      const e = new MemoryEndpoint(net, o.secretKey, o.alpns, ++port, options.window, options.held);
       net.set(e.id(), e);
       return e;
     },

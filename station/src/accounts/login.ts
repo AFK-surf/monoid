@@ -8,12 +8,21 @@
 // - Grok Build: `grok login --device-auth` the same, its link at accounts.x.ai with the code in it; its home is the
 //   profile's grok/ (agents/grok.ts).
 // - Devin: `devin auth login --force-manual-token-flow` prints a link at app.devin.ai; after signing in, the page shows a
-//   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminal).
+//   code the person pastes back, as Claude's. It reads the code only from a terminal: it runs in one (platform.terminalSoon).
 //   Its sign-in lands in the profile's devin/data/ (XDG_DATA_HOME, agents/devin.ts).
-// - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with the profile's agy/ as its
-//   HOME (where it then keeps the sign-in in a file: the keychain is the user's home's), asks how to sign in (the station answers its first choice, Google OAuth), prints a link at accounts.google.com and reads
-//   back the code the page shows, which the person pastes, as Claude's. It goes on into its interface once signed in:
-//   the sign-in is done when its file is written (agents/agy.ts agyToken), and the command and those between stopped.
+// - Antigravity CLI: no login command; `agy` itself, in a terminal of its own as Devin's, with an empty directory of its
+//   own as its HOME (<data>/run/agy-login/<profile>-<run>, removed as it ends) and told to keep its sign-in in a file
+//   there (`AGY_FILE_TOKENS`: none of the keychain's), asks how to sign in (the station answers its first choice, Google
+//   OAuth; for a company's Google account, `enterprise`, its second, a Google Cloud project, then Continue with Google
+//   Cloud), prints a link at accounts.google.com and reads back the code the page shows, which the person pastes, as
+//   Claude's. Not in the profile's agy/: finding a sign-in there (signing in again) it asks nothing and goes straight into
+//   its interface (1.5.9), and a sign-in given up or failed would have overwritten the one there. Told it is a remote
+//   session's, it first asks the terminal what it is (`ESC [ c`), which the station answers as a terminal would. It goes
+//   on into its interface once signed in: the sign-in is done when its file is written whole (agents/agy.ts
+//   agyTokenReady), then copied into the profile's agy/, and the command and those between stopped. A company's
+//   account writes the file first with only its token, then fetches its licences: the first is chosen; with none, it
+//   asks how to pay (Pay As You Go chosen) and for a Google Cloud project, which the person gives (`needs_project`,
+//   taken as a code is).
 // - OpenCode Go (`startConsole`): no command; the station asks the OpenCode Console for a code itself (console.ts) and
 //   keeps asking until it is approved, then leaves the tokens in the profile's home. The page shows it as Codex's.
 // - Kimi Code (`startKimi`): the same with Kimi's device grant (kimi.ts).
@@ -25,16 +34,16 @@
 // not asked again.
 import type { Clock } from "effect";
 import { type ChildProcess, spawn } from "node:child_process";
-import { mkdirSync, readFileSync, rmSync, statSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
-import { fileCredentials } from "../agents/no-keychain.ts";
+import { fileCredentialsSoon } from "../agents/no-keychain.ts";
 import { CONSOLE, type ConsoleLogin, type Device, type DeviceAnswer, deviceToken, startDevice, type Token, whoIs, writeConsole } from "./console.ts";
 import { KIMI_AUTH, kimiDeviceToken, newDeviceId, readKimi, startKimiDevice, writeKimi } from "./kimi.ts";
 import { CURSOR, type CursorUrls, cursorHandshake, mintCursorKey, pollCursor, writeCursor } from "./cursor.ts";
 import { cleanEnv } from "../agents/runtime.ts";
 import { devinData } from "../agents/devin.ts";
-import { agyHome, agyToken, noteAgyEmail } from "../agents/agy.ts";
+import { AGY_FILE_TOKENS, agyToken, agyTokenIn, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
+import { writePrivateSoon } from "../ops/files.ts";
 import type { Runtime } from "../agents/profiles.ts";
 import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { log } from "../ops/log.ts";
@@ -45,7 +54,7 @@ import { started } from "../platform/processes.ts";
 import { loopbackOf, urlsIn, webPage } from "../ops/command-output.ts";
 import type { LoginPages } from "../logins/pages.ts";
 
-export type LoginState = "starting" | "needs_code" | "needs_approval" | "verifying" | "done" | "failed" | "cancelled";
+export type LoginState = "starting" | "needs_code" | "needs_project" | "needs_approval" | "verifying" | "done" | "failed" | "cancelled";
 
 export type LoginJob = {
   profile: string;
@@ -69,8 +78,14 @@ export type LoginJob = {
 const pageKey = (profile: string) => `profile:${profile}`;
 
 const TIMEOUT_MS = 15 * 60_000;
+/// How long Claude's and Devin's commands are given to take a pasted code and end: past it the sign-in fails, saying to
+/// start again, rather than showing 正在完成登录 till the sign-in's own 15 minutes run out.
+export const VERIFY_WAIT_MS = 90_000;
+/// What `claude auth login` says of a pasted code it would not take (2.1.321: no `#`, or nothing on one side of it); it
+/// then waits for Enter and another code, never ending by itself.
+const CLAUDE_CODE_REFUSED = "make sure the full code was copied";
 /// Variables that would make the login command talk to something other than the subscription.
-const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_HOME", "OPENAI_API_KEY", "GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY", "WINDSURF_API_KEY", "XDG_DATA_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH", "AGY_ACCOUNT"];
+const SCRUBBED = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_BASE_URL", "CLAUDE_CONFIG_DIR", "CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CODEX_HOME", "OPENAI_API_KEY", "GROK_HOME", "GROK_AUTH", "GROK_AUTH_PATH", "XAI_API_KEY", "WINDSURF_API_KEY", "XDG_DATA_HOME", "GEMINI_API_KEY", "GOOGLE_API_KEY", "AGY_ADC_AUTH", "AGY_ACCOUNT", "ANTIGRAVITY_GEMINI_DIR"];
 /// The terminal Devin's login runs in: wide, so that its link is printed on one line.
 const DEVIN_COLS = 1000;
 const DEVIN_ROWS = 40;
@@ -80,17 +95,36 @@ export type LoginCommands = { claude: string; codex: string; grok?: string; devi
 /// How often the Antigravity CLI's sign-in file is looked for once its code went in, and for how long.
 const AGY_POLL_MS = 500;
 const AGY_WAIT_MS = 90_000;
+/// Between the arrow down and Enter in its menus.
+const AGY_KEY_GAP_MS = 50;
+/// What the Antigravity CLI says when a company's sign-in fails after its code or project went in (1.5.9).
+/// (Its own errors say `[Auth Error]`.)
+const AGY_FAILURES = ["[Auth Error]", "Couldn't sign in", "Failed to select license", "Failed to save GCP settings", "Permission denied"];
+/// What it says where a Google Cloud account may not list its licences: no failure, it goes on to ask how to pay.
+const AGY_NO_LICENCES = "Could not fetch licenses";
+/// What it asks the terminal as a remote session's (its primary attributes, `ESC [ c`), and the answer it is given: a
+/// VT100 with advanced video (and, for the secondary attributes it asks with it, a VT220's).
+const AGY_TERMINAL_ASKED = "\u001b[c";
+const AGY_TERMINAL_ANSWER = "\u001b[?1;2c\u001b[>0;276;0c";
 
 /// Where a profile keeps the cookies and passkeys of its sign-in tab in the station's browser, inside its own home.
 export const LOGIN_BROWSER_FILE = ".stillfail-login-state.json";
 
 /// What a sign-in is for: a profile's id, the runtime it signs in to, its home, and (for Claude) the account email to
 /// pre-populate on the authorize page when known.
-export type LoginProfile = { id: string; runtime: Runtime; home: string; email?: string | null };
+/// `enterprise`: an Antigravity CLI sign-in to a company's Google account (Google Workspace, Gemini Enterprise, Google
+/// Cloud) rather than a person's.
+export type LoginProfile = { id: string; runtime: Runtime; home: string; email?: string | null; enterprise?: boolean };
 
 /// A sign-in under way: its command (none for OpenCode's, which `stop` ends), and the file its stand-in browser writes
 /// the pages it opens to.
-type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; home?: string; chose?: boolean };
+/// `said`: what Claude's command said since its code went in (absent before), read for its refusal.
+type Running = { run: number; job: LoginJob; child: ChildProcess | null; raw: string; output: string; cancelTimer: () => void; exited: boolean; lang: Lang; stop?: () => void; opened?: string; back?: string; home?: string; chose?: boolean; agy?: AgySteps; said?: string };
+
+/// Where an Antigravity CLI sign-in is in its menus: which it answered, and what it said since its code (or project)
+/// went in (`after`, null before), which is where its licences, how to pay and the project are asked. `stage`: its HOME,
+/// an empty directory of this sign-in's; `terminal`: whether its question to the terminal was answered.
+type AgySteps = { enterprise: boolean; cloud: boolean; license: boolean; billing: boolean; after: string | null; stage: string; terminal: boolean };
 
 export class LoginManager {
   private jobs = new Map<string, Running>();
@@ -98,6 +132,8 @@ export class LoginManager {
   private listeners = new Set<(profile: string) => void>();
   private runs = 0;
   private noBrowserDir: string;
+  /// Where the Antigravity CLI's sign-ins each have their HOME (`run`: what runs, bounded-ephemeral).
+  private agyLoginDir: string;
   private commands: LoginCommands;
   private background: Fibers;
   /// The environment the commands start from; variables that point a login elsewhere are removed at start.
@@ -122,6 +158,7 @@ export class LoginManager {
     this.keyName = keyName;
     this.background = new Fibers("login", clock);
     this.noBrowserDir = join(data, "run", "no-browser");
+    this.agyLoginDir = join(data, "run", "agy-login");
     this.commands = commands;
     this.env = env;
     this.stateFile = (profile) => {
@@ -147,7 +184,20 @@ export class LoginManager {
     this.pages = pages;
     pages.changes((key) => {
       const profile = key.startsWith("profile:") ? key.slice("profile:".length) : null;
-      if (profile !== null && this.jobs.has(profile)) this.emit(profile);
+      if (profile === null) return;
+      const running = this.jobs.get(profile);
+      if (running === undefined) return;
+      // The Antigravity CLI's page come back with its code in the station's browser: taken from there, its tab closed,
+      // nothing to paste (its code goes to antigravity.google alone, never back to this machine).
+      if (running.job.runtime === "agy" && running.job.state === "needs_code") {
+        const code = agyCallbackCode(pages.urlOf(key), running.job.url);
+        if (code !== null) {
+          pages.close(key);
+          void this.submitCode(profile, code, running.lang).catch((error) => log.warn("login", "a code read off the station's browser was not taken", { profile, error: (error as Error).message }));
+          return;
+        }
+      }
+      this.emit(profile);
     });
   }
 
@@ -158,7 +208,7 @@ export class LoginManager {
       if (this.pages !== null) {
         const screen = this.pages.screenOf(pageKey(profile));
         if (screen !== null) job.screen = screen;
-        if ((screen !== null || this.stationPage(running) !== null) && this.pages.can()) job.browser = true;
+        if ((screen !== null || this.hasPage(running)) && this.pages.can()) job.browser = true;
       }
       return job;
     }
@@ -168,18 +218,22 @@ export class LoginManager {
 
   /// The page a sign-in under way opens in the station's browser: the one its command opened where that comes back to
   /// it here (Claude's loopback one), else the one it gives to open; null when it has none (yet).
-  private stationPage(running: Running): string | null {
+  private async stationPage(running: Running): Promise<string | null> {
     const { job } = running;
     if (job.state !== "needs_code" && job.state !== "needs_approval") return null;
     if (running.opened) {
-      let opened: string[] = [];
-      try {
-        opened = urlsIn(readFileSync(running.opened, "utf8"));
-      } catch {}
+      const opened = urlsIn(await readFile(running.opened, "utf8").catch(() => ""));
       const back = opened.findLast((u) => loopbackOf(u) !== null);
-      if (back !== undefined) return back;
+      if (back !== undefined) return (running.back = back);
     }
     return webPage(job.url) ? job.url : null;
+  }
+
+  /// Whether it has a page to open (`stationPage`) as far as is known without reading what its command opened: the
+  /// page it gives (every command's is one), or the one it opened as it was last read.
+  private hasPage(running: Running): boolean {
+    const { job } = running;
+    return (job.state === "needs_code" || job.state === "needs_approval") && (running.back !== undefined || webPage(job.url));
   }
 
   /// Opens the page of `profile`'s sign-in in the station's browser (the tab open already, if there is one): its
@@ -188,7 +242,8 @@ export class LoginManager {
     const running = this.jobs.get(profile);
     if (!running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (this.pages === null || !this.pages.can()) throw new Error(tr(lang, "station.loginPage.noBrowser"));
-    const url = this.stationPage(running);
+    const url = await this.stationPage(running);
+    if (this.jobs.get(profile) !== running) throw new Error(tr(lang, "station.loginPage.nothing"));
     if (url === null && this.pages.screenOf(pageKey(profile)) === null) throw new Error(tr(lang, "station.loginPage.nothing"));
     let screen: string;
     try {
@@ -206,74 +261,131 @@ export class LoginManager {
 
   /// Starts a sign-in for a subscription profile, replacing any running one.
   async start(profile: LoginProfile, lang: Lang = stationLang()): Promise<LoginJob> {
+    // (a pseudo-terminal where its command reads only from one: looked for first, before anything is recorded)
+    const terminal =
+      profile.runtime === "devin" ? await platform.terminalSoon(this.commands.devin ?? "devin", ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS)
+      : profile.runtime === "agy" ? await platform.terminalSoon(this.commands.agy ?? "agy", [], DEVIN_COLS, DEVIN_ROWS)
+      : null;
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
-    const [noBrowser, open] = this.noBrowser();
+    const noBrowser = this.noBrowserDir;
     const sourceEnv = this.env();
     const clean = Object.fromEntries(Object.entries(sourceEnv).filter(([k]) => !SCRUBBED.includes(k)));
     let env = platform.prependPath(clean, noBrowser) as Record<string, string>;
-    env.BROWSER = open;
-    // The pages it opens, written down for the station's browser (one file a sign-in).
-    const opened = join(noBrowser, `${profile.id}.opened`);
-    rmSync(opened, { force: true });
+    const run = ++this.runs;
+    // The pages it opens, written down for the station's browser (one file a sign-in: one ended before is taken away
+    // off this thread, never this one's).
+    const opened = join(noBrowser, `${profile.id}-${run}.opened`);
     env.STILLFAIL_LOGIN_OPENED = opened;
+    /// The directories it needs, made once it is recorded.
+    const dirs = [profile.home];
     let command: string;
     let args: string[];
     let pathCommand: string | undefined;
+    // The Antigravity CLI's HOME: an empty directory of this sign-in's (the top of this file says why).
+    const stage = profile.runtime === "agy" ? join(this.agyLoginDir, `${profile.id}-${run}`) : null;
     if (profile.runtime === "claude") {
       env.CLAUDE_CONFIG_DIR = profile.home;
-      fileCredentials(env);
       const email = typeof profile.email === "string" && profile.email.trim() !== "" ? profile.email.trim() : null;
       [command, args] = [this.commands.claude, ["auth", "login", "--claudeai", ...(email ? ["--email", email] : [])]];
     } else if (profile.runtime === "grok") {
       env.GROK_HOME = join(profile.home, "grok");
       env.GROK_DISABLE_AUTOUPDATER = "1";
-      mkdirSync(env.GROK_HOME, { recursive: true });
+      dirs.push(env.GROK_HOME);
       [command, args] = [this.commands.grok ?? "grok", ["login", "--device-auth"]];
     } else if (profile.runtime === "devin") {
       env.XDG_DATA_HOME = devinData(profile.home);
-      mkdirSync(env.XDG_DATA_HOME, { recursive: true });
+      dirs.push(env.XDG_DATA_HOME);
       pathCommand = this.commands.devin ?? "devin";
-      const wrapped = platform.terminal(pathCommand, ["auth", "login", "--force-manual-token-flow"], DEVIN_COLS, DEVIN_ROWS);
-      if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
-      [command, args] = wrapped;
-    } else if (profile.runtime === "agy") {
-      env.HOME = agyHome(profile.home);
-      // Not a remote session's: there it first asks the terminal what it can do, and waits for an answer none gives.
+      if (terminal === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.devinNoTerminal"));
+      [command, args] = terminal;
+    } else if (stage !== null) {
+      env.HOME = stage;
+      // Its sign-in kept in a file in that HOME, none of the keychain's (as a remote session's: it then asks the terminal
+      // what it is, which `agyAnswer` answers).
+      Object.assign(env, AGY_FILE_TOKENS);
       delete env.SSH_CONNECTION;
       env.AGY_CLI_DISABLE_AUTO_UPDATE = "1";
-      mkdirSync(env.HOME, { recursive: true });
       pathCommand = this.commands.agy ?? "agy";
-      const wrapped = platform.terminal(pathCommand, [], DEVIN_COLS, DEVIN_ROWS);
-      if (wrapped === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.agyNoTerminal"));
-      [command, args] = wrapped;
+      if (terminal === null) return this.refused(profile.id, profile.runtime, tr(lang, "station.login.agyNoTerminal"));
+      [command, args] = terminal;
     } else {
       env.CODEX_HOME = profile.home;
       [command, args] = [this.commands.codex, ["login", "--device-auth"]];
     }
     const now = this.background.now();
     const job: LoginJob = { profile: profile.id, runtime: profile.runtime, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
-    const run = ++this.runs;
     const id = profile.id;
     // The shell lookup can take time. Record the sign-in first so cancelling or replacing it stops this start too.
     const running: Running = {
       run, job, child: null, raw: "", output: "", exited: true, opened, lang, home: profile.home,
+      ...(stage !== null ? { agy: { enterprise: profile.enterprise === true, cloud: false, license: false, billing: false, after: null, stage, terminal: false } } : {}),
       cancelTimer: this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut"))),
     };
     this.jobs.set(id, running);
     this.emit(id);
-    const foundEnv = await withShellCommand(pathCommand ?? command, env, sourceEnv);
+    try {
+      // (Claude Code kept off the keychain: its sign-in in the profile's home)
+      const keychain = profile.runtime === "claude" ? fileCredentialsSoon(env) : null;
+      const [open] = await Promise.all([this.noBrowser(), rm(opened, { force: true }), keychain, ...dirs.map((d) => mkdir(d, { recursive: true }))]);
+      env.BROWSER = open;
+    } catch (e) {
+      if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+      const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+      this.finish(id, "failed", error);
+      return { ...job, state: "failed", error };
+    }
     if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+    const dropStage = () => (stage !== null ? rm(stage, { recursive: true, force: true }).catch(() => {}) : Promise.resolve());
+    if (stage !== null) {
+      // Those an earlier sign-in of this profile left (the station ended under it) go first; never a later one's, made
+      // while this listing was read.
+      const left = await readdir(this.agyLoginDir).catch(() => [] as string[]);
+      if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+      const mine = (name: string) => {
+        if (!name.startsWith(`${profile.id}-`)) return false;
+        const rest = name.slice(profile.id.length + 1);
+        const n = Number(rest);
+        return /^\d+$/.test(rest) && Number.isInteger(n) && n >= 0 && n < run;
+      };
+      await Promise.all(left.filter(mine).map((name) => rm(join(this.agyLoginDir, name), { recursive: true, force: true }).catch(() => {})));
+      try {
+        await mkdir(stage, { recursive: true });
+      } catch (e) {
+        if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+        const error = tr(lang, "station.login.cannotRun", { error: (e as Error).message });
+        this.finish(id, "failed", error);
+        return { ...job, state: "failed", error };
+      }
+      if (this.jobs.get(id) !== running) {
+        await dropStage();
+        return { ...job, state: "cancelled" };
+      }
+    }
+    const foundEnv = await withShellCommand(pathCommand ?? command, env, sourceEnv);
+    if (this.jobs.get(id) !== running) {
+      await dropStage();
+      return { ...job, state: "cancelled" };
+    }
     // The browser stand-ins must stay ahead of any Node bin added for the login command.
     if (foundEnv !== env) env = platform.prependPath(foundEnv, noBrowser) as Record<string, string>;
-    const r = platform.runnable(command, args, env);
-    const child = spawn(r.file, r.args, { cwd: profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
+    const r = await platform.runnableSoon(command, args, env);
+    if (this.jobs.get(id) !== running) {
+      await dropStage();
+      return { ...job, state: "cancelled" };
+    }
+    const child = spawn(r.file, r.args, { cwd: stage ?? profile.home, env, stdio: ["pipe", "pipe", "pipe"], windowsVerbatimArguments: r.windowsVerbatimArguments, windowsHide: true });
     running.child = child;
     running.exited = false;
+    // Its HOME goes with it, whatever its end (what it signed in is copied out before it is stopped).
+    if (stage !== null) child.once("close", () => void dropStage());
     const spawned = await started(child);
-    if (this.jobs.get(id) !== running) return { ...job, state: "cancelled" };
+    if (this.jobs.get(id) !== running) {
+      void dropStage();
+      return { ...job, state: "cancelled" };
+    }
     if (spawned) {
+      void dropStage();
       // Recorded like any other failure, so the page shows why.
       running.exited = true;
       const error = tr(lang, "station.login.cannotRun", { error: spawned.message });
@@ -313,8 +425,8 @@ export class LoginManager {
 
   /// Starts signing a Kimi Code profile in to the person's Kimi account the same way (kimi.ts), for a device of its own:
   /// the one it signed in on before where it has one (Kimi renews a token only for the device it was given to).
-  startKimi(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
-    const deviceId = readKimi(profile.home)?.deviceId ?? newDeviceId();
+  async startKimi(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
+    const deviceId = (await readKimi(profile.home))?.deviceId ?? newDeviceId();
     return this.deviceSignIn(profile, "kimi", lang, {
       start: () => startKimiDevice(this.kimi, deviceId),
       ask: (code) => kimiDeviceToken(this.kimi, code, deviceId),
@@ -328,7 +440,7 @@ export class LoginManager {
     profile: { id: string; home: string },
     provider: "opencode" | "kimi",
     lang: Lang,
-    steps: { start: () => Promise<Device>; ask: (deviceCode: string) => Promise<DeviceAnswer>; keep: (token: Token) => Promise<() => void> },
+    steps: { start: () => Promise<Device>; ask: (deviceCode: string) => Promise<DeviceAnswer>; keep: (token: Token) => Promise<() => void | Promise<void>> },
   ): Promise<LoginJob> {
     const [failed, expired, denied, unreachable] =
       provider === "kimi"
@@ -336,7 +448,6 @@ export class LoginManager {
         : ["station.login.consoleFailed", "station.login.consoleExpired", "station.login.consoleDenied", "could not ask the OpenCode Console about a sign-in"];
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
     const id = profile.id;
     const now = this.background.now();
     const job: LoginJob = { profile: id, runtime: "claude", provider, state: "starting", url: null, userCode: null, error: null, startedAt: now, expiresAt: now + TIMEOUT_MS };
@@ -347,6 +458,8 @@ export class LoginManager {
     const current = () => this.jobs.get(id)?.run === run;
     let device: Device;
     try {
+      await mkdir(profile.home, { recursive: true });
+      if (!current()) return this.get(id)!;
       device = await steps.start();
     } catch (e) {
       if (current()) this.finish(id, "failed", tr(lang, failed, { error: (e as Error).message }));
@@ -381,11 +494,12 @@ export class LoginManager {
       const write = await steps.keep(answer.token);
       if (!current()) return;
       try {
-        write();
+        await write();
       } catch (e) {
-        return this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        return;
       }
-      this.finish(id, "done", null);
+      if (current()) this.finish(id, "done", null);
     };
     running.stop = this.background.after(interval, ask);
     log.info("login", "device sign-in started", { profile: id, provider });
@@ -398,7 +512,6 @@ export class LoginManager {
   async startCursor(profile: { id: string; home: string }, lang: Lang = stationLang()): Promise<LoginJob> {
     this.cancel(profile.id);
     this.finished.delete(profile.id);
-    mkdirSync(profile.home, { recursive: true });
     const id = profile.id;
     const now = this.background.now();
     const handshake = cursorHandshake(this.cursor);
@@ -408,6 +521,13 @@ export class LoginManager {
     this.jobs.set(id, running);
     running.cancelTimer = this.background.after(TIMEOUT_MS, () => this.failRun(id, run, tr(lang, "station.login.timedOut")));
     const current = () => this.jobs.get(id)?.run === run;
+    try {
+      await mkdir(profile.home, { recursive: true });
+    } catch (e) {
+      if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+      return this.get(id)!;
+    }
+    if (!current()) return this.get(id)!;
     // Asked often at first (the person is on the page), less as it goes on.
     let interval = 1_000;
     const ask = async () => {
@@ -437,11 +557,12 @@ export class LoginManager {
       }
       if (!current()) return;
       try {
-        writeCursor(profile.home, { apiKey: minted.apiKey, email: minted.email, keyName: this.keyName(), createdAt: wall.now() });
+        await writeCursor(profile.home, { apiKey: minted.apiKey, email: minted.email, keyName: this.keyName(), createdAt: wall.now() });
       } catch (e) {
-        return this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        if (current()) this.finish(id, "failed", tr(lang, "station.login.homeFailed", { error: (e as Error).message }));
+        return;
       }
-      this.finish(id, "done", null);
+      if (current()) this.finish(id, "done", null);
     };
     running.stop = this.background.after(interval, ask);
     log.info("login", "Cursor sign-in started", { profile: id });
@@ -458,13 +579,26 @@ export class LoginManager {
     return { ...failed };
   }
 
-  /// Claude and Devin: the code the browser showed after approving.
+  /// Claude and Devin: the code the browser showed after approving. The Antigravity CLI's company account with no
+  /// licence: its Google Cloud project, the same way (`needs_project`).
   async submitCode(profile: string, code: string, lang: Lang = stationLang()): Promise<LoginJob> {
     const running = this.jobs.get(profile);
-    if (!running || running.job.state !== "needs_code") throw new Error(tr(lang, "station.login.notWaitingForCode"));
-    const clean = code.trim();
-    if (clean === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    if (!running || (running.job.state !== "needs_code" && running.job.state !== "needs_project")) throw new Error(tr(lang, "station.login.notWaitingForCode"));
+    const trimmed = code.trim();
+    if (trimmed === "") throw new Error(tr(lang, "station.login.emptyCode"));
+    // Claude's is checked before it goes in: one it would not take is refused here, the sign-in still waiting for a code.
+    const clean = running.job.runtime === "claude" ? claudeCodeOf(trimmed, running.job.url, lang) : trimmed;
+    // What it says from here on is read for what comes next (its question for the project, which was said, not again).
+    if (running.agy) running.agy.after = "";
+    running.stop?.();
+    running.stop = undefined;
     running.job.state = "verifying";
+    if (running.job.runtime === "claude") running.said = "";
+    if (running.job.runtime === "claude" || running.job.runtime === "devin") {
+      running.stop = this.background.after(VERIFY_WAIT_MS, () => { // timer: a deadline for the command to take the code
+        if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "failed", tr(running.lang, "station.login.verifyTimedOut"));
+      });
+    }
     const job = { ...running.job };
     await new Promise<void>((resolve, reject) => {
       const stdin = running.child?.stdin;
@@ -478,25 +612,96 @@ export class LoginManager {
     return job;
   }
 
-  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in since the code
-  /// went in; failed when it has not in a while (a code it did not take: it says nothing a program can read of it).
+  /// The Antigravity CLI goes on into its interface once signed in: done when it has written its sign-in whole in its
+  /// HOME (a company's account writes it first with only its token, its licence or project after: `agyTokenReady`),
+  /// which is then written into the profile's agy/ (the one there kept until then: a sign-in given up or failed leaves
+  /// it as it was); failed when it has not in a while (a code it did not take: it says nothing a program can read of
+  /// it). While it waits for a project from the person it is not timed (the sign-in's own expiry still holds).
   private awaitAgy(profile: string, running: Running) {
-    // (the file's time is the machine's: compared with the wall's; how long it is waited for, the station's clock)
-    const since = wall.now() - 1000;
     const until = this.background.now() + AGY_WAIT_MS;
-    const look = () => {
-      if (this.jobs.get(profile) !== running) return;
-      if (running.home !== undefined && writtenSince(agyToken(running.home), since)) {
-        const home = running.home;
-        void readFile(agyToken(home), "utf8").then((text) => noteAgyEmail(home, text), () => null).finally(() => {
-          if (this.jobs.get(profile) === running) this.finish(profile, "done", null);
-        });
-        return;
+    const steps = running.agy!;
+    const signedIn = agyTokenIn(join(steps.stage, ".gemini"));
+    const look = async () => {
+      if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
+      const home = running.home;
+      if (home !== undefined) {
+        const text = await readFile(signedIn, "utf8").catch(() => "");
+        if (this.jobs.get(profile) !== running || running.job.state !== "verifying") return;
+        if (agyTokenReady(text, steps.enterprise)) {
+          try {
+            await writePrivateSoon(agyToken(home), text);
+          } catch (e) {
+            if (this.jobs.get(profile) === running) this.finish(profile, "failed", tr(running.lang, "station.login.homeFailed", { error: (e as Error).message }));
+            return;
+          }
+          await noteAgyEmail(home, text).catch(() => null);
+          if (this.jobs.get(profile) === running && running.job.state === "verifying") this.finish(profile, "done", null);
+          return;
+        }
       }
       if (this.background.now() > until) return this.finish(profile, "failed", tr(running.lang, "station.login.agyCodeRefused"));
-      running.stop = this.background.after(AGY_POLL_MS, look);
+      running.stop = this.background.after(AGY_POLL_MS, () => void look());
     };
-    look();
+    void look();
+  }
+
+  /// What the Antigravity CLI asks, answered (`output`): how to sign in, and for a company's account the way into
+  /// Google Cloud; once its code went in, its licence (the first), how to pay (as it goes) and the project (asked of the
+  /// person); what it says of a failure ends the sign-in at once, saying it.
+  private agyAnswer(profile: string, running: Running, chunk: string) {
+    const steps = running.agy!;
+    const write = (keys: string) => running.child?.stdin?.write(keys);
+    // A choice further down: the arrow, then Enter a moment later (it reads the two apart).
+    const second = () => {
+      write("\u001b[B");
+      const run = running.run;
+      this.background.after(AGY_KEY_GAP_MS, () => {
+        if (this.jobs.get(profile)?.run === run) write("\r");
+      });
+    };
+    // Its question to the terminal, as a remote session's, answered once, before it asks anything else.
+    if (running.job.state === "starting" && !running.chose && !steps.terminal && running.raw.includes(AGY_TERMINAL_ASKED)) {
+      steps.terminal = true;
+      write(AGY_TERMINAL_ANSWER);
+    }
+    if (running.job.state === "starting" && !running.chose && running.output.includes("Select login method")) {
+      running.chose = true;
+      if (steps.enterprise) second();
+      else write("\r");
+      return;
+    }
+    if (steps.enterprise && !steps.cloud && running.job.state === "starting" && (running.output.includes("Google Cloud sign-in method") || running.output.includes("Continue with Google Cloud"))) {
+      steps.cloud = true;
+      write("\r");
+      return;
+    }
+    if (steps.after === null) return;
+    // Read whole: an escape can be cut between two pieces.
+    const raw = [...(steps.after + chunk)];
+    steps.after = raw.slice(Math.max(0, raw.length - 16000)).join("");
+    const said = stripAnsi(steps.after);
+    // (a line of its licences not listed is no failure, whatever it says: it goes on)
+    const failed = said.split(/\r?\n/).find((l) => !l.includes(AGY_NO_LICENCES) && AGY_FAILURES.some((f) => l.includes(f)));
+    if (failed !== undefined && (running.job.state === "verifying" || running.job.state === "needs_project")) {
+      const line = failed.trim().replace(/^\[Auth Error\]\s*/, "").trim();
+      return this.finish(profile, "failed", tr(running.lang, "station.login.agyFailed", { error: line.slice(0, 300) }));
+    }
+    if (!steps.license && said.includes("Can't find your subscription?")) {
+      steps.license = true;
+      write("\r");
+      return;
+    }
+    if (!steps.billing && said.includes("Pay only for the tokens you use")) {
+      steps.billing = true;
+      second();
+      return;
+    }
+    if (running.job.state === "verifying" && said.includes("Provide Google Cloud project")) {
+      running.stop?.();
+      running.stop = undefined;
+      running.job.state = "needs_project";
+      this.emit(profile);
+    }
   }
 
   cancel(profile: string) {
@@ -521,10 +726,15 @@ export class LoginManager {
     const raw = [...running.raw];
     if (raw.length > 16000) running.raw = raw.slice(raw.length - 16000).join("");
     running.output = stripAnsi(running.raw);
-    // The Antigravity CLI asks how to sign in first: Google OAuth, its first choice.
-    if (running.job.runtime === "agy" && running.job.state === "starting" && !running.chose && running.output.includes("Select login method")) {
-      running.chose = true;
-      running.child?.stdin?.write("\r");
+    if (running.agy) {
+      this.agyAnswer(profile, running, chunk);
+      if (this.jobs.get(profile) !== running) return;
+    }
+    if (running.said !== undefined && running.job.state === "verifying") {
+      const said = [...(running.said + chunk)];
+      running.said = said.slice(Math.max(0, said.length - 4000)).join("");
+      // It waits on for Enter and another code: ended here, saying what to paste.
+      if (stripAnsi(running.said).toLowerCase().includes(CLAUDE_CODE_REFUSED)) return this.finish(profile, "failed", tr(running.lang, "station.login.claudeIncompleteCode"));
     }
     if (parse(running.job, running.output)) this.emit(profile);
   }
@@ -558,7 +768,7 @@ export class LoginManager {
         } catch {}
       }
     }
-    if (running.opened) rmSync(running.opened, { force: true });
+    if (running.opened) void rm(running.opened, { force: true }).catch(() => {});
     this.pages?.close(pageKey(profile));
     this.finished.set(profile, { ...running.job, state, error });
     log.info("login", "login ended", { profile, state, error });
@@ -575,14 +785,14 @@ export class LoginManager {
     }
   }
 
-  /// A directory whose `open` and `xdg-open` open nothing, put first on the login command's PATH; and what `open` is to
-  /// be called by (BROWSER). Each writes the pages it is given to the file STILLFAIL_LOGIN_OPENED names (on Windows it
-  /// does nothing).
-  private noBrowser(): [dir: string, open: string] {
-    mkdirSync(this.noBrowserDir, { recursive: true });
+  /// Makes the directory whose `open` and `xdg-open` open nothing, put first on the login command's PATH
+  /// (`noBrowserDir`); gives what `open` is to be called by (BROWSER). Each writes the pages it is given to the file
+  /// STILLFAIL_LOGIN_OPENED names (on Windows it does nothing).
+  private async noBrowser(): Promise<string> {
+    await mkdir(this.noBrowserDir, { recursive: true });
     const script = `#!/bin/sh\n# A browser for a sign-in run by still.fail (station/src/accounts/login.ts): the page goes to the station.\n[ -n "$STILLFAIL_LOGIN_OPENED" ] || exit 0\nfor a in "$@"; do printf '%s\\n' "$a" >> "$STILLFAIL_LOGIN_OPENED"; done\nexit 0\n`;
-    const [open] = ["open", "xdg-open"].map((name) => platform.makeCommand(join(this.noBrowserDir, name), script, true));
-    return [this.noBrowserDir, open!];
+    const [open] = await Promise.all(["open", "xdg-open"].map((name) => platform.makeCommandSoon(join(this.noBrowserDir, name), script, true)));
+    return open!;
   }
 }
 
@@ -628,6 +838,60 @@ export function parse(job: LoginJob, output: string): boolean {
   return false;
 }
 
+/// The code to type into `claude auth login` of what was pasted (trimmed): `code#state` as its page shows it, or the
+/// address that page was at (`…/callback?code=…&state=…`), made `code#state`. Refused, saying what to paste instead,
+/// where the command would not take it (no `#`, nothing on a side of it: it says so and waits on, 2.1.321) or where its
+/// state is another sign-in's than `authUrl`'s.
+export function claudeCodeOf(clean: string, authUrl: string | null, lang: Lang): string {
+  let expected = "";
+  try {
+    expected = authUrl !== null ? (new URL(authUrl).searchParams.get("state")?.trim() ?? "") : "";
+  } catch {}
+  let pasted: URL | null = null;
+  if (/^https?:\/\//i.test(clean)) {
+    try {
+      pasted = new URL(clean);
+    } catch {}
+  }
+  let code: string;
+  let state: string;
+  if (pasted !== null) {
+    // (the authorize link itself, pasted back, says `code=true` and the state: no code of the person's)
+    const authorize = /\/authorize\/?$/.test(pasted.pathname);
+    code = authorize ? "" : (pasted.searchParams.get("code")?.trim() ?? "");
+    state = pasted.searchParams.get("state")?.trim() ?? "";
+  } else {
+    const parts = clean.split("#");
+    if (parts.length !== 2) throw new Error(tr(lang, "station.login.claudeIncompleteCode"));
+    code = parts[0]!.trim();
+    state = parts[1]!.trim();
+  }
+  if (code === "" || state === "") throw new Error(tr(lang, "station.login.claudeIncompleteCode"));
+  if (expected !== "" && state !== expected) throw new Error(tr(lang, "station.login.claudeWrongState"));
+  return `${code}#${state}`;
+}
+
+/// The code Google gave an Antigravity CLI sign-in, read off the page its browser came back to
+/// (https://antigravity.google/oauth-callback?code=…&state=…), when that is its sign-in's (`authUrl`'s `state`); else null.
+export function agyCallbackCode(tabUrl: string | null, authUrl: string | null): string | null {
+  if (tabUrl === null) return null;
+  let back: URL;
+  try {
+    back = new URL(tabUrl);
+  } catch {
+    return null;
+  }
+  if (back.origin !== "https://antigravity.google" || back.pathname.replace(/\/+$/, "") !== "/oauth-callback") return null;
+  const code = back.searchParams.get("code")?.trim() ?? "";
+  if (code === "") return null;
+  let state = "";
+  try {
+    state = authUrl !== null ? (new URL(authUrl).searchParams.get("state") ?? "") : "";
+  } catch {}
+  if (state !== "" && back.searchParams.get("state") !== state) return null;
+  return code;
+}
+
 /// A one-time code like ABCD-12345: four capitals or digits, a dash, four to six more.
 export function deviceCode(output: string): string | null {
   const code = (s: string, min: number, max: number) => s.length >= min && s.length <= max && /^[A-Z0-9]+$/.test(s);
@@ -666,15 +930,6 @@ export function stripAnsi(text: string): string {
     out += c;
   }
   return out;
-}
-
-/// Whether `path` was written at or after `since` (ms).
-function writtenSince(path: string, since: number): boolean {
-  try {
-    return statSync(path).mtimeMs >= since;
-  } catch {
-    return false;
-  }
 }
 
 function lastLines(output: string): string {

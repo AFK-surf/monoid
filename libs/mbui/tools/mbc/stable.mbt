@@ -152,9 +152,19 @@ fn split_stable(
   // the declarations (and the externs) renamed, each with what it declares and what it uses
   let file_ids = prelude_ids.copy()
   let ditems : Array[DItem] = []
+  // (a declaration renamed as one before it is that one: function types the same are one type, names.mbt)
+  let decl_seen = BSet::new()
   for k, d in decls {
     let (kind, info) = decl_kinds[k]
     let (t, used) = rename(d, names_t)
+    if kind == 1 {
+      if decl_seen.has(t) {
+        // (kept in its place, declaring nothing: the items are found by their place in decls)
+        ditems.push({ t: b"", declares: BSet::new(), uses: BSet::new(), always: false })
+        continue
+      }
+      decl_seen.add(t)
+    }
     file_ids.add_all(used)
     if kind == 0 {
       ditems.push({ t, declares: BSet::new(), uses: used, always: true })
@@ -341,6 +351,11 @@ fn split_stable(
   for m in layout_matches(init.text) {
     offset_set[parse_int(init.text[m.0:m.1])] = ()
   }
+  for t in data_r {
+    for m in layout_matches(t) {
+      offset_set[parse_int(t[m.0:m.1])] = ()
+    }
+  }
   let first : Map[Bytes, Int] = Map([]) // a layout's words: its first offset
   let key_of : Map[Int, Bytes] = Map([])
   for off in ints(offset_set) {
@@ -418,7 +433,10 @@ fn split_stable(
   }
   // a big package in pieces by source file (its #line's), as C is compiled: an edit moves the lines of the functions
   // after it in its file, and only that file's piece changes. A file bigger than a unit (a generic one's instances:
-  // core's Map for each of the program's types) in pieces of its own by its functions' names
+  // core's Map for each of the program's types) in pieces of its own by the types its functions are instances for
+  // (type_args): by their names, a branch's one new type's instances (a Map's keys, get, set, iter...) were spread
+  // over 20 of core's 32 pieces of that file and 21 of view's, each compiled again (with mbui's view and signals, some
+  // 60 of the 280 units a branch's 360 lines of sfpages had to compile, mbui-chat-nodes-outline, 2026-11-14)
   let file_key = rest.map(fn(f) {
     match line_file(f.text) {
       Some(path) => {
@@ -461,7 +479,7 @@ fn split_stable(
         cat([
           base,
           b"_",
-          utf8((crc32(new) % sub.reinterpret_as_uint()).to_string()),
+          utf8((crc32(type_args(new)) % sub.reinterpret_as_uint()).to_string()),
         ])
       } else {
         base
@@ -1021,6 +1039,63 @@ fn split_stable(
   )
   // jobs: (file, what its entries are (0 functions, 1 moonbit_init's pieces, 2 globals), its entries)
   let jobs : Array[(Bytes, Int, Array[(Bytes, Int)])] = []
+  // A global's object names its layout by its content too, as a function's header does: moonc numbers the layouts
+  // across the program, so a type put in anywhere renumbered those after it, and every data unit with an object of
+  // one was new text (184 of the 419 units a branch's change of 19 files compiled again for that alone,
+  // vault-slack-oauth, 2026-11-15). A static initializer can take no constant of another unit, so the object's
+  // header says the layout's index 0, and moonbit_init sets it first of all from data_layout.c's table of them
+  // (csplit_fix_layouts). Only an object of one header (`struct { int32_t rc; uint32_t meta; …}`); with moonbit_init
+  // in one unit, as it was. MBC_DATA_LAYOUTS=0: the numbers kept in the globals, as they were
+  let fixes : Array[(Bytes, Bytes)] = [] // (a global as renamed, its layout's name)
+  if !whole_init && env_is("MBC_DATA_LAYOUTS", "1") != b"0" {
+    let head = b"struct { int32_t rc; uint32_t meta;"
+    for k, n in data_names {
+      let t = data_r[k]
+      let ms = layout_matches(t)
+      let lead = collapse_space(t[0:(if t.length() < 120 { t.length() } else { 120 })])
+      let at = find(lead, head, 0)
+      if ms.length() == 1 && at >= 0 && at <= 18 {
+        let m = ms[0]
+        fixes.push(
+          (
+            names.get_or_default(n, n),
+            layout_named[key_of[parse_int(t[m.0:m.1])]],
+          ),
+        )
+        data_r[k] = cat([sub(t, 0, m.0), b"0", sub(t, m.1, t.length())])
+      }
+    }
+  }
+  let fix_names = BSet::new()
+  let layout_fixes = if fixes.length() == 0 {
+    b""
+  } else {
+    let sorted = stable_sort(Array::makei(fixes.length(), fn(i) { i }), fn(a, b) {
+      bcmp(fixes[a].0, fixes[b].0)
+    })
+    let buf = Buffer()
+    buf.write_bytes(
+      b"static const struct { uint32_t *meta; const uint32_t *layout; } csplit_layout_fixes[",
+    )
+    buf.write_bytes(bint(fixes.length()))
+    buf.write_bytes(b"] = {\n")
+    for i in sorted {
+      let (g, l) = fixes[i]
+      fix_names.add(g)
+      buf.write_bytes(b"  { &")
+      buf.write_bytes(g)
+      buf.write_bytes(b".meta, &")
+      buf.write_bytes(l)
+      buf.write_bytes(b" },\n")
+    }
+    buf.write_bytes(b"};\nCSPLIT_INTERNAL void csplit_fix_layouts(void) {\n  for (int i = 0; i < ")
+    buf.write_bytes(bint(fixes.length()))
+    buf.write_bytes(
+      b"; i++) {\n    *csplit_layout_fixes[i].meta |= (*csplit_layout_fixes[i].layout & MOONBIT_REGULAR_LAYOUT_INDEX_MASK)\n      << MOONBIT_REGULAR_LAYOUT_INDEX_SHIFT;\n  }\n}\n",
+    )
+    buf.to_bytes()
+  }
+  stats.push(("objects_layouts_fixed", fixes.length()))
   // moonbit_init too: with all of decls.h it was compiled again for any type changed anywhere
   if whole_init {
     let (t, used) = init_part(init.text)
@@ -1032,7 +1107,13 @@ fn split_stable(
       buf.write_bytes(f)
       buf.write_bytes(b"(void);\n")
     }
+    if fixes.length() > 0 {
+      buf.write_bytes(b"CSPLIT_INTERNAL void csplit_fix_layouts(void);\n")
+    }
     buf.write_bytes(b"void moonbit_init() {\n")
+    if fixes.length() > 0 {
+      buf.write_bytes(b"csplit_fix_layouts();\n")
+    }
     for f in init_calls {
       buf.write_bytes(f)
       buf.write_bytes(b"();\n")
@@ -1233,6 +1314,8 @@ fn split_stable(
       }
       if name == b"data_layout.c" {
         texts.push(layout_defs)
+        texts.push(layout_fixes)
+        used.add_all(fix_names)
       }
       let text = unit_text(used, join(texts, b"\n"), None, defines)
       let ch = if write_if_changed(join_path(outdir, name), text) { 1 } else { 0 }
@@ -1326,6 +1409,9 @@ fn split_stable(
     }
   }
   made.add_all(layout_names)
+  if fixes.length() > 0 {
+    made.add(b"csplit_fix_layouts")
+  }
   for f in init_calls {
     made.add(f)
   }
@@ -1405,4 +1491,36 @@ fn Heap::pop(self : Heap) -> Int {
     }
   }
   top
+}
+
+///|
+/// What a function is an instance for: its name from the first `G` that opens moonc's type arguments (`Map0keysG…E`,
+/// not a type's own name, which follows a `0`), its closures' `C…l…` taken off its end, so a type's instances of one
+/// generic file and their closures are one piece of it; a name with none, itself.
+fn type_args(name : Bytes) -> Bytes {
+  let mut end = name.length()
+  while true {
+    // (a closure's: C<digits>l<digits> at the end)
+    let mut j = end
+    while j > 0 && is_digit(name[j - 1]) {
+      j -= 1
+    }
+    if j == end || j == 0 || name[j - 1] != b'l' {
+      break
+    }
+    let mut k = j - 1
+    while k > 0 && is_digit(name[k - 1]) {
+      k -= 1
+    }
+    if k == j - 1 || k == 0 || name[k - 1] != b'C' {
+      break
+    }
+    end = k - 1
+  }
+  for i in 1..<end {
+    if name[i] == b'G' && name[i - 1] != b'0' && name[i - 1] != b'_' {
+      return sub(name, i, end)
+    }
+  }
+  name
 }

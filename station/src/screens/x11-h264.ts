@@ -47,6 +47,7 @@ export class X11H264 {
   #first: Frame | null = null;
   #lastTs = 0;
   #ended = false;
+  #closed = false;
   #failure = "X11 H.264 capture ended";
   #stderr = "";
   #timer: () => void;
@@ -195,10 +196,11 @@ export class X11H264 {
   keyframe() { this.#force = true; }
   video(): ScreenVideo { return { capture: "X11", encoder: "ffmpeg libx264 (software)", hardware: false }; }
 
-  #end(reason: string) {
+  #end(reason: string, closed = false) {
     if (this.#ended) return;
     this.#ended = true;
     this.#failure = reason.trim();
+    this.#closed = closed;
     this.#timer();
     this.#capture.kill();
     const encoder = this.#encoder;
@@ -212,5 +214,7 @@ export class X11H264 {
     pending?.resolve(null);
     this.#gone();
   }
-  close() { this.#end("X11 H.264 view closed"); }
+  /// Why its capture or encoder ended by itself (ffmpeg's words); none once it was closed.
+  why(): string | undefined { return this.#ended && !this.#closed ? this.#failure : undefined; }
+  close() { this.#end("X11 H.264 view closed", true); }
 }

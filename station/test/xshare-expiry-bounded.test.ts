@@ -4,11 +4,12 @@ import { XSHARE_IDLE_MS } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
 import { ChatShareIndexBuilder } from "../src/xshare/index-builder.ts";
 import { testClock } from "./hub-fakes.ts";
+import { dbFile } from "./temp-dir.ts";
 
 test("reconciling shares and their next expiry does not reread long-lapsed chats", async () => {
   const counts: { live: number; expiry: number; workspaces: number }[] = [];
   for (const oldShares of [40, 400]) {
-    const clock = testClock(), store = Store.open(":memory:", null, clock.clock), db = store.db;
+    const clock = testClock(), store = Store.open(dbFile("xshare-expiry-"), null, clock.clock), db = store.db;
     const builder = new ChatShareIndexBuilder(store, Promise.resolve());
     try {
       const now = store.now(), put = db.prepare("INSERT INTO chat_shares (session, shared, write, by, at) VALUES (?, ?, 0, 'a', 0)");

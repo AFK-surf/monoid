@@ -275,6 +275,41 @@ export function usageChatStatsReady(db: DatabaseSync, viewer: InWorkspace | null
   return viewer.home === false || db.prepare("SELECT 1 FROM usage_chat_dirty_scope WHERE kind = 1 AND ws = '' LIMIT 1").get() === undefined;
 }
 
+/// One batch of a moved session's chats (usage_chat_dirty, which a session's change of workspace, key or token marks):
+/// each of its memberships given its workspace as it is now. None where no session waits; `done`: none waits after it.
+function drainDirty(db: DatabaseSync, limit: number): { done: boolean; processed: number } | null {
+  const dirty = db.prepare("SELECT session, thread_after FROM usage_chat_dirty ORDER BY session LIMIT 1").get() as
+    { session: string; thread_after: number | null } | undefined;
+  if (dirty === undefined) return null;
+  const session = db.prepare("SELECT ws FROM sessions WHERE key = ?").get(dirty.session) as { ws: string | null } | undefined;
+  const rows = (dirty.thread_after === null
+    ? db.prepare("SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? ORDER BY thread LIMIT ?").all(dirty.session, limit)
+    : db.prepare("SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? AND thread > ? ORDER BY thread LIMIT ?").all(dirty.session, dirty.thread_after, limit)) as { thread: number }[];
+  const update = db.prepare("UPDATE usage_chat_members SET ws = ?, present = ? WHERE session = ? AND thread = ? AND (ws IS NOT ? OR present IS NOT ?)");
+  const ws = session?.ws ?? null, present = session === undefined ? 0 : 1;
+  for (const row of rows) update.run(ws, present, dirty.session, row.thread, ws, present);
+  if (rows.length < limit) {
+    db.prepare("DELETE FROM usage_chat_dirty_scope WHERE session = ?").run(dirty.session);
+    db.prepare("DELETE FROM usage_chat_dirty WHERE session = ?").run(dirty.session);
+  } else db.prepare("UPDATE usage_chat_dirty SET thread_after = ? WHERE session = ?").run(rows.at(-1)!.thread, dirty.session);
+  return { done: db.prepare("SELECT 1 FROM usage_chat_dirty LIMIT 1").get() === undefined, processed: rows.length };
+}
+
+/// One transaction of the chats of sessions that moved (`drainDirty`), and nothing of the old chats' fill
+/// (usage_chat_progress): the station runs it as sessions move, so that the page's chats are whole again
+/// (usage/module.ts `drainUsageChats`). `done`: no moved session waits.
+export function drainUsageChatDirty(db: DatabaseSync, limit = 32): { done: boolean; processed: number } {
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const moved = drainDirty(db, limit) ?? { done: true, processed: 0 };
+    db.exec("COMMIT");
+    return moved;
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
+}
+
 type Progress = { stage: number; thread_after: number | null; thread_end: number | null; member_after: number | null;
   member_end: number | null; card_thread: number | null; card_n: number | null; card_end_thread: number | null;
   card_end_n: number | null; done: number };
@@ -285,23 +320,11 @@ export function backfillUsageChatStats(db: DatabaseSync, limit = 32): { done: bo
   db.exec("BEGIN IMMEDIATE");
   try {
     const state = db.prepare("SELECT * FROM usage_chat_progress WHERE id = 1").get() as Progress;
-    const dirty = db.prepare("SELECT session, thread_after FROM usage_chat_dirty ORDER BY session LIMIT 1").get() as
-      { session: string; thread_after: number | null } | undefined;
-    if (dirty) {
-      const session = db.prepare("SELECT ws FROM sessions WHERE key = ?").get(dirty.session) as { ws: string | null } | undefined;
-      const rows = (dirty.thread_after === null
-        ? db.prepare("SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? ORDER BY thread LIMIT ?").all(dirty.session, limit)
-        : db.prepare("SELECT thread FROM usage_chat_members INDEXED BY usage_chat_members_session WHERE session = ? AND thread > ? ORDER BY thread LIMIT ?").all(dirty.session, dirty.thread_after, limit)) as { thread: number }[];
-      const update = db.prepare("UPDATE usage_chat_members SET ws = ?, present = ? WHERE session = ? AND thread = ? AND (ws IS NOT ? OR present IS NOT ?)");
-      const ws = session?.ws ?? null, present = session === undefined ? 0 : 1;
-      for (const row of rows) update.run(ws, present, dirty.session, row.thread, ws, present);
-      if (rows.length < limit) {
-        db.prepare("DELETE FROM usage_chat_dirty_scope WHERE session = ?").run(dirty.session);
-        db.prepare("DELETE FROM usage_chat_dirty WHERE session = ?").run(dirty.session);
-      } else db.prepare("UPDATE usage_chat_dirty SET thread_after = ? WHERE session = ?").run(rows.at(-1)!.thread, dirty.session);
-      const done = state.done === 1 && db.prepare("SELECT 1 FROM usage_chat_dirty LIMIT 1").get() === undefined;
+    const moved = drainDirty(db, limit);
+    if (moved !== null) {
+      const done = state.done === 1 && moved.done;
       db.exec("COMMIT");
-      return { done, processed: rows.length };
+      return { done, processed: moved.processed };
     }
     if (state.done) { db.exec("COMMIT"); return { done: true, processed: 0 }; }
     let processed = 0;

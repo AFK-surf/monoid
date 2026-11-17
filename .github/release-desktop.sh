@@ -47,7 +47,7 @@ for name do
 done
 if [ -z "$out" ]; then
   # Put here, the deltas from the builds before made first (scripts/release-deltas.ts: never a reason not to put it;
-  # with --out, the job putting it makes them: .github/workflows/pipeline.yml deltas).
+  # with --out, the job putting it makes them: .github/workflows/pipeline.yml deltas-desktop).
   releases=https://app.still.fail/releases
   [ "$product" = stillfail ] || releases=https://app.$product.build/releases
   node scripts/release-deltas.ts "$RELEASE_DIR" --releases "$releases" --deadline "${STILLFAIL_DELTAS_SECONDS:-90}" || echo "release-desktop: no deltas" >&2

@@ -90,13 +90,13 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     route("POST", /^\/logins$/, (r) => answer(async (a) => ok(await a.newLogin(input(r), r.viewer, r.lang)))),
     route("PUT", /^\/*automatic-decisions\/*$/, (r) =>
       answer(async (a) => {
-        a.putAutomaticDecisions(input(r), r.viewer, r.lang);
+        await a.putAutomaticDecisions(input(r), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),
     route("PUT", /^\/*archiving\/*$/, (r) =>
       answer(async (a) => {
-        a.putArchiving(input(r), r.viewer, r.lang);
+        await a.putArchiving(input(r), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),
@@ -122,7 +122,7 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     route("PUT", /^\/*profiles\/+([^/]+)\/*$/, (r, [id]) =>
       answer(async (a) => {
         const profile = segment(id!);
-        a.putProfile(profile, input(r), r.viewer, r.lang);
+        await a.putProfile(profile, input(r), r.viewer, r.lang);
         const answered = ok(await view(r));
         // Its new state is reported once known.
         void a.check(profile).catch(() => {});
@@ -131,10 +131,12 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     ),
     route("DELETE", /^\/*profiles\/+([^/]+)\/*$/, (r, [id]) =>
       answer(async (a) => {
-        a.deleteProfile(segment(id!), r.viewer, r.lang);
+        await a.deleteProfile(segment(id!), r.viewer, r.lang);
         return ok(await view(r));
       }),
     ),
+    // Each account's last hours, as the Profile overview draws them (accounts/pace.ts): read as it is shown.
+    route("GET", /^\/*profiles\/+pace\/*$/, (r) => answer((a) => ok(a.paceView(r.viewer)))),
     route("POST", /^\/*profiles\/+([^/]+)\/+check(?:\/.*)?$/, (r, [id]) => answer(async (a) => ok(await a.check(segment(id!), r.lang)))),
     route("GET", /^\/*profiles\/+([^/]+)\/+fusion(?:\/.*)?$/, (_r, [id]) => answer((a) => ok({ fusion: a.fusionView(segment(id!)) }))),
     route("POST", /^\/*profiles\/+([^/]+)\/+reset-quota(?:\/.*)?$/, (r, [id]) =>
@@ -225,10 +227,10 @@ export const routes = ({ accounts, sharing, overview, policies }: AccountsRouteD
     ),
     // A sign-in for a new profile: dropped, or given its code. Any other id is no route.
     route("DELETE", /^\/*logins\/+([^/]+)\/*$/, (r, [id]) =>
-      answer((a) => {
+      answer(async (a) => {
         const login = segment(id!);
         if (!a.hasPending(login)) return noRoute(r);
-        a.dropLogin(login);
+        await a.dropLogin(login);
         return ok({ ok: true });
       }),
     ),

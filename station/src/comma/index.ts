@@ -129,7 +129,7 @@ export function makeComma(options: CommaOptions) {
 
   return {
     ...connects,
-    close: async () => { closing = true; stopWorkspaces(); stopScope(); await connects.close(); },
+    close: async () => { closing = true; stopWorkspaces(); stopScope(); await connects.close(); await tasks.written(); },
     tasks,
     /// What the overview says of a Comma connect besides what all connects say.
     shown: (raw: Json): Record<string, unknown> => {

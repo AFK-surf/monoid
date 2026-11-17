@@ -336,6 +336,10 @@ typedef struct Req {
 
 typedef struct View {
   int vid, kind;
+  // the window of the run it is in (linux_app.c: the windows of one run; 0 the first): the one in place as it was
+  // opened, then the one in place as it is placed (a view a window's frames place goes there); -1, its window closed
+  // (hidden, under none, till the app closes it)
+  int wid;
   double x, y, w, h, cx0, cy0, cx1, cy1;
   double r[4];  // its corners (top left, then round it)
   int shown, placed;
@@ -481,10 +485,29 @@ static void scroll_band(View *v) {
   wk.webkit_web_view_evaluate_javascript(v->web, js, -1, NULL, NULL, NULL, NULL, NULL);
 }
 
+// Taken to the window in place where it is in another (a window's frames placing it: the app's tree draws it there now):
+// its box off that window's GtkFixed and onto this one's, over the views there.
+static void moved_here(View *v) {
+  int wid = mb_app_wid();
+  if (v->wid == wid || !v->box || !mb_app_under_of(wid)) return;
+  GtkWidget *was = mb_app_under_of(v->wid);
+  if (was) {
+    g_object_ref(v->box);
+    gtk_fixed_remove(GTK_FIXED(was), GTK_WIDGET(v->box));
+  }
+  vlog("view %d: to window %d from %d", v->vid, wid, v->wid);
+  v->wid = wid;
+  gtk_fixed_put(GTK_FIXED(mb_app_under_of(wid)), GTK_WIDGET(v->box), 0, 0);
+  // (the reference it was held by off any window: GtkFixed holds it now)
+  g_object_unref(v->box);
+}
+
 // Placed as it was last told: its box at the clip (its edges on device pixels), its page at its rect within it,
 // hidden while it is not shown.
 static void apply_place(View *v) {
   if (!v->box) return;
+  // (a window's scale is its own: a view in another than the one in place is placed as it is taken there)
+  if (v->wid != mb_app_wid()) return;
   double s = mb_app_scale();
   if (s <= 0) s = 1;
   double bx = round(v->cx0 * s), by = round(v->cy0 * s);
@@ -508,7 +531,7 @@ static void apply_place(View *v) {
   }
   b->ox = (px0 + v->band_x - bx) / s, b->oy = (py0 + v->band_y - by) / s;
   b->cw = fmin(pw, MAX_PX) / s, b->ch = fmin(ph, MAX_PX) / s;
-  gtk_fixed_move(GTK_FIXED(mb_app_under()), GTK_WIDGET(b), bx / s, by / s);
+  gtk_fixed_move(GTK_FIXED(mb_app_under_of(v->wid)), GTK_WIDGET(b), bx / s, by / s);
   gtk_widget_set_visible(GTK_WIDGET(b), v->shown && bw > 0 && bh > 0);
   gtk_widget_queue_resize(GTK_WIDGET(b));
   // where it is now, in device pixels (scripts/host_contract.sh HOST views compares it with VIEWTOLD)
@@ -831,7 +854,7 @@ static void make_web(View *v) {
   gtk_widget_add_controller(GTK_WIDGET(v->box), events);
   gtk_widget_set_visible(GTK_WIDGET(v->box), FALSE);
   // over the views opened before it
-  gtk_fixed_put(GTK_FIXED(mb_app_under()), GTK_WIDGET(v->box), 0, 0);
+  gtk_fixed_put(GTK_FIXED(mb_app_under_of(v->wid)), GTK_WIDGET(v->box), 0, 0);
   if (v->placed) apply_place(v);
   if (v->kind == 3) {
     char *url = g_strconcat(SITE_ROOT, v->start, NULL);
@@ -853,6 +876,7 @@ int32_t mb_host_view_open(int32_t kind, moonbit_string_t arg) {
   View *v = g_new0(View, 1);
   v->vid = ++next_vid;
   v->kind = kind;
+  v->wid = mb_app_wid();
   v->loading = 1;
   v->scripts = g_ptr_array_new_with_free_func(g_free);
   v->covers = g_array_new(FALSE, FALSE, sizeof(double));
@@ -900,6 +924,7 @@ void mb_host_view_place(int32_t vid, double x, double y, double w, double h, dou
   v->x = x, v->y = y, v->w = w, v->h = h;
   v->cx0 = cx0, v->cy0 = cy0, v->cx1 = cx1, v->cy1 = cy1;
   v->r[0] = r0, v->r[1] = r1, v->r[2] = r2, v->r[3] = r3;
+  moved_here(v);
   apply_place(v);
 }
 
@@ -931,7 +956,9 @@ void mb_host_view_close(int32_t vid) {
     wk.webkit_web_view_stop_loading(v->web);
     g_signal_handlers_disconnect_matched(v->web, G_SIGNAL_MATCH_DATA, 0, 0, NULL, NULL, GINT_TO_POINTER(vid));
   }
-  if (v->box) gtk_fixed_remove(GTK_FIXED(mb_app_under()), GTK_WIDGET(v->box));
+  GtkWidget *under = mb_app_under_of(v->wid);
+  if (v->box && under) gtk_fixed_remove(GTK_FIXED(under), GTK_WIDGET(v->box));
+  else if (v->box) g_object_unref(v->box);
   g_queue_clear_full(&v->said, g_free);
   g_ptr_array_unref(v->scripts);
   g_array_unref(v->covers);
@@ -1044,7 +1071,7 @@ void mb_host_view_tell(int32_t vid, int32_t what, moonbit_string_t text) {
     View **end = &views;
     while (*end) end = &(*end)->next;
     *end = v;
-    if (v->box) gtk_widget_insert_before(GTK_WIDGET(v->box), mb_app_under(), NULL);
+    if (v->box && mb_app_under_of(v->wid)) gtk_widget_insert_before(GTK_WIDGET(v->box), mb_app_under_of(v->wid), NULL);
     // how they are stacked, the lowest first (scripts/host_contract.sh HOST views: as the app told, VIEWSTACKTOLD)
     GString *line = g_string_new("VIEWSTACK");
     for (View *o = views; o; o = o->next) g_string_append_printf(line, " %d", o->vid);
@@ -1225,7 +1252,9 @@ static int covered_at(View *v, double x, double y) {
 int mb_views_pass_through(double x, double y) {
   int at = 0;
   for (View *v = views; v; v = v->next) {
-    if (!v->shown || !v->placed || !v->web || !strcmp(v->touch, "through") || covered_at(v, x, y)) continue;
+    if (v->wid != mb_app_wid() || !v->shown || !v->placed || !v->web || !strcmp(v->touch, "through") ||
+        covered_at(v, x, y))
+      continue;
     double x0 = fmax(v->cx0, v->x), y0 = fmax(v->cy0, v->y);
     double x1 = fmin(v->cx1, v->x + v->w), y1 = fmin(v->cy1, v->y + v->h);
     if (x >= x0 && x < x1 && y >= y0 && y < y1) at = 1;
@@ -1236,7 +1265,22 @@ int mb_views_pass_through(double x, double y) {
 // The window's scale changed: each view placed again, on the new scale's device pixels.
 void mb_views_rescale(void) {
   for (View *v = views; v; v = v->next)
-    if (v->placed) apply_place(v);
+    if (v->placed && v->wid == mb_app_wid()) apply_place(v);
+}
+
+// Window `wid` closing (linux_app.c win_closed), before its widgets go: each view in it taken off its GtkFixed (held
+// here, hidden) till the app closes it (as it lets go of what the window showed) or another window's frames place it.
+void mb_views_forget(int wid) {
+  GtkWidget *under = mb_app_under_of(wid);
+  for (View *v = views; v; v = v->next) {
+    if (v->wid != wid) continue;
+    if (v->box && under) {
+      g_object_ref(v->box);
+      gtk_fixed_remove(GTK_FIXED(under), GTK_WIDGET(v->box));
+      gtk_widget_set_visible(GTK_WIDGET(v->box), FALSE);
+    }
+    v->wid = -1;
+  }
 }
 
 // What the app awaits of the views, told as it came (f: host_native.mbt's set_outside; NULL: dropped).

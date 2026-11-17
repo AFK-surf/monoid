@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, VISIBLE_USAGE_CARDS } from "../src/read/store.ts";
-import { usage, usageHistory } from "../src/read/usage.ts";
+import { makeStore, VISIBLE_USAGE_CARDS } from "./reference/store.ts";
+import { usage, usageHistory } from "./reference/usage.ts";
 import { Store } from "../src/store/store.ts";
 
 function session(store: Store, key: string, ws: string | null) {

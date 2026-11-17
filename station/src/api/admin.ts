@@ -11,6 +11,7 @@ import { USER_TAB_ID } from "../screens/source.ts";
 import type { SimDebug } from "../screens/sim-debug.ts";
 import type { Readers } from "../read/pool.ts";
 import { HttpError } from "../read/views.ts";
+import { toEntry } from "../store/rows.ts";
 import { type Answer, type Request, error, json, queryPairs } from "./request.ts";
 import { routes as chats } from "./routes/chats.ts";
 import { routes as usage } from "./routes/usage.ts";
@@ -20,11 +21,11 @@ import { routes as marks } from "./routes/marks.ts";
 import { routes as updates } from "./routes/updates.ts";
 import { routes as accounts } from "./routes/accounts.ts";
 import { routes as xshare } from "./routes/xshare.ts";
-import { routes as hub, uploadPath } from "./routes/hub.ts";
+import { routes as hub, movedAnswer, uploadPath } from "./routes/hub.ts";
 import { routes as deviceTools } from "./routes/tools.ts";
 import { routes as agentEnv } from "./routes/agent-env.ts";
 import { routes as networkSettings } from "./routes/network.ts";
-import { restarter } from "../ops/restart.ts";
+import { pageRestart } from "../ops/restart.ts";
 import { routes as contextSettings } from "./routes/context.ts";
 import { routes as presetRoutes } from "./routes/presets.ts";
 import { routes as starRoutes } from "./routes/stars.ts";
@@ -47,7 +48,7 @@ import { previewTarget, proxyPreview } from "../jobs/preview.ts";
 import type { Clock } from "effect";
 import { liveClock } from "../ops/fibers.ts";
 import { readOnly } from "../mesh/credential.ts";
-import { elsewhere } from "./seen.ts";
+import { elsewhere, went } from "./seen.ts";
 import { reviewUndecided } from "../sessions/review.ts";
 import { tr } from "../ops/i18n.ts";
 
@@ -71,7 +72,7 @@ export type Handler = (r: Request, args: string[]) => Promise<Answer>;
 export type Route = { method: string; pattern: RegExp; handle: Handler };
 /// What a route has to answer with.
 export type Tools = {
-  /// A read in a reader thread (src/read/ops.ts), answered as JSON; its error as `{error}` with its status.
+  /// A read in a reader thread (test/reference/ops.ts), answered as JSON; its error as `{error}` with its status.
   read(r: Request, op: string, args: unknown): Promise<Answer>;
   /// The machine's state, shared by GET /host and the events.
   host: Host;
@@ -100,6 +101,8 @@ export type AdminDeps = {
   /// (the drive, the device tools, the workspaces); the agents' when not given (tests).
   config?: ConfigFile;
   data?: string;
+  /// Asks the launcher to start its front anew and hand over (ops/launcher.ts), where it can: the page's restart does.
+  restartFront?: () => void;
   cloud?: Cloud;
   /// still.fail Helper (macOS): the drive's protected folders go through it.
   helper?: HelperApp | null;
@@ -116,6 +119,11 @@ export type AdminDeps = {
 const ONCE_KEY = "idempotency-key";
 const ONCE_KEEP_MS = 10 * 60_000;
 type Kept = { status: number; headers: Record<string, string>; body: Buffer };
+/// A message's write kept under its key, as a hand-over carries it to the station its chat went to (`keptSends`):
+/// whose key, the thread there, the key, when it was kept, and its answer (the body in base64).
+export type KeptSend = { viewer: string; thread: number; key: string; at: number; status: number; headers: Record<string, string>; body: string };
+/// A person's message in a chat (routes/hub.ts): the thread it is written to.
+const SEND_PATH = /^\/*threads\/+([^/]+)\/+messages(?:\/.*)?$/;
 /// A key's first write: its answer once there (none: not kept), and when it was kept.
 type Slot = { at: number | null; answer: Promise<Kept | null> };
 
@@ -124,7 +132,7 @@ export class Admin {
   private routes: Route[];
   /// What the routes are given; the station's parts' too (parts.ts).
   private tools: Tools;
-  private readers: Readers;
+  readonly readers: Readers;
 
   readonly host: Host;
 
@@ -143,7 +151,9 @@ export class Admin {
       read: async (r, op, args) => {
         try {
           const signal = r.method === "GET" || (r.method === "POST" && READS.test(r.path)) ? r.signal : undefined;
-          return json(200, await this.readers.read(op, args, r.lang, { background: r.background === true, signal }));
+          const options = { background: r.background === true, signal };
+          // (as bytes, passed on as the reader gave them; a test's stand-in for the readers may give text alone)
+          return json(200, "readBytes" in this.readers ? await this.readers.readBytes(op, args, r.lang, options) : await (this.readers as Readers).read(op, args, r.lang, options));
         } catch (e) {
           return error(e instanceof HttpError ? e.status : 500, (e as Error).message);
         }
@@ -160,7 +170,7 @@ export class Admin {
     };
     this.tools = tools;
     this.routes = [...chats(tools), ...usage(tools), ...sessions(tools), ...events(tools), ...marks(tools), ...hub(tools),
-      ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: () => restarter(data) } : {}) }) : []),
+      ...(config ? networkSettings({ config, changed: () => deps.events?.overviewChanged(), ...(data !== undefined ? { restart: pageRestart(data, deps.restartFront) } : {}) }) : []),
       ...(config ? deviceTools({ config, changed: () => deps.events?.overviewChanged() }) : []),
       ...(cloud && data !== undefined ? workspaces({ cloud, data, changed: () => deps.events?.overviewChanged() }) : []),
       ...(config && data !== undefined
@@ -261,6 +271,96 @@ export class Admin {
     return runtimeCompatible(r, answer);
   }
 
+  /// The messages written under a key to threads `threads` here (each to its id on the station it went to), as a
+  /// hand-over carries them there (replica/handover.ts): asked again there under the same key, they are answered as
+  /// here and not posted again. Only what was written (a 2xx); a refusal here is no write to keep a retry from.
+  keptSends(threads: ReadonlyMap<number, number>): KeptSend[] {
+    const out: KeptSend[] = [];
+    for (const [k, slot] of this.slots) {
+      if (slot.at === null) continue;
+      const [viewer, path, key] = k.split("\0");
+      const thread = path === undefined ? undefined : SEND_PATH.exec(path)?.[1];
+      const there = thread === undefined ? undefined : threads.get(Number(decodeURIComponent(thread)));
+      if (there === undefined || key === undefined) continue;
+      const kept = this.#settled.get(slot);
+      if (kept === undefined || kept.status < 200 || kept.status >= 300) continue;
+      out.push({ viewer: viewer!, thread: there, key, at: slot.at, status: kept.status, headers: kept.headers, body: kept.body.toString("base64") });
+    }
+    return out;
+  }
+
+  /// What another station kept of the messages of a chat it handed here (`keptSends` there), kept here as if written
+  /// here, for the rest of their time: over a refusal kept meanwhile (the chat was not shown here yet), never over a
+  /// write of this station's own.
+  keepSends(sends: readonly KeptSend[]): void {
+    for (const s of sends) {
+      const k = `${s.viewer}\0/threads/${s.thread}/messages\0${s.key}`;
+      const had = this.slots.get(k);
+      if (had !== undefined && (had.at === null || ((this.#settled.get(had)?.status ?? 0) >= 200 && (this.#settled.get(had)?.status ?? 0) < 300))) continue;
+      const kept: Kept = { status: s.status, headers: s.headers, body: Buffer.from(s.body, "base64") };
+      const slot: Slot = { at: s.at, answer: Promise.resolve(kept) };
+      this.#settled.set(slot, kept);
+      this.slots.set(k, slot);
+    }
+  }
+  /// Each kept slot's answer, as it settled (a slot's promise cannot be looked into).
+  readonly #settled = new WeakMap<Slot, Kept>();
+
+  /// A person's message the MoonBit program writes (mesh/served.ts `say`): as `once` keeps a keyed write's answer,
+  /// asked before it is written (`kept`: the first one's answer, given again), with the timestamp it is written at
+  /// (the hub's, one clock for every message) and what to settle the key with once answered; refused as POST
+  /// /threads/:id/messages refuses (routes/hub.ts: the station starting, or moving away from the asker's workspace).
+  async claimSay(viewer: Request["viewer"], path: string, key: string | null, lang: Request["lang"]): Promise<{ kept: Kept } | { refused: Kept } | { ts: string; settle: (answer: Kept | null) => void }> {
+    const refused = (status: number, message: string) => ({ refused: error(status, message) as Kept });
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return refused(503, "station starting");
+    if (viewer.workspace !== null && agents.hub.quietIn(viewer.workspace)) return refused(503, tr(lang, "station.retire.moving"));
+    // (a chat handed to another station: answered where it went, as POST /threads/:id/messages answers it, never written here)
+    const thread = SEND_PATH.exec(path)?.[1];
+    const moved = thread === undefined || !/^\d+$/.test(decodeURIComponent(thread)) ? null : movedAnswer(store, Number(decodeURIComponent(thread)), lang);
+    if (moved !== null) return { refused: moved as Kept };
+    if (key === null || key === "" || key.length > 200) return { ts: agents.hub.nextTs(), settle: () => {} };
+    const slotKey = `${viewer.email}\0${path}\0${key}`;
+    const now = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+    for (const [k, slot] of this.slots) if (slot.at !== null && now - slot.at >= ONCE_KEEP_MS) this.slots.delete(k);
+    for (;;) {
+      const slot = this.slots.get(slotKey);
+      if (slot === undefined) break;
+      const kept = await slot.answer;
+      if (kept !== null) return { kept: { status: kept.status, headers: { ...kept.headers }, body: kept.body } };
+      if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+    }
+    let settle: (kept: Kept | null) => void = () => {};
+    const slot: Slot = { at: null, answer: new Promise<Kept | null>((resolve) => (settle = resolve)) };
+    this.slots.set(slotKey, slot);
+    return {
+      ts: agents.hub.nextTs(),
+      settle: (answer) => {
+        if (answer !== null && answer.status < 500) {
+          slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+          const kept: Kept = { status: answer.status, headers: answer.headers, body: answer.body };
+          // (as `once` keeps its answers: a hand-over carries it with its chat, `keptSends`)
+          this.#settled.set(slot, kept);
+          settle(kept);
+        } else {
+          settle(null);
+          if (this.slots.get(slotKey) === slot) this.slots.delete(slotKey);
+        }
+      },
+    };
+  }
+
+  /// A person's message the MoonBit program wrote (`row`, as the entries table has it): told the store's followers
+  /// as the store's own write is told, and delivered to the chat's sessions as `say` delivers it (sessions/lifecycle.ts).
+  saidElsewhere(thread: number, n: number, text: string, row: Record<string, unknown>) {
+    const agents = typeof this.deps.agents === "function" ? this.deps.agents() : this.deps.agents;
+    const store = this.deps.store ?? agents?.hub.store;
+    if (store === undefined || agents === undefined) return;
+    store.told([{ type: "thread", id: thread, entries: [toEntry(row)] }]);
+    agents.hub.deliver(thread, n, store.threadSessions(thread).map((m: { session: string }) => m.session), text);
+  }
+
   /// `write`'s answer, or the answer the first write under `key` had: while the first is under way the
   /// others wait for it; a 5xx is not kept (the write may not have happened: asked again, it is tried again).
   private async once(key: string, write: () => Promise<Answer>): Promise<Answer> {
@@ -291,6 +391,7 @@ export class Admin {
     }
     if (kept.status < 500) {
       slot.at = (this.deps.clock ?? liveClock).currentTimeMillisUnsafe();
+      this.#settled.set(slot, kept);
       settle(kept);
     } else {
       settle(null);
@@ -306,7 +407,11 @@ export class Admin {
     if (r.method === "POST" && /^\/*batch$/.test(r.path)) return this.batch(r);
     // A session, chat or job of another workspace than the viewer's is none for them (api/seen.ts).
     const hidden = this.deps.store ? elsewhere(this.deps.store, r.path, r.viewer) : null;
-    if (hidden !== null) return error(404, hidden);
+    if (hidden !== null) {
+      // (a write to a chat handed to another station: answered where it went, as a message to it is; a read stays not there)
+      const there = r.method === "GET" || r.method === "HEAD" ? null : went(this.deps.store!, r.path, r.viewer);
+      return there !== null ? json(409, JSON.stringify({ error: tr(r.lang, "station.move.movedThere"), moved: there })) : error(404, hidden);
+    }
     // A web service on this machine, through its preview's path: any method, its answer as it comes.
     const preview = previewTarget(r.path);
     if (preview !== null) {

@@ -136,12 +136,15 @@ fn outline_tester(
   asks? : Bool = true,
   held? : OutlineHeld = { on: false, answers: [] },
   heard? : Array[(String, Json)] = [],
+  swr? : Bool = false,
 ) -> @ui.Tester {
   new_run()
   let base = fixture(mode)
   let src : Source = {
     ..base,
     asks_outline: fn() { asks },
+    // (`swr`: as an app since MBUI_SWR_VIEWS, an outline opened again showing the rows it had at once)
+    swr_views: fn() { swr },
     call: fn(name, params, done) {
       calls.push({ name, params, bytes: None, done })
       // (`held`: the outline's rows answered only as the test lets them go)

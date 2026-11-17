@@ -1,11 +1,14 @@
 // A simulator's case as Xcode has it (screens/sim-chrome.ts): how it is read and laid out, and how its pictures are turned. Drawing the PDFs is `sips`'s,
 // a Mac's: station/side's and the app's.
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readdirSync, writeFileSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { chromeOf, decode, displaysOf, encode, pageSize, turned } from "../src/screens/sim-chrome.ts";
+import { deflateSync } from "node:zlib";
+import { type Drawing, chromeOf, decode, displaysOf, encode, pageSize, picturesOf, turned } from "../src/screens/sim-chrome.ts";
+import { syncCalls } from "./main-thread-sync.ts";
 
 test("a PDF's page, on its side as /Rotate says", () => {
   assert.deepEqual(pageSize(Buffer.from("<< /MediaBox [0 0 63 16] >>")), { width: 63, height: 16 });
@@ -52,7 +55,9 @@ test("a case in pieces: the panel inside its sizing, each button from its side, 
       ],
     }),
   );
-  const c = await chromeOf({ chrome: "com.apple.dt.devicekit.chrome.phone9", mask: null, width: 750, height: 1334, scale: 2 }, root, null, root);
+  const read: Awaited<ReturnType<typeof chromeOf>>[] = [];
+  assert.deepEqual(await syncCalls(async () => void read.push(await chromeOf({ chrome: "com.apple.dt.devicekit.chrome.phone9", mask: null, width: 750, height: 1334, scale: 2 }, root, null, root))), [], "read with nothing of the main thread's held");
+  const c = read[0];
   assert.ok(c);
   assert.deepEqual(c.frame, { width: 375 + 40 + 18, height: 667 + 70 });
   assert.deepEqual(c.screen, { x: 29, y: 30, width: 375, height: 667 });
@@ -83,6 +88,78 @@ test("pictures turned clockwise, and through a PNG as they were", async () => {
   assert.deepEqual([...turned(p, 2).data], [0, 255, 0, 128, 255, 0, 0, 255]);
   assert.deepEqual([...turned(p, 3).data], [0, 255, 0, 128, 255, 0, 0, 255]);
   assert.equal(turned(p, 0), p);
-  const back = decode(await encode(p));
+  const back = await decode(await encode(p));
   assert.deepEqual([back.width, back.height, ...back.data], [2, 1, ...p.data]);
+});
+
+test("a case's pictures for two turns at once: each page drawn once, nothing of the main thread's held, no file left half written", async () => {
+  const root = mkdtempSync(join(tmpdir(), "sim-chrome-"));
+  const dir = join(root, "phone7.devicechrome/Contents/Resources");
+  const bundle = join(root, "Phone 7.simdevicetype/Contents/Resources");
+  mkdirSync(dir, { recursive: true });
+  mkdirSync(bundle, { recursive: true });
+  const pdf = (at: string, name: string, w: number, h: number, more = "") => writeFileSync(join(at, `${name}.pdf`), `<< /MediaBox [0 0 ${w} ${h}] ${more}>>`);
+  pdf(dir, "Body", 100, 200);
+  pdf(dir, "Vol", 6, 20);
+  pdf(dir, "Vol Dn", 6, 20);
+  // (drawn on its side, as an iPhone Duo's inner panel's buttons are)
+  pdf(dir, "Power", 30, 6, "/Rotate 90 ");
+  pdf(bundle, "Sensor", 20, 4);
+  // The panel's shape, compressed as Apple's masks are: a rounded rectangle.
+  writeFileSync(
+    join(bundle, "Mask.pdf"),
+    Buffer.concat([
+      Buffer.from("%PDF-1.3\n<< /Length 1 /Filter /FlateDecode >>\nstream\n"),
+      deflateSync("q Q q 10 120 m 50 120 l 60 120 60 110 60 110 c 60 10 l 60 0 50 0 50 0 c 10 0 l 0 0 0 10 0 10 c 0 110 l 0 120 10 120 10 120 c h f"),
+      Buffer.from("\nendstream\n<< /Type /Pages /MediaBox [0 0 60 120] >>\n"),
+    ]),
+  );
+  writeFileSync(
+    join(dir, "chrome.json"),
+    JSON.stringify({
+      images: { composite: "Body", devicePadding: { left: 0, right: 0, top: 0, bottom: 0 } },
+      inputs: [
+        { name: "volume-up", image: "Vol", imageDown: "Vol Dn", imageDownDrawMode: "compositeUnder", anchor: "left", align: "leading", offsets: { normal: { x: 2, y: 40 } } },
+        { name: "power", image: "Power", anchor: "right", align: "leading", offsets: { normal: { x: -2, y: 50 } } },
+      ],
+    }),
+  );
+  // What sips would draw: the page at the size asked, the screen's opening the dark of its middle.
+  const drawn = new Map<string, number>();
+  const how: Drawing = {
+    cache: join(root, "cache"),
+    draw: async (from, out, longest) => {
+      const page = pageSize(await readFile(from))!;
+      const k = longest === null ? 1 : longest / Math.max(page.width, page.height);
+      const [width, height] = [Math.round(page.width * k), Math.round(page.height * k)];
+      const data = new Uint8Array(width * height * 4);
+      for (let i = 0; i < width * height; i++) data.set([10, 10, 10, 255], i * 4);
+      await writeFile(out, await encode({ width, height, data }));
+      const kept = out.replace(/\.\d+\.\d+\.png$/, "");
+      drawn.set(kept, (drawn.get(kept) ?? 0) + 1);
+    },
+  };
+  let both: Awaited<ReturnType<typeof picturesOf>>[] = [];
+  const calls = await syncCalls(async () => {
+    const c = await chromeOf({ chrome: "com.apple.dt.devicekit.chrome.phone7", mask: "Mask", width: 180, height: 360, scale: 3 }, bundle, "Sensor", root, how);
+    assert.ok(c);
+    assert.ok(c.corners.length === 4 && c.corners.every((r) => r > 0 && r < 0.5), `${c.corners}`);
+    both = await Promise.all([picturesOf(c, 0, how), picturesOf(c, 1, how)]);
+  });
+  assert.deepEqual(calls, [], "made with nothing of the main thread's held");
+  assert.ok(drawn.size > 0);
+  for (const [png, n] of drawn) assert.equal(n, 1, `${png} drawn ${n} times`);
+  const [upright, turnedOnce] = both as [Awaited<ReturnType<typeof picturesOf>>, Awaited<ReturnType<typeof picturesOf>>];
+  const sized = async (b64: string) => {
+    const p = await decode(Buffer.from(b64, "base64"));
+    return [p.width, p.height];
+  };
+  assert.deepEqual(await sized(upright.body), [300, 600]);
+  assert.deepEqual(await sized(turnedOnce.body), [600, 300]);
+  assert.deepEqual(await sized(upright.buttons.power!.up), [18, 90]);
+  assert.deepEqual(await sized(turnedOnce.buttons.power!.up), [90, 18]);
+  assert.ok(upright.buttons["volume-up"]!.down && turnedOnce.buttons["volume-up"]!.down);
+  const left = readdirSync(how.cache);
+  assert.equal(left.filter((f) => f.endsWith(".json")).length, 2, "each turn's pictures kept");
+  assert.deepEqual(left.filter((f) => f.includes(`.${process.pid}.`)), [], "no temporary file left");
 });

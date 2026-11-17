@@ -1,4 +1,4 @@
-// The drive's player (play.mbt) over the fixture's made-up films (play_fixture.mbt): the page, which of the folder's
+// The drive's player (play.mbt; its page sfpages' play_page_node) over the fixture's made-up films (play_fixture.mbt): the page, which of the folder's
 // it is, the subtitle read beside it, where it was left kept as the page goes; a video's row pushing it.
 
 ///|
@@ -32,12 +32,18 @@ test "turned sideways, the film over the whole window: its bars clear of a cutou
   t.resize(844.0, 390.0)
   t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":0,\"left\":47,\"right\":0}}")
   t.frame()
-  // the film from the screen's one edge to the other, under the cutout too (its black there, not the page's paper)
+  // the film from the screen's one edge to the other, under the cutout too (its black there, not the page's paper:
+  // the player's own ground, its picture a node of its own placed where it fills the window's height)
   let placed = t.views().filter(fn(l) { l.has_prefix("place ") })
   match placed.last() {
-    Some(l) => assert_true(l.contains(" in 0 0 844 390"), msg=l)
+    Some(l) => assert_true(l.contains(" 0 ") && l.has_suffix(" 390"), msg=l)
     None => fail("the film not placed")
   }
+  let black = @sf.media_ink(true).stage
+  assert_true(
+    t.drawn_rects().iter().any(fn(r) { r.0 == 0.0 && r.1 == 0.0 && r.2 == 844.0 && r.3 == 390.0 && r.4 == black }),
+    msg="its black under the whole window",
+  )
   // the name in the bar at the top past the cutout and the bar's own 8 in
   match t.rect_of("第02集.mp4") {
     Some((x, _, _, _)) => assert_true(x >= 47.0 + 8.0)

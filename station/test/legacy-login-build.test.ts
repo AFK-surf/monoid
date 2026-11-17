@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installLegacyLoginCards, legacyLoginCardsStep } from "../src/store/legacy-login-cards.ts";
+import { installLegacyLoginCards, legacyLoginCardsStep } from "./reference/backfill/legacy-login-cards.ts";
 import { LOGIN_CARD_TOKENS } from "./login-card-token-query.ts";
 
 const schema = `CREATE TABLE entries(thread INTEGER NOT NULL,n INTEGER NOT NULL,ts TEXT,kind TEXT NOT NULL,

@@ -1,0 +1,17 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/posts"
+
+import {
+  "station/sql",
+}
+
+// Values
+pub fn step(@sql.Db, Int64, Int64, limit? : Int32) -> Bool raise
+
+// Errors
+
+// Types and methods
+
+// Type aliases
+
+// Traits

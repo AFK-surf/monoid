@@ -2,10 +2,12 @@
 // page made once: page_pane.mbt pane_made), the way there 4: its column as wide as the panel has slid in, a way set off
 // at the change that opens or closes it (side_slides) and read where it is drawn, as the block's fold is (pane_view's
 // fold_goes); over a page too narrow for both, over the page from its right edge, a shadow at its side; its edge the
-// tree's (@sf.edge_node). In it an agent's history in front: its top an old view as tall as it is (the bar, the head,
-// its details: history_top), its steps nodes (sfpages' history_steps_node); a file in the viewer, the panel's bar so
-// too and the file's tools and stage under it (sfbase's viewer_tab_node); any other tab the panel's old view
-// (side_panel), the page's island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
+// tree's (@sf.edge_node). Its bar the tree's over whatever tab is in front (panel_bar_node.mbt), under it: an agent's
+// history, its head and steps nodes (history_head_node, sfpages' history_steps_node); a file in the viewer, its tools
+// and stage (sfbase's viewer_tab_node); 任务, agent 往来 and 图片、文件和链接 what each shows (jobs_tab_node,
+// letters_tab_node, sfpages' things_node); 文件 and a station's 文件 the tab's nodes (drive_tab_node.mbt), a station's
+// page sfpages' station_node; any other tab (a station's screen) the panel's old view of what it shows (side_panel),
+// the page's island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
 
 ///|
 /// Whether `front` (one the panel shows: side_shows) is one of the chat's agents' histories: what the panel's old view
@@ -21,9 +23,45 @@ fn side_history_tab(front : String) -> Bool {
 
 ///|
 /// Whether `front` is one the window's tree shows under the panel's bar rather than the panel's old view: an agent's
-/// history, a file in the viewer.
+/// history, a file in the viewer, a Farview tab, a station's 共享调试, 文件 and a station's 文件 (side_files_tab), a
+/// station's page (side_station_tab), 任务, agent 往来, 图片、文件和链接 (side_own_tab).
 fn side_node_tab(front : String) -> Bool {
-  side_history_tab(front) || @sfbase.view_tab_file(front) is Some(_)
+  side_history_tab(front) ||
+  @sfbase.view_tab_file(front) is Some(_) ||
+  tab_service(front) is Some(_) ||
+  tab_file(front) is Some(_) ||
+  side_farview_tab(front) is Some(_) ||
+  side_screen_tab(front) is Some(_) ||
+  side_adb_tab(front) is Some(_) ||
+  side_files_tab(front) is Some(_) ||
+  side_station_tab(front) is Some(_) ||
+  side_own_tab(front)
+}
+
+///|
+/// Whether `front` is one of the chat's own tabs made as nodes (side_own_node): 任务, agent 往来, 图片、文件和链接.
+fn side_own_tab(front : String) -> Bool {
+  front is ("jobs" | "letters" | "things")
+}
+
+///|
+/// The station and the screen of `front` where it is a Farview tab, which this app draws itself (sfpages'
+/// farview_tab_node).
+fn side_farview_tab(front : String) -> (String, String)? {
+  match station_tab(front) {
+    Some(("screen", station, screen)) if @sfpages.farview_native_screen(screen) => Some((station, screen))
+    _ => None
+  }
+}
+
+///|
+/// The station and the screen of `front` where it is a station's screen (side_screen_node: as its page shows it, or a
+/// Farview tab drawn natively).
+fn side_screen_tab(front : String) -> (String, String)? {
+  match station_tab(front) {
+    Some(("screen", station, screen)) => Some((station, screen))
+    _ => None
+  }
 }
 
 ///|
@@ -68,7 +106,7 @@ fn side_way(key : String) -> @motion.Way {
 /// by a change asked here (side_changing's `asked`), slid in or out from where it is at that change's moment, as long as
 /// it is wide; else there at once (a page opened with its tabs as they were left). Slid out, what it showed let go of
 /// at its end.
-fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit {
+fn side_slides(n : @view.View, src : Source, key : String, chat : String, open : Bool) -> Unit {
   let way = side_way(key)
   let target = if open { @signals.untracked(fn() { side_whole(src, n) }) } else { 0.0 }
   let was = @signals.untracked(fn() { panel_own.was.get(key) })
@@ -76,6 +114,8 @@ fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit 
     Some(was) if was != open && panel_own.asked.untracked() == key => {
       panel_own.asked.set("")
       way.go(target, @motion.moved(), at=n.cause_at())
+      // (the chat's rows laid out anew at where it goes, on their list's way from this moment: side_narrower)
+      @sfbase.column_sets_off(chat)
       if !open {
         let ends = way.end()
         n.at_moment(ends, fn() { if way.end() == ends { side_left(key) } }) |> ignore
@@ -94,8 +134,21 @@ fn side_slides(n : @view.View, src : Source, key : String, open : Bool) -> Unit 
 }
 
 ///|
-/// How wide page `key`'s panel's column is as node `n` is drawn: where its way has it while it goes, else all of it
-/// open (`open`), none closed.
+/// Whether page `key`'s panel's column is to slide to `open` from where it is and has not set off yet: a change asked
+/// here (side_changing's `asked`) come to what the page reads, side_slides not yet told it. What reads where the column
+/// is (side_col, side_narrower) is told it in the same pass as the change, before or after side_slides is (whichever
+/// way the tree takes them): so it reads the column where its way sets off from, never where it is going for the frame
+/// between (all of the page's width at once as it closes, the column at none, then back to the way's).
+fn side_setting_off(key : String, open : Bool) -> Bool {
+  match panel_own.was.get(key) {
+    Some(was) => was != open && panel_own.asked.get() == key
+    None => false
+  }
+}
+
+///|
+/// How wide page `key`'s panel's column is as node `n` is drawn: where its way has it while it goes, where it sets off
+/// from as it is about to (side_setting_off), else all of it open (`open`), none closed.
 fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
   match panel_own.goes.get(key) {
     Some(way) => {
@@ -103,6 +156,9 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
       let t = n.drawn_while(fn(at) { way.goes_at(at) })
       if t != @double.infinity && way.goes_at(t) {
         return way.value_at(t)
+      }
+      if side_setting_off(key, open) {
+        return way.target()
       }
     }
     None => ()
@@ -115,10 +171,13 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 }
 
 ///|
-/// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out, and how far across it is moved
-/// (chat_page_made's `narrower`): while its panel's column slides, as at the narrower of where the page was as it set
-/// off and where it goes (the panel's wider end), moved across as laid_across has it; at rest, and over a page too
-/// narrow for both (the page as wide as it is), none, laid out as wide as it is.
+/// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out (less than none: wider), and
+/// how far across it is moved (chat_page_made's `narrower`): while its panel's column slides, as where it goes, from the
+/// moment it sets off, moved across as laid_toward has it (the old list's laid_w and list_shift: laid out anew only as
+/// the way sets off, its rows' heights going on the list's way from there; the rows' words where they stood as it set
+/// off, going with the page to where they stand once it is there; laid out at the narrower end all the way it was
+/// narrow at once and wide at once as the panel was gone, the user, 2026-11-09: 「打开关闭右侧面板，中间的变化不对」);
+/// at rest, and over a page too narrow for both (the page as wide as it is), none, laid out as wide as it is.
 fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
   let pane = pane_w_at(src, n)
   guard app.nav.page_of(serial) is Some((Chat(r), _)) else { return { by: 0.0, across: 0.0, laid: pane } }
@@ -130,10 +189,30 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
   }
   if t == @double.infinity || !way.goes_at(t) {
     let open = side_now(src, r).0.length() > 0
-    return { by: 0.0, across: 0.0, laid: pane - (if open { side_whole(src, n) } else { 0.0 }) }
+    let to = if open { side_whole(src, n) } else { 0.0 }
+    // (about to set off: as it is still, where the column is (side_setting_off), laid out anew only as the way sets off,
+    // its rows told then: side_slides)
+    if side_setting_off(chat_key(r), open) {
+      return { by: 0.0, across: 0.0, laid: pane - way.target() }
+    }
+    return { by: 0.0, across: 0.0, laid: pane - to }
   }
-  let ends = (way.value_at(way.starts_at()), way.target())
-  laid_across(pane - way.value_at(t), pane - dmax(ends.0, ends.1), pane - dmin(ends.0, ends.1))
+  laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
+}
+
+///|
+/// A chat's column drawn `now` wide on its way from `from` to `to`: laid out at `to` all the way (how much narrower
+/// than it is drawn: less than none where it is drawn narrower, its page cutting it), moved across by as much further in
+/// as its rows' words stood at `from` than they stand at `to`, less as much of it as the way has come
+/// (chat_page_made's `narrower`): so they go with the page from where they stood as it set off to where they stand, never
+/// stepping where they are laid out anew.
+fn laid_toward(now : Double, from : Double, to : Double) -> @sfbase.ColumnLaid {
+  let gone = if (from - to).abs() > 0.5 { dmax(0.0, dmin(1.0, (from - now) / (from - to))) } else { 1.0 }
+  {
+    by: now - to,
+    across: (@sfpages.chat_row_side(from) - @sfpages.chat_row_side(to)) * (1.0 - gone),
+    laid: to,
+  }
 }
 
 ///|
@@ -165,7 +244,7 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       return
     }
     let open = fn() { side_now(src, r).0.length() > 0 }
-    col.reacts(open, fn(open) { side_slides(col, src, key, open) })
+    col.reacts(open, fn(open) { side_slides(col, src, key, r.station + "\u{1}" + r.session, open) })
     // (its page kept under another, shown no more: what a file's tab plays here paused, as when its tab is let go)
     col.reacts(fn() { app.nav.shows(serial) }, fn(shows) {
       if !shows {
@@ -199,17 +278,22 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
       let island = fn(n : @view.View, build : (@ui.Ctx) -> Unit, natural : Bool) {
         app.nav.page_island(n, serial, fn(c, _page) { build(c) }, key=tape_island_key, natural~)
       }
+      // its bar over whatever tab is in front, the tree's; none where what is in front has its own (side_own_bar_node)
+      p.show(at_once=true, fn() {
+        let (tabs, front) = side_shown(src, r)
+        !side_own_bar_node(p, tabs, front, false)
+      }, fn(b) { side_bar_node(b, src, r, fn() { side_shown(src, r) }, false, tips) })
       p.pick(at_once=true, fn() { history_in_front(src, r) }, fn(q, agent) {
-        q.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        q.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
         if agent == "" {
-          // (every other tab: the panel's old view, all of it)
+          // (every other tab: the panel's old view of what it shows)
           island(
             q,
             fn(c) {
-              match (@sfbase.workspace_in_view(src).0, view_of_chat(src, r).0) {
-                (Some(w), Some(view)) => {
+              match (@sfbase.workspace_in_view(src).0, @sfbase.chat_view_now(src, r)) {
+                (Some(w), Some(_)) => {
                   let (tabs, front) = side_shown(src, r)
-                  side_panel(c, src, w, r, view, tabs, front)
+                  side_panel(c, src, w, r, tabs, front)
                 }
                 _ => ()
               }
@@ -220,9 +304,23 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           .min_height(Is(Some(0.0)))
           |> ignore
         } else if @sfbase.view_tab_file(agent) is Some(_) {
-          side_view_node(q, src, r, agent, island)
+          side_view_node(q, src, r, agent)
+        } else if tab_service(agent) is Some(job) {
+          service_tab_node(q, src, r, job, None, None, tips)
+        } else if tab_file(agent) is Some((session, path, name)) {
+          file_tab_node(q, src, r, session, path, name, tips)
+        } else if side_screen_tab(agent) is Some(_) {
+          side_screen_node(q, src, r, agent, fn() { side_shown(src, r).0 }, false)
+        } else if side_adb_tab(agent) is Some(station) {
+          side_adb_node(q, src, station)
+        } else if side_files_tab(agent) is Some(station) {
+          side_files_node(q, src, r, station, fn() { @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under) }, tips)
+        } else if side_station_tab(agent) is Some(station) {
+          side_station_node(q, src, station, tips, fn() { side_whole(src, q) }, false)
+        } else if side_own_tab(agent) {
+          side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
         } else {
-          side_history_node(q, src, r, agent, tips, island)
+          side_history_node(q, src, r, agent, tips)
         }
       })
     })
@@ -243,29 +341,9 @@ fn history_in_front(src : Source, r : ChatRef) -> String {
 }
 
 ///|
-/// Agent `agent`'s history in chat `r`'s panel, in node `q` (as large as the panel): the panel's bar an old view as tall
-/// as it is (side_bar_row, as `island` hosts one, every tab's), then its head (history_head_node) and its steps the
-/// rest (sfpages' history_steps_node), nodes.
-fn side_history_node(
-  q : @view.View,
-  src : Source,
-  r : ChatRef,
-  agent : String,
-  tips : @sf.TipLayer,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
-) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, agent) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
+/// Agent `agent`'s history in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): its
+/// head (history_head_node) and its steps the rest (sfpages' history_steps_node), nodes.
+fn side_history_node(q : @view.View, src : Source, r : ChatRef, agent : String, tips : @sf.TipLayer) -> Unit {
   history_head_node(q, src, r, agent, tips)
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -275,37 +353,24 @@ fn side_history_node(
 }
 
 ///|
-/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel): the panel's bar as an agent's history has it
-/// (side_bar_row, as `island` hosts one), then the file's tools and its stage the rest (sfbase's viewer_tab_node, what
-/// it hosts of the old view in `island` too); its picture over the whole window (its 全屏) stepping through the chat's.
+/// File tab `tab` in chat `r`'s panel, in node `q` (as large as the panel under its bar, side_bar_node): the file's
+/// tools and its stage (sfbase's viewer_tab_node); its picture over the whole
+/// window (its 全屏) stepping through the chat's.
 fn side_view_node(
   q : @view.View,
   src : Source,
   r : ChatRef,
   tab : String,
-  island : (@view.View, (@ui.Ctx) -> Unit, Bool) -> @view.View,
 ) -> Unit {
-  island(
-    q,
-    fn(c) {
-      match view_of_chat(src, r).0 {
-        Some(view) => c.box(style=history_top_box, fn() { side_bar_row(c, src, r, view, side_shown(src, r).0, tab) }) |> ignore
-        None => ()
-      }
-    },
-    true,
-  )
-  .shrink(Is(0.0))
-  |> ignore
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, island, fn() {
-      let thread = match view_of_chat(src, r).0 {
+    @sfbase.viewer_tab_node(s, src, tabs_key(r), tab, fn() {
+      let thread = match @sfbase.chat_view_now(src, r) {
         Some(v) => v.thread
         None => None
       }
       @sfbase.InChat(thread, r.session)
-    })
+    }, fn() { side_whole(src, s) })
   })
   |> ignore
 }
@@ -339,6 +404,208 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
     g.over(Is(true)) |> ignore
     @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() })
     |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The station of `front` where it is a station's 共享调试 tab (the settings' page of it, focused on that station).
+fn side_adb_tab(front : String) -> String? {
+  match station_tab(front) {
+    Some(("adb", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// A station's 共享调试 tab in a chat's panel, in node `q` (as large as the panel under its bar): the settings' page of
+/// it (@settings.adb_node), its step for `station` first, in the workspace in view, its head with no back (the tab is
+/// the way to close it).
+fn side_adb_node(q : @view.View, src : Source, station : String) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+      guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      let core = settings_core(src, w)
+      @settings.adb_node(p, core, station, on_back=fn() {  }, frame=fn() { { back: None, top: 0.0, foot: 0.0, named: false } })
+    })
+  })
+  |> ignore
+}
+
+///|
+/// A Farview tab, `station`'s `screen`, in a chat's panel, in node `q` (as large as the panel under its bar,
+/// side_bar_node): the tab drawn here (sfpages' farview_tab_node).
+fn side_farview_node(q : @view.View, src : Source, station : String, screen : String) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    @sfpages.farview_tab_node(s, src, station, screen)
+  })
+  |> ignore
+}
+
+///|
+/// Station screen tab `tab` in chat `r`'s panel (`tabs` the panel's as they are now; `on_tape`: a panel of its own on the
+/// tape), in node `q` (as large as the panel under its bar): a Farview tab drawn here while 实验性功能's Farview 原生标签页渲染
+/// is on (side_farview_node), else its page (sfpages' screen_node) beside its chat, its × the tab's, alone in the panel
+/// upright the panel's bar its own (side_own_bar_node), its view let go of as the tab goes (closed, another in front,
+/// its chat left) unless it is the page on top over all of it; made again as that is turned on or off.
+fn side_screen_node(q : @view.View, src : Source, r : ChatRef, tab : String, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+  guard station_tab_page(r, tab) is Some(Screen(at)) else { return }
+  q.pick(at_once=true, fn() { @sfpages.farview_native_screen(at.screen) }, fn(n, native) {
+    n.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    if native {
+      side_farview_node(n, src, at.station, at.screen)
+    } else {
+      side_screen_page_node(n, src, r, tab, at, tabs, on_tape)
+    }
+  })
+}
+
+///|
+/// Station screen tab `tab`'s page (`at`) in node `q` (side_screen_node's).
+fn side_screen_page_node(q : @view.View, src : Source, r : ChatRef, tab : String, at : @sfbase.ScreenAt, tabs : () -> Array[String], on_tape : Bool) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.owns(fn() {
+      match app.nav.top() {
+        Screen(top) if top.station == at.station && top.screen == at.screen => ()
+        _ => @sfpages.screen_left(src, at.station, at.screen)
+      }
+    })
+    |> ignore
+    s.pick(at_once=true, fn() {
+      let (ww, wh) = s.window()
+      screen_tab_alone(tabs()) && !column_short.get() && ww <= wh
+    }, fn(p, alone) {
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      @sfpages.screen_node(
+        p,
+        src,
+        at,
+        fn() { { back: None, top: 0.0, foot: 0.0, named: false } },
+        on_close=fn() { side_change(src, r, "close", Some(tab)) },
+        in_tab=true,
+        own_bar=if alone { Some(side_bar_look_node(on_tape)) } else { None },
+      )
+    })
+  })
+  |> ignore
+}
+
+///|
+/// One of chat `r`'s own tabs (`tab`: side_own_tab) in its panel, in node `q` (as large as the panel under its bar,
+/// side_bar_node): what the tab shows, nodes: 任务 (a service pressed opening its own tab, in front), agent 往来 and
+/// 图片、文件和链接 once the chat's thread is known (在对话里看 going to the message in the chat). A card across its foot is laid as `foot_card` says (in the panel's corners).
+fn side_own_node(
+  q : @view.View,
+  src : Source,
+  r : ChatRef,
+  tab : String,
+  tips : @sf.TipLayer,
+  foot_card : () -> @ui.Style,
+) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+    if tab == "jobs" {
+      jobs_tab_node(s, src, r, tips, foot_card, fn(job) { side_tab_open(src, r, "service:" + job) })
+      // (what its press asked, taken over by what it read as it was made: side_front_pressed)
+      @sfbase.shown_read(side_tab_shown_at(r, tab))
+      return
+    }
+    // (once its view, and so its thread, is read: what both show is the thread's)
+    // (its head alone: sfbase's chat_view_now)
+    s.pick(fn() { @sfbase.chat_view_now(src, r).bind(fn(v) { v.thread }) }, fn(t, thread) {
+      t.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      guard thread is Some(th) else { return }
+      if tab == "letters" {
+        let first = @signals.untracked(fn() { @sfbase.chat_view_now(src, r) })
+        guard first is Some(first) else { return }
+        letters_tab_node(t, src, r, th, fn() { @sfbase.chat_view_now(src, r).unwrap_or(first) }, tips)
+      } else {
+        @sfpages.things_node(t, src, r, th, fn(seq) { @sfbase.go_to(r, seq) }, beside=true)
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// Where `front` is 文件 (the workspace's stations', "": the chat's station first) or a station's 文件 tab (that
+/// station's alone), which station: the tab made as nodes (drive_tab_node.mbt).
+fn side_files_tab(front : String) -> String? {
+  if front == "files" {
+    return Some("")
+  }
+  match station_tab(front) {
+    Some(("drive", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// 文件 (`station` "") or station `station`'s 文件 in chat `r`'s panel, in node `q` (as large as the panel under its
+/// bar): the tab made as nodes (files_tab_node) in the workspace in view, what it adds going into the chat's draft, a
+/// station's kept where it is by its own scope (station_files_scope); 添加 at its foot as `foot` lays it; what is said
+/// of what the pointer rests on in `tips`.
+fn side_files_node(q : @view.View, src : Source, r : ChatRef, station : String, foot : () -> @ui.Style, tips : @sf.TipLayer) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, id) {
+      guard id is Some(ws) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if station == "" {
+        files_tab_node(p, src, ws, tabs_key(r), r.station, foot, tips)
+      } else {
+        files_tab_node(p, src, ws, tabs_key(r), station, foot, tips, only_station=true, scope=station_files_scope(r, station))
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The station of `front` where it is a station's page tab (its page, Setting(Station), beside the chat).
+fn side_station_tab(front : String) -> String? {
+  match station_tab(front) {
+    Some(("station", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// Station `station`'s page tab in a chat's panel, in node `q` (as large as the panel under its bar): its page made
+/// once (sfpages' station_node), in the workspace in view, as a settings' page is made in a pane (page_pane's: its
+/// frame's core, a fixture's dialog, a right click copying what is picked), laid out by the panel's `width` (narrow or
+/// wide, page_node's look), its head with no back (the tab is the way to close it), its name the tab's (named); on the
+/// tape (`on_tape`), in a panel of its own, its cards the panel's (@sf.pane_lent), as tape_made's pages are.
+fn side_station_node(
+  q : @view.View,
+  src : Source,
+  station : String,
+  tips : @sf.TipLayer,
+  width : () -> Double,
+  on_tape : Bool,
+) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+      guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      let core = settings_core(src, w)
+      let here = fn() { @settings.here_of(core, w.id, w.name) }
+      @settings.frame(core, @signals.untracked(here))
+      // (a dialog a fixture's mode puts up over its page, before the page is made: setting_page's)
+      settings_fixture(src, core)
+      if on_tape {
+        p.lends(@sf.pane_lent, true) |> ignore
+      }
+      context_node(p)
+      @sfpages.station_node(p, core, src, here, station, on_back=fn() {  }, frame=fn() {
+        { back: None, top: 0.0, foot: 0.0, named: true }
+      }, width~, tips~)
+    })
   })
   |> ignore
 }

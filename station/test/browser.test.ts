@@ -504,8 +504,8 @@ test("unused for an hour it is closed; used meanwhile, it stays", async () => {
   assert.equal(b.status().running, false);
   assert.equal(chrome.made[0]!.of("Browser.close").length, 1, "asked to close, so it saves its profile");
   assert.deepEqual(chrome.calls, ["find", "launch", "kill 101"]);
-  assert.equal(readState(dir).lastUse, IDLE_MS - 1000, "its last use written down");
   await b.close();
+  assert.equal((await readState(dir)).lastUse, IDLE_MS - 1000, "its last use written down");
 });
 
 test("a person watching a tab keeps it open", async () => {
@@ -615,6 +615,7 @@ test("the browser tool: endpoint by default, tabs, status, stop, each of them th
 
 test("a tab is the session's that opened it, and a tab it opens is too; a tab gone is forgotten", async () => {
   const owners = new Owners(scratch());
+  await owners.ready();
   const { cdp, screens, lists, t } = await tabs(owners);
   const told = lists.length;
   t.owned("A", "chat-1");
@@ -647,11 +648,16 @@ test("whose each tab is outlives the station process, and is forgotten for tabs 
   const first = new Owners(dir);
   first.set("A", "chat-1");
   first.set("Z", "chat-2");
+  await first.written();
   const owners = new Owners(dir);
+  await owners.ready();
   assert.equal(owners.of("A"), "chat-1");
   const { t } = await tabs(owners);
   assert.equal(owners.of("A"), "chat-1", "A is still there");
-  assert.equal(new Owners(dir).of("Z"), undefined, "Z closed while no station watched");
+  await owners.written();
+  const again = new Owners(dir);
+  await again.ready();
+  assert.equal(again.of("Z"), undefined, "Z closed while no station watched");
   t.close();
 });
 

@@ -418,20 +418,30 @@ test "a flush is handed over in its place among the frames; after it a frame not
 }
 
 ///|
-test "its sound's clock is the host's: samples played and milliseconds queued, 0 before it opens and once closed" {
+test "its sound's clock and wanted reserve are the host's: 0 once closed" {
   let v = screen()
   v.t.set_stream_audio(true)
   assert_eq(v.s.audio_played(), 0.0)
   assert_eq(v.s.audio_queued(), 0.0)
+  assert_eq(v.s.audio_wanted(), 0.0)
+  v.t.set_stream_audio_wanted(0, 100.0)
+  assert_eq(v.s.audio_wanted(), 100.0)
   v.s.audio(Bytes::make(3840, b'\x00'))
   let id = v.s.id()
   assert_eq(v.s.audio_played(), 0.0)
+  assert_eq(v.s.audio_wanted(), 100.0)
   v.t.set_stream_audio_clock(id, 96000.0, 60.0)
+  v.t.set_stream_audio_wanted(id, 300.0)
   assert_eq(v.s.audio_played(), 96000.0)
   assert_eq(v.s.audio_queued(), 60.0)
+  assert_eq(v.s.audio_wanted(), 300.0)
+  v.t.set_stream_audio(false)
+  assert_eq(v.s.audio_wanted(), 0.0)
+  v.t.set_stream_audio(true)
   v.s.close()
   assert_eq(v.s.audio_played(), 0.0)
   assert_eq(v.s.audio_queued(), 0.0)
+  assert_eq(v.s.audio_wanted(), 0.0)
 }
 
 ///|

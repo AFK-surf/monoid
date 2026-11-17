@@ -114,7 +114,8 @@ fn file_flight_key(key : String, files : Array[String], flying : Array[String]) 
 
 ///|
 /// A message's files (Files), at the column's end when it is the viewer's (`mine`); `said`: the message's `said` (its
-/// pictures brushed in once decoded only then: image_reveal).
+/// pictures brushed in once decoded only then: image_reveal); `over`: the room over them (under its words: what makes
+/// them files_under_words under them).
 pub fn message_files(
   c : @ui.Ctx,
   src : Source,
@@ -126,6 +127,7 @@ pub fn message_files(
   landing_key? : String = "",
   corner? : Double = @sf.message_file_corner,
   at? : String = "",
+  over? : Double = 0.0,
 ) -> Unit {
   if list.length() == 0 {
     return
@@ -145,20 +147,19 @@ pub fn message_files(
       _ => dmin(card_across(c, src, here, a), room)
     }
   })
-  // (in a picture of the chat being shared, each with the room its ✕ hangs in past its top and right: publish.mbt)
-  let hung = if picturing.val is Some(_) { publish_file_hung() } else { 0.0 }
   let rows : Array[Array[Int]] = []
   let mut used = 0.0
   for i, w in widths {
-    if rows.length() == 0 || used + files_gap + w + hung > room {
+    if rows.length() == 0 || used + files_gap + w > room {
       rows.push([i])
-      used = w + hung
+      used = w
     } else {
       rows[rows.length() - 1].push(i)
-      used = used + files_gap + w + hung
+      used = used + files_gap + w
     }
   }
   let column = if mine { files_column_end } else { files_column }
+  let column = if over > 0.0 { column.then(@ui.style(pt=@sf.room_of(over))) } else { column }
   let flight = flight_here(here)
   let flying_keys = match flight {
     Some(f) if landing_key == "" => f.files.map(fn(ff) { ff.key })
@@ -166,12 +167,6 @@ pub fn message_files(
     _ => []
   }
   let file_keys = if flying_keys.length() > 0 { list.map(fn(a) { @sfbase.file_key(a) }) } else { [] }
-  // (the gap between rows the room the ✕ hangs in past the next's top on top of their own, out to the scale's next step)
-  let column = if hung > 0.0 {
-    column.then(@ui.style(pt=@sf.room_of(hung), gap=@sf.room_of(scale_up(files_gap + hung))))
-  } else {
-    column
-  }
   c.box(style=column, id=row, fn() {
     for r in rows {
       c.box(style=files_row, fn() {
@@ -190,12 +185,12 @@ pub fn message_files(
             "image" | "video" => Some(message_media(c, src, here.station, owner_of(here, a), a, said~))
             _ => None
           }
-          let item = c.box(style=@ui.style(w=Fixed(widths[i] + hung)), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
+          let item = c.box(style=@ui.style(w=Fixed(widths[i])), fn() { file_item(c, src, here, a, widths[i], by~, landing_key=key, media~, corner~, at~) })
           let paint = media.map(fn(p) { fn(w, h, fit, radius) { media_content(c, p, w, h, fit, radius) } })
           match flight {
             Some(f) => flight_landing(
               c, f, item, key, share=landing_share(a),
-              top_crop=file_kind(a.name) == "image" && tall_image_cropped(a), paint~,
+              start_crop=file_kind(a.name) == "image" && image_cropped_from_start(a), paint~,
             )
             None => ()
           }
@@ -341,11 +336,16 @@ fn own_size(a : Attachment) -> (Double, Double)? {
 }
 
 ///|
-/// Whether the chat's minimum width crops a tall image: show its beginning, at the top of the box.
-fn tall_image_cropped(a : Attachment) -> Bool {
+/// Whether the chat's least side crops an image: a tall one at the least width, a wide strip at the least height. Either
+/// shows its beginning (its top, its left), not its middle: the middle of a strip cut from a page is as often its bare
+/// ground (2026-11-15: a window's head cut across, its title at the left and its buttons at the right, shown as a box
+/// of nothing).
+fn image_cropped_from_start(a : Attachment) -> Bool {
   let (bw, bh, _) = image_box(a, image_least, min_side=image_min_side)
   match own_size(a) {
-    Some((w, h)) => bw == image_min_side && bh == box_most_h && w * bh / h < bw
+    Some((w, h)) =>
+      (bw == image_min_side && bh == box_most_h && w * bh / h < bw) ||
+      (bh == image_min_side && bw == box_most_w && h * bw / w < bh)
     None => false
   }
 }
@@ -386,11 +386,7 @@ fn thumb_ratio(hash : String) -> Double? {
 ///|
 /// One of a message's files (FileItem), `w` wide.
 fn file_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w : Double, by~ : (String, String, String)?, landing_key? : String = "", media? : MediaPicture? = None, corner? : Double = @sf.message_file_corner, at? : String = "", said? : Bool = false) -> Unit {
-  match picturing.val {
-    // (in a picture of the chat being shared: to tick, publish.mbt)
-    Some((seq, taking)) => publish_file(c, src, here, seq, taking, a, w, by~)
-    None => file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
-  }
+  file_drawn(c, src, here, a, w, by~, landing_key~, media~, corner~, at~, said~)
 }
 
 ///|
@@ -469,14 +465,14 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
   })
   let thumb = @sfbase.thumb_place(here.station + "/" + owner + "/" + a.path, here.station, here.session, at)
   let downloading = download_of(src, here.station, owner, stored_name(a.path))
-  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, open, key, quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   // the picture covering the whole box; a letterboxed one's covering its own proportions centred in it, all it and
   // what it waits on take, the box's corners cutting it (imageBox.ts letterbox; any: its frame's, concentric with
   // what holds it where it is in a corner of that, a quote's card)
   let (sw, sh) = picture_share(a, image_least, min_side=image_min_side)
   let (pw, ph) = (w * sw, h * sh)
-  let top_crop = tall_image_cropped(a)
-  let fit : @ui.Fit = if top_crop { FitCoverAt(0.0) } else { FitCover }
+  let start_crop = image_cropped_from_start(a)
+  let fit : @ui.Fit = if start_crop { FitCoverFrom(0.0, 0.0) } else { FitCover }
   let likeness = image_wait_colours(a.thumbhash, pw, ph, c.color(Neutral), c.color(Bg)).unwrap_or("")
   let picture = fn() { media_content(c, p, pw, ph, fit, 0.0) }
   // one the device holds and not decoded yet: what the app's first page waits for
@@ -520,7 +516,7 @@ fn image_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     }
   })
   // where it is and what it shows, for the preview to fly from and back into; hidden while the preview is its picture
-  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, top_crop~, list=list_of(here))
+  note_thumb(c, thumb, b, corner, picture=shows, letterbox~, start_crop~, list=list_of(here))
   c.look(b, @ui.look(alpha=thumb_shows(thumb)))
   // held by a finger for its menu: lifted over the menu's scrim (@sf.lift_over)
   @sf.lift_over(c, b, "file/" + thumb, @sf.lift_of(c, "file/" + thumb, false, file_held_open(open)), file_lift_scale)
@@ -673,7 +669,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
       ),
     ]
   }
-  let more = [beside_option(here, a, at), download_option(src, here, a, owner)]
+  let more = file_options([beside_option(here, a, at), download_option(src, here, a, owner)])
   more.append(load)
   file_menu(c, open, "", quote=quote_of(here, a, owner, by), more~)
   // (its name, which nothing over its picture says)
@@ -724,7 +720,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     over(marks)
   })
   // where it is and what it shows, for the preview to fly from and back into; hidden while the preview is its picture
-  // (what decides how its capsule looks said with it: what draws it in flight told as it changes)
+  // (what its capsule says with it: what draws it in flight told as it changes)
   note_thumb(
     c,
     thumb,
@@ -733,8 +729,7 @@ fn video_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, w :
     picture=if still == "!" { "" } else { still },
     letterbox~,
     list=list_of(here),
-    over=fn(alpha) { over(alpha * marks) },
-    said="\{marks} \{@ui.some_text(coming)} \{a.duration} \{corner}",
+    over=Some({ duration: a.duration, coming, corner, seen: marks }),
   )
   c.look(b, @ui.look(alpha=thumb_shows(thumb)))
   // held by a finger for its menu: lifted over the menu's scrim (@sf.lift_over)
@@ -752,7 +747,7 @@ fn card_item(c : @ui.Ctx, src : Source, here : MessageHere, a : Attachment, by~ 
   let failed = text(dl, "state") == "failed"
   let place = @sfbase.thumb_occurrence(here.station, here.session, at)
   let key = "msg-card/" + place + "/" + @sfbase.file_key(a)
-  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=[beside_option(here, a, at), download_option(src, here, a, owner)])
+  file_menu(c, c.id(key), "", quote=quote_of(here, a, owner, by), more=file_options([beside_option(here, a, at), download_option(src, here, a, owner)]))
   let id = text(dl, "id")
   @sf.file_card(
     c,
@@ -1020,6 +1015,11 @@ let files_column : @ui.Style = @ui.css("w=Full gap=S1_5 align=AStart")
 let files_column_end : @ui.Style = @ui.css("w=Full gap=S1_5 align=AEnd")
 
 ///|
+/// How far a message's files are under its words: 8, twice what is between its other parts (msg_main's gap), a card
+/// being heavier than a line.
+let files_under_words : Double = 8.0
+
+///|
 // kept across runs: a value (no field of it changes)
 let files_row : @ui.Style = @ui.css("row gap=S1_5 align=AStart")
 
@@ -1068,6 +1068,11 @@ let image_fill_waiting : @ui.Style = image_fill.then(@ui.css("bg=Neutral"))
 let letterbox_room : @ui.Style = @ui.css("w=Full h=Full align=ACenter justify=JCenter")
 
 ///|
+/// letterbox_room waiting on its picture, nothing of it to show yet: the neutral ground (image_fill_waiting's).
+// kept across runs: a value (no field of it changes)
+let letterbox_room_waiting : @ui.Style = letterbox_room.then(@ui.css("bg=Neutral"))
+
+///|
 /// One that cannot be had (msgImageUnavailable): its mark over 无法预览, muted, in its middle.
 // kept across runs: a value (no field of it changes)
 let no_preview_box : @ui.Style = @ui.css("w=Full h=Full gap=S1_5 align=ACenter justify=JCenter")
@@ -1102,4 +1107,16 @@ fn list_of(here : MessageHere) -> String {
     Some(l) => l.rk
     None => ""
   }
+}
+
+///|
+/// A file's menu's own choices, those offered here (one not, None, is no line between them: @sf.menu's None is one).
+fn file_options(offered : Array[@sf.MenuItem?]) -> Array[@sf.MenuItem?] {
+  let out : Array[@sf.MenuItem?] = []
+  for x in offered {
+    if x is Some(_) {
+      out.push(x)
+    }
+  }
+  out
 }

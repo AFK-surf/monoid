@@ -40,7 +40,7 @@ export type ChatKeys = RowColumns & {
 };
 
 /// The columns of a record as the writer puts them (account.ts #chatCols) and SQLite makes them of its JSON (schema.ts
-/// CHAT_COLUMNS: `hidden`, `archived_mark`, `archived_at`; list-rows.test.ts holds the two to each other).
+/// CHAT_COLUMNS: `hidden`, `led`, `archived_mark`, `archived_at`; list-rows.test.ts holds the two to each other).
 export type RowColumns = {
   thread: number | null;
   session: string | null;
@@ -49,6 +49,8 @@ export type RowColumns = {
   pinnedAt: number | null;
   mine: boolean;
   hidden: boolean;
+  /// An agent leads it (chat_create for itself, its `opener.led`): in no list, reached from its opener's info alone.
+  led: boolean;
   archivedMark: boolean;
   archivedAt: number | null;
 };
@@ -108,6 +110,7 @@ export function rowColumns(record: J): RowColumns {
     pinnedAt: num(record?.pinned),
     mine: record?.mine === true,
     hidden: record?.hidden === true,
+    led: isObject(record?.opener) && record.opener.led === true,
     archivedMark: mark,
     archivedAt: !mark ? null : at === undefined || at === null ? num(record?.lastActiveAt) : num(at),
   };
@@ -124,9 +127,9 @@ export function chatKeys(station: string, archived: boolean, id: string, record:
   return { ...rowColumns(record), station, archived, id, marked, agents, state: derived.state, watched: derived.watched, ord, record };
 }
 
-/// What puts a row in the window and the counts but the station and `archived` (its keys): whose it is, hidden, watched,
-/// and the keys it is read apart by (`apart`, overlaid here).
-const shown = (c: ChatKeys) => [c.mine, c.hidden, c.watched, c.thread, c.session];
+/// What puts a row in the window and the counts but the station and `archived` (its keys): whose it is, hidden, led,
+/// watched, and the keys it is read apart by (`apart`, overlaid here).
+const shown = (c: ChatKeys) => [c.mine, c.hidden, c.led, c.watched, c.thread, c.session];
 
 export const CHAT_READS = {
   /// A listed chat by its id.
@@ -209,7 +212,7 @@ export const CHAT_READS = {
   } satisfies ChatRead<Overlaid>,
   /// The first `limit` rows of the chat list over `stations`, in its order (the pinned by when, then the latest active;
   /// in a tie, by station as given, then the station's order), of those it shows by their columns (`mine`, its
-  /// visibility, `watching`), but those `apart` (overlaid here: read apart, views.ts #chats); with its place in its
+  /// visibility, `watching`; never one an agent leads, `led`: a search finds those, read whole), but those `apart` (overlaid here: read apart, views.ts #chats); with its place in its
   /// station's order (`ord`). Found of columns alone, walking `chat_recent` in its order (`pinned_at DESC` puts the
   /// pinned first, NULL being the least), the station's place among `stations` and its own order sorted only among the
   /// rows tied on those; the stations and those apart found in strings bound once (`inOrder`, `keyed`), a station's
@@ -222,7 +225,7 @@ export const CHAT_READS = {
     name: "$chat-window", bound: "first", records: true,
     sql: `SELECT c.station, c.archived, c.id, c.pinned_at, c.last_active, c.ord
       FROM chat AS c
-      WHERE c.archived = 0 AND instr(?1, char(1) || c.station || char(1)) > 0 AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND (?4 = 0 OR c.watched = 1)
+      WHERE c.archived = 0 AND instr(?1, char(1) || c.station || char(1)) > 0 AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
         AND (?5 = '' OR c.thread IS NULL OR instr(?5, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
         AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)
       ORDER BY c.pinned_at DESC, c.last_active DESC, instr(?1, char(1) || c.station || char(1)), c.ord, c.id LIMIT ?7`,
@@ -238,7 +241,7 @@ export const CHAT_READS = {
     name: "$chat-counts", bound: "count", records: false,
     sql: `SELECT c.station, count(*), max(c.state IS 'run'), sum(c.state IS 'run')
       FROM chat AS c
-      WHERE c.archived = 0 AND c.station IN (SELECT value FROM json_each(?1)) AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND (?4 = 0 OR c.watched = 1)
+      WHERE c.archived = 0 AND c.station IN (SELECT value FROM json_each(?1)) AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
         AND (?5 = '' OR c.thread IS NULL OR instr(?5, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
         AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)
       GROUP BY c.station`,

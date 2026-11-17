@@ -41,6 +41,15 @@ render_dl() {
   done
   render_strips_dl "$(dirname "$out")"
   render_matte_dl "$(dirname "$out")"
+  render_words_dl "$(dirname "$out")"
+}
+
+# Words the hosts' text is weighed by (src/kitdemo/gallery/dl_print_wbtest.mbt words_shown), words.dl in $1: drawn for
+# people by scripts/render_words.sh, nothing checked.
+render_words_dl() {
+  MBUI_DL_PRINT=words moon_test_native src/kitdemo/gallery/dl_print_wbtest.mbt 2>/dev/null |
+    awk '/^DLEND/{p=0} p{print} /^DLBEGIN/{p=1}' > "$1/words.dl"
+  [ -s "$1/words.dl" ] || { echo "render_words_dl: no words draw list"; return 1; }
 }
 
 # What the renderers draw in strips (src/host/bands.h; src/kitdemo/gallery/dl_print_wbtest.mbt strips_shown), strips.dl

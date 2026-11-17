@@ -66,7 +66,7 @@ priv struct Glyph {
   ox : Double
   oy : Double
   color : Bool
-  // its plot in the atlas (@hostapi.Atlas; -1: nothing to draw), and whether that is colour glyphs' own
+  // its shelf in the atlas (@hostapi.Atlas; -1: nothing to draw), and whether that is colour glyphs' own
   plot : Int
   in_colour : Bool
   // the pixels a point its cell in the atlas was sized at
@@ -154,6 +154,8 @@ fn text_arrive() -> Unit {
     let first = text_cache.generation < 0
     text_cache.generation = g
     glyphs_forget()
+    // (and the halos blurred of them: their pictures are of the glyphs drawn before, halo.mbt)
+    halos_forget()
     // (and the frame drawn whole: its glyphs drawn again where they were, the same numbers, other pixels: hostcall.mbt
     // `presented`)
     presented.forget()
@@ -171,11 +173,12 @@ fn text_arrive() -> Unit {
 }
 
 ///|
-/// The atlases started over where the last frame had a glyph with no room in them. A plot is emptied only if the frame
-/// draws nothing from it, and glyphs placed at different times lie across the plots: with a glyph on the screen in each,
-/// no new one gets a place, frame after frame, until what is on the screen changes (words with gaps in them). Started
-/// over, what is on the screen lies together. Where the frame right after was short too, an atlas holds less than is on
-/// the screen: not started over again until a frame is not (it would draw them all every frame, and none would stay).
+/// The atlases started over where the last frame had a glyph with no room in them. A shelf is emptied only if the frame
+/// draws nothing from it, and glyphs placed at different times lie across the shelves: with a glyph on the screen on
+/// each, no new one gets a place, frame after frame, until what is on the screen changes (words with gaps in them).
+/// Started over, what is on the screen lies together. Where the frame right after was short too, an atlas holds less
+/// than is on the screen: not started over again until a frame is not (it would draw them all every frame, and none
+/// would stay).
 fn none_short() -> Unit {
   let short = text_cache.short
   text_cache.short = false
@@ -202,6 +205,7 @@ fn glyphs_short_owed() -> Bool {
 /// Every glyph forgotten, and where it was in the atlas: drawn again as it is next asked for.
 fn glyphs_forget() -> Unit {
   glyphs_lost.val = true
+  glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
   text_cache.atlas = None
@@ -216,10 +220,17 @@ let glyphs_kept : Ref[Array[(Int, Double, Double)]?] = Ref(None)
 
 ///|
 /// Whether a glyph may have gone from where something made to be kept draws it since that was last looked for: one let
-/// go of for another (its plot emptied), all forgotten, or one there was no room for. What draws from the atlas frame
+/// go of for another (its shelf emptied), all forgotten, or one there was no room for. What draws from the atlas frame
 /// after frame is looked through again then (view_glyphs_held), not each frame.
 // kept across runs: set as one goes, put back as what draws them is looked through
 let glyphs_lost : Ref[Bool] = Ref(true)
+
+///|
+/// How many times a glyph may have gone from where it was in the atlas (glyphs_lost's, or one placed again at another
+/// scale), over every window of the run: a window that comes in place after another's frame moved one is built whole
+/// (window_slots.mbt's glyphs_moved_since).
+// kept across runs: only counts on
+let glyph_moves : Ref[Int] = Ref(0)
 
 ///|
 /// Glyph `key` drawn from where `g` is, told to what is made to be kept (glyphs_kept).
@@ -232,7 +243,7 @@ fn glyph_kept(key : Int, g : Glyph) -> Unit {
 
 ///|
 /// Whether the glyphs `kept` (glyphs_kept's) are each where they were in the atlas still, at `sc` pixels a point, as
-/// glyphs_still asks, none said drawn from in this frame (what is not drawn now: Atlas::drawn keeps a plot through the
+/// glyphs_still asks, none said drawn from in this frame (what is not drawn now: Atlas::drawn keeps a shelf through the
 /// frame, and one drawn from by nothing on the screen may be emptied).
 fn glyphs_there(kept : Array[(Int, Double, Double)], sc : Double) -> Bool {
   for k in kept {
@@ -524,6 +535,10 @@ fn shapes_thin() -> Unit {
 
 ///|
 fn clear_shapes() -> Unit {
+  // (and who spaces words and how the host's face draws the marks set closer: found again as a run starts or the
+  // faces change)
+  spaced_said.val = None
+  spaced_stops_left.val = None
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
     // never free a cycle): let go of the layout first
@@ -595,6 +610,190 @@ fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : F
 }
 
 ///|
+/// Who spaces Chinese and Japanese words (@hostapi.words_spaced), asked once a run.
+// kept across runs: forgotten with the shapes (clear_shapes: a Tester's run, the host's faces changed)
+let spaced_said : Ref[Int?] = Ref(None)
+
+///|
+fn spaced_now() -> Int {
+  match spaced_said.val {
+    Some(s) => s
+    None => {
+      let s = @hostapi.words_spaced()
+      spaced_said.val = Some(s)
+      s
+    }
+  }
+}
+
+///|
+/// The number of the mark `c` that closes a clause or a sentence (，。、：； 0 to 4), else -1.
+fn spaced_stop_of(c : Int) -> Int {
+  match c {
+    0xFF0C => 0
+    0x3002 => 1
+    0x3001 => 2
+    0xFF1A => 3
+    0xFF1B => 4
+    _ => -1
+  }
+}
+
+///|
+/// The mark that closes a clause or a sentence numbered `i` (spaced_stop_of's).
+fn spaced_stop(i : Int) -> String {
+  match i {
+    0 => "\u{FF0C}"
+    1 => "\u{3002}"
+    2 => "\u{3001}"
+    3 => "\u{FF1A}"
+    _ => "\u{FF1B}"
+  }
+}
+
+///|
+/// Whether the host's face draws each of the marks that close a clause (spaced_stop) in the first half of its em (as a simplified Chinese face draws
+/// them all; a traditional one draws them in the middle, a Japanese one ：；), found of their glyphs once: where one is
+/// drawn in the middle, set half an em closer to the mark after it, the two marks' ink would meet (。」).
+// kept across runs: forgotten with the shapes (clear_shapes: a Tester's run, the host's faces changed)
+let spaced_stops_left : Ref[FixedArray[Bool]?] = Ref(None)
+
+///|
+fn spaced_stop_left(i : Int) -> Bool {
+  let left = match spaced_stops_left.val {
+    Some(l) => l
+    None => {
+      let size = 16.0
+      let out = FixedArray::make(16 * 4, 0.0)
+      let g = FixedArray::make(8, 0.0)
+      let l = FixedArray::make(5, false)
+      for k in 0..<5 {
+        let n = h_shape(spaced_stop(k), size, 400, 0, out)
+        let key = if n == 1 { out[3].to_int() } else { -1 }
+        l[k] = if n != 1 {
+          // (not one cluster as a mark is: not known to be left)
+          false
+        } else if key < 0 {
+          // (nothing drawn: no ink to meet)
+          true
+        } else {
+          h_glyph(key, g)
+          // its ink (where it starts from the pen, how wide) ends before the em's middle, or there is none
+          g[2] == 0.0 || g[4] + g[2] <= size * 0.45
+        }
+      }
+      spaced_stops_left.val = Some(l)
+      l
+    }
+  }
+  left[i]
+}
+
+///|
+/// A Han character or kana (not a mark): what an eighth of an em parts from a Latin letter or a digit.
+fn spaced_wide(c : Int) -> Bool {
+  (c >= 0x3400 && c <= 0x4DBF) ||
+  (c >= 0x4E00 && c <= 0x9FFF) ||
+  (c >= 0xF900 && c <= 0xFAFF) ||
+  // (a high surrogate of the planes' ideographs, U+20000 to U+3FFFF)
+  (c >= 0xD840 && c <= 0xD8BF) ||
+  (c >= 0x3041 && c <= 0x3096) ||
+  (c >= 0x30A1 && c <= 0x30FA) ||
+  c == 0x30FC
+}
+
+///|
+fn spaced_narrow(c : Int) -> Bool {
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+
+///|
+/// 1 a full-width closing bracket or quote (its ink in the first half of its em in a simplified Chinese, a traditional
+/// Chinese and a Japanese face alike: its second half empty), 2 an opening one (its ink in its second half), 3 a mark
+/// closing a clause (，。、：；: its second half empty only where spaced_stop_left says so), else 0. ！ and ？ are none:
+/// drawn in the middle by a traditional and a Japanese face, and wider than half an em in a simplified one (as chws
+/// leaves them).
+fn spaced_mark(c : Int) -> Int {
+  match c {
+    0xFF09 | 0x300D | 0x300F | 0x3011 | 0x300B | 0x3009 | 0x3015 | 0x3017 | 0xFF3D | 0xFF5D | 0x201D | 0x2019 => 1
+    0xFF08 | 0x300C | 0x300E | 0x3010 | 0x300A | 0x3008 | 0x3014 | 0x3016 | 0xFF3B | 0xFF5B | 0x201C | 0x2018 => 2
+    0xFF0C | 0x3002 | 0x3001 | 0xFF1A | 0xFF1B => 3
+    _ => 0
+  }
+}
+
+///|
+/// Whether full-width mark `c` (spaced_mark's 1 or 3) has the second half of its em empty, in the host's face.
+fn spaced_mark_open_after(c : Int, m : Int) -> Bool {
+  if m == 1 {
+    return true
+  }
+  let i = spaced_stop_of(c)
+  i >= 0 && spaced_stop_left(i)
+}
+
+///|
+/// Chinese and Japanese words in the host's clusters (`out`, `k` of them) spaced as Core Text has spaced them since
+/// iOS 26 and macOS 27, where the host's shaper spaces none (@hostapi.words_spaced_here: Android's, Windows', Linux's,
+/// the web's): an eighth of an em between a Han character or kana and a Latin letter or a digit right beside it, either
+/// way round (never where anything is between them: a space someone wrote, a no-break space, a tab, a mark), put
+/// on the advance of the first of the two, so each glyph is drawn where its cluster starts and the room is after the
+/// first (on the second's, a Latin letter after Han showed its room after it: 你是O wner, apple_text.m); and a
+/// full-width mark a whole em wide before another a half em narrower where its ink ends before the other's begins (a
+/// closing bracket's empty second half, a clause's mark's where the face draws it in its first half (spaced_stop_left);
+/// an opening bracket's before another opening one's empty first half), as chws sets them: never an opening one before
+/// a closing one ("（）"). A mark a host set closer already (Windows' punct_solid) is no longer an em: left as it is.
+/// The text is not changed (what is copied is what was written) and a caret goes by the advances. Not in the code
+/// face, whose columns are a grid.
+fn words_spaced_in(
+  text : String,
+  size : Double,
+  out : FixedArray[Double],
+  k : Int,
+  space_words : Bool,
+) -> Unit {
+  let gap = size * 0.125
+  let tol = size * 0.05
+  for j in 0..<(k - 1) {
+    let a = out[j * 4].to_int()
+    let b = out[(j + 1) * 4].to_int()
+    if a >= text.length() || b >= text.length() {
+      continue
+    }
+    let ca = text.at(a).to_int()
+    let cb = text.at(b).to_int()
+    if spaced_pair(ca, cb) {
+      if space_words {
+        out[j * 4 + 2] = out[j * 4 + 2] + gap
+      }
+      continue
+    }
+    let ma = spaced_mark(ca)
+    let mb = spaced_mark(cb)
+    // (an opening bracket before another opening one: the other's empty first half; a closing mark before any: its
+    // own empty second half, where it has one)
+    let closer = if ma == 2 {
+      mb == 2
+    } else {
+      ma != 0 && mb != 0 && spaced_mark_open_after(ca, ma)
+    }
+    if !closer {
+      continue
+    }
+    if (out[j * 4 + 2] - size).abs() <= tol && (out[(j + 1) * 4 + 2] - size).abs() <= tol {
+      out[j * 4 + 2] = out[j * 4 + 2] - size / 2.0
+    }
+  }
+}
+
+///|
+/// Whether a cluster starting with `a` right before one starting with `b` are a Han character or kana and a Latin
+/// letter or a digit, either way round: an eighth of an em between them.
+fn spaced_pair(a : Int, b : Int) -> Bool {
+  (spaced_wide(a) && spaced_narrow(b)) || (spaced_narrow(a) && spaced_wide(b))
+}
+
+///|
 /// With `spacing` (letter spacing, as Android's: each cluster's advance has it, half before its piece and half
 /// after), shaped with no ligatures (@hostapi.style_no_ligatures): a ligature's letters would not be spaced.
 fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? : Double = 0.0) -> Shaped {
@@ -623,6 +822,18 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
         0
       } else {
         shape_widths(text, size, weight, style, out)
+      }
+      if m > 1 &&
+        (style & @hostapi.style_mono) == 0 &&
+        @hostapi.face_of_style(style) != @hostapi.face_code &&
+        spaced_now() != @hostapi.words_spaced_none {
+        words_spaced_in(
+          text,
+          size,
+          out,
+          m,
+          spaced_now() == @hostapi.words_spaced_here,
+        )
       }
       let lb = if m > 1 { Some(@text.line_breaks(text)) } else { None }
       // UAX #29's clusters: a host that cut one in two (a Thai vowel sign some segmenters leave on its own) is
@@ -753,11 +964,7 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
           None => ()
         }
       }
-      let bd = if ascii { None } else { Some(@text.Bidi::new(text)) }
-      let bd = match bd {
-        Some(b) if b.is_mixed() => Some(b)
-        _ => None
-      }
+      let bd = if ascii { None } else { @text.bidi_mixed(text) }
       // L4: a bracket (or another mirrored character) reading right to left is drawn as its mirror image, ")" for
       // "(" (each cluster is drawn on its own, out of the line the shaper would have mirrored it in)
       match bd {
@@ -795,7 +1002,7 @@ fn shape(text : String, size : Double, weight : Int, style? : Int = 0, spacing? 
       text_cache.shaped = text_cache.shaped + 1
       // its glyphs not drawn yet: drawn ahead unless this frame draws them (glyphs_ahead)
       for k in keys {
-        if k >= 0 && text_cache.fresh.length() < glyphs_ahead_most && !text_cache.glyphs.contains(k) {
+        if k >= 0 && text_cache.fresh.length() < glyphs_ahead_most && !glyph_drawn_any_sub(k) {
           text_cache.fresh.push(k)
         }
       }
@@ -959,6 +1166,21 @@ fn bidi_offset_at(
 let glyphs_ahead_most : Int = 4096
 
 ///|
+/// Whether base glyph `k` has already been placed in the atlas at any horizontal subpixel phase.
+fn glyph_drawn_any_sub(k : Int) -> Bool {
+  text_cache.glyphs.contains(k) ||
+  (
+    h_platform() == 3 &&
+    (
+      text_cache.glyphs.contains(k | (1 << 26)) ||
+      text_cache.glyphs.contains(k | (2 << 26)) ||
+      text_cache.glyphs.contains(k | (3 << 26)) ||
+      text_cache.glyphs.contains(k | (4 << 26))
+    )
+  )
+}
+
+///|
 /// The glyphs of what the frame shaped and did not draw (a page pushed, still off the screen; the lines below what a
 /// list shows), handed to the host as the frame's painting is over, to draw them ahead, off the frames' thread: there
 /// when they come into view, a frame or more later, not all drawn in the frame they first show in. What is drawn is the
@@ -971,7 +1193,7 @@ fn glyphs_ahead() -> Unit {
   let keys = FixedArray::make(fresh.length(), 0)
   let mut n = 0
   for k in fresh {
-    if !text_cache.glyphs.contains(k) {
+    if !glyph_drawn_any_sub(k) {
       keys[n] = k
       n = n + 1
     }
@@ -1002,8 +1224,40 @@ let no_glyph : Glyph = {
 /// The glyphs in the atlas by their places ("u v", as an instance has them): their keys.
 fn glyph_keys() -> Map[String, Int] {
   let at : Map[String, Int] = Map([])
-  text_cache.glyphs.each(fn(key, g) { if g.plot >= 0 { at["\{g.u} \{g.v}"] = key } })
+  text_cache.glyphs.each(fn(key, g) { if g.plot >= 0 { at["\{g.u} \{g.v}"] = key & 0x03FFFFFF } })
   at
+}
+
+///|
+/// The horizontal origin (in points) of the View node being built in `view_made` (`ux`, which `view_blit`
+/// rounds from as `lx`), 0 outside `view_made`.
+// kept across runs: set and put back around view_made
+let glyph_origin_x : Ref[Double] = Ref(0.0)
+
+///|
+/// Glyph `key` with its horizontal quarter-pixel phase on Windows (bits 26..28: 0 for 0, 1 for +1/4, 2 for
+/// +1/2, 3 for -1/4, 4 for -1/2 of a device pixel) for a cluster laid out at `laid_x` points (`sc` pixels a point,
+/// `z` zoom), so its quad stays on the whole pixel `on_pixels` puts it on while DirectWrite draws its ink within
+/// 1/8 px of `laid_x * sc`. Unchanged on other platforms or when zoomed.
+fn glyph_sub_at(key : Int, laid_x : Double, sc : Double, z : Double) -> Int {
+  if key < 0 || z != 1.0 || h_platform() != 3 {
+    return key
+  }
+  let tx = laid_x * sc
+  let q = ((tx - tx.round()) * 4.0).round().to_int()
+  let sub = match q {
+    1 => 1
+    2 => 2
+    -1 => 3
+    -2 => 4
+    _ => 0
+  }
+  (key & 0x03FFFFFF) | (sub << 26)
+}
+
+///|
+fn glyph_sub(key : Int, x : Double, sc : Double, z : Double) -> Int {
+  glyph_sub_at(key, glyph_origin_x.val + x - glyphs_carried[0], sc, z)
 }
 
 ///|
@@ -1076,6 +1330,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
         h_log("GLYPHSCALE placed at \{g.sc}, drawn at \{sc}, generation \{h_atlas_generation()}")
       }
       text_cache.glyphs.remove(key)
+      glyph_moves.val += 1
       glyph(key, sc)
     }
     Some(g) => {
@@ -1099,6 +1354,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
       match a.place(key, w, h, fn(k) {
         text_cache.glyphs.remove(k)
         glyphs_lost.val = true
+        glyph_moves.val += 1
       }) {
         Some((plot, x, y)) => {
           h_glyph_put(key, x + across, y)
@@ -1122,6 +1378,7 @@ fn glyph(key : Int, sc : Double) -> Glyph {
         None => {
           text_cache.short = true
           glyphs_lost.val = true
+          glyph_moves.val += 1
           glyph_kept(key, { ..no_glyph, u: -1.0, v: -1.0 })
           no_glyph
         }

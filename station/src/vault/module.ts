@@ -11,7 +11,7 @@ import { wall } from "../ops/fibers.ts";
 import { Browser } from "../browser/service.ts";
 import { Agents } from "../sessions/agents.ts";
 import { sender, senderTitleIfReady } from "../sessions/messages.ts";
-import { ControlPlane, Events, Parts, Paths, Previous, Store } from "../services.ts";
+import { ControlPlane, Events, Parts, Paths, Previous, Readers, Store } from "../services.ts";
 import { vaultTools } from "./tool.ts";
 import { SignIns } from "./signin.ts";
 import { routes as signInRoutes } from "../api/routes/signins.ts";
@@ -30,7 +30,7 @@ export const VaultLive = Layer.effectDiscard(
     const parts = yield* Parts;
     const plane = yield* ControlPlane;
     const cloud = plane.state;
-    const { hub, remote, cardOutcomes } = yield* Agents;
+    const { hub, remote, cardOutcomes, pages } = yield* Agents;
     // A workspace's lock: the home workspace's is the station's own (null), another's by its id.
     const lock = (ws: string | null) => cloud.locked(ws === null || ws === cloud.home() ? null : ws)?.state ?? null;
     const vaults = vaultStore(store.db);
@@ -62,6 +62,8 @@ export const VaultLive = Layer.effectDiscard(
       },
     });
     yield* Effect.addFinalizer(() => Effect.promise(() => secrets.close()));
+    // (the use index's program let go with the readers' idle ones when the station is short of memory)
+    (yield* Readers).onTrim(() => secrets.trimIdle());
     browsers.onTakenOut((session, request, cookies, workspace) => secrets.renewed(session, request, cookies, workspace));
     browsers.onFresh((session) => secrets.signInAgain(session));
     browsers.onUsed((session, host) => secrets.browserUsed(session, host));
@@ -74,8 +76,8 @@ export const VaultLive = Layer.effectDiscard(
       backfill: { previousGone: previous.exited, priority: store.backfillPriority },
       workspace: (session) => store.sessionWs(session) ?? cloud.home(),
       screenLink: (tab) => {
-        const s = cloud.state;
-        return s && s.workspace && plane.spec().pages ? `${s.origin}/w/${s.workspace}/s/${s.station}/screen/${encodeURIComponent(`browser:${tab}`)}` : null;
+        const s = pages();
+        return s ? `${s.origin}/w/${s.workspace}/s/${s.station}/screen/${encodeURIComponent(`browser:${tab}`)}` : null;
       },
       browser: {
         tabs: (session) => browsers.tabs(session),

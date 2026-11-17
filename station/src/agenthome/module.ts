@@ -9,6 +9,7 @@ import { Effect, Layer } from "effect";
 import { log } from "../ops/log.ts";
 import { Agents } from "../sessions/agents.ts";
 import { agentHomes, linkTranscripts, siteSkills, unlinkAgentHome, writeBuiltinSkills } from "../sessions/agent-home.ts";
+import { featureOnChannel } from "../features.ts";
 import { ControlPlane, StationConfig } from "../services.ts";
 
 export const AgentHomeLive = Layer.effectDiscard(
@@ -17,31 +18,51 @@ export const AgentHomeLive = Layer.effectDiscard(
     const config = yield* StationConfig;
     const { updates, hub } = yield* Agents;
     const feedback = updates.channel() === "stable" && plane.spec().feedback === true;
-    const keep = () => {
+    const keep = async () => {
       const { agentHome, profiles } = hub.config();
       try {
-        for (const home of agentHomes(agentHome)) writeBuiltinSkills(home, feedback);
-        unlinkAgentHome(agentHome, profiles);
+        // (stillfail-move where moving is on here: features.ts, the station's channel, so again as its config changes)
+        const move = featureOnChannel("stationMove", updates.channel());
+        for (const home of await agentHomes(agentHome)) await writeBuiltinSkills(home, feedback, siteSkills(), move);
+        await unlinkAgentHome(agentHome, profiles);
       } catch (error) {
         log.warn("agent_home", "the agents' home not kept", { error: (error as Error).message });
       }
     };
-    const transcripts = () => {
+    const transcripts = async () => {
       const { dataDir, profiles } = hub.config();
       try {
-        linkTranscripts(dataDir, profiles);
+        await linkTranscripts(dataDir, profiles);
       } catch (error) {
         log.warn("agent_home", "the shared transcripts not linked", { error: (error as Error).message });
       }
     };
     const site = siteSkills();
     if (site !== null) log.info("agent_home", "the deployment's skills are linked into every agents' home", { path: site });
-    keep();
-    transcripts();
+    // One round at a time, off the station's thread: changes of the config while one runs make one more after it (two
+    // rounds at once would gather one home's transcripts twice over), none once the station closes.
+    let closed = false;
+    let again = false;
+    let rounds: Promise<void> = Promise.resolve();
+    const round = async () => {
+      await keep();
+      await transcripts();
+    };
+    yield* Effect.promise(round);
     const unlisten = config.listen(() => {
-      keep();
-      transcripts();
+      if (closed || again) return;
+      again = true;
+      rounds = rounds.then(() => {
+        again = false;
+        return closed ? undefined : round();
+      });
     });
-    yield* Effect.addFinalizer(() => Effect.sync(unlisten));
+    yield* Effect.addFinalizer(() =>
+      Effect.promise(() => {
+        closed = true;
+        unlisten();
+        return rounds;
+      }),
+    );
   }),
 );

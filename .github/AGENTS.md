@@ -12,20 +12,31 @@
   holds no one back and is mended forward by whoever brought it, never rolled back: the run's
   `rates-said` says what merged since the last run that went through, the likeliest first (`scripts/rates-said.sh`).
 - Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
-  hand, 10). A job that needs longer is made faster.
-- No paid runners (GitHub's larger ones): Linux on GitHub's standard runners, the rest on the self-hosted machines
-  the workflows name. Those machines' runners share one Mac each, so what a job takes there depends on its
-  neighbours: what runs on Linux as well goes to Linux runners, in slices when it is long (the station's tests,
-  `check-station`, and the core's, `check-core`: more test files, more slices).
+  hand, 10). A job that needs longer is made faster. Minutes are whole (the runner cut a step's 3.8 at 3): a step that
+  must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
+  `@$((JOB_END - 35))`, JOB_END written by the job's first step. The units' stores of GitHub's images are keyed by the
+  image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
+- No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
+  unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`,
+  `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`, a 16-core Linux
+  machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; Apple native parts, Xcode/Simulator checks
+  (`check-mac`, `side-mac`, iOS/macOS builds) and release signing stay on `Mini1` (`macos-ci`, `quick`). Runners on one
+  self-hosted machine share its cores and queue bursts of multi-job workflows, so keep bursty multi-job PR builds and
+  parallel real-time test slices on GitHub's separate VMs rather than stacking them on one host.
 - A check that failed and passed on the same commit is never rerun green (the root AGENTS.md). Do not rerun an old
   commit's main pipeline: it deploys that commit's beta over the newer one.
 - An artifact uploaded for people to look at (pictures, logs, what moved) says `continue-on-error: true`: a runner's
   connection to GitHub's artifact service reset fails a check that had passed (main acb00686, 2026-11-01; #5157's
-  `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's.
-- A release's deltas (`scripts/release-deltas.ts`: the `deltas` job, `put_feed` in `scripts/release.sh`) never fail
-  or hold back a release: what goes wrong is a warning and that delta is left out, the feed whole without it. Their
-  time is bounded by `--deadline` inside the job's own 5 minutes; a part that needs more gets fewer bases, not longer.
-- The Mac's beta never holds back the others' (`put` runs whatever `desktop` came to): its signing waits on Apple's
+  `offscreen`, 2026-11-10). One a later job downloads does not: there the upload's failure is the job's, unless that
+  job does without it (mbui-size's measures and what they measure: `record` carries the one before's for a measure
+  missing). mbui-size downloads what it measures by `scripts/download-artifact.sh --optional`, not
+  actions/download-artifact, which once ended 0 with half a zip on the disk (43955196994, 2026-11-16): a zip is
+  checked by its size and digest, a cut one taken on by Range, and the directory is there only when it came whole.
+- A release's deltas (`scripts/release-deltas.ts`: the `deltas-<part>` jobs, each waiting for its own part's build
+  alone, `put_feed` in `scripts/release.sh`) never fail or hold back a release: what goes wrong is a warning and that
+  delta is left out, the feed whole without it. Their time is bounded by `--deadline` inside the job's own 5 minutes;
+  a part that needs more is made faster or gets fewer bases, not longer (10 bases: the owner, 2026-11-11).
+- The Mac's beta never holds back the others' (`put` runs whatever `desktop` and its build, `desktop-build`, came to): its signing waits on Apple's
   notary service, which can take a job's five minutes (2026-11-12, four runs in a row). A failed or cancelled
   `desktop` leaves the Mac's feed as it was; it is main's red, and `done` waits for it, so the next run plans it again.
 - The Android delta's deflater is part of the format: JZlib's version (`libs/mbui/android/jzlib`) and the level and settings

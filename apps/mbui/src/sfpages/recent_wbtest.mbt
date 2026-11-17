@@ -79,9 +79,13 @@ fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
     recent.photos.push(photo(i.to_int64(), recent_now - i.to_int64(), -1, -1))
   }
   let t = @ui.Tester::new(
-    fn(c) {
-      recent_strip(c, fn(i) { tapped.push(i) })
-      recent_adding(c, fn(_) {  }) |> ignore
+    fn(c) { c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) }) },
+    tree=fn(root) {
+      root.box(fn(v) {
+        recent_strip_node(v, fn(i) { tapped.push(i) })
+        v.show(fn() { recent.chosen.length() > 0 }, at_once=true, fn(a) { recent_adding_node(a, fn(_) {  }, fn() {  }, false) })
+      })
+      |> ignore
     },
     // (wide enough for its first tiles whole, the strip on its words' line: recent_in)
     w=430.0,
@@ -95,7 +99,7 @@ fn strip_tester(n : Int, tapped : Array[Int]) -> @ui.Tester {
 /// Where tile `i` of the strip is (0 the camera): its start and top, the row as far in as recent_in has it, a tile 92
 /// wide and 6 apart.
 fn strip_tile(i : Int) -> (Double, Double) {
-  let (side, top) = recent_in()
+  let (side, top) = recent_in(false)
   (side + i.to_double() * recent_step, top)
 }
 
@@ -150,7 +154,7 @@ test "recent photos: 添加 n 个 stands where the tiles under the strip were, w
   assert_eq(recent.chosen.length(), 2)
   // under the strip (its tiles as far down as recent_in has them, 12 under), as high as the tiles: pressed, they go and
   // none is chosen
-  t.tap(195.0, recent_in().1 + recent_tile_h + 12.0 + recent_add_h / 2.0)
+  t.tap(195.0, recent_in(false).1 + recent_tile_h + 12.0 + recent_add_h / 2.0)
   assert_eq(recent.chosen.length(), 0)
   assert_eq(tapped, [])
   recent_reset()

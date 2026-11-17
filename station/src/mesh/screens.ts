@@ -692,7 +692,15 @@ class ViewSession {
         next = null;
       }
       if (this.#closed) return;
-      if (next === null) return this.#stop("gone");
+      if (next === null) {
+        // Its source gone or going (a tab closed, a simulator shut down): over for good. A desktop does not go while
+        // its station runs, so its capture ending (a Linux desktop's ffmpeg or portal helper exiting) is said with its
+        // words, the view to be opened again, never "gone" (the app's 此屏幕已不存在 with no way on).
+        if (this.hub.get(this.id) !== this.source || this.source.kind !== "desktop") return this.#stop("gone");
+        const why = this.view.why?.() ?? "";
+        log.warn("screens", "a screen's capture ended", { screen: this.id, why });
+        return this.#stop(tr(this.#lang, "station.screen.captureEnded", { said: why || tr(this.#lang, "station.screen.captureEndedUnsaid") }));
+      }
       if (next.config) {
         if (next.config.codec !== "jpeg") {
           // A preview (a card, two pictures a second) no higher than the source's own.

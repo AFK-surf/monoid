@@ -1,11 +1,12 @@
 // A command run with a grant (secret_run 三种用法): through the proxy, with the grant's SSH key in an
 // agent, with the secret in its environment, or with a file kept in the vault written out for it. The station runs it, in the session's workspace, and gives back what it
 // said with the secret hidden (scrub.ts) and cut to a size an agent reads, and how it ended.
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { endCommand, startCommand } from "../ops/processes.ts";
+import { platform } from "../platform/index.ts";
 import { type Held, accountOf, valueOf } from "./keeper.ts";
 import { type Proxy, placeholder } from "./proxy.ts";
 import { Scrubber, scrub } from "./scrub.ts";
@@ -43,6 +44,16 @@ class Kept {
   }
 }
 
+/// The shell a command is run by (platform.posixShell: Git's sh on Windows, which its installer leaves off PATH), found
+/// by the run's environment and the station's for what that leaves out (the vault's drops CLAUDE_CODE_GIT_BASH_PATH and
+/// ProgramFiles stays the station's): only to find it, the command given `env` alone. None: what to do, as an error.
+async function shellFor(env: Record<string, string>): Promise<string> {
+  const given = new Set(Object.keys(env).map((k) => k.toUpperCase()));
+  const by: NodeJS.ProcessEnv = {};
+  for (const [k, v] of Object.entries(process.env)) if (!given.has(k.toUpperCase())) by[k] = v;
+  return platform.posixShellSoon({ ...by, ...env });
+}
+
 /// Runs `ask.command` (by sh -c) with grant `held`; `env`: the environment it starts from; `used` is told each use of
 /// the secret (a host the proxy put it in, an SSH signature, the start of a command given it in its environment).
 export async function runWith(held: Held, ask: RunAsk, proxy: Proxy, env: Record<string, string>, used: (detail: string) => void, allowed: () => boolean = () => true): Promise<Ran> {
@@ -51,7 +62,7 @@ export async function runWith(held: Held, ask: RunAsk, proxy: Proxy, env: Record
   const vars: Record<string, string> = { ...env };
   const account = accountOf(held.secret);
   if (account !== null) vars[ACCOUNT_VAR] = account;
-  const ends: (() => void)[] = [];
+  const ends: (() => void | Promise<void>)[] = [];
   try {
     if (!allowed()) throw new Error("grant expired");
     if (held.grant.mode === "proxy") {
@@ -67,27 +78,27 @@ export async function runWith(held: Held, ask: RunAsk, proxy: Proxy, env: Record
       if (ask.env) vars[ask.env] = stand;
     } else if (held.grant.mode === "ssh") {
       const key = parseSshKey(value);
-      const dir = mkdtempSync(join(tmpdir(), "sf-ssh-"));
+      const dir = await mkdtemp(join(tmpdir(), "sf-ssh-"));
+      ends.push(() => rm(dir, { recursive: true, force: true }));
       const sock = join(dir, "agent.sock");
       const server = await serveAgent(sock, key, () => {
         if (!allowed()) return false;
         used("ssh signature");
         return true;
       });
-      ends.push(() => {
-        server.close();
-        rmSync(dir, { recursive: true, force: true });
-      });
+      // Closed before its directory goes (ends are taken last first); not waited for, as before: a process the command
+      // left behind may hold a connection to it.
+      ends.push(() => void server.close());
       vars.SSH_AUTH_SOCK = sock;
     } else if (held.grant.mode === "file") {
       // Written where only this user reads it, for this command alone: its path is what the command is given.
       used("file");
-      const dir = mkdtempSync(join(tmpdir(), "sf-file-"));
-      chmodSync(dir, 0o700);
-      ends.push(() => rmSync(dir, { recursive: true, force: true }));
+      const dir = await mkdtemp(join(tmpdir(), "sf-file-"));
+      ends.push(() => rm(dir, { recursive: true, force: true }));
+      await chmod(dir, 0o700);
       const path = join(dir, fileName(held.secret.fields.filename));
       const bytes = Buffer.from(value, "base64");
-      writeFileSync(path, bytes, { mode: 0o600 });
+      await writeFile(path, bytes, { mode: 0o600 });
       vars[SECRET_VAR] = path;
       if (ask.env) vars[ask.env] = path;
       return await spawned(ask, vars, fileHidden(bytes, value));
@@ -98,7 +109,9 @@ export async function runWith(held: Held, ask: RunAsk, proxy: Proxy, env: Record
     }
     return await spawned(ask, vars, [value]);
   } finally {
-    for (const end of ends) end();
+    // Last made, first ended: an agent's socket closed before its directory is taken away. One that fails leaves
+    // the rest to be ended.
+    for (const end of ends.reverse()) await Promise.resolve().then(end).catch(() => undefined);
   }
 }
 
@@ -115,9 +128,15 @@ function fileHidden(bytes: Buffer, b64: string): string[] {
   return Buffer.from(text, "utf8").equals(bytes) ? [text.replace(/\r?\n$/, ""), b64] : [b64];
 }
 
-function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Promise<Ran> {
+async function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Promise<Ran> {
+  let shell: string;
+  try {
+    shell = await shellFor(env);
+  } catch (e) {
+    return { code: null, signal: null, output: (e as Error).message, cut: false, timedOut: false };
+  }
   return new Promise((resolve) => {
-    const child = startCommand("sh", ["-c", ask.command], { cwd: ask.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = startCommand(shell, ["-c", ask.command], { cwd: ask.cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     const kept = new Kept();
     const out = new Scrubber(hidden);
     const err = new Scrubber(hidden);
@@ -131,7 +150,7 @@ function spawned(ask: RunAsk, env: Record<string, string>, hidden: string[]): Pr
     });
     child.on("error", (e) => {
       stop();
-      resolve({ code: null, signal: null, output: `could not start sh: ${e.message}`, cut: false, timedOut: false });
+      resolve({ code: null, signal: null, output: `could not start ${shell}: ${e.message}`, cut: false, timedOut: false });
     });
     child.on("close", (code, signal) => {
       stop();
@@ -152,9 +171,15 @@ const CAPTURE_MAX = 64 * 1024;
 
 /// Runs `command` (by sh -c) in `cwd` and takes what it prints as a secret: none of it is shown, its standard error only
 /// with the output hidden in it.
-export function capture(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<Captured> {
+export async function capture(command: string, cwd: string, env: Record<string, string>, timeoutMs: number): Promise<Captured> {
+  let shell: string;
+  try {
+    shell = await shellFor(env);
+  } catch (e) {
+    return { code: null, signal: null, out: "", err: (e as Error).message, timedOut: false, tooLong: false };
+  }
   return new Promise((resolve) => {
-    const child = startCommand("sh", ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    const child = startCommand(shell, ["-c", command], { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
     const out: Buffer[] = [];
     let size = 0;
     let tooLong = false;
@@ -173,7 +198,7 @@ export function capture(command: string, cwd: string, env: Record<string, string
     });
     child.on("error", (e) => {
       stop();
-      resolve({ code: null, signal: null, out: "", err: `could not start sh: ${e.message}`, timedOut: false, tooLong: false });
+      resolve({ code: null, signal: null, out: "", err: `could not start ${shell}: ${e.message}`, timedOut: false, tooLong: false });
     });
     child.on("close", (code, signal) => {
       stop();

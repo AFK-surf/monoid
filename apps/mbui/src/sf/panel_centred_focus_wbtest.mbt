@@ -89,10 +89,11 @@ test "a dialog of nodes in the middle with nothing that takes what is typed: no 
   t.type_text("字")
   t.draw()
   assert_eq(f.text(), "", msg="typed under it")
-  // Enter there: nothing pressed, its foot's 确定 neither, the dialog still up (as the old dialog: no focus, no press)
+  // Enter there: its foot's primary 确定 pressed, its default (@view.View::default_press: the owner, 2026-11-16, a
+  // dialog's primary confirmed by Enter), once; nothing of its body
   t.key(@ui.key_code_enter)
   t.draw()
-  assert_eq(ok.val, 0)
+  assert_eq(ok.val, 1)
   assert_true(presenter_visible())
   // Tab round it: its body, its foot, back to its body; never 关闭
   let tabs : Array[String] = []

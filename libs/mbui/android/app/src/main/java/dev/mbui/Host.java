@@ -11,7 +11,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.inputmethod.InputMethodManager;
 
-/** What the C host calls back into Java for (from the GL thread). */
+/** What the C host calls back into Java for (from the app's thread: MBView's). */
 final class Host {
     static MainActivity activity;
     static MBView view;
@@ -42,12 +42,12 @@ final class Host {
     /** What the app was last told of it (-1: nothing yet): told only as it changes, the same said again telling nothing. */
     private static int toldAppState = -1;
 
-    /** Tells the app (on the GL thread, before it pauses when the activity does), only as it changes. */
+    /** Tells the app (on its thread), only as it changes. */
     static synchronized void tellAppState() {
         int s = appState();
         if (s == toldAppState || view == null) return;
         toldAppState = s;
-        view.toGL(() -> Native.appState(s));
+        view.toApp(() -> Native.appState(s));
     }
 
     /** The system in night mode (MainActivity: its configuration's uiMode, kept as it changes): @hostapi.system_dark. */
@@ -103,7 +103,7 @@ final class Host {
         return A11y.on();
     }
 
-    /** What the app's widgets are now (@hostapi.a11y_tree, from the GL thread): the view's virtual nodes made of it. */
+    /** What the app's widgets are now (@hostapi.a11y_tree, from the app's thread): the view's virtual nodes made of it. */
     static void a11yTree(String lines) {
         main.post(() -> {
             MBView v = view;
@@ -202,7 +202,7 @@ final class Host {
     // in full screen on API 30+ it also waits for IME insets control (as after boot, before the IME window is made).
     // In multi-window the system controls the IME insets, so ask the input method directly once the window has focus.
     private static boolean imeOwed;
-    /** The soft keyboard shown, as the insets last said (MainActivity; read on the GL thread too: MBView.typing). */
+    /** The soft keyboard shown, as the insets last said (MainActivity; read on the app's thread too: MBView.typing). */
     static volatile boolean imeVisible;
     /** The app asked for the keyboard and it has not shown since: a hiding seen meanwhile is the one before the
      *  asking (the app's own, still under way), not the person putting it away (MainActivity's text 7). Set as
@@ -256,12 +256,12 @@ final class Host {
         if (view != null) view.wantFrame();
     }
 
-    /** A post told on the GL thread and not taken there yet (posted). */
+    /** A post told on the app's thread and not taken there yet (posted). */
     private static final java.util.concurrent.atomic.AtomicBoolean postedOwed = new java.util.concurrent.atomic.AtomicBoolean();
 
     /**
      * Something posted for the app's next frame (post.h's mb_post, android_host.c mb_post_wake: any thread): the app
-     * told on the GL thread, between frames (Native.posted), once until it has taken what came; it takes what changes
+     * told on its thread, between frames (Native.posted), once until it has taken what came; it takes what changes
      * only signals then, and asks for a frame only where something is left for one (ui's messages_between). A core's
      * message that changes nothing drawn (a remote screen's acknowledgement, its pointer's move) builds nothing.
      */
@@ -269,7 +269,7 @@ final class Host {
         MBView v = view;
         if (v == null) return;
         if (!postedOwed.compareAndSet(false, true)) return;
-        v.queueEvent(() -> {
+        MBView.onApp(() -> {
             postedOwed.set(false);
             Native.posted();
         });
@@ -292,14 +292,14 @@ final class Host {
 
     /**
      * A frame for what moves on by the clock that needs only {@code hz} frames a second (android_host.c
-     * mb_host_frames_paced, GL thread, in the frame): MBView's (framesPaced); whether it paces it.
+     * mb_host_frames_paced, the app's thread, in the frame): MBView's (framesPaced); whether it paces it.
      */
     static boolean framesPaced(double hz) {
         MBView v = view;
         return v != null && v.framesPaced(hz);
     }
 
-    /** The input method's edits sent to MoonBit (MBView.MBInput.edited, main thread) and taken by it (GL thread). */
+    /** The input method's edits sent to MoonBit (MBView.MBInput.edited, main thread) and taken by it (its thread). */
     static int imeSent;
     static volatile int imeTaken;
 
@@ -541,7 +541,7 @@ final class Host {
     }
 
     /**
-     * A scripted run's input (src/ui/drive.mbt, from the GL thread), sent as an input method sends it: committed
+     * A scripted run's input (src/ui/drive.mbt, from the app's thread), sent as an input method sends it: committed
      * words, composed words, Enter and backspace through the view's InputConnection, a paste as KEYCODE_PASTE (the
      * clipboard read there). 0 for what has no path here (4, the window's picture: adb's screencap takes it).
      */

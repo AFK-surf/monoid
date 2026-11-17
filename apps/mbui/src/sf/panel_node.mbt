@@ -42,8 +42,11 @@ fn panel_node(
       let way = EdgeWay::new(0.0)
       let leave_from = Ref(0.0)
       let leave_look = Ref(@kit.pop_in.at(0.0, 0.0))
+      // (what it holds made first, what it reads then waited for before it comes in: OpenGate)
+      let gate = OpenGate::new()
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
+          gate.stop()
           if x.fade_out_together {
             // Keep the appearance reached if it is closed before its entrance finishes.
             let p = way.way.value_at(layer.cause_at())
@@ -52,7 +55,7 @@ fn panel_node(
           }
           way.go(layer, 0.0, @kit.pop_out_ms, ease=Leave)
         } else {
-          way.go(layer, 1.0, @kit.pop_ms)
+          gate.go(layer, fn() { way.go(layer, 1.0, @kit.pop_ms) })
         }
       })
       let look = fn() {
@@ -134,6 +137,7 @@ fn panel_node(
           { alpha: 1.0, dx: 0.0, dy: 0.0, sx: 1.0, sy: 1.0, ox: 0.5, oy: 0.5, rot: 0.0, circle: 0.0, words: look().words }
         })
       }
+      gate.collect(fn() {
       layer.box(fn(p) {
         presented_popovers[keyed.serial] = p
         p
@@ -142,7 +146,17 @@ fn panel_node(
         .beside(at.id(), side=x.side, along=x.along, offset=x.offset, padding=8.0, holds_side=true)
         // (`fits`: as wide as what it holds, `w` at most, never narrower than it has been: its parts each told how wide
         // what they hold is laid out, out to its sides, none narrower than it is, small_panel's min_w and max_w)
-        .width(if x.fits { By(fn() { Some(dmin(x.w, wide.iter().fold(init=0.0, fn(m, s) { dmax(m, s.get().unwrap_or(0.0)) }))) }) } else { Is(Some(x.w)) })
+        // (what it holds nodes, `fits`: as wide as they are laid out, `w` at most, the tree sizing it by them)
+        .width(
+          if x.fits && x.nodes is Some(_) {
+            Is(None)
+          } else if x.fits {
+            By(fn() { Some(dmin(x.w, wide.iter().fold(init=0.0, fn(m, s) { dmax(m, s.get().unwrap_or(0.0)) }))) })
+          } else {
+            Is(Some(x.w))
+          },
+        )
+        .max_width(Is(if x.fits && x.nodes is Some(_) { Some(x.w) } else { None }))
         .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
         // (`tall`: a share of the window, no taller than the room beside what opened it, small_panel's `h`)
         .height(By(fn() { if x.tall > 0.0 { Some(dmin(x.tall * over_room(layer).1, dmax(0.0, over_room(layer).1 - 16.0))) } else { None } }))
@@ -293,6 +307,13 @@ fn panel_node(
             b
             .shrink(Is(1.0))
             .min_height(Is(Some(0.0)))
+            // (`most`: what it holds that tall at most, scrolling past it, panel_nodes')
+            .max_height(
+              match x.nodes {
+                Some({ most: Some(m), .. }) => By(fn() { Some(m()) })
+                _ => Is(None)
+              },
+            )
             .margin(Is((-panel_pad, 0.0, -panel_pad, 0.0)))
             // (the focus its own as it opens where it takes it (`focus`, kit's popover's: on what holds its body, said
             // nothing of itself): no key presses it)
@@ -398,6 +419,8 @@ fn panel_node(
         }
       })
       |> ignore
+      })
+      gate.seal(layer)
     },
     leave=@kit.pop_out_ms,
   )

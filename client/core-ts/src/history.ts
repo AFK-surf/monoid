@@ -449,10 +449,55 @@ export function parsePrompt(text: string): [Sourced[], string] {
   }
   rest += second.slice(at);
   const note = rest
+    .replace(/<card-state\b[^>]*>[\s\S]*?(?:<\/card-state>|$)/g, "")
+    .replace(/^\[Delivered at [^\n]+\]\n?/gm, "")
     .split("\n")
     .filter((l) => !(l.startsWith("(Thread ") && l.endsWith(")") && l.includes(" had messages before you were brought in;")))
     .join("\n");
   return [messages, note.trim()];
+}
+
+/// Cleans station-injected prompt wrappers (`[Quote] From ...`, `Attached files:`, pasted-text instructions) in a
+/// received user message so the person's own words stay front and center in the execution history.
+export function cleanReceivedMessageText(raw: string): string {
+  let cleaned = raw.replace(
+    /(?:^|\n\n)\[Quote\] From [^\n]+:\n((?:>[^\n]*(?:\n|$))+)(?:Their comment on it:[ \t]*([^\n]*)(?:\n|$))?/g,
+    (full, passage: string, comment?: string) => {
+      const leadingBreak = full.startsWith("\n\n") ? "\n\n" : "";
+      const nonEmpty = passage
+        .split("\n")
+        .map((l) => l.replace(/^>\s?/, "").trim())
+        .filter((l) => l !== "");
+      const first = nonEmpty[0] ?? "";
+      const clipped = Array.from(first).slice(0, 100).join("");
+      const suffix = nonEmpty.length > 1 || clipped.length < first.length ? " …" : "";
+      const quoteLine = clipped !== "" ? `> ${clipped}${suffix}` : "";
+      const commentLine = comment !== undefined && comment.trim() !== "" ? comment.trim() : "";
+      const combined = [quoteLine, commentLine].filter(Boolean).join("\n");
+      return combined !== "" ? `${leadingBreak}${combined}\n` : leadingBreak;
+    },
+  );
+  cleaned = cleaned.replace(
+    /(?:\n\n|^)The user pasted text into the composer; its full contents are in these text attachments\. Read them as part of the user's message:\n(?:- [^\n]+(?:\n|$))+/g,
+    "",
+  );
+  cleaned = cleaned.replace(
+    /(?:\n\n|^)Attached files:\n((?:- [^\n]+(?:\n|$))+)/g,
+    (_full, list: string) => {
+      const names = list
+        .trim()
+        .split("\n")
+        .map((l) => {
+          const m = /^- \/.*? \((.+), \d+ bytes\)$/.exec(l.trim());
+          if (m?.[1]) return m[1];
+          const p = l.replace(/^- /, "").trim();
+          return p.split("/").pop() || p;
+        })
+        .filter(Boolean);
+      return names.length > 0 ? `\n[附件: ${names.join(", ")}]` : "";
+    },
+  );
+  return cleaned.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 /// Work the agent started on its own that told it how it ended (Claude Code's `<task-notification>`): a background command
@@ -773,7 +818,7 @@ export function presentHistory(live: J, cx: Context): J {
               from = { name, slackUser: null, bound: false };
             }
             // A person's words are drawn as they wrote them; an agent's are Markdown, as a chat's page reads them.
-            const said = mentions(m.text, cx);
+            const said = mentions(cleanReceivedMessageText(m.text), cx);
             return [{ key: m.ts, from, text: said, place: place(m.thread, m.slack ? m.ts : null), ...(m.agent ? { md: markdown(said, cx.md) } : {}) }];
           }),
         };
@@ -849,7 +894,7 @@ export function presentHistory(live: J, cx: Context): J {
                     : t("core-logic.history.mark.other", { mark: m });
           v = {
             kind: "mark",
-            text: item.why !== null ? `${baseText}：${line(item.why, 200)}` : baseText,
+            text: item.why !== null ? `${baseText}：${item.why}` : baseText,
           };
           const ends = endsOf(m);
           if (ends !== null) v.ends = ends;
@@ -867,32 +912,29 @@ export function presentHistory(live: J, cx: Context): J {
     return out;
   });
 
-  // Turns: each prompt that woke the agent (not one of a sub-agent's) begins one, on its item, saying when and what the
-  // turn did up to the next: how many calls, how many messages it sent (or that it sent none). Items before the first
-  // loaded one belong to a turn that began on an earlier page.
-  type Turn = { at: number | null; steps: number; posts: number; item: J };
-  let turn: Turn | null = null;
-  const turns: Turn[] = [];
+  // Turns: each prompt that woke the agent (not one of a sub-agent's) begins one, on its item; its time is shown when
+  // at least TURN_TIME_GAP_MS (or a local day boundary) has passed since the last shown turn time. Items before the
+  // first loaded one belong to a turn that began on an earlier page.
+  const TURN_TIME_GAP_MS = 5 * 60_000;
+  let lastTurnTimeAt: number | null = null;
   items.forEach(([item, first], n) => {
     if (item.kind === "received" && !flag(timeline[item.i], "subagent")) {
-      const at = typeof timeline[first]?.at === "string" ? epochMs(timeline[first].at) : null;
-      turn = { at: at === null ? null : Math.trunc(at), steps: 0, posts: 0, item: shown[n] };
-      turns.push(turn);
-    } else if (turn !== null) {
-      if (item.kind === "group") turn.steps += item.rows.filter((r) => "step" in r).length;
-      else if (item.kind === "post") turn.posts++;
+      const rawAt = typeof timeline[first]?.at === "string" ? epochMs(timeline[first].at) : null;
+      const at = rawAt === null ? null : Math.trunc(rawAt);
+      const showTime =
+        at !== null &&
+        (lastTurnTimeAt === null ||
+          Math.abs(at - lastTurnTimeAt) >= TURN_TIME_GAP_MS ||
+          format.localDay(at, cx.offsetMin) !== format.localDay(lastTurnTimeAt, cx.offsetMin));
+      if (showTime) lastTurnTimeAt = at;
+      shown[n].turn = {
+        ...(at !== null ? { at } : {}),
+        ...(showTime
+          ? { time: cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin) }
+          : {}),
+      };
     }
   });
-  for (const { at, steps: n, posts, item } of turns) {
-    const did = [
-      ...(n > 0 ? [t("core-logic.history.turn.steps", { n })] : []),
-      posts > 0 ? t("core-logic.history.turn.posts", { n: posts }) : t("core-logic.history.turn.silent"),
-    ].join(" · ");
-    item.turn = {
-      ...(at !== null ? { at, time: cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin) } : {}),
-      text: did,
-    };
-  }
 
   const pushedNow = pushed(live, cx.runtime);
   const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));

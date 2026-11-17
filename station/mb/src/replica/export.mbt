@@ -1,5 +1,5 @@
-// The export (station/src/replica/export.ts `Exporter`, its AGENTS.md): what must survive of this station's
-// conversations, read from stillfail.db and written as batches, a generation of them per workspace, under
+// The export (station/test/reference/replica-export.ts `Exporter`, src/replica/AGENTS.md): what must survive of this
+// station's conversations, read from stillfail.db and written as batches, a generation of them per workspace, under
 // <replica>/own/<workspace>/<gen>/, the exporter's own state in <replica>/export.db. The same reads, records, state and
 // files as the TypeScript exporter's, so either takes up where the other left off.
 

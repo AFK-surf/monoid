@@ -19,6 +19,7 @@ pub fn fixture_reset() -> Unit {
   new_fix.d_runtime = "claude"
   new_fix.d_effort = "high"
   new_fix.context = ""
+  new_fix.speed = ""
   new_fix.d_profile = ""
   new_fix.d_profiles.clear()
   new_fix.d_none = false
@@ -26,6 +27,7 @@ pub fn fixture_reset() -> Unit {
   new_fix.reading = 0
   new_fix.crowded = false
   new_fix.tall = false
+  new_fix.ultrafast = false
   new_fix.unmarked = false
   new_fix.preset = ""
   new_fix.presets_late = false
@@ -41,7 +43,12 @@ pub fn fixture_reset() -> Unit {
   fix_job_more.val = 0
   new_fix.presets.clear()
   new_fix.presets.push_iter([fix_preset_design(), fix_preset("p-tc", "web-app + backend", ["web-app", "backend"], "")].iter())
+  new_fix.others.clear()
+  new_fix.others.push_iter(fix_others().iter())
+  new_fix.others_reading = false
   fix_chats.clear()
+  fix_windows.clear()
+  fix_windowed.clear()
   fix_timers.clear()
   fix_downloads.clear()
   fix_keeping_reset()

@@ -30,6 +30,8 @@ test("a_whole_file_asked_again_while_it_comes_is_read_once", async () => {
   await host.settle();
   const done = host.takeEmitted().map(([, m]) => m as J).filter((m) => (m.id === 1 || m.id === 2) && ("ok" in m || "error" in m));
   assert.deepEqual(done.map((m) => [m.id, m.ok?.type, m.error?.message]).sort(), [[1, "image/png", undefined], [2, "image/png", undefined]]);
+  // each its own bytes, whole: the page takes those it is given away (the web's worker; FakeHost.emit too)
+  for (const id of [1, 2]) assert.deepEqual([...(done.find((m) => m.id === id)?.bytes ?? [])], [1, 2, 3], `file ${id}`);
   // Come and gone: asked again, it is read again.
   call(core, ui, 3, "station.file", { station: "ws/st", key: "k1", name: "a.png" });
   await host.settle();

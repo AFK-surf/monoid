@@ -158,11 +158,13 @@ pub struct Stops {
   mut track_x : Double
   mut track_w : Double
   mut felt : Int
+  /// how many times its caller has said a pick did not take (Stops::reset): what shows it as nodes (stops_node) told so
+  resets : @signals.Signal[Int]
 }
 
 ///|
 pub fn Stops::new() -> Stops {
-  { said: -2, shown: -1, expect: -1, stale: [], track_x: 0.0, track_w: 0.0, felt: -1 }
+  { said: -2, shown: -1, expect: -1, stale: [], track_x: 0.0, track_w: 0.0, felt: -1, resets: @signals.signal(0) }
 }
 
 ///|
@@ -171,6 +173,7 @@ pub fn Stops::reset(self : Stops) -> Unit {
   self.said = -2
   self.expect = -1
   self.stale.clear()
+  self.resets.set(self.resets.untracked() + 1)
 }
 
 ///|

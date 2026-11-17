@@ -88,3 +88,10 @@ test "the shell's answers at once" {
   }
   assert_true(garbled.has_prefix("the shell's answer is not JSON"))
 }
+
+///|
+test "a shell's error is said in its words, not its type's name" {
+  let e : Error = @wire.ShellError("database is locked")
+  inspect(e.to_string(), content="database is locked")
+  inspect("\{e}", content="database is locked")
+}

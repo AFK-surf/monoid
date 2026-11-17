@@ -2,12 +2,27 @@
 // with the same JSON and bytes, done with what a browser has. iroh is iroh for the browser
 // (client/iroh-wasm, a module made by wasm-bindgen with its wasm beside it; its calls are those the TypeScript core
 // wraps, client/core-ts/src/iroh-bindings.ts), loaded from where the page serves it the first time an endpoint is
-// bound; what is kept is kept in the page's localStorage; the clock is the page's, the random bytes its crypto's.
+// bound, or given (`Shell::start_with`: the module, or what loads it, where a bundle has it already); what is kept
+// is kept in the page's localStorage (none in a worker: `storage.*` fails there, and its program keeps its own);
+// the clock is the page's, the random bytes its crypto's.
 //
 //   op                 on a page
-//   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively)
-//   iroh.bind          the module's `bind({secretKey, relayUrls})`: through relays alone whatever is asked (a browser
-//                      has no UDP: `relayOnly` is always so), and nothing looked up (`lookup` never)
+//   storage.get/set    localStorage, the key `<dir>:<key>`, the value in hex (a file a key natively); where there is
+//                      none (a worker), a failure
+//   idb.get/put/delete/scan   keys (strings) and their bytes, past localStorage's few MB: the page's IndexedDB,
+//                      the database `<dir>:idb` and its store "kv"; where there is none (Node, a worker made
+//                      without it), a map of this page's alone, gone with it. `get {key}` answers `{found}` and,
+//                      found, the bytes; `put {key}` with the bytes, `{}`; `delete {key}` or `{prefix}`, every key
+//                      it starts, `{}`; `scan {prefix?, after?, limit?}` the keys from `prefix` past `after`, in
+//                      the order of their UTF-16 code units, `limit` (200 unless said) at most: `{items: [{key,
+//                      hex}], more}`. No other shell has them: the Rust shell keeps what it keeps in `sql.*`
+//   iroh.bind          the module's `bind({secretKey, relayUrls})`, with `relayEntries` where any are said (each
+//                      `{entry, relay}`): through relays alone whatever is asked (a browser has no UDP: `relayOnly`
+//                      is always so), nothing looked up (`lookup` never), and no connection taken (`alpns` is not
+//                      read: iroh-wasm binds with none)
+//   iroh.setRelayEntries   the endpoint's `setRelayEntries(entries)`, each `{entry, relay}`; of one closed, nothing
+//   iroh.accept        none: a page takes no connection. Asked, it fails as every op a page has not, which the
+//                      mesh says to whoever asked for one (`Mesh::incoming`)
 //   iroh.connect       `endpoint.connect(addr, alpn, [], givenUp)`; `fetch.cancel` of its call resolves `givenUp`,
 //                      which drops the handshake, and it is answered "cancelled" as natively
 //   iroh.endpointId, iroh.relayStatus, iroh.close      the endpoint's `id`, `relayStatus`, `close`
@@ -31,11 +46,9 @@
 //                  stream, which is neither; a reply's left unread): as the Rust shell lets a connection's go;
 //   a connection   kept as why it ended once it has (asked after, it answers that), until it is closed with
 //                  `forget` (`conn.close {id, forget: true}`: the mesh's, once it was told the end and keeps why
-//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes. The Rust
-//                  shell reads no `forget` and keeps that of every connection it had: there it is that shell's to
-//                  let go;
-//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after
-//                  (the Rust shell still says a closed one's id: the mesh keeps it and asks none).
+//                  itself, or at once of one an opening gave up, ended or not) or its endpoint closes, as the Rust
+//                  shell lets one go;
+//   an endpoint    as it is closed, with every connection of it and their streams. Nothing is answered of it after.
 // As natively, a wait given up is not a call given up but for a dial: a read let go of goes on (iroh-wasm's `read`
 // holds the stream's receiving half), so a stream is not read again after that, but reset.
 //
@@ -48,10 +61,33 @@
 priv type Page
 
 ///|
+/// iroh for the browser as its program gives it (`Shell::start_with`): the module itself, initialized (what has
+/// `bind`), or a function that gives it or a promise of it (`() => init().then(() => iroh)`), called the first time
+/// an endpoint is bound, and again at the next where what it gave failed.
+#external
+pub type IrohJs
+
+///|
+/// How the page's shell gets iroh's module: a function giving a promise of it, called as an endpoint is bound
+/// until one it gave came.
+#external
+priv type Loader
+
+///|
+/// The module at `at` (iroh-wasm's JavaScript, its wasm beside it), loaded and initialized.
+extern "js" fn loader_at(at : String) -> Loader =
+  #|(at) => () => import(at).then((module) => module.default().then(() => module))
+
+///|
+/// The module given, or what the function given gives (asked once a promise of it is wanted, not before).
+extern "js" fn loader_of(iroh : IrohJs) -> Loader =
+  #|(given) => typeof given === "function" ? () => Promise.resolve().then(() => given()) : () => Promise.resolve(given)
+
+///|
 /// `answered(id, kind, text, bytes)` is called as a call is answered (`Shell::settle`'s kinds), never while it is
 /// asked.
-extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, String, Bytes) -> Unit) -> Page =
-  #|(prefix, irohAt, answered) => {
+extern "js" fn page_start(prefix : String, loader : Loader, answered : (Int, Int, String, Bytes) -> Unit) -> Page =
+  #|(prefix, loader, answered) => {
   #|  const none = new Uint8Array(0);
   #|  // by handle: {endpoint}; {conn, of: its endpoint, closed: why it ended, once it has} or, ended, {gone: why, of};
   #|  // {stream, on: its connection, finished, ended}
@@ -65,13 +101,104 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|  // by the call of a dial under way: what gives it up
   #|  const dials = new Map();
   #|  let iroh = null;
-  #|  const load = () => (iroh ??= import(irohAt).then((module) => module.default().then(() => module)).catch((e) => { iroh = null; throw e; }));
+  #|  const load = () => (iroh ??= loader().catch((e) => { iroh = null; throw e; }));
   #|  const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
   #|  const unhex = (text) => Uint8Array.from(text.match(/../g) ?? [], (b) => Number.parseInt(b, 16));
   #|  const connection = (h) => {
   #|    if (h?.gone !== undefined) throw new Error("connection closed: " + (h.gone.reason ?? ""));
   #|    if (h?.conn === undefined) throw new Error("not a connection");
   #|    return h.conn;
+  #|  };
+  #|  // (a worker has no localStorage: its program keeps what it keeps itself)
+  #|  const storage = () => {
+  #|    if (typeof localStorage === "undefined") throw new Error("no localStorage here");
+  #|    return localStorage;
+  #|  };
+  #|  // the page's IndexedDB, opened as first asked (again after a failure); none: a map of the page's alone
+  #|  let db = null;
+  #|  const memory = typeof indexedDB === "undefined" ? new Map() : null;
+  #|  const done = (r) => new Promise((ok, fail) => { r.onsuccess = () => ok(r.result); r.onerror = () => fail(r.error); });
+  #|  const store = (mode) => (db ??= new Promise((ok, fail) => {
+  #|    const r = indexedDB.open(prefix + ":idb", 1);
+  #|    r.onupgradeneeded = () => r.result.createObjectStore("kv");
+  #|    r.onsuccess = () => ok(r.result);
+  #|    r.onerror = () => fail(r.error);
+  #|  }).catch((e) => { db = null; throw e; })).then((d) => d.transaction("kv", mode).objectStore("kv"));
+  #|  const committed = (s) => new Promise((ok, fail) => {
+  #|    s.transaction.oncomplete = () => ok();
+  #|    s.transaction.onerror = s.transaction.onabort = () => fail(s.transaction.error ?? new Error("aborted"));
+  #|  });
+  #|  const key = (a) => {
+  #|    if (typeof a.key !== "string") throw new Error("no key");
+  #|    return a.key;
+  #|  };
+  #|  // the keys from `from` on (past it where `past`), in order, each with its value, while `f` takes them
+  #|  const walk = async (from, past, f) => {
+  #|    if (memory !== null) {
+  #|      for (const k of [...memory.keys()].sort()) {
+  #|        if (k < from || (past && k === from)) continue;
+  #|        if (!f(k, memory.get(k))) break;
+  #|      }
+  #|      return;
+  #|    }
+  #|    const s = await store("readonly");
+  #|    await new Promise((ok, fail) => {
+  #|      const r = s.openCursor(IDBKeyRange.lowerBound(from, past));
+  #|      r.onerror = () => fail(r.error);
+  #|      r.onsuccess = () => {
+  #|        const c = r.result;
+  #|        if (c === null || typeof c.key !== "string" || !f(c.key, c.value)) ok();
+  #|        else c.continue();
+  #|      };
+  #|    });
+  #|  };
+  #|  const idb = async (op, a, bytes) => {
+  #|    switch (op) {
+  #|      case "idb.get": {
+  #|        const k = key(a);
+  #|        const v = memory !== null ? memory.get(k) : await done((await store("readonly")).get(k));
+  #|        return v === undefined ? [{ found: false }] : [{ found: true }, v];
+  #|      }
+  #|      case "idb.put": {
+  #|        const k = key(a);
+  #|        const v = Uint8Array.from(bytes ?? none);
+  #|        if (memory !== null) memory.set(k, v);
+  #|        else {
+  #|          const s = await store("readwrite");
+  #|          s.put(v, k);
+  #|          await committed(s);
+  #|        }
+  #|        return [{}];
+  #|      }
+  #|      case "idb.delete": {
+  #|        const gone = [];
+  #|        if (typeof a.prefix === "string") await walk(a.prefix, false, (k) => k.startsWith(a.prefix) && gone.push(k) > 0);
+  #|        else gone.push(key(a));
+  #|        if (memory !== null) for (const k of gone) memory.delete(k);
+  #|        else if (gone.length > 0) {
+  #|          const s = await store("readwrite");
+  #|          for (const k of gone) s.delete(k);
+  #|          await committed(s);
+  #|        }
+  #|        return [{}];
+  #|      }
+  #|      default: {
+  #|        // idb.scan
+  #|        const p = typeof a.prefix === "string" ? a.prefix : "";
+  #|        const after = typeof a.after === "string" ? a.after : null;
+  #|        const limit = Number.isInteger(a.limit) && a.limit > 0 ? a.limit : 200;
+  #|        const past = after !== null && after >= p;
+  #|        const items = [];
+  #|        let more = false;
+  #|        await walk(past ? after : p, past, (k, v) => {
+  #|          if (!k.startsWith(p)) return false;
+  #|          if (items.length === limit) return !(more = true);
+  #|          items.push({ key: k, hex: hex(v) });
+  #|          return true;
+  #|        });
+  #|        return [{ items, more }];
+  #|      }
+  #|    }
   #|  };
   #|  const stream = (h) => {
   #|    if (h?.stream === undefined) throw new Error("not a stream");
@@ -82,15 +209,20 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|    const h = handles.get(a.id);
   #|    switch (op) {
   #|      case "storage.get": {
-  #|        const kept = localStorage.getItem(prefix + ":" + a.key);
+  #|        const kept = storage().getItem(prefix + ":" + a.key);
   #|        return kept === null ? [{ none: true }] : [{}, unhex(kept)];
   #|      }
   #|      case "storage.set":
-  #|        localStorage.setItem(prefix + ":" + a.key, hex(bytes ?? none));
+  #|        storage().setItem(prefix + ":" + a.key, hex(bytes ?? none));
   #|        return [{}];
+  #|      case "idb.get":
+  #|      case "idb.put":
+  #|      case "idb.delete":
+  #|      case "idb.scan":
+  #|        return idb(op, a, bytes);
   #|      case "iroh.bind": {
   #|        const module = await load();
-  #|        return [{ id: keep({ endpoint: await module.bind({ secretKey: bytes ?? none, relayUrls: a.relayUrls ?? [] }) }) }];
+  #|        return [{ id: keep({ endpoint: await module.bind({ secretKey: bytes ?? none, relayUrls: a.relayUrls ?? [], ...(a.relayEntries ? { relayEntries: a.relayEntries } : {}) }) }) }];
   #|      }
   #|      case "iroh.connect": {
   #|        if (h?.endpoint === undefined) throw new Error("not an endpoint");
@@ -120,6 +252,9 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|          dials.delete(id);
   #|        }
   #|      }
+  #|      case "iroh.setRelayEntries":
+  #|        if (h?.endpoint !== undefined) await h.endpoint.setRelayEntries(a.entries ?? []);
+  #|        return [{}];
   #|      case "iroh.networkChange":
   #|        if (h?.endpoint !== undefined) await h.endpoint.networkChange();
   #|        return [{}];
@@ -211,6 +346,13 @@ extern "js" fn page_start(prefix : String, iroh : String, answered : (Int, Int, 
   #|      case "iroh.relayStatus":
   #|        if (h?.endpoint !== undefined) return h.endpoint.relayStatus();
   #|        break;
+  #|      case "iroh.addAddr":
+  #|        // (where a peer is, without looking it up: iroh-wasm's `addAddr`, answered at once)
+  #|        if (h?.endpoint !== undefined) {
+  #|          h.endpoint.addAddr(a.addr);
+  #|          return null;
+  #|        }
+  #|        break;
   #|      case "conn.closeReason":
   #|        if (h?.conn !== undefined) return h.conn.closeReason() ?? null;
   #|        if (h?.gone !== undefined) return h.gone;
@@ -293,9 +435,30 @@ let page : Ref[Page?] = Ref(None)
 /// as its next timer comes due, by `rt`'s own clock. So `rt` is a runtime on a clock of the page's
 /// (`Runtime::live(now)`), and nothing else ticks it.
 pub fn Shell::start(rt : @effect.Runtime, dir : String, iroh~ : String) -> Shell {
+  Shell::started(rt, dir, loader_at(iroh))
+}
+
+///|
+/// As `Shell::start`, with iroh given rather than loaded from an address (`IrohJs`: the module a bundle imported, or
+/// what initializes it), for a page or a worker. `dir`: what `storage.*` keys are kept under, where there is a
+/// localStorage (a worker has none, and its program keeps its own).
+pub fn Shell::start_with(rt : @effect.Runtime, iroh : IrohJs, dir? : String = "") -> Shell {
+  Shell::started(rt, dir, loader_of(iroh))
+}
+
+///|
+/// The page's shell started, iroh got by `loader`, and `rt` turned by the page's events from now on.
+fn Shell::started(rt : @effect.Runtime, dir : String, loader : Loader) -> Shell {
   let shell = Shell::of_target(rt)
-  let made = page_start(dir, iroh, (id, kind, text, bytes) => shell.settle(id.to_int64(), kind, text, bytes))
+  let made = page_start(dir, loader, (id, kind, text, bytes) => shell.settle(id.to_int64(), kind, text, bytes))
   page.val = Some(made)
+  turn_on(rt, made)
+  shell
+}
+
+///|
+/// `rt` turned by the page `made`'s events: once what woke a fiber is over, and as its next timer comes due.
+fn turn_on(rt : @effect.Runtime, made : Page) -> Unit {
   // (one turn for all that woke since the last: asked once, run as a microtask; then the page's timer set for the
   // runtime's next, which asks a turn as it comes due)
   let asked = Ref(false)
@@ -319,7 +482,6 @@ pub fn Shell::start(rt : @effect.Runtime, dir : String, iroh~ : String) -> Shell
   }
   rt.on_wake(() => (wake.val)())
   rt.on_timer(_ => (wake.val)())
-  shell
 }
 
 ///|

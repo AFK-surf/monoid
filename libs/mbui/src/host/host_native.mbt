@@ -63,6 +63,12 @@ extern "C" fn ffi_glyph(key : Int, out : FixedArray[Double]) -> Unit = "mb_host_
 
 extern "C" fn ffi_glyph_put(key : Int, x : Int, y : Int) -> Unit = "mb_host_glyph_put"
 
+#borrow(out)
+extern "C" fn ffi_glyph_picture(key : Int, out : FixedArray[Byte]) -> Int = "mb_host_glyph_picture"
+
+#borrow(px)
+extern "C" fn ffi_atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Int = "mb_host_atlas_put"
+
 extern "C" fn ffi_atlas_size(colour : Int) -> Int = "mb_host_atlas_size"
 
 #borrow(keys)
@@ -163,6 +169,10 @@ extern "C" fn ffi_exit(code : Int) -> Unit = "mb_host_exit"
 extern "C" fn ffi_mem_bytes() -> Double = "mb_host_mem_bytes"
 
 extern "C" fn ffi_reduce_transparency() -> Int = "mb_host_reduce_transparency"
+
+extern "C" fn ffi_increase_contrast() -> Int = "mb_host_increase_contrast"
+
+extern "C" fn ffi_thermal_throttled() -> Int = "mb_host_thermal_throttled"
 
 extern "C" fn ffi_gpu_ms() -> Double = "mb_host_gpu_ms"
 
@@ -326,6 +336,10 @@ extern "C" fn ffi_window_open(what : String) -> Int = "mb_host_window_open"
 extern "C" fn ffi_window_front(what : String) -> Int = "mb_host_window_front"
 
 ///|
+#borrow(what)
+extern "C" fn ffi_windows(op : Int, wid : Int, what : String) -> Int = "mb_host_windows"
+
+///|
 extern "C" fn ffi_set_cursor(kind : Int) -> Unit = "mb_host_set_cursor"
 
 ///|
@@ -444,6 +458,15 @@ fn window_open(what : String) -> Bool {
 /// The window opened for `what` to the front, while it is open (@hostapi.window_front).
 fn window_front(what : String) -> Bool {
   ffi_window_front(what) != 0
+}
+
+///|
+/// The windows of this run (@hostapi.windows_in_process, window_open_id, window_front_id, window_close_id,
+/// window_current): op 0 whether they open in it, 1 one opened for `what` (its id; 0 none), 2 window `wid` to the front
+/// (whether it is open), 3 it closed, 4 the window drawn or handing input now. A host whose windows are runs of their
+/// own answers 0 to each.
+fn windows(op : Int, wid : Int, what : String) -> Int {
+  ffi_windows(op, wid, what)
 }
 
 ///|
@@ -621,6 +644,19 @@ fn glyph(key : Int, out : FixedArray[Double]) -> Unit {
 ///|
 fn glyph_put(key : Int, x : Int, y : Int) -> Unit {
   ffi_glyph_put(key, x, y)
+}
+
+///|
+/// The picture of glyph `key` drawn by the `glyph` asked last (win_text.cpp; Apple's, Linux's and Android's hosts give
+/// none yet: no halo drawn there).
+fn glyph_picture(key : Int, out : FixedArray[Byte]) -> Bool {
+  ffi_glyph_picture(key, out) == 1
+}
+
+///|
+/// Pixels made here put in the words' atlas (win_text.cpp; none taken elsewhere yet).
+fn atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Bool {
+  ffi_atlas_put(x, y, w, h, px) == 1
 }
 
 ///|
@@ -828,6 +864,20 @@ fn back_enabled(on : Bool) -> Unit {
 /// turned off; Android has no such setting (never).
 fn reduce_transparency() -> Bool {
   ffi_reduce_transparency() != 0
+}
+
+///|
+/// Whether the system asks for more contrast: macOS's and iOS's Increase Contrast, Windows' high contrast;
+/// Android and Linux have no such setting an app reads (never).
+fn increase_contrast() -> Bool {
+  ffi_increase_contrast() != 0
+}
+
+///|
+/// Whether the system is slowing the device down for its heat: Android's thermal status moderate or worse, macOS's
+/// and iOS's thermal state serious or critical; Windows and Linux never.
+fn thermal_throttled() -> Bool {
+  ffi_thermal_throttled() != 0
 }
 
 ///|

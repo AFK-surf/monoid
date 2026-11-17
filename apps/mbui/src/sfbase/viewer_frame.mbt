@@ -10,14 +10,10 @@
 // what it shows otherwise is laid out as the web's, narrower under 640 (viewer.mbt).
 
 ///|
-/// Where it is among those it steps through and how many they are (an image's: its chat's, as the core tells them,
-/// imageNear's index and count; a folder's); (-1, 0) when it steps through none.
-pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
-  if vw.shown_kind() != Some(KImage) {
-    return (-1, 0)
-  }
+/// What viewer `vw` asks of the core for where its picture is among its chat's (`imageNear`), where it steps through
+/// its chat's pictures (None: it steps through none of them, or a folder's).
+fn image_near_params(vw : Viewer) -> Map[String, Json]? {
   match vw.steps {
-    NoSteps => (-1, 0)
     InChat(thread, session) => {
       let p : Map[String, Json] = { "station": Json::string(vw.station), "path": Json::string(vw.file.path) }
       let at = vw.gallery_at()
@@ -28,7 +24,23 @@ pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
         Some(th) => p["thread"] = Json::number(th)
         None => p["session"] = Json::string(session)
       }
-      let told = src.topic("imageNear", p).get().value
+      Some(p)
+    }
+    _ => None
+  }
+}
+
+///|
+/// Where it is among those it steps through and how many they are (an image's: its chat's, as the core tells them,
+/// imageNear's index and count; a folder's); (-1, 0) when it steps through none.
+pub fn viewer_place(vw : Viewer, src : Source) -> (Int, Int) {
+  if vw.shown_kind() != Some(KImage) {
+    return (-1, 0)
+  }
+  match vw.steps {
+    NoSteps => (-1, 0)
+    InChat(_, _) => {
+      let told = src.topic("imageNear", image_near_params(vw).unwrap_or({})).get().value
       let at = match field(told, "index") {
         Some(Number(n, ..)) => n.to_int()
         _ => -1
@@ -58,6 +70,7 @@ pub fn vf_kind_label(kind : PKind?) -> String {
     Some(KMarkdown) => "Markdown"
     Some(KCsv) => @sf.t("web-main.preview.kind.csv")
     Some(KHtml) => @sf.t("web-main.preview.kind.html")
+    Some(KMbui) => "mbui"
     Some(KCode) => @sf.t("web-main.preview.kind.code")
     Some(KText) => @sf.t("web-main.preview.kind.text")
     None => ""
@@ -65,14 +78,45 @@ pub fn vf_kind_label(kind : PKind?) -> String {
 }
 
 ///|
+/// Whether a preview offers the 预览 / 源码 switch once its bytes are here.
+/// (`.mbui` / `.wasm` mini-programs run without a human-facing source toggle; agents read their source and state directly.)
+pub fn vf_has_source(vw : Viewer) -> Bool {
+  match vw.shown_kind() {
+    Some(KCsv) | Some(KHtml) => true
+    _ => false
+  }
+}
+
+///|
+/// The title shown in the viewer's bar: a `.mbui` / `.wasm` mini-program's resolved app title, else the file's name.
+pub fn vf_title(vw : Viewer) -> String {
+  if vw.shown_kind() == Some(KMbui) || is_mbui_viz(vw.file.name) {
+    viz_mbui_meta_of(vw.station, vw.key, vw.file.path, vw.file.name, vw.bytes.get()).0
+  } else {
+    vw.file.name
+  }
+}
+
+///|
 /// The line under the name: which of how many, its size, its kind; an image's size in pixels
 /// after them, as its message says it (the station read it from its header), else as its whole picture was decoded.
-/// (A film's and a song's are their player's bar's: player.mbt.)
+/// (A film's and a song's are their player's bar's: player.mbt; a `.mbui` mini-program has none.)
 pub fn vf_meta(vw : Viewer, src : Source) -> String {
+  if vw.shown_kind() == Some(KMbui) || is_mbui_viz(vw.file.name) {
+    return ""
+  }
   let (at, count) = viewer_place(vw, src)
   let parts : Array[String] = []
   let first = if count > 1 && at >= 0 { "\{at + 1} / \{count} · " } else { "" }
-  parts.push(first + @sf.file_size(vw.file.size))
+  let size = if vw.file.size > 0.0 {
+    vw.file.size
+  } else {
+    match vw.bytes.get() {
+      Some(b) => b.length().to_double()
+      None => 0.0
+    }
+  }
+  parts.push(first + @sf.file_size(size))
   let kind = vf_kind_label(vw.shown_kind())
   if kind != "" {
     parts.push(kind)
@@ -102,10 +146,10 @@ fn vf_native(v : Viewer, c : @ui.Ctx, src : Source) -> Unit {
     return
   }
   @sf.native_over_act("close", @sf.t("common.close"), "close", fn() { if !v.closing { v.shut(c) } }, lead=true)
-  if v.coming() {
+  if v.coming() || v.shown_kind() == Some(KMbui) {
     return
   }
-  if v.shown_kind() == Some(KHtml) {
+  if vf_has_source(v) {
     if v.bytes.get() is Some(_) {
       @sf.native_over_act("source", @sf.t(if v.source { "web-main.preview.rendered" } else { "web-main.preview.source" }), "code", fn() {
         v.set_source(!v.source)
@@ -198,25 +242,6 @@ fn vf_native_download(v : Viewer, c : @ui.Ctx, src : Source, there : Bool) -> Un
 ///|
 /// 预览 / 源码 in the bar (less its 2 in).
 let vf_tabs_item : Double = 58.0
-
-///|
-/// A chat's text or Markdown open in its preview, read in the desktop's reader (FilePreview.tsx hands it to the same
-/// Reader): what the preview read of it given to the reader (its place not kept: a chat's file is no drive's). In a tab
-/// beside a chat, the tab's reader (@sf.reader's `beside`: its tools the tab's, viewer_tab.mbt).
-pub fn vf_read(vw : Viewer, c : @ui.Ctx, src : Source, b : Bytes) -> Unit {
-  let v = vw
-  let file = @sf.blob_file(b, v.file.name, v.file.size, mime=v.mime, save=fn() { v.ask_save(c) })
-  @sf.reader(
-    c,
-    v.read_key(),
-    file,
-    markdown=v.shown_kind() == Some(KMarkdown),
-    back_label=v.desk_back(src),
-    on_back=fn() { v.shut(c) },
-    beside=v.beside,
-    move_beside=if !v.beside && beside_offered(v.file.path, v.file.name) { Some(fn() { v.move_beside() }) } else { None },
-  )
-}
 
 ///|
 /// What its reader reads it as (@sf.reader's key): the whole window's, or a tab's beside a chat, each its own place in

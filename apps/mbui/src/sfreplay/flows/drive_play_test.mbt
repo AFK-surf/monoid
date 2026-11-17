@@ -1,5 +1,5 @@
 // 45-drive-play (e2e/traces/drive-play.trace: a local still.fail, 76 messages): a video of the drive
-// played (the library's player, @sf.player): 影音 in the lent folder (drive-media), the first episode tapped: the
+// played (the library's player as nodes, @sf.player_node): 影音 in the lent folder (drive-media), the first episode tapped: the
 // player, which of the folder's films it is (1 / 2: the song is not one of them), its subtitle read beside it
 // (drive.read), its picture read by the system's player through the core (drive.read, each part as it comes, as the
 // run's player asked: its trace's read lines); left where it was, told to the core (drive.place); opened again, on

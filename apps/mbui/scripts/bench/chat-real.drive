@@ -1,0 +1,12 @@
+# 小屏, a finger: a chat of real size open as an agent works in it (src/sfbench/chat_real_scene.mbt): what it changes
+# every 120 ms, as the core sends it, taken while the chat sits at its foot, then while it is flung up and comes back.
+timeout 20000
+until 发消息
+wait 500
+log measure
+wait 3000
+drag 195 640 0 -360 90
+wait 1500
+drag 195 300 0 360 90
+wait 1500
+exit

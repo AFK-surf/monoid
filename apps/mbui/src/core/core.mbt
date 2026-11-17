@@ -294,8 +294,8 @@ pub fn fatal() -> String? {
 /// frame sees depends on frames, not on when the core's thread answered. A kept conversation given again (replay.mbt)
 /// comes this way too.
 pub fn receive(text : String, bytes : Bytes?) -> Unit {
-  // (for an id nothing holds: let be, unread)
-  if unheld(text) {
+  // (for an id nothing holds: let be, unread; for one let go of, kept unread)
+  if unheld(text, bytes) {
     return
   }
   let t0 = if perf_counts() { ffi_now() } else { -1.0 }
@@ -306,10 +306,12 @@ pub fn receive(text : String, bytes : Bytes?) -> Unit {
 }
 
 ///|
-/// Whether message `text` is for an id nothing holds (Client::unheld): let be unread, a kept conversation's clock told
-/// it came all the same (receive_hook).
-fn unheld(text : String) -> Bool {
-  guard client.unheld(text) else { return false }
+/// Whether message `text` is for an id nothing holds (Client::unheld), or for a subscription let go of (Client::later):
+/// taken unread, a kept conversation's clock told it came all the same (receive_hook). One for a subscription let go of
+/// is read as ever while a conversation is recorded, whose trace says each message as it was read, and with bytes
+/// beside it (none of these has any).
+fn unheld(text : String, bytes : Bytes?) -> Bool {
+  guard client.taken_unread(text, later=tracer.val is None && bytes is None) else { return false }
   match receive_hook.val {
     Some(f) => f()
     None => ()
@@ -439,8 +441,8 @@ pub fn perf_said(span : Double) -> String {
 /// answer nobody reads), before the frame decides what it does: what read the topic is built again, nothing else
 /// (@ui.on_message_said, "core"). Whether it was; else it is left for `receive`, as the frame is built.
 pub fn receive_said(text : String, bytes : Bytes?) -> Bool {
-  // (for an id nothing holds: taken as it comes, unread, nothing built for it)
-  if unheld(text) {
+  // (for an id nothing holds: taken as it comes, unread, nothing built for it; for one let go of, kept unread)
+  if unheld(text, bytes) {
     return true
   }
   let t0 = if perf_counts() { ffi_now() } else { -1.0 }
@@ -549,26 +551,21 @@ pub fn sign_in(on_done : (Result[Json, Json]) -> Unit) -> Unit {
     match r {
       Ok(Object(ok)) =>
         match ok.get("url") {
-          Some(String(url)) => {
-            let token = engine.next_auth
-            engine.next_auth += 1
-            engine.auths[token] = fn(back) {
-              match back {
-                Ok(query) =>
-                  client.call(
-                    "auth.complete",
-                    params=Json::object({ "query": Json::string(query) }),
-                    on_done~,
-                  )
-                  |> ignore
-                Err(why) => on_done(Err(error_json("auth", why)))
-              }
-            }
-            if ffi_web_auth(token, url, auth_scheme()) == 0 {
-              engine.auths.remove(token)
+          Some(String(url)) =>
+            if !browser_session(url, fn(back) {
+                match back {
+                  Ok(query) =>
+                    client.call(
+                      "auth.complete",
+                      params=Json::object({ "query": Json::string(query) }),
+                      on_done~,
+                    )
+                    |> ignore
+                  Err(why) => on_done(Err(error_json("auth", why)))
+                }
+              }) {
               on_done(Err(error_json("auth", "no browser session in this build")))
             }
-          }
           _ => on_done(Err(error_json("auth", "auth.begin gave no url")))
         }
       Ok(_) => on_done(Err(error_json("auth", "auth.begin gave no url")))
@@ -576,6 +573,27 @@ pub fn sign_in(on_done : (Result[Json, Json]) -> Unit) -> Unit {
     }
   })
   |> ignore
+}
+
+///|
+/// Opens `url` in the system's browser session (`has_browser_session`), which comes back on the app's own scheme
+/// (`app_scheme`): `done` gets the query it came back with, or why not ("cancelled": the person closed it). False
+/// where this build has none (nothing opened, `done` never called).
+pub fn browser_session(url : String, done : (Result[String, String]) -> Unit) -> Bool {
+  let token = engine.next_auth
+  engine.next_auth += 1
+  engine.auths[token] = done
+  if ffi_web_auth(token, url, auth_scheme()) == 0 {
+    engine.auths.remove(token)
+    return false
+  }
+  true
+}
+
+///|
+/// The app's own scheme, which its browser session comes back on (`<scheme>://auth/…`).
+pub fn app_scheme() -> String {
+  auth_scheme()
 }
 
 ///|
@@ -618,4 +636,16 @@ pub fn query_of(url : String) -> String {
     Some(j) => q.exact_view(end=j).to_owned()
     None => q.to_owned()
   }
+}
+
+///|
+/// The keyed list of topic `topic`'s value at `field` (Sub::keyed), of its subscription where there is one: none
+/// acquired for it (what reads it reads the topic as well, which holds it).
+pub fn keyed_of(
+  topic : String,
+  params : Map[String, Json],
+  field : String,
+  keys : Array[String],
+) -> @signals.KeyedList[String, Json]? {
+  client.peek_topic(topic, params~).map(fn(s) { s.keyed(field, keys) })
 }

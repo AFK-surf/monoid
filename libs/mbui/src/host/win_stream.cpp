@@ -8,7 +8,13 @@
 //
 // On the GPU where it can (the renderer's device, made with video support: win_render.cpp): the decoder given a DXGI
 // device manager decodes in hardware into Direct3D surfaces, each frame copied off its surface into an NV12 texture of
-// the stream's own (a few kept for reuse), its colours made BGRA there by the video processor only when something
+// the stream's own (a few kept for reuse). The decoders work on a device of their own on the same adapter (decoding),
+// each frame's texture shared with the renderer's and handed over once its copy is done on the GPU (a fence waited on
+// by the decoder's thread), taken back once what the renderer drew of it is (a fence the decoding device waits on):
+// on the renderer's device, a seek's run of frames decoded to reach the one asked for (a key frame's two seconds of 4K)
+// held the window's Present 25-80 ms; NVIDIA, 2026-11-17: 15-19 frames late of 32 seeks, 0-5 so. Where that
+// device or the sharing is not to be had, the decoders are on the renderer's device as before. Its colours made BGRA
+// there by the video processor only when something
 // shows it: the stream's system video layer (below), or the app's renderer drawing it (mb_stream_srv). Elsewhere (no
 // video device, a decoder that will not decode on the GPU) as before: in software, its NV12 made BGRA on the CPU as its
 // colours say (BT.709 or BT.601, video or full range) into a texture.
@@ -30,11 +36,11 @@
 //
 // A stream's sound (@hostapi.stream_audio, 48 kHz stereo PCM16 in 20 ms packets, the app's and a route's alike): a
 // source voice of XAudio2's of its own (one engine for all), as apple_stream.m's player: started once its reserve is
-// queued (100 ms at first), emptied once more than that and 200 ms are (after a stall in the transport) and as it runs
-// dry (an underrun refills the reserve first); stopped by an empty packet (muted, the stream's sound gone) or as the
-// stream closes. The reserve follows how late packets come: a gap between two longer than it covers makes it that
-// long and a packet more, at most 300 ms (packets of a Mac's sound, each 20 ms by their own clock, came here 50 to
-// 270 ms apart now and then, a busy Mac's: 60 ms ran dry, and each time it did was heard as a crackle).
+// queued (100 ms at first; @hostapi.stream_audio_wanted tells an app that paces its packets how much that is), emptied
+// once more than the reserve and 200 ms are (after a stall in the transport) and as it runs dry (an underrun refills
+// the reserve first); stopped by an empty packet (muted, the stream's sound gone) or as the stream closes. The reserve
+// follows how late packets come while it plays, up to 300 ms, and comes back down as they come on time: win_sound.h,
+// the rule, and why.
 //
 // A stream's system video layer (@hostapi.stream_layers, a native view of kind 4: win_views.cpp hands its content's
 // visual here, mb_stream_attach): a composition swap chain the size of the frame, in a visual of the views'
@@ -49,6 +55,7 @@
 #include <windows.h>
 #include <objbase.h>
 #include <d3d11.h>
+#include <d3d11_4.h>
 #include <d3d10.h>
 #include <dxgi1_2.h>
 #include <dcomp.h>
@@ -64,6 +71,7 @@
 #include <string.h>
 #include <math.h>
 #include "win.h"
+#include "win_sound.h"
 
 #pragma comment(lib, "windowscodecs.lib")
 #pragma comment(lib, "ole32.lib")
@@ -82,6 +90,10 @@ struct Gpu {
   ID3D11VideoProcessorInputView *in;
   int w, h;
   int bt601, full;
+  // decoding on a device of its own: the same texture there (what a frame is copied into), and the renderer's fence's
+  // value once what it drew of it is done (given back to be copied into again)
+  ID3D11Texture2D *dtex;
+  UINT64 drawn;
 };
 
 struct StreamFrame {
@@ -187,12 +199,11 @@ struct Stream {
   double ptr_w, ptr_h, ptr_hx, ptr_hy, ptr_x, ptr_y;
   int ptr_shown, ptr_new;
   IDCompositionSurface *ptr_surface;
-  // its sound (under sound_lock): its voice, whether it plays, its packets' memory (the voice reads each till played)
+  // its sound (under sound_lock): its voice, whether it is gone, its packets' memory (the voice reads each till played)
   IXAudio2SourceVoice *voice;
-  int sound_playing, sound_gone;
-  // the packets queued before it plays (5 at first: sound_play), and when the last one came (QueryPerformanceCounter)
-  int sound_reserve;
-  LONGLONG sound_at;
+  int sound_gone;
+  // when it plays and its reserve (win_sound.h)
+  SoundPlayer sound;
   uint8_t *sound_ring;
   unsigned sound_next;
   // the samples its voices let go of had played (its sound's clock goes on across them: mb_host_stream_audio_played);
@@ -288,6 +299,110 @@ static ID3D11VideoContext *vctx;
 static IMFDXGIDeviceManager *dxgi_manager;
 static int mf_started;
 
+// The decoders' device (decoding, above): it, its context, its fence (a frame's copy done: `copied` its last value);
+// the renderer's context and fence (shared, opened there too: what it drew of a texture done: `drawn` its last value).
+// Each fence's values set under fence_lock, so they only rise. ddev NULL: the decoders on the renderer's device.
+static ID3D11Device *ddev;
+static ID3D11DeviceContext4 *dctx;
+static ID3D11Fence *copied_fence, *drawn_fence, *drawn_fence_d;
+static ID3D11DeviceContext4 *rctx4;
+static UINT64 copied, drawn;
+static SRWLOCK fence_lock = SRWLOCK_INIT;
+
+static void decoding_drop(void) {
+  if (drawn_fence_d) drawn_fence_d->Release();
+  if (drawn_fence) drawn_fence->Release();
+  if (copied_fence) copied_fence->Release();
+  if (rctx4) rctx4->Release();
+  if (dctx) dctx->Release();
+  if (ddev) ddev->Release();
+  drawn_fence_d = drawn_fence = copied_fence = NULL;
+  rctx4 = dctx = NULL;
+  ddev = NULL;
+}
+
+// A texture w × h for frames copied off the decoder: made on the decoders' device, shared, opened on the renderer's
+// (*dtex and *tex), as the video processor takes it in (a decoder's surface: what NVIDIA's takes) or else plain.
+static HRESULT shared_nv12(int w, int h, ID3D11Texture2D **dtex, ID3D11Texture2D **tex) {
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  D3D11_TEXTURE2D_DESC td = {};
+  td.Width = (UINT)w;
+  td.Height = (UINT)h;
+  td.MipLevels = td.ArraySize = 1;
+  td.Format = DXGI_FORMAT_NV12;
+  td.SampleDesc.Count = 1;
+  td.Usage = D3D11_USAGE_DEFAULT;
+  td.BindFlags = D3D11_BIND_DECODER;
+  td.MiscFlags = D3D11_RESOURCE_MISC_SHARED;
+  *dtex = *tex = NULL;
+  HRESULT hr = ddev->CreateTexture2D(&td, NULL, dtex);
+  if (FAILED(hr)) {
+    td.BindFlags = 0;
+    hr = ddev->CreateTexture2D(&td, NULL, dtex);
+  }
+  IDXGIResource *r = NULL;
+  HANDLE handle = NULL;
+  if (SUCCEEDED(hr)) hr = (*dtex)->QueryInterface(IID_PPV_ARGS(&r));
+  if (SUCCEEDED(hr)) hr = r->GetSharedHandle(&handle);
+  if (SUCCEEDED(hr)) hr = dev->OpenSharedResource(handle, IID_PPV_ARGS(tex));
+  if (r) r->Release();
+  if (FAILED(hr)) {
+    if (*dtex) (*dtex)->Release();
+    if (*tex) (*tex)->Release();
+    *dtex = *tex = NULL;
+  }
+  return hr;
+}
+
+// The decoders' device on the renderer's adapter, its fences, and a texture shared from it tried (decoding, above):
+// none of it (ddev NULL) where any of that fails, or MBUI_SAME_VIDEO_DEVICE says so.
+static void decoding_device(ID3D11Device *dev, ID3D11DeviceContext *ctx) {
+  const char *same = getenv("MBUI_SAME_VIDEO_DEVICE");
+  if (same && *same && *same != '0') return;
+  IDXGIDevice *xdev = NULL;
+  IDXGIAdapter *adapter = NULL;
+  ID3D11Device5 *dev5 = NULL, *ddev5 = NULL;
+  ID3D11DeviceContext *dc = NULL;
+  ID3D10Multithread *mt = NULL;
+  HANDLE handle = NULL;
+  D3D_FEATURE_LEVEL levels[] = {D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0};
+  HRESULT hr = dev->QueryInterface(IID_PPV_ARGS(&xdev));
+  if (SUCCEEDED(hr)) hr = xdev->GetAdapter(&adapter);
+  if (SUCCEEDED(hr))
+    hr = D3D11CreateDevice(adapter, D3D_DRIVER_TYPE_UNKNOWN, NULL,
+                           D3D11_CREATE_DEVICE_VIDEO_SUPPORT | D3D11_CREATE_DEVICE_BGRA_SUPPORT, levels, 2,
+                           D3D11_SDK_VERSION, &ddev, NULL, &dc);
+  if (SUCCEEDED(hr)) hr = dc->QueryInterface(IID_PPV_ARGS(&dctx));
+  // (the decoders' threads and the one that copies off them share its context: each call under its lock)
+  if (SUCCEEDED(hr)) hr = ddev->QueryInterface(IID_PPV_ARGS(&mt));
+  if (SUCCEEDED(hr)) mt->SetMultithreadProtected(TRUE);
+  if (SUCCEEDED(hr)) hr = ctx->QueryInterface(IID_PPV_ARGS(&rctx4));
+  if (SUCCEEDED(hr)) hr = dev->QueryInterface(IID_PPV_ARGS(&dev5));
+  if (SUCCEEDED(hr)) hr = ddev->QueryInterface(IID_PPV_ARGS(&ddev5));
+  if (SUCCEEDED(hr)) hr = ddev5->CreateFence(0, D3D11_FENCE_FLAG_NONE, IID_PPV_ARGS(&copied_fence));
+  if (SUCCEEDED(hr)) hr = dev5->CreateFence(0, D3D11_FENCE_FLAG_SHARED, IID_PPV_ARGS(&drawn_fence));
+  if (SUCCEEDED(hr)) hr = drawn_fence->CreateSharedHandle(NULL, GENERIC_ALL, NULL, &handle);
+  if (SUCCEEDED(hr)) hr = ddev5->OpenSharedFence(handle, IID_PPV_ARGS(&drawn_fence_d));
+  if (SUCCEEDED(hr)) {
+    ID3D11Texture2D *a = NULL, *b = NULL;
+    hr = shared_nv12(64, 64, &a, &b);
+    if (a) a->Release();
+    if (b) b->Release();
+  }
+  if (handle) CloseHandle(handle);
+  if (mt) mt->Release();
+  if (ddev5) ddev5->Release();
+  if (dev5) dev5->Release();
+  if (dc) dc->Release();
+  if (adapter) adapter->Release();
+  if (xdev) xdev->Release();
+  if (FAILED(hr)) {
+    decoding_drop();
+    fprintf(stdout, "win: streams: decoded on the renderer's device (none of their own: %08lx)\n", (unsigned long)hr);
+    fflush(stdout);
+  }
+}
+
 static int video_here(void) {
   if (video_state) return video_state > 0;
   ID3D11Device *dev = (ID3D11Device *)mb_render_device();
@@ -313,12 +428,15 @@ static int video_here(void) {
   mt->SetMultithreadProtected(TRUE);
   mt->Release();
   if (!mf_started && SUCCEEDED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) mf_started = 1;
-  if (FAILED(MFCreateDXGIDeviceManager(&token, &dxgi_manager)) || FAILED(dxgi_manager->ResetDevice(dev, token))) {
+  decoding_device(dev, ctx);
+  if (FAILED(MFCreateDXGIDeviceManager(&token, &dxgi_manager)) ||
+      FAILED(dxgi_manager->ResetDevice(ddev ? ddev : dev, token))) {
     if (dxgi_manager) dxgi_manager->Release();
     dxgi_manager = NULL;
   }
   video_state = 1;
-  fprintf(stdout, "win: streams: on the GPU (its decoders %s)\n", dxgi_manager ? "too" : "not: no device manager");
+  fprintf(stdout, "win: streams: on the GPU (its decoders %s)\n",
+          !dxgi_manager ? "not: no device manager" : ddev ? "too, on a device of their own" : "too");
   fflush(stdout);
   return 1;
 }
@@ -360,6 +478,7 @@ static IMFTransform *decoder_of(const GUID &sub) {
 static void gpu_drop(Gpu *g) {
   if (g->in) g->in->Release();
   if (g->tex) g->tex->Release();
+  if (g->dtex) g->dtex->Release();
   memset(g, 0, sizeof *g);
 }
 
@@ -377,6 +496,12 @@ static Gpu gpu_take(Stream *s, int w, int h) {
   }
   LeaveCriticalSection(&lock);
   if (g.tex) return g;
+  g.w = w;
+  g.h = h;
+  if (ddev) {
+    shared_nv12(w, h, &g.dtex, &g.tex);
+    return g;
+  }
   D3D11_TEXTURE2D_DESC td = {};
   td.Width = (UINT)w;
   td.Height = (UINT)h;
@@ -399,6 +524,14 @@ static Gpu gpu_take(Stream *s, int w, int h) {
 // A texture it no longer shows, kept to be copied into again (a few), else let go.
 static void gpu_give(Stream *s, Gpu *g) {
   if (!g->tex) return;
+  if (g->dtex) {
+    // (copied into again only once what the renderer drew of it is done: its fence's value now, sent to the GPU)
+    AcquireSRWLockExclusive(&fence_lock);
+    g->drawn = ++drawn;
+    rctx4->Signal(drawn_fence, g->drawn);
+    ReleaseSRWLockExclusive(&fence_lock);
+    rctx4->Flush();
+  }
   EnterCriticalSection(&lock);
   int kept = !s->closed && s->npool < POOL;
   if (kept) s->pool[s->npool++] = *g;
@@ -639,12 +772,16 @@ static void fed_dropped(Stream *s) {
   if (direct >= 0) route_acked(route, direct);
 }
 
-// Windows' H.264 decoder once on the GPU is told nothing more and never released: its going, or flushed and told its
-// streaming ends, resets the app's Direct3D device about 100 ms later (DXGI_ERROR_DEVICE_RESET, also on another thread,
-// the GPU idle or seconds on: an RTX 5080's, driver 621.12, 2026-11-04), every Present failing from then on and the
-// window's picture stopped. Kept as it is for the next stream of its size, which goes on with it from a key frame.
+// A decoder once streaming on the GPU (H.264's, H.265's or AV1's: `codec`) is told nothing more and never released:
+// H.264's going, or flushed and told its streaming ends, resets the app's Direct3D device about 100 ms later
+// (DXGI_ERROR_DEVICE_RESET, also on another thread, the GPU idle or seconds on: an RTX 5080's, driver 621.12,
+// 2026-11-04), every Present failing from then on and the window's picture stopped; H.265's leaves semaphore handles
+// behind in the process each time one is released (driver 621.24, 2026-11-15, #6541). Kept as it is by codec and size
+// for the next stream or config of that codec and size, which goes on with it from a key frame.
 struct H264Kept {
   IMFTransform *dec;
+  int codec;
+  LONGLONG next;
   UINT32 cw, ch, w, h, rows;
   int bt601, full;
 };
@@ -665,18 +802,20 @@ static void h264_keep(H264 *d) {
   }
   AcquireSRWLockExclusive(&h264_kept_lock);
   // (more than that: not kept, and still not released)
-  if (h264_nkept < H264_KEPT) h264_kept[h264_nkept++] = {d->dec, d->cw, d->ch, d->w, d->h, d->rows, d->bt601, d->full};
+  if (h264_nkept < H264_KEPT)
+    h264_kept[h264_nkept++] = {d->dec, d->codec, d->next, d->cw, d->ch, d->w, d->h, d->rows, d->bt601, d->full};
   ReleaseSRWLockExclusive(&h264_kept_lock);
 }
 
-// One kept of this size given to `d`: 1 here.
+// One kept of this codec and size given to `d`: 1 here.
 static int h264_kept_take(H264 *d, UINT32 w, UINT32 h) {
   int got = 0;
   AcquireSRWLockExclusive(&h264_kept_lock);
   for (int i = 0; i < h264_nkept && !got; i++) {
     H264Kept *k = &h264_kept[i];
-    if (k->cw != w || k->ch != h) continue;
+    if (k->codec != d->codec || k->cw != w || k->ch != h) continue;
     d->dec = k->dec;
+    if (k->next > d->next) d->next = k->next;
     d->w = k->w, d->h = k->h, d->rows = k->rows;
     d->bt601 = k->bt601, d->full = k->full;
     *k = h264_kept[--h264_nkept];
@@ -687,7 +826,7 @@ static int h264_kept_take(H264 *d, UINT32 w, UINT32 h) {
 }
 
 static void h264_stop(H264 *d) {
-  if (d->dec && d->gpu && d->streaming && d->codec == CODEC_H264) h264_keep(d);
+  if (d->dec && d->gpu && d->streaming) h264_keep(d);
   else if (d->dec) d->dec->Release();
   d->dec = NULL;
   d->streaming = 0;
@@ -843,9 +982,10 @@ static int h264_start(Stream *s, UINT32 w, UINT32 h) {
     if (FAILED(MFStartup(MF_VERSION, MFSTARTUP_LITE))) return 0;
     mf_started = 1;
   }
-  if (d->codec == CODEC_H264 && !InterlockedCompareExchange(&s->no_gpu, 0, 0) && h264_kept_take(d, w, h)) {
+  if (!InterlockedCompareExchange(&s->no_gpu, 0, 0) && h264_kept_take(d, w, h)) {
     d->gpu = d->streaming = 1;
-    fprintf(stdout, "win: stream %d: H.264 %ux%u decoded on the GPU (a decoder kept)\n", s->id, w, h);
+    fprintf(stdout, "win: stream %d: %s %ux%u decoded on the GPU (a decoder kept)\n", s->id, codec_name(d->codec), w,
+            h);
     fflush(stdout);
     return 1;
   }
@@ -909,7 +1049,7 @@ static void h264_broken(Stream *s, HRESULT hr) {
   fed_dropped(s);
   say(s, "b");
   // (not to be taken up again, and on the GPU not released either: h264_keep)
-  if (d->gpu && d->codec == CODEC_H264) d->dec = NULL;
+  if (d->gpu) d->dec = NULL;
   h264_stop(d);
   h264_start(s, d->cw, d->ch);
 }
@@ -957,7 +1097,27 @@ static Gpu gpu_copy_off(Stream *s, H264 *d, IMFSample *smp) {
   if (w > 0 && h > 0 && SUCCEEDED(smp->GetBufferByIndex(0, &b)) && SUCCEEDED(b->QueryInterface(IID_PPV_ARGS(&xb))) &&
       SUCCEEDED(xb->GetResource(IID_PPV_ARGS(&src))) && SUCCEEDED(xb->GetSubresourceIndex(&sub))) {
     g = gpu_take(s, w, h);
-    if (g.tex) {
+    if (g.tex && g.dtex) {
+      // on the decoders' device, after what the renderer drew of it last; handed over once done there (waited for
+      // here, on the decoder's thread: nothing of the renderer's waits)
+      D3D11_BOX box = {0, 0, 0, (UINT)w, (UINT)h, 1};
+      if (g.drawn) dctx->Wait(drawn_fence_d, g.drawn);
+      dctx->CopySubresourceRegion(g.dtex, 0, 0, 0, 0, src, sub, &box);
+      AcquireSRWLockExclusive(&fence_lock);
+      UINT64 v = ++copied;
+      dctx->Signal(copied_fence, v);
+      ReleaseSRWLockExclusive(&fence_lock);
+      dctx->Flush();
+      if (copied_fence->GetCompletedValue() < v) {
+        static thread_local HANDLE done;
+        if (!done) done = CreateEventW(NULL, FALSE, FALSE, NULL);
+        // (a GPU that never finishes it: the frame let go, after 2 s)
+        if (!done || FAILED(copied_fence->SetEventOnCompletion(v, done)) || WaitForSingleObject(done, 2000) != WAIT_OBJECT_0)
+          gpu_drop(&g);
+      }
+      g.bt601 = d->bt601;
+      g.full = d->full;
+    } else if (g.tex) {
       D3D11_BOX box = {0, 0, 0, (UINT)w, (UINT)h, 1};
       ((ID3D11DeviceContext *)mb_render_context())->CopySubresourceRegion(g.tex, 0, 0, 0, 0, src, sub, &box);
       g.bt601 = d->bt601;
@@ -1729,7 +1889,6 @@ void mb_host_stream_show(int32_t id, double ts) {
 #define SOUND_PACKET 3840  // 20 ms: 960 frames of 48 kHz stereo PCM16
 #define SOUND_FRAMES 960
 #define SOUND_RING 32      // packets' memory: the 25 queued at most, the one playing, and room
-#define SOUND_MOST 15      // the largest reserve: 300 ms
 
 static SRWLOCK sound_lock = SRWLOCK_INIT;
 static IXAudio2 *sound_engine;
@@ -1754,6 +1913,41 @@ static int sound_ready(void) {
   return 1;
 }
 
+// the player's clock (win_sound.h): ms, the machine's
+static double sound_now(void) {
+  static LARGE_INTEGER freq;
+  if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
+  LARGE_INTEGER now;
+  QueryPerformanceCounter(&now);
+  return (double)now.QuadPart * 1000.0 / (double)freq.QuadPart;
+}
+
+// (under sound_lock) its voice, as win_sound.h's player does to it
+static int voice_queued(void *it) {
+  XAUDIO2_VOICE_STATE st;
+  ((Stream *)it)->voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+  return (int)st.BuffersQueued;
+}
+static int voice_submit(void *it, const uint8_t *packet) {
+  Stream *s = (Stream *)it;
+  uint8_t *slot = s->sound_ring + (size_t)(s->sound_next++ % SOUND_RING) * SOUND_PACKET;
+  memcpy(slot, packet, SOUND_PACKET);
+  XAUDIO2_BUFFER b = {};
+  b.AudioBytes = SOUND_PACKET;
+  b.pAudioData = slot;
+  return SUCCEEDED(s->voice->SubmitSourceBuffer(&b));
+}
+static int voice_start(void *it) { return SUCCEEDED(((Stream *)it)->voice->Start()); }
+static void voice_flush(void *it) {
+  Stream *s = (Stream *)it;
+  s->voice->Stop();
+  s->voice->FlushSourceBuffers();
+}
+static SoundVoice voice_of(Stream *s) {
+  SoundVoice v = {s, voice_queued, voice_submit, voice_start, voice_flush};
+  return v;
+}
+
 // (under sound_lock) its voice let go, what is queued with it
 static void sound_stop(Stream *s) {
   if (s->voice) {
@@ -1764,8 +1958,7 @@ static void sound_stop(Stream *s) {
     s->voice->DestroyVoice();
   }
   s->voice = NULL;
-  s->sound_playing = 0;
-  s->sound_at = 0;
+  sound_stopped(&s->sound);
 }
 
 // (under sound_lock) one 20 ms packet played after those queued
@@ -1784,43 +1977,17 @@ static void sound_play(Stream *s, const uint8_t *bytes) {
       return;
     }
     if (!s->sound_ring) s->sound_ring = (uint8_t *)malloc((size_t)SOUND_RING * SOUND_PACKET);
-    s->sound_playing = 0;
+    sound_stopped(&s->sound);
     if (s->sound_volume_set) s->voice->SetVolume(s->sound_volume);
   }
-  if (!s->sound_reserve) s->sound_reserve = 5;
-  // how long since the last packet: a gap longer than the reserve covers makes it that long and a packet more
-  static LARGE_INTEGER freq;
-  if (!freq.QuadPart) QueryPerformanceFrequency(&freq);
-  LARGE_INTEGER now;
-  QueryPerformanceCounter(&now);
-  if (s->sound_at) {
-    int gap = (int)((now.QuadPart - s->sound_at) * 1000 / freq.QuadPart);
-    int need = gap / 20 + 2;
-    // (a gap of a second or more: the sound paused, not late)
-    if (gap < 1000 && need > s->sound_reserve && s->sound_reserve < SOUND_MOST) {
-      s->sound_reserve = need < SOUND_MOST ? need : SOUND_MOST;
-      fprintf(stderr, "win: stream %d: sound %d ms apart, its reserve %d ms\n", s->id, gap, s->sound_reserve * 20);
-    }
-  }
-  s->sound_at = now.QuadPart;
-  XAUDIO2_VOICE_STATE st;
-  s->voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
-  // more than the reserve and 200 ms queued (a stall), or run dry while playing: emptied, the reserve filled again
-  if ((int)st.BuffersQueued >= s->sound_reserve + 10 || (s->sound_playing && st.BuffersQueued == 0)) {
-    s->voice->Stop();
-    s->voice->FlushSourceBuffers();
-    s->sound_playing = 0;
-    st.BuffersQueued = 0;
-  }
-  uint8_t *slot = s->sound_ring + (size_t)(s->sound_next++ % SOUND_RING) * SOUND_PACKET;
-  memcpy(slot, bytes, SOUND_PACKET);
-  XAUDIO2_BUFFER b = {};
-  b.AudioBytes = SOUND_PACKET;
-  b.pAudioData = slot;
-  if (FAILED(s->voice->SubmitSourceBuffer(&b))) return;
-  // started once its reserve is queued
-  if (!s->sound_playing && (int)st.BuffersQueued + 1 >= s->sound_reserve && SUCCEEDED(s->voice->Start()))
-    s->sound_playing = 1;
+  int was = s->sound.reserve;
+  SoundVoice v = voice_of(s);
+  sound_packet(&s->sound, &v, bytes, sound_now());
+  if (was && s->sound.reserve > was)
+    fprintf(stderr, "win: stream %d: sound %d ms apart, its reserve %d ms\n", s->id, (int)s->sound.gap,
+            s->sound.reserve * 20);
+  else if (was && s->sound.reserve < was)
+    fprintf(stderr, "win: stream %d: sound calm, its reserve %d ms\n", s->id, s->sound.reserve * 20);
 }
 
 // (any thread) stream s's packet played, or (empty) its sound stopped
@@ -1926,6 +2093,110 @@ void *mb_stream_srv(int id) {
   return s->bgra_srv;
 }
 
+// ---- the frame shown, for an app's own native code (a frame copied, a still saved) ----
+
+// What mb_stream_grab hands its taker: the texture read back and where it came from
+struct Grab {
+  ID3D11DeviceContext *ctx;
+  ID3D11Texture2D *staging;
+  ID3D11Query *copied;
+  int w, h;
+  double ts;
+  mb_stream_grabbed_fn done;
+  void *arg;
+};
+
+static DWORD WINAPI grab_read(void *p) {
+  Grab *g = (Grab *)p;
+  D3D11_MAPPED_SUBRESOURCE map = {};
+  HRESULT hr;
+  // (the GPU's copy waited for without the device's lock, which the window's frames take too: its event asked after,
+  // each asking a moment's hold of the lock; a Map that waited would hold it till the copy is done. Not Sleep(1),
+  // which is a scheduler tick, 15.6 ms unless the timer was made finer: the copy itself takes a few ms)
+  if (g->copied) {
+    BOOL done = FALSE;
+    while (g->ctx->GetData(g->copied, &done, sizeof done, D3D11_ASYNC_GETDATA_DONOTFLUSH) == S_FALSE) SwitchToThread();
+  }
+  while ((hr = g->ctx->Map(g->staging, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &map)) == DXGI_ERROR_WAS_STILL_DRAWING)
+    SwitchToThread();
+  if (SUCCEEDED(hr)) {
+    g->done(g->arg, (const uint8_t *)map.pData, g->w, g->h, (int)map.RowPitch, g->ts);
+    g->ctx->Unmap(g->staging, 0);
+  } else {
+    g->done(g->arg, NULL, 0, 0, 0, g->ts);
+  }
+  if (g->copied) g->copied->Release();
+  g->staging->Release();
+  g->ctx->Release();
+  free(g);
+  return 0;
+}
+
+// The frame stream `id` shows now, whole (the decoder's picture as it is drawn: BGRA, its own size, not the size it is
+// drawn at), handed to `done` on a thread of its own as top-down rows `pitch` bytes apart, with the frame's time, and
+// let go as `done` returns; rows NULL where it could not be read. On the UI thread, as the app draws: it costs the
+// window a copy the GPU makes (its own texture into one the CPU reads) and nothing it waits on; `done` is to take the
+// rows and return (the texture they are in is held till it does). 1 asked, 0 none shown
+// (or no device to read it with).
+int mb_stream_grab(int id, mb_stream_grabbed_fn done, void *arg) {
+  Stream *s = stream_of(id);
+  if (!s || s->closed || !done) return 0;
+  ID3D11ShaderResourceView *srv = (ID3D11ShaderResourceView *)mb_stream_srv(id);
+  if (!srv) return 0;
+  ID3D11Device *dev = (ID3D11Device *)mb_render_device();
+  if (!dev) return 0;
+  ID3D11Resource *res = NULL;
+  ID3D11Texture2D *src = NULL;
+  srv->GetResource(&res);
+  if (!res) return 0;
+  HRESULT hr = res->QueryInterface(IID_PPV_ARGS(&src));
+  res->Release();
+  if (FAILED(hr)) return 0;
+  D3D11_TEXTURE2D_DESC td;
+  src->GetDesc(&td);
+  td.MipLevels = 1;
+  td.ArraySize = 1;
+  td.SampleDesc.Count = 1;
+  td.SampleDesc.Quality = 0;
+  td.Usage = D3D11_USAGE_STAGING;
+  td.BindFlags = 0;
+  td.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+  td.MiscFlags = 0;
+  ID3D11Texture2D *staging = NULL;
+  if (FAILED(dev->CreateTexture2D(&td, NULL, &staging))) {
+    src->Release();
+    return 0;
+  }
+  ID3D11DeviceContext *ctx = NULL;
+  dev->GetImmediateContext(&ctx);
+  ctx->CopySubresourceRegion(staging, 0, 0, 0, 0, src, 0, NULL);
+  src->Release();
+  // (its end marked, and the work sent to the GPU now, not with the next frame's)
+  ID3D11Query *copied = NULL;
+  D3D11_QUERY_DESC qd = {D3D11_QUERY_EVENT, 0};
+  if (SUCCEEDED(dev->CreateQuery(&qd, &copied))) ctx->End(copied);
+  ctx->Flush();
+  Grab *g = (Grab *)calloc(1, sizeof *g);
+  g->ctx = ctx;
+  g->staging = staging;
+  g->copied = copied;
+  g->w = (int)td.Width;
+  g->h = (int)td.Height;
+  g->ts = s->cur.ts;
+  g->done = done;
+  g->arg = arg;
+  HANDLE t = CreateThread(NULL, 0, grab_read, g, 0, NULL);
+  if (!t) {
+    if (copied) copied->Release();
+    staging->Release();
+    ctx->Release();
+    free(g);
+    return 0;
+  }
+  CloseHandle(t);
+  return 1;
+}
+
 // Sound plays here unless a run says not to (MBUI_STREAM_AUDIO=0, to compare).
 int32_t mb_host_stream_audio_here(void) {
   const char *v = getenv("MBUI_STREAM_AUDIO");
@@ -1970,6 +2241,19 @@ double mb_host_stream_audio_queued(int32_t id) {
     s->voice->GetState(&st, XAUDIO2_VOICE_NOSAMPLESPLAYED);
     ms = (double)st.BuffersQueued * 20;
   }
+  ReleaseSRWLockShared(&sound_lock);
+  return ms;
+}
+
+// Milliseconds of its sound the player wants queued before it starts (win_sound.h's reserve: 100 ms at first, up to
+// 300 ms after late packets, coming back to 100 ms once calm); for id 0 (a stream not opened yet), the initial 100 ms.
+double mb_host_stream_audio_wanted(int32_t id) {
+  if (!mb_host_stream_audio_here()) return 0;
+  if (id == 0) return SOUND_BASE * 20.0;
+  Stream *s = stream_of(id);
+  if (!s) return 0;
+  AcquireSRWLockShared(&sound_lock);
+  double ms = s->sound_gone ? 0 : sound_wanted(&s->sound, s->voice ? voice_queued(s) : 0, sound_now());
   ReleaseSRWLockShared(&sound_lock);
   return ms;
 }

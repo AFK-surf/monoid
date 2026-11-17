@@ -39,11 +39,36 @@ function ticks(start: number, step: number, count: number, range: Range, offsetM
   return out;
 }
 
-function relay(r: J, range: Range, now: number, offsetMin: number) {
+/** A URL as compared: without a trailing slash (cloud/src/relays.ts sameUrl). */
+const same = (url: string) => url.replace(/\/+$/, "");
+const host = (url: string) => (URL.canParse(url) ? new URL(url).host : url);
+
+/** What the operator does with a relay (the cloud's list, cloud/src/relay-registry.ts relayList): whether it can be
+ * taken off (the cloud's own cannot), how it came onto the list (its parts, each kept whole on a narrow page), and the
+ * ways into it, each of which can be taken off. */
+function keeping(url: string, registry: J) {
+  if (registry === null || typeof registry !== "object") return { removable: false, how: null, entries: [] };
+  const rows = arr(get(registry, "relays"));
+  const row = rows.find((l) => typeof get(l, "url") === "string" && same(l.url) === same(url) && !get(l, "target"));
+  const entries = rows
+    .filter((l) => typeof get(l, "url") === "string" && typeof get(l, "target") === "string" && same(l.target) === same(url))
+    .map((l) => ({ url: String(l.url), name: typeof get(l, "name") === "string" && l.name !== "" ? String(l.name) : host(String(l.url)), host: host(String(l.url)) }));
+  if (row === undefined) return { removable: false, how: same(String(get(registry, "own") ?? "")) === same(url) ? [t("core-views.admin.relay.how.own")] : null, entries };
+  const by = String(get(row, "added_by") ?? "");
+  const came = by === "config" ? t("core-views.admin.relay.how.config")
+    : by === "admin-token" ? t("core-views.admin.relay.how.api")
+    : by.startsWith("token") ? t("core-views.admin.relay.how.token")
+    : by === "" ? null : t("core-views.admin.relay.how.by", { email: by });
+  const how = [host(url), came, get(row, "enrolled") === true ? null : t("core-views.admin.relay.how.byAddress")].filter((x): x is string => x !== null);
+  return { removable: true, how, entries };
+}
+
+function relay(r: J, range: Range, now: number, offsetMin: number, registry: J) {
   const url = String(get(r, "url") ?? ""), name = String(get(r, "name") ?? get(r, "url") ?? "");
+  const kept = keeping(url, registry);
   const at = num(r, "at");
   // Never heard from (its timer not set up yet): nothing to show but that.
-  if (at === null) return { url, name, state: "error", seen: t("core-views.admin.relay.never"), numbers: [], charts: [], ticks: [] };
+  if (at === null) return { url, name, ...kept, state: "error", seen: t("core-views.admin.relay.never"), numbers: [], charts: [], ticks: [] };
   const state = now - at <= FRESH ? "online" : "offline";
   const seen = t("core-views.admin.relay.seen", { when: format.relativeTime(at * 1000, now * 1000, offsetMin) });
   const current = get(r, "now");
@@ -81,6 +106,7 @@ function relay(r: J, range: Range, now: number, offsetMin: number) {
   return {
     url,
     name,
+    ...kept,
     state,
     seen,
     numbers,
@@ -131,6 +157,9 @@ function directory(d: J, range: Range, now: number, offsetMin: number) {
   return {
     url: "directory",
     name: t("core-views.admin.directory.name"),
+    removable: false,
+    how: null,
+    entries: [],
     state: at !== null && now - at <= FRESH ? "online" : "offline",
     seen: at === null ? t("core-views.admin.relay.never") : t("core-views.admin.relay.seen", { when: format.relativeTime(at * 1000, now * 1000, offsetMin) }),
     numbers: [
@@ -150,10 +179,20 @@ function directory(d: J, range: Range, now: number, offsetMin: number) {
 export function relays(v: J, range: string | null, now: number, offsetMin: number) {
   const shown: Range = range === "week" ? "week" : "day";
   const d = get(v, "directory");
+  // (a still.fail cloud from before says nothing of its list: nothing to keep from here then)
+  const registry = get(v, "registry");
+  const listed = registry !== null && typeof registry === "object";
   return {
     range: shown,
     ranges: RANGES.map((id) => ({ id, label: t(`core-views.admin.relay.range.${id}`) })),
+    manage: listed,
+    // The tokens made for relays not used yet: what each will be called, at what URL, till when.
+    tokens: arr(get(registry, "tokens")).map((k, i) => {
+      const at = num(k, "expires_at");
+      const where = typeof get(k, "url") === "string" ? host(String(k.url)) : t("core-views.admin.relay.token.anyUrl");
+      return { key: `${i}:${String(get(k, "name") ?? "")}`, name: String(get(k, "name") ?? ""), line: at === null ? where : `${where} · ${t("core-views.admin.relay.token.expires", { until: format.timeUntil(at * 1000, now * 1000) })}` };
+    }),
     // (a still.fail cloud from before says nothing of its Directory)
-    relays: [...arr(get(v, "relays")).map((r) => relay(r, shown, now, offsetMin)), ...(d !== null && typeof d === "object" ? [directory(d, shown, now, offsetMin)] : [])],
+    relays: [...arr(get(v, "relays")).map((r) => relay(r, shown, now, offsetMin, registry)), ...(d !== null && typeof d === "object" ? [directory(d, shown, now, offsetMin)] : [])],
   };
 }

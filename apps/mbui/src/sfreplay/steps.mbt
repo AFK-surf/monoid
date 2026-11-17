@@ -146,6 +146,12 @@ fn Flow::split_seen(self : Flow, at : String) -> Unit {
 let pass_trace : Ref[String] = Ref("")
 
 ///|
+/// The page the run's app was started on (`#env MBUI_OPEN_PAGE`, src/stillfail/main.mbt), opened as the replay's starts
+/// too, before its first frame takes what came: Flow::open_page then opens nothing more.
+// kept across runs: written as each pass begins (Flow::start)
+let page_at_start : Ref[Bool] = Ref(false)
+
+///|
 /// Whether the pass that began last is one of orders' pace passes (pace_between), and whether it failed yet: a failure
 /// in it said (`PACE-FAIL`), not ended on, while what fails at a rate is counted.
 // kept across runs: written as each pass begins
@@ -245,10 +251,17 @@ pub fn Flow::start(
   // to it due as long after it as they came in the run, its first step too, not as long after the replay's clock began)
   let started_at = 1000.0
   r.clock(fn() { started_at })
+  // (the page the run's app was started on, as its script's head says (src/stillfail/main.mbt): opened as this one
+  // starts too, before its first frame, what it asks as it is made asked with the rest of the start, not as a step;
+  // where its trace's head says so, MBUI_START_PAGE)
+  page_at_start.val = emit_path() == "" &&
+    switch_was_on(r, env, "MBUI_START_PAGE") &&
+    trace.contains("{\"step\":\"#env MBUI_OPEN_PAGE=files\"")
+  let begun = fn() { if page_at_start.val { @sfapp.open_page(Files) } }
   let t = match r.text() {
     Some(text) =>
-      @ui.Tester::new(app, w~, h~, scale~, dark~, window_inset~, native~, env=r.env() + env, text~, platform~, tree=@sfapp.app_tree(the_source), time=started_at, loc~)
-    None => @ui.Tester::new(app, w~, h~, scale~, dark~, window_inset~, native~, env=r.env() + env, platform~, tree=@sfapp.app_tree(the_source), time=started_at, loc~)
+      @ui.Tester::new(app, w~, h~, scale~, dark~, window_inset~, native~, env=r.env() + env, text~, platform~, tree=@sfapp.app_tree(the_source), time=started_at, begun~, loc~)
+    None => @ui.Tester::new(app, w~, h~, scale~, dark~, window_inset~, native~, env=r.env() + env, platform~, tree=@sfapp.app_tree(the_source), time=started_at, begun~, loc~)
   }
   // (and the rest of what its host gave its first frame: the system's settings, the minutes it was off UTC)
   ignore(t.settings_said(settings.stringify()))
@@ -1549,6 +1562,11 @@ pub fn Flow::open_page(self : Flow, page : @sfapp.Page, loc~ : SourceLoc) -> Uni
   }
   let site = loc.to_string()
   emit("#env MBUI_OPEN_PAGE=" + page_name(page))
+  // (opened as the replay's app started, as the run's was)
+  if page_at_start.val {
+    return
+  }
+  page_opening.val = true
   @sfapp.open_page(page)
   self.t.draw()
   self.core()
@@ -1556,6 +1574,9 @@ pub fn Flow::open_page(self : Flow, page : @sfapp.Page, loc~ : SourceLoc) -> Uni
   if @ui.nav_rest() >= 0.0 {
     self.run_to_at(site, @ui.nav_rest)
   }
+  // (what the page asked as it opened, taken: the run's start's, no step's)
+  self.r.take_asked() |> ignore
+  page_opening.val = false
 }
 
 // ── batch C's steps (appended): a desktop's pointer, the window, a drag ─────────────────────────────
@@ -2038,52 +2059,9 @@ pub fn Flow::answer_taken(self : Flow, call : String) -> Double {
 }
 
 ///|
-/// The display's frame that took the latest message in `which` holds for (Replay::given_at_where: a topic's change):
-/// where what it sets off starts. -1 while none is given.
-pub fn Flow::message_taken(self : Flow, which : (Json) -> Bool) -> Double {
-  self.frame_taking(self.r.given_at_where(which))
-}
-
-
-///|
 fn Flow::frame_taking(_self : Flow, given : Double?) -> Double {
   // (Replay::deliver's taken_at: the display's frame that took it)
   given.unwrap_or(-1.0)
-}
-
-///|
-/// The clock stepped a frame at a time, what is due given as it comes, until something said to move holds `name`
-/// (Tester::moving, Tester::rest_of): when it is at rest. The test fails if nothing more may come first and none does.
-pub fn Flow::until_moving(self : Flow, name : String) -> Double {
-  if pace_split.val != "" {
-    return self.t.time()
-  }
-  // (one the last step that acts began: one of its name moving as it was taken, its coming in not over at a tap, is not
-  // it)
-  let told = fn() { self.t.moving().iter().any(fn(l) { l.contains(name) && !self.at_step.contains(l) }) }
-  while !told() || self.t.rest_of(name) <= self.t.time() {
-    if self.t.posted() == 0 && self.r.next_due() is None {
-      // (what it waits for came while the run's script was in its next step that waits (until 已保留 after the tap):
-      // waiting too, it is in that step with it: taken now, the clock not run to when the run took it, for what comes
-      // after it to come at its pace from here, a frame at a time)
-      match self.r.next_step() {
-        Some(l) if waiting_step(l) => {
-          if self.r.step_taken(l) {
-            continue
-          }
-        }
-        _ => ()
-      }
-      self.fail("nothing moves that is " + name)
-      return -1.0
-    }
-    self.t.run_for(frame_ms)
-  }
-  // (told, not started yet: it starts with the frame after)
-  if self.t.rest_of(name) == @double.infinity {
-    self.t.draw()
-  }
-  self.t.rest_of(name)
 }
 
 ///|

@@ -3,10 +3,10 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
+import { openJobs } from "./reference/jobs.ts";
 import { Readers } from "../src/read/pool.ts";
-import { makeStore } from "../src/read/store.ts";
-import { JOB_NAME_FIRST_LARGE, JOB_NAME_FIRST_PENDING, JOB_NAME_FIRST_ROW, jobNameFirstStep } from "../src/store/job-name-first.ts";
+import { makeStore } from "./reference/store.ts";
+import { JOB_NAME_FIRST_LARGE, JOB_NAME_FIRST_PENDING, JOB_NAME_FIRST_ROW, jobNameFirstStep } from "./reference/backfill/job-name-first.ts";
 import { Store } from "../src/store/store.ts";
 
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member" as const, workspace: "A", device: "dev", home: false };
@@ -74,8 +74,9 @@ test("a changed first member and a dirty summary retain workspace and archive be
     assert.throws(() => openJobs(reader, viewer, "en"), (error: any) => error.status === 503 && error.message.startsWith(JOB_NAME_FIRST_PENDING));
     prepare(s, thread);
     assert.equal(openJobs(reader, viewer, "en")[0]?.chat?.title, "Shared");
+    // (its own session archived and its chat not: the chat is put away whole, in the archive under its own title)
     s.db.prepare("UPDATE sessions SET archived_at=1 WHERE key='a'").run();
-    assert.notEqual(openJobs(reader, viewer, "en")[0]?.chat?.title, "Shared");
+    assert.deepEqual(openJobs(reader, viewer, "en")[0]?.chat, { id: "a", title: "Shared", archived: true });
   } finally { s.close(); }
 });
 

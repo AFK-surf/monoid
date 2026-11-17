@@ -1,6 +1,6 @@
 // The station's parts in its own process (src/parts.ts): their routes answered after the platform's, a read-only
 // member's writes refused but those a part allows, their overview fields said once each, their tools listed and called
-// through the agents' door as they are added.
+// through the agents' door as they are added (and while they are offered).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { Admin, agentsRoutes } from "../src/api/admin.ts";
@@ -53,6 +53,19 @@ test("a part's tools reach the agents' door as they are added", async () => {
   assert.equal((await call("tools/call", { name: "secret_list", arguments: {} })).result.content[0].text, "listed for s1");
 });
 
+test("a part's tools offered only while it says so: neither listed nor called otherwise (a beta feature's on a stable station)", async () => {
+  const parts = new StationParts();
+  let on = false;
+  const mcp = new McpEndpoint(() => "s1", () => parts.allTools());
+  const call = async (method: string, params: unknown) => (await mcp.handle("POST", "Bearer t", JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }))).body as any;
+  parts.tools([{ name: "station_move", description: "", inputSchema: {}, run: async () => "moved" }], () => on);
+  assert.deepEqual((await call("tools/list", {})).result.tools, []);
+  assert.match((await call("tools/call", { name: "station_move", arguments: {} })).error.message, /unknown tool/);
+  on = true;
+  assert.deepEqual((await call("tools/list", {})).result.tools.map((t: any) => t.name), ["station_move"]);
+  assert.equal((await call("tools/call", { name: "station_move", arguments: {} })).result.content[0].text, "moved");
+});
+
 test("the agents' side, made after the admin API: asked for as a request comes, its routes a part", async () => {
   const parts = new StationParts();
   let side: any = undefined;
@@ -65,10 +78,13 @@ test("the agents' side, made after the admin API: asked for as a request comes, 
   assert.deepEqual(await ask(admin, member, "GET", "/overview"), [200, { viewer: "u" }]);
 });
 
-test("what a part holds in memory goes over to the next process: given as it hands over, taken up as it comes", () => {
+test("what a part holds in memory goes over to the next process: given as it hands over, taken up as it comes", async () => {
   const before = new StationParts();
   before.carry("shelf", () => ({ books: [1, 2] }), () => assert.fail("nothing came before it"));
-  const carried = JSON.parse(JSON.stringify(before.carried()));
+  // (one that asks for it first: the live view, of the sessions' program)
+  before.carry("asked", async () => "answered", () => assert.fail("nothing came before it"));
+  const carried = JSON.parse(JSON.stringify(await before.carried()));
+  delete carried.asked;
   assert.deepEqual(carried, { shelf: { books: [1, 2] } });
 
   // The next process: what came for a part not made yet waits for it; a part none carried for is left alone.

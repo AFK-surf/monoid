@@ -13,6 +13,7 @@ pub(all) struct NewFix {
   mut model : String
   mut runtime : String
   mut effort : String
+  mut speed : String
   mut d_model : String
   mut d_runtime : String
   mut d_effort : String
@@ -29,6 +30,8 @@ pub(all) struct NewFix {
   /// MBUI_FIXTURE=newchat-tall-model: as crowded, how hard it thinks and how fast as Codex offers them (2026-10-30: the
   /// column beside the models taller than they are at most)
   mut tall : Bool
+  /// MBUI_FIXTURE=newchat-ultrafast-model: the Codex speed selector on a station that offers all three speeds.
+  mut ultrafast : Bool
   /// MBUI_FIXTURE=newchat-crowded-unmarked: as crowded, its first station of no mark of its own (2026-11-13: a person's
   /// Studio, its control a bare chevron once its name gave way)
   mut unmarked : Bool
@@ -53,6 +56,10 @@ pub(all) struct NewFix {
   mut providers : Bool
   /// MBUI_FIXTURE=settings-connect-borrow: the model drafted another station's, borrowed first (the pick's `borrow`)
   mut borrow : Bool
+  /// The other members' presets (the `otherPresets` topic, fix_others; `preset` of each), and whether the stations are
+  /// still being asked for them (its `reading`)
+  others : Array[Json]
+  mut others_reading : Bool
 }
 
 ///|
@@ -61,6 +68,7 @@ pub let new_fix : NewFix = {
   model: "claude-opus-5-5",
   runtime: "claude",
   effort: "high",
+  speed: "",
   d_model: "claude-opus-5-5",
   d_runtime: "claude",
   d_effort: "high",
@@ -72,6 +80,7 @@ pub let new_fix : NewFix = {
   reading: 0,
   crowded: false,
   tall: false,
+  ultrafast: false,
   unmarked: false,
   preset: "",
   presets_late: false,
@@ -83,6 +92,8 @@ pub let new_fix : NewFix = {
   liked: [],
   providers: false,
   borrow: false,
+  others: fix_others(),
+  others_reading: false,
 }
 
 ///|
@@ -153,6 +164,111 @@ pub fn fix_clone_ends(id : String, error? : String = "") -> Unit {
   }
   fix_presets_said.val += 1
   @settings.fixture_changed()
+}
+
+///|
+/// The other members' presets, by when they were made: 线上排障 of 林夏's, made on Willow, and Mia's 文档站, on Maple.
+pub fn fix_others() -> Array[Json] {
+  [
+    fix_other("p-ops", "线上排障", "林夏", "st1", "Willow", ["backend"]),
+    fix_other("p-doc", "文档站", "Mia Chen", "st2", "Maple", ["notes"]),
+  ]
+}
+
+///|
+/// Someone else's preset of the made-up workspace's: as fix_preset, whose it is and the station it was made on beside
+/// (`home`, named `home_name`: said here, fix_station reading new_fix).
+fn fix_other(id : String, name : String, whose : String, home : String, home_name : String, dirs : Array[String]) -> Json {
+  match fix_preset(id, name, dirs, "先看最近的报错日志。") {
+    Object(m) => {
+      let p = m.copy()
+      p["whose"] = Json::string(whose)
+      p["station"] = Json::string("ws1/" + home)
+      p["stationName"] = Json::string(home_name)
+      Json::object(p)
+    }
+    other => other
+  }
+}
+
+///|
+/// Someone else's preset `id` of the made-up workspace's given another name (a fixture's mode: one as long as a person
+/// gives one).
+pub fn fix_other_rename(id : String, name : String) -> Unit {
+  for i, p in new_fix.others {
+    match p {
+      Object(m) if text(Some(p), "id") == id => {
+        let c = m.copy()
+        c["name"] = Json::string(name)
+        new_fix.others[i] = Json::object(c)
+      }
+      _ => ()
+    }
+  }
+}
+
+///|
+/// The `otherPresets` topic: the other members' presets as a list shows them, and whether more may come.
+pub fn fix_other_presets() -> Json {
+  {
+    "reading": Json::boolean(new_fix.others_reading),
+    "presets": Json::array(
+      new_fix.others.map(fn(p) {
+        let one = Some(p)
+        {
+          "id": Json::string(text(one, "id")),
+          "name": Json::string(text(one, "name")),
+          "whose": Json::string(text(one, "whose")),
+          "station": Json::string(text(one, "station")),
+          "stationName": Json::string(text(one, "stationName")),
+        }
+      }),
+    ),
+  }
+}
+
+///|
+/// The other members' presets said, as the last station asked answers (`reading` over).
+pub fn fix_others_say() -> Unit {
+  new_fix.others_reading = false
+  fix_presets_said.val += 1
+  @settings.fixture_changed()
+}
+
+///|
+/// The `preset` topic: preset `id` whole, the person's own (fix_preset's, made on the first station) or someone else's
+/// (fix_others); None where the made-up workspace has none of that id.
+pub fn fix_preset_one(id : String) -> Json? {
+  let own = new_fix.presets.iter().find_first(fn(p) { text(Some(p), "id") == id })
+  let other = new_fix.others.iter().find_first(fn(p) { text(Some(p), "id") == id })
+  let (p, mine) = match (own, other) {
+    (Some(p), _) => (p, true)
+    (None, Some(p)) => (p, false)
+    (None, None) => return None
+  }
+  let one = Some(p)
+  let home = if mine { "ws1/st1" } else { text(one, "station") }
+  let name_of = fn(address : String) { text(Some(fix_station(address.unsafe_substring(start=4, end=address.length()))), "name") }
+  Some({
+    "id": Json::string(id),
+    "name": Json::string(text(one, "name")),
+    "dirs": Json::array(
+      items(one, "dirs").map(fn(d) {
+        let at = if text(Some(d), "station") == "" { home } else { text(Some(d), "station") }
+        {
+          "path": Json::string(text(Some(d), "path")),
+          "repo": Json::string(text(Some(d), "repo")),
+          "station": Json::string(at),
+          "stationName": Json::string(name_of(at)),
+        }
+      }),
+    ),
+    "instructions": Json::string(text(one, "instructions")),
+    "mine": Json::boolean(mine),
+    "whose": Json::string(if mine { "我" } else { text(one, "whose") }),
+    "home": Json::string(home),
+    "homeName": Json::string(name_of(home)),
+  })
 }
 
 ///|
@@ -443,6 +559,7 @@ fn fix_runtime_short(runtime : String) -> String {
     "devin" => "Devin"
     "hermes" => "Hermes"
     "agy" => "AGY"
+    "pi" => "Pi"
     _ => "CC"
   }
 }
@@ -537,6 +654,7 @@ pub fn fix_pick() -> Json {
       "model": Json::string(model),
       "runtime": Json::string(runtime),
     }
+    if n.speed != "" { o["speed"] = Json::string(n.speed) }
     if effort != "" {
       o["effort"] = Json::string(effort)
     }
@@ -599,7 +717,8 @@ pub fn fix_pick() -> Json {
     } else {
       ["low", "medium", "high"]
     },
-    "fastAvailable": n.tall,
+    "fastAvailable": n.tall || n.ultrafast,
+    "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6-astra",
     // (how much context Claude Code can be kept to under the model's 1M)
     "contexts": if n.d_runtime == "claude" {
       [("", "完整 · 1M"), ("500000", "500K"), ("300000", "300K"), ("200000", "200K")].map(fn(c) {
@@ -879,9 +998,15 @@ fn fix_new_chat_of(f : Fixture) -> Json {
     } else {
       [{ "name": "still.fail", "repo": "github.com/AFK-surf/still.fail", "icon": Json::string(fix_sf_icon) }, { "name": "still.fail 设计稿", "repo": "" }]
     },
-    "presetStation": Json::string(if n.preset == "" { "" } else { text(Some(fix_station(n.station)), "station") }),
+    // (someone else's picked: its own station, as it was made on, and its name)
+    "presetStation": Json::string(
+      match n.others.iter().find_first(fn(p) { text(Some(p), "id") == n.preset }) {
+        Some(p) => text(Some(p), "station")
+        None => if n.preset == "" { "" } else { text(Some(fix_station(n.station)), "station") }
+      },
+    ),
     "presetName": Json::string(
-      match n.presets.iter().find_first(fn(p) { field(Some(p), "id") == Some(Json::string(n.preset)) }) {
+      match (n.presets + n.others).iter().find_first(fn(p) { field(Some(p), "id") == Some(Json::string(n.preset)) }) {
         Some(p) => (if field(Some(p), "name").unwrap_or(Json::string("")) is String(s) { Some(s) } else { None }).unwrap_or("")
         None => ""
       },
@@ -1025,6 +1150,25 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       f.changed()
       Some(Ok(Json::object({})))
     }
+    // (someone else's copied into one's own: a preset of one's own of its name and folders, made on the page's station)
+    "preset.copy" => {
+      let from = text(p, "id")
+      guard n.others.iter().find_first(fn(x) { text(Some(x), "id") == from }) is Some(o) else {
+        return Some(Err({ "code": "http_404", "message": "这个预设已经不在了" }))
+      }
+      let id = "p-\{n.presets.length()}"
+      let made = match fix_preset(id, text(Some(o), "name"), [], text(Some(o), "instructions")) {
+        Object(m) => {
+          let c = m.copy()
+          c["dirs"] = field(Some(o), "dirs").unwrap_or(Json::array([]))
+          Json::object(c)
+        }
+        other => other
+      }
+      n.presets.push(made)
+      f.changed()
+      Some(Ok(made))
+    }
     "preset.delete" => {
       take("id", fn(s) { n.presets.retain(fn(x) { field(Some(x), "id") != Some(Json::string(s)) }) })
       f.changed()
@@ -1124,6 +1268,12 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       Some(Ok(Json::object({})))
     }
     "pick.save" => {
+      take("speed", fn(s) { n.speed = s })
+      match field(p, "fast") {
+        Some(True) => n.speed = "fast"
+        Some(False) => n.speed = "standard"
+        _ => ()
+      }
       if text(p, "of") == "connect-new:preset" {
         preset_model_cleared.val = false
       }

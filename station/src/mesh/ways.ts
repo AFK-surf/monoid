@@ -160,11 +160,38 @@ export class WaysRefusal extends Error {}
 /// Whether still.fail's cloud is on http (a local setup), where a relay on http is taken too.
 const insecure = (cloud: Cloud) => (cloud.state?.origin ?? "").startsWith("http:");
 
-/// still.fail's own relays: what the control plane's `relay_urls` say, but the workspaces' own it puts after them
-/// (as it kept them, `waysSaid`): every workspace has these.
+/// still.fail's own relays: every workspace has these. As the control plane says them apart (`stillfail_relays`), else
+/// what its `relay_urls` say but the workspaces' own it puts after them (as it kept them, `waysSaid`): that guess took
+/// one of still.fail's that some workspace of the station's also added as its own for none of them (2026-11-16, 上海's in
+/// Hypershell: `no such way` as it was turned off).
 export function stillFails(cloud: Cloud): string[] {
+  const said = cloud.state?.stillfail_relays;
+  if (said !== undefined && said.length > 0) return said.filter((u) => URL.canParse(u));
   const theirs = cloud.memberships().flatMap((m) => cloud.waysSaid(m.workspace)?.relays ?? []);
   return cloud.relays().filter((u) => !theirs.some((t) => sameUrl(t) === sameUrl(u)));
+}
+
+/// The relays `ws`'s stations and devices go through: still.fail's, then its own not among them, but those its ways turn
+/// off (`ours`: all of still.fail's; a relay's URL). Never none: a record that would leave none (one made by hand, or
+/// from before `setWay` kept the last on) is taken as turning none off.
+export function workspaceRelays(ways: Ways, ws: string): string[] {
+  const { all, on } = relaysOf(ways, ws);
+  return on.length > 0 ? on : all;
+}
+
+/// The relays `ws`'s ways turn off (none where they would turn off all: `workspaceRelays`): what is not dialed to its
+/// stations, nor taken where Address Lookup names it.
+export function offRelays(ways: Ways, ws: string): string[] {
+  const { all, on } = relaysOf(ways, ws);
+  return on.length > 0 ? all.filter((u) => !on.includes(u)) : [];
+}
+
+function relaysOf(ways: Ways, ws: string): { all: string[]; on: string[] } {
+  const ours = stillFails(ways.cloud);
+  const v = ways.view(ws);
+  const all = [...ours, ...v.relays.map((r) => r.url).filter((u) => !ours.some((o) => sameUrl(o) === sameUrl(u)))];
+  const off = (u: string) => v.off.some((w) => sameUrl(w) === sameUrl(u)) || (v.off.includes("ours") && ours.some((o) => sameUrl(o) === sameUrl(u)));
+  return { all, on: all.filter((u) => !off(u)) };
 }
 
 /// `url` added to `ws`'s own relays, by `by`. One already there stays as it is.
@@ -234,7 +261,10 @@ export function setWay(ways: Ways, ws: string, way: string, on: boolean): WaysRe
   if (!isKind && relay === null) throw new WaysRefusal("no such way: a relay of the workspace's, or ours, lan, tailnet, direct");
   const id = relay ?? way;
   return ways.change(ws, (now) => {
-    const off = now.off.filter((w) => (id === "ours" ? w !== "ours" && !ours.some((o) => sameUrl(o) === sameUrl(w)) : isKind ? w !== id : sameUrl(w) !== sameUrl(id)));
+    // `ours` on takes back, with it, what the apps of before its one switch turned off alone and the panel no longer
+    // shows: one of still.fail's relays, `lan`, `tailnet`, `direct` (2026-11-16, Hypershell's 北京 and 深圳 off for good)
+    const legacy = (w: string) => w === "lan" || w === "tailnet" || w === "direct" || ours.some((o) => sameUrl(o) === sameUrl(w));
+    const off = now.off.filter((w) => (id === "ours" ? w !== "ours" && !(on && legacy(w)) && !ours.some((o) => sameUrl(o) === sameUrl(w)) : isKind ? w !== id : sameUrl(w) !== sameUrl(id)));
     if (!on) off.push(id);
     const isRelayOff = (u: string) => off.some((w) => sameUrl(w) === sameUrl(u)) || (off.includes("ours") && ours.some((o) => sameUrl(o) === sameUrl(u)));
     if (relays.every(isRelayOff)) throw new WaysRefusal("the last relay stays on: the web app and a device new to the workspace reach its stations by relays alone");
@@ -318,7 +348,12 @@ export function followWays(ways: Ways, call: PeerCall, after: (ms: number, f: ()
   const look = () => {
     const st = cloud.state;
     if (stopped || !st || !cloud.peersCurrent) return;
-    for (const m of cloud.memberships()) for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+    for (const m of cloud.memberships()) {
+      for (const p of m.peers) if (typeof p?.id === "string" && p.id !== st.station) bring(p.id, m.workspace, m.home);
+      // Its rigs too (stations that only run tasks, rig/): kept on the relays the workspace keeps on, as a station is
+      // (relays.ts), they answer `ways.*` as a station does (peer.ts servePeer).
+      for (const r of cloud.rigs(m.workspace)) if (r.id !== st.station && !m.peers.some((p) => p?.id === r.id)) bring(r.id, m.workspace, m.home);
+    }
   };
   look();
   const unlistenCloud = cloud.listen(look);

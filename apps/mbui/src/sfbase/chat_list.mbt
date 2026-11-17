@@ -6,6 +6,7 @@
 ///|
 /// An entry of the list, with the room above the first (the bar's) and below the last (the
 /// composer's).
+#derive(Eq)
 pub(all) enum Entry {
   Top
   /// the page before coming, or why it could not be read ("" coming)
@@ -149,6 +150,10 @@ pub(all) struct Reading {
   sent_as : Map[String, String]
   /// Told when a local row is taken over, so a viewer opened before that can follow its new core identity.
   sent_as_told : @signals.Signal[Int]
+  /// the keys (sent_as's) of rows taken over that were sent close under the row before them (LocalSent's `joined`): that
+  /// row `followed`, its time line gone, and the core's row joined, through the takeover as from the press, the core's
+  /// word changing nothing seen (the coordinator of the migration, 2026-11-15: one block, sent here and the core's)
+  sent_joined : Map[String, Bool]
   /// agents whose turn ended, still shown while their messages come out of their avatars: Lingering
   linger : Map[String, Lingering]
   /// the agents' lines in the order they first came to the list, by their keys: they stand so, one whose turn ended
@@ -286,6 +291,7 @@ pub fn reading_of(key : String) -> Reading {
         sent: {},
         sent_as: {},
         sent_as_told: @signals.signal(0),
+        sent_joined: {},
         linger: {},
         act_order: {},
         acts_seen: 0,
@@ -643,6 +649,10 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
     None => ()
   }
   chat_inputs.forget(key)
+  chat_heads.forget(key)
+  chat_head_jsons.forget(key)
+  // (its messages by key let go with it: read again from its list as it is read again)
+  chat_messages_kept.remove(key)
 }
 
 ///|
@@ -654,6 +664,11 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
     None => ()
   }
   chat_inputs.forget_from(src, key)
+  chat_heads.forget_from(src, key)
+  chat_head_jsons.forget_from(src, key)
+  // (its messages by key let go with it, chat_read_left having told where it was left: read again from its list as it
+  // is read again)
+  chat_messages_kept.remove(key)
 }
 
 ///|
@@ -662,7 +677,8 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
 pub fn chat_kept(r : ChatRef) -> ChatView? {
   match chat_read.kept(chat_params(r)) {
     Some(c) => Some(c.view)
-    None => None
+    // (a page that reads the chat by key read its head alone: chat_head)
+    None => chat_head_read.kept(chat_params(r)).map(fn(h) { h.view })
   }
 }
 
@@ -671,7 +687,8 @@ pub fn chat_kept(r : ChatRef) -> ChatView? {
 pub fn chat_kept_from(src : Source, r : ChatRef) -> ChatView? {
   match chat_read.kept_from(src, chat_params(r)) {
     Some(c) => Some(c.view)
-    None => None
+    // (a page that reads the chat by key read its head alone: chat_head)
+    None => chat_head_read.kept_from(src, chat_params(r)).map(fn(h) { h.view })
   }
 }
 
@@ -679,6 +696,8 @@ pub fn chat_kept_from(src : Source, r : ChatRef) -> ChatView? {
 /// A chat as chat_read made it: its view, its list's entries, and each message with the JSON it was read from (the
 /// next version's same JSON, a message that did not change, not read again: made_again).
 priv struct ChatRead {
+  /// the topic's value it was read from: what of it is the same JSON in the next is not read again (chat_view_of's)
+  raw : Json
   message_json : Array[Json]
   view : ChatView
   list : Array[Entry]
@@ -717,23 +736,52 @@ fn chat_entries_same(a : ChatView, b : ChatView) -> Bool {
 }
 
 ///|
-/// Messages appended after an unchanged history keep its entries. The old array remains untouched, since a frame
-/// may still use it. Other list changes take the ordinary path.
+/// Messages changed where they stand (a streamed answer's words), and appended after the history before, keep the
+/// entries of all the rest: the old ones copied, the changed messages' put in their place and the new ones' after them.
+/// The old array remains untouched, since a frame may still use it. Other list changes take the ordinary path. A
+/// message changed in place keeps its seq (the unread line stays where it was over it) and says nothing elsewhere,
+/// before or now (no Sent entries of its own to put again).
 fn chat_entries_appended(v : ChatView, was : ChatRead) -> (Array[Entry], Int)? {
   let before = was.view.messages
-  if before.is_empty() || before.length() >= v.messages.length() ||
+  if before.is_empty() || before.length() > v.messages.length() ||
      was.view.more != v.more || was.view.unread_line != v.unread_line ||
+     (v.more && (was.view.older != v.older || was.view.older_failed != v.older_failed)) ||
      !was.view.elsewhere.is_empty() || !v.elsewhere.is_empty() {
     return None
   }
-  for i, m in before {
-    if !physical_equal(m, v.messages[i]) {
-      return None
+  // (the messages changed where they stand, the last first)
+  let changed : Array[Int] = []
+  let mut i = before.length() - 1
+  while i >= 0 {
+    let a = before[i]
+    let b = v.messages[i]
+    if !physical_equal(a, b) {
+      guard a.seq == b.seq && a.elsewhere.is_empty() && b.elsewhere.is_empty() else { return None }
+      changed.push(i)
     }
+    i -= 1
   }
   let out = was.list.copy()
   while out.length() > was.message_end {
     out.pop() |> ignore
+  }
+  // (each changed message's entry found from the end of the messages': no more of them gone through than lie after
+  // the first changed)
+  if !changed.is_empty() {
+    let mut m = before.length() - 1
+    let mut c = 0
+    let mut at = out.length() - 1
+    while at >= 0 && c < changed.length() {
+      if out[at] is Said(_) {
+        if m == changed[c] {
+          out[at] = Said(v.messages[m])
+          c += 1
+        }
+        m -= 1
+      }
+      at -= 1
+    }
+    guard c == changed.length() else { return None }
   }
   for i in before.length()..<v.messages.length() {
     chat_entry_message(out, v.messages[i], v.unread_line)
@@ -744,28 +792,70 @@ fn chat_entries_appended(v : ChatView, was : ChatRead) -> (Array[Entry], Int)? {
 }
 
 ///|
+/// The messages of `message_json` read from those of a chat read before (`was`) where they changed only where they
+/// stand or came after them (a streamed answer's words, a message come at the end): each the same JSON as before taken
+/// as it was, each changed where it stands (its key the same) and each come read, no other looked at or keyed. None
+/// where any came or went elsewhere, or moved: made_again's to find.
+fn chat_read_again(message_json : Array[Json], was : ChatRead) -> (Array[(Json, Message)], Array[Message])? {
+  let n = was.read.length()
+  guard n > 0 && message_json.length() >= n && was.view.messages.length() == n else { return None }
+  let read = was.read.copy()
+  let messages = was.view.messages.copy()
+  for i in 0..<n {
+    let j = message_json[i]
+    let (wj, _) = was.read[i]
+    guard !physical_equal(j, wj) else { continue }
+    guard message_key(j) == message_key(wj) else { return None }
+    let m = message_of(j)
+    read[i] = (j, m)
+    messages[i] = m
+  }
+  for i in n..<message_json.length() {
+    let j = message_json[i]
+    let m = message_of(j)
+    read.push((j, m))
+    messages.push(m)
+  }
+  Some((read, messages))
+}
+
+///|
 /// A chat's view and its list's entries, as the core's `chat` topic gives them: its messages read again only as they
-/// changed (one came: that one read).
+/// changed (one came: that one read), and what else it says read again only where it is not the same JSON as before
+/// (chat_view_of's `was`).
 // kept across runs: what it keeps is let go of by a run anew and by reset (derived.mbt)
-let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
+let chat_read : Derived[ChatRead] = Derived::new_ref("chat", fn(v, was) {
+  chat_read_made.val += 1
   let message_json = items(Some(v), "messages")
   let (read, messages) = match was {
     Some(w) if physical_equal(w.message_json, message_json) && same_chat_messages(message_json, w.read) =>
       (w.read, w.view.messages)
     _ => {
-      let read = made_again(
-        message_json,
-        match was {
-          Some(w) => w.read
-          None => []
-        },
-        message_key,
-        message_of,
-      )
-      (read, read.map(fn(p) { p.1 }))
+      let again = match was {
+        Some(w) => chat_read_again(message_json, w)
+        None => None
+      }
+      match again {
+        Some(both) => both
+        None => {
+          let read = made_again(
+            message_json,
+            match was {
+              Some(w) => w.read
+              None => []
+            },
+            message_key,
+            message_of,
+          )
+          (read, read.map(fn(p) { p.1 }))
+        }
+      }
     }
   }
-  let view = chat_view_of(v, messages)
+  let view = chat_view_of(v, messages, match was {
+    Some(w) => Some((w.raw, w.view))
+    None => None
+  })
   let (list, message_end) = match was {
     Some(w) if chat_entries_same(w.view, view) => (w.list, w.message_end)
     Some(w) =>
@@ -775,7 +865,7 @@ let chat_read : Derived[ChatRead] = Derived::new("chat", fn(v, was) {
       }
     None => chat_entries(view)
   }
-  { message_json, view, list, message_end, read }
+  { raw: v, message_json, view, list, message_end, read }
 })
 
 ///|
@@ -815,19 +905,67 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
     rd.ticked = false
     rd.floor_counted = false
     // every chat kept whose data the page read: its activities whose turn is over let go, its page shown or not
-    // (not one a message of it drawn elsewhere keeps: its topic never asked for)
+    // (not one a message of it drawn elsewhere keeps: its topic never asked for), read through the source of the page
+    // that holds it, never the window's: a chat whose page has not read it yet (one made as nodes, its composer's old
+    // view not built yet) or is left (told so as this frame's builds are over: pages_left) read through the window's
+    // would be a reader of its own, its topic held past its page
     let (station, session) = match rk.find("\u{1}") {
       Some(i) => (rk.exact_view(end=i).to_owned(), rk.exact_view(start=i + 1).to_owned())
       None => continue
     }
     let r : ChatRef = { station, session, title: "", station_name: "" }
     let page_src = page_source_for_chat(src, r)
-    if chat_kept_from(page_src, r) is None {
+    if physical_equal(page_src, src) {
       continue
     }
-    match view_of_chat(page_src, r).0 {
-      Some(v) => chat_tick(c, rk, rd, v, shown=rd.was_shown, in_front~)
-      None => ()
+    // (a chat whose messages its page reads by key (ChatMessages, a page made as nodes) by its head and those: no
+    // reading of all of it as a word comes into one; else as its page read it whole)
+    let keyed = match chat_heads.peek_from(page_src, chat_inputs_key(r)) {
+      Some(_) => chat_messages(page_src, r)
+      None => None
+    }
+    match keyed {
+      Some(ms) =>
+        match chat_head(page_src, r).0 {
+          Some(v) => chat_tick(c, rk, rd, v, ms~, shown=rd.was_shown, in_front~)
+          None => ()
+        }
+      _ =>
+        // (read whole by its page: chat_read's, never its head alone, which a page reading it by key keeps)
+        if chat_read.kept_from(page_src, chat_params(r)) is Some(_) {
+          match view_of_chat(page_src, r).0 {
+            Some(v) => chat_tick(c, rk, rd, v, shown=rd.was_shown, in_front~)
+            None => ()
+          }
+        }
+    }
+  }
+}
+
+///|
+/// Chat view `v`'s messages (those kept by key, `ms`, where it holds none: its head's) from the newest back, each
+/// given to `go` till it says no more.
+fn said_back(v : ChatView, ms : ChatMessages?, go : (Message) -> Bool) -> Unit {
+  match ms {
+    Some(ms) if v.messages.is_empty() => {
+      let keys = ms.peek_keys()
+      let mut i = keys.length() - 1
+      while i >= 0 {
+        match ms.peek(keys[i]) {
+          Some(m) => if !go(m) { return }
+          None => ()
+        }
+        i = i - 1
+      }
+    }
+    _ => {
+      let mut i = v.messages.length() - 1
+      while i >= 0 {
+        if !go(v.messages[i]) {
+          return
+        }
+        i = i - 1
+      }
     }
   }
 }
@@ -835,7 +973,15 @@ pub fn linger_tick(c : @ui.Ctx, src : Source, in_front~ : Bool) -> Unit {
 ///|
 /// A chat's own data, once a build, before its page is built (linger_tick; its page the first build it shows in):
 /// what comes out of its avatars played on, whose activity stays as its turn ends.
-pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : Bool, in_front~ : Bool) -> Unit {
+pub fn chat_tick(
+  c : @ui.Ctx,
+  rk : String,
+  rd : Reading,
+  v : ChatView,
+  ms? : ChatMessages,
+  shown~ : Bool,
+  in_front~ : Bool,
+) -> Unit {
   let lingered = rd.ticked
   let played = rd.played
   if lingered && (played || !shown) {
@@ -873,7 +1019,10 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
     for k, _ in rd.linger {
       showing[k] = true
     }
-    emit_take(c, em, v, showing)
+    match ms {
+      Some(ms) if v.messages.is_empty() => emit_take_keyed(c, em, ms, showing)
+      _ => emit_take(c, em, v, showing)
+    }
     // words sent from here on their way: their landing as declared (-2: not laid out yet), -1 none or landed
     // (emit_step)
     let sending = fn() {
@@ -895,7 +1044,14 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
   // the user, of an answer at once to a card picked: 「点一个决策后上下摇晃」; 「处理中」不再单独收一次).
   let keeps = emit_keeps(em)
   // (the last message here, by seq: an answer past it is on its way)
-  let here = v.messages.iter().fold(init=-1.0, fn(m, x) { if x.seq > m { x.seq } else { m } })
+  let here = match ms {
+    Some(ms) if v.messages.is_empty() =>
+      match ms.peek_keys().last().bind(fn(k) { ms.peek(k) }) {
+        Some(m) => m.notice_last_seq
+        None => -1.0
+      }
+    _ => v.messages.iter().fold(init=-1.0, fn(m, x) { if x.notice_last_seq > m { x.notice_last_seq } else { m } })
+  }
   let on_its_way = fn(a : Agent) {
     match a.about {
       Some(seq) if seq > here && !v.newer => seq
@@ -960,24 +1116,38 @@ pub fn chat_tick(c : @ui.Ctx, rk : String, rd : Reading, v : ChatView, shown~ : 
       // (one from a turn before, its line gone by now)
       rd.answered_unseen.remove(k) |> ignore
       let idle = rd.idle_here.get(k).unwrap_or(-1.0)
-      rd.turn_from[k] = v.messages
-        .iter()
-        .filter(fn(m) { !(m.author_kind == "agent" && m.by.agent == k && m.said && m.seq > idle) })
-        .fold(init=-1.0, fn(n, m) { if m.seq > n { m.seq } else { n } })
+      // (the newest that is not this turn's own: looked for from the end)
+      let from = Ref(-1.0)
+      said_back(v, ms, fn(m) {
+        if !(m.author_kind == "agent" && m.by.agent == k && m.said && m.seq > idle) {
+          from.val = m.seq
+          false
+        } else {
+          true
+        }
+      })
+      rd.turn_from[k] = from.val
     }
     if rd.answered.contains(k) || keeps.contains(k) {
       continue
     }
     let from = rd.turn_from[k]
-    let came = v.messages.iter().any(fn(m) {
-      m.seq > from &&
-      m.author_kind == "agent" &&
-      m.by.agent == k &&
-      !m.mine &&
-      !m.system &&
-      m.ending != "" &&
-      !emit_goes(em, m.seq)
+    // (looked for from the end, no further back than where its turn began)
+    let came_ = Ref(false)
+    said_back(v, ms, fn(m) {
+      guard m.seq > from else { return false }
+      if m.author_kind == "agent" &&
+        m.by.agent == k &&
+        !m.mine &&
+        !m.system &&
+        m.ending != "" &&
+        !emit_goes(em, m.seq) {
+        came_.val = true
+        return false
+      }
+      true
     })
+    let came = came_.val
     if came {
       rd.answered[k] = a.last_turn
       if first {
@@ -1341,7 +1511,8 @@ pub fn read_place(
       while k <= i.last && k < n {
         let h = lr.row_height(k).unwrap_or(0.0)
         match list[k] {
-          Said(m) if y >= top - 0.5 && y + h <= foot + 0.5 && m.seq > rd.seen_whole => rd.seen_whole = m.seq
+          // (a notice folding several is read to its last)
+          Said(m) if y >= top - 0.5 && y + h <= foot + 0.5 && m.notice_last_seq > rd.seen_whole => rd.seen_whole = m.notice_last_seq
           _ => ()
         }
         y = y + h
@@ -1489,6 +1660,9 @@ pub fn row_keys(
         // (the row goes on by the key it was sent as)
         came = "o:" + l.row.id
         rd.sent_as[k] = came
+        if l.row.joined {
+          rd.sent_joined[came] = true
+        }
         rd.sent_as_told.set(rd.sent_as_told.untracked() + 1)
         all_keys[i] = came
         taken[k] = true
@@ -1520,6 +1694,22 @@ pub fn row_keys(
   // (after the outbox, before the agents' lines and the room under them)
   let all = all.copy()
   let all_keys = all_keys.copy()
+  // (a row taken over that was sent close under the row before it: as it was from the press, whatever the core says yet)
+  if rd.sent_joined.length() > 0 {
+    for i, k in all_keys {
+      guard i > 0 && rd.sent_joined.contains(k) else { continue }
+      match all[i] {
+        Said(m) if !m.joined => all[i] = Said({ ..m, joined: true })
+        Out(o) if !o.joined => all[i] = Out({ ..o, joined: true })
+        _ => ()
+      }
+      match all[i - 1] {
+        Said(m) if !m.followed => all[i - 1] = Said({ ..m, followed: true })
+        Out(o) if !o.followed => all[i - 1] = Out({ ..o, followed: true })
+        _ => ()
+      }
+    }
+  }
   if still.length() > 0 {
     let mut at = all.length()
     for i, e in all {
@@ -2563,7 +2753,7 @@ fn shown_sign(e : Entry) -> String {
         Some(d) => "\{d.resolved}\{d.dismissed}\{@ui.some_text(d.chosen)}"
         None => ""
       }
-      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_reassign_session}|\{m.notice_detail.length()}"
+      "m\{m.text.length()}|\{m.attachments.length()}|\{m.quotes.length()}|\{m.time is Some(_)}|\{m.waiting}|\{m.joined}|\{m.followed}|\{d}|\{m.notice_failed}|\{m.notice_words.length()}|\{m.notice_retry_session}|\{m.notice_again_session}|\{m.notice_reassign_session}|\{m.notice_detail.length()}|\{m.notice_count}"
     }
     Out(o) => "o\{o.text.length()}|\{o.attachments.length()}|\{o.state}|\{o.joined}|\{o.followed}"
     State(a, b, c) => "s" + a + b + c

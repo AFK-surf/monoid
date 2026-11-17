@@ -69,7 +69,6 @@ const OVER_DELTA: Record<string, number> = {
   "usage/down": 88,
   "drive/file": 72,
   "chatLetters/letter": 40,
-  "usage/usage": 40,
   "devices/device": 24,
   "connects/down": 24,
   "connect/session": 24,
@@ -82,7 +81,6 @@ const OVER_DELTA: Record<string, number> = {
   "driveBrowse columns/file": 16,
   "archive/down": 16,
   "notices/card": 16,
-  "workspaceMarks/card": 8,
   "longJobs/job": 16,
   "resources/sample": 8,
   "connects mine/down": 8,
@@ -100,7 +98,7 @@ const UNBOUNDED = "nothing in the core bounds it (to weigh)";
 const NOT_MEASURED: Record<string, string> = {
   link: RAW, overview: RAW, sessions: RAW, session: RAW, host: RAW, memory: RAW, net: RAW, way: RAW, threads: RAW, thread: RAW, letters: RAW, chatRows: RAW,
   slackApp: RAW, jobs: RAW, machineLogins: RAW, machineLogin: RAW, machineLoginScreen: RAW, archivedRows: RAW, stationUsage: RAW, stationResources: RAW,
-  stationSearch: RAW,
+  stationSearch: RAW, profilePace: RAW,
   slackTokens: FORM, connectFlow: FORM, decisionForm: FORM, policyForm: FORM, agentEnvForm: FORM, profileFlow: FORM, lockDraft: FORM,
   adbCard: "four fields, its line a word of the core's or the phone's message (adb.ts card)", releases: "one number (core.ts `told`)",
   fonts: "the fonts of a fixed catalogue, by id (font-files.ts, fonts.ids, SHARE_LOOKS_FILES)", drivePlace: "three fields (DrivePlace)",
@@ -113,6 +111,7 @@ const NOT_MEASURED: Record<string, string> = {
   screenCard: "eight fields of one screen (screens.ts screenCard)", imageNear: "the two pictures beside one, at most (placed.ts near)",
   shareIn: "30 chats (share-in.ts LISTED) and the workspace's stations, 64 at most (client/limits.ts STATIONS_PER_WORKSPACE)",
   chatFeedback: UNBOUNDED,
+  preset: "one preset whole, as the `presets` topic weighed sends each: its name, instructions and folders held to preset-records.ts NAME_MAX, INSTRUCTIONS_MAX, DIRS_MAX",
 };
 
 /// What a topic's value as the fixture makes it holds nothing of, though its shape declares it (a list, a map), by the
@@ -155,6 +154,9 @@ const EMPTY: Record<string, Record<string, string>> = {
     "overview.copies.offers": STATE, "overview.copies.formerly": NONE, "overview.copies.taking": STATE,
     "overview.copies.retire.steps": STATE,
   },
+  // (no module open: its items are the open one's alone, move.ts)
+  "stationMove station": { "modules[].items": ASKED_SO },
+  "stationMove": { "modules[].items": ASKED_SO },
   "stationPart profiles": { "[].modelsSaving": SAVING, "[].quota.windows[].time": NEVER, "[].decisionModels": NONE, "[].workspaces": NONE },
   // (a sign-in under way: Willow's)
   "stationPart logins": { "(whole)": STATE },
@@ -170,11 +172,11 @@ const EMPTY: Record<string, Record<string, string>> = {
   "profile": { "profile.usedBy": NONE },
   "profile key": { "profile.quota.resets": NONE },
   "connects": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
-  "connects mine": { "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
+  "connects mine": { "items[].connect.group.relays": "the viewer made no group connect (another member made the one there is)", "wait.failing": ERROR, "items[].connect.bind.profiles": STATE },
   // (asked for its last line alone, a job's row: no lines, jobs.ts log)
   "jobLog line": { lines: ASKED_SO },
   // (a single-session connect's session, and the one weighed is many sessions')
-  "connect": { "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
+  "connect": { "connect.group.relays": "the page weighed is a Slack connect's (c-slack-1), which has no group server", "connect.bind.profiles": STATE, "sessions[].profiles": STATE, "bound.profiles": STATE, "bound.efforts": STATE, "bound.time": STATE, "bound.watch.names": STATE },
   "newChat": { "pick.value.profiles": STATE },
   // (a new chat's pick names no account's allowance, choose.ts `#now` quiet; the model it takes with nothing chosen,
   // Fable, runs on one runtime and takes no Devin sidekick; borrow: a model only another station has, picked)
@@ -204,6 +206,8 @@ const EMPTY: Record<string, Record<string, string>> = {
   "changelog news": { tabs: ASKED_SO },
   // (a rig's devices', a station that only runs tasks: the workspace has none)
   "devices": { "devices[].requests": NONE },
+  // (a station's terminals: none open on the workspace of real size)
+  "terminals": { terminals: NONE },
   // (names chosen, a tree's folders open, columns widened by hand)
   "driveBrowse phone": { "chosen.names": STATE, open: STATE, widths: STATE },
   "driveBrowse columns": { "chosen.names": STATE, open: STATE, widths: STATE },
@@ -496,6 +500,7 @@ const STILL: Record<string, string> = {
   // (a model control's: what the station's accounts read, their allowances, a station down move none of it, choose.ts)
   "pick": BY_PAGE("pick.set, pick.save, pick.like, pick.forget"),
   "joinable": BY_PAGE("station.join: the stations of the account's workspaces, one joining another"),
+  "terminals": BY_PAGE("terminal.view, terminal.end: a member opening one or ending it; the workspace has none open"),
   "memberships": READ_ONCE("views/memberships.ts readSoon, and again by station.join"),
   "workspaceWays": BY_PAGE("workspace.setWay: the rest is still.fail's relays, as /v1/me lists them"),
   "changelog news": UNTOLD("what this build got since the changelog was last shown: the device's build, said as a run starts (client.device), and the changelog shown (changelog.seen), on its own page"),

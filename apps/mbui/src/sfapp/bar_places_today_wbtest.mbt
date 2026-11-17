@@ -170,13 +170,14 @@ fn today_live(heard : Array[String]) -> Array[String] {
 /// before places were kept), and what keeping them told otherwise: each message the same, but where the page left and
 /// the one come to read the same topic, which is then held through the switch (`doing`, read by 连接 and Home: let go of
 /// and asked again, as two messages, while the one was let go before the other was made). Their order within a switch
-/// is no part of it: held as a set.
+/// is no part of it: held as a set. (Home's bar's key of the stations' newer releases, `stationUpdates`, let go of and
+/// asked again with Home's own, 2026-11-14.)
 let today_baseline : Array[(String, Array[String], Array[String])] = [
   (
     "chats→connects",
     [
       "unsub doing {}", "unsub changelog {\"news\":true}", "unsub driveTransfers {\"workspace\":\"ws1\"}", "unsub longJobs {\"scope\":\"ws1\"}",
-      "sub doing {}", "unsub lock {\"workspace\":\"ws1\"}",
+      "sub doing {}", "unsub lock {\"workspace\":\"ws1\"}", "unsub stationUpdates {\"scope\":\"ws1\"}",
     ],
     [],
   ),
@@ -184,7 +185,7 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
     "connects→chats",
     [
       "sub lock {\"workspace\":\"ws1\"}", "sub longJobs {\"scope\":\"ws1\"}", "sub changelog {\"news\":true}", "unsub doing {}", "sub doing {}",
-      "sub driveTransfers {\"workspace\":\"ws1\"}",
+      "sub driveTransfers {\"workspace\":\"ws1\"}", "sub stationUpdates {\"scope\":\"ws1\"}",
     ],
     ["unsub doing {}", "sub doing {}"],
   ),
@@ -192,7 +193,7 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
     "chats→usage",
     [
       "sub usage {\"scope\":\"ws1\",\"days\":7}", "unsub doing {}", "unsub changelog {\"news\":true}", "unsub driveTransfers {\"workspace\":\"ws1\"}",
-      "unsub longJobs {\"scope\":\"ws1\"}", "unsub lock {\"workspace\":\"ws1\"}",
+      "unsub longJobs {\"scope\":\"ws1\"}", "unsub lock {\"workspace\":\"ws1\"}", "unsub stationUpdates {\"scope\":\"ws1\"}",
     ],
     [],
   ),
@@ -202,7 +203,7 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
     "usage→chats",
     [
       "sub lock {\"workspace\":\"ws1\"}", "sub longJobs {\"scope\":\"ws1\"}", "sub changelog {\"news\":true}", "unsub usage {\"scope\":\"ws1\",\"days\":7}",
-      "sub doing {}", "sub driveTransfers {\"workspace\":\"ws1\"}",
+      "sub doing {}", "sub driveTransfers {\"workspace\":\"ws1\"}", "sub stationUpdates {\"scope\":\"ws1\"}",
     ],
     [],
   ),
@@ -210,7 +211,7 @@ let today_baseline : Array[(String, Array[String], Array[String])] = [
     "chats→profiles",
     [
       "unsub doing {}", "unsub changelog {\"news\":true}", "unsub driveTransfers {\"workspace\":\"ws1\"}", "unsub longJobs {\"scope\":\"ws1\"}",
-      "unsub lock {\"workspace\":\"ws1\"}",
+      "unsub lock {\"workspace\":\"ws1\"}", "unsub stationUpdates {\"scope\":\"ws1\"}",
     ],
     [],
   ),
@@ -272,9 +273,10 @@ test "bar places today: each switch's nodes made and let go, the stack's entry, 
   ignore(at_rest_heard)
   let walk = ["connects", "chats", "usage", "connects", "usage", "chats", "profiles", "connects", "profiles", "usage", "chats"]
   // (what each switch made and let go of the tree: the first visit of a place made as nodes makes it, a place come back
-  // to makes and lets go of nothing but a node of Home's (made while it was away, let go as it is back), an old view's
-  // place its few)
-  let works = [(124, 0), (0, 1), (653, 264), (0, 0), (0, 0), (0, 1), (7, 0), (0, 6), (6, 0), (0, 6), (0, 1)]
+  // to makes and lets go of nothing but a node of Home's (made while it was away, let go as it is back); 用量 made once,
+  // whole, its answer come by the core's channel before the frame that builds it; 额度 too, made once as nodes since
+  // the profiles' list was, kept as the others; its list or 概览 one page, the pick between them two nodes more)
+  let works = [(131, 0), (0, 1), (407, 0), (0, 0), (0, 0), (0, 1), (221, 0), (0, 0), (0, 0), (0, 0), (0, 1)]
   let mut from_place = "chats"
   for k, place in walk {
     let i = today_bar.search(place).unwrap()

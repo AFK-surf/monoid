@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { harness } from "./harness.ts";
 import { releaseType, sharedRelease } from "../src/install.ts";
-import { VERSIONED, groupReads, parseRanges } from "../src/releases.ts";
+import { VERSIONED, groupReads, parseRanges, serveRelease, type ReleaseBucket } from "../src/releases.ts";
 
 // The releases bucket's files at /releases/<file>: whole, or the ranges asked for (one, or many as
 // multipart/byteranges, as the desktop app's updater asks for what changed between two zips).
@@ -83,6 +83,79 @@ test("a release is served whole or by ranges, the versioned builds cached for go
   } finally {
     await h.close();
   }
+});
+
+test("a release's ranges resume only the representation named by If-Range", async () => {
+  const h = await harness();
+  try {
+    const bucket = (await h.mf.getR2Bucket("RELEASES", "api")) as unknown as { put(key: string, value: string): Promise<unknown> };
+    const name = "stillfail-station-linux-x64.tar.gz";
+    await bucket.put(name, "old archive");
+    const before = await h.fetch(`/releases/${name}`);
+    const oldTag = before.headers.get("etag")!;
+    await before.arrayBuffer();
+    await bucket.put(name, "new archive");
+    const whole = await h.fetch(`/releases/${name}`);
+    const tag = whole.headers.get("etag")!;
+    await whole.arrayBuffer();
+    assert.notEqual(tag, oldTag);
+
+    const same = await h.fetch(`/releases/${name}`, { headers: { range: "bytes=4-", "if-range": tag } });
+    assert.equal(same.status, 206);
+    assert.equal(same.headers.get("content-range"), "bytes 4-10/11");
+    assert.equal(await same.text(), "archive");
+    // No Last-Modified is advertised, so an HTTP-date cannot validate a resumed copy here.
+    for (const validator of [oldTag, `W/${tag}`, "Mon, 16 Nov 2026 00:00:00 GMT"]) {
+      for (const range of ["bytes=4-", "bytes=0-1,4-5", "bytes=100-"]) {
+        const changed = await h.fetch(`/releases/${name}`, { headers: { range, "if-range": validator } });
+        assert.equal(changed.status, 200, `${validator}: ${range}`);
+        assert.equal(changed.headers.get("content-range"), null);
+        assert.equal(changed.headers.get("etag"), tag);
+        assert.equal(await changed.text(), "new archive");
+      }
+    }
+    const noRange = await h.fetch(`/releases/${name}`, { headers: { "if-range": oldTag } });
+    assert.equal(noRange.status, 200);
+    assert.equal(await noRange.text(), "new archive");
+  } finally {
+    await h.close();
+  }
+});
+
+// The object is replaced at a chosen read, without relying on requests racing on a real bucket.
+function changingRelease(changeAt: number): ReleaseBucket {
+  let reads = 0;
+  return {
+    head: async () => ({ size: 100_000, httpEtag: '"old"' }),
+    get: async (_file, options) => {
+      const changed = !options?.range || ++reads >= changeAt;
+      const bytes = new Uint8Array(100_000).fill(changed ? 2 : 1);
+      const range = options?.range;
+      const part = range ? bytes.subarray(range.offset, range.offset + range.length) : bytes;
+      return { body: new Response(part).body!, size: bytes.length, httpEtag: changed ? '"new"' : '"old"' };
+    },
+  };
+}
+
+test("a release replaced after its head was read restarts a single range as the whole file", async () => {
+  const answer = await serveRelease(new Request("https://releases.test/file", { headers: { range: "bytes=4-9", "if-range": '"old"' } }), changingRelease(1), "file", "application/octet-stream");
+  assert.equal(answer.status, 200);
+  assert.equal(answer.headers.get("content-range"), null);
+  assert.equal(answer.headers.get("etag"), '"new"');
+  assert.deepEqual(new Uint8Array(await answer.arrayBuffer()), new Uint8Array(100_000).fill(2));
+});
+
+test("a release replaced between multipart reads cannot complete a mixed response", async (t) => {
+  // Node has no FixedLengthStream. The integration test above holds the byte count in workerd; this test
+  // controls the bucket's changes and needs only the stream's write/abort behavior.
+  const previous = Object.getOwnPropertyDescriptor(globalThis, "FixedLengthStream");
+  Object.defineProperty(globalThis, "FixedLengthStream", { configurable: true, value: class extends TransformStream<Uint8Array, Uint8Array> {
+    constructor(_length: number) { super(); }
+  } });
+  t.after(() => { if (previous) Object.defineProperty(globalThis, "FixedLengthStream", previous); else Reflect.deleteProperty(globalThis, "FixedLengthStream"); });
+  const answer = await serveRelease(new Request("https://releases.test/file", { headers: { range: "bytes=0-1,70000-70001", "if-range": '"old"' } }), changingRelease(2), "file", "application/octet-stream");
+  assert.equal(answer.status, 206);
+  await assert.rejects(answer.arrayBuffer(), /changed while reading/);
 });
 
 test("a face's files: a page's stylesheet and slices, the Android app's file, cached for good and fetched from any origin", async () => {
@@ -179,6 +252,29 @@ test("a cloud of its own reads the station's releases from still.fail's when its
     // an app's feed is its own alone, even when it has none
     assert.equal((await h.fetch("/releases/android/latest.json")).status, 404);
     assert.deepEqual(asked, ["station.json", "stillfail-station-linux-x64.tar.gz bytes=3-6", "station-beta.json"]);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a release read upstream keeps the client's If-Range condition", async () => {
+  const asked: Record<string, string>[] = [];
+  const h = await harness({
+    upstream: (_file, request): { status: number; body: string; headers: Record<string, string> } => {
+      asked.push(request.headers);
+      return request.headers["if-range"] === '"old"'
+        ? { status: 200, body: "new archive", headers: { etag: '"new"' } }
+        : { status: 206, body: "archive", headers: { "content-range": "bytes 4-10/11", etag: '"new"' } };
+    },
+  });
+  try {
+    for (const tag of ['"old"', '"new"']) {
+      const answer = await h.fetch("/releases/stillfail-station-linux-x64.tar.gz", { headers: { range: "bytes=4-", "if-range": tag } });
+      assert.equal(answer.status, tag === '"old"' ? 200 : 206);
+      assert.equal(answer.headers.get("etag"), '"new"');
+      assert.equal(await answer.text(), tag === '"old"' ? "new archive" : "archive");
+    }
+    assert.deepEqual(asked.map((headers) => [headers.range, headers["if-range"]]), [["bytes=4-", '"old"'], ["bytes=4-", '"new"']]);
   } finally {
     await h.close();
   }

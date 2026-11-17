@@ -100,7 +100,7 @@ test("registration: the link carries what the app is to get; asked until its id 
     assert.equal(url.searchParams.get("user_code"), "AB");
     assert.equal(url.searchParams.get("name"), "Codex 机器人");
     assert.deepEqual(JSON.parse(gunzipSync(Buffer.from(url.searchParams.get("addons")!, "base64url")).toString()), ADDONS);
-    assert.equal(encodeAddons({ a: 1 }).includes("="), false);
+    assert.equal((await encodeAddons({ a: 1 })).includes("="), false);
     await t.adjust(5000);
     await settle();
     assert.equal(reg.get(r.id)!.state, "waiting");
@@ -173,6 +173,7 @@ async function surfaceRig(o: { topics?: boolean; threadMode?: boolean; names?: b
     close: async () => {
       await surface.stop();
       await book?.close();
+      await threads.written();
       await fake.close();
       await t.close();
       rmSync(dir, { recursive: true, force: true });
@@ -503,7 +504,9 @@ test("hub: a Feishu connect's chat is one session, its threads on the connect's 
     assert.ok(answer.startsWith("Posted to oc_g/om_a"), answer);
     const card = r.fake.calls("POST", "/open-apis/im/v1/messages").map((c) => JSON.parse(c.body.content)).find((c) => JSON.stringify(c).includes("button"));
     assert.deepEqual(card.body.elements.filter((e: Json) => e.tag === "button").map((b: Json) => b.text.content), ["A", "B"]);
-    assert.match(await rig.refused(key, "chat_post", { to: "oc_g/om_a", text: "登录", card: { type: "login", login: "abc" } }), /login card is shown only in still\.fail/);
+    const loginPost = await rig.call(key, "chat_post", { to: "oc_g/om_a", text: "登录 https://app.still.fail/w/ws/s/st/login/abc", card: { type: "login", login: "abc" } });
+    assert.ok(loginPost.startsWith("Posted to oc_g/om_a"), loginPost);
+    assert.deepEqual(rig.store.cardAt(thread.id, rig.store.messagesBefore(thread.id, null, 1)[0]!.ts), { type: "login", login: "abc" });
   } finally {
     await r.close();
     await rig.close();
@@ -648,6 +651,7 @@ test("scan: the station resumes a waiting scan and retries a failed save after r
     confirmed = true;
     feishu = makeFeishu({ data, store, config, clock: t.clock, receive: async () => {}, bound: () => false });
     table = routes();
+    await feishu.registrations.ready();
     await t.adjust(5000);
     await fake.until("save failed", () => failures > 0);
     assert.equal(config.raw().connects.length, 0);
@@ -658,7 +662,9 @@ test("scan: the station resumes a waiting scan and retries a failed save after r
     failSave = false;
     feishu = makeFeishu({ data, store, config, clock: t.clock, receive: async () => {}, bound: () => false });
     table = routes();
+    await feishu.registrations.ready();
     await fake.until("saved after restart", () => typeof feishu.registrations.get(reg.id)?.connectId === "string");
+    await feishu.registrations.written();
     const kept = config.raw().connects;
     assert.equal(kept.length, 1);
     assert.deepEqual([kept[0].feishu.appId, kept[0].feishu.appSecret, kept[0].bind, kept[0].workspace, kept[0].requireMention, kept[0].feishu.threads], ["cli_scan", "scan-secret", { runtime: "claude", model: "chosen-model" }, "joined", false, true]);

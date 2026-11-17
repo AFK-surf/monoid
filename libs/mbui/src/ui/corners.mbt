@@ -386,6 +386,12 @@ fn[T] Ctx::with_tree_nodes(
           }
           n.tx = f.off.0
           n.ty = f.off.1
+          // (its margins: one below 0 lays it over the one before on purpose, a stack of faces, which the spacing
+          // rules leave as it is, gaps.mbt)
+          n.mar_l = f.margin.0
+          n.mar_t = f.margin.1
+          n.mar_r = f.margin.2
+          n.mar_b = f.margin.3
         }
         None => ()
       }
@@ -400,6 +406,11 @@ fn[T] Ctx::with_tree_nodes(
     }
     if facts && holder >= 0 && self.tree_scaled(d.id, held[holder].0.id, contents) {
       tree_scaled_at.add(i)
+    }
+    // (drawn another size than laid out, itself or by what holds it: a picture of a part drawn small or large, its
+    // places drawn and its words laid out, tree_drawn_scaled)
+    if !laid && scales[k] != 1.0 {
+      tree_drawn_scaled.add(i)
     }
     // (said to be a picture, as an old view's box is by its semantics: Ctx::pictures)
     if tree.says_picture(d.id) {
@@ -442,8 +453,10 @@ fn[T] Ctx::with_tree_nodes(
   }
   tree_field_boxes.clear()
   tree_scaled_at.clear()
+  tree_drawn_scaled.clear()
   corner_scale_at.clear()
   tree_draws_at.clear()
+  tree_marks_at.clear()
   tree_fixed_h_at.clear()
   tree_moved_at.clear()
   tree_scroll_held_at.clear()
@@ -635,8 +648,8 @@ fn Ctx::corner_faults(self : Ctx) -> Array[String] {
       // across a panel's foot: the user, 2026-10-26, a finger's not concentric with the page's corners, not found)
       let round = rb >= dmin(b.fw, b.fh) / 2.0 - 0.5
       if round {
-        if ((t - d).abs() <= 0.5 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
-          ((l - r).abs() <= 0.5 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5) {
+        if ((t - d).abs() <= 0.5 && b.fh < a.fh - 1.0 && ra < a.fh / 2.0 - 0.5 && b.fh <= b.fw + 0.5) ||
+          ((l - r).abs() <= 0.5 && b.fw < a.fw - 1.0 && ra < a.fw / 2.0 - 0.5 && b.fw <= b.fh + 0.5) {
           continue
         }
         // a mark smaller than the gap it would leave round it standing concentric (the corner's radius less its own

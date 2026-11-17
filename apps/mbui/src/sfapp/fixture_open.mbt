@@ -4,8 +4,8 @@
 
 ///|
 /// What the modes of the cards and words set going as the chat opens: chat-answering's option under way, chat-pick's
-/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's and
-/// chat-menu-choice's menu presented.
+/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's,
+/// chat-menu-choice's and chat-menu-levels' menu presented, chat-confirm's confirm.
 pub fn open_cards_fixture(mode : String) -> Unit {
   match mode {
     "chat-answering" => acting.doing["answer/" + seq_key("ws1/st1", 7.0, 8.0) + "/一起换"] = true
@@ -46,6 +46,37 @@ pub fn open_cards_fixture(mode : String) -> Unit {
         ],
         from=@sf.at_point(700.0, 300.0),
       )
+    // a menu whose item opens a menu (分享: on 小屏 a level of the same sheet, back to the first)
+    "chat-menu-levels" =>
+      @sf.menu(
+        [
+          Some(@sf.menu_item_of("复制链接", fn() {  }, icon="copy")),
+          Some(
+            @sf.menu_item_of("分享", fn() {
+              @sf.menu(
+                [
+                  Some(@sf.menu_item_of("发到 Slack", fn() {  }, icon="send")),
+                  Some(@sf.menu_item_of("发到飞书", fn() {  }, icon="send")),
+                  None,
+                  Some(@sf.menu_item_of("生成图片", fn() {  }, icon="photo")),
+                ],
+                title="分享到",
+                from=@sf.at_point(700.0, 300.0),
+              )
+            }, icon="share", further=true),
+          ),
+          None,
+          Some(
+            @sf.menu_item_of("删除", fn() {
+              @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true)
+            }, icon="trash", danger=true, further=true),
+          ),
+        ],
+        from=@sf.at_point(700.0, 300.0),
+      )
+    // a confirm over the chat (the presenters'), one that cannot be undone, its warning under its words
+    "chat-confirm" =>
+      @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true, warning="删除后不能恢复。")
     "chat-menu-choice" =>
       @sf.menu(
         [
@@ -73,8 +104,8 @@ pub fn open_cards_fixture(mode : String) -> Unit {
       @sf.pick(
         "切换工作站",
         [
-          @sf.choice("st1", "Willow", note="这台 Mac", mark=fn(c, size) { @sf.station_icon(c, "", "", size, @sf.theme().p.muted, here=true) }),
-          @sf.choice("st2", "Cedar", value="离线", mark=fn(c, size) { @sf.station_icon(c, "", "", size, @sf.theme().p.muted) }),
+          @sf.choice("st1", "Willow", note="这台 Mac", mark=OfStation("", "", true, fn() { @sf.theme().p.muted })),
+          @sf.choice("st2", "Cedar", value="离线", mark=OfStation("", "", false, fn() { @sf.theme().p.muted })),
           @sf.choice("st3", "Birch", value="2 个任务"),
         ],
         "st1",
@@ -114,7 +145,7 @@ pub fn open_fixture(mode : String) -> Unit {
     "home-attention" => @sfdesk.open_attention()
     // (what is beside it: the made-up core keeps it so, fixture.mbt fixture_chat_tabs)
     "chat-letters-side" => {
-      dui.letters_open = ""
+      @sfdesk.letters_to_list(r)
       dui.letters_held[r.station + "\u{1}" + r.session] = 7.0
     }
     "chat-model-pop" => @sfpages.open_triple(r.station, "session:s-c1")
@@ -167,7 +198,7 @@ fn open_decide_panels(mode : String, src : Source) -> Unit {
     "chat-things" => open_things(src, r, 7.0)
     "chat-letters-open" => {
       open_letters(src, r, 7.0)
-      dui.letters_open = @sffixture.fix_letters_link
+      @sfdesk.letters_open_at(r, @sffixture.fix_letters_link)
     }
     "chat-agent" | "chat-agent-unsaid" | "chat-agent-screens" => open_agent(src, r, "s-c1")
     "chat-jobs" => open_chat_jobs(src, r)
@@ -238,16 +269,14 @@ pub fn open_drive_fixture(mode : String) -> Unit {
       app.nav.push(DriveRead(at))
       let r = @sf.reading_for(reader_key(at))
       if mode != "reader" && mode != "reader-md" {
-        r.chrome = true
+        r.chrome.set(true)
       }
       if mode == "reader-contents" {
-        r.panel = @sf.ReaderPanel::Contents
-        r.contents_put = false
+        r.panel.set(@sf.ReaderPanel::Contents)
       }
       if mode == "reader-layout" {
         // (the layout's panel, nodes of the window's tree, told it is open)
         @sf.reader_panel_set(r, @sf.ReaderPanel::Layout)
-        r.contents_put = false
       }
     }
     // (chat-station-files: ＋'s Station 文件 put up as the app's source is made, fixture_station_files)
@@ -312,7 +341,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
     @sffixture.fixture_update_goes("0.1.5640", "ready", away=false)
   }
   // the same build's first two stages there: offered (有新版本), coming (40%)
-  if mode == "home-update-offered" {
+  // (and the stations' newer releases beside it: one key, the dialog of both, sfpages station_updates.mbt)
+  if mode == "home-update-offered" || mode == "home-station-updates-app" || mode == "station-updates-app" {
     @sffixture.fixture_update("0.1.5640")
   }
   if mode == "home-update-coming" {
@@ -370,22 +400,35 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   @sfpages.open_search_mode(mode)
   // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
-  // the code typed on its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" {
+  // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
+  // lock-needs-app-security (its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
   if mode == "keys-dialog" {
     @sfdesk.wide.keys_open.set(true)
   }
+  // a station login link (/w/<ws>/s/<station>/login/<id>) opened in its standalone sheet
+  if mode == "login-link" {
+    open_login("ws1/st1", "login-1")
+  }
 }
 
 ///|
-/// The app as src/sffix starts it for `mode`, for a Tester made next (screens_wbtest.mbt): the app as at the start (reset:
-/// whatever ran before in the process), the made-up source of the mode and what it opens before the first frame
-/// (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
-pub fn fixture_app(mode : String) -> Source {
-  reset()
+/// The app as src/sffix starts it for `mode`, for a Tester made next (screens_wbtest.mbt): a run begun (new_run: the run
+/// before let go of, then the app as at the start, whatever ran before in the process), the made-up source of the mode
+/// and what it opens before the first frame (open_fixture_mode). The Tester keeps it as it starts (reset by hand).
+/// The run before let go of first: its window's tree, still there till the next Tester is made, followed what this one
+/// opens (⌘/'s `keys_open`) and put up a panel of its own in this run's presenters, closed (open said false) as that
+/// tree was let go (switches_still_wbtest's keys-dialog, on 中屏 and 大屏 after 小屏; run_begins_wbtest).
+pub fn fixture_app(mode : String, chat_nodes? : Bool = false) -> Source {
+  new_run()
+  // (the chat's page made as nodes, as one who turned 实验性功能's 试用新对话页 on has it: said before the mode opens a chat,
+  // which is made as the choice stands then)
+  if chat_nodes {
+    @sfbase.chat_page_nodes.set(true)
+  }
   let src = @sffixture.fixture(mode)
   open_fixture_over(mode, src)
   src
@@ -410,7 +453,7 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   // slice 8's panels over the chat (decide_fixture.mbt)
   open_decide_panels(mode, src)
   if mode == "files-add-folder" {
-    @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+    @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   }
   // (share-card-dark: over the dark theme; share-card-<key>: in that look, share_looks.mbt)
   if mode == "share-card" || mode.has_prefix("share-card-") {
@@ -428,6 +471,11 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   }
   // a new workspace over Home: nothing typed yet; and named, an invite code typed that still.fail cloud found wrong
   // (what is wrong with it under its field)
+  // the stations' newer releases waiting for this person: their key over Home (home-station-updates); their dialog open
+  // over it (station-updates)
+  if mode == "station-updates" || mode == "station-updates-app" {
+    @sfpages.station_updates_dialog(src, settings_core(src, { id: "ws1", name: "星火工作室", emoji: "", icon: "", email: "lin@example.com" }), "ws1")
+  }
   if mode == "new-workspace" {
     @sfpages.new_workspace_put(src, name="", code="", error_code="")
   }
@@ -439,8 +487,8 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
 ///|
 /// The first row's chat (opened by sffix for chat… modes): ＋'s Station 文件 in 文档, a file ticked.
 fn fixture_station_files(src : Source) -> Unit {
-  @sfdesk.station_files_pick(src, "ws1/st1:s-c1")
-  @sfdesk.station_pick_set({ station: "ws1/st1", station_name: "Willow", root: @sffixture.fix_docs, root_name: "文档", path: "" }, [
+  @sfpages.station_files_pick(src, "ws1/st1:s-c1")
+  @sfpages.station_pick_set({ station: "ws1/st1", station_name: "Willow", root: @sffixture.fix_docs, root_name: "文档", path: "" }, [
     {
       station: "ws1/st1",
       station_name: "Willow",
@@ -537,6 +585,14 @@ pub fn open_mode(mode : String) -> Unit {
   if mode == "settings-connect-borrow" {
     @sffixture.new_fix.borrow = true
   }
+  // (someone else's preset picked: so before its page asks its new chat)
+  if mode == "newchat-preset-theirs" || mode == "newchat-preset-theirs-long" {
+    @sffixture.new_fix.preset = "p-ops"
+  }
+  // (as long a name as a person gives one: its 复制「X」为我的预设 cut as 编辑「X」 is)
+  if mode == "newchat-preset-theirs-long" {
+    @sffixture.fix_other_rename("p-ops", "线上排障：告警、回滚与值班交接的完整手册")
+  }
   if mode.has_prefix("newchat") {
     app.nav.rise(NewChat)
     if mode.has_prefix("newchat-crowded") || mode.has_prefix("newchat-providers") || mode == "newchat-tall-model" {
@@ -548,6 +604,15 @@ pub fn open_mode(mode : String) -> Unit {
       n.providers = mode.has_prefix("newchat-providers")
       n.model = "deepseek-v4-1-flash"
       n.runtime = "dsh"
+      n.d_model = n.model
+      n.d_runtime = n.runtime
+    }
+    if mode == "newchat-ultrafast-model" {
+      let n = @sffixture.new_fix
+      n.crowded = true
+      n.ultrafast = true
+      n.model = "gpt-6-astra"
+      n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
@@ -607,6 +672,14 @@ pub fn open_mode(mode : String) -> Unit {
         @sfpages.new_chat_ask("preset-new-clones")
       }
       "newchat-preset-picked" => @sffixture.new_fix.preset = "p-sf"
+      // (the other members' presets, a level further in from the menu; none of them yet; the menu with someone
+      // else's picked, whose it is after its name and 复制「X」为我的预设 in place of 编辑)
+      "newchat-preset-others" => @sfpages.new_chat_ask("preset-others")
+      "newchat-preset-others-none" => {
+        @sffixture.new_fix.others.clear()
+        @sfpages.new_chat_ask("preset-others")
+      }
+      "newchat-preset-theirs" | "newchat-preset-theirs-long" => @sfpages.new_chat_ask("preset")
       // (its preset names a model Maple does not run: the stations offered; on Maple, said so)
       "newchat-preset-model-station" => {
         @sffixture.new_fix.preset = "p-sf"
@@ -622,7 +695,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }
@@ -646,6 +719,33 @@ pub fn open_mode(mode : String) -> Unit {
     // the profiles' place with Willow's own Codex login offered with its allowance (settings-profiles-offer's)
     @settings.fixture_page("settings-profiles-offer") |> ignore
     app.nav.replace(Place("profiles"))
+  } else if mode == "place-profiles-sum-a" {
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    @settings.profiles_narrow_overview.set(false)
+    app.nav.replace(Place("profiles"))
+  } else if mode == "place-profiles-sum-overview" {
+    // (the bottom bar's Profile switched to 概览, its own: profiles_place_overview)
+    @settings.fixture_page("settings-profiles-sum-a") |> ignore
+    @settings.profiles_narrow_overview.set(false)
+    @settings.profiles_place_overview.set(true)
+    app.nav.replace(Place("profiles"))
+  } else if mode == "terminal" || mode.has_prefix("terminal-") {
+    // one of its terminals: typed into here (terminal, terminal-kb, terminal-keys, terminal-center), by someone else
+    // with 接管 over it (terminal-taken), or ended with 重新打开 (terminal-ended)
+    match mode {
+      "terminal-kb" => @sfpages.terminal_fixture_ask("kb")
+      "terminal-keys" => @sfpages.terminal_fixture_ask("keys")
+      "terminal-center" => @sfpages.terminal_fixture_ask("center")
+      "terminal-scrolled" => @sfpages.terminal_fixture_ask("scrolled")
+      _ => ()
+    }
+    let tid = match mode {
+      "terminal-taken" => "term-1"
+      "terminal-ended" => "term-ended"
+      _ => "term-2"
+    }
+    open_setting("station:ws1/st1")
+    app.nav.push(Terminal({ station: "ws1/st1", terminal: tid, watch: false, cwd: "" }))
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage
@@ -665,7 +765,7 @@ pub fn open_mode(mode : String) -> Unit {
         "station": "ws1/st1",
         "root": Json::string(@sffixture.fix_docs),
         "path": "",
-        "place": Json::string(@sfdesk.place_name("page/0")),
+        "place": Json::string(@sfpages.place_name("page/0")),
       }
       for k, v in params {
         o[k] = v
@@ -682,12 +782,12 @@ pub fn open_mode(mode : String) -> Unit {
       "files-tree" => {
         @sffixture.fix_browse_prefs_set({ "driveViews": { "page": "tree" } }) |> ignore
         browse({ "act": "tree", "folder": "设计稿", "view": "tree" })
-        @sfdesk.nav_open("ws1/st1")
+        @sfpages.nav_open("ws1/st1")
       }
       "files-list" => @sffixture.fix_browse_prefs_set({ "driveViews": { "page": "list" } }) |> ignore
       // a copy asked about a name there: 说明.txt into 会议记录, which has one
       "files-clash" =>
-        @sfdesk.drag_ask({
+        @sfpages.drag_ask({
           into: { station: "ws1/st1", root: Some(@sffixture.fix_docs), path: "会议记录" },
           into_name: "会议记录",
           total: 1,
@@ -755,11 +855,26 @@ fn open_play_fixture(mode : String) -> Unit {
 /// MBUI_FIXTURE=service…: the first row's chat, its service's page over it.
 fn open_service_fixture(mode : String) -> Unit {
   match mode {
-    "service" | "service-sized" | "service-restart" | "service-stopped" => {
+    "service" | "service-sized" | "service-restart" | "service-stopped" | "service-marks" | "service-marks-dark" => {
       app.nav.push(Chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }))
       app.nav.push(Service("ws1/st1", "j-web"))
       if mode == "service-sized" {
         svc_viewports[service_key("ws1/st1", "j-web")] = Some({ width: 390, height: Some(844) })
+      }
+      // (`-marks`: two marks picked on the page, the first said beside its pin, the second's note open; on either
+      // theme)
+      if mode.has_prefix("service-marks") {
+        let m = @sfbase.service_page_for("ws1/st1", "j-web").marks
+        let mark = fn(n : Int, kind : String, label : String, words : String, rect : (Double, Double, Double, Double), comment : String) -> @sfbase.PageMark {
+          { n, path: "/", vw: 390, vh: 600, label, kind, selector: "main > " + label, text: words, rect, component: "", comment }
+        }
+        m.marks.push(mark(1, "按钮", "button.go", "构建", (20.0, 120.0, 100.0, 30.0), "把按钮换成主色"))
+        m.marks.push(mark(2, "标题", "h1", "本周发布", (40.0, 320.0, 200.0, 40.0), ""))
+        m.at[1] = (20.0, 120.0, 100.0, 30.0)
+        m.at[2] = (40.0, 320.0, 200.0, 40.0)
+        m.css_w = 390.0
+        m.css_h = 600.0
+        m.editing = Some(2)
       }
     }
     _ => ()

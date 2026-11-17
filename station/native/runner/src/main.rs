@@ -1,5 +1,6 @@
 //! stillfail-runner: keeps one agent process (claude, codex app-server) for the station, so the agent outlives the
-//! station restarting or crashing (docs/station-ts-native.md, section 1).
+//! station restarting or crashing (docs/station-ts-native.md, section 1). With `--pty` it keeps a person's terminal
+//! the same way: its program on a pseudo-terminal, its output as an agent's stdout, and its screen (src/ghostty.rs).
 //!
 //! The runner holds the agent's stdin and appends its stdout and stderr to `<id>.out` and `<id>.err` as they come. A
 //! station attaches on `<id>.sock` and is sent what it has not acknowledged yet, then whatever follows; the agent's
@@ -11,7 +12,6 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -20,12 +20,13 @@ use base64::Engine;
 use base64::engine::general_purpose::STANDARD as B64;
 use serde_json::{Value, json};
 
+mod ghostty;
 mod shim;
 #[cfg_attr(unix, path = "sys/unix.rs")]
 #[cfg_attr(windows, path = "sys/windows.rs")]
 mod sys;
 
-use sys::{Agent, Conn, Listener};
+use sys::{Agent, Conn, Listener, Proc, PtyMaster};
 
 /// What a station may ask to be sent to the agent.
 #[derive(Clone, Copy)]
@@ -35,7 +36,7 @@ enum Signal {
     Int,
 }
 
-const USAGE: &str = "usage: stillfail-runner --dir <run/runners> --id <id> [--cwd <dir>] -- <program> <args…>
+const USAGE: &str = "usage: stillfail-runner --dir <run/runners> --id <id> [--cwd <dir>] [--pty <cols>x<rows>] -- <program> <args…>
        (Windows) stillfail-runner --job -- <program> <args…>";
 /// How long a runner whose agent has exited waits for a `done` before it cleans up by itself.
 const LINGER: Duration = Duration::from_secs(24 * 3600);
@@ -43,6 +44,8 @@ const LINGER: Duration = Duration::from_secs(24 * 3600);
 const SETTLE: Duration = Duration::from_secs(1);
 /// Most bytes in one `out` message.
 const CHUNK: usize = 64 * 1024;
+/// Recent stdout bytes kept in memory (a power of two) so live `push` sends them without reading `<id>.out` from disk.
+const OUT_WINDOW: usize = 256 * 1024;
 const STREAMS: [&str; 2] = ["out", "err"];
 /// How much of a stream acknowledged is let go of at once: its file keeps its length (offsets stay as they were), the
 /// disk under what was acknowledged is given back (sys::punch), so a long-running stream does not consume disk indefinitely.
@@ -54,6 +57,9 @@ struct Args {
     cwd: Option<PathBuf>,
     linger: Duration,
     settle: Duration,
+    /// A terminal's program, on a pseudo-terminal of this many columns and rows (a person's terminal, opened from the
+    /// app: the station's mesh/terminals.ts), rather than an agent on pipes.
+    pty: Option<(u16, u16)>,
     program: String,
     args: Vec<String>,
 }
@@ -86,12 +92,82 @@ struct Shared {
     stdin: Sender<Option<Vec<u8>>>,
     linger: Duration,
     settle: Duration,
+    /// Where it keeps a terminal: its side of the pseudo-terminal and the screen its output has made.
+    pty: Option<Pty>,
+}
+
+/// A terminal's side of its pseudo-terminal, which it is resized by, and its screen (src/ghostty.rs) with how much of
+/// its output (stdout's offset) has been written to it: one who opens the terminal is given that screen, then its
+/// output from there.
+struct Pty {
+    master: PtyMaster,
+    screen: Mutex<(ghostty::Screen, u64)>,
+}
+
+/// Recent stdout bytes `[start .. end)` kept in a ring buffer indexed by `offset & (OUT_WINDOW - 1)`.
+#[derive(Default)]
+struct OutRing {
+    buf: Vec<u8>,
+    start: u64,
+    end: u64,
+}
+
+impl OutRing {
+    fn append(&mut self, at: u64, data: &[u8]) {
+        if data.is_empty() {
+            return;
+        }
+        if self.buf.is_empty() {
+            self.buf.resize(OUT_WINDOW, 0);
+            self.start = at;
+            self.end = at;
+        } else if at != self.end {
+            self.start = at;
+            self.end = at;
+        }
+        let (write_at, slice) = if data.len() >= OUT_WINDOW {
+            let skip = data.len() - OUT_WINDOW;
+            (at + skip as u64, &data[skip..])
+        } else {
+            (at, data)
+        };
+        let idx = (write_at as usize) & (OUT_WINDOW - 1);
+        let first = slice.len().min(OUT_WINDOW - idx);
+        self.buf[idx..idx + first].copy_from_slice(&slice[..first]);
+        if first < slice.len() {
+            self.buf[..slice.len() - first].copy_from_slice(&slice[first..]);
+        }
+        self.end = at + data.len() as u64;
+        self.start = self.start.max(self.end.saturating_sub(OUT_WINDOW as u64));
+    }
+
+    fn copy_at(&self, at: u64, dst: &mut [u8]) -> bool {
+        let Some(upto) = at.checked_add(dst.len() as u64) else {
+            return false;
+        };
+        if self.buf.is_empty() || at < self.start || upto > self.end {
+            return false;
+        }
+        if dst.is_empty() {
+            return true;
+        }
+        let n = dst.len();
+        let idx = (at as usize) & (OUT_WINDOW - 1);
+        let first = n.min(OUT_WINDOW - idx);
+        dst[..first].copy_from_slice(&self.buf[idx..idx + first]);
+        if first < n {
+            dst[first..].copy_from_slice(&self.buf[..n - first]);
+        }
+        true
+    }
 }
 
 #[derive(Default)]
 struct State {
     /// Bytes of each stream written to its file so far.
     len: [u64; 2],
+    /// Hot in-memory ring of recent stdout bytes so live pushes skip `read_exact_at` disk syscalls.
+    out_ring: OutRing,
     eof: [bool; 2],
     /// The agent has ended (not reaped yet, maybe): its pid is no longer to be signalled alone.
     exiting: bool,
@@ -157,7 +233,7 @@ fn main() {
 }
 
 fn parse_args(raw: Vec<String>) -> Result<Args, String> {
-    let (mut dir, mut id, mut cwd, mut linger, mut settle) = (None, None, None, LINGER, SETTLE);
+    let (mut dir, mut id, mut cwd, mut linger, mut settle, mut pty) = (None, None, None, LINGER, SETTLE, None);
     let mut it = raw.into_iter();
     let mut command = Vec::new();
     while let Some(arg) = it.next() {
@@ -166,6 +242,11 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
             "--dir" => dir = Some(PathBuf::from(value()?)),
             "--id" => id = Some(value()?),
             "--cwd" => cwd = Some(PathBuf::from(value()?)),
+            "--pty" => {
+                let size = value()?;
+                let parsed = size.split_once('x').and_then(|(c, r)| Some((c.parse::<u16>().ok()?, r.parse::<u16>().ok()?)));
+                pty = Some(parsed.filter(|&(c, r)| c > 0 && r > 0).ok_or_else(|| format!("--pty needs <cols>x<rows>, not {size:?}"))?);
+            }
             // Not for the station: lets tests see the cleanup without waiting a day.
             "--linger-ms" => linger = Duration::from_millis(value()?.parse().map_err(|_| "--linger-ms needs a number of ms")?),
             // Not for the station either: lets tests wait for the output's end however late it comes.
@@ -187,7 +268,7 @@ fn parse_args(raw: Vec<String>) -> Result<Args, String> {
     }
     let program = command.remove(0);
     let dir = std::path::absolute(&dir).map_err(|e| format!("bad --dir: {e}"))?;
-    Ok(Args { dir, id, cwd, linger, settle, program, args: command })
+    Ok(Args { dir, id, cwd, linger, settle, pty, program, args: command })
 }
 
 /// Starts the agent and everything around it, says it is ready, and lets go of whoever started the runner.
@@ -209,10 +290,10 @@ fn start(args: &Args) -> Result<(Arc<Shared>, Listener), String> {
         let files = [open(&paths.out)?, open(&paths.err)?];
 
         let started_at = now_ms();
-        let (mut child, agent) = sys::spawn(&args.program, &args.args, args.cwd.as_deref()).map_err(|e| format!("cannot start {}: {e}", args.program))?;
+        let (proc, agent, stdin, stdout, stderr, pty) = spawn(args).map_err(|e| format!("cannot start {}: {e}", args.program))?;
         let pid = agent.pid();
         let text = |path: &Path| path.to_string_lossy().into_owned();
-        let info = json!({
+        let mut info = json!({
             "id": args.id,
             "runner": std::process::id(),
             "pid": pid,
@@ -225,7 +306,13 @@ fn start(args: &Args) -> Result<(Arc<Shared>, Listener), String> {
             "err": text(&paths.err),
             // It gives back stdout's disk only up to what the station keeps (an ack's `keep`).
             "keeps": true,
+            // A terminal (`--pty`): stdout is all it writes, `resize` and `screen` are asked of it.
+            "pty": pty.is_some(),
         });
+        if let Some((cols, rows)) = args.pty {
+            info["cols"] = json!(cols);
+            info["rows"] = json!(rows);
+        }
         if let Err(e) = write_atomic(&paths.json, &format!("{info}\n")) {
             agent.abandon();
             return Err(e);
@@ -241,15 +328,15 @@ fn start(args: &Args) -> Result<(Arc<Shared>, Listener), String> {
             stdin: stdin_tx,
             linger: args.linger,
             settle: args.settle,
+            pty,
         });
-        let stdin = child.stdin.take();
         std::thread::spawn(move || feed(stdin, stdin_rx));
-        for (i, (pipe, file)) in [(Box::new(child.stdout.take().unwrap()) as Box<dyn Read + Send>, out), (Box::new(child.stderr.take().unwrap()), err)].into_iter().enumerate() {
+        for (i, (pipe, file)) in [(stdout, out), (stderr, err)].into_iter().enumerate() {
             let shared = shared.clone();
             std::thread::spawn(move || pump(&shared, i, pipe, file));
         }
         let waiting = shared.clone();
-        std::thread::spawn(move || wait_agent(&waiting, child));
+        std::thread::spawn(move || wait_agent(&waiting, proc));
 
         let mut ready = info;
         ready["ready"] = json!(true);
@@ -263,6 +350,20 @@ fn start(args: &Args) -> Result<(Arc<Shared>, Listener), String> {
     sys::detach_stdio();
     sys::ready();
     Ok((shared, listener))
+}
+
+type Spawned = (Proc, sys::Agent, Option<Box<dyn Write + Send>>, Box<dyn Read + Send>, Box<dyn Read + Send>, Option<Pty>);
+
+/// The program, on pipes, or on a pseudo-terminal with the screen it starts with.
+fn spawn(args: &Args) -> io::Result<Spawned> {
+    let Some((cols, rows)) = args.pty else {
+        let (proc, agent, stdin, stdout, stderr) = sys::spawn(&args.program, &args.args, args.cwd.as_deref())?;
+        return Ok((proc, agent, stdin, stdout, stderr, None));
+    };
+    let screen = ghostty::Screen::new(cols, rows).map_err(io::Error::other)?;
+    let (proc, agent, writer, reader, master) = sys::spawn_pty(&args.program, &args.args, args.cwd.as_deref(), cols, rows)?;
+    let pty = Pty { master, screen: Mutex::new((screen, 0)) };
+    Ok((proc, agent, Some(writer), reader, Box::new(io::empty()), Some(pty)))
 }
 
 /// How far a process's start as the system tells it may be past the `startedAt` it wrote then: clocks read two ways.
@@ -310,7 +411,7 @@ impl Shared {
 
 /// Writes what the station sends to the agent's stdin, in order, off the connection's thread (an agent that is not
 /// reading must not hold up a `signal`). `None` closes it.
-fn feed(mut stdin: Option<ChildStdin>, rx: Receiver<Option<Vec<u8>>>) {
+fn feed(mut stdin: Option<Box<dyn Write + Send>>, rx: Receiver<Option<Vec<u8>>>) {
     for message in rx {
         match message {
             Some(bytes) => {
@@ -335,11 +436,25 @@ fn pump(shared: &Shared, i: usize, mut pipe: Box<dyn Read + Send>, file: File) {
             Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
             Err(_) => break,
         };
+        // A terminal's screen is written what its file is, under its own lock, so what it has been written and the
+        // offset it says are one (`screen`).
+        let mut screen = shared.pty.as_ref().filter(|_| i == 0).map(|pty| pty.screen.lock().unwrap_or_else(|e| e.into_inner()));
         // Written at the stream's length, so a failed write (disk full) leaves no gap: what is lost is lost whole,
         // and offsets stay those of the file.
         let at = shared.lock().len[i];
         if sys::write_all_at(&file, &buf[..n], at).is_ok() {
-            shared.lock().len[i] += n as u64;
+            let len = {
+                let mut st = shared.lock();
+                if i == 0 {
+                    st.out_ring.append(at, &buf[..n]);
+                }
+                st.len[i] += n as u64;
+                st.len[i]
+            };
+            if let Some(screen) = screen.as_mut() {
+                screen.0.write(&buf[..n]);
+                screen.1 = len;
+            }
             shared.changed.notify_all();
         }
     }
@@ -348,8 +463,13 @@ fn pump(shared: &Shared, i: usize, mut pipe: Box<dyn Read + Send>, file: File) {
 }
 
 /// Waits for the agent to exit, lets its output end, then for a `done`; cleans up by itself after the linger.
-fn wait_agent(shared: &Shared, child: Child) {
-    let exit = shared.agent.wait(child, || shared.lock().exiting = true);
+fn wait_agent(shared: &Shared, proc: Proc) {
+    let exit = shared.agent.wait(proc, || {
+        shared.lock().exiting = true;
+        if let Some(pty) = &shared.pty {
+            pty.master.close_on_exit();
+        }
+    });
 
     let mut st = shared.lock();
     st.exit = Some(exit);
@@ -425,6 +545,11 @@ fn connection(shared: &Arc<Shared>, stream: Conn, conn: u64) {
         }
         match handle(shared, conn, &line) {
             Ok(Next::Read) => {}
+            Ok(Next::Reply(reply)) => {
+                if send(&writer, &reply).is_err() {
+                    break;
+                }
+            }
             Ok(Next::Leave) => break,
             Err(e) => {
                 let _ = send(&writer, &json!({"op": "error", "error": e}));
@@ -443,6 +568,8 @@ fn connection(shared: &Arc<Shared>, stream: Conn, conn: u64) {
 /// After a message: read on, or end the connection.
 enum Next {
     Read,
+    /// What was asked, said back on this connection.
+    Reply(Value),
     Leave,
 }
 
@@ -499,6 +626,20 @@ fn handle(shared: &Shared, conn: u64, line: &[u8]) -> Result<Next, String> {
             let bytes = B64.decode(data).map_err(|e| format!("write: data is not base64: {e}"))?;
             let _ = shared.stdin.send(Some(bytes));
         }
+        // A terminal's new size: its program is told (SIGWINCH) and its screen is made that size.
+        "resize" => {
+            let size = |key: &str| message[key].as_u64().filter(|n| (1..=u16::MAX as u64).contains(n)).map(|n| n as u16).ok_or_else(|| format!("resize: no {key}"));
+            let (cols, rows) = (size("cols")?, size("rows")?);
+            let pty = shared.pty.as_ref().ok_or("resize: not a terminal")?;
+            resize(pty, cols, rows)?;
+        }
+        // A terminal's screen as it is: VT that makes it again, its current size, and how much of stdout made it (`at`);
+        // what is sent of stdout from `at` on goes on from it.
+        "screen" => {
+            let pty = shared.pty.as_ref().ok_or("screen: not a terminal")?;
+            let (data, at, (cols, rows)) = screen(pty)?;
+            return Ok(Next::Reply(json!({"op": "screen", "at": at, "cols": cols, "rows": rows, "data": B64.encode(data)})));
+        }
         "close_stdin" => {
             let _ = shared.stdin.send(None);
         }
@@ -529,11 +670,23 @@ fn handle(shared: &Shared, conn: u64, line: &[u8]) -> Result<Next, String> {
     Ok(Next::Read)
 }
 
+fn resize(pty: &Pty, cols: u16, rows: u16) -> Result<(), String> {
+    // The screen first, under its lock: output the program writes for its new size is written to a screen of that size.
+    let mut screen = pty.screen.lock().unwrap_or_else(|e| e.into_inner());
+    screen.0.resize(cols, rows);
+    pty.master.resize(cols, rows).map_err(|e| format!("resize: {e}"))
+}
+
+fn screen(pty: &Pty) -> Result<(Vec<u8>, u64, (u16, u16)), String> {
+    let screen = pty.screen.lock().unwrap_or_else(|e| e.into_inner());
+    Ok((screen.0.snapshot()?, screen.1, screen.0.size()))
+}
+
 /// Sends the attached connection what it has not had: each stream from its cursor, in order, then the exit.
 fn push(shared: &Shared, conn: u64, writer: &Mutex<Conn>) {
     enum Work {
         Said(Value),
-        Out { i: usize, at: u64, n: usize },
+        Out { i: usize, at: u64, n: usize, in_buf: bool },
         Exit(Value),
     }
     let mut buf = vec![0u8; CHUNK];
@@ -553,7 +706,8 @@ fn push(shared: &Shared, conn: u64, writer: &Mutex<Conn>) {
                     let next = [first, 1 - first].into_iter().find(|&i| p.at[i] < st.len[i]);
                     if let Some(i) = next {
                         let n = (st.len[i] - p.at[i]).min(CHUNK as u64) as usize;
-                        break (Work::Out { i, at: p.at[i], n }, p.epoch);
+                        let in_buf = i == 0 && st.out_ring.copy_at(p.at[0], &mut buf[..n]);
+                        break (Work::Out { i, at: p.at[i], n, in_buf }, p.epoch);
                     }
                     if st.settled && !p.exit_sent {
                         break (Work::Exit(st.exit.clone().unwrap()), p.epoch);
@@ -563,9 +717,9 @@ fn push(shared: &Shared, conn: u64, writer: &Mutex<Conn>) {
             }
         };
         let sent = match &work {
-            Work::Out { i, at, n } => {
+            Work::Out { i, at, n, in_buf } => {
                 first = 1 - i;
-                if sys::read_exact_at(&shared.files[*i], &mut buf[..*n], *at).is_err() {
+                if !*in_buf && sys::read_exact_at(&shared.files[*i], &mut buf[..*n], *at).is_err() {
                     return;
                 }
                 send(writer, &json!({"op": "out", "stream": STREAMS[*i], "at": at, "data": B64.encode(&buf[..*n])}))
@@ -579,7 +733,7 @@ fn push(shared: &Shared, conn: u64, writer: &Mutex<Conn>) {
         if let Some(p) = st.push.as_mut().filter(|p| p.epoch == epoch) {
             match work {
                 Work::Said(_) => p.said = true,
-                Work::Out { i, at, n } => p.at[i] = at + n as u64,
+                Work::Out { i, at, n, .. } => p.at[i] = at + n as u64,
                 Work::Exit(_) => p.exit_sent = true,
             }
         }
@@ -590,4 +744,52 @@ fn send(writer: &Mutex<Conn>, message: &Value) -> io::Result<()> {
     let mut line = message.to_string();
     line.push('\n');
     writer.lock().unwrap_or_else(|e| e.into_inner()).write_all(line.as_bytes())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn out_ring_serves_live_window_across_wraps_and_falls_back_when_evicted() {
+        let mut ring = OutRing::default();
+        let mut dst = [0u8; 8];
+        assert!(!ring.copy_at(0, &mut dst));
+
+        ring.append(0, b"hello ");
+        ring.append(6, b"world!");
+        let mut got = [0u8; 12];
+        assert!(ring.copy_at(0, &mut got));
+        assert_eq!(&got, b"hello world!");
+
+        // Advance across multiple OUT_WINDOW wrap boundaries.
+        let mut offset = 12u64;
+        let step = 40_000usize;
+        for round in 0..10u8 {
+            let chunk = vec![b'A' + round; step];
+            ring.append(offset, &chunk);
+            offset += step as u64;
+        }
+        // Bytes older than OUT_WINDOW were evicted -> caller falls back to disk read.
+        assert!(!ring.copy_at(0, &mut dst));
+        // The entire recent OUT_WINDOW is intact across the wrap point.
+        let tail_start = offset - OUT_WINDOW as u64;
+        let mut tail = vec![0u8; OUT_WINDOW];
+        assert!(ring.copy_at(tail_start, &mut tail));
+        assert_eq!(tail[0], b'A' + 3);
+        assert_eq!(*tail.last().unwrap(), b'A' + 9);
+    }
+
+    #[test]
+    fn out_ring_handles_single_write_larger_than_window() {
+        let mut ring = OutRing::default();
+        let big: Vec<u8> = (0..(OUT_WINDOW + 1024)).map(|i| (i & 0xFF) as u8).collect();
+        ring.append(100, &big);
+        let mut check = [0u8; 16];
+        assert!(!ring.copy_at(100, &mut check));
+        let start = 100 + 1024u64;
+        let mut full = vec![0u8; OUT_WINDOW];
+        assert!(ring.copy_at(start, &mut full));
+        assert_eq!(&full[..], &big[1024..]);
+    }
 }

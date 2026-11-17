@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { cardPlace, postCard } from "../src/sessions/card-place.ts";
-import { cardPostsStep } from "../src/store/card-post-index.ts";
+import { cardPostsStep } from "./reference/backfill/card-post-index.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 test("an operation finds its original card without reading the session's other conversations", () => {

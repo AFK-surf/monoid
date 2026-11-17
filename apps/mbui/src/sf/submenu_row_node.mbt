@@ -23,7 +23,7 @@ let submenu_layer_lent : @view.Lent[@view.View] = @view.Lent::new()
 ///|
 /// What presented_nodes lends `row`, the node one presented is made in: its submenu rows' one open, none at first.
 fn panel_submenus_lend(row : @view.View) -> Unit {
-  row.lends(panel_submenus_lent, @signals.signal(None, same=same_view)) |> ignore
+  row.lends(panel_submenus_lent, @signals.signal_by(None, same=same_view)) |> ignore
 }
 
 ///|
@@ -58,7 +58,7 @@ pub fn submenu_row_node(
 ) -> Unit {
   let open_row = match parent.lent(panel_submenus_lent) {
     Some(o) => o
-    None => @signals.signal(None, same=same_view)
+    None => @signals.signal_by(None, same=same_view)
   }
   let layer = parent.lent(submenu_layer_lent).unwrap_or(parent)
   // (opened by the keyboard: its first item's the focus as it opens)

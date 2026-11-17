@@ -142,7 +142,7 @@ fn chat_body_nodes(
   // ⌘F (chat.find, the keymap's Chat, taken while the tree gives the page keys): the chat's find opened in its bar
   // (wide_bar_of's), as the old page's chat_page took it, but in a chat not made yet
   v.on_action("chat.find", fn(_) {
-    guard view_of_chat(src, r).0 is Some({ thread: Some(_), .. }) else { return false }
+    guard @sfbase.chat_view_now(src, r) is Some({ thread: Some(_), .. }) else { return false }
     chat_find_open(r)
     true
   })
@@ -150,11 +150,12 @@ fn chat_body_nodes(
   // the rest of the chat's own keys that act beyond its list, as the old page's chat_keys took them and by what it
   // did: ⌘⇧E into the archive, ⌘⇧H its first agent's history beside it, ⌘. its agents at work stopped, ⌘⇧J its
   // services and jobs, ⌘⇧D its station's own display; what it cannot do now passes the key on
-  let chat_view = fn() { view_of_chat(src, r).0 }
+  // (its head alone: sfbase's chat_view_now)
+  let chat_view = fn() { @sfbase.chat_view_now(src, r) }
   v.on_action("chat.archive", fn(_) {
     guard chat_view() is Some(cv) && !cv.archived && !cv.offline else { return false }
     guard @sfbase.workspace_in_view(src).0 is Some(w) else { return false }
-    archive_asked(src, w, r, cv, src.topic("chat", chat_params(r)).get().value)
+    archive_asked(src, w, r, cv, @sfbase.chat_head_json(src, r))
     true
   })
   .on_action("chat.history", fn(_) {
@@ -169,7 +170,7 @@ fn chat_body_nodes(
   })
   .on_action("chat.jobs", fn(_) {
     guard chat_view() is Some(_) else { return false }
-    toggle_jobs_pop()
+    jobs_pressed(src, r)
     true
   })
   .on_action("chat.screen", fn(_) {
@@ -178,10 +179,11 @@ fn chat_body_nodes(
     true
   })
   |> ignore
-  // (another chat's find let go as this one's page is made, as chat_page did as it was built: closed, what it looked
-  // for forgotten, nothing left to go to there)
-  v.reacts(fn() { () }, fn(_) {
-    if find_chat() != "" && find_chat() != chat_key(r) {
+  // (another chat's find let go as this one's page comes to be drawn, as chat_page did as it was built: closed, what it
+  // looked for forgotten, nothing left to go to there; a page kept of a chat left too, as it is drawn again; not while
+  // it is made behind another)
+  v.reacts(shows, fn(on) {
+    if on && find_chat() != "" && find_chat() != chat_key(r) {
       find_forget()
     }
   })
@@ -191,8 +193,8 @@ fn chat_body_nodes(
 
 ///|
 /// A row of the 文件 tab carried over chat `r`'s page made with its inside nodes (`v`; chat_body_nodes), as the old pane
-/// had it (drop_hint, chat_drop): while it is over the page but the composer (`composer`'s node, which marks itself
-/// then), frosted over all of it with 松开以添加到消息 under the row's mark, drawn only; let go on the page, into the
+/// had it (drop_hint, chat_drop): while it is where it would land on the page were it let go (drop_on_page) but on the
+/// composer (`composer`'s node), frosted over all of it with 松开以添加到消息 under the row's mark, drawn only; let go on the page, into the
 /// chat's draft (composer.add), named by its path or sent as a file as the chat takes what is dragged in. Where it was
 /// let go is the page's as a drop from outside is (mbui's Tree::drop_at): the node drawn there, the page's node holding
 /// it (what is drawn over the page there, a panel or another page, keeps it).
@@ -209,11 +211,23 @@ fn chat_drop_node(
     h.show(
       fn() {
         dragged() is Some(_) &&
-        v.pointed_in() &&
-        !(match composer() {
-          Some(n) => n.pointed_in()
-          None => false
-        })
+        // (where the row would land were it let go now, followed as the pointer moves and as what is under it is
+        // placed: the page's anywhere over it, its messages' ground beside and between them too, what takes no press
+        // as what does; not where something drawn over the page is, nor on the composer's own points; nothing looked
+        // for while no row is carried)
+        h.pointer_piece(fn(_, _) {
+          guard dragged() is Some(_) else { return 0 }
+          let (x, y) = v.tree.pointer_said()
+          match drop_on_page(v, x, y) {
+            Some(id) =>
+              match composer() {
+                Some(n) if v.tree.holds(n.id(), id) => 0
+                _ => 1
+              }
+            None => 0
+          }
+        }) ==
+        1
       },
       fn(o) {
         o.grow(Is(1.0)).glass(By(fn() { Some(@sf.glass_floating()) })) |> ignore
@@ -244,16 +258,23 @@ fn chat_drop_node(
     fn() { dragged() is Some(_) },
     fn(carried) {
       guard !carried && shows() && ftab.let_go is Some((item, x, y)) else { return }
-      let on = match v.tree.drop_at(x, y) {
-        Some(OnNode(id)) | Some(OnOld(id)) => v.tree.holds(v.id(), id)
-        _ => false
-      }
-      guard on else { return }
+      guard drop_on_page(v, x, y) is Some(_) else { return }
       ftab.let_go = None
       writing_drop(src, writing(src, draft), r.station, [@sfpages.dropped_of(item)], @sfpages.drops_as_files(src, draft))
     },
     at_start=false,
   )
+}
+
+///|
+/// What a row let go at (x, y) in the window lands on of chat page `v` (mbui's Tree::drop_at: the node drawn there, held
+/// by the page's node), None where it lands on none of it (off the page, or on what is drawn over it there): one rule for
+/// where the row is taken and where the page is frosted as it is held (chat_drop_node).
+fn drop_on_page(v : @view.View, x : Double, y : Double) -> @view.NodeId? {
+  match v.tree.drop_at(x, y) {
+    Some(OnNode(id)) | Some(OnOld(id)) if v.tree.holds(v.id(), id) => Some(id)
+    _ => None
+  }
 }
 
 ///|
@@ -265,7 +286,9 @@ fn chat_composer_nodes(c : @ui.Ctx, src : Source, r : ChatRef, apart : Bool) -> 
   guard @sfbase.workspace_in_view(src).0 is Some(w) else { return }
   let foot = c.box(style=@ui.style(w=Full, min_h=Fixed(@sfpages.composer_open_room(c, c.width))), fn() {
     c.spacer()
-    @sfpages.chat_composer(c, src, w, r, view_of_chat(src, r).0, apart~)
+    // (its head alone, as the composer reads it: sfbase's chat_view_now; a word streamed into a message builds none of
+    // it again)
+    @sfpages.chat_composer(c, src, w, r, @sfbase.chat_view_now(src, r), apart~)
   })
   @motion.scope(c, foot, bottom=true)
 }

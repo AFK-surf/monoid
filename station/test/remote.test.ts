@@ -3,20 +3,21 @@
 // through a direct `call` that answers as the transport does.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, utimesSync, writeFileSync } from "node:fs";
 import { rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
-import { type Clock, type Duration, Effect, Exit, Scope } from "effect";
+import { type Clock, Duration, Effect, Exit, Scope } from "effect";
 import { TestClock } from "effect/testing";
 import { signalGroup } from "../src/ops/group.ts";
 import { Jobs, type Machine } from "../src/jobs/jobs.ts";
-import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, writeJson, written } from "../src/jobs/remote.ts";
+import { GIVE_UP_MS, IDLE_MS, type PeerCall, Refused, Remote, answerPeer, filePath, hash, readJson, written } from "../src/jobs/remote.ts";
+import { writeJson } from "./remote-records.ts";
 import { type Load, OLDER } from "../src/jobs/load.ts";
 import { type Json, Store } from "../src/store/store.ts";
 import { remoteTools } from "../src/tools/remote.ts";
-import { bytesOf, withBytes } from "../src/mesh/bus.ts";
+import { NoLink, bytesOf, withBytes } from "../src/mesh/bus.ts";
 
 const dirs: string[] = [];
 const cleanup: (() => Promise<void> | void)[] = [];
@@ -74,13 +75,13 @@ async function rounds(_what: string, clock: ReturnType<typeof testClock>, by: Du
 
 type Station = { dir: string; store: Store; jobs: Jobs; remote: Remote; told: [string, string][] };
 
-function station(options: { clock?: Clock.Clock; jobsClock?: Clock.Clock; machine?: Machine; meshWaitMs?: number; dir?: string; store?: Store; jobs?: Jobs; notify?: (s: string, t: string) => void; removeMirror?: (path: string) => Promise<void>; removeTask?: (path: string) => Promise<void> } = {}): Station {
+function station(options: { clock?: Clock.Clock; jobsClock?: Clock.Clock; machine?: Machine; meshWaitMs?: number; dir?: string; store?: Store; jobs?: Jobs; notify?: (s: string, t: string) => void; removeMirror?: (path: string) => Promise<void>; removeTask?: (path: string) => Promise<void>; version?: string } = {}): Station {
   const dir = options.dir ?? tempdir();
   const store = options.store ?? Store.open(":memory:");
   const told: [string, string][] = [];
   const jobs = options.jobs ?? new Jobs({ store, data: dir, notify: () => {}, link: () => null, clock: options.jobsClock, machine: options.machine });
   const remote = new Remote({
-    data: dir, store, jobs, clock: options.clock, meshWaitMs: options.meshWaitMs, removeMirror: options.removeMirror, removeTask: options.removeTask,
+    data: dir, store, jobs, clock: options.clock, meshWaitMs: options.meshWaitMs, removeMirror: options.removeMirror, removeTask: options.removeTask, version: options.version ?? "0.1.1",
     notify: options.notify ?? ((session, text) => void told.push([session, text])),
   });
   cleanup.push(async () => {
@@ -252,16 +253,22 @@ describe("remote", { concurrency: true }, () => {
     await writeJson(record, { ...readJson(record), seen: now - IDLE_MS - 1000 });
     writeFileSync(join(work, "keep"), "the session's work");
 
-    const remote = r.remote as unknown as { tasksOf: (...args: [string, string, string]) => Promise<unknown[]> };
-    const tasksOf = remote.tasksOf.bind(r.remote);
+    // The sweep is the program's: held once it read the room's use, before it reads its tasks and closes it.
+    const remote = r.remote as unknown as { asked(f: string, args: Json[]): Promise<Json> };
+    const asked = remote.asked.bind(r.remote);
     let entered!: () => void;
     let release!: () => void;
     const reading = new Promise<void>((resolve) => (entered = resolve));
     const held = new Promise<void>((resolve) => (release = resolve));
-    remote.tasksOf = async (...args) => {
-      entered();
-      await held;
-      return tasksOf(...args);
+    let first = true;
+    remote.asked = async (f, args) => {
+      const answer = await asked(f, args);
+      if (f === "node.seenAt" && first) {
+        first = false;
+        entered();
+        await held;
+      }
+      return answer;
     };
     const sweeping = r.remote.sweep(now);
     await reading;
@@ -436,6 +443,25 @@ describe("remote", { concurrency: true }, () => {
     await assert.rejects(call(r, "peer-a", "file.put", { path: "input", offset: 0, data: "", final: true }));
   });
 
+  test("a transfer's path stays in its task's directory, as this machine's paths go (the program's own join)", async () => {
+    const r = station();
+    await call(r, "peer-a", "task.prepare", { spec: { command: "true", name: "paths" } });
+    const win = process.platform === "win32";
+    // (out of the directory: up, the root; on Windows a backslash separates too, and a drive, a share or a stream is
+    // not relative, mb nodepath `relative_parts`)
+    const out = ["../outside", "a/../../outside", "/etc/passwd", "./a", ...(win ? ["..\\outside", "a\\..\\..\\outside", "C:\\Windows\\win.ini", "C:outside", "\\\\server\\share\\x", "\\x", "file:stream"] : [])];
+    for (const path of out) await assert.rejects(call(r, "peer-a", "file.put", { path, offset: 0, data: b64("x"), final: true }), Error, path);
+    // (in it: where this machine's own join puts it, a backslash a name's on Unix)
+    const inside: [string, string[]][] = [["nested/file", ["nested", "file"]], ...(win ? [["nested\\deeper", ["nested", "deeper"]] as [string, string[]]] : [["a\\..\\b", ["a\\..\\b"]] as [string, string[]]])];
+    for (const [path, parts] of inside) {
+      await call(r, "peer-a", "file.put", { path, offset: 0, data: b64(path), final: true });
+      assert.equal(unb64(await call(r, "peer-a", "file.get", { path })), path);
+      const written = (readdirSync(join(r.dir, "remote"), { recursive: true }) as string[]).filter((f) => f.endsWith(join("work", ...parts)));
+      assert.equal(written.length, 1, `${path} written where Node's join puts it: ${written.join(", ")}`);
+      assert.equal(readFileSync(join(r.dir, "remote", written[0]!), "utf8"), path);
+    }
+  });
+
   test("removal from the workspace stops only that peer's task", async () => {
     const r = station();
     for (const peer of ["peer-a", "peer-b"]) {
@@ -564,10 +590,12 @@ describe("remote", { concurrency: true }, () => {
     const r = station();
     let release!: () => void;
     const released = new Promise<void>((resolve) => (release = resolve));
-    const stop = r.jobs.stop.bind(r.jobs);
-    r.jobs.stop = async (id: string) => {
-      await released;
-      return stop(id);
+    // The stop is the program's: held where it asks Node to signal the task's group.
+    const jobs = r.jobs as unknown as { asked(f: string, args: Json[]): Promise<Json> };
+    const asked = jobs.asked.bind(jobs);
+    jobs.asked = async (f, args) => {
+      if (f === "node.signal") await released;
+      return asked(f, args);
     };
     await callAs(r, "s", "long", "task.prepare", { spec: { command: FOREVER } });
     await callAs(r, "s", "long", "task.start");
@@ -633,6 +661,45 @@ describe("remote", { concurrency: true }, () => {
     assert.equal(asked.filter((s) => s === "old").length, 1);
     assert.equal(asked.filter((s) => s === "down").length, 3);
     assert.ok(existsSync(r.remote.usedPath("other")));
+  });
+
+  test("a station started again takes up a session closing: its stations asked on its clock until each answered, then its record goes", async () => {
+    const clock = testClock();
+    const store = Store.open(":memory:", null, clock);
+    cleanup.push(() => store.close());
+    const dir = tempdir();
+    // The station before: the session used two stations, closed while neither was reached.
+    const jobs = new Jobs({ store, data: dir, notify: () => {}, link: () => null });
+    const before = new Remote({ data: dir, store, jobs, clock, notify: () => {}, version: "0.1.1" });
+    let tried = 0;
+    before.attach(async () => {
+      tried++;
+      throw new Error("offline");
+    });
+    before.recordUse("ws", "s", "up");
+    before.recordUse("ws", "s", "down");
+    before.closeSession("s");
+    const path = before.usedPath("s");
+    await written(path);
+    await until("both asked once", () => tried === 2);
+    await before.close();
+    await jobs.shutdown();
+    assert.deepEqual([readJson(path).closing, readJson(path).closed], [true, []], "left closing, none answered");
+
+    // Started again (a program of its own): the record taken up from the disk, its stations asked again.
+    const next = station({ clock, dir, store });
+    const asked: string[] = [];
+    let down = 0;
+    next.remote.attach(async (target, _workspace, request) => {
+      assert.deepEqual([request.method, request.workspace, request.session], ["session.close", "ws", "s"]);
+      asked.push(target);
+      if (target === "down" && down++ === 0) throw new Error("offline");
+      return { closed: true };
+    });
+    await until("asked again as it is attached", () => asked.length === 2);
+    assert.ok(existsSync(path), "one station not answered yet: kept");
+    await rounds("every station answered and the record gone", clock, "10 seconds", () => !existsSync(path));
+    assert.deepEqual([asked.filter((s) => s === "up").length, asked.filter((s) => s === "down").length], [1, 2]);
   });
 
   // ── recovery_tests ──
@@ -725,6 +792,20 @@ describe("remote", { concurrency: true }, () => {
     await assert.rejects(use("station_task", { ...task, action: "prepare", command: "true", dir: "relative" }), /absolute path/);
     await assert.rejects(use("station_task", { ...task, action: "start" }), /prepare.*failed|prepare.*again/i);
     assert.deepEqual((await use("station_task", { ...task, action: "get" })).job, null);
+  });
+
+  test("a task's directory and what comes back stays in its task's directory, as this machine's paths go (Node's isAbsolute)", async () => {
+    const { home, use } = pair();
+    const src = join(home, "src");
+    mkdirSync(src);
+    writeFileSync(join(src, "input.txt"), "in\n");
+    // (absolute as this machine has it: `C:\…` on Windows, which the program's POSIX-only check once refused)
+    const prepared = await use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: ["out/result.txt"] });
+    assert.equal(prepared.prepared, true, JSON.stringify(prepared));
+    const win = process.platform === "win32";
+    for (const back of ["/etc/passwd", "../outside", "a/../../outside", ...(win ? ["C:\\outside", "\\outside", "a\\..\\..\\outside"] : [])]) {
+      await assert.rejects(use("station_task", { station: "B", key: "dir", action: "prepare", dir: src, command: "true", back: [back] }), /back must be paths relative/, back);
+    }
   });
 
   test("a failed prepare stays fenced after migration of an older record and a restart", async () => {
@@ -904,7 +985,7 @@ describe("remote", { concurrency: true }, () => {
   test("a session runs a task on another station: inputs up, its notices and end told here, its artifact down", async () => {
     const { a, b, home, clock, use } = pair();
     // Neither measures its load here: both say they cannot tell.
-    assert.deepEqual((await use("station_list", {})).stations, [{ id: "A", here: true, load: OLDER }, { id: "B", load: OLDER }]);
+    assert.deepEqual((await use("station_list", {})).stations, [{ id: "A", here: true, version: "0.1.1", load: OLDER }, { id: "B", version: "0.1.1", load: OLDER }]);
     const described = await use("station_list", { station: "B" });
     assert.equal(described.tasks, true);
     assert.equal(described.fileChunkBytes, 256 * 1024);
@@ -972,7 +1053,8 @@ describe("remote", { concurrency: true }, () => {
     writeFileSync(join(a.dir, "mesh", "cloud.json"), JSON.stringify({ workspace: "ws", station: "A" }));
     a.store.insertSession({ key: "s1", connect: "ds", runtime: "claude", profile: "cc", workspace: a.dir, token: "t1", createdBy: "ann", createdAt: Date.now(), lastActiveAt: Date.now() });
     a.remote.setLoad(async () => loadOf(0.05, 1));
-    // B measures its load; D is from before (its describe says none); C never answers; E cannot be reached; F refuses.
+    // B measures its load; D is from before (its describe says none); C never answers; E cannot be reached (its link
+    // did not open); F refuses.
     const b = station();
     b.remote.setLoad(async () => loadOf(0.9, 0));
     const d = station();
@@ -981,7 +1063,7 @@ describe("remote", { concurrency: true }, () => {
       if (target === "" && request.method === "peers") return { workspace: "ws", stations: ["A", "B", "C", "D", "E", "F"].map((id) => ({ id, name: id.toLowerCase() })), current: true };
       if (target === "C") return new Promise(() => {});
       try {
-        if (target === "E") throw new Error("peer unavailable or does not support station RPC: no route");
+        if (target === "E") throw new NoLink("peer unavailable or does not support station RPC: no route");
         if (target === "F") throw new Refused("station is starting");
         const answer = await answerPeer(target === "B" ? b.remote : d.remote, workspace ?? "ws", "A", request);
         if ("error" in answer) throw new Refused(answer.error);
@@ -1007,10 +1089,10 @@ describe("remote", { concurrency: true }, () => {
       workspace: "ws",
       current: true,
       stations: [
-        { id: "A", name: "a", here: true, load: busy("5%", "1 agent turn") },
-        { id: "B", name: "b", load: busy("90%", "0 agent turns") },
-        { id: "C", name: "c", offline: "did not answer within 2 s" },
-        { id: "D", name: "d", load: OLDER },
+        { id: "A", name: "a", here: true, version: "0.1.1", load: busy("5%", "1 agent turn") },
+        { id: "B", name: "b", version: "0.1.1", load: busy("90%", "0 agent turns") },
+        { id: "C", name: "c", unanswered: "did not answer within 2 s; not known to be offline: ask it alone" },
+        { id: "D", name: "d", version: "0.1.1", load: OLDER },
         { id: "E", name: "e", offline: "peer unavailable or does not support station RPC: no route" },
         { id: "F", name: "f", refused: "station is starting" },
       ],
@@ -1024,6 +1106,83 @@ describe("remote", { concurrency: true }, () => {
     assert.equal(older.load, OLDER);
     assert.equal(older.sync, 1);
     assert.deepEqual((await use("station_list", { station: "A" })).load, loadOf(0.05, 1));
+  });
+
+  test("station_list says offline only where it knows it, and the version each station says itself (2026-11-14)", async () => {
+    // A station just restarted, its relay at 8 s, listed a Windows station up and updating itself as offline ("did not
+    // answer within 2 s") and on 0.1.9133, the version still.fail cloud had told it when it connected: it was on 0.1.9162.
+    const clock = testClock();
+    const a = station({ clock, version: "0.1.9170" });
+    mkdirSync(join(a.dir, "mesh"), { recursive: true });
+    writeFileSync(join(a.dir, "mesh", "cloud.json"), JSON.stringify({ workspace: "ws", station: "A" }));
+    a.store.insertSession({ key: "s1", connect: "ds", runtime: "claude", profile: "cc", workspace: a.dir, token: "t1", createdBy: "ann", createdAt: Date.now(), lastActiveAt: Date.now() });
+    // The roster says 0.1.9133 of each. B answers at once and C after 3 s, both on 0.1.9162; F answers after 20 s;
+    // D is from before (its describe says no version); E cannot be reached (its link did not open).
+    const others: Record<string, Station> = { B: station({ version: "0.1.9162" }), C: station({ version: "0.1.9162" }), D: station(), F: station({ version: "0.1.9162" }) };
+    const after: Record<string, number> = { C: 3000, F: 20_000 };
+    const waiting = new Set<string>();
+    const transport: PeerCall = async (target, workspace, request) => {
+      if (target === "" && request.method === "peers") return { workspace: "ws", stations: ["A", "B", "C", "D", "E", "F"].map((id) => ({ id, name: id.toLowerCase(), version: "0.1.9133" })), current: true };
+      if (target === "E") throw new NoLink("peer unavailable or does not support station RPC: no route");
+      if (after[target] !== undefined) {
+        waiting.add(target);
+        await Effect.runPromise(clock.sleep(Duration.millis(after[target])));
+      }
+      const answer = await answerPeer(others[target].remote, workspace ?? "ws", "A", request);
+      if ("error" in answer) throw new Refused(answer.error);
+      if (target !== "D") return answer.result;
+      const { version: _, ...older } = answer.result;
+      return older;
+    };
+    a.remote.attach(transport);
+    const tools = remoteTools(a.remote);
+    const use = async (name: string, args: Json) => JSON.parse(await tools.find((t) => t.name === name)!.run("s1", args));
+    let listed: Json = null;
+    void use("station_list", {}).then((l) => (listed = l));
+    await until("C and F are waited for", () => waiting.size === 2);
+    await turn();
+    await rounds("the list is out", clock, "500 millis", () => listed !== null);
+    const of = (id: string) => listed.stations.find((s: Json) => s.id === id);
+    // Each said apart, so that all that is wrong is seen at once.
+    const wrong = [
+      of("C").offline !== undefined && `C only did not answer within 2 s, listed offline: ${of("C").offline}`,
+      of("C").version !== undefined && `C did not answer, listed with the roster's version as its own: ${of("C").version}`,
+      of("B").version !== "0.1.9162" && `B answered, listed with ${of("B").version}, not the version it says`,
+      of("E").offline === undefined && "E could not be reached and is not listed offline",
+    ].filter((w) => w !== false);
+    assert.deepEqual(wrong, []);
+    assert.deepEqual(listed.stations, [
+      { id: "A", name: "a", here: true, version: "0.1.9170", load: OLDER },
+      { id: "B", name: "b", version: "0.1.9162", load: OLDER },
+      { id: "C", name: "c", version_seen: "0.1.9133", unanswered: "did not answer within 2 s; not known to be offline: ask it alone" },
+      { id: "D", name: "d", version_seen: "0.1.9133", load: OLDER },
+      { id: "E", name: "e", version_seen: "0.1.9133", offline: "peer unavailable or does not support station RPC: no route" },
+      { id: "F", name: "f", version_seen: "0.1.9133", unanswered: "did not answer within 2 s; not known to be offline: ask it alone" },
+    ]);
+    // Asked alone, C is waited for 10 s: listed as it answers.
+    let alone: Json = null;
+    waiting.clear();
+    void use("station_list", { station: "C" }).then((l) => (alone = l));
+    await until("C is asked", () => waiting.has("C"));
+    await turn();
+    await rounds("C answers", clock, "500 millis", () => alone !== null);
+    assert.equal(alone.unanswered, undefined, "C answered within 10 s");
+    assert.equal(alone.version, "0.1.9162");
+    assert.equal(alone.tasks, true);
+    // F, asked alone, is waited for 10 s and no more: then it is said not to have answered, not to be offline.
+    alone = null;
+    void use("station_list", { station: "F" }).then((l) => (alone = l));
+    await until("F is asked", () => waiting.has("F"));
+    await turn();
+    for (let s = 0; s < 18; s++) {
+      await Effect.runPromise(clock.adjust("500 millis"));
+      await turn();
+    }
+    assert.equal(alone, null, "F is waited for 10 s");
+    await rounds("F is given up on", clock, "500 millis", () => alone !== null);
+    const given = alone as Json;
+    assert.equal(given.offline, undefined);
+    assert.match(String(given.unanswered), /^did not answer within 10 s; not known to be offline/);
   });
 
   test("a station that cannot measure its load within a second says so, and answers describe all the same", async () => {

@@ -11,7 +11,7 @@ import { merge } from "../src/entries.ts";
 import { topicKey, type Topic } from "../src/protocol.ts";
 import { EVICT_AFTER_MS } from "../src/store.ts";
 import { attention, choices, models, quotaFor, runnableOn } from "../src/views/models.ts";
-import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, noticeOf, shownMessage, stationOn } from "../src/views/views.ts";
+import { OVERVIEW_FIT, answeredAt, betaOffered, blockedUnder, down, foldNotices, noticeOf, shownMessage, stationOn } from "../src/views/views.ts";
 import { localDay } from "../src/views/usage.ts";
 import { decorate, installView, profile as presentProfile } from "../src/present.ts";
 import { conformTy } from "../src/conform.ts";
@@ -375,6 +375,12 @@ test("a notice that a chat's run changed says what changed, what it runs on now 
   assert.equal(shown(run, { ...run, effort: "low" }).words, "思考深度：高 → 低");
   assert.equal(shown(run, { ...run, effort: "low" }).sides, undefined);
   assert.equal(shown({ ...run, fast: false }, { ...run, fast: true }).short, "速度：Fast");
+  const codex = { ...run, runtime: "codex", model: "gpt-6-astra", fast: true };
+  notice = shown(codex, { ...codex, speed: "ultrafast" });
+  assert.equal(notice.words, "速度：Fast → Ultrafast");
+  assert.equal(notice.short, "速度：Ultrafast");
+  assert.ok(notice.lines[1].includes("Ultrafast"));
+  assert.equal(shown({ ...codex, speed: "ultrafast" }, { ...codex, speed: "standard" }).words, "速度：Ultrafast → 标准");
   // Another account alone (the station moved it, an allowance run out) is named; with another runtime it is the rest's.
   notice = shown(run, { ...run, profile: "cc2", account: "b@x.com" });
   assert.equal(notice.words, "账号：a@x.com → b@x.com");
@@ -510,11 +516,9 @@ test("a_rows_decision_is_its_line_and_mark_and_counts_for_the_workspace", async 
   assert.deepEqual([m.workspaces.ws.wait, m.workspaces.ws.alert, m.workspaces.ws.label], [2, 0, "2 个待你处理"]);
   // Of the lists the rail leads to: 我参与的 has the one of theirs waiting, 监控中 nothing.
   assert.deepEqual([m.workspaces.ws.tone, m.workspaces.ws.mineTone, m.workspaces.ws.watchingTone], ["wait", "wait", undefined]);
-  // 待处理 and the badge are the same: the cards waiting for them not looked at since they came (k3 read: its row still
-  // says it).
-  assert.deepEqual([m.badge, m.workspaces.ws.badge], [1, 1]);
-  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"]]);
-  assert.equal(m.workspaces.ws.items[0].text, "待处理 · k1 要合吗？", "its row's line");
+  // 待处理 and the badge are the same: the cards waiting for them, looked at or not (k3 read: it still waits).
+  assert.deepEqual([m.badge, m.workspaces.ws.badge], [2, 2]);
+  assert.deepEqual(m.workspaces.ws.items.map((i: J) => [i.kind, i.session, i.seq, i.stationName]), [["wait", "k1", 5, "studio"], ["wait", "k3", 4, "studio"]]);
   assert.equal(m.workspaces.ws.items[0].what, "k1 要合吗？", "the same without its lead");
 });
 
@@ -591,7 +595,7 @@ test("待处理_lists_the_unread_the_badge_counts_last_of_all_with_how_far_to_re
   assert.deepEqual([listed(), marks.value.badge], [[["wait", "k1", 5], ["done", "person", 30]], 2]);
 });
 
-test("待处理_is_what_went_wrong_till_let_go_or_waits_not_looked_at_since_of_what_the_badge_counts", async () => {
+test("待处理_is_what_went_wrong_till_let_go_and_what_waits_till_answered_of_what_the_badge_counts", async () => {
   const t = setup();
   const marks = ui();
   t.subscribe(1, { topic: "workspaceMarks" });
@@ -614,9 +618,14 @@ test("待处理_is_what_went_wrong_till_let_go_or_waits_not_looked_at_since_of_w
   await t.readAll([[marks, 1]]);
   const listed = () => marks.value.workspaces.ws.items.map((i: J) => [i.kind, i.session]);
   // gone wrong, read or not, till it runs again or is let go: as the workspace's mark says (pengxiao, 2026-10-28);
-  // the badge only what was not read
+  // the badge counts them read or not too, as what waits (chat-stage.ts needsViewer, 2026-11-16)
   assert.deepEqual(listed(), [["alert", "new"], ["alert", "old"], ["wait", "k1"]]);
-  assert.deepEqual([marks.value.workspaces.ws.alert, marks.value.workspaces.ws.label, marks.value.badge], [2, "2 个出错 · 1 个待你处理", 2]);
+  assert.deepEqual([marks.value.workspaces.ws.alert, marks.value.workspaces.ws.label, marks.value.badge], [2, "2 个出错 · 1 个待你处理", 3]);
+  // a card looked at and not answered still waits there, as the sidebar still counts it
+  const seen = deciding("k1", 7, 5, now - 3000, false);
+  t.set(rows("ws/st"), [failed("new", now - 1000, true), failed("old", now - 2000, false), seen]);
+  await t.readAll([[marks, 1]]);
+  assert.deepEqual([listed(), marks.value.workspaces.ws.wait, marks.value.badge], [[["alert", "new"], ["alert", "old"], ["wait", "k1"]], 1, 3]);
   const old = marks.value.workspaces.ws.items[1].failure;
   assert.equal(old, "ws/st/old@1", "a failure names its chat and when it ended");
   // let go (忽略): off 待处理 and the workspace's mark
@@ -771,6 +780,23 @@ test("a_models_own_window_is_said_of_that_model_alone", () => {
   assert.equal(agyOn("anthropic/claude-opus-4-6").spent.until, 9000);
   assert.equal(agyOn(null).quota.windows.length, 2, "falls back to the profile's own default model");
   assert.equal(quotaFor(agyOv.profiles[0]!.quota, null).windows.length, 4, "the account's own page keeps all four windows");
+  const agyProOv = {
+    profiles: [{
+      id: "gp", name: "GP", runtimes: ["agy"], model: "gemini-4-argon-medium",
+      models: ["gemini-4-argon-medium", "gemini-4-hydrogen-medium", "claude-opus-5-5-medium"],
+      check: { state: "ok" },
+      quota: {
+        state: "ok",
+        windows: agyWin,
+        scoped: [{ label: "每周 · Argon", usedPercent: 100, resetsAt: 9500, scope: "Argon" }],
+      },
+    }],
+  };
+  const agyProOn = (model: string | null) => runnableOn(agyProOv, { runtime: "agy", profile: "gp", model }, 0)[0];
+  assert.equal(agyProOn("gemini-4-argon-medium").spent.until, 9500);
+  assert.equal(agyProOn("gemini-4-argon-medium").quota.windows.length, 3);
+  assert.equal(agyProOn("gemini-4-hydrogen-medium").spent, null);
+  assert.equal(agyProOn("gemini-4-hydrogen-medium").quota.windows.length, 2);
 });
 
 test("an_agent_can_be_moved_to_the_profiles_of_its_runtime", () => {
@@ -1854,7 +1880,7 @@ test("a_database_from_before_the_rows_part_and_verdicts_is_brought_to_them_and_l
   assert.deepEqual(parts(), ["ws/a object", "ws/b object", "ws/c object"]);
   // (what the chat list reads, and an older core reads, as it was)
   assert.deepEqual(sql.all("SELECT address, part FROM station_part ORDER BY address"), partsBefore);
-  assert.ok(String(sql.all("SELECT sql FROM sqlite_master WHERE name = 'station_part_set'")[0]?.[0]).includes("(address, part, row, chat, formerly, profiles, profiled)"));
+  assert.ok(String(sql.all("SELECT sql FROM sqlite_master WHERE name = 'station_part_set'")[0]?.[0]).includes("(address, part, row, chat, formerly, profiles, profiled, software, connects, settings)"));
   assert.equal(again.made.overviewsRead, 3, "read only to be judged");
   assert.deepEqual(rowsOf(again.list), rowsOf(first.list));
   await again.t.host.time.pass(100);
@@ -2750,19 +2776,19 @@ test("only the overload notice belonging to a waiting retry offers its cancellat
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k", "j"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 模型满载，自动重试，与额度无关"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 模型满载，自动重试，与额度无关"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const waiting = {
     kind: "resume", outcome: "failed", declared: "waiting", detail: "overloaded: at capacity",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: waiting }), threads: [chat], turns: [] });
   t.set(sessionOf("ws/a", "j"), { session: fullSession("j"), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[0].notice.retrySession, undefined);
-  assert.equal(u.value.messages[1].notice.retrySession, "k");
+  assert.equal(u.value.messages[2].notice.retrySession, "k");
   // A new turn, or an unrelated wait, cannot be cancelled through that old notice.
   for (const lastTurn of [
     { ...waiting, outcome: "aborted", declared: null },
@@ -2771,7 +2797,7 @@ test("only the overload notice belonging to a waiting retry offers its cancellat
   ]) {
     t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn }), threads: [chat], turns: [] });
     await t.read(u, 1);
-    assert.equal(u.value.messages[1].notice.retrySession, undefined);
+    assert.equal(u.value.messages[2].notice.retrySession, undefined);
   }
 });
 
@@ -2781,19 +2807,19 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const failed = {
     kind: "input", outcome: "failed", declared: null, detail: "network: fetch failed",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
   assert.equal(u.value.messages[0].notice.againSession, undefined);
-  assert.equal(u.value.messages[1].notice.againSession, "k");
-  assert.equal(u.value.messages[1].notice.retrySession, undefined);
+  assert.equal(u.value.messages[2].notice.againSession, "k");
+  assert.equal(u.value.messages[2].notice.retrySession, undefined);
   // Gone once it runs, a message waits for it, it ended otherwise, or the failure is one a retry would meet again.
   for (const [session, lastTurn] of [
     [{ process: "running" }, failed],
@@ -2805,17 +2831,17 @@ test("only the notice of a failed turn still where its agent stands offers 重�
   ] as const) {
     t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { ...session, lastTurn }), threads: [chat], turns: [] });
     await t.read(u, 1);
-    assert.equal(u.value.messages[1].notice.againSession, undefined, JSON.stringify([session, lastTurn]));
+    assert.equal(u.value.messages[2].notice.againSession, undefined, JSON.stringify([session, lastTurn]));
   }
   // A turn the station stopped asking for a state (回复即可继续) offers it too, while it stands there.
   const givenUp = { kind: "nudge", outcome: "completed", declared: null, detail: null, about: failed.about, startedAt: 10, endedAt: 11 };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.againSession, "k");
+  assert.equal(u.value.messages[2].notice.againSession, "k");
   assert.equal(u.value.messages[0].notice.againSession, undefined);
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: givenUp }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.againSession, undefined);
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
 });
 
 test("the notice of a failure where the allowance showed a limit offers 重新分配账号, not 重试, while its agent stands there", async () => {
@@ -2824,22 +2850,22 @@ test("the notice of a failure where the allowance showed a limit offers 重新�
   t.subscribe(1, chatTopic("ws/a", 7));
   const chat = thread(7, ["k"], t.host.nowMs());
   t.set(threads("ws/a"), [chat]);
-  const entries = [1, 2].map((n) => ({
-    ...entry(n, "⚠️ 这个账号的 Fable 额度已用完"), authorKind: "ember", author: "ember",
-  }));
-  t.set(pageOf("ws/a", 7), { first: 1, last: 2, entries, end: false, thread: chat });
+  // (the viewer's reply between: the same notice said again is one of its own, not folded with the first)
+  const notice = (n: number) => ({ ...entry(n, "⚠️ 这个账号的 Fable 额度已用完"), authorKind: "ember", author: "ember" });
+  const entries = [notice(1), entry(2, "再试"), notice(3)];
+  t.set(pageOf("ws/a", 7), { first: 1, last: 3, entries, end: false, thread: chat });
   const failed = {
     kind: "input", outcome: "failed", declared: null, detail: "limit:Fable: You've hit your Fable limit",
-    about: { thread: 7, seq: 2, ts: "2.0" }, startedAt: 10, endedAt: 11,
+    about: { thread: 7, seq: 3, ts: "3.0" }, startedAt: 10, endedAt: 11,
   };
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.reassignSession, "k");
-  assert.equal(u.value.messages[1].notice.againSession, undefined);
+  assert.equal(u.value.messages[2].notice.reassignSession, "k");
+  assert.equal(u.value.messages[2].notice.againSession, undefined);
   assert.equal(u.value.messages[0].notice.reassignSession, undefined);
   t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { pending: 1, lastTurn: failed }), threads: [chat], turns: [] });
   await t.read(u, 1);
-  assert.equal(u.value.messages[1].notice.reassignSession, undefined);
+  assert.equal(u.value.messages[2].notice.reassignSession, undefined);
 });
 
 test("chat_is_a_thread_its_messages_and_its_agents", async () => {
@@ -3565,6 +3591,91 @@ test("a_failure_is_not_repeated_when_its_notice_is_in_the_chat", async () => {
   assert.equal(u.value.stateText, "出错：模型服务出错");
 });
 
+test("failures_said_alike_one_after_another_fold_into_one_acted_on_and_read_by_the_last", async () => {
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  const words = "与模型服务的连接中断，回复即可重试";
+  // Eleven, each its own request: the same closed, their details apart; the last of them with none.
+  const lost = (n: number): J => ({ ...entry(n, `⚠️ ${words}${n < 12 ? `\n\n\`\`\`\nrequest r${n}: ECONNRESET\n\`\`\`` : ""}`), authorKind: "ember", author: "ember", at: n * 1000 });
+  const failed = (seq: number) => ({ kind: "input", outcome: "failed", declared: null, detail: "network: fetch failed", startedAt: 1, endedAt: 2, about: { thread: 7, seq, ts: `${seq}.0` } });
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", process: "warm", lastTurn: failed(12) })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed(12) }), threads: [thread(7, ["k"], now)], turns: [] });
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  t.set(overview("ws/a"), { ...overviewOf([], []), feedback: true });
+  const notices = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(lost);
+  t.set(pageOf("ws/a", 7), { first: 1, last: 12, entries: [entry(1, "开始"), ...notices], thread: null });
+  const r = { ...row("k", now), thread: 7 };
+  r.agents[0].lastTurn = failed(12);
+  r.agents[0].process = "warm";
+  t.set(rows("ws/a"), [r]);
+  await t.read(u, 1);
+  const shown = () => u.value.messages.map((m: J) => [m.seq, m.ts, m.notice?.count, m.notice?.lastSeq]);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 11, 12]]);
+  let folded = u.value.messages[1];
+  // The last's time and failure in words, what may be done of it (重试, 上报), as one.
+  assert.deepEqual([folded.notice.words, folded.notice.detail, folded.notice.againSession, folded.createdAt, folded.reportable], [words, "request r11: ECONNRESET", "k", 12000, true]);
+  // Its turn's failure is in the chat (the last of the folded), so the end says nothing more of it; nor of one of them.
+  assert.equal(u.value.stateText, undefined);
+  for (const about of [2, 7]) {
+    r.agents[0].lastTurn = failed(about);
+    t.set(rows("ws/a"), [{ ...r, agents: [...r.agents] }]);
+    await t.read(u, 1);
+    assert.equal(u.value.stateText, undefined, String(about));
+  }
+  // One more comes: the same row (its seq and ts), one more said.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, lost(13)], last: 13 }));
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", process: "warm", lastTurn: failed(13) })]);
+  t.set(sessionOf("ws/a", "k"), { session: fullSession("k", { lastTurn: failed(13) }), threads: [thread(7, ["k"], now)], turns: [] });
+  await t.read(u, 1);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 12, 13]]);
+  folded = u.value.messages[1];
+  assert.deepEqual([folded.notice.againSession, folded.createdAt], ["k", 13000]);
+  // What the viewer says parts them; what is not a failure, or says otherwise, is not folded.
+  t.store.update(pageOf("ws/a", 7), (p) => ({ ...(p as J), entries: [...(p as J).entries, entry(14, "再试"), lost(15), lost(16), { ...entry(17, "已停止当前任务"), authorKind: "ember", author: "ember" }, { ...entry(18, "已停止当前任务"), authorKind: "ember", author: "ember" }, { ...entry(19, "⚠️ 模型服务出错，回复即可重试"), authorKind: "ember", author: "ember" }, lost(20)], last: 20 }));
+  await t.read(u, 1);
+  assert.deepEqual(shown(), [[1, "1.0", undefined, undefined], [2, "2.0", 12, 13], [14, "14.0", undefined, undefined], [15, "15.0", 2, 16], [17, "17.0", undefined, undefined], [18, "18.0", undefined, undefined], [19, "19.0", undefined, undefined], [20, "20.0", undefined, undefined]]);
+  // A picture of the chat (`listed`) folds them alike.
+  const listed = t.views.listed("ws/a", 7, (t.store.get(pageOf("ws/a", 7)) as J).entries);
+  assert.deepEqual(listed.map((m: J) => [m.seq, m.notice?.count]), [[1, undefined], [2, 12], [14, undefined], [15, 2], [17, undefined], [18, undefined], [19, undefined], [20, undefined]]);
+});
+
+test("failures_said_alike_fold_by_what_they_are_bound_to_and_not_across_what_was_sent_elsewhere", async () => {
+  // Folded alone: kept as made while what it is made of is the same objects.
+  const n = (seq: number, words = "与模型服务的连接中断", more: J = {}): J => ({ seq, ts: `${seq}.0`, system: true, createdAt: seq, notice: { failed: true, words, ...more } });
+  const said = [n(1), n(2, "与模型服务的连接中断", { retrySession: "k" }), n(3), n(4, "与模型服务的连接中断", { againSession: "k" }), n(5)];
+  const once = foldNotices(said);
+  assert.equal(once.length, 1);
+  assert.deepEqual([once[0].notice.count, once[0].notice.lastSeq, once[0].notice.retrySession, once[0].notice.againSession, once[0].seq], [5, 5, "k", "k", 1]);
+  assert.equal(foldNotices(said)[0], once[0]);
+  assert.equal(foldNotices([...said.slice(0, 4), n(5)])[0] === once[0], false);
+  // None folded: the list as it was.
+  const apart = [n(1), n(2, "额度已用完")];
+  assert.equal(foldNotices(apart), apart);
+  // What was sent elsewhere after 2 parts 1-2 from 3-5; another's profile, or a different one, too.
+  assert.deepEqual(foldNotices(said, new Set([2])).map((m) => [m.seq, m.notice.count]), [[1, 2], [3, 3]]);
+  assert.deepEqual(foldNotices([n(1), { ...n(2), profile: "p" }, { ...n(3), profile: "p" }]).map((m) => [m.seq, m.notice.count]), [[1, undefined], [2, 2]]);
+  // One with an install, or a run's change, stands alone.
+  assert.deepEqual(foldNotices([n(1), { ...n(2), install: {} }, n(3, "与模型服务的连接中断", { short: "换成 Codex" })]).map((m) => m.seq), [1, 2, 3]);
+  // In a chat's page: what its agent sent to Slack after the second of three is under the second.
+  const t = setup();
+  const u = ui();
+  t.subscribe(1, chatTopic("ws/a", 7));
+  const now = t.host.nowMs();
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember" })]);
+  t.set(threads("ws/a"), [thread(7, ["k"], now)]);
+  const lost = (seq: number): J => ({ ...entry(seq, "⚠️ 与模型服务的连接中断，回复即可重试"), authorKind: "ember", author: "ember", at: seq * 1000 });
+  t.set(pageOf("ws/a", 7), { first: 1, last: 4, entries: [lost(1), lost(2), lost(3), lost(4)], thread: null });
+  const call = (tool: string, args: J, at: string, callId: string) => ({ at, kind: "tool_call", tool, text: JSON.stringify(args), callId });
+  t.data.putItems("transcript", "ws/a", "k", [
+    [0, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "连不上了" }, "1970-01-01T00:00:02.5Z", "c1")],
+    [1, call("mcp__stillfail__chat_post", { to: "C0OPS/1727.0001", text: "还是连不上" }, "1970-01-01T00:00:04.5Z", "c2")],
+  ]);
+  await t.read(u, 1);
+  assert.deepEqual(u.value.messages.map((m: J) => [m.seq, m.notice.count, m.notice.lastSeq, (m.elsewhere ?? []).map((s: J) => s.text)]), [[1, 2, 2, ["连不上了"]], [3, 2, 4, ["还是连不上"]]]);
+});
+
 test("the_viewers_messages_sent_one_after_another_go_close_together_their_time_under_the_last", async () => {
   const t = setup();
   const u = ui();
@@ -3671,7 +3782,8 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
   t.subscribe(1, agentPage("ws/a", "k"));
   // Who wrote to it in Slack, with their Slack picture (the station's names book).
   const mia = { id: "slack:ember:U9", name: "Mia", email: null, via: "slack", picture: "https://avatars.slack-edge.com/mia_72.jpg" };
-  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", participants: [mia] })]);
+  // (another agent's session on the station, whose own uploads its posts name)
+  t.set(sessions("ws/a"), [fullSession("k", { connect: "ember", participants: [mia] }), fullSession("j", { connect: "gpt", workspace: "/ws/j" })]);
   t.set(rows("ws/a"), [{ id: "k", session: "k", thread: null, title: "看看项目", agents: [] }]);
   // Another agent's bot on the station, its picture as Slack shows it.
   const gpt = { ...connect("gpt", "GPT-Ember"), botImage: "https://avatars.slack-edge.com/gpt_72.jpg", connection: { state: "connected", botUserId: "UB2" } };
@@ -3681,7 +3793,7 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
     [0, { at: "1970-01-01T00:00:01Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="Mia (U9)" ts="1.5">看看项目\n\nAttached files:\n- /ws/k/uploads/shot.png (shot.png, 13 bytes)</message>' }],
     [1, call("mcp__stillfail__chat_post", { to: "C0OPS/1.5", text: "*看了*" }, "1970-01-01T00:00:03Z", "c1")],
     [2, { at: "1970-01-01T00:00:03Z", kind: "tool_result", text: "posted", ok: true, callId: "c1" }],
-    [3, { at: "1970-01-01T00:00:04Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="GPT-Ember (<@UB2>)" ts="4.0">也看了</message>' }],
+    [3, { at: "1970-01-01T00:00:04Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="GPT-Ember (<@UB2>)" ts="4.0">也看了\n\nAttached files:\n- /ws/j/uploads/pic.png (pic.png, 7 bytes)</message>' }],
     [4, { at: "1970-01-01T00:00:05Z", kind: "user", text: '<message via="slack" thread="C0OPS/1.5" from="Mia (U9)" ts="5.0"><@UB2> 继续</message>' }],
   ]);
   await t.read(u, 1);
@@ -3699,8 +3811,14 @@ test("an_agent_only_in_slack_shows_what_was_said_there_on_its_page", async () =>
   assert.equal(v.elsewhere[0].by.picture, mia.picture);
   assert.equal(v.elsewhere[1].by.picture, undefined);
   assert.equal(v.elsewhere[2].by.picture, gpt.botImage);
-  // The files the person sent with it are its files, kept by the session they were given to; not its words.
-  assert.deepEqual(v.elsewhere.map((s: J) => s.attachments ?? []), [[{ name: "shot.png", path: "/ws/k/uploads/shot.png", size: 13, owner: "k" }], [], [], []]);
+  // The files the person sent with it are its files, kept by the session they were given to; not its words. Those
+  // another agent of the station posted are kept by that agent's session, whose workspace their path is in.
+  assert.deepEqual(v.elsewhere.map((s: J) => s.attachments ?? []), [
+    [{ name: "shot.png", path: "/ws/k/uploads/shot.png", size: 13, owner: "k" }],
+    [],
+    [{ name: "pic.png", path: "/ws/j/uploads/pic.png", size: 7, owner: "j" }],
+    [],
+  ]);
 });
 
 // ── What is shared is never written on (「谁能改什么」) ──

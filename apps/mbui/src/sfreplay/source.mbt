@@ -13,26 +13,37 @@ let images : @sfbase.ChatImages = @sfbase.ChatImages::new()
 /// Pictures by their address as the app's own are (src/stillfail: @sfapp.core_pictures, one that could not be had
 /// asked again when its page is put up anew), so a run that asked again is asked again here; made anew in each
 /// Tester.
-let pictures : Ref[((String, Int) -> String)?] = Ref(None)
+let pictures : Ref[@sfapp.CorePictures?] = Ref(None)
 
 ///|
-fn picture(url : String, stint : Int) -> String {
-  let f = match pictures.val {
+fn pictures_now() -> @sfapp.CorePictures {
+  match pictures.val {
     Some(f) => f
     None => {
-      let f = @sfapp.core_pictures(fn(url, done) {
-        @core.call_bytes("picture", params=Json::object({ "url": Json::string(url) }), on_done=fn(r) {
-          match r {
-            Ok((_, bytes)) => done(bytes)
-            Err(_) => done(None)
+      let asked = fn(kept : Bool) {
+        fn(url : String, done : (Bytes?) -> Unit) {
+          let params : Map[String, Json] = { "url": Json::string(url) }
+          if kept {
+            params["kept"] = Json::boolean(true)
           }
-        })
-      })
+          @core.call_bytes("picture", params=Json::object(params), on_done=fn(r) {
+            match r {
+              Ok((_, bytes)) => done(bytes)
+              Err(_) => done(None)
+            }
+          })
+        }
+      }
+      let f = @sfapp.core_pictures_waited(asked(false), asked(true))
       pictures.val = Some(f)
       f
     }
   }
-  f(url, stint)
+}
+
+///|
+fn picture(url : String, stint : Int) -> String {
+  (pictures_now().shown)(url, stint)
 }
 
 ///|
@@ -459,6 +470,14 @@ pub fn source() -> @sfapp.Source {
       { value, error: s.error, version: s.version }
     },
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, replay_topic_params(name, params)) },
+    // (a chat's messages as the run's core sent them, by key; the topics a run of before is answered otherwise, none)
+    topic_keyed: fn(name, params, field, keys) {
+      if name == "chat" {
+        @core.keyed_of(name, replay_topic_params(name, params), field, keys)
+      } else {
+        None
+      }
+    },
     topic_scope: None,
     topic_alive: fn() { true },
     topic_lease_own: None,
@@ -557,7 +576,16 @@ pub fn source() -> @sfapp.Source {
       let s = @sfcore.sign_in_now()
       @sfbase.SignInStep::of(busy=s.busy, verifying=s.verifying, waiting=s.waiting, failed=s.failed)
     },
-    picture: fn(url, stint) { picture(url, stint) },
+    picture: fn(url, stint) {
+      let key = picture(url, stint)
+      // (waited for by a card, a panel or a sheet made with it, as the app has it since MBUI_OPEN_WHOLE)
+      if @sfcore.trace_switch("MBUI_OPEN_WHOLE") {
+        @sfbase.picture_gated(key)
+      }
+      key
+    },
+    // (a page opening waits for the pictures it shows the device holds, as the app has it since MBUI_PAGE_PICTURES)
+    picture_waits: fn(url) { @sfcore.trace_switch("MBUI_PAGE_PICTURES") && (pictures_now().waits)(url) },
     fatal: fn() { @core.fatal() },
     file: fn(station, key, name) {
       let params : Map[String, Json] = {
@@ -582,7 +610,15 @@ pub fn source() -> @sfapp.Source {
     draft_picture: fn(key, id) {
       let params : Map[String, Json] = { "key": Json::string(key), "id": Json::string(id) }
       let at = "draft\u{1}" + key + "\u{1}" + id
-      image("", at, "composer.picture", Json::object(params), "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}")
+      images.get("", at, "mem:draft-picture/\{@ui.stable_hash(at)}/\{at.length()}", fn(_, done) {
+        @core.call_bytes("composer.picture", params=Json::object(params), on_done=fn(r) {
+          match r {
+            Ok((_, Some(b))) if b.length() > 0 => @sfbase.writing_kept(id, b)
+            _ => ()
+          }
+          done(r)
+        })
+      })
     },
     images,
     now: fn() { @ui.wall_ms() },
@@ -649,6 +685,11 @@ pub fn source() -> @sfapp.Source {
     asks_devices: fn() { @sfcore.trace_switch("MBUI_DEVICES") },
     asks_outline: fn() { @sfcore.trace_switch("MBUI_OUTLINE") },
     switches_ahead: fn() { @sfcore.trace_switch("MBUI_SWITCH_AHEAD") },
+    asks_station_updates: fn() { @sfcore.trace_switch("MBUI_STATION_UPDATES") },
+    asks_station_move: fn() { @sfcore.trace_switch("MBUI_STATION_MOVE") },
+    asks_terminals: fn() { @sfcore.trace_switch("MBUI_TERMINALS") },
+    swr_views: fn() { @sfcore.trace_switch("MBUI_SWR_VIEWS") },
+    gates_opens: fn() { @sfcore.trace_switch("MBUI_OPEN_WHOLE") },
   }
 }
 
@@ -662,7 +703,8 @@ let started : Ref[Bool] = Ref(false)
 ///|
 fn init {
   @ui.on_reset(fn() { started.val = false })
-  @core.client.keep(replay_kept)
+  @core.client.keep(replay_kept, most=replay_kept_most)
+  @core.client.show_kept(replay_shown_kept)
   @core.client.tells_before(replay_tells)
 }
 
@@ -682,20 +724,36 @@ fn replay_tells(name : String, topic : Json) -> Array[(String, Json)] {
 ///|
 /// What the core's client keeps as it lets go of it (sfbase's topic_kept, as src/stillfail's main has it), where the
 /// run's app did, its trace's head saying so: the lists the places open on with MBUI_HAVE_SAME, Home's own with
-/// MBUI_HOME_SAME, a chat with MBUI_KEEP_CHAT, each asked again as that run asked it.
+/// MBUI_HOME_SAME, a chat with MBUI_KEEP_CHAT (its last 8 with MBUI_SWR_VIEWS, 4 before), a view's own with
+/// MBUI_SWR_VIEWS, each asked again as that run asked it.
 fn replay_kept(name : String, params : Json) -> Int {
   let on = if name == "chat" {
     @sfcore.trace_switch("MBUI_KEEP_CHAT")
   } else if @sfbase.home_lasting_of(name) {
     @sfcore.trace_switch("MBUI_HOME_SAME")
+  } else if @sfbase.topic_shown_kept(name) {
+    @sfcore.trace_switch("MBUI_SWR_VIEWS")
   } else {
     @sfcore.trace_switch("MBUI_HAVE_SAME")
   }
   if on {
-    @sfbase.topic_kept(name, params)
+    @sfbase.topic_kept_by(name, params, @sfcore.trace_switch("MBUI_SWR_VIEWS"))
   } else {
     0
   }
+}
+
+///|
+/// How many values the core's client keeps of every name together, as the run's app did (sfbase's kept_most_by).
+fn replay_kept_most() -> Int {
+  @sfbase.kept_most_by(@sfcore.trace_switch("MBUI_SWR_VIEWS"))
+}
+
+///|
+/// Which topics' values kept are shown at once as they are asked again, as the run's app did: none before
+/// MBUI_SWR_VIEWS (sfbase's topic_shown_kept).
+fn replay_shown_kept(name : String) -> Bool {
+  @sfcore.trace_switch("MBUI_SWR_VIEWS") && @sfbase.topic_shown_kept(name)
 }
 
 ///|

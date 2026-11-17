@@ -34,13 +34,17 @@ import { Status, Waited } from "./status.ts";
 import { Store } from "./store.ts";
 import { CloudSync } from "./sync/cloud.ts";
 import { Priority, Scheduler } from "./sync/scheduler.ts";
-import { Kind, SAMPLE, Tracer } from "./trace.ts";
+import { Kind, SAMPLE, Tracer, service } from "./trace.ts";
+import { UseCounts, builtSink, type UsageSink } from "./use-counts.ts";
+import { ownBuild } from "./station/oldest.ts";
 import { spentClock } from "./spent.ts";
 import { checkWith, keepVerified } from "./vault/verified.ts";
 import { Wakes, WakingHost } from "./wake.ts";
 import { Workspaces } from "./workspace.ts";
 import { install as installStationCalls } from "./station/calls.ts";
 import { install as installScreens } from "./screens.ts";
+import { install as installTerminals } from "./terminals.ts";
+import { install as installFarview } from "./farview.ts";
 import { Composers, install as installComposer } from "./composer.ts";
 import { StationsSync } from "./station/sync.ts";
 import { StationTopics } from "./station/topics.ts";
@@ -67,7 +71,7 @@ import { Rigs } from "./rigs.ts";
 import { Devices } from "./devices.ts";
 import { Signer } from "./lock.ts";
 import { PersonalLock } from "./personal-lock.ts";
-import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personalStations, refusedAgain, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
+import { answersOf, asked, bindPerson, enrolled, inForceOf, keepToPerson, lockSeen, movedBySelf, movedHere, ownLockEnv, ownLockFor, personalStations, refusedAgain, signerKnown, signerOf, signsAs, takeOffBound, tellStations, tookOrRefused, withBound } from "./views/lock.ts";
 import { personalBegin, personalCancel, personalPairState, personalProve } from "./views/pair.ts";
 import { envOf, Views } from "./views/views.ts";
 import * as xshare from "./views/xshare.ts";
@@ -78,6 +82,9 @@ import * as pairing from "./views/pair.ts";
 import * as vaultCalls from "./views/vault.ts";
 import * as waysCalls from "./views/ways-stations.ts";
 import * as stationMarkCalls from "./views/station-marks.ts";
+import * as presetCalls from "./views/presets.ts";
+import * as movedChats from "./views/moved.ts";
+import { MOVED } from "./station/requests.ts";
 import * as transferCalls from "./views/transfers.ts";
 import * as browseCalls from "./views/browse.ts";
 import * as downloads from "./views/downloads.ts";
@@ -107,6 +114,8 @@ export type Options = {
   /// Who the accounts are with (account-provider.ts): still.fail cloud unless the embedding app gives another
   /// (`commaAccountProvider`, comma.ts).
   account?: AccountProviderFactory;
+  /// Where what people use is counted to (use-counts.ts): the project this build was given unless a test gives its own.
+  usage?: UsageSink | null;
 };
 
 /// What the core holds: every module.
@@ -114,6 +123,10 @@ export class Inner {
   host!: Host;
   runner!: Runner;
   tracer!: Tracer;
+  /// What people use, counted for still.fail's PostHog project where the app says so (use-counts.ts).
+  useCounts!: UseCounts;
+  /// What app the UI said it is (`client.device`'s `app`): the counts' `app`.
+  deviceApp = "";
   /// Client errors recorded lately, by source and message, and when.
   reported = new Map<string, number>();
   /// The control plane the accounts are with, and the accounts.
@@ -141,6 +154,8 @@ export class Inner {
   meshNow: () => Mesh | null = () => null;
   attention!: Attention;
   choose!: Choose;
+  /// A person's presets and starred models as their devices carry them (views/presets.ts).
+  presets!: presetCalls.PresetViews;
   changelog!: Changelog;
   forms!: Forms;
   adb!: Adb;
@@ -190,6 +205,12 @@ export class Core {
       brand.setCloud(inner.host.cloudOrigin());
       fonts.setOrigin(inner.host.cloudOrigin(), inner.host.testChannel());
       inner.tracer = new Tracer(inner.host, inner.runner, options.sample ?? SAMPLE, TRACES);
+      inner.useCounts = new UseCounts(inner.host, inner.runner, options.usage === undefined ? builtSink() : options.usage, () => inner.accounts.list()[0]?.sub ?? null, () => ({
+        app: inner.deviceApp !== "" ? inner.deviceApp : service.os === "browser" ? "web" : "",
+        os: service.os,
+        build: ownBuild(),
+      }));
+      prefs.setCounted(inner.useCounts.sends);
       spentClock(() => inner.host.monotonicMs());
       // A failure let go of is a span of its own: Cloud Trace has it though nothing waited on it.
       inner.runner.onIgnored = (what, error) => {
@@ -250,6 +271,8 @@ export class Core {
       inner.router.owners.push(inner.stationTopics);
       installStationCalls();
       installScreens();
+      installTerminals();
+      installFarview();
       inner.composers = new Composers(inner);
       installComposer();
       inner.views = new Views(envOf(inner));
@@ -258,7 +281,7 @@ export class Core {
       inner.viewCalls = new ViewCalls(inner, inner.views);
       inner.viewCalls.install();
       // What agents said lately read ahead, kept on the device: a chat opens with its Markdown read (md-ahead.ts).
-      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of));
+      const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of), () => inner.store.turn());
       inner.data.onOldMd = (station, of, text) => ahead.refresh(station, of, text);
       inner.data.onLogChange((table, station, id) => {
         if (table === "entry") ahead.thread(station, Number(id));
@@ -271,6 +294,8 @@ export class Core {
       vaultCalls.install(inner);
       waysCalls.install(inner);
       stationMarkCalls.install(inner);
+      inner.presets = presetCalls.install(inner);
+      movedChats.install(inner);
       transferCalls.install(inner);
       browseCalls.install(inner);
       downloads.install(inner);
@@ -283,7 +308,7 @@ export class Core {
       inner.choose = installChoose(inner);
       installShareIn(inner);
       inner.forms = installForms(inner);
-      const asks = new Asks(inner.host, (from, to) => inner.changelog.brings(from, to), (address) => inner.views?.stationNow(address) ?? address);
+      const asks = new Asks(inner.host, (from, to) => inner.changelog.brings(from, to), (address) => inner.views?.stationNow(address) ?? address, (address, by) => inner.data.chatNow(address, by));
       asks.follow(inner.accounts);
       // A release may be out (still.fail cloud said one is, or its events socket opened again: what it said while closed
       // is not said again): the newest of each feed read again when next asked, and the app told (the `releases`
@@ -313,6 +338,10 @@ export class Core {
           device: () => Effect.map(inner.mesh(), (m) => m.deviceId()),
           label: () => prefs.deviceName(inner.data) ?? "",
           signKey: () => signerOf(inner),
+          makeSignKey: () => (inner.host.appKeys ? Effect.map(Effect.orElseSucceed(Signer.make(inner.host), () => null), (signer) => {
+            if (signer) signerKnown(inner, signer.id);
+            return signer?.id ?? null;
+          }) : Effect.succeed(null)),
           ...ownLockEnv(inner),
           changed: () => {
             inner.adb.touched();
@@ -427,7 +456,7 @@ export class Core {
       };
       handlers.relayView = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayView" }>;
-        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t));
+        return Effect.sync(() => relayView(c.connects, c.query, c.all, c.bot, t, c.place));
       };
       handlers.relayMentions = (_i, call) => {
         const c = call as Extract<Call, { kind: "relayMentions" }>;
@@ -578,13 +607,17 @@ export class Core {
     const inner = this.inner;
     const asked = heavy(name) ? null : params;
     let call: Call;
+    // (what it names aimed where its chat is now: views/moved.ts)
+    const aimed = movedChats.aimed(inner, params);
     try {
-      call = parseCall(name, params, bytes);
+      call = parseCall(name, aimed, bytes);
     } catch (e) {
       inner.host.emit(client, answer(id, { err: asCoreError(e) }));
       return;
     }
     // Under way from now until it answers, for every page to show where it is (doing.ts).
+    // What people use (use-counts.ts): each call by its name, but what the UI says of itself (`client.*`).
+    if (!name.startsWith("client.")) inner.useCounts.used(name);
     let doing: number | null = null;
     if (asked !== null && counts(call, name)) {
       doing = inner.doing.start(name, asked, inner.host.nowMs());
@@ -610,8 +643,19 @@ export class Core {
     };
     const key = `${client}/${id}`;
     const stoppable = cancellable(call);
+    // Its station answered that the chat it names went to another (views/moved.ts): asked there, once.
+    const again = (error: CoreError): Effect.Effect<unknown, CoreError> => {
+      if (error.code !== MOVED) return Effect.fail(error);
+      const there = movedChats.aimed(inner, params);
+      if (get(there, "station") === get(aimed, "station") && get(there, "thread") === get(aimed, "thread")) return Effect.fail(error);
+      return Effect.try({ try: () => parseCall(name, there, bytes), catch: asCoreError }).pipe(
+        Effect.flatMap((c) => execute(inner, c, progress, [client, id], span.context)),
+        Effect.mapError(asCoreError),
+      );
+    };
     const run = execute(inner, call, progress, [client, id], span.context).pipe(
       Effect.mapError(asCoreError),
+      Effect.catch(again),
       // Stopped (a UI cancelled it, or went): it says so.
       Effect.onInterrupt(() =>
         Effect.sync(() => {

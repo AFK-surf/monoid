@@ -236,6 +236,7 @@ test "view owners share normalized chat parameters and release independently" {
   let src : Source = {
     ..base,
     topic_key: fn(name, params) { @sfbase.wire_topic_key(name, normalize(name, params)) },
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) { (base.topic_read)(name, normalize(name, params)) },
     waits: fn(name, params) { (base.waits)(name, normalize(name, params)) },
     leave: fn(name, params, __reason) {
@@ -1038,6 +1039,7 @@ fn signal_client_source(client : @core.Client) -> Source {
   {
     ..base,
     topic_key: @sfbase.wire_topic_key,
+    topic_keyed: fn(_, _, _, _) { None },
     topic_read: fn(name, params) {
       let sub = client.follow_topic(name, params~)
       { value: sub.value, error: sub.error, version: sub.version }
@@ -1905,6 +1907,9 @@ test "a chat after closing the switcher reads station changes made in the gap" {
     asks_devices: fn() { true },
     asks_outline: fn() { true },
     switches_ahead: fn() { true },
+    asks_station_updates: fn() { true },
+    asks_station_move: fn() { true },
+    asks_terminals: fn() { true },
   }
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
   t.frame()

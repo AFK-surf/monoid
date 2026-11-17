@@ -12,6 +12,7 @@ import { test } from "node:test";
 import { mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
 import { Store, newMessage } from "../src/store/store.ts";
+import { readersOf } from "./reference.ts";
 
 const binary = mbReaderBinary();
 
@@ -73,8 +74,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
   const plain = say(talk, "ember", "ember", "just a note", 3003);
   const entry = (n: number, kind: string, authorKind: string, author: string, text: string | null, at: number) => ({ n, kind, authorKind, author, text, at });
   const readers = (mb: string | null) => {
-    const r = new Readers(data, 1);
-    r.mbReader = mb;
+    const r = readersOf(data, mb);
     r.names.set("p@x", "Pat");
     return r;
   };
@@ -93,7 +93,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
       }
       const entries = [entry(person, "message", "person", "r@x", "a word", 3000), entry(file, "message", "person", "s@x", "  ", 3001),
         entry(wrong, "message", "ember", "ember", "⚠️ The model failed  \n\nwhat it said", 3002), entry(plain, "message", "ember", "ember", "just a note", 3003)];
-      for (const [thread, list, since] of [[talk, entries, 0], [talk, entries.slice(0, 1), 0], [talk, entries.slice(2), 0], [talk, entries, 5000], [hidden, entries, 0], [quiet, [], 0], [9999, entries, 0]] as const)
+      for (const [thread, list, since] of [[talk, entries, 0], [talk, entries.slice(0, 1), 0], [talk, entries.slice(2), 0], [card, entries.slice(0, 1), 0], [talk, entries, 5000], [hidden, entries, 0], [quiet, [], 0], [9999, entries, 0]] as const)
         out.push(await read(r, "saidNotices", { thread, entries: list, since, lang }, lang));
     }
     return strip(out);
@@ -103,7 +103,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
     assert.deepEqual(first, await all(worker));
     const said = JSON.stringify(first);
     for (const sign of ["\"kind\":\"done\"", "\"kind\":\"block\"", "\"text\":\"a key\"", "\"kind\":\"message\"", "\"kind\":\"failed\"", "\"text\":\"The model failed\"", "\"title\":\"Done chat\"",
-      "una@x", "x".repeat(400) + "\""])
+      "una@x", "\"to\":[\"m@x\"]", "\"to\":[\"q@x\"]", "x".repeat(400) + "\""])
       assert.ok(said.includes(sign), sign);
   } finally {
     worker.close(); program.close();

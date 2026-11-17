@@ -138,18 +138,20 @@ export class ChatShares {
     this.deps = deps;
     this.time = new Fibers("xshare", deps.clock);
     this.lapsed = this.time.now();
+    // Read as the station starts, not at the first request's on the main thread.
+    this.readState();
   }
 
   private get root() {
     return join(this.deps.data, "xshare");
   }
 
-  /// The one copy of state.json in memory, read at the first use and written through.
+  /// The one copy of state.json in memory, read as it is made and written through.
   private readState(): State {
     if (this.state) return this.state;
     const empty: State = { guests: {}, hosted: {}, borrowed: {}, hosts: {}, replies: {}, answered: {}, roster: {} };
     try {
-      const s = JSON.parse(readFileSync(join(this.root, "state.json"), "utf8"));
+      const s = JSON.parse(readFileSync(join(this.root, "state.json"), "utf8")); // sync: read once, before the station serves
       for (const k of Object.keys(empty) as (keyof State)[]) if (isObject(s[k])) (empty as any)[k] = s[k];
     } catch {}
     const now = this.time.now();

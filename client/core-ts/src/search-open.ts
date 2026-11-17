@@ -31,7 +31,9 @@ export function openOf(item: J): J | null {
       const path = str(item.path);
       if (path === null) return null;
       const cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-      const [folder, name] = cut > 0 ? [path.slice(0, cut), path.slice(cut + 1)] : [path, ""];
+      // The disk's root keeps its separator: C: alone names that drive's current directory.
+      const rootEnd = /^[A-Za-z]:[\\/]/.test(path) ? 3 : 1;
+      const [folder, name] = cut >= 0 ? [path.slice(0, Math.max(cut, rootEnd)), path.slice(cut + 1)] : [path, ""];
       const pinned = str(item.root);
       const dir = item.dir === true;
       const root = pinned ?? (dir ? path : folder);

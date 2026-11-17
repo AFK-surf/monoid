@@ -1,4 +1,4 @@
-// Reads the station's own parts ask in the background (station/src/read/ops-sessions.ts): the sessions whose
+// Reads the station's own parts ask in the background (station/test/reference/ops-sessions.ts): the sessions whose
 // workspaces are measured (`sessionsAtWork`), what a week's archive-policy checks say (`policyChecks`), and the people
 // of a connect's recent threads (`recentConnectPeople`). The statements are the TypeScript's, as it makes them.
 

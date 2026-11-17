@@ -5,6 +5,8 @@ import { parseDevice, type DeviceCall } from "../devices.ts";
 import { parseAsk, type Ask } from "../asks-parse.ts";
 import { parseAttend, type AttendCall } from "../attend-parse.ts";
 import { parseScreen, type ScreenCall } from "../screens.ts";
+import { parseTerminal, type TerminalCall } from "../terminals.ts";
+import { parseFarview, type FarviewCall } from "../farview.ts";
 import type { FontsCall } from "../font-files.ts";
 import { parseComposer, type ComposerAct } from "../composer.ts";
 import { conform } from "../conform.ts";
@@ -36,6 +38,8 @@ export type Call =
   | { kind: "profileFlow"; topic: Topic; action: string; patch: unknown }
   | { kind: "slackTokens"; topic: Topic; action: string; patch: unknown }
   | { kind: "clientError"; source: string; message: string }
+  | { kind: "clientReports"; on: boolean }
+  | { kind: "clientShown"; page: string }
   | { kind: "wake"; away: number; network: boolean; retry: boolean }
   | { kind: "authBegin"; redirectUri: string; returnTo: string; deviceName: string | null }
   | { kind: "authComplete"; query: string }
@@ -153,7 +157,7 @@ export type Call =
   | { kind: "feedbackDismiss"; workspace: string; id: string; reply: string }
   | { kind: "commandsFind"; query: string; offered: unknown[] }
   /// What a chat's relay picker shows (relay-pick.ts): the connects read, what was typed, all asked for, the bot picked.
-  | { kind: "relayView"; connects: RelayConnect[]; query: string; all: boolean; bot: string | null }
+  | { kind: "relayView"; connects: RelayConnect[]; query: string; all: boolean; bot: string | null; place: string | null }
   /// Who its note can mention now (relay-pick.ts): the people of the place picked, the note as written.
   | { kind: "relayMentions"; people: RelayPerson[]; note: string }
   /// A history step's call and what came back, read by what they are (tool-step.ts).
@@ -175,6 +179,10 @@ export type Call =
   | { kind: "device"; call: DeviceCall }
   /// A station's screen seen and driven (screens.ts): `screen.view` and what goes on it.
   | { kind: "screen"; call: ScreenCall }
+  /// A station's terminal viewed and typed into (terminals.ts): `terminal.view` and what goes on it.
+  | { kind: "terminal"; call: TerminalCall }
+  /// A chat's Farview tab in its own protocol (farview.ts): `farview.view` and what the app says on it.
+  | { kind: "farview"; call: FarviewCall }
   /// The workspace lock (views/lock.ts): `lock.<name>` on a workspace, with what it takes.
   | { kind: "lock"; name: string; workspace: string; params: Record<string, unknown> }
   | { kind: "lockPrompt"; name: string; params: Record<string, unknown> }
@@ -184,6 +192,9 @@ export type Call =
   | { kind: "ways"; name: "setRelays" | "setWay"; workspace: string; params: Record<string, unknown> }
   /// A station's name and mark changed from the app (views/station-marks.ts): on the station, else on still.fail cloud.
   | { kind: "stationMark"; workspace: string; station: string; params: Record<string, unknown> }
+  /// A person's own preset made, changed, deleted, or someone else's copied into theirs (views/presets.ts): on this
+  /// device at once, carried to the workspace's stations after; `station` the page's (a new one's `home`).
+  | { kind: "presets"; name: "add" | "put" | "delete" | "copy"; station: string; params: Record<string, unknown> }
   | { kind: "driveTransfer"; action: "start" | "cancel" | "retry"; params: Record<string, unknown> }
   /// A station's files as they are browsed (views/browse.ts): `drive.browse` and the rest of drive-browse.ts's CALLS,
   /// with what each takes.
@@ -208,7 +219,7 @@ function fromOf(params: unknown): { from?: unknown } {
 /// those that hand it what they read as it comes (`stream`: a player's part of a file, let go of as it seeks elsewhere
 /// or closes), so that nothing no page waits for any more goes on coming over the network.
 export function cancellable(call: Call): boolean {
-  return ((call.kind === "stationPreview" || call.kind === "stationFilePart" || call.kind === "driveRead") && call.stream) || call.kind === "previewSocket" || (call.kind === "screen" && call.call.kind === "view");
+  return ((call.kind === "stationPreview" || call.kind === "stationFilePart" || call.kind === "driveRead") && call.stream) || call.kind === "previewSocket" || (call.kind === "screen" && call.call.kind === "view") || (call.kind === "terminal" && call.call.kind === "view") || (call.kind === "farview" && call.call.kind === "view");
 }
 
 function opStation(op: ops.Request): string | null {
@@ -231,6 +242,9 @@ export function callStation(call: Call): string | null {
     case "adb":
       return call.call.kind === "share" ? call.call.offer.station : null;
     case "screen":
+      return call.call.kind === "view" ? call.call.station : null;
+    case "terminal":
+    case "farview":
       return call.call.kind === "view" ? call.call.station : null;
     case "decisionForm":
     case "policyForm":
@@ -301,6 +315,7 @@ export function counts(call: Call, name: string): boolean {
       return call.name !== "state" && call.name !== "lock" && call.name !== "open";
     case "ways":
     case "stationMark":
+    case "presets":
       return true;
     default:
       return false;
@@ -312,7 +327,7 @@ const S = "string" as const;
 const FILE_OPEN_PART = 4 * 1024 * 1024;
 
 /// The vault's calls (views/vault.ts).
-export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate"];
+export const VAULT_CALLS = ["state", "lock", "setup", "create", "delete", "addDevice", "ask", "hidePrompt", "prompts", "putItem", "deleteItem", "open", "recover", "approve", "deny", "setLasts", "migrate", "oauthBegin", "oauthComplete"];
 
 /// The workspace lock's calls (views/lock.ts).
 export const LOCK_CALLS = ["state", "open", "toggle", "dismiss", "pendingDismiss", "addStation", "joinStation", "renew", "removeDevice", "disable", "pair", "pairCode", "pairCancel", "handOver", "confirmSigner"];
@@ -400,6 +415,11 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
     const p = read(params, [["workspace", S, "req"], ["station", S, "req"]]);
     return { kind: "stationMark", workspace: p.workspace as string, station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
   }
+  if (name === "preset.add" || name === "preset.put" || name === "preset.delete" || name === "preset.copy") {
+    const p = read(params, [["station", S, "req"]]);
+    StationAddr.parse(p.station as string);
+    return { kind: "presets", name: name.slice(7) as "add" | "put" | "delete" | "copy", station: p.station as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
+  }
   if (name === "workspace.setRelays" || name === "workspace.setWay") {
     const p = read(params, [["workspace", S, "req"]]);
     return { kind: "ways", name: name === "workspace.setRelays" ? "setRelays" : "setWay", workspace: p.workspace as string, params: isObject(params) ? (params as Record<string, unknown>) : {} };
@@ -446,6 +466,12 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
       ]);
       return { kind: "clientError", source: p.source as string, message: p.message as string };
     }
+    // whether what people use is counted and sent from this device (use-counts.ts), as the app's settings say
+    case "client.reports":
+      return { kind: "clientReports", on: read(params, [["on", "bool", "req"]]).on as boolean };
+    // a page the app shows, by its kind alone (use-counts.ts)
+    case "client.shown":
+      return { kind: "clientShown", page: read(params, [["page", S, "req"]]).page as string };
     case "client.wake": {
       const p = read(params, [
         ["away", "f64", "default"],
@@ -917,8 +943,9 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["query", S, "default"],
         ["all", "bool", "opt"],
         ["bot", S, "opt"],
+        ["place", S, "opt"],
       ]);
-      return { kind: "relayView", connects: readConnects(p.connects), query: p.query as string, all: p.all === true, bot: p.bot as string | null };
+      return { kind: "relayView", connects: readConnects(p.connects), query: p.query as string, all: p.all === true, bot: p.bot as string | null, place: p.place as string | null };
     }
     case "chat.relayMentions": {
       const p = read(params, [
@@ -1281,6 +1308,10 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
   if (device) return { kind: "device", call: device };
   const screen = parseScreen(name, p, bytes);
   if (screen) return { kind: "screen", call: screen };
+  const terminal = parseTerminal(name, p, bytes);
+  if (terminal) return { kind: "terminal", call: terminal };
+  const farview = parseFarview(name, p, bytes);
+  if (farview) return { kind: "farview", call: farview };
   const ask = parseAsk(name, p);
   if (ask) return { kind: "ask", ask };
   const op = ops.request(name, p);

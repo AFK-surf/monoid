@@ -55,6 +55,21 @@ priv struct FromLook {
   edge : (Double, Int64)
   corners : (Double, Double, Double, Double)
   ink : Int64
+  /// how much of the way it keeps this look before it comes to the one it goes to (View::flies_in's `look_late`)
+  held : Double
+}
+
+///|
+/// How far from the look it set out with to the one it goes to a flight is drawn (0 → 1), `l.k` of its way left: as
+/// far as its way, or none for the share of it the look it set out with is held (FromLook's `held`), then the rest.
+fn lift_look_p(l : Lift) -> Double {
+  let p = 1.0 - l.k
+  let held = l.from.held
+  if held > 0.0 {
+    dclamp((p - held) / (1.0 - held), 0.0, 1.0)
+  } else {
+    p
+  }
 }
 
 ///|
@@ -65,14 +80,26 @@ priv struct FromLook {
 priv struct Lift {
   follow : Int
   top : Int
-  d : (Double, Double, Double, Double)
+  mut d : (Double, Double, Double, Double)
+  late : Double
   mut k : Double
+  /// how much of its way down or up is left (1 → 0): `k` but for one whose rise lags its way across (View::flies_in's
+  /// `up_late`)
+  mut ky : Double
+  /// where it set out in the window, kept there (View::flies_in's): it goes from there to where it is drawn now, so
+  /// what moves that place meanwhile (a list's way opening its room) is taken up on its own way, not added to it;
+  /// none: off that place by `d`, which goes with it (View::shared's, and one whose node rides a way its page said:
+  /// Tree::rides_said_way)
+  mut fixed : (Double, Double, Double, Double)?
   mut a : Double
   from : FromLook
   /// a flight with an end that stays (View::shared's `stays`): how that end draws its picture (covering, along; contained),
   /// drawn so on the way; and its room as cut by what held it, what is drawn of it at that end (`at_start`: the end it
   /// sets out from)
   stays : StaysEnd?
+  /// how far what holds it was drawn off where it is laid out as it set out (View::drawn_off): what moves it so after
+  /// (a later cause's way in a page's list said `flips`) moves where it goes with it
+  mut held_off : (Double, Double)
 }
 
 ///|
@@ -81,7 +108,7 @@ priv struct Lift {
 /// sets out (else where it comes to).
 priv struct StaysEnd {
   cover : Bool
-  cover_at : Double?
+  cover_at : (Double, Double)?
   contain : Bool
   cut : (Double, Double, Double, Double)
   at_start : Bool
@@ -106,8 +133,11 @@ priv struct Departure {
 priv struct Flying {
   node : NodeId
   mut ghost : NodeId?
+  /// how much of its length its rise lags its way across (0: none; View::flies_in's `up_late`)
+  late : Double
   /// faded in as it comes (false: one with an end that stays, one picture moving)
   fades : Bool
+  from_fn : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
   start : Double
   dur : Double
   along : (Double) -> Double
@@ -163,6 +193,100 @@ pub fn View::shared(
     }
   }
   self
+}
+
+
+///|
+/// One made in a change that flies in from what is none of the window's tree (View::flies_in): the node, and where it
+/// sets out given where it is laid out as that change is committed (its place and size in the window).
+priv struct Incoming {
+  node : NodeId
+  from : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?
+  late : Double
+  bare : Bool
+  look_late : Double
+}
+
+///|
+/// Made in the change being committed, it flies, as that change is committed whole, from what is none of the window's
+/// tree (an old view's words, a text field's: nothing of it here to let go of, so no old copy) to where that change
+/// lays it out: from where `from` says, given that place and size in the window (None: no flight, there at once),
+/// looking there as it is (`bare_from`: with no ground and no edge at the start, as bare words in a field do, coming to
+/// its own look on the way); one thing moving, never faded, drawn over the rest of its layer all the way, as one View::shared pairs
+/// (the head of this file). `flight` is the way, @motion's shared, a Move; its rise (down or up, and its height) lags
+/// its way across by `up_late` of its length, both eased as the way is over the rest (0: one way; words sent: across
+/// first, up a little after). Its look stays the one it sets out with for `look_late` of its way, coming to its own over
+/// the rest (bare words out of the field before their ground comes round them). Made outside a change it is there at
+/// once.
+#callsite(autofill(loc))
+pub fn View::flies_in(
+  self : View,
+  flight : Flight,
+  from : ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?,
+  up_late? : Double = 0.0,
+  bare_from? : Bool = false,
+  look_late? : Double = 0.0,
+  loc~ : SourceLoc,
+) -> View {
+  ignore(loc)
+  guard self.live() is Some(n) && self.tree.in_change() else { return self }
+  n.share_flight = Some(flight)
+  self.tree.incoming.push({
+    node: { at: self.at, gen: self.gen },
+    from,
+    late: dclamp(up_late, 0.0, 0.9),
+    bare: bare_from,
+    look_late: dclamp(look_late, 0.0, 0.9),
+  })
+  self.tree.pairs_due()
+  self
+}
+
+///|
+/// Those made in the change committed now that fly in from outside the tree (View::flies_in), each set flying from
+/// where it says, given where it is laid out now; one let go of meanwhile, or no longer in the window's tree, none.
+fn Tree::incoming_now(self : Tree) -> Unit {
+  let all = self.incoming.copy()
+  self.incoming.clear()
+  for i in all {
+    guard self.alive_id(i.node) && self.attached(i.node.at) else { continue }
+    let n = self.nodes[i.node.at]
+    let to = self.handle(i.node.at).laid_window_now()
+    guard (i.from)(to) is Some(from) else { continue }
+    // (in a page's list key's block coming in this change: that key carried by this flight, the list's one way of this
+    // moment on its rise (Tree::carried))
+    self.carried(i.node.at, from, to, i.late)
+    let (a, b, c, d) = corners_of(n.look)
+    let look : FromLook = {
+      ground: if i.bare { n.look.ground & 0xFFFFFF00L } else { n.look.ground },
+      edge: if i.bare { (0.0, n.look.edge.1 & 0xFFFFFF00L) } else { n.look.edge },
+      corners: (a, b, c, d),
+      ink: n.look.ink,
+      held: i.look_late,
+    }
+    self.fly_from(i.node, from, look, None, i.late, from_fn=Some(i.from)) |> ignore
+  }
+  // (told for this change alone)
+  self.carried_rows.clear()
+}
+///|
+/// Whether node `at` or what holds it is on a way its page said (Style's come_spec of a list key's `comes_way`, Tree's
+/// come_ways_lead): its place moves on that curve, which a flight in to it takes up by going with it.
+fn Tree::rides_said_way(self : Tree, at : Int) -> Bool {
+  let mut p = at
+  while p >= 0 {
+    let n = self.nodes[p]
+    if n.live && n.coming && (self.come_ways_lead.contains(p) || (n.list_key_way && n.flex.style.come_spec is Some(_))) {
+      return true
+    }
+    // (or a page's list's block on its one way (`flips`, Tree's flip_rows): drawn off where it is laid out as that way
+    // goes, a later change moving it on while the flight goes; the flight goes with it)
+    if n.live && p != at && self.flip_rows.contains(p) {
+      return true
+    }
+    p = n.parent
+  }
+  false
 }
 
 ///|
@@ -321,7 +445,7 @@ fn Tree::stays_end(self : Tree, id : String) -> Int? {
   for at in all {
     let n = self.nodes[at]
     guard n.live && n.placed && self.attached(at) else { continue }
-    let (x, y, _, s) = self.projected(at)
+    let (x, y, _, s) = self.projected(at, drawn=true)
     let (w, h) = (n.lw * s, n.lh * s)
     let (bx0, by0, bx1, by1) = self.stays_bounds(at)
     // (and within its layer, the window's part it is drawn in)
@@ -348,9 +472,9 @@ fn Tree::stays_bounds(self : Tree, at : Int) -> (Double, Double, Double, Double)
   while i >= 0 {
     match self.scrolls_at.get(i) {
       Some(sc) if !sc.across => {
-        let (_, y, s) = self.placed(i)
+        let (_, y, s) = self.placed(i, drawn=true)
         let h = self.nodes[i].flex.height * s
-        let (over, under) = @signals.untracked(fn() { (sc.top_covered(), sc.foot_covered_now()) })
+        let (over, under) = @signals.untracked(fn() { (sc.top_covered(), sc.foot_hides_now()) })
         top = dmax(top, y + over * s)
         foot = dmin(foot, y + h - under * s)
       }
@@ -429,9 +553,20 @@ fn Tree::placed_window(self : Tree, at : Int) -> (Double, Double, Double, Double
 /// Where node `n`, on a flight's way as `l` says, is drawn in the window now and how big: off the place and size of the
 /// one it goes with by what is left of how far off it set out.
 fn Tree::lift_rect(self : Tree, l : Lift) -> (Double, Double, Double, Double) {
-  let (x, y, w, h) = self.placed_window(l.follow)
+  let (x0, y0, w, h) = self.placed_window(l.follow)
+  let (hx, hy) = self.held_off(l.follow)
+  let x = x0 + hx - l.held_off.0
+  let y = y0 + hy - l.held_off.1
   let k = l.k
-  (x + l.d.0 * k, y + l.d.1 * k, dmax(w + l.d.2 * k, 0.0), dmax(h + l.d.3 * k, 0.0))
+  let ky = l.ky
+  // (a picture or tile opening in both width and height with a lagged rise (`up_late`): opened proportionally on `ky`,
+  // as sfbase/flight.mbt's kind 4 does, never stretched wide before its height rises)
+  let kw = if l.stays is None && l.late > 0.0 && l.d.2.abs() > 1.0 && l.d.3.abs() > 1.0 { ky } else { k }
+  match l.fixed {
+    Some((fx, fy, fw, fh)) =>
+      (x + (fx - x) * k, y + (fy - y) * ky, dmax(w + (fw - w) * kw, 0.0), dmax(h + (fh - h) * ky, 0.0))
+    None => (x + l.d.0 * k, y + l.d.1 * ky, dmax(w + l.d.2 * kw, 0.0), dmax(h + l.d.3 * ky, 0.0))
+  }
 }
 
 ///|
@@ -469,14 +604,15 @@ fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
   let n = self.nodes[at]
   match n.lift {
     Some(l) => {
-      let p = 1.0 - l.k
+      let p = lift_look_p(l)
       let to = self.nodes[l.follow].look
       let c = corners_mix(l.from.corners, corners_of(to), p)
       {
-        ground: colour_mix(l.from.ground, to.ground, p),
+        ground: colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p),
         edge: (l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p, colour_mix(l.from.edge.1, to.edge.1, p)),
         corners: c,
         ink: colour_mix(l.from.ink, to.ink, p),
+        held: 0.0,
       }
     }
     None => {
@@ -486,6 +622,7 @@ fn Tree::look_from(self : Tree, at : Int, s : Double) -> FromLook {
         edge: (n.look.edge.0 * s, n.look.edge.1),
         corners: (a * s, b * s, c * s, d * s),
         ink: n.look.ink,
+        held: 0.0,
       }
     }
   }
@@ -533,14 +670,14 @@ fn colour_mix(a : Int64, b : Int64, p : Double) -> Int64 {
 fn Tree::lifted_content(self : Tree, n : Node, l : Lift, c : Content) -> Content {
   let (_, _, w, h) = self.lift_rect(l)
   let s = lift_scale(n, w)
-  let p = 1.0 - l.k
+  let p = lift_look_p(l)
   let to = self.nodes[l.follow].look
   let (a, b, cc, d) = corners_mix(l.from.corners, corners_of(to), p)
   {
     ..c,
     w: if s > 0.0 { w / s } else { c.w },
     h: if s > 0.0 { h / s } else { c.h },
-    ground: colour_mix(l.from.ground, to.ground, p),
+    ground: colour_mix(l.from.ground, blend_ground(to.ground, to.ground_over), p),
     edge: ((l.from.edge.0 + (to.edge.0 - l.from.edge.0) * p) / s, colour_mix(l.from.edge.1, to.edge.1, p)),
     corners: Some((a / s, b / s, cc / s, d / s)),
     radius: a / s,
@@ -622,7 +759,7 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
         ((x, y, w, h), look)
       }
       None => {
-        let (x, y, _, s) = self.projected(at)
+        let (x, y, _, s) = self.projected(at, drawn=true)
         ((x, y, n.lw * s, n.lh * s), self.look_from(at, s))
       }
     }
@@ -757,6 +894,8 @@ fn Tree::pairs_now(self : Tree) -> Unit {
   for h in let_go {
     self.handle(h.at).let_go()
   }
+  // (what flies in from outside the tree, made in it: View::flies_in)
+  self.incoming_now()
   @signals.end_batch()
   self.committing -= 1
   self.modals_settled()
@@ -825,8 +964,10 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
     self.handle(held).let_go()
   }
   let g = self.nodes[ghost]
-  // (taking nothing, read out as nothing, its id none of the living's)
+  // (taking nothing, read out as nothing, its id none of the living's: what of it reads whether it takes input told so,
+  // once the change is committed whole, as a node said to take no press is: View::presses)
   g.inert = true
+  self.modals_told(within=ghost)
   g.said_hidden = true
   match g.share {
     Some(id) => {
@@ -854,7 +995,9 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
   let f : Flying = {
     node: to,
     ghost: Some({ at: ghost, gen: g.gen }),
+    late: 0.0,
     fades: true,
+    from_fn: None,
     start: at,
     dur: ms,
     along,
@@ -862,8 +1005,8 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
     stop: fn() {  },
   }
   self.flights.push(f)
-  self.nodes[to.at].lift = Some({ follow: to.at, top, d: dd, k: 1.0, a: 0.0, from: d.look, stays: None })
-  g.lift = Some({ follow: to.at, top, d: dd, k: 1.0, a: 1.0, from: d.look, stays: None })
+  self.nodes[to.at].lift = Some({ follow: to.at, top, d: dd, late: 0.0, k: 1.0, ky: 1.0, a: 0.0, from: d.look, stays: None, fixed: None, held_off: self.held_off(to.at) })
+  g.lift = Some({ follow: to.at, top, d: dd, late: 0.0, k: 1.0, ky: 1.0, a: 1.0, from: d.look, stays: None, fixed: None, held_off: self.held_off(to.at) })
   self.lifted_order()
   // (drawn as of each frame's moment while it goes; over at its end, a moment of its own)
   let stop_way = self.queued(fn() { self.drawn_at() }, fn(t) { self.flight_at(f, t) })
@@ -883,7 +1026,7 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
 /// meanwhile, as one of its id that moves lives.
 fn Tree::from_stays(self : Tree, st : Int, to : NodeId) -> Unit {
   let n = self.nodes[st]
-  let (x, y, _, s) = self.projected(st)
+  let (x, y, _, s) = self.projected(st, drawn=true)
   self.fly_stays(to, (x, y, n.lw * s, n.lh * s), self.look_from(st, s), self.stays_of(st, true)) |> ignore
 }
 
@@ -928,6 +1071,23 @@ fn Tree::fly_stays(
   look : FromLook,
   stays : StaysEnd,
 ) -> Bool {
+  self.fly_from(to, from, look, Some(stays), 0.0)
+}
+
+///|
+/// Node `to` set flying from `from` (where it sets out, how it looks there) to its place, one thing moving: not faded,
+/// no old copy, `stays` its end that stays where there is one (View::shared's; none: View::flies_in's). Its rise lags its
+/// way across by `late` of its length (View::flies_in's `up_late`). Whether it
+/// flies (not, at once: as with motion reduced, or as far as nothing).
+fn Tree::fly_from(
+  self : Tree,
+  to : NodeId,
+  from : (Double, Double, Double, Double),
+  look : FromLook,
+  stays : StaysEnd?,
+  late : Double,
+  from_fn? : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)? = None,
+) -> Bool {
   guard self.alive_id(to) && self.nodes[to.at].share_flight is Some(flight) else { return false }
   let to_v = self.handle(to.at)
   let (tx, ty, tw, th) = to_v.laid_window_now()
@@ -935,7 +1095,8 @@ fn Tree::fly_stays(
   let dd = (fx - tx, fy - ty, fw - tw, fh - th)
   let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
   let (ms, along) = (flight.way)(far)
-  if ms <= 0.0 || far <= 0.5 {
+  let waits_old = stays is None && from_fn is Some(_) && self.holds_hosted(0)
+  if ms <= 0.0 || (!waits_old && far <= 0.5) {
     return false
   }
   // (one already on its way: over, this one from where it was)
@@ -945,9 +1106,25 @@ fn Tree::fly_stays(
   }
   let at = self.cause_now()
   let top = self.top_node_of(to.at)
-  let f : Flying = { node: to, ghost: None, fades: false, start: at, dur: ms, along, top, stop: fn() {  } }
+  let f : Flying = { node: to, ghost: None, late, fades: false, from_fn, start: at, dur: ms, along, top, stop: fn() {  } }
   self.flights.push(f)
-  self.nodes[to.at].lift = Some({ follow: to.at, top, d: dd, k: 1.0, a: 1.0, from: look, stays: Some(stays) })
+  // (set out from what is none of the tree's while an old view is hosted in it: refreshed against where it is laid out
+  // once that view is next built (Tree::flights_refresh_now), whether or not anything else waits for it (a page come
+  // in in this change, its composer in its list's foot laid at its height only as it is built))
+  if waits_old {
+    self.old_built_waits.push(fn(_) {  })
+  }
+  // (one whose node comes on a way its page said (a list key's `comes_way`, the flight's own rise): off its node by
+  // where it set out, going with it, so that it and the list rise as one; any other from its fixed start)
+  let fixed = if stays is None && !self.rides_said_way(to.at) { Some(from) } else { None }
+  self.nodes[to.at].lift = Some({ follow: to.at, top, d: dd, late, k: 1.0, ky: 1.0, a: 1.0, from: look, stays, fixed, held_off: self.held_off(to.at) })
+  // (drawn as it sets out from the frame it does: its look the one it sets out with, not its own till its way is next
+  // read (a frame drawn before that, as a host's while its list waits for the old view in its foot, drew its bubble's
+  // ground whole where its bare words set out))
+  self.lift_marked(to.at)
+  if self.nodes[to.at].content is Some(_) {
+    self.made_again(to.at)
+  }
   self.lifted_order()
   let stop_way = self.queued(fn() { self.drawn_said() }, fn(t) { self.flight_at(f, t) })
   let stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
@@ -961,17 +1138,61 @@ fn Tree::fly_stays(
 }
 
 ///|
+/// Flights set out in the change whose hosted old views just laid out their new height (`Tree::old_waits_run`, after a
+/// list's pinned foot ran `set_out` for that height): each flight's offset `d` and `held_off` refreshed against its
+/// final laid-out place `to`, so a foot shrinking on send never shifts flying items down by the room it gave back.
+fn Tree::flights_refresh_now(self : Tree) -> Unit {
+  guard !self.flights.is_empty() else { return }
+  let now = self.drawn_said()
+  let mut laid = false
+  for f in self.flights.copy() {
+    guard self.alive_id(f.node) && f.from_fn is Some(from_fn) && now - f.start < 100.0 else { continue }
+    if !laid {
+      self.laid_now() |> ignore
+      laid = true
+    }
+    let to = self.handle(f.node.at).laid_window_now()
+    match from_fn(to) {
+      Some(from) => {
+        let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
+        let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
+        if far <= 0.5 {
+          self.flight_over(f)
+        } else {
+          self.carried(f.node.at, from, to, f.late)
+          match self.nodes[f.node.at].lift {
+            Some(l) => {
+              l.d = dd
+              l.fixed = if l.stays is None && !self.rides_said_way(f.node.at) { Some(from) } else { None }
+              l.held_off = self.held_off(l.follow)
+            }
+            None => ()
+          }
+          self.flight_at(f, now)
+        }
+      }
+      None => self.flight_over(f)
+    }
+  }
+}
+
+///|
 /// Flight `f` drawn as of moment `t`: how much of its way is left and how far each is faded, both marked to be drawn so.
 fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
   let ms = t - f.start
-  let p = if ms <= 0.0 {
-    0.0
-  } else if ms >= f.dur {
-    1.0
-  } else {
-    (f.along)(ms)
+  let at = fn(ms : Double) {
+    if ms <= 0.0 {
+      0.0
+    } else if ms >= f.dur {
+      1.0
+    } else {
+      (f.along)(ms)
+    }
   }
+  // (across over the first of its length, its rise as long after it lags: one way where none)
+  let p = at(ms / (1.0 - f.late))
   let k = 1.0 - p
+  let ky = 1.0 - at((ms - f.late * f.dur) / (1.0 - f.late))
   // (the new one in over the first half of the way, the old one under it out over the second: never both half seen)
   let a_in = dmin(1.0, dmax(0.0, p * 2.0))
   let a_out = dmin(1.0, dmax(0.0, (1.0 - p) * 2.0))
@@ -979,6 +1200,7 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
     match self.nodes[f.node.at].lift {
       Some(l) => {
         l.k = k
+        l.ky = ky
         l.a = if f.fades { a_in } else { 1.0 }
         self.lift_marked(f.node.at)
       }
@@ -990,6 +1212,7 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
       match self.nodes[g.at].lift {
         Some(l) => {
           l.k = k
+          l.ky = ky
           l.a = a_out
           self.lift_marked(g.at)
           // (what it is drawn over the rest of drawn again with it)
@@ -1008,9 +1231,43 @@ fn Tree::flight_at(self : Tree, f : Flying, t : Double) -> Unit {
 fn Tree::lift_marked(self : Tree, at : Int) -> Unit {
   let n = self.nodes[at]
   self.look_marked_at(at)
+  self.fillers_marked(at)
   self.composed.push({ at, gen: n.gen })
   self.places_rev = self.places_rev + 1
   self.hits_bump()
+}
+
+///|
+/// Where node `at` fills what holds it (laid out at its top left, as big as it is: a picture's box in its frame, the
+/// frame what flies) and that is on a flight's way: how big its content is drawn there, as big as what holds it is (its
+/// content in its own terms, Tree::lifted_content). Laid out at its own size it would be drawn only as tall as its own
+/// shape scaled to the way's width, a 3:2 picture flying from a square tile drawn 56 by 37 in a 56 by 56 frame, its
+/// foot cut flat (2026-11-15).
+fn Tree::fills_lifted(self : Tree, at : Int) -> (Double, Double)? {
+  let n = self.nodes[at]
+  let p = n.parent
+  guard p >= 0 && p < self.nodes.length() else { return None }
+  let h = self.nodes[p]
+  guard h.lift is Some(l) && h.lw > 0.0 && h.lh > 0.0 else { return None }
+  guard n.lx.abs() < 0.5 && n.ly.abs() < 0.5 && (n.lw - h.lw).abs() < 0.5 && (n.lh - h.lh).abs() < 0.5 else {
+    return None
+  }
+  let (_, _, w, hh) = self.lift_rect(l)
+  let s = lift_scale(h, w)
+  guard s > 0.0 else { return None }
+  Some((w / s, hh / s))
+}
+
+///|
+/// What fills node `at` (Tree::fills_lifted) made again as `at` is drawn otherwise on its way, or comes to its rest.
+fn Tree::fillers_marked(self : Tree, at : Int) -> Unit {
+  let n = self.nodes[at]
+  for k in n.kids {
+    let c = self.nodes[k]
+    if c.live && c.lx.abs() < 0.5 && c.ly.abs() < 0.5 && (c.lw - n.lw).abs() < 0.5 && (c.lh - n.lh).abs() < 0.5 {
+      self.look_marked_at(k)
+    }
+  }
 }
 
 ///|
@@ -1026,6 +1283,7 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
     self.nodes[f.node.at].lift = None
     self.places_rev = self.places_rev + 1
     self.look_marked_at(f.node.at)
+    self.fillers_marked(f.node.at)
     self.place_marked_at(f.node.at)
   }
   match f.ghost {
@@ -1151,4 +1409,88 @@ fn Tree::change_ended(self : Tree) -> Unit {
     return
   }
   self.images_asked_now()
+}
+
+///|
+/// Node `at`, flying in from `from` to `to` (its place in the window as the change lays it out) with its rise `late`:
+/// where it lies in the block of a key a page's list brings by data in this change (Tree's carried_rows), that key is
+/// carried by it: told the flight's way, as long as the flight and on the curve its rise goes, which that list's one way
+/// of this moment then goes on. The cause says where it comes from; the list does the rest (the user, 2026-11-10: the
+/// row grows on the same curve and length as the words leave the field; 2026-11-15).
+fn Tree::carried(
+  self : Tree,
+  at : Int,
+  from : (Double, Double, Double, Double),
+  to : (Double, Double, Double, Double),
+  late : Double,
+) -> Unit {
+  guard self.nodes[at].share_flight is Some(flight) else { return }
+  let mut p = at
+  while p >= 0 {
+    let tell = match self.carried_rows.get(p) {
+      Some(tell) if self.nodes[p].live && self.nodes[p].flex.style.come_at == self.cause_now() => Some(tell)
+      _ => self.flip_rows.get(p)
+    }
+    match tell {
+      Some(tell) => {
+        let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
+        let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
+        let (ms, along) = (flight.way)(far)
+        guard ms > 0.0 && far > 0.5 else { return }
+        // (its rise: what flight_at draws its way down or up by, as a share of the time of all of it)
+        let rise = fn(x : Double) {
+          let m = (x * ms - late * ms) / (1.0 - late)
+          if m <= 0.0 {
+            0.0
+          } else if m >= ms {
+            1.0
+          } else {
+            along(m)
+          }
+        }
+        tell((ms, rise))
+        return
+      }
+      _ => p = self.nodes[p].parent
+    }
+  }
+}
+
+///|
+/// Row `at` of a page's list, its key coming by data, carried by a flight (Tree::carried): its way and its group's on
+/// `way`, said at its cause's moment still, before any frame draws it (flex's ComeGroup `spec`).
+fn Tree::lead_way(self : Tree, at : Int, way : (Double, (Double) -> Double)) -> Unit {
+  guard self.nodes[at].live else { return }
+  let n = self.nodes[at]
+  let st = n.flex.style
+  n.list_key_way = true
+  st.come_spec = Some(way)
+  self.come_ways_lead[at] = way
+  match st.come_group {
+    Some(g) => {
+      g.spec = Some(way)
+      if g.set {
+        @flex.come_group_set(g)
+      }
+    }
+    None => if st.come_at == st.come_at {
+      st.come_ends = st.come_at + way.0
+    }
+  }
+  self.marked()
+}
+
+///|
+/// How far what holds node `at` is drawn off where it is laid out (View::drawn_off of each that holds it, summed).
+fn Tree::held_off(self : Tree, at : Int) -> (Double, Double) {
+  let mut x = 0.0
+  let mut y = 0.0
+  let mut i = self.nodes[at].parent
+  while i >= 0 {
+    let (a, b) = self.nodes[i].look.drawn_off
+    x = x + a
+    y = y + b
+    i = self.nodes[i].parent
+  }
+  (x, y)
 }

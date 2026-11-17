@@ -5,7 +5,8 @@
 // a terminal emulator with no display (@xterm/headless), which also answers what the program asks of its terminal (the
 // cursor's place, the background colour: gh waits for both). Nothing it shows is logged or kept on disk.
 import { type ChildProcess } from "node:child_process";
-import { type FSWatcher, readFileSync, watch } from "node:fs";
+import { type FSWatcher, watch } from "node:fs";
+import { readFile } from "node:fs/promises";
 import { basename, dirname } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import xterm from "@xterm/headless";
@@ -90,6 +91,10 @@ export class LoginRun {
   #said = "";
   #cr = "";
   #opened: string[] = [];
+  /// The reads of the pages it opened asked so far (`#reopen`): only the latest's is taken; and whether what it said
+  /// waits on it to be looked at.
+  #reads = 0;
+  #lookAgain = false;
   #rows: string[] = Array.from({ length: ROWS }, () => "");
   #cursor = { x: 0, y: 0 };
   #exited = false;
@@ -153,8 +158,10 @@ export class LoginRun {
     if (!this.active) return;
     if (foundEnv !== env) env = platform.prependPath(foundEnv, this.#o.shims) as Record<string, string>;
     keychainOutOfGit(env);
-    const wrapped = platform.terminal(program!, args, COLS, ROWS) ?? [program!, args];
-    const r = platform.runnable(wrapped[0], wrapped[1], env);
+    const wrapped = (await platform.terminalSoon(program!, args, COLS, ROWS)) ?? [program!, args];
+    if (!this.active) return;
+    const r = await platform.runnableSoon(wrapped[0], wrapped[1], env);
+    if (!this.active) return;
     let child: ChildProcess;
     try {
       child = startCommand(r.file, r.args, { cwd: this.#o.cwd, env, stdio: ["pipe", "pipe", "pipe"] });
@@ -169,7 +176,7 @@ export class LoginRun {
     }
     child.stdin?.on("error", () => {});
     const decoders = [new StringDecoder("utf8"), new StringDecoder("utf8")];
-    [child.stdout, child.stderr].forEach((stream, i) => stream?.on("data", (chunk: Buffer) => this.#output(decoders[i]!.write(chunk))));
+    [child.stdout, child.stderr].forEach((stream, i) => stream?.on("data", (chunk: Buffer) => this.output(decoders[i]!.write(chunk))));
     child.once("close", (code, signal) => void this.#closed(code, signal));
     this.#timeout = this.#o.fibers.after(TIMEOUT_MS, () => this.#fail(tr(this.#o.lang, "station.machineLogin.timedOut"), "timeout"));
     this.#watchStall();
@@ -177,7 +184,7 @@ export class LoginRun {
     try {
       const file = basename(this.#o.opened);
       this.#watcher = watch(dirname(this.#o.opened), { persistent: false }, (_event, name) => {
-        if (name === null || name === file) this.#read();
+        if (name === null || name === file) this.#reopen();
       });
       this.#watcher.on("error", () => {});
     } catch {}
@@ -219,27 +226,33 @@ export class LoginRun {
     stdin.write(text);
   }
 
-  #output(text: string): void {
+  /// What its command printed, a chunk as it came (its output's own handler; a test gives the chunks it means).
+  output(text: string): void {
     if (text === "" || !this.active) return;
     // A line's "\r" at a chunk's end is read with what follows it ("\r\n" split in two is one line's end).
     const whole = this.#cr + text;
     this.#cr = /\r+$/.exec(whole)?.[0] ?? "";
     const plain = plainText(whole.slice(0, whole.length - this.#cr.length));
-    const said = this.#said + plain;
-    this.#said = said.length > SAID_KEPT ? said.slice(said.length - SAID_KEPT) : said;
-    if (this.hadBrowserStep && !this.#saidDone) {
-      this.#afterStep = (this.#afterStep + plain).slice(-4_000);
-      this.#saidDone = saysDone(this.#afterStep);
-    }
     this.#watchStall();
     this.#term.write(text, () => {
+      // What it said is taken as the emulator has drawn it, chunk by chunk in the order they came (its writes'
+      // callbacks run so), never ahead of the screen: taken as it came, a chunk's draw looked again at what it said
+      // with the next chunk already in it, its page and code told while the screen did not show them yet (2026-11-16,
+      // logins.test.ts's "answered [n]", check-station (2) on 43866525344).
+      const said = this.#said + plain;
+      this.#said = said.length > SAID_KEPT ? said.slice(said.length - SAID_KEPT) : said;
+      if (this.hadBrowserStep && !this.#saidDone) {
+        this.#afterStep = (this.#afterStep + plain).slice(-4_000);
+        this.#saidDone = saysDone(this.#afterStep);
+      }
       this.#draw();
       // Saying more, it no longer waits on what it asked (whether it waits now is asked once it is quiet again).
       if (this.waiting) {
         this.waiting = false;
         this.#o.changed();
       }
-      this.#read();
+      // Looked at with the pages it opened as they are now: a command opens its page, then prints another.
+      this.#reopen(true);
     });
     // Quiet again from now: whether it waits is asked once it has said its piece.
     this.#quiet?.();
@@ -257,13 +270,28 @@ export class LoginRun {
     if (!same) this.#o.drawn();
   }
 
-  /// What it asks of a person now, from the pages it opened and what it said.
+  /// The pages it opened read again, off the station's thread (as its stand-ins write them), then looked at again: once
+  /// they changed, or as it said more (`look`).
+  #reopen(look = false): void {
+    if (!this.active) return;
+    if (look) this.#lookAgain = true;
+    const read = ++this.#reads;
+    void readFile(this.#o.opened, "utf8").then(
+      (text) => urlsIn(text),
+      () => this.#opened,
+    ).then((opened) => {
+      if (read !== this.#reads || !this.active) return;
+      const changed = JSON.stringify(opened) !== JSON.stringify(this.#opened);
+      this.#opened = opened;
+      if (!changed && !this.#lookAgain) return;
+      this.#lookAgain = false;
+      this.#read();
+    });
+  }
+
+  /// What it asks of a person now, from the pages it opened (as last read) and what it said.
   #read(): void {
     if (!this.active) return;
-    try {
-      const text = readFileSync(this.#o.opened, "utf8");
-      this.#opened = urlsIn(text);
-    } catch {}
     const before = JSON.stringify([this.state, this.step, this.url, this.loopback, this.code, this.codeUrl, this.waiting]);
     // As it said them, a link broken at the terminal's width put together again.
     const said = unwrapped(this.#said, COLS);
@@ -273,7 +301,7 @@ export class LoginRun {
     const page = this.#opened.at(-1) ?? null;
     const back = page !== null ? loopbackOf(page) : null;
     const printedBack = page === null ? printed.find((u) => loopbackOf(u) !== null) ?? null : null;
-    const code = deviceCodeIn(said);
+    const code = deviceCodeIn(said, this.#opened);
     if (this.state === "verifying") {
       // The browser came back: nothing more to do but wait for it to finish.
     } else if (back !== null || printedBack !== null) {
@@ -282,7 +310,8 @@ export class LoginRun {
       this.step = "loopback";
       this.state = "browser";
       this.code = null;
-    } else if (code !== null) {
+    } else if (!this.paste && code !== null) {
+      // A code the person pastes from its page (paste) stays theirs to enter: what it says after is not a device code.
       const urls = deviceUrls([...this.#opened, ...printed], code);
       this.code = code;
       this.url = urls.url;
@@ -401,6 +430,9 @@ export class LoginRun {
 
   async #closed(code: number | null, signal: NodeJS.Signals | null): Promise<void> {
     this.#exited = true;
+    if (!this.active) return;
+    // What it said last on the screen before it is ended: the emulator parses what it is given later, in order.
+    await new Promise<void>((drawn) => this.#term.write("", drawn));
     if (!this.active) return;
     if (code === 0) return this.#end("done", null);
     const said = lastLines(this.#said);

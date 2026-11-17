@@ -151,7 +151,21 @@ fn sending_line_node(
         due.val = w.at_moment(seen, fn() { shows.set(true) })
       }
     })
-    w.alpha(By(fn() { if shows.get() && !flying() { 1.0 } else { 0.0 } })) |> ignore
+    // (leaving, as it was as it began to leave: one not seen as its words flew, the message taken by the station as
+    // they land, is never seen for its leaving's while because the flight it waited for is over)
+    let was = Ref(0.0)
+    w.alpha(
+      By(fn() {
+        if w.leaving() {
+          was.val
+        } else {
+          let a = if shows.get() && !flying() { 1.0 } else { 0.0 }
+          was.val = a
+          a
+        }
+      }),
+    )
+    |> ignore
     @sf.progress_spinner_node(w, progress, size=waiting_spin) |> ignore
     @sf.words_node(w, words, fn() { msg_time }) |> ignore
   })

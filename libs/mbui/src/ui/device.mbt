@@ -516,6 +516,7 @@ fn DeviceState::new() -> DeviceState {
 /// last read it, what this frame reads, and which frame that is.
 priv struct Catcher {
   mut composing : String
+  composing_sig : @signals.Signal[String]
   came : Array[KeyIn]
   mut keys : Array[KeyIn]
   mut frame : Int
@@ -524,6 +525,19 @@ priv struct Catcher {
   mut island : @view.NodeId?
   /// where the input method's own windows go, in the window's points (x, y, h of a caret); none: the window's foot
   mut place : (Double, Double, Double)?
+  /// a node of the window's tree's (key_catcher_node): the node it is, whose modal layers keep its focus from input as
+  /// a field's are, and what is told each key and word as it comes, at its moment (none read as a frame builds)
+  mut node : @view.NodeId?
+  mut told : ((KeyIn) -> Unit)?
+  mut paste_told : ((String) -> Unit)?
+}
+
+///|
+fn Catcher::set_composing(self : Catcher, s : String) -> Unit {
+  if self.composing != s {
+    self.composing = s
+    self.composing_sig.set(s)
+  }
 }
 
 ///|
@@ -531,7 +545,18 @@ fn Ctx::catcher_of(self : Ctx, id : Int) -> Catcher {
   match self.dev.catchers.get(id) {
     Some(st) => st
     None => {
-      let st = { composing: "", came: [], keys: [], frame: -1, island: None, place: None }
+      let st = {
+        composing: "",
+        composing_sig: @signals.signal("", same=fn(a, b) { a == b }),
+        came: [],
+        keys: [],
+        frame: -1,
+        island: None,
+        place: None,
+        node: None,
+        told: None,
+        paste_told: None,
+      }
       self.dev.catchers[id] = st
       st
     }
@@ -670,10 +695,19 @@ fn code_of_char(ch : Int) -> String {
 }
 
 ///|
+/// What came: told at once to a node's (key_catcher_node), else kept for the frame that reads it (Ctx::key_catcher).
+fn Catcher::put(self : Catcher, k : KeyIn) -> Unit {
+  match self.told {
+    Some(f) => f(k)
+    None => self.came.push(k)
+  }
+}
+
+///|
 /// A key pressed and let go.
 fn Catcher::tap(self : Catcher, key : String, code : String, mods : Int) -> Unit {
-  self.came.push(Key(down=true, key~, code~, mods~))
-  self.came.push(Key(down=false, key~, code~, mods~))
+  self.put(Key(down=true, key~, code~, mods~))
+  self.put(Key(down=false, key~, code~, mods~))
 }
 
 ///|
@@ -687,7 +721,7 @@ fn Catcher::type_words(self : Catcher, s : String) -> Unit {
     first = false
     let l = line.to_owned()
     if l != "" {
-      self.came.push(Text(l))
+      self.put(Text(l))
     }
   }
 }
@@ -714,7 +748,7 @@ fn catcher_key(c : Ctx, code : Int, mods : Int) -> Bool {
           }
           st.tap(key, code_of_char(lower), m)
         } else {
-          st.came.push(Text(ch.unsafe_to_char().to_string()))
+          st.put(Text(ch.unsafe_to_char().to_string()))
         }
       }
   }
@@ -728,24 +762,27 @@ fn catcher_text(c : Ctx, kind : Int, s : String, a : Int, b : Int) -> Bool {
   guard c.dev.catchers.get(c.focus_allowed()) is Some(st) else { return false }
   match kind {
     0 => {
-      st.composing = ""
+      st.set_composing("")
       st.type_words(s)
     }
-    1 => st.composing = s
+    1 => st.set_composing(s)
     2 => {
-      if st.composing != "" {
-        st.type_words(st.composing)
+      let had = st.composing
+      st.set_composing("")
+      if had != "" {
+        st.type_words(had)
       }
-      st.composing = ""
     }
     4 =>
       if st.composing != "" {
         let n = st.composing.length() - a
-        st.composing = if n <= 0 {
-          ""
-        } else {
-          st.composing.unsafe_substring(start=0, end=n)
-        }
+        st.set_composing(
+          if n <= 0 {
+            ""
+          } else {
+            st.composing.unsafe_substring(start=0, end=n)
+          },
+        )
       } else {
         for _ in 0..<a {
           st.tap("Backspace", "Backspace", 0)
@@ -754,6 +791,15 @@ fn catcher_text(c : Ctx, kind : Int, s : String, a : Int, b : Int) -> Bool {
           st.tap("Delete", "Delete", 0)
         }
       }
+    8 => {
+      st.set_composing("")
+      if s != "" {
+        match st.paste_told {
+          Some(f) => f(s)
+          None => st.type_words(s)
+        }
+      }
+    }
     _ => ()
   }
   true

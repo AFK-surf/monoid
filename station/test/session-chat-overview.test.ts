@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { overview } from "../src/api/overview.ts";
-import { sessionChatReady, SessionChatPreparation } from "../src/store/session-chat-index.ts";
+import { sessionChatReady, SessionChatPreparation } from "./reference/backfill/session-chat-index.ts";
 import { Store } from "../src/store/store.ts";
 
 test("the overview names a single chat without preparing an index", async () => {

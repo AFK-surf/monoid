@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { WidgetSourcesBuilder } from "../src/read/widget-sources-builder.ts";
-import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../src/store/widget-sources.ts";
+import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

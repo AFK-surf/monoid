@@ -57,7 +57,8 @@ const strings = [process.env.MBUI_FIXTURE ?? '', process.env.MBUI_LOCALE ?? '', 
   process.env.MBUI_FAILED ?? '', process.env.MBUI_FAILED_WHY ?? '', process.env.MBUI_SAID ?? '',
   process.env.MBUI_UPDATE ?? '', process.env.MBUI_FILM_AUTOFILL ?? '',
   process.env.MBUI_CORE_MS ?? '', process.env.MBUI_UPDATES_MS ?? '',
-  process.env.MBUI_FIX_PACE ?? '', process.env.MBUI_FIX_CORE ?? '', fixtureJson].map(s => Array.from(s, c => c.codePointAt(0)));
+  process.env.MBUI_FIX_PACE ?? '', process.env.MBUI_FIX_CORE ?? '', fixtureJson, process.env.MBUI_OPEN_WHOLE ?? '',
+  process.env.MBUI_FILM_LOCAL_FONTS ?? '', process.env.MBUI_CHAT_PAGE ?? ''].map(s => Array.from(s, c => c.codePointAt(0)));
 const numbers = [size[0], size[1], scale, platform, dark, at, fps, max, frame, fontScale, inset, corner, nav, cornersKept];
 let core, scratch = [], pixels;
 function text() {
@@ -191,7 +192,7 @@ const imports = { probe, film, mbhost, __moonbit_fs_unstable: fsUnstable, __moon
 } } };
 const source = fs.readFileSync(path.join(directory, 'scene.wasm'));
 mark('read');
-if (!WebAssembly.validate(source)) throw new Error('invalid source Wasm module');
+// V8's WebAssembly.validate rejects a start function past 50,000 locals before compactStart folds them.
 const wasm = compactStart(source);
 if (!WebAssembly.validate(wasm)) throw new Error('invalid compacted Wasm module');
 mark('compact');

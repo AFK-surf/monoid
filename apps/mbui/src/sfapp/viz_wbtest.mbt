@@ -570,3 +570,25 @@ test "a chat left keeps its pages, as the few left before it: gone back to, they
   assert_false(viz_frames.contains(key))
   assert_true(t.views().contains("close \{page}"))
 }
+
+///|
+test "the whole screen on 小屏 and 大屏: its bar over the page at the window's top (its floating head, its bar across), the page under it" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    new_run()
+    let src = fixture("chat-viz")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+    t.run_for(@ui.move_most_ms)
+    viz_open_full("release.html", "ws1/st1", "s-c1", "work/s-c1/release.html", "s-c1")
+    t.run_for(@ui.move_most_ms)
+    let full = opened_views(t, 2)
+    let page = full[full.length() - 1]
+    let page_top = match view_rect(t, page) {
+      Some((_, y, _, _)) => y
+      None => fail("\{name}: the page not placed")
+    }
+    let titles = t.words().filter(fn(n) { n.0 == "release.html" })
+    assert_true(titles.iter().any(fn(n) { n.2 >= 0.0 && n.2 + n.4 <= page_top + 1.0 }), msg="\{name}: its name over the page at \{page_top}: \{Repr(titles.map(fn(n) { (n.1, n.2) }))}")
+  }
+}

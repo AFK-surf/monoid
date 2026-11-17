@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, wri
 import net from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { Events } from "../src/api/events.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
@@ -1084,6 +1084,27 @@ async function rest(frames: FrameIn): Promise<any[]> {
   return states;
 }
 
+test("a desktop whose capture ends while it is still there: said why, to be opened again, never gone", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource("desktop");
+  Object.defineProperty(source, "kind", { value: "desktop" });
+  source.make = () => Object.assign(new FakeView(), { last: 1, why: () => "Can't open display :0" });
+  hub.add(source);
+  const v = await open(hub, member, undefined, "/admin/api/screens/desktop/view");
+  await v.stream.write(frame(KIND.ack, ts8(2000)));
+  assert.deepEqual((await rest(v.frames)).at(-1), {
+    ended: "The picture stopped: Can't open display :0. Tap Open again to retry; if it keeps happening, check that this station's desktop is still signed in.",
+  });
+  await v.served;
+  assert.equal(source.views[0]!.closed, true);
+  // Its capture saying nothing: said so.
+  source.make = () => Object.assign(new FakeView(), { last: 1 });
+  const w = await open(hub, member, undefined, "/admin/api/screens/desktop/view");
+  await w.stream.write(frame(KIND.ack, ts8(2000)));
+  assert.match((await rest(w.frames)).at(-1).ended, /^The picture stopped: the capture exited\./);
+  await w.served;
+});
+
 test("a view ends when the client finishes, the source goes or has no more, the station stops, or the link breaks", async () => {
   const hub = new ScreenHub();
   const source = new FakeSource();
@@ -1194,7 +1215,7 @@ test("the list: GET /screens with each source's access; an old station's 404; `s
   // What a station without screens (one from before) answers.
   assert.equal((await ask(new Admin({ names: new Map(), read: async () => "{}" } as any), "en")).status, 404);
   // On the event stream, in each stream's language.
-  const events = new Events({ readers: { read: async () => "[]" } as any, said: () => [], subscribe: () => () => {}, host: async () => ({}), jobLog: () => null, tail: () => "", outputAt: () => null, sessionExists: () => false });
+  const events = new Events({ readers: { read: async () => "[]" } as any, said: () => [], subscribe: () => () => {}, host: async () => ({}), jobLog: () => null, logNow: async () => null, sessionExists: () => false });
   const zh = (await events.open(viewer, "zh", false, [], [])).body as AsyncIterableIterator<Buffer>;
   const en = (await events.open(viewer, "en", false, [], [])).body as AsyncIterableIterator<Buffer>;
   events.screens((lang) => hub.listed(lang));
@@ -1498,6 +1519,14 @@ test("Windows' desktop, for real: stillfail-screen gives a picture of the displa
 /// and token; `status` as `status` is, `permissions.show` noted (its window then up), `quit` noted, `screen.view`
 /// (and `simulator.view`) answering with made-up frames and noting the input. `restartOnce`: its next view asks to start again (a grant taken
 /// since it started), and it is back on its socket a moment later, as the app started again is.
+after(() => {
+  for (const fake of FakeHelperApp.made) {
+    try {
+      fake.close();
+    } catch {}
+  }
+});
+
 class FakeHelperApp {
   launches = 0;
   quits = 0;
@@ -1518,7 +1547,12 @@ class FakeHelperApp {
   watching = 0;
   constructor(status: any) {
     this.status = status;
+    FakeHelperApp.made.add(this);
   }
+  /// Every one made, closed as the file ends: one a test left open (it failed before its `close`) would keep its socket
+  /// and connections, and the test's process with them, until CI's limit, saying nothing of the test that failed
+  /// (check-station (0) cancelled at 5 minutes on #6574, helper.sock left listening with 5 pipes, as on #6028).
+  static readonly made = new Set<FakeHelperApp>();
   #closed = false;
   launch = async (_app: string, env: Record<string, string>) => {
     // Closed with the test: a station still watching it must not have it listen again (the test would never end).
@@ -1527,11 +1561,19 @@ class FakeHelperApp {
     this.#where = { path: env.STILLFAIL_HELPER_SOCKET!, token: env.STILLFAIL_HELPER_TOKEN! };
     await this.#listen();
   };
+  /// Never again once closed: a restart's listening again (`setImmediate`) or a launch still under way when the test
+  /// closed it would keep the socket open and the test's process with it, until the runner's limit.
   async #listen() {
+    if (this.#closed) return;
     const { path, token } = this.#where!;
     rmSync(path, { force: true });
     const server = net.createServer((conn) => this.#serve(conn, token));
     await new Promise<void>((resolve) => server.listen(path, resolve));
+    if (this.#closed) {
+      server.close();
+      rmSync(path, { force: true });
+      return;
+    }
     this.#server = server;
   }
   #stop() {
@@ -1850,14 +1892,17 @@ test("a view the station opens itself (an agent's) shows who has it, driving or 
 });
 
 /// Moves `time` on 100 ms each time the station waits on it, until `done`: its time passes only while it waits, so
-/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is.
-async function passing(time: ReturnType<typeof testClock>, done: () => boolean) {
+/// what it does between its waits (asking the helper over its socket) comes first however slow the machine is. Each
+/// step is what the station does, never a count of the loop's turns between: it began another wait, or `changed` (what `done`
+/// reads) came. Counted in turns (2,000 `setImmediate`s, some 20 ms), a runner slow to answer the helper's socket
+/// failed it before the helper was back (#6587's check-station (1), 2026-11-16).
+async function passing(time: ReturnType<typeof testClock>, done: () => boolean, changed: () => Promise<void>) {
   let seen = time.asked();
   for (let i = 0; i < 2_000 && !done(); i++) {
     if (time.asked() > seen) {
       seen = time.asked();
       await time.adjust(100);
-    } else await new Promise((r) => setImmediate(r));
+    } else await Promise.race([time.begun(seen + 1), changed()]);
   }
   assert.ok(done(), "never came to pass");
 }
@@ -1870,10 +1915,15 @@ test("the helper watched: ended by itself it is started again, once, its window 
   // it still under way as the helper went would start it, as it should).
   let backs = 0;
   let backing: Promise<void> = Promise.resolve();
-  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => (backs++, (backing = desktop.helperBack())) });
+  let told: (() => void)[] = [];
+  const helper: HelperApp = new HelperApp({ app, dir, launch: fake.launch, clock: time.clock, onBack: () => {
+    backs++;
+    backing = desktop.helperBack();
+    for (const tell of told.splice(0)) tell();
+  } });
   const desktop: Desktop = new Desktop({ supported: true, helper, changed: () => {}, lang: () => "en" });
   const back = async (n: number) => {
-    await passing(time, () => backs === n);
+    await passing(time, () => backs === n, () => new Promise<void>((r) => told.push(r)));
     await backing;
   };
   await assert.rejects(desktop.open({ maxWidth: 1920, maxHeight: 1080, codecs: ["h264"] }));
@@ -2097,11 +2147,11 @@ test("the list says what each screen carries: its clipboard's types, where a fil
   assert.deepEqual(new Desktop({ supported: false, helper: null, changed: () => {} }).clipboard(), []);
 });
 
-test("where a dropped file goes: the home's Downloads, else the home (what is in it never listed)", () => {
+test("where a dropped file goes: the home's Downloads, else the home (what is in it never listed)", async () => {
   const home = mkdtempSync(join(tmpdir(), "drop-"));
-  assert.equal(dropFolder(home), home, "no Downloads: the home");
+  assert.equal(await dropFolder(home), home, "no Downloads: the home");
   mkdirSync(join(home, "Downloads"));
-  assert.equal(dropFolder(home), join(home, "Downloads"));
+  assert.equal(await dropFolder(home), join(home, "Downloads"));
   rmSync(home, { recursive: true, force: true });
 });
 

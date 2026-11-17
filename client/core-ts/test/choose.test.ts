@@ -335,3 +335,16 @@ test("a_model_can_be_kept_to_the_steps_under_its_window_on_a_runtime_that_takes_
   const before = models({ profiles: overview.profiles }, 0).find((m: J) => m.model === "claude-opus-5-5");
   assert.deepEqual([before.contexts.claude, before.contextWindow], [[], undefined]);
 });
+
+
+test("frequent configurations keep Ultrafast distinct from Fast and Standard", () => {
+  const option = { model: "gpt-6-astra", name: "GPT-6 Astra", runtimes: ["codex"] };
+  const base = { model: option.model, runtime: "codex" };
+  let history: J[] = [];
+  for (const [i, speed] of ["standard", "fast", "ultrafast"].entries()) history = recordCombo(history, { ...base, speed }, i);
+  history = recordCombo(history, { ...base, fast: true }, 4);
+  assert.equal(history.length, 3, "legacy Fast and the Fast tier are the same configuration");
+  const combos = frequentCombos(history, [option], resolve([option], { ...base, speed: "ultrafast" }));
+  assert.deepEqual(combos.filter((x) => x.selected).map((x) => x.speed), ["ultrafast"]);
+  assert.equal(combos.find((x) => x.speed === "ultrafast").speedText, "Ultrafast");
+});

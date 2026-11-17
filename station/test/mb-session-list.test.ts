@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { SessionListBuilder } from "../src/read/session-list-builder.ts";
-import { auditSessionListStep, installSessionListIndex, sessionListReady, sessionListStep } from "../src/store/session-list-index.ts";
+import { auditSessionListStep, installSessionListIndex, sessionListReady, sessionListStep } from "./reference/backfill/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

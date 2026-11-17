@@ -85,13 +85,13 @@ const nameOf = `CASE WHEN json_valid(a.value) THEN json_extract(a.value, '$.name
 // Remember malformed or noncanonical attachments without making the write itself fail.
 const invalid = `(m.attachments IS NOT NULL AND (NOT json_valid(m.attachments) OR EXISTS
   (SELECT 1 FROM json_each(${validAttachments}) a WHERE a.value IS NOT NULL AND NOT json_valid(a.value))))`;
-const insertRows = (messages: string) => `INSERT INTO widget_source_rows (thread,n,slot,path,at,name)
+export const insertRows = (messages: string) => `INSERT INTO widget_source_rows (thread,n,slot,path,at,name)
   SELECT m.thread, m.n, a.id, ${pathOf}, m.created_at, ${nameOf}
   FROM (${messages}) k CROSS JOIN merged m ON m.thread = k.thread AND m.n = k.n
   CROSS JOIN json_each(${validAttachments}) a
   WHERE typeof(${pathOf}) = 'text' AND NOT EXISTS (SELECT 1 FROM widget_source_rows i
     WHERE i.thread = m.thread AND i.n = m.n AND i.slot = a.id);`;
-const insertInvalid = (messages: string) => `INSERT INTO widget_source_invalid (thread,n)
+export const insertInvalid = (messages: string) => `INSERT INTO widget_source_invalid (thread,n)
   SELECT m.thread, m.n FROM (${messages}) k CROSS JOIN merged m ON m.thread = k.thread AND m.n = k.n
   WHERE ${invalid} AND NOT EXISTS (SELECT 1 FROM widget_source_invalid i WHERE i.thread = m.thread AND i.n = m.n);`;
 const reconcile = `UPDATE widget_source_changed SET dirty=1 WHERE (thread,n) IN (${changes});
@@ -195,16 +195,6 @@ export function checkWidgetSources(db: DatabaseSync): void {
   if (!meta || meta.version !== VERSION) throw new Error(`widget source index version ${meta?.version ?? "missing"} is incompatible with ${VERSION}`);
 }
 
-export function widgetSourcesReady(db: DatabaseSync, thread: number): boolean {
-  checkWidgetSources(db);
-  return (db.prepare("SELECT complete FROM widget_source_scopes WHERE thread=?").get(thread) as { complete: number } | undefined)?.complete === 1;
-}
-
-type Scope = { last_n: string | null; end_n: string | null; complete: number };
-const scopeOf = (db: DatabaseSync, thread: number): Scope | undefined => db.prepare(
-  "SELECT CAST(last_n AS TEXT) AS last_n, CAST(end_n AS TEXT) AS end_n, complete FROM widget_source_scopes WHERE thread=?",
-).get(thread) as Scope | undefined;
-
 // Keep numeric ordering inside the bounded selection and cast only afterwards, so JavaScript cannot round a cursor.
 // The letter index also contains rare non-message entries; take those as candidates so each batch stays bounded.
 const positionQuery = (after: boolean, indexed: boolean): string => {
@@ -219,46 +209,5 @@ const positionQuery = (after: boolean, indexed: boolean): string => {
 };
 export const WIDGET_SOURCE_POSITIONS_FIRST = positionQuery(false, true);
 export const WIDGET_SOURCE_POSITIONS_NEXT = positionQuery(true, true);
-const WIDGET_SOURCE_POSITIONS_FIRST_FALLBACK = positionQuery(false, false);
-const WIDGET_SOURCE_POSITIONS_NEXT_FALLBACK = positionQuery(true, false);
-
-/// Prepare one old thread in bounded batches. Read cold positions before taking the writer; triggers preserve any
-/// changes between that read and the primary-key recheck made while committing the batch.
-export function widgetSourcesStep(db: DatabaseSync, thread: number, limit = 128): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) throw new RangeError("widget source batch must be between 1 and 128");
-  if (widgetSourcesReady(db, thread)) return { done: true, visited: 0 };
-  if (!scopeOf(db, thread)) {
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      db.prepare(`INSERT INTO widget_source_scopes (thread,last_n,end_n,complete)
-        SELECT ?,NULL,(SELECT n FROM entries WHERE thread=? ORDER BY n DESC LIMIT 1),0
-        WHERE NOT EXISTS (SELECT 1 FROM widget_source_scopes WHERE thread=?)`).run(thread, thread, thread);
-      db.exec("COMMIT");
-    } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-  }
-  const before = scopeOf(db, thread)!;
-  if (before.complete === 1) return { done: true, visited: 0 };
-  // A partially upgraded store may lack one of these indexes. Its existing primary-key walk is still bounded per batch.
-  const indexes = db.prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type='index'
-    AND name IN ('entries_said','entries_letters')`).get() as { n: number };
-  const indexed = indexes.n === 2;
-  const positions = (before.last_n === null
-    ? db.prepare(indexed ? WIDGET_SOURCE_POSITIONS_FIRST : WIDGET_SOURCE_POSITIONS_FIRST_FALLBACK).all(thread, before.end_n, limit)
-    : db.prepare(indexed ? WIDGET_SOURCE_POSITIONS_NEXT : WIDGET_SOURCE_POSITIONS_NEXT_FALLBACK).all(thread, before.last_n, before.end_n, limit)) as { n: string }[];
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    const now = scopeOf(db, thread);
-    if (!now || now.last_n !== before.last_n || now.end_n !== before.end_n || now.complete !== before.complete) {
-      db.exec("COMMIT"); return { done: now?.complete === 1, visited: 0 };
-    }
-    const message = "SELECT ? AS thread, CAST(? AS INTEGER) AS n";
-    const addRows = db.prepare(insertRows(message));
-    const addInvalid = db.prepare(insertInvalid(message));
-    for (const position of positions) { addRows.run(thread, position.n); addInvalid.run(thread, position.n); }
-    const done = positions.length < limit;
-    db.prepare("UPDATE widget_source_scopes SET last_n=CAST(? AS INTEGER), complete=? WHERE thread=?")
-      .run(positions.at(-1)?.n ?? before.last_n, done ? 1 : 0, thread);
-    db.exec("COMMIT");
-    return { done, visited: positions.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-}
+export const WIDGET_SOURCE_POSITIONS_FIRST_FALLBACK = positionQuery(false, false);
+export const WIDGET_SOURCE_POSITIONS_NEXT_FALLBACK = positionQuery(true, false);

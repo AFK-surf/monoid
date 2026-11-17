@@ -10,8 +10,9 @@ import type { Driven, FormField, FormValues } from "../src/browser/signin-form.t
 import type { Request } from "../src/vault/crypto.ts";
 import { SignIns, siteOf } from "../src/vault/signin.ts";
 import { vaultTools } from "../src/vault/tool.ts";
-import { installSigninSaveIndex, queueSigninSave, stepSigninSaveIndex } from "../src/vault/signin-save-index.ts";
+import { installSigninSaveIndex, queueSigninSave, stepSigninSaveIndex } from "./reference/backfill/signin-save-index.ts";
 import { STILLFAIL_SURFACE } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 const tick = () => new Promise((r) => setImmediate(r));
 
@@ -194,7 +195,7 @@ test("a vault decision finds its sign-in without reading the session's completed
 });
 
 test("a pending old sign-in decision is recovered after the previous station exits", async () => {
-  const db = new DatabaseSync(":memory:");
+  const db = new DatabaseSync(dbFile("signin-recovered-"), { timeout: 5000 });
   db.exec(`CREATE TABLE signin_asks (id TEXT PRIMARY KEY, session TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
     CREATE INDEX signin_asks_by_session ON signin_asks (session, status);`);
   const insert = db.prepare("INSERT INTO signin_asks VALUES (?, 's1', 'pat@example.com', 'done', ?)");

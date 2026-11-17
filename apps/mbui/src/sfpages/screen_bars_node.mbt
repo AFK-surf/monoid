@@ -1,0 +1,973 @@
+// What a screen's page has round its picture, as nodes of the window's tree (screen_view.mbt's screen_node arranges
+// them): the bar over it upright, the compact row beside a chat, the viewer's bar with keyboard and mouse, the rail
+// sideways, 全屏's tools folded into one button over its corner, the foot's actions and the keys row under it, the keys
+// row floating over its foot while the keyboard is up, 接管 while someone else drives it, and the mouse's two buttons
+// floating at its foot. Each shows what the view's state and what was done here say as that is told; each press does
+// its work in its handler.
+
+///|
+/// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: round_button_box's), its name `label` read out and its tip;
+/// the ink at 10% under it while `lit` (the keyboard up, 控制, 全屏), the hover's under the hand; pressed, `press`. The
+/// node (what a panel it opens stands beside).
+fn screen_round_node(
+  parent : @view.View,
+  pg : ScreenPage,
+  icon : () -> String,
+  label : () -> String,
+  press : (@view.View) -> Unit,
+  lit? : () -> Bool = fn() { false },
+  side? : Double = round_side,
+) -> @view.View {
+  let me : Ref[@view.View?] = Ref(None)
+  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
+    me.val = Some(v)
+    v
+    .width(Is(Some(side)))
+    .height(Is(Some(side)))
+    .radius(Is(side / 2.0))
+    .lines_up(Is(Some(Middle)))
+    .lies_along(Is(Middle))
+    .ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } }))
+    |> ignore
+    @sf.hover_ground_node(v, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
+    @sf.icon_node(v, "", round_icon, By(fn() { @ui.tree_theme().color(Fg) }), name_now=icon) |> ignore
+    @sf.tip_node(pg.tips, v, label) |> ignore
+  })
+}
+
+///|
+/// A panel asked of the page by what is outside it (a fixture's, a test's: as if pressed), `keys` the ones `from` opens,
+/// opened beside `from` as it is made or as it is asked, at that moment (what it stands beside laid out by then).
+fn screen_asked(from : @view.View, pg : ScreenPage, keys : Array[String], open : (String) -> Unit) -> Unit {
+  let u = pg.u
+  from.reacts(fn() { u.asked_panel.get() }, fn(asked) {
+    if keys.contains(asked) {
+      u.asked_panel.set("")
+      from.at_moment(from.cause_at(), fn() { open(asked) }) |> ignore
+    }
+  })
+}
+
+///|
+/// 控制中心 as a round button (the bar's, the rail's, the folded tools') in `parent`: pressed, its panel beside it; or a
+/// simulator's 日志 or 重启 App where a fixture asked for them.
+fn center_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let b = screen_round_node(parent, pg, fn() { "sliders" }, fn() { @sf.t("web-pages.screen.panel") }, fn(b) {
+    center_open(pg, Node(b), "center")
+  })
+  screen_asked(b, pg, ["center", "logs", "apps"], fn(asked) { center_open(pg, Node(b), asked) })
+}
+
+///|
+/// 控制中心's panel beside what opened it (`from`); a fixture's asked `logs` or `apps`, a simulator's panel in its place.
+fn center_open(pg : ScreenPage, from : @sf.Anchor, asked : String) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  if asked == "logs" {
+    debug_logs_open(s, u, from)
+    return
+  }
+  if asked == "apps" {
+    debug_apps_open(s, u, from)
+    return
+  }
+  screen_panel_toggle(u, "center", fn() {
+    @sf.panel_nodes(@sf.t("web-pages.screen.panel"), fn(v, done) { center_node(v, s, u, from, pg.close, done) }, from~, side=screen_panel_side(), focus=false)
+  })
+}
+
+///|
+/// 按键 as a round button (the foot's, the rail's, the folded tools') in `parent`: pressed, its panel beside it; on while
+/// it is open. Only while driving a screen that is no simulator's (its device's buttons are beside its picture).
+fn keys_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  parent.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+    let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.keysPanel") }, fn(b) {
+      keys_open(s, u, Node(b))
+    }, lit=fn() {
+      screen_panel_on_now(u, "keys")
+    })
+    screen_asked(b, pg, ["keys"], fn(_) { keys_open(s, u, Node(b)) })
+  })
+}
+
+///|
+/// 只看/控制 as one round button (the rail's, the folded tools') in `parent`: the pointer while driving, an eye while
+/// looking; where it may be chosen.
+fn mode_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let on = fn() {
+    s.said.get() |> ignore
+    s.controlling()
+  }
+  parent.show(at_once=true, fn() { s.said.get() |> ignore; s.choosable() }, fn(k) {
+    screen_round_node(
+      k,
+      pg,
+      fn() { if on() { "cursor" } else { "eye" } },
+      fn() { @sf.t(if on() { "android-misc.screen.drive" } else { "android-misc.screen.look" }) },
+      fn(_) { control_chosen(s, u, !s.controlling()) },
+      lit=on,
+    )
+    |> ignore
+  })
+}
+
+///|
+/// Pasting the device's clipboard (where the station carries text or pictures) as a round button in `parent`, lit
+/// while a paste goes.
+fn paste_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  parent.show(at_once=true, fn() { s.said.get() |> ignore; s.pastes() }, fn(k) {
+    screen_round_node(k, pg, fn() { "paste" }, fn() { @sf.t("android-misc.screen.paste") }, fn(_) { paste_asked(s, u) }, lit=fn() {
+      s.pasting.get()
+    })
+    |> ignore
+  })
+}
+
+///|
+/// The keyboard as a round button in `parent`, lit while the keys go to the screen; while driving it.
+fn keyboard_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  parent.show(at_once=true, fn() { s.driving_now() }, fn(k) {
+    screen_round_node(k, pg, fn() { "keyboard" }, fn() { @sf.t("android-misc.screen.keyboard") }, fn(_) { keyboard_toggled(pg) }, lit=fn() {
+      pg.catching()
+    })
+    |> ignore
+  })
+}
+
+///|
+/// 全屏 (lit while it is) as a round button in `parent`.
+fn full_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let u = pg.u
+  screen_round_node(
+    parent,
+    pg,
+    fn() { "landscape" },
+    fn() { @sf.t(if u.full.get() { "android-misc.screen.unfull" } else { "android-misc.screen.full" }) },
+    fn(_) {
+      screen_panels_close(u)
+      u.full.set(!u.full.untracked())
+    },
+    lit=fn() { u.full.get() },
+  )
+  |> ignore
+}
+
+///|
+/// Its close as a round button in `parent`.
+fn close_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  screen_round_node(parent, pg, fn() { "close" }, fn() { @sf.t("android-misc.screen.close") }, fn(_) { (pg.close)() }) |> ignore
+}
+
+///|
+/// The screen's name (where `named`) and the core's line under it in `parent` (who else is on it; while another drives
+/// it, who does is said with 接管, not twice), cut short where the bar's buttons leave them less.
+fn screen_bar_words_node(parent : @view.View, pg : ScreenPage, named : Bool) -> Unit {
+  let s = pg.s
+  parent.box(fn(w) {
+    @sf.style_node(w, fn() { screen_bar_words }, in_row=true)
+    w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    if named {
+      @sf.words_node(w, fn() { pg.said_title() }, fn() { screen_title_words }) |> ignore
+    }
+    let line = fn() {
+      let st = s.state_now()
+      if s.open_said() && !s.can_take_over() {
+        text(st, "line")
+      } else {
+        ""
+      }
+    }
+    w.show(at_once=true, fn() { line() != "" }, fn(l) { @sf.words_node(l, line, fn() { screen_line_words }) |> ignore })
+  })
+  |> ignore
+}
+
+///|
+/// The view's tabs folded into one button counting them in `parent`, where it has them (a desktop's windows; a browser's
+/// pages where its bar has no room for them).
+fn tabs_count_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  parent.show(at_once=true, fn() {
+    s.said.get() |> ignore
+    !view_tabs(s).0.is_empty()
+  }, fn(k) { tabs_button_node(k, pg) })
+}
+
+///|
+/// Upright (the user, 2026-11-13: 「连带着远程控制的 UI 一起重构」) in `p`: one row, close, then the screen's name and the
+/// core's line (only looking, who else is on it), the view's tabs folded into a button counting them where it has them
+/// (a desktop's windows), 控制中心 (只看, pasting, sending files, 全屏, how the view goes: all there); a tab of the
+/// station's browser has ← and its address bar in its name's place (screen_browser.mbt). A panel's bar of its own: the
+/// panel's close at its end, beside what it closes.
+fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  u.narrow_bar = true
+  p.box(fn(bar) {
+    @sf.style_node(bar, fn() {
+      match pg.own_bar {
+        Some(own) => own
+        None => if pg.in_tab { screen_bar_in_tabs } else { screen_bar }
+      }
+    })
+    if !pg.in_tab {
+      close_button_node(bar, pg)
+    }
+    bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
+      m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
+      if browser {
+        browser_seen(s)
+        m.box(fn(t) {
+          @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
+          browser_tools_node(t, pg, narrow=fn() { true })
+        })
+        |> ignore
+      } else {
+        // (among a panel's tabs, the tab in front names it)
+        screen_bar_words_node(m, pg, !pg.in_tab || pg.own_bar is Some(_))
+        tabs_count_node(m, pg)
+      }
+    })
+    bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
+    // (a panel's bar of its own: the panel's close at its end, beside what it closes, where the system has bars too:
+    // among the chat's actions in them it read as another thing's; the user, 2026-11-06)
+    if pg.own_bar is Some(_) {
+      close_button_node(bar, pg)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// With keyboard and mouse inside a chat's side panel in `p`: one row, no traffic-light indent, no `< 返回`, and (where
+/// the panel's tab row stands above) no name or close of its own: a browser's controls, or the desktop's line, its
+/// tabs, 组合键 while driving it; 控制中心. None while the view is not open, where the panel names it.
+fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  u.narrow_bar = true
+  p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) }, fn(slot) {
+    slot.box(fn(bar) {
+      @sf.style_node(bar, fn() {
+        match pg.own_bar {
+          Some(own) => own
+          None => if browser_shown_now(s) { screen_tab_browser_bar } else { screen_tab_status_bar }
+        }
+      })
+      bar.pick(at_once=true, fn() { browser_shown_now(s) }, fn(m, browser) {
+        m.row(Is(true)).lines_up(Is(Some(Middle))).grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(@ui.Space::S2.px())) |> ignore
+        if browser {
+          browser_seen(s)
+          m.box(fn(t) {
+            @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
+            browser_tools_node(t, pg, narrow=fn() { true })
+          })
+          |> ignore
+        } else {
+          screen_bar_words_node(m, pg, pg.own_bar is Some(_))
+          tabs_count_node(m, pg)
+          // 组合键 while driving a desktop
+          m.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+            let b = screen_round_node(k, pg, fn() { "keycap" }, fn() { @sf.t("web-pages.screen.combos") }, fn(b) {
+              keys_open(s, u, Node(b), combos_only=true)
+            }, lit=fn() {
+              screen_panel_on_now(u, "keys")
+            })
+            ignore(b)
+          })
+        }
+      })
+      bar.show(at_once=true, fn() { s.open_said() }, fn(k) { center_button_node(k, pg) })
+      if pg.own_bar is Some(_) {
+        close_button_node(bar, pg)
+      }
+    })
+    |> ignore
+  })
+}
+
+///|
+/// Whether the link to the screen's station is poor now (its round trip amber or red): the viewer's bar says so then,
+/// and only then (its figures are 控制中心's).
+fn net_poor(s : ScreenSess) -> Bool {
+  let level = text(field(screen_net(s), "rtt"), "level")
+  level == "amber" || level == "red"
+}
+
+///|
+/// With keyboard and mouse in `p`: the viewer's bar across the window's top (@sf.viewer_bar_node), one row (the user,
+/// 2026-11-13): back by its name, the view's tabs in the name's place where it has them (a person's pages on the
+/// station's browser, ＋ after them; a desktop's whole screen and its windows), else the screen's name and the core's
+/// line; at its end the link's figures only while it is poor, 组合键 while driving a desktop, 控制中心 (只看 is there),
+/// and 接管 while someone else drives it, who does said in the line's place. Narrow, the tabs fold into a button
+/// counting them.
+fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let narrow = fn() { view_narrow(p, u) }
+  p.reacts(narrow, fn(n) { u.narrow_bar = n })
+  let line = fn() {
+    let st = s.state_now()
+    if !s.open_said() {
+      ""
+    } else if s.can_take_over() {
+      drives_words(s)
+    } else {
+      text(st, "line")
+    }
+  }
+  let tabs_shown = fn() {
+    s.said.get() |> ignore
+    !view_tabs(s).0.is_empty() && !narrow()
+  }
+  let ink = fn() { @sf.page_viewer_ink() }
+  p.box(fn(room) {
+    room.height(Is(Some(@sf.viewer_bar_h))) |> ignore
+    @sf.viewer_bar_node(
+      room,
+      // (alone in a window of its own, nowhere to go back to: its window's close and 控制中心's 断开 close it)
+      fn() { if pg.lone { "" } else { @sf.t("common.back") } },
+      fn() { pg.said_title() },
+      line,
+      fn() { "" },
+      fn() { false },
+      fn(_) { 1.0 },
+      fn() { 0.0 },
+      fn() { p.window().0 },
+      ink,
+      fn(r, corner) {
+        // how the view goes, while the link is poor
+        r.show(at_once=true, fn() { s.phase_now() == "live" && net_poor(s) }, fn(k) { net_chip_node(k, pg) })
+        // narrow, the tabs folded into the button counting them (a browser's is by its address bar)
+        r.show(at_once=true, fn() { narrow() && !browser_shown_now(s) && !view_tabs(s).0.is_empty() }, fn(k) { tabs_button_node(k, pg, side=@sf.tool_side) })
+        // (组合键 while driving: the keyboard has the rest)
+        r.show(at_once=true, fn() { s.driving_now() && !s.simulator() }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: "keycap", label: @sf.t("web-pages.screen.combos"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { keys_open(s, u, Node(t), combos_only=true) }) |> ignore
+        })
+        r.show(at_once=true, fn() { s.open_said() }, fn(k) {
+          let t = @sf.tool_node(k, fn() { { icon: "sliders", label: @sf.t("web-pages.screen.panel"), on: false, disabled: false } }, ink, corner, fn() {  }, tip=pg.tips)
+          t.on_press(fn() { center_open(pg, Node(t), "center") }) |> ignore
+          screen_asked(t, pg, ["center", "logs", "apps"], fn(asked) { center_open(pg, Node(t), asked) })
+        })
+        r.show(at_once=true, fn() { s.taking_over_now() }, fn(k) { take_over_node(k, pg, in_bar=true, placed=false) })
+      },
+      fn() { (pg.close)() },
+      pg.tips,
+      capsule_now=fn() { s.taking_over_now() },
+      middle=fn(m) { tabs_row_node(m, pg) },
+      middle_shown=tabs_shown,
+    )
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// How the view goes, in the viewer's bar (the web's NetChip) in `parent`: the signal mark on its tile, coloured as the
+/// round trip is, and how long it has been seen; pressed, the view's figures under it.
+fn net_chip_node(parent : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let b = @headless.button(parent, fn() { @sf.t("web-pages.screen.stats") }, fn(b) { net_panel_open(s, u, Node(b)) }, fn(b, _) {
+    @sf.style_node(b, fn() { net_chip_box }, in_row=true)
+    @sf.hover_ground_node(b)
+    b.box(fn(t) {
+      @sf.style_node(t, fn() { net_mark_tile }, in_row=true)
+      signal_bars_node(t, fn() {
+        s.said.get() |> ignore
+        text(field(screen_net(s), "rtt"), "level")
+      })
+    })
+    |> ignore
+    @sf.words_node(b, fn() { seen_for(u) }, fn() { screen_time_words }) |> ignore
+  })
+  // (asked from elsewhere, a fixture's: opened as this is made)
+  screen_asked(b, pg, ["net"], fn(_) { net_panel_open(s, u, Node(b)) })
+}
+
+///|
+/// How far a floating capsule (the folded tools, the mouse's buttons) was dragged from its corner, and from where a drag
+/// of it began: told as it is dragged (what places it reads it).
+priv struct Afloat {
+  moved : @signals.Signal[(Double, Double)]
+  /// how far it was moved as the drag began, and where in the window the drag began
+  mut from : (Double, Double)
+  mut start : (Double, Double)
+  /// where it was laid out with no drag, as the drag began (its window's: to keep it inside the window)
+  mut laid : (Double, Double, Double, Double)
+}
+
+///|
+fn afloat_new() -> Afloat {
+  { moved: @signals.signal((0.0, 0.0), same=fn(a, b) { a == b }), from: (0.0, 0.0), start: (0.0, 0.0), laid: (0.0, 0.0, 0.0, 0.0) }
+}
+
+///|
+/// Capsule `cap` floated as `f` says: drawn as far from its place as it was dragged, a hold on it (on one of its buttons
+/// too) moved past the slop taking it with the finger, kept inside the window as it is laid out (moved past its edge,
+/// opened longer); a press on it that does not move is a tap of what is under it. The window turned or resized: back
+/// to its corner.
+fn afloat_node(cap : @view.View, f : Afloat) -> Unit {
+  cap.offset(By(fn() { f.moved.get() })) |> ignore
+  cap.reacts(fn() { cap.window() }, fn(_) { f.moved.set((0.0, 0.0)) }, at_start=false)
+  cap
+  .claims(fn(dx, dy) { dx * dx + dy * dy > screen_slop * screen_slop })
+  .on_drag(fn(d) {
+    match d.kind {
+      Down => {
+        f.from = f.moved.untracked()
+        f.start = (d.wx, d.wy)
+        let (x, y, w, h) = cap.rect()
+        f.laid = (x - f.from.0, y - f.from.1, w, h)
+      }
+      Moved | Up => {
+        let dx = f.from.0 + d.wx - f.start.0
+        let dy = f.from.1 + d.wy - f.start.1
+        let (x0, y0, w, h) = f.laid
+        let (ww, wh) = cap.window()
+        // (its panel still past the window's edge, on the tape: nothing to keep it inside of yet)
+        if x0 < 0.0 || x0 + w > ww {
+          f.moved.set((dx, dy))
+        } else {
+          f.moved.set((dmax(-x0, dmin(ww - w - x0, dx)), dmax(-y0, dmin(wh - h - y0, dy))))
+        }
+      }
+      Off => f.moved.set(f.from)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// 全屏's tools in `fill` (a layer over the picture), folded into one round button over the frame's corner (in the
+/// letterbox, as a screen wider than the device leaves one): open, the same as the rail's down from it — 只看/控制, 按键,
+/// pasting, the keyboard, 控制中心, 退出全屏. Its button dragged, they go where it is let go, kept inside the window (what
+/// is under the corner in sight again).
+fn full_tools_node(fill : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  fill.box(fn(place) {
+    place.over(Is(true)) |> ignore
+    @sf.style_node(place, fn() { screen_corner_end(screen_top_end) })
+    place.box(fn(cap) {
+      @sf.style_node(cap, fn() { full_tools_box })
+      floats_node(cap)
+      // a round button 4 in from the capsule's edge: its corner 20 + 4
+      let open = fn() { u.tools_open.get() }
+      let b = screen_round_node(
+        cap,
+        pg,
+        fn() { if open() { "close" } else { "more" } },
+        fn() { @sf.t(if open() { "android-misc.screen.toolsClose" } else { "android-misc.screen.tools" }) },
+        fn(_) { u.tools_open.set(!u.tools_open.untracked()) },
+        lit=open,
+      )
+      ignore(b)
+      afloat_node(cap, u.tools_moved)
+      cap.show(open, fn(t) {
+        t.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
+        mode_button_node(t, pg)
+        keys_button_node(t, pg)
+        paste_button_node(t, pg)
+        keyboard_button_node(t, pg)
+        center_button_node(t, pg)
+        full_button_node(t, pg)
+      })
+      ignore(s)
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// Sideways in `p`: the same as the bar down the side (close, who else is on it, 只看/控制, 按键, pasting, the keyboard,
+/// 控制中心, 全屏), the line said when the people on it are tapped (there while others are). What says the line (pressed:
+/// said for rail_say_ms from then) and whether it is said.
+fn screen_rail_node(p : @view.View, pg : ScreenPage) -> (() -> Unit, () -> Bool) {
+  let s = pg.s
+  let said = Ref((fn() {  }, fn() { false }))
+  p.box(fn(rail) {
+    @sf.style_node(rail, fn() { rail_box }, in_row=true)
+    said.val = rail.holds_for(rail_say_ms, later=true)
+    let (say, saying) = said.val
+    if !pg.in_tab {
+      close_button_node(rail, pg)
+    }
+    rail.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    let others = fn() { items(s.state_now(), "others").length() }
+    rail.show(at_once=true, fn() { text(s.state_now(), "line") != "" && s.open_said() && others() > 0 }, fn(k) {
+      k.box(fn(people) {
+        let b = screen_round_node(people, pg, fn() { "users" }, fn() { @sf.t("android-misc.screen.people") }, fn(_) { say() }, lit=saying)
+        ignore(b)
+        // the count of the others on it: over the button's top right, 4 out and 2 up
+        people.box(fn(place) {
+          @sf.style_node(place, fn() { rail_badge_place })
+          place.over(Is(true)) |> ignore
+          place.box(fn(badge) {
+            @sf.style_node(badge, fn() { rail_badge }, in_row=true)
+            badge.offset(Is((rail_badge_out, -rail_badge_up))) |> ignore
+            @sf.mark_words_node(badge, fn() { "\{others()}" }, fn() { rail_badge_words }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    mode_button_node(rail, pg)
+    keys_button_node(rail, pg)
+    paste_button_node(rail, pg)
+    keyboard_button_node(rail, pg)
+    rail.show(at_once=true, fn() { s.open_said() }, fn(k) {
+      k.lines_up(Is(Some(Middle))).gap(Is(@ui.Space::S1.px())) |> ignore
+      center_button_node(k, pg)
+      full_button_node(k, pg)
+    })
+  })
+  |> ignore
+  said.val
+}
+
+///|
+/// Where the count of the others on it sits past the rail's people button's top right corner.
+let rail_badge_out : Double = 4.0
+
+///|
+let rail_badge_up : Double = 2.0
+
+///|
+/// The rail's line in `p` (a layer over the page), said beside the rail over its foot while `said` holds it (the
+/// people on it tapped), while the state has one.
+fn rail_said_node(p : @view.View, pg : ScreenPage, said : (() -> Unit, () -> Bool)) -> Unit {
+  let s = pg.s
+  let (_, saying) = said
+  p.show(at_once=true, fn() { saying() && s.state_now() is Some(_) }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(place) {
+      @sf.style_node(place, fn() { rail_say_place })
+      place.box(fn(b) {
+        @sf.style_node(b, fn() { rail_say_box })
+        floats_node(b)
+        @sf.words_node(b, fn() { text(s.state_now(), "line") }, fn() { rail_say_words }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+/// Upright, under the frame while driving it in `f` (the user, 2026-11-13: 「小屏下面的操作…不够直观，不够方便」). Not
+/// typing: a few large actions, each its mark over its name — 键盘, 粘贴 (where the station takes the clipboard), 按键
+/// (组合键, F1–F12…; not a simulator's), and with the trackpad 左键 and 右键 (directly, a tap clicks and a press held clicks
+/// right). Typing: what a phone's keyboard has not (Esc, Tab, ⌘ ⌃ ⌥ ⇧, the arrows) over it, the keyboard put away at
+/// its end, as a keyboard's row of keys over a phone's own.
+fn foot_node(f : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  f.pick(at_once=true, fn() { pg.catching() || u.typing.get() }, fn(slot, typing) {
+    if typing {
+      slot.box(fn(row) {
+        @sf.style_node(row, fn() { screen_foot })
+        // (按键 first: what the row and the keyboard have not, 组合键 and F1–F12)
+        keys_button_node(row, pg)
+        row.box(fn(k) {
+          @sf.style_node(k, fn() { screen_fill_w }, in_row=true)
+          k.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          keys_row_node(k, pg, mouse=false)
+        })
+        |> ignore
+        // the keyboard put away, and the row with it (already down, the system's own: the row alone)
+        screen_round_node(row, pg, fn() { "keyboard" }, fn() { @sf.t("android-misc.screen.keyboard") }, fn(_) {
+          screen_panels_close(u)
+          match u.catcher {
+            Some(k) => @ui.key_catcher_focus_set(k, false)
+            None => ()
+          }
+          u.typing.set(false)
+        }, lit=fn() { true })
+        |> ignore
+      })
+      |> ignore
+    } else {
+      slot.box(fn(row) {
+        @sf.style_node(row, fn() { screen_foot_actions })
+        foot_action_node(row, pg, "keyboard", fn() { @sf.t("android-misc.screen.keyboard") }, fn() { @sf.t("android-misc.screen.keyboard") }, fn(_) {
+          keyboard_toggled(pg)
+        })
+        |> ignore
+        row.show(at_once=true, fn() { s.said.get() |> ignore; s.pastes() }, fn(k) {
+          // (its share of the row, as each action's)
+          k.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+          foot_action_node(k, pg, "paste", fn() { @sf.t("web-pages.screen.paste") }, fn() { @sf.t("android-misc.screen.paste") }, lit=fn() {
+            s.pasting.get()
+          }, fn(_) { paste_asked(s, u) })
+          |> ignore
+        })
+        row.show(at_once=true, fn() { s.said.get() |> ignore; !s.simulator() }, fn(kk) {
+          kk.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
+          let k = foot_action_node(kk, pg, "keycap", fn() { @sf.t("web-pages.screen.keysPanel") }, fn() { @sf.t("web-pages.screen.keysPanel") }, lit=fn() {
+            screen_panel_on_now(u, "keys")
+          }, fn(b) { keys_open(s, u, Node(b)) })
+          // (a fixture's, asked as it is made)
+          screen_asked(k, pg, ["keys"], fn(_) { keys_open(s, u, Node(k)) })
+        })
+        row.show(at_once=true, fn() { mouse_shown_now(s) && s.pad(s.src) }, fn(m) {
+          m.row(Is(true)).grow(Is(2.0)).basis(Is(Some(0.0))).gap(Is(@ui.Space::S1.px())) |> ignore
+          let left = @sf.t("android-misc.screen.key.mouseLeft")
+          let right = @sf.t("android-misc.screen.key.mouseRight")
+          foot_action_node(m, pg, "mouse-left", fn() { left }, fn() { left }, felt=btn_primary, fn(_) { button_clicked(s, u, btn_primary) })
+          |> ignore
+          foot_action_node(m, pg, "mouse-right", fn() { right }, fn() { right }, felt=btn_secondary, fn(_) {
+            button_clicked(s, u, btn_secondary)
+          })
+          |> ignore
+        })
+      })
+      |> ignore
+    }
+  })
+}
+
+///|
+/// One of the foot's actions in `parent`: its mark over its name (`words`), as wide as its share of the row, lit while
+/// `lit`; its name for those who cannot see it `label` (粘贴's says whose clipboard); a mouse's button (`felt`) felt as a
+/// press goes down on it. Pressed, `press`. The node.
+fn foot_action_node(
+  parent : @view.View,
+  pg : ScreenPage,
+  icon : String,
+  words : () -> String,
+  label : () -> String,
+  lit? : () -> Bool = fn() { false },
+  felt? : Int = 0,
+  press : (@view.View) -> Unit,
+) -> @view.View {
+  ignore(pg)
+  let me : Ref[@view.View?] = Ref(None)
+  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
+    me.val = Some(v)
+    @sf.style_node(v, fn() { foot_action_box }, in_row=true)
+    v.ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } })) |> ignore
+    @sf.hover_ground_node(v, lit=Some(fn() { b.pressed() }))
+    @sf.icon_node(v, icon, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
+    @sf.words_node(v, words, fn() { foot_action_words }) |> ignore
+    if felt != 0 {
+      button_felt_node(v, felt)
+    }
+  })
+}
+
+///|
+/// A mouse button `v` felt as a press goes down on it (the click itself goes as it is let go): the right button as a
+/// context click, the left as a key.
+fn button_felt_node(v : @view.View, button : Int) -> Unit {
+  let kind : @ui.Haptic = if button == btn_secondary { ContextClick } else { KeyboardTap }
+  v.reacts(fn() { v.pressed() }, fn(down) {
+    if down {
+      @ui.haptic(kind)
+    }
+  }, at_start=false)
+}
+
+///|
+/// A key of the keys row: what it sends, or a modifier held for the next key (`mod`, its bit).
+priv struct RowKey {
+  label : String
+  name : String
+  key : String
+  code : String
+  mod_ : Int
+  icon : String
+  /// where the row has not the room for every key: the k-th to leave it for its ⋯ (View::drops; 0: never)
+  drop : Int
+  /// a mouse button (btn_primary, btn_secondary) clicked where the pointer is, instead of a key; 0 a key
+  button : Int
+}
+
+///|
+fn screen_row_keys() -> Array[RowKey] {
+  let k = fn(label, name, key, code, mod_, icon, drop) -> RowKey { { label, name, key, code, mod_, icon, drop, button: 0 } }
+  let b = fn(name, icon, button) -> RowKey {
+    { label: "", name, key: "", code: "", mod_: 0, icon, drop: 0, button }
+  }
+  // (short of room the least used leave first: ⌥, ⌃, ⇧, Tab, ⌘, then up and down, left and right last; the mouse's
+  // buttons and Esc stay)
+  [
+    b(@sf.t("android-misc.screen.key.mouseLeft"), "mouse-left", btn_primary),
+    b(@sf.t("android-misc.screen.key.mouseRight"), "mouse-right", btn_secondary),
+    k("Esc", "Esc", "Escape", "Escape", 0, "", 0),
+    k("Tab", "Tab", "Tab", "Tab", 0, "", 4),
+    k("⌘", @sf.t("android-misc.screen.key.command"), "", "", mod_meta, "", 5),
+    k("⌃", @sf.t("android-misc.screen.key.control"), "", "", mod_ctrl, "", 2),
+    k("⌥", @sf.t("android-misc.screen.key.option"), "", "", mod_alt, "", 1),
+    k("⇧", @sf.t("android-misc.screen.key.shift"), "", "", mod_shift, "", 3),
+    k("", @sf.t("android-misc.screen.key.left"), "ArrowLeft", "ArrowLeft", 0, "arrow-left", 7),
+    k("", @sf.t("android-misc.screen.key.up"), "ArrowUp", "ArrowUp", 0, "arrow-up", 6),
+    k("", @sf.t("android-misc.screen.key.down"), "ArrowDown", "ArrowDown", 0, "arrow-down", 6),
+    k("", @sf.t("android-misc.screen.key.right"), "ArrowRight", "ArrowRight", 0, "arrow-right", 7),
+  ]
+}
+
+///|
+/// The mouse's two buttons (clicked where the pointer is: the trackpad's, else the screen's own), the keys a phone's
+/// keyboard has not (Esc, Tab, the arrows) and the modifiers (⌘ ⌃ ⌥ ⇧: held, shown solid, for the next key or click,
+/// typed or here), in a row in `parent`. Where it has not the room for them all, the least used leave it (RowKey's
+/// `drop`; a modifier held never), and a ⋯ key at its end turns the row to them, as a keyboard turns to its other keys
+/// (lit while turned; pressed again, on to those that had not the room there either, or back): nothing scrolled,
+/// nothing wrapped, nothing over the keyboard.
+fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  let keys = screen_row_keys().filter(fn(k) { k.button == 0 || mouse })
+  let held = fn(k : RowKey) { k.mod_ != 0 && (u.held.held_said() & k.mod_) != 0 }
+  let leaves = fn(k : RowKey) { if held(k) { 0 } else { k.drop } }
+  let on_face = fn(k : RowKey) {
+    let turned = u.keys_turned.get()
+    turned.is_empty() || turned.contains(k.name)
+  }
+  let slots : Map[String, @view.View] = Map([])
+  parent.box(fn(row) {
+    @sf.style_node(row, fn() { keys_row_box }, in_row=true)
+    // (as wide as it is given, what has not the room there left out: View::drops)
+    row.fits(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+    for k in keys {
+      row.show(at_once=true, fn() { on_face(k) }, fn(slot) {
+        slots[k.name] = slot
+        slot.drops(By(fn() { leaves(k) })) |> ignore
+        row_key_node(slot, pg, k, fn() { held(k) })
+      })
+    }
+    // (the ⋯: on the first face there only while a key is out; turned, always, the way on or back)
+    row.box(fn(more) {
+      let turned = fn() { !u.keys_turned.get().is_empty() }
+      more.drops(By(fn() { if turned() { 0 } else { -1 } })) |> ignore
+      @headless.toggle(more, Button, fn() { @sf.t("common.more") }, turned, fn(_) {
+        // (turned to those this face left out as last laid out: from the first face its others, and from them, where
+        // they too have not the room, the rest; none left out, back)
+        u.keys_turned.set(
+          keys
+          .filter(fn(k) {
+            let face = @signals.untracked(fn() { on_face(k) })
+            face && leaves(k) > 0 && slots.get(k.name).map(fn(v) { v.alive() && v.left_out() }).unwrap_or(false)
+          })
+          .map(fn(k) { k.name }),
+        )
+      }, fn(v, _) {
+        @sf.style_node(v, fn() { row_key_box }, in_row=true)
+        v.ground(By(fn() { @ui.tree_theme().color(if turned() { Fg } else { Tint }) })) |> ignore
+        @sf.hover_ground_node(v)
+        @sf.icon_node(v, "more", key_icon, By(fn() { @ui.tree_theme().color(if turned() { Bg } else { Fg }) })) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  |> ignore
+  ignore(s)
+}
+
+///|
+/// A key of the keys row in `slot`: its words or its mark, solid while `held` (a modifier held for the next key);
+/// pressed, a modifier held or let go, a mouse button clicked where the pointer is, or the key sent with what is held.
+fn row_key_node(slot : @view.View, pg : ScreenPage, k : RowKey, held : () -> Bool) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  @headless.toggle(slot, Button, fn() { k.name }, held, fn(_) {
+    if k.mod_ != 0 {
+      u.held.toggle(k.mod_)
+    } else if k.button != 0 {
+      button_clicked(s, u, k.button)
+    } else {
+      let mods = u.held.take()
+      stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
+    }
+  }, fn(v, _) {
+    @sf.style_node(v, fn() { row_key_box }, in_row=true)
+    v.ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Tint }) })) |> ignore
+    @sf.hover_ground_node(v)
+    if k.icon != "" {
+      @sf.icon_node(v, k.icon, key_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
+    } else {
+      @sf.words_node(v, fn() { k.label }, fn() { if held() { row_key_on_words } else { row_key_words } }) |> ignore
+    }
+    if k.button != 0 {
+      button_felt_node(v, k.button)
+    }
+  })
+  |> ignore
+}
+
+///|
+/// Mouse button `button` clicked where the pointer is (the trackpad's, else the screen's own; the station saying none,
+/// where a finger last pressed on the picture, else the trackpad's), the modifiers the keys row holds round it.
+fn button_clicked(s : ScreenSess, u : ScreenUi, button : Int) -> Unit {
+  let mods = u.held.take()
+  let at = match @signals.untracked(fn() { pointer_now(s, u) }) {
+    Some(at) => at
+    None => u.tapped_at.unwrap_or(u.pad.at())
+  }
+  click(fn(j) { s.input(s.src, j) }, at, button, mods)
+}
+
+///|
+/// Whether the mouse's buttons show while driving a screen that is no simulator's: the keys row's two, and their
+/// floating pair in 全屏 and sideways. Never turned off (pengxiao, 2026-11-12: nobody does, and the keys row folds what
+/// has not the room).
+fn mouse_shown(s : ScreenSess) -> Bool {
+  s.driving() && !s.simulator()
+}
+
+///|
+/// 左键 and 右键 side by side at the end of the frame's foot in `row` (the system bar's, 全屏 and sideways, the keyboard
+/// down: the keys row is not there; screen_stage_foot, what else is there laid out clear of them), each a round button
+/// floating on its own, the two dragged anywhere together by either, as the folded tools are.
+fn mouse_float_node(row : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  row.box(fn(end) {
+    @sf.style_node(end, fn() { mouse_pair_end }, in_row=true)
+    end.box(fn(cap) {
+      @sf.style_node(cap, fn() { mouse_pair_box }, in_row=true)
+      u.mouse_pair = Some(cap)
+      for b in [
+        ("mouse-left", "android-misc.screen.key.mouseLeft", btn_primary),
+        ("mouse-right", "android-misc.screen.key.mouseRight", btn_secondary),
+      ] {
+        let button = @headless.button(cap, fn() { @sf.t(b.1) }, fn(_) { button_clicked(s, u, b.2) }, fn(v, _) {
+          @sf.style_node(v, fn() { mouse_button_box }, in_row=true)
+          floats_node(v)
+          @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() }))
+          @sf.icon_node(v, b.0, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
+          button_felt_node(v, b.2)
+        })
+        ignore(button)
+      }
+      afloat_node(cap, u.mouse_moved)
+    })
+    |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The keys row floating over the frame's foot in `fill` (sideways, 全屏 and the system's bars', while the keyboard is up
+/// and it drives the screen); `sides`: clear of what the system has at the sides (全屏's).
+fn keys_capsule_over_node(fill : @view.View, pg : ScreenPage, sides~ : Bool) -> Unit {
+  let s = pg.s
+  fill.show(at_once=true, fn() { s.driving_now() && typing_now(fill) }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(place) {
+      @sf.style_node(place, fn() { if sides { screen_foot_center.then(@sf.sides_clear(@ui.Space::S2.px())) } else { screen_foot_center } })
+      place.box(fn(cap) {
+        @sf.style_node(cap, fn() { keys_capsule_box }, in_row=true)
+        floats_node(cap)
+        keys_row_node(cap, pg)
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+}
+
+///|
+/// Who drives it and 接管 floating over the top of the frame in `fill` (sideways, 全屏, the system's bars'), while
+/// someone else drives it.
+fn take_over_over_node(fill : @view.View, pg : ScreenPage) -> Unit {
+  let s = pg.s
+  fill.show(at_once=true, fn() { s.taking_over_now() }, fn(o) {
+    o.over(Is(true)) |> ignore
+    o.box(fn(place) {
+      @sf.style_node(place, fn() { screen_top_center })
+      take_over_node(place, pg, in_bar=false, placed=false)
+    })
+    |> ignore
+  })
+}
+
+///|
+/// Who else drives it, as the state names them.
+fn drivers_of(s : ScreenSess) -> Array[String] {
+  items(s.state, "controllers").filter_map(fn(j) {
+    match j {
+      String(n) => Some(n)
+      _ => None
+    }
+  })
+}
+
+///|
+/// 「<who> 正在控制」, or 「他人正在控制」 where the state names nobody.
+fn drives_words(s : ScreenSess) -> String {
+  let who = drivers_of(s)
+  if who.is_empty() {
+    @sf.t("android-misc.screen.someoneDrives")
+  } else {
+    @sf.t("android-misc.screen.drives", args=[("who", who.join(@sf.t("web-main.list.separator")))])
+  }
+}
+
+///|
+/// Someone else drives it (an agent at work) and this view only looks, in `parent`: who, and 接管 in one tap
+/// (`screen.control` true: their input waits while this person drives; the line then says so). `in_bar`: in the
+/// viewer's bar, a row of its tools, who drives said by the bar's line; else a capsule floating still (`placed`: upright
+/// under the bar, 12 from the sides).
+fn take_over_node(parent : @view.View, pg : ScreenPage, in_bar~ : Bool, placed~ : Bool) -> Unit {
+  let made = fn(at : @view.View) { take_over_capsule_node(at, pg, in_bar, placed) }
+  if placed {
+    parent.box(fn(p) {
+      @sf.style_node(p, fn() { take_over_place })
+      made(p)
+    })
+    |> ignore
+  } else {
+    made(parent)
+  }
+}
+
+///|
+/// What take_over_node makes in `at`.
+fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, placed : Bool) -> Unit {
+  let s = pg.s
+  let u = pg.u
+  ignore(placed)
+  at.box(fn(b) {
+    // a capsule round a 32 high button 6 in from its edge: its corner 6 + 16
+    @sf.style_node(b, fn() { if in_bar { take_over_bar_row } else { take_over_box } })
+    if !in_bar {
+      floats_node(b)
+      @sf.first_line_node(b, Ui, fn(l) { l.box(fn(d) { @sf.style_node(d, fn() { take_over_dot }, in_row=true) }) |> ignore }) |> ignore
+      b.box(fn(w) {
+        @sf.style_node(w, fn() { take_over_words_box }, in_row=true)
+        @sf.words_node(w, fn() { s.said.get() |> ignore; drives_words(s) }, fn() { take_over_words }) |> ignore
+      })
+      |> ignore
+    }
+    // the main solid button, as the web's primary (dark in the light theme, light in the dark one), not the accent
+    // (whole, what says who drives cut short beside it)
+    let button = @headless.button(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn(_) { control_chosen(s, u, true) }, fn(v, _) {
+      @sf.style_node(v, fn() { take_over_button }, in_row=true)
+      v.shrink(Is(0.0)) |> ignore
+      @sf.hover_ground_node(v)
+      @sf.words_node(v, fn() { @sf.t("android-misc.screen.takeOver") }, fn() { take_over_button_words }) |> ignore
+    })
+    // what it does: their input waits while this person drives
+    @sf.tip_node(pg.tips, button, fn() {
+      s.said.get() |> ignore
+      let who = drivers_of(s)
+      let names = if who.is_empty() { @sf.t("web-pages.screen.someone") } else { who.join(@sf.t("web-pages.screen.and")) }
+      @sf.t("web-pages.screen.takeOverTip", args=[("names", names)])
+    })
+    |> ignore
+  })
+  |> ignore
+}

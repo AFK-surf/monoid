@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 import { log } from "../ops/log.ts";
 import { wall } from "../ops/fibers.ts";
-import type { Addr, Connection, Endpoint, Mesh, Stream, Traffic } from "./native.ts";
+import { type Addr, type Connection, type Endpoint, type Mesh, type Stream, type Traffic, relaysConflict } from "./native.ts";
 
 /// What frames say besides a length (client/shell's PIPE_END, PIPE_FAILED); the longest a frame written here is.
 const END = 0xffff_fffe;
@@ -23,9 +23,21 @@ const FRAME_MOST = 1 << 20;
 type Path = NonNullable<ReturnType<NonNullable<Connection["paths"]>>>[number];
 type Seen = { conn: number; remote: string; alpn: string; via: string | null; paths: Path[]; stats: Traffic };
 
-/// `mesh`, its endpoint the front's at `socket`.
+/// `mesh`, its endpoint the front's at `socket`; `frontLink` says whether the endpoints bound through it are linked to
+/// the front now (ops/health.ts), or one of them is linking to it again (the front ended, or does not answer).
 export function withFront(mesh: Mesh, socket: string): Mesh {
-  return { ...mesh, bind: (options) => FrontEndpoint.bind(socket, options) };
+  const bound = new Set<FrontEndpoint>();
+  return {
+    ...mesh,
+    bind: async (options) => {
+      const endpoint = await FrontEndpoint.bind(socket, options, () => bound.delete(endpoint));
+      bound.add(endpoint);
+      return endpoint;
+    },
+    frontLink: () => ([...bound].every((e) => e.linked()) ? "ok" : "reconnecting"),
+    // (each ask of it asks the front again for the next: read every HELD_EVERY_MS with health.json, main.ts)
+    relayConflict: () => relaysConflict(bound),
+  };
 }
 
 let opened = 0;
@@ -47,6 +59,10 @@ export class Front {
   readonly #connSockets = new Map<number, Set<Socket>>();
   readonly #forgotten = new Set<number>();
   #gone: Error | null = null;
+  /// Whether the link is gone.
+  get isGone(): boolean {
+    return this.#gone !== null;
+  }
   /// Once the link is gone (the front ended, or it was closed here).
   readonly gone: Promise<void>;
   #wentAway!: () => void;
@@ -148,12 +164,18 @@ export class Front {
     const first = (data: Buffer) => {
       head = Buffer.concat([head, data]);
       // The connection's id and the stream's, then 1 (one this process opened), 0 (the other end's, from a front
-      // before the order) or 2 (the other end's, with its index on the connection: 8 more bytes).
-      if (head.length < 17 || (head[16] === 2 && head.length < 25)) return;
+      // before the order) or 2 (the other end's, with its index on the connection: 8 more bytes); or 3 and an index: that
+      // one the front answers itself (client/shell `conn.hand`'s `routes`), told so it is not waited for.
+      if (head.length < 17 || ((head[16] === 2 || head[16] === 3) && head.length < 25)) return;
       socket.off("data", first);
       socket.pause();
       const conn = Number(head.readBigUInt64BE(0));
       const id = Number(head.readBigUInt64BE(8));
+      if (head[16] === 3) {
+        socket.destroy();
+        if (!this.#forgotten.has(conn)) this.incomingOf(conn).skip(Number(head.readBigUInt64BE(17)));
+        return;
+      }
       if (this.#forgotten.has(conn)) {
         socket.destroy();
         return;
@@ -212,7 +234,7 @@ type Came = { socket: Socket; carry: Buffer; id: number };
 export class Incoming {
   readonly #came: Came[] = [];
   /// Those that came before one opened ahead of them, by index; the index the next to be taken has.
-  readonly #early = new Map<number, Came>();
+  readonly #early = new Map<number, Came | null>();
   #nextIndex = 0;
   #taker: ((s: Came | null) => void) | null = null;
   #ended = false;
@@ -222,9 +244,22 @@ export class Incoming {
     if (s.index === undefined) return this.#put(s);
     if (s.index !== this.#nextIndex) return void this.#early.set(s.index, s);
     this.#put(s);
-    for (let next = this.#early.get(++this.#nextIndex); next; next = this.#early.get(++this.#nextIndex)) {
+    this.#onFrom(this.#nextIndex + 1);
+  }
+
+  /// The stream of index `index` is not coming here (the front answers it): those after it are not held for it.
+  skip(index: number) {
+    if (this.#ended) return;
+    if (index !== this.#nextIndex) return void this.#early.set(index, null);
+    this.#onFrom(index + 1);
+  }
+
+  /// Those that came early given in turn from index `from`, till one has not come yet.
+  #onFrom(from: number) {
+    this.#nextIndex = from;
+    for (let next = this.#early.get(from); next !== undefined; next = this.#early.get(++this.#nextIndex)) {
       this.#early.delete(this.#nextIndex);
-      this.#put(next);
+      if (next !== null) this.#put(next);
     }
   }
 
@@ -246,7 +281,7 @@ export class Incoming {
   end() {
     this.#ended = true;
     for (const s of this.#came.splice(0)) s.socket.destroy();
-    for (const s of this.#early.values()) s.socket.destroy();
+    for (const s of this.#early.values()) s?.socket.destroy();
     this.#early.clear();
     const taker = this.#taker;
     this.#taker = null;
@@ -402,10 +437,14 @@ class FrontConnection implements Connection {
   /// The streams its other end opens.
   readonly #incoming: Incoming;
 
+  /// The front's id of it, which the streams it hands a route's program name (`Endpoint.route`).
+  readonly handed: number;
+
   constructor(front: Front, seen: Seen) {
     this.#front = front;
     this.#incoming = front.incomingOf(seen.conn);
     this.#id = seen.conn;
+    this.handed = seen.conn;
     this.#remote = seen.remote;
     this.#alpn = Buffer.from(seen.alpn, "hex");
     this.#seen = seen;
@@ -469,6 +508,7 @@ class FrontConnection implements Connection {
   }
   isClosed() { return this.#closed !== null; }
   closed() { return this.#ended; }
+  closeReason() { return this.#closed === null ? null : { kind: this.#closed.kind, reason: this.#closed.reason }; }
 }
 
 /// The station's endpoint at the front, its link to it made again where it went (the front ended, and the launcher
@@ -479,20 +519,24 @@ class FrontEndpoint implements Endpoint {
   readonly #bind: Record<string, unknown>;
   #front: Front;
   #said: { id: string; sockets: string[] };
-  #relays: { url: string; connected: boolean }[] = [];
+  #relays: { url: string; connected: boolean; access: string; conflict?: boolean }[] = [];
   #asking = false;
   #closed = false;
   /// The link made again, once it is.
   #again: Promise<void> | null = null;
+  /// What `route` gave the front, given again on a link made again.
+  #routed: { alpn: string; front: string[]; routes: string[] } | null = null;
+  readonly #closing: () => void;
 
-  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[] }) {
+  private constructor(socket: string, bind: Record<string, unknown>, front: Front, said: { id: string; sockets: string[] }, closing: () => void) {
+    this.#closing = closing;
     this.#socket = socket;
     this.#bind = bind;
     this.#front = front;
     this.#said = said;
   }
 
-  static async bind(socket: string, options: Parameters<Mesh["bind"]>[0]): Promise<FrontEndpoint> {
+  static async bind(socket: string, options: Parameters<Mesh["bind"]>[0], closing: () => void = () => {}): Promise<FrontEndpoint> {
     const bind = {
       key: hex(options.secretKey),
       options: {
@@ -503,10 +547,11 @@ class FrontEndpoint implements Endpoint {
         ...(options.bindAddr ? { bindAddr: options.bindAddr } : {}),
         ...(options.relayOnly ? { relayOnly: true } : {}),
         ...(options.congestion ? { congestion: options.congestion } : {}),
+        ...(options.dscp !== undefined ? { dscp: options.dscp } : {}),
       },
     };
     const { front, said } = await FrontEndpoint.#link(socket, bind);
-    const endpoint = new FrontEndpoint(socket, bind, front, said);
+    const endpoint = new FrontEndpoint(socket, bind, front, said, closing);
     endpoint.#relays = await front.ask("relayStatus").catch(() => []);
     endpoint.#watch(front);
     return endpoint;
@@ -534,6 +579,15 @@ class FrontEndpoint implements Endpoint {
           try {
             const { front: next, said } = await FrontEndpoint.#link(this.#socket, this.#bind);
             if (this.#closed) return next.close();
+            try {
+              // Restore restrictions before accepting or dialing on this endpoint.
+              for (const args of this.#disabled.values()) await next.ask("disabledRelays", { args });
+              if (this.#routed) await next.ask("route", this.#routed);
+              this.#relays = await next.ask("relayStatus").catch(() => []);
+            } catch (error) {
+              next.close();
+              throw error;
+            }
             this.#front = next;
             this.#said = said;
             this.#watch(next);
@@ -547,8 +601,14 @@ class FrontEndpoint implements Endpoint {
     });
   }
 
-  #ask(op: string, args: Record<string, unknown> = {}) {
+  async #ask(op: string, args: Record<string, unknown> = {}) {
+    if (this.#again) await this.#again;
     return this.#front.ask(op, args);
+  }
+
+  /// Linked to the front now: not linking to it again after its link went.
+  linked(): boolean {
+    return this.#closed || (this.#again === null && !this.#front.isGone);
   }
 
   id() { return this.#said.id; }
@@ -567,8 +627,31 @@ class FrontEndpoint implements Endpoint {
     this.#asking = true;
     this.#ask("relayStatus").then((r) => { this.#relays = r; }, () => {}).finally(() => (this.#asking = false));
   }
-  insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => {}); }
-  removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => {}); }
+  // (what the endpoint is on now is what a link made again binds with: else a relay removed came back as it did)
+  /// The stations' disabled relays as given (`disabledRelays`), given again to a front linked to anew (its endpoint bound
+  /// afresh): as they are now, never one taken back.
+  readonly #disabled = new Map<string, { peer: string; relays: string[]; public: boolean }>();
+  disabledRelays(id: string, relays: string[], noPublic: boolean) {
+    const args = { peer: id, relays, public: noPublic };
+    const before = this.#disabled.get(id);
+    this.#disabled.set(id, args);
+    return this.#ask("disabledRelays", { args }).then(() => {
+      if (relays.length === 0 && !noPublic && this.#disabled.get(id) === args) this.#disabled.delete(id);
+    }, (error) => {
+      // An older front has no policy to replay. Other failures keep the desired set for reconnect.
+      if (/no operation|not a function/.test((error as Error).message) && this.#disabled.get(id) === args) {
+        if (before) this.#disabled.set(id, before);
+        else this.#disabled.delete(id);
+      }
+      throw error;
+    });
+  }
+  insertRelay(url: string) { return this.#ask("insertRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.some((u) => bare(u) === bare(url)) ? urls : [...urls, url])); }
+  removeRelay(url: string) { return this.#ask("removeRelay", { args: { url } }).then(() => this.#relayUrls((urls) => urls.filter((u) => bare(u) !== bare(url)))); }
+  #relayUrls(change: (urls: string[]) => string[]) {
+    const options = this.#bind.options as { relayUrls: string[] };
+    options.relayUrls = change(options.relayUrls);
+  }
   publicRelays(on: boolean) { return this.#ask("publicRelays", { args: { on } }).then(() => {}); }
   keep(urls: string[]) { void this.#ask("keep", { args: { urls } }).catch((e) => log.warn("mesh", "relays not kept", { error: (e as Error).message })); }
   setCongestion(congestion: "cubic" | "bbr") { void this.#ask("setCongestion", { args: { congestion } }).catch(() => {}); }
@@ -576,6 +659,12 @@ class FrontEndpoint implements Endpoint {
   addAddr(addr: Addr) { void this.#ask("addAddr", { addr }).catch(() => {}); }
   setRelayEntries(entries: { entry: string; relay: string }[]) { return this.#ask("setRelayEntries", { args: { entries } }).then(() => {}); }
   networkChange() { return this.#ask("networkChange").then(() => {}); }
+
+  async route(alpn: Buffer, to: string[], routes: string[]): Promise<boolean> {
+    this.#routed = { alpn: hex(alpn), front: to, routes };
+    // (a front from before routes answers no such operation: it hands Node every stream, as before)
+    return this.#ask("route", this.#routed).then(() => true, () => false);
+  }
 
   async accept(): Promise<Connection | null> {
     for (;;) {
@@ -600,9 +689,12 @@ class FrontEndpoint implements Endpoint {
 
   async close() {
     this.#closed = true;
+    this.#closing();
     await this.#front.ask("close").catch(() => {});
     this.#front.close();
   }
 }
 
 const hex = (b: Buffer) => Buffer.from(b).toString("hex");
+/// A relay's URL as compared: no trailing slash.
+const bare = (url: string) => url.replace(/\/+$/, "");

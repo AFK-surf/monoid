@@ -1,28 +1,26 @@
-import { Worker } from "node:worker_threads";
-import { MbBackfill, mbReaderBinary } from "../read/mb-reader.ts";
+import { MbBackfill, readerBinary } from "../read/mb-reader.ts";
 import { Fibers } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
-import { workspaceActivityReady, workspaceActivityStep } from "../store/workspace-activity.ts";
-import { recoverWaitsReady, recoverWaitsStep } from "../store/recover-waits.ts";
-import { awakeWaitsReady, awakeWaitsStep } from "../store/awake-waits.ts";
-import { activeJobUpgradeReady, activeJobUpgradeStep } from "../store/active-jobs-upgrade.ts";
+import { workspaceActivityReady } from "../store/workspace-activity.ts";
+import { recoverWaitsReady } from "../store/recover-waits.ts";
+import { awakeWaitsReady } from "../store/awake-waits.ts";
+import { activeJobUpgradeReady } from "../store/active-jobs-upgrade.ts";
 import type { Store } from "../store/store.ts";
 
 type Kind = "activity" | "recovery" | "awake" | "active-jobs";
 
-/// One worker prepares the lookups after handover, in bounded batches. Workspace activity is prepared first so its
+/// One builder prepares the lookups after handover, in bounded batches. Workspace activity is prepared first so its
 /// existing callers are not held up by restart and awake preparation. Every cursor can resume after interruption. By
-/// the MoonBit builder (station/mb, src/activity) where its program is there, the worker taking over a kind it leaves
-/// to it (`MbBackfill`); a worker of its own given, by that one.
-export function buildWorkspaceActivity(store: Store, previous: Promise<void>, workerFile?: URL, mb = workerFile === undefined ? mbReaderBinary() : null): {
+/// the MoonBit builder (station/mb, src/activity; `MbBackfill`; `binary`: the program, a test's own where it gives one).
+export function buildWorkspaceActivity(store: Store, previous: Promise<void>, binary?: string): {
   ready: Promise<boolean>; activeJobsReady: Promise<boolean>; close: () => Promise<void>;
 } {
   const activity = Promise.withResolvers<boolean>();
   const activeJobs = Promise.withResolvers<boolean>();
   const path = store.db.location();
   const retries = new Fibers("workspace activity", store.clock);
-  let worker: Worker | MbBackfill | null = null;
+  let worker: MbBackfill | null = null;
   let cancel: (() => void) | null = null;
   let closed = false;
   let activityDone = workspaceActivityReady(store.db);
@@ -48,26 +46,16 @@ export function buildWorkspaceActivity(store: Store, previous: Promise<void>, wo
     retryMs = Math.min(retryMs * 2, 30_000);
     cancel = retries.after(ms, () => { cancel = null; start(); });
   };
-  const memoryStep = () => {
-    if (closed || complete()) return;
-    const kind = next();
-    try {
-      const result = kind === "activity" ? workspaceActivityStep(store.db) : kind === "recovery" ? recoverWaitsStep(store.db)
-        : kind === "awake" ? awakeWaitsStep(store.db) : activeJobUpgradeStep(store.db);
-      if (result.done) finish(kind);
-      if (!complete()) cancel = retries.after(20, () => { cancel = null; memoryStep(); });
-    } catch (error) {
-      log.warn("hub", "a session recovery batch stopped", { error: (error as Error).message });
-      retry();
-    }
-  };
   const start = () => {
     if (closed || complete() || worker !== null) return;
-    if (path === null) { memoryStep(); return; }
-    const file = workerFile ?? new URL(import.meta.url.endsWith(".ts") ? "./workspace-activity-worker.ts" : "./sessions/workspace-activity-worker.js", import.meta.url);
-    let current: Worker | MbBackfill;
-    const thread = () => new Worker(file, { workerData: { path, priority: store.backfillPriority } });
-    try { current = mb !== null ? new MbBackfill(mb, ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20, thread) : thread(); }
+    if (path === null) {
+      log.warn("hub", "the session recovery backfill requires a file-backed store");
+      activity.resolve(false);
+      activeJobs.resolve(false);
+      return;
+    }
+    let current: MbBackfill;
+    try { current = new MbBackfill(binary ?? readerBinary(), ["--builder", "session-backfill", "--db", path], store.backfillPriority, 20); }
     catch (error) {
       log.warn("hub", "the session recovery worker could not start", { error: (error as Error).message });
       retry();

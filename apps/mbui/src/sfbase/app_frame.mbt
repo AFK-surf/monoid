@@ -19,6 +19,43 @@ pub fn language_from_prefs(prefs : Json?) -> Unit {
 }
 
 ///|
+/// Experimental switches on this device (实验性功能: `chatPage`, `farviewNative`, `board`), told their signals as the
+/// kept choices change and as the app's tree is made, before any page of nodes; turning `board` off puts away any
+/// active board state and returns Home to the ordinary chat list.
+pub fn chat_page_from_prefs(prefs : Json?) -> Unit {
+  let chat_page = @settings.feature_from(prefs, "chatPage")
+  if chat_page != chat_page_told.val {
+    chat_page_told.val = chat_page
+    chat_page_nodes.set(chat_page)
+  }
+  let fv = @settings.feature_from(prefs, "farviewNative")
+  if fv != farview_told.val {
+    farview_told.val = fv
+    farview_native.set(fv)
+  }
+  let bd = @settings.feature_from(prefs, "board")
+  if bd != board_told.val {
+    let was_on = board_told.val
+    board_told.val = bd
+    board_feature.set(bd)
+    if was_on && !bd {
+      board_transient_reset()
+      (board_listed.val)()
+    }
+  }
+}
+
+///|
+/// The experimental switches last told from `prefs`: none on as a run begins.
+let chat_page_told : Ref[Bool] = Ref(false)
+
+///|
+let farview_told : Ref[Bool] = Ref(false)
+
+///|
+let board_told : Ref[Bool] = Ref(false)
+
+///|
 /// Light or dark, as this device is set (the prefs' `appearance`), or as the system is (@hostapi.system_dark)
 /// when it follows it; the host told when it changes (its bars follow, or are as dark as the frame's page says:
 /// `page_dark`).
@@ -34,6 +71,8 @@ pub fn appearance(c : @ui.Ctx, src : Source, page_dark : Bool?) -> Unit {
   })
   // haptics as this device is set (the prefs' `haptics`: off), else on
   @ui.set_haptics(text(prefs, "haptics") != "off")
+  // the chat page as chosen here (the prefs' `chatPage`: 试用新对话页)
+  chat_page_from_prefs(prefs)
   let dark = @settings.dark(prefs, @ui.system_dark())
   @sf.set_dark(Some(dark))
   // the accent as this device is set (the prefs' `accent`, as chosen here a moment ago), else still.fail's orange
@@ -232,7 +271,7 @@ fn init {
 /// to that app, which this one takes as it is built in its place: scripts/mac-app.sh) as the same page's on the
 /// cloud; any other as it is.
 pub fn app_link(url : String) -> String {
-  for scheme in ["stillfail://", "stillfail-beta://"] {
+  for scheme in ["stillfail://", "stillfail-beta://", "monoid://", "monoid-beta://"] {
     if url.has_prefix(scheme) {
       return "\{cloud_origin()}/\{url.exact_view(start=scheme.length())}"
     }
@@ -306,6 +345,9 @@ fn app_frame_reset() -> Unit {
   badge_told.set(-1)
   told_bars.val = None
   told_dark.val = None
+  chat_page_told.val = false
+  farview_told.val = false
+  board_told.val = false
   attention.told = false
   attention.visible = false
   attention.focused = false

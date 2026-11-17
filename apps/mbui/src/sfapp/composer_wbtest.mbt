@@ -22,8 +22,13 @@ fn fake_core(
   made? : Ref[Source?] = Ref(None),
   ups? : Map[String, Json] = Map([]),
   platform? : Int = 2,
+  nodes? : Bool = false,
 ) -> @ui.Tester {
   new_run()
+  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes)
+  if nodes {
+    @sfbase.chat_page_nodes.set(true)
+  }
   // the drafts the fake core has named (its `draft.put`)
   let drafts_named = Ref(0)
   let base = fixture("chat")
@@ -681,6 +686,8 @@ test "at its end, a row that comes at it: the core told the end is not in view w
   if rest > t.time() && rest < @double.infinity {
     t.run_for(rest - t.time())
   }
+  // (the page made as nodes: its list's ways, the row's way in, which the old list's name above does not say)
+  cr_ways_end(t)
   //  told end:false as it comes, its room
   // opening, end:true once it is open; at its end as it rests
   assert_true(ends.contains(false))
@@ -702,6 +709,7 @@ test "at its end, a row that comes at it: the core told the end is not in view w
   if rest > t.time() && rest < @double.infinity {
     t.run_for(rest - t.time())
   }
+  cr_ways_end(t)
   assert_eq(ends[ends.length() - 1], true)
   let mut k = 1
   while k < told.length() {
@@ -710,6 +718,15 @@ test "at its end, a row that comes at it: the core told the end is not in view w
     k += 1
   }
   fix_clock.val = None
+}
+
+///|
+/// `t` run on to where the ways of the window's tree going now end (none: as it is).
+fn cr_ways_end(t : @ui.Tester) -> Unit {
+  match @ui.view_tree() {
+    Some(tree) if tree.ways_end() > t.time() => t.run_for(tree.ways_end() - t.time())
+    _ => ()
+  }
 }
 
 ///|
@@ -852,4 +869,39 @@ test "send pressed before a frame has shown the words typed: they go all the sam
   let sent = named(calls, "chat.send")
   assert_eq(sent.length(), 1)
   assert_eq(text(Some(sent[0].params), "text"), "马上发出去")
+}
+
+// What the composer draws by and is bounded by that the core answers between frames, after all else it asked (sfbase's
+// refs.mbt): read as it is built, so the answer builds it again, its island kept as it was (a device's) or not, the
+// frames' check of what was kept on and off (outside_wbtest.mbt's outside_round_trip, outside_each).
+
+///|
+test "the core's marks for words typed, answered between frames: the field draws them as marks at once" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["ref.marks"])
+    t.tap_text("发消息")
+    t.type_text("同一个工作区的 @[发布清单]")
+    t.run_for(outside_enter_ms)
+    assert_true(outside_called(heard, "ref.marks") > 0, msg=at)
+    let drawn = t.words().map(fn(w) { w.0 }).join("|")
+    assert_true(drawn.contains("发布清单") && !drawn.contains("[发布清单]"), msg="\{at}: \{drawn}")
+  })
+}
+
+///|
+test "the core's bound for words pasted, answered between frames: words pasted past it at once go as a file" {
+  outside_each(fn(wide, looks, nodes, at) raise {
+    let heard : Array[String] = []
+    let t = outside_round_trip(heard, new_chat=false, wide~, looks~, nodes~, late=["paste.info"])
+    t.tap_text("发消息")
+    t.run_for(outside_enter_ms)
+    assert_true(outside_called(heard, "paste.info") > 0, msg=at)
+    t.paste(long_paste())
+    // (what the core says of them, asked as they are pasted, as late)
+    t.run_for(outside_enter_ms)
+    guard @sfbase.writings.get("ws1/st1:s-c1") is Some(w) else { fail("\{at}: no draft") }
+    assert_eq(w.field.text(), "", msg=at)
+    assert_eq(w.files.get().length(), 1, msg=at)
+  })
 }

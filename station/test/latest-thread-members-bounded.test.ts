@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installLatestThreadIndex, LATEST_THREAD_ATTEMPT, prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
+import { installLatestThreadIndex, LATEST_THREAD_ATTEMPT, prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const delivered of [false, true]) {

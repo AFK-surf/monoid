@@ -8,7 +8,7 @@ import { runnerId } from "../src/agents/process.ts";
 import { keyPart } from "../src/agents/sandbox-name.ts";
 import { runtimeNamed } from "../src/sessions/config.ts";
 import { SandboxNameBuilder } from "../src/sessions/sandbox-name-builder.ts";
-import { enableSandboxIndex, runnerTakeUpSessions, sandboxIndexReady, sandboxIndexStep } from "../src/store/sandbox-index.ts";
+import { enableSandboxIndex, runnerTakeUpSessions, sandboxIndexReady, sandboxIndexStep } from "./reference/backfill/sandbox-index.ts";
 import { type SessionRow, Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 

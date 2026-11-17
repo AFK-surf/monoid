@@ -11,7 +11,7 @@
 // kept across runs: a table, never written
 let row_fields : Array[String] = [
   "station", "id", "name", "emoji", "icon", "summary", "face", "line", "online", "reconnecting", "blocked", "stateText",
-  "stateBusy", "problems", "lastSeen", "version", "way", "joined", "home", "mine", "host", "overview",
+  "stateBusy", "problems", "protect", "lastSeen", "version", "way", "joined", "home", "mine", "host", "overview",
 ]
 
 ///|
@@ -121,7 +121,7 @@ let page_connect_fields : Array[String] = ["id", "name", "team", "presence", "st
 ///|
 // kept across runs: a table, never written
 let page_profile_dropped : Array[String] = [
-  "home", "homeExists", "models", "group", "groupTitle", "usesText", "modelsReading", "serves",
+  "home", "homeExists", "models", "group", "groupTitle", "usesText", "serves",
 ]
 
 ///|

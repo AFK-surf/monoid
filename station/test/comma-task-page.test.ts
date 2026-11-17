@@ -8,12 +8,12 @@ import { routerReads } from "../src/comma/chats.ts";
 import { peerRead, textOf } from "../src/comma/peer.ts";
 import { CommaSurface } from "../src/comma/surface.ts";
 import { bytesOf } from "../src/mesh/bus.ts";
-import { usageOps } from "../src/read/ops-usage.ts";
-import { outflowMessages } from "../src/read/outflow.ts";
+import { usageOps } from "./reference/ops-usage.ts";
+import { outflowMessages } from "./reference/outflow.ts";
 import { Readers } from "../src/read/pool.ts";
-import { LEGACY_PAGE_ORDINARY_KEYS_AFTER, makeStore, messageEntriesAfter, PAGE_LETTER_CANDIDATES_AFTER, PAGE_ORDINARY_KEYS_AFTER } from "../src/read/store.ts";
-import { installLegacySaid, legacySaidDrainThread, legacySaidStep } from "../src/store/legacy-said-build.ts";
-import { PAGE_LETTER_KEYS_AFTER, pageLetterStep } from "../src/store/page-letter-index.ts";
+import { LEGACY_PAGE_ORDINARY_KEYS_AFTER, makeStore, messageEntriesAfter, PAGE_LETTER_CANDIDATES_AFTER, PAGE_ORDINARY_KEYS_AFTER } from "./reference/store.ts";
+import { installLegacySaid, legacySaidDrainThread, legacySaidStep } from "./reference/backfill/legacy-said-build.ts";
+import { PAGE_LETTER_KEYS_AFTER, pageLetterStep } from "./reference/backfill/page-letter-index.ts";
 import { installSaidState } from "../src/store/said-state.ts";
 import { Store } from "../src/store/store.ts";
 

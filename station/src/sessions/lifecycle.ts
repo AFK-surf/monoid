@@ -1,29 +1,32 @@
+import { modelSpeed, ultrafastModel, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
+import { accessKind } from "../agents/profiles.ts";
 // Sessions and chats as people make, change, archive and delete them (the Rust station's hub.rs: new_session, open_chat,
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
 // other stations are told); packing an archived session's files is the hub's ColdStorage.
-import { type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
-import { copyFileSync, mkdirSync, renameSync, rmSync } from "node:fs";
+import { NoPreset, type PresetCopy, keepCopy, presetRefusal } from "./presets.ts";
 import { createHash } from "node:crypto";
-import { rm } from "node:fs/promises";
+import { copyFile, mkdir, rename, rm } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { DISK_LOW_BYTES } from "../ops/disk.ts";
 import { PlaceRefused } from "../ops/places.ts";
 import { log } from "../ops/log.ts";
 import { tr, type Lang, stationLang } from "../ops/i18n.ts";
 import { checkContext } from "./context-cap.ts";
-import { type MachineSession, type Roots, rolloutOf, rolloutsIn } from "../read/machine.ts";
+import { type MachineSession, type Roots, ROLLOUT_DEPTH, ROLLOUT_ENTRIES, extension, rolloutOf } from "../read/machine.ts";
 import { usageNow } from "../read/usage.ts";
-import { readTimeline, sessionPlaces, sharedTranscripts, transcriptSources } from "../read/transcript.ts";
-import { forgetMarks, marksDir } from "../read/transcripts.ts";
+import { sessionPlaces, sharedTranscripts } from "../read/transcript.ts";
+import { transcriptSourcesSoon } from "../read/transcript-soon.ts";
+import { forgetMarksSoon, marksDir } from "../read/transcripts.ts";
+import { walkBounded } from "../ops/walk.ts";
 import { ARCHIVED_WORKSPACE_BATCH, AUTO, type ArchivedWorkspace, type Attachment, MANUAL, type Quote, STILLFAIL_SURFACE, type ThreadRow, type WorkOf, type ArchiveLook, type SessionRow } from "../store/store.ts";
 import { sessionBindingsReady } from "../store/session-bindings-index.ts";
 import { archiveMarksReady } from "../store/archive-mark-index.ts";
 import type { SessionChange } from "./accounts.ts";
 import { runChanged, runShown } from "./run-change.ts";
 import { unlockWorktrees, withLock } from "./archive.ts";
-import { roomOf } from "./footprint.ts";
-import { type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
+import { roomOfSoon } from "./footprint.ts";
+import { type Profile, type Runtime, runs, runtimeNamed, runtimeTitle } from "./config.ts";
 import { FAST_RUNTIMES } from "../agents/profiles.ts";
 import { CLIENT_KEY_KEPT_MS, type Hub, connectOf, newChatKey, newSingleSessionKey, newToken } from "./hub.ts";
 import { INTERNAL_CHANNEL, INTERNAL_CONNECT, chatKey, chatWorkspace } from "./internal.ts";
@@ -37,6 +40,7 @@ export type NewChat = {
   model?: string | null;
   effort?: string | null;
   fast?: boolean | null;
+  speed?: ModelSpeed | null;
   /// The most context it runs with, in tokens (sessions/context-cap.ts); none: the model's whole window.
   context?: number | null;
   title?: string | null;
@@ -51,6 +55,14 @@ export type NewChat = {
   presetCopy?: PresetCopy | null;
 };
 
+function checkSpeed(runtime: string, model: string | null, speed: ModelSpeed | null | undefined, profile: Profile | null | undefined, lang: Lang): void {
+  if (speed == null) return;
+  if (modelSpeed(speed) === null || !FAST_RUNTIMES.includes(runtime as Runtime)) throw new Error(tr(lang, "station.speed.invalid"));
+  if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(model) || !profile || accessKind(profile) !== "subscription")) {
+    throw new Error(tr(lang, "station.speed.ultrafast_unavailable"));
+  }
+}
+
 const trimmed = (v: string | null | undefined) => {
   const t = v?.trim();
   return t ? t : null;
@@ -58,13 +70,17 @@ const trimmed = (v: string | null | undefined) => {
 
 /// Points a single-session connect at a session: an existing one (any session on the same runtime, whichever connect
 /// started it) or, with null, a new empty one. The bound session's key.
-export function bindSingle(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): string {
+export async function bindSingle(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): Promise<string> {
+  return hub.oneSingle(connectId, () => bindSingleInTurn(hub, connectId, target, title, createdBy));
+}
+
+async function bindSingleInTurn(hub: Hub, connectId: string, target: string | null, title: string | null, createdBy: string | null): Promise<string> {
   const config = hub.config();
   const connect = connectOf(config, connectId);
   if (connect.mode !== "single-session") throw new Error(`connect ${connectId} is not single-session`);
   if (target === null) {
     const key = newSingleSessionKey(connect.id);
-    hub.createSession(config, key, connect, "all", null, trimmed(title), createdBy);
+    await hub.createSession(config, key, connect, "all", null, trimmed(title), createdBy);
     hub.store.setBinding(connect.id, key);
     return key;
   }
@@ -132,19 +148,42 @@ export function say(hub: Hub, thread: number, user: string, text: string, attach
 /// A session of its own, talked to in the station's chat: the runtime, model and effort chosen by whoever starts it
 /// rather than a connect's, and the profile: one given keeps it there; else the pool picks one with the model on. Only
 /// the profiles allowed in its workspace.
-export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): [string, ThreadRow] {
-  const config = hub.config();
+export async function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang()): Promise<[string, ThreadRow]> {
   const client = trimmed(options.clientKey);
   // A reply can be lost when the station restarts. The same request must find the rows already made, including when
   // the process stopped between inserting the session, the thread and its membership.
   const key = client === null ? newChatKey() : chatKey(`c-${createHash("sha256").update(JSON.stringify([options.ws ?? null, options.createdBy, client])).digest("hex").slice(0, 32)}`, (k) => hub.store.getSession(k) !== null);
-  const existing = hub.store.getSession(key);
-  if (existing !== null) {
+  // The same request again while this one waits on the disk (a retry): it waits for this one, then finds what it made,
+  // picking no account and writing nothing.
+  return client === null ? sessionMade(hub, key, client, options, lang) : oneByKey(hub, key, () => sessionMade(hub, key, client, options, lang));
+}
+
+/// The new sessions being made by their keys, of each hub (`newSession`).
+const making = new WeakMap<Hub, Map<string, Promise<unknown>>>();
+function oneByKey<T>(hub: Hub, key: string, f: () => Promise<T>): Promise<T> {
+  let mine = making.get(hub);
+  if (mine === undefined) making.set(hub, (mine = new Map()));
+  const run = (mine.get(key) ?? Promise.resolve()).then(f, f);
+  const done = run.then(() => {}, () => {});
+  mine.set(key, done);
+  void done.then(() => {
+    if (mine.get(key) === done) mine.delete(key);
+  });
+  return run;
+}
+
+async function sessionMade(hub: Hub, key: string, client: string | null, options: NewChat, lang: Lang): Promise<[string, ThreadRow]> {
+  const config = hub.config();
+  const made = (): [string, ThreadRow] | null => {
+    const existing = hub.store.getSession(key);
+    if (existing === null) return null;
     if (client !== null) hub.clientKeysMade.set(key, [client, hub.now()]);
     const thread = hub.store.homeChat(key) ?? openChat(hub, key, options.createdBy, existing.title);
     hub.store.joinThread(thread.id, key, INTERNAL_CONNECT);
     return [key, thread];
-  }
+  };
+  const before = made();
+  if (before !== null) return before;
   const runtime = options.runtime;
   const all = config.profiles.filter((p) => p.runtimes.includes(runtime));
   if (all.length === 0) throw new Error(`no ${runtime} profile configured`);
@@ -162,9 +201,11 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
   const model = trimmed(options.model);
   // (what its preset binds it to, held here too: an app from before or another way in changes none of it)
   const preset = trimmed(options.preset);
-  const bound = options.presetCopy ?? (preset !== null ? hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
+  const bound = options.presetCopy ?? (preset !== null ? await hub.presets.get(options.ws ?? hub.workspaces()[0] ?? null, preset) : null);
   const refused = bound === null ? null : presetRefusal(bound, hub.station(), { runtime, model }, lang);
   if (refused !== null) throw new Error(refused);
+  // (one that names no preset of its workspace makes no chat, nor its directory)
+  if (!options.presetCopy && preset !== null && bound === null) throw new NoPreset(preset);
   let profile;
   if (wantedProfiles !== null) {
     const subset = [];
@@ -180,17 +221,18 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
     profile = subset.length === 1 ? subset[0]! : hub.accounts.pick(subset, model, true);
   } else profile = hub.accounts.pick(profiles, model, true);
   const effort = options.effort ? options.effort : null;
+  checkSpeed(runtime, model ?? profile.model ?? null, options.speed, profile, lang);
   checkContext(runtime, options.context, lang);
   if (effort !== null) {
     const allowed = hub.accounts.modelEfforts(runtime, model, wantedProfiles, (p) => here.has(p.id));
     if (!allowed.includes(effort)) throw new Error(`effort must be one of ${allowed.join(", ")}`);
   }
   const workspace = chatWorkspace(config.dataDir, key);
-  mkdirSync(workspace, { recursive: true });
+  await mkdir(workspace, { recursive: true });
   // (before its rows: one that names no preset of its workspace makes no chat)
-  if (options.presetCopy) keepCopy(workspace, options.presetCopy);
-  else if (preset !== null) hub.presets.keepFor(workspace, options.ws ?? hub.workspaces()[0] ?? null, preset);
-  mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+  if (options.presetCopy) await keepCopy(workspace, options.presetCopy);
+  else if (preset !== null) await hub.presets.keepFor(workspace, options.ws ?? hub.workspaces()[0] ?? null, preset);
+  await mkdir(join(config.dataDir, "repos"), { recursive: true });
   const now = hub.now();
   // Known before its rows are (their events can reach the client before this answers), and for a while after.
   if (client !== null) {
@@ -210,7 +252,8 @@ export function newSession(hub: Hub, options: NewChat, lang: Lang = stationLang(
     profiles: wantedProfiles,
     model: model ?? profile.model ?? null,
     effort,
-    fast: FAST_RUNTIMES.includes(runtime) ? (options.fast ?? null) : null,
+    fast: FAST_RUNTIMES.includes(runtime) ? (options.speed ? options.speed !== "standard" : options.fast ?? null) : null,
+    speed: options.speed ?? null,
     context: options.context ?? null,
     workspace,
     cwd: null,
@@ -241,6 +284,10 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
     if (Object.keys(rest).length === 0) return;
   }
   const { row, runtime, model, effort, profile, profiles, pinned, repick } = hub.accounts.change(key, change, lang);
+  const account = hub.accounts.profile(profile ?? row.profile);
+  const speedModel = model ?? account?.model ?? null;
+  const speed = change.speed !== undefined ? change.speed : change.fast !== undefined || runtime !== row.runtime || (row.speed === "ultrafast" && !ultrafastModel(speedModel)) ? null : row.speed;
+  checkSpeed(runtime, speedModel, speed, account, lang);
   const movedRuntime = runtime !== row.runtime && typeof profile === "string";
   const recapped = change.context !== undefined && change.context !== row.context;
   // Its runtime compacts on its own only some calls into a new process: what it holds over a lower most is compacted
@@ -262,6 +309,8 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
     if (repick || leftPool) hub.accounts.repick(key);
     else if (profile === null) hub.accounts.runOn(key, false, true);
   }
+  if (change.speed !== undefined) hub.store.setSessionSpeed(key, change.speed);
+  else if (row.speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(speedModel))) hub.store.setSessionSpeed(key, null);
   // Another most context is what its process starts with (Claude Code's settings, a Codex thread's config): only a new
   // one takes it.
   await hub.changed(key, movedRuntime || recapped);
@@ -294,9 +343,9 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
   const row = known ?? hub.store.getSession(key);
   if (!row) throw new Error(`unknown session ${key}`);
   if (!archived) {
-    const shown = () => {
+    const shown = async () => {
       hub.store.setArchived(key, false, by);
-      rmSync(transcriptCopy(hub, key), { force: true });
+      await rm(transcriptCopy(hub, key), { force: true });
     };
     const restoring = hub.cold.restore(key);
     return restoring ? restoring.then(shown) : shown();
@@ -306,7 +355,9 @@ export function archiveBy(hub: Hub, key: string, archived: boolean, by: string, 
   const actor = hub.actor(row);
   void actor
     .putAway()
-    .then(() => actor.evict())
+    // (what it left in the background ends with it: an archived session keeps nothing running; a turn under way runs
+    // to its end, which ends it then: hub.ts `idleNow`)
+    .then(() => actor.evict(true))
     .then(() => actor.cleanArchive());
 }
 
@@ -322,10 +373,10 @@ export function archiveChat(hub: Hub, thread: number, archived: boolean): void |
 }
 
 /// A snapshot-bounded walk of archived workspaces; no main-thread query returns more than a page.
-async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean = () => true): AsyncGenerator<ArchivedWorkspace> {
+async function* archivedWorkspaces(hub: Hub, through: number | ArchivedWorkspace, needed: () => boolean | Promise<boolean> = () => true): AsyncGenerator<ArchivedWorkspace> {
   let after: ArchivedWorkspace | null = null;
   for (;;) {
-    if (!needed()) return;
+    if (!(await needed())) return;
     const page = hub.store.archivedSessions(after, through);
     for (const s of page) yield s;
     if (page.length < ARCHIVED_WORKSPACE_BATCH) return;
@@ -356,18 +407,18 @@ export async function expireArchived(hub: Hub, now: number): Promise<number | nu
 /// The disk of the station's data is low (ops/disk.ts): archived workspaces are emptied before archivedWorkspaceMs, the
 /// longest archived first, as `expireArchived` empties them, until `free` is DISK_LOW_BYTES again. None with
 /// archivedWorkspaceDays 0 (kept on purpose).
-export async function relieveArchived(hub: Hub, free: () => number): Promise<void> {
+export async function relieveArchived(hub: Hub, free: () => number | Promise<number>): Promise<void> {
   const { cold } = hub;
   if (hub.config().archivedWorkspaceMs <= 0 || !cold.expire || !cold.holdsMore) return;
-  if (free() >= DISK_LOW_BYTES) return;
+  if ((await free()) >= DISK_LOW_BYTES) return;
   const through = hub.store.lastArchivedSession();
   if (through === null) return;
-  for await (const s of archivedWorkspaces(hub, through, () => free() < DISK_LOW_BYTES)) {
-    if (free() >= DISK_LOW_BYTES) return;
+  for await (const s of archivedWorkspaces(hub, through, async () => (await free()) < DISK_LOW_BYTES)) {
+    if ((await free()) >= DISK_LOW_BYTES) return;
     try {
       // Shown and archived again since, it is not the one looked at: `expire` leaves it.
       if (!(await cold.holdsMore(s.key))) continue;
-      if (free() >= DISK_LOW_BYTES) return;
+      if ((await free()) >= DISK_LOW_BYTES) return;
       await cold.expire(s.key, s.archivedAt);
     } catch (error) {
       log.warn("hub", "the workspace of an archived session was not emptied", { session: s.key, error: (error as Error).message });
@@ -622,36 +673,42 @@ export async function deleteSession(hub: Hub, key: string) {
   await actor?.dispose();
   hub.live.forget(key);
   const { dataDir, profiles } = hub.config();
-  const transcripts = transcriptSources(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row)).paths.map((p) => p.path);
+  const transcripts = (await transcriptSourcesSoon(dataDir, profiles, hub.store.runtimeSessionSources(key), sessionPlaces(row))).paths.map((p) => p.path);
   hub.store.deleteSession(key);
   hub.closed(key);
-  rmSync(transcriptCopy(hub, key), { force: true });
-  forgetMarks(marksDir(dataDir), transcripts);
+  await rm(transcriptCopy(hub, key), { force: true });
+  await forgetMarksSoon(marksDir(dataDir), transcripts);
   // Sessions made by the station keep their workspace in a directory of their own.
   const sessions = join(dataDir, "sessions");
   const own = basename(row.workspace) === "workspace" && (row.workspace + sep).startsWith(sessions + sep);
   const home = own ? dirname(row.workspace) : row.workspace;
-  const room = roomOf(dataDir, row.workspace);
+  const room = await roomOfSoon(dataDir, row.workspace);
   if (room !== null) {
     // Git worktrees it archived are let go first, so `git worktree prune` can clean them up.
     await withLock(room, async () => {
       await unlockWorktrees(room);
       await rm(home, { recursive: true, force: true });
     });
-  } else rmSync(home, { recursive: true, force: true });
+  } else await rm(home, { recursive: true, force: true });
   log.info("hub", "session deleted", { session: key });
 }
 
 /// Copies a machine session's transcript to where the station's runtimes keep theirs (`shared`:
 /// data/transcripts/<runtime>), at the same place under it, so a profile resumes it there: for Codex every file it keeps
-/// the thread in. The originals are not touched. Where the transcript read is.
-function copyTranscript(roots: Roots, session: MachineSession, shared: string): string {
+/// the thread in. The originals are not touched. Where the transcript read is. Off the main thread: a Codex home's
+/// rollouts walked as read/machine.ts `transcriptOf` walks them, bounded the same (ops/walk.ts), and a transcript of
+/// hundreds of MB copied by the file system's own copy.
+async function copyTranscript(roots: Roots, session: MachineSession, shared: string): Promise<string> {
   const root = session.runtime === "claude" ? roots.claude : roots.codex;
   const files = [session.path];
   if (session.runtime === "codex") {
-    const rollouts: string[] = [];
-    rolloutsIn(root, rollouts);
-    files.push(...rollouts.filter((p) => p !== session.path && rolloutOf(p, session.id)));
+    await walkBounded(
+      root,
+      (e) => {
+        if (e.file && e.depth > 0 && e.name.startsWith("rollout-") && extension(e.name) === "jsonl" && e.path !== session.path && rolloutOf(e.path, session.id)) files.push(e.path);
+      },
+      { maxDepth: ROLLOUT_DEPTH, maxEntries: ROLLOUT_ENTRIES, followRoot: true },
+    );
   }
   const under = (path: string) => {
     const rel = relative(root, path);
@@ -660,10 +717,10 @@ function copyTranscript(roots: Roots, session: MachineSession, shared: string): 
   };
   for (const from of files) {
     const to = join(shared, under(from));
-    mkdirSync(dirname(to), { recursive: true });
+    await mkdir(dirname(to), { recursive: true });
     const partial = to.replace(/\.jsonl$/, "") + ".jsonl.part";
-    copyFileSync(from, partial);
-    renameSync(partial, to);
+    await copyFile(from, partial);
+    await rename(partial, to);
   }
   return join(shared, under(session.path));
 }
@@ -712,15 +769,15 @@ export async function continueMachineSession(hub: Hub, roots: Roots, found: Mach
   const keptModel = found.model !== null && profiles.some((p) => p.models.includes(found.model!)) ? found.model : null;
   const profile = hub.accounts.pick(profiles, keptModel, false);
   const model = keptModel ?? profile.model ?? profile.models[0] ?? null;
-  const copy = copyTranscript(roots, found, sharedTranscripts(config.dataDir, runtime));
-  // Where its execution history is when it comes here: its last entry, read as the history reads it (from the shared
-  // place, read/transcript.ts `transcriptPaths`).
-  const entries = readTimeline(runtime, copy).length;
+  const copy = await copyTranscript(roots, found, sharedTranscripts(config.dataDir, runtime));
+  // Where its execution history is when it comes here: its last entry, counted as the history reads it (from the shared
+  // place, read/transcript.ts `transcriptPathsSoon`), by the readers, not on this thread.
+  const entries = await hub.live.counted(runtime, copy);
   const last = entries > 0 ? entries - 1 : null;
   const key = newChatKey();
   const workspace = chatWorkspace(config.dataDir, key);
-  mkdirSync(workspace, { recursive: true });
-  mkdirSync(join(config.dataDir, "repos"), { recursive: true });
+  await mkdir(workspace, { recursive: true });
+  await mkdir(join(config.dataDir, "repos"), { recursive: true });
   const now = hub.now();
   const titleOf = found.title ?? found.first;
   const title = titleOf !== null ? Array.from(titleOf).slice(0, 80).join("") : null;

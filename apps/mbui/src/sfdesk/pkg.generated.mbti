@@ -148,7 +148,7 @@ pub fn keep_opened(@ui.Ctx, @sfbase.Source, String, @sfbase.DriveAt, String) -> 
 
 pub fn keys(@ui.Ctx, @sfbase.Source, @sfbase.Workspace) -> Unit
 
-pub fn keys_dialog(@ui.Ctx, @sfbase.Source) -> Unit
+pub fn keys_dialog_node(@view.View, @sfbase.Source, @signals.Signal[Bool]) -> Unit
 
 pub fn laid_beside(@sfbase.Page) -> Bool
 
@@ -338,8 +338,6 @@ pub fn side_place() -> String
 
 pub fn side_slide_reset() -> Unit
 
-pub let side_tab : @ui.Style
-
 pub let side_tab_close : @ui.Style
 
 pub let side_tab_front : @ui.TextStyle
@@ -351,8 +349,6 @@ pub let side_tab_list : @ui.Style
 pub let side_tab_words : @ui.TextStyle
 
 pub fn side_toggle(@sfbase.Source, @sfbase.ChatRef, String) -> Unit
-
-pub fn side_top(@ui.Ctx) -> Unit
 
 pub fn side_top_h() -> Double
 
@@ -410,7 +406,7 @@ pub fn tape_shows_left() -> Double
 
 pub fn tape_shows_right() -> Double
 
-pub fn tape_side(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, SideOf, leaving? : Bool) -> Unit
+pub fn tape_side(@ui.Ctx, @sfbase.Source, @sfbase.Workspace, SideOf) -> Unit
 
 pub let tape_side_max : Double
 

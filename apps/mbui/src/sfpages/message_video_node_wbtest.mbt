@@ -48,7 +48,7 @@ fn video_tester(keeping : Array[Json], platform? : Int = 0) -> @ui.Tester {
       let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
       let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
       let tips = @sf.TipLayer::new(fn() { Some(popup) })
-      message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, "")
+      message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, fn() { "" })
       @sf.presented_nodes(root)
     },
     w=430.0,

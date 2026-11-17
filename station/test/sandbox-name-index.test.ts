@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { keyPart, sandboxName } from "../src/agents/sandbox-name.ts";
-import { disableSandboxIndex, enableSandboxIndex, SANDBOX_SESSION, sandboxIndexReady, sandboxIndexStep, sandboxSessions } from "../src/store/sandbox-index.ts";
+import { disableSandboxIndex, enableSandboxIndex, SANDBOX_SESSION, sandboxIndexReady, sandboxIndexStep, sandboxSessions } from "./reference/backfill/sandbox-index.ts";
 
 const schema = `CREATE TABLE sessions (key TEXT PRIMARY KEY, token TEXT NOT NULL UNIQUE, last_active_at INTEGER NOT NULL)`;
 const add = `INSERT INTO sessions (key, token, last_active_at) VALUES (?, ?, ?)`;

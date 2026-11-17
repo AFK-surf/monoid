@@ -1,8 +1,7 @@
 // What agents do in their own conversations (the Rust station's hub.rs: chat_post, chat_state, chat_history, slack_api and
 // what they rest on): post (with files and a card, ending the turn or not), record how the turn ends, read a thread,
 // and call Slack as their bot. What a tool says of the turn reaches its session's actor, in turn with the rest.
-import { mkdirSync, rmSync } from "node:fs";
-import { copyFile, stat } from "node:fs/promises";
+import { copyFile, mkdir, rm, stat } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join } from "node:path";
 import { PlaceRefused } from "../ops/places.ts";
 import { wall } from "../ops/fibers.ts";
@@ -13,7 +12,7 @@ import { LegacyEditsUnavailable, makeStore as makeReadStore, statePendingCard as
 import { iso } from "../read/transcript.ts";
 import { CARD_POSTS_PENDING } from "../store/card-post-index.ts";
 import { type Attachment, type MessageRow, STILLFAIL_SURFACE, type SessionThread, type ThreadRow } from "../store/store.ts";
-import type { DeclaredState, SessionActor } from "./actor.ts";
+import type { Actor, DeclaredState } from "./actor.ts";
 import {
   type Args,
   MAX_WAIT_SECONDS,
@@ -35,7 +34,7 @@ import {
 import { type ChatSurface, callApi } from "./chat.ts";
 import { threadsToldOf } from "./afresh.ts";
 import type { Hub } from "./hub.ts";
-import { shownFacts } from "./image-size.ts";
+import { shownFactsSoon } from "./image-size.ts";
 import { dir as thumbsDir, keep } from "../drive/thumbs.ts";
 import { INTERNAL_CONNECT } from "./internal.ts";
 import { namedLocalPaths, prepare } from "./local-links.ts";
@@ -138,7 +137,7 @@ function stateWrite(hub: Hub, write: () => void): void {
 
 /// An answer can arrive after the reader returns, while the actor waits its turn. Confirm it inside the same bounded
 /// transaction as the state write. An old lookup or a busy writer is waited for outside the actor's queue.
-async function recordQuestionForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordQuestionForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string], watch: boolean, threadsOf: () => number[], ts: string,
   missing: string): Promise<boolean> {
   let delay = 10;
@@ -179,7 +178,7 @@ async function pendingForState(hub: Hub, key: string, threadsOf: () => number[])
 const NEED_VISIBLE_QUESTION = "need_human requires a visible question: post what you need with chat_post kind=need_human, or give about pointing to your question (a pending answer card is used by default). need alone is not a message to the person";
 
 /// As for a named question, the latest default card must be checked in the state-writing transaction.
-async function recordPendingForTurn(hub: Hub, key: string, actor: SessionActor, turn: string, kind: DeclaredState,
+async function recordPendingForTurn(hub: Hub, key: string, actor: Actor, turn: string, kind: DeclaredState,
   words: string | null, about: [number, number, string] | null, watch: boolean, threadsOf: () => number[],
   requireQuestion: boolean): Promise<boolean> {
   let delay = 10;
@@ -238,12 +237,12 @@ export function mayStage(hub: Hub, args: Args, links: boolean): boolean {
 /// ops/places.ts), so that what reads them next (attach, prepare, sendable) never touches such a folder on the
 /// station's thread. The arguments to go on with, and what removes the copies once the message is sent. A grant the
 /// helper lacks refuses it, its window put up on the Mac, telling the agent to ask with the permissions tool.
-export async function staged(hub: Hub, key: string, args: Args, links: boolean): Promise<{ args: Args; done: () => void }> {
+export async function staged(hub: Hub, key: string, args: Args, links: boolean): Promise<{ args: Args; done: () => Promise<void> }> {
   const row = hub.store.getSession(key);
   const places = hub.places;
   const copies: string[] = [];
-  const done = () => {
-    for (const c of copies) rmSync(dirname(c), { recursive: true, force: true });
+  const done = async () => {
+    await Promise.all(copies.map((c) => rm(dirname(c), { recursive: true, force: true })));
   };
   if (!row || (!Array.isArray(args.files) && !(links && typeof args.text === "string"))) return { args, done };
   const into = join(row.workspace, "uploads");
@@ -285,7 +284,7 @@ export async function staged(hub: Hub, key: string, args: Args, links: boolean):
     }
     return { args: next, done };
   } catch (e) {
-    done();
+    await done();
     throw e;
   }
 }
@@ -298,7 +297,7 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
   if (!row || !target) throw new Error("unknown session");
   if (paths.length > 10) throw new Error("at most 10 files per message");
   const dir = join(target.workspace, "uploads");
-  mkdirSync(dir, { recursive: true });
+  await mkdir(dir, { recursive: true });
   // Copied off the station's thread: a large file, or one read back from disk on a machine short of memory, held it
   // for up to 10 seconds a post (a station, 2026-10-28).
   const out: Attachment[] = [];
@@ -320,9 +319,24 @@ export async function attach(hub: Hub, key: string, paths: string[], into: strin
     const copy = join(dir, `${stamp}-${safe}`);
     await copyFile(path, copy);
     // a picture or a film as it is shown, so pages hold its place (a film's length and frames with it)
-    out.push({ name, path: copy, size: meta.size, ...shownFacts(copy) } satisfies Attachment);
+    out.push({ name, path: copy, size: meta.size, ...(await shownFactsSoon(copy)) } satisfies Attachment);
   }
   return out;
+}
+
+/// Why a card may not wait for `assignee` in chat `thread`, or null: it is an account an agent runs on here (a profile's
+/// name or email) and nobody of that email wrote in the chat. Claude Code tells its model its account's email as "the
+/// user's", which agents took for the person deciding, and the card waited in a 待处理 nobody reads (2026-11-15). One who
+/// runs their agents on their own account and writes in the chat is still theirs to be asked.
+function runnerAssignee(hub: Hub, thread: number, assignee: string): string | null {
+  const own = (v: unknown) => (typeof v === "string" ? v.trim().toLowerCase() : "");
+  if (!hub.config().profiles.some((p) => own(p.name) === assignee || own(p.email) === assignee)) return null;
+  const db = hub.store.db;
+  if (db.prepare("SELECT 1 FROM thread_people WHERE thread = ? AND lower(author) = ? LIMIT 1").get(thread, assignee) !== undefined) return null;
+  const wrote = db.prepare("SELECT author FROM thread_people WHERE thread = ? AND author LIKE '%@%' AND author NOT LIKE '%:%' LIMIT 10").all(thread) as { author: string }[];
+  const people = wrote.map((r) => r.author);
+  const who = people.length > 0 ? `: who wrote here is ${people.join(", ")}` : "";
+  return `card.assignee ${assignee} is an account agents run on here, not a person in this chat (an email your runtime calls its user's is that account). Set it to the deciding person's email from their message's from${who}.`;
 }
 
 /// chat_post: a message to one of the session's conversations, maybe with files and a card, maybe ending its turn.
@@ -369,20 +383,18 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   const thread = target(hub, key, args.to);
   if (store.manuallyArchived(thread.thread.id)) throw new Error(`${threadAddress(thread.thread.channel, thread.thread.threadTs)} was archived by hand: it takes no messages until someone restores it`);
   const chat = hub.chat(thread.connect);
+  const refused = typeof card?.assignee === "string" ? runnerAssignee(hub, thread.thread.id, card.assignee) : null;
+  if (refused !== null) throw new Error(refused);
   // A login card on a platform: its page to open, with a field for the code that page gives or the device code to enter
-  // there; so only for a login of this station at such a step.
+  // there; so only for a login of this station at such a step. Elsewhere the card is still kept in the still.fail chat
+  // (and its 待处理), while the platform message carries the link in its text.
   const page = card?.type === "login" && chat.loginCards === true && card.station === undefined ? (hub.logins?.page(String(card.login)) ?? null) : null;
   const loginHere = page !== null;
-  // (the page goes only into what the platform shows, never into the card the chat keeps)
-  const shown = page !== null ? { ...card, page } : card;
-  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && !loginHere) {
-    throw new Error(
-      card.type === "login" && chat.loginCards === true
-        ? 'a login card is shown here only for a login of this station that gives a device code, or waits for a code from its page (paste: true); otherwise post its link in the text and end with kind "need_human"'
-        : chat.cards === true
-          ? 'a login card is shown only in still.fail chats (CHAT/… or EMBER/…); here post its link in the text and end with kind "need_human"'
-          : 'cards (options, a text field) are not shown here; write the choices or the question in the text and end with kind "need_human"',
-    );
+  // (the page goes only into what the platform shows, never into the card the chat keeps; a login card the platform
+  // cannot show inline is omitted from the platform post while kept in the chat)
+  const shown = loginHere ? { ...card, page } : card?.type === "login" && thread.thread.surface !== STILLFAIL_SURFACE ? null : card;
+  if (card !== null && thread.thread.surface !== STILLFAIL_SURFACE && !(chat.cards === true && (card.type === "options" || card.type === "text")) && card.type !== "login") {
+    throw new Error('cards (options, a text field) are not shown here; write the choices or the question in the text and end with kind "need_human"');
   }
   if (card !== null && text === "") throw new Error("text is required with a card: what it asks and the facts it turns on, so it can be answered from this message alone");
   let about: [number, number, string] | null = null;
@@ -465,6 +477,8 @@ export async function chatPost(hub: Hub, key: string, args: Args, held: Held = {
   if (guarded) {
     if (actor && questionTurn !== null && hub.actors.get(key) === actor) await actor.postedForTurn(questionTurn);
   } else await actor?.postedNow();
+  // A post with no state after one that ended the turn says it goes on: the end said before no longer stands.
+  if (kind === null) await actor?.goesOn();
   if (!guarded && need !== null) await actor?.need(need);
   let recorded = true;
   let stateError: string | null = null;
@@ -710,12 +724,12 @@ export async function chatState(hub: Hub, key: string, args: Args): Promise<stri
 }
 
 /// chat_history: earlier messages of one of the session's conversations.
-/// chat_leave: the session stops hearing a Slack or Feishu thread until someone mentions it there (hub `acceptInTurn`).
+/// chat_leave: the session stops hearing a Slack, Feishu or group thread until someone mentions it there (hub `acceptInTurn`).
 /// A still.fail chat is never left: people there talk to its agents, mentioned or not.
 export function chatLeave(hub: Hub, key: string, args: Args): string {
   const thread = target(hub, key, args.to);
   const to = jsString(args.to);
-  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack and Feishu threads can.`);
+  if (thread.thread.surface === STILLFAIL_SURFACE) throw new Error(`${to} is a still.fail chat: it cannot be left. Only Slack, Feishu and group threads can.`);
   hub.store.leaveThread(thread.thread.id, key);
   return `Left ${to}: its messages no longer reach you until someone mentions you there; chat_history still reads it and chat_post still posts there.`;
 }

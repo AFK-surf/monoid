@@ -154,7 +154,7 @@ static void clip_files_done(GObject *src, GAsyncResult *res, gpointer data) {
 
 // What the clipboard has, as GTK can read it (its own types the formats are read into).
 static GdkContentFormats *clip_formats(void) {
-  GdkContentFormats *f = gdk_clipboard_get_formats(gtk_widget_get_clipboard(area));
+  GdkContentFormats *f = gdk_clipboard_get_formats(gtk_widget_get_clipboard(ws->area));
   return gdk_content_formats_union_deserialize_gtypes(gdk_content_formats_ref(f));
 }
 
@@ -166,7 +166,7 @@ int32_t mb_host_clip_read(void) {
   if (!r) return 0;
   int32_t id = clip_next++;
   r->id = id;
-  GdkClipboard *cb = gtk_widget_get_clipboard(area);
+  GdkClipboard *cb = gtk_widget_get_clipboard(ws->area);
   GdkContentFormats *f = clip_formats();
   gpointer d = GINT_TO_POINTER(id);
   r->waiting = 1;  // (this call's own: none may be asked)

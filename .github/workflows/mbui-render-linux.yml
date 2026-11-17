@@ -12,6 +12,7 @@ on:
       - "libs/mbui/src/host/linux_text.c"
       - "libs/mbui/src/host/linux_image.c"
       - "libs/mbui/src/host/gles_render.h"
+      - "libs/mbui/src/host/frame_mail.h"
       - "libs/mbui/scripts/linux.sh"
       - "libs/mbui/src/render/**"
       - "libs/mbui/src/damage/**"
@@ -27,12 +28,17 @@ on:
       - "libs/mbui/goldens/render/controls.dl"
       - "libs/mbui/scripts/render_dl.sh"
       - "libs/mbui/scripts/render_linux.sh"
+      - "libs/mbui/scripts/gles_render_test.c"
       - ".github/workflows/mbui-render-linux.yml"
   push:
     branches: [main]
     paths: *paths
   workflow_dispatch:
 
+env:
+  # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
+  # read by its deploy key)
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   offscreen:
     strategy:

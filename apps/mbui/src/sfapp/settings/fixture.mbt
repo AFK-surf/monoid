@@ -124,6 +124,9 @@ priv struct SettingsFixture {
   mut offer_quota : Bool
   /// The same subscription independently signed in and borrowed on several stations.
   mut profile_hosts : Bool
+  /// ChatGPT 团队 of a kind of login that cannot be shared (the station's `shareable` false:
+  /// settings-profile-unshareable): its page says so in place of the switch.
+  mut profile_unshareable : Bool
   /// Only one station is signed in; another borrows it.
   mut profile_one_owner : Bool
   /// A borrowing station cannot reach its source, and another station is offline.
@@ -143,6 +146,8 @@ priv struct SettingsFixture {
   relays : Array[String]
   /// whether still.fail's relays were turned off (`workspace.setWay` with `way: "ours"`)
   mut ours_off : Bool
+  /// whether the profiles' overview uses the multi-pool summary fixture (`settings-profiles-sum-a`)
+  mut summary : Bool
 }
 
 ///|
@@ -201,6 +206,7 @@ let fx : SettingsFixture = {
   several: false,
   offer_quota: false,
   profile_hosts: false,
+  profile_unshareable: false,
   profile_one_owner: false,
   profile_away: false,
   profile_pending: false,
@@ -210,6 +216,7 @@ let fx : SettingsFixture = {
   kept_cleared: [],
   relays: [],
   ours_off: false,
+  summary: false,
 }
 
 ///|
@@ -283,6 +290,38 @@ let fixture_open : FixtureOpen = { sheet: "", list: "", block: 0, frames: 0, des
 let fx_connect_step : Ref[String] = Ref("team")
 
 ///|
+/// What is typed on a new group connect's server step (its fields by name), as the page sends it; and whether one was
+/// added (k1 is it then).
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_group_typed : Map[String, String] = Map([])
+
+///|
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_group_made : Ref[Bool] = Ref(false)
+
+///|
+/// Where a new profile's draft for Google is (settings-new-profile-google…): "" none; "pick" (the providers, Google
+/// among them), "method" (its ways), or the way chosen ("plan", "enterprise", "key"); moved on as the page edits it.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google : Ref[String] = Ref("")
+
+///|
+/// Its sign-in's state ("" none started; "needs_code", "needs_project", "verifying"), moved on as the page sends it.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google_login : Ref[String] = Ref("")
+
+///|
+/// An Anthropic plan's sign-in for a new profile (settings-new-profile-login…) given its whole code: signed in, its
+/// profile made (cc); before, waiting on the code.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_new_login_done : Ref[Bool] = Ref(false)
+
+///|
+/// Whether Google accounts are among the profiles (settings-profiles-google): a company's and a person's.
+// kept across runs: the fixture's state, reset with the rest of it (fixture_reset)
+let fx_google_profiles : Ref[Bool] = Ref(false)
+
+///|
 /// 连接 (MBUI_FIXTURE=settings-connects): a Slack app made and not connected yet over the connects, one connect with its
 /// own picture and one with its platform's mark.
 let fx_connects_waiting : Ref[Bool] = Ref(false)
@@ -301,16 +340,23 @@ let fx_station_update_failed : Ref[Bool] = Ref(false)
 let fx_station_updated : Ref[Bool] = Ref(false)
 
 ///|
+/// The workspace in safe mode with its stations not named by it: Willow, online, which the viewer could protect here
+/// (the core's `protect`), and Maple, offline, which it could not.
+let fx_unprotected : Ref[Bool] = Ref(false)
+
+///|
 /// The made-up settings as a run starts (reset): none changed, no sheet or scroll to put up.
 fn fixture_reset() -> Unit {
   fx.names.clear()
   rigs_fixture_reset()
+  move_fixture_reset()
   devices_fixture_reset()
   fx_many_models.val = false
   fx_many_kept.val = false
   fx_station_many_profiles.val = false
   fx_station_update_failed.val = false
   fx_station_updated.val = false
+  fx_unprotected.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
   fx.drive_kept = fx_drive_kept
@@ -369,7 +415,10 @@ fn fixture_reset() -> Unit {
   fx.no_hours = false
   fx.several = false
   fx.offer_quota = false
+  fx.summary = false
+  profiles_narrow_overview.set(false)
   fx.profile_hosts = false
+  fx.profile_unshareable = false
   fx.profile_one_owner = false
   fx.profile_away = false
   fx.profile_pending = false
@@ -381,6 +430,12 @@ fn fixture_reset() -> Unit {
   fixture_open.frames = 0
   fixture_open.desk = ""
   fx_connect_step.val = "team"
+  fx_group_typed.clear()
+  fx_group_made.val = false
+  fx_google.val = ""
+  fx_google_login.val = ""
+  fx_new_login_done.val = false
+  fx_google_profiles.val = false
   fx_connects_waiting.val = false
 }
 
@@ -506,6 +561,14 @@ pub fn fixture_prompts_now(pairing~ : Bool, more? : Bool = false, key_ask~ : Boo
 }
 
 ///|
+/// The bot being made by scanning (MBUI_FIXTURE=settings-new-connect-scan) made: the wizard done on its own, the
+/// connect added (`k1`), told to what follows its topics.
+pub fn fixture_scanned() -> Unit {
+  fx_connect_step.val = "feishuScanned"
+  fx_changed()
+}
+
+///|
 /// Willow a Windows station, running as administrator as `v` says (the core's `StationElevation`), or not.
 pub fn fixture_elevation(v : Json?) -> Unit {
   fx.elevation = v
@@ -519,6 +582,10 @@ pub fn fixture_page(mode : String) -> String {
   } else {
     mode
   }
+  // (the stable channel's: the same page, of Willow updated on the stable channel, which runs no `beta` feature of a
+  // station's: sffixture's fixture_stable_mode)
+  fx_station_beta.val = !m.has_suffix("-stable")
+  let m = if m.has_suffix("-stable") { m.unsafe_substring(start=0, end=m.length() - 7) } else { m }
   // a sheet up over the page, or the page scrolled down (fixture_open; the library's pages too)
   @sf.page_list_opened.val = fn(c, key, rows) { fixture_scroll(c, key, rows~) }
   let up = fn(sheet : String, list : String, block : Int) {
@@ -600,7 +667,7 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/station/ws1/st1", -1)
     }
     // Willow retired from the workspace, its chats moved to another station (station_retire_node.mbt): its ⋯'s
-    // 迁走聊天并移出… there (-retire: Maple the one other station up); its panel opened over its page, what goes and
+    // 迁走聊天并移出工作区 there (-retire: Maple the one other station up); its panel opened over its page, what goes and
     // what stays as Willow counts them (-panel: Maple chosen; -panel-pick: Maple and Cedar up, none chosen; -panel-none:
     // none up; -panel-joined: a workspace Willow only joined, its accounts staying; -panel-long: the one up named long);
     // then 迁移 at the top of its page, its steps as it goes: sending (取消), its chats paused (取消), failed as Maple
@@ -634,12 +701,14 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/station/ws1/st1", 0)
     }
     "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" => {
-      station_parts["ws1/st1"] = "machine"
+      station_parts["ws1/st1"] = "settings"
       fx_station_update_failed.val = m == "settings-station-update-failed"
       fx_station_updated.val = m == "settings-station-updated"
       up("", "settings/station/ws1/st1", 0)
     }
     "settings-stations-add" => up("add", "", 0)
+    // a station its workspace's safe mode does not name, which the viewer could protect: 保护 on its page and its card
+    "settings-station-unprotected" | "settings-stations-unprotected" => fx_unprotected.val = true
     // Profile's ＋ with more than one station online: which to add it on (pressed by the film's step)
     "settings-profiles-pick" => fx.mba_online = true
     // an account's page with the station it is on and its move to another, Maple up to take it: ChatGPT 团队, a
@@ -655,12 +724,22 @@ pub fn fixture_page(mode : String) -> String {
     }
     "settings-profiles-several" => fx.several = true
     "settings-profiles-offer" => fx.offer_quota = true
+    // (an account on several stations' own page: its members those of a profile's hosts)
+    "settings-profile-account" => fx.profile_hosts = true
+    "settings-profiles-sum-a" => {
+      fx.summary = true
+      profiles_narrow_overview.set(true)
+    }
     "settings-stations-existing" => up("add-existing", "", 0)
     "settings-stations-command" => up("add-command", "", 0)
     "settings-first-station" => fx.none = true
     "settings-profile-lower" => up("", "settings/profile/ws1/st1/cc", 2)
     // The sharing section of the made-up subscription, for reviewing its on-screen layout.
     "settings-profile-share" => up("", "settings/profile/ws1/st1/cc", 6)
+    "settings-profile-unshareable" => {
+      fx.profile_unshareable = true
+      up("", "settings/profile/ws1/st1/cx", 0)
+    }
     "settings-profile-hosts" | "settings-profile-hosts-one" | "settings-profile-hosts-away" | "settings-profile-hosts-pending" | "settings-profile-hosts-cutoff" => {
       fx.profile_hosts = true
       fx.profile_one_owner = m == "settings-profile-hosts-one"
@@ -684,6 +763,22 @@ pub fn fixture_page(mode : String) -> String {
       up("", "settings/profile/ws1/st1/cc", 0)
     }
     "settings-new-profile-login" => fx.new_login = true
+    // Google's: from the providers on (pressed through), at its ways, at a company account's code and its project
+    "settings-new-profile-google" => fx_google.val = "pick"
+    "settings-new-profile-google-ways" => fx_google.val = "method"
+    "settings-new-profile-google-code" => {
+      fx_google.val = "enterprise"
+      fx_google_login.val = "needs_code"
+    }
+    "settings-new-profile-google-plan" => {
+      fx_google.val = "plan"
+      fx_google_login.val = "needs_code"
+    }
+    "settings-new-profile-google-project" => {
+      fx_google.val = "enterprise"
+      fx_google_login.val = "needs_project"
+    }
+    "settings-profiles-google" => fx_google_profiles.val = true
     // a key's form for a provider with a choice of region and of protocol (Kimi's: 中国 / 国际, OpenAI / Anthropic
     // 兼容)
     "settings-new-profile-key" => fx.new_key = true
@@ -743,18 +838,21 @@ pub fn fixture_page(mode : String) -> String {
     // the run's models listed (model_list.mbt): more than 8, by series, one of another station's to borrow
     "settings-run-models" => {
       fx_many_models.val = true
-      run_list["session:s-c1"] = "model"
+      run_list.set("session:s-c1", "model")
     }
     // 本机缓存 with many chats kept (a card of 200 rows)
     "settings-kept-many" => fx_many_kept.val = true
     // the run's accounts listed (run_more.mbt account_list)
-    "settings-run-accounts" => run_list["session:s-c1"] = "account"
+    "settings-run-accounts" => run_list.set("session:s-c1", "account")
     // the fonts page at code's faces
     "settings-fonts-code" => fonts_at.set(2)
     "settings-new-connect-platform" => fx_connect_step.val = "platform"
     "settings-new-connect-scan" => fx_connect_step.val = "feishuScan"
     // a new Comma connect's model, its first step after the platform
     "settings-new-connect-comma" => fx_connect_step.val = "commaBind"
+    // a station with the group connect: Group offered and picked; a new group connect's server, filled in
+    "settings-new-connect-platform-group" => fx_connect_step.val = "platformGroup"
+    "settings-new-connect-group" => fx_connect_step.val = "groupForm"
     // a new Slack app's step: its name, its look
     "settings-new-connect-app" => fx_connect_step.val = "app"
     "settings-connects" => fx_connects_waiting.val = true
@@ -764,9 +862,12 @@ pub fn fixture_page(mode : String) -> String {
   if m.has_prefix("settings-new-connect") {
     fixture_open.desk = "new-connect"
   }
+  let moves = move_fixture_mode(m)
   match m {
     "settings" => "home"
-    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" =>
+    _ if moves && (m == "settings-station-move-section" || m == "settings-station-move-offered") => "station:ws1/st1"
+    _ if moves => "move:ws1/st1"
+    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
       "stations"
@@ -778,13 +879,14 @@ pub fn fixture_page(mode : String) -> String {
     "settings-adb-second" => "adb:ws1/st2"
     "settings-profile-menu" | "settings-profile-lower" | "settings-profile-share" | "settings-profile-login" | "settings-profile-login-station" =>
       "profile:ws1/st1#cc"
-    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" => "new-profile:ws1/st1"
+    "settings-new-profile" | "settings-new-profile-hermes" | "settings-new-profile-stations" | "settings-new-profile-login" | "settings-new-profile-login-station" | "settings-new-profile-key" | "settings-new-profile-google" | "settings-new-profile-google-ways"
+    | "settings-new-profile-google-code" | "settings-new-profile-google-plan" | "settings-new-profile-google-project" => "new-profile:ws1/st1"
     "settings-connect-menu" | "settings-connect-mode" => "connect:ws1/st1#k1"
     "settings-connect-run" | "settings-connect-switch" | "settings-slack-app" => "connect:ws1/st1#k1"
     // the page of a connect of another kind, none of its sessions yet
-    "settings-connect-comma" | "settings-connect-feishu" => "connect:ws1/st1#k1"
-    "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma" =>
-      "connects"
+    "settings-connect-comma" | "settings-connect-feishu" | "settings-connect-group" => "connect:ws1/st1#k1"
+    "settings-new-connect" | "settings-new-connect-platform" | "settings-new-connect-scan" | "settings-new-connect-app" | "settings-new-connect-comma"
+    | "settings-new-connect-platform-group" | "settings-new-connect-group" => "connects"
     "settings-vault-off" | "settings-vault-words" | "settings-vault-recover" | "settings-vault-plain" | "settings-vault-waits" =>
       "vault"
     "settings-vault-items" | "settings-vault-add" | "settings-vault-editor" => "vault-items"
@@ -813,7 +915,8 @@ pub fn fixture_page(mode : String) -> String {
     "settings-notify-off" | "settings-lock-prompt" | "settings-lock-prompt-personal" | "settings-vault-prompt" => "home"
     // (the notifications' page; the system having refused them: its banner's way to allow them)
     "settings-notify" | "settings-notify-denied" => "notifications"
-    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" => "station:ws1/st1"
+    "settings-station" | "settings-station-pages" | "settings-station-many-profiles" | "settings-station-own3" | "settings-station-unprotected" => "station:ws1/st1"
+    "settings-stations-unprotected" => "stations"
     "settings-station-offline" => "station:ws1/st2"
     "settings-memory" => "memory:ws1/st1"
     "settings-memory-doc" => "memory-doc:ws1/st1#发布流程"
@@ -822,11 +925,17 @@ pub fn fixture_page(mode : String) -> String {
     "settings-profile-key" | "settings-profile-move-key" => "profile:ws1/st1#k2"
     "settings-profile-move" => "profile:ws1/st1#cx"
     "settings-profile-copy" => "profile:ws1/st1#bx"
-    "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" => "profile:ws1/st1#cx"
+    "settings-profile-quota" | "settings-profile-quota-login" | "settings-profile-quota-expiry" | "settings-profile-unshareable" => "profile:ws1/st1#cx"
     "settings-profile-quota-kinds" => "profile:ws1/st1#cc"
+    // (an account on several stations by its key, and one station's profiles from its page)
+    "settings-profile-account" => "profile-account:ws1/st1/cc"
+    "settings-profiles-station" => "profiles:ws1/st1"
     "settings-me-reading" => "me"
-    "settings-usage-details-pending" => "usage"
-    "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer" => "profiles"
+    "settings-usage-details-pending" | "settings-usage-real" => "usage"
+    // (its prices of the same workspace's: usage_real's)
+    "settings-usage-real-prices" => "prices"
+    "settings-profiles-pick" | "settings-profiles-monthly" | "settings-profiles-fable" | "settings-profiles-own3" | "settings-profiles-week-fable" | "settings-profiles-several" | "settings-profiles-offer"
+    | "settings-profiles-google" | "settings-profiles-sum-a" => "profiles"
     "settings-connect" | "settings-connect-borrow" => "connect:ws1/st1#k1"
     _ =>
       if m.has_prefix("settings-") {
@@ -869,11 +978,12 @@ fn meter(short : String, left : Int, level : String, remaining : String, big : S
 
 ///|
 fn fx_profile(id : String, name : String, kind : String, tone : String, check : String, group : String, title : String, more : Array[(String, Json)]) -> Json {
+  let rt = if group == "chatgpt" { "codex" } else if group == "agy" { "agy" } else { "claude" }
   let p : Map[String, Json] = {
     "id": str(id),
     "name": str(name),
-    "runtime": str(if group == "chatgpt" { "codex" } else { "claude" }),
-    "runtimes": [str(if group == "chatgpt" { "codex" } else { "claude" })],
+    "runtime": str(rt),
+    "runtimes": [str(rt)],
     "access": obj([("kind", str(kind)), ("key", str(if kind == "subscription" { "" } else { "sk-…a41f" }))]),
     "home": "",
     "homeExists": true,
@@ -1002,6 +1112,23 @@ fn fx_profiles() -> Array[Json] {
       ("usedBy", []),
     ]),
   ]
+  if fx_google_profiles.val {
+    // Google accounts signed in to (settings-profiles-google): a company's on Gemini Enterprise, a person's on Ultra,
+    // their plans as the station's check says them
+    for g in [("gw", "lin@company.example", "Enterprise Ultra"), ("gp", "lin@gmail.example", "Ultra")] {
+      profiles.push(
+        fx_profile(g.0, g.1, "subscription", "green", "可用", "google", "Google 订阅", [
+          ("runtime", str("agy")),
+          ("runtimes", [str("agy")]),
+          ("email", str(g.1)),
+          ("planText", str(g.2)),
+          ("signInProvider", str("Google")),
+          ("usesText", str("Antigravity CLI")),
+          ("usedBy", []),
+        ]),
+      )
+    }
+  }
   if fx.copy_shown {
     // Maple's Claude subscription borrowed here (share role user): its station pauses it (`enabled`), edits nothing else.
     profiles.push(
@@ -1016,7 +1143,145 @@ fn fx_profiles() -> Array[Json] {
   if fx.several {
     fx_several(profiles)
   }
+  if fx.summary {
+    return fx_summary_profiles()
+  }
   profiles
+}
+
+///|
+/// The Profile overview the made-up core says (`profilesOverview`): the core's own of the accounts it lists, as
+/// fixture_overview.mbt keeps them (fx_summary_profiles' or fx_profiles' two subscriptions); none with no station.
+pub fn fixture_overview() -> Json {
+  if fx.none {
+    return obj([("pools", [])])
+  }
+  @json.parse(if fx.summary { fx_overview_summary } else { fx_overview_plain }) catch {
+    _ => obj([("pools", [])])
+  }
+}
+
+///|
+/// Realistic multi-account pool across four provider groups for the profiles overview designs.
+fn fx_summary_profiles() -> Array[Json] {
+  let win = fn(label : String, mark : String, left : Int, refills : String, scope : String) -> Json {
+    let level = if left <= 10 { "red" } else if left <= 25 { "amber" } else { "ok" }
+    let fields : Array[(String, Json)] = [
+      ("label", str(label)),
+      ("usedPercent", Json::number((100 - left).to_double())),
+      ("mark", str(mark)),
+      ("left", Json::number(left.to_double())),
+      ("level", str(level)),
+      ("refills", str(refills)),
+    ]
+    if scope != "" {
+      fields.push(("scope", str(scope)))
+    }
+    obj(fields)
+  }
+  let ok_q = fn(ws : Array[Json]) -> Json {
+    obj([("state", str("ok")), ("windows", Json::array(ws)), ("checkedAt", Json::number(0.0)), ("time", obj([("checkedAt", stamp_of("2 分钟前"))]))])
+  }
+  let ok_q_reset = fn(ws : Array[Json], count : Int, text : String) -> Json {
+    obj([
+      ("state", str("ok")),
+      ("windows", Json::array(ws)),
+      ("resetCount", Json::number(count.to_double())),
+      ("resetText", str(text)),
+      ("checkedAt", Json::number(0.0)),
+      ("time", obj([("checkedAt", stamp_of("2 分钟前"))])),
+    ])
+  }
+  [
+    // Claude 订阅 (5): weighted tight weekly pace (4 days left to reset, heavy usage + 1 weekly dead + 1 expired login)
+    fx_profile("cc", "Claude 主账号", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("planText", str("Max 20x")),
+      (
+        "quota",
+        ok_q_reset(
+          [win("5 小时", "5H", 48, "2 小时后恢复", ""), win("每周", "W", 28, "5 天后恢复", ""), win("每周 · Fable", "Fable", 52, "5 天后恢复", "Fable")],
+          1,
+          "剩余 1 次重置 · 28 小时后过期",
+        ),
+      ),
+    ]),
+    fx_profile("cc2", "afkdev1@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("afkdev1@proton.me")),
+      ("planText", str("Max 20x")),
+      ("quota", ok_q([win("5 小时", "5H", 36, "3 小时后恢复", ""), win("每周", "W", 22, "5 天后恢复", ""), win("每周 · Fable", "Fable", 45, "5 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc3", "afkdev2@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("afkdev2@proton.me")),
+      ("planText", str("Max 5x")),
+      ("quota", ok_q([win("5 小时", "5H", 0, "42 分钟后恢复", ""), win("每周", "W", 40, "4 天后恢复", ""), win("每周 · Fable", "Fable", 80, "4 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc4", "cuesurf4@proton.me", "subscription", "green", "可用", "claude", "Claude 订阅", [
+      ("email", str("cuesurf4@proton.me")),
+      ("planText", str("Max 20x")),
+      ("quota", ok_q([win("每周", "W", 0, "2 天后恢复", ""), win("每周 · Fable", "Fable", 100, "2 天后恢复", "Fable")])),
+    ]),
+    fx_profile("cc5", "cuesurf2@proton.me", "subscription", "red", "需要登录", "claude", "Claude 订阅", [
+      ("email", str("cuesurf2@proton.me")),
+      ("planText", str("Max 20x")),
+      ("trouble", obj([("title", str("需要重新登录")), ("detail", str("登录凭证已过期")), ("next", str("重新登录这个账号后恢复使用")), ("action", str("login")), ("label", str("重新登录"))])),
+      ("quota", obj([("state", str("unavailable")), ("windows", []), ("checkedAt", Json::number(0.0))])),
+    ]),
+    // ChatGPT 订阅 (3): comfortable pace, and jiachen@cue.surf resets in 14h with 84% weekly quota untouched
+    fx_profile("cx", "ChatGPT 团队", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("planText", str("Pro 200")),
+      ("quota", ok_q([win("5 小时", "5H", 82, "3 小时后恢复", ""), win("每周", "W", 68, "3 天后恢复", "")])),
+    ]),
+    fx_profile("cx2", "jiachen@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("email", str("jiachen@cue.surf")),
+      ("planText", str("Pro 200")),
+      ("quota", ok_q([win("5 小时", "5H", 92, "4 小时后恢复", ""), win("每周", "W", 84, "14 小时后恢复", "")])),
+    ]),
+    fx_profile("cx3", "yangjinfei@cue.surf", "subscription", "green", "可用", "chatgpt", "ChatGPT 订阅", [
+      ("email", str("yangjinfei@cue.surf")),
+      ("planText", str("Plus")),
+      ("quota", ok_q([win("5 小时", "5H", 100, "5 小时后恢复", ""), win("每周", "W", 0, "2 天后恢复", "")])),
+    ]),
+    // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools
+    fx_profile("ag1", "zover.v@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+      ("email", str("zover.v@gmail.com")),
+      ("planText", str("AI Ultra")),
+      ("signInProvider", str("Google")),
+      (
+        "quota",
+        ok_q([
+          win("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
+          win("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
+          win("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
+        ]),
+      ),
+    ]),
+    fx_profile("ag2", "zzj3720@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
+      ("email", str("zzj3720@gmail.com")),
+      ("planText", str("AI Ultra")),
+      ("signInProvider", str("Google")),
+      (
+        "quota",
+        ok_q([
+          win("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
+          win("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
+          win("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
+        ]),
+      ),
+    ]),
+    // API key (2): 1 ready with balance, 1 invalid key
+    fx_profile("k1", "OpenRouter", "api-provider", "green", "可用", "key", "API key", [
+      ("providerName", str("OpenRouter")),
+      ("providerMark", str("openrouter")),
+      ("access", obj([("kind", str("api-provider")), ("provider", str("openrouter")), ("key", str("sk-or-…9c2a"))])),
+      ("quota", obj([("state", str("ok")), ("windows", []), ("creditsText", str("余额 $42.80")), ("checkedAt", Json::number(0.0))])),
+      ("usedBy", ["k1"]),
+    ]),
+    fx_profile("k2", "备用 key", "anthropic-api", "red", "key 已失效", "key", "API key", [
+      ("trouble", obj([("title", str("key 已失效")), ("detail", str("服务商拒绝了这个 key")), ("next", str("更换有效 key")), ("action", str("key")), ("label", str("更换 key"))])),
+      ("quota", obj([("state", str("unsupported")), ("windows", []), ("checkedAt", Json::number(0.0))])),
+      ("usedBy", []),
+    ]),
+  ]
 }
 
 ///|
@@ -1323,6 +1588,7 @@ fn fx_cx_more() -> Array[(String, Json)] {
   }
   let left = 2 - fx.resets_used
   [
+    ("shareable", Json::boolean(!fx.profile_unshareable)),
     ("modelsText", str("\{ids.length()} 个模型")),
     ("models", Json::array(ids.map(str))),
     ("named", Json::array(fx.models_added.map(str))),
@@ -1442,17 +1708,33 @@ fn fx_connect(id : String, name : String, presence : String, status : String, mo
 }
 
 ///|
-/// Connect k1 as one of another kind (MBUI_FIXTURE=settings-connect-comma, -feishu): Comma's, reached in Comma and
-/// running a session a Task; Feishu's, its app on 飞书. No Slack workspace either, so no team.
+/// Connect k1 as one of another kind (MBUI_FIXTURE=settings-connect-comma, -feishu, -group): Comma's, reached in Comma
+/// and running a session a Task; Feishu's, its app on 飞书; Group's, a member of an IM server. No Slack workspace
+/// either, so no team.
 fn fx_connect_as(kind : String) -> Json {
   let feishu = kind == "feishu"
-  match fx_connect("k1", if feishu { "飞书助手" } else { "Comma 助手" }, "online", "在线", "multi-session") {
+  let group = kind == "group"
+  match fx_connect("k1", if feishu { "飞书助手" } else if group { "Claude" } else { "Comma 助手" }, "online", "在线", "multi-session") {
     Object(o) => {
       o["kind"] = str(kind)
       o.remove("team")
       o.remove("slack")
       o["sessions"] = Json::number(0.0)
-      o["placeText"] = str(if feishu { "飞书" } else { "Comma" })
+      o["placeText"] = str(if feishu { "飞书" } else if group { "Group" } else { "Comma" })
+      if group {
+        o["group"] = obj([
+          ("server", str("3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")),
+          ("relays", [str("https://relay-tokyo.group.example")]),
+          ("botName", str("Claude")),
+          ("memberId", str("5c1e9a7b3d2f")),
+          ("device", str("b7e2c94f0a1d3e5c7b9a2f4e6d8c0b1a3f5e7d9c2b4a6f8e0d1c3b5a7f9e2d4c")),
+          ("joining", Json::boolean(false)),
+        ])
+        o["modeWords"] = fx_mode_words_group()
+        o["modeText"] = str("每个对话一个会话")
+        o["modeLabel"] = str("每个对话一个会话")
+        o["modeSentence"] = str("私聊它，或在群里 @ 它开始；之后这个私聊或群里的消息都交给这个会话")
+      }
       if feishu {
         o["feishu"] = obj([
           ("appId", str("cli_a7f3e9b2c41d500e")),
@@ -1491,6 +1773,63 @@ fn fx_comma_flow() -> Json {
     ("noProfile", Json::boolean(false)),
     ("canCreate", Json::boolean(true)),
     ("pick", fx_session_pick()),
+  ])
+}
+
+///|
+/// A new group connect (MBUI_FIXTURE=settings-new-connect-platform-group, settings-new-connect-group): Group picked
+/// among the platforms; its model and way; its server, step 3 of 3, as typed (settings-new-connect-group: filled in as
+/// someone pasted it); added.
+fn fx_group_flow(step : String, mode : String) -> Json {
+  let filled = mode == "settings-new-connect-group"
+  let typed = fn(name : String, sample : String) { if filled { sample } else { fx_group_typed.get(name).unwrap_or("") } }
+  let server = typed("server", "3f9a1c0e7b2d4a6f8e1c3b5d7a9f0e2c4b6d8a0f1e3c5b7d9a2f4e6c8b0d1a3f")
+  let relays = typed("relays", "https://relay-tokyo.group.example")
+  let code = typed("code", "7K2M-QX9P-H4TW-3NRB")
+  let ready = server.length() == 64 && relays.has_prefix("https://") && code.length() >= 16
+  let form = step == "groupForm" || step == "groupDone"
+  let step = if step == "groupDone" { "done" } else { step }
+  obj([
+    ("step", str(step)),
+    ("title", str(if form { "加入 Group 服务器" } else if step == "groupBind" { "绑定模型" } else { "选择平台" })),
+    ("back", str(if form { "groupBind" } else if step == "groupBind" { "platform" } else { "close" })),
+    ("number", Json::number(if form { 3.0 } else if step == "groupBind" { 2.0 } else { 1.0 })),
+    ("total", Json::number(3.0)),
+    ("mobile", Json::boolean(true)),
+    ("platforms", [str("slack"), str("feishu"), str("comma"), str("group")]),
+    ("platform", str("group")),
+    (
+      "group",
+      obj([
+        ("server", str(server)),
+        ("relays", str(relays)),
+        ("code", str(code)),
+        ("botName", str(typed("botName", "Claude"))),
+        ("serverError", Json::null()),
+        ("relaysError", Json::null()),
+        ("codeError", Json::null()),
+        ("ready", Json::boolean(ready)),
+        ("error", Json::null()),
+      ]),
+    ),
+    ("mode", str("multi-session")),
+    ("requireMention", Json::boolean(true)),
+    ("threads", Json::boolean(false)),
+    ("modeWords", fx_mode_words_group()),
+    ("noProfile", Json::boolean(false)),
+    ("canCreate", Json::boolean(true)),
+    ("pick", fx_session_pick()),
+  ])
+}
+
+///|
+/// How a group connect's ways are said (present.ts modeWords "group"): in its conversations' words.
+fn fx_mode_words_group() -> Json {
+  obj([
+    ("multi", obj([("label", str("每个对话一个会话")), ("description", str("私聊它，或在群里 @ 它开始；之后这个私聊或群里的消息都交给这个会话"))])),
+    ("single", obj([("label", str("所有对话共用一个会话")), ("description", str("它所在的群和私聊都进入同一个会话，适合长期值守的助手"))])),
+    ("mentionOn", str("被 @ 后，同一个群里的后续消息无需再 @；私聊的每条消息都会进入会话。")),
+    ("mentionOff", str("它所在的群和私聊里的每条消息都会进入会话。")),
   ])
 }
 
@@ -1643,6 +1982,7 @@ fn fx_station(address : String) -> Json {
           []
         },
       ),
+      ("protect", Json::boolean(fx_unprotected.val && !fx.willow_away)),
       // the runtimes it runs, each with its models (its page's: the connect page asks whether one runs on its runtime)
       ("runtimes", [obj([("runtime", str("claude")), ("models", [str("claude-opus-5-5"), str("claude-sonnet-5")])])]),
       // what its profiles have turned on (Claude 主账号's: Opus 5.5 and Sonnet 5, on claude)
@@ -1715,7 +2055,23 @@ fn fx_station(address : String) -> Json {
           ("connects", [fx_connect("k1", "星火助手", "online", "在线", "multi-session")]),
           ("profiles", Json::array(profiles)),
           // a new profile's sign-in under way (settings-new-profile-login…)
-          ("logins", if fx.new_login { [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])] } else { [] }),
+          (
+            "logins",
+            if fx_google_login.val != "" {
+              [
+                obj([
+                  ("id", str("login-new")), ("runtime", str("agy")), ("job", fx_google_job(fx_google_login.val)),
+                  ("created", if fx_google_login.val == "done" { str("gw") } else { Json::null() }),
+                ]),
+              ]
+            } else if fx.new_login && fx_new_login_done.val {
+              [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "done")), ("created", str("cc"))])]
+            } else if fx.new_login {
+              [obj([("id", str("login-new")), ("runtime", str("claude")), ("job", fx_login_job("login-new", "needs_code"))])]
+            } else {
+              []
+            },
+          ),
           ("processesText", str("2 个 agent 进程 · claude 1.2 GB")),
           (
             "slackApps",
@@ -1811,6 +2167,8 @@ fn fx_station(address : String) -> Json {
           ("network", obj([("congestion", str(fx.congestion))])),
           ("elevation", fx.elevation.unwrap_or(Json::null())),
           ("copies", fx.copies.unwrap_or(Json::null())),
+          ("move", fx_move_offer()),
+          ("features", fx_station_features()),
           ("sharing", Json::boolean(true)),
           (
             "machineLogins",
@@ -1896,6 +2254,9 @@ fn fx_station(address : String) -> Json {
       ("face", str(if up { "idle" } else { "offline" })),
       ("online", Json::boolean(up)),
       ("link", obj([("state", str(if up { "online" } else { "offline" }))])),
+      // (away, as Willow away says it)
+      ("stateText", str(if up { "" } else { "2 天前在线" })),
+      ("problems", if up { [] } else { [obj([("key", str("away")), ("level", str("red")), ("text", str("离线：在该机器上打开 still.fail 即可重新连接"))])] }),
       ("runtimes", []),
       ("models", []),
     ])
@@ -1903,7 +2264,7 @@ fn fx_station(address : String) -> Json {
 }
 
 ///|
-fn fx_archive() -> Json {
+fn fx_archive(q? : String = "") -> Json {
   let all = [
     ("a1", "整理上个月的发票", "已经把 23 张发票按月份归好", "14:05", "今天", true),
     ("a2", "试一下新的图标尺寸", "三种尺寸的对比图放在共享文件夹里", "11:30", "今天", true),
@@ -1913,6 +2274,10 @@ fn fx_archive() -> Json {
   let days : Array[(String, Array[Json])] = []
   for a in all {
     if fx.restored.contains("s-" + a.0) {
+      continue
+    }
+    // (looked for: those whose title or last line has the words, as the core's archive search has them)
+    if q != "" && !a.1.contains(q) && !a.2.contains(q) {
       continue
     }
     let row = obj([
@@ -2240,14 +2605,27 @@ fn fx_memory() -> Json {
     (
       "global",
       obj([
-        ("path", str("~/.claude/CLAUDE.md")),
+        ("path", str("~/.stillfail/agent/MEMORY.md")),
         ("text", str("")),
         ("size", str("4 KB")),
+        ("whenChanged", str("15 分钟前 · Willow")),
         (
           "sections",
           [
             obj([("title", str("开头")), ("text", str("这台机器上的 agent 共用的记忆。")), ("note", str("1 KB"))]),
-            obj([("title", str("习惯")), ("text", str("- 提交前先跑测试\n- 说明写成完整的句子")), ("note", str("2 条"))]),
+            obj([
+              ("title", str("习惯")),
+              ("text", str("- 提交前先跑测试\n- 说明写成完整的句子")),
+              ("note", str("2 条")),
+              ("whenChanged", str("15 分钟前 · Willow")),
+              (
+                "diff",
+                [
+                  [str("-"), str("- UI 改动先本地出图发用户确认再提 PR")],
+                  [str("+"), str("- 复杂的活和 UI 设计先让用户确认方案和预览效果再动手；干活中有新变化先确认方案")],
+                ],
+              ),
+            ]),
           ],
         ),
       ]),
@@ -2264,6 +2642,14 @@ fn fx_memory() -> Json {
           ("body", str("## 步骤\n\n1. 改版本号\n2. 写更新说明\n3. 打包并上传")),
           ("about", str("发布新版本时")),
           ("size", str("3 KB")),
+          ("whenChanged", str(if fx.skills_shared.get("发布流程").unwrap_or(true) { "25 分钟前 · Willow" } else { "" })),
+          (
+            "diff",
+            [
+              [str("-"), str("2. 手工整理更新说明")],
+              [str("+"), str("2. 写更新说明")],
+            ],
+          ),
           ("files", [obj([("name", str("checklist.md")), ("text", str("- 签名\n- 截图")), ("label", str("checklist")), ("size", str("1 KB"))])]),
           // (the core's words of it: looks.ts)
           ("group", str("project")), ("kindText", str("项目记忆")), ("whenText", str("发布新版本时")), ("line", str("发布新版本时")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("## 步骤\n\n1. 改版本号\n2. 写更新说明\n3. 打包并上传"))]), obj([("key", str("checklist.md")), ("label", str("checklist")), ("size", str("1 KB")), ("text", str("- 签名\n- 截图"))])]),
@@ -2273,7 +2659,7 @@ fn fx_memory() -> Json {
               obj([("id", str("sh1")), ("role", str("host")), ("host", str("st1")), ("conflicts", ["SKILL.md"]), ("users", ["st2"]), ("missing", [])])
             } else {
               obj([])
-            },
+            }
           ),
         ]),
         obj([
@@ -2283,6 +2669,7 @@ fn fx_memory() -> Json {
           ("builtin", Json::boolean(false)),
           ("text", str("每周五下午写。")),
           ("size", str("1 KB")),
+          ("whenChanged", str("40 分钟前 · Maple")),
           ("group", str("skill")), ("kindText", str("Skill")), ("whenText", str("写周报时用的格式")), ("line", str("写周报时用的格式")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("每周五下午写。"))])]),
         ]),
         obj([("name", str("pdf")), ("size", str("2 KB")), ("description", str("读写 PDF")), ("project", Json::boolean(false)), ("builtin", Json::boolean(true)), ("text", str("")), ("group", str("builtin")), ("kindText", str("station 内置")), ("whenText", str("读写 PDF")), ("line", str("读写 PDF")), ("pages", [obj([("key", str("")), ("label", str("总览")), ("text", str("（空）"))])])]),
@@ -2484,6 +2871,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    // (Willow's: Maple is away, none of its own known)
+    "screens" if text(Some(Json::object(params)), "station") == "ws1/st2" =>
+      Some(obj([("screens", Json::array([])), ("outdated", Json::boolean(false)), ("control", Json::boolean(false)), ("known", Json::boolean(true))]))
     "screens" => {
       let m = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
       if m == "settings-station-pages" || m == "screen-pages" || m == "screen-user-pages" || m == "screen-user-tabs" {
@@ -2553,6 +2943,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           ),
         ]),
       )
+    "profileFlow" if fx_google.val != "" => Some(fx_profile_flow_google(fx_google.val))
     "profileFlow" if fx.new_login => Some(fx_profile_flow_plan())
     "profileFlow" if fx.new_key => Some(fx_profile_flow_key())
     "profileFlow" => Some(fx_profile_flow(hermes=mode == "settings-new-profile-hermes"))
@@ -2572,6 +2963,9 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
       }
     }
     "connectFlow" if fx_connect_step.val == "commaBind" => Some(fx_comma_flow())
+    "connectFlow" if fx_connect_step.val == "platformGroup" => Some(fx_group_flow("platform", mode))
+    "connectFlow" if fx_connect_step.val == "groupBind" || fx_connect_step.val == "groupForm" || fx_connect_step.val == "groupDone" =>
+      Some(fx_group_flow(fx_connect_step.val, mode))
     "connectFlow" if fx_connect_step.val != "team" && fx_connect_step.val != "app" =>
       Some(fx_feishu_flow(fx_connect_step.val))
     "connectFlow" =>
@@ -2740,13 +3134,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                   match mode {
                     "settings-connect-comma" => fx_connect_as("comma")
                     "settings-connect-feishu" => fx_connect_as("feishu")
+                    "settings-connect-group" => fx_connect_as("group")
+                    _ if fx_group_made.val => fx_connect_as("group")
                     _ => fx_connect("k1", "星火助手", "online", "在线", "multi-session")
                   },
                 ),
                 ("runtimeChanges", Json::boolean(mode == "settings-connect-switch")),
                 (
                   "sessions",
-                  if mode == "settings-connect-comma" || mode == "settings-connect-feishu" {
+                  if mode == "settings-connect-comma" || mode == "settings-connect-feishu" || mode == "settings-connect-group" || fx_group_made.val {
                     []
                   } else {
                     [
@@ -2948,7 +3344,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           // (as the list is sent it: client/core-ts schema.ts WorkspaceProfile, ListedProfile)
           ("profile", listed_profile_said(p)),
           ("title", str(if text(Some(p), "email") == "" { text(Some(p), "name") } else { text(Some(p), "email") })),
-          ("usable", Json::boolean(true)),
+          ("usable", Json::boolean(if has(pv, "usable") { flag(pv, "usable") } else { true })),
           ("state", state),
           ("look", Json::boolean(look)),
           ("where", str(if fx.trouble == "quota-login" && text(pv, "id") == "cx" { "Willow" } else { "Willow 可用" })),
@@ -2990,6 +3386,19 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     }
+    // (what the core makes of a workspace spread over three stations as real ones are: usage_real.mbt; split as asked,
+    // the core's choice where none is, all of it where a part or a day is picked)
+    "usage" if mode.has_prefix("settings-usage-real") =>
+      usage_real(
+        match params.get("days") {
+          Some(Number(n, ..)) => n.to_int()
+          _ => 7
+        },
+        match params.get("split") {
+          Some(String(l)) => l
+          _ => ""
+        },
+      )
     "usage" =>
       Some(
         fx_usage(
@@ -3016,7 +3425,15 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           details_pending=mode == "settings-usage-details-pending",
         ),
       )
-    "archive" => Some(fx_archive())
+    "archive" =>
+      Some(
+        fx_archive(
+          q=match params.get("q") {
+            Some(String(q)) => q
+            _ => ""
+          },
+        ),
+      )
     "memory" => Some(fx_memory())
     // (settings-me-reading: where the account is signed in not read yet, its wait line shown)
     "loginSessions" if mode.has_prefix("settings-me-reading") => None
@@ -3049,6 +3466,8 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
         ]),
       )
     }
+    "stationMove" => Some(fx_move_view(params))
+    "doing" if fx_move.refused is Some(_) => Some(obj([("doing", Json::array(fx_move_doing()))]))
     "doing" => Some(obj([("doing", if fx.protecting {
       [obj([("call", str("lock.joinStation")), ("stage", str("running")), ("params", obj([("workspace", str("ws1")), ("station", str("st2"))]))])]
     } else if fx.key_giving {
@@ -3115,6 +3534,10 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     )
   }
   match retire_fixture_call(name, p) {
+    Some(r) => return Some(r)
+    None => ()
+  }
+  match move_fixture_call(name, p) {
     Some(r) => return Some(r)
     None => ()
   }
@@ -3339,6 +3762,8 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
       let target = match (to, fx_connect_step.val) {
         ("back", "app") => "team"
         ("back", "feishuScan") => "feishuWay"
+        ("back", "groupForm") => "groupBind"
+        ("back", "groupBind") => "platformGroup"
         ("back", _) => "close"
         (step, _) => step
       }
@@ -3353,6 +3778,91 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
     // the drafts' forms (a new profile's, a new connect's, the decisions' and the archive policy's), opened and edited
     // an Anthropic plan's sign-in for a new profile, begun (settings-new-profile-login…)
     "login.new" if fx.new_login => Some(Ok(obj([("id", str("login-new")), ("job", fx_login_job("login-new", "needs_code"))])))
+    // a code pasted back for Claude's sign-in, as the station takes it (station/src/accounts/login.ts claudeCodeOf):
+    // refused without its `#` and what follows it, the sign-in still waiting; whole, signed in
+    "login.code" if fx.new_login =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx_new_login_done.val = true
+            fx_changed()
+            Ok(obj([("job", fx_login_job("login-new", "done"))]))
+          }
+        },
+      )
+    "profile.loginCode" if fx.login == "needs_code" =>
+      Some(
+        match fx_claude_code(text(p, "code")) {
+          Some(e) => Err(e)
+          None => {
+            fx.login = "done"
+            fx_changed()
+            Ok(obj([]))
+          }
+        },
+      )
+    // Google's sign-in, begun; its code taken (a company's then asks for its project), its project taken
+    "login.new" if fx_google.val != "" => {
+      // (one under way already, as a mode put it: as it is)
+      if fx_google_login.val == "" {
+        fx_google_login.val = "needs_code"
+      }
+      fx_changed()
+      Some(Ok(obj([("id", str("login-new")), ("job", fx_google_job(fx_google_login.val))])))
+    }
+    "login.code" if fx_google_login.val != "" => {
+      // (a company's code: then its project; its project, or a person's code: signed in, its profile made, as gw)
+      fx_google_login.val = if fx_google_login.val == "needs_code" && fx_google.val == "enterprise" { "needs_project" } else { "done" }
+      if fx_google_login.val == "done" {
+        fx_google_profiles.val = true
+      }
+      fx_changed()
+      Some(Ok(obj([("job", fx_google_job(fx_google_login.val))])))
+    }
+    "login.drop" if fx_google_login.val != "" => {
+      fx_google_login.val = ""
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    // Google's draft moved on as the core moves it (forms.ts): its provider picked, a way chosen, back
+    "profile.flow.edit" if fx_google.val != "" => {
+      let patch = field(p, "input")
+      let was = fx_google.val
+      fx_google.val = if text(patch, "provider") == "google" {
+        "method"
+      } else if has(patch, "provider") && text(patch, "provider") == "" {
+        "pick"
+      } else if text(patch, "method") != "" {
+        text(patch, "method")
+      } else if flag(patch, "back") {
+        if was == "method" || was == "pick" { "pick" } else { "method" }
+      } else {
+        was
+      }
+      if fx_google.val != was {
+        fx_google_login.val = ""
+        fx_changed()
+      }
+      Some(Ok(obj([])))
+    }
+    // a new group connect's server as typed, and added (k1 is it from then on)
+    "connect.flow.edit" if has(field(p, "input"), "group") => {
+      let g = field(field(p, "input"), "group")
+      for name in ["server", "relays", "code", "botName"] {
+        if has(g, name) {
+          fx_group_typed[name] = text(g, name)
+        }
+      }
+      fx_changed()
+      Some(Ok(obj([])))
+    }
+    "connect.flow.create" if fx_connect_step.val == "groupForm" => {
+      fx_group_made.val = true
+      fx_connect_step.val = "groupDone"
+      fx_changed()
+      Some(Ok(obj([("id", str("k1"))])))
+    }
     "profile.flow.open" | "profile.flow.edit" | "profile.flow.drop" | "connect.flow.open" | "connect.flow.edit"
     | "connect.flow.drop" | "automaticDecisions.form.open" | "automaticDecisions.form.edit"
     | "automaticDecisions.form.drop" | "automaticDecisions.policy.open" | "automaticDecisions.policy.drop" =>
@@ -3410,7 +3920,9 @@ fn waiting_approvers(code : Bool) -> Json {
 /// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked, no device found,
 /// the pairing failed (lock-elsewhere: approved in another workspace, not this one), this device without
 /// its code yet; its security page): this device waiting, not a signer. lock-upgrade: in the lock but not signing (its key lost), the code being typed on its
-/// security page.
+/// security page. lock-needs-app, lock-needs-app-security: a web page left out of an upgraded workspace that nobody can
+/// approve there (its person has no app in it): the core's `needsAppText` in place of the ask, on its waiting page and
+/// on its security page.
 fn waiting_lock(mode : String) -> Json {
   let mode = if mode.has_suffix("-dark") { mode.unsafe_substring(start=0, end=mode.length() - 5) } else { mode }
   let pair = match mode {
@@ -3431,6 +3943,20 @@ fn waiting_lock(mode : String) -> Json {
   // in the lock, its key since lost (a phone moved to a new one): made one that signs on its security page
   let upgrade = mode == "lock-upgrade"
   let code = if mode == "lock-nocode" { "" } else { "Q4K-7PM" }
+  // a web page nobody can approve here: not waiting (nothing to ask), the core's words (core-misc.lock.needsApp)
+  let needs_app = mode.has_prefix("lock-needs-app")
+  let me : Array[(String, Json)] = [
+    ("device", str("d-me")),
+    ("code", str(code)),
+    ("kind", str(if needs_app { "web" } else { "app" })),
+    ("confirmed", Json::boolean(upgrade)),
+    ("waiting", Json::boolean(!upgrade && !needs_app)),
+    ("unsigned", Json::boolean(upgrade)),
+    ("pair", pair),
+  ]
+  if needs_app {
+    me.push(("needsAppText", str("此 workspace 的安全模式要求每位成员至少有一台客户端。请安装桌面或手机客户端并登录，由管理员批准后，再用客户端批准此网页版")))
+  }
   obj([
     ("available", Json::boolean(true)),
     ("locked", Json::boolean(true)),
@@ -3438,23 +3964,12 @@ fn waiting_lock(mode : String) -> Json {
     ("role", str("owner")),
     ("manages", Json::boolean(true)),
     ("owner", Json::boolean(true)),
-    ("canSign", Json::boolean(true)),
+    ("canSign", Json::boolean(!needs_app)),
     ("signs", Json::boolean(false)),
     ("signers", Json::number(5.0)),
     ("protected", Json::number(4.0)),
     ("attention", Json::number(0.0)),
-    (
-      "me",
-      obj([
-        ("device", str("d-me")),
-        ("code", str(code)),
-        ("kind", str("app")),
-        ("confirmed", Json::boolean(upgrade)),
-        ("waiting", Json::boolean(!upgrade)),
-        ("unsigned", Json::boolean(upgrade)),
-        ("pair", pair),
-      ]),
-    ),
+    ("me", obj(me)),
     (
       "members",
       [
@@ -3551,6 +4066,18 @@ fn fx_words() -> Array[String] {
 }
 
 ///|
+/// Why the station would refuse `code` pasted back for Claude's sign-in (no `#`, or nothing on a side of it), as its
+/// refusal comes to the app; None where it takes it.
+fn fx_claude_code(code : String) -> Json? {
+  let parts = code.split("#").to_array()
+  if parts.length() == 2 && parts[0].trim(chars=" ").length() > 0 && parts[1].trim(chars=" ").length() > 0 {
+    None
+  } else {
+    Some(obj([("code", str("http")), ("message", str("授权码不完整，请复制授权页面上的完整授权码（含 # 及后面的部分）"))]))
+  }
+}
+
+///|
 /// A subscription's sign-in under way in `state` (a profile's, or a new one's by its login's id): its page, and that
 /// the station's own browser can open it where the fixture says so.
 fn fx_login_job(profile : String, state : String) -> Json {
@@ -3592,6 +4119,99 @@ fn fx_profile_flow_plan() -> Json {
     ("submitLabel", str("")),
     ("usesLine", str("")),
   ])
+}
+
+///|
+/// Google's sign-in under way in `state` (settings-new-profile-google…): its page at accounts.google.com.
+fn fx_google_job(state : String) -> Json {
+  obj([
+    ("profile", str("login-new")),
+    ("runtime", str("agy")),
+    ("state", str(state)),
+    ("url", str("https://accounts.google.com/o/oauth2/auth")),
+    ("startedAt", Json::number(0.0)),
+    ("expiresAt", Json::number(0.0)),
+  ])
+}
+
+///|
+/// A new profile's draft for Google at `at` (fx_google): the providers with Google among them, its ways (a person's
+/// plan, a company's, a key) as the core says them, or the way chosen: a plan's sign-in, or the key's form.
+fn fx_profile_flow_google(at : String) -> Json {
+  if at == "pick" {
+    guard fx_profile_flow() is Object(m) else { return fx_profile_flow() }
+    let google = obj([
+      ("id", str("google")), ("name", str("Google Gemini")), ("group", str("labs")), ("kind", str("api-provider")),
+      ("runtime", str("agy")), ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+    ])
+    let groups = match m.get("groups") {
+      Some(Array(gs)) =>
+        gs.mapi(fn(i, g) {
+          match g {
+            Object(o) if i == 0 =>
+              match o.get("providers") {
+                Some(Array(ps)) => {
+                  let o2 = o.copy()
+                  o2["providers"] = Json::array([..ps, google])
+                  Json::object(o2)
+                }
+                _ => g
+              }
+            _ => g
+          }
+        })
+      _ => []
+    }
+    let m2 = m.copy()
+    m2["groups"] = Json::array(groups)
+    return Json::object(m2)
+  }
+  let choice = fn(id : String, title : String, hint : String) { obj([("id", str(id)), ("title", str(title)), ("hint", str(hint))]) }
+  let way = if at == "method" { "" } else { at }
+  let fields : Array[(String, Json)] = [
+    ("step", str(if at == "method" { "method" } else { "connect" })),
+    ("station", str("ws1/st1")),
+    ("title", str("连接 Google Gemini")),
+    ("hint", str("")),
+    ("method", str(way)),
+    (
+      "tile",
+      obj([
+        ("id", str("google")), ("name", str("Google Gemini")), ("kind", str("api-provider")), ("runtime", str("agy")),
+        ("mark", str("gemini")), ("hasKey", Json::boolean(true)), ("hasPlan", Json::boolean(true)),
+      ]),
+    ),
+    ("groups", []),
+    (
+      "choices",
+      if at == "method" {
+        [
+          choice("plan", "订阅 · Google AI", "Google AI Pro / Ultra 或免费 Google 账号，用于运行 Antigravity CLI。用 Google 账号登录一次，再贴回页面给的授权码。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+          choice("enterprise", "企业版 · Gemini Enterprise", "公司的 Google Workspace 或 Google Cloud 账号，用于运行 Antigravity CLI。用公司的 Google 账号登录一次，再贴回页面给的授权码；账号没分到许可证时，再填一个 Google Cloud 项目。Google 的条款不允许其他工具这样用，账号可能被停用。"),
+          choice("key", "API key", "使用 Google Gemini 的 API key，按量计费"),
+        ]
+      } else {
+        []
+      },
+    ),
+    ("showEndpoint", Json::boolean(false)),
+    ("endpoint", str("")),
+    ("protocols", []),
+    ("showKey", Json::boolean(at == "key")),
+    ("key", str("")),
+    ("keyLabel", str(if at == "key" { "API key" } else { "" })),
+    ("canSubmit", Json::boolean(false)),
+    ("pending", Json::boolean(false)),
+    ("submitLabel", str(if at == "key" { "验证并添加" } else { "" })),
+    ("usesLine", str(if at == "method" { "" } else { "添加后可用于：Antigravity CLI" })),
+  ]
+  if at == "plan" || at == "enterprise" {
+    fields.push((
+      "signIn",
+      obj([("runtime", str("agy")), ("provider", str("Google")), ("access", str(if at == "enterprise" { "agy-enterprise" } else { "" }))]),
+    ))
+  }
+  obj(fields)
 }
 
 ///|
@@ -3784,7 +4404,9 @@ fn fx_session_pick() -> Json {
 /// A new connect on Feishu's path (MBUI_FIXTURE=settings-new-connect-platform, -scan): the platform picked (飞书), or
 /// the bot being made by scanning, its QR code waiting.
 fn fx_feishu_flow(step : String) -> Json {
-  let scan = step == "feishuScan"
+  let scanned = step == "feishuScanned"
+  let scan = step == "feishuScan" || scanned
+  let step = if scanned { "done" } else { step }
   let feishu : Array[(String, Json)] = [
     ("way", str("scan")),
     ("appId", str("")),
@@ -3796,10 +4418,10 @@ fn fx_feishu_flow(step : String) -> Json {
     ("failed", Json::boolean(false)),
     ("creating", Json::boolean(false)),
     ("error", Json::null()),
-    ("connect", Json::null()),
+    ("connect", if scanned { str("k1") } else { Json::null() }),
   ]
   if scan {
-    feishu.push(("registration", obj([("state", str("waiting")), ("url", str("https://open.feishu.cn/page/launcher?code=made-up"))])))
+    feishu.push(("registration", obj([("state", str(if scanned { "done" } else { "waiting" })), ("url", str("https://open.feishu.cn/page/launcher?code=made-up"))])))
     feishu.push(("stateText", str("使用飞书扫描二维码，按提示创建机器人")))
     feishu.push(("qr", fx_qr(25)))
   }

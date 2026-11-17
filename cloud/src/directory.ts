@@ -16,17 +16,18 @@ import { DurableObject } from "cloudflare:workers";
 import { ulid } from "ulid";
 import { STATIONS_PER_WORKSPACE } from "../../client/limits.ts";
 import { CODE_TTL_DAYS, isAdmin, newCode, normalizeCode } from "./admin";
-import { digest, nowSeconds, randomSecret, type Identity } from "./auth";
+import { clock, denied, digest, nowSeconds, pastedSecret, randomSecret, type Identity } from "./auth";
 import { header, publicOrigins } from "./compat";
 import type { Env } from "./env";
 import { grantKeys } from "./grants";
 import { langOf, setCloud, type Lang } from "./i18n.ts";
 import { isIconUrl } from "./icons";
 import { showsOf, type Shows } from "./noticeText";
-import { MAX_RELAYS, parseRelays, relays, relayUrls, sameUrl, waysOf } from "./relays";
+import { MAX_RELAYS, ownRelay, parseRelays, relays, relayUrl, relayUrls, sameUrl, WAY_KINDS, waysOf, type Listed, type Relays } from "./relays";
+import { RELAY_TABLES, RELAY_TOKEN_TTL_SEC, relayPut, relayTokenOf, type RelayListed, type RelayTokenInput } from "./relay-registry";
 import type { Part } from "./changelog";
 import type { FeedbackInput } from "./feedback";
-import type { AccountEvent, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
+import type { AccountEvent, ViewTold, StationEvent, AddedView, Admission, AdminFeedback, FeedbackReply, WorkspaceFeedback, AdminPending, AdminUser, AdminWorkspace, DeviceView, FeedbackStatus, InvitationView, InviteCodeView, LockHead, LockRequestView, MeView, MemberView, PendingInvitation, RigView, Role, StationView, UserView, WorkspaceSummary, WorkspaceView } from "./types";
 import { apply, asEntry, entryHash, genesis, keepLockAt, LockAppendRefused, shortCode, type Entry, type LockEntry, type LockState } from "./lock";
 export type { Role };
 
@@ -76,7 +77,7 @@ const FEEDBACK_SHOWN = 200;
 const LIST: AccountEvent = { type: "workspaces" };
 /** The picture an account is shown with, of its row in users: the one it put up for itself (setOwnPicture), else its sign-in's. */
 const SHOWN_PICTURE = "COALESCE(own_picture, picture)";
-type Attachment = { station: string; at: number; dropped?: boolean } | { sub: string };
+type Attachment = { station: string; at: number; dropped?: boolean } | { sub: string; sid?: string };
 
 /**
  * Where devices' events sockets and stations' presence sockets open, and who says whether a station is enrolled: their
@@ -130,6 +131,7 @@ export class Directory extends DurableObject<Env> {
     ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS users (sub TEXT PRIMARY KEY, email TEXT NOT NULL, name TEXT NOT NULL DEFAULT '', picture TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL, last_seen INTEGER, admitted TEXT, beta INTEGER);
       CREATE TABLE IF NOT EXISTS workspaces (id TEXT PRIMARY KEY, name TEXT NOT NULL, created_by TEXT NOT NULL, created_at INTEGER NOT NULL);
+      CREATE TABLE IF NOT EXISTS told (workspace TEXT PRIMARY KEY, rev INTEGER NOT NULL, view TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS members (workspace TEXT NOT NULL, sub TEXT NOT NULL, role TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (workspace, sub));
       CREATE INDEX IF NOT EXISTS members_by_user ON members (sub);
       CREATE TABLE IF NOT EXISTS invitations (id TEXT PRIMARY KEY, workspace TEXT NOT NULL, token_hash TEXT NOT NULL UNIQUE, role TEXT NOT NULL, email TEXT, created_by TEXT NOT NULL, expires_at INTEGER NOT NULL);
@@ -141,6 +143,7 @@ export class Directory extends DurableObject<Env> {
       CREATE TABLE IF NOT EXISTS added (workspace TEXT NOT NULL, email TEXT NOT NULL, role TEXT NOT NULL, added_by TEXT NOT NULL, added_at INTEGER NOT NULL, PRIMARY KEY (workspace, email));
       CREATE INDEX IF NOT EXISTS added_by_email ON added (email);
       CREATE TABLE IF NOT EXISTS added_mails (workspace TEXT NOT NULL, email TEXT NOT NULL, at INTEGER NOT NULL, PRIMARY KEY (workspace, email));
+      CREATE TABLE IF NOT EXISTS added_mail_retries (workspace TEXT NOT NULL, email TEXT NOT NULL, PRIMARY KEY (workspace, email));
       CREATE TABLE IF NOT EXISTS pending (email TEXT PRIMARY KEY, beta INTEGER, may_create INTEGER, added_by TEXT NOT NULL, added_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS invite_codes (code TEXT PRIMARY KEY, note TEXT NOT NULL DEFAULT '', created_by TEXT NOT NULL, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, revoked_at INTEGER, used_by TEXT, used_at INTEGER, workspace TEXT);
       CREATE TABLE IF NOT EXISTS push (id TEXT PRIMARY KEY, sub TEXT NOT NULL, sid TEXT NOT NULL, kind TEXT NOT NULL, endpoint TEXT, p256dh TEXT, auth TEXT, token TEXT, created INTEGER NOT NULL);
@@ -183,6 +186,14 @@ export class Directory extends DurableObject<Env> {
     if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "relays")) this.#run("ALTER TABLE workspaces ADD COLUMN relays TEXT");
     // Nor ways turned off (a JSON array of relay URLs and kinds of way, null for none: setWay), before they could be.
     if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "ways_off")) this.#run("ALTER TABLE workspaces ADD COLUMN ways_off TEXT");
+    // Nor which record of its stations' those two are (`ways_at` its time in ms, `ways_station` the station that made
+    // it, "" a change made here: #waysPut), before the stations said theirs.
+    for (const column of ["ways_at INTEGER", "ways_station TEXT"]) {
+      if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === column.split(" ")[0])) this.#run(`ALTER TABLE workspaces ADD COLUMN ${column}`);
+    }
+    // Nor whether whoever signs in through the cloud's OpenID provider joins it (1: joinBySignIn), before a machine's
+    // cloud let its organization's people in so (selfhost/setup.ts).
+    if (!this.#rows("PRAGMA table_info(workspaces)").some((r) => r.name === "sign_in_joins")) this.#run("ALTER TABLE workspaces ADD COLUMN sign_in_joins INTEGER");
     // Nor did push keep a device's language, before there were languages.
     if (!this.#rows("PRAGMA table_info(push)").some((r) => r.name === "lang")) this.#run("ALTER TABLE push ADD COLUMN lang TEXT");
     // Nor what a device shows of notices (JSON: noticeText.ts Shows; null all, in full), before a device said.
@@ -208,6 +219,9 @@ export class Directory extends DurableObject<Env> {
     for (const table of ["station_members", "enrollments"]) {
       if (!this.#rows(`PRAGMA table_info(${table})`).some((r) => r.name === "rig")) this.#run(`ALTER TABLE ${table} ADD COLUMN rig INTEGER`);
     }
+    // The cloud's list of relays (relay-registry.ts), and the tokens made for relays to put themselves on it. (What a
+    // deploy's config said before was taken as the list once, 2026-11-17: the `relays-listed` migration.)
+    ctx.storage.sql.exec(RELAY_TABLES);
     if (sockets.where(env) === "objects") this.handOff();
     // What deliveries a restart cut short still owe.
     if (this.#one("SELECT 1 AS x FROM outbox LIMIT 1")) void ctx.blockConcurrencyWhile(() => this.#arm());
@@ -508,9 +522,105 @@ export class Directory extends DurableObject<Env> {
    */
   #changed(workspace: string, list: boolean, also: Iterable<string> = [], only: "lock" | "requests" | null = null): void {
     for (const station of this.#stationsIn(workspace)) this.#sendState(station);
-    const subs = [...this.#members(workspace), ...also];
-    const said = only === "lock" ? { lock: { head: this.#lockHead(workspace), locked: this.#locked(workspace) } } : only === "requests" ? { requests: true as const } : {};
-    this.#tell(subs, ...(list ? [LIST] : []), { type: "workspace", id: workspace, ...said });
+    if (only !== null) {
+      const said = only === "lock" ? { lock: { head: this.#lockHead(workspace), locked: this.#locked(workspace) } } : { requests: true as const };
+      this.#tell([...this.#members(workspace), ...also], { type: "workspace", id: workspace, ...said });
+      return;
+    }
+    // Each member is told what changed of the view and of their entry of the list (`#told`), so their devices read
+    // neither again: every device of every member read both whole at each change (the locks' end to end, 2026-11-15:
+    // of an account's 187 requests in a minute, 49 `/v1/me` and 61 the view). Those whose role changed, or who were not
+    // members before, get the view whole as before (what they see of it changed beyond what the others are told), and
+    // whoever else is told (`also`: taken out, or invited) the list read again.
+    // (who is told never hangs on what is told: the members as the Directory has them, whatever `#told` comes to)
+    const subs = this.#members(workspace);
+    const plain: AccountEvent = { type: "workspace", id: workspace };
+    const groups = new Map<string, { subs: string[]; events: AccountEvent[] }>();
+    try {
+      const told = this.#told(workspace);
+      const roles = new Map((told?.now.members ?? []).map((m) => [m.sub, m.role]));
+      const before = new Map((told?.before?.members ?? []).map((m) => [m.sub, m.role]));
+      const into = (key: string, sub: string, events: () => AccountEvent[]) => {
+        let group = groups.get(key);
+        if (!group) groups.set(key, (group = { subs: [], events: events() }));
+        group.subs.push(sub);
+      };
+      for (const sub of subs) {
+        const role = roles.get(sub);
+        if (role === undefined || !told) {
+          into("plain", sub, () => [...(list ? [LIST] : []), plain]);
+          continue;
+        }
+        const same = told.before !== null && before.get(sub) === role;
+        const manager = MANAGERS.includes(role);
+        into(`${role} ${same}`, sub, () => [...(list ? [{ type: "workspaces", entry: told.entry(role) } as AccountEvent] : []), same ? { type: "workspace", id: workspace, rev: told.rev, ...told.change(manager) } : plain]);
+      }
+    } catch (error) {
+      // What tells a change never fails the request it follows (2026-11-15: a first version answered 500 to an
+      // invitation already made): the view as last told let go of and begun again from now, at a version above any
+      // before, and every member told plainly, as before there were versions.
+      console.warn(`told: ${workspace}'s view as last told not read (${error instanceof Error ? error.message : String(error)}); its members told plainly, told anew from now`);
+      groups.clear();
+      groups.set("plain", { subs, events: [...(list ? [LIST] : []), plain] });
+      this.#toldAnew(workspace);
+    }
+    const others = [...new Set(also)].filter((sub) => !subs.includes(sub));
+    if (others.length > 0) groups.set("others", { subs: others, events: [...(list ? [LIST] : []), plain] });
+    for (const { subs, events } of groups.values()) this.#tell(subs, ...events);
+  }
+
+  /** A workspace's view as last told let go of, and kept again as it is now at a version above the one let go of and
+   * this second's thousandths (`#told`); where even that fails, none kept, the next change beginning it. */
+  #toldAnew(workspace: string): void {
+    try {
+      const was = this.#one("SELECT rev FROM told WHERE workspace = ?", workspace);
+      this.#run("DELETE FROM told WHERE workspace = ?", workspace);
+      const now = this.#alike(workspace);
+      if (!now) return;
+      const rev = Math.max(nowSeconds() * 1000, typeof was?.rev === "number" ? was.rev + 1 : 0);
+      this.#run("INSERT INTO told (workspace, rev, view) VALUES (?, ?, ?)", workspace, rev, JSON.stringify(now));
+    } catch (error) {
+      console.warn(`told: ${workspace}'s view not kept anew (${error instanceof Error ? error.message : String(error)})`);
+    }
+  }
+
+  /** What a workspace's view says alike to every member: `#view` but the viewer's role and lock requests, the managers'
+   * parts (invitations, added) of it, `rigs` with none too. */
+  #alike(id: string): AlikeView | null {
+    const w = this.#one("SELECT id, name, created_at, relays, ways_off, emoji, icon FROM workspaces WHERE id = ?", id);
+    if (!w) return null;
+    const members = this.#rows(`
+      SELECT m.sub, COALESCE(u.email, '') AS email, COALESCE(u.name, '') AS name, COALESCE(${SHOWN_PICTURE}, '') AS picture, m.role, m.added_at
+      FROM members m LEFT JOIN users u ON u.sub = m.sub WHERE m.workspace = ? ORDER BY m.added_at`, id) as unknown as MemberView[];
+    const stations = this.#stationViews(id).map(({ workspace: _, ...station }) => station);
+    const invitations = this.#rows("SELECT id, role, email, created_by, expires_at FROM invitations WHERE workspace = ? AND expires_at > ? ORDER BY expires_at", id, nowSeconds()) as unknown as InvitationView[];
+    const added = this.#rows("SELECT email, role, added_by, added_at FROM added WHERE workspace = ? ORDER BY added_at", id) as unknown as AddedView[];
+    return { id, name: w.name as string, ...marks(w.emoji, w.icon), created_at: w.created_at as number, members, stations, rigs: this.#rigViews(id), invitations, added, relays: parseRelays(w.relays), ...offOf(w.ways_off), ways: waysOf(this.#relays(), parseRelays(w.relays), parseRelays(w.ways_off)), lock: this.#lockHead(id), ...(this.#locked(id) ? { locked: true } : {}) };
+  }
+
+  /**
+   * A workspace's view as it is now against the one last told (kept in `told`, with its version): the versions before
+   * and after (one more where anything changed), what changed for a manager and for anyone else, and a member's entry
+   * of their list by their role. Nothing kept yet (a workspace not changed since, or moved in): what is now is kept,
+   * at a version above any before (this second's thousandths), and `before` is null.
+   */
+  #told(workspace: string): { before: AlikeView | null; now: AlikeView; rev: [number, number]; change: (manager: boolean) => ViewTold; entry: (role: Role) => WorkspaceSummary } | null {
+    const now = this.#alike(workspace);
+    if (!now) return null;
+    const kept = this.#one("SELECT rev, view FROM told WHERE workspace = ?", workspace);
+    const before = kept ? (JSON.parse(kept.view as string) as AlikeView) : null;
+    const text = JSON.stringify(now);
+    const was = kept ? (kept.rev as number) : nowSeconds() * 1000;
+    const rev: [number, number] = [was, !kept || kept.view === text ? was : was + 1];
+    if (kept?.view !== text) this.#run("INSERT INTO told (workspace, rev, view) VALUES (?, ?, ?) ON CONFLICT (workspace) DO UPDATE SET rev = excluded.rev, view = excluded.view", workspace, rev[1], text);
+    const { members, stations, ...rest } = now;
+    return {
+      before,
+      now,
+      rev,
+      change: (manager) => (before === null ? {} : viewTold(before, now, manager)),
+      entry: (role) => ({ id: now.id, name: now.name, ...marks(rest.emoji, rest.icon), role, created_at: now.created_at, stations: stations.length, members: members.length, relays: now.relays, ...(now.ways_off ? { ways_off: now.ways_off } : {}) }) as WorkspaceSummary,
+    };
   }
 
   /**
@@ -535,7 +645,10 @@ export class Directory extends DurableObject<Env> {
     this.#takePending(identity.sub, identity.email);
     if (!old || (old.email === identity.email && old.name === identity.name && old.picture === identity.picture)) return;
     // Members lists show them; invitations they sent show their name; a new email has other invitations.
-    for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) this.#changed(row.workspace as string, false);
+    for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", identity.sub)) {
+      if (old.email !== identity.email) this.#forgetMailRetry(row.workspace as string, old.email as string);
+      this.#changed(row.workspace as string, false);
+    }
     const invited = this.#rows("SELECT i.email FROM invitations i WHERE i.created_by = ? AND i.expires_at > ?", identity.sub, nowSeconds()).flatMap((r) => this.#byEmail(r.email as string));
     this.#tell([...invited, ...(old.email === identity.email ? [] : [identity.sub])], LIST);
   }
@@ -568,6 +681,66 @@ export class Directory extends DurableObject<Env> {
     for (const row of rows) this.#changed(row.workspace as string, true);
   }
 
+  /**
+   * A self-hosted cloud's workspace that whoever its OpenID provider (OIDC_ISSUER) signs in joins as a member, or no
+   * longer does (selfhost/setup.ts `open_to_sign_in`): a machine's cloud whose provider lets in only its organization's
+   * people (monoid's console) lets each of them in, not only the first to sign in. Those already in stay.
+   */
+  openToSignIn(workspace: string, open: boolean): void {
+    this.#run("UPDATE workspaces SET sign_in_joins = ? WHERE id = ?", open ? 1 : null, workspace);
+  }
+
+  /**
+   * Someone the cloud's OpenID provider has just vouched for (login.ts, before their session is made), in each
+   * workspace open to its sign-in (openToSignIn), with `role`, the one the provider gives them (OIDC_ROLE_CLAIM; null:
+   * it gives none). Not yet in it: added as addMembers adds an email (an invitation to it replaced), as a member
+   * where it gives none (an invitation of their own then left for them to accept), so the session's upsertUser makes them one (#joinAdded). In it: their role made the
+   * provider's, as setRole makes it, but for its last owner's (the workspace keeps one). Not beyond its seats. Taken
+   * out, they are in again as they sign in again: who is in, and as what, is the provider's to say.
+   */
+  async joinBySignIn(email: string, role: Role | null = null): Promise<void> {
+    const address = email.toLowerCase();
+    if (role !== null && !ROLES.includes(role)) role = null;
+    const open = this.#rows("SELECT id, created_by FROM workspaces WHERE sign_in_joins = 1");
+    const changed = new Map<string, string[]>();
+    this.ctx.storage.transactionSync(() => {
+      for (const row of open) {
+        const workspace = row.id as string;
+        const members = this.#rows("SELECT m.sub, m.role FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?", workspace, address);
+        if (members.length > 0) {
+          if (role === null) continue;
+          for (const m of members) {
+            if (m.role === role) continue;
+            const owners = this.#one("SELECT COUNT(*) AS n FROM members WHERE workspace = ? AND role = 'owner'", workspace)!.n as number;
+            if (m.role === "owner" && owners <= 1) continue;
+            this.#run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", role, workspace, m.sub);
+            // (the credentials it holds name its old role, as setRole's)
+            this.#revoke(workspace, "sub", m.sub as string);
+            changed.set(workspace, [...(changed.get(workspace) ?? []), m.sub as string]);
+          }
+          continue;
+        }
+        const added = this.#one("SELECT role FROM added WHERE workspace = ? AND email = ?", workspace, address);
+        if (added && (role === null || added.role === role)) continue;
+        const invited = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, address, nowSeconds())!.n as number;
+        // (without a role of the provider's, an invitation of their own is theirs to accept, with its role)
+        if (role === null && invited > 0) continue;
+        const replaces = added ? 1 : invited;
+        if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) continue;
+        this.#run("DELETE FROM invitations WHERE workspace = ? AND email = ?", workspace, address);
+        this.#run(`INSERT INTO added (workspace, email, role, added_by, added_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (workspace, email) DO UPDATE SET role = excluded.role`, workspace, address, role ?? "member", row.created_by, nowSeconds());
+        changed.set(workspace, changed.get(workspace) ?? []);
+      }
+    });
+    for (const [workspace, also] of changed) {
+      this.#changed(workspace, true, also);
+      this.#tell(also, LIST);
+    }
+    if (changed.size > 0) this.#tell(this.#byEmail(address), LIST);
+    if ([...changed.values()].some((also) => also.length > 0)) await this.#delivered();
+  }
+
   /** An account signing in with an email the admin gave rights to before it had one: they are its from now on. */
   #takePending(sub: string, email: string): void {
     const row = this.#one("SELECT beta, may_create FROM pending WHERE email = ?", email.toLowerCase());
@@ -586,25 +759,30 @@ export class Directory extends DurableObject<Env> {
    * Adds people by email, no invitation to accept: those with an account are members at once, the others as soon as they
    * first sign in with that email. What each became: joined, added (waiting for a first sign-in), or already a member.
    */
-  addMembers(sub: string, workspace: string, role: Role, emails: unknown): { joined: string[]; added: string[]; already: string[]; view: WorkspaceView; mail: AddedMail } {
+  addMembers(sub: string, workspace: string, role: Role, emails: unknown, reportsSent = false): { joined: string[]; added: string[]; already: string[]; view: WorkspaceView; mail: AddedMail } {
     const mine = this.#role(sub, workspace, MANAGERS);
     if (!ROLES.includes(role)) fail(400, "invalid_role");
     if (role === "owner" && mine !== "owner") fail(403, "forbidden");
     const { joined, added, already } = this.#addEmails(sub, workspace, role, emailsOf(emails));
-    return { joined, added, already, view: this.#view(sub, workspace), mail: this.#toMail(sub, workspace, joined, added) };
+    return { joined, added, already, view: this.#view(sub, workspace), mail: this.#toMail(sub, workspace, joined, added, already, reportsSent) };
   }
 
   /**
    * Who of those just added is told so by mail (api.ts sends it): each email once a day in a workspace at most, so
    * taking someone out and adding them again cannot send the cloud's address to anyone over and over. Noted as sent
-   * here; one that could not be sent is let go of again (`mailFailed`), so adding them again tries again.
+   * here; one that could not be sent waits separately (`mailFailed`), so adding them again tries again even when
+   * they are already a member and the day's records have gone. It waits only while that member or added email stays.
    */
-  #toMail(by: string, workspace: string, joined: string[], added: string[]): AddedMail {
+  #toMail(by: string, workspace: string, joined: string[], added: string[], already: string[], reportsSent: boolean): AddedMail {
     const now = nowSeconds();
     this.#run("DELETE FROM added_mails WHERE at <= ?", now - ADDED_MAIL_EVERY_SEC);
+    const waiting = (email: string) => this.#one("SELECT 1 AS x FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+    const retry = reportsSent ? already.filter(waiting) : [];
     const to: { email: string; joined: boolean }[] = [];
-    for (const [emails, isJoined] of [[joined, true], [added, false]] as const) {
+    for (const [emails, isJoined] of [[[...joined, ...retry], true], [added, false]] as const) {
       for (const email of emails) {
+        // An older API reports only failures: it cannot acknowledge and clear a pending retry after success.
+        if (!reportsSent && waiting(email)) continue;
         if (this.#one("SELECT 1 AS x FROM added_mails WHERE workspace = ? AND email = ?", workspace, email)) continue;
         this.#run("INSERT INTO added_mails (workspace, email, at) VALUES (?, ?, ?)", workspace, email, now);
         to.push({ email, joined: isJoined });
@@ -615,9 +793,29 @@ export class Directory extends DurableObject<Env> {
     return { to, inviter: inviter ?? "", workspace: name ?? "" };
   }
 
-  /** Mails of `addMembers` that could not be sent: not counted as sent, so adding them again sends again. */
-  mailFailed(workspace: string, emails: string[]): void {
-    for (const email of emails) this.#run("DELETE FROM added_mails WHERE workspace = ? AND email = ?", workspace, email);
+  /**
+   * Failure frees its daily slot and waits while its recipient stays; success clears a retry. Keep the old RPC and
+   * make successes optional: a Worker and its Directory may run different versions while code is being deployed.
+   */
+  mailFailed(workspace: string, emails: string[], sent: string[] = []): void {
+    this.ctx.storage.transactionSync(() => {
+      for (const email of emails) {
+        this.#run("DELETE FROM added_mails WHERE workspace = ? AND email = ?", workspace, email);
+        if (this.#mailRecipient(workspace, email)) this.#run("INSERT OR IGNORE INTO added_mail_retries (workspace, email) VALUES (?, ?)", workspace, email);
+        else this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+      }
+      for (const email of sent) this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email);
+    });
+  }
+
+  #mailRecipient(workspace: string, email: string): boolean {
+    return Boolean(this.#one(`SELECT 1 AS x FROM added WHERE workspace = ? AND email = ?
+      UNION ALL SELECT 1 FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = lower(?) LIMIT 1`, workspace, email.toLowerCase(), workspace, email));
+  }
+
+  /** Taking someone out ends their pending mail too; becoming a signed-in member does not. */
+  #forgetMailRetry(workspace: string, email: string): void {
+    if (!this.#mailRecipient(workspace, email)) this.#run("DELETE FROM added_mail_retries WHERE workspace = ? AND email = ?", workspace, email.toLowerCase());
   }
 
   /** addMembers once allowed: each email a member now, or as soon as it first signs in. */
@@ -660,11 +858,12 @@ export class Directory extends DurableObject<Env> {
   removeAdded(sub: string, workspace: string, email: string): WorkspaceView {
     this.#role(sub, workspace, MANAGERS);
     this.#run("DELETE FROM added WHERE workspace = ? AND email = ?", workspace, email.trim().toLowerCase());
+    this.#forgetMailRetry(workspace, email.trim().toLowerCase());
     this.#changed(workspace, true);
     return this.#view(sub, workspace);
   }
 
-  me(sub: string): { user: MeView | null; workspaces: WorkspaceSummary[] } {
+  me(sub: string): { user: MeView | null; workspaces: WorkspaceSummary[] } & ReturnType<typeof relays> {
     const row = this.#one(`SELECT sub, email, name, ${SHOWN_PICTURE} AS picture, own_picture, beta FROM users WHERE sub = ?`, sub);
     // beta and own_picture only when set: clients from before them know no such field, and an account without them says
     // nothing.
@@ -675,7 +874,7 @@ export class Directory extends DurableObject<Env> {
         (SELECT COUNT(*) FROM members x WHERE x.workspace = w.id) AS members, w.relays, w.ways_off, w.emoji, w.icon
       FROM members m JOIN workspaces w ON w.id = m.workspace WHERE m.sub = ? ORDER BY w.created_at`, sub)
       .map(({ relays, ways_off, emoji, icon, ...w }) => ({ ...w, relays: parseRelays(relays), ...offOf(ways_off), ...marks(emoji, icon) })) as unknown as WorkspaceSummary[];
-    return { user: user ?? null, workspaces };
+    return { user: user ?? null, workspaces, ...relays(this.#relays(), true) };
   }
 
   /**
@@ -759,19 +958,10 @@ export class Directory extends DurableObject<Env> {
   /** A workspace as the caller sees it (what its changes answer with: called within them, it is not counted again). */
   #view(sub: string, id: string): WorkspaceView {
     const role = this.#role(sub, id);
-    const w = this.#one("SELECT id, name, created_at, relays, ways_off, emoji, icon FROM workspaces WHERE id = ?", id)!;
-    const members = this.#rows(`
-      SELECT m.sub, COALESCE(u.email, '') AS email, COALESCE(u.name, '') AS name, COALESCE(${SHOWN_PICTURE}, '') AS picture, m.role, m.added_at
-      FROM members m LEFT JOIN users u ON u.sub = m.sub WHERE m.workspace = ? ORDER BY m.added_at`, id) as unknown as MemberView[];
-    const stations = this.#stationViews(id).map(({ workspace: _, ...station }) => station);
-    const rigs = this.#rigViews(id);
-    const invitations = MANAGERS.includes(role)
-      ? this.#rows("SELECT id, role, email, created_by, expires_at FROM invitations WHERE workspace = ? AND expires_at > ? ORDER BY expires_at", id, nowSeconds()) as unknown as InvitationView[]
-      : [];
-    const added = MANAGERS.includes(role)
-      ? this.#rows("SELECT email, role, added_by, added_at FROM added WHERE workspace = ? ORDER BY added_at", id) as unknown as AddedView[]
-      : [];
-    return { id, name: w.name as string, ...marks(w.emoji, w.icon), role, created_at: w.created_at as number, members, stations, ...(rigs.length ? { rigs } : {}), invitations, added, relays: parseRelays(w.relays), ...offOf(w.ways_off), ways: waysOf(this.env, parseRelays(w.relays), parseRelays(w.ways_off)), lock: this.#lockHead(id), ...(this.#locked(id) ? { locked: true } : {}), lock_requests: this.#lockRequestCount(id, sub, role) };
+    const { rigs, invitations, added, ...alike } = this.#alike(id)!;
+    const told = this.#one("SELECT rev FROM told WHERE workspace = ?", id);
+    const manager = MANAGERS.includes(role);
+    return { ...(told ? { rev: told.rev as number } : {}), ...alike, role, ...(rigs.length ? { rigs } : {}), invitations: manager ? invitations : [], added: manager ? added : [], lock_requests: this.#lockRequestCount(id, sub, role) };
   }
 
   /**
@@ -963,14 +1153,16 @@ export class Directory extends DurableObject<Env> {
     this.#changed(workspace, false);
   }
 
-  /** A device asked for a credential: kept for the owner to check when the lock is turned on. */
-  recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): void {
+  /** A device asked for a credential: kept for the owner to check when the lock is turned on. The relays it is told
+   * with the credential. */
+  recordDevice(sub: string, workspace: string, device: string, said: { base?: string; kind?: string; label?: string }): ReturnType<typeof relays> {
     const now = nowSeconds();
     this.#run(
       `INSERT INTO devices (workspace, sub, device, base, kind, label, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (workspace, sub, device) DO UPDATE SET base = COALESCE(excluded.base, base), kind = COALESCE(excluded.kind, kind), label = COALESCE(excluded.label, label), last_seen = excluded.last_seen`,
       workspace, sub, device, said.base ?? null, said.kind ?? null, said.label ?? null, now, now,
     );
+    return relays(this.#relays(), true);
   }
 
   /** The devices that asked for credentials in the workspace in the last 31 days: its owners and admins see everyone's
@@ -1037,7 +1229,7 @@ export class Directory extends DurableObject<Env> {
   setRelays(sub: string, id: string, input: unknown): WorkspaceView {
     this.#role(sub, id, MANAGERS);
     if (!Array.isArray(input) || input.length > MAX_RELAYS) fail(400, "invalid_relays");
-    const ours = relayUrls(this.env).map(sameUrl);
+    const ours = relayUrls(this.#relays()).map(sameUrl);
     const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
     const list: string[] = [];
     for (const raw of input as unknown[]) {
@@ -1049,14 +1241,14 @@ export class Directory extends DurableObject<Env> {
     // A relay of its own taken away is no longer among those turned off either; if none of its relays would stay on,
     // still.fail's come back on.
     const off = parseRelays(this.#one("SELECT ways_off FROM workspaces WHERE id = ?", id)?.ways_off);
-    const ways = waysOf(this.env, list, []).map((w) => sameUrl(w.id));
+    const ways = waysOf(this.#relays(), list, []).map((w) => sameUrl(w.id));
     const filtered = off.filter((o) => o === "ours" || ways.includes(sameUrl(o)));
-    const kept = waysOf(this.env, list, filtered).some((w) => w.kind === "relay" && w.on)
+    const kept = waysOf(this.#relays(), list, filtered).some((w) => w.kind === "relay" && w.on)
       ? filtered
       : filtered.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
     this.ctx.storage.transactionSync(() => {
       this.#run("UPDATE workspaces SET relays = ? WHERE id = ?", list.length ? JSON.stringify(list) : null, id);
-      this.#run("UPDATE workspaces SET ways_off = ? WHERE id = ?", kept.length ? JSON.stringify(kept) : null, id);
+      this.#run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", kept.length ? JSON.stringify(kept) : null, clock.now(), id);
     });
     this.#changed(id, true);
     return this.#view(sub, id);
@@ -1075,18 +1267,18 @@ export class Directory extends DurableObject<Env> {
     const row = this.#one("SELECT relays, ways_off FROM workspaces WHERE id = ?", id)!;
     const own = parseRelays(row.relays);
     const nowOff = parseRelays(row.ways_off);
-    const ours = relayUrls(this.env).map(sameUrl);
+    const ours = relayUrls(this.#relays()).map(sameUrl);
     let off: string[];
     if (way === "ours") {
       off = nowOff.filter((o) => o !== "ours" && !ours.includes(sameUrl(o)));
       if (!on) off.push("ours");
     } else {
-      const ways = waysOf(this.env, own, nowOff);
+      const ways = waysOf(this.#relays(), own, nowOff);
       const target = ways.find((w) => sameUrl(w.id) === sameUrl(way as string)) ?? fail(400, "invalid_way");
       off = ways.filter((w) => (w === target ? !on : !w.on)).map((w) => w.id);
     }
-    if (!waysOf(this.env, own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
-    this.#run("UPDATE workspaces SET ways_off = ? WHERE id = ?", off.length ? JSON.stringify(off) : null, id);
+    if (!waysOf(this.#relays(), own, off).some((w) => w.kind === "relay" && w.on)) fail(409, "last_relay");
+    this.#run("UPDATE workspaces SET ways_off = ?, ways_at = ?, ways_station = '' WHERE id = ?", off.length ? JSON.stringify(off) : null, clock.now(), id);
     this.#changed(id, true);
     return this.#view(sub, id);
   }
@@ -1122,7 +1314,7 @@ export class Directory extends DurableObject<Env> {
     const told = [...this.#members(id), ...this.#invitees(id)];
     const stations = this.#stationsIn(id).map((station) => ({ station, home: this.#memberships(station)[0] }));
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["members", "invitations", "added", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests"]) this.#run(`DELETE FROM ${table} WHERE workspace = ?`, id);
+      for (const table of ["members", "invitations", "added", "added_mails", "added_mail_retries", "station_members", "enrollments", "lock_entries", "lock_aside", "devices", "lock_requests", "told"]) this.#run(`DELETE FROM ${table} WHERE workspace = ?`, id);
       this.#run("DELETE FROM workspaces WHERE id = ?", id);
     });
     this.#tell(told, LIST, { type: "workspace", id });
@@ -1139,9 +1331,9 @@ export class Directory extends DurableObject<Env> {
     if (email === null || !/^[^\s@]{1,64}@[^\s@]{1,190}$/.test(email)) fail(400, "invalid_email");
     if (this.#one("SELECT 1 AS x FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = lower(?)", workspace, email!)) fail(409, "already_member");
     const open = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND expires_at > ?", workspace, nowSeconds())!.n as number;
-    if (open >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     // Every open invitation holds a seat, but a newer one to the same email takes the older one's.
     const replaces = this.#one("SELECT 1 AS x FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, email!.toLowerCase(), nowSeconds()) ? 1 : 0;
+    if (open - replaces >= LIMITS.openInvitations) fail(429, "too_many_invitations");
     if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) fail(429, "too_many_members");
     const token = randomSecret();
     const id = ulid();
@@ -1201,6 +1393,8 @@ export class Directory extends DurableObject<Env> {
       this.#run("DELETE FROM invitations WHERE id = ?", id);
       this.#run("UPDATE users SET admitted = 'invitation' WHERE sub = ? AND admitted IS NULL", sub);
       if (!existing) this.#run("INSERT INTO members (workspace, sub, role, added_at) VALUES (?, ?, ?, ?)", workspace, sub, row!.role, nowSeconds());
+      // As with the invitation's link, accepting grants its role without lowering one already held.
+      else if (ROLES.indexOf(row!.role as Role) < ROLES.indexOf(existing.role as Role)) this.#run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", row!.role, workspace, sub);
     });
     this.#changed(workspace, true);
     return this.#view(sub, workspace);
@@ -1250,6 +1444,8 @@ export class Directory extends DurableObject<Env> {
     }
     if (row!.role === "owner") this.#keepAnOwner(workspace);
     this.#run("DELETE FROM members WHERE workspace = ? AND sub = ?", workspace, target);
+    const email = this.#one("SELECT email FROM users WHERE sub = ?", target)?.email as string | undefined;
+    if (email) this.#forgetMailRetry(workspace, email);
     this.#rigsGone(workspace, target);
     this.#revoke(workspace, "sub", target);
     this.#changed(workspace, true, [target]);
@@ -1298,6 +1494,7 @@ export class Directory extends DurableObject<Env> {
         this.#run("DELETE FROM pending WHERE lower(email) = lower(?)", email);
         this.#run("DELETE FROM added WHERE lower(email) = lower(?)", email);
         this.#run("DELETE FROM invitations WHERE lower(email) = lower(?)", email);
+        this.#run("DELETE FROM added_mail_retries WHERE lower(email) = lower(?)", email);
       }
       this.#run("DELETE FROM users WHERE sub = ?", sub);
     });
@@ -1329,7 +1526,8 @@ export class Directory extends DurableObject<Env> {
   async #enrollment(sub: string, workspace: string, name: unknown, rig = false): Promise<{ token: string; expires_at: number }> {
     const clean = cleanName(name) ?? fail(400, "invalid_name");
     if (this.#stationsFull(workspace)) fail(429, "too_many_stations");
-    const token = randomSecret();
+    // (pasted after a command: never beginning with `-`, auth.ts pastedSecret)
+    const token = pastedSecret();
     const expires = nowSeconds() + ENROLLMENT_TTL_SEC;
     this.#run("DELETE FROM enrollments WHERE expires_at <= ?", nowSeconds());
     this.#run("INSERT INTO enrollments (token_hash, workspace, name, created_by, expires_at, rig) VALUES (?, ?, ?, ?, ?, ?)", await digest(token), workspace, clean, sub, expires, rig ? 1 : null);
@@ -1541,6 +1739,10 @@ export class Directory extends DurableObject<Env> {
 
   /** Sessions signed out (all of an account's with none named): their credentials go, in every workspace of the account. */
   async revokeSessions(sub: string, sids: string[] | null): Promise<void> {
+    for (const ws of this.ctx.getWebSockets(`sub:${sub}`)) {
+      const { sid } = ws.deserializeAttachment() as { sid?: string };
+      if (ws.readyState === WebSocket.OPEN && (sids === null || sid === undefined || sids.includes(sid))) ws.close(1008, "session ended");
+    }
     if (sids === null) this.#run("DELETE FROM push WHERE sub = ?", sub);
     else for (const sid of sids) this.#run("DELETE FROM push WHERE sub = ? AND sid = ?", sub, sid);
     for (const row of this.#rows("SELECT workspace FROM members WHERE sub = ?", sub)) {
@@ -1650,6 +1852,120 @@ export class Directory extends DurableObject<Env> {
   /** The accounts there are (moving each one's object: move.ts). */
   moveAccounts(): string[] {
     return this.#rows("SELECT sub FROM users ORDER BY sub").map((r) => r.sub as string);
+  }
+
+  // ── the cloud's relays (relays.ts, relay-registry.ts) ───────────────────
+
+  /** The relays as this cloud has them: its own, and its list in the order its relays were put on it. */
+  #relays(): Relays {
+    const listed = this.#rows("SELECT url, name, target FROM relays ORDER BY added_at, rowid").map((r) => ({ url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null }));
+    return { own: ownRelay(this.env), listed };
+  }
+
+  /** The same, for what reads it outside this object (status.ts, relay-load.ts, the probes). */
+  relaysNow(): Relays {
+    return this.#relays();
+  }
+
+  /** The list as the console shows it, and the tokens made for relays not used yet. */
+  relayList(): { own: string; relays: RelayListed[]; tokens: { name: string; url: string | null; target: string | null; expires_at: number }[] } {
+    const now = nowSeconds();
+    this.#run("DELETE FROM relay_tokens WHERE expires_at <= ?", now);
+    return {
+      own: ownRelay(this.env),
+      relays: this.#rows("SELECT url, name, target, secret_hash, added_at, added_by FROM relays ORDER BY added_at, rowid").map((r) => ({
+        url: r.url as string, name: r.name as string, target: (r.target as string | null) ?? null, added_at: r.added_at as number, added_by: r.added_by as string, enrolled: r.secret_hash !== null,
+      })),
+      tokens: this.#rows("SELECT name, url, target, expires_at FROM relay_tokens ORDER BY expires_at").map((r) => ({ name: r.name as string, url: (r.url as string | null) ?? null, target: (r.target as string | null) ?? null, expires_at: r.expires_at as number })),
+    };
+  }
+
+  /** The operator puts a relay on the list (or names it anew, or changes what an entry is a way into). */
+  relayPut(by: string, input: RelayTokenInput): Listed {
+    const put = relayPut(input, this.#relays(), this.env.PUBLIC_ORIGIN.startsWith("http:"));
+    if (typeof put === "string") fail(400, put);
+    const { url, name, target } = put as Listed;
+    this.#run(`INSERT INTO relays (url, name, target, added_at, added_by) VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT (url) DO UPDATE SET name = excluded.name, target = excluded.target`, url, name, target, nowSeconds(), by);
+    this.#relaysChanged();
+    return put as Listed;
+  }
+
+  /** The operator takes a relay off the list, and the ways into it with it; its tokens made for it go too. */
+  relayRemove(url: unknown): void {
+    if (typeof url !== "string") fail(400, "invalid_relay");
+    const found = this.#rows("SELECT url FROM relays").map((r) => r.url as string).find((u) => sameUrl(u) === sameUrl(url as string)) ?? fail(404, "relay_not_found");
+    this.ctx.storage.transactionSync(() => {
+      this.#run("DELETE FROM relays WHERE url = ? OR target = ?", found, found);
+      this.#run("DELETE FROM relay_tokens WHERE url = ? OR target = ?", found, found);
+    });
+    this.#relaysChanged();
+  }
+
+  /** A token for a relay to put itself on the list with (relay-enroll.sh): good for RELAY_TOKEN_TTL_SEC, once. */
+  async relayToken(by: string, input: RelayTokenInput): Promise<{ token: string; name: string; url: string | null; expires_at: number }> {
+    const made = relayTokenOf(input, this.#relays(), this.env.PUBLIC_ORIGIN.startsWith("http:"));
+    if (typeof made === "string") fail(400, made);
+    const { name, url, target } = made as Exclude<typeof made, string>;
+    const token = pastedSecret();
+    const expires = nowSeconds() + RELAY_TOKEN_TTL_SEC;
+    this.#run("DELETE FROM relay_tokens WHERE expires_at <= ?", nowSeconds());
+    this.#run("INSERT INTO relay_tokens (token_hash, name, url, target, made_by, expires_at) VALUES (?, ?, ?, ?, ?, ?)", await digest(token), name, url, target, by, expires);
+    return { token, name, url, expires_at: expires };
+  }
+
+  /**
+   * A relay puts itself on the list with a token the operator made (POST /v1/relays/enroll): at the URL the token names,
+   * or the one it says where the token names none. Given a secret of its own, which its counters come with
+   * (relay-load.ts); one on the list already is given a new one (and the token's name). Nothing awaits between the
+   * token read and its use, so it is used once.
+   */
+  async relayEnrolled(token: unknown, said: unknown): Promise<{ url: string; name: string; secret: string }> {
+    if (typeof token !== "string" || token === "") fail(400, "invalid_request");
+    const hash = await digest(token as string);
+    const secret = randomSecret();
+    const secretHash = await digest(secret);
+    const row = this.#one("SELECT name, url, target, made_by FROM relay_tokens WHERE token_hash = ? AND expires_at > ?", hash, nowSeconds()) ?? fail(403, "invalid_token");
+    const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
+    const url = (row!.url as string | null) ?? relayUrl(said, insecure) ?? fail(400, "invalid_relay");
+    if (said !== undefined && said !== null && said !== "" && sameUrl(String(said)) !== sameUrl(url as string)) fail(403, "wrong_relay");
+    const put = relayPut({ url, name: row!.name, target: row!.target }, this.#relays(), insecure);
+    if (typeof put === "string") fail(400, put);
+    const { name, target } = put as Listed;
+    this.ctx.storage.transactionSync(() => {
+      this.#run("DELETE FROM relay_tokens WHERE token_hash = ?", hash);
+      this.#run(`INSERT INTO relays (url, name, target, secret_hash, added_at, added_by) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT (url) DO UPDATE SET name = excluded.name, target = excluded.target, secret_hash = excluded.secret_hash`, (put as Listed).url, name, target, secretHash, nowSeconds(), `token:${row!.made_by as string}`);
+    });
+    this.#relaysChanged();
+    return { url: (put as Listed).url, name, secret };
+  }
+
+  /**
+   * Which relay of the list sent its counters (relay-load.ts): the one whose secret it came with; else, one listed
+   * with no secret of its own (as the deploy's config listed them) named by `named`, believed by the address it came
+   * from (`from`, which Cloudflare saw) being its URL's.
+   */
+  relayHeard(secretHash: string | null, named: string, from: string | null): string {
+    if (secretHash !== null) return (this.#one("SELECT url FROM relays WHERE secret_hash = ?", secretHash)?.url as string | undefined) ?? fail(403, "invalid_secret");
+    const row = this.#rows("SELECT url, secret_hash FROM relays WHERE target IS NULL").find((r) => sameUrl(r.url as string) === sameUrl(named)) ?? fail(400, "unknown_relay");
+    if (row!.secret_hash !== null) fail(403, "not_from_relay");
+    if (!from || new URL(row!.url as string).hostname.replace(/^\[|\]$/g, "") !== from) fail(403, "not_from_relay");
+    return row!.url as string;
+  }
+
+  /** The list changed: every station connected is sent its state again (its relays in it), every device told to read
+   * its `/v1/me` again. */
+  #relaysChanged(): void {
+    const stations = new Set(this.#rows("SELECT key FROM live WHERE kind = 'station'").map((r) => r.key as string));
+    for (const ws of this.ctx.getWebSockets()) {
+      const attachment = ws.deserializeAttachment() as Attachment;
+      if ("station" in attachment && !attachment.dropped) stations.add(attachment.station);
+    }
+    for (const station of stations) this.#sendState(station);
+    this.tellAll({ type: "workspaces" }, null);
+    // (the operator's console shows the list: its 中继 page read again, as the minute's sample has it)
+    if (this.env.ADMIN_EMAIL) this.#tell(this.#byEmail(this.env.ADMIN_EMAIL), { type: "relays" });
   }
 
   // ── the admin's console ─────────────────────────────────────────────────
@@ -2157,10 +2473,24 @@ export class Directory extends DurableObject<Env> {
     const pair = new WebSocketPair();
     if (path === "/events") {
       const sub = header(request, "sub")!;
+      const sid = header(request, "sid") ?? "";
       // Every device opens this when it starts: the nearest thing to "last seen" that costs no write per request.
       this.#run("UPDATE users SET last_seen = ? WHERE sub = ?", nowSeconds(), sub);
       this.ctx.acceptWebSocket(pair[1], [`sub:${sub}`]);
-      pair[1].serializeAttachment({ sub } satisfies Attachment);
+      pair[1].serializeAttachment({ sub, sid } satisfies Attachment);
+      // Registered before checking, so a revocation during that call closes it too. The client receives no socket
+      // until checked: the Worker's earlier check may have preceded a revocation on the way here.
+      let live: boolean;
+      try {
+        live = await this.env.ACCOUNTS.getByName(sub).signedIn({ sub, sid });
+      } catch (error) {
+        if (pair[1].readyState === WebSocket.OPEN) pair[1].close(1011, "session check failed");
+        throw error;
+      }
+      if (!live || pair[1].readyState !== WebSocket.OPEN) {
+        if (pair[1].readyState === WebSocket.OPEN) pair[1].close(1008, "session ended");
+        return denied();
+      }
       return new Response(null, { status: 101, webSocket: pair[0], headers: { "sec-websocket-protocol": header(request, "protocol") ?? EVENTS_PROTOCOLS[0] } });
     }
     const station = header(request, "station")!;
@@ -2220,10 +2550,14 @@ export class Directory extends DurableObject<Env> {
     // for a station (which it would let ask anything of it). A rig is told the stations (they alone ask of it), not
     // the other rigs, and whose it is (`rig`).
     // (`ways`: the workspace's own relays and the ways it turned off, as kept here before its stations kept them: what a
-    // station takes as its first of them, station/src/mesh/ways.ts)
+    // station takes as its first of them, station/src/mesh/ways.ts), but one of still.fail's a workspace also added as its
+    // own before it was still.fail's: kept as both, a station took it for neither (2026-11-16, 上海 in hypershell-算法)
+    const told = relays(this.#relays());
+    const ours = told.relay_urls.map(sameUrl);
+    const theirs = (raw: unknown) => parseRelays(raw).filter((u) => !ours.includes(sameUrl(u)));
     const [home, ...joined] = found.map(({ relays, ways_off, rig, enrolled_by, ...row }) => ({
       ...(row as { workspace: string; workspace_name: string; name: string }),
-      ways: { relays: parseRelays(relays), off: parseRelays(ways_off) },
+      ways: { relays: theirs(relays), off: parseRelays(ways_off) },
       peers: this.#rows("SELECT m.station AS id, m.name, s.version FROM station_members m LEFT JOIN stations s ON s.id = m.station WHERE m.workspace = ? AND m.rig IS NULL ORDER BY m.enrolled_at, m.rowid", row.workspace),
       ...(rig === 1 ? { rig: { owner: enrolled_by as string } } : this.#rigsTold(row.workspace as string)),
       revocations: this.#rows("SELECT kind, id, at FROM revocations WHERE workspace = ? AND at >= ?", row.workspace, since),
@@ -2233,11 +2567,13 @@ export class Directory extends DurableObject<Env> {
     const { peers, revocations, lock: _, locked: __, ...row } = home! as typeof home & { locked?: true };
     // Every workspace's own relays after still.fail's (one endpoint, homed on any of them): a station from before them
     // keeps one more relay as it keeps the rest.
-    const told = relays(this.env);
+    // `stillfail_relays`: still.fail's alone, so a station tells them from its workspaces' own where one of those is
+    // also one of still.fail's (station/src/mesh/ways.ts `stillFails`).
+    const stillfail_relays = [...told.relay_urls];
     const relay_urls = [...told.relay_urls];
     for (const url of found.flatMap((w) => parseRelays(w.relays))) if (!relay_urls.map(sameUrl).includes(sameUrl(url))) relay_urls.push(url);
     const lock = this.#lockHead(row.workspace);
-    return JSON.stringify({ type: "state", peers, ...row, origin: this.env.PUBLIC_ORIGIN, ...told, relay_urls, grant_keys: grantKeys(this.env), revocations, lock, workspaces: joined });
+    return JSON.stringify({ type: "state", peers, ...row, origin: this.env.PUBLIC_ORIGIN, ...told, relay_urls, stillfail_relays, grant_keys: grantKeys(this.env), revocations, lock, workspaces: joined });
   }
 
   #offline(station: string): void {
@@ -2247,7 +2583,8 @@ export class Directory extends DurableObject<Env> {
 
   /** "ping" is answered by the runtime; a station speaks otherwise only of the workspace locks: it asks for entries it
    * lacks (`lock.get {after}`, answered `{type: "lock", entries}`) or brings ones the cloud lacks (`lock.put`), of its
-   * home's lock, or of another workspace's it is in that it names (`workspace`, said back with the entries). */
+   * home's lock, or of another workspace's it is in that it names (`workspace`, said back with the entries); and of
+   * the ways it keeps of a workspace it names (`ways.put`, #waysPut). */
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const attachment = ws.deserializeAttachment() as Attachment;
     if (typeof message !== "string" || !("station" in attachment)) return;
@@ -2277,7 +2614,49 @@ export class Directory extends DurableObject<Env> {
       // what the station keeps of the lock that the cloud's chain parted from (its head an entry that lost), kept by
       // the fork choice (a station from before says none, and is answered as before).
       await this.#appendLock(workspace, body.entries, body.keep === true).catch(() => this.#sendState(station));
+    } else if (body.type === "ways.put" && named !== null) {
+      this.#waysPut(station, workspace, body as Record<string, unknown>);
     }
+  }
+
+  /**
+   * A workspace's ways as one of its stations keeps them (station/src/cloud/presence.ts `waysTeller`): theirs, kept here
+   * for those that reach no station yet (an app from before the stations kept them; a browser or a device new to the
+   * workspace, which learns its relays from `/v1/me` alone, 2026-11-16). The newest record kept, as the stations keep
+   * it (`at`, then the larger station id: station/src/mesh/ways.ts); one of a rig's, which keeps none, not. Cleaned as
+   * setRelays and setWay clean, never every relay off. Told only when the ways changed: each station says its record
+   * again as its socket opens.
+   */
+  #waysPut(station: string, workspace: string, body: Record<string, unknown>): void {
+    const { at, station: by } = body;
+    if (!Number.isSafeInteger(at) || (at as number) < 0 || typeof by !== "string" || by.length > 128 || !Array.isArray(body.relays) || !Array.isArray(body.off)) return;
+    if (this.#one("SELECT rig FROM station_members WHERE station = ? AND workspace = ?", station, workspace)?.rig === 1) return;
+    const row = this.#one("SELECT relays, ways_off, ways_at, ways_station FROM workspaces WHERE id = ?", workspace);
+    if (!row) return;
+    const was = { at: row.ways_at as number | null, station: (row.ways_station as string | null) ?? "" };
+    if (was.at !== null && !((at as number) > was.at || (at === was.at && by > was.station))) return;
+    const ours = relayUrls(this.#relays());
+    const insecure = this.env.PUBLIC_ORIGIN.startsWith("http:");
+    const list: string[] = [];
+    for (const raw of body.relays) {
+      const url = typeof raw === "string" && URL.canParse(raw.trim()) ? new URL(raw.trim()) : null;
+      if (!url || !(url.protocol === "https:" || (insecure && url.protocol === "http:")) || url.username || url.password || url.search || url.hash) continue;
+      const clean = url.href.replace(/\/+$/, "");
+      if (list.length < MAX_RELAYS && !ours.some((u) => sameUrl(u) === sameUrl(clean)) && !list.some((u) => sameUrl(u) === sameUrl(clean))) list.push(clean);
+    }
+    // What is off: `ours`, a kind of way, or a relay of still.fail's or of its own (as listed); else nothing.
+    let off: string[] = [];
+    for (const w of body.off) {
+      if (typeof w !== "string") continue;
+      const id = w === "ours" || (WAY_KINDS as readonly string[]).includes(w) ? w : [...ours, ...list].find((u) => sameUrl(u) === sameUrl(w));
+      if (id !== undefined && !off.includes(id)) off.push(id);
+    }
+    // (as the stations' keepRelayOn: still.fail's back on rather than none)
+    if (!waysOf(this.#relays(), list, off).some((w) => w.kind === "relay" && w.on)) off = off.filter((o) => o !== "ours" && !ours.some((u) => sameUrl(u) === sameUrl(o)));
+    const relays = list.length ? JSON.stringify(list) : null;
+    const waysOff = off.length ? JSON.stringify(off) : null;
+    this.#run("UPDATE workspaces SET relays = ?, ways_off = ?, ways_at = ?, ways_station = ? WHERE id = ?", relays, waysOff, at as number, by, workspace);
+    if (relays !== ((row.relays as string | null) ?? null) || waysOff !== ((row.ways_off as string | null) ?? null)) this.#changed(workspace, true);
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {
@@ -2340,7 +2719,7 @@ export type DirectoryLoad = {
 
 /** What each of the directory's calls serves, as its load is counted (adminLoad); "other" for one not listed. */
 const FAMILIES: Record<string, string> = {
-  accountFor: "signin", upsertUser: "signin",
+  accountFor: "signin", upsertUser: "signin", joinBySignIn: "signin", openToSignIn: "admin",
   me: "me", invitationsFor: "me", setOwnPicture: "me", deleteAccount: "me", revokeSessions: "me",
   isBeta: "beta",
   seen: "sockets", closed: "sockets", stationConnected: "sockets", stationState: "sockets", stationLeft: "sockets", stationSaid: "sockets",
@@ -2355,9 +2734,13 @@ for (const name of ["workspace", "createWorkspace", "updateWorkspace", "deleteWo
 for (const name of ["adminUsers", "setMayCreate", "adminPending", "setPending", "removePending", "setBlocked", "setBeta", "adminDeleteWorkspace", "adminCreateWorkspace", "adminSetLimits",
   "adminEnrollment", "adminWorkspaces", "inviteCodes", "createInviteCode", "revokeInviteCode", "adminFeedback", "setFeedbackStatus", "replyToFeedback", "adminLoad"]) FAMILIES[name] = "admin";
 /** The tables that are this object's own, not moved into another cloud: its sockets' generations, the outbox to the
- * objects (made again as things change), its counts. */
-const MOVE_SKIPPED = new Set(["outbox", "live", "hits"]);
+ * objects (made again as things change), its counts, the views as last told (`#told`: begun again by the next change,
+ * at a version above any before). */
+const MOVE_SKIPPED = new Set(["outbox", "live", "hits", "told"]);
 for (const name of ["moveExport", "moveImport", "moveAccounts"]) FAMILIES[name] = "admin";
+// The relays' list: the operator's (a relay's counters and its enrolling are "other"); the cron's reading of it.
+for (const name of ["relayList", "relayPut", "relayRemove", "relayToken"]) FAMILIES[name] = "admin";
+FAMILIES.relaysNow = "broadcast";
 /** What it runs for itself rather than being called for. */
 const UNCOUNTED = new Set(["constructor", "handOff", "migrateStationMembers", "migrateFreePlan", "send", "settled", "sweep"]);
 
@@ -2417,6 +2800,33 @@ function cleanIcon(value: unknown, origins: string[]): string | null {
  * guests': the clients fetch a person's by its address); else null. */
 function cleanPicture(value: unknown, origins: string[]): string | null {
   return typeof value === "string" && origins.some((origin) => isIconUrl(origin, value)) ? value : null;
+}
+/** What a workspace's view says alike to every member (directory.ts `#alike`), as kept to be told against. */
+type AlikeView = Omit<WorkspaceView, "role" | "rev" | "rigs" | "lock_requests"> & { rigs: RigView[] };
+/** A view's lists, each by the key of its entries (what a device patches by). */
+const KEYED = { members: "sub", stations: "id", rigs: "id", invitations: "id", added: "email" } as const;
+/** What changed from `before` to `now`, told so (AccountEvent `workspace`): a manager's with the invitations and the
+ * added, anyone else's without, as their views are. */
+function viewTold(before: AlikeView, now: AlikeView, manager: boolean): ViewTold {
+  const told: Required<ViewTold> = { set: {}, unset: [], put: {}, gone: {} };
+  const was = before as unknown as Record<string, unknown>;
+  const is = now as unknown as Record<string, unknown>;
+  for (const key of new Set([...Object.keys(was), ...Object.keys(is)])) {
+    if (key in KEYED) continue;
+    if (!(key in is)) told.unset.push(key);
+    else if (JSON.stringify(was[key]) !== JSON.stringify(is[key])) told.set[key] = is[key];
+  }
+  for (const [list, key] of Object.entries(KEYED)) {
+    if (!manager && (list === "invitations" || list === "added")) continue;
+    const entries = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]) : []);
+    const held = new Map(entries(was[list]).map((e) => [e[key], JSON.stringify(e)]));
+    const put = entries(is[list]).filter((e) => held.get(e[key]) !== JSON.stringify(e));
+    const keys = new Set(entries(is[list]).map((e) => e[key]));
+    const gone = [...held.keys()].filter((k) => !keys.has(k));
+    if (put.length > 0) told.put[list] = put;
+    if (gone.length > 0) told.gone[list] = gone;
+  }
+  return Object.fromEntries(Object.entries(told).filter(([, v]) => (Array.isArray(v) ? v.length > 0 : Object.keys(v).length > 0))) as ViewTold;
 }
 /** A workspace's emoji and icon as its views carry them: each only when set (clients from before them know neither). */
 function marks(emoji: unknown, icon: unknown): { emoji?: string; icon?: string } {

@@ -886,6 +886,62 @@ export class Local {
     }
   }
 
+  // ── a chat that went to another station ──
+
+  /// What was done here to the chat of `session` on `from` (its thread there `thread`) and is not confirmed yet, aimed
+  /// at its copy on `to` (its thread there `there`; views/moved.ts): its outbox, the first messages sent to its agent, a
+  /// chat asked for here that became it, its renames, pins, archives and the like laid over its row. What was aimed
+  /// goes from there as it would have from here. The messages of its outbox to be sent: their ids.
+  moved(from: string, session: string, thread: number | null, to: string, there: number | null): string[] {
+    const sends: string[] = [];
+    if (thread !== null && there !== null) {
+      const list = this.#outbox.get(join([from, thread]));
+      if (list !== undefined && list.length > 0) {
+        this.#outboxPut(from, thread, []);
+        this.#outboxPut(to, there, [...this.outbox(to, there), ...list]);
+        for (const m of list) if (m.state === "sending" && (m.seq === undefined || m.seq === null)) sends.push(String(m.id));
+        this.#changed({ kind: "outbox", station: from, thread });
+        this.#changed({ kind: "outbox", station: to, thread: there });
+      }
+    }
+    const k = this.#firstKey(from, session);
+    const first = this.#firsts.get(k);
+    if (first !== undefined) {
+      const there_ = this.#firstKey(to, session);
+      const was = this.#firsts.get(there_);
+      this.#firsts.delete(k);
+      this.#firsts.set(there_, was === undefined ? first : { ...was, queue: [...was.queue, ...first.queue] });
+      this.#saveFirst(k);
+      this.#saveFirst(there_);
+      this.#changed({ kind: "first", station: from, key: session });
+      this.#changed({ kind: "first", station: to, key: session });
+    }
+    for (const [key, chat] of this.#pending) {
+      if (chat.station !== from || chat.made?.[0] !== session) continue;
+      this.#pending.set(key, { ...chat, station: to, made: there === null ? chat.made : [session, there] });
+      this.#pendingDb.set(key, this.#data.of(to) ?? this.#pendingDb.get(key)!);
+      this.#made.delete(join([from, session]));
+      this.#made.set(join([to, session]), key);
+      this.#savePending(key);
+      this.#changed({ kind: "pending", key });
+    }
+    const of = (station: string, t: number | null, s: string) => station === from && (t !== null && thread !== null ? t === thread : s === session);
+    let changing = false;
+    for (const [i, c] of this.#changing.entries()) {
+      if (!of(c.station, c.thread, c.session)) continue;
+      const aimed: Change = { ...c, station: to, thread: c.thread !== null ? there : null };
+      this.#changing[i] = aimed;
+      this.#data.putLocal(CHANGING, from, String(c.id), undefined);
+      this.#data.putLocal(CHANGING, to, String(c.id), aimed);
+      changing = true;
+    }
+    if (changing) {
+      this.#changed({ kind: "changing", station: from });
+      this.#changed({ kind: "changing", station: to });
+    }
+    return sends;
+  }
+
   /// The identity of an entry sent from here, once it arrived.
   remember(station: string, thread: number, seq: number, id: string): void {
     const k = join([station, thread, seq]);

@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { openJobs } from "../src/read/jobs.ts";
-import { makeStore, seenBy } from "../src/read/store.ts";
+import { openJobs } from "./reference/jobs.ts";
+import { makeStore, seenBy } from "./reference/store.ts";
 import { JOBS_UP } from "../src/store/rows.ts";
-import { WORKSPACE_UP_JOBS } from "../src/store/workspace-up-jobs.ts";
+import { WORKSPACE_UP_JOBS } from "./reference/backfill/workspace-up-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 const viewer = (home: boolean) => ({ sub: "a@example.test", email: "a@example.test", name: "A", role: "member",

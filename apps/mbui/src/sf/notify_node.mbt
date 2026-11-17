@@ -663,12 +663,15 @@ pub fn kind_row_node(
     |> ignore
     head.box(fn(top) {
       top.row(Is(true)).gap(Is(notify_kind_gap)).lines_up(Is(Some(Middle))) |> ignore
+      // (its title whole on its line, what tells of it cut short in what the title leaves, words set large: the title
+      // never put on two lines for it)
       top.box(fn(t) {
-        t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+        t.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).keeps_held(Is(true)) |> ignore
         words_node(t, title, fn() { notify_kind_title }) |> ignore
       })
       |> ignore
-      words_node(top, sum, fn() { notify_kind_sum }) |> ignore
+      words_node(top, sum, fn() { notify_kind_sum }).cuts(Is(true)).min_width(Is(Some(0.0))).allow_ellipsis(Is(true))
+      |> ignore
       icon_node(top, "chevron-right", notify_kind_chevron, By(fn() { theme().p.muted }), name_now=fn() {
         if open() {
           "chevron-down"

@@ -10,8 +10,8 @@ const web = (ws?: string) => ({ runtime: "claude" as const, createdBy: "ada@exam
 test("an agent archives another chat as the app does, and a repeated call leaves its archive time alone", async () => {
   const r = new Rig({ link: true });
   try {
-    const [caller] = newSession(r.hub, web());
-    const [other, thread] = newSession(r.hub, web());
+    const [caller] = await newSession(r.hub, web());
+    const [other, thread] = await newSession(r.hub, web());
     say(r.hub, thread.id, "ada@example.com", "keep this message");
     await settle();
     const link = r.hub.link(other)!;
@@ -35,8 +35,8 @@ test("an agent archives another chat as the app does, and a repeated call leaves
 test("an extra chat is archived without archiving its session; Slack threads are refused", async () => {
   const r = new Rig({ link: true });
   try {
-    const [caller] = newSession(r.hub, web());
-    const [other] = newSession(r.hub, web());
+    const [caller] = await newSession(r.hub, web());
+    const [other] = await newSession(r.hub, web());
     const extra = openChat(r.hub, other, "ada@example.com", "extra");
     assert.equal(extra.home, null);
     await r.call(caller, "chat_archive", { chat: `CHAT/${extra.threadTs}` });
@@ -53,9 +53,9 @@ test("an extra chat is archived without archiving its session; Slack threads are
 test("a chat page showing another session's history archives the page's chat", async () => {
   const r = new Rig({ link: true });
   try {
-    const [caller] = newSession(r.hub, web());
-    const [page] = newSession(r.hub, web());
-    const [history] = newSession(r.hub, web());
+    const [caller] = await newSession(r.hub, web());
+    const [page] = await newSession(r.hub, web());
+    const [history] = await newSession(r.hub, web());
     const link = `${r.hub.link(page)!}?history=${encodeURIComponent(history)}&entry=1`;
     await r.call(caller, "chat_archive", { chat: link });
     assert.equal(r.store.getSession(page)!.archivedBy, MANUAL);
@@ -71,8 +71,8 @@ test("an agent archives a chat on another station through the workspace transpor
   const near = new Rig({ link: true, place: { workspace: "w", station: "near" }, workspaces: ["w"] });
   const far = new Rig({ link: true, place: { workspace: "w", station: "far" }, workspaces: ["w"] });
   try {
-    const [caller] = newSession(near.hub, web("w"));
-    const [other] = newSession(far.hub, web("w"));
+    const [caller] = await newSession(near.hub, web("w"));
+    const [other] = await newSession(far.hub, web("w"));
     const link = far.hub.link(other)!;
     near.hub.onPeer(async (station, request) => {
       assert.equal(station, "far");
@@ -93,8 +93,8 @@ test("an agent archives a chat on another station through the workspace transpor
 test("a writable chat shared from another workspace cannot be archived locally or by a peer", async () => {
   const r = new Rig({ link: true, place: { workspace: "one", station: "st" }, workspaces: ["one", "two"] });
   try {
-    const [caller] = newSession(r.hub, web("one"));
-    const [other] = newSession(r.hub, web("two"));
+    const [caller] = await newSession(r.hub, web("one"));
+    const [other] = await newSession(r.hub, web("two"));
     r.store.setChatShare(other, [{ workspace: "one", name: "One" }], true, "ada@example.com");
     const link = r.hub.link(other)!;
     assert.match(await r.refused(caller, "chat_archive", { chat: link }), /another workspace/);

@@ -2,7 +2,7 @@
 // (station/src/store/legacy-edits-build.ts: its old messages scanned, then the keys older writers changed folded back)
 // and the said lookup (legacy-said-build.ts: its old messages scanned). Both were made when the store was opened; a
 // merged view or widget trigger that must be switched first (`repairMergedEditLookup`, the store's schema upkeep) is
-// left to the worker: `Fallback`.
+// left to the station's writer: `Fallback`.
 
 ///|
 let version : Int = 1
@@ -11,7 +11,7 @@ let version : Int = 1
 let batch : Int = 64
 
 ///|
-/// The store needs the worker's schema repair before its edits can be prepared.
+/// The store needs the writer's schema repair before its edits can be prepared (read/pool.ts `repairEdits`).
 pub(all) suberror Fallback
 
 ///|
@@ -214,6 +214,12 @@ fn uses_legacy_edits(db : @sql.Db) -> Bool raise {
 /// A single merged message can be read: the scan done and at most one batch of changed keys left
 /// (`legacyMergedReadReady`), as the merged view now reads.
 fn edits_ready(db : @sql.Db) -> Bool raise {
+  // (asked for each message a read merges: thousands in the shared chat list, which took half its time)
+  db.known("legacy.edits_ready", () => Json::boolean(edits_ready_now(db))) == Json::boolean(true)
+}
+
+///|
+fn edits_ready_now(db : @sql.Db) -> Bool raise {
   let view = sql_of(db, "view", "merged").unwrap_or("")
   let legacy = view.contains("legacy_edit_meta")
   let old_index = legacy && view.contains("INDEXED BY entries_target")
@@ -340,7 +346,7 @@ pub fn edits_maintenance(db : @sql.Db) -> Bool raise {
 }
 
 ///|
-/// One step of the edit lookup's upkeep (said-worker.ts `legacyEdits`); whether a merged message can be read then.
+/// One step of the edit lookup's upkeep (read/pool.ts `prepareLegacyEdits`); whether a merged message can be read then.
 /// A store whose merged view must be switched first raises `Fallback`.
 pub fn edits_step(db : @sql.Db) -> Bool raise {
   if edits_ready(db) {
@@ -382,7 +388,8 @@ fn said_scanned(db : @sql.Db) -> Bool raise {
 }
 
 ///|
-/// One batch of the said lookup's old scan (said-worker.ts `legacySaid`); whether it is done (or the store has none).
+/// One batch of the said lookup's old scan (read/pool.ts `prepareLegacySaid`); whether it is done (or the store has
+/// none).
 pub fn said_step(db : @sql.Db) -> Bool raise {
   if has_legacy_said(db) && !said_scanned(db) {
     ignore(said_scan(db))
@@ -1042,4 +1049,12 @@ pub fn bounded_edit_key(db : @sql.Db, thread : Json, n : Json) -> String? raise 
 /// Old edits to be prepared before a message can be read merged (read/store.ts LegacyEditsUnavailable).
 pub(all) suberror Unprepared {
   Unprepared(String)
+}
+
+///|
+/// Its words as they are where it is said (`to_string`), not its type's name.
+pub impl Show for Unprepared with output(self, logger) {
+  match self {
+    Unprepared(m) => logger.write_string(m)
+  }
 }

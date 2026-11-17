@@ -1,0 +1,51 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/locate"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn claude_project(String) -> String?
+
+pub fn history_sources(@sql.Db, @json.Json) -> Array[Source?] raise
+
+pub fn runtime_kind(String) -> Bool
+
+pub fn transcript_dir(String) -> String
+
+// Errors
+
+// Types and methods
+pub struct Finder {
+  // private fields
+}
+pub fn Finder::hints(Self) -> @json.Json
+pub fn Finder::join(Self, Array[String]) -> String
+pub fn Finder::new(@host.Host, String) -> Self
+pub fn Finder::sources(Self, String, Array[(String, String)], Array[Source], Array[String], anywhere? : Bool) -> (Array[(String, String)], Bool)
+pub fn Finder::transcript_path(Self, String, String, Array[String], String, Array[String], Bool) -> String?
+pub fn Finder::use_hints(Self, @json.Json) -> Unit
+
+pub struct Locator {
+  // private fields
+}
+pub fn Locator::heard(Self, String) -> Unit
+pub fn Locator::new(@host.Host, @sql.Db, String, String) -> Self
+
+pub(all) struct Said {
+  suffix : String
+  mut seen : Bool
+}
+
+pub(all) struct Source {
+  id : String
+  runtime : String
+  profile : String?
+}
+
+// Type aliases
+
+// Traits

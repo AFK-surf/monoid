@@ -1,5 +1,6 @@
-// The search's candidate scopes (station/src/search/scope-index.ts), installed empty with their writers, and their old
-// state prepared and repaired in bounded steps (scope-prepare.ts `SearchScopePreparation`), here for the MoonBit
+// The search's candidate scopes (station/test/reference/search-scope-index.ts), installed empty with their writers,
+// and their old state prepared and repaired in bounded steps (search-scope-prepare.ts `SearchScopePreparation`),
+// here for the MoonBit
 // builder. Thread ids and rowids are read and bound as text (an id past 2^53 kept exact); a membership's or a session's
 // key is bound as SQLite has it, by its bytes and storage class, so a repair seeks exactly what it marked.
 

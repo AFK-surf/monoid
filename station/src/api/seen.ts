@@ -1,7 +1,7 @@
 // What of the station's chats a viewer sees: those of their own workspace. A request that names
 // a session, a chat or a job of another workspace is answered as one naming what is not there.
 import { percentDecode } from "./request.ts";
-import { type InWorkspace, sees } from "../store/rows.ts";
+import { type InWorkspace, handedWs, sees } from "../store/rows.ts";
 import type { Store } from "../store/store.ts";
 
 /// Whether `viewer` sees a session (one not there: the home workspace's).
@@ -41,4 +41,25 @@ export function elsewhere(store: Store, path: string, viewer: InWorkspace): stri
     default:
       return jobSeen(store, viewer, id) ? null : `no job ${id}`;
   }
+}
+
+/// Where a chat a write's path names went (replica/handover.ts), for a viewer it is not seen by here: one of its sessions
+/// handed to another station of the viewer's workspace and shown there (its `ws` here `handed:`), so that the write is
+/// answered as a message to it is (409, `moved`: routes/hub.ts `movedAnswer`) and a device aims it there; null for
+/// anything else (a chat of another workspace, one still coming here, one not there), which stays not there. Only for
+/// what `elsewhere` said not seen: a thread with a session still here is written here.
+export function went(store: Store, path: string, viewer: InWorkspace): { session: string; station: string; thread: number | null; there: number | null } | null {
+  const named = NAMED.exec(path);
+  if (named === null) return null;
+  const [, kind, raw] = named;
+  const id = segment(raw!);
+  const keys = kind === "sessions" ? [id]
+    : kind === "threads" && /^[+-]?\d+$/.test(id) && Number.isSafeInteger(Number(id)) ? store.threadSessions(Number(id)).map((m) => m.session)
+    : [];
+  for (const key of keys) {
+    const h = store.handedTo(key);
+    if (h === null || store.sessionWs(key)?.startsWith(handedWs("")) !== true || !sees(viewer, h.ws)) continue;
+    return { session: key, station: h.station, thread: h.thread, there: h.there };
+  }
+  return null;
 }

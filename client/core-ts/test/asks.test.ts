@@ -4,6 +4,7 @@ import { test } from "node:test";
 import { ed25519 } from "@noble/curves/ed25519.js";
 import { Effect } from "effect";
 import { Accounts } from "../src/accounts.ts";
+import { Core } from "../src/core.ts";
 import { keyIdOf } from "../src/app-release.ts";
 import { Asks, PICTURE_RETRY_MS, PICTURES_KEPT, buddies, devCloud, linkTarget } from "../src/asks.ts";
 import { parseAsk } from "../src/asks-parse.ts";
@@ -13,6 +14,7 @@ import { HostError } from "../src/error.ts";
 import { holdLanguage } from "../src/i18n.ts";
 import { FakeHost, jsonResponse } from "../src/testing.ts";
 import { base64, toJsonBytes, utf8 } from "../src/util.ts";
+import { answers, call } from "./helpers.ts";
 import { run } from "./run.ts";
 
 holdLanguage();
@@ -104,6 +106,30 @@ test("a_newer_app_is_asked_for_once_until_a_release_is_said_to_be_out_and_a_pict
   await assert.rejects(run(asks.picture("https://p.test/gone.png")));
   assert.equal(host.requests.filter((r) => r.url.endsWith("gone.png")).length, 2);
   await assert.rejects(run(asks.picture("file:///etc/passwd")));
+});
+
+test("a_picture_asked_together_and_again_comes_whole_each_time_though_the_page_takes_its_bytes_away", async () => {
+  // The web's worker moves an answer's bytes to its page (FakeHost.emit does the same): the picture the core holds for
+  // the next asking must not be the bytes that went.
+  const host = new FakeHost();
+  host.onFetch((req) => (req.url === "https://p.test/a.png" ? { status: 200, headers: [["content-type", "image/png"]], body: new Uint8Array([1, 2, 3]) } : jsonResponse(404, {})));
+  const core = await Core.create(host, { clock: host.time.clock });
+  try {
+    const ui = core.connect();
+    call(core, ui, 1, "picture", { url: "https://p.test/a.png" });
+    call(core, ui, 2, "picture", { url: "https://p.test/a.png" });
+    await host.settle();
+    call(core, ui, 3, "picture", { url: "https://p.test/a.png" });
+    await host.settle();
+    const emitted = host.takeEmitted();
+    for (const id of [1, 2, 3]) {
+      const m = answers(emitted, id) as { ok?: { type: string }; bytes?: Uint8Array } | undefined;
+      assert.deepEqual([m?.ok?.type, [...(m?.bytes ?? [])]], ["image/png", [1, 2, 3]], `picture ${id}`);
+    }
+    assert.equal(host.requests.filter((r) => r.url === "https://p.test/a.png").length, 1);
+  } finally {
+    core.close();
+  }
 });
 
 test("a_picture_is_fetched_where_the_host_says_and_kept_under_its_own_address", async () => {
@@ -361,4 +387,33 @@ test("the_buddies_are_the_web_s_list", () => {
   const all = buddies();
   assert.ok(Array.isArray(all) && all.length > 5);
   assert.ok(typeof all[0].id === "string" && typeof all[0].label === "string" && typeof all[0].bg === "string");
+});
+
+test("a_picture_asked_as_kept_is_answered_from_the_device_at_once_or_with_none_its_fetch_set_off_for_the_next_asking", async () => {
+  const host = new FakeHost();
+  let fetched = 0;
+  let release: () => void = () => {};
+  const gate = new Promise<void>((resolve) => (release = resolve));
+  host.onFetch(async (req) => {
+    fetched++;
+    await gate;
+    return { status: 200, headers: [["content-type", "image/png"]], body: new Uint8Array([req.url.length, 3]) };
+  });
+  const asks = new Asks(host, nothing);
+  assert.deepEqual(parseAsk("picture", { url: "https://p.test/a.png", kept: true }), { kind: "picture", url: "https://p.test/a.png", kept: true });
+  assert.deepEqual(parseAsk("picture", { url: "https://p.test/a.png" }), { kind: "picture", url: "https://p.test/a.png", kept: false });
+  // Not on the device: none at once, the network not waited for, its fetch set off.
+  const [kind, bytes] = await run(asks.pictureKept("https://p.test/a.png"));
+  assert.deepEqual([kind, bytes.length], ["", 0]);
+  // The asking that follows shares that one fetch.
+  const asked = run(asks.picture("https://p.test/a.png"));
+  release();
+  assert.deepEqual([...(await asked)[1]], [20, 3]);
+  assert.equal(fetched, 1);
+  // Kept now: answered from the device, again without the network.
+  const again = new Asks(host, nothing);
+  const [k2, b2] = await run(again.pictureKept("https://p.test/a.png"));
+  assert.deepEqual([k2, [...b2]], ["image/png", [20, 3]]);
+  assert.equal(fetched, 1);
+  await assert.rejects(run(asks.pictureKept("file:///etc/passwd")));
 });

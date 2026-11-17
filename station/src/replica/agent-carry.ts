@@ -1,6 +1,6 @@
 // A retired station's agent home put into this station's, as its chats are taken here (retire.ts `#tookPlace`; the
 // lead, 2026-11-14: the agents' own memory and skills go along). What it sent is its MEMORY.md, its presets.json and
-// the skills people or agents made there (carry-worker.ts `homeFiles`), each file by its hash as the rooms' are. Nothing
+// the skills people or agents made there (station/mb carry.mbt `home_files`), each file by its hash as the rooms' are. Nothing
 // this station has is overwritten:
 // - MEMORY.md: put where this one has none (or only the empty one a home is made with), else the retired station's
 //   appended under a heading that says which station it came from and when, once (the line under it names the station);
@@ -16,7 +16,7 @@ import { createReadStream } from "node:fs";
 import { createInterface } from "node:readline";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { randomBytes } from "node:crypto";
-import type { CarriedFile, CarriedHome } from "./carry-worker.ts";
+import type { CarriedFile, CarriedHome } from "./carry.ts";
 import { type KeptRecord, canonical, newerRecord } from "../../../client/core-ts/src/preset-records.ts";
 
 /// What an agent home is made with (sessions/agent-home.ts `workspaceAgentHome`): as good as none.

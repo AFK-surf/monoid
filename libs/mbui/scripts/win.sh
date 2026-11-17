@@ -61,11 +61,12 @@ sync_app() {
   rm -rf $SA && mkdir -p $SA
   cp -p "$APPMOD/moon.mod" $SA/
   cp -rp "$APPMOD/src" $SA/src
-  printf 'members = [\n  ".",\n  "../mod",\n]\n' > $SA/moon.work
+  # (the app's other members, a module it pulls in beside it, where they are)
+  sh "$D/stage_work.sh" "$APPMOD" ../mod . > $SA/moon.work
   # (its packages with Apple's own native stubs, a core host's: their Windows one, win_engine.c, instead, else left out)
   for p in $(grep -l '\.m"' $SA/src/*/moon.pkg 2>/dev/null); do
     if [ -f "$(dirname $p)/win_engine.c" ]; then
-      sed -i -e 's/"native-stub": *\[[^]]*\.m"[^]]*\]/"native-stub": [ "win_engine.c" ]/' -e 's/-fobjc-arc *//' $p
+      sed -i -e 's/"[^"]*\.m"/"win_engine.c"/' -e 's/-fobjc-arc *//' -e 's/-Iout\/core\/ghostty-vt\/include *//' $p
     else
       rm -rf "$(dirname $p)"
     fi

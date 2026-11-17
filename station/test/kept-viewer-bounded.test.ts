@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { keptChats, makeStore } from "../src/read/store.ts";
+import { keptChats, makeStore } from "./reference/store.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a viewer's kept chats use its index instead of reading everyone else's", () => {

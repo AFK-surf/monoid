@@ -1,20 +1,5 @@
-// The player on top as the shell has it (its page sfpages' drive_play.mbt): back while it is sideways turns it upright
-// first, and what is on top dark or light whatever the theme (the system bars' icons follow it).
-
-///|
-/// Back while the player on top is sideways turns it upright first.
-fn play_back(c : @ui.Ctx) -> Unit {
-  match app.nav.top() {
-    DrivePlay(at) =>
-      {
-        let m = @sf.playing_for(reader_key(at)).media
-        if m.is_sideways() {
-          c.on_back(fn() { m.upright() })
-        }
-      }
-    _ => ()
-  }
-}
+// The player on top as the shell has it (its page sfpages' drive_play.mbt, back while it is sideways turning it upright
+// first its own): what is on top dark or light whatever the theme (the system bars' icons follow it).
 
 ///|
 /// Whether what is on top is dark or light whatever the theme (the system bars' icons follow it): the player and the

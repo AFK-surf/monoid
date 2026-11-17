@@ -10,6 +10,7 @@ import * as format from "../format.ts";
 import { t } from "../i18n.ts";
 import { isWatch, remoteOwner } from "../jobs.ts";
 import * as model from "../shapes/model.ts";
+import type { RemoteRun } from "../protocol.ts";
 import { arr as arrU, get as getU } from "../util.ts";
 import { GROUPS, groupTitle } from "./profiles.ts";
 import { count, localDay, money } from "./usage.ts";
@@ -26,7 +27,7 @@ const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? 
 /// was archived (from a week before on); its jobs (the tasks other stations' chats run on it among them), the tasks
 /// other stations' chats ran on it (when each began, and whose session: its usage's `remoteRuns`), its chats' calls
 /// (its usage's `rows`: by day, chat, profile and model).
-export type FleetStation = { station: string; online: boolean; today: boolean; running: string[]; chatOf: (session: string) => string | null; archived: number[]; jobs: J[]; runs: { at: number; session: string }[]; calls: J[] };
+export type FleetStation = { station: string; online: boolean; today: boolean; running: string[]; chatOf: (session: string) => string | null; archived: number[]; jobs: J[]; runs: RemoteRun[]; calls: J[] };
 
 /// How many of a kind's models are said one by one when it has more than one past them, the rest together.
 const MODELS_NAMED = 3;
@@ -117,7 +118,7 @@ export function fleetView(stations: FleetStation[], profiles: J[], usage: J, now
   const chats = new Set<string>();
   const used = new Set<string>();
   const archived: number[] = [];
-  const runs: { at: number; session: string }[] = [];
+  const runs: RemoteRun[] = [];
   for (const s of online) {
     archived.push(...s.archived);
     runs.push(...s.runs);
@@ -155,7 +156,7 @@ export function fleetView(stations: FleetStation[], profiles: J[], usage: J, now
 /// date; the tasks chats ran on other stations over them (`runs`), and how many each chat that ran any did, on average
 /// (by its session: a chat's own agent), none said with none run. None while the usage is read, or with nothing spent
 /// nor archived.
-function days(usage: J, archived: number[], runs: { at: number; session: string }[], offset: number): J {
+function days(usage: J, archived: number[], runs: RemoteRun[], offset: number): J {
   if (usage === null || usage === undefined) return null;
   const tiles = arr(get(usage, "tiles"));
   const daily = arr(get(usage, "daily"));
@@ -175,10 +176,12 @@ function days(usage: J, archived: number[], runs: { at: number; session: string 
   const shown = new Set(daily.map((d) => str(d.day)));
   const ran = runs.filter((r) => shown.has(localDay(r.at, offset)));
   const by = new Set(ran.map((r) => r.session)).size;
+  // (a station that gathers them says how many one stands for; one from before, each one)
+  const n = ran.reduce((sum, r) => sum + (typeof r.count === "number" && r.count > 0 ? r.count : 1), 0);
   const tasks = ran.length === 0 ? {} : {
-    tasks: ran.length,
-    tasksText: t("core-logic.fleet.tasks", { n: ran.length }),
-    tasksPer: t("core-logic.fleet.tasks_per", { n: Math.round((ran.length / by) * 10) / 10 }),
+    tasks: n,
+    tasksText: t("core-logic.fleet.tasks", { n }),
+    tasksPer: t("core-logic.fleet.tasks_per", { n: Math.round((n / by) * 10) / 10 }),
   };
   return {
     ...tasks,

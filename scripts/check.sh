@@ -163,7 +163,13 @@ report() {
     read -r rc took < "$tmp/step.$i.done"
     if [ "$rc" = 0 ]; then echo "· $name … ok (${took} s)"; else
       echo "· $name … FAILED (${took} s)"
+      # (what a test file said of itself as it ended, before its summary: a process it left running, its station
+      # ending; a file that failed whole says nothing more in the summary's last lines)
+      grep -E "left running after its tests|^  [0-9]+ |the program running the sessions ended|\.test\.ts: as it ended: " "$tmp/step.$i.log" | head -20 | sed 's/^/    /'
       tail -40 "$tmp/step.$i.log" | sed 's/^/    /'
+      # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
+      # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
+      grep -A6 ': left running after its tests' "$tmp/step.$i.log" | head -60 | sed 's/^/    /'
       failed="$failed $name"
     fi
   done
@@ -244,6 +250,16 @@ TS
   : > "$pkg/.stand-in"
 }
 
+# What the core's code and tests import of the station's own files (client/core-ts reaches into station/ by relative
+# paths): a change to one alone typechecks the core and runs its tests. #6720 made station/src/sessions/presets.ts'
+# Presets answer promises; test/presets-carried.test.ts, which calls them, ran neither, and main was red at the next
+# change to the core (43894522015). scripts/core-station.ts (part ts) holds every such import to these three lists.
+core_station='^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$'
+# The core's tests read these (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core; one line,
+# in single quotes) and are remembered by these (core_test_inputs).
+core_test_paths='^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/(api/(admin|moved-from|oldest|routes/(presets|stars))|cloud/(lock|state)|mesh/(credential|device-builds|serve)|ops/fibers|rig/grants|sessions/presets|updates/keys)\.ts$|^station/test/lock-(chains|fork-choice-model|fork-pool|moved-world|oracle|roster-model|roster4-model|world-sim)\.ts$|^scripts/native\.ts$'
+core_test_inputs="client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/api/admin.ts station/src/api/moved-from.ts station/src/api/oldest.ts station/src/api/routes/presets.ts station/src/api/routes/stars.ts station/src/cloud/lock.ts station/src/cloud/state.ts station/src/mesh/credential.ts station/src/mesh/device-builds.ts station/src/mesh/serve.ts station/src/ops/fibers.ts station/src/rig/grants.ts station/src/sessions/presets.ts station/src/updates/keys.ts station/test/lock-chains.ts station/test/lock-fork-choice-model.ts station/test/lock-fork-pool.ts station/test/lock-moved-world.ts station/test/lock-oracle.ts station/test/lock-roster-model.ts station/test/lock-roster4-model.ts station/test/lock-world-sim.ts scripts/native.ts"
+
 if part ts; then
   ts_root='^(scripts|test|spike)/.*\.ts$|^(tsconfig\.json|package\.json|pnpm-lock\.yaml)$'
   ts_web='^web/'
@@ -272,6 +288,13 @@ if part ts; then
 
   # The agents' rules name only what is there (AGENTS.md: These files are kept true): any change may move what one names.
   step "AGENTS.md paths" node scripts/agents-paths.ts
+  # What the core imports of the station's is in core_station, core_test_paths and core_test_inputs (above).
+  if touches '^client/core-ts/|^scripts/(check\.sh|core-station\.ts)$'; then
+    step "core's imports of the station's checked with it" node scripts/core-station.ts "$core_station" "$core_test_paths" "$core_test_inputs"
+  fi
+  # The features not yet everyone's are one registry, the core's and the app's alike, each read where it decides and
+  # none read once gone (client/core-ts/src/features.ts): any change may add or leave a branch on one.
+  step "features: one registry, no dead switch or branch left" node scripts/features-check.ts
 
   if touches '^design/(station-)?icons/|^apps/mbui/(tools/icons/|scripts/icons$)|^web/ui/src/icons\.tsx$'; then
     step icons bash apps/mbui/scripts/icons . --check
@@ -284,6 +307,22 @@ if part ts; then
   # Every CI job may take 5 minutes at most (only scripts/ci-timeouts.py's LONGER 10), and says so (timeout-minutes).
   if touches '^\.github/workflows/|^scripts/ci-timeouts\.py$'; then
     step "CI jobs: 5 minutes at most" python3 scripts/ci-timeouts.py
+  fi
+  # A CI step's limit to the second (its own timeout-minutes is whole minutes).
+  if touches '^scripts/with-timeout'; then
+    step "a command's limit to the second" bash scripts/with-timeout-test.sh
+  fi
+  # An artifact a CI job downloads, unzipped whole by its digest or not there at all.
+  if touches '^scripts/download-artifact'; then
+    step "artifact download: whole by digest or nothing there" bash scripts/download-artifact-test.sh
+  fi
+  # A prebuilt native part's download: asked again after a 5xx or a broken connection, never after a 404.
+  if touches '^scripts/native(\.ts|-download-test\.mjs)$'; then
+    step "natives: a download asked again after a 5xx" node scripts/native-download-test.mjs
+  fi
+  # A release's deltas within the job's end, the package and its feed put after them (apps/mbui/scripts/beta.sh publish).
+  if touches '^apps/mbui/scripts/beta\.sh$|^scripts/beta-deadline'; then
+    step "preview publish: deltas bounded by the job's end" bash scripts/beta-deadline-test.sh
   fi
   # The UIs never make a request of a station or still.fail cloud themselves: they name what they want done
   # (client/core-ts/src/ops.ts), and the core, which knows what it changes, brings every topic that shows it up to date.
@@ -367,10 +406,18 @@ if part ts; then
       added 'station/src/*.ts' ':(exclude,glob)station/src/**/*worker.ts' ':(exclude)station/src/read' ':(exclude)station/src/cli.ts' \
         ':(exclude)station/src/updates/command.ts' ':(exclude)station/src/updates/delta.ts'
       added 'station/src/read/pool.ts' 'station/src/read/mb-reader.ts' 'station/src/read/tail.ts' 'station/src/read/transcript.ts' \
-        'station/src/read/packed.ts' 'station/src/read/plan.ts' 'station/src/read/*-builder.ts' 'station/src/read/*-requests.ts' ':(exclude,glob)station/src/**/*worker.ts'
+        'station/src/read/*-builder.ts' 'station/src/read/*-requests.ts' ':(exclude,glob)station/src/**/*worker.ts'
     } | grep -nE '\b(access|appendFile|chmod|chown|close|copyFile|cp|exists|fchmod|fchown|fdatasync|fstat|fsync|ftruncate|futimes|lchown|link|lstat|lutimes|mkdir|mkdtemp|open|opendir|read|readdir|readFile|readlink|readv|realpath|rename|rm|rmdir|stat|statfs|symlink|truncate|unlink|utimes|write|writeFile|writev|exec|execFile|spawn|gzip|gunzip|deflate|deflateRaw|inflate|inflateRaw|unzip|brotliCompress|brotliDecompress|zstdCompress|zstdDecompress)Sync(\.native)?\(' \
       | grep -v 'sync:' > "$tmp/syncs" || true
     step "the station's main thread waits on nothing (in what this adds)" sh -c "! grep . '$tmp/syncs'"
+    # A database the process serving writes as the next one starts beside it (a handover): what a change adds opens no
+    # SQLite connection without a busy timeout, and begins no transaction but BEGIN IMMEDIATE outside one already open:
+    # a deferred BEGIN or a SAVEPOINT begun outside a transaction that reads and then writes is refused the write at once,
+    # with no busy timeout waited ("database is locked": a station's next process stopped by itself, 2026-11-14). One that
+    # only reads, or one of its own (":memory:", a file no other connection opens), says so on its line with "deferred:".
+    added 'station/src/*.ts' | grep -nE 'new DatabaseSync\(' | grep -vE 'timeout|":memory:"|deferred:' > "$tmp/sqlite" || true
+    added 'station/src/*.ts' | grep -nE 'exec\(["`](BEGIN( DEFERRED)?["`;]|SAVEPOINT )' | grep -v 'deferred:' >> "$tmp/sqlite" || true
+    step "a starting process waits its turn for the database (in what this adds)" sh -c "! grep . '$tmp/sqlite'"
   fi
   # No way into a station from outside (AGENTS.md): every socket a station listens on is this machine's own, and says
   # so on its line (127.0.0.1; the fd the launcher holds, a Unix socket's path); the mesh's endpoint is bound by
@@ -407,6 +454,12 @@ if part ts; then
   if [ $full = 1 ] && touches '^(test|client|web/src/core)/|^package\.json$'; then core_tests=1; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || touches "$ts_cloud" || [ $core_tests = 1 ]; then prep root deps .; fi
   if touches "$ts_root" || touches "$ts_web" || touches "$web_reads" || [ $core_tests = 1 ]; then wasm_pkg; fi
+  # The mbui app's budgets only fall (scripts/mbui-budgets.ts): a raise says why in its commit's message. A commit's own
+  # is checked as its message is written (.githooks/commit-msg); a push's and CI's, here, by the range's messages.
+  if { [ "$mode" = push ] || [ "$mode" = full ]; } && touches '^apps/mbui/src/sfapp/(real_size(_change|_bindings)?_known|chat_nodes_open_budget)_wbtest\.mbt$|^scripts/mbui-budgets\.ts$'; then
+    step "mbui budgets only fall" node scripts/mbui-budgets.ts "$range"
+  fi
+  if touches '^scripts/mbui-budgets\.ts$|^test/mbui-budgets\.test\.ts$'; then step "mbui budgets test" node --test test/mbui-budgets.test.ts; fi
   # The stable channel's release notes (scripts/changelog.ts): each one read as CI will.
   if touches '^docs/releases/|^scripts/changelog\.ts$'; then step "release notes" sh -c 'node scripts/changelog.ts --stable > /dev/null'; fi
   # Root tests also import the core's Markdown reader. Wait for its packages on a cold checkout, as the web does.
@@ -424,7 +477,8 @@ if part ts; then
     step "typecheck: cloud" after cloud after cloud-types sh -c 'cd cloud && pnpm run check'
   fi
   # The TypeScript core: its own tsconfig.
-  if touches "$ts_core"; then prep core deps client/core-ts; step "typecheck: core-ts" after core sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
+  # (with the station's deps: what the core imports of the station's imports its packages, effect among them)
+  if touches "$ts_core" || touches "$core_station"; then prep core deps client/core-ts; prep station deps station; step "typecheck: core-ts" after core after station sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
   if touches "$ts_core|^client/math/|^apps/mbui/src/sf/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
   if touches "$ts_core|^client/fixtures/math\\.json$|^apps/mbui/src/sf/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
   # The core's pure answers the mbui app's runs without a core keep (apps/mbui/src/sfkept), as the core answers them now.
@@ -470,37 +524,30 @@ if [ $full = 1 ]; then
   # them in slices on Linux runners of their own (pipeline.yml, check-core), as the station's: in check-linux beside the
   # rest of ts they went from 3.5 to past its five minutes as files were added (179 files; main 6045382883 cancelled at
   # 5:05, 43272321433, 2026-11-12), each file small and none worth cutting (212 s of CPU in all on a Mac, the most 17).
-  # (core_test_paths: scripts/plan.sh reads it from this line for CI's check-core)
-  core_test_paths='^client/core-ts/|^client/i18n/|^web/src/core/|^web/public/avatars/|^station/native/mesh/|^vendor/|^rules/js/|^station/src/cloud/lock\.ts$|^station/test/lock-(chains|oracle)\.ts$|^scripts/native\.ts$'
+  # (core_test_paths and core_test_inputs: above, beside what the core imports of the station's)
   if part core-tests && touches "$core_test_paths"; then
     prep core deps client/core-ts; prep station deps station
     slice=${STILLFAIL_CORE_SHARD:-}
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: core-ts${slice:+ $slice}" "client/core-ts client/i18n web/src/core web/public/avatars station/native/mesh vendor rules/js station/src/cloud/lock.ts station/test/lock-chains.ts station/test/lock-oracle.ts scripts/native.ts" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh -- node --test --test-force-exit $files'
+    remembered "tests: core-ts${slice:+ $slice}" "$core_test_inputs" after core after station env CORE_SLICE="$slice" sh -c 'cd client/core-ts && files=$(ls test/*.test.ts | awk -v s="${CORE_SLICE:-0/1}" '"'"'BEGIN { split(s, a, "/") } NR % a[2] == a[1]'"'"') && [ -n "$files" ] && node ../../scripts/native.ts run mesh -- node --test --test-force-exit $files'
   fi
   if part ts && touches "$ts_cloud"; then remembered "tests: cloud" "cloud client/i18n station/src/cloud/lock.ts client/core-ts/src/lock-form.ts rules/js" after cloud sh -c 'cd cloud && pnpm test'; fi
   # The station: it and its tests run whenever it, one of its native parts or the words it says changed (station_paths:
   # scripts/plan.sh reads it from this line for CI's check-station).
-  station_paths='^station/|^vendor/|^client/i18n/|^client/shell/|^libs/mbui/src/effect/|^rules/js/|^scripts/native\.ts$|^scripts/station-slice\.sh$'
-  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit; on a Mac the Rust station's archive
-  # command too, for the compatibility tests, which skip themselves without it: it is prebuilt for darwin alone).
+  station_paths='^station/|^vendor/|^client/i18n/|^client/core-ts/src/features\.ts$|^client/shell/|^libs/mbui/src/effect/|^rules/(js|src)/|^rules/moon\.mod$|^scripts/native\.ts$|^scripts/station-slice\.sh$'
+  # Its tests' native parts, prebuilt (mesh addon, runner, the reader in MoonBit, and the Rust station's archive
+  # command for darwin-arm64 and linux-x64).
   station_natives="mesh runner reader"
-  [ "$(uname -s)" = Darwin ] && station_natives="mesh runner archive-rs reader"
+  case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
-    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase'
+    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. Cursor's
     # driver (agents/cursor-bridge.mjs) and the sandbox bridge (agents/sandbox-bridge.mjs) run in processes of their own,
     # not the station's.
     step "station: time through its clock" sh -c '! git grep -nE "Date\.now\(|new Date\(\)|setTimeout\(|setInterval\(" -- station/src ":!station/src/ops/fibers.ts" ":!station/src/agents/cursor-bridge.mjs" ":!station/src/agents/sandbox-bridge.mjs"'
-    # Where the station's tests are another run's (CI: check-station's, on Linux), the ones only a Mac can run are
-    # this one's: those of the Rust station's archive command (test/cold-compat.test.ts, 8 tests; every other test
-    # ran on Linux as on a Mac, 2026-11-10).
-    if ! part station-tests && [ "$(uname -s)" = Darwin ]; then
-      remembered "tests: station, a Mac's alone" "station scripts/native.ts" after station sh -c 'cd station && node ../scripts/native.ts run mesh runner archive-rs reader -- node --import ./test/setup-env.mjs --test --test-timeout=600000 test/cold-compat.test.ts'
-    fi
   fi
   # The station's tests (station/test): every file, or one slice of them (STILLFAIL_STATION_SHARD="<i>/<n>": the
   # files dealt by what each costs, the longest first, each onto the slice with the least: scripts/station-slice.sh). CI runs them in slices on Linux runners of their own (pipeline.yml,
@@ -512,14 +559,14 @@ if [ $full = 1 ]; then
     slice=${STILLFAIL_STATION_SHARD:-}
     # (STILLFAIL_NODE_TEST_JOBS: that many files at a time rather than Node's own count)
     # shellcheck disable=SC2016 # the command's own variables, expanded by its shell
-    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node --import ./test/setup-env.mjs --test ${STILLFAIL_NODE_TEST_JOBS:+--test-concurrency="$STILLFAIL_NODE_TEST_JOBS"} --test-timeout=600000 $files'
+    remembered "tests: station${slice:+ $slice}" "station client/i18n client/shell vendor rules/js rules/src rules/moon.mod libs/mbui/src/effect scripts/native.ts scripts/station-slice.sh" after station env STATION_SLICE="$slice" STATION_NATIVES="$station_natives" sh -c 'cd station && files=$(sh ../scripts/station-slice.sh "${STATION_SLICE:-0/1}") && [ -n "$files" ] && node ../scripts/native.ts run $STATION_NATIVES -- node --import ./test/setup-env.mjs --test ${STILLFAIL_NODE_TEST_JOBS:+--test-concurrency="$STILLFAIL_NODE_TEST_JOBS"} --test-timeout=600000 $files'
   fi
   # The usage stream exercises the real station reader and the client together. Keep it out of either side's own
   # typecheck and prepare both sides before checking and running it, including on a fresh checkout.
   if part station && touches '^station/(src/|integration/|test/setup-env\.mjs$)|^client/core-ts/(src/|test/(helpers|station-fixture)\.ts$)|^scripts/check\.sh$'; then
     prep station deps station
     prep core deps client/core-ts
-    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
+    step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node ../scripts/native.ts run reader -- node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
   fi
   # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too).
   for crate in launcher runner mesh screen; do

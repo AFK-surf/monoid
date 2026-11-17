@@ -160,6 +160,7 @@ fn quote_media_departure(name : String, width : Double, height : Double, platfor
   new_run()
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  both_way()
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=width, h=height, platform~)
   let file : Json = {
     "name": Json::string(name), "path": Json::string("/w/uploads/" + name), "size": 120,
@@ -188,84 +189,93 @@ fn quote_media_departure(name : String, width : Double, height : Double, platfor
 
 ///|
 test "a quoted picture's card and empty comment do not blink as it is sent" {
-  quote_media_departure("departure.png", 390.0, 844.0, 2)
+  both_pages(fn() raise {
+    quote_media_departure("departure.png", 390.0, 844.0, 2)
+  }, old_only="the nodes page flies the message's quote card (#6593's message_quotes_node `from`), which has no comment line: decided a known difference (2026-11-16)")
 }
 
 ///|
 test "a quoted video cover's card and empty comment do not blink as it is sent" {
-  quote_media_departure("departure.mp4", 1280.0, 800.0, 0)
+  both_pages(fn() raise {
+    quote_media_departure("departure.mp4", 1280.0, 800.0, 0)
+  }, old_only="the nodes page flies the message's quote card (#6593's message_quotes_node `from`), which has no comment line: decided a known difference (2026-11-16)")
 }
 
 ///|
 test "a long quoted picture's words do not rewrap as the card sets out" {
-  new_run()
-  let src = fixture("chat")
-  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
-  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
-  let passage = quote_passage + "，然后把表格中的每一项逐一检查，确保发送前后文字不会在这里突然换行"
-  let file : Json = {
-    "name": "long-quote.png", "path": "/w/uploads/long-quote.png", "size": 120,
-    "width": 1600, "height": 900, "owner": "s-c1",
-  }
-  @sfbase.writing_quote(src, @sfbase.writing(src, "ws1/st1:s-c1"), {
-    "author": "Ana", "text": Json::string(passage), "ts": "ts8",
-  }, file~)
-  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
-  let before = t.lines_of(passage)
-  assert_true(before.length() > 0, msg="the quote's words were not laid out")
-  tap_send(t)
-  let first = t.lines_of(passage)
-  assert_eq(first, before, msg="the quote's words rewrapped on sending")
+  both_pages(fn() raise {
+    new_run()
+    let src = fixture("chat")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    both_way()
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    let passage = quote_passage + "，然后把表格中的每一项逐一检查，确保发送前后文字不会在这里突然换行"
+    let file : Json = {
+      "name": "long-quote.png", "path": "/w/uploads/long-quote.png", "size": 120,
+      "width": 1600, "height": 900, "owner": "s-c1",
+    }
+    @sfbase.writing_quote(src, @sfbase.writing(src, "ws1/st1:s-c1"), {
+      "author": "Ana", "text": Json::string(passage), "ts": "ts8",
+    }, file~)
+    t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+    let before = t.lines_of(passage)
+    assert_true(before.length() > 0, msg="the quote's words were not laid out")
+    tap_send(t)
+    let first = t.lines_of(passage)
+    assert_eq(first, before, msg="the quote's words rewrapped on sending")
+  })
 }
 
 ///|
 test "a quote sent alone is in the list at once, its card flying there from the composer's: seen every frame, from where its words were" {
-  let calls : Array[Made] = []
-  let t = quoting(calls)
-  let was = quote_once(t)
-  let (_, _, wide, _) = quote_ground(t)
-  tap_send(t)
-  // in the list from the frame it is sent, as the core will have it (composer.ts take: what is said about it with it)
-  let sent = sending_of("ws1/st1\u{1}s-c1")
-  assert_eq(sent.length(), 1)
-  assert_eq(sent[0].row.quotes.map(fn(q) { (q.text, q.comment, q.ts) }), [(quote_passage, "这里要对齐", "ts8")])
-  match send_flight.get() {
-    Some(f) => assert_eq(f.files.map(fn(ff) { ff.key }), [@sfbase.quote_key(0)])
-    None => fail("nothing flies")
-  }
-  // where its words were as it is sent, then every frame till it has landed: never gone, never twice apart
-  let at = quote_once(t)
-  assert_true((at.0 - was.0).abs() < 0.5 && (at.1 - was.1).abs() < 0.5, msg="sent, seen at \{Repr(at)}, not \{Repr(was)}")
-  // its card as wide as it was in the composer as it sets out, and narrower only on its way: never all at once
-  let widths = [quote_ground(t).2]
-  let sent_at = t.time()
-  let mut hinted = false
-  while t.time() < sent_at + flight_ms + 50.0 {
-    t.frame()
-    quote_once(t) |> ignore
-    widths.push(quote_ground(t).2)
-    // the composer's hint away while the card is over it (the field comes up under it as the composer comes down)
-    if t.time() < sent_at + flight_ms / 4.0 && hint_seen(t) {
-      hinted = true
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = quoting(calls)
+    let was = quote_once(t)
+    let (_, _, wide, _) = quote_ground(t)
+    tap_send(t)
+    // in the list from the frame it is sent, as the core will have it (composer.ts take: what is said about it with it)
+    let sent = sending_of("ws1/st1\u{1}s-c1")
+    assert_eq(sent.length(), 1)
+    assert_eq(sent[0].row.quotes.map(fn(q) { (q.text, q.comment, q.ts) }), [(quote_passage, "这里要对齐", "ts8")])
+    match send_flight.get() {
+      Some(f) => assert_eq(f.files.map(fn(ff) { ff.key }), [@sfbase.quote_key(0)])
+      None => fail("nothing flies")
     }
-  }
-  assert_false(hinted)
-  // and not back once it is out of it: the words' field has the cursor its comment line had (composer_hint)
-  t.run_for(@sf.hint_back_ms)
-  assert_eq(focused_field(t), "发消息")
-  assert_false(hint_seen(t))
-  assert_true(send_flight.get() is None)
-  // landed in its message, over the composer, as wide as it needs
-  let (_, y) = quote_once(t)
-  assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
-  let landed = widths[widths.length() - 1]
-  assert_true(landed < wide - 40.0, msg="landed \{landed} wide, as the composer's \{wide}")
-  assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
-  for k in 1..<widths.length() {
-    if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
-      fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
+    // where its words were as it is sent, then every frame till it has landed: never gone, never twice apart
+    let at = quote_once(t)
+    assert_true((at.0 - was.0).abs() < 0.5 && (at.1 - was.1).abs() < 0.5, msg="sent, seen at \{Repr(at)}, not \{Repr(was)}")
+    // its card as wide as it was in the composer as it sets out, and narrower only on its way: never all at once
+    let widths = [quote_ground(t).2]
+    let sent_at = t.time()
+    let mut hinted = false
+    while t.time() < sent_at + flight_ms + 50.0 {
+      t.frame()
+      quote_once(t) |> ignore
+      widths.push(quote_ground(t).2)
+      // the composer's hint away while the card is over it (the field comes up under it as the composer comes down)
+      if t.time() < sent_at + flight_ms / 4.0 && hint_seen(t) {
+        hinted = true
+      }
     }
-  }
+    assert_false(hinted)
+    // and not back once it is out of it: the words' field has the cursor its comment line had (composer_hint)
+    t.run_for(@sf.hint_back_ms)
+    assert_eq(focused_field(t), "发消息")
+    assert_false(hint_seen(t))
+    assert_true(send_flight.get() is None)
+    // landed in its message, over the composer, as wide as it needs
+    let (_, y) = quote_once(t)
+    assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
+    let landed = widths[widths.length() - 1]
+    assert_true(landed < wide - 40.0, msg="landed \{landed} wide, as the composer's \{wide}")
+    assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
+    for k in 1..<widths.length() {
+      if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
+        fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
+      }
+    }
+  })
 }
 
 ///|
@@ -279,71 +289,79 @@ fn focused_field(t : @ui.Tester) -> String {
 
 ///|
 test "sent with the focus in its comment line, a quote leaves the focus in the words' field" {
-  let calls : Array[Made] = []
-  let t = quoting(calls)
-  assert_eq(focused_field(t), "添加说明（可选）")
-  tap_send(t)
-  t.run_for(flight_ms + 50.0)
-  assert_eq(focused_field(t), "发消息")
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = quoting(calls)
+    assert_eq(focused_field(t), "添加说明（可选）")
+    tap_send(t)
+    t.run_for(flight_ms + 50.0)
+    assert_eq(focused_field(t), "发消息")
+  })
 }
 
 ///|
 test "taken out with the focus in its comment line, a quote leaves the focus in the words' field" {
-  let calls : Array[Made] = []
-  let t = quoting(calls)
-  assert_eq(focused_field(t), "添加说明（可选）")
-  t.click(Button, label=@sf.t("web-main.quote.remove"))
-  t.run_for(@sf.leave_ms + 50.0)
-  assert_eq(focused_field(t), "发消息")
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = quoting(calls)
+    assert_eq(focused_field(t), "添加说明（可选）")
+    t.click(Button, label=@sf.t("web-main.quote.remove"))
+    t.run_for(@sf.leave_ms + 50.0)
+    assert_eq(focused_field(t), "发消息")
+  })
 }
 
 ///|
 test "words sent with a quote land under its card, which is in their row from the frame they are sent" {
-  let calls : Array[Made] = []
-  let t = quoting(calls)
-  t.tap_text("发消息")
-  t.type_text("先上屏")
-  tap_send(t)
-  assert_eq(sending_of("ws1/st1\u{1}s-c1")[0].row.quotes.length(), 1)
-  t.run_for(flight_ms + 50.0)
-  assert_true(send_flight.get() is None)
-  let (_, qy) = quote_once(t)
-  match t.drawn_of("先上屏") {
-    Some((_, wy)) => assert_true(qy < wy, msg="the quote at \{qy}, the words at \{wy}")
-    None => fail("the words not drawn")
-  }
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = quoting(calls)
+    t.tap_text("发消息")
+    t.type_text("先上屏")
+    tap_send(t)
+    assert_eq(sending_of("ws1/st1\u{1}s-c1")[0].row.quotes.length(), 1)
+    t.run_for(flight_ms + 50.0)
+    assert_true(send_flight.get() is None)
+    let (_, qy) = quote_once(t)
+    match t.drawn_of("先上屏") {
+      Some((_, wy)) => assert_true(qy < wy, msg="the quote at \{qy}, the words at \{wy}")
+      None => fail("the words not drawn")
+    }
+  })
 }
 
 ///|
 test "sent, a quote's ✕ leaves with its card and the send button fades to faint: neither at once" {
-  let calls : Array[Made] = []
-  let t = quoting(calls)
-  // (as it came up when the draft could be sent)
-  t.run_for(@sf.dur_ms)
-  let ready = send_ground(t)
-  assert_true(x_seen(t) > 0.9)
-  tap_send(t)
-  let xs = [x_seen(t)]
-  let grounds = [send_ground(t)]
-  let sent_at = t.time()
-  while t.time() < sent_at + @sf.leave_ms + 50.0 {
-    t.frame()
-    xs.push(x_seen(t))
-    grounds.push(send_ground(t))
-    // over its card all the way, never under it
-    assert_true(x_over_card(t), msg="the ✕ under its card at \{t.time()}")
-  }
-  // the ✕: seen as it sets out, fading on (never back), gone once it has left
-  assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
-  assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
-  assert_eq(xs[xs.length() - 1], 0.0)
-  for k in 1..<xs.length() {
-    if xs[k] > xs[k - 1] + 0.01 {
-      fail("the ✕ came back: \{Repr(xs)}")
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = quoting(calls)
+    // (as it came up when the draft could be sent)
+    t.run_for(@sf.dur_ms)
+    let ready = send_ground(t)
+    assert_true(x_seen(t) > 0.9)
+    tap_send(t)
+    let xs = [x_seen(t)]
+    let grounds = [send_ground(t)]
+    let sent_at = t.time()
+    while t.time() < sent_at + @sf.leave_ms + 50.0 {
+      t.frame()
+      xs.push(x_seen(t))
+      grounds.push(send_ground(t))
+      // over its card all the way, never under it
+      assert_true(x_over_card(t), msg="the ✕ under its card at \{t.time()}")
     }
-  }
-  // the send button: through what lies between its two grounds, not from one to the other at once
-  let faint = grounds[grounds.length() - 1]
-  assert_true(faint != ready)
-  assert_true(grounds.iter().any(fn(g) { g != ready && g != faint }), msg="\{Repr(grounds)}")
+    // the ✕: seen as it sets out, fading on (never back), gone once it has left
+    assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
+    assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
+    assert_eq(xs[xs.length() - 1], 0.0)
+    for k in 1..<xs.length() {
+      if xs[k] > xs[k - 1] + 0.01 {
+        fail("the ✕ came back: \{Repr(xs)}")
+      }
+    }
+    // the send button: through what lies between its two grounds, not from one to the other at once
+    let faint = grounds[grounds.length() - 1]
+    assert_true(faint != ready)
+    assert_true(grounds.iter().any(fn(g) { g != ready && g != faint }), msg="\{Repr(grounds)}")
+  })
 }

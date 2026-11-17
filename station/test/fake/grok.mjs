@@ -9,7 +9,7 @@
 //   tools         a call to the station's tools that fails as unreachable
 //   post          a post through the station's tools, reached with use_tool as Grok Build reaches an MCP server's
 //   sub           a subagent spawned by a call: its own session's steps, then its end
-//   hold          waits until cancelled, or until a message is interjected (then says it heard it)
+//   hold          (or a prompt with test-hold in it, as the hub words one) waits until cancelled, or until a message is interjected (then says it heard it)
 //   exit          exits 4 in the middle of the turn
 // FAKE_DUMP: its argv and env are appended there as a JSON line, and every line of stdin to FAKE_DUMP.stdin. The version
 // it says it is (`--version`) is FAKE_DUMP.version's when there is one, else 1.0.62.
@@ -129,7 +129,7 @@ function agent() {
       notify(s.id, { sessionUpdate: "subagent_finished", subagent_id: child, child_session_id: child, status: "completed", tool_calls: 1, turns: 1 });
       update(s.id, { sessionUpdate: "tool_call_update", toolCallId: callId, status: "completed", content: [{ type: "content", content: { type: "text", text: "found A" } }] });
     }
-    if (text === "hold") {
+    if (text === "hold" || text.includes("test-hold")) {
       reply("holding");
       const why = await new Promise((r) => {
         s.cancel = () => r("cancelled");

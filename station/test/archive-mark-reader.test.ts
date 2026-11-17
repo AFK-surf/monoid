@@ -8,6 +8,7 @@ import { ArchiveMarkBuilder } from "../src/read/archive-mark-builder.ts";
 import { Readers } from "../src/read/pool.ts";
 import { archiveMarksReady, installArchiveMarkIndex } from "../src/store/archive-mark-index.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "archive-mark-reader-"));
@@ -53,9 +54,8 @@ test("an abandoned archive check does not start preparing marks after handover",
 test("a stopped archive mark worker resumes its pending request", async () => {
   const f = fixture(), file = join(f.dir, "worker.mjs"), marker = join(f.dir, "exited");
   try {
-    const real = new URL("../src/read/archive-mark-worker.ts", import.meta.url).href;
-    writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-    const builder = new ArchiveMarkBuilder(join(f.dir, "stillfail.db"), {}, pathToFileURL(file));
+    endsOnce(file, marker);
+    const builder = new ArchiveMarkBuilder(join(f.dir, "stillfail.db"), {}, file);
     try {
       await builder.readyIndex();
       assert.ok(existsSync(marker));

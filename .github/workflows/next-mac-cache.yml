@@ -14,6 +14,10 @@ concurrency:
 permissions:
   contents: read
   actions: read # an arch/next pipeline may have built its shell as a run artifact rather than publishing it
+env:
+  # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
+  # read by its deploy key)
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   mac:
     if: github.repository_owner == 'AFK-surf'
@@ -73,7 +77,7 @@ jobs:
           sha=$(git rev-parse HEAD)
           run=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow pipeline.yml --commit "$sha" --limit 1 --json databaseId --jq '.[0].databaseId // empty')
           if [ -n "$run" ]; then
-            gh run download "$run" --repo "$GITHUB_REPOSITORY" --name "natives-$sha" --dir "$RUNNER_TEMP/natives" ||
+            gh run download "$run" --repo "$GITHUB_REPOSITORY" --pattern "natives*-$sha" --dir "$RUNNER_TEMP/natives" ||
               echo "The pipeline has no native artifact ready; the native store will be used."
           fi
       - name: The shell prebuilt for these sources

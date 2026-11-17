@@ -3,5 +3,9 @@
 timeout 20000
 until 发消息
 wait 400
-wheel -900
+wheel -300
+wait 200
+wheel -300
+wait 200
+wheel -300
 wait 1800

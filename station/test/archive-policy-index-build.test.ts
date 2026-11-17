@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { archivePolicyIndexNeedsWork, archivePolicyIndexStep, hasLegacyArchivePolicy, installArchivePolicyIndex, LEGACY_ARCHIVE_POLICY } from "../src/store/archive-policy-index.ts";
+import { archivePolicyIndexNeedsWork, archivePolicyIndexStep, hasLegacyArchivePolicy, installArchivePolicyIndex, LEGACY_ARCHIVE_POLICY } from "./reference/backfill/archive-policy-index.ts";
 
 const schema = `CREATE TABLE archive_policy(id INTEGER PRIMARY KEY,at INTEGER NOT NULL,policy TEXT NOT NULL,
   author TEXT NOT NULL,summary TEXT NOT NULL,ws TEXT);`;

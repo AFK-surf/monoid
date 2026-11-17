@@ -34,6 +34,9 @@ on:
       - "apps/mbui/src/host/station_install.h"
       - "apps/mbui/src/host/station_calls.h"
       - "apps/mbui/scripts/station_install_test.c"
+      - "apps/mbui/src/host/station_uninstall.h"
+      - "apps/mbui/scripts/station_uninstall_test.c"
+      - "bin/stillfail.ps1"
       - "apps/mbui/scripts/linux_station_test.*"
       - "libs/mbui/src/kitdemo/gallery/linkcheck.mbt"
       - "libs/mbui/src/kitdemo/gallery/noticecheck.mbt"
@@ -43,6 +46,8 @@ on:
       - "libs/mbui/src/ui/drop.mbt"
       - "libs/mbui/src/ui/messages.mbt"
       - "libs/mbui/src/host/gles_render.h"
+      - "libs/mbui/src/host/frame_mail.h"
+      - "libs/mbui/scripts/gles_render_test.c"
       - "libs/mbui/src/host/corner_sl.h"
       - "libs/mbui/src/host/done_watch.h"
       - "libs/mbui/src/host/post.h"
@@ -62,6 +67,10 @@ on:
     paths: *paths
   workflow_dispatch:
 
+env:
+  # Farview's client, which the app draws a chat's Farview tab with (apps/mbui/scripts/farview.sh: a private repository,
+  # read by its deploy key)
+  FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   contracts:
     runs-on: ubuntu-24.04
@@ -90,6 +99,8 @@ jobs:
           mkdir -p out
           cc -Wall -Werror -Isrc/host -I../../libs/mbui/src/host scripts/station_install_test.c -o out/station_install_test
           out/station_install_test
+          cc -Wall -Werror -Isrc/host scripts/station_uninstall_test.c -o out/station_uninstall_test
+          out/station_uninstall_test
       - uses: ./.github/actions/mbui-moonbit
       - name: kitdemo
         run: scripts/host_contract.sh linux build

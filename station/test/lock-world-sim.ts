@@ -41,13 +41,13 @@
 // fails them, and so does a known failure that holds now (take it out). The checks of every step stay hard: a wrong chain, a forger's entry or
 // someone let in whom the chain does not name fails at once.
 import assert from "node:assert/strict";
-import { createPrivateKey, createPublicKey, sign as nodeSign } from "node:crypto";
+import { createPrivateKey, createPublicKey, sign as nodeSign, verify as nodeVerify } from "node:crypto";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { keepLockAt, LockAppendRefused } from "../../cloud/src/lock.ts";
-import { type Entry, apply, endpointBytes, entryHash, fold, lockChain, signedBytes } from "../src/cloud/lock.ts";
+import { type Entry, type Verify, apply, endpointBytes, entryHash, fold, lockChain, signedBytes, verifyWith } from "../src/cloud/lock.ts";
 import { keep } from "../src/cloud/log-keep.ts";
 import { applyState, planeTeller } from "../src/cloud/presence.ts";
 import { Cloud, readLock, writeState } from "../src/cloud/state.ts";
@@ -56,6 +56,39 @@ import { tellLocks } from "../src/mesh/lock-events.ts";
 import { answerLock, followLock } from "../src/mesh/lock-sync.ts";
 import { PersonChains } from "../src/mesh/person-chains.ts";
 import { inLockBringing, lockRoute } from "../src/mesh/serve.ts";
+
+/// A signature's check kept by what it checked (cloud/lock.ts `verifyWith`, as a station gives its addon's): the worlds,
+/// the models and their runners (lock-roster4-model.ts, rules-fork-check.ts: every thread that imports this) fold the
+/// same chains again and again at each look, and checking the same signatures over took a third of rules-fork's time
+/// (2026-11-16, Studio: `verifyOneShot` 29% of its jobs' CPU on the main thread). The same key, signature and bytes
+/// always check the same, so nothing a check says changes; only node's own checks, never the addon's
+/// (verify-native.test.ts sets its own).
+const checked = new Map<string, boolean>();
+const keptKeys = new Map<string, ReturnType<typeof createPublicKey>>();
+const keptVerify: Verify = (alg, key, signature, message) => {
+  const id = `${alg} ${key.toString("base64")} ${signature.toString("base64")} ${message.toString("base64")}`;
+  const known = checked.get(id);
+  if (known !== undefined) return known;
+  const k = `${alg === "Ed25519" ? "e" : "p"}${key.toString("base64")}`;
+  let pub = keptKeys.get(k);
+  if (pub === undefined) {
+    pub = alg === "Ed25519"
+      ? createPublicKey({ key: { kty: "OKP", crv: "Ed25519", x: key.toString("base64url") }, format: "jwk" })
+      : createPublicKey({ key: { kty: "EC", crv: "P-256", x: key.subarray(1, 33).toString("base64url"), y: key.subarray(33).toString("base64url") }, format: "jwk" });
+    if (keptKeys.size >= 10_000) keptKeys.clear();
+    keptKeys.set(k, pub);
+  }
+  let ok: boolean;
+  try {
+    ok = alg === "Ed25519" ? nodeVerify(null, message, pub, signature) : nodeVerify("sha256", message, { key: pub, dsaEncoding: alg === "ES256-der" ? "der" : "ieee-p1363" }, signature);
+  } catch {
+    ok = false;
+  }
+  if (checked.size >= 500_000) checked.clear();
+  checked.set(id, ok);
+  return ok;
+};
+verifyWith(keptVerify);
 
 const WS = "01HWORLDWORLDWORLDWORLDWOR";
 /// The workspace s0 and s1 joined besides their home one.

@@ -989,6 +989,38 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a placed p
 }
 
 ///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: a placed page drawn comes in as a message's image does, what it waited under brushed off it in strips, gone at its end" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    let asked : Array[String] = []
+    let t = viz_nodes_open(w, h, platform, asked)
+    let page = viz_nodes_frame(name).view
+    t.view_says(page.id(), "{\"vizMessage\":true,\"type\":\"height\",\"height\":231.4}")
+    viz_nodes_run(t, @ui.move_most_ms, true)
+    let said = viz_nodes_shown(t, page).unwrap()
+    assert_true(viz_nodes_covered(t, said), msg="\{name}: its placeholder over it till its host has drawn it")
+    // (the line's grey drawn within the page's place, whatever its alpha)
+    let line = @sf.palette_of(false).line >> 8
+    let greys = fn() {
+      let (x0, y0, x1, y1) = viz_nodes_shown(t, page).unwrap()
+      t.drawn_rects().filter(fn(d) { d.4 >> 8 == line && d.0 >= x0 - 1.0 && d.1 >= y0 - 1.0 && d.0 + d.2 <= x1 + 1.0 && d.1 < y1 }).length()
+    }
+    t.finish(2, page.id())
+    t.frame()
+    let began = t.time()
+    // half way: what it waited under brushed off it in strips (an image's way in), none of it over all of it
+    t.run_for(@sfbase.viz_reveal_ms / 2.0)
+    let half = greys()
+    assert_false(viz_nodes_covered(t, said), msg="\{name}: half way, nothing over all of it")
+    assert_true(half > 2, msg="\{name}: half way, its strips: \{half}")
+    // in: nothing of it left over the page
+    t.run_for(began + @sfbase.viz_reveal_ms + 1.0 - t.time())
+    assert_eq(greys(), 0, msg="\{name}: in, nothing over it")
+    assert_true(viz_nodes_frame(name).reveal is None, msg="\{name}: come in once")
+  }
+}
+
+///|
 /// The lowest field drawn (the composer's), if any.
 fn composer_field(t : @ui.Tester) -> (Double, Double, Double, Double)? {
   let mut at : (Double, Double, Double, Double)? = None
@@ -1260,6 +1292,19 @@ fn quote_nodes_pill(t : @ui.Tester) -> (Double, Double, Double, Double)? {
 }
 
 ///|
+/// The quote mark actually drawn in the pill over the picked words.
+fn quote_nodes_mark(t : @ui.Tester) -> String {
+  guard quote_nodes_pill(t) is Some((x, y, w, h)) && @ui.view_tree() is Some(tree) else { return "" }
+  for d in tree.drawn() {
+    let name = tree.drawn_name(d.id)
+    if name.has_prefix("/icon/quote") && d.x >= x && d.y >= y && d.x + d.w <= x + w && d.y + d.h <= y + h {
+      return name
+    }
+  }
+  ""
+}
+
+///|
 /// Words `s` of a message in a chat's page made with its inside nodes on 大屏, its list wheeled up till they are drawn
 /// well within the window (pick_pill_kept_wbtest's way): where they are drawn.
 fn quote_nodes_words(t : @ui.Tester, s : String) -> (Double, Double, Double, Double) raise {
@@ -1295,6 +1340,16 @@ test "大屏, a chat's page made with its inside nodes: words of an agent's mess
   )
   t.run_for(@ui.move_most_ms)
   assert_true(quote_nodes_pill(t) is Some(_), msg="引用 gone once at rest")
+  assert_eq(quote_nodes_mark(t), "/icon/quote/", msg="the pill over the end has a closing quote")
+  // The same words picked in the other direction put the pill at their start and use an opening quote.
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + pw - 1.0, py + ph / 2.0, px + 1.0, py + ph / 2.0)
+  t.frame()
+  assert_true(@ui.picked_now().map(fn(p) { p.text.contains("90") }).unwrap_or(false))
+  assert_eq(quote_nodes_mark(t), "/icon/quote-open/", msg="the pill over the start has an opening quote")
+  t.run_for(@ui.double_click_ms)
+  t.drag(px + 1.0, py + ph / 2.0, px + pw - 1.0, py + ph / 2.0)
+  t.frame()
   // pressed (a click of its own, not a second of the drag's): the quote in the chat's draft (composer.quote), whose
   // words, which message and as what; nothing picked, the pill gone
   t.run_for(@ui.double_click_ms)
@@ -1330,7 +1385,7 @@ test "大屏, a chat's page made with its inside nodes: words dragged over with 
 }
 
 ///|
-test "小屏, a chat's page made with its inside nodes: a finger held still on a message's words picks; lifted, the system's text menu offers 引用 after its own and no pill is drawn; chosen, quoted into the chat's draft as that message's, nothing picked" {
+test "小屏, a chat's page made with its inside nodes: a finger held still on a message's words picks; lifted, the page's own bar over it offers 引用, no system's text menu; pressed, quoted into the chat's draft as that message's, nothing picked" {
   let calls : Array[(String, Json)] = []
   let (w, h) = (390.0, 844.0)
   let t = find_nodes_open(calls, w, h, 2)
@@ -1349,14 +1404,16 @@ test "小屏, a chat's page made with its inside nodes: a finger held still on a
   t.press_at(px + 6.0, py + ph / 2.0)
   t.run_for(@ui.long_press_ms)
   t.release(px + 6.0, py + ph / 2.0)
-  t.draw()
+  t.run_for(@ui.move_most_ms)
   guard @ui.picked_now() is Some(p) else { fail("nothing picked by the finger held still") }
   assert_true(p.finger && p.text != "" && p.of.length() == 1, msg="\{p.text} of \{@ui.list_text(p.of)}, a finger's \{p.finger}")
-  assert_true(t.text_menu().0, msg="no text menu over what the finger picked")
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
-  assert_true(quote_nodes_pill(t) is None, msg="a pill over a finger's pick")
+  assert_false(t.text_menu().0, msg="the system's text menu over what the finger picked")
+  assert_eq(pick_bar_offers(t), ["引用", "复制", "全选", "多选", "复制链接"])
+  guard pick_bar_button(t, "引用") is Some((bx, by, bw, bh)) else { fail("no 引用 over the pick") }
+  // (over the words picked)
+  assert_true(by + bh <= py, msg="the bar at \{by}+\{bh}, the words at \{py}")
   let picked = p.text
-  t.key(@hostapi.key_menu_own)
+  t.tap(bx + bw / 2.0, by + bh / 2.0)
   t.run_for(@ui.move_most_ms)
   let quoted = calls.filter(fn(c) { c.0 == "composer.quote" })
   assert_eq(quoted.length(), 1, msg="\{Repr(calls.map(fn(c) { c.0 }))}")
@@ -1364,12 +1421,28 @@ test "小屏, a chat's page made with its inside nodes: a finger held still on a
   let q = field(Some(quoted[0].1), "quote")
   assert_eq((text(q, "text"), text(q, "ts"), text(q, "author"), text(q, "role")), (picked.trim(chars=" \n\t").to_owned(), "ts8", "Claude", "agent"))
   assert_eq(@ui.picked_now(), None)
-  assert_false(t.text_menu().0)
+  assert_eq(pick_bar_offers(t), [])
+}
+
+///|
+/// What the bar over a finger's pick offers, its buttons' words in its order (left to right); none where no bar is.
+fn pick_bar_offers(t : @ui.Tester) -> Array[String] {
+  let found = ["引用", "复制", "全选", "多选", "复制链接"].filter_map(fn(l) {
+    pick_bar_button(t, l).map(fn(r) { (r.0, l) })
+  })
+  found.sort_by(fn(a, b) { a.0.compare(b.0) })
+  found.map(fn(f) { f.1 })
+}
+
+///|
+/// Where the bar's button `label` is drawn.
+fn pick_bar_button(t : @ui.Tester, label : String) -> (Double, Double, Double, Double)? {
+  t.query(Button, label~).map(fn(s) { s.rect })
 }
 
 ///|
 /// 小屏, the chat's page made with its inside nodes: a finger held still on the first character of the words `s` of a
-/// message, lifted (what is picked then, the system's text menu over it).
+/// message, lifted (what is picked then, the bar over it).
 fn finger_held_nodes(t : @ui.Tester, s : String) -> Unit raise {
   guard t.run_rects(s) is [(px, py, _, ph), ..] else { fail("「\{s}」 not drawn") }
   t.press_at(px + 6.0, py + ph / 2.0)
@@ -1379,26 +1452,40 @@ fn finger_held_nodes(t : @ui.Tester, s : String) -> Unit raise {
 }
 
 ///|
-test "小屏, a chat's page made with its inside nodes: a finger's pick in a message has its turn shared and its link copied in the system's text menu after 引用, as the old bar over it had; chosen, done for that message and nothing picked" {
+test "小屏, a chat's page made with its inside nodes: a finger's pick in a message has the bar's 复制, 全选, its turn shared and its link copied, as the old bar over it had; each pressed, done for that message" {
   let calls : Array[(String, Json)] = []
   let t = find_nodes_open(calls, 390.0, 844.0, 2)
   let words = "做完了：列表、跳到最新的按钮"
   finger_held_nodes(t, words)
   guard @ui.picked_now() is Some(p) else { fail("nothing picked by the finger held still") }
   assert_true(p.finger && p.of.length() == 1, msg="\{p.text} of \{@ui.list_text(p.of)}")
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
+  // 全选: all of that message's words picked, the bar over them again without it
+  guard pick_bar_button(t, "全选") is Some((x, y, w, h)) else { fail("no 全选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  guard @ui.picked_now() is Some(all) else { fail("全选 let go of what was picked") }
+  assert_true(all.text.length() > p.text.length() && all.of == p.of, msg="\{Repr(all.text)} of \{@ui.list_text(all.of)}")
+  assert_eq(pick_bar_offers(t), ["引用", "复制", "多选", "复制链接"])
+  // 复制: the words picked on the clipboard, nothing picked
+  guard pick_bar_button(t, "复制") is Some((x, y, w, h)) else { fail("no 复制") }
+  t.tap(x + w / 2.0, y + h / 2.0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(t.clipboard(), all.text)
+  assert_eq(@ui.picked_now(), None)
   // 复制链接: the message's link on the clipboard (message_items' link), nothing quoted, nothing picked
-  t.key(@hostapi.key_menu_own + 2)
+  finger_held_nodes(t, words)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "复制链接") is Some((x, y, w, h)) else { fail("no 复制链接") }
+  t.tap(x + w / 2.0, y + h / 2.0)
   t.run_for(@ui.move_most_ms)
   assert_eq(t.clipboard(), "https://app.still.fail/o/ws1/st1/s-c1?message=11")
   assert_eq(@ui.picked_now(), None)
-  assert_false(t.text_menu().0)
   assert_eq(calls.filter(fn(c) { c.0 == "composer.quote" || c.0 == "chat.publishPreview" }).length(), 0)
-  // held again, 多选: the chat's picture asked of the whole chat (its thread) as it is chosen, nothing picked (read
-  // then: the picture it opens is another page's, its pictures decoded as it comes)
+  // held again, 多选: the chat's picture asked of the whole chat (its thread) as it is pressed, nothing picked
   finger_held_nodes(t, words)
-  assert_eq(t.text_menu_own(), ["引用", "多选", "复制链接"])
-  t.key(@hostapi.key_menu_own + 1)
+  t.run_for(@ui.move_most_ms)
+  guard pick_bar_button(t, "多选") is Some((x, y, w, h)) else { fail("no 多选") }
+  t.tap(x + w / 2.0, y + h / 2.0)
   let asked = calls.filter(fn(c) { c.0 == "chat.publishPreview" })
   assert_eq(asked.length(), 1, msg="\{Repr(calls.map(fn(c) { c.0 }))}")
   assert_eq(number(Some(asked[0].1), "thread"), 7.0)
@@ -1412,13 +1499,13 @@ test "小屏, a chat's page made with its inside nodes: a finger's pick in a mes
 /// drawn all gone over a row: its flash at rest, its menu's band shut, as they were; not a control's ground under the
 /// pointer, a bar's button's 32 by 32, which is another matter).
 fn flash_grounds() -> (Int, Int) {
-  let accent = @ui.tree_theme().color(AccentBg) & 0xFFFFFF00L
+  let flash = @sf.theme().flash_bg() & 0xFFFFFF00L
   let mut seen = 0
   let mut clear = 0
   for d in @ui.view_tree().unwrap().drawn() {
     if d.ground != 0L && (d.ground & 0xFFL) == 0L && d.w >= 200.0 {
       clear += 1
-    } else if (d.ground & 0xFFFFFF00L) == accent && d.ground != 0L {
+    } else if (d.ground & 0xFFFFFF00L) == flash && d.ground != 0L {
       seen += 1
     }
   }
@@ -1439,4 +1526,123 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message 
     long_run(t, l, @sfbase.flash_ms + long_rest_ms)
     assert_eq(flash_grounds(), (0, 0), msg="\{name}: at rest")
   }
+}
+
+///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: a message gone to that shows already glides to just under its top, the eyes taken along to it, not there at once" {
+  for s in long_screens {
+    let (name, w, h, _) = s
+    let l = long_chat()
+    let t = place_long_open(l, s)
+    t.move_to(w / 2.0, h / 2.0)
+    for _ in 0..<2 {
+      t.wheel(w / 2.0, h / 2.0, -600.0)
+      long_run(t, l, long_rest_ms)
+    }
+    // (the lowest message whose head shows in the lower half: gone to as a quote of it is pressed)
+    let mut target = -1
+    let mut from = 0.0
+    for n in l.first.get()..=l.last.get() {
+      if t.rect_of("第\{n}条：") is Some((_, y, _, _)) && y > h / 2.0 && y < h * 0.8 {
+        target = n
+        from = y
+      }
+    }
+    assert_true(target >= 0, msg="\{name}: nothing shows in the lower half")
+    go_to(long_ref, target.to_double())
+    @ui.came_from_outside()
+    t.run_for(@view.wheel_ease_ms)
+    let mid = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    long_run(t, l, long_rest_ms)
+    let end = t.rect_of("第\{target}条：").map(fn(r) { r.1 })
+    guard (mid, end) is (Some(m), Some(e)) else { fail("\{name}: \{target} not drawn: \{Repr((mid, end))}") }
+    assert_true(e > 0.0 && e < h / 3.0, msg="\{name}: \{target} gone to at \{e}")
+    assert_true(m < from - 2.0 && m > e + 2.0, msg="\{name}: from \{from} to \{e}, at \{m} on its way")
+  }
+}
+
+///|
+/// The bands drawn in colour `c` (whatever its alpha) across the list (wider than any part of a row), as (top, foot),
+/// top to foot.
+fn row_bands(t : @ui.Tester, c : Int64) -> Array[(Double, Double)] {
+  let out = t
+    .drawn_rects()
+    .filter(fn(r) { r.4 >> 8 == c >> 8 && (r.4 & 0xFFL) != 0L && r.2 > 300.0 })
+    .map(fn(r) { (r.1, r.1 + r.3) })
+  out.sort_by(fn(a, b) { a.0.compare(b.0) })
+  out
+}
+
+///|
+/// Whether `bands` lie one on another from the first to the last, nothing between them, and hold all of `from` to `to`.
+fn bands_hold(bands : Array[(Double, Double)], from : Double, to : Double) -> Bool {
+  guard bands.length() > 0 else { return false }
+  for i in 1..<bands.length() {
+    if (bands[i].0 - bands[i - 1].1).abs() > 0.5 {
+      return false
+    }
+  }
+  bands[0].0 <= from && bands[bands.length() - 1].1 >= to
+}
+
+///|
+test "a chat's page made with its inside nodes, on 小屏 and 大屏: the bands of rows gone to one after another meet, from the middle of the room over each to the middle of the room over the next, whatever room that is" {
+  for s in long_screens {
+    let (name, _, _, _) = s
+    let l = long_chat()
+    let t = place_long_open(l, s)
+    let flash = @sf.theme().flash_bg()
+    let first = l.first.get() + 3
+    // (each gone to in turn: its band's top and foot, each from the top of the words of the row it is in, as drawn
+    // then: the list is moved as each is gone to)
+    let tops : Array[Double] = []
+    let foots : Array[Double] = []
+    for n in first..<(first + 5) {
+      go_to(long_ref, n.to_double())
+      @ui.came_from_outside()
+      t.run_for(@sfbase.flash_in_ms + 100.0)
+      let bands = row_bands(t, flash)
+      guard (bands.length(), t.rect_of("第\{n}条："), t.rect_of("第\{n + 1}条：")) is (1, Some(r), Some(u)) else {
+        fail("\{name}: \{n} gone to: \{Repr(bands)}")
+      }
+      tops.push(bands[0].0 - r.1)
+      foots.push(bands[0].1 - u.1)
+      long_run(t, l, @sfbase.flash_ms + long_rest_ms)
+    }
+    for i in 1..<tops.length() {
+      assert_true(
+        (foots[i - 1] - tops[i]).abs() <= 0.5,
+        msg="\{name}: \{first + i - 1}'s band ends \{foots[i - 1]} from the words under it, \{first + i}'s starts \{tops[i]}",
+      )
+    }
+  }
+}
+
+///|
+test "a chat's page made with its inside nodes, 大屏: a long answer in pieces gone to, or right clicked in a piece after its first, is lit as one band from its head to its foot" {
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, [])
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  @signals.start_batch()
+  @sfbase.go_to(r, 3.0)
+  @signals.end_batch()
+  t.run_for(@sfbase.flash_in_ms + 100.0)
+  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+    fail("its head and its last line not drawn")
+  }
+  let flashed = row_bands(t, @sf.theme().flash_bg())
+  assert_true(bands_hold(flashed, head.1, last.1 + last.3), msg="gone to: \{Repr(flashed)}, \{head.1}…\{last.1 + last.3}")
+  t.run_for(@sfbase.flash_ms + @ui.move_most_ms)
+  assert_eq(row_bands(t, @sf.theme().flash_bg()), [], msg="at rest")
+  // (right clicked in a piece after its first, over the composer)
+  guard t.rect_of("核心的一段在") is Some((x, y, _, _)) else { fail("a line of a later piece not drawn") }
+  t.move_to(x + 8.0, y + 8.0)
+  t.frame()
+  t.right_click(x + 8.0, y + 8.0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.find("复制消息链接") is Some(_), msg="its menu")
+  guard (t.rect_of("列表改成虚拟列表"), t.rect_of("有问题随时说")) is (Some(head), Some(last)) else {
+    fail("its head and its last line not drawn, its menu open")
+  }
+  let lit = row_bands(t, @ui.tree_theme().color(Hover))
+  assert_true(bands_hold(lit, head.1, last.1 + last.3), msg="its menu open: \{Repr(lit)}, \{head.1}…\{last.1 + last.3}")
 }

@@ -27,12 +27,12 @@ test "old pinned folders can be removed from and returned to the personal list w
       (base.call)(name, params, done)
     },
   }
-  let contains = fn() { @sfdesk.favorite_has(@sfdesk.favorites(src, "ws1"), "ws1/st1", fix_docs, "") }
+  let contains = fn() { @sfpages.favorite_has(@sfpages.favorites(src, "ws1"), "ws1/st1", fix_docs, "") }
   assert_true(contains(), msg="the old pinned folder starts among the shortcuts")
-  @sfdesk.favorite_remove(src, "ws1", "ws1/st1", fix_docs, "")
+  @sfpages.favorite_remove(src, "ws1", "ws1/st1", fix_docs, "")
   assert_false(contains(), msg="the old pinned folder stays removed when the list is read again")
   assert_eq(named(calls, "drive.setRoots").length(), 0, msg="removing a shortcut leaves the station's settings alone")
-  @sfdesk.favorite_add(src, "ws1", { station: "ws1/st1", root: fix_docs, path: "", name: "文档" })
+  @sfpages.favorite_add(src, "ws1", { station: "ws1/st1", root: fix_docs, path: "", name: "文档" })
   assert_true(contains(), msg="the same folder can be added again")
   assert_eq(named(calls, "drive.setRoots").length(), 0, msg="adding a shortcut leaves the station's settings alone")
 }

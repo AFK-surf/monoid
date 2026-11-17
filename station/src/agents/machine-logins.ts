@@ -5,7 +5,7 @@
 //   the machine's current access token (CLAUDE_CODE_OAUTH_TOKEN) and never refresh. It is read where claude reads it:
 //   on macOS the keychain first, then the file (a claude run by hand saves to the keychain and deletes the file).
 import { execFile } from "node:child_process";
-import { mkdirSync, readFileSync } from "node:fs";
+import { mkdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { wall } from "../ops/fibers.ts";
 import { platform } from "../platform/index.ts";
@@ -65,7 +65,7 @@ export async function readClaudeCredentials(env: Env): Promise<MachineToken | un
     if (found.kind === "unreadable") return undefined;
   }
   try {
-    return parseClaudeCredentials(readFileSync(claudeCredentialsFile(env), "utf8"));
+    return parseClaudeCredentials(await readFile(claudeCredentialsFile(env), "utf8"));
   } catch {
     return undefined;
   }
@@ -85,7 +85,7 @@ export async function machineClaudeToken(env: Env): Promise<MachineToken> {
 
 /// A machine profile's Codex home, sharing the machine's login: its auth.json the machine's file (platform.shareFile:
 /// a link, or where one is refused a hard link). Made again when something replaced it (a sign-in in the home, say).
-export function linkCodexAuth(home: string, env: Env) {
-  mkdirSync(home, { recursive: true });
-  platform.shareFile(codexAuthFile(env), join(home, "auth.json"));
+export async function linkCodexAuthSoon(home: string, env: Env): Promise<void> {
+  await mkdir(home, { recursive: true });
+  await platform.shareFile(codexAuthFile(env), join(home, "auth.json"));
 }

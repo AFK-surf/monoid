@@ -12,6 +12,7 @@ import { STILLFAIL_SURFACE, Store } from "../src/store/store.ts";
 import { installWidgetSources } from "../src/store/widget-sources.ts";
 import { SignIns } from "../src/vault/signin.ts";
 import { queueSigninSave } from "../src/vault/signin-save-index.ts";
+import { dbFile } from "./temp-dir.ts";
 
 async function until(check: () => boolean, timeout = 5000): Promise<void> {
   const end = Date.now() + timeout;
@@ -184,7 +185,7 @@ test("a failed reissue withdraws its new card and keeps the previous location", 
 });
 
 test("a recovered vault decision finishes the queued sign-in outcome", async () => {
-  const r = rig("done");
+  const r = rig("done", dbFile("signin-outbox-recovered-"));
   let restarted: SignIns | undefined;
   try {
     await r.signIns.close();

@@ -4,7 +4,7 @@
 # pieces from the checkout and runs a headless smoke test..
 #   scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET]
 #                   | smoke [build|run] | listen | exit | fairness | sealed | collate | login-test | vectors | sizes | clean | all
-#                   | chat-open | ws-switch | md-parse | mermaid | mermaid-lib | mermaid-smoke | zstd-read
+#                   | chat-open | ws-switch | new-chat | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read
 # SF_SRC: the still.fail checkout (default: this one, scripts/env.sh); out/core/ gets everything built.
 # TARGET: a Rust target (default aarch64-apple-darwin; aarch64-apple-ios, aarch64-apple-ios-sim for iOS).
 set -e
@@ -185,6 +185,16 @@ hbc_over() {
 hbc_no_key() {
   echo "core.hbc has no key, so HBC_CACHE is not used (the core is made here, and not kept): $1" >&2
 }
+# The PostHog project this build's core sends what people use to (client/core-ts/src/use-counts.ts, its
+# `__STILLFAIL_POSTHOG__`): {host, key} of the file STILLFAIL_POSTHOG names, as the hosts' own reports take it (a
+# release's, from POSTHOG_JSON); none, `undefined`, and the core sends nothing. Part of core.hbc's key and stamp.
+posthog_define() {
+  if [ -n "${STILLFAIL_POSTHOG:-}" ] && [ -f "$STILLFAIL_POSTHOG" ]; then
+    node -e 'const { host, key } = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.stdout.write(JSON.stringify({ host, key }))' "$STILLFAIL_POSTHOG"
+  else
+    echo undefined
+  fi
+}
 hbc_key() {
   [ -n "${HBC_CACHE:-}" ] || return 1
   local trees changed paths
@@ -203,6 +213,7 @@ hbc_key() {
     hbc_over "$ROOT/core" | while IFS= read -r f; do echo "${f##*/}"; $SHA < "$f"; done
     $SHA < "$D/core.sh"
     echo "${ENTRY#"$ROOT"/}"
+    echo "posthog $(posthog_define | $SHA)"
     $SHA < "$1"; } | $SHA | cut -c1-24
 }
 
@@ -227,12 +238,15 @@ def said(p):
 own = os.path.join(root, 'core')
 packages = os.path.join(checkout, 'client', 'core-ts', 'node_modules')
 keyed = [os.path.join(checkout, *t.split('/')) for t in trees]
-# (esbuild says them from where it ran, this module; what it left out of a package is no file)
+# (esbuild says them from where it ran, this module; what it left out of a package is no file, nor what a --define of
+# an object makes, `<define:NAME>`: its value is the key's and stamp's already, as hermes says it: posthog)
 files, lost = [], []
 for i in sorted(json.load(open(meta))['inputs']):
     p = os.path.realpath(os.path.join(root, i))
     if os.path.isfile(p):
         files.append(p)
+    elif re.fullmatch(r'<define:[A-Za-z0-9_$.]+>', i):
+        continue
     elif 'node_modules' not in re.split(r'[\\/]', i):
         lost.append(i)
 unheld = ", so the bundle cannot be held to core.hbc's key (hbc_inputs in apps/mbui/scripts/core.sh: where it reads the metafile's paths from)"
@@ -324,7 +338,7 @@ hermes_kept() {
 
 hermes() {
   local t0=$(now)
-  local hc="$(hermesc)" key=
+  local hc="$(hermesc)" key= stamp=
   ENTRY=${ENTRY:-$ROOT/core/hermes.ts}
   if key=$(hbc_key "$hc") && [ -f "$HBC_CACHE/$key.hbc" ]; then
     cp -p "$HBC_CACHE/$key.hbc" $OUT/core.hbc && rm -f $OUT/core.hbc.stamp
@@ -334,7 +348,9 @@ hermes() {
   have_deps
   # With a clean Git tree the content key decides reuse; a missing key cannot fall back to an older timestamp stamp.
   # Without a content key, use the last build only when its checkout and inputs still match.
-  if [ -z "$key" ] && [ -f $OUT/core.hbc ] && [ -f $OUT/core.hbc.stamp ] && [ "$(hbc_stamp "$hc" 2>/dev/null)" = "$(cat $OUT/core.hbc.stamp)" ]; then
+  local posthog
+  posthog=$(posthog_define) || { echo "hermes: STILLFAIL_POSTHOG ($STILLFAIL_POSTHOG) is no {host, key}"; return 1; }
+  if [ -z "$key" ] && [ -f $OUT/core.hbc ] && [ -f $OUT/core.hbc.stamp ] && [ "$(hbc_stamp "$hc" 2>/dev/null) posthog $(echo "$posthog" | $SHA)" = "$(cat $OUT/core.hbc.stamp)" ]; then
     echo "hermes: core.hbc as it was (its inputs unchanged)"
     return 0
   fi
@@ -344,6 +360,7 @@ hermes() {
   NODE_PATH=$CORE_TS/node_modules $CORE_TS/node_modules/.bin/esbuild ${ENTRY:-$ROOT/core/hermes.ts} --bundle \
     --format=iife --platform=neutral --main-fields=module,main --conditions=hermes --target=es2020 --supported:async-await=false --supported:async-generator=false --minify --legal-comments=none \
     --alias:@core=$CORE_TS/src --alias:@stillfail=$SF_SRC --resolve-extensions=.ts,.js,.mjs \
+    "--define:__STILLFAIL_POSTHOG__=$posthog" \
     --outfile=$OUT/core-hermes.js --metafile=$OUT/core-hermes.meta.json --log-level=warning \
     || { echo "hermes: bundle failed"; return 1; }
   hbc_inputs "$key" || { rm -f $OUT/core-hermes.js; return 1; }
@@ -357,7 +374,7 @@ if (!out || !out.code) throw new Error('babel made nothing');
 writeFileSync(f, out.code);" $OUT/core-hermes.js) || { echo "hermes: class transform failed"; return 1; }
   "$hc" -emit-binary -O -block-scoping -out $OUT/core.hbc $OUT/core-hermes.js \
     || { echo "hermes: hermesc failed"; rm -f $OUT/core.hbc; return 1; }
-  hbc_stamp "$hc" > $OUT/core.hbc.stamp || rm -f $OUT/core.hbc.stamp
+  { stamp=$(hbc_stamp "$hc") && echo "$stamp posthog $(echo "$posthog" | $SHA)" > $OUT/core.hbc.stamp; } || rm -f $OUT/core.hbc.stamp
   echo "hermes in $(since $t0) s: $(wc -c < $OUT/core-hermes.js | tr -d ' ') bytes of script, $(wc -c < $OUT/core.hbc | tr -d ' ') of bytecode${key:+ (kept as $key)}"
   if [ -n "$key" ]; then
     mkdir -p "$HBC_CACHE" && cp -p $OUT/core.hbc "$HBC_CACHE/$key.hbc.tmp" && mv "$HBC_CACHE/$key.hbc.tmp" "$HBC_CACHE/$key.hbc"
@@ -441,7 +458,27 @@ APPLE_ENTRY=$ROOT/core/hermes.ts
 apple_native() {
   local target=${1:-aarch64-apple-darwin}
   engine $target || return 1
-  shell_prebuilt $target || [ -f $OUT/$target/libstillfail_shell.a ] || shell $target
+  shell_prebuilt $target || [ -f $OUT/$target/libstillfail_shell.a ] || shell $target || return 1
+  ghostty_vt $target
+}
+
+# libghostty-vt for TARGET (the app's terminals: src/stillfail/terminal_ghostty.c), still.fail's natives by its key
+# (prebuilt by hand, scripts/native.ts's ghostty-vt): its library in out/core/TARGET beside the engine's, its headers
+# (the same for every target) in out/core/ghostty-vt/include, each copied only when it differs. The app's link takes
+# the library; its C finds the headers there.
+ghostty_vt() {
+  local t dir g=$OUT/ghostty-vt
+  case $1 in
+    aarch64-apple-darwin) t=darwin-arm64 ;;
+    aarch64-apple-ios) t=ios-arm64 ;;
+    aarch64-apple-ios-sim) t=ios-sim-arm64 ;;
+    *) return 0 ;;
+  esac
+  dir=$(node "$SF_SRC/scripts/native.ts" path ghostty-vt $t) || return 1
+  mkdir -p $OUT/$1 $g/include
+  cmp -s "$dir/lib/libghostty-vt.a" $OUT/$1/libghostty-vt.a || cp "$dir/lib/libghostty-vt.a" $OUT/$1/ || return 1
+  rsync -a --checksum "$dir/include/" $g/include/ || return 1
+  echo "ghostty-vt $1: still.fail's natives, ghostty-vt $t ($dir)"
 }
 apple() {
   apple_native "${1:-}" || return 1
@@ -527,6 +564,22 @@ ws_switch() {
   return $code
 }
 
+# A new chat sent, in Hermes (core/newchat.m over client/core-ts/bench/ws-switch-seed.ts's two workspaces of real size):
+# what each step's calls cost the core's one thread (mb_core_perf_line), plain words, `@` typed and two marks, links
+# pasted, a file of 24 MB, a list of 600 rows. SCALE as ws-switch's; run twice on the same data, the second the one to read.
+new_chat() {
+  core_program newchat || return 1
+  local dir=$(mktemp -d /tmp/mbui-new-chat.XXXXXX) code=0
+  (cd $CORE_TS && node bench/ws-switch-seed.ts "$dir" ${SCALE:-1}) || code=1
+  for run in first again; do
+    [ $code = 0 ] || break
+    echo "== $run run =="
+    MB_CORE_BUNDLE=$OUT/core.hbc $OUT/newchat "$dir" || code=1
+  done
+  rm -rf "$dir"
+  return $code
+}
+
 # Markdown read in Hermes as the core reads it (client/core-ts/bench/md-parse.ts over the bench's replies), bundled as the
 # core is, run by Hermes's own command: characters read a second, and a chat's page (80 000 of them) in ms.
 md_parse() {
@@ -544,6 +597,24 @@ const f = process.argv[1];
 writeFileSync(f, transformSync(readFileSync(f, 'utf8'), { babelrc: false, configFile: false, compact: true, plugins: ['@babel/plugin-transform-classes'] }).code);" $o/bench.js) || return 1
   cat $o/texts.js $o/bench.js > $o/run.js
   "$(hermesc)" -emit-binary -O -block-scoping -out $o/run.hbc $o/run.js 2>&1 | grep -a "error:" && return 1
+  $OUT/hermes/bin/hermes $o/run.hbc
+}
+
+# The Profile overview's pools made in Hermes as the core makes them (client/core-ts/bench/profiles-overview.ts), bundled as
+# the core is, run by Hermes's own command: ms the first and each again.
+profiles_overview() {
+  have_deps
+  hermes_apple || return 1
+  local o=$OUT/profiles-overview
+  mkdir -p $o
+  NODE_PATH=$CORE_TS/node_modules $CORE_TS/node_modules/.bin/esbuild $CORE_TS/bench/profiles-overview.ts --bundle --format=iife --platform=neutral \
+    --main-fields=module,main --target=es2020 --supported:async-await=false --supported:async-generator=false --minify --legal-comments=none --resolve-extensions=.ts,.js,.mjs --log-level=warning --outfile=$o/bench.js || return 1
+  (cd $CORE_TS && node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { transformSync } from '@babel/core';
+const f = process.argv[1];
+writeFileSync(f, transformSync(readFileSync(f, 'utf8'), { babelrc: false, configFile: false, compact: true, plugins: ['@babel/plugin-transform-classes'] }).code);" $o/bench.js) || return 1
+  "$(hermesc)" -emit-binary -O -block-scoping -out $o/run.hbc $o/bench.js 2>&1 | grep -a "error:" && return 1
   $OUT/hermes/bin/hermes $o/run.hbc
 }
 
@@ -739,6 +810,7 @@ case "${1:-all}" in
   hermes) [ "${2:-}" != apple ] || ENTRY=${ENTRY:-$APPLE_ENTRY}; hermes ;;
   hermes-kept) hermes_kept "${2:-}" ;;
   hermes-script) hermes_script "$2" "${3:-}" ;;
+  profiles-overview) profiles_overview ;;
   hermes-apple) hermes_apple ;;
   engine) engine "${2:-aarch64-apple-darwin}" ;;
   apple) apple "${2:-aarch64-apple-darwin}" ;;
@@ -746,6 +818,7 @@ case "${1:-all}" in
   listen) listen_test ;;
   chat-open) chat_open ;;
   ws-switch) ws_switch ;;
+  new-chat) new_chat ;;
   md-parse) md_parse ;;
   mermaid) mermaid_bench ;;
   mermaid-lib) mermaid_lib ;;
@@ -766,5 +839,5 @@ case "${1:-all}" in
   sizes) sizes ;;
   clean) rm -rf "$CARGO_TARGET_DIR"; echo "removed $CARGO_TARGET_DIR (out/core kept)" ;;
   all) deps; shell; smoke_build; smoke_run; sizes ;;
-  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | md-parse | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
+  *) echo "usage: scripts/core.sh deps | shell [TARGET] | hermes [apple] | hermes-kept [apple] | hermes-script FILE [OUT] | hermes-apple | engine [TARGET] | apple [TARGET] | apple-native [TARGET] | smoke [build|run] | listen | exit | fairness | collate | login-test | vectors | sizes | chat-open | ws-switch | new-chat | md-parse | profiles-overview | mermaid | mermaid-lib | mermaid-smoke | zstd-read | clean | all"; exit 2 ;;
 esac

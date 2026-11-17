@@ -1,12 +1,13 @@
 // The decided uses of secrets: maintained as requests change and filled from old requests in bounded transactions.
 // Building an index directly over vault_requests would make the first station start read and sort its whole history.
 import type { DatabaseSync } from "node:sqlite";
-import { Worker } from "node:worker_threads";
+import { wall } from "../ops/fibers.ts";
 import { log } from "../ops/log.ts";
 import { releaseStoppedBackfill } from "../store/backfill.ts";
 import { backfillPendingPreparation, pendingPreparationComplete } from "./pending-index.ts";
 import { initializeReboxIndex } from "./rebox-index.ts";
-import { mbReaderBinary } from "../read/mb-reader.ts";
+import { installSchema } from "./schema-install.ts";
+import { readerBinary } from "../read/mb-reader.ts";
 import { MbUseReader } from "./use-reader-mb.ts";
 
 // JSON paths use the first duplicate key and truncate keys at NUL; JavaScript does neither. A lone UTF-16
@@ -110,9 +111,7 @@ export type PendingPrepare = { kind: "pending"; id: number; ws: string; members:
 export type UseAnswer = { id: number; bodies?: string[]; ready?: true; error?: string };
 
 export function initializeUseIndex(db: DatabaseSync): void {
-  db.exec("SAVEPOINT vault_use_schema");
-  try { db.exec(SCHEMA); db.exec("RELEASE vault_use_schema"); }
-  catch (error) { db.exec("ROLLBACK TO vault_use_schema; RELEASE vault_use_schema"); throw error; }
+  installSchema(db, "vault_use_schema", SCHEMA, ["SELECT 1 FROM vault_use_backfill_all WHERE id = 1"]);
 }
 
 export function readUses(db: DatabaseSync, q: UseRead, knownAmbiguous?: boolean): string[] {
@@ -284,22 +283,32 @@ export function backfillNextWorkspace(db: DatabaseSync): boolean {
   return false;
 }
 
+/// How long the MoonBit reader is kept with nothing asked of it and its background done.
+const IDLE_MS = 60_000;
+
 /// A separate connection and worker keep both the backfill and reads away from the station's request thread. In-memory
 /// stores (tests) use the same bounded algorithm on their own connection; they cannot be opened by another worker.
 export class UseIndex {
+  /// What of the MoonBit reader's background was found done, for the one started after it (MbUseReader `known`).
+  #known = { uses: false, rebox: false };
+  /// The idle reader's going armed (IDLE_MS), called off by an ask.
+  #idle: (() => void) | null = null;
+  readonly #after: (ms: number, f: () => void) => () => void;
   readonly #db: DatabaseSync;
   readonly #path: string | null;
   readonly #previousGone: Promise<void> | null;
   readonly #priority: SharedArrayBuffer | undefined;
-  #worker: Worker | MbUseReader | null = null;
+  #worker: MbUseReader | null = null;
   #closed = false;
   #stopped!: () => void;
   readonly #whenStopped = new Promise<void>((resolve) => { this.#stopped = resolve; });
   #next = 0;
   #waiting = new Map<number, { resolve: (answer: UseAnswer) => void; reject: (error: Error) => void }>();
 
-  constructor(db: DatabaseSync, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer } = {}) {
+  /// `options.after`: the timer of IDLE_MS (a test's own; else the wall's).
+  constructor(db: DatabaseSync, options: { previousGone?: Promise<void>; priority?: SharedArrayBuffer; after?: (ms: number, f: () => void) => () => void } = {}) {
     this.#db = db;
+    this.#after = options.after ?? wall.after;
     this.#previousGone = options.previousGone ?? null;
     this.#priority = options.priority;
     initializeUseIndex(db);
@@ -313,13 +322,10 @@ export class UseIndex {
     }
   }
 
-  #start(): Worker | MbUseReader {
+  #start(): MbUseReader {
     if (this.#worker !== null) return this.#worker;
-    const file = new URL(import.meta.url.endsWith(".ts") ? "./use-index-worker.ts" : "./vault/use-index-worker.js", import.meta.url);
-    // (by the MoonBit program, station/mb's src/vaultuses, where it is there; else by the worker)
-    const mb = mbReaderBinary();
-    const worker = mb !== null ? new MbUseReader(mb, this.#path!, this.#priority)
-      : new Worker(file, { workerData: { path: this.#path, priority: this.#priority } });
+    // (by the MoonBit program, station/mb's src/vaultuses)
+    const worker = new MbUseReader(readerBinary(), this.#path!, this.#priority, this.#known);
     const owner = worker.threadId;
     worker.once("exit", () => releaseStoppedBackfill(this.#priority, owner));
     this.#worker = worker;
@@ -332,18 +338,60 @@ export class UseIndex {
       if (answer.error !== undefined) waiting.reject(new Error(answer.error));
       else if (answer.bodies !== undefined || answer.ready === true) waiting.resolve(answer);
       else waiting.reject(new Error("the vault use reader sent no result"));
+      this.#idleLater();
     });
+    worker.on("idle", () => this.#idleLater());
     let failure: Error | null = null;
     worker.on("error", (error) => {
       failure = error;
       log.error("vault", "the use reader stopped", { error: error.message });
     });
     worker.on("exit", (code) => {
-      if (this.#worker === worker) this.#worker = null;
+      // (one let go while idle is no longer this one's: what waits now is the next's)
+      if (this.#worker !== worker) return;
+      this.#worker = null;
+      this.#known = worker.settled;
       for (const waiting of this.#waiting.values()) waiting.reject(failure ?? new Error(`the vault use reader stopped (exit ${code})`));
       this.#waiting.clear();
     });
     return worker;
+  }
+
+  /// Whether a reader runs now.
+  get running(): boolean { return this.#worker !== null; }
+
+  /// The MoonBit reader let go at once if nothing is asked of it and its background is done: 1, else 0 (the station
+  /// short of memory: read/pool.ts `trimIdle`). The next ask starts it again.
+  trimIdle(): number {
+    if (this.#closed || !this.#letGoable()) return 0;
+    this.#letGo();
+    return 1;
+  }
+
+  #letGoable(): boolean {
+    const worker = this.#worker;
+    return worker !== null && this.#waiting.size === 0 && worker.idle();
+  }
+
+  #letGo(): void {
+    this.#idle?.();
+    this.#idle = null;
+    const worker = this.#worker;
+    if (worker === null) return;
+    this.#known = worker.settled;
+    this.#worker = null;
+    void worker.terminate();
+  }
+
+  /// Nothing asked of the MoonBit reader and its background done: it goes after IDLE_MS unless asked again. Kept from
+  /// the station's start, it held 15 MB for the hours nobody used the vault (2026-11-15).
+  #idleLater(): void {
+    if (this.#closed || this.#idle !== null || !this.#letGoable()) return;
+    // timer: a deadline (an idle program's process let go)
+    this.#idle = this.#after(IDLE_MS, () => {
+      this.#idle = null;
+      if (this.#letGoable()) this.#letGo();
+    });
   }
 
   async read(ws: string, vault: string, owner: string | null, limit: number): Promise<string[]> {
@@ -382,6 +430,8 @@ export class UseIndex {
     if (this.#closed) throw new Error("station stopping");
     return new Promise((resolve, reject) => {
       try {
+        this.#idle?.();
+        this.#idle = null;
         const worker = this.#start();
         this.#waiting.set(q.id, { resolve, reject });
         worker.postMessage(q);
@@ -394,6 +444,8 @@ export class UseIndex {
 
   async close(): Promise<void> {
     this.#closed = true;
+    this.#idle?.();
+    this.#idle = null;
     this.#stopped();
     if (this.#worker !== null) await this.#worker.terminate();
   }

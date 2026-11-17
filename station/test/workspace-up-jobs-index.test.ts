@@ -4,10 +4,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, seenBy } from "../src/read/store.ts";
+import { makeStore, seenBy } from "./reference/store.ts";
 import { JOBS_UP } from "../src/store/rows.ts";
 import { Store } from "../src/store/store.ts";
-import { installWorkspaceUpJobs, WORKSPACE_UP_JOBS, WORKSPACE_UP_OLD_ROWIDS, WORKSPACE_UP_SAME_PORT, workspaceUpJobsReady, workspaceUpJobsStep } from "../src/store/workspace-up-jobs.ts";
+import { installWorkspaceUpJobs, WORKSPACE_UP_JOBS, WORKSPACE_UP_OLD_ROWIDS, WORKSPACE_UP_SAME_PORT, workspaceUpJobsReady, workspaceUpJobsStep } from "./reference/backfill/workspace-up-jobs.ts";
 
 const session = (s: Store, key: string, ws: string | null, token = key) => s.insertSession({ key, connect: "ember",
   runtime: "claude", profile: "cc", workspace: "/w", token, ws, createdAt: 1, lastActiveAt: 1 });

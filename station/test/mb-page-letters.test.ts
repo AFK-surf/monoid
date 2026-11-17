@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
 import { Readers } from "../src/read/pool.ts";
-import { pageLetterReady, pageLetterStep } from "../src/store/page-letter-index.ts";
+import { pageLetterReady, pageLetterStep } from "./reference/backfill/page-letter-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

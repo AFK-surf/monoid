@@ -122,6 +122,14 @@ fn vault_both(
 }
 
 ///|
+/// What head_drawn says, a line each, in order of the line.
+fn drawn_lines(drawn : String) -> Array[String] {
+  let lines = drawn.split("\n").map(fn(l) { l.to_owned() }).to_array()
+  lines.sort()
+  lines
+}
+
+///|
 /// The post `m` (as it changes) over `src` as the nodes draw it, `w` wide.
 fn vault_new(w : Double, src : Source, m : () -> Message) -> @ui.Tester {
   card_new(w, src, m, body=Some(fn(b, here, core) {
@@ -166,7 +174,9 @@ test "a vault item's approval under its post at 1.3, narrow, and under a mouse: 
     let (w, scale) = case
     let at = "in minutes at \{w}, \{scale}"
     let (was, now, t) = vault_both(vault_src(Some(topic)), vault_ask_post(), w, at, scale~)
-    assert_eq(now, was, msg=at)
+    // (each the same where it is drawn, in whichever order: the old view puts the line over its buttons by its foot's
+    // flow, after them in what it draws, the nodes before them)
+    assert_eq(drawn_lines(now), drawn_lines(was), msg=at)
     dec_audit(t, at)
     let (_, cy, _, ch) = t.query(Button, label="闲置 4319 分钟后失效").unwrap().rect
     let (_, ay, _, ah) = t.query(Button, label="允许").unwrap().rect
@@ -374,6 +384,18 @@ fn vault_card_cases() -> Array[(String, Message, String)] {
     ("refused", vault_card_post(vault_use(more={ "status": "denied" })), ""),
     ("not kept", vault_card_post(vault_keep("login", username="demo-user", more={ "status": "denied" })), ""),
     ("expired", vault_card_post(vault_use(more={ "status": "expired" })), ""),
+    // (all it says long, its command on one line far past a phone's column: no wider than the column, 2026-11-15)
+    (
+      "long",
+      vault_card_post(
+        vault_use(more={
+          "name": "使用 PostHog 个人 API key（still.fail 查询卡顿上报）",
+          "reason": "查你手机上新对话页卡顿的上报（ui_hang 里每次卡顿时间、页面、帧数），看是不是某处设计导致的",
+          "command": "sh /Users/someone/.stillfail/sessions/chat/c-0123456789abcdef/workspace/scratch/posthog-ui-hang-query.sh --days 3 --kind chat",
+        }),
+      ),
+      "",
+    ),
   ]
 }
 
@@ -521,7 +543,7 @@ test "a vault item's request decided as its card shows: the card goes, the line 
 }
 
 ///|
-test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: not made as nodes yet, nothing in the words' place" {
+test "a vault item's request where nothing is answered (no core): its card alone, no answer at its foot; one asking for a file to be picked: its card, what is asked and the button that picks it" {
   let m = vault_card_post(vault_use())
   let t = card_new(390.0, vault_src(None), fn() { m }, body=Some(fn(b, here, _) { message_card_node(b, here, None, fn() { m }) }))
   t.run_for(@ui.move_most_ms)
@@ -532,7 +554,8 @@ test "a vault item's request where nothing is answered (no core): its card alone
   let f = vault_card_post(vault_keep("file", typed=true))
   let t = card_new(390.0, vault_src(None), fn() { f })
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("测试服务登录") is None)
+  assert_true(t.find("测试服务登录") is Some(_))
+  assert_true(t.find("选择文件") is Some(_))
 }
 
 ///|

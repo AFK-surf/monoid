@@ -24,6 +24,8 @@ fn main {
     return
   }
   let dark = @film.arg("MBUI_DARK") == "1"
+  // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (实验性功能's 试用新对话页), as a person who turned it on has it
+  let chat_nodes = @film.arg("MBUI_CHAT_PAGE") == "nodes"
   // (the app made as sffix makes it, at the Tester's first frame: the code face it carries given then, to the
   // Tester's text, which is this Mac's)
   let src : Ref[@sfapp.Source?] = Ref(None)
@@ -32,8 +34,15 @@ fn main {
     match src.val {
       Some(s) => s
       None => {
-        // (switch-real:<ms>: a workspace picked over a late core, switch_scene.mbt)
-        let s = if mode.has_prefix("switch-real") { switch_real_source(mode) } else { @sfapp.fixture_app(mode) }
+        // (switch-real:<ms>: a workspace picked over a late core, switch_scene.mbt; chat-real: a chat of real size as an
+        // agent works in it, chat_real_scene.mbt)
+        let s = if mode.has_prefix("switch-real") {
+          switch_real_source(mode)
+        } else if mode == "chat-real" {
+          chat_real_source(chat_nodes)
+        } else {
+          @sfapp.fixture_app(mode, chat_nodes~)
+        }
         // MBUI_FIX_PACE, MBUI_FIX_CORE: the made-up station's pace (@sffixture.fix_pace_said), said in APPBENCH below
         @sffixture.fix_pace_said(@film.arg("MBUI_FIX_PACE"), @film.arg("MBUI_FIX_CORE"))
         if dark {
@@ -44,6 +53,11 @@ fn main {
         s
       }
     }
+  }
+  // (a chat of real size shows its pictures, decoded as a device's are: what its host holds of them at once is theirs,
+  // not the made-up chats' few)
+  if mode == "chat-real" {
+    @ui.host_image_bytes_known([("src/film/bench.mbt", 262144)])
   }
   let pace = @film.arg("MBUI_FIX_PACE")
   let core = @film.arg("MBUI_FIX_CORE")

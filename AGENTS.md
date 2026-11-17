@@ -15,10 +15,11 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   on the device, the views. The UIs only render it. `client/shell` (Rust) is its IO in the native apps,
   `client/iroh-wasm` iroh for the browser, `client/i18n/catalog` the words of every part (zh and en, the same keys).
 - `apps/mbui/`: the app on every platform (Android, iOS, macOS, Windows, Linux, and the web), in MoonBit on mbui, the
-  UI framework at `libs/mbui`.
+  UI framework at `libs/mbui`. `libs/comma-ui`: Comma's design system as a component library on mbui, of its own.
 - `libs/base/`: the first of the base in MoonBit, of no program (the Rust shell's binding, the mesh's wire and its
   device side). Nothing here is built on it yet.
 - `web/`: the web's host of that app, a few pages of its own (Preact) and the design system `web/ui`.
+  `apps/extension`: the browser extension that sends a page to a chat.
 - `website/`: the official site. `rules/`: rules shared by the station, cloud and core, in MoonBit, built to JS.
 - `scripts/`: checks, releases, the CI plan. `vendor/`: patched upstream code (its README says each patch).
 - `docs/`: only how to build, run and operate (development.md, operations.md, two notes on a station's setup) and
@@ -45,6 +46,11 @@ chats, each conversation an agent session on a **station** (a machine of theirs)
   Chinese (`修复：…`, `新增：…`, `改进：…`); `Changelog-parts:` where they see it (`station`, `web`, `android`,
   `desktop`, `cloud`); `Fixes: FB-<n>` a bug report it fixes. The apps' changelog and each stable release's notes
   are written from these alone (`scripts/changelog.ts`); a change with nothing for people writes none.
+- A change to what is not yet everyone's (`client/core-ts/src/features.ts`) says so in that line: one people on stable
+  cannot have (a `beta` feature, a `betaOnly` experimental one) adds `Changelog-channel: beta`, kept out of the stable
+  release's notes; one of an experimental feature names where it is turned on (`新增：实验性功能「对话列表看板视图」中，…`).
+  The change that opens it to stable writes its line for stable then. A line already written otherwise is said again in
+  `docs/changelog-notes.json`.
 - `sh scripts/check.sh full origin/main..HEAD` checks what the range changed (the git hooks run its quick part);
   `STILLFAIL_CHECK_PART` narrows it. Run the part you changed before a PR; the whole of it is CI's.
 - A fix that cannot wait a day for the next stable release (a crash, data lost, people locked out, a release that does
@@ -138,20 +144,20 @@ before, never waited on; that goes 7 days after these stations ship. Its taking 
 station took is pending on the device that signed it (`client/core-ts/src/lock-pending.ts`) until one does, or until
 the lock names none (its last station taken out), which the cloud keeps as before there were stations.
 
-That sync is being replaced (2026-11-12): stations that took different entries at one place never came back to one
-chain (`station/test/lock-world-sim.ts` lists what that broke and what still does). What replaces it is modelled in
-`station/test/lock-fork-choice-model.ts` (each log's fork choice) and `station/test/lock-roster-model.ts` (a workspace
-said in its people's own logs). The stations go by the fork choice now (`station/src/cloud/log-keep.ts`), keeping a
-branch only for what another keeper took: a station never makes a fork itself (what a device brings goes on from its
-head, or is refused as before), so it never moves off an entry for one that came to it alone; stations of a lock still
-give each other all they keep and come to one chain. The core keeps what the stations showed it and goes by the same
-fork choice (`client/core-ts/src/lock-keep.ts`), so a device follows them off an entry that lost, and the device that
-signed it signs it again after the head where that still says what was meant (`againOf`), carrying to each station
-what it lacks of what the stations showed (`client/core-ts/src/views/lock.ts` `carry`). The cloud's copy, for the
-stations and devices from before, is kept the same way: what a station gives it as another keeper's goes by the fork
-choice (`cloud/src/lock.ts` `keepLockAt`), each station giving it its chain where the cloud's parts from it
-(`station/src/cloud/presence.ts` `planeParted`), so it names the stations' head again. What it is built to (the user,
-2026-11-12):
+Stations that took different entries at one place used to never come back to one chain (2026-11-12;
+`station/test/lock-world-sim.ts` lists what that broke and what still does), so each log goes by a fork choice
+(`station/test/lock-fork-choice-model.ts`), and a workspace's chain moves into its people's own logs (`moved {root}`;
+`station/test/lock-roster4-model.ts`, rules/AGENTS.md). The stations go by the fork choice
+(`station/src/cloud/log-keep.ts`), keeping a branch only for what another keeper took: a station never makes a fork
+itself (what a device brings goes on from its head, or is refused as before), so it never moves off an entry for one
+that came to it alone; stations of a lock still give each other all they keep and come to one chain. The core keeps what
+the stations showed it and goes by the same fork choice (`client/core-ts/src/lock-keep.ts`), so a device follows them
+off an entry that lost, and the device that signed it signs it again after the head where that still says what was meant
+(`againOf`), carrying to each station what it lacks of what the stations showed (`client/core-ts/src/views/lock.ts`
+`carry`). The cloud's copy, for the stations and devices from before, is kept the same way: what a station gives it as
+another keeper's goes by the fork choice (`cloud/src/lock.ts` `keepLockAt`), each station giving it its chain where the
+cloud's parts from it (`station/src/cloud/presence.ts` `planeParted`), so it names the stations' head again. What it is
+built to (the user, 2026-11-12):
 
 - The lock's adversary is the cloud and every station but the one asked (`rules/protocol/lock.spthy`): only signatures
   of devices on a lock decide. No cloud and no station orders entries, arbitrates between them, or is the one to follow.

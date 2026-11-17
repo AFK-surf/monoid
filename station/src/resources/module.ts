@@ -1,17 +1,20 @@
 // What of this machine still.fail uses (resources/watch.ts), as a part of the station (parts.ts): looked at while a
-// page asks; GET /resources.
+// page asks; GET /resources. And the station's watch over its own memory (ops/self-memory.ts).
 import { execFile } from "node:child_process";
 import { readFile, rm } from "node:fs/promises";
-import { homedir } from "node:os";
+import { homedir, totalmem } from "node:os";
 import { basename, join } from "node:path";
 import { promisify } from "node:util";
 import { Effect, Layer } from "effect";
 import { resourceRoutes } from "../api/routes/usage.ts";
 import { runnerSessions, runnersWithSessions, watchedJobs } from "../jobs/memory.ts";
 import { loadMesh } from "../mesh/native.ts";
-import { platform } from "../platform/index.ts";
+import { type ProcessInfo, platform, treeOf } from "../platform/index.ts";
 import { Agents } from "../sessions/agents.ts";
-import { Parts, Paths, Store } from "../services.ts";
+import { restarter } from "../ops/restart.ts";
+import { SelfMemoryGovernor } from "../ops/self-memory.ts";
+import { MbProcess } from "../read/mb-reader.ts";
+import { Parts, Paths, Readers, Store } from "../services.ts";
 import { linuxUsage } from "./linux.ts";
 import { ResourceWatch } from "./watch.ts";
 
@@ -60,10 +63,36 @@ export function parseNettop(text: string): Map<number, { in: number; out: number
   return out;
 }
 
+/// The resident bytes of the MoonBit programs this process runs (MbProcess.live) and all under them, in `table`.
+export function programsIn(table: readonly ProcessInfo[] | null, pids: readonly number[]): { bytes: number; count: number } {
+  if (table === null) return { bytes: 0, count: pids.length };
+  const { byPid, children } = treeOf(table);
+  const seen = new Set<number>();
+  let bytes = 0;
+  for (const queue = [...pids]; queue.length > 0; ) {
+    const pid = queue.pop()!;
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    bytes += byPid.get(pid)?.bytes ?? 0;
+    queue.push(...(children.get(pid) ?? []));
+  }
+  return { bytes, count: pids.length };
+}
+
+/// The resident bytes of the front in `table` (the MoonBit program the launcher keeps the station's endpoint in,
+/// native/launcher/src/front.rs): the launcher's child that runs the program, which no other is (its others are Nodes);
+/// null where there is no launcher, no table or no front. Linux's ps cuts a command's name to 15 bytes.
+export function frontIn(table: readonly ProcessInfo[] | null, launcher: number | null, self: number): number | null {
+  if (table === null || launcher === null) return null;
+  const front = table.find((p) => p.ppid === launcher && p.pid !== self && basename(p.command).startsWith("stillfail-reade"));
+  return front?.bytes ?? null;
+}
+
 /// Whether this process's parent is its launcher (stillfail-station), not a shell or launchd, whose all under it is not
 /// the station's.
 async function launcher(): Promise<boolean> {
-  if (process.ppid <= 1) return false;
+  // (Windows: no ps of its own, and no front to find)
+  if ((platform.os !== "macos" && platform.os !== "linux") || process.ppid <= 1) return false;
   try {
     return basename((await run("ps", ["-o", "comm=", "-p", String(process.ppid)], { encoding: "utf8" })).stdout.trim()).startsWith("stillfail");
   } catch {
@@ -73,9 +102,40 @@ async function launcher(): Promise<boolean> {
 
 export const ResourcesLive = Layer.effectDiscard(
   Effect.gen(function* () {
-    const { data } = yield* Paths;
+    const { data, restartFront } = yield* Paths;
     const store = yield* Store;
     const { hub } = yield* Agents;
+    const readers = yield* Readers;
+    const underLauncher = yield* Effect.promise(() => launcher());
+    // The station's own memory (ops/self-memory.ts), wherever it runs: on Windows only Node's own is read.
+    yield* Effect.acquireRelease(
+      Effect.sync(() => {
+        // One table a sample: the one `children` read, the governor asking `front` after it.
+        let table: Promise<ProcessInfo[] | null> | null = null;
+        const governor = new SelfMemoryGovernor({
+          clock: hub.clock,
+          totalBytes: totalmem(),
+          startedAt: hub.clock.currentTimeMillisUnsafe() - Math.round(process.uptime() * 1000),
+          memory: () => process.memoryUsage(),
+          children: async () => programsIn(await (table = platform.processTable(false)), MbProcess.live().map((p) => p.pid)),
+          front: async () => {
+            // (let go once read: the machine's table is not kept between samples)
+            const current = table;
+            table = null;
+            return frontIn(await (current ?? platform.processTable(false)), underLauncher ? process.ppid : null, process.pid);
+          },
+          pressure: () => platform.memoryPressure(),
+          trimIdle: () => readers.trimIdle(),
+          evictWarm: () => hub.evictAllIdle(),
+          handover: () => restarter(data),
+          // (the front held past its limit started anew, the Node handed over to one linked to it: the launcher's)
+          ...(restartFront ? { restartFront: async () => restartFront() } : {}),
+        });
+        governor.start();
+        return governor;
+      }),
+      (g) => Effect.promise(() => g.close()),
+    );
     // What processes used is read on macOS and Linux; elsewhere (Windows) there is nothing to look at.
     const linux = platform.os === "linux";
     if (platform.os !== "macos" && !linux) {
@@ -85,7 +145,6 @@ export const ResourcesLive = Layer.effectDiscard(
     const mesh = loadMesh();
     const isApp = appBundles();
     const whose = runnerSessions(store, (runners) => hub.runnerNameSessions(runners));
-    const underLauncher = yield* Effect.promise(() => launcher());
     const watch = yield* Effect.acquireRelease(
       Effect.sync(() => new ResourceWatch({
         clock: hub.clock,

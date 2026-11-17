@@ -589,3 +589,61 @@ test "a stream of the peer's asked for in the turn the mesh closes, before the m
   // (cut before its first step, the mesh's wait never asked the shell)
   assert_eq(stood.times("conn.acceptBi 2"), 0)
 }
+
+// ── a reply handed to the shell to read (`Reply::tap`) ──
+
+///|
+test "a reply tapped before its body is taken hands what came with its head to the shell with its call; taken, what is read after is what follows on the stream" {
+  let (stood, far, _, link) = linked()
+  far.taps = Some(true)
+  far.opens = _ => Some([b"{\"status\":200,\"headers\":{}}\nf0f1"])
+  let (reply, _) = gave(stood.go(() => link.duplex("GET", "/view")))
+  assert_true(gave(stood.go(() => reply.tap(7L))))
+  assert_eq(far.tapped, ["4 7 4"])
+  // (what came with the head is the shell's now: the next piece is the stream's own)
+  let next = stood.go(() => reply.take())
+  assert_eq(ended_as(next), "waiting")
+  far.sends(4, b"f2")
+  assert_true(gave(next) == Some(b"f2"))
+  // Once its body was taken, too late: nothing asked.
+  assert_false(gave(stood.go(() => reply.tap(8L))))
+  assert_eq((far.tapped.length(), stood.times("istream.tap 4")), (1, 1))
+}
+
+///|
+test "a tap the shell does not take, or cannot (a page's, no such op), changes nothing: the body is read whole from its first byte" {
+  for taps in [Some(false), None] {
+    let (stood, far, _, link) = linked()
+    far.taps = taps
+    far.opens = _ => Some([b"{\"status\":200,\"headers\":{}}\nab"])
+    let (reply, _) = gave(stood.go(() => link.duplex("GET", "/view")))
+    assert_false(gave(stood.go(() => reply.tap(3L))))
+    assert_eq(stood.times("istream.tap 4"), 1)
+    let rest = stood.go(() => reply.rest())
+    far.sends(4, b"cd")
+    far.finish(4)
+    assert_true(gave(rest) == b"abcd")
+  }
+  // A request's reply with nothing past its head: handed nothing, and read whole the same.
+  let (stood, far, _, link) = linked()
+  far.taps = Some(false)
+  far.serves = (_, _) => replied(200, b"whole")
+  let reply = gave(stood.go(() => link.request("GET", "/x")))
+  assert_false(gave(stood.go(() => reply.tap(1L))))
+  assert_true(gave(stood.go(() => reply.rest())) == b"whole")
+}
+
+///|
+test "a tap after its body was taken, after it ended or was let go of, or with a negative call is refused here, nothing asked of the shell" {
+  let (stood, far, _, link) = linked()
+  far.taps = Some(true)
+  far.opens = _ => Some([b"{\"status\":200,\"headers\":{}}\nab"])
+  let (reply, _) = gave(stood.go(() => link.duplex("GET", "/view")))
+  assert_false(gave(stood.go(() => reply.tap(-1L))))
+  assert_true(gave(stood.go(() => reply.take())) == Some(b"ab"))
+  assert_false(gave(stood.go(() => reply.tap(2L))))
+  let (cancelled, _) = gave(stood.go(() => link.duplex("GET", "/view")))
+  cancelled.cancel()
+  assert_false(gave(stood.go(() => cancelled.tap(2L))))
+  assert_eq((far.tapped, stood.said.filter(one => one.has_prefix("istream.tap")).length()), ([], 0))
+}

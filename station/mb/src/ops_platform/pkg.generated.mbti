@@ -1,0 +1,1097 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/ops_platform"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn agent_env(@json.Json) -> Array[(String, String)]
+
+pub fn agent_nice(String?) -> Int32
+
+pub fn all_teams(@json.Json, @json.Json) -> Array[(String, Team)]
+
+pub fn any_base_name(String) -> String
+
+pub fn asked_by(String?) -> String
+
+pub fn asks_enter(String) -> Bool
+
+pub fn assignments_of(Array[String], String?) -> (Array[(String, String)], Array[String])
+
+pub fn attribute(String, @json.Json) -> @json.Json
+
+pub fn author_name(String, String, String?, Array[(String, String)], String?, String?, Array[(String, String)], Array[(String, String)], String?, (String, String) -> @json.Json) -> (String?, String?)
+
+pub let awake_every_ms : Double
+
+pub let awake_job_span_ms : Double
+
+pub let awake_linger_ms : Double
+
+pub fn awake_working(Bool, Bool?, Array[(String, Double)], Array[String], (Array[String]) -> Array[(String, String?, Double?, Double?)], Double) -> Bool
+
+pub fn background_found(Bool, (String) -> Bool, (String) -> String?) -> Background
+
+pub fn backgrounded_on(Background, String, Array[String]) -> (String, Array[String])
+
+pub fn branded(String, Product) -> String
+
+pub fn built_key(String?) -> @json.Json
+
+pub fn bundle_of(String) -> String?
+
+pub fn cap_by_age(Fs, String, Double) -> Double raise
+
+pub fn cap_plan(Array[(String, Double, Double)], Double) -> (Array[String], Double)
+
+pub fn check_agent_env(@json.Json?) -> String?
+
+pub fn clean_path(Plat, String) -> String
+
+pub fn clean_posix(Plat, String) -> String
+
+pub fn command_words(String) -> Array[String]?
+
+pub let config_backups_kept : Int32
+
+pub fn config_edit(@json.Json) -> (@json.Json) -> @json.Json
+
+pub fn config_teams(@json.Json) -> Array[(String, Team)]
+
+pub fn cpu_share((Double, Double), (Double, Double)) -> Double?
+
+pub fn data_dir(Array[String], String?, String) -> String
+
+pub fn descendants_of(String, Double) -> Array[Double]
+
+pub fn device_code_in(String, Array[String]) -> String?
+
+pub fn device_urls(Array[String], String) -> (String?, String?)
+
+pub fn disk_every(String) -> Double
+
+pub let disk_every_ms : Double
+
+pub let disk_low_bytes : Double
+
+pub fn disk_of_io(String) -> (Double, Double)?
+
+pub fn disk_soft(Double) -> Double
+
+pub let disk_soft_bytes : Double
+
+pub let disk_soft_every_ms : Double
+
+pub fn disk_tier(Double, Double) -> String
+
+pub fn domain_of(String) -> String?
+
+pub fn echoes_of(String, String?) -> Bool?
+
+pub fn end_choice(Array[ProcessInfo]?, Double, String, Map[Double, Whose], Array[Double]) -> Result[String, String]
+
+pub fn end_group_looks(Double) -> Int32
+
+pub fn env_name(String) -> Bool
+
+pub fn error_event(String, String?, String?, String, String?, String, Double) -> @json.Json
+
+pub fn error_heard(String, @json.Json?) -> (String, String?)
+
+pub fn extension(String) -> String?
+
+pub fn field_or_null(String, String) -> Double?
+
+pub fn file_hits(Array[String], Array[String], String, Bool, Array[String], Array[String], Bool, Int32, Bool, (String) -> (Bool, Double, Double)?) -> @json.Json
+
+pub fn file_name(Plat, String) -> String?
+
+pub fn file_search_key(Array[String], String, Bool, Bool, Int32, Bool, Array[String]) -> String
+
+pub fn file_search_reuse(Double?, Bool, Bool) -> Bool
+
+pub fn first_word(String) -> String
+
+pub fn flag(Array[String], String) -> String?
+
+pub fn followed_change(String, String?) -> String
+
+pub fn footprint_of_status(String) -> Double?
+
+pub fn forget_marks(Fs, String, Array[String]) -> Unit raise
+
+pub fn format_skill(@json.Json, String, String) -> Result[String, String]
+
+pub let front_after_ms : Double
+
+pub fn front_in(Array[ProcessInfo]?, Double?, Double) -> Double?
+
+pub fn git_shell(Array[(String, String)], (String) -> Bool) -> String?
+
+pub fn git_shell_soon(Array[(String, String)], Array[String]?, (String) -> Bool) -> String?
+
+pub fn group_memory_of_ps(String, Array[Double]) -> Array[(Double, Double)]
+
+pub fn guarded_tops(Bool, String, Array[String]) -> Array[String]
+
+pub fn hard_front_of(Double) -> Double
+
+pub fn hard_rss_of(Double) -> Double
+
+pub async fn harness(@host.Host) -> Unit
+
+pub let health_fresh_ms : Double
+
+pub fn health_of(@json.Json) -> @json.Json?
+
+pub fn health_path(String, (Array[String]) -> String) -> String
+
+pub fn health_text(@json.Json) -> String
+
+pub fn heap_command_end(@json.Json?) -> (String, Int32)
+
+pub let heap_most : Double
+
+pub fn heap_old_snapshots(Array[String]) -> Array[String]
+
+pub fn heap_snapshot_name(String) -> Bool
+
+pub fn heap_snapshot_path(String, Double) -> String
+
+pub fn heap_take(Fs, String, Int32) -> Bool
+
+pub fn held_by(Array[String?], Double, (Double) -> Bool) -> Double?
+
+pub let held_exit : Int32
+
+pub fn idle_of_ioreg(String) -> Double?
+
+pub fn in_terminal(Bool, String?, String, Array[String], Int32, Int32) -> (String, Array[String])?
+
+pub fn inside(Plat, String, String) -> Bool
+
+pub fn invalid_json_message(Catalog, String, String, String) -> String
+
+pub fn iso_time(Double) -> String
+
+pub let job_log_cap : Double
+
+pub fn join_path(Plat, String, String) -> String
+
+pub fn keep_local(Array[(String, String)]) -> Array[(String, String)]
+
+pub fn keep_newest(Fs, String, String, Int32) -> Array[String] raise
+
+pub fn keep_newest_plan(Array[(String, Double)], Int32) -> Array[String]
+
+pub fn known_person(@json.Json, @json.Json, @json.Json, String, String) -> @json.Json
+
+pub fn lang_of(String?) -> String
+
+pub fn lang_of_browser(String?, String?) -> String
+
+pub fn launcher_args(Array[String]) -> LauncherArgs
+
+pub fn link_stand_in(Bool, Bool, String?) -> String
+
+pub fn linux_sample(String, String, String) -> (Memory, String, Double)
+
+pub fn linux_usage(String?, String?, String?, Double) -> @json.Json
+
+pub fn log_line(Double, String, String, String, @json.Json?) -> String
+
+pub let log_max_batch : Int32
+
+pub let log_max_value : Int32
+
+pub let log_max_waiting : Int32
+
+pub fn log_record(Double, String, String, String, @json.Json, String) -> @json.Json
+
+pub fn log_refused(Double?) -> Bool
+
+pub fn log_tail(Fs, String, Int32) -> String raise
+
+pub fn longest_waits(Waits, most? : Int32) -> String
+
+pub fn look_answer(Fs, @json.Json) -> @json.Json raise
+
+pub fn loopback_answer(Catalog, String, String?, Bool, @json.Json?, String) -> @json.Json
+
+pub fn loopback_of(String, depth? : Int32) -> Loopback?
+
+pub fn lsof_cwds(String) -> Array[(Double, String)]
+
+pub fn lsof_pids(String, Double) -> Array[Double]
+
+pub fn mac_boot_and_footprint(String?, String?, Double) -> (Double, Double?)
+
+pub fn mac_memory_of(String?, String?, () -> String?) -> Memory
+
+pub fn machine_roots(String?, String?) -> (String, String)
+
+pub fn maker_of(String) -> String?
+
+pub fn mask_value(String) -> String
+
+pub fn mdfind_args(String, Array[String]) -> Array[String]
+
+pub fn mdfind_paths(Array[String], Int32) -> Array[String]
+
+pub fn model_name(String) -> String
+
+pub fn model_price(String) -> (Double, Double, Double)?
+
+pub let most_value : Int32
+
+pub let most_vars : Int32
+
+pub fn moved(String, String?, String, String, String) -> String
+
+pub fn netstat_listening(String, Array[Double], Double) -> Array[String]
+
+pub fn netstat_port_pids(String, Double, Double) -> Array[Double]
+
+pub let no_shell : String
+
+pub fn no_waits() -> Waits
+
+pub let node_part_ms : Double
+
+pub fn noisy(String, String) -> Bool
+
+pub fn now_secs(Double) -> Double
+
+pub fn orphan_marks(Fs, String) -> Array[String] raise
+
+pub fn output_at(Fs, String) -> Double? raise
+
+pub fn own_data(Plat, String, String, (Array[String]) -> String) -> Bool
+
+pub fn page_restart(Bool, Bool) -> String
+
+pub fn parse_args(String) -> Array[(Double, String)]
+
+pub fn parse_env_text(String, Array[(String, String)]) -> @json.Json
+
+pub fn parse_f64(String) -> Double?
+
+pub fn parse_lsof(String, Double) -> Array[String]
+
+pub fn parse_mounts(String) -> Array[String]
+
+pub fn parse_nettop(String) -> Array[(Double, Double, Double)]
+
+pub fn parse_ps(String) -> Array[ProcessInfo]
+
+pub fn parse_top_mem(String) -> Array[(Double, Double)]
+
+pub fn parse_u64(String) -> Double?
+
+pub fn person_in(@json.Json, Team?, String) -> @json.Json
+
+pub fn person_key(String, String) -> String
+
+pub fn place_answer(String) -> @json.Json?
+
+pub fn place_copy_answer(@json.Json) -> String
+
+pub fn place_dir_answer(@json.Json, String) -> Result[Look, String]
+
+pub fn place_follow(Fs, String, String, (String) -> (String, Bool)?) -> Look raise
+
+pub fn place_look_key(String, String, Bool, Bool) -> String
+
+pub fn place_machine(String) -> String
+
+pub fn place_needs(Catalog, String, String, String, String, String, Bool, String) -> String
+
+pub fn place_refused(Catalog, String, String, String, Bool, Double, String, (String, String) -> String) -> String
+
+pub let place_timeout_ms : Double
+
+pub fn place_walk(Fs, String, String, (String) -> (String, Bool)?) -> Look raise
+
+pub fn plain_text(String) -> String
+
+pub fn portable_component(String) -> String
+
+pub fn portable_name(String) -> Bool
+
+pub fn ports_to_try(Double?, Double?, Double, Bool) -> Array[Double]
+
+pub fn positionals(Array[String], Array[String]) -> Array[String]
+
+pub fn posix_basename(String) -> String
+
+pub fn posix_dirname(String) -> String
+
+pub fn posix_join(Array[String]) -> String
+
+pub fn posix_normalize(String) -> String
+
+pub fn posix_resolve(Array[String], String) -> String
+
+pub fn pressure_of_available(Double?, Double?) -> String?
+
+pub fn pressure_of_level(String, available? : Double?, total? : Double?) -> String?
+
+pub let previous_limit_ms : Double
+
+pub fn previous_pid(String?, Double) -> Double?
+
+pub fn probe_env(Array[(String, String)]) -> Array[(String, String)]
+
+pub fn proc_address(String) -> String
+
+pub fn proc_listening_sockets(Array[String], Double) -> Array[(String, String)]
+
+pub fn proc_stat_ticks(String) -> (Double, Double)?
+
+pub fn product_of(String) -> Product
+
+pub fn program_of(Array[String]) -> String
+
+pub fn programs_in(Array[ProcessInfo]?, Array[Double]) -> (Double, Int32)
+
+pub fn prompts(String) -> Bool
+
+pub fn proxy_env(Array[(String, String)]) -> Array[(String, String)]?
+
+pub fn ps_commands(String) -> Array[String]
+
+pub fn read_shim(String) -> Shim?
+
+pub fn relative_in(Plat, String, String) -> String?
+
+pub fn relative_parts(Plat, String) -> Array[String]?
+
+pub fn remembered_mcp_port(String?) -> Double?
+
+pub fn remote_teams(@json.Json) -> Array[(String, Team)]
+
+pub fn remove_stale(Fs, String, String, Double, Double) -> Array[String] raise
+
+pub let resources_history_ms : Double
+
+pub let resources_look_ms : Double
+
+pub fn restarter_pid(String?, (Double) -> Bool) -> Double?
+
+pub let rollout_depth : Int32
+
+pub let rollout_entries : Int32
+
+pub fn rollout_of(String, String) -> Bool
+
+pub fn rollout_under(Fs, String, String) -> String? raise
+
+pub fn rotate_in_place(Fs, String, Double, Double) -> Bool raise
+
+pub fn rotate_plan(Double, Double, Double) -> Double?
+
+pub fn rtrim(String) -> String
+
+pub fn rust_lines(String) -> Array[String]
+
+pub fn said_line(LauncherArgs, Said) -> String?
+
+pub fn same_path(Plat, String, String) -> Bool
+
+pub fn saved_path_of(Array[(String, String)], Array[(String, String)], Array[(String, String)]) -> Array[String]
+
+pub fn says_done(String) -> Bool
+
+pub fn scrub_message(String, String) -> String
+
+pub fn scrub_paths(String, String) -> String
+
+pub fn scrub_text(String, String) -> String
+
+pub fn scrub_value(String, @json.Json, String) -> @json.Json
+
+pub let search_asked_again_guess_ms : Double
+
+pub let search_asked_again_ms : Double
+
+pub let search_at_once : Int32
+
+pub let search_kept_ms : Double
+
+pub let search_most : Int32
+
+pub let search_most_said : Int32
+
+pub let search_personal : Array[String]
+
+pub fn search_plan(Bool, Array[String]?, Int32?, Int32?) -> @json.Json
+
+pub let search_short : Int32
+
+pub fn search_stations(@json.Json, String) -> @json.Json
+
+pub let search_text_max : Double
+
+pub fn search_walk(Fs, Array[String], Array[String], Array[String], Int32, Double, () -> Double) -> (Array[String], Bool) raise
+
+pub let search_walk_depth : Int32
+
+pub let search_walk_entries : Int32
+
+pub let search_walk_ms : Double
+
+pub fn search_workspace_of(String?, String?) -> @json.Json
+
+pub fn secret_asked(String) -> Bool
+
+pub fn secret_value(String, String) -> Bool
+
+pub fn segments(Plat, String) -> Array[String]
+
+pub let self_relief_ms : Double
+
+pub let self_sample_ms : Double
+
+pub let self_startup_ms : Double
+
+pub let self_sustained : Int32
+
+pub fn session_usage(Array[@json.Json]) -> @json.Json
+
+pub fn sh_quoted(String) -> String
+
+pub fn sha1_hex(Bytes) -> String
+
+pub fn shell_candidates(Array[(String, String)], Array[String], Bool) -> Array[ShellCandidate]
+
+pub let shell_keep_ms : Double
+
+pub fn shell_kept_key(Array[@json.Json], Array[(String, String)]) -> String
+
+pub let shell_max_output : Int32
+
+pub fn shell_path_of(String, String, Int32) -> Array[String]?
+
+pub fn shell_probe_args(Bool) -> Array[String]
+
+pub let shell_probe_ms : Double
+
+pub fn shim_of(String, String) -> @json.Json
+
+pub fn skill_selection(@json.Json) -> Result[(String, String), String]
+
+pub fn skill_station(String?, Array[(String, String, Bool)]) -> Result[String, String]
+
+pub fn skill_workspace(String?, String?) -> String?
+
+pub fn socket_inode(String) -> String?
+
+pub fn soft_limit_of(Double) -> Double
+
+pub fn split_words(String) -> Array[String]
+
+pub fn spotlight_asks(Array[String], Bool, String, Array[String]) -> Array[@json.Json]
+
+pub fn spotlight_query(Array[String], Bool) -> String?
+
+pub fn start_env(Array[(String, String)], @json.Json, Array[String]) -> Array[(String, String)]
+
+pub fn start_time_of_etime(String, Double) -> Double?
+
+pub let station_log_cap : Double
+
+pub fn station_version(String?) -> String?
+
+pub fn still_ours(Double?, Double, Bool, Bool) -> Bool
+
+pub let stillfail_product : Product
+
+pub fn storage_entry(String) -> StorageEntry?
+
+pub let storage_manifest : Array[StorageEntry]
+
+pub fn store_session(@sql.Db, String) -> @json.Json? raise
+
+pub fn store_thread(@sql.Db, Double) -> @json.Json? raise
+
+pub fn store_thread_sessions(@sql.Db, Double) -> Array[@json.Json] raise
+
+pub fn stores_secret(String) -> Bool
+
+pub fn tcp_port_inodes(Array[String], Int32) -> Array[String]
+
+pub fn team_in(Array[(String, Team)], String) -> Team?
+
+pub fn text_name(String) -> Bool
+
+pub fn threads_with_cards(@sql.Db, Array[Double]) -> Array[Double] raise
+
+pub let thumbs_cap : Double
+
+pub fn ticks_of_stat(String) -> Double?
+
+pub fn tr(Catalog, String, String, Map[String, @json.Json], product? : Product) -> String
+
+pub fn transcript_mark_file(String, String) -> String
+
+pub fn transcript_marks_dir(String) -> String
+
+pub fn transcript_of(Fs, String, String, String, String) -> String? raise
+
+pub fn tree_bytes(Fs, String, Int32, () -> Double) -> (Double, Int32, Bool) raise
+
+pub fn tree_of(Array[ProcessInfo]) -> Array[(Double, Array[Double])]
+
+pub fn typed_on(String?, String, String?, String) -> Bool
+
+pub fn unanswered(Bool, String, Bool, String, String) -> Bool
+
+pub fn unix_agy_build(String, String, Bool) -> String?
+
+pub fn unix_agy_staging(Array[(String, String)], String) -> String?
+
+pub fn unix_append_path(Array[(String, String)], String) -> Unit
+
+pub fn unix_browser_places(Bool, Array[(String, String)], (String) -> String?) -> Array[String]
+
+pub fn unix_clean(String) -> String
+
+pub fn unix_flushing(Bool, String) -> (String, Array[String])
+
+pub fn unix_hold_awake(Bool, String, Int32, Bool) -> (String, Array[String])?
+
+pub let unix_installer_shell : String
+
+pub fn unix_installs() -> @json.Json
+
+pub fn unix_is_launcher(String) -> Bool
+
+pub fn unix_join(String, String) -> String
+
+pub fn unix_launcher_signal(String) -> String?
+
+pub fn unix_lowered(String, Array[String], Int32, Bool) -> (String, Array[String])
+
+pub fn unix_native_cache(Bool, Array[(String, String)], String) -> String
+
+pub fn unix_node_build(String, String, String) -> NodeBuild?
+
+pub fn unix_os(String) -> String
+
+pub fn unix_prepend_path(Array[(String, String)], String) -> Array[(String, String)]
+
+pub fn unix_relative_in(String, String) -> String?
+
+pub fn unix_user_shell(Array[(String, String)], String?, String?) -> String?
+
+pub fn unix_within(String, String) -> Bool
+
+pub fn unreadable_dir_message(Catalog, String, String, Array[String], Bool, (Array[String]) -> String) -> String
+
+pub fn unwrapped(String, Int32) -> String
+
+pub let update_log_cap : Double
+
+pub let upkeep_every_ms : Double
+
+pub let upkeep_first_ms : Double
+
+pub fn upkeep_round(Bool, Bool, Bool, Bool) -> Array[String]
+
+pub fn upkeep_said(@json.Json) -> @json.Json?
+
+pub fn urls_in(String) -> Array[String]
+
+pub fn usage_cost(@json.Json) -> Double?
+
+pub fn usage_now(Array[@json.Json], Array[@json.Json], Double?, @json.Json?) -> @json.Json
+
+pub fn used_bytes(Double?, Double) -> Double
+
+pub fn version_of(Array[String], String?, String?) -> String
+
+pub fn views_config(@json.Json) -> @json.Json
+
+pub fn waited(Waits, Double, () -> String) -> Unit
+
+pub let waited_ms : Double
+
+pub let wal_cap : Double
+
+pub fn wal_past(Double?) -> Bool
+
+pub fn walk_bounded(Fs, Array[String], (WalkEntry) -> Visit, WalkOptions) -> WalkResult raise
+
+pub let walk_max_depth : Int32
+
+pub let walk_max_duration_ms : Double
+
+pub let walk_max_entries : Int32
+
+pub fn web_page(String?) -> Bool
+
+pub fn whose_of(Array[ProcessInfo], Array[(String, Double)], (String) -> Bool, Array[Double], Array[Runner], Array[(Double, String)]?, () -> Array[(String, String)], ((Array[String]) -> Array[(String, String)]?)?) -> Map[Double, Whose]
+
+pub fn win32_dirname(String) -> String
+
+pub fn win32_is_absolute(String) -> Bool
+
+pub fn win32_join(Array[String]) -> String
+
+pub fn win32_normalize(String) -> String
+
+pub fn win32_relative(String, String, String) -> String
+
+pub fn win32_resolve(Array[String], String) -> String
+
+pub fn win_agy_staging(Array[(String, String)], (Array[String]) -> String) -> String?
+
+pub fn win_append_path(Array[(String, String)], String, String) -> Unit
+
+pub fn win_browser_places(Array[(String, String)]) -> Array[String]
+
+pub fn win_clean(String, String) -> String
+
+pub fn win_cmd_path(String, Array[(String, String)]) -> Result[String, String]
+
+pub fn win_command_candidates(String, Array[(String, String)], String, (Array[String]) -> String) -> Array[String]?
+
+pub fn win_command_cmd(String, String?, Bool) -> String
+
+pub fn win_drives((String) -> Bool) -> Array[(String, String)]
+
+pub fn win_group_memory(String, Array[Double]) -> Array[(Double, Double)]
+
+pub fn win_installs() -> @json.Json
+
+pub fn win_is_drive_path(String) -> Bool
+
+pub fn win_is_launcher(String) -> Bool
+
+pub fn win_is_root_name(String) -> Bool
+
+pub fn win_join(String, String) -> String
+
+pub fn win_native_cache(Array[(String, String)], String, (Array[String]) -> String) -> String
+
+pub fn win_node_build(String, String, String?) -> NodeBuild?
+
+pub fn win_path_exts(Array[(String, String)]) -> Array[String]
+
+pub fn win_path_of(Array[(String, String)]) -> String
+
+pub fn win_prepend_path(Array[(String, String)], String, String) -> Array[(String, String)]
+
+pub fn win_relative_in(String, String, String) -> String?
+
+pub fn win_rooted(String) -> Bool
+
+pub fn win_runnable_of(String, Array[String], Array[(String, String)], String?, (String, Array[String])?) -> Result[@json.Json, String]
+
+pub fn win_shim_update(String, String, String, String, (String) -> Bool, String?) -> @json.Json
+
+pub fn win_within(String, String) -> Bool
+
+pub fn windows_register_script(String, String, String, String, Bool) -> String
+
+pub fn windows_task_of(String?) -> (String, Bool)
+
+pub fn windows_update_script(String, Array[(String, String)], String) -> String
+
+pub fn winget_package(String) -> String?
+
+pub fn with_shell_command(String, Array[(String, String)], (Array[(String, String)]) -> Bool, Array[String]?, (Array[(String, String)], String) -> Unit, String?, (Bool) -> Array[String]?, (Array[(String, String)], String) -> Array[(String, String)]) -> Array[(String, String)]
+
+pub fn within(Plat, String, String) -> Bool
+
+pub fn working_of(Bool, @json.Json?, Bool, Bool, Bool, Double) -> @json.Json
+
+// Errors
+
+// Types and methods
+pub struct AppBundles {
+  known : Map[String, Bool]
+}
+pub fn AppBundles::is_app(Self, String, (String) -> String?) -> Bool
+pub fn AppBundles::new() -> Self
+
+pub struct Awake {
+  mut last_work : Double
+  mut held : Bool
+  mut unheld_said : Bool
+}
+pub fn Awake::check(Self, Double, Bool, Bool) -> String?
+pub fn Awake::new() -> Self
+
+pub(all) enum Background {
+  Taskpolicy
+  Ionice(String, String)
+  Nice(String)
+  NoWrapper
+}
+
+pub struct CarriedBox {
+  mut came : @json.Json?
+  taken : Array[@json.Json]
+  mut taker : Bool
+}
+pub fn CarriedBox::new() -> Self
+pub fn CarriedBox::take(Self) -> Unit
+pub fn CarriedBox::told(Self, @json.Json) -> Unit
+
+pub struct Catalog {
+  zh : Map[String, Word]
+  en : Map[String, Word]
+}
+pub fn Catalog::from_json(@json.Json, @json.Json) -> Self
+
+pub struct ConfigFile {
+  path : String
+  data : String
+  fs : Fs
+  mut check : (@json.Json, String) -> String?
+  invalid_words : String
+  mut seen : String
+  mut value : @json.Json
+  mut invalid : String?
+  mut last_written : String?
+  listeners : Array[(@json.Json) -> Unit]
+}
+pub fn ConfigFile::listen(Self, (@json.Json) -> Unit) -> Unit
+pub fn ConfigFile::new(Fs, String, String?, String) -> Self raise
+pub fn ConfigFile::raw(Self) -> @json.Json raise
+pub fn ConfigFile::update(Self, (@json.Json) -> @json.Json) -> @json.Json raise
+
+pub struct ControlReader {
+  mut carry : String
+}
+pub fn ControlReader::feed(Self, String) -> Array[Told]
+pub fn ControlReader::new() -> Self
+
+pub struct FollowedTree {
+  root : String
+  into : (String) -> Bool
+  most : Int32
+  watch : (String) -> String?
+  watches : Array[String]
+  mut closed : Bool
+}
+pub fn FollowedTree::close(Self) -> Unit
+pub fn FollowedTree::new(String, (String) -> Bool, Int32, (String) -> String?) -> Self
+pub fn FollowedTree::scan(Self, Fs) -> Scanned raise
+
+pub struct Fs {
+  host : @host.Host
+}
+pub fn Fs::chmod(Self, String, Int32) -> Unit raise
+pub fn Fs::dev(Self, String, follow? : Bool) -> Double? raise
+pub fn Fs::kind(Self, String) -> String? raise
+pub fn Fs::lstat(Self, String) -> Lstat? raise
+pub fn Fs::meta(Self, String) -> (Double, Double, Bool)? raise
+pub fn Fs::meta_ms(Self, String) -> (Double, Double?, Bool)? raise
+pub fn Fs::mkdir(Self, String) -> Unit raise
+pub fn Fs::names(Self, String) -> Array[String]? raise
+pub fn Fs::new(@host.Host) -> Self
+pub fn Fs::read(Self, String) -> String? raise
+pub fn Fs::readdir(Self, String) -> Array[(String, String)]? raise
+pub fn Fs::readlink(Self, String) -> String? raise
+pub fn Fs::realpath(Self, String) -> String? raise
+pub fn Fs::remove(Self, String, recursive? : Bool) -> Unit raise
+pub fn Fs::rename(Self, String, String) -> Unit raise
+pub fn Fs::run(Self, String, Array[String], timeout_ms? : Int32) -> String? raise
+pub fn Fs::write(Self, String, String) -> Unit raise
+
+type Group
+
+type Had
+
+pub struct LauncherArgs {
+  fds : (Double, Double, Double)?
+  pipe : String?
+  ports : (Double, Double)?
+  carries : Bool
+  heartbeats : Bool
+}
+pub fn LauncherArgs::linked(Self) -> Bool
+pub fn LauncherArgs::to_json(Self) -> @json.Json
+
+pub struct LogExport {
+  home : String
+  mut waiting : Array[LogLine]
+  mut dropped : Int32
+  mut closed : Bool
+  mut configured : Bool
+}
+pub fn LogExport::add(Self, LogLine, Bool) -> Unit
+pub fn LogExport::body(Self, Array[LogLine], String, Int32, String, Double) -> String
+pub fn LogExport::close(Self) -> Unit
+pub fn LogExport::new(String) -> Self
+pub fn LogExport::send_all(Self, Bool, String?, String, Double, (String) -> Double?) -> Array[String]
+
+pub(all) struct LogLine {
+  ms : Double
+  level : String
+  at : String
+  message : String
+  fields : @json.Json
+}
+
+pub(all) enum Look {
+  Ok(String)
+  Gone
+  NotADirectory
+  Denied
+  Protected(String, String, Bool)
+}
+pub fn Look::to_json(Self) -> @json.Json
+
+pub(all) struct Loopback {
+  host : String
+  port : Int32
+  path : String
+  state : String?
+  post : Bool
+}
+pub fn Loopback::to_json(Self) -> @json.Json
+
+pub(all) struct Lstat {
+  kind : String
+  size : Double
+  mode : Double
+  ino : Double
+  mtime_ms : Double
+}
+
+pub(all) struct Memory {
+  total_bytes : Double
+  used_bytes : Double
+  swap_used_bytes : Double?
+  known : Bool?
+}
+pub fn Memory::to_json(Self) -> @json.Json
+
+pub(all) enum Named {
+  Beside(String)
+  At(String)
+}
+
+pub(all) struct NodeBuild {
+  dist : String
+  archive : String
+  bin : String
+  npm : String
+  tar : String
+}
+pub fn NodeBuild::to_json(Self) -> @json.Json
+
+pub struct Own {
+  data : String
+  config : String
+  more_of : Array[() -> Array[String]]
+}
+pub fn Own::add(Self, () -> Array[String]) -> Unit
+pub fn Own::more(Self) -> Array[String]
+pub fn Own::new(String, String) -> Self
+pub fn Own::paths(Self) -> Array[String]
+
+pub(all) enum Plat {
+  Unix
+  Windows(String)
+}
+
+pub(all) struct ProcessInfo {
+  pid : Double
+  ppid : Double
+  pgid : Double
+  mut bytes : Double
+  command : String
+}
+pub fn ProcessInfo::to_json(Self) -> @json.Json
+
+pub(all) struct Product {
+  name : String
+  test_host : String
+  id : String
+  reverse : String
+}
+
+pub struct ResourceWatch {
+  mut last : Map[Double, Had]
+  mut last_at : Double?
+  mut seen : Map[Double, String]
+  mut now_ : (Double, Array[Group], Use)?
+  mut history : Array[(Double, Use)]
+  mut counted : Bool
+  mut net : Bool
+  mut disk : Bool
+}
+pub fn ResourceWatch::fresh(Self, Double) -> Bool
+pub fn ResourceWatch::look(Self, Bool, Double, Array[ProcessInfo]?, Map[Double, Whose], Array[Double], (Array[Double]) -> Array[Usage?], Array[(Double, Double, Double)]?) -> Unit
+pub fn ResourceWatch::new() -> Self
+pub fn ResourceWatch::snapshot(Self) -> @json.Json
+
+pub(all) struct Runner {
+  runner : Double
+  pid : Double
+  session : String?
+}
+
+pub(all) enum Said {
+  Ready(String)
+  Serving(String, Double)
+  Taking
+  Failed(String)
+  Drained(String)
+  Carry(@json.Json)
+  Heartbeat
+  RestartFront
+}
+
+pub(all) struct Scanned {
+  failed : String?
+  over : Bool
+}
+
+pub struct SelfMemory {
+  soft : Double
+  hard_rss : Double
+  hard_heap : Double
+  hard_front : Double
+  started_at : Double
+  sustained : Int32
+  startup_ms : Double
+  relief_ms : Double
+  mut last_relief : Double?
+  mut over : Int32
+  mut front_over : Int32
+  mut handed_over : Bool
+}
+pub fn SelfMemory::new(Double, Double, @json.Json) -> Self
+pub fn SelfMemory::sample(Self, Double, Double, Double, Double, Double?, String?, () -> Double, (() -> Double)?, Bool, Bool, Bool) -> @json.Json
+
+pub(all) struct ShellCandidate {
+  path : String
+  beside : String?
+}
+
+pub(all) enum Shim {
+  Node(Named)
+  Program(Named)
+}
+
+pub(all) struct StorageEntry {
+  name : String
+  class : String
+  what : String
+  max_bytes : Double?
+  max_age_ms : Double?
+  reclaim : String?
+}
+pub fn StorageEntry::to_json(Self) -> @json.Json
+
+pub(all) struct Team {
+  id : String
+  name : String
+  book : String
+}
+
+pub(all) enum Told {
+  Op(String)
+  NoOp
+  Carried(@json.Json)
+  Unreadable(Int32)
+}
+
+pub struct Turns {
+  going : Array[(Int32, String?, String)]
+  waiting : Array[(Int32, String?, String)]
+}
+pub fn Turns::ask(Self, Int32, String?, String) -> @json.Json
+pub fn Turns::done(Self, Int32) -> Int32?
+pub fn Turns::expire(Self, Int32) -> Unit
+pub fn Turns::new() -> Self
+
+pub(all) struct Usage {
+  cpu_ns : Double
+  footprint : Double
+  disk_read : Double?
+  disk_written : Double?
+}
+
+pub(all) struct Use {
+  mut cpu : Double
+  mut memory : Double
+  mut net_in : Double
+  mut net_out : Double
+  mut disk_read : Double
+  mut disk_write : Double
+}
+
+pub(all) enum Visit {
+  Go
+  Skip
+  Stop
+}
+
+pub struct Waits {
+  mut ms : Double
+  mut calls : Int32
+  mut longest : Double
+  by : Array[(String, Double, Int32)]
+}
+pub fn Waits::to_json(Self) -> @json.Json
+
+pub(all) struct WalkEntry {
+  path : String
+  rel : String
+  name : String
+  depth : Int32
+  directory : Bool
+  symlink : Bool
+  file : Bool
+  stats : Lstat?
+  root : String
+}
+pub fn WalkEntry::to_json(Self) -> @json.Json
+
+pub(all) struct WalkOptions {
+  same_device : Bool
+  max_entries : Int32
+  max_depth : Int32
+  max_duration_ms : Double
+  now : () -> Double
+  stat : Bool
+  follow_root : Bool
+  follow_links : Bool
+  on_error : (String, String) -> Unit
+  on_crossed : (WalkEntry) -> Unit
+  aborted : () -> Bool
+}
+pub fn WalkOptions::default(() -> Double) -> Self
+
+pub(all) struct WalkResult {
+  truncated : Bool
+  reason : String?
+  visited : Int32
+  crossed : Int32
+}
+pub fn WalkResult::to_json(Self) -> @json.Json
+
+pub(all) struct Whose {
+  key : String
+  kind : String
+  session : String?
+}
+
+pub(all) enum Word {
+  One(String)
+  Plural(String?, String?)
+}
+
+// Type aliases
+
+// Traits

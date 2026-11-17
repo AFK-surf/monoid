@@ -20,7 +20,7 @@ import { platform } from "../../platform/index.ts";
 export type DriveRouteDeps = {
   drive: Drive; config: ConfigFile; home?: string; changed?: () => void;
   /// Where a file sent in a chat waits for its message (the uploads), with a name of its own: none, no /drive/stage.
-  stage?: (name: string) => { safe: string; path: string };
+  stage?: (name: string) => { safe: string; path: string } | Promise<{ safe: string; path: string }>;
 };
 
 const manages = (r: { viewer: { role: string } }) => r.viewer.role === "owner" || r.viewer.role === "admin";
@@ -67,8 +67,8 @@ const text = (v: unknown, name: string): string => {
 
 /// What GET /drive and the overview say: the folders pinned, what the viewer may do, and, for one who reaches every
 /// folder (`anywhere`), the home to start from.
-export const driveView = (drive: Drive, r: { viewer: Request["viewer"] }, home = homedir()) => ({
-  roots: driveOf(drive, r).roots(), manage: manages(r), write: !readOnly(r.viewer), ...(anywhere(r) ? { anywhere: true, home } : {}),
+export const driveView = async (drive: Drive, r: { viewer: Request["viewer"] }, home = homedir()) => ({
+  roots: await driveOf(drive, r).roots(), manage: manages(r), write: !readOnly(r.viewer), ...(anywhere(r) ? { anywhere: true, home } : {}),
   // What is deleted goes to the machine's trash (macOS, Linux); folders are watched for what changes in them, and zipped
   // to download.
   ...(platform.trash ? { trash: true } : {}), watch: true, ...(anywhere(r) ? { zip: true } : {}),
@@ -111,7 +111,7 @@ export function routes({ drive: whole, config, home = homedir(), changed, stage 
           const clean = before.find((b) => b === p) ?? (await drive.checkRoot(p));
           if (!roots.includes(clean)) roots.push(clean);
         }
-        config.update((raw) => {
+        await config.updateSoon((raw) => {
           const was = raw.drive !== null && typeof raw.drive === "object" ? raw.drive : {};
           raw.drive = ws === null ? { ...was, roots } : { ...was, workspaces: { ...(was.workspaces ?? {}), [ws]: roots } };
         });

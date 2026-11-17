@@ -78,6 +78,76 @@ export type Unfinished = { id: string; kind: KeepKind; mtime: number; size: numb
 /// A chat's file kept: where it is, its size, the bytes kept of it (fewer: a part of it read), when it was last read.
 export type ChatKept = { station: string; key: string; name: string; size: number; bytes: number; used: number };
 
+/// What each file's parts take (`sum(length)` of its rows of `part`), kept by triggers on `part` whoever writes it (an
+/// older core too), as account.ts keeps `log_bytes`: what the page of what the device keeps (`usage`, `chatFiles`) and
+/// the bound of each kind (`#trim`, `unfinished`) read, never summing the parts (a chat's are never let go by
+/// themselves: 100 000 parts summed held the core 0.26 s in Hermes, 2026-11-11). Before a row is put in, what a row it
+/// replaces took goes (INSERT OR REPLACE deletes it firing no delete trigger); then what it takes comes; a row changed
+/// (`rename` moves a file's parts to its new name) or deleted takes away what it took. A file whose parts come to 0 has
+/// no row. Made where missing as the database opens, counted then from the parts (a database a core from before kept);
+/// a trigger missing or not this core's made again and every count made anew. Where that cannot be written (no room),
+/// the parts are summed as before, this run.
+const add = (row: "new" | "old", sign: "" | "-", from = "WHERE true") =>
+  `INSERT INTO part_bytes (id, bytes) SELECT ${row}.id, ${sign}${from === "WHERE true" ? `${row}.length` : "w.length"} ${from}
+      ON CONFLICT (id) DO UPDATE SET bytes = bytes + excluded.bytes;`;
+const gone = (row: "new" | "old") => `DELETE FROM part_bytes WHERE id = ${row}.id AND bytes = 0;`;
+const PART_TRIGGERS: [string, string][] = [
+  ["part_bytes_was", `CREATE TRIGGER part_bytes_was BEFORE INSERT ON part
+  BEGIN
+    ${add("new", "-", "FROM part AS w WHERE w.id = new.id AND w.at = new.at AND w.length = new.length")}
+  END`],
+  ["part_bytes_put", `CREATE TRIGGER part_bytes_put AFTER INSERT ON part
+  BEGIN
+    ${add("new", "")}
+    ${gone("new")}
+  END`],
+  ["part_bytes_set", `CREATE TRIGGER part_bytes_set AFTER UPDATE ON part
+  BEGIN
+    ${add("old", "-")}
+    ${gone("old")}
+    ${add("new", "")}
+    ${gone("new")}
+  END`],
+  ["part_bytes_drop", `CREATE TRIGGER part_bytes_drop AFTER DELETE ON part
+  BEGIN
+    ${add("old", "-")}
+    ${gone("old")}
+  END`],
+];
+const spaced = (s: string) => s.replace(/\s+/g, " ").trim();
+
+/// `part_bytes` made where it is not, with its triggers (PART_TRIGGERS): whether it is kept (false: it could not be
+/// written, and nothing of it changed).
+export function ensurePartBytes(sql: Sql): boolean {
+  try {
+    sql.exec("BEGIN IMMEDIATE");
+    const had = new Map(sql.all("SELECT name, sql FROM sqlite_master WHERE (type = 'trigger' AND tbl_name = 'part') OR name = 'part_bytes'").map((r) => [String(r[0]), String(r[1])]));
+    let remade = !had.has("part_bytes");
+    sql.exec("CREATE TABLE IF NOT EXISTS part_bytes (id TEXT PRIMARY KEY, bytes INTEGER NOT NULL) WITHOUT ROWID");
+    for (const [name, statement] of PART_TRIGGERS) {
+      const was = had.get(name);
+      if (was !== undefined && spaced(was) === spaced(statement)) continue;
+      if (was !== undefined) sql.exec(`DROP TRIGGER ${name}`);
+      sql.exec(statement);
+      remade = true;
+    }
+    // (new, or a trigger missing or not this core's: what was counted may have missed a write)
+    if (remade) {
+      sql.run("DELETE FROM part_bytes", []);
+      sql.run("INSERT INTO part_bytes (id, bytes) SELECT id, sum(length) FROM part GROUP BY id HAVING sum(length) <> 0", []);
+    }
+    sql.exec("COMMIT");
+    return true;
+  } catch {
+    try {
+      sql.exec("ROLLBACK");
+    } catch {
+      // Rolled back already.
+    }
+    return false;
+  }
+}
+
 export class DriveKept {
   readonly #host: Host;
   /// How much of each kind is kept at most.
@@ -86,6 +156,8 @@ export class DriveKept {
   #sql: Sql | null | undefined = undefined;
   /// Files a part of which is being written, how many: not let go meanwhile.
   readonly #writing = new Map<string, number>();
+  /// Whether `part_bytes` is kept (ensurePartBytes): what each file's parts take is read of it, or summed of them.
+  #partBytes = false;
 
   constructor(host: Host, most: Record<KeepKind, number> = { file: FILES_MAX, played: PLAYED_MAX, chat: Number.POSITIVE_INFINITY, sent: SENT_MAX, outbox: Number.POSITIVE_INFINITY }) {
     this.#host = host;
@@ -111,11 +183,27 @@ export class DriveKept {
         CREATE TABLE IF NOT EXISTS origin (id TEXT PRIMARY KEY, json TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS wanted (id TEXT PRIMARY KEY, kind TEXT NOT NULL, size INTEGER NOT NULL);
         CREATE INDEX IF NOT EXISTS kept_read ON kept (kind, used);`);
+        this.#partBytes = ensurePartBytes(opened.success);
         return (this.#sql = opened.success);
       } catch {
         return (this.#sql = null);
       }
     });
+  }
+
+  /// What the files of `kept` (as `k`, filtered by `where`) take, each (`k.id`, its bytes): of `part_bytes`, or summed.
+  #filesBytes(where: string, order: string): string {
+    return this.#partBytes
+      ? `SELECT k.id, coalesce(b.bytes, 0) FROM kept k LEFT JOIN part_bytes b ON b.id = k.id WHERE ${where} ${order}`
+      : `SELECT k.id, coalesce(sum(p.length), 0) FROM kept k LEFT JOIN part p ON p.id = k.id WHERE ${where} GROUP BY k.id ${order}`;
+  }
+
+  /// What all the files of `kept` (as `k`, filtered by `where`) take together.
+  #allBytes(sql: Sql, where: string, params: string[] = []): number {
+    const q = this.#partBytes
+      ? `SELECT coalesce(sum(b.bytes), 0) FROM kept k JOIN part_bytes b ON b.id = k.id WHERE ${where}`
+      : `SELECT coalesce(sum(p.length), 0) FROM part p JOIN kept k ON k.id = p.id WHERE ${where}`;
+    return Number(sql.all(q, params)[0]?.[0] ?? 0);
   }
 
   #kept(sql: Sql, id: string): Kept | null {
@@ -265,7 +353,7 @@ export class DriveKept {
   /// The least lately read of `kind` let go while they are past its bound: never `keep`, nor one being written.
   #trim(sql: Sql, kind: KeepKind, keep: string): Effect.Effect<void> {
     const most = this.#most[kind];
-    const rows = sql.all("SELECT k.id, coalesce(sum(p.length), 0) FROM kept k LEFT JOIN part p ON p.id = k.id WHERE k.kind = ? GROUP BY k.id ORDER BY k.used DESC, k.id", [kind]);
+    const rows = sql.all(this.#filesBytes("k.kind = ?", "ORDER BY k.used DESC, k.id"), [kind]);
     const drop: string[] = [];
     let total = 0;
     for (const r of rows) {
@@ -317,7 +405,7 @@ export class DriveKept {
           of.push([Number(r[1]), Number(r[2])]);
         }
         // (all that is kept of the kind, listed or not: what its bound is held against; a kind with none is not summed)
-        const total = Number.isFinite(this.#most[kind]) ? Number(sql.all("SELECT COALESCE(SUM(p.length), 0) FROM part p JOIN kept k ON k.id = p.id WHERE k.kind = ?", [kind])[0]?.[0] ?? 0) : 0;
+        const total = Number.isFinite(this.#most[kind]) ? this.#allBytes(sql, "k.kind = ?", [kind]) : 0;
         const seen = new Set<string>();
         for (const r of rows) {
           const [id, mtime, size, used] = [String(r[0]), Number(r[1]), Number(r[2]), Number(r[3])];
@@ -523,7 +611,7 @@ export class DriveKept {
   /// The bytes kept of the drives' files and of those sent from here (not the chats').
   usage(): Effect.Effect<number> {
     return Effect.map(this.#db(), (sql) =>
-      sql === null ? 0 : Number(sql.all("SELECT coalesce(sum(p.length), 0) FROM part p JOIN kept k ON k.id = p.id WHERE k.kind != 'chat'")[0]?.[0] ?? 0),
+      sql === null ? 0 : this.#allBytes(sql, "k.kind != 'chat'"),
     );
   }
 
@@ -544,7 +632,11 @@ export class DriveKept {
   chatFiles(): Effect.Effect<ChatKept[]> {
     return Effect.map(this.#db(), (sql) => {
       if (sql === null) return [];
-      const rows = sql.all("SELECT k.id, k.size, k.used, coalesce(sum(p.length), 0) FROM kept k LEFT JOIN part p ON p.id = k.id WHERE k.kind = 'chat' GROUP BY k.id ORDER BY k.used DESC, k.id");
+      const rows = sql.all(
+        this.#partBytes
+          ? "SELECT k.id, k.size, k.used, coalesce(b.bytes, 0) FROM kept k LEFT JOIN part_bytes b ON b.id = k.id WHERE k.kind = 'chat' ORDER BY k.used DESC, k.id"
+          : "SELECT k.id, k.size, k.used, coalesce(sum(p.length), 0) FROM kept k LEFT JOIN part p ON p.id = k.id WHERE k.kind = 'chat' GROUP BY k.id ORDER BY k.used DESC, k.id",
+      );
       const out: ChatKept[] = [];
       for (const r of rows) {
         const [, station, key, ...name] = String(r[0]).split("\n");
@@ -555,11 +647,18 @@ export class DriveKept {
     });
   }
 
-  /// The files kept of a station's sessions `keys` let go (a chat's, as its messages are), but what is being written.
+  /// The files kept of a station's sessions `keys` let go (a chat's, as its messages are), but what is being written:
+  /// each session's by their names' common start (chatKeptId), none of another's read.
   forgetChat(station: string, keys: readonly string[]): Effect.Effect<void> {
     return Effect.gen({ self: this }, function* () {
-      const files = yield* this.chatFiles();
-      for (const f of files) if (f.station === station && keys.includes(f.key)) yield* this.forget(chatKeptId(f.station, f.key, f.name));
+      const sql = yield* this.#db();
+      if (sql === null) return;
+      for (const key of keys) {
+        const from = chatKeptId(station, key, "");
+        // (every name that starts so: up to the start with its last character, "\n", one more)
+        const to = `${from.slice(0, -1)}\u000b`;
+        for (const r of sql.all("SELECT id FROM kept WHERE id > ? AND id < ? AND kind = 'chat'", [from, to])) yield* this.forget(String(r[0]));
+      }
     });
   }
 }

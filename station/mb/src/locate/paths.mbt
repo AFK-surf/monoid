@@ -1,6 +1,6 @@
-// Where a session's transcripts are, as station/src/read/transcript.ts finds them (`transcriptPaths`,
-// `transcriptSources` and what they call): its paths made as Node's path.join makes them, the filesystem asked through
-// the shell (`fs.stat`, `fs.readdir`, `fs.realpath`, as Node's statSync, readdirSync and realpathSync answer), and the
+// Where a session's transcripts are, as station/src/read/transcript.ts finds them (`transcriptPathsLooking`,
+// `transcriptSourcesLooking` and what they call): its paths made as Node's path.join makes them, the filesystem asked
+// through the shell (`fs.stat`, `fs.readdir`, `fs.realpath`, as Node's stat, readdir and realpath answer), and the
 // in-process hints it keeps (`elsewhere`, `rollouts`, `saidRollouts`) given for each batch by the station
 // (`transcriptLocationHints`) and given back after it.
 
@@ -106,6 +106,7 @@ pub fn transcript_dir(runtime : String) -> String {
     "devin" => "devin/sessions"
     "hermes" => "hermes/sessions"
     "agy" => "agy/sessions"
+    "pi" => "pi/sessions"
     _ => "dsh-sessions"
   }
 }
@@ -113,12 +114,12 @@ pub fn transcript_dir(runtime : String) -> String {
 ///|
 /// agents/runtime.ts `RUNTIME_KINDS`.
 pub fn runtime_kind(runtime : String) -> Bool {
-  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy"].contains(runtime)
+  ["claude", "codex", "dsh", "grok", "cursor", "devin", "hermes", "agy", "pi"].contains(runtime)
 }
 
 ///|
 /// transcript.ts `claudeProject`: each character but an ASCII letter or digit a dash, none past 200 (UTF-16 units).
-fn claude_project(cwd : String) -> String? {
+pub fn claude_project(cwd : String) -> String? {
   if cwd.length() > 200 {
     return None
   }
@@ -162,7 +163,7 @@ fn Finder::transcript_in(self : Finder, runtime : String, dir : String, id : Str
   match runtime {
     "dsh" => return self.dsh(dir, id)
     "grok" => return self.grok(dir, id)
-    "cursor" | "devin" | "hermes" | "agy" => {
+    "cursor" | "devin" | "hermes" | "agy" | "pi" => {
       let path = self.join([dir, id + ".jsonl"])
       return if self.kept(path) { Some(path) } else { None }
     }
@@ -286,8 +287,8 @@ fn homes_first(profiles : Array[(String, String)], first : String?) -> Array[Str
 }
 
 ///|
-/// transcript.ts `transcriptPaths` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
-fn Finder::transcript_path(
+/// transcript.ts `transcriptPathsLooking` for one id: its path, if found (`anywhere` false: a Claude one in its places alone).
+pub fn Finder::transcript_path(
   self : Finder,
   runtime : String,
   data : String,
@@ -378,7 +379,7 @@ pub(all) struct Source {
 }
 
 ///|
-/// transcript.ts `transcriptSources`: each source's path with its runtime, and whether the last one's was found
+/// transcript.ts `transcriptSourcesLooking`: each source's path with its runtime, and whether the last one's was found
 /// (`anywhere` false, as the live locator asks: a Claude one looked for in its places alone).
 pub fn Finder::sources(
   self : Finder,
@@ -405,7 +406,7 @@ pub fn Finder::sources(
 }
 
 ///|
-/// transcript.ts `useTranscriptLocationHints`: the hints of one batch, read from what the station sent.
+/// test/reference/transcript-paths.ts `useTranscriptLocationHints`: the hints of one batch, read from what the station sent.
 pub fn Finder::use_hints(self : Finder, hints : Json) -> Unit {
   self.elsewhere.clear()
   self.rollouts.clear()

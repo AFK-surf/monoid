@@ -1,0 +1,36 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/vaultuses"
+
+import {
+  "moonbitlang/core/json",
+  "station/sql",
+}
+
+// Values
+pub fn backfill_next_workspace(@sql.Db) -> Bool raise
+
+pub fn backfill_pending_preparation(@sql.Db, @json.Json, Bool, Bool) -> Bool raise
+
+pub fn backfill_rebox(@sql.Db, limit? : Int32) -> Bool raise
+
+pub fn backfill_use_preparation(@sql.Db, @json.Json) -> Bool raise
+
+pub fn operate(@sql.Db, String) -> @json.Json raise
+
+pub fn pending_preparation_complete(@sql.Db, @json.Json, Bool, Bool) -> Bool raise
+
+pub fn try_read_uses(@sql.Db, UseRead) -> Array[@json.Json]? raise
+
+// Errors
+
+// Types and methods
+pub(all) struct UseRead {
+  ws : @json.Json
+  vault : Array[Int32]
+  owner : Array[Int32]?
+  limit : @json.Json
+}
+
+// Type aliases
+
+// Traits

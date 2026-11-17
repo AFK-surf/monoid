@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { installProcessJobs, processJobsStep } from "../src/store/process-jobs.ts";
+import { installProcessJobs, processJobsStep } from "./reference/backfill/process-jobs.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

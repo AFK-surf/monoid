@@ -465,6 +465,11 @@ export class Tabs {
     if (known !== undefined && known.tab === tab) this.#retitled(known);
   }
 
+  /// Where tab `targetId` is now (its address), or null where there is no such tab.
+  urlOf(targetId: string): string | null {
+    return this.#tabs.get(targetId)?.tab.address() ?? null;
+  }
+
   /// A tab's title changed: the screens' watchers hear of it.
   #retitled(known: { tab: Tab; remove: () => void }) {
     const screens = this.#p.screens;

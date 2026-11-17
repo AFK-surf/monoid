@@ -1,4 +1,5 @@
-// Words sent on a chat's page made as nodes (sfbase's chat_page_nodes on; no flight there) are seen in every frame
+// Words sent on a chat's page made as nodes (sfbase's chat_page_nodes on; flying from the field, the list rising on
+// their flight's rise: ss_from_rest) are seen in every frame
 // from the press (the coordinator of the migration, 2026-11-14: the result is there in the cause's frame; at the end
 // the content only goes up; one cause, one motion): in the press's frame their row stands whole, at full ink and its
 // size, its top at its rest against the key before it, drawn over the composer it leaves, and rides up with the list's
@@ -210,17 +211,38 @@ test "a chat's page made as nodes, 小屏 and 大屏: one line sent, nothing giv
 
 ///|
 /// Where the key before the sent one goes among `frames` (from the frame before the press, then each drawn after the
-/// press's moment): its first step in the first frame drawn after the press, the next larger; on a Move the third is
-/// about its fastest, so no smaller than the second by more than a device pixel's half (the Tester's 2 a point).
+/// press's moment), the list's one way on the words' flight's rise (chat_body_node's `sent_rise`: scrolls_window's
+/// `comes_way`): still while the words go across, their rise 12% of the flight late; then up only, gaining from
+/// rest (by the rows' grid's pixels). Till 2026-11-14 it set out on a Move in the first frame after the press, its words not
+/// flying: the coordinator of the migration (the list and the bubble one motion).
 fn ss_from_rest(frames : Array[SsFrame], at : String) -> Unit raise {
   let pressed = frames[0].at
-  let ys = [frames[0].prev.unwrap()] + frames.filter(fn(f) { f.at > pressed + 0.001 }).filter_map(fn(f) { f.prev })
-  assert_true(ys.length() > 4, msg="\{at}: \{ys.length()} frames with the key before")
-  let steps = [ys[0] - ys[1], ys[1] - ys[2], ys[2] - ys[3]]
-  assert_true(
-    steps[0] > 0.0 && steps[1] > steps[0] && steps[2] >= steps[1] - 0.25,
-    msg="\{at}: its first steps \{Repr(steps)}",
-  )
+  let late = pressed + @sfbase.flight_desk_ms * 0.12
+  let start = frames[0].prev.unwrap()
+  let after = frames.filter(fn(f) { f.at > pressed + 0.001 && f.prev is Some(_) })
+  assert_true(after.length() > 4, msg="\{at}: \{after.length()} frames with the key before")
+  // (still while the words go across)
+  for f in after {
+    if f.at <= late - 0.001 {
+      assert_true((f.prev.unwrap() - start).abs() <= 0.01, msg="\{at}: the key before moved at \{f.at - pressed} ms, its rise \{late - pressed} ms late")
+    }
+  }
+  // (then up only, from rest: its first steps each larger)
+  let ys = [start] + after.filter(fn(f) { f.at > late - 0.001 }).map(fn(f) { f.prev.unwrap() })
+  let mut first = 0
+  while first + 1 < ys.length() && (ys[first] - ys[first + 1]).abs() <= 0.01 {
+    first = first + 1
+  }
+  // (gaining from rest, on the rows' grid (the host's pixels): what three frames take it up, then the next three, no
+  // less, by a pixel of that grid; frame by frame a slow start steps a pixel and stands)
+  assert_true(first + 6 < ys.length(), msg="\{at}: the key before never set out: \{Repr(ys)}")
+  let px = 1.0 / @ui.view_tree().unwrap().rows_grid_now()
+  let one = ys[first] - ys[first + 3]
+  let two = ys[first + 3] - ys[first + 6]
+  assert_true(one > 0.0 && two >= one - px, msg="\{at}: up \{one} in its first three frames, then \{two}: \{Repr(ys[first:first + 7].to_owned())}")
+  for i in 1..<ys.length() {
+    assert_true(ys[i] <= ys[i - 1] + 0.01, msg="\{at}: the key before down from \{ys[i - 1]} to \{ys[i]}")
+  }
 }
 
 ///|
@@ -301,7 +323,7 @@ test "a chat's page made as nodes, 小屏 and 大屏: a quote with a comment sen
 }
 
 ///|
-test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an empty comment sent: in its card's tile in the frame before the press, at its place in the row, whole at full ink, in every frame after it" {
+test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an empty comment sent: in its card's tile in the frame before the press, one picture whole at full ink in every frame after it, growing from the tile's size to its own in the row, never back (quote_image_wbtest's flight)" {
   for screen in ss_screens {
     let name = "seen.png"
     let file : Json = { "name": Json::string(name), "path": Json::string("/w/uploads/" + name), "size": 120, "width": 1600, "height": 900, "owner": "s-c1" }
@@ -318,11 +340,13 @@ test "a chat's page made as nodes, 小屏 and 大屏: a quoted picture with an e
     let rest = seen[seen.length() - 1]
     assert_true(rest.length() == 1 && rest[0].0 > 60.0, msg="\{screen.0}: at rest \{Repr(rest)}")
     assert_true(seen[0].length() == 1 && (seen[0][0].0 - 56.0).abs() < 0.5, msg="\{screen.0}: before the press \{Repr(seen[0])}")
+    // (it flies from its tile to its place, as the old page's does: no frame without it, none at part ink, none smaller
+    // than the frame before)
     for i in 1..<seen.length() {
       let s = seen[i]
       assert_true(
-        s.length() == 1 && (s[0].0 - rest[0].0).abs() < 0.01 && s[0].1 > 0.999,
-        msg="\{screen.0}, frame \{i}: \{Repr(s)}, \{Repr(rest)} at rest",
+        s.length() == 1 && s[0].0 >= seen[i - 1][0].0 - 0.01 && s[0].0 <= rest[0].0 + 0.01 && s[0].1 > 0.999,
+        msg="\{screen.0}, frame \{i}: \{Repr(s)} after \{Repr(seen[i - 1])}, \{Repr(rest)} at rest",
       )
     }
   }

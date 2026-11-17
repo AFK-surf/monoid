@@ -45,7 +45,7 @@ test("a failure notice reported: the turn, the agent, versions, variables' names
     ].join("\n");
     const sent: any[] = [];
     const parts = new StationParts();
-    const deps = { logTail: () => log, versions: () => ({ station: "0.1.3600", codex: "0.160.0" }), envNames: () => ["HTTPS_PROXY", "HTTP_PROXY"], link: (k: string) => `https://app/o/${k}`, home: "/Users/ada" };
+    const deps = { logTail: async () => log, versions: () => ({ station: "0.1.3600", codex: "0.160.0" }), envNames: () => ["HTTPS_PROXY", "HTTP_PROXY"], link: (k: string) => `https://app/o/${k}`, home: "/Users/ada" };
     parts.routes(reportRoutes(store, deps, async (report) => (sent.push(report), sent.length === 1 ? { number: 12 } : { number: 12, duplicate: true })));
     parts.viewerMay((r) => r.method === "POST" && REPORT_PATH.test(r.path));
     const admin = new Admin(readers, { parts, store });
@@ -93,7 +93,7 @@ test("a report not taken by still.fail cloud is said so", async () => {
     const chat = store.openThread("ember", "CHAT", "2.1", null, "ada@x.com");
     store.insertMessage(newMessage(chat.id, "2.2", "ember", "ember", "⚠️ 本轮出错：boom"));
     const parts = new StationParts();
-    const deps = { logTail: () => null, versions: () => ({}), envNames: () => [], link: () => null, home: "/h" };
+    const deps = { logTail: async () => null, versions: () => ({}), envNames: () => [], link: () => null, home: "/h" };
     parts.routes(reportRoutes(store, deps, async () => { throw new Error("still.fail cloud answered 429: rate_limited"); }));
     const admin = new Admin(readers, { parts, store });
     const [status, answer] = await ask(admin, member, `/threads/${chat.id}/report`, { n: store.lastEntry(chat.id) });

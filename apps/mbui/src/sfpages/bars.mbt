@@ -1,18 +1,32 @@
 // 下方栏, one page for every frame (web/src/mobile/BarSettings.tsx BarSettingsScreen; the web's desktop has no bottom
 // bar, so no page of it): this device's bottom bars, each a section of its own (its name, 当前 on the one in view,
 // 使用 and 删除 at its end) over a card of its places; a new one made under them. What the core keeps (`bars`) and the
-// page's state are the settings' (save_bars, bar_adding, bar_moves: let go of as the page is left). The bar is
-// Small's alone, so the settings' row of it is too (settings_list.mbt); the page is laid out at any width all the same
-// (one open as the screen grows wider stays).
+// page's state are the settings' (save_bars, bar_adding: let go of as the page is left; a place held, its card's).
+// The bar is Small's alone, so the settings' row of it is too (settings_list.mbt); the page is laid out at any width
+// all the same (one open as the screen grows wider stays). Made once as nodes of the window's tree.
 
 ///|
-/// The page (BarSettingsScreen), in the frame it is given: what the bars are for under its title; each bar; 新建一栏;
-/// what is kept of them, under all.
-pub fn bars_page(c : @ui.Ctx, core : Core, frame : PageFrame) -> Unit {
-  let (made, cur) = (core.bars)()
-  let sets : Array[Array[String]] = made.copy()
-  if @settings.bar_adding.get() {
-    sets.push([])
+/// The page (BarSettingsScreen) made once as nodes in node `v`, in the frame it is given, laid out by the `width` its
+/// frame gives it: what the bars are for under its title, what they are of over it (此设备); each bar a section of its
+/// own; 新建一栏; what is kept of them, under all. Each as the core keeps the bars now (`bars`), a bar made while one is
+/// being added (bar_adding) under them.
+pub fn bars_node(
+  v : @view.View,
+  core : Core,
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+) -> Unit {
+  let made = fn() { (core.bars)().0 }
+  let cur = fn() { (core.bars)().1 }
+  // (the made ones, and the one being made under them, kept with its first place once it has one)
+  let sets = fn() -> Array[Array[String]] {
+    let all = made().copy()
+    if @settings.bar_adding.get() {
+      all.push([])
+    }
+    all
   }
   // a place picked for bar `i` (one past the made ones: the one just made, kept with its first place)
   let pick_for = fn(i : Int, from : @sf.Beside) {
@@ -30,65 +44,84 @@ pub fn bars_page(c : @ui.Ctx, core : Core, frame : PageFrame) -> Unit {
       }
     }, from~)
   }
-  let blocks : Array[() -> Unit] = []
-  for i, set in sets {
-    let is_made = i < made.length()
-    let n = (i + 1).to_string()
-    blocks.push(fn() {
-      @sf.section(
-        c,
-        @sf.t("android-misc.bar.set", args=[("n", n)]),
-        actions=fn() {
-          // the one in view says so where the others offer to be it
-          if is_made && i == cur {
-            @sf.pill(c, @sf.t("android-misc.bar.current"), tone=Accented)
-          }
-          if is_made && i != cur {
-            @sf.action(c, "bar-use/" + i.to_string(), @sf.t("android-misc.bar.use"), on_press=fn() {
-              @settings.save_bars(core, made, i)
-            })
-          }
-          if sets.length() > 1 {
-            @sf.action(c, "bar-delete/" + i.to_string(), @sf.t("android-misc.bar.delete"), bad=true, on_press=fn() {
-              if !is_made {
-                @settings.bar_adding.set(false)
-              } else {
-                let left : Array[Array[String]] = []
-                for k, x in made {
-                  if k != i {
-                    left.push(x)
-                  }
-                }
-                @settings.save_bars(core, left, if cur > i || cur >= left.length() { if cur - 1 < 0 { 0 } else { cur - 1 } } else { cur })
-              }
-            })
-          }
-        },
-        fn() {
-          @sf.group(c, card=true, fn() {
-            bar_card(c, core, i, set, made.length() == 1 && set.length() == 1, fn(from) { pick_for(i, from) })
-          })
-        },
-      )
-    })
+  let blocks = fn() {
+    let out = sets().mapi(fn(i, _) { "bar/" + i.to_string() })
+    out.push("new")
+    out.push("foot")
+    out
   }
-  blocks.push(fn() {
-    @sf.group(c, fn() {
-      let id = c.id("bar-new")
-      @sf.link_row(c, "bar-new", @sf.t("android-misc.bar.new"), chevron=false, lead=fn() {
-        @sf.icon(c, "plus", size=bar_new_mark, color=@sf.link_ink()) |> ignore
-      }, on_press=fn() {
-        @settings.bar_adding.set(true)
-        pick_for(made.length(), Of(id))
-      }) |> ignore
-    })
-  })
-  blocks.push(fn() {
-    @sf.page_note(c, @sf.t(if made.length() > 1 { "android-misc.bar.foot.many" } else { "android-misc.bar.foot.one" }))
-  })
-  @sf.page(c, on_back=core.pop, frame~, "bars", @sf.t("android-misc.bar.title"), blocks, lead=@sf.t("android-misc.bar.note"), small=@sf.t(
-    "android-misc.bar.small",
-  ))
+  @sf.page_node(
+    v,
+    fn() { @sf.t("android-misc.bar.title") },
+    on_back~,
+    frame~,
+    said?,
+    width?,
+    lead=fn() { @sf.t("android-misc.bar.note") },
+    small=fn() { @sf.t("android-misc.bar.small") },
+    blocks,
+    fn(b, key) {
+      match key {
+        "new" =>
+          @sf.group_node(b, fn(g) {
+            @sf.link_row_node(
+              g,
+              fn() { @sf.t("android-misc.bar.new") },
+              fn() {
+                @settings.bar_adding.set(true)
+                pick_for(made().length(), Node(g))
+              },
+              chevron=false,
+              lead=LeadLine(fn(l) { @sf.icon_node(l, "plus", bar_new_mark, By(@sf.link_ink)) |> ignore }),
+            )
+          })
+        "foot" =>
+          @sf.page_note_node(b, fn() {
+            @sf.t(if made().length() > 1 { "android-misc.bar.foot.many" } else { "android-misc.bar.foot.one" })
+          })
+        _ => {
+          let i = @string.parse_int(key.unsafe_substring(start=4, end=key.length())) catch { _ => 0 }
+          let set = fn() { sets().get(i).unwrap_or([]) }
+          let is_made = fn() { i < made().length() }
+          @sf.section_node(
+            b,
+            fn() { @sf.t("android-misc.bar.set", args=[("n", (i + 1).to_string())]) },
+            ends=fn(e) {
+              // the one in view says so where the others offer to be it
+              e.show(fn() { is_made() && i == cur() }, fn(p) {
+                @sf.pill_node(p, fn() { @sf.t("android-misc.bar.current") }, tone=Accented) |> ignore
+              })
+              e.show(fn() { is_made() && i != cur() }, fn(a) {
+                @sf.action_node(a, fn() { @sf.t("android-misc.bar.use") }, fn() { @settings.save_bars(core, made(), i) })
+              })
+              e.show(fn() { sets().length() > 1 }, fn(a) {
+                @sf.action_node(a, fn() { @sf.t("android-misc.bar.delete") }, bad=true, fn() {
+                  let made = made()
+                  let cur = cur()
+                  if i >= made.length() {
+                    @settings.bar_adding.set(false)
+                  } else {
+                    let left : Array[Array[String]] = []
+                    for k, x in made {
+                      if k != i {
+                        left.push(x)
+                      }
+                    }
+                    @settings.save_bars(core, left, if cur > i || cur >= left.length() { if cur - 1 < 0 { 0 } else { cur - 1 } } else { cur })
+                  }
+                })
+              })
+            },
+            fn(sec) {
+              @sf.group_node(sec, card=true, fn(g) {
+                bar_card_node(g, core, i, set, fn() { made().length() == 1 && set().length() == 1 }, fn(from) { pick_for(i, from) })
+              })
+            },
+          )
+        }
+      }
+    },
+  )
 }
 
 ///|
@@ -98,11 +131,31 @@ fn bar_place_name(place : String) -> String {
 }
 
 ///|
-/// A bar's places (BarCard), on its group's card: four slots, each its mark over its name with a "−" at its corner
-/// (none on the last place of the only bar), one held and moved sideways put where it is let go (by how many slots it
-/// went), a screen reader's step moving it one along; with room left, a slot that adds one (`add`, from where it is).
-fn bar_card(c : @ui.Ctx, core : Core, i : Int, set : Array[String], only : Bool, add : (@sf.Beside) -> Unit) -> Unit {
-  let t = @sf.theme()
+/// A slot held by the finger (bar_card_node's): its place, where its slot stands in the row (from its start, as it
+/// went down), how far it has gone since, how wide its slot is.
+#derive(Eq)
+priv struct BarHeld {
+  key : String
+  x : Double
+  dx : Double
+  w : Double
+}
+
+///|
+/// A bar's places (BarCard) as nodes in `g`, its group's card: four slots, each its mark over its name with a "−" at
+/// its corner (none on the last place of the only bar: `only`), one held and moved sideways put where it is let go (by
+/// how many slots it went), a screen reader's step moving it one along; with room left, a slot that adds one (`add`,
+/// from where it is). Bar `i`'s places as `set` says them now. Held, the slot drawn where the finger has it, 8% larger,
+/// raised over the other places (BarSettings.kt's graphicsLayer, zIndex(2f)): drawn so over the row, its slot left
+/// where it was meanwhile.
+fn bar_card_node(
+  g : @view.View,
+  core : Core,
+  i : Int,
+  set : () -> Array[String],
+  only : () -> Bool,
+  add : (@sf.Beside) -> Unit,
+) -> Unit {
   // BarSettingsScreen's onMove: the place at `j` put at `to`
   let put_at = fn(j : Int, to : Int) {
     let (now, ncur) = (core.bars)()
@@ -113,101 +166,207 @@ fn bar_card(c : @ui.Ctx, core : Core, i : Int, set : Array[String], only : Bool,
       @settings.save_bars(core, now.mapi(fn(n, s) { if n == i { moved } else { s } }), ncur)
     }
   }
-  let moves = @settings.bar_moves
-  c.box(style=bar_slots, fn() {
-    for j, key in set {
-      let id = c.id("bar-slot/" + i.to_string() + "/" + key)
-      let held = i.to_string() + "/" + key
-      // the finger's (detectHorizontalDragGestures): lifted once it goes sideways past the slop, following it; let go,
-      // put by how many slots it went (a slot's width, the row's quarter)
-      c.drag_on(id, axis=Horizontal)
-      let lifted = match c.drag_of(id) {
-        Some(d) => {
-          let (dx, _) = d.take_move()
-          if d.down && d.moving {
-            moves[held] = moves.get(held).unwrap_or(0.0) + dx
+  let held : @signals.Signal[BarHeld?] = @signals.signal(None)
+  let held_key = fn() { held.get().map(fn(h) { h.key }) }
+  g.box(fn(r) {
+    @sf.style_node(r, fn() { bar_slots })
+    r.each(set, fn(k) { k }, fn(slot, key) {
+      let key = key.untracked()
+      let at = fn() { @signals.untracked(set).search(key).unwrap_or(0) }
+      @sf.style_node(slot, fn() { bar_slot }, in_row=true)
+      slot.radius(Is(bar_slot_corner)) |> ignore
+      // (held: drawn over the row where the finger has it, the slot's place kept)
+      slot.alpha(By(fn() { if held_key() == Some(key) { 0.0 } else { 1.0 } })) |> ignore
+      slot.box(fn(face) {
+        @sf.style_node(face, fn() { bar_face })
+        face.says(Is(Some(@view.said(Group, label=bar_place_name(key), actions=[Decrement, Increment])))) |> ignore
+        // a screen reader's (右移): one slot along
+        face.on_step(fn(by) {
+          let j = at()
+          let n = @signals.untracked(set).length()
+          if j + by >= 0 && j + by < n {
+            put_at(j, j + by)
           }
-          if d.take_end() {
-            let went = moves.get(held).unwrap_or(0.0)
-            moves.remove(held)
-            match c.rect_of(id) {
-              Some((_, _, w, _)) if w > 0.0 => {
-                let to = j + (went / w).round().to_int()
-                put_at(j, if to < 0 { 0 } else if to >= set.length() { set.length() - 1 } else { to })
-              }
-              _ => ()
-            }
-          } else if !d.down {
-            moves.remove(held)
-          }
-          d.down && d.moving
-        }
-        None => false
-      }
-      // a screen reader's (右移): one slot along
-      if c.action_asked(id, Decrement) && j > 0 {
-        put_at(j, j - 1)
-      }
-      if c.action_asked(id, Increment) && j < set.length() - 1 {
-        put_at(j, j + 1)
-      }
-      // the slot, and its "−" over it beside (not inside) what the finger holds: a press on the "−" is its own
-      let slot = c.box(style=if lifted { bar_slot_held } else { bar_slot }, fn() {
-        let face = c.box(style=bar_face, id~, fn() {
-          c.box(style=bar_face_words, fn() {
-            c.box(style=bar_mark_room, fn() { (core.place_icon)(c, key, t.p.text) }) |> ignore
-            c.text(bar_place_name(key), style=bar_place_words) |> ignore
-          })
-          |> ignore
         })
-        c.semantics(face, Group, id~, label=bar_place_name(key), actions=[Decrement, Increment])
-        if !only {
-          c.layer(fn() {
-            let rid = c.id("bar-remove/" + i.to_string() + "/" + key)
-            c.on_press(rid, fn() {
-              let (now, ncur) = (core.bars)()
-              @settings.save_bars(core, now.mapi(fn(n, s) { if n == i { s.filter(fn(p) { p != key }) } else { s } }), ncur)
-            })
-            // in the slot's top right corner, concentric with it (so with the card's, the last slot's corner in the
-            // card's), however wide a slot is
-            let said = @sf.t("android-misc.bar.remove", args=[("name", bar_place_name(key))])
-            c.box(style=bar_remove_at, fn() {
-              let minus = c.box(style=bar_remove, id=rid, label=said, fn() {
-                @sf.icon(c, "minus", size=bar_remove_mark, color=t.p.muted) |> ignore
-              })
-              c.semantics(minus, Button, id=rid, label=said)
-            })
-            |> ignore
+        |> ignore
+        // the finger's (detectHorizontalDragGestures): lifted once it goes past the slop, following it sideways; let go,
+        // put by how many slots it went (a slot's width)
+        let from = Ref(0.0)
+        face.gesture(@ui.touch_slop(), drag=fn(d) {
+          match d.kind {
+            Down => {
+              // (taken past the slop: the finger already that far from where it went down, what it holds as far
+              // along with it from the first, where it went down the start)
+              let gone = d.x - d.ox
+              from.val = d.wx - gone
+              let (fx, _, _, _) = face.placed_window_now()
+              let (rx, _, _, _) = r.placed_window_now()
+              held.set(Some({ key, x: fx - rx, dx: gone, w: d.w }))
+            }
+            Moved =>
+              match held.get() {
+                Some(h) => held.set(Some({ ..h, dx: d.wx - from.val }))
+                None => ()
+              }
+            Up => {
+              match held.get() {
+                Some(h) if h.w > 0.0 => {
+                  let j = at()
+                  let n = @signals.untracked(set).length()
+                  let to = j + ((d.wx - from.val) / h.w).round().to_int()
+                  held.set(None)
+                  put_at(j, if to < 0 { 0 } else if to >= n { n - 1 } else { to })
+                }
+                _ => held.set(None)
+              }
+            }
+            Off => held.set(None)
+          }
+        })
+        |> ignore
+        bar_face_words_node(face, key)
+      })
+      |> ignore
+      // its "−" over it beside (not inside) what the finger holds: a press on the "−" is its own
+      slot.box(fn(m) {
+        bar_remove_at_node(m)
+        m.show(fn() { !only() }, fn(k) {
+          bar_remove_node(k, key, fn() {
+            let (now, ncur) = (core.bars)()
+            @settings.save_bars(core, now.mapi(fn(n, s) { if n == i { s.filter(fn(p) { p != key }) } else { s } }), ncur)
+          })
+        })
+      })
+      |> ignore
+    })
+    // with room left, a slot that adds one, from where it is
+    r.show(fn() { set().length() < @settings.bar_size }, fn(a) {
+      @sf.style_node(a, fn() { bar_slot }, in_row=true)
+      a.box(fn(face) {
+        @sf.style_node(face, fn() { bar_face })
+        @sf.presses_node(face, fn() { add(Node(face)) })
+        face.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-misc.bar.add"))) })) |> ignore
+        face.box(fn(w) {
+          @sf.style_node(w, fn() { bar_face_words })
+          w.box(fn(ring) {
+            @sf.style_node(ring, fn() { bar_add_ring })
+            @sf.icon_node(ring, "plus", bar_add_mark, By(fn() { @sf.theme().p.subtle })) |> ignore
           })
           |> ignore
-        }
-      })
-      // held: where the finger has it, 8% bigger, over the other places (graphicsLayer, zIndex(2f))
-      if lifted {
-        c.look(slot, @ui.look(dx=moves.get(held).unwrap_or(0.0), scale=1.08))
-        c.put_over(slot)
-      }
-    }
-    if set.length() < @settings.bar_size {
-      let aid = c.id("bar-add/" + i.to_string())
-      c.on_press(aid, fn() {
-        add(Of(aid))
-      })
-      c.box(style=bar_face, id=aid, fn() {
-        c.box(style=bar_face_words, fn() {
-          c.box(style=bar_add_ring, fn() {
-            @sf.icon(c, "plus", size=bar_add_mark, color=t.p.subtle) |> ignore
-          })
-          |> ignore
-          c.text(@sf.t("android-misc.bar.add"), style=bar_add_words) |> ignore
+          @sf.words_node(w, fn() { @sf.t("android-misc.bar.add") }, fn() { bar_add_words }) |> ignore
         })
         |> ignore
       })
       |> ignore
-    }
-    for _ in 0..<(@settings.bar_size - set.length() - 1) {
-      c.box(style=bar_slot, fn() {  }) |> ignore
-    }
+    })
+    // the slots left past it, empty
+    r.each(fn() { Array::makei(dmax_int(0, @settings.bar_size - set().length() - 1), fn(k) { k }) }, fn(k) { k.to_string() }, fn(e, _) {
+      @sf.style_node(e, fn() { bar_slot }, in_row=true)
+    })
+    // the one held, where the finger has it, over the rest
+    r.show(fn() { held.get() is Some(_) }, fn(o) {
+      o.over(Is(true)) |> ignore
+      o.pick(fn() { held_key().unwrap_or("") }, fn(p, key) {
+        p.box(fn(slot) {
+          @sf.style_node(slot, fn() { bar_slot_held })
+          let raised = @sf.held_raised
+          slot.radius(Is(bar_slot_corner)).shadow(Is((raised.sigma, raised.dy, raised.color))) |> ignore
+          slot
+          .width(By(fn() { held.get().map(fn(h) { Some(h.w) }).unwrap_or(None) }))
+          .offset(By(fn() { held.get().map(fn(h) { (h.x + h.dx, 0.0) }).unwrap_or((0.0, 0.0)) }))
+          .scale(Is(bar_held_scale))
+          |> ignore
+          slot.box(fn(face) {
+            @sf.style_node(face, fn() { bar_face })
+            bar_face_words_node(face, key)
+          })
+          |> ignore
+          slot.box(fn(m) {
+            bar_remove_at_node(m)
+            m.show(fn() { !only() }, fn(k) { bar_remove_look_node(k) })
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The larger of two whole numbers.
+fn dmax_int(a : Int, b : Int) -> Int {
+  if a > b {
+    a
+  } else {
+    b
+  }
+}
+
+///|
+/// How much larger a slot held is (graphicsLayer's scale, 1.08).
+let bar_held_scale : Double = 1.08
+
+///|
+/// A slot's mark over its name (place `key`'s), in `face`.
+fn bar_face_words_node(face : @view.View, key : String) -> Unit {
+  face.box(fn(w) {
+    @sf.style_node(w, fn() { bar_face_words })
+    w.box(fn(m) {
+      @sf.style_node(m, fn() { bar_mark_room })
+      bar_place_mark_node(m, key)
+    })
+    |> ignore
+    @sf.words_node(w, fn() { bar_place_name(key) }, fn() { bar_place_words }) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// A place's mark in the bar's ink (28): the stations', their glyph with one station on, as no station is meant; the
+/// others' their icon (@sfbase.place_icon).
+fn bar_place_mark_node(m : @view.View, place : String) -> Unit {
+  let ink = fn() { @sf.theme().p.text }
+  if place == "stations" {
+    let still : @sf.GlyphCounts = { online: 1, dim: 0, failing: 0, working: 0, asleep: false, connecting: 0 }
+    @sf.station_glyph_node(m, fn() { still }, bar_mark, ink, fn() { @sf.theme().p.red }) |> ignore
+  } else {
+    @sf.icon_node(m, @sfbase.place_icon(place), bar_mark, By(ink)) |> ignore
+  }
+}
+
+///|
+/// A place's mark's side.
+let bar_mark : Double = 28.0
+
+///|
+/// Where a slot's "−" stands, node `m`: over all of its slot, the "−" in its top right corner, in from it as far as
+/// makes it concentric with its card's corner where the slot is the last.
+fn bar_remove_at_node(m : @view.View) -> Unit {
+  let p = bar_remove_in
+  m.over(Is(true)).padding(Is((p, p, p, p))).lines_up(Is(Some(End))) |> ignore
+}
+
+///|
+/// The "−" that takes place `key` out of its bar, in `m` (bar_remove_at_node's), `press` as it is pressed.
+fn bar_remove_node(m : @view.View, key : String, press : () -> Unit) -> Unit {
+  m.box(fn(minus) {
+    @sf.style_node(minus, fn() { bar_remove })
+    @sf.presses_node(minus, press)
+    minus.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-misc.bar.remove", args=[("name", bar_place_name(key))]))) }))
+    |> ignore
+    @sf.icon_node(minus, "minus", bar_remove_mark, By(fn() { @sf.theme().p.muted })) |> ignore
+  })
+  |> ignore
+}
+
+///|
+/// The "−"'s look alone (bar_remove_node's), in `m`: on the slot held, drawn where the finger has it.
+fn bar_remove_look_node(m : @view.View) -> Unit {
+  m.box(fn(minus) {
+    @sf.style_node(minus, fn() { bar_remove })
+    @sf.icon_node(minus, "minus", bar_remove_mark, By(fn() { @sf.theme().p.muted })) |> ignore
   })
   |> ignore
 }
@@ -220,18 +379,23 @@ fn bar_card(c : @ui.Ctx, core : Core, i : Int, set : Array[String], only : Bool,
 let bar_slots : @ui.Style = @ui.css("row w=Full justify=JBetween")
 
 ///|
-/// A slot: its corner round its "−" in its corner (Around: concentric with it at whatever room its card leaves).
+/// A slot: its corner round its "−" in its corner (bar_slot_corner).
 // kept across runs: a value (no field of it changes)
-let bar_slot : @ui.Style = @ui.style(w=@sf.grow, max_w=Fixed(bar_slot_most), radius=Around)
+let bar_slot : @ui.Style = @ui.style(w=@sf.grow, max_w=Fixed(bar_slot_most))
+
+///|
+/// A slot's corner: concentric with its card's at the room the card leaves round its slots (a card's row's).
+let bar_slot_corner : Double = @ui.concentric(@sf.group_corner, @sf.list_pad)
 
 ///|
 /// A slot's widest: as wide as a phone's quarter of its card, its "−" by its mark wherever the card is wider.
 let bar_slot_most : Double = 88.0
 
 ///|
-/// A slot held: on the card's ground, raised (shadow(6), black at 14% both).
+/// A slot held: on the card's ground, raised (shadow(6), black at 14% both: @sf.held_raised), round as a slot is; as
+/// wide as its slot (bar_card_node's).
 // kept across runs: a value (no field of it changes)
-let bar_slot_held : @ui.Style = bar_slot.then(@ui.style(bg=Card, shadow=@sf.held_raised.cast()))
+let bar_slot_held : @ui.Style = @ui.css("bg=Card")
 
 ///|
 /// What a slot shows, 12 over and 10 under it, in its middle.
@@ -267,12 +431,8 @@ let bar_add_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Subtle, wrap
 let bar_remove : @ui.Style = @ui.css("w=S5 h=S5 radius=Full bg=Neutral align=ACenter justify=JCenter")
 
 ///|
-// kept across runs: a value (no field of it changes)
-let bar_remove_at : @ui.Style = @ui.style(
-  w=Full,
-  p=@sf.room_of(@ui.capsule_in(@sf.group_corner, bar_remove_side) - @sf.list_pad),
-  align=AEnd,
-)
+/// How far in from its slot's top right corner the "−" stands.
+let bar_remove_in : Double = @ui.capsule_in(@sf.group_corner, bar_remove_side) - @sf.list_pad
 
 ///|
 let bar_remove_side : Double = 20.0

@@ -361,6 +361,32 @@ test "a way being set: its switch not turned meanwhile, as the core says it stan
 }
 
 ///|
+test "one of still.fail's relays turned off alone (by an app from before the one switch), no relay of its own: the switch shows off and turns them all back on" {
+  for screen in ws_screens {
+    let at = screen.0
+    let calls : Array[(String, Json)] = []
+    let ways = fn(v : Json?) {
+      ws_with(v, "ways", fn(all) {
+        all.map(fn(w) {
+          if text(Some(w), "name") == "北京" { ws_said(Some(w), "on", Json::boolean(false)).unwrap() } else { w }
+        })
+      })
+    }
+    let t = ws_opened(screen, "中继", fn(s) { ws_changing(s, calls, ways~) })
+    let sw = t.get(Switch, label="使用官方中继")
+    assert_eq(sw.check, Some(Off), msg=at)
+    assert_false(sw.disabled, msg=at)
+    ws_press(t, Switch, "使用官方中继")
+    t.run_for(@ui.move_most_ms)
+    let way_calls = calls.filter(fn(c) { c.0 == "workspace.setWay" })
+    assert_eq(way_calls.length(), 1, msg=at)
+    assert_eq(text(Some(way_calls[0].1), "way"), "ours", msg=at)
+    assert_true(flag(Some(way_calls[0].1), "on"), msg=at)
+    @sf.presenters_reset()
+  }
+}
+
+///|
 test "the ways' panel follows the core on every screen: still.fail's relays turned off elsewhere shows so; the viewer no longer a manager, nothing of it turned or added" {
   for screen in ws_screens {
     let at = screen.0

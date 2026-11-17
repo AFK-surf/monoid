@@ -443,7 +443,7 @@ test "on the tape a chat brought over while its view is on its way: the page com
 /// What the last frame drew from `left` across on (its instances, as Tester::drawn_text says them).
 fn drawn_from(t : @ui.Tester, left : Double) -> Array[String] {
   let out = []
-  for line in t.drawn_text().split("\n") {
+  for line in t.drawn_instances_text().split("\n") {
     if line.has_prefix("inst ") {
       // (its first number: where it is across, in 1/64 px)
       let mut x = 0
@@ -1368,12 +1368,8 @@ test "on the tape a settings page chosen in their list shows beside it, pressed 
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
   page_over(t, 600.0)
-  assert_true(settings_page_whole(t, "全局记忆 · 项目记忆", 600.0), msg="\{Repr(@sfdesk.wide.tape_at.get())} \{Repr(t.rect_of("全局记忆 · 项目记忆"))}")
-  // a level further in from the page in use: a station's memory, then one of its pages
-  t.tap_text("Willow")
-  t.run_for(@ui.move_most_ms)
-  t.run_for(@ui.move_most_ms)
   assert_true(settings_page_whole(t, "发布流程", 600.0), msg="\{Repr(@sfdesk.wide.tape_at.get())} \{Repr(t.rect_of("发布流程"))}")
+  // a level further in from the page in use: one of its pages
   t.tap_text("发布流程")
   t.run_for(@ui.move_most_ms)
   t.run_for(@ui.move_most_ms)
@@ -1428,4 +1424,150 @@ test "on the tape a passage picked anew after the sidebar was brought over bring
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+}
+
+///|
+test "on the tape, the pointer resting on a message's ⋯ till its tip shows: back goes to the sidebar, the tip no place it leaves" {
+  let t = tape_chat(0, 720.0, 800.0)
+  t.tap_text("首页的列表改成按天分组")
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("整理发布清单")
+  t.run_for(@ui.move_most_ms)
+  page_over(t, 720.0)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+  // (a message's ⋯, shown as the pointer rests on its message: the pointer on it, a tip's while)
+  let words = "推送截图前要先登录 gh"
+  guard t.rect_of(words) is Some((wx, wy, _, wh)) else { fail("「\{words}」 not drawn") }
+  t.move_to(wx + 4.0, wy + wh / 2.0)
+  t.draw()
+  let more = @sf.t("web-main.menu.more")
+  let mores = fn() { t.semantics().filter(fn(s) { s.label == more && !s.hidden }) }
+  guard mores() is [m, ..] else { fail("no ⋯ shown over the message") }
+  let (mx, my, mw, mh) = m.rect
+  t.move_to(mx + mw / 2.0, my + mh / 2.0)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(mores().length() >= 2, msg="its tip not shown: \{mores().length()}")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Side)
+}
+
+///|
+/// The app in `mode` on an iPad's whole screen `w` × `h` (a finger its input, regular both ways), its system's status
+/// bar `top` high over the view's top and the home indicator's 20 under its foot, as its host says them edge to edge.
+fn ipad_at(mode : String, w : Double, h : Double, top : Double) -> @ui.Tester {
+  new_run()
+  let src = fixture(mode)
+  open_fixture_over(mode, src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, native=Finger)
+  say_room(t, "regular", "regular")
+  t.post(@hostapi.system_channel, "{\"bars\":{\"top\":\{top},\"bottom\":20,\"left\":0,\"right\":0}}")
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+/// What of the app is in the status bar's room at the window's top (over `top`): where a press there lands on what
+/// does something (the frame's grounds reach under it, edge to edge, and take none), and words or an icon drawn there
+/// (as much of each as what cuts it shows).
+fn under_status_bar(t : @ui.Tester, w : Double, top : Double) -> Array[String] {
+  let out = []
+  for y in [0.5, top / 2.0, top - 0.5] {
+    let mut x = 0.5
+    let mut run = false
+    while x < w {
+      let pressed = t.press_lands_at(x, y) == "pressed"
+      if pressed && !run {
+        out.push("pressed at \{x},\{y}: \{t.sources_at(x, y)}")
+      }
+      run = pressed
+      x = x + 4.0
+    }
+  }
+  let seen = fn(b : (Double, Double, Double, Double), cut : (Double, Double, Double, Double)) {
+    let (x0, y0, x1, y1) = b
+    let (cx0, cy0, cx1, cy1) = cut
+    let top_seen = dmax(y0, cy0)
+    dmin(x1, cx1) > dmax(x0, cx0) && dmin(y1, cy1) > top_seen && top_seen < top - 0.01
+  }
+  for g in t.glyph_clips() {
+    if seen(g.0, g.1) {
+      let (x, y, _, _) = g.0
+      out.push("words at \{x},\{y}: \{t.sources_at(x, y)}")
+    }
+  }
+  for d in t.drawn_cut() {
+    let (kind, x, y, dw, dh, cut) = d
+    // (a shape the size of an icon or a mark, not a ground)
+    if kind == 11 && dw < 60.0 && dh < 60.0 && seen((x, y, x + dw, y + dh), cut) {
+      out.push("icon at \{x},\{y}: \{t.sources_at(x + dw / 2.0, y + dh / 2.0)}")
+    }
+  }
+  out
+}
+
+///|
+test "on an iPad's whole screen nothing of the wide frame is pressed or drawn under the system's status bar, the page's bar and the side panel's switch under it: on the pane and on the tape, a chat with its side panel shut and open, the sidebar folded, settings, a new chat, 文件, the places with no sidebar, the board, the safe mode's wait" {
+  let top = 24.0
+  let bad = []
+  // (landscape and upright, a large one's, and beside another app: split widths, on the tape and off it)
+  for size in [(1180.0, 820.0), (1366.0, 1024.0), (820.0, 1180.0), (1024.0, 1366.0), (694.0, 1024.0), (981.0, 820.0)] {
+    let (w, h) = size
+    for state in [
+        "chat", "chat-panel", "chat-folded", "chat-side", "settings-about", "newchat", "files", "connects", "usage", "board",
+        "lock-waiting",
+      ] {
+      let mode = if state.has_prefix("chat") || state == "connects" || state == "usage" { "chat" } else { state }
+      let t = ipad_at(mode, w, h, top)
+      match state {
+        "chat-panel" => {
+          tap_said(t, "打开侧栏")
+          t.run_for(@ui.move_most_ms)
+        }
+        "chat-folded" => {
+          @sfdesk.wide.folded.set(true)
+          t.run_for(@ui.move_most_ms)
+        }
+        // (on the tape, the sidebar in use)
+        "chat-side" => {
+          @sfdesk.wide.tape_ask.set(Some(@sfdesk.TapePane::Side))
+          t.run_for(@ui.move_most_ms)
+        }
+        // (the places with no sidebar of their own: the pane's whole, on the tape's screens too)
+        "connects" | "usage" => {
+          @sfbase.go_place(state) |> ignore
+          t.run_for(@ui.move_most_ms)
+        }
+        _ => ()
+      }
+      let at = "\{w}x\{h} \{state}"
+      assert_eq(@sfdesk.is_wide(t.ctx()), true, msg=at)
+      let faults = under_status_bar(t, w, top)
+      if faults.length() > 0 {
+        bad.push("\{at}: \{faults.length()} under the status bar, the first \{faults[0]}")
+      }
+    }
+  }
+  if bad.length() > 0 {
+    fail(bad.join("\n"))
+  }
+}
+
+///|
+test "a window resized into Medium keeps the open page in the foreground" {
+  for platform in [0, 1, 2] {
+    let t = tape_chat(platform, 1280.0, 900.0)
+    t.resize(669.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    page_over(t, 669.0)
+    t.resize(515.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_false(@sfdesk.is_wide(t.ctx()))
+    assert_true(on_first_chat())
+    t.resize(669.0, 900.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfdesk.wide.tape_at.get(), @sfdesk.TapePane::Page)
+    assert_true(on_first_chat())
+  }
 }

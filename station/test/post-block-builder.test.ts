@@ -9,6 +9,9 @@ import { PostBlockBuilder } from "../src/sessions/post-block-builder.ts";
 import { installPostBlocks, postBlocksReady } from "../src/store/post-blocks.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
+import { endsOnce } from "./programs.ts";
+
 
 function fromBefore(store: Store, name = "old"): number {
   const thread = store.openThread("ember", "CHAT", name, null, null).id;
@@ -51,7 +54,8 @@ test("deliveries wait for the previous station and only index their requested su
 });
 
 test("concurrent requests share progress, and closing releases waiters", async () => {
-  const store = Store.open(":memory:");
+  const dir = mkdtempSync(join(tmpdir(), "post-builder-shared-"));
+  const store = Store.open(join(dir, "station.db"));
   const builder = new PostBlockBuilder(store, Promise.resolve());
   try {
     const thread = fromBefore(store);
@@ -62,7 +66,7 @@ test("concurrent requests share progress, and closing releases waiters", async (
     assert.equal(postBlocksReady(store.db, thread, 0), false);
     await long;
     assert.deepEqual(store.postAfter("wanted", thread, 0), { n: 180, ts: "m180" });
-  } finally { await builder.close(); store.close(); }
+  } finally { await builder.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 
   const other = Store.open(":memory:");
   const previous = Promise.withResolvers<void>();
@@ -80,9 +84,8 @@ test("a stopped post block worker retries the requested suffix", async () => {
   const store = Store.open(join(dir, "station.db"));
   const file = join(dir, "worker.mjs");
   const marker = join(dir, "exited");
-  const real = new URL("../src/sessions/post-block-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new PostBlockBuilder(store, Promise.resolve(), pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new PostBlockBuilder(store, Promise.resolve(), file);
   try {
     const thread = fromBefore(store);
     await builder.ready([{ thread, n: 170 }]);
@@ -100,8 +103,7 @@ test("a delivery from an old thread waits for its indexed suffix before formatti
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,170,'wanted')").run(thread);
     const prepared: { thread: number; n: number }[] = [];
     rig.hub.preparePostsAfter = (positions, signal) => { prepared.push(...positions); return builder.ready(positions, signal); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.ok(text.includes('ts="m170" before="m180">'));
     assert.deepEqual(prepared, [{ thread, n: 170 }]);
     assert.equal(postBlocksReady(rig.store.db, thread, 100), false);
@@ -117,8 +119,7 @@ test("a delivery at the end of an old thread needs no history work", async () =>
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,?,'wanted')").run(thread, 179);
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,?,'wanted')").run(thread, 200);
     rig.hub.preparePostsAfter = async () => { throw new Error("unneeded history work"); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.ok(text.includes('ts="m179" before="m180">'));
     assert.ok(text.includes('ts="m200">'));
     assert.equal(postBlocksReady(rig.store.db, thread, 179), false);
@@ -147,8 +148,7 @@ test("a batch prepares only the missing old suffixes and reads again after anoth
       rig.store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,ts,at) VALUES (?,201,'message','agent','wanted','m201',201)").run(last);
       return builder.ready(positions, signal);
     };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text] = await (actor as any).format(rig.store.pendingMessages("wanted")) as [string, unknown];
+    const [text] = await formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), new AbortController().signal) as [string, unknown];
     assert.equal(calls, 1);
     assert.ok(text.includes('ts="m200" before="m201">'));
     assert.equal(postBlocksReady(rig.store.db, last, 200), false);
@@ -178,7 +178,7 @@ test("unindexed quick answers still share one read snapshot", () => {
   } finally { other.close(); store.close(); rmSync(dir, { recursive: true, force: true }); }
 });
 
-test("closing an actor cancels its pending old-history work", async () => {
+test("a delivery given up on (its actor stopped or closed) cancels its pending old-history work", async () => {
   const rig = new Rig();
   const previous = Promise.withResolvers<void>();
   const builder = new PostBlockBuilder(rig.store, previous.promise);
@@ -188,10 +188,10 @@ test("closing an actor cancels its pending old-history work", async () => {
     rig.store.joinThread(thread, "wanted", "ember");
     rig.store.db.prepare("INSERT INTO deliveries(thread,n,session) VALUES (?,170,'wanted')").run(thread);
     rig.hub.preparePostsAfter = (positions, signal) => builder.ready(positions, signal);
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const rejected = assert.rejects((actor as any).format(rig.store.pendingMessages("wanted")), /delivery cancelled/);
+    const stopped = new AbortController();
+    const rejected = assert.rejects(formatDelivery(rig.hub.deps, "wanted", rig.store.pendingMessages("wanted"), stopped.signal), /delivery cancelled/);
     await new Promise<void>((resolve) => setImmediate(resolve));
-    actor.close();
+    stopped.abort();
     await rejected;
     previous.resolve();
     assert.equal(postBlocksReady(rig.store.db, thread, 170), false);

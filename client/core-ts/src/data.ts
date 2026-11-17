@@ -6,8 +6,8 @@
 // Topics of this data have no value of their own: their value is read from here (`shared`), by query, when it goes
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
 import { Effect, Fiber, Queue } from "effect";
-import { OVERVIEW_CHAT, OVERVIEW_PROFILED } from "./db/schema.ts";
-import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type RowChange, frozen } from "./db/account.ts";
+import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
+import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
 import type { Host, Sql, SqlRow, SqlValue } from "./host.ts";
@@ -595,7 +595,73 @@ export class Data {
       const list = [...rows.values()];
       for (const l of this.#chatsChanged) l(station, list, changes.firstChats.has(station));
     }
+    for (const [station, session] of changes.freed) for (const l of this.#freed) l(station, session);
+    for (const [station, session] of changes.came) {
+      this.#movedSeen.touch(station);
+      for (const l of this.#came) l(station, session);
+    }
   }
+
+  // ── chats moved to another station ──
+
+  readonly #freed: ((station: string, session: string) => void)[] = [];
+  readonly #came: ((station: string, session: string) => void)[] = [];
+  readonly #movedSeen = new Marks();
+
+  /// Hears a chat the station it went to said came from `station` (db/account.ts `#came`), after the burst that wrote it.
+  onCame(listener: (station: string, session: string) => void): void {
+    this.#came.push(listener);
+  }
+
+  /// Hears a chat that came back to `station` (db/account.ts Changes `freed`): its rows to be made again.
+  onFreed(listener: (station: string, session: string) => void): void {
+    this.#freed.push(listener);
+  }
+
+  /// Where `station` said its chat of `session` went (undefined: it did not, or it came back); read so, made again as
+  /// that changes.
+  moved(station: string, session: string): MovedTo | undefined {
+    this.#movedSeen.read(station);
+    return this.of(station)?.moved(station, session);
+  }
+
+  /// The session of `station`'s chat of `thread` that it said went elsewhere.
+  movedThread(station: string, thread: number): string | undefined {
+    this.#movedSeen.read(station);
+    return this.of(station)?.movedThread(station, thread);
+  }
+
+  /// The sessions `station` said went elsewhere.
+  movedFrom(station: string): string[] {
+    return this.of(station)?.movedFrom(station) ?? [];
+  }
+
+  /// `station` says its chat of `session` went to `to` (null: came back): whether that changed what was known.
+  putMoved(station: string, session: string, to: MovedTo | null): boolean {
+    const changed = this.of(station)?.putMoved(station, session, to) ?? false;
+    if (changed) this.#movedSeen.touch(station);
+    return changed;
+  }
+
+  /// Where a chat of `station` is now (by its session, or its thread there), as the stations said it went, station by
+  /// station: its station, session and thread there; null where none said it went, or what they said goes round.
+  chatNow(station: string, by: { session: string } | { thread: number }): { station: string; session: string; thread: number | null } | null {
+    let session = "session" in by ? by.session : this.movedThread(station, by.thread);
+    if (session === undefined) return null;
+    let at = station;
+    let thread: number | null = "thread" in by ? by.thread : null;
+    const seen = new Set<string>([at]);
+    for (;;) {
+      const to = this.moved(at, session);
+      if (to === undefined) break;
+      if (seen.has(to.station)) return null;
+      seen.add(to.station);
+      at = to.station;
+      thread = to.there;
+    }
+    return at === station ? null : { station: at, session, thread };
+  }
+
 
   /// Hears every held topic that changes.
   onChange(listener: (topic: Topic) => void): void {
@@ -773,17 +839,21 @@ export class Data {
     return value;
   }
 
-  /// A step of a sign-in for a new profile as its station answered it (`job`), taken from the state `from` (null: the
-  /// login not listed yet): shown while the overview still has it there. No job (dropped): let go.
-  stepLogin(station: string, id: string, job: unknown, from: string | null): void {
+  /// A step of a sign-in for a new profile as its station answered it (`job`), taken from the state `from` (one of them,
+  /// where several; null: the login not listed yet): shown while the overview still has it there. No job (dropped): let go.
+  stepLogin(station: string, id: string, job: unknown, from: string | readonly string[] | null): void {
     const key = join([station, id]);
     this.#loginSteps.delete(key);
-    if (isObject(job) && loginAt(this.#rawOverview({ topic: "overview", station }), id) === from) this.#loginSteps.set(key, { id, job, from });
+    const was = loginAt(this.#rawOverview({ topic: "overview", station }), id);
+    const took = Array.isArray(from) ? was !== null && from.includes(was) : was === from;
+    if (isObject(job) && took) this.#loginSteps.set(key, { id, job, from: was });
     this.#tell({ topic: "overview", station });
     this.#tellQuery({ topic: "$overview-fit", station });
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
   }
 
   /// The steps an overview of the station has gone past (or that it no longer has where they were): let go.
@@ -806,6 +876,8 @@ export class Data {
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
     return true;
   }
 
@@ -816,6 +888,8 @@ export class Data {
     this.#tellQuery({ topic: "$overview-chat", station });
     this.#tellQuery({ topic: "$overview-profiles", station });
     this.#tellQuery({ topic: "$overview-profiled", station });
+    this.#tellQuery({ topic: "$overview-connects", station });
+    this.#tellQuery({ topic: "$overview-settings", station });
   }
 
   /// A held topic's new value (read, or as an event left it). `confirmed`: it came from its source just now (else it
@@ -1016,12 +1090,15 @@ export class Data {
     // Beside it, once its chain moved to its people's logs: the person logs and the statements' bodies its stations
     // gave (views/lock.ts `lockLogs`, `lockBodies`); whom the person here added and as what (`lockAdded`); whether the
     // lock held says it is in safe mode, a few bytes (`lockSafe`); which of its stations last said to this device that
-    // they serve what a moved chain is made of (`lockServes`); what they saw of its devices' builds (`lockBuilds`).
-    if (table === "lockLogs" || table === "lockBodies" || table === "lockAdded" || table === "lockSafe" || table === "lockServes" || table === "lockBuilds") return [this.#ofWorkspace(key) ?? null, [key, table]];
+    // they serve what a moved chain is made of (`lockServes`).
+    if (table === "lockLogs" || table === "lockBodies" || table === "lockAdded" || table === "lockSafe" || table === "lockServes") return [this.#ofWorkspace(key) ?? null, [key, table]];
     // A workspace's ways as its stations keep them (views/ways-stations.ts): in the workspace's, by its id.
     if (table === "ways") return [this.#ofWorkspace(key) ?? null, [key, "ways"]];
     // Its stations' names and marks as they keep them (views/station-marks.ts): in the workspace's, by its id.
     if (table === "stationMarks") return [this.#ofWorkspace(key) ?? null, [key, "stationMarks"]];
+    // Its person's presets as the device carries them, and which of its stations are from before (presets-kept.ts):
+    // in the workspace's, by its id.
+    if (table === "presetRecords") return [this.#ofWorkspace(key) ?? null, [key, "presetRecords"]];
     // A workspace's vaults as its stations hold them (views/vault.ts): the vaults, box certificates and requests by the
     // workspace's id; each vault's items by `<workspace>/<vault>`.
     if (table === "vault") return [this.#ofWorkspace(key) ?? null, [key, "vault"]];
@@ -1325,11 +1402,45 @@ export class Data {
     return frozen(out);
   }
 
+  /// What the connects' list and a connect's page read of a station's overview (account.ts overviewConnects, schema.ts
+  /// overviewConnectsOf), kept beside it: read in a computed, it is made again only as that changes, not with the rest
+  /// of the overview. Where the overview is shown with what is being done to it here (overlaid), made of that, anew.
+  overviewConnects(station: string): unknown {
+    this.#readQuery({ topic: "$overview-connects", station });
+    if (!this.#overlaid(station)) return this.of(station)?.overviewConnects(station);
+    const shown = this.shown({ topic: "overview", station });
+    if (shown === undefined) return undefined;
+    if (!isObject(shown)) return frozen({ connects: [], slackApps: [], profiled: true, connectRuntimeChange: false });
+    const list = (v: unknown) => (Array.isArray(v) ? v : []);
+    return frozen({ connects: list(shown.connects), slackApps: list(shown.slackApps), profiled: list(shown.profiles).length > 0, connectRuntimeChange: shown.connectRuntimeChange === true });
+  }
+
+  /// What the settings' automatic decisions and archiving read of a station's overview (account.ts overviewSettings,
+  /// schema.ts OVERVIEW_SETTINGS), kept beside it: read in a computed, it is made again only as that changes. Where the
+  /// overview is shown with what is being done to it here (overlaid), made of that, anew.
+  overviewSettings(station: string): unknown {
+    this.#readQuery({ topic: "$overview-settings", station });
+    if (!this.#overlaid(station)) return this.of(station)?.overviewSettings(station);
+    const shown = this.shown({ topic: "overview", station });
+    if (!isObject(shown)) return undefined;
+    const out: Record<string, unknown> = {};
+    // (in the overview's order, as SQLite keeps the part: json_each)
+    for (const k of Object.keys(shown)) if ((OVERVIEW_SETTINGS as readonly string[]).includes(k)) out[k] = shown[k];
+    return frozen(out);
+  }
+
   /// The stations a station took the place of (account.ts overviewFormerly), kept beside its overview: read in a
   /// computed, it is made again only as that changes.
   overviewFormerly(station: string): unknown {
     this.#readQuery({ topic: "$overview-formerly", station });
     return this.of(station)?.overviewFormerly(station);
+  }
+
+  /// A station's own software as its overview lists it (account.ts overviewSoftware), kept beside it: read in a
+  /// computed, it is made again only as that changes.
+  overviewSoftware(station: string): unknown {
+    this.#readQuery({ topic: "$overview-software", station });
+    return this.of(station)?.overviewSoftware(station);
   }
 
   /// How the views make a declaration's values (db/kept.ts), for each database to make them as their records are
@@ -1664,6 +1775,16 @@ export class Data {
 
   forgetLog(table: LogTable, station: string, id: string): void {
     this.of(station)?.forgetLog(table, station, id);
+  }
+
+  /// One step of counting what each chat keeps where it is not counted yet (AccountDb.countLogs): whether any is left.
+  countLogs(): boolean {
+    return this.dbs().some((db) => db.countLogs());
+  }
+
+  /// The sessions of a chat (AccountDb.threadSessions).
+  threadSessions(station: string, thread: number): string[] {
+    return this.of(station)?.threadSessions(station, thread) ?? [];
   }
 
   /// What every account's database keeps of each chat (AccountDb.cacheUsage).

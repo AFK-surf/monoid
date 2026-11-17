@@ -91,10 +91,39 @@ pub async fn Host::line(self : Host) -> String? {
 }
 
 ///|
-/// Writes `text` and a newline to stdout.
+/// Writes `text` and a newline to stdout, U+2028 and U+2029 written as JSON escapes (`\u2028`, `\u2029`): the station
+/// reads each line with node:readline, which ends a line at either of them too, so a chat's text with one cut the
+/// answer that held it in two, neither JSON, and its read was never answered (2026-11-14). A line said here is JSON,
+/// where they can stand only in a string, and so are the same escaped.
 pub fn Host::say(self : Host, text : String) -> Unit {
   ignore(self)
-  ignore(out_ffi(@utf8.encode(text + "\n")))
+  let line = if text.contains("\u{2028}") || text.contains("\u{2029}") {
+    text.replace_all(old="\u{2028}", new="\\u2028").replace_all(old="\u{2029}", new="\\u2029")
+  } else {
+    text
+  }
+  // (a line of MBs and its end written one after the other: not copied again to end it)
+  if line.length() > 64 * 1024 {
+    ignore(out_ffi(@utf8.encode(line)))
+    ignore(out_ffi(b"\n"))
+  } else {
+    ignore(out_ffi(@utf8.encode(line + "\n")))
+  }
+}
+
+///|
+/// Writes a line already UTF-8 (`bytes`, none of its own ends in it) and its end: one of MBs not copied again.
+pub fn Host::say_bytes(self : Host, bytes : Bytes) -> Unit {
+  ignore(self)
+  ignore(out_ffi(bytes))
+  ignore(out_ffi(b"\n"))
+}
+
+///|
+/// Writes `bytes` to stdout as they are (after a line that says how many: what reads them knows).
+pub fn Host::out(self : Host, bytes : Bytes) -> Unit {
+  ignore(self)
+  ignore(out_ffi(bytes))
 }
 
 ///|

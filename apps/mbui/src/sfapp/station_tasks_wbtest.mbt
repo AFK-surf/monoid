@@ -20,9 +20,9 @@ test "大屏: the stations' list has those that only run tasks after the whole o
   assert_true(t.find("谁可以使用") is Some(_))
   assert_true(t.find("改为完整 station") is Some(_))
   assert_true(t.find("Willow") is Some(_))
-  // a whole one picked again: its page back
-  let (x, y) = t.find("Willow").unwrap()
-  t.tap(x, y)
+  // a whole one picked again (its row in the list, a button by its name: the page beside it names Willow too): its page
+  // back
+  t.click(Button, label="Willow")
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("谁可以使用") is None)
 }

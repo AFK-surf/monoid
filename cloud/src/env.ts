@@ -54,19 +54,11 @@ export interface Env {
    * in (`beta` in the console); unset, there is none (index.ts).
    */
   BETA_ORIGIN?: string;
-  /** Where stations and clients find the relay; defaults to PUBLIC_ORIGIN (whose /relay is the relay: relay-worker.ts). */
+  /** This cloud's own relay; defaults to PUBLIC_ORIGIN (whose /relay is the relay: relay-worker.ts). The others are the
+   * cloud's list (relay-registry.ts), its operator's, never a var. */
   RELAY_URL?: string;
-  /** More relays beside it (comma-separated), for where it is slow or out of reach (relays.ts). */
-  RELAY_URLS?: string;
   /** "globalping": the relays are probed from China's networks every half hour (probes.ts). */
   RELAY_PROBES?: string;
-  /** Ways into the relays for devices alone (comma-separated): one relay machine's address forwarding to another's relay
-   * (relays.ts). */
-  RELAY_ENTRIES?: string;
-  /** The relay each entry forwards to, keyed by the entry's URL (relays.ts). */
-  RELAY_ENTRY_TARGETS?: Record<string, string>;
-  /** What the relays are called (by their URL) where people see which one a connection goes through (relays.ts). */
-  RELAY_NAMES?: Record<string, string>;
   /** How loaded the relays are, for the console (relay-load.ts). */
   RELAY_LOAD: DurableObjectNamespace<RelayLoad>;
   /** What was last found of each service, for still.fail/status (status.ts). */
@@ -87,6 +79,10 @@ export interface Env {
   OIDC_ISSUER?: string;
   /** What the sign-in page calls that provider (使用 {name} 继续). Unset: its host. */
   OIDC_NAME?: string;
+  /** A claim of that provider's ID token saying someone's role there (monoid's console: `monoid_role`), which they
+   * have in the workspaces open to its sign-in (Directory joinBySignIn): `owner` and `admin` as they are, any other a
+   * member. Unset: they join as members, and a role given there stays. */
+  OIDC_ROLE_CLAIM?: string;
   AUTH_SIGNING_KEY: string;
   ADMIN_TOKEN?: string;
   /**

@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { Readers } from "../src/read/pool.ts";
 import { autoArchive, startAutoArchiveTimer } from "../src/sessions/lifecycle.ts";
-import { archiveLastRead, archiveLastStep, installArchiveLast } from "../src/store/archive-last.ts";
+import { archiveLastRead, archiveLastStep, installArchiveLast } from "./reference/backfill/archive-last.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 

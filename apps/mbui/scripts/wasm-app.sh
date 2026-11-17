@@ -20,7 +20,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 cd "$A"
 H=../../libs/mbui/src/host
 # The files whose `extern "C"` calls the shell answers: mbui's host, the core's engine, the app's own.
-decls="$H/host_native.mbt $H/device_native.mbt $H/stream_native.mbt $H/textref_native.mbt $H/native_native.mbt
+decls="$H/host_native.mbt $H/device_native.mbt $H/stream_native.mbt $H/textref_native.mbt $H/native_native.mbt $H/terminal_native.mbt
   src/core/native.mbt src/stillfail/link_native.mbt src/sfreplay/emit_native.mbt
   src/sfreplay/trace_native.mbt"
 O=$A/out/wasm-app
@@ -43,6 +43,13 @@ if ! moon build --target wasm --release --no-strip src/$APP > "$log" 2>&1; then
 fi
 echo "wasm-app: the app in $((SECONDS - t0)) s"
 program=$A/$(pkg_build $APP wasm release)/$APP.wasm
+# (its start, every package's initializers in one function, past the 50,000 locals wasmtime and V8 take: same-typed locals
+# whose lives never overlap folded into one, where it is, nothing else of the program changed: tools/wasm-film/compact.mjs)
+node --input-type=module -e "
+import { readFileSync, writeFileSync } from 'node:fs';
+import { compactStart } from '$A/tools/wasm-film/compact.mjs';
+writeFileSync(process.argv[1], compactStart(readFileSync(process.argv[1])));
+" "$program" || { echo 'wasm-app: its start could not be compacted' >&2; exit 1; }
 # wasmtime's command line (its release for this machine, fetched once by its checksum), which compiles a program ahead
 # for a device's shell: WT_CLI; WT_SAME, what makes its compilation the C API's default engine's (the command line's own
 # collector is another: a program compiled without it the shell refuses)
@@ -119,6 +126,7 @@ if [ "${PLATFORM:-mac}" = windows ]; then
   fi
   engine=$(cd "$SF_SRC" && node scripts/native.ts path engine win32-x64) || exit 1
   shell=$(cd "$SF_SRC" && node scripts/native.ts path shell win32-x64) || exit 1
+  ghostty_vt=$(cd "$SF_SRC" && node scripts/native.ts path ghostty-vt win32-x64) || exit 1
   # WebView2's SDK (win_views.cpp), as mbui's win.sh fetches it
   WV2=$MBUI_DIR/out/webview2/1.0.4258.31
   if [ ! -f "$WV2/build/native/include/WebView2.h" ]; then
@@ -132,11 +140,11 @@ if [ "${PLATFORM:-mac}" = windows ]; then
   t0=$SECONDS
   win() { cygpath -w "$1"; }
   flags="-nologo -O2 -utf-8 -W0 -I$(win "$moon_root/include") -I$(win "$WT_W/include") -I$(win "$A/$H") -I$(win "$A/engine")
-    -I$(win "$WV2/build/native/include") -I$(win "$A/src/host")"
+    -I$(win "$WV2/build/native/include") -I$(win "$A/src/host") -I$(win "$ghostty_vt/include")"
   # (cl's own: -Fo the object, -c; C++ the host's .cpp, with exceptions as it is compiled natively)
   objs=()
   pids=()
-  for f in $H/win_*.c $H/win_*.cpp $H/wasm_shell.c "$O/thunks.c" src/stillfail/win_engine.c src/core/core_native.c \
+  for f in $H/win_*.c $H/win_*.cpp $H/wasm_shell.c "$O/thunks.c" src/stillfail/win_engine.c src/stillfail/terminal_ghostty.c src/core/core_native.c \
       src/sfreplay/trace_files.c "$moon_root/lib/runtime/runtime.c"; do
     o=$W/obj/$(echo "${f#"$A"/}" | tr '/\\:' '___').obj
     mkdir -p "$W/obj"
@@ -150,13 +158,13 @@ if [ "${PLATFORM:-mac}" = windows ]; then
     pids+=($!)
   done
   for p in ${pids[@]+"${pids[@]}"}; do wait "$p" || exit 1; done
-  # (the engine's and the shell's import libraries named by the host's #pragma comment, found where LIB says, as
+  # (the engine's, the shell's and libghostty-vt's libraries named by #pragma comment, found where LIB says, as
   # scripts/win.sh has it)
-  export LIB="$(win "$engine");$(win "$shell");$LIB"
+  export LIB="$(win "$engine");$(win "$shell");$(win "$ghostty_vt/lib");$LIB"
   # (MSVC's link, beside its cl: Git Bash's own /usr/bin/link is another program)
   "$(dirname "$(command -v cl.exe)")/link.exe" -nologo -out:"$(win "$W/stillfail.exe")" $(for o in "${objs[@]}"; do win "$o"; done) \
     "$(win "$WT_W/lib/wasmtime.dll.lib")" "$(win "$WV2/build/native/x64/WebView2LoaderStatic.lib")" > "$W/link.log" 2>&1 || { cat "$W/link.log"; exit 1; }
-  cp "$WT_W/lib/wasmtime.dll" "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$A/out/core/core.hbc" "$W/"
+  cp "$WT_W/lib/wasmtime.dll" "$engine/stillfail_engine.dll" "$shell/stillfail_shell.dll" "$ghostty_vt/bin/ghostty-vt.dll" "$A/out/core/core.hbc" "$W/"
   echo "wasm-app: the Windows shell in $((SECONDS - t0)) s"
   if [ "${1:-build}" = run ]; then
     shift
@@ -200,7 +208,7 @@ fi
 bash "$D/core.sh" apple-native aarch64-apple-darwin > "$O/core.log" 2>&1 || { cat "$O/core.log"; exit 1; }
 moon_root=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
 host_c=$(ls $H/apple_*.m $H/mac_app.m)
-stubs="src/core/core_native.c src/sfreplay/trace_files.c src/stillfail/core_engine.m"
+stubs="src/core/core_native.c src/sfreplay/trace_files.c src/stillfail/core_engine.m src/stillfail/terminal_ghostty.c"
 shell_src=$(cat $host_c $H/*.h $H/wasm_shell.c "$O/thunks.c" $stubs "$moon_root/lib/runtime/runtime.c" "$moon_root/include/moonbit.h" \
   out/core/aarch64-apple-darwin/*.a "$WT/lib/libwasmtime.dylib" "$0" | cksum)
 if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" ]; then
@@ -210,8 +218,8 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
   mkdir -p "$O/obj"
   pids=()
   for f in $host_c $H/wasm_shell.c "$O/thunks.c" $stubs "$moon_root/lib/runtime/runtime.c"; do
-    obj=$O/obj/$(echo "$f" | tr '/' '_').o
-    flags="-O2 -I$moon_root/include -I$WT/include -I$H"
+    obj=$O/obj/$(echo "$f" | tr '/.' '__').o
+    flags="-O2 -I$moon_root/include -I$WT/include -I$H -Iout/core/ghostty-vt/include"
     case "$f" in *.m) flags="$flags -fobjc-arc -fblocks" ;; esac
     clang $flags -c "$f" -o "$obj" &
     pids+=($!)
@@ -224,7 +232,7 @@ if [ ! -x "$O/shell" ] || [ "$(cat "$O/shell.src" 2>/dev/null)" != "$shell_src" 
     -framework AuthenticationServices -framework SystemConfiguration -framework Security -framework LocalAuthentication \
     -framework CoreFoundation -framework Foundation -liconv \
     out/core/aarch64-apple-darwin/libmbui_core.a out/core/aarch64-apple-darwin/libstillfail_shell.a \
-    -Fout/core/hermes/Library/Frameworks/macosx -framework hermes -lc++ \
+    out/core/aarch64-apple-darwin/libghostty-vt.a -Fout/core/hermes/Library/Frameworks/macosx -framework hermes -lc++ \
     -Wl,-rpath,"$A/out/core/hermes/Library/Frameworks/macosx"
   echo "$shell_src" > "$O/shell.src"
   echo "wasm-app: the shell in $((SECONDS - t0)) s"

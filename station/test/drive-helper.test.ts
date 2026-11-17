@@ -13,7 +13,7 @@ import { after, mock, test } from "node:test";
 import { routes } from "../src/api/routes/drive.ts";
 import type { Request } from "../src/api/request.ts";
 import { Drive, DriveError } from "../src/drive/drive.ts";
-import { protectedTop } from "../src/drive/fs.ts";
+import { protectedTop, protectedTopSoon } from "../src/drive/fs.ts";
 import { HELPER_APP, HelperApp } from "../src/helper/app.ts";
 import { AGAIN_MS, HelperFiles } from "../src/helper/files.ts";
 import { ConfigFile } from "../src/ops/config.ts";
@@ -360,7 +360,8 @@ test("which way: a protected folder through still.fail Helper, by its name; any 
   assert.equal(protectedTop(join(project, "notes.md"), home), docs);
   assert.equal(protectedTop(join(home, "documents", "x"), home), docs);
   assert.equal(protectedTop(join(home, "Movies", "film.mp4"), home), null);
-  assert.equal(protectedTop("/Volumes/Nope/x", home), null);
+  assert.equal(await protectedTopSoon("/Volumes/Nope/x", home), null);
+  assert.equal(protectedTop("/Volumes/Nope/x", home), null, "as last looked at");
   // Elsewhere, for a member who reaches every folder: directly, the helper not even started.
   assert.deepEqual((await drive.list(join(home, "Movies"), "", true)).entries.map((e) => e.name), ["film.mp4"]);
   assert.deepEqual((await drive.list(home, "", true)).entries.map((e) => e.name), ["Documents", "Movies"]);
@@ -476,9 +477,9 @@ test("without the grant: refused saying so, the helper's window up on that Mac o
   const { project, fake, drive, changed } = machine();
   fake.grants.set("documents", "unknown");
   // The root, looked at in the background (told once it is known): unreadable while the helper may not open it.
-  assert.equal(drive.roots()[0]!.state, "unreadable");
+  assert.equal((await drive.roots())[0]!.state, "unreadable");
   await until(() => changed() > 0);
-  assert.equal(drive.roots()[0]!.state, "unreadable");
+  assert.equal((await drive.roots())[0]!.state, "unreadable");
   assert.ok(fake.asked.some((a) => a.op === "files.access"));
   // A person opens it: refused, the window up asking for Documents, in the station's words.
   const e = (await drive.list(project, "").catch((x) => x)) as DriveError;
@@ -503,7 +504,7 @@ test("without the grant: refused saying so, the helper's window up on that Mac o
   fake.windowUp = false;
   fake.tell();
   await until(() => changed() > told);
-  assert.equal(drive.roots()[0]!.state, "ok");
+  assert.equal((await drive.roots())[0]!.state, "ok");
   assert.deepEqual((await drive.list(project, "")).entries.map((e) => e.name), ["Season 1", "notes.md"]);
   fake.close();
 });
@@ -572,7 +573,7 @@ test("the station's own permission errors stay as they were where there is no he
   const drive = new Drive({ config: () => config, protect: () => [] });
   chmodSync(docs, 0o000);
   try {
-    assert.equal(drive.roots()[0]!.state, "unreadable");
+    assert.equal((await drive.roots())[0]!.state, "unreadable");
     assert.equal(await code(drive.list(project, "")), "permission");
   } finally {
     chmodSync(docs, 0o755);

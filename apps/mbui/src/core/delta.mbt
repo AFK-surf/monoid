@@ -119,7 +119,7 @@ fn patch_all(list : Array[Json], run : ArrayView[Json], first : Map[String, Json
       (Some(i), Some(Array(ops))) => {
         let was = out[i]
         out[i] = apply_delta(was, ops)
-        if key_of(out[i], fields) != key_of(was, fields) {
+        if !same_key(out[i], was, fields) {
           stale = true
         }
       }
@@ -206,17 +206,48 @@ fn index_of(seg : Json) -> Int? {
 ///|
 /// An item's key: the one field's value, or the fields' values in order (a field missing is null).
 fn key_of(item : Json, fields : Array[Json]) -> Json {
-  let field = fn(f : Json) -> Json {
-    match (item, f) {
-      (Object(m), String(name)) => m.get(name).unwrap_or(Json::null())
-      _ => Json::null()
+  if fields.length() == 1 {
+    key_field(item, fields[0])
+  } else {
+    Json::array(fields.map(fn(f) { key_field(item, f) }))
+  }
+}
+
+///|
+/// A field of an item by its key's field `f` (a field missing is null).
+fn key_field(item : Json, f : Json) -> Json {
+  match (item, f) {
+    (Object(m), String(name)) => m.get(name).unwrap_or(Json::null())
+    _ => Json::null()
+  }
+}
+
+///|
+/// Whether `item`'s key is `target` (key_of's, an op's `patch`, `drop`, `move` or `before`), nothing made to tell: a
+/// list's items are looked through for one, and an array made of each one's fields (a chat's messages' `seq` and
+/// `outgoing`) was an allocation an item, hundreds a streamed word.
+fn key_match(item : Json, fields : Array[Json], target : Json) -> Bool {
+  if fields.length() == 1 {
+    return key_field(item, fields[0]) == target
+  }
+  guard target is Array(t) && t.length() == fields.length() else { return false }
+  for i, f in fields {
+    if key_field(item, f) != t[i] {
+      return false
     }
   }
-  if fields.length() == 1 {
-    field(fields[0])
-  } else {
-    Json::array(fields.map(field))
+  true
+}
+
+///|
+/// Whether items `a` and `b` have the same key (key_of's), nothing made to tell.
+fn same_key(a : Json, b : Json, fields : Array[Json]) -> Bool {
+  for f in fields {
+    if key_field(a, f) != key_field(b, f) {
+      return false
+    }
   }
+  true
 }
 
 ///|
@@ -226,9 +257,21 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
     _ => return list
   }
   let out = list.copy()
+  // (where each key is, of a list as long as a chat's: kept for the list each op makes, so a word streamed into a
+  // chat's last message finds it at once, not after every message before it; the first of a key where it is there
+  // twice, as walking from the start finds it)
+  let at = if list.length() >= keyed_at_least { Some(keyed_at_of(list, fields)) } else { None }
   let find = fn(k : Json) -> Int {
+    match at {
+      Some(at) =>
+        match at.get(k.stringify()) {
+          Some(i) if i < out.length() && key_match(out[i], fields, k) => return i
+          _ => ()
+        }
+      None => ()
+    }
     for i, item in out {
-      if key_of(item, fields) == k {
+      if key_match(item, fields, k) {
         return i
       }
     }
@@ -259,6 +302,8 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
         Some(Array(ops)) if i >= 0 => out[i] = apply_delta(out[i], ops)
         _ => ()
       }
+      // (each where it was)
+      keyed_at_keep(out, fields, at)
     }
     (None, None, Some(k)) => {
       let i = find(k)
@@ -276,13 +321,76 @@ fn apply_keyed(list : Array[Json], op : Map[String, Json]) -> Array[Json] {
       let i = find(key_of(put, fields))
       if i >= 0 && !op.contains("before") {
         out[i] = put
+        keyed_at_keep(out, fields, at)
       } else {
         if i >= 0 {
           out.remove(i) |> ignore
         }
         place(put, op.get("before"))
+        // (a new one at the end: each where it was, it last)
+        if i < 0 && out.length() > 0 && physical_equal(out[out.length() - 1], put) {
+          match at {
+            Some(m) => {
+              let pk = key_of(put, fields).stringify()
+              if !m.contains(pk) {
+                m[pk] = out.length() - 1
+              }
+              keyed_at_keep(out, fields, Some(m))
+            }
+            None => ()
+          }
+        }
       }
     }
   }
   out
+}
+
+///|
+/// How long a keyed list is before where each of its keys is is kept for it (keyed_at_of): a shorter one is walked.
+let keyed_at_least : Int = 32
+
+///|
+/// Where each key of a keyed list is (by its key's JSON text, the first where it is there twice), of the list it was
+/// worked out of: the lists apply_keyed made last, each looked for by itself.
+priv struct KeyedAt {
+  list : Array[Json]
+  fields : Array[Json]
+  at : Map[String, Int]
+}
+
+///|
+// kept across runs: a list here is found only by being the very list given, so one of a run before is never found
+let keyed_ats : Array[KeyedAt] = []
+
+///|
+/// How many lists' keys are kept at once (keyed_ats): each of a value's keyed lists changed in turn.
+let keyed_ats_most : Int = 8
+
+///|
+/// Where each key of `list` (by `fields`) is: kept for it, else worked out once.
+fn keyed_at_of(list : Array[Json], fields : Array[Json]) -> Map[String, Int] {
+  for a in keyed_ats {
+    if physical_equal(a.list, list) && a.fields == fields {
+      return a.at
+    }
+  }
+  let at : Map[String, Int] = Map([])
+  for i, item in list {
+    let k = key_of(item, fields).stringify()
+    if !at.contains(k) {
+      at[k] = i
+    }
+  }
+  at
+}
+
+///|
+/// `at` kept for `list` (made from the list it was of, each key where it was), the oldest let go past keyed_ats_most.
+fn keyed_at_keep(list : Array[Json], fields : Array[Json], at : Map[String, Int]?) -> Unit {
+  guard at is Some(at) else { return }
+  if keyed_ats.length() >= keyed_ats_most {
+    keyed_ats.remove(0) |> ignore
+  }
+  keyed_ats.push({ list, fields, at })
 }

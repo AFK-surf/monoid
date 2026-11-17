@@ -30,7 +30,12 @@ fn panel_centred_node(
   let within = fn() { steps_escape(keyed) || back_under(keyed) }
   // (its own ground keeps the focus as it opens, none of what it holds given it: a search at hand by touch)
   let own_ground : Ref[Bool] = Ref(false)
-  dialog_layer_node(parent, open, cancel, outside=true, first_stop=fn() { keyed.steps is None && !own_ground.val }, first_takes?=if x.nodes is Some(_) { Some(fn(s : @view.Said) { opens_on_role(s.role) }) } else { None }, shown~, gone~, dims~, covered~, within~, fn(across, layer, look, veil) {
+  // (one put at a share of the window down from its top (panel_nodes' `top_share`): no close button, a row's room in)
+  let top_share = match x.nodes {
+    Some(n) => n.top
+    None => 0.0
+  }
+  dialog_layer_node(parent, open, cancel, outside=true, top_share~, first_stop=fn() { keyed.steps is None && !own_ground.val }, first_takes?=if x.nodes is Some(_) { Some(fn(s : @view.Said) { opens_on_role(s.role) }) } else { None }, shown~, gone~, dims~, covered~, within~, fn(across, layer, look, veil) {
     let theme = fn() { @ui.tree_theme() }
     // (one that goes in steps: each its own head and foot, sliding in whole; the dialog untitled round them)
     let steps = keyed.steps
@@ -98,7 +103,7 @@ fn panel_centred_node(
       // (no taller than the window leaves it, dialog_room: what it holds scrolls in itself past that)
       .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - dialog_room)) }))
       // (dialog_box: 24 over its title, 24 in at its sides; each part out to them, the padding inside it)
-      .padding(Is((dialog_pad, dialog_pad, dialog_pad, 0.0)))
+      .padding(Is(if top_share > 0.0 { (top_pad, top_pad, top_pad, top_pad) } else { (dialog_pad, dialog_pad, dialog_pad, 0.0) }))
       .radius(Is(dialog_r))
       .ground(By(fn() { panel_ground() }))
       .edge(By(fn() { (1.0, theme().color(Line)) }))
@@ -117,10 +122,27 @@ fn panel_centred_node(
       |> ignore
       // (where what it holds starts: under an untitled one's close button; right under a title row of its own, which
       // keeps what space it wants under it, as what it holds kept it when it drew that row itself; a title's gap else)
+      // (one that heads itself (`heads_itself`, its body nodes: its own head row in the title's place, clear of the
+      // close button over its corner) as one with a title row of its own)
+      // (one at a share of the window down (`top_share`): no head over it, what it holds at its room's top)
+      // (how far its close button stands out under a titled head with nothing said under it (dialog_close_at's `up`):
+      // the body's box starts that much lower and its column's top room is that much less, so what scrolls in it stops
+      // clear of the button and what it holds stands where it did)
+      let close_under = fn() {
+        if steps is None && top_share == 0.0 && x.title_row is None && !(x.nodes is Some({ heads: true, .. })) &&
+          !untitled() &&
+          now().2 == "" {
+          dmax(0.0, @ui.capsule_in(dialog_r, dialog_close) - (dialog_pad + dialog_head_over))
+        } else {
+          0.0
+        }
+      }
       let body_top = fn() {
-        if untitled() {
+        if top_share > 0.0 {
+          top_share_body
+        } else if untitled() && !(x.nodes is Some({ heads: true, .. })) && top_share == 0.0 {
           dialog_untitled_top()
-        } else if x.title_row is Some(_) {
+        } else if x.title_row is Some(_) || (x.nodes is Some({ heads: true, .. })) {
           title_row_under
         } else {
           no_style
@@ -163,7 +185,7 @@ fn panel_centred_node(
           close_old(o, true)
         })
       }
-      if x.live is None {
+      if x.live is None && top_share == 0.0 {
         corner()
       }
       // (its head: its title (its step beside it) and its close button at its end where it has a title, what it says
@@ -176,7 +198,9 @@ fn panel_centred_node(
           // (as wide as the dialog, out to its sides: the old frame's head's room)
           h.width(By(fn() { Some(w()) })) |> ignore
           h.box(fn(part) {
-            style_node(part, fn() { centred_part_in(dialog_pad, 0.0) })
+            // (as far over what it holds as its close button stands out under its line (close_under), so what scrolls
+            // under it stops clear of the button)
+            style_node(part, fn() { centred_part_in(dialog_pad, 0.0).then(@ui.style(pb=room(close_under()))) })
             part.alpha(By(fn() { look().words })) |> ignore
             // (its title's line, there while it has a title: its title, its step beside it, its close button at its end)
             part.box(fn(line) {
@@ -297,18 +321,18 @@ fn panel_centred_node(
           |> ignore
           b.box(fn(col) {
             style_node(col, fn() {
-              (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in))).then(body_top())
+              (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in), pt=room(@ui.Space::S4_5.px() - close_under()))).then(body_top())
             })
             col.grow(Is(1.0)).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
             // (its rows out across the room the dialog leaves them, as far as an old body's: rows_out's)
             panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, clear=@signals.untracked(fn() {
-              if untitled() { dialog_close_clear() } else { 0.0 }
+              if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
             }))
             // (what it holds, together in one box as the old body's measured box held it (none of the body's gap
             // between its parts): its share tall; one as tall as what it holds up to that share (`hugs`), no taller)
             col.box(fn(held) {
               let share = fn() { Some(dmax(0.0, x.tall * over_room(layer).1 - dialog_frame_h)) }
-              if n.hugs {
+              if n.hugs || n.hugs_centred {
                 held.max_height(By(share)) |> ignore
               } else {
                 held.height(By(share)) |> ignore
@@ -341,7 +365,7 @@ fn panel_centred_node(
               column_given.val = true
               column_in_now.val = words_in
               in_dialog.val = true
-              untitled_clear_now.val = if untitled() { dialog_close_clear() } else { 0.0 }
+              untitled_clear_now.val = if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
               lists_sized_now.val = true
               // (what holds what it holds giving way to the height the dialog leaves it)
               c.gives_way(measured_body(c, keyed.serial, id, whole, fn() { titled_by_row(x, fn() { draw_panel_body(x, c, close, keyed~) }) }))
@@ -373,17 +397,24 @@ fn panel_centred_node(
         d.box(fn(b) {
           let scroll = @view.Scroll::new()
           b.shrink(Is(1.0)).min_height(Is(Some(0.0))).margin(Is((-dialog_pad, 0.0, -dialog_pad, 0.0))) |> ignore
+          // (holding nothing laid out, none of its room, its margin over it with it: what it holds gone_empty below)
+          if x.nodes is Some(_) {
+            b.gone_empty(Is(true)) |> ignore
+          }
           b.scrolls(scroll, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(s) {
+            if x.nodes is Some(_) {
+              s.gone_empty(Is(true)) |> ignore
+            }
             match x.nodes {
               // (what it holds nodes: in a column on its words' line as the old frame's body is laid out, its words as
               // far in as its look says)
               Some(n) =>
                 s.box(fn(outer) {
                   style_node(outer, fn() { centred_part_in(0.0, 0.0) })
-                  outer.alpha(By(fn() { look().words })) |> ignore
+                  outer.alpha(By(fn() { look().words })).gone_empty(Is(true)) |> ignore
                   outer.box(fn(col) {
                     style_node(col, fn() {
-                      (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in))).then(body_top())
+                      (if footed { dialog_body } else { dialog_body_end }).then(@ui.style(px=room(words_in), pt=room(@ui.Space::S4_5.px() - close_under()))).then(body_top())
                     })
                     // (holding nothing laid out, none of its room: its title and what it says straight over its foot,
                     // as the old body's box gone_empty)
@@ -391,7 +422,7 @@ fn panel_centred_node(
                     // (on its words' line already: none further in; its rows out across the room the dialog leaves them,
                     // as far as an old body's (rows_out's); clear of its close button while untitled)
                     panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true, clear=@signals.untracked(fn() {
-                      if untitled() { dialog_close_clear() } else { 0.0 }
+                      if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
                     }))
                     (n.body)(col, close)
                   })
@@ -418,7 +449,7 @@ fn panel_centred_node(
                   column_given.val = true
                   column_in_now.val = words_in
                   in_dialog.val = true
-                  untitled_clear_now.val = if untitled() { dialog_close_clear() } else { 0.0 }
+                  untitled_clear_now.val = if untitled() && top_share == 0.0 { dialog_close_clear() } else { 0.0 }
                   match steps {
                     // (its steps a stack, out to the dialog's edges, each whole: steps_centred's)
                     Some(nav) => {
@@ -486,7 +517,7 @@ fn panel_centred_node(
           }
         _ => ()
       }
-      if x.live is Some(_) {
+      if x.live is Some(_) && top_share == 0.0 {
         corner()
       }
       // (one that goes in steps: its close button over its steps, laid after them, a step sliding in or away under it)
@@ -563,3 +594,11 @@ fn opens_on_role(role : @view.Role) -> Bool {
     _ => false
   }
 }
+
+///|
+/// The room in all round one put at a share of the window down from its top (panel_nodes' `top_share`): a row's.
+let top_pad : Double = 12.0
+
+///|
+/// What such a one holds starts at its room's top: no head over it, none of a body's room under one (dialog_body's).
+let top_share_body : @ui.Style = @ui.css("pt=S0")

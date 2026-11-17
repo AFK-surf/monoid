@@ -121,6 +121,19 @@ fn first_strong(cls : FixedArray[Int], a : Int, b : Int) -> Int {
 }
 
 ///|
+/// Whether a character of Bidi_Class `t` makes a text's levels worth working out: right to left, an Arabic number, an
+/// embedding or override (LRE to PDF), an isolate's initiator. A text of none is all level 0.
+fn complex_class(t : Int) -> Bool {
+  t == B_R ||
+  t == B_AL ||
+  t == B_AN ||
+  (t >= B_LRE && t <= B_PDF) ||
+  t == B_LRI ||
+  t == B_RLI ||
+  t == B_FSI
+}
+
+///|
 /// The levels of `s`, a paragraph at each paragraph separator (B). `dir`: 0 left to right, 1 right to left, -1 each
 /// paragraph's own first strong character's (P2, P3).
 pub fn Bidi::new(s : String, dir? : Int = -1) -> Bidi {
@@ -140,13 +153,7 @@ pub fn Bidi::new(s : String, dir? : Int = -1) -> Bidi {
   for k in 0..<m {
     let t = bidi_class(cps[k])
     cls[k] = t
-    if t == B_R ||
-      t == B_AL ||
-      t == B_AN ||
-      (t >= B_LRE && t <= B_PDF) ||
-      t == B_LRI ||
-      t == B_RLI ||
-      t == B_FSI {
+    if complex_class(t) {
       complex = true
     }
   }
@@ -697,6 +704,42 @@ pub fn Bidi::line_levels(self : Bidi, start : Int, end : Int) -> FixedArray[Int]
 /// Whether any level is above 0 (else every line reads left to right, in logical order).
 pub fn Bidi::is_mixed(self : Bidi) -> Bool {
   self.mixed
+}
+
+///|
+/// Whether code unit `u` may be of a character that makes a text's levels worth working out (Bidi::new's `complex`:
+/// right to left, Arabic numbers, an embedding or an isolate): none under Hebrew (Latin, Greek, Cyrillic and the rest),
+/// none in CJK, the punctuation, the symbols. Over: every surrogate (what is past the BMP is not looked up), the
+/// right-to-left blocks (with what is unassigned in them), RLM, the embeddings and the isolates' initiators
+/// (bidi_mixed_test holds it to each BMP character's class).
+fn may_be_bidi(u : Int) -> Bool {
+  if u < 0x0590 {
+    return false
+  }
+  (u <= 0x08FF) ||
+  u == 0x200F ||
+  (u >= 0x202A && u <= 0x202E) ||
+  (u >= 0x2066 && u <= 0x2068) ||
+  (u >= 0xD800 && u <= 0xDFFF) ||
+  (u >= 0xFB1D && u <= 0xFDFF) ||
+  (u >= 0xFE70 && u <= 0xFEFF)
+}
+
+///|
+/// `s`'s levels where some of it reads right to left (Bidi::is_mixed), else None: worked out only where a character in
+/// it may make them so (may_be_bidi), so that words of none (English, Chinese, what is said in most chats) are looked
+/// at a code unit at a time and nothing made.
+pub fn bidi_mixed(s : String) -> Bidi? {
+  let n = s.length()
+  let mut i = 0
+  while i < n {
+    if may_be_bidi(s.at(i).to_int()) {
+      let bd = Bidi::new(s)
+      return if bd.mixed { Some(bd) } else { None }
+    }
+    i = i + 1
+  }
+  None
 }
 
 ///|

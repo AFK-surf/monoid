@@ -56,6 +56,6 @@ test "favorite removal is offered on demand, not always in the list" {
     assert_true(t.find("从个人收藏移除「文档」") is Some(_), msg="\{platform}: the row's menu offers removal")
     t.tap_text("从个人收藏移除「文档」")
     t.run_for(@ui.move_most_ms)
-    assert_false(@sfdesk.favorite_has(@sfdesk.favorites(src, "ws1"), "ws1/st1", fix_docs, ""), msg="\{platform}: the folder leaves favorites")
+    assert_false(@sfpages.favorite_has(@sfpages.favorites(src, "ws1"), "ws1/st1", fix_docs, ""), msg="\{platform}: the folder leaves favorites")
   }
 }

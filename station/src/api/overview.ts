@@ -1,7 +1,7 @@
 // GET /overview: the station as its settings pages show it — still.fail cloud, connects,
 // profiles, the agents' processes, counts, the disk, logins, updates — as the viewer sees it. Answered on the main
 // thread from what is in memory and the config; told again on /events when it changes (`overview`).
-import { statfsSync } from "node:fs";
+import { statfs } from "node:fs/promises";
 import { homedir } from "node:os";
 import type { Accounts } from "../accounts/index.ts";
 import { facts } from "../accounts/catalog.ts";
@@ -39,7 +39,7 @@ export type OverviewDeps = {
   permissions?: (viewer: Viewer) => unknown;
   /// A pinned root as the drive shows it (drive.ts `rootViewThrough`: one in a folder macOS protects by what still.fail
   /// Helper's grant is known to be, never listed by the station); default `rootView`.
-  rootView?: (path: string) => RootView;
+  rootView?: (path: string) => Promise<RootView>;
 };
 
 /// This station's link to still.fail cloud, as the pages show it (server.rs MeshFile::status): in the viewer's workspace
@@ -83,10 +83,10 @@ async function keptMemory(d: OverviewDeps, pgids: number[]): Promise<Map<number,
 }
 
 /// The data disk's room: what clients warn of when it runs low.
-function diskRoom(path: string): unknown {
+async function diskRoom(path: string): Promise<unknown> {
   if (process.env.STILLFAIL_TEST_HOST === "1") return { freeBytes: 50_000_000_000, totalBytes: 100_000_000_000 };
   try {
-    const s = statfsSync(path);
+    const s = await statfs(path);
     return { freeBytes: s.bavail * s.bsize, totalBytes: s.blocks * s.bsize };
   } catch {
     return null;
@@ -110,6 +110,8 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
   const states = [...d.hub.processes()].filter(([key]) => sees(viewer, d.store.sessionWs(key) ?? null)).map(([, state]) => state);
   // The agents' runtime processes; background jobs' groups are recorded too (to be reaped), but they are jobs.
   const processes = d.store.listProcesses().filter((p) => p.runtime !== "job");
+  // (The disk's room asked meanwhile: it never fails.)
+  const disk = diskRoom(d.hub.config().dataDir);
   const memory = await keptMemory(d, processes.map((p) => p.pgid));
   const connects = visibleConnects.map((c: any) => {
     const mode = c.mode ?? "multi-session";
@@ -151,6 +153,8 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     const own = d.connectKinds?.get(kind);
     return own === undefined ? shown : { ...shown, ...own.shown(c), connection: own.connection(c) ?? shown.connection };
   });
+  // (what each profile's home says read off the thread first: accounts/index.ts `homeSays`)
+  await d.accounts?.homesReadSoon?.();
   const profiles = d.accounts?.profilesView(viewer) ?? [];
   return {
     automaticDecisions: d.accounts ? await decisionsView(d, viewer) : null,
@@ -162,6 +166,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     sessionRuntimeChange: true,
     connectRuntimeChange: true,
     accountSubsets: true,
+    modelSpeeds: true,
     // Who made each model its profiles run, and its series, as the model catalog says (accounts/catalog.ts): the
     // clients group and mark models by them, and by the names alone where it says none.
     modelMakers: modelMakers(profiles),
@@ -174,7 +179,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     }),
     counts: { sessions: sessionsOf(null), running: states.filter((s) => s === "running").length, warm: states.filter((s) => s === "warm").length },
     slackUsers: d.store.slackIdentities(viewer.email),
-    disk: diskRoom(d.hub.config().dataDir),
+    disk: await disk,
     logins: d.accounts?.loginsView(viewer) ?? [],
     apiProviders: d.accounts?.apiProviders() ?? [],
     machineLogins: d.accounts?.machineLogins() ?? [],
@@ -193,7 +198,7 @@ export async function overview(d: OverviewDeps, viewer: Viewer, lang: Lang): Pro
     // Whether it sends its log to still.fail (routes/diagnostics.ts).
     diagnostics: diagnosticsView(raw),
     network: networkView(raw),
-    drive: { roots: rootsOf(raw, viewer.home === false ? viewer.workspace : null).map((p) => (d.rootView ?? rootView)(p)), ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) },
+    drive: { roots: await Promise.all(rootsOf(raw, viewer.home === false ? viewer.workspace : null).map((p) => (d.rootView ?? rootView)(p))), ...(readOnly(viewer) ? {} : { anywhere: true, home: homedir() }) },
     // What its search finds of the machine: its files through Spotlight (macOS) or walked as asked, and
     // whether the person's own mail, messages and the like too.
     search: { files: platform.hasSpotlight ? "spotlight" : "walk", personal: raw?.search?.personal === true },

@@ -1,4 +1,4 @@
-// Where each entry of a transcript is, and the entries between two of them, as read/transcripts.ts and read/tail.ts
+// Where each entry of a transcript is, and the entries between two of them, as read/transcripts.ts and test/reference/tail.ts
 // keep and read them (`markedOf`, `chainOf`, `entriesOf`; `TranscriptTail` as a reader's thread runs it: marking, its
 // entries counted, none kept): what the pages of a history ask for (GET /sessions/:key/timeline) and where a session's
 // live view goes on from (sessions/live.ts). A transcript's reading and its marks are kept as the worker keeps them, in
@@ -6,12 +6,12 @@
 // the other wrote. Its bytes are read through the shell (`fs.bytes`, as hex; a put-away one's frames decompressed there).
 
 ///|
-/// read/transcript.ts READING: what a line gives changes with it, so marks of another are read anew. The same number
+/// test/reference/transcript.ts READING: what a line gives changes with it, so marks of another are read anew. The same number
 /// as there: a change to what a line gives here or there raises both.
-let reading : Int = 2
+let reading : Int = 3
 
 ///|
-/// read/transcripts.ts KEPT, KEPT_BYTES; read/tail.ts PIECE, MARK_EVERY, MARK_BYTES; read/transcripts.ts PIECE_READ.
+/// read/transcripts.ts KEPT, KEPT_BYTES; test/reference/tail.ts PIECE, MARK_EVERY, MARK_BYTES; read/transcripts.ts PIECE_READ.
 let kept_most : Int = 16
 
 ///|
@@ -30,7 +30,7 @@ let mark_bytes : Int64 = 1L << 20
 let piece_read : Int64 = 1L << 20
 
 ///|
-/// read/tail.ts `Mark`: the end of a line, the index of the entry the next line's first is, what reading keeps there.
+/// test/reference/tail.ts `Mark`: the end of a line, the index of the entry the next line's first is, what reading keeps there.
 pub struct Mark {
   offset : Int64
   index : Int
@@ -38,7 +38,7 @@ pub struct Mark {
 }
 
 ///|
-/// read/tail.ts `TailState`: where a transcript's reading stands (`partial`: a line still being written).
+/// test/reference/tail.ts `TailState`: where a transcript's reading stands (`partial`: a line still being written).
 pub struct TailState {
   path : String
   runtime : String?
@@ -136,7 +136,7 @@ fn le32(b : BytesView, at : Int) -> Int64 {
 }
 
 ///|
-/// A transcript's line as its record (read/tail.ts `recordOf`): None when empty or not JSON; its \r before its \n goes.
+/// A transcript's line as its record (test/reference/tail.ts `recordOf`): None when empty or not JSON; its \r before its \n goes.
 fn record_of(line : String) -> @jsjson.JValue? {
   let text = if line.has_suffix("\r") { line.view(end_offset=line.length() - 1).to_owned() } else { line }
   if text == "" {
@@ -264,7 +264,7 @@ fn lines_of(bytes : BytesView, cut : Int) -> Array[Int] {
 }
 
 ///|
-/// read/tail.ts `TranscriptTail` as a reader's thread runs it: marking, counting what it reads.
+/// test/reference/tail.ts `TranscriptTail` as a reader's thread runs it: marking, counting what it reads.
 priv struct Tail {
   runtime : String
   path : String
@@ -276,15 +276,31 @@ priv struct Tail {
   mut count : Int
   mut marks : Array[Mark]
   mut anew : Bool
+  /// What it reads given back, not only counted (`tail_read`: the live view's), and where the last read began
+  mut collect : Array[Entry]?
+  mut began : Int?
 }
 
 ///|
 fn Tail::new(runtime : String, path : String) -> Tail {
-  { runtime, path, offset: 0L, packed_stamp: None, parts: [], held: 0, state: ReadState::new(), count: 0, marks: [], anew: false }
+  {
+    runtime,
+    path,
+    offset: 0L,
+    packed_stamp: None,
+    parts: [],
+    held: 0,
+    state: ReadState::new(),
+    count: 0,
+    marks: [],
+    anew: false,
+    collect: None,
+    began: None,
+  }
 }
 
 ///|
-/// read/tail.ts `TranscriptTail.from`, with its marks.
+/// test/reference/tail.ts `TranscriptTail.from`, with its marks.
 fn Tail::from(runtime : String, state : TailState, marks : Array[Mark]) -> Tail {
   let tail = Tail::new(state.runtime.unwrap_or(runtime), state.path)
   tail.marks = marks.copy()
@@ -303,7 +319,7 @@ fn Tail::hold(self : Tail, rest : Bytes) -> Unit {
 }
 
 ///|
-/// read/tail.ts `snapshot`.
+/// test/reference/tail.ts `snapshot`.
 fn Tail::snapshot(self : Tail) -> TailState {
   if self.parts.length() > 1 {
     self.parts = [joined(self.parts.map(p => p[:]))]
@@ -320,7 +336,7 @@ fn Tail::snapshot(self : Tail) -> TailState {
 }
 
 ///|
-/// A read under way (read/tail.ts `#begin`'s `take` and `end`).
+/// A read under way (test/reference/tail.ts `#begin`'s `take` and `end`).
 priv struct Run {
   tail : Tail
   had : Int
@@ -353,6 +369,9 @@ fn Run::take(self : Run, piece : BytesView) -> Unit raise {
     for r in records {
       timeline_of(tail.runtime, r, tail.state, entries)
     }
+    if tail.collect is Some(out) {
+      out.append(entries)
+    }
     self.read += entries.length()
     let index = self.had + self.read
     let (last_offset, last_index) = match tail.marks.last() {
@@ -371,7 +390,7 @@ fn Run::end(self : Run) -> Unit {
 }
 
 ///|
-/// read/tail.ts `#begin`: None when nothing came.
+/// test/reference/tail.ts `#begin`: None when nothing came.
 fn Tail::begin(self : Tail, stamp : String?, size : Int64) -> Run? {
   self.packed_stamp = stamp
   if size < self.offset {
@@ -385,11 +404,12 @@ fn Tail::begin(self : Tail, stamp : String?, size : Int64) -> Run? {
   if size == self.offset {
     return None
   }
+  self.began = Some(self.count)
   Some({ tail: self, had: self.count, read: 0 })
 }
 
 ///|
-/// read/tail.ts `TranscriptTail.read`: what came since the last read, counted and marked.
+/// test/reference/tail.ts `TranscriptTail.read`: what came since the last read, counted and marked.
 fn Tail::read(self : Tail, host : @host.Host) -> Unit raise {
   let compressed = meta(host, self.path) is None
   let disk = if compressed { self.path + ".zst" } else { self.path }
@@ -610,7 +630,7 @@ pub fn length_of(chain : Array[Marked]) -> Int {
 }
 
 ///|
-/// read/tail.ts `TailState` as JSON (read/transcripts.ts `stateOf`, for the live view to go on from).
+/// test/reference/tail.ts `TailState` as JSON (read/transcripts.ts `stateOf`, for the live view to go on from).
 pub fn state_json(s : TailState) -> Json {
   let out : Map[String, Json] = { "path": Json::string(s.path) }
   if s.runtime is Some(r) {
@@ -750,4 +770,51 @@ fn read_between(host : @host.Host, runtime : String, m : Marked, from : Double, 
     _ => ()
   }
   out
+}
+
+///|
+/// test/reference/tail.ts `TranscriptTail.from(…).readSoon()` (the live view's, sessions/live.ts): what a transcript gained since
+/// where its reading stood (`state`: a TailState as JSON, or only `path` and `runtime` for one not read yet), as
+/// `{start, entries, state}`, the entries whole as the timeline gives them, each that is told otherwise in brief with
+/// that beside it (`~brief`, as `brief` makes it of the entry read here, its call's brief from its input kept), for the
+/// live view to give a listener in brief as it is (sessions/live.ts). A state that says `entries: false` is only counted,
+/// none given (where a copied transcript's history ends: sessions/lifecycle.ts `continueMachineSession`).
+pub fn tail_read(host : @host.Host, runtime : String, state : Json) -> Json raise {
+  let st = match state {
+    { "offset": Number(_), .. } => state_of_json(state)
+    { "path": String(path), .. } =>
+      {
+        path,
+        runtime: match state.value("runtime") { Some(String(r)) => Some(r); _ => None },
+        offset: 0L,
+        partial: Bytes::default(),
+        count: 0,
+        inner: [],
+        packed_stamp: None,
+      }
+    _ => fail("no state")
+  }
+  let tail = Tail::from(runtime, st, [])
+  let out = []
+  if !(state.value("entries") is Some(False)) {
+    tail.collect = Some(out)
+  }
+  tail.read(host)
+  let start = match tail.began {
+    Some(at) => at
+    None => tail.count
+  }
+  {
+    "start": Json::number(start.to_double()),
+    "entries": Json::array(
+      out.map(e => {
+        let whole = entry_json(e, false)
+        if brief(e) is (b, true) && whole is Object(fields) {
+          fields["~brief"] = entry_json(b, true)
+        }
+        whole
+      }),
+    ),
+    "state": state_json(tail.snapshot()),
+  }
 }

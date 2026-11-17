@@ -212,6 +212,7 @@ fn option_row_node(
         fn(_) { f(i()) },
         disabled=fn() { !free() },
         fn(row, b) {
+          row.focus_ring_theme() |> ignore
           fill(row)
           let rippled = press_look(row, Is(option_row_corner), fn() { false }, ink=fn() { alpha(theme().p.text, 0.1) })
           let on_it = fn(d : @view.Drag) { row.finger_target(d.wx, d.wy) }

@@ -239,12 +239,22 @@ test "an update's download answered otherwise: its status in Updates.kt's words"
 fn update_key_marks(busy : Bool) -> (@ui.Tester, Array[String]) {
   new_run()
   let t = @ui.Tester::new(
-    fn(c) { @sf.update_key(c, "k", 34.0, 20.0, "重启更新", "", busy) |> ignore },
+    fn(c) { @ui.old_views_here(c) },
+    tree=fn(r) {
+      let tips = @sf.TipLayer::new(fn() { Some(r) })
+      r.row(Is(true)) |> ignore
+      @sf.update_key_node(r, tips, 34.0, 20.0, fn() { "重启更新" }, fn() { "" }, fn() { busy }, fn() { None }, fn() {  })
+    },
     w=120.0,
     h=80.0,
   )
   t.run_for(@kit.progress_ms)
-  (t, t.shape_boxes().filter(fn(b) { b.0.contains("icon/") }).map(fn(b) { b.0 }))
+  let marks = match @ui.view_tree() {
+    Some(tree) =>
+      tree.drawn().filter(fn(d) { d.alpha > 0.0 && tree.drawn_name(d.id).contains("icon/") }).map(fn(d) { tree.drawn_name(d.id) })
+    None => []
+  }
+  (t, marks)
 }
 
 ///|

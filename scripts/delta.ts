@@ -18,8 +18,10 @@
 // the entries whose deflated bytes changed inflated, written out with the n_deflate ranges deflated again. Only a
 // deflater giving the same bytes as the one that made the apk makes it again: node's (level 6) makes the tests' zips;
 // a real APK is checked by the Java applier the app carries (`--deflate-check none` here checks the bsdiff alone).
-// Making: the old files found whole in the made bytes (wholeFiles: an old tree's files, an apk's entries) are matched
-// where they were found, and only the rest of the old blob is sorted for bsdiff to search (sparseSuffixArray).
+// Making: the old files found whole in the made bytes (wholeFiles: an old tree's files, an apk's entries), and the old
+// bytes found as they were between them (sameBlocks: what a build left of a big binary, shifted), are matched where they
+// were found, and only the rest of the old blob is sorted for bsdiff to search (sparseSuffixArray), each search starting
+// in the bucket of its first 3 bytes.
 import { createHash } from "node:crypto";
 import { readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -38,6 +40,7 @@ export function suffixArray(blob: Uint8Array): Int32Array {
   const I = new Int32Array(blob.length + 1);
   I[0] = blob.length;
   sais(blob, blob.length, 255, I.subarray(1));
+  if (blob.length >= PREFIXED_FROM) starting.set(I, prefixStarts(blob));
   return I;
 }
 
@@ -45,12 +48,18 @@ function sais(s: Uint8Array | Int32Array, n: number, upper: number, sa: Int32Arr
   if (n === 0) return;
   if (n === 1) { sa[0] = 0; return; }
   if (n === 2) { if (s[0]! < s[1]!) { sa[0] = 0; sa[1] = 1; } else { sa[0] = 1; sa[1] = 0; } return; }
-  // ls[i]: suffix i is S-type (smaller than suffix i+1); the virtual sentinel after s makes s[n-1] L-type.
-  const ls = new Uint8Array(n);
-  for (let i = n - 2; i >= 0; i--) ls[i] = s[i] === s[i + 1] ? ls[i + 1]! : s[i]! < s[i + 1]! ? 1 : 0;
+  // t's bit i: suffix i is S-type (smaller than suffix i+1); the virtual sentinel after s makes s[n-1] L-type. Bits,
+  // not a byte each: the inducing reads them at random, an eighth as much memory to miss in.
+  const t = new Uint32Array((n + 31) >>> 5);
+  for (let i = n - 2, next = 0; i >= 0; i--) {
+    const a = s[i]!, b = s[i + 1]!;
+    next = a < b ? 1 : a > b ? 0 : next;
+    if (next) t[i >>> 5]! |= 1 << (i & 31);
+  }
+  const S = (i: number) => (t[i >>> 5]! >>> (i & 31)) & 1;
   // sumL[c]: where bucket c begins; sumS[c]: where its S-type part begins.
   const sumL = new Int32Array(upper + 2), sumS = new Int32Array(upper + 2);
-  for (let i = 0; i < n; i++) if (!ls[i]) sumS[s[i]!]!++; else sumL[s[i]! + 1]!++;
+  for (let i = 0; i < n; i++) if (!S(i)) sumS[s[i]!]!++; else sumL[s[i]! + 1]!++;
   for (let c = 0; c <= upper; c++) { sumS[c]! += sumL[c]!; if (c < upper) sumL[c + 1]! += sumS[c]!; }
   const buf = new Int32Array(upper + 2);
   const induce = (lms: Int32Array, m: number) => {
@@ -59,11 +68,11 @@ function sais(s: Uint8Array | Int32Array, n: number, upper: number, sa: Int32Arr
     for (let i = 0; i < m; i++) { const d = lms[i]!; sa[buf[s[d]!]!++] = d; }
     buf.set(sumL);
     sa[buf[s[n - 1]!]!++] = n - 1;
-    for (let i = 0; i < n; i++) { const v = sa[i]!; if (v >= 1 && !ls[v - 1]) sa[buf[s[v - 1]!]!++] = v - 1; }
+    for (let i = 0; i < n; i++) { const v = sa[i]!; if (v >= 1 && !S(v - 1)) sa[buf[s[v - 1]!]!++] = v - 1; }
     buf.set(sumL);
-    for (let i = n - 1; i >= 0; i--) { const v = sa[i]!; if (v >= 1 && ls[v - 1]) sa[--buf[s[v - 1]! + 1]!] = v - 1; }
+    for (let i = n - 1; i >= 0; i--) { const v = sa[i]!; if (v >= 1 && S(v - 1)) sa[--buf[s[v - 1]! + 1]!] = v - 1; }
   };
-  const isLms = (i: number) => i > 0 && ls[i] === 1 && ls[i - 1] === 0;
+  const isLms = (i: number) => i > 0 && S(i) === 1 && S(i - 1) === 0;
   let m = 0;
   for (let i = 1; i < n; i++) if (isLms(i)) m++;
   const lms = new Int32Array(m);
@@ -72,34 +81,31 @@ function sais(s: Uint8Array | Int32Array, n: number, upper: number, sa: Int32Arr
   if (m === 0) return;
   const sorted = new Int32Array(m);
   for (let i = 0, k = 0; i < n; i++) if (isLms(sa[i]!)) sorted[k++] = sa[i]!;
-  // Name each LMS substring by its rank among them; equal substrings share a name.
-  const { names, upper: top } = lmsNames(s, n, lms, sorted);
+  // Each LMS substring named by its rank among them, equal substrings one name: kept in sa (free now) at its position's
+  // half, two LMS positions never being next to each other, then read out in the text's order.
+  let top = 0;
+  sa[sorted[0]! >>> 1] = 0;
+  for (let i = 1; i < m; i++) {
+    const l = sorted[i - 1]!, r = sorted[i]!;
+    // (the same up to and with the next LMS position, that of both at once; the sentinel is like no other)
+    let same = false;
+    for (let d = 0; ; d++) {
+      if (l + d === n || r + d === n || s[l + d] !== s[r + d]) break;
+      if (d > 0) {
+        const el = isLms(l + d), er = isLms(r + d);
+        if (el || er) { same = el && er; break; }
+      }
+    }
+    if (!same) top++;
+    sa[r >>> 1] = top;
+  }
+  const names = new Int32Array(m);
+  for (let i = 0; i < m; i++) names[i] = sa[lms[i]! >>> 1]!;
   const order = new Int32Array(m);
   if (top + 1 === m) for (let i = 0; i < m; i++) order[names[i]!] = i;
   else sais(names, m, top, order);
   for (let i = 0; i < m; i++) sorted[i] = lms[order[i]!]!;
   induce(sorted, m);
-}
-
-function lmsNames(s: Uint8Array | Int32Array, n: number, lms: Int32Array, sorted: Int32Array) {
-  const m = lms.length;
-  const index = new Int32Array(n);
-  for (let i = 0; i < m; i++) index[lms[i]!] = i;
-  const names = new Int32Array(m);
-  let upper = 0;
-  names[index[sorted[0]!]!] = 0;
-  for (let i = 1; i < m; i++) {
-    let l = sorted[i - 1]!, r = sorted[i]!;
-    const endL = index[l]! + 1 < m ? lms[index[l]! + 1]! : n, endR = index[r]! + 1 < m ? lms[index[r]! + 1]! : n;
-    let same = endL - l === endR - r;
-    if (same) {
-      while (l < endL && s[l] === s[r]) { l++; r++; }
-      if (l === n || r === n || s[l] !== s[r]) same = false;
-    }
-    if (!same) upper++;
-    names[index[sorted[i]!]!] = upper;
-  }
-  return { names, upper };
 }
 
 // --- the old files found whole ---
@@ -164,6 +170,71 @@ export function wholeFiles(old: Uint8Array, files: Range[], made: Uint8Array): R
   return out;
 }
 
+/** The blocks old bytes are found by where no whole file was: a run found is at least this long. */
+export const BLOCK = 256;
+
+/**
+ * `runs` (sorted by `made`, not overlapping) with the stretches of `made` between them that are old bytes as they were,
+ * a BLOCK at least, put in: the old blob's BLOCK-aligned blocks are indexed by a rolling hash, which is rolled over each
+ * stretch; a block found there is followed back and forward as far as the bytes agree. What a build changed in a big
+ * binary leaves most of it as it was, shifted: those bytes need no search, nor to be sorted for one.
+ */
+export function sameBlocks(old: Uint8Array, made: Uint8Array, runs: Run[]): Run[] {
+  const B = BLOCK, out: Run[] = [];
+  if (made.length < B || old.length < B) return runs;
+  const hash = (b: Uint8Array, at: number) => {
+    let h = 0;
+    for (let i = 0; i < B; i++) h = (Math.imul(h, HASH) + b[at + i]!) | 0;
+    return h;
+  };
+  let top = 1;
+  for (let i = 0; i < B; i++) top = Math.imul(top, HASH);
+  const bits = new Uint32Array(1 << 17), first = new Map<number, number>();
+  for (let at = 0; at + B <= old.length; at += B) {
+    // (a block of one byte said over is in every such stretch, each a compare: not indexed)
+    let flat = true;
+    for (let i = 1; i < B && flat; i++) flat = old[at + i] === old[at];
+    if (flat) continue;
+    const h = hash(old, at);
+    if (first.has(h)) continue;
+    first.set(h, at);
+    bits[h >>> 15]! |= 1 << ((h >>> 10) & 31);
+  }
+  const view = Buffer.from(made.buffer, made.byteOffset, made.length), oldView = Buffer.from(old.buffer, old.byteOffset, old.length);
+  const look = (from: number, to: number) => {
+    let p = from;
+    if (to - p < B) return;
+    let h = hash(made, p);
+    for (;;) {
+      const o = bits[h >>> 15]! & (1 << ((h >>> 10) & 31)) ? first.get(h) : undefined;
+      if (o !== undefined && view.compare(oldView, o, o + B, p, p + B) === 0) {
+        let back = 0;
+        const most = Math.min(p - from, o);
+        while (back < most && made[p - back - 1] === old[o - back - 1]) back++;
+        let len = B;
+        const ahead = Math.min(to - p, old.length - o);
+        while (len < ahead && made[p + len] === old[o + len]) len++;
+        out.push({ made: p - back, old: o - back, len: back + len });
+        p += len;
+        if (p + B > to) return;
+        h = hash(made, p);
+      } else {
+        if (p + B >= to) return;
+        h = (Math.imul(h, HASH) - Math.imul(made[p]!, top) + made[p + B]!) | 0;
+        p++;
+      }
+    }
+  };
+  let at = 0;
+  for (const r of runs) {
+    look(at, r.made);
+    out.push(r);
+    at = r.made + r.len;
+  }
+  look(at, made.length);
+  return out;
+}
+
 /** The ranges of an old blob of `size` bytes outside `runs`' files, and how many bytes they hold. */
 function outside(size: number, runs: Run[]) {
   const taken = runs.map((r) => [r.old, r.old + r.len] as const).sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -194,7 +265,27 @@ export function sparseSuffixArray(old: Uint8Array, runs: Run[]): Int32Array {
   I[0] = old.length;
   sais(reduced, m, 255, I.subarray(1));
   for (let i = 1; i <= m; i++) I[i] = at[I[i]!]!;
+  if (m >= PREFIXED_FROM) starting.set(I, prefixStarts(reduced));
   return I;
+}
+
+/** The 3-byte prefixes a search starts by: 2^24 of them, a bucket each in the suffix array (64 MB of starts, made for
+ * what is sorted from PREFIXED_FROM bytes: under it the whole search stays in the cache). */
+const PREFIXES = 1 << 24;
+export const PREFIXED_FROM = 1 << 20;
+/** A suffix array's buckets by the first 3 bytes of what was sorted (big-endian, a suffix shorter than 3 padded with
+ * zeros: it sorts first in that bucket), where its maker knew them: I[starts[p]] is the first suffix of p. */
+const starting = new WeakMap<Int32Array, Int32Array>();
+
+function prefixStarts(sorted: Uint8Array): Int32Array {
+  const m = sorted.length, starts = new Int32Array(PREFIXES + 1);
+  // (counted a slot ahead, so that the sum below leaves each its start)
+  for (let r = 0; r + 2 < m; r++) starts[((sorted[r]! << 16) | (sorted[r + 1]! << 8) | sorted[r + 2]!) + 1]!++;
+  if (m >= 2) starts[((sorted[m - 2]! << 16) | (sorted[m - 1]! << 8)) + 1]!++;
+  if (m >= 1) starts[(sorted[m - 1]! << 16) + 1]!++;
+  starts[0] = 1;
+  for (let p = 1; p <= PREFIXES; p++) starts[p]! += starts[p - 1]!;
+  return starts;
 }
 
 // --- bsdiff ---
@@ -203,7 +294,7 @@ export function sparseSuffixArray(old: Uint8Array, runs: Run[]): Int32Array {
  * with `known` (wholeFiles), a position in one of its runs is matched there without a search. */
 export function bsdiff(old: Buffer, made: Buffer, I: Int32Array = suffixArray(old), known: Run[] = []): Buffer[] {
   const oldsize = old.length, newsize = made.length;
-  const out = chunker();
+  const out = chunker(), starts = starting.get(I);
   let pos = 0;
   const matchlen = (o: number, s: number) => {
     const n = Math.min(oldsize - o, newsize - s);
@@ -227,7 +318,15 @@ export function bsdiff(old: Buffer, made: Buffer, I: Int32Array = suffixArray(ol
       const n = run.made + run.len - scan;
       return n + matchlen(pos + n, scan + n);
     }
+    // (from the bucket of its first 3 bytes: the bounds the whole search would come to, without its first two dozen
+    // steps, each a miss of the cache once the array is tens of MB. Only where a suffix sorted ran past a reduced range's
+    // end could the two differ: a shorter match)
     let st = 0, en = I.length - 1;
+    if (starts && scan + 3 <= newsize) {
+      const p = (made[scan]! << 16) | (made[scan + 1]! << 8) | made[scan + 2]!;
+      st = starts[p]! - 1;
+      en = Math.min(starts[p + 1]!, I.length - 1);
+    }
     while (en - st >= 2) {
       const x = st + ((en - st) >> 1);
       if (below(I[x]!, scan)) st = x; else en = x;
@@ -299,7 +398,10 @@ function chunker() {
   let fill = 0;
   const flush = () => {
     if (fill === 0) return;
-    const packed = deflateRawSync(buf.subarray(0, fill), { level: 9 }), head = Buffer.alloc(8);
+    // (any deflate is the format's, the appliers inflating what comes. Level 8: on bsdiff's records, mostly zeros,
+    // level 9 walked its chains 3 times as long for 1.5-2.3% less, about a quarter of a far base's time; measured on the
+    // published deltas of 0.1.9570, 2026-11-16)
+    const packed = deflateRawSync(buf.subarray(0, fill), { level: 8 }), head = Buffer.alloc(8);
     head.writeUInt32LE(fill, 0);
     head.writeUInt32LE(packed.length, 4);
     parts.push(head, packed);
@@ -397,7 +499,7 @@ const WHOLE_ENOUGH = 1 / 8;
 /** A delta's bytes; `oldFiles`, the ranges of the old blob's files, lets those found whole in `made` go unsorted. */
 export function makeDelta(old: Buffer, made: Buffer, files: string[], inflate: Range[], deflate: Range[], oldFiles?: Range[]): Buffer {
   const head = encodeHeader({ files, inflate, oldSize: old.length, oldSha256: sha256(old), deflate, madeSize: made.length });
-  const runs = oldFiles ? wholeFiles(old, oldFiles, made) : [];
+  const runs = sameBlocks(old, made, oldFiles ? wholeFiles(old, oldFiles, made) : []);
   const covered = old.length - outside(old.length, runs).m;
   const body = covered > 0 && covered >= old.length * WHOLE_ENOUGH ? bsdiff(old, made, sparseSuffixArray(old, runs), runs) : bsdiff(old, made);
   return Buffer.concat([head, ...body, END]);

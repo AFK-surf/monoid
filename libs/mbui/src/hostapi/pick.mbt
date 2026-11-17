@@ -24,6 +24,7 @@ pub(all) enum PickKind {
 /// image source the host draws: its gallery's content:// address, a video's still; "" where it cannot). A file held goes up through the core a part at a time, read from
 /// the host as it goes (the core's `composer.add` with `blob: {hostFile: held, size}`: the host answers `picked.read`,
 /// `picked.hash`, `picked.release`; still.fail's Android app's PickedFiles.kt).
+#derive(Eq)
 pub(all) struct Picked {
   name : String
   bytes : Bytes

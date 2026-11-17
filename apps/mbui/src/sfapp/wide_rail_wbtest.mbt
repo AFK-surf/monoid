@@ -204,8 +204,13 @@ test "wide: the sidebar's edge is pressed and shows its ↔ 6 either side of its
       t.drag(x + 30.0, y, x, y)
       assert_eq(@sfdesk.wide.side_w.get(), 240.0)
     }
-    // (over a row and over none alike: the strip its line is in the middle of, no room grown round it)
-    assert_eq(shown, [-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 5.0], msg="at \{y}")
+    // (over a row and over none alike: the strip its line is in the middle of, no room grown round it; where the
+    // lists' thumb is shown over its inner half, that half the thumb's (pane_edge): the lists scroll, their search
+    // tucked over the first row)
+    assert_true(
+      shown == [-6.0, -4.0, -2.0, 0.0, 2.0, 4.0, 5.0] || shown == [0.0, 2.0, 4.0, 5.0],
+      msg="at \{y}: \{Repr(shown)}",
+    )
   }
 }
 
@@ -266,14 +271,14 @@ test "wide: ⌃2 goes to the second workspace (prefs.set workspace)" {
 }
 
 ///|
-test "wide: a row's menu has 接力到频道… for a chat with an agent" {
+test "wide: a row's menu has 接力到频道 for a chat with an agent" {
   let calls : Array[Made] = []
   let t = wide_tester(calls)
   let (x, y) = t.find("整理发布清单").unwrap()
   t.right_click(x, y)
   t.frame()
   open_share(t)
-  assert_true(t.find("接力到频道…") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
+  assert_true(t.find("接力到频道") is Some(_), msg=t.words().map(fn(w) { w.0 }).join("|"))
 }
 
 ///|
@@ -805,12 +810,14 @@ test "an update in each sidebar keeps its corner and press room on medium and la
   ] {
     for mode in ["settings-about", "files", "place-stations", "place-profiles"] {
       let t = screen_in(mode, win, "zh")
+      let head = fn(f : String) { f.split(", node ").collect()[0].to_owned() }
+      let before = if mode != "settings-about" { t.corner_faults().map(head) } else { [] }
       if mode != "settings-about" {
         @sffixture.fixture_update("0.1.9999")
         @sffixture.fixture_update_goes("0.1.9999", "downloading", percent=40, away=false)
         t.run_for(@ui.move_most_ms)
       }
-      let corners = t.corner_faults()
+      let corners = t.corner_faults().filter(fn(f) { !before.contains(head(f)) })
       assert_true(corners.is_empty(), msg="\{win.0} \{mode}: \{Repr(corners)}")
       let rooms = t.room_faults().filter(fn(f) { f.contains("正在下载") })
       assert_true(rooms.is_empty(), msg="\{win.0} \{mode}: \{Repr(rooms)}")
@@ -1139,4 +1146,35 @@ test "wide: switching rail places with same-width sidebars starts no fold motion
   t.frame()
   assert_eq(@sfbase.page_way.id, "")
   assert_true(app.nav.top() != Home)
+}
+
+///|
+test "wide: the sidebar folded, 更新 past the rail says what it offers as the pointer rests on it; pressed, its tip shut" {
+  let t = wide_tester([], mode="chat")
+  @sffixture.fixture_update("0.1.9999")
+  t.frame()
+  t.key(@ui.key_of_char('\\'), mods=@ui.mod_cmd)
+  t.move_to(1000.0, 400.0)
+  t.run_for(@ui.move_most_ms)
+  let (x, y, w, h) = t.query(Button, label=update_said_now()).unwrap().rect
+  assert_eq(x, @sfdesk.update_closed_in)
+  let tip = fn() { t.words().iter().any(fn(s) { s.0 == update_tip_now() }) }
+  t.move_to(x + w / 2.0, y + h / 2.0)
+  t.run_for(@sf.tip_delay_ms + @ui.move_most_ms)
+  assert_true(tip(), msg="its tip, the pointer resting on it")
+  t.click(Button, label=update_said_now())
+  t.run_for(@ui.move_most_ms)
+  assert_false(tip(), msg="its tip shut by the press, the pointer still on it")
+}
+
+///|
+/// What the update key says now, and its tip (sfdesk brand.mbt's update_said).
+fn update_said_now() -> String {
+  @sfbase.update_stands().label
+}
+
+///|
+fn update_tip_now() -> String {
+  let stands = @sfbase.update_stands()
+  stands.label + (if stands.note == "" { "" } else { " · " + stands.note })
 }

@@ -240,3 +240,20 @@ test "a switch waiting in rounds given up between them: all of it let go, nothin
   assert_eq(switched.val, -1.0, msg="given up: never switched")
   assert_eq(rounds_asked(heard[from_heard:].to_owned()), [(1, 1), (1, 1), (0, 0)], msg="given up: all let go, nothing asked after")
 }
+
+///|
+test "an account's page opened by a press is told to the host's timing: asked at the press, opened after its frame" {
+  for ms in account_open_lates() {
+    let heard : Array[String] = []
+    let t = account_open_tester(false, ms, "profiles", heard)
+    let told : Array[String] = []
+    @sfbase.open_timing.val = Some({
+      asked: fn(to) { told.push("asked \{to}") },
+      opened: fn(to) { told.push("opened \{to}") },
+    })
+    assert_eq(account_open_frames(t, "Claude 主账号", "订阅有效"), (0, true), msg="\{ms} ms: opened")
+    t.run_for(@ui.move_most_ms * 2.0)
+    @sfbase.open_timing.val = None
+    assert_eq(told, ["asked account", "opened account"], msg="\{ms} ms")
+  }
+}

@@ -7,6 +7,9 @@
 // it says how to get them when they are missing.
 // On Linux the service is a systemd user service (lingering, so it runs with no one logged in); with no user systemd
 // (a container, another init) the station is started in the background, and said not to come back after a reboot.
+// In still.fail's own container (station/docker: STILLFAIL_CONTAINER set) the container's entrypoint runs the station
+// and starts it again whenever it ends, once no install holds run/install.lock: the installer starts nothing there,
+// and a restart only ends the running station (an update hands over in place as anywhere else).
 // Without a token, on a station already in a workspace, it updates the station (`stillfail update` runs it so). An update
 // does not stop the agents when it can help it: with the service's definition unchanged, the running station hands
 // over to the new release in its own process (SIGUSR2, the Rust station's main.rs), turns, runtimes and jobs going on;
@@ -218,6 +221,25 @@ unit_dir="\${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 unit="$product-station.service"
 # Whether this Linux has a systemd for the user to run services in (not a container's, not another init).
 user_systemd() { command -v systemctl >/dev/null 2>&1 && systemctl --user show-environment >/dev/null 2>&1; }
+# Every directory the install writes in is checked before anything is downloaded or joined: one a sudo made root's
+# (~/.config after a \`sudo\` command made it, mkdir's "Permission denied" at the service once the machine had joined,
+# 2026-11-17) stops it here with the command that gives it back. Not run as root instead: the station is the user's,
+# its service a user service, and the agents run as the user.
+unwritable=""
+writable() {
+  w_dir=$1
+  while [ ! -e "$w_dir" ]; do w_dir=$(dirname "$w_dir"); done
+  [ -d "$w_dir" ] && [ -w "$w_dir" ] || unwritable="$w_dir"
+}
+writable "$data"
+writable "$HOME/.local/bin"
+if [ "$os" = Darwin ]; then writable "$(dirname "$plist")"; elif user_systemd; then writable "$unit_dir"; fi
+if [ -n "$unwritable" ]; then
+  owner=$(ls -ld "$unwritable" | awk '{print $3}')
+  me=$(id -un)
+  echo "${say("cloud.install.unwritable", { dir: "${unwritable}", owner: "${owner}", user: "${me}" })}" >&2
+  exit 1
+fi
 # WSL keeps a distribution up only while something of Windows' holds it (a terminal, a wsl.exe): with none, its
 # services stop with it, and it does not start with Windows. So a wsl.exe that holds it, hidden, started at each
 # Windows sign-in from the user's Startup folder ($keeper, a script for wscript) and now. Through WSL's interop
@@ -244,6 +266,25 @@ case "$channel" in
   *) channel=stable; release="stillfail-station-$platform.tar.gz"; [ -n "\${STILLFAIL_INSTALLER_HANDED:-}" ] || echo "${say("cloud.install.download")}" ;;
 esac
 step download
+# Downloads $1 to $2 (curl given the rest before them: how it shows its progress), tried again after each of
+# STILLFAIL_DOWNLOAD_PAUSES (seconds; a test's 0 0 0) where it failed on the way: no connection, one broken (macOS's
+# LibreSSL curl's exit 35, SSL_ERROR_SYSCALL, main 0a099ace's station-update 43880021498, 2026-11-16, which curl's own
+# --retry does not take), a deadline, a gateway's 502, 503 or 504. A refusal (404, 403, 500) is the same when asked again.
+download() {
+  dl_url=$1 dl_out=$2
+  shift 2
+  for dl_pause in \${STILLFAIL_DOWNLOAD_PAUSES-1 2 4} last; do
+    if dl_code=$(curl "$@" -w '%{http_code}' "$dl_url" -o "$dl_out"); then return 0; else dl_status=$?; fi
+    rm -f "$dl_out"
+    case "$dl_status:$dl_code" in
+      22:502|22:503|22:504|5:*|6:*|7:*|16:*|18:*|28:*|35:*|52:*|55:*|56:*|92:*) ;;
+      *) return "$dl_status" ;;
+    esac
+    [ "$dl_pause" != last ] || return "$dl_status"
+    echo "${say("cloud.install.downloadAgain", { seconds: "${dl_pause}" })}" >&2
+    sleep "$dl_pause"
+  done
+}
 sha256_of() { { shasum -a 256 "$1" 2>/dev/null || sha256sum "$1"; } | cut -d' ' -f1; }
 # Handed a release already downloaded (by the installer of the release before, below, or by the station, which made it
 # from a delta: station/src/updates/release.ts): taken, its directory removed.
@@ -251,7 +292,7 @@ case "\${STILLFAIL_ARCHIVE:-}" in
   */stillfail-handed.*/stillfail.tar.gz)
     mv "$STILLFAIL_ARCHIVE" "$tmp/stillfail.tar.gz"
     rm -rf "$(dirname "$STILLFAIL_ARCHIVE")" ;;
-  *) curl -fL --progress-bar "$origin/releases/$release" -o "$tmp/stillfail.tar.gz" ;;
+  *) download "$origin/releases/$release" "$tmp/stillfail.tar.gz" -fL --progress-bar ;;
 esac
 # A station updating itself says what the release must hash to, as its signed words say (station/src/updates/signed.ts):
 # anything else is not installed.
@@ -297,7 +338,7 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
     elif [ -n "\${STILLFAIL_NODE_SHA256:-}" ]; then
       node_file="node-v$node_version-$platform.tar.gz"
       echo "${say("cloud.install.node.download", { version: "${node_version}" })}"
-      if ! curl -fL --progress-bar "$origin/releases/node/$node_file" -o "$tmp/$node_file"; then
+      if ! download "$origin/releases/node/$node_file" "$tmp/$node_file" -fL --progress-bar; then
         echo "${say("cloud.install.node.failed", { version: "${node_version}", origin: "${origin}" })}" >&2
         exit 1
       fi
@@ -310,7 +351,7 @@ if [ -f "$tmp/stillfail/NODE_VERSION" ]; then
     else
       node_file="node-v$node_version-$platform.tar.gz"
       echo "${say("cloud.install.node.download", { version: "${node_version}" })}"
-      if ! curl -fL --progress-bar "$origin/releases/node/$node_file" -o "$tmp/$node_file" || ! curl -fsSL "$origin/releases/node/$node_file.sha256" -o "$tmp/$node_file.sha256"; then
+      if ! download "$origin/releases/node/$node_file" "$tmp/$node_file" -fL --progress-bar || ! download "$origin/releases/node/$node_file.sha256" "$tmp/$node_file.sha256" -fsSL; then
         echo "${say("cloud.install.node.failed", { version: "${node_version}", origin: "${origin}" })}" >&2
         exit 1
       fi
@@ -343,18 +384,20 @@ agent_path=$(printf '%s' "$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PAT
 # The service's definition, as this release has it: written below, and compared with the one running now.
 if [ "$os" = Darwin ]; then
   service_file="$plist"
+  # Paths and PATH are XML text: an ampersand or angle bracket in either must survive launchd's parser.
+  xml() { printf '%s' "$1" | sed -e 's/&/\\&amp;/g' -e 's/</\\&lt;/g' -e 's/>/\\&gt;/g'; }
   cat > "$tmp/service" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key><string>$label</string>
-    <key>ProgramArguments</key><array><string>$app/bin/stillfail</string><string>start</string></array>
-    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$agent_path</string><key>STILLFAIL_DATA</key><string>$data</string></dict>
+    <key>ProgramArguments</key><array><string>$(xml "$app/bin/stillfail")</string><string>start</string></array>
+    <key>EnvironmentVariables</key><dict><key>PATH</key><string>$(xml "$agent_path")</string><key>STILLFAIL_DATA</key><string>$(xml "$data")</string></dict>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>
-    <key>StandardOutPath</key><string>$data/stillfail.log</string>
-    <key>StandardErrorPath</key><string>$data/stillfail.log</string>
+    <key>StandardOutPath</key><string>$(xml "$data/stillfail.log")</string>
+    <key>StandardErrorPath</key><string>$(xml "$data/stillfail.log")</string>
 </dict>
 </plist>
 PLIST
@@ -510,6 +553,12 @@ else
   fi
   if [ -f "$cur/stillfail.pid" ]; then kill "$(cat "$cur/stillfail.pid")" 2>/dev/null || true; fi
   rm -f "$cur/stillfail.pid"
+  # In still.fail's container: the station is its entrypoint's, which starts the new release once this install lets
+  # go of its lock. Ended here, and waited for: the release is not swapped under a station still running on it.
+  if [ -n "\${STILLFAIL_CONTAINER:-}" ] && [ -n "$pid" ]; then
+    kill "$pid" 2>/dev/null || true
+    for _ in $(seq 1 30); do kill -0 "$pid" 2>/dev/null || break; sleep 1; done
+  fi
 fi
 [ -n "$swapped" ] || swap_app
 rm -rf "$app.old"
@@ -517,6 +566,8 @@ prune_node
 fi
 mkdir -p "$HOME/.local/bin"
 ln -sf "$app/bin/stillfail" "$HOME/.local/bin/$product"
+# Installed again after stillfail uninstall (or the app's 卸载本机 Station): no longer said so.
+rm -f "$data/uninstalled"
 
 if [ -n "$token" ]; then
   echo "${say("cloud.install.join")}"
@@ -529,6 +580,8 @@ elif [ "$os" = Darwin ]; then
   mkdir -p "$(dirname "$plist")"
   cp "$tmp/service" "$plist"
   started=""
+  # (stopped from the app, the service is disabled: enabled, or bootstrap would load it and never start it)
+  launchctl enable "gui/$(id -u)/$label" 2>/dev/null || true
   for _ in 1 2 3 4 5; do
     launchctl bootstrap "gui/$(id -u)" "$plist" 2>/dev/null && { started=yes; break; }
     sleep 2
@@ -543,6 +596,9 @@ else
     systemctl --user restart "$unit"
     # Also with no one logged in (a server): the user's services start with the machine.
     loginctl enable-linger "$(id -un)" 2>/dev/null || lingering="no"
+  elif [ -n "\${STILLFAIL_CONTAINER:-}" ]; then
+    # (the container's entrypoint starts it, and again whenever it ends)
+    in_container="yes"
   else
     nohup env PATH="$agent_path" STILLFAIL_DATA="$data" "$app/bin/stillfail" start >> "$data/stillfail.log" 2>&1 &
     echo $! > "$data/stillfail.pid"
@@ -559,9 +615,11 @@ fi
 echo "  ${say("cloud.install.where.app", { app: "${app}" })}"
 echo "  ${say("cloud.install.where.data", { data: "$data" })}"
 echo "  ${say("cloud.install.where.status")}"
-[ "$os" = Linux ] && [ -z "\${no_service:-}" ] && echo "  ${say("cloud.install.where.service", { unit: "$unit" })}"
+[ "$os" = Linux ] && [ -z "\${no_service:-}" ] && [ -z "\${in_container:-}" ] && echo "  ${say("cloud.install.where.service", { unit: "$unit" })}"
 [ -n "\${lingering:-}" ] && echo "  ${say("cloud.install.where.linger", { user: "$(id -un)" })}"
-if [ -n "$wsl" ] && [ -n "\${no_service:-}" ]; then
+if [ -n "\${in_container:-}" ]; then
+  echo "  ${say("cloud.install.where.container")}"
+elif [ -n "$wsl" ] && [ -n "\${no_service:-}" ]; then
   echo "  ${say("cloud.install.where.wslSystemd")}"
 elif [ -n "\${no_service:-}" ]; then
   echo "  ${say("cloud.install.where.noService")}"

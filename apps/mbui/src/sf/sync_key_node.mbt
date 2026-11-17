@@ -176,7 +176,8 @@ pub fn sync_key_node(
       })
       |> ignore
     })
-    ignore(tip_node(tips, k, fn() { said.get() }, side=Bottom))
+    // (no control, it takes no press: its tip shown by the pointer within it, as it is placed)
+    ignore(tip_node(tips, k, fn() { said.get() }, side=Bottom, within=true))
   })
   |> ignore
 }

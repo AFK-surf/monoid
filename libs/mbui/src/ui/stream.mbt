@@ -839,12 +839,12 @@ fn Ctx::paint_stream(self : Ctx, i : Int, n : Node, alpha : Double) -> Bool {
   }
   let (x, y, w, h, u0, v0, du, dv) = match fit {
     FitFill => (bx, by, bw, bh, 0.0, 0.0, 1.0, 1.0)
-    FitCover | FitCoverAt(_) => {
+    FitCover | FitCoverAt(_) | FitCoverFrom(_, _) => {
       let k = dmax(bw / pw, bh / ph)
       let du = bw / k / pw
       let dv = bh / k / ph
-      let vertical = match fit { FitCoverAt(y) => dclamp(y, 0.0, 1.0); _ => 0.5 }
-      (bx, by, bw, bh, (1.0 - du) / 2.0, (1.0 - dv) * vertical, du, dv)
+      let (across, down) = fit.cover_from()
+      (bx, by, bw, bh, (1.0 - du) * across, (1.0 - dv) * down, du, dv)
     }
     FitContain => {
       let k = dmin(bw / pw, bh / ph)
@@ -998,6 +998,24 @@ pub fn Tester::stream_shows(self : Tester, id : Int, ts : Double, w : Int, h : I
 }
 
 ///|
+/// Shown in window `wid` of the run from now on (window_slots.mbt), handed to it by what showed it in another: its
+/// picture's layer that window's to place, the one it leaves taking it not back nor hiding it as what showed it there
+/// goes (NativeView::paint_in, Ctx::sync_views).
+pub fn Stream::given_to_window(self : Stream, wid : Int) -> Unit {
+  match self.view {
+    Some(v) => v.wid = wid
+    None => ()
+  }
+}
+
+///|
+/// The streams open now, by their host's ids, oldest first (what a test says each shows: stream_shows).
+pub fn Tester::stream_ids(self : Tester) -> Array[Int] {
+  ignore(self)
+  open_streams.filter(fn(s) { !s.closed && s.id != 0 }).map(fn(s) { s.id })
+}
+
+///|
 /// Stream `id`'s host let its frames up to `ts` go undecoded: taken at the next frame.
 pub fn Tester::stream_drops(self : Tester, id : Int, ts : Double) -> Unit {
   fake_said(self.fake, id, "d \{ts}")
@@ -1081,6 +1099,18 @@ pub fn Stream::audio_queued(self : Stream) -> Double {
 }
 
 ///|
+/// Milliseconds of its sound the host wants queued before it starts (@hostapi.stream_audio_wanted: Windows' reserve,
+/// 100 ms at first, up to 300 ms after late packets, coming back to 100 ms once calm): an app pacing packets by
+/// `audio_played` keeps at least this much ahead (`while sent - played < ahead.max(s.audio_wanted())`). Answered before
+/// the stream opens too; 0 once closed, or where the host plays none or says none.
+pub fn Stream::audio_wanted(self : Stream) -> Double {
+  if self.closed {
+    return 0.0
+  }
+  @hostapi.stream_audio_wanted(self.id)
+}
+
+///|
 /// Its sound played at volume `v` (1 as it came, 0 silent), from now on, its sound started later too; asked before it
 /// opens, told the host as it does. Where the host has nothing for it, as it came.
 pub fn Stream::audio_volume(self : Stream, v : Double) -> Unit {
@@ -1101,6 +1131,13 @@ pub fn Tester::set_stream_audio(self : Tester, on : Bool) -> Unit { self.fake.au
 /// milliseconds queued.
 pub fn Tester::set_stream_audio_clock(self : Tester, id : Int, played : Double, queued : Double) -> Unit {
   self.fake.stream_audio_clock[id] = (played, queued)
+}
+
+///|
+/// Milliseconds stream `id`'s host wants queued before its sound starts (Stream::audio_wanted; `id` 0: before a stream
+/// opens, and the default for opened ones).
+pub fn Tester::set_stream_audio_wanted(self : Tester, id : Int, ms : Double) -> Unit {
+  self.fake.stream_audio_wanted[id] = ms
 }
 
 ///|

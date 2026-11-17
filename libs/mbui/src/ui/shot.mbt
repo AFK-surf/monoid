@@ -133,6 +133,7 @@ pub fn take_picture(
       measure_runs=view_runs_measure,
       measure_kept=view_words_measure_kept,
       measure_runs_kept=view_runs_measure_kept,
+      measure_runs_least=view_runs_least,
       measure_shorter=view_shorter_measure,
       time=fn() { h_event_time() },
     )
@@ -587,6 +588,7 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
       tree.turn_angle_of(c.id),
       tree.ground_drawn_of(c.id),
     )
+    let outer_ring_at = self.emit_outer_ring(c, x, y, a, s)
     if c.clips && !c.clips_self {
       let r = c.radius * s
       match c.corners {
@@ -594,6 +596,9 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
         None => push_box_clip(x, y, c.w * s, c.h * s, r, r, r, r)
       }
       clipping.push(c.id)
+    }
+    if outer_ring_at >= 0 && outer_ring_at < self.ninst {
+      rings.push((c.id, self.shot_ring_take(outer_ring_at)))
     }
     if ring_at >= 0 && ring_at < self.ninst {
       rings.push((c.id, self.shot_ring_take(ring_at)))
@@ -654,5 +659,26 @@ fn tree_shot_words(tree : @view.Tree) -> Array[String] {
       out.push(c.runs.map(fn(r) { r.text }).join(""))
     }
   })
+  out
+}
+
+///|
+/// The pictures each picture made as nodes now being taken (take_picture) draws, as Tester::image_nodes says an old
+/// view's: their key and how big each is drawn.
+pub fn Tester::picture_images(self : Tester) -> Array[(String, Double, Double)] {
+  self.reads_own()
+  let out = []
+  for _, s in g().shots {
+    match s.tree {
+      Some(st) =>
+        for d in st.tree.drawn() {
+          match d.image {
+            Some((src, _, _)) => out.push((src, d.w, d.h))
+            None => ()
+          }
+        }
+      None => ()
+    }
+  }
   out
 }

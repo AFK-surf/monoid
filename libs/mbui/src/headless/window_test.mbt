@@ -11,7 +11,7 @@ let own_files : String = "mbui/src/headless/"
 ///|
 /// The properties of a node that draw nothing and lay nothing out: what it is read out as and whether it is, whether
 /// it takes a press and the focus. A component says of its nodes, in its own files, only these.
-let own_words : Array[String] = ["Says", "Hides", "Presses", "Focusable", "TabStop"]
+let own_words : Array[String] = ["Says", "Hides", "Presses", "Focusable", "TabStop", "DefaultPress"]
 
 ///|
 /// Whether `place` is in one of this package's own files, no test's.

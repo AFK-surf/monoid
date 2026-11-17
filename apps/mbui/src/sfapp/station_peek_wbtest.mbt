@@ -290,6 +290,157 @@ test "station tabs show their page beside the chat, preserve folders and release
 }
 
 ///|
+test "on the Mac a screen beside a chat goes to a window of this run: its first frame the screen as it was shown, no splash, its view handed over" {
+  new_run()
+  let (viewed, cancelled) = (Ref(0), Ref(0))
+  let base = fixture("chat-screen-tab")
+  @sfpages.open_screen_fixture("chat-screen-tab")
+  let src : Source = {
+    ..base,
+    stream: fn(name, params, bytes, value, done) {
+      if name == "screen.view" {
+        viewed.val += 1
+      }
+      (base.stream)(name, params, bytes, value, done)
+    },
+    cancel: fn(id) {
+      cancelled.val += 1
+      (base.cancel)(id)
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.set_window_beside_size(1, 960.0, 600.0)
+  // (the chat opened once the host opens windows of its own: its panel's bar made so)
+  open_chat(r)
+  t.run_for(@ui.move_most_ms)
+  for id in t.stream_ids() {
+    t.stream_shows(id, 1000.0, 1280, 720)
+  }
+  t.frame()
+  assert_true(t.drawlist().contains("stream 1280x720"), msg="the screen shown beside the chat")
+  assert_eq(viewed.val, 1)
+  let (x, y) = adb_button_at(t, "在新窗口打开").unwrap()
+  t.tap(x, y)
+  // the window's first frame (the tap's): the viewer's bar and the frame shown beside the chat, none of a start
+  assert_eq(t.windows_opened(), [], msg="no run of its own started")
+  assert_eq(t.windows_beside().length(), 1)
+  let wid = t.windows_beside()[0].0
+  let (words, drawn) = (Ref([]), Ref(""))
+  t.in_window(wid, fn() {
+    words.val = t.words().map(fn(w) { w.0 })
+    drawn.val = t.drawlist()
+  })
+  assert_true(words.val.iter().any(fn(w) { w.contains("Chrome") }), msg="\{Repr(words.val)}")
+  assert_true(!words.val.iter().any(fn(w) { w.contains("正在连接") || w.contains("正在读取") }), msg="\{Repr(words.val)}")
+  assert_true(drawn.val.contains("stream 1280x720"), msg="the frame decoded beside the chat drawn there at once")
+  t.run_for(@ui.move_most_ms)
+  // its tab closed here; its view the same, not asked again nor let go of
+  assert_true(!side_now(r).0.contains("screen:[\"ws-1/st-1\",\"browser:tab-1\"]"))
+  assert_eq(viewed.val, 1)
+  assert_eq(cancelled.val, 0)
+  assert_true(!t.drawlist().contains("stream 1280x720"))
+  // the window closed by the person: the view let go of then; the app goes on
+  t.close_window_beside(wid)
+  t.frame()
+  assert_eq(cancelled.val, 1)
+  assert_eq(t.windows_beside(), [])
+  assert_true(app.nav.top() is Chat(_))
+}
+
+///|
+test "on the Mac's video layer a screen beside a chat goes to a window of this run: the layer there in its first frame, the panel closing here never takes it back nor hides it" {
+  new_run()
+  let said : Ref[((Json, Bytes?) -> Unit)?] = Ref(None)
+  let base = fixture("chat-screen-tab")
+  @sfpages.open_screen_fixture("chat-screen-tab")
+  let src : Source = {
+    ..base,
+    stream: fn(name, params, bytes, value, done) {
+      if name == "screen.view" {
+        said.val = Some(value)
+      }
+      (base.stream)(name, params, bytes, value, done)
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0, h264=true)
+  t.set_stream_layers(true)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  t.set_window_beside_size(1, 960.0, 600.0)
+  // (the chat opened once the host shows streams on their own layers: its screen's opened so)
+  open_chat(r)
+  t.run_for(@ui.move_most_ms)
+  // (its frames H.264, shown on the system's video layer)
+  let tell = said.val.unwrap()
+  tell({ "config": { "codec": "h264", "width": 1280, "height": 720 } }, Some(b"avcc"))
+  tell({ "frame": { "key": true, "ts": 2000 } }, Some(b"\x00\x00\x00\x01\x65"))
+  t.frame()
+  for id in t.stream_ids() {
+    t.stream_shows(id, 2000.0, 1280, 720)
+  }
+  t.frame()
+  assert_eq(t.holes().length(), 1, msg="the layer shown beside the chat")
+  let from = t.views().length()
+  let holes_here = Ref(0)
+  t.each_frame(Some(fn() { holes_here.val += t.holes().length() }))
+  let (x, y) = adb_button_at(t, "在新窗口打开").unwrap()
+  t.tap(x, y)
+  let wid = t.windows_beside()[0].0
+  let places = fn() { t.views()[from:].to_owned().filter(fn(l) { l.has_prefix("place ") }) }
+  assert_true(places().iter().any(fn(l) { l.has_suffix("window \{wid}") && !l.contains("hidden") }), msg="\{Repr(places())}")
+  t.run_for(@ui.move_most_ms)
+  t.each_frame(None)
+  assert_true(places().iter().all(fn(l) { l.has_suffix("window \{wid}") }), msg="placed by the first window: \{Repr(places())}")
+  assert_true(!places().last().unwrap().contains("hidden"), msg="\{Repr(places())}")
+  assert_eq(holes_here.val, 0)
+  let there = Ref(0)
+  t.in_window(wid, fn() { there.val = t.holes().length() })
+  assert_eq(there.val, 1)
+}
+
+///|
+test "a window of this run sized on its own: ⌘+ in it zooms it alone, the first window and the device's kept size as they were" {
+  new_run()
+  let base = fixture("chat-screen-tab")
+  @sfpages.open_screen_fixture("chat-screen-tab")
+  let prefs_set = Ref(0)
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      if name == "prefs.set" {
+        prefs_set.val += 1
+      }
+      (base.call)(name, params, done)
+    },
+  }
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.set_window_opens(true)
+  t.set_windows_in_process(true)
+  // (the chat opened once the host opens windows of its own: its panel's bar made so)
+  open_chat(r)
+  t.run_for(@ui.move_most_ms)
+  let (x, y) = adb_button_at(t, "在新窗口打开").unwrap()
+  t.tap(x, y)
+  t.run_for(@ui.move_most_ms)
+  let wid = t.windows_beside()[0].0
+  let taken = Ref(false)
+  t.in_window(wid, fn() { taken.val = @ui.view_action("zoom.in") })
+  assert_true(taken.val)
+  t.run_for(@ui.move_most_ms)
+  let (here, there) = (Ref(0.0), Ref(0.0))
+  here.val = @ui.window_zoom()
+  t.in_window(wid, fn() { there.val = @ui.window_zoom() })
+  assert_eq(here.val, 1.0)
+  assert_true(there.val > 1.0, msg="\{there.val}")
+  assert_eq(prefs_set.val, 0)
+}
+
+///|
 test "a screen beside a chat goes to a window of its own from the panel's bar (a desktop's), its tab closed here" {
   new_run()
   let cancelled : Array[Int] = []
@@ -509,7 +660,7 @@ test "a station's card put up before the first frame is built: titled its name f
 
 ///|
 /// A window's tree of what is presented alone (no frame of the app round it, so nothing says
-/// the settings' core but `here`: the old frame's build says it while `here` says so, as signed_in_over does), on a
+/// the settings' core but `here`: the old frame's build says it while `here` says so, as app.mbt's reaction does), on a
 /// phone: the Tester and the fixture's chat's source.
 fn peek_core_later_tester(here : @signals.Signal[Bool]) -> (@ui.Tester, Source) {
   let src = fixture_app("chat")
@@ -586,7 +737,7 @@ test "a station's card put up while the settings' core is not said yet: nothing 
 }
 
 ///|
-test "a station's card in a phone's window, the system's words at 1.3: each way's speed drawn whole, before its total and inside the card, ↑'s and ↓'s in one column, in both languages" {
+test "a station's card in a phone's window, the system's words at 1.3: each way's speed drawn whole and inside the card on one line, without cumulative totals, in both languages" {
   guard corner_windows.search_by(w => w.0 == "phone") is Some(i) else { fail("no phone window in corner_windows") }
   for lang in ["zh", "en"] {
     let t = screen_in("chat-peek", corner_windows[i], lang, font_scale=words_large_scale)
@@ -604,16 +755,16 @@ test "a station's card in a phone's window, the system's words at 1.3: each way'
       .get(0)
       .map(fn(e) { e.0 })
     }
+    let arrows : Array[@view.Drawn] = []
     let speeds : Array[@view.Drawn] = []
-    let totals : Array[@view.Drawn] = []
     for way in [("↑", "96 KB/s", "9.6 MB"), ("↓", "1.4 MB/s", "212 MB")] {
       let at = "\{lang} \{way.0}"
       guard drawn(way.0, None) is Some(arrow) else { fail("\{at}: no arrow drawn") }
       guard drawn(way.1, Some(arrow.y)) is Some(speed) else { fail("\{at}: no ‘\{way.1}’ on its line") }
-      guard found.search_by(fn(e) { e.3.contains(way.2) && (e.0.y - arrow.y).abs() < 1.0 }) is Some(k) else {
-        fail("\{at}: no total on its line")
+      assert_true(found.search_by(fn(e) { e.3.contains(way.2) }) is None, msg="\{at}: no cumulative total drawn")
+      guard found.search_by(fn(e) { e.3 == way.1 && (e.0.y - arrow.y).abs() < 1.0 }) is Some(k) else {
+        fail("\{at}: no speed entry")
       }
-      let total = found[k].0
       // (the card: what holds it with a ground of its own)
       let mut p = found[k].1
       while p >= 0 && found[p].0.ground == 0L {
@@ -626,12 +777,11 @@ test "a station's card in a phone's window, the system's words at 1.3: each way'
       let need = @ui.text_advance(way.1, size=@ui.sp_at(words_large_scale, speed.words_look.size), weight=speed.words_look.weight)
       assert_true(need <= speed.w + 0.5, msg="\{at}: its speed whole (needs \{need}, has \{speed.w})")
       assert_true(speed.x >= arrow.x + arrow.w, msg="\{at}: its speed after its arrow")
-      assert_true(speed.x + speed.w <= total.x + 0.5, msg="\{at}: its speed before its total (\{speed.x + speed.w}, \{total.x})")
-      assert_true(total.x + total.w <= card.x + card.w + 0.5, msg="\{at}: inside the card (\{total.x + total.w}, \{card.x + card.w})")
+      assert_true(speed.x + speed.w <= card.x + card.w + 0.5, msg="\{at}: inside the card (\{speed.x + speed.w}, \{card.x + card.w})")
+      arrows.push(arrow)
       speeds.push(speed)
-      totals.push(total)
     }
-    assert_true((speeds[0].x - speeds[1].x).abs() < 0.5, msg="\{lang}: ↑'s and ↓'s speeds in one column (\{speeds[0].x}, \{speeds[1].x})")
-    assert_true((totals[0].x - totals[1].x).abs() < 0.5, msg="\{lang}: their totals in one column (\{totals[0].x}, \{totals[1].x})")
+    assert_true((arrows[0].y - arrows[1].y).abs() < 1.0, msg="\{lang}: ↑ and ↓ on one line (\{arrows[0].y}, \{arrows[1].y})")
+    assert_true(arrows[1].x >= speeds[0].x + speeds[0].w, msg="\{lang}: ↓ after ↑'s speed (\{arrows[1].x}, \{speeds[0].x + speeds[0].w})")
   }
 }

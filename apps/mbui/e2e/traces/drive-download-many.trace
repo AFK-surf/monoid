@@ -1,437 +1,346 @@
 {"step":"drive-big 105609"}
-{"env":{"MBUI_CLOUD":"http://127.0.0.1:18887","MBUI_CORE_ACCOUNT":"{\"sub\":\"alice\",\"email\":\"alice@example.test\",\"name\":\"Name of alice\",\"picture\":\"\",\"access\":\"-\",\"refresh\":\"-\",\"accessExpires\":1794447070}","MBUI_DOWNLOADS_DIR":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads","MBUI_PLACES_BAR":"1","MBUI_DEVICES":"1","MBUI_STATION_ROWS":"1","MBUI_HAVE_SAME":"1","MBUI_OUTLINE":"1","MBUI_CONNECT_ROWS":"1","MBUI_KEEP_CHAT":"1","MBUI_CHAT_ROW":"1","MBUI_CHATS_WINDOW":"1","MBUI_MARKS_ONE":"1"}}
+{"env":{"MBUI_CLOUD":"http://127.0.0.1:28787","MBUI_CORE_ACCOUNT":"{\"sub\":\"alice\",\"email\":\"alice@example.test\",\"name\":\"Name of alice\",\"picture\":\"\",\"access\":\"-\",\"refresh\":\"-\",\"accessExpires\":1794864648}","MBUI_DOWNLOADS_DIR":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads","MBUI_PLACES_BAR":"1","MBUI_DEVICES":"1","MBUI_STATION_ROWS":"1","MBUI_HAVE_SAME":"1","MBUI_OUTLINE":"1","MBUI_CONNECT_ROWS":"1","MBUI_KEEP_CHAT":"1","MBUI_CHAT_ROW":"1","MBUI_CHATS_WINDOW":"1","MBUI_MARKS_ONE":"1","MBUI_PROFILE_ROWS":"1","MBUI_HOME_SAME":"1","MBUI_SWITCH_AHEAD":"1","MBUI_STATION_UPDATES":"1","MBUI_STATION_MOVE":"1","MBUI_TERMINALS":"1","MBUI_SWR_VIEWS":"1","MBUI_OPEN_WHOLE":"1","MBUI_PAGE_PICTURES":"1","MBUI_START_PAGE":"1"}}
 {"host":{"localStation":null}}
-{"out":{"id":1,"call":"client.device","params":{"client":"still.fail mbui","app":"desktop","userAgent":"Macintosh; Mac OS X"}},"w":1794446799420.39}
-{"out":{"id":2,"subscribe":{"topic":"prefs"},"keyed":true},"w":1794446799420.899}
-{"out":{"id":3,"subscribe":{"topic":"accounts"},"keyed":true},"w":1794446799421.06}
-{"out":{"id":4,"subscribe":{"topic":"workspaces"},"keyed":true},"w":1794446799421.274}
-{"in":{"id":1,"ok":null},"w":1794446799504.462}
-{"in":{"id":2,"value":{"onlyMine":false,"onlyWatching":false,"listFilter":{},"appearance":"system","rowPicture":"auto","absoluteTime":false,"lang":"zh","keys":{},"lastChat":{},"openChat":{},"chatTabs":{},"dropFiles":{},"driveViews":{},"filesTabs":{},"driveFavorites":{"01M76NSCTQ86BGR7W0YS3R5G21":"[{\"station\":\"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"\",\"name\":\"e2e-105609\"}]"},"driveFavoritesHidden":{"01M76NSCTQ86BGR7W0YS3R5G21":"[]"},"previewSizes":{},"sidebars":{},"trouble":{},"jobsSeen":{},"failsGone":{},"resume":{},"stationUpdatesDismissed":{},"device":{"app":"desktop","phone":false,"handoff":false},"productName":"still.fail","product":"still.fail","reader":{"size":16,"line":1.7,"margin":22,"face":"sans","indent":true,"paper":"follow"},"rails":{},"bars":{"sets":[["chats","files","profiles","stations"],["archive","usage","connects","vault"]],"current":0},"barsBy":{},"fonts":{},"faces":{"ui":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"text":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"code":{"id":"","name":"","mono":true,"family":"","files":[],"bytes":0},"list":[{"id":"inter","name":"Inter","mono":false,"family":"SF Inter","css":"http://127.0.0.1:18887/releases/fonts/inter/4.001/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18887/releases/fonts/inter/4.001/var.ttf.gz","bytes":457818,"sha256":"29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031"}],"preview":"http://127.0.0.1:18887/releases/fonts/inter/4.001/preview-194fa287.ttf","bytes":457818},{"id":"noto-sans-sc","name":"思源黑体","mono":false,"family":"SF Noto Sans SC","css":"http://127.0.0.1:18887/releases/fonts/noto-sans-sc/2.004/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18887/releases/fonts/noto-sans-sc/2.004/var.ttf.gz","bytes":11276563,"sha256":"a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"}],"preview":"http://127.0.0.1:18887/releases/fonts/noto-sans-sc/2.004/preview-f0494178.ttf","bytes":11276563},{"id":"noto-serif-sc","name":"思源宋体","mono":false,"family":"SF Noto Serif SC","css":"http://127.0.0.1:18887/releases/fonts/noto-serif-sc/2.003/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18887/releases/fonts/noto-serif-sc/2.003/var.ttf.gz","bytes":15454579,"sha256":"050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"}],"preview":"http://127.0.0.1:18887/releases/fonts/noto-serif-sc/2.003/preview-001bbedf.ttf","bytes":15454579},{"id":"lxgw-wenkai","name":"霞鹜文楷","mono":false,"family":"SF LXGW WenKai","css":"http://127.0.0.1:18887/releases/fonts/lxgw-wenkai/1.530/font.css","files":[{"weight":400,"url":"http://127.0.0.1:18887/releases/fonts/lxgw-wenkai/1.530/400.ttf.gz","bytes":12904482,"sha256":"2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b"},{"weight":500,"url":"http://127.0.0.1:18887/releases/fonts/lxgw-wenkai/1.530/500.ttf.gz","bytes":13272430,"sha256":"f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a"}],"preview":"http://127.0.0.1:18887/releases/fonts/lxgw-wenkai/1.530/preview-d3505af4.ttf","bytes":26176912},{"id":"jetbrains-mono","name":"JetBrains Mono","mono":true,"family":"SF JetBrains Mono","css":"http://127.0.0.1:18887/releases/fonts/jetbrains-mono/2.211/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18887/releases/fonts/jetbrains-mono/2.211/var.ttf.gz","bytes":90579,"sha256":"48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"}],"preview":"http://127.0.0.1:18887/releases/fonts/jetbrains-mono/2.211/preview-ee73078f.ttf","bytes":90579},{"id":"fira-code","name":"Fira Code","mono":true,"family":"SF Fira Code","css":"http://127.0.0.1:18887/releases/fonts/fira-code/5.002/font.css","files":[{"weight":0,"url":"http://127.0.0.1:18887/releases/fonts/fira-code/5.002/var.ttf.gz","bytes":137151,"sha256":"9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb"}],"preview":"http://127.0.0.1:18887/releases/fonts/fira-code/5.002/preview-555be27a.ttf","bytes":137151},{"id":"maple-mono","name":"Maple Mono","mono":true,"family":"SF Maple Mono CN","css":"http://127.0.0.1:18887/releases/fonts/maple-mono/7.9/font.css","files":[{"weight":400,"url":"http://127.0.0.1:18887/releases/fonts/maple-mono/7.9/400.ttf.gz","bytes":8352545,"sha256":"0fcc5139bfd5ab14ff989bb7dfd5236d0cafc10e60b9828569e6883613ab4085"},{"weight":600,"url":"http://127.0.0.1:18887/releases/fonts/maple-mono/7.9/600.ttf.gz","bytes":8438132,"sha256":"96ed7ae26ee7c50b02b2d2b2bc0f1a0cbabe45ae5d6e6abf6678e2177c415677"}],"preview":"http://127.0.0.1:18887/releases/fonts/maple-mono/7.9/preview-cffdf246.ttf","bytes":16790677}]},"keymap":{"changeable":true,"mac":true,"groups":[{"group":"global","name":"全局"},{"group":"chat","name":"对话"},{"group":"files","name":"文件"}],"actions":[{"action":"chat.switch","group":"global","name":"快速切换对话","typing":"yes","keys":["Mod+K"],"labels":["⌘K"],"text":"⌘K","changed":false,"listed":true},{"action":"chat.new","group":"global","name":"新建对话","typing":"yes","keys":["Mod+N","Alt+Mod+N"],"labels":["⌘N","⌥⌘N"],"text":"⌘N / ⌥⌘N","changed":false,"listed":true},{"action":"chat.prev","group":"global","name":"上一个对话","typing":"yes","keys":["Alt+Up"],"labels":["⌥↑"],"text":"⌥↑","changed":false,"listed":true},{"action":"chat.next","group":"global","name":"下一个对话","typing":"yes","keys":["Alt+Down"],"labels":["⌥↓"],"text":"⌥↓","changed":false,"listed":true},{"action":"sidebar.toggle","group":"global","name":"收起/展开侧边栏","typing":"yes","keys":["Mod+\\"],"labels":["⌘\\"],"text":"⌘\\","changed":false,"listed":true},{"action":"nav.back","group":"global","name":"后退","typing":"yes","keys":["Mod+["],"labels":["⌘["],"text":"⌘[","changed":false,"listed":true},{"action":"nav.forward","group":"global","name":"前进","typing":"yes","keys":["Mod+]"],"labels":["⌘]"],"text":"⌘]","changed":false,"listed":true},{"action":"settings","group":"global","name":"设置","typing":"yes","keys":["Mod+,"],"labels":["⌘,"],"text":"⌘,","changed":false,"listed":true},{"action":"shortcuts","group":"global","name":"快捷键一览","typing":"yes","keys":["Mod+/"],"labels":["⌘/"],"text":"⌘/","changed":false,"listed":true},{"action":"zoom.in","group":"global","name":"放大界面","typing":"yes","keys":["Mod+Plus","Mod+=","Shift+Mod+=","Shift+Mod+Plus"],"labels":["⌘+","⌘=","⇧⌘=","⇧⌘+"],"text":"⌘+ / ⌘= / ⇧⌘= / ⇧⌘+","changed":false,"listed":true},{"action":"zoom.out","group":"global","name":"缩小界面","typing":"yes","keys":["Mod+-"],"labels":["⌘-"],"text":"⌘-","changed":false,"listed":true},{"action":"zoom.reset","group":"global","name":"恢复界面大小","typing":"yes","keys":["Mod+0"],"labels":["⌘0"],"text":"⌘0","changed":false,"listed":true},{"action":"composer.focus","group":"chat","name":"回到输入框","typing":"no","keys":["Space"],"labels":["空格"],"text":"空格","changed":false,"listed":true},{"action":"composer.file","group":"chat","name":"发送文件","typing":"yes","keys":["Mod+U"],"labels":["⌘U"],"text":"⌘U","changed":false,"listed":true},{"action":"chat.stop","group":"chat","name":"停止当前任务","typing":"yes","keys":["Mod+."],"labels":["⌘."],"text":"⌘.","changed":false,"listed":true},{"action":"chat.history","group":"chat","name":"执行历史","typing":"yes","keys":["Shift+Mod+H"],"labels":["⇧⌘H"],"text":"⇧⌘H","changed":false,"listed":true},{"action":"chat.jobs","group":"chat","name":"服务和后台任务","typing":"yes","keys":["Shift+Mod+J"],"labels":["⇧⌘J"],"text":"⇧⌘J","changed":false,"listed":true},{"action":"chat.screen","group":"chat","name":"Station 屏幕","typing":"yes","keys":["Shift+Mod+D"],"labels":["⇧⌘D"],"text":"⇧⌘D","changed":false,"listed":true},{"action":"chat.latest","group":"chat","name":"跳到最新","typing":"empty","keys":["Mod+Down"],"labels":["⌘↓"],"text":"⌘↓","changed":false,"listed":true},{"action":"chat.find","group":"chat","name":"在对话中查找","typing":"yes","keys":["Mod+F"],"labels":["⌘F"],"text":"⌘F","changed":false,"listed":true},{"action":"chat.outline","group":"chat","name":"目录","typing":"yes","keys":["Mod+G"],"labels":["⌘G"],"text":"⌘G","changed":false,"listed":true},{"action":"chat.said.prev","group":"chat","name":"上一条发言","typing":"empty","keys":["Alt+Shift+Up"],"labels":["⌥⇧↑"],"text":"⌥⇧↑","changed":false,"listed":true},{"action":"chat.said.next","group":"chat","name":"下一条发言","typing":"empty","keys":["Alt+Shift+Down"],"labels":["⌥⇧↓"],"text":"⌥⇧↓","changed":false,"listed":true},{"action":"chat.archive","group":"chat","name":"归档对话","typing":"yes","keys":["Shift+Mod+E"],"labels":["⇧⌘E"],"text":"⇧⌘E","changed":false,"listed":true},{"action":"panel.close","group":"chat","name":"收起侧栏","typing":"yes","keys":["Escape"],"labels":["Esc"],"text":"Esc","changed":false,"listed":true},{"action":"files.preview","group":"files","name":"显示或隐藏预览","typing":"yes","keys":["Shift+Mod+P"],"labels":["⇧⌘P"],"text":"⇧⌘P","changed":false,"listed":true}],"workspace":["⌃1","⌃2","⌃3","⌃4","⌃5","⌃6","⌃7","⌃8","⌃9"],"send":{"by":"enter","choices":[{"by":"enter","name":"Enter 发送"},{"by":"mod","name":"⌘ Enter 发送"}],"send":"↩","newline":"⇧↩","text":"发送 ↩，换行 ⇧↩"}},"railView":{"places":[{"id":"chats","label":"对话","kind":"lists","list":"all"},{"id":"mine","label":"我参与的","kind":"lists","list":"mine"},{"id":"watching","label":"监控中","kind":"lists","list":"watching"},{"id":"hidden","label":"已隐藏","kind":"lists","list":"hidden"},{"id":"archive","label":"已归档","kind":"lists","list":"archive"},{"id":"attention","label":"待处理","kind":"attention"},{"id":"files","label":"文件","kind":"places"},{"id":"stations","label":"Station","kind":"places"},{"id":"profiles","label":"Profile","kind":"places"},{"id":"connects","label":"连接","kind":"places"},{"id":"usage","label":"用量","kind":"places"}],"groups":[{"kind":"places","label":"页面","places":["files","stations","profiles","connects","usage"]},{"kind":"lists","label":"对话列表","places":["chats","mine","watching","hidden","archive"]},{"kind":"attention","label":"提醒","places":["attention"]}],"default":["attention","chats","files","stations","profiles","connects","usage"],"all":{"items":["attention","chats","files","stations","profiles","connects","usage"],"hidden":["mine","watching","hidden","archive"],"changed":false},"by":{}}}},"w":1794446799504.724}
-{"in":{"id":3,"value":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"}]},"w":1794446799504.919}
-{"in":{"id":4,"value":[{"account":{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"},"workspaces":[{"id":"01M76NSCTQ86BGR7W0YS3R5G21","name":"Dev","role":"owner","created_at":1794446766,"stations":1,"members":1,"relays":[],"time":{"created_at":{"past":true,"at":1794446766000,"ago":"刚刚","full":"11/12 01:26:06","until":"1 分钟内"}}}],"invitations":[],"relay_url":"http://127.0.0.1:18840","loaded":false,"beta":true}]},"w":1794446799504.945}
-{"out":{"id":5,"subscribe":{"topic":"status"},"keyed":true},"w":1794446799505.24}
-{"out":{"id":6,"subscribe":{"topic":"notify"},"keyed":true},"w":1794446799505.295}
-{"in":{"id":5,"value":{"items":[],"lines":[]}},"w":1794446799515.482}
-{"in":{"id":4,"delta":[{"path":[0,"loaded"],"set":true}]},"w":1794446799515.517}
-{"in":{"id":6,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M76NSCTQ86BGR7W0YS3R5G21","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794446799515.549}
-{"out":{"id":7,"call":"notify.permission","params":{"state":"unknown"}},"w":1794446799515.66}
-{"in":{"id":7,"ok":null},"w":1794446799515.855}
-{"settings":{"w":1280,"h":800,"scale":1,"platform":0,"pointing":0,"utc":0,"motion":0,"glass":0,"dark":0,"inset":1,"ime":0,"copy":0,"font":1},"w":1794446799520.186}
-{"frame":1930552767.6655838,"w":1794446799520.199}
-{"out":{"id":8,"subscribe":{"topic":"lock","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799520.301}
-{"out":{"id":9,"subscribe":{"topic":"workspaceMarks"},"keyed":true},"w":1794446799521.314}
-{"out":{"id":11,"call":"chats.window","params":{"scope":"01M76NSCTQ86BGR7W0YS3R5G21","mine":false,"rows":30}},"w":1794446799521.361}
-{"out":{"id":10,"subscribe":{"topic":"chats","scope":"01M76NSCTQ86BGR7W0YS3R5G21","mine":false},"keyed":true},"w":1794446799521.383}
-{"out":{"id":12,"subscribe":{"topic":"longJobs","scope":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799521.411}
-{"out":{"id":13,"subscribe":{"topic":"status","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799521.774}
-{"out":{"id":14,"subscribe":{"topic":"downloads"},"keyed":true},"w":1794446799522.355}
-{"out":{"id":15,"subscribe":{"topic":"driveTransfers","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799522.381}
-{"out":{"id":16,"subscribe":{"topic":"doing"},"keyed":true},"w":1794446799523.329}
-{"out":{"id":17,"subscribe":{"topic":"lockPrompts"},"keyed":true},"w":1794446799523.371}
-{"out":{"id":18,"subscribe":{"topic":"notify","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799523.404}
-{"in":{"id":8,"value":{"available":true,"locked":false,"notice":true,"role":"owner","manages":true,"owner":true,"canSign":true,"signs":false,"me":{"device":"03283af637ddbe995f02d2dd5c0a04da0397685d735120367e87d30c8ecd85e9","code":"DD8-EKD","kind":"app","confirmed":false,"waiting":false},"signers":0,"members":[],"stations":[{"id":"07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","name":"willow","version":"0.1.0","online":true,"protected":false}],"protected":0,"renew":[],"attention":0}},"w":1794446799526.639}
-{"in":{"id":11,"ok":null},"w":1794446799526.684}
-{"in":{"id":9,"value":{"workspaces":{"01M76NSCTQ86BGR7W0YS3R5G21":{"alert":0,"unread":1,"tone":"done","label":"1 个有新消息","badge":1,"items":[{"kind":"done","workspace":"01M76NSCTQ86BGR7W0YS3R5G21","workspaceName":"Dev","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","stationName":"willow","session":"chat:c-ee3df5cb0990cb0dc6286c39738eef95","thread":1,"title":"端到端测试的对话","text":"","what":"","seq":2,"at":1794446770317}],"mineTone":"done"}},"badge":1,"badgeKinds":{"on":true,"wait":true,"failed":true,"done":true,"message":true,"services":true}}},"w":1794446799526.745}
-{"in":{"id":10,"value":{"stations":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269"}],"days":[{"daysAgo":0,"label":"今天","items":[{"id":"chat:c-ee3df5cb0990cb0dc6286c39738eef95","session":"chat:c-ee3df5cb0990cb0dc6286c39738eef95","thread":1,"title":"端到端测试的对话","agents":[{"runtime":"claude","agentText":"默认模型"}],"last":{"seq":2,"by":{"mine":false},"preview":"你好，我是测试用的 agent"},"unread":true,"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","stationName":"willow","people":[{"id":"alice@example.test","email":"alice@example.test","shown":{"name":"Name of alice","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test"},"peopleText":"你 发起","clientKey":"new:chat-e6e65f6dfd516f6736","pinned":false,"swipeArchive":true,"hidden":false,"tone":"done"}]}],"more":null,"trouble":null,"members":1,"leading":"agents","glyph":{"online":1,"dim":0,"connecting":0,"failing":0,"working":0,"asleep":false,"summary":"willow","label":"1 台 station，1 台在线","running":0,"now":"暂无 agent 在运行","unit":"个 agent 正在运行"},"note":{"reading":false,"text":null,"failing":[],"empty":false},"syncing":null}},"w":1794446799526.82}
-{"in":{"id":12,"value":{"groups":[],"lit":false,"ids":[]}},"w":1794446799526.854}
-{"in":{"id":13,"value":{"items":[],"lines":[]}},"w":1794446799526.865}
-{"in":{"id":14,"value":{"downloads":[],"keeping":[]}},"w":1794446799526.876}
-{"in":{"id":15,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1794446799526.886}
-{"out":{"id":19,"subscribe":{"topic":"filesTabs","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799567.946}
-{"out":{"id":20,"subscribe":{"topic":"stations","scope":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799568.01}
-{"out":{"id":21,"subscribe":{"topic":"workspace","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446799568.066}
-{"out":{"id":22,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M76NSCTQ86BGR7W0YS3R5G21"}},"w":1794446799597.862}
-{"step":"# written by scripts/rerecord.sh from its test (src/sfreplay/emit.mbt): not edited by hand","w":1794446799601.469}
-{"step":"timeout 90000","w":1794446799601.482}
-{"step":"#env MBUI_WIN=1280x800","w":1794446799601.488}
-{"step":"#before drive-big 105609","w":1794446799601.493}
-{"step":"#env MBUI_OPEN_PAGE=files","w":1794446799601.497}
-{"step":"wait 449","w":1794446799601.501}
-{"out":{"id":5,"unsubscribe":true},"w":1794446799601.535}
-{"in":{"id":16,"value":{"doing":[]}},"w":1794446799602.237}
-{"in":{"id":17,"value":{"pairing":[],"asks":[]}},"w":1794446799602.258}
-{"in":{"id":18,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M76NSCTQ86BGR7W0YS3R5G21","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794446799602.275}
-{"in":{"id":19,"value":null},"w":1794446799602.288}
-{"in":{"id":20,"value":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","id":"07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","name":"willow","summary":"空闲 · Test CPU · 7 GB · Test OS","face":"idle","line":"Test CPU","online":true,"reconnecting":false,"stateText":"空闲","stateBusy":false,"problems":[],"lastSeen":1794446769,"version":"0.1.0","way":{"path":"直连","via":"direct"},"joined":false,"mine":true,"host":{"identity":"Test CPU · 7 GB · Test OS","os":"Test OS","meters":[{"label":"CPU","short":"CPU","percent":25,"left":75,"level":"ok","value":"25%","remaining":"空闲 75%","big":"75","unit":"%","title":"CPU 空闲率","titleShort":"CPU 空闲","total":"负载 1.0","note":"负载 1.0 · Test CPU"},{"label":"内存","short":"内存","percent":50,"left":50,"level":"ok","value":"3.7 GB / 7.5 GB","remaining":"剩 3.7 G","big":"3.7","unit":"GB","title":"可用内存","total":"总内存 7 GB","totalShort":"总 7 GB"},{"label":"磁盘","short":"磁盘","percent":50,"left":50,"level":"ok","value":"剩余 46.6 GB / 93.1 GB","remaining":"剩 46.6 G","big":"46.6","unit":"GB","title":"可用磁盘","total":"总磁盘 93 GB","totalShort":"总 93 GB"}]},"overview":{"viewer":{"via":"mesh","email":"alice@example.test","name":"Name of alice","sub":"alice","role":"owner","workspace":"01M76NSCTQ86BGR7W0YS3R5G21","device":"03283af637ddbe995f02d2dd5c0a04da0397685d735120367e87d30c8ecd85e9"},"counts":{"sessions":1,"running":0,"warm":1},"disk":{"freeBytes":50000000000,"totalBytes":100000000000},"drive":{"roots":[],"anywhere":true,"home":"/test-station/home"}}}]},"w":1794446799602.334}
-{"in":{"id":21,"value":{"id":"01M76NSCTQ86BGR7W0YS3R5G21","name":"Dev","role":"owner","created_at":1794446766,"members":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png","role":"owner","added_at":1794446766}],"stations":[{"id":"07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","name":"willow","emoji":null,"icon":null,"enrolled_at":1794446768,"enrolled_by":"alice","last_seen":1794446769,"version":"0.1.0","time":{"last_seen":{"past":true,"at":1794446769000,"ago":"刚刚","full":"11/12 01:26:09","until":"1 分钟内"}}}],"invitations":[],"added":[],"relays":[],"ways":[{"id":"http://127.0.0.1:18840","kind":"relay","on":true},{"id":"lan","kind":"lan","on":true},{"id":"tailnet","kind":"tailnet","on":true},{"id":"direct","kind":"direct","on":true}],"lock":null,"lock_requests":0,"time":{"created_at":{"past":true,"at":1794446766000,"ago":"刚刚","full":"11/12 01:26:06","until":"1 分钟内"}}}},"w":1794446799602.39}
-{"in":{"id":22,"ok":null},"w":1794446799602.417}
-{"frame":1930552850.5340838,"w":1794446799603.024}
-{"out":{"id":23,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":"","write":true},"keyed":true},"w":1794446799603.521}
-{"out":{"id":24,"subscribe":{"topic":"drive","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""},"keyed":true},"w":1794446799603.924}
-{"out":{"id":25,"call":"files.tabs","params":{"workspace":"01M76NSCTQ86BGR7W0YS3R5G21","act":"arrive","pane":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""}}},"w":1794446799611.74}
-{"out":{"id":26,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":"","write":true,"act":"at"}},"w":1794446799611.781}
-{"in":{"id":23,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{},"chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794446799614.277}
-{"in":{"id":24,"value":{"path":"","entries":[{"name":"e2e-105609","dir":true,"size":0,"mtime":1794446796642,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"01:26"}],"truncated":false,"folders":1,"files":0,"countText":"1 个文件夹"}},"w":1794446799614.316}
-{"in":{"id":23,"delta":[{"path":["countText"],"set":"1 个文件夹"},{"path":["folders",""],"set":["e2e-105609"]}]},"w":1794446799614.34}
-{"frame":1930552867.2095838,"w":1794446799619.699}
-{"in":{"id":25,"ok":{"tabs":[{"id":"e619c64774e4","panes":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""}],"front":0}],"current":"e619c64774e4","front":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""}}},"w":1794446799619.753}
-{"in":{"id":26,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794446799619.807}
-{"in":{"id":19,"value":{"tabs":[{"id":"e619c64774e4","panes":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""}],"front":0}],"current":"e619c64774e4","front":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home","path":""}}},"w":1794446799628.812}
-{"in":{"id":2,"delta":[{"path":["filesTabs","01M76NSCTQ86BGR7W0YS3R5G21"],"set":"{\"tabs\":[{\"id\":\"e619c64774e4\",\"panes\":[{\"station\":\"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\",\"root\":\"/test-station/home\",\"path\":\"\"}],\"front\":0}],\"current\":\"e619c64774e4\"}"}]},"w":1794446799629.828}
-{"frame":1930552884.707292,"w":1794446799637.208}
-{"frame":1930553233.8807504,"w":1794446799986.401}
-{"frame":1930553300.5744169,"w":1794446800053.092}
-{"step":"now untiln 2 =e2e-105609","w":1794446800054.8}
-{"step":"tap1 =e2e-105609","w":1794446800054.926}
-{"step":"tap1 =e2e-105609","acted":true,"w":1794446800057.333}
-{"out":{"id":23,"unsubscribe":true},"w":1794446800057.369}
-{"frame":1930553317.2153337,"w":1794446800069.714}
-{"out":{"id":27,"subscribe":{"topic":"drive","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""},"keyed":true},"w":1794446800069.974}
-{"out":{"id":28,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"","write":true},"keyed":true},"w":1794446800070.228}
-{"out":{"id":29,"call":"files.tabs","params":{"workspace":"01M76NSCTQ86BGR7W0YS3R5G21","act":"arrive","pane":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""}}},"w":1794446800073.668}
-{"out":{"id":30,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"","write":true,"act":"at"}},"w":1794446800073.709}
-{"step":"answered files.tabs","w":1794446800075.114}
-{"out":{"id":24,"unsubscribe":true},"w":1794446800075.157}
-{"in":{"id":28,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{},"chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794446800075.292}
-{"frame":1930553333.8789172,"w":1794446800086.383}
-{"in":{"id":29,"ok":{"tabs":[{"id":"e619c64774e4","panes":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""}],"front":0}],"current":"e619c64774e4","front":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""}}},"w":1794446800086.487}
-{"in":{"id":30,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794446800086.538}
-{"in":{"id":27,"value":{"path":"","entries":[{"name":"大文件","dir":true,"size":0,"mtime":1794446796836,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"01:26"},{"name":"子文件夹","dir":true,"size":0,"mtime":1794446771043,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"01:26"},{"name":"小说-e2e.txt","dir":false,"size":36779,"mtime":1794446771063,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"36 KB","timeText":"01:26"},{"name":"说明.txt","dir":false,"size":43,"mtime":1794446771043,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"43 B","timeText":"01:26"}],"truncated":false,"folders":2,"files":2,"countText":"2 个文件夹 · 2 个文件"}},"w":1794446800086.576}
-{"in":{"id":19,"delta":[{"path":["front","root"],"set":"/test-station/home/e2e-105609"},{"path":["tabs",0,"panes",0,"root"],"set":"/test-station/home/e2e-105609"}]},"w":1794446800086.631}
-{"in":{"id":28,"delta":[{"path":["countText"],"set":"2 个文件夹 · 2 个文件"},{"path":["folders",""],"set":["大文件","子文件夹","说明.txt","小说-e2e.txt"]}]},"w":1794446800086.664}
-{"in":{"id":2,"delta":[{"path":["filesTabs","01M76NSCTQ86BGR7W0YS3R5G21"],"set":"{\"tabs\":[{\"id\":\"e619c64774e4\",\"panes\":[{\"station\":\"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"\"}],\"front\":0}],\"current\":\"e619c64774e4\"}"}]},"w":1794446800086.704}
-{"step":"answered drive.browse","w":1794446800093.874}
-{"frame":1930553350.5462503,"w":1794446800103.044}
-{"step":"answered files.tabs","w":1794446800105.146}
-{"frame":1930553367.2120836,"w":1794446800119.702}
-{"step":"answered drive.browse","w":1794446800121.365}
-{"frame":1930553383.878042,"w":1794446800136.366}
-{"step":"wait 500","w":1794446800137.956}
-{"frame":1930553400.5413337,"w":1794446800153.026}
-{"frame":1930553417.213917,"w":1794446800169.707}
-{"frame":1930553433.8714588,"w":1794446800186.366}
-{"frame":1930553450.541917,"w":1794446800203.03}
-{"frame":1930553467.2095006,"w":1794446800219.694}
-{"frame":1930553683.8776255,"w":1794446800436.39}
-{"frame":1930553900.548709,"w":1794446800653.064}
-{"step":"now until =大文件","w":1794446800655.112}
-{"step":"tap =大文件","w":1794446800655.215}
-{"out":{"id":31,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"","write":true,"act":"press","folder":"","name":"大文件","mod":false,"shift":false}},"w":1794446800655.771}
-{"step":"tap =大文件","acted":true,"w":1794446800655.82}
-{"frame":1930553917.2093754,"w":1794446800669.703}
-{"in":{"id":31,"ok":{"acted":true,"chosen":{"folder":"","names":["大文件"],"anchor":"大文件","lead":"大文件"},"show":{"folder":"","name":"大文件"}}},"w":1794446800669.801}
-{"step":"answered drive.browse","w":1794446800671.701}
-{"frame":1930553933.8776672,"w":1794446800686.377}
-{"step":"tap =大文件","w":1794446800688.143}
-{"out":{"id":32,"call":"drive.browse","params":{"act":"opened","owner":"page","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"","name":"大文件"}},"w":1794446800688.649}
-{"out":{"id":19,"unsubscribe":true},"w":1794446800689.206}
-{"step":"tap =大文件","acted":true,"w":1794446800690.392}
-{"out":{"id":28,"unsubscribe":true},"w":1794446800690.437}
-{"frame":1930553950.5435004,"w":1794446800703.047}
-{"in":{"id":32,"ok":null},"w":1794446800703.16}
-{"out":{"id":33,"subscribe":{"topic":"drive","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件"},"keyed":true},"w":1794446800703.369}
-{"out":{"id":34,"subscribe":{"topic":"filesTabs","workspace":"01M76NSCTQ86BGR7W0YS3R5G21"},"keyed":true},"w":1794446800703.548}
-{"out":{"id":35,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件","write":true},"keyed":true},"w":1794446800703.638}
-{"out":{"id":36,"call":"files.tabs","params":{"workspace":"01M76NSCTQ86BGR7W0YS3R5G21","act":"arrive","pane":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件"}}},"w":1794446800706.79}
-{"out":{"id":37,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"at"}},"w":1794446800706.826}
-{"step":"answered drive.browse","w":1794446800707.999}
-{"out":{"id":27,"unsubscribe":true},"w":1794446800708.021}
-{"in":{"id":34,"value":{"tabs":[{"id":"e619c64774e4","panes":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""}],"front":0}],"current":"e619c64774e4","front":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":""}}},"w":1794446800708.113}
-{"in":{"id":35,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{},"chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794446800708.135}
-{"frame":1930553967.1992505,"w":1794446800719.696}
-{"in":{"id":36,"ok":{"tabs":[{"id":"e619c64774e4","panes":[{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件"}],"front":0}],"current":"e619c64774e4","front":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件"}}},"w":1794446800719.794}
-{"in":{"id":37,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794446800719.847}
-{"in":{"id":33,"value":{"path":"大文件","entries":[{"name":"大文件.bin","dir":false,"size":50331648,"mtime":1794446796835,"type":"application/octet-stream","kind":"other","opens":"save","sizeText":"48 MB","timeText":"01:26"},{"name":"附件.txt","dir":false,"size":40,"mtime":1794446796836,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"40 B","timeText":"01:26"}],"truncated":false,"folders":0,"files":2,"countText":"2 个文件"}},"w":1794446800719.878}
-{"in":{"id":34,"delta":[{"path":["front","path"],"set":"大文件"},{"path":["tabs",0,"panes",0,"path"],"set":"大文件"}]},"w":1794446800719.922}
-{"in":{"id":35,"delta":[{"path":["countText"],"set":"2 个文件"},{"path":["folders","大文件"],"set":["大文件.bin","附件.txt"]}]},"w":1794446800719.952}
-{"in":{"id":2,"delta":[{"path":["filesTabs","01M76NSCTQ86BGR7W0YS3R5G21"],"set":"{\"tabs\":[{\"id\":\"e619c64774e4\",\"panes\":[{\"station\":\"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"大文件\"}],\"front\":0}],\"current\":\"e619c64774e4\"}"}]},"w":1794446800719.968}
-{"step":"answered files.tabs","w":1794446800725.811}
-{"frame":1930553983.8680837,"w":1794446800736.361}
-{"step":"answered drive.browse","w":1794446800738.413}
-{"frame":1930554000.5484586,"w":1794446800753.037}
-{"step":"wait 500","w":1794446800754.681}
-{"frame":1930554017.206667,"w":1794446800769.695}
-{"frame":1930554033.8769171,"w":1794446800786.362}
-{"frame":1930554050.5465837,"w":1794446800803.031}
-{"frame":1930554067.210417,"w":1794446800819.698}
-{"frame":1930554083.874542,"w":1794446800836.367}
-{"frame":1930554100.5449588,"w":1794446800853.032}
-{"frame":1930554517.2095006,"w":1794446801269.732}
-{"step":"now until 大文件.bin","w":1794446801271.53}
-{"step":"tap 大文件.bin","w":1794446801271.622}
-{"out":{"id":38,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"press","folder":"大文件","name":"大文件.bin","mod":false,"shift":false}},"w":1794446801272.117}
-{"step":"tap 大文件.bin","acted":true,"w":1794446801272.166}
-{"frame":1930554533.879167,"w":1794446801286.381}
-{"in":{"id":38,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin"],"anchor":"大文件.bin","lead":"大文件.bin"},"show":{"folder":"大文件","name":"大文件.bin"}}},"w":1794446801286.461}
-{"step":"answered drive.browse","w":1794446801287.956}
-{"frame":1930554550.5467088,"w":1794446801303.038}
-{"step":"key cmd+a","w":1794446801304.702}
-{"step":"key cmd+a","acted":true,"w":1794446801304.788}
-{"frame":1930554567.2092505,"w":1794446801319.71}
-{"out":{"id":39,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"key","key":"mod+a","shift":false}},"w":1794446801321.02}
-{"step":"answered drive.browse","w":1794446801321.464}
-{"frame":1930554583.8809588,"w":1794446801336.374}
-{"in":{"id":39,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin","附件.txt"],"anchor":"大文件.bin","lead":"大文件.bin"}}},"w":1794446801336.427}
-{"in":{"id":35,"delta":[{"path":["chosen","anchor"],"set":"大文件.bin"},{"path":["chosen","folder"],"set":"大文件"},{"path":["chosen","lead"],"set":"大文件.bin"},{"path":["chosen","names"],"append":["大文件.bin","附件.txt"]},{"path":["keys"],"set":["ArrowDown","mod+ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+o"," ","mod+ ","mod+Backspace","Delete","mod+Delete","mod+a","Escape","mod+Escape","mod+shift+Period"]}]},"w":1794446801336.475}
-{"frame":1930554600.5324173,"w":1794446801353.022}
-{"step":"rightclick 大文件.bin","w":1794446801354.605}
-{"step":"rightclick 大文件.bin","acted":true,"w":1794446801355.004}
-{"frame":1930554617.2110837,"w":1794446801369.702}
-{"out":{"id":40,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"menu","folder":"大文件","name":"大文件.bin"}},"w":1794446801372.766}
-{"step":"answered drive.browse","w":1794446801373.41}
-{"frame":1930554633.8599586,"w":1794446801386.363}
-{"in":{"id":40,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin","附件.txt"],"anchor":"大文件.bin","lead":"大文件.bin"}}},"w":1794446801386.55}
-{"frame":1930554650.5449169,"w":1794446801403.032}
-{"step":"wait 150","w":1794446801405.117}
-{"frame":1930554667.2140837,"w":1794446801419.701}
-{"frame":1930554683.9192505,"w":1794446801436.446}
-{"frame":1930554700.5523338,"w":1794446801453.056}
-{"frame":1930554717.212334,"w":1794446801469.703}
-{"frame":1930554733.8788755,"w":1794446801486.372}
-{"frame":1930554750.5455003,"w":1794446801503.033}
-{"frame":1930554767.213917,"w":1794446801519.698}
-{"frame":1930554817.2143753,"w":1794446801569.723}
-{"step":"now until 下载 2 个文件","w":1794446801571.735}
-{"step":"tap 下载 2 个文件","w":1794446801571.82}
-{"out":{"id":41,"call":"download.start","params":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","size":50331648,"mtime":1794446796835}},"w":1794446801572.404}
-{"out":{"id":42,"call":"download.start","params":{"station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","size":40,"mtime":1794446796836}},"w":1794446801572.445}
-{"step":"tap 下载 2 个文件","acted":true,"w":1794446801573.297}
-{"in":{"id":41,"ok":{"download":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","title":"大文件.bin","size":50331648,"loaded":0,"progress":0,"state":"going","active":true,"statusText":"正在下载 0% · 48 MB","startedAt":1794446801572}}},"w":1794446801573.377}
-{"in":{"id":42,"ok":{"download":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","title":"附件.txt","size":40,"loaded":0,"progress":0,"state":"going","active":true,"statusText":"正在下载 0% · 40 B","startedAt":1794446801573}}},"w":1794446801573.787}
-{"frame":1930554833.8583338,"w":1794446801586.357}
-{"step":"until 已保存到「下载」","w":1794446801588.386}
-{"frame":1930554850.5340004,"w":1794446801603.03}
-{"frame":1930554867.2201672,"w":1794446801619.71}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"put":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","title":"大文件.bin","size":50331648,"loaded":2808848,"progress":0.05580679575602213,"state":"going","active":true,"statusText":"正在下载 5% · 48 MB","startedAt":1794446801572},"before":null},{"path":["downloads"],"key":["id"],"put":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt","station":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","title":"附件.txt","size":40,"loaded":40,"progress":1,"state":"ready","active":true,"statusText":"已下载 · 40 B","startedAt":1794446801573},"before":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin"}]},"w":1794446801623.515}
-{"frame":1930554883.8516672,"w":1794446801636.354}
-{"out":{"id":43,"call":"download.take","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt"}},"w":1794446801638.009}
-{"frame":1930554900.5314586,"w":1794446801653.031}
-{"in":{"id":43,"ok":{"taken":true}},"w":1794446801653.201}
-{"out":{"id":44,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt","offset":0,"length":4194304}},"w":1794446801653.257}
-{"frame":1930554917.189042,"w":1794446801669.68}
-{"in":{"id":44,"ok":{"type":"text/plain; charset=utf-8","total":40,"mtime":1794446796836}},"w":1794446801669.834,"b":"e5928ce5a4a7e69687e4bbb6e4b880e8b5b7e4b88be8bdbde79a84e5b08fe69687e4bbb6e380820a"}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":6766146},{"path":["progress"],"set":0.13443124294281006},{"path":["statusText"],"set":"正在下载 13% · 48 MB"}]},{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt","ops":[{"path":["state"],"set":"saving"},{"path":["statusText"],"set":"正在保存 · 40 B"}]}]},"w":1794446801676.17}
-{"frame":1930554933.859792,"w":1794446801686.362}
-{"out":{"id":45,"call":"download.done","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt","at":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads/附件.txt"}},"w":1794446801688.347}
-{"step":"answered download.take","w":1794446801689.052}
-{"in":{"id":45,"ok":{}},"w":1794446801689.577}
-{"frame":1930554950.5370836,"w":1794446801703.043}
-{"step":"answered download.read","w":1794446801705.043}
-{"frame":1930554967.1968338,"w":1794446801719.7}
-{"step":"answered download.done","w":1794446801721.584}
-{"frame":1930554983.8752503,"w":1794446801736.378}
-{"step":"answered download.done","w":1794446801738.212}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"drop":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/附件.txt"},{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":11950296},{"path":["progress"],"set":0.23743104934692383},{"path":["statusText"],"set":"正在下载 23% · 48 MB"}]}]},"w":1794446801738.829}
-{"frame":1930555000.5964587,"w":1794446801753.105}
-{"frame":1930555017.1977506,"w":1794446801769.699}
-{"frame":1930555033.8667502,"w":1794446801786.368}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":16210102},{"path":["progress"],"set":0.322065790494283},{"path":["statusText"],"set":"正在下载 32% · 48 MB"}]}]},"w":1794446801790.314}
-{"frame":1930555050.5267088,"w":1794446801803.021}
-{"frame":1930555067.272209,"w":1794446801819.811}
-{"frame":1930555083.864584,"w":1794446801836.37}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":20378810},{"path":["progress"],"set":0.40489057699839276},{"path":["statusText"],"set":"正在下载 40% · 48 MB"}]}]},"w":1794446801845.967}
-{"frame":1930555100.530167,"w":1794446801853.022}
-{"frame":1930555117.193584,"w":1794446801869.695}
-{"frame":1930555133.858042,"w":1794446801886.353}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":24943779},{"path":["progress"],"set":0.49558836221694946},{"path":["statusText"],"set":"正在下载 49% · 48 MB"}]}]},"w":1794446801897.701}
-{"frame":1930555150.5271254,"w":1794446801903.028}
-{"frame":1930555167.205167,"w":1794446801919.712}
-{"frame":1930555183.8597088,"w":1794446801936.358}
-{"frame":1930555200.516792,"w":1794446801953.021}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":29360128},{"path":["progress"],"set":0.5833333333333334},{"path":["statusText"],"set":"正在下载 58% · 48 MB"}]}]},"w":1794446801956.091}
-{"frame":1930555217.2023754,"w":1794446801969.702}
-{"frame":1930555233.8799586,"w":1794446801986.401}
-{"frame":1930555250.5213754,"w":1794446802003.033}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":34259986},{"path":["progress"],"set":0.680684765179952},{"path":["statusText"],"set":"正在下载 68% · 48 MB"}]}]},"w":1794446802012.648}
-{"frame":1930555267.1987922,"w":1794446802019.693}
-{"frame":1930555284.7484171,"w":1794446802037.248}
-{"frame":1930555300.5537505,"w":1794446802053.06}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":38907778},{"path":["progress"],"set":0.7730280955632528},{"path":["statusText"],"set":"正在下载 77% · 48 MB"}]}]},"w":1794446802066.459}
-{"frame":1930555317.1999588,"w":1794446802069.697}
-{"frame":1930555333.8759172,"w":1794446802086.38}
-{"frame":1930555350.538917,"w":1794446802103.04}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":43364438},{"path":["progress"],"set":0.8615739742914835},{"path":["statusText"],"set":"正在下载 86% · 48 MB"}]}]},"w":1794446802119.075}
-{"frame":1930555367.2058754,"w":1794446802119.708}
-{"frame":1930555384.0998755,"w":1794446802136.61}
-{"frame":1930555400.5310004,"w":1794446802153.033}
-{"frame":1930555417.1925836,"w":1794446802169.688}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":47873469},{"path":["progress"],"set":0.9511603713035583},{"path":["statusText"],"set":"正在下载 95% · 48 MB"}]}]},"w":1794446802171.958}
-{"frame":1930555433.8651254,"w":1794446802186.362}
-{"frame":1930555450.5232506,"w":1794446802203.033}
-{"frame":1930555467.188959,"w":1794446802219.688}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":50331648},{"path":["progress"],"set":1},{"path":["state"],"set":"ready"},{"path":["statusText"],"set":"已下载 · 48 MB"}]}]},"w":1794446802231.904}
-{"frame":1930555483.8697922,"w":1794446802236.366}
-{"out":{"id":46,"call":"download.take","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin"}},"w":1794446802237.671}
-{"frame":1930555500.5257921,"w":1794446802253.005}
-{"in":{"id":46,"ok":{"taken":true}},"w":1794446802253.066}
-{"out":{"id":47,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":0,"length":4194304}},"w":1794446802253.105}
-{"frame":1930555517.1883337,"w":1794446802269.686}
-{"in":{"id":47,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802269.786,"bn":4194304}
-{"out":{"id":48,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":4194304,"length":4194304}},"w":1794446802270.639}
-{"frame":1930555533.8695838,"w":1794446802286.373}
-{"in":{"id":48,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802286.467,"bn":4194304}
-{"out":{"id":49,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":8388608,"length":4194304}},"w":1794446802286.876}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["state"],"set":"saving"},{"path":["statusText"],"set":"正在保存 · 48 MB"}]}]},"w":1794446802288.936}
-{"frame":1930555550.5223336,"w":1794446802303.026}
-{"in":{"id":49,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802303.184,"bn":4194304}
-{"out":{"id":50,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":12582912,"length":4194304}},"w":1794446802304.024}
-{"frame":1930555567.190167,"w":1794446802319.691}
-{"in":{"id":50,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802319.79,"bn":4194304}
-{"out":{"id":51,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":16777216,"length":4194304}},"w":1794446802320.218}
-{"frame":1930555583.854709,"w":1794446802336.345}
-{"in":{"id":51,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802336.429,"bn":4194304}
-{"out":{"id":52,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":20971520,"length":4194304}},"w":1794446802337.36}
-{"frame":1930555600.520667,"w":1794446802353.022}
-{"in":{"id":52,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802353.111,"bn":4194304}
-{"out":{"id":53,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":25165824,"length":4194304}},"w":1794446802353.522}
-{"frame":1930555617.1904588,"w":1794446802369.689}
-{"in":{"id":53,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802369.779,"bn":4194304}
-{"out":{"id":54,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":29360128,"length":4194304}},"w":1794446802370.621}
-{"frame":1930555633.8737922,"w":1794446802386.363}
-{"in":{"id":54,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802386.441,"bn":4194304}
-{"out":{"id":55,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":33554432,"length":4194304}},"w":1794446802386.874}
-{"frame":1930555650.543417,"w":1794446802403.037}
-{"in":{"id":55,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802403.123,"bn":4194304}
-{"out":{"id":56,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":37748736,"length":4194304}},"w":1794446802403.984}
-{"frame":1930555667.2147088,"w":1794446802419.713}
-{"in":{"id":56,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802419.804,"bn":4194304}
-{"out":{"id":57,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":41943040,"length":4194304}},"w":1794446802420.207}
-{"frame":1930555683.8727088,"w":1794446802436.365}
-{"in":{"id":57,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802436.435,"bn":4194304}
-{"out":{"id":58,"call":"download.read","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":46137344,"length":4194304}},"w":1794446802437.359}
-{"frame":1930555700.5366254,"w":1794446802453.026}
-{"in":{"id":58,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794446796835}},"w":1794446802453.083,"bn":4194304}
-{"frame":1930555717.2125423,"w":1794446802469.701}
-{"out":{"id":59,"call":"download.done","params":{"id":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin","at":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads/大文件.bin"}},"w":1794446802470.928}
-{"in":{"id":59,"ok":{}},"w":1794446802477.11}
-{"frame":1930555733.8815002,"w":1794446802486.394}
-{"frame":1930555750.5332086,"w":1794446802503.023}
-{"step":"answered download.take","w":1794446802504.701}
-{"frame":1930555767.2050421,"w":1794446802519.691}
-{"step":"answered download.read","w":1794446802521.267}
-{"frame":1930555783.8792088,"w":1794446802536.372}
-{"step":"answered download.read","w":1794446802538.116}
-{"frame":1930555800.541542,"w":1794446802553.027}
-{"step":"answered download.read","w":1794446802554.6}
-{"frame":1930555817.2091255,"w":1794446802569.694}
-{"step":"answered download.read","w":1794446802571.25}
-{"frame":1930555833.8743753,"w":1794446802586.359}
-{"step":"answered download.read","w":1794446802588.057}
-{"frame":1930555850.526792,"w":1794446802603.017}
-{"step":"answered download.read","w":1794446802604.655}
-{"frame":1930555867.2105837,"w":1794446802619.705}
-{"step":"answered download.read","w":1794446802621.426}
-{"frame":1930555883.8764172,"w":1794446802636.365}
-{"step":"answered download.read","w":1794446802637.884}
-{"frame":1930555900.5485837,"w":1794446802653.054}
-{"step":"answered download.read","w":1794446802654.702}
-{"in":{"id":14,"delta":[{"path":["downloads"],"key":["id"],"drop":"01M76NSCTQ86BGR7W0YS3R5G21/07967e90154593a3236296d782c25bfd8447af8146bc40d3d0f253dd5f879269\n/test-station/home/e2e-105609\n大文件/大文件.bin"}]},"w":1794446802667.464}
-{"frame":1930555917.2093337,"w":1794446802669.696}
-{"step":"answered download.read","w":1794446802671.768}
-{"frame":1930555933.8760421,"w":1794446802686.363}
-{"step":"answered download.read","w":1794446802687.81}
-{"frame":1930555950.5468755,"w":1794446802703.034}
-{"step":"answered download.read","w":1794446802704.465}
-{"frame":1930555967.2042503,"w":1794446802719.691}
-{"step":"wait 2600","w":1794446802721.05}
-{"frame":1930555983.8657923,"w":1794446802736.35}
-{"frame":1930556000.5348337,"w":1794446802753.032}
-{"frame":1930556017.2150838,"w":1794446802769.704}
-{"frame":1930556033.8809588,"w":1794446802786.375}
-{"frame":1930556050.538334,"w":1794446802803.029}
-{"frame":1930556067.2113338,"w":1794446802819.701}
-{"frame":1930556083.879417,"w":1794446802836.365}
-{"frame":1930556100.5342922,"w":1794446802853.017}
-{"frame":1930556117.2091253,"w":1794446802869.691}
-{"frame":1930558317.2226672,"w":1794446805069.749}
-{"frame":1930558333.8743753,"w":1794446805086.377}
-{"frame":1930558350.538209,"w":1794446805103.036}
-{"frame":1930558367.2133336,"w":1794446805119.732}
-{"frame":1930558383.8830004,"w":1794446805136.386}
-{"frame":1930558400.545792,"w":1794446805153.039}
-{"frame":1930558417.2124171,"w":1794446805169.697}
-{"frame":1930558433.8627505,"w":1794446805186.347}
-{"frame":1930558583.8650005,"w":1794446805336.377}
-{"step":"# flow complete","w":1794446805338.453}
-{"step":"","w":1794446805338.465}
-{"textrec":{"s":[13,600,0,"D"],"r":[0,1,9.539989590644836,0]}}
+{"out":{"id":1,"call":"client.device","params":{"client":"still.fail mbui","app":"desktop","userAgent":"Macintosh; Mac OS X"}},"w":1794864363361.355}
+{"out":{"id":2,"subscribe":{"topic":"prefs"},"keyed":true},"w":1794864363362.702}
+{"out":{"id":3,"subscribe":{"topic":"accounts"},"keyed":true},"w":1794864363362.916}
+{"out":{"id":4,"subscribe":{"topic":"workspaces"},"keyed":true},"w":1794864363363.571}
+{"in":{"id":1,"ok":null},"w":1794864363418.322}
+{"in":{"id":2,"value":{"onlyMine":false,"onlyWatching":false,"boardViews":{},"boardGroups":{},"boardShowEmpty":{},"boardDrafts":{},"listFilter":{},"appearance":"system","rowPicture":"auto","absoluteTime":false,"lang":"zh","keys":{},"lastChat":{},"moveTo":{},"openChat":{},"chatTabs":{},"dropFiles":{},"driveViews":{},"filesTabs":{},"driveFavorites":{"01M7K40WN8AC40FXKK46D3ZR31":"[{\"station\":\"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"\",\"name\":\"e2e-105609\"}]"},"driveFavoritesHidden":{"01M7K40WN8AC40FXKK46D3ZR31":"[]"},"previewSizes":{},"sidebars":{},"trouble":{},"jobsSeen":{},"failsGone":{},"resume":{},"stationUpdatesDismissed":{},"device":{"app":"desktop","phone":false,"handoff":false},"productName":"still.fail","product":"still.fail","reader":{"size":16,"line":1.7,"margin":22,"face":"sans","indent":true,"paper":"follow"},"rails":{},"bars":{"sets":[["chats","files","profiles","stations"],["archive","usage","connects","vault"]],"current":0},"barsBy":{},"fonts":{},"faces":{"ui":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"text":{"id":"","name":"","mono":false,"family":"","files":[],"bytes":0},"code":{"id":"","name":"","mono":true,"family":"","files":[],"bytes":0},"list":[{"id":"inter","name":"Inter","mono":false,"family":"SF Inter","css":"http://127.0.0.1:28787/releases/fonts/inter/4.001/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28787/releases/fonts/inter/4.001/var.ttf.gz","bytes":457818,"sha256":"29160a80ff49ddcab2c97711247e08b1fab27a484a329ce8b813d820dc559031"}],"preview":"http://127.0.0.1:28787/releases/fonts/inter/4.001/preview-194fa287.ttf","bytes":457818},{"id":"noto-sans-sc","name":"思源黑体","mono":false,"family":"SF Noto Sans SC","css":"http://127.0.0.1:28787/releases/fonts/noto-sans-sc/2.004/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28787/releases/fonts/noto-sans-sc/2.004/var.ttf.gz","bytes":11276563,"sha256":"a3041811a78c361b1de50f953c805e0244951c21c5bd412f7232ef0d899af0da"}],"preview":"http://127.0.0.1:28787/releases/fonts/noto-sans-sc/2.004/preview-f0494178.ttf","bytes":11276563},{"id":"noto-serif-sc","name":"思源宋体","mono":false,"family":"SF Noto Serif SC","css":"http://127.0.0.1:28787/releases/fonts/noto-serif-sc/2.003/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28787/releases/fonts/noto-serif-sc/2.003/var.ttf.gz","bytes":15454579,"sha256":"050080d9255a86808f2945bffac582b31ef32bc36411ce29563b4961670c66f9"}],"preview":"http://127.0.0.1:28787/releases/fonts/noto-serif-sc/2.003/preview-001bbedf.ttf","bytes":15454579},{"id":"lxgw-wenkai","name":"霞鹜文楷","mono":false,"family":"SF LXGW WenKai","css":"http://127.0.0.1:28787/releases/fonts/lxgw-wenkai/1.530/font.css","files":[{"weight":400,"url":"http://127.0.0.1:28787/releases/fonts/lxgw-wenkai/1.530/400.ttf.gz","bytes":12904482,"sha256":"2d73eea94ad808999d90c0000c239a84a33b09d4bc6ab6c5b8bbf1eda8a7fc8b"},{"weight":500,"url":"http://127.0.0.1:28787/releases/fonts/lxgw-wenkai/1.530/500.ttf.gz","bytes":13272430,"sha256":"f4b8a34d1f838fe411540cb7c97b1c384ac9738a876c4104500bc42508b2312a"}],"preview":"http://127.0.0.1:28787/releases/fonts/lxgw-wenkai/1.530/preview-d3505af4.ttf","bytes":26176912},{"id":"jetbrains-mono","name":"JetBrains Mono","mono":true,"family":"SF JetBrains Mono","css":"http://127.0.0.1:28787/releases/fonts/jetbrains-mono/2.211/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28787/releases/fonts/jetbrains-mono/2.211/var.ttf.gz","bytes":90579,"sha256":"48715a42ec242c21e9f02692891e147d022299a52e48d5e413e1a942193ffeda"}],"preview":"http://127.0.0.1:28787/releases/fonts/jetbrains-mono/2.211/preview-ee73078f.ttf","bytes":90579},{"id":"fira-code","name":"Fira Code","mono":true,"family":"SF Fira Code","css":"http://127.0.0.1:28787/releases/fonts/fira-code/5.002/font.css","files":[{"weight":0,"url":"http://127.0.0.1:28787/releases/fonts/fira-code/5.002/var.ttf.gz","bytes":137151,"sha256":"9335b082b3c7850d98a64b584f3417f65355f3471278bb5eeb8c6c0e8657aeeb"}],"preview":"http://127.0.0.1:28787/releases/fonts/fira-code/5.002/preview-555be27a.ttf","bytes":137151},{"id":"maple-mono","name":"Maple Mono","mono":true,"family":"SF Maple Mono CN","css":"http://127.0.0.1:28787/releases/fonts/maple-mono/7.9/font.css","files":[{"weight":400,"url":"http://127.0.0.1:28787/releases/fonts/maple-mono/7.9/400.ttf.gz","bytes":8352545,"sha256":"0fcc5139bfd5ab14ff989bb7dfd5236d0cafc10e60b9828569e6883613ab4085"},{"weight":600,"url":"http://127.0.0.1:28787/releases/fonts/maple-mono/7.9/600.ttf.gz","bytes":8438132,"sha256":"96ed7ae26ee7c50b02b2d2b2bc0f1a0cbabe45ae5d6e6abf6678e2177c415677"}],"preview":"http://127.0.0.1:28787/releases/fonts/maple-mono/7.9/preview-cffdf246.ttf","bytes":16790677}]},"keymap":{"changeable":true,"mac":true,"groups":[{"group":"global","name":"全局"},{"group":"chat","name":"对话"},{"group":"files","name":"文件"}],"actions":[{"action":"chat.switch","group":"global","name":"快速切换对话","typing":"yes","keys":["Mod+K"],"labels":["⌘K"],"text":"⌘K","changed":false,"listed":true},{"action":"chat.new","group":"global","name":"新建对话","typing":"yes","keys":["Mod+N","Alt+Mod+N"],"labels":["⌘N","⌥⌘N"],"text":"⌘N / ⌥⌘N","changed":false,"listed":true},{"action":"chat.prev","group":"global","name":"上一个对话","typing":"yes","keys":["Alt+Up"],"labels":["⌥↑"],"text":"⌥↑","changed":false,"listed":true},{"action":"chat.next","group":"global","name":"下一个对话","typing":"yes","keys":["Alt+Down"],"labels":["⌥↓"],"text":"⌥↓","changed":false,"listed":true},{"action":"sidebar.toggle","group":"global","name":"收起/展开侧边栏","typing":"yes","keys":["Mod+\\"],"labels":["⌘\\"],"text":"⌘\\","changed":false,"listed":true},{"action":"nav.back","group":"global","name":"后退","typing":"yes","keys":["Mod+["],"labels":["⌘["],"text":"⌘[","changed":false,"listed":true},{"action":"nav.forward","group":"global","name":"前进","typing":"yes","keys":["Mod+]"],"labels":["⌘]"],"text":"⌘]","changed":false,"listed":true},{"action":"settings","group":"global","name":"设置","typing":"yes","keys":["Mod+,"],"labels":["⌘,"],"text":"⌘,","changed":false,"listed":true},{"action":"shortcuts","group":"global","name":"快捷键一览","typing":"yes","keys":["Mod+/"],"labels":["⌘/"],"text":"⌘/","changed":false,"listed":true},{"action":"zoom.in","group":"global","name":"放大界面","typing":"yes","keys":["Mod+Plus","Mod+=","Shift+Mod+=","Shift+Mod+Plus"],"labels":["⌘+","⌘=","⇧⌘=","⇧⌘+"],"text":"⌘+ / ⌘= / ⇧⌘= / ⇧⌘+","changed":false,"listed":true},{"action":"zoom.out","group":"global","name":"缩小界面","typing":"yes","keys":["Mod+-"],"labels":["⌘-"],"text":"⌘-","changed":false,"listed":true},{"action":"zoom.reset","group":"global","name":"恢复界面大小","typing":"yes","keys":["Mod+0"],"labels":["⌘0"],"text":"⌘0","changed":false,"listed":true},{"action":"composer.focus","group":"chat","name":"回到输入框","typing":"no","keys":["Space"],"labels":["空格"],"text":"空格","changed":false,"listed":true},{"action":"composer.file","group":"chat","name":"发送文件","typing":"yes","keys":["Mod+U"],"labels":["⌘U"],"text":"⌘U","changed":false,"listed":true},{"action":"chat.stop","group":"chat","name":"停止当前任务","typing":"yes","keys":["Mod+."],"labels":["⌘."],"text":"⌘.","changed":false,"listed":true},{"action":"chat.history","group":"chat","name":"执行历史","typing":"yes","keys":["Shift+Mod+H"],"labels":["⇧⌘H"],"text":"⇧⌘H","changed":false,"listed":true},{"action":"chat.jobs","group":"chat","name":"服务和后台任务","typing":"yes","keys":["Shift+Mod+J"],"labels":["⇧⌘J"],"text":"⇧⌘J","changed":false,"listed":true},{"action":"chat.screen","group":"chat","name":"Station 屏幕","typing":"yes","keys":["Shift+Mod+D"],"labels":["⇧⌘D"],"text":"⇧⌘D","changed":false,"listed":true},{"action":"chat.latest","group":"chat","name":"跳到最新","typing":"empty","keys":["Mod+Down"],"labels":["⌘↓"],"text":"⌘↓","changed":false,"listed":true},{"action":"chat.find","group":"chat","name":"在对话中查找","typing":"yes","keys":["Mod+F"],"labels":["⌘F"],"text":"⌘F","changed":false,"listed":true},{"action":"chat.outline","group":"chat","name":"目录","typing":"yes","keys":["Mod+G"],"labels":["⌘G"],"text":"⌘G","changed":false,"listed":true},{"action":"chat.said.prev","group":"chat","name":"上一条发言","typing":"empty","keys":["Alt+Shift+Up"],"labels":["⌥⇧↑"],"text":"⌥⇧↑","changed":false,"listed":true},{"action":"chat.said.next","group":"chat","name":"下一条发言","typing":"empty","keys":["Alt+Shift+Down"],"labels":["⌥⇧↓"],"text":"⌥⇧↓","changed":false,"listed":true},{"action":"chat.archive","group":"chat","name":"归档对话","typing":"yes","keys":["Shift+Mod+E"],"labels":["⇧⌘E"],"text":"⇧⌘E","changed":false,"listed":true},{"action":"panel.close","group":"chat","name":"收起侧栏","typing":"yes","keys":["Escape"],"labels":["Esc"],"text":"Esc","changed":false,"listed":true},{"action":"files.preview","group":"files","name":"显示或隐藏预览","typing":"yes","keys":["Shift+Mod+P"],"labels":["⇧⌘P"],"text":"⇧⌘P","changed":false,"listed":true}],"workspace":["⌃1","⌃2","⌃3","⌃4","⌃5","⌃6","⌃7","⌃8","⌃9"],"send":{"by":"enter","choices":[{"by":"enter","name":"Enter 发送"},{"by":"mod","name":"⌘ Enter 发送"}],"send":"↩","newline":"⇧↩","text":"发送 ↩，换行 ⇧↩"}},"railView":{"places":[{"id":"chats","label":"对话","kind":"lists","list":"all"},{"id":"mine","label":"我参与的","kind":"lists","list":"mine"},{"id":"watching","label":"监控中","kind":"lists","list":"watching"},{"id":"hidden","label":"已隐藏","kind":"lists","list":"hidden"},{"id":"archive","label":"已归档","kind":"lists","list":"archive"},{"id":"attention","label":"待处理","kind":"attention"},{"id":"files","label":"文件","kind":"places"},{"id":"stations","label":"Station","kind":"places"},{"id":"profiles","label":"Profile","kind":"places"},{"id":"connects","label":"连接","kind":"places"},{"id":"usage","label":"用量","kind":"places"}],"groups":[{"kind":"places","label":"页面","places":["files","stations","profiles","connects","usage"]},{"kind":"lists","label":"对话列表","places":["chats","mine","watching","hidden","archive"]},{"kind":"attention","label":"提醒","places":["attention"]}],"default":["attention","chats","files","stations","profiles","connects","usage"],"all":{"items":["attention","chats","files","stations","profiles","connects","usage"],"hidden":["mine","watching","hidden","archive"],"changed":false},"by":{}},"testChannel":false,"experimental":{},"features":{"chatPage":false,"farviewNative":false,"board":false,"terminal":false,"stationMove":false},"experimentalItems":[{"id":"chatPage","enabled":false},{"id":"farviewNative","enabled":false},{"id":"board","enabled":false}]}},"w":1794864363418.531}
+{"in":{"id":3,"value":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"}]},"w":1794864363418.888}
+{"in":{"id":4,"value":[{"account":{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png"},"workspaces":[{"id":"01M7K40WN8AC40FXKK46D3ZR31","name":"Dev","role":"owner","created_at":1794864345,"stations":1,"members":1,"relays":[],"time":{"created_at":{"past":true,"at":1794864345000,"ago":"刚刚","full":"11/16 21:25:45","until":"1 分钟内"}}}],"invitations":[],"relay_url":"http://127.0.0.1:28740","loaded":false,"beta":true}]},"w":1794864363419.023}
+{"out":{"id":5,"subscribe":{"topic":"status"},"keyed":true},"w":1794864363419.073}
+{"out":{"id":6,"subscribe":{"topic":"workspace","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363419.138}
+{"out":{"id":7,"subscribe":{"topic":"stations","scope":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363419.157}
+{"out":{"id":8,"subscribe":{"topic":"notify"},"keyed":true},"w":1794864363419.185}
+{"in":{"id":5,"value":{"items":[],"lines":[]}},"w":1794864363426.662}
+{"in":{"id":4,"delta":[{"path":[0,"loaded"],"set":true}]},"w":1794864363426.696}
+{"in":{"id":6,"value":{"rev":1794864346000,"id":"01M7K40WN8AC40FXKK46D3ZR31","name":"Dev","created_at":1794864345,"members":[{"sub":"alice","email":"alice@example.test","name":"Name of alice","picture":"https://example.test/p.png","role":"owner","added_at":1794864345}],"stations":[{"id":"118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","name":"willow","emoji":null,"icon":null,"enrolled_at":1794864346,"enrolled_by":"alice","last_seen":1794864347,"version":"0.1.0","time":{"last_seen":{"past":true,"at":1794864347000,"ago":"刚刚","full":"11/16 21:25:47","until":"1 分钟内"}}}],"relays":[],"ways":[{"id":"http://127.0.0.1:28740","kind":"relay","on":true},{"id":"lan","kind":"lan","on":true},{"id":"tailnet","kind":"tailnet","on":true},{"id":"direct","kind":"direct","on":true}],"lock":null,"role":"owner","invitations":[],"added":[],"lock_requests":0,"time":{"created_at":{"past":true,"at":1794864345000,"ago":"刚刚","full":"11/16 21:25:45","until":"1 分钟内"}}}},"w":1794864363426.725}
+{"in":{"id":7,"value":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","id":"118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","name":"willow","summary":"空闲 · Test CPU · 7 GB · Test OS","face":"idle","line":"Test CPU","online":true,"reconnecting":false,"stateText":"空闲","stateBusy":false,"problems":[],"lastSeen":1794864347,"version":"0.1.0","way":{"path":"直连","via":"direct"},"joined":false,"mine":true,"host":{"identity":"Test CPU · 7 GB · Test OS","os":"Test OS","meters":[{"label":"CPU","short":"CPU","percent":25,"left":75,"level":"ok","value":"25%","remaining":"空闲 75%","big":"75","unit":"%","title":"CPU 空闲率","titleShort":"CPU 空闲","total":"负载 1.0","note":"负载 1.0 · Test CPU"},{"label":"内存","short":"内存","percent":50,"left":50,"level":"ok","value":"3.7 GB / 7.5 GB","remaining":"剩 3.7 G","big":"3.7","unit":"GB","title":"可用内存","total":"总内存 7 GB","totalShort":"总 7 GB"},{"label":"磁盘","short":"磁盘","percent":50,"left":50,"level":"ok","value":"剩余 46.6 GB / 93.1 GB","remaining":"剩 46.6 G","big":"46.6","unit":"GB","title":"可用磁盘","total":"总磁盘 93 GB","totalShort":"总 93 GB"}]},"overview":{"viewer":{"via":"mesh","email":"alice@example.test","name":"Name of alice","sub":"alice","role":"owner","workspace":"01M7K40WN8AC40FXKK46D3ZR31","device":"c8a11771ccc70437a940bbd0a9bd9d58708ebe09f14ddeb8422df7876e9c70cb"},"counts":{"sessions":1,"running":0,"warm":1},"disk":{"freeBytes":50000000000,"totalBytes":100000000000},"drive":{"roots":[],"anywhere":true,"home":"/test-station/home"}}}]},"w":1794864363426.77}
+{"in":{"id":8,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M7K40WN8AC40FXKK46D3ZR31","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794864363426.797}
+{"out":{"id":9,"call":"notify.permission","params":{"state":"unknown"}},"w":1794864363426.879}
+{"in":{"id":9,"ok":null},"w":1794864363427.079}
+{"settings":{"w":1280,"h":800,"scale":1,"platform":0,"pointing":0,"utc":0,"motion":0,"glass":0,"dark":0,"inset":1,"ime":0,"copy":0,"font":1},"w":1794864363428.601}
+{"frame":15222846.84291667,"w":1794864363428.612}
+{"out":{"id":10,"subscribe":{"topic":"lock","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363428.707}
+{"out":{"id":11,"subscribe":{"topic":"workspaceMarks"},"keyed":true},"w":1794864363428.772}
+{"out":{"id":13,"call":"chats.window","params":{"scope":"01M7K40WN8AC40FXKK46D3ZR31","mine":false,"rows":30}},"w":1794864363428.81}
+{"out":{"id":12,"subscribe":{"topic":"chats","scope":"01M7K40WN8AC40FXKK46D3ZR31","mine":false},"keyed":true},"w":1794864363428.826}
+{"out":{"id":14,"subscribe":{"topic":"filesTabs","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363428.86}
+{"out":{"id":15,"subscribe":{"topic":"doing"},"keyed":true},"w":1794864363428.892}
+{"out":{"id":16,"subscribe":{"topic":"driveTransfers","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363428.91}
+{"out":{"id":17,"subscribe":{"topic":"status","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363428.937}
+{"out":{"id":18,"subscribe":{"topic":"lockPrompts"},"keyed":true},"w":1794864363428.955}
+{"out":{"id":19,"subscribe":{"topic":"notify","workspace":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363428.979}
+{"out":{"id":20,"subscribe":{"topic":"stationUpdates","scope":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363429}
+{"out":{"id":21,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":"","write":true},"keyed":true},"w":1794864363433.293}
+{"out":{"id":22,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":"","write":true,"act":"at"}},"w":1794864363433.405}
+{"out":{"id":23,"subscribe":{"topic":"drive","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""},"keyed":true},"w":1794864363433.523}
+{"out":{"id":24,"subscribe":{"topic":"longJobs","scope":"01M7K40WN8AC40FXKK46D3ZR31"},"keyed":true},"w":1794864363435.715}
+{"out":{"id":25,"subscribe":{"topic":"downloads"},"keyed":true},"w":1794864363436.273}
+{"out":{"id":26,"call":"files.tabs","params":{"workspace":"01M7K40WN8AC40FXKK46D3ZR31","act":"arrive","pane":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""}}},"w":1794864363442.872}
+{"in":{"id":13,"ok":null},"w":1794864363444.714}
+{"in":{"id":10,"value":{"available":true,"locked":false,"notice":true,"role":"owner","manages":true,"owner":true,"canSign":true,"signs":false,"me":{"device":"c8a11771ccc70437a940bbd0a9bd9d58708ebe09f14ddeb8422df7876e9c70cb","code":"Z2G-Q62","kind":"app","confirmed":false,"waiting":false},"signers":0,"members":[],"stations":[{"id":"118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","name":"willow","version":"0.1.0","online":true,"protected":false}],"protected":0,"renew":[],"attention":0,"pending":[]}},"w":1794864363444.734}
+{"in":{"id":11,"value":{"workspaces":{"01M7K40WN8AC40FXKK46D3ZR31":{"alert":0,"unread":1,"tone":"done","label":"1 个有新消息","badge":1,"items":[{"kind":"done","workspace":"01M7K40WN8AC40FXKK46D3ZR31","workspaceName":"Dev","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","stationName":"willow","session":"chat:c-55b03b0150bf49df1d7eec767db6616f","thread":1,"title":"端到端测试的对话","text":"","what":"","seq":2,"at":1794864348283}],"mineTone":"done"}},"badge":1,"badgeKinds":{"on":true,"wait":true,"failed":true,"done":true,"message":true,"services":true}}},"w":1794864363445.892}
+{"in":{"id":12,"value":{"stations":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44"}],"days":[{"daysAgo":0,"label":"今天","items":[{"id":"chat:c-55b03b0150bf49df1d7eec767db6616f","session":"chat:c-55b03b0150bf49df1d7eec767db6616f","thread":1,"title":"端到端测试的对话","agents":[{"runtime":"claude","agentText":"默认模型"}],"last":{"seq":2,"by":{"mine":false},"preview":"你好，我是测试用的 agent"},"unread":true,"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","stationName":"willow","people":[{"id":"alice@example.test","email":"alice@example.test","shown":{"name":"Name of alice","picture":"https://example.test/p.png","mine":true}}],"creator":{"id":"alice@example.test"},"peopleText":"你 发起","pinned":false,"swipeArchive":true,"hidden":false,"tone":"done"}]}],"more":null,"trouble":null,"members":1,"leading":"agents","glyph":{"online":1,"dim":0,"connecting":0,"failing":0,"working":0,"asleep":false,"summary":"willow","label":"1 台 station，1 台在线","running":0,"now":"暂无 agent 在运行","unit":"个 agent 正在运行"},"note":{"reading":false,"text":null,"failing":[],"empty":false},"syncing":null}},"w":1794864363446.07}
+{"in":{"id":14,"value":null},"w":1794864363446.176}
+{"in":{"id":15,"value":{"doing":[]}},"w":1794864363447.288}
+{"in":{"id":16,"value":{"supported":true,"loaded":true,"transfers":[]}},"w":1794864363447.313}
+{"in":{"id":17,"value":{"items":[],"lines":[]}},"w":1794864363447.348}
+{"in":{"id":18,"value":{"pairing":[],"asks":[]}},"w":1794864363447.394}
+{"in":{"id":19,"value":{"on":true,"asked":true,"push":true,"kinds":{"wait":true,"failed":true,"done":"away","message":true},"preview":true,"muted":[],"workspaces":[{"id":"01M7K40WN8AC40FXKK46D3ZR31","name":"Dev","on":true}],"permission":"unknown","show":[]}},"w":1794864363447.43}
+{"in":{"id":20,"value":{"items":[],"offered":0,"labelText":"","titleText":"Station 更新"}},"w":1794864363447.461}
+{"in":{"id":22,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794864363450.78}
+{"in":{"id":21,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{},"chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794864363450.863}
+{"in":{"id":24,"value":{"groups":[],"lit":false,"ids":[]}},"w":1794864363450.914}
+{"in":{"id":25,"value":{"downloads":[],"keeping":[]}},"w":1794864363450.935}
+{"in":{"id":23,"value":{"path":"","entries":[{"name":"e2e-105609","dir":true,"size":0,"mtime":1794864361937,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"21:26"},{"name":"Library","dir":true,"size":0,"mtime":1794864346896,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"21:25"}],"truncated":false,"folders":2,"files":0,"countText":"2 个文件夹"}},"w":1794864363450.963}
+{"in":{"id":21,"delta":[{"path":["countText"],"set":"2 个文件夹"},{"path":["folders",""],"set":["e2e-105609","Library"]}]},"w":1794864363451.055}
+{"in":{"id":26,"ok":{"tabs":[{"id":"dda0a988a5d0","panes":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""}],"front":0}],"current":"dda0a988a5d0","front":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""}}},"w":1794864363451.069}
+{"out":{"id":27,"call":"client.focus","params":{"visible":true,"focused":true,"workspace":"01M7K40WN8AC40FXKK46D3ZR31"}},"w":1794864363489.592}
+{"out":{"id":5,"unsubscribe":true},"w":1794864363493.163}
+{"step":"# written by scripts/rerecord.sh from its test (src/sfreplay/emit.mbt): not edited by hand","w":1794864363493.181}
+{"step":"timeout 90000","w":1794864363493.188}
+{"step":"#env MBUI_WIN=1280x800","w":1794864363493.192}
+{"step":"#before drive-big 105609","w":1794864363493.195}
+{"step":"#env MBUI_OPEN_PAGE=files","w":1794864363493.197}
+{"step":"wait 449","w":1794864363493.2}
+{"in":{"id":14,"value":{"tabs":[{"id":"dda0a988a5d0","panes":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""}],"front":0}],"current":"dda0a988a5d0","front":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home","path":""}}},"w":1794864363493.705}
+{"in":{"id":2,"delta":[{"path":["filesTabs","01M7K40WN8AC40FXKK46D3ZR31"],"set":"{\"tabs\":[{\"id\":\"dda0a988a5d0\",\"panes\":[{\"station\":\"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\",\"root\":\"/test-station/home\",\"path\":\"\"}],\"front\":0}],\"current\":\"dda0a988a5d0\"}"}]},"w":1794864363493.746}
+{"in":{"id":27,"ok":null},"w":1794864363493.797}
+{"frame":15222915.819250004,"w":1794864363497.451}
+{"out":{"id":20,"unsubscribe":true,"keep":true},"w":1794864363498.067}
+{"in":{"id":20,"v":"1g5q6l2a6v6r:0"},"w":1794864363498.176}
+{"frame":15223300.044208338,"w":1794864363881.704}
+{"frame":15223366.723000003,"w":1794864363948.377}
+{"step":"now untiln 2 =e2e-105609","w":1794864363948.848}
+{"step":"tap1 =e2e-105609","w":1794864363949.052}
+{"out":{"id":28,"subscribe":{"topic":"drive","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":""},"keyed":true},"w":1794864363951.48}
+{"step":"tap1 =e2e-105609","acted":true,"w":1794864363954.082}
+{"in":{"id":28,"value":{"path":"","entries":[{"name":"大文件","dir":true,"size":0,"mtime":1794864362089,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"21:26"},{"name":"子文件夹","dir":true,"size":0,"mtime":1794864349036,"type":"","kind":"folder","opens":"folder","sizeText":"","timeText":"21:25"},{"name":"小说-e2e.txt","dir":false,"size":36779,"mtime":1794864349052,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"36 KB","timeText":"21:25"},{"name":"说明.txt","dir":false,"size":43,"mtime":1794864349036,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"43 B","timeText":"21:25"}],"truncated":false,"folders":2,"files":2,"countText":"2 个文件夹 · 2 个文件"}},"w":1794864363955.317}
+{"out":{"id":29,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"","write":true},"keyed":true},"w":1794864363958.257}
+{"out":{"id":30,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"","write":true,"act":"at"}},"w":1794864363958.335}
+{"out":{"id":31,"call":"files.tabs","params":{"workspace":"01M7K40WN8AC40FXKK46D3ZR31","act":"arrive","pane":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":""}}},"w":1794864363959.131}
+{"out":{"id":21,"unsubscribe":true},"w":1794864363961.402}
+{"frame":15223383.376250004,"w":1794864363965.012}
+{"in":{"id":30,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794864363965.167}
+{"in":{"id":29,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{"":["大文件","子文件夹","小说-e2e.txt","说明.txt"]},"countText":"2 个文件夹 · 2 个文件","chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794864363965.244}
+{"in":{"id":31,"ok":{"tabs":[{"id":"dda0a988a5d0","panes":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":""}],"front":0}],"current":"dda0a988a5d0","front":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":""}}},"w":1794864363965.71}
+{"step":"answered drive.browse","w":1794864363969.373}
+{"frame":15223400.04841667,"w":1794864363981.685}
+{"step":"answered files.tabs","w":1794864363982.252}
+{"frame":15223416.709000003,"w":1794864363998.339}
+{"step":"wait 500","w":1794864363998.774}
+{"frame":15223433.377375005,"w":1794864364015.01}
+{"frame":15223450.040500004,"w":1794864364031.67}
+{"frame":15223466.702625003,"w":1794864364048.336}
+{"frame":15223483.37316667,"w":1794864364065.007}
+{"frame":15223500.03916667,"w":1794864364081.677}
+{"frame":15223516.70704167,"w":1794864364098.34}
+{"in":{"id":14,"delta":[{"path":["front","root"],"set":"/test-station/home/e2e-105609"},{"path":["tabs",0,"panes",0,"root"],"set":"/test-station/home/e2e-105609"}]},"w":1794864364134.246}
+{"in":{"id":2,"delta":[{"path":["filesTabs","01M7K40WN8AC40FXKK46D3ZR31"],"set":"{\"tabs\":[{\"id\":\"dda0a988a5d0\",\"panes\":[{\"station\":\"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"\"}],\"front\":0}],\"current\":\"dda0a988a5d0\"}"}]},"w":1794864364136.303}
+{"frame":15223566.700375004,"w":1794864364148.33}
+{"frame":15223783.369875005,"w":1794864364365.026}
+{"frame":15223916.706583338,"w":1794864364498.365}
+{"frame":15223933.368583336,"w":1794864364515.002}
+{"step":"now until =大文件","w":1794864364515.454}
+{"step":"tap =大文件","w":1794864364515.641}
+{"out":{"id":32,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"","write":true,"act":"press","folder":"","name":"大文件","mod":false,"shift":false}},"w":1794864364516.372}
+{"step":"tap =大文件","acted":true,"w":1794864364516.474}
+{"frame":15223950.039208338,"w":1794864364531.674}
+{"in":{"id":32,"ok":{"acted":true,"chosen":{"folder":"","names":["大文件"],"anchor":"大文件","lead":"大文件"},"show":{"folder":"","name":"大文件"}}},"w":1794864364531.775}
+{"step":"answered drive.browse","w":1794864364532.277}
+{"frame":15223966.700000003,"w":1794864364548.333}
+{"step":"tap =大文件","w":1794864364548.888}
+{"out":{"id":33,"call":"drive.browse","params":{"act":"opened","owner":"page","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"","name":"大文件"}},"w":1794864364549.462}
+{"out":{"id":34,"subscribe":{"topic":"drive","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件"},"keyed":true},"w":1794864364551.413}
+{"step":"tap =大文件","acted":true,"w":1794864364554.394}
+{"in":{"id":33,"ok":null},"w":1794864364554.454}
+{"in":{"id":29,"delta":[{"path":["chosen","anchor"],"set":"大文件"},{"path":["chosen","lead"],"set":"大文件"},{"path":["chosen","names"],"append":["大文件"]},{"path":["keys"],"set":["ArrowDown","mod+ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","ArrowRight","mod+ArrowRight","Enter","mod+Enter","mod+o","mod+Backspace","Delete","mod+Delete","mod+a","Escape","mod+Escape","mod+shift+Period"]}]},"w":1794864364554.473}
+{"in":{"id":34,"value":{"path":"大文件","entries":[{"name":"大文件.bin","dir":false,"size":50331648,"mtime":1794864362089,"type":"application/octet-stream","kind":"other","opens":"save","sizeText":"48 MB","timeText":"21:26"},{"name":"附件.txt","dir":false,"size":40,"mtime":1794864362089,"type":"text/plain; charset=utf-8","kind":"text","opens":"read","sizeText":"40 B","timeText":"21:26"}],"truncated":false,"folders":0,"files":2,"countText":"2 个文件"}},"w":1794864364555.144}
+{"out":{"id":35,"subscribe":{"topic":"driveBrowse","owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件","write":true},"keyed":true},"w":1794864364558.005}
+{"out":{"id":36,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"at"}},"w":1794864364558.082}
+{"out":{"id":37,"call":"files.tabs","params":{"workspace":"01M7K40WN8AC40FXKK46D3ZR31","act":"arrive","pane":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件"}}},"w":1794864364559.728}
+{"out":{"id":23,"unsubscribe":true},"w":1794864364559.776}
+{"out":{"id":29,"unsubscribe":true},"w":1794864364561.683}
+{"frame":15223983.366500005,"w":1794864364564.995}
+{"in":{"id":36,"ok":{"acted":true,"chosen":{"folder":"","names":[]}}},"w":1794864364565.148}
+{"in":{"id":35,"value":{"arrangement":{"by":"name","down":false,"hidden":false},"folders":{"大文件":["大文件.bin","附件.txt"]},"countText":"2 个文件","chosen":{"folder":"","names":[]},"open":[],"widths":{},"keys":["ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+a","mod+shift+Period"]}},"w":1794864364565.203}
+{"in":{"id":37,"ok":{"tabs":[{"id":"dda0a988a5d0","panes":[{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件"}],"front":0}],"current":"dda0a988a5d0","front":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件"}}},"w":1794864364566.298}
+{"out":{"id":28,"unsubscribe":true},"w":1794864364567.614}
+{"step":"answered drive.browse","w":1794864364569.209}
+{"in":{"id":14,"delta":[{"path":["front","path"],"set":"大文件"},{"path":["tabs",0,"panes",0,"path"],"set":"大文件"}]},"w":1794864364569.263}
+{"in":{"id":2,"delta":[{"path":["filesTabs","01M7K40WN8AC40FXKK46D3ZR31"],"set":"{\"tabs\":[{\"id\":\"dda0a988a5d0\",\"panes\":[{\"station\":\"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\",\"root\":\"/test-station/home/e2e-105609\",\"path\":\"大文件\"}],\"front\":0}],\"current\":\"dda0a988a5d0\"}"}]},"w":1794864364569.291}
+{"frame":15224000.035666669,"w":1794864364581.664}
+{"step":"answered files.tabs","w":1794864364582.116}
+{"frame":15224016.70366667,"w":1794864364598.338}
+{"step":"wait 500","w":1794864364598.764}
+{"frame":15224033.367083337,"w":1794864364614.998}
+{"frame":15224050.031000003,"w":1794864364631.659}
+{"frame":15224066.69516667,"w":1794864364648.322}
+{"frame":15224083.362708338,"w":1794864364664.99}
+{"frame":15224100.032166671,"w":1794864364681.662}
+{"frame":15224116.696458338,"w":1794864364698.324}
+{"frame":15224516.707875004,"w":1794864365098.355}
+{"frame":15224533.364458337,"w":1794864365114.997}
+{"step":"now until 大文件.bin","w":1794864365115.438}
+{"step":"tap 大文件.bin","w":1794864365115.574}
+{"out":{"id":38,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"press","folder":"大文件","name":"大文件.bin","mod":false,"shift":false}},"w":1794864365116.025}
+{"step":"tap 大文件.bin","acted":true,"w":1794864365116.12}
+{"frame":15224550.046333337,"w":1794864365131.692}
+{"in":{"id":38,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin"],"anchor":"大文件.bin","lead":"大文件.bin"},"show":{"folder":"大文件","name":"大文件.bin"}}},"w":1794864365131.754}
+{"step":"key cmd+a","w":1794864365132.203}
+{"out":{"id":39,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"key","key":"mod+a","shift":false}},"w":1794864365132.356}
+{"step":"key cmd+a","acted":true,"w":1794864365132.386}
+{"frame":15224566.700583337,"w":1794864365148.334}
+{"in":{"id":39,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin","附件.txt"],"anchor":"大文件.bin","lead":"大文件.bin"}}},"w":1794864365148.375}
+{"step":"answered drive.browse","w":1794864365148.877}
+{"frame":15224583.364458336,"w":1794864365164.996}
+{"step":"rightclick 大文件.bin","w":1794864365165.389}
+{"out":{"id":40,"call":"drive.browse","params":{"owner":"page","place":"p1","view":"list","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件","write":true,"act":"menu","folder":"大文件","name":"大文件.bin"}},"w":1794864365165.707}
+{"step":"rightclick 大文件.bin","acted":true,"w":1794864365166.936}
+{"frame":15224600.027958337,"w":1794864365181.656}
+{"in":{"id":40,"ok":{"acted":true,"chosen":{"folder":"大文件","names":["大文件.bin","附件.txt"],"anchor":"大文件.bin","lead":"大文件.bin"}}},"w":1794864365181.729}
+{"in":{"id":35,"delta":[{"path":["chosen","anchor"],"set":"大文件.bin"},{"path":["chosen","folder"],"set":"大文件"},{"path":["chosen","lead"],"set":"大文件.bin"},{"path":["chosen","names"],"append":["大文件.bin","附件.txt"]},{"path":["keys"],"set":["ArrowDown","mod+ArrowDown","ArrowUp","mod+ArrowUp","Home","mod+Home","End","mod+End","mod+o"," ","mod+ ","mod+Backspace","Delete","mod+Delete","mod+a","Escape","mod+Escape","mod+shift+Period"]}]},"w":1794864365181.795}
+{"step":"wait 150","w":1794864365182.76}
+{"frame":15224616.698458336,"w":1794864365198.33}
+{"frame":15224633.363583336,"w":1794864365214.993}
+{"frame":15224650.027458336,"w":1794864365231.657}
+{"frame":15224666.699458338,"w":1794864365248.329}
+{"frame":15224683.372541672,"w":1794864365265.012}
+{"frame":15224700.034041671,"w":1794864365281.667}
+{"frame":15224716.707708336,"w":1794864365298.349}
+{"frame":15224733.363333337,"w":1794864365314.996}
+{"frame":15224766.697708337,"w":1794864365348.333}
+{"step":"now until 下载 2 个文件","w":1794864365348.741}
+{"step":"tap 下载 2 个文件","w":1794864365348.89}
+{"out":{"id":41,"call":"download.start","params":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","size":50331648,"mtime":1794864362089}},"w":1794864365349.477}
+{"out":{"id":42,"call":"download.start","params":{"station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","size":40,"mtime":1794864362089}},"w":1794864365349.52}
+{"step":"tap 下载 2 个文件","acted":true,"w":1794864365350.177}
+{"in":{"id":41,"ok":{"download":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","title":"大文件.bin","size":50331648,"loaded":0,"progress":0,"state":"going","active":true,"statusText":"正在下载 0% · 48 MB","startedAt":1794864365349}}},"w":1794864365350.274}
+{"in":{"id":42,"ok":{"download":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","title":"附件.txt","size":40,"loaded":0,"progress":0,"state":"going","active":true,"statusText":"正在下载 0% · 40 B","startedAt":1794864365350}}},"w":1794864365350.604}
+{"frame":15224783.37829167,"w":1794864365365.031}
+{"step":"until 已保存到「下载」","w":1794864365365.744}
+{"frame":15224800.059958337,"w":1794864365381.717}
+{"frame":15224816.72566667,"w":1794864365398.385}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"put":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/大文件.bin","name":"大文件.bin","title":"大文件.bin","size":50331648,"loaded":5124652,"progress":0.10181768735249837,"state":"going","active":true,"statusText":"正在下载 10% · 48 MB","startedAt":1794864365349},"before":null},{"path":["downloads"],"key":["id"],"put":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt","station":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44","root":"/test-station/home/e2e-105609","path":"大文件/附件.txt","name":"附件.txt","title":"附件.txt","size":40,"loaded":40,"progress":1,"state":"ready","active":true,"statusText":"已下载 · 40 B","startedAt":1794864365350},"before":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin"}]},"w":1794864365401.095}
+{"frame":15224833.38354167,"w":1794864365415.041}
+{"out":{"id":43,"call":"download.take","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt"}},"w":1794864365415.548}
+{"frame":15224850.04266667,"w":1794864365431.692}
+{"in":{"id":43,"ok":{"taken":true}},"w":1794864365431.861}
+{"out":{"id":44,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt","offset":0,"length":4194304}},"w":1794864365431.921}
+{"frame":15224866.72841667,"w":1794864365448.399}
+{"in":{"id":44,"ok":{"type":"text/plain; charset=utf-8","total":40,"mtime":1794864362089}},"w":1794864365448.681,"b":"e5928ce5a4a7e69687e4bbb6e4b880e8b5b7e4b88be8bdbde79a84e5b08fe69687e4bbb6e380820a"}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":12652960},{"path":["progress"],"set":0.2513917287190755},{"path":["statusText"],"set":"正在下载 25% · 48 MB"}]},{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt","ops":[{"path":["state"],"set":"saving"},{"path":["statusText"],"set":"正在保存 · 40 B"}]}]},"w":1794864365452.727}
+{"frame":15224883.390083335,"w":1794864365465.043}
+{"out":{"id":45,"call":"download.done","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt","at":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads/附件.txt"}},"w":1794864365466.311}
+{"step":"answered download.done","w":1794864365466.895}
+{"in":{"id":45,"ok":{}},"w":1794864365467.493}
+{"frame":15224900.049666671,"w":1794864365481.723}
+{"frame":15224916.717875004,"w":1794864365498.374}
+{"step":"answered download.done","w":1794864365499.126}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"drop":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/附件.txt"},{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":20971520},{"path":["progress"],"set":0.4166666666666667},{"path":["statusText"],"set":"正在下载 41% · 48 MB"}]}]},"w":1794864365505.256}
+{"frame":15224933.38679167,"w":1794864365515.037}
+{"frame":15224950.058708336,"w":1794864365531.728}
+{"frame":15224966.719000004,"w":1794864365548.375}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":29360128},{"path":["progress"],"set":0.5833333333333334},{"path":["statusText"],"set":"正在下载 58% · 48 MB"}]}]},"w":1794864365559.825}
+{"frame":15224983.38941667,"w":1794864365565.039}
+{"frame":15225000.051750002,"w":1794864365581.707}
+{"frame":15225016.710625002,"w":1794864365598.363}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":37721407},{"path":["progress"],"set":0.7494570215543112},{"path":["statusText"],"set":"正在下载 74% · 48 MB"}]}]},"w":1794864365613.744}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":37748736},{"path":["progress"],"set":0.75},{"path":["statusText"],"set":"正在下载 75% · 48 MB"}]}]},"w":1794864365614.695}
+{"frame":15225033.411958337,"w":1794864365615.054}
+{"frame":15225050.041583335,"w":1794864365631.695}
+{"frame":15225066.732416669,"w":1794864365648.411}
+{"frame":15225083.377125004,"w":1794864365665.032}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":46137344},{"path":["progress"],"set":0.9166666666666666},{"path":["statusText"],"set":"正在下载 91% · 48 MB"}]}]},"w":1794864365670.265}
+{"frame":15225100.062000003,"w":1794864365681.741}
+{"frame":15225116.706083335,"w":1794864365698.352}
+{"frame":15225133.36529167,"w":1794864365715.008}
+{"frame":15225150.035333335,"w":1794864365731.678}
+{"frame":15225166.708208337,"w":1794864365748.354}
+{"frame":15225183.362125002,"w":1794864365765}
+{"frame":15225200.02091667,"w":1794864365781.66}
+{"frame":15225216.69591667,"w":1794864365798.334}
+{"frame":15225233.35879167,"w":1794864365814.994}
+{"frame":15225250.019458337,"w":1794864365831.649}
+{"frame":15225266.698000003,"w":1794864365848.34}
+{"frame":15225283.37104167,"w":1794864365865.016}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["loaded"],"set":50331648},{"path":["progress"],"set":1},{"path":["state"],"set":"ready"},{"path":["statusText"],"set":"已下载 · 48 MB"}]}]},"w":1794864365865.477}
+{"frame":15225300.03904167,"w":1794864365881.685}
+{"out":{"id":46,"call":"download.take","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin"}},"w":1794864365882.06}
+{"frame":15225316.698416669,"w":1794864365898.339}
+{"in":{"id":46,"ok":{"taken":true}},"w":1794864365898.447}
+{"out":{"id":47,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":0,"length":4194304}},"w":1794864365898.485}
+{"frame":15225333.376625003,"w":1794864365915.027}
+{"in":{"id":47,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365915.16,"bn":4194304}
+{"out":{"id":48,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":4194304,"length":4194304}},"w":1794864365915.7}
+{"frame":15225350.035791669,"w":1794864365931.674}
+{"in":{"id":48,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365931.751,"bn":4194304}
+{"out":{"id":49,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":8388608,"length":4194304}},"w":1794864365931.993}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"patch":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","ops":[{"path":["state"],"set":"saving"},{"path":["statusText"],"set":"正在保存 · 48 MB"}]}]},"w":1794864365932.549}
+{"frame":15225366.70704167,"w":1794864365948.354}
+{"in":{"id":49,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365948.45,"bn":4194304}
+{"out":{"id":50,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":12582912,"length":4194304}},"w":1794864365948.859}
+{"frame":15225383.368500004,"w":1794864365965.012}
+{"in":{"id":50,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365965.159,"bn":4194304}
+{"out":{"id":51,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":16777216,"length":4194304}},"w":1794864365965.399}
+{"frame":15225400.037750004,"w":1794864365981.685}
+{"in":{"id":51,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365981.806,"bn":4194304}
+{"out":{"id":52,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":20971520,"length":4194304}},"w":1794864365982.173}
+{"frame":15225416.69441667,"w":1794864365998.331}
+{"in":{"id":52,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864365998.405,"bn":4194304}
+{"out":{"id":53,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":25165824,"length":4194304}},"w":1794864365998.629}
+{"frame":15225433.36354167,"w":1794864366015.002}
+{"in":{"id":53,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366015.13,"bn":4194304}
+{"out":{"id":54,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":29360128,"length":4194304}},"w":1794864366015.489}
+{"frame":15225450.040291669,"w":1794864366031.684}
+{"in":{"id":54,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366031.781,"bn":4194304}
+{"out":{"id":55,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":33554432,"length":4194304}},"w":1794864366031.992}
+{"frame":15225466.70554167,"w":1794864366048.349}
+{"in":{"id":55,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366048.442,"bn":4194304}
+{"out":{"id":56,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":37748736,"length":4194304}},"w":1794864366048.82}
+{"frame":15225483.367500003,"w":1794864366065.007}
+{"in":{"id":56,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366065.129,"bn":4194304}
+{"out":{"id":57,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":41943040,"length":4194304}},"w":1794864366065.349}
+{"frame":15225500.027208336,"w":1794864366081.664}
+{"in":{"id":57,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366081.729,"bn":4194304}
+{"out":{"id":58,"call":"download.read","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","offset":46137344,"length":4194304}},"w":1794864366082.071}
+{"frame":15225516.698208338,"w":1794864366098.34}
+{"in":{"id":58,"ok":{"type":"application/octet-stream","total":50331648,"mtime":1794864362089}},"w":1794864366098.407,"bn":4194304}
+{"frame":15225533.368458336,"w":1794864366115.013}
+{"out":{"id":59,"call":"download.done","params":{"id":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin","at":"/test-worktree/apps/mbui/out/e2e/mac/02-drive_download_many/downloads/大文件.bin"}},"w":1794864366115.671}
+{"in":{"id":59,"ok":{}},"w":1794864366117.629}
+{"frame":15225550.035250004,"w":1794864366131.679}
+{"frame":15225566.704875004,"w":1794864366148.348}
+{"step":"wait 2600","w":1794864366148.856}
+{"frame":15225583.35804167,"w":1794864366164.995}
+{"frame":15225600.02416667,"w":1794864366181.662}
+{"frame":15225616.70366667,"w":1794864366198.349}
+{"in":{"id":25,"delta":[{"path":["downloads"],"key":["id"],"drop":"01M7K40WN8AC40FXKK46D3ZR31/118532ed8132029534738e92bcb41572964a8fc6bfe57f9bd4c07d0211e25d44\n/test-station/home/e2e-105609\n大文件/大文件.bin"}]},"w":1794864366199.921}
+{"frame":15225633.362083338,"w":1794864366215}
+{"frame":15225650.02554167,"w":1794864366231.661}
+{"frame":15225666.705625003,"w":1794864366248.349}
+{"frame":15225683.366833337,"w":1794864366265.008}
+{"frame":15225700.022625003,"w":1794864366281.659}
+{"frame":15225716.684000002,"w":1794864366298.311}
+{"frame":15225733.36279167,"w":1794864366315}
+{"frame":15225750.040208338,"w":1794864366331.687}
+{"frame":15225766.70129167,"w":1794864366348.347}
+{"frame":15225783.383708335,"w":1794864366365.035}
+{"frame":15225800.038625004,"w":1794864366381.679}
+{"frame":15225816.703708338,"w":1794864366398.352}
+{"frame":15225833.374208337,"w":1794864366415.037}
+{"frame":15228133.371583337,"w":1794864368715.139}
+{"frame":15228150.031500002,"w":1794864368731.692}
+{"frame":15228166.704500003,"w":1794864368748.363}
+{"frame":15228183.375375003,"w":1794864368765.035}
+{"step":"# flow complete","w":1794864368765.583}
+{"step":"","w":1794864368765.59}
+{"textrec":{"s":[12,500,0,"willow"],"r":[0,1,9.613114356994629,0,1,1,3.141031265258789,1,2,1,3.219938278198242,2,3,1,3.219938278198242,2,4,1,7.094053745269775,3,5,1,9.49055528640747,0]}}
+{"textrec":{"m":[12,500,0],"r":[11.6015625,2.53125,17,11.6015625,2.53125,0]}}
+{"textrec":{"s":[22,600,0,"主目录"],"r":[0,1,20.94548872180451,7,1,1,20.94548872180451,8,2,1,20.94548872180451,9]}}
+{"textrec":{"m":[22,600,0],"r":[21.26953125,4.640625,31,18.91900634765625,3.08099365234375,0]}}
+{"textrec":{"s":[12,400,0,"字字字字字字字字"],"r":[0,1,11.918287937743191,10,1,1,11.918287937743191,10,2,1,11.918287937743195,10,3,1,11.918287937743187,10,4,1,11.918287937743187,10,5,1,11.918287937743187,10,6,1,11.918287937743187,10,7,1,11.918287937743187,10]}}
+{"textrec":{"m":[12,400,0],"r":[11.6015625,2.53125,17,11.6015625,2.53125,0]}}
+{"textrec":{"s":[13,400,0,"字字字字"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11]}}
+{"textrec":{"m":[13,400,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
+{"textrec":{"s":[12,400,0,"字字字字"],"r":[0,1,11.918287937743191,10,1,1,11.918287937743191,10,2,1,11.918287937743195,10,3,1,11.918287937743187,10]}}
+{"textrec":{"s":[13,400,0,"字字字字字字"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11,6,1,12.898832684824896,11,7,1,12.898832684824896,11,8,1,12.898832684824896,11,9,1,3.783203125,12,10,1,11.2353515625,13,11,1,7.9091796875,14]}}
+{"textrec":{"s":[12,400,0,"字字字"],"r":[0,1,11.918287937743191,10,1,1,11.918287937743191,10,2,1,11.918287937743195,10]}}
+{"textrec":{"s":[13,400,0,"字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,3.783203125,12,6,1,11.2353515625,13,7,1,7.9091796875,14]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11,6,1,12.898832684824896,11,7,1,12.898832684824896,11,8,1,12.898832684824896,11,9,1,12.898832684824896,11,10,1,12.898832684824896,11,11,1,12.898832684824896,11,12,1,3.783203125,12,13,1,11.2353515625,13,14,1,7.9091796875,14]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11,6,1,12.898832684824896,11,7,1,3.783203125,12,8,1,11.2353515625,13,9,1,7.9091796875,14]}}
+{"textrec":{"s":[13,400,0,"字字字字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11,6,1,12.898832684824896,11,7,1,12.898832684824896,11,8,1,3.783203125,12,9,1,11.2353515625,13,10,1,7.9091796875,14]}}
+{"textrec":{"s":[13,400,0,"字字字字字字.md"],"r":[0,1,12.898832684824903,11,1,1,12.898832684824903,11,2,1,12.898832684824903,11,3,1,12.898832684824903,11,4,1,12.898832684824896,11,5,1,12.898832684824896,11,6,1,3.783203125,12,7,1,11.2353515625,13,8,1,7.9091796875,14]}}
+{"textrec":{"s":[13,600,0,"D"],"r":[0,1,9.539989590644836,15]}}
 {"textrec":{"m":[13,600,0],"r":[12.568359375,2.7421875,18,12.568359375,2.7421875,0]}}
-{"textrec":{"s":[22,600,0,"文件"],"r":[0,1,22,1,1,1,22,2]}}
-{"textrec":{"m":[22,600,0],"r":[21.3125,5.306640625,31,23.32004725933075,7.480015158653259,0]}}
-{"textrec":{"s":[14,600,32,"4 个文件夹"],"r":[0,1,9.058438301086426,3,1,1,3.759765625,-1,2,1,14,4,3,1,14,5,4,1,14,6,5,1,14,7]}}
-{"textrec":{"m":[14,600,0],"r":[13.5625,3.376953125,20,14.840030074119568,4.7600096464157104,0]}}
-{"textrec":{"s":[13,500,0,"字字字字字"],"r":[0,1,13,8,1,1,13,8,2,1,13,8,3,1,13,8,4,1,13,8]}}
-{"textrec":{"m":[13,500,0],"r":[12.59375,3.1357421875,18,13.78002792596817,4.420008957386017,0]}}
-{"textrec":{"s":[12,400,0,"字字字字字字字字字字字字字字字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9,4,1,12,9,5,1,12,9,6,1,12,9,7,1,12,9,8,1,12,9,9,1,12,9,10,1,12,9,11,1,12,9,12,1,12,9,13,1,12,9,14,1,12,9,15,1,12,9,16,1,12,9,17,1,12,9]}}
-{"textrec":{"m":[12,400,0],"r":[11.625,2.89453125,17,12.720025777816772,4.080008268356323,0]}}
-{"textrec":{"s":[13,500,0,"字字字"],"r":[0,1,13,8,1,1,13,8,2,1,13,8]}}
-{"textrec":{"s":[12,400,0,"字字字字字字字字字字字字字字字字字字字字字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9,4,1,12,9,5,1,12,9,6,1,12,9,7,1,12,9,8,1,12,9,9,1,12,9,10,1,12,9,11,1,12,9,12,1,12,9,13,1,12,9,14,1,12,9,15,1,12,9,16,1,12,9,17,1,12,9,18,1,12,9,19,1,12,9,20,1,12,9,21,1,12,9,22,1,12,9,23,1,12,9]}}
-{"textrec":{"s":[13,500,0,"字字字字字字"],"r":[0,1,13,8,1,1,13,8,2,1,13,8,3,1,13,8,4,1,13,8,5,1,13,8]}}
-{"textrec":{"s":[12,400,0,"字字字字字字字字字字字字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9,4,1,12,9,5,1,12,9,6,1,12,9,7,1,12,9,8,1,12,9,9,1,12,9,10,1,12,9,11,1,12,9,12,1,12,9,13,1,12,9,14,1,12,9]}}
-{"textrec":{"s":[13,500,0,"字字字字"],"r":[0,1,13,8,1,1,13,8,2,1,13,8,3,1,13,8]}}
-{"textrec":{"s":[12,400,0,"字字字字字字字字字字字字字字字字字字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9,4,1,12,9,5,1,12,9,6,1,12,9,7,1,12,9,8,1,12,9,9,1,12,9,10,1,12,9,11,1,12,9,12,1,12,9,13,1,12,9,14,1,12,9,15,1,12,9,16,1,12,9,17,1,12,9,18,1,12,9,19,1,12,9,20,1,12,9]}}
-{"textrec":{"s":[12,400,0,"个人收藏"],"r":[0,1,12,10,1,1,12,11,2,1,12,12,3,1,12,13]}}
-{"textrec":{"s":[12,400,0,"Station"],"r":[0,1,7.69921875,14,1,1,3.80859375,15,2,1,7.34765625,16,3,1,3.92578125,15,4,1,2.90625,17,5,1,7.1953125,18,6,1,7.08984375,19]}}
-{"textrec":{"s":[13,400,0,"字字字字字"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20]}}
-{"textrec":{"m":[13,400,0],"r":[12.59375,3.1357421875,18,13.78002792596817,4.420008957386017,0]}}
-{"textrec":{"s":[13,400,0,"字字字"],"r":[0,1,13,20,1,1,13,20,2,1,13,20]}}
-{"textrec":{"g":1,"r":[0,0,24,24,-1,-20,0]}}
-{"textrec":{"g":2,"r":[0,0,24,24,-1,-20,0]}}
-{"textrec":{"g":0,"r":[0,0,11,12,-1,-11,0]}}
-{"textrec":{"g":10,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":11,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":12,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":13,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"s":[12,500,0,"willow"],"r":[0,1,9.946869850158691,21,1,1,3.022260904312134,22,2,1,3.022260904312134,23,3,1,3.022260904312134,23,4,1,7.051286101341248,24,5,1,9.946869850158691,21]}}
-{"textrec":{"m":[12,500,0],"r":[11.625,2.89453125,17,12.720025777816772,4.080008268356323,0]}}
-{"textrec":{"s":[13,400,0,"字字字字"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20]}}
-{"textrec":{"s":[12,400,0,"字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9]}}
-{"textrec":{"s":[13,400,0,"字字字字字字"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20]}}
-{"textrec":{"s":[13,400,0,"字字字字字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20,6,1,13,20,7,1,13,20,8,1,13,20,9,1,3.7451171875,25,10,1,11.3876953125,26,11,1,7.9599609375,27]}}
-{"textrec":{"s":[12,400,0,"字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9]}}
-{"textrec":{"s":[13,400,0,"字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,3.7451171875,25,6,1,11.3876953125,26,7,1,7.9599609375,27]}}
-{"textrec":{"s":[13,400,0,"字字字字字字字字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20,6,1,13,20,7,1,13,20,8,1,13,20,9,1,13,20,10,1,13,20,11,1,13,20,12,1,3.7451171875,25,13,1,11.3876953125,26,14,1,7.9599609375,27]}}
-{"textrec":{"s":[13,400,0,"字字字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20,6,1,13,20,7,1,3.7451171875,25,8,1,11.3876953125,26,9,1,7.9599609375,27]}}
-{"textrec":{"s":[13,400,0,"字字字字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20,6,1,13,20,7,1,13,20,8,1,3.7451171875,25,9,1,11.3876953125,26,10,1,7.9599609375,27]}}
-{"textrec":{"s":[13,400,0,"字字字字字字.md"],"r":[0,1,13,20,1,1,13,20,2,1,13,20,3,1,13,20,4,1,13,20,5,1,13,20,6,1,3.7451171875,25,7,1,11.3876953125,26,8,1,7.9599609375,27]}}
-{"textrec":{"s":[22,600,0,"主目录"],"r":[0,1,22,28,1,1,22,29,2,1,22,30]}}
-{"textrec":{"s":[12,400,0,"字字字字字字字字"],"r":[0,1,12,9,1,1,12,9,2,1,12,9,3,1,12,9,4,1,12,9,5,1,12,9,6,1,12,9,7,1,12,9]}}
-{"textrec":{"s":[13,400,0,"添加到收藏"],"r":[0,1,13,31,1,1,13,32,2,1,13,33,3,1,13,34,4,1,13,35]}}
-{"textrec":{"s":[12,400,0,"willow"],"r":[0,1,9.8203125,36,1,1,2.90625,17,2,1,2.90625,37,3,1,2.90625,37,4,1,6.978515625,18,5,1,9.8203125,36]}}
-{"textrec":{"s":[13,400,32,"e2e-105609"],"r":[0,1,7.5791015625,38,1,1,8.4296875,39,2,1,7.5791015625,38,3,1,8.4296875,40,4,1,8.4296875,41,5,1,8.4296875,42,6,1,8.4296875,43,7,1,8.4296875,44,8,1,8.4296875,42,9,1,8.4296875,45]}}
-{"textrec":{"s":[13,400,0,"willow"],"r":[0,1,10.638671875,46,1,1,3.1484375,47,2,1,3.1484375,48,3,1,3.1484375,48,4,1,7.56005859375,49,5,1,10.638671875,46]}}
-{"textrec":{"g":21,"r":[0,0,12,9,-1,-8,0]}}
-{"textrec":{"g":22,"r":[0,0,5,12,-1,-11,0]}}
-{"textrec":{"g":23,"r":[0,0,5,11,-1,-10,0]}}
-{"textrec":{"g":24,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":28,"r":[0,0,22,23,0,-20,0]}}
-{"textrec":{"g":29,"r":[0,0,18,23,2,-19,0]}}
-{"textrec":{"g":30,"r":[0,0,22,23,0,-19,0]}}
-{"textrec":{"g":31,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":32,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":33,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":34,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":35,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":38,"r":[0,0,9,11,-1,-9,0]}}
-{"textrec":{"g":39,"r":[0,0,9,12,0,-11,0]}}
-{"textrec":{"g":40,"r":[0,0,7,4,1,-6,0]}}
-{"textrec":{"g":41,"r":[0,0,9,12,0,-11,0]}}
-{"textrec":{"g":42,"r":[0,0,10,13,-1,-11,0]}}
-{"textrec":{"g":43,"r":[0,0,9,13,0,-11,0]}}
-{"textrec":{"g":44,"r":[0,0,9,13,0,-11,0]}}
-{"textrec":{"g":45,"r":[0,0,9,12,0,-11,0]}}
-{"textrec":{"g":36,"r":[0,0,12,9,-1,-8,0]}}
-{"textrec":{"g":17,"r":[0,0,5,12,-1,-11,0]}}
-{"textrec":{"g":37,"r":[0,0,4,11,-1,-10,0]}}
-{"textrec":{"g":18,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":14,"r":[0,0,10,12,-1,-10,0]}}
-{"textrec":{"g":15,"r":[0,0,6,12,-1,-10,0]}}
-{"textrec":{"g":16,"r":[0,0,9,10,-1,-8,0]}}
-{"textrec":{"g":19,"r":[0,0,9,9,-1,-8,0]}}
-{"textrec":{"g":46,"r":[0,0,13,10,-1,-9,0]}}
-{"textrec":{"g":47,"r":[0,0,5,12,-1,-11,0]}}
-{"textrec":{"g":48,"r":[0,0,4,12,0,-11,0]}}
-{"textrec":{"g":49,"r":[0,0,10,11,-1,-9,0]}}
-{"textrec":{"s":[12,400,0,"名称"],"r":[0,1,12,50,1,1,12,51]}}
-{"textrec":{"s":[12,400,0,"大小"],"r":[0,1,12,52,1,1,12,53]}}
-{"textrec":{"s":[12,400,0,"修改时间"],"r":[0,1,12,54,1,1,12,55,2,1,12,56,3,1,12,57]}}
-{"textrec":{"s":[12,400,32,"1 个文件夹"],"r":[0,1,7.78125,58,1,1,3.22265625,-1,2,1,12,59,3,1,12,60,4,1,12,61,5,1,12,62]}}
-{"textrec":{"s":[12,400,32,"01:26"],"r":[0,1,7.78125,63,1,1,7.78125,58,2,1,3.22265625,64,3,1,7.78125,65,4,1,7.78125,66]}}
-{"textrec":{"g":58,"r":[0,0,8,11,0,-10,0]}}
-{"textrec":{"g":59,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":60,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":61,"r":[0,0,14,14,-1,-11,0]}}
-{"textrec":{"g":62,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"s":[13,400,0,"添加到收藏"],"r":[0,1,12.898832684824903,16,1,1,12.898832684824903,17,2,1,12.898832684824903,18,3,1,12.898832684824903,19,4,1,12.898832684824896,20]}}
+{"textrec":{"s":[12,400,0,"个人收藏"],"r":[0,1,11.918287937743191,21,1,1,11.918287937743191,22,2,1,11.918287937743195,23,3,1,11.918287937743187,24]}}
+{"textrec":{"s":[13,400,32,"e2e-105609"],"r":[0,1,7.3505859375,25,1,1,8.1123046875,26,2,1,7.3505859375,25,3,1,6.0556640625,27,4,1,8.1123046875,28,5,1,8.1123046875,29,6,1,8.1123046875,30,7,1,8.1123046875,31,8,1,8.1123046875,29,9,1,8.1123046875,32]}}
+{"textrec":{"s":[12,400,0,"willow"],"r":[0,1,9.29296875,33,1,1,2.96484375,34,2,1,3.03515625,35,3,1,3.03515625,35,4,1,6.97265625,36,5,1,9.17578125,33]}}
+{"textrec":{"s":[12,400,0,"Station"],"r":[0,1,7.646484375,37,1,1,4.359375,38,2,1,6.62109375,39,3,1,4.359375,38,4,1,2.96484375,34,5,1,7.08984375,36,6,1,7.001953125,40]}}
+{"textrec":{"s":[13,400,0,"willow"],"r":[0,1,9.9912109375,41,1,1,3.1357421875,42,2,1,3.2119140625,43,3,1,3.2119140625,43,4,1,7.4775390625,44,5,1,9.8642578125,41]}}
+{"textrec":{"s":[12,400,32,"2 个文件夹"],"r":[0,1,7.55859375,45,1,1,3.375,-1,2,1,11.918287937743191,46,3,1,11.918287937743191,47,4,1,11.918287937743195,48,5,1,11.918287937743187,49]}}
+{"textrec":{"s":[12,400,0,"名称"],"r":[0,1,11.918287937743191,50,1,1,11.918287937743191,51]}}
+{"textrec":{"s":[12,400,0,"大小"],"r":[0,1,11.918287937743191,52,1,1,11.918287937743191,53]}}
+{"textrec":{"s":[12,400,0,"修改时间"],"r":[0,1,11.918287937743191,54,1,1,11.918287937743191,55,2,1,11.918287937743195,56,3,1,11.918287937743187,57]}}
+{"textrec":{"s":[12,400,32,"21:26"],"r":[0,1,7.55859375,45,1,1,7.55859375,58,2,1,3.5625,59,3,1,7.55859375,45,4,1,7.55859375,60]}}
+{"textrec":{"s":[13,400,0,"Library"],"r":[0,1,7.30615234375,61,1,1,3.1357421875,42,2,1,7.9091796875,62,3,1,4.875,63,4,1,7.0966796875,64,5,1,4.90673828125,63,6,1,7.01416015625,65]}}
+{"textrec":{"s":[12,400,32,"21:25"],"r":[0,1,7.55859375,45,1,1,7.55859375,58,2,1,3.5625,59,3,1,7.55859375,45,4,1,7.55859375,66]}}
+{"textrec":{"g":0,"r":[0,0,12,9,-1,-8,0]}}
+{"textrec":{"g":1,"r":[0,0,5,12,-1,-11,0]}}
+{"textrec":{"g":2,"r":[0,0,5,11,-1,-10,0]}}
+{"textrec":{"g":3,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":7,"r":[0,0,22,23,0,-20,0]}}
+{"textrec":{"g":8,"r":[0,0,18,23,2,-19,0]}}
+{"textrec":{"g":9,"r":[0,0,22,23,0,-19,0]}}
+{"textrec":{"g":45,"r":[0,0,8,11,0,-10,0]}}
+{"textrec":{"g":46,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":47,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":48,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":49,"r":[0,0,14,14,-1,-11,0]}}
 {"textrec":{"g":50,"r":[0,0,13,14,-1,-11,0]}}
 {"textrec":{"g":51,"r":[0,0,14,14,-1,-11,0]}}
 {"textrec":{"g":52,"r":[0,0,14,14,-1,-11,0]}}
@@ -440,11 +349,53 @@
 {"textrec":{"g":55,"r":[0,0,14,14,-1,-11,0]}}
 {"textrec":{"g":56,"r":[0,0,14,14,-1,-11,0]}}
 {"textrec":{"g":57,"r":[0,0,12,14,0,-11,0]}}
-{"textrec":{"g":63,"r":[0,0,9,12,-1,-10,0]}}
-{"textrec":{"g":64,"r":[0,0,5,10,-1,-8,0]}}
-{"textrec":{"g":65,"r":[0,0,8,11,0,-10,0]}}
+{"textrec":{"g":25,"r":[0,0,9,11,-1,-9,0]}}
+{"textrec":{"g":26,"r":[0,0,9,12,0,-11,0]}}
+{"textrec":{"g":27,"r":[0,0,7,4,1,-6,0]}}
+{"textrec":{"g":28,"r":[0,0,9,12,0,-11,0]}}
+{"textrec":{"g":29,"r":[0,0,10,13,-1,-11,0]}}
+{"textrec":{"g":30,"r":[0,0,9,13,0,-11,0]}}
+{"textrec":{"g":31,"r":[0,0,9,13,0,-11,0]}}
+{"textrec":{"g":32,"r":[0,0,9,12,0,-11,0]}}
+{"textrec":{"g":58,"r":[0,0,8,11,0,-10,0]}}
+{"textrec":{"g":59,"r":[0,0,5,10,-1,-8,0]}}
+{"textrec":{"g":60,"r":[0,0,8,12,0,-10,0]}}
+{"textrec":{"g":61,"r":[0,0,8,12,0,-11,0]}}
+{"textrec":{"g":42,"r":[0,0,5,12,-1,-11,0]}}
+{"textrec":{"g":62,"r":[0,0,9,13,0,-11,0]}}
+{"textrec":{"g":63,"r":[0,0,6,10,0,-9,0]}}
+{"textrec":{"g":64,"r":[0,0,9,11,-1,-9,0]}}
+{"textrec":{"g":65,"r":[0,0,9,13,-1,-9,0]}}
 {"textrec":{"g":66,"r":[0,0,8,12,0,-10,0]}}
+{"textrec":{"g":15,"r":[0,0,11,12,-1,-11,0]}}
+{"textrec":{"g":16,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":17,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":18,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":19,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":20,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":21,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":22,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":23,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":24,"r":[0,0,14,14,-1,-11,0]}}
+{"textrec":{"g":33,"r":[0,0,12,9,-1,-8,0]}}
+{"textrec":{"g":34,"r":[0,0,5,12,-1,-11,0]}}
+{"textrec":{"g":35,"r":[0,0,4,11,-1,-10,0]}}
+{"textrec":{"g":36,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":37,"r":[0,0,10,12,-1,-10,0]}}
+{"textrec":{"g":38,"r":[0,0,6,12,-1,-10,0]}}
+{"textrec":{"g":39,"r":[0,0,9,10,-1,-8,0]}}
+{"textrec":{"g":40,"r":[0,0,9,9,-1,-8,0]}}
+{"textrec":{"g":41,"r":[0,0,13,10,-1,-9,0]}}
+{"textrec":{"g":43,"r":[0,0,4,12,0,-11,0]}}
+{"textrec":{"g":44,"r":[0,0,10,11,-1,-9,0]}}
 {"textrec":{"s":[22,600,32,"e2e-105609"],"r":[0,1,12.63594116200693,67,1,1,14.210243008914404,68,2,1,12.63594116200693,67,3,1,14.210243008914404,69,4,1,14.210243008914404,70,5,1,14.210243008914404,71,6,1,14.210243008914404,72,7,1,14.210243008914404,73,8,1,14.210243008914404,71,9,1,14.210243008914404,74]}}
+{"textrec":{"s":[12,400,32,"2 个文件夹 · 2 个文件"],"r":[0,1,7.78125,45,1,1,3.22265625,-1,2,1,12,46,3,1,12,47,4,1,12,48,5,1,12,49,6,1,3.22265625,-1,7,1,3.45703125,75,8,1,3.22265625,-1,9,1,7.78125,45,10,1,3.22265625,-1,11,1,12,46,12,1,12,47,13,1,12,48]}}
+{"textrec":{"s":[13,400,0,"大文件"],"r":[0,1,13,76,1,1,13,77,2,1,13,78]}}
+{"textrec":{"s":[13,400,0,"子文件夹"],"r":[0,1,13,79,1,1,13,77,2,1,13,78,3,1,13,80]}}
+{"textrec":{"s":[13,400,32,"小说-e2e.txt"],"r":[0,1,13,81,1,1,13,82,2,1,8.4296875,27,3,1,7.5791015625,25,4,1,8.4296875,26,5,1,7.5791015625,25,6,1,3.4912109375,83,7,1,4.2529296875,84,8,1,7.3505859375,85,9,1,4.2529296875,84]}}
+{"textrec":{"s":[12,400,32,"36 KB"],"r":[0,1,7.78125,86,1,1,7.78125,60,2,1,3.22265625,-1,3,1,8.0625,87,4,1,7.8515625,88]}}
+{"textrec":{"s":[13,400,0,"说明.txt"],"r":[0,1,13,89,1,1,13,90,2,1,3.7451171875,12,3,1,4.2529296875,91,4,1,7.3505859375,92,5,1,4.2529296875,91]}}
+{"textrec":{"s":[12,400,32,"43 B"],"r":[0,1,7.78125,93,1,1,7.78125,86,2,1,3.22265625,-1,3,1,7.8515625,88]}}
 {"textrec":{"g":67,"r":[0,0,14,15,-1,-13,0]}}
 {"textrec":{"g":68,"r":[0,0,14,19,0,-18,0]}}
 {"textrec":{"g":69,"r":[0,0,10,5,2,-9,0]}}
@@ -453,13 +404,6 @@
 {"textrec":{"g":72,"r":[0,0,14,20,0,-18,0]}}
 {"textrec":{"g":73,"r":[0,0,14,20,0,-18,0]}}
 {"textrec":{"g":74,"r":[0,0,14,19,0,-18,0]}}
-{"textrec":{"s":[12,400,32,"2 个文件夹 · 2 个文件"],"r":[0,1,7.78125,65,1,1,3.22265625,-1,2,1,12,59,3,1,12,60,4,1,12,61,5,1,12,62,6,1,3.22265625,-1,7,1,3.45703125,75,8,1,3.22265625,-1,9,1,7.78125,65,10,1,3.22265625,-1,11,1,12,59,12,1,12,60,13,1,12,61]}}
-{"textrec":{"s":[13,400,0,"大文件"],"r":[0,1,13,76,1,1,13,77,2,1,13,78]}}
-{"textrec":{"s":[13,400,0,"子文件夹"],"r":[0,1,13,79,1,1,13,77,2,1,13,78,3,1,13,80]}}
-{"textrec":{"s":[13,400,0,"说明.txt"],"r":[0,1,13,81,1,1,13,82,2,1,3.7451171875,25,3,1,4.2529296875,83,4,1,7.3505859375,84,5,1,4.2529296875,83]}}
-{"textrec":{"s":[12,400,32,"43 B"],"r":[0,1,7.78125,85,1,1,7.78125,86,2,1,3.22265625,-1,3,1,7.8515625,87]}}
-{"textrec":{"s":[13,400,32,"小说-e2e.txt"],"r":[0,1,13,88,1,1,13,89,2,1,8.4296875,40,3,1,7.5791015625,38,4,1,8.4296875,39,5,1,7.5791015625,38,6,1,3.4912109375,90,7,1,4.2529296875,91,8,1,7.3505859375,92,9,1,4.2529296875,91]}}
-{"textrec":{"s":[12,400,32,"36 KB"],"r":[0,1,7.78125,86,1,1,7.78125,66,2,1,3.22265625,-1,3,1,8.0625,93,4,1,7.8515625,87]}}
 {"textrec":{"g":75,"r":[0,0,5,4,-1,-6,0]}}
 {"textrec":{"g":76,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":77,"r":[0,0,15,15,-1,-12,0]}}
@@ -467,59 +411,60 @@
 {"textrec":{"g":79,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":80,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":81,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":82,"r":[0,0,13,15,0,-12,0]}}
-{"textrec":{"g":25,"r":[0,0,4,5,0,-3,0]}}
-{"textrec":{"g":83,"r":[0,0,6,12,-1,-10,0]}}
-{"textrec":{"g":84,"r":[0,0,9,10,-1,-9,0]}}
-{"textrec":{"g":85,"r":[0,0,10,11,-1,-10,0]}}
+{"textrec":{"g":82,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":83,"r":[0,0,5,5,-1,-3,0]}}
+{"textrec":{"g":84,"r":[0,0,6,12,-1,-10,0]}}
+{"textrec":{"g":85,"r":[0,0,9,10,-1,-9,0]}}
 {"textrec":{"g":86,"r":[0,0,9,12,-1,-10,0]}}
 {"textrec":{"g":87,"r":[0,0,9,11,0,-10,0]}}
-{"textrec":{"g":88,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":88,"r":[0,0,9,11,0,-10,0]}}
 {"textrec":{"g":89,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":90,"r":[0,0,5,5,-1,-3,0]}}
+{"textrec":{"g":90,"r":[0,0,13,15,0,-12,0]}}
+{"textrec":{"g":12,"r":[0,0,4,5,0,-3,0]}}
 {"textrec":{"g":91,"r":[0,0,6,12,-1,-10,0]}}
 {"textrec":{"g":92,"r":[0,0,9,10,-1,-9,0]}}
-{"textrec":{"g":93,"r":[0,0,9,11,0,-10,0]}}
-{"textrec":{"s":[12,400,32,"e2e-105609"],"r":[0,1,6.99609375,94,1,1,7.78125,65,2,1,6.99609375,94,3,1,7.78125,95,4,1,7.78125,58,5,1,7.78125,63,6,1,7.78125,96,7,1,7.78125,66,8,1,7.78125,63,9,1,7.78125,97]}}
-{"textrec":{"s":[22,600,0,"大文件"],"r":[0,1,22,98,1,1,22,1,2,1,22,2]}}
+{"textrec":{"g":93,"r":[0,0,10,11,-1,-10,0]}}
+{"textrec":{"s":[12,400,32,"e2e-105609"],"r":[0,1,6.99609375,94,1,1,7.78125,45,2,1,6.99609375,94,3,1,7.78125,95,4,1,7.78125,58,5,1,7.78125,96,6,1,7.78125,66,7,1,7.78125,60,8,1,7.78125,96,9,1,7.78125,97]}}
+{"textrec":{"s":[22,600,0,"大文件"],"r":[0,1,22,98,1,1,22,99,2,1,22,100]}}
+{"textrec":{"s":[12,400,32,"2 个文件"],"r":[0,1,7.78125,45,1,1,3.22265625,-1,2,1,12,46,3,1,12,47,4,1,12,48]}}
+{"textrec":{"s":[13,400,0,"大文件.bin"],"r":[0,1,13,76,1,1,13,77,2,1,13,78,3,1,3.7451171875,12,4,1,7.9599609375,62,5,1,3.1484375,42,6,1,7.6806640625,101]}}
+{"textrec":{"s":[12,400,32,"48 MB"],"r":[0,1,7.78125,93,1,1,7.78125,102,2,1,3.22265625,-1,3,1,10.83984375,103,4,1,7.8515625,88]}}
+{"textrec":{"s":[13,400,0,"附件.txt"],"r":[0,1,13,104,1,1,13,78,2,1,3.7451171875,12,3,1,4.2529296875,91,4,1,7.3505859375,92,5,1,4.2529296875,91]}}
+{"textrec":{"s":[12,400,32,"40 B"],"r":[0,1,7.78125,93,1,1,7.78125,96,2,1,3.22265625,-1,3,1,7.8515625,88]}}
 {"textrec":{"g":94,"r":[0,0,9,10,-1,-8,0]}}
 {"textrec":{"g":95,"r":[0,0,7,4,0,-6,0]}}
-{"textrec":{"g":96,"r":[0,0,8,12,0,-10,0]}}
+{"textrec":{"g":96,"r":[0,0,9,12,-1,-10,0]}}
 {"textrec":{"g":97,"r":[0,0,8,11,0,-10,0]}}
 {"textrec":{"g":98,"r":[0,0,24,24,-1,-20,0]}}
-{"textrec":{"s":[12,400,32,"2 个文件"],"r":[0,1,7.78125,65,1,1,3.22265625,-1,2,1,12,59,3,1,12,60,4,1,12,61]}}
-{"textrec":{"s":[13,400,0,"大文件.bin"],"r":[0,1,13,76,1,1,13,77,2,1,13,78,3,1,3.7451171875,25,4,1,7.9599609375,99,5,1,3.1484375,47,6,1,7.6806640625,100]}}
-{"textrec":{"s":[12,400,32,"48 MB"],"r":[0,1,7.78125,85,1,1,7.78125,101,2,1,3.22265625,-1,3,1,10.83984375,102,4,1,7.8515625,87]}}
-{"textrec":{"s":[13,400,0,"附件.txt"],"r":[0,1,13,103,1,1,13,78,2,1,3.7451171875,25,3,1,4.2529296875,83,4,1,7.3505859375,84,5,1,4.2529296875,83]}}
-{"textrec":{"s":[12,400,32,"40 B"],"r":[0,1,7.78125,85,1,1,7.78125,63,2,1,3.22265625,-1,3,1,7.8515625,87]}}
-{"textrec":{"g":99,"r":[0,0,9,13,0,-11,0]}}
-{"textrec":{"g":100,"r":[0,0,8,10,0,-9,0]}}
-{"textrec":{"g":101,"r":[0,0,9,12,-1,-10,0]}}
-{"textrec":{"g":102,"r":[0,0,11,11,0,-10,0]}}
-{"textrec":{"g":103,"r":[0,0,14,15,0,-12,0]}}
-{"textrec":{"s":[13,400,32,"下载 2 个文件"],"r":[0,1,13,104,1,1,13,105,2,1,3.4912109375,-1,3,1,8.4296875,39,4,1,3.4912109375,-1,5,1,13,106,6,1,13,107,7,1,13,108]}}
-{"textrec":{"s":[13,400,0,"复制路径"],"r":[0,1,13,109,1,1,13,110,2,1,13,111,3,1,13,112]}}
-{"textrec":{"s":[13,400,32,"删除 2 项"],"r":[0,1,13,113,1,1,13,114,2,1,3.4912109375,-1,3,1,8.4296875,39,4,1,3.4912109375,-1,5,1,13,115]}}
-{"textrec":{"g":104,"r":[0,0,15,14,-1,-11,0]}}
-{"textrec":{"g":105,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":99,"r":[0,0,24,24,-1,-20,0]}}
+{"textrec":{"g":100,"r":[0,0,24,24,-1,-20,0]}}
+{"textrec":{"g":101,"r":[0,0,8,10,0,-9,0]}}
+{"textrec":{"g":102,"r":[0,0,9,12,-1,-10,0]}}
+{"textrec":{"g":103,"r":[0,0,11,11,0,-10,0]}}
+{"textrec":{"g":104,"r":[0,0,14,15,0,-12,0]}}
+{"textrec":{"s":[13,400,32,"下载 2 个文件"],"r":[0,1,13,105,1,1,13,106,2,1,3.4912109375,-1,3,1,8.4296875,26,4,1,3.4912109375,-1,5,1,13,107,6,1,13,108,7,1,13,109]}}
+{"textrec":{"s":[13,400,0,"复制路径"],"r":[0,1,13,110,1,1,13,111,2,1,13,112,3,1,13,113]}}
+{"textrec":{"s":[13,400,32,"删除 2 项"],"r":[0,1,13,114,1,1,13,115,2,1,3.4912109375,-1,3,1,8.4296875,26,4,1,3.4912109375,-1,5,1,13,116]}}
+{"textrec":{"g":105,"r":[0,0,15,14,-1,-11,0]}}
 {"textrec":{"g":106,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":107,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":108,"r":[0,0,15,15,-1,-12,0]}}
 {"textrec":{"g":109,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":110,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":111,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":110,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":111,"r":[0,0,14,15,-1,-12,0]}}
 {"textrec":{"g":112,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":113,"r":[0,0,14,15,-1,-12,0]}}
-{"textrec":{"g":114,"r":[0,0,14,15,0,-12,0]}}
-{"textrec":{"g":115,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"s":[13,400,0,"正在下载「附件.txt」"],"r":[0,1,13,116,1,1,13,117,2,1,13,118,3,1,13,119,4,1,13,120,5,1,13,103,6,1,13,78,7,1,3.7451171875,25,8,1,4.2529296875,83,9,1,7.3505859375,84,10,1,4.2529296875,83,11,1,13,121]}}
-{"textrec":{"g":116,"r":[0,0,15,13,-1,-11,0]}}
-{"textrec":{"g":117,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":118,"r":[0,0,15,14,-1,-11,0]}}
-{"textrec":{"g":119,"r":[0,0,15,15,-1,-12,0]}}
-{"textrec":{"g":120,"r":[0,0,7,11,7,-12,0]}}
-{"textrec":{"g":121,"r":[0,0,7,11,-1,-8,0]}}
-{"textrec":{"s":[13,400,0,"已保存到「下载」"],"r":[0,1,13,122,1,1,13,123,2,1,13,124,3,1,13,33,4,1,13,120,5,1,13,118,6,1,13,119,7,1,13,121]}}
-{"textrec":{"g":122,"r":[0,0,14,13,0,-11,0]}}
-{"textrec":{"g":123,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":113,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":114,"r":[0,0,14,15,-1,-12,0]}}
+{"textrec":{"g":115,"r":[0,0,14,15,0,-12,0]}}
+{"textrec":{"g":116,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"s":[13,400,0,"正在下载「附件.txt」"],"r":[0,1,13,117,1,1,13,118,2,1,13,119,3,1,13,120,4,1,13,121,5,1,13,104,6,1,13,78,7,1,3.7451171875,12,8,1,4.2529296875,91,9,1,7.3505859375,92,10,1,4.2529296875,91,11,1,13,122]}}
+{"textrec":{"g":117,"r":[0,0,15,13,-1,-11,0]}}
+{"textrec":{"g":118,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":119,"r":[0,0,15,14,-1,-11,0]}}
+{"textrec":{"g":120,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":121,"r":[0,0,7,11,7,-12,0]}}
+{"textrec":{"g":122,"r":[0,0,7,11,-1,-8,0]}}
+{"textrec":{"s":[13,400,0,"已保存到「下载」"],"r":[0,1,13,123,1,1,13,124,2,1,13,125,3,1,13,18,4,1,13,121,5,1,13,119,6,1,13,120,7,1,13,122]}}
+{"textrec":{"g":123,"r":[0,0,14,13,0,-11,0]}}
 {"textrec":{"g":124,"r":[0,0,15,15,-1,-12,0]}}
+{"textrec":{"g":125,"r":[0,0,15,15,-1,-12,0]}}

@@ -40,7 +40,7 @@ Which command, as tested:
 | npm | `npm login` | a page to open | `--auth-type=legacy` (username and password) |
 | docker | `docker login` | device code (Docker Hub) | – |
 | vercel | `vercel login` | device code | – |
-| wrangler | `wrangler login --device` | device code (8 characters, 5 minutes) | plain `wrangler login` (loopback, fails if 8976 is taken) |
+| wrangler | `wrangler login --device` | device code (8 characters, 3 minutes) | plain `wrangler login` (loopback, fails if 8976 is taken) |
 | firebase | `firebase login` | loopback; first asks two Y/n questions (answer them) | – |
 | devin | `devin auth login --force-manual-token-flow` | page, then the code pasted on the card (`paste: true`) | plain `devin auth login` (opens a browser on the station itself and waits there) |
 

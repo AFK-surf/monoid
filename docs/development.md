@@ -8,7 +8,7 @@ The commands below run from the repository root unless noted. The station, the c
 ## Prerequisites
 
 - Git, Python 3, Node.js 24 or later, and pnpm 10.33.0 (every `package.json` names it in `packageManager`).
-- Rust is optional for everyday work: the native parts the TypeScript station and clients use are prebuilt (`scripts/native.ts`). To change one of them you need rustup (the parts are built with the toolchain pinned in `scripts/native.ts`, which rustup installs on first use), plus, per part: the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` matching `wasm-bindgen` in `client/Cargo.lock` (currently 0.2.129) and LLVM's `clang`/`llvm-ar` with WebAssembly support for the browser's iroh; the NDK below for Android's shell and engine; zig and cargo-zigbuild for the Linux station parts from a Mac.
+- Rust is optional for everyday work: the native parts the TypeScript station and clients use are prebuilt (`scripts/native.ts`). To change one of them you need rustup (the parts are built with the toolchain pinned in `scripts/native.ts`, which rustup installs on first use), plus, per part: the `wasm32-unknown-unknown` target, `wasm-bindgen-cli` matching `wasm-bindgen` in `client/Cargo.lock` (currently 0.2.129) and LLVM's `clang`/`llvm-ar` with WebAssembly support for the browser's iroh; the NDK below for Android's shell and engine; zig and cargo-zigbuild for the Linux station parts from a Mac. libghostty-vt (`ghostty-vt`, the terminal's) needs nothing installed: its build fetches the zig its release asks for; CI never builds it, so a change to its version is prebuilt by hand on a Mac and published before the change is pushed (`node scripts/native.ts prebuild --release ghostty-vt:<target>…`, each of its targets).
 - Android additionally needs JDK 17 and the Android SDK (NDK 28.2.13676358 to build its shell or engine, or to strip them when packing); the apps (`apps/mbui/`), the web app included, need MoonBit and their platform's toolchain, as [its README](../apps/mbui/README.md) says.
 
 ```sh
@@ -50,7 +50,8 @@ Where a seed decides what a simulated run leaves open (jitter, how writes are cu
 What cannot be made the same every run (real processes and signals, the native addon and iroh-relay over real sockets,
 networks made up at random) is the side run's: `sh scripts/side.sh` (each package's `side/`; Rust's
 `#[ignore = "side: …"]`; the locks and a rig end to end, `apps/mbui/scripts/e2e-local.sh locks-all` and
-`rigs-all`), every four hours on main in CI (`.github/workflows/side.yml`, each part on a runner of its own; run it by hand with `gh workflow run side`),
+`rigs-all`; a station's things moved to another and back with faults, `move-all`, by hand only: it takes longer than a
+CI job may), every four hours on main in CI (`.github/workflows/side.yml`, each part on a runner of its own; run it by hand with `gh workflow run side`),
 blocking nothing. A side failure goes to an agent, which reproduces it as a test CI runs, failing the same way every
 time, and fixes it; one it cannot reproduce is let be. Never a retry, a longer deadline or a looser bound to make a
 test pass. A failed locks or rigs leaves its logs (the cloud's, the relay's, each station's apart), each device's record

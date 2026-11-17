@@ -1,4 +1,4 @@
-// A text read on a phone, tapped: its bars come in (sf/reader.mbt reader_narrow_bars), faded and stepped in as each
+// A text read on a phone, tapped: its bars come in (sf/reader_node.mbt reader_narrow_chrome), faded and stepped in as each
 // frame is painted, built as they are told to come and at their declared end, nothing built for them on the way.
 
 ///|

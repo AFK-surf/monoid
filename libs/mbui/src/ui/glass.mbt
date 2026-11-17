@@ -12,7 +12,9 @@
 //  alpha, Bar.kt rim) · 15 opacity · 21-23 a notch in its top
 //            edge (its box's notch_*: the circle's middle below the top,
 //            its radius, its fillets'; scene.mbt)
-//   liquid:  12 the rim's light · 13 the bezel's width · 14 unused
+//   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
+//            lights it (Glass::spot, from its rect's top left: glass_spot's
+//            packing; 0 none; a group drawn as its first shape's, so its first's)
 //            15 opacity · 21 how far the bezel bends what is under it
 //            (px) · 22 the colours' split (0-1) · 23 the smooth-min radius
 //            two shapes of one group merge within
@@ -159,7 +161,7 @@ fn Ctx::glass_inst(
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.liquid { 0.0 } else { gl.rim_back },
+    if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size
@@ -167,6 +169,29 @@ fn Ctx::glass_inst(
   a[b + 21] = gl.refraction
   a[b + 22] = gl.chroma
   a[b + 23] = gl.merge
+}
+
+///|
+/// Where the pointer lights liquid glass (points from its top left) as one number of an instance: 0 none, else each
+/// of x and y at half a point from 256 before its edge (0-4095, so 256 before to 1791.5 past), x * 4096 + y + 1; the
+/// renderers take it apart again (kind 6's spot_glow).
+fn glass_spot(spot : (Double, Double)?) -> Double {
+  match spot {
+    None => 0.0
+    Some((lx, ly)) => {
+      let q = fn(v : Double) {
+        let h = ((v + 256.0) * 2.0).round()
+        if h < 0.0 {
+          0.0
+        } else if h > 4095.0 {
+          4095.0
+        } else {
+          h
+        }
+      }
+      q(lx) * 4096.0 + q(ly) + 1.0
+    }
+  }
 }
 
 ///|
@@ -244,7 +269,9 @@ fn Ctx::emit_group_glass(self : Ctx, i : Int, alpha_in : Double) -> Unit {
 ///|
 /// The box's ground: its glass (or the glass's solid ground), and its own
 /// colour over that if it has one. The shadow of glass is drawn after it,
-/// outside it only, so the glass does not frost its own shadow.
+/// outside it only, so the glass does not frost or bend its own shadow: a
+/// drop of a liquid group's (drawn as its group's one shape) casts none of
+/// its own.
 fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
   if glass_paint.solid {
     if n.shadow > 0.0 {
@@ -261,7 +288,7 @@ fn Ctx::paint_glass(self : Ctx, n : Node, gl : Glass, alpha : Double) -> Unit {
       self.notch_last(n)
     }
   }
-  if n.shadow > 0.0 && !gl.liquid {
+  if n.shadow > 0.0 && (!gl.liquid || glass_paint.in_group == 0) {
     self.paint_shadow(n, alpha, true)
   }
 }

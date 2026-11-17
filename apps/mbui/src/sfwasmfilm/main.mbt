@@ -183,8 +183,12 @@ fn scene_arg(name : String) -> String {
     "MBUI_FIX_PACE" => option(18)
     "MBUI_FIX_CORE" => option(19)
     "MBUI_FIXTURE_JSON" => option(20)
+    "MBUI_OPEN_WHOLE" => option(21)
+    "MBUI_CHAT_PAGE" => option(23)
     // (1Password's answers in a scene: the native film's only)
     "MBUI_FILM_OP" => ""
+    // (the people's faces decoded late and a page waiting for them, sffilmscene's: the native film's only)
+    "MBUI_FILM_FACE_MS" | "MBUI_FILM_FACE_WAITS" => ""
     _ => @halt.saying("picture: unsupported scene option \{name}")
   }
 }
@@ -213,6 +217,8 @@ pub fn draw() -> Int {
   if option_number(10) == 1.0 { t.set_window_inset(true) }
   if option_number(9) > 0.0 { t.set_font_scale(option_number(9)) }
   if option(8) != "" { t.set_app_said("local_station", option(8)) }
+  // (the font families installed here, as a host lists them: MBUI_FILM_LOCAL_FONTS)
+  if option(22) != "" { t.set_local_fonts(option(22)) }
   let prepare = option(3)
   let script = option(4)
   let max = option_number(7).to_int()
@@ -262,6 +268,12 @@ pub fn draw() -> Int {
   }
   instance_data.val = values
   ground.val = bg
+  // Every rule the frame is held to (Tester::audit), said once what is drawn is taken: a picture for people is looked
+  // at by its agent with what the rules find in it, never by eye alone (the user, 2026-11-14: a message's words on its
+  // file's card at 0 apart, shown and passed; mbui's film/picture.mbt says them the same).
+  let rules = t.audit()
+  for fault in rules { println("rules: \{fault}") }
+  println("rules: \{rules.length()} found")
   count
 }
 ///|

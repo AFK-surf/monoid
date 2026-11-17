@@ -5,9 +5,12 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { test } from "node:test";
 import { WidgetSourcesBuilder } from "../src/read/widget-sources-builder.ts";
-import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "../src/store/widget-sources.ts";
+import { installWidgetSources, widgetSourcesReady, widgetSourcesStep } from "./reference/backfill/widget-sources.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
+import { formatDelivery } from "../src/sessions/actor.ts";
+import { endsOnce } from "./programs.ts";
+
 
 function oldThreads(store: Store): [number, number] {
   const db = store.db;
@@ -71,9 +74,8 @@ test("a stopped widget source worker resumes the requested thread", async () => 
   const dir = mkdtempSync(join(tmpdir(), "widget-worker-"));
   const path = join(dir, "stillfail.db"), store = Store.open(path);
   const file = join(dir, "worker.mjs"), marker = join(dir, "exited");
-  const real = new URL("../src/read/widget-sources-worker.ts", import.meta.url).href;
-  writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-  const builder = new WidgetSourcesBuilder(path, {}, pathToFileURL(file));
+  endsOnce(file, marker);
+  const builder = new WidgetSourcesBuilder(path, {}, file);
   try {
     const [, thread] = oldThreads(store);
     await builder.ready([thread]);
@@ -96,8 +98,7 @@ test("delivery prepares old widget sources again if membership changes while it 
       if (calls.length === 1) rig.store.joinThread(second, "wanted", "ember");
       for (const thread of threads) while (!widgetSourcesStep(rig.store.db, thread).done) {}
     };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    const [text, widgets] = await (actor as any).format([]) as [string, [string, string][]];
+    const [text, widgets] = await formatDelivery(rig.hub.deps, "wanted", [], new AbortController().signal) as [string, [string, string][]];
     assert.deepEqual(calls, [[first], [second]]);
     assert.ok(text.includes("second.html"));
     assert.deepEqual(widgets, [["/w/pick.html", "blue"]]);
@@ -113,8 +114,7 @@ test("a failed widget preparation leaves the model untold", async () => {
     rig.store.joinThread(thread, "wanted", "ember");
     rig.store.putWidgetState("wanted", "/w/pick.html", "{}", "blue");
     rig.hub.prepareWidgetSources = async () => { throw new Error("preparation failed"); };
-    const actor = rig.hub.actor(rig.session("wanted"));
-    await assert.rejects((actor as any).format([]), /preparation failed/);
+    await assert.rejects(formatDelivery(rig.hub.deps, "wanted", [], new AbortController().signal), /preparation failed/);
     assert.equal(rig.store.db.prepare("SELECT told_at FROM widget_states WHERE session='wanted'").get()?.told_at, null);
   } finally { await rig.close(); }
 });

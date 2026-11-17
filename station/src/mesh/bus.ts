@@ -7,6 +7,10 @@ import type { Json } from "../store/store.ts";
 /// The answer of a peer that refused a request (its `{"error": …}`): final, unlike a request that did not get through.
 export class Refused extends Error {}
 
+/// A request to a station no link to which would open (mesh/peer.ts, its dial failed): the one failure that says it is
+/// not there now. A request that went and got no answer in time says nothing of it (it may be slow, or starting).
+export class NoLink extends Error {}
+
 /// Bytes that follow a request's or an answer's head on its stream (`stillfail/station/2`, mesh/peer.ts): a file as it
 /// is read, at the pace the other end takes it. A request or an answer carries them under this symbol, so they go
 /// along with it through every part that hands it on, and never into its JSON. A request's are read by the part that
@@ -113,6 +117,12 @@ export class PeerBus {
     return call(station, typeof request?.workspace === "string" ? request.workspace : null, request);
   }
 
+  /// Whether a request naming `station` comes back to this station: it is this one, or one whose place it took.
+  cameHere(station: string, workspace: string | null = null): boolean {
+    if (station === "" || this.self === "") return false;
+    return station === this.self || (this.now !== null && this.now(station, workspace) === this.self);
+  }
+
   /// Which station took a lost one's place (`now`); `self`, this station's id.
   formerly(now: (station: string, workspace: string | null) => string, self: string): void {
     this.now = now;
@@ -145,7 +155,19 @@ export class PeerBus {
   }
 
   /// A request of a station of `workspace` (the transport authenticated it and checked it belongs).
+  /// Who is told each time another station is heard from (it asked something here: its link is open), by station:
+  /// what is owed to it is told now rather than at its backoff's next try (replica/handover.ts `reached`).
+  private readonly hearers: ((peer: string) => void)[] = [];
+  heard(f: (peer: string) => void): void {
+    this.hearers.push(f);
+  }
+
   handle(workspace: string, peer: string, request: Json): Promise<Json> {
+    for (const f of this.hearers) {
+      try {
+        f(peer);
+      } catch {}
+    }
     const method = methodOf(request);
     const dot = method.indexOf(".");
     const inbox = this.handlers.get(method) ?? (dot > 0 ? this.handlers.get(method.slice(0, dot + 1)) : undefined) ?? this.rest;

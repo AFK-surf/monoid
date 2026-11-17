@@ -195,9 +195,12 @@ test "follow_from: the margin counts from what covers the list's top; with none,
 
 ///|
 test "follow_from: held by the key's top, the list is off its foot: a key come after moves nothing that shows; taken to its foot (to_end, the hand), it follows it again" {
+  // (held a screen and more off its foot, and less than half of one: taken there by a move its slots are found again
+  // by, and by one they are not)
+  for tall in [600.0, 450.0] {
   for rate in rc_rates {
     for how in ["to_end", "the hand"] {
-      let c = fw_case(600.0)
+      let c = fw_case(tall)
       let held = c.walk(rc_at, fn() {
         c.keys.set(fw_keys([fw_key]))
         c.place.follow_from(Some(fw_key), margin=fw_margin)
@@ -227,8 +230,9 @@ test "follow_from: held by the key's top, the list is off its foot: a key come a
       let was = back[back.length() - 1].0
       let again = c.walk(at3, fn() { c.keys.set(fw_keys([fw_key, 71, 72])) }, rate, from=at2 + fw_after_ms)
       let (now, _, off) = again[again.length() - 1]
-      assert_true(off < 0.01 && now < was - 39.0, msg="at \{rate}, \{how}: \{was} → \{now}, off its foot by \{off}")
+      assert_true(off < 0.01 && now < was - 39.0, msg="\{tall} tall at \{rate}, \{how}: \{was} → \{now}, off its foot by \{off}")
     }
+  }
   }
 }
 

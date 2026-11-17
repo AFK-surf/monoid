@@ -2,11 +2,11 @@
 // would be, every frame as drawn whole (the Tester's frame watch).
 
 ///|
-test "记忆 made once, the mouse resting on a station's row: back to settings and in again with it still there, each frame as drawn whole" {
+test "记忆 made once, the mouse resting on a row: back to settings and in again with it still there, each frame as drawn whole" {
   let t = memories_tester(0)
-  let row = match t.semantics().search_by(fn(n) { n.label == "Willow" }) {
+  let row = match t.semantics().search_by(fn(n) { n.label == @sf.t("web-main.memory.builtin") }) {
     Some(i) => t.semantics()[i].rect
-    None => fail("Willow's row read out")
+    None => fail("builtin skills' row read out")
   }
   t.move_to(row.0 + row.2 / 2.0, row.1 + row.3 / 2.0)
   t.run_for(@ui.move_most_ms)

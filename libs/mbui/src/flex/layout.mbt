@@ -1347,6 +1347,8 @@ fn layout_flex(
       if changed > 0.0 {
         node.pre_gen = -1
         node.cache_n = 0
+        // (what it holds changed as it was measured: its place worked out before no longer to be kept)
+        node.p_ok = false
       }
     }
     _ => ()
@@ -1398,6 +1400,10 @@ fn layout_flex(
       let cs = c.style
       if cs.position == Absolute {
         continue
+      }
+      // (on a line: the measure that put it there writes none, and one left out as it was laid before is not now)
+      if c.line < 0 {
+        c.line = 0
       }
       // (pool.add written out: called from here too, it is not inlined
       // where every container's items are set up)
@@ -2099,9 +2105,13 @@ fn layout_flex(
           cross_pos = cross_size - cross_pos - cross
         }
         f.unsafe_set(i + CROSS_POS, cross_pos)
-        // (for baselines only, which reuse does not take: measuring may
-        // write them too)
-        flow.unsafe_get(at.unsafe_get(k)).line = pool.line_of.unsafe_get(k)
+        // (for baselines only, which reuse does not take; laid out only, never as it is measured: a measure in a room
+        // it has not laid out in (a row with none bound, what holds it finding its size) puts back on a line what its
+        // row left out as it was laid, and a layout of that row kept after it (p_ok) would leave it so, of no size but
+        // not left out: drawn whole where it was let go, 2026-11-15)
+        if perform {
+          flow.unsafe_get(at.unsafe_get(k)).line = pool.line_of.unsafe_get(k)
+        }
       }
     }
     let fw = if row { main_size + pbw } else { cross_size + pbw }
@@ -2229,8 +2239,15 @@ fn layout_flex(
     // none above, so nothing else says it is back)
     for c in node.children {
       if c.style.display == DisplayNone {
-        left_out(c)
-        zero(c)
+        // (laid out nowhere already, and by nothing since: as it is, of no size, all it holds forgotten (none of its last
+        // layouts kept, p_ok), none of it walked again, whatever changed in it meanwhile, which is laid out as it shows
+        // again; a page under the one on top was forgotten whole again for each change of it or of the page over it,
+        // 2026-11-15: Home's lists under a chat, 295 nodes a change. What is made in it meanwhile is of no size as made)
+        if !(c.hidden_gen >= 0 && c.hidden_gen == c.laid_gen) {
+          left_out(c)
+          zero(c)
+          c.hidden_gen = c.laid_gen
+        }
       } else if c.line < 0 && c.style.position == Absolute {
         c.line = 0
       }
@@ -3315,7 +3332,10 @@ fn node_baseline(n : Node) -> Double {
     if c.line > 0 {
       break
     }
-    if c.style.position == Absolute || c.style.display == DisplayNone || (n.holds_gone && c.style.gone_empty && holds_none(c)) {
+    if c.line < 0 ||
+      c.style.position == Absolute ||
+      c.style.display == DisplayNone ||
+      (n.holds_gone && c.style.gone_empty && holds_none(c)) {
       continue
     }
     let al = item_align(n.style, c.style)

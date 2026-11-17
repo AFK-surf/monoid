@@ -83,4 +83,7 @@ extern "C" fn st_audio_played(id : Int) -> Double = "mb_host_stream_audio_played
 extern "C" fn st_audio_queued(id : Int) -> Double = "mb_host_stream_audio_queued"
 
 ///|
+extern "C" fn st_audio_wanted(id : Int) -> Double = "mb_host_stream_audio_wanted"
+
+///|
 extern "C" fn st_audio_volume(id : Int, v : Double) -> Unit = "mb_host_stream_audio_volume"

@@ -31,6 +31,7 @@
 #include "mini_json.h"
 #include "post_api.h"
 #include "station_install.h"  // what the installer is handed
+#include "station_uninstall.h"  // what takes it away
 
 // What it says changed (a step of the installer, an act done): a message posted on the app's channel for it, which
 // builds the next frame whole (@ui.on_message's), as a frame asked for did when this was the host's.
@@ -204,6 +205,9 @@ static moonbit_string_t sf_station_said(void) {
   _snwprintf(path, MAX_PATH * 2, L"%ls\\app", data);
   if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) o += (size_t)snprintf(b + o, cap - o, ",\"installed\":true");
   if (task) o += (size_t)snprintf(b + o, cap - o, ",\"service\":{\"kind\":\"task\",\"name\":\"%ls\"}", STATION_TASK);
+  // taken away here (stillfail uninstall, or 卸载本机 Station), its data kept: never brought back unasked
+  _snwprintf(path, MAX_PATH * 2, L"%ls\\uninstalled", data);
+  if (GetFileAttributesW(path) != INVALID_FILE_ATTRIBUTES) o += (size_t)snprintf(b + o, cap - o, ",\"uninstalled\":true");
   _snwprintf(path, MAX_PATH * 2, L"%ls\\mesh\\cloud.json", data);
   jv cloud = local_json(path);
   const char *ws = jtext(&cloud, "workspace");
@@ -401,6 +405,25 @@ static void sf_station_act(moonbit_string_t action) {
     free(a);
     return;
   }
+  if (!wcscmp(a, L"uninstall")) {
+    // bin/stillfail.ps1's uninstall, carried by the app (station_uninstall.h): a release from before has none, and one
+    // removed by hand none at all; done with no release there too
+    int u = WideCharToMultiByte(CP_UTF8, 0, data, -1, NULL, 0, NULL, NULL);
+    char *d8 = (char *)malloc((size_t)u + 1);
+    if (d8) WideCharToMultiByte(CP_UTF8, 0, data, -1, d8, u, NULL, NULL);
+    char *c8 = d8 ? station_uninstall_command(d8) : NULL;
+    free(d8);
+    WCHAR *command = NULL;
+    if (c8) {
+      int w = MultiByteToWideChar(CP_UTF8, 0, c8, -1, NULL, 0);
+      command = (WCHAR *)calloc((size_t)w + 1, sizeof(WCHAR));
+      if (command) MultiByteToWideChar(CP_UTF8, 0, c8, -1, command, w);
+      free(c8);
+    }
+    if (command) local_begin("uninstall", command, NULL);
+    free(a);
+    return;
+  }
   int start = !wcscmp(a, L"start"), stop = !wcscmp(a, L"stop"), restart = !wcscmp(a, L"restart");
   if (!start && !stop && !restart) {
     free(a);
@@ -408,12 +431,25 @@ static void sf_station_act(moonbit_string_t action) {
   }
   WCHAR *command = NULL;
   if (local_task()) {
-    // (the task ended, then run again: a restart; schtasks's own, with nothing of a shell)
-    command = (WCHAR *)calloc(256, sizeof(WCHAR));
+    // for good: stopped, the task is disabled (not run at the next sign-in) and ended, one not running stopped already;
+    // started or restarted, it is enabled again and the station no longer said taken away (schtasks's own, cmd only to
+    // put them in a row)
+    if (!stop) {
+      _snwprintf(path, MAX_PATH * 2, L"%ls\\uninstalled", data);
+      DeleteFileW(path);
+    }
+    command = (WCHAR *)calloc(512, sizeof(WCHAR));
+    const WCHAR *t = STATION_TASK;
     if (command) {
-      if (stop) _snwprintf(command, 256, L"schtasks.exe /End /TN \"%ls\"", STATION_TASK);
-      else if (start) _snwprintf(command, 256, L"schtasks.exe /Run /TN \"%ls\"", STATION_TASK);
-      else _snwprintf(command, 256, L"cmd.exe /c schtasks.exe /End /TN \"%ls\" & schtasks.exe /Run /TN \"%ls\"", STATION_TASK, STATION_TASK);
+      if (stop)
+        _snwprintf(command, 512,
+                   L"cmd.exe /c schtasks.exe /Change /TN \"%ls\" /Disable && (schtasks.exe /End /TN \"%ls\" >nul 2>&1 & exit 0)", t, t);
+      else if (start)
+        _snwprintf(command, 512, L"cmd.exe /c schtasks.exe /Change /TN \"%ls\" /Enable >nul & schtasks.exe /Run /TN \"%ls\"", t, t);
+      else
+        _snwprintf(command, 512,
+                   L"cmd.exe /c schtasks.exe /Change /TN \"%ls\" /Enable >nul & schtasks.exe /End /TN \"%ls\" >nul 2>&1 & schtasks.exe /Run /TN \"%ls\"",
+                   t, t, t);
     }
   } else {
     _snwprintf(path, MAX_PATH * 2, L"%ls\\run\\station.json", data);

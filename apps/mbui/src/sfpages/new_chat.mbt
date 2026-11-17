@@ -72,7 +72,7 @@ pub fn new_chat_opens(ws : String, ask : (String, Map[String, Json]) -> @sfbase.
 
 ///|
 /// A new chat in workspace `w` (NewChat, NewChatScreen): while its stations are read, the page as it will be on the
-/// station it last started on, its composer taking words but sending nothing; with none at all, the first to add;
+/// station it last started on, its composer sending to that one; with none at all, the first to add;
 /// with none up, said so; nothing to run a chat with yet, its first step; else the page on the station it starts on.
 pub fn new_chat_page(c : @ui.Ctx, src : Source, w : Workspace, frame : NewChatFrame) -> Unit {
   let topic = src.topic("newChat", new_chat_asked(w.id)).get().snapshot()
@@ -523,7 +523,7 @@ fn station_rows_node(n : @view.View, src : Source, w : Workspace, v : Json?, clo
       // (its words on the panel's words' line wherever it is drawn: @sf.panel_row_in_node; its ground under a mouse, as
       // panel_row_in's `hovered`)
       @sf.style_node(row, fn() { station_row.then(@sf.panel_row_in_node(row)) })
-      row.ground(By(fn() { if @sf.hovered_in_node(row) || row.focus_shown() { @sf.theme().p.hover } else { 0L } })) |> ignore
+      @sf.hover_ground_node(row, lit=Some(fn() { @sf.hovered_in_node(row) || row.focus_shown() }))
       @sf.rippled_node(row, fn() {
         @sfbase.pick_new(src, w.id, { "station": Json::string(text(st, "id")) })
         close()
@@ -687,7 +687,7 @@ fn new_tools(c : @ui.Ctx, src : Source, w : Workspace, v : Json?, station : Json
 
 ///|
 /// The page's composer (ComposerSlot, the mobile host's): the station's new chat's draft, `width` wide, roomy wide with
-/// the choices in its row; locked while nothing can run it (no model, no runtime) or while its stations are read. Its
+/// the choices in its row; locked while nothing can run it (no model, no runtime), never while its stations are read. Its
 /// place measured (what the scene leaving keeps clear); gone to the chat (`Going`), its place as it was. Held on no
 /// station (none started on yet, the stations' first value not come): its place, no draft asked for.
 fn new_composer_place(
@@ -704,7 +704,9 @@ fn new_composer_place(
   let wide = c.width >= @sf.page_narrow_most && c.ime_inset() == 0.0
   match state {
     Going(_, _) => list_space(c, @sfbase.fresh.room.get())
-    Held(_) if address == "" => list_space(c, @motion.measured(c, "new/composer").unwrap_or(0.0))
+    // (its room as it will be laid out once its station is there, not 0 till it has been: what is over it laid out
+    // where it will stay from the first frame, never moved up by the composer's coming: new_composer_room)
+    Held(_) if address == "" => list_space(c, @motion.measured(c, "new/composer").unwrap_or(new_composer_room(c, wide)))
     _ => {
       let held = state is Held(_)
       let spec : ComposerSpec = {
@@ -716,7 +718,12 @@ fn new_composer_place(
         note: [],
         tail: None,
         roomy: wide,
-        locked: held || text(v, "runtime") == "" || field(v, "model") is None,
+        // (while its stations are read it sends to the one it last started on, as it will be: Enter never taken
+        // for nothing; only with none to start on, or the stations not read for good)
+        locked: match state {
+          Held(error) => address == "" || error != ""
+          _ => !flag(v, "waiting") && (text(v, "runtime") == "" || field(v, "model") is None)
+        },
         offline: false,
         warm_agent: false,
       }
@@ -733,6 +740,18 @@ fn new_composer_place(
       c.put_over(place)
       @motion.measure(c, place, "new/composer")
     }
+  }
+}
+
+///|
+/// The room a new chat's composer takes, held (no station yet: nothing typed, its tools not offered), as it is laid out
+/// once it is built: roomy in the page's middle (`wide`) its opened box with one line (composer_open_box), else at the
+/// page's foot a capsule with what is round it there (capsule_room). Where its place is not measured yet.
+fn new_composer_room(c : @ui.Ctx, wide : Bool) -> Double {
+  if wide {
+    composer_open_box(c)
+  } else {
+    capsule_room(c, c.width)
   }
 }
 
@@ -954,9 +973,16 @@ fn new_send(
       runs~,
     )
   }
-  let row = sent_local(rk, None, words, up, going~, quotes~, runs~, now=(src.now)())
+  // (the chat's page made as nodes: its row's bubble flies from where the words stand in this page's field, each
+  // quote's card from its card and each of its files from its tile, as the chat's own composer tells them
+  // (sent_from_composer, as send_in_chat's; mbui's View::flies_in), as the page becomes the chat in this change)
+  let from = if carried { None } else { sent_from_composer(c, src, d, station) }
+  let row = sent_local(rk, None, words, up, going~, quotes~, runs~, from~, now=(src.now)())
   if carried {
     @sfbase.flight_carry_into(c, d.key, draft, rk, row)
+  } else if from is Some(_) {
+    // (and the chat's composer they leave, by its draft's key, going to its foot on their clock: composer's shape)
+    @sfbase.sent_out_said(c, station + ":" + key)
   }
   let sig = @sfbase.picked_sig(v)
   fresh.starting.set(true)
@@ -976,42 +1002,50 @@ fn new_send(
   let taken : Ref[Json?] = Ref(None)
   let made = Ref(!make)
   let sending = Ref(true)
-  // (not sent after all: its row gone from the list, its words back in the chat's composer, saying why)
+  // (this send still the page's: the new chat not begun anew since, nor this one sent again under its key; what the
+  // core answers late of one that is not touches nothing of what the page is now)
+  let ours = fn() { fresh.made.get() == key }
+  // (not sent after all: its row gone from the list, its words back in the chat's composer, saying why, unless
+  // something is written there by now: then said so, as send_in_chat's)
   let not_sent = fn(why : String) {
     @ui.haptic(Reject)
     sending.val = false
-    fresh.starting.set(false)
+    if ours() {
+      fresh.starting.set(false)
+    }
     @sfbase.sent_local_gone(rk, row)
     @sfbase.flight_carry_gone(draft)
     @sfbase.writing_starting(src, d, false)
-    let into = @sfbase.writing(src, draft)
-    into.taken = d.taken
     d.taken = None
-    writing_restore(src, into, why)
+    // (what was taken went with the words into the chat's draft: composer.carry; nothing taken, nothing to put back)
+    if why != "" {
+      @sfbase.writing_back_or_said(src, @sfbase.writing(src, draft), @sf.t("web-main.draft.notSent", args=[("error", why)]))
+    }
   }
   let send = fn() {
     match taken.val {
       Some(t) if made.val && sending.val => {
         sending.val = false
-        let params : Map[String, Json] = {
-          "station": Json::string(station),
-          "session": Json::string(key),
-          "text": Json::string(text(Some(t), "text")),
-          "attachments": Json::array(items(Some(t), "attachments")),
-          "quotes": Json::array(items(Some(t), "quotes")),
-        }
-        let going = items(Some(t), "uploads")
-        if going.length() > 0 {
-          params["uploads"] = Json::array(going)
-        }
-        (src.call)("chat.send", Json::object(params), fn(res) {
-          match res {
-            Err(e) => {
-              sending.val = true
-              not_sent(text(Some(e), "message"))
+        send_taken(src, station, ToSession(key), t, fn(said) {
+          match said {
+            // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
+            SentRefused(why) => not_sent(why)
+            // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
+            // back in the composer too were sent twice, 2026-11-16)
+            SentKept(why) => {
+              @ui.haptic(Reject)
+              if ours() {
+                fresh.starting.set(false)
+              }
+              @sfbase.flight_carry_gone(draft)
+              @sfbase.writing_starting(src, d, false)
+              @sfbase.sent_local_gone(rk, row)
+              toast_later(@sf.t("web-main.draft.notSent", args=[("error", why)]))
             }
-            Ok(_) => {
-              fresh.starting.set(false)
+            SentTaken => {
+              if ours() {
+                fresh.starting.set(false)
+              }
               @sfbase.writing_starting(src, d, false)
             }
           }
@@ -1038,18 +1072,29 @@ fn new_send(
           send()
         }
         Err(e) => {
-          // not made: the page the new chat again, its scene back, what was taken back in its composer
+          // not made: what is written meanwhile back in the new chat's draft, and what was taken with it (unless
+          // something is written there by now: then said so); the page the new chat again, its scene back, only
+          // while it is still the chat it became: a page come on top since, or a new chat begun anew, is left as it
+          // is (Nav::become changes whatever is on top)
           sending.val = false
-          fresh.made.set("")
-          fresh.starting.set(false)
-          fresh.became.set(None)
-          @sfbase.leaving_back()
           @sfbase.sent_local_gone(rk, row)
           @sfbase.flight_carry_gone(draft)
           @sfbase.writing_carry(src, draft, d.key)
           @sfbase.writing_starting(src, d, false)
-          writing_restore(src, d, text(Some(e), "message"))
-          app.nav.become(NewChat)
+          let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
+          let here = ours() && app.nav.top() is Chat(top) && top == r
+          if ours() {
+            fresh.made.set("")
+            fresh.starting.set(false)
+            fresh.became.set(None)
+          }
+          if here {
+            @sfbase.leaving_back()
+            app.nav.become(NewChat)
+          }
+          // (what was taken comes back with what is written meanwhile: composer.carry)
+          d.taken = None
+          @sfbase.writing_back_or_said(src, d, why)
         }
       }
     })

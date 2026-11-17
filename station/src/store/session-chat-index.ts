@@ -1,5 +1,5 @@
 import type { DatabaseSync } from "node:sqlite";
-import { ccSessionReady, CcIndexPreparation } from "./cc-thread-index.ts";
+import { ccSessionReady } from "./cc-thread-index.ts";
 
 export const SESSION_CHAT_VERSION = 1;
 const VERSION = SESSION_CHAT_VERSION;
@@ -10,7 +10,7 @@ const VERSION = SESSION_CHAT_VERSION;
 const lastAt = (thread: string) => `(SELECT at FROM entries WHERE thread=${thread} ORDER BY n DESC LIMIT 1)`;
 const exists = (session: string, thread: string) => `(EXISTS
   (SELECT 1 FROM thread_sessions m JOIN threads t ON t.id=m.thread WHERE m.session=${session} AND m.thread=${thread}))`;
-const refresh = (session: string, thread: string) => `UPDATE cc_session_rows SET
+export const refresh = (session: string, thread: string) => `UPDATE cc_session_rows SET
     name_present=${exists(session, thread)},
     name_has_last=CASE WHEN ${exists(session, thread)} THEN (${lastAt(thread)} IS NOT NULL) END,
     name_last_at=CASE WHEN ${exists(session, thread)} THEN COALESCE(${lastAt(thread)},0) END,
@@ -21,7 +21,7 @@ const refresh = (session: string, thread: string) => `UPDATE cc_session_rows SET
       (name_has_last IS NOT (${lastAt(thread)} IS NOT NULL) OR name_last_at IS NOT COALESCE(${lastAt(thread)},0)
         OR name_created_at IS NOT (SELECT created_at FROM threads WHERE id=${thread}))))`;
 // A scope may have been removed and recreated while its copy rows survived. Restore its ordered row during the scan.
-const ensure = (session: string, thread: string) => `INSERT OR IGNORE INTO session_chat_rows(session,has_last,last_at,created_at,thread)
+export const ensure = (session: string, thread: string) => `INSERT OR IGNORE INTO session_chat_rows(session,has_last,last_at,created_at,thread)
   SELECT session,name_has_last,name_last_at,name_created_at,thread FROM cc_session_rows
   WHERE session=${session} AND thread=${thread} AND name_present=1
     AND EXISTS (SELECT 1 FROM session_chat_scopes WHERE session=${session})`;
@@ -122,54 +122,4 @@ export function indexedSessionChat(db: DatabaseSync, session: string): Record<st
     if (!sessionChatReady(db, session)) throw new SessionChatUnavailable();
     return db.prepare(SESSION_CHAT_INDEXED).get(session) ?? null;
   } finally { db.exec("RELEASE session_chat_read"); }
-}
-
-/// Prepare the existing membership set first, then add its ordered rows in bounded key order. Triggers cover changes during the
-/// scan, including rows inserted behind its cursor. Every slice and its cursor are committed together.
-export class SessionChatPreparation {
-  readonly #cc = new CcIndexPreparation();
-
-  cancel(session: string): void { this.#cc.cancel(session); }
-
-  step(db: DatabaseSync, session: string, limit = 64,
-    options: { existingSession?: boolean } = {}): { done: boolean; visited: number } {
-    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 128) throw new RangeError("session chat batch must be between 1 and 128");
-    checkSessionChatIndex(db);
-    if (options.existingSession && !db.prepare("SELECT 1 FROM sessions WHERE key=?").get(session)) return { done: true, visited: 0 };
-    if (!ccSessionReady(db, session)) {
-      const progress = this.#cc.step(db, session, limit, options);
-      return { done: false, visited: progress.visited };
-    }
-    db.exec("BEGIN IMMEDIATE");
-    try {
-      // Another writer may have changed the projection before this transaction took the write lock.
-      checkSessionChatIndex(db);
-      // A session can disappear while the worker waits for handover or between batches. Never recreate its scope.
-      if (options.existingSession && !db.prepare("SELECT 1 FROM sessions WHERE key=?").get(session)) {
-        db.exec("COMMIT"); return { done: true, visited: 0 };
-      }
-      if (!ccSessionReady(db, session)) { db.exec("COMMIT"); return { done: false, visited: 0 }; }
-      db.prepare(`INSERT INTO session_chat_scopes(session,scan_end)
-        SELECT ?1,(SELECT thread FROM cc_session_rows WHERE session=?1 ORDER BY thread DESC LIMIT 1)
-        WHERE NOT EXISTS (SELECT 1 FROM session_chat_scopes WHERE session=?1)`).run(session);
-      const scopeQuery = db.prepare("SELECT scan_after,scan_end,complete FROM session_chat_scopes WHERE session=?");
-      scopeQuery.setReadBigInts(true);
-      const scope = scopeQuery.get(session) as { scan_after: bigint | null; scan_end: bigint | null; complete: bigint };
-      if (scope.complete === 1n) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-      const scan = db.prepare(scope.scan_after === null
-        ? "SELECT thread FROM cc_session_rows WHERE session=?1 AND thread<=?2 ORDER BY thread LIMIT ?3"
-        : "SELECT thread FROM cc_session_rows WHERE session=?1 AND thread>?2 AND thread<=?3 ORDER BY thread LIMIT ?4");
-      scan.setReadBigInts(true);
-      const rows = (scope.scan_after === null ? scan.all(session, scope.scan_end, limit)
-        : scan.all(session, scope.scan_after, scope.scan_end, limit)) as { thread: bigint }[];
-      const update = db.prepare(refresh("?1", "?2"));
-      const insert = db.prepare(ensure("?1", "?2"));
-      for (const row of rows) { update.run(session, row.thread); insert.run(session, row.thread); }
-      const done = rows.length < limit;
-      db.prepare("UPDATE session_chat_scopes SET scan_after=?,complete=? WHERE session=?")
-        .run(rows.at(-1)?.thread ?? scope.scan_after, done ? 1 : 0, session);
-      db.exec("COMMIT");
-      return { done, visited: rows.length };
-    } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-  }
 }

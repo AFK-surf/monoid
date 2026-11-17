@@ -46,20 +46,40 @@
 /// came.
 /// MBUI_SWITCH_AHEAD (2026-11-14: a choice that switches what its page reads asks ahead of the switch, sfbase's
 /// switch_answered: 用量's days and split, a station's page's parts) off in all 81 as it came.
+/// MBUI_STATION_UPDATES (2026-11-14: the stations' newer releases waiting for this person asked with the shell, their
+/// key beside the app's update) off in all 81 as it came.
+/// MBUI_STATION_MOVE (2026-11-15: a station's page asks what of it moves, `stationMove`, for its 迁移 row) off in all
+/// 81 as it came.
+/// MBUI_TERMINALS (2026-11-15: a station's terminals among its screens on its page) off in all 81 as it came.
+/// MBUI_SWR_VIEWS (2026-11-15: a view's own topic kept and shown again at once, a chat's services' pop read from its
+/// bar's summary till its own comes, an agent's card asking ahead its model's menu) off in all 81 as it came.
+/// MBUI_OPEN_WHOLE (2026-11-15: a card, a panel or a sheet opened the first time comes in once what it reads is answered,
+/// a station's or a connect's page opened once what it shows is) off in all 81 as it came.
+/// MBUI_PAGE_PICTURES (2026-11-16: a chat's page opening waits as well for the faces it shows the device holds) off in
+/// all 81 as it came.
+/// MBUI_START_PAGE (2026-11-17: the page a scripted run's app was started on opened as its replay's starts, before its
+/// first frame) off in all but drive-download-many and wide-places, recorded again with it as 文件 was made once as nodes.
 let switches_known : Map[String, Int] = {
-  "MBUI_PLACES_BAR": 72,
-  "MBUI_DEVICES": 73,
-  "MBUI_STATION_ROWS": 73,
-  "MBUI_HAVE_SAME": 73,
-  "MBUI_OUTLINE": 73,
-  "MBUI_CONNECT_ROWS": 73,
-  "MBUI_KEEP_CHAT": 73,
-  "MBUI_CHAT_ROW": 74,
-  "MBUI_CHATS_WINDOW": 74,
-  "MBUI_MARKS_ONE": 74,
-  "MBUI_PROFILE_ROWS": 81,
-  "MBUI_HOME_SAME": 81,
-  "MBUI_SWITCH_AHEAD": 81,
+  "MBUI_PLACES_BAR": 71,
+  "MBUI_DEVICES": 72,
+  "MBUI_STATION_ROWS": 72,
+  "MBUI_HAVE_SAME": 72,
+  "MBUI_OUTLINE": 72,
+  "MBUI_CONNECT_ROWS": 72,
+  "MBUI_KEEP_CHAT": 72,
+  "MBUI_CHAT_ROW": 73,
+  "MBUI_CHATS_WINDOW": 73,
+  "MBUI_MARKS_ONE": 73,
+  "MBUI_PROFILE_ROWS": 77,
+  "MBUI_HOME_SAME": 77,
+  "MBUI_SWITCH_AHEAD": 77,
+  "MBUI_STATION_UPDATES": 77,
+  "MBUI_STATION_MOVE": 78,
+  "MBUI_TERMINALS": 77,
+  "MBUI_SWR_VIEWS": 78,
+  "MBUI_OPEN_WHOLE": 78,
+  "MBUI_PAGE_PICTURES": 78,
+  "MBUI_START_PAGE": 79,
 }
 
 ///|

@@ -1,4 +1,4 @@
-// ＋ pressed on a touch system (still.fail's Android app): the library's panel, a sheet from the foot,
+// ＋ pressed on a touch system (still.fail's Android app): the library's panel of nodes, a sheet from the foot,
 // of the gallery's recent photos across its top (the camera first: recent.mbt), then 照片, 文件 and Station 文件 (添加 n 个
 // in their place while photos are chosen in the strip). A tile
 // picked asks the system (held by the host where it is big: writing_add_held), what it answers coming into the draft as
@@ -8,22 +8,23 @@
 ///|
 /// ＋'s panel for draft `key`, opened by ＋ (`plus`): the gallery's recent photos read again as it opens.
 fn attach_open(plus : Int, src : Source, key : String) -> Unit {
-  @sf.panel("", fn(c, close) { attach_body(c, src, key, close) }, from=Of(plus), w=attach_w)
+  @sf.panel_nodes("", fn(v, close) { attach_body_node(v, src, key, close) }, from=Of(plus), w=attach_w)
   recent_opened()
 }
 
 ///|
-/// What the panel shows, each frame it is drawn: the strip, then the three tiles.
-fn attach_body(c : @ui.Ctx, src : Source, key : String, close : () -> Unit) -> Unit {
-  let p = @sf.theme().p
+/// What the panel holds, in its body's node `v`: the strip, then the three tiles (添加 n 个 in their place while photos
+/// are chosen in the strip), each pressed shutting it (`close`) for what it asks.
+fn attach_body_node(v : @view.View, src : Source, key : String, close : () -> Unit) -> Unit {
+  let small = @sf.in_small_panel_node(v)
   let ask = fn(kind : @hostapi.PickKind) {
     close()
     if @ui.pick(kind, hold=true, on_got=fn(files) { picked_into(key, files) }) is None {
-      say(c, @sf.t(if kind == Camera { "android-chat.composer.noCamera" } else { "android-chat.composer.noFiles" }))
+      @sfbase.toast_later(@sf.t(if kind == Camera { "android-chat.composer.noCamera" } else { "android-chat.composer.noFiles" }))
     }
   }
-  // the gallery's recent photos, read as the panel opened (attach_open), taken once read
-  recent_frame(src)
+  // the gallery's recent photos, read as the panel opened (attach_open), taken as they are read
+  recent_reads_node(v, src)
   let tapped = fn(i : Int) {
     if i == 0 {
       ask(Camera)
@@ -38,49 +39,48 @@ fn attach_body(c : @ui.Ctx, src : Source, key : String, close : () -> Unit) -> U
         // no gallery on this host: said so
         NoGallery => {
           close()
-          say(c, @sf.t("android-chat.composer.noRecent"))
+          @sfbase.toast_later(@sf.t("android-chat.composer.noRecent"))
         }
         _ => @hostapi.gallery_ask()
       }
     }
   }
-  let photos = c.id("attach/photos")
-  let files = c.id("attach/files")
-  let station = c.id("attach/station")
-  c.on_press(photos, fn() {
-    ask(Photos)
-  })
-  c.on_press(files, fn() {
-    ask(Files)
-  })
-  c.on_press(station, fn() {
-    close()
-    (@sfbase.station_files_asked.val)(src, key)
-  })
-  recent_strip(c, tapped)
-  // photos chosen in the strip: 添加 n 个 where the tiles were
-  let adding = recent_adding(c, fn(files) { picked_into(key, files) }, close~)
-  if adding {
-    return
-  }
-  let corner = attach_block_corner()
-  c.box(style=attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot()))), fn() {
-    for item in [
-      (photos, @sf.t("android-chat.attach.photos"), "photo"),
-      (files, @sf.t("android-chat.attach.files"), "file"),
-      (station, @sf.t("web-pages.chat.files"), "server"),
-    ] {
-      let (id, label, icon) = item
-      c.box(style=attach_tile.then(@ui.style(radius=attach_block_radius())), id~, fn() {
-        @sf.icon(c, icon, size=attach_icon, color=p.text) |> ignore
-        c.text(label, style=attach_words) |> ignore
-        // (Attach.kt: clip(Smooth(14)).clickable; the ladder's block corner here, or a small panel's: attach_block_corner)
-        @motion.ripple(c, id, corner)
-      })
-      |> ignore
+  recent_strip_node(v, tapped)
+  // photos chosen in the strip: 添加 n 个 where the tiles were, as high (the sheet as it is)
+  v.pick(fn() { recent.chosen.length() > 0 }, at_once=true, fn(p, adding) {
+    if adding {
+      recent_adding_node(p, fn(files) { picked_into(key, files) }, close, small)
+      return
     }
+    let corner = attach_block_corner(small)
+    p.box(fn(row) {
+      @sf.style_node(row, fn() { attach_tiles.then(@ui.style(pb=@sf.room_of(attach_foot(small)))) })
+      for item in [
+        ("android-chat.attach.photos", "photo", fn() { ask(Photos) }),
+        ("android-chat.attach.files", "file", fn() { ask(Files) }),
+        (
+          "web-pages.chat.files",
+          "server",
+          fn() {
+            close()
+            (@sfbase.station_files_asked.val)(src, key)
+          },
+        ),
+      ] {
+        let (words, icon, press) = item
+        let label = fn() { @sf.t(words) }
+        row.box(fn(tile) {
+          @sf.style_node(tile, fn() { attach_tile.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
+          @sf.icon_node(tile, icon, attach_icon, By(fn() { @sf.theme().p.text })) |> ignore
+          @sf.words_node(tile, label, fn() { attach_words }) |> ignore
+          // (Attach.kt: clip(Smooth(14)).clickable; the ladder's block corner here, or a small panel's)
+          @sf.rippled_node(tile, press, corner, label)
+        })
+        |> ignore
+      }
+    })
+    |> ignore
   })
-  |> ignore
 }
 
 ///|

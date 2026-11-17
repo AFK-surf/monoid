@@ -123,6 +123,24 @@ export class Gpus {
     this.linuxRead = options.linux ?? (() => linuxGpus(this.run));
   }
 
+  /// The GPUs as last read, none asked or waited for: what `read` answers once its commands have answered at least
+  /// once (null where none is known yet). For a sample that waits for them only a moment (api/host.ts `sample`).
+  cached(): Gpu[] | null {
+    const gpus: Gpu[] = [];
+    if (this.os === "macos" && this.arch === "arm64" && this.apple?.gpu) gpus.push(this.apple.gpu);
+    if (!this.absent) gpus.push(...(this.nvidia?.gpus ?? []));
+    if (this.os === "linux") {
+      const hasNvidia = gpus.length > 0;
+      gpus.push(...(this.linux?.cards ?? []).filter((c) => c.vendor !== "0x10de" || !hasNvidia).map((c) => c.gpu));
+    }
+    if (this.os === "macos" && this.arch === "x64") {
+      const hasNvidia = gpus.length > 0;
+      gpus.push(...(this.macDisplays?.cards ?? []).filter((c) => c.vendor !== "nvidia" || !hasNvidia).map((c) => c.gpu));
+    }
+    if (this.os === "windows") gpus.push(...(this.windows?.gpus ?? []));
+    return gpus.length === 0 ? null : gpus;
+  }
+
   /// The GPUs, or null when none is known. nvidia-smi is asked again once its answer is NVIDIA_KEEP_MS old; until the
   /// new one comes the last is given (the first is waited for, GPU_WAIT_MS at most).
   async read(): Promise<Gpu[] | null> {

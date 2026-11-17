@@ -558,6 +558,15 @@ fn note_cards_node(r : @view.View) -> Unit {
     .padding(Is((@ui.Space::px(S4), 0.0, @ui.Space::px(S4), 0.0)))
     .gap(Is(@ui.Space::px(S2)))
     |> ignore
+    // (how many from the row's end each card stands, by its mark once: each card reads its own, told only as it changes)
+    let drops_by = row.keyed_by(
+      fn() {
+        marks_said()
+        let notes = mark_notes()
+        notes.mapi(fn(i, x) { (x.0, notes.length() - i) })
+      },
+      fn(d) { d.0 },
+    )
     row.each(
       fn() {
         marks_said()
@@ -569,14 +578,7 @@ fn note_cards_node(r : @view.View) -> Unit {
         cards[mid] = card
         card.owns(fn() { cards.remove(mid) }) |> ignore
         // (the last in the row leaving it first)
-        card.drops(By(fn() {
-          marks_said()
-          let notes = mark_notes()
-          match notes.search_by(fn(x) { x.0 == mid }) {
-            Some(i) => notes.length() - i
-            None => 1
-          }
-        }))
+        card.drops(By(fn() { drops_by.get(mid).map(fn(d) { d.1 }).unwrap_or(1) }))
         |> ignore
         note_tray_card_node(
           card,

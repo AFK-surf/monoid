@@ -62,6 +62,10 @@ export class Beside {
 /// options left out). `station` is `"<workspace>/<station>"`.
 export type Topic = { topic: string; [param: string]: unknown };
 
+/// A task another station's chat ran on a station, as its usage says it (`remoteRuns`): when it began and whose session;
+/// `count` how many such tasks a station that gathers them said in one (one where none is said: a station from before).
+export type RemoteRun = { at: number; session: string; count?: number };
+
 type Param = "string" | "u64" | "u32" | "u16" | "bool" | "object";
 /// How each param is kept: `req` must be given; `def` is filled in when absent (and always sent); `opt` is null when
 /// absent and sent so; `skip` is left out when absent (`skip_serializing_if`); `skipFalse`, a bool left out when false.
@@ -82,6 +86,10 @@ export const TOPICS: Record<string, Spec> = {
   host: { station: S },
   memory: { station: S },
   presets: { station: S },
+  profilePace: { station: S },
+  // What of a station moves to another (`to`, its id; "" none chosen yet), the items of `module` open, `limit` of them
+  // (move.ts: a page at a time as its list is scrolled, MOVE_SHOWN_MOST at most).
+  stationMove: { station: S, to: ["string", "def"], module: ["string", "def"], limit: ["u32", "skip"] },
   net: { station: S },
   way: { station: S },
   threads: { station: S },
@@ -116,6 +124,9 @@ export const TOPICS: Record<string, Spec> = {
   // or by a profile of it on a station (`station`, `id`), as a profile's page is opened.
   profiles: { scope: S },
   profile: { scope: S, key: ["string", "skip"], station: ["string", "skip"], id: ["string", "skip"] },
+  // The Profile overview's pools (views/profiles-overview.ts), and what each station said of its accounts' last hours
+  // (GET /profiles/pace), read while the overview shows.
+  profilesOverview: { scope: S },
   // A list's connects, each its row (ConnectRow); one connect's page asks that connect (ConnectView), and a
   // single-session one's page what its choice of a session lists, `connectCandidates`, while it can open that choice.
   connects: { scope: S, mine: ["bool", "def"] },
@@ -140,6 +151,10 @@ export const TOPICS: Record<string, Spec> = {
   filePeek: { station: S, key: S, path: S, line: ["u32", "skip"] },
   messagePeek: { station: S, thread: ["u64", "req"], seq: ["u64", "req"] },
   newChat: { scope: S },
+  /// A preset whole, the person's own or someone else's (views/presets.ts), as its page shows and edits it.
+  preset: { scope: S, id: S },
+  /// Others' presets of a workspace, read as it is shown (a press: views/presets.ts).
+  otherPresets: { scope: S },
   shareIn: { scope: S, source: S, query: ["string", "def"] },
   pick: { station: S, of: S },
   chatJobs: { station: S, thread: ["u64", "opt"], session: ["string", "opt"], compact: ["bool", "skipFalse"], summary: ["bool", "skipFalse"] },
@@ -153,6 +168,8 @@ export const TOPICS: Record<string, Spec> = {
   usage: { scope: S, days: ["u32", "skip"], split: ["string", "skip"], only: ["object", "skip"], day: ["string", "skip"] },
   fleet: { scope: S },
   railCard: { scope: S, place: S },
+  // The workspace's stations whose newer release waits for this person (views/station-updates.ts).
+  stationUpdates: { scope: S },
   settings: { scope: S },
   stationResources: { station: S },
   resources: { scope: S, station: ["string", "skip"] },
@@ -181,6 +198,7 @@ export const TOPICS: Record<string, Spec> = {
   joinable: { workspace: S },
   memberships: { station: S },
   screens: { station: S },
+  terminals: { station: S },
   screenCard: { station: S, screen: S },
   lockDraft: { workspace: S },
   lockPrompts: {},
@@ -247,8 +265,8 @@ export function sameTopic(a: Topic, b: Topic): boolean {
   return topicKey(a) === topicKey(b);
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "drive", "screens", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "linkPreview", "filePeek", "messagePeek"]);
-const VIEWS = new Set(["chats", "chatRow", "stations", "station", "stationPart", "profiles", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "chatSearch", "search", "archive", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "workspaceMarks", "decisions", "usage", "fleet", "railCard", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const VIEWS = new Set(["chats", "chatRow", "stations", "station", "stationPart", "profiles", "profile", "connects", "connect", "connectCandidates", "chat", "history", "agentCard", "stationNet", "chatSearch", "search", "archive", "chatJobs", "chatLetters", "chatThings", "chatOutline", "imageNear", "longJobs", "workspaceMarks", "decisions", "usage", "fleet", "railCard", "stationUpdates", "settings", "resources", "adminList", "adminItem", "adminOverview", "adminRelays", "workspaceWays"]);
 
 /// The station a station topic belongs to; null for the account topics, the core's own and the views.
 export function topicStation(topic: Topic): string | null {

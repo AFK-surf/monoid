@@ -162,18 +162,19 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   assert_false(t.ime().0)
   // backdrop tap: 模型 sheet holds the composer's keyboard off until it has sunk completely away
   t.tap(195.0, 20.0)
-  assert_true(@kit.sheet_top(t.ctx()) is Some(_), msg="模型 sheet sinking")
+  // (a sheet of the window's tree since the model's panel is made of nodes: what it holds still drawn as it sinks)
+  assert_true(t.find("常用搭配") is Some(_), msg="模型 sheet sinking")
   assert_false(t.ime().0, msg="composer's keyboard held off as 模型 starts to sink")
   let early_ime = Ref(0)
   t.each_frame(Some(fn() {
-    if @kit.sheet_top(t.ctx()) is Some(_) && t.ime().0 {
+    if t.find("常用搭配") is Some(_) && t.ime().0 {
       early_ime.val += 1
     }
   }))
   sheet_rested(t, "sf-present")
   t.each_frame(None)
   assert_eq(early_ime.val, 0)
-  assert_true(@kit.sheet_top(t.ctx()) is None)
+  assert_true(t.find("常用搭配") is None)
   assert_true(t.ime().0, msg="composer's keyboard given back once 模型 has sunk off")
   // 搜索模型 inside the open sheet raises the keyboard and keeps the sheet above it
   t.set_ime_inset(300.0)
@@ -189,6 +190,9 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   t.resize(390.0, 544.0)
   sheet_rested(t, "sf-present")
   let (_, y_search, _, h_search) = t.get(@ui.Role::Dialog).rect
+  // (where its search's words are as it rests: what its top's way down is read by as it sinks)
+  let words_y = fn() { t.find("搜索模型").map(fn(p) { p.1 }) }
+  let search_at = words_y().unwrap()
   assert_true(y_search + h_search <= 544.5, msg="模型 sheet \{y_search}+\{h_search} rides above keyboard")
   // tapping a row inside the sheet while 搜索模型 has the keyboard up keeps the rows still under the finger and picks it
   let (bx, by, bw, bh) = t.get(@ui.Role::Button, label="Sonnet 5").rect
@@ -196,14 +200,14 @@ test "小屏 touch: 新对话's 模型 sheet over the focused composer rises at 
   let (_, y_down, _, h_down) = t.get(@ui.Role::Dialog).rect
   assert_true((y_down - y_search).abs() < 1.0 && (h_down - h_search).abs() < 1.0, msg="pointer-down keeps sheet at \{y_search}+\{h_search}, got \{y_down}+\{h_down}")
   t.release(bx + bw / 2.0, by + bh / 2.0)
-  let y_leave = @kit.sheet_top(t.ctx()).unwrap()
+  let y_leave = y_search + words_y().unwrap() - search_at
   assert_true(y_leave >= y_search - 1.0 && y_leave < y_search + 90.0, msg="smooth sink from \{y_search}, got \{y_leave}")
   assert_eq(@sffixture.new_fix.model, "claude-sonnet-5")
   assert_false(t.ime().0)
   t.set_ime_inset(0.0)
   t.resize_next(390.0, 844.0)
   sheet_rested(t, "sf-present")
-  assert_true(@kit.sheet_top(t.ctx()) is None)
+  assert_true(t.find("常用搭配") is None)
   assert_true(t.ime().0)
 }
 

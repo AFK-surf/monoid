@@ -1,4 +1,4 @@
-// 97-video-frames (e2e/traces/video-frames.trace): a video's frames (the library's player, @sf.player_view): alice's
+// 97-video-frames (e2e/traces/video-frames.trace): a video's frames (the library's player, @sf.player_node): alice's
 // other device sends a clip; opened, it plays, its frames' times read from the file (the host's player: 4 s at 30 a
 // second, 120 frames); paused, which frame of how many, and its ±15 s become ‹ and ›: to the one before and the very
 // next, each as the player says it is there; 保存此帧: the frame showing grabbed by the host and kept in the

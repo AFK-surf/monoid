@@ -10,9 +10,9 @@ import * as rules from "../../../rules/js/rules.js";
 import { type Entry, canonical, entryHash } from "./lock.ts";
 import { fold, movedRoot } from "./lock-moved.ts";
 import { checkChain, crypto } from "./personal-lock.ts";
-import { checkLock, signerIn } from "./vault/lock-check.ts";
+import { type Checked, checkLock, signerIn } from "./vault/lock-check.ts";
 import { COUNTED_FROM } from "./station/oldest.ts";
-import { MOVED_FROM_BUILD } from "../../../station/src/api/moved-from.ts";
+import { LOGS_ANY_FROM_BUILD, MOVED_FROM_BUILD } from "../../../station/src/api/moved-from.ts";
 
 // deno-lint-ignore no-explicit-any
 type J = any;
@@ -55,46 +55,23 @@ export type HandOverPlan =
 /// From when (unix seconds, by this device's clock) a workspace's chain is handed over by itself (views/lock.ts
 /// `handsOver`): the day this was written (2026-11-14), so on every build from this one. Not a date anyone waits for (the
 /// user, 2026-11-14: 无感迁移, no date, no switch, nobody told to update): what holds a workspace back is what uses it,
-/// each station of its chain saying it serves what a moved chain is made of and each app device it lets in running a
-/// build that takes one (`devicesWaited`). It is only
+/// each station of its chain saying it serves what a moved chain is made of (no app device is waited for: one on a build
+/// that does not take a moved chain is told to update by its stations as it next asks). It is only
 /// where `mayHandOver`'s fourteen days count from for a chain begun before it.
 export const HAND_OVER_FROM: number | null = 1794614400;
 /// How long the person who turned safe mode on has to hand the chain over before another owner's device does (the
 /// owner, 2026-11-14): from `HAND_OVER_FROM` or the genesis, whichever is later.
 export const HAND_OVER_FIRST_SECS = 14 * 86400;
 
-/// How long a device no station of the chain has seen is not waited for (the owner was told, 2026-11-14:
-/// 「超过 7 天没上线的设备不等」): it uses nothing meanwhile, and as it comes back a station of a moved workspace tells a
-/// core too old for it to update (station/src/mesh/serve.ts `movedTooOld`).
-export const IDLE_SECS = 7 * 86400;
-/// For now, a chain whose members bound to a log are more than this is not handed over: a workspace said in its people's
-/// logs is bounded (`LOGS_MOST`, 256 logs a workspace) and one past it is a dead end.
-export const HAND_OVER_MEMBERS_MOST = 200;
 
 /// Whether a device that said `build` (its highest, as a station saw it ask: -1, none said) takes a moved workspace: a
 /// release's (COUNTED_FROM on) from MOVED_FROM_BUILD on; one under COUNTED_FROM, a development build's or an iOS app's
 /// (its TestFlight number, libs/mbui/scripts/ios.sh), cannot be told apart and is taken as able (the tests' devices say
 /// such builds; the iOS app updates by TestFlight); none said is not.
 export const ableBuild = (build: number): boolean => build >= 0 && (build < COUNTED_FROM || build >= MOVED_FROM_BUILD);
-
-/// What the stations said of the devices' builds (GET /lock `builds`, GET /lock/person), kept beside a lock: each
-/// station's `since` by its id, and per device the highest build and the latest `at` any of them said.
-export type BuildsSeen = { since: Record<string, number>; devices: Record<string, { build: number; at: number }> };
-
-/// Of the devices `ids`, those a handover (or a write of a kind an older app refuses) waits for, by what the stations
-/// `of` said (`seen`): one seen on a build not able (`ableBuild`) within IDLE_SECS of `now`, and one never seen while the
-/// latest `since` of those stations is within IDLE_SECS (none said: every one not seen is waited for). One not seen
-/// for IDLE_SECS uses nothing, and is not waited for.
-export function devicesWaited(ids: Iterable<string>, seen: BuildsSeen, of: readonly string[], now: number): string[] {
-  const said = of.flatMap((id) => (typeof seen.since[id] === "number" ? [seen.since[id]!] : []));
-  const since = said.length === 0 ? null : Math.max(...said);
-  const out: string[] = [];
-  for (const id of ids) {
-    const d = seen.devices[id];
-    if (d !== undefined ? !ableBuild(d.build) && now - d.at < IDLE_SECS : since === null || now - since < IDLE_SECS) out.push(id);
-  }
-  return out.sort();
-}
+/// The same of a chain binding more than LOGS_BEFORE logs (station/src/api/moved-from.ts): from LOGS_ANY_FROM_BUILD on,
+/// under which a station of such a moved workspace tells a core to update.
+export const ableLarge = (build: number): boolean => build >= 0 && (build < COUNTED_FROM || build >= LOGS_ANY_FROM_BUILD);
 
 /// Who turned safe mode on: the person of the device the genesis names with the key that signed it (its body's
 /// `owner` where it names none so).
@@ -129,12 +106,14 @@ export function mayHandOver(entries: readonly Entry[], sub: string, from: number
 /// that `moved` after it, is the chain's list at its head (`differs`): nobody dropped or added by the move. A bound
 /// member's log not held carries nothing of theirs (rules: what it said is not known), so it would differ: the logs
 /// the chain binds are read first (views/lock.ts `readBound`).
-export function handOverPlan(ws: string, entries: readonly Entry[], who: Who, chains: ReadonlyMap<string, readonly Entry[]>, bodies: readonly unknown[], now: number): HandOverPlan {
+/// `check`: the chain checked by the rules at `now` (`checkLock`, by default; the caller's where it keeps what it checked:
+/// views/lock.ts `checkedChain`).
+export function handOverPlan(ws: string, entries: readonly Entry[], who: Who, chains: ReadonlyMap<string, readonly Entry[]>, bodies: readonly unknown[], now: number, check: (entries: readonly Entry[], now: number) => Checked = (es, at) => checkLock([...es], at)): HandOverPlan {
   if (entries.length === 0) return { refused: "the workspace has no lock" };
   if (movedRoot(entries) !== null) return { refused: "the chain moved already" };
-  let checked: ReturnType<typeof checkLock>;
+  let checked: Checked;
   try {
-    checked = checkLock([...entries], now);
+    checked = check(entries, now);
   } catch (e) {
     return { refused: `the chain held does not check: ${(e as Error).message}` };
   }

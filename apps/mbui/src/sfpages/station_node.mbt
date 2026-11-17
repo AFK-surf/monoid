@@ -1,15 +1,15 @@
-// A station's own page (station_page.mbt's) made once as nodes of the window's tree, laid out by the width its frame
+// A station's own page made once as nodes of the window's tree, laid out by the width its frame
 // gives it (page_node): its head of its own (its mark and name, which its managers change where they are, how it is and
 // what it is, what is wrong with it, trying it again while away, 启动 where it is this machine's and stopped, its ⋯),
 // then its parts one at a time as its choice says: how it is and what runs on it, its 进程, what it is let do and set
 // to, its software and the machine. Everything said is the core's, each part bound to what it says now: the machine's
-// figures (station_cards.mbt), its 进程 (resources_node.mbt), a login's card under way (login_card.mbt's node). The
-// old view of the page (station_page) is what the rail's 'stations' place (sfdesk places.mbt) and a chat's side panel
-// (station_tabs.mbt) still draw: both old views themselves, which cannot hold a part made once.
+// figures (station_cards.mbt), its 进程 (resources_node.mbt), a login's card under way (login_card.mbt's node); what it
+// works out apart from its nodes, station_page.mbt. Every frame makes it so, and a chat's side panel as a station's tab
+// (sfdesk panel_node.mbt side_station_node).
 
 ///|
 /// Station `address`'s page (StationSettings, StationScreen) made once in node `v`, as wide as `width` gives it, in the
-/// frame it is given: while the stations are read, or where it is gone, a made-up one's in its bones (station_waiting's);
+/// frame it is given: while the stations are read, or where it is gone, a made-up one's in its bones;
 /// made again as the viewer comes to manage it or not. `stint`: the page's time on top (what a picture put up for its
 /// mark is asked for on). Its parts' choice pressed, what the part pressed reads as it is first drawn is asked of `src`
 /// (station_part_asks) and the page stays as it is, the choice showing what was pressed; the part is switched to whole in
@@ -71,8 +71,33 @@ pub fn station_node(
 }
 
 ///|
-/// Station `s`'s page (station_view's): its head, then its parts one at a time. `bones`: all of it in its bones,
-/// waiting on what it says (station_waiting's: its title the frame's).
+/// A station's page while the workspace's stations are read, none picked yet (the stations' place in the wide frame):
+/// a made-up one's in its bones, waiting on them, as station_node's.
+pub fn stations_reading_node(
+  v : @view.View,
+  core : Core,
+  src : Source,
+  here : () -> Here,
+  on_back~ : () -> Unit,
+  frame~ : () -> PageFrame,
+  said? : (@sf.PageSaid) -> Unit,
+  width? : () -> Double,
+  tips? : @sf.TipLayer,
+) -> Unit {
+  let tips = match tips {
+    Some(t) => t
+    None => @sf.TipLayer::new(fn() { Some(v) })
+  }
+  v.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+  let sample = station_sample()
+  station_view_node(v, core.quiet(), src, here, fn() { Some(sample) }, false, Some(@sf.t("common.readingStations")), on_back, frame, said, width, tips, fn() {
+    0
+  })
+}
+
+///|
+/// Station `s`'s page: its head, then its parts one at a time. `bones`: all of it in its bones,
+/// waiting on what it says (its title the frame's).
 fn station_view_node(
   p : @view.View,
   core : Core,
@@ -89,6 +114,8 @@ fn station_view_node(
   stint : () -> Int,
 ) -> Unit {
   let address = text(@signals.untracked(s), "station")
+  // (its 进程 as its blocks read it, a row of its table a block: read only as one is made)
+  let rs = rs_table_of(core, here, address)
   // (what the host says of the station here, as it said it last: a signal of that input, read again every few seconds
   // from when it is made, while this page is this machine's station's: it starts, stops and updates on its own time)
   let host : @signals.Signal[String] = @signals.signal(
@@ -98,7 +125,9 @@ fn station_view_node(
   if bones is None && address == this_machine() {
     fn again(at : Double) -> Unit {
       p.at_moment(at + @settings.local_read_ms, later=true, fn() {
-        host.set(@hostapi.app_said("local_station"))
+        let said = @hostapi.app_said("local_station")
+        host.set(said)
+        @settings.local_station_heard(said)
         again(at + @settings.local_read_ms)
       })
       |> ignore
@@ -160,29 +189,51 @@ fn station_view_node(
       None => part()
     }
   }
-  let blocks = fn() {
-    // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown)
-    let out = if station_moving_shown(s()) { ["moving", "parts"] } else { ["parts"] }
+  // (what its blocks are worked out of: the station as their keys read it, so a change of what no key reads runs none
+  // of what reads them; and the blocks worked out once, told only as one comes, goes or moves)
+  // (and the `beta` features it runs: its terminals' rows are keys of its overview's parts)
+  let keyed = station_narrowed(s, ["copies", "drive", "permissions", "agentEnv", "search", "diagnostics", "elevation", "features"])
+  let blocks_now = @signals.computed(fn(_) {
+    let s = keyed
+    // (being retired, or taking a retired one's chats in: 迁移 first, over its parts, whichever is shown; or something
+    // of it moved to another station, moving, stopped or failed: station_move_node.mbt's; whether or not the station
+    // offers moving now, a stable one that never moved having none)
+    let out = if station_moving_shown(s()) {
+      ["moving", "parts"]
+    } else if flag(s(), "online") && (core.move_on)() && @settings.move_shown(core, address) {
+      ["move", "parts"]
+    } else {
+      ["parts"]
+    }
     out.append(
       match part() {
-        "processes" => ["processes"]
+        // (its head, each row of its table, how it is read: a block each; in its bones its head alone)
+        "processes" => if bones is None { ["processes"] + rs_block_keys(rs, flag(s(), "online")) } else { ["processes"] }
         "settings" => station_settings_keys(s(), manager)
         "machine" => ["software", "device"]
         _ => station_overview_keys(core, s())
       },
     )
     out
-  }
+  })
+  let blocks = fn() { blocks_now.get() }
+  // (what most parts read of it: all it says of itself, of its overview only the `beta` features it runs (its terminals),
+  // whether it has a machine)
+  let top = station_narrowed(s, ["features"])
   let block = fn(b : @view.View, key : String) {
     match key {
       "parts" => station_parts_node(b, chosen, press)
-      "resources" => station_resources_node(b, core, here, s, fn() { press("processes") })
-      "userPages" => station_user_pages_node(b, core, here, s)
-      "agentPages" => station_agent_pages_node(b, core, here, s)
-      "screens" => station_screens_node(b, core, here, s)
-      "profiles" => station_profiles_node(b, core, here, s)
-      "connects" => station_connects_node(b, core, s)
-      "drive" => station_drive_node(b, s)
+      "resources" =>
+        station_resources_node(b, core, here, station_narrowed(s, ["processes", "processesText"], host=true), fn() {
+          press("processes")
+        })
+      k if k == "allScreens" || k.has_prefix("allScreens/") => all_screens_block(b, core, here, top, k)
+      "userPages" => station_user_pages_node(b, core, here, top)
+      "agentPages" => station_agent_pages_node(b, core, here, top)
+      "screens" => station_screens_node(b, core, here, top)
+      "profiles" => station_profiles_node(b, core, here, top)
+      "connects" => station_connects_node(b, core, station_narrowed(s, ["connects"]))
+      "drive" => station_drive_node(b, station_narrowed(s, ["drive"]))
       // its devices, and adding one: any member but one who only reads (a whole station's are every chat's)
       "devices" => {
         let id = text(@signals.untracked(s), "id")
@@ -192,22 +243,25 @@ fn station_view_node(
         })
       }
       "more" => station_more_node(b, core, address)
-      "processes" => station_processes_node(b, core, here, s)
+      "processes" => station_processes_node(b, core, here, top, if bones is None { Some(rs) } else { None })
+      k if k.has_prefix("processes/") => rs_block_node(b, core, address, rs, k)
       "offline" => @sf.group_node(b, fn(g) { said_row_node(g, fn() { @sf.t("web-pages.stations.settingsOffline") }) })
-      "logins" => station_logins_node(b, core, address, fn() { flag(s(), "online") })
-      "permissions" => station_permissions_node(b, core, address, fn() { field(field(s(), "overview"), "permissions") })
-      "env" => station_env_node(b, core, address, fn() { field(field(s(), "overview"), "agentEnv") }, manager)
-      "search" => station_search_node(b, core, address, fn() { field(field(s(), "overview"), "search") }, manager)
-      "context" => station_context_node(b, core, address, fn() { field(field(s(), "overview"), "context") }, manager)
-      "diagnostics" =>
-        station_diagnostics_node(b, core, address, fn() { field(field(s(), "overview"), "diagnostics") }, manager)
-      "elevation" => station_elevation_node(b, core, address, fn() { field(field(s(), "overview"), "elevation") })
+      "system" =>
+        station_system_node(b, core, address, station_narrowed(s, ["agentEnv", "search", "diagnostics", "elevation"]), manager)
+      "logins" => station_logins_node(b, core, address, fn() { flag(top(), "online") })
+      "permissions" => station_permissions_node(b, core, address, station_overview_of(s, "permissions"))
+      "env" => station_env_node(b, core, address, station_overview_of(s, "agentEnv"), manager)
+      "search" => station_search_node(b, core, address, station_overview_of(s, "search"), manager)
+      "context" => station_context_node(b, core, address, station_overview_of(s, "context"), manager)
+      "diagnostics" => station_diagnostics_node(b, core, address, station_overview_of(s, "diagnostics"), manager)
+      "elevation" => station_elevation_node(b, core, address, station_overview_of(s, "elevation"))
       "workspaces" => station_workspaces_node(b, core, address)
-      "network" => station_network_node(b, core, address, fn() { field(field(s(), "overview"), "network") }, manager)
-      "copies" => station_copies_node(b, core, address, fn() { field(field(s(), "overview"), "copies") })
-      "moving" => station_moving_node(b, core, here, s, manager)
-      "software" => station_software_node(b, core, s, manager, tips)
-      "device" => station_device_node(b, s)
+      "network" => station_network_node(b, core, address, station_overview_of(s, "network"), manager)
+      "copies" => station_copies_node(b, core, address, station_overview_of(s, "copies"))
+      "moving" => station_moving_node(b, core, here, station_narrowed(s, ["copies"]), manager)
+      "move" => station_move_section(b, core, address)
+      "software" => station_software_node(b, core, station_narrowed(s, ["updates"]), manager, tips)
+      "device" => station_device_node(b, station_narrowed(s, [], host=true))
       _ => ()
     }
   }
@@ -229,15 +283,63 @@ fn station_view_node(
     said?,
     width?,
     tips~,
-    // its head says its name: no title over it (StationSettings: Head, then Body)
-    head=fn(h) { station_head_node(h, core, here, s, host, manager, bones is Some(_), stint, tips) },
+    // its head says its name: no title over it (StationSettings: Head, then Body). (It reads all the station says of
+    // itself, none of its overview or its machine: what the machine is worked out of it whole on its own, its ⋯ the
+    // station whole as it is pressed)
+    head=fn(h) { station_head_node(h, core, here, top, s, host, manager, bones is Some(_), stint, tips) },
     // (what its head does, on back's line over it where the page puts it there: own_head's back_line)
     actions=fn(a) {
       if bones is None {
-        station_actions_node(a, core, here, s, fn() { local_stopped_in(address, host.get()) }, manager, tips)
+        station_actions_node(a, core, here, top, s, fn() { local_stopped_in(address, host.get()) }, manager, tips)
       }
     },
   )
+}
+
+///|
+/// Station `s` (whole) as a part of its page reads it: all it says of itself but its `overview` and its machine (its
+/// name, mark, how it is, what is wrong with it: a few words, which change as it does), of its overview only `overview`'s
+/// fields, and its machine (`host`) whole where `host` says so, else only whether it has one (a `{}` in its place).
+/// Worked out once of it whole, told only as that comes out otherwise (a computed, Json's equality): a change of what
+/// the part does not read (a profile's quota, its 归档's line, the machine's meters) runs none of what shows it.
+fn station_narrowed(s : () -> Json?, overview : Array[String], host? : Bool = false) -> () -> Json? {
+  let now = @signals.computed(fn(_) {
+    match s() {
+      Some(Object(m)) => {
+        let out : Map[String, Json] = Map([])
+        for k, v in m {
+          if k == "overview" {
+            let o : Map[String, Json] = Map([])
+            for f in overview {
+              match field(Some(v), f) {
+                Some(x) => o[f] = x
+                None => ()
+              }
+            }
+            out[k] = Json::object(o)
+          } else if k == "host" {
+            out[k] = match v {
+              Object(_) if !host => Json::object(Map([]))
+              _ => v
+            }
+          } else {
+            out[k] = v
+          }
+        }
+        Some(Json::object(out))
+      }
+      other => other
+    }
+  })
+  fn() { now.get() }
+}
+
+///|
+/// Field `key` of station `s`'s overview, worked out once of it whole, told only as it comes out otherwise (a computed):
+/// what a part of the page that shows that field alone reads.
+fn station_overview_of(s : () -> Json?, key : String) -> () -> Json? {
+  let now = @signals.computed(fn(_) { field(field(s(), "overview"), key) })
+  fn() { now.get() }
 }
 
 ///|
@@ -245,12 +347,12 @@ fn station_view_node(
 /// its screens, profiles, connects and folders, and what else of it has a page of its own.
 fn station_overview_keys(core : Core, s : Json?) -> Array[String] {
   let address = text(s, "station")
-  station_overview_keys_by(s, station_part_read(core, address, station_screens_ask(address)).value)
+  station_overview_keys_by(s, station_part_read(core, address, station_screens_ask(address)).value, terminals=terminals_to_show(core, address, s))
 }
 
 ///|
 /// The keys of its overview's parts (station_overview_keys'), its screens as `screens` says them (None: not answered).
-fn station_overview_keys_by(s : Json?, screens : Json?) -> Array[String] {
+fn station_overview_keys_by(s : Json?, screens : Json?, terminals? : Bool = false) -> Array[String] {
   let o = field(s, "overview")
   let out = []
   if flag(s, "online") && field(s, "host") is Some(Object(_)) {
@@ -259,23 +361,17 @@ fn station_overview_keys_by(s : Json?, screens : Json?) -> Array[String] {
   match screens {
     Some(Object(_)) as v => {
       let all = items(v, "screens")
-      if all.iter().any(fn(sc) { is_user_screen(Some(sc)) }) || (flag(v, "browser") && flag(v, "control")) {
-        out.push("userPages")
-      }
-      if all.iter().any(fn(sc) { is_agent_screen(Some(sc)) }) {
-        out.push("agentPages")
-      }
-      if all.iter().any(fn(sc) { !is_browser_screen(Some(sc)) }) || (all.is_empty() && text(v, "note") != "") {
-        out.push("screens")
+      let can_open = flag(v, "browser") && flag(v, "control")
+      // (its terminals there too, while it is up: 打开终端 at least)
+      if !all.is_empty() || can_open || text(v, "note") != "" || (terminals && flag(s, "online")) {
+        // (its heading, then a block a row: all_screens_block)
+        out.push("allScreens")
+        for row in all_screens_rows_by(s, v, terminals) {
+          out.push("allScreens/" + row)
+        }
       }
     }
     _ => ()
-  }
-  if items(s, "profileGroups").length() > 0 {
-    out.push("profiles")
-  }
-  if items(o, "connects").length() > 0 {
-    out.push("connects")
   }
   if field(o, "drive") is Some(Object(_)) {
     out.push("drive")
@@ -284,7 +380,6 @@ fn station_overview_keys_by(s : Json?, screens : Json?) -> Array[String] {
   if flag(s, "online") {
     out.push("devices")
   }
-  out.push("more")
   out
 }
 
@@ -294,33 +389,21 @@ fn station_overview_keys_by(s : Json?, screens : Json?) -> Array[String] {
 fn station_settings_keys(s : Json?, manager : Bool) -> Array[String] {
   let o = field(s, "overview")
   if !flag(s, "online") {
-    return if manager { ["offline", "logins", "workspaces"] } else { ["offline", "logins"] }
+    return ["offline"]
   }
-  let out = []
+  let out = ["software"]
   if field(o, "permissions") is Some(Object(_)) {
     out.push("permissions")
   }
-  out.push("logins")
-  if field(o, "agentEnv") is Some(Array(_)) {
-    out.push("env")
+  let env = items(o, "agentEnv")
+  let has_env = field(o, "agentEnv") is Some(Array(_)) && (manager || env.length() > 0)
+  let search = field(o, "search")
+  let has_search = search is Some(Object(_)) && text(search, "files") == "spotlight"
+  if has_env || has_search || field(o, "diagnostics") is Some(Object(_)) || field(o, "elevation") is Some(Object(_)) {
+    out.push("system")
   }
-  match field(o, "search") {
-    Some(Object(_)) as search if text(search, "files") == "spotlight" => out.push("search")
-    _ => ()
-  }
-  for k in ["context", "diagnostics", "elevation"] {
-    if field(o, k) is Some(Object(_)) {
-      out.push(k)
-    }
-  }
-  if manager {
-    out.push("workspaces")
-  }
-  if field(o, "copies") is Some(Object(_)) {
+  if items(field(o, "copies"), "offers").length() > 0 {
     out.push("copies")
-  }
-  if field(o, "network") is Some(Object(_)) {
-    out.push("network")
   }
   out
 }
@@ -337,7 +420,7 @@ fn station_part_read(core : Core, address : String, ask : (String, Map[String, J
 ///|
 /// What station `address`'s page's readers say they have read anew by, what a part pressed asked handed to them
 /// (sfbase's switch_answered, shown_read).
-fn station_shown_at(address : String) -> String {
+pub fn station_shown_at(address : String) -> String {
   "station\u{1}" + address
 }
 
@@ -372,9 +455,16 @@ fn station_env_form_ask(address : String, form : String) -> (String, Map[String,
 fn station_block_asks(core : Core, here : Here, address : String, s : Json?, manager : Bool, key : String) -> Array[(String, Map[String, Json])] {
   match key {
     "resources" => [station_net_ask(address), resources_ask(here, address)]
+    "allScreens" => [station_screens_ask(address), ..if terminals_offered(core, s) { [terminals_ask(address)] } else { [] }]
     "userPages" | "agentPages" | "screens" => [station_screens_ask(address)]
     "devices" => if (core.devices_on)() { [@settings.devices_ask(here)] } else { [] }
     "processes" => if flag(s, "online") { [resources_ask(here, address)] } else { [] }
+    "system" =>
+      if manager && station_env_open.get(address).unwrap_or(false) {
+        [station_env_form_ask(address, station_env_form(core, address))]
+      } else {
+        []
+      }
     "logins" => [logins_ask(address)]
     "env" => if manager { [station_env_form_ask(address, station_env_form(core, address))] } else { [] }
     // (up, it is the part's last, under its variables' editor: made only as it is scrolled to, which asks it then; away,
@@ -392,7 +482,7 @@ fn station_part_asks(core : Core, here : Here, address : String, s : Json?, mana
     "processes" => ["processes"]
     "settings" => station_settings_keys(s, manager)
     "machine" => []
-    _ => ["screens", ..station_overview_keys_by(s, None)]
+    _ => ["screens", ..station_overview_keys_by(s, None, terminals=terminals_offered(core, s))]
   }
   let out : Array[(String, Map[String, Json])] = []
   let said : Map[String, Bool] = Map([])
@@ -409,28 +499,18 @@ fn station_part_asks(core : Core, here : Here, address : String, s : Json?, mana
 }
 
 ///|
-/// What part `part` of station `address`'s page (`s` whole, as it is now) reads as it is first drawn once what the press
-/// asked is answered (switch_answered's `then`): in its 设置, the card of each login under way (`machineLogin`), whose
-/// ids only its logins' answer says, read by what its 登录 shows them by (station_logins_shown).
-fn station_part_then(address : String, s : Json?, part : String) -> (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])] {
-  fn(read) {
-    if part == "settings" {
-      station_logins_shown(read(logins_ask(address)), flag(s, "online")).map(fn(id) { login_ask(address, id) })
-    } else {
-      []
-    }
+fn station_logins_shown(view : Json?, online : Bool) -> Array[String] {
+  if !online || !flag(view, "supported") {
+    return []
   }
+  items(view, "logins").filter(fn(l) { flag(Some(l), "active") }).map(fn(l) { text(Some(l), "id") })
 }
 
 ///|
-/// The logins under way its 登录 shows a card of (`view` its logins as the core says them): their ids; none while it
-/// is away (it can be neither done nor cancelled until it is back).
-fn station_logins_shown(view : Json?, online : Bool) -> Array[String] {
-  if online {
-    items(view, "logins").filter(fn(l) { flag(Some(l), "active") }).map(fn(l) { text(Some(l), "id") })
-  } else {
-    []
-  }
+/// What part `part` of station `address`'s page (`s` whole, as it is now) reads as it is first drawn once what the press
+/// asked is answered (switch_answered's `then`).
+fn station_part_then(_address : String, _s : Json?, _part : String) -> (((String, Map[String, Json])) -> Json?) -> Array[(String, Map[String, Json])] {
+  fn(_read) { [] }
 }
 
 ///|
@@ -438,12 +518,14 @@ fn station_logins_shown(view : Json?, online : Bool) -> Array[String] {
 /// before it), what the machine is, its version, where it is from; what is wrong with it under them; at its end trying
 /// it again while away or silent, 启动 where it is this machine's and stopped here, its ⋯. This machine's as the host
 /// says it, asked again every few seconds from when it is made (it starts, stops and updates on its own time: a
-/// moment said each time). `bones`: all of it in its bones while what it says is read the first time.
+/// moment said each time). `bones`: all of it in its bones while what it says is read the first time. `s`: the station
+/// as its head reads it (station_narrowed's: none of its overview or its machine), `whole` all of it.
 fn station_head_node(
   h : @view.View,
   core : Core,
   here : () -> Here,
   s : () -> Json?,
+  whole : () -> Json?,
   host : @signals.Signal[String],
   manager : Bool,
   bones : Bool,
@@ -451,7 +533,7 @@ fn station_head_node(
   tips : @sf.TipLayer,
 ) -> Unit {
   if bones {
-    @sf.waiting_node(h, fn(w) { station_head_node(w, core, here, s, host, manager, false, stint, tips) })
+    @sf.waiting_node(h, fn(w) { station_head_node(w, core, here, s, whole, host, manager, false, stint, tips) })
     return
   }
   let address = text(@signals.untracked(s), "station")
@@ -465,12 +547,17 @@ fn station_head_node(
     }
   }
   let name = fn() { text(s(), "name") }
+  // (what the machine is, its version, where it is from: worked out once of the station whole, told only as it reads
+  // otherwise, so its machine's figures changing run nothing of the head)
+  let facts_now = @signals.computed(fn(_) { station_head_facts(whole()) })
+  let facts = fn() { facts_now.get() }
   @sf.own_head_node(
     h,
-    fn(m, _side) {
+    fn(m, side) {
+      let glyph = if side <= 32.0 { st_mark_wide_glyph } else { st_mark_glyph }
       m.pick(fn() { @sf.has_station_mark(text(s(), "emoji"), text(s(), "icon")) }, fn(k, has) {
         if has {
-          @sf.station_mark_node(k, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, st_mark_glyph, fn() {
+          @sf.station_mark_node(k, fn() { text(s(), "emoji") }, fn() { text(s(), "icon") }, glyph, fn() {
             @sf.theme().p.text
           }, stint)
         } else {
@@ -507,17 +594,16 @@ fn station_head_node(
     name,
     rename?=if manager { Some(fn() { station_rename(core, @signals.untracked(here), @signals.untracked(s)) }) } else { None },
     rename_label=fn() { @sf.t("web-pages.settings.stations.rename") },
+    // (what the machine is, none for one never reached: no line, and no dot before nothing)
     lines=fn() {
-      let facts = [text(field(s(), "host"), "identity")]
-      if text(s(), "version") != "" {
-        facts.push("Station " + text(s(), "version"))
+      match facts() {
+        "" => []
+        facts => [facts]
       }
-      facts.push(joined_text(s()))
-      [join(facts, " · ")]
     },
     // its dot before what it says of how it is (reconnecting …; this machine's, how it stands here: 已停止, 正在更新),
     // else before what the machine is
-    dot=fn() { if state().0 == "" { dot() } else { "" } },
+    dot=fn() { if state().0 == "" && facts() != "" { dot() } else { "" } },
     state=fn(k) {
       @sf.state_dot_node(k, fn() { if state().1 && stopped() is Some(_) { "busy" } else { dot() } })
       @sf.words_node(k, fn() { state().0 }, fn() { if state().1 { st_fact_busy } else { st_fact } }) |> ignore
@@ -531,18 +617,20 @@ fn station_head_node(
       }
       out
     },
-    actions=fn(a) { station_actions_node(a, core, here, s, stopped, manager, tips) },
+    actions=fn(a) { station_actions_node(a, core, here, s, whole, stopped, manager, tips) },
   )
 }
 
 ///|
 /// What its head does at its end (station_head's): trying it again while away or silent, 启动 where it is this
-/// machine's and stopped here (`stopped`), how its renaming goes and its ⋯ for its managers.
+/// machine's and stopped here (`stopped`), how its renaming goes and its ⋯ for its managers. `s`: the station as they
+/// read it (station_narrowed's), `whole` all of it, which its ⋯ reads as it is pressed.
 fn station_actions_node(
   a : @view.View,
   core : Core,
   here : () -> Here,
   s : () -> Json?,
+  whole : () -> Json?,
   stopped : () -> Json?,
   manager : Bool,
   tips : @sf.TipLayer,
@@ -574,6 +662,15 @@ fn station_actions_node(
       _ => ()
     }
   })
+  // its 加入安全模式 (station_protect's), where its workspace's safe mode does not name it and the viewer could protect it here
+  a.show(fn() { flag(s(), "protect") }, fn(e) {
+    let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", here().workspace), ("station", id())]) }
+    @sf.button_node(e, fn() { @sf.t("web-pages.security.joinShort") }, fn() {
+      let now = @signals.untracked(s)
+      join_dialog(core, @signals.untracked(here).workspace, text(now, "id"), text(now, "name"))
+    }, tone=Ghost, busy=joining, disabled=joining)
+    |> ignore
+  })
   if manager {
     let on = fn() { [("station", id())] }
     doing_mark_node(a, fn() { is_doing(core, ["workspace.renameStation", "workspace.removeStation"], on()) }, fn() {
@@ -582,7 +679,7 @@ fn station_actions_node(
     // its ⋯ (station_menu's), beside it
     @sf.icon_action_opens_node(a, "more", fn() { @sf.t("common.more") }, fn(m) {
       let (x, y, w, h) = m.placed_window_now()
-      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(s)), from=At(x, y, w, h), along=End)
+      @sf.menu(station_menu_items(core, @signals.untracked(here), @signals.untracked(whole)), from=At(x, y, w, h), along=End)
     })
     |> ignore
   }
@@ -648,11 +745,11 @@ fn station_resources_node(b : @view.View, core : Core, here : () -> Here, s : ()
           let uses = fn() { items(station_part_read(core, address, resources_ask(here(), address)).value, "stations").get(0) }
           station_dials_node(r, fn() { field(s(), "host") })
           r.show(fn() { net() is Some(Object(_)) }, fn(x) { station_net_node(x, net) })
-          r.show(fn() { items(field(s(), "overview"), "processes").length() > 0 }, fn(x) {
-            @sf.words_node(x, fn() { text(field(s(), "overview"), "processesText") }, fn() { st_memory }) |> ignore
-          })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
           r.show(fn() { uses() is Some(_) }, fn(x) { station_uses_node(x, uses, processes) })
+          r.show(fn() { uses() is None && items(field(s(), "overview"), "processes").length() > 0 }, fn(x) {
+            @sf.words_node(x, fn() { text(field(s(), "overview"), "processesText") }, fn() { st_memory }) |> ignore
+          })
         })
         |> ignore
       })
@@ -684,6 +781,184 @@ fn screen_row_icon(sv : Json?) -> String {
   } else {
     "monitor"
   }
+}
+
+///|
+/// Unified "屏幕与浏览器" section: physical/simulator screens, agent-opened browser tabs, and station browser entry, all
+/// of it in one node (a test's: the page has it a block a row, all_screens_keys).
+// (held by its tests, not used by the app yet)
+#warnings("-unused_value")
+fn station_all_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
+  let address = text(@signals.untracked(s), "station")
+  st_section_node(b, fn() { all_screens_title(core, s()) }, count=fn() { all_screens_count(core, address, s) }, fn(sec) {
+    @sf.group_node(sec, fn(g) {
+      g.each(fn() { all_screens_rows(core, address, s()) }, fn(k) { k }, fn(row, k) {
+        all_screens_row_node(row, core, here, s, k.untracked())
+      })
+    })
+  })
+}
+
+///|
+/// Its heading: 屏幕、浏览器与终端 where its terminals are offered (a `beta` feature of the station's: terminals_offered),
+/// else 屏幕与浏览器.
+fn all_screens_title(core : Core, s : Json?) -> String {
+  if terminals_offered(core, s) {
+    @sf.t("web-pages.stations.screensAndTerminals")
+  } else {
+    @sf.t("web-pages.stations.screensTitle")
+  }
+}
+
+///|
+/// Its screens' topic (`screens`).
+fn all_screens_v(core : Core, address : String) -> Json? {
+  (core.topic)("screens", { "station": str(address) }).get().value
+}
+
+///|
+/// How many 屏幕、浏览器与终端 counts: its screens, the agents' tabs and its terminals.
+fn all_screens_count(core : Core, address : String, s : () -> Json?) -> Int {
+  let v = all_screens_v(core, address)
+  let screens = items(v, "screens").filter(fn(sc) { !is_browser_screen(Some(sc)) }).length()
+  let tabs = items(v, "screens").filter(fn(sc) { is_agent_screen(Some(sc)) }).length()
+  let terminals = if terminals_offered(core, s()) && flag(s(), "online") {
+    let tv = (core.topic)("terminals", { "station": str(address) }).get().value
+    if terminals_shown(s(), tv) { items(tv, "terminals").length() } else { 0 }
+  } else {
+    0
+  }
+  screens + tabs + terminals
+}
+
+///|
+/// The rows of 屏幕、浏览器与终端 by their keys, in order (as `screens`, `v`, and station `s` say them, `terminals`:
+/// terminals_to_show's): each screen ("screen/<id>"), each agent's tab ("tab/<id>"), opening its browser ("browser"),
+/// its terminals and 打开终端 ("terminals"), what it says where it has none ("note").
+fn all_screens_rows_by(s : Json?, v : Json?, terminals : Bool) -> Array[String] {
+  let all = items(v, "screens")
+  let out : Array[String] = []
+  for sc in all {
+    if !is_browser_screen(Some(sc)) {
+      out.push("screen/" + text(Some(sc), "id"))
+    }
+  }
+  for sc in all {
+    if is_agent_screen(Some(sc)) {
+      out.push("tab/" + text(Some(sc), "id"))
+    }
+  }
+  if all.iter().any(fn(sc) { is_user_screen(Some(sc)) }) || (flag(v, "browser") && flag(v, "control")) {
+    out.push("browser")
+  }
+  if terminals && flag(s, "online") {
+    out.push("terminals")
+  }
+  if all.is_empty() && text(v, "note") != "" {
+    out.push("note")
+  }
+  out
+}
+
+///|
+/// The rows of 屏幕、浏览器与终端 of station `address` (`s` whole) as they are now (all_screens_rows_by's).
+fn all_screens_rows(core : Core, address : String, s : Json?) -> Array[String] {
+  all_screens_rows_by(s, all_screens_v(core, address), terminals_to_show(core, address, s))
+}
+
+///|
+/// Row `key` of 屏幕、浏览器与终端 (all_screens_rows_by's) in `row`: a screen's with who is on it, an agent's tab's, opening
+/// the browser, the terminals, its note. One whose screen is gone draws it as it was last, while it goes.
+fn all_screens_row_node(row : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
+  let address = text(@signals.untracked(s), "station")
+  let v = fn() { all_screens_v(core, address) }
+  // (the screen `id` as `screens` has it now, else as it was last)
+  let screen_of = fn(id : String) -> () -> Json? {
+    let last : Ref[Json?] = Ref(None)
+    fn() {
+      match items(v(), "screens").iter().find_first(fn(sc) { text(Some(sc), "id") == id }) {
+        Some(sc) => {
+          last.val = Some(sc)
+          Some(sc)
+        }
+        None => last.val
+      }
+    }
+  }
+  match key {
+    k if k.has_prefix("screen/") => {
+      let id = k.exact_view(start=7).to_owned()
+      let sv = screen_of(id)
+      let lacks = fn() {
+        let access = field(sv(), "access")
+        access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
+      }
+      // (its row made again as it comes to be this machine's own or lacks what it may, who is on it under it made
+      // once, whatever of that changes)
+      @sf.group_rows_node(row, fn(r) {
+        r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
+          let (own, lacks) = k
+          @sf.link_row_node(
+            p,
+            fn() { text(sv(), "title") },
+            fn() {
+              if !own {
+                @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: false }))
+              }
+            },
+            note=fn() { if own { @sf.t("android-misc.screen.here") } else { text(sv(), "line") } },
+            lacks=!own && lacks,
+            goes=!own,
+            lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
+          )
+        })
+        screen_views_node(r, core, here, address, sv)
+      })
+    }
+    k if k.has_prefix("tab/") => station_browser_row_node(row, core, here, address, screen_of(k.exact_view(start=4).to_owned()))
+    "browser" => {
+      let user_tabs = fn() { items(v(), "screens").filter(fn(sc) { is_user_screen(Some(sc)) }) }
+      @sf.link_row_node(
+        row,
+        fn() { @sf.t("web-pages.screen.openBrowserRow") },
+        fn() { @settings.open_station_browser(core, address) },
+        note=fn() { browser_tabs_note(user_tabs().length()) },
+        lead=LeadLine(fn(l) { st_mark_node(l, fn() { "web" }) }),
+      )
+    }
+    // its terminals, then 打开终端 (station_terminals_node.mbt)
+    "terminals" => @sf.group_rows_node(row, fn(r) { station_terminal_rows_node(r, core, address, s) })
+    "note" => said_row_node(row, fn() { text(v(), "note") }, lead=LeadLine(fn(l) { st_mark_node(l, fn() { "monitor" }) }))
+    _ => ()
+  }
+}
+
+///|
+/// 屏幕、浏览器与终端 as blocks of the page's list (a block is a row): its heading ("allScreens"), then each of its rows
+/// ("allScreens/<row>", all_screens_rows'), a piece of its card each.
+fn all_screens_block(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, key : String) -> Unit {
+  let address = text(@signals.untracked(s), "station")
+  if key == "allScreens" {
+    @sf.section_heading_node(b, fn() { all_screens_title(core, s()) }, title_after=fn(l) {
+      l.show(fn() { all_screens_count(core, address, s) > 0 }, fn(n) {
+        @sf.words_node(n, fn() { all_screens_count(core, address, s).to_string() }, fn() { st_count }) |> ignore
+      })
+    })
+    return
+  }
+  let row = key.exact_view(start=11).to_owned()
+  // (as tall as its block, its piece of the card in it as tall: card_piece_node)
+  b.grow(Is(1.0)) |> ignore
+  let last : Ref[@sf.CardPiece] = Ref(@sf.CardPiece::CardWhole)
+  let piece = fn() {
+    let rows = all_screens_rows(core, address, s())
+    match rows.search(row) {
+      Some(i) => last.val = @sf.card_piece_of(i, rows.length())
+      None => ()
+    }
+    last.val
+  }
+  @sf.card_piece_node(b, piece, wide_group=true, fn(card) { all_screens_row_node(card, core, here, s, row) })
 }
 
 ///|
@@ -727,10 +1002,11 @@ fn station_agent_pages_node(b : @view.View, core : Core, here : () -> Here, s : 
 /// and any active viewer rows under it.
 fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, address : String, sv : () -> Json?) -> Unit {
   let id = text(@signals.untracked(sv), "id")
-  row.pick(fn() { flag(sv(), "closable") }, fn(p, close_on) {
-    @sf.group_rows_node(p, fn(r) {
+  // (its row made again as it comes to be closable or not, who is on it under it made once)
+  @sf.group_rows_node(row, fn(r) {
+    r.pick(fn() { flag(sv(), "closable") }, fn(p, close_on) {
       @sf.link_row_node(
-        r,
+        p,
         fn() { text(sv(), "title") },
         fn() {
           @sfbase.open_page(Screen({ station: address, screen: id, title: text(@signals.untracked(sv), "title"), until_gone: true }))
@@ -753,8 +1029,8 @@ fn station_browser_row_node(row : @view.View, core : Core, here : () -> Here, ad
           None
         },
       )
-      screen_views_node(r, core, here, address, sv)
     })
+    screen_views_node(r, core, here, address, sv)
   })
 }
 
@@ -776,11 +1052,11 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
           let access = field(sv(), "access")
           access is Some(Object(_)) && (!flag(access, "capture") || !flag(access, "control"))
         }
-        row.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
+        @sf.group_rows_node(row, fn(r) {
+          r.pick(fn() { (own_screen(address, id), lacks()) }, fn(p, k) {
           let (own, lacks) = k
-          @sf.group_rows_node(p, fn(r) {
           @sf.link_row_node(
-            r,
+            p,
             fn() { text(sv(), "title") },
             fn() {
               if !own {
@@ -794,8 +1070,8 @@ fn station_screens_node(b : @view.View, core : Core, here : () -> Here, s : () -
             // (its mark the page's own row mark, st_row_mark's 16 in the muted ink, by its first line, as the old page's)
             lead=LeadLine(fn(l) { st_mark_node(l, fn() { screen_row_icon(sv()) }) }),
           )
-          screen_views_node(r, core, here, address, sv)
           })
+          screen_views_node(r, core, here, address, sv)
         })
       })
       g.show(fn() { screens().length() == 0 && items(v(), "screens").is_empty() && text(v(), "note") != "" }, fn(n) {
@@ -817,10 +1093,10 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
     let vv = fn() { Some(vs.get()) }
     let view = text(@signals.untracked(vv), "id")
     let on = [("view", view)]
-    row.pick(fn() { (flag(vv(), "may"), flag(vv(), "control")) }, fn(r, k) {
-      let (may, control) = k
-      @sf.link_row_node(
-        r,
+    // (made once: 转为只看 and 断开 come and go at its end as the view says it may be let go of and drives it, the row
+    // itself not made again for either)
+    @sf.link_row_node(
+        row,
         fn() { text(vv(), "name") },
         fn() {  },
         // (the device is what tells one's own views apart: in the note, which wraps where 转为只看 and 断开 leave little room)
@@ -830,28 +1106,24 @@ fn screen_views_node(g : @view.View, core : Core, here : () -> Here, address : S
           if device == "" { mode + " · " + text(vv(), "ago") } else { device + " · " + mode + " · " + text(vv(), "ago") }
         },
         goes=false,
-        tail?=if may {
-          Some(fn(e) {
-            @sf.line_end_node(e, fn(l) {
-              if control {
-                let what = @sf.t("web-pages.screen.viewWatchOnly")
-                @sf.button_node(l, fn() { what }, fn() { asked("screen.watchOnly", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-                  is_doing(core, ["screen.watchOnly"], on)
-                })
-                |> ignore
-              }
-              let what = @sf.t("web-pages.screen.viewEnd")
-              @sf.button_node(l, fn() { what }, fn() { asked("screen.endView", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
-                is_doing(core, ["screen.endView"], on)
+        tail=fn(e) {
+          @sf.line_end_node(e, fn(l) {
+            l.show(fn() { flag(vv(), "control") }, fn(w) {
+              let what = @sf.t("web-pages.screen.viewWatchOnly")
+              @sf.button_node(w, fn() { what }, fn() { asked("screen.watchOnly", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
+                is_doing(core, ["screen.watchOnly"], on)
               })
               |> ignore
             })
+            let what = @sf.t("web-pages.screen.viewEnd")
+            @sf.button_node(l, fn() { what }, fn() { asked("screen.endView", what, [("view", str(view))]) }, tone=Ghost, busy=fn() {
+              is_doing(core, ["screen.endView"], on)
+            })
+            |> ignore
           })
-        } else {
-          None
         },
+        tail_shown=fn() { flag(vv(), "may") },
       )
-    })
   })
   g.show(fn() { items(screen(), "views").filter(fn(v) { flag(Some(v), "may") }).length() > 1 }, fn(r) {
     let what = @sf.t("web-pages.screen.viewsEndAll")
@@ -988,10 +1260,11 @@ fn station_more_node(b : @view.View, core : Core, address : String) -> Unit {
 
 ///|
 /// Its 进程 (station_processes'): what still.fail uses of the machine; offline, a line saying it cannot be seen.
-fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?) -> Unit {
+/// `table`: its page's, its table's rows and how it is read blocks of their own (rs_block_node).
+fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : () -> Json?, table : RsTable?) -> Unit {
   b.pick(fn() { flag(s(), "online") }, fn(p, online) {
     if online {
-      resources_node(p, core, here, text(@signals.untracked(s), "station"))
+      resources_node(p, core, here, text(@signals.untracked(s), "station"), table?)
     } else {
       @sf.words_node(p, fn() { @sf.t("web-pages.stations.processesOffline") }, fn() { st_memory }) |> ignore
     }
@@ -999,6 +1272,92 @@ fn station_processes_node(b : @view.View, core : Core, here : () -> Here, s : ()
 }
 
 // ── Settings ────────────────────────────────────────────────────────────
+
+///|
+/// Unified "运行设置" section: collapsible Agent 环境变量, Spotlight personal search switch, Windows admin elevation switch, and diagnostic logs switch.
+fn station_system_node(b : @view.View, core : Core, address : String, s : () -> Json?, manager : Bool) -> Unit {
+  let env_list = fn() { items(field(s(), "overview"), "agentEnv") }
+  let has_env = fn() { field(field(s(), "overview"), "agentEnv") is Some(Array(_)) && (manager || env_list().length() > 0) }
+  let env_open = @signals.signal(station_env_open.get(address).unwrap_or(false))
+  let search = fn() { field(field(s(), "overview"), "search") }
+  let diagnostics = fn() { field(field(s(), "overview"), "diagnostics") }
+  let elevation = fn() { field(field(s(), "overview"), "elevation") }
+  let has_search = fn() { search() is Some(Object(_)) && text(search(), "files") == "spotlight" }
+  st_section_node(b, fn() { "运行设置" }, fn(sec) {
+    @sf.group_node(sec, fn(g) {
+      g.show(has_env, fn(ev) {
+        @sf.group_rows_node(ev, fn(gr) {
+          @sf.link_row_node(
+            gr,
+            fn() { @sf.t("web-pages.stations.agentEnv") },
+            fn() {
+              let now = !env_open.untracked()
+              station_env_open[address] = now
+              env_open.set(now)
+            },
+            note=fn() { station_env_summary(env_list()) },
+            folds=fn() { env_open.get() },
+          )
+          gr.show(fn() { env_open.get() }, fn(ed) {
+            if manager {
+              station_env_editor_node(ed, core, address, @ui.Field::new())
+            } else {
+              ed.each(fn() { env_list().mapi(fn(i, e) { (i, e) }) }, fn(x) { x.0 }, fn(row, x) {
+                said_row_node(row, fn() { text(Some(x.get().1), "key") }, note=fn() { text(Some(x.get().1), "value") })
+              })
+            }
+          })
+        })
+      })
+      g.show(has_search, fn(sr) {
+        st_switch_node(
+          sr,
+          core,
+          address,
+          fn() { @sf.t("web-pages.stations.search.personal") },
+          fn() { flag(search(), "personal") },
+          fn() { @sf.t("web-pages.stations.search.personalLine") },
+          "search.setPersonal",
+          "personal",
+          fn() { @sf.t("web-pages.stations.search.what") },
+          fn() { manager },
+        )
+      })
+      g.show(fn() { elevation() is Some(Object(_)) }, fn(el) {
+        st_switch_node(
+          el,
+          core,
+          address,
+          fn() { @sf.t("web-pages.stations.elevation.admin") },
+          fn() { flag(elevation(), "on") },
+          fn() { text(elevation(), "line") },
+          "elevation.set",
+          "on",
+          fn() { @sf.t("web-pages.stations.elevation.what") },
+          fn() { flag(elevation(), "canChange") },
+          busy=fn() { flag(elevation(), "busy") },
+        )
+      })
+      g.show(fn() { diagnostics() is Some(Object(_)) }, fn(dg) {
+        st_switch_node(
+          dg,
+          core,
+          address,
+          fn() { @sf.t("web-pages.stations.diagnostics.logs") },
+          fn() { flag(diagnostics(), "logs") },
+          fn() { @sf.t("web-pages.stations.diagnostics.logsLine") },
+          "diagnostics.setLogs",
+          "logs",
+          fn() { @sf.t("web-pages.stations.diagnostics.what") },
+          fn() { manager },
+        )
+      })
+    })
+    sec.show(fn() { text(elevation(), "failed") != "" }, fn(f) {
+      @sf.words_node(f, fn() { text(elevation(), "failed") }, fn() { st_problem_bad }) |> ignore
+    })
+  })
+}
 
 ///|
 /// Its 登录 (station_logins'): only the logins done there through still.fail; one under way its card (as in its chat), those ended a row per program naming it, who last logged in to it, from
@@ -1706,7 +2065,7 @@ fn software_row_node(
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     r.box(fn(m) {
-      @sf.style_node(m, fn() { sw_mark })
+      @sf.style_node(m, fn() { sw_mark }, in_row=true)
       if own {
         m.pick(fn() { @sf.theme().dark }, fn(k, dark) {
           @sf.drawable_node(k, if dark { "stillfail_mark_dark" } else { "stillfail_mark" }, sw_glyph) |> ignore
@@ -1983,3 +2342,27 @@ let st_env_foot : @ui.Style = @ui.css("row w=Full gap=S2 justify=JEnd align=ACen
 ///|
 /// The software's foot's lines apart where checking again goes under (software_list's line_gap).
 let sw_foot_lines : Double = 4.0
+
+///|
+/// A station's page opened by a press, where what opens waits for what it shows (sfbase's route_open_then): once the
+/// station is answered, what the part shown reads as it is first drawn, as a press on that part asks it
+/// (station_part_asks), so the page opens with every block of it whole. Read once, as it is (nothing followed: what
+/// it read of the workspace's is held by the app).
+fn init {
+  @sfbase.station_open_more.val = fn(src, w, address, s) {
+    @signals.untracked(fn() {
+      let core = @sfbase.settings_core(src, w)
+      let here = @settings.here_of(core, w.id, w.name)
+      let part = match @settings.station_parts.get(address) {
+        Some(p) if station_part_names.contains(p) => p
+        _ => "overview"
+      }
+      // (whether it is managed matters to its 设置 alone)
+      let manager = part == "settings" && {
+        let r = role_of(core, here)
+        r == "owner" || r == "admin"
+      }
+      station_part_asks(core, here, address, Some(s), manager, part)
+    })
+  }
+}

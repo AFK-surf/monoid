@@ -15,10 +15,18 @@ export const UI_BINARY = "agent-desktop.exe";
 /// A command longer than this is ended (agent-desktop's own waits are shorter).
 export const UI_LIMIT_MS = 60_000;
 
+/// Where agent-desktop was found, by its override (STILLFAIL_AGENT_DESKTOP): looked for again only where it was not.
+const uiFound = new Map<string, string>();
+
 /// The release's agent-desktop on Windows: STILLFAIL_AGENT_DESKTOP, or beside the station's code.
 export function uiBinary(env: NodeJS.ProcessEnv = process.env): string | null {
+  const key = env.STILLFAIL_AGENT_DESKTOP ?? "";
+  const kept = uiFound.get(key);
+  if (kept !== undefined) return kept;
   const candidates = [env.STILLFAIL_AGENT_DESKTOP, fileURLToPath(new URL(`./${UI_BINARY}`, import.meta.url))];
-  return candidates.find((p) => p && existsSync(p)) ?? null;
+  const found = candidates.find((p) => p && existsSync(p)) ?? null; // sync: read once, before the station serves (services.ts, as it makes the desktop's screen)
+  if (found !== null) uiFound.set(key, found);
+  return found;
 }
 
 /// An envelope from what agent-desktop printed: an error envelope when it printed none.

@@ -3,7 +3,7 @@
 // /threads/:id/report `{n}` (the notice's entry), answered `{number, duplicate?}`; a read-only member may report too,
 // as nothing on the station changes.
 import { createHash } from "node:crypto";
-import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { open } from "node:fs/promises";
 import { type Request, error, json } from "../api/request.ts";
 import type { Route } from "../api/admin.ts";
 import { tr } from "../ops/i18n.ts";
@@ -33,30 +33,31 @@ const ARCH: Record<string, string> = { arm64: "aarch64", x64: "x86_64" };
 /// is none), the versions of the station and its runtimes, the names of the variables its agents run with, a
 /// session's page, and the home directory scrubbed from what is sent.
 export type ReportDeps = {
-  logTail: (most: number) => string | null;
+  logTail: (most: number) => Promise<string | null>;
   versions: () => Record<string, string>;
   envNames: () => string[];
   link: (session: string) => string | null;
   home: string;
 };
 
-/// The station's log as it ends: its last `most` bytes, from the first whole line.
-export function readTail(path: string, most: number): string | null {
-  let fd: number;
+/// The station's log as it ends: its last `most` bytes, from the first whole line. Read off the main thread: megabytes
+/// of a log on a busy disk would hold every request meanwhile.
+export async function readTail(path: string, most: number): Promise<string | null> {
+  let fh: Awaited<ReturnType<typeof open>>;
   try {
-    fd = openSync(path, "r");
+    fh = await open(path, "r");
   } catch {
     return null;
   }
   try {
-    const size = fstatSync(fd).size;
+    const size = (await fh.stat()).size;
     const from = Math.max(0, size - most);
     const buf = Buffer.alloc(size - from);
-    readSync(fd, buf, 0, buf.length, from);
-    const text = buf.toString("utf8");
+    const { bytesRead } = await fh.read(buf, 0, buf.length, from);
+    const text = buf.subarray(0, bytesRead).toString("utf8");
     return from === 0 ? text : text.slice(text.indexOf("\n") + 1);
   } finally {
-    closeSync(fd);
+    await fh.close().catch(() => {});
   }
 }
 
@@ -97,7 +98,7 @@ export function logLines(text: string, from: number, to: number, names: string[]
 const quoted = (text: string) => text.split("\n").map((l) => `> ${l}`).join("\n");
 
 /// The report of the notice `entry` in `thread`, reported by `viewer`.
-export function noticeReport(store: Store, thread: ThreadRow, entry: EntryRow, viewer: { name: string; email: string }, deps: ReportDeps): Json {
+export async function noticeReport(store: Store, thread: ThreadRow, entry: EntryRow, viewer: { name: string; email: string }, deps: ReportDeps): Promise<Json> {
   const text = (entry.text ?? "").replace(/^⚠️\s*/u, "").trim();
   const found = failedTurnOf(store, thread.id, entry.at);
   const session = found?.session ?? null;
@@ -132,7 +133,7 @@ export function noticeReport(store: Store, thread: ThreadRow, entry: EntryRow, v
   context.thread = `${thread.channel}/${thread.threadTs}`;
   const out: Json = { key, title: title || "failure notice", body, area: "station", reporter: `${viewer.name} (${viewer.email}), from the chat`, context };
   if (session?.ws) out.workspace = session.ws;
-  const tail = session !== null ? deps.logTail(LOG_TAIL) : null;
+  const tail = session !== null ? await deps.logTail(LOG_TAIL) : null;
   if (tail !== null && session !== null) {
     const from = (turn?.startedAt ?? entry.at - NO_TURN_MS) - BEFORE_MS;
     const names = [session.key, ...store.runtimeSessions(session.key), `profile=${session.profile}`];
@@ -161,7 +162,7 @@ export function reportRoutes(store: Store, deps: ReportDeps, send: (report: Json
         if (typeof n !== "number" || !Number.isSafeInteger(n) || n < 1) return error(400, tr(r.lang, "station.admin.badN"));
         const entry = store.entriesBetween(thread.id, n, n)[0];
         if (entry === undefined || entry.authorKind !== STATION_AUTHOR || !/^⚠️/u.test(entry.text ?? "")) return error(404, tr(r.lang, "station.feedback.notAFailure"));
-        const report = noticeReport(store, thread, entry, r.viewer, deps);
+        const report = await noticeReport(store, thread, entry, r.viewer, deps);
         let answer: Json;
         try {
           answer = await send(report);

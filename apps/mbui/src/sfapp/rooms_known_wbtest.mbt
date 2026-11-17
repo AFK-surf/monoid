@@ -63,12 +63,23 @@
 /// newchat has under them on a phone and a tablet: the composer's three chips behind the panel, old views, the page
 /// behind counted again, 36 more, 457. Each target's room measured by its unparted reach within its holder and window
 /// (@view.press_room), parting with non-overlapping neighbours handled by the hit test without inflating visual gaps
-/// (2026-11-14): 406 fewer, 51.)
-let rooms_known : Map[String, Int] = { "room": 51, "apart": 0, "hover": 0 }
+/// (2026-11-14): 406 fewer, 51. An agent at work with its history beside its chat (chat-history-side-working,
+/// 2026-11-14), what chat-history-side has: its bar's agent key's close in the three wide windows, 3 more, 54.)
+/// In each half of the windows (corners_check, 2026-11-15): of the 6, 5 in the first and 1 in the second. 文件 and a
+/// station's drive made once as nodes (2026-11-17): none left.
+let rooms_known : Map[String, Int] = {
+  "0/2 room": 0,
+  "0/2 apart": 0,
+  "0/2 hover": 0,
+  "1/2 room": 0,
+  "1/2 apart": 0,
+  "1/2 hover": 0,
+}
 
 ///|
-/// What is off its bar in the faults `rooms` (each `at: rule: …`), None where each rule keeps to it.
-fn rooms_wrong(rooms : Array[String]) -> String? {
+/// What is off its bar in the faults `rooms` (each `at: rule: …`) of the windows' half `half` (corners_check), None
+/// where each rule keeps to it.
+fn rooms_wrong(half : Int, rooms : Array[String]) -> String? {
   let counts : Map[String, Int] = Map([])
   for f in rooms {
     for rule in ["room", "apart", "hover"] {
@@ -80,10 +91,10 @@ fn rooms_wrong(rooms : Array[String]) -> String? {
   let off : Array[String] = []
   for rule in ["room", "apart", "hover"] {
     let have = counts.get(rule).unwrap_or(0)
-    let known = rooms_known.get(rule).unwrap_or(0)
+    let known = rooms_known.get("\{half}/2 \{rule}").unwrap_or(0)
     if have != known {
       off.push(
-        "\{rule}: \{have} faults, \{known} known (" +
+        "\{half}/2 \{rule}: \{have} faults, \{known} known (" +
         (if have < known {
           "fewer: its bar comes down in rooms_known_wbtest.mbt"
         } else {

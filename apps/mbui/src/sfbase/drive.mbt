@@ -22,6 +22,7 @@ pub(all) struct DriveFile {
 
 ///|
 /// An entry of a folder (DriveEntry).
+#derive(Eq)
 pub(all) struct DvEntry {
   name : String
   dir : Bool
@@ -35,6 +36,7 @@ pub(all) struct DvEntry {
 
 ///|
 /// A folder lent (DriveRoot): where it is on the station, its name, whether it can be browsed now.
+#derive(Eq)
 pub(all) struct DvRoot {
   path : String
   name : String
@@ -45,6 +47,7 @@ pub(all) struct DvRoot {
 ///|
 /// A station as its drive is seen: its name, whether it is up, whether its overview has come and has a drive, the
 /// folders it lends, whether the viewer browses every folder (from `home`), deletes to a trash, zips.
+#derive(Eq)
 pub(all) struct DvStation {
   station : String
   name : String
@@ -72,7 +75,7 @@ pub(all) struct DvStation {
 /// Folder `path` of `root` on `station`: its entries as the station said them (the core's `drive` topic), worked out
 /// once for each version of it; None while it has not said them.
 pub fn dv_entries(src : Source, station : String, root : String, path : String) -> Array[DvEntry]? {
-  dv_entries_read.read(src, drive_params(station, root, path)).0
+  dv_entries_read.value(src, drive_params(station, root, path))
 }
 
 ///|
@@ -412,6 +415,7 @@ pub fn dv_keep_both(src : Source, u : DvUpload) -> Unit {
 /// A station's file or folder dragged out of a list of its drive (a chat's 文件 tab):
 /// its station and that station's name, its root and its path under it, its absolute path, its name, its size,
 /// whether it is a folder. What a composer takes of it is named by its path on its station.
+#derive(Eq)
 pub(all) struct Dragged {
   station : String
   station_name : String
@@ -421,4 +425,25 @@ pub(all) struct Dragged {
   name : String
   size : Double
   dir : Bool
+}
+
+///|
+/// `go` done once `ready` says so: now, or as what it reads changes (a folder's listing come from the core, a pick's
+/// files read by the host), outside any build; whether it is done, and what stops it waiting. Made in a handler of the
+/// hand's or the host's, where nothing reads and no owner is set: what waits is no part of what reads now, let go only
+/// by its stop (the files' page's drag: sfpages' files_drag.mbt).
+pub fn drive_when(ready : () -> Bool, go : () -> Unit) -> (Ref[Bool], () -> Unit) {
+  let done = Ref(false)
+  let owner = @signals.set_owner(None)
+  let stop = @signals.effect(fn() {
+    if !done.val && ready() {
+      done.val = true
+      @signals.untracked(go)
+    }
+  })
+  @signals.set_owner(owner) |> ignore
+  if done.val {
+    stop()
+  }
+  (done, stop)
 }

@@ -2,8 +2,8 @@
 import assert from "node:assert/strict";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { makeStore, usageThreads } from "../src/read/store.ts";
-import { titleOf } from "../src/read/views.ts";
+import { makeStore, usageThreads } from "./reference/store.ts";
+import { titleOf } from "./reference/views.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 test("usage names still.fail chats without reading their first messages", () => {

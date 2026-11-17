@@ -6,14 +6,14 @@
 // On Windows the runner's socket is a named pipe (`\\.\pipe\…`, its `socket`), which is not a file: opening it, even
 // to see it is there, is a connection, and the runner keeps one at a time. So it is never looked at but to attach.
 import { spawn } from "node:child_process";
-import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { access, readFile, readdir } from "node:fs/promises";
+import { access, lstat, readFile, readdir, rm } from "node:fs/promises";
 import { createConnection, type Socket } from "node:net";
 import { join } from "node:path";
 import { niced } from "../ops/nice.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import { platform } from "../platform/index.ts";
 import { runnerBinary } from "../platform/processes.ts";
+import { log } from "../ops/log.ts";
 
 export type RunnerInfo = {
   id: string;
@@ -26,6 +26,10 @@ export type RunnerInfo = {
   socket: string;
   /// It gives back stdout's disk only up to an ack's `keep` (one from before gives back up to the ack).
   keeps?: boolean;
+  /// A terminal's (`pty`): its program on a pseudo-terminal (terminals/), and the size it started with.
+  pty?: boolean;
+  cols?: number;
+  rows?: number;
 };
 
 export type Exit = { code: number | null; signal: string | null };
@@ -35,10 +39,13 @@ export { runnerBinary };
 
 export const runnersDir = (data: string) => join(data, "run", "runners");
 
+/// A person's terminal's runner (terminals/), not an agent's: its id's start. What takes up agents' runners leaves it.
+export const TERMINAL_RUNNER = "term-";
+export const isTerminalRunner = (id: string) => id.startsWith(TERMINAL_RUNNER);
+
 /// Whether a runner of before (its info file there, itself alive) still keeps its process: its socket there (one on its
-/// way out has removed it). A pipe cannot be looked at (see above): the info file, which goes with it, says so then.
-export const listening = (info: RunnerInfo) => !platform.runnerSocketVisible || existsSync(info.socket);
-/// `listening`, looked at off the station's thread.
+/// way out has removed it), looked at off the station's thread. A pipe cannot be looked at (see above): the info file,
+/// which goes with it, says so then.
 export const listeningSoon = async (info: RunnerInfo) => !platform.runnerSocketVisible || (await access(info.socket).then(() => true, () => false));
 
 /// A program named by its command (not a path) that `env`'s PATH does not have: the runtime is not installed there.
@@ -51,13 +58,14 @@ export class CommandMissing extends Error {
 }
 
 /// Starts `program` under a runner, its environment `env` (the agent's whole environment), in `cwd`.
-export async function startRunner(data: string, id: string, program: string, args: string[], env: NodeJS.ProcessEnv, cwd: string): Promise<RunnerInfo> {
+/// `pty`: the program on a pseudo-terminal of that size (a person's terminal, terminals/), not on pipes.
+export async function startRunner(data: string, id: string, program: string, args: string[], env: NodeJS.ProcessEnv, cwd: string, pty?: { cols: number; rows: number }): Promise<RunnerInfo> {
   // Looked for as the runner would (its PATH is `env`'s): one not there is told apart from a runner that failed.
   env = await withShellCommand(program, env);
-  if (!/[\\/]/.test(program) && platform.findCommand(program, env) === null) return Promise.reject(new CommandMissing(program));
+  if (!/[\\/]/.test(program) && (await platform.findCommandSoon(program, env)) === null) return Promise.reject(new CommandMissing(program));
   return new Promise((resolve, reject) => {
     // Lower than the station (ops/nice.ts), the runtime it starts and what that starts too.
-    const [command, given] = niced(runnerBinary(), ["--dir", runnersDir(data), "--id", id, "--cwd", cwd, "--", program, ...args]);
+    const [command, given] = niced(runnerBinary(), ["--dir", runnersDir(data), "--id", id, "--cwd", cwd, ...(pty ? ["--pty", `${pty.cols}x${pty.rows}`] : []), "--", program, ...args]);
     const child = spawn(command, given, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -81,17 +89,8 @@ export async function startRunner(data: string, id: string, program: string, arg
   });
 }
 
-/// Runners of before this station: their info files, those whose runner is alive.
-export function existingRunners(data: string): RunnerInfo[] {
-  const dir = runnersDir(data);
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter((f) => f.endsWith(".json"))
-    .flatMap((f) => alive(() => readFileSync(join(dir, f), "utf8")));
-}
-
-/// The runners alive now, as `existingRunners` finds them, read without holding the station's thread: what is looked at
-/// every few seconds (jobs/memory.ts, resources/watch.ts). Their files are some 10 kB each (a command's arguments), and
+/// Runners of before this station, alive now: their info files, those whose runner is alive, read without holding the
+/// station's thread: what is looked at every few seconds (jobs/memory.ts, resources/watch.ts). Their files are some 10 kB each (a command's arguments), and
 /// on a machine short of memory twenty runners took up to 5 s to read on the thread (2026-10-25).
 export async function liveRunners(data: string, options: { strict?: boolean } = {}): Promise<RunnerInfo[]> {
   const dir = runnersDir(data);
@@ -122,6 +121,77 @@ function alive(text: () => string): RunnerInfo[] {
   } catch {
     return [];
   }
+}
+
+/// How far a process's start as the system tells it may be past the `startedAt` its runner wrote (native/runner
+/// `STARTED_SLACK_MS`): clocks read two ways, and ps says whole seconds.
+const STARTED_SLACK_MS = 60_000;
+
+/// Whether the runner an info file names is alive and is that runner (native/runner `live_runner`): its pid there, and
+/// not started after the runner said it had (a pid gone long ago reused by another process).
+export async function liveRunner(info: RunnerInfo): Promise<boolean> {
+  try {
+    process.kill(info.runner, 0);
+  } catch {
+    // Gone (or another user's process of that pid: not our runner).
+    return false;
+  }
+  const started = await platform.startTimeOf(info.runner).catch(() => null);
+  return started === null || typeof info.startedAt !== "number" || started <= info.startedAt + STARTED_SLACK_MS;
+}
+
+/// The files a runner keeps beside its info file (native/runner `Paths`).
+const RUNNER_FILES = [".json", ".out", ".err", ".sock"];
+/// A runner's files with no info file beside them this long are left over (one starting writes its info file last).
+export const RUNNER_LEFT_MS = 5 * 60_000;
+
+/// The files of runners gone (killed, crashed, the machine restarted: a runner removes its own only when it ends well)
+/// removed: an info file whose runner is not alive, with its output, errors and socket; and output, errors, sockets and
+/// half-written info files with no info file, unchanged for RUNNER_LEFT_MS. Chats' runners have ids of their own each
+/// time (`claude-chat_…-<random>`), so nothing ever started again under one of them to clear it: 1.1 GB of them on a
+/// station (2026-11-15). The ids removed. `orphan` ends a runner alive that nobody holds, saying whether it did (the
+/// hub's `endOrphan`: a runner left so went on for good), which then goes with its files.
+export async function sweepRunners(data: string, now: number, orphan?: (info: RunnerInfo) => Promise<boolean>): Promise<string[]> {
+  const dir = runnersDir(data);
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const infos = new Set(names.filter((n) => n.endsWith(".json")).map((n) => n.slice(0, -5)));
+  const gone = new Set<string>();
+  const remove = async (id: string) => {
+    for (const ext of RUNNER_FILES) await rm(join(dir, `${id}${ext}`), { force: true }).catch(() => undefined);
+    gone.add(id);
+  };
+  for (const id of infos) {
+    const text = await readFile(join(dir, `${id}.json`), "utf8").catch(() => null);
+    let info: RunnerInfo | null = null;
+    try {
+      info = text === null ? null : (JSON.parse(text) as RunnerInfo);
+    } catch {}
+    if (info === null || typeof info.runner !== "number") {
+      // One that does not read: left over only once it has stood unchanged a while.
+      const st = await lstat(join(dir, `${id}.json`)).catch(() => null);
+      if (st !== null && now - st.mtimeMs >= RUNNER_LEFT_MS) await remove(id);
+      continue;
+    }
+    if (!(await liveRunner(info))) await remove(id);
+    else if (orphan !== undefined && !isTerminalRunner(id) && (await orphan(info).catch(() => false))) await remove(id);
+  }
+  for (const name of names) {
+    const ext = RUNNER_FILES.find((e) => e !== ".json" && name.endsWith(e)) ?? (name.endsWith(".tmp") ? ".tmp" : null);
+    if (ext === null) continue;
+    const id = name.slice(0, -ext.length);
+    if (infos.has(id) || gone.has(id)) continue;
+    const st = await lstat(join(dir, name)).catch(() => null);
+    if (st === null || now - st.mtimeMs < RUNNER_LEFT_MS) continue;
+    await rm(join(dir, name), { force: true }).catch(() => undefined);
+    gone.add(id);
+  }
+  if (gone.size > 0) log.info("agents::runner", "runners gone, their files removed", { count: gone.size });
+  return [...gone];
 }
 
 /// Connections being let go: each one closed on this side and read to its end, so its runner has taken every ack sent on

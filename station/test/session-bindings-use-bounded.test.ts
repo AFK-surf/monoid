@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { autoArchive, startAutoArchiveTimer } from "../src/sessions/lifecycle.ts";
-import { installSessionBindingsIndex, sessionBindingsReady, sessionBindingsStep } from "../src/store/session-bindings-index.ts";
+import { installSessionBindingsIndex, sessionBindingsReady, sessionBindingsStep } from "./reference/backfill/session-bindings-index.ts";
 import { Store } from "../src/store/store.ts";
 import { Rig } from "./hub-fakes.ts";
 

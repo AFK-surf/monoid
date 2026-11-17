@@ -3,6 +3,7 @@
 // once, only an app a person installed started again. side/screen-simulator-debug.test.ts has the real one.
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -159,6 +160,7 @@ test("an app is installed and started from a file gone up, which is let go of", 
     () => ({ stop: () => {} }),
   );
   const folder = debug.installFolder();
+  await mkdir(folder, { recursive: true });
   const put = (name: string) => {
     const path = join(folder, name);
     writeFileSync(path, "x");

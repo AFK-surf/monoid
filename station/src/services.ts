@@ -1,14 +1,14 @@
 // The station's services: what its parts are given, each a Context key with the layer that makes it. Async and
 // long-lived work is Effect (fibers in scopes: a part stopped stops all it started); computing what to answer is plain
 // functions (src/read). 「模块划分」.
-import { Context, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
+import { cloudEntry } from "./cloud/transport.ts";
+import { Clock, Context, Effect, Layer, Queue, Stream, SubscriptionRef } from "effect";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { Admin } from "./api/admin.ts";
 import { Events as EventStreams, eventsHandoverFile } from "./api/events.ts";
 import { Host } from "./api/host.ts";
 import { jobSeen, sessionSeen, threadSeen } from "./api/seen.ts";
-import { outputAt, tail } from "./read/jobs.ts";
 import { Store as StationStore } from "./store/store.ts";
 import { sees } from "./store/rows.ts";
 import { buildLegacyEntryLookups } from "./store/legacy-said-builder.ts";
@@ -16,12 +16,14 @@ import { type StationKey, loadKey } from "./cloud/key.ts";
 import { Cloud as CloudState } from "./cloud/state.ts";
 import { type ControlPlaneShape, makeControlPlane } from "./cloud/plane.ts";
 import type { Provider } from "./cloud/provider.ts";
-import { type Mesh, loadMesh } from "./mesh/native.ts";
+import { type Mesh, loadMesh, withRelays } from "./mesh/native.ts";
 import { withFront } from "./mesh/front.ts";
 import { verifyWith } from "./cloud/lock.ts";
 import { Readers as ReaderPool } from "./read/pool.ts";
+import { repairMergedEditLookup } from "./store/schema.ts";
 import { makeStore } from "./read/store.ts";
 import { apiOf, entryViews, spokenIn } from "./read/views.ts";
+import { KnownNames } from "./read/slack-known.ts";
 import type { AgentsParts } from "./sessions/agents.ts";
 import { platform } from "./platform/index.ts";
 import { ScreenHub } from "./screens/hub.ts";
@@ -30,7 +32,7 @@ import { Simulators } from "./screens/simulator.ts";
 import { WindowsDesktop, screenBinary } from "./screens/win-desktop.ts";
 import { LinuxDesktop } from "./screens/linux-desktop.ts";
 import { uiBinary } from "./screens/ui.ts";
-import { type Drive, dropFolder, stationDrive } from "./drive/drive.ts";
+import { type Drive, droppedInto, stationDrive } from "./drive/drive.ts";
 import { stationVersion } from "./ops/version.ts";
 import { channelOf } from "./updates/versions.ts";
 import { HelperApp, helperApp } from "./helper/app.ts";
@@ -52,7 +54,9 @@ import { wall } from "./ops/fibers.ts";
 /// Where the station keeps its data, and the release it runs from.
 /// `beforeStore`: what is done before the store first opens (a lost station's chats taken back: replica/restore.ts,
 /// given by main.ts).
-export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string; readonly beforeStore?: () => Promise<void> }>()("stillfail/Paths") {}
+/// The station's directories, and what of its launcher the parts ask (ops/launcher.ts): `restartFront` where it keeps a
+/// front it can start anew.
+export class Paths extends Context.Service<Paths, { readonly data: string; readonly app: string; readonly beforeStore?: () => Promise<void>; readonly restartFront?: () => void }>()("stillfail/Paths") {}
 
 /// The control plane this station is enrolled in (cloud/plane.ts): cloud.json and its changes, the presence socket,
 /// notices, traces, releases and which credentials it takes. `layer` follows cloud.json's provider (still.fail cloud
@@ -70,7 +74,9 @@ export class ControlPlane extends Context.Service<ControlPlane, ControlPlaneShap
         const { data } = yield* Paths;
         const key = yield* Key;
         const up = yield* Up;
-        const state = yield* Effect.acquireRelease(Effect.sync(() => new CloudState(data)), (s) => Effect.sync(() => s.close()));
+        const clock = yield* Clock.clockWith(Effect.succeed);
+        const config = yield* StationConfig;
+        const state = yield* Effect.acquireRelease(Effect.sync(() => new CloudState(data, true, clock, () => cloudEntry(config.raw()))), (s) => Effect.promise(async () => { await s.close(); }));
         const changes = Stream.callback<void>((queue) =>
           Effect.acquireRelease(
             Effect.sync(() => state.listen(() => void Queue.offerUnsafe(queue, undefined))),
@@ -98,7 +104,7 @@ export class Up extends Context.Service<Up, SubscriptionRef.SubscriptionRef<bool
   static readonly layer = Layer.effect(Up, SubscriptionRef.make(false));
 }
 
-/// The readers (worker threads) answering the admin API's reads.
+/// The readers (the MoonBit program's processes) answering the admin API's reads.
 export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/Readers") {
   static readonly layer = Layer.effect(
     Readers,
@@ -119,8 +125,16 @@ export class Readers extends Context.Service<Readers, ReaderPool>()("stillfail/R
         }),
       );
       return yield* Effect.acquireRelease(Effect.sync(() => {
+        // The usage checker (`startUsageIndex`, reader `--builder usage-check`) only says whether the statistics are
+        // complete, filling nothing: it is started by the read that finds them not yet (pool.ts `usageRead`), not here.
         const pool = new ReaderPool(data, undefined, undefined, undefined, { previousGone: previous.exited, priority: store.backfillPriority });
-        pool.startUsageIndex();
+        // (the merged view a builder leaves to the writer, repaired on the station's one write connection, which waits
+        // for no lock meanwhile: one held elsewhere is SQLITE_BUSY, and the builder asks again after a pause)
+        pool.repairEdits = () => {
+          const timeout = Number((store.db.prepare("PRAGMA busy_timeout").get() as { timeout: number }).timeout);
+          store.db.exec("PRAGMA busy_timeout = 0");
+          try { repairMergedEditLookup(store.db); } finally { store.db.exec(`PRAGMA busy_timeout = ${timeout}`); }
+        };
         pool.warm();
         return pool;
       }), (pool) => Effect.sync(() => pool.close()));
@@ -158,7 +172,7 @@ export class Store extends Context.Service<Store, StationStore>()("stillfail/Sto
   );
 }
 
-/// Start the store before the usage-index worker, and keep the same store available to the station's other parts.
+/// Start the store before the readers, and keep the same store available to the station's other parts.
 export const ReadersAndStore = Readers.layer.pipe(Layer.provideMerge(Store.layer));
 
 /// still.fail Helper (macOS §4), installed and talked to under <data>/helper: this Mac's
@@ -192,7 +206,9 @@ export class ScreenRegistry extends Context.Service<ScreenRegistry, ScreenHub>()
   static readonly layer = Layer.effect(
     ScreenRegistry,
     Effect.gen(function* () {
-      const hub = yield* Effect.acquireRelease(Effect.sync(() => new ScreenHub({ drop: () => dropFolder(homedir()) })), (hub) => Effect.sync(() => hub.close()));
+      // (the Downloads looked at off the thread, before the screens are listed)
+      const drop = yield* Effect.promise(() => droppedInto(homedir()));
+      const hub = yield* Effect.acquireRelease(Effect.sync(() => new ScreenHub({ drop })), (hub) => Effect.sync(() => hub.close()));
       const helper = yield* Helper;
       const { data } = yield* Paths;
       const title = process.env.STILLFAIL_TEST_HOST === "1" ? () => "test-station" : undefined;
@@ -244,14 +260,23 @@ export class Events extends Context.Service<Events, EventStreams>()("stillfail/E
       // What was just said, made as the pages show it on this thread: over the store's own connection (what it just
       // wrote is in its memory), with the names the readers are given.
       const view = Object.assign(makeStore(store.db, data), { names: readers.names });
+      // and the config and names books as the station holds them, so a message said looks at no file
+      const config = yield* StationConfig;
+      const known = yield* Effect.acquireRelease(Effect.sync(() => new KnownNames(data, () => config.raw())), (known) => Effect.sync(() => known.close()));
       const events = new EventStreams({
         readers,
-        said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view), thread, entries)),
+        said: (thread, entries, lang) => spokenIn(lang, () => entryViews(apiOf(view, config.raw(), known), thread, entries)),
         subscribe: (listener) => store.subscribe(listener),
         host: () => admin.sample(),
         jobLog: (id) => store.getJob(id)?.log ?? null,
-        tail,
-        outputAt,
+        logNow: async (id, lines) => {
+          try {
+            const read = JSON.parse(await readers.read("jobLog", { id, lines: String(lines) }, "zh", { told: true }));
+            return { text: read.text, outputAt: read.outputAt ?? null };
+          } catch {
+            return null;
+          }
+        },
         sessionExists: (key) => store.getSession(key) !== null,
         liveSeen: (viewer, key) => { const ws = store.sessionWs(key); return ws !== undefined && sees(viewer, ws); },
         seen: (viewer, of) => ("session" in of ? sessionSeen(store, viewer, of.session) : "thread" in of ? threadSeen(store, viewer, of.thread) : jobSeen(store, viewer, of.job)),
@@ -294,7 +319,11 @@ export class StationConfig extends Context.Service<StationConfig, ConfigFile>()(
         const config = new ConfigFile(data);
         config.watch();
         return config;
-      }), (config) => Effect.sync(() => config.unwatch()));
+      }), (config) => Effect.promise(async () => {
+        config.unwatch();
+        // What was taken is on disk before the next process reads it.
+        await config.written();
+      }));
     }),
   );
 }
@@ -424,9 +453,11 @@ export class AdminApi extends Context.Service<AdminApi, Admin>()("stillfail/Admi
     Effect.gen(function* () {
       const side = yield* AgentsSide;
       const config = yield* StationConfig;
+      const paths = yield* Paths;
       return new Admin(yield* Readers, {
         store: yield* Store, events: yield* Events, host: yield* AdminHost, agents: () => side.current ?? undefined, screens: yield* ScreenRegistry, helper: yield* Helper, grants: yield* Grants,
-        drive: yield* StationDrive, parts: yield* Parts, config, data: (yield* Paths).data, cloud: (yield* ControlPlane).state,
+        drive: yield* StationDrive, parts: yield* Parts, config, data: paths.data, cloud: (yield* ControlPlane).state,
+        ...(paths.restartFront ? { restartFront: paths.restartFront } : {}),
       });
     }),
   );
@@ -440,6 +471,6 @@ export class MeshNative extends Context.Service<MeshNative, Mesh>()("stillfail/M
     if (mesh.verify) verifyWith((alg, key, signature, message) => mesh.verify!(alg, key, signature, message));
     // The endpoint kept by the MoonBit front where the launcher started one (mesh/front.ts), across handovers.
     const front = process.env.STILLFAIL_MESH_FRONT;
-    return front ? withFront(mesh, front) : mesh;
+    return front ? withFront(mesh, front) : withRelays(mesh);
   }));
 }

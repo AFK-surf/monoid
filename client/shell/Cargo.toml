@@ -33,6 +33,8 @@ n0-future = "0.3"
 # A datagram that asks whether a connection's other end is still there (`conn.answers`).
 bytes = "1"
 noq-proto = { version = "1", default-features = false }
+# The station's front marks its datagrams with a DSCP (`iroh.bind`'s `dscp`): the vendored one ([patch.crates-io]).
+noq-udp = { version = "=1.3.0", default-features = false }
 # The lock's and the vault's signatures checked here (`crypto.verify`) by formally verified implementations (Cryspen's
 # libcrux: HACL*'s Ed25519 and P-256, proved in F*), not the core's JS (@noble's), and off Hermes' slow arithmetic.
 libcrux-ed25519 = { version = "=0.0.10", default-features = false }
@@ -41,7 +43,12 @@ libcrux-ecdsa = { version = "=0.0.9", default-features = false }
 zstd = { version = "0.13", default-features = false }
 # What the station's programs write and hash (fs.write, fs.hash) and draw at random (crypto.random).
 sha2 = "0.10"
+sha1 = "0.10"
 getrandom = "0.3"
+# The vault's seal and items (station/src/vault/crypto.ts, its formats): ChaCha20-Poly1305, HKDF-SHA256, HMAC-SHA256 and
+# SHA-256 by ring (rustls' provider here already), X25519 with a key given (ring makes only its own) by dalek's.
+ring = "0.17"
+curve25519-dalek = "4.1"
 # A screen view's sound asked as Opus (ScreenTap), decoded here into the PCM every host plays, one decoder for every
 # platform (the hosts' own differ, and Windows may have none). Pure Rust, a port of libopus 1.6: on the Mac's helper's
 # packets 20 µs a packet on an M5 Max and within 84 dB of AudioToolbox's own decode (opus-decoder 0.1.1, the same to

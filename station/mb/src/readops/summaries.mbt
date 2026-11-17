@@ -55,6 +55,7 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
     "runtimeSessionId": field(r, "runtime_session_id"),
     "workspace": field(r, "workspace"),
   }
+  if field(r, "speed") is (String(_) as s) { v["speed"] = s }
   if !(field(r, "cwd") is Null) {
     v["cwd"] = field(r, "cwd")
   }
@@ -73,6 +74,11 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
   v["archivedAt"] = field(r, "archived_at")
   v["archivedBy"] = field(r, "archived_by")
   v["shownAt"] = field(r, "shown_at")
+  // Handed here from another station (replica/handover.ts): that station, so that a device drops the row it kept of
+  // it there, as that station may never tell it (sessions.ts `sessionJson`, rows.ts `toSession`: none where empty).
+  if field(r, "came_from") is String(from) && from != "" {
+    v["from"] = Json::string(from)
+  }
   v
 }
 

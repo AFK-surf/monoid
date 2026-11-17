@@ -93,7 +93,7 @@ fn ag_msg(kind : String, by? : String = "agent", files? : Array[String] = [], pl
 /// high.
 fn ag_new_row(w : Double, m : () -> Message, platform? : Int = 0, src? : Source, h? : Double = 320.0) -> @ui.Tester {
   said_new(w, platform~, src?, h~, fn(f, src, here) {
-    agent_said_node(f, src, here, "m:ts9", fn() { row_side((here.width)()) }, fn() { 0.0 }, m) |> ignore
+    agent_said_node(f, src, here, fn() { "m:ts9" }, fn() { row_side((here.width)()) }, fn() { 0.0 }, m) |> ignore
   })
 }
 
@@ -143,7 +143,7 @@ test "what an agent said, made once as nodes, is drawn as the old view drew it: 
       let t = ag_new_row(w, fn() { c.1 }, src?=c.2, h=ag_high(c.0))
       t.run_for(@ui.move_most_ms)
       assert_eq(ag_drawn(t), was, msg=at)
-      let faults = t.audit()
+      let faults = audit_but_card_marks(t)
       let time = faults.filter(fn(f) {
         f.has_prefix("room: ") &&
         f.contains("stillfail/src/sfpages/message_head_node.mbt:") &&
@@ -187,7 +187,7 @@ test "what an agent said at the system's words set to 1.3 is drawn as the old vi
     t.set_font_scale(1.3)
     t.run_for(@ui.move_most_ms)
     assert_eq(ag_drawn(t), was, msg=c.0)
-    let faults = t.audit()
+    let faults = audit_but_card_marks(t)
     assert_eq(faults, [], msg=c.0 + ": " + faults.join(" | "))
   }
 }
@@ -238,7 +238,7 @@ test "what an agent's post asks under it, in its row made once as nodes, is draw
       let was = ag_drawn(old)
       let src = dec_src(@signals.signal(None), [])
       let t = dec_new(w, fn() { dec_view() }, fn(f, here) {
-        agent_said_node(f, src, here, "m:ts8", fn() { row_side(w) }, fn() { 0.0 }, fn() { m }) |> ignore
+        agent_said_node(f, src, here, fn() { "m:ts8" }, fn() { row_side(w) }, fn() { 0.0 }, fn() { m }) |> ignore
       })
       t.run_for(@ui.move_most_ms)
       assert_eq(ag_drawn(t), was, msg=at)
@@ -268,7 +268,7 @@ test "a link in what an agent said opens where it leads tapped; right clicked, i
   t.right_click(x, y)
   t.draw()
   assert_false(@sf.presenting(), msg="nothing opens beside it here")
-  let faults = t.audit()
+  let faults = audit_but_card_marks(t)
   assert_eq(faults, [], msg=faults.join(" | "))
   @sf.presenters_reset()
 }

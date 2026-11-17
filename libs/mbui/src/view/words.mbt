@@ -1,7 +1,7 @@
 // How a node's words are set and what is drawn round it besides its ground: their size, weight and line, whether they
 // wrap (View::words' `look`), their ink as it changes (View::ink); how wide it may grow (View::max_width); the shadow
-// it casts (View::shadow). Typed, what hosts the tree draws by them (ui's view_made), measured by what it measures
-// with (Tree::new's `measure`).
+// it casts (View::shadow), the halo its words are drawn on (View::words_halo). Typed, what hosts the tree draws by them
+// (ui's view_made), measured by what it measures with (Tree::new's `measure`).
 
 ///|
 /// How a node's words are set: their size (points), weight (100 … 900), the height of a line (points, at the system's
@@ -138,7 +138,9 @@ pub fn View::runs_picked(self : View, span : Live[(Int, Int)], loc~ : SourceLoc)
 ///|
 /// A part of a node's words in pieces marked under them (View::runs_marks): from, until (in their text's terms, as what
 /// is picked is), a ground in `ground`, and where `line` is not 0 a line under it in that colour, `line_w` thick at its
-/// foot (what is found: each a ground; the one gone to a line under it too).
+/// foot (what is found: each a ground; the one gone to a line under it too); `round` above 0, its ground one a line,
+/// round that much at the mark's two ends (its first line's start, its last line's end) and square where it runs on to
+/// the next line, as a passage picked is drawn in an old view (a quote's passage lit where it is gone to).
 #derive(Eq, Debug)
 pub(all) struct RunsMark {
   from : Int
@@ -146,6 +148,9 @@ pub(all) struct RunsMark {
   ground : Int64
   line : Int64
   line_w : Double
+  round : Double
+  starts : Bool
+  ends : Bool
 }
 
 ///|
@@ -307,6 +312,27 @@ pub fn words_run(text : String, weight? : Int = 0, ink? : Int64 = 0L) -> @text.R
 }
 
 ///|
+/// How narrow words in pieces may wrap as a test measures them (runs_measure): their longest word, 7 a character,
+/// words parted by spaces.
+pub fn runs_least_measure(runs : Array[@text.Run], _look : WordsLook, _set : RunsLook, _scale : Double) -> Double {
+  let mut widest = 0
+  let mut word = 0
+  for r in runs {
+    for ch in r.text {
+      if ch == ' ' || ch == '\n' {
+        word = 0
+      } else {
+        word = word + 1
+        if word > widest {
+          widest = word
+        }
+      }
+    }
+  }
+  widest.to_double() * 7.0
+}
+
+///|
 /// Words in pieces measured as a test's are: as their words one after another (words_measure).
 pub fn runs_measure(
   runs : Array[@text.Run],
@@ -337,6 +363,20 @@ pub fn View::ink(self : View, ink : Live[Int64], loc~ : SourceLoc) -> View {
 #callsite(autofill(loc))
 pub fn View::shadow(self : View, cast : Live[(Double, Double, Int64)], loc~ : SourceLoc) -> View {
   self.bind(loc~, Shadow, cast, Paint, fn(c) { self.tree.nodes[self.at].look.shadow = c })
+  self
+}
+
+///|
+/// The halo its words are drawn on, as it changes (`blur`: its sigma in points, `ink` its colour; 0 blur: none): the
+/// cover of their glyphs as they are laid out, blurred so, in that colour, under them, as CSS's text-shadow with no
+/// offset, but brought up so that where it is densest it covers wholly (thin strokes blurred come to a fifth of a cover
+/// or less): a name over a busy ground read clearly on it without a box round it. Paint's: drawn with its words, as
+/// opaque, cut and big as they are; blurred once for the words, size and pixels they are drawn at, not each frame
+/// (ui's halo.mbt). Drawn where the host gives its glyphs' pictures back (Windows); elsewhere none, its words as ever.
+/// A property of its own, not WordsLook's, as View::words_breaks is.
+#callsite(autofill(loc))
+pub fn View::words_halo(self : View, halo : Live[(Double, Int64)], loc~ : SourceLoc) -> View {
+  self.bind(loc~, WordsHalo, halo, Paint, fn(h) { self.tree.nodes[self.at].look.halo = h })
   self
 }
 
@@ -494,6 +534,8 @@ pub fn View::shrink(self : View, s : Live[Double], loc~ : SourceLoc) -> View {
     self.tree.nodes[self.at].cut = false
     self.tree.nodes[self.at].shrink_said = Some(s)
     self.tree.give_way_applied(self.at)
+    // (no longer held to its column's width as cut short: Tree::capped_applied)
+    self.tree.capped_applied(self.at)
   })
   self
 }
@@ -501,8 +543,10 @@ pub fn View::shrink(self : View, s : Live[Double], loc~ : SourceLoc) -> View {
 ///|
 /// Cut short where what holds it has not the room across (an old view's w=Cut: ui's layout.mbt, `Cut => if in_row {
 /// shrink = 1.0 }`): in a row it gives way along the row's length; in a column it keeps its own height, never squeezed
-/// down. That alone: how wide it may be and whether its words end in an ellipsis are their own properties
-/// (View::min_width, View::max_width, View::allow_ellipsis). As what holds it lays out now (View::row), as it changes.
+/// down, and is no wider than the column, no width said of it (an old view's `capped`: a most said is that where the
+/// column has the room, the column's where it has less, CSS's min(100%, 560px); Tree::capped_applied). Whether its
+/// words end in an ellipsis is their own property (View::allow_ellipsis). As what holds it lays out now (View::row), as
+/// it changes.
 /// How much it gives way said otherwise (View::shrink) or this said again: the one said last.
 #callsite(autofill(loc))
 pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
@@ -524,6 +568,8 @@ pub fn View::cuts(self : View, on : Live[Bool], loc~ : SourceLoc) -> View {
       }
       self.tree.give_way_applied(self.at)
     }
+    // (no wider than its column while cut short there, or as it was: Tree::capped_applied)
+    self.tree.capped_applied(self.at)
   })
   self
 }
@@ -807,15 +853,13 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
   // (what takes the pointer where, as whether it takes presses is (View::presses): said at the moment it changes, its
   // hits found anew, nothing laid out for it; said anew, what was said before let go of)
   guard self.live() is Some(n) else { return self }
-  match n.props.get(Prop::Points.ord()) {
-    Some(stop) => {
-      n.props.remove(Prop::Points.ord())
-      stop()
-    }
-    None => ()
-  }
+  n.prop_stop(Prop::Points.ord())
   let set = fn(on : Bool) {
     guard self.live() is Some(n) else { return }
+    if !n.points_said {
+      n.points_said = true
+      self.tree.hits_bump()
+    }
     if n.points != on {
       n.points = on
       self.tree.inputs_own_said(self.at)
@@ -828,7 +872,7 @@ pub fn View::points(self : View, on : Live[Bool]) -> View {
     By(f) =>
       self.owning(fn() {
         let stop = self.tree.structured(f, fn(v) { self.owning(fn() { set(v) }) })
-        n.props[Prop::Points.ord()] = stop
+        n.prop_set(Prop::Points.ord(), stop)
       })
   }
   self

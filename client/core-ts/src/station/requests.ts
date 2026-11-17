@@ -14,11 +14,13 @@ import { route } from "../route.ts";
 import { Kind, type Span, type SpanContext } from "../trace.ts";
 import { fromBase64, get, hex, isObject, parseJson, toJsonBytes } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { concat, readAll, replyHeader, type RequestHead, type ScreenAsk, type StationWire, type WireReply, type WireSocket } from "./wire.ts";
+import { concat, readAll, replyHeader, type RequestHead, type ScreenAsk, type StationWire, type TerminalAsk, type WireReply, type WireSocket } from "./wire.ts";
 import { timed } from "../spent.ts";
 import { BUILD_HEADER, ownBuild, stationTooOld } from "./oldest.ts";
 
 export const IDEMPOTENCY_KEY = "idempotency-key";
+/// The code of a request's failure where the chat it asked of went to another station (`onMoved`).
+export const MOVED = "chat_moved";
 /// A request that only reads though it is no GET (POST /changed/<list>, what is held in its body): asked again on
 /// another way as a GET is (mesh-wire.ts `mayRepeat`).
 export const READS = "stillfail-reads";
@@ -156,6 +158,9 @@ export class Requests {
   readonly wire: StationWire;
   /// Told of a station that answered a request whole and well (2xx): it is reached, whatever its stream found.
   onAnswered: (station: StationAddr) => void = () => {};
+  /// Told of a station's answer that the chat asked of went to another station (`409 {error, moved}`: station/src/api/
+  /// routes/hub.ts `Moved`), before the request fails (`chat_moved`), so what fails of it is aimed there (views/moved.ts).
+  onMoved: (station: StationAddr, moved: unknown) => void = () => {};
 
   constructor(core: Inner, wire: StationWire) {
     this.#core = core;
@@ -273,7 +278,13 @@ export class Requests {
     return Effect.flatMap(this.exchange(station, method, path, headers, bytes, options.quiet ?? false, options.ctx ?? null, undefined, undefined, undefined, undefined, true), (r) => {
       // Parsed inside the exchange: invalid JSON also fails its request span.
       const data = r.json === undefined ? {} : r.json;
-      return r.status >= 200 && r.status < 300 ? Effect.succeed(data as unknown) : Effect.fail(httpError(r.status, data));
+      if (r.status >= 200 && r.status < 300) return Effect.succeed(data as unknown);
+      const error = httpError(r.status, data);
+      if (r.status === 409 && isObject(get(data, "moved"))) {
+        this.onMoved(station, get(data, "moved"));
+        error.code = MOVED;
+      }
+      return Effect.fail(error);
     });
   }
 
@@ -646,6 +657,74 @@ export class Requests {
         // What the station lacks for it (macOS's grants), said with a 503.
         if (isObject(get(data, "access"))) error.access = get(data, "access");
         return yield* Effect.fail(error);
+      }
+      return view;
+    });
+  }
+
+  /// A view of one of the station's terminals (`new` opens one): its stream, open both ways once the station answered 200.
+  terminalView(station: StationAddr, id: string, ask: TerminalAsk, ctx: SpanContext | null): Effect.Effect<WireSocket, CoreError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      const full = `/admin/api/terminals/${encode(id)}/view`;
+      const waiting = this.#status(station).begin({ station: station.toString() }, t("core-misc.terminal.opening"), false);
+      const span = this.#core.tracer.span(`TERMINAL ${route(full)}`, Kind.Client, ctx);
+      span.set("url.path", route(full));
+      span.set("stillfail.stream", true);
+      const head: RequestHead = { method: "POST", path: full, headers: [["traceparent", span.context.traceparent()], [LANG_HEADER, current()], [BUILD_HEADER, ownBuild() || "0.1.0"]] };
+      const opening = this.wire.terminal ? this.wire.terminal(station, head, ask) : Effect.fail(new CoreError("unsupported", t("core-misc.terminal.noWire")));
+      const opened = yield* Effect.result(
+        Effect.raceFirst(
+          opening,
+          Effect.sleep(SOCKET_OPEN_MS).pipe(Effect.andThen(Effect.fail(new CoreError("timeout", t("core-misc.terminal.timeout"))))),
+        ).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (opened._tag === "Failure") {
+        failed(span, opened.failure);
+        span.end();
+        return yield* Effect.fail(opened.failure);
+      }
+      const view = opened.success;
+      answered(span, view.reply);
+      span.end();
+      if (view.reply.status !== 200) {
+        const bytes = yield* Effect.orElseSucceed(readAll(view.reply.body), () => empty);
+        const data = parseJson(bytes);
+        return yield* Effect.fail(httpError(view.reply.status, data === undefined ? {} : data));
+      }
+      return view;
+    });
+  }
+
+  /// A Farview tab's own protocol, carried by the station to its host (farview.ts): open once the station answers
+  /// 200, the host's bytes both ways then. A station that refuses says why (`httpError`: 404 no such tab, 403 a
+  /// read-only member); one from before takes the stream for a request and never answers: given up after SOCKET_OPEN_MS.
+  farviewView(station: StationAddr, screen: string, ctx: SpanContext | null): Effect.Effect<WireSocket, CoreError, Scope.Scope> {
+    return Effect.gen({ self: this }, function* () {
+      const full = `/admin/api/farview/${encode(screen)}`;
+      const waiting = this.#status(station).begin({ station: station.toString() }, t("core-misc.farview.opening"), false);
+      const span = this.#core.tracer.span(`FARVIEW ${route(full)}`, Kind.Client, ctx);
+      span.set("url.path", route(full));
+      span.set("stillfail.stream", true);
+      const head: RequestHead = { method: "POST", path: full, headers: [["traceparent", span.context.traceparent()], [LANG_HEADER, current()], [BUILD_HEADER, ownBuild() || "0.1.0"]] };
+      const opening = this.wire.farview ? this.wire.farview(station, head, screen) : Effect.fail(new CoreError("unsupported", t("core-misc.farview.noWire")));
+      const opened = yield* Effect.result(
+        Effect.raceFirst(
+          opening,
+          Effect.sleep(SOCKET_OPEN_MS).pipe(Effect.andThen(Effect.fail(new CoreError("timeout", t("core-misc.farview.timeout"))))),
+        ).pipe(Effect.ensuring(Effect.sync(() => waiting.end()))),
+      );
+      if (opened._tag === "Failure") {
+        failed(span, opened.failure);
+        span.end();
+        return yield* Effect.fail(opened.failure);
+      }
+      const view = opened.success;
+      answered(span, view.reply);
+      span.end();
+      if (view.reply.status !== 200) {
+        const bytes = yield* Effect.orElseSucceed(readAll(view.reply.body), () => empty);
+        const data = parseJson(bytes);
+        return yield* Effect.fail(httpError(view.reply.status, data === undefined ? {} : data));
       }
       return view;
     });

@@ -264,7 +264,7 @@ test("two calls needing a rotation at once rotate once: the refresh token works 
   });
   fake.answer("apps.manifest.export", { ok: true, manifest: {} });
   let tokens = [token("me", "T1", "old", Date.now())];
-  const apps = new SlackApps({ client: new SlackClient(fake.base), load: () => tokens, save: (t) => (tokens = [t]) });
+  const apps = new SlackApps({ client: new SlackClient(fake.base), load: () => tokens, save: (t) => void (tokens = [t]) });
   try {
     await Promise.all([apps.exportManifest("me", "A1"), apps.exportManifest("me", "A2")]);
     assert.equal(rotations, 1);

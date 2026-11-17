@@ -5,7 +5,8 @@
 // by the words (pick_found: a choice's label, note and value), Enter in it picks the first found, none found said so
 // (common.noMatch). Its list scrolls past pick_list_most (View::scrolls), each choice a row of its own as menu_item
 // draws it (its mark or icon in a column before its words, its value after them, its note under them, the one chosen
-// in the accent): pressed, chosen. Escape, back and a press outside close it.
+// in the accent): pressed, chosen. Escape clears what is typed in its search, then closes it; back and a press outside
+// close it.
 
 ///|
 /// A long pick in `parent` while `open()` (let go of at once once not): `title` (what it is called), `choices`, the one
@@ -61,7 +62,11 @@ pub fn pick_node(
       }
     })
     .on_key(fn(k) {
-      if k.code == @ui.key_escape {
+      // (Escape: what is typed in its search cleared first, as a Mac's search field's; with nothing typed, closed)
+      if k.code == @ui.key_escape && line.text() != "" {
+        line.set("")
+        true
+      } else if k.code == @ui.key_escape {
         cancel()
         true
       } else {
@@ -127,12 +132,21 @@ pub fn pick_node(
         // grounds, icons and words, the same, Look's `words` as a surface's are)
         l.max_height(Is(Some(pick_list_most))).alpha(By(words_in)) |> ignore
         l.scrolls(list, slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+          // (its choices by key, once: they are what it was given, the same while it is open; the first of a key the one)
+          let by_key : Map[String, Choice] = Map([])
+          for x in choices {
+            if !by_key.contains(x.key) {
+              by_key[x.key] = x
+            }
+          }
+          // (the last found, by member: a change of it tells the two rows it concerns)
+          let last_is = b.selected(fn() { found().last().map(fn(l) { l.key }) })
           b.each(fn() { found().map(fn(x) { x.key }) }, fn(k) { k }, fn(cell, k) {
             let k = k.untracked()
-            match choices.iter().find_first(fn(x) { x.key == k }) {
+            match by_key.get(k) {
               Some(x) => {
                 // (the last found reaching into the panel's padding at its foot, as menu_item's at_foot)
-                let last = fn() { found().last().map(fn(l) { l.key }) == Some(x.key) }
+                let last = fn() { last_is(x.key) }
                 pick_row_node(cell, x, x.key == chosen, fn() { go(x.key) }, last, reach)
               }
               None => ()
@@ -181,6 +195,7 @@ fn pick_row_node(
     .padding(Is((text_in + reach, menu_row_over, text_in + reach, menu_row_over)))
     .gap(Is(gap))
     .radius(Is(small_panel_inner(r_menu)))
+    // det-ok(raw-hover-ground): roving radio picker bar moves at once across items without trailing fade
     .ground(By(fn() { if r.pointed() || (r.focused() && r.focus_shown()) { library_theme().p.hover } else { 0L } }))
     .presses(Is(true))
     .focusable(Is(true))
@@ -192,11 +207,7 @@ fn pick_row_node(
         into.box(fn(col) {
           col.width(Is(Some(panel_icon_col))).lines_up(Is(Some(Middle))) |> ignore
           match x.mark {
-            Some(m) =>
-              @ui.old(col, fn(c) { m(c, panel_icon) })
-              .width(Is(Some(panel_icon)))
-              .height(Is(Some(panel_icon)))
-              |> ignore
+            Some(m) => choice_mark_node(col, m, panel_icon)
             None => icon_node(col, x.icon, panel_icon, By(fn() { library_theme().p.muted })) |> ignore
           }
         })

@@ -159,3 +159,206 @@ fn[K : Eq] Column::fill(self : Column[K], keys : Array[K], hs : Array[(Double, B
   }
   self.summed()
 }
+
+///|
+/// A list of `n` keys in a box 300 wide and `box` tall on grid `g`, counted 30 each, each row as tall as `tall` says
+/// with the words of its key, its blocks made each its own or of one kind another takes (`reused`), `first` brought
+/// to its top before its first frame: the tree.
+fn heights_list(n : Int, tall : (Int) -> Double, g : Double, reused : Bool, first? : Int, box? : Double = 200.0) -> Tree {
+  let place : ListPlace[Int] = ListPlace::new()
+  let row = fn(b : View, k : () -> Int) {
+    b.box(fn(l) { l.height(By(fn() { Some(tall(k())) })).words(By(fn() { "row \{k()}" })) |> ignore }) |> ignore
+  }
+  let tree = Tree::new(
+    fn(root) {
+      root.box(fn(o) {
+        o.width(Is(Some(300.0))).height(Is(Some(box))) |> ignore
+        if reused {
+          o.scrolls_window(
+            Scroll::list(),
+            fn() { Array::makei(n, fn(i) { i }) },
+            est=30.0,
+            place~,
+            fn(_, _) { @halt.saying("every block is of a kind another may take") },
+            reused=fn(_) { Some(0) },
+            make_reused=row,
+          )
+          |> ignore
+        } else {
+          o.scrolls_window(Scroll::list(), fn() { Array::makei(n, fn(i) { i }) }, est=30.0, place~, fn(b, k) {
+            row(b, fn() { k })
+          })
+          |> ignore
+        }
+      })
+      |> ignore
+    },
+    time=fn() { 0.0 },
+  )
+  if g > 0.0 {
+    tree.set_rows_grid(g)
+  }
+  if first is Some(k) {
+    place.bring(k)
+  }
+  tree.frame(390.0, 844.0) |> ignore
+  tree.frame(390.0, 844.0) |> ignore
+  tree
+}
+
+///|
+/// The rows drawn in the list's box, top down: each one's key, where its top is and how tall it is drawn.
+fn heights_rows(t : Tree, box? : Double = 200.0) -> Array[(Int, Double, Double)] {
+  let out = []
+  for d in t.drawn() {
+    if d.words.has_prefix("row ") && d.y + d.h > 1.0e-6 && d.y < box - 1.0e-6 {
+      let mut k = 0
+      for ch in d.words.exact_view(start=4, end=d.words.length()) {
+        k = k * 10 + (ch.to_int() - '0'.to_int())
+      }
+      out.push((k, d.y, d.h))
+    }
+  }
+  out.sort_by(fn(a, b) { a.1.compare(b.1) })
+  out
+}
+
+///|
+/// One turn of the wheel `dy` down at moment `at`, drawn: how many passes of its fill that took.
+fn heights_wheeled(t : Tree, dy : Double, at : Double) -> Int {
+  let p0 = fill_passes.val
+  t.wheel_at(150.0, 100.0, 0.0, dy, 0, at) |> ignore
+  t.frame(390.0, 844.0) |> ignore
+  fill_passes.val - p0
+}
+
+///|
+/// What is wrong with rows `rows` as drawn on grid `g`: one not where the one over it ends, by `tall`, or the box not
+/// covered from its top to its foot.
+fn heights_unjoined(
+  rows : Array[(Int, Double, Double)],
+  tall : (Int) -> Double,
+  g : Double,
+  box? : Double = 200.0,
+) -> Array[String] {
+  let wrong = []
+  if rows.is_empty() || rows[0].1 > 1.0e-6 || rows[rows.length() - 1].1 + rows[rows.length() - 1].2 < box - 1.0e-6 {
+    wrong.push("the box not covered: \{Repr(rows)}")
+  }
+  for i in 1..<rows.length() {
+    let (k, y, _) = rows[i - 1]
+    if rows[i].0 != k + 1 || (rows[i].1 - (y + rows_slot_on(tall(k), g))).abs() > 1.0e-6 {
+      wrong.push("row \{rows[i].0} at \{rows[i].1} under row \{k} at \{y}")
+    }
+  }
+  wrong
+}
+
+///|
+/// Key `k`'s height where its rows are of several heights, none as tall as they are counted (30).
+fn heights_several(k : Int) -> Double {
+  match k % 4 {
+    0 => 22.1
+    1 => 31.7
+    2 => 40.0 * 1.3
+    _ => 27.3
+  }
+}
+
+///|
+test "a page's list of rows as tall as it counts them, wheeled five rows on at once into rows never measured: its fill makes and measures them a pass each, none after the last, each where it is scrolled there again" {
+  let wrong = []
+  for g in [0.0, 2.75, 3.5] {
+    for reused in [false, true] {
+      let said = "on \{g}, reused \{reused}"
+      let t = heights_list(1500, fn(_) { 30.0 }, g, reused, box=400.0)
+      // (down, five rows come in at once, never measured, within the slots round what showed; five more, near where its
+      // slots end, as they are found again)
+      let p1 = heights_wheeled(t, 150.0, 10.0)
+      let came = heights_rows(t, box=400.0)
+      let p2 = heights_wheeled(t, 150.0, 20.0)
+      if p1 != 5 || p2 != 5 {
+        wrong.push("\{said}: passes of its fill \{p1} and \{p2}")
+      }
+      wrong.append(heights_unjoined(came, fn(_) { 30.0 }, g, box=400.0).map(fn(w) { "\{said}: \{w}" }))
+      // (back where the first five came in, all of it measured now: drawn as it was as they first came, no pass of its
+      // fill for what it measured)
+      let p3 = heights_wheeled(t, -150.0, 30.0)
+      let again = heights_rows(t, box=400.0)
+      if again != came {
+        wrong.push("\{said}: scrolled there again \{Repr(again)} where it first came \{Repr(came)}")
+      }
+      if p3 != 0 {
+        wrong.push("\{said}: back over them measured, passes of its fill \{p3}")
+      }
+    }
+  }
+  assert_eq(wrong, [])
+}
+
+///|
+/// Key `k`'s height where its rows are as tall as they are counted (30) but every seventh, 52.
+fn heights_mostly(k : Int) -> Double {
+  if k % 7 == 3 {
+    52.0
+  } else {
+    30.0
+  }
+}
+
+///|
+/// What is wrong after one turn of the wheel `dy` from `before`: a row seen before and after not moved as far as the
+/// wheel, or the rows drawn not one under another from the top of the box to its foot.
+fn heights_moved(
+  before : Array[(Int, Double, Double)],
+  after : Array[(Int, Double, Double)],
+  dy : Double,
+  tall : (Int) -> Double,
+  g : Double,
+  box : Double,
+) -> Array[String] {
+  let wrong = []
+  for r in after {
+    match before.search_by(fn(b) { b.0 == r.0 }) {
+      Some(i) if (before[i].1 - dy - r.1).abs() > 1.0e-6 => wrong.push("row \{r.0} from \{before[i].1} to \{r.1}")
+      _ => ()
+    }
+  }
+  wrong.append(heights_unjoined(after, tall, g, box~))
+  wrong
+}
+
+///|
+test "a page's list wheeled at once into rows never measured, down from its top and up from a key brought to its top, its rows of one height but some, or all of several: what was seen moved as far as the wheel, none missing, none over another, as when scrolled there again" {
+  let wrong = []
+  for g in [0.0, 3.5] {
+    for reused in [false, true] {
+      for heights in [("mostly", heights_mostly), ("several", heights_several)] {
+        let (name, tall) = heights
+        for down in [true, false] {
+          for box in [200.0, 400.0] {
+            let said = "on \{g}, reused \{reused}, \{name}, down \{down}, \{box} tall"
+            let t = if down {
+              heights_list(1500, tall, g, reused, box~)
+            } else {
+              heights_list(1500, tall, g, reused, first=600, box~)
+            }
+            let dy = if down { 144.0 } else { -144.0 }
+            let before = heights_rows(t, box~)
+            heights_wheeled(t, dy, 10.0) |> ignore
+            let after = heights_rows(t, box~)
+            wrong.append(heights_moved(before, after, dy, tall, g, box).map(fn(w) { "\{said}: \{w}" }))
+            // (past it and back, all of it measured: drawn as it was)
+            heights_wheeled(t, dy, 20.0) |> ignore
+            heights_wheeled(t, -dy, 30.0) |> ignore
+            let again = heights_rows(t, box~)
+            if again != after {
+              wrong.push("\{said}: scrolled there again \{Repr(again)} where it first came \{Repr(after)}")
+            }
+          }
+        }
+      }
+    }
+  }
+  assert_eq(wrong, [])
+}

@@ -2,13 +2,12 @@
 // runtime takes). How an access kind reaches its models (the environment, Codex's overrides) is agents/profiles.ts's.
 // The providers' addresses can be pointed elsewhere (`Urls`): tests give fake servers.
 import { execFile } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import { readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { Env } from "../agents/machine-logins.ts";
-import { linkCodexAuth, parseClaudeCredentials } from "../agents/machine-logins.ts";
-import { fileCredentials, takeBack } from "../agents/no-keychain.ts";
+import { linkCodexAuthSoon, parseClaudeCredentials } from "../agents/machine-logins.ts";
+import { fileCredentialsSoon, takeBack } from "../agents/no-keychain.ts";
 import { type AccessKind, OPENCODE, profileRuntimes, type Runtime, type Via } from "../agents/profiles.ts";
 import { type Endpoints, endpoints, find, type Source } from "../agents/providers.ts";
 import type { Capability } from "../sessions/decision.ts";
@@ -18,11 +17,11 @@ import { claudeOAuthToken, claudeToken as tokenOf } from "./oauth.ts";
 import { CONSOLE, RenewRefused } from "./console.ts";
 import { CURSOR, type CursorUrls, cursorMe, cursorModels, readCursor } from "./cursor.ts";
 import { type DevinFusion, devinCatalog, devinData } from "../agents/devin.ts";
-import { agyHome, agyTakeBack, agyToken, noteAgyEmail } from "../agents/agy.ts";
+import { agyHome, agyPlanIn, agyTakeBack, agyToken, agyTokenReady, noteAgyEmail } from "../agents/agy.ts";
 import { platform } from "../platform/index.ts";
 import { profileFetch } from "../ops/agent-env.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
-import { claudePlan, codexClaims } from "./machine.ts";
+import { claudePlan, codexClaimsSoon } from "./machine.ts";
 
 type Json = any;
 
@@ -119,8 +118,9 @@ export function accessKinds(runtime: Runtime): AccessKind[] {
   // Antigravity CLI: a Google account signed in to (its plan: Google AI Pro / Ultra), a Gemini key, or its own variables.
   if (runtime === "agy") return ["subscription", "api-provider", "env"];
   if (runtime === "claude") return ["subscription", "opencode-go", "anthropic-api", "api-provider", "env"];
-  // DeepSeek Harness has no subscription to sign in to here: an account of its own is set up by variables.
-  if (runtime === "dsh") return ["opencode-go", "anthropic-api", "api-provider", "env"];
+  // DeepSeek Harness has no subscription to sign in to here: an account of its own is set up by variables. Neither has
+  // Pi here (its own sign-ins are not offered yet): it runs on the same keys, on pi-ai as DeepSeek Harness's routes do.
+  if (runtime === "dsh" || runtime === "pi") return ["opencode-go", "anthropic-api", "api-provider", "env"];
   // Grok Build: SuperGrok signed in to, an xAI key, or its own variables.
   if (runtime === "grok") return ["subscription", "api-provider", "env"];
   // Cursor: a Cursor account signed in to (it takes no provider's key), or its own variables (CURSOR_API_KEY).
@@ -140,10 +140,10 @@ export const needsKey = (kind: AccessKind, provider: string | undefined): boolea
 /// The runtimes an access kind runs without its provider: a provider's follow from where it
 /// speaks (`runtimesFor`).
 export function runtimesOf(kind: AccessKind, runtime: Runtime | undefined): Runtime[] {
-  if (kind === "opencode-go") return ["claude", "codex", "dsh"];
-  if (kind === "anthropic-api") return ["claude", "dsh"];
+  if (kind === "opencode-go") return ["claude", "codex", "dsh", "pi"];
+  if (kind === "anthropic-api") return ["claude", "dsh", "pi"];
   if (kind === "api-provider") return [];
-  if (kind === "subscription" && runtime === "dsh") return [];
+  if (kind === "subscription" && (runtime === "dsh" || runtime === "pi")) return [];
   return runtime ? [runtime] : [];
 }
 
@@ -203,8 +203,8 @@ const sorted = (list: string[]) => list.sort((a, b) => (a < b ? -1 : a > b ? 1 :
 /// Runs a runtime's own status command, in `env` only; what it said and how it ended.
 async function statusOf(command: string, args: string[], env: Env): Promise<{ code: number | null; stdout: string; stderr: string }> {
   env = await withShellCommand(command, env);
+  const r = await platform.runnableSoon(command, args, env as NodeJS.ProcessEnv);
   return new Promise((resolve, reject) => {
-    const r = platform.runnable(command, args, env as NodeJS.ProcessEnv);
     execFile(r.file, r.args, { env: env as NodeJS.ProcessEnv, timeout: 20_000, killSignal: "SIGKILL", windowsVerbatimArguments: r.windowsVerbatimArguments }, (error, stdout, stderr) => {
       if (error && (error as NodeJS.ErrnoException).code === "ENOENT") return reject(new Error(`${command}: ${error.message}`));
       if (error && error.killed) return reject(new Error(`${command} ${args.join(" ")} timed out`));
@@ -266,7 +266,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
       env.CLAUDE_CODE_OAUTH_TOKEN = machineToken;
     } else {
       await takeBack(o.home);
-      fileCredentials(env as Record<string, string>);
+      await fileCredentialsSoon(env as Record<string, string>);
     }
     const output = await statusOf("claude", ["auth", "status"], env);
     // Signed out, it says so and exits 1: its answer is still the JSON on stdout.
@@ -280,7 +280,7 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // into the check; the token itself stays in the home. A machine login's keychain is handled by MachineLogins.
     let credentials: ReturnType<typeof parseClaudeCredentials> = undefined;
     if (!o.machine) {
-      try { credentials = parseClaudeCredentials(readFileSync(join(o.home, ".credentials.json"), "utf8")); } catch {}
+      try { credentials = parseClaudeCredentials(await readFile(join(o.home, ".credentials.json"), "utf8")); } catch {}
     }
     const plan = claudePlan(status.subscriptionType ?? credentials?.subscriptionType, status.rateLimitTier ?? credentials?.rateLimitTier);
     const detail = [t("station.profile.signedIn"), typeof status.email === "string" ? status.email : "", plan ?? ""].filter((s) => s !== "");
@@ -289,13 +289,13 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     return result;
   }
   if (o.kind === "subscription" && o.runtime === "codex") {
-    if (o.machine) linkCodexAuth(o.home, o.env);
+    if (o.machine) await linkCodexAuthSoon(o.home, o.env);
     const output = await statusOf("codex", ["login", "status"], { ...o.env, CODEX_HOME: o.home });
     const text = `${output.stdout}${output.stderr}`.trim();
     if (text.toLowerCase().includes("not logged in")) return check("login", t("station.profile.signedOut"), null);
     if (output.code !== 0) throw new Error(`Command failed: codex login status\n${text}`);
     const result = check("ok", text.split("\n")[0] || t("station.profile.signedIn"), null);
-    const plan = codexClaims(o.home)?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
+    const plan = (await codexClaimsSoon(o.home))?.["https://api.openai.com/auth"]?.chatgpt_plan_type;
     if (typeof plan === "string" && plan.trim() !== "") result.plan = plan.trim();
     return result;
   }
@@ -306,12 +306,12 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     if (/not authenticated|not logged in|sign in/i.test(text)) return check("login", t("station.profile.signedOut"), null);
     if (output.code !== 0) throw new Error(`Command failed: grok models\n${text.trim()}`);
     const models = grokModels(text);
-    const email = grokEmail(o.home);
+    const email = await grokEmail(o.home);
     return check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), models.length > 0 ? models : null);
   }
   if (o.kind === "subscription" && o.runtime === "cursor") {
     // The key the sign-in minted (cursor.ts), asked of Cursor's API: whose it is, and the models it may run.
-    const login = readCursor(o.home);
+    const login = await readCursor(o.home);
     if (login === null) return check("login", t("station.profile.signedOut"), null);
     const cursor = urls.cursor ?? CURSOR;
     const me = await cursorMe(cursor, login.apiKey);
@@ -336,7 +336,8 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // Noted for what names the account without asking Devin (devinEmail).
     if (email !== null) {
       try {
-        writeFileSync(join(o.home, "devin", "account.json"), `${JSON.stringify({ email })}\n`);
+        await mkdir(join(o.home, "devin"), { recursive: true });
+        await writeFile(devinAccountFile(o.home), `${JSON.stringify({ email })}\n`);
       } catch {}
     }
     const done = check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), catalog !== null && catalog.models.length > 0 ? catalog.models : null);
@@ -351,12 +352,19 @@ async function checkInner(o: CheckOptions, lang: Lang): Promise<ProfileCheck> {
     // `agy` had moved it (`agyTakeBack`); whether it works, and its models, a session opened only to ask says (index.ts).
     if (!(await agyTakeBack(o.home))) return check("login", t("station.profile.signedOut"), null);
     let email: string | null = null;
+    let text = "";
     try {
-      email = await noteAgyEmail(o.home, await readFile(agyToken(o.home), "utf8"));
+      text = await readFile(agyToken(o.home), "utf8");
+      email = await noteAgyEmail(o.home, text);
     } catch {
       return check("login", t("station.profile.signedOut"), null);
     }
-    return check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), null);
+    // A company's account whose licence or project was never given is signed out to `agy` (agents/agy.ts).
+    if (!agyTokenReady(text, false)) return check("login", t("station.profile.signedOut"), null);
+    const plan = agyPlanIn(text);
+    const result = check("ok", [t("station.profile.signedIn"), email ?? ""].filter((s) => s !== "").join(t("station.list.comma")), null);
+    if (plan !== null) result.plan = plan;
+    return result;
   }
   return check("unknown", t("station.profile.envUnchecked"), null);
 }
@@ -369,9 +377,9 @@ export function devinEmailIn(text: string): string | null {
 
 /// Whose Devin account a profile signed in to: the email the station noted when it was last checked (account.json in
 /// its Devin home), none before.
-export function devinEmail(home: string): string | null {
+export async function devinEmail(home: string): Promise<string | null> {
   try {
-    return devinNotedIn(readFileSync(devinAccountFile(home), "utf8"));
+    return devinNotedIn(await readFile(devinAccountFile(home), "utf8"));
   } catch {
     return null;
   }
@@ -384,9 +392,6 @@ export function devinNotedIn(text: string): string | null {
   return typeof email === "string" && email !== "" ? email : null;
 }
 
-/// Whose Cursor account a profile signed in to, as its sign-in kept it (accounts/cursor.ts).
-export const cursorEmail = (home: string): string | null => readCursor(home)?.email ?? null;
-
 /// The models `grok models` lists: a line each, `* id (default)` or `- id`.
 export function grokModels(text: string): string[] {
   return text.split("\n").flatMap((line) => {
@@ -396,9 +401,9 @@ export function grokModels(text: string): string[] {
 }
 
 /// Whose account Grok Build is signed in with, as its auth.json says (agents/grok.ts: its home is the profile's grok/).
-export function grokEmail(home: string): string | null {
+export async function grokEmail(home: string): Promise<string | null> {
   try {
-    return grokEmailIn(readFileSync(grokAuthFile(home), "utf8"));
+    return grokEmailIn(await readFile(grokAuthFile(home), "utf8"));
   } catch {
     return null;
   }

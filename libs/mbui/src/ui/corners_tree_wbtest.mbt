@@ -897,3 +897,79 @@ test "corners: a row's ground under the hand drawn square, standing in from a ro
   assert_eq(tree_lit_row_faults(20.0, 12.0), [])
   assert_eq(tree_lit_row_faults(0.0, 0.0), [])
 }
+
+///|
+test "corners: a pill overlay (radius=1.0e6) flush inside a non-pill rounded card (radius=16, 180×48) is caught as non-concentric" {
+  let t = Tester::new(
+    fn(_) {  },
+    tree=fn(root) {
+      root.box(fn(page) {
+        page.pad(Is(40.0)) |> ignore
+        page.box(fn(card) {
+          card
+          .width(Is(Some(180.0)))
+          .height(Is(Some(48.0)))
+          .radius(Is(16.0))
+          .ground(Is(0xFBE9E7FFL))
+          |> ignore
+          card.box(fn(flash) {
+            flash
+            .over(Is(true))
+            .radius(Is(1.0e6))
+            .ground(Is(0xCC5A3433L))
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=300.0,
+    platform=0,
+    corners_held=false,
+  )
+  t.draw()
+  assert_true(wants(t.corner_faults(), 24.0), msg=list_text(t.corner_faults()))
+}
+
+///|
+test "corners: a row's ground_over under the hand drawn square inside a rounded panel is caught at rest" {
+  let faults = fn(r : Double) -> Array[String] {
+    let t = Tester::new(
+      fn(_) {  },
+      tree=fn(root) {
+        root.box(fn(page) {
+          page.pad(Is(40.0)) |> ignore
+          page.box(fn(panel) {
+            panel.width(Is(Some(300.0))).padding(Is((20.0, 48.0, 20.0, 48.0))).radius(Is(24.0)).ground(Is(0x222222FFL)) |> ignore
+            panel.box(fn(v) {
+              v
+              .height(Is(Some(48.0)))
+              .radius(Is(r))
+              .ground(Is(0L))
+              .ground_over(By(fn() { if v.pointed() { 0xEEEEEE22L } else { 0L } }))
+              .presses(Is(true))
+              .on_press(fn() {  })
+              .says(Is(Some(@view.said(Button, label="row"))))
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      },
+      w=400.0,
+      h=300.0,
+      platform=0,
+      corners_held=false,
+    )
+    t.draw()
+    t.corner_faults()
+  }
+  let square = faults(0.0)
+  assert_true(square.length() == 1 && square[0].contains("lit square under the hand"), msg=list_text(square))
+  assert_eq(faults(12.0), [])
+}

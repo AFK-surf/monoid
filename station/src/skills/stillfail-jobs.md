@@ -63,13 +63,17 @@ can mark places and comment. Use stillfail-show for evidence to accompany the li
 Use `station_list` to see the workspace's stations and how busy each is right now (cores, arch/OS, GPU, CPU busy over
 the last minute, load average, free memory and disk where tasks run, what it is running); `station_list {station}`
 gives one in detail with its task capabilities and file limits. All are asked at once: one not answering within 2 s
-is listed offline. Any station of the workspace accepts tasks from here; one not updated yet may still refuse them,
-and an older one's load shows as unknown. A station safe mode does not protect is listed last with `unprotected`: why
+is listed `unanswered`, which is not offline (it may be slow, starting or updating): ask it alone, which waits 10 s,
+before telling anyone it is down. Only one no link to which would open is listed `offline`. `version` is what a
+station says itself; one that did not answer (or is older) shows only `version_seen`, the copy still.fail cloud gave
+this station, which can be several updates old: never tell a person their station is out of date from it. Any
+station of the workspace accepts tasks from here; one not updated yet may still refuse them, and an older one's load
+shows as unknown. A station safe mode does not protect is listed last with `unprotected`: why
 it cannot be called from here, and how an owner or admin protects it. That is not a bug: tell the person.
 
 Choosing where to run: the right OS and architecture first; then enough free memory and disk for the job (a large
 build needs several GiB of each); then the least busy (low CPU busy and load per core, few running tasks). Heavy
-builds and test suites go to a big machine, not a small VM. Offline stations are skipped. There are no locks: do
+builds and test suites go to a big machine, not a small VM. Offline and unanswered stations are skipped. There are no locks: do
 not wait for, ask for or announce a "lock" on a machine, and do not queue behind other agents' claims. Look at the
 load, and if a machine is busy pick another or start anyway when nothing better is free: the station queues it when
 it must.
@@ -206,4 +210,5 @@ Called again once granted, `phone_use` says how the phone is reached now (its ad
 chats cannot reach). A grant ends when its time is up, when this chat has used the device for nothing for the idle
 time, when its owner takes it back, or when this chat is archived; you are told. Done with a device (what it was asked
 for is finished), hand it back with `done: true`: its port here closes and, for a phone, it is no longer lent for this
-chat and you are no longer told how it comes and goes.
+chat and you are no longer told how it comes and goes. Hand it back only once the whole of that is done: one grant covers its time,
+so do not give it back between steps nor ask for it again for each use.

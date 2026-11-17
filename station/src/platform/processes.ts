@@ -10,15 +10,26 @@ import { fileURLToPath } from "node:url";
 /// The runner binary: STILLFAIL_RUNNER, else beside the station's code in a release, else where cargo built it. On
 /// Windows, once `keepRunnerIn` has named a directory, a copy of it there (see `keepRunnerIn`).
 export function runnerBinary(): string {
+  const found = runnerFound();
+  return kept ? kept.copyOf(found) : found;
+}
+
+/// Where the runner was found, by the STILLFAIL_RUNNER it was looked for with: looked for once, not at every agent's
+/// start on the main thread (a release's runner beside its code stays there while its station runs).
+let runnerAt: { env: string; path: string } | null = null;
+function runnerFound(): string {
+  const env = process.env.STILLFAIL_RUNNER ?? "";
+  if (runnerAt !== null && runnerAt.env === env) return runnerAt.path;
   const name = process.platform === "win32" ? "stillfail-runner.exe" : "stillfail-runner";
   const candidates = [
     process.env.STILLFAIL_RUNNER,
     fileURLToPath(new URL(`./${name}`, import.meta.url)),
     fileURLToPath(new URL(`../../native/runner/target/release/${name}`, import.meta.url)),
   ];
-  const found = candidates.find((p) => p && existsSync(p));
+  const found = candidates.find((p) => p && existsSync(p)); // sync: once for the process (and each STILLFAIL_RUNNER a test gives)
   if (!found) throw new Error(`stillfail-runner is not there (looked at ${candidates.filter(Boolean).join(", ")})`);
-  return kept ? kept.copyOf(found) : found;
+  runnerAt = { env, path: found };
+  return found;
 }
 
 /// Where runners run from on Windows, when not from where the station's release is. The desktop app's installer (NSIS,
@@ -33,6 +44,10 @@ export function keepRunnerIn(dir: string) {
   if (process.platform !== "win32") return;
   kept = new RunnerCopies(dir);
   kept.prune();
+  // Copied now, as the station starts, not as its first agent starts on the main thread.
+  try {
+    kept.copyOf(runnerFound());
+  } catch {}
 }
 
 class RunnerCopies {

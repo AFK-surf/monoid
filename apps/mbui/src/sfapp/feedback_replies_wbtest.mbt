@@ -56,7 +56,7 @@ test "查看 opens the replies; 回复 answers the team as the person, the field
   t.run_for(@ui.move_most_ms)
   assert_true(t.find("FB-12 · chat_post 偶尔发不出去") is Some(_))
   assert_true(t.find("能再说一下出错时在跑什么吗？") is Some(_))
-  t.tap_text("回复 still.fail 团队…")
+  t.tap_text("回复 still.fail 团队")
   t.type_text("那会儿在跑 pnpm build")
   t.click(Button, label="回复")
   let asked = named(calls, "workspace.feedbackReply")

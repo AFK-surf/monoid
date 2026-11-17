@@ -29,6 +29,8 @@ if [ -z "${GITHUB_ACTIONS:-}" ] && [ "${MBUI_WHOLE_SUITE:-}" != 1 ]; then
   exit 2
 fi
 cd "$A"
+# (fd 9: the script's own stderr, for what is said while runs go on: parts_watch)
+exec 9>&2
 F='^Warning\|^ *│\|^ *╭\|^ *╰\|^─\|^ *[0-9]* │'
 code=0
 if [ -n "${GITHUB_ACTIONS:-}" ]; then targets=${TARGETS:-native}; else targets=${TARGETS:-wasm-gc}; fi
@@ -141,7 +143,8 @@ for t in $targets; do
     [ -f $b/sfapp.whitebox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$APP_BUILD_OUT" && cp $b/sfapp.whitebox_test.exe $b/__whitebox_test_info.json "$APP_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$APP_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h $b/sfapp.whitebox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$APP_BUILD_OUT/sfapp.whitebox_test.exe" "$APP_BUILD_OUT/testexe" || true
+    echo "test.sh: sfapp's test program put in $APP_BUILD_OUT ($(du -h "$APP_BUILD_OUT/sfapp.whitebox_test.exe" | cut -f1))"
     exit 0
   fi
   # (the flows' test program and its tests' list put where REPLAY_BUILD_OUT says, the same way)
@@ -150,7 +153,8 @@ for t in $targets; do
     [ -f $b/flows.blackbox_test.exe ] || { moon test $mode $pkgs --build-only 2>&1 | grep -v "$F" | tail -40; exit 1; }
     mkdir -p "$REPLAY_BUILD_OUT" && cp $b/flows.blackbox_test.exe $b/__blackbox_test_info.json "$REPLAY_BUILD_OUT/" &&
       cp "$(bash "$D/testexe" path)" "$REPLAY_BUILD_OUT/testexe" || exit 1
-    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h $b/flows.blackbox_test.exe | cut -f1))"
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" "$REPLAY_BUILD_OUT/testexe" || true
+    echo "test.sh: the flows' test program put in $REPLAY_BUILD_OUT ($(du -h "$REPLAY_BUILD_OUT/flows.blackbox_test.exe" | cut -f1))"
     # (then the core's tests here, the flows' left to replay-fps's runs of it)
     pkgs="${pkgs/ -p stillfail\/sfreplay\/flows/}"
   fi
@@ -165,9 +169,11 @@ for t in $targets; do
         [[ " $MBC_EMPTY_TESTS " = *" $q/$n.${k}_test "* ]] && continue
         [ -f $b/$n.${k}_test.exe ] || { echo "test.sh: no $b/$n.${k}_test.exe to put in $PKGS_BUILD_OUT" >&2; exit 1; }
         mkdir -p "$PKGS_BUILD_OUT/$q" && cp $b/$n.${k}_test.exe $b/__${k}_test_info.json "$PKGS_BUILD_OUT/$q/" || exit 1
+        ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/$q/$n.${k}_test.exe" || true
       done
     done
     cp "$(bash "$D/testexe" path)" "$PKGS_BUILD_OUT/testexe" || exit 1
+    ! command -v strip >/dev/null 2>&1 || [ "$(uname -s)" != Linux ] || strip --strip-unneeded "$PKGS_BUILD_OUT/testexe" || true
     echo "test.sh: the packages' test programs put in $PKGS_BUILD_OUT ($(du -sh "$PKGS_BUILD_OUT" | cut -f1))"
   fi
   s=$(date +%s)
@@ -176,8 +182,8 @@ for t in $targets; do
   # rates in turn): a line "k FILE" each, the longest first, onto the k that, with it, would end the soonest (its pages
   # over its programs, or with its other runs over its cores, whichever is longer; the lowest k among equals). A file's
   # time is its line's in scripts/page-seconds.txt at the rate (MBUI_TEST_FPS: the default, 60, 120, 24 or 7), 1 where
-  # it is 0, and a file not there yet counts as one of the longest (the column's ninetieth percentile), so it is dealt
-  # early to whichever runner has room: as the median, chat_find_wbtest (116 s at 120 a second, new in #5283) went with
+  # it is 0, and a file not there yet, or `-` there at the rate (none measured it), counts as one of the longest (the
+  # column's ninetieth percentile), so it is dealt early to whichever runner has room: as the median, chat_find_wbtest (116 s at 120 a second, new in #5283) went with
   # app 1/4 at 120 fps's own and made it 280 s of its 5 minutes (42936333352, 2026-11-11). Every runner at one rate
   # deals the same.
   page_deal() {
@@ -185,7 +191,7 @@ for t in $targets; do
     shift
     [ $# = 0 ] && return
     printf '%s\n' "$@" | awk -v col=$(case "${MBUI_TEST_FPS:-}" in "") echo 2 ;; 60) echo 3 ;; 120) echo 4 ;; *) echo 5 ;; esac) '
-      FNR == NR { if ($1 !~ /^#/) { w[$1] = $col > 0 ? $col : 1; if ($col > 0) v[++m] = $col }; next }
+      FNR == NR { if ($1 !~ /^#/ && $col != "-") { w[$1] = $col > 0 ? $col : 1; if ($col > 0) v[++m] = $col }; next }
       FNR == 1 { for (i = 2; i <= m; i++) for (j = i; j > 1 && v[j - 1] > v[j]; j--) { t = v[j]; v[j] = v[j - 1]; v[j - 1] = t }
         new = m ? v[int(m * 9 / 10) + 1] : 1 }
       { b = $0; sub(/.*\//, "", b); print ((b in w) ? w[b] : new), $0 }' "$D/page-seconds.txt" - |
@@ -238,11 +244,16 @@ for t in $targets; do
     # 256 s of app 4/4 at 120 fps part 2/3 and 117 s of app 1/4 at 24 7 fps, which its 7 then cut at its 5 minutes,
     # main 0d56014c 43468965521, 2026-11-13) (in five since, its 中屏 and 大屏 a run each: in three, beside the first's
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
-    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:3 src/sfapp/squeeze_said_wbtest.mbt:1
+    # (switches_still's 68-90, cut at 79: as screens came that run grew from 106-113 s to 163-279 s on main's runs of
+    # 2026-11-15, app switches part 4/4 292 s of its 5 minutes on 927e8653 43692601857)
+    # (and 68-79 cut at 73: as #6459's previews were swept that run was 231-260 s, part 4/4 269 and 275 s of its 5
+    # minutes on main ab2d43d7 43718049538 and 4e8f3be0 43718632655, its other three runs 25-151)
+    # (and 60-68 cut at 64: that run 249 s, part 3/4 268 s of its 5 minutes on main e18b38e4 43719996435)
+    sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
-      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:2 src/sfapp/send_steady_wbtest.mbt:@1@2
+      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
-      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@68@90@123@146@176@205@248)
+      src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@64@68@73@79@90@123@146@176@205@248)
     pages=()
     for f in "${files[@]}"; do [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f"); done
     for w in "${sweeps[@]}"; do
@@ -257,12 +268,13 @@ for t in $targets; do
       if [ -n "${MBUI_TEST_FPS:-}" ]; then
         # (real_size's, every screen opened on a workspace of real size and given its changes, the same: a sweep of every
         # screen, its bars set on the default run; 40-102 s a run at the four rates, #5407 42976047326)
+        # (duo_side's, every screen's controls held clear of an iPhone Duo's column on its side, at rest: the same)
         # (switches_still's, every screen's switches pressed, its table set on the default run: main's switches job's alone)
         # (corners' and contrast's too, said here since a branch's changed files at a rate (APP_GROUP=1/1, every run on the
         # one): main's rates never ran them (their groups are the default rate's alone), and a branch that changed
         # corners_wbtest ran its three at 120 and 60 with the motion counted on one runner, cut at its 5 minutes,
         # lock-upgrade-page 43559278519, 2026-11-14)
-        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
+        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
       fi
       # (in k runs of its tests by their index: moon test FILE --index FROM-TO, the tests in the file's order)
       m=$(grep -c '^test "' "$f")
@@ -432,16 +444,60 @@ for t in $targets; do
           # branches alike, 254-312 s (cut at its 5 minutes on main 02416d29 43580485463; reply-place 43588784943 298 s),
           # the others 151-235. The third reckoned 1500: by the table its pages 172 s, the first's 637, the second's
           # 795, the fourth's 705, each of those some 10-35 s of the table more, on their four and two)
-          *) specs="4,4,950,1 2,4,430,1 1,4,1500,1 4,4,900,1" ;;
+          # (the third's pages, 235 s by the table on its one program, ran 217-243 s beside kept_rows', answers_still's
+          # and real_size's eleven runs, app 3/4 227-255 s of its 5 minutes on four pushes of 2026-11-14 (43604749359,
+          # 43605560534, 43605643007), the second's 181-235 on its two programs, the first's and fourth's 105-152 on their
+          # four. The third reckoned 1650 and the second 650: by the table the third's pages 132 s, the second's 694 (751),
+          # the first's 622 (529), the fourth's 666 (599))
+          # (dealt so, the third's job was 132-170 s on main 2c8f3745 43607717744 and branches after, the first's
+          # 212-243 and the fourth's 227-261: too many taken from the third. Reckoned 1580: by the table its pages 188 s,
+          # the first's 598, the second's 690, the fourth's 643)
+          # (dealt so, the first's pages ran 235 s, some 0.39 s for each of the table's beside real_size's half (195 s)
+          # and preview_tree's halves, where the fourth's ran 149, 0.23, and the second's and third's jobs 142 and 153
+          # (app-deal-third-2's push, 2026-11-14). The first reckoned 1150 and the fourth 800: by the table the first's
+          # pages 462 s, the second's 710, the third's 188, the fourth's 759)
+          # (dealt so, the fourth's job was 199-268 s on main 152b19b5 43615169071 and branches after #6295, its pages
+          # 245-275 beside send_steady's three; the first's 132-197 and the third's 142-183. The fourth reckoned 900,
+          # the first 1060 and the third 1590: by the table the first's pages 523 s, the second's 711, the third's 205,
+          # the fourth's 682)
+          # (dealt so, the fourth's job was the longest of the four on main's runs of the evening, 241-257 s (ab5e69b4
+          # 43639248574: 197, 219, 168, 257), the third's 163-212: the fourth reckoned 980, the third 1550. By the
+          # table the first's pages 567 s, the second's 683, the third's 259, the fourth's 612, where they were 533,
+          # 688, 211 and 689 with the files merged since)
+          # (dealt so, with the files merged since, the third's pages were 265 s by the table on its one program and ran
+          # 278 s: app 3/4 271 s on main 7b151c31 (43658036848) and 294 s on farview-pace (43658053979), the others
+          # 160-251. The third reckoned 1650: by the table the first's pages 598 s, the second's 705, the third's 199,
+          # the fourth's 619)
+          # (reckoned by what ran, not by what was reckoned before: on five pushes of 2026-11-16 (43844048935,
+          # 43845665634, 43844188947, 43847582791, 43847194601) each group's job was its pages' file-seconds over its
+          # programs, near enough (the first 470 s on four, 118 s; the second 383 on two, 192; the third 175-271 on its
+          # one, its job 175-284; the fourth 845 on four, 214), whatever ran beside them, and the reckonings had drifted
+          # from what did (the first reckoned 1030 where its other runs were some 160 s of runs, the third 1650 where
+          # its were 620-750): the first's job was half the third's. page-seconds.txt written again from those runs (26
+          # files it had not, each dealt as one of the longest) and each group's other runs reckoned at half their
+          # runs' seconds, as they share its cores with the pages (the first's real_size half and preview_tree's halves
+          # 160 s of runs, the second's sweeps 420, the third's kept_rows, real_size and answers_still 650, the
+          # fourth's send_steady three 230 since they skip the frames nothing asks for); the third's pages on two
+          # programs (p3, below), one leaving their 175-271 s to one core: by the table some 200 s a group)
+          # (dealt so, #6678's 43854977577: app 1/4 211 s of tests (real_size's wide half 169 beside its pages' 211),
+          # 2/4 203 (its pages on two programs the longest), 3/4 170, 4/4 139 (send_steady's three 38-60 s). Each
+          # reckoned again so that what was dealt would have ended as it ran, the wide window's real_size on the
+          # fourth, the second's pages on three programs: by the table 720, 355, 386 and 711 s of pages)
+          # (dealt so, 43857300626: app 1/4 198 s, 2/4 116, 3/4 188, 4/4 234 with real_size's wide half there; that
+          # half on the second since, each reckoned again as it ran: by the table 658, 546, 364 and 604 s of pages)
+          # (real_size's wide half on the fourth since (app_group_of), the second's reckoning raised for what ran there
+          # beside it all the same, 43864771728: by the table 715, 503, 393 and 561 s of pages)
+          *) specs="4,4,72,1 3,4,284,1 2,4,366,1 4,4,225,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
-        # (the second's pages on two programs beside its sweeps at the default rate, on $n at a rate, where it has none)
-        p2=2
-        [ -z "${MBUI_TEST_FPS:-}" ] || p2=$n
-        runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 1 ${g3[*]}" "@pages 4 $n ${g4[*]}")
+        # (the second's pages on three programs beside its sweeps at the default rate, on $n at a rate, where it has
+        # none; the third's on two at the default rate, on one at a rate beside kept_rows' five runs, as it was)
+        p2=3 p3=2
+        [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
+        runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else
         runs+=("@pages 0 $n $(page_deal 1,1,0,1 "${pages[@]}" | cut -d' ' -f2 | tr '\n' ' ')")
       fi
@@ -526,11 +582,21 @@ for t in $targets; do
       # the most room at the default rate: the wide window's, the longer, on the first, where the opening alone was
       # 103 s of its 5 minutes (#5407 42976047326); the phone's on the fourth, which has no run but its pages. On Studio
       # in Wasm 37 s and 13 s where the opening alone was 28 s: some 135 s and 50 s here, 2026-11-11)
-      "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 1 ;;
+      # (its tests cut at each of its two sweeps since #6627 put a quick test of its own first: cut in two halves, the
+      # first was that test alone and the second both sweeps, "--index 1-3", matched by none of these and dealt to the
+      # fourth beside its 142 files of pages, 306 s, app 4/4 cut at its 5 minutes on main 202a54dc 43822504735)
+      # (the wide window's on the second since, the one with the most room: on the first beside its pages on four
+      # programs it ran 169 s, app 1/4 228 s (#6678's 43854977577); on the fourth 197 s beside its pages and
+      # send_steady's three, app 4/4 234 s, where app 2/4 was 116 (43857300626))
+      # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
+      # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
+      # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) echo 4 ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
       # 124-243)
+      "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
@@ -541,12 +607,16 @@ for t in $targets; do
       # 54-124 s, main 85413543 42736997391, station-conversations-survive 42739107408, 2026-11-10)
       "src/sfapp/preview_tree_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "" | 60) echo 1 ;; *) echo 4 ;; esac ;;
       "src/sfapp/contrast_wbtest.mbt  ") echo contrast ;;
-      # (switches_still's sixteen runs, every screen's switches pressed over a core answering late, on four runners of
+      # (switches_still's runs, every screen's switches pressed over a core answering late, on four runners of
       # their own, every fourth on each (APP_PART), four side by side on its four cores: main's alone, after a merge
       # (mbui-check.yml's switches). Cut where its tests' time, as main's runs measured it, comes to a sixteenth each:
       # by count, ten a run past the 60th and two before it, a runner's fourteen runs side by side on its four cores were
       # 200-280 s each, its job 295 s of its 5 minutes, main 4dda0ed0 43565383295, 2026-11-14 (its chats' screens, 20-52,
       # the most). No more runners for it (the owner: 「不要一慢就拆」, 「分片会排队」))
+      # (seventeen since, its tests 52-68 cut at 60: that one run was 273-279 s, part 1/4 288-291 s of its 5 minutes on
+      # main 98178dc5 43606413194 and cf48243e 43604572194, its other three runs 68-132 s; the other parts 108-166 s)
+      # (eighteen since, its tests 52-60 cut at 56: that run was 247 s on main ccb596e1 43609558227, part 1/4 258 s
+      # beside its four others (99-167 s), where 60-68 was 96; its tests 52-59 8-11 s each on Studio, none the most)
       "src/sfapp/switches_still_wbtest.mbt "*) echo switches ;;
       # (send_steady's three on the fourth, beside its pages on its four cores: the deal reckons them there)
       "src/sfapp/send_steady_wbtest.mbt "*) echo 4 ;;
@@ -628,6 +698,34 @@ for t in $targets; do
       *) [ $# -le 2 ] && echo $(basename -a "$@") || echo "$# files ($(basename "$1") ...)" ;;
     esac
   }
+  # parts_watch DIR EXE: in CI, a part of exe_run's still running after MBUI_PART_SAYS seconds (150) is said at once on
+  # the job's log (fd 9, the script's own stderr), never only in its run's output, which is printed after it ends: what
+  # it runs, its process's state and CPU time, the last of what it printed, and its threads' stacks where gdb is there.
+  # Why: app 1/4 was cut at its 5 minutes with nothing said of which file had not ended, #6837 b68070c9c and main
+  # d77015c89, 2026-11-17, its runs 137 s otherwise.
+  parts_watch() {
+    [ -n "${GITHUB_ACTIONS:-}" ] || return 0
+    local d=$1 exe=$2 t0 said=" " name arg pid
+    t0=$(date +%s)
+    while :; do
+      sleep 10 # det-ok(script-wait): a watchdog's look at the parts still running, never a wait a test passes by
+      [ $(($(date +%s) - t0)) -ge "${MBUI_PART_SAYS:-150}" ] || continue
+      while read -r name arg; do
+        [ -f "$d/$name.out" ] && [ ! -f "$d/$name.code" ] || continue
+        case "$said" in *" $name "*) continue ;; esac
+        said="$said$name "
+        {
+          echo "test.sh: still running after $(($(date +%s) - t0)) s: $(basename "$exe") $arg"
+          pid=$(ps -eo pid=,args= | awk -v e="$exe" -v a="$arg" 'index($0, e " " a) && !/ sh -c / { print $1; exit }')
+          [ -z "$pid" ] || ps -o pid=,stat=,etime=,time=,wchan= -p "$pid" | sed 's/^/  ps: /'
+          tail -20 "$d/$name.out" | sed 's/^/  said: /'
+          if [ -n "$pid" ] && command -v gdb > /dev/null; then
+            timeout 30 sudo -n gdb -batch -p "$pid" -ex 'thread apply all bt 40' 2>&1 | grep -a '^#\|^Thread' | head -80 | sed 's/^/  gdb: /'
+          fi
+        } >&9
+      done < "$d/parts"
+    done
+  }
   # exe_run EXE INFO JOBS PKG FILE… | FILE --index FROM-TO: a run on a test program built already, JOBS of it side by
   # side, each taking the next part when done with one (xargs -P); tools/testexe says what to ask it and what it said.
   # JOBS as Neach: a process a file even on one (testexe says each file's seconds only of a run in more than one part)
@@ -637,8 +735,14 @@ for t in $targets; do
     case $j in *each) j=${j%each} split=$((j > 1 ? j : 2)) ;; esac
     d=$(mktemp -d)
     "$TESTEXE" parts "$info" "$split" "$@" > "$d/parts" || { rm -rf "$d"; return 2; }
-    [ ! -s "$d/parts" ] || sed "s|^|$d/|" "$d/parts" | xargs -P "$j" -L 1 sh -c \
-      's=$(date +%s); "$0" "$2" > "$1.out" 2>&1; echo "$? $(($(date +%s) - s))" > "$1.code"' "$exe"
+    if [ -s "$d/parts" ]; then
+      parts_watch "$d" "$exe" &
+      local w=$!
+      sed "s|^|$d/|" "$d/parts" | xargs -P "$j" -L 1 sh -c \
+        's=$(date +%s); "$0" "$2" > "$1.out" 2>&1; echo "$? $(($(date +%s) - s))" > "$1.code"' "$exe"
+      kill $w 2>/dev/null
+      wait $w 2>/dev/null
+    fi
     "$TESTEXE" said "$info" "$d" "$pkg"
     c=$?
     rm -rf "$d"

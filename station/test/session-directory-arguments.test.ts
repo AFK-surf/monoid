@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
 import { SessionDirectoryBuilder } from "../src/sessions/session-directory-builder.ts";
-import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectoryArguments } from "../src/store/session-directory.ts";
+import { installSessionDirectories, sessionDirectoriesReady, sessionDirectoriesStep, sessionDirectoryArguments } from "./reference/backfill/session-directory.ts";
 import { Store } from "../src/store/store.ts";
+import { dbFile } from "./temp-dir.ts";
 
 const HOME = "/home/me";
 const put = `INSERT INTO sessions(key,connect,scope,runtime,profile,workspace,cwd,token,created_at,last_active_at,archived_at)
@@ -184,7 +185,7 @@ test("argument lookup immediately falls back through handover and prepares after
 });
 
 test("at most 32 live sessions answer directly without preparing historical directories", async () => {
-  const store = Store.open(":memory:"), db = store.db;
+  const store = Store.open(dbFile("dir-args-")), db = store.db;
   const previous = Promise.withResolvers<void>();
   const builder = new SessionDirectoryBuilder(store, previous.promise);
   try {

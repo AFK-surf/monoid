@@ -20,7 +20,7 @@ let row_profile_fields : Array[String] = [
 ///|
 /// What a row's allowance carries (RowQuota): its windows as their chips draw them (quota_window_fields).
 // kept across runs: a table, never written
-let row_quota_fields : Array[String] = ["state", "windows", "creditsText"]
+let row_quota_fields : Array[String] = ["state", "windows", "detail", "creditsText"]
 
 ///|
 /// Account `e` (whole) as its row: the row's fields, whether it is signed in on several of its members (those not a

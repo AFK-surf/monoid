@@ -1,8 +1,9 @@
 // The groups of instances the host keeps (@hostapi.group_set): a list's row kept as it was drawn, which the app then
 // says among a frame's instances by a header alone (kind 13, mbui/src/ui/scene.mbt), moved, instead of writing every
-// instance of it again each frame. Each host's mb_host_present draws the headers out here before its renderer takes the
-// frame, as mbui/src/ui/view_ride.mbt's ride_put writes them: so a renderer, its shaders, what compares a frame with the
-// last (apple_render.m's same_as_shown) and what draws the last frame again all take the instances as before.
+// instance of it again each frame. Each host's renderer draws the headers out here as it takes a frame (mb_groups_floats),
+// as mbui/src/ui/view_ride.mbt's ride_put writes them, straight into the floats it draws from: so a renderer, its
+// shaders, what compares a frame with the last (apple_render.m's same_as_shown) and what draws the last frame again all
+// take the instances as before, with no copy of the frame in doubles between.
 //
 // A header's numbers: 0, 1 how far its group's instances are moved; 5 13; 12 the group; 13 the first of its instances,
 // 14 how many (the header and the room after it the frame gives them, unwritten), 15 how far on its shapes' pieces
@@ -14,7 +15,11 @@
 // place of it: a header of such a group stands for all of it, its 14 how many it draws out to (each header in it as
 // many as that one says), each header in it drawn out where it comes, moved with it and cut to its clip as well.
 //
-// Included once, by the file that defines mb_host_present.
+// A group's instances are kept in doubles, as the app said them: each moved in doubles and only then made a float, so
+// what is drawn is the same to the bit as the app's own instance moved there would be ((float)(x + dx), never
+// (float)x + dx: a float kept would round twice, a list's row a 2^-24 of its place off, its clip's cut compared off).
+//
+// Included once, by each host's renderer (apple_render.m, gles_render.h, win_render.cpp).
 #ifndef MB_GROUPS_H
 #define MB_GROUPS_H
 
@@ -24,6 +29,12 @@
 
 #define MB_GROUP_INST 60
 #define MB_GROUP_HEAD 13.0
+
+#ifdef __cplusplus
+#define MB_GROUPS_C extern "C"
+#else
+#define MB_GROUPS_C
+#endif
 
 typedef struct {
   // 0: none here; -1: one let go here (looked past)
@@ -39,8 +50,6 @@ static mb_group *mb_groups;
 static size_t mb_groups_cap;
 // (those here and those let go, what a look goes past)
 static size_t mb_groups_taken;
-static double *mb_groups_out;
-static size_t mb_groups_out_cap;
 
 static size_t mb_group_slot(int32_t id) { return ((uint32_t)id * 2654435761u) & (mb_groups_cap - 1); }
 
@@ -61,7 +70,7 @@ static void mb_groups_grow(void) {
   mb_group *old = mb_groups;
   size_t cap = mb_groups_cap;
   mb_groups_cap = cap ? cap * 2 : 256;
-  mb_groups = calloc(mb_groups_cap, sizeof(mb_group));
+  mb_groups = (mb_group *)calloc(mb_groups_cap, sizeof(mb_group));
   mb_groups_taken = 0;
   for (size_t i = 0; i < cap; i++)
     if (old[i].id > 0) mb_group_put(old[i]);
@@ -76,9 +85,9 @@ static void mb_group_put(mb_group g) {
   mb_groups[i] = g;
 }
 
-int32_t mb_host_groups_here(void) { return 1; }
+MB_GROUPS_C int32_t mb_host_groups_here(void) { return 1; }
 
-void mb_host_group_drop(int32_t id) {
+MB_GROUPS_C void mb_host_group_drop(int32_t id) {
   mb_group *g = mb_group_find(id);
   if (!g) return;
   free(g->inst);
@@ -89,11 +98,11 @@ void mb_host_group_drop(int32_t id) {
   g->id = -1;
 }
 
-void mb_host_group_set(int32_t id, double *inst, double *moves, int32_t n) {
+MB_GROUPS_C void mb_host_group_set(int32_t id, double *inst, double *moves, int32_t n) {
   mb_host_group_drop(id);
   if (id <= 0 || n < 0) return;
-  mb_group g = {id, n, malloc(sizeof(double) * MB_GROUP_INST * (size_t)(n > 0 ? n : 1)),
-                malloc(sizeof(int32_t) * (size_t)(n > 0 ? n : 1)), 0};
+  mb_group g = {id, n, (double *)malloc(sizeof(double) * MB_GROUP_INST * (size_t)(n > 0 ? n : 1)),
+                (int32_t *)malloc(sizeof(int32_t) * (size_t)(n > 0 ? n : 1)), 0};
   memcpy(g.inst, inst, sizeof(double) * MB_GROUP_INST * (size_t)n);
   for (int32_t i = 0; i < n; i++) {
     g.moves[i] = (int32_t)moves[i];
@@ -146,11 +155,21 @@ static void mb_group_inst_moved(double *e, int32_t m, double dx, double dy, doub
   }
 }
 
-// Header `h`'s group drawn out into `d`, `room` instances at most (the header's own place and the room after it):
-// each of its instances moved and cut as the header says. A group that holds headers (a list's, its rows kept:
+// Instance `e` of a group (doubles, as kept) into `o` as floats, moved and cut as mb_group_inst_moved says, in doubles
+// first.
+static void mb_group_inst_out(float *o, const double *e, int32_t m, double dx, double dy, double seg_by, int cut,
+                              double h0, double h1, double h2, double h3) {
+  double t[MB_GROUP_INST];
+  memcpy(t, e, sizeof t);
+  mb_group_inst_moved(t, m, dx, dy, seg_by, cut, h0, h1, h2, h3);
+  for (int k = 0; k < MB_GROUP_INST; k++) o[k] = (float)t[k];
+}
+
+// Header `h`'s group drawn out into `d` as floats, `room` instances at most (the header's own place and the room after
+// it): each of its instances moved and cut as the header says. A group that holds headers (a list's, its rows kept:
 // mbui/src/ui/view_ride.mbt's ListRiding) is drawn whole, each of those in one place of it drawn out where it comes
 // in turn, moved with it and cut to its clip as well, as many as it says. How many it drew.
-static int32_t mb_group_out(double *d, int32_t room, const double *h) {
+static int32_t mb_group_out(float *d, int32_t room, const double *h) {
   int32_t first = (int32_t)h[13], n = (int32_t)h[14];
   double dx = h[0], dy = h[1], seg_by = h[15];
   // (its clip, 16-19, where it says one: each of its instances cut to it as well, mbui/src/ui/view_ride.mbt's
@@ -188,51 +207,38 @@ static int32_t mb_group_out(double *d, int32_t room, const double *h) {
         w += mb_group_out(d + (size_t)w * MB_GROUP_INST, n - w, hv);
         continue;
       }
-      double *o = d + (size_t)w * MB_GROUP_INST;
-      memcpy(o, e, sizeof(double) * MB_GROUP_INST);
-      mb_group_inst_moved(o, g->moves[i], dx, dy, seg_by, cut, h0, h1, h2, h3);
+      mb_group_inst_out(d + (size_t)w * MB_GROUP_INST, e, g->moves[i], dx, dy, seg_by, cut, h0, h1, h2, h3);
       w++;
     }
     // (what it said it drew past what it holds: nothing there)
-    if (w < n) memset(d + (size_t)w * MB_GROUP_INST, 0, sizeof(double) * MB_GROUP_INST * (size_t)(n - w));
+    if (w < n) memset(d + (size_t)w * MB_GROUP_INST, 0, sizeof(float) * MB_GROUP_INST * (size_t)(n - w));
     return n;
   }
   if (!g || first < 0 || first + n > g->n) {
     // (one not kept, never so: nothing drawn there)
-    memset(d, 0, sizeof(double) * MB_GROUP_INST * (size_t)n);
+    memset(d, 0, sizeof(float) * MB_GROUP_INST * (size_t)n);
     return n;
   }
-  memcpy(d, g->inst + (size_t)first * MB_GROUP_INST, sizeof(double) * MB_GROUP_INST * (size_t)n);
-  double *e = d;
-  for (int32_t i = 0; i < n; i++, e += MB_GROUP_INST)
-    mb_group_inst_moved(e, g->moves[first + i], dx, dy, seg_by, cut, h0, h1, h2, h3);
+  for (int32_t i = 0; i < n; i++)
+    mb_group_inst_out(d + (size_t)i * MB_GROUP_INST, g->inst + (size_t)(first + i) * MB_GROUP_INST, g->moves[first + i],
+                      dx, dy, seg_by, cut, h0, h1, h2, h3);
   return n;
 }
 
-// The frame `buf` (`count` instances) with each header drawn out, its group's instances in its place; `buf` itself
-// where it has none.
-static const double *mb_groups_draw_out(const double *buf, int32_t count) {
+// The frame `buf` (`count` instances) into `f` as floats, the renderer's own (count * MB_GROUP_INST of them), each
+// header drawn out, its group's instances in its place: one pass over the frame, whatever it holds.
+static void mb_groups_floats(float *f, const double *buf, int32_t count) {
   int32_t k = 0;
-  while (k < count && buf[(size_t)k * MB_GROUP_INST + 5] != MB_GROUP_HEAD) k++;
-  if (k >= count) return buf;
-  size_t len = (size_t)count * MB_GROUP_INST;
-  if (mb_groups_out_cap < len) {
-    mb_groups_out_cap = len * 2;
-    mb_groups_out = realloc(mb_groups_out, sizeof(double) * mb_groups_out_cap);
-  }
-  double *s = mb_groups_out;
-  // (what comes before the first header as it is)
-  memcpy(s, buf, sizeof(double) * (size_t)k * MB_GROUP_INST);
   while (k < count) {
     const double *h = buf + (size_t)k * MB_GROUP_INST;
     if (h[5] != MB_GROUP_HEAD) {
-      memcpy(s + (size_t)k * MB_GROUP_INST, h, sizeof(double) * MB_GROUP_INST);
+      float *o = f + (size_t)k * MB_GROUP_INST;
+      for (int j = 0; j < MB_GROUP_INST; j++) o[j] = (float)h[j];
       k++;
       continue;
     }
-    k += mb_group_out(s + (size_t)k * MB_GROUP_INST, count - k, h);
+    k += mb_group_out(f + (size_t)k * MB_GROUP_INST, count - k, h);
   }
-  return s;
 }
 
 #endif

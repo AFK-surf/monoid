@@ -37,7 +37,7 @@ pub impl Show for BackStep with output(self, logger) {
 pub fn View::takes_back(self : View, f : () -> Unit) -> View {
   guard self.live() is Some(n) else { return self }
   if n.on_back is None && n.on_back_step is None {
-    self.tree.backs = self.tree.backs + 1
+    self.tree.backs.push(self.at)
   }
   n.on_back = Some(f)
   n.on_back_step = None
@@ -65,7 +65,7 @@ pub fn View::held_back_goes_on(self : View) -> View {
 pub fn View::follows_back(self : View, f : (BackStep) -> Unit) -> View {
   guard self.live() is Some(n) else { return self }
   if n.on_back is None && n.on_back_step is None {
-    self.tree.backs = self.tree.backs + 1
+    self.tree.backs.push(self.at)
   }
   n.on_back_step = Some(f)
   n.on_back = None
@@ -76,20 +76,59 @@ pub fn View::follows_back(self : View, f : (BackStep) -> Unit) -> View {
 
 ///|
 /// What takes back now of the tree's: the node drawn last that takes back (View::takes_back, View::follows_back) and may
-/// take input; none where no node does.
+/// take input; none where no node does. Asked of those that take back alone (Tree's `backs`, a few), not of every node
+/// of the tree walked for them each frame: of two that may take it, the one drawn after the other by where each is
+/// among what holds it from the root (as the walk from the root, later kids first, found it first).
 pub fn Tree::back_taker(self : Tree) -> NodeId? {
-  if self.backs == 0 || self.nodes.length() == 0 || !self.nodes[0].live {
+  if self.backs.is_empty() || self.nodes.length() == 0 || !self.nodes[0].live {
     return None
   }
-  let found : Array[Int] = []
-  self.topmost_from(0, fn(n) { n.on_back is Some(_) || n.on_back_step is Some(_) }, found)
-  for i in found {
-    let n = self.nodes[i]
-    if n.live && !self.pressless_at(i) {
-      return Some({ at: i, gen: n.gen })
+  let mut top = -1
+  let mut top_path : Array[Int] = []
+  for at in self.backs {
+    let n = self.nodes[at]
+    if !n.live || (n.on_back is None && n.on_back_step is None) || self.pressless_at(at) || !self.held_from_root(at) {
+      continue
+    }
+    if top < 0 {
+      top = at
+      continue
+    }
+    if top_path.is_empty() {
+      guard self.kids_path(top) is Some(tp) else {
+        top = at
+        continue
+      }
+      top_path = tp
+    }
+    guard self.kids_path(at) is Some(path) else { continue }
+    if drawn_after(path, top_path) {
+      top = at
+      top_path = path
     }
   }
-  None
+  if top < 0 {
+    None
+  } else {
+    Some({ at: top, gen: self.nodes[top].gen })
+  }
+}
+
+///|
+/// Where node `at` is from the root: which of each one's kids holds it, the root's first (Tree::layer_path's, by the
+/// root's kids as they are, not its layers); none where it is not held so from the root (put by, View::park, or taken
+/// out of what held it).
+fn Tree::kids_path(self : Tree, at : Int) -> Array[Int]? {
+  let path : Array[Int] = []
+  let mut i = at
+  while i != 0 {
+    let p = self.nodes[i].parent
+    guard p >= 0 && self.nodes[p].kids.search(i) is Some(k) else { return None }
+    path.push(k)
+    i = p
+  }
+  path.rev_in_place()
+  Some(path)
 }
 
 ///|

@@ -1,3 +1,4 @@
+import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 import { latest as latestNote } from "../agents/migrations.ts";
 // All durable station state, in one SQLite file (the Rust station's store.rs ported: the same file, schema, SQL and rules, so
 // the Rust station and this one open each other's data). One read-write connection, used synchronously; every method is
@@ -20,29 +21,28 @@ import { type Lang, stationLang, tr } from "../ops/i18n.ts";
 import { readArchive, threadFile } from "./archive.ts";
 import {
   type Attachment, type AutoTitle, type ChatShare, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
-  type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
+  type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type HandedChat, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
-  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment,
+  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
-  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
+  LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageQuarters, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
 import { hasLegacyDecisionTime, installDecisionTimeIndex } from "./legacy-decision-time.ts";
 import { hasDecisionSessionRepair, hasLegacyDecisionSession, hasSharedDecisionSession, installDecisionSessionIndex,
   DecisionSessionsUnavailable, LEGACY_LAST_DECISION_SHARED, LEGACY_LAST_DECISION_SEPARATE, LEGACY_LAST_DECISION_REPAIR } from "./legacy-decision-session.ts";
-import { retiredUsage } from "./usage-retire.ts";
 import { findRuntimeSource, type RuntimeSource } from "./runtime-source.ts";
 import * as usage from "./usage.ts";
 import { timed } from "./timed.ts";
-import { installUsageMinutes } from "./usage-minutes.ts";
-import { installIncrementalUsageTotals, installUsageDetail, usageTotalsComplete } from "./usage-detail.ts";
+import * as handover from "./handover.ts";
+import { installIncrementalUsageTotals, usageTotalsComplete } from "./usage-totals-source.ts";
+import { HOUR_MS, hourWindows, installProfileHours, PACE_HOURS, QUOTA_HOURS_READ, SPEND_HOURS_READ, type HourWindow, type SpendHour } from "./profile-hours.ts";
 import { installUsageSpan } from "./usage-span.ts";
 import { installUsageChatStats } from "./usage-chat-stats.ts";
-import { retireDuplicateUsage } from "./usage-unified.ts";
-import { installEmptyUsageHistory, moveUsageHistory } from "./usage-history.ts";
+import { installUsage15m, moveUsage15m } from "./usage-15m.ts";
 import { compactRecentlyCompacted, hasCompactUsage, savedCompactContext } from "./usage-compact.ts";
 import { DELETE_EXPIRED_REMOTE_RUNS, installRemoteRuns } from "./remote-runs.ts";
 import { HAS_ACTIVE_WATCH, HAS_SESSION_ACTIVE_WATCH, HAS_ACTIVE_WATCH_BEFORE_UPGRADE, HAS_SESSION_ACTIVE_WATCH_BEFORE_UPGRADE, installActiveWatches } from "./watch-jobs.ts";
@@ -65,7 +65,8 @@ import { checkWidgetSources, installWidgetSources, widgetSourceBeforeAddNeedsRep
 import { indexedCcThreads, installCcIndex } from "./cc-thread-index.ts";
 import { indexedSessionChat, installSessionChatIndex, SESSION_CHAT_SMALL, SESSION_CHAT_VERSION, SessionChatUnavailable } from "./session-chat-index.ts";
 import { installLatestThreadIndex, LATEST_THREAD_ATTEMPT, LATEST_THREADS_INDEXED, LATEST_THREAD_VERSION } from "./latest-thread-index.ts";
-import { CARD_POST_BEFORE, CARD_POST_LATEST, cardPostsReady, installCardPosts } from "./card-post-index.ts";
+import { cardPostsReady, installCardPosts } from "./card-post-index.ts";
+import { ANSWER_AFTER, ANSWER_AT, ANSWER_BETWEEN, ASKED_LATEST, CONVERSATION_CARD_BEFORE, CONVERSATION_CARD_LATEST, SYSTEM_CARD_AT, SYSTEM_CARD_KEPT, SYSTEM_CARD_WAITING, systemCardSql } from "./card-kinds.ts";
 import { installClosedCardsIndex } from "./legacy-closed-cards.ts";
 import { installSaidState, SAID_BATCH_SIZE, SAID_LATEST, SAID_SCAN, SAID_STATE, saidBoundary } from "./said-state.ts";
 import { archiveLastRead, installArchiveLast } from "./archive-last.ts";
@@ -112,9 +113,15 @@ export const MEMBER_JOIN_IF_NEEDED = `INSERT INTO thread_sessions (thread, sessi
   SELECT ?1, ?2, ?3, ?4 WHERE NOT EXISTS
     (SELECT 1 FROM thread_sessions WHERE thread = ?1 AND session = ?2 AND left_at IS NULL)
   ON CONFLICT (thread, session) DO UPDATE SET left_at = NULL WHERE thread_sessions.left_at IS NOT NULL`;
+// The sessions that lead the one an UPDATE of sessions changes (chat_create for me), as JSON.
+const LEADERS_RETURNING = "RETURNING (SELECT json_group_array(parent) FROM opened_chats WHERE child_station = '' AND child = sessions.key AND parent_station = '' AND led = 1) AS leaders";
+// Each gives, of a delivery made, the conversational card the thread waited on as it was made: RETURNING is worked out
+// before the AFTER triggers run (schema.ts pending_cards_delivered, which settles it), so a delivery tells what it
+// settled with no statement more on the main thread (test/main-thread-waits.test.ts).
+const WAITED_RETURNING = "RETURNING (SELECT n FROM pending_cards WHERE thread = ?1) AS waited";
 export const DELIVERY_INSERT_IF_ABSENT = `INSERT OR IGNORE INTO deliveries (thread, n, session)
   SELECT ?1, ?2, ?3 WHERE NOT EXISTS
-    (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3)`;
+    (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3) ${WAITED_RETURNING}`;
 // A Router write keeps its original targets across a retry. Check they still exist, belong to the chat and can hear it
 // in the same statement as the insertion, so a concurrent deletion cannot recreate a delivery for a removed session.
 export const DELIVERY_INSERT_IF_MEMBER = `INSERT OR IGNORE INTO deliveries (thread, n, session)
@@ -122,7 +129,7 @@ export const DELIVERY_INSERT_IF_MEMBER = `INSERT OR IGNORE INTO deliveries (thre
     (SELECT 1 FROM thread_sessions ts JOIN sessions s ON s.key = ts.session
      WHERE ts.thread = ?1 AND ts.session = ?3 AND ts.left_at IS NULL AND (s.archived_by IS NULL OR s.archived_by <> ?4))
   AND EXISTS (SELECT 1 FROM entries WHERE thread = ?1 AND n = ?2 AND kind = 'message')
-  AND NOT EXISTS (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3)`;
+  AND NOT EXISTS (SELECT 1 FROM deliveries WHERE thread = ?1 AND n = ?2 AND session = ?3) ${WAITED_RETURNING}`;
 // A Router may only deliver while the whole chat still belongs to the requesting workspace.
 export const ROUTER_WORKSPACE_MISMATCH = `SELECT 1 FROM thread_sessions ts LEFT JOIN sessions s ON s.key = ts.session
   WHERE ts.thread = ?1 AND (s.key IS NULL OR COALESCE(s.ws, ?2) IS NOT ?3) LIMIT 1`;
@@ -204,7 +211,7 @@ export const workOfRow = (r: Json | undefined): WorkOf | undefined =>
   r === undefined ? undefined : { pending: r.pending !== 0, lastTurn: r.started_at === null ? null : toTurnSummary(r) };
 
 /// What the auto-archive needs to know of a session idle long enough (sessions/lifecycle.ts), as a reader says it
-/// (read/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
+/// (test/reference/ops-sessions.ts `archiveFacts`): bound to a connect, pinned, its chats and which of them are kept, its work and
 /// whether a job of its is up. Null where the index that says it is not built yet. Its chats are the recent ones
 /// (`recentThreadRows`), as everything the station decides of a session's threads looks at.
 export type ArchiveFacts = { bound: boolean | null; pinned: boolean | null; threads: SessionThread[]; kept: number[] | null; work: WorkOf | null; upJob: boolean | null };
@@ -693,14 +700,14 @@ export class Store {
     this.#archiveDir = archiveDir;
     this.#temp = temp;
     // Chats published as snapshots (gone with public sharing): what a station from before kept of them.
-    if (temp === null) rmSync(join(dirname(archiveDir), "published"), { recursive: true, force: true });
+    if (temp === null) rmSync(join(dirname(archiveDir), "published"), { recursive: true, force: true }); // sync: once, as the store opens, before the station serves
   }
 
   /// Opens the store at `path` (":memory:" for one of its own); archived threads go to `archive`, else `archive/`
   /// beside the database. One of version 12 is brought up to this one (#upgradeFrom12); one of another is refused.
   static open(path: string, archive: string | null = null, clock: Clock.Clock = liveClock): Store {
     const memory = path === ":memory:";
-    if (!memory) mkdirSync(dirname(path), { recursive: true });
+    if (!memory) mkdirSync(dirname(path), { recursive: true }); // sync: once, as the store opens
     // Busy for a moment (another process reading, the WAL recovered after a crash): waited for, from the first statement.
     // On the main thread, what takes long is said (timed.ts).
     const priority = new Int32Array(new SharedArrayBuffer(8));
@@ -752,15 +759,15 @@ export class Store {
       addWorkspaceColumns(db);
       installArchivePolicyIndex(db);
       addOpenerTitle(db);
+      addLedColumn(db);
       addLeftColumn(db);
       addUsageColumns(db);
       installUsageSpan(db);
       addUsageTotals(db);
-      if (!retiredUsage(db)) addUsageCompactions(db);
+      if (!hasCompactUsage(db)) addUsageCompactions(db);
       installUsageCompactions(db);
-      addUsageQuarters(db);
-      installUsageMinutes(db);
-      installUsageDetail(db, clock.currentTimeMillisUnsafe());
+      installUsage15m(db, clock.currentTimeMillisUnsafe());
+      installProfileHours(db);
       installIncrementalUsageTotals(db);
       usage.installUsageCounter(db, clock.currentTimeMillisUnsafe());
       installRemoteRuns(db);
@@ -778,10 +785,10 @@ export class Store {
       installJobNameFirst(db);
       addCardOutcomes(db);
       installUsageChatStats(db);
-      installEmptyUsageHistory(db);
       addSessionTurns(db);
       addSessionWork(db, clock.currentTimeMillisUnsafe());
       addPendingCards(db);
+      addPendingSystemCards(db);
       addTellIndexes(db);
       installSaidState(db);
       installArchiveLast(db);
@@ -798,7 +805,7 @@ export class Store {
     if (archive !== null) store = new Store(db, archive, null, clock, priority.buffer as SharedArrayBuffer);
     else if (memory) {
       const dir = join(tmpdir(), `stillfail-archive-${randomBytes(8).toString("hex")}`);
-      mkdirSync(dir, { recursive: true });
+      mkdirSync(dir, { recursive: true }); // sync: a store in memory (the tests'), as it opens
       store = new Store(db, dir, dir, clock, priority.buffer as SharedArrayBuffer);
     } else store = new Store(db, join(dirname(path), "archive"), null, clock, priority.buffer as SharedArrayBuffer);
     try {
@@ -821,7 +828,7 @@ export class Store {
   /// Closes the database (and removes an in-memory store's archive): the Rust's drop.
   close(): void {
     this.db.close();
-    if (this.#temp !== null) rmSync(this.#temp, { recursive: true, force: true });
+    if (this.#temp !== null) rmSync(this.#temp, { recursive: true, force: true }); // sync: a test's store in memory only
   }
 
   /// Hears what changes from now on; the function returned stops it.
@@ -848,6 +855,12 @@ export class Store {
   /// Where archived threads and transcript copies go (`threads/`, `transcripts/`).
   archiveDir(): string {
     return this.#archiveDir;
+  }
+
+  /// What another writer of the database wrote, told those who follow the store as its own writes are (mesh/served.ts:
+  /// the marks the MoonBit program writes for a device).
+  told(changes: Changes): void {
+    this.#send(changes);
   }
 
   #send(changes: Changes): void {
@@ -1111,7 +1124,7 @@ export class Store {
       else this.#run("UPDATE sessions SET ws = ? WHERE ws = ?", to, from);
       this.#wsOf.clear();
       // The calls of the sessions gone before them were `from`'s as well: the whole workspace's go.
-      moveUsageHistory(this.db, from ?? "", to ?? "");
+      moveUsage15m(this.db, from ?? "", to ?? "");
       for (const key of keys) changes.push({ type: "session", key });
       if (keys.length > 0 && from !== to) this.#sessionWorkspaceChanged();
     });
@@ -1122,12 +1135,12 @@ export class Store {
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
     this.#with((changes) => {
       this.#run(
-        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO sessions (key, connect, scope, title, created_by, runtime, profile, profile_pinned, profiles, model, effort, workspace, cwd, runtime_session_id, token, created_at, last_active_at, told_notes, fast, ws, context, speed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         s.key, s.connect, s.scope ?? "thread", s.title ?? null, s.createdBy ?? null, s.runtime, s.profile, flag(pinned), list !== null ? JSON.stringify(list) : null,
         s.model ?? null, s.effort ?? null, s.workspace, s.cwd ?? null, s.runtimeSessionId ?? null, s.token, s.createdAt, s.lastActiveAt,
         // A new session begins with today's instructions: no note is news to it.
-        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null,
+        latestNote(), optFlag(s.fast), s.ws ?? null, s.context ?? null, s.speed ?? null,
       );
       changes.push({ type: "session", key: s.key });
       this.#sessionWorkspaceChanged();
@@ -1148,7 +1161,7 @@ export class Store {
     // transcript recovers the original. Without the index no older station could have made such a change.
     const first = hasRuntimeOrderIndex(this.db)
       ? "(SELECT runtime FROM runtime_sessions INDEXED BY runtime_sessions_ordered WHERE session_key = ?9 ORDER BY at, rowid LIMIT 1), " : "";
-    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
+    this.#updateSession(key, `UPDATE sessions SET original_runtime = COALESCE(original_runtime, ${first}runtime), runtime = ?1, profile = ?2, profile_pinned = ?3, profiles = ?4, model = ?5, effort = ?6, fast = ?7, speed = NULL, context = ?8 WHERE key = ?9`, runtime, profile, flag(pinned), list !== null ? JSON.stringify(list) : null, model, effort, optFlag(fast), context, key);
   }
 
   /// A session's model and effort from its next start on (null: the runtime's default).
@@ -1157,7 +1170,7 @@ export class Store {
   }
 
   setSessionFast(key: string, fast: boolean | null): void {
-    this.#updateSession(key, "UPDATE sessions SET fast = ?1 WHERE key = ?2", optFlag(fast), key);
+    this.#updateSession(key, "UPDATE sessions SET fast = ?1, speed = NULL WHERE key = ?2", optFlag(fast), key);
   }
 
   /// The most context it runs with from its next start on (null: the model's whole window).
@@ -1174,6 +1187,15 @@ export class Store {
   /// Whether it goes on afresh once its prompt cache is over (null: as the station is set).
   setSessionAfresh(key: string, afresh: boolean | null): void {
     this.#updateSession(key, "UPDATE sessions SET afresh = ?1 WHERE key = ?2", optFlag(afresh), key);
+  }
+
+  setSessionSpeed(key: string, speed: ModelSpeed | null): void {
+    this.#updateSession(key, "UPDATE sessions SET speed = ?1, fast = CASE WHEN ?1 IS NULL THEN NULL WHEN ?1 = 'standard' THEN 0 ELSE 1 END WHERE key = ?2", speed, key);
+  }
+
+  codexSessionSpeed(thread: string): ModelSpeed | null {
+    const r = this.#one("SELECT speed FROM sessions WHERE runtime = 'codex' AND runtime_session_id = ?", thread);
+    return modelSpeed(r?.speed);
   }
 
   codexSessionFast(thread: string): boolean | null {
@@ -1279,6 +1301,24 @@ export class Store {
     );
   }
 
+  /// Session `key`'s accounts said anew by `map` (each by the id it had, to the id it has: a retired station's, as they
+  /// came here after its chats, replica/retire.ts): its own, the ones it is kept to, and its runtime sessions'. Whether
+  /// its own changed.
+  followProfiles(key: string, map: Map<string, string>): boolean {
+    const row = this.getSession(key);
+    if (!row) return false;
+    for (const r of this.#all("SELECT id, profile FROM runtime_sessions WHERE session_key = ?", key)) {
+      const to = typeof r.profile === "string" ? map.get(r.profile) : undefined;
+      if (to !== undefined) this.#run("UPDATE runtime_sessions SET profile = ? WHERE session_key = ? AND id = ?", to, key, r.id);
+    }
+    const to = map.get(row.profile);
+    const kept = row.profiles ?? null;
+    const list = kept === null ? null : kept.map((p) => map.get(p) ?? p);
+    if (to === undefined && (kept === null || list!.every((p, i) => p === kept[i]))) return false;
+    this.setSessionProfile(key, to ?? row.profile, row.profilePinned, list);
+    return to !== undefined;
+  }
+
   /// The profile a runtime session of the session last ran on, if known.
   ranOn(key: string, id: string): string | null {
     return this.#one("SELECT profile FROM runtime_sessions WHERE session_key = ? AND id = ?", key, id)?.profile ?? null;
@@ -1378,12 +1418,12 @@ export class Store {
   // ── chats agents opened (opened_chats; sessions/opened.ts) ──
 
   /// Records a chat opened for a session: by its station and key, and its parent's ('' for this station).
-  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle"> & { openerTitle?: string | null }): void {
+  insertOpened(o: Omit<Opened, "state" | "createdAt" | "openerTitle" | "led"> & { openerTitle?: string | null; led: boolean | null }): void {
     this.#with((changes) => {
       const at = this.now();
       this.#run(
-        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, at,
+        `INSERT INTO opened_chats (child_station, child, parent_station, parent, key, title, link, opener_title, led, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        o.childStation, o.child, o.parentStation, o.parent, o.key, o.title, o.link, o.openerTitle ?? null, o.led === null ? null : o.led ? 1 : 0, at,
       );
       // Told of the chat it was opened from, here (the parent's station is this one: '').
       if (o.parentStation === "") {
@@ -1429,7 +1469,12 @@ export class Store {
 
   /// How a chat opened from here last ended a turn, as its station told.
   setOpenedState(childStation: string, child: string, state: string): void {
-    this.#run("UPDATE opened_chats SET state = ? WHERE child_station = ? AND child = ?", state, childStation, child);
+    this.#with((changes) => {
+      // (its opener's row says whether a chat it leads is still at work: read/views opened's `active`)
+      for (const r of this.#all("UPDATE opened_chats SET state = ? WHERE child_station = ? AND child = ? RETURNING parent, parent_station", state, childStation, child)) {
+        if (r.parent_station === "") changes.push({ type: "session", key: r.parent as string });
+      }
+    });
   }
 
   /// The runtime sessions the session has run in, the first first, ending with the one it runs in now.
@@ -1512,6 +1557,11 @@ export class Store {
       this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
       changes.push({ type: "thread", id: thread, entries: [] });
     });
+  }
+
+  /// A chat named by hand by another program (the MoonBit program serving devices, mesh/served.ts): as `setThreadTitle`.
+  retitled(thread: number): void {
+    this.#titleRevisions.set(thread, this.titleRevision(thread) + 1);
   }
 
   /// Changes even when a person writes the same title again; a pending generation must respect that choice.
@@ -1684,6 +1734,287 @@ export class Store {
       for (const id of removed) changes.push({ type: "threadRemoved", id, ws });
       for (const id of kept) changes.push({ type: "thread", id, entries: [] });
     });
+  }
+
+  // ── chats handed over one at a time (replica/handover.ts, store/handover.ts) ──
+
+  /// The threads sessions `keys` take part in after `after`, at most `limit`: what a chat handed over sends.
+  chatThreads(keys: readonly string[], after: number, limit = handover.PAGE): number[] {
+    return handover.chatThreads(this.db, keys, after, limit);
+  }
+
+  /// A page of a chat's rows of `table` (store/handover.ts `chatPage`).
+  chatPage(table: handover.ChatTable, of: number | string, after: handover.After, limit = handover.PAGE, keys: readonly string[] = []): Json[] {
+    return handover.chatPage(this.db, table, of, after, limit, keys);
+  }
+
+  /// A page of another station's chat's rows put in (store/handover.ts `importRows`), one transaction: its sessions say
+  /// `ctx.ws` (not shown) until `showChat`. `ctx` says what was put in.
+  /// `id`: the hand-over's, whose ctx is kept with the rows (`handover_in`, `importCtx`).
+  importRows(ctx: handover.ImportCtx, table: handover.ChatTable, rows: Json[], id?: string): void {
+    this.#with((changes) => {
+      const touched: handover.Touched = { sessions: new Set(), threads: new Set() };
+      this.#tx(() => {
+        handover.importRows(this.db, ctx, table, rows, touched);
+        if (id !== undefined) this.#run("INSERT INTO handover_in (id, ctx) VALUES (?1, ?2) ON CONFLICT (id) DO UPDATE SET ctx = ?2", id, JSON.stringify(ctx));
+      });
+      for (const key of touched.sessions) this.#wsOf.delete(key);
+      for (const key of touched.sessions) changes.push({ type: "session", key });
+      for (const id of touched.threads) changes.push({ type: "thread", id, entries: [] });
+      for (const c of touched.marks ?? []) {
+        // (a read put in: its number as it is here)
+        if (c.type === "read" && c.n === null) c.n = this.readPosition(c.viewer, c.thread);
+        changes.push(c);
+      }
+      if (touched.sessions.size > 0) this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// What a hand-over that failed put in (`ctx`), taken out: its sessions put in anew deleted, those there before as
+  /// they were, the threads it put in anew gone.
+  /// What hand-over `id` put in here so far, as kept with its rows (null: nothing, or it ended).
+  importCtx(id: string): handover.ImportCtx | null {
+    const r = this.#one("SELECT ctx FROM handover_in WHERE id = ?", id);
+    return r === undefined ? null : (JSON.parse(r.ctx as string) as handover.ImportCtx);
+  }
+
+  /// Hand-over `id` ended (shown, or dropped): what it put in is kept no more.
+  forgetImport(id: string): void {
+    this.#run("DELETE FROM handover_in WHERE id = ?", id);
+  }
+
+  dropImport(ctx: handover.ImportCtx): void {
+    const fresh = this.#with((changes) => {
+      const fresh = this.#tx(() => handover.dropImport(this.db, ctx));
+      for (const s of ctx.made.sessions) {
+        this.#wsOf.delete(s.key);
+        changes.push({ type: "session", key: s.key });
+      }
+      return fresh;
+    });
+    for (const key of fresh) this.deleteSession(key);
+    this.#with((changes) => {
+      for (const id of this.#tx(() => handover.dropEmptyThreads(this.db, ctx))) changes.push({ type: "threadRemoved", id });
+    });
+    this.#sessionWorkspaceChanged();
+  }
+
+  /// Sessions `keys` put in from another station shown: of workspace `ws` (null: the home one) from now on; one handed
+  /// from here before and back now is no longer said to be there (`handed_over`).
+  showChat(keys: readonly string[], ws: string | null): void {
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          this.#run("UPDATE sessions SET ws = ? WHERE key = ?", ws, key);
+          if (this.#run("DELETE FROM handed_over WHERE session = ?", key) > 0) changes.push({ type: "moved", key, station: null, ws, thread: null, there: null });
+        }
+      });
+      for (const key of keys) {
+        this.#wsOf.delete(key);
+        this.#handed.delete(key);
+        changes.push({ type: "session", key });
+        for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
+      }
+      this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// Sessions `keys` said gone to `station` (`goneTo`) whose hand-over did not go after all, nor are they there: no longer
+  /// said to be there, in sight here as they were (replica/handover.ts `#mend`). One out of sight here, or said to be at
+  /// another station, is left as it is.
+  notGone(keys: readonly string[], station: string): string[] {
+    const back: string[] = [];
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          if (row === undefined || (row.ws as string | null)?.startsWith(handedWs("")) === true) continue;
+          if (this.#run("DELETE FROM handed_over WHERE session = ? AND station = ?", key, station) === 0) continue;
+          back.push(key);
+          changes.push({ type: "moved", key, station: null, ws: (row.ws as string | null) ?? null, thread: null, there: null });
+        }
+      });
+      for (const key of back) {
+        this.#handed.delete(key);
+        this.#wsOf.delete(key);
+        changes.push({ type: "session", key });
+      }
+      if (back.length > 0) this.#sessionWorkspaceChanged();
+    });
+    return back;
+  }
+
+  /// Sessions `keys` handed to `station`: where each went kept with its chat's thread here and there, then out of sight
+  /// here (`goneTo`, then `shownThere`, at once).
+  handOff(keys: readonly string[], station: string, home: string | null, threads: Record<string, { thread: number | null; there: number | null }>): void {
+    this.goneTo(keys, station, threads);
+    this.shownThere(keys, home);
+    this.deliveredThere(keys);
+  }
+
+  /// Sessions `keys` went to `station` (the hand-over's `gone`): where each went kept, with its chat's thread here and
+  /// there, so what its platforms say goes there (hub `movedTo`); still in sight here, as it went, until that station
+  /// shows it (`shownThere`): a device is pointed there only once it is there to be read.
+  goneTo(keys: readonly string[], station: string, threads: Record<string, { thread: number | null; there: number | null }>): void {
+    this.#with(() => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          if (row === undefined) continue;
+          const ws = (row.ws as string | null) ?? null;
+          if (ws?.startsWith(handedWs("")) === true) continue;
+          const t = threads[key] ?? { thread: null, there: null };
+          this.#run("INSERT INTO handed_over (session, station, ws, thread, there, at) VALUES (?1, ?2, ?3, ?4, ?5, ?6) ON CONFLICT (session) DO UPDATE SET station = ?2, ws = ?3, thread = ?4, there = ?5, at = ?6", key, station, ws, t.thread, t.there, this.now());
+        }
+      });
+      for (const key of keys) this.#handed.delete(key);
+    });
+  }
+
+  /// Sessions `keys`, gone (`goneTo`), shown where they went: out of sight here (`handedWs`: `home` names the home
+  /// one's), devices told where (`moved`), in one step.
+  shownThere(keys: readonly string[], home: string | null): void {
+    this.#with((changes) => {
+      this.#tx(() => {
+        for (const key of keys) {
+          const row = this.#one("SELECT ws FROM sessions WHERE key = ?", key);
+          const h = this.#one("SELECT * FROM handed_over WHERE session = ?", key);
+          if (row === undefined || h === undefined) continue;
+          const ws = (row.ws as string | null) ?? null;
+          if (ws?.startsWith(handedWs("")) === true) continue;
+          // Gone from here for anywhere: no longer the station it came here from that its row says (`from`).
+          this.#run("UPDATE sessions SET ws = ?, came_from = NULL WHERE key = ?", handedWs(ws ?? home ?? ""), key);
+          changes.push({ type: "moved", key, station: h.station as string, ws, thread: (h.thread as number | null) ?? null, there: (h.there as number | null) ?? null });
+        }
+      });
+      for (const key of keys) {
+        this.#wsOf.delete(key);
+        this.#handed.delete(key);
+        changes.push({ type: "session", key });
+      }
+      this.#sessionWorkspaceChanged();
+    });
+  }
+
+  /// What sessions `keys` had yet to be handed here went with them, the last of it once they were out of sight here
+  /// (handed there, store/handover.ts `deliveries`): none of it is handed to their agent here again should they come
+  /// back.
+  deliveredThere(keys: readonly string[]): void {
+    this.#tx(() => {
+      for (const key of keys) this.#run("UPDATE deliveries SET delivered_at = ?2 WHERE session = ?1 AND delivered_at IS NULL", key, this.now());
+    });
+  }
+
+  /// Of sessions `keys`, those this station has in sight: a row of its own (`ws` none or a workspace's), not one put
+  /// out of sight (handed away, coming, a retirement's leftover). One statement whatever their number.
+  liveOf(keys: readonly string[]): string[] {
+    if (keys.length === 0) return [];
+    return this.#all(`SELECT key FROM sessions WHERE key IN (SELECT value FROM json_each(?1))
+      AND (ws IS NULL OR (ws NOT LIKE 'handed:%' AND ws NOT LIKE 'coming:%' AND ws NOT LIKE 'retired:%'))`, JSON.stringify(keys)).map((r) => String(r.key));
+  }
+
+  /// Where session `key` was handed (null: it was not, or came back): kept in memory once read.
+  handedTo(key: string): HandedChat | null {
+    if (this.#handed.has(key)) return this.#handed.get(key)!;
+    const r = this.#one("SELECT * FROM handed_over WHERE session = ?", key);
+    const h: HandedChat | null = r === undefined ? null : { session: key, station: r.station, ws: r.ws ?? null, thread: r.thread ?? null, there: r.there ?? null, at: r.at };
+    if (!this.db.isTransaction) this.#handed.set(key, h);
+    return h;
+  }
+  readonly #handed = new Map<string, HandedChat | null>();
+
+  /// The chats handed from here, by session after `after`, at most `limit`.
+  handedChats(after: string, limit: number): HandedChat[] {
+    return this.#all("SELECT * FROM handed_over WHERE session > ? ORDER BY session LIMIT ?", after, limit).map((r) => ({ session: r.session, station: r.station, ws: r.ws ?? null, thread: r.thread ?? null, there: r.there ?? null, at: r.at }));
+  }
+
+  /// What a chat handed here is told of it, once, as its next turn starts (`untoldMovedNote`): said anew where it came
+  /// here before.
+  setMovedNote(session: string, text: string): void {
+    this.#run("INSERT INTO moved_notes (session, text, told_at) VALUES (?1, ?2, NULL) ON CONFLICT (session) DO UPDATE SET text = ?2, told_at = NULL", session, text);
+    this.#movedUntold.add(session);
+  }
+
+  /// The sessions that came through connect `id`, at most `limit` (what a connect's move waits for).
+  sessionsOfConnect(id: string, limit: number, after = ""): string[] {
+    return this.#all("SELECT key FROM sessions WHERE connect = ? AND key > ? ORDER BY key LIMIT ?", id, after, limit).map((r) => r.key as string);
+  }
+
+  /// The sessions of workspace `ws` (null: the home one's, which say none) after `after`, at most `limit`, handed ones
+  /// (`handedWs`) with them.
+  sessionsOfWs(ws: string | null, home: string | null, after: string, limit: number): string[] {
+    const named = ws === null ? home : ws;
+    // (each by the index of a workspace's sessions, sessions_of_ws, then the two merged)
+    const page = "SELECT key FROM sessions WHERE COALESCE(ws, '') = ? AND key > ? ORDER BY key LIMIT ?";
+    const own = this.#all(page, ws ?? "", after, limit);
+    // (the home one's sessions say its id too: those from before workspaces were written say none, a station enrolled
+    // since writes the home's id, as hub `ofWorkspace` takes both; the move drill's A had every chat so, 2026-11-14)
+    const named_ = ws === null && home !== null && home !== "" ? this.#all(page, home, after, limit) : [];
+    const handed = this.#all(page, handedWs(named ?? ""), after, limit);
+    return [...new Set([...own, ...named_, ...handed].map((r) => r.key as string))].sort().slice(0, limit);
+  }
+
+  /// `sessionsOfWs`'s page (the same keys in the same order) as a page of sessions (`SessionPage`), read in one
+  /// statement: each session's row, where it was handed (kept as `handedTo` keeps it) and the accounts its runtime
+  /// sessions ran on.
+  sessionPageOfWs(ws: string | null, home: string | null, after: string, limit: number): SessionPage {
+    const named = ws === null ? home : ws;
+    const branch = "SELECT * FROM (SELECT * FROM sessions WHERE COALESCE(ws, '') = ? AND key > ? ORDER BY key LIMIT ?)";
+    const homeToo = ws === null && home !== null && home !== "";
+    const ran = "(SELECT json_group_array(profile) FROM (SELECT profile, MIN(id) AS first FROM runtime_sessions WHERE session_key = u.key AND profile IS NOT NULL GROUP BY profile ORDER BY first))";
+    const sql = `SELECT u.*, h.station AS h_station, h.ws AS h_ws, h.thread AS h_thread, h.there AS h_there, h.at AS h_at, ${ran} AS h_ran FROM (${[branch, ...(homeToo ? [branch] : []), branch].join(" UNION ALL ")}) u LEFT JOIN handed_over h ON h.session = u.key ORDER BY u.key LIMIT ?`;
+    const args: Arg[] = [ws ?? "", after, limit, ...(homeToo ? [home, after, limit] : []), handedWs(named ?? ""), after, limit, limit];
+    const rows: SessionRow[] = [];
+    const ranOf = new Map<string, string[]>();
+    for (const r of this.#all(sql, ...args)) {
+      const key = r.key as string;
+      if (!this.db.isTransaction) this.#handed.set(key, r.h_station === null || r.h_station === undefined ? null : { session: key, station: r.h_station, ws: r.h_ws ?? null, thread: r.h_thread ?? null, there: r.h_there ?? null, at: r.h_at });
+      ranOf.set(key, JSON.parse((r.h_ran as string | null) ?? "[]") as string[]);
+      rows.push(toSession(r));
+    }
+    return new SessionPage(this, rows.map((r) => r.key), rows, ranOf);
+  }
+
+  /// What a page of sessions is read with at once (move/: a plan's modules): their rows (given, or read as first asked),
+  /// the sessions of each one's still.fail home chat, the accounts their runtime sessions ran on, each one statement for
+  /// the page and one for the sessions a home chat brings that the page lacks; a session not of the page is read alone.
+  sessionPage(keys: readonly string[], rows?: readonly SessionRow[]): SessionPage {
+    return new SessionPage(this, keys, rows);
+  }
+
+  /// Of sessions `keys`: those that are the home of a still.fail chat, with that chat's sessions (`homeChat`: its first
+  /// such thread), in one statement.
+  stillfailHomes(keys: readonly string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (keys.length === 0) return out;
+    const first = new Map<string, number>();
+    for (const r of this.#all("SELECT t.id, t.home, t.surface, m.session FROM threads t LEFT JOIN thread_sessions m ON m.thread = t.id WHERE t.home IN (SELECT value FROM json_each(?)) ORDER BY t.id, m.joined_at, m.rowid LIMIT ?", JSON.stringify(keys), keys.length * 64)) {
+      const home = r.home as string;
+      if (!first.has(home)) first.set(home, r.id as number);
+      if (first.get(home) !== r.id || r.surface !== STILLFAIL_SURFACE) continue;
+      const list = out.get(home) ?? [];
+      if (typeof r.session === "string") list.push(r.session);
+      out.set(home, list);
+    }
+    return out;
+  }
+
+  /// The accounts sessions `keys`' runtime sessions ran on, each session's in the order its runtime sessions are kept
+  /// (by id), in one statement.
+  ranOnOf(keys: readonly string[]): Map<string, string[]> {
+    const out = new Map<string, string[]>();
+    if (keys.length === 0) return out;
+    for (const r of this.#all("SELECT session_key, profile, MIN(id) AS first FROM runtime_sessions WHERE session_key IN (SELECT value FROM json_each(?)) AND profile IS NOT NULL GROUP BY session_key, profile ORDER BY session_key, first LIMIT ?", JSON.stringify(keys), keys.length * 64)) {
+      const list = out.get(r.session_key as string) ?? [];
+      list.push(r.profile as string);
+      out.set(r.session_key as string, list);
+    }
+    return out;
+  }
+
+  /// No chat of a connect's thread runs on another station any more (one handed back here).
+  dropConnectThreadStation(connect: string, channel: string, threadTs: string): void {
+    this.#run("DELETE FROM connect_threads WHERE connect = ? AND channel = ? AND thread_ts = ?", connect, channel, threadTs);
   }
 
   // ── single-session bindings ──
@@ -2456,14 +2787,30 @@ export class Store {
   /// Hands a message to sessions. Those that did not have it yet.
   deliver(thread: number, n: number, sessions: string[], workspace?: { expected: string | null; fallback: string | null }): string[] {
     return this.#with((changes) => {
+      // The conversational card a person's message settles as it is handed over (schema.ts pending_cards_delivered):
+      // told, so that where a platform shows it, it shows it closed. What waited is the first delivery's (later ones see
+      // it settled already).
+      let waited: number | null | undefined;
+      const insert = (sql: string, ...args: (string | number)[]): boolean => {
+        const r = this.#one(sql, ...args);
+        if (r === undefined) return false;
+        if (waited === undefined) waited = (r.waited as number | null) ?? null;
+        return true;
+      };
+      const settled = () => {
+        if (waited === undefined || waited === null || waited >= n) return;
+        const by = this.#one("SELECT author, ts FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND author_kind = 'person'", thread, n);
+        if (by !== undefined) changes.push({ type: "thread", id: thread, entries: [], answered: { n, author: by.author, ts: by.ts ?? "" } });
+      };
       if (workspace === undefined) {
         const added: string[] = [];
         for (const s of sessions) {
-          if (this.#run(DELIVERY_INSERT_IF_ABSENT, thread, n, s) > 0) {
+          if (insert(DELIVERY_INSERT_IF_ABSENT, thread, n, s)) {
             added.push(s);
             changes.push({ type: "session", key: s });
           }
         }
+        if (added.length > 0) settled();
         return added;
       }
       // The workspace check and all Router deliveries see one write-locked snapshot. A concurrent move must not
@@ -2475,11 +2822,12 @@ export class Store {
         ) throw new Error("no such chat of the workspace");
         const added: string[] = [];
         for (const s of sessions) {
-          if (this.#run(DELIVERY_INSERT_IF_MEMBER, thread, n, s, MANUAL) > 0) added.push(s);
+          if (insert(DELIVERY_INSERT_IF_MEMBER, thread, n, s, MANUAL)) added.push(s);
         }
         return added;
       }, true);
       for (const s of added) changes.push({ type: "session", key: s });
+      if (added.length > 0) settled();
       return added;
     });
   }
@@ -2801,43 +3149,61 @@ export class Store {
   }
 
   #pendingCardNumber(thread: number): number | undefined {
+    // A system card waiting comes first: it is settled only where it is decided (card-kinds.ts).
+    const system = this.#one(SYSTEM_CARD_WAITING, thread)?.n;
+    if (system !== undefined) return system;
     let n: number | undefined;
-    if (cardPostsReady(this.db, thread)) n = this.#one(CARD_POST_LATEST, thread)?.n;
+    if (cardPostsReady(this.db, thread)) n = this.#one(CONVERSATION_CARD_LATEST, thread)?.n;
     else {
       // Until an old thread is prepared, preserve its synchronous event-time answer using the original indexes.
       const latest = (column: string): Json | undefined =>
-        this.#one(`SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND ${column} IS NOT NULL ORDER BY n DESC LIMIT 1`, thread);
+        this.#one(`SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND ${column} IS NOT NULL AND NOT ${systemCardSql("card")} ORDER BY n DESC LIMIT 1`, thread);
       const a = latest("card"), b = latest("options");
       n = a && b ? Math.max(a.n, b.n) : (a ?? b)?.n;
     }
     if (n === undefined) return undefined;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
-    const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined;
-    if (answered || closed) return undefined;
+    if (!this.#cardWaits(thread, n)) return undefined;
     return n;
   }
 
-  /// A prepared thread seeks the previous post directly. An old thread still being prepared uses the original query:
-  /// callers that tell a connect about this event must answer now, from the event's current state.
+  /// Whether the card posted at `n` still waits (not its replacement by a newer one: the callers see to that): a
+  /// system card until it is closed, a conversational one until it is closed or a person's message after it reached
+  /// its agent (card-kinds.ts).
+  #cardWaits(thread: number, n: number): boolean {
+    if (this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, n) !== undefined) return false;
+    if (this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return this.#one(SYSTEM_CARD_KEPT, thread, n) !== undefined;
+    return this.#one(ANSWER_AFTER, thread, n) === undefined;
+  }
+
+  /// The conversational card posted before `n`. A prepared thread seeks it directly. An old thread still being prepared
+  /// uses the original query: callers that tell a connect about this event must answer now, from the event's current
+  /// state.
   #previousCard(thread: number, n: number): number | null {
-    if (cardPostsReady(this.db, thread)) return this.#one(CARD_POST_BEFORE, thread, n).n;
-    return this.#one(CARD_BEFORE_LATEST_PERSON, thread, n).n;
+    if (cardPostsReady(this.db, thread)) return this.#one(CONVERSATION_CARD_BEFORE, thread, n)?.n ?? null;
+    const before = this.#one(CARD_BEFORE_LATEST_PERSON, thread, n).n;
+    return before === null || this.#one(SYSTEM_CARD_AT, thread, before) !== undefined ? null : before;
   }
 
+  /// Whether the card at `n` stopped waiting after it was posted, with nothing closing it: a conversational card by a
+  /// person's message that reached its agent or a newer conversational card; a system card never so.
   #cardEndedAfter(thread: number, n: number): boolean {
-    const sql = cardPostsReady(this.db, thread) ? CLOSED_CARD_AFTER_POSTS : CLOSED_CARD_AFTER;
-    return this.#one(sql, thread, n)!.ended !== 0;
+    if (this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return false;
+    if (this.#one(ANSWER_AFTER, thread, n) !== undefined) return true;
+    if (cardPostsReady(this.db, thread)) {
+      return this.#one(`SELECT 1 FROM card_posts c JOIN entries e ON e.thread = c.thread AND e.n = c.n
+        WHERE c.thread = ?1 AND c.n > ?2 AND NOT ${systemCardSql("e.card")} LIMIT 1`, thread, n) !== undefined;
+    }
+    return this.#one(CLOSED_CARD_AFTER, thread, n)!.ended !== 0;
   }
 
-  /// The card whose wait ended with this person's message. This follows the same entry-order rules as pendingCard and
-  /// answersSince, so a message written before a new card cannot be mistaken for its answer. A card already withdrawn
-  /// or closed is not attributed to a later message.
+  /// The card whose wait ended with this person's message (as it reached its agent: card-kinds.ts). This follows the
+  /// same entry-order rules as pendingCard and answersSince, so a message written before a new card cannot be mistaken
+  /// for its answer. A card already withdrawn or closed is not attributed to a later message, nor is a system card.
   cardEndedByMessage(thread: number, n: number): [MessageRow, Json] | null {
-    const person = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND author_kind = 'person'", thread, n);
-    if (!person) return null;
+    if (this.#one(ANSWER_AT, thread, n) === undefined) return null;
     const asked = this.#previousCard(thread, n);
     if (asked === null) return null;
-    const earlier = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n);
+    const earlier = this.#one(ANSWER_BETWEEN, thread, asked, n);
     const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked);
     if (earlier || closed) return null;
     const row = this.#one("SELECT card, options FROM entries WHERE thread = ? AND n = ?", thread, asked);
@@ -2846,14 +3212,15 @@ export class Store {
     return card === undefined || !message ? null : [toMessage(message), card];
   }
 
-  /// The card a new card (the post at `n`) replaced: the thread's card before it, if it was still pending then (no
-  /// person wrote after it, nor was it closed or withdrawn).
+  /// The card a new card (the post at `n`) replaced: the thread's conversational card before it, if it was still
+  /// pending then (no person's message after it reached its agent, nor was it closed or withdrawn). A system card
+  /// replaces none and is replaced by none.
   cardReplacedBy(thread: number, n: number): [MessageRow, Json] | null {
-    const carded = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND (card IS NOT NULL OR options IS NOT NULL)", thread, n);
-    if (!carded) return null;
+    const carded = this.#one("SELECT card FROM entries WHERE thread = ? AND n = ? AND kind = 'message' AND (card IS NOT NULL OR options IS NOT NULL)", thread, n);
+    if (!carded || this.#one(SYSTEM_CARD_AT, thread, n) !== undefined) return null;
     const asked = this.#previousCard(thread, n);
     if (asked === null) return null;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? AND n < ? LIMIT 1", thread, asked, n);
+    const answered = this.#one(ANSWER_BETWEEN, thread, asked, n);
     const closed = this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND n = ?", thread, asked);
     if (answered || closed) return null;
     return this.#cardPost(thread, asked);
@@ -2883,15 +3250,21 @@ export class Store {
   askingMessage(thread: number, about: number | null, during: [number, number]): [MessageRow, MessageRow[]] | null {
     const n: number | null =
       about ??
-      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?", thread, during[0], during[1]).n;
+      this.#one(this.#legacyAgent ? LEGACY_ASKED_DURING : "SELECT max(n) AS n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at >= ? AND at <= ?", thread, during[0], during[1]).n ??
+      (this.#legacyAgent ? null : this.#one(ASKED_LATEST, thread, during[1])?.n ?? null);
     if (n === null) return null;
-    const answered = this.#one("SELECT 1 FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'person' AND n > ? LIMIT 1", thread, n) !== undefined;
+    const answered = this.#one(ANSWER_AFTER, thread, n) !== undefined;
     // A post with a card is pendingCard's: one no longer pending was answered, closed or withdrawn.
     const carded = this.#one("SELECT 1 FROM entries WHERE thread = ? AND n = ? AND (card IS NOT NULL OR options IS NOT NULL)", thread, n) !== undefined;
     if (answered || carded) return null;
     const messages = this.messagesBefore(thread, n + 1, 3);
     const m = messages.pop();
     return m && m.n === n && m.authorKind === "agent" ? [m, messages] : null;
+  }
+
+  /// Whether a card of the thread was closed since `since` (ms): a person decided it, or its agent withdrew it.
+  cardClosedSince(thread: number, since: number): boolean {
+    return this.#one("SELECT 1 FROM closed_cards WHERE thread = ? AND at >= ? LIMIT 1", thread, since) !== undefined;
   }
 
   /// The cards a viewer dismissed, as "thread:n" (read/store.ts's key for the Rust's (thread, n)).
@@ -3385,6 +3758,32 @@ export class Store {
     });
   }
 
+  /// The session's turns a restart cut off (no runner kept their process): ended as aborted now, each with the state it
+  /// said it ends in where that is not waiting (as `endTurn` ends one, a card closed meanwhile making it final), so none
+  /// is left running for ever (`turns.ended_at` NULL: the session shown at work, never idle). How many it ended.
+  endCutOff(session: string): number {
+    return this.#with((changes) => {
+      const now = this.now();
+      const n = this.#run(
+        `UPDATE turns SET ended_at = ?2, outcome = 'aborted', detail = 'other: cut off by restart',
+           declared = CASE WHEN declared = 'waiting' THEN NULL ELSE declared END,
+           wait_seconds = CASE WHEN declared = 'waiting' THEN NULL ELSE wait_seconds END
+         WHERE session_key = ?1 AND ended_at IS NULL`,
+        session, now,
+      );
+      if (n === 0) return 0;
+      this.#run(
+        `UPDATE turns SET declared = 'final', wait_seconds = NULL
+         WHERE session_key = ?1 AND ended_at = ?2 AND detail = 'other: cut off by restart'
+           AND declared IN ('block', 'need_help', 'need_human', 'need_decision') AND about_n IS NOT NULL
+           AND EXISTS (SELECT 1 FROM closed_cards c WHERE c.thread = turns.about_thread AND c.n = turns.about_n)`,
+        session, now,
+      );
+      changes.push({ type: "session", key: session });
+      return n;
+    });
+  }
+
   /// The session was stopped while it waited: its latest turn, if it ended waiting, is recorded as stopped instead
   /// (aborted, no longer waiting). Whether it was.
   stopWait(session: string, refill = false): boolean {
@@ -3527,13 +3926,43 @@ export class Store {
     );
   }
 
-  /// Keeps a profile's quota (its `checkedAt` says when).
+  /// Keeps a profile's quota (its `checkedAt` says when), and an allowance read as its hour's (profile-hours.ts): the
+  /// last reading of each hour, those PACE_HOURS before it let go in the same write.
   setProfileQuota(profile: string, quota: Json): void {
+    const at = checkedAt(quota);
+    const windows = typeof quota === "object" && quota !== null && quota.state === "ok" && at !== null && at > 0 ? hourWindows(quota) : [];
     this.#run(
       `INSERT INTO profile_status (profile, quota_json, quota_at) VALUES (?, ?, ?)
        ON CONFLICT (profile) DO UPDATE SET quota_json = excluded.quota_json, quota_at = excluded.quota_at`,
-      profile, JSON.stringify(quota), checkedAt(quota),
+      profile, JSON.stringify(quota), at,
     );
+    if (windows.length === 0 || at === null) return;
+    const hour = Math.floor(at / HOUR_MS);
+    this.#run(
+      `INSERT INTO profile_quota_hours (profile, hour, windows_json, at) VALUES (?, ?, ?, ?)
+       ON CONFLICT (profile, hour) DO UPDATE SET windows_json = excluded.windows_json, at = excluded.at`,
+      profile, hour, JSON.stringify(windows), at,
+    );
+    this.#run("DELETE FROM profile_quota_hours WHERE profile = ? AND hour < ?", profile, hour - PACE_HOURS);
+  }
+
+  /// What the profiles' allowances said and their calls spent in each of the PACE_HOURS hours up to `nowHour` (GET
+  /// /profiles/pace): by the hour's index and usage_15m's quarters' (`from * 4`, the hour's first quarter), so a read
+  /// takes those hours' rows alone.
+  profileHours(nowHour: number): { quotas: { profile: string; hour: number; at: number; windows: HourWindow[] }[]; spend: SpendHour[] } {
+    const from = nowHour - PACE_HOURS;
+    const quotas = this.#all(QUOTA_HOURS_READ, from)
+      .map((r) => ({ profile: r.profile as string, hour: r.hour as number, at: r.at as number, windows: (parsed(r.windows_json) ?? []) as HourWindow[] }));
+    const spend = this.#all(SPEND_HOURS_READ, from * 4).map((r): SpendHour => ({
+      hour: r.hour, profile: r.profile, runtime: r.runtime, model: r.model === "" ? null : r.model, fast: r.fast === 1, calls: r.calls,
+      input: r.input, cacheRead: r.cache_read, cacheWrite: r.cache_write, cacheWriteLong: r.cache_write_long, output: r.output,
+    }));
+    return { quotas, spend };
+  }
+
+  /// A profile deleted: its hours go with it.
+  forgetProfileHours(profile: string): void {
+    this.#run("DELETE FROM profile_quota_hours WHERE profile = ?", profile);
   }
 
   // ── runtime process groups ──
@@ -3618,6 +4047,28 @@ export class Store {
   /// latest first: what a session has up.
   jobsUp(): JobRow[] {
     return this.#all(JOBS_UP).map(toJob);
+  }
+
+  /// What sessions `keys` have up (as `jobsUp` gives them, the latest first), each session's by its index: what one
+  /// chat's hold reads, never every job up on the station.
+  jobsUpOf(keys: readonly string[]): JobRow[] {
+    return keys.flatMap((k) => this.upJobIds(k).flatMap((id) => this.getJob(id) ?? [])).sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /// The chats here in sight that run on profile `pid` (not archived, not handed away), at most `most`: whether a login
+  /// another station lends this one is in use here (move/station.ts `move.uses`). By the index of those in sight.
+  liveSessionsOn(pid: string, most: number): string[] {
+    return (this.#all(LIVE_ON_PROFILE, pid, most) as { key: string }[]).map((r) => r.key);
+  }
+
+  /// Of each of sessions `keys` that has had a job, its last job made (by the index) and where that stands (its end, or
+  /// its state): what a room's size is kept against (move/sizes.ts), as a job's build writes in it. One statement
+  /// whatever the keys.
+  jobsMarkOf(keys: readonly string[]): Map<string, string> {
+    const out = new Map<string, string>();
+    if (keys.length === 0) return out;
+    for (const x of this.#all(LAST_JOBS_OF, JSON.stringify(keys)) as { k: string; r: number; e: number | null; state: string }[]) out.set(x.k, `${x.r}/${x.e ?? x.state}`);
+    return out;
   }
 
   /// The service holding a port, including one waiting to restart.
@@ -3793,11 +4244,6 @@ export class Store {
 
   // ── usage (store/usage.rs) ──
 
-  /// Once the previous station has exited, stop maintaining redundant historical summaries.
-  retireDuplicateUsage(): boolean {
-    return retireDuplicateUsage(this.db);
-  }
-
   usageCounter(): { since: number; through: number } {
     return this.#one("SELECT since, through FROM usage_counter WHERE id = 1") as { since: number; through: number };
   }
@@ -3967,17 +4413,19 @@ export class Store {
 
   #setArchived(key: string, archived: boolean, by: string, changes: Changes): void {
     const now = this.now();
+    let leaders: string[] = [];
     this.#tx(() => {
-      if (archived) {
-        this.#run("UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ?", now, by, key);
-      } else {
-        const shown = by === MANUAL ? now : null;
-        this.#run("UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ?", shown, key);
-      }
+      // (with the chats that lead it, if any: its leader's row shows whether a chat it leads is still at work, read/views
+      // opened's `active`; one statement, test/main-thread-waits.test.ts)
+      const row = archived
+        ? this.#one(`UPDATE sessions SET archived_at = ?, archived_by = ? WHERE key = ? ${LEADERS_RETURNING}`, now, by, key)
+        : this.#one(`UPDATE sessions SET archived_at = NULL, archived_by = NULL, shown_at = COALESCE(?, shown_at) WHERE key = ? ${LEADERS_RETURNING}`, by === MANUAL ? now : null, key);
+      leaders = row === undefined ? [] : (JSON.parse(String(row.leaders ?? "[]")) as string[]);
       this.#run("UPDATE threads SET hidden_at = ?, hidden_by = ? WHERE home = ?", archived ? now : null, archived ? by : null, key);
     });
     for (const t of this.sessionThreads(key)) changes.push({ type: "thread", id: t.thread.id, entries: [] });
     changes.push({ type: "session", key });
+    for (const parent of leaders) changes.push({ type: "session", key: parent });
   }
 
   #setThreadHidden(thread: number, hidden: boolean, by: string, changes: Changes): void {
@@ -4066,7 +4514,7 @@ export class Store {
         for (const trigger of outcomes) this.db.exec(trigger.sql);
         this.#run("UPDATE threads SET archived_at = NULL WHERE id = ?", thread);
       });
-      rmSync(file, { force: true });
+      rmSync(file, { force: true }); // sync: once, as a database of version 12 is brought up
     }
     this.db.exec("DROP INDEX IF EXISTS threads_archived; DROP TABLE IF EXISTS items;");
     if (brought > 0) log.info("store", "the threads archived to files are back in the database", { n: brought, lost: lost.join(" ") });
@@ -4086,4 +4534,77 @@ export class Store {
 function checkedAt(value: Json): number | null {
   const at = value !== null && typeof value === "object" && !Array.isArray(value) ? value.checkedAt : undefined;
   return typeof at === "number" && Number.isInteger(at) ? at : null;
+}
+
+/// A page of sessions as `Store.sessionPage` and `Store.sessionPageOfWs` read it.
+export class SessionPage {
+  readonly #store: Store;
+  /// Its sessions, in order.
+  readonly keys: readonly string[];
+  readonly #keys: ReadonlySet<string>;
+  readonly #rows = new Map<string, SessionRow | null>();
+  #rowsRead = false;
+  #homes: Map<string, string[]> | null = null;
+  /// Each session's accounts, of those read (`#ranOf`).
+  #ran = new Map<string, string[]>();
+  #ranOf: Set<string> | null = null;
+
+  constructor(store: Store, keys: readonly string[], rows?: readonly SessionRow[], ran?: Map<string, string[]>) {
+    this.#store = store;
+    this.keys = keys;
+    this.#keys = new Set(keys);
+    if (rows !== undefined) this.#take(keys, rows);
+    if (ran !== undefined) {
+      this.#ran = ran;
+      this.#ranOf = new Set(keys);
+    }
+  }
+
+  #take(keys: Iterable<string>, rows: readonly SessionRow[]): void {
+    for (const k of keys) this.#rows.set(k, null);
+    for (const r of rows) this.#rows.set(r.key, r);
+    this.#rowsRead = true;
+  }
+
+  /// Its sessions' rows, in order (those that are).
+  rows(): SessionRow[] {
+    return this.keys.flatMap((k) => this.session(k) ?? []);
+  }
+
+  session(key: string): SessionRow | null {
+    if (!this.#rowsRead && this.#keys.has(key)) this.#take(this.#keys, this.#store.sessionsOf([...this.#keys]));
+    if (this.#rows.has(key)) return this.#rows.get(key) ?? null;
+    return this.#store.getSession(key);
+  }
+
+  /// The sessions of `key`'s still.fail home chat (null: it is the home of none).
+  homeMembers(key: string): string[] | null {
+    if (!this.#keys.has(key)) return this.#store.stillfailHomes([key]).get(key) ?? null;
+    if (this.#homes === null) {
+      this.#homes = this.#store.stillfailHomes([...this.#keys]);
+      // (those a home chat brings that the page lacks: their rows and accounts read with the page's)
+      const more = [...new Set([...this.#homes.values()].flat())].filter((k) => !this.#keys.has(k) && !this.#rows.has(k));
+      if (more.length > 0) {
+        if (!this.#rowsRead) this.#take(this.#keys, this.#store.sessionsOf([...this.#keys]));
+        const got = this.#store.sessionsOf(more);
+        for (const k of more) this.#rows.set(k, null);
+        for (const r of got) this.#rows.set(r.key, r);
+        if (this.#ranOf !== null) {
+          for (const [k, list] of this.#store.ranOnOf(more)) this.#ran.set(k, list);
+          for (const k of more) this.#ranOf.add(k);
+        }
+      }
+    }
+    return this.#homes.get(key) ?? null;
+  }
+
+  /// The accounts `key`'s runtime sessions ran on, in order.
+  ranOn(key: string): string[] {
+    if (this.#ranOf === null && (this.#keys.has(key) || this.#rows.has(key))) {
+      this.#ranOf = new Set([...this.#keys, ...this.#rows.keys()]);
+      this.#ran = this.#store.ranOnOf([...this.#ranOf]);
+    }
+    if (this.#ranOf !== null && this.#ranOf.has(key)) return this.#ran.get(key) ?? [];
+    return this.#store.ranOnOf([key]).get(key) ?? [];
+  }
 }

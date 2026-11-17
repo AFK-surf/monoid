@@ -70,7 +70,7 @@ export const WATCH_HELD_MS = 90_000;
 
 export type HubOptions = {
   /// Where a file a person drops into a view is put on this machine (the drive's
-  /// `dropFolder`); none: files are not taken.
+  /// `droppedInto`); none: files are not taken.
   drop?: () => string | null;
 };
 
@@ -367,6 +367,7 @@ export class ScreenHub implements Screens {
           id: s.id, kind: s.kind, title: s.title(), width, height, ...this.people(s.id), ...(access ? { access } : {}),
           ...(clipboard.length > 0 ? { clipboard } : {}),
           ...(s.peek ? { peek: true } : {}),
+          ...(s.farview ? { farview: true } : {}),
           ...(s.discard ? { closable: true } : {}),
           ...(s.userTab ? { userTab: true } : {}),
           ...(sleeping ? { sleeping: true } : {}),

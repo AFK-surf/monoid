@@ -9,9 +9,9 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { CcIndexBuilder } from "../src/read/cc-index-builder.ts";
 import { MbProcess, mbReaderBinary } from "../src/read/mb-reader.ts";
-import { CcIndexPreparation, ccSessionReady, installCcIndex } from "../src/store/cc-thread-index.ts";
-import { latestThreadReady, prepareLatestThreadStep } from "../src/store/latest-thread-index.ts";
-import { SessionChatPreparation, sessionChatReady } from "../src/store/session-chat-index.ts";
+import { CcIndexPreparation, ccSessionReady, installCcIndex } from "./reference/backfill/cc-thread-index.ts";
+import { latestThreadReady, prepareLatestThreadStep } from "./reference/backfill/latest-thread-index.ts";
+import { SessionChatPreparation, sessionChatReady } from "./reference/backfill/session-chat-index.ts";
 import { Store } from "../src/store/store.ts";
 
 const binary = mbReaderBinary();

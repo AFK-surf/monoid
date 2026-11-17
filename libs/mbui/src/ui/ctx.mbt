@@ -340,6 +340,8 @@ pub struct Ctx {
   mut wake_waited : Double
   // the last frame left nothing that ends to come (Ctx::at_rest, as it ended)
   mut frame_rest : Bool
+  // the last frame asked for none after it, a wake owed aside (Ctx::asks_no_frame, as it ended)
+  mut frame_unasked : Bool
   /// who asked for the next frame first this frame (Ctx::request_frame's caller), and for the wake it waits for
   /// (Ctx::wake_in's): what Tester::assert_idle says of what is left
   mut frame_by : SourceLoc?
@@ -746,6 +748,7 @@ fn Ctx::new() -> Ctx {
     wake_at: -1.0,
     wake_waited: -1.0,
     frame_rest: false,
+    frame_unasked: false,
     frame_by: None,
     wake_by: None,
     page_in_hand: false,
@@ -3029,8 +3032,21 @@ pub fn Ctx::copy_image(self : Ctx, data : Bytes) -> Unit {
 /// clipboard's history), taken off `clear_ms` later (0: kept) unless something else was copied meanwhile or another
 /// secret since: on the app's clock (a host keeps no time of its own), nothing the app waits on.
 pub fn Ctx::copy_secret(self : Ctx, s : String, clear_ms~ : Double) -> Unit {
-  h_clipboard_secret(s, clear_ms)
   self.copied_felt()
+  secret_put(s, clear_ms)
+}
+
+///|
+/// The same from what a node does as it is pressed (a node's handler, no Ctx: Ctx::copy_secret's), felt.
+pub fn clipboard_secret(s : String, clear_ms~ : Double) -> Unit {
+  haptic(KeyboardTap)
+  secret_put(s, clear_ms)
+}
+
+///|
+/// A secret put on the clipboard and taken off `clear_ms` later (copy_secret's, clipboard_secret's).
+fn secret_put(s : String, clear_ms : Double) -> Unit {
+  h_clipboard_secret(s, clear_ms)
   secret_copies.val += 1
   let copy = secret_copies.val
   if clear_ms > 0.0 {

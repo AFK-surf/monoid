@@ -1,18 +1,24 @@
 // What the agent is told about its situation, appended to the runtime's own system prompt, and how messages are put to
 // it. A change to how agents work gets a note in migrations.ts too, for the sessions begun before it.
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import type { MessageRow, PendingMessage, WidgetModel } from "../store/store.ts";
 import type { BackgroundTask } from "./runtime.ts";
 import { type CardChoice, STILLFAIL_SURFACE } from "../store/rows.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
 
 
+/// What points an agent at moving a station's things, said only where moving is on (features.ts stationMoveOn).
+export const MOVE_LINE = " To move chats, or a whole station, to another station, skill stillfail-move.";
+
 /// `project`: the directory the runtime runs in, for a session begun outside still.fail (in a terminal) and continued here.
 /// `memory`: the workspace's memory as it is now (`readMemory`). `site`: what the deployment adds (`readSiteInstructions`).
-/// `station`: this station's name ("" where it has none).
-export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = ""): string {
+/// `station`: this station's name ("" where it has none). `move`: whether moving to another station is on here (a `beta`
+/// feature of the station's, features.ts): where it is not, its skill is not named.
+export function sessionInstructions(workspace: string, project: string | null, repos_dir: string, memory_path: string, memory: string, site = "", station = "", move = true): string {
   const projectLine = project === null ? "" : `- Project directory: ${project}. This session began outside still.fail (in a terminal on this machine) and goes on here: you run in that directory and keep working on it as before. The session workspace below is for scratch files only.\n`;
-  return instructions(projectLine, workspace, repos_dir, memory_path, station) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
+  const told = instructions(projectLine, workspace, repos_dir, memory_path, station);
+  return (move ? told : told.replace(MOVE_LINE, "")) + (site === "" ? "" : `\n\n${site}`) + (memory === "" ? "" : `\n\n<memory path="${memory_path}">\n${memory}\n</memory>`);
 }
 
 /// The most of the deployment's text an agent is told: a few lines that point at its skills, not a manual.
@@ -30,30 +36,76 @@ export async function readSiteInstructions(env: NodeJS.ProcessEnv = process.env)
 }
 
 /// The workspace's memory as it is now, told after the instructions: given with them, not by the runtime's home (a
-/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening.
+/// profile serves every workspace, sessions/agent-home.ts). Read off the station's thread, at each process's opening,
+/// with what of it has grown past what an agent can use (`overgrown`) said after it.
 export async function readMemory(path: string): Promise<string> {
-  return (await readFile(path, "utf8").catch(() => "")).trim();
+  const memory = (await readFile(path, "utf8").catch(() => "")).trim();
+  const grown = overgrown([["MEMORY.md", memory], ...(await skillsBeside(path))]);
+  return grown === "" ? memory : `${memory}\n\n${grown}`;
 }
 
-const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats and Comma Tasks.
+/// The most a memory file holds before an agent is told to condense it, in bytes (MEMORY.md, a team skill's SKILL.md),
+/// and the longest line of one. Every session of the workspace reads MEMORY.md and a project's skill whole: one that
+/// grew into a log of progress (skills/stillfail/SKILL.md reached 165 KB on 2026-11-15, 49 "status" sections that
+/// contradicted each other) costs each session tens of thousands of tokens and misleads it. A merge keeps both
+/// versions where two stations changed one place (share/memory.ts, merged by station/mb src/memory), so what came
+/// twice is the agents' to tidy too.
+export const MEMORY_MOST = 8 * 1024;
+export const SKILL_MOST = 24 * 1024;
+export const LINE_MOST = 1500;
+
+/// The team skills' SKILL.md beside the memory at `path` (`skills/<name>/SKILL.md`), as [relative path, text].
+async function skillsBeside(path: string): Promise<[string, string][]> {
+  const dir = join(dirname(path), "skills");
+  const names = await readdir(dir, { withFileTypes: true }).catch(() => []);
+  const out: [string, string][] = [];
+  for (const e of names) {
+    if (!e.isDirectory()) continue;
+    const text = await readFile(join(dir, e.name, "SKILL.md"), "utf8").catch(() => null);
+    if (text !== null) out.push([`skills/${e.name}/SKILL.md`, text]);
+  }
+  return out.sort(([a], [b]) => (a < b ? -1 : 1));
+}
+
+/// What of `files` ([relative path, text]) is past MEMORY_MOST, SKILL_MOST or LINE_MOST, as a note to the agent; "" when
+/// nothing is.
+export function overgrown(files: [string, string][]): string {
+  const kb = (n: number) => `${Math.ceil(n / 1024)} KB`;
+  const said: string[] = [];
+  for (const [rel, text] of files) {
+    const bytes = Buffer.byteLength(text, "utf8");
+    const most = rel === "MEMORY.md" ? MEMORY_MOST : SKILL_MOST;
+    const long = text.split("\n").filter((l) => Buffer.byteLength(l, "utf8") > LINE_MOST).length;
+    const why = [bytes > most ? `${kb(bytes)}, past ${kb(most)}` : "", long > 0 ? `${long} line${long === 1 ? "" : "s"} past ${LINE_MOST} bytes` : ""].filter((x) => x !== "");
+    if (why.length > 0) said.push(`- ${rel}: ${why.join("; ")}`);
+  }
+  if (said.length === 0) return "";
+  return `[still.fail: this memory has grown past what an agent can use: condense a file you touch before you add to it]\n${said.join("\n")}\nKeep the lasting rules and facts, one line each; drop progress, status and handover notes (they belong in a chat's own workspace); keep one of what is said twice and the newest of what contradicts.`;
+}
+
+const instructions = (project: string, workspace: string, repos_dir: string, memory_path: string, station: string) => `You work on this machine for people who write to you from still.fail chats, Slack threads, Feishu chats, group (IM) chats and Comma Tasks.
 
 Messages:
-- Each message comes as <message via="web|slack|feishu|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
+- Each message comes as <message via="web|slack|feishu|group|comma" thread="…" from="…" ts="…">: thread is the conversation to answer in. sent_at is the message's time in UTC; recorded_at is when the station recorded it if its identifier does not encode a time. ts is the original message identifier. A delivery says when it was handed to you in UTC. via="station" is a notice (a job ended): act on it and tell whoever asked for the work.
 - One session can hear several threads: answer each in its own. Not every message is for you; other agents are bots: build on their work and mention them when you need something.
 - before="TS" means it was written before your post TS, without seeing it.
 - A chat_post is held back when messages you have not read came in its thread first; read them, then send it unchanged with send=<its id> if it still stands, or post what fits now.
-- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…开的/Opened by <a chat's link> was opened for you: work in it with chat_post; its opener hears how your turns end.
-- Told to stop following a Slack or Feishu thread: say so in a sentence and chat_leave it.
+- A message headed 来自/From <a chat's link> is a letter from another chat's agent: answer it with session_send to that link. A chat headed 由…领导的/Led by <a chat's link> is a part of that chat's work: work in it with chat_post; its leader hears how your turns end and is who you ask (need_human reaches it, not a person); report your conclusions and their evidence apart, and what you would drop, found no gain in, or think needs a person as a proposal for it to decide. One headed …为你开的/Opened for you by <a chat's link> is your person's: work for them as in any chat. One headed 由…开的/Opened by: its opener hears how your turns end.
+- Told to stop following a Slack, Feishu or group thread: say so in a sentence and chat_leave it.
 - Write in the language the chat's people write in. Code, commits and pull requests follow their repository.
 
 Answering:
 - Only chat_post reaches people; your ordinary output reaches nobody. chat_post to=<the message's thread>.
 - A subagent you start says nothing itself: it hands its result back to you, and you post what people need. Never have one post to the chat, end the turn, write to another chat's agent or write to Slack.
-- Give the chat a title (a few words) with your first post once its topic is clear.
-- Post the answer, results and questions; post progress only when people need it before the end (a changed plan, a blocker, long work).
-- Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email from the conversation); when they must type a value, a text card. Do not ask about what is already decided or authorized.
+- Give the chat a title (a few words) with your first post once its topic is clear: what the whole chat is for, never the step you are on.
+- Post the answer, results and questions; when a request or change will take more than a couple of minutes, reply briefly first with the cause and plan rather than staying silent until the end.
+- Ask only when a real choice blocks the work. When people would answer by picking or confirming, attach an options card (card.assignee: the deciding person's email, from their message's from; an email your runtime calls its user's is the account you run on, not a person here); when they must type a value, a text card. Do not ask about what is already decided or authorized.
+- Where people gave a principle, decide by it yourself: do not bring them the steps or small choices; ask only what it does not settle and cannot be undone, or only they can decide. Anything that makes someone wait is a decision: ask it plainly.
+- Told off with nothing new found, do not change your answer or give a new date: work out what they want, then say it again.
+- Asked to do something as another chat did, read that chat from its start first (what was asked there, what it used), and never have people carry words between chats. Another chat's agent asking this chat to take up a large piece of another line of work: ask this chat's people first.
+- Before fixing a bug, look whether someone already opened or merged a fix (pull requests by its issue, its words and its files; the files' recent commits).
 - Never ask people to run a command or paste a secret: use the login tool for logins (skill stillfail-login), the vault for credentials (skill stillfail-vault).
-- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats. To retire a station (move its chats to another), skill stillfail-retire. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.
+- For visible results show them (skills stillfail-show, stillfail-viz). For other chats, agents, Slack or Feishu APIs and archive policy, read skill stillfail-chats. To move chats, or a whole station, to another station, skill stillfail-move. To lead other chats or subagents toward one goal, skill stillfail-leading. When you do not have a skill that your instructions or a tool's description names, read it with skill_read by its name.
 
 End every turn with one state, given as kind on your last chat_post or with chat_state:
 - all_done with done: only when nothing people asked for in the chat is left (no next step of yours, no unmerged branch, no open question): what was finished and the evidence (a commit, a release, the answer given). A step of a longer goal done is not all_done.
@@ -62,24 +114,24 @@ End every turn with one state, given as kind on your last chat_post or with chat
 - Otherwise do not end the turn: a post that says what you do next means you go on doing it now.
 
 Formatting: GitHub Markdown everywhere. Differences:
-| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu |
-|---|---|---|---|
-| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> |
-| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text |
-| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text |
+| | still.fail chat (thread CHAT/… or EMBER/…) | Slack | Feishu | group |
+|---|---|---|---|---|
+| mention | write the name | <@USER_ID> | <at id=OPEN_ID></at> | @name |
+| files (chat_post files=[paths]) | ![](shot.png) places an image, [name](file) a file | uploaded below the text | sent below the text | sent with the text |
+| math | \\(…\\) and \\[…\\] | Unicode plain text | Unicode plain text | Unicode plain text |
 Write file names as \`code\`.
 
 Where you work:
 ${project}- Session workspace: ${workspace}: scratch files, clones and worktrees. Only files sent in the chat outlive it; push what must last.
-- Shared repository cache: ${repos_dir}: canonical clones; work in worktrees, never edit them directly.
-- A repository's AGENTS.md files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
+- Shared repository cache: ${repos_dir}: canonical clones; open a detached worktree in your workspace to read or change one (never edit the cache directly), and batch independent reads and searches in parallel rather than slicing files through the shell.
+- A repository's AGENTS.md (or CLAUDE.md) files, its root's and each directory's down to where you change code, are its rules: read them first (you may be told them as you reach a directory) and keep them true in what you change.
 
 Memory:
 - The memory and skills are the same on every station of this workspace: the stations keep them level, an edit here reaching the others within seconds.${station === "" ? "" : ` You are on station ${station}.`} What is true of one machine alone (its disk, paths, accounts, network) says which station it is of: \`- ${station || "Studio"}：…\`. A line or skill marked [<station>] came from that station before the memory was shared.
 - Global memory ${memory_path} (told below): only what would break things if forgotten, one line each.
 - Project memory goes in skills/<project>/SKILL.md beside it, description starting "项目记忆：". Before working out a project's build or workflow from source, search kinds=["skill"].
 - A file named *.conflict-<station>.* beside a skill's is that station's version made at the same time and not merged: merge what it adds into the skill and delete it.
-- Keep memory short and consistent: when you add a rule, remove any it contradicts. No credentials.`;
+- Keep memory short and consistent: lasting rules and facts only, never progress, status or handover notes (those go in your chat's workspace); when you add a rule, remove any it contradicts or repeats. Where two stations changed one place at once the merge keeps both versions: keep one. No credentials.`;
 
 export const NUDGE = `Your turn ended without a state, so nobody knows where the chat stands. Only a real unresolved need requires need_human. A factual answer alone does not need a follow-up question; do not invent one. If you still need something after answering a clarification, visibly ask for it; need alone is only a status summary. If you ask a person to choose or confirm, post the question with a card. Do not reopen a decision the user already made. Decide whether anything in it is still unfinished, then end the turn with exactly one:
 - all_done: nothing in the chat is left unfinished at all. Post the result with chat_post kind "all_done" (or chat_state "all_done" if you already posted it), with done: why nothing is left, naming the evidence (a commit, a release, a person's confirmation, the answer given).
@@ -95,7 +147,7 @@ export const RESUME_AFTER_RESTART = `The station restarted while you were in the
 export const GO_ON_AFTER_AUTH = `Your last turn stopped on an authentication error. The station reopened the runtime to reload its credentials. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know.`;
 export const GO_ON_AFTER_CODEX_UPDATE = `Your last turn stopped because Codex was too old for the selected model. The station updated Codex and reopened this conversation. Continue the unfinished work from this conversation. First check the transcript, files and any operations already started; do not repeat completed actions. If an action's outcome is uncertain, verify it before retrying. Post only if people need to know.`;
 
-export const GO_ON_AFTER_SPENT = `Your last turn was cut off: the account it ran on hit its usage limit. You now run on another account (or model). Check where you were, then continue the work. Post only if people need to know.`;
+export const GO_ON_AFTER_SPENT = `Your last turn was cut off: the account it ran on hit its usage limit. You now run on another account (or runtime or model). Check where you were, then continue the work. Do not announce the switch itself, but if what remains will take more than a couple of minutes and people have not yet been told the plan or where things stand, post a brief progress note before going on.`;
 
 export const GO_ON_AFTER_OVERLOADED = `Your last turn was cut off: the model was at capacity (the provider's side, not your account), and the station waited a while before trying again. Check where you were, then continue the work. Post only if people need to know.`;
 
@@ -166,6 +218,8 @@ export function parseThreadAddress(value: string): [string, string] | null {
   const [channel, ts] = [v.slice(0, at), v.slice(at + 1)];
   // A Feishu chat's: its chat id and the message or topic it began with.
   if (/^oc_[A-Za-z0-9]+$/.test(channel) && /^om(t)?_[A-Za-z0-9]+$/.test(ts)) return [channel, ts];
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  if (/^[ds]_[0-9a-f]{24}$/.test(channel) && (ts === channel || /^t_[0-9a-f]{16}$/.test(ts))) return [channel, ts];
   const dot = ts.indexOf(".");
   if (dot < 0) return null;
   const [secs, micros] = [ts.slice(0, dot), ts.slice(dot + 1)];
@@ -211,10 +265,20 @@ export function messageForAgent(m: MessageRow): string {
   return parts.filter((p) => p !== "").join("\n\n");
 }
 
-const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : "slack");
+const via = (surface: string) => (surface === STILLFAIL_SURFACE ? "web" : surface.startsWith("feishu:") ? "feishu" : surface.startsWith("comma:") ? "comma" : surface.startsWith("group:") ? "group" : "slack");
 
 /// The still.fail app a message was sent from, as an attribute; nothing for one that did not say.
 const clientAttr = (m: MessageRow) => (m.client !== null && m.client !== undefined ? ` client="${escapeAttr(m.client)}"` : "");
+
+/// Slack and app message IDs are seconds since the epoch; Comma's and a group's are sequence numbers, and Feishu's are opaque.
+/// For the latter two only the time the station recorded the message is known (which can be later than it was sent).
+function timeAttr(m: MessageRow, surface: string): string {
+  const numeric = via(surface) !== "comma" && via(surface) !== "feishu" && via(surface) !== "group" && /^\d{10}(?:\.\d+)?$/.test(m.ts) ? Number(m.ts) * 1000 : NaN;
+  const sent = Number.isFinite(numeric) && numeric <= 8.64e15 ? numeric : null;
+  const recorded = Number.isFinite(m.createdAt) && m.createdAt > 0 && m.createdAt <= 8.64e15 ? m.createdAt : null;
+  const at = sent ?? recorded;
+  return at === null ? "" : ` ${sent === null ? "recorded_at" : "sent_at"}="${new Date(at).toISOString()}"`;
+}
 
 /// Messages handed to a session, each with its source and sender, and a hint where a thread is new to it.
 /// `posts`: the agent's first post in a message's thread made after it (by ts), said as its `before`.
@@ -237,7 +301,7 @@ export function formatInbound(messages: PendingMessage[], newThreads: Set<number
     const from = agent ? (name ?? "another agent") : name !== undefined ? `${name} (${m.author})` : m.author;
     const post = posts.get(p);
     const sentBefore = post !== undefined ? ` before="${escapeAttr(post)}"` : "";
-    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}" from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m)}\n</message>`);
+    lines.push(`<message via="${via(p.surface)}" connect="${escapeAttr(p.connect)}"${you} thread="${address}"${timeAttr(m, p.surface)} from="${escapeAttr(from)}"${agent ? " bot" : ""}${clientAttr(m)} ts="${m.ts}"${sentBefore}>\n${messageForAgent(m)}\n</message>`);
     const change = cards.get(p);
     if (change !== undefined) {
       const whose = change.ended.author === selfKey ? "Your card" : "A card";
@@ -311,7 +375,7 @@ export function formatHistory(messages: MessageRow[], surface: string, address: 
         const chose = found.chose === undefined ? "" : `; ${found.chose.by} chose ${JSON.stringify(found.chose.option)}, which closed it without a message`;
         card = `\n[Answer card: ${found.pending ? "pending" : "no longer pending"}${chose}; ${JSON.stringify(facts)}]`;
       }
-      return `<message via="${via(surface)}" thread="${address}" from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m)}${card}\n</message>`;
+      return `<message via="${via(surface)}" thread="${address}"${timeAttr(m, surface)} from="${escapeAttr(from)}"${bot}${clientAttr(m)} ts="${m.ts}">\n${messageForAgent(m)}${card}\n</message>`;
     })
     .join("\n");
 }

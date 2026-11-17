@@ -417,6 +417,6 @@ function statusWords(r: Json): string {
   }
   for (const t of r?.status?.taking ?? []) out.push(`Taking the chats of ${t.name || t.origin}: ${t.step}${t.error ? ` (${t.error})` : ""}.`);
   // (a retired station is answered by the one that took its place, as any request naming it: that one says it)
-  for (const t of r?.status?.taken ?? []) out.push(`This station took the chats of station ${t.name || t.origin} (${t.chats} chats) and is that station too now; jobs: ${t.jobs.length === 0 ? "none" : t.jobs.map((j: Json) => `${j.name} ${j.started ? "started again" : `not started (${j.why ?? "from a station before jobs moved"})`}`).join("; ")}. Its accounts and connects follow as it finishes. ${REMOVE_WORDS}`);
+  for (const t of r?.status?.taken ?? []) out.push(`This station took the chats of station ${t.name || t.origin} (${t.chats} chats) and is that station too now;${typeof t.error === "string" && t.error !== "" ? ` but ${t.error};` : ""} jobs: ${t.jobs.length === 0 ? "none" : t.jobs.map((j: Json) => `${j.name} ${j.started ? "started again" : `not started (${j.why ?? "from a station before jobs moved"})`}`).join("; ")}. Its accounts and connects follow as it finishes. ${REMOVE_WORDS}`);
   return out.join(" ");
 }

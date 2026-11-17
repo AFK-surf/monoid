@@ -95,6 +95,9 @@ export const work = {
   /// What the workspace's profiles read of a station's overview (its kept part, station_part.profiled) decorated
   /// (views.ts #stationShownOf `profile`), not taken as made for it: never the whole overview.
   profiledParts: 0,
+  /// What the settings read of a station's overview (its kept part, station_part.settings: its automatic decisions and
+  /// archiving) decorated (views.ts #stationShownOf `settings`), not taken as made for it: never the whole overview.
+  settingsParts: 0,
   /// Stations' models listed from an overview's profiles (views/models.ts `models`), each with what every account of it
   /// runs and has left: a new chat's page makes its one station's, a model control's panel every station's it could
   /// borrow from too.

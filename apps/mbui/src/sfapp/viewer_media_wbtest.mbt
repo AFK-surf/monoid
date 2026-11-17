@@ -128,7 +128,7 @@ test "a video closed, the frame it shows grabbed and its answer late (past a who
 }
 
 ///|
-test "a video closed, its frame's grab answered with nothing: back into its thumbnail with its still from where its picture was, nothing kept, then gone" {
+test "a video closed, its frame's grab answered with nothing: back into its thumbnail with its still from where its picture was, no frame kept (where it was kept alone, to go on from), then gone" {
   let t = media_tree()
   media_opened(t)
   let v = viewer.get().unwrap()
@@ -137,7 +137,8 @@ test "a video closed, its frame's grab answered with nothing: back into its thum
   assert_true(t.view_said("{\"still\":{\"view\":1},\"b\":\"\"}"))
   t.draw()
   assert_eq(t.holes().length(), 0, msg="flown back")
-  assert_true(pv_frames.is_empty(), msg="nothing kept")
+  // (no frame kept: its thumbnail shows its still as before; where it was kept, opened again on from there)
+  assert_eq(pv_frames.values().to_array(), [("", 4000.0)])
   assert_true(v.fly_pic != "" && media_drawn(t, v.fly_pic) is [r] && media_near(r, hole), msg="its still \{v.fly_pic} flying from where its picture was: \{Repr(media_drawn(t, v.fly_pic))}, was \{Repr(hole)}")
   t.run_for(@ui.move_most_ms)
   assert_true(viewer.get() is None && pv_leaving.get() is None && media_closed(t) == 1, msg="gone, its player closed once")

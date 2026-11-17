@@ -11,40 +11,40 @@
 /// What the frames read of the hand, as the frame being drawn began.
 priv struct Hand {
   /// what the pointer is over and what holds that, as the last frame drew them (Ctx::hovered)
-  over : @signals.Keyed[Int]
+  mut over : @signals.Keyed[Int]
   /// what is pressed (Ctx::pressed), and what the press went down on and what holds it (Ctx::press_within)
-  pressed : @signals.Keyed[Int]
-  press_on : @signals.Keyed[Int]
+  mut pressed : @signals.Keyed[Int]
+  mut press_on : @signals.Keyed[Int]
   /// what was clicked, and clicked twice, since the frame before (Ctx::on_press, on_double_press, a part's Response); what a press held long
   /// was on (Ctx::long_press)
-  clicked : @signals.Keyed[Int]
-  double : @signals.Keyed[Int]
-  held : @signals.Keyed[Int]
+  mut clicked : @signals.Keyed[Int]
+  mut double : @signals.Keyed[Int]
+  mut held : @signals.Keyed[Int]
   /// what has the focus, as a member and as what it is (Ctx::has_focus, focused_id)
-  focus : @signals.Keyed[Int]
-  focus_id : @signals.Signal[Int]
+  mut focus : @signals.Keyed[Int]
+  mut focus_id : @signals.Signal[Int]
   /// what has the focus where it shows (it came by the keyboard: Ctx::focus_shown), by member: told as that alone
   /// changes too, what has it not told
-  shown : @signals.Keyed[Int]
+  mut shown : @signals.Keyed[Int]
   /// where the pointer is, whether it is down, the current input (Ctx::pointer, Ctx::press, pointing)
-  pointer : @signals.Signal[(Double, Double)]
-  down : @signals.Signal[Bool]
-  pointing : @signals.Signal[Pointing]
+  mut pointer : @signals.Signal[(Double, Double)]
+  mut down : @signals.Signal[Bool]
+  mut pointing : @signals.Signal[Pointing]
   /// whether a finger or a button held down is past the slop of where the press was seen going down (Ctx::press's
   /// `moved`): what reads the press is built again as it goes past, not as it moves
-  beyond : @signals.Signal[Bool]
+  mut beyond : @signals.Signal[Bool]
   /// the hand's discrete events so far, counted (hand_event): what reads what came (a key, a menu asked for, words
   /// dropped) is built again as one comes
-  events : @signals.Signal[Int]
+  mut events : @signals.Signal[Int]
   /// what was typed into a field of an old view with the focus so far, counted (hand_typed): its words and the keys it
   /// takes as its own, which go to its old view alone (view_host.mbt's typed_part); what reads the keys reads them
   /// with the discrete events (hand_keys_read), nothing else of what reads the hand (a press, a menu asked for)
-  typed : @signals.Signal[Int]
+  mut typed : @signals.Signal[Int]
   /// the pointer's presses going down or up so far, counted (hand_pressed): what reads how a press goes (Ctx::press, an
   /// editor's caret, a second finger) is built again as one does, nothing else
-  presses : @signals.Signal[Int]
+  mut presses : @signals.Signal[Int]
   /// what a reader asked something of (Ctx::ask_action), by member (Ctx::action_asked): what asked of none, not built
-  asked : @signals.Keyed[Int]
+  mut asked : @signals.Keyed[Int]
 }
 
 ///|

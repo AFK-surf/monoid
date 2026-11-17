@@ -150,17 +150,18 @@ fn qt_seen(
           tips,
           stint: fn() { 0 },
           jump: if s.jumps { Some(fn(ts, text) { jumped.push((ts, text)) }) } else { None },
+          picture: None,
         }
         root.box(fn(f) {
           @sf.style_node(f, fn() { head_frame })
           let side = fn() { row_side(w) }
           let top = fn() { 0.0 }
           if s.m.mine {
-            mine_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            mine_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           } else if s.m.author_kind == "agent" {
-            agent_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            agent_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           } else {
-            person_said_node(f, src, here, "m:ts5", side, top, fn() { s.m }) |> ignore
+            person_said_node(f, src, here, fn() { "m:ts5" }, side, top, fn() { s.m }) |> ignore
           }
         })
         |> ignore
@@ -243,7 +244,7 @@ fn qt_uncapsuled(l : Array[String]) -> (Array[String], Array[String]) {
   let capsule = fn(x : String) {
     (x.has_prefix("rect ") && x.has_suffix(" 166")) ||
     x.has_prefix("words 0:42@") ||
-    (x.has_prefix("shape ") && x.has_suffix(" 4294967295") && x.contains(" 0.36458333333333337 "))
+    (x.has_prefix("shape ") && x.has_suffix(" 4294967295") && x.contains(" 0.5266056723709838 "))
   }
   (l.filter(fn(x) { !capsule(x) }), l.filter(capsule))
 }

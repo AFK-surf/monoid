@@ -154,8 +154,8 @@ fn part_building() -> Bool {
 /// shown changes at (a clock's step, a timer's end, a motion's), each set as the first frame at or past it begins, in
 /// order, with whether what is shown waits for it (`later`: none of those that read it does).
 priv struct KeptClock {
-  frame : @signals.Signal[Int]
-  dues : Array[KeptDue]
+  mut frame : @signals.Signal[Int]
+  mut dues : Array[KeptDue]
 }
 
 ///|

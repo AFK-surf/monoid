@@ -18,6 +18,7 @@ import { PENDING_MOST, type Pending } from "../src/lock-pending.ts";
 import type { Topic } from "../src/protocol.ts";
 import { PAGE } from "../src/station/channel-kinds.ts";
 import { localDay } from "../src/views/usage.ts";
+import { MOVE_PAGE, MOVE_SHOWN_MOST, freeText, moveLimit, moveShown } from "../src/move.ts";
 import { hostOf, link, overview, rows, sessions, threads, workspace } from "./views-rig.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -398,7 +399,13 @@ function connectsOf(station: number): J[] {
     slack: { appToken: "", botToken: "" }, feishu: { appId: "cli_a7f3e9b2c41d500e", appSecret: "…9c2b", domain: "feishu", threads: true },
     connection: { state: "connected" }, createdBy: { id: pick(PEOPLE, station + 4).email, name: pick(PEOPLE, station + 4).name }, sessions: 12 + station, session: null,
   };
-  return station % 2 === 0 ? [slack(1), slack(2), slack(3), feishu] : [slack(1), slack(2), feishu];
+  const group: J = {
+    id: "c-group-1", name: "Claude", team: null, enabled: true, kind: "group", mode: "multi-session", requireMention: true, bind: { runtime: "claude", model: null, effort: null, profile: null },
+    slack: { appToken: "", botToken: "" },
+    group: { server: "3f9a1c0e7d2b4a6f8e1c3b5a7d9f2e4c6b8a0d1f3e5c7b9a2d4f6e8c0a1b8b0d", relays: ["https://relay-tokyo.group.example"], botName: "Claude", memberId: `m-${station}`, device: "7c1e9a3f5b2d4c6e8a0f1b3d5c7e9a2f4b6d8c0e1a3f5b7d9c2e4a6f8b0d1c3e", joining: false },
+    connection: { state: "connected" }, createdBy: { id: pick(PEOPLE, station + 5).email, name: pick(PEOPLE, station + 5).name }, sessions: 4 + station, session: null,
+  };
+  return station === 0 ? [slack(1), slack(2), slack(3), feishu, group] : station % 2 === 0 ? [slack(1), slack(2), slack(3), feishu] : [slack(1), slack(2), feishu];
 }
 
 function decisionsOf(now: number, station: number, profiles: J[]): J {
@@ -472,7 +479,8 @@ export function overviewOf(now: number, station: number): J {
     consoleSignIn: true,
     accountSubsets: true,
     updates: [
-      VERSION("station", "still.fail", "0.1.7018", "0.1.7020", { channel: "beta", auto: true, idleOnly: true }),
+      // (Willow's updated by a person: its newer release offered, views/station-updates.ts)
+      VERSION("station", "still.fail", "0.1.7018", "0.1.7020", { channel: "beta", auto: station !== 1, idleOnly: true }),
       VERSION("claude", "Claude Code", "2.4.12", "2.4.14"),
       VERSION("codex", "Codex", "0.98.0", "0.98.0"),
       VERSION("dsh", "DeepSeek Harness", "1.3.2", "1.3.2"),
@@ -510,6 +518,9 @@ export function overviewOf(now: number, station: number): J {
     contextCaps: { runtimes: ["claude", "codex"], least: 100_000, windows: Object.fromEntries([...new Set(profiles.flatMap((p: J) => p.models as string[]))].map((m) => [m, /haiku|4-5|mini|flash|v3/.test(m) ? 200_000 : /gpt|codex|grok/.test(m) ? 400_000 : 1_000_000])) },
     archiving: { days: 7, slackDays: 14, reviewed: true, canEdit: true },
     automaticDecisions: decisionsOf(now, station, profiles),
+    // The `beta` features it runs (station/src/features.ts): a station on the test channel's (its terminals, moving).
+    move: { offered: true },
+    features: ["terminal", "stationMove"],
   };
 }
 
@@ -1210,6 +1221,44 @@ export function overviewMoved(base: number, at: number, what: "decided" | "updat
   return { ...o, automaticDecisions: { ...ad, recent: [made, ...ad.recent.slice(0, -1)], policy: { ...ad.policy, checked: ad.policy.checked + 1 } } };
 }
 
+/// The person's presets as the device carries them (src/presets-kept.ts): Maple's two and one made on Willow, one of
+/// theirs deleted; none of a station from before.
+function presetRecordsOf(now: number): J {
+  const maple = presetsOf(now, 0).presets as J[];
+  const rec = (p: J, home: string, rev: number) => ({
+    ...p, dirs: p.dirs.map((d: J) => ({ path: d.path, repo: d.repo, station: `ws/${home}` })), createdBy: PEOPLE[0]!.email, owner: "s1", rev, home,
+  });
+  const records: J = {
+    "p-app": rec(maple[0], "maple", 3),
+    "p-infra": rec(maple[1], "maple", 2),
+    "p-web": rec({ id: "p-web", name: "官网", dirs: [{ path: "/Users/willow/src/website", repo: "github.com/acme/website" }], instructions: "改文案前先看 i18n 的五种语言是否都要改。", createdAt: now - 12 * DAY, updatedAt: now - DAY }, "willow", 1),
+    "p-old": { id: "p-old", owner: "s1", rev: 4, gone: true, updatedAt: now - 30 * DAY },
+  };
+  return { records, before: [] };
+}
+
+/// What the device holds once one of the person's presets was changed on another device of theirs at `at` (carried to
+/// it as a station told `presets`).
+export function presetRecordsChanged(base: number, at: number): J {
+  const held = presetRecordsOf(base);
+  const was = held.records["p-web"];
+  return { ...held, records: { ...held.records, "p-web": { ...was, name: "官网 · 文案", updatedAt: at, rev: was.rev + 1 } } };
+}
+
+/// Others' presets as Maple gives them at a press (GET /presets/others): each of a member's, as many as a team of real
+/// size has (two a member of the first dozen).
+export function othersPresetsOf(now: number): J[] {
+  return PEOPLE.slice(1, 12).flatMap((p, i) => [0, 1].map((j) => ({
+    id: `p-${p.sub}-${j}`, name: j === 0 ? `${p.name} 的代码审查` : `${pick(TITLES, i * 2 + j)}`.slice(0, 40), dirs: [{ path: `/Users/maple/src/${["app", "station", "infra"][(i + j) % 3]}`, repo: `github.com/acme/${["app", "station", "infra"][(i + j) % 3]}`, station: "ws/maple" }],
+    instructions: "先跑测试再提交；改动大的先在 thread 里说一声。", createdBy: p.email, createdAt: now - (40 - i) * DAY - j * HOUR, updatedAt: now - i * HOUR, owner: p.sub, rev: 1 + j, home: "maple",
+  })));
+}
+
+/// Others' presets as Maple gives them read again once one of them changed one at `at`.
+export function othersPresetsChanged(base: number, at: number): J[] {
+  return othersPresetsOf(base).map((r: J, i: number) => (i === 0 ? { ...r, name: `${r.name}（新）`, updatedAt: at, rev: r.rev + 1 } : r));
+}
+
 /// Maple's presets once one was changed on another device at `at`.
 export function presetsChanged(base: number, at: number): J {
   const p = presetsOf(base, 0);
@@ -1272,6 +1321,7 @@ export function records(now: number): [string, string, unknown][] {
     ["me", "s1", me],
     ["choice", "ws:ws:frequent", frequent],
     ["choice", "ws:ws:preset", { id: "p-app", station: "ws/maple" }],
+    ["presetRecords", "ws", presetRecordsOf(now)],
     ...UP.map((at, st): [string, string, unknown] => ["memberships", at, { workspaces: [{ workspace: "ws", workspaceName: "Acme", name: STATIONS[st]!.name, home: true }], canJoin: true }]),
     ["lock", "ws", lockOf(now)],
     ["lockPending", "ws", pendingOf(now)],
@@ -1490,7 +1540,73 @@ export function more(now: number): [Topic, unknown][] {
   out.push([{ topic: "linkPreview", station: CHAT.station, url: "https://github.com/acme/app/pull/5244" }, { kind: "github_pull_request", url: "https://github.com/acme/app/pull/5244", repository: "acme/app", number: 5244, title: "Android：列表行高首帧算好，滚动不再重新测量", state: "open", author: { login: "lina-park" }, additions: 412, deletions: 187, changedFiles: 14, comments: 6, labels: ["android", "performance", "needs-review"], updatedAt: now - HOUR, checks: { passed: 23, failed: 0, pending: 2 } }]);
   for (const [st, at] of UP.entries()) out.push([{ topic: "stationSearch", station: at, q: SEARCH, limit: 6 }, searchOf(now, st)]);
   for (const [topic, value] of peeks(now)) out.push([topic, value]);
+  for (const asked of MOVES_ASKED) out.push([{ topic: "stationMove", station: CHAT.station, ...asked }, moveOf(now, asked)]);
   return out;
+}
+
+/// The ways the app asks what of Maple moves (apps/mbui sfpages/station_move_node.mbt): its station's page (whether it
+/// shows 迁移), the page with its modules closed, with 聊天 open (as it opens by itself, something of it moving), and
+/// that list scrolled to the most it shows.
+export const MOVES_ASKED: { to: string; module: string; limit?: number }[] = [
+  { to: "", module: "" },
+  { to: "willow", module: "" },
+  { to: "willow", module: "chats" },
+  { to: "willow", module: "chats", limit: 200 },
+];
+
+/// What Maple says of moving its things to Willow (its GET /move, module by module), `step` chats on from where it is
+/// at `now`: some of each module there, one chat moving and how far, some stopped waiting for an account, some that
+/// failed or cannot move, saying why; the asked module's items `limit` of them (the others' first page, as the sync
+/// holds them), as the page draws it (move.ts).
+export function moveOf(now: number, asked: { to: string; module: string; limit?: number }, step = 0): J {
+  const limit = moveLimit(asked.limit);
+  // (its station's page, no station chosen: as a station's page mostly is, nothing of it moved, so no 迁移 there and what
+  // else the page shows as it would be, till `step` chats of it moved: 迁移 at its top; the page of 迁移 mid-way, as below)
+  if (asked.to === "") {
+    const quiet = moveOf(now, { ...asked, to: "willow" }, step);
+    const done = (m: J) => (m.id === "chats" ? step : 0);
+    return {
+      ...quiet, to: "", toName: "", moving: null, active: step > 0, allMove: null, allBack: null, allThere: false, note: "",
+      count: `${step} / ${quiet.modules.reduce((n: number, m: J) => n + m.total, 0)}`,
+      modules: quiet.modules.map((m: J) => ({ ...m, done: done(m), count: m.total === 0 ? m.count : `${done(m)} / ${m.total}`, mark: "", markText: "", opens: false, action: "" })),
+    };
+  }
+  const item = (id: string, label: string, state: string, more: J = {}) => ({ id, label, state, needs: [], ...more });
+  const n = (k: number, there: number, label: (i: number) => string, more: (i: number) => J = () => ({})) =>
+    Array.from({ length: k }, (_, i) => item(`i${i}`, label(i), i < there ? "there" : "here", more(i)));
+  // (more chats than the page shows of a module at the most, MOVE_SHOWN_MOST: what it shows is that, however many it has)
+  const chats = Array.from({ length: MOVE_SHOWN_MOST + 40 }, (_, i) => {
+    const at = 30 + step;
+    const label = TITLES[i % TITLES.length]!;
+    if (i < at) return item(keyOf(0, i), label, "there");
+    if (i === at) return item(keyOf(0, i), label, "moving", { progress: { done: (64 + 40 * step) * 1024 ** 2, total: 412 * 1024 ** 2, unit: "bytes" } });
+    if (i < at + 4) return item(keyOf(0, i), label, "stopped", { waitsFor: "accounts i0" });
+    if (i < at + 6) return item(keyOf(0, i), label, "failed", { error: `Willow 的磁盘只剩 2.1 GB，这个聊天的文件要 ${3 + i % 4}.4 GB：在 Willow 上腾出空间再试` });
+    if (i < at + 8) return item(keyOf(0, i), label, "here", { cannot: "它的工作目录在 station 之外（/Volumes/Work/app）：把目录移进 station 的工作区再迁" });
+    return item(keyOf(0, i), label, "here");
+  });
+  const modules: [string, string[], J[]][] = [
+    // (in the station's order, move/station.ts `modules`: what GET /move answers them in)
+    ["accounts", [], n(6, 3, (i) => `Claude · ${PEOPLE[i % PEOPLE.length]!.email}`, (i) => (i === 5 ? { cannot: "这台机器自己的登录不迁：在 Willow 上登录它自己的" } : {}))],
+    ["chats", ["accounts", "connects", "repos", "vault"], chats],
+    ["jobs", ["chats"], n(8, 2, (i) => `dev server · ${TITLES[i % TITLES.length]}`)],
+    ["connects", ["chats"], n(4, 0, (i) => ["Slack · Acme", "飞书 · 产品群", "Comma · 值班", "Slack · Acme Labs"][i]!)],
+    ["repos", [], n(12, 5, (i) => `github.com/acme/${["app", "station", "web", "infra", "docs", "relay"][i % 6]}${i < 6 ? "" : `-${i}`}`)],
+    ["vault", [], n(2, 1, (i) => `${PEOPLE[i]!.name} 的密钥`)],
+    ["settings", [], n(1, 0, () => "归档、自动决策、网络")],
+  ];
+  const raw = {
+    ws: "ws", to: asked.to,
+    modules: modules.map(([id, needs, all]) => {
+      const page = all.slice(0, id === asked.module ? limit : MOVE_PAGE);
+      return { id, needs, done: all.filter((x) => x.state === "there").length, total: all.length, items: page, more: page.length < all.length ? page.at(-1).id : null };
+    }),
+    moving: { module: "chats", id: keyOf(0, 30 + step), label: TITLES[(30 + step) % TITLES.length], progress: { done: (64 + 40 * step) * 1024 ** 2, total: 412 * 1024 ** 2, unit: "bytes" } },
+    stopped: [1, 2, 3].map((k) => ({ item: `chats ${keyOf(0, 30 + step + k)}`, waitsFor: "accounts i0" })),
+    last: { at: now - 5 * MIN, by: PEOPLE[0]!.email, done: [], refused: [{ item: `chats ${keyOf(0, 40 + step)}`, why: "它要的连接「Slack · Acme」还没迁到 Willow：先迁连接，或用全部迁移" }], stopped: [], resumed: [], failed: null },
+  };
+  const targets = STATIONS.slice(1, UP_COUNT).map((s, i) => ({ station: s.id, name: s.name, free: freeText({ disk: { freeBytes: (180 + 40 * i) * 1024 ** 3 } }) }));
+  return moveShown(raw, { to: asked.to, toName: asked.to === "" ? "" : "Willow", module: asked.module, targets, canMove: true });
 }
 
 /// Bytes made of `seed` alone, as base64: a picture's that is not one.

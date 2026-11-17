@@ -5,9 +5,9 @@
 //   - a row: the rail and the sidebar's column (as wide as the block takes, open or folded: col), the page's pane in
 //     what it leaves (the page an island, built for the room the tree gives it);
 //   - over them, the block (the rail and the sidebar on one ground, shell.css.ts dock), the tree's (dock_node): its
-//     ground and shadow, cut round as its corners are, the rail in it and the sidebar of a place not made once over it
-//     (side_made) old views of their own, taking presses where they draw them; shown a while (folded, peeking) it
-//     reaches over the page; 更新 where the closed bar leaves room for it an old view of its own;
+//     ground and shadow, cut round as its corners are, the rail in it and every place's sidebar over it (side_node);
+//     shown a while (folded, peeking) it reaches over the page; 更新 where the closed bar leaves room for it an old view
+//     of its own, which says first what the page's bars work out of where the block's move has got (pane_block_built);
 //   - over the block, the sidebar's edge, a node of its own (pane_edge: each press, drag and let go at its moment).
 //
 // The block's move (brand.tsx moveSidebar: folded or opened as chosen, shown a while or no longer, a place with no
@@ -16,7 +16,7 @@
 // where it goes (FoldLook), one way from 0 to 1, read where it is drawn. What is no cause of a move (the window, the
 // edge dragged, the window's room folding it, a fold's place) puts things where they go at once.
 //
-// Still the old view's (the way there): the rail, a place's sidebar not made once, 更新 and the page (their islands),
+// Still the old view's (the way there): 更新 and the page (their islands),
 // and the pointer coming on the closed bar to show it a while. Back is a node of the tree's
 // (wide_takes_back, wide_back_step).
 
@@ -136,6 +136,7 @@ priv struct FoldIs {
 /// What the frame off the tape is laid out by now, a window `ww` by `wh`: the place's sidebar gated or bare, its
 /// sidebar folded for the page's room, on a fold standing upright, closed to the bar, shown a while; the sidebar's
 /// width; the bars' room at the top and the foot.
+#derive(Eq)
 priv struct PaneRoom {
   gated : Bool
   bare : Bool
@@ -149,9 +150,62 @@ priv struct PaneRoom {
 }
 
 ///|
+/// The room worked out once for all that reads it: some sixty bindings each worked it out whole (lock_waiting's topic
+/// keys among it) at every move of the sidebar's edge dragged. Kept for the last source, workspace, width and board's
+/// source asked (board_frame_src is no signal).
+priv struct RoomHeld {
+  src : Source
+  board : Source?
+  w : Workspace
+  ww : Double
+  room : @signals.Computed[PaneRoom]
+}
+
+///|
+// kept across runs: the room last asked for, each window's own
+let room_held : Ref[RoomHeld?] = Ref(None)
+
+///|
+fn init {
+  @ui.window_kept_ref(room_held, fn() { None })
+}
+
+///|
 fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
+  let room = match room_held.val {
+    Some(h) if physical_equal(h.src, src) &&
+      h.ww == ww &&
+      (physical_equal(h.w, w) || h.w == w) &&
+      same_board(h.board, board_frame_src.val) => h.room
+    _ => {
+      let room = @signals.untracked(fn() { @signals.computed(fn(_) { pane_room_now(src, w, ww) }) })
+      room_held.val = Some({ src, board: board_frame_src.val, w, ww, room })
+      room
+    }
+  }
+  room.get()
+}
+
+///|
+fn same_board(a : Source?, b : Source?) -> Bool {
+  match (a, b) {
+    (Some(x), Some(y)) => physical_equal(x, y)
+    (None, None) => true
+    _ => false
+  }
+}
+
+///|
+/// How far down the window the frame off the tape starts (the system's status bar over its top, edge to edge): the
+/// page's stack, the block and the sidebar's edge each under it, worked out here alone (the pane's room's `top`).
+fn pane_top() -> Double {
+  @ui.system_bars().top
+}
+
+///|
+fn pane_room_now(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let gated = lit_place() != "settings" && @settings.lock_waiting(settings_core(src, w), w.id)
-  let bare = place_bare(lit_place())
+  let bare = place_bare_now(lit_place())
   let own = !gated && !bare
   let crowded = own &&
     (@sf.native_input() is Finger) &&
@@ -160,8 +214,7 @@ fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
   let on_fold = if folded { None } else { side_on_fold() }
   let bar = (own && folded) || bare
   let s = if gated { 0.0 } else { on_fold.unwrap_or(wide.side_w.get()) }
-  let bars = @ui.system_bars()
-  let foot = if @sf.native_side() { cards_foot } else { bars.bottom }
+  let foot = if @sf.native_side() { cards_foot } else { @ui.system_bars().bottom }
   {
     gated,
     bare,
@@ -170,7 +223,7 @@ fn pane_room(src : Source, w : Workspace, ww : Double) -> PaneRoom {
     bar,
     peek: own && folded && wide.peeking.get(),
     s,
-    top: bars.top,
+    top: pane_top(),
     foot,
   }
 }
@@ -453,6 +506,7 @@ fn fold_built(c : @ui.Ctx, now : FoldLook) -> FoldLook {
 /// in view (its file's head).
 pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : Double) -> Unit {
   wide.tape.set(false)
+  board_frame_src.val = Some(src)
   // (its tips over all of the window, as the old frame's are: none cut by the pane, the sidebar's edge's and its pages')
   let tips = @sf.TipLayer::new(fn() { Some(v) })
   fold_goes.node = Some(v)
@@ -577,15 +631,13 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       |> ignore
     })
     |> ignore
-    // the page's pane in what the column leaves, under the bars at the top
+    // the page's pane in what the column leaves, its stack under the bars at the top (pane_top: a margin, as what is
+    // laid over what holds it takes none of that one's padding)
     row.box(fn(pane) {
       fold_goes.parts.push(pane)
-      pane
-      .grow(Is(1.0))
-      .padding(By(fn() { (0.0, @ui.system_bars().top, 0.0, 0.0) }))
-      |> ignore
+      pane.grow(Is(1.0)) |> ignore
       pane.box(fn(page) {
-        page.grow(Is(1.0)).over(Is(true)) |> ignore
+        page.grow(Is(1.0)).over(Is(true)).margin(By(fn() { (0.0, pane_top(), 0.0, 0.0) })) |> ignore
         // (the stack the tree's, each page its island: page_pane.mbt)
         pane_pages(page, src, tips)
       })
@@ -594,24 +646,16 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     |> ignore
   })
   |> ignore
-  // the block over them (reaching over the page shown a while), the tree's: its ground, the rail and a place's sidebar
-  // not made once in it (dock_node)
-  let block = Ref(v)
+  // the block over them (reaching over the page shown a while), the tree's: its ground and the rail (dock_node)
   v.box(fn(b) {
     b.over(Is(true)) |> ignore
-    block.val = dock_node(
-      b,
-      fn() { pane_side_at(src, b) },
-      fn(r) { rail_node(r, src, tips, fn() { pane_rail_at(src, b) }) },
-      fn(c, bar) { pane_side_built(c, src, bar) },
-      // (what the page's bars and the sidebar's parts work out from where the block's move has got, said before the
-      // sidebar's old view builds)
-      before=fn(c) { pane_block_built(c, src, b) },
-    )
+    dock_node(b, fn() { pane_side_at(src, b) }, fn(r) { rail_node(r, src, tips, fn() { pane_rail_at(src, b) }) })
   })
   |> ignore
-  // 更新 where the closed bar's start leaves room for it, taking presses where it draws them
-  @ui.old(v, fn(c) { pane_update_built(c, src) }, key=tape_island_key).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // what the page's bars and the sidebar's parts work out from where the block's move has got (pane_block_built)
+  @ui.old(v, fn(c) { pane_block_built(c, src, v) }, key=tape_island_key).over(Is(true)) |> @ui.old_takes_own |> ignore
+  // 更新 where the closed bar's start leaves room for it (pane_update_node)
+  v.show(at_once=true, fn() { pane_update_shows(src, v) }, fn(o) { pane_update_node(o, src, tips) })
   // the sidebar made once, the tree's, over the block where it lays its sidebar out (side_node)
   v.box(fn(sides) {
     sides.over(Is(true)) |> ignore
@@ -624,13 +668,12 @@ pub fn pane_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
     dock_edge_node(line, fn() { pane_side_at(src, line) })
   })
   |> ignore
-  // the sidebar's edge, the tree's, over the block (its rows under its strip), but where a list's thumb of the block's
-  // is shown there: the thumb's (@ui.yield_thumbs)
-  v.box(fn(edges) {
-    edges.over(Is(true)) |> ignore
-    edges.show(fn() { pane_edge_stands(src, edges) }, fn(n) { pane_edge(n, edges, src, tips, block.val) })
+  // the sidebar's edge, the tree's, over the block (its rows under its strip), but where a list's thumb of the
+  // sidebar's is shown there: the thumb's (@ui.yield_thumbs)
+  v.show(fn() { pane_edge_stands(src, v) }, fn(n) {
+    n.over(Is(true)) |> ignore
+    pane_edge(n, v, src, tips)
   })
-  |> ignore
 }
 
 ///|
@@ -645,18 +688,24 @@ fn pane_side_at(src : Source, n : @view.View) -> SideAt {
       let t = fold_drawn_at(n)
       let f = fold_along(t, now)
       let top = if side_full_height(r.bar) { 0.0 } else { r.top }
-      {
-        ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))),
-        held_w: fold_held_at(t, f).1,
+      // (what it holds laid out, on a move between where it is shown and where it is not (the closed bar's, not
+      // peeking), as wide as at the end it is shown at all the way, drawn cut and placed where the move has got: not laid
+      // out and its words measured again at each frame of it, nothing of it seen to move but its edge; between two
+      // where it is shown, as wide as the move has it, what stands at its end moving with it)
+      let laid_w = match fold_goes.from {
+        Some(from) if fold_going(t) && now.showing <= 0.0 => from.side_w
+        Some(from) if fold_going(t) && from.showing <= 0.0 => now.side_w
+        _ => f.side_w
       }
+      { ..dock_side_at(r.bar, r.peek, r.s, f.col, top, r.foot, 0.0, wh, Some((f, fold_going(t)))), laid_w, }
     }
     None =>
       {
         box: (0.0, 0.0, 0.0, 0.0),
+        laid_w: 0.0,
         block: (0.0, 0.0, 0.0, 0.0),
         ground: 0L,
         shadow: (0.0, 0.0, 0L),
-        held_w: 0.0,
         links: None,
         round: 0.0,
         edge: (0.0, 0L),
@@ -832,8 +881,8 @@ fn fold_bars(c : @ui.Ctx, f : FoldLook) -> Unit {
 }
 
 ///|
-/// What the frame off the tape says of the block as its sidebar's old view builds, the frame's node `n` (dock_node's
-/// `before`): what the page's bars and the sidebar's parts work out from where the block's move has got (fold_bars),
+/// What the frame off the tape says of the block, each build of its island over the page (pane_view's), the frame's node
+/// `n`: what the page's bars and the sidebar's parts work out from where the block's move has got (fold_bars),
 /// the block closed to the bar or not, crowded or not.
 fn pane_block_built(c : @ui.Ctx, src : Source, n : @view.View) -> Unit {
   let (now, _, _, _) = @sfbase.workspace_in_view(src)
@@ -846,15 +895,41 @@ fn pane_block_built(c : @ui.Ctx, src : Source, n : @view.View) -> Unit {
 }
 
 ///|
-/// 更新 off the tape with the sidebar closed, where its first row is not shown: where the bar's start leaves room for it
-/// (its old view, the window's whole).
-fn pane_update_built(c : @ui.Ctx, src : Source) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  let r = pane_room(src, w, c.width)
-  if !r.gated && update_shown() && r.bar && !r.peek {
-    update_button(c, src, @ui.window_inset(), r.top)
+/// Whether 更新 shows off the tape with the sidebar closed, where its first row is not shown, in the workspace in view, a
+/// window as wide as node `n` has it: an update offered (update_shown), the block the closed bar, not shown a while.
+fn pane_update_shows(src : Source, n : @view.View) -> Bool {
+  match @sfbase.workspace_in_view(src).0 {
+    Some(w) => {
+      let r = pane_room(src, w, n.window().0)
+      !r.gated && update_shown() && r.bar && !r.peek
+    }
+    None => false
   }
+}
+
+///|
+/// 更新 off the tape with the sidebar closed (pane_update_shows) in node `o`, over all of the window: where the bar's
+/// start leaves room for it, past the rail (update_closed_in; past the window's buttons where they are in the app's top
+/// row, update_closed_inset), update_top under the system's bars over the window (a phone's status bar, which take what
+/// is pressed under them); its tip in `tips`.
+fn pane_update_node(o : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
+  o
+  .over(Is(true))
+  .padding(By(fn() {
+    let top = match @sfbase.workspace_in_view(src).0 {
+      Some(w) => pane_room(src, w, o.window().0).top
+      None => 0.0
+    }
+    let left = if @ui.window_inset_now() { update_closed_inset } else { update_closed_in }
+    (left, top + update_top, 0.0, 0.0)
+  }))
+  |> ignore
+  // (in a row: as wide as the key, its tip and its press on it alone)
+  o.box(fn(row) {
+    row.row(Is(true)) |> ignore
+    update_key_of(row, src, tips)
+  })
+  |> ignore
 }
 
 ///|
@@ -868,18 +943,6 @@ fn pane_rail_at(src : Source, n : @view.View) -> RailAt {
     }
     None => rail_at_tape(dock_ground(false))
   }
-}
-
-///|
-/// The sidebar of a place not made once over the block (lists.mbt sidebar: the files', the settings', the stations',
-/// the profiles'), its old view's, as wide as its box (`bar`: the block the closed bar, shown a while or on its way).
-fn pane_side_built(c : @ui.Ctx, src : Source, bar : Bool) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  // (in the bar: what the web's sidebar does there, at once, as the bar starts out)
-  wide.in_bar = bar
-  sidebar(c, src, w, c.width)
-  wide.in_bar = false
 }
 
 ///|
@@ -906,7 +969,7 @@ pub fn pane_under(c : @ui.Ctx, src : Source, w : Workspace, all : Array[Workspac
     title_row(c, "window-title-row", closed_bar_top)
   }
   // (back, the shell's one way: the frame's node's, pane_view, wide_takes_back)
-  sv_sweep(c, src)
+  // (the pages of closed tabs let go as each closes: service_tab.mbt's tab_let_go)
 }
 
 ///|
@@ -931,9 +994,8 @@ fn pane_edge_stands(src : Source, n : @view.View) -> Bool {
 /// nowhere there; the second of two) the sidebar folded or opened again, as Enter, Space or a screen reader's press of
 /// it do. Held, the wide frame's edge_held, from its press to its end (let go, called off, gone with its node). Its
 /// pointer the resizing one while the sidebar is open, a button's folded; read out as a button saying what a press does;
-/// its words by the pointer along it (tips). Where a list's thumb of the block's (`block`, the old view drawing it) is
-/// shown over its strip, that thumb's.
-fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLayer, block : @view.View) -> Unit {
+/// its words by the pointer along it (tips). Where a list's thumb of the sidebar's is shown under its strip, that thumb's.
+fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   let words = fn() {
     if wide.folded.get() {
@@ -947,14 +1009,14 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
   let fold = fn() { wide.folded.set(!wide.folded.get()) }
   n
   .width(Is(Some(@ui.Space::px(S3))))
-  .height(By(fn() { Some(n.window().1) }))
+  .height(By(fn() { Some(dmax(0.0, n.window().1 - pane_top())) }))
   .offset(By(fn() {
     match @sfbase.workspace_in_view(src).0 {
       Some(w) => {
-        let (_, now) = fold_target(src, w, n.window().0)
-        (fold_along(fold_drawn_at(holder), now).edge, 0.0)
+        let (r, now) = fold_target(src, w, n.window().0)
+        (fold_along(fold_drawn_at(holder), now).edge, r.top)
       }
-      None => (0.0, 0.0)
+      None => (0.0, pane_top())
     }
   }))
   |> ignore
@@ -981,10 +1043,10 @@ fn pane_edge(n : @view.View, holder : @view.View, src : Source, tips : @sf.TipLa
     tips~,
     side=Right,
   )
+  // (a list's thumb of the sidebar's shown under its strip: the thumb's there)
+  @ui.yield_thumbs(e)
   // (a button's as the web's is: its pointer the resizing one while open; read out as what a press does; Enter, Space
   // or a screen reader's press of it, as a press of it is)
-  // (a list's thumb of the block's shown over its strip: the thumb's there)
-  @ui.yield_thumbs(e, block)
   e
   .cursor(By(fn() { if wide.folded.get() { None } else { Some(ResizeX) } }))
   .says(By(fn() { Some(@view.said(Button, label=words())) }))

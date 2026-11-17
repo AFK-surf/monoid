@@ -37,23 +37,16 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "station-file-sent": [7],
   // 6: sub {"topic":"workspace","workspace":…} | strict sub {"topic":"doing"}
   "drive-lend": [7],
-  "drive-play": [7, 120],
-  "drive-rename": [7],
-  "drive-zip": [7],
-  "reader": [7],
+  "drive-play": [7],
   // 6: unsub {"topic":"status"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "dismiss": [7],
   "paste-long": [7],
   "paste-short": [7],
-  "pin": [7],
   "station-files": [7],
   // 5: sub {"query":…,"scope":…,"topic":"search"} | strict call cache.usage {}
   "settings-profile": [7],
-  "settings-station-mark": [7],
   "settings-station-settings": [7],
   "settings-workspace-people": [7],
-  "station-rename": [7],
-  "settings-decisions": [7],
   // 4: - | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "notice-looking": [7],
   // wide-answer-reply at 120 (#5519): the new chat page sends its composer, machineSessions.list and status's
@@ -65,10 +58,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub
   // {"topic":"chat","compact":true,"session":…,"station":…}
   "viewer": [7],
-  // 3: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict call cache.usage {}
-  "settings-connect": [7],
-  "settings-device-pages": [7],
-  "settings-vault-item": [7],
   // 3: sub {"query":…,"scope":…,"topic":"shareIn","source":…} | strict sub {"topic":"notify"}
   // (120, seen once its rows were held: shareIn let go of before driveTransfers in the strict pass, after it at 120.
   // shareIn is read by the share sheet's old view as its frame builds (src/sfapp/share.mbt:445, share_parts,
@@ -90,7 +79,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   // 1: - | strict call link.parse {"url":…}
   "notice-failed": [7],
   // 1: - | strict sub {"topic":"stationNet","station":…}
-  "settings-add-station": [7],
   // 1: unsub {"topic":"doing"} | strict sub {"topic":"chat","compact":true,"session":…,"station":…}
   "settings-run-settings": [7],
   // 1: - | strict call composer.starting {"key":…,"starting":true}
@@ -103,14 +91,6 @@ let pace_splits_known : Map[String, Array[Int]] = {
   "wide-resize": [7, 120],
   // 1: - | strict call chat.pin {"pinned":true,"session":…,"station":…}
   "wide-row-menu": [7],
-  // 1: sub {"topic":"chat","compact":true,"session":…,"station":…} | strict sub {"limit":60,"scope":…,"topic":"archive"}
-  // (the replay's rig, not the app (#5589, measured): the strict pass's tap on the filter key at 1983.3 ms draws the
-  // frames it leaves owed at once, its clock on to 2016.7, the pace pass's draws none till the display's next; at 7 a
-  // second the menu is not up where 已归档 was at 2150, the tap on it falls on nothing, 已归档 never opens and 还原's at
-  // 2733.3 falls on Home's chat row. The menu itself stands the same at every rate a moment after its press (the
-  // library's presenters and Home's own, 60, 120, 24, 7). Taken out by the PR that gives the strict pass its inputs as
-  // the pace pass's are given, at their moments, frames drawn only as the clock passes them)
-  "archive-restore": [7],
   // 1: sub {"query":…,"scope":…,"topic":"search"} | strict call notify.permission {"state":"unknown"}
   "wide-switcher": [7],
 }
@@ -120,12 +100,8 @@ let pace_splits_known : Map[String, Array[Int]] = {
 /// moment and its strict pass the run's steps at the run's moments (the replay's rig, the coordinator of the migration,
 /// 2026-11-12): a split each, untraced yet, found where a stop before it had hidden it or where the measure came truer.
 /// Held as pace_splits_known is, and only falls: each is traced in turn and goes with its cause.
-// kept across runs: a value
-let pace_splits_untraced : Map[String, Array[Int]] = {
-  // (each split as PACE says it in the flow's run)
-  "drive-sheet-closing": [7],
-  "wide-switcher": [120],
-}
+// kept across runs: a value (each split as PACE says it in the flow's run: none left)
+let pace_splits_untraced : Map[String, Array[Int]] = Map([])
 
 ///|
 /// The flows whose strict pass asks what their run did not, known, by trace: each ask exactly, in its order, at its
@@ -134,29 +110,17 @@ let pace_splits_untraced : Map[String, Array[Int]] = {
 /// again over one).
 // kept across runs: a value
 let strict_diverged_known : Map[String, Array[(Double, String)]] = {
-  // drive-download-many (recorded again for bell_lit): its run's app was started on the files' page (the trace's
-  // `MBUI_OPEN_PAGE=files`), the replay's opens it as a step (Flow::open_page) once the first screen is up. So the
-  // replay's app first lands the wide frame's pane, declaring the new chat as the marks are answered (1093.9), and lets
-  // go of it as the files' page comes on top, a frame's moment there, the shell's `doing` handed over from the page
-  // before let go of and asked again with it. The run's app asked none of it. The replay's way of opening the page, not
-  // the app's: goes as Flow::open_page starts the replay's app on the page as its run's was
-  "drive-download-many": [
-    (1093.92529296875, "{\"id\":19,\"subscribe\":{\"topic\":\"newChat\",\"scope\":\"01M76NSCTQ86BGR7W0YS3R5G21\"},\"keyed\":true}"),
-    (1566.6666666666665, "{\"id\":19,\"unsubscribe\":true}"),
-    (1566.6666666666665, "{\"id\":12,\"unsubscribe\":true}"),
-    (1583.3333333333333, "{\"id\":26,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
-  ],
   // lock-wait (#5519; anew with what the first screen reads declared, #5589; anew with notify.permission told as
   // notify is answered, between frames, #5613: it takes the id before doing's and driveTransfers', and what the
   // replay held for it comes a frame sooner): at 22116.7 the lock's delta (safe mode off) takes the waiting page away
   // and with it what it had taken over of what was declared as the workspace came in view, doing and driveTransfers
-  // (taken over, then its reader gone, the next not come yet: a gap a declaration does not mend); Home's frame at
+  // (taken over, then its reader gone, the next not come yet: a gap a declaration does not mend; driveTransfers no
+  // longer since Home's transfers key is made as nodes, at rest while it does not show); Home's frame at
   // 22133.3 asks doing again. The run's device took it in the frame that built the next page, behind a message before
   // it, so nothing was let go. Gone with #5135 (what is read kept by its topic while a page is covered), whose merge
   // takes this out.
   "lock-wait": [
     (23096.97412109375, "{\"id\":13,\"unsubscribe\":true}"),
-    (23096.97412109375, "{\"id\":14,\"unsubscribe\":true}"),
     (23100.0, "{\"id\":24,\"subscribe\":{\"topic\":\"doing\"},\"keyed\":true}"),
   ],
 }
@@ -205,7 +169,6 @@ let frames_unrecorded_known : Array[String] = [
   "drive-upload",
   "drive-zip",
   "glass",
-  "history",
   "home-new-chat",
   "lock-wait",
   "mark-read",
@@ -269,8 +232,8 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "drive-download-many",
     (
-      "src/sfreplay/flows/drive_download_many_test.mbt:38:5-38:22@stillfail: not so at 3544.971435546875 ms, the run's moment for it (its timeline 0 ms later from its first step): so at 3665.17822265625 ms, 120.206787109375 ms later",
-      "untraced (probed frame by frame): nothing moving but the download's toast; what it waits for is the core's answers to the folder opened, which the replay gives later than the run's moment (3580.1 to 3649.2 ms): the replay's moment of giving, it seems, not the app's",
+      "src/sfreplay/flows/drive_download_many_test.mbt:38:5-38:22@stillfail: not so at 2934.93408203125 ms, the run's moment for it (its timeline 0 ms later from its first step): so at 3070.395263671875 ms, 135.461181640625 ms later",
+      "untraced (probed frame by frame): nothing moving but the download's toast; what it waits for is the core's answers to the download begun (download.take, download.read), which the replay gives later than the run's moment (2991.2 to 3046.3 ms): the replay's moment of giving, it seems, not the app's",
     ),
   ),
   (
@@ -283,15 +246,22 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "draft",
     (
-      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:362:7-362:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:915:5-915:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1022:14-1022:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1576:3-1576:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
+      "its motion at rest at 3290.177388696544 ms, 189.09438088404386 ms after the run's next step (3101.0830078125 ms; its timeline 21.912109375 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 3290.177388696544 ms) | bar/k to 0, told at src/sfapp/bar.mbt:300:3-300:36@stillfail (at rest at 3290.177388696544 ms) | a stack's slide, told at src/ui/nav_view.mbt:362:7-362:68@mbui (at rest at 2902.3291015625 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:912:5-912:105@stillfail (at rest at 3066.6666666666665 ms) | Anim \"composer/hint\" to 1, told at src/sfpages/composer.mbt:912:5-912:105@stillfail (at rest at 3100 ms) | Anim \"composer/send/able\" to 1, told at src/sfpages/composer.mbt:1011:14-1011:124@stillfail (at rest at 2740 ms) | Anim \"layout composer/box\" to 1, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/extras\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/part/words\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | Anim \"layout composer/notices/01M6W4XGV9R8EP2T8MEXHXRZSC/0542fc65aeac537e7b415361c87bd78e6109b4bc5957f0c782439cd3a4cff4a6:chat:c-4d386bcc584806fc879106a02c56a9a4\" to 0, told at src/motion/layer.mbt:1606:3-1606:47@mbui (at rest at 2900 ms) | a list's rows' heights, told at src/ui/list.mbt:1005:5-1005:92@mbui (at rest at 2900 ms)",
       "untraced: the bar's springs, the stack's slide and the composer's ways still moving as the run's next step came",
     ),
   ),
   (
     "settings-add-station",
     (
-      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: Anim \"ripple\" to 0.5, told at src/motion/ripple.mbt:124:5-124:56@mbui (at rest at 2400 ms)",
-      "untraced: a press's ripple still moving as the run's next step came (mbui/src/motion/ripple.mbt:124)",
+      "its motion at rest at 2295.209228515625 ms, 16.55908203125 ms after the run's next step (2278.650146484375 ms; its timeline 13.2421875 ms later from its first step); said since the last step that acted: ",
+      "untraced: a motion at rest 16.6 ms after the run's next step, nothing said since the last step that acted (the list's ＋ a node's press since the stations' list was made once: sfpages' stations_list.mbt, page_add_node)",
+    ),
+  ),
+  (
+    "settings-vault-item",
+    (
+      "its motion at rest at 3178.962890625 ms, 84.2900390625 ms after the run's next step (3094.6728515625 ms; its timeline 47.491943359375 ms later from its first step); said since the last step that acted: ",
+      "traced: the stack's slide from 密钥 to 全部密钥 (src/ui/nav.mbt:368), as long as before (2829.9 to 3180.3 ms, the same at main); 密钥 made as nodes (sfpages' vault_node) takes 全部密钥's press between frames, its slide said at once from the press's moment, where the old view's was told as a frame built it and not yet said as the run's next step came: the run took that step before the slide was over",
     ),
   ),
   (
@@ -302,17 +272,10 @@ let strict_known : Map[String, (String, String)] = Map([
     ),
   ),
   (
-    "share-files",
+    "wide-switcher",
     (
-      "its motion at rest at 1466.6666666666665 ms, 60.553629557291515 ms after the run's next step (1406.113037109375 ms; its timeline 0 ms later from its first step); said since the last step that acted: image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:741:5-741:63@mbui (at rest at 1300 ms)",
-      "untraced: an image fading in as the run's next step came (mbui/src/ui/image.mbt:741)",
-    ),
-  ),
-  (
-    "share-new-chat",
-    (
-      "its motion at rest at 1466.6666666666665 ms, 6.895670572916515 ms after the run's next step (1459.77099609375 ms; its timeline 0 ms later from its first step); said since the last step that acted: the bar's springs, told at src/sfapp/bar.mbt:170:12-170:102@stillfail (at rest at 1096.608154296875 ms) | image \"mem:share-in/1\" fading in, told at src/ui/image.mbt:741:5-741:63@mbui (at rest at 1300 ms)",
-      "untraced: the bar's springs and an image fading in as the run's next step came",
+      "src/sfreplay/flows/wide_switcher_test.mbt:15:5-15:17@stillfail: not so at 1185.19140625 ms, the run's moment for it (its timeline 37.46728515625 ms later from its first step): so at 1201.19140625 ms, 16 ms later",
+      "untraced: ⌘K's panel goes as the chat its Enter opened comes on top, which waits for the face its page shows (`picture` with `kept`, sfbase's pictures_in): the replay gives that answer a frame after the run's moment for the panel gone (the trace recorded again 2026-11-17, ⌘K made as nodes)",
     ),
   ),
   (
@@ -325,8 +288,8 @@ let strict_known : Map[String, (String, String)] = Map([
   (
     "wide-places",
     (
-      "src/sfreplay/flows/wide_places_test.mbt:12:5-12:17@stillfail: not so at 1132.15087890625 ms, the run's moment for it (its timeline 11.18603515625 ms later from its first step): so at 1149.0439453125 ms, 16.89306640625 ms later",
-      "untraced (probed frame by frame): nothing moving at that moment; what it waits for is the core's next message, which the replay gives later than the run's moment (1132.9 ms): the replay's moment of giving, it seems, not the app's",
+      "src/sfreplay/flows/wide_places_test.mbt:12:5-12:17@stillfail: not so at 1092.735107421875 ms, the run's moment for it (its timeline 14.4169921875 ms later from its first step): so at 2084.735107421875 ms, 992 ms later",
+      "traced (recorded again 2026-11-17, its 文件 made once as nodes; main's app replays it the same): the run's app asked 文件's folder (driveBrowse, drive.browse, drive) before the core answered its `workspace`, so the trace has that answer after those asks, and the replay gives it only once they are made again (core/replay.mbt Replay::ready); the replay's app shows 文件, and makes its folder, once what it reads at rest is answered, `workspace` among it (sfbase/page_reads.mbt page_reads, sfdesk/frame.mbt pane_opens): each waits for the other till page_local_ms (1000 ms) lets the page show, 992 ms after the run's moment",
     ),
   ),
 ])

@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { decisionSessionIndexStep, decisionSessionRepairStep, hasLegacyDecisionSession, hasSharedDecisionSession, installDecisionSessionIndex } from "../src/store/legacy-decision-session.ts";
-import { decisionTimeIndexStep, installDecisionTimeIndex } from "../src/store/legacy-decision-time.ts";
+import { decisionSessionIndexStep, decisionSessionRepairStep, hasLegacyDecisionSession, hasSharedDecisionSession, installDecisionSessionIndex } from "./reference/backfill/legacy-decision-session.ts";
+import { decisionTimeIndexStep, installDecisionTimeIndex } from "./reference/backfill/legacy-decision-time.ts";
 
 function database(size: number, path = ":memory:"): DatabaseSync {
   const db = new DatabaseSync(path);

@@ -2,22 +2,21 @@
 // (ws1/st1) Claude subscription and its API key, wide; ChatGPT 团队's.
 
 ///|
-test "a profile's page, wide: who it is and whether it works, then its allowance, what it spent, who uses it, how it runs, sharing" {
+test "a profile's page, wide: who it is and whether it works, then its allowance and who uses it, sharing, settings" {
   let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
   // its head: its name, what it is (the core's words), its last check
   assert_true(t.find("Claude 主账号") is Some(_))
-  assert_true(t.find("订阅账号") is Some(_), msg="what it is")
-  assert_true(t.find("订阅有效") is Some(_), msg="its check in a line")
-  // what is left of its allowance, a dial each
+  assert_true(t.find("订阅账号 · Ultra") is Some(_), msg="what it is")
+  assert_true(t.find("订阅有效 · 5 分钟前检查") is Some(_), msg="its check in a line")
+  // what is left of its allowance, a dial each, and who uses it in the same card
   assert_true(t.find("额度") is Some(_))
   assert_true(t.find("5 小时") is Some(_) && t.find("本周") is Some(_), msg="its windows")
-  // who uses it, how it runs, whom it is shared with
-  scrolled_to(t, 1280.0, "使用它的连接")
-  assert_true(t.find("使用它的连接") is Some(_))
-  scrolled_to(t, 1280.0, "默认 Fast")
-  assert_true(t.find("默认 Fast") is Some(_))
+  assert_true(t.find("星火助手") is Some(_))
+  // whom it is shared with, and its settings
   scrolled_to(t, 1280.0, "分享给其他 station")
   assert_true(t.find("分享给其他 station") is Some(_), msg="sharing")
+  scrolled_to(t, 1280.0, "默认 Fast")
+  assert_true(t.find("默认 Fast") is Some(_))
 }
 
 ///|
@@ -94,7 +93,9 @@ test "a shared subscription's main switch and its station details remain usable 
     scrolled_to(t, w, "分享给其他 station")
     assert_eq(t.get(Switch, label="分享给其他 station").check, Some(On), msg=at)
     assert_true(t.find("所在 station") is Some(_) && t.find("可用的 station") is Some(_), msg=at)
-    assert_true(t.find("使用中：Maple") is Some(_), msg=at)
+    assert_true(t.find("将此账号迁移到其他 station") is Some(_), msg=at)
+    assert_true(t.find("允许其他 station 上的对话使用此账号") is Some(_), msg=at)
+    assert_true(t.find("选择哪些 station 可以使用此账号") is Some(_), msg=at)
     let boxes = t.boxes_held()
     let switch_title = boxes.filter(fn(b) { b.text == "分享给其他 station" })
     assert_eq(switch_title.length(), 1, msg=at)
@@ -209,60 +210,15 @@ fn drawn_names() -> Array[String] {
 }
 
 ///|
-/// Three places with the same account status: the current station, a link, and one still waiting for a profile (the
-/// account's own topic, `profile`, which its page reads them of).
-fn alignment_places(s : Source) -> Source {
-  fn shaped(v : Json) -> Json {
-    match v {
-      Object(o) => {
-        let p = o.copy()
-        for k, x in o { p[k] = shaped(x) }
-        if o.get("key") == Some(Json::string("ws1/st1/cc")) && o.contains("places") {
-          let place = fn(station : String, name : String, id : String) -> Json {
-            obj([
-              ("station", str(station)), ("stationName", str(name)), ("profileId", str(id)),
-              ("online", Json::boolean(true)), ("usable", Json::boolean(true)),
-              ("state", obj([("text", str("额度查询失败")), ("tone", str("amber"))])),
-            ])
-          }
-          p["places"] = Json::array([
-            place("ws1/st1", "Willow", "cc"),
-            place("ws1/st2", "Maple", "cc"),
-            place("ws1/st3", "Cedar", ""),
-          ])
-        }
-        Json::object(p)
-      }
-      Array(a) => Json::array(a.map(shaped))
-      _ => v
-    }
-  }
-  {
-    ..s,
-    topic_read: fn(name, params) {
-      let v = s.topic(name, params).get().snapshot()
-      if name == "profile" {
-        match v.value {
-          Some(x) => { ..v, value: Some(shaped(x)) }
-          None => v
-        }
-      } else { v }
-    },
-  }
-}
-
-///|
-test "an account's station statuses line up whether their rows open or not" {
+test "a shared account's station rows explain what each row is for without per-station status rows" {
   for (w, platform) in page_cases {
-    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, h=2400.0, over=alignment_places)
+    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, h=2400.0)
     let at = "\{w} platform \{platform}"
-    let statuses = t.boxes_held().filter(fn(b) { b.text == "额度查询失败" })
-    assert_eq(statuses.length(), 3, msg=at)
-    assert_eq(statuses[0].x, statuses[1].x, msg="\{at}: current and link")
-    assert_eq(statuses[2].x, statuses[1].x, msg="\{at}: pending and link")
-    assert_true(t.query(Link, label="Willow") is None, msg="\{at}: current does not open")
-    assert_true(t.query(Link, label="Maple") is Some(_), msg="\{at}: another station opens")
-    assert_true(t.query(Link, label="Cedar") is None, msg="\{at}: pending does not open")
+    assert_true(t.find("所在 station") is Some(_), msg=at)
+    assert_true(t.find("将此账号迁移到其他 station") is Some(_), msg=at)
+    assert_true(t.find("允许其他 station 上的对话使用此账号") is Some(_), msg=at)
+    assert_true(t.find("选择哪些 station 可以使用此账号") is Some(_), msg=at)
+    assert_true(t.query(Link, label="Maple") is None, msg="\{at}: per-station rows removed")
   }
 }
 
@@ -490,10 +446,11 @@ test "a subscription's resets of two kinds, a row each: what each gives back sai
 ///|
 test "a profile's models, a narrow page with a mouse: how many in a row; all of them in a panel, each a box to star; one named by hand added there, then taken off by its ×" {
   let t = setting_tester(Profile("ws1/st1", "cx"), 390.0)
-  scrolled_to(t, 390.0, "全部模型")
+  scrolled_to(t, 390.0, "可用模型")
   assert_true(t.find("12 个模型") is Some(_), msg="how many")
+  assert_true(t.find("勾选常用模型，或按名称添加自定义模型") is Some(_), msg="what clicking it does")
   assert_true(t.find("GPT-6-MINI") is None, msg="not laid out on the page")
-  t.tap_text("全部模型")
+  t.tap_text("可用模型")
   t.run_for(@kit.presence_in_ms)
   assert_true(@sf.presenting(), msg="a panel")
   assert_true(t.find("GPT-6-MINI") is Some(_), msg="every one it runs")
@@ -508,21 +465,24 @@ test "a profile's models, a narrow page with a mouse: how many in a row; all of 
   t.frame()
   t.frame()
   assert_true(t.query(Button, label="移除 MY-MODEL") is Some(_), msg="the model named, among the rest")
-  // its × takes it off again
+  // its × takes it off again (the sheet grown to hold it, on its way from as tall as it was: at rest)
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 MY-MODEL")
-  t.frame()
-  t.frame()
+  // (its row closing its room on its way)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="移除 MY-MODEL") is None, msg="taken off")
 }
 
 ///|
 test "a profile model's id appears beside the option the pointer is over" {
   let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
-  scrolled_to(t, 1280.0, "全部模型")
-  t.tap_text("全部模型")
+  scrolled_to(t, 1280.0, "可用模型")
+  t.tap_text("可用模型")
   t.run_for(@kit.presence_in_ms)
   for (name, id) in [("Opus 5.5", "claude-opus-5-5"), ("Sonnet 5", "claude-sonnet-5")] {
-    let (x, y, w, h) = t.rect_of(name).unwrap()
+    // (its name on its box's row in the panel, not where the page under it says it)
+    let (bx, by, _, bh) = t.get(Checkbox, label="喜欢 \{name}").rect
+    let (_, x, y, w, h, _) = t.words().filter(fn(e) { e.0 == name && e.1 > bx && (e.2 + e.4 / 2.0 - (by + bh / 2.0)).abs() < 2.0 })[0]
     t.move_to(x + w / 2.0, y + h / 2.0)
     t.run_for(@sf.tip_delay_ms + @kit.presence_in_ms)
     let tip = t.get(Tooltip, label=id).rect
@@ -585,22 +545,14 @@ fn long_profile(s : Source) -> Source {
 }
 
 ///|
-test "a profile's page on a phone: its long name, its figures on one line and how many models it runs, nothing squeezed" {
-  // (326, the page android 0.1.6389 cut its name, its Tokens figure and its models' names on, 2026-10-31)
+test "a profile's page on a phone: its long name and how many models it runs, nothing squeezed" {
   for w in [326.0, 390.0] {
     let t = setting_tester(Profile("ws1/st1", "cc"), w, platform=2, over=long_profile, h=2400.0)
     // (its switches' words, beside their switches, are another's)
     let faults = t.squeeze_faults().filter(fn(f) { !f.contains("for what shares their row") })
     assert_eq(faults, [], msg=w.to_string() + faults.join("; "))
-    assert_true(t.find("模型请求次数") is None && t.find("输入、缓存和输出") is None, msg="\{w}: no calls, nor what tokens are")
-    for f in ["$1,735", "49.7 亿", "最多 Opus 5.5", "4 个模型"] {
-      assert_true(t.find(f) is Some(_), msg="\{w}: \{f}")
-    }
-    // its figures side by side
-    let (_, y1, _, _) = t.rect_of("$1,735").unwrap()
-    let (x3, y3, w3, _) = t.rect_of("49.7 亿").unwrap()
-    assert_eq(y3, y1, msg="\{w}: one line")
-    assert_true(x3 + w3 <= w, msg="\{w}: inside the page")
+    assert_true(t.find("近 7 天") is None, msg="\{w}: usage removed from profile page")
+    assert_true(t.find("4 个模型") is Some(_), msg="\{w}: 4 个模型")
   }
 }
 
@@ -696,8 +648,8 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   }
   let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0, over=fusion_profile)
   assert_eq(calls.length(), 0)
-  scrolled_to(t, 1280.0, "全部模型")
-  t.tap_text("全部模型")
+  scrolled_to(t, 1280.0, "可用模型")
+  t.tap_text("可用模型")
   t.run_for(@kit.presence_in_ms)
   assert_eq(calls.map(fn(x) { x.0 }), ["profile.fusion"])
   assert_true(t.find("Fusion 组合") is Some(_))
@@ -721,4 +673,170 @@ test "a Devin profile's models panel asks Fusion pairs on demand, switches lead 
   let uid = "fusion-gpt-6-sol-sidekick-swe-2-medium"
   assert_true(calls[3].1.stringify().contains(uid), msg="profile.put saves \{uid}: \{calls[3].1.stringify()}")
   assert_true(calls[4].1.stringify().contains("\"liked\":true"), msg="pick.like likes \{uid}: \{calls[4].1.stringify()}")
+}
+
+///|
+test "profile page shows non-quota explanations and intermediate checking states" {
+  // 1. Subscription with unsupported quota (e.g. Devin / Kimi Code) and no usedBy still shows the quota card and detail.
+  let t_unsupported = setting_tester(Profile("ws1/st1", "cc"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = {
+            "state": "unsupported",
+            "detail": "Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看",
+            "windows": [],
+          }
+          Json::object(p)
+        }
+        Object(o) if o.get("connects") is Some(_) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          p["connects"] = Json::array([])
+          p["presets"] = Json::array([])
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_unsupported.find("额度") is Some(_))
+  assert_true(t_unsupported.find("Devin 不向 station 提供套餐用量，请在 app.devin.ai 的 Usage 页查看") is Some(_))
+
+  // 2. Subscription with unchecked quota (quota: null) shows 尚未查询额度, modelsReading shows 正在读取, and clicking 重新检查 dispatches both profile.check and profile.quota.
+  let calls : Array[String] = []
+  let t_unchecked = setting_tester(Profile("ws1/st1", "cc"), 1280.0, h=2400.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("cc")) => {
+          let p = o.copy()
+          p["quota"] = Json::null()
+          p["available"] = Json::array([])
+          p["modelsReading"] = Json::boolean(true)
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+      call: fn(name, params, done) {
+        if name == "profile.check" || name == "profile.quota" {
+          calls.push(name)
+        }
+        (s.call)(name, params, done)
+      },
+    }
+  })
+  assert_true(t_unchecked.find("订阅账号 · Ultra") is Some(_))
+  assert_true(t_unchecked.find("尚未查询额度") is Some(_))
+  assert_true(t_unchecked.find("正在读取") is Some(_))
+  t_unchecked.click(Button, label="重新检查")
+  t_unchecked.frame()
+  assert_eq(calls, ["profile.check", "profile.quota"])
+
+  // 3. Plain API key with check.state == "ok" and quota.detail shows its capabilities in the facts line and quota.detail in the header state line without a quota card.
+  let t_key = setting_tester(Profile("ws1/st1", "k2"), 1280.0, over=fn(s) {
+    fn shaped(v : Json) -> Json {
+      match v {
+        Object(o) if o.get("id") == Some(Json::string("k2")) => {
+          let p = o.copy()
+          p["checkTone"] = Json::string("green")
+          p["checkText"] = Json::string("可用")
+          p["checkLine"] = Json::string("8 个模型")
+          p["check"] = { "state": "ok", "time": { "checkedAt": { "ago": "5 分钟前" } } }
+          p["quota"] = { "state": "unsupported", "detail": "按量计费，无额度上限", "windows": [] }
+          Json::object(p)
+        }
+        Object(o) => {
+          let p = o.copy()
+          for k, x in o {
+            p[k] = shaped(x)
+          }
+          Json::object(p)
+        }
+        Array(a) => Json::array(a.map(shaped))
+        _ => v
+      }
+    }
+    {
+      ..s,
+      topic_read: fn(name, params) {
+        let r = s.topic(name, params).get().snapshot()
+        { ..r, value: r.value.map(shaped) }
+      },
+    }
+  })
+  assert_true(t_key.find("API key · Anthropic") is Some(_))
+  assert_true(t_key.find("可用于：") is Some(_))
+  assert_true(t_key.find("Claude Code") is Some(_))
+  assert_true(t_key.find("按量计费，无额度上限 · 5 分钟前检查") is Some(_))
+  assert_true(t_key.boxes_held().filter(fn(b) { b.text == "额度" }).is_empty())
+}
+
+///|
+test "a wide profile head aligns its 32 mark with the name's first line and starts the lines below at the mark's left edge" {
+  let t = setting_tester(Profile("ws1/st1", "cc"), 1280.0)
+  assert_eq(t.first_line_faults(), [])
+  assert_eq(t.line_start_faults(), [])
+  let name_word = t.words().filter(fn(w) { w.0 == "Claude 主账号" })[0]
+  let facts_word = t.words().filter(fn(w) { w.0 == "订阅账号 · Ultra" })[0]
+  let uses_word = t.words().filter(fn(w) { w.0 == "可用于：" })[0]
+  let state_word = t.words().filter(fn(w) { w.0.contains("订阅有效") })[0]
+  let mark_boxes = t.boxes_held().filter(fn(b) {
+    (b.w - 32.0).abs() <= 0.5 &&
+    (b.h - 32.0).abs() <= 0.5 &&
+    b.x < name_word.1 &&
+    (b.y - name_word.2).abs() < 20.0
+  })
+  assert_true(mark_boxes.length() > 0)
+  let mark = mark_boxes[0]
+  let mark_mid = mark.y + mark.h / 2.0
+  let name_mid = name_word.2 + name_word.4 / 2.0
+  assert_true(
+    (mark_mid - name_mid).abs() <= 2.0,
+    msg="mark_mid=\{mark_mid} name_mid=\{name_mid}",
+  )
+  assert_true(
+    (facts_word.1 - mark.x).abs() <= 1.0,
+    msg="facts_x=\{facts_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    (uses_word.1 - mark.x).abs() <= 1.0,
+    msg="uses_x=\{uses_word.1} mark_x=\{mark.x}",
+  )
+  assert_true(
+    state_word.1 < name_word.1,
+    msg="state_x=\{state_word.1} name_x=\{name_word.1}",
+  )
 }

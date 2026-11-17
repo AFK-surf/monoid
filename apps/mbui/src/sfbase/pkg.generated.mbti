@@ -248,6 +248,8 @@ pub fn core_doing(Source, Array[String], Array[(String, String)]) -> Bool
 
 pub fn core_failed(Source, Array[String], Array[(String, String)]) -> String?
 
+pub fn core_failed_of(Source, (@json.Json) -> Bool) -> String?
+
 pub fn core_topic_params(String, Map[String, @json.Json]) -> Map[String, @json.Json]
 
 pub fn count(@json.Json?, String) -> Int32
@@ -626,7 +628,7 @@ pub fn flight_grounded(@ui.Ctx, SendFlight) -> Bool
 
 pub fn flight_hint_away(@ui.Ctx, String) -> Bool
 
-pub fn flight_landing(@ui.Ctx, SendFlight, Int32, String, share? : (Double, Double), top_crop? : Bool, paint? : ((Double, Double, @ui.Fit, Double) -> Unit)?) -> Unit
+pub fn flight_landing(@ui.Ctx, SendFlight, Int32, String, share? : (Double, Double), start_crop? : Bool, paint? : ((Double, Double, @ui.Fit, Double) -> Unit)?) -> Unit
 
 pub fn flight_landing_words(@ui.Ctx, SendFlight, Int32) -> Unit
 
@@ -683,8 +685,6 @@ pub fn flight_words_key(SendFlight) -> String
 pub fn flights_reset() -> Unit
 
 pub fn floor_of(@ui.Ctx, Reading, String, Array[String]) -> Double
-
-pub let flow_ahead : Int32
 
 pub let flow_part : Int32
 
@@ -1106,7 +1106,7 @@ pub let note_pop_ms : Double
 
 pub let note_subtle : Int64
 
-pub fn note_thumb(@ui.Ctx, String, Int32, Double, picture~ : String, letterbox? : Bool, top_crop? : Bool, list? : String, over? : (Double) -> Unit, said? : String) -> Unit
+pub fn note_thumb(@ui.Ctx, String, Int32, Double, picture~ : String, letterbox? : Bool, start_crop? : Bool, list? : String, over? : (Double) -> Unit, said? : String) -> Unit
 
 pub let notice_host : @ref.Ref[NoticeHost]
 
@@ -1168,7 +1168,7 @@ pub let options_out_ms : Double
 
 pub let options_scale : Double
 
-pub let outside_ask : @ref.Ref[OutsideAsk?]
+pub let outside_ask : @signals.Signal[OutsideAsk?]
 
 pub fn outside_asking(String) -> OutsideAsk?
 
@@ -1194,9 +1194,9 @@ pub fn page_entry_read(Int32, Source, Page) -> Unit
 
 pub fn page_entry_source(Source, @view.View, Int32) -> Source
 
-pub fn page_glass() -> @paint.Glass
+pub fn page_faces() -> Array[Bytes]
 
-pub let page_glass_blur : Double
+pub fn page_glass() -> @paint.Glass
 
 pub let page_js : String
 
@@ -1548,6 +1548,8 @@ pub fn sent_local(String, ChatView?, String, Array[@json.Json], going? : Array[@
 
 pub fn sent_local_gone(String, String) -> Unit
 
+pub fn sent_local_taken(String, Map[String, String]) -> Unit
+
 pub fn sent_picture(String, Attachment) -> String?
 
 pub let sent_pictures : Map[String, String]
@@ -1619,8 +1621,6 @@ pub fn share_offer(Double, Double, () -> Unit, String, String, String) -> Unit
 pub fn share_turn_tool(@ui.Ctx, String, Int32, String, String, () -> Unit) -> Unit
 
 pub let shared_into : Map[String, Array[@hostapi.Picked]]
-
-pub fn sharing_go(String) -> Unit
 
 pub let shell : @ref.Ref[Shell]
 
@@ -1717,8 +1717,6 @@ pub fn tag_place(Bytes, Bool) -> Int32?
 pub fn tagging_new() -> Tagging
 
 pub fn tagging_take(Tagging, Bytes, Bool) -> Bytes
-
-pub fn tap_stage(@ui.Ctx, Viewer, Int32) -> Unit
 
 pub fn tell_focus(Source, ChatRef, ChatView, Reading, Bool, Double) -> Unit
 
@@ -1980,6 +1978,8 @@ pub fn whole_row(Source, ChatItem) -> ChatItem?
 pub fn window_front(Page) -> Bool
 
 pub fn window_opens_for(Page) -> Bool
+
+pub let wheel_rest_ms : Double
 
 pub fn window_page(String) -> Page?
 
@@ -2840,6 +2840,8 @@ pub(all) struct Message {
   notice_again_session : String
   notice_reassign_session : String
   notice_detail : String
+  notice_count : Int32
+  notice_last_seq : Double
   notice_short : String
   notice_lines : Array[String]
   notice_sides : RunSides?
@@ -2915,7 +2917,6 @@ pub(all) struct OutsideAsk {
   send : () -> Unit
   chats : @sf.LiveArray[OutsideRef]
   checking : @signals.Signal[Bool]
-  go : @signals.Signal[Bool]
   open : @signals.Signal[Bool]
   busy : @signals.Signal[Bool]
   error : @signals.Signal[String]
@@ -3484,7 +3485,7 @@ pub(all) struct Thumb {
   h : Double
   corners : @motion.MeasuredCorners
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
   seen : (Double, Double, Double, Double)?
   clear : (Double, Double)?
@@ -3497,7 +3498,7 @@ type ThumbDrawn
 pub(all) struct ThumbLook {
   radius : Double
   letterbox : Bool
-  top_crop : Bool
+  start_crop : Bool
   picture : String
   id : Int32
   list : String

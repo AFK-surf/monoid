@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { constants, DatabaseSync } from "node:sqlite";
 import { test } from "node:test";
-import { installSigninSaveIndex, SIGNIN_SAVE, signinForSave, signinSaveComplete, stepSigninSaveIndex } from "../src/vault/signin-save-index.ts";
+import { installSigninSaveIndex, SIGNIN_SAVE, signinForSave, signinSaveComplete, stepSigninSaveIndex } from "./reference/backfill/signin-save-index.ts";
 
 function fixture() {
   const db = new DatabaseSync(":memory:");

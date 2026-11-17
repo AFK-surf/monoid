@@ -8,6 +8,7 @@ import type { Attachment } from "../store/rows.ts";
 import { CcSessionsUnavailable } from "../store/cc-thread-index.ts";
 import type { Hub } from "./hub.ts";
 import { STATION_AUTHOR } from "../store/rows.ts";
+import { markNotice } from "./chat.ts";
 
 /// What the bot says there: who said it on still.fail, then their words as they wrote them.
 export function ccText(who: string, said: string): string {
@@ -21,7 +22,7 @@ async function sayFailure(hub: Hub, thread: number, place: string, error: Error)
     const here = hub.store.threadSessions(thread)[0];
     if (chat === null || here === undefined) return;
     const note = tr(stationLang(), "station.cc.failed", { place, error: error.message });
-    const at = await hub.chat(here.connect).post({ channel: chat.channel, threadTs: chat.threadTs }, note, []);
+    const at = await hub.chat(here.connect).post({ channel: chat.channel, threadTs: chat.threadTs }, markNotice(note), []);
     hub.store.insertMessage({ thread, ts: at, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text: note, attachments: [] });
   } catch (again) {
     log.warn("hub", "a copy's failure was not said in its chat", { thread, error: (again as Error).message });
@@ -56,7 +57,7 @@ export async function cc(hub: Hub, thread: number, who: string, email: string, s
       hub.store.insertMessage({ thread: o.thread.id, ts, authorKind: STATION_AUTHOR, author: STATION_AUTHOR, text, attachments: files });
     } catch (error) {
       log.warn("hub", "a message was not copied to a thread of its chat", { thread, to: o.thread.id, error: (error as Error).message });
-      const place = o.thread.surface.startsWith("feishu:") ? "Feishu" : "Slack";
+      const place = o.thread.surface.startsWith("feishu:") ? "Feishu" : o.thread.surface.startsWith("group:") ? "group" : "Slack";
       await sayFailure(hub, thread, place, error instanceof Error ? error : new Error(String(error)));
     }
   }));

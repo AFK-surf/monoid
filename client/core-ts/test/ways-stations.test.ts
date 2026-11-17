@@ -16,10 +16,14 @@ const B = "bb".repeat(32);
 function fakeInner(answers: Record<string, (method: string, body: unknown) => Effect.Effect<unknown, CoreError>>) {
   const records = new Map<string, unknown>();
   const asked: string[] = [];
-  const also: { read: (address: string) => Effect.Effect<void, CoreError>; event: (address: string, name: string, data: unknown) => void }[] = [];
+  const also: { read: (address: string) => Effect.Effect<void, CoreError>; event: (address: string, name: string, data: unknown) => void; resumed?: (address: string) => Effect.Effect<void, CoreError> }[] = [];
   const enqueued: Effect.Effect<unknown, unknown>[] = [];
+  // What the mesh was told of each station's ways.
+  const told: string[] = [];
+  const mesh = { setWays: (address: string, theirs: string[], off: string[]) => void told.push(`${address} ${theirs.join(",")} off=${off.join(",")}`) };
   const inner = {
     provider: { kind: "stillfail" },
+    meshNow: () => mesh,
     data: {
       record: (table: string, key: string) => records.get(`${table}:${key}`),
       put: (table: string, key: string, value: unknown) => void records.set(`${table}:${key}`, value),
@@ -39,7 +43,7 @@ function fakeInner(answers: Record<string, (method: string, body: unknown) => Ef
     scheduler: { enqueue: (_a: string, _k: string, _p: unknown, e: Effect.Effect<unknown, unknown>) => void enqueued.push(e) },
   } as unknown as Inner;
   install(inner);
-  return { inner, records, asked, also, enqueued };
+  return { inner, records, asked, also, enqueued, told };
 }
 
 const run = <X>(e: Effect.Effect<X, CoreError>) => Effect.runPromise(Effect.result(e));
@@ -113,4 +117,36 @@ test("where none keeps them the cloud is written by the cloud's own op, not a st
     handlers.op = stationOp;
     cloudOp.run = was;
   }
+});
+
+test("ways kept are told the mesh at once for each of the workspace's stations, the links open going them with no request", async () => {
+  // 2026-11-16: its own relay added and still.fail's turned off, the streams open stayed on still.fail's relays until a
+  // request opened a link again.
+  const f = fakeInner({ [`ws/${A}`]: () => Effect.succeed({ relays: [{ url: "https://own.test" }], off: ["ours"], at: 5, station: A }) });
+  for (const h of f.also) await run(h.read(`ws/${A}`));
+  assert.deepEqual(f.told, [`ws/${A} https://own.test off=ours`, `ws/${B} https://own.test off=ours`]);
+  // One older than what is kept: nothing told.
+  const g = fakeInner({ [`ws/${A}`]: () => Effect.succeed(kept(5, A, "https://one.test")), [`ws/${B}`]: () => Effect.succeed(kept(3, B, "https://old.test")) });
+  for (const h of g.also) await run(h.read(`ws/${A}`));
+  for (const h of g.also) await run(h.read(`ws/${B}`));
+  assert.deepEqual(g.told, [`ws/${A} https://one.test off=`, `ws/${B} https://one.test off=`]);
+});
+
+test("a stream come back resumed reads the ways where the device keeps none and the station has not answered this run, else asks nothing", async () => {
+  // A core updated to this, its stream restored from the cursor its last kept: the ways changed before were never told.
+  const f = fakeInner({ [`ws/${A}`]: () => Effect.succeed(kept(5, A, "https://own.test")), [`ws/${B}`]: () => Effect.fail(new CoreError("http_404", "no route", 404)) });
+  const resumed = (address: string) => Promise.all(f.also.map((h) => (h.resumed ? run(h.resumed(address)) : undefined)));
+  await resumed(`ws/${A}`);
+  assert.deepEqual(f.asked, [`ws/${A} GET /ways`]);
+  assert.deepEqual(keptWays(f.inner, "ws")?.relays, [{ url: "https://own.test" }]);
+  // Kept now: nothing asked of either.
+  await resumed(`ws/${A}`);
+  await resumed(`ws/${B}`);
+  assert.deepEqual(f.asked, [`ws/${A} GET /ways`]);
+  // None kept, a station from before (404): asked once a run.
+  const g = fakeInner({ [`ws/${B}`]: () => Effect.fail(new CoreError("http_404", "no route", 404)) });
+  const again = (address: string) => Promise.all(g.also.map((h) => (h.resumed ? run(h.resumed(address)) : undefined)));
+  await again(`ws/${B}`);
+  await again(`ws/${B}`);
+  assert.deepEqual(g.asked, [`ws/${B} GET /ways`]);
 });

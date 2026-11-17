@@ -5,10 +5,10 @@ import { TestClock } from "effect/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Roots } from "../src/read/machine.ts";
-import { CommandMissing } from "../src/agents/runner.ts";
+import type { Roots } from "./reference/machine.ts";
+import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
-import type { ChatMessage, ChatSurface, InboundFile, InboundMessage, ThreadRef } from "../src/sessions/chat.ts";
+import { type ChatMessage, type ChatSurface, type InboundFile, type InboundMessage, NOTICE_MARK, type ThreadRef } from "../src/sessions/chat.ts";
 import { type HubConfig, hubConfig } from "../src/sessions/config.ts";
 import { type ColdStorage, Hub } from "../src/sessions/hub.ts";
 import { InternalChat } from "../src/sessions/internal.ts";
@@ -16,7 +16,8 @@ import { answerFiles } from "../src/slack/surface.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { type Attachment, Store } from "../src/store/store.ts";
 import { letterMessage } from "../src/store/rows.ts";
-import { CcIndexPreparation } from "../src/store/cc-thread-index.ts";
+import { CcIndexPreparation } from "./reference/backfill/cc-thread-index.ts";
+import { actorsBusy } from "../src/sessions/mb-actor.ts";
 
 type Json = any;
 
@@ -38,6 +39,8 @@ export class FakeChat implements ChatSurface {
   files: string[][] = [];
   /// The card each post carried (null: none).
   carried: Json[] = [];
+  /// The posts that were a station's notice, by their place in `posts`.
+  marked: number[] = [];
   /// Like a Slack app without files:write.
   noFiles = false;
   /// The bytes of files shared in messages, by file id (others cannot be read); the ids fetched, in order.
@@ -68,12 +71,17 @@ export class FakeChat implements ChatSurface {
   whilePosting: (() => Promise<void>) | null = null;
   async post(thread: ThreadRef, message: string, files: Attachment[], card?: Json | null) {
     if (files.length > 0 && this.noFiles) throw new Error("slack files.getUploadURLExternal: missing_scope");
+    // (a station's ⚠️ words are its notice, which another station must be able to tell from a person's message: one
+    // posted without the mark is refused, so every test that makes one fails)
+    if (message.startsWith("⚠️") && !message.endsWith(NOTICE_MARK)) throw new Error(`a station's notice posted without NOTICE_MARK: ${message}`);
     const meanwhile = this.whilePosting;
     this.whilePosting = null;
     await meanwhile?.();
     this.files.push(files.map((f) => f.name));
     this.carried.push(card ?? null);
-    this.posts.push([thread, message]);
+    // (a station's notice ends with its mark, chat.ts NOTICE_MARK: recorded as people read it; `marked` says which)
+    if (message.endsWith(NOTICE_MARK)) this.marked.push(this.posts.length);
+    this.posts.push([thread, message.replaceAll(NOTICE_MARK, "")]);
     return `${9_000_000 + next()}.000200`;
   }
   async edit(thread: ThreadRef, ts: string, message: string) {
@@ -215,6 +223,8 @@ export class FakeDriver implements AgentDriver {
   sessions: FakeSession[] = [];
   /// Runtime session ids that resume fails for.
   unresumable = new Set<string>();
+  /// What resuming a runtime session fails with the next time it is asked (once), as the network or a borrowing does.
+  resumeFailsOnce = new Map<string, Error>();
   /// Why every process it is asked to start does not (like a borrowed login its host did not lend).
   refuses: string | null = null;
   /// Its command is not on PATH: every start fails as the runner says it (not installed).
@@ -224,6 +234,11 @@ export class FakeDriver implements AgentDriver {
   shutdowns = 0;
   /// What the runner of a station that crashed keeps, taken up with no snapshot (as the driver finds it on its own).
   left: { id: string; busy: boolean; mcpUrl?: string } | null = null;
+  /// The runners it holds, where a test has it say (agents/runtime.ts `ownedRunners`); unset, it holds every one of
+  /// its runtime's (hub.ts `ownsRunner`).
+  ownedRunners?: () => ReadonlySet<string>;
+  /// What it ends of what it keeps idle, the machine short of memory, where a test has it (agents/runtime.ts `evictIdle`).
+  evictIdle?: () => Promise<number>;
 
   constructor(kind: "claude" | "codex") {
     this.kind = kind;
@@ -243,6 +258,11 @@ export class FakeDriver implements AgentDriver {
     if (this.missing) throw new CommandMissing(this.kind);
     if (this.refuses !== null) throw new Error(this.refuses);
     if (options.resume !== undefined && this.unresumable.has(options.resume)) throw new Error("no such session");
+    const once = options.resume === undefined ? undefined : this.resumeFailsOnce.get(options.resume);
+    if (once !== undefined) {
+      this.resumeFailsOnce.delete(options.resume!);
+      throw once;
+    }
     const session = new FakeSession(options.resume ?? `${this.kind}-${this.n++}`, options, events);
     this.sessions.push(session);
     return session;
@@ -269,7 +289,8 @@ export class FakeDriver implements AgentDriver {
 export async function settle(rounds = 100) {
   for (let quiet = 0; quiet < rounds; ) {
     await new Promise((r) => setImmediate(r));
-    quiet = process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback") ? 0 : quiet + 1;
+    // (a file handle's close, the last step of fs/promises' writeFile and readFile, is a request of its own: CloseReq)
+    quiet = actorsBusy() || process.getActiveResourcesInfo().some((r) => r === "FSReqPromise" || r === "FSReqCallback" || r === "CloseReq") ? 0 : quiet + 1;
   }
 }
 
@@ -363,7 +384,9 @@ export class Rig {
     if (o.maxWarmClaude !== undefined) this.raw.maxWarmClaude = o.maxWarmClaude;
     if (o.warmMinutes !== undefined) this.raw.warmMinutes = o.warmMinutes;
     this.config = hubConfig(this.raw, this.dir);
-    this.store = Store.open(o.fileStore ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
+    // In a file, as a station's: the sessions' actors read and write it themselves where they run in the MoonBit program
+    // (sessions/mb-actor.ts), which one in memory would keep from them (`fileStore: false`: in memory all the same).
+    this.store = Store.open(o.fileStore !== false ? join(this.dir, "stillfail.db") : ":memory:", null, o.clock);
     const chats = new Map<string, ChatSurface>([
       ["cl", this.chat],
       ["gpt", this.gptChat],
@@ -379,7 +402,7 @@ export class Rig {
   workspaces: string[] | undefined;
 
   /// A hub over this rig's store and config (another station's, after a restart: given its own drivers).
-  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[] }) {
+  newHub(o: { chats: (id: string) => ChatSurface | undefined; link?: boolean; cold?: ColdStorage; drivers?: AgentDriver[]; internal?: boolean; mcpUrl?: string; runners?: string[]; endRunner?: (info: RunnerInfo) => Promise<unknown> }) {
     const hub = new Hub({
       config: () => this.config,
       store: this.store,
@@ -391,6 +414,7 @@ export class Rig {
       workspaces: this.workspaces ? () => this.workspaces! : undefined,
       station: () => this.place.station,
       runners: () => o.runners ?? [],
+      endRunner: o.endRunner,
       cold: o.cold,
       clock: this.clock,
       machineRoots: () => this.roots ?? { claude: join(this.dir, "no-machine/claude"), codex: join(this.dir, "no-machine/codex") },

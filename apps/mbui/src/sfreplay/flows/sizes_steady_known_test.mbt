@@ -6,11 +6,8 @@
 fn init {
   @ui.sizes_steady_known([
     ("src/sfapp/tape.mbt", 1),
-    ("src/sfreplay/flows/archive_restore_test.mbt", 1),
     ("src/sfreplay/flows/glass_test.mbt", 1),
     ("src/sfreplay/flows/new_chat_test.mbt", 1),
-    ("src/sfreplay/flows/service_page_test.mbt", 1),
-    ("src/sfreplay/flows/settings_connect_test.mbt", 4),
     ("src/sfreplay/flows/settings_run_settings_test.mbt", 1),
     ("src/sfreplay/flows/settings_vault_item_test.mbt", 1),
     ("src/sfreplay/flows/share_new_chat_test.mbt", 1),
@@ -20,6 +17,6 @@ fn init {
     // chat page's state row (made at mbui/src/ui/nav_view.mbt:258, the old view's) step 4.03 in the frame at 1383.3
     // between 0 and -0.6, the row's change set out from the frame that builds it. Goes as the chat page is made as
     // nodes)
-    ("src/sfreplay/flows/wide_switcher_test.mbt", 2),
+    ("src/sfreplay/flows/wide_switcher_test.mbt", 1),
   ])
 }

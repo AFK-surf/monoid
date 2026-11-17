@@ -433,7 +433,7 @@ fn mark_grid_node(
       }
     }
     l
-  })
+  }, same=fn(a, b) { a == b })
   // (a block's key: what it shows of, the side and the words typed, then which; under none alone, that none was found)
   let of = fn() { if st.side.get() == 1 { "e//" } else { "g/" + st.query.text() + "/" } }
   let keys = fn() {
@@ -532,10 +532,11 @@ fn mark_row_node(
         } else if emojis {
           @sf.words_node(cell, fn() { key }, fn() { mark_emoji_words }) |> ignore
         } else {
-          @sf.station_mark_node(cell, fn() { "" }, fn() { "glyph:" + key }, mark_glyph, fn() {
+          // (the glyph alone: what a mark could be besides is none of a cell's)
+          @sf.glyph_mark_node(cell, key, mark_glyph, fn() {
             let t = @sf.theme()
             mark_color(st.color.get()).unwrap_or(if on { t.p.accent_text } else { t.p.text })
-          }, fn() { 0 })
+          })
         }
         // (a finger's press rippling over it, as an old row's: square outside a card)
         @sf.rippled_node(cell, press, 0.0, fn() { label })

@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "../src/store/chat-list-scope-build.ts";
-import { installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { settleRecentWorkspaceOrderStep } from "../src/store/chat-list-scope-order.ts";
-import { readPreparedRecentWorkspace } from "../src/store/chat-list-scope-rows.ts";
-import { settleRecentScopeVisibilityStep } from "../src/store/chat-list-scope-visibility.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep, settleRecentWorkspaceSessionStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { settleRecentWorkspaceOrderStep } from "./reference/chat-list/chat-list-scope-order.ts";
+import { readPreparedRecentWorkspace } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { settleRecentScopeVisibilityStep } from "./reference/chat-list/chat-list-scope-visibility.ts";
 import { Store } from "../src/store/store.ts";
 
 for (const recursive of [false, true]) test(`many unrelated shared home changes do not block a small workspace (recursive triggers ${recursive})`, () => {

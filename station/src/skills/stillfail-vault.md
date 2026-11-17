@@ -46,6 +46,11 @@ station's profiles), or anything the person said not to keep.
   - None of these, for one you do not have: the card has a field the person types or pastes it in (a login's account
     too, when you give no `username`; a file, a button that picks it), kept as they approve it and never shown to you. Say in `reason` where they get it
     (OpenCode 控制台 → API Keys), and give `hosts` and `env` as for any.
+  - `oauth: "slack"` (kind `token`, none of the above): the person's own Slack account, to call Slack's Web API as
+    them (search, read and post as themselves, where the workspace's bot is not them): the card has them sign in on
+    Slack's page in the app, their user token kept as they do, given through the proxy to `slack.com` alone. Look in
+    `secret_list` first: one kept is named `Slack · <workspace> · <their name>`. Use it with `secret_run` and
+    `Authorization: Bearer $STILLFAIL_SECRET` on `https://slack.com/api/<method>`.
   - `kind`: `token` (an API key, a bearer token), `login` (a password, with `username`), `ssh_key` (a private key, with
     `public_key` if known), `file` (a credential that is a whole file, at most 64 KB: a kubeconfig, a service account's
     JSON key, a `.p12` certificate, a `.env`), `browser` (a sign-in to websites, `hosts` the sites: their cookies and
@@ -57,8 +62,8 @@ station's profiles), or anything the person said not to keep.
     `file` for a file: each command gets it written out where only it reads it, removed when it ends, its path in
     `env` (`KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`) and `$STILLFAIL_SECRET`.
   - `name`: what a person and the next agent know at a glance: the service and the account or site, and where it is
-    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · AFK-surf/still.fail, UniFi 后台登录态（经
-    Studio 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
+    reached when that is not plain (测试服务 admin 登录, GitHub deploy token · acme/web, 路由器后台登录态（经
+    家里那台 Mac 转发到 127.0.0.1:8443）). Never a bare host (`127.0.0.1 登录态`): nobody knows what it was.
   - `about` (required): what it is for and how it is used, in the person's language: what it opens, the steps to reach it
     (a forward from which station, a tunnel, the page to open), the tool or command that takes it. `secret_list` shows
     it to every agent after you beside the name; never a secret in it.

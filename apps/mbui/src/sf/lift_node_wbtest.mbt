@@ -37,7 +37,7 @@ test "lifted as lift_of's: on lift_spring from the moment its menu is said up, b
       root.val = Some(r)
       r.box(fn(b) {
         b.width(Is(Some(lift_test_side))).height(Is(Some(lift_test_side))).ground(Is(lift_test_ink)) |> ignore
-        lift_node(b, fn() { false }, fn() { open.get() }, lift_test_scale)
+        lift_node(b, fn() { false }, fn() { open.get() }, lift_test_scale) |> ignore
       })
       |> ignore
     },
@@ -83,7 +83,7 @@ test "lifted with its menu up from the foot: drawn over the scrim, and up clear 
         .height(Is(Some(lift_test_side)))
         .ground(Is(lift_test_ink))
         |> ignore
-        lift_node(b, fn() { false }, fn() { presented_from(Node(b)) }, lift_test_scale)
+        lift_node(b, fn() { false }, fn() { presented_from(Node(b)) }, lift_test_scale) |> ignore
       })
       |> ignore
     },

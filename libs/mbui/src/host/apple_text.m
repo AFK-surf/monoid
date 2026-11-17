@@ -8,6 +8,8 @@
 #import <ImageIO/ImageIO.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdlib.h>
+#include <string.h>
 
 static double text_scale = 2.0;
 
@@ -313,16 +315,27 @@ void mb_host_font_metrics(double size, int32_t weight, int32_t style, double *ou
   out[5] = 0;  // lines as asked, not on whole pixels
 }
 
+// Whether Core Text's own spacing of Chinese and Japanese words is left out (MBUI_AUTOSPACE=off or =mbui, a picture
+// of words set as a shaper that spaces none sets them, or as mbui spaces them: hostapi's words_spaced): the line said
+// to be English, where Core Text (macOS 27) puts no room between Han and a Latin letter and sets no full-width mark
+// closer, its letters kerned as before.
+static int unspaced(void) {
+  static int said = -1;
+  if (said < 0) {
+    const char *v = getenv("MBUI_AUTOSPACE");
+    said = v && (strcmp(v, "off") == 0 || strcmp(v, "mbui") == 0);
+  }
+  return said;
+}
+
 // style & 8: no ligatures (words with letter spacing, each cluster spaced on its own)
 static CTLineRef make_line(NSString *s, CTFontRef f, int style) {
-  NSDictionary *attrs = (style & 8) ? @{
+  NSMutableDictionary *attrs = [@{
     (__bridge id)kCTFontAttributeName : (__bridge id)f,
     (__bridge id)kCTForegroundColorFromContextAttributeName : @YES,
-    (__bridge id)kCTLigatureAttributeName : @0,
-  } : @{
-    (__bridge id)kCTFontAttributeName : (__bridge id)f,
-    (__bridge id)kCTForegroundColorFromContextAttributeName : @YES,
-  };
+  } mutableCopy];
+  if (style & 8) attrs[(__bridge id)kCTLigatureAttributeName] = @0;
+  if (unspaced()) attrs[(__bridge id)kCTLanguageAttributeName] = @"en";
   NSAttributedString *as = [[NSAttributedString alloc] initWithString:s attributes:attrs];
   return CTLineCreateWithAttributedString((__bridge CFAttributedStringRef)as);
 }
@@ -809,6 +822,23 @@ void mb_host_glyph_put(int32_t key, int32_t x, int32_t y) {
   mb_atlas_upload(colour, x - (colour ? MB_ATLAS_COLOR_U : 0), y, held.pw, held.ph, held.px);
   held = nil;
   held_key = -1;
+}
+
+// A glyph's picture given back, pixels made by MoonBit put in the atlas (words' halo, src/ui/halo.mbt): none here
+// yet, so no halo is drawn (win_text.cpp's are).
+int32_t mb_host_glyph_picture(int32_t key, moonbit_bytes_t out) {
+  (void)key;
+  (void)out;
+  return 0;
+}
+
+int32_t mb_host_atlas_put(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t px) {
+  (void)x;
+  (void)y;
+  (void)w;
+  (void)h;
+  (void)px;
+  return 0;
 }
 
 // ---------------------------------------------------------------------------

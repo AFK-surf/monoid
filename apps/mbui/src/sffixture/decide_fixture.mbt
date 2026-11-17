@@ -7,12 +7,16 @@
 // "chat-job"; "chat-letters-many" (their sheet, more chats written with than it holds at its share: its list
 // scrolling in it); "chat-letters-info" (the chat's sheet with its row for what its agents and other chats' wrote each
 // other), "chat-letters" (their sheet: the chats written with), "chat-letters-open" (one of them opened); the wide
-// frame's "chat-letters-pop" (the chat's "…" open), "chat-jobs-pop" (its services' popover), "chat-letters-side",
-// "chat-jobs-side", "chat-history-side", "chat-service-side" (what is opened beside it: its web service's page, its bar
+// frame's "chat-letters-pop" (the chat's "…" open), "chat-jobs-pop" (its services' popover), "chat-jobs-bar" (the
+// chat with its services, their popover not open: its bar's button to open it), "chat-letters-side",
+// "chat-jobs-side", "chat-history-side", "chat-history-side-working" (that with its agent at work: what its history's head
+// shows only then), "chat-service-side" (what is opened beside it: its web service's page, its bar
 // at the panel's width), "chat-tabs-side" (two of them: the history behind
 // 任务), "chat-model-pop" (its agent's model control's panel
 // open), "chat-model-accounts" (its accounts open over it), "chat-find" (⌘F's bar, a word typed in it), "chat-agent-card" (the chat, its agent's details and card read:
-// what its card over its picture says); "home-jobs"
+// what its card over its picture says); "home-foot" (the wide frame's rail with no bell: the sidebar's foot with
+// Maple offline and a service left up long, home-jobs's; "home-foot-many": sixteen of them, more than its panel's
+// room); "home-jobs"
 // (Home with the jobs left up a long while at its top); "home-jobs-screens" (and simulators and views of screens
 // left up long, each with its 关闭 or 断开); "home-attention" (the wide frame's 待处理 open: a decision to let
 // go, a failure looked at, a station offline); "home-syncing" (Home catching up on what changed while away: the line
@@ -26,9 +30,9 @@ pub fn decide_mode(mode : String) -> Bool {
     "history", "history-reading", "history-failed", "history-older", "history-older-failed", "history-details",
     "chat-info", "chat-detail", "chat-actions", "chat-publish", "chat-agent", "chat-agent-unsaid", "chat-peek", "chat-jobs", "chat-job", "home-jobs", "home-jobs-screens", "history-link",
     "chat-letters-info", "chat-letters", "chat-letters-many", "chat-letters-open", "chat-letters-pop", "chat-letters-side", "chat-jobs-pop",
-    "chat-things", "chat-things-side", "chat-info-pulls",
-    "chat-jobs-side", "chat-history-side", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
-    "chat-station-tag", "home-attention", "home-syncing",
+    "chat-jobs-bar", "chat-things", "chat-things-side", "chat-info-pulls",
+    "chat-jobs-side", "chat-history-side", "chat-history-side-working", "chat-service-side", "chat-tabs-side", "chat-model-pop", "chat-model-accounts", "chat-find", "chat-agent-card",
+    "chat-station-tag", "home-attention", "home-syncing", "home-foot", "home-foot-many",
   ].contains(mode)
 }
 
@@ -357,6 +361,8 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       } else if session == "s-c1" && (f.mode == "chat-station-tag" || f.mode == "chat-actions") {
         // no agent in it yet: its station's tag in its bar (pressed by the film's step: its card beside it)
         Some(base.map(fn(b) { fix_no_agent(fix_detailed_chat(b)) }))
+      } else if session == "s-c1" && f.mode == "chat-history-side-working" {
+        Some(base.map(fn(b) { with_working(fix_detailed_chat(b)) }))
       } else if session == "s-c1" {
         Some(base.map(fix_detailed_chat))
       } else {
@@ -448,7 +454,9 @@ pub fn decide_fixture_topic(f : Fixture, name : String, params : Map[String, Jso
       // (待处理 beside the rail's bell lists them over its chats: the panel as it was reported, 2026-11-12)
       if f.mode == "home-jobs-screens" || f.mode == "home-attention" {
         Some(Some(long_screens_view()))
-      } else if f.mode == "home-jobs" {
+      } else if f.mode == "home-foot-many" {
+        Some(Some(long_many_view()))
+      } else if f.mode == "home-jobs" || f.mode == "home-foot" {
         Some(
           Some({
             "groups": [
@@ -481,6 +489,35 @@ pub fn long_job() -> Json {
   m["age"] = Json::string("3 小时")
   m["chat"] = { "id": "s-c1", "title": "整理发布清单", "archived": false }
   Json::object(m)
+}
+
+///|
+/// The `longJobs` view with more left up long than its panel has the room for (home-foot-many): two groups of eight
+/// services, each but its first three under 还有 N 个.
+pub fn long_many_view() -> Json {
+  let group = fn(key : String, head : String, from : Int) -> Json {
+    let jobs : Array[Json] = []
+    for i in 0..<8 {
+      let m = match long_job() {
+        Object(m) => m.copy()
+        _ => {}
+      }
+      let n = from + i
+      m["id"] = Json::string("j-web-\{n}")
+      m["name"] = Json::string("服务 \{n}")
+      jobs.push(Json::object(m))
+    }
+    { "key": Json::string(key), "head": Json::string(head), "jobs": Json::array(jobs) }
+  }
+  let ids : Array[Json] = []
+  for n in 1..<17 {
+    ids.push(Json::string("ws1/st1/j-web-\{n}"))
+  }
+  {
+    "groups": [group("services", "开了很久的网页服务 · 8", 1), group("more", "另一批网页服务 · 8", 9)],
+    "lit": true,
+    "ids": Json::array(ids),
+  }
 }
 
 ///|
@@ -724,7 +761,6 @@ pub fn fix_attention_marks() -> Json {
       "station": Json::string(station),
       "stationName": Json::string(name),
       "thread": Json::number(thread),
-      "workspaceName": "家里",
     }
     m
   }
@@ -739,6 +775,7 @@ pub fn fix_attention_marks() -> Json {
   {
     "workspaces": {
       "ws1": {
+        "workspaceName": "家里",
         "alert": 1,
         "wait": 1,
         "unread": 1,

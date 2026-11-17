@@ -17,7 +17,9 @@ export type { LinkNet, RequestHead, SocketOut };
 /// `ended`: why the station ended the connection it came on, as it said in closing it (its reason, station/src/mesh/
 /// serve.ts: `lock_unconfirmed`, `credential_revoked`…); null while the connection is open or it went otherwise (a
 /// timeout, the network). None on a wire with no connection of its own.
-export type WireReply = { status: number; headers: [string, string][]; body: Pull<Uint8Array>; via: string | null; relay?: string | null; ended?: () => string | null };
+/// `drop`: the way it came on taken for gone (its stream went silent), what else is open to the station kept where it
+/// answers (`reset` takes the way requests go on now). None on a wire with no connection of its own.
+export type WireReply = { status: number; headers: [string, string][]; body: Pull<Uint8Array>; via: string | null; relay?: string | null; ended?: () => string | null; drop?: () => void };
 
 export function replyHeader(reply: { headers: [string, string][] }, name: string): string | undefined {
   return reply.headers.find(([k]) => k.toLowerCase() === name.toLowerCase())?.[1];
@@ -57,7 +59,8 @@ export type WireSocket = { reply: WireReply; send: SocketOut; tap?: (call: numbe
 export interface StationWire {
   /// `wrote`: how much of the body has gone out, now and then as it goes (a wire that sends it whole says nothing).
   request(station: StationAddr, head: RequestHead, body: Uint8Array, wrote?: (sent: number) => void): Effect.Effect<WireReply, CoreError, Scope.Scope>;
-  /// The way to the station is taken for gone: what is open to it closes.
+  /// The way to the station requests go on now is taken for gone: it closes, and requests go on another way open to
+  /// it that answers, where there is one (else all that is open to it closes).
   reset?(station: StationAddr): void;
   /// Whether the wire itself finds another way to a station when the UI comes back.
   races?(): boolean;
@@ -79,7 +82,17 @@ export interface StationWire {
   /// A view of one of the station's screens: the head line carries `screen`, and the stream
   /// stays open both ways (the station's answer, then frames each way: screen-frames.ts). Only the mesh carries one.
   screen?(station: StationAddr, head: RequestHead, screen: ScreenAsk): Effect.Effect<WireSocket, CoreError, Scope.Scope>;
+  /// A view of one of the station's terminals: the head line carries `terminal`, and the stream stays open both ways
+  /// (the station's answer, then frames each way: terminals.ts). Only the mesh carries one.
+  terminal?(station: StationAddr, head: RequestHead, terminal: TerminalAsk): Effect.Effect<WireSocket, CoreError, Scope.Scope>;
+  /// A Farview tab's own protocol: the head line carries `farview` (the tab's screen), and the station carries the
+  /// stream to the tab's host as it is, both ways (farview.ts). Only the mesh carries one.
+  farview?(station: StationAddr, head: RequestHead, screen: string): Effect.Effect<WireSocket, CoreError, Scope.Scope>;
 }
+
+/// What a terminal view asks, as its head line's `terminal` has it (station/src/terminals/terminals.ts `asked`): its
+/// size in cells, whether it types (`control`) and takes it from whoever does (`taken`, 接管), where a new one opens.
+export type TerminalAsk = { cols: number; rows: number; control: boolean; taken?: boolean; cwd?: string; chat?: string };
 
 /// What a screen view asks for, as its head line's `screen` has it. `client`, `app`: this device's
 /// name and which app it is, for those who look at who is on the screen; `self`: its main id, by which it knows its own

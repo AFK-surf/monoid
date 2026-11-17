@@ -78,11 +78,6 @@ pub fn landing_error_words(e : Json) -> String {
 }
 
 ///|
-/// The field: on the surface, a hairline round it, 12 round, 12 and 10 in.
-// kept across runs: a value (no field of it changes)
-pub let code_field : @ui.Style = @ui.css("w=Full px=S3 py=S2_5 radius=Xl bg=Surface border=B1 border_color=Line")
-
-///|
 /// Makes a workspace of the first account's own (named after it), with `code` when one was asked for: picked once
 /// made; else why not, and whether a code is wanted.
 fn create_workspace(src : Source, account : Json?, code : String) -> Unit {

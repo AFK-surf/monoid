@@ -4,7 +4,7 @@
 // up by a next driver (with a snapshot, and after a crash) with the turn's end told once and no live event twice.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import fs from "node:fs";
 import { writeFile } from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
@@ -12,15 +12,19 @@ import { tmpdir } from "node:os";
 import { delimiter, dirname, join } from "node:path";
 import { after, describe, test } from "node:test";
 import { fileURLToPath } from "node:url";
-import { CodexDriver, classifyCodexError, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { CodexDriver, hostSkillsOff, type CodexDriverOptions } from "../src/agents/codex.ts";
+import { LiveFromCodex, codexEvents } from "./codex-reference.ts";
 import { REPO_RULES_COMMAND } from "../src/agents/repo-rules.ts";
 import { ackedOffset, outFile, runnerId } from "../src/agents/process.ts";
-import { allLeft, existingRunners, type RunnerInfo } from "../src/agents/runner.ts";
+import { allLeft, type RunnerInfo } from "../src/agents/runner.ts";
+import { existingRunners } from "./runners-kept.ts";
 import type { OpenOptions, Profile, RuntimeEvent } from "../src/agents/runtime.ts";
 import { readAgentEnvFrom } from "../src/ops/agent-env.ts";
-import { transcriptPaths } from "../src/read/transcript.ts";
+import { transcriptPaths } from "./reference/transcript-paths.ts";
 import { tempDir } from "./temp-dir.ts";
+import { settle, testClock } from "./hub-fakes.ts";
 
+type Json = any;
 const fake = join(dirname(fileURLToPath(import.meta.url)), "fake");
 process.env.PATH = `${fake}${delimiter}${process.env.PATH}`;
 // Inherited, and not to reach the agent.
@@ -80,6 +84,8 @@ function listen() {
 const ends = (events: RuntimeEvent[]) => events.filter((e) => e.type === "turnEnded");
 const ended = (k: number) => (events: RuntimeEvent[]) => ends(events).length >= k;
 const deltas = (events: RuntimeEvent[]) => events.flatMap((e) => (e.type === "live" && e.event.kind === "delta" ? [e.event.text] : []));
+/// What the deltas said, joined: read by the MoonBit program, an item's that come together are told as one.
+const said = (events: RuntimeEvent[]) => deltas(events).join("");
 const outcome = (events: RuntimeEvent[], k = 0) => (ends(events)[k] as Extract<RuntimeEvent, { type: "turnEnded" }>).outcome;
 const starts = (dump: string) => readFileSync(dump, "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const stdin = (dump: string) => readFileSync(`${dump}.stdin`, "utf8").trim().split("\n").map((l) => JSON.parse(l));
@@ -142,6 +148,8 @@ describe("the Codex driver", { concurrency: true }, () => {
     const taken = await next.adopt(options(p, { resume: one.id() }), snapshot, events.push);
     await taken.prompt("say:after");
     await events.until(ended(1));
+    // (where its transcript is, asked of the app-server as it was taken up, kept)
+    await (taken as any).transcriptKnown;
     const listed: string[] = [];
     const real = fs.readdirSync;
     fs.readdirSync = ((dir: fs.PathLike, ...args: unknown[]) => (listed.push(String(dir)), (real as (...xs: unknown[]) => unknown)(dir, ...args))) as typeof real;
@@ -227,25 +235,88 @@ describe("the Codex driver", { concurrency: true }, () => {
     await session.dispose();
   });
 
-  test("a new sign-in replaces the app-server after its running turn, and new requests wait for it", async () => {
+  // An app-server once up never ended: three left idle went on 35 to 49 hours, some 107 MB (2026-11-15).
+  test("an app-server idle warmMs ends, its idle threads closed with no turn ended; the next opens it again, resuming", async () => {
+    const time = testClock();
+    const d = driver({ clock: time.clock, warmMs: 60_000 });
+    const p = profile();
+    const a = listen();
+    const session = await d.open(options(p), a.push);
+    await session.prompt("say:hi");
+    await a.until(ended(1));
+    const runner = existingRunners(data).find((r) => r.id === runnerId("codex", p.id))!;
+    assert.ok(runner, "its app-server runs");
+    await time.begun(1);
+    await time.adjust(59_000);
+    await settle();
+    assert.ok(!a.events.some((e) => e.type === "closed"), "idle less than warmMs");
+    await time.adjust(1_000);
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(ends(a.events).length, 1, "no turn ended by it");
+    await eventually(() => !existingRunners(data).some((r) => r.id === runner.id && r.runner === runner.runner));
+    const b = listen();
+    const again = await d.open(options(p, { resume: session.id() }), b.push);
+    await again.prompt("say:back");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    assert.equal(again.id(), session.id(), "the same thread");
+    assert.equal(starts(p.dump).length, 2, "on a new app-server");
+    await again.dispose();
+  });
+
+  test("the machine short of memory ends the app-servers no turn runs on at once; one with a turn running goes on", async () => {
+    const d = driver();
+    const idle = profile();
+    const busy = profile();
+    const a = listen();
+    const b = listen();
+    const one = await d.open(options(idle), a.push);
+    const other = await d.open(options(busy), b.push);
+    await other.prompt("hold:1");
+    await b.until((e) => deltas(e).length > 0);
+    assert.equal(await d.evictIdle(), 1);
+    assert.ok(a.events.some((e) => e.type === "closed"), "the idle one's thread closed");
+    assert.equal(ends(a.events).length, 0);
+    assert.ok(!b.events.some((e) => e.type === "closed"));
+    assert.equal(await other.steer("finish"), true, "its turn goes on");
+    await b.until(ended(1));
+    assert.equal(outcome(b.events).kind, "completed");
+    const c = listen();
+    const again = await d.open(options(idle, { resume: one.id() }), c.push);
+    await again.prompt("say:back");
+    await c.until(ended(1));
+    assert.equal(outcome(c.events).kind, "completed");
+    await Promise.all([again.dispose(), other.dispose()]);
+  });
+
+  // A profile's app-server is shared by its chats: waiting for its turn held every new chat of the profile back as long
+  // as another chat's turn ran (an hour, 2026-11-15).
+  test("a new sign-in leaves the running turn on the old app-server and starts new requests on a new one at once", async () => {
     const d = driver();
     const p = profile();
     const { events, push, until } = listen();
+    const b = listen();
     const session = await d.open(options(p), push);
+    const idle = await d.open(options(p), b.push);
     await session.prompt("hold:1");
     await until((e) => deltas(e).length > 0);
     await d.loginChanged(p.id);
-    let answered = false;
-    const limits = d.rateLimits(p).then((value) => { answered = true; return value; });
-    await sleep(100);
-    assert.equal(answered, false, "a request does not use the old process while its turn runs");
-    assert.equal(starts(p.dump).length, 1);
-    assert.equal(await session.steer("finish"), true);
+    assert.equal(starts(p.dump).length, 1, "a turn runs on it: it is not restarted under it");
+    assert.deepEqual(await d.rateLimits(p), { rateLimits: { primary: { usedPercent: 5 } } }, "answered while the old turn runs");
+    assert.equal(starts(p.dump).length, 2, "by a new process");
+    // The other chat on it, with no turn, is let go of: opened again on the new one with its next turn.
+    await b.until((e) => e.some((x) => x.type === "closed"));
+    const c = listen();
+    const fresh = await d.open(options(p), c.push);
+    await fresh.prompt("say:back");
+    await c.until(ended(1));
+    assert.equal(outcome(c.events).kind, "completed");
+    assert.equal(await session.steer("finish"), true, "the old turn still runs on the old process");
     await until(ended(1));
     assert.equal(outcome(events).kind, "completed");
-    assert.deepEqual(await limits, { rateLimits: { primary: { usedPercent: 5 } } });
-    assert.equal(starts(p.dump).length, 2, "the next request uses a new process");
-    await session.dispose();
+    await until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(starts(p.dump).length, 2);
+    await Promise.all([session.dispose(), idle.dispose(), fresh.dispose()]);
   });
 
   test("a borrowed login about to run out is lent again under the running app-server, not by starting another", async () => {
@@ -380,20 +451,45 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.deepEqual(outcome(events, 0), { kind: "failed", reason: "auth", message: "unauthorized: token expired" });
     assert.deepEqual(outcome(events, 1), { kind: "failed", reason: "rate_limit", message: "usage limit reached" });
     assert.deepEqual(outcome(events, 2), { kind: "failed", reason: "model", message: "model not supported" });
-    assert.equal(classifyCodexError(null), "model");
-    assert.equal(classifyCodexError({ serverOverloaded: null }), "overloaded");
-    assert.equal(classifyCodexError({ usageLimitExceeded: null }), "rate_limit");
-    assert.equal(classifyCodexError(null, "auth error: 401, auth error code: token_revoked"), "auth");
-    assert.equal(classifyCodexError(null, "model not supported"), "model");
-    // Turned away with nothing said (2026-11-02, "unexpected status 403 Forbidden: "): refused, why not known; not the
-    // model's error. Its region said, or Cloudflare's page for a blocked address: where it comes from.
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 403 } }, "unexpected status 403 Forbidden: Unknown error"), "denied");
-    assert.equal(classifyCodexError("other", "unexpected status 403 Forbidden: "), "denied");
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 403 } }, "unexpected status 403 Forbidden: <!DOCTYPE html><title>Just a moment...</title>"), "blocked");
-    assert.equal(classifyCodexError({ responseStreamConnectionFailed: { httpStatusCode: 401 } }, "unexpected status 401 Unauthorized: "), "auth");
-    assert.equal(classifyCodexError({ responseStreamDisconnected: { httpStatusCode: null } }, "stream disconnected before completion"), "network");
-    assert.equal(classifyCodexError(null, "stream disconnected before completion: error sending request for url (https://chatgpt.com/backend-api/codex/responses)"), "network");
-    assert.equal(classifyCodexError("contextWindowExceeded", "Codex ran out of room in the model's context window"), "context");
+    // (each `codexErrorInfo`'s reason as the TypeScript station told it: mb/src/codex, its tests, from codex-cases.ts)
+  });
+
+  // The program reads each thread's notifications (mb/src/codex): what a session is told is what the TypeScript station
+  // made of the same lines of the app-server's output (codex-reference.ts), but for its words told together.
+  test("a session is told what the TypeScript station made of its thread's notifications", async () => {
+    const d = driver();
+    const p = profile();
+    const { events, push, until } = listen();
+    const session = await d.open(options(p), push);
+    const other = await d.open(options(p), () => {});
+    const prompts = ["cmd", "say:hello", "fail:auth", "fail:rate", "fail:model", "slow:4", "mcp", "again"];
+    for (const [i, prompt] of prompts.entries()) {
+      await session.prompt(prompt);
+      await other.prompt("say:not this one");
+      await until(ended(i + 1));
+    }
+    await until(ended(prompts.length + 1));
+    const live = new LiveFromCodex();
+    const want: Json[] = [];
+    for (const line of readFileSync(outFile(data, runnerId("codex", p.id)), "utf8").split("\n")) {
+      if (!line.startsWith("{")) continue;
+      const msg = JSON.parse(line);
+      if (typeof msg.method === "string" && msg.id === undefined && msg.params?.threadId === session.id()) want.push(...codexEvents(live, msg.method, msg.params));
+    }
+    // (a turn's start told once, where none was asked for: the one after "again")
+    const told = (all: Json[]) => {
+      const out: Json[] = [];
+      for (const e of all.filter((e) => e.type !== "turnStarted")) {
+        const last = out.at(-1);
+        if (e.type === "live" && e.event.kind === "delta" && last?.type === "live" && last.event.kind === "delta" && last.event.id === e.event.id && last.event.field === e.event.field) {
+          out[out.length - 1] = { type: "live", event: { ...last.event, text: last.event.text + e.event.text } };
+        } else out.push(e);
+      }
+      return out;
+    };
+    assert.deepEqual(told(events), told(want));
+    assert.equal(events.filter((e) => e.type === "turnStarted").length, 1, "the turn it began itself");
+    assert.ok(ends(events).length === prompts.length + 1 && said(events).includes("hello"));
   });
 
   test("abort interrupts the running turn by its id; steer adds to it, and is refused with nothing running", async () => {
@@ -407,18 +503,18 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(await session.steer("more"), true);
     await until(ended(1));
     assert.deepEqual(outcome(events), { kind: "completed" });
-    assert.ok(deltas(events).includes("steer:more"));
+    assert.ok(said(events).includes("steer:more"));
     const steer = stdin(p.dump).find((m) => m.method === "turn/steer");
     assert.deepEqual(steer.params, { threadId: session.id(), input: [{ type: "text", text: "more" }], expectedTurnId: steer.params.expectedTurnId });
     assert.match(steer.params.expectedTurnId, /^tu-/);
 
-    assert.deepEqual(deltas(events), ["d0 ", "steer:more"]);
+    assert.equal(said(events), "d0 steer:more");
     await session.prompt("hold:3");
-    await until((e) => deltas(e).length >= 5);
+    await until((e) => said(e).includes("d2 "));
     await session.abort();
     await until(ended(2));
     assert.deepEqual(outcome(events, 1), { kind: "aborted" });
-    assert.deepEqual(deltas(events).slice(2), ["d0 ", "d1 ", "d2 "]);
+    assert.equal(said(events), "d0 steer:mored0 d1 d2 ");
     const interrupt = stdin(p.dump).find((m) => m.method === "turn/interrupt");
     assert.equal(interrupt.params.threadId, session.id());
     assert.match(interrupt.params.turnId, /^tu-/);
@@ -463,7 +559,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(session.id(), before.id());
     await session.prompt("mcp");
     await until(ended(1));
-    assert.deepEqual(deltas(events), ["connected"]);
+    assert.equal(said(events), "connected");
     // Both times without the thread's history, which the reply would otherwise carry whole.
     assert.deepEqual(stdin(p.dump).filter((m) => m.method === "thread/resume").map((m) => m.params.excludeTurns), [true, true]);
   });
@@ -481,7 +577,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     const session = await d.open(options(p, { key: first.key, resume: failed.id() }), push);
     await session.prompt("mcp");
     await until(ended(1));
-    assert.deepEqual(deltas(events), ["connected"]);
+    assert.equal(said(events), "connected");
   });
 
   test("the app-server exiting fails the thread's turn as exited and closes every thread on it", async () => {
@@ -562,7 +658,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     assert.equal(starts(p.dump).length, 2);
   });
 
-  test("a same-version replacement waits for its turn and starts a new app-server", async () => {
+  test("a same-version replacement leaves its turn running and starts new sessions on a new app-server", async () => {
     const d = driver({ installedVersion: async () => "1.0.0" });
     const p = profile();
     writeFileSync(`${p.dump}.version`, "1.0.0");
@@ -573,18 +669,20 @@ describe("the Codex driver", { concurrency: true }, () => {
 
     // A repaired installation can have the same version while its executable and helpers have changed.
     await d.runtimeChanged(true);
-    const b = listen();
-    const next = d.open(options(p), b.push);
     assert.equal(starts(p.dump).length, 1, "the running turn is not interrupted");
-    assert.equal(await one.steer("finish"), true);
-    await a.until(ended(1));
-    assert.equal(outcome(a.events).kind, "completed");
-    const two = await next;
-    assert.equal(starts(p.dump).length, 2);
+    const b = listen();
+    const two = await d.open(options(p), b.push);
+    assert.equal(starts(p.dump).length, 2, "a new session does not wait for it");
     await two.prompt("say:back");
     await b.until(ended(1));
     assert.equal(outcome(b.events).kind, "completed");
+    assert.equal(await one.steer("finish"), true);
+    await a.until(ended(1));
+    assert.equal(outcome(a.events).kind, "completed");
+    await a.until((e) => e.some((x) => x.type === "closed"));
+    assert.equal(starts(p.dump).length, 2);
   });
+
 
   test("an app-server whose output has grown long is replaced once its turn ends, its sessions opened again", async () => {
     // Every app-server has written more than this by its first turn's end.
@@ -620,7 +718,8 @@ describe("the Codex driver", { concurrency: true }, () => {
 
   test("a subscription's turns say their service tier; models and rate limits come from the app-server", async () => {
     let fast: boolean | undefined = true;
-    const d = driver({ fast: () => fast });
+    let speed: "standard" | "fast" | "ultrafast" | null = null;
+    const d = driver({ fast: () => fast, speed: () => speed });
     const p = profile({ access: { kind: "subscription" } });
     const { push, until } = listen();
     const session = await d.open(options(p), push);
@@ -631,6 +730,13 @@ describe("the Codex driver", { concurrency: true }, () => {
     await until(ended(2));
     const tiers = stdin(p.dump).filter((m) => m.method === "turn/start").map((m) => m.params.serviceTier);
     assert.deepEqual(tiers, ["fast", null], "an explicit null clears a tier chosen before");
+    fast = true;
+    for (const [i, next] of (["ultrafast", "standard", "fast", null] as const).entries()) {
+      speed = next;
+      await session.prompt(`say:speed-${i}`);
+      await until(ended(i + 3));
+    }
+    assert.deepEqual(stdin(p.dump).filter((m) => m.method === "turn/start").map((m) => m.params.serviceTier), ["fast", null, "ultrafast", null, "fast", "fast"], "Standard clears Ultrafast even with Fast as the account default");
     const started = starts(p.dump)[0];
     assert.deepEqual(started.argv, ["app-server", "-c", "features.apps=false", "-c", "features.recommended_plugins=false", "--listen", "stdio://"]);
     const catalog = await d.models(p);
@@ -655,8 +761,8 @@ describe("the Codex driver", { concurrency: true }, () => {
       const [gateOne, gateTwo] = [gates(p.dump, "one"), gates(p.dump, "two")];
       await one.prompt("gate:12:4:one");
       await two.prompt("gate:14:4:two");
-      await a.until((e) => deltas(e).length >= 4);
-      await a2.until((e) => deltas(e).length >= 4);
+      await a.until((e) => said(e).includes("d3 "));
+      await a2.until((e) => said(e).includes("d3 "));
       // A request in flight as it lets go: its reply goes to the next driver, which drops it.
       const steering = one.steer("late");
       let snapshots: unknown[] = [null, null];
@@ -688,13 +794,13 @@ describe("the Codex driver", { concurrency: true }, () => {
         const all = [...before.events, ...now.events];
         assert.equal(ends(all).length, 1, "the turn's end, once");
         assert.deepEqual(outcome(now.events), { kind: "completed" });
-        const said = deltas(all).filter((t) => !t.startsWith("steer:"));
-        assert.deepEqual(said, Array.from({ length: count }, (_, i) => `d${i} `), "every delta once, in order");
+        const words = said(all).replaceAll("steer:late", "");
+        assert.equal(words, Array.from({ length: count }, (_, i) => `d${i} `).join(""), "every delta once, in order");
         assert.equal(all.filter((e) => e.type === "live" && e.event.kind === "start").length, 1);
         assert.equal(all.filter((e) => e.type === "live" && e.event.kind === "end").length, 1);
         assert.equal(now.events.filter((e) => e.type === "turnStarted").length, crashed ? 1 : 0);
       }
-      assert.ok(deltas([...a.events, ...b.events]).includes("steer:late"), "the steer itself reached the turn");
+      assert.ok(said([...a.events, ...b.events]).includes("steer:late"), "the steer itself reached the turn");
       assert.equal(starts(p.dump).length, 1, "the same app-server");
       // It goes on: new requests on the app-server taken up.
       await takenOne.prompt("say:after");
@@ -716,7 +822,7 @@ describe("the Codex driver", { concurrency: true }, () => {
       const idle = await d.open(options(p), b.push);
       const gate = gates(p.dump, `drain${after.length}`);
       await long.prompt(`gate:6:3:drain${after.length}`);
-      await a.until((e) => deltas(e).length >= 3);
+      await a.until((e) => said(e).includes("d2 "));
       // Its output past the limit from now on (every app-server has written more than this by now).
       (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
       // Another's turn ends while that one runs: the app-server is replaced now, the one with no turn let go of.
@@ -743,7 +849,7 @@ describe("the Codex driver", { concurrency: true }, () => {
       await eventually(gate.said);
       await gate.open("b");
       await x.until(ended(1));
-      assert.deepEqual(deltas([...a.events, ...(x === a ? [] : x.events)]), Array.from({ length: 6 }, (_, i) => `d${i} `), "its turn to the end, once, on the one being replaced");
+      assert.equal(said([...a.events, ...(x === a ? [] : x.events)]), Array.from({ length: 6 }, (_, i) => `d${i} `).join(""), "its turn to the end, once, on the one being replaced");
       assert.deepEqual(outcome(x.events), { kind: "completed" });
       // Its last turn over: it is let go of, and ends with its runner (its output gone with it).
       await x.until((e) => e.some((y) => y.type === "closed"));
@@ -768,7 +874,7 @@ describe("the Codex driver", { concurrency: true }, () => {
       const gate = gates(p.dump, `held${after.length}`);
       const unsub = gates(p.dump, "unsub");
       await long.prompt(`gate:6:3:held${after.length}`);
-      await a.until((e) => deltas(e).length >= 3);
+      await a.until((e) => said(e).includes("d2 "));
       (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
       await idle.prompt("say:x");
       await b.until((e) => e.some((x) => x.type === "closed"));
@@ -805,7 +911,7 @@ describe("the Codex driver", { concurrency: true }, () => {
       await gate.open("b");
       await x.until(ended(1));
       assert.deepEqual(outcome(x.events), { kind: "completed" });
-      assert.deepEqual(deltas([...a.events, ...(x === a ? [] : x.events)]), Array.from({ length: 6 }, (_, i) => `d${i} `));
+      assert.equal(said([...a.events, ...(x === a ? [] : x.events)]), Array.from({ length: 6 }, (_, i) => `d${i} `).join(""));
     });
   }
 
@@ -819,7 +925,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     const gate = gates(p.dump, "none");
     const unsub = gates(p.dump, "unsub");
     await long.prompt("gate:4:2:none");
-    await a.until((e) => deltas(e).length >= 2);
+    await a.until((e) => said(e).includes("d1 "));
     (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
     await idle.prompt("say:x");
     await b.until((e) => e.some((x) => x.type === "closed"));
@@ -861,7 +967,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     const idle = await d.open(options(p), b.push);
     const gate = gates(p.dump, "refuse");
     await long.prompt("gate:4:2:refuse");
-    await a.until((e) => deltas(e).length >= 2);
+    await a.until((e) => said(e).includes("d1 "));
     writeFileSync(`${p.dump}.unsub.fail`, "");
     (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
     await idle.prompt("say:x");
@@ -888,7 +994,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     const idle = await d.open(options(p), b.push);
     const gate = gates(p.dump, "slow");
     await long.prompt("gate:4:2:slow");
-    await a.until((e) => deltas(e).length >= 2);
+    await a.until((e) => said(e).includes("d1 "));
     (d as unknown as { options: CodexDriverOptions }).options.outputLimit = 1;
     await idle.prompt("say:x");
     await b.until((e) => e.some((x) => x.type === "closed"));
@@ -965,7 +1071,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     };
     const gate = gates(p.dump, "kept");
     await two.prompt("gate:6:3:kept");
-    await a2.until((e) => deltas(e).length >= 3);
+    await a2.until((e) => said(e).includes("d2 "));
     // Another turn ends while that one runs, saying more than the runner gives back at once (32 MiB, native/runner
     // `punch`): reading again still begins where that one began, and the runner keeps it.
     await one.prompt(`say:${"x".repeat(34 * 1024 * 1024)}`);
@@ -988,7 +1094,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await b2.until(ended(1));
     const all = [...a2.events, ...b2.events];
     assert.equal(ends(all).length, 1, "its end, once");
-    assert.deepEqual(deltas(all), Array.from({ length: 6 }, (_, i) => `d${i} `), "every delta once, in order");
+    assert.equal(said(all), Array.from({ length: 6 }, (_, i) => `d${i} `).join(""), "every delta once, in order");
     assert.equal(b2.events.filter((e) => e.type === "turnStarted").length, 1, "read again as running");
     assert.equal(b.events.filter((e) => e.type === "turnStarted").length, 0, "the one whose turns had ended, idle");
     // None running now: reading again begins past it.
@@ -1003,6 +1109,36 @@ describe("the Codex driver", { concurrency: true }, () => {
     await driver().adopt(options(p, { resume: two.id() }), null, () => {});
   });
 
+  // On a VM (2026-11-15) one app-server's output reached 747 MB: a thread closed while its turn ran was never told that
+  // turn's end, and where it began held what the runner keeps from then on.
+  test("a thread closed while its turn runs no longer holds what its app-server's runner keeps", async () => {
+    const first = driver();
+    const p = profile();
+    const a = listen();
+    const a2 = listen();
+    const one = await first.open(options(p), a.push);
+    const two = await first.open(options(p), a2.push);
+    const info = existingRunners(data).find((r) => r.id === runnerId("codex", p.id))!;
+    const out = join(data, "run", "runners", `${info.id}.out`);
+    const gate = gates(p.dump, "closed");
+    await two.prompt("gate:4:2:closed");
+    await a2.until((e) => said(e).includes("d1 "));
+    const twoBegan = readFileSync(out).indexOf("turn/started");
+    // Closed with its turn running: its end will not be read here.
+    await two.dispose();
+    await one.prompt("say:after");
+    await a.until(ended(1));
+    first.detach();
+    await allLeft();
+    const now = await ackedOffset(info, out);
+    assert.ok(now.keep !== null && now.keep > twoBegan, `kept from ${now.keep}, past where the closed thread's turn began (${twoBegan})`);
+    await gate.open("a");
+    await eventually(gate.said);
+    await gate.open("b");
+    // Taken up once more, so the driver's shutdown ends it.
+    await driver().adopt(options(p, { resume: one.id() }), null, () => {});
+  });
+
   // On a station (2026-11-02) a next station asked a profile's quota as it started: it took the app-server up as after a
   // crash, from the station still handing over, which let go of the turn running on it.
   test("a next driver takes no app-server up before the station before it is taken up: that one hears its turn to the end", { timeout: 60_000 }, async () => {
@@ -1012,7 +1148,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     const one = await first.open(options(p), a.push);
     const gate = gates(p.dump, "early");
     await one.prompt("gate:6:3:early");
-    await a.until((e) => deltas(e).length >= 3);
+    await a.until((e) => said(e).includes("d2 "));
     // The next station asks the profile's quota as it starts, before what the one before left is taken up: it does not
     // so much as look for an app-server yet.
     const taken = Promise.withResolvers<void>();
@@ -1025,7 +1161,7 @@ describe("the Codex driver", { concurrency: true }, () => {
     await eventually(gate.said);
     await gate.open("b");
     await a.until(ended(1));
-    assert.deepEqual(deltas(a.events), Array.from({ length: 6 }, (_, i) => `d${i} `), "all of its turn, to the station before");
+    assert.equal(said(a.events), Array.from({ length: 6 }, (_, i) => `d${i} `).join(""), "all of its turn, to the station before");
     // That one hands over: its snapshot, its runner let go; the next takes the session up from it, then the rest.
     const snapshot = JSON.parse(JSON.stringify(one.snapshot()));
     first.detach();
@@ -1095,6 +1231,62 @@ describe("the Codex driver", { concurrency: true }, () => {
 });
 
 // Alone: the station's variables are the whole process's, and every app-server above would be out of date under them.
+// The user's own skills turned off by file, found off the station's thread: linked folders followed, each real folder
+// once (a link back to its parent ends there), six levels down at most, in the order comparePaths gives.
+test("the host's skills are found off the station's thread", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-"));
+  const deep = join(root, "a", "b", "c", "d", "e", "f");
+  mkdirSync(join(deep, "g"), { recursive: true });
+  writeFileSync(join(deep, "SKILL.md"), "");
+  writeFileSync(join(deep, "g", "SKILL.md"), "");
+  mkdirSync(join(root, "Mine"));
+  writeFileSync(join(root, "Mine", "SKILL.md"), "");
+  writeFileSync(join(root, "Mine", "notes.md"), "");
+  const linked = tempDir(join(tmpdir(), "cx-linked-"));
+  writeFileSync(join(linked, "SKILL.md"), "");
+  symlinkSync(linked, join(root, "linked"), "junction");
+  symlinkSync(root, join(root, "Mine", "back"), "junction");
+  symlinkSync(join(root, "nowhere"), join(root, "broken"), "junction");
+  const off = await hostSkillsOff(root);
+  assert.ok(off.every((s) => s.enabled === false));
+  assert.deepEqual(off.map((s) => s.path), [join(root, "Mine", "SKILL.md"), join(deep, "SKILL.md"), join(root, "linked", "SKILL.md")]);
+  assert.deepEqual(await hostSkillsOff(join(root, "nowhere")), []);
+});
+
+// A walk of a tree the station does not own (station/AGENTS.md, walkBounded): links into one another end at the first
+// real folder, a clone's or an environment's insides are not gone into, and a tree too big is cut at its bound.
+test("the host's skills are walked bounded: links round in a ring end, node_modules is left out, too many entries cut it", async () => {
+  const root = tempDir(join(tmpdir(), "cx-skills-bounded-"));
+  mkdirSync(join(root, "a"));
+  mkdirSync(join(root, "b"));
+  writeFileSync(join(root, "a", "SKILL.md"), "");
+  writeFileSync(join(root, "b", "SKILL.md"), "");
+  // a → b → a: followed without a ring's end it would go round to its depth, each folder again under a longer path.
+  symlinkSync(join(root, "b"), join(root, "a", "to-b"), "junction");
+  symlinkSync(join(root, "a"), join(root, "b", "to-a"), "junction");
+  for (const left of ["node_modules", ".git", ".venv"]) {
+    mkdirSync(join(root, "a", left, "pkg"), { recursive: true });
+    writeFileSync(join(root, "a", left, "pkg", "SKILL.md"), "");
+  }
+  // A link to a file named SKILL.md is a skill as the file it names.
+  const elsewhere = tempDir(join(tmpdir(), "cx-skill-file-"));
+  writeFileSync(join(elsewhere, "SKILL.md"), "");
+  mkdirSync(join(root, "c"));
+  symlinkSync(join(elsewhere, "SKILL.md"), join(root, "c", "SKILL.md"), "file");
+  const off = (await hostSkillsOff(root)).map((s) => s.path);
+  assert.deepEqual(off, [join(root, "a", "SKILL.md"), join(root, "b", "SKILL.md"), join(root, "c", "SKILL.md")]);
+
+  const many = tempDir(join(tmpdir(), "cx-skills-many-"));
+  for (let i = 0; i < 40; i++) {
+    mkdirSync(join(many, `s${String(i).padStart(2, "0")}`));
+    writeFileSync(join(many, `s${String(i).padStart(2, "0")}`, "SKILL.md"), "");
+  }
+  // The root, its 40 folders, then 9 of their SKILL.md: what was found before the bound is what is turned off.
+  const cut = await hostSkillsOff(many, { maxEntries: 50 });
+  assert.equal(cut.length, 9);
+  assert.equal((await hostSkillsOff(many)).length, 40);
+});
+
 describe("the Codex driver under the station's variables", () => {
   test("the station's variables for its agents: an app-server starts with them, again once idle when they change; a profile's own win", async (t) => {
     t.after(() => readAgentEnvFrom(() => null));
@@ -1117,4 +1309,18 @@ describe("the Codex driver under the station's variables", () => {
     await two.prompt("say:x");
     await until(ended(1));
   });
+});
+
+// Shut down for good as a session is being opened (a turn's nudge as hub-e2e.test.ts's station shut down, 2026-11-16,
+// CI of #6583: the app-server it then started was left running, and the program reading it held the test file's
+// process): none is started after, and the open fails saying so. (The shutdown's step comes first: the open reaches
+// `serial` only after what it reads before it.)
+test("shut down as a session opens: no app-server started after, the open refused", async () => {
+  const d = driver();
+  const p = profile();
+  const opening = d.open(options(p), () => {});
+  await d.shutdown();
+  await assert.rejects(opening, /not started: the station's agents were let go/);
+  assert.deepEqual(existsSync(p.dump) ? starts(p.dump).filter((s) => s.argv[0] === "app-server") : [], [], "no app-server started");
+  assert.deepEqual(existingRunners(data).map((r) => r.id).filter((id) => id.includes(p.id)), []);
 });

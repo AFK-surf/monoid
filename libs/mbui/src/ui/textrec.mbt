@@ -110,6 +110,7 @@ fn rec_key(text : String, size : Double, weight : Int, style : Int, key : Int) -
 ///|
 fn rec_glyph(key : Int, out : FixedArray[Double]) -> Unit {
   if text_recording() {
+    let key = if key >= 0 { key & 0x03FFFFFF } else { key }
     text_say("g\{key}", { "g": Json::number(key.to_double()), "r": nums(out, 7) })
   }
 }
@@ -265,6 +266,7 @@ fn kept_key(text : String, size : Double, weight : Int, style : Int) -> Int? {
 ///|
 fn kept_glyph(key : Int, out : FixedArray[Double]) -> Bool {
   guard text_table.val is Some(t) else { return false }
+  let key = if key >= 0 { key & 0x03FFFFFF } else { key }
   match t.glyphs.get(key) {
     Some(r) => {
       for i in 0..<r.length() {

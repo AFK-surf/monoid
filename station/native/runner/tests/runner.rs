@@ -29,7 +29,8 @@ fn alive(pid: i64) -> bool {
     unsafe { libc::kill(pid as i32, 0) == 0 }
 }
 
-/// Waits for `pid`, not this test's child, to end (kqueue says when); one gone already is not found.
+/// Waits for `pid`, not this test's child, to end (kqueue on macOS, pidfd on Linux); one gone already is not found.
+#[cfg(target_os = "macos")]
 fn ends(pid: i64) {
     // SAFETY: a kqueue of this function's, a change and an event in live structs, the kqueue closed after.
     unsafe {
@@ -52,6 +53,29 @@ fn ends(pid: i64) {
         let (flags, fflags, data) = (got.flags, got.fflags, got.data);
         let gone = flags & libc::EV_ERROR != 0 && data == libc::ESRCH as isize;
         assert!(gone || fflags & libc::NOTE_EXIT != 0, "{pid}: flags {flags:#x}, data {data}");
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn ends(pid: i64) {
+    // SAFETY: pidfd_open on `pid` gives a descriptor readable once `pid` exits (or ESRCH if gone already), closed after.
+    unsafe {
+        let pidfd = libc::syscall(libc::SYS_pidfd_open, pid as libc::pid_t, 0 as libc::c_uint);
+        if pidfd < 0 {
+            let err = std::io::Error::last_os_error();
+            assert_eq!(err.raw_os_error(), Some(libc::ESRCH), "pidfd_open({pid}): {err}");
+            return;
+        }
+        let fd = pidfd as libc::c_int;
+        let mut pfd = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+        let n = loop {
+            let n = libc::poll(&mut pfd, 1, -1);
+            if n >= 0 || std::io::Error::last_os_error().kind() != std::io::ErrorKind::Interrupted {
+                break n;
+            }
+        };
+        libc::close(fd);
+        assert_eq!(n, 1, "poll pidfd({pid}): {}", std::io::Error::last_os_error());
     }
 }
 
@@ -553,9 +577,13 @@ fn the_runner_outlives_the_process_that_started_it() {
     let (mut shell, info) = start_from_shell(&dir, "exit 0", false);
     assert!(shell.wait().unwrap().success());
     let runner = Runner { dir, info, child: None };
-    // Its parent gone, it is taken up by init/launchd.
+    // Its parent gone, it is taken up by init/launchd (or a Linux subreaper such as systemd --user).
     let ppid = Command::new("ps").args(["-o", "ppid=", "-p", &runner.pid("runner").to_string()]).output().unwrap();
-    assert_eq!(String::from_utf8_lossy(&ppid.stdout).trim(), "1");
+    let ppid_num: u32 = String::from_utf8_lossy(&ppid.stdout).trim().parse().unwrap();
+    #[cfg(target_os = "macos")]
+    assert_eq!(ppid_num, 1);
+    #[cfg(target_os = "linux")]
+    assert!(ppid_num != shell.id() && unsafe { libc::kill(ppid_num as i32, 0) == 0 || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM) });
     still_works(&runner);
 }
 

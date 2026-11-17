@@ -7,6 +7,7 @@ import { pathToFileURL } from "node:url";
 import { SessionListBuilder } from "../src/read/session-list-builder.ts";
 import { installSessionListIndex, sessionListReady } from "../src/store/session-list-index.ts";
 import { Store } from "../src/store/store.ts";
+import { endsOnce } from "./programs.ts";
 
 test("a stopped session list worker retries and resumes its pending index", async () => {
   const dir = mkdtempSync(join(tmpdir(), "session-list-worker-")), path = join(dir, "station.db"), store = Store.open(path), db = store.db;
@@ -18,9 +19,8 @@ test("a stopped session list worker retries and resumes its pending index", asyn
     for (let i = 0; i < 3; i++) store.insertSession({ key: `old-${i}`, connect: "ember", runtime: "claude", profile: "cc",
       workspace: "/work", token: `old-${i}`, createdAt: i, lastActiveAt: i, ws: "mine" });
     installSessionListIndex(db);
-    const real = new URL("../src/read/session-list-worker.ts", import.meta.url).href;
-    writeFileSync(file, `import { existsSync, writeFileSync } from 'node:fs';\nif (!existsSync(${JSON.stringify(marker)})) { writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); }\nawait import(${JSON.stringify(real)});\n`);
-    const builder = new SessionListBuilder(path, {}, pathToFileURL(file));
+    endsOnce(file, marker);
+    const builder = new SessionListBuilder(path, {}, file);
     try {
       await builder.readyIndex();
       assert.ok(existsSync(marker));

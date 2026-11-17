@@ -3,6 +3,7 @@
 import * as brand from "./brand.ts";
 import * as fonts from "./fonts.ts";
 import { conform } from "./conform.ts";
+import { experimentalItemsOf, experimentalOf, featuresOf, isExperimentalFeature } from "./features.ts";
 import { railView } from "./rail.ts";
 import type { Data } from "./data.ts";
 import { CoreError } from "./error.ts";
@@ -13,13 +14,33 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { setOwnBuild } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey"];
-const MAPS = ["listFilter", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "experimental", "reports"];
+const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
 /// At most this many failures kept as let go in one workspace's 待处理.
 const FAILS_GONE_KEPT = 200;
+/// The drafts a workspace's 待派发 keeps on this device: the newest of them.
+const BOARD_DRAFTS_KEPT = 200;
+const BOARD_GROUPS = ["state", "station", "person"];
+
+/// A workspace's drafts as given, each whole and within its bounds (newest first, the newest kept), or null where one
+/// is not.
+function boardDraftsOf(v: unknown): Map_[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: Map_[] = [];
+  for (const d of v) {
+    if (!isObject(d)) return null;
+    const { id, title, station, stationName } = d;
+    if (typeof id !== "string" || id === "" || id.length > 120) return null;
+    if (typeof title !== "string" || title.trim() === "" || title.length > 4000) return null;
+    if (typeof station !== "string" || station === "" || station.length > 200) return null;
+    if (typeof stationName !== "string" || stationName.length > 200) return null;
+    out.push({ id, title, station, stationName });
+  }
+  return out.slice(0, BOARD_DRAFTS_KEPT);
+}
 const PREFS = { topic: "prefs" };
 /// The app's colour themes other than still.fail's orange (`accent`; none: the orange), or a hue of one's own
 /// (`custom:<0..359>`, the app makes the theme of it).
@@ -124,12 +145,20 @@ function listFiltersOf(v: unknown): Map_ {
   return isObject(v) ? Object.fromEntries(Object.entries(v).filter(([, f]) => LIST_FILTERS.includes(f as string))) : {};
 }
 
+/// Whether this core sends what people use (use-counts.ts `sends`: a build given still.fail's project, on its own
+/// cloud), said with the prefs as `counted`: the app then tells it whether to (`client.reports`) and what it shows.
+let counted = false;
+export function setCounted(on: boolean): void {
+  counted = on;
+}
+
 /// The prefs as they go out: the current product name, the reader's settings whole, the bottom bars (each workspace's
 /// too), the faces, and the keymap and the rail.
 export function shown(v: unknown): unknown {
   if (!isObject(v)) return v;
   const by = isObject(v.barsBy) ? Object.fromEntries(Object.entries(v.barsBy).map(([ws, b]) => [ws, barsOf(b)])) : {};
-  return { ...v, productName: brand.name(), product: brand.current().name, listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v) };
+  const test = brand.isTestChannel();
+  return { ...v, productName: brand.name(), product: brand.current().name, testChannel: test, experimental: experimentalOf(v), features: featuresOf(v, test), experimentalItems: experimentalItemsOf(v, test), listFilter: listFiltersOf(v.listFilter), reader: readerOf(v.reader), bars: barsOf(v.bars), barsBy: by, fonts: fonts.chosen(v.fonts), faces: fonts.shown(v.fonts), keymap: keymap.view(v), railView: railView(v), ...(counted ? { counted: true } : {}) };
 }
 
 /// What is kept, as kept (no defaults filled in).
@@ -143,8 +172,19 @@ function kept(data: Data): Map_ {
 export function set(data: Data, patch: unknown, fill: boolean, now: number): void {
   if (!isObject(patch)) throw CoreError.invalid(t("core-misc.params.not_object"));
   const prefs = kept(data);
-  // What an older build kept for 奏 is not kept on.
+  // What an older build kept for 奏, or for experimental features since graduated, is not kept on.
   if ("listFilter" in prefs) prefs.listFilter = listFiltersOf(prefs.listFilter);
+  // 外观's 试用新对话页 of 0.1.9524-0.1.9625 (`chatPage: "nodes"`) is 实验性功能's switch from now on (features.ts
+  // experimentalOf reads it so till this writes it over; goes with that, 2026-11-24).
+  if ("chatPage" in prefs) {
+    if (prefs.chatPage === "nodes" && !(isObject(prefs.experimental) && "chatPage" in prefs.experimental)) prefs.experimental = { ...(isObject(prefs.experimental) ? prefs.experimental : {}), chatPage: true };
+    delete prefs.chatPage;
+  }
+  if ("experimental" in prefs) {
+    const cleaned = experimentalOf({ experimental: prefs.experimental });
+    if (Object.keys(cleaned).length) prefs.experimental = cleaned;
+    else delete prefs.experimental;
+  }
   delete prefs.onlyDecisions;
   delete prefs.decisionsDeferred;
   // serde_json's Map iterates in key order.
@@ -179,12 +219,35 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
           delete map[key];
           continue;
         }
+        if (field === "experimental") {
+          if (!isExperimentalFeature(key) || typeof entry !== "boolean") {
+            throw CoreError.invalid(t("core-misc.params.invalid", { error: `experimental.${key}` }));
+          }
+          if (!entry) {
+            delete map[key];
+            continue;
+          }
+        }
         // The jobs a bell has shown: the newest of them.
         if (field === "jobsSeen" && Array.isArray(entry)) entry = entry.slice(-JOBS_SEEN_KEPT);
         // The failures let go: added to those kept, the newest of them.
         if (field === "failsGone" && Array.isArray(entry)) {
           const was = Array.isArray(map[key]) ? (map[key] as unknown[]) : [];
           entry = [...new Set([...was, ...entry])].slice(-FAILS_GONE_KEPT);
+        }
+        // A workspace's board: shown as one, grouped otherwise than by state, its drafts (none: as without).
+        if (field === "boardViews" && entry !== "board") throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardViews.${key}` }));
+        if (field === "boardGroups" && !BOARD_GROUPS.includes(entry as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardGroups.${key}` }));
+        // (its empty columns left out: `false`; shown is none)
+        if (field === "boardShowEmpty" && entry !== false) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardShowEmpty.${key}` }));
+        if (field === "boardDrafts") {
+          const drafts = boardDraftsOf(entry);
+          if (drafts === null) throw CoreError.invalid(t("core-misc.params.invalid", { error: `boardDrafts.${key}` }));
+          if (drafts.length === 0) {
+            delete map[key];
+            continue;
+          }
+          entry = drafts;
         }
         // A workspace's bottom bars, kept as they read (as `bars`).
         if (field === "barsBy") entry = barsOf(entry);
@@ -200,6 +263,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
         }
         map[key] = entry as never;
       }
+      if (field === "experimental" && Object.keys(map).length === 0) delete prefs.experimental;
     } else if (fill && field in prefs) {
       // kept
     } else if (value === null) {
@@ -223,6 +287,7 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("appUpdate" in prefs && prefs.appUpdate !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "appUpdate" }));
   if ("windowZoom" in prefs && !["50", "67", "75", "80", "90", "110", "125", "150", "175", "200"].includes(prefs.windowZoom as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "windowZoom" }));
   if ("sendKey" in prefs && prefs.sendKey !== "mod") throw CoreError.invalid(t("core-misc.params.invalid", { error: "sendKey" }));
+  if ("reports" in prefs && prefs.reports !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "reports" }));
   if ("dropAs" in prefs && prefs.dropAs !== "file" && prefs.dropAs !== "path") throw CoreError.invalid(t("core-misc.params.invalid", { error: "dropAs" }));
   if ("shareLook" in prefs && !(typeof prefs.shareLook === "string" && SHARE_LOOK.test(prefs.shareLook))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "shareLook" }));
   if ("archiveHint" in prefs && !["off", "done", "reviewed"].includes(prefs.archiveHint as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "archiveHint" }));

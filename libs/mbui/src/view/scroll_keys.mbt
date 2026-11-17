@@ -142,7 +142,7 @@ fn Scroll::keyed(self : Scroll, v : View, t : Double, action : String) -> Bool {
   } else if action == scroll_line_up {
     self.moved(t, -scroll_key_line) |> ignore
   } else if action == scroll_top {
-    self.sent(t, 0.0)
+    self.sent(t, @signals.untracked(fn() { self.top_now() }))
   } else if action == scroll_foot {
     if !(self.to_foot)(t) {
       self.sent(t, self.most())

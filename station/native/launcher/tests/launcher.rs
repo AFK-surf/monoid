@@ -32,7 +32,16 @@ fn launcher() -> &'static str {
 /// The Node the station runs on (.node-version), where scripts/node-here.sh puts it, unless STILLFAIL_NODE says another.
 fn node() -> String {
     let version = include_str!("../../../../.node-version").trim();
-    std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| format!("{}/.local/node-v{version}-darwin-arm64/bin/node", std::env::var("HOME").unwrap()))
+    let platform = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => "darwin-arm64",
+        ("linux", "x86_64") => "linux-x64",
+        ("linux", "aarch64") => "linux-arm64",
+        _ => return std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| "node".to_string()),
+    };
+    std::env::var("STILLFAIL_NODE").unwrap_or_else(|_| {
+        let here = format!("{}/.local/node-v{version}-{platform}/bin/node", std::env::var("HOME").unwrap());
+        if Path::new(&here).is_file() { here } else { "node".to_string() }
+    })
 }
 
 /// Held while a socket is made or a process started. On macOS a socket is made close-on-exec only after it is made: a
@@ -301,7 +310,7 @@ fn node_serves_the_launchers_ports_and_station_json_names_the_launcher() {
     let start = &station.log()[0].2;
     let app = station.app.display();
     let data = station.data.display();
-    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries"));
+    assert_eq!(start, &format!("start run --app {app} --data {data} --launcher-fds 3,4,5 --launcher-carries --launcher-heartbeat"));
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
     assert!(station.said(node, "got stop") && station.said(node, "exit"));
@@ -638,7 +647,7 @@ fn with_parent_it_stops_once_the_parent_is_gone() {
 /// A stand-in for the front (front.rs) in the release: it says where it listens and how it hands streams (this
 /// release's way), appends its pid to <data>/fronts and runs until its stdin (the launcher's) ends.
 fn release_front(station: &Station) {
-    release_front_saying(station, ",\"streams\":2");
+    release_front_saying(station, ",\"streams\":4");
 }
 
 /// One that says `more` after where it listens (nothing: a front from before `streams`).
@@ -750,6 +759,56 @@ fn a_front_handing_streams_as_a_release_before_is_replaced_by_the_launcher_that_
     until("the front to end with the launcher", || (!alive(fronts[1])).then_some(()));
 }
 
+#[cfg(target_os = "macos")]
+#[test]
+fn a_changed_launcher_identity_replaces_the_front_but_the_same_identity_keeps_it() {
+    let mut station = Station::new("front-uuid");
+    release_front(&station);
+    station.start("");
+    station.up();
+    let original = station.fronts();
+    assert_eq!(original.len(), 1);
+
+    // The same Mach-O identity, even reached through a different launcher file, retains the front.
+    release_launcher(&station, "exec \"$BUILT\" \"$@\"\n");
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("same-identity handover", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    assert_eq!(station.fronts(), original);
+
+    // Give a copy a different Mach-O UUID and sign it afresh so macOS will run it.
+    let changed = station.dir.join("different-launcher");
+    let mut image = std::fs::read(BUILT).unwrap();
+    assert_eq!(u32::from_ne_bytes(image[0..4].try_into().unwrap()), 0xfeedfacf);
+    let end = 32 + u32::from_ne_bytes(image[20..24].try_into().unwrap()) as usize;
+    let mut offset = 32;
+    while offset < end {
+        let kind = u32::from_ne_bytes(image[offset..offset + 4].try_into().unwrap());
+        let size = u32::from_ne_bytes(image[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        assert!(size >= 8 && offset + size <= end);
+        if kind == 0x1b {
+            image[offset + 8] ^= 1;
+            break;
+        }
+        offset += size;
+    }
+    assert!(offset < end, "the launcher has an LC_UUID");
+    std::fs::write(&changed, image).unwrap();
+    std::fs::set_permissions(&changed, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    assert!(output(Command::new("codesign").args(["--force", "--sign", "-"]).arg(&changed)).status.success());
+    release_launcher(&station, &format!("exec '{}' \"$@\"\n", changed.display()));
+    station.conf("version=0.3.0\n");
+    station.signal(libc::SIGUSR2);
+    until("different-identity handover", || station.station_json().filter(|s| s["version"] == "0.3.0"));
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 2, "{fronts:?}");
+    assert!(!alive(original[0]));
+    assert!(alive(fronts[1]));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the replacement front to end", || (!alive(fronts[1])).then_some(()));
+}
+
 #[test]
 fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     let mut station = Station::new("frontends");
@@ -775,12 +834,361 @@ fn a_front_that_ends_is_started_again_unless_it_ended_as_it_started() {
     unsafe { libc::kill(first, libc::SIGKILL) };
     until("the front's end said", || std::fs::read_to_string(station.dir.join("launcher.log")).ok().filter(|l| l.contains("not started again")));
     assert_eq!(station.fronts().len(), 1);
+    // and the Node serving, linked to the front that is gone, hands over by itself to one that binds it (it waited for
+    // a SIGUSR2 by hand before, 2026-11-15)
+    let new = until("the Node handed over to", || station.started().get(1).copied());
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
+    assert!(station.said(new, "front none"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+fn the_node_serving_asking_for_the_front_anew_has_it_ended_and_hands_over_to_one_linked_to_a_new_one() {
+    let mut station = Station::new("frontrestart");
+    release_front(&station);
+    station.conf("restart_front=once\n");
+    station.start("");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let first = station.started()[0];
+    until("the first Node to ask", || station.said(first, "restart front").then_some(()));
+    // the front there ended (its stdin closed), another started in its place
+    let fronts = until("another front", || Some(station.fronts()).filter(|f| f.len() >= 2));
+    assert_eq!(fronts.len(), 2, "{fronts:?}");
+    until("the first front gone", || (!alive(fronts[0])).then_some(()));
+    assert!(alive(fronts[1]));
+    // and the Node serving handed over to one linked to it
+    let new = until("the Node handed over to", || station.started().get(1).copied());
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
+    assert!(station.said(new, &format!("front {}", socket.display())), "{:?}", station.log());
+    until("the first Node handed over", || station.said(first, "got handover").then_some(()));
+    let mcp = station.mcp();
+    until("the new one serving", || (ask(mcp).ok()? == format!("{new} mcp")).then_some(()));
+    assert!(station.file("handoff-failed").is_none());
+    assert_eq!(station.file("front.pid").map(|p| p.trim().to_string()), Some(fronts[1].to_string()));
+    assert_eq!(station.started().len(), 2, "one handover: {:?}", station.log());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(fronts[1])).then_some(()));
+}
+
+/// A station with a front rolled back to a release from before it (0.1.8755: no program, and the launcher `script`):
+/// its front is ended before the handover's Node starts, which binds the endpoint itself, and none is started again.
+fn rolled_back_to_a_release_without_the_front(name: &str, script: &str) {
+    let mut station = Station::new(name);
+    release_front(&station);
+    station.start("front_retry=100");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    std::fs::remove_file(station.app.join("station/stillfail-reader")).unwrap();
+    release_launcher(&station, script);
     station.conf("version=0.2.0\n");
     station.signal(libc::SIGUSR2);
     until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
     let new = *station.started().last().unwrap();
     until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == new && w.starts_with("front ")).then_some(()));
-    assert!(station.said(new, "front none"));
+    assert!(station.said(new, "front none"), "{:?}", station.log());
+    // gone before it started (ended, and waited for), and no other in its place
+    assert!(!alive(fronts[0]), "the front left beside a Node that binds the station's endpoint itself: {}", station.launcher_log());
+    assert!(station.launcher_log().contains("has no front"), "{}", station.launcher_log());
+    assert_eq!(station.fronts(), fronts);
+    assert_eq!(station.file("front.pid"), None);
     station.signal(libc::SIGTERM);
     assert!(station.wait().success());
+}
+
+#[test]
+fn a_release_rolled_back_to_one_without_the_front_and_a_launcher_that_cannot_take_over_has_the_front_ended() {
+    rolled_back_to_a_release_without_the_front("frontback2", "[ \"$1\" = handoff-version ] && { echo 2; exit 0; }\nexit 1\n");
+}
+
+#[test]
+fn a_release_rolled_back_to_one_without_the_front_whose_launcher_takes_over_has_the_front_ended_before_it_runs() {
+    rolled_back_to_a_release_without_the_front("frontback3", "exec \"$BUILT\" \"$@\"\n");
+}
+
+/// A front of `station`'s data directory left from before (2026-11-16: a launcher killed, or one from before front.pid,
+/// left its front running beside the next one's, both on the station's key): a process of this user with a front's
+/// arguments for its socket, no launcher's child (its parent gone), with no front.pid naming it, that does not end
+/// with its stdin. Its pid.
+fn orphan_front(station: &Station) -> i32 {
+    let socket = station.data.join("run/front.sock");
+    let script = "sh -c 'trap \"\" HUP TERM; while :; do sleep 1; done' stillfail-reader --builder mesh --socket \"$1\" --shell-dir \"$1.d\" </dev/null >/dev/null 2>&1 & echo $!";
+    let out = output(Command::new("/bin/sh").arg("-c").arg(script).arg("sh").arg(&socket).stdin(Stdio::null()));
+    let pid: i32 = String::from_utf8(out.stdout).unwrap().trim().parse().unwrap();
+    assert!(alive(pid));
+    pid
+}
+
+/// Ended by the test, if the launcher did not end it.
+fn ended_by_test(pid: i32) -> bool {
+    let was = alive(pid);
+    // SAFETY: a signal to a process this test started.
+    unsafe { libc::kill(pid, libc::SIGKILL) };
+    was
+}
+
+#[test]
+fn a_front_left_from_before_is_ended_as_the_launcher_starts() {
+    let mut station = Station::new("orphanstart");
+    release_front(&station);
+    let orphan = orphan_front(&station);
+    station.start("");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    let left = ended_by_test(orphan);
+    assert!(!left, "the front left from before still runs beside the launcher's: {}", station.launcher_log());
+    assert!(station.launcher_log().contains(&format!("left from before (pid {orphan})")), "{}", station.launcher_log());
+    assert!(alive(fronts[0]));
+    assert_eq!(station.file("front.pid").map(|p| p.trim().to_string()), Some(fronts[0].to_string()));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(!alive(fronts[0]));
+    assert_eq!(station.file("front.pid"), None);
+}
+
+#[test]
+fn a_front_left_from_before_is_ended_by_the_launcher_that_takes_over_and_the_one_kept_lives() {
+    let mut station = Station::new("orphanrenew");
+    release_front(&station);
+    station.start("");
+    station.up();
+    let fronts = station.fronts();
+    assert_eq!(fronts.len(), 1);
+    // one left by a launcher from before front.pid (an update taken up from 0.1.9230), found as the release's launcher
+    // takes this one's place
+    let orphan = orphan_front(&station);
+    release_launcher(&station, "exec \"$BUILT\" \"$@\"\n");
+    station.conf("version=0.2.0\n");
+    station.signal(libc::SIGUSR2);
+    until("station.json of the new version", || station.station_json().filter(|s| s["version"] == "0.2.0"));
+    let left = ended_by_test(orphan);
+    assert!(!left, "the front left from before still runs beside the one kept: {}", station.launcher_log());
+    assert_eq!(station.fronts(), fronts, "the front kept is the one serving");
+    assert!(alive(fronts[0]));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    assert!(!alive(fronts[0]));
+}
+
+#[test]
+fn a_front_that_does_not_end_with_its_stdin_is_killed_as_the_launcher_stops() {
+    let mut station = Station::new("frontstuck");
+    // a front whose thread reading stdin is held: its end of the pipe is never read
+    let path = station.app.join("station/stillfail-reader");
+    let fronts = station.data.join("fronts");
+    std::fs::write(&path, format!("#!/bin/sh\necho $$ >> '{}'\nprintf '{{\"listening\":\"%s\",\"streams\":4}}\\n' \"$4\"\nexec sleep 1000000\n", fronts.display())).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    station.start("");
+    station.up();
+    let front = station.fronts()[0];
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    let left = ended_by_test(front);
+    assert!(!left, "the front outlived the launcher: {}", station.launcher_log());
+    assert!(station.launcher_log().contains("did not end with its stdin"), "{}", station.launcher_log());
+}
+
+impl Station {
+    fn launcher_log(&self) -> String {
+        std::fs::read_to_string(self.dir.join("launcher.log")).unwrap_or_default()
+    }
+}
+
+#[test]
+fn a_node_whose_main_thread_hangs_after_taking_over_is_killed_and_another_serves() {
+    let mut station = Station::new("hang");
+    station.conf("hang=once\n");
+    station.start("heartbeat=500,backoff=100");
+    station.up();
+    let first = station.started()[0];
+    assert!(station.said(first, "heartbeat asked"), "{:?}", station.log());
+    until("the first Node to hang", || station.said(first, "hang").then_some(()));
+    // Not asked to hand over (it would not hear it): killed, and one started again that serves.
+    let again = until("a Node that serves after it", || Some(*station.started().last()?).filter(|n| *n != first && station.said(*n, "ready")));
+    until("the hung one gone", || (!alive(first)).then_some(()));
+    let mcp = station.mcp();
+    until("the new one answering", || (ask(mcp).ok()? == format!("{again} mcp")).then_some(()));
+    assert!(station.launcher_log().contains(&format!("Node {first} said nothing for 0.5 s")), "{}", station.launcher_log());
+    assert!(!station.said(first, "got handover"));
+    assert!(station.file("handoff-failed").is_none());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+#[ignore = "side: waits real time for what does not happen"]
+fn a_node_that_does_not_say_it_is_alive_is_left_serving() {
+    // A release from before (heartbeat=no): it never says it, so it is never held to it. What it would take for it to be
+    // killed (500 ms of silence after taking over) is long past once another Node, which does say it, has been
+    // handed over to and has said it a while.
+    let mut station = Station::new("noheartbeat");
+    station.conf("heartbeat=no\n");
+    station.start("heartbeat=500");
+    station.up();
+    let old = station.started()[0];
+    let mcp = station.mcp();
+    // Its silence is long by the time the next one, started at a SIGUSR2, is up.
+    until("10 heartbeat-times of the old one's silence", || (now_ms() >= station.log()[0].0 + 5000).then_some(()));
+    assert!(alive(old));
+    assert_eq!(answered_by(mcp), old);
+    assert!(!station.launcher_log().contains("said nothing"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+}
+
+#[test]
+fn a_front_given_up_is_started_again_and_the_node_serving_hands_over_to_one_linked_to_it() {
+    let mut station = Station::new("frontretry");
+    release_front(&station);
+    station.start("front=3600000,front_retry=300");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let first_front = station.fronts()[0];
+    // SAFETY: a signal to the stand-in this test's launcher started.
+    unsafe { libc::kill(first_front, libc::SIGKILL) };
+    // It ended as it started: Nodes bind the endpoint themselves meanwhile (the one serving handed over to one) ...
+    let direct = until("the Node handed over to", || station.started().get(1).copied());
+    until("the new Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == direct && w.starts_with("front ")).then_some(()));
+    assert!(station.said(direct, "front none"));
+    // ... until a front is started again: the one serving then hands over to one linked to it.
+    let second_front = until("another front", || station.fronts().get(1).copied());
+    assert!(alive(second_front));
+    let linked = until("the Node linked to it", || station.started().get(2).copied());
+    until("the linked Node to say its front", || station.log().into_iter().any(|(_, p, w)| p == linked && w.starts_with("front ")).then_some(()));
+    assert!(station.said(linked, &format!("front {}", socket.display())), "{:?}", station.log());
+    until("the direct one gone", || (!alive(direct)).then_some(()));
+    let mcp = station.mcp();
+    until("the linked one serving", || (ask(mcp).ok()? == format!("{linked} mcp")).then_some(()));
+    assert!(station.launcher_log().contains("the front listens again"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(second_front)).then_some(()));
+}
+
+/// A front in the release that answers on its socket (fixtures/front.cjs, on the tests' Node).
+fn release_answering_front(station: &Station) {
+    let path = station.app.join("station/stillfail-reader");
+    let js = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/front.cjs");
+    std::fs::write(&path, format!("#!/bin/sh\nexec '{}' '{}' \"$@\"\n", node(), js.display())).unwrap();
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+}
+
+impl Station {
+    fn front_asks(&self) -> usize {
+        std::fs::read_to_string(self.data.join("front-asks")).unwrap_or_default().lines().count()
+    }
+}
+
+#[test]
+fn a_front_that_answers_is_left_and_one_that_stops_answering_is_killed_and_started_again() {
+    let mut station = Station::new("frontprobe");
+    release_answering_front(&station);
+    station.start("front=0,front_probe=100");
+    station.up();
+    let first = until("the front", || station.fronts().first().copied());
+    // Asked again and again, answering each: left alone.
+    until("five asks answered", || (station.front_asks() >= 5).then_some(()));
+    assert!(!station.launcher_log().contains("did not answer"), "{}", station.launcher_log());
+    assert_eq!(station.fronts(), [first]);
+    // Stopped (it holds its socket and the system takes connections into its backlog, but nothing answers): killed after
+    // three asks, and another started in its place.
+    // SAFETY: a signal to the stand-in this test's launcher started.
+    unsafe { libc::kill(first, libc::SIGSTOP) };
+    let second = until("another front", || station.fronts().get(1).copied());
+    until("the stopped one gone", || (!alive(first)).then_some(()));
+    assert!(alive(second));
+    assert!(station.launcher_log().contains("killed as hung"), "{}", station.launcher_log());
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(second)).then_some(()));
+}
+
+/// The signals `pid` ignores, where the system says (Linux: /proc; macOS lists none for a process).
+fn ignored_signals(pid: i32) -> Option<u64> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let line = status.lines().find(|l| l.starts_with("SigIgn:"))?;
+    u64::from_str_radix(line.trim_start_matches("SigIgn:").trim(), 16).ok()
+}
+
+const SIGPIPE_BIT: u64 = 1 << (libc::SIGPIPE - 1);
+
+#[test]
+fn the_launcher_lives_through_telling_a_node_whose_end_of_the_control_socket_closed() {
+    let mut station = Station::new("sigpipe");
+    station.conf("control=close\n");
+    station.start("stop=200");
+    station.up();
+    let node = station.started()[0];
+    until("the Node to close its end", || station.said(node, "control closed by itself").then_some(()));
+    if let Some(ignored) = ignored_signals(station.pid()) {
+        assert_ne!(ignored & SIGPIPE_BIT, 0, "SigIgn {ignored:x}");
+    }
+    // Told something on a socket whose other end is gone: EPIPE, said, not a SIGPIPE that would end it.
+    station.signal(libc::SIGHUP);
+    until("the launcher to say it could not tell it", || station.launcher_log().contains(&format!("could not tell Node {node}")).then_some(()));
+    assert!(station.launcher.as_mut().unwrap().try_wait().unwrap().is_none(), "the launcher is still there");
+    station.signal(libc::SIGTERM);
+    // (the Node hears no stop: killed when it does not stop in time)
+    let _ = station.wait();
+    until("the Node gone", || (!alive(node)).then_some(()));
+}
+
+/// The front program the release has (station/mb's reader), where the test is given one (STILLFAIL_TEST_READER: `node
+/// scripts/native.ts file reader`); else the test says it skips.
+fn reader() -> Option<PathBuf> {
+    let given = std::env::var_os("STILLFAIL_TEST_READER").map(PathBuf::from).filter(|p| p.is_file());
+    if given.is_none() {
+        eprintln!("skipped: no STILLFAIL_TEST_READER (the reader program to run as the front)");
+    }
+    given
+}
+
+/// One ask of the front at `socket`, its answer's line.
+fn ask_front(socket: &Path, line: &str) -> String {
+    use std::io::Write;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).unwrap();
+    stream.write_all(line.as_bytes()).unwrap();
+    let mut answer = String::new();
+    BufReader::new(&stream).read_line(&mut answer).unwrap();
+    answer
+}
+
+#[test]
+fn the_release_s_front_answers_an_ask_it_has_no_operation_for_and_lives_through_writing_to_a_closed_socket() {
+    let Some(program) = reader() else { return };
+    let mut station = Station::new("realfront");
+    std::os::unix::fs::symlink(&program, station.app.join("station/stillfail-reader")).unwrap();
+    station.start("");
+    station.up();
+    let socket = station.data.join("run/front.sock");
+    let front = until("the front listening", || {
+        let log = station.launcher_log();
+        let at = log.find("the front listens (pid ")?;
+        log[at + 23..].split(')').next()?.parse::<i32>().ok()
+    });
+    // What the launcher asks it (front.rs `answers`): an answer of the same id, an error.
+    let said: Value = serde_json::from_str(&ask_front(&socket, "{\"id\":1,\"op\":\"answers\"}\n")).unwrap();
+    assert_eq!(said["id"], 1);
+    assert!(said["error"].is_string(), "{said}");
+    if let Some(ignored) = ignored_signals(front) {
+        assert_ne!(ignored & SIGPIPE_BIT, 0, "SigIgn {ignored:x}");
+    }
+    // Asks whose asker is gone before the answer is written: written to a closed socket (EPIPE), many times over.
+    for _ in 0..50 {
+        use std::io::Write;
+        let mut stream = std::os::unix::net::UnixStream::connect(&socket).unwrap();
+        stream.write_all(b"{\"id\":2,\"op\":\"answers\"}\n").unwrap();
+        drop(stream);
+    }
+    let said: Value = serde_json::from_str(&ask_front(&socket, "{\"id\":3,\"op\":\"answers\"}\n")).unwrap();
+    assert_eq!(said["id"], 3);
+    assert!(alive(front));
+    assert!(!station.launcher_log().contains("did not answer"));
+    station.signal(libc::SIGTERM);
+    assert!(station.wait().success());
+    until("the front to end with the launcher", || (!alive(front)).then_some(()));
 }

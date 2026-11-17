@@ -484,14 +484,15 @@ fn holes_beside(t : @ui.Tester, left : Double) -> Array[(Double, Double, Double,
 
 ///|
 /// The audit's faults of a press's room or of presses over each other (`room:`, `apart:`) naming something of a file's
-/// tab or of its player (made in viewer_tab.mbt, player.mbt, kit's media.mbt; a tab's player's keys under its own key,
+/// tab or of its player (made in viewer_tab.mbt, player_node.mbt, player_list_node.mbt, kit's media.mbt; a tab's
+/// player's keys under its own key,
 /// `preview-media/…`).
 fn tab_player_faults(t : @ui.Tester) -> Array[String] {
   t
   .audit()
   .filter(fn(f) {
     (f.has_prefix("room:") || f.has_prefix("apart:")) &&
-    (f.contains("viewer_tab.mbt") || f.contains("player.mbt") || f.contains("media.mbt") || f.contains("preview-media/"))
+    (f.contains("viewer_tab.mbt") || f.contains("player_node.mbt") || f.contains("player_list_node.mbt") || f.contains("media.mbt") || f.contains("preview-media/"))
   })
 }
 
@@ -766,7 +767,7 @@ test "中屏 and 大屏: a film's and a song's player in a tab keeps the corner 
   }
 }
 
-// A film or a song in a tab is part of the pane (sf/player.mbt's `embedded`): no ground of its own, its picture in the
+// A film or a song in a tab is part of the pane (sf/player_node.mbt's `embedded`): no ground of its own, its picture in the
 // room over its controls, the controls always there under it in the pane's colours.
 
 ///|
@@ -888,4 +889,49 @@ test "大屏: a song playing in a tab cuts no hole in it (its player placed out 
     let f = beside_tester(mode="chat-view-side-video", w~, h~)
     assert_eq(holes_beside(f, tab_left(f, beside_film)).length(), 1, msg="\{w} wide: a film's picture")
   }
+}
+
+///|
+test "大屏: a film opened beside keeps what its message knew of it: its size, its length and its frames, from the tab's first frame" {
+  let t = beside_tester(mode="chat-download")
+  let (x, y) = chat_film(t)
+  press_held(t, x, y, @ui.mod_cmd)
+  let f = tab_viewer_named(t, beside_film).file
+  assert_eq((f.width, f.height, f.duration, f.frames), (1280.0, 720.0, 12500.0, 375), msg="the tab's film as its message has it: \{Repr((f.width, f.height, f.duration, f.frames))}, tabs \{Repr(view_tabs(t))}")
+}
+
+///|
+test "text files default beside the chat; their explicit full-window action still opens over it" {
+  let t = beside_tester()
+  for name in ["说明.md", "list.ts", "数据.csv", "报告.html"] {
+    @sfbase.open_preview("ws1/st1", "s-c1", made_file(name))
+    t.run_for(@ui.move_most_ms)
+    assert_true(@sfbase.viewer.get() is None, msg=name + " opens beside")
+    assert_eq(t.all(Tab, label=name, selected=true).length(), 1)
+    assert_true(t.all(Toolbar, label=name).length() > 0)
+  }
+  assert_eq(view_tabs(t).length(), 4)
+  t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_), msg="explicit 全屏 wins over the text default")
+  assert_eq(view_tabs(t).length(), 4)
+}
+
+///|
+test "text files without a side panel fall back to the whole-window preview" {
+  let t = beside_tester(w=390.0, h=844.0, platform=2)
+  @sfbase.open_preview("ws1/st1", "s-c1", made_file("说明.md"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is Some(_))
+  assert_eq(view_tabs(t).length(), 0)
+}
+
+///|
+test "a plain press on a message's text attachment opens its side tab" {
+  let t = beside_tester(mode="chat-files-sent")
+  t.click(Group, label="list.ts")
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.viewer.get() is None)
+  assert_eq(t.all(Tab, label="list.ts", selected=true).length(), 1)
+  assert_true(shown_beside(t, "list.ts", "export const estimate"))
 }

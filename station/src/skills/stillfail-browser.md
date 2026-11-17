@@ -43,17 +43,14 @@ is the one way to ask:
   they typed. You are told in your session when the page has left its sign-in: look whether it is signed in, then call
   `sign_in {site, done: true, name, about}` (it is kept in their vault if they chose so on the card, with no other card;
   other chats then ask for it instead of signing in again; `name` and `about` as skill stillfail-vault says, so that they
-  know what it is: UniFi 后台登录态（经 Studio 转发到 127.0.0.1:8443）, not 127.0.0.1 登录态), or `sign_in {site, stuck: "what is left"}` in their language.
+  know what it is: 路由器后台登录态（经家里那台 Mac 转发到 127.0.0.1:8443）, not 127.0.0.1 登录态), or `sign_in {site, stuck: "what is left"}` in their language.
 - It does not wait: go on with what does not need it, else end your turn need_human (about the card). Do not post the
   tab's screen for a sign-in yourself, and never ask for a password or a code in the chat.
 - The vault's sign-in ran out (the site asks you to sign in although it was granted): sign in with the site's passkey if
   it offers one (below: the browser signs it), else `sign_in {site, again: true}`.
-- Passkeys: each tab of this chat's environment has an authenticator of the browser's own, so a site's "add a passkey"
-  (on its account or security page) makes one here with no prompt, and a site asking for one it has signs with it. Once
-  signed in to a site that takes passkeys, add one there (a second passkey beside the person's own; most sites take
-  several; the site may ask for the password again: call `sign_in {site}` again on that page and it is typed in
-  again) before `done`: the sign-in kept carries
-  it, and when its cookies run out later, its passkey signs in again with nobody asked.
+- Passkeys: each tab of this chat's environment has an authenticator of the browser's own, so a site asking for a passkey
+  already stored in that sign-in signs with it automatically. Never register a new passkey on a person's account unless
+  they explicitly ask you to add one.
 - A sign-in made before each chat had its own environment is still in the station's own profile: `secret_save {…,
   kind: "browser", browser: "station"}` reads it from there.
 

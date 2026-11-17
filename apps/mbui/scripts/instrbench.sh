@@ -11,6 +11,7 @@
 #   scripts/instrbench.sh compare A B     two runs' OUTs side by side, A before and B after (each from its checkout),
 #                                         both compiled by the same MoonBit (MBUI_TOOLS): another one's code is
 #                                         another's (moon of 2026-10-16 and of 11-04: Home's frame 2.9% apart)
+#   MBUI_CHAT_PAGE=nodes: the chats' scenes on the chat's page made as nodes (外观's 试用新对话页).
 #   TOP=20: how many functions are said. MBUI_PROFILE_EACH=1: each function's counts in each frame too (F lines).
 #   MBUI_PROFILE_FOCUS=NAME (a function's name in the program, one `*` in it for any part): each function's "all
 #   inside its calls" is what it ran where NAME called it itself (wasmgas profile's focus=); MBUI_PROFILE_CALLERS=NAME,
@@ -21,6 +22,7 @@ D="$(cd "$(dirname "$0")" && pwd)"
 cd "$A"
 # scene      script                           fixture    window
 table="home scroll-home long 390x844
+edge edge chat-long 1280x800
 home-again home-again long 390x844
 medium scroll-medium chat-long 690x840
 open open long 390x844
@@ -28,6 +30,7 @@ paged scroll-deep long-paged 390x844
 type type chat-long 390x844
 table scroll-table chat-md 390x844
 send send chat-done-live 390x844
+chatreal chat-real chat-real 390x844
 list30 list list:30 390x844
 list1500 list list:1500 390x844
 sight30 list list-sight:30 390x844
@@ -37,7 +40,10 @@ switch15 switch-ws switch-real:15 390x844
 switch25 switch-ws switch-real:25 390x844
 switch40 switch-ws switch-real:40 390x844
 switch100 switch-ws switch-real:100 390x844
-switchclose switch-ws-close switch-real:25 390x844"
+switchclose switch-ws-close switch-real:25 390x844
+edge4 edge-batch chat-long 1280x800
+edge4apart edge-apart chat-long 1280x800
+board board board-list 1280x800"
 gas() { "$MBUI_DIR/scripts/wasmgas" "$@"; }
 if [ "${1:-run}" = compare ]; then
   [ $# = 3 ] || { echo 'instrbench.sh compare BEFORE_OUT AFTER_OUT' >&2; exit 2; }

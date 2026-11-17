@@ -9,7 +9,7 @@ import { Store } from "../src/store/store.ts";
 import { chatTools } from "../src/tools/chat.ts";
 import { openAgentsDoor } from "../src/tools/http.ts";
 import { McpEndpoint } from "../src/tools/mcp.ts";
-import { installRecentChatIndex } from "../src/store/chat-list-index.ts";
+import { installRecentChatIndex } from "./reference/chat-list/chat-list-index.ts";
 
 function fixture() {
   const dir = mkdtempSync(join(tmpdir(), "recent-chat-reader-"));

@@ -5,11 +5,11 @@ import { join } from "node:path";
 import { constants } from "node:sqlite";
 import { test } from "node:test";
 import { recentChatIds } from "../src/store/chat-list.ts";
-import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "../src/store/chat-list-scope-build.ts";
-import { installRecentScopeJournal, trackRecentScope } from "../src/store/chat-list-scope-journal.ts";
-import { dispatchRecentScopeOrderStep, settleRecentWorkspaceOrderStep } from "../src/store/chat-list-scope-order.ts";
-import { putRecentScopeSource, readPreparedRecentWorkspace, RECENT_SCOPE_ORDER_PENDING } from "../src/store/chat-list-scope-rows.ts";
-import { settleRecentScopeVisibilityStep } from "../src/store/chat-list-scope-visibility.ts";
+import { scanRecentWorkspaceStep, settleRecentWorkspaceMemberStep } from "./reference/chat-list/chat-list-scope-build.ts";
+import { installRecentScopeJournal, trackRecentScope } from "./reference/chat-list/chat-list-scope-journal.ts";
+import { dispatchRecentScopeOrderStep, settleRecentWorkspaceOrderStep } from "./reference/chat-list/chat-list-scope-order.ts";
+import { putRecentScopeSource, readPreparedRecentWorkspace, RECENT_SCOPE_ORDER_PENDING } from "./reference/chat-list/chat-list-scope-rows.ts";
+import { settleRecentScopeVisibilityStep } from "./reference/chat-list/chat-list-scope-visibility.ts";
 import { Store } from "../src/store/store.ts";
 
 test("a frequently updated shared chat does not starve another shared chat's ordering", () => {

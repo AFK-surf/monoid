@@ -8,7 +8,8 @@
 // restore-keys takes the newest of a kind on its ref (then main's), so the older ones of a kind on a ref are never read
 // again: kept is the newest of each kind on each live ref, the rest deleted (one under a megabyte left: it frees
 // nothing). A deleted branch's caches cannot be restored by another branch, so all of its caches are removed once
-// they have not been created or read for 30 minutes. Pull request and other refs keep their own existing rules.
+// they have not been created or read for 30 minutes, and a live branch's once not read for 12 hours. Pull request and
+// other refs keep their own existing rules.
 // (A list of the kinds by name, as .github/cache_prune.py had, missed each new one: on 2026-10-22 mbui-apk-<sha>,
 // android-lint-main-<sha>, android-build-main-<sha> and the mbui-linux-store-… ones were 4 GB of the 22.)
 // setup-gradle's parts of a Gradle home (gradle-transforms-v1-<hash>, gradle-dependencies-v1-…: by their content,
@@ -104,18 +105,68 @@ fn iso_s(t : String) -> Double {
 }
 
 ///|
-fn gh_lines(args : String) -> Array[String]? {
-  match @sys.run_out("gh " + args) {
-    Some(o) =>
-      Some(
-        o
-        .split("\n")
-        .map(fn(l) { l.to_owned() })
-        .filter(fn(l) { l.length() > 0 })
-        .to_array(),
-      )
-    None => None
+/// How many times a call of GitHub's API is made before it counts as failed: the API answers a 5xx now and then
+/// ("gh: Server Error (HTTP 502)" listing the branches, run 43977844748), and this runs over a hundred times a day.
+let gh_tries : Int = 3
+
+///|
+/// `gh <args>`'s lines, made by `run` up to `gh_tries` times with `pause` between; None when every one failed, which
+/// lets nothing be deleted.
+fn gh_lines_by(
+  args : String,
+  run : (String) -> String?,
+  pause : () -> Unit,
+) -> Array[String]? {
+  for i in 0..<gh_tries {
+    if i > 0 {
+      pause()
+    }
+    match run("gh " + args) {
+      Some(o) =>
+        return Some(
+          o
+          .split("\n")
+          .map(fn(l) { l.to_owned() })
+          .filter(fn(l) { l.length() > 0 })
+          .to_array(),
+        )
+      None => ()
+    }
   }
+  None
+}
+
+///|
+fn gh_pause() -> Unit {
+  ignore(@sys.run_out("sleep 2"))
+}
+
+///|
+fn gh_lines(args : String) -> Array[String]? {
+  gh_lines_by(args, @sys.run_out, gh_pause)
+}
+
+///|
+/// A cache's delete, made by `delete` up to `gh_tries` times with `pause` between while it is `there`: None once it is
+/// done or gone, else the last answer. (Gone already, between the list and here: GitHub's own eviction, run
+/// 39606378560; or a 5xx for a delete that was done all the same, run 39620407496: what decides is whether it is
+/// still there.)
+fn delete_cache_by(
+  delete : () -> String,
+  there : () -> Bool,
+  pause : () -> Unit,
+) -> String? {
+  let mut r = ""
+  for i in 0..<gh_tries {
+    if i > 0 {
+      pause()
+    }
+    r = delete()
+    if r.contains("exit=0") || r.contains("HTTP 404") || !there() {
+      return None
+    }
+  }
+  Some(r)
 }
 
 ///|
@@ -125,6 +176,22 @@ fn deleted_head_cache(c : Cache, heads : Map[String, Bool], now : Double) -> Boo
   !heads.contains(c.ref_) &&
   c.created > 0.0 && c.accessed > 0.0 &&
   now - c.created >= deleted_head_grace_s && now - c.accessed >= deleted_head_grace_s
+}
+
+///|
+/// A live branch's caches not read for so long: a branch pushed again after it restores main's by restore-keys, as a
+/// new one does. Kept till it is gone, the caches of the 70 branches besides main held 5.4 GB
+/// of the 10 on 2026-11-15, most of it unread for 12-24 hours, and GitHub evicted the emulator's build, read each
+/// scheduled mbui-ci run: android-streams-real, android-devices and android-oldest failed with no emulator (43673780626).
+let idle_branch_s : Double = 12.0 * 3600.0
+
+///|
+/// A branch's cache (not the default branch's) not read for `idle_branch_s`
+fn idle_branch_cache(c : Cache, default_head : String, now : Double) -> Bool {
+  c.ref_.has_prefix("refs/heads/") &&
+  c.ref_ != default_head &&
+  c.accessed > 0.0 &&
+  now - c.accessed >= idle_branch_s
 }
 
 ///|
@@ -279,6 +346,10 @@ fn cache_prune(args : Array[String]) -> Int {
         continue
       }
     }
+    if idle_branch_cache(c, default_head, now) {
+      gone.push(c)
+      continue
+    }
     if is_gradle_part(c.key) {
       let since = match homes_read.get(c.ref_) {
         Some(t) => t
@@ -311,12 +382,16 @@ fn cache_prune(args : Array[String]) -> Int {
       "\{if dry { "would delete" } else { "delete" }} \{c.key} (\{c.ref_}, \{c.size / 1000000L} MB)",
     )
     if !dry {
-      let r = @sys.run_out(
-        "gh api -X DELETE repos/\{repo}/actions/caches/\{c.id} 2>&1; echo \"exit=$?\"",
-      ).unwrap_or("exit=1")
-      // (gone already, between the list and here: GitHub's own eviction, run 39606378560; or a 5xx for a delete
-      // that was done all the same, run 39620407496: what decides is whether it is still there)
-      if !r.contains("exit=0") && !r.contains("HTTP 404") && still_there(repo, c) {
+      let failed = delete_cache_by(
+        fn() {
+          @sys.run_out(
+            "gh api -X DELETE repos/\{repo}/actions/caches/\{c.id} 2>&1; echo \"exit=$?\"",
+          ).unwrap_or("exit=1")
+        },
+        fn() { still_there(repo, c) },
+        gh_pause,
+      )
+      if failed is Some(r) {
         @sys.eprintln("chk cache-prune: deleting \{c.key}: \{trim(r)}")
         return 1
       }

@@ -1,5 +1,5 @@
-// The files' page (sfdesk files_start.mbt files_station): one page for a station's drive, laid out by its own width
-// (narrow: drive_narrow.mbt, the web's narrow app; wide: the files' page as the web's desktop), at a width of each tier,
+// The files' page (sfpages files_page_node.mbt drive_page_node): one page for a station's drive, laid out by its own width
+// (narrow: narrow_folder_node, the web's narrow app; wide: the files' page as the web's desktop), at a width of each tier,
 // with a finger and with a mouse.
 
 ///|
@@ -254,7 +254,7 @@ test "adding a favorite on a narrow screen chooses a station and folder without 
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
   app.nav.replace(Files)
   t.run_for(@ui.move_most_ms)
-  @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+  @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   sheet_rested(t, "sf-present")
   // (two stations it can be done on: which first)
   assert_true(t.find("选择一台 station，然后选择要收藏的文件夹") is Some(_), msg="which station")
@@ -275,7 +275,7 @@ test "adding a favorite on a narrow screen chooses a station and folder without 
   t.click(Button, label="收藏此文件夹")
   t.frame()
   assert_eq(named(calls, "drive.setRoots").length(), 0)
-  assert_true(@sfdesk.favorite_has(@sfdesk.favorites(src, "ws1"), "ws1/st1", "/Users/lin/项目", ""))
+  assert_true(@sfpages.favorite_has(@sfpages.favorites(src, "ws1"), "ws1/st1", "/Users/lin/项目", ""))
   assert_true(!@sf.presenting())
 }
 
@@ -375,10 +375,10 @@ let keyboard_h : Double = 340.0
 ///|
 test "the files' keys: ⌘⇧G (the keymap's) opens 前往文件夹; in its field Tab completes what is typed, ↓ ↑ choose; Escape closes it" {
   let t = files_page_tester(1280.0, 800.0, 0)
-  assert_true(t.find("前往文件夹…") is None)
+  assert_true(t.find("前往文件夹") is None)
   t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("前往文件夹…") is Some(_))
+  assert_true(t.find("前往文件夹") is Some(_))
   // (the row chosen: the one its Tab is drawn after)
   let chosen = fn() {
     let words = t.words().map(fn(w) { w.0 })
@@ -406,7 +406,7 @@ test "the files' keys: ⌘⇧G (the keymap's) opens 前往文件夹; in its fiel
   )
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
-  assert_true(t.find("前往文件夹…") is None)
+  assert_true(t.find("前往文件夹") is None)
 }
 
 ///|
@@ -448,7 +448,7 @@ fn go_up(platform : Int, w : Double, h : Double, rest? : Bool = true) -> @ui.Tes
   if platform == 0 {
     t.key(@ui.key_of_char('g'), mods=@ui.mod_cmd + @ui.mod_shift_key)
   } else {
-    @sfdesk.go_to_open()
+    @sfpages.go_to_open()
     t.draw()
   }
   if rest {
@@ -478,7 +478,7 @@ test "前往文件夹 on each screen: a dialog in the middle, its field focused;
   for sc in go_screens() {
     let about = "\{Repr(sc)}"
     let t = go_up(sc.0, sc.1, sc.2)
-    let (x, y, w, _) = t.rect_of("前往文件夹…").unwrap()
+    let (x, y, w, _) = t.rect_of("前往文件夹").unwrap()
     let (dx, _, dw, _) = t.get(@ui.Role::Dialog).rect
     assert_true((dx + dw / 2.0 - sc.1 / 2.0).abs() < 1.0 && x >= dx && x + w <= dx + dw && y > 0.0, msg="\{about}: its title \{Repr((x, y, w))}")
     assert_true(t.focused() is Some(n) && n.role is TextField, msg="\{about}: the field focused")
@@ -508,7 +508,7 @@ test "前往文件夹 on each screen: a folder's row pressed goes there, the dia
       Drive(at) => assert_eq(at.root, Some("/Users/lin/项目"), msg=about)
       _ => fail("\{about}: no folder open")
     }
-    assert_true(t.find("前往文件夹…") is None, msg="\{about}: closed")
+    assert_true(t.find("前往文件夹") is None, msg="\{about}: closed")
   }
 }
 
@@ -536,7 +536,7 @@ test "前往文件夹 with a mouse: the row pointed at is the one chosen; Enter 
     Drive(at) => assert_eq(at.root, Some("/Users/lin"))
     _ => fail("no folder open")
   }
-  assert_true(t.find("前往文件夹…") is None)
+  assert_true(t.find("前往文件夹") is None)
 }
 
 ///|
@@ -551,7 +551,7 @@ test "前往文件夹 with keyboard and mouse: Escape and a press outside it clo
       t.tap(20.0, 780.0)
     }
     t.run_for(@ui.move_most_ms)
-    assert_true(t.find("前往文件夹…") is None, msg=how)
+    assert_true(t.find("前往文件夹") is None, msg=how)
     match app.nav.top() {
       Drive(at) => assert_eq(at.root, Some(fix_docs), msg=how)
       _ => fail("\{how}: the folder left")
@@ -615,7 +615,7 @@ test "前往文件夹: keys pressed one after another, nothing waited for betwee
     Drive(at) => assert_eq(at.root, Some("/Users/lin"))
     _ => fail("no folder open")
   }
-  assert_true(t.find("前往文件夹…") is None)
+  assert_true(t.find("前往文件夹") is None)
 }
 
 ///|
@@ -638,7 +638,7 @@ fn which_station(calls : Array[Made], platform : Int, wide : Bool, rest : Bool) 
   }
   app.nav.replace(Files)
   t.run_for(@ui.move_most_ms)
-  @sfdesk.add_favorite_folder(src, "ws1", @sfdesk.favorite_stations(src, "ws1"))
+  @sfpages.add_favorite_folder(src, "ws1", @sfpages.favorite_stations(src, "ws1"))
   t.frame()
   if rest {
     t.run_for(@ui.move_most_ms)

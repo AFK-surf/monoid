@@ -15,7 +15,7 @@ let answering_depth : Ref[Int] = Ref(0)
 
 ///|
 // kept across runs: filled while answering and emptied as it ends
-let answer_marked : Array[() -> Unit] = []
+let answer_marked : Array[(Tree, () -> Unit)] = []
 
 ///|
 /// How many changes are being committed now (Tree::at_cause, a structure's first making), and whether an answer was told
@@ -67,13 +67,30 @@ pub fn answering(f : () -> Unit, within? : View) -> Unit {
   f()
   answering_depth.val -= 1
   if answering_depth.val == 0 {
-    // (one settled may mark another, settled in its turn: what it makes is no cause either)
+    // (one settled may mark another, settled in its turn: what it makes is no cause either. Those of one tree settled
+    // as one change of it (Tree::at_cause), of one moment, each a change within it: what a change committed whole
+    // does after it (the pointer's layout, Tree::withins_settled; where things stand, Tree::settle_after_change) done
+    // once for all of them, not once each: 28 structures an answer marked, none of them changed, laid the whole tree
+    // out 56 times, 2026-11-15)
     answering_depth.val += 1
     while answer_marked.length() > 0 {
       let due = answer_marked.copy()
       answer_marked.clear()
-      for settle in due {
-        settle()
+      let trees : Array[Tree] = []
+      for d in due {
+        if !trees.iter().any(fn(t) { physical_equal(t, d.0) }) {
+          trees.push(d.0)
+        }
+      }
+      for t in trees {
+        t.at_cause(fn() {
+          for d in due {
+            if physical_equal(d.0, t) {
+              (d.1)()
+            }
+          }
+          false
+        })
       }
     }
     answering_depth.val -= 1

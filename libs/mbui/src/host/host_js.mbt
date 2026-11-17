@@ -276,6 +276,20 @@ fn glyph_put(key : Int, x : Int, y : Int) -> Unit {
 }
 
 ///|
+/// The picture of a glyph (as host_native.mbt's): a page's canvas gives none back here (no halo drawn).
+fn glyph_picture(key : Int, out : FixedArray[Byte]) -> Bool {
+  ignore((key, out))
+  false
+}
+
+///|
+/// Pixels made here put in the words' atlas (as host_native.mbt's): none taken here.
+fn atlas_put(x : Int, y : Int, w : Int, h : Int, px : FixedArray[Byte]) -> Bool {
+  ignore((x, y, w, h, px))
+  false
+}
+
+///|
 fn atlas_size(colour : Bool) -> Int {
   js_atlas_size(colour)
 }
@@ -462,6 +476,18 @@ fn back_enabled(on : Bool) -> Unit {
 /// browser's prefers-reduced-transparency.
 fn reduce_transparency() -> Bool {
   js_reduce_transparency()
+}
+
+///|
+/// Whether the system asks for more contrast: the web is not drawn by this host for people (its own page), never.
+fn increase_contrast() -> Bool {
+  false
+}
+
+///|
+/// Whether the system is slowing the device down for its heat: a browser says none, never.
+fn thermal_throttled() -> Bool {
+  false
 }
 
 ///|
@@ -1319,6 +1345,15 @@ fn window_open(what : String) -> Bool {
 fn window_front(what : String) -> Bool {
   ignore(what)
   false
+}
+
+///|
+/// The windows of this run (see host_native.mbt): a browser's page has its one.
+fn windows(op : Int, wid : Int, what : String) -> Int {
+  ignore(op)
+  ignore(wid)
+  ignore(what)
+  0
 }
 
 ///|

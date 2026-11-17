@@ -54,6 +54,14 @@ let tree_field_boxes : Map[Int, FieldBox] = Map([])
 let tree_scaled_at : Set[Int] = Set([])
 
 ///|
+/// The nodes of the window's tree among the frame's drawn another size than they are laid out, by their own scale or
+/// what holds them (View::scale): where each is put is as drawn, the words in them as laid out, so what the squeeze
+/// and the gaps measure of words against boxes there (cut, overlapping, wrapped, apart) is not said of them: a picture
+/// of a part (a look's tile, a card drawn smaller on a stage), judged where it is drawn its own size.
+// kept across runs: filled and emptied round one asking of the squeeze (Ctx::with_tree_nodes)
+let tree_drawn_scaled : Set[Int] = Set([])
+
+///|
 /// The first of the frame's nodes put there for the window's tree's (Ctx::with_tree_nodes `facts`), -1 none.
 // kept across runs: set round one asking of the squeeze (Ctx::with_tree_nodes)
 let tree_nodes_from : Ref[Int] = Ref(-1)
@@ -64,6 +72,12 @@ let tree_nodes_from : Ref[Int] = Ref(-1)
 /// of them as it reads an old view's node's shapes and lines.
 // kept across runs: filled and emptied round one asking of the squeeze (Ctx::with_tree_nodes)
 let tree_draws_at : Set[Int] = Set([])
+
+///|
+/// Of those, what draws a mark of its own (a drawing, a picture: no glass, shadow or old view hosted), what the
+/// spacing rules hold as content, as an old view's node's shapes (Ctx::tree_draws).
+// kept across runs: filled and emptied with tree_draws_at
+let tree_marks_at : Set[Int] = Set([])
 
 ///|
 /// The nodes of the window's tree among the frame's where they are drawn is their own to say (LaidFacts' `moves_own`):
@@ -95,7 +109,7 @@ fn Ctx::tree_facts(
     _ => d.alpha
   }
   match contents.get(d.id.at) {
-    Some((c, _)) =>
+    Some((c, _)) => {
       if c.image is Some(_) ||
         c.picture is Some(_) ||
         !c.shapes.is_empty() ||
@@ -105,6 +119,10 @@ fn Ctx::tree_facts(
         c.hosted {
         tree_draws_at.add(i)
       }
+      if c.image is Some(_) || c.picture is Some(_) || !c.shapes.is_empty() || !c.lines.is_empty() {
+        tree_marks_at.add(i)
+      }
+    }
     None => ()
   }
   if tree_fields.contains(d.id) {
@@ -122,6 +140,9 @@ fn Ctx::tree_facts(
   n.dir = if f.row { Row } else { Column }
   n.rtl = f.row && f.reverse
   n.flow = f.row && f.wraps
+  if f.spread {
+    n.justify = JBetween
+  }
   n.pad_l = f.pad.0
   n.pad_t = f.pad.1
   n.pad_r = f.pad.2

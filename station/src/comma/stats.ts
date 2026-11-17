@@ -14,7 +14,7 @@
 // Built as Comma first connects, a minute after the agents' spending was recorded, as a chat moves or someone reads
 // one (a minute after too), and every hour (another station's changes reach it so); one build at a time.
 import { createHash, randomBytes } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { wall } from "../ops/fibers.ts";
@@ -27,6 +27,9 @@ type Json = any;
 export const BUILD_DAYS = 31;
 const DAY_MS = 24 * 60 * 60_000;
 const SETTLE_MS = 60_000;
+/// How long a statement on the statistics' database waits for another process's write (a handover's) before SQLite
+/// refuses it.
+export const BUSY_MS = 5000;
 const EVERY_MS = 60 * 60_000;
 // A writer that keeps committing while the old rows are classified can keep dirtying them indefinitely. After
 // several such turns, apply the still-dirty rows with the original predicate instead of never finishing the build.
@@ -294,11 +297,15 @@ export class CommaStats {
   readonly #read: Read;
   readonly #changes: (changed: () => void) => () => void;
 
-  /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called.
-  constructor(path: string, read: Read, changes: (changed: () => void) => () => void, ready: Promise<void> = Promise.resolve()) {
+  /// `changes`: tells when the agents spent or a chat moved, until the function it answers is called. `busyMs`: how long
+  /// a statement waits for another's write before it is refused (`BUSY_MS`; a test holding the database's lock to see
+  /// what is tried again gives less, each try else 5 s of its time).
+  constructor(path: string, read: Read, changes: (changed: () => void) => () => void, ready: Promise<void> = Promise.resolve(), busyMs = BUSY_MS) {
     this.#read = read;
     this.#changes = changes;
-    this.#db = new DatabaseSync(path);
+    // Shared with the process serving as a new one starts beside it (a handover): another's write waited for, as the
+    // store's is, not refused at once ("database is locked" stopped a station's next process as it made this).
+    this.#db = new DatabaseSync(path, { timeout: busyMs });
     this.#db.exec("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
     this.stats = new RevIndex(this.#db, "stats_index", ready);
     this.tasks = new RevIndex(this.#db, "task_index", ready);
@@ -324,15 +331,19 @@ export class CommaStats {
     this.#db.prepare("DELETE FROM said WHERE at < ?").run(now - BUILD_DAYS * DAY_MS);
   }
 
-  static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>): CommaStats {
-    mkdirSync(data, { recursive: true });
-    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready);
+  /// The directories the indexes are kept in (`at`'s and `inWorkspace`'s), made once off the main thread before either.
+  static async makeDirs(data: string): Promise<void> {
+    await mkdir(data, { recursive: true });
+    await mkdir(join(data, "comma-indexes"), { recursive: true, mode: 0o700 });
+  }
+
+  static at(data: string, read: Read, changes: (changed: () => void) => () => void, ready?: Promise<void>, busyMs?: number): CommaStats {
+    return new CommaStats(join(data, "comma-stats.db"), read, changes, ready, busyMs);
   }
 
   /// A workspace's index is never taken from the old, unscoped index: its owner is not known after a home change.
   static inWorkspace(data: string, workspace: string, read: Read, changes: (changed: () => void) => () => void): CommaStats {
     const dir = join(data, "comma-indexes");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
     // Preserve JavaScript's whole string, including lone surrogates, rather than folding them to U+FFFD in UTF-8.
     const name = createHash("sha256").update(workspace, "utf16le").digest("hex");
     return new CommaStats(join(dir, `${name}.db`), read, changes);
@@ -451,7 +462,8 @@ export class CommaStats {
     const skipped = new Set(unread);
     const read = (row: Json) => !skipped.has(row.station ?? "");
     let changed = { stats: 0, tasks: 0 };
-    this.#db.exec("BEGIN");
+    // (the write taken first: begun deferred, its read then write was refused at once while the process beside it wrote)
+    this.#db.exec("BEGIN IMMEDIATE");
     try {
       // Recheck in this transaction's snapshot. If preparation is no longer usable, classify again without writing a
       // partial build; any dirty rows allowed here are included and checked by the original predicate.

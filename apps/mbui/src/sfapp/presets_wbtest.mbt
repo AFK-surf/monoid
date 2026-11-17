@@ -1,5 +1,5 @@
 // A preset's dialog and its steps further in (sfpages presets.mbt), panels of nodes: 添加目录 opened at once whatever the
-// stations have said, what they offer coming into it as they say it; 浏览文件夹… and 从 Git 克隆… there first whatever
+// stations have said, what they offer coming into it as they say it; 浏览文件夹 and 从 Git 克隆 there first whatever
 // was found or typed (the person's 2026-11-01: 「要是仓库一辈子拉不到，我一辈子不能选目录？」); the folder picker
 // (sfdesk drive_dialogs.mbt) its list the panel's, a finger's to scroll; a clone under way a row of the dialog's till
 // its station says it is there.
@@ -16,16 +16,16 @@ fn preset_tester(src : Source, wide : Bool) -> @ui.Tester {
 
 ///|
 /// The fixture's `mode` opened over `src` (made of the mode's own fixture where None), a Move after; a step further in
-/// from the dialog (添加目录, 浏览文件夹…, a folder of repositories in it, 从 Git 克隆…) walked to as a person goes, from
+/// from the dialog (添加目录, 浏览文件夹, a folder of repositories in it, 从 Git 克隆) walked to as a person goes, from
 /// the new preset's dialog at rest, a press and a Move each, not as the fixture opens it.
 fn preset_mode(mode : String, wide? : Bool = false, src? : Source) -> @ui.Tester raise {
   let src = src.unwrap_or(fixture(mode))
   let t = preset_tester(src, wide)
   let walk = match mode {
     "newchat-preset-new-add" => ["添加目录"]
-    "newchat-preset-new-browse" => ["添加目录", "浏览文件夹…"]
-    "newchat-preset-new-browse-repos" => ["添加目录", "浏览文件夹…", "项目"]
-    "newchat-preset-new-clone" => ["添加目录", "从 Git 克隆…"]
+    "newchat-preset-new-browse" => ["添加目录", "浏览文件夹"]
+    "newchat-preset-new-browse-repos" => ["添加目录", "浏览文件夹", "项目"]
+    "newchat-preset-new-clone" => ["添加目录", "从 Git 克隆"]
     _ => []
   }
   open_mode(if walk.length() > 0 { "newchat-preset-new" } else { mode })
@@ -90,20 +90,20 @@ fn runs(t : @ui.Tester) -> String {
 test "添加目录 opens before the station's folders are said, its two ways first, and they come into it as they are" {
   let t = preset_add(true)
   // open already: browsing a station's folders there and cloning one, nothing else to pick yet
-  assert_true(shows(t, "浏览文件夹…") && shows(t, "从 Git 克隆…"), msg=runs(t))
+  assert_true(shows(t, "浏览文件夹") && shows(t, "从 Git 克隆"), msg=runs(t))
   assert_false(shows(t, "web-app"))
   // said: in the pick that is open, not one opened again
   @sffixture.fix_presets_say()
   t.draw()
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "web-app"), msg=runs(t))
-  assert_true(shows(t, "浏览文件夹…"))
+  assert_true(shows(t, "浏览文件夹"))
 }
 
 ///|
 test "wide, 添加目录 shows the other stations' folders while its own says nothing, and its own as they come, frames going on" {
   let t = preset_add(true, wide=true)
-  assert_true(shows(t, "浏览文件夹…"), msg=runs(t))
+  assert_true(shows(t, "浏览文件夹"), msg=runs(t))
   // (Maple's, said: there whatever the preset's station says)
   assert_true(shows(t, "still.fail 设计稿"), msg=runs(t))
   // said: the frames that follow show it, none drawn on purpose
@@ -123,7 +123,7 @@ test "adding directories groups them by station, including the same repository o
   assert_eq(t.all(Button, label="still.fail").length(), 2, msg=t.semantics_dump())
   assert_true(shows(t, "~/projects/still.fail · 12 个对话用过"))
   assert_true(shows(t, "~/code/still.fail · 2 个对话用过"))
-  assert_true(shows(t, "浏览文件夹…") && shows(t, "从 Git 克隆…"), msg=runs(t))
+  assert_true(shows(t, "浏览文件夹") && shows(t, "从 Git 克隆"), msg=runs(t))
   assert_false(shows(t, "web-app"))
 }
 
@@ -176,14 +176,18 @@ test "不用预设 from a held control lets go of the preset" {
 }
 
 ///|
-test "with no presets at all, the capsule opens a new one's dialog, not a menu of 不用预设 alone" {
+test "with none of one's own, the capsule opens 新预设 and 其他成员的预设, not a menu of 不用预设 alone" {
   new_run()
   @sffixture.new_fix.presets.clear()
   let t = preset_mode("newchat")
   press(t, "预设")
   t.run_for(@ui.move_most_ms)
   assert_false(shows(t, "不用预设"), msg=runs(t))
-  assert_true(shows(t, "新预设") && shows(t, "名字") && shows(t, "添加目录"), msg=runs(t))
+  assert_true(shows(t, "新预设") && shows(t, "其他成员的预设"), msg=runs(t))
+  // (新预设: the new one's dialog)
+  t.tap_text("新预设")
+  t.run_for(@ui.move_most_ms)
+  assert_true(shows(t, "名字") && shows(t, "添加目录"), msg=runs(t))
 }
 
 ///|
@@ -264,7 +268,7 @@ test "editing another station's preset still starts browsing on the composer's s
   t.run_for(@ui.move_most_ms)
   press(t, "添加目录")
   t.run_for(@ui.move_most_ms)
-  press(t, "浏览文件夹…")
+  press(t, "浏览文件夹")
   t.run_for(@ui.move_most_ms)
   assert_true(t.query(Button, label="选择文件夹所在的 station: Maple") is Some(_), msg=t.semantics_dump())
   assert_eq(text(Some(named(calls, "drive.folders")[0].params), "station"), "ws1/st2")
@@ -435,7 +439,7 @@ test "a clone that failed says why in its row, its × lets go of it there and he
   let calls : Array[Made] = []
   new_run()
   let t = preset_mode("newchat-preset-new-add", src=preset_calls("newchat-preset-new-add", calls))
-  press(t, "从 Git 克隆…")
+  press(t, "从 Git 克隆")
   t.run_for(@ui.move_most_ms)
   // (on a sheet, the keys its field's once it is pressed)
   let (fx, fy) = t.find("owner/r").unwrap()
@@ -490,9 +494,9 @@ test "by touch in the window's middle (a fold laid open) the preset's dialog, �
   assert_false(t.ime().0, msg="the dialog: \{t.focus_said()}")
   press(t, "添加目录")
   t.run_for(@ui.move_most_ms)
-  assert_true(shows(t, "浏览文件夹…"), msg=runs(t))
+  assert_true(shows(t, "浏览文件夹"), msg=runs(t))
   assert_false(t.ime().0, msg="添加目录: \{t.focus_said()}")
-  press(t, "浏览文件夹…")
+  press(t, "浏览文件夹")
   t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "选择文件夹"), msg=runs(t))
   assert_false(t.ime().0, msg="the picker: \{t.focus_said()}")
@@ -500,7 +504,7 @@ test "by touch in the window's middle (a fold laid open) the preset's dialog, �
   t.key(@ui.key_escape)
   t.run_for(@ui.move_most_ms)
   assert_false(t.ime().0, msg="添加目录 again: \{t.focus_said()}")
-  press(t, "从 Git 克隆…")
+  press(t, "从 Git 克隆")
   t.run_for(@ui.move_most_ms)
   assert_true(t.focus_said().has_prefix("TextField"), msg="the clone's: \{t.focus_said()}")
   assert_true(t.ime().0, msg="the clone's input method")
@@ -594,12 +598,22 @@ test "the preset's screens keep every rule, on a phone and on a desk" {
 /// holds, which scrolls (panel_centred_node's body). Named by its files and how far, not by their lines: a line moved
 /// in either file by another change is no fault of these screens.
 fn preset_dialog_known(f : String) -> Bool {
-  f.has_prefix("apart: a box (a node of the window's tree's at ") &&
-  f.contains("made at stillfail/src/sf/icon_button_node.mbt:") &&
-  f.contains(", in what was asked for at stillfail/src/sf/panel_centred_node.mbt:") &&
-  f.contains(" (a node of the window's tree's at ") &&
-  f.contains("made at stillfail/src/sf/panel_centred_node.mbt:") &&
-  f.has_suffix(") are drawn over each other by 58×1")
+  // (a folder's row of two lines, its icon and its chevron centred on them: the first line's rule, counted in
+  // corners_first_line_known (newchat-preset-new-browse), said here once audit() held that rule too, 2026-11-15)
+  (f.has_prefix("first line: ") && f.contains("「下载 station") && f.contains(" off the first of the 2 lines beside it")) ||
+  // (and its field over the folders' rows, under a mouse on a row: the row's ground lit reaches lit_reach past its
+  // icon, the field's edge on the icons' as every list's head is (rule 7), so 8 short of the lit ground's at both
+  // sides: rule 5, said once the spacing rules measured the window's tree's nodes, 2026-11-14; looked at 2026-11-15,
+  // as meant)
+  (f.has_prefix("rule 5: a box in 「") && f.contains(" falls short 8 at its ") && f.contains("(at 404,") && f.contains(" 472×36,")) ||
+  (
+    f.has_prefix("apart: a box (a node of the window's tree's at ") &&
+    f.contains("made at stillfail/src/sf/icon_button_node.mbt:") &&
+    f.contains(", in what was asked for at stillfail/src/sf/panel_centred_node.mbt:") &&
+    f.contains(" (a node of the window's tree's at ") &&
+    f.contains("made at stillfail/src/sf/panel_centred_node.mbt:") &&
+    f.has_suffix(") are drawn over each other by 58×1")
+  )
 }
 
 ///|
@@ -627,7 +641,7 @@ test "wide, the dialog's 添加目录 under a mouse is lit round, out past its t
 let picker_press_lates : Array[Double] = [0.0, 16.0, 120.0, 250.0, 400.0, 700.0]
 
 ///|
-/// The folder picker of a new preset's dialog in screen `s`, walked to as a person goes (添加目录, 浏览文件夹…, the row
+/// The folder picker of a new preset's dialog in screen `s`, walked to as a person goes (添加目录, 浏览文件夹, the row
 /// 项目: newchat-preset-new-browse-repos) over its fixture whose core answers each call as late as `pace` says when it
 /// is asked (the walk answered at once), as a device's host draws it (check_looks off), at rest; the calls made to
 /// `calls`.
@@ -639,7 +653,7 @@ fn picker_press_tester(s : Screen, pace : Ref[Double], calls : Array[Made]) -> @
   open_mode("newchat-preset-new")
   t.draw()
   t.run_for(@ui.move_most_ms)
-  for label in ["添加目录", "浏览文件夹…", "项目"] {
+  for label in ["添加目录", "浏览文件夹", "项目"] {
     press(t, label)
     t.run_for(@ui.move_most_ms)
   }

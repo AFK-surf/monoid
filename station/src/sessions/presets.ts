@@ -1,3 +1,4 @@
+import type { ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Presets: what a chat starts knowing, chosen as it is opened. A preset names the directories its
 // chats work with and what people want of them there; it does not bind the agent to them (it runs in its own session
 // workspace as every chat does). A workspace's presets are its agent home's presets.json; a chat opened with one keeps a
@@ -12,8 +13,8 @@
 // deletion kept as a record of its own (`gone`) so that it is not brought back. Every live record it keeps in a
 // workspace is its agents' (chat_create `preset`) and opens a chat here, whoever's and wherever it was made; an app
 // from before is listed only those made here (`home`), so that one carried to three stations is not shown three times.
-import { type Dirent, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, symlinkSync, writeFileSync } from "node:fs";
-import { readFile, readdir, stat, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
+import { mkdir, open, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { homedir } from "node:os";
 import { randomBytes } from "node:crypto";
@@ -28,10 +29,12 @@ import {
   NAME_MAX,
   type PresetRecord,
   canonical,
+  goneKept,
   isGone,
   modelOf,
   newerRecord,
   recordOf,
+  recordsKept,
   stationsOf,
 } from "../../../client/core-ts/src/preset-records.ts";
 
@@ -52,6 +55,7 @@ export type PresetModel = {
   runtime?: string;
   effort?: string;
   fast?: boolean;
+  speed?: ModelSpeed;
   context?: number;
   profile?: string;
   profiles?: string[];
@@ -114,10 +118,7 @@ export function presetRefusal(
 
 const FILE = "presets.json";
 const COPY = ".stillfail-preset.json";
-/// The deleted presets a workspace's file keeps at most, the latest: a deletion is forgotten only after this many
-/// later ones, and only a device or a station that held the preset live all that while (a person's presets are made by
-/// hand, tens of them) could bring it back then.
-export const GONE_MOST = 500;
+// (the deleted presets it keeps: preset-records.ts `goneKept`, so many of each owner's, the rule a device keeps too)
 /// The live presets a workspace's file keeps at most: one more a device brings is refused.
 export const LIVE_MOST = 1000;
 
@@ -173,9 +174,9 @@ export type PresetsFile = { presets: Preset[]; gone: PresetGone[] };
 
 /// The presets of the workspace whose agent home is `home`, as written (one from before as presetOf reads it, the file
 /// not written for it); none when there is no file yet. `me`: this station's id.
-export function readPresetsFile(home: string, me = ""): PresetsFile {
+export async function readPresetsFile(home: string, me = ""): Promise<PresetsFile> {
   try {
-    const raw = JSON.parse(readFileSync(join(home, FILE), "utf8"));
+    const raw = JSON.parse(await readFile(join(home, FILE), "utf8"));
     const presets: Preset[] = (Array.isArray(raw?.presets) ? raw.presets : []).flatMap((p: unknown) => presetOf(p, me) ?? []);
     const gone: PresetGone[] = (Array.isArray(raw?.gone) ? raw.gone : []).flatMap((g: unknown) => goneOf(g) ?? []);
     return { presets, gone };
@@ -184,32 +185,20 @@ export function readPresetsFile(home: string, me = ""): PresetsFile {
   }
 }
 
-/// The live presets of the workspace whose agent home is `home` (readPresetsFile).
-export function readPresets(home: string, me = ""): Preset[] {
-  return readPresetsFile(home, me).presets;
-}
-
-/// The latest GONE_MOST of `gone`, by when each was deleted (then the higher `rev`, then the id: the same whatever their
-/// order).
-function latestGone(gone: PresetGone[]): PresetGone[] {
-  if (gone.length <= GONE_MOST) return gone;
-  const order = (a: PresetGone, b: PresetGone) => b.updatedAt - a.updatedAt || b.rev - a.rev || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const kept = new Set([...gone].sort(order).slice(0, GONE_MOST));
-  return gone.filter((g) => kept.has(g));
-}
-
-function writePresets(home: string, presets: Preset[], gone: PresetGone[]): void {
-  mkdirSync(home, { recursive: true });
+/// Written whole beside it and put in its place, so that a reader meanwhile reads the one before or this one. A change
+/// reads, changes and writes it in one turn of its workspace's queue (Presets `#serial`).
+async function writePresets(home: string, presets: Preset[], gone: PresetGone[]): Promise<void> {
+  await mkdir(home, { recursive: true });
   const path = join(home, FILE);
   const temp = `${path}.${randomBytes(4).toString("hex")}`;
   // (the deleted ones beside the live, which is all a reader from before reads)
-  writeFileSync(temp, `${JSON.stringify({ presets, gone: latestGone(gone) }, null, 2)}\n`); // sync: read, changed and written in one step that must not be split
-  renameSync(temp, path);
+  await writeFile(temp, `${JSON.stringify({ presets, gone: goneKept(gone) }, null, 2)}\n`);
+  await rename(temp, path);
 }
 
 /// What a preset is said to be (POST, PUT /presets): its name and instructions trimmed, its directories each a
 /// directory on this machine (`~` its home), named once each, plus optional station policy and model configuration.
-export function presetInput(v: unknown): {
+export async function presetInput(v: unknown): Promise<{
   name: string;
   dirs: PresetDir[];
   instructions: string;
@@ -217,7 +206,7 @@ export function presetInput(v: unknown): {
   station?: string;
   stations?: string[];
   model?: PresetModel;
-} {
+}> {
   const o = (v ?? {}) as Record<string, unknown>;
   const name = (str(o.name) ?? "").trim();
   if (name === "") throw new Error("a preset needs a name");
@@ -238,9 +227,9 @@ export function presetInput(v: unknown): {
       continue;
     }
     const path = expand(given.trim());
-    if (!isDirectory(path)) throw new Error(`${given} is no directory on this station`);
+    if (!(await isDirectory(path))) throw new Error(`${given} is no directory on this station`);
     if (dirs.some((x) => x.path === path && x.station === undefined)) continue;
-    dirs.push({ path, repo: originOf(path) });
+    dirs.push({ path, repo: await originOf(path) });
   }
   if (dirs.length > DIRS_MAX) throw new Error(`a preset has ${DIRS_MAX} directories at most`);
   const st = stationsOf(o);
@@ -262,9 +251,9 @@ function expand(path: string): string {
   return isAbsolute(path) ? resolve(path) : resolve(homedir(), path);
 }
 
-function isDirectory(path: string): boolean {
+async function isDirectory(path: string): Promise<boolean> {
   try {
-    return statSync(path).isDirectory();
+    return (await stat(path)).isDirectory();
   } catch (e) {
     // (one macOS guards, picked through still.fail Helper: the station is not let look, but it is there)
     const code = (e as NodeJS.ErrnoException).code;
@@ -273,10 +262,10 @@ function isDirectory(path: string): boolean {
 }
 
 /// The repository a clone at `path` is of (its origin's URL, as `host/owner/name`), if it is one.
-export function originOf(path: string): string | null {
+export async function originOf(path: string): Promise<string | null> {
   let config: string;
   try {
-    config = readFileSync(join(gitDir(path) ?? join(path, ".git"), "config"), "utf8");
+    config = await readFile(join((await gitDir(path)) ?? join(path, ".git"), "config"), "utf8");
   } catch {
     return null;
   }
@@ -292,11 +281,11 @@ export function originIn(config: string): string | null {
 }
 
 /// A worktree's `.git` is a file naming its directory in the clone it was made from: the clone's own then.
-function gitDir(path: string): string | null {
+async function gitDir(path: string): Promise<string | null> {
   try {
     const dotGit = join(path, ".git");
-    if (statSync(dotGit).isDirectory()) return dotGit;
-    const named = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, "utf8"))?.[1]?.trim();
+    if ((await stat(dotGit)).isDirectory()) return dotGit;
+    const named = /^gitdir:\s*(.+)$/m.exec(await readFile(dotGit, "utf8"))?.[1]?.trim();
     if (!named) return null;
     const dir = resolve(path, named);
     // <clone>/.git/worktrees/<name>: its config is the clone's.
@@ -369,33 +358,51 @@ export class Presets {
     return w ? `${w}/${this.me()}` : this.me();
   }
 
-  #file(ws: string | null): PresetsFile {
+  /// Each workspace's changes in turn, by its presets.json's directory: each read, changed and written whole before the
+  /// next reads it, so that two at once (two devices bringing records, two apps from before) lose neither.
+  #queues = new Map<string, Promise<unknown>>();
+
+  #serial<T>(ws: string | null, f: () => Promise<T>): Promise<T> {
+    const home = this.home(ws);
+    const before = this.#queues.get(home) ?? Promise.resolve();
+    const run = before.then(f, f);
+    const done = run.then(() => {}, () => {});
+    this.#queues.set(home, done);
+    void done.then(() => {
+      if (this.#queues.get(home) === done) this.#queues.delete(home);
+    });
+    return run;
+  }
+
+  #file(ws: string | null): Promise<PresetsFile> {
     return readPresetsFile(this.home(ws), this.me());
   }
 
   /// Every live preset this station keeps in `ws`, whoever's and wherever made: what its agents and chats open with.
-  list(ws: string | null): Preset[] {
-    return this.#file(ws).presets;
+  async list(ws: string | null): Promise<Preset[]> {
+    return (await this.#file(ws)).presets;
   }
 
   /// Those made here, as an app from before is listed them (GET /presets).
-  listed(ws: string | null): Preset[] {
+  async listed(ws: string | null): Promise<Preset[]> {
     const me = this.me();
-    return this.list(ws).filter((p) => p.home === me);
+    return (await this.list(ws)).filter((p) => p.home === me);
   }
 
-  get(ws: string | null, id: string): Preset | null {
-    return this.list(ws).find((p) => p.id === id) ?? null;
+  async get(ws: string | null, id: string): Promise<Preset | null> {
+    return (await this.list(ws)).find((p) => p.id === id) ?? null;
   }
 
   /// A preset made by an app from before (POST /presets): `by` the email of who made it, `owner` their sub.
-  add(ws: string | null, input: unknown, by: string, owner = ""): Preset {
-    const given = presetInput(input);
-    const file = this.#file(ws);
-    const now = this.now();
-    const preset: Preset = { id: `p-${randomBytes(5).toString("hex")}`, ...given, createdBy: by, createdAt: now, updatedAt: now, owner, rev: 1, home: this.me() };
-    writePresets(this.home(ws), [...file.presets, preset], file.gone);
-    return preset;
+  async add(ws: string | null, input: unknown, by: string, owner = ""): Promise<Preset> {
+    const given = await presetInput(input);
+    return this.#serial(ws, async () => {
+      const file = await this.#file(ws);
+      const now = this.now();
+      const preset: Preset = { id: `p-${randomBytes(5).toString("hex")}`, ...given, createdBy: by, createdAt: now, updatedAt: now, owner, rev: 1, home: this.me() };
+      await writePresets(this.home(ws), [...file.presets, preset], file.gone);
+      return preset;
+    });
   }
 
   /// Whose a preset is once `who` changes it: its owner, or, one from before of nobody said yet that they made, theirs.
@@ -405,28 +412,33 @@ export class Presets {
   }
 
   /// A preset changed by an app from before (PUT /presets/:id): one change more.
-  put(ws: string | null, id: string, input: unknown, who?: Asker): Preset {
-    const file = this.#file(ws);
-    const all = file.presets;
-    const at = all.findIndex((p) => p.id === id);
-    if (at < 0) throw new NoPreset(id);
-    const prev = all[at]!;
-    const preset: Preset = {
-      id: prev.id, ...presetInput(input), createdBy: prev.createdBy, createdAt: prev.createdAt, updatedAt: this.now(),
-      owner: this.#ownerAfter(prev, who), rev: prev.rev + 1, home: prev.home,
-    };
-    all[at] = preset;
-    writePresets(this.home(ws), all, file.gone);
-    return preset;
+  async put(ws: string | null, id: string, input: unknown, who?: Asker): Promise<Preset> {
+    return this.#serial(ws, async () => {
+      const file = await this.#file(ws);
+      const all = file.presets;
+      const at = all.findIndex((p) => p.id === id);
+      if (at < 0) throw new NoPreset(id);
+      const prev = all[at]!;
+      const given = await presetInput(input);
+      const preset: Preset = {
+        id: prev.id, ...given, createdBy: prev.createdBy, createdAt: prev.createdAt, updatedAt: this.now(),
+        owner: this.#ownerAfter(prev, who), rev: prev.rev + 1, home: prev.home,
+      };
+      all[at] = preset;
+      await writePresets(this.home(ws), all, file.gone);
+      return preset;
+    });
   }
 
   /// A preset deleted by an app from before (DELETE /presets/:id): kept deleted, one change more.
-  delete(ws: string | null, id: string, who?: Asker): void {
-    const file = this.#file(ws);
-    const prev = file.presets.find((p) => p.id === id);
-    if (prev === undefined) throw new NoPreset(id);
-    const gone: PresetGone = { id, owner: this.#ownerAfter(prev, who), rev: prev.rev + 1, gone: true, updatedAt: this.now() };
-    writePresets(this.home(ws), file.presets.filter((p) => p.id !== id), [...file.gone.filter((g) => g.id !== id), gone]);
+  delete(ws: string | null, id: string, who?: Asker): Promise<void> {
+    return this.#serial(ws, async () => {
+      const file = await this.#file(ws);
+      const prev = file.presets.find((p) => p.id === id);
+      if (prev === undefined) throw new NoPreset(id);
+      const gone: PresetGone = { id, owner: this.#ownerAfter(prev, who), rev: prev.rev + 1, gone: true, updatedAt: this.now() };
+      await writePresets(this.home(ws), file.presets.filter((p) => p.id !== id), [...file.gone.filter((g) => g.id !== id), gone]);
+    });
   }
 
   /// A preset as it is carried (preset-records.ts): every folder naming its station (this station's address where it
@@ -451,9 +463,8 @@ export class Presets {
     };
   }
 
-  /// Every record of `ws` kept here, each the newer where an id is both live and deleted (a file put together by hand).
-  #records(ws: string | null): Map<string, KeptRecord> {
-    const file = this.#file(ws);
+  /// Every record of `ws` in `file`, each the newer where an id is both live and deleted (a file put together by hand).
+  #records(ws: string | null, file: PresetsFile): Map<string, KeptRecord> {
     const out = new Map<string, KeptRecord>();
     for (const r of [...file.presets.map((p) => this.record(ws, p)), ...file.gone]) {
       const was = out.get(r.id);
@@ -469,67 +480,77 @@ export class Presets {
     return r.owner === "" && !isGone(r) && sameEmail(r.createdBy, who.email);
   }
 
-  /// What GET /presets/kept answers: `who`'s records kept here, deleted ones too.
-  kept(ws: string | null, who: Asker): KeptRecord[] {
-    return [...this.#records(ws).values()].filter((r) => Presets.theirs(r, who));
+  /// What GET /presets/kept answers: `who`'s records kept here, deleted ones too; and every deletion of nobody said yet
+  /// (one of before deleted by an app from before by someone who did not make it: a few bytes each, `goneKept` of them),
+  /// which its maker's device takes as its own where it holds that preset (client/core-ts/src/presets-kept.ts `taken`).
+  async kept(ws: string | null, who: Asker): Promise<KeptRecord[]> {
+    return [...this.#records(ws, await this.#file(ws)).values()].filter((r) => Presets.theirs(r, who) || (isGone(r) && r.owner === "" && who.sub !== ""));
   }
 
   /// What GET /presets/others answers: everyone else's live records kept here.
-  others(ws: string | null, who: Asker): PresetRecord[] {
-    return [...this.#records(ws).values()].filter((r): r is PresetRecord => !isGone(r) && !Presets.theirs(r, who));
+  async others(ws: string | null, who: Asker): Promise<PresetRecord[]> {
+    return [...this.#records(ws, await this.#file(ws)).values()].filter((r): r is PresetRecord => !isGone(r) && !Presets.theirs(r, who));
   }
 
   /// Records `who`'s device brings (PUT /presets/kept): each checked as both sides check one (recordOf), taken only
   /// where it is theirs (its owner their sub; an id kept here only where that is theirs too, or a deletion of nobody
   /// said) and newer than what is kept, as it was brought. Answers what is kept now of each id asked.
-  carry(ws: string | null, who: Asker, given: unknown[]): Carried {
-    const all = this.#records(ws);
-    const out: Carried = { records: [], refused: [], changed: false };
-    const asked: string[] = [];
-    let live = [...all.values()].filter((r) => !isGone(r)).length;
-    given.forEach((raw, at) => {
-      const id = typeof (raw as { id?: unknown } | null)?.id === "string" ? ((raw as { id: string }).id) : null;
-      let r: KeptRecord;
-      try {
-        r = recordOf(raw);
-      } catch (e) {
-        out.refused.push({ at, id, error: (e as Error).message });
-        return;
-      }
-      if (who.sub === "" || r.owner !== who.sub) {
-        out.refused.push({ at, id, error: "a record is taken only from its owner's devices (owner: their sub)" });
-        return;
-      }
-      const was = all.get(r.id);
-      if (was !== undefined && was.owner !== "" && was.owner !== who.sub) {
-        out.refused.push({ at, id, error: `preset ${r.id} is someone else's` });
-        return;
-      }
-      if (was !== undefined && was.owner === "" && !isGone(was) && !Presets.theirs(was, who)) {
-        out.refused.push({ at, id, error: `preset ${r.id} was made by someone else` });
-        return;
-      }
-      if (!asked.includes(r.id)) asked.push(r.id);
-      if (was !== undefined && (newerRecord(was, r) === was || canonical(was) === canonical(r))) return;
-      const nowLive = !isGone(r) && (was === undefined || isGone(was));
-      if (nowLive && live >= LIVE_MOST) {
-        out.refused.push({ at, id, error: `this station keeps ${LIVE_MOST} presets of a workspace at most` });
-        return;
-      }
-      if (nowLive) live++;
-      else if (isGone(r) && was !== undefined && !isGone(was)) live--;
-      all.set(r.id, r);
-      out.changed = true;
+  carry(ws: string | null, who: Asker, given: unknown[]): Promise<Carried> {
+    return this.#serial(ws, async () => {
+      const file = await this.#file(ws);
+      const was = this.#records(ws, file);
+      const all = new Map(was);
+      const out: Carried = { records: [], refused: [], changed: false };
+      const asked: string[] = [];
+      let live = [...all.values()].filter((r) => !isGone(r)).length;
+      given.forEach((raw, at) => {
+        const id = typeof (raw as { id?: unknown } | null)?.id === "string" ? ((raw as { id: string }).id) : null;
+        let r: KeptRecord;
+        try {
+          r = recordOf(raw);
+        } catch (e) {
+          out.refused.push({ at, id, error: (e as Error).message });
+          return;
+        }
+        if (who.sub === "" || r.owner !== who.sub) {
+          out.refused.push({ at, id, error: "a record is taken only from its owner's devices (owner: their sub)" });
+          return;
+        }
+        const held = all.get(r.id);
+        if (held !== undefined && held.owner !== "" && held.owner !== who.sub) {
+          out.refused.push({ at, id, error: `preset ${r.id} is someone else's` });
+          return;
+        }
+        if (held !== undefined && held.owner === "" && !isGone(held) && !Presets.theirs(held, who)) {
+          out.refused.push({ at, id, error: `preset ${r.id} was made by someone else` });
+          return;
+        }
+        if (!asked.includes(r.id)) asked.push(r.id);
+        if (held !== undefined && (newerRecord(held, r) === held || canonical(held) === canonical(r))) return;
+        const nowLive = !isGone(r) && (held === undefined || isGone(held));
+        if (nowLive && live >= LIVE_MOST) {
+          out.refused.push({ at, id, error: `this station keeps ${LIVE_MOST} presets of a workspace at most` });
+          return;
+        }
+        if (nowLive) live++;
+        else if (isGone(r) && held !== undefined && !isGone(held)) live--;
+        all.set(r.id, r);
+      });
+      // What is kept as it is written (a deletion past what an owner's keep, `goneKept`, not): changed only where that
+      // differs from what was, so that a deletion dropped as it is taken is neither written nor told.
+      const before = recordsKept(Object.fromEntries(was));
+      const after = recordsKept(Object.fromEntries(all));
+      const ids = new Set([...Object.keys(before), ...Object.keys(after)]);
+      out.changed = [...ids].some((id) => before[id] !== after[id]);
+      if (out.changed) await this.#write(ws, file, new Map(Object.entries(after)));
+      for (const id of asked) if (after[id] !== undefined) out.records.push(after[id]!);
+      return out;
     });
-    if (out.changed) this.#write(ws, all);
-    for (const id of asked) out.records.push(all.get(id)!);
-    return out;
   }
 
-  /// `all` written as presets.json: what was kept as it was (this station's folders without `station`, as an app from
-  /// before reads them), what was brought as it was brought.
-  #write(ws: string | null, all: Map<string, KeptRecord>): void {
-    const file = this.#file(ws);
+  /// `all` written as presets.json in place of `file`: what was kept as it was (this station's folders without
+  /// `station`, as an app from before reads them), what was brought as it was brought.
+  async #write(ws: string | null, file: PresetsFile, all: Map<string, KeptRecord>): Promise<void> {
     const before = new Map(file.presets.map((p) => [p.id, p]));
     const presets: Preset[] = [];
     const gone: PresetGone[] = [];
@@ -540,13 +561,13 @@ export class Presets {
         presets.push(held !== undefined && canonical(this.record(ws, held)) === canonical(r) ? held : r);
       }
     }
-    writePresets(this.home(ws), presets, gone);
+    await writePresets(this.home(ws), presets, gone);
   }
 
   /// Keeps what a chat in `workspace` is opened with: preset `id` as it is now. A folder this station is on is this
   /// machine's; another station's is said to be there, by its name.
-  keepFor(workspace: string, ws: string | null, id: string): PresetCopy {
-    const p = this.get(ws, id);
+  async keepFor(workspace: string, ws: string | null, id: string): Promise<PresetCopy> {
+    const p = await this.get(ws, id);
     if (p === null) throw new NoPreset(id);
     const dirs = p.dirs.map(({ station, stationName, ...d }) => (station === undefined || this.isHere(station) ? d : { ...d, elsewhere: this.nameOf(station, stationName) }));
     return keepCopy(workspace, { id: p.id, name: p.name, dirs, instructions: p.instructions });
@@ -569,46 +590,68 @@ const GUIDE_MOST = 16 * 1024;
 /// runtime opened in them would have them (neither reads them where it does not run): their instruction files kept
 /// with the copy (told with the station's instructions), their skills linked into the chat's workspace under both
 /// runtimes' skill directories, so each finds them as its own.
-export function keepCopy(workspace: string, copy: PresetCopy): PresetCopy {
+export async function keepCopy(workspace: string, copy: PresetCopy): Promise<PresetCopy> {
   const linked = new Set<string>();
-  const dirs = copy.dirs.map((d) => {
-    if (d.elsewhere !== undefined) return d;
-    const guides = GUIDES.flatMap((file): Guide[] => {
-      try {
-        const bytes = readFileSync(join(d.path, file));
-        const whole = bytes.length <= GUIDE_MOST;
-        return [{ file, text: bytes.subarray(0, GUIDE_MOST).toString("utf8").trim(), whole }];
-      } catch {
-        return [];
-      }
-    });
+  const dirs: PresetDir[] = [];
+  // (one folder after another: a skill's name taken by an earlier folder is this one's under its folder's name)
+  for (const d of copy.dirs) {
+    if (d.elsewhere !== undefined) {
+      dirs.push(d);
+      continue;
+    }
+    const guides: Guide[] = [];
+    for (const file of GUIDES) {
+      const guide = await guideOf(join(d.path, file));
+      if (guide !== null) guides.push({ file, ...guide });
+    }
     const skills: string[] = [];
     for (const home of SKILL_HOMES) {
-      let names: string[] = [];
-      try {
-        names = readdirSync(join(d.path, home));
-      } catch {}
+      const names = await readdir(join(d.path, home)).catch(() => [] as string[]);
       for (const n of names) {
         const from = join(d.path, home, n);
-        if (!existsSync(join(from, "SKILL.md"))) continue;
+        if (!(await stat(join(from, "SKILL.md")).then(() => true, () => false))) continue;
         // (one of the same name already linked: this folder's under its folder's name before it)
         const name = linked.has(n) ? `${basename(d.path)}-${n}` : n;
         if (linked.has(name)) continue;
         linked.add(name);
         skills.push(name);
         for (const to of SKILL_HOMES) {
-          mkdirSync(join(workspace, to), { recursive: true });
-          try {
-            symlinkSync(from, join(workspace, to, name), "dir");
-          } catch {}
+          await mkdir(join(workspace, to), { recursive: true });
+          await symlink(from, join(workspace, to, name), "dir").catch(() => {});
         }
       }
     }
-    return { ...d, ...(guides.length > 0 ? { guides } : {}), ...(skills.length > 0 ? { skills } : {}) };
-  });
+    dirs.push({ ...d, ...(guides.length > 0 ? { guides } : {}), ...(skills.length > 0 ? { skills } : {}) });
+  }
   const kept = { ...copy, dirs };
-  writeFileSync(join(workspace, COPY), `${JSON.stringify(kept, null, 2)}\n`);
+  // (whole, put in its place: a turn reading it meanwhile, `presetCopyOf`, reads none or all of it)
+  const path = join(workspace, COPY);
+  const temp = `${path}.${randomBytes(4).toString("hex")}`;
+  await writeFile(temp, `${JSON.stringify(kept, null, 2)}\n`);
+  await rename(temp, path);
   return kept;
+}
+
+/// A folder's instruction file as a chat is told it: its first GUIDE_MOST bytes, and whether that is all of it (one
+/// byte more read to tell, never the whole of a large one); null where there is none to read.
+async function guideOf(path: string): Promise<{ text: string; whole: boolean } | null> {
+  let fh;
+  try {
+    fh = await open(path, "r");
+    const buf = Buffer.alloc(GUIDE_MOST + 1);
+    let got = 0;
+    for (;;) {
+      const { bytesRead } = await fh.read(buf, got, buf.length - got, got);
+      if (bytesRead === 0) break;
+      got += bytesRead;
+      if (got === buf.length) break;
+    }
+    return { text: buf.subarray(0, Math.min(got, GUIDE_MOST)).toString("utf8").trim(), whole: got <= GUIDE_MOST };
+  } catch {
+    return null;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
 }
 
 /// A preset of another station's as the asking app gives it (POST /sessions `presetCopy`: what it read there, each
@@ -632,10 +675,11 @@ export function presetCopyInput(v: unknown): PresetCopy {
   };
 }
 
-/// What a chat whose session workspace is `workspace` was opened with, if anything.
-export function presetCopyOf(workspace: string): PresetCopy | null {
+/// What a chat whose session workspace is `workspace` was opened with, if anything: read off the main thread, as each of
+/// its turns and each opening of its process asks it.
+export async function presetCopyOf(workspace: string): Promise<PresetCopy | null> {
   try {
-    const v = JSON.parse(readFileSync(join(workspace, COPY), "utf8"));
+    const v = JSON.parse(await readFile(join(workspace, COPY), "utf8"));
     if (typeof v?.id !== "string" || typeof v?.name !== "string") return null;
     return { id: v.id, name: v.name, dirs: dirsOf(v.dirs), instructions: str(v.instructions) ?? "" };
   } catch {

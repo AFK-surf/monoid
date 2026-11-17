@@ -2,8 +2,8 @@
 import type { DatabaseSync } from "node:sqlite";
 import { hasLegacyDecisionTime } from "./legacy-decision-time.ts";
 
-const VERSION = 1;
-const BATCH = 64;
+export const VERSION = 1;
+export const BATCH = 64;
 const exists = (db: DatabaseSync, type: string, name: string) =>
   db.prepare("SELECT 1 FROM sqlite_master WHERE type=? AND name=?").get(type, name) !== undefined;
 
@@ -27,8 +27,8 @@ export const LEGACY_LAST_DECISION_REPAIR = `SELECT d.result FROM legacy_decision
   INDEXED BY legacy_decision_session_repair_by_session CROSS JOIN decision_checks d ON d.id=p.id
   WHERE p.session=?1 ORDER BY p.id DESC LIMIT 1`;
 
-type SessionTable = "legacy_decision_session" | "legacy_decision_session_repair";
-function sessionState(db: DatabaseSync, table: SessionTable): number | null {
+export type SessionTable = "legacy_decision_session" | "legacy_decision_session_repair";
+export function sessionState(db: DatabaseSync, table: SessionTable): number | null {
   if (!exists(db, "table", `${table}_meta`)) return null;
   if (!exists(db, "table", table))
     throw new Error("legacy decision-session metadata has no lookup");
@@ -39,7 +39,7 @@ function sessionState(db: DatabaseSync, table: SessionTable): number | null {
     throw new Error("legacy decision-session lookup has an unsupported version");
   return row.complete;
 }
-function hasSessionLookup(db: DatabaseSync, table: SessionTable): boolean {
+export function hasSessionLookup(db: DatabaseSync, table: SessionTable): boolean {
   const state = sessionState(db, table);
   return state !== null && state !== 2 && exists(db, "index", `${table}_by_session`);
 }
@@ -55,7 +55,7 @@ export function hasSharedDecisionSession(db: DatabaseSync): boolean {
 
 const reconcile = (ids: string) => `DELETE FROM legacy_decision_session WHERE id IN (${ids});
   INSERT INTO legacy_decision_session(id,session) SELECT id,session FROM decision_checks WHERE id IN (${ids});`;
-const SCHEMA = `
+export const SCHEMA = `
 CREATE TABLE legacy_decision_session_meta(id INTEGER PRIMARY KEY CHECK(id=1),version INTEGER NOT NULL,
   complete INTEGER NOT NULL,cursor INTEGER,end_id INTEGER) WITHOUT ROWID;
 INSERT INTO legacy_decision_session_meta VALUES(1,${VERSION},0,NULL,(SELECT MAX(id) FROM decision_checks));
@@ -71,9 +71,6 @@ CREATE TRIGGER legacy_decision_session_delete AFTER DELETE ON decision_checks BE
 // If the old auxiliary index was removed, its table may still be in use by older connections. Build a fresh, empty
 // lookup beside it; never create an index synchronously over the populated old table.
 const REPAIR_SCHEMA = SCHEMA.replaceAll("legacy_decision_session", "legacy_decision_session_repair");
-const REPAIR_TRIGGERS = SCHEMA.slice(SCHEMA.indexOf("CREATE TRIGGER")).replaceAll("legacy_decision_session", "legacy_decision_session_repair");
-const REPAIR_INDEX = "CREATE INDEX legacy_decision_session_repair_by_session ON legacy_decision_session_repair(session)";
-
 /// Recheck both the row bound and another opener under the writer lock.
 export function installDecisionSessionIndex(db: DatabaseSync): void {
   const native = () => exists(db, "index", "decision_checks_session");
@@ -99,48 +96,9 @@ export function installDecisionSessionIndex(db: DatabaseSync): void {
 }
 
 type Meta = { version: number; complete: number; cursor: string | null; end_id: string | null };
-const meta = (db: DatabaseSync, table: SessionTable) => db.prepare(`SELECT version,complete,CAST(cursor AS TEXT) cursor,
+export const meta = (db: DatabaseSync, table: SessionTable) => db.prepare(`SELECT version,complete,CAST(cursor AS TEXT) cursor,
   CAST(end_id AS TEXT) end_id FROM ${table}_meta WHERE id=1`).get() as Meta;
 
-function sessionIndexStep(db: DatabaseSync, table: SessionTable, limit: number): { done: boolean; visited: number } {
-  if (!Number.isSafeInteger(limit) || limit < 1 || limit > BATCH) throw new RangeError("decision-session batch must be 1–64");
-  if (table === "legacy_decision_session_repair" ? !decisionSessionRepairNeedsWork(db) : !hasSessionLookup(db, table))
-    return { done: true, visited: 0 };
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    if (table === "legacy_decision_session_repair" && sessionState(db, table) === 2) {
-      const removed = db.prepare(`DELETE FROM ${table} WHERE id IN (SELECT id FROM ${table} ORDER BY id LIMIT ?)`).run(limit).changes;
-      if (db.prepare(`SELECT 1 FROM ${table} LIMIT 1`).get() === undefined) {
-        db.exec(`${REPAIR_INDEX}; ${REPAIR_TRIGGERS}`);
-        db.exec(`UPDATE ${table}_meta SET complete=0,cursor=NULL,end_id=(SELECT MAX(id) FROM decision_checks) WHERE id=1`);
-      }
-      db.exec("COMMIT");
-      return { done: false, visited: Number(removed) };
-    }
-    // Another connection can remove the index between the initial check and this writer lock.
-    if (!hasSessionLookup(db, table)) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const m = meta(db, table);
-    if (m.version !== VERSION) throw new Error("unsupported legacy decision-session preparation");
-    if (m.complete === 1) { db.exec("COMMIT"); return { done: true, visited: 0 }; }
-    const rows = m.end_id === null ? [] : (m.cursor === null
-      ? db.prepare(`SELECT CAST(id AS TEXT) id FROM decision_checks WHERE id<=CAST(?1 AS INTEGER)
-          ORDER BY decision_checks.id LIMIT ?2`).all(m.end_id, limit)
-      : db.prepare(`SELECT CAST(id AS TEXT) id FROM decision_checks WHERE id>CAST(?1 AS INTEGER) AND id<=CAST(?2 AS INTEGER)
-          ORDER BY decision_checks.id LIMIT ?3`).all(m.cursor, m.end_id, limit)) as { id: string }[];
-    const put = db.prepare(`INSERT INTO ${table}(id,session)
-      SELECT id,session FROM decision_checks d WHERE d.id=CAST(?1 AS INTEGER)
-        AND NOT EXISTS (SELECT 1 FROM ${table} l WHERE l.id=d.id)`);
-    for (const row of rows) put.run(row.id);
-    const done = rows.length < limit;
-    db.prepare(`UPDATE ${table}_meta SET cursor=CAST(? AS INTEGER),complete=? WHERE id=1`)
-      .run(rows.at(-1)?.id ?? m.cursor, done ? 1 : 0);
-    db.exec("COMMIT");
-    return { done, visited: rows.length };
-  } catch (error) { try { db.exec("ROLLBACK"); } catch {} throw error; }
-}
-
-export const decisionSessionIndexStep = (db: DatabaseSync, limit = BATCH) => sessionIndexStep(db, "legacy_decision_session", limit);
-export const decisionSessionRepairStep = (db: DatabaseSync, limit = BATCH) => sessionIndexStep(db, "legacy_decision_session_repair", limit);
 export function decisionSessionIndexNeedsWork(db: DatabaseSync): boolean {
   return hasLegacyDecisionSession(db) && meta(db, "legacy_decision_session").complete === 0;
 }

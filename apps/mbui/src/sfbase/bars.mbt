@@ -94,7 +94,7 @@ pub fn place_icon(place : String) -> String {
     "chats" => "chats"
     "files" => "folder"
     "profiles" => "quota"
-    "connects" => "im"
+    "connects" => "plug"
     "usage" => "chart"
     "archive" => "archive"
     "vault" => "key"

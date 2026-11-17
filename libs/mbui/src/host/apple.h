@@ -25,8 +25,15 @@ typedef struct {
 
 extern mb_callbacks mb_cb;
 
+// the windows of one run (mac_app.m): at most this many, the first 0
+#define MB_WINS 16
+
 // renderer (apple_render.m)
 void mb_render_init(CAMetalLayer *layer);
+// what is a window's own of drawing (its layer, its size, its last frame, its canvas) put in place for window `wid`,
+// and let go of as it closes
+void mb_render_use(int wid);
+void mb_render_forget(int wid);
 id<MTLDevice> mb_render_device(void);
 void mb_render_set_size(double w, double h, double scale);
 void mb_render_present(const double *inst, int32_t count, double r, double g, double b);
@@ -95,6 +102,8 @@ enum {
   MB_OUTSIDE_STOOD = 13,
   MB_OUTSIDE_PERF = 14,
   MB_OUTSIDE_OP = 15,
+  // a window of the run beside the first closed by the person (id: its id; mac_app.m's win_closed)
+  MB_OUTSIDE_WINDOW = 17,
 };
 void mb_host_outside(int32_t kind, int32_t id, int32_t state);
 // whether a native view's picture for snapshots is being taken (apple_views.m): a snapshot waits for it
@@ -107,6 +116,11 @@ void mb_views_snap_all(void);
 // the view they go in, made once, as big as the canvas's view and placed just
 // under it (flipped on macOS: coordinates from the top left, as the app's)
 id mb_views_root(CGRect frame);
+// window `wid`'s of the run (0 the first's: mb_views_root), made the first time; the window drawn or handing input now
+// its views put in and found in (mac_app.m's win_use); window `wid`'s let go of as it closes
+id mb_views_root_of(int wid, CGRect frame);
+void mb_views_use(int wid);
+void mb_views_forget(int wid);
 // whether the pointer at (x, y) (the app's points) goes to a web view under
 // the canvas (the canvas's view lets it through)
 int mb_views_pass_through(double x, double y);

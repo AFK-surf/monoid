@@ -337,8 +337,8 @@ static void drop_post(const char *json) { mb_post("mbui.drop", json, strlen(json
 static void drop_at(POINTL pt, double *x, double *y) {
   POINT p = {pt.x, pt.y};
   ScreenToClient(hwnd, &p);
-  *x = p.x / scale;
-  *y = p.y / scale;
+  *x = p.x / ws->scale;
+  *y = p.y / ws->scale;
 }
 
 static FORMATETC drop_files_format = {CF_HDROP, NULL, DVASPECT_CONTENT, -1, TYMED_HGLOBAL};

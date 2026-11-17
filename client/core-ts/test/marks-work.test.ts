@@ -69,14 +69,14 @@ test("a_workspaces_marks_are_put_together_of_each_workspaces_own", async () => {
   const { a } = await twoWorkspaces();
   const m = a.value;
   const items = (ws: string) => m.workspaces[ws].items.map((i: J) => [i.kind, i.session, i.seq ?? null]);
-  // Most urgent first, the latest first within; failures read or not, the rest only unread.
+  // Most urgent first, the latest first within; failures and what waits read or not, the rest only unread.
   assert.deepEqual(items("ws"), [["alert", "f1", null], ["wait", "k1", 5], ["wait", "k2", 6], ["done", "u1", 40], ["done", "u2", 50]]);
   assert.deepEqual(items("wb"), [["alert", "g1", null], ["alert", "g2", null], ["done", "v1", 130], ["done", "v2", 140]]);
   assert.deepEqual([m.workspaces.ws.alert, m.workspaces.ws.wait, m.workspaces.ws.unread, m.workspaces.ws.badge, m.workspaces.ws.label], [1, 2, 2, 5, "1 个出错 · 2 个待你处理 · 2 个有新消息"]);
-  assert.deepEqual([m.workspaces.wb.alert, m.workspaces.wb.wait, m.workspaces.wb.unread, m.workspaces.wb.badge], [2, undefined, 2, 3]);
-  assert.deepEqual([m.workspaces.wb.items[0].workspaceName, m.workspaces.wb.items[0].workspaceEmoji, m.workspaces.wb.items[0].stationName], ["Labs", "🧪", "lab"]);
+  assert.deepEqual([m.workspaces.wb.alert, m.workspaces.wb.wait, m.workspaces.wb.unread, m.workspaces.wb.badge], [2, undefined, 2, 4]);
+  assert.deepEqual([m.workspaces.wb.workspaceName, m.workspaces.wb.workspaceEmoji, m.workspaces.wb.items[0].stationName], ["Labs", "🧪", "lab"]);
   // The badge is every workspace's; each one's `others` the workspaces' besides it, as shown while it is.
-  assert.equal(m.badge, 8);
+  assert.equal(m.badge, 9);
   assert.deepEqual([m.workspaces.ws.others, m.workspaces.ws.othersLabel], ["alert", "其他 workspace：2 个出错 · 2 个有新消息"]);
   assert.deepEqual([m.workspaces.wb.others, m.workspaces.wb.othersLabel], ["alert", "其他 workspace：1 个出错 · 2 个待你处理 · 2 个有新消息"]);
 });
@@ -130,15 +130,15 @@ test("a_row_that_changed_makes_its_own_part_again_and_no_other", async () => {
   const { t, a, home, now } = await twoWorkspaces();
   const value = t.store.value(marksOf("ws")) as J;
   const before = { ...work };
-  // k2 looked at: its card no longer counted by the badge, nor in 待处理.
+  // k2 looked at and not answered: still counted by the badge and in 待处理 (chat-stage.ts needsViewer), its row made again.
   const seen = { ...home[1], unread: false };
   t.set(rows("ws/st"), [home[0], seen, ...home.slice(2)]);
   await t.readAll([[a, 1]]);
   assert.deepEqual([workSince(before).workspaceMarks, workSince(before).marked], [1, 1]);
   const after = t.store.value(marksOf("ws")) as J;
   assert.equal(after.ok.workspaces.wb, value.ok.workspaces.wb, "the other workspace's mark is the same object");
-  assert.deepEqual(a.value.workspaces.ws.items.map((i: J) => i.session), ["f1", "k1", "u1", "u2"]);
-  assert.deepEqual([a.value.workspaces.ws.wait, a.value.workspaces.ws.badge, a.value.badge], [2, 4, 7]);
+  assert.deepEqual(a.value.workspaces.ws.items.map((i: J) => i.session), ["f1", "k1", "k2", "u1", "u2"]);
+  assert.deepEqual([a.value.workspaces.ws.wait, a.value.workspaces.ws.badge, a.value.badge], [2, 5, 9]);
   // A failure let go (a pref of its workspace's) makes no row again, and only its workspace's mark.
   const failure = a.value.workspaces.ws.items[0].failure;
   assert.equal(failure, "ws/st/f1@1");
@@ -151,7 +151,7 @@ test("a_row_that_changed_makes_its_own_part_again_and_no_other", async () => {
   const wb = (t.store.value(marksOf("ws")) as J).ok.workspaces.wb;
   assert.equal(wb.items, kept.ok.workspaces.wb.items);
   assert.deepEqual([wb.others, wb.othersLabel], ["wait", "其他 workspace：2 个待你处理 · 2 个有新消息"]);
-  assert.deepEqual([a.value.workspaces.ws.alert, a.value.workspaces.ws.items.map((i: J) => i.session)], [0, ["k1", "u1", "u2"]]);
+  assert.deepEqual([a.value.workspaces.ws.alert, a.value.workspaces.ws.items.map((i: J) => i.session)], [0, ["k1", "k2", "u1", "u2"]]);
   // A row of the other workspace: that one alone.
   const other = { ...work };
   t.set(rows("wb/lab"), [failed("g1", 11, now - 1500, true), failed("g2", 12, now - 2500, false, 2), unread("v1", 13, now - 700, "agent"), unread("v2", 14, now - 800, "person")]);
@@ -167,7 +167,7 @@ test("what_the_badge_counts_changes_every_workspaces_mark_and_the_badge", async 
   assert.deepEqual([workSince(before).workspaceMarks, workSince(before).marked], [2, 0], "what a row says of itself is not what the badge counts");
   assert.deepEqual(a.value.workspaces.ws.items.map((i: J) => i.session), ["f1", "k1", "k2", "u2"]);
   assert.deepEqual(a.value.workspaces.wb.items.map((i: J) => i.session), ["g1", "g2", "v2"]);
-  assert.deepEqual([a.value.workspaces.ws.badge, a.value.workspaces.wb.badge, a.value.badge, a.value.badgeKinds.done], [4, 2, 6, false]);
+  assert.deepEqual([a.value.workspaces.ws.badge, a.value.workspaces.wb.badge, a.value.badge, a.value.badgeKinds.done], [4, 3, 7, false]);
 });
 
 test("a_mark_made_again_reads_of_the_database_only_the_row_that_changed", async () => {
