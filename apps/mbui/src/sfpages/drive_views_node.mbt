@@ -250,13 +250,15 @@ fn tree_lines(s : Shown, at : DriveAt, depth : Int, out : Array[Line], empty : B
 /// in a page's list of their own: `head` over them (in what scrolls), `empty` where the folder has nothing, `foot` the
 /// room under the last (the frame's). The row asked into view (a key moved to it, a new folder named) brought there, as
 /// near as it needs to come. Each line a block made only while it shows, by its key: an entry by its folder and name,
-/// one made, taken out or moved coming and going where it is.
+/// one made, taken out or moved coming and going where it is. On a card of pieces (card_piece_node), but where not
+/// `card`: on the ground they stand on (a chat's 文件 tab's, in a panel).
 pub fn rows_view_node(
   parent : @view.View,
   s : Shown,
   at : DriveAt,
   tree : Bool,
   compact? : Bool = false,
+  card? : Bool = true,
   head? : (@view.View) -> Unit,
   empty? : (@view.View) -> Unit,
   foot? : () -> Double = fn() { 0.0 },
@@ -340,8 +342,15 @@ pub fn rows_view_node(
               Some(f) => f(b)
               None => ()
             }
-          _ =>
-            @sf.card_piece_node(b, fn() { now().piece }, fn(r) {
+          _ => {
+            let on = fn(make : (@view.View) -> Unit) {
+              if card {
+                @sf.card_piece_node(b, fn() { now().piece }, make)
+              } else {
+                make(b)
+              }
+            }
+            on(fn(r) {
               match first.line {
                 Row(a, e0, depth, _) => {
                   let e = fn() {
@@ -383,6 +392,7 @@ pub fn rows_view_node(
                 Empty => ()
               }
             })
+          }
         }
       },
     )
@@ -393,8 +403,8 @@ pub fn rows_view_node(
 
 ///|
 /// A folder's rows to come while it is read the first time (the library's Waiting, in its bones), in `parent`: `count`
-/// rows as rows_view_node draws them, of made-up names, a couple of folders first.
-pub fn rows_sample_node(parent : @view.View, s : Shown, at : DriveAt, count : Int, compact? : Bool = false) -> Unit {
+/// rows as rows_view_node draws them (on a card but where not `card`), of made-up names, a couple of folders first.
+pub fn rows_sample_node(parent : @view.View, s : Shown, at : DriveAt, count : Int, compact? : Bool = false, card? : Bool = true) -> Unit {
   @sf.waiting_node(parent, fn(w) {
     for i in 0..<count {
       let (dir, name) = rows_sample_names[i % rows_sample_names.length()]
@@ -404,9 +414,14 @@ pub fn rows_sample_node(parent : @view.View, s : Shown, at : DriveAt, count : In
         "sizeText": Json::string(if dir { "" } else { @sf.sample_words(3) }),
         "timeText": Json::string(@sf.sample_words(4)),
       })
-      @sf.card_piece_node(w, fn() { @sf.card_piece_of(i, count) }, fn(r) {
+      let row = fn(r : @view.View) {
         drive_row_node(r, { ..s, src: @sfbase.sample_source, row_of: fn(_, _) { rows_sample_props } }, at, fn() { e }, compact~)
-      })
+      }
+      if card {
+        @sf.card_piece_node(w, fn() { @sf.card_piece_of(i, count) }, row)
+      } else {
+        row(w)
+      }
     }
   })
 }

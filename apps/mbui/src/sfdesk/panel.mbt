@@ -615,20 +615,15 @@ pub fn tape_side(c : @ui.Ctx, src : Source, w : Workspace, side : SideOf) -> Uni
 ///|
 /// What the panel (sidePanel) shows under its bar (the tree's: side_bar_node) of every tab the window's tree does not
 /// show (panel_node.mbt side_node_tab: an agent's history, a file in the viewer, a Farview tab, 任务, agent 往来,
-/// 图片、文件和链接 are its), an old view; what in front has a bar of its own (side_bars) that bar, the panel's none over
-/// it. Its edge is the tree's (side_panel_node's).
-fn side_panel(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tabs : Array[String], front : String) -> Unit {
+/// 图片、文件和链接, 文件, a station's 文件 and its page are its: a station's screen is left), an old view; what in front
+/// has a bar of its own (side_bars) that bar, the panel's none over it. Its edge is the tree's (side_panel_node's).
+fn side_panel(c : @ui.Ctx, src : Source, _w : Workspace, r : ChatRef, tabs : Array[String], front : String) -> Unit {
   c.box(style=side_panel_style, fn() {
     let (_, screen_alone, _) = side_bars(c, tabs, front)
     c.box(style=side_pane, fn() {
-      if front == "files" {
-        // the workspace's stations' files (drive_tab.mbt), what is added from them going into the chat's draft
-        files_tab(c, src, w.id, tabs_key(r), r.station)
-      } else if station_tab_pane(c, src, w, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) {
-        ()
-      }
-      // (an agent's history, a web service, a visualization, 任务, agent 往来, 图片、文件和链接: the tree's,
-      // panel_node.mbt)
+      station_tab_pane(c, src, r, front, own_bar=if screen_alone { Some(side_bar_tape()) } else { None }) |> ignore
+      // (an agent's history, a web service, a visualization, 任务, agent 往来, 图片、文件和链接, 文件, a station's 文件
+      // and its page: the tree's, panel_node.mbt)
     })
     |> ignore
   })

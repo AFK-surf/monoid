@@ -10,6 +10,9 @@
 // (a right click): 添加到消息, 复制路径, 下载, pin; a row dragged onto the chat is put into the message (the composer
 // takes it: tab_take_drop). A folder is gone into; what reads, plays or previews opens over the chat. Where it
 // is is kept by workspace while the app runs, as the web's tab is.
+// A chat's side panel makes it once as nodes (drive_tab_node.mbt), its 文件 and a station's alike; what follows here,
+// the tab's old view (files_tab, drive_tab_rows.mbt), is the new chat's panel's alone, an old view itself, till its page
+// is made as nodes. Where the tab is, what is carried and let go off it are both's.
 
 ///|
 /// The tab: whether it is being built, where it is by workspace (None: the places; none kept: where it starts), what
@@ -48,6 +51,8 @@ let ftab_places_said : Map[String, @signals.Signal[DriveAt??]] = Map([])
 fn ftab_put(ws : String, at : DriveAt?) -> Unit {
   // (a folder pressed and read meanwhile, browse_switch's: waited for no more, the tab put elsewhere)
   @sfpages.browse_switch_off("tab/" + ftab.chat)
+  // (the tab made as nodes browses by its place's scope: drive_tab_node.mbt ntab_browse_of)
+  @sfpages.browse_switch_off("tab/" + ws)
   ftab.places[ws] = at
   match ftab_places_said.get(ws) {
     Some(s) => s.set(Some(at))

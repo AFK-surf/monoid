@@ -1,5 +1,5 @@
-// What a chat's 文件 tab (drive_tab.mbt) draws its folder with, while the panels that hold it are still built the old
-// way (the chat's side panel, a new chat's files panel, a station's tab): its rows (DriveRow, compact: a mark, a name,
+// What the 文件 tab's old view (drive_tab.mbt) draws its folder with, while the panel that holds it is still built the
+// old way (a new chat's files panel; a chat's side panel makes it as nodes, drive_tab_node.mbt): its rows (DriveRow, compact: a mark, a name,
 // its size; the ⋯ on hover and the same on a right click or a finger's hold; pressed, picked or gone into; with a
 // mouse dragged onto the chat, for its composer to take: tab_take_drop), their list, and the preview under it. The
 // folder's browsing (its order, where it is told) is the files' page's (sfpages' files_browse.mbt), the entries' acts
@@ -15,21 +15,24 @@ priv struct TabRowOf {
 
 ///|
 /// The tab's drag (a row pressed with a mouse and moved past the slop carries it; let go off the tab, for the chat's
-/// composer to take), and the row that took the last press or menu (what holds the rows leaves it to them).
+/// composer to take), where the pointer carries it in the window (what an old view it goes over reads, built again as
+/// it moves: drop_hint), and the row that took the last press or menu (what holds the rows leaves it to them).
 priv struct TabDrag {
   mut press : (Dragged, Double, Double)?
   item : @signals.Signal[Dragged?]
+  at : @signals.Signal[(Double, Double)]
   mut row_ids : (Int, Int)
 }
 
 ///|
 // kept across runs: put back by tab_drag_reset
-let tdrag : TabDrag = { press: None, item: @signals.signal(None), row_ids: (0, 0) }
+let tdrag : TabDrag = { press: None, item: @signals.signal(None), at: @signals.signal((0.0, 0.0)), row_ids: (0, 0) }
 
 ///|
 fn tab_drag_reset() -> Unit {
   tdrag.press = None
   tdrag.item.set(None)
+  tdrag.at.set((0.0, 0.0))
   tdrag.row_ids = (0, 0)
 }
 
@@ -60,8 +63,10 @@ fn tab_drag_source(c : @ui.Ctx, id : Int, item : Dragged, live : Bool) -> Unit {
             tdrag.press = None
             // (another carried: what was let go before and not taken is not for it)
             ftab.let_go = None
+            tdrag.at.set((x, y))
             tdrag.item.set(Some(i))
           }
+          (_, Some(_)) => tdrag.at.set((x, y))
           _ => ()
         }
       Up(x, y) => {

@@ -7,15 +7,7 @@
 // little room beside them (a phone's), each row's names on a line over its figures.
 
 ///|
-/// The core's `resources` view of the workspace in view, for station `address` (read, the station looking often,
-/// while shown).
-fn resources_of(core : Core, here : Here, address : String) -> Json? {
-  let ask = resources_ask(here, address)
-  (core.topic)(ask.0, ask.1).get().value
-}
-
-///|
-/// What the core is asked for station `address`'s figures (resources_of's, its 进程's and its overview's line's): its
+/// What the core is asked for station `address`'s figures (its 进程's and its overview's line's): its
 /// `resources` view of the workspace in view.
 fn resources_ask(here : Here, address : String) -> (String, Map[String, Json]) {
   ("resources", { "scope": str(here.workspace), "station": str(address) })
@@ -97,103 +89,6 @@ fn rs_use(u : Json?, key : String) -> Double {
 }
 
 ///|
-/// Its 进程 (Processes): what still.fail uses of the machine; offline, a line saying it cannot be seen.
-fn station_processes(c : @ui.Ctx, core : Core, here : Here, s : Json?) -> Array[() -> Unit] {
-  let address = text(s, "station")
-  if !flag(s, "online") {
-    return [fn() { c.text(@sf.t("web-pages.stations.processesOffline"), style=st_memory) |> ignore }]
-  }
-  [
-    fn() {
-      c.box(style=rs_processes, fn() {
-        c.text(@sf.t("web-pages.stations.processesLead"), style=st_memory) |> ignore
-        match resources_of(core, here, address) {
-          Some(Object(_)) as v => resources_body(c, core, address, v)
-          _ => @sf.waiting(c, fn() { c.box(style=rs_page, fn() { rs_sample(c, core) }) |> ignore })
-        }
-      })
-      |> ignore
-    },
-  ]
-}
-
-///|
-/// The body (ResourcesBody): nothing read yet, a wait (or that there is nothing to see) and how it is read; else its
-/// totals, the choice of whose and of how, the table, how it is read.
-fn resources_body(c : @ui.Ctx, core : Core, address : String, v : Json?) -> Unit {
-  let shown = rs_shown_of(address)
-  c.box(style=rs_page, fn() {
-    if flag(v, "empty") {
-      let wait = field(v, "wait")
-      if flag(wait, "reading") || items(wait, "failing").length() > 0 {
-        @sf.waiting(c, fn() { rs_sample(c, core) })
-      } else {
-        c.text(@sf.t("web-main.resources.none"), style=rs_empty) |> ignore
-      }
-      rs_foot(c, v, false)
-      return
-    }
-    rs_figures_of(c, core, address, v, shown)
-    rs_foot(c, v, true)
-  })
-  |> ignore
-}
-
-///|
-/// What is seen of the machine (`v`): its totals, the choice of whose and of how, the table.
-fn rs_figures_of(c : @ui.Ctx, core : Core, address : String, v : Json?, shown : RsShown) -> Unit {
-  // (four in a row, or two over two where four have not the room: in pairs that go on in lines, never three and one,
-  // as the usage page's)
-  let tiles = items(v, "tiles")
-  c.box(style=rs_tiles, flow=true, fn() {
-    for k in 0..<((tiles.length() + 1) / 2) {
-      c.box(style=rs_tile_pair, keep=true, fn() {
-        for i in (k * 2)..<@cmp.minimum(k * 2 + 2, tiles.length()) {
-          rs_tile(c, address, Some(tiles[i]))
-        }
-      })
-      |> ignore
-    }
-  })
-  |> ignore
-  // whose and how, on a line, apart at its ends
-  c.box(style=rs_bar, flow=true, fn() {
-    let kinds = items(v, "kinds")
-    let keys = ["all"] + kinds.map(fn(k) { text(Some(k), "key") })
-    let labels = [@sf.t("web-main.resources.all")] + kinds.map(fn(k) { text(Some(k), "label") })
-    let at = keys.search(shown.kind).unwrap_or(0)
-    let picked = @sf.segmented(c, "resources-kind/" + address, labels, at)
-    if picked != at {
-      rs_shown[address] = { ..rs_shown_of(address), kind: keys[picked] }
-    }
-    let how = @sf.segmented(
-      c,
-      "resources-flat/" + address,
-      [@sf.t("web-main.resources.grouped"), @sf.t("web-main.resources.flat")],
-      if shown.flat { 1 } else { 0 },
-    )
-    if (how == 1) != shown.flat {
-      rs_shown[address] = { ..rs_shown_of(address), flat: how == 1 }
-    }
-  })
-  |> ignore
-  let groups = items(v, "groups").filter(fn(g) { shown.kind == "all" || text(Some(g), "kind") == shown.kind })
-  let columns = rs_columns_of(v)
-  if shown.flat {
-    rs_flat(c, core, address, groups, columns, shown)
-  } else {
-    rs_grouped(c, core, address, groups, columns, shown)
-  }
-}
-
-///|
-/// What is seen of the machine while it is read (the library's Waiting, in its bones): the totals and a table of
-/// made-up processes, as rs_figures_of draws them.
-fn rs_sample(c : @ui.Ctx, core : Core) -> Unit {
-  rs_figures_of(c, core.quiet(), "sample", Some(rs_sample_view()), rs_shown_of("sample"))
-}
-
-///|
 /// The made-up machine rs_sample draws (and its node, resources_node's bones).
 fn rs_sample_view() -> Json {
   let w = fn(n : Int) { Json::string(@sf.sample_words(n)) }
@@ -222,34 +117,6 @@ fn rs_sample_view() -> Json {
     "groups": [group(0, 8, 30.0, [6, 9, 5]), group(1, 6, 20.0, [7]), group(2, 10, 10.0, [8])],
   }
   v
-}
-
-///|
-/// A total, said, with the last minutes' line under it (Tile, Spark).
-fn rs_tile(c : @ui.Ctx, address : String, tv : Json?) -> Unit {
-  let key = text(tv, "key")
-  c.box(style=rs_tile_box, fn() {
-    c.box(style=rs_tile_head, fn() {
-      c.text(text(tv, "label"), style=rs_tile_label) |> ignore
-      c.text(text(tv, "sub"), style=rs_tile_sub) |> ignore
-    })
-    |> ignore
-    c.text(text(tv, "value"), style=rs_tile_value) |> ignore
-    // the line as wide as the tile, read back as it is laid out
-    let id = c.id("resources-spark/" + address + "/" + key)
-    let w = match c.laid_size(id) {
-      Some((w, _)) => w
-      None => 0.0
-    }
-    let ink = rs_spark_ink(key)
-    c.box(style=rs_spark, id~, fn() {
-      if w > 0.0 {
-        c.shapes(rs_spark_shapes(number_list(tv, "points"), w, ink), w=Px(w), h=Px(rs_spark_h)) |> ignore
-      }
-    })
-    |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -315,25 +182,6 @@ priv struct RsLayout {
 }
 
 ///|
-/// The layout of table `id` (as wide as it is laid out: read back) for `rows` (each row's use, and whether its sorted
-/// figure is said bold), with `names` columns of names first.
-fn rs_layout(
-  c : @ui.Ctx,
-  id : Int,
-  rows : Array[(Json?, Bool)],
-  columns : Array[(String, String)],
-  by : String,
-  names : Int,
-) -> RsLayout {
-  let room = match c.laid_size(id) {
-    Some((w, _)) => w
-    None => c.width
-  }
-  // (their words as drawn: the system's size of words applied)
-  rs_layout_of(room, c.sp(c.text_size(Xs).0), c.sp(c.text_size(Sm).0), rows, columns, by, names)
-}
-
-///|
 /// The layout of a table `room` wide (rs_layout's), its heads' words drawn `head` large and its figures' `figure` (a
 /// figure's digits tabular).
 fn rs_layout_of(
@@ -383,279 +231,6 @@ fn rs_column(lay : RsLayout, k : Int, under? : Bool = false, shared? : Bool = fa
 }
 
 ///|
-/// A row of the table (rs_line) as it is laid out: its names, its figures and its end on one line; stacked, its names
-/// on a line of their own and its figures under them, under their heads, its end beside both.
-fn rs_table_row(c : @ui.Ctx, lay : RsLayout, style : @ui.Style, id : Int, names : () -> Unit, figures : () -> Unit, end : () -> Unit) -> Int {
-  rs_line(c, style, id, fn() {
-    if lay.stacked {
-      c.box(style=rs_stack, fn() {
-        c.box(style=rs_row, names) |> ignore
-        c.box(style=rs_figures_line, figures) |> ignore
-      })
-      |> ignore
-    } else {
-      names()
-      figures()
-    }
-    end()
-  })
-}
-
-///|
-/// The columns' heads (Heads): the first ones' (none stacked: the names have a line of their own), then each
-/// column's, sorting by itself (the most first), the end's room.
-fn rs_heads(
-  c : @ui.Ctx,
-  address : String,
-  first : Array[String],
-  columns : Array[(String, String)],
-  shown : RsShown,
-  lay : RsLayout,
-) -> Unit {
-  rs_line(c, if lay.stacked { rs_head_row_stacked } else { rs_head_row }, 0, fn() {
-    if !lay.stacked {
-      for i, h in first {
-        c.box(style=if i == 0 { rs_name_cell } else { rs_whose_cell }, fn() { c.text(h, style=rs_head) |> ignore })
-        |> ignore
-      }
-    }
-    for k, col in columns {
-      let id = c.id("resources-by/" + address + "/" + col.0)
-      c.on_press(id, fn() {
-        rs_shown[address] = { ..rs_shown_of(address), by: col.0 }
-      })
-      let on = col.0 == shown.by
-      let name = @sf.t("web-main.resources.column." + col.0)
-      let words = if on { name + " ↓" } else { name }
-      let b = c.box(style=rs_column(lay, k), id~, fn() {
-        c.text(words, style=if on || c.hovered(id) { rs_head_on } else { rs_head }) |> ignore
-      })
-      c.semantics(b, Button, id~, label=@sf.t("web-main.resources.by", args=[("column", name)]))
-    }
-    c.box(style=rs_end_cell, fn() {  }) |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// A row's figures (Figures), each in its column: the sorted column's bold, with how much of the most it is before it
-/// where the layout has room for it; `plain`, none so.
-fn rs_figures(
-  c : @ui.Ctx,
-  u : Json?,
-  columns : Array[(String, String)],
-  by : String,
-  most : Double,
-  lay : RsLayout,
-  plain? : Bool = false,
-) -> Unit {
-  for k, col in columns {
-    let strong = !plain && col.0 == by
-    let shared = strong && lay.share
-    c.box(style=rs_column(lay, k, under=lay.stacked, shared~), fn() {
-      if shared {
-        let part = if most > 0.0 { @cmp.minimum(1.0, rs_use(u, by) / most) } else { 0.0 }
-        c.box(style=rs_share, fn() {
-          if part > 0.0 {
-            c.box(style=rs_share_fill.then(@ui.style(w=Grow(part))), fn() {  }) |> ignore
-          }
-          let rest = 1.0 - part
-          if rest > 0.0 {
-            c.box(style=@ui.style(w=Grow(rest)), fn() {  }) |> ignore
-          }
-        })
-        |> ignore
-      }
-      c.text(text(u, col.1), style=if strong { rs_figure_strong } else { rs_figure }) |> ignore
-    })
-    |> ignore
-  }
-}
-
-///|
-/// Whose a chat's row is: its chat opened from its title, where it has one.
-fn rs_title(c : @ui.Ctx, core : Core, key : String, g : Json?, style : @ui.TextStyle) -> Unit {
-  let chat = field(g, "chat")
-  let session = text(chat, "session")
-  if chat is Some(Object(_)) && session != "" {
-    let id = c.id("resources-chat/" + key)
-    c.on_press(id, fn() {
-      (core.open_chat)(text(chat, "station"), session, text(g, "title"))
-    })
-    // (underlined under the pointer: chatLink)
-    c.box(style=rs_title_box, id~, fn() {
-      c.rich([@ui.span(text(g, "title"), underline=c.hovered(id))], style~) |> ignore
-    })
-    |> ignore
-  } else {
-    c.text(text(g, "title"), style~) |> ignore
-  }
-}
-
-///|
-/// Whose uses what (Grouped), the most of the column sorted by first, each opening to its processes (the first open at
-/// first).
-fn rs_grouped(c : @ui.Ctx, core : Core, address : String, groups : Array[Json], columns : Array[(String, String)], shown : RsShown) -> Unit {
-  let by = shown.by
-  let sorted = groups.copy()
-  sorted.sort_by(fn(a, b) { rs_use(field(Some(b), "use"), by).compare(rs_use(field(Some(a), "use"), by)) })
-  let most = sorted.fold(init=0.0, fn(m, g) { @cmp.maximum(m, rs_use(field(Some(g), "use"), by)) })
-  // (a group's figures bold, its processes' plain)
-  let rows : Array[(Json?, Bool)] = []
-  for g in groups {
-    rows.push((field(Some(g), "use"), true))
-    for p in items(Some(g), "processes") {
-      rows.push((field(Some(p), "use"), false))
-    }
-  }
-  let table = c.id("resources-table/" + address)
-  let lay = rs_layout(c, table, rows, columns, by, 1)
-  c.box(style=rs_table, id=table, taps=false, fn() {
-    rs_heads(c, address, [@sf.t("web-main.resources.column.name")], columns, shown, lay)
-    for g in sorted {
-      let gv = Some(g)
-      let key = text(gv, "key")
-      let on = rs_open(shown, groups, key)
-      let id = c.id("resources-group/" + address + "/" + key)
-      c.on_press(id, fn() {
-        rs_open_or_shut(address, groups, key)
-      })
-      let b = rs_table_row(
-        c,
-        lay,
-        rs_group_row,
-        id,
-        fn() {
-          c.box(style=rs_name_cell, fn() {
-            c.box(style=rs_name, fn() {
-              @sf.icon(c, if on { "chevron-down" } else { "chevron-right" }, size=rs_toggle, color=@sf.theme().p.subtle)
-              |> ignore
-              rs_title(c, core, key, gv, rs_name_text)
-              let meta = join([text(gv, "kindText"), items(gv, "processes").length().to_string()], " · ")
-              c.text(meta, style=rs_meta) |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        },
-        fn() { rs_figures(c, field(gv, "use"), columns, by, most, lay) },
-        fn() { c.box(style=rs_end_cell, fn() {  }) |> ignore },
-      )
-      c.semantics(b, Button, id~, expanded=on)
-      if on {
-        let ps = items(gv, "processes").copy()
-        ps.sort_by(fn(a, b) { rs_use(field(Some(b), "use"), by).compare(rs_use(field(Some(a), "use"), by)) })
-        for p in ps {
-          let pv = Some(p)
-          let rid = c.id("resources-row/" + address + "/" + text(pv, "key"))
-          rs_table_row(
-            c,
-            lay,
-            rs_row,
-            rid,
-            fn() {
-              c.box(style=rs_process_cell, fn() {
-                c.text(text(pv, "name"), style=rs_process_name) |> ignore
-                c.text(number(pv, "pid").to_int().to_string(), style=rs_meta) |> ignore
-              })
-              |> ignore
-            },
-            fn() { rs_figures(c, field(pv, "use"), columns, by, most, lay, plain=true) },
-            fn() { rs_end(c, core, address, pv, gv, rid) },
-          )
-          |> ignore
-        }
-      }
-    }
-  })
-  |> ignore
-}
-
-///|
-/// Every process, with whose it is (Flat), the most of the column sorted by first.
-fn rs_flat(c : @ui.Ctx, core : Core, address : String, groups : Array[Json], columns : Array[(String, String)], shown : RsShown) -> Unit {
-  let by = shown.by
-  let rows : Array[(Json, Json)] = []
-  for g in groups {
-    for p in items(Some(g), "processes") {
-      rows.push((p, g))
-    }
-  }
-  rows.sort_by(fn(a, b) { rs_use(field(Some(b.0), "use"), by).compare(rs_use(field(Some(a.0), "use"), by)) })
-  let most = rows.fold(init=0.0, fn(m, r) { @cmp.maximum(m, rs_use(field(Some(r.0), "use"), by)) })
-  let table = c.id("resources-table/" + address)
-  let lay = rs_layout(c, table, rows.map(fn(r) { (field(Some(r.0), "use"), true) }), columns, by, 2)
-  c.box(style=rs_table, id=table, taps=false, fn() {
-    rs_heads(c, address, [@sf.t("web-main.resources.column.process"), @sf.t("web-main.resources.column.whose")], columns, shown, lay)
-    for r in rows {
-      let pv = Some(r.0)
-      let gv = Some(r.1)
-      let rid = c.id("resources-row/flat/" + address + "/" + text(pv, "key"))
-      rs_table_row(
-        c,
-        lay,
-        rs_row,
-        rid,
-        fn() {
-          c.box(style=rs_name_cell, fn() {
-            c.box(style=rs_name, fn() {
-              c.text(text(pv, "name"), style=rs_cell_words) |> ignore
-              c.text(number(pv, "pid").to_int().to_string(), style=rs_meta) |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-          c.box(style=rs_whose_cell, fn() { rs_title(c, core, "flat/" + text(pv, "key"), gv, rs_whose) }) |> ignore
-        },
-        fn() { rs_figures(c, field(pv, "use"), columns, by, most, lay) },
-        fn() { rs_end(c, core, address, pv, gv, rid) },
-      )
-      |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// A row of the table (tr), set apart from the next by its room (no line under it: only a menu's parts are set apart
-/// by one); a row's least height at least (@sf.row_least_h: a press's room, its heads and its rows pressed).
-fn rs_line(c : @ui.Ctx, style : @ui.Style, id : Int, body : () -> Unit) -> Int {
-  c.box(style=style.then(@sf.row_least_h()), id~, body)
-}
-
-///|
-/// Its row's end (EndCell): a way to end the process where it may be ended (a chat's, not its agent's own), asked first.
-fn rs_end(c : @ui.Ctx, core : Core, address : String, pv : Json?, gv : Json?, row : Int) -> Unit {
-  c.box(style=rs_end_cell, fn() {
-    let key = "resources-end/" + address + "/" + text(pv, "key")
-    // seen as its row is pointed at or it is reached by the keys (end: opacity 0 till then), always to a finger: what a
-    // pointer over a thing shows (@sf.pointed_or_finger)
-    let seen = @sf.pointed_or_finger(c, c.hovered(row) || c.lit(c.id(key)))
-    if flag(pv, "endable") && seen {
-      let name = text(pv, "name")
-      @sf.icon_button(
-        c,
-        "stop",
-        key~,
-        size=rs_end_size,
-        label=@sf.t("web-main.resources.endLabel", args=[("name", name)]),
-        on_press=fn() {
-          let pid = number(pv, "pid")
-          @sf.confirm(
-            @sf.t("web-main.resources.endTitle", args=[("name", name), ("pid", pid.to_int().to_string())]),
-            @sf.t("web-main.resources.endBody", args=[("chat", text(gv, "title"))]),
-            @sf.t("web-main.resources.end"),
-            danger=true,
-            fn() { rs_end_now(core, gv, pid, name) },
-          )
-        },
-      ) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
 /// Process `pid` (called `name`) of group `gv`'s chat ended (`process.end`), as its end is confirmed; said how it went.
 fn rs_end_now(core : Core, gv : Json?, pid : Double, name : String) -> Unit {
   let session = text(gv, "session")
@@ -672,74 +247,6 @@ fn rs_end_now(core : Core, gv : Json?, pid : Double, name : String) -> Unit {
       }
     },
   )
-}
-
-///|
-/// How often it is read, what is missing, how it is counted (Foot).
-fn rs_foot(c : @ui.Ctx, v : Json?, basis : Bool) -> Unit {
-  c.box(style=rs_foot_box, fn() {
-    let every = number(v, "everyMs")
-    if every > 0.0 {
-      c.text(@sf.t("web-main.resources.every", args=[("n", (every / 1000.0).round().to_int().to_string())]), style=rs_foot_words)
-      |> ignore
-    }
-    for n in items(v, "notes") {
-      match n {
-        String(w) => c.text(w, style=rs_foot_words) |> ignore
-        _ => ()
-      }
-    }
-    if basis {
-      c.text(text(v, "basis"), style=rs_foot_words) |> ignore
-    }
-  })
-  |> ignore
-}
-
-///|
-/// What still.fail uses of the machine (Uses): a quiet line, the whole of it opening its 进程; the network's figure where
-/// the station reads it.
-fn station_uses(c : @ui.Ctx, address : String, uv : Json?) -> Unit {
-  let t = @sf.theme()
-  let u = field(uv, "use")
-  let id = c.id("station-uses/" + address)
-  c.on_press(id, fn() {
-    @settings.station_parts[address] = "processes"
-  })
-  let lit = c.hovered(id)
-  let words = if lit { rs_uses_lit } else { rs_uses_words }
-  let name = @sf.t("web-pages.stations.uses", args=[("name", "still.fail")])
-  let figures = fn(style : @ui.Style, flow : Bool) {
-    c.box(style~, flow~, fn() {
-      let figure = fn(label : String, value : String) {
-        c.rich([@ui.span(label + " "), @ui.span(value, weight=500, color=t.p.text)], style=rs_uses_words) |> ignore
-      }
-      figure("CPU", text(u, "cpuText"))
-      figure(@sf.t("web-main.resources.column.memory"), text(u, "memoryText"))
-      if flag(uv, "net") {
-        figure(@sf.t("web-main.resources.column.net"), text(u, "netText"))
-      }
-    })
-    |> ignore
-  }
-  let b = c.box(style=rs_uses, id~, fn() {
-    // its name beside its figures where the line has the room for all of them, else over them, never between two lines
-    c.box(style=rs_uses_ways, one_of=true, fn() {
-      c.box(style=rs_uses_beside, fn() {
-        c.text(name, style=words) |> ignore
-        figures(rs_uses_one_line, false)
-      })
-      |> ignore
-      c.box(style=rs_uses_over, fn() {
-        c.text(name, style=words) |> ignore
-        figures(rs_uses_figures, true)
-      })
-      |> ignore
-    })
-    |> ignore
-    @sf.icon(c, "chevron-right", size=rs_uses_chevron, color=if lit { t.p.text } else { t.p.muted }) |> ignore
-  })
-  c.semantics(b, Link, id~, label=name)
 }
 
 // ── styles ────────────────
@@ -859,11 +366,6 @@ let rs_figures_line : @ui.Style = @ui.css("row w=Full justify=JEnd")
 let rs_name_least : @ui.Space = S40
 
 ///|
-/// A group's row: the page's hover under the pointer.
-// kept across runs: a value (no field of it changes)
-let rs_group_row : @ui.Style = rs_row.then(@ui.css("hovered{bg=Hover}"))
-
-///|
 /// The first column: what is left of the row's width, 6 by 8 in.
 // kept across runs: a value (no field of it changes)
 let rs_name_cell : @ui.Style = @ui.style(w=@sf.grow, min_w=S0, px=S2, py=S1_5)
@@ -908,12 +410,6 @@ let rs_name : @ui.Style = @ui.css("row w=Full gap=S1_5 align=ACenter")
 
 ///|
 let rs_toggle : Double = 14.0
-
-///|
-/// A chat's title, opening it: cut short where its row has less room (its words with an ellipsis).
-// kept across runs: a value (no field of it changes)
-let rs_title_box : @ui.Style = @ui.css("w=Cut")
-
 
 ///|
 /// A head (head: the meta's 12, 500, muted).

@@ -26,6 +26,7 @@ pub fn reset() -> Unit {
   transfers_reset()
   tab_reset()
   tab_drag_reset()
+  tab_node_reset()
   sv_reset()
   attention_reset()
   rail_native_reset()

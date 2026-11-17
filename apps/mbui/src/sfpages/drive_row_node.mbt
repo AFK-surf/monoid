@@ -26,7 +26,10 @@ pub(all) struct RowOf {
 /// The ways a place shows a folder's rows, the same for each view (Shown): its source and its browsing (Browse), what
 /// each row does, what is dropped on where a folder's rows are (not on one of them), a press where there is no row
 /// (nothing chosen); whether the station takes what is written there and copies from others; whether its list is too
-/// narrow for a size's and a time's columns (what a row is said under its name then).
+/// narrow for a size's and a time's columns (what a row is said under its name then); what carries a row as a mouse
+/// holds it and moves it (the files' page's drag, drag_source_node: let go on a folder, it goes there; a chat's 文件
+/// tab's its own, let go on the chat for its composer to take), given the row's node, what it carries and whether it
+/// may be carried now.
 pub(all) struct Shown {
   src : Source
   b : Browse
@@ -36,6 +39,7 @@ pub(all) struct Shown {
   write : () -> Bool
   transfers : () -> Bool
   stacked : () -> Bool
+  carries : (@view.View, () -> Dragged, () -> Bool) -> Unit
 }
 
 ///|
@@ -63,7 +67,7 @@ fn drive_row_menu(key : String, items : Array[@sf.MenuItem?], from : @sf.Beside,
 
 ///|
 /// A folder's row in `parent` (DriveRow), its entry `e` as it is now in the folder `at`, as `s` shows it: compact (a
-/// column's, a chat's 文件 tab's: 8 less high, the size alone), at a tree's `depth` (a folder with its disclosure, open
+/// column's, a chat's 文件 tab's: less in, the size alone), at a tree's `depth` (a folder with its disclosure, open
 /// as `expanded` says, `on_toggle` as it is pressed), in columns (`column`: the folder open beside, `along`, marked, a
 /// › at its end).
 pub fn drive_row_node(
@@ -120,8 +124,8 @@ pub fn drive_row_node(
     } else {
       @sf.row_apart_node(room)
     }
-    // pressed by a mouse and moved: dragged
-    drag_source_node(room, item, live)
+    // pressed by a mouse and moved: dragged, as its place carries it
+    (s.carries)(room, item, live)
     room.box(fn(g) {
       // a folder takes what is dropped on it
       let lit = match row.drop {
@@ -193,7 +197,8 @@ pub fn drive_row_node(
           })
           // (a column's row with its 2 to the next a row's least, a press's room: 36 with a mouse, 44 with a finger)
           .then(
-            @ui.style(min_h=Fixed(if column { items.least - column_rows_apart } else if compact { items.least - compact_less } else { items.least })),
+            // (a chat's 文件 tab's as tall as a row's least, pressed in no less: its words less in)
+            @ui.style(min_h=Fixed(if column { items.least - column_rows_apart } else { items.least })),
           )
         })
         if tree {
@@ -602,12 +607,8 @@ pub fn list_head_node(parent : @view.View, a : () -> Arrangement, on_sort : (Str
 // ── its sizes and looks ──
 
 ///|
-/// A compact row (a column's, a chat's 文件 tab's) 8 less high than the screen's, its mark 2 less (KindIcon 20, compact
-/// 18); a tree's disclosure's chevron (12), the ⋯ (32; compact 24), the heads' chevron (10); a folder's › to a finger
-/// (14).
-let compact_less : Double = 8.0
-
-///|
+/// A compact row's (a column's, a chat's 文件 tab's) mark 2 less than the screen's (KindIcon 20, compact 18); a tree's
+/// disclosure's chevron (12), the ⋯ (32; compact 24), the heads' chevron (10); a folder's › to a finger (14).
 let compact_less_mark : Double = 2.0
 
 ///|
@@ -682,7 +683,7 @@ let entry_busy_alpha : Double = 0.6
 let row_style : @ui.Style = @ui.css("row w=Full px=S3 py=S2 gap=S3 align=ACenter")
 
 ///|
-/// A chat's 文件 tab's and a column's (compact): 8 less high, 6 by 10 in, 10 apart, the size alone, room for its ⋯ (28).
+/// A chat's 文件 tab's and a column's (compact): 6 by 10 in, 10 apart, the size alone, room for its ⋯ (28).
 // kept across runs: a value (no field of it changes)
 let row_compact : @ui.Style = @ui.css("row w=Full px=S2_5 py=S1_5 gap=S2_5 align=ACenter")
 

@@ -5,8 +5,9 @@
 // tree's (@sf.edge_node). Its bar the tree's over whatever tab is in front (panel_bar_node.mbt), under it: an agent's
 // history, its head and steps nodes (history_head_node, sfpages' history_steps_node); a file in the viewer, its tools
 // and stage (sfbase's viewer_tab_node); 任务, agent 往来 and 图片、文件和链接 what each shows (jobs_tab_node,
-// letters_tab_node, sfpages' things_node); any other tab the panel's old view of what it shows (side_panel), the page's
-// island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
+// letters_tab_node, sfpages' things_node); 文件 and a station's 文件 the tab's nodes (drive_tab_node.mbt), a station's
+// page sfpages' station_node; any other tab (a station's screen) the panel's old view of what it shows (side_panel),
+// the page's island. On the tape the panel is a panel of its own (tape_view's tape_side_node).
 
 ///|
 /// Whether `front` (one the panel shows: side_shows) is one of the chat's agents' histories: what the panel's old view
@@ -22,7 +23,8 @@ fn side_history_tab(front : String) -> Bool {
 
 ///|
 /// Whether `front` is one the window's tree shows under the panel's bar rather than the panel's old view: an agent's
-/// history, a file in the viewer, a Farview tab, 任务, agent 往来, 图片、文件和链接 (side_own_tab).
+/// history, a file in the viewer, a Farview tab, a station's 共享调试, 文件 and a station's 文件 (side_files_tab), a
+/// station's page (side_station_tab), 任务, agent 往来, 图片、文件和链接 (side_own_tab).
 fn side_node_tab(front : String) -> Bool {
   side_history_tab(front) ||
   @sfbase.view_tab_file(front) is Some(_) ||
@@ -30,6 +32,8 @@ fn side_node_tab(front : String) -> Bool {
   tab_file(front) is Some(_) ||
   side_farview_tab(front) is Some(_) ||
   side_adb_tab(front) is Some(_) ||
+  side_files_tab(front) is Some(_) ||
+  side_station_tab(front) is Some(_) ||
   side_own_tab(front)
 }
 
@@ -298,6 +302,10 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           side_farview_node(q, src, station, screen)
         } else if side_adb_tab(agent) is Some(station) {
           side_adb_node(q, src, station)
+        } else if side_files_tab(agent) is Some(station) {
+          side_files_node(q, src, r, station, fn() { @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under) }, tips)
+        } else if side_station_tab(agent) is Some(station) {
+          side_station_node(q, src, station, tips, fn() { side_whole(src, q) }, false)
         } else if side_own_tab(agent) {
           side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
         } else {
@@ -458,6 +466,85 @@ fn side_own_node(
       } else {
         @sfpages.things_node(t, src, r, th, fn(seq) { @sfbase.go_to(r, seq) }, beside=true)
       }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// Where `front` is 文件 (the workspace's stations', "": the chat's station first) or a station's 文件 tab (that
+/// station's alone), which station: the tab made as nodes (drive_tab_node.mbt).
+fn side_files_tab(front : String) -> String? {
+  if front == "files" {
+    return Some("")
+  }
+  match station_tab(front) {
+    Some(("drive", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// 文件 (`station` "") or station `station`'s 文件 in chat `r`'s panel, in node `q` (as large as the panel under its
+/// bar): the tab made as nodes (files_tab_node) in the workspace in view, what it adds going into the chat's draft, a
+/// station's kept where it is by its own scope (station_files_scope); 添加 at its foot as `foot` lays it; what is said
+/// of what the pointer rests on in `tips`.
+fn side_files_node(q : @view.View, src : Source, r : ChatRef, station : String, foot : () -> @ui.Style, tips : @sf.TipLayer) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, id) {
+      guard id is Some(ws) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      if station == "" {
+        files_tab_node(p, src, ws, tabs_key(r), r.station, foot, tips)
+      } else {
+        files_tab_node(p, src, ws, tabs_key(r), station, foot, tips, only_station=true, scope=station_files_scope(r, station))
+      }
+    })
+  })
+  |> ignore
+}
+
+///|
+/// The station of `front` where it is a station's page tab (its page, Setting(Station), beside the chat).
+fn side_station_tab(front : String) -> String? {
+  match station_tab(front) {
+    Some(("station", station, _)) => Some(station)
+    _ => None
+  }
+}
+
+///|
+/// Station `station`'s page tab in a chat's panel, in node `q` (as large as the panel under its bar): its page made
+/// once (sfpages' station_node), in the workspace in view, as a settings' page is made in a pane (page_pane's: its
+/// frame's core, a fixture's dialog, a right click copying what is picked), laid out by the panel's `width` (narrow or
+/// wide, page_node's look), its head with no back (the tab is the way to close it), its name the tab's (named); on the
+/// tape (`on_tape`), in a panel of its own, its cards the panel's (@sf.pane_lent), as tape_made's pages are.
+fn side_station_node(
+  q : @view.View,
+  src : Source,
+  station : String,
+  tips : @sf.TipLayer,
+  width : () -> Double,
+  on_tape : Bool,
+) -> Unit {
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+    s.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
+      guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
+      p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+      let core = settings_core(src, w)
+      let here = fn() { @settings.here_of(core, w.id, w.name) }
+      @settings.frame(core, @signals.untracked(here))
+      // (a dialog a fixture's mode puts up over its page, before the page is made: setting_page's)
+      settings_fixture(src, core)
+      if on_tape {
+        p.lends(@sf.pane_lent, true) |> ignore
+      }
+      context_node(p)
+      @sfpages.station_node(p, core, src, here, station, on_back=fn() {  }, frame=fn() {
+        { back: None, top: 0.0, foot: 0.0, named: true }
+      }, width~, tips~)
     })
   })
   |> ignore

@@ -96,7 +96,7 @@ let panel_screen_pages : Map[String, @sfbase.ScreenAt] = Map([])
 let panel_screens : Map[String, (String, String, Bool)] = Map([])
 
 ///|
-fn station_tab_pane(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tab : String, own_bar? : @ui.Style? = None) -> Bool {
+fn station_tab_pane(c : @ui.Ctx, src : Source, r : ChatRef, tab : String, own_bar? : @ui.Style? = None) -> Bool {
   guard station_tab(tab) is Some((kind, station, screen)) else { return false }
   let frame : PageFrame = { back: None, top: 0.0, foot: 0.0, named: false }
   match kind {
@@ -106,17 +106,9 @@ fn station_tab_pane(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, tab :
       @sfpages.screen_page(c, src, at, frame,
         on_close=fn() { side_change(src, r, "close", Some(tab)) }, in_tab=true, own_bar~)
     }
-    "drive" => files_tab(c, src, w.id, tabs_key(r), station, only_station=true, scope=station_files_scope(r, station))
-    // (the settings' 共享调试, made once as nodes in the panel: panel_node's side_adb_node)
-    "adb" => ()
-    // (a station's page: its old view, the panel being one: station_page; every frame's own stack makes it once)
-    _ => {
-      let core = settings_core(src, w)
-      let here = @settings.here_of(core, w.id, w.name)
-      @settings.frame(core, here)
-      settings_fixture(src, core)
-      @sfpages.station_page(c, core, here, frame, station)
-    }
+    // (a station's 文件, its page and the settings' 共享调试, made once as nodes in the panel: panel_node's
+    // side_files_node, side_station_node, side_adb_node)
+    _ => ()
   }
   true
 }

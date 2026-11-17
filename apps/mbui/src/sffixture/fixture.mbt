@@ -65,7 +65,8 @@ pub(all) struct Fixture {
 
 ///|
 /// The tabs kept to begin with: the new chat's Station 文件 (newchat-files), and what the first row's chat has open
-/// beside it on the wide frame's screenshots (its agent's history, its services and jobs, agent 往来, a file of its in
+/// beside it on the wide frame's screenshots (its agent's history, its services and jobs, agent 往来, 文件 and its
+/// station's 文件 and page (chat-files-side, chat-drive-side; chat-station-side the page in front of 文件), a file of its in
 /// the viewer: chat-view-side its Markdown, chat-view-side-image its picture, chat-view-side-video its film,
 /// chat-view-side-audio its song, opened beside it before the app began).
 pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
@@ -76,6 +77,9 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
     "chat-letters-side" => { "ws1/st1:s-c1": kept("letters") }
     "chat-things-side" => { "ws1/st1:s-c1": kept("things") }
     "chat-jobs-side" => { "ws1/st1:s-c1": kept("jobs") }
+    "chat-files-side" => { "ws1/st1:s-c1": kept("files") }
+    "chat-drive-side" => { "ws1/st1:s-c1": kept("drive:[\"ws1/st1\"]") }
+    "chat-station-side" => { "ws1/st1:s-c1": { "tabs": ["files", "station:[\"ws1/st1\"]"], "active": "station:[\"ws1/st1\"]" } }
     "chat-service-side" => { "ws1/st1:s-c1": kept("service:j-web") }
     "chat-history-side" | "chat-history-side-working" | "chat-model-pop" | "chat-model-accounts" => { "ws1/st1:s-c1": kept("s-c1") }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "tabs": ["s-c1", "jobs"], "active": "jobs" } }

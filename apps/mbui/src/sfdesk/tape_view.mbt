@@ -1260,7 +1260,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
       }
     }
     // (a file in the viewer: its tools and stage, as beside the page; a Farview tab, its screen drawn here; 任务, agent
-    // 往来, 图片、文件和链接 each its nodes, a card across the foot in the panel's corners; any other tab its old view)
+    // 往来, 图片、文件和链接 each its nodes, a card across the foot in the panel's corners; 文件 and a station's 文件 the
+    // tab's nodes, 添加 in those corners too; a station's page its page's nodes; any other tab its old view)
     q.pick(at_once=true, front, fn(s, agent) {
       s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
       if agent == "" {
@@ -1293,6 +1294,17 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
         side_farview_node(s, src, station, screen)
       } else if side_adb_tab(agent) is Some(station) {
         side_adb_node(s, src, station)
+      } else if side_files_tab(agent) is Some(station) {
+        // (添加 in the panel's foot corner, concentric with it)
+        side_files_node(s, src, r, station, fn() {
+          @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))
+          let st = @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under)
+          @sf.pane_round.val = None
+          st
+        }, tips)
+      } else if side_station_tab(agent) is Some(station) {
+        // (as wide as the panel on the tape is laid out now)
+        side_station_node(s, src, station, tips, fn() { tape_room_now().panel_w }, true)
       } else if side_own_tab(agent) {
         side_own_node(s, src, r, agent, tips, fn() {
           @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))

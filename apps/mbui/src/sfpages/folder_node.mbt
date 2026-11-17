@@ -217,6 +217,7 @@ pub fn folder_view_node(
         write,
         transfers: fn() { (f.st)().transfers },
         stacked: fn() { list_room() < row_stack_below },
+        carries: drag_source_node,
       }
       // its keys while it is in front (the rows', the core's; ⌘U, ⌘⇧N), anywhere on it but a field
       held.on_key(fn(k) {
@@ -529,6 +530,7 @@ pub fn folder_actions_node(
         icon_now=fn() { if previewing() { "panel-close" } else { "panel-open" } },
         shortcut="files.preview",
         ink=fn() { lit(previewing()) },
+        on=previewing,
       )
       |> ignore
     })

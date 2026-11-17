@@ -1,15 +1,15 @@
-// A station's own page (station_page.mbt's) made once as nodes of the window's tree, laid out by the width its frame
+// A station's own page made once as nodes of the window's tree, laid out by the width its frame
 // gives it (page_node): its head of its own (its mark and name, which its managers change where they are, how it is and
 // what it is, what is wrong with it, trying it again while away, 启动 where it is this machine's and stopped, its ⋯),
 // then its parts one at a time as its choice says: how it is and what runs on it, its 进程, what it is let do and set
 // to, its software and the machine. Everything said is the core's, each part bound to what it says now: the machine's
-// figures (station_cards.mbt), its 进程 (resources_node.mbt), a login's card under way (login_card.mbt's node). The
-// old view of the page (station_page) is what the rail's 'stations' place (sfdesk places.mbt) and a chat's side panel
-// (station_tabs.mbt) still draw: both old views themselves, which cannot hold a part made once.
+// figures (station_cards.mbt), its 进程 (resources_node.mbt), a login's card under way (login_card.mbt's node); what it
+// works out apart from its nodes, station_page.mbt. Every frame makes it so, and a chat's side panel as a station's tab
+// (sfdesk panel_node.mbt side_station_node).
 
 ///|
 /// Station `address`'s page (StationSettings, StationScreen) made once in node `v`, as wide as `width` gives it, in the
-/// frame it is given: while the stations are read, or where it is gone, a made-up one's in its bones (station_waiting's);
+/// frame it is given: while the stations are read, or where it is gone, a made-up one's in its bones;
 /// made again as the viewer comes to manage it or not. `stint`: the page's time on top (what a picture put up for its
 /// mark is asked for on). Its parts' choice pressed, what the part pressed reads as it is first drawn is asked of `src`
 /// (station_part_asks) and the page stays as it is, the choice showing what was pressed; the part is switched to whole in
@@ -96,8 +96,8 @@ pub fn stations_reading_node(
 }
 
 ///|
-/// Station `s`'s page (station_view's): its head, then its parts one at a time. `bones`: all of it in its bones,
-/// waiting on what it says (station_waiting's: its title the frame's).
+/// Station `s`'s page: its head, then its parts one at a time. `bones`: all of it in its bones,
+/// waiting on what it says (its title the frame's).
 fn station_view_node(
   p : @view.View,
   core : Core,

@@ -1,8 +1,9 @@
 // A chat's own tabs beside it on 中屏 (the tape's panel, tape_side_node) and 大屏 (beside the page, side_panel_node),
 // made as nodes of the window's tree (sfdesk's jobs_tab_node, letters_tab_node; sfpages' things_node): 任务's list,
 // a job picked and its output, a service opening its own tab; agent 往来's chats, one opened and back; 图片、文件和链接's
-// kinds, chosen here and by things_choose; and on the tape a Farview tab drawn here (实验性功能 on), its screen
-// (side_farview_node), not an agent's history.
+// kinds, chosen here and by things_choose; 文件 and a station's 文件 (sfdesk's drive_tab_node.mbt), a folder gone into,
+// a file picked and added to the draft, back to the places; a station's page (sfpages' station_node); and on the tape a
+// Farview tab drawn here (实验性功能 on), its screen (side_farview_node), not an agent's history.
 
 ///|
 /// 大屏 beside the page, 中屏 the tape's panel (corners_wbtest's windows).
@@ -165,4 +166,98 @@ test "中屏: on the tape's panel a tab alone is its bar's title, a heading with
   let t = side_tab_at("chat-tabs-side", side_tab_windows[1])
   assert_eq(side_tabs_said(t).length(), 2)
   assert_true(t.query(Button, label=@sf.t("web-pages.chat.closeJobs")) is Some(_), msg="任务's ×")
+}
+
+///|
+/// `words` tapped where they are furthest right (in the panel, not the chat's or the sidebar's).
+fn side_tap_rightmost(t : @ui.Tester, words : String) -> Unit {
+  let at = t.locate(words)
+  guard at.length() > 0 else { @halt.saying("no \{words}") }
+  let mut best = at[0]
+  for p in at {
+    if p.0 > best.0 {
+      best = p
+    }
+  }
+  t.tap(best.0, best.1)
+}
+
+///|
+/// What the audit finds of 文件's and a station's page's own nodes beside the chat (their edge drawn over the panel's
+/// column, as every panel's: none of theirs).
+fn side_files_faults(t : @ui.Tester) -> Array[String] {
+  t
+  .audit()
+  .filter(fn(f) {
+    (f.contains("drive_tab_node") || f.contains("drive_row_node") || f.contains("drive_views_node") || f.contains("station_node")) &&
+    !f.contains("edge_node.mbt")
+  })
+}
+
+///|
+test "中屏, 大屏: 文件 beside the chat, nodes: its station's home, a folder gone into and starred (lit at rest), a file pressed picked, 添加 1 个 puts it into the draft; the trail's station back to the places" {
+  for win in side_tab_windows {
+    let t = side_tab_at("chat-files-side", win)
+    assert_eq(side_files_faults(t), [], msg=win.0)
+    for w in ["整个文件夹", "下载", "文档", "项目"] {
+      assert_true(t.find(w) is Some(_), msg="\{win.0}: \{w}")
+    }
+    side_tap_rightmost(t, "文档")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("说明.txt") is Some(_), msg="\{win.0}: 文档's files")
+    assert_true(t.find("下载") is None, msg="\{win.0}: the home's gone")
+    // (the folder starred: its star lit at rest, the pointer gone from it, as the old tab's lit button)
+    // (the fixture's 文档 kept at hand already: lit; taken off, quiet; kept again, lit)
+    assert_eq(side_star_lit(t, "从个人收藏移除「文档」"), true, msg="\{win.0}: starred, lit at rest")
+    t.click(Button, label="从个人收藏移除「文档」")
+    t.move_to(10.0, win.2 - 10.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(side_star_lit(t, "把「文档」加入个人收藏"), false, msg="\{win.0}: not starred, quiet")
+    t.click(Button, label="把「文档」加入个人收藏")
+    t.move_to(10.0, win.2 - 10.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(side_star_lit(t, "从个人收藏移除「文档」"), true, msg="\{win.0}: starred again, lit at rest")
+    side_tap_rightmost(t, "说明.txt")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("添加 1 个") is Some(_), msg="\{win.0}: picked")
+    assert_eq(side_files_faults(t), [], msg="\{win.0}: a file picked")
+    side_tap_rightmost(t, "添加 1 个")
+    t.run_for(@ui.move_most_ms)
+    assert_true(draft_files().contains("说明.txt"), msg="\{win.0}: \{draft_files()}")
+    assert_true(t.find("添加 1 个") is None, msg="\{win.0}: the picks let go")
+    side_tap_rightmost(t, "Willow")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("整个文件夹") is None, msg="\{win.0}: the places")
+    assert_eq(side_files_faults(t), [], msg="\{win.0}: the places")
+  }
+}
+
+///|
+test "中屏, 大屏: a station's 文件 and its page beside the chat, nodes: its home's folders; its page's head and parts, laid out by the panel's width, 设置 pressed" {
+  for win in side_tab_windows {
+    let t = side_tab_at("chat-drive-side", win)
+    assert_eq(side_files_faults(t), [], msg=win.0)
+    assert_true(t.find("文档") is Some(_), msg="\{win.0}: its home's folders")
+    let t = side_tab_at("chat-station-side", win)
+    assert_eq(side_files_faults(t), [], msg=win.0)
+    assert_true(t.find("概览") is Some(_), msg="\{win.0}: its parts")
+    // (laid out by the panel's width, as page_node's look has it: 大屏's panel narrow, a section's heading alone; the
+    // tape's wide, a section's box of its own made where the page asks for it, section_node's wide way)
+    // (its words' own place, the first of what sources_of says)
+    let asked = t.sources_of("资源").split("\n").next().map(fn(l) { l.to_owned() }).unwrap_or("")
+    let wide_section = asked.contains("sfpages/station_node.mbt")
+    assert_eq(wide_section, win.0 == "medium", msg="\{win.0}: \{asked}")
+    side_tap_rightmost(t, "设置")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(side_files_faults(t), [], msg="\{win.0}: 设置")
+  }
+}
+
+///|
+/// Whether the button named `label` is drawn lit at rest: its ground the accent's lit tint (icon_button_node's `on`).
+fn side_star_lit(t : @ui.Tester, label : String) -> Bool {
+  guard t.query(Button, label~) is Some(n) else { return false }
+  let (x, y, w, h) = n.rect
+  let lit = @sf.alpha(@sf.theme().p.accent, 0.08)
+  t.drawn_rects().iter().any(fn(r) { (r.0 - x).abs() < 1.0 && (r.1 - y).abs() < 1.0 && (r.2 - w).abs() < 1.0 && (r.3 - h).abs() < 1.0 && r.4 == lit })
 }
