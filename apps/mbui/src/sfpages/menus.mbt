@@ -85,13 +85,15 @@ fn path_held(c : @ui.Ctx, src : Source, station : String, agent : String, path :
 ///|
 /// A file in a message (box `id`; a picture's image `src`, else "") held or right clicked: its menu there, as a
 /// passage's (pick.mbt): 引用 into the chat's draft (`quote`, where it is a message's), then what else it offers
-/// (`more`: 下载 and a video's 加载), then a picture's copy.
+/// (`more`: 下载 and a video's 加载), then a picture's copy; after them, a line between, what its message offers of
+/// itself (`after`, read as the menu opens: its link copied and 多选, as the page made as nodes has them).
 fn file_menu(
   c : @ui.Ctx,
   id : Int,
   src : String,
   quote? : (() -> Unit)? = None,
   more? : Array[@sf.MenuItem?] = [],
+  after? : () -> Array[@sf.MenuItem?] = fn() { [] },
 ) -> Unit {
   match c.menu_asked(id) {
     Some((x, y)) => {
@@ -110,6 +112,13 @@ fn file_menu(
       items.append(more)
       if src != "" && src != "!" {
         items.push(Some(@sf.menu_item_of(@sf.t("desktop.contextMenu.copyImage"), fn() { menu_doing.image.set(src) }, icon="copy")))
+      }
+      let tail = after()
+      if !tail.is_empty() {
+        if !items.is_empty() {
+          items.push(None)
+        }
+        items.append(tail)
       }
       if items.length() > 0 {
         @sf.menu(items, from=@sf.at_point(x, y))

@@ -1,44 +1,30 @@
-// Rows together in a panel's body (group's in_panel way: a card of the panel's) as nodes (group_node) beside the old
-// one (group), each given the same rows (two that turn something on or off), the last of what a dialog holds
-// (panel_card_last, panel_card_last_node): on every screen a panel is drawn on, everything drawn and every word where
-// the old one's is and as big.
+// Rows together in a panel's body (a card of the panel's) as nodes (group_node), two rows that turn something on or
+// off, the last of what a dialog holds (panel_card_last_node): on every screen a panel is drawn on, everything drawn
+// and every word where it stood when it stood where the old view's group did, and as big.
 
 ///|
 /// What a panel holding rows together on a card draws at rest, every rectangle and every word (each where and how big,
-/// to a thousandth of a point), in order: the old panel's (`old`), else the node panel's, on a window `at`, opened by
+/// to a thousandth of a point), in order, on a window `at`, opened by
 /// its 打开 (`pressed`: a sheet a press opened, a small panel beside it) or by nothing (a sheet, a dialog in the middle
 /// of the window). Closed after, gone.
-fn group_panel_drawn(at : (Int, Double, Double), pressed : Bool, old : Bool) -> Array[String] raise {
+fn group_panel_drawn(at : (Int, Double, Double), pressed : Bool) -> Array[String] raise {
   let open = fn(from : Anchor) {
     let from = if pressed { from } else { Unanchored }
-    if old {
-      panel("一组", from~, fn(c, _) {
-        c.box(style=panel_words_in(), fn() { c.text("它说的话", style=secondary) |> ignore }) |> ignore
-        c.box(style=group_panel_block.then(panel_card_last()), fn() {
-          group(c, fn() {
-            switch_row(c, "group-panel/a", "第一个开关", false) |> ignore
-            switch_row(c, "group-panel/b", "第二个开关", true) |> ignore
-          })
-        })
-        |> ignore
+    panel_nodes("一组", from~, fn(v, _) {
+      v.box(fn(b) {
+        style_node(b, fn() { panel_words_in_node(b) })
+        words_node(b, fn() { "它说的话" }, fn() { secondary }) |> ignore
       })
-    } else {
-      panel_nodes("一组", from~, fn(v, _) {
-        v.box(fn(b) {
-          style_node(b, fn() { panel_words_in_node(b) })
-          words_node(b, fn() { "它说的话" }, fn() { secondary }) |> ignore
+      |> ignore
+      v.box(fn(b) {
+        style_node(b, fn() { group_panel_block.then(panel_card_last_node(b)) })
+        group_node(b, fn(g) {
+          switch_row_node(g, fn() { "第一个开关" }, fn() { false }, fn(_) {  })
+          switch_row_node(g, fn() { "第二个开关" }, fn() { true }, fn(_) {  })
         })
-        |> ignore
-        v.box(fn(b) {
-          style_node(b, fn() { group_panel_block.then(panel_card_last_node(b)) })
-          group_node(b, fn(g) {
-            switch_row_node(g, fn() { "第一个开关" }, fn() { false }, fn(_) {  })
-            switch_row_node(g, fn() { "第二个开关" }, fn() { true }, fn(_) {  })
-          })
-        })
-        |> ignore
       })
-    }
+      |> ignore
+    })
   }
   presenters_reset()
   let (platform, w, h) = at
@@ -72,7 +58,8 @@ fn group_panel_drawn(at : (Int, Double, Double), pressed : Bool, old : Bool) -> 
 let group_panel_block : @ui.Style = @ui.css("w=Full gap=S2 pt=S3_5")
 
 ///|
-test "rows together in a panel's body as nodes where the old ones stand: a sheet opened by nothing and by a press, with a finger and with a mouse, a small panel beside what opened it, a dialog in the middle of the window" {
+test "rows together in a panel's body as nodes: a sheet opened by nothing and by a press, with a finger and with a mouse, a small panel beside what opened it, a dialog in the middle of the window" {
+  let seen : Array[String] = []
   for screen in [
     ("sheet opened by nothing", phone, false),
     ("sheet opened by a press", phone, true),
@@ -81,18 +68,80 @@ test "rows together in a panel's body as nodes where the old ones stand: a sheet
     ("dialog", (0, 800.0, 600.0), false),
   ] {
     let (about, at, pressed) = screen
-    let old = group_panel_drawn(at, pressed, true)
-    let new = group_panel_drawn(at, pressed, false)
-    let differs : Array[String] = []
-    for i in 0..<(if old.length() > new.length() { old.length() } else { new.length() }) {
-      let o = old.get(i).unwrap_or("-")
-      let n = new.get(i).unwrap_or("-")
-      if o != n {
-        differs.push("\{about}: line \{i}:\n  old \{o}\n  new \{n}")
-      }
-    }
-    if !differs.is_empty() {
-      fail(differs.join("\n"))
-    }
+    seen.push("\{about}:")
+    seen.append(group_panel_drawn(at, pressed))
   }
+  inspect(seen.join("\n"), content=(
+    #|sheet opened by nothing:
+    #|rect 40,40 310x36 3907312895
+    #|rect 0,0 390x844 71
+    #|rect 176,559 38x5 841819172
+    #|rect 16,652 358x168 606546701
+    #|rect 306,685 44x26 3250899455
+    #|rect 308,687 22x22 4294967295
+    #|rect 306,761 44x26 3428463871
+    #|rect 326,763 22x22 4294967295
+    #|words 一组@24,576 32x24 a1
+    #|words 打开@180,47 30x22 a1
+    #|words 它说的话@24,610 342x18 a1
+    #|words 第一个开关@40,687 254x22 a1
+    #|words 第二个开关@40,763 254x22 a1
+    #|sheet opened by a press:
+    #|rect 40,40 310x36 3907312895
+    #|rect 0,0 390x844 71
+    #|rect 176,569 38x5 841819172
+    #|rect 16,652 358x168 606546701
+    #|rect 306,685 44x26 3250899455
+    #|rect 308,687 22x22 4294967295
+    #|rect 306,761 44x26 3428463871
+    #|rect 326,763 22x22 4294967295
+    #|words 一组@24,586 32x24 a1
+    #|words 打开@180,47 30x22 a1
+    #|words 它说的话@24,620 342x18 a1
+    #|words 第一个开关@40,687 254x22 a1
+    #|words 第二个开关@40,763 254x22 a1
+    #|sheet opened by a press, with a mouse:
+    #|rect 40,40 310x36 3907312895
+    #|rect 0,0 390x844 71
+    #|rect 176,585 38x5 841819172
+    #|rect 16,668 358x152 606546701
+    #|rect 314,699 36x22 3250899455
+    #|rect 316,701 18x18 4294967295
+    #|rect 314,767 36x22 3428463871
+    #|rect 330,769 18x18 4294967295
+    #|words 一组@24,602 32x24 a1
+    #|words 打开@182,48 26x20 a1
+    #|words 它说的话@24,636 342x18 a1
+    #|words 第一个开关@40,699 262x22 a1
+    #|words 第二个开关@40,767 262x22 a1
+    #|small panel:
+    #|rect 40,40 720x36 3907312895
+    #|rect 40,82 296x228 4294967295
+    #|rect 46,150 284x126 4294967295
+    #|rect 270,173 36x22 3250899455
+    #|rect 272,175 18x18 4294967295
+    #|rect 270,231 36x22 3428463871
+    #|rect 286,233 18x18 4294967295
+    #|rect 40,82 296x228 0
+    #|words 一组@56,94 264x20 a1
+    #|words 打开@387,48 26x20 a1
+    #|words 它说的话@62,118 252x18 a1
+    #|words 第一个开关@68,174 186x20 a1
+    #|words 第二个开关@68,232 186x20 a1
+    #|dialog:
+    #|rect 40,40 720x36 3907312895
+    #|rect 0,0 800x600 320215859
+    #|rect 140,166.5 520x267 4294967295
+    #|rect 156,289.5 488x128 606546701
+    #|rect 582,314.5 36x22 3250899455
+    #|rect 584,316.5 18x18 4294967295
+    #|rect 582,370.5 36x22 3428463871
+    #|rect 598,372.5 18x18 4294967295
+    #|rect 140,166.5 520x267 0
+    #|words 打开@387,48 26x20 a1
+    #|words 一组@164,192.5 44x30 a1
+    #|words 它说的话@164,241.5 472x18 a1
+    #|words 第一个开关@180,315.5 386x20 a1
+    #|words 第二个开关@180,371.5 386x20 a1
+  ))
 }

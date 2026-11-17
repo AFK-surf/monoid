@@ -1,0 +1,18 @@
+import {
+  "station/host",
+  "station/jsjson",
+  "station/wire",
+  "station/mesh_door/door",
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/string",
+  "moonbitlang/core/double",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/encoding/base64",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/encoding/hex",
+}
+
+import {
+  "station/mesh_runtime",
+} for "test"

@@ -10,16 +10,33 @@
 ///|
 /// Where a window's tips are drawn (a node over all of it, as it is given when a tip is first shown) and when the last
 /// of them went (another shown within tooltip_skip_ms of it at once: kit's tip_closed): one for the window's tree, made
-/// and let go with what holds it.
+/// and let go with what holds it. `hands`: its tips handing their ground on, the next shown at once going from where
+/// the one before was drawn (@motion.Handoff, within tooltip_skip_ms of its going).
 pub struct TipLayer {
   layer : () -> @view.View?
   mut went_at : Double
+  priv hands : @motion.Handoff
 }
 
 ///|
 /// The tips' layer of a window, drawn in what `layer` gives (the node it is first shown in).
 pub fn TipLayer::new(layer : () -> @view.View?) -> TipLayer {
-  { layer, went_at: -1.0e18 }
+  { layer, went_at: -1.0e18, hands: @motion.Handoff::new(within=@kit.tooltip_skip_ms) }
+}
+
+///|
+/// What a tip can take over from (@motion.HandPart's tag): one on the same side of its control; one by the pointer
+/// (`at_pointer`) none, nor is it taken over from.
+fn tip_hand_tag(side : @view.Side, at_pointer : Bool) -> Int {
+  if at_pointer {
+    return -1
+  }
+  match side {
+    Top => 0
+    Right => 1
+    Bottom => 2
+    Left => 3
+  }
 }
 
 ///|
@@ -74,6 +91,17 @@ pub fn tip_node(
   let fade = TipFade::new()
   let anchor_id = anchor.id()
   let owner = @kit.tip_node_owner()
+  // (its ground handed on among its layer's tips: seen while its slot is its own and some of it is in)
+  let glide = tips.hands.part(
+    fn(t) {
+      if @signals.untracked(fn() { @kit.tip_owns(owner) }) {
+        fade.at(t)
+      } else {
+        0.0
+      }
+    },
+    tag=tip_hand_tag(side, at_pointer),
+  )
   // (made in its layer as it is first shown where there is one then (none yet: shown the next time it is, as there is
   // one), held there for its control, let go with it)
   let made = Ref(false)
@@ -92,7 +120,7 @@ pub fn tip_node(
     })
     |> ignore
     holder.show(fn() { open.get() }, leave=@kit.pop_out_ms, fn(t) {
-      tip_look_node(t, anchor_id, side, label, shortcut, fade, gap, at_pointer, owner)
+      tip_look_node(t, anchor_id, side, label, shortcut, fade, glide, gap, at_pointer, owner)
     })
     true
   }
@@ -113,18 +141,27 @@ pub fn tip_node(
     }
     let at = anchor.cause_at()
     if on {
+      // (another of the layer's showing or gone a moment ago, on the same side: taken over from where it is drawn now,
+      // as fast as it goes, before this one takes the window's slot from it; there before tip_settled moments,
+      // @motion.hand_spring)
+      let taken = glide.came(at, @motion.hand_spring, takes=skip && !at_pointer)
       if !made.val {
         made.val = make()
       }
       if made.val {
         @kit.tip_claim(owner)
       }
-      // (in, as kit's tip_in: from where it is at this moment, eased out)
-      fade.go(anchor, 1.0, at, tip_in_ms, Out)
+      match taken {
+        // (in whole at once, its ground going from where the other's was to its own place, its words with it)
+        Some(_) => fade.put(1.0)
+        // (in, as kit's tip_in: from where it is at this moment, eased out)
+        None => fade.go(anchor, 1.0, at, tip_in_ms, Out)
+      }
     } else {
       // (out, as pop_out: from where it is at this moment, eased to leave, over as long as it is kept going)
       fade.go(anchor, 0.0, at, @kit.pop_out_ms, Leave)
       tips.went_at = at
+      glide.left(at)
     }
     open.set(on)
   }
@@ -202,8 +239,9 @@ pub fn tip_node(
       set_open(false)
     } else if focused || open.untracked() {
       set_open(true)
-    } else if skip && at < tips.went_at + @kit.tooltip_skip_ms {
-      // (another of the layer's went a moment ago: at once)
+    } else if skip && (at < tips.went_at + @kit.tooltip_skip_ms || glide.other_near(at)) {
+      // (another of the layer's went a moment ago, or shows still (the hand come from it to this one, that one told it
+      // left after this one is told it came): at once)
       set_open(true)
     } else {
       // (rested on a while from now: shown then, as it is then, a pointer over it carrying no press, taking input)
@@ -227,6 +265,7 @@ pub fn tip_node(
   anchor.owns(fn() {
     stop_rest()
     fade.stop()
+    glide.gone()
     (lifted_end.val)()
   })
   |> ignore
@@ -330,6 +369,17 @@ fn TipFade::go(self : TipFade, node : @view.View, to : Double, at : Double, ms :
 }
 
 ///|
+/// All of it in (`to`) at once, going nowhere (shown in place of another of its layer: tip_node's handoff).
+fn TipFade::put(self : TipFade, to : Double) -> Unit {
+  self.from = to
+  self.to = to
+  self.start = 0.0
+  self.ms = 0.0
+  self.stop()
+  self.moving.set(false)
+}
+
+///|
 /// Its end's moment let go of (another way set out, its control gone).
 fn TipFade::stop(self : TipFade) -> Unit {
   match self.due {
@@ -361,6 +411,7 @@ fn tip_look_node(
   label : () -> String,
   shortcut : String,
   fade : TipFade,
+  glide : @motion.HandPart,
   gap : Double,
   at_pointer : Bool,
   owner : @kit.TipOwner,
@@ -436,6 +487,9 @@ fn tip_look_node(
       w.words(By(fn() { label() })).words_look(By(fn() { words_look(true) })).ink(By(fn() { theme().color(OnPrimary) }))
       |> ignore
     }
+    // (its ground handed on among its layer's tips, its words with it: from where the one before was drawn, from its
+    // middle)
+    glide.draws(t, carries=w)
     w
     .alpha(By(fn() {
       // (of its ground's: what of the words shows over as much of the ground as there is)

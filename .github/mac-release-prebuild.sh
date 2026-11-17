@@ -9,6 +9,7 @@ dir="$RUNNER_TEMP/mac-prebuild"
 case "${1:-}" in
   start)
     mkdir -p "$dir"
+    rm -f "$dir/built"
     # the PostHog project the core sends what people use to (scripts/core.sh posthog_define): the file the bundling
     # step writes too, the same, so that core.hbc made here is the one it takes
     if [ -n "${POSTHOG_JSON:-}" ]; then
@@ -91,7 +92,17 @@ case "${1:-}" in
     export PATH="$MOON_HOME/bin:$PATH" APP=stillfail MODE=release MBUI_PACKAGES_PENDING="$dir/packages-pending"
     # The app's wrapper builds core.hbc beside the app. Leaving it until mac-app.sh bundled the app added 26 s after
     # the compile and let a successful build time out during cleanup (42588746155, 2026-11-09).
-    bash "$A/scripts/mac.sh" build
+    # (built whole here, `built` says so: the bundling step takes it as it is, MBUI_BUILT, not running mac.sh again
+    # (12-20 s that cut a build done at the job's five minutes, 133850663609, 2026-11-17); so the check mac-app.sh made of
+    # its log is made here)
+    set -o pipefail
+    bash "$A/scripts/mac.sh" build 2>&1 | tee "$dir/build.log"
+    if grep -q 'built for newer macOS version' "$dir/build.log"; then
+      grep 'built for newer macOS version' "$dir/build.log" | head -5 >&2
+      echo "Mac prebuild: something was built for a newer macOS than $MACOSX_DEPLOYMENT_TARGET" >&2
+      exit 1
+    fi
+    touch "$dir/built"
     ;;
   *) echo "usage: $0 start|ready|packages|wait|stop" >&2; exit 2 ;;
 esac

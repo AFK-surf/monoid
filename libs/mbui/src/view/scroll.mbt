@@ -148,6 +148,12 @@ pub struct Scroll {
   /// how tall what lies over its top covers what it shows (the bar a page's list runs under: View::scrolls'
   /// `top_covered`), read through Scroll::top_covered
   priv mut top_cover : () -> Double
+  /// the foot pinned over what it shows (a page's list's foot: View::scrolls_window's), its node; -1 none. What flies
+  /// from a thing in it may be drawn under it (View::shared's `route`, FlightLevel's UnderFoot)
+  mut foot_at : Int
+  /// the node in that foot what flies under it is drawn just before (View::flights_under: a page's composer, the round
+  /// buttons over the list made before it left under the flight); -1: the foot itself
+  mut under_at : Int
   /// the logic's moment it was last put at once (Scroll::put: a page's list brought to a block or to its foot, the
   /// app's put), for the Tester's judges: what it moves by its offset alone (its bar's thumb) goes there with it in the
   /// frame that takes it (Tree::scroll_put_at)
@@ -265,6 +271,8 @@ fn Scroll::made(as_list : Bool, across? : Bool = false) -> Scroll {
     foot_covered: fn() { 0.0 },
     foot_clear: fn() { 0.0 },
     top_cover: fn() { 0.0 },
+    foot_at: -1,
+    under_at: -1,
     put_at: -1.0e9,
     wheel_at: -1.0e9,
     keys_at: -1.0e9,
@@ -940,13 +948,14 @@ pub fn View::scroll_holding(self : View, across? : Bool = false) -> Scroll? {
 /// along its right, as that says (scroll_bar.mbt; none: none). Scrolling across (Scroll::across): a row, what it holds
 /// laid out as wide as it is, given way to nothing across where what holds it is narrower; a hold its own once it moves
 /// across past the slop; its bar along its foot, `bar_in` in from either end (under what it is for, where what it holds
-/// reaches past that: Ctx::sideways's), room under what it holds for it while it can go (its bar never over what it
-/// holds' last line), none while it cannot. `top_covered`: down a column, how tall what lies over its top is now (the
+/// reaches past that: Ctx::sideways's), over what it holds' foot, no room kept for it (the user, 2026-11-17:
+/// 「滚动条不应该占位置，也不应该没有」, every container so). Every bar keeps clear of the round corners of what cuts
+/// it (View::corner_clear). `top_covered`: down a column, how tall what lies over its top is now (the
 /// bar a page's list runs under: its room), a live value its page says once (Scroll::top_covered); what is brought into
 /// sight comes to rest under it. `bar_clear`: down a column, how much of its top and its foot its bar keeps clear of,
 /// as it is now (by default what covers its top), as an old view's list's bar does. `bar_here`: whether this one has
 /// its bar now, as that changes (one of several scrolled beside each other as one, Scroll::beside: the last of a long
-/// table's pieces, its bar under its last row alone): the bar drawn and its room kept only while it says so; a hand
+/// table's pieces, its bar under its last row alone): the bar drawn only while it says so; a hand
 /// on any of them shows it (Scroll's `peers_scrolled`).
 pub fn View::scrolls(
   self : View,
@@ -1274,21 +1283,6 @@ pub fn View::scrolls(
     if !across && s.whole is None {
       held.margin(By(fn() { (0.0, 0.0, 0.0, press_room.get()) })) |> ignore
     }
-    // (across with a bar: room at its foot for it while it can go, as laid out (none while it cannot), its bar never
-    // over what it holds' last line: Ctx::sideways's bar_room, from this layout's told reach, not a frame's before)
-    // (under what it holds, its own room at its foot counted, as Ctx::sideways' `foot` is the more of its padding there
-    // and the bar's room: what of the bar's room its padding there has not, under it)
-    match bar {
-      Some(b) if across =>
-        held.margin(By(fn() {
-          let room = if bar_room() && s.most_now() > 0.5 { b.size + 2.0 * b.inset } else { 0.0 }
-          let st = self.tree.nodes[held.at].flex.style
-          let pad = if st.padding_bottom_kind() == @flex.LEN_PT { st.padding_bottom_value() } else { 0.0 }
-          (0.0, 0.0, 0.0, if room > pad { room - pad } else { 0.0 })
-        }))
-        |> ignore
-      _ => ()
-    }
     build(held)
   })
   |> ignore
@@ -1429,6 +1423,8 @@ pub fn View::scrolls(
     s.foot_covered = fn() { 0.0 }
     s.foot_clear = fn() { 0.0 }
     s.top_cover = fn() { 0.0 }
+    s.foot_at = -1
+    s.under_at = -1
     s.host = None
     match self.tree.scrolls_at.get(self.at) {
       Some(o) if physical_equal(o, s) => self.tree.scrolls_at.remove(self.at)

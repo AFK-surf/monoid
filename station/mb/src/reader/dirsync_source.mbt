@@ -3,8 +3,11 @@
 //
 // - Which files: in a Git work tree what `git ls-files -co --exclude-standard` names (tracked, and untracked but not
 //   ignored), so node_modules, target and dist stay home; elsewhere every file but `ignored_dirs`. `.git` is not
-//   synced, neither are submodules or nested repositories. A symbolic link goes as a link when what it names stays
-//   inside the directory, and is left out (said in `skipped`) when it leads out.
+//   synced, neither are nested repositories. A submodule's files are not sent either (one is tens of thousands of
+//   them): it goes as its path, the commit checked out here (else the index's) and its URL (`.gitmodules`, the
+//   repository's own config before it, a relative one against `origin`), which the target checks out in the mirror
+//   before a task runs (dirsync.mbt `submodules_script`); one with no URL is left out. A symbolic link goes as a link
+//   when what it names stays inside the directory, and is left out (said in `skipped`) when it leads out.
 // - Compared by content: a file's id is its Git blob id (sha1 of "blob <size>\0" and its bytes), free from the index
 //   for a clean tracked file the mirror has as it is, hashed for the rest (also a clean one that would be sent: with a
 //   filter or eol conversion its bytes are not what the index names). The target keeps the last synced source state
@@ -77,6 +80,8 @@ priv struct Listing {
   git : Bool
   prefix : String
   skipped : Array[(String, String)]
+  /// The submodules to check out there: path, commit, URL.
+  submodules : Array[(String, String, String)]
 }
 
 ///|
@@ -94,6 +99,7 @@ fn Listing::to_json(self : Listing) -> Json {
     "git": jbool(self.git),
     "prefix": jstr(self.prefix),
     "skipped": Json::array(self.skipped.map(s => { "path": jstr(s.0), "why": jstr(s.1) })),
+    "submodules": Json::array(self.submodules.map(s => { "path": jstr(s.0), "id": jstr(s.1), "url": jstr(s.2) })),
   }
 }
 
@@ -219,6 +225,7 @@ async fn Actors::list_local(self : Actors, dir : String) -> Listing raise {
     let seen : Map[String, Bool] = {}
     let hash : Array[String] = []
     let clean : Array[(String, String, String)] = []
+    let links : Array[(String, String)] = []
     for line in self.git_list(dir, ["ls-files", "-z", "-s"]) {
       guard line.find("\t") is Some(tab) else { continue }
       let head = line.view(end_offset=tab).split(" ").map(s => s.to_string()).collect()
@@ -231,7 +238,7 @@ async fn Actors::list_local(self : Actors, dir : String) -> Listing raise {
       let id = if head.length() > 1 { head[1] } else { "" }
       let stage = if head.length() > 2 { head[2] } else { "" }
       if mode == "160000" {
-        skipped.push((path, "submodule"))
+        links.push((path, id))
         continue
       }
       // A clean tracked file is what the index says; a changed one (or one in a conflict), or a link, is hashed.
@@ -274,8 +281,9 @@ async fn Actors::list_local(self : Actors, dir : String) -> Listing raise {
     for i, path in hash {
       take(path, on_disk(path, got[i]))
     }
+    let submodules = self.submodules_of(dir, prefix, links, skipped)
     files.sort_by((a, b) => @search.compare_units(a.path, b.path))
-    return { files, git: true, prefix, skipped }
+    return { files, git: true, prefix, skipped, submodules }
   }
   // Walked bounded (as station/src/ops/walk.ts `walkBounded` walks, breadth first): a directory on another file system
   // mounted in it is left out (said in `skipped`), no link followed. What would leave the listing short is an error,
@@ -357,7 +365,108 @@ async fn Actors::list_local(self : Actors, dir : String) -> Listing raise {
     take(path, on_disk(path, got[i]))
   }
   files.sort_by((a, b) => @search.compare_units(a.path, b.path))
-  { files, git: false, prefix: "", skipped }
+  { files, git: false, prefix: "", skipped, submodules: [] }
+}
+
+///|
+/// `git config -z` entries of `args` (--get-regexp's): key → value; none where git found none.
+async fn Actors::git_config(self : Actors, dir : String, args : Array[String]) -> Map[String, String] raise {
+  let all = ["config", "-z"]
+  all.append(args)
+  let out : Map[String, String] = {}
+  guard self.git_out(dir, all) is Some(text) else { return out }
+  for entry in text.split("\u{0}") {
+    let entry = entry.to_string()
+    match entry.find("\n") {
+      Some(nl) => out[entry.view(end_offset=nl).to_string()] = entry.view(start_offset=nl + 1).to_string()
+      None => if entry != "" { out[entry] = "" }
+    }
+  }
+  out
+}
+
+///|
+/// A submodule's URL as Git takes it: one relative to the superproject's (`./`, `../`) against `base` (its origin's
+/// URL; none without one), each `../` taking off the last part of it.
+fn submodule_url(url : String, base : String) -> String {
+  if !url.has_prefix("./") && !url.has_prefix("../") {
+    return url
+  }
+  if base == "" {
+    return ""
+  }
+  let mut b = base
+  while b.has_suffix("/") {
+    b = b.view(end_offset=b.length() - 1).to_string()
+  }
+  let mut u = url
+  while true {
+    if u.has_prefix("./") {
+      u = u.view(start_offset=2).to_string()
+    } else if u.has_prefix("../") {
+      u = u.view(start_offset=3).to_string()
+      // (a part goes up to its `/`, or up to the `:` of `host:path`, which `host:` keeps)
+      let cut = match b.rev_find("/") {
+        Some(i) if i > 0 && !(b.view(end_offset=i).to_string().has_suffix("/")) => Some(i)
+        _ => b.rev_find(":").map(i => i + 1)
+      }
+      match cut {
+        Some(i) => b = b.view(end_offset=i).to_string()
+        None => return ""
+      }
+    } else {
+      break
+    }
+  }
+  if b.has_suffix(":") { b + u } else { b + "/" + u }
+}
+
+///|
+/// The submodules among `links` (path, the index's commit) as the target is to check them out: the commit checked out
+/// in each (a submodule moved on and not yet staged is built at it here), else the index's, and its URL. One with no
+/// URL is left out, said in `skipped`.
+async fn Actors::submodules_of(self : Actors, dir : String, prefix : String, links : Array[(String, String)], skipped : Array[(String, String)]) -> Array[(String, String, String)] raise {
+  let out : Array[(String, String, String)] = []
+  if links.length() == 0 {
+    return out
+  }
+  // `.gitmodules` as the index has it (its paths from the work tree's top), the repository's own URLs before it.
+  let listed = self.git_config(dir, ["--blob", ":.gitmodules", "--get-regexp", "^submodule\\..*\\.(path|url)$"])
+  let own = self.git_config(dir, ["--get-regexp", "^submodule\\..*\\.url$"])
+  let origin = self.git_out(dir, ["config", "--get", "remote.origin.url"]).unwrap_or("").trim_space().to_string()
+  let named : Map[String, String] = {}
+  for key, value in listed {
+    if key.has_prefix("submodule.") && key.has_suffix(".path") {
+      named[value] = key.view(start_offset=10, end_offset=key.length() - 5).to_string()
+    }
+  }
+  let heads = self.scan(dir, links.map(l => "\{l.0}/.git"), false)
+  for i, link in links {
+    let (path, index_id) = link
+    let url = match named.get(prefix + path) {
+      Some(name) => {
+        let given = match own.get("submodule.\{name}.url") {
+          Some(u) => u
+          None => listed.get("submodule.\{name}.url").unwrap_or("")
+        }
+        submodule_url(given, origin)
+      }
+      None => ""
+    }
+    if url == "" {
+      skipped.push((path, "submodule with no URL in .gitmodules"))
+      continue
+    }
+    let mut id = index_id
+    if !(heads[i] is Null) {
+      match self.git_out(self.rjoin([dir, path]), ["rev-parse", "-q", "--verify", "HEAD^{commit}"]) {
+        Some(h) if is_blob_id(h.trim_space().to_string()) => id = h.trim_space().to_string()
+        _ => ()
+      }
+    }
+    out.push((path, id, url))
+  }
+  out
 }
 
 ///|
@@ -479,12 +588,17 @@ async fn Actors::sync_dir(self : Actors, station : String, workspace : String, s
   let parts = sync_plan_pages(plan)
   let mut answer = Json::null()
   for i, part in parts {
-    answer = ask("sync.commit", {
+    let commit : Map[String, Json] = {
       "id": jstr(id),
       "set": Json::array(part.filter_map(p => match p { { "s": s, .. } => Some(s); _ => None })),
       "remove": Json::array(part.filter_map(p => match p { { "r": r, .. } => Some(r); _ => None })),
       "final": jbool(i == parts.length() - 1),
-    })
+    }
+    // (with the last part, what the mirror is to check out: a target from before leaves it)
+    if i == parts.length() - 1 && listing.submodules.length() > 0 {
+      commit["submodules"] = Json::array(listing.submodules.map(s => Json::array([jstr(s.0), jstr(s.1), jstr(s.2)])))
+    }
+    answer = ask("sync.commit", commit)
   }
   let skipped = listing.skipped
   {
@@ -495,6 +609,7 @@ async fn Actors::sync_dir(self : Actors, station : String, workspace : String, s
     "removed": jnum(num_of(answer.value("removed")).unwrap_or(0.0)),
     "skipped": Json::array(skipped[0:if skipped.length() < 50 { skipped.length() } else { 50 }].iter().map(s => ({ "path": jstr(s.0), "why": jstr(s.1) } : Json)).collect()),
     "skippedCount": jnum(skipped.length().to_double()),
+    "submodules": jnum(listing.submodules.length().to_double()),
     "prefix": jstr(listing.prefix),
     "ms": jnum(self.remote_now() - t0),
   }

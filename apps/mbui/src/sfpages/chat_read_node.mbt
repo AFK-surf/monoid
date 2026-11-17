@@ -36,7 +36,7 @@ let chat_reads : Map[String, ChatRead] = Map([])
 /// Chat `r`'s page (in `v`, its view `view` as it changes) telling the core what is read and where it is from what its
 /// list `place` has in sight (the file's head), its rows as `rows` has them, while `shows` (it is drawn), where it is
 /// at rest (`scroll`, the list's, neither in the hand nor going on by itself); where it is kept and told as a place is (sfbase's
-/// kept_place_of), what covers the list's top `cover` tall.
+/// kept_place_of), what covers the list's top `cover` tall, and the room the list keeps under it with it `top` tall.
 fn chat_read_node(
   v : @view.View,
   src : Source,
@@ -47,6 +47,7 @@ fn chat_read_node(
   rows : ChatBodyList,
   shows : () -> Bool,
   cover : () -> Double,
+  top : () -> Double,
 ) -> Unit {
   let k = r.station + "\u{1}" + r.session
   // (the chat's while it is open: a page made again for it, as another comes over it and goes, goes on from it)
@@ -84,12 +85,14 @@ fn chat_read_node(
         _ => j = j - 1
       }
     }
-    // the message at the top, its top under the list's: where the first in sight is one (else as it was)
-    match rs.get(s.first).map(fn(row) { row.entry }) {
-      Some(Said(m)) => a.top = Some((m.seq, @sfbase.kept_place_of(-s.into, @signals.untracked(cover))))
-      _ => ()
+    // the message at the top, its top under the list's: where the reader is (chat_reader_at: what is read under the bar,
+    // not a tail of what was over it, nor a row of no message), as a go-to and the outline take it (else as it was)
+    match chat_reader_at(s, rs, @signals.untracked(cover), @signals.untracked(top)) {
+      Some(top) => a.top = Some(top)
+      None => ()
     }
-    // the last message seen whole: the message the last key wholly in sight is, or the last before it
+    // the last message seen whole: the message the last key wholly in sight is, or the last before it; a piece of a
+    // long message seen whole is not the message seen whole but where it is its last
     match s.whole {
       Some(w) if !cv.newer => {
         let mut i = rs.keys.length() - 1
@@ -97,8 +100,8 @@ fn chat_read_node(
           i = i - 1
         }
         while i >= 0 {
-          match rs.get(rs.keys[i]).map(fn(row) { row.entry }) {
-            Some(Said(m)) => {
+          match rs.get(rs.keys[i]) {
+            Some({ entry: Said(m), piece, .. }) if piece.map(fn(pc) { pc.last }).unwrap_or(true) => {
               // (a notice folding several is read to its last: notice_last_seq)
               if m.notice_last_seq > a.whole {
                 a.whole = m.notice_last_seq
@@ -177,7 +180,14 @@ fn chat_read_node(
   v.reacts(
     shows,
     fn(on) {
-      guard on else { return }
+      // (covered by another page over it (小屏's stack): the core told it is not before the eyes, its end not seen,
+      // told again that it is as it is drawn again)
+      guard on else {
+        if chat_reads.get(k) is Some(now) && physical_equal(now, a) && app_in_front() {
+          chat_read_focus(src, r, @signals.untracked(view), a, false)
+        }
+        return
+      }
       if !(chat_reads.get(k) is Some(now) && physical_equal(now, a)) {
         chat_reads[k] = a
         a.told_focus = ""
@@ -195,7 +205,9 @@ fn chat_read_node(
 /// what its list last had in sight as it was told the core (the first message in sight and the last; none where it was
 /// told none), the list to a message as any go-to inside the chat is (sfbase's go_to: chat_goes_to brings it just under
 /// the list's room; the words found are bold in every row while the bar is open in it, find_words_in, so a go-to's own
-/// words are not kept for it), nothing left to go to as it is let go.
+/// words are not kept for it), not flashing, the time the reader is at brought before the eyes (find_goes); nothing
+/// left to go to as it is let go; how many times words are in each message asked that its rows hold as they draw them
+/// (`drawn`).
 fn chat_nodes_find_list(r : ChatRef) -> FindList {
   let k = r.station + "\u{1}" + r.session
   {
@@ -227,8 +239,26 @@ fn chat_nodes_find_list(r : ChatRef) -> FindList {
       }
       (first, last)
     },
-    go: fn(seq, _) { @sfbase.go_to(r, seq, keep_place=false) },
-    forget: fn() { @sfbase.go_tos.remove(k) },
+    go: fn(seq, _) {
+      find_goes[k] = seq
+      @sfbase.go_to(r, seq, keep_place=false)
+    },
+    forget: fn() {
+      @sfbase.go_tos.remove(k)
+      find_goes.remove(k)
+    },
+    drawn: fn(words, seqs) {
+      guard chat_reads.get(k) is Some(a) && a.sight is Some((_, rs)) else { return Map([]) }
+      let out : Map[Double, Int] = Map([])
+      for key in rs.keys {
+        match rs.get(key) {
+          Some({ entry: Said(m), .. }) if chat_piece_of(key) == key && seqs.contains(m.seq) =>
+            out[m.seq] = find_times_drawn(m, words)
+          _ => ()
+        }
+      }
+      out
+    },
   }
 }
 
@@ -303,6 +333,14 @@ pub fn chat_read_left(src : Source, r : ChatRef, v : ChatView?) -> Bool {
   let k = r.station + "\u{1}" + r.session
   guard chat_reads.get(k) is Some(a) else { return false }
   chat_reads.remove(k)
+  // (what it was to go to, and where back to, gone with it: not gone to in a page made for it later)
+  @sfbase.go_tos.remove(k)
+  @sfbase.go_to_passages.remove(k)
+  @sfbase.go_to_words.remove(k)
+  @sfbase.go_back_offsets.remove(k)
+  @sfbase.go_to_around.remove(k)
+  @sfbase.place_forget(k)
+  find_goes.remove(k)
   match v {
     Some(view) if !src.read_only => {
       (src.call)("client.focus", { "left": @sfbase.focus_chat(r, view, None) }, @sfbase.answer_unread)

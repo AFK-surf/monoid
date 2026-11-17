@@ -320,8 +320,6 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
   let x : PanelOf = {
     title: t("web-pages.drive.player.list"),
     description: "",
-    body: fn(_, _) {  },
-    foot: None,
     w: panel_w,
     fits: false,
     wide: false,
@@ -330,21 +328,17 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
     grows: false,
     focus: false,
     ruled: false,
-    lists: false,
     fade_out_together: false,
     form: false,
-    field: "",
     stage: false,
     above: None,
-    title_row: None,
     heads_itself: true,
     side: Bottom,
     along: Start,
     offset: panel_offset,
     match_panel: 0,
-    steps: false,
     on_back: None,
-    nodes: Some({
+    nodes: {
       body: fn(col, _) {
         col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
         col.box(fn(head) {
@@ -378,15 +372,14 @@ fn play_list_sheet_node(parent : @view.View, pn : PlayerNode, loc~ : SourceLoc) 
       top: 0.0,
       most: None,
       flush: false,
-    }),
+    },
   }
   parent.box(made_for=loc, fn(layer) {
     layer.over(Is(true)).stacked(Is(0)) |> ignore
     sheet_node(
       layer,
-      "sf-player-sheet/list/" + pn.p.key(),
       fn() { pn.listing.get() },
-      fn() { [{ n: 0, x, nodes: x.nodes, close, from: Unanchored, lists: -1 }] },
+      fn() { [{ n: 0, x, close, from: Unanchored }] },
       close,
     )
   })

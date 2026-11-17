@@ -16,6 +16,24 @@ priv struct MessageFilesAt {
   said : () -> Bool
   /// in a picture of the chat being shared, how it draws them (MessageNodeHere's)
   picture : MessagePicture?
+  /// what their message offers of itself where it does as it is now (a message of the chat's: its link, its turn
+  /// shared), after what each file's own menu offers (message_items_after)
+  share : () -> MessageShare?
+}
+
+///|
+/// What a file's or a picture's menu `items` offers of its message after its own, a line between (`share`, where the
+/// message offers itself): its link copied and 多选 its turn shared, as its words' menu has them (sfbase's
+/// message_items: its words' copy that menu's, not a file's), so a message of files alone offers those to a finger's
+/// hold as to a right click. No line where nothing is before them; none of them where it offers nothing.
+fn message_items_after(items : Array[@sf.MenuItem?], share : () -> MessageShare?) -> Unit {
+  guard @signals.untracked(share) is Some(s) else { return }
+  let more = @sfbase.message_items(@signals.untracked(s.link), "", s.go)
+  guard !more.is_empty() else { return }
+  if !items.is_empty() {
+    items.push(None)
+  }
+  items.append(more)
 }
 
 ///|
@@ -229,6 +247,7 @@ fn message_file_card_node(
           items.push(x)
         }
       }
+      message_items_after(items, place.share)
       @sf.menu(items, from=@sf.at_point(x, y))
     },
   )

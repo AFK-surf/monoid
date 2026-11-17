@@ -32,7 +32,7 @@ import {
 import { answerOf, answeredBlocks, endedBlocks, loginBlocks, loginCodeOf, loginEnteredBlocks, markdown, questionBlocks, standsBlock, standsText } from "../src/slack/cards.ts";
 import { configTokens, connectName, madeApps, makeConnections, slackConnects, slackOverview, slackShown } from "../src/slack/index.ts";
 import { modelLabel, modelOf, modelOptions, modelValue, newChatBlocks, newChatView, submittedChat } from "../src/slack/new-chat.ts";
-import { SlackSurface, answerFiles, identityOf, messageFiles, messageText, personOf, toEvent, verifySlackTokens } from "../src/slack/surface.ts";
+import { SlackSurface, answerFiles, filesToLookUp, identityOf, messageFiles, messageText, personOf, toEvent, verifySlackTokens } from "../src/slack/surface.ts";
 import { SlackApiError, SlackClient, apiBase, field } from "../src/slack/web.ts";
 
 const binary = mbReaderBinary();
@@ -467,6 +467,8 @@ test("Slack's messages, files and Socket Mode's events as the station takes them
     assert.deepEqual(await mbFn("messageText", m), await ts(() => messageText(m)), `messageText ${JSON.stringify(m)}`);
     assert.deepEqual(await mbFn("messageFiles", m), await ts(() => messageFiles(m)));
   }
+  for (const m of [{ files: [{ id: "F1", file_access: "check_file_info" }, { id: "F2" }, { id: "F1", file_access: "check_file_info" }, { id: "", file_access: "check_file_info" }, { id: "F3", file_access: "visible" }] }, { files: "x" }, {}, null])
+    assert.deepEqual(await mbFn("filesToLookUp", m), await ts(() => [...filesToLookUp(m)]), `filesToLookUp ${JSON.stringify(m)}`);
   for (const a of [{ messages: [TABLE, null], message: { files: [{ id: "F9", size: "big" }] }, file: { id: "F10", name: "n" } }, {}, null])
     assert.deepEqual(await mbFn("answerFiles", a), await ts(() => answerFiles(a)), `answerFiles ${JSON.stringify(a)}`);
   for (const a of [{ user: { name: "n", profile: { display_name: "", email: "A@B.C", image_72: "https://p" }, real_name: "Real" } }, { user: { name: "handle" } }, {}, null])
@@ -783,7 +785,16 @@ async function surfaces(respond: () => Respond, options: { handler?: (event: Jso
 }
 
 test("the surface: who it is, the socket's events taken and acknowledged, edits, stops and a reconnect", { skip }, async () => {
-  const s = await surfaces(slackFor(), { handler: (e) => { if (e?.message?.text === "refuse") throw new Error("not kept"); } });
+  const s = await surfaces(
+    slackFor((r) => {
+      if (r.m !== "files.info") return null;
+      const id = r.p?.[0]?.[1];
+      if (id === "F9") return ok({ file: { id: "F9", name: "image.png", size: 108054, mode: "hosted", url_private_download: "https://files.slack.com/files-pri/T-F9/download/image.png" } });
+      if (id === "F6") return ok({});
+      return { body: { ok: false, error: "file_not_found" } };
+    }),
+    { handler: (e) => { if (e?.message?.text === "refuse") throw new Error("not kept"); } },
+  );
   await s.both("identity", () => s.surface.identity(), );
   await s.both("socket", () => s.surface.socket());
   for (const name of ["botUserId", "botName", "workspace", "platform"] as const) await s.both(name, () => (s.surface as Json)[name]());
@@ -811,6 +822,20 @@ test("the surface: who it is, the socket's events taken and acknowledged, edits,
   const [tsAt, mbAt] = [s.tsEvents[4].localAt, s.mbEvents[4].localAt];
   assert.ok(typeof tsAt === "number" && typeof mbAt === "number" && Math.abs(tsAt - mbAt) <= 1000 + (Date.now() - before), `the stop's time ${tsAt} ${mbAt}`);
   assert.deepEqual({ ...s.mbEvents[4], localAt: 0 }, { ...s.tsEvents[4], localAt: 0 });
+  // files given by their id alone, looked up with files.info before the message is handed on: one found (beside one
+  // given whole, not looked up), one Slack answers with no file and one it refuses (both kept as given); one message at
+  // a time, so each side asks Slack in one order
+  const shared: Json[][] = [
+    [{ id: "F9", file_access: "check_file_info" }, { id: "F7", name: "a.txt", size: 3, url_private: "https://files.slack.com/a" }],
+    [{ id: "F6", file_access: "check_file_info" }],
+    [{ id: "F8", file_access: "check_file_info" }],
+  ];
+  for (const [i, files] of shared.entries()) {
+    for (const side of [s.a, s.b]) side.send({ type: "events_api", envelope_id: `f${i}`, payload: { event: { type: "message", subtype: "file_share", channel: "C1", user: "U1", ts: `10.${5 + i}`, text: "see", files } } });
+    await until(`the files of f${i} looked up`, () => s.tsEvents.length === 6 + i && s.mbEvents.length === 6 + i && s.a.acks.length === 6 + i && s.b.acks.length === 6 + i);
+    assert.deepEqual(s.mbEvents[5 + i], s.tsEvents[5 + i], `f${i}`);
+  }
+  assert.deepEqual(s.tsEvents[5].message.files[0], { id: "F9", name: "image.png", size: 108054, url: "https://files.slack.com/files-pri/T-F9/download/image.png" });
   // Slack asks for another socket
   for (const side of [s.a, s.b]) side.send({ type: "disconnect", reason: "refresh_requested" });
   await until("both connected again", () => s.a.sockets.length === 2 && s.b.sockets.length === 2);

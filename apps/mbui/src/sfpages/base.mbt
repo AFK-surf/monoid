@@ -126,6 +126,7 @@ using @sfbase {
   viz_file_of,
   viz_mermaid_block,
   viz_open_full,
+  viz_open,
   workspace_of,
   writing,
   writing_text,

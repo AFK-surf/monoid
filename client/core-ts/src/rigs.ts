@@ -394,6 +394,7 @@ export class Rigs {
       const out: J = { ...made, person: root };
       if (typeof out.install === "string") out.install = `${out.install} rig:${root}`;
       if (typeof out.installWindows === "string") out.installWindows = `${out.installWindows} rig:${root}`;
+      if (typeof out.installDocker === "string") out.installDocker = `${out.installDocker} rig:${root}`;
       if (typeof out.command === "string") out.command = `${out.command} --rig ${root}`;
       return out;
     });

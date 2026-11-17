@@ -36,7 +36,9 @@ export type Effect =
   | { kind: "login"; id: string | null; from: string | string[] | null }
   /// A tab of the station's browser opened here by the id this device made for it (`screen`): listed at once, a view of
   /// it waiting for the station, until the station lists it or refuses it.
-  | { kind: "tab"; screen: string };
+  | { kind: "tab"; screen: string }
+  /// A screen closed (`view` null) or a view of it ended: gone from what is held of the station's screens at once.
+  | { kind: "screenGone"; screen: string; view: string | null };
 
 /// The request an operation makes.
 export type Request = {
@@ -664,10 +666,10 @@ function stationOp(name: string, params: unknown): Request | null {
       const made = id !== null && /^u_[0-9a-f]{12}$/.test(id);
       return op("POST", () => "/screens/browser", p.pick(["url", "id"]), made ? { kind: "tab", screen: `browser:${id}` } : NONE);
     }
-    // A screen closed for good (a tab of the station's browser): it leaves the station's list as
-    // the station tells it (`screens` on its stream).
+    // A screen closed for good (a tab of the station's browser, a simulator): it leaves what is held of the station's
+    // list once the station took it, and the list is as the station tells it (`screens` on its stream).
     case "screen.close":
-      return op("POST", () => `/screens/${p.at("screen")}/close`, null, NONE);
+      return op("POST", () => `/screens/${p.at("screen")}/close`, null, { kind: "screenGone", screen: p.str("screen"), view: null });
     // A terminal ended, its program and what it started (station/src/terminals/): it leaves the list as it goes.
     case "terminal.end":
       return op("POST", () => `/terminals/${p.at("terminal")}/end`, null, NONE);
@@ -683,7 +685,7 @@ function stationOp(name: string, params: unknown): Request | null {
     // A person's view of a screen, wherever it is, ended or made to only look ( "Who is on a
     // screen"); it changes on the station's list as the station tells it.
     case "screen.endView":
-      return op("POST", () => `/screens/${p.at("screen")}/views/${p.at("view")}/end`, null, NONE);
+      return op("POST", () => `/screens/${p.at("screen")}/views/${p.at("view")}/end`, null, { kind: "screenGone", screen: p.str("screen"), view: p.str("view") });
     case "screen.watchOnly":
       return op("POST", () => `/screens/${p.at("screen")}/views/${p.at("view")}/watch`, null, NONE);
     case "screen.endViews":

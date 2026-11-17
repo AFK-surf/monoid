@@ -434,32 +434,50 @@ pub fn wait_line_node(parent : @view.View, words : () -> String, loc~ : SourceLo
     l
     .row(Is(true))
     .gap(Is(8.0))
-    .lines_up(Is(Some(Middle)))
+    .lines_up(Is(Some(Start)))
     .min_height(Is(Some(18.0)))
     |> ignore
     l.at_moment(l.cause_at() + later_ms, fn() { long.set(true) }) |> ignore
-    // (the spinner's room while it is not yet there: one in the other's place along the row, at once)
-    l.pick(fn() { long.get() }, fn(s, on) {
-      if on {
-        spinner_node(s, size=12.0) |> ignore
-      } else {
-        s.width(Is(Some(12.0))).height(Is(Some(12.0))) |> ignore
-      }
+    // (the spinner on the words' first line, in the middle of it: never on the middle of words of two lines)
+    l.box(fn(g) {
+      g
+      .width(Is(Some(12.0)))
+      .height(By(fn() { Some(wait_words_line()) }))
+      .lines_up(Is(Some(Middle)))
+      .lies_along(Is(Middle))
+      |> ignore
+      // (the spinner's room while it is not yet there: one in the other's place, at once)
+      g.pick(fn() { long.get() }, fn(s, on) {
+        if on {
+          spinner_node(s, size=12.0) |> ignore
+        } else {
+          s.width(Is(Some(12.0))).height(Is(Some(12.0))) |> ignore
+        }
+      })
     })
+    |> ignore
     l.box(fn(w) {
       w.shrink(Is(1.0)).min_width(Is(Some(0.0))).hides(By(fn() { !long.get() })) |> ignore
       w
       .words(By(words))
       .words_look(By(fn() {
-        let th = @ui.tree_theme()
-        let (size, own) = th.text_size(Ui)
-        { size, weight: 400, line: th.leading(L5).unwrap_or(own), wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
+        let (size, _) = @ui.tree_theme().text_size(Ui)
+        { size, weight: 400, line: wait_words_line(), wrap: true, tracking: @view.letters_own, balance: false, max_lines: 0 }
       }))
       .ink(By(fn() { if long.get() { theme().p.muted } else { alpha(theme().p.muted, 0.0) } }))
       |> ignore
     })
     |> ignore
   })
+}
+
+///|
+/// How high a line of a wait's words is (wait_line_node's): L5's line at the Ui size, as the system's size of words makes
+/// it.
+fn wait_words_line() -> Double {
+  let th = @ui.tree_theme()
+  let (_, own) = th.text_size(Ui)
+  th.leading(L5).unwrap_or(own)
 }
 
 ///|

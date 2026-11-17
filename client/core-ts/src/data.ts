@@ -1290,6 +1290,16 @@ export class Data {
     return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived };
   }
 
+  /// The chat a job's session is in (its job's row names none): the one its link names (as chatTitled finds it), else
+  /// the first listed it is among the agents of (`chat_agent`: a chat's second agent's task); its id, its title,
+  /// whether it is archived and the viewer's own, of their columns, no record read.
+  chatOfJob(station: string, session: string): { id: string; title: string | null; archived: boolean; mine: boolean } | undefined {
+    void this.listed(station, "chats");
+    void this.listed(station, "archived");
+    const f = this.chatFound(CHAT_READS.named, { station, id: session }, () => false)[0] ?? this.chatFound(CHAT_READS.agent, { station, session }, () => false)[0];
+    return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived, mine: f.cols[1] === 1 };
+  }
+
   chatOfThread(station: string, thread: number): unknown {
     if (!Number.isInteger(thread)) return undefined;
     void this.listed(station, "chats");
@@ -1718,6 +1728,14 @@ export class Data {
     return this.of(station)?.putJob(station, job, open) ?? false;
   }
 
+  dropJob(station: string, id: string): boolean {
+    return this.of(station)?.dropJob(station, id) ?? false;
+  }
+
+  closeSessionJobs(station: string, session: string): void {
+    this.of(station)?.closeSessionJobs(station, session);
+  }
+
   // ── logs: a thread's entries, a session's transcript ──
 
   logNumbers(table: LogTable, station: string, id: string): readonly number[] {
@@ -1730,6 +1748,12 @@ export class Data {
   logPutSince(table: LogTable, station: string, id: string, since: number): { rev: number; put: number[] | null } {
     this.#readQuery({ topic: "$log", table, station, id });
     return this.of(station)?.logPutSince(table, station, id, since) ?? { rev: 0, put: null };
+  }
+
+  /// The number of the message of thread `thread` said at `ts`, where the device holds it (AccountDb.messageAt).
+  messageAt(station: string, thread: number, ts: string): number | null {
+    this.#readQuery({ topic: "$log", table: "entry", station, id: String(thread) });
+    return this.of(station)?.messageAt(station, thread, ts) ?? null;
   }
 
   logRange(table: LogTable, station: string, id: string, from: number, to: number): Map<number, unknown> {
