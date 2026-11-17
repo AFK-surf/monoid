@@ -674,6 +674,10 @@ pub let said_paths : Map[String, Array[String]] = {
     "site",
     "author.login",
     "labels.*",
+    "workflow",
+    "branch",
+    "jobs.*.name",
+    "jobs.*.step",
   ],
   "live": [
     "activity.now.text",

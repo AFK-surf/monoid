@@ -1306,6 +1306,10 @@ async fn find_preview(io : LinkIo, href : String) -> Json? {
   if url.scheme != "https" && url.scheme != "http" {
     return None
   }
+  if url.hostname() == "github.com" && actions_target(url.path) is Some((repo, id, attempt)) {
+    let found = try { Some(actions_preview(io, href, repo, id, attempt)) } catch { _ => None }
+    if found is Some(value) { return Some(value) }
+  }
   match github_path(url.path) {
     Some((owner, repo, pull, number)) if url.hostname() == "github.com" => {
       let found = try {
@@ -1370,6 +1374,12 @@ pub async fn LinkPreviews::preview(self : LinkPreviews, href : String, now : Dou
     self.kept.remove(oldest)
   }
   let found = find_preview(self.io, href) catch { _ => None }
+  // A run or its attempt can change between two hovers. Coalesce only its in-flight reads.
+  if @cloud_net.parse_url(href) is Some(url) && url.hostname() == "github.com" && actions_target(url.path) is Some(_) &&
+    self.kept.get(href) is Some((_, current)) && physical_equal(current, value) {
+    self.kept.remove(href)
+    if self.order.search(href) is Some(i) { ignore(self.order.remove(i)) }
+  }
   ignore(value.succeed(found))
   found
 }

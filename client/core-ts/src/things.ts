@@ -17,7 +17,7 @@ export type Kind = (typeof KINDS)[number];
 /// A message's part in it: when it was said, by whom, the message (its seq).
 type Said = { seq: number; createdAt: number | null; by: string };
 
-export type Thing = Said & { key: string; file?: J; words?: string; url?: string; title?: string; site?: string; count?: number; repository?: string; number?: number; peek?: "pull" | "issue" };
+export type Thing = Said & { key: string; file?: J; words?: string; url?: string; title?: string; site?: string; count?: number; repository?: string; number?: number; peek?: "pull" | "issue" | "run" };
 
 /// A day's pictures and videos (`day`: 今天, 昨天, 9月20日; none where when is not known), message by message.
 export type ThingDay = { day: string; groups: ThingGroup[] };
