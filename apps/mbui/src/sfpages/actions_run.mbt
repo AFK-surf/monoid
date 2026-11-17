@@ -135,7 +135,7 @@ let run_job_row : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 
 ///|
 // kept across runs: job names share a column and wrap inside it
-let run_name_column : @ui.Style = @ui.style(w=S24)
+let run_name_column : @ui.Style = @ui.css("w=S24")
 
 ///|
 fn run_name_words(hot : Bool) -> @ui.TextStyle {
@@ -144,4 +144,4 @@ fn run_name_words(hot : Bool) -> @ui.TextStyle {
 
 ///|
 // kept across runs: a text-only status pill has the same inset on both sides
-let run_pill : @ui.Style = peek_state.then(@ui.style(pl=S2))
+let run_pill : @ui.Style = peek_state.then(@ui.css("pl=S2"))
