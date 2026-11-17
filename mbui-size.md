@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 122.81 |
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.07 | 67.25 | 95.83 | 125.31 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 2.51 | 3.54 | 15.21 | 36.6 | 60.53 | 32.07 | 67.25 | 95.83 | 122.38 |
 | [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 2.51 | 3.54 | 15.21 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.64 | 65.84 | 95.78 | 120.38 |
-| [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.64 | 65.84 | 95.78 | 120.08 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [d2a6756a3](https://github.com/AFK-surf/monoid/commit/d2a6756a39e67a14ec306ccf8899fd63cadbdcf0) mbui: MoonBit of 2026-11-17 taken as it says (capa | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
 | [3c9180329](https://github.com/AFK-surf/monoid/commit/3c9180329ec4693ddeb16c582b98a8fd107347f9) mbui app: switches pressed where they are seen, th | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
 | [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
-| [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
