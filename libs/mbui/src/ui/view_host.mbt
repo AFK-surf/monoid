@@ -2340,11 +2340,11 @@ fn Ctx::view_ring_put(self : Ctx, held : FixedArray[Double], by : (Int, (Double,
 
 ///|
 /// As a frame's paint goes through the tree, before anything of it places a glyph: where a glyph may have gone from
-/// where it was (glyphs_lost: a plot emptied for another, all forgotten, or one there was no room for) or the words'
+/// where it was (glyphs_lost: a shelf emptied for another, all forgotten, or one there was no room for) or the words'
 /// pixels a point changed, all that is kept to be composed again (each node's content, each list's row kept) looked
 /// through, what draws one no longer where it was (or one there was no room for as it was made) made again as it is
 /// composed, never composed out of what the atlas now holds there instead; else nothing looked at. What the frame draws
-/// from is kept in the atlas through it as a plot is to be emptied (glyphs_held_drawn), not said each frame.
+/// from is kept in the atlas through it as a shelf is to be emptied (glyphs_held_drawn), not said each frame.
 fn view_glyphs_held(_tree : @view.Tree, sc : Double) -> Unit {
   if !glyphs_lost.val && sc == glyphs_held_sc.val {
     return
@@ -2383,7 +2383,7 @@ fn view_glyphs_held(_tree : @view.Tree, sc : Double) -> Unit {
 let glyphs_held_sc : Ref[Double] = Ref(0.0)
 
 ///|
-/// What the window's tree draws now from the atlas said drawn from in this frame (Atlas::drawn), before a plot is
+/// What the window's tree draws now from the atlas said drawn from in this frame (Atlas::drawn), before a shelf is
 /// emptied for what comes (Atlas::before_full): each node's content composed in it (as it is drawn now: what is not
 /// drawn, gone or faded out, holds none), each list's row kept drawn again, as glyphs an old view draws are as it
 /// draws them.

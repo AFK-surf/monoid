@@ -66,7 +66,7 @@ priv struct Glyph {
   ox : Double
   oy : Double
   color : Bool
-  // its plot in the atlas (@hostapi.Atlas; -1: nothing to draw), and whether that is colour glyphs' own
+  // its shelf in the atlas (@hostapi.Atlas; -1: nothing to draw), and whether that is colour glyphs' own
   plot : Int
   in_colour : Bool
   // the pixels a point its cell in the atlas was sized at
@@ -173,11 +173,12 @@ fn text_arrive() -> Unit {
 }
 
 ///|
-/// The atlases started over where the last frame had a glyph with no room in them. A plot is emptied only if the frame
-/// draws nothing from it, and glyphs placed at different times lie across the plots: with a glyph on the screen in each,
-/// no new one gets a place, frame after frame, until what is on the screen changes (words with gaps in them). Started
-/// over, what is on the screen lies together. Where the frame right after was short too, an atlas holds less than is on
-/// the screen: not started over again until a frame is not (it would draw them all every frame, and none would stay).
+/// The atlases started over where the last frame had a glyph with no room in them. A shelf is emptied only if the frame
+/// draws nothing from it, and glyphs placed at different times lie across the shelves: with a glyph on the screen on
+/// each, no new one gets a place, frame after frame, until what is on the screen changes (words with gaps in them).
+/// Started over, what is on the screen lies together. Where the frame right after was short too, an atlas holds less
+/// than is on the screen: not started over again until a frame is not (it would draw them all every frame, and none
+/// would stay).
 fn none_short() -> Unit {
   let short = text_cache.short
   text_cache.short = false
@@ -219,7 +220,7 @@ let glyphs_kept : Ref[Array[(Int, Double, Double)]?] = Ref(None)
 
 ///|
 /// Whether a glyph may have gone from where something made to be kept draws it since that was last looked for: one let
-/// go of for another (its plot emptied), all forgotten, or one there was no room for. What draws from the atlas frame
+/// go of for another (its shelf emptied), all forgotten, or one there was no room for. What draws from the atlas frame
 /// after frame is looked through again then (view_glyphs_held), not each frame.
 // kept across runs: set as one goes, put back as what draws them is looked through
 let glyphs_lost : Ref[Bool] = Ref(true)
@@ -242,7 +243,7 @@ fn glyph_kept(key : Int, g : Glyph) -> Unit {
 
 ///|
 /// Whether the glyphs `kept` (glyphs_kept's) are each where they were in the atlas still, at `sc` pixels a point, as
-/// glyphs_still asks, none said drawn from in this frame (what is not drawn now: Atlas::drawn keeps a plot through the
+/// glyphs_still asks, none said drawn from in this frame (what is not drawn now: Atlas::drawn keeps a shelf through the
 /// frame, and one drawn from by nothing on the screen may be emptied).
 fn glyphs_there(kept : Array[(Int, Double, Double)], sc : Double) -> Bool {
   for k in kept {
