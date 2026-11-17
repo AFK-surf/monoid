@@ -70,6 +70,7 @@ import {
   "moonbitlang/core/string",
   "station/vault_crypto",
   "moonbitlang/core/json",
+  "station/mesh_runtime",
   "station/ops_platform",
   "moonbitlang/core/encoding/utf8",
   "moonbitlang/core/buffer",
