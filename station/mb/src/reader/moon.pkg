@@ -50,6 +50,7 @@ import {
   "station/cursor",
   "station/acp",
   "station/pi",
+  "station/api_routes",
   "station/pieces",
   "station/nodepath",
   "station/admit",

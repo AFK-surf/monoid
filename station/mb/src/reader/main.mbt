@@ -1052,6 +1052,8 @@ fn main {
         _ => None
       }))
     (Some("said"), Some(db), _) => @host.run(shell_dir=beside(db, "shell"), host => said_builder(host, db))
+    (Some("harness-api-routes"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @api_routes.harness(host))
     (Some("archive-last"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => {
         let archive : Ref[@archivelast.Archive?] = Ref(None)
