@@ -705,6 +705,7 @@ common.link.open
 common.login.confirmClaudeAction
 common.login.confirmClaudeBody
 common.login.confirmClaudeTitle
+common.login.confirmClaudeWarning
 common.more
 common.noMatch
 common.opening

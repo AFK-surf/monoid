@@ -98,9 +98,10 @@ test "a Claude login card asks before opening the authorization page" {
   ])))
   t.tap_text("打开登录页")
   sheet_rested(t, "sf-present")
-  assert_true(t.find("打开 Claude 授权页面？") is Some(_))
+  assert_true(t.find("请确认登录环境") is Some(_))
+  assert_true(t.find(@sf.t("common.login.confirmClaudeWarning")) is Some(_))
   assert_true(t.opened().is_empty())
-  t.tap_text("继续打开")
+  t.tap_text("确认并登录")
   assert_eq(t.opened(), [page])
 }
 
