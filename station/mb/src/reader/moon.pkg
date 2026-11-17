@@ -39,6 +39,7 @@ import {
   "station/front",
   "station/jsjson",
   "station/jscase",
+  "station/events",
   "station/claude",
   "station/codex",
   "station/dsh",

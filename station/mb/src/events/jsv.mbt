@@ -1,0 +1,195 @@
+// JSON values as JavaScript makes and writes them (@jsjson: JSON.stringify's text, an object's keys in its order),
+// with what the TypeScript station does to them: a property read (`v.name`), set in its place or after the rest
+// (`{ ...v, name }`), deleted, a string's text.
+
+///|
+using @jsjson {type JValue}
+
+///|
+type J = JValue
+
+///|
+fn js(s : String) -> J {
+  Str(@jsjson.units(s))
+}
+
+///|
+fn jn(d : Double) -> J {
+  Num(d)
+}
+
+///|
+/// An object of these properties, in this order.
+fn jo(pairs : Array[(String, J)]) -> J {
+  Obj(pairs.map(p => (@jsjson.units(p.0), p.1)))
+}
+
+///|
+/// An object of these properties, those absent (undefined) left out as JSON.stringify leaves them.
+fn jopt(pairs : Array[(String, J?)]) -> J {
+  let out = []
+  for p in pairs {
+    if p.1 is Some(v) {
+      out.push((@jsjson.units(p.0), v))
+    }
+  }
+  Obj(out)
+}
+
+///|
+fn ja(items : Array[J]) -> J {
+  Arr(items)
+}
+
+///|
+/// The text of a string (its code units as they are).
+fn text_of(v : J?) -> String? {
+  match v {
+    Some(Str(s)) => Some(@jsjson.raw_text(s))
+    _ => None
+  }
+}
+
+///|
+fn str_prop(v : J, name : String) -> String? {
+  text_of(v.get(name))
+}
+
+///|
+fn num_prop(v : J, name : String) -> Double? {
+  match v.get(name) {
+    Some(Num(d)) => Some(d)
+    _ => None
+  }
+}
+
+///|
+/// Whether `v` has `name` (`name in v`).
+fn has(v : J, name : String) -> Bool {
+  v.get(name) is Some(_)
+}
+
+///|
+/// `{ ...v, [name]: value }`: an object's property set where it is, or put after the rest (anything but an object
+/// spread as none).
+fn with_prop(v : J, name : String, value : J) -> J {
+  let key = @jsjson.units(name)
+  let out = []
+  let mut set = false
+  if v is Obj(entries) {
+    for e in entries {
+      if e.0 == key {
+        if !set {
+          out.push((key, value))
+          set = true
+        }
+      } else {
+        out.push(e)
+      }
+    }
+  }
+  if !set {
+    out.push((key, value))
+  }
+  Obj(out)
+}
+
+///|
+/// `{ ...v }` without `name` (`delete copy[name]`).
+fn without(v : J, name : String) -> J {
+  let key = @jsjson.units(name)
+  match v {
+    Obj(entries) => Obj(entries.filter(e => e.0 != key))
+    other => other
+  }
+}
+
+///|
+fn stringify(v : J) -> String {
+  @jsjson.stringify(v)
+}
+
+///|
+/// JSON.parse; none for what is not JSON.
+fn parse(text : String) -> J? {
+  Some(@jsjson.parse(text)) catch {
+    _ => None
+  }
+}
+
+///|
+/// `String(v ?? "")`.
+fn string_of(v : J?) -> String {
+  match v {
+    None | Some(Null) => ""
+    Some(v) => @jsjson.raw_text(@jsjson.js_string(v))
+  }
+}
+
+///|
+/// A number as JavaScript writes it in a template string (`${n}`).
+fn num_text(d : Double) -> String {
+  @jsjson.stringify(Num(d))
+}
+
+///|
+/// `v[i]`: none where `v` is no array or too short.
+fn at(v : J, i : Int32) -> J? {
+  match v {
+    Arr(items) if i >= 0 && i < items.length() => Some(items[i])
+    _ => None
+  }
+}
+
+///|
+/// `{ ...v }`: an object's own properties; a string's or an array's by their indices; nothing of anything else.
+fn spread(v : J) -> J {
+  match v {
+    Obj(_) => v
+    Str(units) =>
+      Obj(units.mapi((i, u) => (@jsjson.units(i.to_string()), Str([u]))))
+    Arr(items) =>
+      Obj(items.mapi((i, item) => (@jsjson.units(i.to_string()), item)))
+    _ => Obj([])
+  }
+}
+
+///|
+/// `a < b` of two strings, as JavaScript compares them: by their UTF-16 code units.
+fn js_compare(a : String, b : String) -> Int32 {
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  for i in 0..<n {
+    let x = a.unsafe_charcode_at(i)
+    let y = b.unsafe_charcode_at(i)
+    if x != y {
+      return if x < y { -1 } else { 1 }
+    }
+  }
+  a.length().compare(b.length())
+}
+
+///|
+/// JavaScript's ToNumber of a value (`Math.min` takes its arguments so).
+fn to_number(v : J) -> Double {
+  match v {
+    Num(n) => n
+    Null => 0.0
+    Bool(b) => if b { 1.0 } else { 0.0 }
+    Str(s) => js_number(@jsjson.raw_text(s))
+    Arr([]) => 0.0
+    Arr([one]) => to_number(Str(@jsjson.js_string(one)))
+    _ => @double.not_a_number
+  }
+}
+
+///|
+/// Math.min of two numbers: NaN where either is.
+fn js_min(a : Double, b : Double) -> Double {
+  if a.is_nan() || b.is_nan() {
+    @double.not_a_number
+  } else if a < b || (a == b && a.signum() < 0.0) {
+    a
+  } else {
+    b
+  }
+}

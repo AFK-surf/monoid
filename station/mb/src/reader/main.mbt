@@ -1026,6 +1026,8 @@ fn main {
     (Some("footprint"), _, _) =>
       // (no shell: it asks the shell for nothing)
       @host.run(host => footprint(host, flag("--sep").unwrap_or("/")))
+    (Some("harness-events"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @events.harness(host))
     (Some("memory"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => memory(host, flag("--sep").unwrap_or("/")))
     (Some("packed"), _, _) =>
