@@ -1290,6 +1290,16 @@ export class Data {
     return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived };
   }
 
+  /// The chat a job's session is in (its job's row names none): the one its link names (as chatTitled finds it), else
+  /// the first listed it is among the agents of (`chat_agent`: a chat's second agent's task); its id, its title,
+  /// whether it is archived and the viewer's own, of their columns, no record read.
+  chatOfJob(station: string, session: string): { id: string; title: string | null; archived: boolean; mine: boolean } | undefined {
+    void this.listed(station, "chats");
+    void this.listed(station, "archived");
+    const f = this.chatFound(CHAT_READS.named, { station, id: session }, () => false)[0] ?? this.chatFound(CHAT_READS.agent, { station, session }, () => false)[0];
+    return f === undefined ? undefined : { id: f.id, title: typeof f.cols[0] === "string" ? f.cols[0] : null, archived: f.archived, mine: f.cols[1] === 1 };
+  }
+
   chatOfThread(station: string, thread: number): unknown {
     if (!Number.isInteger(thread)) return undefined;
     void this.listed(station, "chats");
@@ -1716,6 +1726,14 @@ export class Data {
 
   putJob(station: string, job: unknown, open: boolean): boolean {
     return this.of(station)?.putJob(station, job, open) ?? false;
+  }
+
+  dropJob(station: string, id: string): boolean {
+    return this.of(station)?.dropJob(station, id) ?? false;
+  }
+
+  closeSessionJobs(station: string, session: string): void {
+    this.of(station)?.closeSessionJobs(station, session);
   }
 
   // ── logs: a thread's entries, a session's transcript ──

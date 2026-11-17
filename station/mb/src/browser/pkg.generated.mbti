@@ -1,0 +1,1002 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/browser"
+
+import {
+  "mbui/effect",
+  "station/cloud_net",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub fn address_or_search(String) -> String?
+
+pub fn all_cookies(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub let arrive_ms : Double
+
+pub async fn ask_tab(FarviewNet, Int32, AgentAsk) -> AgentAnswer
+
+pub fn at(@jsjson.JValue?, String) -> @jsjson.JValue?
+
+pub async fn[X] attempt(async () -> X) -> Result[X, Error]
+
+pub fn base64url(Bytes) -> String
+
+pub fn behind() -> Array[(String, @jsjson.JValue)]
+
+pub let blank_page : String
+
+pub fn browser_declaration() -> @jsjson.JValue
+
+pub fn browser_live(BrowserParts, Browsers, FarviewTabs, Clock) -> Unit
+
+pub let browser_max_message : Int32
+
+pub let browser_prefix : String
+
+pub async fn browser_service(BrowserOptions) -> Browsers
+
+pub fn browser_tools(ToolBrowsers, door_url? : () -> String?, farview? : FarviewTabs) -> Array[BrowserTool]
+
+pub fn button_mark() -> String
+
+pub let button_script : String
+
+pub let cdp_answer_ms : Double
+
+pub let cdp_open_ms : Double
+
+pub fn chat_dir(String) -> String
+
+pub fn chrome_args(String, Int32, Bool, user_agent? : String) -> Array[String]
+
+pub fn chrome_host(String, Machine, Files, Clock, Log, binary? : String, headless? : Bool) -> ChromeHost
+
+pub let clip_text_max : Int32
+
+pub async fn connect_cdp(String, async (String, CdpLink) -> CdpSocket, Clock) -> Cdp
+
+pub let copy_binding : String
+
+pub fn copy_hook() -> String
+
+pub fn decode_answer(Bytes) -> AgentAnswer?
+
+pub let default_size : (Double, Double, Double)
+
+pub fn dnum(Double) -> String
+
+pub let door_open_ms : Double
+
+pub fn door_request_answer() -> (Int32, String, String)
+
+pub async fn door_upgrade(DoorBrowsers, String) -> DoorUpgrade
+
+pub async fn drive(SignInForm, String, FormValues, Array[String], async (Double) -> Unit) -> Driven
+
+pub fn encode_ask(AgentAsk) -> Bytes
+
+pub fn encode_uri_component(String) -> String
+
+pub async fn eval_in(FarviewNet, Int32, String) -> @jsjson.JValue?
+
+pub fn expired(Array[@jsjson.JValue]) -> Array[@jsjson.JValue]
+
+pub fn extract_first_http_url(String) -> String?
+
+pub fn fail_(String) -> Thrown
+
+pub fn farview_asset(String, FarviewRelease) -> String
+
+pub fn farview_cache_dir(String, String, FarviewRelease) -> String
+
+pub fn farview_config(@jsjson.JValue?, String, Array[(String, FarviewRelease)], String) -> FarviewConfig?
+
+pub fn farview_for(FarviewConfig?, String, String?) -> Bool
+
+pub fn farview_form(FarviewNet, Int32) -> SignInForm
+
+pub fn farview_how_to(FarviewConfig, Array[FarviewTab]) -> String
+
+pub let farview_mark : String
+
+pub fn farview_releases() -> Array[(String, FarviewRelease)]
+
+pub fn farview_sources(String, Map[String, String]) -> Array[String]
+
+pub fn farview_stream(FarviewTabs, Bool, @jsjson.JValue) -> FarviewStream
+
+pub fn farview_target(String?, String) -> String
+
+pub fn farview_unreachable(Error) -> FarviewStream
+
+pub fn fill_script(String?, String?) -> String
+
+pub fn finder() -> String
+
+pub let first_page : String
+
+pub fn from_base64url(String) -> Bytes
+
+pub fn from_utf8(Bytes) -> String
+
+pub fn gh_source(String) -> (String, String, String)?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn headful_agent(String) -> String
+
+pub fn host_cdp_open(@host.Host) -> async (String, CdpLink) -> CdpSocket
+
+pub fn host_clock(@host.Host, Double) -> Clock
+
+pub fn host_file_of(@jsjson.JValue?) -> HostFile?
+
+pub fn host_files(@host.Host) -> Files
+
+pub fn host_log() -> Log
+
+pub fn host_machine(@host.Host, Clock, MachineProcs) -> Machine
+
+pub fn host_net(@host.Host, Clock) -> FarviewNet
+
+pub fn host_of(String) -> String
+
+pub fn host_release_io(@host.Host) -> ReleaseIo
+
+pub fn how_to(BrowserStatus, String?) -> String
+
+pub let idle_ms : Double
+
+pub fn input_of(@jsjson.JValue, (Double, Double, Double)) -> @jsjson.JValue?
+
+pub fn ja(Array[@jsjson.JValue]) -> @jsjson.JValue
+
+pub fn jb(Bool) -> @jsjson.JValue
+
+pub fn ji(Int32) -> @jsjson.JValue
+
+pub fn jn(Double) -> @jsjson.JValue
+
+pub fn jo(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn jpeg_size(Bytes) -> (Int32, Int32)?
+
+pub fn js(String) -> @jsjson.JValue
+
+pub fn js_object(Array[(String, @jsjson.JValue)]) -> @jsjson.JValue
+
+pub fn js_str(@jsjson.JValue?) -> String
+
+pub fn kept_of(SignInState) -> String
+
+pub fn key_code(String, String) -> Int32
+
+pub fn key_event(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn kind_of(Error) -> String
+
+pub let login_binding : String
+
+pub fn login_hook() -> String
+
+pub fn look_script() -> String
+
+pub fn mark_script(String) -> String
+
+pub fn message_of(Error) -> String
+
+pub let move_ms : Double
+
+pub fn normalize_browser_url(String) -> String?
+
+pub fn num_text(@jsjson.JValue) -> String
+
+pub fn of_sites(String, Array[String]) -> Bool
+
+pub fn parse(String) -> @jsjson.JValue raise Thrown
+
+pub fn parse_active_port(String) -> (Int32, String)?
+
+pub fn pass(WsEnd, WsEnd, Gate) -> Pass
+
+pub let passkey_binding : String
+
+pub fn passkey_binding_of(String) -> String
+
+pub fn passkey_hook(String) -> String
+
+pub fn passkey_of(@jsjson.JValue?) -> Passkey?
+
+pub fn pdirname(String) -> String
+
+pub fn persistable_browser_url(String) -> String?
+
+pub fn pick_script(String) -> String
+
+pub fn pjoin(Array[String]) -> String
+
+pub fn quote(String) -> String
+
+pub async fn read_state(Files, String) -> @jsjson.JValue
+
+pub fn rp_for(String, String) -> Bool
+
+pub fn same_client_data(String, String) -> Bool
+
+pub fn sep_of(String) -> String
+
+pub fn session_of_path(String) -> String?
+
+pub fn session_path(String) -> String
+
+pub fn session_ws(String?, String) -> String?
+
+pub fn sha256_of(Bytes) -> String
+
+pub fn site_cookies(@jsjson.JValue?, Array[String]) -> Array[@jsjson.JValue]
+
+pub fn site_of_browser_url(String) -> String?
+
+pub fn site_passkeys(Array[Passkey], Array[String]) -> Array[Passkey]
+
+pub fn size_for(ViewOptions) -> (Double, Double, Double)
+
+pub fn state_of(String) -> SignInState
+
+pub fn str_of(@jsjson.JValue?) -> String?
+
+pub fn stringify(@jsjson.JValue) -> String
+
+pub fn tab_form(Cdp, String, String) -> SignInForm
+
+pub fn tabs_text(Array[TabInfo]) -> String
+
+pub fn to_viewport(Double, Double, (Double, Double)) -> (Double, Double)
+
+pub async fn unpack_release(String, String, FarviewRelease, Array[String], async (String) -> Bytes?, Files, ReleaseIo) -> Unit
+
+pub fn url_host(@cloud_net.Url) -> String
+
+pub fn url_of(String) -> @cloud_net.Url?
+
+pub let user_tab_idle_ms : Double
+
+pub fn utf8(String) -> Bytes
+
+pub fn viewport_of(@jsjson.JValue?) -> (Double, Double)?
+
+pub async fn[X] within(Clock, Double, async () -> X, String) -> X
+
+// Errors
+pub(all) suberror FsError {
+  FsError(String, String)
+}
+
+pub(all) suberror ScreenRefused {
+  ScreenRefused(Int32, String)
+}
+
+pub(all) suberror Thrown {
+  Thrown(String, String)
+}
+pub impl Show for Thrown
+
+// Types and methods
+pub(all) enum AgentAnswer {
+  Value(String)
+  Seen(String, String, String)
+  Taken
+}
+pub fn AgentAnswer::to_j(Self) -> @jsjson.JValue
+
+pub(all) enum AgentAsk {
+  Look
+  Eval(String)
+  Cookies(String, String)
+  Act(String, String, String)
+}
+
+pub struct Authenticators {
+  // private fields
+}
+pub fn Authenticators::close(Self) -> Unit
+pub fn Authenticators::forget(Self, String) -> Unit
+pub fn Authenticators::has(Self, String, String) -> Bool
+pub fn Authenticators::new(Cdp, (String) -> Bool, on_changed? : (String) -> Unit, clock~ : Clock, log~ : Log) -> Self
+pub async fn Authenticators::put(Self, String, Array[Passkey]) -> Unit
+pub async fn Authenticators::read(Self, String, sites? : Array[String]) -> Array[Passkey]
+pub async fn Authenticators::start(Self) -> Unit
+pub async fn Authenticators::take_out(Self, String, Array[String]) -> Array[Passkey]
+
+pub(all) struct BrowserOptions {
+  dir : String
+  chrome : ChromeHost
+  screens : Screens?
+  clock : Clock
+  idle_ms : Double?
+  user_tab_idle_ms : Double?
+  context_owner : ((String?) -> String?)?
+  used_tab : ((String, String) -> Unit)?
+  files : Files
+  log : Log
+  uuid : () -> String
+  random_hex : (Int32) -> String
+  pid : Int32
+}
+
+pub(all) struct BrowserParts {
+  door : (DoorBrowsers) -> Unit
+  streams : ((Bool, @jsjson.JValue) -> FarviewStream) -> Unit
+  session_ended : ((String) -> Unit) -> Unit
+  tools : (Array[BrowserTool]) -> Unit
+  door_url : () -> String?
+}
+
+pub struct BrowserState {
+  dir : String
+  // private fields
+}
+pub async fn BrowserState::change(Self, (@jsjson.JValue) -> @jsjson.JValue) -> Unit
+pub fn BrowserState::new(String, Files, Clock) -> Self
+pub async fn BrowserState::read(Self) -> @jsjson.JValue
+pub fn BrowserState::start_change(Self, (@jsjson.JValue) -> @jsjson.JValue) -> Later[Unit]
+pub async fn BrowserState::written(Self) -> Unit
+
+pub(all) struct BrowserStatus {
+  running : Bool
+  http : String?
+  ws : String?
+  binary : String?
+  headless : Bool?
+  pid : Int32??
+  tabs : Int32?
+  viewing : Int32?
+  last_use : Double?
+}
+pub fn BrowserStatus::off() -> Self
+pub fn BrowserStatus::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct BrowserTool {
+  declaration : @jsjson.JValue
+  run : async (String, @jsjson.JValue) -> String
+}
+
+pub struct Browsers {
+  station : StationBrowser
+  // private fields
+}
+pub async fn Browsers::close(Self) -> Unit
+pub async fn Browsers::close_of(Self, String) -> Unit
+pub async fn Browsers::context(Self, String) -> String
+pub async fn Browsers::cookies(Self, String, Array[String], Bool) -> String
+pub fn Browsers::door(Self) -> DoorBrowsers
+pub async fn Browsers::endpoint(Self, String) -> BrowserStatus
+pub fn Browsers::extend_sign_in(Self, String, String, Double) -> Unit
+pub async fn Browsers::form(Self, String, String) -> SignInForm
+pub async fn Browsers::new(BrowserOptions) -> Self
+pub fn Browsers::on_fresh(Self, (String) -> Unit) -> Unit
+pub fn Browsers::on_resumed(Self, (String) -> Unit) -> Unit
+pub fn Browsers::on_taken_out(Self, (String, String, String, String?) -> Unit) -> Unit
+pub fn Browsers::on_used(Self, (String, String) -> Unit) -> Unit
+pub async fn Browsers::open(Self, String) -> (String, GateParts)
+pub fn Browsers::passkeys_again(Self) -> Unit
+pub async fn Browsers::passkeys_in(Self, String, Array[String], String) -> Unit
+pub async fn Browsers::resume(Self) -> Unit
+pub async fn Browsers::sign_in(Self, String, String, String?, Array[String], String, Double) -> Unit
+pub fn Browsers::status(Self, String) -> BrowserStatus
+pub async fn Browsers::stop(Self, String) -> Unit
+pub fn Browsers::tabs(Self, String) -> Array[TabInfo]
+pub fn Browsers::tabs_j(Self, String) -> Array[@jsjson.JValue]
+pub fn Browsers::tool_browsers(Self) -> ToolBrowsers
+pub fn Browsers::use_farview(Self, FarviewTabs) -> Unit
+pub fn Browsers::used(Self, String, String, url? : String) -> Unit
+
+pub(all) struct Cdp {
+  post : (String, @jsjson.JValue, String?) -> Later[@jsjson.JValue]
+  on : ((CdpEvent) -> Unit) -> () -> Unit
+  closed : async () -> Unit
+  close : () -> Unit
+}
+pub async fn Cdp::ask(Self, String, params? : @jsjson.JValue, session? : String) -> @jsjson.JValue
+pub async fn Cdp::send(Self, String, @jsjson.JValue, String?) -> @jsjson.JValue
+pub fn Cdp::tell(Self, String, @jsjson.JValue, String?) -> Unit
+
+pub(all) struct CdpEvent {
+  method : String
+  params : @jsjson.JValue
+  session_id : String?
+}
+
+pub struct CdpLink {
+  // private fields
+}
+pub fn CdpLink::cdp(Self) -> Cdp
+pub fn CdpLink::ended(Self) -> Unit
+pub fn CdpLink::heard(Self, String) -> Unit
+pub fn CdpLink::new(CdpSocket, Clock) -> Self
+
+pub(all) struct CdpSocket {
+  send : (String) -> Unit
+  close : () -> Unit
+}
+
+pub(all) struct Child {
+  pid : Int32?
+  ended : () -> String?
+}
+
+pub(all) struct ChromeHost {
+  find : async () -> Running?
+  launch : async () -> Running
+  installed : () -> Bool
+  kill : async (Running) -> Unit
+  connect : async (String) -> Cdp
+  state : BrowserState?
+}
+
+pub(all) struct Clip {
+  type_ : String
+  text : String
+}
+
+pub(all) struct Clock {
+  now : () -> Double
+  after : (Double, async () -> Unit) -> () -> Unit
+  spawn : (async () -> Unit) -> Unit
+  sleep : async (Double) -> Unit
+}
+
+pub(all) struct DoorBrowsers {
+  open : async (String) -> (String, GateParts)
+}
+
+pub(all) enum DoorUpgrade {
+  Refused(Int32, String)
+  Through(String, GateParts)
+}
+
+pub(all) struct Driven {
+  state : String
+  why : String?
+}
+pub fn Driven::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct FarviewConfig {
+  dir : String
+  host : String
+  agent : String
+  engine : String
+  sessions : Array[String]
+  release : (String, FarviewRelease)?
+}
+pub fn FarviewConfig::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct FarviewNet {
+  connect : async (Int32) -> TcpLink
+  clock : Clock
+}
+
+pub(all) struct FarviewOptions {
+  dir : String
+  config : () -> FarviewConfig?
+  screens : Screens?
+  fetch : async (String) -> Bytes?
+  sources : (String) -> Array[String]
+  machine : Machine
+  files : Files
+  net : FarviewNet
+  release_io : ReleaseIo
+  log : Log
+  env : Array[(String, String)]
+}
+
+pub(all) struct FarviewRelease {
+  rev : String
+  sha256 : String
+}
+
+pub struct FarviewScreen {
+  id : String
+  mut changed : () -> Unit
+  mut opened : (String) -> Unit
+  // private fields
+}
+pub fn FarviewScreen::address(Self) -> String
+pub fn FarviewScreen::close(Self) -> Unit
+pub fn FarviewScreen::heard(Self, @jsjson.JValue) -> Unit
+pub fn FarviewScreen::new(String, Int32, Int32, FarviewNet, Log) -> Self
+pub fn FarviewScreen::on_changed(Self, () -> Unit) -> Unit
+pub fn FarviewScreen::open(Self, ViewOptions) -> FarviewView raise
+pub fn FarviewScreen::page(Self) -> FramePage
+pub fn FarviewScreen::site(Self) -> String?
+pub fn FarviewScreen::size(Self) -> (Double, Double)
+pub fn FarviewScreen::source(Self) -> ScreenSource
+pub fn FarviewScreen::title(Self) -> String
+pub fn FarviewScreen::viewing(Self) -> Int32
+pub fn FarviewScreen::watch(Self) -> Unit
+
+pub(all) enum FarviewStream {
+  Refuse(Int32, String)
+  Carry(Int32)
+}
+pub fn FarviewStream::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct FarviewTab {
+  info : TabInfo
+  agent : Int32
+}
+pub fn FarviewTab::to_j(Self) -> @jsjson.JValue
+
+pub struct FarviewTabs {
+  // private fields
+}
+pub fn FarviewTabs::active(Self) -> FarviewConfig?
+pub fn FarviewTabs::active_for(Self, String) -> Bool
+pub fn FarviewTabs::agent_port(Self, String, id? : String) -> Int32?
+pub async fn FarviewTabs::choose(Self, String, String) -> Unit
+pub fn FarviewTabs::client_port(Self, String) -> Int32?
+pub fn FarviewTabs::close(Self) -> Unit
+pub async fn FarviewTabs::close_of(Self, String) -> Unit
+pub async fn FarviewTabs::close_tab(Self, String, String) -> Unit
+pub async fn FarviewTabs::cookies(Self, String) -> Array[@jsjson.JValue]
+pub async fn FarviewTabs::endpoint(Self, String) -> BrowserStatus
+pub async fn FarviewTabs::form(Self, String, id? : String) -> SignInForm
+pub fn FarviewTabs::new(FarviewOptions) -> Self
+pub async fn FarviewTabs::open(Self, String, String) -> FarviewTab
+pub async fn FarviewTabs::put_cookies(Self, String, Array[@jsjson.JValue]) -> Unit
+pub async fn FarviewTabs::ready(Self, FarviewConfig) -> Unit
+pub async fn FarviewTabs::resume(Self) -> Unit
+pub fn FarviewTabs::status(Self, String) -> BrowserStatus
+pub async fn FarviewTabs::stop(Self, String) -> Unit
+pub fn FarviewTabs::tabs(Self, String) -> Array[FarviewTab]
+pub async fn FarviewTabs::take_out(Self, String, Array[String]) -> Array[@jsjson.JValue]
+
+pub struct FarviewView {
+  peek : Bool
+  // private fields
+}
+pub fn FarviewView::as_view(Self) -> ScreenView
+pub fn FarviewView::bounds(Self, Double, Double) -> Unit
+pub fn FarviewView::close(Self) -> Unit
+pub fn FarviewView::input(Self, @jsjson.JValue) -> Unit
+pub fn FarviewView::keyframe(Self) -> Unit
+pub async fn FarviewView::next(Self) -> Frame?
+pub fn FarviewView::set_clipboard(Self, Clip, Bool) -> Unit
+pub fn FarviewView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
+
+pub(all) struct Files {
+  read : async (String) -> String?
+  write_private : async (String, String) -> Unit
+  write : async (String, String, Int32) -> Unit
+  create : async (String, String) -> Unit
+  rename : async (String, String) -> Unit
+  unlink : async (String) -> Unit
+  mkdir : async (String, Int32) -> Unit
+  rm : async (String, Bool) -> Unit
+  readdir : async (String) -> Array[String]
+  exists : async (String) -> Bool
+  mtime : async (String) -> Double
+}
+
+pub(all) struct FormAsks {
+  username : Bool
+  password : Bool
+  code : Bool
+  blocked : Bool
+}
+pub fn FormAsks::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct FormValues {
+  username : String?
+  password : String?
+  code : String?
+}
+
+pub(all) struct Frame {
+  config : (String, Double, Double)?
+  key : Bool
+  ts : Double
+  data : Bytes
+}
+
+pub struct FrameLink {
+  mut heard : (@jsjson.JValue) -> Unit
+  mut ended : () -> Unit
+  // private fields
+}
+pub fn FrameLink::close(Self) -> Unit
+pub fn FrameLink::new(FarviewNet, Int32) -> Self
+pub async fn FrameLink::picture(Self) -> (@jsjson.JValue, Bytes)?
+pub fn FrameLink::send(Self, @jsjson.JValue) -> Unit
+
+pub(all) struct FramePage {
+  url : String
+  title : String
+}
+
+pub struct Gate {
+  // private fields
+}
+pub fn Gate::from_chrome(Self, String) -> Passed
+pub fn Gate::from_client(Self, String) -> Passed
+pub fn Gate::new(GateParts) -> Self
+pub fn Gate::wants(Self, String) -> Bool
+
+pub(all) struct GateParts {
+  context : String
+  context_of : (String) -> String?
+  opened : ((String) -> Unit)?
+  used : ((String, String?) -> Unit)?
+}
+
+pub(all) struct HostFile {
+  pid : Int32
+  port : Int32
+  agent : Int32
+  frame : Int32
+}
+pub fn HostFile::to_j(Self) -> @jsjson.JValue
+
+pub struct Later[X] {
+  done : @effect.Deferred[X]
+}
+pub fn[X] Later::is_done(Self[X]) -> Bool
+pub fn[X] Later::of(@effect.Deferred[X]) -> Self[X]
+pub fn[X] Later::resolved(X) -> Self[X]
+pub fn[X] Later::start(Clock, async () -> X) -> Self[X]
+pub async fn[X] Later::wait(Self[X]) -> X
+
+pub(all) struct Log {
+  info : (String, String, @jsjson.JValue) -> Unit
+  warn : (String, String, @jsjson.JValue) -> Unit
+}
+pub fn Log::silent() -> Self
+
+pub(all) struct Machine {
+  now : () -> Double
+  sleep : async (Double) -> Unit
+  browsers : () -> Array[String]
+  browsers_soon : async () -> Array[String]
+  has_display : () -> Bool
+  start_lasting : (String, Array[String], String, Array[(String, String)]) -> Child
+  start_time_of : async (Int32) -> Double?
+  group_alive : (Int32) -> Bool
+  end_group : async (Int32, Double) -> Unit
+  signal_group : (Int32, String) -> Unit
+  free : async (Int32) -> Bool
+  version : async (Int32) -> (String, String)?
+  answers : async (Int32) -> Bool
+  connect : async (String) -> Cdp
+}
+
+pub(all) struct MachineProcs {
+  start_lasting : (String, Array[String], String, Array[(String, String)]) -> Child
+  start_time_of : async (Int32) -> Double?
+  group_alive : (Int32) -> Bool
+  end_group : async (Int32, Double) -> Unit
+  signal_group : (Int32, String) -> Unit
+  browsers : () -> Array[String]
+  browsers_soon : async () -> Array[String]
+  has_display : () -> Bool
+}
+
+pub struct Owners {
+  // private fields
+}
+pub fn Owners::drop(Self, String) -> Unit
+pub fn Owners::keep(Self, Array[String]) -> Unit
+pub fn Owners::new(String, Files, Clock, Log) -> Self
+pub fn Owners::of(Self, String) -> String?
+pub async fn Owners::ready(Self) -> Unit
+pub fn Owners::set(Self, String, String) -> Bool
+pub async fn Owners::written(Self) -> Unit
+
+pub struct Pass {
+  // private fields
+}
+pub fn Pass::end(Self) -> Unit
+pub fn Pass::from_chrome(Self, Bytes, Bool) -> Unit
+pub fn Pass::from_client(Self, Bytes, Bool) -> Unit
+
+pub(all) struct Passed {
+  up : Array[String]
+  down : Array[String]
+}
+
+pub(all) struct Passkey {
+  credential_id : String
+  rp_id : String
+  private_key : String
+  user_handle : String?
+  sign_count : Double
+}
+pub fn Passkey::to_j(Self) -> @jsjson.JValue
+
+pub struct PrivateFile {
+  path : String
+  // private fields
+}
+pub fn PrivateFile::new(String, Files, Clock) -> Self
+pub fn PrivateFile::write(Self, String) -> Later[Unit]
+pub async fn PrivateFile::written(Self) -> Unit
+
+pub(all) struct ReleaseIo {
+  write_bytes : async (String, Bytes) -> Unit
+  untar : async (String, String) -> Unit
+  random_hex : (Int32) -> String
+}
+
+pub(all) struct Running {
+  pid : Int32?
+  started : Double?
+  port : Int32
+  ws : String
+  binary : String
+  headless : Bool
+  user_agent : String
+}
+pub fn Running::of_j(@jsjson.JValue) -> Self
+pub fn Running::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ScreenBrowser {
+  available : () -> Bool
+  open_user_tab : async (String, String?) -> String
+}
+
+pub(all) struct ScreenSource {
+  id : String
+  kind : String
+  peek : () -> Bool
+  title : () -> String
+  site : () -> String?
+  address : () -> String
+  size : () -> (Double, Double)
+  clipboard : () -> Array[String]
+  opened_by : () -> String?
+  open : async (ViewOptions) -> ScreenView
+  open_url : (async (String) -> Unit)?
+  reload : (async () -> Unit)?
+  back : (async () -> Unit)?
+  forward : (async () -> Unit)?
+  discard : (async () -> Unit)?
+  sleep : (async () -> Unit)?
+  user_tab : Bool
+  popup : Bool
+  sleeping : () -> Bool
+  farview : Bool
+}
+
+pub(all) struct ScreenView {
+  next : async () -> Frame?
+  keyframe : () -> Unit
+  input : async (@jsjson.JValue) -> Unit
+  set_clipboard : async (Clip, Bool) -> Unit
+  watch_clipboard : ((Clip) -> Unit) -> () -> Unit
+  watch_login : ((@jsjson.JValue) -> Unit) -> () -> Unit
+  fill : async (@jsjson.JValue) -> Unit
+  watch_passkey : ((@jsjson.JValue) -> Unit) -> () -> Unit
+  passkey : async (@jsjson.JValue) -> Unit
+  bounds : (Double, Double) -> Unit
+  video : () -> @jsjson.JValue
+  viewport : () -> (Double, Double)
+  watch_child : ((String) -> Unit) -> () -> Unit
+  close : () -> Unit
+  peek : Bool
+}
+
+pub(all) struct Screens {
+  add : (ScreenSource) -> () -> Unit
+  changed : (() -> Unit)?
+  set_browser : ((ScreenBrowser?) -> Unit)?
+}
+
+pub(all) struct SignInForm {
+  host : async () -> String
+  url : async () -> String
+  on : async (String) -> Bool
+  look : async () -> FormAsks
+  type_ : async (String, String) -> Bool
+  enter : async () -> Unit
+  press : async () -> Bool
+  mark : async () -> Unit
+  marked : async () -> Bool
+  close : () -> Unit
+}
+
+pub(all) struct SignInState {
+  cookies : Array[@jsjson.JValue]
+  passkeys : Array[Passkey]
+}
+pub fn SignInState::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct SignedIn {
+  raw : @jsjson.JValue
+  request : String
+  workspace : String?
+  sites : Array[String]
+  mut until : Double
+}
+pub fn SignedIn::new(String, String?, Array[String], Double) -> Self
+pub fn SignedIn::to_j(Self) -> @jsjson.JValue
+
+pub struct StationBrowser {
+  // private fields
+}
+pub fn StationBrowser::as_screen_browser(Self) -> ScreenBrowser
+pub async fn StationBrowser::attach(Self, String) -> (Cdp, String)
+pub fn StationBrowser::available(Self) -> Bool
+pub async fn StationBrowser::close(Self) -> Unit
+pub async fn StationBrowser::close_of(Self, String) -> Unit
+pub async fn StationBrowser::close_tab(Self, String) -> Unit
+pub fn StationBrowser::context_of(Self, String) -> String?
+pub async fn StationBrowser::endpoint(Self) -> BrowserStatus
+pub async fn StationBrowser::flushed(Self) -> Unit
+pub fn StationBrowser::has_tab(Self, String) -> Bool
+pub fn StationBrowser::new(BrowserOptions) -> Self
+pub async fn StationBrowser::open_tab(Self, String, state_file? : () -> String?) -> String
+pub async fn StationBrowser::open_user_tab(Self, String, id? : String) -> String
+pub fn StationBrowser::own(Self, String, String) -> Unit
+pub async fn StationBrowser::passkeys(Self) -> Authenticators
+pub async fn StationBrowser::resume(Self) -> Unit
+pub async fn StationBrowser::send(Self, String, params? : @jsjson.JValue) -> @jsjson.JValue
+pub fn StationBrowser::status(Self) -> BrowserStatus
+pub async fn StationBrowser::stop(Self) -> Unit
+pub fn StationBrowser::tab_url(Self, String) -> String?
+pub fn StationBrowser::tabs(Self) -> Array[TabInfo]
+pub fn StationBrowser::used(Self) -> Unit
+pub fn StationBrowser::user_tabs(Self) -> UserTabs
+
+pub(all) struct TabInfo {
+  id : String
+  title : String
+  url : String
+  attached : Bool
+  session : String?
+}
+pub fn TabInfo::to_j(Self) -> @jsjson.JValue
+
+pub struct TabView {
+  // private fields
+}
+pub fn TabView::as_view(Self) -> ScreenView
+pub fn TabView::close(Self) -> Unit
+pub async fn TabView::fill(Self, @jsjson.JValue) -> Unit
+pub async fn TabView::input(Self, @jsjson.JValue) -> Unit
+pub fn TabView::keyframe(Self) -> Unit
+pub fn TabView::new(ViewParts) -> Self
+pub async fn TabView::next(Self) -> Frame?
+pub async fn TabView::passkey(Self, @jsjson.JValue) -> Unit
+pub async fn TabView::set_clipboard(Self, Clip, Bool) -> Unit
+pub fn TabView::set_watch_child(Self, ((String) -> Unit) -> () -> Unit) -> Unit
+pub async fn TabView::start(Self, ViewOptions, viewport? : (Double, Double)) -> Unit
+pub fn TabView::video(Self) -> @jsjson.JValue
+pub fn TabView::viewport(Self) -> (Double, Double)
+pub fn TabView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
+pub fn TabView::watch_login(Self, (@jsjson.JValue) -> Unit) -> () -> Unit
+pub fn TabView::watch_passkey(Self, (@jsjson.JValue) -> Unit) -> () -> Unit
+
+pub struct Tabs {
+  // private fields
+}
+pub async fn Tabs::arrived(Self, String, ms? : Double) -> Unit
+pub fn Tabs::close(Self) -> Unit
+pub async fn Tabs::close_tab(Self, String) -> Unit
+pub async fn Tabs::close_target(Self, String) -> Unit
+pub fn Tabs::close_views_of(Self, String) -> Unit
+pub fn Tabs::context_of(Self, String) -> String?
+pub fn Tabs::has(Self, String) -> Bool
+pub async fn Tabs::history_target(Self, String, Int32) -> Unit
+pub fn Tabs::list(Self) -> Array[TabInfo]
+pub async fn Tabs::measure_target(Self, String, ((Double, Double)) -> Unit, () -> Double) -> Unit
+pub async fn Tabs::navigate_target(Self, String, String) -> Unit
+pub fn Tabs::new(TabsParts) -> Self
+pub fn Tabs::of_session(Self, String) -> Array[String]
+pub async fn Tabs::open_target(Self, String, ViewOptions, sized~ : ((Double, Double)) -> Unit, used? : () -> Unit, ended? : () -> Unit) -> ScreenView
+pub fn Tabs::owned(Self, String, String) -> Unit
+pub fn Tabs::owner_of(Self, String) -> String?
+pub async fn Tabs::reload_target(Self, String) -> Unit
+pub async fn Tabs::start(Self) -> Unit
+pub fn Tabs::url_of(Self, String) -> String?
+pub fn Tabs::viewing(Self) -> Int32
+
+pub(all) struct TabsParts {
+  cdp : Cdp
+  screens : Screens?
+  connect : async () -> Cdp
+  now : () -> Double
+  activity : () -> Unit
+  clock : Clock
+  owners : Owners?
+  context_owner : ((String?) -> String?)?
+  used_tab : ((String, String) -> Unit)?
+  own_passkey : ((String, String) -> Bool)?
+  user_tabs : UserTabHooks?
+  uuid : () -> String
+}
+
+pub(all) struct TcpLink {
+  write : async (Bytes) -> Unit
+  read : async () -> Bytes?
+  close : () -> Unit
+}
+
+pub(all) struct ToolBrowsers {
+  endpoint : async (String) -> BrowserStatus
+  tabs : (String) -> Array[TabInfo]
+  status : (String) -> BrowserStatus
+  stop : async (String) -> Unit
+}
+
+pub(all) struct UserTabHooks {
+  target_created : (@jsjson.JValue) -> String?
+  target_info_changed : (@jsjson.JValue) -> Bool
+  target_destroyed : (String) -> Bool
+  refresh_titles : (Array[@jsjson.JValue]) -> Unit
+}
+
+pub struct UserTabs {
+  // private fields
+}
+pub fn UserTabs::attached(Self, Tabs) -> Unit
+pub fn UserTabs::attaching(Self, Tabs) -> Unit
+pub fn UserTabs::browser_stopped(Self) -> Unit
+pub async fn UserTabs::close(Self) -> Unit
+pub fn UserTabs::hooks(Self) -> UserTabHooks
+pub fn UserTabs::new(UserTabsOptions) -> Self
+pub fn UserTabs::notify_screens(Self) -> Unit
+pub async fn UserTabs::open_new(Self, String, asked? : String) -> String
+pub async fn UserTabs::ready(Self) -> Unit
+pub fn UserTabs::refresh_titles(Self, Array[@jsjson.JValue]) -> Unit
+pub fn UserTabs::target_created(Self, @jsjson.JValue) -> String?
+pub fn UserTabs::target_destroyed(Self, String) -> Bool
+pub fn UserTabs::target_info_changed(Self, @jsjson.JValue) -> Bool
+pub async fn UserTabs::written(Self) -> Unit
+
+pub(all) struct UserTabsOptions {
+  dir : String
+  screens : Screens?
+  clock : Clock
+  idle_ms : Double?
+  is_isolated_context : ((String?) -> Bool)?
+  create_target : async (String, () -> Unit, (String, Tabs) -> Unit) -> (String, Tabs)
+  files : Files
+  random_hex : (Int32) -> String
+}
+
+pub(all) struct ViewOptions {
+  codecs : Array[String]
+  max_width : Double
+  max_height : Double
+  peek : Bool
+  fit : (Double, Double, Double)?
+}
+pub fn ViewOptions::of_j(@jsjson.JValue) -> Self
+
+pub(all) struct ViewParts {
+  cdp : Cdp
+  session : String
+  target_id : String
+  now : () -> Double
+  sized : (((Double, Double)) -> Unit)?
+  used : (() -> Unit)?
+  ended : (() -> Unit)?
+  own_passkey : ((String) -> Bool)?
+  uuid : () -> String
+  clock : Clock
+}
+
+pub(all) struct WsEnd {
+  send_text : (String) -> Unit
+  send_raw : (Bytes, Bool) -> Unit
+  is_open : () -> Bool
+  connecting : () -> Bool
+  close : () -> Unit
+  terminate : () -> Unit
+}
+
+// Type aliases
+pub type TakenOut = (String, String, String, String?) -> Unit
+
+// Traits

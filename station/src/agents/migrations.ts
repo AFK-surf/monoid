@@ -175,6 +175,7 @@ export const NOTES: [number, string][] = [
   [168, "chat_create takes speed: standard, fast or ultrafast. Ultrafast needs GPT-6 Astra or GPT-6.1 Sol on a Codex subscription with an eligible OpenAI plan; the legacy fast switch still works."],
   [169, "A login, vault, phone, rig or sign-in card now waits until it is decided or you withdraw it (secret_cancel and the like), whatever people write meanwhile, so secret_reask and phone_use reask are needed only for one you withdrew; an options or text card in a Slack, Feishu or group thread ends only as a message reaches you there. A post with a card still pending that ends your turn with no state ends it need_human; after a post, a turn with no state ends all_done after one reminder."],
   [170, "Moving to another station is a test-channel feature of the station's: on a station updated on the stable channel there is no station_move tool and your instructions do not name skill stillfail-move."],
+  [171, "Skill stillfail-browser now covers Farview (driven with its agent.exe, not DevTools) as well as Chrome, and `browser {engine}` to switch."],
 ];
 
 /// The last note that replaces every one before it (the instructions rewritten whole): a session behind it hears only

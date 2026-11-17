@@ -662,11 +662,12 @@ pub fn long_jobs_asked(ws : String) -> Map[String, Json] {
 }
 
 ///|
-/// How many services are left up long in the workspace (the `longJobs` topic).
+/// How many are left up long in the workspace (the `longJobs` topic): the viewer's own and the others' (`otherCount`),
+/// so that what shows them says all of it.
 pub fn long_jobs(src : Source, w : Workspace) -> Int {
-  items(src.topic("longJobs", long_jobs_asked(w.id)).get().value, "groups").fold(init=0, fn(n, g) {
-    n + items(Some(g), "jobs").length()
-  })
+  let value = src.topic("longJobs", long_jobs_asked(w.id)).get().value
+  items(value, "groups").fold(init=0, fn(n, g) { n + items(Some(g), "jobs").length() }) +
+  number(value, "otherCount").to_int()
 }
 
 ///|
