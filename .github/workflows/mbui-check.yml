@@ -153,10 +153,13 @@ jobs:
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
           # (pkgs' build apart from the app build's: one key for both, main's pkgs part gone through and its app build
-          # cut, kept a _build without sfapp, and every app build after compiled it again, ~145 s, 134051515574)
-          key: mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-${{ github.sha }}
+          # cut, kept a _build without sfapp, and every app build after compiled it again, ~145 s, 134051515574). Its
+          # key is mbui-moon-pkgs-<part>-, not under mbui-moon-build-<part>-: as mbui-moon-build-app-pkgs-<sha> the app
+          # build's restore-keys took it when newer, a _build without sfapp, and every branch's app build compiled cold
+          # past its five minutes (2026-11-17, 134154408897)
+          key: mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}
           restore-keys: |
-            mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-
+            mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-
             mbui-moon-build-${{ env.PART }}-
       # (each file an mtime of its content: moon builds again only what changed since that build, not all of it after
       # the checkout's new mtimes: the replay's 170 tasks over main's last build, 0b0e29e8, 41381222307, 2026-11-02)
@@ -440,7 +443,7 @@ jobs:
             !${{ env.MBC_STORE }}
             !apps/mbui/_build/**/*.mbc
             !apps/mbui/_build/**/*.mbc/**
-          key: mbui-moon-build-${{ env.PART }}${{ env.GROUP == 'pkgs' && '-pkgs' || '' }}-${{ github.sha }}
+          key: mbui-moon-${{ env.GROUP == 'pkgs' && 'pkgs' || 'build' }}-${{ env.PART }}-${{ github.sha }}
       # (what the run counted of how what moves goes, MBUI_TEST_MOTION=count: in the summary; and that and what it said of
       # the bars, MBUI_TEST_BARS too, whole as an artifact, for motion-bars)
       - name: How what moves goes
