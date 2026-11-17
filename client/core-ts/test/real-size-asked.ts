@@ -189,6 +189,7 @@ function innerOf(parts: { host: FakeHost; store: Store; data: Data; views?: View
   // (the person's own lock as the lock's page reads it: what is pending of it, as many as are kept)
   const personal = {
     standing: () => "member",
+    root: () => null,
     chain: () => null,
     pendingShown: () => ownPendingOf(parts.host.nowMs()).map((item) => ({ item, row: pendingRow(item, STATIONS.map((s) => s.name)) })),
   };

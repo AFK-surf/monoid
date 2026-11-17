@@ -2686,12 +2686,23 @@ export function lockView(inner: Inner, ws: string): J {
   }));
   const renew = members.flatMap((m) => (m.you ? m.groups.flatMap((g) => g.devices).filter((d) => d.renewSoon) : []));
   const dismissed = get(get(inner.data.shared({ topic: "prefs" }), "lockNotice"), ws) === true;
+  // Let in here by its person's own lock (`onBoundPerson`): no approval in this one makes it sign (views/pair.ts
+  // `waitingIn` asks it in no workspace of the kind), so it is offered none. Where that lock does not say the signer
+  // it keeps (personal-lock.ts `signerUnsaid`: one from before signers were said there), a moved workspace's state
+  // does not name it by it: it says so on that lock itself, by a press (`lock.confirmSigner`, the person asked once).
+  const boundOwn = locked && !signs && onBoundPerson(inner, ws);
+  const confirmSigner = locked && !waits && boundOwn && !signs && sub !== null && inner.adb.personal().signerUnsaid(sub);
   // An app in the lock that does not sign with its key (let in before it kept one, as the devices there when the lock
-  // was turned on were; or its key since lost): it may be made one that signs, approved face to face as a new one is.
-  const unsigned = locked && mine !== undefined && mine.kind === "app" && inner.host.appKeys === true && signers.has(inner) && !signs;
-  if (unsigned && typeof mine.sign_key === "string") recover(inner, mine.sign_key);
+  // was turned on were; or its key since lost): it may be made one that signs, approved face to face as a new one is
+  // (`unsigned`), but where its person's own lock lets it in.
+  const lacks = locked && mine !== undefined && mine.kind === "app" && inner.host.appKeys === true && signers.has(inner) && !signs;
+  const unsigned = lacks && !boundOwn;
+  if (lacks && typeof mine.sign_key === "string") recover(inner, mine.sign_key);
+  // Its person taken out of a moved workspace (`outText`): by whom and whom to ask, what it waits for; not to install an
+  // app first, which lets nobody back in.
+  const out = outText(inner, ws);
   // A web page left out whose person has no app in the list: nobody could approve it (`needsAppIn`), so it asks nobody.
-  const needsApp = needsAppIn(inner, ws);
+  const needsApp = out === null && needsAppIn(inner, ws);
   const pair = locked && !waits && !needsApp && (mine === undefined || unsigned) ? pairs.mine(inner, own && sub !== null ? personOf(sub) : ws) : null;
   // The devices its try dials here, as people know them (which machine, a phone or a computer), the most lately used
   // first, those showing a code before them: the person opens still.fail on one of those (2026-11-05: "到底是哪个设备会
@@ -2725,7 +2736,6 @@ export function lockView(inner: Inner, ws: string): J {
     if (h?.entries[0] !== undefined) upto(Math.max(HAND_OVER_FROM, h.entries[0].at) + HAND_OVER_FIRST_SECS);
   }
   p.shownUntil = until;
-  const out = outText(inner, ws);
   const root = movedHere(inner, ws) && role === "owner" && force.said !== "waiting" ? rootOf(inner, ws) : null;
   const rootText = root !== null && root.sub !== sub ? t("core-misc.lock.rootOnlyPage", { name: root.name }) : null;
   const onAgain = root !== null && root.sub === sub && force.said === "off";
@@ -2754,6 +2764,8 @@ export function lockView(inner: Inner, ws: string): J {
       ...(out !== null ? { outText: out } : {}),
       // A web page left out that nobody could approve: to install an app first (`needsAppIn`).
       ...(needsApp ? { needsAppText: t("core-misc.lock.needsApp") } : {}),
+      // On its person's own lock without its signer said there: why it does not sign, and the press that says it.
+      ...(confirmSigner ? { stateText: t("core-misc.lock.signerUnsaid"), confirmText: t("core-misc.vault.confirm") } : {}),
     },
     signers: [...f.devices.values()].filter((d) => typeof d.sign_key === "string").length,
     members,
@@ -3841,10 +3853,10 @@ function webMoved(inner: Inner, sub: string, ws: string, id: string, kind: "web"
 }
 
 /// A moved workspace turned off (`off`) or on again (`open`, with the settings in force and the root's person's email),
-/// by the root's person alone.
+/// by the root's person alone (`offAllowed`, either way: another owner's `open` on their own log would count for
+/// nothing, and was signed there all the same).
 function onOffMoved(inner: Inner, sub: string, ws: string, on: boolean): Effect.Effect<unknown, CoreError> {
-  return Effect.suspend(() => {
-    if (!saysHere(inner, sub)) return Effect.fail(notTrustedHere());
+  return Effect.andThen(offAllowed(inner, sub, ws), () => {
     const force = inForceOf(inner, ws);
     const name = nameOf(inner, ws);
     if (!on) return sayMoved(inner, sub, ws, [{ kind: "off" }], { act: "disable", name }, t("core-misc.lock.reason.disable"));

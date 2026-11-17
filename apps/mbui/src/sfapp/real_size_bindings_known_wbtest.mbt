@@ -4,6 +4,10 @@
 // floor; the lines to write are printed by the test). Counted 2026-11-16 (on main after #6556) on the values and changes of
 // client/core-ts/test/real-size.ts.
 
+// Added 2026-11-17: the screens of safe mode after its upgrade (fixture_open.mbt: lock-out-security, settings-vault-
+// syncing and -confirm, settings-lock-prompt-role, settings-security-again, -root-off, -root and -confirm), new screens
+// each holding the profiles' list as the settings' pages beside them do, at their bar.
+
 // Added 2026-11-17: the remote screen's page made as nodes (sfpages screen_*.mbt): a change of its view's tabs
 // (screens/screen) runs its tabs' row, and a sample of its station's link (stationNet) the bar's link chip, where its old
 // view's were not counted.
@@ -104,6 +108,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone lock-needs-app-security profiles/down": 12,
   "phone screen-user-pages screens/screen": 1,
   "phone screen-user-tabs screens/screen": 1,
+  "phone lock-out-security profiles/down": 12,
   "phone settings-home profiles/down": 12,
   "phone settings-appearance profiles/down": 12,
   "phone settings-experimental profiles/down": 12,
@@ -571,6 +576,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-vault-off profiles/down": 12,
   "phone settings-vault-plain profiles/down": 12,
   "phone settings-vault-waits profiles/down": 12,
+  "phone settings-vault-syncing profiles/down": 12,
+  "phone settings-vault-confirm profiles/down": 12,
   "phone settings-vault-words profiles/down": 12,
   "phone settings-vault-add profiles/down": 12,
   "phone settings-vault-add vaultItems vault=plain/item": 5,
@@ -578,6 +585,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-vault-editor vaultItems vault=plain/item": 5,
   "phone settings-vault-recover profiles/down": 12,
   "phone settings-lock-prompt profiles/down": 12,
+  "phone settings-lock-prompt-role profiles/down": 12,
   "phone settings-add-people profiles/down": 12,
   "phone settings-workspace-mark profiles/down": 12,
   "phone settings-local-fonts profiles/down": 12,
@@ -614,12 +622,15 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-security-join profiles/down": 12,
   "phone settings-security-off profiles/down": 12,
   "phone settings-security-pending profiles/down": 12,
+  "phone settings-security-again profiles/down": 12,
+  "phone settings-security-root-off profiles/down": 12,
+  "phone settings-security-root profiles/down": 12,
+  "phone settings-security-confirm profiles/down": 12,
   "phone settings-security-upgrade-station profiles/down": 12,
   "phone settings-security-upgrade-station-not profiles/down": 12,
   "phone settings-security-upgrade-member profiles/down": 12,
   "phone settings-security-upgrade-device profiles/down": 12,
   "phone settings-security-upgrade-many profiles/down": 12,
-  "phone settings-security-upgrade-ask profiles/down": 12,
   "phone settings-security-upgrade-other profiles/down": 12,
   "phone settings-security-upgrade-updating profiles/down": 12,
   "phone settings-stations-tasks profiles/down": 12,
@@ -1398,6 +1409,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide lock-security profiles/down": 6,
   "wide lock-upgrade profiles/down": 6,
   "wide lock-needs-app-security profiles/down": 6,
+  "wide lock-out-security profiles/down": 6,
   "wide settings-home profiles/down": 6,
   "wide settings-appearance profiles/down": 6,
   "wide settings-experimental profiles/down": 6,
@@ -1519,9 +1531,12 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-vault-off profiles/down": 6,
   "wide settings-vault-plain profiles/down": 6,
   "wide settings-vault-waits profiles/down": 6,
+  "wide settings-vault-syncing profiles/down": 6,
+  "wide settings-vault-confirm profiles/down": 6,
   "wide settings-vault-words profiles/down": 6,
   "wide settings-vault-recover profiles/down": 6,
   "wide settings-lock-prompt profiles/down": 6,
+  "wide settings-lock-prompt-role profiles/down": 6,
   "wide settings-add-people profiles/down": 6,
   "wide settings-workspace-mark profiles/down": 6,
   "wide settings-local-fonts profiles/down": 6,
@@ -1531,12 +1546,15 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-security-join profiles/down": 6,
   "wide settings-security-off profiles/down": 6,
   "wide settings-security-pending profiles/down": 6,
+  "wide settings-security-again profiles/down": 6,
+  "wide settings-security-root-off profiles/down": 6,
+  "wide settings-security-root profiles/down": 6,
+  "wide settings-security-confirm profiles/down": 6,
   "wide settings-security-upgrade-station profiles/down": 6,
   "wide settings-security-upgrade-station-not profiles/down": 6,
   "wide settings-security-upgrade-member profiles/down": 6,
   "wide settings-security-upgrade-device profiles/down": 6,
   "wide settings-security-upgrade-many profiles/down": 6,
-  "wide settings-security-upgrade-ask profiles/down": 6,
   "wide settings-security-upgrade-other profiles/down": 6,
   "wide settings-security-upgrade-updating profiles/down": 6,
   "wide settings-stations-tasks profiles/down": 6,

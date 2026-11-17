@@ -2229,6 +2229,15 @@ pub fn fixture(mode : String) -> Source {
         f.archived.remove(text(Some(params), "session").clamped_view(start=2).to_owned())
         f.changed()
       }
+      // safe mode's change of this device (verified once, on again as it was): at work a moment, as its station takes it,
+      // then done
+      if @settings.fixture_lock_doing(name, params) {
+        fix_later(1200.0, fn() {
+          @settings.fixture_lock_done()
+          done(Ok(Json::null()))
+        })
+        return
+      }
       match @settings.fixture_call(name, params) {
         Some(r) => {
           done(r)
