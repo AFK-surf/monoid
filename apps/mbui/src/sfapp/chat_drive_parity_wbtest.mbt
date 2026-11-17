@@ -2165,7 +2165,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-picture", what: Key("old alone 「发布清单 第三项已经核对完：安装包签名正确。」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「发送到」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
-  { drive: "send-quote-picture", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 4267.0, to: 5217.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu_line },
   { drive: "send-quote-picture", what: Key("old alone 「星火#发布」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「等 林 决定」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「还有深色模式也看一下」"), from: 1867.0, to: 1867.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -2712,7 +2711,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "picture-lift", what: Key("old alone 「发布清单 第三项已经核对完：安装包签名正确。」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("old alone 「发送到」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
   { drive: "picture-lift", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },
-  { drive: "picture-lift", what: Key("old alone 「对比图和构建日志附在下面。」"), from: 4467.0, to: 6617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu_line },
   // (6667: the menu's sheet of the window's tree goes from the frame of the press that closes it, the host's a frame on)
   { drive: "picture-lift", what: Key("nodes alone 「发消息」"), from: 6667.0, to: 6667.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_menu_line },
   { drive: "picture-lift", what: Key("old alone 「星火#发布」"), from: 2067.0, to: 2067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_wheel },

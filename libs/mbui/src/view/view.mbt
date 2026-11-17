@@ -751,11 +751,22 @@ struct Node {
   /// the id it is one thing by with another, and how it flies from that one (View::shared: shared.mbt); none, not
   mut share : String?
   mut share_flight : Flight?
+  /// how a flight between it and the end of its id that stays goes (View::shared's `route`)
+  mut share_route : FlightRoute?
+  /// how it flies in from what is none of the tree's (View::flies_in), apart from how it flies with another of its id
+  /// (View::shared): a thumbnail sent from here flies in from the composer on the send's way, and later its picture's
+  /// viewer back into it on its own
+  mut in_flight : Flight?
   /// the end of a flight that stays where it is (View::shared's `stays`: a thumbnail), drawn nowhere while one of its
   /// id that moves lives
   mut share_stays : Bool
   /// one that moves that flies only from or to one of its id that stays (View::shared's `with_stays`)
   mut share_with_stays : Bool
+  /// what is told as a flight between it and the end of its id that stays sets out (View::shared's `told`)
+  mut share_told : ((Double, Double, (Double) -> Double) -> Unit)?
+  /// a mark over what holds it (View::flight_mark): on that one's flight's way, carried at its own size by its nearest
+  /// corner, gone as the way is halfway from the end it lies at
+  mut flight_mark : Bool
   /// on a flight's way, drawn over the rest of its layer where the flight has it (shared.mbt); none, where it is
   mut lift : Lift?
 }
@@ -1967,8 +1978,12 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.source = None
       n.share = None
       n.share_flight = None
+      n.share_route = None
+      n.in_flight = None
       n.share_stays = false
       n.share_with_stays = false
+      n.share_told = None
+      n.flight_mark = false
       n.lift = None
       i
     }
@@ -2136,8 +2151,12 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         source: None,
         share: None,
         share_flight: None,
+        share_route: None,
+        in_flight: None,
         share_stays: false,
         share_with_stays: false,
+        share_told: None,
+        flight_mark: false,
         lift: None,
       })
       self.nodes.length() - 1
@@ -11970,13 +11989,24 @@ fn Tree::ordered(self : Tree, at : Int, holder : Int, top : Int) -> Unit {
   // (on a flight's way: drawn over the rest of its layer, put there as that ends, Tree::ordered_lifted; the one that
   // moves of a flight with an end that stays drawn where it is held, what is drawn after it over it: Tree::lifted_over)
   match n.lift {
-    Some(l) if !self.lifting && l.top != at && self.lifted_over(n, l) => {
+    Some(l) if !self.lifting && l.top != at && (self.lifted_over(n, l) || self.flies_under_foot(at)) => {
       self.tops[at] = top
       return
     }
     _ => ()
   }
   self.lifting = false
+  // (a flight drawn under this foot now (its route's level): put just before it, held by what holds it, so what is drawn
+  // over the column it pins over is over it too)
+  if self.flights.length() > 0 {
+    for f in self.flights {
+      if f.foot == at && self.alive_id(f.node) && self.under_foot(f) && f.node.at != at {
+        self.lifting = true
+        self.ordered(f.node.at, holder, top)
+      }
+    }
+    self.lifting = false
+  }
   if n.slot {
     self.tops[at] = top
     for k in n.kids {
@@ -12534,6 +12564,18 @@ fn Tree::each_drawn_in_order(
       s = bs * s
       lx = ux.unsafe_get(h) + lx
       ly = uy.unsafe_get(h) + ly
+      // (a mark over what flies: at its own size by its nearest corner, going as the way goes: Tree::mark_on_flight)
+      if n.flight_mark {
+        match self.mark_on_flight(self.order.unsafe_get(i), fn(o) { (wx[o], wy[o], ws[o]) }) {
+          Some((mx, my, ms, ma)) => {
+            x = mx
+            y = my
+            s = ms
+            a = a * ma
+          }
+          None => ()
+        }
+      }
       // (a page's list's row on its host's pixels, drawn as big as it is laid out: its top the grid's own number for
       // where it is, however it was summed there: row_on_grid)
       if h == rows_at {
@@ -12601,6 +12643,8 @@ pub fn Tree::drawn_one(
   let i = self.order_of[id.at]
   guard i >= 0 && i < self.order.length() else { return None }
   guard self.nodes[id.at].content is Some(c) else { return None }
+  // (where each of the path is drawn, by its place in the order: what a mark in it is carried by, Tree::mark_on_flight)
+  let path_drawn : Map[Int, (Double, Double, Double)] = Map([])
   let path = self.drawn_path
   path.clear()
   let mut j = i
@@ -12650,6 +12694,18 @@ pub fn Tree::drawn_one(
       ns = s * ns
       lx = ux + lx
       ly = uy + ly
+      // (a mark over what flies, as the walk has it: Tree::mark_on_flight)
+      if n.flight_mark {
+        match self.mark_on_flight(self.order[path[k]], fn(o) { path_drawn.get(o).unwrap_or((0.0, 0.0, 1.0)) }) {
+          Some((mx, my, ms, ma)) => {
+            nx = mx
+            ny = my
+            ns = ms
+            na = na * ma
+          }
+          None => ()
+        }
+      }
       if rows_kids && ns == 1.0 {
         let was = ny
         ny = row_on_grid(ny, self.rows_grid)
@@ -12688,6 +12744,7 @@ pub fn Tree::drawn_one(
       }
       None => if n.share_stays && self.stays_hidden(n) { a = 0.0 }
     }
+    path_drawn[path[k]] = (x, y, s)
   }
   Some((c, x, y, a, s, ux, uy, i))
 }

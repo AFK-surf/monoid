@@ -7,8 +7,9 @@
 // its foot's end from 300 ms after it was first said to be on its way (fading in over 200), from that moment on the
 // timeline, never from when its row was made. One that cannot be had says so; one its station could not be reached
 // for, pressed, is asked again. Pressed, the preview; right clicked, its menu where; held by a finger, its menu, the
-// picture lifted over the menu's scrim while it is up (@sf.lift_node). The preview flies from its box and back into
-// it by its thumbnail's id (@sfbase.note_thumb_node).
+// picture lifted over the menu's scrim while it is up (@sf.lift_node). Its box is the end of the preview's flight that
+// stays (View::shared), by its thumbnail's id: the preview's picture flies from it and back into it, out from under
+// the chat's bar or composer first where they cover it.
 
 ///|
 /// A message's picture `a` (as it is now) in `parent`, `w()` by `h()` (its box: image_box's at most the width given, bound:
@@ -76,8 +77,6 @@ fn message_image_node(
   }
   // the menu up by a finger's hold (its serial among what is presented: lifted while it is drawn)
   let held_menu : @signals.Signal[Int?] = @signals.signal(None)
-  // (said the one its thumbnail's id names as it is pressed: note_thumb_node's)
-  let chosen : Ref[() -> Unit] = Ref(fn() {  })
   parent.box(fn(f) {
     // (all of it kept, one value, as it comes to another: what is bound to it worked out again only then, not as the
     // message's data is said again with its size, its picture's share and its likeness the same: @sf.value_kept)
@@ -125,7 +124,6 @@ fn message_image_node(
         if unreached() {
           src.images.again(station())
         } else {
-          (chosen.val)()
           open_file(place.here(), a(), at=at())
         }
       },
@@ -144,21 +142,25 @@ fn message_image_node(
       file_lift_scale,
     )
     |> ignore
-    // (what the preview flies from and back into, by its thumbnail's id: hidden while the preview shows it, its
-    // picture flown from here and back here by the viewer, under the page's bar while it is under it)
-    chosen.val = @sfbase.note_thumb_node(
-      f,
-      thumb,
-      radius=corner,
-      letterbox~,
-      start_crop~,
-      picture=fn() {
-        match key() {
-          "!" => ""
-          k => k
+    // (the end of the preview's flight that stays, by its thumbnail's id: drawn nowhere while the preview shows it,
+    // its picture flown from here and back here, View::shared's `stays`, drawn on its way as here: covering its box,
+    // from its start where it is cut so, from its middle else, or a letterboxed one contained (said covering from
+    // somewhere, it covers whatever else is said; said none, contained): one binding for all three)
+    f
+    .image_contains(Is(true))
+    .image_covers_at(
+      By(fn() {
+        if start_crop() {
+          Some((0.0, 0.0))
+        } else if letterbox() {
+          None
+        } else {
+          Some((0.5, 0.5))
         }
-      },
+      }),
     )
+    .shared(By(thumb), @motion.flight_by(@motion.moved()), stays=true)
+    |> ignore
     f.pick(at_once=true, fn() { key() == "!" }, fn(p, none) {
       // (all of its box, a share of it as the frame's size is said: what is in it laid out in it, its middle the box's)
       p.width_share(Is(1.0)).height_share(Is(1.0)) |> ignore

@@ -129,9 +129,13 @@ fn words_over_hides(a : FixedArray[Double], j : Int, px : Double, py : Double) -
 }
 
 ///|
-/// Whether both glyphs `k1` and `k2` (`k1` drawn first) are seen at (`px`, `py`): nothing that hides drawn between
-/// them there, nor over both.
+/// Whether both glyphs `k1` and `k2` (`k1` drawn first) are seen at (`px`, `py`): each there within what cuts it, its
+/// clip's rounded corners too (in_inst_clip: words in a frame cut round, a theme's circle opening, are none past its
+/// curve), and nothing that hides drawn between them there, nor over both.
 fn Ctx::words_over_both_seen(self : Ctx, k1 : Int, k2 : Int, px : Double, py : Double) -> Bool {
+  if !in_inst_clip(self.inst, k1 * inst_size, px, py) || !in_inst_clip(self.inst, k2 * inst_size, px, py) {
+    return false
+  }
   for j in (k1 + 1)..<self.ninst {
     if j != k2 && words_over_hides(self.inst, j, px, py) {
       return false

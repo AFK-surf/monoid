@@ -2854,7 +2854,8 @@ pub fn Tester::glyphs_seen(self : Tester) -> Array[(Double, Double, Double, Doub
       if x1 > x0 && y1 > y0 {
         let px = (x0 + x1) / 2.0
         let py = (y0 + y1) / 2.0
-        let mut hidden = false
+        // (none of it seen past its clip's rounded corner: in_inst_clip)
+        let mut hidden = !in_inst_clip(a, b, px, py)
         for j in (k + 1)..<c.ninst {
           if words_over_hides(a, j, px, py) {
             hidden = true
