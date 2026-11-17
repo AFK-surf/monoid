@@ -148,7 +148,7 @@ pub fn keep_opened(@ui.Ctx, @sfbase.Source, String, @sfbase.DriveAt, String) -> 
 
 pub fn keys(@ui.Ctx, @sfbase.Source, @sfbase.Workspace) -> Unit
 
-pub fn keys_dialog(@ui.Ctx, @sfbase.Source) -> Unit
+pub fn keys_dialog_node(@view.View, @sfbase.Source, @signals.Signal[Bool]) -> Unit
 
 pub fn laid_beside(@sfbase.Page) -> Bool
 

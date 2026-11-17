@@ -813,17 +813,11 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
       side.box(fn(b) {
         b.over(Is(true)) |> ignore
         let tips = @sf.TipLayer::new(fn() { tape_goes.node })
-        dock_node(
-          b,
-          fn() { tape_side_at(side) },
-          fn(r) {
-            // (nothing of it read out while the panel is behind the one in use: tape_behind's)
-            r.hides(By(fn() { wide.tape_at.get() != Side })) |> ignore
-            rail_node(r, src, tips, fn() { rail_at_tape(tape_side_at(side).ground) })
-          },
-          fn(c, _) { tape_sidebar_built(c, src) },
-        )
-        |> ignore
+        dock_node(b, fn() { tape_side_at(side) }, fn(r) {
+          // (nothing of it read out while the panel is behind the one in use: tape_behind's)
+          r.hides(By(fn() { wide.tape_at.get() != Side })) |> ignore
+          rail_node(r, src, tips, fn() { rail_at_tape(tape_side_at(side).ground) })
+        })
       })
       |> ignore
       // (the sidebar made once, the tree's, over the panel where it lays its sidebar out; nothing of it read out while
@@ -1174,15 +1168,6 @@ fn tape_behind(c : @ui.Ctx, p : TapePane, body : () -> Unit) -> Unit {
 /// Whether panel `p` has its cover over it (tape_cover): not in use, or on its way to be, or pulled over by a finger.
 fn tape_covered(p : TapePane) -> Bool {
   wide.tape_at.get() != p || !tape_goes.rest.get() || wide.tape_pull.get() == Some(p)
-}
-
-///|
-/// The sidebar of a place not made once over the block on the tape (lists.mbt sidebar), its old view's, as wide as its
-/// box; behind the panel in use on its darker ground (tape_behind).
-fn tape_sidebar_built(c : @ui.Ctx, src : Source) -> Unit {
-  let (now, _, _, _) = @sfbase.workspace_in_view(src)
-  guard now is Some(w) else { return }
-  tape_behind(c, Side, fn() { sidebar(c, src, w, c.width) })
 }
 
 ///|

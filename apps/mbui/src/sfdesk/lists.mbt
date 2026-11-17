@@ -6,15 +6,6 @@
 // list; opened, the newest of them is open beside it, or with none what the archive is.
 
 ///|
-/// The sidebar `width` wide (its 8 at the left over the rail's empty side), the one the block holds (side_place): the
-/// chats' lists (已归档 among them) for the chats' places; a place's own (the files', the stations', the profiles', the
-/// settings': made once over the block, side_node).
-fn sidebar(_c : @ui.Ctx, _src : Source, _w : Workspace, _width : Double) -> Unit {
-  // (the chats' lists and every place's own: made once over the block, side_node.mbt; nothing left to its old view)
-  ()
-}
-
-///|
 /// What is wrong with the stations of the workspace in view, as the foot's band says it (lists_foot_node's): None
 /// where nothing is, or with the bell in the rail (its panel says it).
 fn foot_trouble_of(src : Source, workspace : () -> Workspace?) -> Json? {

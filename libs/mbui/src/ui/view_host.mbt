@@ -6519,18 +6519,20 @@ fn view_cursor_tell() -> Unit {
 
 ///|
 // kept across runs: put back as its nodes are let go (yield_thumbs)
-/// The nodes that yield to a list's thumb of an old view under them, by index: who each is, and who the old view is.
-let thumbs_yielded : Map[Int, (@view.NodeId, @view.NodeId)] = Map([])
+/// The nodes that yield to a list's thumb under them, by index: who each is, and who the old view is (none: the tree's
+/// thumbs alone).
+let thumbs_yielded : Map[Int, (@view.NodeId, @view.NodeId?)] = Map([])
 
 ///|
-/// Node `v` (one that takes a press: an edge over the side of a block an old view draws) yields, where it is found
-/// taking a finger, to `island` (that old view, drawn under it) where what of `island` takes it there is the thumb of a
+/// Node `v` (one that takes a press: an edge over the side of a block) yields, where it is found taking a mouse's
+/// press, to the thumb of a column of the tree's under it there (one taking a drag while it shows: Tree::is_thumb), and
+/// to `island` (an old view drawn under it, where there is one) where what of `island` takes it there is the thumb of a
 /// list's bar shown for a mouse (bar_target's: its grab round it, its clip): the thumb's there, its pointer, its press
 /// and what follows. Nothing over `v` there, `island` living, this making of it, taking presses there (not leaving, no
 /// modal layer over it): else `v`'s. Let go with `v`.
-pub fn yield_thumbs(v : @view.View, island : @view.View) -> Unit {
+pub fn yield_thumbs(v : @view.View, island? : @view.View) -> Unit {
   let me = v.id()
-  thumbs_yielded[me.at] = (me, island.id())
+  thumbs_yielded[me.at] = (me, island.map(fn(i) { i.id() }))
   v.owns(fn() {
     match thumbs_yielded.get(me.at) {
       Some((who, _)) if who == me => thumbs_yielded.remove(me.at)
@@ -6567,7 +6569,7 @@ fn view_retarget(
       _ => ()
     }
   }
-  guard found.contains(Hosted(island)) else { return picked }
+  guard island is Some(island) && found.contains(Hosted(island)) else { return picked }
   match old_taker_at(tree, island, x, y) {
     Some(token) if token % 2 == 0 && g().bars.iter().any(fn(b) { b.thumb == token / 2 }) => Hosted(island)
     _ => picked
@@ -6595,7 +6597,7 @@ fn yields_published(c : Ctx) -> Unit {
   if thumbs_yielded.is_empty() && yields_seen.val.is_empty() {
     return
   }
-  let islands = thumbs_yielded.values().map(fn(e) { e.1 }).collect()
+  let islands = thumbs_yielded.values().filter_map(fn(e) { e.1 }).collect()
   let now = []
   for k, id in c.hit_ids {
     guard c.bars.iter().any(fn(b) { b.thumb == id }) else { continue }

@@ -443,7 +443,6 @@ fn dock_side_at(
     // (on the tape, open, a panel of its own: the ground it floats on; else where the move has its ground)
     ground: if wide.tape.get() && !bar { dock_ground(bar) } else { f.ground },
     shadow: (f.blur, f.fall, @sf.alpha(@sf.theme().p.shadow, f.shade)),
-    held_w: f.side_w,
     links,
     round,
     edge: (dock_line, @sf.alpha(@sf.theme().p.line, f.line)),
@@ -457,7 +456,7 @@ fn dock_side_at(
 
 ///|
 /// The block's line as a node in `n` (as large as what holds the block, over it), where `at` says the block is: drawn
-/// after all the block holds, its rail and sidebar the old view's or the tree's (side_node), as an old view's
+/// after all the block holds, its rail and its sidebar (side_node), as an old view's
 /// box's border is drawn over what it holds; the block's own box draws none (dock).
 fn dock_edge_node(n : @view.View, at : () -> SideAt) -> Unit {
   n.box(fn(e) {
@@ -476,19 +475,8 @@ fn dock_edge_node(n : @view.View, at : () -> SideAt) -> Unit {
 /// The block (shell.css.ts dock: the rail and the sidebar on one ground) as nodes in `n` (as large as what holds the
 /// block, over it), where `at` says it is: a node with its ground and its shadow, as round as its corners are
 /// (dock_round_node), holding, cut to it, the rail (`rail`'s nodes: rail_node, as wide as the rail is drawn; none
-/// beside the system's tabs) and the sidebar of a place not made once over the block (side_made: `side`'s old view, as
-/// wide as the sidebar is laid out, built only while what is in it is drawn; `before` built in it first, each build,
-/// whether or not the sidebar is: what the frame works out of the block before its sidebar builds). Its line is drawn
-/// over all it holds by dock_edge_node, its chats' lists by side_node. The sidebar's old view's node (what a list's
-/// thumb of it is shown by: pane_edge).
-fn dock_node(
-  n : @view.View,
-  at : () -> SideAt,
-  rail : (@view.View) -> Unit,
-  side : (@ui.Ctx, Bool) -> Unit,
-  before? : (@ui.Ctx) -> Unit = fn(_) {  },
-) -> @view.View {
-  let held : Ref[@view.View?] = Ref(None)
+/// beside the system's tabs). Its line is drawn over all it holds by dock_edge_node, every place's sidebar by side_node.
+fn dock_node(n : @view.View, at : () -> SideAt, rail : (@view.View) -> Unit) -> Unit {
   n.box(fn(o) {
     o.over(Is(true)) |> ignore
     // (laid out where the block is, not drawn off where it is laid out: the old views in it laid out where they are
@@ -532,36 +520,10 @@ fn dock_node(
         })
       })
       |> ignore
-      // the sidebar of a place not made once over the block, as wide as it is laid out, beside the rail
-      g.box(fn(s) {
-        s
-        .width(By(fn() { Some(at().held_w) }))
-        .height(By(fn() { Some(at().block.3) }))
-        .shrink(Is(0.0))
-        // (where the rail is drawn narrower than nothing, under the sidebar: from where the sidebar starts)
-        .margin(By(fn() {
-          let a = at()
-          (dmin(0.0, a.box.0 - a.block.0), 0.0, 0.0, 0.0)
-        }))
-        |> ignore
-        held.val = Some(
-          @ui.old(s, fn(c) {
-            before(c)
-            let a = at()
-            if a.shown && !side_made(side_place()) {
-              side(c, a.bar)
-            }
-          }, key=tape_island_key)
-          .over(Is(true))
-          |> @ui.old_takes_own,
-        )
-      })
-      |> ignore
     })
     |> ignore
   })
   |> ignore
-  held.val.unwrap_or(n)
 }
 
 ///|
@@ -582,14 +544,12 @@ let dock_line : Double = 1.0
 /// (x, y, w, h), its corners (linked as its look's are, else one radius: dock_round_node) and its line (how wide, its
 /// colour: dock_edge_node), whether what is in it is drawn, how tall its top row is (the brand's, where the block's
 /// move has got: fold_bars'), where that move has got between open and the floating bar (the band's), whether the
-/// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour); how wide the
-/// sidebar is laid out in it (its box's, or on the block's way between showing it and not the larger end's: fold_held).
+/// block is the closed bar, whether on the tape; the block's ground and its shadow (blur, fall, colour).
 priv struct SideAt {
   box : (Double, Double, Double, Double)
   block : (Double, Double, Double, Double)
   ground : Int64
   shadow : (Double, Double, Int64)
-  held_w : Double
   links : FixedArray[@ui.CornerOf]?
   round : Double
   edge : (Double, Int64)

@@ -83,7 +83,9 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // out by the tree; so phone search-jobs and search-results below, and wide switcher)
   "phone switcher": (631, 744, 170),
   "phone switcher-found": (637, 747, 170),
-  "phone keys-dialog": (434, 499, 92),
+  // (raised once, 2026-11-17: ⌘/'s shortcuts a panel of the presenters' made as nodes, sfdesk shortcuts.mbt
+  // keys_dialog_node: what its old dialog built as it opened now made, laid out and measured by the tree)
+  "phone keys-dialog": (615, 771, 234),
   "phone search": (434, 499, 92),
   "phone search-jobs": (571, 693, 148),
   "phone search-results": (764, 921, 234),
@@ -467,7 +469,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide place": (714, 915, 213),
   "wide switcher": (1556, 1653, 256),
   "wide switcher-found": (1564, 1650, 250),
-  "wide keys-dialog": (1323, 1346, 142),
+  // (raised once, 2026-11-17: ⌘/'s shortcuts made as nodes, as phone keys-dialog above)
+  "wide keys-dialog": (1491, 2777, 576),
   "wide search": (1323, 1346, 142),
   "wide search-jobs": (1323, 1346, 142),
   "wide search-results": (1323, 1346, 142),

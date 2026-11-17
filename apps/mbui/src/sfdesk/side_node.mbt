@@ -1,16 +1,15 @@
 // The sidebar made once over the block (pane_view's and tape_view's `sides`): where the block lays its sidebar out
 // (SideAt), the sidebar the block holds now (side_place), each made as nodes of the window's tree: the chats' lists for
 // the chats' places (with 已归档 among them, the band over them and the foot under them), the settings' list for the
-// settings', the stations' and the profiles' lists for the rail's places of theirs (places_side_node.mbt). The files'
-// is not made once yet: the block's old view's (lists.mbt sidebar).
+// settings', the stations' and the profiles' lists for the rail's places of theirs (places_side_node.mbt), the files'
+// for theirs (files_side_node.mbt).
 
 ///|
 /// The sidebar the block holds now in node `n` (as large as what holds the block, over it), where `at` says the block
 /// has it: cut to the block's room, its corners the block's (its line over it, dock_edge_node's); shown while what is in
 /// it is drawn.
 fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideAt) -> Unit {
-  // (in the place of an old view's sidebar drawn where it is (sidebar's): at once, as one sidebar for another)
-  n.show(at_once=true, fn() { side_made(side_place()) }, fn(cut) {
+  n.box(fn(cut) {
     cut
     // (not shown, as the device waits in the lock: laid out nowhere, the same nodes, what had the focus in it given
     // it back as it is shown again, as an old view's focus waits for its node)
@@ -42,6 +41,7 @@ fn side_node(n : @view.View, src : Source, tips : @sf.TipLayer, at : () -> SideA
     })
     |> ignore
   })
+  |> ignore
 }
 
 ///|
@@ -57,13 +57,6 @@ fn side_opens(src : Source, ws : String, ask : (String, Map[String, Json]) -> @s
   let long = rail_items(src, ws).contains("attention") ||
     @sfbase.opens_answered(ask("longJobs", @sfbase.long_jobs_asked(ws)))
   list && all && marks && long
-}
-
-///|
-/// Whether the sidebar of `place` (side_place's) is made once over the block, not drawn by its old view (sidebar's).
-fn side_made(_place : String) -> Bool {
-  // (every place's now: the chats', the files', the stations', the profiles', the settings')
-  true
 }
 
 ///|

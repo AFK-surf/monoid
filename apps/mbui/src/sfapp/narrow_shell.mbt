@@ -199,6 +199,8 @@ fn narrow_shell(v : @view.View, src : Source) -> Unit {
   |> ignore
   // ⌘K's panel over the pages (sfdesk's switcher.mbt), over what the old view puts over them
   @sfdesk.switcher_node(v, src)
+  // ⌘/'s shortcuts, presented as the shell's keys_open says (sfdesk's shortcuts.mbt)
+  @sfdesk.keys_dialog_node(v, src, @sfdesk.wide.keys_open)
   // the bottom bar's glass, where the bar is laid out: a finger on it the bar's at each event's moment (drawn by the old
   // view over the pages; what the old frame puts over all of it at its root, its notch's key, menus and sheets, first)
   bar_glass_node(v, src, fn() { workspace_in_view(src).0 })
@@ -363,7 +365,7 @@ fn narrow_bar_shown(src : Source, w : Workspace) -> Bool {
 
 ///|
 /// Over the frame with workspace `w` in view, in every tier: the sheets, a new device waiting on this one's code, what
-/// the settings put up, ⌘/, the presenters, the toasts, the loupe.
+/// the settings put up, the presenters, the toasts, the loupe.
 fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   // a new device waiting on this one's code, in any workspace of the person's, over whichever page is open
   // : put up when no other sheet is
@@ -372,9 +374,6 @@ fn signed_in_over(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   @settings.vault_prompts(settings_core(src, w), !sheet_open())
   // (the core what the settings put up over a page draws with, put up by what has none at hand)
   @settings.panels_frame(settings_core(src, w), w.id)
-  // ⌘/'s shortcuts, in every tier over the pages, under the presenters (sfdesk's shortcuts.mbt; ⌘K's panel the
-  // shells' own as nodes, sfdesk's switcher_node)
-  @sfdesk.keys_dialog(c, src)
   // the library's menus, picks, panels, confirms and questions (src/sf presenters.mbt), over all of those
   @sf.presented(c)
   finger_loupe(c)

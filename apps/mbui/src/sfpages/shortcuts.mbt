@@ -1,6 +1,6 @@
 // 快捷键, one page made once on every screen: each action
 // of the core's keymap (the prefs' `keymap`) gets new keys by pressing them (`keys.set`). ⌘/'s list of them is the
-// shell's (sfdesk shortcuts.mbt keys_dialog).
+// shell's (sfdesk shortcuts.mbt keys_dialog_node).
 
 ///|
 /// An action's keys changed (`keys.set`: none, its own again; no action, every one's), what the core says of it
