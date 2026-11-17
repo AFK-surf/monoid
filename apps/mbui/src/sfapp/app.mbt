@@ -552,6 +552,7 @@ pub fn app_tree(src : Source) -> (@view.View) -> Unit {
         (
           p,
           @settings.feature_from(p, "chatPage"),
+          @settings.feature_from(p, "composerNodes"),
           @settings.feature_from(p, "farviewNative"),
           @settings.feature_from(p, "board"),
         )

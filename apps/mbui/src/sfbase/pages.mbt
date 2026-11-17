@@ -78,6 +78,12 @@ pub fn page_chat_reader(src : Source, entry : @view.View, serial : Int) -> (Page
 pub let chat_page_nodes : @signals.Signal[Bool] = @signals.signal(chat_page_nodes_at_start, same=fn(a, b) { a == b })
 
 ///|
+/// Whether a chat's composer on its page made as nodes is made as nodes too (sfpages' composer_node), not an old view
+/// in its list's foot: 实验性功能's 试用新输入框, read with chat_page_nodes as the page is made (chat_page_kind).
+// kept across runs: false as a run begins (reset)
+pub let composer_nodes : @signals.Signal[Bool] = @signals.signal(false, same=fn(a, b) { a == b })
+
+///|
 /// What chat_page_nodes is as a run begins.
 // kept across runs: a value
 let chat_page_nodes_at_start : Bool = false
@@ -88,7 +94,12 @@ let chat_page_nodes_at_start : Bool = false
 /// an open chat's page the one chosen at once (chat_page_made reads it as it is made).
 pub fn chat_page_kind() -> String {
   if chat_page_nodes.get() {
-    "chat"
+    // (its composer made as nodes or as an old view: another make of the page, made again in its place as it turns)
+    if composer_nodes.get() {
+      "chat-composed"
+    } else {
+      "chat"
+    }
   } else {
     "chat-old"
   }
@@ -232,6 +243,7 @@ pub fn chat_page_made(
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
   foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
+  foot_node? : (@view.View, Source, ChatRef) -> Unit,
   narrower? : (@view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
 ) -> Source {
@@ -315,27 +327,35 @@ pub fn chat_page_made(
                 // (its height going the way the composer's ground sets out on for what it holds, from that cause's
                 // moment and by its spec, so the room under the last row goes with that ground, one motion:
                 // composer_set_out, foot_resizes)
-                let island : Ref[@view.View?] = Ref(None)
-                island.val = app.nav.page_island(
-                  n,
-                  serial,
-                  fn(c, page) {
-                    page_entry_read(serial, retained, page)
-                    page_read(page)
-                    f(c, retained, r)
-                  },
-                  key~,
-                  natural=true,
-                  // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
-                  // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
-                  over=true,
-                  reshaped=fn(_was) { foot_resizes(island.val, r) },
-                )
-                // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
-                // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
-                // from outside)
-                |> @ui.old_takes_own
-                |> Some
+                // (its composer made as nodes too, where 试用新输入框 is on as the page is made (chat_page_kind): in the
+                // list's foot, its height going its own way, View::resizes)
+                let composed = @signals.untracked(fn() { composer_nodes.get() })
+                match foot_node {
+                  Some(fnode) if composed => n.box(fn(at) { fnode(at, retained, r) }) |> ignore
+                  _ => {
+                    let island : Ref[@view.View?] = Ref(None)
+                    island.val = app.nav.page_island(
+                      n,
+                      serial,
+                      fn(c, page) {
+                        page_entry_read(serial, retained, page)
+                        page_read(page)
+                        f(c, retained, r)
+                      },
+                      key~,
+                      natural=true,
+                      // (cut to itself, its ground its shape all the way: laid out at its one line as words are sent from
+                      // it, its ground going down to that on its own way drawn whole over its node's top, not cut flat)
+                      over=true,
+                      reshaped=fn(_was) { foot_resizes(island.val, r) },
+                    )
+                    // (in the list's foot, nothing to the hand but what it holds that takes it: the room round the
+                    // composer's capsule, over it and the bar's under it, the page's, as a press or what is let go there
+                    // from outside)
+                    |> @ui.old_takes_own
+                    |> Some
+                  }
+                }
                 // (the composer as wide as the column is drawn, where it is drawn, whatever the column is laid out
                 // at: its own way to another width with_side's)
                 // (none of it at rest: bound once a column has first set off on such a way, at that cause)
@@ -1336,6 +1356,7 @@ pub fn reset() -> Unit {
   absolute_times.set(false)
   // whether a chat's page is made as nodes inside (chat_page_nodes), Farview tabs native, or the board enabled
   chat_page_nodes.set(chat_page_nodes_at_start)
+  composer_nodes.set(false)
   farview_native.set(false)
   board_feature.set(false)
   // a chat's list's turns and its messages out of avatars (list_turns.mbt, emit.mbt)

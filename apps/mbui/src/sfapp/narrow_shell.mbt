@@ -592,6 +592,7 @@ fn narrow_made_as(
                 )
               },
               foot=chat_foot_nodes,
+              foot_node=fn(n, s, r) { chat_foot_node(n, s, r, @sf.TipLayer::new(fn() { Some(v) })) },
             )
             |> ignore
           },

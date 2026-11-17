@@ -207,7 +207,11 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
 - The chat's page made as nodes is behind a switch a person turns on, 实验性功能's 试用新对话页 (the experimental
   feature `chatPage`, the prefs' `experimental`; sfbase's `chat_page_from_prefs`), off by default till it lacks nothing
-  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile.
+  (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile. Its
+  composer made as nodes (sfpages' `composer_node`) is behind another, 试用新输入框 (`composerNodes`, read with it as the
+  page is made: sfbase's `composer_nodes`), till the composer and the new chat's page lack nothing made so (the owner,
+  2026-11-17: 「要迁就全迁了，用开关保证用户不会受影响」); what it is apart from how it is drawn is one for both views
+  (`composer_state.mbt`, sfbase's `compose_given.mbt`, `composer_send.mbt`), never copied into the view made as nodes.
 - What is not yet everyone's is a feature of one registry, the core's (`client/core-ts/src/features.ts`;
   `scripts/features-check.ts`), of which the app keeps no copy and no rule: it reads the prefs' `features` and
   `experimentalItems`, and a station's own as its overview says (`src/sfapp/settings/features.mbt`). `beta`, on on the

@@ -23,6 +23,7 @@ export interface FeatureSpec {
 
 export const FEATURES = {
   chatPage: { stage: "experimental", betaOnly: true },
+  composerNodes: { stage: "experimental", betaOnly: true },
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
   terminal: { stage: "beta", station: true },

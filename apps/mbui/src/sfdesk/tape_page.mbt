@@ -676,6 +676,11 @@ fn tape_made(
                 tape_behind(c, Page, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
                 @sf.pane_round.val = None
               },
+              foot_node=fn(n, s, r) {
+                @sf.pane_round.val = Some(tape_page_round())
+                @sfpages.chat_composer_node(n, s, r, tips, apart=true)
+                @sf.pane_round.val = None
+              },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
               narrower=tape_page_narrower,
             )

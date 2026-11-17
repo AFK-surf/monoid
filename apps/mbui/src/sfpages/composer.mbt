@@ -206,6 +206,7 @@ fn composing_reset() -> Unit {
   composing.hint_shown.set("")
   composing.taking.set(false)
   composing.corners.clear()
+  warmed_at.clear()
   // (what its box was last shaped for: a run's, never the next's, whose first build would take the one before's as
   // its ground set out, its list's foot going that way: composer_foot_told)
   composer_shaped_by.val = ""
@@ -615,73 +616,22 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   let dropped : Array[Dragged] = []
   for g in @sfbase.draft_taken(w.key) {
     match g {
-      Picked(list) =>
-        if !no_files {
-          @signals.untracked(fn() {
-            for f in list {
-              writing_add_picked(src, w, spec.station, f)
-            }
-          })
-        }
-      // files shared into the app from another, for this draft (share.mbt)
-      Shared(list) =>
-        if !no_files {
-          c.tell("composer/shared/" + w.key, fn() {
-            for f in list {
-              writing_add_picked(src, w, spec.station, f)
-            }
-          })
-        }
-      // a message's file quoted from its menu (sfpages menus.mbt): a quote with its file in its card
-      Quoted(author, ts, role, file) =>
-        if !no_files {
-          c.tell("composer/quoted/" + w.key, fn() {
-            writing_quote(
-              src,
-              w,
-              {
-                "author": Json::string(author),
-                "text": Json::string(text(Some(file), "name")),
-                "ts": Json::string(ts),
-                "role": Json::string(role),
-              },
-              file~,
-            )
-          })
-        }
+      // (the system's picker's answer taken in before the box is laid out: the host's word that it answered brings
+      // this frame)
+      Picked(_) => @signals.untracked(fn() { given_into(src, spec.station, w, no_files, g) })
       // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
       Followed(words) => {
-        let now = w.field.text()
-        let said = if now.trim() == "" { words } else { now.trim_end().to_owned() + "\n" + words }
+        let said = followed_words(w, words)
         w.field.set(said)
         c.tell("composer/followed/" + w.key, fn() { writing_text(src, w, said) })
         c.focus_field(w.field)
       }
-      // a picture marked for this chat (a service's page, an image viewed), going up with a quote per mark (what is
-      // said of it its comment): a page's mark's screenshot as its quote's picture, an image's as a file beside them
-      Marked(name, bytes, quotes, kind) =>
-        if !no_files {
-          c.tell("composer/marked/" + w.key, fn() {
-            if kind != "page" {
-              writing_add(src, w, spec.station, name, bytes)
-            }
-            for q in quotes {
-              let quote : Json = {
-                "author": Json::string(q.0),
-                "text": Json::string(q.1),
-                "comment": Json::string(q.2),
-                "role": Json::string(kind),
-              }
-              if kind == "page" {
-                writing_quote(src, w, quote, picture=(spec.station, name, bytes))
-              } else {
-                writing_quote(src, w, quote)
-              }
-            }
-          })
-        }
       // a 文件 row put in (添加到消息) or let go on the chat
       Dropped(d) => dropped.push(d)
+      // (what writes to the core told after the build)
+      Shared(_) => c.tell("composer/shared/" + w.key, fn() { given_into(src, spec.station, w, no_files, g) })
+      Quoted(_) => c.tell("composer/quoted/" + w.key, fn() { given_into(src, spec.station, w, no_files, g) })
+      Marked(_) => c.tell("composer/marked/" + w.key, fn() { given_into(src, spec.station, w, no_files, g) })
     }
   }
   match c.field_files(composer_field_key) {
@@ -695,6 +645,79 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   @sfbase.writing_stills(c)
   if !dropped.is_empty() && !no_files {
     writing_drop(src, w, spec.station, dropped.map(dropped_of), drops_as_files(src, w.key))
+  }
+}
+
+///|
+/// `g`, put into draft `w` on `station` from outside its composer (sfbase's compose_given.mbt), taken into it now,
+/// whichever view draws it: files the system's picker answered and files shared into the app go up (none where it takes
+/// no files: `no_files`); a message's file quoted from its menu (sfpages menus.mbt) a quote with its file in its card; a
+/// picture marked for this chat (a service's page, an image viewed) going up with a quote per mark, what is said of it
+/// its comment (a page's mark's screenshot as its quote's picture, an image's as a file beside them); words a
+/// visualization asked to send after what is written; a 文件 row by its path, or as a file where the chat takes what is
+/// dragged in so.
+fn given_into(src : Source, station : String, w : Writing, no_files : Bool, g : Given) -> Unit {
+  match g {
+    Picked(list) | Shared(list) =>
+      if !no_files {
+        for f in list {
+          writing_add_picked(src, w, station, f)
+        }
+      }
+    Quoted(author, ts, role, file) =>
+      if !no_files {
+        writing_quote(
+          src,
+          w,
+          {
+            "author": Json::string(author),
+            "text": Json::string(text(Some(file), "name")),
+            "ts": Json::string(ts),
+            "role": Json::string(role),
+          },
+          file~,
+        )
+      }
+    Followed(words) => {
+      let said = followed_words(w, words)
+      w.field.set(said)
+      writing_text(src, w, said)
+      w.field.focus()
+    }
+    Marked(name, bytes, quotes, kind) =>
+      if !no_files {
+        if kind != "page" {
+          writing_add(src, w, station, name, bytes)
+        }
+        for q in quotes {
+          let quote : Json = {
+            "author": Json::string(q.0),
+            "text": Json::string(q.1),
+            "comment": Json::string(q.2),
+            "role": Json::string(kind),
+          }
+          if kind == "page" {
+            writing_quote(src, w, quote, picture=(station, name, bytes))
+          } else {
+            writing_quote(src, w, quote)
+          }
+        }
+      }
+    Dropped(d) =>
+      if !no_files {
+        writing_drop(src, w, station, [dropped_of(d)], drops_as_files(src, w.key))
+      }
+  }
+}
+
+///|
+/// What draft `w` says once a visualization's `words` are put after what is written in it (a line between).
+fn followed_words(w : Writing, words : String) -> String {
+  let now = w.field.text()
+  if now.trim() == "" {
+    words
+  } else {
+    now.trim_end().to_owned() + "\n" + words
   }
 }
 
@@ -957,7 +980,7 @@ fn attach(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files 
     // on a touch system the phone's sheet of what can go in (attach.mbt), with keyboard and mouse the system's picker at once
     c.on_press(id, fn() {
       if @sf.attach_from_sheet() {
-        attach_open(id, src, w.key)
+        attach_open(Of(id), src, w.key)
       } else {
         pick_files(w)
       }
@@ -1670,13 +1693,13 @@ let composer_box : @ui.Style = @ui.css("row w=Full gap=SPx radius=InnerOr(Full) 
 let capsule_pad_alone : Double = 8.0
 
 ///|
-/// How high the capsule is: its round buttons capsule_pad_alone in; in a panel's foot corners too square for that to
+/// How high the capsule is, its field's line `line`: its round buttons capsule_pad_alone in; in a panel's foot corners too square for that to
 /// stand concentric in them, as high as does (@sf.foot_capsule_h: a finger's 52 in the tape's 28, 48), so it stands
 /// where its ends are concentric with them as high as it is (the user, 2026-10-26: a finger's, 52 high, stood where a 48
 /// would, its ends not on the page's corners).
-fn capsule_h(c : @ui.Ctx) -> Double {
+fn capsule_h_at(line : Double) -> Double {
   let side = @sf.theme().round.side
-  @sf.foot_capsule_h(side + 2.0 * (capsule_pad_alone + capsule_extra(c)), side)
+  @sf.foot_capsule_h(side + 2.0 * (capsule_pad_alone + capsule_extra_at(line)), side)
 }
 
 ///|
@@ -1685,7 +1708,13 @@ fn capsule_h(c : @ui.Ctx) -> Double {
 /// they are, else as its line), so that they stand as far in at their ends as over and under them, concentric with it;
 /// none while its line is no taller than they are.
 fn capsule_extra(c : @ui.Ctx) -> Double {
-  dmax(0.0, (field_line(c) - @sf.theme().round.side) / 2.0)
+  capsule_extra_at(field_line(c))
+}
+
+///|
+/// capsule_extra's, its field's line `line`.
+fn capsule_extra_at(line : Double) -> Double {
+  dmax(0.0, (line - @sf.theme().round.side) / 2.0)
 }
 
 ///|
@@ -1739,15 +1768,21 @@ pub let composer_alone : ComposerPlace = {
 /// concentric with the corner it is in, an end that cannot the ladder's inset in, as it stands alone
 /// (@sf.foot_capsule); else as it stands alone (composer_alone).
 pub fn composer_place(c : @ui.Ctx, pane : Double) -> ComposerPlace {
+  composer_place_at(pane, field_line(c))
+}
+
+///|
+/// composer_place's, its field's line `line`.
+fn composer_place_at(pane : Double, line : Double) -> ComposerPlace {
   let d = composer_side()
   if !@sf.in_pane() || composer_width(pane) < pane - 2.0 * d - 0.5 {
     return composer_alone
   }
-  let h = capsule_h(c)
+  let h = capsule_h_at(line)
   let (l, r, b) = @sf.foot_capsule(h, d, d)
   {
     capsule_in: (l - d, r - d, b - d),
-    capsule_pad: (h - @sf.theme().round.side) / 2.0 - capsule_extra(c),
+    capsule_pad: (h - @sf.theme().round.side) / 2.0 - capsule_extra_at(line),
     corner: @sf.pane_composer_corner(),
   }
 }
@@ -2308,6 +2343,15 @@ pub fn send_in_chat(c : @ui.Ctx, src : Source, r : ChatRef, v : ChatView, w : Wr
   let above = c.list_info_as(list, fn(i) { i.map(fn(v) { v.at_end }) }).map(fn(i) { !i.at_end }).unwrap_or(false)
   c.list_to_end(list, glide=@sfbase.flight_of(w.key) is None || above)
   @sfbase.chat_latest(c, src, r, v, @sf.t("web-main.chat.toLatest"))
+  sent_into_chat(src, r, v, w, rk, row)
+}
+
+///|
+/// Words sent into chat `r` (`v` its view, `rk` its station and session) from draft `w`, in its list already as `row`
+/// (sent_local): what the core takes off the draft (`composer.take`) goes (`chat.send`), whichever view drew the
+/// composer. Not taken in at all (the core refused it, or went away with it): back in the composer unless something new
+/// is written there, saying why; one the station did not take waits in the outbox, which says so.
+fn sent_into_chat(src : Source, r : ChatRef, v : ChatView, w : Writing, rk : String, row : String) -> Unit {
   writing_take(src, w, fn(taken) {
     guard taken is Some(_) else {
       sent_local_gone(rk, row)
@@ -3249,8 +3293,14 @@ let composer_foot_wide : Double = 16.0
 /// of words (field_line), its parts 10 apart, its buttons' row as far from its foot as makes them concentric with its
 /// corners (tools_row).
 fn composer_open_box(c : @ui.Ctx, corner? : Double = @sf.composer_corner()) -> Double {
+  composer_open_box_at(field_line(c), corner)
+}
+
+///|
+/// composer_open_box's, its field's line `line`, its corner `corner`.
+fn composer_open_box_at(line : Double, corner : Double) -> Double {
   let t = @sf.theme()
-  @sf.composer_pad + (8.0 + field_line(c)) + 10.0 + t.round.side + @ui.capsule_in(corner, t.round.side)
+  @sf.composer_pad + (8.0 + line) + 10.0 + t.round.side + @ui.capsule_in(corner, t.round.side)
 }
 
 ///|

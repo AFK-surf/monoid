@@ -549,6 +549,7 @@ fn pane_made(
                     None => chat_composer_nodes(c, s, r, wide.tape.get())
                   }
                 },
+                foot_node=fn(n, s, r) { @sfpages.chat_composer_node(n, s, r, tips, apart=wide.tape.get()) },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
                 narrower=fn(n) { side_narrower(src, n, k) },
                 // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's)
