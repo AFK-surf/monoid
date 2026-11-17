@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.53 | 65.35 | 95.75 | 116.75 |
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 | [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.75 | 121.86 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 2.46 | 3.45 | 14.75 | 35.98 | 57.87 | 31.53 | 65.35 | 95.86 | 120.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 2.46 | 3.45 | 14.67 | 35.88 | 57.4 | 31.46 | 65.01 | 100.3 | 111.98 |
 | [9dbcbbe02](https://github.com/AFK-surf/monoid/commit/9dbcbbe020a90f1ebc50ff72b3b09092826f6f6a) app: a file moved beside and a service opened from | 2.46 | 3.45 | 14.67 | 35.85 | 57.4 | 31.42 | 64.78 | 100.16 | 124.22 |
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 2.46 | 3.44 | 14.66 | 35.84 | 57.36 | 31.42 | 64.78 | 100.16 | 122.45 |
-| [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 2.45 | 3.44 | 14.64 | 35.81 | 57.14 | 31.42 | 64.78 | 100.16 | 115.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [6644d6799](https://github.com/AFK-surf/monoid/commit/6644d679905fc6f62e8552668ed3fe76b6852bbd)  (#6752) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
 | [21ec95ea7](https://github.com/AFK-surf/monoid/commit/21ec95ea78901096a17a51c08e3552bc747d9486)  (#6743) | 0.43 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.31 |
 | [036e83632](https://github.com/AFK-surf/monoid/commit/036e8363234bdf60b6048cc0b621cdf871a50e85) ci: bound preview's deltas by JOB_END and speed up | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
 | [595b5782f](https://github.com/AFK-surf/monoid/commit/595b5782fae86d9588064145fb3aab1cf135198c) Keep sheets from the foot clear of the system's ba | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [a379dfc3f](https://github.com/AFK-surf/monoid/commit/a379dfc3f41e8cecbe37cba7b9e7490e3e61c303) Apply workspace relay restrictions to existing pee | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [9dbcbbe02](https://github.com/AFK-surf/monoid/commit/9dbcbbe020a90f1ebc50ff72b3b09092826f6f6a) app: a file moved beside and a service opened from | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
 | [476a5972b](https://github.com/AFK-surf/monoid/commit/476a5972b9fb7de8a29ae6a712b551ce6c078840) station: keep a conversation when resuming it fail | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
-| [f4bec3814](https://github.com/AFK-surf/monoid/commit/f4bec38146a615dbd538c749d843827175a1d6e7) mbui: a clip painted alone keeps a corner whose ed | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 57.36 |
