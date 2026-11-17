@@ -591,13 +591,7 @@ fn things_list_node(
             @sf.style_node(row, fn() { things_found_none.then(side()) })
             @sf.words_node(row, fn() { @sf.t("web-main.find.none") }, fn() { things_none }) |> ignore
           }
-          Some(RowDay(day)) => {
-            @sf.style_node(row, fn() { things_day.then(side()) })
-            // (as wide as they are, cut where the row has not the room (things_day_words' w=Cut), as an old view's words
-            // in a column are: not stretched across it)
-            row.lines_up(Is(Some(@view.Along::Start))) |> ignore
-            @sf.words_node(row, fn() { day }, fn() { things_day_words }) |> ignore
-          }
+          Some(RowDay(day)) => things_day_node(row, side, fn() { day })
           Some(RowSaid(group)) => {
             @sf.style_node(row, fn() { things_said_line.then(side()) })
             media_said_node(row, Some(group))
@@ -634,6 +628,48 @@ fn things_list_node(
       est=things_row_est,
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
+      // (a thing's row of a kind, and a day's heading, as it no more shows taken by the next of its kind to come to
+      // show, its key that one's: not made and let go as the list is scrolled; its kind its key's, which never changes)
+      reused=fn(name) {
+        match table.untracked().1.get(name) {
+          Some(RowThing(k, _)) => thing_kinds.search(k)
+          Some(RowDay(_)) => Some(thing_kinds.length())
+          _ => None
+        }
+      },
+      make_reused=fn(row, name) {
+        // (what its key is now, the last it was where it is gone from the list: what it shows as it goes)
+        let first = @signals.untracked(fn() { table.get().1.get(name()) })
+        let last : Ref[ThingsRow?] = Ref(first)
+        let now = fn() {
+          match table.get().1.get(name()) {
+            Some(r) => {
+              last.val = Some(r)
+              Some(r)
+            }
+            None => last.val
+          }
+        }
+        match first {
+          Some(RowDay(_)) =>
+            things_day_node(row, side, fn() {
+              match now() {
+                Some(RowDay(day)) => day
+                _ => ""
+              }
+            })
+          Some(RowThing(k, _)) => {
+            @sf.style_node(row, fn() { things_line.then(side()) })
+            thing_row_node(row, src, r, k, fn() {
+              match now() {
+                Some(RowThing(_, t)) => Some(t)
+                _ => None
+              }
+            }, away)
+          }
+          _ => ()
+        }
+      },
     )
     |> ignore
     // (another kind chosen: its list from its top, as a list of its own)
@@ -642,6 +678,16 @@ fn things_list_node(
   .grow(Is(1.0))
   .min_height(Is(Some(0.0)))
   |> ignore
+}
+
+///|
+/// A day's heading of the media in `row` (things_list_node's), `day` as it is now: `side`'s sides.
+fn things_day_node(row : @view.View, side : () -> @ui.Style, day : () -> String) -> Unit {
+  @sf.style_node(row, fn() { things_day.then(side()) })
+  // (as wide as they are, cut where the row has not the room (things_day_words' w=Cut), as an old view's words in a
+  // column are: not stretched across it)
+  row.lines_up(Is(Some(@view.Along::Start))) |> ignore
+  @sf.words_node(row, day, fn() { things_day_words }) |> ignore
 }
 
 ///|

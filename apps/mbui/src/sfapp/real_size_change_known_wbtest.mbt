@@ -1700,7 +1700,7 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide chat-working job/job": (0, 0, 0, 0, 22, 17),
   "wide chat-working live/step": (0, 0, 0, 0, 22, 17),
   "wide archived archive/down": (55, 74, 57, 8, 0, 0),
-  "wide archived archive/archived": (28, 35, 39, 4, 0, 0),
+  "wide archived archive/archived": (6, 0, 35, 3, 0, 0),
   "wide place-stations station/updating": (0, 0, 0, 0, 0, 0),
   "wide place-stations station/session": (0, 0, 0, 0, 0, 0),
   "wide place-stations station/quota": (0, 0, 0, 0, 0, 0),

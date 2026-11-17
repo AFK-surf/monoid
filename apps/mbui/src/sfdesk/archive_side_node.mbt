@@ -129,6 +129,35 @@ fn archive_pane_node(
     top_covered=top,
     bar_clear=fn() { (top(), foot()) },
     near_foot=(1.0, more, fn() { archive_side.limit.set(archive_side.limit.untracked() + archive_side_page) }),
+    // (an archived chat's row, and a day's heading, as it no more shows taken by the next of its kind to come to show:
+    // its key that one's, not made and let go as the list is scrolled)
+    reused=fn(k) {
+      match lines.untracked().1.get(k) {
+        Some(Row(_, _)) => Some(0)
+        Some(Day(_)) => Some(1)
+        _ => None
+      }
+    },
+    make_reused=fn(b, key) {
+      // (what its key is now, the last it was where it is gone from the list: told only as that changes)
+      let first = @signals.untracked(fn() { line_of(key()) })
+      let mine = @signals.computed(fn(was) {
+        match line_of(key()) {
+          Some(_) as l => l
+          None => was.unwrap_or(first)
+        }
+      })
+      let now = fn() { mine.get() }
+      b.box(fn(line) {
+        @sf.style_node(line, fn() { @sf.list_line(at) })
+        match first {
+          Some(Day(_)) => archive_day_side_node(line, at, now)
+          Some(Row(first, _)) => archive_row_line_node(line, src, tips, at, stint, first, now, key)
+          _ => ()
+        }
+      })
+      |> ignore
+    },
     fn(b, k) {
       // (what this line is as the list says it now, told only as that changes: a chat put back tells the others nothing)
       let mine = @signals.computed(fn(_) { line_of(k) })
@@ -160,32 +189,8 @@ fn archive_pane_node(
               }
             })
           Some(Waiting) => @sf.waiting_node(line, fn(s) { archive_sample_node(s, at, tips, stint) })
-          Some(Day(_)) =>
-            @sf.list_heading_node(
-              line,
-              fn() {
-                match now() {
-                  Some(Day(d)) => d
-                  _ => ""
-                }
-              },
-              at,
-            )
-          Some(Row(first, _)) => {
-            let it = fn() {
-              match now() {
-                Some(Row(i, _)) => i
-                _ => first
-              }
-            }
-            let more = fn() {
-              match now() {
-                Some(Row(_, m)) => m
-                _ => false
-              }
-            }
-            archive_row_side_node(line, src, tips, it, more, at, stint)
-          }
+          Some(Day(_)) => archive_day_side_node(line, at, now)
+          Some(Row(first, _)) => archive_row_line_node(line, src, tips, at, stint, first, now, fn() { k })
           None => ()
         }
       })
@@ -193,6 +198,49 @@ fn archive_pane_node(
     },
   )
   |> ignore
+}
+
+///|
+/// A day's heading of the archive (archive_pane_node's) in `line`, its line as it is now (`now`).
+fn archive_day_side_node(line : @view.View, at : @sf.ListAt, now : () -> ArchiveLine?) -> Unit {
+  @sf.list_heading_node(
+    line,
+    fn() {
+      match now() {
+        Some(Day(d)) => d
+        _ => ""
+      }
+    },
+    at,
+  )
+}
+
+///|
+/// An archived chat's line of the archive (archive_pane_node's) in `line`, its line as it is now (`now`; `first` as it
+/// was made) under its key as it is now (`key`: another's as a line put by is taken for another).
+fn archive_row_line_node(
+  line : @view.View,
+  src : Source,
+  tips : @sf.TipLayer,
+  at : @sf.ListAt,
+  stint : () -> Int,
+  first : Json,
+  now : () -> ArchiveLine?,
+  key : () -> String,
+) -> Unit {
+  let it = fn() {
+    match now() {
+      Some(Row(i, _)) => i
+      _ => first
+    }
+  }
+  let more = fn() {
+    match now() {
+      Some(Row(_, m)) => m
+      _ => false
+    }
+  }
+  archive_row_side_node(line, src, tips, it, more, at, stint, key~)
 }
 
 ///|
@@ -265,6 +313,7 @@ fn archive_row_side_node(
   more : () -> Bool,
   at : @sf.ListAt,
   stint : () -> Int,
+  key? : () -> String = fn() { "" },
 ) -> Unit {
   let t = fn() { @sf.theme() }
   let v = fn() { Some(it()) }
@@ -288,6 +337,12 @@ fn archive_row_side_node(
     let chosen = @sf.EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
     row.reacts(fn() { @sf.lit_node(row) }, fn(h) { hover.go(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
     row.reacts(on, fn(o) { chosen.go(row, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    // (taken for another chat as it comes to show (archive_pane_node's reused): its ground as were it made for that one,
+    // at once, not easing from the one it was)
+    row.reacts(key, at_start=false, fn(_) {
+      chosen.put(if @signals.untracked(on) { 1.0 } else { 0.0 })
+      hover.put(if @signals.untracked(fn() { @sf.lit_node(row) }) { 1.0 } else { 0.0 })
+    })
     let ground = fn() {
       let p = t().p
       let h = hover.shown(row)
