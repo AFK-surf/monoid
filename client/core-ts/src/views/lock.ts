@@ -977,10 +977,21 @@ function readLockOnce(inner: Inner, ws: string, stations: string[], said?: { ref
     // members in and answers that it keeps none) says nothing of it: asked alone as its link opened, its answer was
     // every station's asked, and the device forgot a lock the others kept, with nothing to read it again (#5540).
     const none = new Set(served.filter((a) => a.head === null).map((a) => a.id));
-    const named = was?.head ? [...fold(was.entries).stations.keys()] : [];
+    // (where the chain moved, the stations the state in force names: those the chain named as it moved may have been
+    // taken out since, and others taken in; 2026-11-17, every station in force reset on its machine and the lock held
+    // here for good, as the chain's own were gone; or one of those gone keeping none taken for the lock's end. Its
+    // chain's where the state is not said here)
+    const wasForce = was?.head && movedRoot(was.entries) !== null ? inForceOf(inner, ws, was.entries) : null;
+    const named = !was?.head ? [] : wasForce !== null && wasForce.said !== "waiting" ? [...wasForce.f.stations.keys()] : [...fold(was.entries).stations.keys()];
     if (served.every((a) => a.head === null) && (was?.head == null || (named.length > 0 && named.every((id) => none.has(id))))) {
       head = null;
       entries = [];
+      // (every station of it reset on its machine: what was seen of them keeping it let go of, and, an owner's device,
+      // the cloud's copy for those from before, which would hold turning it on again with `lock_exists`)
+      if (was?.head) {
+        letPinnedGo(inner, ws);
+        if (get(view(inner, ws), "role") === "owner") inner.runner.fork(Effect.ignore(inner.provider.request(sub, "DELETE", `/v1/workspaces/${encodeURIComponent(ws)}/lock`, null, null)));
+      }
     } else if (!off && named.some((id) => none.has(id)) && named.some((id) => !stations.includes(id))) {
       // One the held lock names keeps none, and not all it names were asked (it told so, or its link opened): they
       // are, now. Each of them reset on its own machine tells it alone, and no such read by itself is the lock's end.
@@ -996,6 +1007,8 @@ function readLockOnce(inner: Inner, ws: string, stations: string[], said?: { ref
     // the bodies are taken against (a lock held, its own or none); then told as the lock is.
     const logsKept = head === null ? false : keepLogs(inner, ws, served.flatMap((a) => a.logs));
     const bodiesKept = head === null ? false : keepBodies(inner, ws, served.flatMap((a) => a.bodies));
+    // (the stations seen keeping the lock held, where it moved: never brought it again by themselves once reset)
+    if (head !== null && movedRoot(entries) !== null) keepPinned(inner, ws, head.genesis, served.flatMap((a) => (a.head !== null && a.head.genesis === head!.genesis ? [a.id] : [])));
     yield* hold(inner, ws, sub, head, entries, mergeSeen([...(whole ? [] : [(was?.seen ?? []) as J[]]), ...served.map((a) => a.seen)]), head === null ? [] : parted, logsKept || bodiesKept, headsMoved);
     carry(inner, ws, served);
     carryBodies(inner, ws, served);
@@ -1172,14 +1185,20 @@ function bringMoved(inner: Inner, ws: string, served: readonly { id: string; hea
   const bodies = bodiesHeld(inner, ws);
   const what = `moved/${h.head.hash}/${logs.map((l) => `${l.length}:${l.length > 0 ? hashOf(l[l.length - 1]!) : ""}`).join(",")}/${bodies.length}`;
   const p = part(inner, ws);
+  // (only to one that keeps no lock and never held this one: one the chain named as it moved, or seen keeping it since,
+  // that keeps none now was reset on its machine, and is protected again only as an owner says so, `stationMoved`;
+  // 2026-11-17: an app left open brought it back as it read the lock, so `stillfail lock reset` never held)
+  const chain = fold(h.entries).stations;
+  const pinned = pinnedHeld(inner, ws, h.head.genesis);
   for (const a of served) {
-    if (!f.stations.has(a.id) || (a.head !== null && a.head.genesis === h.head.genesis)) continue;
+    if (!f.stations.has(a.id) || a.head !== null || chain.has(a.id) || pinned.has(a.id)) continue;
     const at = `${a.id}/${what}`;
     if (p.carried.has(at)) continue;
     p.carried.add(at);
     // (not reached, or refused: let go of, so that the next read brings it again)
     const bring = inner.stations.requests.call(new StationAddr(ws, a.id), "POST", "/lock", { entries: h.entries, logs, bodies }, { quiet: true });
-    inner.runner.fork(Effect.ignore(Effect.tapError(bring, () => Effect.sync(() => p.carried.delete(at))), { log: "Unhandled", message: "a moved lock brought to a station its state names" }));
+    const genesis = h.head.genesis;
+    inner.runner.fork(Effect.ignore(Effect.tap(Effect.tapError(bring, () => Effect.sync(() => p.carried.delete(at))), () => Effect.sync(() => keepPinned(inner, ws, genesis, [a.id]))), { log: "Unhandled", message: "a moved lock brought to a station its state names" }));
   }
 }
 
@@ -1617,17 +1636,54 @@ export function offOwnLock(inner: Inner, ws: string): boolean {
   // (2026-11-14, main's side run at 00b417fd9b, N: each station's first refusal named an admin, the next one 50 ms
   // later, the lock read by then, the right words).
   // (a station's `left`, whatever is held: `leftIn` reads it only once the chain held moved)
-  if (inner.adb.personal().standing(sub) === "outside" && part(inner, ws).left.size > 0) return true;
+  // (or one begun anew on another device since this one pinned it, `replaced`: this device leaves the one it pinned
+  // first, `lock.forgetOwn`, and then is outside the one begun anew)
+  const standing = inner.adb.personal().standing(sub);
+  if ((standing === "outside" || standing === "replaced") && part(inner, ws).left.size > 0) return true;
   if (!h?.head) return false;
   // Where the chain moved a device not let in is given no state to read whom it names: its person having a log of their
   // own it is not on (`standing`, of their stations' GET /lock/person) is all it knows, and is enough, as only their own
   // app devices put it on that log and so let it in (2026-11-14, the locks' end to end after #6102: its page and refusal
   // said to ask its trusted devices or an admin, and nothing on it said its request was its own log's).
   if (movedHere(inner, ws) && !stateOf(inner, ws, h.entries).devices.has(part(inner, ws).base ?? bases.get(inner) ?? "")) {
-    const standing = inner.adb.personal().standing(sub);
     if (standing !== "none" && standing !== "member") return true;
   }
+  // On a lock of its person's own (`member`) that the workspace does not bind them by (it began it anew,
+  // `lock.restartOwn`): there is nothing of theirs to join, it is that lock's already; it waits for the workspace to
+  // bind them by it (`reboundIn`), else asks as any device of theirs does (2026-11-17: `lock.pair` went on asking to
+  // join the lock it was on, its own devices none to dial).
+  if (standing === "member") return false;
   return stateOf(inner, ws, h.entries).persons.has(sub) && !onBoundPerson(inner, ws);
+}
+
+/// Whether this app, its person's only trusted device since it began their lock anew (`lock.restartOwn`), waits for the
+/// workspace to bind them by that lock: its list still binds them by the one of before (where the chain moved and this
+/// device is given no state: a station's refusal said the list names an app device of theirs, `leftAppsIn`, which it
+/// is not, the only one on the lock it is on; not the chains the refusal names, `person`, which a station gives of
+/// every log of theirs it keeps, the one of before after they are taken out too, station/src/mesh/serve.ts
+/// `ownChainsOf`). No approval lets it in meanwhile (an owner's or admin's device admits a person's first device, never
+/// one of a member it binds by another lock), so it asks nobody, and says who is to take them out and add them again
+/// (`reboundText`). Once taken out the list binds them by nothing: it asks as a newcomer.
+export function reboundIn(inner: Inner, ws: string): boolean {
+  const sub = inner.workspaces.owner(ws);
+  if (sub === null || inner.host.appKeys !== true) return false;
+  const personal = inner.adb.personal();
+  const own = personal.root(sub);
+  if (personal.standing(sub) !== "member" || own === null) return false;
+  const h = held(inner, ws);
+  if (!h?.head) return false;
+  const base = part(inner, ws).base ?? bases.get(inner) ?? null;
+  if (movedHere(inner, ws)) {
+    const force = inForceOf(inner, ws);
+    if (force.said === "off") return false;
+    if (force.said === "on") return force.f.persons.has(sub) && force.f.persons.get(sub) !== own && (base === null || live(force.f.devices.get(base), now(inner)) === undefined);
+    return leftAppsIn(inner, ws);
+  }
+  const f = fold(h.entries);
+  if (f.disabled) return false;
+  // (an app device of a person bound here goes by their own lock alone, whatever this one names of it: station/src/mesh/
+  // serve.ts `inLock`; where the chain moved, one it still says `by` "chain" is let in by the state, above)
+  return f.persons.has(sub) && f.persons.get(sub) !== own;
 }
 
 /// What a hello brings of the person's own lock: its chain, wherever its member bound it here, this device in the
@@ -2604,8 +2660,13 @@ export function lockView(inner: Inner, ws: string): J {
   // join is that lock (`run`'s pair). Known to be off it (`off`: their lock read, this device not on it; not merely not
   // read yet, as an app just started is), it waits here whatever this lock names: the stations let it in on that alone.
   const own = base !== null && locked && !waits && offOwnLock(inner, ws);
-  const off = own && sub !== null && inner.adb.personal().standing(sub) === "outside";
-  const mine = off ? undefined : base ? (live(f.devices.get(base), at) ?? (onBoundPerson(inner, ws) ? { id: base, sub: inner.workspaces.owner(ws), kind: "app" } : undefined)) : undefined;
+  // (or that lock begun anew on another device since this one pinned it, `replaced`: not on it either)
+  const standing = sub === null ? "none" : inner.adb.personal().standing(sub);
+  const off = own && (standing === "outside" || standing === "replaced");
+  // Made its person's only trusted device here (`lock.restartOwn`) while the workspace binds the lock of before
+  // (`reboundIn`): the stations let it in by that lock alone, so an entry of its own in this one confirms nothing.
+  const reboundHere = locked && !waits && reboundIn(inner, ws);
+  const mine = off || reboundHere ? undefined : base ? (live(f.devices.get(base), at) ?? (onBoundPerson(inner, ws) ? { id: base, sub: inner.workspaces.owner(ws), kind: "app" } : undefined)) : undefined;
   const role = str(get(v, "role")) ?? "member";
   const manages = role === "owner" || role === "admin";
   const signs = mine !== undefined && typeof mine.sign_key === "string" && mine.sign_key === signer;
@@ -2703,7 +2764,16 @@ export function lockView(inner: Inner, ws: string): J {
   const out = outText(inner, ws);
   // A web page left out whose person has no app in the list: nobody could approve it (`needsAppIn`), so it asks nobody.
   const needsApp = out === null && needsAppIn(inner, ws);
-  const pair = locked && !waits && !needsApp && (mine === undefined || unsigned) ? pairs.mine(inner, own && sub !== null ? personOf(sub) : ws) : null;
+  // Made its person's only trusted device here (`lock.restartOwn`) while the workspace binds the lock of before: who is
+  // to take them out and add them again; nothing to ask meanwhile (`reboundIn`).
+  const rebound = reboundHere && !needsApp;
+  // Its person's own lock begun anew elsewhere (`replaced`): said so, and the press that says it was them
+  // (`lock.forgetOwn`), before it asks anything.
+  const replaced = own && standing === "replaced";
+  const pair = locked && !waits && !needsApp && !rebound && !replaced && (mine === undefined || unsigned) ? pairs.mine(inner, own && sub !== null ? personOf(sub) : ws) : null;
+  // None of its person's devices on their own lock answered (or there are none to dial): it may begin their lock anew,
+  // this device their only trusted one (`lock.restartOwn`).
+  const canRestart = own && standing === "outside" && pair !== null && (pair.state === "none" || pair.state === "failed");
   // The devices its try dials here, as people know them (which machine, a phone or a computer), the most lately used
   // first, those showing a code before them: the person opens still.fail on one of those (2026-11-05: "到底是哪个设备会
   // 弹出来呀？", a web page of theirs, or an app not approved, shows nothing). Each a row of the page's list, its name
@@ -2712,7 +2782,10 @@ export function lockView(inner: Inner, ws: string): J {
   if (pair !== null && Array.isArray(pair.approvers)) {
     pair.approvers = pair.approvers
       .map((a: J) => {
-        const d = f.devices.get(a.id);
+        // (one on its person's own lock alone, which the state here does not name, as that lock says it: a moved
+        // workspace's state is given no device not let in, and a device lost stays on their lock)
+        const on = sub === null ? undefined : inner.adb.personal().approvers(sub).find((x) => x.id === a.id);
+        const d = f.devices.get(a.id) ?? (on === undefined ? undefined : { id: a.id, sub, kind: "app", label: on.label });
         const v = d === undefined ? null : device(d);
         const { group } = prefs.deviceParts(v?.label ?? "");
         return {
@@ -2764,6 +2837,12 @@ export function lockView(inner: Inner, ws: string): J {
       ...(out !== null ? { outText: out } : {}),
       // A web page left out that nobody could approve: to install an app first (`needsAppIn`).
       ...(needsApp ? { needsAppText: t("core-misc.lock.needsApp") } : {}),
+      // Its person's only trusted device now, the workspace binding the lock of before: whom to ask (`reboundIn`).
+      ...(rebound ? { reboundText: t(role === "owner" ? "core-misc.lock.reboundOwner" : "core-misc.lock.reboundMember") } : {}),
+      // Its person's own lock begun anew elsewhere: what that means, and the press that says it was them.
+      ...(replaced ? { replacedTitleText: t("android-misc.personal.replaced"), replacedNoteText: t("android-misc.personal.replaced.note"), forgetText: t("android-misc.personal.forget") } : {}),
+      // None of theirs answered: this device made their only trusted one.
+      ...(canRestart ? { restartText: t("android-misc.personal.restart"), restartNoteText: t("core-misc.lock.restartNote") } : {}),
       // On its person's own lock without its signer said there: why it does not sign, and the press that says it.
       ...(confirmSigner ? { stateText: t("core-misc.lock.signerUnsaid"), confirmText: t("core-misc.vault.confirm") } : {}),
     },
@@ -2995,10 +3074,38 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
           yield* within.wait(Effect.ignore(Effect.all([read(inner, c.workspace), inner.adb.personal().refresh(sub)], { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
         }
         if (offOwnLock(inner, c.workspace)) return yield* inner.adb.run({ kind: "personalJoin", sub });
+        // (its person's only trusted device since it began their lock anew, the workspace binding the one of before: no
+        // approval lets it in until they are taken out, `reboundIn`; its page says whom to ask)
+        if (reboundIn(inner, c.workspace)) return yield* Effect.fail(new CoreError("lock_rebound", t(get(view(inner, c.workspace), "role") === "owner" ? "core-misc.lock.reboundOwner" : "core-misc.lock.reboundMember")));
         return yield* pairs.run(inner, c.name, c.workspace, c.params);
       case "pairCode":
       case "pairCancel":
         return yield* pairs.run(inner, c.name, c.workspace, c.params);
+      // Waiting to join its person's own lock and none of their devices on it answering (`restartText`): this device
+      // begins it anew, their only trusted device, as `adb.personalRestart` does (personal-lock.ts `restart`). Only
+      // by the person's press: begun by itself where they have devices left elsewhere, those would be told it was
+      // `replaced`, as if their account were taken. Every workspace of theirs asked again (their stations go by the lock
+      // it is on now), and each says whom to ask meanwhile (`reboundIn`).
+      // Its person's own lock begun anew elsewhere (`replaced`): they say it was them (`forgetText`), and this device
+      // leaves the one it pinned (personal-lock.ts `forget`), to ask to join the new one.
+      case "restartOwn":
+      case "forgetOwn": {
+        yield* pairs.run(inner, "pairCancel", c.workspace, {});
+        const personal = inner.adb.personal();
+        if (c.name === "restartOwn") {
+          if (personal.standing(sub) !== "outside") return yield* Effect.fail(CoreError.invalid("this device is on its person's own lock, or knows none"));
+          result = yield* personal.restart(sub, t("core-misc.personal.reason.restart"));
+        } else {
+          if (personal.standing(sub) !== "replaced") return yield* Effect.fail(CoreError.invalid("its person's own lock was not begun anew elsewhere"));
+          result = yield* personal.forget(sub, t("core-misc.personal.reason.forget"));
+        }
+        for (const [w, owner] of inner.workspaces.owned()) {
+          if (owner !== sub) continue;
+          refusedAgain(inner, w);
+          touch(inner, w);
+        }
+        break;
+      }
       case "addStation":
         result = yield* lock.addStation(param("station"), param("code"));
         break;
@@ -3420,7 +3527,30 @@ function keepServes(inner: Inner, ws: string, id: string, serves: boolean, rootO
   const was = servesHeld(inner, ws), out = rootOutHeld(inner, ws), hs = headsHeld(inner, ws);
   if (was.includes(id) === serves && out.includes(id) === rootOut && hs.includes(id) === heads) return;
   const said = (list: string[], yes: boolean) => (yes ? [...list.filter((x) => x !== id), id] : list.filter((x) => x !== id));
-  inner.data.put(SERVES, ws, { ready: said(was, serves), rootout: said(out, rootOut), heads: said(hs, heads) });
+  const r = inner.data.record(SERVES, ws);
+  inner.data.put(SERVES, ws, { ...(isObject(r) ? r : {}), ready: said(was, serves), rootout: said(out, rootOut), heads: said(hs, heads) });
+}
+
+/// Which stations of `ws` this device saw keeping the moved lock of genesis `genesis` (its GET /lock's head of that
+/// genesis, or its taking what this device brought), kept beside `lockServes` (`pinned`, with the genesis it is of; one
+/// of another genesis, or none, is none): a station of them that keeps no lock now was reset on its own machine
+/// (`stillfail lock reset`), and is never brought the lock again by itself (`bringMoved`), only as an owner protects it
+/// again (`lock.joinStation`, `stationMoved`). The stations the chain named as it moved held it then, so count as so.
+function pinnedHeld(inner: Inner, ws: string, genesis: string): Set<string> {
+  const r = get(inner.data.record(SERVES, ws), "pinned");
+  return new Set(isObject(r) && r.genesis === genesis && Array.isArray(r.ids) ? (r.ids as unknown[]).filter((x): x is string => typeof x === "string") : []);
+}
+function keepPinned(inner: Inner, ws: string, genesis: string, ids: readonly string[]): void {
+  const was = pinnedHeld(inner, ws, genesis);
+  if (ids.every((id) => was.has(id))) return;
+  const r = inner.data.record(SERVES, ws);
+  inner.data.put(SERVES, ws, { ...(isObject(r) ? r : {}), pinned: { genesis, ids: [...new Set([...was, ...ids])] } });
+}
+function letPinnedGo(inner: Inner, ws: string): void {
+  const r = inner.data.record(SERVES, ws);
+  if (!isObject(r) || r.pinned === undefined) return;
+  const { pinned: _, ...rest } = r;
+  inner.data.put(SERVES, ws, rest);
 }
 /// Whether a removal of the root's person said here names the root's log (lock-statements.ts `cancelsOf`): only where
 /// every station the state in force names said `rootout` (a reader from before reads it as nothing, so one of them
@@ -3873,10 +4003,13 @@ function onOffMoved(inner: Inner, sub: string, ws: string, on: boolean): Effect.
 function stationMoved(inner: Inner, sub: string, ws: string, station: string): Effect.Effect<unknown, CoreError> {
   return Effect.suspend(() => {
     if (!saysHere(inner, sub)) return Effect.fail(notTrustedHere());
-    if (stateOf(inner, ws).stations.has(station)) return Effect.succeed(null);
     const s = arr(get(view(inner, ws), "stations")).find((x) => x?.id === station);
     if (!s) return Effect.fail(CoreError.invalid("not a station of this workspace"));
     const name = str(s.name) || station.slice(0, 8);
+    // Named by the state in force already, and keeping no lock (reset on its own machine, `stillfail lock reset`, as
+    // 设置 › 安全 shows it, not protected, 保护 beside it): the owner says to protect it again, so it is brought the
+    // lock now, as nothing brings one reset so by itself (`bringMoved`). One keeping another lock is reset first.
+    if (stateOf(inner, ws).stations.has(station)) return protectAgain(inner, ws, station, name);
     // Said, and the state in force here naming it: the chain as it moved brought to that station with the logs and
     // bodies its state is made of, as `joinStation` brings a station the whole chain before a move (the door a station
     // keeping no lock pins one by: its owner's device, station/src/mesh/moved-pin.ts `pinBrought`, which pins only
@@ -3885,6 +4018,33 @@ function stationMoved(inner: Inner, sub: string, ws: string, station: string): E
     // (not reached now, or refusing it as the statement had not reached the state it checked: brought again as this
     // device next reads that station and finds it keeps none, `bringMoved`)
     return Effect.tap(sayMoved(inner, sub, ws, [{ kind: "station", key: station }], { act: "protectStation", name }, actText({ act: "protectStation", name })), () => Effect.sync(() => bringMoved(inner, ws, [{ id: station, head: null }])));
+  });
+}
+
+/// A station the state in force of moved workspace `ws` names that keeps no lock now, brought the chain as it moved
+/// with the logs and bodies its state is made of (POST /lock, `pinBrought` there), as `bringMoved` brings one it never
+/// held: by the owner's press alone (`stationMoved`). Not reached, it says so; one that keeps the lock already takes
+/// nothing; one that keeps another is to be reset on its own machine first (`otherLock`).
+function protectAgain(inner: Inner, ws: string, station: string, name: string): Effect.Effect<unknown, CoreError> {
+  return Effect.gen(function* () {
+    const at = new StationAddr(ws, station);
+    const asked = yield* Effect.result(inner.stations.requests.call(at, "GET", "/lock", null, { quiet: true }));
+    if (asked._tag === "Failure") return yield* Effect.fail(new CoreError("lock_station_offline", t("core-misc.lock.stationOffline", { name })));
+    const h = held(inner, ws);
+    const p = part(inner, ws);
+    const theirs = readHead(get(asked.success, "head"));
+    p.heads.set(station, theirs);
+    if (!h?.head) return null;
+    if (theirs !== null && !sameLock(h, theirs)) return yield* Effect.fail(otherLock(inner, ws, station));
+    if (theirs === null) {
+      const brought = yield* Effect.result(inner.stations.requests.call(at, "POST", "/lock", { entries: h.entries, logs: [...logsOf(inner, ws, false).values()], bodies: bodiesHeld(inner, ws) }, { quiet: true }));
+      if (brought._tag === "Failure") return yield* Effect.fail(new CoreError("lock_station_refused", brought.failure.message || t("core-misc.lock.stationOffline", { name })));
+      p.heads.set(station, readHead(get(brought.success, "head")) ?? h.head);
+    }
+    keepPinned(inner, ws, h.head.genesis, [station]);
+    touch(inner, ws);
+    keepSafe(inner, ws);
+    return null;
   });
 }
 
@@ -4163,7 +4323,12 @@ export class Lock {
   /// Entries brought to the cloud, for the stations and devices from before that read the lock there: waited on only
   /// when no station took them (`took`), else not (a failure there is no failure of this).
   #toCloud(entries: Entry[], took: boolean): Effect.Effect<void, CoreError> {
-    const asked = Effect.asVoid(this.#cloud("POST", "/lock", { entries }));
+    // (a lock turned on anew, its genesis: the cloud may still keep the one before, every station of it reset on its
+    // machine and the cloud never told, `lock_exists`; let go of there first, the owner's, and asked again: the stations
+    // took this one already, or none keeps any, `open`'s draft. 2026-11-17: turning it on again failed for good)
+    const genesis = entries.length === 1 && entries[0]!.kind === "genesis";
+    const post = Effect.asVoid(this.#cloud("POST", "/lock", { entries }));
+    const asked = !genesis ? post : Effect.catch(post, (e) => (e.code === "lock_exists" ? Effect.andThen(this.#cloud("DELETE", "/lock"), post) : Effect.fail(e)));
     if (!took) return asked;
     this.#inner.runner.fork(Effect.ignore(asked));
     return Effect.void;

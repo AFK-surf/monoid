@@ -2112,6 +2112,12 @@ export const SHAPES: Record<string, Shape> = {
     ["needsAppText", opt("String"), { said: true, doc: "A web page left out of an upgraded workspace whose person has no app in it: nobody can approve it there, so\nit says to install an app first, and it is not offered to ask (`waiting` false, no `pair`; views/lock.ts `needsAppIn`)." }],
     ["stateText", opt("String"), { said: true, doc: "On its person's own lock that lets it in here, without saying this device's signer there (personal-lock.ts\n`signerUnsaid`): why it does not sign yet, ended by `confirmText` (`unsigned` false: no approval helps)." }],
     ["confirmText", opt("String"), { said: true, doc: "With `stateText`: the button that says this device's signer on its person's own lock (`lock.confirmSigner`),\nasking once." }],
+    ["restartText", opt("String"), { said: true, doc: "Waiting on its person's own lock it is not on (`ownLock`), none of their devices on it answering: the\nbutton that makes this device their only trusted device (`lock.restartOwn`), offered once none answered." }],
+    ["restartNoteText", opt("String"), { said: true, doc: "With `restartText`: what choosing it does (the workspaces' admins to take them out and add them again, their\nother devices approved again)." }],
+    ["replacedTitleText", opt("String"), { said: true, doc: "Its person's own lock pinned here was begun anew on another device (personal-lock.ts `replaced`): the\nwaiting page's title in its place." }],
+    ["replacedNoteText", opt("String"), { said: true, doc: "With `replacedTitleText`: that only the person does so, and not to go on if they did not." }],
+    ["forgetText", opt("String"), { said: true, doc: "With `replacedTitleText`: the button that says it was them (`lock.forgetOwn`), after which this device asks\nto join the lock begun anew." }],
+    ["reboundText", opt("String"), { said: true, doc: "This device made its person's only trusted device (`lock.restartOwn`) while the workspace still binds the\nlock of before: who is to take them out and add them again first (views/lock.ts `reboundIn`); nothing to ask\nmeanwhile (no `pair`)." }],
   ], { doc: "This device in the workspace's lock." }),
   LockPending: struct([
     ["id", "String", { doc: "Which one (`lock.pendingDismiss`, `adb.personalPendingDismiss`); in a workspace's `lock`, one of the person's own lock begins `own:`." }],

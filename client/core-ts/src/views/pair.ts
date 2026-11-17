@@ -51,7 +51,7 @@ import { fromB64url } from "../vault/crypto.ts";
 import { type Checked, checkLock } from "../vault/lock-check.ts";
 import { Priority } from "../sync/scheduler.ts";
 import { ownBuild } from "../station/oldest.ts";
-import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
+import { Lock, approvedHere, asked, baseOf, beginsFor, beginsHere, bindsHere, leftAppsIn, leftIn, needsAppIn, deviceText, fold, held, inForceOf, live, lockSeen, movedHere, movedWorks, nameOf, offOwnLock, onBoundPerson, reboundIn, pairs, putOnBound, read, refusedAgain, sayAdmit, signerKnown, signerLoading, signerOf, stateOf, unnote, view, withBound, notedRole, roleText } from "./lock.ts";
 import type { Said } from "../lock-statements.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -655,7 +655,9 @@ function waitingIn(inner: Inner, base: string): { workspaces: string[]; approver
     const unsigned = had !== undefined && had.kind === "app" && inner.host.appKeys === true && (signer === null || had.sign_key !== signer);
     // (nor where its person bound a lock of their own that it is not on: approved into this one it would still be
     // refused, the stations letting their app devices in on that lock alone; it joins that one, views/lock.ts `run`)
-    if (f.disabled || (had !== undefined && !unsigned) || onBoundPerson(inner, ws) || offOwnLock(inner, ws)) continue;
+    // (nor where it is its person's only trusted device since it began their lock anew and the workspace binds the one
+    // of before: nobody's approval lets it in till they are taken out, views/lock.ts `reboundIn`)
+    if (f.disabled || (had !== undefined && !unsigned) || onBoundPerson(inner, ws) || offOwnLock(inner, ws) || reboundIn(inner, ws)) continue;
     // (where the chain moved: its state's, of its people's own logs; a web page is let in there by its own person's
     // devices alone, `movedPlace`)
     // An app there whose person the list does not name with the log this device is on (someone's first device, or
@@ -1214,14 +1216,20 @@ export function personalBegin(inner: Inner, subs: string[]): Effect.Effect<unkno
     const before = tryings.get(inner);
     if (before) drop(before);
     const y = trying(inner, subs.map(personOf));
+    // (whom it dials, by person: the page that waits names them, views/lock.ts lockView's `pair`; 2026-11-17, a new app
+    // whose other devices were all lost listed none, nothing on it saying which it had asked)
+    y.approvers = new Map(subs.map((sub) => [personOf(sub), [...new Set(personal.approvers(sub).map((d) => d.id))]]));
     const trusted = [...new Set(subs.flatMap((sub) => personal.approvers(sub).map((d) => d.id)))];
+    // (through the relays of their workspaces too, as `begin` dials: a device of theirs may be reached by those alone)
+    const wsRelays = [...inner.workspaces.owned()].filter(([, owner]) => subs.includes(owner)).flatMap(([ws]) => inner.cloudSync.workspaceRelays(ws));
+    const relays = [...new Set([...(inner.cloudSync.relays ?? []), ...wsRelays])];
     // (the key it signs the workspaces' locks with: a device on the person's lock puts it in those where they bound it)
     const hello = { t: "hello", v: 1, workspaces: [], kind: "app", label: prefs.deviceName(inner.data) ?? "", sign_key: signer.id, build: ownBuild() || "0.1.0", personal: { subs, key } };
     y.searching = true;
     inner.runner.fork(
       Effect.gen(function* () {
         yield* Effect.ensuring(
-          Effect.forEach(trusted, (id) => seek(inner, y, id, inner.cloudSync.relays ?? [], hello), { concurrency: "unbounded", discard: true }),
+          Effect.forEach(trusted, (id) => seek(inner, y, id, relays, hello), { concurrency: "unbounded", discard: true }),
           Effect.sync(() => { y.searching = false; }),
         );
         finishLooking(inner, y);

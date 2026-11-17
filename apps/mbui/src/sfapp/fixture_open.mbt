@@ -402,7 +402,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
   // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
   // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" {
+  // lock-restart-security, lock-rebound-security, lock-replaced-security (its person's own lock: its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" || mode == "lock-restart-security" || mode == "lock-rebound-security" || mode == "lock-replaced-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
