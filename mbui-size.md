@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 2.56 | 3.63 | 15.18 | 36.33 | 57.93 | 31.69 | 64.57 | 96.42 | 120.63 |
 | [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 2.56 | 3.63 | 15.18 | 36.32 | 57.93 | 31.67 | 64.57 | 96.49 | 127.43 |
 | [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.67 | 64.57 | 96.49 | 127.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [254f58fcf](https://github.com/AFK-surf/monoid/commit/254f58fcf7b826be38ed03fe369e75b905fc805a) ci(preview): save Windows HBC_CACHE after mbc-stor | 2.54 | 3.59 | 15.67 | 37.03 | 62.28 | 32.34 | 68.4 | 96.03 | 124.13 |
 | [86fe68199](https://github.com/AFK-surf/monoid/commit/86fe68199d232e055bbd4721a3f9279db868ce2c) mbui: headless menu, combobox and anchor placement | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 | [b62deb04c](https://github.com/AFK-surf/monoid/commit/b62deb04cd6b7837f000c6fb19254b1de6ada86f) mbui: main's reds after #6647 mended: rows steady  | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
-| [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 2.54 | 3.58 | 15.68 | 37.01 | 62.22 | 32.34 | 68.4 | 96.03 | 130.33 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [415ec50f8](https://github.com/AFK-surf/monoid/commit/415ec50f85085a14cebd8ceeb21102bf6655ce09) Align marks in chat-list rows (#6455) | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
 | [2cea29165](https://github.com/AFK-surf/monoid/commit/2cea29165294fd7b43bcfe7d2115c091f4c5b0e2) admin: dual-brand console, feedback replies, relay | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [7f4127bab](https://github.com/AFK-surf/monoid/commit/7f4127babaf94ca2b9c48155067e27adf4df7769) station test: await home's background relayStatus  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [b199c2d64](https://github.com/AFK-surf/monoid/commit/b199c2d648538499e233464c7ae2799b7ad79684) mbui: bound transition holds on the tree timeline  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [254f58fcf](https://github.com/AFK-surf/monoid/commit/254f58fcf7b826be38ed03fe369e75b905fc805a) ci(preview): save Windows HBC_CACHE after mbc-stor | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.38 |
 | [86fe68199](https://github.com/AFK-surf/monoid/commit/86fe68199d232e055bbd4721a3f9279db868ce2c) mbui: headless menu, combobox and anchor placement | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.38 |
 | [b62deb04c](https://github.com/AFK-surf/monoid/commit/b62deb04cd6b7837f000c6fb19254b1de6ada86f) mbui: main's reds after #6647 mended: rows steady  | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.51 |
-| [8670b8d85](https://github.com/AFK-surf/monoid/commit/8670b8d85f63ed244c9e89d56e4781d232362990) 添加 station gives a Docker command (cloud's install | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.59 | 4.25 | 53.63 |
