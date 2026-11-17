@@ -111,3 +111,53 @@ test "a huge function with no prototype is given one before it" {
   assert_eq(named, ["_M0FP11c3big"])
   assert_true(str(out).contains("CSPLIT_OPTNONE int32_t _M0FP11c3big(int32_t x);\n\nint32_t _M0FP11c3big(int32_t x) {"))
 }
+
+///|
+test "a #line directive's path is relative from its checkout or moon on, never one in a literal or a comment" {
+  let src = @utf8.encode(
+    prelude +
+    "struct _M0TP11a1T;\n\nint32_t _M0FP11c3f(int32_t x) {\n" +
+    "  #line 152 \"/abs/worktree/station/mb/src/reader/actors.mbt\"\n" +
+    "  x = x + 1;\n" +
+    "\t#line 10 \"/opt/moon/lib/core/builtin/array.mbt\"\n" +
+    "  x = x + 2;\n" +
+    "  #line 3 \"/abs/rules/src/lock/fork.mbt\"\n" +
+    "  #line 4 \"/abs/libs/mbui/src/effect/run.mbt\"\n" +
+    "  #line 5 \"/abs/worktree/station/mb/src/rules/x.mbt\"\n" +
+    "  #line 6 \"/elsewhere/a.mbt\"\n" +
+    "  const char* s = \"#line 1 \\\"/abs/station/mb/x.mbt\\\"\";\n" +
+    "  /*\n#line 2 \"/abs/station/mb/y.mbt\"\n*/\n" +
+    "  // #line 7 \"/abs/station/mb/z.mbt\"\n" +
+    "  return x;\n}\n\n#line 8 \"/top/station/mb/src/a.mbt\"\n",
+  )
+  let (out, _) = prep(src)
+  let o = str(out)
+  assert_true(o.contains("\n  #line 152 \"station/mb/src/reader/actors.mbt\"\n"))
+  assert_true(o.contains("\n\t#line 10 \"lib/core/builtin/array.mbt\"\n"))
+  assert_true(o.contains("\n  #line 3 \"rules/src/lock/fork.mbt\"\n"))
+  assert_true(o.contains("\n  #line 4 \"libs/mbui/src/effect/run.mbt\"\n"))
+  assert_true(o.contains("\n  #line 5 \"station/mb/src/rules/x.mbt\"\n"))
+  assert_true(o.contains("\n  #line 6 \"/elsewhere/a.mbt\"\n"))
+  assert_true(o.contains("\n#line 8 \"station/mb/src/a.mbt\"\n"))
+  assert_true(o.contains("\"#line 1 \\\"/abs/station/mb/x.mbt\\\"\""))
+  assert_true(o.contains("\n#line 2 \"/abs/station/mb/y.mbt\"\n"))
+  assert_true(o.contains("// #line 7 \"/abs/station/mb/z.mbt\""))
+}
+
+///|
+test "a function of 200 KB is huge by default, one under it is not" {
+  let line = "  x = x + 1;\n"
+  let fun = fn(lines : Int) {
+    @utf8.encode(
+      prelude +
+      "struct _M0TP11a1T;\n\nint32_t _M0FP11c3big(int32_t x) {\n" +
+      line.repeat(lines) +
+      "  return x;\n}\n",
+    )
+  }
+  let over = 200 * 1024 / line.length() + 1
+  let (_, named) = prep(fun(over))
+  assert_eq(named, ["_M0FP11c3big"])
+  let (_, none) = prep(fun(190 * 1024 / line.length()))
+  assert_eq(none, [])
+}

@@ -2,8 +2,8 @@
 # Builds the station's reader in MoonBit (station/mb) for TARGET (this machine's by default: darwin-arm64, linux-x64,
 # linux-arm64, win32-x64), on a Mac or a Linux x86-64 machine, into OUT (default _build/stillfail-reader-TARGET).
 # MoonBit makes the program's C here (with mbc-stub.sh so moon skips its host compile and link); src/cprep makes it
-# ready for mbui's mbc (a result of what raises named by its definition, a function of 512 KB or more, a coroutine's
-# state machine, not optimised), which splits it into units and compiles them in parallel across all cores
+# ready for mbui's mbc (a result of what raises named by its definition, a function of 200 KB or more, a coroutine's
+# state machine, not optimised, #line's paths relative), which splits it into units and compiles them in parallel across all cores
 # (moonbit_init at -O0, unchanged units kept in MBC_STORE), then links for each target (zig cc for Linux, glibc 2.28
 # on, and for Windows, MinGW's), with MoonBit's runtime from its source, its reference cycles collected
 # (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to the shell's static library (client/shell), which
@@ -53,6 +53,22 @@ echo "$$" > "$lock/pid"
   trap 'rm -rf "$lock"' EXIT
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
+  # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
+  # was made (prepped-reader.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
+  gen_key=$( {
+    moon version --all
+    "$ROOT/libs/mbui/scripts/mbc" key
+    find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
+      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
+      "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+      | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
+  } | shasum | awk '{print $1}')
+  prepped="$D/_build/prepped-reader.c"
+  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-reader.key" 2>/dev/null)" = "$gen_key" ]; then
+    cp "$prepped" "$work/reader.c"
+    echo "build.sh: reader.c as prepared for $gen_key" >&2
+    exit 0
+  fi
   # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
@@ -67,7 +83,11 @@ echo "$$" > "$lock/pid"
     exit 1
   fi
   "$D/_build/cprep/native/release/build/station/cprep/cprep.exe" \
-    "$D/_build/native/release/build/station/reader/reader.c" "$work/reader.c" >&2
+    "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
+  rm -f "$D/_build/prepped-reader.key"
+  mv "$prepped.tmp.$$" "$prepped"
+  echo "$gen_key" > "$D/_build/prepped-reader.key"
+  cp "$prepped" "$work/reader.c"
 )
 
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}

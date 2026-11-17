@@ -14,7 +14,12 @@
 //   unit that has it.
 // - A function of HUGE_BYTES or more (a coroutine's state machine moonc made of one async function, a line a state)
 //   is not optimised (CSPLIT_OPTNONE on its prototype, which its definition takes): -O2 took LLVM 131-158 s on one of
-//   1 MB on CI's ci-1, past its job's 5 minutes, -O0 a sixteenth of that (2026-11-17).
+//   1 MB on CI's ci-1, past its job's 5 minutes, -O0 a sixteenth of that; and replica_coord's of 392-487 KB took tens
+//   of seconds each for linux-x64 and win32-x64, so 200 KB (2026-11-17).
+// - A `#line N "PATH"` directive names the source by its absolute path, which differs between checkouts and runners
+//   (ci-1's actions-runner-<n>/_work/..., each one's moon in actions-runner-<n>/_tool/...): every unit's text was
+//   another on each, and 389 of 415 units missed MBC_STORE (2026-11-17). PATH from its first of `/station/mb/`,
+//   `/rules/`, `/libs/mbui/` or `/lib/core/` on is kept, relative (`station/mb/src/reader/actors.mbt`).
 
 ///|
 #borrow(path)
@@ -29,7 +34,7 @@ extern "C" fn c_write_file(path : Bytes, data : Bytes) -> Int = "cprep_write_fil
 
 ///|
 /// A function of this many bytes or more (as moonc wrote it) is compiled unoptimised.
-const HUGE_BYTES : Int = 512 * 1024
+const HUGE_BYTES : Int = 200 * 1024
 
 ///|
 /// What the prelude says CSPLIT_OPTNONE is, by compiler.
@@ -141,13 +146,84 @@ fn prelude_end(t : BytesView) -> Int {
 }
 
 ///|
-/// `moonbit_result_<digits>`, a whole identifier outside literals and comments, as `_M0TWresult$<digits>`.
+/// Where a `#line` directive's path names the source from a checkout or a moon on (`station/mb/...`, `rules/...`,
+/// `libs/mbui/...`, `lib/core/...`).
+let line_roots : Array[Bytes] = [b"/station/mb/", b"/rules/", b"/libs/mbui/", b"/lib/core/"]
+
+///|
+/// For a line starting at i that is a `#line N "PATH"` directive (spaces or tabs before it) whose PATH has one of
+/// line_roots: where PATH starts, where its relative part starts, else (-1, -1).
+fn line_path(t : BytesView, i : Int) -> (Int, Int) {
+  let n = t.length()
+  let mut k = i
+  while k < n && (t[k] == b' ' || t[k] == b'\t') {
+    k += 1
+  }
+  if !starts_at(t, k, b"#line ") {
+    return (-1, -1)
+  }
+  k += 6
+  let d = k
+  while k < n && is_digit(t[k]) {
+    k += 1
+  }
+  if k == d || k >= n || t[k] != b' ' {
+    return (-1, -1)
+  }
+  while k < n && t[k] == b' ' {
+    k += 1
+  }
+  if k >= n || t[k] != b'"' {
+    return (-1, -1)
+  }
+  let start = k + 1
+  let mut e = start
+  while e < n && t[e] != b'"' && t[e] != b'\n' {
+    e += 1
+  }
+  if e >= n || t[e] != b'"' {
+    return (-1, -1)
+  }
+  // (the root found first in PATH: a package of the reader's named like one, src/rules, is in its path after it)
+  let mut cut = -1
+  for j in start..<e {
+    for r in line_roots {
+      if starts_at(t, j, r) && j + r.length() <= e {
+        cut = j + 1
+        break
+      }
+    }
+    if cut >= 0 {
+      break
+    }
+  }
+  if cut < 0 {
+    (-1, -1)
+  } else {
+    (start, cut)
+  }
+}
+
+///|
+/// `moonbit_result_<digits>`, a whole identifier outside literals and comments, as `_M0TWresult$<digits>`; and a
+/// `#line` directive's path relative (line_path).
 fn rename_results(t : BytesView) -> Bytes {
   let n = t.length()
   let buf = Buffer()
   let mut last = 0
   let mut i = 0
   while i < n {
+    if i == 0 || t[i - 1] == b'\n' {
+      let (start, cut) = line_path(t, i)
+      if start >= 0 {
+        buf.write_bytesview(t[last:start])
+        last = cut
+        while i < n && t[i] != b'\n' {
+          i += 1
+        }
+        continue
+      }
+    }
     let c = t[i]
     if c == b'"' || c == b'\'' || c == b'/' {
       let e = skip_literal(t, i)
