@@ -283,7 +283,7 @@ fn chat_float_stand(
       }
     })
     stand.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
-    stand.show(shown, fn(o) {
+    stand.show(shown, at_once=true, fn(o) {
       let reach = @sf.float_button_reach
       o
       .margin(

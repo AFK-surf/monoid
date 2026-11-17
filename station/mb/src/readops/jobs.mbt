@@ -54,7 +54,7 @@ pub fn shown(db : @sql.Db, host : @host.Host, j : Map[String, Json]) -> Json rai
       Json::number(notices_shown.to_double()),
     ])
     .map(r => ({ "at": field(r, "at"), "text": field(r, "text") } : Json))
-  {
+  let v : Map[String, Json] = {
     "id": field(j, "id"),
     "session": field(j, "session_key"),
     "name": field(j, "name"),
@@ -69,9 +69,14 @@ pub fn shown(db : @sql.Db, host : @host.Host, j : Map[String, Json]) -> Json rai
     "restarts": field(j, "restarts"),
     "log": field(j, "log"),
     "watch": Json::boolean(field(j, "watch") != Json::number(0.0)),
-    "notices": Json::array(notices),
-    "outputAt": output_at(host, field(j, "log")),
   }
+  // waiting in the queue for its turn (said only when so, as jobs.ts `jobJson` says it)
+  if field(j, "queued") == Json::number(1.0) {
+    v["queued"] = Json::boolean(true)
+  }
+  v["notices"] = Json::array(notices)
+  v["outputAt"] = output_at(host, field(j, "log"))
+  Json::object(v)
 }
 
 ///|

@@ -289,10 +289,14 @@ test "the archive: its chats by day; one restored leaves it" {
   assert_true(t.query(Button, label="删除「整理上个月的发票」") is Some(_))
   let (x, y, w, h) = t.query(Button, label="恢复「整理上个月的发票」").unwrap().rect
   t.tap(x + w / 2.0, y + h / 2.0)
+  // (its row closing its way, the list's: gone once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("整理上个月的发票") is None)
   assert_true(t.find("周会纪要") is Some(_))
   // the bottom bar going out of the way, on its own springs and glides, to where it rests
-  t.run_for(bar.rest() - t.time())
+  if bar.rest() > t.time() {
+    t.run_for(bar.rest() - t.time())
+  }
   // the last tap's ripple shown whole, its way in and out
   t.run_for(@motion.ripple_tap_ms)
   t.assert_idle()
@@ -1089,7 +1093,8 @@ test "本机缓存 with many chats: the ones keeping most first, all when asked,
   t.scroll_to_end()
   t.draw()
   t.tap_text("显示全部 203 个")
-  t.draw()
+  // (the rows it brings make their way, the list's: looked at once that is over)
+  t.run_for(@ui.move_most_ms)
   // a block each: of 203 rows a screen's (one block of them all was built whole each frame, every row's words with it)
   t.scroll_to_end()
   t.draw()
@@ -1130,8 +1135,8 @@ test "本机缓存: a chat's files opened, each let go by its bin; those of no c
   // its bin: let go, read again
   let (x, y, w, h) = t.query(Button, label="删除「季度报告.pdf」").unwrap().rect
   t.tap(x + w / 2.0, y + h / 2.0)
-  t.draw()
-  t.draw()
+  // (its row closing its way, the list's: gone once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("季度报告.pdf") is None)
   assert_true(t.find("1 个 · 12 MB") is Some(_))
 }

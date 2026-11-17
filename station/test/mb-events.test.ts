@@ -641,6 +641,21 @@ test("what GET /events asks for, of the viewer's workspace only; what seen.ts sa
   assert.deepEqual(await mb({ op: "numbers", texts }), JSON.parse(JSON.stringify(texts.map((t) => Number(t)))));
 });
 
+test("another station's task is its workspace's, whichever is this station's home: seen.ts and the program alike", { skip }, async () => {
+  const jobs = { jw1: "remote:w1:st:a", jw2: "remote:w2:st:b", jw3: "remote:w3:st:c", jcolon: "remote:w2:st:d:e", jshort: "remote:w2",
+    jempty: "remote:w2:st:", jslash: "remote:w2/x:st:f", jnone: "remote::st:g", jline: "remote:w2:st:h\ni", jgone: "nobody", jhere: "s2" };
+  const world = { sessions: { s2: { ws: "w2" } }, threads: {}, jobs, handed: {} };
+  const store = storeOf(world);
+  const paths = Object.keys(jobs).map((id) => `/jobs/${id}`);
+  const homes = ["jw1", "jshort", "jempty", "jslash", "jnone", "jline", "jgone"];
+  const seenOf: [Json, string[]][] = [[A, homes], [C, homes], [B, ["jw2", "jcolon", "jhere"]], [viewer("d@x", "w3", { home: false }), ["jw3"]]];
+  for (const [v, seen] of seenOf) {
+    const said = await mb({ op: "seen", world, viewer: v, paths });
+    assert.deepEqual(said, { elsewhere: paths.map((p) => elsewhere(store, p, v)), went: paths.map((p) => went(store, p, v)) }, v.email);
+    assert.deepEqual(Object.keys(jobs).filter((_, i) => said.elsewhere[i] === null), seen, v.email);
+  }
+});
+
 // ── the overview, the local status, the machine ─────────────────────────────────────────────────────────────────
 
 const require = createRequire(import.meta.url);

@@ -7,10 +7,34 @@ import { up, fields, conflict, workspaceUpJobsReady } from "../../../src/store/w
 export * from "../../../src/store/workspace-up-jobs.ts";
 
 const PORT_BATCHES_PER_GUARD = 8;
-/// Candidate jobs for one workspace; unusual identities remain for the reader's JavaScript visibility check.
+/// Whether `x`, what follows `remote:<workspace>:` in a key, is `<station>:<session>` as store/rows.ts `remoteWs` reads
+/// it: a station's id not empty, with neither `:` nor `/`, then a session's key not empty. (Only a printable key is one
+/// of scope 1: none has a line's end, which `remoteWs`'s `.` would not take.)
+export const remoteRest = (x: string) => `(instr(${x},':')>1 AND instr(substr(${x},1,instr(${x},':')-1),'/')=0
+    AND length(${x})>instr(${x},':'))`;
+/// Whether `key`, of `remote:` and printable, is another station's task as `remoteWs` reads it.
+export const remoteForm = (key: string) => {
+  const x = `substr(${key},8)`;
+  return `(instr(${x},':')>1 AND instr(substr(${x},1,instr(${x},':')-1),'/')=0
+    AND ${remoteRest(`substr(${x},instr(${x},':')+1)`)})`;
+};
+/// The workspace of such a key (`remoteForm`).
+export const remoteFormWs = (key: string) => `substr(${key},8,instr(substr(${key},8),':')-1)`;
+/// Candidate jobs for one workspace; unusual identities remain for the reader's JavaScript visibility check. A session
+/// not here (scope 1) is the home workspace's (`?2`), but another station's task (`remote:<ws>:…`) is its workspace's,
+/// whichever is this station's home (store/rows.ts `seesMissing`): those of `?1` are read by their own range of the
+/// index, those of no workspace's form by the home one, those of other workspaces never.
 export const WORKSPACE_UP_JOBS = `WITH wanted AS (
   SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=0 AND ws=?1
   UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+    AND session<'remote:'
+  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+    AND session>='remote;'
+  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws='' AND ?2
+    AND session>='remote:' AND session<'remote;' AND NOT ${remoteForm("session")}
+  UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=1 AND ws=''
+    AND session>='remote:'||?1||':' AND session<'remote:'||?1||';' AND ?1<>'' AND instr(?1,':')=0 AND instr(?1,'/')=0
+    AND ${remoteRest("substr(session,length(?1)+9)")}
   UNION ALL SELECT session FROM workspace_up_sessions INDEXED BY workspace_up_sessions_scope WHERE scope=2 AND ws=''
 ) SELECT j.* FROM wanted w CROSS JOIN session_up_job_rows u ON u.session=w.session
   CROSS JOIN jobs j ON j.rowid=u.job_rowid

@@ -71,17 +71,27 @@ pub fn new_fade(c : @ui.Ctx) -> @motion.Anim {
 }
 
 ///|
+/// The new chat's first words on their way to the chat it became (0 … 1), when the chat's list is made as nodes
+/// (`chat_page_nodes`: where `flight_carried` is not used, the words flying on `View::flies_in` for `flight_desk_ms`).
+pub fn new_first_fly(c : @ui.Ctx) -> @motion.Anim {
+  @motion.anim(c, "new/first-fly", 1.0, global=true)
+}
+
+///|
 /// The new chat's first words sent, or the new chat left for a chat: its scene leaves, from now, and its choices fade
 /// (on a phone as Android's LeaveFade), over the chat it became (new_chat_leaving_of): as the words go, not once the
 /// core has made the chat and taken them in.
 pub fn became_starts(c : @ui.Ctx, wide~ : Bool) -> Unit {
-  ignore(wide)
   let leave = new_leave(c)
   leave.snap(c, 0.0)
   leave.animate(c, 1.0, @motion.tween(new_leave_ms, ease=Leave))
   let fade = new_fade(c)
   fade.snap(c, 0.0)
   fade.animate(c, 1.0, @motion.tween(new_fade_ms, ease=Leave))
+  let fly = new_first_fly(c)
+  fly.snap(c, 0.0)
+  let after = if wide || @signals.untracked(fn() { chat_page_nodes.get() }) { 0.0 } else { flight_carry_after_ms }
+  fly.animate(c, 1.0, @motion.tween(flight_desk_ms, ease=Flight, delay=after))
 }
 
 ///|
@@ -91,6 +101,7 @@ pub fn leaving_back() -> Unit {
   let c = @ui.current()
   new_leave(c).animate(c, 0.0, @motion.tween(new_leave_ms, ease=Out))
   new_fade(c).animate(c, 0.0, @motion.tween(new_fade_ms, ease=Out))
+  new_first_fly(c).snap(c, 1.0)
 }
 
 ///|
@@ -191,11 +202,22 @@ pub fn new_chat_leaving_of(c : @ui.Ctx, r : ChatRef) -> Bool {
 }
 
 ///|
+/// Whether `draft` (`station:session`) is the chat a new chat just became while its first words are still on their way
+/// (`flight_carried` on the old list, or `new_first_fly` on the list made as nodes).
+pub fn new_first_flying(c : @ui.Ctx, draft : String) -> Bool {
+  flight_carried(draft) ||
+  (match fresh.became.get() {
+    Some(b) => b.station + ":" + b.session == draft && !new_first_fly(c).over(c)
+    None => false
+  })
+}
+
+///|
 /// Whether chat `r` was just made from a new chat, its scene still leaving or its first words still carried: the
 /// core's own, its first view not read yet, nothing breathing over it.
 pub fn new_chat_made(c : @ui.Ctx, r : ChatRef) -> Bool {
   match fresh.became.get() {
-    Some(b) if b == r => !new_leave(c).over(c) || flight_carried(r.station + ":" + r.session)
+    Some(b) if b == r => !new_leave(c).over(c) || new_first_flying(c, r.station + ":" + r.session)
     _ => false
   }
 }

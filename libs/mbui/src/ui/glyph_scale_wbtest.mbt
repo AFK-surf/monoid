@@ -5,9 +5,12 @@
 test "a frame at another scale, the host's generation where it was: every glyph drawn is put again at that scale" {
   let t = Tester::new(fn(c) { c.text("AB", wrap=false) |> ignore }, w=400.0, scale=1.0)
   t.draw()
+  // (the glyphs the frame drew: a glyph drawn at another quarter-pixel phase at the other scale, glyph_sub_at, is
+  // another glyph, its cell at 1 left for whenever that phase is drawn again)
   let placed = fn() {
+    let cells = t.drawn_instances().filter(fn(i) { i[5] == 1.0 }).map(fn(i) { (i[12], i[13]) })
     let at = []
-    text_cache.glyphs.each(fn(_, g) { if g.plot >= 0 { at.push((g.u, g.v, g.sc)) } })
+    text_cache.glyphs.each(fn(_, g) { if g.plot >= 0 && cells.contains((g.u, g.v)) { at.push((g.u, g.v, g.sc)) } })
     at.sort()
     at
   }

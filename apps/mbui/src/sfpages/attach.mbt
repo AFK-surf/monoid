@@ -7,8 +7,8 @@
 
 ///|
 /// ＋'s panel for draft `key`, opened by ＋ (`plus`): the gallery's recent photos read again as it opens.
-fn attach_open(plus : Int, src : Source, key : String) -> Unit {
-  @sf.panel_nodes("", fn(v, close) { attach_body_node(v, src, key, close) }, from=Of(plus), w=attach_w)
+fn attach_open(plus : @sf.Anchor, src : Source, key : String) -> Unit {
+  @sf.panel_nodes("", fn(v, close) { attach_body_node(v, src, key, close) }, from=plus, w=attach_w)
   recent_opened()
 }
 

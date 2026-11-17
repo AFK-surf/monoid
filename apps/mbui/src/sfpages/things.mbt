@@ -511,6 +511,18 @@ pub fn things_node(
 }
 
 ///|
+/// The rows' keys `keys` of things of kind `kind`, as things_list_node reads them, `other` said of them: whether they are
+/// another kind's in place of the one before (@sf.pg_blocks_read of its things' keys and its kind: another kind came and
+/// the one before went), so read again in the same change as it was; a thing come or gone of the same kind (the last one
+/// too, its place none found) only came or went.
+fn things_kind_read(was : Ref[Set[String]], other : Ref[Bool], keys : Array[String], kind : String) -> Array[String] {
+  let set = keys.filter(fn(k) { k.has_prefix("thing/") })
+  set.push("kind/" + kind)
+  @sf.pg_blocks_read(was, other, set) |> ignore
+  keys
+}
+
+///|
 /// What things_node shows of a chat's things once it has some (`value` as the core has them now, the kinds it `has`,
 /// the `kind` shown, `chosen` told as one is chosen), in `p`: its rows in a list, made as they come into sight,
 /// `side`'s sides (`sides` points each); at its top again as another kind is chosen.
@@ -535,6 +547,10 @@ fn things_list_node(
     // (the room the grid's tiles share across, as the field's box is: the list's less its sides, given it as it is laid
     // out, its rows made by it there)
     let room = fn() { given.width() - 2.0 * sides }
+    // (its things' keys and its kind as last read, and whether their last change was another kind shown: its rows
+    // another list, there at once; one thing come or gone of the same kind, the last one too, its way: things_kind_read)
+    let keys_was : Ref[Set[String]] = Ref(Set([]))
+    let kind_other = Ref(false)
     // (its rows by their keys, as the core has its things now, the kind shown, the room the tiles have)
     let table : @signals.Computed[(Array[String], Map[String, ThingsRow])] = @signals.computed_by(fn(_) {
       let v = value()
@@ -581,9 +597,12 @@ fn things_list_node(
     }, same=fn(a, b) { rows_table_same(a, b, things_row_same) })
     p.scrolls_window(
       scroll,
-      fn() { table.get().0 },
-      // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
-      at_once=true,
+      fn() { things_kind_read(keys_was, kind_other, table.get().0, kind()) },
+      // (a thing come or gone by data makes its way, the list's (View::comes), keyed by the thing; the rest (its head,
+      // the days and tiles laid out by the room the tiles have, by where they are among them) there and gone at once, and
+      // all of it as another kind is shown)
+      comes=fn(name) { !kind_other.val && name.has_prefix("thing/") },
+      goes=fn(name) { !kind_other.val && name.has_prefix("thing/") },
       fn(row, name) {
         match @signals.untracked(fn() { table.get().1.get(name) }) {
           Some(RowHead) => things_head_node(row, at, value, has, kind, chosen, side, room)

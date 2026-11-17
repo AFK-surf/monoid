@@ -87,7 +87,7 @@ pub fn ClipRead::got(self : ClipRead) -> ClipGot? {
     }
     _ => {
       cl_end(self.id)
-      Some({ text: "", picture: clip_unreadable, png: Bytes::new(0), files: [] })
+      Some({ text: "", picture: clip_unreadable, png: Bytes::make(0, b'\x00'), files: [] })
     }
   }
 }
@@ -96,7 +96,7 @@ pub fn ClipRead::got(self : ClipRead) -> ClipGot? {
 /// Words put on the clipboard, `label` what the system shows of where they came from (Android's ClipData label; ""
 /// none).
 pub fn clip_set_text(text : String, label : String) -> Unit {
-  cl_set(text, Bytes::new(0), label)
+  cl_set(text, Bytes::make(0, b'\x00'), label)
 }
 
 ///|

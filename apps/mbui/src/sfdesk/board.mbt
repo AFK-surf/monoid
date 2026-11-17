@@ -217,8 +217,8 @@ let beside_title_look : @ui.TextStyle = @ui.text_style(size=Title, weight=Semibo
 ///|
 /// The sidebar's key to the board (beside its filter, as it looks): the chats as columns, the sidebar closed to its bar.
 fn board_key_node(f : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
-  let hot = @sf.EdgeWay::new(0.0)
-  f.reacts(fn() { @sf.lit_node(f) }, fn(on) { hot.go(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
+  let hot = @motion.NodeWay::new(0.0)
+  f.reacts(fn() { @sf.lit_node(f) }, fn(on) { hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms) })
   @sf.style_node(f, fn() { filter_box })
   f.radius(Is(1.0e6)).ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot.shown(f)) })) |> ignore
   // (on the tape the page's panel brought over with it: the board is what it holds)

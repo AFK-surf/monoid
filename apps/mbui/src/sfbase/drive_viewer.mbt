@@ -177,7 +177,7 @@ pub fn drive_read_all(
           got.val += bytes.length()
           progress({ loaded: got.val.to_double(), total: total.to_double() })
           if bytes.length() == 0 || got.val >= total || (limit >= 0 && got.val >= limit) {
-            let all = Buffer(size_hint=got.val)
+            let all = Buffer(capacity=got.val)
             for b in parts {
               all.write_bytes(b)
             }

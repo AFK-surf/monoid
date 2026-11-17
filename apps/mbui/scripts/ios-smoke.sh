@@ -42,7 +42,7 @@ device() {  # the simulator's id and state, "" when there is none of that name
 import json,sys
 for ds in json.load(sys.stdin)['devices'].values():
   for x in ds:
-    if x['name']=='$MBUI_IOS_DEVICE': print(x['udid'], x['state']); sys.exit()
+    if x['name']=='$MBUI_IOS_DEVICE' and x.get('isAvailable'): print(x['udid'], x['state']); sys.exit()
 "
 }
 # iOS's own services the flows never use, which a booted simulator runs all the same (health and fitness, Siri, the
@@ -155,8 +155,20 @@ case "${1:-}" in
     # was of the same runtime and device: its first boot's work (the data's migration, every widget's and service's
     # first run) done, a 3-core runner's load in the hundreds for minutes otherwise (2026-10-21)
     if [ -n "${SIM_DATA:-}" ] && [ -z "$(device)" ]; then
-      rt=$(xcrun simctl list runtimes -j | python3 -c "import json,sys;r=[x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']];print(r[-1]['identifier'])")
-      dt=$(xcrun simctl list devicetypes -j | python3 -c "import json,sys;t=[x for x in json.load(sys.stdin)['devicetypes'] if x['name'].startswith('iPhone 1') and 'Pro' in x['name'] and 'Max' not in x['name']];print(t[-1]['identifier'])")
+      # (an iPhone Pro of those a runtime itself supports, the oldest, else the first iPhone it supports, of the newest
+      # runtime that supports one: a runtime drops the oldest types as it comes (iOS 27.1 the iPhone 11 Pro, the whole
+      # list's last, made before; the render runner's iOS 27.1 the iPhone Duo alone); what it took, and what each runtime
+      # skipped supports, said)
+      rt_dt=$(xcrun simctl list runtimes -j | python3 -c "
+import json,re,sys
+for r in reversed([x for x in json.load(sys.stdin)['runtimes'] if x['platform']=='iOS' and x['isAvailable']]):
+  s=r.get('supportedDeviceTypes',[])
+  t=sorted((x for x in s if re.fullmatch(r'iPhone \\d+ Pro',x['name'])),key=lambda x:int(x['name'].split()[1]))
+  t=t or [x for x in s if x.get('productFamily')=='iPhone' or x['name'].startswith('iPhone')]
+  if t: print(r['identifier'],t[0]['identifier']); print('ios: a simulator of',t[0]['name'],'on',r['name'],file=sys.stderr); sys.exit()
+  print('ios: runtime',r['identifier'],'supports no iPhone:',[x['name'] for x in s],file=sys.stderr)
+sys.exit(1)")
+      rt=${rt_dt% *} dt=${rt_dt#* }
       id=$(xcrun simctl create "$MBUI_IOS_DEVICE" "$dt" "$rt") || exit 1
       echo "$rt $dt" > "$STATE/sim-kind"
       if [ -d "$SIM_DATA/data" ] && [ "$(cat "$SIM_DATA/kind" 2>/dev/null)" = "$rt $dt" ]; then

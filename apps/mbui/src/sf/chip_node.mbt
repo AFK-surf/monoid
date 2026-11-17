@@ -35,8 +35,8 @@ pub fn chip_node(
     disabled~,
     fn(v, b) {
       let lit = fn() { !disabled() && (b.focus_shown() || b.hovered() || b.pressed()) }
-      let hand = EdgeWay::new(0.0)
-      v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let hand = @motion.NodeWay::new(0.0)
+      v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       v
       .focus_ring_theme()
       .row(Is(true))
@@ -180,8 +180,8 @@ pub fn toggle_chip_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Button, label, active, fn(_) { press() }, fn(b, _) {
-    let hand = EdgeWay::new(0.0)
-    b.reacts(fn() { lit_node(b) }, fn(on) { hand.go(b, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let hand = @motion.NodeWay::new(0.0)
+    b.reacts(fn() { lit_node(b) }, fn(on) { hand.go_ms(b, if on { 1.0 } else { 0.0 }, dur_ms) })
     let ink = fn() {
       let p = theme().p
       if active() { p.accent_text } else { p.text }
@@ -248,8 +248,8 @@ pub fn choice_chip_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Button, label, chosen, fn(_) { press() }, fn(b, _) {
-    let hand = EdgeWay::new(0.0)
-    b.reacts(fn() { lit_node(b) }, fn(on) { hand.go(b, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let hand = @motion.NodeWay::new(0.0)
+    b.reacts(fn() { lit_node(b) }, fn(on) { hand.go_ms(b, if on { 1.0 } else { 0.0 }, dur_ms) })
     let ground = fn() {
       let p = theme().p
       if chosen() {
