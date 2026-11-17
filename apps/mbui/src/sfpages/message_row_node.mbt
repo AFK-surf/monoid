@@ -1,9 +1,9 @@
 // A row of a chat's list as a node of the window's tree (chat_list.mbt row_box's, the row's half of it): the node it
 // is, found by its key (sfbase's Entry::id: `m:<ts>`, `o:<id>`, `act:<agent>`, `state`, `older`, `newer`, `empty`,
-// `line`), and its room: in from the pane's sides to the column, the room over it. What is laid over a row (the band of
-// a message gone to, of one whose menu is open) is hung on it by what draws those, through `over`, by its key and the
-// moment it began: a row is told nothing of it, and writes nothing for anything else (what else needs to know of a row
-// reads it by its key in the chat's view).
+// `line`), and its room: in from the pane's sides to the column, the room over it. What lights a message (its band as
+// it is gone to, as its menu is open) is no row's: the list draws it under all the rows of the message, once
+// (chat_body_bands). A row writes nothing for anything else (what else needs to know of a row reads it by its key in
+// the chat's view).
 
 ///|
 /// A row of a chat's list as made: its key (Entry::id) and its outermost node, what is anchored on it (a menu, the bar
@@ -39,25 +39,21 @@ fn row_top_kind(room : Double) -> Int {
 }
 
 ///|
-/// A row's room in `parent` (row_box's, but its bands): `top` over it (as that changes: none, joined_gap, list_gap),
+/// A row's room in `parent` (row_box's): `top` over it (as that changes: none, joined_gap, list_gap),
 /// in from the pane's sides by `side` each (as the list's width gives it: row_side's; the trailing side the system's
-/// inset beside its bars, native_row_inset's), its body made by `body` in the column's middle, as wide as is left.
-/// `over`, told the row's own node (all of it, the room over it too) and `key` once as it is made, before what it holds:
-/// what is laid under all of it (its band, chat_row_band_node) hung there, drawn first. Its key as it is now: a block
-/// put by and taken for another row (View::scrolls_window's `reused`) that row's.
+/// inset beside its bars, native_row_inset's), its body made by `body` in the column's middle, as wide as is left. Its
+/// key as it is now: a block put by and taken for another row (View::scrolls_window's `reused`) that row's.
 fn message_row_frame_node(
   parent : @view.View,
   key : () -> String,
   side : () -> Double,
   top : () -> Double,
   body : (@view.View) -> Unit,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
   let node = parent.box(fn(root) {
     // (across all of the list, as the old row's column (row_column): its look said once, no binding for what never
     // changes)
     root.fills_across(Is(true)) |> ignore
-    over(root, key)
     // (the room over it, as the row before it says: one kind of room in the other's place as that changes (none, a
     // joined one's, the gap between messages), the row's own structure, its way the column's; the list's way of it with
     // its neighbours' once it holds a block's. How tall that kind is follows the list's width at once: the narrow
