@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 2.55 | 3.6 | 15.73 | 37.09 | 62.5 | 32.34 | 68.4 | 96.03 | 155.7 |
 | [5c4e8695e](https://github.com/AFK-surf/monoid/commit/5c4e8695e0fb5e7c1a94233ea5227e9a3b8b4657) mbui: the Profile sidebar's rows say their plan ag | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 | [d38972704](https://github.com/AFK-surf/monoid/commit/d3897270478176e9eea4aa5e65df84dfc769d966) Revert board's web keyboard changes to mbui (#6998 | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 | [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
-| [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 2.5 | 3.52 | 15.22 | 36.56 | 60.21 | 32.07 | 67.25 | 95.83 | 121.58 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
 | [5c4e8695e](https://github.com/AFK-surf/monoid/commit/5c4e8695e0fb5e7c1a94233ea5227e9a3b8b4657) mbui: the Profile sidebar's rows say their plan ag | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
 | [d38972704](https://github.com/AFK-surf/monoid/commit/d3897270478176e9eea4aa5e65df84dfc769d966) Revert board's web keyboard changes to mbui (#6998 | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.49 |
 | [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [0544389e6](https://github.com/AFK-surf/monoid/commit/0544389e666987ca7fd5ca9ed7772f11e554fa1e) mbui: the remote screen page made as nodes on ever | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [1003c664a](https://github.com/AFK-surf/monoid/commit/1003c664a5814a7e40834d74f3db89236c8533c1) mbui: the card to share made once as nodes, its st | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
 | [d56cd5759](https://github.com/AFK-surf/monoid/commit/d56cd5759b6c91b7c2c5c1026a1be9d7e2ab2480) fix(mbui): keep the open page in front when resizi | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.4 |
-| [4cb2b1c76](https://github.com/AFK-surf/monoid/commit/4cb2b1c76bc4f15139e6e5fd8a766baf51d75bb6) station test: the clones' twin waits for the TypeS | 0.43 | 0.56 | 2.13 | 3.23 | 5.1 | 1.57 | 4.18 | 53.56 |
