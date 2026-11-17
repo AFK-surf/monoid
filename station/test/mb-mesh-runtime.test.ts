@@ -1704,14 +1704,15 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await mbFront.listen();
     const options = { secretKey: Buffer.alloc(32, 7), alpns: [Buffer.from("stillfail/station/2"), Buffer.from("aa")], relayUrls: ["https://r1/"], discovery: false, congestion: "bbr" as const, dscp: 43 };
     ep = await withFront({} as never, tsFront.path).bind(options);
-    const front = (verb: string, args: Json = {}, name = "ep") => mb().ask("front", { name, verb, args }).then(answered);
+    const front = (verb: string, args: Json = {}, name = "ep") => within(`the MoonBit client's ${verb} (${name})`, mb().ask("front", { name, verb, args }).then(answered));
     const mbBound = await front("bind", { socket: mbFront.path, options: { secretKey: hex(options.secretKey), alpns: options.alpns.map(hex), relayUrls: options.relayUrls, discovery: false, congestion: "bbr", dscp: 43 } });
     assert.deepEqual(mbBound, { id: ep.id(), sockets: ep.sockets() });
     const both = async (what: string, ts: () => Promise<unknown> | unknown, verb: string, args: Json = {}, name = "ep") => {
       let theirs: Json;
       try {
-        theirs = asJson(await ts());
+        theirs = asJson(await within(`the TypeScript client's ${what}`, Promise.resolve().then(ts)));
       } catch (e) {
+        if ((e as Error).message.startsWith("not within")) throw e;
         theirs = { error: (e as Error).message };
       }
       assert.deepEqual(await front(verb, args, name), theirs, what);
@@ -1745,7 +1746,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     const mbAccepted = front("accept", { as: "c1" });
     await tsFront.give(1);
     await mbFront.give(1);
-    const conn = (await accepted)!;
+    const conn = (await within("the TypeScript client's accept", accepted))!;
     assert.deepEqual(await mbAccepted, { remote: conn.remoteId(), alpn: Buffer.from(conn.alpn()).toString("hex"), handed: (conn as { handed?: number }).handed ?? null });
     const opened = (f: FakeFront) => [f.opened(1, 1), f.opened(1, 0)];
     const [ts1, ts0] = opened(tsFront);
@@ -1755,7 +1756,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     const ts3 = tsFront.opened(1, 3);
     const mb3 = mbFront.opened(1, 3);
     const tsStreams: Stream[] = [];
-    for (let i = 0; i < 3; i++) tsStreams.push((await conn.acceptBi())!);
+    for (let i = 0; i < 3; i++) tsStreams.push((await within(`the TypeScript client's acceptBi ${i}`, conn.acceptBi()))!);
     for (let i = 0; i < 3; i++) assert.equal(await front("acceptBi", { as: `s${i}` }, "c1"), true);
     // each read as the other end wrote it: the first taken is the one opened first
     for (const [f, ids] of [[tsFront, [ts0, ts1, ts3]], [mbFront, [mb0, mb1, mb3]]] as const) {
@@ -1776,7 +1777,7 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await both("finish", () => tsStreams[2]!.finish(), "finish", {}, "s2");
     await both("write after the finish", () => tsStreams[2]!.write(Buffer.from("x")), "write", { bytes: hex(Buffer.from("x")) }, "s2");
     // one this end opens; its stopping asked of the front
-    const own = await conn.openBi();
+    const own = await within("the TypeScript client's openBi", conn.openBi());
     await front("openBi", { as: "o1" }, "c1");
     await both("written on one opened here", () => own.write(Buffer.from("asked")), "write", { bytes: hex(Buffer.from("asked")) }, "o1");
     // (at the front before the reset below: a reset lets go of what was not sent yet, as a QUIC stream's does, and the
