@@ -1176,6 +1176,7 @@ fn side_group(src : Source, ws : String) -> String {
   let railed = rail_items(src, ws)
   match place {
     "files" => "files"
+    "remote" if railed.contains("remote") => "remote"
     "profiles" if railed.contains("profiles") => "profiles"
     "stations" if railed.contains("stations") => "stations"
     "chats" | "archive" => "chats"

@@ -923,6 +923,55 @@ pub(all) struct TerminalAt {
 }
 
 ///|
+/// A new terminal's id (one opened for its page): `new`, `new#<seq>` the seq-th beside others, and `:<chat>` after
+/// either where it opens in that chat's workspace. The chat rides in the id, not a field of `TerminalAt`, whose shape
+/// every unit that reads a page is compiled by.
+pub fn new_terminal_id(chat? : String = "", seq? : Int = 0) -> String {
+  let base = if seq > 0 { "new#" + seq.to_string() } else { "new" }
+  if chat != "" {
+    base + ":" + chat
+  } else {
+    base
+  }
+}
+
+///|
+/// Whether a terminal's id is a new one's (new_terminal_id), none of the station's yet.
+pub fn terminal_is_new(id : String) -> Bool {
+  id == "new" || id.has_prefix("new:") || id.has_prefix("new#")
+}
+
+///|
+/// The chat a new terminal's id says it opens in ("" none, or a terminal of the station's).
+pub fn terminal_open_chat(id : String) -> String {
+  guard terminal_is_new(id) else { return "" }
+  match id.find(":") {
+    Some(i) => id.exact_view(start=i + 1).to_owned()
+    None => ""
+  }
+}
+
+///|
+/// A terminal's id without the chat a new one's says (`new`, `new#<seq>`, or the station's id as it is).
+pub fn terminal_base_id(id : String) -> String {
+  guard terminal_is_new(id) else { return id }
+  match id.find(":") {
+    Some(i) => id.exact_view(end=i).to_owned()
+    None => id
+  }
+}
+
+///|
+/// A terminal's id with `chat` put in where it is a new one's that says none yet.
+pub fn terminal_with_chat(id : String, chat : String) -> String {
+  if chat == "" || !terminal_is_new(id) || terminal_open_chat(id) != "" {
+    id
+  } else {
+    id + ":" + chat
+  }
+}
+
+///|
 /// What page `p` is, by its kind alone: a name out of a fixed set written here, never a chat's, station's, session's,
 /// file's, job's or person's id, name, title or path, nor anything typed. What the window thread's hang reports sent
 /// to PostHog say of the page shown (shown_kind, mbui's journal_shows) and the device's performance record says too.
@@ -956,6 +1005,7 @@ fn place_kind(place : String) -> String {
   match place {
     "chats" => "chats"
     "files" => "files"
+    "remote" => "remote"
     "stations" => "stations"
     "profiles" => "profiles"
     "connects" => "connects"
@@ -1291,6 +1341,7 @@ pub(all) struct DriveAt {
 /// toast's count goes on, as before it was here).
 pub fn reset() -> Unit {
   app.nav = new_nav()
+  chat_remote_caps_reset()
   // (the core given no mermaid: a run's core is a new one)
   mermaid_begin()
   // (no page on its way: a frame with no wide page in it says none, the last run's left as it was)
@@ -1300,6 +1351,7 @@ pub fn reset() -> Unit {
   history_reset()
   last_reset()
   ahead_reset()
+  remote_tabs_reset()
   switch_reset()
   app.picked.set("")
   @ui.set_motion_chosen(None)
@@ -1423,9 +1475,10 @@ pub fn reset() -> Unit {
   shell.val = bare_shell()
   beside_room_now.set(false)
   tab_full_reset()
-  // the page shown alone in a window of its own (window.mbt)
+  // the page shown alone in a window of its own (window.mbt) and remote workbench tabs (remote_tabs.mbt)
   lone_page.val = None
   lone_shown.val = @signals.signal(None)
+  remote_tabs_reset()
   windows_open.clear()
   windows_here_show.clear()
 }
@@ -1471,6 +1524,7 @@ pub fn back_label(p : Page) -> String {
     // stations, a station's own page)
     Setting(@settings.Route::Stations) | Place("stations") => @sf.t("android-misc.bar.place.stations")
     Setting(@settings.Route::Profiles(_)) | Place("profiles") => @sf.t("android-misc.bar.place.profiles")
+    Place("remote") => @sf.t("web-main.rail.remote")
     Place("usage") => @sf.t("web-pages.settings.nav.usage")
     Place("vault") => @sf.t("android-settings.vault.title")
     _ => @sf.t("common.back")

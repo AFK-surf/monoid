@@ -35,7 +35,13 @@ fn side_node_tab(front : String) -> Bool {
   side_adb_tab(front) is Some(_) ||
   side_files_tab(front) is Some(_) ||
   side_station_tab(front) is Some(_) ||
+  side_terminal_tab(front) ||
   side_own_tab(front)
+}
+
+///|
+fn side_terminal_tab(front : String) -> Bool {
+  station_tab(front) is Some(("terminal", _, _))
 }
 
 ///|
@@ -323,6 +329,8 @@ fn side_panel_node(v : @view.View, src : Source, serial : Int, tips : @sf.TipLay
           side_files_node(q, src, r, station, fn() { @sf.foot_corner(@sf.button_height(), ftab_side, ftab_under) }, tips)
         } else if side_station_tab(agent) is Some(station) {
           side_station_node(q, src, station, tips, fn() { side_whole(src, q) }, false)
+        } else if side_terminal_tab(agent) {
+          side_terminal_node(q, src, r, agent)
         } else if side_own_tab(agent) {
           side_own_node(q, src, r, agent, tips, @sf.pane_foot_card)
         } else {
@@ -443,10 +451,76 @@ fn side_adb_node(q : @view.View, src : Source, station : String) -> Unit {
 ///|
 /// A Farview tab, `station`'s `screen`, in a chat's panel, in node `q` (as large as the panel under its bar,
 /// side_bar_node): the tab drawn here (sfpages' farview_tab_node).
-fn side_farview_node(q : @view.View, src : Source, station : String, screen : String) -> Unit {
+fn side_farview_node(
+  q : @view.View,
+  src : Source,
+  r : ChatRef,
+  tab : String,
+  station : String,
+  screen : String,
+) -> Unit {
   q.box(fn(s) {
     s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
-    @sfpages.farview_tab_node(s, src, station, screen)
+    @sfpages.farview_pane_node(
+      s,
+      src,
+      station,
+      screen,
+      on_switch=fn(next) {
+        if !station_page_beside(src, r, next) {
+          @sfbase.open_page(next)
+        }
+      },
+      on_close=fn() { side_change(src, r, "close", Some(tab)) },
+    )
+  })
+  |> ignore
+}
+
+///|
+/// A station terminal tab in chat `r`'s side panel, rendered as a pure node (`sfpages.terminal_node`).
+fn side_terminal_node(q : @view.View, src : Source, r : ChatRef, tab : String) -> Unit {
+  guard station_terminal_at(r, tab) is Some(at) else { return }
+  let cur_tab = Ref(tab)
+  q.box(fn(s) {
+    s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))).clips(Is(true)) |> ignore
+    @sfpages.terminal_pane_node(
+      s,
+      src,
+      at,
+      back=fn() { @sf.t("common.back") },
+      on_back=fn() { side_change(src, r, "close", Some(cur_tab.val)) },
+      top=fn() { 0.0 },
+      width=fn() { side_whole(src, s) },
+      in_tab=true,
+      keep_open=fn() {
+        let open_tabs = @signals.untracked(fn() { side_now(src, r).0 })
+        open_tabs.contains(cur_tab.val) ||
+        (!at.terminal.has_prefix("new") &&
+        open_tabs.any(fn(t) { station_tab(t) == Some(("terminal", at.station, at.terminal)) }))
+      },
+      on_resolved=fn(real_id, real_cwd) {
+        let next_cwd = if real_cwd != "" { real_cwd } else { at.cwd }
+        let next_tab = station_tab_key("terminal", at.station, screen=real_id)
+        panel_terminal_pages[tabs_key(r) + "/" + next_tab] = {
+          ..at,
+          terminal: real_id,
+          cwd: next_cwd,
+        }
+        let prev = cur_tab.val
+        cur_tab.val = next_tab
+        if prev != next_tab {
+          panel_terminal_pages.remove(tabs_key(r) + "/" + prev)
+          side_ask(src, r, "open", Some(next_tab))
+          side_ask(src, r, "close", Some(prev))
+        }
+      },
+      on_switch_page=fn(next) {
+        if !station_page_beside(src, r, next) {
+          @sfbase.open_page(next)
+        }
+      },
+    )
   })
   |> ignore
 }
@@ -462,7 +536,7 @@ fn side_screen_node(q : @view.View, src : Source, r : ChatRef, tab : String, tab
   q.pick(at_once=true, fn() { @sfpages.farview_native_screen(at.screen) }, fn(n, native) {
     n.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
     if native {
-      side_farview_node(n, src, at.station, at.screen)
+      side_farview_node(n, src, r, tab, at.station, at.screen)
     } else {
       side_screen_page_node(n, src, r, tab, at, tabs, on_tape)
     }

@@ -493,6 +493,20 @@ pub fn open_fixture_src(mode : String, src : Source) -> Unit {
   if mode == "new-workspace-code" {
     @sfpages.new_workspace_put(src, name="产品团队", code="ABCD-1234-EFGH", error_code="invite_code_invalid")
   }
+  if mode.has_prefix("place-remote") {
+    @settings.fixture_place_remote()
+    // (远程 is the first of the second bar: reached by sliding up to it, so that bar is the one in view, its ball on 远程;
+    // place-remote-home stays on Home, the first bar in view, for a finger to slide up to 远程 from there)
+    if mode != "place-remote-home" {
+      let (sets, _) = @sfbase.bars_in(src, "ws1")
+      @sfbase.bars_picked.set(Some((sets, 1)))
+    }
+  }
+  if mode == "place-remote-tabs" {
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "desktop", title: "Willow 的桌面", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Screen({ station: "ws1/st1", screen: "browser:T1", title: "发布清单 - localhost:5173", until_gone: false })) |> ignore
+    @sfbase.remote_tab_open(src, "ws1", Terminal({ station: "ws1/st1", terminal: "term-2", watch: false, cwd: "~/still.fail" })) |> ignore
+  }
 }
 
 ///|
@@ -757,6 +771,11 @@ pub fn open_mode(mode : String) -> Unit {
     }
     open_setting("station:ws1/st1")
     app.nav.push(Terminal({ station: "ws1/st1", terminal: tid, watch: false, cwd: "" }))
+  } else if mode == "place-remote-tabs" {
+    app.nav.replace(Place("remote"))
+  } else if mode == "place-remote-home" {
+    // (Home, as the app starts, over 远程's stations: Maple online beside Willow)
+    ()
   } else if mode.has_prefix("place-") {
     // a place of the rail's in the wide frame: place-stations, place-profiles, place-connects,
     // place-usage

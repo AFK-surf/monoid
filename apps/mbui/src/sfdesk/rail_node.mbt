@@ -508,11 +508,12 @@ fn rail_place_node(
     }
   }
   let dot = fn() {
-    place == "attention" &&
-    (match ws() {
-      Some(w) => bell_lit(src, w)
+    match ws() {
+      Some(w) =>
+        (place == "attention" && bell_lit(src, w)) ||
+        (place == "remote" && @sfpages.remote_agent_lit(src, w.id))
       None => false
-    })
+    }
   }
   let carded = rail_carded(place)
   let key = rail_key_node(item, tips, at, on, label, press, tipped=!carded, fn(k) {

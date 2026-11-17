@@ -1361,6 +1361,8 @@ fn tape_side_node(pane : @view.View, src : Source) -> Unit {
       } else if side_station_tab(agent) is Some(station) {
         // (as wide as the panel on the tape is laid out now)
         side_station_node(s, src, station, tips, fn() { tape_room_now().panel_w }, true)
+      } else if side_terminal_tab(agent) {
+        side_terminal_node(s, src, r, agent)
       } else if side_own_tab(agent) {
         side_own_node(s, src, r, agent, tips, fn() {
           @sf.pane_round.val = Some(beside_column(tape_pane_corners(Panel, true), tape_room_now().under))

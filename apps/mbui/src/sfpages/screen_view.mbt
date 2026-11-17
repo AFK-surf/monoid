@@ -210,6 +210,11 @@ priv struct ScreenPage {
   own_bar : @ui.Style?
   /// a window of its own (the desktop's windows of one run), alone in it: nowhere to go back to
   lone : Bool
+  /// shown as a tab at a pane's top with no row of tabs over it (远程's): its bar the pane's own, as high as a page's,
+  /// its keys this far in from its start and its end (screen_tab_bar_node)
+  tab_pads : (() -> (Double, Double))?
+  /// where a window of its own takes it, what hands it there (its 在独立窗口中打开)
+  on_window : (() -> Unit)?
 }
 
 ///|
@@ -245,11 +250,7 @@ priv enum ScreenLook {
 }
 
 ///|
-/// The viewer of `at.screen` on `at.station` (ScreenViewer) in node `v`: `at.title` until the core says one (the
-/// link's own, or the row's it was opened from); one opened until its screen is gone (a login's page) goes back by
-/// itself then. Inside the room its frame keeps over and under it (`frame`: the system's bars), unless full. `on_close`:
-/// what its 关闭 does where it is not a page of the shell's (a window of its own, a chat's tab); `in_tab`: a tab beside
-/// its chat, `own_bar` the bar's style of a panel it is alone in.
+/// The viewer of `at.screen` on `at.station` (screen_pane_node, which says the rest).
 #callsite(autofill(loc))
 pub fn screen_node(
   v : @view.View,
@@ -259,6 +260,28 @@ pub fn screen_node(
   on_close? : () -> Unit,
   in_tab? : Bool = false,
   own_bar? : @ui.Style? = None,
+  loc~ : SourceLoc,
+) -> Unit {
+  screen_pane_node(v, src, at, frame, on_close?, in_tab~, own_bar~, loc~)
+}
+
+///|
+/// The viewer of `at.screen` on `at.station` (ScreenViewer) in node `v`: `at.title` until the core says one (the
+/// link's own, or the row's it was opened from); one opened until its screen is gone (a login's page) goes back by
+/// itself then. Inside the room its frame keeps over and under it (`frame`: the system's bars), unless full. `on_close`:
+/// what its 关闭 does where it is not a page of the shell's (a window of its own, a chat's tab); `in_tab`: a tab beside
+/// its chat, `own_bar` the bar's style of a panel it is alone in.
+#callsite(autofill(loc))
+pub fn screen_pane_node(
+  v : @view.View,
+  src : Source,
+  at : ScreenAt,
+  frame : () -> PageFrame,
+  on_close? : () -> Unit,
+  in_tab? : Bool = false,
+  own_bar? : @ui.Style? = None,
+  tab_pads? : () -> (Double, Double),
+  on_window? : () -> Unit,
   loc~ : SourceLoc,
 ) -> Unit {
   let station = at.station
@@ -299,6 +322,8 @@ pub fn screen_node(
       in_tab,
       own_bar,
       lone,
+      tab_pads,
+      on_window,
     }
     // unseen, where the keyboard's input goes (a press on the stage gives it the focus with a mouse; 键盘 with a finger)
     screen_catcher_node(root, pg)
@@ -944,6 +969,10 @@ pub fn screen_left(src : Source, station : String, screen : String) -> Unit {
 /// A window of this run beside the first closed on page `p` (sfbase's window_page_left): a screen it showed that no
 /// other window shows now let go of, as its page leaving would (screen_left).
 fn screen_window_left(p : @sfbase.Page) -> Unit {
+  if p is Terminal(tat) {
+    terminal_left(tat.station, tat.terminal)
+    return
+  }
   guard p is Screen(at) && !@sfbase.window_has_screen(at.station, at.screen) else { return }
   match screens_open.get(screen_key(at.station, at.screen)) {
     Some(s) => screen_left(s.src, at.station, at.screen)

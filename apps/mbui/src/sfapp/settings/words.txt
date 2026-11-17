@@ -2013,3 +2013,8 @@ web-pages.experimental.board.title
 web-pages.experimental.board.description
 core-views.move.why.offline
 core-views.move.why.stable
+android-misc.bar.place.remote
+web-main.rail.remote
+web-pages.remote.openTerminal
+web-pages.remote.openBrowser
+web-pages.remote.openDesktop
