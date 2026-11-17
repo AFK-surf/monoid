@@ -462,8 +462,8 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   held: true,
   file: "",
   seen: {},
-  turned: {},
   found: Set([]),
+  found_across: Set([]),
   window: (-1.0, -1.0),
   bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
@@ -891,8 +891,8 @@ fn SizesSteady::window_put(self : SizesSteady, o : SizesSteady) -> Unit {
   self.held = o.held
   self.file = o.file
   self.seen = o.seen
-  self.turned = o.turned
   self.found = o.found
+  self.found_across = o.found_across
   self.window = o.window
   self.bars = o.bars
   self.words = o.words
