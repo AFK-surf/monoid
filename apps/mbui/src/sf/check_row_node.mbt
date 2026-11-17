@@ -27,9 +27,29 @@ pub fn check_row_node(
         turn(!@signals.untracked(on))
       }
     })
-    check_row_box_node(r, on, turn, label, disabled)
+    // (its box and its lead on its first line where a note is under it: as tall as that line at least, across its
+    // middle, never across the middle of both lines (the user, 2026-11-14); across the row's middle where it is one)
+    r.lines_up(By(fn() { Some(if note() != "" { Start } else { Middle }) })) |> ignore
+    let first_line = fn(v : @view.View) {
+      v.words_redone() |> ignore
+      // (its title's line as its words say it: so many points, or so many times their size where it is said so)
+      let w = @ui.style_words(theme().rows.title)
+      node_sp(v, if w.line > 0.0 { w.line } else { -w.line * w.size })
+    }
+    let on_first_line = fn(make : (@view.View) -> Unit) {
+      r.box(fn(l) {
+        l
+        .row(Is(true))
+        .lines_up(Is(Some(Middle)))
+        .min_height(By(fn() { if note() != "" { Some(first_line(l)) } else { None } }))
+        |> ignore
+        make(l)
+      })
+      |> ignore
+    }
+    on_first_line(fn(l) { check_row_box_node(l, on, turn, label, disabled) })
     match lead {
-      Some(make) => make(r)
+      Some(make) => on_first_line(make)
       None => ()
     }
     // (its words as a setting row's: what is left of the row)
@@ -82,15 +102,9 @@ fn check_row_box_node(
     }))
     .alpha(By(fn() { if disabled() { check_disabled_alpha } else { 1.0 } }))
     |> ignore
-    b.show(on, fn(m) {
-      m
-      .words(Is("✓"))
-      .words_look(By(fn() {
-        { size: side() * 0.7, weight: 700, line: side(), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-      }))
-      .ink(By(fn() { @ui.tree_theme().on_primary }))
-      |> ignore
-    })
+    // (pressed, sunk a little and springing back as it is let go; its tick drawn by its stroke as it is ticked)
+    @motion.press_feel(b, live=fn() { !disabled() }, hovers=false, size=(theme().rows.check, theme().rows.check)) |> ignore
+    check_tick_node(b, on, side, fn() { @ui.tree_theme().on_primary })
     // (the keyboard's focus on it: a concentric ring round it, its gap and width the theme's)
     focus_ring_node(b)
   })
@@ -100,7 +114,7 @@ fn check_row_box_node(
 ///|
 /// A tick row's mark in `parent` where the row itself takes the press (choice_row_node's `lead`): its side and corner
 /// the theme's rows' (`check`, `check_corner`), standing `row_corner` in from a rounded row's edge (as
-/// check_row_box's `pl=room(row_corner)`), filled in the primary ink with its check when `on` (or quiet on
+/// check_row_box's `pl=room(row_corner)`), filled in the primary ink with its tick (drawn by its stroke as it is ticked) when `on` (or quiet on
 /// `neutral_bg` in `muted` when `dimmed`, as the last ticked row that cannot be unticked).
 #callsite(autofill(loc))
 pub fn check_mark_node(
@@ -162,15 +176,7 @@ pub fn check_mark_node(
       }
     }))
     |> ignore
-    b.show(fn() { on() && !mixed() }, fn(m) {
-      m
-      .words(Is("✓"))
-      .words_look(By(fn() {
-        { size: side() * 0.7, weight: 700, line: side(), wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }
-      }))
-      .ink(By(fn() { if dimmed() { theme().p.muted } else { @ui.tree_theme().on_primary } }))
-      |> ignore
-    })
+    check_tick_node(b, fn() { on() && !mixed() }, side, fn() { if dimmed() { theme().p.muted } else { @ui.tree_theme().on_primary } })
     b.show(mixed, fn(bar) {
       bar
       .width(By(fn() { Some((side() * 0.52).round()) }))

@@ -83,6 +83,10 @@
     cancelAnimationFrame(pendingRaf);
     tick();
   }
+  // A frame asked for what moves on by the clock that needs only `hz` a second (@hostapi.frames_paced: a slow fill, a
+  // spinner): a browser says nothing of how often it refreshes, so it is the next animation frame, as request_frame_on.
+  // (None at all till 2026-11-17: what moved on by the clock alone, paced, stood still between inputs.)
+  H.framesPaced = (_hz) => H.requestFrame();
   // (a run to a declared moment draws every frame to it: its timers are on its clock, due at the frame they fall in)
   // The frame `ms` after the one being built (its time), else after now: drawn at the first of the display's frames at
   // or past it, the ones before drawing nothing (not the one after a timer happens to fire: a step a frame or two

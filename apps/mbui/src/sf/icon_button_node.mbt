@@ -72,6 +72,8 @@ fn icon_button_by(
   // its label, pressed and focused only while not disabled, its tip held up by a finger's long press via Hold. Here,
   // its look)
   let tip : Ref[TipHand?] = Ref(None)
+  // (its press's feel, told how big it is as the press goes down by the gesture: nothing read of its layout)
+  let feel_of : Ref[@motion.PressFeel?] = Ref(None)
   @headless.button(
     made_for=loc,
     parent,
@@ -85,12 +87,28 @@ fn icon_button_by(
       on_hold=fn() { if tip.val is Some(h) { (h.hold)() } },
       on_lift=fn() { if tip.val is Some(h) { (h.lift)() } },
       on_cancel=fn() { if tip.val is Some(h) { (h.cancel)() } },
+      down=fn(d) { if feel_of.val is Some(f) { f.down(d) } },
     ),
     fn(v, b) {
-      // (the hand on it: a pointer over it, a finger or the pointer held on it; the keyboard's focus shown on it)
+      // (the hand on it: a pointer over it, a finger or the pointer held on it; the keyboard's focus shown on it. Pressed,
+      // sunk a little and springing back as it is let go (@motion.press_feel); pressed where it was lit already (a
+      // mouse's click under the pointer), its tint a step deeper too, where the hover alone had nothing left to show)
       let lit = fn() { b.focus_shown() || b.hovered() || b.pressed() }
       let hand = @motion.NodeWay::new(0.0)
       v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let feel = @motion.press_feel(v, live=fn() { !disabled() }, hovers=false)
+      feel_of.val = Some(feel)
+      let deeper = lit_before_press(v, b, hand)
+      let tint = fn() {
+        // (its press's way followed whether or not it deepens: what deepens it is told as it goes down)
+        let pressed_now = dmin(1.0, dmax(0.0, feel.pressed_on(v)))
+        let pr = if deeper.val { pressed_now } else { 0.0 }
+        if pr <= 0.0 {
+          hand.shown(v)
+        } else {
+          hand.shown(v) * (1.0 + icon_button_press_more * pr)
+        }
+      }
       let pad = (size - icon_size) / 2.0
       v
       .focus_ring_theme()
@@ -128,7 +146,7 @@ fn icon_button_by(
         } else if on() {
           alpha(lit_ink(), 0.08)
         } else {
-          alpha(theme().p.text, 0.065 * hand.shown(v))
+          alpha(theme().p.text, 0.065 * tint())
         }
       }))
       |> ignore
@@ -145,3 +163,7 @@ fn icon_button_by(
 ///|
 /// How far a disabled icon button is seen (icon_button's `disabled`).
 let icon_button_disabled_alpha : Double = 0.45
+
+///|
+/// How much deeper an icon button's tint is pressed than under the hand alone, a share of that tint.
+let icon_button_press_more : Double = 0.6

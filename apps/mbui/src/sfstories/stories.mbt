@@ -57,7 +57,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       file: "button_node.mbt",
       api: [("button_node.mbt", "button_node"), ("button_node.mbt", "button_opens_node")],
       play: Some(button_play),
-      about: "页面和弹层里的按钮：六种语气，可带图标；忙时转圈，不可用时变淡。",
+      about: "页面和弹层里的按钮：六种语气，可带图标；按下时下沉并回弹，忙时转圈，完成时画出对勾，不可用时变淡。",
       cases: [
         (
           "语气 Tone",
@@ -98,6 +98,31 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
         (
           "撑满一栏 across",
           fn(card) { @sf.button_node(card, fn() { "继续" }, fn() {  }, tone=Primary, across=true) |> ignore },
+        ),
+        (
+          "发布 → 发布中 → 已发布（按发布开始，按下一步往下走）",
+          fn(card) {
+            // (0 at rest, 1 at work, 2 done)
+            let step = kept(0)
+            let words = fn() {
+              match step.get() {
+                0 => "发布"
+                1 => "发布中"
+                _ => "已发布"
+              }
+            }
+            // (发布 pressed at rest: at work; 下一步 brings what it does to done, then back to rest; 发布 pressed done:
+            // at rest again)
+            side_by_side(card, fn(r) {
+              let press = fn() { step.set(if step.get() == 0 { 1 } else { 0 }) }
+              @sf.button_node(r, words, press, tone=Primary, icon="share", busy=fn() { step.get() == 1 }, done=fn() {
+                step.get() == 2
+              })
+              |> ignore
+              @sf.button_node(r, words, press, busy=fn() { step.get() == 1 }, done=fn() { step.get() == 2 }) |> ignore
+              @sf.button_node(r, fn() { "下一步" }, fn() { step.set((step.get() + 1) % 3) }, tone=Ghost) |> ignore
+            })
+          },
         ),
       ],
     },
@@ -360,13 +385,76 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
+      key: "hold-button",
+      group: "按钮",
+      name: "按住确认 HoldButton",
+      file: "hold_button_node.mbt",
+      api: [("hold_button_node.mbt", "hold_button_node")],
+      play: None,
+      about: "不能误按的操作：按住直到填满才执行，中途松手回退；执行后原地变成限时撤销。键盘和读屏按下即执行。",
+      cases: [
+        (
+          "按住删除 · 可撤销",
+          fn(card) {
+            let done = kept(0)
+            side_by_side(card, fn(r) {
+              // (the one beside it goes with it as it turns into 撤销 and back)
+              let moves : Ref[@motion.Moves?] = Ref(None)
+              @sf.hold_button_node(
+                r,
+                fn() { "按住删除" },
+                fn() { done.set(done.get() + 1) },
+                undo=(fn() { done.set(done.get() - 1) }, 4000.0),
+                moves=fn(m) { moves.val = Some(m) },
+              )
+              |> ignore
+              let beside = @sf.hold_button_node(r, fn() { "按住发布" }, fn() {  }, danger=false)
+              if moves.val is Some(m) {
+                m.moves_with(beside)
+              }
+            })
+          },
+        ),
+      ],
+    },
+    {
+      key: "roving-hover",
+      group: "按钮",
+      name: "工具栏游走悬停 RovingHover",
+      file: "roving_hover_node.mbt",
+      api: [("roving_hover_node.mbt", "roving_hover_node"), ("tool_node.mbt", "tool_node")],
+      play: None,
+      about: "一排工具共用一块悬停底色：指针从一个滑到下一个时底色直接滑过去，提示也跟着走，不先消失再淡入。",
+      cases: [
+        (
+          "预览栏的工具",
+          fn(card) {
+            side_by_side(card, fn(r) {
+              r.lends(@sf.rove_lent, @sf.RovingHover::new()) |> ignore
+              for t in [("download", "下载"), ("share", "分享"), ("copy", "复制"), ("trash", "删除")] {
+                @sf.tool_node(
+                  r,
+                  fn() { { icon: t.0, label: t.1, on: false, disabled: false } },
+                  fn() { @sf.page_viewer_ink() },
+                  Is(@sf.small_corner),
+                  fn() {  },
+                  tip=tips,
+                )
+                |> ignore
+              }
+            })
+          },
+        ),
+      ],
+    },
+    {
       key: "switch",
       group: "选择",
       name: "开关 Switch",
       file: "page_node.mbt",
       api: [("page_node.mbt", "switch_node"), ("page_node.mbt", "switch_row_node")],
       play: Some(switch_play),
-      about: "开和关两种状态，按一下切换；拖动的手感随操控方式变。",
+      about: "开和关两种状态，按一下切换；圆钮用弹簧弹到另一头，飞行中随速度拉长，落位恢复正圆。",
       cases: [
         (
           "开 · 关 · 小号 · 不可用",
@@ -400,17 +488,29 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       file: "check_row_node.mbt",
       api: [("check_node.mbt", "check_node"), ("check_row_node.mbt", "check_row_node")],
       play: None,
-      about: "多选：单个勾选框（check_node）和带说明的一行（check_row_node）。",
+      about: "多选：单个勾选框（check_node）和带说明的一行（check_row_node）；勾上时对勾按笔顺画出。",
       cases: [
         (
           "勾选框",
           fn(card) {
             let a = kept(true)
             let b = kept(false)
+            // (each with its words beside it, 8 apart, pressed as its box is; faded with it while it cannot be)
+            let labelled = fn(r : @view.View, on : @signals.Signal[Bool], words : String, off : Bool) {
+              r.box(fn(l) {
+                l.row(Is(true)).gap(Is(8.0)).lines_up(Is(Some(Middle))) |> ignore
+                @sf.check_node(l, fn() { on.get() }, fn(v) { on.set(v) }, fn() { words }, disabled=fn() { off })
+                let w = @sf.words_node(l, fn() { words }, fn() { @sf.theme().rows.title })
+                w.alpha(Is(if off { 0.45 } else { 1.0 })) |> ignore
+                @sf.presses_node(w, fn() { on.set(!on.get()) }, on=fn() { !off })
+              })
+              |> ignore
+            }
+            let c = kept(true)
             side_by_side(card, fn(r) {
-              @sf.check_node(r, fn() { a.get() }, fn(v) { a.set(v) }, fn() { "记住我" })
-              @sf.check_node(r, fn() { b.get() }, fn(v) { b.set(v) }, fn() { "同意条款" })
-              @sf.check_node(r, fn() { true }, fn(_) {  }, fn() { "不可用" }, disabled=fn() { true })
+              labelled(r, a, "记住我", false)
+              labelled(r, b, "同意条款", false)
+              labelled(r, c, "不可用", true)
             })
           },
         ),
@@ -556,6 +656,26 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
+      key: "slider",
+      group: "选择",
+      name: "滑块 Slider",
+      file: "slider_node.mbt",
+      api: [("slider_node.mbt", "value_slider_node")],
+      play: None,
+      about: "拖动、点按跳转、方向键调整一个数值；按住时圆钮和填充轨融成一滴，上方气泡显示数值。",
+      cases: [
+        (
+          "音量 · 不可用",
+          fn(card) {
+            let v = kept(40.0)
+            @sf.value_slider_node(card, fn() { "音量" }, fn() { v.get() }, fn(x) { v.set(x) }, format=fn(n) { "\{n}%" }, tips~)
+            |> ignore
+            @sf.value_slider_node(card, fn() { "不可用" }, fn() { 60.0 }, fn(_) {  }, disabled=fn() { true }) |> ignore
+          },
+        ),
+      ],
+    },
+    {
       key: "input",
       group: "输入",
       name: "输入框 Input",
@@ -686,6 +806,14 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
+          "收尾中 finishing：已满，处理中",
+          fn(card) {
+            let t = @sf.theme
+            @sf.progress_node(card, fn() { Some(1.0) }, fn() { t().p.line }, fn() { t().p.accent }, finishing=fn() { true })
+            |> ignore
+          },
+        ),
+        (
           "圆环 · 转圈",
           fn(card) {
             side_by_side(card, fn(r) {
@@ -694,6 +822,85 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
               @sf.progress_spinner_node(r, fn() { None }) |> ignore
               @sf.progress_spinner_node(r, fn() { None }, size=24.0) |> ignore
             })
+          },
+        ),
+      ],
+    },
+    {
+      key: "rolling-number",
+      group: "进度",
+      name: "滚动数字 RollingNumber",
+      file: "rolling_number_node.mbt",
+      api: [("rolling_number_node.mbt", "rolling_number_node")],
+      play: None,
+      about: "数字变化时只滚动变了的那几位，没变的位纹丝不动；变大从下往上滚，变小从上往下。",
+      cases: [
+        (
+          "按一下加减",
+          fn(card) {
+            let n = kept(98)
+            side_by_side(card, fn(r) {
+              @sf.rolling_number_node(r, fn() { n.get() }, format=fn(k) { "\{k}%" }) |> ignore
+              @sf.button_node(r, fn() { "+1" }, fn() { n.set(n.get() + 1) }) |> ignore
+              @sf.button_node(r, fn() { "+17" }, fn() { n.set(n.get() + 17) }) |> ignore
+              @sf.button_node(r, fn() { "−1" }, fn() { n.set(n.get() - 1) }) |> ignore
+            })
+          },
+        ),
+      ],
+    },
+    {
+      key: "edge",
+      group: "布局",
+      name: "分栏边 Edge",
+      file: "edge_node.mbt",
+      api: [("edge_node.mbt", "edge_node"), ("edge_look_node.mbt", "edge_look_node")],
+      play: None,
+      about: "拖动改变一栏的宽度；拖过最窄或最宽时，分割线像琴弦一样被拉弯，松手弹回。",
+      cases: [
+        (
+          "拖动改宽（120 到 220）",
+          fn(card) {
+            let w = kept(160.0)
+            let held = kept(false)
+            let pull = @sf.EdgePull::new()
+            card.box(fn(row) {
+              row.row(Is(true)).height(Is(Some(160.0))) |> ignore
+              row.box(fn(side) {
+                side.width(By(fn() { Some(w.get()) })).radius(Is(@sf.small_corner)).ground(By(fn() { @sf.theme().p.chip })) |> ignore
+              })
+              |> ignore
+              row.box(fn(holder) {
+                holder.width(Is(Some(@sf.handle_w))) |> ignore
+                let e = @sf.edge_node(
+                  holder,
+                  fn() { "调整宽度" },
+                  fn() { w.get() },
+                  fn() { 120.0 },
+                  fn() { 220.0 },
+                  Right,
+                  fn(said, _) {
+                    match said {
+                      Dragging(x) | Dropped(x) => w.set(x)
+                      _ => ()
+                    }
+                  },
+                  fn(h) { held.set(h) },
+                  pull~,
+                )
+                e.box(fn(g) {
+                  g.over(Is(true)) |> ignore
+                  @sf.edge_look_node(g, fn() { true }, fn() { e.pointed() || held.get() }, fn() { held.get() }, pull~) |> ignore
+                })
+                |> ignore
+              })
+              |> ignore
+              row.box(fn(rest) {
+                rest.grow(Is(1.0)).radius(Is(@sf.small_corner)).edge(By(fn() { (1.0, @sf.theme().p.line) })) |> ignore
+              })
+              |> ignore
+            })
+            |> ignore
           },
         ),
       ],

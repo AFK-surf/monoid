@@ -381,6 +381,8 @@ fn side_view_node(
 fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer) -> Unit {
   let held = @signals.signal(false, same=fn(a, b) { a == b })
   n.over(Is(true)).width(Is(Some(@sf.handle_w))).offset(Is((-@sf.handle_out, 0.0))) |> ignore
+  // (dragged on past either end, its line drawn aside as a string, sprung back as it is let go)
+  let pull = @sf.EdgePull::new()
   let e = @sf.edge_node(
     n,
     fn() { @sf.t("web-pages.chat.resizePanel") + " · " + @sf.t("web-pages.chat.closePanel") },
@@ -399,10 +401,11 @@ fn side_edge_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer
     fn(h) { held.set(h) },
     tips~,
     side=Left,
+    pull~,
   )
   e.box(fn(g) {
     g.over(Is(true)) |> ignore
-    @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() })
+    @sf.edge_look_node(g, fn() { false }, fn() { e.pointed() || e.focus_shown() || held.get() }, fn() { held.get() }, pull~)
     |> ignore
   })
   |> ignore
