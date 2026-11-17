@@ -277,3 +277,9 @@ let waits_on_led_sql : String =
   #|SELECT 1 AS x FROM opened_chats o LEFT JOIN sessions c ON o.child_station = '' AND c.key = o.child
   #|  WHERE o.parent_station = '' AND o.parent = ?1 AND o.led = 1 AND c.archived_at IS NULL
   #|  AND (o.state IS NULL OR o.state NOT IN ('all_done', 'stopped')) LIMIT 1
+
+///|
+/// store/card-kinds.ts ASKER_BEFORE.
+let asker_before_sql : String =
+  #|SELECT author FROM entries INDEXED BY entries_people_by_n WHERE thread = ?1 AND n < ?2
+  #|  AND author_kind = 'person' AND kind = 'message' ORDER BY n DESC LIMIT 1

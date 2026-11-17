@@ -233,6 +233,15 @@ fn need_view(db : @sql.Db, thread : Json, agents : Array[Json], names : Names, d
   guard asking_message(db, thread, seq, from, to) is Some((m, earlier)) else { return Json::null() }
   let before = earlier.map(b => message_view(db, b, names)) catch { e => raise e }
   let v : Map[String, Json] = { "seq": m.value("n").unwrap_or(Json::null()), "message": message_view(db, m, names), "before": Json::array(before) }
+  // (whom it asks: the person it was answering, by their address, card-kinds.ts ASKER_BEFORE)
+  match one(db, asker_before_sql, [thread, m.value("n").unwrap_or(Json::null())]) {
+    Some(r) =>
+      match field(r, "author") {
+        String(a) if a.contains("@") => v["decider"] = Json::string(@jscase.lower(a))
+        _ => ()
+      }
+    None => ()
+  }
   if dismissed.contains("\{js_text(thread)}:\{js_text(m.value("n").unwrap_or(Json::null()))}") {
     v["dismissed"] = true
   }

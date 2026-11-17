@@ -250,7 +250,9 @@ export function asked(row: J): J | null {
   const need = get(row, "need");
   if (u64(get(need, "seq")) === undefined || !isObject(get(need, "message"))) return null;
   const v = structuredClone(need);
-  v.card = { type: "text" };
+  // (whom its agent asks: the person it answered, as its station says, `decider`; else whoever started the chat)
+  const asks = trimmed(get(need, "decider"));
+  v.card = asks !== null ? { type: "text", assignee: asks } : { type: "text" };
   return v;
 }
 

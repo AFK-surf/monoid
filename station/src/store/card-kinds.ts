@@ -68,6 +68,12 @@ export const SYSTEM_CARD_KEPT = "SELECT 1 AS x FROM pending_system_cards WHERE t
 /// and not answered since (a turn that woke for its background work and needs the same, 2026-11-16).
 export const ASKED_LATEST = "SELECT n FROM entries WHERE thread = ? AND kind = 'message' AND author_kind = 'agent' AND at <= ? ORDER BY at DESC LIMIT 1";
 
+/// The person whose message came last before ?2 in thread ?1 (the partial index of people's messages): whom an agent's
+/// need with no card asks, the person it was answering (a need's `decider`, read/views; the station's notice of it).
+/// Their address where it is one (a still.fail chat's), else a platform's id the core takes as no one in particular.
+export const ASKER_BEFORE = `SELECT author FROM entries INDEXED BY entries_people_by_n WHERE thread = ?1 AND n < ?2
+  AND author_kind = 'person' AND kind = 'message' ORDER BY n DESC LIMIT 1`;
+
 /// Whether session ?1 waits on work it started that is not a watch (a list row's agent's `waitingAsync`, read/views):
 /// a background job running (by the running jobs, few), or a chat it leads (chat_create for me) not archived and not
 /// ended done or stopped (opened_chats_by_key).

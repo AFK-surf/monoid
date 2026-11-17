@@ -1654,6 +1654,12 @@ export class Views implements Owner {
     return this.#core.data.marked(stations);
   }
 
+  /// A chat's record by its thread on a station (none: not listed there), for what is kept here of it alone (a message
+  /// that did not go: views/marks.ts).
+  chatOfThread(station: string, thread: number): J {
+    return this.#core.data.chatOfThread(station, thread) ?? null;
+  }
+
   /// The chat an agent's item has: the still.fail chat bound to it, as the station's items say, or its threads do.
   boundThread(station: string, key: string): number | null {
     const fromRows = u64(get(this.#core.data.chatOfSession(station, key), "thread"));

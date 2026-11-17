@@ -21,7 +21,7 @@ import { trim } from "../../../client/core-ts/src/whitespace.ts";
 import * as chatRow from "../../../client/core-ts/src/chat-row.ts";
 import { knownChannel, knownPerson, slackCreator, teamName } from "./slack-known.ts";
 import { log } from "../../src/ops/log.ts";
-import { WAITS_ON_JOB, WAITS_ON_LED } from "../../src/store/card-kinds.ts";
+import { ASKER_BEFORE, WAITS_ON_JOB, WAITS_ON_LED } from "../../src/store/card-kinds.ts";
 import { type AuthorKind, type Json, type MessageRow, type Store, type ThreadRow, type ThreadSummary, STILLFAIL_SURFACE, takeChars } from "./store.ts";
 import { STILLFAIL_CONNECT } from "../../src/store/rows.ts";
 import { readFileSync, statSync } from "node:fs";
@@ -233,6 +233,9 @@ function needView(api: Api, thread: number, agents: Json[], dismissed: Set<strin
   const [m, earlier] = asked;
   const before = earlier.map((b) => messageView(b, names, api.store));
   const v: Json = { seq: m.n, message: messageView(m, names, api.store), before };
+  // (whom it asks: the person it was answering, by their address)
+  const asker = store.one(api.store, ASKER_BEFORE, thread, m.n) as Json;
+  if (typeof field(asker, "author") === "string" && (field(asker, "author") as string).includes("@")) v.decider = (field(asker, "author") as string).toLowerCase();
   if (dismissed.has(`${thread}:${m.n}`)) v.dismissed = true;
   return v;
 }

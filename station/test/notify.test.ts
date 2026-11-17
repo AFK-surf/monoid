@@ -107,18 +107,21 @@ test("a notice reads its chat's name and whom to tell, nothing counted over the 
     store.endTurn(`t${i}`, "completed", null, "block", null);
   }
   const told = ops.turnNotices!(reader, { key: "k", since: 0, ended: null, lang: "zh" }) as any;
-  assert.deepEqual(told.notices.map((n: any) => [n.kind, n.to.join(","), n.text]), [["block", "ada@x.com,bob@x.com", "要不要改？"]]);
+  // (what it asks is told to whom it asks: bob, whose word it answered, not everyone in the chat)
+  assert.deepEqual(told.notices.map((n: any) => [n.kind, n.to.join(","), n.text]), [["block", "bob@x.com", "要不要改？"]]);
   const entries = store.entriesBefore(chat.id, null, 1);
   const heard = ops.saidNotices!(reader, { thread: chat.id, entries: entries.map((e) => ({ ...e, kind: "message", authorKind: "person", author: "bob@x.com", text: "在吗" })), since: 0, lang: "zh" }) as any[];
   assert.deepEqual(heard.map((n) => [n.kind, n.to.join(","), n.text]), [["message", "ada@x.com", "在吗"]]);
   assert.equal(told.notices[0].title, heard[0].title);
   store.setChatMuted("ADA@x.com", chat.id, true);
   const muted = ops.turnNotices!(reader, { key: "k", since: 0, ended: null, lang: "zh" }) as any;
-  assert.deepEqual(muted.notices.map((n: any) => n.to), [["bob@x.com"]], "the other participant still receives a push");
+  assert.deepEqual(muted.notices.map((n: any) => n.to), [["bob@x.com"]], "the one asked still receives a push");
   assert.deepEqual(ops.saidNotices!(reader, { thread: chat.id, entries: entries.map((e) => ({ ...e, kind: "message", authorKind: "person", author: "bob@x.com", text: "在吗" })), since: 0, lang: "zh" }), []);
   store.setChatMuted("ada@x.com", chat.id, false);
-  const unmuted = ops.turnNotices!(reader, { key: "k", since: 0, ended: null, lang: "zh" }) as any;
-  assert.deepEqual(unmuted.notices[0].to, ["ada@x.com", "bob@x.com"]);
+  store.setChatMuted("BOB@x.com", chat.id, true);
+  const unheard = ops.turnNotices!(reader, { key: "k", since: 0, ended: null, lang: "zh" }) as any;
+  assert.deepEqual(unheard.notices, [], "the one asked muted it: nobody else is told instead");
+  store.setChatMuted("bob@x.com", chat.id, false);
   assert.deepEqual(asked.filter((sql) => /\bCOUNT\(/i.test(sql)), []);
   assert.ok(!asked.some((sql) => sql.includes("m.n = t.person_n")), "own-chat titles do not read the first message");
 });
@@ -173,7 +176,7 @@ test("a chat's people hear of its turns and of each other, once, gathered", asyn
   assert.equal(posted.length, 1, "gathered into one post");
   assert.deepEqual(all.sort(), [
     ["done", "ada@x.com,bob@x.com", "好了", 2],
-    ["failed", "ada@x.com,bob@x.com", "没能启动", 3],
+    ["failed", "ada@x.com", "没能启动", 3],
     ["message", "ada@x.com", "看一下", 1],
   ]);
   // The home workspace's: posted as before, without naming it.

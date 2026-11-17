@@ -5,6 +5,7 @@
 // (rule 2), never polled, and never all of them. A station's first rows are where it starts from. Each workspace hears
 // of its own.
 import { Marks } from "./reactive.ts";
+import { startedBy } from "./chat-stage.ts";
 import * as decisions from "./decisions.ts";
 import * as format from "./format.ts";
 import { t } from "./i18n.ts";
@@ -209,6 +210,8 @@ function noticed(row: J, thenSeen: Seen | undefined, me: J, slackUsers: string[]
   const kind = get(by, "kind");
   // A failure's first paragraph: what it means (what failed said, under it, is for the chat).
   if (fresh && isStationAuthor(kind) && text.startsWith("⚠️")) {
+    // (told to whoever started it, as it goes wrong for them alone: chat-stage.ts failedForViewer)
+    if (!startedBy(row, me)) return null;
     const first = format.cleanText(format.plainText(String(last.text).split("\n\n")[0]!));
     return ["failed", body("failed", "", first.slice("⚠️".length).trim())];
   }
