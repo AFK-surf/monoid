@@ -261,7 +261,7 @@ test "Markdown as nodes: a row of images, one of them twice, each drawn at the w
 /// `code` in a code block in a column 16 in from a window `w` wide (a finger's at 390, a mouse's wider), in the colours
 /// `ink` says where it says them, the system's words at `scale`, wrapped at its width where `wrapped` (its wrap key
 /// pressed), drawn by an old view's code_block or as nodes (`node`, code_block_node): its Tester, drawn.
-fn mlines_tester(node : Bool, code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester {
+fn mlines_tester(node : Bool, code : String, ink : String?, w : Double, scale : Double, wrapped : Bool) -> @ui.Tester raise {
   // (an old view's block wrapped by its id: none so till its key is pressed here)
   code_wrapped.clear()
   let platform = if w < 500.0 { 2 } else { 0 }
@@ -293,7 +293,18 @@ fn mlines_tester(node : Bool, code : String, ink : String?, w : Double, scale : 
   t.draw()
   t.draw()
   if wrapped {
-    t.tap_text(md_wrap_words(false))
+    if w < 500.0 {
+      t.tap_text(md_wrap_words(false))
+    } else {
+      // (with a mouse its keys are made while the pointer is on the block: over its first line, then its wrap key)
+      let first = code.split("\n").to_array()[0].to_owned()
+      match t.rect_of(first) {
+        Some(r) => t.move_to(r.0 + 2.0, r.1 + 2.0)
+        None => ()
+      }
+      t.draw()
+      t.click(Button, label=md_wrap_words(false))
+    }
     t.run_for(@ui.move_most_ms)
   }
   t

@@ -32,12 +32,6 @@ jobs:
       cancel-in-progress: true
     runs-on: ubuntu-24.04
     timeout-minutes: 5
-    # (the job's, not the workflow's: a branch's run started one each minute, which took the workflow's group, cancelled
-    # the prune running then, and was itself skipped by the `if` above: none came through for hours and the caches came
-    # to 27 GB, MoonBit's and main's evicted, 2026-11-17. A job its `if` skips takes no group.)
-    concurrency:
-      group: cache-prune
-      cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
         with:

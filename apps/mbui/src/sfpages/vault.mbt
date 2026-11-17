@@ -911,15 +911,19 @@ fn vault_all_node(b : @view.View, core : Core, ws : () -> String, view : () -> J
   let all = vault_all_of(core, ws, view)
   b.box(fn(col) {
     vault_find_node(col)
-    // (each secret by its vault and id: one added or taken out comes and goes where it is)
-    col.show(fn() { all.rows.get().length() > 0 }, fn(s) {
-      @sf.group_node(s, fn(g) {
-        g.each(fn() { all.rows.get() }, fn(r) { r.0 }, fn(row, r) { vault_row_node(row, core, ws, fn() { r.get().1 }) })
+    // (what is looked for another list, by what is typed: switched there at once, as the page's blocks are keyed by it,
+    // vault_all_keys)
+    col.switch_by(vault_found_by, fn(found, _) {
+      // (each secret by its vault and id: one added or taken out comes and goes where it is)
+      found.show(fn() { all.rows.get().length() > 0 }, fn(s) {
+        @sf.group_node(s, fn(g) {
+          g.each(fn() { all.rows.get() }, fn(r) { r.0 }, fn(row, r) { vault_row_node(row, core, ws, fn() { r.get().1 }) })
+        })
       })
+      // the accounts, folded under a row naming them (open where what is looked for is among them)
+      found.show(fn() { all.accounts.get().length() > 0 }, fn(s) { vault_accounts_node(s, core, all) })
+      found.pick(fn() { vault_all_said(all) }, fn(p, what) { vault_all_said_node(p, core, ws, what) })
     })
-    // the accounts, folded under a row naming them (open where what is looked for is among them)
-    col.show(fn() { all.accounts.get().length() > 0 }, fn(s) { vault_accounts_node(s, core, all) })
-    col.pick(fn() { vault_all_said(all) }, fn(p, what) { vault_all_said_node(p, core, ws, what) })
   })
   |> ignore
 }
@@ -1118,25 +1122,53 @@ fn vault_all_said_node(p : @view.View, core : Core, ws : () -> String, what : In
 
 ///|
 /// 全部密钥's blocks on a page's list (a block is a row: its list card made a piece of it a row, as far as it shows):
-/// its search, each of its rows by its key, the accounts' card, what it says under them.
+/// its search, each of its rows by its key, the accounts' card, what it says under them. What is looked for is another
+/// list, by what is typed: each block under the search keyed by it too (vault_found_by), so what a query typed or changed
+/// finds is another set in the place of the ones before, there at once (page_node's pg_blocks_read), as 设置's search's
+/// cards are (settings_list.mbt), never the card of the accounts closing on its way as its rows close on theirs in it
+/// (#6647 left this one: vault_wbtest's 全部密钥 found by ssh, the card turned back in a frame). A secret added or taken
+/// out under one query comes and goes where it is, as ever.
 fn vault_all_keys(all : VaultAll) -> Array[String] {
+  let by = vault_found_by()
   let out = ["find"]
   for r in all.rows.get() {
-    out.push(r.0)
+    out.push(r.0 + by)
   }
   if all.accounts.get().length() > 0 {
-    out.push("accounts")
+    out.push("accounts" + by)
   }
   if vault_all_said(all) != 0 {
-    out.push("said")
+    out.push("said" + by)
   }
   out
+}
+
+///|
+/// What 全部密钥's blocks under its search are keyed by besides their own (vault_all_keys): what is looked for, "" where
+/// nothing is.
+fn vault_found_by() -> String {
+  let q = vault_find.text().trim(chars=" ").to_lower()
+  if q == "" {
+    ""
+  } else {
+    "?" + q.to_owned()
+  }
+}
+
+///|
+/// A block's key of 全部密钥 (vault_all_keys') as it is of its own, what is looked for taken off it.
+fn vault_block_own(key : String) -> String {
+  match key.find("?") {
+    Some(i) => key.unsafe_substring(start=0, end=i)
+    None => key
+  }
 }
 
 ///|
 /// 全部密钥's block `key` (vault_all_keys') in `b`: a row of its list card, the piece of the card it is where it is
 /// among them now, as it is now (as it was last where its key is gone, while it goes).
 fn vault_all_block(b : @view.View, core : Core, ws : () -> String, all : VaultAll, key : String) -> Unit {
+  let key = vault_block_own(key)
   match key {
     "find" => vault_find_node(b)
     "accounts" => vault_accounts_node(b, core, all)

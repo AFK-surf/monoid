@@ -167,7 +167,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
         p.ended = true
         p.chosen = true
         close_from_serial(serial)
-        f()
+        chosen_in(serial, f)
       }
       match p.shows {
         // (on 小屏, a panel (no stage, no steps of its own) whatever it holds, and a confirm, a question, a menu or a

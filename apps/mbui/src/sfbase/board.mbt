@@ -42,13 +42,21 @@ let board_chat_key : String = "\nboardChat"
 
 ///|
 /// A line written down to start later (待派发): its key (`new:board-…`, the key its chat is made under), its words, the
-/// station it is to run on and that station's name.
+/// station it is to run on, that station's name and the files held in its own composer.
+#derive(Eq, Debug)
+pub(all) struct BoardFile {
+  id : String
+  name : String
+}
+
+///|
 #derive(Eq, Debug)
 pub(all) struct BoardDraft {
   id : String
   title : String
   station : String
   station_name : String
+  files : Array[BoardFile]
 }
 
 ///|
@@ -293,9 +301,10 @@ fn board_drafts_kept(src : Source, ws : String) -> Array[BoardDraft] {
               title: text(one, "title"),
               station: text(one, "station"),
               station_name: text(one, "stationName"),
+              files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
             }
           })
-          .filter(fn(d) { d.id != "" && d.title != "" })
+          .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
         _ => []
       }
   }
@@ -308,12 +317,16 @@ fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Un
   board_rev.set(board_rev.untracked() + 1)
   let kept = Json::array(
     drafts.map(fn(d) {
-      Json::object({
+      let one : Map[String, Json] = {
         "id": Json::string(d.id),
         "title": Json::string(d.title),
         "station": Json::string(d.station),
         "stationName": Json::string(d.station_name),
-      })
+      }
+      if !d.files.is_empty() {
+        one["files"] = Json::array(d.files.map(fn(f) { { "id": Json::string(f.id), "name": Json::string(f.name) } }))
+      }
+      Json::object(one)
     }),
   )
   (src.call)("prefs.set", { "boardDrafts": board_of_ws(ws, kept) }, answer_unread)
@@ -327,6 +340,19 @@ pub fn board_drafts_of(src : Source, ws : String) -> Array[BoardDraft] {
 }
 
 ///|
+/// A new board task's key, also the key its chat will be made under.
+pub fn board_next_id() -> String {
+  board_written.val += 1
+  "new:board-\{@hostapi.wall_ms().to_int64()}-\{board_written.val}"
+}
+
+///|
+/// The task's composer, kept separately in the workspace's draft store; `id` stays with its board card.
+pub fn board_file_key(ws : String, id : String) -> String {
+  "new:" + ws + ":board:" + id
+}
+
+///|
 /// A line written down in 待派发 of workspace `ws`, to run on `station`: its key, None where nothing was written.
 pub fn board_draft_add(
   src : Source,
@@ -334,23 +360,41 @@ pub fn board_draft_add(
   title : String,
   station : String,
   station_name : String,
+  id? : String = "",
+  files? : Array[BoardFile] = [],
 ) -> String? {
   let words = title.trim(chars=" \n\r\t").to_owned()
-  guard words != "" && station != "" else { return None }
-  board_written.val += 1
-  let id = "new:board-\{@hostapi.wall_ms().to_int64()}-\{board_written.val}"
+  guard (words != "" || !files.is_empty()) && station != "" else { return None }
+  let id = if id == "" { board_next_id() } else { id }
   // (newest first, as the board's chats are: where it was written, at 待派发's top)
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
-  board_drafts_put(src, ws, [{ id, title: words, station, station_name }] + was)
+  board_drafts_put(src, ws, [{ id, title: words, station, station_name, files }] + was)
   Some(id)
 }
 
 ///|
 /// Draft `id` of workspace `ws` let go of (deleted, or its chat made).
-pub fn board_draft_remove(src : Source, ws : String, id : String) -> Unit {
+pub fn board_draft_remove(src : Source, ws : String, id : String, discard_files? : Bool = true) -> Unit {
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
   guard was.iter().any(fn(d) { d.id == id }) else { return }
+  if discard_files {
+    for d in was {
+      if d.id == id {
+        board_files_discard(src, ws, id, d.files)
+      }
+    }
+  }
   board_drafts_put(src, ws, was.filter(fn(d) { d.id != id }))
+}
+
+///|
+/// A discarded task's files are released by the same composer that kept them.
+pub fn board_files_discard(src : Source, ws : String, id : String, files : Array[BoardFile]) -> Unit {
+  if files.is_empty() { return }
+  let w = writing(src, board_file_key(ws, id))
+  for f in files {
+    writing_remove(src, w, f.id)
+  }
 }
 
 ///|
@@ -377,35 +421,74 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
   let name = d.station + "/" + key
   board_titles_here[name] = d.title
   board_started.set(board_started.untracked() + [{ ws, draft: d, key }])
-  (src.call)("newChat.create", { "station": Json::string(d.station), "key": Json::string(key) }, fn(res) {
-    match res {
-      Ok(_) => {
-        board_draft_remove(src, ws, d.id)
-        (src.call)(
-          "chat.send",
-          {
+  let w = if d.files.is_empty() { None } else { Some(writing(src, board_file_key(ws, d.id))) }
+  let failed = fn(why : String) {
+    board_titles_here.remove(name)
+    board_seen_here.remove(name)
+    board_started.set(board_started.untracked().filter(fn(s) { s.draft.id != d.id }))
+    toast_later(why)
+  }
+  let create = fn(taken : Json?) {
+    (src.call)("newChat.create", { "station": Json::string(d.station), "key": Json::string(key) }, fn(res) {
+      match res {
+        Ok(_) => {
+          board_draft_remove(src, ws, d.id, discard_files=false)
+          let p : Map[String, Json] = {
             "station": Json::string(d.station),
             "session": Json::string(key),
             "text": Json::string(d.title),
-            "attachments": Json::array([]),
-            "quotes": Json::array([]),
-          },
-          fn(sent) {
+            "attachments": Json::array(items(taken, "attachments")),
+            "quotes": Json::array(items(taken, "quotes")),
+          }
+          let uploads = items(taken, "uploads")
+          if !uploads.is_empty() { p["uploads"] = Json::array(uploads) }
+          (src.call)("chat.send", Json::object(p), fn(sent) {
             match sent {
-              Err(e) => toast_later(text(Some(e), "message"))
+              Err(e) => {
+                let why = text(Some(e), "message")
+                // Refused before the outbox took it: put the files and words back in the created chat's composer.
+                if ["invalid_params", "core_restarted", "closed"].contains(text(Some(e), "code")) {
+                  match w {
+                    Some(w) => {
+                      let chat_draft = d.station + ":" + key
+                      writing_carry(src, w.key, chat_draft)
+                      writing_back_or_said(src, writing(src, chat_draft), why)
+                    }
+                    None => ()
+                  }
+                }
+                toast_later(why)
+              }
               Ok(_) => ()
             }
-          },
-        )
+          })
+        }
+        Err(e) => {
+          let why = text(Some(e), "message")
+          match w {
+            Some(w) => writing_restore(src, w, why)
+            None => ()
+          }
+          failed(why)
+        }
       }
-      Err(e) => {
-        board_titles_here.remove(name)
-        board_seen_here.remove(name)
-        board_started.set(board_started.untracked().filter(fn(s) { s.draft.id != d.id }))
-        toast_later(text(Some(e), "message"))
-      }
+    })
+  }
+  match w {
+    None => create(None)
+    Some(w) => {
+      writing_text(src, w, d.title)
+      writing_take(src, w, station=d.station, fn(taken) {
+        match taken {
+          Some(t) if items(Some(t), "attachments").length() + items(Some(t), "uploads").length() == d.files.length() => create(Some(t))
+          _ => {
+            writing_restore(src, w, "")
+            failed(@sf.t("web-main.board.files_unavailable"))
+          }
+        }
+      })
     }
-  })
+  }
 }
 
 ///|

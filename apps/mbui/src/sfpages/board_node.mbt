@@ -62,6 +62,8 @@ priv struct BoardOwn {
   mut columns : () -> Array[(String, String)]
   mut cards_of : (String) -> Array[BoardKey]
   field : @ui.Field
+  /// The task currently being written, whose files have their own persisted composer.
+  draft_id : @signals.Signal[String]
   station : @signals.Signal[String]
   /// 已归档 chosen in the board's filter's menu (the frame's: its page, or its list in the board's place)
   archived : () -> Unit
@@ -390,6 +392,7 @@ pub fn board_node(
     columns: fn() { [] },
     cards_of: fn(_) { [] },
     field: @ui.Field::new(),
+    draft_id: @signals.signal(@sfbase.board_next_id()),
     station: @signals.signal(""),
     archived: archive,
     stint,
@@ -453,11 +456,11 @@ pub fn board_node(
 ///|
 /// The wide board: its bar over its columns side by side (whole columns where they have not all the room, going
 /// sideways to the rest); the chat of the card picked beside all of it, the window's whole height, where there is the
-/// room. The chat slides in and out from the board's end (a Move as far as it is wide), the columns going from their
-/// width to the one they come to over the same way, and the columns brought sideways to where they are to show over it
-/// too: one motion, its three parts each worked out of it. Open and still, its edge at its start dragged for its width
-/// (sfbase's board_chat_w_of: board_chat_least to board_chat_most, a whole column and the board's margins always left
-/// beside it), the columns laid out again as it goes; pressed twice, its own width again.
+/// room. The chat slides in and out from the board's end (a Move as far as it is wide). The columns keep their width as
+/// the chat opens or closes; only the least sideways scroll needed to keep the chosen column in sight moves with it.
+/// Open and still, its edge at its start dragged for its width (sfbase's board_chat_w_of: board_chat_least to
+/// board_chat_most, a whole column and the board's margins always left beside it), the columns keeping theirs; pressed
+/// twice, its own width again.
 fn board_wide(
   p : @view.View,
   src : Source,
@@ -498,10 +501,9 @@ fn board_wide(
       (way.value_at(t) - from) / (to - from)
     }
   }
-  // (each column's width as the chat beside them is to be: laid out at it at once as it is opened or closed, its cards'
-  // words broken anew once, at the width they come to, never along the way (View::lays_anew), the chat sliding in
-  // over the board's end as the pane's sidebar does beside a page, sfdesk board.mbt)
-  let laid_w = fn() { board_col_w(width() - (if split() { beside_w() + board_edge_reach } else { 0.0 }), count()) }
+  // (the chat changes how much of the board is seen, not the width of every column: opening or closing it must not
+  // reflow all the cards under the reader)
+  let laid_w = fn() { board_col_w(width(), count()) }
   p.row(Is(true)) |> ignore
   p.box(fn(left) {
     left.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
@@ -516,21 +518,29 @@ fn board_wide(
       // the edge's alone)
       area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore
       let across = @view.Scroll::across()
-      // (brought sideways to `to` over the chat's way: drawn moved by what is left of the way, put there as it ends)
-      let glide_to = fn(to : Double) {
-        let at = area.cause_at()
-        let now = across.at(area.tree) + (if glide.goes_at(at) {
-          let (f, t) = glides.val
-          (t - f) * along(glide, at) - (t - f)
+      // (the part of the scroll drawn apart from its anchor while the columns are on their way)
+      let glide_extra = fn(at : Double) {
+        if glide.goes_at(at) {
+          let (from, to) = glides.val
+          from - from.min(to) + (to - from) * along(glide, at)
         } else {
           0.0
-        })
+        }
+      }
+      // (anchor at the lesser end so it stays in range while the chat opens or closes; draw the rest of the scroll
+      // over the way, then put it at the destination. Anchoring at the old end on close let the growing viewport clamp
+      // it before the way had finished.)
+      let glide_to = fn(to : Double) {
+        let at = area.cause_at()
+        let now = across.at(area.tree) + glide_extra(at)
         // (as far as it goes there once laid out so)
         let to = if to < 0.0 { 0.0 } else { to }
         if (to - now).abs() < 0.5 {
+          glide.put(1.0)
+          across.put(to)
           return
         }
-        across.put(now)
+        across.put(now.min(to))
         glides.val = (now, to)
         glide.put(0.0)
         glide.go(1.0, spec(), at~)
@@ -540,24 +550,24 @@ fn board_wide(
       // (where the columns are to be for column `key`'s to show whole, the chat beside them as it is to be)
       own.reveal = fn(key) {
         let cols = @signals.untracked(own.columns)
-        let n = cols.length()
         let i = cols.search_by(fn(c) { c.0 == key }).unwrap_or(0)
         let r = width() -
           (if @signals.untracked(own.side) && key != "draft" { @signals.untracked(beside_w) + board_edge_reach } else { 0.0 })
-        let w = board_col_w(r, n)
-        let avail = r - 2.0 * board_pad
-        let fits = ((avail + board_gap) / (board_col_least + board_gap)).floor().to_int()
-        let shown_n = if fits < 1 { 1 } else if fits > n { n } else { fits }
-        let first = if i >= shown_n { i - shown_n + 1 } else { 0 }
-        let now = across.at(area.tree)
+        let w = laid_w()
+        let now = across.at(area.tree) + glide_extra(area.cause_at())
         let stride = w + board_gap
-        // (where it shows whole already, left as it is)
-        let first_now = (now / stride).round().to_int()
-        let first = if i >= first_now && i < first_now + shown_n && key != "draft" { first_now } else { first }
-        glide_to(first.to_double() * stride)
+        let start = i.to_double() * stride
+        let end = start + w
+        let room = r - 2.0 * board_pad
+        // (only as far as needed, keeping the existing position where the column already fits)
+        let to = if key == "draft" { 0.0 } else if start < now { start } else if end > now + room { end - room } else { now }
+        glide_to(to)
       }
-      own.to_start = fn() { across.put(0.0) }
-      // (the chat beside them opened or closed: the three set off together, from that moment)
+      own.to_start = fn() {
+        glide.put(1.0)
+        across.put(0.0)
+      }
+      // (the chat beside them opened or closed: its way starts at that moment)
       area.reacts(split, fn(open) {
         let at = area.cause_at()
         if open {
@@ -576,14 +586,12 @@ fn board_wide(
           let w = board_col_w(width(), count())
           let n = count().to_double()
           let most = 2.0 * board_pad + n * w + (n - 1.0) * board_gap - width()
-          let now = across.at(area.tree)
-          if now > most {
-            glide_to(if most < 0.0 { 0.0 } else { most })
-          }
+          let now = across.at(area.tree) + glide_extra(at)
+          glide_to(if now > most { if most < 0.0 { 0.0 } else { most } } else { now })
         }
       }, at_start=false)
-      // (the chat beside them made narrower or wider by its edge: the columns no further sideways than they go in the
-      // room it leaves, none left empty at their end; put there at once, as the edge is in the hand)
+      // (the chat beside them made narrower or wider by its edge: the columns, their width kept, no further sideways than
+      // they go in the room it leaves, none left empty at their end; put there at once, as the edge is in the hand)
       // (not as it opens or closes: the way above's)
       let was_w = Ref(0.0)
       area.reacts(fn() { if split() { beside_w() } else { 0.0 } }, fn(bw) {
@@ -592,7 +600,7 @@ fn board_wide(
         guard bw > 0.0 && was > 0.0 else { return }
         let r = width() - bw - board_edge_reach
         let n = count().to_double()
-        let most = dmax(0.0, 2.0 * board_pad + n * board_col_w(r, count()) + (n - 1.0) * board_gap - r)
+        let most = dmax(0.0, 2.0 * board_pad + n * laid_w() + (n - 1.0) * board_gap - r)
         if across.at(area.tree) > most {
           across.put(most)
         }
@@ -616,8 +624,7 @@ fn board_wide(
             if t == @double.infinity || !glide.goes_at(t) {
               (0.0, 0.0)
             } else {
-              let (f, to) = glides.val
-              (-(to - f) * along(glide, t), 0.0)
+              (-glide_extra(t), 0.0)
             }
           }))
           |> ignore
@@ -1302,7 +1309,23 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
 /// station it goes to, 添加.
 fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -> Unit {
   let card_at : Ref[@view.View?] = Ref(None)
+  let ws = @signals.untracked(own.ws)
+  let writing = fn() { @sfbase.writing(own.src, @sfbase.board_file_key(ws, own.draft_id.get())) }
+  let files = fn() {
+    writing().files.get().map(fn(f) -> @sfbase.BoardFile { { id: text(Some(f), "id"), name: text(Some(f), "name") } })
+  }
+  let ready = fn() {
+    let w = writing()
+    (own.field.text().trim(chars=" \n\r\t").to_owned() != "" || !w.files.get().is_empty()) &&
+    w.pending.get() == 0 && !w.files.get().iter().any(fn(f) { text(Some(f), "error") != "" }) &&
+    board_station_now(own) != ""
+  }
+  let discard = fn() {
+    @sfbase.board_files_discard(own.src, ws, own.draft_id.untracked(), @signals.untracked(files))
+    own.draft_id.set(@sfbase.board_next_id())
+  }
   let add = fn() {
+    guard @signals.untracked(ready) else { return }
     let words = own.field.text()
     let st = @signals.untracked(fn() { board_station_now(own) })
     let name = own.stations_by.peek(st).map(fn(s) { s.name }).unwrap_or("")
@@ -1311,7 +1334,8 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       _ => None
     }
     // (the draft and its line put away one change: what moves for it goes from where all of it stood before)
-    guard words.trim(chars=" \n\r\t").to_owned() != "" else { return }
+    let id = own.draft_id.untracked()
+    let attached = @signals.untracked(files)
     @signals.start_batch()
     // (wide, put away at once once written, its words in it, its room let go first: its draft comes in its place,
     // grown from where it was)
@@ -1319,10 +1343,11 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       own.room_made.set(own.room_made.untracked() + 1)
       @sfbase.board_adding.set(false)
     }
-    let added = @sfbase.board_draft_add(own.src, @signals.untracked(own.ws), words, st, name)
+    let added = @sfbase.board_draft_add(own.src, ws, words, st, name, id~, files=attached)
     if wide && added is Some(id) {
       own.added_from = from.map(fn(r) { (id, r) })
     }
+    if added is Some(_) { own.draft_id.set(@sfbase.board_next_id()) }
     @signals.end_batch()
     guard added is Some(_) else { return }
     if !wide {
@@ -1331,6 +1356,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     }
   }
   let cancel = fn() {
+    discard()
     own.field.set("")
     @sfbase.board_adding.set(false)
   }
@@ -1344,7 +1370,13 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     if d > 0.0 { d / 2.0 } else { 0.0 }
   }
   a.box(fn(card) {
+    card.owns(fn() { discard() }) |> ignore
     card_at.val = Some(card)
+    card.reacts(fn() {
+      writing().files.get().map(fn(f) { text(Some(f), "error") }).filter(fn(e) { e != "" }).join("\n")
+    }, fn(error) {
+      if error != "" { @sfbase.toast_later(error) }
+    }, at_start=false)
     card
     .ground(By(fn() { @sf.theme().p.card }))
     .radius(Is(@sf.card_corner))
@@ -1362,6 +1394,11 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
         max_lines=3,
         enter_sends=true,
         submitted=fn(_) { add() },
+        files=fn(got) {
+          let w = @signals.untracked(writing)
+          let station = @signals.untracked(fn() { board_station_now(own) })
+          for f in got { @sfbase.writing_add(own.src, w, station, f.0, f.1) }
+        },
         leaves=[@ui.key_escape],
         size_by=fn() { @sf.theme().t.ui },
         colors_by=fn() {
@@ -1412,18 +1449,82 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       r.box(fn(g) { g.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
       r.box(fn(k) {
         k.shrink(Is(0.0)).margin(By(fn() { (0.0, 0.0, add_in(), 0.0) })) |> ignore
-        @sf.button_node(k, fn() { board_words("add") }, add, tone=Primary, disabled=fn() {
-          own.field.text().trim(chars=" \n\t").is_empty() || board_station_now(own) == ""
-        })
+        @sf.button_node(k, fn() { board_words("add") }, add, tone=Primary, disabled=fn() { !ready() })
         |> ignore
       })
       |> ignore
     })
     |> ignore
+    board_files_node(card, own.src, fn() { @sfbase.board_file_key(ws, own.draft_id.get()) }, files, remove=fn(f) {
+      @sfbase.writing_remove(own.src, @signals.untracked(writing), f.id)
+    })
   })
   |> ignore
   if wide {
     card_corner_key(a, tips, fn() { true }, "close", fn() { board_words("cancel") }, cancel)
+  }
+}
+
+///|
+/// Files beside a task: their pictures come from the composer or the device's kept draft, not from board prefs.
+fn board_files_node(
+  parent : @view.View,
+  src : Source,
+  key : () -> String,
+  files : () -> Array[@sfbase.BoardFile],
+  remove? : (@sfbase.BoardFile) -> Unit,
+) -> Unit {
+  // The entry always has room for its attachments, so adding or removing one never moves its actions or the cards below.
+  let strip = fn(p : @view.View) {
+    p.height(Is(Some(64.0))).min_width(Is(Some(0.0))) |> ignore
+    p.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), fn(row) {
+      row.row(Is(true)).gap(Is(6.0)).padding(Is((0.0, 8.0, 8.0, 0.0))) |> ignore
+      match remove {
+        Some(_) => row.show(fn() { files().is_empty() }, at_once=true, fn(hint) {
+          @sf.words_node(hint, fn() { @sf.t("web-main.board.paste_image") }, fn() { card_meta_look }) |> ignore
+        })
+        None => ()
+      }
+      let by_id = row.keyed_by(files, fn(f) { f.id })
+      row.each(fn() { by_id.keys() }, fn(id) { id }, fn(slot, id) {
+        let file = fn() { by_id.get(id.get()).unwrap_or({ id: "", name: "" }) }
+        let picture = fn() {
+          let f = file()
+          if file_kind(f.name) != "image" {
+            "!"
+          } else {
+            match @sfbase.writing_pictures.get(f.id) {
+              Some(p) => p
+              None => (src.draft_picture)(key(), f.id)
+            }
+          }
+        }
+        let tile = fn(at : @view.View) {
+          @sf.waiting_tile_node(at, fn(p) {
+            p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
+              if has_picture {
+                v.image(By(fn() { Some((picture(), "", 56)) })) |> ignore
+              } else {
+                v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+                @sf.icon_node(v, "file", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
+              }
+            })
+          }, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "" })
+          |> ignore
+        }
+        match remove {
+          Some(drop) => {
+            @sf.with_corner_remove_node(slot, fn() { @sf.t("web-main.file.remove", args=[("name", file().name)]) }, @sf.card_corner, tile, fn() { drop(@signals.untracked(file)) })
+            |> ignore
+          }
+          None => tile(slot)
+        }
+      })
+    }) |> ignore
+  }
+  match remove {
+    Some(_) => parent.box(strip) |> ignore
+    None => parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
   }
 }
 
@@ -1754,7 +1855,9 @@ fn draft_card(
   lane : String,
 ) -> Unit {
   let d = fn() { (own.drafts_by)().get(id) }
-  let title = fn() { d().map(fn(d) { d.title }).unwrap_or("") }
+  let title = fn() {
+    d().map(fn(d) { if d.title == "" { d.files.get(0).map(fn(f) { f.name }).unwrap_or("") } else { d.title } }).unwrap_or("")
+  }
   let card_at : Ref[@view.View?] = Ref(None)
   // (started from `from` in the window: its chat's card flies in from there, board_chat_card's)
   let start_from = fn(from : (Double, Double, Double, Double)) {
@@ -1855,6 +1958,9 @@ fn draft_card(
       head.padding(Is((0.0, 0.0, card_title_end(), 0.0))) |> ignore
     })
     |> ignore
+    board_files_node(card, src, fn() { @sfbase.board_file_key((own.ws)(), id) }, fn() {
+      d().map(fn(d) { d.files }).unwrap_or([])
+    })
     // where it is to run, as a chat's card says where it runs (and, not by state, that it waits in 待派发): its station's
     // mark before its name where it has one, as a chat's row has it, else its name alone where the title begins
     card.box(fn(m) {

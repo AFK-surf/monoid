@@ -3739,6 +3739,7 @@ pub fn fixture_call(name : String, params : Json) -> Result[Json, Json]? {
             ("token", str("made-up")),
             ("install", str("curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b")),
             ("installWindows", str("& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b")),
+            ("installDocker", str("docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b")),
             ("command", str("stillfail station enroll https://still.fail 4f7c2a9e1b")),
           ]),
         ),
@@ -4115,6 +4116,7 @@ fn fixture_sheet(core : Core, here : Here) -> Unit {
           (
             "curl -fsSL https://still.fail/install.sh | sh -s -- 4f7c2a9e1b",
             "& ([scriptblock]::Create((irm https://still.fail/install.ps1))) 4f7c2a9e1b",
+            "docker run -d --restart unless-stopped -v stillfail:/home/stillfail -e STILLFAIL_ORIGIN=https://still.fail ghcr.io/afk-surf/stillfail-station 4f7c2a9e1b",
           ),
         ))
       }

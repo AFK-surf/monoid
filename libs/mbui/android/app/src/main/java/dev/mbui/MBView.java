@@ -1199,6 +1199,12 @@ public class MBView extends GLSurfaceView implements GLSurfaceView.Renderer {
             out.imeOptions = EditorInfo.IME_ACTION_NONE | EditorInfo.IME_FLAG_NO_ENTER_ACTION
                     | EditorInfo.IME_FLAG_NO_PERSONALIZED_LEARNING
                     | EditorInfo.IME_FLAG_NO_EXTRACT_UI | EditorInfo.IME_FLAG_NO_FULLSCREEN;
+        } else if (Device.imeAction == 5) {
+            // an email address's: the keyboard's for addresses with @, nothing suggested; its Enter as the field's own
+            out.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_EMAIL_ADDRESS;
+        } else if (Device.imeAction == 6) {
+            // words taken as typed (a server's id, a code): nothing corrected or suggested; its Enter as the field's own
+            out.inputType = InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS;
         }
         out.initialSelStart = Host.selStart;
         out.initialSelEnd = Host.selEnd;

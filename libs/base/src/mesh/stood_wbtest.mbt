@@ -56,6 +56,8 @@
 //   stood.added                           where the endpoint was told a peer is (`iroh.addAddr`, asked at once):
 //                                          `<endpoint> <addr as written>`.
 //   stood.bind_keys, stood.bound_as       the key each bind was given; what each endpoint bound at once was asked.
+//   stood.dial_alpns, stood.forgot_ends   the protocol each dial was asked on (its bytes); the endpoints closed
+//                                          to be forgotten (`iroh.close` with `forget`).
 //   far.lag[way] = 25                     a way's dials and answers take that long ("main", a relay whose own
 //                                          endpoint dials it, an address said: `Peer::way_of`); far.deaf[way]: its
 //                                          dials go unanswered; far.direct[way]: its connections go direct
@@ -121,8 +123,11 @@ priv struct Stood {
   /// What the shell answers `crypto.verify` (none: it has no such op) and what it was asked.
   mut verifies : Json?
   verify_asks : Array[String]
-  /// The endpoints closed (`iroh.close`).
+  /// The endpoints closed (`iroh.close`), and those closed to be forgotten (`forget`).
   unbound : Map[Int, Unit]
+  forgot_ends : Map[Int, Unit]
+  /// The protocol each dial was asked on (`iroh.connect`'s bytes), in order.
+  dial_alpns : Array[Bytes]
   /// What each bind was asked with, where each dial was told its peer is, and the entries told, as written.
   binds : Array[String]
   addrs : Array[String]
@@ -174,6 +179,8 @@ fn Stood::new() -> Stood {
     verifies: None,
     verify_asks: [],
     unbound: Map([]),
+    forgot_ends: Map([]),
+    dial_alpns: [],
     binds: [],
     addrs: [],
     entries: [],
@@ -195,6 +202,10 @@ fn Stood::new() -> Stood {
       }
       if op == "iroh.connect" && args is { "addr": addr, .. } {
         stood.addrs.push(addr.stringify())
+        stood.dial_alpns.push(bytes.unwrap_or(b""))
+      }
+      if op == "iroh.close" && args is { "forget": True, .. } {
+        stood.forgot_ends[handle] = ()
       }
       if op == "iroh.setRelayEntries" && args is { "entries": entries, .. } {
         stood.entries.push(entries.stringify())

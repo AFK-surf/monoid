@@ -1472,12 +1472,19 @@ export interface Overview {
 /** How a workspace's board columns are grouped: by where each chat stands, by its station, or by who is in it. */
 export type BoardGroup = "state" | "station" | "person";
 
+/** A queued task's file, named by its composer id; its bytes stay in the device's draft store. */
+export interface BoardFile {
+	id: string;
+	name: string;
+}
+
 /** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */
 export interface BoardDraft {
 	id: string;
 	title: string;
 	station: string;
 	stationName: string;
+	files?: BoardFile[];
 }
 
 /** What a workspace's chat list shows: all, the viewer's (我参与的), the watching ones (监控中), the viewer's hidden chats (已隐藏), or archived chats (已归档). */

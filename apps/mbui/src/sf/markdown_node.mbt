@@ -1213,7 +1213,14 @@ fn md_task_node(t : @view.View, done : () -> Bool, line : () -> Double, loc~ : S
 /// the code in the code face, in the colours the core said (`colours`), 12 on 18 (on a
 /// desktop's width 12 on 1.6), scrolled across, or wrapped at its width once its wrap key (before the copy key) is
 /// pressed, till it is pressed again. Pressed, the copy key copies the code and says so copied_ms. `face`: a face
-/// tried for the code, as it is now (code_block's: None or Some(0) the code's own).
+/// tried for the code, as it is now (code_block's: None or Some(0) the code's own). `command`: a command to copy and
+/// run elsewhere (添加 station's, a profile's sign-in on its machine): on its one line, scrolled across, its copy key
+/// beside it (no bar, no language, no wrap key: the user,
+/// 2026-11-17, 「为啥上面空了那么多」). Otherwise, with a mouse, no bar: its wrap and copy keys are icons in its top right
+/// corner (code_block's tray), taking no room, shown while the pointer is on the block, or always (`keys_always`; the
+/// user, 2026-11-17: 「hover 才显示，不占空间，悬浮，可以配置成永远显示」, then the icons of GitHub's and Cursor's, 方案 2);
+/// with a finger, which hovers over nothing, on their bar over it. The app's one block of code or of a command to copy
+/// (the user, 2026-11-17: 「合成一个组件」).
 #callsite(autofill(loc))
 pub fn code_block_node(
   p : @view.View,
@@ -1221,6 +1228,8 @@ pub fn code_block_node(
   lang : () -> String,
   colours : () -> String?,
   face? : () -> Int? = fn() { None },
+  command? : Bool = false,
+  keys_always? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   let over = native_input() is Mouse
@@ -1244,6 +1253,83 @@ pub fn code_block_node(
   .clips(Is(true))
   .ground(By(fn() { theme().p.code_ground }))
   |> ignore
+  // (its code in a box of its own: wrapped at its width, or on its lines as written in one that scrolls across, what
+  // is over it staying)
+  let words = fn(w : @view.View, wrap : Bool) {
+    let runs = fn() {
+      let runs = match colours() {
+        Some(ink) => core_ink(code(), ink, theme().dark)
+        None => [@ui.span(code(), mono=true)]
+      }
+      // (in the face tried, where it is told one: code_block's paragraph's `face`)
+      match face() {
+        Some(f) if f != 0 => runs.map(fn(run) { { ..run, face: Some(f) } })
+        _ => runs
+      }
+    }
+    let look : @view.WordsLook = {
+      size: theme().t.caption,
+      weight: 400,
+      line: if over { code_line_wide } else { 18.0 },
+      wrap,
+      tracking: @view.letters_own,
+      balance: false,
+      max_lines: 0,
+    }
+    // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
+    w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+  }
+  // (its copy key: copies the code and says so copied_ms)
+  let copy_key = fn(b : @view.View) {
+    b.box(fn(k) {
+      k
+      .row(Is(true))
+      .height(Is(Some(code_key_h)))
+      .padding(Is((7.0, 0.0, 7.0, 0.0)))
+      .gap(Is(4.0))
+      .lines_up(Is(Some(Middle)))
+      .radius(Is(code_key_h / 2.0))
+      .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
+      |> ignore
+      pressed_node(k, fn() {
+        @ui.clipboard_set(@signals.untracked(code))
+        // (pressed again while it says so: from then)
+        (copied_off.val)()
+        copied.set(true)
+        copied_off.val = k.at_moment(k.logic_at() + copied_ms, fn() { copied.set(false) })
+      }, Is(code_key_h / 2.0), Button, fn() { md_copy_words(copied.get()) })
+      icon_node(k, "copy", 12.0, By(fn() { web().muted }), name_now=fn() { if copied.get() { "check" } else { "copy" } }) |> ignore
+      k.box(fn(n) {
+        n.words(By(fn() { md_copy_words(copied.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  }
+  // (a command: its words beside its copy key, their first line in the middle of it, wrapped at what is left of the
+  // width; no bar over them to stand empty)
+  if command {
+    let line = if over { code_line_wide } else { 18.0 }
+    let first = key_inset + (code_key_h - line) / 2.0
+    p.row(Is(true)).lines_up(Is(Some(Start))) |> ignore
+    // (on its one line, scrolled across: nobody reads it whole before copying it, and who does scrolls; the user,
+    // 2026-11-17: 「不用折行，没啥人会看，要看的自己横向滚动」)
+    p.box(made_for=loc, fn(q) {
+      q.grow(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+      q.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
+        held.padding(Is((14.0, first, 8.0, first))).lines_up(Is(Some(Start))) |> ignore
+        held.box(fn(w) { words(w, false) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+    p.box(fn(k) {
+      k.padding(Is((0.0, key_inset, key_inset, key_inset))) |> ignore
+      copy_key(k)
+    })
+    |> ignore
+    return
+  }
   let bar = fn(b : @view.View) {
     b
     .row(Is(true))
@@ -1254,6 +1340,7 @@ pub fn code_block_node(
     |> ignore
     b.box(fn(l) {
       l.padding(Is((6.0, 0.0, 6.0, 0.0))) |> ignore
+      // (floating over the code: on a capsule of its own as the keys are, so the code under it does not show through)
       let size = if over { code_lang_wide } else { 10.0 }
       l.box(fn(n) {
         n.words(By(fn() { if lang() == "" { "text" } else { lang() } }), look=md_plain_look(size, 0.0)).ink(By(fn() { web().subtle })) |> ignore
@@ -1282,57 +1369,11 @@ pub fn code_block_node(
     |> ignore
     // (apart as an old view's keys are: code_keys_apart)
     b.box(fn(g) { g.width(Is(Some(code_keys_gap))) |> ignore }) |> ignore
-    b.box(fn(k) {
-      k
-      .row(Is(true))
-      .height(Is(Some(code_key_h)))
-      .padding(Is((7.0, 0.0, 7.0, 0.0)))
-      .gap(Is(4.0))
-      .lines_up(Is(Some(Middle)))
-      .radius(Is(code_key_h / 2.0))
-      .ground(By(fn() { alpha(theme().p.canvas, 0.8) }))
-      |> ignore
-      pressed_node(k, fn() {
-        @ui.clipboard_set(@signals.untracked(code))
-        // (pressed again while it says so: from then)
-        (copied_off.val)()
-        copied.set(true)
-        copied_off.val = k.at_moment(k.logic_at() + copied_ms, fn() { copied.set(false) })
-      }, Is(code_key_h / 2.0), Button, fn() { md_copy_words(copied.get()) })
-      icon_node(k, "copy", 12.0, By(fn() { web().muted }), name_now=fn() { if copied.get() { "check" } else { "copy" } }) |> ignore
-      k.box(fn(n) {
-        n.words(By(fn() { md_copy_words(copied.get()) }), look=md_plain_look(theme().t.caption, 0.0)).ink(By(fn() { web().muted })) |> ignore
-      })
-      |> ignore
-    })
-    |> ignore
+    copy_key(b)
   }
-  p.box(made_for=loc, bar) |> ignore
-  // (its code in a box of its own: wrapped at its width, or on its lines as written in one that scrolls across, what
-  // is over it staying)
-  let words = fn(w : @view.View, wrap : Bool) {
-    let runs = fn() {
-      let runs = match colours() {
-        Some(ink) => core_ink(code(), ink, theme().dark)
-        None => [@ui.span(code(), mono=true)]
-      }
-      // (in the face tried, where it is told one: code_block's paragraph's `face`)
-      match face() {
-        Some(f) if f != 0 => runs.map(fn(run) { { ..run, face: Some(f) } })
-        _ => runs
-      }
-    }
-    let look : @view.WordsLook = {
-      size: theme().t.caption,
-      weight: 400,
-      line: if over { code_line_wide } else { 18.0 },
-      wrap,
-      tracking: @view.letters_own,
-      balance: false,
-      max_lines: 0,
-    }
-    // (each of its lines a line of its own, scrolled across or wrapped: code_block's `breaks`)
-    w.words_runs(By(runs), look~).words_breaks(Is(true)).ink(By(fn() { theme().p.text })) |> ignore
+  // (with a mouse its keys are the tray's, after the code; with a finger, which hovers over nothing, on their bar over it)
+  if !over {
+    p.box(made_for=loc, bar) |> ignore
   }
   p.box(fn(sc) {
     sc.pick(fn() { if wrapped.get() { 1 } else { 0 } }, fn(q, kind) {
@@ -1340,6 +1381,7 @@ pub fn code_block_node(
         q.padding(Is((14.0, 12.0, 14.0, 12.0))) |> ignore
         q.box(fn(w) { words(w, true) }) |> ignore
       } else {
+        // (its bar clear of the block's round corners)
         q.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(held) {
           held.padding(Is((14.0, 12.0, 14.0, 12.0))).lines_up(Is(Some(Start))) |> ignore
           held.box(fn(w) { words(w, false) }) |> ignore
@@ -1350,7 +1392,51 @@ pub fn code_block_node(
     |> ignore
   })
   |> ignore
+  // (with a mouse: code_block's tray, its wrap and copy keys icons on the canvas within a hairline, concentric with
+  // the block's corner a step of the ladder in, as high as a line of code and its room less that step)
+  if over {
+    let in_ = row_corner - small_corner
+    let side = code_line_wide + code_room_y * 2.0 - in_ * 2.0
+    p.box(made_for=loc, fn(o) {
+      o
+      .over(Is(true), from_top=true)
+      .row(Is(true))
+      .lies_along(Is(End))
+      .padding(Is((0.0, in_, in_, 0.0)))
+      |> ignore
+      // (made only while the pointer is on the block, it says it copied, or it is said to show always)
+      o.show(at_once=true, fn() { keys_always || copied.get() || p.pointer_within() }, fn(t) {
+        t.row(Is(true)).gap(Is(code_keys_gap)) |> ignore
+        let key = fn(icon : String, said : () -> String, press : () -> Unit, icon_now : () -> String, on : () -> Bool) {
+          t.box(fn(k) {
+            style_node(k, fn() { code_tray_key_look })
+            k.radius(Is(small_corner)) |> ignore
+            icon_button_node(k, icon, said, press, size=side, icon_size=code_tray_icon, icon_now~, grounded=false, on~) |> ignore
+          })
+          |> ignore
+        }
+        key("wrap", fn() { md_wrap_words(wrapped.get()) }, fn() { wrapped.set(!wrapped.get()) }, fn() { "wrap" }, fn() { wrapped.get() })
+        key(
+          "copy",
+          fn() { md_copy_words(copied.get()) },
+          fn() {
+            @ui.clipboard_set(@signals.untracked(code))
+            (copied_off.val)()
+            copied.set(true)
+            copied_off.val = p.at_moment(p.logic_at() + copied_ms, fn() { copied.set(false) })
+          },
+          fn() { if copied.get() { "check" } else { "copy" } },
+          fn() { false },
+        )
+      })
+    })
+    |> ignore
+  }
 }
+
+///|
+/// A code block's tray key's hairline (code_block's).
+let code_tray_key_look : @ui.Style = @ui.css("bg=Surface border=B1 border_color=Line")
 
 ///|
 /// How far apart a code block's keys stand (code_keys_apart's 4).

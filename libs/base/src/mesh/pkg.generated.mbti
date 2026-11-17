@@ -79,6 +79,8 @@ pub fn say(String, args? : Map[String, String]) -> String
 
 pub fn set_language(String) -> Unit
 
+pub fn sha256(Bytes) -> Bytes
+
 pub fn shell_store(@shell.Shell) -> Store
 
 pub let speed_fresh_ms : Int32
@@ -197,6 +199,7 @@ pub async fn Mesh::close(Self) -> Unit
 pub fn Mesh::current(Self, String, scope? : String) -> Link?
 pub fn Mesh::decodes_opus(Self) -> Bool
 pub fn Mesh::device_id(Self) -> String
+pub async fn Mesh::dial_once(Self, String, String, relays? : Array[String], within? : Int32) -> Outgoing
 pub fn Mesh::drop_link(Self, String, scope? : String, reason? : String) -> Unit
 pub async fn Mesh::health_change(Self, String, Bool, scope? : String) -> Bool
 pub fn Mesh::healthy(Self, String, scope? : String) -> Bool
@@ -241,6 +244,17 @@ pub struct Out {
 pub async fn Out::finish(Self) -> Unit
 pub async fn Out::stopped(Self) -> Int32?
 pub async fn Out::write(Self, Bytes) -> Unit
+
+pub struct Outgoing {
+  peer : String
+  alpn : String
+  // private fields
+}
+pub async fn Outgoing::accept(Self) -> Inbound?
+pub fn Outgoing::close(Self, reason? : String) -> Unit
+pub async fn Outgoing::closed(Self) -> Closed
+pub fn Outgoing::ended(Self) -> Bool
+pub async fn Outgoing::open(Self) -> Inbound
 
 #derive(Eq, @debug.Debug)
 pub(all) struct Packets {
