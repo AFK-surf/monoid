@@ -1117,6 +1117,10 @@ let pa_why_quote_flight : String = "a quote sent with its own picture: as nodes 
 
 
 ///|
+/// The time under one's own words, laid where it rests from the first and grown there as it comes (mbui's pick_leave).
+let pa_why_time_end : String = "the time under one's own words: as nodes laid where it rests from the first and grown there as it comes (mbui's pick_leave: a place laid out at once as the change has it, never held as wide as what it took the place of; the user, 2026-11-17: 「81-82 帧」, it had come in from the start of such a place and jumped to its end); the old page draws it whole at once"
+
+///|
 /// An agent's line gone, the old page goes on drawing its ring where the line was for as long as its ring's layer is
 /// drawn (chat_rows' work_ring in a layer of its own, which the face's fading does not reach); as nodes the ring is the
 /// face's, gone with the line.
@@ -1306,7 +1310,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-wide", what: Key("old alone 「这次只改列表，截图下次再说」"), from: 3033.0, to: 3067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-wide", what: Key("words 「Claude：先登录 gh。」"), from: 3083.0, to: 3250.0, dx: 67.4, dy: 51.8, dw: 0.2, why: pa_why_send },
   { drive: "send-quote-wide", what: Key("words 「这一步写进文档」"), from: 3083.0, to: 3250.0, dx: 67.4, dy: 51.8, dw: 0.2, why: pa_why_send },
-  { drive: "send-quote-wide", what: Key("words 「刚刚」"), from: 3383.0, to: 3567.0, dx: 39.2, dy: 0.7, dw: 39.2, why: pa_why_working },
   { drive: "desk-send-text-and-multiline", what: Key("nodes alone 「发布前再看一眼签名」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Key("words 「发布前再看一眼签名」"), from: 1900.0, to: 2000.0, dx: 91.1, dy: 6.9, dw: 0.2, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Key("nodes alone 「发布前再看一眼签名」"), from: 2017.0, to: 2233.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -1344,7 +1347,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-send-text-and-multiline", what: Key("old alone 「刚刚」"), from: 4133.0, to: 4167.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-send-text-and-multiline", what: Key("ring old alone"), from: 4133.0, to: 5183.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "desk-send-text-and-multiline", what: Key("alpha 「刚刚」"), from: 4183.0, to: 4250.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
-  { drive: "desk-send-text-and-multiline", what: Key("words 「刚刚」"), from: 4183.0, to: 4200.0, dx: 5.0, dy: 2.2, dw: 9.8, why: pa_why_old_ring },
+  { drive: "desk-send-text-and-multiline", what: Key("words 「刚刚」"), from: 4183.0, to: 4200.0, dx: 9.8, dy: 2.2, dw: 9.8, why: pa_why_time_end },
   { drive: "desk-send-text-and-multiline", what: Key("ground nodes alone"), from: 4267.0, to: 4267.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-send-text-and-multiline", what: Key("nodes alone 「一起换」"), from: 4267.0, to: 4267.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "desk-send-text-and-multiline", what: Key("old alone 「Claude」"), from: 4550.0, to: 4550.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float },
@@ -1362,7 +1365,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-send-text-and-multiline", what: Key("words 「先看一下签名⏎再看发布说明⏎最后核对版本号」"), from: 5017.0, to: 5117.0, dx: 95.2, dy: 6.9, dw: 0.2, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Key("nodes alone 「先看一下签名⏎再看发布说明⏎最后核对版本号」"), from: 5133.0, to: 5367.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Key("ground"), from: 5167.0, to: 5533.0, dx: 60.7, dy: 43.1, dw: 0.2, why: pa_why_bell },
-  { drive: "desk-send-text-and-multiline", what: Key("words 「刚刚」"), from: 5167.0, to: 5417.0, dx: 4.9, dy: 15.7, dw: 9.7, why: pa_why_send },
+  { drive: "desk-send-text-and-multiline", what: Key("words 「刚刚」"), from: 5167.0, to: 5417.0, dx: 9.7, dy: 15.7, dw: 9.7, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Rows, from: 5167.0, to: 5417.0, dx: pa_way_tol, dy: 15.7, dw: pa_way_tol, why: pa_why_send },
   { drive: "desk-send-text-and-multiline", what: Key("ground nodes alone"), from: 5200.0, to: 5367.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "desk-send-text-and-multiline", what: Key("old alone 「发消息」"), from: 5200.0, to: 5267.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
@@ -1515,7 +1518,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send", what: Key("ring old alone"), from: 4200.0, to: 4433.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "send", what: Key("alpha 「刚刚」"), from: 4250.0, to: 4317.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
   { drive: "send", what: Key("old alone 「等 林 决定」"), from: 4250.0, to: 4250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
-  { drive: "send", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 5.5, dy: 3.7, dw: 10.7, why: pa_why_old_ring },
+  { drive: "send", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 10.7, dy: 3.7, dw: 10.7, why: pa_why_time_end },
   { drive: "send", what: Key("nodes alone 「等 林 决定」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "send", what: Key("old alone 「高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "send-lines", what: Key("ground"), from: 1267.0, to: 1267.0, dx: 0.2, dy: 6.7, dw: 0.2, why: pa_why_lines },
@@ -1623,7 +1626,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote", what: Key("ring"), from: 3283.0, to: 3317.0, dx: 5.4, dy: 10.5, dw: 10.5, why: pa_why_working },
   { drive: "send-quote", what: Key("ring alpha"), from: 3283.0, to: 3383.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_working },
   { drive: "send-quote", what: Key("words 「处理中」"), from: 3283.0, to: 3350.0, dx: 12.7, dy: 6.6, dw: 17.0, why: pa_why_working },
-  { drive: "send-quote", what: Key("words 「刚刚」"), from: 3700.0, to: 3883.0, dx: 41.2, dy: 0.2, dw: 41.2, why: pa_why_working },
   { drive: "decide", what: Key("nodes alone 「你 选择了「一起换」」"), from: 883.0, to: 1150.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_card },
   { drive: "decide", what: Key("old alone 「一起换」"), from: 883.0, to: 967.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_card },
   { drive: "decide", what: Key("old alone 「先不换」"), from: 883.0, to: 967.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_card },
@@ -1706,7 +1708,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "answer", what: Key("ring old alone"), from: 4200.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "answer", what: Key("alpha 「刚刚」"), from: 4250.0, to: 4317.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
   { drive: "answer", what: Key("old alone 「等 林 决定」"), from: 4250.0, to: 4250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
-  { drive: "answer", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 5.5, dy: 3.7, dw: 10.7, why: pa_why_old_ring },
+  { drive: "answer", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 10.7, dy: 3.7, dw: 10.7, why: pa_why_time_end },
   { drive: "answer", what: Key("nodes alone 「等 林 决定」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "answer", what: Key("old alone 「高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_spit },
   { drive: "answer", what: Key("old alone 「Claude」"), from: 4617.0, to: 4617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_float },
@@ -1747,7 +1749,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-newchat", what: Key("old alone 「刚刚」"), from: 5033.0, to: 5067.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "wide-newchat", what: Key("ring old alone"), from: 5033.0, to: 5767.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "wide-newchat", what: Key("alpha 「刚刚」"), from: 5083.0, to: 5150.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
-  { drive: "wide-newchat", what: Key("words 「刚刚」"), from: 5083.0, to: 5100.0, dx: 5.0, dy: 2.2, dw: 9.8, why: pa_why_old_ring },
+  { drive: "wide-newchat", what: Key("words 「刚刚」"), from: 5083.0, to: 5100.0, dx: 9.8, dy: 2.2, dw: 9.8, why: pa_why_time_end },
   { drive: "wide-newchat", what: Key("old alone 「Claude」"), from: 5450.0, to: 5450.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("alpha 「Claude」"), from: 5467.0, to: 5483.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_newchat },
   { drive: "wide-newchat", what: Key("alpha 「刚刚」"), from: 5467.0, to: 5483.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_timein },
@@ -1821,7 +1823,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-newchat-picture", what: Key("old alone 「刚刚」"), from: 3800.0, to: 3833.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "send-newchat-picture", what: Key("ring old alone"), from: 3800.0, to: 4033.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "send-newchat-picture", what: Key("alpha 「刚刚」"), from: 3850.0, to: 3917.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
-  { drive: "send-newchat-picture", what: Key("words 「刚刚」"), from: 3850.0, to: 3867.0, dx: 5.5, dy: 3.7, dw: 10.7, why: pa_why_old_ring },
+  { drive: "send-newchat-picture", what: Key("words 「刚刚」"), from: 3850.0, to: 3867.0, dx: 10.7, dy: 3.7, dw: 10.7, why: pa_why_time_end },
   { drive: "wide-send", what: Key("nodes alone 「发布前再看一眼签名」"), from: 1850.0, to: 1850.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "wide-send", what: Key("words 「发布前再看一眼签名」"), from: 1900.0, to: 2000.0, dx: 91.1, dy: 6.9, dw: 0.2, why: pa_why_send },
   { drive: "wide-send", what: Key("nodes alone 「发布前再看一眼签名」"), from: 2017.0, to: 2233.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
@@ -1859,7 +1861,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "wide-send", what: Key("old alone 「刚刚」"), from: 4133.0, to: 4167.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "wide-send", what: Key("ring old alone"), from: 4133.0, to: 4367.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "wide-send", what: Key("alpha 「刚刚」"), from: 4183.0, to: 4250.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
-  { drive: "wide-send", what: Key("words 「刚刚」"), from: 4183.0, to: 4200.0, dx: 5.0, dy: 2.2, dw: 9.8, why: pa_why_old_ring },
+  { drive: "wide-send", what: Key("words 「刚刚」"), from: 4183.0, to: 4200.0, dx: 9.8, dy: 2.2, dw: 9.8, why: pa_why_time_end },
   { drive: "send-lines-wide", what: Key("nodes alone 「先看一下签名⏎再看发布说明⏎最后核对版本号」"), from: 1917.0, to: 1917.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-lines-wide", what: Key("button @outline"), from: 1933.0, to: 2267.0, dx: 0.2, dy: 22.2, dw: 0.2, why: pa_why_send },
   { drive: "send-lines-wide", what: Key("composer"), from: 1933.0, to: 2083.0, dx: 0.2, dy: 44.2, dw: 44.2, why: pa_why_send },
@@ -2369,7 +2371,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "answer-leave", what: Key("ring old alone"), from: 4200.0, to: 5250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_old_ring },
   { drive: "answer-leave", what: Key("alpha 「刚刚」"), from: 4250.0, to: 4317.0, dx: 0.2, dy: 0.2, dw: 1.1, why: pa_why_old_ring },
   { drive: "answer-leave", what: Key("old alone 「等 林 决定」"), from: 4250.0, to: 4250.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
-  { drive: "answer-leave", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 5.5, dy: 3.7, dw: 10.7, why: pa_why_old_ring },
+  { drive: "answer-leave", what: Key("words 「刚刚」"), from: 4250.0, to: 4267.0, dx: 10.7, dy: 3.7, dw: 10.7, why: pa_why_time_end },
   { drive: "answer-leave", what: Key("nodes alone 「等 林 决定」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
   { drive: "answer-leave", what: Key("old alone 「高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？」"), from: 4317.0, to: 4317.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
   { drive: "answer-leave", what: Key("old alone 「Claude」"), from: 4617.0, to: 4617.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_working },
@@ -2530,7 +2532,6 @@ let pa_way_known : Array[PaWay] = [
   { drive: "desk-panel-picture-quote", what: Key("words 「Claude：先登录 gh。」"), from: 4933.0, to: 5117.0, dx: 42.3, dy: 74.4, dw: 0.2, why: pa_why_send },
   { drive: "desk-panel-picture-quote", what: Key("old alone 「忽略」"), from: 5000.0, to: 5000.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
   { drive: "desk-panel-picture-quote", what: Key("old alone 「把首页和聊天页的截图都更新」"), from: 5017.0, to: 5017.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },
-  { drive: "desk-panel-picture-quote", what: Key("words 「刚刚」"), from: 5300.0, to: 5483.0, dx: 39.2, dy: 0.2, dw: 39.2, why: pa_why_bell },
   { drive: "desk-panel-picture-quote", what: Key("words 「0s」"), from: 6717.0, to: 6733.0, dx: 36.2, dy: 0.2, dw: 3.0, why: pa_why_working },
   { drive: "desk-panel-picture-quote", what: Key("words 「处理中」"), from: 6717.0, to: 6717.0, dx: 0.2, dy: 0.2, dw: 17.0, why: pa_why_working },
   { drive: "desk-panel-picture-quote", what: Key("nodes alone 「处理中」"), from: 6733.0, to: 6783.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_bell },

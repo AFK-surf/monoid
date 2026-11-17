@@ -212,6 +212,11 @@ pub(all) struct Content {
   /// on its way in or out (View::comes), cut to itself as well: its own words drawn within it, not past it over what
   /// is beside it, as what it holds is (clips with it, its way's while it goes)
   clips_self : Bool
+  /// where cut to itself on its way (clips_self), which of its sides cut it: 0 all four (what said it clips: View::clips);
+  /// 1 its top and its foot, down a column; 2 its two ends, along a row. A way goes down its column or along its row:
+  /// what it holds is cut where the way has got, never across, where nothing goes (a pick's what fades as wide as it
+  /// was over a narrower place it left, drawn whole: pick_leave.mbt; the user, 2026-11-17)
+  clips_way : Int
   /// its words' lines each in the middle of its width (View::words_centered)
   words_center : Bool
   /// its words, not wrapped, on their lines as written (View::words_breaks)
@@ -327,6 +332,11 @@ pub(all) struct Drawn {
   /// on its way in or out (View::comes), cut to itself as well: its own words drawn within it, not past it over what
   /// is beside it, as what it holds is (clips with it, its way's while it goes)
   clips_self : Bool
+  /// where cut to itself on its way (clips_self), which of its sides cut it: 0 all four (what said it clips: View::clips);
+  /// 1 its top and its foot, down a column; 2 its two ends, along a row. A way goes down its column or along its row:
+  /// what it holds is cut where the way has got, never across, where nothing goes (a pick's what fades as wide as it
+  /// was over a narrower place it left, drawn whole: pick_leave.mbt; the user, 2026-11-17)
+  clips_way : Int
   /// its words' lines each in the middle of its width (View::words_centered)
   words_center : Bool
   /// its words, not wrapped, on their lines as written (View::words_breaks)
@@ -11952,6 +11962,13 @@ fn Tree::made_again(self : Tree, at : Int) -> Unit {
     hosted: n.hosted,
     clips: n.look.clips,
     clips_self: n.look.clips && n.coming && !n.come_uncut,
+    clips_way: if n.clips_said {
+      0
+    } else if self.along_row_at(at) {
+      2
+    } else {
+      1
+    },
     words_center: n.look.words_center,
     words_breaks: n.look.words_breaks,
     glyphs_said: n.look.glyphs_said,
@@ -12823,6 +12840,7 @@ fn unfolded(c : Content, x : Double, y : Double, a : Double, s : Double) -> Draw
     hosted: c.hosted,
     clips: c.clips,
     clips_self: c.clips_self,
+    clips_way: c.clips_way,
     words_center: c.words_center,
     words_breaks: c.words_breaks,
     glyphs_said: c.glyphs_said,

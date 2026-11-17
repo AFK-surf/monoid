@@ -570,9 +570,11 @@ fn Ctx::tree_shot_paint(self : Ctx, tree : @view.Tree) -> Unit {
     // (on its way: cut to itself before it draws its own, as the window's tree is painted, Content::clips_self)
     if c.clips_self {
       let r = c.radius * s
+      // (cut along its way alone, open across: Content::clips_way)
+      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, c.h * s)
       match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, c.h * s, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(x, y, c.w * s, c.h * s, r, r, r, r)
+        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
+        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
     }
@@ -682,3 +684,18 @@ pub fn Tester::picture_images(self : Tester) -> Array[(String, Double, Double)] 
   }
   out
 }
+
+///|
+/// The box a node on its way is cut to (Content::clips_self) at `x`, `y`, `w` by `h` drawn: all of it (`way` 0), or
+/// open across where its way goes down a column (1) or along a row (2): nothing it holds cut where no way goes.
+fn clip_way_box(way : Int, x : Double, y : Double, w : Double, h : Double) -> (Double, Double, Double, Double) {
+  match way {
+    1 => (x - clip_way_open, y, w + 2.0 * clip_way_open, h)
+    2 => (x, y - clip_way_open, w, h + 2.0 * clip_way_open)
+    _ => (x, y, w, h)
+  }
+}
+
+///|
+/// How far past its sides a cut open across reaches (points, past any window).
+let clip_way_open : Double = 100000.0

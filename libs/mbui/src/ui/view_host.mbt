@@ -1738,9 +1738,11 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
     // over nothing beside it; pushed once, for what it holds too, below. Content::clips_self)
     if c.clips_self {
       let r = c.radius * s
+      // (cut along its way alone, open across: Content::clips_way)
+      let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, c.h * s)
       match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(x, y, c.w * s, c.h * s, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(x, y, c.w * s, c.h * s, r, r, r, r)
+        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
+        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
       }
       clipping.push(c.id)
     }
