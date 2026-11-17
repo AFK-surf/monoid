@@ -156,7 +156,7 @@ fn settings_parts_of(core : Core, here : @settings.Here, bars~ : Bool, kept~ : S
       settings_row(
         Connects(""),
         "connects",
-        "im",
+        "plug",
         @sf.t("android-settings.connects.title"),
         value=if connects is None {
           ""

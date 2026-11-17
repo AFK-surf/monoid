@@ -628,7 +628,7 @@ fn rail_icon(place : String) -> String {
     "archive" => "archive"
     "files" => "folder"
     "profiles" => "quota"
-    "connects" => "im"
+    "connects" => "plug"
     "usage" => "chart"
     _ => "server"
   }
