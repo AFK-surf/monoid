@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c89a3b06](https://github.com/AFK-surf/monoid/commit/4c89a3b06b913256574e6fe0e82d6e2f9e113e44) Respect wrapping when measuring a nested row’s min | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 31.69 | 64.57 | 96.45 | 119.72 |
 | [fde0f64c7](https://github.com/AFK-surf/monoid/commit/fde0f64c727cddabc7ede6f4260c64dbc591097a) mbui: a page's list compiled once, not once a key  | 2.54 | 3.41 | 13.97 | 35.17 | 53.72 | 31.69 | 64.57 | 96.45 | 119.72 |
 | [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
 | [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 2.57 | 3.63 | 15.19 | 36.33 | 57.93 | 31.69 | 64.57 | 96.45 | 124.25 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 2.55 | 3.6 | 15.73 | 37.09 | 62.5 | 32.34 | 68.4 | 96.03 | 155.7 |
 | [5c4e8695e](https://github.com/AFK-surf/monoid/commit/5c4e8695e0fb5e7c1a94233ea5227e9a3b8b4657) mbui: the Profile sidebar's rows say their plan ag | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 | [d38972704](https://github.com/AFK-surf/monoid/commit/d3897270478176e9eea4aa5e65df84dfc769d966) Revert board's web keyboard changes to mbui (#6998 | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
-| [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 2.55 | 3.6 | 15.7 | 37.05 | 62.36 | 32.34 | 68.4 | 96.03 | 125.53 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4c89a3b06](https://github.com/AFK-surf/monoid/commit/4c89a3b06b913256574e6fe0e82d6e2f9e113e44) Respect wrapping when measuring a nested row’s min | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.27 |
 | [fde0f64c7](https://github.com/AFK-surf/monoid/commit/fde0f64c727cddabc7ede6f4260c64dbc591097a) mbui: a page's list compiled once, not once a key  | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.51 |
 | [74df55c40](https://github.com/AFK-surf/monoid/commit/74df55c407cd82a8379c7bef1499a94390822ac8) sf-ui: extract still.fail's src/sf component libra | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.51 |
 | [4f66be198](https://github.com/AFK-surf/monoid/commit/4f66be1980197550f5bc486dc30d19acd4c592fd) Let new Claude chats default to TUI on this device | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.46 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [93a7fa67b](https://github.com/AFK-surf/monoid/commit/93a7fa67b255c1e4eda84013d99c69a76207bcbb) mbui web host: Han shaped cluster by cluster, keys | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
 | [5c4e8695e](https://github.com/AFK-surf/monoid/commit/5c4e8695e0fb5e7c1a94233ea5227e9a3b8b4657) mbui: the Profile sidebar's rows say their plan ag | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.64 |
 | [d38972704](https://github.com/AFK-surf/monoid/commit/d3897270478176e9eea4aa5e65df84dfc769d966) Revert board's web keyboard changes to mbui (#6998 | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.49 |
-| [245a2b3d2](https://github.com/AFK-surf/monoid/commit/245a2b3d2a03f8b926bf675b15e434d6b049207a) ci: hold Actions caches under 7.5 GB, prune after  | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.63 |
