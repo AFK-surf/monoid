@@ -42,7 +42,7 @@ device() {  # the simulator's id and state, "" when there is none of that name
 import json,sys
 for ds in json.load(sys.stdin)['devices'].values():
   for x in ds:
-    if x['name']=='$MBUI_IOS_DEVICE': print(x['udid'], x['state']); sys.exit()
+    if x['name']=='$MBUI_IOS_DEVICE' and x.get('isAvailable'): print(x['udid'], x['state']); sys.exit()
 "
 }
 # iOS's own services the flows never use, which a booted simulator runs all the same (health and fitness, Siri, the
