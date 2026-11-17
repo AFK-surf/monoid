@@ -1,13 +1,14 @@
 #!/bin/bash
 # Builds the station's reader in MoonBit (station/mb) for TARGET (this machine's by default: darwin-arm64, linux-x64,
 # linux-arm64, win32-x64), on a Mac or a Linux x86-64 machine, into OUT (default _build/stillfail-reader-TARGET).
-# MoonBit makes the program's C here (with mbc-stub.sh so moon skips its host compile and link); libs/mbui/scripts/mbc
-# splits it into units and compiles them in parallel across all cores (moonbit_init at -O0, unchanged units kept in
-# MBC_STORE), then links for each target (zig cc for Linux, glibc 2.28 on, and for Windows, MinGW's), with MoonBit's
-# runtime from its source, its reference cycles collected (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to
-# the shell's static library (client/shell), which SHELL_LIB names, or scripts/native.ts gets for the target
-# (shell-apple on the Mac, shell-station elsewhere). MBUI_TOOLS, as apps/mbui's scripts have it, says where moon is when
-# it is not on PATH.
+# MoonBit makes the program's C here (with mbc-stub.sh so moon skips its host compile and link); src/cprep makes it
+# ready for mbui's mbc (a result of what raises named by its definition, a function of 200 KB or more, a coroutine's
+# state machine, not optimised, #line's paths relative), which splits it into units and compiles them in parallel across all cores
+# (moonbit_init at -O0, unchanged units kept in MBC_STORE), then links for each target (zig cc for Linux, glibc 2.28
+# on, and for Windows, MinGW's), with MoonBit's runtime from its source, its reference cycles collected
+# (MOONBIT_TRIAL_DELETION) on the system allocator. Linked to the shell's static library (client/shell), which
+# SHELL_LIB names, or scripts/native.ts gets for the target (shell-apple on the Mac, shell-station elsewhere).
+# MBUI_TOOLS, as apps/mbui's scripts have it, says where moon is when it is not on PATH.
 #   build.sh [TARGET] [OUT]
 set -euo pipefail
 D="$(cd "$(dirname "$0")" && pwd)"
@@ -52,6 +53,22 @@ echo "$$" > "$lock/pid"
   trap 'rm -rf "$lock"' EXIT
   "$ROOT/libs/mbui/scripts/mbc" path >/dev/null
   cd "$D"
+  # The prepared C is one for every target: a target built after another of the same sources and moon takes it as it
+  # was made (prepped-reader.key, by content, not by git), not making it again (moon build and cprep, ~40 s each).
+  gen_key=$( {
+    moon version --all
+    "$ROOT/libs/mbui/scripts/mbc" key
+    find "$D/moon.mod" "$D/moon.work" "$D/build.sh" "$ROOT/rules/moon.mod" "$ROOT/libs/mbui/moon.mod" \
+      "$ROOT/libs/mbui/scripts/mbc-stub.sh" "$D/src" "$ROOT/rules/src" "$ROOT/libs/mbui/src/effect" \
+      "$ROOT/libs/mbui/src/halt" -type f ! -name '*_test.mbt' ! -name '*_wbtest.mbt' ! -name pkg.generated.mbti \
+      | LC_ALL=C sort | xargs shasum | sed "s|  $ROOT/|  |"
+  } | shasum | awk '{print $1}')
+  prepped="$D/_build/prepped-reader.c"
+  if [ -f "$prepped" ] && [ "$(cat "$D/_build/prepped-reader.key" 2>/dev/null)" = "$gen_key" ]; then
+    cp "$prepped" "$work/reader.c"
+    echo "build.sh: reader.c as prepared for $gen_key" >&2
+    exit 0
+  fi
   # moon writes to a file of its own, shown only where it failed: the targets build at once on one stderr, which
   # another build leaves non-blocking, and moon aborts on the EAGAIN a full pipe gives as it writes a warning
   # (2026-11-15, CI's win32-x64 reader: "internal rendering error: Os { code: 35 }").
@@ -60,12 +77,20 @@ echo "$$" > "$lock/pid"
     cat "$work/moon.log" >&2
     exit 1
   fi
-  cp "$D/_build/native/release/build/station/reader/reader.c" "$work/reader.c"
+  # (cprep compiled for this machine, in a build directory of its own: the reader's is moon's with the stand-ins)
+  if ! env -u MOON_CC -u MOON_AR moon build --target native --release --target-dir "$D/_build/cprep" src/cprep >"$work/cprep-build.log" 2>&1; then
+    cat "$work/cprep-build.log" >&2
+    exit 1
+  fi
+  "$D/_build/cprep/native/release/build/station/cprep/cprep.exe" \
+    "$D/_build/native/release/build/station/reader/reader.c" "$prepped.tmp.$$" >&2
+  rm -f "$D/_build/prepped-reader.key"
+  mv "$prepped.tmp.$$" "$prepped"
+  echo "$gen_key" > "$D/_build/prepped-reader.key"
+  cp "$prepped" "$work/reader.c"
 )
 
 moon_home=${MOON_HOME:-$(dirname "$(dirname "$(command -v moon)")")}
-flags=(-I"$moon_home/include" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
-cflags="-I\"$moon_home/include\" -O2 -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
 
 if [ -z "${MBC_STORE:-}" ]; then
   if [ -d "$HOME/stillfail-ci" ]; then
@@ -76,8 +101,38 @@ if [ -z "${MBC_STORE:-}" ]; then
 fi
 mkdir -p "$MBC_STORE"
 
+# moonbit.h from a directory of the store named by its content, not moon's: each runner of a machine has a moon of its
+# own (CI's ci-1: actions-runner-<n>/_tool/moon-ci), and a unit's command and the headers it read are its key in the
+# store, so no runner took another's units (2026-11-17).
+moon_inc_key=$(shasum "$moon_home/include/moonbit.h" | awk '{print $1}')
+moon_inc="$MBC_STORE/moon-include-$moon_inc_key"
+if [ ! -f "$moon_inc/moonbit.h" ]; then
+  tmp_inc="$moon_inc.tmp.$$"
+  rm -rf "$tmp_inc"
+  mkdir -p "$tmp_inc"
+  cp "$moon_home"/include/*.h "$tmp_inc/"
+  mv "$tmp_inc" "$moon_inc" 2>/dev/null || rm -rf "$tmp_inc"
+fi
+# On GitHub's hosted macOS runner (3 cores, cold store), a branch's reader compiles at -O0 (~30 s) within the
+# job's 5 minutes; main and self-hosted runners stay -O2.
+opt=-O2
+if [ "${RUNNER_ENVIRONMENT:-}" = github-hosted ] && [ "${GITHUB_REF:-}" != refs/heads/main ]; then
+  opt=-O0
+fi
+flags=(-I"$moon_inc" "$opt" -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1)
+cflags="-I\"$moon_inc\" $opt -fwrapv -fno-strict-aliasing -ffp-contract=off -Wno-unused-value -DMOONBIT_TRIAL_DELETION=1"
+
+# scripts/native.ts builds the targets at once on one machine (STILLFAIL_NATIVE_ONE): each takes half its cores (the
+# Mac's, its only reader target there, all of them).
+jobs=()
+if [ "${STILLFAIL_NATIVE_ONE:-}" = 1 ] && [ "$target" != darwin-arm64 ]; then
+  ncpu=$(getconf _NPROCESSORS_ONLN 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 8)
+  jobs=("-j=$(( (ncpu + 1) / 2 ))")
+fi
+
 extras=()
 for c in "$D"/src/*/*.c; do
+  [ "$c" = "$D/src/cprep/io.c" ] && continue # (cprep's own, no part of the reader)
   extras+=("--extra=$c")
 done
 
@@ -85,6 +140,7 @@ done
   "--cc=${cc[*]}" \
   "--cflags=$cflags" \
   "--init-flags=$init_flags" \
+  ${jobs[@]+"${jobs[@]}"} \
   "--obj=$work/obj" \
   "--link-flags=$work/link-flags.txt" \
   "${extras[@]}" \

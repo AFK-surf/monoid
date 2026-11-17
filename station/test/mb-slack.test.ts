@@ -991,7 +991,12 @@ test("cards pressed and closed, the /sf form, a login's code, status lines and w
   await s.both("download", async () => Buffer.from(await s.surface.download({ id: "F", name: "a", size: 3, url: `${s.a.origin}/files/a` })).toString("base64"), { id: "F", name: "a", size: 3, url: `${s.b.origin}/files/a` });
   await s.both("download", () => s.surface.download({ id: "F", name: "a", size: 3, url: null }), { id: "F", name: "a", size: 3, url: null });
   // names known without waiting: none at first, learned in the background
+  // (each looked up in the background: the person asked only once the channel's lookup reached Slack on both sides, or
+  // the two lookups reach it in either order)
+  const asked = (m: string) => [s.a, s.b].map((x) => x.log.filter((r: Json) => r.m === m).length);
+  const before = asked("conversations.info");
   await s.both("knownChannel", () => s.surface.knownChannel("C1"), "C1");
+  await until("the channel looked up on both sides", () => asked("conversations.info").every((n, i) => n > before[i]!));
   await s.both("knownPerson", () => s.surface.knownPerson("U2"), "U2");
   await until("names learned", () => s.learned() >= 1 && tells.some((t) => t.of === s.id));
   await s.both("knownChannel", () => s.surface.knownChannel("C1"), "C1");

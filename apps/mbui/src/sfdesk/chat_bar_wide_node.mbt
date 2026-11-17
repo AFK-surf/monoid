@@ -43,8 +43,9 @@ pub fn chat_bar_wide_node(
       _ => None
     }
   }
-  // (by the chat it is of: another one become in its place another bar)
-  v.pick(fn() { chat().map(fn(r) { (r.station, r.session) }) }, fn(b, which) {
+  // (by the chat it is of: another one become in its place another bar, at once, as tall as a bar from the first: none
+  // become one (a new chat, a place, 设置 left for a chat) is no bar growing)
+  v.switch_by(fn() { chat().map(fn(r) { (r.station, r.session) }) }, fn(b, which) {
     guard which is Some(_) else { return }
     guard @signals.untracked(chat) is Some(r) else { return }
     wide_bar_of(b, src, r, ends, tips, stint)
@@ -75,6 +76,12 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       None => false
     }
   }
+  // ⌘F's bar while the find is open and, once it closes, while it fades out as it was (the pick's `leave_of`, its way
+  // out its own: find_bar_node's presence_in); then the chat's buttons in its place, faded in over as long from there
+  // alone (`back_in`): a bar made with the find shut shows them at once, nothing more made for it. Which of the two
+  // holds the place, for its room at its end (`find_shown`), as each is made
+  let back_in = Ref(false)
+  let find_shown = @signals.signal(@signals.untracked(finding), same=fn(a, b) { a == b })
   let high = fn() { @sf.wide_bar_h + (ends.over)() }
   b.by_room(fn(held, room) {
     held
@@ -101,27 +108,40 @@ fn wide_bar_of(b : @view.View, src : Source, r : ChatRef, ends : ChatBarEnds, ti
       bar.box(fn(inner) {
         @sf.style_node(inner, fn() { chat_bar_inner }, in_row=true)
         wide_bar_title_row(inner, src, r, view, fn() { room.width() }, tips, stint)
-        // ⌘F's bar, in place of the buttons while it is open: it covers none of the chat
-        inner.pick(fn() { finding() }, fn(e, open) {
-          if open {
-            // (what holds it giving way as it does: the old row's had none of its own)
-            e.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-            @sfpages.find_bar_node(
-              e,
-              src,
-              r,
-              fn() { view().bind(fn(v) { v.thread }) },
-              @sfpages.chat_find_list(r),
-              tips,
-            )
-            |> ignore
-          } else {
-            wide_bar_keys(e, src, r, view, ends, tips, pops, stint)
-          }
-        })
+        // ⌘F's bar, in place of the buttons while the find is open: it covers none of the chat. Closed, it goes out
+        // over find_in_ms before the buttons come (one, then the other: never both seen)
+        inner.pick(
+          leave_of=fn(was, now) { if was && !now { @sfpages.find_in_ms } else { 0.0 } },
+          fn() { finding() },
+          fn(e, open) {
+            find_shown.set(open)
+            if open {
+              back_in.val = true
+              // (what holds it giving way as it does: the old row's had none of its own)
+              e.row(Is(true)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sfpages.find_bar_node(
+                e,
+                src,
+                r,
+                fn() { view().bind(fn(v) { v.thread }) },
+                @sfpages.chat_find_list(r),
+                tips,
+              )
+              |> ignore
+            } else {
+              // (back from ⌘F's bar faded out: faded in from now, as long)
+              if back_in.val {
+                back_in.val = false
+                let seen = @motion.presence_in(e, @motion.tween(@sfpages.find_in_ms, ease=Out))
+                e.alpha(By(seen)) |> ignore
+              }
+              wide_bar_keys(e, src, r, view, ends, tips, pops, stint)
+            }
+          },
+        )
       })
       |> ignore
-      bar_room_node(bar, fn() { (ends.end)(beside(), finding()) })
+      bar_room_node(bar, fn() { (ends.end)(beside(), find_shown.get()) })
     })
     |> ignore
     bar_room_node(held, fn() {

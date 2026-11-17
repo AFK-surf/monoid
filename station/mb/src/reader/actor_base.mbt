@@ -159,6 +159,32 @@ fn failed_again(turn : Json) -> Bool {
 }
 
 ///|
+/// A turn Codex's backend refused with nothing but `{"detail":"Bad Request"}` (FB-26, `codexErrorInfo` "other", read as
+/// `model`): the thread it was asked on, not the request, is what it refuses (openai/codex#58639, #61097), so trying it
+/// again as it is fails the same way for good. Only that body, its spacing aside: a detail that names what was wrong
+/// (`Unsupported parameter`), or says more, is not this.
+fn bare_bad_request(message : String) -> Bool {
+  let body = @json.parse(message) catch { _ => return false }
+  match body {
+    Object(o) => o.length() == 1 && o.get("detail") is Some(String("Bad Request"))
+    _ => false
+  }
+}
+
+///|
+fn refused_bad_request(turn : Json) -> Bool {
+  str_of(turn.value("outcome")) == Some("failed") &&
+  (match str_of(turn.value("detail")) {
+    Some(d) =>
+      match d.strip_prefix("model: ") {
+        Some(rest) => bare_bad_request(rest.to_string())
+        None => false
+      }
+    None => false
+  })
+}
+
+///|
 fn given_up(turn : Json) -> Bool {
   str_of(turn.value("outcome")) == Some("completed") && turn.value("declared") is (None | Some(Null))
 }

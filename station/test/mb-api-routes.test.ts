@@ -293,7 +293,7 @@ const MOCKED: [string, string][] = [
 
 /// What of a mocked module stays its own: what the program has as its own too (a constant's value, a pure check).
 const KEPT: Record<string, string[]> = {
-  "rows": ["STILLFAIL_SURFACE", "handedWs", "sees", "STILLFAIL_CONNECT"],
+  "rows": ["STILLFAIL_SURFACE", "handedWs", "sees", "seesMissing", "remoteWs", "STILLFAIL_CONNECT"],
   "jobs/preview": ["previewTarget"],
 };
 
@@ -753,6 +753,8 @@ const SESSIONS: Record<string, any> = {
   s9: { key: "s9", workspace: "/rooms/s9", ws: "w2", profile: "p1" },
   sh: { key: "sh", workspace: "/rooms/sh", ws: "handed:w1", profile: "p1" },
 };
+/// Other stations' tasks run here: no session of theirs (store/rows.ts `seesMissing`).
+const REMOTE_JOBS: Record<string, string> = { jr1: "remote:w1:st:a", jr2: "remote:w2:st:b", jr3: "remote:w3:st:c", jrx: "remote:w2" };
 const THREADS: Record<number, any> = {
   7: { id: 7, surface: "ember", sessions: ["s1"] },
   8: { id: 8, surface: "slack", sessions: ["s2"] },
@@ -768,11 +770,11 @@ function baseWorld(): World {
   // the store
   on("store.getSession", ([k]) => (SESSIONS[k] ? { ...SESSIONS[k] } : null));
   on("hub.store.getSession", ([k]) => (SESSIONS[k] ? { ...SESSIONS[k] } : null));
-  on("store.sessionWs", ([k]) => SESSIONS[k]?.ws ?? null);
+  on("store.sessionWs", ([k]) => (SESSIONS[k] ? SESSIONS[k].ws ?? null : undefined));
   on("store.getThread", ([n]) => (THREADS[n] ? { id: n, surface: THREADS[n].surface, title: null } : null));
   on("store.threadSessions", ([n]) => (THREADS[n]?.sessions ?? []).map((s: string) => ({ session: s, thread: n })));
   on("store.handedTo", ([k]) => (k === "sh" ? { station: "st2", ws: "w1", thread: 10, there: 70 } : null));
-  on("store.getJob", ([id]) => (id === "j1" ? { id: "j1", sessionKey: "s1" } : id === "j9" ? { id: "j9", sessionKey: "s9" } : null));
+  on("store.getJob", ([id]) => (id === "j1" ? { id: "j1", sessionKey: "s1" } : id === "j9" ? { id: "j9", sessionKey: "s9" } : REMOTE_JOBS[id] !== undefined ? { id, sessionKey: REMOTE_JOBS[id] } : null));
   on("store.handedChats", () => [{ session: "sh", station: "st2", ws: "w1", thread: 10, there: 70, at: 1000 }, { session: "s9", station: "st3", ws: "w2", thread: 9, there: 3, at: 2000 }]);
   on("store.pendingCardHeaderIfReady", () => null);
   on("store.setRead", ([, , n]) => n);
@@ -1295,6 +1297,7 @@ function defineCases() {
   add("job log", { method: "GET", path: "/jobs/j1/log", query: [["lines", "40"]] });
   add("job another workspace's", { method: "GET", path: "/jobs/j9" });
   add("job unknown action", { method: "GET", path: "/jobs/j1/what" });
+  for (const id of Object.keys(REMOTE_JOBS)) for (const viewer of [OWNER, OTHER_WS]) add(`another station's task ${id}, of ${viewer.workspace}`, { method: "GET", path: `/jobs/${id}`, viewer });
   // hub.ts
   add("new session", { method: "POST", path: "/sessions", body: { runtime: "claude", model: "opus", title: "hi", fast: true, speed: "fast", context: 100000 } });
   add("new session bad runtime", { method: "POST", path: "/sessions", body: { runtime: "nope" } });

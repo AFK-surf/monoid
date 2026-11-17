@@ -42,12 +42,19 @@ final class MBText {
         final float size;
         final int weight;
         final int style;  // 1 italic, 2 the code face
-        // drawn ahead (under `lock`): NONE, ASKED (in `asked`), DRAWING (by the thread ahead), DRAWN (`drawn`); the
-        // scale and the faces it is to be drawn at
+        // drawn ahead (under `lock`): NONE, ASKED (in `asked`), DRAWING (by the thread ahead), DRAWN (`drawn`, by
+        // phase); the phases still wanted and those drawn and not taken (bit `sub`: glyphSub); the scale and the faces
+        // it is to be drawn at
         int ahead;
-        Drawn drawn;
+        int want, have;
+        final Drawn[] drawn = new Drawn[SUB_COUNT];
         float askScale;
         int askFaces;
+        // (the app's thread's) the phases of it drawn there or asked to be drawn ahead at the scale and in the faces
+        // said, so each is asked once
+        int subsQueued;
+        float queuedScale;
+        int queuedFaces;
 
         Entry(String text, float size, int weight, int style) {
             this.text = text;
@@ -57,13 +64,38 @@ final class MBText {
         }
     }
 
-    /** A cluster drawn in white, a pixel round its bounds (none: nothing to draw), at a scale, in the faces as they were. */
+    /**
+     * A cluster drawn in white, a pixel round its bounds (none: nothing to draw), at a scale, in the faces as they were,
+     * moved right by its phase: where its picture's top left is from the pen (pixels).
+     */
     static final class Drawn {
         Bitmap bmp;
         final Rect b = new Rect();
+        int x0, y0;
         int color;
         float scale;
         int faces;
+    }
+
+    /**
+     * A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub) in pixels: how far right of
+     * the whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's sub_dx, the same).
+     */
+    static final int SUB_COUNT = 4, SUB_ALL = 0x0F;
+
+    static float subDx(int sub) {
+        switch (sub) {
+            case 1: return 0.25f;
+            case 2: return -0.5f;
+            case 3: return -0.25f;
+            default: return 0f;
+        }
+    }
+
+    /** A glyph key's phase (its bits 26..27), 0 for a key of none. */
+    static int glyphSub(int fullKey) {
+        int sub = fullKey >= 0 ? (fullKey >>> 26) & 7 : 0;
+        return sub < SUB_COUNT ? sub : 0;
     }
 
     /** A glyph put in an atlas this frame (colour glyphs' or the words'), its picture to be uploaded there (flush). */
@@ -425,26 +457,37 @@ final class MBText {
     }
 
     /**
-     * Glyph `key` drawn (ahead, else here), its picture held for glyphPut: in `out` 0, 0 (where it goes is MoonBit's),
-     * its size in points (0: nothing to draw), where its top left is from the pen, whether it is in colours of its own.
+     * Glyph `fullKey` (its cluster's key and its phase: glyphSub) drawn (ahead, else here), its picture held for
+     * glyphPut: in `out` 0, 0 (where it goes is MoonBit's), its size in points (0: nothing to draw), where its top left
+     * is from the pen, whether it is in colours of its own. The phases of it not drawn or asked yet asked of the thread
+     * ahead, for where its words are moved to next (ui's view_rephase).
      */
-    static void glyph(int key, double[] out) {
+    static void glyph(int fullKey, double[] out) {
         for (int i = 0; i < 7; i++) out[i] = 0;
         dropHeld();
+        int key = fullKey >= 0 ? fullKey & 0x03FFFFFF : fullKey;
+        int sub = glyphSub(fullKey);
         if (key < 0 || key >= entries.size()) return;
         Entry e = entries.get(key);
         float sc = density();
-        Drawn d = drawnAhead(e, sc);
-        if (d == null) d = draw(e, sc, paint(e.size * sc, e.weight, e.style), faces);
+        Drawn d = drawnAhead(e, sub, sc);
+        if (d == null) d = draw(e, sc, subDx(sub), paint(e.size * sc, e.weight, e.style), faces);
+        if (e.queuedScale != sc || e.queuedFaces != faces) {
+            e.subsQueued = 0;
+            e.queuedScale = sc;
+            e.queuedFaces = faces;
+        }
+        e.subsQueued |= 1 << sub;
+        int rest = SUB_ALL & ~e.subsQueued;
+        if (rest != 0) aheadOne(e, rest, sc);
         if (d.bmp == null) return;
-        int pad = 1;
-        heldKey = key;
+        heldKey = fullKey;
         held = d.bmp;
         heldColour = d.color != 0;
         out[2] = d.bmp.getWidth() / sc;
         out[3] = d.bmp.getHeight() / sc;
-        out[4] = (d.b.left - pad) / sc;
-        out[5] = (d.b.top - pad) / sc;
+        out[4] = d.x0 / sc;
+        out[5] = d.y0 / sc;
         out[6] = d.color;
     }
 
@@ -467,24 +510,33 @@ final class MBText {
         heldKey = -1;
     }
 
-    /** `e` drawn in white a pixel round its bounds, at `sc` pixels a point with `p` (its font at that size): on either thread. */
-    static Drawn draw(Entry e, float sc, Paint p, int faces) {
+    /**
+     * `e` drawn in white a pixel round its bounds, at `sc` pixels a point with `p` (its font at that size), its ink
+     * moved right by `subDx` pixels (its phase) and the bitmap's edges on whole pixels round it so moved, a pixel of
+     * room on both sides: on either thread.
+     */
+    static Drawn draw(Entry e, float sc, float subDx, Paint p, int faces) {
         Drawn d = new Drawn();
         d.scale = sc;
         d.faces = faces;
         Rect b = d.b;
         p.getTextBounds(e.text, 0, e.text.length(), b);
         int pad = 1;
-        int pw = b.width() + 2 * pad, ph = b.height() + 2 * pad;
-        if (b.width() <= 0 || b.height() <= 0 || pw > 512 || ph > 512) return d;
+        if (b.width() <= 0 || b.height() <= 0) return d;
+        int x0 = (int) Math.floor(b.left + subDx) - pad, x1 = (int) Math.ceil(b.right + subDx) + pad;
+        int pw = x1 - x0, ph = b.height() + 2 * pad;
+        if (pw > 512 || ph > 512) return d;
         // what cannot come out in colours drawn as its cover alone (a byte a pixel, what the words' atlas takes), not
         // looked through for colours
         boolean mayColour = mayBeColour(e.text);
         Bitmap bmp = Bitmap.createBitmap(pw, ph, mayColour ? Bitmap.Config.ARGB_8888 : Bitmap.Config.ALPHA_8);
         Canvas c = new Canvas(bmp);
-        c.drawText(e.text, pad - b.left, pad - b.top, p);
+        // (the paint's SUBPIXEL_TEXT_FLAG: its glyphs where they fall, not on whole pixels)
+        c.drawText(e.text, -x0 + subDx, pad - b.top, p);
         d.color = mayColour && isColor(bmp) ? 1 : 0;
         d.bmp = bmp;
+        d.x0 = x0;
+        d.y0 = b.top - pad;
         return d;
     }
 
@@ -646,7 +698,10 @@ final class MBText {
     static int aheadCount;
     static Thread aheadThread;
 
-    /** The glyphs of keys[0..n) to draw ahead, at the scale and in the faces of now. The app's thread. */
+    /**
+     * The glyphs of keys[0..n) to draw ahead at the phases of each not drawn or asked yet, at the scale and in the faces
+     * of now. The app's thread.
+     */
     static void ahead(int[] ks, int n) {
         float sc = density();
         boolean any = false;
@@ -655,50 +710,98 @@ final class MBText {
                 int k = ks[i];
                 if (k < 0 || k >= entries.size()) continue;
                 Entry e = entries.get(k);
-                if (e.ahead != NONE) continue;
+                if (e.queuedScale != sc || e.queuedFaces != faces) {
+                    e.subsQueued = 0;
+                    e.queuedScale = sc;
+                    e.queuedFaces = faces;
+                }
+                int want = SUB_ALL & ~e.subsQueued;
+                if (want == 0 || e.ahead != NONE) continue;
                 if (aheadCount >= AHEAD_MOST && !dropOldestDrawn()) break;
-                e.ahead = ASKED;
-                e.askScale = sc;
-                e.askFaces = faces;
-                asked.add(e);
-                aheadCount++;
+                ask(e, want, sc);
                 any = true;
             }
             if (any) lock.notifyAll();
         }
-        if (any && aheadThread == null) {
+        if (any) startAhead();
+    }
+
+    /** `e` asked of the thread ahead at the phases of `want` (under lock; none of them asked before). */
+    static void ask(Entry e, int want, float sc) {
+        e.ahead = ASKED;
+        e.want = want;
+        e.have = 0;
+        e.askScale = sc;
+        e.askFaces = faces;
+        e.subsQueued |= want;
+        asked.add(e);
+        aheadCount++;
+    }
+
+    /** `e` asked of the thread ahead at the phases of `want`, where it is not asked already. The app's thread. */
+    static void aheadOne(Entry e, int want, float sc) {
+        synchronized (lock) {
+            if (e.ahead != NONE) return;
+            if (aheadCount >= AHEAD_MOST && !dropOldestDrawn()) return;
+            ask(e, want, sc);
+            lock.notifyAll();
+        }
+        startAhead();
+    }
+
+    static void startAhead() {
+        if (aheadThread == null) {
             aheadThread = new Thread(MBText::drawAhead, "mbui glyphs");
             aheadThread.setDaemon(true);
             aheadThread.start();
         }
     }
 
-    /** The oldest glyph drawn ahead and not placed, let go (under lock): false when there is none. */
+    /** The phases of `e` drawn ahead and not taken, let go (under lock). */
+    static void dropDrawn(Entry e) {
+        for (int s = 0; s < SUB_COUNT; s++) {
+            if (e.drawn[s] != null && e.drawn[s].bmp != null) e.drawn[s].bmp.recycle();
+            e.drawn[s] = null;
+        }
+        e.have = 0;
+    }
+
+    /**
+     * The oldest glyph drawn ahead and not all placed, let go (under lock): false when there is none. What of it was
+     * drawn and never taken may be asked again.
+     */
     static boolean dropOldestDrawn() {
         java.util.Iterator<Entry> it = drawnAhead.iterator();
         if (!it.hasNext()) return false;
         Entry e = it.next();
         it.remove();
-        if (e.drawn != null && e.drawn.bmp != null) e.drawn.bmp.recycle();
-        e.drawn = null;
+        e.subsQueued &= ~e.have;
+        dropDrawn(e);
         e.ahead = NONE;
         aheadCount--;
         return true;
     }
 
     /**
-     * What was drawn ahead of `e` at `sc` in the faces of now, taken; null when it was not (asked and not begun: no
-     * longer asked, drawn here). While the thread ahead draws it, waited for. The app's thread.
+     * What was drawn ahead of `e` at phase `sub` at `sc` in the faces of now, taken; null when it was not (asked and not
+     * begun: that phase no longer asked, drawn here). While the thread ahead draws it, waited for. The app's thread.
      */
-    static Drawn drawnAhead(Entry e, float sc) {
+    static Drawn drawnAhead(Entry e, int sub, float sc) {
+        int bit = 1 << sub;
         synchronized (lock) {
             if (e.ahead == NONE) return null;
             if (e.ahead == ASKED) {
-                // (left in `asked`: the thread ahead passes over it)
-                e.ahead = NONE;
-                aheadCount--;
+                // (left in `asked` while other phases of it are: the thread ahead draws the rest; taken out where none
+                // is, so that asked again before that thread came to it, it is in `asked` once)
+                e.want &= ~bit;
+                if (e.want == 0) {
+                    e.ahead = NONE;
+                    asked.remove(e);
+                    aheadCount--;
+                }
                 return null;
             }
+            if (e.ahead == DRAWING && (e.want & bit) == 0) return null;
             while (e.ahead == DRAWING) {
                 try {
                     lock.wait();
@@ -708,12 +811,18 @@ final class MBText {
                 }
             }
             if (e.ahead != DRAWN) return null;
-            Drawn d = e.drawn;
-            e.drawn = null;
-            e.ahead = NONE;
-            aheadCount--;
-            drawnAhead.remove(e);
-            if (d.scale != sc || d.faces != faces) {
+            Drawn d = e.drawn[sub];
+            e.drawn[sub] = null;
+            e.have &= ~bit;
+            boolean stale = d != null && (d.scale != sc || d.faces != faces);
+            if (e.have == 0 || stale) {
+                dropDrawn(e);
+                e.ahead = NONE;
+                aheadCount--;
+                drawnAhead.remove(e);
+            }
+            if (d == null) return null;
+            if (stale) {
                 if (d.bmp != null) d.bmp.recycle();
                 return null;
             }
@@ -721,7 +830,7 @@ final class MBText {
         }
     }
 
-    /** The thread ahead: each glyph asked for drawn with its own paints, as the app's thread would draw it. */
+    /** The thread ahead: each glyph asked for drawn with its own paints at each phase asked, as the app's thread would draw it. */
     static void drawAhead() {
         HashMap<Long, Paint> mine = new HashMap<>();
         int mineFaces = -1;
@@ -729,6 +838,7 @@ final class MBText {
             Entry e;
             float sc;
             int f;
+            int want;
             synchronized (lock) {
                 while (asked.isEmpty()) {
                     try {
@@ -742,25 +852,33 @@ final class MBText {
                 e.ahead = DRAWING;
                 sc = e.askScale;
                 f = e.askFaces;
+                want = e.want;
             }
-            Drawn d = null;
+            Drawn[] d = new Drawn[SUB_COUNT];
+            int have = 0;
             try {
                 if (f != mineFaces) {
                     mine.clear();
                     mineFaces = f;
                 }
-                d = draw(e, sc, paintIn(mine, e.size * sc, e.weight, e.style), f);
+                Paint p = paintIn(mine, e.size * sc, e.weight, e.style);
+                for (int s = 0; s < SUB_COUNT; s++) {
+                    if ((want & (1 << s)) == 0) continue;
+                    d[s] = draw(e, sc, subDx(s), p, f);
+                    have |= 1 << s;
+                }
             } catch (Throwable x) {
                 // (out of memory for its picture, as much as anything: let be, drawn on the app's thread when it is asked
                 // for; never left DRAWING for that thread to wait on)
                 Host.log("glyph ahead: " + x);
             }
             synchronized (lock) {
-                if (d == null) {
+                if (have == 0) {
                     e.ahead = NONE;
                     aheadCount--;
                 } else {
-                    e.drawn = d;
+                    for (int s = 0; s < SUB_COUNT; s++) e.drawn[s] = d[s];
+                    e.have = have;
                     e.ahead = DRAWN;
                     drawnAhead.add(e);
                 }

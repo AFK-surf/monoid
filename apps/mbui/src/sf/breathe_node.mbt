@@ -19,7 +19,7 @@ pub fn breathe_node(
 ) -> Unit {
   let first = @signals.untracked(waits)
   // (how much of its breath it takes, 0 … 1: breathe's `share`)
-  let share = EdgeWay::new(if first { 1.0 } else { 0.0 })
+  let share = @motion.NodeWay::new(if first { 1.0 } else { 0.0 })
   // (whole and at rest: none of its breath taken, its way there over; nothing of the clock read)
   let whole = @signals.signal(!first)
   let due : Ref[() -> Unit] = Ref(fn() {  })
@@ -30,9 +30,9 @@ pub fn breathe_node(
     due.val = fn() {  }
     if w {
       whole.set(false)
-      share.go(v, 1.0, dur_ms, ease=Out)
+      share.go_ms(v, 1.0, dur_ms, ease=Out)
     } else {
-      share.go(v, 0.0, dur_ms, ease=Out)
+      share.go_ms(v, 0.0, dur_ms, ease=Out)
       due.val = v.at_moment(share.end(), fn() { whole.set(true) })
     }
   })

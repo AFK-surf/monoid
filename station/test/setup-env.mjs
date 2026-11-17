@@ -1,8 +1,8 @@
 import { afterEach, beforeEach } from "node:test";
-import { execFileSync } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { leftRunning } from "./left-running.ts";
 
 // A test that needs a custom CA sets it itself. Host trust overrides must not leak into the fake agents' environments.
 for (const key of ["SSL_CERT_FILE", "SSL_CERT_DIR", "CODEX_CA_CERTIFICATE"]) delete process.env[key];
@@ -26,14 +26,7 @@ if (process.env.NODE_TEST_CONTEXT === "child-v8" && process.platform !== "win32"
   const mark = `${process.pid}-${Date.now()}`;
   process.env.STILLFAIL_TEST_FILE = mark;
   process.on("exit", () => {
-    let listed = "";
-    try {
-      // Each process of this user with its environment (macOS: -E; Linux: e).
-      listed = execFileSync("ps", process.platform === "darwin" ? ["-E", "-ww", "-x", "-o", "pid=,command="] : ["-x", "-ww", "e", "-o", "pid=,args="], { encoding: "utf8", maxBuffer: 64 << 20, env: { ...process.env, STILLFAIL_TEST_FILE: "" } });
-    } catch {
-      return;
-    }
-    const left = listed.split("\n").filter((l) => l.includes(`STILLFAIL_TEST_FILE=${mark}`)).map((l) => l.trim()).filter((l) => Number(l.split(" ")[0]) !== process.pid);
+    const left = leftRunning(mark);
     if (left.length === 0) return;
     for (const l of left) {
       try {
@@ -41,7 +34,7 @@ if (process.env.NODE_TEST_CONTEXT === "child-v8" && process.platform !== "win32"
       } catch {}
     }
     const file = process.argv.find((a) => /\.test\.(ts|mjs)$/.test(a)) ?? "?";
-    process.stderr.write(`${file}: left running after its tests (ended now):\n${left.map((l) => `  ${l.replace(/ [A-Za-z_][A-Za-z0-9_]*=.*$/, "").slice(0, 200)}`).join("\n")}\n`);
+    process.stderr.write(`${file}: left running after its tests (ended now):\n${left.map((l) => `  ${l.slice(0, 200)}`).join("\n")}\n`);
     process.exitCode = 1;
   });
 }

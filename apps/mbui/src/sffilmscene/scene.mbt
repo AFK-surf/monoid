@@ -45,7 +45,7 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         }
         let (base_mode, chat_nodes) = match mode.strip_prefix("nodes:") {
           Some(rest) => (rest.to_owned(), true)
-          None => (mode, arg("MBUI_CHAT_PAGE") == "nodes")
+          None => (mode, arg("MBUI_CHAT_PAGE") == "nodes" || arg("MBUI_CHAT_PAGE") == "composed")
         }
         let s = if base_mode == "json" {
           @sfapp.fixture_json_app(arg("MBUI_FIXTURE_JSON"))
@@ -95,8 +95,12 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
           s
         }
         if dark { @sf.set_dark(Some(true)) }
-        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页, as a run that chose it begins)
-        if arg("MBUI_CHAT_PAGE") == "nodes" { @sfbase.chat_page_nodes.set(true) }
+        // MBUI_CHAT_PAGE=nodes: the chat's page made as nodes (外观's 试用新对话页, as a run that chose it begins);
+        // `composed`: its composer too (试用新输入框)
+        if arg("MBUI_CHAT_PAGE") == "nodes" || arg("MBUI_CHAT_PAGE") == "composed" {
+          @sfbase.chat_page_nodes.set(true)
+        }
+        if arg("MBUI_CHAT_PAGE") == "composed" { @sfbase.composer_nodes.set(true) }
         @sf.give_faces()
         src.val = Some(s)
         s

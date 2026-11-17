@@ -7,7 +7,7 @@
   // the serif face (style bit 4): a reader's 宋体
   const SERIF = '"Songti SC", "Noto Serif CJK SC", "Source Han Serif SC", SimSun, serif';
   const MONO = 'ui-monospace, "SF Mono", Menlo, Consolas, "JetBrains Mono", "PingFang SC", "Noto Sans CJK SC", monospace';
-  const ATLAS = 2048;
+  const ATLAS = 4096;
   const hostScriptSrc = (typeof document !== 'undefined' && document.currentScript && document.currentScript.src) || location.href;
   const params = new URLSearchParams(location.search);
   const H = {};
@@ -407,6 +407,8 @@
     if (a_rot.x != 0.0) { vec2 d = pos - a_rot.yz; float c = cos(a_rot.x), s = sin(a_rot.x); at = a_rot.yz + vec2(c * d.x - s * d.y, s * d.x + c * d.y); }
     gl_Position = vec4(at.x / u_vp.x * 2.0 - 1.0, 1.0 - at.y / u_vp.y * 2.0, 0.0, 1.0);
     v_pos = pos; v_cpos = a_rot.w > 0.5 ? at : pos; v_rect = a_rect; v_p = a_p; v_color = a_color; v_c2 = a_c2; v_clip = a_clip; v_pad = a_pad; v_rc = a_rc; v_rs = a_rs; v_rr = a_rr;
+    // (a glyph's p.x, which it has no use for: how it is turned, for its texels taken whole where it is not)
+    if (kind == 1 || kind == 3 || kind == 7) v_p.x = a_rot.x;
     if (kind == 4 && a_pad.z > 0.5) v_pad.x = a_rot.w;
     v_oclip = a_oclip; v_orc = a_orc; v_ors = a_ors;
     vec2 cq = a_rot.w > 0.5 ? at : pos;
@@ -816,8 +818,14 @@
     if (kind == 1 || kind == 3 || kind == 7) {
       // within its own cell (c2: where in the atlas, in texels), however its rect is stretched or turned: a sample
       // past the cell's edge texels would blend in what lies beside it (another glyph, one left from before the
-      // atlas started over)
-      vec2 uv = clamp(v_c2.xy + (p - v_rect.xy) / v_rect.zw * v_c2.zw, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
+      // atlas started over). One drawn as big as its picture, not turned, its corner on a pixel: each pixel its
+      // texel's centre, as win_render.cpp takes it (worked out of where it is across the rect, a float's division
+      // took a texel's neighbour in where its rounding fell, at 3, 2.625 and 1.5 pixels a point and far across)
+      vec2 off = abs(v_rect.zw * u_scale - v_c2.zw);
+      vec2 r0 = v_rect.xy * u_scale, r0i = floor(r0 + 0.5);
+      bool exact = v_p.x == 0.0 && max(off.x, off.y) <= 0.5 && max(abs(r0.x - r0i.x), abs(r0.y - r0i.y)) <= 0.05;
+      vec2 tex = exact ? floor(p * u_scale - r0i) + 0.5 : (p - v_rect.xy) / v_rect.zw * v_c2.zw;
+      vec2 uv = clamp(v_c2.xy + tex, v_c2.xy + 0.5, v_c2.xy + v_c2.zw - 0.5) / ${ATLAS}.0;
       vec4 t = texture(u_atlas, uv);
       if (kind == 7) {
         // inked by how light what is under its glass is, looked at round the glass's middle
@@ -2378,21 +2386,35 @@
   // (one atlas: colour glyphs in it with the others)
   H.atlasSize = (colour) => colour ? 0 : ATLAS;
 
+  // A glyph key's horizontal quarter-pixel phase (bits 26..27: text.mbt glyph_col_sub), in pixels: how far right of
+  // the whole pixel column its quad is put on a glyph at it is drawn (win_text.cpp's sub_dx, the same).
+  const subDx = (sub) => sub === 1 ? 0.25 : sub === 2 ? -0.5 : sub === 3 ? -0.25 : 0;
+
   // `e` drawn in black, a pixel round its bounds: its box (in `e`) and its picture, held for H.glyphPut (where it
-  // goes in the atlas is MoonBit's: hostapi's atlas.mbt)
-  function rasterize(e, key) {
+  // goes in the atlas is MoonBit's: hostapi's atlas.mbt). Its ink drawn moved right by its phase (`fullKey`'s), and a
+  // digit of words whose digits are one width (style & 32) by as much again as centres it in the widest's room; the
+  // picture's edges on whole pixels round the ink so moved, so where it lands is never a pixel's rounding of its place
+  // added to that.
+  function rasterize(e, fullKey) {
     held = null;
     const sc = dpr;
+    const sub = (fullKey >>> 26) & 7;
     mctx.font = font(e.size, e.weight, e.style);
     const m = mctx.measureText(e.c);
     const left = m.actualBoundingBoxLeft, right = m.actualBoundingBoxRight;
     const asc = m.actualBoundingBoxAscent, desc = m.actualBoundingBoxDescent;
+    let tabShift = 0;
+    if (e.style & 32 && isDigit(e.c)) {
+      const f = font(e.size, e.weight, e.style);
+      tabShift = (tabWidth(f) - width(f, e.c)) / 2;
+    }
+    const shiftPx = tabShift * sc + (sub < 4 ? subDx(sub) : 0);
     // whole pixels each way from the baseline, so every glyph's baseline is
     // on a pixel row of its bitmap and glyphs on one line line up
     const pad = 1;
-    const l = Math.ceil(left * sc), r = Math.ceil(right * sc);
+    const x0 = Math.floor(-left * sc + shiftPx) - pad, x1 = Math.ceil(right * sc + shiftPx) + pad;
     const a = Math.ceil(asc * sc), d = Math.ceil(desc * sc);
-    const pw = l + r + 2 * pad, ph = a + d + 2 * pad;
+    const pw = x1 - x0, ph = a + d + 2 * pad;
     e.w = 0;
     if (pw <= 2 || ph <= 2 || pw > 512 || ph > 512) return;
     rc.width = pw;
@@ -2404,7 +2426,7 @@
     // draws them (Han and Latin alike: 328580 against 282186 of ink, white and black, at 24 px)
     rctx.fillStyle = '#000';
     rctx.textBaseline = 'alphabetic';
-    rctx.fillText(e.c, pad + l, pad + a);
+    rctx.fillText(e.c, -x0 + shiftPx, pad + a);
     const img = rctx.getImageData(0, 0, pw, ph);
     // drawn in black: a cluster with colours of its own (grey ones too: any pixel of some opacity not black) is an
     // emoji's
@@ -2412,20 +2434,16 @@
     for (let i = 0; i < img.data.length && !color; i += 4) {
       if (img.data[i + 3] > 64 && Math.max(img.data[i], img.data[i + 1], img.data[i + 2]) > 32) color = 1;
     }
-    held = { key, img, pw, ph };
+    held = { key: fullKey, img, pw, ph };
     e.w = pw / sc;
     e.h = ph / sc;
-    e.ox = -(l + pad) / sc;
-    if (e.style & 32 && isDigit(e.c)) {
-      const f = font(e.size, e.weight, e.style);
-      e.ox += (tabWidth(f) - width(f, e.c)) / 2;
-    }
+    e.ox = x0 / sc;
     e.oy = -(a + pad) / sc;
     e.color = color;
   }
 
   H.glyph = (key, out) => {
-    const e = entries[key];
+    const e = key >= 0 ? entries[key & 0x03FFFFFF] : undefined;
     if (!e) { for (let i = 0; i < 8; i++) out[i] = 0; return; }
     rasterize(e, key);
     out[0] = 0; out[1] = 0; out[2] = e.w || 0; out[3] = e.h || 0;

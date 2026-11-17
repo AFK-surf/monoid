@@ -115,7 +115,8 @@
     "raw-hover-ground": {},
     "width-structure": {},
     "reused-untracked-key": {},
-    "manual-fade-way": {}
+    "manual-fade-way": {},
+    "page-at-moment": {}
   },
   "excused": {
     "frame-request": {},
@@ -196,6 +197,7 @@
     "raw-hover-ground": {},
     "width-structure": {},
     "reused-untracked-key": {},
-    "manual-fade-way": {}
+    "manual-fade-way": {},
+    "page-at-moment": {}
   }
 }

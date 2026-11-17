@@ -39,7 +39,9 @@ let ug_card_gap : Double = 20.0
 let ug_body_gap : Double = 16.0
 
 ///|
-/// How it is counted (usage_notes'): the core's notes, then its basis, 4 apart, the meta's subtle.
+/// How it is counted (usage_notes'): the core's notes, then its basis, 4 apart, the meta's subtle. Each line a row by
+/// its words: a line said otherwise is that one going and the other coming in its place, one way down the column, not
+/// a row by its place given other words at once as another makes its way under it (all of it dipping and growing back).
 fn usage_notes_node(parent : @view.View, v : () -> Json?) -> Unit {
   parent.box(fn(n) {
     n.gap(Is(4.0)) |> ignore
@@ -47,10 +49,10 @@ fn usage_notes_node(parent : @view.View, v : () -> Json?) -> Unit {
       fn() {
         let lines = strings(v(), "notes")
         lines.push(text(v(), "basis"))
-        lines.filter(fn(l) { l != "" }).mapi(fn(i, l) { (i, l) })
+        lines.filter(fn(l) { l != "" })
       },
-      fn(l) { l.0 },
-      fn(row, l) { @sf.words_node(row, fn() { l.get().1 }, fn() { ug_note }) |> ignore },
+      fn(l) { l },
+      fn(row, l) { @sf.words_node(row, fn() { l.get() }, fn() { ug_note }) |> ignore },
     )
   })
   |> ignore

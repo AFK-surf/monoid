@@ -108,13 +108,11 @@ fn message_others_node(
     })
     |> ignore
     // (over the row, at its start: out in the margin, or over the head's start where inline)
-    row.box(fn(layer) {
-      layer.over(Is(true)) |> ignore
-      layer.box(fn(av) {
-        @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
-        avatar(av)
-      })
-      |> ignore
+    // (one node over the row, its room its own: no box of the layer's round it)
+    row.box(fn(av) {
+      av.over(Is(true)) |> ignore
+      @sf.style_node(av, fn() { if message_inline(here) { msg_avatar_inline } else { msg_avatar_room } })
+      avatar(av)
     })
     |> ignore
   })

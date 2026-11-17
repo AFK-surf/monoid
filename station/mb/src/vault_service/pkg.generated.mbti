@@ -1,0 +1,707 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/vault_service"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/debug",
+  "moonbitlang/core/json",
+  "moonbitlang/core/ref",
+  "station/host",
+  "station/sql",
+  "station/vault_crypto",
+  "stillfail/rules/vault",
+}
+
+// Values
+pub let account_var : String
+
+pub async fn agent_answer(Machine, SshKey, Bytes, () -> Bool) -> Bytes noraise
+
+pub fn base_env(World) -> Array[(String, String)]
+
+pub async fn capture(World, String, String, Array[(String, String)], Double) -> Captured
+
+pub let capture_ms : Double
+
+pub let card_occupied : String
+
+pub let carried_save_pending : String
+
+pub fn forget_signin_save(@vault_crypto.Db, String, String, status? : String) -> Unit raise
+
+pub fn forms_of(String) -> Array[Bytes]
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn has_invalid_vault_members(@vault_crypto.Db, String) -> Bool raise
+
+pub fn has_vault_members(@vault_crypto.Db) -> Bool raise
+
+pub let hidden_mark : String
+
+pub fn initialize_pending_index(@vault_crypto.Db) -> Unit raise
+
+pub fn initialize_rebox_index(@vault_crypto.Db) -> Unit raise
+
+pub fn initialize_use_index(@vault_crypto.Db) -> Unit raise
+
+pub fn initialize_vault_members(@vault_crypto.Db) -> Unit raise
+
+pub fn install_signin_save_index(@vault_crypto.Db) -> Unit raise
+
+pub fn is_deleted_vault_write(Error) -> Bool
+
+pub async fn make_ca(Machine, Double, String) -> (Bytes, KeyRef)
+
+pub async fn make_leaf(Machine, (Bytes, KeyRef), String, String, Double) -> (Bytes, KeyRef)
+
+pub fn message_of(Error) -> String
+
+pub fn next_pending_signin_save(@vault_crypto.Db, String?) -> PendingSigninSave? raise
+
+pub fn of_sites(String, Array[String]) -> Bool
+
+pub async fn parse_ssh_key(Machine, String) -> SshKey
+
+pub fn pem(Bytes, label? : String) -> String
+
+pub fn pending_audit_complete(@vault_crypto.Db, String) -> Bool raise
+
+pub fn pending_index_complete(@vault_crypto.Db, String) -> Bool raise
+
+pub fn pending_index_started(@vault_crypto.Db, String) -> Bool raise
+
+pub fn pending_preparation_complete(@vault_crypto.Db, String, Bool, Bool) -> Bool raise
+
+pub fn pending_signin_save(@vault_crypto.Db, session? : String) -> PendingSigninSave? raise
+
+pub fn placeholder(String) -> String
+
+pub fn queue_signin_save(@vault_crypto.Db, String, String, String) -> Unit raise
+
+pub fn rebox_index_complete(@vault_crypto.Db) -> Bool raise
+
+pub let run_ms : Double
+
+pub async fn run_with(World, @vault_crypto.Held, RunAsk, Proxy, Array[(String, String)], (String) -> Unit, allowed? : () -> Bool) -> Ran
+
+pub fn scrub(String, Array[String]) -> String
+
+pub let secret_var : String
+
+pub async fn serve_agent(Machine, String, SshKey, () -> Bool) -> (() -> Unit)
+
+pub fn signin_for_save(@vault_crypto.Db, String, String) -> String? raise
+
+pub fn signin_save_complete(@vault_crypto.Db, String) -> Bool raise
+
+pub fn site_of(String) -> String
+
+pub async fn ssh_sign(Machine, SshKey, Bytes, Int32) -> Bytes
+
+pub fn stringify(@json.Json) -> String
+
+pub fn swap(String, String, String) -> String
+
+pub fn ulid(Double, Bytes) -> String
+
+pub let undecided : String
+
+pub fn use_json(String, @json.Json, String, String?, @json.Json, @json.Json, @json.Json, Bool) -> @json.Json
+
+pub fn utf8_text(Bytes) -> String
+
+pub fn vault_members_complete(@vault_crypto.Db, String) -> Bool raise
+
+pub fn vault_members_started(@vault_crypto.Db, String) -> Bool raise
+
+pub fn vault_tools(Secrets, (String) -> String?, (String, String) -> String, sign_ins? : SignIns) -> Array[Tool]
+
+// Errors
+pub suberror Aborted
+pub impl Show for Aborted
+
+pub suberror Refused {
+  Refused(String)
+}
+pub impl Show for Refused
+
+pub suberror WriteBusy
+
+// Types and methods
+type Away
+
+pub(all) struct Browsers {
+  cookies : async (String, Array[String], Bool) -> String
+  passkeys_in : (async (String, @json.Json) -> Unit)?
+  sign_in : async (String, @json.Json) -> Unit
+  extend_sign_in : ((String, String, Double) -> Unit)?
+}
+
+pub(all) struct Captured {
+  code : Int32?
+  signal : String?
+  out : String
+  raw : String?
+  err : String
+  timed_out : Bool
+  too_long : Bool
+}
+pub fn Captured::to_json(Self) -> @json.Json
+
+pub(all) struct CardOutcomes {
+  save : (@json.Json, () -> Unit raise) -> Unit raise
+}
+
+#derive(Eq)
+pub(all) enum CardState {
+  Same
+  Other
+  NoCard
+}
+
+pub(all) struct ConnectAsk {
+  url : String
+  authorization : String?
+}
+
+pub(all) enum ConnectDecision {
+  Refuse(String)
+  Tunnel(String, Int32)
+  Open(String, Int32, String, Int32)
+}
+
+pub(all) struct Ended {
+  code : Int32?
+  signal : String?
+  timed_out : Bool
+  error : String?
+}
+
+pub(all) struct ForwardAsk {
+  run : Int32
+  host : String
+  port : Int32
+  verb : String
+  path : String
+  headers : Array[(String, Array[String])]
+}
+
+pub(all) enum ForwardDecision {
+  Forbid(Int32, String)
+  Forward(Array[(String, Array[String])])
+}
+
+type HeldLogin
+
+pub(all) struct Hub {
+  store : Store
+  prepare_latest_threads : (async (Array[String]) -> Unit)?
+  prepare_card_posts : (async (Array[Int32]) -> Unit)?
+  post : async (String, String, String, String) -> String
+  shared : (Int32, Int32, String, String) -> Unit
+  notify : (String, String) -> Unit raise
+  identity : (String) -> @json.Json?
+}
+
+pub struct Incoming {
+  w : World
+  proxy : Proxy
+  incoming : Map[String, (String, @ref.Ref[Bool])]
+}
+pub async fn Incoming::heard(Self, String, String, @json.Json) -> @json.Json
+pub fn Incoming::new(World, Proxy) -> Self
+
+pub(all) struct KeyRef {
+  handle : String
+  kind : String
+  public : Array[Bytes]
+}
+
+pub(all) struct Listed {
+  vault : String
+  item : String
+  owner : String?
+  listing : @json.Json
+}
+
+pub struct Lock {
+  json : @json.Json
+  ws : String
+  view : @vault.LockView
+  members : Array[(String, String)]
+  devices : Array[(String, String)]
+}
+pub fn Lock::device_sub(Self, String) -> String?
+pub fn Lock::devices_for(Self, String) -> Array[String]
+pub fn Lock::email_of(Self, String) -> String?
+pub fn Lock::member_with_email(Self, String) -> String?
+pub fn Lock::members_with_email(Self, String) -> Array[String]
+pub fn Lock::of_json(@json.Json) -> Self
+
+type LostSaves
+
+pub(all) struct Machine {
+  temp_dir : async (String) -> String
+  remove : async (String) -> Unit
+  chmod : async (String, Int32) -> Unit
+  write_file : async (String, Bytes, Int32) -> Unit
+  read_file : async (String) -> Bytes?
+  mkdir : async (String, Int32) -> Unit
+  shell_for : async (Array[(String, String)]) -> String
+  spawn : async (Spawn) -> Ended
+  p256_new : async () -> KeyRef
+  key_of_pem : async (String) -> KeyRef?
+  ed25519_of_seed : async (Bytes) -> KeyRef
+  rsa_of_jwk : async (@json.Json) -> KeyRef
+  key_pem : async (KeyRef) -> String
+  sign : async (KeyRef, String, Bytes) -> Bytes
+  sha1 : async (Bytes) -> Bytes
+  roots : async () -> Array[String]
+  tls_context : async (String, String) -> String
+  proxy_listen : async (async (ConnectAsk) -> ConnectDecision, async (ForwardAsk) -> ForwardDecision) -> Int32
+  proxy_close : () -> Unit
+  unix_serve : async (String, async (Int32, Bytes) -> (Bytes, Bool)) -> (() -> Unit)
+  random : (Int32) -> Bytes
+}
+
+pub(all) struct Peer {
+  id : String
+  name : String
+}
+
+pub(all) struct PendingSigninSave {
+  session : String
+  save : String
+  status : String
+}
+
+pub(all) struct Previous {
+  gone : (async () -> Unit)?
+}
+
+pub struct Proxy {
+  machine : Machine
+  dir : String
+  now : () -> Double
+  runs : Map[String, (Int32, ProxyRun)]
+  by_number : Map[Int32, ProxyRun]
+  mut next_run : Int32
+  leaves : Map[String, (String, Double)]
+  mut ca : (Bytes, KeyRef)?
+  mut port : Int32
+  mut listening : Bool
+  mut starting : @effect.Deferred[Int32]?
+}
+pub fn Proxy::admit(Self, ProxyRun) -> (String, () -> Unit)
+pub fn Proxy::bundle(Self) -> String
+pub fn Proxy::close(Self) -> Unit
+pub async fn Proxy::connect(Self, ConnectAsk) -> ConnectDecision noraise
+pub async fn Proxy::forward(Self, ForwardAsk) -> ForwardDecision noraise
+pub fn Proxy::new(Machine, String, () -> Double) -> Self
+pub async fn Proxy::start(Self) -> Int32
+
+pub(all) struct ProxyRun {
+  hosts : Array[String]
+  placeholder : String
+  value : String
+  used : (String) -> Unit
+  allowed : () -> Bool
+}
+
+pub(all) struct Ran {
+  code : Int32?
+  signal : String?
+  output : String
+  cut : Bool
+  timed_out : Bool
+  used : Bool?
+}
+pub fn Ran::to_json(Self) -> @json.Json
+
+pub(all) struct RunArgs {
+  grant : String
+  command : String
+  env : String?
+  cwd : String
+  under : String?
+  timeout_ms : Double?
+  station : String?
+}
+
+pub(all) struct RunAsk {
+  command : String
+  cwd : String
+  env : String?
+  timeout_ms : Double
+}
+
+pub(all) struct SaveAsk {
+  name : String
+  kind : String
+  reason : String
+  value : String?
+  command : String?
+  path : String?
+  username : String?
+  public_key : String?
+  filename : String?
+  modes : Array[String]?
+  hosts : Array[String]?
+  env : String?
+  cwd : String
+  station : String?
+  browser : String?
+  person : String?
+  oauth : String?
+  about : String?
+  quiet : ((String) -> Unit)?
+}
+
+pub struct Scrubber {
+  forms : Array[Bytes]
+  mark : Bytes
+  keep : Int32
+  mut held : Bytes
+}
+pub fn Scrubber::end(Self) -> Bytes
+pub fn Scrubber::new(Array[String], mark? : String) -> Self
+pub fn Scrubber::push(Self, Bytes) -> Bytes
+
+pub struct Secrets {
+  w : World
+  db : @vault_crypto.Db
+  crypto : @vault_crypto.Crypto
+  vaults : VaultStore
+  plain : @vault_crypto.PlainStore
+  keeper : @vault_crypto.Keeper
+  proxy : Proxy
+  uses_index : UseIndex
+  listeners : Array[(@json.Json) -> Unit]
+  mut plain_written : (@json.Json) -> Unit
+  unsaved : Map[String, @json.Json]
+  saves_by_owner : Map[String, Map[String, Map[String, Unit]]]
+  save_scopes : Map[String, Array[(String, String)]]
+  unscoped_saves : Map[String, Unit]
+  posting_saves : Map[String, @json.Json]
+  lost_saves : Map[String, LostSaves]
+  lost_scopes : Map[String, Map[String, Unit]]
+  held_lost_scopes : Map[String, Map[String, Unit]]
+  preparing_pending : Map[String, @effect.Deferred[Unit]]
+  member_audits : Map[String, Unit]
+  pending_audits : Map[String, Unit]
+  mut previous_exited : Bool
+  restore_pending : Map[String, (String, String)]
+  mut restore_waiting : Bool
+  mut restore_closed : Bool
+  carried_saves : Map[String, Unit]
+  mut carried_saves_waiting : Bool
+  rebox_pending : Map[String, (String, String, Double)]
+  mut rebox_scheduled : Bool
+  away : Map[String, Away]
+  runs : Incoming
+  timers : Array[() -> Unit]
+}
+pub async fn Secrets::ask(Self, String, UseAsk_) -> String
+pub fn Secrets::audit(Self, String, String, limit? : Int32) -> Array[@json.Json] raise
+pub fn Secrets::boxed(Self, Lock, @json.Json) -> Bool raise
+pub fn Secrets::browser_used(Self, String, String) -> Unit
+pub fn Secrets::cancel(Self, String, String) -> String raise
+pub fn Secrets::carried(Self) -> @json.Json
+pub fn Secrets::carry(Self, @json.Json) -> Unit
+pub fn Secrets::close(Self) -> Unit
+pub fn Secrets::deny(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::deny_plain(Self, String, String, @json.Json) -> String? raise
+pub async fn Secrets::describe(Self, String, String, name? : String, about? : String, String, person? : String) -> String
+pub fn Secrets::described(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::described_plain(Self, String, Lock?, String, @json.Json) -> Result[@json.Json, String] raise
+pub fn Secrets::grant(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::grant_plain(Self, String, Lock?, String, @json.Json) -> String? raise
+pub async fn Secrets::heard(Self, String, String, @json.Json) -> @json.Json
+pub fn Secrets::held(Self, String) -> Array[@vault_crypto.Held]
+pub fn Secrets::in_vault(Self, String, String, String) -> Bool raise
+pub fn Secrets::listen(Self, (@json.Json) -> Unit) -> Unit
+pub fn Secrets::listings(Self, String, person? : String) -> Array[Listed] raise
+pub fn Secrets::new(World, @vault_crypto.Db, @vault_crypto.Crypto, VaultStore, @vault_crypto.PlainStore, proxy? : Proxy) -> Self raise
+pub fn Secrets::on_plain_written(Self, (@json.Json) -> Unit) -> Unit
+pub fn Secrets::passkeys_again(Self, String) -> Unit raise
+pub fn Secrets::pending(Self, String, Lock?, String, String) -> Array[@json.Json] raise
+pub async fn Secrets::prepare_pending(Self, String, members? : Bool) -> Unit
+pub async fn Secrets::reask(Self, String, String, signal? : Signal) -> String
+pub fn Secrets::reboxed(Self) -> Unit raise
+pub async fn Secrets::remove(Self, String, String, String, person? : String) -> String
+pub fn Secrets::removed(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::removed_plain(Self, String, String, @json.Json) -> Result[@json.Json, String] raise
+pub fn Secrets::renewed(Self, String, String, String, workspace? : String) -> Unit raise
+pub async fn Secrets::run(Self, String, RunArgs) -> String
+pub async fn Secrets::save_secret(Self, String, SaveAsk) -> String
+pub fn Secrets::saved(Self, Lock, String, @json.Json) -> String? raise
+pub fn Secrets::saved_plain(Self, String, Lock?, String, @json.Json) -> Result[@json.Json, String] raise
+pub fn Secrets::session_changed(Self, String) -> Unit
+pub fn Secrets::sign_in_again(Self, String) -> Unit raise
+pub fn Secrets::status(Self, String, person? : String) -> String raise
+pub fn Secrets::tells(Self, @json.Json) -> @json.Json?
+pub fn Secrets::trim_idle(Self) -> Int32
+pub async fn Secrets::uses(Self, String, Lock?, String, String, String, limit? : Int32) -> Array[@json.Json]
+
+#derive(Eq, @debug.Debug)
+pub(all) struct SessionRow {
+  ws : String?
+  archived : Bool
+}
+
+pub(all) struct SignInAsk {
+  site : String
+  reason : String?
+  tab : String?
+  again : Bool
+  reask : Bool
+  done : Bool
+  stuck : String?
+  name : String?
+  about : String?
+}
+
+pub(all) struct SignInDeps {
+  tabs : (String) -> Array[(String, String)]
+  look : async (String, String) -> @json.Json
+  drive : async (String, String, String, @json.Json, Map[String, Unit]) -> @json.Json
+  listed : (String, String) -> String? raise
+  held : (String, String) -> String? raise
+  use_ : async (String, String, String) -> String
+  keep : async (String, String, String, (String) -> Unit, String?, String?) -> String
+  screen_link : (String) -> String?
+  workspace : (String) -> String?
+  id : (() -> String)?
+}
+
+pub struct SignIns {
+  w : World
+  db : @vault_crypto.Db
+  d : SignInDeps
+  held : Map[String, HeldLogin]
+  save_index : SigninSaveBuilder
+}
+pub async fn SignIns::ask(Self, String, SignInAsk, signal? : Signal) -> String
+pub fn SignIns::close(Self) -> Unit
+pub fn SignIns::deny(Self, String, String, String) -> String? raise
+pub fn SignIns::fill(Self, String, String, String, @json.Json) -> String? raise
+pub fn SignIns::get(Self, String) -> @json.Json? raise
+pub fn SignIns::heard(Self, @json.Json) -> Unit raise
+pub fn SignIns::new(World, @vault_crypto.Db, SignInDeps) -> Self raise
+pub fn SignIns::self_(Self, String, String, String, Bool) -> String? raise
+pub fn SignIns::session_changed(Self, String) -> Unit raise
+
+pub struct Signal {
+  mut aborted : Bool
+}
+pub fn Signal::abort(Self) -> Unit
+pub fn Signal::new() -> Self
+
+pub struct SigninSaveBuilder {
+  w : World
+  db : @vault_crypto.Db
+  answer : (PendingSigninSave, String?) -> Unit raise
+  mut conn : @sql.Db?
+  mut current : String?
+  mut last : String?
+  mut closed : Bool
+  mut previous_ready : Bool
+  mut previous_waiting : Bool
+  mut timer : (() -> Unit)?
+  mut retry_ms : Double
+}
+pub fn SigninSaveBuilder::close(Self) -> Unit
+pub fn SigninSaveBuilder::forget(Self, String, String, String) -> Unit raise
+pub fn SigninSaveBuilder::lookup(Self, String, String) -> String? raise
+pub fn SigninSaveBuilder::new(World, @vault_crypto.Db, (PendingSigninSave, String?) -> Unit raise) -> Self raise
+pub fn SigninSaveBuilder::wait(Self, String, String, String) -> Unit raise
+
+pub(all) struct Spawn {
+  shell : String
+  args : Array[String]
+  cwd : String
+  env : Array[(String, String)]
+  timeout_ms : Double
+  on_out : (Bytes) -> Unit
+  on_err : (Bytes) -> Unit
+}
+
+pub(all) struct SshKey {
+  key : KeyRef
+  blob : Bytes
+  kind : String
+  comment : String
+}
+
+pub(all) struct Store {
+  get_session : (String) -> SessionRow?
+  starter : (String) -> String?
+  participants : (String) -> Array[String]
+  latest_thread : (String) -> Thread?
+  latest_thread_if_ready : ((String) -> Thread??)?
+  session_thread_by_id : (String, Int32) -> Thread?
+  pending_card_header : (Int32) -> String?
+  pending_card_header_if_ready : ((Int32) -> String??)?
+  insert_message : (@json.Json, (() -> Unit raise)?) -> Int32 raise
+  withdraw_card : (String, Int32, String) -> Bool
+  restate_card : (String, Int32, String, (@json.Json?) -> @json.Json) -> Bool
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct Thread {
+  connect : String
+  id : Int32
+  channel : String
+  thread_ts : String
+  surface : String
+}
+pub fn Thread::of_json(@json.Json) -> Self?
+pub fn Thread::to_json(Self) -> @json.Json
+
+pub(all) struct Timeout {
+  kind : String
+  seconds : Double
+}
+
+pub struct Tool {
+  name : String
+  description : String
+  input_schema : @json.Json
+  run : async (String, @json.Json, Signal?) -> String
+}
+
+type UseAsk
+
+pub(all) struct UseAsk_ {
+  item : String
+  mode : String?
+  reason : String
+  command : String?
+  hosts : Array[String]?
+  station : String?
+  timeout : @json.Json?
+  person : String?
+}
+
+pub struct UseIndex {
+  w : World
+  main : @vault_crypto.Db
+  mut conn : @sql.Db?
+  mut uses_done : Bool
+  mut rebox_done : Bool
+  mut rebox_turn : Bool
+  waiting : Array[UseAsk]
+  mut closed : Bool
+  mut ready : Bool
+  mut stepping : Bool
+  mut scheduled : Bool
+  mut idle : (() -> Unit)?
+  mut previous : @effect.Deferred[Unit]?
+}
+pub fn UseIndex::close(Self) -> Unit
+pub fn UseIndex::drain(Self) -> Unit raise
+pub fn UseIndex::new(World, @vault_crypto.Db) -> Self raise
+pub async fn UseIndex::prepare_pending(Self, String, Bool, audit? : Bool) -> Unit
+pub async fn UseIndex::read(Self, String, String, String?, Int32) -> Array[String]
+pub fn UseIndex::trim_idle(Self) -> Int32
+
+pub struct Vault {
+  vaults : VaultStore
+  secrets : Secrets
+  sign_ins : SignIns
+  writes : WriteGate
+  tools : Array[Tool]
+  mut coming : Bool
+  deps : VaultDeps
+  came_ref : @ref.Ref[(() -> Unit)?]
+}
+pub fn Vault::carried(Self) -> @json.Json
+pub fn Vault::carry(Self, @json.Json) -> Unit
+pub fn Vault::close(Self) -> Unit
+pub async fn Vault::heard(Self, World, String, String?, @json.Json) -> @json.Json
+pub fn Vault::new(World, @vault_crypto.Db, @vault_crypto.Crypto, VaultDeps) -> Self raise
+pub fn Vault::session_changed(Self, String) -> Unit
+
+pub(all) struct VaultDeps {
+  tell : (String, @json.Json, String, @json.Json) -> Unit
+  tabs : (String) -> Array[(String, String)]
+  look : async (String, String) -> @json.Json
+  drive : async (String, String, String, @json.Json, Map[String, Unit]) -> @json.Json
+  screen_link : (String) -> String?
+  session_ws : (String) -> String?
+  session_dir : (String) -> String?
+  join_path : (String, String) -> String
+  signin_id : (() -> String)?
+  passkeys_again_all : () -> Unit
+}
+
+pub struct VaultStore {
+  db : @vault_crypto.Db
+}
+pub fn VaultStore::box_(Self, String, String) -> @json.Json? raise
+pub fn VaultStore::box_snapshot(Self, String, String) -> (@json.Json, String)? raise
+pub fn VaultStore::boxes(Self, String) -> Array[@json.Json] raise
+pub fn VaultStore::boxes_for(Self, String, Array[String]) -> Array[@json.Json] raise
+pub fn VaultStore::first_items(Self, String, String, Int32) -> Array[(String, @json.Json)] raise
+pub fn VaultStore::first_vaults(Self, String, Int32) -> Array[(String, @json.Json)] raise
+pub fn VaultStore::forget_item(Self, String, String, String) -> Unit raise
+pub fn VaultStore::forget_vault(Self, String, String) -> Unit raise
+pub fn VaultStore::item(Self, String, String, String) -> @json.Json? raise
+pub fn VaultStore::item_snapshot(Self, String, String, String) -> (@json.Json, String)? raise
+pub fn VaultStore::items(Self, String, String) -> Array[@json.Json] raise
+pub fn VaultStore::items_after(Self, String, String, String) -> Array[@json.Json] raise
+pub fn VaultStore::member_vaults(Self, String, String) -> Array[@json.Json] raise
+pub fn VaultStore::new(@vault_crypto.Db) -> Self raise
+pub fn VaultStore::put_box(Self, @json.Json) -> Unit raise
+pub fn VaultStore::put_box_if(Self, @json.Json, String?) -> Bool raise
+pub fn VaultStore::put_item(Self, @json.Json) -> Unit raise
+pub fn VaultStore::put_item_if(Self, @json.Json, String, String?) -> Bool raise
+pub fn VaultStore::put_vault(Self, @json.Json) -> Unit raise
+pub fn VaultStore::put_vault_if(Self, @json.Json, String?) -> Bool raise
+pub fn VaultStore::vault(Self, String, String) -> @json.Json? raise
+pub fn VaultStore::vault_snapshot(Self, String, String) -> (@json.Json, String)? raise
+pub fn VaultStore::vaults(Self, String) -> Array[@json.Json] raise
+pub fn VaultStore::vaults_after(Self, String, String) -> Array[@json.Json] raise
+
+pub(all) struct World {
+  hub : Hub
+  card_outcomes : CardOutcomes?
+  home : () -> String?
+  title : ((String) -> String? raise)?
+  title_if_ready : ((String) -> String?? raise)?
+  data : String
+  lock : (String?) -> Lock?
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  sleep : async (Double) -> Unit
+  peer : ((String) -> Peer? raise)?
+  ask : (async (String, @json.Json) -> @json.Json)?
+  work_of : ((String, String, String) -> String)?
+  coming : (() -> Bool)?
+  previous : Previous
+  browsers : Browsers?
+  machine : Machine
+  hold : () -> () -> Unit
+  log : (String, String, String, @json.Json) -> Unit
+  random : (Int32) -> Bytes
+  env : () -> Array[(String, String)]
+  index_db : (() -> @sql.Db raise)?
+  backfill_take : () -> Bool
+  backfill_give : () -> Unit
+  foreground : (Bool) -> Unit
+}
+
+pub struct WriteGate {
+  mut ready : Bool
+  mut closed : Bool
+  waiting : @effect.Deferred[Bool]
+  mut cancel : () -> Unit
+}
+pub fn WriteGate::close(Self) -> Unit
+pub fn WriteGate::new((async () -> Unit)?, (Double, () -> Unit) -> () -> Unit) -> Self
+pub fn WriteGate::wait(Self) -> @effect.Deferred[Bool]??
+
+// Type aliases
+
+// Traits

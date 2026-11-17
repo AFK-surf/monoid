@@ -150,9 +150,14 @@ fn full_button_node(parent : @view.View, pg : ScreenPage) -> Unit {
     pg,
     fn() { "landscape" },
     fn() { @sf.t(if u.full.get() { "android-misc.screen.unfull" } else { "android-misc.screen.full" }) },
+    // (lit, out of it; else as 控制中心's 全屏)
     fn(_) {
-      screen_panels_close(u)
-      u.full.set(!u.full.untracked())
+      if u.full.untracked() {
+        screen_panels_close(u)
+        screen_unfull(u)
+      } else {
+        full_asked(u)
+      }
     },
     lit=fn() { u.full.get() },
   )
@@ -294,10 +299,10 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
-/// Whether the link to the screen's station is poor now (its round trip amber or red): the viewer's bar says so then,
-/// and only then (its figures are 控制中心's).
+/// Whether the link to the screen's station is poor now (its round trip slow, or a share of what goes lost: amber or
+/// red): the viewer's bar says so then, and only then (its figures are 控制中心's). Read as the view's state is told.
 fn net_poor(s : ScreenSess) -> Bool {
-  let level = text(field(screen_net(s), "rtt"), "level")
+  let level = screen_link_level(s.state_now(), screen_net(s))
   level == "amber" || level == "red"
 }
 
@@ -372,7 +377,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 
 ///|
 /// How the view goes, in the viewer's bar (the web's NetChip) in `parent`: the signal mark on its tile, coloured as the
-/// round trip is, and how long it has been seen; pressed, the view's figures under it.
+/// round trip and what it lost are (screen_link_level), and how long it has been seen; pressed, the view's figures under it.
 fn net_chip_node(parent : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
@@ -381,10 +386,7 @@ fn net_chip_node(parent : @view.View, pg : ScreenPage) -> Unit {
     @sf.hover_ground_node(b)
     b.box(fn(t) {
       @sf.style_node(t, fn() { net_mark_tile }, in_row=true)
-      signal_bars_node(t, fn() {
-        s.said.get() |> ignore
-        text(field(screen_net(s), "rtt"), "level")
-      })
+      signal_bars_node(t, fn() { screen_link_level(s.state_now(), screen_net(s)) })
     })
     |> ignore
     @sf.words_node(b, fn() { seen_for(u) }, fn() { screen_time_words }) |> ignore

@@ -1190,9 +1190,9 @@ fn reader_narrow_chrome(
   loc~ : SourceLoc,
 ) -> Unit {
   let room = fn() { (viewer_host().room)() }
-  let bars = EdgeWay::new(if r.chrome.untracked() { 1.0 } else { 0.0 })
+  let bars = @motion.NodeWay::new(if r.chrome.untracked() { 1.0 } else { 0.0 })
   parent.reacts(fn() { r.chrome.get() }, fn(on) {
-    bars.go(parent, if on { 1.0 } else { 0.0 }, if on { narrow_bars_in_ms } else { reader_bars_ms })
+    bars.go_ms(parent, if on { 1.0 } else { 0.0 }, if on { narrow_bars_in_ms } else { reader_bars_ms })
   })
   let shown = fn(n : @view.View) { bars.shown(n) }
   let chapters = fn() {

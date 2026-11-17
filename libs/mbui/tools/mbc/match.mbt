@@ -194,7 +194,7 @@ fn accesses(t : BytesView, f : (Bytes, Array[(Bytes, Bytes)]) -> Unit) -> Unit {
 /// HEADER_OF removed: Moonbit_object_header\s*\([^()]*\)\s*->
 fn drop_header_of(t : Bytes) -> Bytes {
   let w = b"Moonbit_object_header"
-  let buf = Buffer(size_hint=t.length())
+  let buf = Buffer(capacity=t.length())
   let n = t.length()
   let mut last = 0
   let mut p = 0
@@ -278,7 +278,7 @@ fn cast_access_at(t : BytesView, p : Int) -> (Int, Int, Int)? {
 /// CAST_ACCESS's types, and the text without them
 fn cast_accesses(t : Bytes) -> (Array[Bytes], Bytes) {
   let out = []
-  let buf = Buffer(size_hint=t.length())
+  let buf = Buffer(capacity=t.length())
   let mut last = 0
   let mut p = 0
   while true {
@@ -440,7 +440,7 @@ fn line_file(t : BytesView) -> Bytes? {
 /// LINE_DIRECTIVE removed: ^[ \t]*#[ \t]*line\b[^\n]*\n  (re.M)
 fn drop_line_directives(t : Bytes) -> Bytes {
   let n = t.length()
-  let buf = Buffer(size_hint=n)
+  let buf = Buffer(capacity=n)
   let mut p = 0
   while p < n {
     let e = eol(t, p)
@@ -664,7 +664,7 @@ fn named_not_ptr(t : BytesView, name : Bytes) -> Bool {
 /// FN_TYPE.sub: \b(_M0TW[A-Za-z0-9_$]*)\b, each replaced by f's answer
 fn fn_type_sub(t : BytesView, f : (Bytes) -> Bytes) -> Bytes {
   let n = t.length()
-  let buf = Buffer(size_hint=n)
+  let buf = Buffer(capacity=n)
   let mut last = 0
   let mut p = 0
   while true {
@@ -754,7 +754,7 @@ fn collapse_space(t : BytesView) -> Bytes {
 /// A function's text with its lines as moonc broke them joined (a directive and what ends in a // comment keep
 /// theirs): moonc breaks a line by its length, which its made-up names' lengths changed.
 fn flatten(t : Bytes) -> Bytes {
-  let out = Buffer(size_hint=t.length())
+  let out = Buffer(capacity=t.length())
   let mut any = false
   let mut cur_open = false
   let n = t.length()

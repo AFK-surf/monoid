@@ -180,7 +180,7 @@ fn profile_found_node(
       ["sign-in", "trouble", "quota", "station", "settings"]
     },
     fn(b, key) {
-      b.show(at_once=true, fn() { profile_keys(core, here, o, p, entry).contains(key) }, fn(r) {
+      b.show(fn() { profile_keys(core, here, o, p, entry).contains(key) }, fn(r) {
         profile_block_node(r, core, here, address, id, s, o, p, entry, open, stint, tips, key)
       })
     },

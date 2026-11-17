@@ -4417,11 +4417,11 @@ pub fn coming_mark_node(
       k
     }
   }
-  let way = EdgeWay::new(@signals.untracked(part))
+  let way = @motion.NodeWay::new(@signals.untracked(part))
   let look = coming_mark_box(size)
   parent.box(made_for=loc, fn(m) {
     style_node(m, fn() { look })
-    m.reacts(part, fn(k) { way.go(m, k, @kit.progress_ms) })
+    m.reacts(part, fn(k) { way.go_ms(m, k, @kit.progress_ms) })
     m.box(fn(l) {
       l
       .width(Is(Some(side)))
