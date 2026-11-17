@@ -1174,57 +1174,35 @@ fn row_aside_w_node(v : @view.View, item : ChatItem, lead : String) -> Double {
 }
 
 ///|
-/// A row's title as a field in its place (row_rename's, from a mouse's 重命名) in `n`: its words
-/// the title's, the focus in it as it comes; Enter saves it (`chat.rename`), Esc or leaving it lets it be; as far in as where its list stands
-/// (`at`) has it (rename_box).
+/// A row's title as a field in its place (row_rename's, from a mouse's 重命名) in `n`: the library's name changed in
+/// place (@sf.inline_rename_node), its words the title's, all of them picked, the focus in it as it comes; Enter or
+/// leaving it saves it (`chat.rename`) where it changed, Esc lets it be; as far in as where its list stands (`at`) has
+/// it (rename_box).
 fn rename_node(n : @view.View, src : Source, item : () -> ChatItem, at : @sf.ListAt) -> Unit {
-  rows.rename_field.set(@signals.untracked(item).title)
-  let done = fn() { stop_rename() }
-  n.box(fn(b) {
-    @sf.style_node(b, fn() { rename_box(at) }, in_row=true)
-    b.row(Is(true)).lines_up(Is(Some(Middle))).edge(By(fn() { (1.0, @sf.theme().p.line_strong) })) |> ignore
-    let f = @ui.field(
-      b,
-      rows.rename_field,
-      font_size=rename_size,
-      label=@sf.t("web-main.chat.rename"),
-      line=rename_line,
-      max_lines=1,
-      enter_sends=true,
-      colors_by=fn() {
-        let p = @sf.theme().p
-        (p.text, p.subtle, p.accent)
-      },
-      submitted=fn(title) {
-        done()
-        rename(src, @signals.untracked(item), title)
-      },
-    )
-    f.grow(Is(1.0)).basis(Is(Some(0.0))).shrink(Is(1.0)) |> ignore
-    b.focus_opens(f) |> ignore
-    // A press outside the field ends the rename even when its target cannot take the focus. It still reaches that
-    // target. The press that opened the menu predates this field, so only later presses are considered.
-    let opened = @signals.untracked(fn() { b.window_downs() })
-    b.reacts(fn() { b.window_downs() }, fn(count) {
-      if count > opened {
-        let (x, y) = b.window_down_point()
-        let (left, top, w, h) = b.placed_window_now()
-        if x < left || x >= left + w || y < top || y >= top + h {
-          b.focus_let_go()
-          done()
-        }
-      }
-    })
-    // (left: let be)
-    let seen = Ref(false)
-    b.reacts(fn() { f.focused() }, fn(on) {
-      if on {
-        seen.val = true
-      } else if seen.val {
-        done()
-      }
-    })
-  })
+  let title = @signals.untracked(item).title
+  rows.rename_field.set(title)
+  @sf.inline_rename_node(
+    n,
+    rows.rename_field,
+    title,
+    @sf.t("web-main.chat.rename"),
+    fn(words) {
+      stop_rename()
+      rename(src, @signals.untracked(item), words)
+    },
+    fn() { stop_rename() },
+    picks=NameWhole,
+    frame=fn(b) {
+      @sf.style_node(b, fn() { rename_box(at) }, in_row=true)
+      b.row(Is(true)).lines_up(Is(Some(Middle))).edge(By(fn() { (1.0, @sf.theme().p.line_strong) })) |> ignore
+    },
+    size_by=fn() { rename_size },
+    line=rename_line,
+    colors_by=fn() {
+      let p = @sf.theme().p
+      (p.text, p.subtle, p.accent)
+    },
+  )
   |> ignore
 }
 

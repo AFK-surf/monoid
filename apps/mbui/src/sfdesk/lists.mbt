@@ -279,10 +279,6 @@ let arch_field_alone : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let arch_field : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter bg=Hover radius=Xl")
-
-///|
-// kept across runs: a value (no field of it changes)
 let arch_clock : @ui.TextStyle = @ui.text_style(size=Caption, color=Subtle, leading=L5, wrap=false)
 
 ///|

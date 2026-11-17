@@ -207,11 +207,13 @@ pub fn drive_row_node(
           inner.box(fn(d) {
             @sf.style_node(d, fn() { disclosure_box }, in_row=true)
             if dir {
-              d.presses(Is(true)).on_press(on_toggle).says(By(fn() { Some(@view.said(Button, label=@sf.t(if expanded() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", e().name)]), expanded=expanded())) })) |> ignore
-              @sf.icon_node(d, "", disclosure_icon, By(fn() { @sf.theme().p.muted }), name_now=fn() {
-                if expanded() { "chevron-down" } else { "chevron-right" }
-              })
-              |> ignore
+              @sf.disclosure_key_node(
+                d,
+                fn() { @sf.t(if expanded() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", e().name)]) },
+                expanded,
+                on_toggle,
+                icon_size=disclosure_icon,
+              )
             }
           })
           |> ignore
@@ -262,7 +264,7 @@ pub fn drive_row_node(
           n.show(fn() { (row.renaming)() }, at_once=true, fn(o) {
             o.over(Is(true)) |> ignore
             @sf.style_node(o, fn() { name_field_over }, in_row=false)
-            name_field_node(o, s.b, at.path, e, row)
+            name_field_node(o, s.b, e, row)
           })
         })
         |> ignore
@@ -407,69 +409,18 @@ fn mark_size(compact : Bool) -> Double {
 }
 
 ///|
-/// A name changed in place (NameField) in `parent`: the name but its extension picked; ⏎ or leaving it keeps it, esc
-/// leaves it as it was.
-fn name_field_node(parent : @view.View, b : Browse, folder : String, e : () -> DvEntry, row : RowOf) -> Unit {
-  ignore(folder)
-  ignore(e)
-  let done = Ref(false)
-  let finish = fn(to : String?) {
-    if !done.val {
-      done.val = true
-      (row.rename)(to)
-    }
-  }
-  let field = b.rename_field()
-  parent.box(fn(box) {
-    @sf.style_node(box, fn() { name_field_box }, in_row=true)
-    // (Escape gives up the new name before the field sees it)
-    box.on_key(fn(k) {
-      if k.code == @ui.key_escape && k.mods == 0 {
-        finish(None)
-        true
-      } else {
-        false
-      }
-    })
-    |> ignore
-    let typed = @ui.field(
-      box,
-      field,
-      max_lines=1,
-      enter_sends=true,
-      size_by=fn() { @sf.theme().t.ui },
-      colors_by=fn() {
-        let p = @sf.theme().p
-        (p.text, p.muted, p.accent)
-      },
-      submitted=fn(words) { finish(Some(words)) },
-      label=@sf.t("web-pages.drive.rename"),
-    )
-    // (left: kept. Left by a press elsewhere, as the window's presses count it; the focus taken from it by nothing
-    // the hand did since it came (what the presenters give back as the menu that asked for it goes), given it again)
-    let downs = Ref(@signals.untracked(fn() { typed.window_downs() }))
-    typed.reacts(fn() { typed.focused() }, fn(on) {
-      let now = @signals.untracked(fn() { typed.window_downs() })
-      if on {
-        downs.val = now
-      } else if now != downs.val {
-        finish(Some(field.text()))
-      } else if !done.val {
-        @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-      }
-    }, at_start=false)
-    // (the cursor in it as it is made, once what made it is done; and once its room is laid out where the host gives
-    // the focus by where it is)
-    @signals.after_flush(fn() { typed.ask_focus() |> ignore })
-    typed.at_moment(typed.cause_at() + 1.0, fn() { if !done.val { typed.ask_focus() |> ignore } }) |> ignore
-    // (where it cannot have it yet, under what is still going over it (the menu that asked for it, as it closes), as
-    // soon as it takes input)
-    typed.reacts(fn() { typed.takes_input() }, fn(takes) {
-      if takes && !done.val && !@signals.untracked(fn() { typed.focused() }) {
-        typed.ask_focus() |> ignore
-      }
-    })
-  })
+/// A name changed in place (NameField) in `parent`: the library's name changed in place (@sf.inline_rename_node), the
+/// name but its extension picked (browse_rename_start picks it); ⏎ or leaving it keeps it, esc leaves it as it was.
+fn name_field_node(parent : @view.View, b : Browse, e : () -> DvEntry, row : RowOf) -> Unit {
+  @sf.inline_rename_node(
+    parent,
+    b.rename_field(),
+    @signals.untracked(e).name,
+    @sf.t("web-pages.drive.rename"),
+    fn(words) { (row.rename)(Some(words)) },
+    fn() { (row.rename)(None) },
+    frame=fn(box) { @sf.style_node(box, fn() { name_field_box }, in_row=true) },
+  )
   |> ignore
 }
 

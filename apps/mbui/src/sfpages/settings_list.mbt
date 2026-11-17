@@ -317,11 +317,6 @@ pub fn settings_search_reset() -> Unit {
 
 ///|
 // kept across runs: a value (no field of it changes)
-let settings_search_ground : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter radius=Full").then(@ui.style(bg=@sf.search_ground))
-
-
-///|
-// kept across runs: a value (no field of it changes)
 let settings_search_page : @ui.Style = @ui.css("w=Full pb=S3 clip=true")
 
 ///|
@@ -330,15 +325,13 @@ let settings_search_page : @ui.Style = @ui.css("w=Full pb=S3 clip=true")
 let settings_search_side : @ui.Style = @ui.css("w=Full")
 
 ///|
-/// The same search control (settings_search's) as nodes, over the settings' list made once: its round ground as tall as
-/// the theme's band, the search mark, the field, and while it holds words the clear key at its end, inside the ground,
-/// as round as it; 12 under it. Its field an editor of its own (a Field is one editor's: the list made once while
+/// The same search control (settings_search's) as nodes, over the settings' list made once: the library's field to look
+/// through a list by (@sf.search_input_node); 12 under it. Its field an editor of its own (a Field is one editor's: the list made once while
 /// another of it still leaves, the sidebar's old one), what it holds the list's words (settings_search_field: kept as a
 /// result is opened, the sidebar's the same), each told the other's as they change. Its words as far in as where its
 /// list stands (`at`) has them (band_pad_in); on a page (`page`), 12 under it, as its blocks are apart.
 pub fn settings_search_node(parent : @view.View, at? : @sf.ListAt = Whole, page? : Bool = true) -> Unit {
   let own = @ui.Field::new(text=@signals.untracked(fn() { settings_search_field.text() }))
-  let held = fn() { own.text() != "" }
   let on_page = page
   parent.box(fn(page) {
     @sf.style_node(page, fn() { if on_page { settings_search_page } else { settings_search_side } })
@@ -348,52 +341,7 @@ pub fn settings_search_node(parent : @view.View, at? : @sf.ListAt = Whole, page?
         own.set(w)
       }
     })
-    page.box(fn(g) {
-      // (its end's room the clear key's while it holds words: round in the round ground's end, concentric)
-      @sf.style_node(g, fn() {
-        // (its words as far in as where its list stands has them, band_pad_in: a page across the whole screen's, a
-        // phone's; a sidebar's)
-        let l = @sf.theme().chat_list
-        let pad = @sf.band_pad_in(at)
-        let end = if held() { @sf.room_of(0.0) } else { @sf.room_of(pad) }
-        settings_search_ground.then(@ui.style(h=Fixed(l.band_h), pl=@sf.room_of(pad), pr=end))
-      })
-      @sf.icon_node(g, "search", @sf.theme().chat_list.band_icon, By(fn() { @sf.theme().p.muted })) |> ignore
-      @ui.field(
-        g,
-        own,
-        placeholder_by=fn() { @sf.t("web-pages.settings.search") },
-        max_lines=1,
-        enter_sends=true,
-        size_by=fn() { @sf.theme().t.ui },
-        line=@signals.untracked(fn() { @sf.theme().t.ui_line }),
-        colors_by=fn() {
-          let p = @sf.theme().p
-          (p.text, p.subtle, p.accent)
-        },
-      )
-      .grow(Is(1.0))
-      .basis(Is(Some(0.0)))
-      .shrink(Is(1.0))
-      .min_width(Is(Some(0.0)))
-      |> ignore
-      g.show(held, fn(k) {
-        let l = @signals.untracked(fn() { @sf.theme().chat_list })
-        @sf.icon_button_node(
-          k,
-          "close",
-          fn() { @sf.t("android-misc.drive.pick.filterClear") },
-          fn() {
-            own.set("")
-            own.focus()
-          },
-          size=l.band_h,
-          icon_size=l.band_icon,
-        )
-        |> ignore
-      })
-    })
-    |> ignore
+    @sf.search_input_node(page, own, fn() { @sf.t("web-pages.settings.search") }, at~) |> ignore
   })
   |> ignore
 }
@@ -666,7 +614,7 @@ fn settings_side_row_node(
         e.drops(Is(1)) |> ignore
         e.box(fn(end) {
           @sf.style_node(end, fn() { settings_side_end })
-          end.show(fn() { row().map(fn(x) { x.dot }).unwrap_or(false) }, fn(d) { @sf.status_dot_node(d) })
+          end.show(fn() { row().map(fn(x) { x.dot }).unwrap_or(false) }, fn(d) { @sf.state_dot_node(d, fn() { "error" }) })
           @sf.words_node(end, said(fn(x) { x.value }), fn() {
             let words = @sf.theme().chat_list.last.then(settings_side_said)
             if row().map(fn(x) { x.bad }).unwrap_or(false) {
