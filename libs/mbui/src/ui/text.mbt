@@ -144,8 +144,8 @@ fn text_frame() -> Unit {
 }
 
 ///|
-/// As a frame begins (frame_settings_arrive): what the host drew and measured before, forgotten where it is gone
-/// (@hostapi.atlas_generation moved on), what measured words told (words_shaped_in).
+/// As a frame begins, before the window's tree is brought (on_frame; frame_offscreen): what the host drew and measured
+/// before, forgotten where it is gone (@hostapi.atlas_generation moved on), what measured words told (words_shaped_in).
 fn text_arrive() -> Unit {
   let g = atlas_now()
   if g != text_cache.generation {

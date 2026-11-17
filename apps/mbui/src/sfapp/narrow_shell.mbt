@@ -482,7 +482,8 @@ fn narrow_made_as(
             // (under the status bar as the window it is in is now: status_top_now, by its width as it changes; a place
             // of the bottom bar's under the top bar, which names it, over the bottom bar: place_page's)
             if place {
-              { back: None, top: status_top_now(v.window().0) + bar_h + 8.0, foot: nav_foot() + bar_room_now(), named: true }
+              let width = v.window().0
+              { back: None, top: status_top_now(width) + bar_h + 8.0, foot: nav_foot() + bar_room_at(width), named: true }
             } else {
               { back: under.map(@sfbase.back_label), top: status_top_now(v.window().0), foot: nav_foot(), named: false }
             }
