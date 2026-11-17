@@ -849,6 +849,7 @@ web-main.chat.keep
 web-main.chat.keep.done
 web-main.chat.keep.what
 web-main.chat.linkCopied
+web-main.chat.messageGone
 web-main.chat.newMessages
 web-main.chat.notSent
 web-main.chat.offline
@@ -1170,6 +1171,7 @@ web-main.quota.unchecked
 web-main.quota.unknown
 web-main.quote.author
 web-main.quote.commentPlaceholder
+web-main.quote.gone
 web-main.quote.jump
 web-main.quote.remove
 web-main.rail.add
@@ -2872,3 +2874,7 @@ web-main.board.lane.run
 web-main.board.lane.done
 web-main.board.lane.watch
 core-views.new_chat
+web-main.composer.filesLocked
+web-main.composer.filesOffline
+web-main.decisions.reply
+web-main.decisions.replyPlaceholder

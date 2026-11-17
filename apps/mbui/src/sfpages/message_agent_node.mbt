@@ -6,9 +6,8 @@
 // files under them, what it asks under it (message_decision_node).
 // What it quotes ahead of its words (message_quotes_node), each quote's own file in its card and not under its words.
 // Each read through what it is given, as that changes.
-// Not here yet, each where it comes in:
-// - a Mermaid chart: as its code till then; `code` takes viz_mermaid_node once it is in main (#5525).
-// - its picture held under the pane's top as a long one scrolls past (c.stick).
+// A Mermaid chart is drawn by `code` (chat_body_node's: viz_mermaid_node). Not here yet: its picture held under the
+// pane's top as a long one scrolls past (c.stick).
 // Its coming out of its agent's picture is here (agent_said_node's `out_of`, agent_out_steps: emit.mbt's Fold, Float,
 // Spit and Return, one message of an agent's at a time).
 
@@ -43,7 +42,8 @@ fn agent_screens(src : Source, here : MessageNodeHere, m : () -> Message) -> @sf
 /// (inline: over the head's start), its name (one of the chat's agents' opens its history), its time; its words as
 /// prose_node_of draws them, its other files under them, what it asks under them (message_decision_node); where it
 /// offers itself (`share`), its ⋯ and a right click's offer. `code`, `screens` (a station's screens' cards by default:
-/// screen_links_node) and `shown` as agent_prose_node takes them.
+/// screen_links_node) and `shown` as agent_prose_node takes them. `ask_sought`: what it asks is what a go-to brings
+/// before the eyes (the bell's: agent_asks_node's `sought`).
 // the chat's page as nodes: held by its tests, not used by the app yet
 #warnings("-unused_value")
 fn agent_said_node(
@@ -69,6 +69,7 @@ fn agent_said_node(
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   pieces_pointed? : () -> Bool = fn() { false },
   piece_made? : (@view.View) -> Unit = fn(_) {  },
+  ask_sought? : () -> Bool = fn() { false },
 ) -> MessageRowNode {
   let menu_on : Ref[() -> Bool] = Ref(fn() { false })
   // (a piece of a long message after its first (chat_body_pieces): its blocks alone, under where its words are drawn,
@@ -101,11 +102,11 @@ fn agent_said_node(
             // (a piece of a message coming out of its agent's picture: its words a glyph at a time as the first's,
             // on the same clock, not there whole while the first's are still coming)
             let glyphs = out_of.bind(fn(o) { o.1.glyphs.val })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, tracks_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs~, piece=Some(pc), piece_by~, across_of~, tracks_of~, files_too=last, share~)
           })
           |> ignore
           if last {
-            agent_asks_node(col, src, here, m, core)
+            agent_asks_node(col, src, here, m, core, sought=ask_sought)
           }
         })
         |> ignore
@@ -186,14 +187,14 @@ fn agent_said_node(
             // (its words and its files one piece, none apart, as the old list holds them to be picked: pickable's
             // pick_fill; a letter's, drawn by the old view alone, has them 4 apart)
             @sf.style_node(p, fn() { agent_prose_piece })
-            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=last)
+            agent_prose_node(p, src, here, m, found~, found_at~, lit~, code~, screens=screens.unwrap_or(agent_screens(src, here, m)), shown?, glyphs=out_glyphs, piece~, piece_by~, across_of~, tracks_of~, files_too=last, share~)
           } else {
             message_card_node(p, here, core, m)
           }
         })
         // (what it asks under it: its last piece's)
         if last {
-          agent_asks_node(b, src, here, m, core)
+          agent_asks_node(b, src, here, m, core, sought=ask_sought)
         }
       },
       share~,
@@ -227,8 +228,15 @@ fn agent_out_room(row : @view.View, plan : AgentOutPlan) -> Unit {
 
 ///|
 /// What agent's message `m` asks under it in `b`, where it asks anything: nothing else made, as no gap is wanted for
-/// nothing; a login's card where there is a core to read it with.
-fn agent_asks_node(b : @view.View, src : Source, here : MessageNodeHere, m : () -> Message, core : @settings.Core?) -> Unit {
+/// nothing; a login's card where there is a core to read it with; what a go-to brings before the eyes while `sought`.
+fn agent_asks_node(
+  b : @view.View,
+  src : Source,
+  here : MessageNodeHere,
+  m : () -> Message,
+  core : @settings.Core?,
+  sought? : () -> Bool = fn() { false },
+) -> Unit {
   b.show(
     fn() {
       match decision_asks(m()) {
@@ -237,7 +245,11 @@ fn agent_asks_node(b : @view.View, src : Source, here : MessageNodeHere, m : () 
         _ => true
       }
     },
-    fn(d) { message_decision_node(d, src, here, m, core~) },
+    fn(d) {
+      // (the bell gone to it: it, whole, what the go-to brings before the eyes (View::sought), not the post's top)
+      d.sought(fn() { if sought() { Some(fn(w, h) { Some((0.0, 0.0, w, h)) }) } else { None } }) |> ignore
+      message_decision_node(d, src, here, m, core~)
+    },
   )
 }
 
@@ -267,8 +279,9 @@ fn agent_prose_node(
   across_of? : (Int) -> @view.Scroll = fn(_) { @view.Scroll::across() },
   tracks_of? : (Int) -> @view.TracksKept? = fn(_) { None },
   files_too? : Bool = true,
+  share? : MessageShare? = None,
 ) -> Unit {
-  let place = message_files_at(here, fn() { m().said })
+  let place = message_files_at(here, fn() { m().said }, share=fn() { share })
   let at = fn() { message_place(m()) + "/f" }
   let by = fn() -> (String, String, String)? {
     let now = m()

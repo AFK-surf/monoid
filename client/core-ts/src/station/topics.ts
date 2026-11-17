@@ -916,25 +916,37 @@ export class StationTopics implements Owner {
     });
   }
 
-  /// The window of a chat about its entry `seq` (`chat.around`: a message found in it, to be shown): a page before it
-  /// and one after, read now where not held. The chat's list goes to it by itself (the UI's to do).
-  around(station: string, id: number, seq: number): Effect.Effect<void, CoreError> {
+  /// The window of a chat about its entry `seq`, or the message said at `ts` (`chat.around`: a message found in it, one
+  /// a quote quotes, to be shown): a page before it and one after, read now where not held; a message by its time looked
+  /// for on the device, and where it is not there, in what of the chat is not on it yet (`bring`, while its station
+  /// answers). The chat's list goes to it by itself (the UI's to do): answered with its number, null where the chat has
+  /// it nowhere (the window as it was).
+  around(station: string, id: number, seq: number | null, ts: string | null = null): Effect.Effect<{ seq: number | null }, CoreError> {
     return Effect.gen({ self: this }, function* () {
+      let at = seq;
+      if (at === null && ts !== null) {
+        at = this.#core.data.messageAt(station, id, ts);
+        if (at === null) {
+          yield* this.bring(station, id);
+          at = this.#core.data.messageAt(station, id, ts);
+        }
+      }
+      if (at === null) return { seq: null };
       const found = this.#window(station, id);
       const latest = this.#latest(station, id);
-      if (!found || seq < 1 || seq > latest) return;
+      if (!found || at < 1 || at > latest) return { seq: null };
       const window = found[1];
       // Already in it, and not at its edge: left as it is (what is around it is on the page).
       const end = window.last ?? latest;
-      if (seq >= window.first && seq <= end && (seq - window.first >= AROUND || window.first === 1) && (end - seq >= AROUND || window.last === null)) return;
-      const from = Math.max(seq - PAGE, 1);
-      const to = Math.min(seq + PAGE - 1, latest);
+      if (at >= window.first && at <= end && (at - window.first >= AROUND || window.first === 1) && (end - at >= AROUND || window.last === null)) return { seq: at };
+      const from = Math.max(at - PAGE, 1);
+      const to = Math.min(at + PAGE - 1, latest);
       yield* this.#sync.channels.range(entriesOf(station, id), from, to, { quiet: false });
       const held = this.#core.data.logRange("entry", station, String(id), from, to);
-      if (!held.has(seq)) return;
-      let first = seq;
+      if (!held.has(at)) return { seq: null };
+      let first = at;
       while (first > from && held.has(first - 1)) first--;
-      let last = seq;
+      let last = at;
       while (last < to && held.has(last + 1)) last++;
       window.first = first;
       window.last = last >= latest ? null : last;
@@ -942,6 +954,7 @@ export class StationTopics implements Owner {
       window.atOffset = null;
       window.caught = Math.max(window.caught, last);
       this.#core.store.invalidate({ topic: "thread", station, thread: id });
+      return { seq: at };
     });
   }
 

@@ -2215,6 +2215,13 @@ export class AccountDb {
 
   /// The messages of one thread whose latest text has every one of `terms` (case aside), oldest first, with their
   /// words (a chat's own find: all of them, as `findSaid` looks).
+  /// The number of the message of thread `thread` said at `ts` (its `ts`, as a quote names it), where it is held; null
+  /// where not. Of that thread's entries alone (its key's prefix), a quote's press's.
+  messageAt(station: string, thread: number, ts: string): number | null {
+    const row = this.sql.all("SELECT n FROM entry WHERE station = ? AND thread = ? AND json_extract(json, '$.kind') = 'message' AND json_extract(json, '$.ts') = ? ORDER BY n LIMIT 1", [station, thread, ts])[0];
+    return row ? Number(row[0]) : null;
+  }
+
   findInThread(station: string, thread: number, terms: string[]): { seq: number; text: string }[] {
     if (!this.#said || terms.length === 0) return [];
     const where = ["s.station = ?", "s.thread = ?", ...terms.map(() => "s.text LIKE ? ESCAPE '\\'")];

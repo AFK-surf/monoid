@@ -1,7 +1,7 @@
 // A chat's page made with its inside nodes (sfbase's chat_page_nodes on; chat_page_made's `body`): its messages the
-// page's list (chat_body_node), the composer in the list's foot the page's old view as yet, the way to the newest over
-// it (chat_jump_node), a passage a mouse picked in a message quoted by its pill (chat_quote_node). What else the old
-// page floats over its list, puts over its rows and flies over it is not here yet.
+// page's list (chat_body_node), the composer in the list's foot the page's old view as yet, what floats over it there
+// (the way to the newest, the bell, 对话目录's button and rail: chat_body_node's foot), a passage picked in a message
+// quoted by its pill or the bar over a finger's pick (chat_quote_node).
 
 ///|
 /// Chat `r`'s messages as `src` reads them (view_of_chat), in node `v`, growing to what the column it is in leaves
@@ -10,7 +10,8 @@
 /// it is drawn to, what hides the list's top), `room` more over its first row, `foot` under its last and the composer
 /// `composer` builds under that, in the list's foot (till the view is read, at the foot of the room it is given),
 /// `lead` the unread line under its top, its tips `tips`, its time on top `stint`;
-/// what is read told the core while `shows` (chat_read_node).
+/// what is read told the core while `shows` (chat_read_node). `cover_to`: how tall what covers it comes to be, as
+/// chat_body_node takes it.
 pub fn chat_page_body_node(
   v : @view.View,
   src : Source,
@@ -19,6 +20,7 @@ pub fn chat_page_body_node(
   stint~ : () -> Int,
   shows~ : () -> Bool,
   cover? : () -> Double = fn() { bar_foot },
+  cover_to? : () -> Double,
   room? : Double = list_room,
   foot? : () -> Double = fn() { list_foot },
   composer? : (@view.View) -> Unit,
@@ -154,13 +156,13 @@ pub fn chat_page_body_node(
         width,
         tips,
         stint,
-        // (a quote's card pressed: the message it quotes gone to, where the chat holds it, and the passage it quotes lit
-        // there alone where its words have it, as the old page's cards (message.mbt quote_cards): chat_goes_to)
+        // (a quote's card pressed: the message it quotes gone to, and the passage it quotes lit there alone where its
+        // words have it, as the old page's cards (message.mbt quote_cards): chat_goes_to; where the chat's window holds
+        // it not, the window moved about it first (chat.around by its ts), said where the chat has it nowhere:
+        // sfbase's go_to_quoted)
         jump: Some(fn(ts, passage) {
-          match chat_said_all(src, r, view).iter().find_first(fn(m) { m.ts == ts }) {
-            Some(m) => @sfbase.go_to(r, m.seq, passage~)
-            None => ()
-          }
+          let shown = chat_said_all(src, r, view).iter().find_first(fn(m) { m.ts == ts }).map(fn(m) { m.seq })
+          @sfbase.go_to_quoted(src, r, @signals.untracked(view).thread, shown, ts, passage)
         }),
         picture: None,
       }
@@ -195,6 +197,7 @@ pub fn chat_page_body_node(
         sending~,
         core~,
         cover~,
+        cover_to?,
         room~,
         // (and while something waits to be decided whose bell may float over the list's end, its room over it: the last
         // row as far over the bell as it is over the composer without it, as the page before kept it (chat_list's
@@ -202,7 +205,7 @@ pub fn chat_page_body_node(
         foot=fn() { foot() + (if @sfbase.ask_clears((here.view)()) { float_lift + float_side } else { 0.0 }) },
         composer?,
         lead~,
-        read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover) },
+        read=fn(place, scroll, rows) { chat_read_node(o, src, r, view, place, scroll, rows, shows, cover, fn() { cover() + room }) },
         to=r,
         shows~,
         // (by key once the view is the chat's head (its entries none: chat_no_entries), as the core's view of a chat a

@@ -5,9 +5,11 @@
 
 ///|
 /// The fixture's chat on 大屏 with a Mac's keys, its calls kept in `calls` and answered as the made-up core answers them;
-/// `found`: what chat.find answers instead (None: the made-up core's own finding).
-fn find_chat_tester(calls : Array[Made], found? : Json? = None) -> @ui.Tester {
+/// `found`: what chat.find answers instead (None: the made-up core's own finding); `nodes`: its page made as nodes
+/// (sfbase's chat_page_nodes).
+fn find_chat_tester(calls : Array[Made], found? : Json? = None, nodes? : Bool = false) -> @ui.Tester {
   new_run()
+  @sfbase.chat_page_nodes.set(nodes)
   let base = fixture("chat")
   let src : Source = {
     ..base,
@@ -143,6 +145,27 @@ test "⌘F: a message found out of the chat's window has the window moved about 
   assert_eq(named(calls, "chat.older").length(), 0)
 }
 
+///|
+test "⌘F on a chat's page made as nodes: Enter goes to the time found, nothing flashing nor kept as lit where the reader is; each step tells the core how many times each message the list holds marks the words" {
+  let calls : Array[Made] = []
+  let t = find_chat_tester(calls, nodes=true)
+  find_typed(t, "截图")
+  t.run_for(@sfpages.find_typing_ms)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_code_enter)
+  t.run_for(@sfbase.flash_in_ms)
+  let moved = named(calls, "chat.find.go")
+  assert_true(moved.length() >= 1)
+  // (the messages the list holds that have them, each as many times as drawn: 8's, 10's and 11's once)
+  let drawn = field(Some(moved[moved.length() - 1].params), "drawn")
+  assert_true(drawn is Some(Object(_)), msg="\{Repr(moved[moved.length() - 1].params)}")
+  for seq in ["8", "10", "11"] {
+    assert_true(drawn.unwrap() is Object(o) && o.get(seq) is Some(Number(1.0, ..)), msg="\{seq}: \{Repr(drawn)}")
+  }
+  // (gone to: no row lit across the list, nothing kept as lit where the reader is)
+  assert_eq(grounds_in(t, @sf.theme().flash_bg()).length(), 0)
+  assert_eq(@sfbase.reading_of("ws1/st1\u{1}s-c1").flash, "")
+}
 
 // 对话目录 (sfpages' outline.mbt): the long chat of two people (sffixture's outline_fixture.mbt), the list away from its
 // end at 昨天's 09:40 (Ana's, seq 22: the one the reader is at); its rail at the right of a wide page, else a round

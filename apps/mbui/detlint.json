@@ -184,6 +184,7 @@
     "later": [
       "@sf.menu",
       "@sf.menu_item_of",
+      "@sfbase.message_items",
       "@sf.pick",
       "@sf.panel",
       "@sf.confirm",

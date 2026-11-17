@@ -490,6 +490,7 @@ test("a_chat_is_looked_in_whole_and_its_window_goes_about_a_message_found", asyn
   // The window about the one found far back: a page on either side; one near the end reaches it.
   call(core, ui, 4, "chat.around", { station: "ws/st", thread: 7, seq: 27 });
   await host.settle();
+  assert.deepEqual(answered(host.emitted.slice(), 4)?.ok, { seq: 27 });
   apply(host, values);
   assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [1, 76, false]);
   call(core, ui, 5, "chat.around", { station: "ws/st", thread: 7, seq: 40 });
@@ -500,6 +501,41 @@ test("a_chat_is_looked_in_whole_and_its_window_goes_about_a_message_found", asyn
   await host.settle();
   apply(host, values);
   assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [220, 300, true]);
+  core.close();
+});
+
+test("a_quoted_message_is_found_by_its_time_and_its_chat_s_window_goes_about_it_read_onto_the_device_where_not_there", async () => {
+  const answers = base();
+  answers["GET /threads"] = [threadView(7, 300)];
+  answers["GET /threads/7/entries?limit=50"] = { last: 300, entries: entries(251, 300) };
+  const { host, core } = await started(answers);
+  const ui = core.connect();
+  const values = new Map();
+  subscribe(core, ui, 1, { topic: "thread", station: "ws/st", thread: 7 });
+  await host.time.pass(500);
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [251, 300, true]);
+  // One on the device, by its time: its number, the window as it was (well within it).
+  call(core, ui, 2, "chat.around", { station: "ws/st", thread: 7, ts: "280.0" });
+  await host.settle();
+  assert.deepEqual(answered(host.emitted.slice(), 2)?.ok, { seq: 280 });
+  // One not on the device: the rest read onto it, then the window about it.
+  for (let from = 201; from >= 1; from -= 50) answers[`GET /threads/7/entries?from=${from}&to=${from + 49}`] = { last: 300, entries: entries(from, from + 49) };
+  call(core, ui, 3, "chat.around", { station: "ws/st", thread: 7, ts: "27.0" });
+  await host.time.pass(500);
+  assert.deepEqual(answered(host.emitted.slice(), 3)?.ok, { seq: 27 });
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last, v(values, 1).end], [1, 76, false]);
+  // One the chat has nowhere: none, the window as it was.
+  call(core, ui, 4, "chat.around", { station: "ws/st", thread: 7, ts: "999.0" });
+  await host.time.pass(500);
+  assert.deepEqual(answered(host.emitted.slice(), 4)?.ok, { seq: null });
+  apply(host, values);
+  assert.deepEqual([v(values, 1).first, v(values, 1).last], [1, 76]);
+  // Neither its number nor its time: refused.
+  call(core, ui, 5, "chat.around", { station: "ws/st", thread: 7 });
+  await host.settle();
+  assert.equal(answered(host.emitted.slice(), 5)?.ok, undefined);
   core.close();
 });
 

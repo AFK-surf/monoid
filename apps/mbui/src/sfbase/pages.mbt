@@ -1380,6 +1380,7 @@ pub fn reset() -> Unit {
   go_tos.clear()
   go_to_passages.clear()
   go_to_words.clear()
+  go_to_around.clear()
   // and where each chat's reader was as a go-to took its list away (jump.mbt)
   places_back.clear()
   go_back_offsets.clear()

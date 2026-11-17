@@ -365,6 +365,7 @@ export const SHAPES: Record<string, Shape> = {
     ["assigneeText", opt("String"), { said: true, doc: "Who needs to decide, in the viewer's words; prepared by the core." }],
     ["type", "String", { doc: "options | text | login" }],
     ["options", opt(vec("DecisionOption"))],
+    ["placeholder", opt("String"), { said: true, doc: "A text card: the hint its field shows while nothing is written in it, as the agent said it." }],
     ["vault", opt("String"), { doc: "An agent's request to use a vault item: the request's id. An app shows approving it (the options,\nthen the person confirms: `vault.approve` with the option's scope, `vault.deny`) rather than answering in the chat;\na web page says to approve it in the app. Absent where a later post of the chat asks the same request again (its card\nalone)." }],
     ["phoneAsk", opt("PhoneAsk"), { doc: "An agent's request for its person's phone (station/src/adb/grants.ts): drawn in place of the post's words, answered with `adb.decide` (the chat's station)." }],
     ["rigAsk", opt("RigAsk"), { doc: "An agent's request for a rig of the workspace (station/src/rigs/requests.ts): drawn in place of the post's words, answered by the rig's person with `rig.decide` (the chat's station)." }],
