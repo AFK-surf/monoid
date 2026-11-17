@@ -22,6 +22,7 @@ Write a report the team can understand without the conversation, in its language
 - title: what goes wrong, one line.
 - body (Markdown): actual/expected behaviour, exact error, reproduction steps, time/frequency and relevant tool names/ids.
 - area: station, web, android, desktop, slack, cloud or unknown.
+- desktopPlatform: for a desktop issue, include macos or windows when the affected app is known.
 - reporter: person's name and Slack channel, Feishu chat or “still.fail chat”.
 - logs: only the few relevant tool errors or station output lines.
 

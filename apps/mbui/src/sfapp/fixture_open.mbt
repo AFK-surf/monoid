@@ -636,7 +636,7 @@ pub fn open_mode(mode : String) -> Unit {
       let n = @sffixture.new_fix
       n.crowded = true
       n.ultrafast = true
-      n.model = "gpt-6-astra"
+      n.model = "gpt-6.2-sol"
       n.runtime = "codex"
       n.d_model = n.model
       n.d_runtime = n.runtime

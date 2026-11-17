@@ -339,13 +339,13 @@ fn todo_shown(src : Source, w : Workspace) -> Bool {
 ///|
 /// The band's height over the lists: its top row, 新建对话's (6 + a row + 2; in the closed bar 6 + a row + 6), 待处理's
 /// when there (2 + a row + 8); a row as high as the theme's band (32; touch's the search field's 38).
-fn band_h(src : Source, w : Workspace) -> Double {
-  side_top_h() +
+fn band_h(src : Source, w : Workspace, at? : BandAt = band_at_old()) -> Double {
+  at.brand +
   band_row_h() +
-  (if wide.tape.get() {
-    band_new_top + side_new_under + band_new_tape_over()
+  (if at.tape {
+    band_new_top + side_new_under + band_new_tape_over(at~)
   } else {
-    band_pane_top() + band_pane_under()
+    band_pane_top(at~) + band_pane_under(at~)
   }) +
   (if todo_shown(src, w) { side_todo_around + band_row_h() } else { 0.0 })
 }

@@ -417,3 +417,202 @@ async test "iroh given: as what loads it, then as the module itself in a worker;
   given_the_module()
   keys_in_memory()
 }
+
+// A tab's claim (tab.mbt) against a browser of the test's: Web Locks and BroadcastChannel as a page has them, in this
+// process's memory, every callback and message a microtask's, so all a step sets going is over by Node's next turn
+// (`settled`). Locks are granted in the order asked, `ifAvailable` answered null where one is held or waited for, an
+// ask given up by its signal taken out of the queue; a message reaches every other open channel of its name, a copy
+// of it. Nothing of the page's shell is reached, so this runs beside its test.
+
+///|
+#external
+priv type Tabs
+
+///|
+/// The test's browser put in the place of the process's `navigator` and `BroadcastChannel`; `locks`: whether it has
+/// Web Locks.
+extern "js" fn tabs_take(locks : Bool) -> Tabs =
+  #|(withLocks) => {
+  #|  const tabs = { was: ["navigator", "BroadcastChannel"].map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]), held: new Map(), queues: new Map(), open: new Set(), gaveUp: 0, raw: new Map() };
+  #|  const next = (name) => {
+  #|    if (tabs.held.has(name)) return;
+  #|    const want = tabs.queues.get(name)?.shift();
+  #|    if (want === undefined) return;
+  #|    tabs.held.set(name, want);
+  #|    Promise.resolve().then(() => want.callback({ name, mode: "exclusive" })).then(
+  #|      (v) => { tabs.held.delete(name); want.ok(v); next(name); },
+  #|      (e) => { tabs.held.delete(name); want.fail(e); next(name); },
+  #|    );
+  #|  };
+  #|  const locks = {
+  #|    request: (name, ...rest) => {
+  #|      const callback = rest.pop();
+  #|      const options = rest[0] ?? {};
+  #|      return new Promise((ok, fail) => {
+  #|        const queue = tabs.queues.get(name) ?? [];
+  #|        tabs.queues.set(name, queue);
+  #|        if (options.ifAvailable === true && (tabs.held.has(name) || queue.length > 0)) {
+  #|          Promise.resolve().then(() => callback(null)).then(ok, fail);
+  #|          return;
+  #|        }
+  #|        const want = { callback, ok, fail };
+  #|        queue.push(want);
+  #|        options.signal?.addEventListener("abort", () => {
+  #|          const at = queue.indexOf(want);
+  #|          if (at < 0) return;
+  #|          queue.splice(at, 1);
+  #|          tabs.gaveUp++;
+  #|          fail(new Error("AbortError"));
+  #|        });
+  #|        next(name);
+  #|      });
+  #|    },
+  #|  };
+  #|  class Channel {
+  #|    constructor(name) { this.name = name; this.onmessage = null; tabs.open.add(this); }
+  #|    postMessage(data) {
+  #|      if (!tabs.open.has(this)) throw new Error("InvalidStateError");
+  #|      for (const other of tabs.open) {
+  #|        if (other === this || other.name !== this.name) continue;
+  #|        const copy = structuredClone(data);
+  #|        Promise.resolve().then(() => { if (tabs.open.has(other)) other.onmessage?.({ data: copy }); });
+  #|      }
+  #|    }
+  #|    close() { tabs.open.delete(this); }
+  #|  }
+  #|  Object.defineProperty(globalThis, "navigator", { value: withLocks ? { locks } : {}, configurable: true, writable: true });
+  #|  Object.defineProperty(globalThis, "BroadcastChannel", { value: Channel, configurable: true, writable: true });
+  #|  tabs.locks = locks;
+  #|  return tabs;
+  #|}
+
+///|
+extern "js" fn tabs_back(tabs : Tabs) -> Unit =
+  #|(tabs) => {
+  #|  for (const [k, was] of tabs.was) {
+  #|    if (was === undefined) delete globalThis[k];
+  #|    else Object.defineProperty(globalThis, k, was);
+  #|  }
+  #|}
+
+///|
+/// The lock of the claim `name` taken as a tab that knows no take over does (a page of an older program): held until
+/// `tabs_free`.
+extern "js" fn tabs_hold(tabs : Tabs, name : String) -> Unit =
+  #|(tabs, name) => { tabs.locks.request("base:tab:" + name, () => new Promise((free) => tabs.raw.set(name, free))); }
+
+///|
+extern "js" fn tabs_free(tabs : Tabs, name : String) -> Unit =
+  #|(tabs, name) => tabs.raw.get(name)?.()
+
+///|
+/// How many hold a lock, how many wait for one, how many channels are open, how many asks were given up.
+extern "js" fn tabs_count(tabs : Tabs) -> FixedArray[Int] =
+  #|(tabs) => [tabs.held.size, [...tabs.queues.values()].reduce((n, q) => n + q.length, 0), tabs.open.size, tabs.gaveUp]
+
+///|
+/// A tab's claim under `name` and what it was told, in order.
+fn tab_of(name : String) -> (TabClaim, Array[TabState]) {
+  let told : Array[TabState] = []
+  (claim_tab(name, s => told.push(s)), told)
+}
+
+///|
+fn counts(tabs : Tabs) -> Array[Int] {
+  Array::from_fixed_array(tabs_count(tabs))
+}
+
+///|
+/// Tabs claiming, taking over, taking back, closing and giving up an ask, against the test's browser.
+async fn tabs_in_a_browser() -> Unit raise {
+  let tabs = tabs_take(true)
+  // The first tab has it; a second of the same name is busy; one of another name has its own.
+  let (a, a_told) = tab_of("p")
+  settled()
+  let first = a_told.copy()
+  let (b, b_told) = tab_of("p")
+  let (c, c_told) = tab_of("q")
+  settled()
+  let busy = (a_told.copy(), b_told.copy(), c_told.copy())
+  // The second takes it over: the first yields, the second has it.
+  b.take_over()
+  settled()
+  let taken = (a_told.copy(), b_told.copy())
+  // The first takes it back, asking twice; the second, asking while it holds it, changes nothing.
+  a.take_over()
+  a.take_over()
+  b.take_over()
+  settled()
+  let back = (a_told.copy(), b_told.copy())
+  // The tab that holds it closes, telling nobody: the next tab to open has it, where the yielded one never asked again.
+  a.release()
+  a.release()
+  a.take_over()
+  settled()
+  let (d, d_told) = tab_of("p")
+  settled()
+  let closed = (a_told.copy(), b_told.copy(), d_told.copy())
+  // Two ask at once: the first asked has it and says so, the other, still waiting, asks again and has it: none is
+  // left waiting behind a tab that never heard it.
+  let (e, e_told) = tab_of("p")
+  settled()
+  b.take_over()
+  e.take_over()
+  settled()
+  let both = (b_told.copy(), d_told.copy(), e_told.copy(), counts(tabs)[1])
+  // A tab waiting behind one that never lets go, closed: its ask is given up and nothing told.
+  tabs_hold(tabs, "r")
+  settled()
+  let (f, f_told) = tab_of("r")
+  settled()
+  f.take_over()
+  settled()
+  let waiting = counts(tabs)
+  f.release()
+  settled()
+  let given_up = counts(tabs)
+  tabs_free(tabs, "r")
+  settled()
+  // A take over asked before the browser's first answer is done as that answer is busy.
+  let (g, g_told) = tab_of("q")
+  g.take_over()
+  settled()
+  let early = (c_told.copy(), g_told.copy())
+  for claim in [b, c, d, e, g] {
+    claim.release()
+  }
+  settled()
+  let left = counts(tabs)
+  tabs_back(tabs)
+  // Without Web Locks a claim is held at once, before `claim_tab` returns, and nothing contends.
+  let bare = tabs_take(false)
+  let (h, h_told) = tab_of("p")
+  let at_once = h_told.copy()
+  let (i, i_told) = tab_of("p")
+  i.take_over()
+  settled()
+  h.release()
+  i.release()
+  let bare_left = counts(bare)
+  tabs_back(bare)
+  assert_eq(first, [Held])
+  assert_eq(busy, ([Held], [Busy], [Held]))
+  assert_eq(taken, ([Held, Yielded], [Busy, Held]))
+  assert_eq(back, ([Held, Yielded, Held], [Busy, Held, Yielded]))
+  assert_eq(closed, ([Held, Yielded, Held], [Busy, Held, Yielded], [Held]))
+  assert_eq(both, ([Busy, Held, Yielded, Held, Yielded], [Held, Yielded], [Busy, Held], 0))
+  assert_eq(f_told, [Busy])
+  // (held: the stand-in tab; waiting: the closed one's ask; open: the channels of d, e, f, b, c)
+  assert_eq(waiting, [3, 1, 5, 0])
+  assert_eq(given_up, [3, 0, 4, 1])
+  assert_eq(early, ([Held, Yielded], [Busy, Held]))
+  assert_eq(left, [0, 0, 0, 1])
+  assert_eq((at_once, i_told), ([Held], [Held]))
+  assert_eq(bare_left, [0, 0, 0, 0])
+}
+
+///|
+/// (its own test: it reaches nothing of the page's shell, whose test runs at once beside it)
+async test "a tab's claim: busy behind another, taken over and back, let go of as its tab closes, its ask given up" {
+  tabs_in_a_browser()
+}

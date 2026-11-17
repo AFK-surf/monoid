@@ -31,6 +31,24 @@ fn board_on_in(ws : String) -> Bool {
 }
 
 ///|
+/// The pane's board width, both for the board's arrangement and a notification opening a chat beside it.
+fn board_width(src : Source, w : Workspace, ww : Double) -> Double {
+  ww - fold_target(src, w, ww).1.col
+}
+
+///|
+/// A notification while the board is in view opens its chat as a card does, if the board has room beside it. A chat
+/// page, another workspace or a narrower board keeps the ordinary page-opening path.
+pub fn notice_on_board(src : Source, r : ChatRef, ww : Double) -> Bool {
+  guard !wide.tape.get() && board_bare() && @sfbase.workspace_in_view(src).0 is Some(w) &&
+    @sfbase.workspace_of(r.station) == w.id && board_width(src, w, ww) >= @sfpages.board_beside_from else {
+    return false
+  }
+  @sfbase.board_pick.set(Some(r))
+  true
+}
+
+///|
 /// Home made in the pane off the tape (pane_made's): the board while it is chosen, else the page's ground alone.
 fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, () -> Page, Page?, () -> Int, Int) -> Unit) {
   (
@@ -48,7 +66,7 @@ fn board_home_made(src : Source, tips : @sf.TipLayer) -> (String, (@view.View, (
         let width = fn() {
           let ww = b.window().0
           match @sfbase.workspace_in_view(src).0 {
-            Some(w) => ww - fold_target(src, w, ww).1.col
+            Some(w) => board_width(src, w, ww)
             None => ww
           }
         }

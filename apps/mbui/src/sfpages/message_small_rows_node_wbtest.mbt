@@ -249,8 +249,7 @@ test "a ring filling as what it waits on comes: none known, the spinner's quarte
 }
 
 ///|
-test "a row's room: its body in from the pane's sides, the room over it as said, its node and key given back and told to what lays things over it" {
-  let told : Array[String] = []
+test "a row's room: its body in from the pane's sides, the room over it as said, its node and key given back" {
   let made : Ref[MessageRowNode?] = Ref(None)
   let top = @signals.signal(list_gap)
   let t = small_rows_new(760.0, fn(v, _) {
@@ -261,12 +260,10 @@ test "a row's room: its body in from the pane's sides, the room over it as said,
         fn() { row_side(760.0) },
         fn() { top.get() },
         fn(m) { unread_line_node(m) |> ignore },
-        over=fn(_, key) { told.push(key()) },
       ),
     )
   })
   t.run_for(@ui.move_most_ms)
-  assert_eq(told, ["line"])
   assert_true(made.val is Some(row) && (row.key)() == "line")
   let side = row_side(760.0)
   let rules = t.drawn_rects().filter(fn(r) { r.3 <= 1.0 && r.2 > 0.0 })

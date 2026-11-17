@@ -38,6 +38,8 @@ pub(all) struct Shell {
   /// what was opened from outside (a notification, an outside link) brought into view on the tape, even from the
   /// sidebar (bring_chosen)
   bring : () -> Unit
+  /// a notified chat opened beside the board currently in view, where there is room; false otherwise
+  notice_on_board : (ChatRef) -> Bool
   /// the rail changed where it is (自定义侧边条), where the layout has a rail beside the pages; none
   /// where it has none
   edit_rail : () -> Unit
@@ -61,6 +63,7 @@ pub fn bare_shell() -> Shell {
     back: stack_back,
     show: fn() {  },
     bring: fn() {  },
+    notice_on_board: fn(_) { false },
     edit_rail: fn() {  },
   }
 }
@@ -102,6 +105,12 @@ pub fn show_chosen() -> Unit {
 /// foldable or tablet's tape, even when the sidebar was in use.
 pub fn bring_chosen() -> Unit {
   (shell.val.bring)()
+}
+
+///|
+/// Open a notified chat beside the board in view, where the shell has room for it.
+pub fn notice_on_board(r : ChatRef) -> Bool {
+  (shell.val.notice_on_board)(r)
 }
 
 ///|

@@ -344,7 +344,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       group: "按钮",
       name: "标签与胶囊 Chip · Pill · Badge",
       file: "chip_node.mbt",
-      api: [("chip_node.mbt", "chip_node"), ("chip_node.mbt", "toggle_chip_node"), ("chip_node.mbt", "pill_node"), ("chip_node.mbt", "badge_node")],
+      api: [("chip_node.mbt", "chip_node"), ("chip_node.mbt", "toggle_chip_node"), ("chip_node.mbt", "press_chip_node"), ("chip_node.mbt", "pill_node"), ("chip_node.mbt", "badge_node")],
       play: Some(pill_play),
       about: "可按的小标签（Chip、可切换的 ToggleChip），以及只用来显示状态的胶囊（Pill）和角标（Badge）。",
       cases: [
@@ -356,6 +356,7 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
               @sf.chip_node(r, fn() { "Claude" }, fn() {  }, icon="agent", tips~) |> ignore
               @sf.toggle_chip_node(r, fn() { "只看未读" }, fn() { on.get() }, fn() { on.set(!on.get()) }) |> ignore
               @sf.toggle_chip_node(r, fn() { "全部 station" }, fn() { false }, fn() {  }, chevron=true) |> ignore
+              @sf.press_chip_node(r, fn() { "停止" }, fn() {  }, icon="stop") |> ignore
             })
           },
         ),

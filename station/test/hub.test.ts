@@ -3586,17 +3586,26 @@ test("fast is per session, on Codex and Claude Code, and null restores the accou
 
 test("Ultrafast is per chat, persists through other changes and legacy Fast clears it", async () => {
   const r = new Rig();
-  Object.assign(r.raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6-astra", "gpt-6.1-sol", "gpt-5.5"] });
+  Object.assign(r.raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-5.5"] });
+  const eligible = r.raw.profiles[1].id;
+  r.raw.profiles.push({ ...r.raw.profiles[1], id: "cx-standard", name: "Standard Codex" });
   r.config = hubConfig(r.raw, r.dir);
-  const [a] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra", speed: "ultrafast" });
-  const [b] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6-astra" });
+  r.hub.accounts.setHealth((id) => ({ check: { codexUltrafastModels: id === eligible ? ["gpt-6.2-sol"] : [] } }));
+  const [a] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6.2-sol", speed: "ultrafast" });
+  const [b] = await newSession(r.hub, { ...chat("codex"), model: "gpt-6.2-sol" });
   r.store.setRuntimeSessionId(a, "thread-ultra");
   r.store.setRuntimeSessionId(b, "thread-default");
   assert.equal(r.session(a).speed, "ultrafast");
+  assert.equal(r.session(a).profile, eligible);
+  await assert.rejects(newSession(r.hub, { ...chat("codex"), model: "gpt-6.2-sol", profile: "cx-standard", speed: "ultrafast" }), /Ultrafast/);
   assert.equal(r.session(a).fast, true, "old clients still see accelerated speed");
   await configure(r.hub, a, {});
   assert.equal(r.store.codexSessionSpeed("thread-ultra"), "ultrafast");
   assert.equal(r.store.codexSessionSpeed("thread-default"), null);
+  r.store.setSessionProfile(b, "cx-standard", false);
+  await configure(r.hub, b, { speed: "ultrafast" });
+  assert.equal(r.session(b).profile, eligible);
+  assert.equal(r.session(b).speed, "ultrafast");
   await configure(r.hub, a, { fast: false });
   assert.equal(r.store.codexSessionSpeed("thread-ultra"), null);
   assert.equal(r.store.codexSessionFast("thread-ultra"), false);
@@ -3606,7 +3615,7 @@ test("Ultrafast is per chat, persists through other changes and legacy Fast clea
   await configure(r.hub, a, { speed: null });
   assert.equal(r.session(a).fast, null, "null restores the account default");
   await assert.rejects(configure(r.hub, a, { model: "gpt-5.5", speed: "ultrafast" }), /Ultrafast/);
-  assert.equal(r.session(a).model, "gpt-6-astra", "invalid settings leave the chat intact");
+  assert.equal(r.session(a).model, "gpt-6.2-sol", "invalid settings leave the chat intact");
   await assert.rejects(newSession(r.hub, { ...chat("claude"), speed: "ultrafast" }), /Ultrafast/);
   await r.close();
 });

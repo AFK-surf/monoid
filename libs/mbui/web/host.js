@@ -2244,12 +2244,21 @@
     const had = narrowFaces.get(face);
     if (had !== undefined) return had;
     narrowFaces.set(face, false);
-    const files = faceFiles.get(face) || [];
-    Promise.all(files.map(([src, weight]) => {
-      const d = faceDescriptors(face, weight);
+    const cjk = cjkFiles.get(face);
+    const files = [...(faceFiles.get(face) || []), ...(cjk || [])];
+    Promise.all(files.map(([src, weight, desc]) => {
+      const d = desc ? { ...desc } : faceDescriptors(face, weight);
       d.featureSettings = d.featureSettings ? `${d.featureSettings}, "pwid" 1` : '"pwid" 1';
       const ff = new FontFace(`mbface${face}n`, src, d);
-      return ff.load().then(() => document.fonts.add(ff));
+      // (a CJK companion's (setCjkFace) kept with it, gone as it goes; one of its files the system has not: the rest
+      // narrow as they are)
+      return ff.load().then(() => {
+        if (desc) {
+          if (cjkFiles.get(face) !== cjk) return;
+          cjkLoaded.get(face).push(ff);
+        }
+        document.fonts.add(ff);
+      }, () => {});
     })).then(() => {
       if (narrowFaces.get(face) !== false) return;
       narrowFaces.set(face, true);
@@ -2302,8 +2311,79 @@
     }, () => {});
     return true;
   };
+  // A face's CJK companion (@webpage.set_cjk_face): the system's CJK faces drawn, within the face's family, for the
+  // CJK marks alone (its unicode-range: Han, kana, bopomofo, CJK punctuation, full-width forms; the Latin quotes and
+  // dashes left to the face itself), each of the nine weights set in the one `step` heavier (a Latin face's 400 beside
+  // a CJK face's 400 reads thin and grey), clamped to 100..900, by the families given (local names, the first the
+  // system has) or else PingFang SC, Noto Sans CJK SC, Source Han Sans SC. With no face of the app's own given (faceAdd)
+  // the face is taken for its CJK alone once any of them is there, the rest of the words in the page's own as before;
+  // where none is, nothing changes. Asked again, what it set before goes first.
+  const CJK_RANGE = 'U+2E80-2FDF, U+3000-303F, U+3040-30FF, U+3100-312F, U+3190-31FF, U+3400-4DBF, U+4E00-9FFF, ' +
+    'U+F900-FAFF, U+FE30-FE4F, U+FF00-FFEF, U+20000-2FA1F';
+  const CJK_FAMILIES = ['PingFang SC', 'Noto Sans CJK SC', 'Source Han Sans SC'];
+  // each weight's names in the families' own files, the nearest first
+  const CJK_WEIGHT_NAMES = {
+    100: ['Thin', 'Ultralight', 'ExtraLight'], 200: ['ExtraLight', 'Ultralight', 'Thin'], 300: ['Light', 'DemiLight'],
+    400: ['Regular', 'Normal'], 500: ['Medium'], 600: ['Semibold', 'SemiBold', 'Bold'], 700: ['Bold', 'Semibold'],
+    800: ['Heavy', 'ExtraBold', 'Black'], 900: ['Black', 'Heavy'],
+  };
+  const cjkSrc = (families, weight) => {
+    const out = [];
+    for (const fam of families) {
+      for (const name of CJK_WEIGHT_NAMES[weight]) {
+        out.push(`local(${JSON.stringify(`${fam} ${name}`)})`);
+        out.push(`local(${JSON.stringify(`${fam.replace(/ /g, '')}-${name}`)})`);
+      }
+      if (weight === 400) out.push(`local(${JSON.stringify(fam)})`);
+    }
+    return out.join(', ');
+  };
+  // each face's CJK files ([src, weight, descriptors], as faceFiles' for narrowFace) and the FontFaces put in the page
+  const cjkFiles = new Map();
+  const cjkLoaded = new Map();
+  const cjkForget = (face) => {
+    cjkFiles.delete(face);
+    for (const ff of cjkLoaded.get(face) || []) document.fonts.delete(ff);
+    cjkLoaded.delete(face);
+  };
+  H.setCjkFace = (face, weightStep, families) => {
+    if (!(face > 0 && face < 16) || typeof FontFace !== 'function') return false;
+    const step = Number.isFinite(weightStep) ? Math.round(weightStep / 100) * 100 : 100;
+    const fams = Array.isArray(families) && families.length ? families.map(String) : CJK_FAMILIES;
+    cjkForget(face);
+    const files = [];
+    for (let w = 100; w <= 900; w += 100) {
+      const drawn = Math.min(900, Math.max(100, w + step));
+      files.push([cjkSrc(fams, drawn), w, { weight: String(w), unicodeRange: CJK_RANGE }]);
+    }
+    cjkFiles.set(face, files);
+    const loaded = [];
+    cjkLoaded.set(face, loaded);
+    // (narrow already asked of the face: its CJK narrow too)
+    const narrow = narrowFaces.has(face);
+    const load = (family, [src, , desc], more) => {
+      const ff = new FontFace(family, src, { ...desc, ...more });
+      return ff.load().then(() => {
+        if (cjkFiles.get(face) !== files) return false;
+        document.fonts.add(ff);
+        loaded.push(ff);
+        return true;
+      }, () => false);
+    };
+    Promise.all([
+      ...files.map((f) => load(`mbface${face}`, f, {})),
+      ...(narrow ? files.map((f) => load(`mbface${face}n`, f, { featureSettings: '"pwid" 1' })) : []),
+    ]).then((took) => {
+      if (cjkFiles.get(face) !== files || !took.some((t) => t)) return;
+      faces.add(face);
+      textChanged();
+      H.requestFrame();
+    });
+    return true;
+  };
   H.faceClear = (face) => {
     faceFiles.delete(face);
+    cjkForget(face);
     narrowFaces.delete(face);
     if (!faces.delete(face)) return;
     for (const ff of [...document.fonts]) {

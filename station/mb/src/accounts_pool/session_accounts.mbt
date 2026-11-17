@@ -473,19 +473,39 @@ async fn SessionAccounts::row(self : SessionAccounts, key : String) -> Row? {
 
 ///|
 /// `poolFor`: which of `candidates` session `row` may use.
-fn pool_for(row : Row, candidates : Array[Profile]) -> (Array[Profile], Array[String]?) {
-  match row.profiles {
-    None => (candidates, None)
-    Some(list) if list.length() == 0 => (candidates, None)
-    Some(list) => {
-      let subset = candidates.filter(p => list.contains(p.id))
-      if subset.length() > 0 {
-        (subset, Some(list))
-      } else {
-        (candidates, None)
-      }
-    }
+fn SessionAccounts::supports_ultrafast(self : SessionAccounts, profile : Profile, model : String?) -> Bool {
+  guard access_kind(profile.raw) == "subscription" else { return false }
+  guard (match model { Some(_) => model; None => jstr(profile.get("model")) }) is Some(id) else { return false }
+  match jget((self.health)(profile.id).check, "codexUltrafastModels") {
+    Some(Arr(models)) => models.iter().any(m => match jstr(Some(m)) {
+      Some(m) => same_model(m, id)
+      None => false
+    })
+    _ => same_model(id, "gpt-6-astra") || same_model(id, "gpt-6.1-sol")
   }
+}
+
+///|
+fn Row::ultrafast(self : Row) -> Bool {
+  self.raw.get("speed") == Some(js("ultrafast"))
+}
+
+///|
+fn SessionAccounts::pool_for(
+  self : SessionAccounts,
+  row : Row,
+  candidates : Array[Profile],
+  use_subset? : Bool = true,
+) -> (Array[Profile], Array[String]?) {
+  let requested = if use_subset { row.profiles } else { None }
+  let subset = match requested {
+    Some(list) => candidates.filter(p => list.contains(p.id))
+    None => []
+  }
+  let kept = if subset.is_empty() { None } else { requested }
+  let allowed = if kept is Some(_) { subset } else { candidates }
+  let pool = if row.ultrafast() { allowed.filter(p => self.supports_ultrafast(p, row.model)) } else { allowed }
+  (pool, kept)
 }
 
 ///|
@@ -524,7 +544,7 @@ pub async fn SessionAccounts::allows(
 ///|
 /// `others`: the profiles session `row` could go on on other than its own, left to the station.
 fn SessionAccounts::others(
-  _self : SessionAccounts,
+  self : SessionAccounts,
   cfg : HubConfig,
   row : Row,
   allows : (Profile) -> Bool,
@@ -534,7 +554,7 @@ fn SessionAccounts::others(
     return []
   }
   let workspace_all = cfg.profiles.filter(p => p.runtimes.contains(runtime) && allows(p))
-  let (all, _) = pool_for(row, workspace_all)
+  let (all, _) = self.pool_for(row, workspace_all)
   let strict = all.iter().any(p => serves(p, row.model))
   all.filter(p => p.id != row.profile && (!strict || serves(p, row.model)))
 }
@@ -767,7 +787,10 @@ pub async fn SessionAccounts::run_on(
       ]),
     )
   }
-  let (candidates, kept_profiles) = pool_for(row, workspace_candidates)
+  let (candidates, kept_profiles) = self.pool_for(row, workspace_candidates)
+  if row.ultrafast() && (candidates.is_empty() || (row.pinned && !candidates.iter().any(p => p.id == row.profile))) {
+    raise plain_error(self.tr(self.station_lang, "station.speed.ultrafast_unavailable"))
+  }
   let current = candidates.iter().find_first(p => p.id == row.profile)
   let now = (self.now)()
   let crowded = (p : Profile) => urgency(self.health_for(cfg, p.id, row.model).quota, now).crowded
@@ -854,10 +877,9 @@ pub async fn SessionAccounts::repick(self : SessionAccounts, key : String) -> Un
       ]),
     )
   }
-  let (candidates, kept_profiles) = if row.pinned {
-    (workspace_candidates, None)
-  } else {
-    pool_for(row, workspace_candidates)
+  let (candidates, kept_profiles) = self.pool_for(row, workspace_candidates, use_subset=!row.pinned)
+  if row.ultrafast() && candidates.is_empty() {
+    raise plain_error(self.tr(self.station_lang, "station.speed.ultrafast_unavailable"))
   }
   let next = self.pick(cfg, candidates, row.model, false, except=key)
   self.set_profile(key, next.id, kept_profiles)
@@ -999,7 +1021,7 @@ pub async fn SessionAccounts::spend(
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
   let allows = self.allowed(key, cfg)
   let workspace_all = cfg.profiles.filter(p => p.runtimes.contains(runtime) && allows(p))
-  let (all, kept_profiles) = pool_for(row, workspace_all)
+  let (all, kept_profiles) = self.pool_for(row, workspace_all)
   let strict = all.iter().any(p => serves(p, row.model))
   let candidates = all.filter(p => p.id != left &&
     (!strict || serves(p, row.model)) &&
@@ -1049,6 +1071,7 @@ async fn SessionAccounts::take_across(
   allows : (Profile) -> Bool,
 ) -> Profile? {
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return None }
+  if row.ultrafast() { return None }
   guard row.model is Some(model) else { return None }
   let candidates = cfg.profiles.filter(p => !p.runtimes.contains(runtime) &&
     allows(p) &&
@@ -1120,18 +1143,18 @@ async fn SessionAccounts::take_across(
 ///|
 /// `acrossOthers`: the profiles of other runtimes session `row` could go on on.
 fn SessionAccounts::across_others(
-  _self : SessionAccounts,
+  self : SessionAccounts,
   cfg : HubConfig,
   row : Row,
   allows : (Profile) -> Bool,
 ) -> Array[Profile] {
   guard runtime_kind(Some(Str(row.runtime))) is Some(runtime) else { return [] }
-  if row.pinned {
+  if row.pinned || row.ultrafast() {
     return []
   }
   guard row.model is Some(model) else { return [] }
   let workspace_all = cfg.profiles.filter(p => p.runtimes.contains(runtime) && allows(p))
-  if pool_for(row, workspace_all).1 is Some(_) {
+  if self.pool_for(row, workspace_all).1 is Some(_) {
     return []
   }
   cfg.profiles.filter(p => !p.runtimes.contains(runtime) && allows(p) && runs(p, model))
@@ -1406,6 +1429,18 @@ pub async fn SessionAccounts::change(
         Some(Some(l)) => Some(l)
         _ => None
       }
+      let pick = async fn(pool : Array[Profile]) {
+        let eligible = if target == "codex" && change.get("speed") == Some(js("ultrafast")) {
+          let eligible = pool.filter(p => self.supports_ultrafast(p, model))
+          if eligible.is_empty() {
+            raise plain_error(t("station.speed.ultrafast_unavailable", []))
+          }
+          eligible
+        } else {
+          pool
+        }
+        self.pick(cfg, eligible, model, true, except=key)
+      }
       let picked = match next_profiles {
         Some(list) => {
           let subset = []
@@ -1425,10 +1460,10 @@ pub async fn SessionAccounts::change(
           if subset.length() == 1 {
             subset[0]
           } else {
-            self.pick(cfg, subset, model, true, except=key)
+            pick(subset)
           }
         }
-        None => self.pick(cfg, candidates, model, true, except=key)
+        None => pick(candidates)
       }
       let effort = match new_effort {
         Some(e) => e
