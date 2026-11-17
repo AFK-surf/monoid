@@ -204,6 +204,8 @@ pub fn chats_held(ChatsView?) -> Int
 
 pub fn chats_more(Source, String, String) -> Int
 
+pub fn chats_live(Source, String, String) -> Bool
+
 pub fn chats_of(Source, String, String) -> (ChatsView?, String?)
 
 pub fn chats_told_before(String, @json.Json) -> Array[(String, @json.Json)]
@@ -683,6 +685,10 @@ pub fn flight_way_ms(Bool, Double) -> Double
 pub fn flight_words_key(SendFlight) -> String
 
 pub fn flights_reset() -> Unit
+
+pub fn floats_laid(@ui.Ctx, Reading, Bool) -> Unit
+
+pub fn floats_settled(@ui.Ctx, Reading) -> Bool
 
 pub fn floor_of(@ui.Ctx, Reading, String, Array[String]) -> Double
 
@@ -3103,6 +3109,7 @@ pub(all) struct Reading {
   mut put_there : Bool
   mut put_place : (Int, Double)?
   mut put : Bool
+  mut put_at : Double
   mut lined : Bool
   asked : @signals.Signal[Double]
   asked_newer : @signals.Signal[Double]
@@ -3131,6 +3138,8 @@ pub(all) struct Reading {
   acts : Map[String, Bool]
   mut shown : Bool
   mut was_shown : Bool
+  mut shown_from : Double
+  mut laid_from : Double
   mut played : Bool
   mut ticked : Bool
   fresh : Map[String, Bool]

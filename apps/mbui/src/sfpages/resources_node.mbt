@@ -327,17 +327,24 @@ fn rs_table_node(
   let lay_at = rs_lay_memo(groups, columns, read.by, fn() { flat })
   // (its heads and rows by how wide it is given to be, laid out in that same layout)
   t.by_room(fn(table, room) {
-    @sf.style_node(table, fn() { rs_table })
-    let lay = rs_lay_in(table, room, lay_at)
-    rs_heads_node(table, address, flat, columns, lay)
-    table.each(read.rows, fn(r) { r }, fn(row, r) { rs_row_of(row, core, address, read, groups, columns, lay, r.untracked()) })
+    // (read out as a table (@headless.table): its heads' row and its rows, the node each is drawn by)
+    @headless.table(table, in_node=true, fn(table, tb) {
+      @sf.style_node(table, fn() { rs_table })
+      let lay = rs_lay_in(table, room, lay_at)
+      rs_heads_node(table, address, flat, columns, lay, tb~)
+      table.each(read.rows, fn(r) { r }, fn(row, r) {
+        rs_row_of(row, core, address, read, groups, columns, lay, r.untracked(), tb~)
+      })
+    })
+    |> ignore
   })
   |> ignore
 }
 
 ///|
 /// Row `r` of a table of station `address`'s 进程 (rs_table_node's, or a block of its page's: rs_block_node) in `row`,
-/// as `read` reads its `groups` and `columns`, laid out as `lay` says.
+/// as `read` reads its `groups` and `columns`, laid out as `lay` says; read out a row of `tb` where it is one of its
+/// rows (a group's row a button that opens it, as ever).
 fn rs_row_of(
   row : @view.View,
   core : Core,
@@ -347,7 +354,12 @@ fn rs_row_of(
   columns : () -> Array[(String, String)],
   lay : () -> RsLayout,
   r : RsRow,
+  tb? : @headless.Table,
 ) -> Unit {
+  match (tb, r) {
+    (Some(_), RsGroup(_)) | (None, _) => ()
+    (Some(tb), _) => tb.row(row, in_node=true, fn(_, _) {  }) |> ignore
+  }
   let by = read.by
   let most = read.most
   let group_of = read.group_of
@@ -609,15 +621,23 @@ fn rs_row_node(
 
 ///|
 /// The columns' heads (rs_heads'): the names' first (none stacked: the names have a line of their own), then each
-/// column's, sorting by itself as it is pressed, lit under the pointer; the end's room.
+/// column's, sorting by itself as it is pressed, lit under the pointer; the end's room. Read out the head's row of `tb`
+/// where it is its table's, the names' heads naming their columns (the columns' each a button that sorts by it).
 fn rs_heads_node(
   table : @view.View,
   address : String,
   flat : Bool,
   columns : () -> Array[(String, String)],
   lay : () -> RsLayout,
+  tb? : @headless.Table,
 ) -> Unit {
-  table.box(fn(h) {
+  let row = fn(make : (@view.View, @headless.TableRow?) -> Unit) {
+    match tb {
+      Some(tb) => tb.row(table, fn(h, tr) { make(h, Some(tr)) })
+      None => table.box(fn(h) { make(h, None) })
+    }
+  }
+  row(fn(h, tr) {
     @sf.style_node(h, fn() { (if lay().stacked { rs_head_row_stacked } else { rs_head_row }).then(@sf.row_least_h()) })
     h.show(fn() { !lay().stacked }, fn(first) {
       first.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))) |> ignore
@@ -627,11 +647,14 @@ fn rs_heads_node(
         ["web-main.resources.column.name"]
       }
       for i, key in heads {
-        first.box(fn(cell) {
+        let look = fn(cell : @view.View) {
           @sf.style_node(cell, fn() { if i == 0 { rs_name_cell } else { rs_whose_cell } }, in_row=true)
           @sf.words_node(cell, fn() { @sf.t(key) }, fn() { rs_head }) |> ignore
-        })
-        |> ignore
+        }
+        match tr {
+          Some(tr) => tr.header(first, look) |> ignore
+          None => first.box(look) |> ignore
+        }
       }
     })
     h.each(fn() { columns().mapi(fn(k, col) { (k, col.0) }) }, fn(c) { c.1 }, fn(cell, c) {

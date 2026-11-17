@@ -1,0 +1,664 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/session_hub"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/set",
+  "station/host",
+  "station/jsjson",
+  "station/store_sessions",
+  "station/store_threads",
+}
+
+// Values
+pub fn about_ts(Map[String, @json.Json]) -> String?
+
+pub fn access_kind(@json.Json) -> String
+
+pub fn agent_name(String?, String) -> String
+
+pub fn agy_base_model(String) -> (String, String?)
+
+pub fn allowed_in(@json.Json, String?, String?) -> Bool
+
+pub fn ask_which(Array[@json.Json], String) -> String
+
+pub let auto : String
+
+pub fn available_efforts(String, String?, @json.Json?) -> Array[String]
+
+pub fn base64url(Array[Int32]) -> String
+
+pub fn billed_per_use(@json.Json) -> Bool
+
+pub fn candidates(Array[@json.Json], String?, leads? : Bool) -> Array[@json.Json]
+
+pub fn cannot_start_words(Words, String, Bool) -> String
+
+pub fn card_arg(@json.Json?, @json.Json?) -> @json.Json? raise Refused
+
+pub fn card_said(@json.Json) -> String
+
+pub fn chars(String) -> Int32
+
+pub fn chat_has(@json.Json, String) -> Bool
+
+pub let chat_key_prefix : String
+
+pub fn chat_workspace(String, String) -> String
+
+pub fn cheap_to_leave(Array[@json.Json], Map[String, Double]) -> Bool
+
+pub fn check_context(Words, String, Double?, String) -> Unit raise Refused
+
+pub let check_idle_ms : Double
+
+pub fn check_speed(Words, String, String?, @json.Json?, @json.Json?, String) -> Unit raise Refused
+
+pub fn choose(Array[@json.Json], Array[@json.Json], leads? : Array[@json.Json]) -> @json.Json
+
+pub fn chosen_speed(@json.Json) -> String?
+
+pub let client_key_kept_ms : Double
+
+pub fn codex_too_old(String) -> Bool
+
+pub fn cold_afresh(@json.Json?, Bool, Double?, Double?) -> Bool
+
+pub fn cold_worth(Double, Double?, Double?, @json.Json?, Bool) -> Bool
+
+pub fn coming_ws(String) -> String
+
+pub fn common_efforts(Array[Array[String]], String) -> Array[String]
+
+pub fn compact_failed(Words, String, Bool) -> String
+
+pub fn compact_failed_notice(Words, @json.Json) -> String
+
+pub let compacted_from : Double
+
+pub fn context_asked(Words, @json.Json?, String) -> Double?? raise Refused
+
+pub let context_least : Double
+
+pub let context_runtimes : Array[String]
+
+pub fn declared_str(@json.Json) -> String
+
+pub fn devin_fusion_base(String) -> String
+
+pub fn enabled(@json.Json) -> Bool
+
+pub fn encode_uri_component(String) -> String
+
+pub fn error_words(Error) -> String
+
+pub fn failure_notice(Words, @json.Json) -> String
+
+pub fn failure_reason(String) -> String
+
+pub fn fallback_efforts(String) -> Array[String]
+
+pub let fallback_most : Int32
+
+pub let fast_runtimes : Array[String]
+
+pub fn few(Array[@json.Json], Array[@json.Json], Array[@json.Json]) -> Array[@json.Json]
+
+pub let few_most : Int32
+
+pub fn field(@json.Json, String) -> @json.Json?
+
+pub fn first_line(String) -> String
+
+pub fn handed_ws(String) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub let held_after_ms : Double
+
+pub let holds_known : Array[String]
+
+pub fn index_of(String, String, from? : Int32) -> Int32
+
+pub fn int(Int32) -> @json.Json
+
+pub let internal_channel : String
+
+pub let internal_connect : String
+
+pub fn is_notice(String) -> Bool
+
+pub fn is_object(@json.Json) -> Bool
+
+pub fn is_reason(String) -> Bool
+
+pub fn is_slack_method(String) -> Bool
+
+pub fn is_true(@json.Json, String) -> Bool
+
+pub fn iso(Double) -> String
+
+pub fn items(@json.Json?) -> Array[@json.Json]
+
+pub fn join_path(Array[String]) -> String
+
+pub fn js_json(@json.Json) -> String
+
+pub fn js_number(@json.Json) -> Double?
+
+pub fn js_number_text(Double) -> String
+
+pub fn js_string(@json.Json) -> String
+
+pub fn jv(@json.Json) -> @jsjson.JValue
+
+pub fn lang_of(String?) -> String
+
+pub let lengths_gather_ms : Double
+
+pub let limit_shown : String
+
+pub fn limit_shown_notice(Words, String?, String) -> String
+
+pub fn listing(String, @json.Json, @json.Json) -> @json.Json?
+
+pub let long_chat_from : Int32
+
+pub let manual : String
+
+pub fn mark_notice(String) -> String
+
+pub let max_inbound_file : Double
+
+pub let max_options : Int32
+
+pub let max_wait_seconds : Int32
+
+pub let min_wait_seconds : Int32
+
+pub fn model_limit_of(String) -> String?
+
+pub fn model_name(String) -> String
+
+pub fn model_speed(@json.Json?) -> String?
+
+pub fn need_arg(Map[String, @json.Json], @json.Json, String) -> String? raise Refused
+
+pub fn next_ts_at(Double) -> String
+
+pub fn no_usage() -> @json.Json
+
+pub let notice_mark : String
+
+pub fn num(Double) -> @json.Json
+
+pub fn num_of(@json.Json, String) -> Double?
+
+pub let older_threads : String
+
+pub fn opt_str(String?) -> @json.Json
+
+pub fn options_arg(@json.Json?) -> Array[@json.Json]? raise Refused
+
+pub fn options_card(Array[@json.Json]) -> @json.Json
+
+pub fn options_said(@json.Json) -> String
+
+pub fn parse_declared(String, Double) -> @json.Json?
+
+pub fn peer_route(String) -> String
+
+pub let pending_work : Array[async () -> Unit]
+
+pub fn person_ref(@json.Json) -> String
+
+pub fn pick_profile(Array[@json.Json], String?, PoolSignals, Bool) -> @json.Json raise Refused
+
+pub fn place_figures(String, Array[@json.Json]) -> String
+
+pub fn price(String) -> (Double, Double, Double)?
+
+pub fn profile_id(@json.Json) -> String
+
+pub fn profile_models(@json.Json) -> Array[String]
+
+pub fn profile_runtimes(@json.Json) -> Array[String]
+
+pub fn quoted(String) -> String
+
+pub fn replace_all(String, String, String) -> String
+
+pub fn replace_first(String, String, String) -> String
+
+pub fn reported_efforts(String, String?, @json.Json?) -> Array[String]?
+
+pub fn retired_ws(String) -> String
+
+pub let retiring_message : String
+
+pub fn retryable(@json.Json) -> Bool
+
+pub fn run_change_words(Words, @json.Json, String) -> String
+
+pub fn run_changed(@json.Json) -> Bool
+
+pub fn run_shown(@json.Json, (String) -> String?) -> @json.Json
+
+pub let runner_left_ms : Double
+
+pub fn runs(@json.Json, String) -> Bool
+
+pub let runtime_kinds : Array[String]
+
+pub fn runtime_label(String) -> String
+
+pub fn runtime_named(String) -> String?
+
+pub let safety_ms : Double
+
+pub fn said_as(@json.Json) -> String
+
+pub fn same(@json.Json?, @json.Json?) -> Bool
+
+pub fn same_model(String, String) -> Bool
+
+pub fn serves(@json.Json, String?) -> Bool
+
+pub fn session_key(String, String, String) -> String
+
+pub let settle_ms : Double
+
+pub fn shown_limit_of(String?) -> String??
+
+pub fn signs_in(@json.Json) -> Bool
+
+pub fn slack_surface(String, String?) -> String
+
+pub fn slack_with_files(Words, String, Array[@json.Json], String) -> (String, String)
+
+pub fn slice(String, Int32, to? : Int32) -> String
+
+pub fn spelling(@json.Json, String) -> String?
+
+pub let spent_before : Array[String]
+
+pub fn split(String, String) -> Array[String]
+
+pub fn split_devin_fusion(String) -> (String, String?, String)?
+
+pub fn[T] stable_sort(Array[T], (T, T) -> Int32) -> Array[T]
+
+pub fn state_arg(@json.Json?) -> (@json.Json, String)? raise Refused
+
+pub let stillfail_surface : String
+
+pub fn str_of(@json.Json, String) -> String?
+
+pub let sweep_ms : Double
+
+pub fn take(String, Int32) -> String
+
+pub fn test_random_hex(Int32, Int32) -> String
+
+pub fn text_or_null(@json.Json, String) -> String?
+
+pub fn thread_command(String) -> String?
+
+pub fn timed(String, Double) -> String
+
+pub fn told_afresh(String, Array[String]) -> String
+
+pub fn told_cleared_words(String, Array[String]) -> String
+
+pub fn told_long_chat_words(Int32, Array[String]) -> String
+
+pub fn told_resume_lost_words(String, Array[String], String?) -> String
+
+pub fn trim(String) -> String
+
+pub fn u(String, Int32) -> Int32
+
+pub fn ultrafast_model(@json.Json?) -> Bool
+
+pub fn undefined() -> @json.Json
+
+pub fn urgency(@json.Json?, Double) -> @json.Json
+
+pub fn usable(@json.Json, Double?) -> Bool
+
+pub let used_within_ms : Double
+
+pub fn windows_of(@json.Json?) -> Array[@json.Json]
+
+pub fn with_said(String, String) -> String
+
+pub fn words_answer(Words, String, Array[@json.Json]) -> @json.Json raise Refused
+
+// Errors
+pub(all) suberror Refused {
+  Refused(String)
+}
+pub fn Refused::message(Self) -> String
+
+// Types and methods
+pub struct AgentsSide {
+  hub : Hub
+  mut in_workspace : Bool
+  mut joined_now : Array[String]
+  mut home_now : String?
+  mut taken : Bool
+}
+pub async fn AgentsSide::follow(Self, Place) -> Unit
+pub fn AgentsSide::new(Hub, Place) -> Self
+pub async fn AgentsSide::start(Self, Place) -> Unit
+
+pub struct Hub {
+  world : World
+  store : @store_sessions.Store
+  mut threads : @store_threads.Store
+  mut words : Words
+  actors : Map[String, String]
+  holds_now : Array[String]
+  adopted : @set.Set[String]
+  mut holds_runners : Bool
+  quieted : @set.Set[String]
+  held_chats : Map[String, String]
+  stop_notices : Map[String, (String, Bool)]
+  deadlines : Map[String, Int32]
+  client_keys_made : Map[String, (String, Double)]
+  held_posts : Map[String, Map[String, @json.Json]]
+  held_count : Int32
+  told_bots : Map[String, @set.Set[String]]
+  quoted_in : Array[String]
+  mut lengths : Map[String, @json.Json]
+  mut lengths_due : Bool
+  length_written : @set.Set[String]
+  timers : Array[Timer]
+  mut timer_seq : Int32
+  timer_waiters : Array[@effect.Deferred[Unit]]
+  mut stopping : Bool
+  awaiting_workspace_activity : @set.Set[String]
+  mut counter : UsageCounter?
+  mut keeps_counted : Bool
+}
+pub async fn Hub::accept(Self, String, @json.Json) -> Unit
+pub fn Hub::act(Self, String, String, args? : Array[@json.Json]) -> Unit
+pub fn Hub::actor(Self, @json.Json) -> String raise Refused
+pub fn Hub::add_to_thread(Self, @json.Json, String) -> Unit raise
+pub async fn Hub::adopt(Self, @json.Json) -> Unit
+pub fn Hub::after(Self, Double, () -> Unit) -> Int32
+pub async fn Hub::allowance_reset(Self, String) -> Unit
+pub fn Hub::any_running(Self) -> Bool
+pub async fn Hub::archive(Self, String, Bool) -> Unit
+pub async fn Hub::archive_by(Self, String, Bool, String, known? : @json.Json) -> Unit
+pub async fn Hub::archive_chat(Self, @json.Json, Bool) -> Unit
+pub async fn Hub::ask_actor(Self, String, String, args? : Array[@json.Json]) -> @json.Json
+pub async fn Hub::auto_archive(Self, Double, look? : @json.Json, missing? : Unprepared) -> Double?
+pub async fn Hub::back_in(Self, String) -> Unit
+pub async fn Hub::bind_single(Self, String, String?, String?, String?) -> String
+pub fn Hub::busy(Self, String) -> Bool
+pub fn Hub::cancel(Self, Int32) -> Unit
+pub fn Hub::changed(Self, String, restart? : Bool) -> Unit
+pub fn Hub::chat_held(Self, String) -> String?
+pub fn Hub::chat_key(Self, String) -> String
+pub fn Hub::client_key(Self, String) -> String?
+pub fn Hub::client_keys(Self) -> Array[(String, String)]
+pub async fn Hub::command(Self, String, String, Array[@json.Json]) -> @json.Json
+pub fn Hub::config(Self) -> @json.Json
+pub async fn Hub::configure(Self, String, @json.Json, lang? : String) -> Unit
+pub fn Hub::connect(Self, String) -> @json.Json raise Refused
+pub fn Hub::connect_of(Self, String) -> @json.Json?
+pub async fn Hub::continue_machine_session(Self, @json.Json, @json.Json, String, lang? : String, ws? : String) -> (String, @json.Json)
+pub fn Hub::counted(Self, @json.Json) -> Unit
+pub async fn Hub::create_session(Self, String, @json.Json, String, @json.Json?, String?, String?) -> Unit
+pub async fn Hub::delete_session(Self, String) -> Unit
+pub fn Hub::deliver(Self, @json.Json, @json.Json, Array[String], String, retry_pending? : Bool, workspace? : String?) -> Unit raise
+pub fn Hub::deliver_letter(Self, @json.Json, @json.Json, Array[String]) -> Unit raise
+pub fn Hub::drop_actor(Self, String) -> Bool
+pub async fn Hub::end_orphan(Self, @json.Json, Double) -> Bool
+pub fn Hub::every_changed(Self) -> Unit
+pub fn Hub::evict(Self, String) -> Unit
+pub async fn Hub::evict_all_idle(Self) -> Int32
+pub async fn Hub::expire_archived(Self, Double) -> Double?
+pub async fn Hub::fetched(Self, String, String, String, Array[@json.Json]) -> (String, Array[@json.Json])
+pub fn Hub::flush_threads(Self) -> Unit
+pub fn Hub::follow_accounts(Self, Array[String], Map[String, String]) -> Int32 raise
+pub fn Hub::get_session(Self, String) -> @json.Json?
+pub fn Hub::goes_afresh(Self, String, Double) -> Bool raise
+pub async fn Hub::hand_over(Self, limit_ms? : Double) -> @json.Json
+pub fn Hub::handed_over(Self, String) -> Bool
+pub fn Hub::has_pending(Self, String) -> Bool
+pub fn Hub::held(Self, String) -> Bool
+pub fn Hub::hold(Self, String) -> Unit
+pub fn Hub::hold_chat(Self, String, String, notice? : String) -> Unit
+pub fn Hub::holds(Self, String) -> Bool
+pub fn Hub::idle_now(Self, String) -> Unit
+pub async fn[T] Hub::in_thread(Self, String, async () -> T, block_following? : Bool) -> T
+pub fn Hub::installed(Self, String) -> Unit raise
+pub fn Hub::keep_usage(Self, String, quiet? : Bool) -> Unit raise
+pub fn Hub::later(Self, async () -> Unit) -> Unit
+pub fn Hub::left_workspace(Self, String) -> Unit
+pub fn Hub::models_first(Self, String, String) -> Array[@json.Json] raise
+pub fn Hub::models_for(Self, String) -> Array[@json.Json] raise
+pub fn Hub::move_on(Self) -> Bool
+pub fn Hub::moved_to(Self, String, String, String) -> String?
+pub fn Hub::new(World, @store_sessions.Store, @store_threads.Store, words? : Words) -> Self
+pub fn Hub::new_chat_key(Self) -> String
+pub async fn Hub::new_session(Self, @json.Json, lang? : String) -> (String, @json.Json)
+pub fn Hub::new_single_session_key(Self, String) -> String
+pub fn Hub::new_token(Self) -> String
+pub fn Hub::next_ts(Self) -> String
+pub fn Hub::note_length(Self, String, @json.Json) -> Unit
+pub fn Hub::now(Self) -> Double
+pub fn Hub::of_workspace(Self, String, String) -> Bool
+pub async fn[T] Hub::one_single(Self, String, async () -> T) -> T
+pub fn Hub::online(Self, @json.Json) -> Bool
+pub fn Hub::open_chat(Self, String, String, String?) -> @json.Json raise
+pub async fn Hub::owns_runner(Self, String) -> Bool
+pub fn Hub::process_state(Self, String) -> String
+pub fn Hub::processes(Self) -> Array[(String, String)]
+pub async fn Hub::profile_gone(Self, String) -> Unit
+pub fn Hub::profile_login_changed(Self, String) -> Unit raise
+pub fn Hub::profiles_in(Self, String?) -> Array[@json.Json]
+pub fn Hub::quiet(Self, String) -> Unit
+pub fn Hub::quiet_in(Self, String) -> Bool
+pub async fn Hub::receive(Self, String, @json.Json) -> Unit
+pub fn Hub::recover(Self) -> Unit raise
+pub fn Hub::release(Self, String) -> Unit raise Refused
+pub fn Hub::release_chat(Self, String) -> Bool raise Refused
+pub async fn Hub::relieve_archived(Self) -> Unit
+pub async fn Hub::retire_after_previous(Self) -> Bool
+pub async fn Hub::retire_usage(Self) -> Unit
+pub fn Hub::run_due(Self, Double) -> Unit
+pub fn Hub::running(Self) -> Int32
+pub fn Hub::running_sessions(Self) -> Array[@json.Json]
+pub fn Hub::runtime_updated(Self, String) -> Unit
+pub fn Hub::say(Self, @json.Json, String, String, attachments? : Array[@json.Json], quotes? : Array[@json.Json], client? : String) -> @json.Json raise
+pub fn Hub::session_ws(Self, String) -> String??
+pub fn Hub::sessions_with_pending(Self) -> Array[String]
+pub async fn Hub::settle(Self) -> Unit
+pub fn Hub::shared(Self, @json.Json, @json.Json, String, String) -> Unit raise
+pub fn Hub::shutdown(Self) -> Unit
+pub fn Hub::starts_afresh(Self, String, String, String, String?) -> String? raise
+pub fn Hub::stopped_notice(Self, String) -> String?
+pub fn Hub::surface(Self, String) -> String
+pub fn Hub::suspend_all(Self) -> Unit
+pub async fn Hub::take_up(Self) -> Unit
+pub fn Hub::threads_told_of(Self, String, recent? : (Array[@json.Json], Bool)) -> Array[String] raise
+pub fn Hub::told(Self, @json.Json) -> Unit
+pub fn Hub::told_cleared(Self, String, read_back? : Bool) -> String raise
+pub fn Hub::told_long_chat(Self, String) -> String? raise
+pub async fn Hub::told_resume_lost(Self, String) -> String
+pub fn Hub::tools_at(Self, String) -> Unit
+pub async fn Hub::unquiet(Self, String) -> Unit
+pub fn Hub::usage_now(Self, String) -> @json.Json? raise
+pub fn Hub::wake_chat(Self, String) -> Unit raise Refused
+pub fn Hub::workspaces(Self) -> Array[String]
+pub fn Hub::ws_of(Self, String?) -> String?
+
+pub struct HubHarness {
+  host : @host.Host
+  mut words : Words
+  mut hub : Hub?
+  mut now : Double
+  mut config : @json.Json
+  mut workspaces : Array[String]
+  mut station : String?
+  mut links : Bool
+  chats : Map[String, @json.Json]
+  states : Map[String, @json.Json]
+  asked : Map[Int32, @effect.Deferred[@json.Json]]
+  mut asks : Int32
+  mut random : Int32
+  mut move_on : Bool?
+  mut live : LiveShell?
+}
+pub fn HubHarness::new(@host.Host) -> Self
+pub fn HubHarness::op(Self, @json.Json) -> @json.Json?
+
+pub struct LiveShell {
+  hub : Hub
+  subs : Map[Int32, (String, Bool)]
+  mut next_sub : Int32
+  mut held : Array[String]
+  watching : Array[String]
+  told : Map[String, @json.Json]
+  begun : @set.Set[String]
+  mut pending : Bool
+  located : Map[String, @json.Json]
+  mut closed : Bool
+}
+pub async fn LiveShell::asked_by_program(Self, String, Array[@json.Json]) -> @json.Json
+pub async fn LiveShell::carried(Self) -> @json.Json
+pub fn LiveShell::close(Self) -> Unit
+pub fn LiveShell::event(Self, String, @json.Json) -> Unit
+pub fn LiveShell::forget(Self, String) -> Unit
+pub fn LiveShell::held_now(Self) -> Array[String]
+pub fn LiveShell::moved(Self, String) -> Unit
+pub fn LiveShell::new(Hub) -> Self
+pub async fn LiveShell::now_of(Self, Array[String]) -> @json.Json
+pub fn LiveShell::running(Self, String, Bool) -> Unit
+pub fn LiveShell::soon(Self, String) -> Unit
+pub fn LiveShell::subscribe(Self, String, Double, Double?, brief? : Bool) -> Int32
+pub fn LiveShell::take_plans(Self, @json.Json) -> Unit
+pub fn LiveShell::take_tails(Self, @json.Json) -> Unit
+pub fn LiveShell::told_by_program(Self, String, Array[@json.Json]) -> Unit
+pub async fn LiveShell::turn_ended(Self, String) -> Unit
+pub fn LiveShell::unsubscribe(Self, String, Int32) -> Unit
+pub fn LiveShell::usage_counted(Self) -> Unit
+
+pub struct Place {
+  bound : Bool
+  joined : Array[String]
+  home : String?
+  first : String?
+  removed : Bool
+  rig_due : Bool
+  rig_pending : @json.Json?
+}
+
+pub struct PoolSignals {
+  health : (String) -> @json.Json
+  load : (String) -> Int32
+  last_picked : (String) -> Double
+  now : () -> Double
+}
+
+pub struct Timer {
+  id : Int32
+  due : Double
+  run : () -> Unit
+}
+
+pub struct Unprepared {
+  unread : Array[@json.Json]
+  mut bindings : Bool
+  jobs : Array[String]
+  mut marks : Bool
+  last : Array[@json.Json]
+}
+pub fn Unprepared::new() -> Self
+pub fn Unprepared::to_json(Self) -> @json.Json
+
+pub struct UsageCheck {
+  hub : Hub
+  mut running : Bool
+  mut next : Int32
+  mut closed : Bool
+  mut complete : Bool
+  waiting : Map[Int32, (@json.Json, Bool)]
+  answered : Map[Int32, @effect.Deferred[Unit]]
+  mut idle : Int32?
+}
+pub fn UsageCheck::close(Self) -> Unit
+pub fn UsageCheck::exited(Self, Int32, failure? : String) -> Unit
+pub fn UsageCheck::heard(Self, @json.Json) -> Unit
+pub fn UsageCheck::new(Hub) -> Self
+pub async fn UsageCheck::ready_chats(Self, @json.Json) -> Unit
+pub async fn UsageCheck::ready_remote(Self) -> Unit
+pub fn UsageCheck::trim_idle(Self) -> Int32
+
+pub struct UsageCounter {
+  hub : Hub
+  settle : Double
+  safety : Double
+  mut last : Double
+  mut first : Bool
+  changed : Array[String]
+  ended : Map[String, Double]
+  mut started_at : Double
+  mut wake : Bool
+  asked : Array[String]
+  mut state : Int32
+  mut due : Double
+  mut timer : Int32?
+}
+pub fn UsageCounter::new(Hub, settle? : Double, safety? : Double) -> Self
+pub async fn UsageCounter::read(Self, Array[String]?) -> Double
+pub fn UsageCounter::reading_all(Self) -> Bool
+pub fn UsageCounter::soon(Self, String) -> Unit
+pub async fn UsageCounter::start(Self) -> Unit
+pub fn UsageCounter::stop(Self) -> Unit
+pub fn UsageCounter::told(Self, @json.Json) -> Unit
+
+pub struct UsageDrain {
+  hub : Hub
+  batch : Int32
+  mut stopped : Bool
+  mut ready : Bool
+  mut running : Bool
+  mut again : Bool
+}
+pub fn UsageDrain::begin(Self) -> Unit
+pub fn UsageDrain::new(Hub, batch? : Int32) -> Self
+pub fn UsageDrain::stop(Self) -> Unit
+pub fn UsageDrain::wake(Self) -> Unit
+
+pub struct Words {
+  zh : Map[String, @json.Json]
+  en : Map[String, @json.Json]
+  lang : String
+}
+pub fn Words::new(zh? : Map[String, @json.Json], en? : Map[String, @json.Json], lang? : String) -> Self
+pub fn Words::tr(Self, String, args? : Array[(String, @json.Json)], lang? : String) -> String
+
+pub struct World {
+  tell : (String, @json.Json) -> Unit
+  ask : async (String, @json.Json) -> @json.Json
+  now : () -> Double
+  config : () -> @json.Json
+  workspaces : () -> Array[String]
+  station : () -> String?
+  link : (String) -> String?
+  chat : (String) -> @json.Json?
+  process_state : (String) -> String
+  idle_ms : (String, Double) -> Double?
+  random_hex : (Int32) -> String
+  move_on : () -> Bool?
+}
+
+// Type aliases
+
+// Traits

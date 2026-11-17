@@ -145,6 +145,7 @@ using @sfbase {
   writing_pictures,
   type Writing,
   type Dragged,
+  type Given,
   type Workspace,
   writing_add_picked,
   opt_text,

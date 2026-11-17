@@ -183,6 +183,18 @@ pub fn icon_action_node(
 }
 
 ///|
+/// What a page does from its bar (its `actions`: 添加) in `parent`, said to be `label`: laid out as the page is (its
+/// look, the same for as long as the page is made: page_node makes it again as that changes), wide the quiet button,
+/// its mark before its words; narrow its mark alone, round. `press` done as it is pressed. The node.
+#callsite(autofill(loc))
+pub fn page_action_node(parent : @view.View, icon : String, label : () -> String, press : () -> Unit, loc~ : SourceLoc) -> @view.View {
+  match look_node(parent) {
+    Wide => button_node(loc~, parent, label, press, tone=Ghost, icon~)
+    Narrow => icon_button_node(loc~, parent, icon, label, press)
+  }
+}
+
+///|
 /// icon_action_node's button that opens what goes beside it (a ⋯'s menu): `open` given the button itself as it is
 /// pressed, where it is placed then.
 #callsite(autofill(loc))

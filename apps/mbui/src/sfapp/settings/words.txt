@@ -2006,6 +2006,8 @@ web-pages.experimental.lead
 web-pages.experimental.enabledCount
 web-pages.experimental.chatPage.title
 web-pages.experimental.chatPage.description
+web-pages.experimental.composerNodes.description
+web-pages.experimental.composerNodes.title
 web-pages.experimental.farviewNative.title
 web-pages.experimental.farviewNative.description
 web-pages.experimental.board.title

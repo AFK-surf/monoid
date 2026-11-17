@@ -641,6 +641,42 @@ fn tape_settle(chat : String, open : String, known : Bool, at : Double) -> Unit 
 }
 
 ///|
+/// Chat `r`'s side panel asked to show a tab (opened or brought to the front) while it was open already (another tab, or
+/// this one, the page slid back over it): on the tape, with `r` shown, the panel brought over, as tape_settle does as
+/// it first opens (it tells only the panel's being open, which this does not change: a card pressed in the chat did
+/// nothing, the panel standing under the system's bars at a Duo's side).
+fn tape_bring_side(r : ChatRef) -> Unit {
+  let shown = match app.nav.top() {
+    Chat(top) | History(top, _, _) => chat_key(top) == chat_key(r)
+    _ => false
+  }
+  if shown && wide.tape.untracked() && wide.tape_at.untracked() != Panel {
+    wide.tape_ask.set(Some(Panel))
+  }
+}
+
+///|
+/// Whether a chat's side panel on the tape is out of sight: another panel in use, at rest, none pulling it over
+/// (side_screen_page_node: its screen let go of meanwhile), followed.
+fn tape_side_hidden() -> Bool {
+  wide.tape.get() && wide.tape_at.get() != Panel && wide.tape_pull.get() != Some(Panel) && tape_goes.rest.get()
+}
+
+///|
+/// The page the tape is laid out for: the stack's top, under what is over the whole window (a station's screen, its
+/// terminal, a drive's text read or its film played: sfapp's wide_page), which leaves the tape as it was, back to it as
+/// it was left (as the pane's: pane_shows), so a screen's 全屏 from a chat's side panel goes back to that panel.
+fn tape_top() -> Page {
+  let pages = app.nav.pages()
+  for i = pages.length() - 1; i >= 0; i = i - 1 {
+    if !(pages[i] is (Screen(_) | Terminal(_) | DriveRead(_) | DrivePlay(_))) {
+      return pages[i]
+    }
+  }
+  app.nav.top()
+}
+
+///|
 /// The tape in node `v` (the signed-in shell's, filling the window: sfapp's taped_shell), in the workspace in view (its
 /// file's head): the page brought over once `ready` says the core has given what it shows of the page put on it, `most`
 /// ms after it was put there at the latest.
@@ -666,7 +702,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   tape_goes.most = most
   tape_goes.panel_of = fn() {
     match @sfbase.workspace_in_view(src).0 {
-      Some(w) => side_open_for(src, w, app.nav.top())
+      Some(w) => side_open_for(src, w, tape_top())
       None => None
     }
   }
@@ -743,7 +779,8 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
   // panel ask, the page waited for come or its wait over, where things go
   v.reacts(
     fn() {
-      let chat = match app.nav.top() {
+      let top = tape_top()
+      let chat = match top {
         Chat(r) | History(r, _, _) => chat_key(r)
         // a chat's detail asked as a page, on its way to its chat's side panel (beside_follow): still that chat, not another
         // come (its panel, opening, comes over)
@@ -755,7 +792,7 @@ pub fn tape_view(v : @view.View, src : Source, ready~ : (Page) -> Bool, most~ : 
         None => ""
       }
       // (the chat shown has its view: what its side panel shows is known)
-      let known = match app.nav.top() {
+      let known = match top {
         Chat(r) | History(r, _, _) => @sfbase.chat_head_json(src, r) is Some(_)
         _ => true
       }

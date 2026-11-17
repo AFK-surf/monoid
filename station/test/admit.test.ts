@@ -272,13 +272,18 @@ test("a command that holds the screen long while another waits has its agent tol
 });
 
 /// A process of the test's for a command that asks for the screen (its shell, as `stillfail-job screen`'s): there until
-/// the test ends, or kills it.
+/// the test ends, or kills it. The shell becomes the command (`exec`): Linux's sh (dash) forks for it otherwise, and the
+/// shell killed left its `tail` running after the file's tests (setup-env.mjs, 2026-11-17).
 const processes: ChildProcess[] = [];
-after(() => {
-  for (const p of processes) p.kill("SIGKILL");
+after(async () => {
+  for (const p of processes) {
+    p.kill("SIGKILL");
+    // (gone, not only signalled, before the file's process looks for what it left: setup-env.mjs)
+    if (p.exitCode === null && p.signalCode === null) await new Promise((r) => p.once("exit", r));
+  }
 });
 function aShell(): ChildProcess {
-  const p = spawn("sh", ["-c", FOREVER], { stdio: "ignore" });
+  const p = spawn("sh", ["-c", `exec ${FOREVER}`], { stdio: "ignore" });
   processes.push(p);
   return p;
 }

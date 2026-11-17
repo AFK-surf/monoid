@@ -146,7 +146,7 @@ pub fn Flow::take(self : Flow, bytes : Bytes) -> Unit {
   let all = if self.carry.length() == 0 {
     bytes
   } else {
-    let b = Buffer(size_hint=self.carry.length() + bytes.length())
+    let b = Buffer(capacity=self.carry.length() + bytes.length())
     b.write_bytes(self.carry)
     b.write_bytes(bytes)
     b.to_bytes()

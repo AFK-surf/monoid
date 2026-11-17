@@ -169,6 +169,8 @@ pub(all) struct ArchiveSide {
   q : @signals.Signal[String]
   limit : @signals.Signal[Int]
   mut last : Json?
+  /// the workspace `last` is of: shown again only in it
+  mut last_ws : String
   note : @signals.Signal[String]
   mut landed : Bool
 }
@@ -178,6 +180,7 @@ pub let archive_side : ArchiveSide = {
   q: @signals.signal(""),
   limit: @signals.signal(archive_side_page),
   last: None,
+  last_ws: "",
   note: @signals.signal(""),
   landed: false,
 }
@@ -192,6 +195,7 @@ fn wide_reset() -> Unit {
   archive_side.q.set("")
   archive_side.limit.set(archive_side_page)
   archive_side.last = None
+  archive_side.last_ws = ""
   archive_side.note.set("")
   archive_side.landed = false
   wide.side_w.set(side_own)
@@ -248,9 +252,16 @@ fn wide_reset() -> Unit {
 /// Whether the window is drawn as this frame: laid out Medium or Large (@sf.layout), by the window's width (not the
 /// box being built's: asked from within the sidebar too).
 pub fn is_wide(c : @ui.Ctx) -> Bool {
+  wide_at(c.window_size().0)
+}
+
+///|
+/// Whether a window `w` wide is drawn as the wide frame (is_wide): what the app's tree tells as its window is first
+/// given, before anything of it is laid out (sfapp's app_tree).
+pub fn wide_at(w : Double) -> Bool {
   // (or where the system lays out its tabs in every pose, the cards across on each screen: an iPhone Duo's outer one too,
   // rail_native.mbt)
-  !(@sf.layout(c.window_size().0) is Small) || @sf.native_able()
+  !(@sf.layout(w) is Small) || @sf.native_able()
 }
 
 ///|

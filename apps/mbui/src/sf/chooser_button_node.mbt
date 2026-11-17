@@ -42,8 +42,8 @@ pub fn chooser_button_node(
     },
     fn(v, _) {
       let lit = fn() { lit_node(v) || open.get() }
-      let hand = EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-      v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+      let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+      v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
       let ink = fn() { if lit() { theme().p.text } else { theme().p.muted } }
       let padx = if card_words { card_foot_words_in(height) } else { button_padx }
       v

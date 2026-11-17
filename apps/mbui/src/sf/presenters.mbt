@@ -227,6 +227,10 @@ priv struct PanelNodes {
   /// beside what opened it, how tall what it holds shows at most before it scrolls in it (panel_nodes' `most`; None: as
   /// tall as the room beside what opened it leaves it)
   most : (() -> Double)?
+  /// on a sheet across it, its column flush with the sheet's sides, what it holds laying out its own (a menu's and a
+  /// pick's rows across it, a confirm's and a question's words as far in as a sheet's), as one a share of the window
+  /// tall lays them out: sheet_node's `own_sides`
+  flush : Bool
 }
 
 ///|
@@ -283,7 +287,8 @@ priv struct Presented {
   mut steps_made : Int
   step_h : @motion.Anim
   mut step_h_of : Int
-  /// as a sheet: how tall it is drawn (its sheet's height, as present_sheet works it out), how far it has gone up out
+  /// as a sheet: how tall it is drawn (its sheet's height, as present_sheet works it out; a sheet of the window's tree,
+  /// as it rises: sheet_node's `rises`), how far it has gone up out
   /// of the way of a sheet over it (0 … 1 of `pushed`: @kit.sheet's `raised`), whether one is, and how far up that takes it
   sheet_h : @signals.Signal[Double]
   recede : @motion.Anim
@@ -460,7 +465,12 @@ fn present(shows : Shows, from : Anchor, line? : String = "", gone? : () -> Unit
   let chosen_in = presented_now.iter().filter(fn(q) { q.closed_now && q.stands > 0.0 && q.taken_by == 0 }).last()
   match (chosen_in, shows) {
     (Some(old), Menu(items, title, _)) if old.chosen && old.shows is Menu(_, _, _) => {
-      menu_level(old, title, items, gone)
+      // (a sheet of the window's tree: a page of it, as a panel's step further in is; the host's, a level of its own)
+      if tree_presented.contains(old.serial) && tree_as_sheet.get(old.serial).unwrap_or(false) {
+        panel_page(old, menu_sheet_panel(old.serial, title, fn() { items }), from, gone)
+      } else {
+        menu_level(old, title, items, gone)
+      }
       return
     }
     _ => ()
@@ -780,7 +790,7 @@ pub fn panel_nodes(
       match_panel,
       steps: false,
       on_back: back,
-      nodes: Some({ body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most }),
+      nodes: Some({ body, foot, hugs, hugs_centred, steps, sheet_heads: false, heads: heads_itself, top: top_share, most, flush: false }),
     }),
     from,
     gone~,
@@ -852,7 +862,7 @@ pub fn panel_go_nodes(
         Panel(x) =>
           match x.nodes {
             Some(n) => {
-              let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most }) }
+              let step : PanelOf = { ..x, title, description, live, on_back: back, nodes: Some({ body, foot, hugs: n.hugs, hugs_centred: n.hugs_centred, steps: false, sheet_heads: false, heads: false, top: 0.0, most: n.most, flush: n.flush }) }
               // (opened by what opened the panel: on a sheet as far in as its first step, sheet_node's `pressed`)
               panel_page(p, step, p.from, left)
             }

@@ -378,7 +378,7 @@ pub fn fixture_named(String, Json?, (Result[(Json, Bytes), Json]) -> Unit) -> Un
 
 pub fn fixture_new_call(Fixture, String, Json) -> Result[Json, Json]?
 
-pub fn fixture_new_topic(Fixture, String) -> Json?
+pub fn fixture_new_topic(Fixture, String, scope? : String) -> Json?
 
 pub fn fixture_outline(Fixture, Map[String, @json.Json]) -> @json.Json?
 
