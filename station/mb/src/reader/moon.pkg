@@ -22,6 +22,7 @@ import {
   "station/cc",
   "station/store_threads",
   "station/usage",
+  "station/adb_devices",
   "station/recent",
   "station/lookups",
   "station/agent_drivers",

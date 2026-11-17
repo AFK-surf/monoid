@@ -996,6 +996,8 @@ fn main {
         _ => None
       }))
     }
+    (Some("harness-adb-devices"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @adb_devices.harness(host))
     (Some("harness-slack"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @slack.harness(host))
     (Some("live-locator"), Some(db), Some(data)) =>

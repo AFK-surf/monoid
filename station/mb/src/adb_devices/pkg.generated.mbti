@@ -1,0 +1,482 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/adb_devices"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/set",
+  "station/host",
+  "station/jsjson",
+  "station/session_chats",
+  "station/sql",
+}
+
+// Values
+pub fn adb_candidates(@jsjson.JValue, String?, String, String, String) -> Array[String]
+
+pub let adb_devices_decl : @jsjson.JValue
+
+pub let adb_port : Int32
+
+pub async fn answer_adb(Shares, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> Unit
+
+pub fn b64(BytesView) -> String
+
+pub let baud_default : Int32
+
+pub async fn bind(World, String) -> (@jsjson.JValue, Int32)
+
+pub async fn card_header_if_ready(World, @jsjson.JValue) -> @jsjson.JValue?
+
+pub let card_occupied : String
+
+pub async fn card_place(World, String, @jsjson.JValue, @jsjson.JValue) -> @jsjson.JValue?
+
+pub fn chat_title(@jsjson.JValue, String?, String?, String, String) -> String
+
+pub fn density_of(String) -> Double
+
+pub let device_list_decl : @jsjson.JValue
+
+pub fn device_list_said(Array[@jsjson.JValue]) -> String
+
+pub fn device_refusal(@jsjson.JValue) -> String?
+
+pub let device_use_decl : @jsjson.JValue
+
+pub let devices_max : Int32
+
+pub let display_mark : String
+
+pub fn display_of(String) -> @jsjson.JValue
+
+pub fn displayed(@jsjson.JValue) -> String
+
+pub fn failure(String) -> String
+
+pub async fn fetch_on_phone(World, @jsjson.JValue, String, String, Double, heard? : async (Double) -> Unit) -> @jsjson.JValue
+
+pub fn floor(Double) -> Double
+
+pub async fn gate(GateDeps, World, String, Array[Int32]) -> String?
+
+pub fn get(@jsjson.JValue, String) -> @jsjson.JValue
+
+pub fn given_title(@jsjson.JValue) -> String?
+
+pub let grace : Double
+
+pub async fn grant_chat_title(World, @jsjson.JValue) -> String?
+
+pub let grant_refused : String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn has(@jsjson.JValue, String) -> Bool
+
+pub fn host_port(String) -> (String, Double)
+
+pub let idle_for_ms : Double
+
+pub let idle_ms : Double
+
+pub fn int_text(Int32) -> String
+
+pub fn is_int(Double) -> Bool
+
+pub fn is_package(String) -> Bool
+
+pub fn is_scope(@jsjson.JValue?) -> Bool
+
+pub fn iso_time(Double) -> String
+
+pub fn js_length(String) -> Int32
+
+pub fn js_num(String) -> Double
+
+pub fn js_slice(String, Int32, b? : Int32) -> String
+
+pub fn js_text(@jsjson.JValue) -> String
+
+pub fn js_trim(String) -> String
+
+pub let keep_lending : String
+
+pub async fn keep_tcp(Shares, Share, String, Array[String]) -> Unit
+
+pub let keep_tcp_command : String
+
+pub async fn key(World, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> String
+
+pub fn kind_of(Error) -> String
+
+pub fn lang_of_core(@jsjson.JValue) -> String
+
+pub fn lasts(String) -> Double
+
+pub fn link_said(Req) -> String
+
+pub fn list_of(@jsjson.JValue?) -> Array[@jsjson.JValue]
+
+pub fn listed(Array[@jsjson.JValue]) -> String
+
+pub fn message_of(Error) -> String
+
+pub fn named(Array[@jsjson.JValue], String) -> @jsjson.JValue raise
+
+pub fn num_text(Double) -> String
+
+pub async fn open_door(World, String, String, async (Int32) -> Array[Int32], async (String, Array[Int32]) -> String?) -> Door
+
+pub fn phone_id(String, String) -> String
+
+pub let phone_send_decl : @jsjson.JValue
+
+pub async fn phone_use(PhoneGrants, async (String, String) -> String, String, @jsjson.JValue) -> String
+
+pub let phone_use_decl : @jsjson.JValue
+
+pub let ports_end : Int32
+
+pub let ports_start : Int32
+
+pub async fn post_card(World, String, @jsjson.JValue, String, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?) -> @jsjson.JValue
+
+pub fn pretty(@jsjson.JValue) -> String
+
+pub async fn reach_device(World, @jsjson.JValue) -> @jsjson.JValue
+
+pub async fn reach_tcp(World, String, Double) -> @jsjson.JValue
+
+pub fn reached(Array[@jsjson.JValue], Int32?, gone? : @jsjson.JValue, display? : @jsjson.JValue) -> String
+
+pub fn reached_at(@jsjson.JValue, Int32) -> String
+
+pub fn read_only(@jsjson.JValue) -> Bool
+
+pub async fn record_posted_card(World, String, @jsjson.JValue, String, @jsjson.JValue, @jsjson.JValue, ((String) -> Error)?, (async () -> Bool)?, @jsjson.JValue?) -> @jsjson.JValue
+
+pub fn refused(String, String) -> @session_chats.Thrown
+
+pub let retry : Double
+
+pub let retry_most : Double
+
+pub fn root_tasks_on(String, Int32) -> Array[Int32]
+
+pub async fn run(World, String, Array[String], Double?) -> String
+
+pub fn said(Req) -> String
+
+pub fn scope_said(@jsjson.JValue?) -> String
+
+pub let scopes : Array[String]
+
+pub let server_version : String
+
+pub async fn servers_of(Shares, Share) -> Array[Array[String]]?
+
+pub let settle : Double
+
+pub let silent_ms : Double
+
+pub fn size_of(String) -> (Double, Double)
+
+pub async fn staged(World, String, String) -> (String, Double)
+
+pub let stillfail_surface : String
+
+pub async fn stream_read(World, @jsjson.JValue) -> Bytes?
+
+pub async fn stream_write(World, @jsjson.JValue, BytesView) -> Unit
+
+pub async fn surface_of(String, String, Int32, async () -> String) -> String?
+
+pub let tcp_port : Int32
+
+pub fn text(@jsjson.JValue?, Int32) -> String
+
+pub fn text_of(@jsjson.JValue?) -> String
+
+pub let title_member_probe : String
+
+pub let title_one_member : String
+
+pub let title_shown_members : String
+
+pub fn tool_decl(String, String, @jsjson.JValue) -> @jsjson.JValue
+
+pub fn unb64(String) -> Bytes
+
+pub let undecided : String
+
+pub fn undefined(@jsjson.JValue) -> Bool
+
+pub fn usual_port(String) -> Int32
+
+pub fn utf8_lossy(BytesView) -> String
+
+pub async fn write_line(World, @jsjson.JValue, @jsjson.JValue) -> Unit
+
+// Errors
+
+// Types and methods
+pub struct Adb {
+  w : World
+  grants : PhoneGrants
+  servers : GrantServers
+  displays : PhoneDisplays
+  shares : Shares
+}
+pub async fn Adb::adb_devices(Self) -> String
+pub async fn Adb::close(Self) -> Unit
+pub async fn Adb::name_of(Self, String) -> String
+pub async fn Adb::new(World, @sql.Db, String, record? : String, admit? : Bool, outcomes? : Bool) -> Self
+pub async fn Adb::phone_device_use(Self, String, @jsjson.JValue, String) -> String
+pub async fn Adb::phone_done(Self, String, @jsjson.JValue) -> Array[String]
+pub async fn Adb::phone_entries(Self, String) -> Array[@jsjson.JValue]
+pub async fn Adb::phone_send(Self, String, @jsjson.JValue) -> String
+pub async fn Adb::phone_use(Self, String, @jsjson.JValue) -> String
+pub async fn Adb::phones_shown(Self, String) -> Array[@jsjson.JValue]
+pub async fn Adb::reach(Self, String, String) -> String
+pub async fn Adb::stream(Self, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue, @jsjson.JValue) -> Unit
+
+pub struct AdbActivity {
+  pkg : String
+  used : (Bool) -> Unit
+  header : FixedArray[Byte]
+  active : @set.Set[UInt32]
+  mut header_bytes : Int32
+  mut remaining : UInt32
+  mut service : FixedArray[Byte]?
+  mut service_bytes : Int32
+  mut service_id : UInt32
+  mut unread : Bool
+}
+pub fn AdbActivity::new(String, (Bool) -> Unit) -> Self
+pub fn AdbActivity::take(Self, BytesView) -> Unit
+
+pub struct DeviceRegistry {
+  w : World
+  db : @sql.Db
+}
+pub async fn DeviceRegistry::add(Self, String, @jsjson.JValue, @jsjson.JValue, Double) -> Result[@jsjson.JValue, String]
+pub fn DeviceRegistry::get(Self, String, String) -> @jsjson.JValue? raise
+pub fn DeviceRegistry::new(World, @sql.Db) -> Self raise
+pub fn DeviceRegistry::of(Self, String) -> Array[@jsjson.JValue] raise
+pub fn DeviceRegistry::remove(Self, String, String) -> Bool raise
+
+pub struct Devices {
+  w : World
+  registry : DeviceRegistry
+  phones : Adb?
+  rigs : Bool
+}
+pub async fn Devices::all(Self, String, String) -> Array[@jsjson.JValue]
+pub fn Devices::bus_list(Self, @jsjson.JValue) -> @jsjson.JValue raise
+pub async fn Devices::changed(Self, @jsjson.JValue) -> Unit
+pub async fn Devices::device_list(Self, String) -> String
+pub async fn Devices::device_use(Self, String, @jsjson.JValue) -> String
+pub async fn Devices::forward(Self, String, @jsjson.JValue) -> String
+pub async fn Devices::listed(Self, String) -> Array[@jsjson.JValue]
+pub fn Devices::new(World, DeviceRegistry, phones? : Adb, rigs? : Bool) -> Self
+pub async fn Devices::phones(Self, String) -> Array[@jsjson.JValue]
+pub async fn Devices::route(Self, String, String, @jsjson.JValue, String) -> (Int32, @jsjson.JValue)?
+pub async fn Devices::side_device(Self, String, String, Bool) -> @jsjson.JValue
+pub async fn Devices::tell(Self, String) -> Unit
+
+pub struct Door {
+  port : Int32
+  close : () -> Unit
+}
+
+pub struct GateDeps {
+  session : async (String) -> @jsjson.JValue
+  table : async () -> @jsjson.JValue
+  runners : async (String) -> Array[Int32]
+  jobs : async () -> Array[(Int32, async (String) -> Bool)]
+  cwds : async (Array[Int32]) -> Map[Int32, String]
+  self_pid : Int32
+  elsewhere : String?
+}
+
+pub struct GrantServers {
+  w : World
+  servers : Map[String, @effect.Deferred[Server?]]
+  record : String?
+  kept : Map[Int32, KeptServer]
+  mut writing : @effect.Deferred[Unit]
+  admit : (async (String, Array[Int32]) -> String?)?
+}
+pub async fn GrantServers::close(Self) -> Unit
+pub async fn GrantServers::ensure(Self, String) -> Server?
+pub fn GrantServers::ids(Self) -> Array[String]
+pub async fn GrantServers::new(World, record? : String, admit? : async (String, Array[Int32]) -> String?) -> Self
+pub async fn GrantServers::owner(Self, @jsjson.JValue, Array[String]) -> String?
+pub async fn GrantServers::reap(Self, previous_gone? : async () -> Unit) -> Int32
+pub async fn GrantServers::stop(Self, String) -> Unit
+pub async fn GrantServers::written(Self) -> Unit
+
+type Held
+
+type KeptServer
+
+pub struct Limits {
+  quick : Double?
+  long : Double?
+}
+
+pub struct PhoneDisplays {
+  w : World
+  used_at : async (String) -> @jsjson.JValue
+  changed : async (String) -> Unit
+  file : String
+  idle_most : Double?
+  held : Map[String, Held]
+  opening : Map[String, @effect.Deferred[@jsjson.JValue]]
+  mut check : (() -> Unit)?
+  mut closed : Bool
+}
+pub async fn PhoneDisplays::close(Self, String) -> Unit
+pub fn PhoneDisplays::close_all(Self) -> Unit
+pub fn PhoneDisplays::has(Self, String) -> Bool
+pub async fn PhoneDisplays::idle(Self) -> Unit
+pub fn PhoneDisplays::new(World, String, async (String) -> @jsjson.JValue, async (String) -> Unit, idle_most? : Double) -> Self
+pub async fn PhoneDisplays::open(Self, String, String, String, Int32, String) -> @jsjson.JValue
+pub fn PhoneDisplays::titles(Self, String) -> Array[String]
+
+pub struct PhoneGrants {
+  w : World
+  db : @sql.Db
+  title : async (Req) -> String?
+  told : async (@jsjson.JValue, @jsjson.JValue, String) -> Unit
+  outcomes : Bool
+  titles : Map[String, (String, String?)]
+  shown_by_session : Map[String, Array[String]]
+  used_at : Map[String, Double]
+}
+pub async fn PhoneGrants::ask(Self, String, String, reask? : Bool, of? : String) -> Req
+pub async fn PhoneGrants::card_pending(Self, Req) -> Bool?
+pub async fn PhoneGrants::changed(Self, @jsjson.JValue) -> Unit
+pub async fn PhoneGrants::decide(Self, String, String, String?, String, signed? : @jsjson.JValue) -> String?
+pub fn PhoneGrants::get(Self, String) -> Req? raise
+pub async fn PhoneGrants::granted_of_owner(Self, String) -> Array[Req]
+pub async fn PhoneGrants::held(Self, String) -> Array[Req]
+pub async fn PhoneGrants::linked(Self, String, @jsjson.JValue) -> Unit
+pub async fn PhoneGrants::live_all(Self) -> Array[Req]
+pub fn PhoneGrants::new(World, @sql.Db, async (Req) -> String?, async (@jsjson.JValue, @jsjson.JValue, String) -> Unit, outcomes? : Bool) -> Self raise
+pub async fn PhoneGrants::of_owner(Self, String, workspace? : String) -> Array[@jsjson.JValue]
+pub async fn PhoneGrants::release(Self, String, owner? : String) -> Array[Req]
+pub async fn PhoneGrants::revoke(Self, String, String, String) -> String?
+pub async fn PhoneGrants::shown(Self, Req) -> @jsjson.JValue
+pub async fn PhoneGrants::sign(Self, String, String, @jsjson.JValue?, String) -> String?
+pub async fn PhoneGrants::starter(Self, String) -> String?
+pub async fn PhoneGrants::used(Self, String, Bool) -> Unit
+
+pub struct Reader {
+  w : World
+  stream : @jsjson.JValue
+  mut carry : Bytes
+}
+pub async fn Reader::line(Self) -> @jsjson.JValue?
+pub fn Reader::new(World, @jsjson.JValue) -> Self
+
+pub struct Req {
+  mut v : @jsjson.JValue
+}
+pub fn Req::copy(Self) -> Self
+pub fn Req::delete(Self, String) -> Unit
+pub fn Req::get(Self, String) -> @jsjson.JValue?
+pub fn Req::id(Self) -> String
+pub fn Req::new(@jsjson.JValue) -> Self
+pub fn Req::num(Self, String) -> Double?
+pub fn Req::owner(Self) -> String
+pub fn Req::session(Self) -> String
+pub fn Req::set(Self, String, @jsjson.JValue) -> Unit
+pub fn Req::status(Self) -> String
+pub fn Req::text(Self, String) -> String
+
+pub struct Server {
+  port : Int32
+  child : @jsjson.JValue
+}
+
+pub struct Share {
+  port : Int32
+  owner : @jsjson.JValue
+  server : @jsjson.JValue
+  mut info : @jsjson.JValue
+  mut conn : @jsjson.JValue
+  mut lang : String
+  mut offer : Int32
+  mut state : @jsjson.JValue
+  mut version : Int32
+  mut screens : Array[String]
+  mut on_set : (async (@jsjson.JValue) -> Unit)?
+  mut refused : String?
+  mut refused_unpaired : Bool
+  refusal_waiters : Array[@effect.Deferred[Unit]]
+  mut connecting : @effect.Deferred[Unit]?
+  mut again : Bool
+  mut failures : Int32
+  mut streams : Int32
+  mut keeping : @effect.Deferred[Unit]
+  sockets : Array[(@jsjson.JValue, Stop)]
+  mut closing : Bool
+  waiters : Array[@effect.Deferred[Unit]]
+}
+pub fn Share::adb_state(Self) -> String
+pub fn Share::email(Self) -> String
+pub fn Share::line(Self) -> @jsjson.JValue
+pub fn Share::listed(Self) -> @jsjson.JValue
+pub fn Share::serial(Self) -> String
+pub fn Share::set_screens(Self, Array[String]) -> Unit
+
+pub struct Shares {
+  w : World
+  by_key : Map[String, Share]
+  tcp_asked : @set.Set[String]
+  gone : Map[String, @jsjson.JValue]
+  limits : Limits
+  cloud : Bool
+  servers : GrantServers?
+  granted : (async (String) -> Array[String])?
+  stated : async (String, @jsjson.JValue) -> Unit
+  used : async (String, Bool) -> Unit
+  mut stopping : Bool
+  stop_waiters : Array[@effect.Deferred[Unit]]
+}
+pub async fn Shares::close(Self) -> Unit
+pub fn Shares::list(Self) -> Array[@jsjson.JValue]
+pub fn Shares::new(World, limits? : Limits, cloud? : Bool, servers? : GrantServers, granted? : async (String) -> Array[String], stated? : async (String, @jsjson.JValue) -> Unit, used? : async (String, Bool) -> Unit) -> Self
+pub fn Shares::regrant(Self, String) -> Unit
+pub fn Shares::screens(Self, String, Array[String]) -> Unit
+
+type Stop
+
+pub struct World {
+  call : async (String, Array[@jsjson.JValue]) -> @jsjson.JValue
+  callback : (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue
+  now : () -> Double
+  spawn : (async () -> Unit) -> Unit
+  words : @session_chats.Words
+  mut lang : String
+  mut timers : Int32
+}
+pub fn World::after(Self, Double, async () -> Unit) -> () -> Unit
+pub async fn World::ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::hub_has(Self, String) -> Bool
+pub async fn World::log(Self, String, String, String, @jsjson.JValue) -> Unit
+pub fn World::new(async (String, Array[@jsjson.JValue]) -> @jsjson.JValue, (async (Array[@jsjson.JValue]) -> @jsjson.JValue) -> @jsjson.JValue, () -> Double, (async () -> Unit) -> Unit, @session_chats.Words) -> Self
+pub fn World::set_lang(Self, String) -> Unit
+pub async fn World::sleep(Self, Double) -> Unit
+pub async fn World::store(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn World::store_has(Self, String) -> Bool
+pub fn World::title_of(Self, @jsjson.JValue, String?) -> String
+pub fn World::tr(Self, String, String, args? : Array[(String, String)]) -> String
+pub async fn World::try_ask(Self, String, Array[@jsjson.JValue]) -> @jsjson.JValue
+pub async fn[X] World::within(Self, Double, async () -> X, String) -> X
+
+// Type aliases
+pub type Admit = async (String, Array[Int32]) -> String?
+
+// Traits
