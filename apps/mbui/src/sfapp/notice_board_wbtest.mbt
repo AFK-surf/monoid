@@ -69,7 +69,12 @@ test "a notification while a chat is in view opens a chat page, even with the bo
     open_page(Chat({ station: "ws1/st1", session: "s-c11", title: "", station_name: "" }))
   })
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.board_on_of(src, "ws1"))
+  // (a chat opened from the board on the wide frame shows the list again, open_where's: the preference turned on
+  // again under the chat page, as the prefs can still say it)
+  assert_true(!@sfbase.board_on_of(src, "ws1"))
+  @sfbase.set_board_on(src, "ws1", true)
+  t.run_for(@ui.move_most_ms)
+  guard app.nav.top() is Chat(_) else { fail("the chat page is no longer in view") }
   notice_board_tap(t, "/o/ws1/st1/s-c1\n8")
   guard app.nav.top() is Chat(r) else { fail("the chat page was not opened") }
   assert_eq((r.station, r.session), ("ws1/st1", "s-c1"))
@@ -83,7 +88,12 @@ test "大屏: 待处理 from a chat opens another chat page while the board pref
     open_page(Chat({ station: "ws1/st1", session: "s-c11", title: "", station_name: "" }))
   })
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.board_on_of(src, "ws1"))
+  // (a chat opened from the board on the wide frame shows the list again, open_where's: the preference turned on
+  // again under the chat page, as the prefs can still say it)
+  assert_true(!@sfbase.board_on_of(src, "ws1"))
+  @sfbase.set_board_on(src, "ws1", true)
+  t.run_for(@ui.move_most_ms)
+  guard app.nav.top() is Chat(_) else { fail("the chat page is no longer in view") }
   t.click(Button, label="待处理")
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="夜里的构建又失败了")
