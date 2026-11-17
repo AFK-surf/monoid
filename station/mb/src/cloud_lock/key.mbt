@@ -13,7 +13,7 @@ pub struct StationKey {
 ///|
 fn ed_sign(host : @host.Host, seed : Bytes, message : Bytes) -> (String, String) raise Failure {
   let answer = host.shell_sync("ed25519.sign", { "seed": Json::string(hex_of(seed)), "message": Json::string(hex_of(message)) }) catch {
-    e => raise Failed(e.to_string())
+    e => raise Failed(Show::to_string(e))
   }
   match answer {
     { "publicKey": String(k), "signature": String(s), .. } => (k, s)
@@ -52,7 +52,7 @@ pub async fn load_key(host : @host.Host, data : String) -> StationKey raise Fail
   if disk.bytes(path) is Some(seed) {
     return StationKey::new(host, seed)
   }
-  let random = host.shell_sync("crypto.random", { "bytes": 32 }) catch { e => raise Failed(e.to_string()) }
+  let random = host.shell_sync("crypto.random", { "bytes": 32 }) catch { e => raise Failed(Show::to_string(e)) }
   guard random is String(h) else { raise Failed("no random bytes") }
   let seed = hex_bytes(h)
   disk.put(path, seed)

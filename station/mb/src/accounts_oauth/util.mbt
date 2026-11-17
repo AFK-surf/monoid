@@ -384,7 +384,7 @@ fn from_jvalue(v : @jsjson.JValue) -> Json {
 /// `JSON.parse(text)`, which fails as SyntaxError.
 fn parse_json(text : String) -> Json raise JsonError {
   from_jvalue(@jsjson.parse(text)) catch {
-    e => raise JsonError(e.to_string())
+    e => raise JsonError(Show::to_string(e))
   }
 }
 

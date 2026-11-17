@@ -151,7 +151,7 @@ fn base64_value(c : Int) -> Int {
 /// `text`'s bytes as Node's `Buffer.from(text, "base64")` gives them: what is no base64 passed over, ended at the
 /// first `=`, a last character alone dropped.
 pub fn base64_bytes(text : String) -> Bytes {
-  let out = Buffer(capacity=text.length() / 4 * 3)
+  let out = Buffer(size_hint=text.length() / 4 * 3)
   let mut acc = 0
   let mut count = 0
   for i in 0..<text.length() {

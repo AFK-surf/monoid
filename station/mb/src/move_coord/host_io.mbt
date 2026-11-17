@@ -23,20 +23,20 @@ pub fn host_disk(host : @host.Host) -> Disk {
           "text": @json.Json::string(text),
         }),
       ) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
     },
     append: async fn(path, text) {
       ignore(
         host.shell_sync("fs.mkdir", { "path": @json.Json::string(@nodepath.dirname("/", path)) }),
       ) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
       ignore(host.shell("fs.put", { "path": @json.Json::string(path) }, bytes=@utf8.encode(text)))
     },
     remove: async fn(path) {
       ignore(host.shell_sync("fs.remove", { "path": @json.Json::string(path) })) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
     },
     spawn: f => ignore(host.rt.fork(f)),
@@ -91,7 +91,7 @@ pub fn host_fs(host : @host.Host) -> Fs {
     },
     mkdir: async fn(path) {
       ignore(host.shell_sync("fs.mkdir", { "path": @json.Json::string(path) })) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
     },
     rename: async fn(from, to) {
@@ -101,7 +101,7 @@ pub fn host_fs(host : @host.Host) -> Fs {
           "to": @json.Json::string(to),
         }),
       ) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
     },
     remove: async fn(path, recursive) {
@@ -111,7 +111,7 @@ pub fn host_fs(host : @host.Host) -> Fs {
           "recursive": @json.Json::boolean(recursive),
         }),
       ) catch {
-        e => raise Failed(e.to_string())
+        e => raise Failed(Show::to_string(e))
       }
     },
     write_from: async fn(path, next) {

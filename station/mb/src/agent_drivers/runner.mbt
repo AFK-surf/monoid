@@ -432,7 +432,7 @@ pub fn Lines::take(self : Lines, bytes : BytesView) -> Array[Bytes] {
       if self.parts.length() == 0 {
         lines.push(last.to_owned())
       } else {
-        let buf = @buffer.Buffer(capacity=self.size + last.length())
+        let buf = @buffer.Buffer(size_hint=self.size + last.length())
         for p in self.parts {
           buf.write_bytes(p)
         }

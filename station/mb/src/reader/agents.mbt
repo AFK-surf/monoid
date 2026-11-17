@@ -354,7 +354,7 @@ fn Agents::write(self : Agents, h : Hosted, text : String) -> Unit {
   // (the runner's message put together once as its bytes: a prompt of MBs is not copied again as a string, its base64
   // and its JSON)
   let line = @utf8.encode(text)
-  let message = @buffer.new(capacity=line.length() / 3 * 4 + 64)
+  let message = @buffer.new(size_hint=line.length() / 3 * 4 + 64)
   message.write_string_utf8("{\"op\":\"write\",\"data\":\"")
   @pieces.base64_into(message, line, if text.has_suffix("\n") { b"" } else { b"\n" })
   message.write_string_utf8("\"}\n")
@@ -698,7 +698,7 @@ fn Agents::tell(
   }
   h.told_out = to
   // (one line put together once as its bytes: a step's write or a tool's output of MBs not copied again into it)
-  let line = @buffer.new(capacity=4096 + units_of(events))
+  let line = @buffer.new(size_hint=4096 + units_of(events))
   line.write_string_utf8("{\"lines\":\{h.n},\"to\":\{to},\"turn\":")
   @jsjson.write_utf8(line, turn)
   line.write_string_utf8(",\"events\":")

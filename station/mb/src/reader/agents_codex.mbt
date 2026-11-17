@@ -266,7 +266,7 @@ fn Agents::codex_tell(
   h.told_out = to
   let bytes = body.to_bytes()
   // (one line put together once as its bytes: a thread's write of MBs is not copied again into it)
-  let line = @buffer.new(capacity=4096 + units_of_groups(groups))
+  let line = @buffer.new(size_hint=4096 + units_of_groups(groups))
   line.write_string_utf8("{\"lines\":\{h.n},\"to\":\{to},\"at\":[\{at.join(",")}],\"bytes\":\{bytes.length()},\"marks\":")
   @jsjson.write_utf8(line, Arr(marks))
   line.write_string_utf8(",\"threads\":")

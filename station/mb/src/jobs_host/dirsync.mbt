@@ -24,7 +24,7 @@ pub let sync_packed : Int = 16 * 1024 * 1024 + 1024 * 1024
 /// A file's content id as Git has it.
 pub fn blob_id(content : Bytes) -> String {
   let head = @utf8.encode("blob \{content.length()}")
-  let buf = @buffer.new(capacity=head.length() + 1 + content.length())
+  let buf = @buffer.new(size_hint=head.length() + 1 + content.length())
   buf.write_bytes(head)
   buf.write_byte(b'\x00')
   buf.write_bytes(content)

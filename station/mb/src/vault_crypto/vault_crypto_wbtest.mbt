@@ -91,7 +91,7 @@ test "a schema read as schema-install.ts reads it" {
     account("x", "DROP TRIGGER IF EXISTS old; CREATE TABLE IF NOT EXISTS y (a)", [])
     "none"
   } catch {
-    e => e.to_string()
+    e => Show::to_string(e)
   }
   inspect(refused, content="the vault's schema x holds a statement installSchema cannot tell is done: DROP TRIGGER IF EXISTS old (vault/schema-install.ts)")
 }

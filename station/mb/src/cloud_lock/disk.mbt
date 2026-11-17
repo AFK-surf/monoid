@@ -44,7 +44,7 @@ pub fn Disk::exists(self : Disk, path : String) -> Bool {
 /// Written whole (a file beside it renamed over it), its folder made, readable by this user alone (writePrivate).
 pub fn Disk::write(self : Disk, path : String, text : String) -> Unit raise Failure {
   let _ = self.host.shell_sync("fs.write", { "path": Json::string(path), "text": Json::string(text) }) catch {
-    e => raise Failed(e.to_string())
+    e => raise Failed(Show::to_string(e))
   }
   self.call("fs.chmod", { "path": Json::string(path), "mode": Json::number(384.0) }) |> ignore
 }
@@ -52,7 +52,7 @@ pub fn Disk::write(self : Disk, path : String, text : String) -> Unit raise Fail
 ///|
 pub fn Disk::rename(self : Disk, from : String, to : String) -> Unit raise Failure {
   let _ = self.host.shell_sync("fs.rename", { "from": Json::string(from), "to": Json::string(to) }) catch {
-    e => raise Failed(e.to_string())
+    e => raise Failed(Show::to_string(e))
   }
 }
 

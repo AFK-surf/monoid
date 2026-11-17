@@ -27,7 +27,7 @@ pub fn Crypto::of_host(host : @host.Host) -> Crypto {
   {
     ask: (op, args) => {
       Ok(host.shell_sync(op, args)) catch {
-        e => Err(e.to_string())
+        e => Err(Show::to_string(e))
       }
     },
   }
