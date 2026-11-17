@@ -604,8 +604,8 @@ test "小屏: a picture pasted with words is kept in 待派发" {
   t.type_text("检查图片")
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
-  t.frame()
-  t.frame()
+  // (its strip's room open over the words)
+  t.run_for(@ui.move_most_ms)
   t.click(Button, label="添加")
   t.run_for(@ui.move_most_ms)
   let draft = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1") })[0]
