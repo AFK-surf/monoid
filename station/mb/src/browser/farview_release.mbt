@@ -22,8 +22,8 @@ pub fn farview_releases() -> Array[(String, FarviewRelease)] {
     (
       "darwin-arm64",
       {
-        rev: "f232322775f819e81555884d2f11a8b1ae40092c",
-        sha256: "3b1251e67041cb3c7859bc9cf47d3542c46e4e283c4f99efa10fa7235ebc1d44",
+        rev: "1dd185eace5eadb3da86cf9a08d53f2d1bb9d98e",
+        sha256: "421eb89981a54b2de2ecc3c065aa018f7398118987069f6bebf753ebebe4de46",
       },
     ),
   ]
