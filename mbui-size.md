@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 132.1 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
 | [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 2.53 | 3.58 | 15.66 | 36.98 | 62.07 | 32.09 | 67.5 | 96.04 | 126.84 |
 | [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
-| [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 117.8 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [5b584438a](https://github.com/AFK-surf/monoid/commit/5b584438a9aa6b061b59c355629015e4fc2ce808) station: share sync's borrow race, and the session | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
 | [6fc637be7](https://github.com/AFK-surf/monoid/commit/6fc637be744d965cb500d5ec49121e937f42e3bb) app: hold a station's menu to the one line main's  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.59 |
 | [ba14c2e9a](https://github.com/AFK-surf/monoid/commit/ba14c2e9abb9b5fb497ba0e02684e42476fe3e40) mbui: a table read out as one (@headless.table; Ta | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.53 |
 | [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [437bfa356](https://github.com/AFK-surf/monoid/commit/437bfa3562506186e140747d6366abe817d7a345) mbui: frame_perf and appbench count the window's t | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [ad6499e81](https://github.com/AFK-surf/monoid/commit/ad6499e81127fc60995f8647b40ec905db292f70) mbui: ⌘/ 快捷键一览改为节点，删掉大屏旧侧栏的空 @ui.old 孤岛（tier-outsi | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.25 |
 | [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.28 |
-| [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
