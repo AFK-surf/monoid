@@ -288,10 +288,6 @@ pub fn open_triple_panel(
     triple.accounts_asked = true
   }
   let up = up && side is Bottom
-  // (as wide as its models and how hard it thinks beside them; wider where they are many, their makers a column
-  // before them)
-  let now = @signals.untracked(fn() { src.topic("pick", pick_params(station, of)).get().value })
-  let many = items(now, "makers").length() > 1 && items(now, "options").length() > triple_flat_most
   let contents : TriplePanel = {
     serial: 0,
     field: @ui.Field::new(),
@@ -312,7 +308,7 @@ pub fn open_triple_panel(
     @sf.t("android-chat.new.model"),
     fn(b, close) { triple_panel_node(b, src, station, of, contents, saved, close) },
     from~,
-    w=if many { triple_panel_w_many } else { triple_panel_w },
+    w=@double.infinity,
     // (as wide as its columns' words, no wider: 2026-10-26 用户「没啥内容也这么宽感觉会很奇怪」)
     fits=true,
     foot=fn(f, close) { triple_foot_node(f, src, station, of, contents, close, saved~) },
@@ -1384,13 +1380,25 @@ fn triple_body_node(
   }
   // (beside what opened it no wider than its first level needs, 2026-10-26 用户「没啥内容也这么宽感觉会很奇怪」; wider
   // only at the level of all of many, their makers a column before a maker's models, and as wide from then on)
-  let beside_w = fn() { (if all() && !searching() { triple_panel_w_many } else { triple_panel_w }) - 2.0 * @sf.panel_pad }
+  let browsing_makers = fn() { all() && !searching() }
+  let room_w = fn() { dmax(0.0, @sf.over_room(b).0 - 2.0 * @sf.panel_pad - 16.0) }
+  let beside_w = fn() { dmin(room_w(), (if browsing_makers() { triple_panel_w_many } else { triple_panel_w }) - 2.0 * @sf.panel_pad) }
   // (the panel at least as wide as a row with the widest name and the widest of how it runs, and its star, where it
   // has the room)
   let row_least = fn() {
     names_w() + 14.0 + @sf.icon_button_side + 4.0 * @ui.Space::px(S1_5) + 2.0 * @ui.Space::px(S2_5) + @ui.Space::px(S3_5)
   }
   let h_effort = @sf.t("web-main.model.effort")
+  let effort_w = fn() {
+    let efforts = all_efforts()
+    guard !efforts.is_empty() else { return 0.0 }
+    b.words_redone() |> ignore
+    let size = @sf.node_sp(b, @sf.theme().t.ui)
+    let title = @sf.node_words_w(h_effort, size, weight=600)
+    let choice = efforts.fold(init=0.0, fn(w, e) { dmax(w, @sf.node_words_w(e.1, size, weight=500)) })
+    let padding = 2.0 * @ui.Space::px(S2_5)
+    dmax(title + padding, choice + padding + @ui.Space::px(S1_5) + @ui.Space::px(S3_5)).ceil()
+  }
   let side_mode = fn() {
     if sheet {
       at == "sidekick"
@@ -1399,24 +1407,20 @@ fn triple_body_node(
     }
   }
   b.box(fn(all_of) {
-    // (beside what opened it, as wide as a row of the widest name at least, within the most it may be; a sheet's rows
-    // are the sheet's width)
-    all_of
-    .shrink(Is(1.0))
-    .min_height(Is(Some(0.0)))
-    .min_width(By(fn() { if sheet { Some(0.0) } else { Some(dmin(row_least(), beside_w())) } }))
-    |> ignore
+    all_of.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     // (beside what opened it never narrower while it is open, as the old small panel's `fits` was: as wide as it is
     // laid out at each change of what sets how wide it is (its level, the maker browsed, what is typed, its words);
     // back from all of them as wide as it was there, its models no wider than their level's most, how hard it thinks
     // taking the rest)
-    if !sheet {
+    if sheet {
+      all_of.min_width(Is(Some(0.0))) |> ignore
+    } else {
       all_of.keeps_width(
         fn() {
           let th = @ui.tree_theme()
           ((all(), kind(), words(), side_mode(), names_w()), (all_of.words_redone(), th.text_size(Body)))
         },
-        most=fn() { triple_panel_w_many - 2.0 * @sf.panel_pad },
+        most=room_w,
       )
       |> ignore
     }
@@ -1476,8 +1480,23 @@ fn triple_body_node(
         // (the models and how hard it thinks side by side, each titled alike over it, the line between them up to the
         // panel's top: 「上面的分割线试试到顶」)
         body.box(fn(side) {
-          @sf.style_node(side, fn() { triple_side_by_side.then(@ui.style(max_w=Fixed(beside_w()))) })
-          side.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+          @sf.style_node(side, fn() { triple_side_by_side })
+          side
+          .shrink(Is(1.0))
+          .min_height(Is(Some(0.0)))
+          .max_width(By(fn() { Some(if browsing_makers() { room_w() } else { beside_w() }) }))
+          // Size all three columns together before any of their contents have to wrap.
+          .width(By(fn() {
+            if !browsing_makers() {
+              None
+            } else {
+              let efforts = effort_w()
+              let makers = @ui.Space::px(S48) + 2.0 * @ui.Space::px(S1_5) + 1.0
+              let beside = if efforts > 0.0 { efforts + @ui.Space::px(S2) } else { 0.0 }
+              Some(dmin(makers + row_least() + beside, room_w()))
+            }
+          }))
+          |> ignore
           side.box(fn(mc) {
             @sf.style_node(mc, fn() { triple_models_column }, in_row=true)
             mc.shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
@@ -1490,7 +1509,8 @@ fn triple_body_node(
               @sf.style_node(col, fn() { triple_effort_column }, in_row=true)
               col.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               // (as tall as the models beside it, its line from the panel's top to its foot's)
-              col.grow(Is(1.0)) |> ignore
+              let measured_effort_w : @view.Live[Double?] = By(fn() { if browsing_makers() { Some(effort_w()) } else { None } })
+              col.grow(Is(1.0)).width(measured_effort_w).max_width(measured_effort_w) |> ignore
               // (the line between them out of their flow, in the middle of the room between them, from the panel's top
               // down to the line over its foot, meeting it: 「竖的那根怎么没跟横的接起来呢」)
               col.box(fn(rule) {
