@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 2.53 | 3.57 | 15.47 | 36.83 | 61.37 | 32.09 | 67.5 | 96.04 | 119.87 |
 | [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
 | [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 2.52 | 3.56 | 15.4 | 36.79 | 61.17 | 32.09 | 67.5 | 96.04 | 125.14 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 117.8 |
 | [2db75fe70](https://github.com/AFK-surf/monoid/commit/2db75fe709c9033c49758a5a49964c86f157dfe2) profiles: 概览's line is what the weeks hold, five h | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.81 | 121.33 |
 | [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 2.5 | 3.52 | 15.21 | 36.57 | 60.14 | 32.03 | 67.14 | 95.81 | 124.77 |
-| [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [50525b7b8](https://github.com/AFK-surf/monoid/commit/50525b7b88a0b6e75f213d9b0657842dd368ca80) mbui: a chat link's card reads the chat's whole ro | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.63 |
 | [18f70295e](https://github.com/AFK-surf/monoid/commit/18f70295ef25fec189b9a4000df7b10d8d19f00c) mbui: what a part of a list's block taken for anot | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
 | [8d32c6f48](https://github.com/AFK-surf/monoid/commit/8d32c6f482df148c0b53166d2891b4f1d050d1a3) mbui: the card to share made once whatever the vie | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.21 | 53.49 |
 | [990d3129b](https://github.com/AFK-surf/monoid/commit/990d3129ba06cf441b00a02c46b12d60d3c2c8c2) ci: Windows' beta no longer holds back the others' | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [2db75fe70](https://github.com/AFK-surf/monoid/commit/2db75fe709c9033c49758a5a49964c86f157dfe2) profiles: 概览's line is what the weeks hold, five h | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
-| [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
