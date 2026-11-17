@@ -1084,6 +1084,14 @@ let decl_feedback_send : String =
   #|        ],
   #|        "description": "The part of still.fail it is in, as far as you can tell."
   #|      },
+  #|      "desktopPlatform": {
+  #|        "type": "string",
+  #|        "enum": [
+  #|          "macos",
+  #|          "windows"
+  #|        ],
+  #|        "description": "Affected desktop app OS, when known."
+  #|      },
   #|      "reporter": {
   #|        "type": "string",
   #|        "description": "Who reports it: their name and where they said it (e.g. \"Ada, Slack #ops\")."

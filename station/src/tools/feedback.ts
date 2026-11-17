@@ -43,6 +43,11 @@ export const FEEDBACK_SEND = {
         ],
         "description": "The part of still.fail it is in, as far as you can tell."
       },
+      "desktopPlatform": {
+        "type": "string",
+        "enum": ["macos", "windows"],
+        "description": "Affected desktop app OS, when known."
+      },
       "reporter": {
         "type": "string",
         "description": "Who reports it: their name and where they said it (e.g. \"Ada, Slack #ops\")."
@@ -110,6 +115,8 @@ export function report(session: SessionRow, args: Record<string, Json>, link: st
   for (const [name, value] of [["model", session.model], ["thread", text("to") === "" ? null : text("to")], ["link", link]] as const) {
     if (value !== null) context[name] = value;
   }
+  const os = text("desktopPlatform");
+  if (os === "macos" || os === "windows") context.desktopPlatform = os;
   const out: Json = { key, title, body, area, reporter: text("reporter"), context };
   if (text("logs") !== "") out.logs = text("logs");
   return out;
