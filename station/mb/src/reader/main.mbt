@@ -843,6 +843,8 @@ fn main {
   let code = match (flag("--builder"), flag("--db"), flag("--data")) {
     (Some("archive-marks"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "archive mark", all(db => @marks.step(db))))
+    (Some("harness-store-schema"), Some(db), _) =>
+      @host.run(shell_dir=beside(db, "shell"), host => @store_schema.harness(host, db))
     (Some("session-bindings"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session binding", all(db => @bindings.step(db))))
     (Some("session-up-jobs"), Some(db), _) =>
