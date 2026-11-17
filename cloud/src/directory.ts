@@ -691,28 +691,54 @@ export class Directory extends DurableObject<Env> {
   }
 
   /**
-   * Someone the cloud's OpenID provider has just vouched for (login.ts, before their session is made): added to each
-   * workspace open to its sign-in (openToSignIn), as addMembers adds an email, so the session's upsertUser makes
-   * them a member (#joinAdded). Not one who is in it already or waits on an invitation of their own (its role is
-   * the one meant), nor beyond the workspace's seats. Taken out, they are added again as they sign in again: who may
-   * is the provider's to say.
+   * Someone the cloud's OpenID provider has just vouched for (login.ts, before their session is made), in each
+   * workspace open to its sign-in (openToSignIn), with `role`, the one the provider gives them (OIDC_ROLE_CLAIM; null:
+   * it gives none). Not yet in it: added as addMembers adds an email (an invitation to it replaced), as a member
+   * where it gives none (an invitation of their own then left for them to accept), so the session's upsertUser makes them one (#joinAdded). In it: their role made the
+   * provider's, as setRole makes it, but for its last owner's (the workspace keeps one). Not beyond its seats. Taken
+   * out, they are in again as they sign in again: who is in, and as what, is the provider's to say.
    */
-  joinBySignIn(email: string): void {
+  async joinBySignIn(email: string, role: Role | null = null): Promise<void> {
     const address = email.toLowerCase();
+    if (role !== null && !ROLES.includes(role)) role = null;
     const open = this.#rows("SELECT id, created_by FROM workspaces WHERE sign_in_joins = 1");
-    const added: string[] = [];
+    const changed = new Map<string, string[]>();
     this.ctx.storage.transactionSync(() => {
       for (const row of open) {
         const workspace = row.id as string;
-        if (this.#one(`SELECT 1 AS x FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?
-          UNION ALL SELECT 1 FROM added WHERE workspace = ? AND email = ?
-          UNION ALL SELECT 1 FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ? LIMIT 1`, workspace, address, workspace, address, workspace, address, nowSeconds())) continue;
-        if (this.#seats(workspace, true) >= this.#memberCap(workspace)) continue;
-        this.#run("INSERT INTO added (workspace, email, role, added_by, added_at) VALUES (?, ?, 'member', ?, ?)", workspace, address, row.created_by, nowSeconds());
-        added.push(workspace);
+        const members = this.#rows("SELECT m.sub, m.role FROM members m JOIN users u ON u.sub = m.sub WHERE m.workspace = ? AND lower(u.email) = ?", workspace, address);
+        if (members.length > 0) {
+          if (role === null) continue;
+          for (const m of members) {
+            if (m.role === role) continue;
+            const owners = this.#one("SELECT COUNT(*) AS n FROM members WHERE workspace = ? AND role = 'owner'", workspace)!.n as number;
+            if (m.role === "owner" && owners <= 1) continue;
+            this.#run("UPDATE members SET role = ? WHERE workspace = ? AND sub = ?", role, workspace, m.sub);
+            // (the credentials it holds name its old role, as setRole's)
+            this.#revoke(workspace, "sub", m.sub as string);
+            changed.set(workspace, [...(changed.get(workspace) ?? []), m.sub as string]);
+          }
+          continue;
+        }
+        const added = this.#one("SELECT role FROM added WHERE workspace = ? AND email = ?", workspace, address);
+        if (added && (role === null || added.role === role)) continue;
+        const invited = this.#one("SELECT COUNT(*) AS n FROM invitations WHERE workspace = ? AND email = ? AND expires_at > ?", workspace, address, nowSeconds())!.n as number;
+        // (without a role of the provider's, an invitation of their own is theirs to accept, with its role)
+        if (role === null && invited > 0) continue;
+        const replaces = added ? 1 : invited;
+        if (this.#seats(workspace, true) - replaces >= this.#memberCap(workspace)) continue;
+        this.#run("DELETE FROM invitations WHERE workspace = ? AND email = ?", workspace, address);
+        this.#run(`INSERT INTO added (workspace, email, role, added_by, added_at) VALUES (?, ?, ?, ?, ?)
+          ON CONFLICT (workspace, email) DO UPDATE SET role = excluded.role`, workspace, address, role ?? "member", row.created_by, nowSeconds());
+        changed.set(workspace, changed.get(workspace) ?? []);
       }
     });
-    for (const workspace of added) this.#changed(workspace, true);
+    for (const [workspace, also] of changed) {
+      this.#changed(workspace, true, also);
+      this.#tell(also, LIST);
+    }
+    if (changed.size > 0) this.#tell(this.#byEmail(address), LIST);
+    if ([...changed.values()].some((also) => also.length > 0)) await this.#delivered();
   }
 
   /** An account signing in with an email the admin gave rights to before it had one: they are its from now on. */

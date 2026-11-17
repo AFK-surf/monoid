@@ -1,6 +1,7 @@
 import { createRemoteJWKSet, EncryptJWT, jwtDecrypt, jwtVerify, SignJWT } from "jose";
 import { adminOrigins, betaOrigin, publicOrigins } from "./compat";
 import type { Env } from "./env";
+import type { Role } from "./types";
 
 export const ACCESS_TTL_SEC = 5 * 60;
 export const SESSION_TTL_SEC = 30 * 24 * 60 * 60;
@@ -229,7 +230,7 @@ export async function unseal(env: Env, value: string): Promise<Tokens> {
 }
 
 /** `origin`: the one Google called back to, whose callback the login gave Google (PUBLIC_ORIGIN's, or an old one's for a login started before the move). Another provider's account is named apart from Google's (`oi-…`, as an email's is `em-…`), as its `sub` is that provider's alone. */
-export async function googleIdentity(env: Env, code: string, verifier: string, nonce: string, origin = env.PUBLIC_ORIGIN): Promise<Identity> {
+export async function googleIdentity(env: Env, code: string, verifier: string, nonce: string, origin = env.PUBLIC_ORIGIN): Promise<Identity & { role?: Role | null }> {
   const from = await provider(env);
   const response = await fetch(from.token, {
     method: "POST",
@@ -268,5 +269,9 @@ export async function googleIdentity(env: Env, code: string, verifier: string, n
     throw new Error("google_identity_mismatch");
   const sub = from === GOOGLE ? payload.sub : `oi-${(await digest(`${from.issuer}\0${payload.sub}`)).slice(0, 32)}`;
   const text = (value: unknown, max: number) => (typeof value === "string" ? value.slice(0, max) : "");
-  return { sub, email: payload.email, name: text(payload.name, 120), picture: /^https:\/\//.test(text(payload.picture, 1024)) ? text(payload.picture, 1024) : "" };
+  const identity = { sub, email: payload.email, name: text(payload.name, 120), picture: /^https:\/\//.test(text(payload.picture, 1024)) ? text(payload.picture, 1024) : "" };
+  // (the provider's role for them, OIDC_ROLE_CLAIM's: null where it says none)
+  if (from === GOOGLE || !env.OIDC_ROLE_CLAIM) return identity;
+  const said = payload[env.OIDC_ROLE_CLAIM];
+  return { ...identity, role: typeof said !== "string" ? null : said === "owner" || said === "admin" ? said : "member" };
 }

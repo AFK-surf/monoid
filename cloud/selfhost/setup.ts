@@ -5,7 +5,8 @@
 //                       station, an enrollment for one named `station`: { cloud, relays, workspace, workspace_name,
 //                       stations, enrollment? }. The calls are the API's own, made as the admin, in a session ended once
 //                       they are done. `open_to_sign_in` (true or false; absent: as it was): whether whoever the OpenID
-//                       provider (OIDC_ISSUER) signs in joins the workspace as a member (Directory joinBySignIn).
+//                       provider (OIDC_ISSUER) signs in joins the workspace, with the role it gives them (OIDC_ROLE_CLAIM; Directory
+//                       joinBySignIn).
 //   POST /v1/scheduled  what Cloudflare's cron does (wrangler.jsonc triggers): the API's scheduled handler, now.
 import type { Account } from "../src/account.ts";
 import type { Directory } from "../src/directory.ts";
