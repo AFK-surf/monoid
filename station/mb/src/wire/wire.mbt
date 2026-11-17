@@ -51,6 +51,12 @@ pub fn Lines::push(self : Lines, data : BytesView) -> Array[String] {
 }
 
 ///|
+/// What came after the last newline, not ended by one (yet).
+pub fn Lines::unended(self : Lines) -> String {
+  @utf8.decode_lossy(Bytes::from_array(self.partial))
+}
+
+///|
 /// One of the host's events (host.c `sfh_wait`).
 pub(all) enum Event {
   /// A piece of stdin.

@@ -42,6 +42,10 @@ pub async fn exchange_install_code(SlackClient, String, String, String, String) 
 
 pub fn field(@jsjson.JValue) -> String
 
+pub fn file_of(@jsjson.JValue) -> @jsjson.JValue
+
+pub fn files_to_look_up(@jsjson.JValue?) -> Array[String]
+
 pub fn form_encoded(Array[(String, String)]) -> String
 
 pub async fn harness(@host.Host) -> Unit

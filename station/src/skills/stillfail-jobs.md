@@ -140,7 +140,9 @@ To build or test a local working directory there (a checkout with uncommitted ch
 absolute path here) instead of uploading: each start syncs it into a mirror on the target (named in prepare's answer,
 inside the session directory) and runs the command there. Only files Git tracks or would add (all but the usual build
 and dependency directories outside Git) go, and only what changed; the target's build output and dependencies stay
-warm, and unchanged files keep their mtime. A sync that takes longer than about 40 s answers `syncing: true` and goes
+warm, and unchanged files keep their mtime. A Git submodule goes as its commit and URL, not its files: the target
+checks it out in the mirror before the command runs (from its own clones, else fetched from the URL, so the commit
+must be pushed), and says in the task's log when it could not. A sync that takes longer than about 40 s answers `syncing: true` and goes
 on: call start again with the same key, which waits on that sync instead of beginning another. `back: [paths]`
 downloads outputs into `station-back/<key>/` here when the task ends; it is removed once nothing in
 it changed for 6 hours, so move what you keep into your workspace. Synced files the command

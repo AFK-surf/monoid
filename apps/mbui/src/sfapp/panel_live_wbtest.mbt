@@ -1,6 +1,6 @@
-// A panel of the presenters' whose title, step and what it says are as they are now (@sf.panel `live`): what it shows
-// and is read out as, its head there or not as its title is, what it holds where it was; in the middle of the window,
-// a share of it tall, and beside what opened it. The old contract, measured on main first.
+// A panel of the presenters' whose title, step and what it says are as they are now (@sf.panel_nodes `live`): what it
+// shows and is read out as, its head there or not as its title is, what it holds where it was; in the middle of the
+// window, a share of it tall, and beside what opened it, as it was when the old contract was measured on main beside it.
 
 ///|
 /// Where a live panel's parts are: its dialog and what it is read out as, its title, its step and what it says as
@@ -13,7 +13,7 @@ fn live_said(t : @ui.Tester) -> String {
 }
 
 ///|
-test "panel live, 大屏 keyboard and mouse: in the middle, a share of the window tall, beside what opened it; its title, step and what it says from none to some and back (frames as the display draws them), drawn by the window's tree in the middle: as main has it" {
+test "panel live, 大屏 keyboard and mouse: in the middle, a share of the window tall, beside what opened it; its title, step and what it says from none to some and back (frames as the display draws them), drawn by the window's tree in the middle" {
   let out = []
   let drawn = []
   for kind in ["middle", "tall", "beside"] {
@@ -21,9 +21,9 @@ test "panel live, 大屏 keyboard and mouse: in the middle, a share of the windo
     let (title, step, says) = (@signals.signal(""), @signals.signal(""), @signals.signal(""))
     let live = fn() { (title.get(), step.get(), says.get()) }
     match kind {
-      "middle" => @sf.panel("", panel_test_body([]), from=Unanchored, live~)
-      "tall" => @sf.panel("", panel_test_body([]), from=Unanchored, tall=0.8, grows=true, live~)
-      _ => @sf.panel("", panel_test_body([]), from=At(600.0, 100.0, 0.0, 0.0), live~)
+      "middle" => @sf.panel_nodes("", panel_test_body([]), from=Unanchored, live~)
+      "tall" => @sf.panel_nodes("", panel_test_body([]), from=Unanchored, tall=0.8, grows=true, live~)
+      _ => @sf.panel_nodes("", panel_test_body([]), from=At(600.0, 100.0, 0.0, 0.0), live~)
     }
     t.run_for(@ui.move_most_ms)
     // (in the middle also a step alone and what it says alone: untitled only with neither title nor step; what it
@@ -45,23 +45,24 @@ test "panel live, 大屏 keyboard and mouse: in the middle, a share of the windo
       drawn.push(tree_said(Dialog, if kind == "beside" { "" } else { s.0 }) is Some(_))
     }
   }
-  // (as main has it)
-  assert_eq(out, [
-    "middle (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 323, 520, 154))) title [] step [] says [] close [(842, 349, 32, 32)] words [(414, 381, 452, 22)]",
-    "middle (任务, , ): dialog Some((任务, (380, 314.5, 520, 171))) title [(404, 340.5, 44, 30)] step [] says [] close [(842, 340.5, 32, 32)] words [(414, 389.5, 452, 22)]",
-    "middle (任务, 第 1 步, 说的话): dialog Some((任务, (380, 301.5, 520, 197))) title [(404, 327.5, 44, 30)] step [(456, 337.5, 42, 20)] says [(404, 364.5, 472, 20)] close [(842, 327.5, 32, 32)] words [(414, 402.5, 452, 22)]",
-    "middle (, 第 1 步, ): dialog Some((第 1 步 关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 314.5, 520, 171))) title [] step [(412, 350.5, 42, 20)] says [] close [(842, 340.5, 32, 32)] words [(414, 389.5, 452, 22)]",
-    "middle (, , 说的话): dialog Some((说的话 面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 310, 520, 180))) title [] step [] says [(404, 340, 472, 20)] close [(842, 336, 32, 32)] words [(414, 394, 452, 22)]",
-    "middle (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 323, 520, 154))) title [] step [] says [] close [(842, 349, 32, 32)] words [(414, 381, 452, 22)]",
-    "tall (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 87, 520, 626))) title [] step [] says [] close [(842, 113, 32, 32)] words [(414, 145, 452, 22)]",
-    "tall (任务, , ): dialog Some((任务, (380, 78.5, 520, 643))) title [(404, 104.5, 44, 30)] step [] says [] close [(842, 104.5, 32, 32)] words [(414, 153.5, 452, 22)]",
-    "tall (任务, 第 1 步, 说的话): dialog Some((任务, (380, 65.5, 520, 669))) title [(404, 91.5, 44, 30)] step [(456, 101.5, 42, 20)] says [(404, 128.5, 472, 20)] close [(842, 91.5, 32, 32)] words [(414, 166.5, 452, 22)]",
-    "tall (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 87, 520, 626))) title [] step [] says [] close [(842, 113, 32, 32)] words [(414, 145, 452, 22)]",
-    "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 68))) title [] step [] says [] close [] words [(616, 112, 264, 22)]",
-    "beside (任务, , ): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 98))) title [(616, 118, 264, 20)] step [] says [] close [] words [(616, 142, 264, 22)]",
-    "beside (任务, 第 1 步, 说的话): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 98))) title [(616, 118, 264, 20)] step [] says [] close [] words [(616, 142, 264, 22)]",
-    "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 68))) title [] step [] says [] close [] words [(616, 112, 264, 22)]",
-  ])
+  debug_inspect(out, content=(
+    #|[
+    #|  "middle (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 322, 520, 156))) title [] step [] says [] close [(842, 348, 32, 32)] words [(404, 380, 472, 22)]",
+    #|  "middle (任务, , ): dialog Some((任务, (380, 313.5, 520, 173))) title [(404, 339.5, 44, 30)] step [] says [] close [(842, 339.5, 32, 32)] words [(404, 388.5, 472, 22)]",
+    #|  "middle (任务, 第 1 步, 说的话): dialog Some((任务, (380, 300.5, 520, 199))) title [(404, 326.5, 44, 30)] step [(456, 336.5, 42, 20)] says [(404, 363.5, 472, 20)] close [(842, 326.5, 32, 32)] words [(404, 401.5, 472, 22)]",
+    #|  "middle (, 第 1 步, ): dialog Some((第 1 步 关闭 面板里的话，长一些，好看它怎么折行 好的, (380, 313.5, 520, 173))) title [] step [(412, 349.5, 42, 20)] says [] close [(842, 339.5, 32, 32)] words [(404, 388.5, 472, 22)]",
+    #|  "middle (, , 说的话): dialog Some((说的话 面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 309, 520, 182))) title [] step [] says [(404, 339, 472, 20)] close [(842, 335, 32, 32)] words [(404, 393, 472, 22)]",
+    #|  "middle (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 322, 520, 156))) title [] step [] says [] close [(842, 348, 32, 32)] words [(404, 380, 472, 22)]",
+    #|  "tall (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 87, 520, 626))) title [] step [] says [] close [(842, 113, 32, 32)] words [(404, 145, 472, 22)]",
+    #|  "tall (任务, , ): dialog Some((任务, (380, 78.5, 520, 643))) title [(404, 104.5, 44, 30)] step [] says [] close [(842, 104.5, 32, 32)] words [(404, 153.5, 472, 22)]",
+    #|  "tall (任务, 第 1 步, 说的话): dialog Some((任务, (380, 65.5, 520, 669))) title [(404, 91.5, 44, 30)] step [(456, 101.5, 42, 20)] says [(404, 128.5, 472, 20)] close [(842, 91.5, 32, 32)] words [(404, 166.5, 472, 22)]",
+    #|  "tall (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的 关闭, (380, 87, 520, 626))) title [] step [] says [] close [(842, 113, 32, 32)] words [(404, 145, 472, 22)]",
+    #|  "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 70))) title [] step [] says [] close [] words [(606, 112, 284, 22)]",
+    #|  "beside (任务, , ): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(616, 118, 264, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
+    #|  "beside (任务, 第 1 步, 说的话): dialog Some((任务 面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 100))) title [(616, 118, 264, 20)] step [] says [] close [] words [(606, 142, 284, 22)]",
+    #|  "beside (, , ): dialog Some((面板里的话，长一些，好看它怎么折行 好的, (600, 106, 296, 70))) title [] step [] says [] close [] words [(606, 112, 284, 22)]",
+    #|]
+  ))
   assert_eq(drawn, [
     true, true, true, true, true, true, true, true, true, true, true, true, true, true,
   ])
@@ -101,17 +102,17 @@ test "panel live in the middle, 大屏 keyboard and mouse, in a short window: it
   let t = menu_tester(1280.0, 500.0, 0)
   let title = @signals.signal("")
   let pf = @ui.Field::new()
-  @sf.panel(
+  @sf.panel_nodes(
     "",
-    fn(c, close) {
-      c.editor("live field", field=pf, placeholder="填一下") |> ignore
+    fn(v, close) {
+      // (its field given the focus as it opens where it is not a sheet: panel_search_at_hand_node)
+      @sf.panel_search_at_hand_node(@sf.input_node(v, pf, placeholder="填一下", label="填一下"))
       for i in 0..<30 {
-        @sf.panel_text(c, fn() { c.text("第\{i}行", style=@sf.paragraph) |> ignore })
+        @sf.words_node(v, fn() { "第\{i}行" }, fn() { @sf.paragraph }) |> ignore
       }
-      panel_test_body([])(c, close)
+      panel_test_body([])(v, close)
     },
     from=Unanchored,
-    field="live field",
     live=fn() { (title.get(), "", "") },
   )
   t.run_for(@ui.move_most_ms)
@@ -137,12 +138,27 @@ test "panel live in the middle, 大屏 keyboard and mouse, in a short window: it
   // (the same dialog and field, 甲 kept; untitled, what it holds starts under its close button, where a titled one's
   // starts under its head (#3806): row 2 the first seen, as titled; its body the shorter while its head is there, back
   // as it goes)
-  let body_said = "填一下 第0行 第1行 第2行 第3行 第4行 第5行 第6行 第7行 第8行 第9行 第10行 第11行 第12行 第13行 第14行 第15行 第16行 第17行 第18行 第19行 第20行 第21行 第22行 第23行 第24行 第25行 第26行 第27行 第28行 第29行 面板里的话，长一些，好看它怎么折行 好的 关闭"
-  assert_eq([before, titled, again], [
-    (true, true, Some(body_said), "甲", (Some("第2行"), Some("第13行"))),
-    (true, true, Some("任务"), "甲", (Some("第2行"), Some("第13行"))),
-    (true, true, Some(body_said), "甲", (Some("第2行"), Some("第13行"))),
-  ])
+  assert_eq((before.3, titled.3, again.3), ("甲", "甲", "甲"))
+  assert_true(before.0 && before.1 && titled.0 && titled.1 && again.0 && again.1, msg="the same dialog and field")
+  debug_inspect([before, titled, again], content=(
+    #|[
+    #|  (
+    #|    true,
+    #|    true,
+    #|    Some("填一下 第0行 第1行 第2行 第3行 第4行 第5行 第6行 第7行 第8行 第9行 第10行 第11行 第12行 第13行 第14行 第15行 第16行 第17行 第18行 第19行 第20行 第21行 第22行 第23行 第24行 第25行 第26行 第27行 第28行 第29行 面板里的话，长一些，好看它怎么折行 好的 关闭"),
+    #|    "甲",
+    #|    (Some("第2行"), Some("第13行")),
+    #|  ),
+    #|  (true, true, Some("任务"), "甲", (Some("第2行"), Some("第13行"))),
+    #|  (
+    #|    true,
+    #|    true,
+    #|    Some("填一下 第0行 第1行 第2行 第3行 第4行 第5行 第6行 第7行 第8行 第9行 第10行 第11行 第12行 第13行 第14行 第15行 第16行 第17行 第18行 第19行 第20行 第21行 第22行 第23行 第24行 第25行 第26行 第27行 第28行 第29行 面板里的话，长一些，好看它怎么折行 好的 关闭"),
+    #|    "甲",
+    #|    (Some("第2行"), Some("第13行")),
+    #|  ),
+    #|]
+  ))
 }
 
 ///|

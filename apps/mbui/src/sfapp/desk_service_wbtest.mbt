@@ -80,6 +80,108 @@ test "desk: a visualization opened aside is a tab beside its chat, served from h
 }
 
 ///|
+/// The site view of the service `job` of ws1/st1's page, its host's number.
+fn service_site_id(job : String) -> Int raise {
+  match service_pages.get(service_key("ws1/st1", job)) {
+    Some({ site: Some(v), .. }) => v.id()
+    _ => fail("no site view of \{job}")
+  }
+}
+
+///|
+/// The panel's 全屏 pressed (said what is there to press where it is not).
+fn press_full(t : @ui.Tester) -> Unit raise {
+  match t.query(Button, label=@sf.t("web-main.preview.fullWindow")) {
+    Some(_) => t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
+    None => fail("no 全屏: \{Repr(t.semantics().filter(fn(s) { !s.hidden }).map(fn(s) { s.label }))}")
+  }
+  t.run_for(@ui.move_most_ms)
+}
+
+///|
+test "desk: a web service beside its chat goes over the whole window by the panel's 全屏, the same page and site view across it, and back by Escape and by 移到侧边, its tab staying" {
+  new_run()
+  let src = fixture("chat-info")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  app.nav.push(Service("ws1/st1", "j-web"))
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="beside, as asked")
+  let site = service_site_id("j-web")
+  let beside_w = t.holes().fold(init=0.0, fn(m, h) { if h.2 > m { h.2 } else { m } })
+  assert_true(beside_w < 1000.0, msg="its page beside the chat: \{beside_w}")
+  press_full(t)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="over the whole window")
+  assert_eq(service_site_id("j-web"), site, msg="the same site view")
+  assert_true(!t.views().contains("close \{site}"), msg="never closed")
+  let full_w = t.holes().fold(init=0.0, fn(m, h) { if h.2 > m { h.2 } else { m } })
+  assert_true(full_w > 1300.0, msg="its page across the window: \{full_w}")
+  assert_eq(t.all(Button, label="刷新").length(), 1, msg="its bar once, over the whole window")
+  assert_eq(t.all(Button, label=@sf.t("web-main.preview.moveBeside")).length(), 1, msg="移到侧边")
+  for f in t.audit() {
+    println("audit full: \{f}")
+  }
+  // (the pointer off the bar's keys: a tip shown takes Escape first)
+  t.move_to(700.0, 500.0)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_escape)
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="Escape: back beside")
+  assert_eq(side_now(r), (["service:j-web"], "service:j-web"), msg="its tab stays, in front")
+  assert_eq(service_site_id("j-web"), site, msg="the same site view again")
+  press_full(t)
+  t.click(Button, label=@sf.t("web-main.preview.moveBeside"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="移到侧边: back beside")
+  // its tab closed while over the whole window: the layer goes with it
+  press_full(t)
+  side_change(r, "close", Some("service:j-web"))
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="gone with its tab")
+}
+
+///|
+test "desk: a web service or a visualization asked with ⌘ held opens over the whole window as its chat's tab; without it, beside" {
+  new_run()
+  let src = fixture("chat-viz")
+  let r : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
+  open_chat(r)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let tab = @sfdesk.file_tab("s-c1", "work/s-c1/release.html", "release.html")
+  t.hold_mods(@ui.mod_cmd)
+  open_page(PreviewFile("ws1/st1", "s-c1", "work/s-c1/release.html", "release.html"))
+  t.hold_mods(0)
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(app.nav.top() == Chat(r), msg="the chat's page")
+  assert_eq(side_now(r), ([tab], tab))
+  match @sfbase.tab_full.get() {
+    Some(f) => assert_eq(f.tab, tab, msg="its tab over the whole window")
+    None => fail("not over the whole window")
+  }
+  let (x, _) = t.find_last("release.html").unwrap()
+  assert_true(x < 800.0, msg="its name in the whole window's bar: \{x}")
+  t.back()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is None, msg="back: beside")
+  assert_eq(side_now(r), ([tab], tab), msg="its tab stays")
+  // its 全屏 in the message, as a press asks: the same tab over the whole window
+  viz_open_full("release.html", "ws1/st1", "s-c1", "work/s-c1/release.html", "s-c1")
+  t.frame()
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="its 全屏")
+  assert_true(@sfbase.viz_full.get() is None, msg="never the visualization's own whole window here")
+  assert_eq(side_now(r), ([tab], tab), msg="never a second tab")
+}
+
+///|
 test "desk: a service up pressed in 任务 beside the chat opens its own tab in front (JobsTab)" {
   new_run()
   let src = fixture("chat-jobs-side")

@@ -3298,20 +3298,8 @@ let panel_icon_box : @ui.Style = @ui.css((
 
 
 // ---------------------------------------------------------------------------
-// A command to copy, a chooser (parts.tsx CopyCommand, Chooser; parts.css.ts command, controls.css.ts chooser)
+// A chooser (parts.tsx Chooser; controls.css.ts chooser)
 
-
-///|
-// kept across runs: a value (no field of it changes)
-let command_box : @ui.Style = @ui.css("row w=Full pl=S3_5 pr=S1_5 py=S1_5 gap=S2 radius=Xl align=ACenter")
-
-///|
-// kept across runs: a value (no field of it changes)
-let command_words_at : @ui.Style = @ui.css("w=Grow(1.0)")
-
-///|
-// kept across runs: a value (no field of it changes)
-let command_words : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Fg, wrap=false)
 
 ///|
 /// A choice that opens a menu of what it can be (Chooser, controls.css.ts chooser): quiet words (12) and a small

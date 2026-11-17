@@ -138,6 +138,60 @@ test("simulators_and_peoples_views_up_long_are_listed_with_how_each_is_stopped",
   assert.equal(longNext([], [], NOW), null);
 });
 
+test("those_queued_are_not_up_and_none_is_asked_again_for_them", () => {
+  // A task waiting in its station's queue has not started: never listed, and nothing to wake for.
+  const queued = job("q", { startedAt: NOW - 2 * LONG, queued: true });
+  assert.deepEqual(longJobs([["w/s1", null, [queued]]], c()), { groups: [], lit: false, ids: [] });
+  assert.equal(longNext([["w/s1", null, [job("q", { startedAt: NOW - LONG + 5_000, queued: true })]]], [], NOW), null);
+});
+
+test("those_up_long_are_asked_again_as_how_long_says_something_else", () => {
+  // Listed an hour and a half: asked again as it comes to 2 小时 (nextChange), not each minute (present.ts NO_TICK).
+  const at = NOW - LONG - 30 * 60_000;
+  const next = longNext([["w/s1", null, [job("j", { startedAt: at })]]], [], NOW);
+  assert.equal(next, nextChange(NOW - at));
+  assert.equal(longJobs([["w/s1", null, [job("j", { startedAt: at })]]], { ...c(), now: NOW + next! - 1 }).groups[0].jobs[0].age, "1 小时");
+  assert.equal(longJobs([["w/s1", null, [job("j", { startedAt: at })]]], { ...c(), now: NOW + next! }).groups[0].jobs[0].age, "2 小时");
+  // One not up an hour yet comes first where it is sooner; a view on this device is never listed, so wakes nothing.
+  assert.equal(longNext([["w/s1", null, [job("j", { startedAt: at }), job("k", { startedAt: NOW - LONG + 5_000 })]]], [], NOW), 5_000);
+  const here = [{ id: "simulator:A", title: "x", views: [{ id: "v", name: "Peng", at: NOW - 2 * LONG, may: true, here: true }] }];
+  assert.equal(longNext([], [["w/s1", null, here]], NOW), null);
+});
+
+test("where_others_are_members_only_the_viewers_own_light_the_bell_the_rest_folded_apart", () => {
+  const up = (id: string, patch: J = {}) => job(id, { startedAt: NOW - 2 * LONG, ...patch });
+  const view = (id: string, patch: J = {}): J => ({ id, name: "Peng", device: "MacBook", at: NOW - 2 * LONG, may: true, ...patch });
+  const screens: J[] = [
+    // the viewer's view on it: theirs
+    { id: "simulator:A", title: "mine", since: NOW - 3 * LONG, closable: true, views: [view("v1", { mine: true })] },
+    // shared: another's view on it alone
+    { id: "simulator:B", title: "shared", since: NOW - 3 * LONG, closable: true, views: [view("v2")] },
+    // on this device: theirs, the view itself not listed
+    { id: "simulator:C", title: "here", since: NOW - 3 * LONG, closable: true, views: [view("v3", { here: true })] },
+  ];
+  const stations: [string, string | null, J[]][] = [["w/s1", null, [up("svc", { port: 1, mine: true }), up("theirs", { port: 2, mine: false }), up("task", { mine: false })]]];
+  const v = longJobs(stations, c(), undefined, undefined, [["w/s1", null, screens, false]]);
+  assert.deepEqual(v.groups.map((g: J) => [g.key, g.jobs.map((j: J) => j.id)]), [["services", ["svc"]], ["simulators", ["screen:simulator:A", "screen:simulator:C"]], ["views", ["view:simulator:A/v1"]]]);
+  assert.deepEqual(v.otherGroups.map((g: J) => [g.key, g.head, g.jobs.map((j: J) => j.id)]), [
+    ["services", "长时间运行的网页服务 · 1", ["theirs"]],
+    ["jobs", "长时间运行的后台任务 · 1", ["task"]],
+    ["simulators", "长时间开着的模拟器 · 1", ["screen:simulator:B"]],
+    ["views", "长时间开着的远程连接 · 1", ["view:simulator:B/v2"]],
+  ]);
+  assert.deepEqual([v.otherCount, v.otherText], [4, "其他运行中 · 4"]);
+  assert.deepEqual(v.ids, ["w/s1/svc", "w/s1/screen:simulator:A", "w/s1/screen:simulator:C", "w/s1/view:simulator:A/v1"]);
+  assert.equal(v.lit, true);
+  // (whose each is goes nowhere: it is no field of what is sent)
+  assert.ok([...v.groups, ...v.otherGroups].every((g: J) => g.jobs.every((j: J) => !("mine" in j))));
+  assert.ok("ok" in conform("LongJobsView", v), JSON.stringify(conform("LongJobsView", v)));
+  // Only others' up: listed apart, lighting nothing, nothing to keep as shown.
+  const others = longJobs([["w/s1", null, [up("theirs", { port: 2, mine: false })]]], c());
+  assert.deepEqual([others.groups, others.lit, others.ids, others.otherCount], [[], false, [], 1]);
+  // A task run for another station's chat that is not the viewer's goes with the others.
+  const from = (): From => ({ name: "cedar", chat: null, mine: false });
+  assert.equal(longJobs([["w/s1", null, [up("r", { session: "remote:w:cedar:chat:c-1" })]]], c(), from).otherCount, 1);
+});
+
 test("a_task_another_stations_chat_runs_is_in_that_chat", () => {
   assert.deepEqual(remoteOwner("remote:w:cedar:chat:c-1"), { station: "w/cedar", session: "chat:c-1" });
   assert.equal(remoteOwner("chat:c-1"), null);

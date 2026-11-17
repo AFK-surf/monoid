@@ -8,7 +8,9 @@
 /// edge_look draws it: its bar while `over()` its column, longer while `on()` it (pointed at, in hand), in the field's
 /// edge grey while `active()` (pressed, dragged), else the strong line's grey; its line while on it (unless `line()` says
 /// no, as that changes: a sidebar folded) or active. Its bar's height and showing move over edge_bar_ms, its grey over edge_ink_ms, its line over
-/// edge_line_ms, each eased out, from the moment its state changed. Taking nothing. The node.
+/// edge_line_ms, each eased out, from the moment its state changed. `pull`: dragged past its end (edge_node's `pull`),
+/// its line a string drawn aside where the hand is (@paint.tension_line), its bar aside with it; at rest, as ever.
+/// Taking nothing. The node.
 #callsite(autofill(loc))
 pub fn edge_look_node(
   parent : @view.View,
@@ -16,10 +18,22 @@ pub fn edge_look_node(
   on : () -> Bool,
   active : () -> Bool,
   line? : () -> Bool = fn() { true },
+  pull? : EdgePull,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(v) {
     let theme = fn() { @ui.tree_theme() }
+    // (how far aside its line is drawn, where along it and how tall it was: none at rest, nor without a pull)
+    let pulled = fn() -> (Double, Double, Double) {
+      match pull {
+        Some(p) => p.shown_on(v)
+        None => (0.0, 0.0, 0.0)
+      }
+    }
+    // (drawn aside only where its line shows: a folded sidebar's has none to bend)
+    let bent = fn() { line() && pulled().0.abs() >= 0.05 }
+    // (its bar's node, drawn aside with its line once it is pulled)
+    let bar : Ref[@view.View?] = Ref(None)
     let state = fn() { edge_state(over(), on(), active(), line()) }
     let now = @signals.untracked(state)
     // (each as the state is as it is made: still)
@@ -41,7 +55,7 @@ pub fn edge_look_node(
       l.box(fn(h) {
         h
         .grow(Is(1.0))
-        .alpha(By(fn() { lit.shown(v) }))
+        .alpha(By(fn() { if bent() { 0.0 } else { lit.shown(v) } }))
         |> ignore
         for i in 0..<edge_line_steps {
           let y = (i.to_double() + 0.5) / edge_line_steps.to_double()
@@ -72,12 +86,68 @@ pub fn edge_look_node(
       .ground(By(fn() { mix(theme().color(FieldHover), ink.shown(v), theme().color(Border)) }))
       .drawn_as(Is("/icon/edge-bar/"))
       |> ignore
+      bar.val = Some(b)
       })
       |> ignore
     })
     |> ignore
     v.box(fn(s) { s.grow(Is(1.0)) |> ignore }) |> ignore
+    // its line drawn aside, and its bar with it, bound as it is first drawn aside: an edge never pulled binds nothing
+    // for it (a page's edges opened bind none). The line a string held at its ends (S2 in from each), drawn aside at the
+    // hand's height, in pieces its grey thinning toward its ends as the straight line's does; nothing drawn at rest
+    match pull {
+      Some(p) => {
+        let bound = Ref(false)
+        v.reacts(fn() { p.taken() }, at_start=false, fn(taken) {
+          if !taken || bound.val {
+            return
+          }
+          bound.val = true
+          v.lines(By(fn() { bend_lines(pulled(), bent(), lit.shown(v), theme().color(FieldHover)) })) |> ignore
+          match bar.val {
+            Some(b) => b.offset(By(fn() { (if bent() { pulled().0 } else { 0.0 }, 0.0) })) |> ignore
+            None => ()
+          }
+        })
+      }
+      None => ()
+    }
   })
+}
+
+///|
+/// An edge's line drawn aside (`pulled`: how far, at what height, how tall it was), in pieces its grey (`ink`, as lit
+/// as `shown`) thinning toward its ends: none while it is not `bent`.
+fn bend_lines(
+  pulled : (Double, Double, Double),
+  bent : Bool,
+  shown : Double,
+  ink : Int64,
+) -> Array[@paint.Line] {
+  let (aside, y, h) = pulled
+  if !bent || h <= 0.0 {
+    return []
+  }
+  let s2 = @ui.Space::px(S2)
+  let span = dmax(0.0, h - 2.0 * s2)
+  let pts = @paint.tension_line(span, handle_w / 2.0, aside, y - s2).map(fn(p) { (p.0, p.1 + s2) })
+  let out = []
+  for i in 0..<edge_bend_pieces {
+    let a = (i.to_double() + 0.5) / edge_bend_pieces.to_double()
+    let k = if a <= 0.1 || a >= 0.9 { 0.0 } else if a < 0.5 { (a - 0.1) / 0.4 } else { (0.9 - a) / 0.4 }
+    if k > 0.0 {
+      out.push(
+        @paint.subline(
+          pts,
+          from=i.to_double() / edge_bend_pieces.to_double(),
+          upto=(i + 1).to_double() / edge_bend_pieces.to_double(),
+          width=@ui.Space::px(SPx),
+          color=alpha(ink, k * shown),
+        ),
+      )
+    }
+  }
+  out
 }
 
 ///|
@@ -86,3 +156,7 @@ pub fn edge_look_node(
 pub fn edge_over() -> Bool {
   @ui.pointing() is Finger
 }
+
+///|
+/// In how many pieces an edge's line drawn aside is drawn, its grey thinning toward its ends as edge_line_steps'.
+let edge_bend_pieces : Int = 20

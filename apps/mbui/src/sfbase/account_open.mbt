@@ -284,7 +284,9 @@ pub fn switch_answered(
   let (answered, leases) = asked_now(src, asks, then?)
   // (what was asked handed over with the switch, so the frame its readers read it anew in is the one after it)
   let go = fn() { @ui.after_frame(fn() { hand_over_shown(at, leases, fn() { @view.answering(switch_to) }) }) }
-  press_wait(answered, go, let_go=fn() {
+  // (the choice the page switches by, shown at the press: a menu it was chosen in done with it then, never held open
+  // as what it opens is waited for, press_wait's `holds`)
+  press_wait(answered, go, holds=false, let_go=fn() {
     leases.each(fn(l) { l.cancel() })
     let_go()
   })

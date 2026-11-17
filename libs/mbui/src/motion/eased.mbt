@@ -20,7 +20,8 @@ pub fn Eased::new(v : Double) -> Eased {
 
 ///|
 /// Off to `to` over `ms` (eased out, or as `ease` says, `delay` ms after `n`'s cause's moment), from where it is then;
-/// its end a moment of `n`'s.
+/// its end a moment of `n`'s, said by its caller (`loc`: whose that moment is, a wake of its own).
+#callsite(autofill(loc))
 pub fn Eased::go(
   self : Eased,
   n : @view.View,
@@ -28,19 +29,23 @@ pub fn Eased::go(
   ms : Double,
   ease? : @ui.Ease = Out,
   delay? : Double = 0.0,
+  loc~ : SourceLoc,
 ) -> Unit {
-  self.go_by(n, to, tween(ms, ease~, delay~))
+  self.go_by(n, to, tween(ms, ease~, delay~), loc~)
 }
 
 ///|
 /// Off to `to` as `spec` says (a tween, a curve, a Move by how far it goes) from `n`'s cause's moment, from where it
-/// is then (or as fast as `velocity` per second); its end a moment of `n`'s.
+/// is then (or as fast as `velocity` per second); its end a moment of `n`'s, said by its caller (`loc`: what waits for
+/// it knows one way's end from another's, the same way said again from many).
+#callsite(autofill(loc))
 pub fn Eased::go_by(
   self : Eased,
   n : @view.View,
   to : Double,
   spec : Spec,
   velocity? : Double,
+  loc~ : SourceLoc,
 ) -> Unit {
   if self.way.target() == to {
     return
@@ -48,7 +53,7 @@ pub fn Eased::go_by(
   (self.due)()
   self.way.go(to, spec, at=n.cause_at(), velocity?)
   self.due = if self.way.ends_at() >= 0.0 {
-    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
+    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) }, loc~)
   } else {
     fn() {  }
   }
@@ -56,13 +61,21 @@ pub fn Eased::go_by(
 
 ///|
 /// Off from `from` (put there at that moment, still) to `to` as `spec` says, from `n`'s cause's moment; its end a
-/// moment of `n`'s.
-pub fn Eased::go_from(self : Eased, n : @view.View, from : Double, to : Double, spec : Spec) -> Unit {
+/// moment of `n`'s, said by its caller (as go_by's).
+#callsite(autofill(loc))
+pub fn Eased::go_from(
+  self : Eased,
+  n : @view.View,
+  from : Double,
+  to : Double,
+  spec : Spec,
+  loc~ : SourceLoc,
+) -> Unit {
   (self.due)()
   self.way.put(from)
   self.way.go(to, spec, at=n.cause_at())
   self.due = if self.way.ends_at() >= 0.0 {
-    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) })
+    n.at_moment(self.way.end(), fn() { self.ended.set(self.ended.untracked() + 1) }, loc~)
   } else {
     fn() {  }
   }
@@ -94,6 +107,13 @@ pub fn Eased::target(self : Eased) -> Double {
 pub fn Eased::shown(self : Eased, n : @view.View) -> Double {
   self.ended.get() |> ignore
   self.way.shown_on(n)
+}
+
+///|
+/// Where it is as `n` is drawn and how fast it goes then (per second): Way::motion_on's, still (0) once it is there.
+pub fn Eased::motion(self : Eased, n : @view.View) -> (Double, Double) {
+  self.ended.get() |> ignore
+  self.way.motion_on(n)
 }
 
 ///|

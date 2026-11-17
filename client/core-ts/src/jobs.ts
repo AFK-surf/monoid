@@ -237,72 +237,91 @@ export function remoteOwner(session: string): { station: string; session: string
 }
 
 /// The chat on another station a task runs for (`remoteOwner`): that station's name, and the chat as its sidebar has
-/// it (`station` its address), none when its row is not known here.
+/// it (`station` its address), none when its row is not known here; whether the task is the viewer's own (`mine`, as
+/// a job's is: `longJobs`).
 export interface From {
   name: string;
   chat: { id: string; title: string | null; archived: boolean; station: string } | null;
+  mine?: boolean;
 }
 
 /// How the rail's bell takes the jobs left up long: whether they light it at all (`badgeKinds.services`), and those it
 /// has shown already (`jobsSeen`, `<station>/<id>`).
 export type Bell = { on: boolean; seen: Set<string> };
 
-/// A station's screens as its `screens` topic has them (screens.ts `screensView`), for those left up long.
-export type HeldScreens = [address: string, name: string | null, screens: J[]];
+/// A station's screens as its `screens` topic has them (screens.ts `screensView`), for those left up long; `own`, whether
+/// what is up on it is the viewer's whatever their views (a workspace of one: false where others share the station,
+/// its simulators then the viewer's only where a view of theirs is on it).
+export type HeldScreens = [address: string, name: string | null, screens: J[], own?: boolean];
+
+/// Whether a job, a simulator or a view left up long is the viewer's own (`mine`: the views put it in, false for one
+/// of another member's or shared; none said, the viewer's): those light the bell and come first; the others are folded
+/// under 其他运行中 (`otherGroups`), never lighting it.
+const mineOf = (item: J): boolean => get(item, "mine") !== false;
 
 /// What costs a station while nobody uses it, besides its jobs (`longJobs`): its simulators and emulators up longer
 /// than `LONG` (`since`, closed from here: `screen.close`), and people's views of its screens open that long
 /// (`screen.endView`): each as a job is shown, with `stop` saying how it is stopped. Only those the viewer may stop;
-/// a view on this device aside (it is in sight here), and an agent's (it goes 60 s after its last use).
+/// a view on this device aside (it is in sight here), and an agent's (it goes 60 s after its last use). Each says
+/// whether it is the viewer's (`mine`): all on a station that is (`own`), else a simulator the viewer has a view on
+/// (here or elsewhere) and the viewer's own views.
 export function longScreens(stations: HeldScreens[], c: Clock): { simulators: J[]; views: J[] } {
   const simulators: J[] = [];
   const views: J[] = [];
-  const row = (address: string, name: string | null, id: string, title: string, startedAt: number, where: (string | null)[], stop: J): J => ({
+  const row = (address: string, name: string | null, id: string, title: string, startedAt: number, where: (string | null)[], stop: J, mine: boolean): J => ({
     id, name: title, state: "running", startedAt, tone: "live", service: false, age: span(c.now - startedAt),
-    station: address, stationName: name, whereText: [name, ...where].filter((x) => x !== null && x !== "").join(" · "), stop,
+    station: address, stationName: name, whereText: [name, ...where].filter((x) => x !== null && x !== "").join(" · "), stop, mine,
   });
-  for (const [address, name, screens] of stations) {
+  for (const [address, name, screens, own = true] of stations) {
     for (const s of screens) {
       const id = strOf(s, "id");
       const since = msOf(s, "since");
       if (id !== "" && since !== null && get(s, "closable") === true && c.now - since >= LONG) {
         const kind = id.startsWith("android:") ? "core-logic.jobs.long.android" : "core-logic.jobs.long.ios";
-        simulators.push(row(address, name, `screen:${id}`, strOf(s, "title"), since, [t(kind)], { call: "screen.close", screen: id, word: t("core-logic.jobs.long.shutdown") }));
+        const mine = own || arr(get(s, "views")).some((v) => get(v, "here") === true || get(v, "mine") === true);
+        simulators.push(row(address, name, `screen:${id}`, strOf(s, "title"), since, [t(kind)], { call: "screen.close", screen: id, word: t("core-logic.jobs.long.shutdown") }, mine));
       }
       for (const v of arr(get(s, "views"))) {
         const at = msOf(v, "at");
         if (at === null || get(v, "may") !== true || get(v, "agent") === true || get(v, "here") === true || c.now - at < LONG) continue;
-        views.push(row(address, name, `view:${id}/${strOf(v, "id")}`, strOf(s, "title"), at, [strOf(v, "name"), strOf(v, "device")], { call: "screen.endView", screen: id, view: strOf(v, "id"), word: t("core-logic.jobs.long.disconnect") }));
+        views.push(row(address, name, `view:${id}/${strOf(v, "id")}`, strOf(s, "title"), at, [strOf(v, "name"), strOf(v, "device")], { call: "screen.endView", screen: id, view: strOf(v, "id"), word: t("core-logic.jobs.long.disconnect") }, own || get(v, "mine") === true));
       }
     }
   }
   return { simulators, views };
 }
 
-/// How long until one of the stations' jobs or screens not up `LONG` yet is (null: none will be).
+/// How long until what `longJobs` says of the stations' jobs and screens changes by the clock alone (null: never): one
+/// not up `LONG` yet comes to be, or how long one listed has been up (its `age`, `span`) says something else. The view
+/// is asked again then and at no other time (present.ts NO_TICK).
 export function longNext(stations: [string, string | null, J[]][], screens: HeldScreens[], now: number): number | null {
   const starts: number[] = [];
-  for (const [, , jobs] of stations) for (const j of jobs) if (!isWatch(j) && msOf(j, "startedAt") !== null) starts.push(j.startedAt);
+  for (const [, , jobs] of stations) for (const j of jobs) if (!isWatch(j) && !isQueued(j) && msOf(j, "startedAt") !== null) starts.push(j.startedAt);
   for (const [, , list] of screens) {
     for (const s of list) {
       const since = msOf(s, "since");
       if (since !== null && get(s, "closable") === true) starts.push(since);
-      for (const v of arr(get(s, "views"))) if (msOf(v, "at") !== null && get(v, "may") === true && get(v, "agent") !== true) starts.push(v.at);
+      for (const v of arr(get(s, "views"))) if (msOf(v, "at") !== null && get(v, "may") === true && get(v, "agent") !== true && get(v, "here") !== true) starts.push(v.at);
     }
   }
-  const left = starts.map((at) => at + LONG - now).filter((ms) => ms > 0);
+  const left = starts.map((at) => (now - at >= LONG ? nextChange(now - at) : at + LONG - now)).filter((ms) => ms > 0);
   return left.length === 0 ? null : Math.min(...left);
 }
 
-/// Those of the stations' open jobs up longer than `LONG`, watches aside, oldest first, services and jobs apart; then
-/// their simulators and people's views of their screens up that long (`longScreens`). A task run for another station's
-/// chat (`from`, by its session) is in that chat, and says which station it came from. The bell's dot (`lit`) while one
-/// is there it has not shown yet; `ids` are what it keeps as shown once it opens.
+/// A task waiting in its station's queue: not running yet, so not up at all.
+const isQueued = (job: J): boolean => get(job, "queued") === true;
+
+/// Those of the stations' open jobs up longer than `LONG`, watches and those queued aside, oldest first, services and
+/// jobs apart; then their simulators and people's views of their screens up that long (`longScreens`). A task run for
+/// another station's chat (`from`, by its session) is in that chat, and says which station it came from. The viewer's
+/// own (`mine`) in `groups`; the others (another member's, a station's shared) in `otherGroups`, `otherCount` of them
+/// (all three left out while there are none). The bell's dot (`lit`) while one of the viewer's is there it has not
+/// shown yet; `ids` are what it keeps as shown once it opens.
 export function longJobs(stations: [string, string | null, J[]][], c: Clock, from: (session: string) => From | null = () => null, bell: Bell = { on: true, seen: new Set() }, screens: HeldScreens[] = []): J {
   const long: J[] = [];
   for (const [address, name, jobs] of stations) {
     for (const j of jobs) {
-      if (isWatch(j) || c.now - (msOf(j, "startedAt") ?? c.now) < LONG) continue;
+      if (isWatch(j) || isQueued(j) || c.now - (msOf(j, "startedAt") ?? c.now) < LONG) continue;
       const job = shown(j, c);
       const chat = get(j, "chat");
       let chatObj = chat !== null && typeof chat === "object" && !Array.isArray(chat) ? chat : null;
@@ -315,6 +334,7 @@ export function longJobs(stations: [string, string | null, J[]][], c: Clock, fro
       job.station = address;
       job.stationName = name;
       job.whereText = [name, title, archived, origin].filter((x) => x !== null).join(" · ");
+      if (elsewhere && elsewhere.mine !== undefined) job.mine = elsewhere.mine;
       long.push(job);
     }
   }
@@ -323,16 +343,24 @@ export function longJobs(stations: [string, string | null, J[]][], c: Clock, fro
   const { simulators, views } = longScreens(screens, c);
   simulators.sort(oldest);
   views.sort(oldest);
-  const groups = (
+  // (whose each is, read and taken off: the shape sends no `mine`)
+  const split = (list: J[], mine: boolean): J[] => list.filter((j) => mineOf(j) === mine).map(({ mine: _, ...j }) => j);
+  const grouped = (mine: boolean) => (
     [
-      ["services", "core-logic.jobs.long.services", long.filter((j) => isService(j))],
-      ["jobs", "core-logic.jobs.long.jobs", long.filter((j) => !isService(j))],
-      ["simulators", "core-logic.jobs.long.simulators", simulators],
-      ["views", "core-logic.jobs.long.views", views],
+      ["services", "core-logic.jobs.long.services", split(long.filter((j) => isService(j)), mine)],
+      ["jobs", "core-logic.jobs.long.jobs", split(long.filter((j) => !isService(j)), mine)],
+      ["simulators", "core-logic.jobs.long.simulators", split(simulators, mine)],
+      ["views", "core-logic.jobs.long.views", split(views, mine)],
     ] as [string, string, J[]][]
   ).flatMap(([key, head, list]) => (list.length === 0 ? [] : [{ key, head: `${t(head)} · ${list.length}`, jobs: list }]));
-  const ids = [...long, ...simulators, ...views].map((j) => `${j.station}/${strOf(j, "id")}`);
-  return { groups, lit: bell.on && ids.some((id) => !bell.seen.has(id)), ids };
+  const groups = grouped(true);
+  const otherGroups = grouped(false);
+  const ids = [...long, ...simulators, ...views].filter(mineOf).map((j) => `${j.station}/${strOf(j, "id")}`);
+  const otherCount = otherGroups.reduce((n, g) => n + g.jobs.length, 0);
+  return {
+    groups, lit: bell.on && ids.some((id) => !bell.seen.has(id)), ids,
+    ...(otherCount > 0 ? { otherGroups, otherCount, otherText: t("core-logic.jobs.long.other", { n: otherCount }) } : {}),
+  };
 }
 
 /// A job's output as read (`JobLogView`): its lines as a terminal shows them, each its runs of one style and its number

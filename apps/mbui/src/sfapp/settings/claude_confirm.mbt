@@ -8,6 +8,7 @@ pub fn confirm_claude_auth(claude : Bool, open : () -> Unit) -> Unit {
       @sf.t("common.login.confirmClaudeBody"),
       @sf.t("common.login.confirmClaudeAction"),
       open,
+      warning=@sf.t("common.login.confirmClaudeWarning"),
     )
   } else {
     open()

@@ -1,27 +1,39 @@
 ---
 name: stillfail-browser
-description: Use the station's own Chrome (this chat's own environment in it) for web work that needs a login or should look like a person's browser (sites, dashboards, consoles, anything behind a sign-in), ask a person to sign in or solve a captcha in it, and keep and reuse sign-ins through the vault.
+description: Use the station's own browser (this chat's own environment in it: Chrome, or Farview) for web work that needs a login or should look like a person's browser (sites, dashboards, consoles, anything behind a sign-in), ask a person to sign in or solve a captcha in it, and keep and reuse sign-ins through the vault.
 ---
 
 # The station's browser
 
-Each station keeps one real Google Chrome, with no window on the machine, and in it an environment of this chat's own:
-its tabs, cookies and storage are this chat's alone, kept in memory only, and gone when the chat is archived. No other
-chat sees them, and you see nothing of another chat's. Get it with the `browser` tool (it starts it if needed): it
-gives this chat's address of it, `ws://127.0.0.1:<port>/browser/<…>`. Drive it there with your own client:
+Each chat has a browser of its own on the station, its tabs, cookies and storage this chat's alone, gone when the chat
+is archived; no other chat sees them, and you see nothing of another chat's. Get it with the `browser` tool (it starts
+it if needed); what it answers says which of two engines this chat has:
 
-- chrome-devtools-mcp: `npx -y chrome-devtools-mcp@latest --wsEndpoint <that address>`
-- Playwright: `chromium.connectOverCDP("<that address>")`, then `browser.contexts()[0].newPage()` (the default
-  context is this chat's environment).
+- **Chrome** (a real Google Chrome with no window, this chat's environment in it, kept in memory only): the tool gives
+  this chat's address of it, `ws://127.0.0.1:<port>/browser/<…>`. Drive it there with your own client:
+  - chrome-devtools-mcp: `npx -y chrome-devtools-mcp@latest --wsEndpoint <that address>`
+  - Playwright: `chromium.connectOverCDP("<that address>")`, then `browser.contexts()[0].newPage()` (the default
+    context is this chat's environment).
+  Through that address you reach this chat's environment only: what touches another chat's tabs or the browser as a
+  whole is refused.
+- **Farview** (a browser whose pages run on this station and draw on people's devices; its profile kept on disk until
+  the chat is archived): no DevTools address, so Playwright and chrome-devtools-mcp do not drive it. The tool gives
+  each tab's agent port; drive it with `agent.exe 127.0.0.1 <port> <step>...` (the path is in the tool's answer), each
+  step printing the page's address, title and an outline after it: `look`, `go:<address>`, `click:<selector>`,
+  `fill:<selector>=<words>`, `submit:<selector>`, `key:<key>[@<selector>]`, `back`, `forward`, `reload`, `wait:<ms>`,
+  `shot:<file.png>`, `eval:<js>` (its result as JSON), `upload:<selector>=<file>[,<file>...]` (files chosen for a file
+  input as a person would) and `downloads` (what the page saved, in its tab's `downloads/`). `browser` action `open`
+  (with `url`) opens another tab, `close` (with `tab`) closes one, `tabs` lists them; a page's new window is a tab too.
 
-Through that address you reach this chat's environment only: what touches another chat's tabs or the browser as a
-whole (closing it, a session of the browser's own) is refused. People see this chat's tabs in their app, and may
-close them there.
+A station gives Chrome unless its config says Farview; `browser {engine: "farview"}` or `{engine: "chrome"}`
+switches this chat's browser from then on (the other's tabs end; each keeps its own sign-ins).
+People see this chat's tabs in their app either way, and may close or drive them there.
 
 Rules:
 
 - Use it, not a Chrome or Chromium you launch yourself, for anything behind a login: sites often refuse to sign in an
   automated one, and the vault's sign-ins go only into this one.
+- `sign_in`, `screen` and `computer` work the same on both engines.
 - Close the tabs you are done with.
 - `browser` with action `tabs` lists this chat's tabs; `stop` closes this chat's environment (its tabs and the
   cookies in it; sign-ins still granted go in again when you next ask).
@@ -48,8 +60,9 @@ is the one way to ask:
   tab's screen for a sign-in yourself, and never ask for a password or a code in the chat.
 - The vault's sign-in ran out (the site asks you to sign in although it was granted): sign in with the site's passkey if
   it offers one (below: the browser signs it), else `sign_in {site, again: true}`.
-- Passkeys: each tab of this chat's environment has an authenticator of the browser's own, so a site asking for a passkey
-  already stored in that sign-in signs with it automatically. Never register a new passkey on a person's account unless
+- Passkeys: each tab of this chat's Chrome has an authenticator of the browser's own, so a site asking for a passkey
+  already stored in that sign-in signs with it automatically. Farview has none yet: for a site that needs a passkey,
+  switch to `browser {engine: "chrome"}` first. Never register a new passkey on a person's account unless
   they explicitly ask you to add one.
 - A sign-in made before each chat had its own environment is still in the station's own profile: `secret_save {…,
   kind: "browser", browser: "station"}` reads it from there.

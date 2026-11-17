@@ -422,7 +422,7 @@ test("a locked workspace's roster changes answer within the stations' wait and t
     if (req.method === "DELETE" && path === "/v1/workspaces/ws/added/d%40x.com") return json({ members });
     if (req.method === "DELETE" && path === `/v1/workspaces/ws/stations/${A}`) return json({ ok: true });
     if (req.method === "POST" && path === "/v1/workspaces/ws/enrollments") {
-      return json({ token: "tok", install: "curl x | sh -s -- tok", installWindows: "& (irm x) tok", command: "stillfail station enroll https://x tok" });
+      return json({ token: "tok", install: "curl x | sh -s -- tok", installWindows: "& (irm x) tok", installDocker: "docker run x tok", command: "stillfail station enroll https://x tok" });
     }
     return undefined;
   });
@@ -459,6 +459,7 @@ test("a locked workspace's roster changes answer within the stations' wait and t
   // The command pins the lock as its station last said it (it took none of the entries since): an entry of the chain.
   const enrolled = await timed("workspace.enroll", { name: "mini" });
   assert.ok(enrolled.command.endsWith(` --lock ${st.head().hash}`), enrolled.command);
+  assert.equal(enrolled.installDocker, `docker run x tok ${st.head().hash}`);
   assert.equal(st.chain.length, 1);
   await pends("workspace.removeMember", { member: "s2" }, "member.remove", { sub: "s2" });
   // Its one station taken out: the lock names none after that, which is the cloud's to keep from it on, as a lock that

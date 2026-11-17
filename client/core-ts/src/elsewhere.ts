@@ -55,9 +55,10 @@ export function sending(tool: string, call: string): { to: string; text: string 
   return null;
 }
 
-/// How a call's result went: failed (the tool's or Slack's `ok: false`), and the ts Slack gave a new message.
-export function outcome(entry: J): { failed: boolean; ts: string | null } {
-  if (entry?.ok === false) return { failed: true, ts: null };
+/// How a call's result went: failed (the tool's or Slack's `ok: false`), refused (the tool's own: it sent nothing, as
+/// a chat_post to an address not of its session, `CHT/…` for `CHAT/…`), and the ts Slack gave a new message.
+export function outcome(entry: J): { failed: boolean; refused: boolean; ts: string | null } {
+  if (entry?.ok === false) return { failed: true, refused: true, ts: null };
   const text = typeof entry?.text === "string" ? entry.text : "";
   let v: J = null;
   try {
@@ -65,16 +66,17 @@ export function outcome(entry: J): { failed: boolean; ts: string | null } {
   } catch {
     // Not Slack's answer (chat_post's own words): it went.
   }
-  if (v === null || typeof v !== "object") return { failed: false, ts: null };
-  return { failed: v.ok === false, ts: typeof v.ts === "string" ? v.ts : null };
+  if (v === null || typeof v !== "object") return { failed: false, refused: false, ts: null };
+  return { failed: v.ok === false, refused: false, ts: typeof v.ts === "string" ? v.ts : null };
 }
 
 /// One thing said in Slack, as kept: its transcript item (`k`: which of the item's messages), `out` when the agent sent
 /// it (its call's id) or else a person's it was given (`user`, `who`: their Slack id and name), when, where (a Slack
-/// thread's address, or a channel before a message's ts is known), its words as Markdown, and whether it failed.
+/// thread's address, or a channel before a message's ts is known), its words as Markdown, whether it failed and whether
+/// the tool refused it (`outcome`).
 export type Said = {
   i: number; k: number; out: boolean; call: string | null; user: string | null; who: string | null; at: number; to: string;
-  text: string; failed: boolean;
+  text: string; failed: boolean; refused: boolean;
 };
 
 /// A file a person's Slack message came with, where the station keeps it (in the workspace of the session it was given
@@ -97,13 +99,13 @@ export function heardFiles(text: string): { text: string; files: Heard[] } {
 
 /// What a transcript item says of Slack: what the agent sends there or was given from there (`said`), or the result of
 /// a call (`result`: its call's id, else none, then it is the item just before's).
-export function readItem(i: number, e: J): { said: Said[] } | { result: { call: string | null; failed: boolean; ts: string | null } } | null {
+export function readItem(i: number, e: J): { said: Said[] } | { result: { call: string | null; failed: boolean; refused: boolean; ts: string | null } } | null {
   if (e?.subagent === true) return null;
   const at = typeof e?.at === "string" ? (epochMs(e.at) ?? 0) : 0;
   if (e?.kind === "tool_call") {
     const s = sending(typeof e.tool === "string" ? e.tool : "", typeof e.text === "string" ? e.text : "");
     if (s === null) return null;
-    return { said: [{ i, k: 0, out: true, call: typeof e.callId === "string" ? e.callId : null, user: null, who: null, at, to: s.to, text: markdownOf(s.text), failed: false }] };
+    return { said: [{ i, k: 0, out: true, call: typeof e.callId === "string" ? e.callId : null, user: null, who: null, at, to: s.to, text: markdownOf(s.text), failed: false, refused: false }] };
   }
   if (e?.kind === "tool_result") return { result: { call: typeof e.callId === "string" ? e.callId : null, ...outcome(e) } };
   if (e?.kind === "user" && typeof e.text === "string") {
@@ -112,7 +114,7 @@ export function readItem(i: number, e: J): { said: Said[] } | { result: { call: 
       // When it was said in Slack (its ts), else when the agent was given it.
       const ts = Number(m.ts);
       const to = m.thread ?? "";
-      return [{ i, k, out: false, call: null, user: m.user || null, who: m.name, at: Number.isFinite(ts) && ts > 0 ? Math.trunc(ts * 1000) : at, to, text: markdownOf(m.text), failed: false }];
+      return [{ i, k, out: false, call: null, user: m.user || null, who: m.name, at: Number.isFinite(ts) && ts > 0 ? Math.trunc(ts * 1000) : at, to, text: markdownOf(m.text), failed: false, refused: false }];
     });
     return said.length > 0 ? { said } : null;
   }
