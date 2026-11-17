@@ -268,11 +268,31 @@ test("two devices of one person meet through a station; one of theirs from befor
   assert.equal(phone.live().some((r) => r.name === "Bo's"), false);
 });
 
-test("a station from before is read and written the old way, never PUT to, and shows nothing twice", async () => {
+test("a station from before is read and written the old way, never PUT to, and shows nothing twice", async (t) => {
   const a = station("a");
   const o = before("o");
   const old = await o.presets.add(null, { name: "Legacy", dirs: [] }, ME.email);
   await o.presets.add(null, { name: "Theirs", dirs: [] }, YOU.email);
+  // A legacy write is forked: the device answers before that station has written its file. Hold each write until
+  // the test lets it go, and wait for the route's real completion, not turns of the device's test clock.
+  const writes: { release: () => void; done: Promise<void> }[] = [];
+  const answer = o.answer;
+  o.answer = (viewer) => (method, path, body) => {
+    const asked = answer(viewer)(method, path, body);
+    if (path !== `/presets/${old.id}` || (method !== "PUT" && method !== "DELETE")) return asked;
+    let release = () => {};
+    let finished = () => {};
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const done = new Promise<void>((resolve) => (finished = resolve));
+    writes.push({ release, done });
+    return Effect.ensuring(Effect.andThen(Effect.promise(() => gate), asked), Effect.sync(finished));
+  };
+  const finishWrites = async () => {
+    const pending = writes.splice(0);
+    for (const w of pending) w.release();
+    await Promise.all(pending.map((w) => w.done));
+  };
+  t.after(finishWrites);
   const d = device(ME, [a, o]);
   await d.open(a);
   await d.open(o);
@@ -296,6 +316,9 @@ test("a station from before is read and written the old way, never PUT to, and s
   assert.deepEqual([d.held().records[old.id]!.rev, d.held().records[old.id]!.owner], [2, ME.sub]);
   assert.equal((await stationRecords(a)).find((r) => r.id === old.id)?.rev, 2, "carried to the station of today");
   assert.ok(o.told.includes(`PUT /presets/${old.id}`), "written to the one from before as before");
+  assert.equal(d.live().find((r) => r.id === old.id)?.name, "Legacy 2", "changed here while the old station's write waits");
+  assert.equal((await o.presets.get(null, old.id))?.name, "Legacy", "the old station has not written yet");
+  await finishWrites();
   assert.equal((await o.presets.get(null, old.id))?.name, "Legacy 2");
   await d.open(o);
   await shown();
@@ -305,6 +328,9 @@ test("a station from before is read and written the old way, never PUT to, and s
   // Deleted here: gone on the device and on the old one; not listed again.
   ok(await d.call("delete", o.address, { id: old.id }));
   assert.ok(o.told.includes(`DELETE /presets/${old.id}`));
+  assert.ok(isGone(d.held().records[old.id]!), "gone here while the old station's deletion waits");
+  await finishWrites();
+  assert.equal(await o.presets.get(null, old.id), null, "deleted on the old station before it is read again");
   await d.open(o);
   await shown();
   assert.deepEqual(listed(), []);
