@@ -1045,6 +1045,8 @@ fn main {
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => packed(host))
     (Some("vault-uses"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => vault_uses(host, db))
+    (Some("harness-session-storage"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @session_storage.harness(host))
     (Some("outflow-chats"), Some(db), _) =>
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "outflow chat index", (db, ask) => match ask {
         { "scope": String(scope), .. } => {

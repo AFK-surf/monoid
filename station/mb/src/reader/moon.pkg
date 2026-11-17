@@ -46,6 +46,7 @@ import {
   "station/jscase",
   "station/events",
   "station/claude",
+  "station/session_storage",
   "station/codex",
   "station/dsh",
   "station/cursor",
