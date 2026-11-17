@@ -6,6 +6,8 @@
 # (scripts/apple_text_test.m).
 D="$(cd "$(dirname "$0")" && pwd)"
 "$D/detlint" || exit 1
+# every call mbui's film makes of a native host answered by Apple's film, Linux's and the hosts' with none
+sh "$D/film_calls.sh" || exit 1
 # the H.264 conversion the hosts share (src/host/avc.h), as still.fail's Android AvcTest tests it
 mkdir -p "$D/../out"
 cc -Wall -I "$D/../src/host" "$D/avc_test.c" -o "$D/../out/avc_test" && "$D/../out/avc_test" || exit 1

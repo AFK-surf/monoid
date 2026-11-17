@@ -20,6 +20,7 @@
 
 void mb_host_present(double *buf, int32_t count, double r, double g, double b);
 int32_t mb_render_drawn_pixels(int32_t x, int32_t y, int32_t w, int32_t h, moonbit_bytes_t out);
+void mb_host_render_dirty(double x, double y, double w, double h);
 
 static char *utf8_of(moonbit_string_t s) {
   char *out = g_utf16_to_utf8((const gunichar2 *)s, Moonbit_array_length(s), NULL, NULL, NULL);
@@ -302,6 +303,12 @@ int32_t mbf_write_text(moonbit_string_t path, moonbit_string_t text) {
   g_free(t);
   return ok;
 }
+
+// (film here: what it asks of the renderer through calls of its own, which src/host/film_none.c answers elsewhere)
+int32_t mbf_supported(void) { return 1; }
+void mbf_set_view(double w, double h, double scale) { mb_render_set_size(w, h, scale); }
+void mbf_text_scale(double scale) { mb_text_set_scale(scale); }
+void mbf_dirty(double x, double y, double w, double h) { mb_host_render_dirty(x, y, w, h); }
 
 // The machine's clock (ms, monotonic): what a bench over a Tester times the frame's work by.
 double mbf_now_ms(void) {

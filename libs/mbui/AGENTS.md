@@ -57,6 +57,7 @@ Subsystem rules live in narrower `AGENTS.md` files loaded when touching those di
 
 - All host calls go through `libs/mbui/src/hostapi` (`Host` trait). Only app mains import `libs/mbui/src/host` (detlint `host-import`), while Tester installs `FakeHost` (`libs/mbui/src/ui/fake_host.mbt`), keeping native tests runnable on Linux CI.
 - Deliver external posts and picker results between frames, never deferring to frame start (`libs/mbui/src/host/AGENTS.md`). Never branch app code on whether a Tester is running (detlint `tester-branch`).
+- mbui's film (`libs/mbui/src/film`) links on every host. Apple (`libs/mbui/src/host/apple_film.m`) and Linux (`libs/mbui/src/host/linux_film.c`) film natively; every other host (Android, Windows, iOS) links `libs/mbui/src/host/film_none.c` (`mbf_supported` 0). Film asks a native host only through `mbf_` calls, never a renderer's own name; a new call is written in all three in the same change (`libs/mbui/scripts/film_calls.sh`, run by `libs/mbui/scripts/check.sh`), so no app writes stubs of its own.
 
 ## There are no flaky failures
 

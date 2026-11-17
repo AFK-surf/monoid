@@ -188,6 +188,8 @@ case "${1:-build}" in
     for f in apple_render apple_text apple_image apple_listen apple_browser_login apple_passwords apple_views apple_stream ios_app; do
       EXTRA="$EXTRA --extra=$ROOT/src/host/$f.m"
     done
+    # (mbui's film, none on a phone: src/host/film_none.c)
+    EXTRA="$EXTRA --extra=$ROOT/src/host/film_none.c"
     if [ -n "${MBUI_WASM_THUNKS:-}" ]; then
       # The app's Wasm shell (MBUI_WASM_THUNKS: the shell's side of the app's calls, tools/wasmhost's): the host, the
       # app's C and wasmtime (Frameworks/libwasmtime.dylib), with no C of moonc's; the app, a .wasm of its own, read
