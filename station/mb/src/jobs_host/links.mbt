@@ -493,29 +493,45 @@ pub fn ip_kind(s : String) -> Int {
 ///|
 /// Whether an address is one of the internet's, not a private, loopback or link-local one.
 pub fn is_public(address : String) -> Bool {
-  let v4 = if is_ipv4(address) {
-    Some(address)
-  } else if at_ci(address, 0, "::ffff:") && is_v4_shape(from(address, 7)) {
-    Some(from(address, 7))
+  let kind = ip_kind(address)
+  if kind == 0 {
+    return false
+  }
+  // As URL canonicalizes dotted IPv4 inside IPv6 to hex, normalize DNS answers too. A zone changes the interface,
+  // not whether the address is public.
+  let v6 = if kind == 6 {
+    let bare = split(address, "%")[0]
+    guard @cloud_net.parse_url("http://[" + bare + "]/") is Some(url) else { return false }
+    let host = url.hostname()
+    slice(host, 1, host.length() - 1)
+  } else {
+    ""
+  }
+  let v4 = if kind == 4 {
+    let parts = split(address, ".").map(digits_number)
+    Some((parts[0].to_int(), parts[1].to_int()))
+  } else if starts(v6, "::ffff:") && split(from(v6, 7), ":").length() == 2 {
+    let high = split(from(v6, 7), ":")[0]
+    let mut value = 0
+    for i in 0..<high.length() {
+      value = value * 16 + hex_unit(high.unsafe_charcode_at(i)).unwrap_or(0)
+    }
+    Some((value >> 8, value & 255))
   } else {
     None
   }
   match v4 {
-    Some(v) => {
-      let parts = split(v, ".").map(digits_number)
-      let a = parts[0]
-      let b = parts[1]
-      !(a == 0.0 ||
-      a == 10.0 ||
-      a == 127.0 ||
-      (a == 100.0 && b >= 64.0 && b < 128.0) ||
-      (a == 169.0 && b == 254.0) ||
-      (a == 172.0 && b >= 16.0 && b < 32.0) ||
-      (a == 192.0 && b == 168.0) ||
-      a >= 224.0)
+    Some((a, b)) => {
+      !(a == 0 ||
+      a == 10 ||
+      a == 127 ||
+      (a == 100 && b >= 64 && b < 128) ||
+      (a == 169 && b == 254) ||
+      (a == 172 && b >= 16 && b < 32) ||
+      (a == 192 && b == 168) ||
+      a >= 224)
     }
     None => {
-      let v6 = @jscase.lower(address)
       !(v6 == "::" ||
       v6 == "::1" ||
       starts(v6, "fc") ||
@@ -527,13 +543,6 @@ pub fn is_public(address : String) -> Bool {
       starts(v6, "ff"))
     }
   }
-}
-
-///|
-/// `\d+\.\d+\.\d+\.\d+` whole.
-fn is_v4_shape(s : String) -> Bool {
-  let parts = split(s, ".")
-  parts.length() == 4 && parts.iter().all(all_digits)
 }
 
 ///|
