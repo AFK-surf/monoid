@@ -193,8 +193,8 @@ pub fn stops_node(
         for i in 0..<@signals.untracked(n) {
           row.box(fn(c) {
             style_node(c, fn() { stops_cell })
-            let a = EdgeWay::new(if @signals.untracked(at) == i { 0.0 } else { 1.0 })
-            c.reacts(at_start=false, fn() { at() == i }, fn(under) { a.go(c, if under { 0.0 } else { 1.0 }, dur_ms) })
+            let a = @motion.NodeWay::new(if @signals.untracked(at) == i { 0.0 } else { 1.0 })
+            c.reacts(at_start=false, fn() { at() == i }, fn(under) { a.go_ms(c, if under { 0.0 } else { 1.0 }, dur_ms) })
             c.box(fn(d) {
               style_node(d, fn() { stops_dot })
               d.alpha(By(fn() { a.shown(d) })) |> ignore
@@ -207,11 +207,11 @@ pub fn stops_node(
       |> ignore
       // its thumb over them: laid out at the stop it goes to, drawn where its spring has it on the way; held, a little
       // larger and the lens grown over it
-      let p = EdgeWay::new(@signals.untracked(goal))
-      inner.reacts(at_start=false, goal, fn(g) { p.go_by(inner, g, @kit.follow_spring) })
-      let held = EdgeWay::new(0.0)
+      let p = @motion.NodeWay::new(@signals.untracked(goal))
+      inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @kit.follow_spring) })
+      let held = @motion.NodeWay::new(0.0)
       inner.reacts(at_start=false, fn() { finger.get() is Some(_) }, fn(h) {
-        held.go_by(inner, if h { 1.0 } else { 0.0 }, @motion.lift_spring)
+        held.go(inner, if h { 1.0 } else { 0.0 }, @motion.lift_spring)
       })
       let name = fn() {
         let a = at()

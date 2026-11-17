@@ -3641,6 +3641,20 @@ pub fn Tester::drags_window_at(self : Tester, x : Double, y : Double) -> Bool {
 }
 
 ///|
+/// Where what is read out as `n` can be seen, as the boxes holding it that clip cut it (Tree::seen_bounds: a strip
+/// scrolled sideways, a list): x0, y0, x1, y1 in the window, its own rect not cut by itself. A node its rect
+/// (`n.rect`) says laid out in the window can lie wholly past that, where a press at its middle lands on whatever is
+/// there instead. Where `n` is no node of the window's tree (an old view's widget), nothing cuts it here.
+pub fn Tester::seen_bounds_of(self : Tester, n : SemNode) -> (Double, Double, Double, Double) {
+  self.reads_own()
+  let all = (-1.0e9, -1.0e9, 1.0e9, 1.0e9)
+  match (view_tree(), tree_said_ids.get(n.id)) {
+    (Some(tree), Some(id)) => tree.seen_bounds(id)
+    _ => all
+  }
+}
+
+///|
 /// What a press at (x, y) would land on, pressing nothing, found as drags_window_at finds it (view_pointer's order):
 /// "window" where it drags the window; "pressed" where what it lands on does something pressed (a node of the window's
 /// tree with its press or its drag said, as Tree::target_at has it, the rule of a press's room measuring by the same;
@@ -3732,7 +3746,7 @@ fn Find::takes(self : Find, s : SemNode) -> Bool {
 /// What `f` finds, said in a line (for what a test fails with).
 fn Find::said(self : Find) -> String {
   let sb = StringBuilder()
-  sb.write_string(self.role.to_string())
+  sb.write_string(Show::to_string(self.role))
   if self.label != "" {
     sb.write_string(" \{self.label.escape()}")
   }

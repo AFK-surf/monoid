@@ -89,16 +89,16 @@ fn button_by(
     let lit = fn() {
       (busy() && (tone == Ghost || tone == GhostDanger)) || (live() && (b.focus_shown() || b.hovered() || b.pressed()))
     }
-    let hand = EdgeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
-    let turning = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
-    let open = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
-    let seen = EdgeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
-    v.reacts(lit, fn(on) { hand.go(v, if on { 1.0 } else { 0.0 }, dur_ms) })
+    let hand = @motion.NodeWay::new(if @signals.untracked(lit) { 1.0 } else { 0.0 })
+    let turning = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let open = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let seen = @motion.NodeWay::new(if @signals.untracked(disabled) { 0.45 } else { 1.0 })
+    v.reacts(lit, fn(on) { hand.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) })
     v.reacts(busy, fn(on) {
-      turning.go(v, if on { 1.0 } else { 0.0 }, dur_ms)
-      open.go_by(v, if on { 1.0 } else { 0.0 }, button_reshape)
+      turning.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms)
+      open.go(v, if on { 1.0 } else { 0.0 }, button_reshape)
     })
-    v.reacts(disabled, fn(off) { seen.go(v, if off { 0.45 } else { 1.0 }, dur_ms) })
+    v.reacts(disabled, fn(off) { seen.go_ms(v, if off { 0.45 } else { 1.0 }, dur_ms) })
     // (its ground, edge and words' ink as the tone has them, the hand's step as far as it has gone)
     let looks = fn() {
       let t = theme()

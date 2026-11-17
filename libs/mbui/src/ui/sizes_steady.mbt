@@ -27,6 +27,9 @@ priv struct SizesSteady {
   mut turned : Map[(Int, Int, Int64, Bool), Double]
   mut found : Set[String]
   mut window : (Double, Double)
+  /// the system's bars round the window as the last frame was drawn (system_bars): what they take of it laid out anew
+  /// at once, as for the window made another size
+  mut bars : (Double, Double, Double, Double)
   /// how much bigger the system's setting made words as the last frame was drawn (font_scale): all laid out anew for it
   /// at once, as for the window made another size
   mut words : Double
@@ -51,6 +54,7 @@ let sizes_steady : SizesSteady = {
   turned: {},
   found: Set([]),
   window: (-1.0, -1.0),
+  bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
   hand: -1.0e9,
   puts: {},
@@ -80,6 +84,7 @@ fn sizes_steady_begin(loc : String, held : Bool) -> Unit {
   sizes_steady.turned.clear()
   sizes_steady.found.clear()
   sizes_steady.window = (-1.0, -1.0)
+  sizes_steady.bars = (-1.0, -1.0, -1.0, -1.0)
   sizes_steady.words = -1.0
   sizes_steady.hand = -1.0e9
   sizes_steady.puts.clear()
@@ -301,8 +306,13 @@ let tree_scroll_held_at : Set[Int] = Set([])
 fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[String] {
   let out : Array[String] = []
   let words = @signals.untracked(font_scale)
-  let resized = sizes_steady.window != (self.width, self.height) || sizes_steady.words != words
+  // (the system's bars said otherwise: the room they leave the window laid out anew at once, no motion of anything in
+  // it, as the window made another size is)
+  let b = @signals.untracked(system_bars)
+  let bars = (b.top, b.bottom, b.left, b.right)
+  let resized = sizes_steady.window != (self.width, self.height) || sizes_steady.words != words || sizes_steady.bars != bars
   sizes_steady.window = (self.width, self.height)
+  sizes_steady.bars = bars
   sizes_steady.words = words
   // (the hand did something since the frame before was judged (rows_steady_hand: the wheel, a key, a press, let go))
   let hand_now = rows_steady.hand != sizes_steady.hand
@@ -529,7 +539,10 @@ fn Ctx::sizes_steady_faults(self : Ctx, now : Double, period : Double) -> Array[
             }
           }
           for i in 0..<k {
-            if answered_in[i] >= 0 && !(tid[i] >= 0 && tr.on_way_at(tid[i], now)) {
+            // (judged within the column the answer changed: what moves that column whole, a page sliding in, is no step
+            // in it)
+            let within = if answered_in[i] >= 0 && answered_in[i] < k { tid[answered_in[i]] } else { -1 }
+            if answered_in[i] >= 0 && !(tid[i] >= 0 && tr.on_way_at(tid[i], now, within~)) {
               put_now[i] = true
             }
           }

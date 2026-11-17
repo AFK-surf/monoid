@@ -444,6 +444,8 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   hand: -1.0e9,
   judged: -1.0e9,
   laids: {},
+  tree_gens: {},
+  anchors: {},
 })
       rows_steady.held = held
       rows_steady.file = file
@@ -461,6 +463,7 @@ fn window_kept_ui_5() -> Array[WindowKept] {
   turned: {},
   found: Set([]),
   window: (-1.0, -1.0),
+  bars: (-1.0, -1.0, -1.0, -1.0),
   words: -1.0,
   hand: -1.0e9,
   puts: {},
@@ -875,6 +878,8 @@ fn RowsSteady::window_put(self : RowsSteady, o : RowsSteady) -> Unit {
   self.hand = o.hand
   self.judged = o.judged
   self.laids = o.laids
+  self.tree_gens = o.tree_gens
+  self.anchors = o.anchors
 }
 
 ///|
@@ -885,6 +890,7 @@ fn SizesSteady::window_put(self : SizesSteady, o : SizesSteady) -> Unit {
   self.turned = o.turned
   self.found = o.found
   self.window = o.window
+  self.bars = o.bars
   self.words = o.words
   self.hand = o.hand
   self.puts = o.puts

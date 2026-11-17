@@ -123,7 +123,9 @@ test "a station's page open: that station alone subscribed, no other's, no part"
   let said : Array[String] = []
   let t = asked_phone(said)
   let before = said.length()
-  @sfbase.open_page(Setting(@settings.Route::Station("ws1/st2")))
+  // (put on top in place over Home, nothing sliding: what is asked as it opens is what this holds, not how it comes in
+  // past the gate a press goes through, which this source does not open by)
+  app.nav.replace_above(1, [Setting(@settings.Route::Station("ws1/st2"))])
   t.run_for(@ui.move_most_ms)
   t.run_for(place_core_soon_ms * 4.0)
   let now = said[before:].to_owned()
@@ -137,7 +139,9 @@ test "权限's archiving open: each station's archiving subscribed by its own ro
   let said : Array[String] = []
   let t = asked_phone(said)
   let before = said.length()
-  @sfbase.open_page(Setting(@settings.Route::Archiving))
+  // (put on top in place over Home, nothing sliding: what is asked as it opens is what this holds, not how it comes in
+  // past the gate a press goes through, which this source does not open by)
+  app.nav.replace_above(1, [Setting(@settings.Route::Archiving)])
   t.run_for(@ui.move_most_ms)
   t.run_for(place_core_soon_ms * 4.0)
   let now = said[before:].to_owned()

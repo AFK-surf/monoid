@@ -151,18 +151,12 @@ pub fn way_in_button_node(
       }
     }
     let ink = fn() { theme().color(if solid { Bg } else { Fg }) }
-    let turning = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
-    let open = EdgeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let turning = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
+    let open = @motion.NodeWay::new(if @signals.untracked(busy) { 1.0 } else { 0.0 })
     v.reacts(busy, fn(on) {
-      turning.go(v, if on { 1.0 } else { 0.0 }, dur_ms)
-      open.go_by(v, if on { 1.0 } else { 0.0 }, button_reshape)
+      turning.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms)
+      open.go(v, if on { 1.0 } else { 0.0 }, button_reshape)
     })
-    v.owns(fn() {
-      for w in [turning, open] {
-        (w.due)()
-      }
-    })
-    |> ignore
     v
     .row(Is(true))
     .width_share(Is(1.0))

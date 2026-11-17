@@ -107,7 +107,7 @@ test "the tag's place: after <head>, else <html>, else the doctype, else first; 
   // a page with no <head> or <html>: after its doctype once it ends
   let t2 = tagging_new()
   assert_eq(tagging_take(t2, @utf8.encode("<!DOCTYPE html><p>x"), false).length(), 0)
-  assert_eq(@codec.utf8_text(tagging_take(t2, Bytes::new(0), true), 1000), "<!DOCTYPE html>" + tag + "<p>x")
+  assert_eq(@codec.utf8_text(tagging_take(t2, Bytes::make(0, b'\x00'), true), 1000), "<!DOCTYPE html>" + tag + "<p>x")
   // none of them: first
   let t3 = tagging_new()
   assert_eq(@codec.utf8_text(tagging_take(t3, @utf8.encode("<p>x"), true), 1000), tag + "<p>x")

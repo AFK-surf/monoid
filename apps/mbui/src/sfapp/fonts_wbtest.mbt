@@ -122,7 +122,6 @@ test "a face's file the host cannot read where it is: had through the core inste
   let base = fixture("home")
   // fetched, kept as fetched (gzipped): what the host cannot read as a face
   (base.call)("fonts.fetch", { "id": "lxgw-wenkai" }, fn(_) {  })
-  (base.call)("prefs.set", { "fonts": { "text": "lxgw-wenkai" } }, fn(_) {  })
   let asked = Ref(0)
   let src : Source = {
     ..kept_here(base),
@@ -133,11 +132,11 @@ test "a face's file the host cannot read where it is: had through the core inste
       (base.read_bytes)(name, params, done)
     },
   }
-  // (the app from the frame its host is set so)
-  let on = Ref(false)
-  let t = @ui.Tester::new(fn(c) { if on.val { view(c, src) } }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  // (the face chosen once the host is set so: the app's tree gives the places' faces as its window is first given,
+  // before anything of it is laid out, and as they are chosen)
   t.set_unreadable_font("/data/500")
-  on.val = true
+  (base.call)("prefs.set", { "fonts": { "text": "lxgw-wenkai" } }, fn(_) {  })
   t.draw()
   t.draw()
   assert_eq(asked.val, 2)
