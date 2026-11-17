@@ -710,5 +710,9 @@
   "bd0f01abb1": {
     "text": ["新增：支持为 Codex 聊天选择 Ultrafast，并在预设和常用搭配中保存速度。"],
     "parts": ["station", "web", "android", "desktop"]
+  },
+  "e2f266eaa7": {
+    "text": ["修复：只执行任务的 station 连接服务出错后会自动重新启动，不再一直连不上"],
+    "parts": ["station"]
   }
 }

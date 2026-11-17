@@ -51,6 +51,10 @@ pub let monitor_mark : LinkMark = { name: "monitor" }
 // kept across runs: an immutable icon name
 pub let globe_mark : LinkMark = { name: "web" }
 
+///|
+// kept across runs: an immutable icon name
+pub let terminal_mark : LinkMark = { name: "terminal" }
+
 
 // ── the cards' looks ──
 
@@ -151,10 +155,20 @@ pub fn link_card_ask(to : @sf.LinkTo) -> (String, Map[String, Json])? {
   let station = Json::string(to.station)
   match to.card {
     "screen" => Some(("screenCard", { "station": station, "screen": Json::string(to.screen) }))
+    "terminal" => Some(("terminalCard", { "station": station, "terminal": Json::string(to.terminal_id()) }))
     "adb" => Some(("adbCard", { "station": station }))
     "service" => Some(("job", { "station": station, "id": Json::string(to.job) }))
     _ => None
   }
+}
+
+///|
+/// The card of the terminal `href` names (`terminalCard` topic), once the core has said.
+pub fn terminal_card_of(src : Source, to : @sf.LinkTo) -> (String, String, Bool)? {
+  guard to.card == "terminal" && link_card_ask(to) is Some((name, params)) else { return None }
+  let v = src.topic(name, params).get().value
+  guard v is Some(Object(_)) else { return None }
+  Some((text(v, "title"), text(v, "line"), flag(v, "gone")))
 }
 
 ///|
@@ -193,6 +207,7 @@ pub fn screen_links(c : @ui.Ctx, src : Source, message : String) -> @sf.Screens 
     card: fn(href, to, words) {
       match to.card {
         "service" => service_link_card(c, src, href, to, words)
+        "terminal" => terminal_link_card(c, src, href, to, words)
         _ => screen_link_card(c, src, message + "\n" + href, href, to, words)
       }
     },
@@ -201,6 +216,11 @@ pub fn screen_links(c : @ui.Ctx, src : Source, message : String) -> @sf.Screens 
         adb_title(src, to)
       } else if to.card == "service" {
         service_card_of(src, to).0
+      } else if to.card == "terminal" {
+        match terminal_card_of(src, to) {
+          Some((title, _, _)) => title
+          None => @sf.t("core-views.terminal.title")
+        }
       } else {
         match screen_card_of(src, to) {
           Some(card) => card.title
@@ -209,6 +229,28 @@ pub fn screen_links(c : @ui.Ctx, src : Source, message : String) -> @sf.Screens 
       }
     },
   }
+}
+
+///|
+pub fn terminal_link_card(c : @ui.Ctx, src : Source, href : String, to : @sf.LinkTo, words : String?) -> Unit {
+  let card = terminal_card_of(src, to)
+  let open = c.id("terminal-link/" + href)
+  c.on_press(open, fn() {
+    open_link(href)
+  })
+  let (name, line, gone) = match card {
+    Some(v) => v
+    None => (@sf.t("core-views.terminal.title"), "", false)
+  }
+  let title = match words {
+    Some(w) => w
+    None => name
+  }
+  c.box(style=link_card, id=open, fn() {
+    link_mark(c, Some(terminal_mark), Muted)
+    link_card_words(c, title, line, gone, link_words)
+  })
+  |> ignore
 }
 
 ///|

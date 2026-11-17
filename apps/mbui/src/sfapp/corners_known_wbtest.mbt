@@ -88,7 +88,9 @@ let corners_tape_rail : Array[String] = [
   "archived", "history", "history-details", "drive",
   "drive-roots", "drive-download", "drive-empty", "drive-loading", "drive-sub", "drive-upload", "files",
   "files-add-folder", "files-clash", "files-columns", "files-list", "files-preview", "files-split",
-  "files-transfers", "files-tree", "place-stations", "place-profiles", "reader", "reader-bars", "reader-contents",
+  "files-transfers", "files-tree", "place-stations", "place-profiles",
+  // (远程: its place, its tabs in the workbench, a chat's remote menu, a terminal in a chat's side panel)
+  "place-remote", "place-remote-tabs", "chat-remote", "chat-terminal-side", "reader", "reader-bars", "reader-contents",
   "reader-layout", "reader-md", "newchat", "newchat-files", "newchat-lend", "share-card", "share-card-dark",
   "newchat-model", "newchat-profiles", "newchat-reading", "newchat-station",
   // (a preset's dialog over 新对话 and its steps further in: the rail behind them, not the panel)

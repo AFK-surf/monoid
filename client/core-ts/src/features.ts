@@ -91,6 +91,12 @@ export function experimentalItemsOf(prefs: unknown, testChannel: boolean, regist
   return out;
 }
 
+/// Whether a station's `overview` says it runs its `beta` feature `id`.
+export function stationFeature(overview: unknown, id: FeatureId): boolean {
+  const ids = isObj(overview) ? overview.features : undefined;
+  return Array.isArray(ids) && ids.includes(id);
+}
+
 /// The `beta` features a station decides (`station: true`), as its overview's `features` lists those on.
 export function stationFeatureIds(registry: Record<string, FeatureSpec> = FEATURES): string[] {
   return Object.keys(registry).filter((id) => registry[id]!.stage === "beta" && registry[id]!.station === true);

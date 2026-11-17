@@ -282,6 +282,7 @@ pub fn new_browser_tab(
   address : String,
   listed : Array[String],
   done : (Result[Json, Json]) -> Unit,
+  url? : String = "",
 ) -> String {
   let digits = "0123456789abcdef"
   let made = fn() {
@@ -297,7 +298,7 @@ pub fn new_browser_tab(
   while listed.contains("browser:" + id) {
     id = made()
   }
-  call("screen.openBrowser", obj([("station", str(address)), ("url", str("")), ("id", str(id))]), done)
+  call("screen.openBrowser", obj([("station", str(address)), ("url", str(url)), ("id", str(id))]), done)
   "browser:" + id
 }
 
@@ -391,6 +392,35 @@ fn peek_screen_items(core : Core, address : String, screens : Json?, close : () 
         close()
         (core.open_screen)(address, text(sc, "id"))
       })))
+    }
+  }
+  if (core.terminals_on)() {
+    let terms = (core.topic)("terminals", { "station": str(address) }).get().value
+    if flag(terms, "known") && !flag(terms, "outdated") {
+      let open_terms = items(terms, "terminals").filter(fn(t) { !flag(Some(t), "ended") })
+      let can_term = flag(terms, "open")
+      if !open_terms.is_empty() || can_term {
+        if !screen_items.is_empty() {
+          screen_items.push(None)
+        }
+        for t in open_terms {
+          let tv = Some(t)
+          let tid = text(tv, "id")
+          let cwd = text(tv, "cwd")
+          let parts = cwd.split("/").collect().filter(fn(p) { p.length() > 0 })
+          let label = match parts.last() { Some(last) => last.to_owned(); None => if cwd == "" { tr("web-pages.remote.openTerminal") } else { cwd } }
+          screen_items.push(Some(@sf.menu_item_of(label, icon="terminal", fn() {
+            close()
+            (open_terminal_of.val)(address, tid, cwd)
+          })))
+        }
+        if can_term {
+          screen_items.push(Some(@sf.menu_item_of(tr("web-pages.remote.openTerminal"), icon="terminal", fn() {
+            close()
+            (open_terminal_of.val)(address, "new", "")
+          })))
+        }
+      }
     }
   }
   if screen_items.is_empty() {

@@ -24,6 +24,21 @@ function shell(): { program: string; args: string[] } {
   return { program: process.env.SHELL || "/bin/sh", args: ["-l"] };
 }
 
+/// Environment hooks so interactive login shells emit `OSC 7` after each command (`cd`) without touching user dotfiles:
+/// macOS `/etc/zshrc` sources `/etc/zshrc_Apple_Terminal` when `TERM_PROGRAM=Apple_Terminal` (with session files off),
+/// and bash executes `PROMPT_COMMAND` when unset.
+function shellEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (platform.os === "macos") {
+    env.TERM_PROGRAM ??= "Apple_Terminal";
+    env.SHELL_SESSIONS_DISABLE ??= "1";
+  }
+  if (!env.PROMPT_COMMAND) {
+    env.PROMPT_COMMAND = `printf '\\033]7;file://%s%s\\007' "\${HOSTNAME:-}" "$PWD"`;
+  }
+  return env;
+}
+
 const metaOf = (v: any): TerminalMeta | null =>
   v !== null && typeof v === "object" && typeof v.by === "string" && typeof v.at === "number" && typeof v.cwd === "string" && typeof v.workspace === "string"
     ? { by: v.by, at: v.at, cwd: v.cwd, workspace: v.workspace, ...(typeof v.chat === "string" ? { chat: v.chat } : {}) }
@@ -49,12 +64,13 @@ export const TerminalsLive = Layer.effectDiscard(
       newId: () => `${TERMINAL_RUNNER}${randomBytes(8).toString("hex")}`,
       offered: () => stationFeature("terminal", config.raw(), app),
       changed: tell,
+      meta: (id, meta) => void writeFile(metaFile(id), JSON.stringify(meta), { mode: 0o600 }).catch(() => undefined),
       gone: (id) => void rm(metaFile(id), { force: true }).catch(() => undefined),
       async start(id, o, meta) {
         await mkdir(metaDir, { recursive: true, mode: 0o700 });
         await writeFile(metaFile(id), JSON.stringify(meta), { mode: 0o600 });
         const { program, args } = shell();
-        const info = await startRunner(data, id, program, args, { ...process.env }, o.cwd, { cols: o.cols, rows: o.rows });
+        const info = await startRunner(data, id, program, args, shellEnv(), o.cwd, { cols: o.cols, rows: o.rows });
         return new TerminalLink(runnerWire(info));
       },
     });

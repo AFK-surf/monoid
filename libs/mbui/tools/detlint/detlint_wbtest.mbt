@@ -3214,3 +3214,40 @@ test "page-at-moment" {
   )
   |> ignore
 }
+
+///|
+test "along-row-at-once" {
+  // a show, a pick or an each said along a row and at once among its own arguments (true, or punned): found; one said
+  // either alone, at_once=false, the two said apart in a function written in its arguments, or in a test: not
+  let fs = found(
+    [
+      (
+        "src/sfpages/x.mbt",
+        "fn d(r : View) -> Unit {\n  r.show(along_row=true, at_once=true, fn() { on.get() }, fn(v) { v |> ignore })\n  r.pick(\n    along_row~,\n    at_once~,\n    fn() { 0 },\n    fn(v, _) { v |> ignore },\n  )\n  r.each(fn() { ks }, at_once=true, along_row=true, fn(v, k) { v |> ignore })\n  r.show(along_row=true, fn() { on.get() }, fn(v) { v.show(at_once=true, fn() { true }, fn(w) { w |> ignore }) |> ignore })\n  r.show(along_row=true, at_once=false, fn() { on.get() }, fn(v) { v |> ignore })\n  r.pick(at_once=true, fn() { 0 }, fn(v, _) { v |> ignore })\n}\n",
+      ),
+      ("src/view/y_test.mbt", "test \"t\" {\n  r.show(along_row=true, at_once=true, fn() { true }, fn(v) { v |> ignore })\n}\n"),
+    ],
+    "along-row-at-once",
+    3,
+  )
+  assert_eq(lines(fs), [2, 3, 9])
+}
+
+///|
+test "headless-on-drag" {
+  // on_drag on a headless component's node: chained on what it gives back, or on the node a function among its own
+  // arguments is given (its look's, directly or down a chain): found; on another node made in the look, on a radio
+  // group's (no press of its own), on a plain box, or in a test: not
+  let fs = found(
+    [
+      (
+        "src/sf/x.mbt",
+        "fn d(p : @view.View) -> Unit {\n  @headless.button(p, label, press, fn(v, b) { v.width(Is(None)) |> ignore }).on_drag(fn(d) { d |> ignore })\n  @headless.toggle(p, Switch, label, on, turn, fn(v, t) {\n    v.width(Is(None)).on_drag(fn(d) { d |> ignore }) |> ignore\n  })\n  @headless.disclosure(p, label, open, press, look=fn(node, d) { node.on_drag(fn(e) { e |> ignore }) |> ignore })\n  @headless.choice(p, Radio, label, chosen, choose, fn(v, c) {\n    v.box(fn(inner) { inner.on_drag(fn(e) { e |> ignore }) |> ignore }) |> ignore\n  })\n  @headless.radio_group(p, fn(v, g) { v.on_drag(fn(e) { e |> ignore }) |> ignore })\n  p.box(fn(b) { b.on_drag(fn(e) { e |> ignore }) |> ignore }).on_drag(fn(e) { e |> ignore }) |> ignore\n  @headless.button(p, label, press, fn(v, b) { v.width(Is(None)) |> ignore }) |> ignore\n}\n",
+      ),
+      ("src/sf/y_wbtest.mbt", "test \"t\" {\n  @headless.button(p, label, press, fn(v, b) { v.on_drag(fn(e) { e |> ignore }) |> ignore }) |> ignore\n}\n"),
+    ],
+    "headless-on-drag",
+    3,
+  )
+  assert_eq(lines(fs), [2, 3, 6])
+}

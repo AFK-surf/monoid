@@ -42,41 +42,54 @@ pub fn list_row_node(
     }
   })
   row.ground(By(ground)) |> ignore
-  match mark {
-    Some(m) =>
-      row.box(made_for=loc, fn(k) {
-        style_node(k, fn() { list_row_mark }, in_row=true)
-        // (as high as its first line: list_looks)
-        k.height(By(fn() { Some(list_looks(k).head_h) })) |> ignore
-        m(k)
-      })
-      |> ignore
-    None => ()
-  }
   row.box(fn(text) {
     style_node(text, fn() { theme().chat_list.text }, in_row=true)
     // (its first line: in a side column, what stands at its end (`end_slot` wide: a chat's station) in one column with
     // what stands in its foot's end corner (a chat's people and agents, concentric with the row's corner: aside_end),
-    // the line reaching into the row's room for it where it must)
-    text.box(fn(h) {
-      style_node(h, fn() { list_looks(h).head })
-      let reach = fn() {
-        let l = theme().chat_list
-        if at != Whole && end_slot > 0.0 {
-          let last = if corner_end() > 0.0 { corner_end() } else { l.face_d }
-          band_pad_in(at) + end_slot / 2.0 - (l.aside_end + last / 2.0)
-        } else {
-          0.0
+    // the line reaching into the row's room for it where it must; a row with a mark: the mark beside its first line
+    // only, never across the middle of its lines however high the row is, the lines under it from the mark's edge, as
+    // the old view's list_row puts them: the user, 2026-11-10)
+    let head_box = fn(line : @view.View) {
+      line.box(fn(h) {
+        style_node(h, fn() { list_looks(h).head })
+        let reach = fn() {
+          let l = theme().chat_list
+          if at != Whole && end_slot > 0.0 {
+            let last = if corner_end() > 0.0 { corner_end() } else { l.face_d }
+            band_pad_in(at) + end_slot / 2.0 - (l.aside_end + last / 2.0)
+          } else {
+            0.0
+          }
         }
-      }
-      // (reaching out past the row's padding where the corner's column is nearer its end, in from it where farther)
-      h
-      .margin(By(fn() { (0.0, 0.0, -dmax(0.0, reach()), 0.0) }))
-      .padding(By(fn() { (0.0, 0.0, end_room() + dmax(0.0, -reach()), 0.0) }))
+        // (reaching out past the row's padding where the corner's column is nearer its end, in from it where farther)
+        h
+        .margin(By(fn() { (0.0, 0.0, -dmax(0.0, reach()), 0.0) }))
+        .padding(By(fn() { (0.0, 0.0, end_room() + dmax(0.0, -reach()), 0.0) }))
+        |> ignore
+        head(h)
+      })
       |> ignore
-      head(h)
-    })
-    |> ignore
+    }
+    match mark {
+      Some(m) =>
+        text.box(made_for=loc, fn(marked) {
+          style_node(marked, fn() { list_row_marked })
+          marked.box(fn(k) {
+            style_node(k, fn() { list_row_mark }, in_row=true)
+            // (as high as its first line: list_looks)
+            k.height(By(fn() { Some(list_looks(k).head_h) })) |> ignore
+            m(k)
+          })
+          |> ignore
+          marked.box(fn(u) {
+            style_node(u, fn() { list_row_under }, in_row=true)
+            head_box(u)
+          })
+          |> ignore
+        })
+        |> ignore
+      None => head_box(text)
+    }
     match (corner, at) {
       // (the room what stands in the corner keeps at the end of the lines under the first)
       (Some(_), Side | Tape) =>

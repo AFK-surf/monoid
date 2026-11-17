@@ -135,6 +135,9 @@ fn row_items(src : Source, f : FolderOf, b : Browse, in_ : DriveAt, e : DvEntry)
     _ => ()
   }
   if e.dir {
+    if terminals_here() && (src.asks_terminals)() && abs != "" {
+      item(@sf.t("web-pages.remote.openHereTerminal"), "terminal", fn() { @sfbase.open_terminal(in_.station, "new", abs, "") })
+    }
     let kept = favorite_has(favorites_in(src, f.ws, [st]), in_.station, root, full)
     item(@sf.t(if kept { "web-pages.files.unfavorite" } else { "web-pages.files.favorite" }, args=[("name", e.name)]), "star", fn() {
       if kept {
@@ -266,6 +269,12 @@ pub fn folder_view_node(
           b.arrange_as(src, hidden=!a.hidden)
         })))
         menu.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.refresh"), icon="refresh", fn() { refresh_folder(src, at) })))
+        let folder_dir = dv_absolute(root, at.path)
+        if terminals_here() && (src.asks_terminals)() && folder_dir != "" {
+          menu.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openHereTerminal"), icon="terminal", fn() {
+            @sfbase.open_terminal(at.station, "new", folder_dir, "")
+          })))
+        }
         menu
       }
       let name = fn() { folder_name((f.st)(), at) }
@@ -593,6 +602,12 @@ pub fn folder_actions_node(
       })))
       items.push(None)
       items.push(Some(@sf.menu_item_of(@sf.t("web-pages.drive.copyPath"), icon="copy", fn() { copy_path(dv_absolute(root, at.path)) })))
+      let here = dv_absolute(root, at.path)
+      if terminals_here() && (src.asks_terminals)() && here != "" {
+        items.push(Some(@sf.menu_item_of(@sf.t("web-pages.remote.openHereTerminal"), icon="terminal", fn() {
+          @sfbase.open_terminal(at.station, "new", here, "")
+        })))
+      }
       match f.go_to {
         Some(g) => items.push(Some(@sf.menu_item_of(@sf.t("web-pages.files.goTo"), icon="search", further=true, g)))
         None => ()
