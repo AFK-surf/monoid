@@ -633,6 +633,7 @@ pub fn open_mode(mode : String) -> Unit {
       n.d_model = n.model
       n.d_runtime = n.runtime
     }
+    if mode == "newchat-tui-model" { @sffixture.new_fix.claude_mode = true }
     if mode == "newchat-ultrafast-model" {
       let n = @sffixture.new_fix
       n.crowded = true
@@ -721,7 +722,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }

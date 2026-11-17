@@ -781,6 +781,7 @@
   "web-main.model.runtime": "运行时",
   "web-main.model.sidekick": "副模型",
   "web-main.model.search": "搜索模型",
+  "web-main.model.claudeMode": "运行模式",
   "web-main.model.speed": "速度",
   "web-main.model.standard": "标准",
   "web-main.newChat.addProfile": "添加 Profile",

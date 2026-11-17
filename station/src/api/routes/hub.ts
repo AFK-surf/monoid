@@ -482,6 +482,7 @@ export const routes = (tools: Tools): Route[] => {
                 model: given("model"),
                 effort: given("effort"),
                 fast: typeof i.fast === "boolean" ? i.fast : null,
+                tui: i.tui === true,
                 speed: speedAsked(i.speed),
                 context: contextAsked(i.context, r.lang),
                 title: typeof i.title === "string" ? chars(i.title, 120) : null,
@@ -685,6 +686,10 @@ export const routes = (tools: Tools): Route[] => {
               if ("afresh" in i) {
                 if (i.afresh !== null && typeof i.afresh !== "boolean") throw new Refused(400, "afresh is true, false or null");
                 change.afresh = i.afresh;
+              }
+              if ("tui" in i) {
+                if (typeof i.tui !== "boolean") throw new Refused(400, "tui must be a boolean");
+                change.tui = i.tui;
               }
               if ("speed" in i) change.speed = speedAsked(i.speed);
               if ("fast" in i) {

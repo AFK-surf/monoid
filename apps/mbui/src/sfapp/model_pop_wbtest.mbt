@@ -503,3 +503,18 @@ test "Ultrafast can be selected and cleared on small and large screens with larg
     }
   }
 }
+
+///|
+test "Claude run mode can be changed in the model settings on small and large screens" {
+  for win in [corner_windows[0], corner_windows[5]] {
+    let t = screen_in("newchat-tui-model", win, "zh")
+    let item : @view.Role = if win.0 == "phone" { Button } else { MenuItemRadio }
+    for mode in ["TUI", "Print"] {
+      t.click(Button, label=if mode == "TUI" { "Print" } else { "TUI" })
+      t.run_for(squeeze_opening)
+      t.click(item, label=mode)
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.tui, mode == "TUI")
+    }
+  }
+}

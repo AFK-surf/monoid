@@ -69,7 +69,7 @@ export type SessionRow = {
   /// The station it was handed here from (replica/handover.ts; absent: it began here, or came back to where it began).
   from?: string;
   key: string; connect: string; scope: SessionScope; title: string | null; createdBy: string | null; runtime: string;
-  profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null;
+  profile: string; profilePinned: boolean; profiles?: string[] | null; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; tui?: boolean;
   /// Whether it goes on afresh once its prompt cache is over, as chosen in its chat (null: as its station is set,
   /// `afreshWhenCold`).
   afresh: boolean | null;
@@ -92,7 +92,7 @@ export type SessionRow = {
 export type NewSession = {
   key: string; connect: string; scope?: SessionScope | null; title?: string | null; createdBy?: string | null;
   runtime: string; profile: string; profilePinned?: boolean; profiles?: string[] | null; model?: string | null; effort?: string | null;
-  fast?: boolean | null; speed?: ModelSpeed | null; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
+  fast?: boolean | null; speed?: ModelSpeed | null; tui?: boolean; context?: number | null; workspace: string; cwd?: string | null; runtimeSessionId?: string | null; token: string;
   createdAt: number; lastActiveAt: number; ws?: string | null;
 };
 
@@ -141,7 +141,7 @@ export type EntryRow = {
 /// How a session runs, as a notice of its change says it: its runtime, model, effort, speed, account (`profile`, its
 /// `account` name; `pinned`: kept to it, else the station's pick) and most context (null: as the runtime has it).
 export type RunShown = {
-  runtime: string; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; profile: string | null; account: string | null;
+  runtime: string; model: string | null; effort: string | null; fast: boolean | null; speed?: ModelSpeed | null; tui?: boolean; profile: string | null; account: string | null;
   pinned: boolean; context: number | null;
 };
 
@@ -447,6 +447,7 @@ export function toSession(r: Json): SessionRow {
   return {
     key: r.key, connect: r.connect, scope: r.scope === "all" ? "all" : "thread", title: r.title, createdBy: r.created_by,
     runtime: r.runtime, profile: r.profile, profilePinned, profiles: parseProfiles(r.profiles, r.profile, profilePinned), model: r.model, effort: r.effort,
+    ...(r.tui === 1 ? { tui: true } : {}),
     ...(typeof r.speed === "string" ? { speed: r.speed as ModelSpeed } : {}),
     fast: r.fast === null || r.fast === undefined ? null : r.fast !== 0,
     afresh: r.afresh === null || r.afresh === undefined ? null : r.afresh !== 0, context: typeof r.context === "number" ? r.context : null, contextBefore: typeof r.context_before === "number" ? r.context_before : null,

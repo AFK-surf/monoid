@@ -19,6 +19,8 @@ pub fn fixture_reset() -> Unit {
   new_fix.d_runtime = "claude"
   new_fix.d_effort = "high"
   new_fix.context = ""
+  new_fix.claude_mode = false
+  new_fix.tui = false
   new_fix.speed = ""
   new_fix.d_profile = ""
   new_fix.d_profiles.clear()

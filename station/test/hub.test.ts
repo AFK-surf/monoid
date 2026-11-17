@@ -3584,6 +3584,20 @@ test("fast is per session, on Codex and Claude Code, and null restores the accou
   await r.close();
 });
 
+test("Claude TUI is per chat, survives other settings and can be switched back to print", async () => {
+  const r = new Rig();
+  const [a] = await newSession(r.hub, { ...chat("claude"), tui: true, fast: false });
+  const [b] = await newSession(r.hub, chat("claude"));
+  assert.equal(r.session(a).tui, true);
+  assert.equal(r.session(b).tui, undefined);
+  await configure(r.hub, a, { fast: true });
+  assert.equal(r.session(a).tui, true);
+  await configure(r.hub, a, { tui: false });
+  assert.equal(r.session(a).tui, undefined);
+  assert.equal(r.session(a).fast, true);
+  await r.close();
+});
+
 test("Ultrafast is per chat, persists through other changes and legacy Fast clears it", async () => {
   const r = new Rig();
   Object.assign(r.raw.profiles[1], { access: { kind: "subscription" }, models: ["gpt-6.2-sol", "gpt-6.1-sol", "gpt-5.5"] });

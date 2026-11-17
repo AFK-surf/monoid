@@ -121,6 +121,7 @@ fn Store::call(self : Store, name : String, x : Array[Json]) -> Json raise {
     "setSessionContextBefore" =>
       unit(self.set_session_context_before(s(x, 0), a(x, 1)))
     "setSessionAfresh" => unit(self.set_session_afresh(s(x, 0), arg(x, 1)))
+    "setSessionTui" => unit(self.set_session_tui(s(x, 0), a(x, 1) == Json::boolean(true)))
     "setSessionSpeed" => unit(self.set_session_speed(s(x, 0), a(x, 1)))
     "codexSessionSpeed" => self.codex_session_speed(s(x, 0))
     "codexSessionFast" => self.codex_session_fast(s(x, 0))

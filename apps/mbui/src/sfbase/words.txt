@@ -1061,6 +1061,7 @@ web-main.menu.more
 web-main.model.account
 web-main.model.auto
 web-main.model.borrowed
+web-main.model.claudeMode
 web-main.model.current
 web-main.model.defaultEffort
 web-main.model.effort

@@ -615,6 +615,10 @@ for t in $targets; do
       # 124-243)
       "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
+      # At the default rate three kept-row ranges were still running at 150 s beside the third group's pages.
+      # It timed out at 316 s while the first finished in 158 (44161134705). Move two ranges onto the first.
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
+        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo 1; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its

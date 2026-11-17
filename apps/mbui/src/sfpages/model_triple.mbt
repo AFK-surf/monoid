@@ -1669,7 +1669,7 @@ fn triple_foot_node(
   // (what the pick says as it is now)
   let o = f
     o.box(fn(row) {
-      @sf.style_node(row, fn() { triple_who_room }, in_row=true)
+      @sf.style_node(row, fn() { if flag(v(), "claudeModeAvailable") { triple_mode_room } else { triple_who_room } }, in_row=true)
       row.wraps(Is(Some(@ui.Space::px(S2)))).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
       // who runs it, at the foot's start (the web's panel's foot, the phone's sheet's)
       let revert_none = fn() {
@@ -1807,6 +1807,16 @@ fn triple_foot_node(
             } else {
               pick_save(src, station, of, { "fast": Json::boolean(k == "fast") })
             }
+          }, from=Node(c), search=false)
+        })
+        |> ignore
+      })
+      row.show(fn() { flag(v(), "claudeModeAvailable") }, fn(x) {
+        let head = @sf.t("web-main.model.claudeMode")
+        let now = fn() { if flag(field(v(), "draft"), "tui") { "TUI" } else { "Print" } }
+        triple_chip_node(x, head, now, fn(c) {
+          @sf.pick(head, [@sf.choice("Print", "Print"), @sf.choice("TUI", "TUI")], @signals.untracked(now), fn(k) {
+            pick_save(src, station, of, { "tui": Json::boolean(k == "TUI") })
           }, from=Node(c), search=false)
         })
         |> ignore
@@ -2101,7 +2111,7 @@ fn triple_model_row_node(
         let p : Map[String, Json] = { "model": Json::string(id) }
         match field(oo, "usual") {
           Some(Object(u)) =>
-            for k in ["runtime", "effort", "fast", "speed", "context"] {
+            for k in ["runtime", "effort", "fast", "speed", "tui", "context"] {
               p[k] = u.get(k).unwrap_or(Json::null())
             }
           _ => ()
@@ -2254,7 +2264,7 @@ fn triple_combo_row_node(
   let params = fn() {
     let xx = @signals.untracked(x)
     let p : Map[String, Json] = { "model": Json::string(text(xx, "model")) }
-    for k in ["runtime", "effort", "fast", "speed", "context"] {
+    for k in ["runtime", "effort", "fast", "speed", "tui", "context"] {
       p[k] = field(xx, k).unwrap_or(Json::null())
     }
     p
@@ -3001,6 +3011,10 @@ let triple_borrow : @ui.Style = @ui.css("w=Full px=S2_5 py=S1_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let triple_who_room : @ui.Style = @ui.style(row=true, w=@sf.grow, align=ACenter, gap=S2)
+
+///|
+// kept across runs: a value (no field of it changes)
+let triple_mode_room : @ui.Style = triple_who_room.then(@ui.css("justify=JBetween"))
 
 ///|
 /// Who runs it, a capsule at the foot's start as tall as the foot's buttons (@sf.button_height), so standing in the

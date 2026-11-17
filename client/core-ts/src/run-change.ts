@@ -10,7 +10,7 @@ type J = any;
 
 /// What a notice is posted for, in the order a line says them; the account only where it alone changed (the station
 /// moved it to another on its own, an allowance run out): with another runtime or model it is the rest's.
-const PARTS = ["runtime", "model", "effort", "fast", "account"] as const;
+const PARTS = ["runtime", "model", "effort", "fast", "tui", "account"] as const;
 type Part = (typeof PARTS)[number];
 
 const str = (v: unknown): string | null => (typeof v === "string" && v !== "" ? v : null);
@@ -32,6 +32,8 @@ function partText(run: J, part: Part): string | null {
       const speed = chosenSpeed(run);
       return speed === "ultrafast" ? "Ultrafast" : speed === "fast" ? "Fast" : speed === "standard" ? t("core-logic.choose.speed.standard") : null;
     }
+    case "tui":
+      return get(run, "runtime") === "claude" ? (get(run, "tui") === true ? "TUI" : "Print") : null;
     case "account":
       return str(get(run, "account")) ?? str(get(run, "profile"));
   }
@@ -39,7 +41,7 @@ function partText(run: J, part: Part): string | null {
 
 /// A run whole: its runtime, model, effort, speed, account (kept to it, or the station's pick) and most context.
 function runText(run: J): string {
-  const parts = PARTS.filter((p) => p !== "account").map((p) => partText(run, p)).filter((p): p is string => p !== null);
+  const parts = PARTS.filter((p) => p !== "account" && (p !== "tui" || get(run, "tui") === true)).map((p) => partText(run, p)).filter((p): p is string => p !== null);
   const account = str(get(run, "account"));
   if (get(run, "pinned") === true && account !== null) parts.push(account);
   else parts.push(account === null ? t("core-logic.choose.account.auto") : t("core-logic.choose.account.auto_on", { name: account }));

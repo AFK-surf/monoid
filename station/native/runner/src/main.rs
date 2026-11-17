@@ -203,6 +203,17 @@ struct Push {
 
 fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
+    // A child of a bridge already kept by a runner. Its controlling terminal is private to the bridge.
+    if raw.first().map(String::as_str) == Some("--relay-pty") {
+        match raw.get(1..) {
+            Some([program, args @ ..]) => match relay_pty(program, args) {
+                Ok(code) => std::process::exit(code),
+                Err(error) => eprintln!("stillfail-runner: {error}"),
+            },
+            _ => eprintln!("stillfail-runner: --relay-pty <program> [args...]"),
+        }
+        std::process::exit(1);
+    }
     // Windows only: a job's process group (see sys::run_job).
     #[cfg(windows)]
     if raw.first().map(String::as_str) == Some("--job") {
@@ -230,6 +241,31 @@ fn main() {
         }
     };
     serve(shared, listener);
+}
+
+/// The bridge's pipes to a real terminal. Closing its input (including when the bridge dies) ends the
+/// terminal's process group. Wait and signal share the same guard so a reaped pid is never signalled.
+fn relay_pty(program: &str, args: &[String]) -> io::Result<i32> {
+    let (proc, agent, mut input, mut output, master) = sys::spawn_pty(program, args, None, 120, 36)?;
+    let agent = Arc::new(agent);
+    let ended = Arc::new(Mutex::new(false));
+    let writing = agent.clone();
+    let closed = ended.clone();
+    std::thread::spawn(move || {
+        let _ = io::copy(&mut io::stdin().lock(), &mut input);
+        let finished = closed.lock().unwrap_or_else(|e| e.into_inner());
+        if !*finished {
+            writing.abandon();
+        }
+    });
+    std::thread::spawn(move || {
+        let _ = io::copy(&mut output, &mut io::stdout());
+    });
+    let exit = agent.wait(proc, || {
+        *ended.lock().unwrap_or_else(|e| e.into_inner()) = true;
+        master.close_on_exit();
+    });
+    Ok(exit["code"].as_i64().unwrap_or(1) as i32)
 }
 
 fn parse_args(raw: Vec<String>) -> Result<Args, String> {

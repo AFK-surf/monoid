@@ -55,6 +55,7 @@ fn summary_session_json(r : Map[String, Json]) -> Map[String, Json] {
     "runtimeSessionId": field(r, "runtime_session_id"),
     "workspace": field(r, "workspace"),
   }
+  if field(r, "tui") == Json::number(1.0) { v["tui"] = Json::boolean(true) }
   if field(r, "speed") is (String(_) as s) { v["speed"] = s }
   if !(field(r, "cwd") is Null) {
     v["cwd"] = field(r, "cwd")
