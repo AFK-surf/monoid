@@ -60,8 +60,10 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (a page's bar on the tape the tree's, over its own view: what the page says of it, collected as it is built)
       // (a chat's page made once holds its old view, which says its bar as it is built, as an old view's page does)
       head=fn(b, k, made) {
-        // (and Home, whose board has its bar of its own: board.mbt's board_tape_made)
-        let own_bar = @signals.untracked(fn() { app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home) })
+        // (and Home / Remote workbench, which draw their own top bar)
+        let own_bar = @signals.untracked(fn() {
+          app.nav.page_of(k) is Some((p, _)) && (@sfbase.chat_page_is(p) || p is Home || p == Place("remote"))
+        })
         tape_bar_head(b, k, made && !own_bar, tips)
       },
       // (a page of the library's made once in its place, where it is: its bar the tape's, from what the page is)
@@ -411,6 +413,40 @@ fn tape_made(
         context_node(p)
         stations_place_node(p, src, core, here, stint, fn() { tape_made_frame }, width, said=told, tips~)
       })
+    Place("remote") =>
+      Some(
+        (
+          "place/remote",
+          fn(v, _page, _under, _stint, _k) {
+            v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
+              guard ws_id is Some(wid) else { return }
+              context_node(p)
+              p.lends(@sf.pane_lent, true) |> ignore
+              @sfpages.remote_workbench_node(
+                p,
+                src,
+                fn() { @sfbase.workspace_in_view(src).0.map_or(wid, fn(w) { w.id }) },
+                tips,
+                // (its tabs, ＋ among them, clear of the panel's top corners as the files' bar is (tape_bar_clear_start):
+                // they stand wherever the room left puts them, so none of them can be concentric with a corner)
+                start_pad=fn() { dmax(12.0, tape_remote_radii()[0]) },
+                end_pad=fn() { dmax(12.0, tape_remote_radii()[1]) },
+                // (a screen driven by a finger, its actions at its foot clear of the panel's foot corners: under the
+                // round of the rounder of them, past what their row keeps under them)
+                foot_pad=fn() {
+                  if @sf.soft_keyboard() {
+                    let r = tape_remote_radii()
+                    dmax(0.0, dmax(r[2], r[3]) - tape_remote_foot_in)
+                  } else {
+                    0.0
+                  }
+                },
+                width~,
+              )
+            })
+          },
+        ),
+      )
     // (a place of the rail's whose page is one of those: that page as the settings open it, at the stack's root, made
     // under its own kind)
     Place(name) =>
@@ -762,4 +798,18 @@ fn tape_files_ends() -> (Double, Double, Double) {
   let under = if side is None { tape_room_now().under } else { 0.0 }
   let corners = beside_column(tape_pane_corners(Page, side is Some(_)), under)
   (tape_bar_start_room(corners, true), tape_bar_end_room(corners), @sf.tape_bar_over())
+}
+
+///|
+/// What a screen's row of actions at its foot keeps under them (sfpages' screen_foot_actions, py=S1).
+// kept across runs: a value (no field of it changes)
+let tape_remote_foot_in : Double = 4.0
+
+///|
+/// The radii of the page's panel on the tape as 远程's workbench stands in it (as tape_chat_bar_ends tells a chat's bar
+/// them): top left, top right, bottom right, bottom left.
+fn tape_remote_radii() -> FixedArray[Double] {
+  let side = tape_shown_side()
+  let under = if side is None { tape_room_now().under } else { 0.0 }
+  @sf.corner_radii(beside_column(tape_pane_corners(Page, side is Some(_)), under))
 }

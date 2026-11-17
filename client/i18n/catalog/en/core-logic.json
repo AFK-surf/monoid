@@ -356,6 +356,8 @@
   "core-logic.jobs.long.services": "Long-running services",
   "core-logic.jobs.long.shutdown": "Shut down",
   "core-logic.jobs.long.simulators": "Simulators left running",
+  "core-logic.jobs.long.terminals": "Terminals left open",
+  "core-logic.jobs.long.endTerminal": "End",
   "core-logic.jobs.long.views": "Remote connections left open",
   "core-logic.jobs.no_notice": "No notices yet · last output {ago}",
   "core-logic.jobs.notices": {
@@ -632,5 +634,5 @@
   "core-logic.notice.run.was": "Before: {run}",
   "core-logic.format.connection.no_group": "No Group",
   "core-logic.choose.error.station_model_speeds": "Update this station to use Ultrafast, or choose Standard or Fast.",
-  "core-logic.choose.error.ultrafast_unavailable": "Choose GPT-6 Astra or GPT-6.1 Sol in Codex with a ChatGPT subscription to use Ultrafast, or choose Standard or Fast."
+  "core-logic.choose.error.ultrafast_unavailable": "To use Ultrafast, choose a supported Codex model and an eligible ChatGPT subscription, or choose Standard or Fast."
 }

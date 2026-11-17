@@ -180,6 +180,39 @@ pub fn toggle_chip_node(
   loc~ : SourceLoc,
 ) -> @view.View {
   @headless.toggle(made_for=loc, parent, Button, label, active, fn(_) { press() }, fn(b, _) {
+    capsule_chip_look(label, active, icon, chevron)(b)
+  })
+}
+
+///|
+/// A borderless full-capsule chip in `parent` that does `press` (a button, not a toggle), drawn as toggle_chip_node's
+/// off: for an action standing among those toggles (a working agent's 停止 before 只看收发 and 详情), so it is the
+/// same height and look as they are. While `disabled()`, at chip_off, taking no press.
+#callsite(autofill(loc))
+pub fn press_chip_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  icon? : String = "",
+  disabled? : () -> Bool = fn() { false },
+  loc~ : SourceLoc,
+) -> @view.View {
+  @headless.button(made_for=loc, parent, label, fn(_) { press() }, disabled~, fn(v, _) {
+    capsule_chip_look(label, fn() { false }, icon, false)(v)
+    v.alpha(By(fn() { if disabled() { chip_off } else { 1.0 } })) |> ignore
+  })
+}
+
+///|
+/// toggle_chip_node's and press_chip_node's look, given to the headless node each makes: its capsule, `icon` before
+/// `label`, `chevron` after.
+fn capsule_chip_look(
+  label : () -> String,
+  active : () -> Bool,
+  icon : String,
+  chevron : Bool,
+) -> (@view.View) -> Unit {
+  fn(b) {
     let hand = @motion.NodeWay::new(0.0)
     b.reacts(fn() { lit_node(b) }, fn(on) { hand.go_ms(b, if on { 1.0 } else { 0.0 }, dur_ms) })
     let ink = fn() {
@@ -218,7 +251,7 @@ pub fn toggle_chip_node(
         icon_node(c, if open { "chevron-up" } else { "chevron-down" }, toggle_chip_chevron, By(ink)) |> ignore
       })
     }
-  })
+  }
 }
 
 ///|

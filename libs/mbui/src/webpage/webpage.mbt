@@ -1,5 +1,5 @@
-// The page round the app where it runs in a browser: the page's title, the colour the browser draws round it, and the
-// browser's history of its site, which an app keeps in step with what it shows (a place put on as a page opens, the
+// The page round the app where it runs in a browser: the page's title, the colour the browser draws round it, the
+// system's CJK faces its words are drawn in beside a face of the app's, and the browser's history of its site, which an app keeps in step with what it shows (a place put on as a page opens, the
 // browser's back taken as the app's). Asked of the host through the app's own calls (@hostapi.app_said, app_tell,
 // named `mbui.page.*`), which the browser's host answers itself (src/host/host_js.mbt, web/host.js) and every other
 // host hands to an app that names none of them: nothing, and "" where it is. So the host's interface is as it was and
@@ -17,6 +17,22 @@ pub fn set_title(title : String) -> Unit {
 /// the page's own again.
 pub fn set_theme_color(color : String) -> Unit {
   @hostapi.app_tell("mbui.page.theme_color", color)
+}
+
+///|
+/// The system's CJK faces drawn for the CJK marks of face `face` (a face given as style.mbt's faces are, 1 the words'):
+/// each weight set `weight_step` heavier (a Latin face's 400 beside a CJK face's 400 reads thin and grey; clamped to
+/// 100..900), by the system's faces named `families` (the first it has; none: PingFang SC, Noto Sans CJK SC, Source Han
+/// Sans SC), the rest of the words in the face as ever. Where the face itself is not given, its CJK alone is drawn so,
+/// once the system has any of them. Asked again, it takes the place of what it said before. Nothing where the page's
+/// host has none (no browser).
+pub fn set_cjk_face(face? : Int = 1, weight_step? : Int = 100, families? : Array[String] = []) -> Unit {
+  let said : Json = {
+    "face": Json::number(face.to_double()),
+    "step": Json::number(weight_step.to_double()),
+    "families": Json::array(families.map(Json::string)),
+  }
+  @hostapi.app_tell("mbui.page.cjk_face", said.stringify())
 }
 
 ///|

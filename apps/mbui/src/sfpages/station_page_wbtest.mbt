@@ -631,6 +631,19 @@ test "a station's 进程 with keyboard and mouse: a chat's process's stop is rea
 }
 
 ///|
+test "a station's 进程 at a phone's width: a process's stop sits on its name's line, not centred on its name and figures" {
+  let t = station_tester("ws1/st1", part="processes")
+  let stops = t.all(Button, label="结束 node")
+  assert_eq(stops.length(), 1, msg="its stop shows where the hand is a finger")
+  let (_, sy, _, sh) = stops[0].rect
+  let name = drawn(t, "node")
+  let figure = drawn(t, "13.9%")
+  assert_true(figure.1 >= name.1 + name.3, msg="its figures under its name")
+  assert_true((sy + sh / 2.0 - (name.1 + name.3 / 2.0)).abs() < 0.5, msg="on its name's line: \{Repr(stops[0].rect)}, \{Repr(name)}")
+  lined_up(t, processes_columns)
+}
+
+///|
 /// A station's variables (station_node.mbt station_env_editor_node, in its page's 设置): the field shows the core's draft as
 /// it changes while nothing typed here waits on it.
 test "the variables' field follows the core's text that comes after the page opened" {

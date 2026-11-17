@@ -21,7 +21,7 @@ import { PAGE, TRANSCRIPT_PAGE, entriesOf, lettersOf, transcriptOf } from "./cha
 import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
-import { terminalsView } from "../terminals.ts";
+import { terminalCard, terminalsView } from "../terminals.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import * as logins from "./machine-logins.ts";
@@ -45,7 +45,7 @@ export function packetsSince(was: LinkNet["packets"], now: LinkNet["packets"]): 
   return { sent: now.sent - was.sent, lost: now.lost - was.lost };
 }
 
-const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
+const STATION_TOPICS = new Set(["link", "overview", "sessions", "host", "net", "way", "threads", "chatRows", "jobs", "archivedRows", "stationUsage", "stationResources", "session", "live", "thread", "letters", "slackApp", "jobLog", "job", "drive", "screens", "terminals", "screenCard", "terminalCard", "machineLogins", "machineLogin", "machineLoginScreen", "stationSearch", "memory", "presets", "profilePace", "stationMove", "linkPreview", "filePeek", "messagePeek"]);
 
 const u64 = (v: unknown): number | null => (typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null);
 
@@ -60,7 +60,7 @@ export function placeKey(station: string, thread: number): string {
 }
 
 /// The station topics made from how its link is (up, down, why): made again as it changes.
-const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
+const LINKED = new Set(["link", "live", "screens", "terminals", "screenCard", "terminalCard", "drive", "presets", "profilePace", "memory", "stationMove", "linkPreview", "filePeek", "messagePeek", "job", "machineLogins", "machineLogin"]);
 
 export class StationTopics implements Owner {
   readonly #core: Inner;
@@ -275,6 +275,11 @@ export class StationTopics implements Owner {
         seen.read(station, "screens");
         if (typeof topic.screen !== "string" || topic.screen === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "screen" })) };
         return { ok: screenCard(this.#core, station, topic.screen, this.#sync.screens(station), link?.state.state === "online") };
+      }
+      case "terminalCard": {
+        seen.read(station, "terminals");
+        if (typeof topic.terminal !== "string" || topic.terminal === "") return { err: CoreError.invalid(t("core-misc.params.missing", { field: "terminal" })) };
+        return { ok: terminalCard(this.#core, station, topic.terminal, this.#sync.terminals(station), link?.state.state === "online") };
       }
       case "jobLog": {
         const v = link?.memory.get(logKey(topic.job as string, topic.lines as number));

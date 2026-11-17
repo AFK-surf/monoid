@@ -298,11 +298,12 @@ const PROFILES: Json[] = [
 test("models, profiles and the words of a run changed, as the TypeScript has them", { skip }, async () => {
   const p = await opened();
   const models = ["claude-opus-5-5", "anthropic/claude-opus-5-5", "claude-opus-5-5[1m]", "Claude-Opus-5-5", "gemini-4-hydrogen", "gemini-4-hydrogen-high", "gemini-4-carbon-low",
-    "fusion-claude-opus-5-5-high-sidekick-swe-2", "fusion-claude-opus-5-5-sidekick-swe-2-medium", "swe-2", "gpt-6-astra", "openai/gpt-6.1-sol", "gpt-5", "o4-mini", "deepseek-v4-pro",
+    "fusion-claude-opus-5-5-high-sidekick-swe-2", "fusion-claude-opus-5-5-sidekick-swe-2-medium", "swe-2", "gpt-6-astra", "openai/gpt-6.1-sol", "gpt-6.2-astra", "openai/gpt-6.2-sol", "gpt-5", "o4-mini", "deepseek-v4-pro",
     "qwen3-coder-480b", "llama-3.1-70b", "unknown-model", "claude-fable-5-2-20261101", "glm-4.6", "kimi-k2", "grok-5", "fusion-swe-2-sidekick-claude-sonnet-5-5-high", ""];
   for (const m of models) {
     await both(p, "modelName", modelName, m);
     await both(p, "ultrafastModel", ultrafastModel, m);
+    await both(p, "ultrafastModel", ultrafastModel, m, ["gpt-6.2-astra", "gpt-6.2-sol"]);
     for (const prof of PROFILES) {
       await both(p, "spelling", spelling, prof, m);
       await both(p, "runs", runs, prof, m);

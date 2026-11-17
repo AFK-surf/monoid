@@ -121,7 +121,9 @@ export class Changelog implements Owner {
       const last = raw.trim().split(".").pop() ?? "";
       if (/^-?[0-9]+$/.test(last)) build = Number(last);
     }
-    this.#data.put(TABLE, "device", { app, build }, false);
+    const agent = get(facts, "userAgent");
+    const platform = app === "desktop" && typeof agent === "string" ? (agent.includes("Windows") ? "windows" : agent.includes("Mac OS X") ? "macos" : null) : null;
+    this.#data.put(TABLE, "device", { app, build, platform }, false);
     if (build !== null && this.#data.record(TABLE, "seen") === undefined) this.#data.put(TABLE, "seen", build, false);
     this.#changed();
   }
@@ -147,16 +149,25 @@ export class Changelog implements Owner {
     });
   }
 
+  #released(feed: J): J {
+    const releases = get(feed, "released");
+    const platform = get(this.#data.record(TABLE, "device"), "platform");
+    if ((platform === "windows" || platform === "macos") && releases && typeof releases === "object" && platform in releases) {
+      return { ...releases, desktop: releases[platform] };
+    }
+    return releases;
+  }
+
   /// What build `to` brings this app (as the device said it is: `client.device`) at build `from`: the lines of its
   /// changes after `from`, up to `to`, newest first. The changelog kept is read again first when it was read before `to`
   /// was out, so a build is known with its lines.
   brings(from: number, to: number): Effect.Effect<string[]> {
     return Effect.gen({ self: this }, function* () {
       const app = this.#app();
-      const known = (feed: J) => partsOf(app).every((part) => (int(get(get(feed, "released"), part)) ?? -Infinity) >= to);
+      const known = (feed: J) => partsOf(app).every((part) => (int(get(this.#released(feed), part)) ?? -Infinity) >= to);
       if (!known(this.#data.record(TABLE, "feed"))) yield* this.read();
       const feed = this.#data.record(TABLE, "feed") as J;
-      const released = get(feed, "released") ?? null;
+      const released = this.#released(feed);
       return arr(get(feed, "entries"))
         .map((entry) => item(entry, app, from, released))
         .filter((it) => it !== null && it.mine && it.version > from && it.version <= to)
@@ -180,7 +191,7 @@ export class Changelog implements Owner {
     const seen = int(this.#data.record(TABLE, "seen"));
     const feed = this.#data.record(TABLE, "feed") as J;
     if (feed === undefined) return { app, build, tabs: [], loading: !this.#failed, error: this.#failed ? t("core-misc.changelog.unreadable") : null };
-    const released = get(feed, "released") ?? null;
+    const released = this.#released(feed);
     const news: J[] = [];
     const shown = arr(get(feed, "entries")).slice(0, SHOWN);
     for (const entry of shown) {

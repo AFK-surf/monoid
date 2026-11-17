@@ -45,3 +45,15 @@ test "大屏: on the block's way a chat's column as wide as at either end, its w
     assert_eq(size(), was)
   }
 }
+
+///|
+test "大屏: folding to the board does not rebuild the old view on each frame" {
+  let (t, _) = board_at("board-list", 1280.0, 800.0)
+  t.click(Button, label="看板")
+  let start = t.time()
+  for after in [80.0, 100.0, 120.0] {
+    t.frame_at(start + after)
+    let p = t.frame_perf()
+    assert_true(p.nodes <= 5, msg="at \{after}: \{p.nodes}, \{t.built_why()}")
+  }
+}

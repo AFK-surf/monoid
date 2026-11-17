@@ -358,13 +358,14 @@ test("the seam's words, the drivers' pure functions: as the TypeScript says them
 
 test("Codex's model list and the user's skills turned off, in the TypeScript's order", { skip }, async () => {
   const pages = [
-    { data: [{ id: "b", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "low" }, { reasoningEffort: "" }], defaultReasoningEffort: "low" }, { model: "a" }, { id: "h", hidden: true }] },
-    { data: [{ id: "c", defaultReasoningEffort: "" }] },
+    { data: [{ id: "b", supportedReasoningEfforts: [{ reasoningEffort: "low" }, { reasoningEffort: "low" }, { reasoningEffort: "" }], defaultReasoningEffort: "low" }, { model: "a", serviceTiers: [{ id: "ultrafast" }] }, { id: "h", hidden: true, serviceTiers: [{ id: "ultrafast" }] }] },
+    { data: [{ id: "c", defaultReasoningEffort: "", additionalSpeedTiers: ["ultrafast"] }, { id: "d", serviceTiers: [], additionalSpeedTiers: ["ultrafast"] }] },
   ];
   const catalog = new ModelCatalog();
   for (const p of pages) catalog.extend(p);
   const said = await mb({ op: "pure", fn: "modelCatalog", args: [pages] });
-  assert.deepEqual(said, { models: catalog.models, efforts: Object.fromEntries(catalog.efforts), defaults: Object.fromEntries(catalog.defaults) });
+  assert.deepEqual(said, { models: catalog.models, efforts: Object.fromEntries(catalog.efforts), defaults: Object.fromEntries(catalog.defaults), ultrafastModels: ["a", "c"] });
+  assert.deepEqual(catalog.ultrafastModels, ["a", "c"]);
   const root = fresh();
   const paths = ["z/SKILL.md", "a/b/SKILL.md", "a/SKILL.md", "a-b/SKILL.md", "node_modules/x/SKILL.md", ".git/SKILL.md"].map((p) => join(root, p));
   for (const p of paths) put(p, "x");

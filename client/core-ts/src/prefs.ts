@@ -14,8 +14,8 @@ import { ofAddress } from "./workspace.ts";
 import { equal, isObject } from "./util.ts";
 import { setOwnBuild } from "./station/oldest.ts";
 
-const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "experimental", "reports"];
-const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
+const FIELDS = ["onlyMine", "onlyWatching", "listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "appearance", "accent", "windowZoom", "terminalZoom", "motion", "haptics", "appUpdate", "rowPicture", "absoluteTime", "language", "keys", "workspace", "lastChat", "chatTabs", "dropFiles", "dropAs", "archiveHint", "screenTouch", "screenQuality", "screenFps", "screenCodec", "screenMouse", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "invite", "badge", "badgeKinds", "reader", "lockNotice", "rail", "rails", "bars", "barsBy", "fonts", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "fillOff", "fillMax", "shareLook", "sendKey", "moveTo", "experimental", "reports"];
+const MAPS = ["listFilter", "boardViews", "boardGroups", "boardShowEmpty", "boardDrafts", "keys", "lastChat", "chatTabs", "dropFiles", "driveViews", "filesTabs", "remoteTabs", "driveFavorites", "driveFavoritesHidden", "resume", "lockNotice", "rails", "barsBy", "previewSizes", "sidebars", "trouble", "jobsSeen", "failsGone", "moveTo", "experimental"];
 const TABS_KEPT = 200;
 /// At most this many jobs kept as looked at in one workspace's bell.
 const JOBS_SEEN_KEPT = 200;
@@ -127,10 +127,10 @@ export function archiveHintOf(prefs: unknown): ArchiveHint {
 }
 
 /// The places a phone's bottom bar can hold, in no order.
-export const BAR_PLACES = ["chats", "files", "stations", "profiles", "connects", "usage", "archive", "vault"];
+export const BAR_PLACES = ["chats", "files", "remote", "stations", "profiles", "connects", "usage", "archive", "vault"];
 /// At most this many places in one bar.
 export const BAR_SIZE = 4;
-const BARS_DEFAULT = { sets: [["chats", "files", "profiles", "stations"], ["archive", "usage", "connects", "vault"]], current: 0 };
+const BARS_DEFAULT = { sets: [["chats", "files", "profiles", "stations"], ["remote", "archive", "usage", "connects"]], current: 0 };
 
 /// A phone's bottom bars as kept, whole: each bar one to four known places, none twice in a bar; at least one bar; the
 /// one in view one of them. What is not that (nothing kept, a place this build does not know) reads as the default or
@@ -294,6 +294,8 @@ export function set(data: Data, patch: unknown, fill: boolean, now: number): voi
   if ("haptics" in prefs && prefs.haptics !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "haptics" }));
   if ("appUpdate" in prefs && prefs.appUpdate !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "appUpdate" }));
   if ("windowZoom" in prefs && !["50", "67", "75", "80", "90", "110", "125", "150", "175", "200"].includes(prefs.windowZoom as string)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "windowZoom" }));
+  if ("terminalZoom" in prefs && !(typeof prefs.terminalZoom === "string" && /^(6[0-9]|[7-9][0-9]|1[0-9]{2}|200)$/.test(prefs.terminalZoom))) throw CoreError.invalid(t("core-misc.params.invalid", { error: "terminalZoom" }));
+  if (isObject(prefs.remoteTabs) && Object.values(prefs.remoteTabs).some((v) => typeof v !== "string" || v.length > 16384)) throw CoreError.invalid(t("core-misc.params.invalid", { error: "remoteTabs" }));
   if ("sendKey" in prefs && prefs.sendKey !== "mod") throw CoreError.invalid(t("core-misc.params.invalid", { error: "sendKey" }));
   if ("reports" in prefs && prefs.reports !== "off") throw CoreError.invalid(t("core-misc.params.invalid", { error: "reports" }));
   if ("dropAs" in prefs && prefs.dropAs !== "file" && prefs.dropAs !== "path") throw CoreError.invalid(t("core-misc.params.invalid", { error: "dropAs" }));

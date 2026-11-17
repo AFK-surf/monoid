@@ -514,3 +514,127 @@ pub fn now() -> Int64 {
 pub fn random(n : Int) -> Bytes {
   page_random(n)
 }
+
+///|
+/// A tab's claim on a page (tab.mbt), as `tab_start` made it.
+#external
+priv type TabJs
+
+///|
+/// A tab's claim under `name`: the Web Lock `base:tab:<name>`, held by a request whose promise is resolved as it is let
+/// go of, and the BroadcastChannel of the same name, on which a tab asks the one that holds it to let it go
+/// (`{kind: "take", by}`) and a tab that has it after such an ask says so (`{kind: "held", by}`). `told` is given
+/// each change: 0 held, 1 busy, 2 yielded. Without Web Locks or a BroadcastChannel (where nothing could hold it
+/// against another tab) it is held at once, and stays so.
+///
+/// A tab told `take` while it holds it is told yielded first and then lets it go, so its program stops before the
+/// next tab starts; a second `take` finds nothing to let go of. A tab that asked waits in the lock's own queue,
+/// asked before it says so, so it has it as the one before lets it go. Two tabs asking at once: the first in the
+/// queue has it and says so, and the other, still waiting, asks again, so the last to ask has it and none waits
+/// behind a tab that never heard it.
+extern "js" fn tab_start(name : String, told : (Int) -> Unit) -> TabJs =
+  #|(name, told) => {
+  #|  const locks = globalThis.navigator?.locks;
+  #|  const Channel = globalThis.BroadcastChannel;
+  #|  let closed = false;
+  #|  if (typeof locks?.request !== "function" || typeof Channel !== "function") {
+  #|    told(0);
+  #|    return { take: () => {}, release: () => { closed = true; } };
+  #|  }
+  #|  const key = "base:tab:" + name;
+  #|  const me = Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, "0")).join("");
+  #|  const channel = new Channel(key);
+  #|  // what was told last; what lets go of the lock while it is held here; what gives up an ask while it waits;
+  #|  // whether the first answer is still to come, and whether a take over was asked meanwhile
+  #|  let state = -1;
+  #|  let letGo = null;
+  #|  let asked = null;
+  #|  let first = true;
+  #|  let wanted = false;
+  #|  const tell = (s) => {
+  #|    if (closed || state === s) return;
+  #|    state = s;
+  #|    told(s);
+  #|  };
+  #|  // the lock granted: held until let go of (yielded or released); released before it came, let go of at once
+  #|  const hold = () => {
+  #|    if (closed) return undefined;
+  #|    const held = new Promise((resolve) => { letGo = resolve; });
+  #|    tell(0);
+  #|    channel.postMessage({ kind: "held", by: me });
+  #|    return held;
+  #|  };
+  #|  const take = () => {
+  #|    if (closed || letGo !== null || asked !== null) return;
+  #|    if (first) {
+  #|      wanted = true;
+  #|      return;
+  #|    }
+  #|    const ask = new AbortController();
+  #|    asked = ask;
+  #|    new Promise((ok) => ok(locks.request(key, { signal: ask.signal }, () => {
+  #|      if (asked === ask) asked = null;
+  #|      return hold();
+  #|    }))).catch(() => { if (asked === ask) asked = null; });
+  #|    channel.postMessage({ kind: "take", by: me });
+  #|  };
+  #|  channel.onmessage = (event) => {
+  #|    const m = event?.data;
+  #|    if (closed || m?.by === me) return;
+  #|    if (m?.kind === "held") {
+  #|      // (had by another while this one still waits: it asks again)
+  #|      if (asked !== null) channel.postMessage({ kind: "take", by: me });
+  #|      return;
+  #|    }
+  #|    if (m?.kind !== "take" || letGo === null) return;
+  #|    const go = letGo;
+  #|    letGo = null;
+  #|    tell(2);
+  #|    go();
+  #|  };
+  #|  new Promise((ok) => ok(locks.request(key, { ifAvailable: true }, (lock) => {
+  #|    first = false;
+  #|    if (lock !== null && lock !== undefined) return hold();
+  #|    tell(1);
+  #|    if (wanted) take();
+  #|    return undefined;
+  #|  }))).catch(() => {
+  #|    // (the browser refused to ask at all: as where there are no locks, held, so the program is not stuck)
+  #|    first = false;
+  #|    tell(0);
+  #|  });
+  #|  return {
+  #|    take,
+  #|    release: () => {
+  #|      if (closed) return;
+  #|      closed = true;
+  #|      asked?.abort();
+  #|      asked = null;
+  #|      const go = letGo;
+  #|      letGo = null;
+  #|      go?.();
+  #|      channel.close();
+  #|    },
+  #|  };
+  #|}
+
+///|
+extern "js" fn tab_take(tab : TabJs) -> Unit =
+  #|(tab) => tab.take()
+
+///|
+extern "js" fn tab_release(tab : TabJs) -> Unit =
+  #|(tab) => tab.release()
+
+///|
+/// A claim on a page (tab.mbt), as `tab_start` keeps it.
+fn tab_claim(name : String, on_state : (TabState) -> Unit) -> TabClaim {
+  let tab = tab_start(name, told => on_state(
+    match told {
+      0 => Held
+      1 => Busy
+      _ => Yielded
+    },
+  ))
+  { take: () => tab_take(tab), let_go: () => tab_release(tab) }
+}

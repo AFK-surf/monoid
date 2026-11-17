@@ -93,19 +93,24 @@ for (const batch of [false, true]) test(`a device abandoning ${batch ? "a batch"
     return "{}";
   } };
   const admin = new Admin(readers as any);
-  t.after(async () => {
-    release();
-    cloud.close();
-    await Promise.all([at.close(), device.close()]);
-    rmSync(data, { recursive: true, force: true });
-  });
-  void (async () => {
+  // what serves each connection is awaited before its data goes: a batch's handler still read and wrote it as the
+  // directory was removed (ENOTEMPTY)
+  const served: Promise<unknown>[] = [];
+  const loop = (async () => {
     for (;;) {
       const conn = await at.accept();
       if (!conn) return;
-      void serve({ cloud, admin, up: () => true }, conn).catch(() => {});
+      served.push(serve({ cloud, admin, up: () => true }, conn).catch(() => {}));
     }
   })();
+  t.after(async () => {
+    release();
+    await Promise.all([at.close(), device.close()]);
+    await loop;
+    await Promise.allSettled(served);
+    cloud.close();
+    rmSync(data, { recursive: true, force: true });
+  });
   const conn = await device.connect({ id: at.id() }, ALPN);
   const now = Math.floor(Date.now() / 1000);
   const credential = grant.credential({ typ: "stillfail-member+jwt" }, { iss: "stillfail-cloud", sub: "usr_a", email: "a@x", name: "a", ws: WS, role: "owner", device: device.id(), sid: "s", iat: now, exp: now + 3600 });

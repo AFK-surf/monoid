@@ -1,5 +1,4 @@
-import { modelSpeed, ultrafastModel, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
-import { accessKind } from "../agents/profiles.ts";
+import { modelSpeed, type ModelSpeed } from "../../../client/core-ts/src/model-speed.ts";
 // Sessions and chats as people make, change, archive and delete them (the Rust station's hub.rs: new_session, open_chat,
 // add_to_thread, say, bind_single, configure, archive, archive_chat, auto_archive, delete_session,
 // continue_machine_session). Archiving here is the record (archived, hidden) and what goes with it (the process ends,
@@ -55,10 +54,10 @@ export type NewChat = {
   presetCopy?: PresetCopy | null;
 };
 
-function checkSpeed(runtime: string, model: string | null, speed: ModelSpeed | null | undefined, profile: Profile | null | undefined, lang: Lang): void {
+function checkSpeed(runtime: string, speed: ModelSpeed | null | undefined, supportsUltrafast: boolean, lang: Lang): void {
   if (speed == null) return;
   if (modelSpeed(speed) === null || !FAST_RUNTIMES.includes(runtime as Runtime)) throw new Error(tr(lang, "station.speed.invalid"));
-  if (speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(model) || !profile || accessKind(profile) !== "subscription")) {
+  if (speed === "ultrafast" && (runtime !== "codex" || !supportsUltrafast)) {
     throw new Error(tr(lang, "station.speed.ultrafast_unavailable"));
   }
 }
@@ -206,6 +205,12 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
   if (refused !== null) throw new Error(refused);
   // (one that names no preset of its workspace makes no chat, nor its directory)
   if (!options.presetCopy && preset !== null && bound === null) throw new NoPreset(preset);
+  const pickAccount = (candidates: Profile[]) => {
+    if (options.speed !== "ultrafast") return hub.accounts.pick(candidates, model, true);
+    const eligible = candidates.filter((p) => hub.accounts.supportsUltrafast(p, model));
+    checkSpeed(runtime, options.speed, eligible.length > 0, lang);
+    return hub.accounts.pick(eligible, model, true);
+  };
   let profile;
   if (wantedProfiles !== null) {
     const subset = [];
@@ -218,10 +223,10 @@ async function sessionMade(hub: Hub, key: string, client: string | null, options
       if (model !== null && !runs(found, model)) throw new Error(tr(lang, "station.profile.modelOff", { profile: found.name, model }));
       subset.push(found);
     }
-    profile = subset.length === 1 ? subset[0]! : hub.accounts.pick(subset, model, true);
-  } else profile = hub.accounts.pick(profiles, model, true);
+    profile = subset.length === 1 ? subset[0]! : pickAccount(subset);
+  } else profile = pickAccount(profiles);
   const effort = options.effort ? options.effort : null;
-  checkSpeed(runtime, model ?? profile.model ?? null, options.speed, profile, lang);
+  checkSpeed(runtime, options.speed, options.speed === "ultrafast" && hub.accounts.supportsUltrafast(profile, model), lang);
   checkContext(runtime, options.context, lang);
   if (effort !== null) {
     const allowed = hub.accounts.modelEfforts(runtime, model, wantedProfiles, (p) => here.has(p.id));
@@ -285,9 +290,15 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
   }
   const { row, runtime, model, effort, profile, profiles, pinned, repick } = hub.accounts.change(key, change, lang);
   const account = hub.accounts.profile(profile ?? row.profile);
-  const speedModel = model ?? account?.model ?? null;
-  const speed = change.speed !== undefined ? change.speed : change.fast !== undefined || runtime !== row.runtime || (row.speed === "ultrafast" && !ultrafastModel(speedModel)) ? null : row.speed;
-  checkSpeed(runtime, speedModel, speed, account, lang);
+  const kept = profiles === undefined ? row.profiles : profiles;
+  const fixed = typeof profile === "string" || (profiles === undefined && row.profilePinned);
+  const wantsUltrafast = change.speed === "ultrafast" || row.speed === "ultrafast";
+  const supportsUltrafast = wantsUltrafast && runtime === "codex" && (fixed
+    ? account !== null && hub.accounts.supportsUltrafast(account, model)
+    : hub.profilesIn(row.ws ?? null).some((p) => p.runtimes.includes("codex") && (!kept?.length || kept.includes(p.id))
+      && (model === null || runs(p, model)) && hub.accounts.supportsUltrafast(p, model)));
+  const speed = change.speed !== undefined ? change.speed : change.fast !== undefined || runtime !== row.runtime || (row.speed === "ultrafast" && !supportsUltrafast) ? null : row.speed ?? null;
+  checkSpeed(runtime, speed, supportsUltrafast, lang);
   const movedRuntime = runtime !== row.runtime && typeof profile === "string";
   const recapped = change.context !== undefined && change.context !== row.context;
   // Its runtime compacts on its own only some calls into a new process: what it holds over a lower most is compacted
@@ -306,11 +317,11 @@ export async function configure(hub: Hub, key: string, change: SessionChange, la
       hub.store.setSessionContext(key, change.context ?? null);
       hub.store.setSessionContextBefore(key, over ? (row.contextBefore ?? row.context ?? 0) : null);
     }
+    if (change.speed !== undefined || (change.fast === undefined && (row.speed ?? null) !== speed)) hub.store.setSessionSpeed(key, speed);
     if (repick || leftPool) hub.accounts.repick(key);
-    else if (profile === null) hub.accounts.runOn(key, false, true);
+    else if (profile === null || (!fixed && speed === "ultrafast" && change.speed !== undefined)) hub.accounts.runOn(key, false, true);
   }
-  if (change.speed !== undefined) hub.store.setSessionSpeed(key, change.speed);
-  else if (row.speed === "ultrafast" && (runtime !== "codex" || !ultrafastModel(speedModel))) hub.store.setSessionSpeed(key, null);
+  if (movedRuntime && speed !== null) hub.store.setSessionSpeed(key, speed);
   // Another most context is what its process starts with (Claude Code's settings, a Codex thread's config): only a new
   // one takes it.
   await hub.changed(key, movedRuntime || recapped);

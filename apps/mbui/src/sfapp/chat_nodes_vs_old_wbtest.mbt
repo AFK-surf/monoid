@@ -281,15 +281,18 @@ fn chat_vs_over(bars : Map[String, (Int, Int)], motion : Bool) -> Array[String] 
 /// over the code (the user, 2026-11-17: 「hover 才显示，不占空间」): each block 38 lower, what shows holds more of the
 /// chat, the page as nodes making and laying out more of it (with a spacer as tall as the bar in the keys' place, a
 /// block makes fewer nodes than it did), the old page fewer.
+/// Each card's nodes raised, 2026-11-17 (phone 2613, plp_narrow 2646, tape 1318, wide 1254; moving phone 1639,
+/// plp_narrow 1658 before; wide md's 1305 in both), once what lights a message whole is the list's band, drawn under all its rows once
+/// (View::scrolls_window's `bands`): its each's slot one node more of the page, its rows' grounds bound no more.
 let chat_vs_bars : Map[String, (Int, Int)] = {
-  "phone card": (2613, 979),
+  "phone card": (2621, 979),
   "phone md": (1707, 930),
-  "plp_narrow card": (2646, 983),
+  "plp_narrow card": (2654, 983),
   "plp_narrow md": (2125, 943),
-  "tape card": (1318, 1184),
+  "tape card": (1319, 1184),
   "tape md": (1368, 1150),
-  "wide card": (1254, 1110),
-  "wide md": (1305, 1097),
+  "wide card": (1256, 1110),
+  "wide md": (1306, 1097),
 }
 
 ///|
@@ -316,14 +319,14 @@ test "a real chat opened again from Home: the page made as nodes does no more ag
 /// Each brought down, 2026-11-17, as chat_vs_bars' are. Wide md's up as chat_vs_bars' (1245, 1062 before): a code
 /// block's keys over its code with a mouse, more of the chat shown.
 let chat_vs_motion_bars : Map[String, (Int, Int)] = {
-  "phone card": (1639, 979),
+  "phone card": (1643, 979),
   "phone md": (1329, 936),
-  "plp_narrow card": (1658, 983),
+  "plp_narrow card": (1662, 983),
   "plp_narrow md": (1639, 943),
-  "tape card": (1318, 1184),
+  "tape card": (1319, 1184),
   "tape md": (1368, 1150),
-  "wide card": (1254, 1110),
-  "wide md": (1305, 1097),
+  "wide card": (1256, 1110),
+  "wide md": (1306, 1097),
 }
 
 ///|
