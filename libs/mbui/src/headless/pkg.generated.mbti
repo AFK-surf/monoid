@@ -15,6 +15,20 @@ pub fn button(@view.View, () -> String, (@view.View) -> Unit, (@view.View, Butto
 #callsite(autofill(loc))
 pub fn choice(@view.View, ChoiceKind, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Choice) -> Unit, disabled? : () -> Bool, focusable? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
+pub fn[K] cmdk_filter(Array[CmdkItem[K]], String, score? : (String, String, Array[String]) -> Double) -> Array[CmdkEntry[K]]
+
+pub fn[K] cmdk_first(Array[CmdkEntry[K]]) -> K?
+
+pub fn[K] cmdk_item(K, String, keywords? : Array[String], group? : String, disabled? : Bool) -> CmdkItem[K]
+
+pub fn[K : Eq] cmdk_keep(Array[CmdkEntry[K]], K?) -> K?
+
+pub fn[K] cmdk_keys(Array[CmdkEntry[K]]) -> Array[K]
+
+pub fn[K : Eq] cmdk_move(Array[CmdkEntry[K]], K?, CmdkMove, wraps? : Bool) -> K?
+
+pub fn cmdk_score(String, String, keywords? : Array[String]) -> Double
+
 #callsite(autofill(loc))
 pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
@@ -33,6 +47,8 @@ pub let combobox_last : String
 pub let combobox_next : String
 
 pub let combobox_prev : String
+
+pub fn command_score(String, String, aliases? : Array[String]) -> Double
 
 #callsite(autofill(loc))
 pub fn disclosure(@view.View, () -> String, () -> Bool, (@view.View) -> Unit, (@view.View, Disclosure) -> Unit, disabled? : () -> Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -56,6 +72,13 @@ pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_
 
 #callsite(autofill(loc))
 pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, (@view.View, Toggle) -> Unit, disabled? : () -> Bool, mixed? : () -> Bool, hold? : Hold, hold_press? : (Double, Double), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn tooltip_bubble(@view.View, () -> String, (@view.View) -> Unit, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub let tooltip_close : String
+
+pub let tooltip_keys : Array[@view.Binding]
 
 // Errors
 
@@ -101,6 +124,32 @@ pub fn Choice::pressed(Self) -> Bool
 pub(all) enum ChoiceKind {
   Button
   Radio
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum CmdkEntry[K] {
+  Heading(String)
+  Separator(String)
+  Item(CmdkItem[K], Double)
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) struct CmdkItem[K] {
+  key : K
+  label : String
+  keywords : Array[String]
+  group : String
+  disabled : Bool
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum CmdkMove {
+  NextItem
+  PrevItem
+  FirstItem
+  LastItem
+  NextGroup
+  PrevGroup
 }
 
 pub struct ComboOption {
@@ -278,6 +327,14 @@ pub(all) enum ToggleKind {
   Switch
   Button
 }
+
+pub struct TooltipGroup[K] {
+  // private fields
+}
+pub fn[K : Eq] TooltipGroup::is_open(Self[K], K) -> Bool
+pub fn[K] TooltipGroup::new(() -> K?, (K?) -> Unit, open_delay_ms? : Double, warmup_ms? : Double) -> Self[K]
+pub fn[K] TooltipGroup::shown(Self[K]) -> K?
+pub fn[K : Eq] TooltipGroup::trigger(Self[K], @view.View, K, disabled? : () -> Bool) -> Unit
 
 // Type aliases
 
