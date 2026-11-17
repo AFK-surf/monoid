@@ -275,6 +275,9 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {
+      "src/demo/main.mbt": 1
+    },
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},
@@ -378,6 +381,7 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},

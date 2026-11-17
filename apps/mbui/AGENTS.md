@@ -198,8 +198,8 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   for it, `chat_nodes_open_budget_wbtest.mbt` what is picked in it. What a make holds made only as it is made (a
   message's paths, its agent's card, the chat's thread) is part of the make.
 - What is left of the old is counted by detlint and only falls: `old-island` (`@ui.old` hosting a Ctx in a node),
-  `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `build-motion`, `layout-read-back`, `ui-current`.
-  A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
+  `old-list` (`Ctx::list`), `old-panel`, `click-read`, `key-read`, `submitted-read`, `build-motion`,
+  `layout-read-back`, `ui-current`. A change never adds one; one it touches it moves over. A node-made part is never wrapped back into a Ctx.
 - The chat's page made as nodes is behind a switch a person turns on, 实验性功能's 试用新对话页 (the experimental
   feature `chatPage`, the prefs' `experimental`; sfbase's `chat_page_from_prefs`), off by default till it lacks nothing
   (the owner, 2026-11-14: 「做开关」「别把用户搞得没法用」); `chat_page_nodes_at_start` stays false meanwhile.

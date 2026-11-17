@@ -35,14 +35,16 @@ test "a box sized by another's laid height follows it in the frame it changes, n
 
 ///|
 test "a row's height read as the view builds is this frame's, in the frame it changes" {
-  let tall = Ref(40.0)
+  // (a signal: a row kept reads it, built again as it changes, as a device's; a plain value was seen to change only by
+  // the Tester's build keeping no row, tester_rows.mbt)
+  let tall = @signals.signal(40.0)
   let t = @ui.Tester::new(
     fn(c) {
       let h = c.list_row_height("rows", 0)
       c.column(fn() {
         c.text("row 0: \{@ui.some_text(h)}", wrap=false) |> ignore
         c.list("rows", 3, 40.0, fn(i) {
-          c.box(w=Fill(1.0), h=Px(if i == 0 { tall.val } else { 40.0 }), fn() {  }) |> ignore
+          c.box(w=Fill(1.0), h=Px(if i == 0 { tall.get() } else { 40.0 }), fn() {  }) |> ignore
         })
         |> ignore
       })
@@ -52,7 +54,7 @@ test "a row's height read as the view builds is this frame's, in the frame it ch
     h=300.0,
   )
   assert_true(t.rect_of("row 0: Some(40)") is Some(_))
-  tall.val = 90.0
+  tall.set(90.0)
   t.frame()
   assert_true(t.rect_of("row 0: Some(90)") is Some(_))
   t.assert_idle()
@@ -99,7 +101,8 @@ test "words read before they are first laid out are there in the frame that lays
 
 ///|
 test "a list in a scope of its own is read back by the id it has there" {
-  let tall = Ref(40.0)
+  // (a signal, as the test before's)
+  let tall = @signals.signal(40.0)
   let t = @ui.Tester::new(
     fn(c) {
       c.scope(7, fn() {
@@ -109,7 +112,7 @@ test "a list in a scope of its own is read back by the id it has there" {
         c.column(fn() {
           c.text("row 0: \{@ui.some_text(h)}", wrap=false) |> ignore
           c.list("rows", 3, 40.0, fn(i) {
-            c.box(w=Fill(1.0), h=Px(if i == 0 { tall.val } else { 40.0 }), fn() {  }) |> ignore
+            c.box(w=Fill(1.0), h=Px(if i == 0 { tall.get() } else { 40.0 }), fn() {  }) |> ignore
           })
           |> ignore
         })
@@ -121,7 +124,7 @@ test "a list in a scope of its own is read back by the id it has there" {
   )
   // laid out in the first frame, read back there: not a frame late, and still from then on
   assert_true(t.rect_of("row 0: Some(40)") is Some(_))
-  tall.val = 90.0
+  tall.set(90.0)
   t.frame()
   assert_true(t.rect_of("row 0: Some(90)") is Some(_))
   t.assert_idle()

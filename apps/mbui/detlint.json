@@ -466,6 +466,11 @@
     },
     "click-read": {},
     "key-read": {},
+    "submitted-read": {
+      "src/sfapp/settings/vault_ask.mbt": 1,
+      "src/sfpages/chat_row.mbt": 1,
+      "src/sfpages/login_card.mbt": 1
+    },
     "part-place": {},
     "button-by-hand": {
       "src/sf/own_head_node.mbt": 1,
@@ -626,6 +631,7 @@
     "old-panel": {},
     "click-read": {},
     "key-read": {},
+    "submitted-read": {},
     "part-place": {},
     "button-by-hand": {},
     "layout-told": {},

@@ -140,9 +140,9 @@ fn messages_reset() -> Unit {
   frame_woken.val = false
   frame_wake_asked.val = false
   system_bars_now.set({ top: 0.0, bottom: 0.0, left: 0.0, right: 0.0 })
-  system_size_class_now.val = None
+  system_size_class_now.set(None)
   system_fold_now.set({ hinge: NoHinge, divisions: [] })
-  system_nav_action_now.val = None
+  system_nav_action_now.set(None)
 }
 
 ///|

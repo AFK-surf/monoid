@@ -32,8 +32,10 @@ priv struct RefField {
 let ref_fields : Map[String, RefField] = Map([])
 
 ///|
-/// From how many characters words pasted at once go as a file (the core's PASTE_THRESHOLD; 0 till it has said).
-let paste_bound : Ref[Int] = Ref(0)
+/// From how many characters words pasted at once go as a file (the core's PASTE_THRESHOLD; 0 till it has said): a
+/// signal, so the composer that read it as it was built (paste_threshold) is built again as the core says it.
+// kept across runs: put back by refs_reset
+let paste_bound : @signals.Signal[Int] = @signals.signal(0)
 
 ///|
 let paste_bound_asked : Ref[Bool] = Ref(false)
@@ -41,8 +43,63 @@ let paste_bound_asked : Ref[Bool] = Ref(false)
 ///|
 pub fn refs_reset() -> Unit {
   ref_fields.clear()
-  paste_bound.val = 0
+  refs_kept.clear()
+  paste_bound.set(0)
   paste_bound_asked.val = false
+}
+
+///|
+/// The chat each title is a mark of as the core keeps it for a workspace (refs.ts `keep`: the latest link of a title
+/// among those of the workspace written in), for the marks this run's picks and pastes put in (`chat.ref`, `chat.refs`,
+/// the only ways a link is kept on the device): its station, by the workspace and the title (refs_kept_key). What the
+/// core kept before this run is not here.
+// kept across runs: put back by refs_reset
+let refs_kept : Map[String, String] = Map([])
+
+///|
+fn refs_kept_key(workspace : String, title : String) -> String {
+  workspace + "\u{1}" + title
+}
+
+///|
+/// Mark `mark` (`@[its title]`) kept by the core as the chat of station `station`, for that station's workspace and for
+/// workspace `into` (one written in, where that is another), as `chat.ref` keeps it.
+fn refs_kept_put(mark : String, station : String, into? : String = "") -> Unit {
+  guard mark.has_prefix("@[") && mark.has_suffix("]") && mark.length() > 3 else { return }
+  let title = mark.exact_view(start=2, end=mark.length() - 1).to_owned()
+  refs_kept[refs_kept_key(workspace_of(station), title)] = station
+  if into != "" {
+    refs_kept[refs_kept_key(into, title)] = station
+  }
+}
+
+///|
+/// Whether words `words`, written on station `station`, can refer to no chat of another workspace: every `@[` in them
+/// begins `@[a title]` that this run's picks and pastes kept as a mark of a chat of `station`'s own workspace
+/// (refs_kept), so the core's `chat.outsideRefs` would find none of them outside. Not a reading of the words' marks
+/// (the core's, refs_ask_marks): a `@[` that is not so, or a title kept before this run, answers false, and the core
+/// is asked as before.
+pub fn refs_here_only(station : String, words : String) -> Bool {
+  let here = workspace_of(station)
+  let mut at = 0
+  while words.exact_view(start=at).find("@[") is Some(found) {
+    let a = at + found
+    let rest = words.exact_view(start=a + 2)
+    let end = match rest.find("]") {
+      Some(e) => e
+      None => return false
+    }
+    let title = rest.exact_view(end=end).to_owned()
+    if title.contains("\n") {
+      return false
+    }
+    match refs_kept.get(refs_kept_key(here, title)) {
+      Some(s) if workspace_of(s) == here => ()
+      _ => return false
+    }
+    at = a + 2 + end + 1
+  }
+  true
 }
 
 ///|
@@ -239,6 +296,12 @@ pub fn refs_put(key : String, input : @ui.Field, words : String, caret? : Int) -
 /// (words_runs: `@` a little lighter, its title in `accent`), its `[` and `]` taking no room, so that what is sent goes
 /// from the field with nothing of it moved or changed. As many code units as the words: the field's offsets hold.
 pub fn refs_look(key : String, accent : Int64) -> (String) -> (String, Array[(Int, Int, Int64)]) {
+  // (what it draws by is read where the field is built, not only as it is drawn: the core's marks coming for the words
+  // (ref.marks: marks_of, set with them; moved along with an edit: marks) build the field again, its words drawn anew
+  // with them)
+  let read = ref_field(key)
+  read.marks_of.get() |> ignore
+  read.marks.length() |> ignore
   fn(s) {
     let f = ref_field(key)
     if s != f.marks_in || f.marks.is_empty() {
@@ -480,6 +543,7 @@ pub fn refs_pick(
         match res {
           Ok(v) => {
             let mark = text(Some(v), "mark")
+            refs_kept_put(mark, station, into~)
             let now = input.text()
             if mark == "" || start >= now.length() || now.at(start).to_int() != 64 || caret > now.length() {
               return
@@ -566,6 +630,7 @@ fn refs_pasted(src : Source, key : String, input : @ui.Field, here : String, pas
             return
           }
           if history == "" {
+            refs_kept_put(mark, station)
             place(mark)
             return
           }
@@ -582,7 +647,12 @@ fn refs_pasted(src : Source, key : String, input : @ui.Field, here : String, pas
           (src.call)(
             "chat.refs",
             { "links": [[Json::string(mark.clamped_view(start=2, end=mark.length() - 1).to_owned()), Json::string(page)]] },
-            fn(r) { if r is Ok(_) { place(mark) } },
+            fn(r) {
+              if r is Ok(_) {
+                refs_kept_put(mark, station)
+                place(mark)
+              }
+            },
           )
         },
       )
@@ -608,13 +678,13 @@ pub fn paste_threshold(c : @ui.Ctx, src : Source) -> Int {
     c.tell("refs/paste-bound", fn() {
       (src.call)("paste.info", { "text": Json::string("") }, fn(r) {
         match r {
-          Ok(v) => paste_bound.val = number(Some(v), "threshold").to_int()
+          Ok(v) => paste_bound.set(number(Some(v), "threshold").to_int())
           Err(_) => paste_bound_asked.val = false
         }
       })
     })
   }
-  paste_bound.val
+  paste_bound.get()
 }
 
 ///|

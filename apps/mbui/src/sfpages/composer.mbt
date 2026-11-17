@@ -332,12 +332,10 @@ pub fn composer(
   // nothing sent)
   let ready_now = fn() { (w.ready.get() || (w.field.text().trim() != "" && !w.starting.get())) && !spec.locked }
   let ready = ready_now()
-  // sent once what it refers to can be read in this workspace (sfbase's outside.mbt): at once when
-  // it refers to nothing of another workspace, else once the viewer has said so (outside.mbt's dialog)
-  @sfbase.sharing_go(w.key)
   let quote_had = quote_has_focus(c, w)
-  // (asked again as send is pressed, of the field: words typed since this build, a frame not drawn yet, told to the
-  // core first and go with it)
+  // (asked again as send is pressed or Enter taken, of the field: words typed since this build, a frame not drawn yet,
+  // told to the core first and go with it; sent once what it refers to can be read in this workspace, sfbase's
+  // outside.mbt: at once when it refers to nothing of another workspace, else as the core or the viewer says so)
   let submit = fn() {
     if ready_now() {
       writing_text(src, w, w.field.text())
@@ -867,6 +865,16 @@ fn composer_text(
             composing.typed = true
           }
         },
+        // (Enter giving them up: sent as it is taken, outside the build, as send's press is (send_button), never left
+        // for the build to read; they stay in the field until they go)
+        on_submit=fn(words) {
+          if !w.starting.get() && !(spec.draft.has_prefix("new:") && @sfbase.fresh.starting.get()) {
+            if words != w.text.get() {
+              writing_text(src, w, words)
+            }
+            submit()
+          }
+        },
       )
       match res.pasted {
         Some(words) => @sfbase.writing_paste(src, w, spec.station, words)
@@ -874,22 +882,12 @@ fn composer_text(
       }
       // `@` and a few letters: the chats they find over the composer (Enter picks one there)
       let menu = ref_menu(c, src, spec, w, cap, res.focused)
-      match res.submitted {
-        // (they stay in the field until they go)
-        Some(words) => if !w.starting.get() && !(spec.draft.has_prefix("new:") && @sfbase.fresh.starting.get()) {
-          if words != w.text.get() {
-            writing_text(src, w, words)
-          }
-          submit()
-        }
-        None =>
-          if res.text != w.text.get() && !w.starting.get() {
-            writing_text(src, w, res.text)
-            warm(c, src, spec)
-          } else if composing.typed {
-            composing.typed = false
-            warm(c, src, spec)
-          }
+      if res.text != w.text.get() && !w.starting.get() {
+        writing_text(src, w, res.text)
+        warm(c, src, spec)
+      } else if composing.typed {
+        composing.typed = false
+        warm(c, src, spec)
       }
       // nothing typed: ↑ ↓ the chat above or below, as the list shows them now, each as it comes, before the field
       // sees it (Ctx::on_key: what is typed then, whether the chat beside is held then)
@@ -1063,7 +1061,13 @@ fn send_button(c : @ui.Ctx, ready : Bool, starting : Bool, submit : () -> Unit) 
 
 ///|
 /// A quote's comment, laid out and drawn the same in the composer and as its card sets out.
-fn quote_comment_field(c : @ui.Ctx, key : String, f : @ui.Field, hint? : Bool = true) -> @ui.EditorResult {
+fn quote_comment_field(
+  c : @ui.Ctx,
+  key : String,
+  f : @ui.Field,
+  hint? : Bool = true,
+  on_submit? : (String) -> Unit,
+) -> @ui.EditorResult {
   c.editor(
     key,
     placeholder=@sf.t("web-main.quote.commentPlaceholder"),
@@ -1075,6 +1079,7 @@ fn quote_comment_field(c : @ui.Ctx, key : String, f : @ui.Field, hint? : Bool = 
     placeholder_color=if hint { @sf.theme().p.subtle } else { 0L },
     caret_color=@sf.theme().p.accent,
     field=f,
+    on_submit?,
   )
 }
 
@@ -1165,12 +1170,10 @@ fn composer_extra_items(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writ
               }
             }),
             comment_field=fn() {
-              let res = quote_comment_field(c, key, f)
+              // (Enter in it: the words' field given the focus, as it is taken)
+              let res = quote_comment_field(c, key, f, on_submit=fn(_) { c.focus_field(w.field) })
               if res.text != text(v, "comment") {
                 writing_comment(src, w, id, res.text)
-              }
-              if res.submitted is Some(_) {
-                c.focus_field(w.field)
               }
             },
           )

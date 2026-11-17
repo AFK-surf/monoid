@@ -33,6 +33,13 @@ import { walked, walkingAs, work } from "./work.ts";
 
 export const COALESCE_MS = 50;
 export const EVICT_AFTER_MS = 60_000;
+/// Topics of words typed (the `@` menu's, a search's): one let go of before the last of its kind is not made again till
+/// it is asked again (#flushOf).
+export const ASKED_BY_WORDS: ReadonlySet<string> = new Set(["chatSearch", "search"]);
+/// A topic of words typed by its kind: its name and where it looks.
+function wordsKind(topic: Topic): string {
+  return `${topic.topic}\u0001${String(topic.scope ?? "")}`;
+}
 /// How many values let go of keeping them (`keep`) are remembered for a client (#kept), the least recently let go of
 /// forgotten first: the app keeps the lists its places open on, a workspace's eight or so, its last 8 chats, and the
 /// read-only topics of the pages, panels and cards it opened lately (apps/mbui/src/sfbase/source.mbt `topic_kept`,
@@ -171,6 +178,8 @@ export class Store {
   readonly #kept = new Map<ClientId, Map<string, { ok: unknown; v: string }>>();
   #source: Source | null = null;
   #idleCount = 0;
+  /// The topic of words typed let go of last, of each kind (wordsKind): kept made as any topic is (#flushOf).
+  readonly #wordsLetGo = new Map<string, string>();
   #watchCount = 0;
   #firstPending = new Map<string, Entry>();
   #updatesPending = new Map<string, Entry>();
@@ -415,6 +424,7 @@ export class Store {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry || entry.subscribers.length > 0 || entry.watchers.length > 0 || entry.usage.hasSubscribers()) return;
     entry.idle = idle;
+    if (ASKED_BY_WORDS.has(topic.topic)) this.#wordsLetGo.set(wordsKind(topic), topicKey(topic));
     this.runner.fork(laterSleep(EVICT_AFTER_MS).pipe(Effect.andThen(Effect.sync(() => this.#evict(topic, idle)))));
   }
 
@@ -750,6 +760,16 @@ export class Store {
   #flushOf(topic: Topic): void {
     const entry = this.#topics.get(topicKey(topic));
     if (!entry) return;
+    if (entry.idle !== null && entry.stale && ASKED_BY_WORDS.has(topic.topic) && this.#wordsLetGo.get(wordsKind(topic)) !== topicKey(topic)) {
+      // Let go of, of words typed, other words let go of since: made again only as it is asked again (subscribe:
+      // outputDirty), never meanwhile; the words let go of last are kept as any topic is, for the page that comes back
+      // to them. Each letter typed in the `@` menu left a `chatSearch` of every workspace's chats, made again at every
+      // change of any chat for a minute, one after another on the core's one thread (in Hermes, at a workspace of
+      // thousands of chats, seconds a change: a new chat's send waited behind them, 2026-11-17).
+      entry.emitScheduled = false;
+      entry.outputDirty = true;
+      return;
+    }
     entry.emitScheduled = false;
     const stale = entry.stale;
     entry.stale = false;
