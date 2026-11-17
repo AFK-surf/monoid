@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9cc460c07](https://github.com/AFK-surf/monoid/commit/9cc460c078d346956000a18aeb25b2d101be646d) mbui: reuse each layout tree on its own pixel grid | 2.57 | 3.63 | 15.18 | 36.31 | 58.04 | 32.51 | 68.98 | 96.26 | 115.92 |
 | [7ea31c7e4](https://github.com/AFK-surf/monoid/commit/7ea31c7e4681f5ba1f74094658295c348aada469) Farview Stage 7: the app's tab draws native select | 2.56 | 3.62 | 15.18 | 36.31 | 58.03 | 32.51 | 68.98 | 96.26 | 123.94 |
 | [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 2.57 | 3.64 | 15.96 | 37.31 | 63.51 | 32.51 | 68.98 | 96.26 | 123.8 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 2.57 | 3.64 | 15.96 | 37.31 | 63.5 | 32.51 | 68.98 | 96.26 | 117.52 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2f266eaa](https://github.com/AFK-surf/monoid/commit/e2f266eaa7003268079c73aef00655862446d1c1) station: a rig's mesh that stops is started again  | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.34 | 68.4 | 96.03 | 124.92 |
 | [0ab86934d](https://github.com/AFK-surf/monoid/commit/0ab86934d4fd3cfe37753c513f423cdbf1b7224f) station/mb: Farview's release the TypeScript's aga | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.34 | 68.4 | 96.03 | 124.92 |
 | [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
-| [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 2.54 | 3.58 | 15.67 | 36.99 | 62.08 | 32.09 | 67.5 | 96.04 | 126.39 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [9cc460c07](https://github.com/AFK-surf/monoid/commit/9cc460c078d346956000a18aeb25b2d101be646d) mbui: reuse each layout tree on its own pixel grid | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.64 |
 | [7ea31c7e4](https://github.com/AFK-surf/monoid/commit/7ea31c7e4681f5ba1f74094658295c348aada469) Farview Stage 7: the app's tab draws native select | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [319f56e71](https://github.com/AFK-surf/monoid/commit/319f56e71cc8f72ea1f6319aef10d5aff0381166) core: only the opener is reminded of a long-runnin | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
 | [50c369b3a](https://github.com/AFK-surf/monoid/commit/50c369b3a932b2457cb0b15f22497a1a58ce1d92) mbui: pick and structured compiled once, not once  | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [e2f266eaa](https://github.com/AFK-surf/monoid/commit/e2f266eaa7003268079c73aef00655862446d1c1) station: a rig's mesh that stops is started again  | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.51 |
 | [0ab86934d](https://github.com/AFK-surf/monoid/commit/0ab86934d4fd3cfe37753c513f423cdbf1b7224f) station/mb: Farview's release the TypeScript's aga | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.53 |
 | [0916809b7](https://github.com/AFK-surf/monoid/commit/0916809b7b4e3b73463609f1833d79dcfc5175b3) mbui: a picture or a film flown from its thumbnail | 0.43 | 0.56 | 2.16 | 3.26 | 5.16 | 1.58 | 4.25 | 53.53 |
-| [85cb4b40c](https://github.com/AFK-surf/monoid/commit/85cb4b40cb2b7e121e5d5019609650f1c569f41b) mbui: liquid glass lit where the pointer is, seen  | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.58 | 4.23 | 53.48 |
