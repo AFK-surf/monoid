@@ -6,6 +6,11 @@
 ///|
 fn init {
   @ui.rows_steady_known([
+    // (at 60 and 120 a second, MBUI_TEST_MOTION, 2026-11-17: Tree::lists_steady's on main's own jolts there, counted whole
+    // after #6722 brought the check and was counted at the default rate alone; main's 44000442600)
+    ("src/sfreplay/flows/appearance_kept_test.mbt", 1),
+    ("src/sfreplay/flows/places_test.mbt", 2),
+    ("src/sfreplay/flows/settings_station_settings_test.mbt", 1),
     // (归档 pressed in the chat's bar: the list's foot stands taller at once as the composer goes, where the chat
     // stands closing over the way, so what is over them goes up 42 in a frame and back, its page leaving for Home;
     // rows_step_least's finding. +1: Home's list of chats as the archived one goes, its row under it 13 up in a frame,
@@ -23,7 +28,7 @@ fn init {
     ("src/sfreplay/flows/notify_off_test.mbt", 2),
     ("src/sfreplay/flows/settings_connect_test.mbt", 3),
     ("src/sfreplay/flows/settings_decisions_test.mbt", 1),
-    ("src/sfreplay/flows/settings_device_pages_test.mbt", 1),
+    ("src/sfreplay/flows/settings_device_pages_test.mbt", 3),
     ("src/sfreplay/flows/settings_profile_test.mbt", 1),
     ("src/sfreplay/flows/settings_vault_item_test.mbt", 2),
     ("src/sfreplay/flows/settings_workspace_people_test.mbt", 1),

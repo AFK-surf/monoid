@@ -4416,9 +4416,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
                 // what flies to it going with it: Tree::rides_said_way)
                 let (a, b, _, _) = flip_drawn(k, slot)
                 // (within a pixel of the host's of where it rests: there, as a row on its grid is at its rest before its
-                // way ends, never past it)
+                // way ends, never past it; how far off it its way has it kept for what grows in it on the same way,
+                // Node's near_rest)
                 let g = self.tree.rows_grid_now()
                 let near = if g > 0.0 { 1.0 / g } else { 0.0 }
+                self.tree.nodes[slot.at].near_rest = if b.abs() < near { b } else { 0.0 }
                 (if a.abs() < near { 0.0 } else { a }, if b.abs() < near { 0.0 } else { b })
               }),
               exact=true,

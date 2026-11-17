@@ -2,18 +2,6 @@
 // it is held): a row over or under what is read changing height, and at the end.
 // A file of its own: the rule's eighteen blocks in one process did not end in a CI job's five minutes at 120 a second.
 
-///|
-/// How far the end may move, in points, where it is known to move more than half a device pixel (rs_still): a bar that
-/// only falls, and goes with the fix. 2026-11-17 (#6722, the owner: 「先合，这项另开 PR 修」): the last row told longer
-/// moves its last line over the composer while the list's flip runs (~250 ms), ±0.2 to 0.4 pt on 小屏, 0.3 at most
-/// on 大屏 (at 120 frames a second): the row's top is
-/// laid at device pixels as it moves while its words' height scales without, the two at odds by under a pixel; at
-/// rest it is where main's is (0.2 pt off there too). To be fixed in the list's flip and this entry taken out.
-let rs_end_known : Map[String, Double] = {
-  "小屏 the last row told longer": 0.5,
-  "大屏 the last row told longer": 0.5,
-}
-
 // ---------------------------------------------------------------------------------------------------------------------
 // 3. A row over or under what is read changing height
 
@@ -92,13 +80,7 @@ fn rs_rows_grow_end(s : (String, Double, Double, Int)) -> Array[String] {
   )
   rs_push(
     broken,
-    rs_end_held(
-      t,
-      k,
-      "\{s.0}: the last row (第\{last}条) told longer",
-      fn() { rs_told(k, fn() { k.grown.push(last) }) },
-      still=rs_end_known.get("\{s.0} the last row told longer").unwrap_or(rs_still),
-    ),
+    rs_end_held(t, k, "\{s.0}: the last row (第\{last}条) told longer", fn() { rs_told(k, fn() { k.grown.push(last) }) }),
   )
   rs_told(k, fn() { k.carded[last - 1] = false })
   rs_rest(t, long_rest_ms * 2.0)

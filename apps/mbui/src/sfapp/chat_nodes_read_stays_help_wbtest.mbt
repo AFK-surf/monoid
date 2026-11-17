@@ -405,7 +405,6 @@ fn rs_held(
   what : String,
   read : () -> Double?,
   cause : () -> Unit,
-  still? : Double = rs_still,
 ) -> String? {
   guard read() is Some(was) else { return Some("\{what}: nothing read before the cause") }
   let seen : Array[(Double, Double?)] = []
@@ -424,7 +423,7 @@ fn rs_held(
       None => if gone is None { gone = Some(f.0) }
       Some(y) => {
         let d = y - was
-        if d.abs() > still {
+        if d.abs() > rs_still {
           off += 1
           if first_at is None {
             first_at = Some(f.0)
@@ -486,14 +485,8 @@ fn rs_read_held(
 
 ///|
 /// The end (rs_end_gap's) held as `cause` happens, said as `what`.
-fn rs_end_held(
-  t : @ui.Tester,
-  k : RsCore,
-  what : String,
-  cause : () -> Unit,
-  still? : Double = rs_still,
-) -> String? {
-  rs_held(t, k, "\{what} (at the end)", fn() { rs_end_gap(t) }, cause, still~)
+fn rs_end_held(t : @ui.Tester, k : RsCore, what : String, cause : () -> Unit) -> String? {
+  rs_held(t, k, "\{what} (at the end)", fn() { rs_end_gap(t) }, cause)
 }
 
 ///|

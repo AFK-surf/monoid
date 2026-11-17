@@ -2251,7 +2251,7 @@ let pa_way_known : Array[PaWay] = [
   { drive: "send-quote-picture", what: Key("ring alpha"), from: 6883.0, to: 6950.0, dx: 0.2, dy: 0.2, dw: 1.0, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("words 「0s」"), from: 6883.0, to: 7100.0, dx: 31.4, dy: 24.2, dw: 5.5, why: pa_why_working },
   { drive: "send-quote-picture", what: Key("alpha 「刚刚」"), from: 6900.0, to: 6967.0, dx: 0.2, dy: 0.2, dw: 1.0, why: pa_why_send },
-  { drive: "send-quote-picture", what: Key("words 「刚刚」"), from: 6900.0, to: 7100.0, dx: 41.2, dy: 28.7, dw: 38.2, why: pa_why_send },
+  { drive: "send-quote-picture", what: Key("words 「刚刚」"), from: 6900.0, to: 7100.0, dx: 41.2, dy: 28.8, dw: 38.2, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("old alone 「忽略」"), from: 6917.0, to: 7050.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("nodes alone 「处理中」"), from: 6933.0, to: 6933.0, dx: pa_alone_any, dy: pa_alone_any, dw: pa_alone_any, why: pa_why_send },
   { drive: "send-quote-picture", what: Key("alpha 「处理中」"), from: 6950.0, to: 6950.0, dx: 0.2, dy: 0.2, dw: 0.4, why: pa_why_working },

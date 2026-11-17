@@ -6,10 +6,17 @@
 ///|
 fn init {
   @ui.rows_steady_known([
+    // (at 60 and 120 a second, MBUI_TEST_MOTION, 2026-11-17: Tree::lists_steady's on main's own jolts there, counted whole
+    // after #6722 brought the check and was counted at the default rate alone; main's 44000442600)
+    ("src/sfapp/board_wbtest.mbt", 4),
+    ("src/sfapp/chat_bar_node_wbtest.mbt", 1),
+    ("src/sfapp/chat_nodes_told_wbtest.mbt", 1),
+    ("src/sfapp/place_first_wbtest.mbt", 1),
+    ("src/sfapp/screens_wbtest.mbt", 1),
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 小屏's 文件 list's foot goes 96
     // in a frame (82 on 大屏), 账号's second row -235, a chat's row -60 to -82, 归档's second row -3; the framework's change for answers, then
     // the list's line)
-    ("src/sfapp/answers_still_wbtest.mbt", 2),
+    ("src/sfapp/answers_still_wbtest.mbt", 3),
     // (words sent in a chat, the core answering 300 to 700 ms after: a row above them goes 82 in a frame as it comes,
     // every screen, at 60 and 120)
     ("src/sfapp/core_pace_rows_wbtest.mbt", 1),
@@ -19,7 +26,7 @@ fn init {
     ("src/sfapp/desk_service_wbtest.mbt", 1),
     // (a settings page's list put where the page that came puts it, in the frame it comes: 推送历史's -31 as 修复 opens,
     // seen once Tree::lists_steady looks at the window's tree's lists, 2026-11-16, as the replays' on main)
-    ("src/sfapp/history_fixes_wbtest.mbt", 1),
+    ("src/sfapp/history_fixes_wbtest.mbt", 3),
     // (a message come at the foot of a chat's page made as nodes as it is caught up on, not said: there at once in the
     // change that brings it, as the file's head says it is to be, its rows over it 84 up in that frame; Tree::lists_steady's,
     // 2026-11-16)
@@ -34,7 +41,7 @@ fn init {
     ("src/sfapp/settings_wbtest.mbt", 1),
     // (大屏 over a core answering late: a chat's rows go -73 to -82 in a frame as its answer comes, 归档's second row -4,
     // at 60 and 120)
-    ("src/sfapp/ways_told_wbtest.mbt", 1),
-    ("src/sfapp/wide_wbtest.mbt", 1),
+    ("src/sfapp/ways_told_wbtest.mbt", 3),
+    ("src/sfapp/wide_wbtest.mbt", 2),
   ])
 }

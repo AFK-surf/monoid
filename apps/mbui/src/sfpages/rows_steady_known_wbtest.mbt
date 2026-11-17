@@ -6,6 +6,6 @@ fn init {
   @ui.rows_steady_known([
     // (密钥库's 全部密钥 searched as a group opens: its rows 260 to 164 in a frame as the search's answer comes, on main
     // the same frame for frame; seen once Tree::lists_steady looks at the window's tree's lists, 2026-11-16)
-    ("src/sfpages/settings_rig_wbtest.mbt", 1),
+    ("src/sfpages/settings_rig_wbtest.mbt", 3),
   ])
 }

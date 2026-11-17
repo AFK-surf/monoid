@@ -688,6 +688,12 @@ struct Node {
   /// goes (View::flip_in): how far down off where it is laid out (against what holds it), how much shorter its own
   /// ground is drawn, how big it is drawn from its top (1 whole), how opaque of that
   mut flip_in : (Double, Double, Double, Double)
+  /// a page's list's row: how far the last walk of the drawn put it to be on the host's grid (Tree::each_drawn_in_order),
+  /// taken back from what in it is drawn grown from its top on a way (flip_in's), which is on no grid
+  mut grid_put : Double
+  /// a page's list's row on its way within a pixel of where it rests, drawn there (its list's, `flips`): how far off it
+  /// its way has it, kept for what in it grows from its top on the same way (grid_put)
+  mut near_rest : Double
   /// when that move is over at the size it is laid out, where it holds what is leaving that holds it till then
   /// (View::moved_by's `holds_leaving`)
   mut moved_holds : ((Double, Double) -> Double)?
@@ -2072,6 +2078,8 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         moved_by: None,
         moved: (0.0, 0.0),
         flip_in: (0.0, 0.0, 1.0, 1.0),
+        grid_put: 0.0,
+        near_rest: 0.0,
         moved_holds: None,
         moved_ends: None,
         content: None,
@@ -5712,6 +5720,26 @@ fn Tree::rows_laid_y(self : Tree, at : Int) -> Double {
 /// (list_three_paths_test).
 pub fn row_on_grid(y : Double, g : Double) -> Double {
   (y * g).round() / g
+}
+
+///|
+/// Node `at`'s row in the page's list whose rows' holder is `rows_at` in the drawn order (Node's grid_put), and the
+/// lowest top, as drawn in the walk whose tops are `wy`, of what cuts it on the way up to that row (the row's own
+/// among them, where it cuts): what it is in a row of, -1 where it is in none.
+fn Tree::grid_row_of(self : Tree, at : Int, rows_at : Int, wy : FixedArray[Double]) -> (Int, Double) {
+  let mut top = @double.neg_infinity
+  let mut i = self.nodes[at].parent
+  while i >= 0 {
+    let o = self.order_of[i]
+    if o >= 0 && self.nodes[i].look.clips && wy.unsafe_get(o) > top {
+      top = wy.unsafe_get(o)
+    }
+    if o >= 0 && self.order_holder[o] == rows_at {
+      return (i, top)
+    }
+    i = self.nodes[i].parent
+  }
+  (-1, top)
 }
 
 ///|
@@ -12277,9 +12305,24 @@ fn Tree::each_drawn_in_order(
       ly = uy.unsafe_get(h) + ly
       // (a page's list's row on its host's pixels, drawn as big as it is laid out: its top the grid's own number for
       // where it is, however it was summed there: row_on_grid)
-      if h == rows_at && s == 1.0 {
-        y = row_on_grid(y, rg)
-        ly = row_on_grid(ly, rg)
+      if h == rows_at {
+        if s == 1.0 {
+          let was = y
+          y = row_on_grid(y, rg)
+          ly = row_on_grid(ly, rg)
+          n.grid_put = y - was - n.near_rest
+        } else {
+          n.grid_put = 0.0
+        }
+      } else if n.flip_in.2 != 1.0 && rows_at >= 0 {
+        // (grown from its top on its block's way (flip_in's): where that way has it, its row's put on the grid taken
+        // back, so that its foot, which the way holds where it is, is not seen to shake by half a pixel as its row is
+        // put on the grid frame by frame against its growth)
+        // (never over the top of what cuts it as it is drawn, its row's or one in it: cut there as it opens)
+        let (r, cut) = self.grid_row_of(self.order.unsafe_get(i), rows_at, wy)
+        if r >= 0 {
+          y = dmax(y - self.nodes[r].grid_put, dmin(y, cut))
+        }
       }
     }
     // (on a flight's way: where the flight has it in the window, nothing that holds it counted, shared.mbt)
@@ -12336,6 +12379,8 @@ pub fn Tree::drawn_one(
   }
   let g = self.pixel_grid
   let mut rows_kids = false
+  let mut row_put = 0.0
+  let mut cut_y = @double.neg_infinity
   let mut x = 0.0
   let mut y = 0.0
   let mut a = 1.0
@@ -12375,8 +12420,20 @@ pub fn Tree::drawn_one(
       lx = ux + lx
       ly = uy + ly
       if rows_kids && ns == 1.0 {
+        let was = ny
         ny = row_on_grid(ny, self.rows_grid)
         ly = row_on_grid(ly, self.rows_grid)
+        row_put = ny - was - n.near_rest
+        cut_y = @double.neg_infinity
+      } else if rows_kids {
+        row_put = 0.0
+        cut_y = @double.neg_infinity
+      } else if n.flip_in.2 != 1.0 {
+        // (as Tree::each_drawn_in_order: its row's put on the grid taken back, never over what cuts it)
+        ny = dmax(ny - row_put, dmin(ny, cut_y))
+      }
+      if n.look.clips && ny > cut_y {
+        cut_y = ny
       }
     }
     // (what it holds a page's list's rows on the grid, as the walk finds them (a slot is in no order: what it holds is
