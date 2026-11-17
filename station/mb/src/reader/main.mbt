@@ -883,6 +883,8 @@ fn main {
         { "thread": Number(thread, ..), .. } => Some(@lookups.people_step(db, thread.to_int64()))
         _ => None
       }))
+    (Some("harness-feishu"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @feishu.harness(host))
     (Some("harness-move-coord"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @move_coord.harness(host))
     (Some("harness-store-threads"), Some(db), _) =>
