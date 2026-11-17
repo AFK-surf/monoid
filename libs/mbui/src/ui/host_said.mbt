@@ -5,7 +5,8 @@
 // solid glass, what decodes a stream, the window's buttons in the top row, the window maximized and how the pointer
 // stands on its maximize button the app draws): each asked of the host as each frame begins
 // (host_settings_arrive), and as it is asked between frames. What the frame is drawn on (the window's size, its pixels,
-// what the host measures words in, where the old views are laid out): as frame_drawn begins it (frame_settings_arrive).
+// where the old views are laid out): as frame_drawn begins it (frame_settings_arrive); what the host measures words in,
+// before the window's tree is brought (on_frame's text_arrive).
 
 ///|
 /// A setting of the host's: its signal (as the frame has it), how it is asked of the host, what else is told as it
@@ -158,13 +159,12 @@ let window_size : Ref[@signals.Signal[(Double, Double)]] = Ref(@signals.signal((
 let pixel_grid : Ref[@signals.Signal[(Double, Bool)]] = Ref(@signals.signal((0.0, false), same=fn(a, b) { a == b }))
 
 ///|
-/// What the frame is drawn on, as it begins (frame_drawn): the window `w` × `h` at `scale`; what the host measures words
-/// in (its glyphs' generation: text_arrive); where the old views are laid out (old_laid_arrive).
+/// What the frame is drawn on, as it begins (frame_drawn): the window `w` × `h` at `scale`; where the old views are laid
+/// out (old_laid_arrive). What the host measures words in (its glyphs' generation: text_arrive) was taken as the frame
+/// began, before the window's tree was brought (on_frame), and asked of the host that once.
 fn frame_settings_arrive(w : Double, h : Double, scale : Double) -> Unit {
   window_size.val.set((w, h))
   pixel_grid.val.set((scale, whole_px_layout()))
-  atlas_said.val = Some(h_atlas_generation())
-  text_arrive()
   old_laid_arrive()
 }
 

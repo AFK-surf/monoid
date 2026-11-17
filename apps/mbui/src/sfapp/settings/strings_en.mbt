@@ -2059,6 +2059,8 @@ let en : Map[String, String] = {
   "web-pages.experimental.enabledCount": "{n} on",
   "web-pages.experimental.chatPage.title": "Try the new chat page",
   "web-pages.experimental.chatPage.description": "A new message list where what you read stays put; turn it off anytime to switch back",
+  "web-pages.experimental.composerNodes.description": "The new chat page's composer, made anew; needs the new chat page on too. Still being finished: turn it off anytime",
+  "web-pages.experimental.composerNodes.title": "Try the new composer",
   "web-pages.experimental.farviewNative.title": "Native Farview tab rendering",
   "web-pages.experimental.farviewNative.description": "Draw Farview browser tabs directly on this device for instant scrolling and typing; turn it off anytime to switch back to screenshots",
   "web-pages.experimental.board.title": "Board view for chats",

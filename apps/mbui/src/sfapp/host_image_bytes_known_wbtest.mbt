@@ -12,6 +12,9 @@ fn init {
     // (every screen's switches pressed over a core answering late, its pictures among them: what Studio's run held at
     // most, 2026-11-14)
     ("src/sfapp/switches_still_wbtest.mbt", 2906925),
+    // (chats switched on 中屏 and 大屏, the first one read up from its end to its pictures: what Studio's runs held at most
+    // at every rate, 2026-11-16)
+    ("src/sfapp/switch_still_wbtest.mbt", 127704),
     ("src/sfapp/chat_bar_wide_wbtest.mbt", 89156),
     ("src/sfapp/chat_drive_parity_wbtest.mbt", 300978),
     ("src/sfapp/chat_images_told_wbtest.mbt", 57845),

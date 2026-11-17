@@ -241,7 +241,7 @@ fn sheet_node(
       offers_layer_lend(layer)
       // (how far its scrim is in; how far below its place it is, in its own heights; how far a finger has its top down)
       // (in another's place: its scrim whole from the first, where that one stood, not below)
-      let dim = EdgeWay::new(if in_place is Some(_) { 1.0 } else { 0.0 })
+      let dim = @motion.NodeWay::new(if in_place is Some(_) { 1.0 } else { 0.0 })
       let below = SheetRise::new()
       // (its box, once it is made: how tall it is as a way is said)
       let sheet_box : Ref[@view.View?] = Ref(None)
@@ -323,11 +323,11 @@ fn sheet_node(
           placed_ms(0.0, own, stood, least)
         }
       }
-      let back = EdgeWay::new(0.0)
+      let back = @motion.NodeWay::new(0.0)
       // (one that grows (`grows`): how tall it is where it was dragged or tapped to another height, or a finger has it;
       // as tall as what it holds till then)
       let sized = @signals.signal(false)
-      let tall = EdgeWay::new(0.0)
+      let tall = @motion.NodeWay::new(0.0)
       let tall_held : @signals.Signal[Double?] = @signals.signal(None)
       // (closed with another in its place: drawn no more)
       let vanished = fn() { layer.leaving() && taken() }
@@ -519,7 +519,7 @@ fn sheet_node(
       layer.reacts(fn() { layer.leaving() }, fn(going) {
         if going {
           gate.stop()
-          dim.go(layer, 0.0, @kit.sheet_scrim_ms, ease=Out)
+          dim.go_ms(layer, 0.0, @kit.sheet_scrim_ms, ease=Out)
           // (closed on its way from as tall as it stood: it sinks away from where it is seen then, as fast as it went)
           let carried_off = carried()
           let inset = if had_ime.val { @signals.untracked(fn() { layer.keyboard_inset() }) } else { 0.0 }
@@ -530,7 +530,7 @@ fn sheet_node(
           let rise = fn() {
             // (how tall it rises, for a sheet under it to step back out of its way: covered_by's there)
             rises(own_now())
-            dim.go(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
+            dim.go_ms(layer, 1.0, @kit.sheet_scrim_ms, ease=Out)
             below.go(sheet_box, layer, 0.0, reach.untracked(), late=@signals.untracked(fn() { top().nodes is None }))
           }
           if in_place is Some(_) {
@@ -542,7 +542,7 @@ fn sheet_node(
       })
       // (a sheet over it: it steps back, as far up as that one's height makes it (push_of), its veil over it as far as
       // it has gone, on a Move as far as it goes; that one gone, back down from there, as the host's (present_sheet))
-      let recede = EdgeWay::new(0.0)
+      let recede = @motion.NodeWay::new(0.0)
       let pushed = @signals.signal(0.0)
       layer.reacts(covered_by, fn(h) {
         match h {
@@ -550,7 +550,7 @@ fn sheet_node(
           None => ()
         }
         let way = dmax(pushed.untracked(), 1.0)
-        recede.go_by(layer, if h is Some(_) { 1.0 } else { 0.0 }, @motion.moved(points=way))
+        recede.go(layer, if h is Some(_) { 1.0 } else { 0.0 }, @motion.moved(points=way))
       })
       |> ignore
       // (its title and what it says as they are now, `live`'s where it says them, as the host's sheet heads a panel:
@@ -851,7 +851,7 @@ fn sheet_node(
                   // (a tap on its grabber, its top 30: to the other end)
                   if d.oy < sheet_grab_tap {
                     let (lo, hi) = (sheet_grows_to[0], sheet_grows_to[1])
-                    tall.go_by(sheet, if at > (lo + hi) / 2.0 * total { lo * total } else { hi * total }, @motion.moved())
+                    tall.go(sheet, if at > (lo + hi) / 2.0 * total { lo * total } else { hi * total }, @motion.moved())
                   }
                 } else if @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below) is None {
                   // (sinking away from where it is, as fast as it was going down)
@@ -860,7 +860,7 @@ fn sheet_node(
                 } else {
                   let f = @kit.sheet_goes_to(sheet_grows_to, at, speed, total, sheet_close_below).unwrap_or(sheet_grows_to[0])
                   // (its height, up: its speed the other way, a second's)
-                  tall.go_by(sheet, f * total, @motion.moved(), velocity=-speed * 1000.0)
+                  tall.go(sheet, f * total, @motion.moved(), velocity=-speed * 1000.0)
                 }
               }
             }
@@ -880,7 +880,7 @@ fn sheet_node(
                   cancel()
                 } else {
                   // (back from its speed, a second's)
-                  back.go_by(layer, 0.0, @motion.moved(), velocity=speed * 1000.0)
+                  back.go(layer, 0.0, @motion.moved(), velocity=speed * 1000.0)
                 }
               }
             }

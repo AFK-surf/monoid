@@ -1057,8 +1057,11 @@ pub let stations_slow_ms : Double = 1200.0
 
 ///|
 /// The new chat's topics, None for any other.
-pub fn fixture_new_topic(f : Fixture, name : String) -> Json? {
+pub fn fixture_new_topic(f : Fixture, name : String, scope? : String = "") -> Json? {
   match name {
+    // (another workspace's: one with no station, as its stations are (none but ws1's): its first to add, never ws1's
+    // Willow and its model, a page that names what that workspace has not)
+    "newChat" if scope != "" && scope != "ws1" => Some({ "stations": [], "any": false })
     "newChat" => Some(fix_new_chat(f))
     "pick" => Some(fix_pick())
     _ => None

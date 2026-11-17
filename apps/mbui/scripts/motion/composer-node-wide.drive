@@ -1,0 +1,11 @@
+# A chat on a computer (MBUI_FIXTURE=webdemo MBUI_WIN=1280x800): its composer with the cursor in it as the chat
+# comes, words written in it (sfpages' composer_node with MBUI_CHAT_PAGE=composed, the old view's with
+# MBUI_CHAT_PAGE=nodes).
+timeout 20000
+until 新建对话
+wait 600
+tap 把那个弄一下
+wait 900
+type 帮我看一下登录按钮
+wait 900
+exit

@@ -16,7 +16,6 @@ fn init {
     "src/sfapp/duo_wbtest.mbt",
     "src/sfapp/emit_kept_wbtest.mbt",
     "src/sfapp/emit_wbtest.mbt",
-    "src/sfapp/home_wbtest.mbt",
     "src/sfapp/kept_rows_kinds_wbtest.mbt",
     "src/sfapp/menu_node_wbtest.mbt",
     "src/sfapp/motion_wbtest.mbt",

@@ -61,6 +61,9 @@ pub fn[K : Hash + Eq, V] keyed_list(same? : (V, V) -> Bool) -> KeyedList[K, V]
 
 pub fn last_set_at() -> String
 
+#callsite(autofill(loc))
+pub fn[K : Eq, V : Eq] memo(() -> K, (K) -> V, same_in? : (K, K) -> Bool, same? : (V, V) -> Bool, loc~ : SourceLoc) -> Computed[V]
+
 pub fn rest(ReactiveNode) -> () -> Unit
 
 pub fn set_active_sub(ReactiveNode?) -> ReactiveNode?

@@ -238,7 +238,7 @@ pub fn open_drive_fixture(mode : String) -> Unit {
             root: @sffixture.fix_docs,
             dir: "",
             name: @signals.signal(name),
-            bytes: Bytes::new(size),
+            bytes: Bytes::make(size, b'\x00'),
             sent: @signals.signal(sent),
             state: @signals.signal(state),
             error: @signals.signal(error),
@@ -401,8 +401,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
   // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
-  // lock-needs-app-security (its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" {
+  // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
@@ -897,9 +897,9 @@ fn open_share_fixture(mode : String) -> Unit {
     "share-in-files" => {
       share_in.shared.set(Some(("", None)))
       share_in.files.set([
-        { name: "home-after.png", bytes: Bytes::new(182345), image: @sffixture.fixture_file("home-after.png") },
-        { name: "compare.png", bytes: Bytes::new(96512), image: @sffixture.fixture_file("compare.png") },
-        { name: "季度数据.csv", bytes: Bytes::new(23110), image: "" },
+        { name: "home-after.png", bytes: Bytes::make(182345, b'\x00'), image: @sffixture.fixture_file("home-after.png") },
+        { name: "compare.png", bytes: Bytes::make(96512, b'\x00'), image: @sffixture.fixture_file("compare.png") },
+        { name: "季度数据.csv", bytes: Bytes::make(23110, b'\x00'), image: "" },
       ])
       share_in.env_taken.set(true)
     }

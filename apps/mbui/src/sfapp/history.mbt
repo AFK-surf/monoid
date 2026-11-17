@@ -284,7 +284,7 @@ fn agent_tiles_node(v : @view.View, card : () -> Json?, top : Double) -> Unit {
           (if context() is Some(Object(_)) { 1 } else { 0 })
         let w = given.width()
         if n > 0 && w > 0.0 {
-          dmax(0.0, (w - 8.0 * Double::from_int(n - 1)) / Double::from_int(n) - 2.0 * @sf.text_in)
+          dmax(0.0, (w - 8.0 * (n - 1).to_double()) / n.to_double() - 2.0 * @sf.text_in)
         } else {
           0.0
         }

@@ -662,8 +662,10 @@ pub fn vault_items_node(
 ///|
 /// What 密钥 and 全部密钥 show before the library, by their keys, as the core's `vaults` (`v`) says where the viewer
 /// stands: the recovery words to write down ("words"); waiting for the core ("waiting"); a web page's names
-/// ("read-only", then "named/<vault>" each); what has to come first ("needs-lock", "not-signer", "off"). None where
-/// the library is there to be used (in plain text on the station, or locked, signed and set up here).
+/// ("read-only", then "named/<vault>" each); what has to come first ("needs-lock", "not-signer", "off"), or, not
+/// signing for another reason than its not being trusted (the core's `stateText`), this device verified once by a press
+/// ("confirm-signer": its `confirmText`) or the members still syncing ("lock-waiting"). None where the library is there
+/// to be used (in plain text on the station, or locked, signed and set up here).
 fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
   // (the words as they are now: read, so that what reads this follows them as they come or go)
   recovery_words_turned.get() |> ignore
@@ -673,6 +675,8 @@ fn vault_first_keys(ws : String, v : Json?) -> Array[String]? {
     Some(_) if flag(v, "plain") => None
     Some(_) if !flag(v, "available") => Some(["read-only"] + items(v, "vaults").map(fn(r) { "named/" + text(Some(r), "id") }))
     Some(_) if !flag(v, "locked") => Some(["needs-lock"])
+    Some(_) if !flag(v, "canSign") && text(v, "confirmText") != "" => Some(["confirm-signer"])
+    Some(_) if !flag(v, "canSign") && text(v, "stateText") != "" => Some(["lock-waiting"])
     Some(_) if !flag(v, "canSign") => Some(["not-signer"])
     Some(_) if !flag(v, "setUp") => Some(["off"])
     Some(_) => None
@@ -704,6 +708,10 @@ fn vault_first_node(
     "read-only" => @sf.page_note_node(b, fn() { @sf.t("android-settings.vault.readOnly") })
     "needs-lock" => vault_gate_node(b, core, "web-pages.vault.needsLock", "web-pages.vault.needsLockWhy")
     "not-signer" => vault_gate_node(b, core, "web-pages.vault.notSigner", "web-pages.vault.notSignerWhy")
+    "confirm-signer" => vault_confirm_node(b, core, ws, view)
+    // (what it waits for, in the core's words, nothing to press: it comes by itself)
+    "lock-waiting" =>
+      @sf.page_card_node(b, fn(k) { @sf.card_lines_node(k, fn() { "" }, words=fn() { text(view().value, "stateText") }) })
     "off" => vault_off_node(b, core, ws)
     k if k.has_prefix("named/") => {
       let id = k.exact_view(start=6).to_owned()
@@ -722,6 +730,28 @@ fn vault_gate_node(b : @view.View, core : Core, title : String, why : String) ->
     @sf.card_lines_node(k, fn() { @sf.t(title) }, note=fn() { @sf.t(why) })
     @sf.card_foot_node(k, fn(f) {
       @sf.button_node(f, fn() { @sf.t("web-pages.vault.toSecurity") }, fn() { (core.push)(Security) }, tone=Primary, card_words=true)
+      |> ignore
+    })
+  })
+}
+
+///|
+/// This device to be verified once before it signs (the core's `stateText`: its signer not said on its person's own
+/// lock), said on a card with 验证 (`confirmText`: `lock.confirmSigner`, the person asked once) at its foot, a ring on it
+/// while that goes.
+fn vault_confirm_node(b : @view.View, core : Core, ws : () -> String, view : () -> @settings.Read) -> Unit {
+  let label = fn() { text(view().value, "confirmText") }
+  @sf.page_card_node(b, footed=true, fn(k) {
+    @sf.card_lines_node(k, fn() { "" }, words=fn() { text(view().value, "stateText") })
+    @sf.card_foot_node(k, fn(f) {
+      @sf.button_node(
+        f,
+        label,
+        fn() { lock_call(core, @signals.untracked(ws), "confirmSigner", @signals.untracked(label), []) },
+        tone=Primary,
+        busy=fn() { is_doing(core, ["lock.confirmSigner"], [("workspace", ws())]) },
+        card_words=true,
+      )
       |> ignore
     })
   })

@@ -17,7 +17,7 @@ fn home_node(v : @view.View, src : Source, tips : @sf.TipLayer, stint : () -> In
     // under the top bar, the status bar's height and its own; over the bottom bar
     top: fn() { status_top_now(v.window().0) + bar_h + 8.0 },
     under: fn() { status_top_now(v.window().0) + bar_h },
-    foot: fn() { nav_foot() + bar_room_now() },
+    foot: fn() { nav_foot() + bar_room_at(v.window().0) },
     ground: fn() { @sf.theme().p.bg },
     // what the update wants of the person, over what the last one brought (until it is seen)
     before: fn(_, _) {

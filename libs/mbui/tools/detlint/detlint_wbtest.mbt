@@ -2689,6 +2689,21 @@ test "raw-effect" {
 }
 
 ///|
+test "pick-loop: in what a switch_by makes, as in a pick's" {
+  // (View::switch_by is a pick at once: what it makes made again as what it switches by changes, the same)
+  let hits =
+    #|fn lanes_node(v : @view.View, ws : () -> String, n : Int) -> Unit {
+    #|  v.switch_by(fn() { ws() }, fn(p, _) {
+    #|    for i in 0..<n {
+    #|      p.box(fn(r) { r.words(Is(i.to_string())) |> ignore }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfpages/lanes_node.mbt", hits)], "pick-loop", 1)
+  assert_eq(lines(fs), [3])
+}
+
+///|
 test "pick-loop" {
   // a loop making nodes as it goes round, in what a pick or a show makes (or in a part made in it, given what to make
   // in): counted, at its `for`
@@ -3158,6 +3173,42 @@ test "manual-fade-way" {
       ("src/stillfail/key_node.mbt", hits),
     ],
     "manual-fade-way",
+    0,
+    cfg~,
+  )
+  |> ignore
+}
+
+///|
+test "page-at-moment" {
+  // a page asking a moment of its own (View::at_moment) outside its tests: counted, at the call
+  let cfg = Config::new(@rjson.parse("{\"pages\": {\"roots\": [\"src/sfdesk\", \"src/sfpages\"]}}"))
+  let hits =
+    #|fn bar_node(v : @view.View, open : () -> Bool) -> Unit {
+    #|  let closing = @signals.signal(false)
+    #|  v.reacts(open, fn(o) {
+    #|    if !o {
+    #|      closing.set(true)
+    #|      v.at_moment(v.cause_at() + 120.0, fn() { closing.set(false) }) |> ignore
+    #|    }
+    #|  })
+    #|}
+  let fs = found([("src/sfdesk/bar_node.mbt", hits)], "page-at-moment", 1, cfg~)
+  assert_eq(lines(fs), [6])
+  // the same in a test, in the library (not a page), excused on its line, and a function of another name: not
+  let excused =
+    #|fn field_node(f : @view.View) -> Unit {
+    #|  // det-ok(page-at-moment): what is typed looked for that much later, the page's own timing
+    #|  f.at_moment(f.cause_at() + 120.0, fn() {  }) |> ignore
+    #|  f.at_moments(1.0) |> ignore
+    #|}
+  found(
+    [
+      ("src/sfdesk/bar_node_wbtest.mbt", hits),
+      ("src/sf/bar_node.mbt", hits),
+      ("src/sfpages/field_node.mbt", excused),
+    ],
+    "page-at-moment",
     0,
     cfg~,
   )
