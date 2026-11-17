@@ -17,6 +17,11 @@ use crate::data::{Config, write_whole};
 /// The MCP endpoint's socket, per the config: unnamed, the port remembered first, then the usual one (`own`: the
 /// machine's data directory), then any. The port it got is remembered.
 pub fn mcp(data: &Path, config: &Config, own: bool) -> Result<TcpListener, String> {
+    mcp_with(data, config, own, |port| TcpListener::bind(("127.0.0.1", port)))
+}
+
+/// `mcp`, its ports bound with `bind` (a test's, for a port no other program can take meanwhile).
+fn mcp_with(data: &Path, config: &Config, own: bool, bind: impl FnMut(u16) -> std::io::Result<TcpListener>) -> Result<TcpListener, String> {
     let what = if config.english { "the agents' MCP endpoint" } else { "agent 的 MCP 端点" };
     let port = config.port;
     let taken = || {
@@ -29,7 +34,7 @@ pub fn mcp(data: &Path, config: &Config, own: bool) -> Result<TcpListener, Strin
     let file = data.join("run").join("mcp.json");
     let before = remembered(&file);
     let usual = (config.named || own).then_some(port);
-    let listener = listen_first(before, usual, config.named, taken, |port| TcpListener::bind(("127.0.0.1", port)))?;
+    let listener = listen_first(before, usual, config.named, taken, bind)?;
     let got = listener.local_addr().map_err(|e| e.to_string())?.port();
     if before.is_some_and(|before| before != got) && !config.named {
         crate::log::warn(&format!("the MCP endpoint's port of before cannot be had; agents left running start again (port={got})"));
@@ -154,21 +159,30 @@ mod tests {
     #[test]
     fn the_mcp_port_is_remembered_and_had_again_and_another_data_directory_takes_no_usual_port() {
         let data = temp("remembered");
-        // The usual port, kept by another program: a station on another data directory never tries it.
-        let usual = TcpListener::bind("127.0.0.1:0").unwrap();
-        let config = Config { port: usual.local_addr().unwrap().port(), named: false, english: true };
-        drop(usual);
-        let first = mcp(&data, &config, false).unwrap();
-        let port = first.local_addr().unwrap().port();
-        assert_ne!(port, config.port);
+        // The test's own ports, held all along: the one the station gets, and the usual one, kept by another program
+        // (so the two differ). A port let go and bound again could be taken by another program meanwhile (main's
+        // check-mac, 2026-11-17: 49183 had again as 49192).
+        let (sock, other) = (TcpListener::bind("127.0.0.1:0").unwrap(), TcpListener::bind("127.0.0.1:0").unwrap());
+        let (port, usual) = (sock.local_addr().unwrap().port(), other.local_addr().unwrap().port());
+        let config = Config { port: usual, named: false, english: true };
+        // A station on another data directory never tries the usual port: any free one.
+        let mut asked = vec![];
+        let first = mcp_with(&data, &config, false, binder(vec![(0, sock)], &mut asked)).unwrap();
+        assert_eq!(asked, [0]);
+        assert_eq!(first.local_addr().unwrap().port(), port);
         // On this machine only, whatever a config of before said (`http.host`).
         assert!(first.local_addr().unwrap().ip().is_loopback());
         assert_eq!(std::fs::read_to_string(data.join("run/mcp.json")).unwrap(), format!("{{\"port\":{port}}}\n"));
         assert_eq!(remembered(&data.join("run/mcp.json")), Some(port));
-        // The station stops and starts again: the same port, so the agents it left running still reach it.
-        drop(first);
-        let again = mcp(&data, &config, false).unwrap();
-        assert_eq!(again.local_addr().unwrap().port(), port);
+        // The station stops and starts again: the same port asked first, so the agents it left running still reach it.
+        let mut asked = vec![];
+        let again = mcp_with(&data, &config, false, binder(vec![(port, first)], &mut asked)).unwrap();
+        assert_eq!((asked, again.local_addr().unwrap().port()), (vec![port], port));
+        // Taken by then, any free one, remembered in its place.
+        let mut asked = vec![];
+        let then = mcp_with(&data, &config, false, binder(vec![(0, other)], &mut asked)).unwrap();
+        assert_eq!((asked, then.local_addr().unwrap().port()), (vec![port, 0], usual));
+        assert_eq!(remembered(&data.join("run/mcp.json")), Some(usual));
         // Nor the loopback port's usual one.
         let admin = admin(&data, 4760, false, false, true).unwrap();
         assert_ne!(admin.local_addr().unwrap().port(), 4760);
