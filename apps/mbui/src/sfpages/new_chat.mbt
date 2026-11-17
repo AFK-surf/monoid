@@ -1017,18 +1017,25 @@ fn new_send(
   let taken : Ref[Json?] = Ref(None)
   let made = Ref(!make)
   let sending = Ref(true)
-  // (not sent after all: its row gone from the list, its words back in the chat's composer, saying why)
+  // (this send still the page's: the new chat not begun anew since, nor this one sent again under its key; what the
+  // core answers late of one that is not touches nothing of what the page is now)
+  let ours = fn() { fresh.made.get() == key }
+  // (not sent after all: its row gone from the list, its words back in the chat's composer, saying why, unless
+  // something is written there by now: then said so, as send_in_chat's)
   let not_sent = fn(why : String) {
     @ui.haptic(Reject)
     sending.val = false
-    fresh.starting.set(false)
+    if ours() {
+      fresh.starting.set(false)
+    }
     @sfbase.sent_local_gone(rk, row)
     @sfbase.flight_carry_gone(draft)
     @sfbase.writing_starting(src, d, false)
-    let into = @sfbase.writing(src, draft)
-    into.taken = d.taken
     d.taken = None
-    writing_restore(src, into, why)
+    // (what was taken went with the words into the chat's draft: composer.carry; nothing taken, nothing to put back)
+    if why != "" {
+      @sfbase.writing_back_or_said(src, @sfbase.writing(src, draft), @sf.t("web-main.draft.notSent", args=[("error", why)]))
+    }
   }
   let send = fn() {
     match taken.val {
@@ -1050,15 +1057,14 @@ fn new_send(
             Err(e) =>
               match text(Some(e), "code") {
                 // (not taken into the chat's outbox: back in its composer, as send_in_chat's)
-                "invalid_params" | "core_restarted" | "closed" => {
-                  sending.val = true
-                  not_sent(text(Some(e), "message"))
-                }
+                "invalid_params" | "core_restarted" | "closed" => not_sent(text(Some(e), "message"))
                 // (in the outbox, which says it did not go yet and sends it once the station is reached: its words
                 // back in the composer too were sent twice, 2026-11-16)
                 _ => {
                   @ui.haptic(Reject)
-                  fresh.starting.set(false)
+                  if ours() {
+                    fresh.starting.set(false)
+                  }
                   @sfbase.flight_carry_gone(draft)
                   @sfbase.writing_starting(src, d, false)
                   @sfbase.sent_local_gone(rk, row)
@@ -1066,7 +1072,9 @@ fn new_send(
                 }
               }
             Ok(_) => {
-              fresh.starting.set(false)
+              if ours() {
+                fresh.starting.set(false)
+              }
               @sfbase.writing_starting(src, d, false)
             }
           }
@@ -1093,18 +1101,29 @@ fn new_send(
           send()
         }
         Err(e) => {
-          // not made: the page the new chat again, its scene back, what was taken back in its composer
+          // not made: what is written meanwhile back in the new chat's draft, and what was taken with it (unless
+          // something is written there by now: then said so); the page the new chat again, its scene back, only
+          // while it is still the chat it became: a page come on top since, or a new chat begun anew, is left as it
+          // is (Nav::become changes whatever is on top)
           sending.val = false
-          fresh.made.set("")
-          fresh.starting.set(false)
-          fresh.became.set(None)
-          @sfbase.leaving_back()
           @sfbase.sent_local_gone(rk, row)
           @sfbase.flight_carry_gone(draft)
           @sfbase.writing_carry(src, draft, d.key)
           @sfbase.writing_starting(src, d, false)
-          writing_restore(src, d, text(Some(e), "message"))
-          app.nav.become(NewChat)
+          let why = @sf.t("web-main.draft.notSent", args=[("error", text(Some(e), "message"))])
+          let here = ours() && app.nav.top() is Chat(top) && top == r
+          if ours() {
+            fresh.made.set("")
+            fresh.starting.set(false)
+            fresh.became.set(None)
+          }
+          if here {
+            @sfbase.leaving_back()
+            app.nav.become(NewChat)
+          }
+          // (what was taken comes back with what is written meanwhile: composer.carry)
+          d.taken = None
+          @sfbase.writing_back_or_said(src, d, why)
         }
       }
     })

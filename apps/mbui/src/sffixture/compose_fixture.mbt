@@ -277,6 +277,14 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
     }
     "composer.restore" =>
       match w.taken {
+        // (with unlessWritten, only while nothing new is written there: composer.ts restore)
+        Some(_) if flag(p, "unlessWritten") &&
+          (w.text.trim(chars=" \n\t").to_owned() != "" ||
+          w.quotes.length() > 0 ||
+          fix_composers.get(key).unwrap_or([]).length() > 0) => {
+          w.taken = None
+          said_back(changed(), false)
+        }
         Some((words, quotes, files)) => {
           w.taken = None
           w.text = words
@@ -284,9 +292,9 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
           w.quotes = quotes
           fix_composers[key] = files
           w.error = text(p, "error")
-          changed()
+          said_back(changed(), true)
         }
-        None => changed()
+        None => said_back(changed(), false)
       }
     "composer.carry" => {
       let to = fix_write(f, text(p, "to"))
@@ -294,6 +302,11 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
       to.rev += 1
       to.quotes = w.quotes
       fix_composers[text(p, "to")] = fix_composers.get(key).unwrap_or([])
+      // (what was taken of it to be sent goes with it: composer.ts carry)
+      if w.taken is Some(_) {
+        to.taken = w.taken
+      }
+      w.taken = None
       w.text = ""
       w.rev += 1
       w.quotes = []
@@ -303,5 +316,18 @@ pub fn fix_compose_call(f : Fixture, name : String, params : Json) -> Result[Jso
     }
     "composer.mode" => changed()
     _ => None
+  }
+}
+
+///|
+/// A restore's answer `a`, saying whether what was taken came back (composer.ts restore's `back`).
+fn said_back(a : Result[Json, Json]?, back : Bool) -> Result[Json, Json]? {
+  match a {
+    Some(Ok(Object(m))) => {
+      let m = m.copy()
+      m["back"] = Json::boolean(back)
+      Some(Ok(Json::object(m)))
+    }
+    a => a
   }
 }

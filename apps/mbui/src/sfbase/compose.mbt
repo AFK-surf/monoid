@@ -819,8 +819,31 @@ pub fn writing_restore(src : Source, w : Writing, error : String, unless_written
 }
 
 ///|
+/// What `take` took of `w` put back where a message did not go, saying why (`why`), unless something new is written
+/// there by now: then that stays, and why it did not go is said as a toast, so that it is never lost unsaid (a chat's
+/// message refused, a new chat's first one whose chat could not be made). Whether something is written there is the
+/// core's to say, as it has the draft then (what the page last drew of it may be another page's, or not yet carried
+/// there): so nothing is shown before it answers, its words come back as it puts them back.
+pub fn writing_back_or_said(src : Source, w : Writing, why : String) -> Unit {
+  w.taken = None
+  writing_act(
+    src,
+    w,
+    "restore",
+    { "error": Json::string(why), "unlessWritten": Json::boolean(true) },
+    done=fn(r) {
+      match r {
+        // (a core from before, which does not say, put it back)
+        Ok(v) => if field(Some(v), "back") is Some(False) { toast_later(why) }
+        Err(_) => toast_later(why)
+      }
+    },
+  )
+}
+
+///|
 /// What is written in `from` goes on into `to` (a new chat becoming the chat it made, or its station changed): `from`
-/// left empty (`composer.carry`).
+/// left empty, and what was taken of it to be sent goes with it, put back there if it does not go (`composer.carry`).
 pub fn writing_carry(src : Source, from : String, to : String) -> Unit {
   let w = writing(src, from)
   writing_act(src, w, "carry", { "to": Json::string(to) })

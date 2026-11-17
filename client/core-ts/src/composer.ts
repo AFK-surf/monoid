@@ -859,22 +859,30 @@ export class Composers {
   }
 
   /// What was taken comes back (a chat that could not be made, a message never sent), saying why; with `unlessWritten`,
-  /// only while nothing new is written there.
-  restore(key: string, error: string | null, unlessWritten: boolean): number {
+  /// only while nothing new is written there. Whether it came back (`back`): where it did not, the page says why it did
+  /// not go some other way, for what is written there now is decided here, not as the page last drew it.
+  restore(key: string, error: string | null, unlessWritten: boolean): { version: number; back: boolean } {
     const s = this.#state(key);
     const back = s.taken;
-    if (!back) return s.version;
-    if (unlessWritten && (s.text.trim() || s.files.length || s.quotes.length)) return s.version;
+    if (!back) return { version: s.version, back: false };
+    // Something new written there: it stays, and what was taken is let go (the page says why it did not go).
+    if (unlessWritten && (s.text.trim() || s.files.length || s.quotes.length)) {
+      s.taken = null;
+      return { version: s.version, back: false };
+    }
     s.taken = null;
     this.#say(s, back.text);
     s.quotes = back.quotes;
     s.files = back.files;
     s.id = back.id;
     s.error = error;
-    return this.#changed(key, s);
+    return { version: this.#changed(key, s), back: true };
   }
 
-  /// What is written in `from` goes on into `to` (a new chat becoming the chat it made), `from` left empty.
+  /// What is written in `from` goes on into `to` (a new chat becoming the chat it made, and back where it could not be
+  /// made), `from` left empty. What was taken of `from` to be sent goes with it, so that it is put back where the
+  /// words now are: into the chat's composer as its first message is refused, into the new chat's as the chat could
+  /// not be made after all (carried there and back).
   carry(from: string, to: string): number {
     from = this.#keys(from)[0]!;
     to = this.#keys(to)[0]!;
@@ -882,9 +890,9 @@ export class Composers {
     if (from === to) return s.version;
     // Counted on from where `to` was: what was shown of it before is older than this.
     const was = this.#state(to);
-    const next = { ...empty(was.db), joined: was.joined, text: s.text, rev: was.rev + 1, quotes: s.quotes, files: s.files, version: was.version, id: s.id };
+    const next = { ...empty(was.db), joined: was.joined, text: s.text, rev: was.rev + 1, quotes: s.quotes, files: s.files, version: was.version, id: s.id, taken: s.taken ?? was.taken };
     this.#all.set(to, next);
-    this.#all.set(from, { ...empty(s.db), joined: s.joined, rev: s.rev + 1, version: s.version, taken: s.taken });
+    this.#all.set(from, { ...empty(s.db), joined: s.joined, rev: s.rev + 1, version: s.version });
     this.#changed(from, this.#all.get(from)!);
     return this.#changed(to, next);
   }
@@ -1021,7 +1029,7 @@ export function install(): void {
       if ("retry" in a) return { version: all.retry(c.key, a.retry) };
       if ("mode" in a) return { version: all.mode(c.key, a.file, a.mode) };
       if ("take" in a) return all.take(c.key, a.station);
-      if ("restore" in a) return { version: all.restore(c.key, a.error, a.unlessWritten) };
+      if ("restore" in a) return all.restore(c.key, a.error, a.unlessWritten);
       if ("carry" in a) return { version: all.carry(c.key, a.carry) };
       return null;
     });

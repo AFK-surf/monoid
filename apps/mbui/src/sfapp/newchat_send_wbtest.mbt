@@ -449,6 +449,110 @@ test "a new chat's first words not sent (the chat not made): the page the new ch
 }
 
 ///|
+/// Home over the made-up chats whose core keeps its answers to `newChat.create` and `chat.send` (`held`, by name: what
+/// gives each), giving each the error `fails` names for it, else what it would; in a phone's window.
+fn failing_core(held : Map[String, () -> Unit], fails : Map[String, Json]) -> (@ui.Tester, Source) {
+  new_run()
+  let base = fixture("home")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      match name {
+        "newChat.create" | "chat.send" =>
+          match fails.get(name) {
+            Some(e) => held[name] = fn() { done(Err(e)) }
+            None => (base.call)(name, params, fn(r) { held[name] = fn() { done(r) } })
+          }
+        _ => (base.call)(name, params, done)
+      }
+    },
+  }
+  both_way()
+  (@ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2), src)
+}
+
+///|
+/// What the core kept for `name` given (its answer, as it comes a round trip late).
+fn give_held(held : Map[String, () -> Unit], name : String) -> Unit raise {
+  match held.get(name) {
+    Some(give) => give()
+    None => fail("\{name} not asked")
+  }
+}
+
+///|
+test "a new chat's chat not made once it was left for another page: that page stays, its first words back in the new chat's draft" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, src) = failing_core(held, {
+      "newChat.create": { "code": "unavailable", "message": "Willow 离线" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(_) else { fail("not become the chat") }
+    t.run_for(new_leave_ms)
+    // left for Home before the core says the chat could not be made
+    t.back()
+    t.run_for(@ui.move_most_ms)
+    let left = app.nav.top()
+    assert_false(left is Chat(_) || left is NewChat, msg="not left")
+    give_held(held, "newChat.create")
+    t.run_for(@ui.move_most_ms)
+    // (the page left for, not the new chat put in its place: Nav::become changes whatever is on top)
+    assert_true(app.nav.top() == left, msg="the page left for replaced")
+    // its first words, where the new chat will have them as it is opened again
+    assert_eq(@sfbase.writing(src, "new:ws1").text.get(), words)
+  })
+}
+
+///|
+test "a new chat's chat not made, something written meanwhile in its composer: that stays, why the words did not go said" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, src) = failing_core(held, {
+      "newChat.create": { "code": "unavailable", "message": "Willow 离线" },
+    })
+    new_chat_sent(t, "把发布说明写一下") |> ignore
+    guard app.nav.top() is Chat(r) else { fail("not become the chat") }
+    t.run_for(new_leave_ms)
+    // written on in the chat's composer, as a hand does (by its hint)
+    t.tap_text("发消息")
+    t.run_for(@ui.move_most_ms)
+    t.type_text("接着写")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfbase.writing(@sfbase.page_source_for_chat(src, r), r.station + ":" + r.session).text.get(), "接着写")
+    give_held(held, "newChat.create")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is NewChat)
+    // what was written meanwhile, not the first words over it
+    assert_eq(@sfbase.writing(src, "new:ws1").text.get(), "接着写")
+    // why they did not go, said
+    seen_once(t, "发送失败：Willow 离线") |> ignore
+  })
+}
+
+///|
+test "a new chat's first message refused by the core: its words back in the chat's composer, the page the chat" {
+  both_pages(fn() raise {
+    let held : Map[String, () -> Unit] = Map([])
+    let (t, src) = failing_core(held, {
+      "chat.send": { "code": "invalid_params", "message": "太长了" },
+    })
+    let words = "把发布说明写一下"
+    new_chat_sent(t, words) |> ignore
+    guard app.nav.top() is Chat(r) else { fail("not become the chat") }
+    give_held(held, "newChat.create")
+    t.draw()
+    give_held(held, "chat.send")
+    t.run_for(@ui.move_most_ms)
+    assert_true(app.nav.top() is Chat(_))
+    // back in the chat's composer, as the core has it (not only as the page last drew it)
+    assert_eq(@sfbase.writing(src, r.station + ":" + r.session).text.get(), words)
+    assert_eq(@sfbase.writing(src, "new:ws1").text.get(), "")
+  })
+}
+
+///|
 /// Home over the made-up chats with the new chat's stations not read while `reading` says (the core's `newChat` with
 /// no `stations`: only the station it last started on, `kept`), the new chats asked for counted in `made`.
 fn reading_core(reading : @signals.Signal[Bool], made : Ref[Int]) -> @ui.Tester {
