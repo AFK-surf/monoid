@@ -5,6 +5,7 @@ import { Effect, Scope } from "effect";
 import { Decompress } from "fzstd";
 import type { Inner } from "../core.ts";
 import { CoreError, HostError, asCoreError, failedIn } from "../error.ts";
+import { FileRanges } from "./file-ranges.ts";
 import { FileSource } from "../file-source.ts";
 import type { Host, Pull, Unzstd } from "../host.ts";
 import { current, t } from "../i18n.ts";
@@ -156,6 +157,8 @@ const NAMED_PART = 4 * 1024 * 1024;
 export class Requests {
   readonly #core: Inner;
   readonly wire: StationWire;
+  readonly #chatParts: FileRanges<{ type: string; total: number }>;
+  readonly #driveParts: FileRanges<{ type: string; total: number; mtime: number | null }>;
   /// Told of a station that answered a request whole and well (2xx): it is reached, whatever its stream found.
   onAnswered: (station: StationAddr) => void = () => {};
   /// Told of a station's answer that the chat asked of went to another station (`409 {error, moved}`: station/src/api/
@@ -165,6 +168,8 @@ export class Requests {
   constructor(core: Inner, wire: StationWire) {
     this.#core = core;
     this.wire = wire;
+    this.#chatParts = new FileRanges(core.runner);
+    this.#driveParts = new FileRanges(core.runner);
   }
 
   #status(station: StationAddr) {
@@ -450,15 +455,20 @@ export class Requests {
   /// a time (onto the disk) rather than whole. `unsupported` from a station from before parts (it has no such route).
   /// `heard`: the part's bytes so far, as they come; `sink`: its bytes handed over as they come, not kept (`bytes` empty);
   /// `said`: what the station says it is, as its answer begins (before its bytes). `quiet`: in the background, not said
-  /// to be waited on; `flushCut`: hand a final short batch to the sink even when it is cut short.
-  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false, flushCut = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+  /// to be waited on. A final short batch is handed to readers even when the transfer is interrupted.
+  filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
+    return this.#chatParts.read(JSON.stringify([station.toString(), key, name]), offset, length,
+      (at, count, take, head) => this.#filePart(station, key, name, at, count, ctx, take, head, quiet), heard, sink, said);
+  }
+
+  #filePart(station: StationAddr, key: string, name: string, offset: number, length: number, ctx: SpanContext | null, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number }) => void, quiet = false): Effect.Effect<{ type: string; total: number; bytes: Uint8Array }, CoreError> {
     const path = `/sessions/${encode(key)}/parts?name=${encode(name)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
       const total = Number(headerOf(headers, "stillfail-total"));
       if (Number.isSafeInteger(total)) said({ type: headerOf(headers, "content-type") ?? "", total });
     });
-    return Effect.flatMap(this.exchange(station, "GET", path, [], empty, quiet, ctx, heard, undefined, sink, onHead, false, flushCut), (r) => {
+    return Effect.flatMap(this.exchange(station, "GET", path, [], empty, quiet, ctx, undefined, undefined, sink, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.fileOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);
@@ -499,7 +509,12 @@ export class Requests {
 
   /// GET /drive/read?root=&path=&offset=&length=: a part of a file of the station's drive, its whole size and time.
   /// `heard`, `sink`, `said`, `quiet`: as filePart's.
-  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, flushCut = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+  driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, heard?: (loaded: number) => void, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false, version?: readonly [number, number]): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
+    return this.#driveParts.read(JSON.stringify([station.toString(), root, path, version]), offset, length,
+      (at, count, take, head) => this.#driveRead(station, root, path, at, count, ctx, take, head, quiet), heard, sink, said);
+  }
+
+  #driveRead(station: StationAddr, root: string, path: string, offset: number, length: number, ctx: SpanContext | null, sink?: (piece: Uint8Array) => void, said?: (head: { type: string; total: number; mtime: number | null }) => void, quiet = false): Effect.Effect<{ type: string; total: number; mtime: number | null; bytes: Uint8Array }, CoreError> {
     const asked = `/drive/read?root=${encode(root)}&path=${encode(path)}&offset=${offset}&length=${length}`;
     const onHead = said && ((status: number, headers: [string, string][]) => {
       if (status !== 200) return;
@@ -507,7 +522,7 @@ export class Requests {
       const mtime = Number(headerOf(headers, "stillfail-mtime"));
       if (Number.isSafeInteger(total)) said({ type: headerOf(headers, "content-type") ?? "", total, mtime: Number.isSafeInteger(mtime) ? mtime : null });
     });
-    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, quiet, ctx, heard, undefined, sink, onHead, false, flushCut), (r) => {
+    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, quiet, ctx, undefined, undefined, sink, onHead, false, true), (r) => {
       if (r.status === 404 && isNoRoute(r.body)) return Effect.fail(new CoreError("unsupported", t("station.core.driveOldStation"), 404));
       if (r.status !== 200) {
         const data = parseJson(r.body);

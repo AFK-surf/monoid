@@ -31,6 +31,10 @@ design rules (the user, 2026-10-03):
    one change is counted (`test/view-work.test.ts`).
 7. **Workspaces are isolated** from each other.
 
+File readers share both kept bytes and outstanding ranges of the same version (the owner, 2026-11-18).
+A new consumer uses the core's station file reads. Test it alongside a save with the wire held mid-part,
+counting requested intervals in both orders and after either reader leaves (test/downloads.test.ts).
+
 ## What a topic sends is bounded
 
 The app parses every message of the core on its frame thread: on the owner's phone a `stations` of 463 KB took 25–86 ms

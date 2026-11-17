@@ -132,14 +132,14 @@ test("uploads_in_parts_and_whole_to_a_station_before_parts", async () => {
 test("fetches_a_file_in_parts_and_a_poster", async () => {
   const { core } = await started({
     ...base(),
-    "GET /sessions/k/parts?name=v.mp4&offset=0&length=4": "abcd",
+    "GET /sessions/k/parts?name=v.mp4&offset=0&length=4": new Raw({ status: 200, headers: [["stillfail-total", "8"]], body: new TextEncoder().encode("abcd") }),
     "GET /sessions/k/parts?name=old.mp4&offset=0&length=4": status(404, { error: "no route GET /sessions/k/parts" }),
     "GET /sessions/k/parts?name=gone.mp4&offset=0&length=4": status(404, { error: "文件不存在" }),
     "GET /sessions/k/poster?name=v.mp4": "jpeg",
   });
   const requests = core.inner.stations.requests;
   const got = await run(requests.filePart(remote(), "k", "v.mp4", 0, 4, null));
-  assert.equal(new TextDecoder().decode(got.bytes), JSON.stringify("abcd"));
+  assert.equal(new TextDecoder().decode(got.bytes), "abcd");
   // A station from before parts, and a file that is not there, apart.
   assert.equal((await failure(requests.filePart(remote(), "k", "old.mp4", 0, 4, null))).code, "unsupported");
   assert.equal((await failure(requests.filePart(remote(), "k", "gone.mp4", 0, 4, null))).code, "http_404");

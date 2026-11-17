@@ -125,6 +125,85 @@ test("a chat's file downloaded a part at a time, ready for the page that takes i
   r.core.close();
 });
 
+for (const first of ["download", "preview"] as const) test(`a save and installer share outstanding parts, ${first} first`, async () => {
+  const name = "2026-11-17T19-15-04-build.apk";
+  const file = new Uint8Array(9 * MB).fill(7);
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: file.length, from: { session: "k1", file: { name: "build.apk", path: "uploads/" + name, size: file.length } } };
+  const hold = r.host.hold(`offset=${4 * MB}&length=${4 * MB}`);
+  const install = () => r.ask("station.file", { ...params, progress: true, keep: true });
+  const save = () => r.ask("download.start", params);
+  try {
+    if (first === "download") { await save(); await install(); }
+    else { await install(); await save(); }
+    const view = r.core.inner.downloads.view();
+    assert.equal(view.downloads.length + view.keeping.length, 1, "only one transfer of the file is listed");
+    hold();
+    await r.host.settle();
+    assert.equal(r.parts(name), 3, "the same missing bytes never requested twice");
+    assert.deepEqual((await install()).bytes, file);
+    assert.equal(r.parts(name), 3);
+  } finally {
+    hold();
+    r.core.close();
+  }
+});
+
+for (const drive of [false, true]) test(`overlapping ${drive ? "drive" : "attachment"} ranges share only their intersection when a save is cancelled`, async () => {
+  const file = Uint8Array.from({ length: 96 }, (_, i) => i);
+  const t = await started();
+  const name = "data.bin";
+  const stationFile = { root: "/docs", path: name, mtime: 8 };
+  const source = drive ? stationFile : { key: "k1" };
+  files(t.host, new Map([[name, file]]), new Set(), new Set(), {
+    files: new Map([["/docs\n" + name, { bytes: file, mtime: 8 }]]), zips: new Map(),
+  });
+  const r = await watch(t);
+  const params = { station: ST, ...source, name, size: file.length };
+  const ui = t.core.connect();
+  const release = t.host.hold("offset=32&length=32");
+  try {
+    call(t.core, ui, 10, drive ? "drive.read" : "station.file.part", { ...params, offset: 32, length: 32, keep: drive ? "file" : true });
+    await t.host.settle();
+    const { ok } = await r.ask("download.start", params);
+    // The player owns the middle of the range; the download only fetches the gap before it, then waits for it.
+    const endpoint = drive ? "/drive/read?" : "/sessions/k1/parts?";
+    const ranges = () => t.host.requests.filter((q) => q.url.includes(endpoint)).map((q) => {
+      const p = new URL(q.url).searchParams;
+      return [Number(p.get("offset")), Number(p.get("length"))];
+    });
+    assert.deepEqual(ranges(), [[32, 32], [0, 32]]);
+    await r.ask("download.cancel", { id: ok.download.id });
+    release();
+    await t.host.settle();
+    const got = await r.ask(drive ? "drive.read" : "station.file.part", { ...params, offset: 32, length: 32, keep: drive ? "file" : true });
+    assert.deepEqual(got.bytes, file.slice(32, 64));
+    assert.equal(ranges().length, 2, "the player completed even though the save stopped");
+  } finally {
+    release();
+    t.core.close();
+  }
+});
+
+test("an installer with no listed size shares and reuses the bytes of the download", async () => {
+  const file = new Uint8Array(65536).fill(3);
+  const name = "old.apk";
+  const r = await rig(new Map([[name, file]]));
+  const params = { station: ST, key: "k1", name, size: 0 };
+  const release = r.host.hold(`offset=0&length=${4 * MB}`);
+  try {
+    await r.ask("download.start", params);
+    await r.ask("station.file", { ...params, keep: true });
+    release();
+    await r.host.settle();
+    assert.deepEqual((await r.ask("station.file", { ...params, keep: true })).bytes, file);
+    assert.equal(r.parts(name), 1);
+  } finally {
+    release();
+    r.core.close();
+  }
+});
+
 test("a chat file without a recorded size is read before it is ready, including an empty or missing file", async () => {
   const content = bytesOf(5 * MB, 7);
   const r = await rig(new Map([["old.zip", content], ["empty.zip", new Uint8Array()]]));

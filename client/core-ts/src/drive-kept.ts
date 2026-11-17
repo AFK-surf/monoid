@@ -226,6 +226,14 @@ export class DriveKept {
     return Effect.forEach(keys, (key) => Effect.ignore(this.#host.storageDelete(key), { log: "Unhandled", message: "drive upload removed" }), { discard: true });
   }
 
+  /// An immutable attachment's known size, including one whose only local copy is the saved file.
+  sizeOf(id: string): Effect.Effect<number | null> {
+    return Effect.map(this.#db(), (sql) => {
+      const row = sql?.all("SELECT size FROM kept WHERE id = ? UNION ALL SELECT size FROM saved WHERE id = ? LIMIT 1", [id, id])[0];
+      return row ? Number(row[0]) : null;
+    });
+  }
+
   /// Bytes `offset` to `offset + length` of the file `id` as it was (`mtime`, `size`), with its type, if they are kept
   /// (and it is written down as read now); else null. What was kept of it as it was before it changed goes.
   read(id: string, mtime: number, size: number, offset: number, length: number): Effect.Effect<{ type: string; bytes: Uint8Array } | null> {
