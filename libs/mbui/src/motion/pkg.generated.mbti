@@ -23,6 +23,12 @@ pub fn back_in_out(Double) -> Double
 
 pub fn back_out(Double) -> Double
 
+pub let backdrop_press_spring : Spec
+
+pub let backdrop_scale_x_spring : Spec
+
+pub let backdrop_scale_y_spring : Spec
+
 pub fn bounce_to_damping_ratio(Double) -> Double
 
 pub fn calc_generator_duration(Generator, time_step? : Double, max_duration? : Double, keyframes? : Array[Double]) -> Double

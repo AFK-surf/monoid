@@ -35,6 +35,8 @@ pub(all) struct Glass {
   // liquid: where the pointer is over it, in points from its own top left (View::pointer_here's), a light drawn
   // there along its rim and over its face; None: none
   spot : (Double, Double)?
+  // zero for the meniscus, one for Backdrop’s default highlight, two for ambient
+  backdrop_highlight : Int
 }
 
 ///|
@@ -68,6 +70,7 @@ pub fn Glass::frosted(
     shares_capture,
     contained,
     spot: None,
+    backdrop_highlight: 0,
   }
 }
 
@@ -116,6 +119,26 @@ pub fn Glass::liquid(
     shares_capture: false,
     contained: false,
     spot,
+    backdrop_highlight: 0,
   }
 }
 
+
+///|
+/// A single rounded Backdrop lens with Kyant’s circular refraction and optional dispersion.
+pub fn Glass::backdrop_lens(
+  height~ : Double,
+  amount~ : Double,
+  blur~ : Double,
+  tint~ : Int64,
+  solid~ : Int64,
+  highlight~ : Double,
+  ambient? : Bool = false,
+  dispersion? : Bool = false,
+) -> Glass {
+  {
+    ..Glass::liquid(blur~, tint~, solid~, saturation=1.0, rim=highlight, bezel=height,
+      refraction=amount, chroma=if dispersion { 1.0 } else { 0.0 }, merge=0.0, adaptive=false),
+    backdrop_highlight: if ambient { 2 } else { 1 },
+  }
+}

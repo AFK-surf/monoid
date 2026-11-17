@@ -360,6 +360,12 @@ test "narrow: how hard it thinks its stops under the models: one tapped is made 
   t.run_for(@ui.move_most_ms)
   assert_eq(new_fix.effort, "max")
   assert_eq(t.get(Slider, label="思考深度").value, "最高")
+  let dot_side = @ui.Space::px(S1)
+  let dots = t.drawn_rects().filter(fn(r) {
+    r.2 == dot_side && r.3 == dot_side && r.0 >= x && r.0 <= x + w && r.1 >= y && r.1 <= y + h
+  })
+  assert_eq(dots.length(), 2, msg="only the two interior effort marks are drawn")
+  assert_true(dots.iter().all(fn(r) { r.0 > x + w / 4.0 && r.0 < x + 3.0 * w / 4.0 }))
   assert_eq(t.all(Dialog).length(), 1, msg="a sheet over the sheet")
   assert_true(t.query(Button, label="GPT-6 Astra") is Some(_), msg="the sheet closed")
 }

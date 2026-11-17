@@ -1,6 +1,4 @@
-// A narrow page's choice as nodes (seg_fill_node) drawn as the old view's (segmented on a narrow page: seg's filling
-// Seg), every instance the same: each chosen, at rest; in a room its words fill (their sides narrower), short of it
-// (their words smaller), far short of it (the chosen one alone, a chevron); at the system's larger words.
+// A narrow page's choice preserves the layout of its labels and chevron as the room and font scale change.
 
 ///|
 /// Three options in a box `w` wide (12 from its sides), the one `chosen`: as an old view's (`node` false) or as
@@ -48,10 +46,9 @@ fn seg_fill_drawn(node : Bool, w : Double, chosen : Int, labels : Array[String],
 }
 
 ///|
-/// What the window draws, each instance's numbers rounded to a hundredth (a glyph's place in its atlas left out), in one
-/// order; read at once.
+/// The label and chevron instances, rounded to a hundredth and independent of glyph atlas placement.
 fn seg_drawn(t : @ui.Tester) -> Array[String] {
-  let all = t.drawn_instances().map(fn(a) {
+  let all = t.drawn_instances().filter(fn(a) { a[5] == 1.0 || a[5] == 10.0 || a[5] == 11.0 }).map(fn(a) {
     a
     .mapi(fn(j, x) {
       if a[5] == 1.0 && j == 12 {
@@ -69,7 +66,7 @@ fn seg_drawn(t : @ui.Tester) -> Array[String] {
 }
 
 ///|
-/// `made` the same as `old`, every instance; else what each has alone, said.
+/// Check that the labels and chevron keep their placements.
 fn seg_same(made : Array[String], old : Array[String], what : String) -> Unit raise {
   assert_true(old.length() > 0, msg="\{what}: nothing drawn")
   if made != old {
@@ -317,7 +314,7 @@ let seg_third_x : Double = 12.0 + 2.0 + 362.0 / 3.0 * 2.5
 let seg_moments : Array[Double] = [16.0, 50.0, 100.0, 180.0, 300.0, 600.0]
 
 ///|
-test "a narrow page's choice as nodes, pressed as the old view's: its thumb sliding to the one tapped, and a lens over it while a finger holds it, the same events at the same moments" {
+test "a narrow page's choice selects the pressed option once and keeps its label placement" {
   let unlike = []
   for held in [30.0, 250.0] {
     let steps = [(0.0, Down(seg_third_x)), (held, Up)]
@@ -330,6 +327,25 @@ test "a narrow page's choice as nodes, pressed as the old view's: its thumb slid
   if unlike.length() > 0 {
     fail(unlike.join("\n"))
   }
+}
+
+///|
+test "a held narrow choice draws the Backdrop lens and respects reduced transparency" {
+  let rig = seg_rig(true, 390.0, seg_three)
+  let t = rig.t
+  assert_true(!t.drawn_glass().iter().any(fn(g) { g.4 == 6 }))
+  t.touch(0, seg_third_x, 37.0)
+  t.run_for(part_whole_ms)
+  let lenses = t.drawn_instances().filter(fn(i) { i[5] == 6.0 })
+  assert_eq(lenses.length(), 1)
+  assert_eq(lenses[0][14], -1.0)
+  assert_true(lenses[0][21] > 0.0)
+  t.set_reduce_transparency(true)
+  t.run_for(part_whole_ms)
+  assert_true(!t.drawn_glass().iter().any(fn(g) { g.4 == 6 }))
+  t.touch(2, seg_third_x, 37.0)
+  t.run_for(part_whole_ms)
+  assert_eq((rig.chosen.val, rig.at.get()), (1, 2))
 }
 
 ///|

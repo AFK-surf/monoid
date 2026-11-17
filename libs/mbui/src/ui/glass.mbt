@@ -14,7 +14,7 @@
 //            its radius, its fillets'; scene.mbt)
 //   liquid:  12 the rim's light · 13 the bezel's width · 14 where the pointer
 //            lights it (Glass::spot, from its rect's top left: glass_spot's
-//            packing; 0 none; a group drawn as its first shape's, so its first's)
+//            packing; 0 none; -1 and -2 are Backdrop’s default and ambient rim)
 //            15 opacity · 21 how far the bezel bends what is under it
 //            (px) · 22 the colours' split (0-1) · 23 the smooth-min radius
 //            two shapes of one group merge within
@@ -161,7 +161,7 @@ fn Ctx::glass_inst(
     1.0,
     if gl.liquid { gl.rim } else { gl.rim_edge },
     if gl.liquid { gl.bezel } else { gl.rim_lit },
-    if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
+    if gl.backdrop_highlight > 0 { -gl.backdrop_highlight.to_double() } else if gl.liquid { glass_spot(gl.spot) } else { gl.rim_back },
     alpha,
   )
   let b = (self.ninst - 1) * inst_size
@@ -218,7 +218,7 @@ fn Ctx::glass_capture(self : Ctx, k : Int, liquid : Bool, shares : Bool) -> Unit
     blur >= 0.0 &&
     a[(k - 1) * inst_size + 5] == kind &&
     a[(k - 1) * inst_size + 7] == blur &&
-    (!liquid || glass_paint.run_len < 8)
+    (!liquid || (glass_paint.run_len < 8 && a[b + 14] >= 0.0 && a[(k - 1) * inst_size + 14] >= 0.0))
   if same && !liquid {
     for j in glass_paint.run_start..<k {
       if rects_meet(j, k, a) {

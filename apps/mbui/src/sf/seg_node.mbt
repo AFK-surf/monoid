@@ -311,7 +311,7 @@ pub fn seg_fill_node(
     .row(Is(true))
     .height(Is(Some(segmented_narrow_h)))
     .radius(Is(seg_radius))
-    .ground(By(fn() { alpha(theme().p.text, 0.06) }))
+    .ground(By(backdrop_track_ink))
     |> ignore
     // (what it holds by the room the track is given: its options shared or fitted to that as the layout comes to it)
     track.by_room(fn(inner, given) {
@@ -397,7 +397,7 @@ pub fn seg_fill_node(
           let fingered : @signals.Signal[Int] = @signals.signal(-1)
           let lensed = fn() { !strip.glass_solid() && fingered.get() >= 0 }
           let held = @motion.NodeWay::new(0.0)
-          strip.reacts(lensed, fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.lift_spring) })
+          strip.reacts(lensed, fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) })
           let lens = fn() { if strip.glass_solid() { 0.0 } else { held.shown(strip) } }
           // the thumb's and the lens's cover (@ui.Ctx::cover's): the item it goes to, what it set out from (items by their
           // shares) and how far it is from there (0 to 1, on a cover's spring), sent on as it goes to another item, from
@@ -468,7 +468,6 @@ pub fn seg_fill_node(
               }
             }))
             .ground(By(fn() { @ui.tree_theme().lifted }))
-            .edge(By(fn() { (0.5, theme().p.line) }))
             // (as the old thumb: faded only while the lens is out, not past 1 as the hand's spring comes back past 0)
             .alpha(By(fn() {
               let l = lens()
@@ -532,10 +531,10 @@ pub fn seg_fill_node(
             .height(Is(Some(segmented_narrow_h - 2.0 * seg_inset)))
             // (round as a pill is said to be, Full, as the old lens's capsule: as round as it can be)
             .radius(Is(1.0e6))
-            .glass(Is(Some(glass_knob())))
+            .glass(By(fn() { Some(backdrop_tab(full())) }))
             .shadow(By(fn() { (seg_lens_shadow * full(), seg_lens_shadow_y * full(), @ui.tree_theme().shadow) }))
             .alpha(By(full))
-            .scale(By(fn() { 1.0 + (seg_lens_grow - 1.0) * lens() }))
+            .scale(By(fn() { 1.0 + (78.0 / 56.0 - 1.0) * lens() }))
             |> ignore
           })
           })
@@ -631,8 +630,8 @@ fn seg_shares(room : Double, least : Array[Double]) -> Array[Double] {
 }
 
 ///|
-/// A filling Seg's corner (seg's `radius`, 10).
-let seg_radius : Double = 10.0
+/// A filling Seg’s full-height capsule.
+let seg_radius : Double = segmented_narrow_h / 2.0
 
 ///|
 /// How wide a filling Seg of `labels` is with their words whole at their size with their sides, and how narrow it may

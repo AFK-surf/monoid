@@ -41,6 +41,21 @@ pub fn spring(
 pub let animate_spring : Spec = spring()
 
 ///|
+/// AndroidLiquidGlass's DampedDragAnimation spring for the press progress.
+// kept across runs: a value, never written
+pub let backdrop_press_spring : Spec = spring(ratio=1.0, stiffness=1000.0, threshold=0.001)
+
+///|
+/// Horizontal scale spring for the pressed glass capsule.
+// kept across runs: a value, never written
+pub let backdrop_scale_x_spring : Spec = spring(ratio=0.6, stiffness=250.0, threshold=0.001)
+
+///|
+/// Vertical scale spring for the pressed glass capsule.
+// kept across runs: a value, never written
+pub let backdrop_scale_y_spring : Spec = spring(ratio=0.7, stiffness=250.0, threshold=0.001)
+
+///|
 /// Compose's tween(durationMillis, delayMillis, easing), its curve said:
 /// what the motion is (@ui.Ease: one curve for each).
 pub fn tween(ms : Double, ease~ : @ui.Ease, delay? : Double = 0.0) -> Spec {

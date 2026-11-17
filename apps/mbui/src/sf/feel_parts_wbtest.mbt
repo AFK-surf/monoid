@@ -1,5 +1,5 @@
 // The library's controls answering the hand as data on their timelines: a checkbox's tick drawn by its stroke, a
-// switch's knob drawn longer as it flies and round at rest, an edge's line drawn aside past its end and back, a full
+// switch's capsule drawn longer as it flies, an edge's line drawn aside past its end and back, a full
 // bar's running light while it finishes. Each at rest drawn as it is, nothing read of the clock.
 
 ///|
@@ -59,7 +59,7 @@ fn knob_drawn(t : @ui.Tester) -> (Double, Double) {
 }
 
 ///|
-test "a switch's knob: round at rest; flying to its other side drawn longer along its way; round again once there" {
+test "a switch's capsule thumb stretches in flight and recovers its resting dimensions" {
   let on = @signals.signal(false)
   let t = part_case(fn(b) { switch_node(b, fn() { on.get() }, fn(v) { on.set(v) }, fn() { "通知" }) })
   let rest = knob_drawn(t)
@@ -69,7 +69,7 @@ test "a switch's knob: round at rest; flying to its other side drawn longer alon
   let flying = knob_drawn(t)
   t.run_for(part_past_ms)
   let there = knob_drawn(t)
-  assert_eq((rest.0 == rest.1, flying.0 > flying.1, there, @ui.view_tree().unwrap().cycle_read()), (true, true, rest, false))
+  assert_eq((rest.0 > rest.1, flying.0 > rest.0, there, @ui.view_tree().unwrap().cycle_read()), (true, true, rest, false))
 }
 
 ///|

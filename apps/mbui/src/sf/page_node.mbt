@@ -1712,21 +1712,25 @@ pub fn switch_node(
       disabled~,
       hold_press=(@ui.touch_slop(), @ui.long_press_ms),
       fn(room, sw) {
-    let out = fn() { dmax(0.0, (theme().items.least - switch_size(small).0) / 2.0) }
+    let size = fn() { if !small && native_input() is Finger { (64.0, 28.0) } else { switch_size(small) } }
+    let out = fn() { dmax(0.0, (theme().items.least - size().0) / 2.0) }
     room.padding(By(fn() { (out(), 0.0, out(), 0.0) })).margin(By(fn() { (-out(), 0.0, -out(), 0.0) })) |> ignore
     room.box(fn(v) {
       // (its track in the middle of that room, up and down: switch_reach's)
       v.min_height(By(fn() { Some(theme().items.least) })).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
       let knob = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
       let held = @motion.NodeWay::new(0.0)
+      let scale_x = @motion.NodeWay::new(1.0)
+      let scale_y = @motion.NodeWay::new(1.0)
       // (sent to its side by a crisp spring from where it is then and as fast: a turn told again mid-way goes on from
       // there, never from a stop; still within switch_settle_ms)
       v.reacts(on, fn(now) { knob.go(v, if now { 1.0 } else { 0.0 }, @motion.knob_spring) })
       v.reacts(fn() { sw.pressed() && @ui.pointing() is Finger }, fn(down) {
-        held.go(v, if down { 1.0 } else { 0.0 }, @motion.lift_spring)
+        held.go(v, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
+        scale_x.go(v, if down { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
+        scale_y.go(v, if down { 1.5 } else { 1.0 }, @motion.backdrop_scale_y_spring)
       })
       v.alpha(By(fn() { if disabled() { switch_disabled_alpha } else { 1.0 } })) |> ignore
-      let size = fn() { switch_size(small) }
       v.box(fn(track) {
         track
         .width(By(fn() { Some(size().0) }))
@@ -1734,11 +1738,13 @@ pub fn switch_node(
         .radius(By(fn() { size().1 / 2.0 }))
         .ground(By(fn() {
           let p = theme().p
-          @kit.blend(p.line_strong, p.accent, dmin(1.0, dmax(0.0, knob.shown(track))))
+          @kit.blend(backdrop_track_ink(), p.accent, dclamp(knob.shown(track), 0.0, 1.0))
         }))
         |> ignore
         let d = fn() { size().1 - 2.0 * switch_in }
-        let travel = fn() { size().0 - 2.0 * switch_in - d() }
+        // LiquidToggle is 64×28 with a 40×24 thumb. Scale the proportions in compact locations.
+        let thumb_w = fn() { size().0 * 40.0 / 64.0 }
+        let travel = fn() { size().0 - 2.0 * switch_in - thumb_w() }
         // (from its start on: the window's tree lays its rows out from the left, its knob's way along the track the same)
         let k = fn() { knob.shown(track) }
         // (held, the knob a lens: wider and larger about its middle, the knob fading under it)
@@ -1747,20 +1753,20 @@ pub fn switch_node(
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(kn) {
             kn
-            .width(By(fn() { Some(d()) }))
+            .width(By(fn() { Some(thumb_w()) }))
             .height(By(fn() { Some(d()) }))
             .radius(By(fn() { d() / 2.0 }))
             .ground(Is(0xFFFFFFFFL))
-            .shadow(Is((2.0, 1.0, 0x00000033L)))
+            .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
             .offset(By(fn() { (switch_in + travel() * k(), switch_in) }))
             // (drawn longer along its way as fast as it flies, a capsule, round again as it comes to rest: its way's
             // speed at the moment drawn, its ground alone; none while a finger holds it as a lens)
             .ground_drawn(By(fn() {
               let (_, speed) = knob.motion(track)
               let calm = 1.0 - dmin(1.0, dmax(lens(), 0.0))
-              @motion.velocity_capsule(d(), d(), speed * travel() * calm, 0.0)
+              @motion.velocity_capsule(thumb_w(), d(), speed * travel() * calm, 0.0)
             }))
-            .alpha(By(fn() { 1.0 - dmin(1.0, lens()) }))
+            .alpha(By(fn() { if lens() > 0.0 { 0.0 } else { 1.0 } }))
             |> ignore
           })
           |> ignore
@@ -1770,22 +1776,20 @@ pub fn switch_node(
           o.over(Is(true)).lines_up(Is(Some(Start))) |> ignore
           o.box(fn(l) {
             let lens_wh = fn() {
-              let h = lens()
-              let grow = 1.0 + (@kit.knob_lens_grow - 1.0) * h
-              (d() * (1.0 + (switch_lens_w - 1.0) * h) * grow, d() * grow)
+              (thumb_w() * scale_x.shown(l), d() * scale_y.shown(l))
             }
             l
             .width(By(fn() { Some(lens_wh().0) }))
             .height(By(fn() { Some(lens_wh().1) }))
             .radius(By(fn() { lens_wh().1 / 2.0 }))
-            .glass(By(fn() { Some(glass_knob()) }))
+            .glass(By(fn() { Some(backdrop_toggle(lens())) }))
+            .shadow(Is((4.0, 4.0 / 6.0, 0x0000000DL)))
             .offset(By(fn() {
               let (lw, lh) = lens_wh()
-              let (w, h) = size()
-              let mid = switch_in + d() / 2.0 + travel() * k()
-              (dmax(0.0, dmin(mid - lw / 2.0, w - lw)), (h - lh) / 2.0)
+              let (_, h) = size()
+              let mid = switch_in + thumb_w() / 2.0 + travel() * k()
+              (mid - lw / 2.0, (h - lh) / 2.0)
             }))
-            .alpha(By(fn() { dmin(1.0, lens()) }))
             |> ignore
           })
           |> ignore
@@ -1812,10 +1816,6 @@ pub fn switch_node(
   })
   |> ignore
 }
-
-///|
-/// How wide a held knob's lens is, of the knob (switch_look_of's `lens_w`).
-let switch_lens_w : Double = 1.45
 
 ///|
 /// How far a disabled switch is seen (@kit.switch_look_of's `opacity`).

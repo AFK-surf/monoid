@@ -140,6 +140,8 @@ pub fn avatars_base() -> String
 
 pub let back : @ui.TextStyle
 
+pub fn backdrop_tab(Double) -> @paint.Glass
+
 pub let bad : @ui.TextStyle
 
 pub fn band_mark(@ui.Ctx, String, Int64) -> Unit

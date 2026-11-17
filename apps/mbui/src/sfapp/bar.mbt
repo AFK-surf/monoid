@@ -1455,7 +1455,7 @@ fn bar_tell(told : BarTold, at : Double) -> Unit {
   let row_top = bar_row_top(told.sets.length())
   let sliding = m.drag >= 0.0
   // The bar rises and the notch closes together while a finger has it, returning together on release.
-  m.held.go(if sliding { 1.0 } else { 0.0 }, 420.0, 16.0, at~)
+  m.held.go(if sliding { 1.0 } else { 0.0 }, 1000.0, 2.0 * 1000.0.sqrt(), at~)
   m.up.go(if m.holds || sliding { 1.0 } else { 0.0 }, ball_down, raise_damping, at~)
   if w > 0.0 {
     match m.swap_at(at) {
@@ -1908,7 +1908,7 @@ fn bar_drawn(c : @ui.Ctx, src : Source, ws : Workspace, active : String?, shown 
         let lw = sw * grow
         let lh = sh * grow
         let lens = at(c, bcx - lw / 2.0, m.ball_y.x - lh / 2.0, lw, lh, body=fn() {
-          c.box(style=lens_box, glass=@sf.glass_lens(), fn() {  }) |> ignore
+          c.box(style=lens_box, glass=@sf.backdrop_tab(m.held.x), fn() {  }) |> ignore
         })
         if ball_going {
           let (ba, bs, held) = (m.ball_alpha, m.ball_scale, dmin(1.0, m.held.x))

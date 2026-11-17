@@ -1,10 +1,8 @@
 // One of a few levels in order as nodes of the window's tree (stops' made-once form, seg.mbt: how hard a model thinks
-// on a sheet): a capsule track on the words' tint, a stop for each level across it, a dot each, the one under its thumb
-// gone; its thumb over the stop it is at, a lifted capsule saying that level's name, as wide as the name needs. A
+// on a sheet): a narrow track with interior detents, filled to the current level, and a capsule naming that level. A
 // finger takes the thumb along the track, to the stop under it and leaning a quarter of the way on toward the finger,
 // on the ball's spring (@kit.follow_spring), each stop come to under it felt; let go, the level under it is picked (a
-// tap is a press let go there). Held, the thumb a little larger and the bar's lens of liquid glass grown over it as it
-// fades under the lens (glass_knob), gone as it is let go; where glass is solid, the capsule alone. Read out a slider
+// tap is a press let go there). Held, the thumb grows into a lens; where glass is solid, the capsule alone. Read out a slider
 // of its levels, stepped by a screen reader and by the arrows with the keyboard's focus.
 
 ///|
@@ -107,6 +105,7 @@ pub fn stops_node(
   parent.box(made_for=loc, fn(track) {
     // (across the rest of the row it is in, as an old drag area filling its row: stops' `w=Fill(1.0)`)
     style_node(track, fn() { stops_track.then(@ui.style(h=Fixed(high()))) }, in_row=true)
+    track.ground(Is(0L)) |> ignore
     // (what its caller says, and again as it says a pick did not take: Stops::reset)
     track.reacts(at_start=false, fn() { (chosen(), state.resets.get()) }, fn(k) { told(k.0) })
     let felt = Ref(-1)
@@ -186,32 +185,50 @@ pub fn stops_node(
         }
       }
       let thumb_h = fn() { high() - 2.0 * pad }
-      // its stops, a dot each, the one under its thumb gone (each faded over dur_ms, eased out, from the moment it
-      // comes under it or leaves it)
-      inner.box(fn(row) {
-        row.row(Is(true)).height(By(fn() { Some(thumb_h()) })) |> ignore
-        for i in 0..<@signals.untracked(n) {
-          row.box(fn(c) {
-            style_node(c, fn() { stops_cell })
-            let a = @motion.NodeWay::new(if @signals.untracked(at) == i { 0.0 } else { 1.0 })
-            c.reacts(at_start=false, fn() { at() == i }, fn(under) { a.go_ms(c, if under { 0.0 } else { 1.0 }, dur_ms) })
-            c.box(fn(d) {
-              style_node(d, fn() { stops_dot })
-              d.alpha(By(fn() { a.shown(d) })) |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
-      })
-      |> ignore
-      // its thumb over them: laid out at the stop it goes to, drawn where its spring has it on the way; held, a little
-      // larger and the lens grown over it
       let p = @motion.NodeWay::new(@signals.untracked(goal))
       inner.reacts(at_start=false, goal, fn(g) { p.go(inner, g, @kit.follow_spring) })
+      let rail_h = 10.0
+      inner.box(fn(r) {
+        let span = fn() { dmax(0.0, room.width() - cell()) }
+        r.over(Is(true))
+          .width(By(fn() { Some(span()) }))
+          .height(Is(Some(rail_h)))
+          .radius(Is(rail_h / 2.0))
+          .offset(By(fn() { (cell() / 2.0, (thumb_h() - rail_h) / 2.0) }))
+          .ground(By(backdrop_track_ink))
+        |> ignore
+        r.box(fn(fill) {
+          fill.width(By(fn() { Some(span()) }))
+            .height(Is(Some(rail_h)))
+            .radius(Is(rail_h / 2.0))
+            .ground(By(fn() { alpha(theme().p.accent, 0.45) }))
+            .ground_drawn(By(fn() { { ..@view.ground_as_laid, dw: dclamp(p.shown(fill), 0.0, last()) * cell() - span() } }))
+          |> ignore
+        }) |> ignore
+      }) |> ignore
+      let interior = fn() {
+        let count = n()
+        if count > 2 { Array::makei(count - 2, fn(i) { i + 1 }) } else { [] }
+      }
+      inner.each(interior, fn(i) { i }, at_once=true, fn(dot, i) {
+        let side = @ui.Space::px(S1)
+        let selected = fn() { at() == i.get() }
+        let visible = @motion.NodeWay::new(if @signals.untracked(selected) { 0.0 } else { 1.0 })
+        dot.reacts(at_start=false, selected, fn(on) { visible.go_ms(dot, if on { 0.0 } else { 1.0 }, dur_ms) })
+        style_node(dot, fn() { stops_dot })
+        dot
+        .over(Is(true))
+        .offset(By(fn() { ((i.get().to_double() + 0.5) * cell() - side / 2.0, (thumb_h() - side) / 2.0) }))
+        .alpha(By(fn() { visible.shown(dot) }))
+        |> ignore
+      })
+      |> ignore
+      // The thumb and the rail follow the same spring.
       let held = @motion.NodeWay::new(0.0)
+      let scale = @motion.NodeWay::new(1.0)
       inner.reacts(at_start=false, fn() { finger.get() is Some(_) }, fn(h) {
-        held.go(inner, if h { 1.0 } else { 0.0 }, @motion.lift_spring)
+        held.go(inner, if h { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
+        scale.go(inner, if h { 1.5 } else { 1.0 }, @motion.backdrop_scale_x_spring)
       })
       let name = fn() {
         let a = at()
@@ -220,7 +237,7 @@ pub fn stops_node(
       let tw = fn() {
         inner.words_redone() |> ignore
         let words = node_words_w(name(), node_sp(inner, theme().t.ui), weight=500) + 2.0 * @ui.Space::px(S3)
-        dmin(room.width(), dmax(cell(), words))
+        dmin(room.width(), dmax(40.0, words))
       }
       let left_at = fn(q : Double) -> Double { dclamp((q + 0.5) * cell() - tw() / 2.0, 0.0, dmax(0.0, room.width() - tw())) }
       let x_now = fn(v : @view.View) { left_at(dclamp(p.shown(v), 0.0, last())) }
@@ -240,6 +257,23 @@ pub fn stops_node(
           |> ignore
         })
         |> ignore
+        // The slider lens sits between the rail and the value label.
+        o.show(fn() { !o.glass_solid() }, fn(l) {
+          l.over(Is(true)) |> ignore
+          l.box(fn(lens) {
+            style_node(lens, fn() { stops_ball_room })
+            lens
+            .over(Is(true))
+            .width(By(fn() { Some(tw()) }))
+            .height(By(fn() { Some(thumb_h()) }))
+            .offset(By(fn() { (x_now(lens), 0.0) }))
+            .glass(By(fn() { Some(backdrop_slider(lensed(lens))) }))
+            .alpha(By(fn() { lensed(lens) }))
+            .scale(By(fn() { scale.shown(lens) }))
+            |> ignore
+          })
+          |> ignore
+        })
         o.box(fn(w) {
           style_node(w, fn() { stops_name })
           w
@@ -251,25 +285,6 @@ pub fn stops_node(
           words_node(w, name, fn() { stops_words }) |> ignore
         })
         |> ignore
-        // (the bar's lens as the library has it for a knob this small (glass_knob), drawn only while it is held)
-        o.show(fn() { !o.glass_solid() }, fn(l) {
-          l.over(Is(true)) |> ignore
-          l.box(fn(lens) {
-            style_node(lens, fn() { stops_ball_room })
-            lens
-            .over(Is(true))
-            .width(By(fn() { Some(tw()) }))
-            .height(By(fn() { Some(thumb_h()) }))
-            .offset(By(fn() { (x_now(lens), 0.0) }))
-            .glass(Is(Some(glass_knob())))
-            .alpha(By(fn() { lensed(lens) }))
-            .scale(By(fn() {
-              (1.0 + stops_held_grow * dmax(0.0, held.shown(lens))) * (1.0 + stops_lens_grow * lensed(lens))
-            }))
-            |> ignore
-          })
-          |> ignore
-        })
       })
     })
     .grow(Is(1.0))

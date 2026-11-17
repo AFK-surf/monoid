@@ -90,6 +90,37 @@ pub fn glass_knob() -> @ui.Glass {
 }
 
 ///|
+/// AndroidLiquidGlass’s LiquidToggle material. The white surface recedes through its press spring.
+fn backdrop_toggle(press : Double) -> @ui.Glass {
+  let p = dclamp(press, 0.0, 1.0)
+  @ui.Glass::backdrop_lens(height=5.0 * p, amount=10.0 * p, blur=8.0 * (1.0 - p),
+    tint=alpha(0xFFFFFFFFL, 1.0 - p), solid=0xFFFFFFFFL, highlight=p, ambient=true, dispersion=true)
+}
+
+///|
+/// AndroidLiquidGlass’s LiquidSlider material (used by the model effort slider).
+fn backdrop_slider(press : Double) -> @ui.Glass {
+  let p = dclamp(press, 0.0, 1.0)
+  @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=8.0 * (1.0 - p),
+    tint=alpha(0xFFFFFFFFL, 1.0 - p), solid=theme().p.raised, highlight=p, ambient=true, dispersion=true)
+}
+
+///|
+/// AndroidLiquidGlass’s LiquidBottomTabs selection lens.
+pub fn backdrop_tab(press : Double) -> @ui.Glass {
+  let p = dclamp(press, 0.0, 1.0)
+  let idle = if theme().dark { 0xFFFFFFFFL } else { 0x000000FFL }
+  let tint = over(alpha(idle, 0.1 * (1.0 - p)), alpha(0x000000FFL, 0.03 * p))
+  @ui.Glass::backdrop_lens(height=10.0 * p, amount=14.0 * p, blur=0.0,
+    tint~, solid=theme().p.raised, highlight=p, dispersion=true)
+}
+
+///|
+fn backdrop_track_ink() -> Int64 {
+  if theme().dark { 0x7878805CL } else { 0x78787833L }
+}
+
+///|
 /// The page's primary action in the bar's notch (a "+"): the accent at 86% over a 20px blur, its rim
 /// 0.4 / 0.75 / 0.4.
 pub fn glass_action() -> @ui.Glass {
