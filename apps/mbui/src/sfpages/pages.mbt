@@ -85,6 +85,7 @@ pub fn reset() -> Unit {
   station_page_reset()
   profile_page_reset()
   profiles_overview_reset()
+  share_mask_all.set(false)
   add_profile_start.clear()
   local_menu.val = false
   memory_doc_reset()

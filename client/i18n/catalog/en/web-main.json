@@ -1238,5 +1238,13 @@
   "web-main.mode.group.multi.description": "Message it, or @-mention it in a group, to start; later messages in that chat or group go to that session",
   "web-main.mode.group.single.label": "One shared session",
   "web-main.mode.group.single.description": "Every group and chat it is in shares one session. Suited to an always-on assistant.",
-  "web-main.model.ultrafastNote": "Requires Pro $500 or eligible Enterprise/Edu. Uses 8× included quota or 6× credits."
+  "web-main.model.ultrafastNote": "Requires Pro $500 or eligible Enterprise/Edu. Uses 8× included quota or 6× credits.",
+  "web-main.share.pool": "Share quota chart",
+  "web-main.share.poolReady": "{ready} of {total} accounts ready",
+  "web-main.share.accounts": "Share subscriptions",
+  "web-main.share.accountsCount": "subscription accounts",
+  "web-main.share.mask": "Account names",
+  "web-main.share.maskAll": "Hide all",
+  "web-main.share.maskSome": "Hide partly",
+  "web-main.share.masked": "Hidden"
 }

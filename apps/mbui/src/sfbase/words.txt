@@ -1246,6 +1246,14 @@ web-main.resources.flat
 web-main.resources.grouped
 web-main.resources.none
 web-main.resources.show
+web-main.share.accounts
+web-main.share.accountsCount
+web-main.share.mask
+web-main.share.maskAll
+web-main.share.maskSome
+web-main.share.masked
+web-main.share.pool
+web-main.share.poolReady
 web-main.shortcuts.change
 web-main.shortcuts.fitActual
 web-main.shortcuts.group.composer
