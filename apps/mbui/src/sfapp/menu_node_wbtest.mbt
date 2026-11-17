@@ -19,7 +19,7 @@ fn menu_tester(w : Double, h : Double, platform : Int) -> @ui.Tester {
 /// Items `labels` (`off` the indices not to be chosen now), each counting into `chosen` by its index as chosen.
 fn menu_items_counting(labels : Array[String], chosen : Array[Int], off? : Array[Int] = []) -> Array[@sf.MenuItem?] {
   labels.mapi(fn(i, l) {
-    Some({ label: l, icon: "", danger: false, disabled: off.contains(i), chosen: None, heading: false, further: false, select: fn() { chosen.push(i) } })
+    Some({ label: l, icon: "", danger: false, disabled: off.contains(i), chosen: None, checkbox: false, heading: false, further: false, select: fn() { chosen.push(i) } })
   })
 }
 
@@ -131,10 +131,10 @@ test "大屏, keyboard and mouse: a menu with a heading, a line and an item not 
   let t = menu_tester(1280.0, 800.0, 0)
   let chosen = []
   let items : Array[@sf.MenuItem?] = [
-    Some({ label: "一组", icon: "", danger: false, disabled: false, chosen: None, heading: true, further: false, select: fn() { chosen.push(-1) } }),
-    Some({ label: "复制", icon: "", danger: false, disabled: false, chosen: None, heading: false, further: false, select: fn() { chosen.push(0) } }),
+    Some({ label: "一组", icon: "", danger: false, disabled: false, chosen: None, checkbox: false, heading: true, further: false, select: fn() { chosen.push(-1) } }),
+    Some({ label: "复制", icon: "", danger: false, disabled: false, chosen: None, checkbox: false, heading: false, further: false, select: fn() { chosen.push(0) } }),
     None,
-    Some({ label: "删除", icon: "", danger: true, disabled: true, chosen: None, heading: false, further: false, select: fn() { chosen.push(1) } }),
+    Some({ label: "删除", icon: "", danger: true, disabled: true, chosen: None, checkbox: false, heading: false, further: false, select: fn() { chosen.push(1) } }),
   ]
   @sf.menu(items, from=@sf.at_point(600.0, 300.0))
   t.run_for(@ui.move_most_ms)
@@ -508,7 +508,7 @@ test "大屏, keyboard and mouse: a menu presented beside what was never drawn: 
 /// An item of a menu called `label` (`off` not to be chosen now, `heading` a heading), its words pushed into `done` as
 /// it is chosen.
 fn menu_item_doing(label : String, done : Array[String], off? : Bool = false, heading? : Bool = false) -> @sf.MenuItem? {
-  Some({ label, icon: "", danger: false, disabled: off, chosen: None, heading, further: false, select: fn() { done.push(label) } })
+  Some({ label, icon: "", danger: false, disabled: off, chosen: None, checkbox: false, heading, further: false, select: fn() { done.push(label) } })
 }
 
 ///|

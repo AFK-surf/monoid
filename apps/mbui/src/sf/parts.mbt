@@ -1360,6 +1360,8 @@ pub(all) struct MenuItem {
   danger : Bool
   disabled : Bool
   chosen : Bool?
+  /// An independent on/off item. Its check is read alongside the single-choice items.
+  checkbox : Bool
   heading : Bool
   /// what it does needs more asked first (a menu, a dialog, a page a step further in): a chevron at its end, in place
   /// of words that end in … (the user, 2026-11-17: 「改成用图标来表达，然后文字说全」)
@@ -1375,10 +1377,15 @@ pub fn menu_item_of(
   danger? : Bool = false,
   disabled? : Bool = false,
   chosen? : Bool,
+  checked? : Bool,
   heading? : Bool = false,
   further? : Bool = false,
 ) -> MenuItem {
-  { label, icon, danger, disabled, chosen, heading, further, select }
+  {
+    label, icon, danger, disabled, heading, further, select,
+    chosen: if checked is Some(_) { checked } else { chosen },
+    checkbox: checked is Some(_),
+  }
 }
 
 ///|

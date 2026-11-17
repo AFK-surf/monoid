@@ -1835,9 +1835,18 @@ fn triple_foot_node(
         let head = @sf.t("web-main.model.claudeMode")
         let now = fn() { if flag(field(v(), "draft"), "tui") { "TUI" } else { "Print" } }
         triple_chip_node(x, head, now, fn(c) {
-          @sf.pick(head, [@sf.choice("Print", "Print"), @sf.choice("TUI", "TUI")], @signals.untracked(now), fn(k) {
-            pick_save(src, station, of, { "tui": Json::boolean(k == "TUI") })
-          }, from=Node(c), search=false)
+          let active = @signals.untracked(now)
+          let default_tui = flag(@signals.untracked(v), "defaultTui")
+          @sf.menu([
+            Some(@sf.menu_item_of("Print", fn() { pick_save(src, station, of, { "tui": false }) }, chosen=active == "Print")),
+            Some(@sf.menu_item_of("TUI", fn() { pick_save(src, station, of, { "tui": true }) }, chosen=active == "TUI")),
+            None,
+            Some(@sf.menu_item_of(@sf.t("web-main.model.defaultTui"), fn() {
+              (src.call)("pick.defaultTui", { "tui": Json::boolean(!default_tui) }, fn(res) {
+                if res is Err(e) { toast_later(@sf.t("web-main.pick.failed", args=[("error", error_words(e))])) }
+              })
+            }, checked=default_tui)),
+          ], from=Node(c), title=head)
         })
         |> ignore
       })
@@ -2132,7 +2141,7 @@ fn triple_model_row_node(
         match field(oo, "usual") {
           Some(Object(u)) =>
             for k in ["runtime", "effort", "fast", "speed", "tui", "context"] {
-              p[k] = u.get(k).unwrap_or(Json::null())
+              if of != "new" || k != "tui" { p[k] = u.get(k).unwrap_or(Json::null()) }
             }
           _ => ()
         }

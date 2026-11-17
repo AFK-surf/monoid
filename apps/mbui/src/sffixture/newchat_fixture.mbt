@@ -14,7 +14,8 @@ pub(all) struct NewFix {
   mut runtime : String
   mut effort : String
   mut claude_mode : Bool
-  mut tui : Bool
+  mut default_tui : Bool
+  mut tui : Bool?
   mut speed : String
   mut d_model : String
   mut d_runtime : String
@@ -71,7 +72,8 @@ pub let new_fix : NewFix = {
   runtime: "claude",
   effort: "high",
   claude_mode: false,
-  tui: false,
+  default_tui: false,
+  tui: None,
   speed: "",
   d_model: "claude-opus-5-5",
   d_runtime: "claude",
@@ -661,7 +663,7 @@ pub fn fix_pick() -> Json {
       "model": Json::string(model),
       "runtime": Json::string(runtime),
     }
-    if n.tui && runtime == "claude" { o["tui"] = Json::boolean(true) }
+    if n.tui.unwrap_or(n.default_tui) && runtime == "claude" { o["tui"] = Json::boolean(true) }
     if n.speed != "" { o["speed"] = Json::string(n.speed) }
     if effort != "" {
       o["effort"] = Json::string(effort)
@@ -725,6 +727,7 @@ pub fn fix_pick() -> Json {
     } else {
       ["low", "medium", "high"]
     },
+    "defaultTui": n.default_tui,
     "claudeModeAvailable": n.claude_mode && n.d_runtime == "claude",
     "fastAvailable": n.tall || n.ultrafast,
     "ultrafastAvailable": n.ultrafast && n.d_runtime == "codex" && n.d_model == "gpt-6.2-sol",
@@ -1286,8 +1289,13 @@ pub fn fixture_new_call(f : Fixture, name : String, params : Json) -> Result[Jso
       f.changed()
       Some(Ok(Json::object({})))
     }
+    "pick.defaultTui" => {
+      n.default_tui = field(p, "tui") is Some(True)
+      f.changed()
+      Some(Ok(Json::object({})))
+    }
     "pick.save" => {
-      if field(p, "tui") is Some(b) { n.tui = b is True }
+      if field(p, "tui") is Some(b) { n.tui = Some(b is True) }
       take("speed", fn(s) { n.speed = s })
       match field(p, "fast") {
         Some(True) => n.speed = "fast"

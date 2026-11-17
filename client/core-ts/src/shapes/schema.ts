@@ -3109,6 +3109,7 @@ export const SHAPES: Record<string, Shape> = {
   ], { doc: "A window of an allowance as its chip draws it, its tip saying what is left and when it refills (QuotaWindow's)." }),
   PickView: struct([
     ["fastAvailable", opt("bool")],
+    ["defaultTui", opt("bool"), { doc: "New Claude chats opened on this device default to TUI." }],
     ["claudeModeAvailable", opt("bool"), { doc: "This Claude chat or preset can select its run mode." }],
     ["ultrafastAvailable", opt("bool"), { doc: "The station supports Ultrafast for this Codex model; the account still needs an eligible OpenAI plan." }],
     ["effortDefault", opt("String"), { doc: "The model's own reasoning level where none is picked (the draft's `effort` null), where its runtime says one." }],

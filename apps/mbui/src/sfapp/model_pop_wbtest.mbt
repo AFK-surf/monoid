@@ -532,7 +532,18 @@ test "Claude run mode can be changed in the model settings on small and large sc
       t.run_for(squeeze_opening)
       t.click(item, label=mode)
       t.run_for(squeeze_opening)
-      assert_eq(new_fix.tui, mode == "TUI")
+      assert_eq(new_fix.tui, Some(mode == "TUI"))
+    }
+    let checkbox : @view.Role = if win.0 == "phone" { Button } else { MenuItemCheckbox }
+    for enabled in [true, false] {
+      t.click(Button, label="Print")
+      t.run_for(squeeze_opening)
+      if win.0 != "phone" {
+        assert_eq(t.get(checkbox, label="新对话默认使用 TUI").check, Some(if enabled { Off } else { On }))
+      }
+      t.click(checkbox, label="新对话默认使用 TUI")
+      t.run_for(squeeze_opening)
+      assert_eq(new_fix.default_tui, enabled)
     }
   }
 }

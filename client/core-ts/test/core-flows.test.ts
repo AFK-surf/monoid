@@ -4180,3 +4180,53 @@ test("Claude run mode reaches existing chats, new chats and presets on stations 
     core.close();
   }
 });
+
+test("default TUI applies to new Claude chats and a manual override lasts for one chat", async () => {
+  for (const available of [true, false]) {
+    const { host, core } = await choosing(false, false, null, true, false, false, undefined, available);
+    const ui = core.connect();
+    const at = { station: "ws/st", of: "new" };
+    const values = new Map();
+    subscribe(core, ui, 1, { topic: "pick", ...at });
+    subscribe(core, ui, 2, { topic: "pick", ...at, of: "session:k1" });
+    subscribe(core, ui, 3, { topic: "newChat", scope: "ws" });
+    let id = 10;
+    const act = (name: string, params: object) => ask(host, core, ui, id++, name, params);
+    const create = async () => {
+      await act("newChat.create", { station: at.station });
+      return stationPosted(host, "/sessions").at(-1);
+    };
+    await host.settle();
+    await act("newChat.pick", { scope: "ws", station: "st", model: "claude-opus-5-5", runtime: "claude" });
+    if (available) {
+      await act("pick.save", { ...at, tui: true });
+      assert.equal((await create()).tui, true);
+      assert.equal((await create()).tui, undefined, "the unchecked default is Print");
+    }
+    await act("pick.defaultTui", { tui: true });
+    apply(host, values);
+    assert.equal(v(values, 1).draft.tui === true, available);
+    assert.notEqual(v(values, 2).draft.tui, true);
+    assert.equal((await create()).tui === true, available);
+    if (available) {
+      await act("pick.save", { ...at, tui: false });
+      assert.equal((await create()).tui, undefined);
+      assert.equal((await create()).tui, true);
+      await act("newChat.pick", { scope: "ws", model: "gpt-6-astra", runtime: "codex" });
+      assert.equal((await create()).tui, undefined);
+      await act("newChat.pick", { scope: "ws", model: "claude-sonnet-5", runtime: "claude" });
+      assert.equal((await create()).tui, true);
+      await act("pick.defaultTui", { tui: false });
+      assert.equal((await create()).tui, undefined);
+    }
+    await act("pick.defaultTui", { tui: true });
+    await run(core.inner.data.written);
+    core.close();
+    host.takeEmitted();
+    const again = await Core.create(host, { clock: host.time.clock, sample: 0, wire: () => new HostWire(host) });
+    await host.time.pass(500);
+    await ask(host, again, again.connect(), 1, "newChat.create", { station: at.station });
+    assert.equal(stationPosted(host, "/sessions").at(-1).tui === true, available);
+    again.close();
+  }
+});
