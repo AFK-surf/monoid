@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 96.11 | 118.63 |
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.64 | 65.84 | 95.78 | 120.38 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 2.46 | 3.45 | 14.75 | 35.94 | 57.77 | 31.5 | 65.24 | 95.57 | 113.84 |
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
-| [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.47 | 65.05 | 100.12 | 112.15 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
@@ -89,5 +90,4 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [50b2c3d1d](https://github.com/AFK-surf/monoid/commit/50b2c3d1d8cabb4ea775370f93988b68de8182dd) app, core, station: 设置 › 实验性功能 and the test channe | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
-| [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
