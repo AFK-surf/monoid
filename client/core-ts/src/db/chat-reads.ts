@@ -212,7 +212,7 @@ export const CHAT_READS = {
   } satisfies ChatRead<Overlaid>,
   /// The first `limit` rows of the chat list over `stations`, in its order (the pinned by when, then the latest active;
   /// in a tie, by station as given, then the station's order), of those it shows by their columns (`mine`, its
-  /// visibility, `watching`; never one an agent leads, `led`), but those `apart` (overlaid here: read apart, views.ts #chats); with its place in its
+  /// visibility, `watching`; never one an agent leads, `led`: a search finds those, read whole), but those `apart` (overlaid here: read apart, views.ts #chats); with its place in its
   /// station's order (`ord`). Found of columns alone, walking `chat_recent` in its order (`pinned_at DESC` puts the
   /// pinned first, NULL being the least), the station's place among `stations` and its own order sorted only among the
   /// rows tied on those; the stations and those apart found in strings bound once (`inOrder`, `keyed`), a station's

@@ -448,6 +448,9 @@ function madeDay(d: J, n: number): J {
 }
 
 /// A chat list's key among the windows (Views `chatsWindow`): its topic's params, said or left to their defaults.
+/// Which chats a list is of: those shown (`visible`), those hidden, both (`all`), or both and those an agent leads too
+/// (`found`: a search typed into, the one way to them besides their opener's info; the user, 2026-11-17).
+type Visibility = "visible" | "hidden" | "all" | "found";
 const windowKey = (list: Topic): string => JSON.stringify([list.scope, list.mine === true, list.watching === true, list.hidden === true]);
 
 /// The list with its first `window` rows, in their days, and how many more it has (`more`): what a page shows of it,
@@ -1777,7 +1780,7 @@ export class Views implements Owner {
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
       case "search": {
-        const chats = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "all" : "visible");
+        const chats = this.#chatsWhole(view.scope as string, false, false, String(view.query ?? "").trim() ? "found" : "visible");
         if (chats === undefined || !("ok" in chats)) return chats;
         return searchView(this.#searchSource, stationsOn(wholeRows(chats.ok)), view);
       }
@@ -2118,14 +2121,14 @@ export class Views implements Owner {
 
   /// A scope's chat list as a page shows it: its first `first` rows (its window), and how many more it has (`more`). Read
   /// as a window over the index, never a station's rows whole (#chatsOf `windowed`).
-  #chats(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number): Value | undefined {
+  #chats(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number): Value | undefined {
     return this.#chatsOf(scope, mine, watching, visibility, first, true).value;
   }
 
   /// A scope's chat list whole, every row of it: what search, chatSearch and a share's choice read till each chat has
   /// what finds it kept beside it (scripts/whole-lists.ts). `first`: how many rows a page shows of it first, what is read
   /// of its stations' records for its first screen while they are not loaded (#head).
-  #chatsWhole(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all" = "visible", first = WINDOW_UNTOLD): Value | undefined {
+  #chatsWhole(scope: string, mine: boolean, watching: boolean, visibility: Visibility = "visible", first = WINDOW_UNTOLD): Value | undefined {
     return this.#chatsOf(scope, mine, watching, visibility, first, false).value;
   }
 
@@ -2134,7 +2137,7 @@ export class Views implements Owner {
   /// overlaid), how many it shows and which stations' rows run counted by SQLite (`counts`); a row kept beside its record
   /// taken from the cache where held, its text read only where not. Else the stations' rows whole (#chatsWhole).
   /// With it, how many of its rows run (their `state`: `running`), counted of a windowed list.
-  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number, windowed: boolean): { value: Value | undefined; running: number } {
+  #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): { value: Value | undefined; running: number } {
     const stations = this.#stationsOr(scope);
     if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined, running: 0 };
     let runningRows = 0;
@@ -2178,9 +2181,9 @@ export class Views implements Owner {
       if (mine && !keptWholes.has(raw) && get(raw, "mine") !== true) return false;
       if (this.local.beingArchived(station, raw)) return false;
       const shown = this.local.asChanging(station, raw);
-      if (visibility !== "all" && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
-      // (a chat an agent leads is in no list: its opener's info leads to it, the user 2026-11-17)
-      if (decisions.led(shown)) return false;
+      if ((visibility === "visible" || visibility === "hidden") && (get(shown, "hidden") === true) !== (visibility === "hidden")) return false;
+      // (a chat an agent leads is in no list but a search: its opener's info leads to it, the user 2026-11-17)
+      if (visibility !== "found" && decisions.led(shown)) return false;
       return !watching || present.watches(arr(get(shown, "agents")));
     };
     // (the key each station's rows are kept by beside their records, where they are read so: listRowKey)
@@ -2241,7 +2244,7 @@ export class Views implements Owner {
           }
           if (visibility === "visible" && whole.hidden === true) return null;
           if (visibility === "hidden" && whole.hidden !== true) return null;
-          if (decisions.led(whole)) return null;
+          if (visibility !== "found" && decisions.led(whole)) return null;
           const standIn: J = { lastActiveAt: whole.lastActiveAt, station: s.address, state: h.row!.state };
           if (h.pinnedAt !== null) {
             pinnedAt.set(standIn, h.pinnedAt);
@@ -2264,7 +2267,7 @@ export class Views implements Owner {
           const shown = this.local.asChanging(s.address, raw);
           if (visibility === "visible" && get(shown, "hidden") === true) return null;
           if (visibility === "hidden" && get(shown, "hidden") !== true) return null;
-          if (decisions.led(shown)) return null;
+          if (visibility !== "found" && decisions.led(shown)) return null;
           // Only a frozen row (db/account.ts) is surely as it was when its row was made.
           const keepable = isObject(shown) && Object.isFrozen(shown);
           const kept = keepable ? this.#rowsMade.get(shown) : undefined;
@@ -2446,7 +2449,7 @@ export class Views implements Owner {
   /// (`items`: a row kept beside its record under its station's key in `keys`, as a HeadRow, else its record; at most
   /// `first` of them in all), then its rows overlaid here (`apart`: what local.ts overlaid names, every one, each its
   /// record); and of each its count and whether one of its rows runs, of the rows the window is of but those overlaid.
-  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: "visible" | "hidden" | "all", first: number, keys: Map<string, string>): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }> } {
+  #window(stations: StationInfo[], mine: boolean, watching: boolean, visibility: Visibility, first: number, keys: Map<string, string>): { items: Map<string, J[]>; apart: Set<J>; counts: Map<string, { n: number; runs: boolean; running: number }> } {
     const data = this.#core.data;
     const addresses = stations.map((s) => s.address);
     const threads: string[] = [];
@@ -2456,7 +2459,7 @@ export class Views implements Owner {
       for (const t0 of o.threads) threads.push(`${a}\u0001${t0}`);
       for (const k of o.sessions) sessions.push(`${a}\u0001${k}`);
     }
-    const p = { stations: addresses, mine, hidden: visibility === "hidden" ? 1 : visibility === "all" ? 2 : 0, watching, threads, sessions, limit: first } as const;
+    const p = { stations: addresses, mine, hidden: visibility === "hidden" ? 1 : visibility === "all" || visibility === "found" ? 2 : 0, watching, threads, sessions, limit: first } as const;
     const items = new Map<string, J[]>();
     const counts = new Map<string, { n: number; runs: boolean; running: number }>();
     const apart = new Set<J>();

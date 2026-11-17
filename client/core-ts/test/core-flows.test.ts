@@ -1881,10 +1881,10 @@ test("the_chats_a_few_words_find_are_a_view_of_the_list", async () => {
   core.close();
 });
 
-// A chat an agent opened to lead itself (chat_create for me) is the agent's to manage: it shows in no list, the `@`
-// menu or a search, reached only from its opener's info (the user, 2026-11-17). One opened for its person is theirs and
-// listed as any other.
-test("a_chat_an_agent_leads_is_in_no_list_and_one_it_opened_for_its_person_is", async () => {
+// A chat an agent opened to lead itself (chat_create for me) is the agent's to manage: it shows in no list nor the `@`
+// menu, reached from its opener's info and found by a search (the user, 2026-11-17). One opened for its person is
+// theirs and listed as any other.
+test("a_chat_an_agent_leads_is_in_no_list_but_a_search_and_one_it_opened_for_its_person_is_listed", async () => {
   const row = (id: string, title: string, at: number) => ({ id, session: id, thread: at, title, agents: [{ key: id }], last: null, unread: false, mine: true, lastActiveAt: at, connect: null, origin: null });
   const answers: J = { ...base(), ...chatsOf([row("lead", "部署", 1), row("part", "部署 子任务", 3), row("theirs", "部署 给你的", 2)]) };
   answers["GET /chats?marks=1"] = { ...answers["GET /chats?marks=1"], openers: { part: { session: "lead", title: "部署", led: true }, theirs: { session: "lead", title: "部署", led: false } } };
@@ -1893,6 +1893,8 @@ test("a_chat_an_agent_leads_is_in_no_list_and_one_it_opened_for_its_person_is", 
   subscribe(core, ui, 1, { topic: "chats", scope: "ws" });
   subscribe(core, ui, 2, { topic: "chatSearch", scope: "ws", query: "部署", limit: 8 });
   subscribe(core, ui, 3, { topic: "chats", scope: "ws", hidden: true });
+  subscribe(core, ui, 4, { topic: "search", scope: "ws", query: "部署" });
+  subscribe(core, ui, 5, { topic: "search", scope: "ws", query: "" });
   await host.settle();
   const values = new Map();
   apply(host, values);
@@ -1900,6 +1902,9 @@ test("a_chat_an_agent_leads_is_in_no_list_and_one_it_opened_for_its_person_is", 
   assert.deepEqual(listed(1), ["theirs", "lead"]);
   assert.deepEqual(v(values, 2).items.map((i: J) => i.id), ["theirs", "lead"]);
   assert.deepEqual(listed(3), []);
+  const found = (n: number) => JSON.stringify(v(values, n));
+  assert.ok(found(4).includes("部署 子任务"), "a search finds it");
+  assert.ok(!found(5).includes("部署 子任务"), "but nothing typed lists it");
   // Still the device's: opened by its key, as its opener's info opens it.
   assert.equal((core.inner.data.chat("ws/st", "part") as J)?.opener?.led, true);
   core.close();
