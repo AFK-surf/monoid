@@ -32,6 +32,9 @@ fn init {
     ("src/sfapp/daily_paths_wbtest.mbt", 89156),
     ("src/sfapp/decide_wbtest.mbt", 159102),
     ("src/sfapp/downloads_wbtest.mbt", 89156),
+    // (every screen on an iPhone Duo's two screens on its side: what Studio's run held at most, a chat's pictures
+    // swiped, 2026-11-17)
+    ("src/sfapp/duo_side_wbtest.mbt", 2831020),
     ("src/sfapp/duo_wbtest.mbt", 960538),
     ("src/sfapp/emit_wbtest.mbt", 89156),
     ("src/sfapp/fast_down_wbtest.mbt", 57758),

@@ -24,7 +24,9 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     let r = reading()
     // The reader can itself be inside the viewer's modal layer. Its panel must take input above that layer, while
     // presenters (whose serials start at 1) still open above the panel.
-    o.over(Is(true)).stacked(Is(0)) |> ignore
+    // (clear of the column of the system's bars down the window's trailing edge, an iPhone Duo's on its side, as the
+    // reader under it is: native_clear)
+    o.over(Is(true)).stacked(Is(0)).padding(By(fn() { (0.0, 0.0, native_clear(), 0.0) })) |> ignore
     o.box(fn(top) { top.height(By(fn() { Some(viewer_bar_under()) })) |> ignore }) |> ignore
     reader_layout_docked(o, close(r))
   })
@@ -139,12 +141,20 @@ pub fn reader_layout_docked(parent : @view.View, close : () -> Unit, fits? : Boo
 
 ///|
 /// The layout's controls in `col` (desk_layout's as it was): in the panel's 280 (320 less 20 either side), or a sheet's
-/// width less 20 either side (`narrow`, the face and the indent side by side there); on paper `p`.
+/// width less 20 either side (`narrow`, the face and the indent side by side there: the sheet between the system's bars
+/// down the window's sides, View::clear, as sheet_node lays it); on paper `p`.
 #callsite(autofill(loc))
 fn layout_body(col : @view.View, narrow : Bool, p : () -> ReaderPaper, loc~ : SourceLoc) -> Unit {
   let style = fn() { (viewer_host().reader_style)() }
   let set = fn(change : ReaderStyleChange) { (viewer_host().set_reader_style)(change) }
-  let inner = fn() { if narrow { dmax(desk_none, col.window().0 - 2.0 * desk_layout_in) } else { desk_layout_inner } }
+  let inner = fn() {
+    if narrow {
+      let (_, right, _, left) = col.clear()
+      dmax(desk_none, col.window().0 - left - right - 2.0 * desk_layout_in)
+    } else {
+      desk_layout_inner
+    }
+  }
   let swatch = fn() { (inner() - desk_papers_gaps) / desk_papers_row }
   let half = fn() { (inner() - desk_pair_gap) / 2.0 }
   // (each option at least half its half less its track's room, a sheet's; the panel's 138: made again as that changes)

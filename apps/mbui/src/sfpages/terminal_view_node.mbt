@@ -112,11 +112,14 @@ pub fn terminal_node(
   let asked = terminal_asked.val
   terminal_asked.val = ""
   let wide = width is Some(_)
+  // (clear of the column of the system's bars down the window's trailing edge, an iPhone Duo's on its side: what it
+  // shows and what is pressed in it, its grid's columns as wide as that leaves; its grounds on under it)
   let pane_w = fn() {
-    match width {
+    let w = match width {
       Some(wf) => wf()
       None => v.window().0
     }
+    dmax(0.0, w - @sf.native_clear())
   }
   let base_cell = terminal_cell()
   let full : @signals.Signal[Bool] = @signals.signal(false)
@@ -613,7 +616,19 @@ pub fn terminal_node(
       focus=false,
     )
   }
-  v.grow(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })) |> ignore
+  v.grow(Is(1.0)).ground(By(fn() { @sf.theme().p.bg })).padding(By(fn() { (0.0, 0.0, @sf.native_clear(), 0.0) })) |> ignore
+  // (the terminal's own dark ground on under the column beside its screen, from under its head to its foot, as the
+  // page's is beside its head)
+  v.box(fn(o) {
+    o
+    .over(Is(true))
+    .row(Is(true))
+    .padding(By(fn() { (0.0, head_h(), 0.0, foot_h()) }))
+    |> ignore
+    o.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    o.box(fn(g) { g.width(By(fn() { Some(@sf.native_clear()) })).ground(Is(terminal_ground)) |> ignore }) |> ignore
+  })
+  |> ignore
   // Top header bar (hidden in full screen)
   v.show(fn() { !full.get() }, fn(hd) {
     @sf.opened_head_node(

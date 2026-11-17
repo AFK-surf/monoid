@@ -47,8 +47,14 @@ pub fn reader_node(
     on_back()
   }
   let paper = fn() { reader_paper((viewer_host().reader_style)().paper) }
-  parent.box(made_for=loc, fn(root) {
-    root.over(Is(true)).ground(By(fn() { paper().ground })) |> ignore
+  parent.box(made_for=loc, fn(page) {
+    page.over(Is(true)).ground(By(fn() { paper().ground })) |> ignore
+    // (over the whole window, what it shows and its chrome clear of the column of the system's bars down the window's
+    // trailing edge, an iPhone Duo's on its side (native_clear), its paper on under it, as a film's or a page's opened
+    // over it is (sfbase's viewer_tree.mbt); in a tab, the tab's room)
+    let clear = fn() { if beside { 0.0 } else { native_clear() } }
+    let room = page.box(fn(r) { r.over(Is(true)).row(Is(true)).padding(By(fn() { (0.0, 0.0, clear(), 0.0) })) |> ignore })
+    let root = room.box(fn(m) { m.grow(Is(1.0)) |> ignore })
     // laid out 小屏 (the window's tier): a phone's, its own bars that a tap brings; not in a tab
     let small = fn() { !beside && layout(root.window().0) is Small }
     // (the panel beside the text: on 大屏 and 中屏 always, in a tab where it has room for both; on 小屏 never, its
@@ -59,7 +65,7 @@ pub fn reader_node(
     }
     let tab_w = match width {
       Some(w) => w
-      None => fn() { root.window().0 }
+      None => fn() { dmax(0.0, root.window().0 - clear()) }
     }
     reader_start(root, r)
     if !beside {
@@ -112,9 +118,9 @@ pub fn reader_node(
         fn(c, phone) {
           c.over(Is(true)) |> ignore
           if phone.untracked() {
-            reader_narrow_chrome(c, r, file, back_label, back, paper)
+            reader_narrow_chrome(c, r, file, back_label, back, paper, tab_w)
           } else {
-            reader_desk_chrome(c, r, file, back_label, back, move_beside, paper)
+            reader_desk_chrome(c, r, file, back_label, back, move_beside, paper, tab_w)
           }
         },
       )
@@ -621,7 +627,7 @@ fn reader_chunk_node(
 /// read and its size; 目录 · 搜索 · 排版 · 移到侧边 · 下载), gone as the text is read on down while no panel is open; what
 /// was found, 10 under it over the text's middle, clear of the panel; the hairline along the foot; the contents' or the
 /// search's panel docked at the right under the bar (the layout's: reader_layout_nodes). The pointer at the window's
-/// top brings the bar back.
+/// top brings the bar back. The bar's middle by how wide the reader is laid out (`width`, reader_node's).
 #callsite(autofill(loc))
 fn reader_desk_chrome(
   parent : @view.View,
@@ -631,6 +637,7 @@ fn reader_desk_chrome(
   back : () -> Unit,
   move_beside : (() -> Bool, () -> Unit)?,
   paper : () -> ReaderPaper,
+  width : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   let ink = fn() { paper_viewer_ink(paper()) }
@@ -690,7 +697,7 @@ fn reader_desk_chrome(
     fn() { r.bar_hidden.get() && r.panel.get() == NoPanel },
     fn(_) { 1.0 },
     fn() { (viewer_host().room)().0 },
-    fn() { parent.window().0 },
+    width,
     ink,
     fn(row, corner) {
       let tool = fn(icon : String, label : String, panel : ReaderPanel) {
@@ -1145,7 +1152,8 @@ fn reader_beside_chrome(
 /// the name with its chapter and how far read under it, 搜索 and 下载; at the foot the chapter with 上一章 and 下一章, a
 /// track with a knob to go anywhere and how far, 目录 and 排版. While they are away, how far through it is: a hairline
 /// along the foot. What was found under the top bar while it shows, at the top while it is away. The contents and the
-/// search: sheets from the window's foot, on the page's own ground (the layout's: reader_layout_nodes).
+/// search: sheets from the window's foot, on the page's own ground (the layout's: reader_layout_nodes). The bars as wide
+/// as the reader is laid out (`width`, reader_node's: clear of the column of the system's bars) leaves them.
 #callsite(autofill(loc))
 fn reader_narrow_chrome(
   parent : @view.View,
@@ -1154,6 +1162,7 @@ fn reader_narrow_chrome(
   back_label : () -> String,
   back : () -> Unit,
   paper : () -> ReaderPaper,
+  width : () -> Double,
   loc~ : SourceLoc,
 ) -> Unit {
   let room = fn() { (viewer_host().room)() }
@@ -1212,7 +1221,7 @@ fn reader_narrow_chrome(
       row.box(fn(bar) {
         style_node(bar, fn() { narrow_top_box })
         bar
-        .width(By(fn() { Some(dmin(row.window().0 - narrow_bar_side, narrow_top_most)) }))
+        .width(By(fn() { Some(dmin(width() - narrow_bar_side, narrow_top_most)) }))
         .glass(By(fn() { Some(narrow_glass(paper())) }))
         .alpha(By(fn() { shown(bar) }))
         .offset(By(fn() { (0.0, -narrow_bars_step * (desk_whole - shown(bar))) }))
@@ -1298,7 +1307,7 @@ fn reader_narrow_chrome(
     o.box(fn(row) {
       style_node(row, fn() { narrow_bar_row })
       row.box(fn(card) {
-        let w = fn() { dmin(row.window().0 - narrow_bar_side, narrow_foot_most) }
+        let w = fn() { dmin(width() - narrow_bar_side, narrow_foot_most) }
         style_node(card, fn() { narrow_foot_box })
         card
         .width(By(fn() { Some(w()) }))

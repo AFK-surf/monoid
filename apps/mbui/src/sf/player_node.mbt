@@ -83,7 +83,7 @@ fn PlayerNode::new(p : @kit.Media, v : PlayerView, embedded : Bool, inset : Doub
     held: @signals.signal(-1.0, same=same_d),
     taken_down: @signals.signal(false, same=same_b),
     grabbing: @signals.signal(false, same=same_b),
-    listing: @signals.signal(v.listing, same=same_b),
+    listing: v.list_shown,
     ended_off: @signals.signal(v.ended_off),
     embedded,
     inset,

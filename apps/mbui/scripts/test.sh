@@ -249,7 +249,7 @@ for t in $targets; do
     # (and 60-68 cut at 64: that run 249 s, part 3/4 268 s of its 5 minutes on main e18b38e4 43719996435)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
-      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
+      src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5
       src/sfapp/switches_still_wbtest.mbt:@20@25@29@34@38@43@47@52@56@60@64@68@73@79@90@123@146@176@205@248)
     pages=()
@@ -266,12 +266,13 @@ for t in $targets; do
       if [ -n "${MBUI_TEST_FPS:-}" ]; then
         # (real_size's, every screen opened on a workspace of real size and given its changes, the same: a sweep of every
         # screen, its bars set on the default run; 40-102 s a run at the four rates, #5407 42976047326)
+        # (duo_side's, every screen's controls held clear of an iPhone Duo's column on its side, at rest: the same)
         # (switches_still's, every screen's switches pressed, its table set on the default run: main's switches job's alone)
         # (corners' and contrast's too, said here since a branch's changed files at a rate (APP_GROUP=1/1, every run on the
         # one): main's rates never ran them (their groups are the default rate's alone), and a branch that changed
         # corners_wbtest ran its three at 120 and 60 with the motion counted on one runner, cut at its 5 minutes,
         # lock-upgrade-page 43559278519, 2026-11-14)
-        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
+        case $f in */screens_wbtest.mbt | */squeeze_said_wbtest.mbt | */words_large_wbtest.mbt | */duo_side_wbtest.mbt | */real_size_wbtest.mbt | */switches_still_wbtest.mbt | */corners_wbtest.mbt | */contrast_wbtest.mbt) continue ;; esac
       fi
       # (in k runs of its tests by their index: moon test FILE --index FROM-TO, the tests in the file's order)
       m=$(grep -c '^test "' "$f")

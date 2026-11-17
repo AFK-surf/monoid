@@ -99,8 +99,9 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
     go_ms=0.0,
     fn(across, layer, look) {
       let field : Ref[@view.View?] = Ref(None)
-      // (32 short of the window at most: room round it however narrow the frame is)
-      let room = fn() { dmin(switcher_w, layer.window().0 - switcher_side - switcher_side) }
+      // (32 short of the room the system's bars leave across the window at most (a column of the app's tabs down a
+      // side, an iPhone Duo's on its side: over_room, as confirm_panel's): room round it however narrow the frame is)
+      let room = fn() { dmin(switcher_w, @sf.over_room(layer).0 - switcher_side - switcher_side) }
       across.box(fn(p) {
         @sf.style_node(p, fn() { switcher_panel.then(@ui.style(w=Fixed(room()))) }, in_row=true)
         p

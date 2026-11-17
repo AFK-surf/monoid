@@ -108,7 +108,8 @@ let bar_key_faint : Double = 0.35
 /// The place's capsule in `parent` (bar_field's): taking what the bar leaves, 160 at least, as high as the theme's bar
 /// field, round, on the faint ground (typed in: the card's, the accent's half round it); what `body` makes in it, at its
 /// end what `end` makes in a press's room (reload), how far the page came along its foot (`part`: its share and colour,
-/// none: nothing). The capsule.
+/// none: nothing). The capsule. `least`: how narrow its room comes to where nothing beside it leaves the bar (its
+/// words cut short then), the place's 168 elsewhere.
 #callsite(autofill(loc))
 pub fn bar_field_node(
   parent : @view.View,
@@ -116,10 +117,11 @@ pub fn bar_field_node(
   body : (@view.View) -> Unit,
   end? : ((@view.View) -> Unit)? = None,
   part? : () -> (Double, @ui.Color)? = fn() { None },
+  least? : Double = bar_field_least,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(room) {
-    style_node(room, fn() { bar_field_room }, in_row=true)
+    style_node(room, fn() { if least == bar_field_least { bar_field_room } else { bar_field_room.then(@ui.style(min_w=Fixed(least))) } }, in_row=true)
     room.box(fn(cap) {
       style_node(cap, fn() {
         let look = (if editing() { bar_field_editing } else { bar_field_box }).then(@ui.style(h=Fixed(theme().bars.field)))

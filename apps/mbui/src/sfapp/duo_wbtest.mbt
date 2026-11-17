@@ -211,6 +211,59 @@ test "a film played on an iPhone Duo, 全屏 in the system's bars: the window fi
 }
 
 ///|
+test "a drive's film or song played on an iPhone Duo on its side: its close, 全屏 (a film's) and download in the system's bars, the player's own bar none; closed from there, the tabs back" {
+  for size in [(951.0, 669.0), (466.0, 678.0)] {
+    let (w, h) = size
+    for mode in ["player-video", "player-audio"] {
+      let at = "\{w}x\{h} \{mode}"
+      new_run()
+      let src = fixture(mode)
+      open_fixture_over(mode, src)
+      let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform=1, nav_able=true)
+      t.post(@hostapi.system_channel, "{\"bars\":{\"top\":0,\"bottom\":20,\"left\":0,\"right\":84}}")
+      t.run_for(@ui.move_most_ms)
+      let said = t.nav_said()
+      for id in ["\"bare\":true", "lead/over/close", "over/download"] {
+        assert_true(said.contains(id), msg="\{at}: the bars handed hold no \{id}: \{said}")
+      }
+      assert_eq(said.contains("over/full"), mode == "player-video", msg="\{at}: \{said}")
+      // (none of the player's own bar: its back)
+      assert_true(t.semantics().iter().all(fn(s) { s.hidden || s.label != @sf.t("common.back") }), msg=at)
+      // 选集 there, a film's folder having others: opened and closed from the system's bars, lit while open
+      if mode == "player-video" {
+        assert_true(said.contains("over/list"), msg="\{at}: \{said}")
+        let key = match app.nav.top() {
+          DrivePlay(d) => @sf.playing_for(reader_key(d)).media.key()
+          _ => ""
+        }
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/list\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_true(@sf.player_listing(key), msg="\{at} \{key}: \{t.nav_said()}")
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/list\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_false(@sf.player_listing(key), msg=at)
+      }
+      // 全屏 there, the inner screen's: the window filled, the bars put away; back out of it first, its actions again
+      if mode == "player-video" && w > 600.0 {
+        t.post(@hostapi.system_channel, "{\"nav\":\"over/full\"}")
+        t.run_for(@ui.move_most_ms)
+        assert_true(@sf.player_full_native(), msg=at)
+        assert_false(t.nav_said().contains("lead/over/close"), msg="\{at}: \{t.nav_said()}")
+        t.back()
+        t.run_for(@ui.move_most_ms)
+        assert_false(@sf.player_full_native(), msg=at)
+        assert_true(app.nav.top() is DrivePlay(_), msg=at)
+        assert_true(t.nav_said().contains("lead/over/close"), msg="\{at}: \{t.nav_said()}")
+      }
+      t.post(@hostapi.system_channel, "{\"nav\":\"lead/over/close\"}")
+      t.run_for(@ui.move_most_ms)
+      assert_false(app.nav.top() is DrivePlay(_), msg=at)
+      assert_true(t.nav_said().contains("\"bare\":false"), msg="\{at}: \{t.nav_said()}")
+    }
+  }
+}
+
+///|
 test "a picture looked at elsewhere: its own bar, as it was" {
   let t = native_chat(951.0, 669.0, false, mode="chat-preview-image")
   t.run_for(@ui.move_most_ms)

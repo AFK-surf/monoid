@@ -223,6 +223,9 @@ pub fn drive_reader_node(parent : @view.View, src : Source, at : DriveAt, back :
 /// The file `at.path` of `at.root` on `at.station`, played (the web's Player: opened where it was left on this device,
 /// the subtitle beside it) as nodes in `parent` (all of its room), its folder's others to go to (`go`: by name, as its
 /// folder lists them), back to its folder by name (`back`). The file as its folder lists it as the player is made.
+/// Beside the system's bars (an iPhone Duo's), its name and its actions in them (drive_player_native) and it laid out
+/// clear of their column down the window's trailing edge, its stage's ground on under it, as a chat's film is
+/// (viewer_tree.mbt); filling the window beside them (@sf.player_fills_native), edge to edge.
 pub fn drive_player_node(parent : @view.View, src : Source, at : DriveAt, back : () -> Unit, go : (DriveAt) -> Unit) -> Unit {
   let root = at.root.unwrap_or("")
   let dir = dv_parent(at.path)
@@ -233,11 +236,20 @@ pub fn drive_player_node(parent : @view.View, src : Source, at : DriveAt, back :
     .map(fn(e) { { name: e.name, size: e.size, mtime: e.mtime, mime: e.mime, kind: e.kind, dir: e.dir } })
   }
   let m = @sf.player_opened(parent, reader_key(at), file, siblings)
+  let width = fn() { @sf.player_stage_w(parent.window().0) }
+  drive_player_native(parent, at, file, m, fn() { @sf.playlist_for(file, siblings()).length() > 1 }, width, back)
+  // (its stage's ground under all of it, the column's room too)
+  let picture = !(file.kind == "audio" || file.mime.has_prefix("audio/"))
+  parent.box(fn(g) { g.over(Is(true)).ground(By(fn() { @sf.media_ink(picture).stage })) |> ignore }) |> ignore
+  let room = parent.box(fn(r) {
+    r.over(Is(true)).row(Is(true)).padding(By(fn() { (0.0, 0.0, parent.window().0 - width(), 0.0) })) |> ignore
+  })
+  let stage = room.box(fn(s) { s.grow(Is(1.0)) |> ignore })
   @sf.player_node(
-    parent,
+    stage,
     m,
     file,
-    fn() { parent.window() },
+    fn() { (width(), parent.window().1) },
     back_label=fn() { viewer_folder_label(src, at.station, root, dir) },
     on_back=back,
     still=fn() { "" },
@@ -246,6 +258,57 @@ pub fn drive_player_node(parent : @view.View, src : Source, at : DriveAt, back :
     move_beside=fn() { None },
     list=fn() { @sf.playlist_for(file, siblings()) },
     on_go=fn(other) { go({ station: at.station, root: at.root, path: dv_join(dir, other) }) },
+  )
+  |> ignore
+}
+
+///|
+/// A drive's file `file` played as page `at` in `n`, its player `m` laid out `width()` wide, beside the system's bars
+/// (an iPhone Duo's): its name and its actions in them in place of the player's own bar, which it draws none of there,
+/// as a chat's film's are (viewer_frame.mbt's vf_native_media): close at their lead (a film turned on its side by the
+/// player upright again first, as back does), 全屏 a film's, 选集 where its folder has others of its kind (`many`),
+/// 下载; said as any of that changes, kept as said while it is the page on top (@sf.native_over_up). Filling the
+/// window beside them (@sf.player_fills_native), none: the bars put away, its name none either. Elsewhere nothing.
+fn drive_player_native(
+  n : @view.View,
+  at : DriveAt,
+  file : @sf.ViewerFile,
+  m : @kit.Media,
+  many : () -> Bool,
+  width : () -> Double,
+  back : () -> Unit,
+) -> Unit {
+  // (its view's, by its player's key: the drive's player is one at a time)
+  let key = m.key()
+  n.reacts(
+    fn() {
+      let w = width()
+      (@sf.native_on(), @sf.player_fills_native(w), w, many(), @sf.player_listing(key))
+    },
+    fn(said) {
+      let (on, full, w, many, listing) = said
+      if !on ||
+        !@sf.native_over_up(if full { "" } else { file.name }, alive=fn() { app.nav.top() == DrivePlay(at) }, owner="drive-play") ||
+        full {
+        return
+      }
+      @sf.native_over_act("close", @sf.t("common.close"), "close", fn() {
+        if m.is_sideways() {
+          m.upright()
+        } else {
+          @sf.player_full_native_set(false)
+          back()
+        }
+      }, lead=true)
+      if file.kind == "video" {
+        let (words, lit, act) = @sf.player_full_act(m, w)
+        @sf.native_over_act("full", words, "landscape", act, active=lit)
+      }
+      if many {
+        @sf.native_over_act("list", @sf.t("web-pages.drive.player.list"), "list", fn() { @sf.player_list_toggle(key) }, active=listing)
+      }
+      @sf.native_over_act("download", @sf.t("web-main.preview.download"), "download", fn() { (file.save)() })
+    },
   )
   |> ignore
 }

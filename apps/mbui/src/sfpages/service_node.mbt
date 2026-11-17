@@ -303,9 +303,11 @@ fn service_foot_bar_node(
       )
     })
     back_forward_node(row, site, tips)
+    // (nothing of this row leaves: the address gives way, its words cut short, down to what the row leaves it, a
+    // panel beside the column of the system's bars on an iPhone Duo's outer screen on its side as narrow as 318)
     address_or_marking_node(row, src, p, site, fixed, end=Some(fn(e) { reload_key_node(e, site, tips) }), part=fn() {
       load_part(load_now(src, p, station, fixed))
-    })
+    }, least=0.0)
     mark_key_node(row, p, site, tips)
     row.pick(at_once=true, fn() { p.moving.get() }, fn(k, moving) {
       k.row(Is(true)) |> ignore
@@ -442,10 +444,12 @@ fn address_or_marking_node(
   fixed : Bool,
   end? : ((@view.View) -> Unit)? = None,
   part? : () -> (Double, @ui.Color)? = fn() { None },
+  least? : Double = @sf.bar_field_least,
 ) -> Unit {
-  // (its least the place's (@sf.bar_field_node's 160): what may leave the bar leaves before it gives way)
+  // (its least the place's (@sf.bar_field_node's 160): what may leave the bar leaves before it gives way; `least`
+  // where nothing of its row leaves)
   parent.box(fn(slot) {
-    slot.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(@sf.bar_field_least))).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
+    slot.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(least))).row(Is(true)).lines_up(Is(Some(Middle))) |> ignore
     slot.pick(
       at_once=true,
       fn() {
@@ -461,7 +465,7 @@ fn address_or_marking_node(
           })
           |> ignore
         } else {
-          address_node(k, p, site, fixed, end, part)
+          address_node(k, p, site, fixed, end, part, least)
         }
       },
     )
@@ -479,6 +483,7 @@ fn address_node(
   fixed : Bool,
   end : ((@view.View) -> Unit)?,
   part : () -> (Double, @ui.Color)?,
+  least : Double,
 ) -> Unit {
   let typing = @signals.signal(false)
   @sf.bar_field_node(
@@ -542,6 +547,7 @@ fn address_node(
     },
     end~,
     part~,
+    least~,
   )
   |> ignore
 }

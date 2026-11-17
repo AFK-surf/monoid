@@ -239,6 +239,9 @@ priv struct PlayerView {
   /// where a player's nodes have its picture now (player_node's: at the moment of what asks, else of what the window's
   /// tree last did), while they live
   mut placed_by : (() -> (Double, Double, Double, Double)?)?
+  /// 选集 open, as its nodes show it (PlayerNode's `listing`, the same signal: what reads it from outside, the system's
+  /// bars' 选集 lit, follows it, and what sets it there opens or closes it: player_list_toggle)
+  list_shown : @signals.Signal[Bool]
 }
 
 ///|
@@ -287,6 +290,42 @@ pub fn player_full_act(p : @kit.Media, width : Double) -> (String, Bool, () -> U
 }
 
 ///|
+/// How wide the window's player is laid out in a window `width` wide: clear of the column of the system's bars down its
+/// trailing edge (an iPhone Duo's on its side: native_clear), but where it fills the window beside them
+/// (player_fills_native).
+pub fn player_stage_w(width : Double) -> Double {
+  if player_fills_native(width) {
+    width
+  } else {
+    dmax(0.0, width - native_clear())
+  }
+}
+
+///|
+/// Whether 选集 is open in the player played as `key`, followed: where its action is the system's bars' (an iPhone
+/// Duo's), lit as the player's own 选集 is.
+pub fn player_listing(key : String) -> Bool {
+  match player_views.get(key) {
+    Some(v) => v.list_shown.get()
+    None => false
+  }
+}
+
+///|
+/// 选集 opened or closed in the player played as `key`, as its own 选集 does (PlayerNode::list_open): where its action is
+/// the system's bars' (an iPhone Duo's). Nothing where its view is not open.
+pub fn player_list_toggle(key : String) -> Unit {
+  match player_views.get(key) {
+    Some(v) => {
+      let on = !v.list_shown.untracked()
+      v.listing = on
+      v.list_shown.set(on)
+    }
+    None => ()
+  }
+}
+
+///|
 /// What a finger dragging the picture does.
 #derive(Eq)
 priv enum PlayerDrag {
@@ -317,6 +356,7 @@ fn view_for(key : String, margin? : Double = 0.0) -> PlayerView {
         ended_off: "",
         file: "",
         placed_by: None,
+        list_shown: @signals.signal(false, same=fn(a, b) { a == b }),
       }
       player_views[key] = v
       v

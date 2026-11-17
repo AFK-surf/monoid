@@ -105,8 +105,9 @@ fn pane_pages(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
 fn pane_gate_node(g : @view.View, src : Source) -> Unit {
   g.ground(By(fn() { @sf.theme().p.bg })) |> ignore
   g.pick(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, _id) {
-    // (all of the pane, as the page it is in the place of)
-    p.over(Is(true)) |> ignore
+    // (all of the pane, as the page it is in the place of; what waits clear of the column of the system's bars down
+    // the window's trailing edge, an iPhone Duo's on its side (@sf.native_clear), the page's ground on under it)
+    p.over(Is(true)).padding(By(fn() { (0.0, 0.0, @sf.native_clear(), 0.0) })) |> ignore
     guard @signals.untracked(fn() { @sfbase.workspace_in_view(src).0 }) is Some(w) else { return }
     let core = settings_core(src, w)
     @sfpages.lock_wait_node(p, core, @settings.here_of(core, w.id, w.name)).grow(Is(1.0)) |> ignore

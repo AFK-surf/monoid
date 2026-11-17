@@ -2171,11 +2171,7 @@ fn Viewer::player_flight(self : Viewer, src : Source, node : @view.View, t : Dou
 /// bars (@sf.player_fills_native), else clear of their column (@sf.native_clear), as the old frame's preview layer laid
 /// it out.
 fn player_width(w : Double) -> Double {
-  if @sf.player_fills_native(w) {
-    w
-  } else {
-    dmax(0.0, w - @sf.native_clear())
-  }
+  @sf.player_stage_w(w)
 }
 
 ///|
