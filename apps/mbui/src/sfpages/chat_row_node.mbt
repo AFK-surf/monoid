@@ -128,7 +128,7 @@ pub fn chat_row_node(
     // held by a finger, it lifts off the list toward the finger (iOS's context menu): a little as its time shows, all
     // the way once its menu opens, back down as the menu goes (@sf.lift_of's), a card of the raised ground over the
     // menu's scrim, drawn in from the screen's sides (row_lifted, @sf.lift_over's)
-    let lift = @sf.EdgeWay::new(0.0)
+    let lift = @motion.NodeWay::new(0.0)
     let lifted = fn() { if finger { dmin(1.0, dmax(0.0, lift.shown(slot))) } else { 0.0 } }
     if finger {
       slot.reacts(
@@ -141,7 +141,7 @@ pub fn chat_row_node(
             0.0
           }
         },
-        fn(to) { lift.go_by(slot, to, @motion.lift_spring) },
+        fn(to) { lift.go(slot, to, @motion.lift_spring) },
       )
       slot
       .ground(By(fn() {
@@ -197,12 +197,12 @@ pub fn chat_row_node(
     // and a while after (left_lit_ms), then fades (left_fade_ms); one row so, the chat last in view; in a side column,
     // beside the chat, it fades as a mouse's does (dur_ms), and the row pressed goes from its press's ground to the
     // selected one's over dur_ms, never through none (the user, 2026-11-07: active 那个状态好像切换的时候颜色会稍微有些闪)
-    let left = @sf.EdgeWay::new(0.0)
+    let left = @motion.NodeWay::new(0.0)
     // (a finger's press's ground, beside the chat: on at once, off over dur_ms)
-    let pressed = @sf.EdgeWay::new(0.0)
+    let pressed = @motion.NodeWay::new(0.0)
     let off = tray.off
-    let hand = @sf.EdgeWay::new(0.0)
-    let chosen = @sf.EdgeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
+    let hand = @motion.NodeWay::new(0.0)
+    let chosen = @motion.NodeWay::new(if @signals.untracked(on) { 1.0 } else { 0.0 })
     let ground = fn() {
       let p = t().p
       if finger {
@@ -382,7 +382,8 @@ pub fn chat_row_node(
           }
           m.box(fn(s) {
             s.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-            s.pick(fn() { state() is Some(_) }, fn(p, has) {
+            // (its state or its last message: the one in the other's place at once, the row's line no way of its own)
+            s.switch_by(fn() { state() is Some(_) }, fn(p, has) {
               if has {
                 p.box(fn(b) {
                   state_at.val = Some(b)
@@ -525,7 +526,7 @@ pub fn chat_row_node(
     if swipes {
       swipe_node(holder, src, item, tray, here, ask_whole, then_whole, come_back)
     }
-    row.reacts(fn() { @sf.lit_in_node(hover_in) }, fn(h) { hand.go(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
+    row.reacts(fn() { @sf.lit_in_node(hover_in) }, fn(h) { hand.go_ms(row, if h { 1.0 } else { 0.0 }, @sf.dur_ms) })
     // (a pointer come to rest over it: its whole row asked for its time, its 归档 and its menu; gone, let go of)
     if !finger {
       row.reacts(fn() { @sf.lit_in_node(hover_in) }, fn(h) {
@@ -546,7 +547,7 @@ pub fn chat_row_node(
       let (k, o) = now
       let to = if o { 1.0 } else { 0.0 }
       if k == chosen_for.val {
-        chosen.go(row, to, @sf.dur_ms)
+        chosen.go_ms(row, to, @sf.dur_ms)
       } else {
         chosen.put(to)
       }
@@ -593,7 +594,7 @@ pub fn chat_row_node(
           if lit {
             pressed.go_from(row, 1.0, 1.0, @motion.Snap(0.0))
           } else {
-            pressed.go(row, 0.0, @sf.dur_ms)
+            pressed.go_ms(row, 0.0, @sf.dur_ms)
           }
         })
       }
@@ -606,10 +607,10 @@ pub fn chat_row_node(
           let since = row.cause_at()
           left.go_from(row, 1.0, 1.0, @motion.Snap(0.0))
           if at == Whole {
-            row.at_moment(since + left_lit_ms, fn() { left.go(row, 0.0, left_fade_ms, ease=Leave) }) |> ignore
+            row.at_moment(since + left_lit_ms, fn() { left.go_ms(row, 0.0, left_fade_ms, ease=Leave) }) |> ignore
           } else {
             // (beside its chat, the list never covered: no page slides off it, its ground goes as a mouse's does)
-            left.go(row, 0.0, @sf.dur_ms)
+            left.go_ms(row, 0.0, @sf.dur_ms)
           }
         }
         was_on.val = (k, o)
@@ -684,7 +685,7 @@ pub fn chat_row_node(
 /// decided (its tray's 撤销 coming in with its way out, from how far it had gone then: `since`), a swipe's archive not
 /// asked yet (`pending`: it flies off first), on its way back over its tray (`going_back`); what is due at its way's end.
 priv struct Tray {
-  off : @sf.EdgeWay
+  off : @motion.NodeWay
   past : @signals.Signal[Bool]
   out : @signals.Signal[Bool]
   parked : @signals.Signal[Bool]
@@ -698,7 +699,7 @@ priv struct Tray {
 ///|
 fn Tray::new() -> Tray {
   {
-    off: @sf.EdgeWay::new(0.0),
+    off: @motion.NodeWay::new(0.0),
     past: @signals.signal(false),
     out: @signals.signal(false),
     parked: @signals.signal(false),
@@ -748,7 +749,7 @@ fn Tray::away(
   self.since.set(gone_at)
   self.decided.set(true)
   self.out.set(true)
-  self.off.go_by(n, -w, spec, velocity?)
+  self.off.go(n, -w, spec, velocity?)
   self.due = n.at_moment(self.off.end(), fn() {
     self.due = fn() {  }
     self.parked_now()
@@ -771,7 +772,7 @@ fn Tray::back(self : Tray, n : @view.View, w : Double, done : () -> Unit) -> Uni
     self.parked.set(false)
     self.off.go_from(n, -w, 0.0, @motion.move_spring)
   } else {
-    self.off.go_by(n, 0.0, @motion.move_spring)
+    self.off.go(n, 0.0, @motion.move_spring)
   }
   self.due = n.at_moment(self.off.end(), fn() {
     self.due = fn() {  }
@@ -862,8 +863,8 @@ fn tray_node(
   undo : () -> Unit,
   keys? : (() -> Bool, (@view.View) -> Unit),
 ) -> Unit {
-  let fill = @sf.EdgeWay::new(0.0)
-  holder.reacts(fn() { tray.past.get() }, fn(p) { fill.go(holder, if p { 1.0 } else { 0.0 }, swipe_fill_ms) })
+  let fill = @motion.NodeWay::new(0.0)
+  holder.reacts(fn() { tray.past.get() }, fn(p) { fill.go_ms(holder, if p { 1.0 } else { 0.0 }, swipe_fill_ms) })
   // (the row's own inset where its list stands: where its mark and title start, list_row_in's)
   let pad = fn() {
     match at {
@@ -1031,7 +1032,7 @@ fn swipe_node(
     tray.due = sw.at_moment(off.end(), fn() { tray.out.set(false) })
   }
   let back = fn(vx : Double) {
-    off.go_by(sw, 0.0, @motion.move_spring, velocity=vx * 1000.0)
+    off.go(sw, 0.0, @motion.move_spring, velocity=vx * 1000.0)
     rests()
   }
   sw
@@ -1105,16 +1106,6 @@ fn swipe_node(
     }
   })
   |> ignore
-}
-
-///|
-/// Whether `item`'s row was swiped off as it leaves its list (out of sight already: no copy of it left behind), its
-/// mark let go then.
-fn swiped_gone(item : ChatItem) -> Bool {
-  let key = swiped_key(item)
-  guard rows.swiped_off.contains(key) else { return false }
-  rows.swiped_off.remove(key)
-  true
 }
 
 ///|

@@ -1,0 +1,6 @@
+# A chat on a phone (MBUI_FIXTURE=chat MBUI_WIN=390x844): its composer at rest, a capsule at its foot (sfpages'
+# composer_node with MBUI_CHAT_PAGE=composed, the old view's with MBUI_CHAT_PAGE=nodes).
+timeout 20000
+until 发消息
+wait 900
+exit

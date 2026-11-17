@@ -16,6 +16,15 @@ pub fn chats_of(src : Source, scope : String, filter : String) -> (ChatsView?, S
 }
 
 ///|
+/// Whether list `filter` of workspace `scope` shows what the core answered it now, not what it last said before it was
+/// let go of (`lasting`, shown again at once till the core answers: TopicState::kept) nor nothing yet. What changes in
+/// it is the list changing only from then (sfpages' RowsMotion: the answer's first value taken at once).
+pub fn chats_live(src : Source, scope : String, filter : String) -> Bool {
+  let (_, topic) = chats_read.read(src, chats_params(scope, filter))
+  topic.value is Some(_) && topic.version >= -1
+}
+
+///|
 /// List `filter` of workspace `scope` as it is asked of the core (chats_params): what a replay of a run from before the
 /// list's rows were what they draw reads a chat's whole row out of (sfreplay's source.mbt).
 pub fn chats_asked(scope : String, filter : String) -> Map[String, Json] {

@@ -141,6 +141,32 @@ test("a_shared_things_link_goes_as_an_attachment_and_the_words_around_it_as_word
   assert.equal(splitShared("https://www.bilibili.com/video/BV1x?spm_id_from=333.1&vd_source=ab&t=30", null).link?.url, "https://www.bilibili.com/video/BV1x?t=30");
 });
 
+test("a_shared_link_keeps_balanced_parentheses_without_taking_the_surrounding_closer", () => {
+  const url = "https://en.wikipedia.org/wiki/Function_(mathematics)";
+  assert.deepEqual(splitShared(url, "Function"), { link: { url, title: "Function", site: "en.wikipedia.org" }, words: "" });
+  assert.deepEqual(splitShared(`Read (${url}) next`, "Function"), { link: { url, title: "Function", site: "en.wikipedia.org" }, words: "Read () next" });
+  assert.equal(splitShared("https://example.org/a_(b_(c))?utm_source=app#part_(1)", null).link?.url, "https://example.org/a_(b_(c))#part_(1)");
+  assert.equal(splitShared("https://example.org/a_%28b%29", null).link?.url, "https://example.org/a_%28b%29");
+  assert.equal(splitShared("https://) https://example.org/a_(b)", null).link?.url, "https://example.org/a_(b)");
+  assert.deepEqual(splitShared("Read (https://example.org/a) next", "Page"), { link: { url: "https://example.org/a", title: "Page", site: "example.org" }, words: "Read () next" });
+});
+
+test("a_parenthesized_page_url_shared_into_a_chat_is_sent_whole", async () => {
+  const { host, core } = await started(answers());
+  const ui = core.connect(), values = new Map();
+  const url = "https://en.wikipedia.org/wiki/Function_(mathematics)";
+  try {
+    await ask(host, core, ui, 1, "shareIn.open", { scope: "ws", source: url, title: "Function", station: "ws/st", id: "k7" });
+    subscribe(core, ui, 2, { topic: "composer", key: "ws/st:k7" });
+    await host.settle();
+    apply(host, values);
+    assert.deepEqual(v(values, 2).files.map((f: J) => f.link), [{ url, title: "Function", site: "en.wikipedia.org" }]);
+    assert.equal(v(values, 2).text, "");
+    const taken = await ask(host, core, ui, 3, "composer.take", { key: "ws/st:k7" });
+    assert.equal(taken.text, `Function\n${url}`);
+  } finally { core.close(); }
+});
+
 test("a_shared_things_site_and_message", () => {
   assert.equal(siteOf("https://m.bilibili.com/video/BV1"), "bilibili.com");
   assert.equal(siteOf("【标题】 https://b23.tv/abc"), "bilibili.com");

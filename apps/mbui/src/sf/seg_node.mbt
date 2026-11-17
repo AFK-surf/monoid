@@ -107,9 +107,13 @@ pub fn seg_node(
           x
         }
         let w_of = fn(k : Int) { widths().get(k).unwrap_or(0.0) }
-        // (where its thumb is along the track, as its way has it: off to the chosen one's place as that changes, from where
-        // it is then)
-        let way = @motion.Way::new(@signals.untracked(fn() { x_of(chosen()) }))
+        // (where its thumb is along the track and how wide, as its cover has it: off from where it set out to the
+        // chosen one's place and width together as that changes, on move_spring; where only the columns' widths change
+        // (the words' size, their language, the room), there at once)
+        let n = @signals.untracked(labels).length()
+        let first = @signals.untracked(chosen)
+        let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
+        let way = @motion.NodeWay::new(1.0)
         let ink = fn() { theme().p.text }
         @headless.radio_group(
           inner,
@@ -127,28 +131,31 @@ pub fn seg_node(
             // side by side: the thumb, under the options' words, and the options
             g.show(fn() { !menu() }, fn(strip) {
               strip.row(Is(true)).gap(Is(segmented_gap)) |> ignore
-              // (the thumb's way said at the moment the chosen one changes, from where it is then; where only where it is
-              // changes, its columns another width (the words' size, their language, the room), there at once)
-              let last = Ref(@signals.untracked(chosen))
-              strip.reacts(fn() { (chosen(), x_of(chosen())) }, fn(at) {
-                let (k, x) = at
-                if k == last.val {
-                  way.put(x)
-                } else {
-                  way.go(x, @motion.move_spring, at=strip.cause_at())
+              strip.reacts(chosen, fn(k) {
+                let (from, to) = cover.untracked()
+                if k != to {
+                  let p = way.value_at(strip.cause_at())
+                  cover.set((@ui.cover_set_out(from, to, p), k))
+                  way.go_from(strip, 0.0, 1.0, @motion.move_spring)
                 }
-                last.val = k
               })
-              // the thumb: where its way has it, as each frame draws it while it goes, as wide as the chosen one
+              let rect = fn() {
+                let (from, to) = cover.get()
+                let p = way.shown(strip)
+                @ui.cover_rect(from, to, p, fn(k) {
+                  if k >= 0 && k < n {
+                    Some((x_of(k), 0.0, w_of(k), segmented_h))
+                  } else {
+                    None
+                  }
+                })
+              }
+              // the thumb: where its cover has it, as each frame draws it while it goes, its width moving with its x
               strip.box(fn(th) {
-                let x = fn() {
-                  way.said()
-                  way.value_at(th.drawn_while(fn(t) { way.goes_at(t) }))
-                }
                 th
                 .over(Is(true))
-                .offset(By(fn() { (x() - segmented_pad, 0.0) }))
-                .width(By(fn() { Some(w_of(chosen())) }))
+                .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(segmented_pad) - segmented_pad, 0.0) }))
+                .width(By(fn() { rect().map(fn(r) { r.2 }) }))
                 .height(Is(Some(segmented_h)))
                 .radius(Is(segmented_corner))
                 .ground(By(fn() { @ui.tree_theme().lifted }))
@@ -389,8 +396,8 @@ pub fn seg_fill_node(
           // only as it is let go on it, @kit.toggle_group's)
           let fingered : @signals.Signal[Int] = @signals.signal(-1)
           let lensed = fn() { !strip.glass_solid() && fingered.get() >= 0 }
-          let held = EdgeWay::new(0.0)
-          strip.reacts(lensed, fn(down) { held.go_by(strip, if down { 1.0 } else { 0.0 }, @motion.lift_spring) })
+          let held = @motion.NodeWay::new(0.0)
+          strip.reacts(lensed, fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.lift_spring) })
           let lens = fn() { if strip.glass_solid() { 0.0 } else { held.shown(strip) } }
           // the thumb's and the lens's cover (@ui.Ctx::cover's): the item it goes to, what it set out from (items by their
           // shares) and how far it is from there (0 to 1, on a cover's spring), sent on as it goes to another item, from
@@ -399,11 +406,11 @@ pub fn seg_fill_node(
           let at = fn() { if lensed() { fingered.get() } else { chosen() } }
           let first = @signals.untracked(at)
           let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
-          let way = EdgeWay::new(1.0)
+          let way = @motion.NodeWay::new(1.0)
           strip.reacts(at, fn(k) {
             let (from, to) = cover.untracked()
             if k != to {
-              let p = way.way.value_at(strip.cause_at())
+              let p = way.value_at(strip.cause_at())
               cover.set((@ui.cover_set_out(from, to, p), k))
               way.go_from(strip, 0.0, 1.0, @motion.cover_spring)
             }

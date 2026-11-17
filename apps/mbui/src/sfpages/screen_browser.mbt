@@ -198,9 +198,10 @@ fn tabs_row_node(m : @view.View, pg : ScreenPage) -> Unit {
 }
 
 ///|
-/// Whether the view's bar is laid out narrow: beside its chat in a panel's tab, or in a narrow window (`v`'s), followed.
-fn view_narrow(v : @view.View, u : ScreenUi) -> Bool {
-  u.in_tab || v.window().0 < browser_wide_at
+/// Whether the view's bar is laid out narrow: in a narrow window (`v`'s), followed. (Beside its chat with keyboard and
+/// mouse the panel's bar is its own, narrow whatever the window: screen_tab_bar_node.)
+fn view_narrow(v : @view.View, _u : ScreenUi) -> Bool {
+  v.window().0 < browser_wide_at
 }
 
 ///|
@@ -212,7 +213,10 @@ fn browser_bar_node(b : @view.View, pg : ScreenPage) -> Unit {
     @sf.style_node(bar, fn() { browser_bar_box })
     bar.box(fn(row) {
       @sf.style_node(row, fn() { browser_tools_row })
-      browser_tools_node(row, pg, narrow=fn() { view_narrow(row, pg.u) })
+      let narrow = fn() { view_narrow(row, pg.u) }
+      // (控制中心 offers → and ⟳ where it is narrow: center_node)
+      row.reacts(narrow, fn(n) { pg.u.narrow_bar = n })
+      browser_tools_node(row, pg, narrow~)
     })
     |> ignore
   })
@@ -239,7 +243,12 @@ fn browser_tools_node(row : @view.View, pg : ScreenPage, narrow~ : () -> Bool) -
     |> ignore
   })
   address_bar_node(row, pg)
-  row.show(at_once=true, fn() { narrow() && !view_tabs(s).0.is_empty() }, fn(k) { tabs_button_node(k, pg) })
+  // (the tabs in a row of their own only in the viewer's bar with keyboard and mouse: screen_viewer_bar_node)
+  let tabs = fn() {
+    s.said.get() |> ignore
+    !view_tabs(s).0.is_empty()
+  }
+  row.show(at_once=true, fn() { (narrow() || @sf.soft_keyboard() || pg.in_tab) && tabs() }, fn(k) { tabs_button_node(k, pg) })
 }
 
 ///|

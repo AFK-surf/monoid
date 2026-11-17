@@ -9,9 +9,12 @@
 // a workspace joined, without one the station here brought up to date and run as the service). Included by
 // src/stillfail/linux_engine.c (mbui's src/host on the include path).
 #include <errno.h>
+#include <poll.h>
 #include <signal.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/syscall.h>
 #include <unistd.h>
 #include <glib/gstdio.h>
 #include <gtk/gtk.h>
@@ -117,7 +120,20 @@ static jv local_json(const char *data, const char *name) {
   return v;
 }
 
-static int local_alive(double pid) { return pid > 0 && (kill((pid_t)pid, 0) == 0 || errno == EPERM); }
+// alive: there and not ended (a process ended but not yet waited for by its parent, a zombie, is not)
+static int local_alive(double pid) {
+  if (pid <= 0 || !(kill((pid_t)pid, 0) == 0 || errno == EPERM)) return 0;
+  char path[64], s[512];
+  snprintf(path, sizeof path, "/proc/%d/stat", (int)pid);
+  FILE *f = fopen(path, "r");
+  if (!f) return 1;
+  size_t n = fread(s, 1, sizeof s - 1, f);
+  fclose(f);
+  s[n] = 0;
+  // (its state just after its name's last ")": a name may hold blanks and brackets)
+  const char *p = strrchr(s, ')');
+  return !(p && p[1] && (p[2] == 'Z' || p[2] == 'X'));
+}
 
 // `"key":"value"` (and a comma before it)
 static void local_field(GString *o, const char *key, const char *value) {
@@ -217,6 +233,7 @@ typedef struct {
   char *channel;  // the installer's release channel (STILLFAIL_CHANNEL), NULL none
   int move;       // bin/stillfail's move: its "NN%" lines how far (local_percent), its other lines not shown, how it
                   // ended its exit ("move.<n>", 2 to 8: bin/stillfail says each; else "move:" and its last line)
+  pid_t wait_pid; // a process argv stops (kill): waited for to end before the job is done, 0 none
 } local_job;
 
 // `argv` run, what it says read as it comes (the installer's steps: its last line, local_said); NULL when it ended well,
@@ -225,10 +242,17 @@ static char *local_run(local_job *j) {
   GSubprocessLauncher *l = g_subprocess_launcher_new(G_SUBPROCESS_FLAGS_STDOUT_PIPE | G_SUBPROCESS_FLAGS_STDERR_MERGE);
   if (j->channel) g_subprocess_launcher_setenv(l, "STILLFAIL_CHANNEL", j->channel, TRUE);
   if (j->move) g_subprocess_launcher_unsetenv(l, "STILLFAIL_DATA");
+  // (the process to stop held before it is signalled, so its end is told however soon it comes: the kernel wakes a
+  // pidfd as the process ends; kill only sends the signal)
+  int pfd = -1;
+#ifdef SYS_pidfd_open
+  if (j->wait_pid > 0) pfd = (int)syscall(SYS_pidfd_open, j->wait_pid, 0);
+#endif
   GError *e = NULL;
   GSubprocess *p = g_subprocess_launcher_spawnv(l, (const char *const *)j->argv, &e);
   g_object_unref(l);
   if (!p) {
+    if (pfd >= 0) close(pfd);
     char *why = g_strdup(e ? e->message : "not started");
     g_clear_error(&e);
     return why;
@@ -256,6 +280,14 @@ static char *local_run(local_job *j) {
   int ok = g_subprocess_get_successful(p);
   int code = g_subprocess_get_if_exited(p) ? g_subprocess_get_exit_status(p) : -1;
   g_object_unref(p);
+  if (pfd >= 0) {
+    // timeout: a process that takes the signal and does not end is reported as it is, still running
+    if (ok) {
+      struct pollfd f = {pfd, POLLIN, 0};
+      poll(&f, 1, 5000);
+    }
+    close(pfd);
+  }
   fprintf(stdout, "linux: %s exited %d\n", j->argv[0], code);
   fflush(stdout);
   if (ok) {
@@ -288,7 +320,7 @@ static gpointer local_thread(gpointer arg) {
 }
 
 // `verb` begun with `argv` (taken) on a thread of its own, unless something is being done already ("busy")
-static void local_begin_job(const char *verb, char **argv, const char *channel, int move) {
+static void local_begin_job(const char *verb, char **argv, const char *channel, int move, pid_t wait_pid) {
   g_mutex_lock(&local_lock);
   if (local_doing[0]) {
     local_set(&local_failed, "busy");
@@ -305,11 +337,12 @@ static void local_begin_job(const char *verb, char **argv, const char *channel, 
   j->argv = argv;
   j->channel = g_strdup(channel);
   j->move = move;
+  j->wait_pid = wait_pid;
   g_thread_unref(g_thread_new("station", local_thread, j));
   station_changed();
 }
 
-static void local_begin(const char *verb, char **argv, const char *channel) { local_begin_job(verb, argv, channel, 0); }
+static void local_begin(const char *verb, char **argv, const char *channel) { local_begin_job(verb, argv, channel, 0, 0); }
 
 // 更改存储位置's folder chosen (the system's dialog): its data moved there by its release's own command
 static void local_move_picked(GObject *dialog, GAsyncResult *r, gpointer data) {
@@ -319,7 +352,7 @@ static void local_move_picked(GObject *dialog, GAsyncResult *r, gpointer data) {
     char **argv = g_new0(char *, 5);
     argv[0] = g_strdup("sh"), argv[1] = g_build_filename(data, "app", "bin", "stillfail", NULL);
     argv[2] = g_strdup("move"), argv[3] = folder;
-    local_begin_job("move", argv, NULL, 1);
+    local_begin_job("move", argv, NULL, 1, 0);
   }
   if (f) g_object_unref(f);
   g_object_unref(dialog);
@@ -345,7 +378,7 @@ static const char *local_uninstall_sh =
     "fi\n"
     "for pid in $(cat \"$1/stillfail.pid\" 2>/dev/null || :; sed -n 's/.*\"pid\":[ ]*\\([0-9][0-9]*\\).*/\\1/p' \"$1/run/station.json\" 2>/dev/null); do\n"
     "  [ \"$pid\" -gt 1 ] 2>/dev/null && ps -o args= -p \"$pid\" 2>/dev/null | grep -qF -- \"$1\" && kill \"$pid\" 2>/dev/null || continue\n"
-    "  for _ in 1 2 3 4 5; do kill -0 \"$pid\" 2>/dev/null || break; sleep 1; done\n"
+    "  for _ in 1 2 3 4 5; do case \"$(ps -o stat= -p \"$pid\" 2>/dev/null | tr -d ' ')\" in \"\"|Z*) break ;; esac; sleep 1; done\n"
     "done\n"
     "if [ -L \"$4\" ]; then case \"$(readlink \"$4\")\" in \"$1/app/\"*) rm -f \"$4\" ;; esac; fi\n"
     "rm -rf \"$1/app\" \"$1/app.old\" \"$1/app.failed\" \"$1/node\" \"$1/helper\" \"$1/run\" \"$1/stillfail.pid\" || exit 1\n"
@@ -417,7 +450,7 @@ static void sf_station_act(moonbit_string_t action) {
       if (!strcmp(a, "stop") && local_alive(pid)) {
         char **argv = g_new0(char *, 3);
         argv[0] = g_strdup("kill"), argv[1] = g_strdup_printf("%d", (int)pid);
-        local_begin(a, argv, NULL);
+        local_begin_job(a, argv, NULL, 0, (pid_t)pid);
       } else {
         local_fail(local_alive(pid) ? "byHand" : "noService");
       }

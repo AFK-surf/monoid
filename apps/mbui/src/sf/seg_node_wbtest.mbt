@@ -237,3 +237,37 @@ test "a choice of a few as nodes: each option as wide as its words drawn, digits
   })
   assert_eq(seg_shown(t, Radio).map(fn(s) { s.rect.2 }), [widest + 2.0 * segmented_in, widest + 2.0 * segmented_in])
 }
+
+///|
+test "a choice of a few as nodes short of room with unequal fitted option widths: switching choice interpolates both thumb x and width smoothly instead of snapping width on the first frame" {
+  let chosen = @signals.signal(0)
+  let labels = ["短", "一串更长的选项词"]
+  let room = @signals.signal(190.0)
+  let t = @ui.Tester::new(fn(_c) {  }, w=400.0, h=200.0, platform=0)
+  t.check_looks(false)
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    root.box(fn(b) {
+      b.width(By(fn() { Some(room.get()) })) |> ignore
+      seg_node(b, fn() { labels }, fn() { chosen.get() }, fn(i) { chosen.set(i) }) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let radios = seg_shown(t, Radio)
+  assert_true(radios.length() == 2 && radios[1].rect.2 > radios[0].rect.2 + 10.0, msg="unequal fitted widths: \{Repr(radios)}")
+  let w0 = radios[0].rect.2
+  let w1 = radios[1].rect.2
+  let thumb_w = fn() {
+    t.drawn_rects().filter(fn(d) { d.4 == @ui.tree_theme().lifted && d.3 == segmented_h })[0].2
+  }
+  assert_true((thumb_w() - w0).abs() < 0.5)
+  let (rx, ry, rw, rh) = radios[1].rect
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  t.run_for(@ui.move_most_ms / 16.0)
+  let mid_w = thumb_w()
+  assert_true(mid_w > w0 + 1.0 && mid_w < w1 - 1.0, msg="thumb width mid-move \{mid_w} between \{w0} and \{w1}")
+  t.run_for(@ui.move_most_ms)
+  assert_true((thumb_w() - w1).abs() < 0.5)
+}

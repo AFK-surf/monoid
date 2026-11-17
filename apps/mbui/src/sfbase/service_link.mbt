@@ -325,7 +325,7 @@ pub fn link_port(src : Source, p : ServicePage, site : @ui.NativeView, m : Json)
       let path = text(Some(m), "path")
       let headers = link_headers(field(Some(m), "headers"))
       let body = match field(Some(m), "body") {
-        Some(String("")) | None => Some(Bytes::new(0))
+        Some(String("")) | None => Some(Bytes::make(0, b'\x00'))
         Some(String(s)) => @codec.from_base64_exact(s)
         _ => None
       }
@@ -483,7 +483,7 @@ pub(all) struct Tagging {
 
 ///|
 pub fn tagging_new() -> Tagging {
-  { start: Buffer(size_hint=4096), placed: false }
+  { start: Buffer(capacity=4096), placed: false }
 }
 
 ///|
@@ -498,10 +498,10 @@ pub fn tagging_take(t : Tagging, b : Bytes, last : Bool) -> Bytes {
   let at = match tag_place(so_far, whole) {
     Some(i) => i
     None if whole => 0
-    None => return Bytes::new(0)
+    None => return Bytes::make(0, b'\x00')
   }
   t.placed = true
-  let out = Buffer(size_hint=so_far.length() + 64)
+  let out = Buffer(capacity=so_far.length() + 64)
   out.write_bytes(so_far[0:at].to_owned())
   out.write_bytes(@utf8.encode(page_js_tag))
   out.write_bytes(so_far[at:].to_owned())

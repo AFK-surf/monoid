@@ -93,7 +93,8 @@ fn made_by(f : MbtFile) -> Array[Made] {
       continue
     }
     let (i, label, least) = match c.name {
-      "pick" => (1, "make", 2)
+      // (switch_by: a pick at once, its make the same)
+      "pick" | "switch_by" => (1, "make", 2)
       "show" => (1, "then", 2)
       "each" => (2, "row", 3)
       "each_of" => (1, "row", 2)
@@ -163,7 +164,7 @@ fn first_name(f : MbtFile, c : Call) -> String? {
 
 ///|
 /// The methods of a View that make nodes in it
-let node_makers : Array[String] = ["box", "show", "pick", "each", "each_of", "scrolls_window", "by_room"]
+let node_makers : Array[String] = ["box", "show", "pick", "switch_by", "each", "each_of", "scrolls_window", "by_room"]
 
 ///|
 /// What a view's call says of how it is laid out, given it: no node made
@@ -223,7 +224,7 @@ fn lint_pick_loop(f : MbtFile, made : Array[Made], given : Map[Int, (Call, Strin
         }
       }
     }
-    guard inner is Some(m) && (m.kind == "pick" || m.kind == "show") else { continue }
+    guard inner is Some(m) && (m.kind == "pick" || m.kind == "switch_by" || m.kind == "show") else { continue }
     // the lambdas between, outermost first: each made in a view of what holds it
     let views = [m.view]
     let mut made_now = true

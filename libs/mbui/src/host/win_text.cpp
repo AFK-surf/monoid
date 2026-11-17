@@ -987,7 +987,7 @@ static bool fine_ensure(Target *t, double scale, int fw, int fh) {
 // cover advected outward, first order: A + δ·|∇A|, the gradient by central differences): a horizontal, a vertical, a
 // diagonal and a curve grow alike, the middle of a narrow counter (where the gradient is nothing, its two sides
 // pulling apart) does not fill, and a quarter pixel's shift is a whole fine pixel's, so each phase is the same picture
-// moved (hostapi's atlas keeps five).
+// moved (hostapi's atlas keeps four).
 static bool draw_fine(IDWriteTextLayout *l, double sc, double x0, double y0, double dx, int pw, int ph, double grow,
                       Target *t, uint8_t *px) {
   int fw = pw * FINE, fh = ph * FINE;
@@ -1057,8 +1057,9 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
   // The bitmap's edges on whole pixels from the baseline, a pixel of room
   // around: the baseline then falls on a pixel row of every glyph's bitmap,
   // so glyphs placed on the same rounded baseline line up.
+  // (across, where its ink is once moved by its phase's `dx`: a pixel of room on both sides at every phase)
   double base = cb->base;
-  int px0 = (int)floor(cb->x0 * sc) - 1, px1 = (int)ceil(cb->x1 * sc) + 1;
+  int px0 = (int)floor((cb->x0 + dx) * sc) - 1, px1 = (int)ceil((cb->x1 + dx) * sc) + 1;
   int py0 = (int)floor((cb->y0 - base) * sc) - 1, py1 = (int)ceil((cb->y1 - base) * sc) + 1;
   double x0 = px0 / sc;
   double y0 = base + py0 / sc;
@@ -1135,19 +1136,19 @@ static void draw_cluster(IDWriteTextLayout *l, const ClusterBounds *cb, double s
 }
 
 // ---- drawing ahead: the glyphs a frame shaped (text.mbt glyphs_ahead) and the remaining subpixel phases of any
-// glyph first drawn on the main thread, drawn by threads of their own across all 5 horizontal quarter-pixel phases ----
+// glyph first drawn on the main thread, drawn by threads of their own across all 4 horizontal quarter-pixel phases ----
 
-#define SUB_COUNT 5
-#define SUB_ALL 0x1F
+#define SUB_COUNT 4
+#define SUB_ALL 0x0F
 
-// Horizontal quarter-pixel shift (in device pixels) encoded in bits 26..28 of a glyph key:
-// 0 -> 0.0, 1 -> +0.25, 2 -> +0.50, 3 -> -0.25, 4 -> -0.50.
+// Horizontal quarter-pixel shift (in device pixels) encoded in bits 26..27 of a glyph key (text.mbt glyph_col_sub: a
+// half pixel is one phase, on the column to its right, never split between two):
+// 0 -> 0.0, 1 -> +0.25, 2 -> -0.50, 3 -> -0.25.
 static double sub_dx(int sub) {
   switch (sub) {
     case 1: return 0.25;
-    case 2: return 0.50;
+    case 2: return -0.50;
     case 3: return -0.25;
-    case 4: return -0.50;
     default: return 0.0;
   }
 }

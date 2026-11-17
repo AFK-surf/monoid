@@ -1,13 +1,13 @@
 // What a chat's card holds (peeks.mbt's chat_card) as nodes of the window's tree, made once: what is over it, opened
 // and shut as the pointer rests on the link to the chat, is the hover card's (sf's), not this; this is what is in it,
-// as the core reads the link (`link.parse`, asked once each: chats_named) and the workspace's list says the chat, as
-// those change: the chat's mark, title and when it was last active; where it is when another station, and that the
+// as the core reads the link (`link.parse`, asked once each: chats_named) and the chat's whole row says it (`chatRow`),
+// as those change: the chat's mark, title and when it was last active; where it is when another station, and that the
 // link is its agent's execution history; the one message the link names (`messagePeek`), else where it stands or the
-// last thing said in it. One archived as its message says; one gone; its bones while the link or the list is read.
+// last thing said in it. One archived as its message says; one gone; its bones while the link or its row is read.
 
 ///|
-/// What a chat's card shows (chat_card's): an archived one as its message says it; its bones while the link or the
-/// list is read; that it is gone; the chat found.
+/// What a chat's card shows (chat_card's): an archived one as its message says it; its bones while the link or its
+/// row is read; that it is gone; the chat found.
 #derive(Eq)
 priv enum ChatShows {
   Archived
@@ -33,17 +33,16 @@ fn chat_card_node(
   // (asked once the link is known, as it changes: chat_named asks the core only for one it has not)
   parent.reacts(href, fn(h) { chat_named(src, here, h) |> ignore })
   let named = fn() { chats_named.get(here + "\u{1}" + href()).unwrap_or(Asking) }
-  // (the chat found in the workspace's list, as its whole row says it, where the link names one: None while the list
-  // or its whole row is read, Some(None) not in the list. When it was last active is its whole row's (`chatRow`, held
-  // while this reads it), the list's row being made without it: chat_card's)
+  // (the chat found, as its whole row says it (`chatRow`, by the link's station and key, read where it is read: one
+  // record of the device's, whether the workspace's list shows it or not): None while the link or its row is read,
+  // Some(None) where its station has none unarchived, or another workspace's: chat_card's)
   let found = fn() -> (ChatItem, Bool, Double?)?? {
     match named() {
       Chat(station, key, history, seq) => {
-        guard @sfbase.chats_of(src, @sfbase.workspace_of(here), "all").0 is Some(_) else { return None }
-        match peek_listed(src, here, station, key) {
-          None => Some(None)
-          Some(listed) => @sfbase.whole_row(src, listed).map(fn(i) { Some((i, history, seq)) })
-        }
+        guard peek_ours(here, station) else { return Some(None) }
+        peek_row(src.topic("chatRow", @sfbase.whole_params(station, key)).get()).map(fn(r) {
+          r.map(fn(i) { (i, history, seq) })
+        })
       }
       _ => None
     }
@@ -92,7 +91,7 @@ fn chat_card_node(
         })
         |> ignore
       }
-      // (while the link or the list is read: a made-up chat's, in its bones)
+      // (while the link or its row is read: a made-up chat's, in its bones)
       Sample =>
         @sf.waiting_node(b, fn(bones) {
           chat_card_of_node(bones, fn() { sample_chat(0) }, fn() { false }, fn() { false }, fn() { None }, src, scope)
