@@ -130,6 +130,7 @@ class PortalProcess implements ScreenView {
   #shown: Size | null = null;
   #waiting: { resolve: (frame: Frame | null) => void; reject: (error: Error) => void }[] = [];
   #failure: ScreenRefused | null = null;
+  #why: string | undefined;
   #config = true;
   #lastTs = 0;
   #input: Promise<void> = Promise.resolve();
@@ -274,6 +275,7 @@ class PortalProcess implements ScreenView {
     if (this.#ended) return;
     this.#ended = true;
     if (error instanceof ScreenRefused) this.#failure = error;
+    if (!this.#normal) this.#why = error.message;
     if (!this.#ready) this.#rejectReady(error);
     if (!this.#opened) this.#rejectFirst(error);
     if (terminate) this.#child.kill();
@@ -286,6 +288,7 @@ class PortalProcess implements ScreenView {
     }
     this.#gone();
   }
+  why(): string | undefined { return this.#why; }
   close(): void {
     if (this.#ended) return;
     this.#normal = true;

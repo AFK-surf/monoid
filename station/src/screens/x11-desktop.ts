@@ -295,6 +295,7 @@ class X11View implements ScreenView {
   #reject!: (error: Error) => void;
   #timer: () => void;
   #stderr = "";
+  #why: string | undefined;
 
   constructor(ffmpeg: string, xdotool: string, env: NodeJS.ProcessEnv, screen: Size, options: ViewOptions, gone: () => void) {
     this.#inputs = new X11Input(xdotool, env, screen);
@@ -358,9 +359,10 @@ class X11View implements ScreenView {
 
   input(event: ScreenInput): Promise<void> { return this.#inputs.input(event); }
 
-  #end(error: Error) {
+  #end(error: Error, closed = false) {
     if (this.#ended) return;
     this.#ended = true;
+    if (!closed) this.#why = error.message;
     this.#timer();
     if (!this.#opened) this.#reject(error);
     this.#child.kill();
@@ -369,7 +371,8 @@ class X11View implements ScreenView {
     this.#inputs.close();
     this.#gone();
   }
-  close(): void { this.#end(new Error("X11 view closed")); }
+  why(): string | undefined { return this.#why; }
+  close(): void { this.#end(new Error("X11 view closed"), true); }
 }
 
 /// The same X11 input as the JPEG view, with an on-demand H.264 encoder for clients that can decode it.
@@ -395,6 +398,7 @@ class X11H264View implements ScreenView {
   rate(bits: number): void { this.#video.rate(bits); }
   keyframe(): void { this.#video.keyframe(); }
   video(): ScreenVideo { return this.#video.video(); }
+  why(): string | undefined { return this.#video.why(); }
   close(): void {
     if (this.#ended) return;
     this.#ended = true;

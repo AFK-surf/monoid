@@ -83,6 +83,8 @@
   "station.screen.codec": "该画面以 {codec} 格式发送，此 app 无法显示",
   "station.screen.debugFailed": "没有成功：{said}",
   "station.screen.failed": "无法打开画面：{said}",
+  "station.screen.captureEnded": "画面中断了：{said}。可以点「重新打开」再试，一直这样就看一下这台 station 的桌面是否还在登录状态。",
+  "station.screen.captureEndedUnsaid": "采集程序退出了",
   "station.screen.captureOff": "这台 Mac 尚未允许 {app} 录制屏幕。",
   "station.screen.controlOff": "这台 Mac 尚未允许 {app} 进行操作（辅助功能），只能查看，无法操作。",
   "station.screen.bothOff": "此 Mac 尚未允许 {app} 录制屏幕和进行操作。",

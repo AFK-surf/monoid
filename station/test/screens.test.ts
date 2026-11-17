@@ -1084,6 +1084,27 @@ async function rest(frames: FrameIn): Promise<any[]> {
   return states;
 }
 
+test("a desktop whose capture ends while it is still there: said why, to be opened again, never gone", async () => {
+  const hub = new ScreenHub();
+  const source = new FakeSource("desktop");
+  Object.defineProperty(source, "kind", { value: "desktop" });
+  source.make = () => Object.assign(new FakeView(), { last: 1, why: () => "Can't open display :0" });
+  hub.add(source);
+  const v = await open(hub, member, undefined, "/admin/api/screens/desktop/view");
+  await v.stream.write(frame(KIND.ack, ts8(2000)));
+  assert.deepEqual((await rest(v.frames)).at(-1), {
+    ended: "The picture stopped: Can't open display :0. Tap Open again to retry; if it keeps happening, check that this station's desktop is still signed in.",
+  });
+  await v.served;
+  assert.equal(source.views[0]!.closed, true);
+  // Its capture saying nothing: said so.
+  source.make = () => Object.assign(new FakeView(), { last: 1 });
+  const w = await open(hub, member, undefined, "/admin/api/screens/desktop/view");
+  await w.stream.write(frame(KIND.ack, ts8(2000)));
+  assert.match((await rest(w.frames)).at(-1).ended, /^The picture stopped: the capture exited\./);
+  await w.served;
+});
+
 test("a view ends when the client finishes, the source goes or has no more, the station stops, or the link breaks", async () => {
   const hub = new ScreenHub();
   const source = new FakeSource();
