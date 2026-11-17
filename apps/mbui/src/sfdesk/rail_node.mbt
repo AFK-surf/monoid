@@ -576,25 +576,21 @@ fn rail_place_node(
       |> ignore
     })
     |> ignore
-    e.box(fn(at_corner) {
-      @sf.style_node(at_corner, fn() { rail_remove_at })
-      at_corner.offset(Is((rail_remove_out, rail_remove_out))) |> ignore
-      at_corner.box(fn(rm) {
-        @sf.style_node(rm, fn() { rail_remove })
-        rm
-        .presses(Is(true))
-        .on_press(fn() {
-          guard ws() is Some(w) else { return }
-          let items = rail_items(src, w.id)
-          if items.length() > 1 {
-            rail_keep(src, w.id, items.filter(fn(i) { i != place }))
-          }
-        })
-        .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]))) }))
-        |> ignore
-        @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
+    e.box(fn(rm) {
+      @sf.style_node(rm, fn() { rail_remove })
+      rm
+      .over(Is(true), edges=(Some(rail_remove_in), Some(rail_remove_in), None, None))
+      .presses(Is(true))
+      .on_press(fn() {
+        guard ws() is Some(w) else { return }
+        let items = rail_items(src, w.id)
+        if items.length() > 1 {
+          rail_keep(src, w.id, items.filter(fn(i) { i != place }))
+        }
       })
+      .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]))) }))
       |> ignore
+      @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
     })
     |> ignore
   })

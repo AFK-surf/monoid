@@ -844,8 +844,8 @@ let rail_adder_w : Double = 248.0
 let rail_adder_off : Double = 8.0
 
 ///|
-/// The − 5 out past the place's top left corner, its icon 12.
-let rail_remove_out : Double = -5.0
+/// The − just inside the place's top left corner, so it stays within the scrolling rail.
+let rail_remove_in : Double = 1.0
 
 ///|
 let rail_remove_icon : Double = 12.0
@@ -863,10 +863,6 @@ let rail_dash_r : Double = 11.75
 
 ///|
 let rail_dash_at : Double = -0.5
-
-///|
-// kept across runs: a value (no field of it changes)
-let rail_remove_at : @ui.Style = @ui.css("w=Full")
 
 ///|
 /// The −: 18 round in the words' colour, the rail's ground round it.

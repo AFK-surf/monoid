@@ -278,7 +278,8 @@ function member(s: J, p: J, name: (id: string) => string, byId: Map<string, J>):
   // A borrowed subscription: as good as its host is reachable (the cloud's word, and the borrower's).
   const { usable: reachable } = profileAvailability(s, p, byId);
   const usable = reachable && p.enabled !== false;
-  const users: string[] = role === "host" && Array.isArray(share.users) ? share.users.map((u: string) => name(u)) : [];
+  // Only the stations of this workspace: a station from before names those of its other workspaces too, by their ids.
+  const users: string[] = role === "host" && Array.isArray(share.users) ? share.users.filter((u: string) => byId.has(u)).map((u: string) => name(u)) : [];
   let about: string;
   if (role === "user") about = t(subscription ? "core-views.profiles.borrows" : "core-views.profiles.copyOf", { station: name(String(share.host)) });
   else if (role === "host") about = users.length > 0 ? t(subscription ? "core-views.profiles.lends" : "core-views.profiles.sharedWith", { stations: users.join(t("core-views.list_separator")) }) : t("core-views.profiles.sharedNone");

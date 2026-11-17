@@ -319,6 +319,8 @@ fn sheet_pick_node(
             value=x.value,
             icon=fn() { x.icon },
             mark?=x.mark.map(fn(m) { fn(b, size) { choice_mark_node(b, m, size) } }),
+            // (one not to be chosen: faint, taking no press, its note saying why: Choice's `disabled`)
+            disabled=fn() { x.disabled },
           )
         None => ()
       }
@@ -335,7 +337,7 @@ fn sheet_pick_node(
       all.box(fn(s) {
         style_node(s, fn() { sheet_search_in })
         input_node(s, line, placeholder_by=fn() { t("common.search") }, submitted=fn(_) {
-          match @signals.untracked(found).get(0) {
+          match @signals.untracked(found).iter().find_first(fn(x) { !x.disabled }) {
             Some(x) => go(x.key)
             None => ()
           }

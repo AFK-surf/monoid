@@ -1693,7 +1693,7 @@ export const SHAPES: Record<string, Shape> = {
   MoveView: struct([
     ["to", "String", { doc: "The station it moves to, by its id (\"\" none chosen)." }],
     ["toName", "String", { said: true }],
-    ["targets", vec("MoveTarget"), { doc: "The workspace's other stations online that offer moving, to choose among." }],
+    ["targets", vec("MoveTarget"), { doc: "The workspace's other stations, to choose among: those it may go to first, then those it may not\n(their `why`)." }],
     ["canMove", "bool", { doc: "The viewer may move and move back (one of the workspace's owners and admins)." }],
     ["moving", opt("MoveNow"), { doc: "What moves now; none while nothing does." }],
     ["active", "bool", { doc: "A move under way, something stopped waiting, or a module's last turn failed: its station's page shows 迁移\n(something of it on the other station alone does not)." }],
@@ -1710,6 +1710,7 @@ export const SHAPES: Record<string, Shape> = {
     ["station", "String", { doc: "Its id: `move.start`'s `to`." }],
     ["name", "String", { said: true }],
     ["free", "String", { said: true, doc: "Its room on disk, in words (none: not said)." }],
+    ["why", "String", { said: true, doc: "Why it cannot be chosen now and what makes it one, in words (offline, too old, moving off\nthere); none: it can." }],
   ]),
   MoveNow: struct([
     ["module", "String"],

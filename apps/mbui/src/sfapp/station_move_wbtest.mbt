@@ -146,18 +146,27 @@ test "no station chosen: the row to choose it alone, its choices each with its r
   assert_true(move_said(t, "迁到") && move_said(t, "选择 station"), msg=move_all_words(t))
   assert_true(!move_said(t, "账号") && !move_said(t, "聊天") && !move_said(t, "全部迁移"), msg="nothing else till one is chosen: " + move_all_words(t))
   move_press(t, "选择 station")
-  assert_true(move_said(t, "Maple · 空闲 120 GB") && move_said(t, "Cedar · 空闲 2.1 TB"), msg=move_all_words(t))
-  move_press(t, "Maple · 空闲 120 GB")
+  assert_true(move_said(t, "Maple") && move_said(t, "空闲 120 GB") && move_said(t, "Cedar") && move_said(t, "空闲 2.1 TB"), msg=move_all_words(t))
+  // (Birch, offline: after them, faint, why under it; pressed, nothing chosen)
+  assert_true(move_said(t, "Birch") && move_said(t, "离线：它上线后可选"), msg=move_all_words(t))
+  assert_true(move_at(t, "Cedar").1 < move_at(t, "Birch").1, msg=move_all_words(t))
+  move_press(t, "Birch")
+  assert_eq(move_calls(calls, "prefs.set").length(), 0)
+  move_press(t, "Maple")
   move_audit(t, "")
   assert_eq(move_calls(calls, "prefs.set").map(fn(p) { text(field(Some(p), "moveTo"), "ws1/st1") }), ["st2"])
   assert_true(move_said(t, "Maple") && move_said(t, "账号") && move_said(t, "聊天"), msg=move_all_words(t))
-  // no station to go to: said in its row
+  // none it may go to: each other station still listed, saying why and what makes it one, none to be chosen
   let calls : Array[Made] = []
   let t = move_tester(calls, "settings-station-move-none")
   @settings.fixture_move(stage="half", targets=false)
   t.draw()
   t.run_for(@ui.move_most_ms)
-  assert_true(move_said(t, "没有可迁往的 station"), msg=move_all_words(t))
+  assert_true(move_said(t, "选择 station") && !move_said(t, "没有可迁往的 station"), msg=move_all_words(t))
+  move_press(t, "选择 station")
+  assert_true(move_said(t, "正式版：在它的「软件与更新」里打开「测试版」后可选") && move_said(t, "离线：它上线后可选"), msg=move_all_words(t))
+  move_press(t, "Maple")
+  assert_eq(move_calls(calls, "prefs.set").length(), 0)
 }
 
 ///|
