@@ -64,6 +64,7 @@ fn pressed_history() -> Json {
     long.write_string("第 \{q} 行，一段很长的话，反复出现用来撑出很多行的文字。\n")
   }
   let step = fn(j : Int, n : Int) -> Json {
+    let entry = (j * 3 + n) * 2
     let out = StringBuilder()
     for q in 0..<12 {
       out.write_string("结果 \{j}-\{n} 第 \{q} 行\n")
@@ -77,7 +78,7 @@ fn pressed_history() -> Json {
         "failed": false,
         "call": "{\"file_path\": \"/a.mbt\"}",
         "result": Json::string(out.to_string()),
-        "entries": [3, 4],
+        "entries": [Json::number(entry.to_double()), Json::number((entry + 1).to_double())],
         "brief": false,
       },
     }

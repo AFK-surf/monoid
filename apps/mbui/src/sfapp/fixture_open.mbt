@@ -133,7 +133,7 @@ pub fn open_fixture(mode : String) -> Unit {
       if mode == "history-details" {
         history_tab.set(1)
       } else {
-        @sfpages.history_open(["h2/group", "h2/group/1", "h4/group", "h4/group/0"])
+        @sfpages.history_open(r.station, r.session, ["h2/group", "h2/group/e3", "h4/group", "h4/group/e7"])
       }
     }
     // the wide frame's (wide_panel.mbt): the chat's "…" open, its services' popover, what is opened beside it

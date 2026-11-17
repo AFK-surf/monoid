@@ -243,7 +243,7 @@ pub fn history_only_io() -> Bool
 
 pub fn history_only_io_flip() -> Unit
 
-pub fn history_open(Array[String]) -> Unit
+pub fn history_open(String, String, Array[String]) -> Unit
 
 pub fn history_steps_node(@view.View, @sfbase.Source, String, String, @sf.TipLayer) -> Unit
 

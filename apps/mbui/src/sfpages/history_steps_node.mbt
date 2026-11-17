@@ -258,7 +258,7 @@ fn steps_list_node(
         // (at once, as it was: a debt of 方案 A, given its way list by list, shown to the owner: list-comes-off)
         at_once=true,
         near_top=(0.5, wants_older, ask_older),
-        reused=fn(k) { steps_row_shape(rows.untracked().1.get(k)) },
+        reused=fn(k) { steps_row_shape(rows.untracked().1.get(k), station, key) },
         make_reused=fn(slot, row_key) {
           steps_reused_row_node(slot, src, station, key, row_of, row_key, lit, tips, make_row)
         },
@@ -421,7 +421,7 @@ fn history_row_node(
   tips : @sf.TipLayer,
   marked? : () -> Bool = fn() { false },
 ) -> Unit {
-  let ik = text(item, "key")
+  let ik = steps_item_key(station, key, text(item, "key"))
   v.box(fn(b) {
     @sf.style_node(b, fn() { h_item })
     // (gone to: on the accent's faint ground a moment, hItem[data-focus])
@@ -1943,7 +1943,7 @@ fn group_rows_node(
   let single_thought = !calls && rows.length() == 1
   steps_box_node(s, h_steps, fn(list) {
     for i, row in rows {
-      group_row_node(list, src, station, key, gk + "/" + i.to_string(), row, single_thought)
+      group_row_node(list, src, station, key, group_row_key(gk, row, i), row, single_thought)
     }
   })
 }
@@ -1977,7 +1977,7 @@ fn group_rows_each_node(
         fn() { GroupRowPicked::{ gk: gk(), row: rows().get(i), single_thought: single_thought_sig.get() } },
         fn(p, cur) {
           guard cur.row is Some(row) else { return }
-          group_row_node(p, src, station, key, cur.gk + "/" + i.to_string(), row, cur.single_thought)
+          group_row_node(p, src, station, key, group_row_key(cur.gk, row, i), row, cur.single_thought)
         },
       )
     })
@@ -2079,6 +2079,22 @@ fn group_row_node(
 }
 
 ///|
+/// Transcript entry numbers belong to one session on one station.
+fn steps_item_key(station : String, key : String, item : String) -> String {
+  station + "\u{1}" + key + "\u{1}" + item
+}
+
+///|
+/// A group's rows can move when calls are combined or a preceding thought is removed.
+/// Keep the disclosure on its transcript entry through those changes.
+fn group_row_key(group : String, row : Json, index : Int) -> String {
+  match items(field(Some(row), "content"), "entries").get(0) {
+    Some(Number(n, ..)) => group + "/e" + n.to_int64().to_string()
+    _ => group + "/" + index.to_string()
+  }
+}
+
+///|
 fn steps_opened_under(ik : String) -> Bool {
   if steps_own.opened.is_empty() {
     return false
@@ -2095,12 +2111,12 @@ fn steps_opened_under(ik : String) -> Bool {
 ///|
 /// Pool key for common closed `Item` row shapes so scrolling reuses existing row subtrees in place (`View::scrolls_window`'s
 /// `reused`) instead of tearing down and rebuilding every row that enters or leaves the viewport.
-fn steps_row_shape(row : StepsRow?, ignore_opened? : Bool = false) -> Int? {
+fn steps_row_shape(row : StepsRow?, station : String, key : String, ignore_opened? : Bool = false) -> Int? {
   match row {
     Some(Live(_, _)) => return Some(66)
     Some(Item(item, _)) => {
       let ik = text(Some(item), "key")
-      if ik == "" || (!ignore_opened && steps_opened_under(ik)) {
+      if ik == "" || (!ignore_opened && steps_opened_under(steps_item_key(station, key, ik))) {
         return None
       }
       let turn_kind = match field(Some(item), "turn") {
@@ -2270,9 +2286,9 @@ fn steps_reused_row_node(
   make_row : (@view.View, StepsRow) -> Unit,
 ) -> Unit {
   let picked = @signals.computed(fn(_) { StepsPicked::{ row: row_of(row_key()) } }, same=fn(a, b) { a == b })
-  let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row) })
+  let init_shape = @signals.untracked(fn() { steps_row_shape(picked.get().row, station, key) })
   let same_shape_sig = @signals.computed(
-    fn(_) { steps_row_shape(picked.get().row, ignore_opened=true) == init_shape },
+    fn(_) { steps_row_shape(picked.get().row, station, key, ignore_opened=true) == init_shape },
     same=fn(a, b) { a == b },
   )
   slot.pick(
@@ -2340,6 +2356,7 @@ fn steps_reused_row_node(
               k
             }
           }
+          let disclosure_key = fn() { steps_item_key(station, key, item_key()) }
           let marked = fn() {
             let l = lit.get()
             l != "" && l == item_key()
@@ -2371,7 +2388,7 @@ fn steps_reused_row_node(
             let content = fn() { field(field(item_fn(), "body"), "content") }
               match base {
                 0 => {
-                  let gk = fn() { item_key() + "/group" }
+                  let gk = fn() { disclosure_key() + "/group" }
                   let open_sig = @signals.computed(fn(_) { steps_opened_contains_fn(gk) }, same=fn(a, b) { a == b })
                   let open = fn() { open_sig.get() }
                   let summary_sig = @signals.computed(fn(_) { text(content(), "summary") }, same=fn(a, b) { a == b })
@@ -2522,7 +2539,7 @@ fn steps_reused_row_node(
                       },
                     )
                   } else {
-                    let fk = fn() { item_key() + "/message/0" }
+                    let fk = fn() { disclosure_key() + "/message/0" }
                     let md_sig = if msg_kind == 2 {
                       Some(@signals.computed(fn(_) { field(msg(), "md") }, same=json_opt_same))
                     } else {
@@ -2566,7 +2583,7 @@ fn steps_reused_row_node(
                   let link = base == 19
                   let post_words_sig = @signals.computed(fn(_) { text(content(), "text") }, same=fn(a, b) { a == b })
                   let post_md_sig = @signals.computed(fn(_) { field(content(), "md") }, same=json_opt_same)
-                  let fk = fn() { item_key() + "/post" }
+                  let fk = fn() { disclosure_key() + "/post" }
                   message_fold_stack_node(
                     b,
                     fk,
@@ -3280,14 +3297,14 @@ fn jump_to_dispatch_target(src : Source, station : String, key : String, current
   })
   let loaded = items(h, "items")
   for it in loaded {
-    let ik = text(Some(it), "key")
+    let ik = steps_item_key(station, key, text(Some(it), "key"))
     let body = field(Some(it), "body")
     let kind = text(body, "kind")
     let content = field(body, "content")
     if kind == "group" {
       let gk = ik + "/group"
       for j, r in items(content, "rows") {
-        let rk = gk + "/" + j.to_string()
+        let rk = group_row_key(gk, r, j)
         if rk != current_rk && !current_rk.has_prefix(rk + "/") && r.stringify().contains(t) {
           steps_own.opened[gk] = true
           steps_own.opened[rk] = true
@@ -3981,10 +3998,10 @@ let steps_edge_wait : @ui.Style = @ui.css("row w=Full py=S1 justify=JCenter")
 let h_item : @ui.Style = @ui.css("w=Full gap=S2")
 
 ///|
-/// Groups and calls opened as a screen opens (a fixture's), by their keys (an item's key, `/group`, `/<its row>`).
-pub fn history_open(keys : Array[String]) -> Unit {
+/// Groups and calls opened as a screen opens (a fixture's), by their disclosure keys within that history.
+pub fn history_open(station : String, key : String, keys : Array[String]) -> Unit {
   for k in keys {
-    steps_own.opened[k] = true
+    steps_own.opened[steps_item_key(station, key, k)] = true
   }
 }
 

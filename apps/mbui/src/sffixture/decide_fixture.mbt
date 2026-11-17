@@ -215,6 +215,7 @@ pub fn fix_history() -> Json {
     { "key": Json::string(key), "entries": [1, 2], "body": { "kind": Json::string(kind), "content": content } }
   }
   let step = fn(
+    entry : Int,
     said : String,
     name : String,
     hint : String,
@@ -230,7 +231,7 @@ pub fn fix_history() -> Json {
       "failed": Json::boolean(failed),
       "call": Json::string(call),
       "result": Json::string(result),
-      "entries": [3, 4],
+      "entries": [Json::number(entry.to_double()), Json::number((entry + 1).to_double())],
       "brief": false,
     }
     if said != "" {
@@ -256,6 +257,7 @@ pub fn fix_history() -> Json {
         "pending": 0,
         "rows": [
           step(
+            1,
             "",
             "Read",
             "src/ui/list.mbt",
@@ -265,6 +267,7 @@ pub fn fix_history() -> Json {
             "    80→pub fn Ctx::list(\n    81→  self : Ctx,\n    82→  key : String,",
           ),
           step(
+            3,
             "跑一遍列表的测试",
             "Bash",
             "",
@@ -296,6 +299,7 @@ pub fn fix_history() -> Json {
         "pending": 0,
         "rows": [
           step(
+            7,
             "",
             "Edit",
             "src/ui/list.mbt",
@@ -305,6 +309,7 @@ pub fn fix_history() -> Json {
             "The file has been updated.",
           ),
           step(
+            9,
             "截图对比",
             "Bash",
             "",
