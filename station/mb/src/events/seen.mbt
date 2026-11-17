@@ -16,9 +16,16 @@ pub(all) struct SeenStore {
 }
 
 ///|
-/// seen.ts `sessionSeen` (one not there: the home workspace's).
+/// seen.ts `sessionSeen` (one not there: the home workspace's, but another station's task its workspace's).
 pub fn session_seen(store : SeenStore, viewer : Viewer, key : String) -> Bool {
-  sees(viewer, (store.session_ws)(key).unwrap_or(Null))
+  match (store.session_ws)(key) {
+    Some(ws) => sees(viewer, ws)
+    None =>
+      match @readops.remote_ws(key) {
+        Some(w) => w == viewer.workspace
+        None => sees(viewer, Null)
+      }
+  }
 }
 
 ///|

@@ -4007,9 +4007,10 @@ export class Store {
     });
   }
 
-  /// A job started (again): running, in this process group.
+  /// A job started (again): running, in this process group. One that waited in the queue (`queued`) starts now: what it
+  /// says of when it started was when it was queued.
   jobStarted(id: string, pgid: number, restarted: boolean): void {
-    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, queued = 0 WHERE id = ?3", pgid, flag(restarted), id);
+    this.#jobUpdate(id, "UPDATE jobs SET state = 'running', pgid = ?1, exit_code = NULL, ended_at = NULL, restarts = restarts + ?2, started_at = CASE WHEN ?2 = 0 AND COALESCE(queued, 0) <> 0 THEN ?4 ELSE started_at END, queued = 0 WHERE id = ?3", pgid, flag(restarted), id, this.now());
   }
 
   /// A job ended: `state` exited, stopped or failed.
