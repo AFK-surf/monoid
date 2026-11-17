@@ -1733,10 +1733,15 @@ test("the front's client: bound, its connections, streams both ways, its relays,
     await both("public relays", () => ep.publicRelays!(false), "publicRelays", { on: false });
     await both("entries", () => ep.setRelayEntries!([{ entry: "e", relay: "r" }]), "setRelayEntries", { entries: [{ entry: "e", relay: "r" }] });
     await both("network changed", () => ep.networkChange!(), "networkChange");
+    // (told and not answered: each front holds it before what follows is asked, or the TypeScript client's online
+    // reached its front before its setCongestion, 134244003438)
+    const told = (op: string) => Promise.all([tsFront, mbFront].map((f) => f.until(() => f.asks.some((a) => a.op === op), `"${op}" at the front (${f === tsFront ? "TypeScript" : "MoonBit"})`)));
     ep.keep!(["https://r1/"]);
     await front("keep", { urls: ["https://r1/"] });
+    await told("keep");
     ep.setCongestion!("cubic");
     await front("setCongestion", { congestion: "cubic" });
+    await told("setCongestion");
     await both("online again", () => ep.online(), "online");
     await both("linked", () => ep.linked!(), "linked");
     await both("home", () => ep.home(), "home");

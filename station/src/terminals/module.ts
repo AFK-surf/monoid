@@ -54,9 +54,9 @@ export const TerminalsLive = Layer.effectDiscard(
     const metaDir = join(data, "run", "terminals");
     const metaFile = (id: string) => join(metaDir, `${id}.json`);
     let terminals: Terminals | null = null;
-    const tell = () => {
+    const tell = (workspace: string) => {
       if (terminals === null) return;
-      for (const workspace of terminals.workspaces()) events.tell("terminals", { terminals: terminals.list(workspace) }, `terminals\0${workspace}`, { workspace });
+      events.tell("terminals", { terminals: terminals.list(workspace) }, `terminals\0${workspace}`, { workspace });
     };
     terminals = new Terminals({
       home: homedir(),

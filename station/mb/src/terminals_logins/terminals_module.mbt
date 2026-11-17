@@ -128,12 +128,9 @@ fn meta_file(data : String, id : String) -> String {
 /// The part made: its terminals (told as they change), and those a station before this one opened taken up.
 pub async fn TerminalsPart::start(io : TerminalsIo) -> TerminalsPart {
   let holder : Ref[Terminals?] = Ref(None)
-  let tell = () => match holder.val {
+  let tell = workspace => match holder.val {
     None => ()
-    Some(t) =>
-      for workspace in t.workspaces() {
-        (io.tell)(workspace, jo([("terminals", t.list(workspace))]))
-      }
+    Some(t) => (io.tell)(workspace, jo([("terminals", t.list(workspace))]))
   }
   let terminals = Terminals::new({
     home: io.home,
