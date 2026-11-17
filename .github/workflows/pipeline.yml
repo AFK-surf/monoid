@@ -950,8 +950,9 @@ jobs:
       MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
       HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
-      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh)
-      - run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 ))" >> "$GITHUB_ENV"
+      # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh;
+      # less the 1-5 s of "Set up job" before this step)
+      - run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
@@ -1067,13 +1068,16 @@ jobs:
       # restored, nothing taken out, so the next run goes on from there, as preview.yml's Linux build does (#6575).
       # Saved only at the job's end, main's c3e7df99 and 4c3a71b2 (2026-11-16, libs/mbui/src/ui changed, 724 of 1028
       # units compiled, moon's build 235 s) were cut at the job's five minutes with nothing kept, the next run as far behind.
-      # Cut 35 s before the job is (JOB_END, scripts/with-timeout.sh): it begins some 67 s in, and the worker's stop, the
-      # key and the save take some 25 s. Main's alone: a branch saves no store, so only the job's own limit holds it)
+      # Cut 60 s before the job is (JOB_END, scripts/with-timeout.sh), what follows a build done: its bundle 26 s, upload
+      # 3 s, key and both saves 19 s, post steps 6 s, 54 s in all (main 992d331c, 43998125472: done 18 s before a cut at
+      # 35 s, all green, and cancelled at the job's 300 s). Cut, the bundle, upload and moon's save are skipped: the
+      # worker's stop, the key and the store's save ~18 s. Main's alone: a branch saves no store, so only the job's own
+      # limit holds it)
       - name: Finish the Mac app build
         id: finish
         run: |
           if [ "$GITHUB_REF" = refs/heads/main ]; then
-            bash scripts/with-timeout.sh @$((JOB_END - 35)) bash .github/mac-release-prebuild.sh wait
+            bash scripts/with-timeout.sh @$((JOB_END - 60)) bash .github/mac-release-prebuild.sh wait
           else
             bash .github/mac-release-prebuild.sh wait
           fi
