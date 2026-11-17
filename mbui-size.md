@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.04 | 127.12 |
 | [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 2.52 | 3.55 | 15.27 | 36.66 | 60.75 | 32.09 | 67.5 | 96.13 | 116.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 2.5 | 3.52 | 15.2 | 36.55 | 60.12 | 31.7 | 65.98 | 95.9 | 121.93 |
 | [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 95.9 | 120.37 |
 | [bdec3efba](https://github.com/AFK-surf/monoid/commit/bdec3efba2fbe447cf2bcdb07c493b078efc358d) mbui: chat page as nodes moves as the old page doe | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 96.11 | 118.63 |
-| [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 96.11 | 118.63 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [c537ac32c](https://github.com/AFK-surf/monoid/commit/c537ac32ce1eea0148de47e064b6371c5b31ba62) mbui: glyphs on the quarter-pixel phase nearest th | 0.43 | 0.56 | 2.15 | 3.25 | 5.14 | 1.57 | 4.21 | 53.64 |
 | [93de84cb1](https://github.com/AFK-surf/monoid/commit/93de84cb18f6cdcb9b02474831ab74f877742e54) mbui film: compact and run the initializer moonc v | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
 | [3ba1b5634](https://github.com/AFK-surf/monoid/commit/3ba1b56349bb87926aa6efc56bfa1c5a3276823b) mbui: one way to declare motion, and switching tha | 0.43 | 0.56 | 2.15 | 3.24 | 5.13 | 1.57 | 4.2 | 53.04 |
 | [f2a93f24d](https://github.com/AFK-surf/monoid/commit/f2a93f24d8aeccb6912223484a6761379d19b167) station/mb: share_sync — profiles, skills, the mem | 0.43 | 0.56 | 2.14 | 3.24 | 5.12 | 1.57 | 4.2 | 53.45 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [bdec3efba](https://github.com/AFK-surf/monoid/commit/bdec3efba2fbe447cf2bcdb07c493b078efc358d) mbui: chat page as nodes moves as the old page doe | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
-| [992d331cf](https://github.com/AFK-surf/monoid/commit/992d331cf04fab188892482cb7b75574e59eca7c) mbui: 网盘播放页与侧栏音视频改为节点，删除旧播放器 sf/player.mbt（old-lis | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
