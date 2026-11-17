@@ -1,9 +1,11 @@
 # The Actions caches a newer one of the same kind replaced, deleted (scripts/chk cache-prune, mbui's tools/chk/
 # cache_prune.mbt): the build caches saved each commit, run or content otherwise fill the repository's 10 GB, and GitHub
 # then evicts what is read seldom and needed (WARP, the emulator's images, MoonBit), which the jobs that need them fail
-# without. After main's runs of the workflows that save them went through, and each half hour: a branch's run, or one
-# that failed or was cancelled, started one each (a run every minute, 37% of the repository's runs, 2026-11-17), its
-# job skipped; a newer prune takes the place of one still running.
+# without. After each of main's runs of the workflows that save them, however it ended (one failed or cancelled had
+# saved its caches by `always()` all the same: skipped, 2 GB of them stayed, and the repository's 12.15 GB had GitHub
+# evict main's mbui-moon-build-app and mbui-mac-moon, 2026-11-17), and each quarter hour: a branch's run started one
+# each (a run every minute, 37% of the repository's runs, 2026-11-17), its job skipped; a newer prune takes the place
+# of one still running.
 name: cache-prune
 on:
   workflow_run:
@@ -11,7 +13,7 @@ on:
     types: [completed]
     branches: [main]
   schedule:
-    - cron: "7,37 * * * *"
+    - cron: "7,22,37,52 * * * *"
   workflow_dispatch:
 
 permissions:
@@ -24,7 +26,7 @@ env:
   FARVIEW_DEPLOY_KEY: ${{ secrets.FARVIEW_DEPLOY_KEY }}
 jobs:
   prune:
-    if: github.repository_owner == 'AFK-surf' && (github.event_name != 'workflow_run' || (github.event.workflow_run.head_branch == 'main' && github.event.workflow_run.conclusion == 'success'))
+    if: github.repository_owner == 'AFK-surf' && (github.event_name != 'workflow_run' || github.event.workflow_run.head_branch == 'main')
     # (the job's, not the workflow's: a workflow's concurrency is taken before its jobs' `if`, so each run the `if` left
     # nothing to do cancelled the prune under way, none of them through since #6955, 44084525729 by 44084606362)
     concurrency:
