@@ -955,6 +955,8 @@ fn main {
           Some(@posts.step(db, thread.to_int64(), after.to_int64()))
         _ => None
       }))
+    (Some("harness-agent-drivers"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @agent_drivers.harness(host))
     (Some("harness-cloud-net"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_net.harness(host))
     (Some("usage-retire"), Some(db), _) =>
