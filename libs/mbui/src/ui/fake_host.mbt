@@ -1148,7 +1148,7 @@ fn fake_scripts_flush(f : FakeHost, id : Int) -> Unit {
 ///|
 /// A request's body: as the run recorded it (Tester::view_said); else none.
 impl @hostapi.Host for FakeHost with view_site_body(self, id, req) {
-  self.site_bodies.get((id, req)).unwrap_or(Bytes::new(0))
+  self.site_bodies.get((id, req)).unwrap_or(Bytes::make(0, b'\x00'))
 }
 
 ///|
@@ -1946,7 +1946,7 @@ impl @hostapi.Host for FakeHost with cl_picture(self, id) {
 impl @hostapi.Host for FakeHost with cl_png(self, id) {
   match self.clip_given(id) {
     Some({ picture: Png(b), .. }) => b
-    _ => Bytes::new(0)
+    _ => Bytes::make(0, b'\x00')
   }
 }
 
@@ -1970,7 +1970,7 @@ impl @hostapi.Host for FakeHost with cl_file_name(self, id, i) {
 impl @hostapi.Host for FakeHost with cl_file(self, id, i) {
   match self.clip_given(id) {
     Some(c) if i >= 0 && i < c.files.length() => c.files[i].1
-    _ => Bytes::new(0)
+    _ => Bytes::make(0, b'\x00')
   }
 }
 
@@ -2293,7 +2293,7 @@ impl @hostapi.Host for FakeHost with post_next(_) {
     return None
   }
   let (channel, json, b) = fake_posted.remove(0)
-  Some((channel, json, b.unwrap_or(Bytes::new(0))))
+  Some((channel, json, b.unwrap_or(Bytes::make(0, b'\x00'))))
 }
 
 // The app's own calls of its host (@hostapi native.mbt; @ui's native_call.mbt) as a test has them: each waits until

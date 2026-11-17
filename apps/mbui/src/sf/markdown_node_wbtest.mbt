@@ -372,25 +372,39 @@ test "a code block of more lines as nodes, wrapped once its key is pressed: each
 }
 
 ///|
-test "Markdown as nodes: a table whose block is taken for another message's (what it scrolls across with another's) scrolled across as that one's, not as the one it was made for" {
+test "Markdown as nodes: a table of one block asks for nothing to scroll across with (a list's block taken for another's keeps how far it is scrolled by its key); a long table's piece scrolls across with what it is given" {
   let (text, tree) = tw_four()
-  let key = @signals.signal("a")
-  let scrolls : Map[String, @view.Scroll] = Map([])
+  let (long_text, long_tree) = tw_table(["模型", "输入", "输出", "备注"], [
+    ["Opus 5.5", "$15", "$75", "最强的推理与写代码"],
+    ["Sonnet 5.5", "$3", "$15", "日常的大多数事"],
+    ["Haiku 5.5", "$0.8", "$4", "快而便宜，适合分类与摘要"],
+    ["Opus 4", "$15", "$75", "上一代的最强"],
+    ["Sonnet 4", "$3", "$15", "上一代的日常"],
+  ])
+  let long = @signals.signal(false)
+  let asked = Ref(0)
+  let scrolls : Map[Int, @view.Scroll] = Map([])
   let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=220.0, h=400.0, platform=2)
   @ui.set_view_app(fn(root) {
     @ui.set_tree_theme(ui_theme_now)
-    root.box(fn(b) {
-      markdown_node(b, fn() { text }, tree=fn() { Some(tree) }, across_of=fn(i) {
-        let k = key.get() + "#" + i.to_string()
-        match scrolls.get(k) {
-          Some(s) => s
-          None => {
-            let s = @view.Scroll::across()
-            scrolls[k] = s
-            s
+    root.pick(fn() { long.get() }, fn(b, long) {
+      markdown_node(
+        b,
+        fn() { if long { long_text } else { text } },
+        tree=fn() { Some(if long { long_tree } else { tree }) },
+        piece=if long { Some({ from: 0, upto: 1, rows: Some((0, 4)), last: false }) } else { None },
+        across_of=fn(i) {
+          asked.val += 1
+          match scrolls.get(i) {
+            Some(s) => s
+            None => {
+              let s = @view.Scroll::across()
+              scrolls[i] = s
+              s
+            }
           }
-        }
-      })
+        },
+      )
       |> ignore
     })
     |> ignore
@@ -403,14 +417,60 @@ test "Markdown as nodes: a table whose block is taken for another message's (wha
     }
   }
   let at_rest = x_of()
-  // (the first message's table scrolled across)
-  scrolls["a#0"].put(60.0)
+  assert_eq(asked.val, 0)
+  // (a long table's first piece: scrolled across as what it is given is)
+  long.set(true)
+  tt.run_for(@ui.move_most_ms)
+  let piece_rest = x_of()
+  scrolls[0].put(60.0)
   tt.draw()
   let scrolled = x_of()
-  // (the block taken for another message's: its table as that one's, at its start)
-  key.set("b")
+  assert_true(asked.val > 0 && scrolled < piece_rest - 1.0, msg="asked \{asked.val}, scrolled \{scrolled} at rest \{piece_rest} (one block's \{at_rest})")
+}
+
+///|
+/// A table of ten rows under its head as markdown_node draws it in a window 220 wide: whole in one block, or cut in the
+/// pieces a page's list makes a block each (md_table_piece_rows a piece), the pieces scrolling across beside each other
+/// and keeping its columns together (`tracks_of`) or each its own. How many times its room was shared out among its
+/// columns, and how many words the window's tree measured, from the table's first frame.
+fn mn_ten_rows(pieces : Bool, kept : Bool) -> (Int, Int) {
+  let rows = Array::makei(10, fn(i) { ["第 \{i} 行", "$\{i * 3}", "$\{i * 7}", "第 \{i} 行的说明，较长的一句"] })
+  let (text, tree) = tw_table(["模型", "输入", "输出", "备注"], rows)
+  let across = @view.Scroll::across()
+  let tracks = @view.TracksKept::new()
+  let tt = @ui.Tester::new(fn(c) { begin(c) |> ignore }, w=220.0, h=900.0, platform=2)
+  let before = table_widths_worked.val
+  @ui.set_view_app(fn(root) {
+    @ui.set_tree_theme(ui_theme_now)
+    let all = md_table_piece_rows
+    let cuts = if pieces { [(0, all), (all, 2 * all), (2 * all, 11)] } else { [] }
+    if cuts.is_empty() {
+      markdown_node(root, fn() { text }, tree=fn() { Some(tree) }) |> ignore
+    }
+    for i, cut in cuts {
+      markdown_node(
+        root,
+        fn() { text },
+        tree=fn() { Some(tree) },
+        piece=Some({ from: 0, upto: 1, rows: Some(cut), last: i == cuts.length() - 1 }),
+        across_of=fn(_) { across },
+        tracks_of=fn(_) { if kept { Some(tracks) } else { None } },
+      )
+      |> ignore
+    }
+  })
   tt.draw()
-  let other = x_of()
-  assert_true(scrolled < at_rest - 1.0, msg="scrolled \{scrolled} at rest \{at_rest}")
-  assert_eq(other, at_rest)
+  (table_widths_worked.val - before, @ui.view_tree().unwrap().work().measured)
+}
+
+///|
+test "Markdown as nodes: a long table cut in three pieces keeping its columns together measures its cells and shares out its room once, as the table whole in one block does, not once a piece" {
+  let (whole_shared, whole_measured) = mn_ten_rows(false, false)
+  let (kept_shared, kept_measured) = mn_ten_rows(true, true)
+  let (own_shared, own_measured) = mn_ten_rows(true, false)
+  // (each its own: every piece measures every cell of the table again, 4 columns of 11 rows twice more)
+  assert_eq(
+    (whole_shared, kept_shared, kept_measured, own_shared, own_measured - kept_measured),
+    (1, 1, whole_measured, 3, 2 * 4 * 11),
+  )
 }

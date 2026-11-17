@@ -279,6 +279,26 @@ fn main {
 let placed : Map[Int, (Double, Double, Double, Double, Double)] = Map([])
 
 ///|
+/// The whole pixel column and quarter-pixel phase of a glyph's pen at `tx` device pixels: ui's glyph_col_sub (text.mbt),
+/// the same numbers (this program links no ui).
+fn glyph_col_sub(tx : Double) -> (Double, Int) {
+  let qf = (tx * 4.0 + 0.5).floor()
+  let col = ((qf + 2.0) * 0.25).floor()
+  let sub = match (qf - col * 4.0).to_int() {
+    1 => 1
+    -2 => 2
+    -1 => 3
+    _ => 0
+  }
+  (col, sub)
+}
+
+///|
+/// The glyphs placed at a quarter-pixel phase (ui's glyph_sub_at), by their keys: their places and their own offsets
+/// down and across (a phase's picture a pixel wider than another's where its ink crosses one).
+let sub_placed : Map[Int, (Double, Double, Double, Double, Double, Double)] = Map([])
+
+///|
 /// The parts of the next frame drawn again told to the renderer (as a host's frame tells them: src/ui/hostcall.mbt).
 fn tell_parts(parts : Array[(Double, Double, Double, Double)]) -> Unit {
   for p in parts {
@@ -317,6 +337,32 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
   // (each glyph put where this host's own advances put it, as the hosts without a colour atlas of their own do; with
   // MBUI_DL_PEN=1 on every host: a list a Tester drew with no host's text, its words laid out by this host's)
   let pens = !colour_atlas.sized() || arg("MBUI_DL_PEN") == "1"
+  // a glyph at a quarter-pixel phase (1 to 3) made and placed here once, as an app places it (text.mbt glyph_sub_key):
+  // its place, size and offsets
+  fn phase_place(base_key : Int, sub : Int) -> (Double, Double, Double, Double, Double, Double)? {
+    let sub_key = (base_key & 0x03FFFFFF) | (sub << 26)
+    match sub_placed.get(sub_key) {
+      Some(p) => Some(p)
+      None => {
+        @hostapi.glyph(sub_key, g)
+        let (sgw, sgh) = (g[2] * dl.scale, g[3] * dl.scale)
+        let (a, across) = if g[6] > 0.5 && colour_atlas.sized() {
+          (colour_atlas, @hostapi.colour_atlas_u)
+        } else {
+          (atlas, 0)
+        }
+        match a.place(sub_key, sgw.round().to_int(), sgh.round().to_int(), fn(_) {  }) {
+          Some((_, sx, sy)) => {
+            @hostapi.glyph_put(sub_key, sx + across, sy)
+            let p = ((sx + across).to_double(), sy.to_double(), sgw, sgh, g[5], g[4])
+            sub_placed[sub_key] = p
+            Some(p)
+          }
+          None => None
+        }
+      }
+    }
+  }
   dl.glyphs.each(fn(no, gl) {
     let (size, weight, style, cluster, text) = gl
     // (a glyph of nothing: a list a Tester drew without the host's text, none to make; not asked of the host, which
@@ -445,46 +491,45 @@ fn instances(dl : Dl, path : String, atlas : @hostapi.Atlas, colour_atlas : @hos
             prev_x = x
             prev_gadv = gadv
             prev_sadv = sadv
-            let tx = pen * dl.scale
-            let rx = tx.round()
-            let q = ((tx - rx) * 4.0).round().to_int()
-            let sub = match q {
-              1 => 1
-              2 => 2
-              -1 => 3
-              -2 => 4
-              _ => 0
-            }
+            // (on the whole pixel column of the quarter-pixel phase nearest the pen, drawn at that phase, as an app's
+            // words are put: glyph_col_sub; its picture's own offset across the phase's, a phase's picture a pixel
+            // wider than another's where its ink crosses one)
+            let (col, sub) = glyph_col_sub(pen * dl.scale)
+            let mut gox = gox
             if sub != 0 && base_key >= 0 {
-              let sub_key = (base_key & 0x03FFFFFF) | (sub << 26)
-              match placed.get(sub_key) {
-                Some((su, sv, sgw, sgh, sgoy)) => {
+              match phase_place(base_key, sub) {
+                Some((su, sv, sgw, sgh, sgoy, sgox)) => {
                   u = su
                   v = sv
                   gw = sgw
                   gh = sgh
                   goy = sgoy
+                  gox = sgox
                 }
-                None => {
-                  @hostapi.glyph(sub_key, g)
-                  let (sgw, sgh) = (g[2] * dl.scale, g[3] * dl.scale)
-                  match atlas.place(sub_key, sgw.round().to_int(), sgh.round().to_int(), fn(_) {  }) {
-                    Some((_, sx, sy)) => {
-                      @hostapi.glyph_put(sub_key, sx, sy)
-                      u = sx.to_double()
-                      v = sy.to_double()
-                      gw = sgw
-                      gh = sgh
-                      goy = g[5]
-                      placed[sub_key] = (u, v, gw, gh, goy)
-                    }
-                    None => ()
-                  }
-                }
+                None => ()
               }
             }
-            inst[k * inst_size] = rx / dl.scale + gox
+            inst[k * inst_size] = col / dl.scale + gox
             inst[k * inst_size + 1] = line_base + goy
+          } else {
+            // (where the list's own places stand, as its Tester drew them over this host's text: the glyph at the phase
+            // the list says, its 13, whose box the Tester was told at that phase)
+            let sub = inst[k * inst_size + 13].to_int()
+            let base_key = match glyph_info.get(no) {
+              Some((key, _, _, _)) => key
+              None => -1
+            }
+            if sub > 0 && sub < 4 && base_key >= 0 {
+              match phase_place(base_key, sub) {
+                Some((su, sv, sgw, sgh, _, _)) => {
+                  u = su
+                  v = sv
+                  gw = sgw
+                  gh = sgh
+                }
+                None => ()
+              }
+            }
           }
           if gw != inst[k * inst_size + 14] || gh != inst[k * inst_size + 15] {
             resized = resized + 1

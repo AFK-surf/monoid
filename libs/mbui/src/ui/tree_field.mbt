@@ -95,7 +95,8 @@ fn view_words_found(d : @view.Drawn) -> String {
 /// selection by the person, what it was and what it is (Ctx::editor's `on_edit`), at that edit's moment.
 /// `command_sends`: where Enter is a new line, ⌘Enter (Ctrl+Enter elsewhere) gives its words up (Ctx::editor's).
 /// `max_lines_by`: how many lines it shows at most as it is now, followed (in place of `max_lines`: a share of the
-/// window's height). `placeholder_by`: its placeholder as
+/// window's height). `paste_limit_by`: from how many characters a paste is given up as it is now, followed (in place of
+/// `paste_limit`: a bound an answer says later, none while what it goes to cannot take one). `placeholder_by`: its placeholder as
 /// it is now, followed (in place of `placeholder`). `label`: what a screen reader calls it (none: its
 /// placeholder). The node made.
 pub fn field(
@@ -124,6 +125,7 @@ pub fn field(
   edited? : (String) -> Unit,
   edit? : (FieldEdit) -> Unit,
   max_lines_by? : () -> Int,
+  paste_limit_by? : () -> Int,
   files? : (Array[(String, Bytes)]) -> Unit,
   size_by? : () -> Double,
   colors_by? : () -> (Int64, Int64, Int64),
@@ -181,7 +183,11 @@ pub fn field(
     st.command_sends = command_sends
     st.leaves = leaves
     st.ime_action = ime_action
-    st.limit = paste_limit
+    match paste_limit_by {
+      // (said again as it changes: the next paste given up by it)
+      Some(by) => f.reacts(by, fn(n) { st.limit = n })
+      None => st.limit = paste_limit
+    }
     st.secret = secret
     st.words = words
     st.look = look
@@ -298,6 +304,9 @@ pub fn Field::let_go(self : Field) -> Unit {
 /// editor it was given), followed as Ctx::has_focus is: what reads it told as the focus comes to that editor or leaves
 /// it. Held by none: false (a focus asked for it is the Field's own till one holds it, Field::focus).
 pub fn Field::focused(self : Field) -> Bool {
+  // (followed whoever holds it as it is read, or none yet: what read it before its field of the tree was made, which
+  // the focus then comes to, told as it does, not left reading none)
+  hand.focus_id.get() |> ignore
   let id = match self.st.tree_node {
     Some(n) if tree_fields.contains(n) => tree_said_of.get(n).unwrap_or(0)
     // (an old view's editor by the id it was built at, while that id's editor is this Field's still)

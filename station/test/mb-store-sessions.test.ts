@@ -654,6 +654,18 @@ test("turns, identities, profiles, processes, jobs and widgets", () => withPair(
   await p.c("jobStarted", "j1", 4242, false);
   await p.c("jobStarted", "j2", 4243, true);
   await p.c("jobStarted", "nope", 1, true);
+  // one that waited in the queue started when it left it; one that did not, and one started again, keep theirs
+  await p.c("insertJob", job("remote_j5", { sessionKey: "t2", queued: true }));
+  const queuedAt = p.now;
+  p.now += 60_000;
+  await p.c("jobStarted", "remote_j5", 4244, false);
+  const started = await p.c("getJob", "remote_j5");
+  assert.equal(started.startedAt, p.now);
+  assert.equal(started.queued, undefined);
+  assert.equal((await p.c("getJob", "j1")).startedAt, queuedAt - 3);
+  p.now += 1;
+  await p.c("jobStarted", "remote_j5", 4245, true);
+  assert.equal((await p.c("getJob", "remote_j5")).startedAt, p.now - 1);
   await p.c("getJob", "j4");
   await p.c("getJob", "none");
   await p.c("jobByToken", "jt-j2");

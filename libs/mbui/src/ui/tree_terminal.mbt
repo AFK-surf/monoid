@@ -732,17 +732,19 @@ fn Ctx::paint_tree_terminal(
           let style = @hostapi.style_mono | (if italic { @hostapi.style_italic } else { 0 })
           let raw_key = term_glyph_key(cell.text, font_size * zoom, weight, style)
           if raw_key >= 0 {
-            let key = glyph_sub(raw_key, cx, sc, zoom)
-            let g = glyph(key, sc / zoom)
+            // (a wide cell's glyph centred in it by its picture at the cell's own phase, then drawn at the phase of
+            // where it is centred to: its quad on the column of that phase, glyph_x)
+            let g0 = glyph(glyph_sub(raw_key, cx, sc, zoom), sc / zoom)
+            let slot_dx = if cell.width == 2 && g0.gw > 0.0 {
+              let natural = g0.ox / zoom + g0.gw / zoom
+              if natural < cw - 1.0 { (cw - g0.gw / zoom) * 0.5 - g0.ox / zoom } else { 0.0 }
+            } else {
+              0.0
+            }
+            let g = if slot_dx == 0.0 { g0 } else { glyph(glyph_sub(raw_key, cx + slot_dx, sc, zoom), sc / zoom) }
             if g.gw > 0.0 {
               let (gw, gh) = (g.gw / zoom, g.gh / zoom)
-              let slot_dx = if cell.width == 2 {
-                let natural = g.ox / zoom + gw
-                if natural < cw - 1.0 { (cw - gw) * 0.5 - g.ox / zoom } else { 0.0 }
-              } else {
-                0.0
-              }
-              let gx = glyph_x(cx + slot_dx, g.ox / zoom, sc)
+              let gx = glyph_x(cx + slot_dx, g.ox / zoom, sc, z=zoom)
               let gy = glyph_row(oy, vy.to_double() * line_h + baseline, g.oy / zoom, sc)
               glyph_pushing.val = true
               self.push_inst(
@@ -801,7 +803,7 @@ fn Ctx::paint_tree_terminal(
         let key = glyph_sub(raw_key, px, sc, zoom)
         let g = glyph(key, sc / zoom)
         if g.gw > 0.0 {
-          let gx = glyph_x(px, g.ox / zoom, sc)
+          let gx = glyph_x(px, g.ox / zoom, sc, z=zoom)
           let gy = glyph_row(oy, tt.cursor_y.to_double() * line_h + baseline, g.oy / zoom, sc)
           glyph_pushing.val = true
           self.push_inst(

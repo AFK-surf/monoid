@@ -3079,6 +3079,7 @@ pub fn Tester::said(Self) -> String
 pub fn Tester::scroll_all_to_end(Self) -> Int32
 pub fn Tester::scroll_to(Self, Int32) -> Unit
 pub fn Tester::scroll_to_end(Self) -> Unit
+pub fn Tester::seen_bounds_of(Self, SemNode) -> (Double, Double, Double, Double)
 pub fn Tester::semantics(Self) -> Array[SemNode]
 pub fn Tester::semantics_dump(Self) -> String
 pub fn Tester::set_a11y(Self, Bool) -> Unit

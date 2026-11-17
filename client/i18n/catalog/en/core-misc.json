@@ -230,6 +230,7 @@
   "core-misc.lock.rootOnly": "Only {name} can turn security mode off or on again. If they cannot, run stillfail lock reset on the computer a station runs on",
   "core-misc.lock.out": "{name} took you out of this workspace's security mode on {time}. To keep using it, ask {name} or another admin to add you again",
   "core-misc.lock.needsApp": "This workspace's security mode requires every member to have at least one app. Install the desktop or mobile app and sign in, have an admin approve it, then approve this web page with the app",
+  "core-misc.lock.signerUnsaid": "This device needs to be verified once to become a trusted device",
   "core-misc.lock.unconfirmed": "This device isn't approved for “{name}” yet: on a trusted device of yours in “{name}”, or as one of its admins, open Settings › Security and verify security code {code}",
   "core-misc.lock.unconfirmedNoCode": "This device isn't approved for “{name}” yet: on a trusted device of yours in “{name}”, or as one of its admins, open Settings › Security and approve it",
   "core-misc.lock.offOwnLock": "This device isn't approved for “{name}” yet: send an approval request on this device, and enter the code your trusted device shows",

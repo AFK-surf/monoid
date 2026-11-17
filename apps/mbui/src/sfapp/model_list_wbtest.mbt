@@ -8,11 +8,12 @@ test "a run's models: by series, filtered by what is typed, none said so" {
   assert_true(t.find("Haiku 4.5") is Some(_))
   t.tap_text("搜索模型")
   t.type_text("haiku")
-  t.frame()
+  // (what the change brings or takes away makes its way, the list's: looked at once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("Haiku 4.5") is Some(_))
   assert_true(t.find("Opus 5.1") is None)
   t.type_text("x")
-  t.frame()
+  t.run_for(@ui.move_most_ms)
   assert_true(t.find("没有匹配的模型") is Some(_))
 }
 

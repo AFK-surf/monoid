@@ -1648,3 +1648,26 @@ test "Field::focused: whether the editor holding it has the focus, an old view's
     ((false, false), (true, false), (false, true), false, [false, true, false]),
   )
 }
+
+///|
+test "whether a field has the focus, read before its field of the tree is made, is told as the focus comes to it" {
+  let f = Field::new()
+  let seen : Array[Bool] = []
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0)
+  set_view_app(fn(root) {
+    root.box(fn(h) {
+      // (read here, as a node is made, before the field it asks of is)
+      h.reacts(fn() { f.focused() }, fn(on) { seen.push(on) }, at_start=false)
+      h.width(Is(Some(200.0))) |> ignore
+      field(h, f, label="字", font_size=10.0, max_lines=1) |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  f.focus()
+  t.draw()
+  assert_eq(seen, [true])
+  f.let_go()
+  t.draw()
+  assert_eq(seen, [true, false])
+}

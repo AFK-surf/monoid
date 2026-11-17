@@ -118,7 +118,8 @@ test "adding directories groups them by station, including the same repository o
   // Filter to the same repository on both machines. Both paths and both station headings remain visible.
   t.tap_text("搜仓库或目录")
   t.type_text("still.fail")
-  t.frame()
+  // (what the change brings or takes away makes its way, the list's: looked at once that is over)
+  t.run_for(@ui.move_most_ms)
   assert_true(shows(t, "Willow") && shows(t, "Maple"), msg=runs(t))
   assert_eq(t.all(Button, label="still.fail").length(), 2, msg=t.semantics_dump())
   assert_true(shows(t, "~/projects/still.fail · 12 个对话用过"))

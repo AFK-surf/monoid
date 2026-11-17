@@ -20,8 +20,9 @@ import { log } from "../ops/log.ts";
 import { type AccessShown, type ScreenHub, ScreenRefused, accessShown, addressShown } from "../screens/hub.ts";
 import { type Clip, type ClipType, type Codec, type Frame, type FrameConfig, type LoginFill, type PasskeyAnswer, type Region, type ScreenInput, type ScreenSource, type ScreenView, type ViewFit, CLIP_PNG_MAX, clipFits, regionOf } from "../screens/source.ts";
 import { type Viewer, readOnly } from "./credential.ts";
+import type { Connection } from "./endpoint.ts";
 import type { Stream } from "./native.ts";
-import { type Fps, FrameLatency, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling } from "./screen-pace.ts";
+import { type Fps, FrameLatency, LOSS_EVERY_MS, LinkLoss, Pacer, type Quality, STILL_MS, START_RATE, Sharpener, Sizer, isFps, loopStall, ownRate, rateCeiling } from "./screen-pace.ts";
 import { writeLine } from "./serve.ts";
 
 export const SCREEN_TYPE = "application/x-stillfail-screen";
@@ -236,8 +237,9 @@ function said<K extends string>(field: K, v: unknown, most: number): { [F in K]?
 }
 
 /// A stream whose head says `"screen"` (serve.ts dispatches it): a view of a screen, for as long as both sides keep it.
-/// `carry`: what came after the head line. Resolves once the view ended.
-export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer, head: any, viewer: Viewer, up: () => boolean, clock: Clock.Clock = liveClock): Promise<void> {
+/// `carry`: what came after the head line; `conn`: the connection it came on, whose paths say what of the view's link was
+/// lost (none: nothing said of it). Resolves once the view ended.
+export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer, head: any, viewer: Viewer, up: () => boolean, clock: Clock.Clock = liveClock, conn?: Pick<Connection, "paths">): Promise<void> {
   const headers: Record<string, string> = {};
   for (const [k, v] of Object.entries(head.headers ?? {})) if (typeof v === "string") headers[k] = v;
   const lang = langOfCore(headers);
@@ -269,6 +271,9 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const name = viewer.name || viewer.email;
   const drives = ask.control && !readOnly(viewer);
   const driven = drives ? hub.drive(id, viewer.device, ask.taken === true, name) : { control: false, took: [] };
+  // Asked once before the view opens: a front's connection reads its paths anew as it is asked, so what the view's loss
+  // is counted from is the link's as the view begins, not as it was when last asked.
+  conn?.paths?.();
   let view: ScreenView;
   try {
     view = await source.open({ maxWidth: ask.maxWidth, maxHeight: ask.maxHeight, codecs: ask.codecs, ...(ask.audio ? { audio: true, ...(ask.opus ? { opus: true } : {}) } : {}), bitrate: START_RATE, ...(ask.fps ? { fps: ask.fps } : {}), ...(ask.peek ? { peek: true } : {}), ...(ask.fit && driven.control ? { fit: ask.fit } : {}), ...(ask.gamut ? { gamut: ask.gamut } : {}) });
@@ -304,7 +309,7 @@ export async function answerScreen(hub: ScreenHub, stream: Stream, carry: Buffer
   const pacer = new Pacer(now, START_RATE, ask.fps, stall.stalled);
   const sizer = new Sizer(now, { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ask.quality);
   const sleep = (ms: number) => Effect.runPromise(clock.sleep(Duration.millis(ms)));
-  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep })
+  await new ViewSession({ hub, id, source, view, stream, frames: new FrameIn(stream, carry), name, device: viewer.device, ...(ask.self ? { self: ask.self } : {}), ...(ask.client ? { client: ask.client } : {}), ...(ask.app ? { app: ask.app } : {}), control, took, peek: ask.peek, audio: ask.audio, access, lang, pacer, sizer, bounds: { maxWidth: ask.maxWidth, maxHeight: ask.maxHeight }, ...(ask.quality ? { quality: ask.quality } : {}), now, sleep, ...(conn?.paths ? { conn } : {}) })
     .run()
     .finally(stall.done);
 }
@@ -377,6 +382,9 @@ class ViewSession {
   readonly quality: Quality | undefined;
   /// How late its frames are (the statistics' 帧延时).
   readonly latency = new FrameLatency();
+  /// How much of what went over its link was lost (the statistics' 丢包率), from its connection's paths.
+  readonly loss: LinkLoss;
+  readonly #conn: Pick<Connection, "paths"> | undefined;
   /// The picture's size, as its latest config said (H.264, H.265: what the bounds go by).
   #size: { width: number; height: number } | null = null;
   /// The bounds the view opened with (the whole screen's), and the part of the screen the client looks at now (null:
@@ -384,7 +392,7 @@ class ViewSession {
   readonly #own: { maxWidth: number; maxHeight: number };
   #region: Region | null = null;
 
-  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void> }) {
+  constructor(o: { hub: ScreenHub; id: string; source: ScreenSource; view: ScreenView; stream: Stream; frames: FrameIn; name: string; device: string; self?: string; client?: string; app?: string; control: boolean; took?: string[]; peek?: boolean; audio?: boolean; access: AccessShown | undefined; lang: Lang; pacer: Pacer; sizer: Sizer; bounds: { maxWidth: number; maxHeight: number }; quality?: Quality; now: () => number; sleep: (ms: number) => Promise<void>; conn?: Pick<Connection, "paths"> }) {
     this.hub = o.hub;
     this.id = o.id;
     this.source = o.source;
@@ -408,6 +416,10 @@ class ViewSession {
     this.#now = o.now;
     this.#sleep = o.sleep;
     this.#lang = o.lang;
+    this.#conn = o.conn;
+    this.loss = new LinkLoss(o.now);
+    // Its counters as the view begins: what went before is no part of it.
+    if (this.#conn?.paths) this.loss.step(this.#conn.paths() ?? []);
     this.#title = o.source.title();
     this.#site = o.source.site?.();
     this.#address = addressShown(o.source.address?.());
@@ -590,6 +602,8 @@ class ViewSession {
     );
     void this.#read();
     if (this.audio && this.view.nextAudio) void this.#audio();
+    // (a preview's card shows no figures)
+    if (this.#conn?.paths && !this.peek) void this.#watchLoss();
     await this.#pump();
     await this.#over;
   }
@@ -627,6 +641,17 @@ class ViewSession {
       }
     } catch (error) {
       log.info("screens", "system audio ended", { error: String(error) });
+    }
+  }
+
+  /// What of the link was lost, said as it changes (a share each LOSS_EVERY_MS, the same not said again): sampled whether
+  /// or not the client's acknowledgements come, so a link that loses most of what goes is said so while nothing comes.
+  async #watchLoss(): Promise<void> {
+    while (!this.#closed) {
+      await Promise.race([this.#sleep(LOSS_EVERY_MS), this.#over]); // timer: a sample of this machine (the connection's packet counters)
+      if (this.#closed) return;
+      const loss = this.loss.step(this.#conn?.paths?.() ?? []);
+      if (loss !== null) void this.#state({ loss });
     }
   }
 

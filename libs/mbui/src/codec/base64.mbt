@@ -10,7 +10,7 @@ let b64_digits : Array[Char] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuv
 ///|
 /// Bytes as base64 (standard, padded).
 pub fn base64(b : Bytes) -> String {
-  let sb = StringBuilder(size_hint=(b.length() + 2) / 3 * 4)
+  let sb = StringBuilder(capacity=(b.length() + 2) / 3 * 4)
   let n = b.length()
   let mut i = 0
   while i < n {
@@ -105,7 +105,7 @@ let hex_digits : Array[Char] = "0123456789abcdef".to_array()
 ///|
 /// Bytes in hex, two lowercase digits each.
 pub fn hex(b : Bytes) -> String {
-  let sb = StringBuilder(size_hint=b.length() * 2)
+  let sb = StringBuilder(capacity=b.length() * 2)
   for i in 0..<b.length() {
     let v = b[i].to_int()
     sb.write_char(hex_digits[v >> 4])

@@ -136,8 +136,11 @@ test "a failure the viewer may report: 上报 asks first, then reports it and sa
     assert_true(named(calls, "chat.report").length() == 0)
     // (with a mouse: the web's confirm, come in)
     t.run_for(@kit.presence_in_ms)
-    // the confirm's own 上报: its words alone on their node (the notice's is in a rich line of its own)
-    let (x, y) = words_node(t, "上报").unwrap()
+    // the confirm's own 上报: the last of the buttons so named (the notice's own is the page's, under it), where it is
+    // drawn (on 小屏 a sheet of the window's tree, rising)
+    let reports = t.all(Button, label="上报")
+    let (bx, by, bw, bh) = reports[reports.length() - 1].rect
+    let (x, y) = (bx + bw / 2.0, by + bh / 2.0)
     let felt = t.haptics().length()
     t.tap(x, y)
     t.frame()

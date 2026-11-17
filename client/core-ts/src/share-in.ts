@@ -28,8 +28,20 @@ export const LISTED = 30;
 /// Where a shared thing goes: a chat (its row's `id`) or, without one, a new chat on `station`.
 export type Target = { station: string; id?: string };
 
-/// A link in what is shared: up to a space or a closing bracket.
-const LINK = /https?:\/\/[^\s<>"'）)】」]+/i;
+/// A link in what is shared: parentheses in the address stay, but an unmatched closer belongs to the words around it.
+function sharedLink(source: string): { url: string; index: number } | null {
+  const m = /https?:\/\/[^\s<>"'）)】」][^\s<>"'）】」]*/i.exec(source);
+  if (m === null) return null;
+  let depth = 0, url = m[0];
+  for (let i = 0; i < url.length; i++) {
+    if (url[i] === "(") depth++;
+    else if (url[i] === ")") {
+      if (depth === 0) { url = url.slice(0, i); break; }
+      depth--;
+    }
+  }
+  return { url, index: m.index };
+}
 
 /// Sites that share links under a short host of their own, by the site they are of.
 const SHORT: Record<string, string> = {
@@ -44,11 +56,11 @@ const SHORT: Record<string, string> = {
 
 /// The site of the first link in what is shared (`youtube.com`), its www./m. left out; null when it has none.
 export function siteOf(source: string): string | null {
-  const m = LINK.exec(source);
+  const m = sharedLink(source);
   if (m === null) return null;
   let host: string;
   try {
-    host = new URL(m[0]).hostname.toLowerCase();
+    host = new URL(m.url).hostname.toLowerCase();
   } catch {
     return null;
   }
@@ -74,11 +86,11 @@ export function messageOf(source: string, title: string | null, note: string | n
 /// words before it when they are short, as apps put a page's title before its link), and the words around it, those not
 /// taken for its title; with no link, the title on a line and the words.
 export function splitShared(source: string, title: string | null): { link: ComposerLink | null; words: string } {
-  const m = LINK.exec(source);
+  const m = sharedLink(source);
   const tt = title?.trim() ?? "";
   if (m === null) return { link: null, words: messageOf(source, title, null) };
-  const url = withoutTracking(m[0]);
-  const rest = (source.slice(0, m.index) + source.slice(m.index + m[0].length)).replace(/[ \t]+\n/g, "\n").trim();
+  const url = withoutTracking(m.url);
+  const rest = (source.slice(0, m.index) + source.slice(m.index + m.url.length)).replace(/[ \t]+\n/g, "\n").trim();
   const site = siteOf(url);
   // Words that only name it (an app's "<title> <link>", or the subject itself): its title, not words of the message.
   const naming = rest !== "" && !rest.includes("\n") && Array.from(rest).length <= TITLE_MAX && (tt === "" || rest === tt);

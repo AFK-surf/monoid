@@ -253,7 +253,33 @@ export function search(text: string, query: string, limit = 500): number[] {
   for (let i = text.indexOf(query); i >= 0 && found.length < limit; i = text.indexOf(query, i + query.length)) found.push(i);
   if (found.length || !/[A-Za-z]/.test(query)) return found;
   const lower = text.toLowerCase(), q = query.toLowerCase();
-  if (lower.length !== text.length || q.length !== query.length) return found;
+  if (q.length !== query.length) return found;
+  if (lower.length !== text.length) {
+    // Match the whole lowercase text as above, but map its offsets past expansions such as İ back to the original.
+    // Each end moves forward, so mapping walks the text twice at most, with no per-character array for large books.
+    const offsets = () => {
+      let original = 0, folded = 0;
+      return (at: number): number => {
+        while (folded < at) {
+          const code = text.codePointAt(original)!, width = code > 0xffff ? 2 : 1;
+          const size = code < 0x80 || code === lower.codePointAt(folded) ? width : text.slice(original, original + width).toLowerCase().length;
+          if (folded + size > at) return size === width ? original + at - folded : -1;
+          original += width;
+          folded += size;
+        }
+        return original;
+      };
+    };
+    const startAt = offsets(), endAt = offsets();
+    for (let i = lower.indexOf(q); i >= 0 && found.length < limit;) {
+      const start = startAt(i), end = endAt(i + q.length);
+      // The UI highlights query.length original code units: a match cannot cut an expansion or have a different width.
+      const fits = start >= 0 && end - start === query.length;
+      if (fits) found.push(start);
+      i = lower.indexOf(q, i + (fits ? q.length : 1));
+    }
+    return found;
+  }
   for (let i = lower.indexOf(q); i >= 0 && found.length < limit; i = lower.indexOf(q, i + q.length)) found.push(i);
   return found;
 }
