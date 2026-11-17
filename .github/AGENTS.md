@@ -12,7 +12,10 @@
   holds no one back and is mended forward by whoever brought it, never rolled back: the run's
   `rates-said` says what merged since the last run that went through, the likeliest first (`scripts/rates-said.sh`).
 - Every job says `timeout-minutes`, 5 at most (`scripts/ci-timeouts.py`; only its `LONGER`, runs of the day's or by
-  hand, 10). A job that needs longer is made faster. Minutes are whole (the runner cut a step's 3.8 at 3): a step that
+  hand, 10). A job that needs longer is made faster, never finished over several pushes or reruns: a branch's
+  mbui-check run cut before its programs were all built keeps none of the units it compiled (test.sh's
+  `MBUI_BUILT_MARK`), and main's store keeps what its runs used for three hours. Minutes are whole (the runner cut a
+  step's 3.8 at 3): a step that
   must end some seconds before its job, for the caches saved after it, runs under `scripts/with-timeout.sh`
   `@$((JOB_END - 35))` (by what follows it: mbui-check's 25, its replay part's 65), JOB_END written by the
   job's first step, less its 5 s of setting up. The units' stores of GitHub's images are keyed by the

@@ -251,8 +251,8 @@ jobs:
             done
           done
           echo "units: $n0 of main's, $(( $(find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d | wc -l) - n0 )) more of $got merged branches' for $(echo $shas | wc -w) commits since ${from:0:8}"
-      # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so a change that
-      # compiled over several pushes (each stopped at its 5 minutes, its units kept) is main's whole once merged)
+      # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
+      # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
         if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
@@ -265,12 +265,18 @@ jobs:
       # is (JOB_END, scripts/with-timeout.sh, its 5 s for setting up the job taken off): 45 s, the stop, the units' tar
       # and upload and the save some 40; the replay part's 65, its upload, the app's check (23-32 s) and main's moon
       # save after it some 50-62 (cut at 300-312 s inside the store's save, 44071439638, 2026-11-17); a run cut so goes
-      # no further, the rates after it not begun)
+      # no further, the rates after it not begun. On a branch a run cut before its programs were all built keeps none of
+      # its units (MBUI_BUILT_MARK, below): a build that needs more than one push's five minutes is made faster, never
+      # finished by pushing or running it again (the owner: no CI needs a rerun to pass))
       - name: The mbui app's tests and the flows seen again (native, ${{ env.PART }})
         id: tests
         run: |
           set -o pipefail
           touch "$RUNNER_TEMP/start"
+          # (written by test.sh once every program it builds is built, whatever their tests then say: the units kept
+          # below are a whole build's, never one cut half way)
+          export MBUI_BUILT_MARK="$RUNNER_TEMP/built"
+          rm -f "$MBUI_BUILT_MARK"
           # (every process of this step's carries this mark, for the step after to find what is left of it: a step
           # stopped leaves its children running)
           echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/tests-tree"
@@ -361,9 +367,11 @@ jobs:
           grep -E ' compiled \(|^mbc: linked' "$RUNNER_TEMP/mbc.log" | cut -c1-220 || true
       # (the units this run used, older ones gone, kept under a key by what they are: main's, and a branch's for its next
       # push, which restores its own with main's: without, each push compiled all the branch had changed again, 125 of
-      # 282 units of sfapp's tests for a branch on it, 108 s of the app part's 151, 2026-10-23. Older ones go only after
-      # a run that went through: one stopped early used few or none, and kept so its store was empty, main's restored by
-      # every branch after it, which then compiled all again, d610a8c0's 5 KB, 2026-10-30)
+      # 282 units of sfapp's tests for a branch on it, 108 s of the app part's 151, 2026-10-23. A branch's older ones go
+      # only after a run that built all its programs (test.sh's MBUI_BUILT_MARK; its tests may have failed: a push that
+      # mends a test compiles nothing again): one stopped early used few or none, and kept so its store was empty, main's
+      # restored by every branch after it, which then compiled all again, d610a8c0's 5 KB, 2026-10-30. A branch's run cut
+      # before then keeps nothing (above, the tests' step))
       - name: The units kept
         if: always()
         run: |
@@ -386,19 +394,31 @@ jobs:
             fi
           else
             [ ! -d "$S" ] || find "$S" -name '*.lock' -delete
-            # (main's keeps what its runs used for the last twelve hours, not only this run's: a branch off main of an hour
+            # (main's keeps what its runs used for the last three hours, not only this run's: a branch off main of an hour
             # or two before found few of its units in main's newest store, main having changed them since, and compiled
             # them all again, 644 of sfapp's 899 in 141 s, app build 275-276 s of its 5 minutes, core-connect-rows
             # 42934469629 and mbui-app-part-balance, 2026-11-10 and 11, where main's own was 41-227)
             # (three hours of them: twelve kept 23,351 units, 926 MB, 36-45 s to restore, 2026-11-17)
-            old=$( [ "$OWN" = m- ] && echo "-mmin +180" || echo "")
-            [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
-            # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
-            [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
-            c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
-            echo "BUILD_KEY=$CACHE_PREFIX$OWN$IMG-$c" >> "$GITHUB_ENV"
+            # (a branch's: only a run that built all its programs keeps its units, those it did not use gone (test.sh's
+            # MBUI_BUILT_MARK; its tests may have failed: a push that mends a test compiles nothing again); a run cut
+            # before then keeps nothing, so no build is finished over several pushes)
+            if [ "$OWN" = m- ]; then
+              old="-mmin +180"
+              [ ! -d "$S" ] || [ "$went" != success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" $old -exec rm -rf {} +
+              # (a cut run's too, those no run used for four hours: kept whole, a cut one saved the 987 MB above)
+              [ ! -d "$S" ] || [ "$went" = success ] || find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +240 -exec rm -rf {} +
+            elif [ -d "$S" ] && [ -f "$RUNNER_TEMP/start" ] && [ -f "$RUNNER_TEMP/built" ]; then
+              find "$S" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -exec rm -rf {} +
+            fi
+            if [ "$OWN" = m- ] || [ -f "$RUNNER_TEMP/built" ]; then
+              c=$( (cd "$S" 2>/dev/null && find . -mindepth 2 -maxdepth 2 -type d | sort) | sha256sum | cut -c1-16)
+              echo "BUILD_KEY=$CACHE_PREFIX$OWN$IMG-$c" >> "$GITHUB_ENV"
+              echo "units kept: $(find "$S" -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l), $(du -sh "$S" 2>/dev/null | cut -f1)"
+            else
+              echo "not every program built (cut at its limit): none of this run's units kept"
+            fi
           fi
-      - if: always() && runner.environment != 'self-hosted' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
+      - if: always() && runner.environment != 'self-hosted' && env.BUILD_KEY != '' && env.BUILD_KEY != steps.main.outputs.cache-matched-key && env.BUILD_KEY != steps.own.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: ${{ env.MBC_STORE }}
