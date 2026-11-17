@@ -324,6 +324,10 @@ priv struct Job {
   src : Bytes
   obj : Bytes
   argv : Array[Bytes]
+  // (a unit compiled less optimised, MBC_LIGHT_TESTS: the command it would have been compiled by at the program's own
+  // level, whose object in MBC_STORE it takes where it has none of its own: a branch's Mac app at -O0 over main's -O2
+  // units, cmd_wrap)
+  alt_argv : Array[Bytes]?
   optional : Bool
   depfile : Bytes? // (none with MSVC: those always compile)
   weight : Int64
@@ -344,11 +348,13 @@ fn Job::new(
   weight : Int64,
   cc : Array[Bytes],
   optional? : Bool = false,
+  alt_argv? : Array[Bytes]? = None,
 ) -> Job {
   {
     src,
     obj,
     argv,
+    alt_argv,
     optional,
     depfile,
     weight,
@@ -465,10 +471,10 @@ fn Job::write_stamp(self : Job, deps : Array[Bytes]) -> Unit {
 }
 
 ///|
-/// The object's key in MBC_STORE: its command (but for where it reads and writes), its compiler and its source's
-/// content
-fn Job::store_key(self : Job) -> Bytes {
-  let argv = self.argv.map(fn(x) {
+/// The key in MBC_STORE of the object `argv` would make of this job's source: its command (but for where it reads and
+/// writes), its compiler and its source's content
+fn Job::store_key_of(self : Job, argv : Array[Bytes]) -> Bytes {
+  let argv = argv.map(fn(x) {
     if x == self.src {
       b"<src>"
     } else if x == self.obj {
@@ -487,15 +493,29 @@ fn Job::store_key(self : Job) -> Bytes {
 
 ///|
 fn Job::store_dir(self : Job, store : Bytes) -> Bytes {
-  let k = self.store_key()
+  self.store_dir_of(store, self.argv)
+}
+
+///|
+fn Job::store_dir_of(self : Job, store : Bytes, argv : Array[Bytes]) -> Bytes {
+  let k = self.store_key_of(argv)
   joins([store, sub(k, 0, 2), k])
 }
 
 ///|
 /// The object another program's unit of the same text, command and compiler made, when what else it read (every
-/// header its depfile named, by content) is as it was
+/// header its depfile named, by content) is as it was; for a unit compiled less optimised, its own level's first, then
+/// the program's own level's (alt_argv)
 fn Job::from_store(self : Job, store : Bytes) -> Bool {
-  let d = self.store_dir(store)
+  self.from_store_dir(self.store_dir(store)) ||
+  (match self.alt_argv {
+    Some(alt) => self.from_store_dir(self.store_dir_of(store, alt))
+    None => false
+  })
+}
+
+///|
+fn Job::from_store_dir(self : Job, d : Bytes) -> Bool {
   let deps = match read_file(path_join(d, b"deps")) {
     Some(t) => lines(t)
     None => return false
@@ -549,6 +569,17 @@ fn Job::keep_in_store(self : Job, store : Bytes) -> Unit {
   if is_dir(d) {
     let _ = c_touch(d)
     return
+  }
+  // (one taken at the program's own level is kept there, not put again under its less optimised command)
+  match self.alt_argv {
+    Some(alt) => {
+      let a = self.store_dir_of(store, alt)
+      if is_dir(a) {
+        let _ = c_touch(a)
+        return
+      }
+    }
+    None => ()
   }
   match read_file(self.stamp()) {
     Some(s) => {
@@ -604,6 +635,23 @@ fn run_jobs_c(jobs0 : Array[Job], j : Int, label : Bytes) -> Array[Bytes] {
       0
     }
   })
+  // A prebuild may overlap Moon with cache restoration. Never read a partial store.
+  match getenv("MBC_STORE_WAIT") {
+    Some(p) if p.length() > 0 => {
+      let limit = match getenv("MBC_STORE_WAIT_SECS") {
+        Some(v) if parse_int(strip(v)) > 0 => parse_int(strip(v))
+        _ => 180
+      }
+      let started = now_s()
+      while exists(p) {
+        if exists(cat([p, b".failed"])) { fatal("MBC_STORE_WAIT failed") }
+        if now_s() - started >= limit.to_double() { fatal("MBC_STORE_WAIT timed out") }
+        c_wait_short()
+      }
+      if exists(cat([p, b".failed"])) { fatal("MBC_STORE_WAIT failed") }
+    }
+    _ => ()
+  }
   let store = match getenv("MBC_STORE") {
     Some(s) if s.length() > 0 => Some(s)
     _ => None
@@ -866,6 +914,7 @@ fn split_jobs(
   init_flags : Array[Bytes],
   msvc : Bool,
   lto : Bool,
+  alt_flags? : Array[Bytes]? = None,
 ) -> (Array[Job], Made) {
   let srcdir = path_join(objdir, b"src")
   let raw = match read_file(c_file) {
@@ -985,13 +1034,31 @@ fn split_jobs(
     let src = path_join(srcdir, name)
     let obj = path_join(objdir, cat([b"u_", sub(name, 0, name.length() - 2), ext]))
     let (argv, dep) = compile_args(cc, f, src, obj, msvc)
+    let alt_argv = alt_flags.map(fn(af) {
+      let f0 = af.copy()
+      for x in gen_flags {
+        f0.push(x)
+      }
+      for x in more {
+        f0.push(x)
+      }
+      compile_args(cc, f0, src, obj, msvc).0
+    })
     // moonbit_init first: the slowest to compile at any level
     let size = match stat(src) {
       Some(s) => s.0
       None => 0L
     }
     jobs.push(
-      Job::new(src, obj, argv, dep, if is_init(name) { size * 4L } else { size }, cc),
+      Job::new(
+        src,
+        obj,
+        argv,
+        dep,
+        if is_init(name) { size * 4L } else { size },
+        cc,
+        alt_argv~,
+      ),
     )
   }
   (jobs, m)
@@ -1790,18 +1857,51 @@ fn plain_path(p : Bytes) -> Bytes {
 }
 
 ///|
+/// Whether `prog` (…/<pkg>/<program>.exe, either slash) is one MBC_LIGHT_TESTS names ("pkg/name.kind …"): compiled
+/// less optimised, MBC_LIGHT_OPT
+fn is_light_prog(prog : Bytes) -> Bool {
+  let p = Bytes::from_array(prog.to_array().map(fn(c) { if c == b'\\' { b'/' } else { c } }))
+  match getenv("MBC_LIGHT_TESTS") {
+    Some(list) => split_words(list).iter().any(fn(e) { ends(p, cat([b"/", e, b".exe"])) })
+    None => false
+  }
+}
+
+///|
 ///|
 /// MSVC's compile of the program's C on its own (cmd_wrap): split and compiled in parallel, then `obj` a placeholder
 /// and `obj`.mbc-units the units, for the link after
 fn msvc_core_obj(real : Array[Bytes], wargs : Array[Bytes], c_file : Bytes, obj : Bytes) -> Unit {
   let objdir = cat([sub(obj, 0, obj.length() - 4), b".mbc"])
   makedirs(objdir)
-  let flags = msvc_compile_flags(wargs[:])
+  let flags0 = msvc_compile_flags(wargs[:])
+  // (a program of MBC_LIGHT_TESTS at /Od, as cmd_wrap's: its program …\<pkg>\<program>.exe, the units the store has at
+  // its own level taken, /O2's and /Od's objects the same COFF to the link)
+  let b = basename(obj)
+  let light = is_light_prog(cat([dirname(dirname(obj)), b"/", sub(b, 0, b.length() - 4), b".exe"]))
+  let flags = if light {
+    let f = flags0.filter(fn(x) { !(x.length() >= 2 && (x[0] == b'/' || x[0] == b'-') && x[1] == b'O') })
+    f.push(getenv("MBC_LIGHT_OPT").unwrap_or(b"/Od"))
+    f
+  } else {
+    flags0
+  }
   let j = match getenv("MBC_JOBS") {
     Some(v) if parse_int(strip(v)) > 0 => parse_int(strip(v))
     _ => cpus()
   }
-  let (jobs, _) = split_jobs(c_file, objdir, real, flags, [], default_init_flags(true), true, false)
+  let alt_flags = if light { Some(flags0) } else { None }
+  let (jobs, _) = split_jobs(
+    c_file,
+    objdir,
+    real,
+    flags,
+    [],
+    default_init_flags(true),
+    true,
+    false,
+    alt_flags~,
+  )
   let objs = run_jobs_c(jobs, j, basename(c_file))
   if !write_file(cat([obj, b".mbc-units"]), join_words(objs, b"\n")) {
     fatal("cannot write \{str(obj)}.mbc-units")
@@ -1973,16 +2073,7 @@ fn cmd_wrap(args : Array[String]) -> Unit {
   }
   // a test program of a few tests compiled less optimised (MBC_LIGHT_TESTS: "pkg/name.kind …", its level
   // MBC_LIGHT_OPT, -O0 by default, apps/mbui/scripts/test.sh): what it tests is the code, not how fast it runs.
-  let mut light = false
-  match getenv("MBC_LIGHT_TESTS") {
-    Some(list) if !msvc =>
-      for e in split_words(list) {
-        if ends(prog, cat([b"/", e, b".exe"])) {
-          light = true
-        }
-      }
-    _ => ()
-  }
+  let light = !msvc && is_light_prog(prog)
   let flags = if light {
     let f = flags0.filter(fn(x) { !starts(x, b"-O") })
     f.push(getenv("MBC_LIGHT_OPT").unwrap_or(b"-O0"))
@@ -1996,7 +2087,20 @@ fn cmd_wrap(args : Array[String]) -> Unit {
     _ => cpus()
   }
   let lto = if core_obj { None } else { lto_for(real, j) }
-  let (jobs, _) = split_jobs(c_file, objdir, real, flags, [], init_flags, msvc, lto is Some(_))
+  // (a unit compiled less optimised takes the program's own level's object from MBC_STORE where there is one: not
+  // with LTO, whose units are bitcode)
+  let alt_flags = if light && lto is None { Some(flags0) } else { None }
+  let (jobs, _) = split_jobs(
+    c_file,
+    objdir,
+    real,
+    flags,
+    [],
+    init_flags,
+    msvc,
+    lto is Some(_),
+    alt_flags~,
+  )
   let objs = run_jobs_c(jobs, j, basename(c_file))
   if core_obj {
     let cmd = real.copy()

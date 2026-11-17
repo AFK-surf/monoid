@@ -17,12 +17,18 @@ case "${1:-}" in
       export STILLFAIL_POSTHOG="$RUNNER_TEMP/posthog.json"
     fi
     unset POSTHOG_JSON
+    rm -f "$dir/store-pending.failed" "$dir/status"
     : > "$dir/packages-pending"
+    : > "$dir/store-pending"
+    export MBC_STORE_WAIT="$dir/store-pending"
     nohup bash "$0" work > "$dir/log" 2>&1 < /dev/null &
     echo "$!" > "$dir/pid"
     ;;
   ready)
     touch "$dir/ready"
+    ;;
+  store)
+    rm -f "$dir/store-pending"
     ;;
   packages)
     rm -f "$dir/packages-pending"
@@ -90,6 +96,7 @@ case "${1:-}" in
     [ ! -f "$exe" ] || [ ! "$A/out/core/aarch64-apple-darwin/libmbui_core.a" -nt "$exe" ] || touch "$A/src/stillfail/core_engine.m"
     export MOON_HOME="$RUNNER_TOOL_CACHE/moon-ci"
     export PATH="$MOON_HOME/bin:$PATH" APP=stillfail MODE=release MBUI_PACKAGES_PENDING="$dir/packages-pending"
+    . apps/mbui/scripts/env.sh
     # The app's wrapper builds core.hbc beside the app. Leaving it until mac-app.sh bundled the app added 26 s after
     # the compile and let a successful build time out during cleanup (42588746155, 2026-11-09).
     # (built whole here, `built` says so: the bundling step takes it as it is, MBUI_BUILT, not running mac.sh again
@@ -104,5 +111,5 @@ case "${1:-}" in
     fi
     touch "$dir/built"
     ;;
-  *) echo "usage: $0 start|ready|packages|wait|stop" >&2; exit 2 ;;
+  *) echo "usage: $0 start|ready|store|packages|wait|stop" >&2; exit 2 ;;
 esac

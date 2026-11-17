@@ -152,10 +152,14 @@ jobs:
       # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
       # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
       # (less the 1-5 s of "Set up job" before it, as windows')
+      # (a branch's app: mbc's MBC_LIGHT_TESTS, each unit taken at -O2 where main's store has it as this program's would
+      # be, what it has not compiled at -O0, as pipeline.yml's desktop-build: all at -O2 a push after main took a large
+      # change and before it saved a store of it was cut. Main's stays -O2)
       - name: The job's end and its image
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
+          [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # the build's number is the commits in the history (their files only as checked out)
       # (GTK 4 and what the host and the core link beside it: libsoup, libsecret)
@@ -242,6 +246,9 @@ jobs:
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
           reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 55 || echo 35)
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash apps/mbui/scripts/linux.sh build
+      # (what a cut build left running stopped on main and a branch alike; a branch's store saved only of a build that
+      # went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
+      # main's cut keeps what it compiled)
       - name: The caches' keys, by what they hold
         if: always() && steps.build.outcome != 'skipped'
         run: |
@@ -260,6 +267,7 @@ jobs:
               sleep 1
             done
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
           fi
           echo "STORE_KEY=mbui-linux-${{ matrix.arch }}-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$IMG-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
@@ -537,8 +545,12 @@ jobs:
       # time to go out, apps/mbui/scripts/beta.sh deltas_deadline; main 44efbac9's, 43981921907, spent its last 24 s on
       # them. The job's first step: after Defender's, pwsh's start put it 8 s past the job's real end, main bd0f01ab's,
       # 43990130513, and its put, all done, was cancelled at that end; less the 3-5 s of "Set up job" before it, 43998071944)
+      # (and a branch's app at /Od where main's store has not its /O2 units, as the Linux job's: MBC_LIGHT_TESTS for the
+      # whole job, the app built in the background and the beta's build after it one build to mbc)
       - name: The job's end
-        run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+        run: |
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+          [ "$GITHUB_REF" = refs/heads/main ] || echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       # Defender's real-time scan kept off what the job writes and runs: each new file and each program's first start was
       # scanned, MoonBit's 114 MB (206 MB of programs) put in in 12-25 s against 2 s for as much of the build's, 2026-10-30
       - shell: pwsh
@@ -882,8 +894,8 @@ jobs:
           Z=$RUNNER_TEMP/zip
           export GITHUB_STEP_SUMMARY="$Z/summary"
           nohup bash -c 'while [ ! -s "$0/signed" ]; do sleep 1; done; [ "$(cat "$0/signed")" = 0 ] && bash apps/mbui/scripts/beta.sh publish win >> "$0/log" 2>&1; echo $? > "$0/status"' "$Z" > /dev/null 2>&1 &
-      # (main's and a branch's, however the build ended: one cut short keeps what it compiled, nothing taken out, so
-      # the next run goes on from there, as the Linux jobs' do; what it left running (moon, mbc, clang-cl) stopped first
+      # (main's however the build ended: one cut short keeps what it compiled, nothing taken out, so the next run goes on
+      # from there, as the Linux jobs' do; a branch's only of a build that went through, as theirs; what it left running (moon, mbc, clang-cl) stopped first
       # and their locks taken out, so the store is still as it is tarred: mbui-check.yml's save failed so, 43839505847)
       - name: The units, by what they hold
         if: always() && steps.build.outcome != 'skipped'
@@ -896,6 +908,7 @@ jobs:
             taskkill //F //IM moon.exe //IM moonc.exe //IM mbc.exe //IM clang-cl.exe //IM cl.exe //IM link.exe > /dev/null 2>&1 || true
             sleep 1
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
           fi
           echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
           echo "STORE_KEY=mbui-win-store-${{ github.ref == 'refs/heads/main' && 'm' || 'b' }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store)" >> "$GITHUB_ENV"

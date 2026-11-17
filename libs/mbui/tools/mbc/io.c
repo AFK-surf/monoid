@@ -15,8 +15,19 @@
 #else
 #include <dirent.h>
 #include <unistd.h>
+#include <time.h>
 #endif
 #include "moonbit.h"
+
+// Bound the cache publication wait without consuming a compiler core.
+void mbc_wait_short(void) {
+#if defined(_WIN32)
+  Sleep(100);
+#else
+  struct timespec delay = {0, 100000000};
+  nanosleep(&delay, NULL);
+#endif
+}
 
 // a path given as bytes (UTF-8), NUL-terminated; the caller frees it
 static char *cpath(moonbit_bytes_t p) {

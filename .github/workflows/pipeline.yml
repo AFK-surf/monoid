@@ -1101,12 +1101,13 @@ jobs:
     env:
       MBUI_FRESH: 1
       MBUI_CACHE: ${{ github.workspace }}/.ci/release
-      MBC_STORE: ${{ github.workspace }}/.ci/mbc-store
-      HBC_CACHE: ${{ github.workspace }}/.ci/hbc
     steps:
       # (when the job is cut, its timeout-minutes above, for its build's own limit to the second, scripts/with-timeout.sh;
       # less the 1-5 s of "Set up job" before this step)
-      - run: echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+      - run: |
+          echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
+          echo "MBC_STORE=$RUNNER_TEMP/ci-live/mbc-store" >> "$GITHUB_ENV"
+          echo "HBC_CACHE=$RUNNER_TEMP/ci-live/hbc" >> "$GITHUB_ENV"
       - uses: actions/checkout@v5
         with: { fetch-depth: 0, filter: "blob:none" } # its build is the commits in the history
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
@@ -1115,16 +1116,6 @@ jobs:
       - name: The Mac C compiler launcher
         id: mac-cc
         run: echo "key=$(shasum -a 256 /usr/bin/cc | cut -c1-16)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@v4
-        id: store
-        with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
-          restore-keys: |
-            mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-
-            mbui-mac-
       # A branch based on arch/next needs its compiled units too. GitHub makes the branch's own and main's caches
       # available, but not arch/next's; next-mac-cache.yml keeps that branch's on main's ref for this job.
       - id: arch-base
@@ -1135,49 +1126,8 @@ jobs:
           if [ -n "$next" ] && [ -n "$shared" ] && [ "$next" != "$shared" ] && git merge-base --is-ancestor "$shared" "$next"; then
             echo "next=true" >> "$GITHUB_OUTPUT"
           fi
-      - if: steps.arch-base.outputs.next == 'true'
-        run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-main"
-      - uses: actions/cache/restore@v4
-        if: steps.arch-base.outputs.next == 'true'
-        with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-next-mac-${{ github.sha }}
-          restore-keys: mbui-next-mac-
-      - if: steps.arch-base.outputs.next == 'true'
-        run: |
-          mkdir -p .ci && rsync -a --ignore-existing "$RUNNER_TEMP/ci-main/" .ci/
-          rm -rf "$RUNNER_TEMP/ci-main"
-      # A branch's app (release_smoke: its bundle, signature, symbols and the macOS it is linked for checked, nothing
-      # published or measured) takes main's -O2 units where main's store holds them (its 1171 units the app's C is split
-      # into, most of them); where it does not (main's store 4 MB, 2026-11-17), the app's C is compiled without
-      # optimising (mbc's MBC_LIGHT_TESTS, -O0), within the job's five minutes on GitHub's three cores: 1171 units in
-      # 41 s on three of Studio's, against moonc's ~120 s here before it. Not the C whole at -O0 in one clang
-      # (MBC_SPLIT=0): 38 s on one of Studio's cores, but 5.8 GB at its peak, of the runner's 7. Main's stays -O2.
       - if: github.ref != 'refs/heads/main'
-        run: |
-          units=$(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l | tr -d ' ')
-          if [ "$units" -ge 800 ]; then echo "main's store holds $units units: the app's C at -O2, taken from it"
-          else echo "main's store holds $units units: the app's C at -O0"; echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"; fi
-      # (a branch's own store over main's, as preview.yml's Linux build: what a cut build of the branch's compiled is kept
-      # and gone on from, not dropped with the run, 870 of 1119 units in 134053849540, 2026-11-17;
-      # after main's units are counted above, which decide -O2 or -O0)
-      - if: github.ref != 'refs/heads/main'
-        run: mkdir -p .ci && mv .ci "$RUNNER_TEMP/ci-store-main"
-      - uses: actions/cache/restore@v4
-        id: own
-        if: github.ref != 'refs/heads/main'
-        with:
-          path: |
-            .ci/mbc-store
-            .ci/hbc
-          key: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
-          restore-keys: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-
-      - if: github.ref != 'refs/heads/main'
-        run: |
-          mkdir -p .ci && cp -a -n "$RUNNER_TEMP/ci-store-main/." .ci/ && rm -rf "$RUNNER_TEMP/ci-store-main"
-          echo "units: $(find .ci/mbc-store -mindepth 2 -maxdepth 2 -type d 2>/dev/null | wc -l)"
+        run: echo "MBC_LIGHT_TESTS=stillfail/stillfail" >> "$GITHUB_ENV"
       - id: hermes
         run: echo "key=$(grep -E '^HERMES_(RN|APPLE_URL|APPLE_SHA256)=' apps/mbui/scripts/core.sh | shasum -a 256 | cut -c1-16)" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
@@ -1192,7 +1142,8 @@ jobs:
       - name: The macOS shell's key
         id: native-keys
         run: echo "key=natives-shell-apple-darwin-arm64-$(node scripts/native.ts key shell-apple darwin-arm64)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache@v4
+      # (saved by main alone, below: a branch that changed the mesh saved it in its Post Run, after its five minutes)
+      - uses: actions/cache/restore@v4
         id: shell
         with:
           path: ~/Library/Caches/stillfail-native/shell-apple
@@ -1206,6 +1157,7 @@ jobs:
             shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-
             shell-apple-target-darwin-arm64-
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       # The next build is kept on main's ref too. Take its Moon build first; unlike the content-addressed units,
       # two Moon build directories cannot be overlaid, so fall back to main's only if there is no next build.
       - uses: actions/cache/restore@v4
@@ -1233,6 +1185,7 @@ jobs:
       # does, both into apps/mbui/deps/farview.tmp, each taking the other's away (scripts/farview.sh); its native parts
       # are downloads of a few seconds. The same scripts, target and compiler are used by mac-app.sh below.
       - name: Start the Mac app build
+        id: start
         env:
           # the PostHog project the app's core sends what people use to (mac-release-prebuild.sh), as the bundling
           # step below gives it, so that core.hbc is made once
@@ -1242,6 +1195,72 @@ jobs:
           touch "$RUNNER_TEMP/start"
           bash .github/mac-release-prebuild.sh start
           bash .github/mac-release-prebuild.sh ready
+      # (main's -O2 units: main's own, and a branch's to take where they are what its changed program's would be at -O2,
+      # mbc's MBC_LIGHT_TESTS, below)
+      - uses: actions/cache/restore@v4
+        id: store
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
+          restore-keys: |
+            mbui-mac-cc-${{ steps.mac-cc.outputs.key }}-
+            mbui-mac-
+      # Preserve cache paths and version; the build reads only the separately published ci-live directories.
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          mkdir -p "$RUNNER_TEMP/ci-main" .ci/mbc-store
+          mv .ci/mbc-store "$RUNNER_TEMP/ci-main/mbc-store"
+          rm -rf .ci/hbc
+      - uses: actions/cache/restore@v4
+        if: steps.arch-base.outputs.next == 'true'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-next-mac-${{ github.sha }}
+          restore-keys: mbui-next-mac-
+      - uses: actions/cache/restore@v4
+        if: github.ref != 'refs/heads/main' && steps.arch-base.outputs.next != 'true'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-ios-${{ github.sha }}
+          restore-keys: mbui-ios-
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          if [ "${{ steps.arch-base.outputs.next }}" = true ] && [ -d .ci/mbc-store ]; then
+            rsync -a .ci/mbc-store/ "$RUNNER_TEMP/ci-main/mbc-store/"
+          fi
+          rm -rf .ci/mbc-store
+          [ ! -d .ci/hbc ] || mv .ci/hbc "$RUNNER_TEMP/ci-main/hbc"
+      - uses: actions/cache/restore@v4
+        id: own
+        if: github.ref != 'refs/heads/main'
+        with:
+          path: |
+            .ci/mbc-store
+            .ci/hbc
+          key: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-${{ github.sha }}
+          restore-keys: mbui-mac-cc-b-${{ steps.mac-cc.outputs.key }}-
+      - if: github.ref != 'refs/heads/main'
+        run: |
+          if [ -d .ci/mbc-store ]; then rsync -a .ci/mbc-store/ "$RUNNER_TEMP/ci-main/mbc-store/"; fi
+          rm -rf .ci/mbc-store
+          mv "$RUNNER_TEMP/ci-main/mbc-store" .ci/mbc-store
+          mkdir -p "$RUNNER_TEMP/ci-main/hbc"
+          if [ -d .ci/hbc ]; then rsync -a .ci/hbc/ "$RUNNER_TEMP/ci-main/hbc/"; fi
+          rm -rf .ci/hbc
+          mv "$RUNNER_TEMP/ci-main/hbc" .ci/hbc
+          rm -rf "$RUNNER_TEMP/ci-main"
+      - name: Publish complete caches to the build
+        run: |
+          mkdir -p .ci/mbc-store .ci/hbc "$RUNNER_TEMP/ci-live"
+          mv .ci/mbc-store "$MBC_STORE"
+          mv .ci/hbc "$HBC_CACHE"
+          bash .github/mac-release-prebuild.sh store
       # pnpm and its store only where the core's bytecode is not kept (HBC_CACHE): only a core made here installs the
       # packages (13-15 s of the job; the Node it needs is the first setup's). Asked with the PostHog project the build
       # makes it with (mac-release-prebuild.sh's), so that the key is the build's.
@@ -1263,25 +1282,13 @@ jobs:
         with:
           path: apps/mbui/out/mac/AppIcon-*
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
-      # (a build cut short by its own limit, before the job's, still keeps what it compiled: the store saved over what was
-      # restored, nothing taken out, so the next run goes on from there, as preview.yml's Linux build does (#6575).
-      # Saved only at the job's end, main's c3e7df99 and 4c3a71b2 (2026-11-16, libs/mbui/src/ui changed, 724 of 1028
-      # units compiled, moon's build 235 s) were cut at the job's five minutes with nothing kept, the next run as far behind.
-      # Cut 60 s before the job is (JOB_END, scripts/with-timeout.sh), what follows a build done: its bundle 26 s, upload
-      # 3 s, key and both saves 19 s, post steps 6 s, 54 s in all (main 992d331c, 43998125472: done 18 s before a cut at
-      # 35 s, all green, and cancelled at the job's 300 s). Cut, the bundle, upload and moon's save are skipped: the
-      # worker's stop, the key and the store's save ~18 s. Main's alone: a branch saves no store, so only the job's own
-      # limit holds it)
+      # Reserve the measured post-build chain, including post-actions: 60 seconds on main, 48 on a branch.
+      # The same diagnostics and process cleanup apply to both.
       - name: Finish the Mac app build
         id: finish
-        # (a branch's cut 40 s before its job, its store's key and save after it, saying where the worker had got to: cut
-        # by the job, its log was never
-        # said and nothing told where its five minutes went, #6955's 133997881250, 2026-11-17)
         run: |
-          if [ "$GITHUB_REF" = refs/heads/main ]; then
-            bash scripts/with-timeout.sh @$((JOB_END - 60)) bash .github/mac-release-prebuild.sh wait
-          else
-            bash scripts/with-timeout.sh @$((JOB_END - 40)) bash .github/mac-release-prebuild.sh wait || {
+          if [ "$GITHUB_REF" = refs/heads/main ]; then reserve=60; else reserve=48; fi
+          bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"
               tail -80 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
@@ -1290,10 +1297,14 @@ jobs:
               tail -20 apps/mbui/out/moon.log 2>/dev/null | sed 's/^/  moon.log: /' || true
               cat apps/mbui/out/mbc.log 2>/dev/null | sed 's/^/  mbc.log: /' || true
               ps -axo etime=,pcpu=,args= | grep -E 'moonc|moon |mbc|clang' | grep -v grep | cut -c1-200 | head -15 | sed 's/^/  running: /' || true
-              bash .github/mac-release-prebuild.sh stop
               exit "$status"
-            }
-          fi
+          }
+      - name: Stop a prebuild whose preparation failed
+        if: ${{ always() && steps.start.outcome != '' && steps.start.outcome != 'skipped' && steps.finish.outcome == 'skipped' }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/mac-prebuild"
+          : > "$RUNNER_TEMP/mac-prebuild/store-pending.failed"
+          bash .github/mac-release-prebuild.sh stop
       # Hand over the same build to the signing job; mac-app.sh checks its build and beta face when taking it back.
       - name: Bundle the beta Mac app for signing
         id: bundle
@@ -1320,24 +1331,38 @@ jobs:
           retention-days: 1
           compression-level: 0
       # (main's, when it built the shell here)
+      - if: github.ref == 'refs/heads/main' && steps.shell.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/Library/Caches/stillfail-native/shell-apple
+          key: ${{ steps.native-keys.outputs.key }}
       - if: github.ref == 'refs/heads/main' && steps.shell.outputs.cache-hit != 'true' && hashFiles('apps/mbui/out/core-target*/native/shell-apple/**/libstillfail_shell.a') != ''
         uses: actions/cache/save@v4
         with:
           path: apps/mbui/out/core-target*/native/shell-apple
           key: shell-apple-target-darwin-arm64-${{ hashFiles('client/Cargo.lock') }}-${{ github.sha }}
+      # (a cut build's log and its compilers stopped on main and a branch alike; a branch's store saved only of a build
+      # that went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
+      # main's cut keeps what it compiled, as above)
       - name: The cache's key, by what it holds
         if: always() && steps.finish.outcome != 'skipped'
         run: |
           # (what the build did not use taken out only of a whole build: one cut in its bundling left compilers writing
           # units as used.sh took out all it had not seen used yet, and main's store was 24 MB after, 2026-11-17)
+          if [ "${{ steps.finish.outcome }}" != success ] || [ "${{ steps.bundle.outcome }}" != success ]; then
+            bash .github/mac-release-prebuild.sh stop
+          fi
+          mkdir -p .ci
+          [ ! -d "$MBC_STORE" ] || mv "$MBC_STORE" .ci/mbc-store
+          [ ! -d "$HBC_CACHE" ] || mv "$HBC_CACHE" .ci/hbc
           if [ "${{ steps.finish.outcome }}" = success ] && [ "${{ steps.bundle.outcome }}" = success ]; then
             sh apps/mbui/scripts/used.sh "$RUNNER_TEMP/start" .ci/mbc-store
           else
             # (where the build was as it was cut: its worker's log is said only as it ends, so a cut said nothing of what
             # it had come to, main 6a896dd6, 202a54dc and 0ff80373 on 2026-11-16)
             tail -40 "$RUNNER_TEMP/mac-prebuild/log" 2>/dev/null || true
-            bash .github/mac-release-prebuild.sh stop
             find .ci/mbc-store -name '*.lock' -delete 2>/dev/null || true
+            [ "$GITHUB_REF" = refs/heads/main ] || { echo "a branch's build that did not go through: its store not saved"; exit 0; }
           fi
           echo "STORE_KEY=mbui-mac-cc-${{ github.ref != 'refs/heads/main' && 'b-' || '' }}${{ steps.mac-cc.outputs.key }}-$(sh apps/mbui/scripts/held.sh .ci/mbc-store .ci/hbc)" >> "$GITHUB_ENV"
       - if: always() && env.STORE_KEY != '' && env.STORE_KEY != steps.store.outputs.cache-matched-key && env.STORE_KEY != steps.own.outputs.cache-matched-key
