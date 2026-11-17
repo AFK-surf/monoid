@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 122.21 |
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.86 | 117.8 |
 | [2db75fe70](https://github.com/AFK-surf/monoid/commit/2db75fe709c9033c49758a5a49964c86f157dfe2) profiles: 概览's line is what the weeks hold, five h | 2.5 | 3.52 | 15.21 | 36.58 | 60.14 | 32.03 | 67.14 | 95.81 | 121.33 |
 | [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 2.5 | 3.52 | 15.21 | 36.57 | 60.14 | 32.03 | 67.14 | 95.81 | 124.77 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 2.46 | 3.45 | 14.75 | 35.97 | 57.86 | 31.51 | 65.33 | 95.83 | 115.71 |
 | [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.83 | 120.14 |
 | [ce12dbc01](https://github.com/AFK-surf/monoid/commit/ce12dbc0114410c695f6848d53218bb599d4e611) mbui, app: main's switches sweep green again after | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
-| [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [4fb7a3b37](https://github.com/AFK-surf/monoid/commit/4fb7a3b37eb84d4308c15476d2276046d966b0f3) mbui: what grows in a list's row on its way follow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.28 |
 | [037cb655a](https://github.com/AFK-surf/monoid/commit/037cb655abd662adf179220ec16fac8856374ae6) station/mb: cloud_net dials through the shell's ow | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [2db75fe70](https://github.com/AFK-surf/monoid/commit/2db75fe709c9033c49758a5a49964c86f157dfe2) profiles: 概览's line is what the weeks hold, five h | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ec2fa0e09](https://github.com/AFK-surf/monoid/commit/ec2fa0e09c8fe82d49a25a3a9c6e3034ecafe841) station: phones, screens, device tools, elevation, | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [194783d76](https://github.com/AFK-surf/monoid/commit/194783d763775145968f2453fae220442e2b235e) feat(relay): add St. Louis relay (#6735) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
 | [ce12dbc01](https://github.com/AFK-surf/monoid/commit/ce12dbc0114410c695f6848d53218bb599d4e611) mbui, app: main's switches sweep green again after | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.28 |
-| [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
