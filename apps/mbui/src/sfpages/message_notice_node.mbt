@@ -25,9 +25,8 @@ fn notice_said_node(
   m : () -> Message,
   opened : @sf.LiveMap[String, Bool],
   copied : @sf.LiveMap[String, Double],
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
 ) -> MessageRowNode {
-  message_row_frame_node(v, key, side, top, over~, fn(r) {
+  message_row_frame_node(v, key, side, top, fn(r) {
     notice_body_node(r, src, here, m, opened, copied)
   })
 }

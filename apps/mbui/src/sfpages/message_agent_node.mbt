@@ -58,7 +58,6 @@ fn agent_said_node(
   found_at? : () -> Int? = fn() { None },
   lit? : () -> (String, Int64) = fn() { ("", 0L) },
   share? : MessageShare? = None,
-  over? : (@view.View, () -> String) -> Unit = fn(_, _) {  },
   code? : (String) -> ((@view.View, () -> String) -> Unit)? = fn(_) { None },
   screens? : @sf.ScreensNode,
   shown? : (@view.View, Array[(String, String, Int)]) -> Unit,
@@ -81,7 +80,7 @@ fn agent_said_node(
   match piece {
     Some(pc) if pc.from > 0 || (pc.rows is Some((r, _)) && r > 0) => {
       let last = pc.last
-      let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
+      let row = message_row_frame_node(v, key, side, top, fn(r) {
         r.box(fn(col) {
           @sf.style_node(col, fn() { msg_main })
           // (pointed at as its first piece is, that one's ⋯ shown while the pointer is on it (`piece_made`, what the
@@ -122,7 +121,7 @@ fn agent_said_node(
     Some(pc) => pc.last
     None => true
   }
-  let row = message_row_frame_node(v, key, side, top, over~, fn(r) {
+  let row = message_row_frame_node(v, key, side, top, fn(r) {
     // (come by data while its agent was at work: out of that agent's picture on its line (`out_of`), as emit.mbt's, each
     // step from the cause's moment: the line folds into its picture (Fold); its own picture glides there from that one
     // (Float, a flight: View::flies_in); its head and its words come out of it, the words a glyph at a time (Spit,
