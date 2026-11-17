@@ -64,6 +64,9 @@ jobs:
           restore-keys: |
             mbui-windows-demo-${{ matrix.check }}-
             mbui-windows-demo-
+      # (what the store's units were before this run's own: those it did not use, and none for three hours, go before
+      # main's save below)
+      - run: touch "$RUNNER_TEMP/start"
       - name: Build
         if: matrix.check == 'ime'
         run: |
@@ -103,6 +106,14 @@ jobs:
           done
           grep -q "no WebView2 runtime" out/webviews/webviews-none.log || { echo "webviews-none.log: the runtime was found"; exit 1; }
           grep -q "SHOT .* ok" out/webviews/webviews-none.log
+      # Main's store keeps what its runs used for three hours (as mbui-check's): saved whole, run after run it kept every
+      # unit it ever took in, 428 MB a check, 1,284 MB of main's caches for the three (2026-11-17).
+      - name: Prune unused units from the demo's store
+        if: always() && github.ref == 'refs/heads/main'
+        run: |
+          [ -d "$MBC_STORE" ] || exit 0
+          find "$MBC_STORE" -name '*.lock' -delete 2>/dev/null || true
+          find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -mmin +180 -exec rm -rf {} +
       - if: always() && github.ref == 'refs/heads/main'
         uses: actions/cache/save@v4
         with:

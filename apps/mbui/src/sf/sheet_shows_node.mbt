@@ -72,8 +72,6 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
   {
     title,
     description: "",
-    body: fn(_, _) {  },
-    foot: None,
     w: panel_w,
     fits: false,
     wide: false,
@@ -82,21 +80,17 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
     grows: false,
     focus: true,
     ruled: false,
-    lists: false,
     fade_out_together: false,
     form: false,
-    field: "",
     stage: false,
     above: None,
-    title_row: None,
     heads_itself: false,
     side: Bottom,
     along: Start,
     offset: panel_offset,
     match_panel: 0,
-    steps: false,
     on_back: None,
-    nodes: Some({
+    nodes: {
       body,
       foot: None,
       hugs: false,
@@ -107,7 +101,7 @@ fn sheet_nodes_panel(title : String, tall : Double, body : (@view.View, () -> Un
       top: 0.0,
       most: None,
       flush: true,
-    }),
+    },
   }
 }
 

@@ -211,7 +211,8 @@ test "opening a .mbui widget beside the chat or full screen uses the mini-progra
   assert_eq(mbui_viz_faults(t), [])
   t.click(Button, label=@sf.t("web-main.preview.fullWindow"))
   t.run_for(@ui.move_most_ms)
-  assert_true(@sfbase.viewer.get() is Some(_), msg="side bar 全屏 opens full-window mini-program container")
+  assert_true(@sfbase.tab_full.get() is Some(_), msg="side bar 全屏 puts the mini-program's tab over the whole window")
+  assert_true(@sfbase.viewer.get() is None, msg="not the whole window's viewer")
   assert_eq(opened_views(t, 2).length(), 0, msg="full screen .mbui uses no WebView")
   assert_true(t.find("0.25.0 发布与性能看板") is Some(_))
   assert_true(t.find("release.mbui") is None, msg="full window shows mini-program title instead of raw filename")
@@ -223,6 +224,7 @@ test "opening a .mbui widget beside the chat or full screen uses the mini-progra
   t.run_for(@ui.move_most_ms)
   t.run_for(@sfpages.reveal_ms)
   t.frame()
+  assert_true(@sfbase.tab_full.get() is None, msg="back in the panel")
   assert_true(@sfbase.viewer.get() is None && @sfbase.pv_leaving.get() is None)
 }
 

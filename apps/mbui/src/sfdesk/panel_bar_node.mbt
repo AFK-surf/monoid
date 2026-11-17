@@ -1,7 +1,8 @@
 // A chat's side panel's bar (sideBar: panel.mbt's styles) as nodes of the window's tree, made once over whatever tab is
 // in front, beside the page (side_panel_node) and on the tape (tape_side_node): its tabs, each its mark, its name and
-// its ×, the one in front on the selected ground (or on the tape, a tab alone, its title), the station's screen to a
-// window of its own, the panel's switch at its end; its empty part the app's own top row, moving the window.
+// its ×, the one in front on the selected ground (or on the tape, a tab alone, its title), a mini-program's 全屏, the
+// station's screen to a window of its own, the panel's switch at its end; its empty part the app's own top row, moving
+// the window.
 
 ///|
 /// What a tab's mark is (side_mark_of): an icon by its name, an agent's maker's mark, a web service's dot of how its
@@ -144,34 +145,16 @@ fn side_bar_node(
       }, tips~)
       |> ignore
     })
-    // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row under it)
-    let mini = fn() {
+    // a `.mbui` / `.wasm` mini-program in front: its single bar's 全屏 (no second file toolbar row under it; any other
+    // tab's is its own bar's), the tab over the whole window (tab_full_node.mbt)
+    bar.show(at_once=true, fn() {
       match @sfbase.view_tab_file(front()) {
-        Some(f) if @sfbase.is_mbui_viz(f.file.name) => Some(f)
-        _ => None
+        Some(f) => @sfbase.is_mbui_viz(f.file.name)
+        None => false
       }
-    }
-    bar.show(at_once=true, fn() { mini() is Some(_) }, fn(e) {
+    }, fn(e) {
       e.shrink(Is(0.0)) |> ignore
-      @sf.icon_button_node(e, "expand", fn() { @sf.t("web-main.preview.fullWindow") }, fn() {
-        let tab = front()
-        guard @sfbase.view_tab_file(tab) is Some(f) else { return }
-        let steps = @sfbase.InChat(view().bind(fn(v) { v.thread }), r.session)
-        match @sfbase.tab_viewer(tabs_key(r), tab) {
-          Some(vw) => vw.full_window(steps)
-          None =>
-            @sfbase.open_preview(
-              if f.station != "" { f.station } else { r.station },
-              f.key,
-              f.file,
-              drive=f.drive,
-              steps~,
-              named=f.named,
-              beside=false,
-            )
-        }
-      }, tips~)
-      |> ignore
+      tab_full_key_node(e, r, front, tips)
     })
     // the panel's switch stays in its top right corner, open or closed; in the short column, the column's
     // (histories_ticked)

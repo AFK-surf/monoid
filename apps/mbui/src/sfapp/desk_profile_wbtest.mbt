@@ -2,15 +2,45 @@
 // over the whole app and the settings' fixture (a profile's own page: src/sfpages accounts_wbtest.mbt).
 
 ///|
-test "wide: the profile list's rows say an account's name and allowance, its tier its page's" {
-  let t = wide_tester([], mode="settings")
+test "wide: the profile list's rows say an account's name, its plan and its allowance; the plan leaves before the name is cut" {
+  // (its plan right after its name, 8 apart, on its line; the plan the first to leave where the sidebar has not the room
+  // for both, the name never cut short for it: the user, 2026-11-14 and 2026-11-17 「侧栏加回套餐，窄了先收起」; where
+  // it can be used and who uses it are the account's page's)
+  let t = wide_tester([], mode="settings", w=1440.0)
   app.nav.replace(Place("profiles"))
   t.draw()
-  // (the plan beside the name cut the name short in the narrowest sidebar; where it can be used and who uses it are the
-  // account's page's too: the user, 2026-11-14)
-  let side = t.text_runs().filter(fn(r) { r.x1 < 300.0 })
-  assert_true(side.iter().any(fn(r) { r.text == "Claude 主账号" }), msg="\{Repr(side.map(fn(r) { r.text }))}")
-  assert_true(side.iter().all(fn(r) { r.text != "Ultra" && !r.text.contains("可用") }), msg="\{Repr(side.map(fn(r) { r.text }))}")
+  let side = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
+  let names = side.filter(fn(r) { r.text == "Claude 主账号" })
+  let plans = side.filter(fn(r) { r.text == "Ultra" })
+  assert_eq(names.length(), 1, msg="\{Repr(side.map(fn(r) { r.text }))}")
+  assert_eq(plans.length(), 1, msg="\{Repr(side.map(fn(r) { r.text }))}")
+  let (name, plan) = (names[0], plans[0])
+  assert_true(plan.x0 > name.x1 && plan.x0 - name.x1 < 12.0, msg="name \{Repr(name)}, plan \{Repr(plan)}")
+  assert_true(plan.top < name.bottom && plan.bottom > name.top, msg="on the name's line: \{Repr(name)}, \{Repr(plan)}")
+  assert_true(side.iter().all(fn(r) { !r.text.contains("可用") }), msg="\{Repr(side.map(fn(r) { r.text }))}")
+  // (a station's own login offered under them: its plan after its runtime the same way)
+  let codex = side.filter(fn(r) { r.text == "Codex" })
+  let plus = side.filter(fn(r) { r.text == "Plus" })
+  assert_true(codex.length() == 1 && plus.length() == 1, msg="\{Repr(side.map(fn(r) { r.text }))}")
+  assert_true(plus[0].x0 > codex[0].x1 && plus[0].x0 - codex[0].x1 < 12.0, msg="\{Repr(codex)}, \{Repr(plus)}")
+  // (what the rules find of its name and its plan: none)
+  let faults = t.audit().filter(fn(f) { f.contains("Ultra") || f.contains("Claude 主账号") })
+  assert_true(faults.is_empty(), msg="\{Repr(faults)}")
+}
+
+///|
+test "wide: an account's plan leaves the sidebar's row before its name is cut short" {
+  // (a name as long as an account's email in a sidebar with not the room for it and its plan: the plan goes, the name
+  // keeps what room there is)
+  let t = wide_tester([], mode="settings", w=1440.0, before=fn(_) {
+    @settings.fixture_page("settings-profiles-long-name") |> ignore
+  })
+  app.nav.replace(Place("profiles"))
+  t.draw()
+  // (a run's words as they are, cut short or not: by where they start)
+  let side = t.text_runs().filter(fn(r) { r.x0 < 300.0 })
+  assert_true(side.iter().all(fn(r) { r.text != "Ultra" }), msg="\{Repr(side.map(fn(r) { r.text }))}")
+  assert_true(side.iter().any(fn(r) { r.text.has_prefix("someone.with") }), msg="\{Repr(side.map(fn(r) { r.text }))}")
 }
 
 ///|

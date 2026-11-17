@@ -1228,6 +1228,7 @@ pub fn open_page(p : Page) -> Unit {
   if window_front(p) {
     return
   }
+  full_page_noted(p)
   history_act(fn() { (shell.val.open)(p) })
 }
 
@@ -1421,6 +1422,7 @@ pub fn reset() -> Unit {
   menu_bar_given.val = ""
   shell.val = bare_shell()
   beside_room_now.set(false)
+  tab_full_reset()
   // the page shown alone in a window of its own (window.mbt)
   lone_page.val = None
   lone_shown.val = @signals.signal(None)

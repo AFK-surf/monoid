@@ -235,19 +235,30 @@ pub fn Hub::profile_login_changed(self : Hub, id : String) -> Unit raise {
 }
 
 ///|
-/// A profile was deleted: the sessions on it are taken on by another of their runtime's; those no other can run stop.
+/// A profile was deleted (disabled, moved away), as hub.ts `profileGone`: a session on it with a turn under way is taken
+/// on by another of its runtime's, or stopped where no other can run it; one whose process is idle only has it ended;
+/// one with no process is left as it is (its next turn picks another account then).
 pub async fn Hub::profile_gone(self : Hub, id : String) -> Unit {
   for row in self.store.list_sessions() {
     let key = row_key(row)
     if str_of(row, "profile") != Some(id) || self.handed_over(key) {
       continue
     }
+    let state = self.process_state(key)
+    if !self.actors.contains(key) || state == "cold" {
+      continue
+    }
+    if state == "warm" {
+      (self.world.tell)("log", {
+        "info": "profile deleted under an idle session",
+        "fields": { "session": Json::string(key), "profile": Json::string(id) },
+      })
+      ignore(self.ask_actor(key, "changed"))
+      continue
+    }
     let movable = match ((self.world.ask)("accounts.runOn", { "key": Json::string(key) }) catch { _ => Json::boolean(false) }) {
       False => false
       _ => true
-    }
-    if !self.actors.contains(key) {
-      continue
     }
     if !movable {
       ignore(self.ask_actor(key, "stop"))

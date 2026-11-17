@@ -308,7 +308,7 @@ fn agent_prose_node(
     let old_here = place.here()
     match @signals.untracked(fn() { placed(@sf.file_name_of(h)) }) {
       Some(a) if is_viz(a.name) && !@sfbase.is_mbui_viz(a.name) =>
-        viz_open_full(a.name, here.station, owner_of(old_here, a), a.path, here.session, linked=true)
+        viz_open(a.name, here.station, owner_of(old_here, a), a.path, here.session, linked=true)
       Some(a) => open_file(old_here, a, at=@signals.untracked(at))
       None =>
         match @sf.path_of_link(h) {

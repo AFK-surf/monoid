@@ -1,7 +1,7 @@
 // A panel whose body and foot are nodes (@sf.panel_nodes) on 小屏: a sheet from the window's foot drawn by the window's
-// tree (sf's sheet_node), held to what the host's sheet does with the same panel with an old body (@sf.panel): where
-// what it holds and its foot are, its scrim, its top dragged a little (back) and further (closed), a press above it,
-// Escape and the back closing it.
+// tree (sf's sheet_node), held to what it did when it was held to the host's sheet with the same panel with an old
+// body: where what it holds and its foot are, its scrim, its top dragged a little (back) and further (closed), a press
+// above it, Escape and the back closing it.
 
 ///|
 /// How long a sheet takes to come or go at most: a way as far as the window is tall or its scrim's fade, whichever is
@@ -36,30 +36,38 @@ fn sheet_at_rest(t : @ui.Tester, close : (@ui.Tester) -> Unit) -> ((Double, Doub
 }
 
 ///|
-/// The sheets of the same panel with an old body and with nodes, each closed by `close`: what each shows at rest.
-fn both_sheets(from : @sf.Anchor, close : (@ui.Tester) -> Unit, title? : String = "面板") -> Unit raise {
+/// The sheet of a panel with nodes, closed by `close`: what it shows at rest.
+fn both_sheets(
+  from : @sf.Anchor,
+  close : (@ui.Tester) -> Unit,
+  title? : String = "面板",
+) -> ((Double, Double, Double, Double), (Double, Double, Double, Double), Int) raise {
   let t = phone_tester()
-  @sf.panel(title, from~, foot=old_foot(), old_body())
-  let old = sheet_at_rest(t, close)
   @sf.panel_nodes(title, from~, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(sheet_at_rest(t, close), old)
+  sheet_at_rest(t, close)
 }
 
 ///|
-test "小屏: a panel opened by nothing whose body and foot are nodes: a sheet whose body, foot and scrim are where the host's are; Escape closes it" {
-  both_sheets(Unanchored, fn(t) { t.key(@ui.key_escape) })
+test "小屏: a panel opened by nothing whose body and foot are nodes: a sheet whose body, foot and scrim are where they were beside the host's; Escape closes it" {
+  debug_inspect(both_sheets(Unanchored, fn(t) { t.key(@ui.key_escape) }), content=(
+    #|((24, 700, 40, 36), (310, 784, 60, 36), 1)
+  ))
 }
 
 ///|
-test "小屏: a panel opened by a press whose body and foot are nodes, untitled: a sheet whose body, foot and scrim are where the host's are; the back closes it" {
-  both_sheets(At(100.0, 300.0, 40.0, 40.0), fn(t) { t.back() }, title="")
+test "小屏: a panel opened by a press whose body and foot are nodes, untitled: a sheet whose body, foot and scrim are where they were beside the host's; the back closes it" {
+  debug_inspect(both_sheets(At(100.0, 300.0, 40.0, 40.0), fn(t) { t.back() }, title=""), content=(
+    #|((16, 724, 40, 36), (310, 784, 60, 36), 1)
+  ))
 }
 
 ///|
 test "小屏: a sheet whose body is nodes, a press above it: closed, as the host's" {
-  both_sheets(Unanchored, fn(t) { t.tap(195.0, 40.0) })
+  debug_inspect(both_sheets(Unanchored, fn(t) { t.tap(195.0, 40.0) }), content=(
+    #|((24, 700, 40, 36), (310, 784, 60, 36), 1)
+  ))
 }
 
 ///|
@@ -79,17 +87,15 @@ test "小屏: a sheet whose body is nodes, its top dragged down a little: back w
     assert_false(@sf.presenter_visible(), msg="gone")
   }
   let t = phone_tester()
-  @sf.panel("面板", from=Unanchored, foot=old_foot(), old_body())
-  t.run_for(sheet_way_ms(t))
-  let rest = painted_at(t, body_ink)
-  let old_little = little(t)
-  far(t)
   @sf.panel_nodes("面板", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
   t.run_for(sheet_way_ms(t))
-  assert_eq(painted_at(t, body_ink), rest, msg="where the host's rests")
-  assert_eq(little(t), old_little, msg="dragged a little: back where the host's goes")
+  let rest = painted_at(t, body_ink)
+  // (at rest, then dragged a little: back)
+  debug_inspect((rest, little(t)), content=(
+    #|((24, 700, 40, 36), (24, 700, 40, 36))
+  ))
   far(t)
 }
 
@@ -153,12 +159,18 @@ fn grows_trace(t : @ui.Tester) -> Array[Double] raise {
 ///|
 test "小屏: a sheet that grows whose body is nodes: dragged up, its grabber tapped, held past its most (giving way), dragged down under its least: where the host's is after each" {
   let t = phone_tester()
-  @sf.panel("面板", from=Unanchored, grows=true, foot=old_foot(), old_body())
-  let old = grows_trace(t)
   @sf.panel_nodes("面板", from=Unanchored, grows=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(grows_trace(t), old)
+  debug_inspect(grows_trace(t), content=(
+    #|[
+    #|  637,
+    #|  50.6400000000001,
+    #|  379.79999999999995,
+    #|  169.79999999999995,
+    #|  50.6400000000001,
+    #|]
+  ))
 }
 
 ///|
@@ -191,13 +203,34 @@ fn rise_trace(t : @ui.Tester) -> Array[Double] {
 ///|
 test "小屏: a sheet whose body is nodes rising and sinking away: over the time its own height takes, where the host's is all the way, let go as the host's is" {
   let t = phone_tester()
-  @sf.panel("面板", from=Unanchored, foot=old_foot(), old_body())
-  let old = rise_trace(t)
   @sf.panel_nodes("面板", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  // (and let go as it has sunk away and its scrim faded, as the host's: its layer held by its sinking, View::moved_by)
-  assert_eq(rise_trace(t), old)
+  // (and let go as it has sunk away and its scrim faded: its layer held by its sinking, View::moved_by)
+  debug_inspect(rise_trace(t), content=(
+    #|[
+    #|  834.5,
+    #|  760,
+    #|  723,
+    #|  708,
+    #|  702,
+    #|  700,
+    #|  700,
+    #|  700,
+    #|  700,
+    #|  772.5,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|  -1,
+    #|]
+  ))
+  t.run_for(sheet_way_ms(t))
+  assert_false(@sf.presenter_visible(), msg="let go")
 }
 
 ///|
@@ -205,7 +238,7 @@ test "小屏: a sheet whose body is nodes rising and sinking away: over the time
 let sheet_share : Double = 0.8
 
 ///|
-test "小屏: a sheet a share of the window tall whose body is nodes: as tall as the host's, what it holds and its foot where the host's are; dragged up, tapped, held past its most and dragged down as the host's" {
+test "小屏: a sheet a share of the window tall whose body is nodes: as tall as it was beside the host's, what it holds and its foot where they were; dragged up, tapped, held past its most and dragged down" {
   let t = phone_tester()
   let rested = fn() raise {
     t.run_for(sheet_way_ms(t))
@@ -215,18 +248,24 @@ test "小屏: a sheet a share of the window tall whose body is nodes: as tall as
     assert_false(@sf.presenter_visible(), msg="gone")
     at
   }
-  @sf.panel("面板", from=Unanchored, tall=sheet_share, grows=true, foot=old_foot(), old_body())
-  let old = rested()
   @sf.panel_nodes("面板", from=Unanchored, tall=sheet_share, grows=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(rested(), old)
-  @sf.panel("面板", from=Unanchored, tall=sheet_share, grows=true, foot=old_foot(), old_body())
-  let old = grows_trace(t)
+  debug_inspect(rested(), content=(
+    #|(168.79999999999995, (0, 231.8, 40, 36), (310, 784, 60, 36))
+  ))
   @sf.panel_nodes("面板", from=Unanchored, tall=sheet_share, grows=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(grows_trace(t), old)
+  debug_inspect(grows_trace(t), content=(
+    #|[
+    #|  168.79999999999995,
+    #|  50.6400000000001,
+    #|  379.79999999999995,
+    #|  169.79999999999995,
+    #|  50.6400000000001,
+    #|]
+  ))
 }
 
 ///|
@@ -249,16 +288,21 @@ fn live_trace(t : @ui.Tester, title : @signals.Signal[String]) -> Array[((Double
 }
 
 ///|
-test "小屏: a sheet whose title is as it is now (`live`) and whose body is nodes: headed while it has a title, what it holds where the host's is each way" {
+test "小屏: a sheet whose title is as it is now (`live`) and whose body is nodes: headed while it has a title, what it holds where it was beside the host's each way" {
   let t = phone_tester()
   let title = @signals.signal("")
-  @sf.panel("", from=Unanchored, tall=sheet_share, live=fn() { (title.get(), "", "") }, old_body())
-  let old = live_trace(t, title)
-  assert_true(old[1].1 is Some(_), msg="titled")
   @sf.panel_nodes("", from=Unanchored, tall=sheet_share, live=fn() { (title.get(), "", "") }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(live_trace(t, title), old)
+  let made = live_trace(t, title)
+  assert_true(made[1].1 is Some(_), msg="titled")
+  debug_inspect(made, content=(
+    #|[
+    #|  ((0, 193.8, 40, 36), None),
+    #|  ((0, 231.8, 40, 36), Some((40, 209.79999999999995))),
+    #|  ((0, 193.8, 40, 36), None),
+    #|]
+  ))
 }
 
 ///|
@@ -267,11 +311,12 @@ test "小屏: a sheet whose body is nodes opened by what a sheet's button does a
   for case in [(0.0, 0.8), (0.8, 0.0)] {
     let (tall, taller) = case
     let t = phone_tester()
-    @sf.panel("面板", from=Unanchored, tall~, fn(c, close) {
-      @sf.button(c, "看更多", key="more", on_press=fn() {
+    @sf.panel_nodes("面板", from=Unanchored, tall~, fn(v, close) {
+      @sf.button_node(v, fn() { "看更多" }, fn() {
         close()
         @sf.panel_nodes("更多", from=Unanchored, tall=taller, fn(v, _) { ink_node(v, 40.0, 36.0, body_ink) })
       })
+      |> ignore
     })
     t.run_for(sheet_way_ms(t))
     let top0 = sheet_tops(t)
@@ -315,17 +360,13 @@ test "小屏: a sheet whose body is nodes opened by what a sheet's button does a
 }
 
 ///|
-/// A sheet whose body is nodes (`nodes`) or an old one, at rest; its top drawn `down` down in `steps` moves (a frame's
-/// apart: as fast as that makes it) and let go: whether it is open once it has had its way.
-fn sheet_let_go_open(nodes : Bool, down : Double, steps : Int) -> Bool {
+/// A sheet whose body is nodes, at rest; its top drawn `down` down in `steps` moves (a frame's apart: as fast as that
+/// makes it) and let go: whether it is open once it has had its way.
+fn sheet_let_go_open(down : Double, steps : Int) -> Bool {
   let t = phone_tester()
-  if nodes {
-    @sf.panel_nodes("面板", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
-      ink_node(v, 40.0, 36.0, body_ink)
-    })
-  } else {
-    @sf.panel("面板", from=Unanchored, foot=old_foot(), old_body())
-  }
+  @sf.panel_nodes("面板", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
+    ink_node(v, 40.0, 36.0, body_ink)
+  })
   t.run_for(sheet_way_ms(t))
   let (_, y, _, _) = t.query(Dialog).unwrap().rect
   t.drag(195.0, y + 10.0, 195.0, y + 10.0 + down, steps~)
@@ -334,15 +375,13 @@ fn sheet_let_go_open(nodes : Bool, down : Double, steps : Int) -> Bool {
 }
 
 ///|
-test "小屏: a sheet let go short of its line: closed flicked down, back let go slowly; past its line closed; the same for one whose body is nodes" {
-  for nodes in [false, true] {
-    // (40 down a frame apart in 2 moves: 1.2 points a ms, a flick; in 8, 0.3: slowly, landing short of 80)
-    assert_false(sheet_let_go_open(nodes, 40.0, 2), msg="flicked 40 down (nodes \{nodes}): closed")
-    assert_true(sheet_let_go_open(nodes, 40.0, 8), msg="let go slowly 40 down (nodes \{nodes}): back, open")
-    // (either side of its line, slowly: 70 and 100 down in 30 moves, 0.14 and 0.2 points a ms)
-    assert_true(sheet_let_go_open(nodes, 70.0, 30), msg="let go slowly 70 down (nodes \{nodes}): back, open")
-    assert_false(sheet_let_go_open(nodes, 100.0, 30), msg="let go slowly 100 down (nodes \{nodes}): closed")
-  }
+test "小屏: a sheet whose body is nodes let go short of its line: closed flicked down, back let go slowly; past its line closed" {
+  // (40 down a frame apart in 2 moves: 1.2 points a ms, a flick; in 8, 0.3: slowly, landing short of 80)
+  assert_false(sheet_let_go_open(40.0, 2), msg="flicked 40 down: closed")
+  assert_true(sheet_let_go_open(40.0, 8), msg="let go slowly 40 down: back, open")
+  // (either side of its line, slowly: 70 and 100 down in 30 moves, 0.14 and 0.2 points a ms)
+  assert_true(sheet_let_go_open(70.0, 30), msg="let go slowly 70 down: back, open")
+  assert_false(sheet_let_go_open(100.0, 30), msg="let go slowly 100 down: closed")
 }
 
 ///|
@@ -417,22 +456,22 @@ test "小屏: a panel of nodes a panel of nodes closes for is a page of the same
 }
 
 ///|
-test "小屏: an old panel an old panel closes for is a page of the same sheet: back to the first as it was left, scrolled; a press above closes all, each let go of once" {
+test "小屏: a panel a panel closes for is a page of the same sheet: back to the first as it was left, scrolled; a press above closes all, each let go of once" {
   let t = phone_tester()
   let said : Array[String] = []
   // (its button in its foot: in reach however far what it holds is scrolled)
-  let foot = fn(c : @ui.Ctx, close : () -> Unit) {
-    @sf.button(c, "下一步", key="next", on_press=fn() {
+  let foot = fn(v : @view.View, close : () -> Unit) {
+    @sf.button_node(v, fn() { "下一步" }, fn() {
       close()
-      @sf.panel("第二页", from=Unanchored, tall=0.6, gone=fn() { said.push("second gone") }, fn(c, _) {
-        c.text("第二页内容") |> ignore
+      @sf.panel_nodes("第二页", from=Unanchored, tall=0.6, gone=fn() { said.push("second gone") }, fn(v, _) {
+        @sf.words_node(v, fn() { "第二页内容" }, fn() { @sf.paragraph }) |> ignore
       })
     })
     |> ignore
   }
-  @sf.panel("第一页", from=Unanchored, foot~, gone=fn() { said.push("first gone") }, fn(c, _) {
+  @sf.panel_nodes("第一页", from=Unanchored, foot~, gone=fn() { said.push("first gone") }, fn(v, _) {
     for i in 0..<40 {
-      c.text("第 \{i} 行") |> ignore
+      @sf.words_node(v, fn() { "第 \{i} 行" }, fn() { @sf.paragraph }) |> ignore
     }
   })
   t.run_for(sheet_way_ms(t))
