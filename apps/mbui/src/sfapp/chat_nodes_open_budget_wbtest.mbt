@@ -44,9 +44,7 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // ringed rings of the face's own; phone cold 779 made and 852 laid before, wide cold 2557 and 3674)
   "phone cold": (757, 29, 830, 146, 776),
   "phone again": (327, 17, 242, 28, 301),
-  // (wide cold made 1 more, 2444, on main since 719a050d0 (2443 there, 2444 at f5d3b641f, measured on both, 2026-11-17):
-  // what came between, not this bar's chat; written here so that main's run says it again)
-  "wide cold": (2444, 483, 3532, 557, 2634),
+  "wide cold": (2443, 483, 3531, 557, 2634),
   "wide again": (882, 130, 881, 123, 1049),
   "phone up": (565, 366, 618, 84, 0),
   "wide up": (698, 382, 910, 113, 0),
