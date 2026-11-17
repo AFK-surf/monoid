@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 2.5 | 3.52 | 15.21 | 36.57 | 60.14 | 32.03 | 67.14 | 95.81 | 124.77 |
 | [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 | [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 2.5 | 3.52 | 15.2 | 36.55 | 60.12 | 31.7 | 65.98 | 95.9 | 121.93 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
-| [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.65 | 184.2 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [efad3a624](https://github.com/AFK-surf/monoid/commit/efad3a624ae9e99ad13c0fcad4df64ed9d671ef5) Keep a drive's reader and player, the terminal, th | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [dc087b45f](https://github.com/AFK-surf/monoid/commit/dc087b45fd224fda48fbad28e1b938bbd6c90399) station/mb: mesh_door, the mesh's door, admission  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.1 |
 | [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [1c2539995](https://github.com/AFK-surf/monoid/commit/1c2539995e89f43958c2b0bed7482c07d2081ea1) station: share, accounts and links wait on no file | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
 | [ef3e54d48](https://github.com/AFK-surf/monoid/commit/ef3e54d48d55901bd5429a4d451b33f78b9a48ce) mbui(win): words covered as the Mac covers them: t | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.33 |
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
-| [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
