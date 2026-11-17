@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.65 | 65.98 | 95.83 | 117.85 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 2.48 | 3.47 | 14.87 | 36.22 | 58.69 | 31.64 | 65.84 | 95.78 | 120.38 |
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.64 | 65.84 | 95.78 | 120.08 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.49 | 65.21 | 95.68 | 116.73 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 2.46 | 3.45 | 14.74 | 35.93 | 57.74 | 31.47 | 65.05 | 100.12 | 112.15 |
-| [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 2.46 | 3.45 | 14.74 | 35.92 | 57.72 | 31.47 | 65.05 | 100.12 | 126.74 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [fc1ab21da](https://github.com/AFK-surf/monoid/commit/fc1ab21daee2950be7ff5be1f303faff1091ed91) station/mb: the lock in MoonBit (cloud_lock), held | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.4 |
 | [fc6c3209e](https://github.com/AFK-surf/monoid/commit/fc6c3209e467de947971e200d061b1a89ac70d86) fix(cloud): hand out the host cloud's relay on for | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [1b2eb62d5](https://github.com/AFK-surf/monoid/commit/1b2eb62d54bb1a5496293976dc644359bfc36941) station: a desktop whose capture ends is said why, | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [87f8d7e80](https://github.com/AFK-surf/monoid/commit/87f8d7e80e3c0c02b6cf9205638c6f183ccbce09) mbui: Metal frames drawn and presented off the mai | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
 | [e015dcdbd](https://github.com/AFK-surf/monoid/commit/e015dcdbdf223ed4644f582d990a7ab39f6ce736) station, core, mbui: redesign usage on synchronous | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
-| [44b4a61c4](https://github.com/AFK-surf/monoid/commit/44b4a61c4f34607fb04292793e1cdc77b643601a) mbui: Station 列表、Profile 列表与账号页改为节点，设置首页在三种屏幕上都走节点 | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 53.04 |
