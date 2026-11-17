@@ -13,8 +13,10 @@ fn init {
     // most, 2026-11-14)
     ("src/sfapp/switches_still_wbtest.mbt", 2906925),
     ("src/sfapp/chat_bar_wide_wbtest.mbt", 89156),
+    ("src/sfapp/chat_drive_parity_wbtest.mbt", 300978),
     ("src/sfapp/chat_images_told_wbtest.mbt", 57845),
     ("src/sfapp/chat_keys_wbtest.mbt", 127704),
+    ("src/sfapp/chat_motion_desk_wbtest.mbt", 462064),
     // (the chat's page made as nodes hands over the pictures of the rows its list has made round what shows, a screen
     // over and under it, where the old list handed over those in view: its 小屏 finger's pick held at its end, 2026-11-13)
     ("src/sfapp/chat_page_nodes_wbtest.mbt", 38548),

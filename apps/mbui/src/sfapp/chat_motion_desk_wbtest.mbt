@@ -351,7 +351,6 @@ fn dk_host_words(
   script : String,
 ) -> Array[(Double, Map[String, Double], Array[String])] {
   new_run()
-  @ui.host_image_bytes_known([("src/sfapp/chat_motion_desk_wbtest.mbt", 4000000)])
   @sfbase.chat_page_nodes.set(true)
   let src = fixture_app(mode, chat_nodes=true)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)
@@ -480,7 +479,6 @@ fn dk_host_each(
   delivered_in? : Double,
 ) -> Unit {
   new_run()
-  @ui.host_image_bytes_known([("src/sfapp/chat_motion_desk_wbtest.mbt", 4000000)])
   @sfbase.chat_page_nodes.set(true)
   let src = fixture_app(mode, chat_nodes=true)
   // (the station taking what is sent this long after it is sent)

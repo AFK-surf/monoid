@@ -417,8 +417,6 @@ fn pa_run(
   script : String,
 ) -> (Array[PaFrame], Array[String]) {
   new_run()
-  // (a film's pictures as a device's are: a picture sent from the composer among them, sffilmscene's)
-  @ui.host_image_bytes_known([("src/sfapp/chat_drive_parity_wbtest.mbt", 4000000)])
   @sfbase.chat_page_nodes.set(nodes)
   let src = fixture_app(mode, chat_nodes=nodes)
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, words_over_held=false)

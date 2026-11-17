@@ -8,9 +8,7 @@ fn init {
   @ui.rows_steady_known([
     // (at 60 and 120 a second, MBUI_TEST_MOTION, 2026-11-17: Tree::lists_steady's on main's own jolts there, counted whole
     // after #6722 brought the check and was counted at the default rate alone; main's 44000442600)
-    ("src/sfapp/board_wbtest.mbt", 4),
     ("src/sfapp/chat_bar_node_wbtest.mbt", 1),
-    ("src/sfapp/chat_nodes_told_wbtest.mbt", 1),
     ("src/sfapp/place_first_wbtest.mbt", 1),
     ("src/sfapp/screens_wbtest.mbt", 1),
     // (each screen walked over a core answering late, at 60 and 120, as an answer comes: 小屏's 文件 list's foot goes 96

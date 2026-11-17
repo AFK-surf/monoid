@@ -33,9 +33,6 @@ fn init {
     // begins now, a frame sooner, so its end is among the frames judged. Taken away with the old chat's page: the row
     // made as nodes goes there by the list's own way)
     ("src/sfapp/viz_wbtest.mbt", 2),
-    // (大屏 over a core answering late, at 60 and 120: a column's place goes 21 to 28 in a frame as answers come, left
-    // after the steadiness exemption (answer_marked.mbt) took the rest: the pages')
-    ("src/sfapp/ways_told_wbtest.mbt", 1),
     ("src/sfapp/wide_rail_wbtest.mbt", 4),
     ("src/sfapp/wide_wbtest.mbt", 2),
   ])
