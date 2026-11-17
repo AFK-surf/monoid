@@ -156,7 +156,7 @@ sealed() {
 }
 # setup: the installer (windows/setup.c) with the app as built and put (put: the program, its engine and shell, core.hbc)
 # packed after it, as MBUI_VARIANT has it: <MBUI_SETUP_OUT, else out/setup>/<name> (MBUI_SETUP_NAME, else
-# stillfail-setup-0.1.<n>.exe)
+# stillfail-setup-0.1.<n>.exe); with MBUI_SETUP_RAW (a path) its raw form (setup.c --raw's) written there as it is packed
 # the installer's own program (windows/setup.c), bare: made once for its source, apart from the app (CI makes it while
 # the app compiles: made in the installer's step, beside the e2e flow's app, it was 4 s alone and 15-56 s there,
 # 2026-10-28). -utf-8: its Chinese words, read in the build machine's code page without it, were garbled in the program
@@ -200,7 +200,10 @@ setup() {
   printf 'APP_NAME=%s\nAPP_ID=%s\nEXE=%s\nDIR=%s\nSCHEMES=%s\nVERSION=0.1.%s\n' "$name" "$id" "$exe" "$dir" "$schemes" "$n" > "$out/setup.env"
   local to=$out/${MBUI_SETUP_NAME:-stillfail-setup-0.1.$n.exe}
   local w=(); for f in "$out/files/"*; do w+=("$(cygpath -w "$f")"); done
-  "$out/setup-bare.exe" --pack "$(cygpath -w "$to")" "$(cygpath -w "$out/setup.env")" "${w[@]}" || return 1
+  # (MBUI_SETUP_RAW: its raw form too, written by --pack from the files as read, the same bytes as --raw writes: a
+  # Windows path, which the program's CreateFileW takes)
+  MBUI_SETUP_RAW=${MBUI_SETUP_RAW:+$(cygpath -w "$MBUI_SETUP_RAW")} \
+    "$out/setup-bare.exe" --pack "$(cygpath -w "$to")" "$(cygpath -w "$out/setup.env")" "${w[@]}" || return 1
   echo "win.sh: $(basename "$to") $(wc -c < "$to") bytes ($name 0.1.$n)"
 }
 app_prebuild() {

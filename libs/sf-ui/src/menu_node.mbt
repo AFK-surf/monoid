@@ -386,6 +386,7 @@ let menu_none : MenuItem = {
   danger: false,
   disabled: true,
   chosen: None,
+  checkbox: false,
   heading: false,
   further: false,
   select: fn() {  },
@@ -433,7 +434,7 @@ fn menu_row_node(
         let actions : Array[@view.Action] = if it.disabled { [] } else { [Activate] }
         Some(
           match it.chosen {
-            Some(on) => @view.said(MenuItemRadio, label=it.label, check=if on { On } else { Off }, actions~)
+            Some(on) => @view.said(if it.checkbox { MenuItemCheckbox } else { MenuItemRadio }, label=it.label, check=if on { On } else { Off }, actions~)
             None => @view.said(MenuItem, label=it.label, actions~)
           },
         )

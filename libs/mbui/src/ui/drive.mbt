@@ -42,6 +42,9 @@
 //   key NAME                    a key, with what is held before it: esc, tab, enter, space, up, down, left, right,
 //                               home, end, pageup, pagedown, backspace, a character; cmd+ (⌘ on macOS, Ctrl
 //                               elsewhere), ctrl+, alt+, shift+ (cmd+k, shift+enter, alt+down)
+//   mods MODS                   only modifiers pressed, no other key (the host's code 0): cmd, ctrl, alt, shift joined
+//                               by + as wheel's MODS (cmd+ as a key's), or none to release them all; later key steps
+//                               carry their own modifiers
 //   resize W H                  the window's content resized to W by H (the host's own window, where it can)
 //   trackpad begin|DX DY|end    the keyboard's trackpad (iOS's floating cursor) begun, its finger at DX DY from where it
 //                               began, let go
@@ -1695,6 +1698,19 @@ fn drive_steps(c : Ctx) -> Unit {
         acted()
         return
       }
+      "mods" =>
+        match modifiers_named(arg) {
+          Some(mods) => {
+            h_log("DRIVE mods \{arg} (\{mods})")
+            on_key(0, mods)
+            acted()
+            return
+          }
+          None => {
+            drive_fail(c, d, "mods cmd+ctrl+alt+shift, or none")
+            return
+          }
+        }
       "key" =>
         match key_named(arg) {
           Some((code, mods)) => {
@@ -1899,18 +1915,41 @@ fn Tester::drive_while(
 let tester_size : Ref[(Double, Double)?] = Ref(None)
 
 ///|
+/// A modifier as a script names it (`key` and `mods`), with cmd following the host's command key.
+fn modifier_named(name : String) -> Int? {
+  match name {
+    "cmd" => Some(if h_keys() == 0 { mod_cmd } else { mod_ctrl })
+    "ctrl" => Some(mod_ctrl)
+    "alt" | "option" => Some(mod_alt)
+    "shift" => Some(mod_shift_key)
+    "meta" => Some(mod_cmd)
+    _ => None
+  }
+}
+
+///|
+fn modifiers_named(names : String) -> Int? {
+  if names == "none" { return Some(0) }
+  if names == "" { return None }
+  let mut mods = 0
+  for name in names.split("+") {
+    match modifier_named(name.to_owned()) {
+      Some(bit) => mods = mods | bit
+      None => return None
+    }
+  }
+  Some(mods)
+}
+
+///|
 /// A key as a script names it (drive's `key`): its code and modifiers.
 fn key_named(name : String) -> (Int, Int)? {
   let parts = name.split("+").map(fn(v) { v.to_owned() }).to_array()
   let mut mods = 0
   for i in 0..<(parts.length() - 1) {
-    match parts[i] {
-      "cmd" => mods = mods | (if h_keys() == 0 { mod_cmd } else { mod_ctrl })
-      "ctrl" => mods = mods | mod_ctrl
-      "alt" | "option" => mods = mods | mod_alt
-      "shift" => mods = mods | mod_shift_key
-      "meta" => mods = mods | mod_cmd
-      _ => return None
+    match modifier_named(parts[i]) {
+      Some(bit) => mods = mods | bit
+      None => return None
     }
   }
   let last = if parts.length() > 0 { parts[parts.length() - 1] } else { "" }

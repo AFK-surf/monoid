@@ -149,6 +149,14 @@ pub let tracker_horizon_ms : Double
 
 pub fn unrubber(Double, Double) -> Double
 
+pub fn untracked_read_fault(String, Array[String], String) -> String?
+
+pub fn untracked_read_known(Array[(String, Int32)]) -> Unit
+
+pub fn untracked_read_marks_left() -> Bool
+
+pub fn untracked_read_reset() -> Unit
+
 pub let wheel_ease_ms : Double
 
 pub let wheel_last : WheelLast
@@ -1396,6 +1404,7 @@ pub fn Tree::turns_about_drawn(Self, NodeId) -> Bool
 pub fn Tree::twice_within(Self, () -> (Double, Double)) -> Unit
 pub fn Tree::typing_left_under(Self) -> Bool
 pub fn Tree::unfollow(Self) -> Unit
+pub fn Tree::untracked_read_faults(Self) -> Array[String]
 pub fn Tree::view_of(Self, NodeId) -> View?
 pub fn Tree::wake(Self) -> Double?
 pub fn Tree::wake_waited(Self) -> Double?

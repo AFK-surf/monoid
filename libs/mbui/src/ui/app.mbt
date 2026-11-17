@@ -2186,6 +2186,13 @@ fn wheel_taken() -> Unit {
 
 ///|
 fn on_key(code : Int, mods : Int) -> Unit {
+  // Code 0 is the host's modifier change, not a key for a field or shortcut. Ordinary keys also carry their
+  // modifiers, so a key received after focus returns corrects the state before it is acted on.
+  if modifiers_said.val.untracked() != mods {
+    view_event(fn() { modifiers_said.val.set(mods) }, what="modifiers")
+    h_request_frame()
+  }
+  if code == 0 { return }
   let (code, mods) = cancel_key(code, mods)
   rows_steady_hand()
   // (one event, at its own moment: view_host.mbt)

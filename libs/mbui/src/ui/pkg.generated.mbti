@@ -365,6 +365,8 @@ pub let key_in_meta : Int32
 
 pub let key_in_shift : Int32
 
+pub fn key_modifiers() -> Int32
+
 pub fn key_of_char(Char) -> Int32
 
 pub let key_space : Int32
@@ -2914,6 +2916,7 @@ pub fn Tester::face_wider(Self, Int32, Double) -> Unit
 pub fn Tester::failed_images(Self) -> Array[Int32]
 pub fn Tester::failed_images_drawn(Self) -> Array[Int32]
 pub fn Tester::family_given(Self, Int32) -> String
+pub fn Tester::fanout_faults(Self) -> Array[String]
 pub fn Tester::field_words(Self) -> String
 pub fn Tester::film(Self, String, fps? : Double, max? : Int32, draw~ : (Self) -> Bool, put~ : (Int32) -> Bool) -> FilmRun
 pub fn Tester::film_frame(Self, String, Int32, max? : Int32) -> (Bool, Array[String])
@@ -3098,6 +3101,7 @@ pub fn Tester::set_app_said(Self, String, String) -> Unit
 pub fn Tester::set_av1(Self, Bool) -> Unit
 pub fn Tester::set_dark(Self, Bool) -> Unit
 pub fn Tester::set_env(Self, String, String) -> Unit
+pub fn Tester::set_fanout_limit(Self, Int32) -> Unit
 pub fn Tester::set_font_scale(Self, Double) -> Unit
 pub fn Tester::set_frame_period(Self, Double) -> Unit
 pub fn Tester::set_frame_times(Self, Array[Double]) -> Unit
@@ -3182,6 +3186,7 @@ pub fn Tester::tree_room_faults(Self) -> Array[String]
 pub fn Tester::turn_of(Self, String) -> Double?
 pub fn Tester::type_text(Self, String) -> Unit
 pub fn Tester::ui_face_wider(Self, Double) -> Unit
+pub fn Tester::untracked_read_faults(Self) -> Array[String]
 pub fn Tester::update_asked(Self) -> Array[String]
 pub fn Tester::view_answers(Self, Int32) -> Array[(Int32, Int32, Double)]
 pub fn Tester::view_given(Self, Int32, Int32) -> (Int32, Bool)

@@ -56,6 +56,30 @@ test "a test sees the notifications the app shows, and taps one: what it opens i
 }
 
 ///|
+test "a scripted run finds and taps a notification, then sees it removed" {
+  let opened : Array[String] = []
+  let t = @ui.Tester::new(fn(c) {
+    let target = @ui.notice_opened()
+    if target != "" { opened.push(target) }
+    c.text("app", wrap=false) |> ignore
+  })
+  t.draw()
+  @ui.notice_show(channel="chats", tag="first", title="Ana", body="the build is green", opens="chat:first")
+  @ui.notice_show(channel="chats", tag="second", title="Lin", body="two questions", opens="chat:second")
+  let script =
+    #|nonotice missing
+    #|noticed Ana
+    #|notice green
+    #|nonotice Ana
+    #|noticed two questions
+    #|exit
+  let log = t.drive(script)
+  assert_true(log.contains("DRIVE PASS"), msg=log.join("\n"))
+  assert_eq(opened, ["chat:first"])
+  assert_eq(t.notices().map(n => n.tag), ["second"])
+}
+
+///|
 test "what the system says between frames comes on its channel, once, kept on the tape; a page in a tab, a secret copied, a package handed over and the hold notice's words are kept" {
   let said : Array[String] = []
   @ui.on_message(@hostapi.system_channel, fn(json, _) { said.push(json) })

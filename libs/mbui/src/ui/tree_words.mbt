@@ -51,14 +51,16 @@ pub fn style_ink(style : TextStyle) -> Int64 {
 }
 
 ///|
-/// Whether words of `style` are cut short on their line where they have not the room (`w=Cut`).
+/// Whether words of `style` are cut short on their line (`w=Cut`), sampled when declaring the node's sizing.
 pub fn style_cut(style : TextStyle) -> Bool {
-  style.resolve(g().narrow, tree_theme().dark).w is Some(Cut)
+  let dark = @signals.untracked(fn() { tree_theme().dark })
+  style.resolve(g().narrow, dark).w is Some(Cut)
 }
 
 ///|
 /// Whether words of `style` say they fill their line (`w=Full`, `w=Grow(k)`: an old view's Fill, which its squeeze
-/// takes as the words saying they may be cut on it: Ctx::squeeze_cut_said).
+/// takes as the words saying they may be cut on it: Ctx::squeeze_cut_said), sampled when declaring sizing.
 pub fn style_fills(style : TextStyle) -> Bool {
-  style.resolve(g().narrow, tree_theme().dark).w is Some(Full | Grow(_))
+  let dark = @signals.untracked(fn() { tree_theme().dark })
+  style.resolve(g().narrow, dark).w is Some(Full | Grow(_))
 }

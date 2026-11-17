@@ -1062,6 +1062,7 @@ web-main.menu.more
 web-main.model.account
 web-main.model.auto
 web-main.model.borrowed
+web-main.model.defaultTui
 web-main.model.claudeMode
 web-main.model.current
 web-main.model.defaultEffort
@@ -2865,6 +2866,7 @@ web-main.board.show_empty
 web-main.board.new
 web-main.board.new_here
 web-main.board.add
+web-main.board.dispatch
 web-main.board.cancel
 web-main.board.goes_on
 web-main.board.start

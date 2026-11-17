@@ -5,6 +5,6 @@
 ///|
 fn init {
   @ui.motion_counted([
-    "src/sf/edge_look_node_wbtest.mbt",
+    "src/edge_look_node_wbtest.mbt",
   ])
 }

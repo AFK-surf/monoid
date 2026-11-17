@@ -12,6 +12,7 @@
   const params = new URLSearchParams(location.search);
   const H = {};
   let cb = null;
+  let modifiersSaid = 0;
   let canvas, gl, prog, post, vao, instBuf, atlasTex, ta;
   const U = {}, PU = {};
   let cssW = 0, cssH = 0, dpr = 1;
@@ -2694,10 +2695,16 @@
     // (a touch screen's fingers each by its pointerId, as they come: kinds 10 down, 11 moved, 12 up, 13 called off, what
     // they come to the app's to work out, touches.mbt)
     const touch = (e) => e.pointerType === 'touch';
+    const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    const tellModifiers = (mods, force = false) => {
+      if (force || mods !== modifiersSaid) cb.key(0, mods);
+    };
     // (the canvas's, and what takes them in its place while a site is seen)
     takePresses = (el) => {
       el.addEventListener('pointerdown', (e) => {
         e.preventDefault();
+        // A key may have been held before the browser gained focus.
+        tellModifiers(modsOf(e));
         // (a box over a site goes as the app says, the press going on: `under` stays; when the canvas takes the
         // press, it stays too and can capture it itself)
         (el === canvas ? canvas : under || el).setPointerCapture(e.pointerId);
@@ -2734,7 +2741,12 @@
     const keymap = { Backspace: 1, Delete: 2, ArrowLeft: 3, ArrowRight: 4, ArrowUp: 5, ArrowDown: 6, Enter: 7, Home: 8, End: 9, PageUp: 15, PageDown: 16, Escape: 17, Tab: 18 };
     // the browser's own shortcuts left to it (reload, close, a new tab or window, the address bar, quit, zoom)
     const browsers = new Set(['r', 'w', 't', 'n', 'l', 'q', 'v']);
-    const modsOf = (e) => (e.shiftKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.altKey ? 4 : 0) | (e.metaKey ? 8 : 0);
+    // Modifier-only keys are input too. Other keys keep their normal path, including browser shortcuts.
+    const modifiers = new Set(['Shift', 'Control', 'Alt', 'Meta', 'OS']);
+    const modifierKey = (e) => { if (modifiers.has(e.key)) tellModifiers(modsOf(e), true); };
+    window.addEventListener('keydown', modifierKey, true);
+    window.addEventListener('keyup', modifierKey, true);
+    window.addEventListener('blur', () => tellModifiers(0, true));
     const command = (e) => keysCmd() === 8 ? e.metaKey : e.ctrlKey;
     const browserKey = (e, c) => command(e) && (browsers.has(c) ||
       (!e.altKey && !(e.ctrlKey && e.metaKey) && ['+', '=', '-', '0'].includes(c)));
@@ -3581,7 +3593,9 @@
     setupGL();
     setupInput();
     setupPage();
-    cb = { frame, pointer, wheel, key, text };
+    // Remember what every key told the app, including one received with a modifier already held.
+    modifiersSaid = 0;
+    cb = { frame, pointer, wheel, key: (code, mods) => { modifiersSaid = mods; key(code, mods); }, text };
     window.__mb = cb;
     resize();
     // (the app's first frame once the host knows what it decodes and whether its terminal Wasm is beside it)

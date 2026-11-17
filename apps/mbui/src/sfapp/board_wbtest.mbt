@@ -558,6 +558,8 @@ test "待派发: a pasted picture is kept with an image-only task and sent after
   t.run_for(@ui.move_most_ms)
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
+  t.hold_mods(0)
   t.frame()
   t.frame()
   assert_true(t.query(Button, label="移除 image.png") is Some(_))
@@ -594,6 +596,8 @@ test "待派发: removing a pasted picture leaves the words and sends no file" {
   t.type_text("只保留文字")
   t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
   t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+  // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
+  t.hold_mods(0)
   // (its strip's room open over the words)
   t.run_for(@ui.move_most_ms)
   t.click(Button, label="移除 image.png")
@@ -633,6 +637,8 @@ test "待派发: a pasted picture's strip comes over the words, the last one rem
     assert_true(board_words_at(t, "可粘贴图片") is None)
     t.clipboard_gives_png(@pixels.png(2, 2, FixedArray::make(16, b'\xff')))
     t.key(@ui.key_of_char('v'), mods=@ui.mod_cmd)
+    // (⌘ let go after pasting, as the host says it: held, 添加 is 派发)
+    t.hold_mods(0)
     t.run_for(@ui.move_most_ms)
     // (its picture over the words, the words and 添加 gone down together by its room, no further apart)
     guard t.query(Button, label="移除 image.png") is Some(x) else { fail("no picture over the words at \{w}") }
@@ -1689,6 +1695,47 @@ test "小屏: a card held by a finger lifts over its menu's scrim, clear of its 
 }
 
 ///|
+/// The icon drawn inside the button named `label` for a screen reader.
+fn board_button_icon(t : @ui.Tester, label : String) -> String {
+  guard t.query(Button, label~) is Some(button) && @ui.view_tree() is Some(tree) else { return "" }
+  let (x, y, w, h) = button.rect
+  for d in tree.drawn() {
+    let name = tree.drawn_name(d.id)
+    if name.has_prefix("/icon/") && d.x >= x && d.y >= y && d.x + d.w <= x + w && d.y + d.h <= y + h {
+      return name
+    }
+  }
+  ""
+}
+
+///|
+test "大屏: the add icon becomes a send arrow with command held and starts the written task" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("检查发布说明")
+  assert_true(t.query(Button, label="添加") is Some(_))
+  assert_eq(board_button_icon(t, "添加"), "/icon/plus/")
+  assert_true(board_words_at(t, "添加") is None)
+  t.hold_mods(@ui.mod_cmd)
+  t.draw()
+  assert_true(t.query(Button, label="派发") is Some(_))
+  assert_eq(board_button_icon(t, "派发"), "/icon/arrow-up/")
+  assert_true(board_words_at(t, "派发") is None)
+  t.hold_mods(0)
+  t.draw()
+  assert_true(t.query(Button, label="添加") is Some(_))
+  assert_eq(board_button_icon(t, "添加"), "/icon/plus/")
+  t.hold_mods(@ui.mod_cmd)
+  t.draw()
+  t.click(Button, label="派发")
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_lane_now(src, "检查发布说明"), "run")
+  assert_eq(board_kept_drafts(), ["给导出加上按月份筛选", "看一下 Android 冷启动为什么慢了 300ms"])
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: a chat put in the pane's place from the board (⌘N, 待处理's, ⌘K's) shows the list again, 对话 lit, the board not kept as Home" {
   let chat : ChatRef = { station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" }
   let pages : Array[Page] = [NewChat, Chat(chat)]
@@ -1766,6 +1813,53 @@ test "大屏: the columns gone sideways to their end, the chat beside narrowed b
   guard t.query(Button, label="盯着 CI，绿了告诉我") is Some(card) else { fail("监控中's card not shown") }
   let end = card.rect.0 + card.rect.2
   assert_true(end >= gx - 40.0, msg="the last column ends at \{end}, the board's room at \{gx}")
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: Enter adds a draft, command Enter dispatches it; a refused dispatch keeps its words" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("留待稍后")
+  t.enter()
+  t.run_for(@ui.move_most_ms)
+  assert_true(board_kept_drafts().contains("留待稍后"))
+  assert_eq(board_lane_now(src, "留待稍后"), "")
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("现在执行")
+  t.hold_mods(@ui.mod_cmd)
+  t.key(@ui.key_code_enter, mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_lane_now(src, "现在执行"), "run")
+  assert_false(board_kept_drafts().contains("现在执行"))
+  t.hold_mods(0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("暂时无法启动")
+  @sffixture.board_create_refused.val = "机器上没有可用的模型。"
+  t.hold_mods(@ui.mod_cmd)
+  t.key(@ui.key_code_enter, mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(@sfbase.toast_words(), "机器上没有可用的模型。")
+  assert_true(board_kept_drafts().contains("暂时无法启动"))
+  assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: Ctrl Enter dispatches with a Windows keyboard" {
+  let (t, src) = board_at("board", 1440.0, 900.0, platform=3)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  t.type_text("立即检查")
+  t.hold_mods(@ui.mod_ctrl)
+  t.draw()
+  assert_true(t.query(Button, label="派发") is Some(_))
+  t.key(@ui.key_code_enter, mods=@ui.mod_ctrl)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_lane_now(src, "立即检查"), "run")
+  assert_false(board_kept_drafts().contains("立即检查"))
   assert_eq(board_faults(t), [])
 }
 

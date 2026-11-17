@@ -1932,6 +1932,9 @@ pub let select_w : Double
 
 pub fn select_node(@view.View, () -> String, () -> Array[(String, String)], (String) -> Unit, label? : () -> String, disabled? : () -> Bool, whole? : Bool) -> Unit
 
+#callsite(autofill(loc))
+pub fn send_button_node(@view.View, () -> String, () -> Bool, () -> Bool, () -> Unit, tips? : TipLayer, icon_now? : () -> String, loc~ : SourceLoc) -> @view.View
+
 pub fn set_accent(String) -> Unit
 
 pub fn set_dark(Bool?) -> Unit

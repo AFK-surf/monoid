@@ -100,6 +100,32 @@ test "a field of the tree's as an old view's in its place: tapped, typed into an
 }
 
 ///|
+test "a tree field follows the current input and line limit for Enter" {
+  let t = Tester::new(fn(_c) {  }, w=300.0, h=200.0, platform=3)
+  let f = Field::new(text="words")
+  let lines = @signals.signal(2)
+  let sent : Array[String] = []
+  set_view_app(fn(root) {
+    field(root, f, label="Words", max_lines_by=fn() { lines.get() }, submitted=fn(s) { sent.push(s) }) |> ignore
+  })
+  t.draw()
+  assert_true(f.st.enter_sends)
+  t.host_says_finger(Some(true))
+  t.tap(10.0, 10.0)
+  assert_false(f.st.enter_sends)
+  lines.set(1)
+  t.draw()
+  t.enter()
+  assert_eq(sent, ["words"])
+  lines.set(2)
+  t.draw()
+  assert_false(f.st.enter_sends)
+  t.host_says_finger(Some(false))
+  t.move_to(20.0, 20.0)
+  assert_true(f.st.enter_sends)
+}
+
+///|
 /// The field drawn `scale` as big at `at`, tapped and "ab" typed at its end: the caret drawn (where, how big) and where
 /// the host is told it is.
 fn caret_typed(tree : Bool, scale : Double, at : (Double, Double)) -> (Array[Double], (Double, Double, Double, Double)) raise {

@@ -130,6 +130,18 @@ yet and you can add one, add it.
   (`Tester::frame`; a pass that kept rows compared with one built whole, `src/ui/tester_rows.mbt`): a test that changes
   the value and looks sees what a device would, the old (sfdesk's `wide.tape`, a plain field read by the rail's
   corners till 2026-11-11).
+- A writable derivation is `@signals.derived_signal`: an override lasts until its inputs change. A pending edit
+  over an authoritative answer is `@signals.optimistic`: remove the edit with the authority update in one batch.
+- A transition waits through `@view.HoldGate`, with a finite `most` on the tree's timeline. Collect independent local
+  reads together. A remote wait opens into `View::bones` at once. A pending binding or optimistic change gives the
+  person feedback while a local hold is pending.
+- A bare `.get()` as a box is made is `[STRICT_READ_UNTRACKED]` on a tree that keeps sources. Bind what changes or say
+  a one-time snapshot with `.untracked()`. The app's legacy places are counted by file and only fall.
+- `Tester::hold_faults` says `[SILENT_HOLD]` and `[LONG_HOLD]`. `Tester::waterfall_faults` says
+  `[ASYNC_WATERFALL]` where reads started one after another. `Tester::set_fanout_limit` enables `[FAN_OUT]` to find
+  a write that wakes too many readers.
+- `[EFFECT_IN_WATCH]` and `[EFFECT_IN_COMPUTED]` name effects made inside a frame's watch or a computed getter.
+  Put the action in a handler or a reaction with a lifetime of its own.
 - A signal or a computed tells what follows it only as its value changes (the user, 2026-11-15: 性能差的代码难以被写出来):
   `signal` and `computed` (and what an app keeps over them) ask `T : Eq` and take a value made anew but equal as no change
   (`@signals.same_value`). What has no value to compare (a handle, functions, a record mutated in place, a read made
@@ -379,9 +391,10 @@ yet and you can add one, add it.
 ## Before a PR
 
 - MoonBit's C compiles a generic function once for every type it is called with, its closures too: a structure or a
-  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`) is a thin generic
-  shell over one body that knows no type (`Picked`, `Tree::structured_by`). Before, their copies were 48 MB of the 751 MB
-  of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
+  list of the framework that pages call with their own key types (`View::pick`, `Tree::structured`, `View::scrolls_window`)
+  is a thin generic shell over one body that knows no type (`Picked`, `Tree::structured_by`; a page's list's keys by
+  their numbers, `ListKeys`, `View::scrolls_window_ids`). Before, their copies were 48 MB and the list's 11 some 26 MB of
+  the 751 MB of C of sfapp's whitebox test program, all built again at every change of mbui's view (2026-11-17).
 - A compiler warning is an error or off, never left a warning: `moon.mod`'s `warnings` is the app's line
   (`apps/mbui/AGENTS.md`, Warnings).
 

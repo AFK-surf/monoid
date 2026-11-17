@@ -289,6 +289,7 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
               danger: false,
               disabled: x.disabled,
               chosen: if one_chosen { Some(x.key == chosen) } else { None },
+              checkbox: false,
               heading: false,
               further: false,
               select: fn() { choose(x.key) },

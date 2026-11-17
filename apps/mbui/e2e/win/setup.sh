@@ -28,6 +28,15 @@ check() {
 entry() { reg.exe query "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\$ID" /v "$1" 2>/dev/null | tr -d '\r' | sed -n "s/^ *$1 *REG_[A-Z_]* *//p"; }
 menu=$(powershell.exe -NoProfile -Command "[Environment]::GetFolderPath('Programs')" | tr -d '\r')
 
+# its raw form as --pack wrote it beside it (win.sh setup's MBUI_SETUP_RAW, which the release takes), the same bytes as
+# --raw writes from the installer: the deltas are made from the one and applied to what the other makes
+if [ -f "$SETUP.raw" ]; then
+  "$SETUP" --raw "$(w "$OUT/again.raw")" > "$OUT/raw.log" 2>&1
+  raw_rc=$?
+  check "its raw form as packed, the same bytes as --raw makes" '[ $raw_rc = 0 ] && [ -s "$SETUP.raw" ] && cmp -s "$SETUP.raw" "$OUT/again.raw"'
+  rm -f "$OUT/again.raw"
+fi
+
 "$SETUP" /S --updated "/D=$(w "$INTO")" > "$OUT/install.log" 2>&1
 check "installed (it exited 0)" '[ $? = 0 ]'
 # what runs from the folder (silent and not asked to, the installer opens nothing)

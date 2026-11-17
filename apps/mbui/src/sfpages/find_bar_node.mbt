@@ -123,7 +123,7 @@ pub fn find_bar_node(
       @ui.field(
         f,
         finding.field,
-        placeholder=@sf.t("web-main.find.placeholder"),
+        placeholder_by=fn() { @sf.t("web-main.find.placeholder") },
         font_size=14.0,
         line=20.0,
         max_lines=1,

@@ -5,6 +5,7 @@ import { TestClock } from "effect/testing";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { after } from "node:test";
 import type { Roots } from "./reference/machine.ts";
 import { CommandMissing, type RunnerInfo } from "../src/agents/runner.ts";
 import type { AgentDriver, AgentSession, BackgroundTask, OpenOptions, RuntimeEvent, TurnOutcome } from "../src/agents/runtime.ts";
@@ -348,7 +349,11 @@ export function testClock(): { clock: Clock.Clock; adjust(ms: number): Promise<v
   return { clock, adjust: (ms) => Effect.runPromise(test.adjust(`${ms} millis`)), asked: () => asked, begun };
 }
 
+const openRigs = new Set<Rig>();
+after(async () => { for (const rig of [...openRigs]) await rig.close(); });
+
 export class Rig {
+  #closed = false;
   dir: string;
   raw: Json;
   config: HubConfig;
@@ -395,6 +400,7 @@ export class Rig {
     this.place = o.place ?? { workspace: "ws", station: "st" };
     this.workspaces = o.workspaces;
     this.hub = this.newHub({ chats: (id) => chats.get(id), link: o.link, cold: o.cold });
+    openRigs.add(this);
   }
 
   /// The workspace and station its links name.
@@ -492,6 +498,9 @@ export class Rig {
   /// Every hub made over this rig, `hub` the last put in its place.
   private hubs: Hub[] = [];
   async close() {
+    if (this.#closed) return;
+    this.#closed = true;
+    openRigs.delete(this);
     await this.hub.shutdown();
     for (const hub of this.hubs) await hub.shutdown();
     while (this.background.size > 0) await Promise.allSettled([...this.background]);

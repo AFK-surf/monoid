@@ -59,14 +59,14 @@ for t in $targets; do
     # (the screens' tests in sfapp's own, screens_wbtest.mbt: a package of their own was a second program of the whole
     # app, compiled again on every change, 88 s of a branch's app part with sfapp's own 92, 2026-10-23)
     # (sfpages' own tests too: the pages moved there from sfapp brought theirs, run by nothing until 2026-10-25)
-    pkgs="-p stillfail/sf -p stillfail/sfpages -p stillfail/sfapp -p stillfail/sfapp/settings -p stillfail/gallery -p stillfail/player -p stillfail/sfgraphic"
+    pkgs="-p stillfail/sfpages -p stillfail/sfapp -p stillfail/sfapp/settings -p stillfail/gallery -p stillfail/player -p stillfail/sfgraphic"
     # (APP_GROUP=k/n: one runner's share of sfapp's runs, app_group_of below, each building sfapp's program alone;
     # APP_GROUP=pkgs: the small packages' run alone, on a runner of its own. Their five programs were built by the
     # first group beside sfapp's, each much of the app again: its build 168-209 s after a change where the others'
     # was 57-89, the first's job the check's longest, 2026-10-29, 40807235675) (built once since, at the default rate
     # (PKGS_BUILD_OUT), their runs at the other rates on what it built (PKGS_EXE): each rate's runner built the same
     # programs again, 72-90 s, to run them 21-51 s, 2026-11-11)
-    if [ "${APP_GROUP:-}" = pkgs ]; then pkgs="-p stillfail/sf -p stillfail/sfpages -p stillfail/sfapp/settings -p stillfail/gallery -p stillfail/player -p stillfail/sfgraphic"
+    if [ "${APP_GROUP:-}" = pkgs ]; then pkgs="-p stillfail/sfpages -p stillfail/sfapp/settings -p stillfail/gallery -p stillfail/player -p stillfail/sfgraphic"
     elif [ -n "${APP_GROUP:-}" ]; then pkgs="-p stillfail/sfapp"; fi
     # (with ThinLTO, MBC_LTO=thin: only the program of the whole app. What ThinLTO's tests are for is the code that
     # ships, built as it ships, inlined across its units; all of it is in sfapp's test, run with the whole app's tests.

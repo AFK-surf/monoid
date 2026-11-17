@@ -687,7 +687,7 @@ fn body_time_short(f : String) -> Bool {
 /// finger's press is 44 (markdown_node's, 小屏): the old one's the same height, drawn the same; the old arrangement's,
 /// held exactly, only to fall.
 fn body_code_short(f : String) -> Bool {
-  f.has_prefix("room: ") && f.contains("stillfail/src/sf/markdown_node.mbt:") && f.contains("to be pressed in, under 44")
+  f.has_prefix("room: ") && f.contains("stillfail/sf/src/markdown_node.mbt:") && f.contains("to be pressed in, under 44")
 }
 
 ///|

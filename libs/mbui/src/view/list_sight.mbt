@@ -45,25 +45,40 @@ pub(all) struct Sight[K] {
 /// that moved what shows, at a change of data, its first layout; never as a frame is drawn on a way; never twice the
 /// same in a row. For a handler's accounts, never for what is made.
 pub fn[K] ListPlace::on_sight(self : ListPlace[K], f : (Sight[K]) -> Unit) -> Unit {
-  self.sight_fns.push(f)
+  let ids = self.ids
+  self.at.sight_fns.push(fn(s) { f(s.keyed(ids)) })
   // (its list told it from now: none listening, nothing of it is worked out or owed)
-  (self.sight_listened)()
+  (self.at.sight_listened)()
 }
 
 ///|
 /// What was last told of what the list has in sight (ListPlace::on_sight), for a handler to read; where none is told
 /// it, what it has in sight as it is counted now; none before its first layout.
 pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {
-  if self.sight_fns.is_empty() {
-    (self.sight_of)()
-  } else {
-    self.sight
+  let now = if self.at.sight_fns.is_empty() { (self.at.sight_of)() } else { self.at.sight }
+  now.map(fn(s) { s.keyed(self.ids) })
+}
+
+///|
+/// What is in sight of the keys by their numbers, as of the keys (ListKeys).
+fn[K] Sight::keyed(self : Sight[Int], ids : ListKeys[K]) -> Sight[K] {
+  {
+    first: ids.key(self.first),
+    into: self.into,
+    tall: self.tall,
+    last: ids.key(self.last),
+    whole: self.whole.map(fn(i) { ids.key(i) }),
+    from_foot: self.from_foot,
+    shows: self.shows,
+    at_foot: self.at_foot,
+    foot_whole: self.foot_whole,
   }
 }
 
 ///|
-/// What the list has in sight now told to what is told it, where it differs from what was told last.
-fn[K : Eq] ListPlace::sight_tell(self : ListPlace[K]) -> Unit {
+/// What the list has in sight now told to what is told it, where it differs from what was told last (one key one
+/// number: the same in sight is the same numbers).
+fn PlaceAt::sight_tell(self : PlaceAt) -> Unit {
   guard (self.sight_of)() is Some(now) else { return }
   if self.sight == Some(now) {
     return

@@ -327,3 +327,6 @@ extern "C" fn c_chdir(path : Bytes) -> Int = "mbc_chdir"
 ///|
 /// A process's slot free again, its end taken
 extern "C" fn c_release(slot : Int) -> Unit = "mbc_release"
+
+///|
+extern "C" fn c_wait_short() -> Unit = "mbc_wait_short"

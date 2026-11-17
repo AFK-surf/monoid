@@ -548,6 +548,87 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
 ) -> View {
   guard self.live() is Some(_) else { return self }
+  // (what asks it to show a block or its foot: the page's, else its own, which End asks its foot of at once,
+  // scroll_keys.mbt; its keys' numbers its own, so a key asked of it before it is among the keys is the same one)
+  let place = place.unwrap_or(ListPlace::new())
+  let ids = place.ids
+  let k = fn(i : Int) { ids.key(i) }
+  let band_ids = fn(b : ListBand[K]) -> ListBand[Int] {
+    { from: ids.id(b.from), upto: ids.id(b.upto), top: b.top, foot: b.foot }
+  }
+  let band_keys = fn(b : ListBand[Int]) -> ListBand[K] {
+    { from: k(b.from), upto: k(b.upto), top: b.top, foot: b.foot }
+  }
+  self.scrolls_window_ids(
+    s,
+    fn() { ids.all(keys()) },
+    fn(v, i) { make(v, k(i)) },
+    est~,
+    slop?=slop,
+    bar?=bar,
+    top_covered~,
+    bar_clear?=bar_clear,
+    holds=fn(i) { holds(k(i)) },
+    follows~,
+    from_end~,
+    comes=fn(i) { comes(k(i)) },
+    goes=fn(i) { goes(k(i)) },
+    leaves_room=fn(i) { leaves_room(k(i)) },
+    comes_whole=fn(i) { comes_whole(k(i)) },
+    comes_way=fn(i) { comes_way(k(i)) },
+    reorders=fn(i) { reorders(k(i)) },
+    at_once~,
+    flips~,
+    place=place.at,
+    near_foot?=near_foot,
+    near_top?=near_top,
+    reused?=reused.map(fn(f) { fn(i) { f(k(i)) } }),
+    make_reused?=make_reused.map(fn(f) { fn(v, i : () -> Int) { f(v, fn() { k(i()) }) } }),
+    head?=head,
+    foot?=foot,
+    foot_clear~,
+    bands?=bands.map(fn(b) {
+      let (all, look) = b
+      (fn() { all().map(band_ids) }, fn(v, band : () -> ListBand[Int]) { look(v, fn() { band_keys(band()) }) })
+    }),
+  )
+}
+
+///|
+/// View::scrolls_window's work, of its keys by their numbers (ListKeys): compiled once, not once for every type of key
+/// a page's list holds (11 of it were 26 MB of a program's C).
+fn View::scrolls_window_ids(
+  self : View,
+  s : Scroll,
+  keys : () -> Array[Int],
+  make : (View, Int) -> Unit,
+  est~ : Double,
+  slop? : Double,
+  bar? : ScrollBar,
+  top_covered~ : () -> Double,
+  bar_clear? : () -> (Double, Double),
+  holds~ : (Int) -> Bool,
+  follows~ : () -> Bool,
+  from_end~ : Bool,
+  comes~ : (Int) -> Bool,
+  goes~ : (Int) -> Bool,
+  leaves_room~ : (Int) -> Bool,
+  comes_whole~ : (Int) -> Bool,
+  comes_way~ : (Int) -> (Double, (Double) -> Double)?,
+  reorders~ : (Int) -> Bool,
+  at_once~ : Bool,
+  flips~ : Bool,
+  place~ : PlaceAt,
+  near_foot? : (Double, () -> Bool, () -> Unit),
+  near_top? : (Double, () -> Bool, () -> Unit),
+  reused? : (Int) -> Int?,
+  make_reused? : (View, () -> Int) -> Unit,
+  head? : (View) -> Unit,
+  foot? : (View) -> Unit,
+  foot_clear~ : () -> Double,
+  bands? : (() -> Array[ListBand[Int]], (View, () -> ListBand[Int]) -> Unit),
+) -> View {
+  guard self.live() is Some(_) else { return self }
   // (its head and its foot, once made, and how tall the foot is as its fill last measured it: the room kept under its
   // last block)
   let head_v : Ref[View?] = Ref(None)
@@ -561,7 +642,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let room_under = fn() { foot_h.get() }
   // (what asks it to show a block or its foot: the page's, else its own, which End asks its foot of at once,
   // scroll_keys.mbt)
-  let place = Some(place.unwrap_or(ListPlace::new()))
+  let place = Some(place)
   // (its keys worked out once as what they read changes, not again as a block's height is told: what reads them, the
   // blocks' tops and the blocks made, reads these)
   // (a key its page says goes leaving its room (`leaves_room`, asked once as it goes), the last among them as it goes
@@ -586,11 +667,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // `floor_end`: ended, by such a change or by the hand taking it off its foot. A key said to leave its room going while
   // armed raises it to the stretch as it shows (its room counted). What is pressed and held holds the room itself
   // meanwhile, the floor armed under it as it was)
-  let floor : Ref[(K, Double)?] = Ref(None)
+  let floor : Ref[(Int, Double)?] = Ref(None)
   let laid_whole = Ref(0.0)
-  let laid_last : Ref[Places[K]?] = Ref(None)
+  let laid_last : Ref[Places[Int]?] = Ref(None)
   let laid_stretch = Ref(0.0)
-  let floor_arm : Ref[(K, Double) -> Unit] = Ref(fn(_, _) {  })
+  let floor_arm : Ref[(Int, Double) -> Unit] = Ref(fn(_, _) {  })
   let floor_end : Ref[() -> Unit] = Ref(fn() {  })
   // (a key come at its end as one move (list_send_one_move_test): in the change by which a key comes at the end (by
   // data), it sets out from as tall as all that change gives back under the top of the last key that stays (L): the
@@ -603,7 +684,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // same, what stays under them as tall as it is (the coordinator of the migration, 2026-11-14). `one_move_key`: L, the
   // keys come after it, those that stay under them, the change's moment, till the fill that measures them;
   // `came_row`: their rows, noted only while they are named)
-  let one_move_key : Ref[(K, Array[K], Array[K], Double)?] = Ref(None)
+  let one_move_key : Ref[(Int, Array[Int], Array[Int], Double)?] = Ref(None)
   // (a bridge while an old view is hosted in its foot (the chat's composer, laid out only as the old frame is built):
   // the builds of the old views begun as `one_move_key` was armed, and whether what waited for one done is let go;
   // a set-out is worked out from what that change gives back only once an old view under its foot is built since
@@ -615,18 +696,18 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (and the stretch as the fill at the cause left it, the floor's then: what that change gives back is counted
   // against it, never against the stretch a later fill holds, which counts the key's own way since)
   let one_move_e0 : Ref[Double?] = Ref(None)
-  let came_row : Map[K, View] = Map([])
+  let came_row : Map[Int, View] = Map([])
   let floor_raise = fn() {
     if floor.val is Some((k, e)) {
       floor.val = Some((k, dmax(e, laid_stretch.val)))
     }
   }
-  let fading : Ref[(K, Double)?] = Ref(None)
+  let fading : Ref[(Int, Double)?] = Ref(None)
   let fade_rev : @signals.Signal[Int] = @signals.signal(0)
-  let fade_go : Ref[(K) -> Unit] = Ref(fn(_) {  })
-  let fade_undo : Ref[(K) -> Unit] = Ref(fn(_) {  })
-  let gone_quiet : Map[K, Bool] = Map([])
-  let page_was : Ref[Array[K]] = Ref([])
+  let fade_go : Ref[(Int) -> Unit] = Ref(fn(_) {  })
+  let fade_undo : Ref[(Int) -> Unit] = Ref(fn(_) {  })
+  let gone_quiet : Map[Int, Bool] = Map([])
+  let page_was : Ref[Array[Int]] = Ref([])
   let keyed = @signals.computed(fn(_) {
     fade_rev.get() |> ignore
     let ks = keys()
@@ -675,22 +756,22 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (how tall each was laid out while it showed, by its key, told as each is laid out (`told` counting each change of
   // it); forgotten as the column is laid out at another width, or as all words are measured anew (the system's size of
   // words, how the theme shapes them: Tree::words_again))
-  let heights : Map[K, Double] = Map([])
+  let heights : Map[Int, Double] = Map([])
   // (those whose height changed or was forgotten since their tops were last worked out: those alone looked up again
   // then, not every key hashed each time one is told)
-  let heights_changed : Array[K] = []
+  let heights_changed : Array[Int] = []
   let told : @signals.Signal[Int] = @signals.signal(0)
   let tell = fn() { told.set(told.untracked() + 1) }
   // (the same, each block's own, by its key, while it is made: what its height reads, not all of them read again as
   // one is told, n for each told)
-  let tall : Map[K, @signals.Signal[Double?]] = Map([])
+  let tall : Map[Int, @signals.Signal[Double?]] = Map([])
   // (those that show now: laid out again as they are, each told anew where it comes out otherwise; the rest forgotten)
-  let showing : Map[K, Bool] = Map([])
+  let showing : Map[Int, Bool] = Map([])
   // (the blocks made, each with its key as it is now: what is measured as the column is laid out)
-  let blocks : Array[(View, () -> K)] = []
+  let blocks : Array[(View, () -> Int)] = []
   // (key `k` shows no more, the block at `at` that showed it let go or put by: unless another shows it (a key moved
   // among them, its row split: the one closing where it was let go as the one opening where it is now shows it))
-  let unshow = fn(k : K, at : Int) {
+  let unshow = fn(k : Int, at : Int) {
     if !blocks.iter().any(fn(b) { b.0.at != at && b.0.alive() && @signals.untracked(b.1) == k }) {
       showing.remove(k)
     }
@@ -756,13 +837,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // wakes what it binds (View::rests) and the slot it is still in, none once that slot left what has slots or had its
   // measured height forgotten and it was taken out of it, held by no node (View::park): so many at most of each, the
   // rest let go; all let go with the list)
-  let spare : Map[Int, Array[(View, @signals.Signal[K], () -> Unit, View?)]] = Map([])
+  let spare : Map[Int, Array[(View, @signals.Signal[Int], () -> Unit, View?)]] = Map([])
   // (what the parts of those blocks keep of each key, kept by it as a block leaves it and given back as a block is
   // taken for it or made anew for it: reused_state.mbt)
-  let kept : ReusedKept[K] = ReusedKept::new()
+  let kept : ReusedKept[Int] = ReusedKept::new()
   let kept_keys = fn() { kept.length() }
   // (block `v` leaving key `k` (put by, let go, or taken for another): what its parts keep now kept by `k`)
-  let keep_from = fn(v : View, k : K) {
+  let keep_from = fn(v : View, k : Int) {
     guard v.alive() && self.tree.reused_slots.get(v.at) is Some(rs) else { return }
     let (xs, bools) = rs.taken(self.tree, v.at)
     kept.keep(k, xs, bools)
@@ -770,7 +851,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (block `v` taken for another key, `was` the one it leaves, `k` the one it comes to (View::scrolls_window's
   // `reused`): what its parts kept of `was` kept, what they kept of `k` given back, each at once (answering.mbt), as
   // were it made anew for `k`; `wake` waking what it binds, `key` saying its key)
-  let taken_for = fn(v : View, was : K, k : K, wake : () -> Unit, key : @signals.Signal[K]) {
+  let taken_for = fn(v : View, was : Int, k : Int, wake : () -> Unit, key : @signals.Signal[Int]) {
     guard was != k && v.alive() && self.tree.reused_slots.get(v.at) is Some(rs) else {
       answering(within=v, fn() {
         wake()
@@ -832,13 +913,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (each block's top in the column and its height, in order: as tall as it was measured, else est)
   // (the keys they were worked out for and where each is among them; what they come to, counted (Column): made again as
   // the keys change, else only those whose height changed since told it)
-  let laid_keys : Ref[Array[K]] = Ref([])
-  let laid_at : Map[K, Int] = Map([])
+  let laid_keys : Ref[Array[Int]] = Ref([])
+  let laid_at : Map[Int, Int] = Map([])
   // (each key's number, given as it is first asked (words picked in its row: View::row_place), kept while the list
   // lives: what its row is known by, whichever node it is made in (Tree's rows_named); a key come back the same row)
-  let row_numbers : Map[K, Int] = Map([])
+  let row_numbers : Map[Int, Int] = Map([])
   let row_numbered = Ref(0)
-  let number_of = fn(k : K) {
+  let number_of = fn(k : Int) {
     match row_numbers.get(k) {
       Some(n) => n
       None => {
@@ -848,30 +929,30 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       }
     }
   }
-  let height_of = fn(k : K) {
+  let height_of = fn(k : Int) {
     match heights.get(k) {
       Some(h) => (h, true)
       None => (est, false)
     }
   }
-  let column : Column[K] = Column::new()
+  let column : Column[Int] = Column::new()
   // (where its first block's top is now, under its head: for what judges its rows, lists_seen.mbt)
   s.keys_start = fn() { column.start }
   // (the anchor taken again where the column is scrolled to now, by its blocks as they are counted before its keys
   // change: anchor_again, below)
-  let anchor_again : Ref[(Column[K]) -> Unit] = Ref(fn(_) {  })
+  let anchor_again : Ref[(Column[Int]) -> Unit] = Ref(fn(_) {  })
   // (each that shows, where it is among them, and how far under the top of what shows its top is, by its blocks as they
   // are counted before its keys change: seen_before, below)
-  let seen_before : Ref[(Column[K]) -> Array[(K, Int, Double)]] = Ref(fn(_) { [] })
+  let seen_before : Ref[(Column[Int]) -> Array[(Int, Int, Double)]] = Ref(fn(_) { [] })
   // (the keys come among them by the last change of its keys (not moved among them) that its page says come, and those
   // gone that showed then that it says go, each as far under the top of what showed as it was and the key it stood
   // over (none: at their foot): what of them comes or goes making its way, way_of below; told the fill, forgotten)
   // (each its own map, made anew where it held any: one let go of, not cleared, so what a first making of 1,500 grew
   // is not walked again at every fill)
-  let came_by_data : Ref[Map[K, Bool]] = Ref(Map([]))
+  let came_by_data : Ref[Map[Int, Bool]] = Ref(Map([]))
   // (`flips`: the keys come by data its page says come, since its way was last worked out: only a change that brings one
   // sets a way out, the rest (caught up, an answer's) there at once as they are)
-  let flip_came : Map[K, Bool] = Map([])
+  let flip_came : Map[Int, Bool] = Map([])
   // (a way made anew at each change, none like another: each said is told, none compared)
   let flip_way : @signals.Signal[@flex.FlipWay?] = @signals.signal_by(None, same=fn(_, _) { false })
   // (`flips`: what each block made at rest binds to its way, bound once a way first sets out, all of them then, by the
@@ -889,16 +970,16 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       }
     })
   }
-  let flip_items : Map[K, @flex.FlipItem] = Map([])
-  let flip_new : Map[K, Bool] = Map([])
-  let gone_from : Ref[Map[K, (Double, K?)]] = Ref(Map([]))
+  let flip_items : Map[Int, @flex.FlipItem] = Map([])
+  let flip_new : Map[Int, Bool] = Map([])
+  let gone_from : Ref[Map[Int, (Double, Int?)]] = Ref(Map([]))
   // (the keys that stay moved among them by the last change of its keys that its page says reorder (`reorders`): each
   // in came_by_data too, and where it showed in gone_from, its row split as the each takes the change (each_by's
   // `splits`, each asked once), till the fill that lays it out forgets them)
-  let moved_now : Ref[Map[K, Bool]] = Ref(Map([]))
+  let moved_now : Ref[Map[Int, Bool]] = Ref(Map([]))
   // (the anchor, where it is one of those moved, put on the first of its stand-ins that did not move: anchor_moved,
   // below)
-  let anchor_moved : Ref[(Map[K, Bool]) -> Unit] = Ref(fn(_) {  })
+  let anchor_moved : Ref[(Map[Int, Bool]) -> Unit] = Ref(fn(_) {  })
   let laid_grid = Ref(-1.0)
   // (how many times they were worked out: what shows by them worked out again each time)
   let laid_rev = Ref(0)
@@ -987,11 +1068,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         !answering_now() &&
         !self.tree.answer_holds(self.at) &&
         !@signals.untracked(self.tree.motion_reduced) {
-        let was_index : Map[K, Int] = Map([])
+        let was_index : Map[Int, Int] = Map([])
         for j in p..<was.length() {
           was_index[was[j]] = j
         }
-        let stay : Array[K] = []
+        let stay : Array[Int] = []
         let stay_was : Array[Int] = []
         for i in p..<ks.length() {
           match was_index.get(ks[i]) {
@@ -1146,7 +1227,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (the rows made or let go by a change of its keys that make their way in or out (View::scrolls_window's way_of),
   // each with its key and, going, the key it stands over among them (none: at their foot), till the end its way
   // declares (ways_due, below); and what ends that wait)
-  let ways : Array[(View, K, K?)] = []
+  let ways : Array[(View, Int, Int?)] = []
   let ways_off : Ref[() -> Unit] = Ref(fn() {  })
   // (the blocks of keys said to come whole (`comes_whole`) on their way at its foot, by their nodes: drawn as at rest,
   // not cut to their room, over the rest of the list (Tree::raise_in_list, the paint's), every one on its way, in the
@@ -1164,8 +1245,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // logic's moment (an input, a change). With none on its way, the column as it is counted.
   // (the column as counted, made once: what is read where none is on its way, nothing made for each reading)
   let plain = Places::counted(column)
-  let counted = fn(all : Column[K]) { if physical_equal(all, column) { plain } else { Places::counted(all) } }
-  let places = fn(all : Column[K]) -> Places[K] {
+  let counted = fn(all : Column[Int]) { if physical_equal(all, column) { plain } else { Places::counted(all) } }
+  let places = fn(all : Column[Int]) -> Places[Int] {
     if ways.is_empty() {
       return counted(all)
     }
@@ -1230,11 +1311,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // as the column is laid out (its fill, below) that move is carried to the anchor, the blocks that show made and
   // measured from it, and where the scroll is put back from the anchor: what came, went or was measured anew over what
   // shows moves none of it. Nothing of this is told after the layout.
-  let anchor : Ref[(K, Double)?] = Ref(None)
+  let anchor : Ref[(Int, Double)?] = Ref(None)
   // (the others that showed as the anchor was last put and hold what shows, each with how far down its top the top of
   // what showed was: the anchor's stand-ins, in order, once it is no more among the keys (the row a filter leaves out;
   // an item become another), what shows held by the next of them where it was)
-  let anchor_else : Array[(K, Double)] = []
+  let anchor_else : Array[(Int, Double)] = []
   // (where what is read in the anchor starts in its block, as it was last put, where its block marks it
   // (View::read_from): held by that start, read anew in each fill; none, held by its top. Each stand-in's the same,
   // in their order, read for the few marked next under the anchor alone)
@@ -1245,7 +1326,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let anchor_else_start : Array[Double?] = []
   // (how many blocks it had, and its last, as it was said held where it is at its foot (Scroll::holds_here): blocks
   // come or gone since, with it still at its foot, and it follows its foot again)
-  let held_with : Ref[(Int, K?)] = Ref((0, None))
+  let held_with : Ref[(Int, Int?)] = Ref((0, None))
   s.held_said = fn() {
     let ks = @signals.untracked(keys)
     held_with.val = (ks.length(), ks.last())
@@ -1281,9 +1362,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (the blocks come at its foot that took the room, each with the row it is made in and how tall it set out from:
   // measured shorter than that in the fill that makes it, from as tall as it is, the rest of the room left, in that
   // layout)
-  let took_room : Map[K, (View, Double)] = Map([])
+  let took_room : Map[Int, (View, Double)] = Map([])
   // (how far down its blocks and the room under them but that go, as they are counted now)
-  let blocks_foot = fn(all : Places[K]) {
+  let blocks_foot = fn(all : Places[Int]) {
     all.foot() + room_under() + @signals.untracked(fn() { s.tuck_room.get() })
   }
   // (where the scroll was as the anchor was last put: what it moved by since, carried to the anchor)
@@ -1291,7 +1372,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (an ask put back by the last fill as it was cut short by its foot still going down (the fill's end): not at its
   // foot meanwhile, nothing following it; and the ask so put back, which the hand lets go of)
   let ask_cut = Ref(false)
-  let ask_cut_was : Ref[ListAsk[K]?] = Ref(None)
+  let ask_cut_was : Ref[ListAsk[Int]?] = Ref(None)
   // (the column marked laid out again: not while it is laid out, its fill going on to what that changed itself)
   let laid_again = fn() {
     if self.tree.rooming != self.at {
@@ -1306,7 +1387,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   )
   // (the anchor among the blocks as they are counted now, or the first of its stand-ins that is: where it is among them
   // and how far down its top the top of what shows was; none put yet, or none of them left, none)
-  let held_at = fn(all : Places[K]) -> (Int, Double)? {
+  let held_at = fn(all : Places[Int]) -> (Int, Double)? {
     guard anchor.val is Some((k, off)) else { return None }
     if laid_at.get(k) is Some(i) && i < all.length() {
       return Some((i, off))
@@ -1320,7 +1401,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (where what is read in the anchor, or the stand-in held_at found, started in its block as it was put: none where
   // it is held by its top)
-  let held_start = fn(all : Places[K]) -> Double? {
+  let held_start = fn(all : Places[Int]) -> Double? {
     guard anchor.val is Some((k, _)) else { return None }
     if laid_at.get(k) is Some(i) && i < all.length() {
       return anchor_start.val
@@ -1334,7 +1415,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (how far under its top what is read in the block of the `i`th key starts, where its block is made and marks it, as
   // the list is laid out now at the width it is laid out at: Tree::start_in)
-  let start_of = fn(all : Places[K], i : Int) -> Double? {
+  let start_of = fn(all : Places[Int], i : Int) -> Double? {
     guard !marks.is_empty() && i >= 0 && i < all.length() else { return None }
     guard room_w.untracked() is Some(w) else { return None }
     let k = all.key(i)
@@ -1351,7 +1432,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (where what a go-to brings lies under the top of the block of the `i`th key, as the list is laid out now at the
   // width it is laid out at, the first of the block's nodes that holds some of it: its top and foot, Tree::sought_in)
-  let sought_of = fn(all : Places[K], i : Int) -> (Double, Double)? {
+  let sought_of = fn(all : Places[Int], i : Int) -> (Double, Double)? {
     guard !sought.is_empty() && i >= 0 && i < all.length() else { return None }
     guard room_w.untracked() is Some(w) else { return None }
     let k = all.key(i)
@@ -1377,7 +1458,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (how far under its top what is read in the block of the `i`th key started as the list was last laid out, where
   // that block was laid out and marks it: Tree::start_laid)
-  let start_laid_of = fn(all : Places[K], i : Int) -> Double? {
+  let start_laid_of = fn(all : Places[Int], i : Int) -> Double? {
     guard !marks.is_empty() && i >= 0 && i < all.length() else { return None }
     let k = all.key(i)
     guard showing.contains(k) else { return None }
@@ -1394,7 +1475,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (the first key whose marked start is at or under what covers its top and over its pinned foot's top, the top of
   // what shows at `top`, `vh` of it showing: where it is among the blocks and how far under its top that start is; none
   // where no key's start shows)
-  let read_anchor = fn(all : Places[K], top : Double, vh : Double) -> (Int, Double)? {
+  let read_anchor = fn(all : Places[Int], top : Double, vh : Double) -> (Int, Double)? {
     guard !marks.is_empty() && all.length() > 0 else { return None }
     let (cover, under) = @signals.untracked(fn() { (s.top_covered(), s.foot_covered_now()) })
     let edge = top + cover
@@ -1433,7 +1514,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (where the top of what shows is by where the blocks are counted now: the anchor's, moved as the scroll was since it
   // was put; none yet, where the scroll is. What came in or went over what shows since has moved the blocks' tops, not
   // yet the scroll (its fill puts it): by the scroll alone, what shows would be read off other blocks.)
-  let top_now = fn(all : Places[K], x : Double) {
+  let top_now = fn(all : Places[Int], x : Double) {
     match (held_at(all), anchor_x.val) {
       (Some((i, off)), Some(was)) => all.top(i) + off + (x - was)
       _ => x
@@ -1441,14 +1522,14 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (where the top of what shows is with the column at its foot, showing `vh` of it: by its blocks as they are counted
   // now and its foot's room, followed)
-  let foot_top = fn(all : Places[K], vh : Double) {
+  let foot_top = fn(all : Places[Int], vh : Double) {
     dmax(0.0, all.foot() + room_under() + s.tuck_room.get() + foot_room.get() - vh)
   }
   // (a press in one of its blocks, press_stays.mbt: that block held so that what was pressed stays where it was: its
   // key, how far under the top of what shows its top was, what lies over what was pressed in it (each node before it
   // or before what holds it, down a column, in the block) and how tall that was then; none once the hand moves it or
   // all the press set off has ended)
-  let pin : Ref[(K, Double, Array[View], Double)?] = Ref(None)
+  let pin : Ref[(Int, Double, Array[View], Double)?] = Ref(None)
   // (what was pressed: let go, or what was over it, held no more)
   let pin_node : Ref[View?] = Ref(None)
   // (what holds what was pressed, up to its block, each with where what lies over it starts among `over` and how tall
@@ -1460,13 +1541,13 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (where it was held at the foot of the room kept under its blocks once what was pressed held it no more (its fill's
   // `top` and keys then): followed again once keys come at its foot have taken that room, unless the hand moved it from
   // there or another row was pressed)
-  let room_held : Ref[(Double, Int, K?)?] = Ref(None)
+  let room_held : Ref[(Double, Int, Int?)?] = Ref(None)
   let unpin : Ref[() -> Unit] = Ref(fn() {  })
   let pin_ends = Ref(false)
   // (where it was scrolled to as it was pressed: moved from there by the hand, held no more; and how many blocks it had,
   // and its last, then: blocks come or gone since at its foot, where it follows it, followed again)
   let pin_x = Ref(0.0)
-  let pin_with : Ref[(Int, K?)] = Ref((0, None))
+  let pin_with : Ref[(Int, Int?)] = Ref((0, None))
   let pin_foot = Ref(false)
   // (the node its blocks are held in, once made: what they hold set coming or going kept by it, Tree's list_inner)
   let held_node = Ref(-1)
@@ -1543,7 +1624,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     // (the block it is in, made here, and what lies over it there: none, nothing held)
     let over : Array[View] = []
     let up_at : Array[(View, Int)] = []
-    let mut found : K? = None
+    let mut found : Int? = None
     let mut i = v.at
     while i >= 0 && i != self.at && found is None {
       up_at.push((self.tree.handle(i), over.length()))
@@ -1777,7 +1858,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     None => ()
   }
   // (the first from `i` on that holds what shows: none of them, the `i`th)
-  let holding = fn(all : Places[K], i : Int) {
+  let holding = fn(all : Places[Int], i : Int) {
     let mut j = i
     while j < all.length() && !holds(all.key(j)) {
       j = j + 1
@@ -1790,11 +1871,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (whether each shows, by its key: told only to those that come to show or stop, not each block reading the window,
   // all of them run again each time the column is scrolled)
-  let shown : Map[K, @signals.Signal[Bool]] = Map([])
+  let shown : Map[Int, @signals.Signal[Bool]] = Map([])
   // (a block's own as it is made in what shows it (`v`), `key` its key as it is now: as tall as what it holds,
   // whatever its slot is counted as till that is told; how tall it is told as it is laid out, kept by its key, told
   // again as it is another's)
-  let block = fn(v : View, key : () -> K, made : (View) -> Unit) {
+  let block = fn(v : View, key : () -> Int, made : (View) -> Unit) {
     v.shrink(Is(0.0)) |> ignore
     let k = @signals.untracked(key)
     showing[k] = true
@@ -1820,7 +1901,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     made(v)
   }
   // (how tall what it holds comes to with its blocks where `all` has them, and its foot's room, untracked)
-  let whole_of = fn(all : Places[K]) {
+  let whole_of = fn(all : Places[Int]) {
     @signals.untracked(fn() { all.foot() + room_under() + s.tuck_room.get() + foot_room.get() })
   }
   // (how tall what it holds comes to: its blocks where they are now, on its host's pixels, and its foot's room)
@@ -1978,10 +2059,10 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     None => ()
   }
   // (which show, as the fill last left them)
-  let shown_now : Array[K] = []
+  let shown_now : Array[Int] = []
   // (told only to those that come or go, each found among the others by looking: what shows is a screen of them, and
   // those that stay were told as they came, or made so: `shown`'s cell made by `shown_now`)
-  let show_only = fn(now : Array[K]) {
+  let show_only = fn(now : Array[Int]) {
     guard now != shown_now else { return }
     for k in shown_now {
       if !now.contains(k) && shown.get(k) is Some(c) {
@@ -1998,7 +2079,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (those that show as they were measured, or as they were counted and came out so: what was seen as it is, which
   // holds where the column is as it is moved, before one come in over it measured otherwise)
-  let seen_rows : Map[K, Bool] = Map([])
+  let seen_rows : Map[Int, Bool] = Map([])
   // (the anchor put where the top of what shows is `top`, `vh` of it showing, the scroll at `x` then, by the blocks as
   // they are counted now: the first that holds what shows, how far down its top the top of what shows is; what is
   // measured anew over it from now on moving none of what shows. One never measured holds nothing sure, the top of what
@@ -2006,7 +2087,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // its top. Held by one counted 48 and measured 218 in the next fill, what showed under it went down the 170 more with
   // it, and that fill, going out from it alone, let go of every block in sight to make them again. Those that show its
   // stand-ins.)
-  let anchor_put = fn(all : Places[K], top : Double, vh : Double, x : Double) {
+  let anchor_put = fn(all : Places[Int], top : Double, vh : Double, x : Double) {
     let read = read_anchor(all, top, vh)
     anchor_start.val = read.map(fn(r) { r.1 })
     anchor.val = if read is Some((j, _)) {
@@ -2092,12 +2173,12 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // under it, found again only as what shows comes within `slots_near` of their ends or is more than `slots_far` from
   // them (a wheel going back and forth over where they end makes and lets go nothing), and as the keys change among
   // them; the rest have no node, the column holding a spacer over them and one under, as tall as they are counted)
-  let slot_keys : @signals.Signal[Array[K]] = @signals.signal([], same=fn(a, b) { physical_equal(a, b) })
+  let slot_keys : @signals.Signal[Array[Int]] = @signals.signal([], same=fn(a, b) { physical_equal(a, b) })
   // (where the slots' first key was found, in which column and at how many of its fillings: while it is filled no
   // more, the slots are where they were found and what covers what shows is told by places alone, no key looked up)
-  let slots_found : Ref[(Column[K], Int, Int)?] = Ref(None)
+  let slots_found : Ref[(Column[Int], Int, Int)?] = Ref(None)
   // (what the window last found shows, and the places it found it from and to: window)
-  let window_found : Ref[(Array[K], Int, Int)] = Ref(([], 0, -1))
+  let window_found : Ref[(Array[Int], Int, Int)] = Ref(([], 0, -1))
   // (whether the window last found stopped short of what shows at one never measured: window)
   let window_short = Ref(false)
   // (the slots that hold `need` (what shows) and as much round it as where the column shows from `top`, `vh` tall,
@@ -2105,7 +2186,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // (a block that shows a key whose slot leaves the slots, `ks` those kept: let go with its slot (what it holds before
   // it), never through its leaving what shows (its keys changed: what is filtered out), what its parts keep kept by its
   // key first, while it lives: reused_state.mbt)
-  let keep_leaving = fn(ks : Array[K]) {
+  let keep_leaving = fn(ks : Array[Int]) {
     for bl in blocks {
       let bk = @signals.untracked(bl.1)
       if bl.0.alive() && showing.contains(bk) && !ks.contains(bk) {
@@ -2113,7 +2194,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       }
     }
   }
-  let slots_cover = fn(all : Places[K], need : Array[K], top : Double, vh : Double) {
+  let slots_cover = fn(all : Places[Int], need : Array[Int], top : Double, vh : Double) {
     let n = all.length()
     if n == 0 {
       slots_found.val = None
@@ -2260,7 +2341,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     })
   }
   // (what is made, the stretch it covers, as `shown_now` says)
-  let made_now = fn(all : Places[K]) {
+  let made_now = fn(all : Places[Int]) {
     match (shown_now.get(0), shown_now.last()) {
       (Some(a), Some(b)) =>
         match (laid_at.get(a), laid_at.get(b)) {
@@ -2286,7 +2367,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // past `hi`): from the first that meets it down, as far as the first never measured. Whether it stopped so short of
   // what shows, one past the one never measured it stopped at meeting where it shows as they are counted:
   // `window_short`.)
-  let window = fn(all : Places[K], top : Double, vh : Double, lo : Int, hi : Int, up_first : Bool) -> Array[K] {
+  let window = fn(all : Places[Int], top : Double, vh : Double, lo : Int, hi : Int, up_first : Bool) -> Array[Int] {
     let now = []
     window_short.val = false
     // (whether `i` meets where it shows, as it is counted)
@@ -2365,7 +2446,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let way_may = fn() { gone_from.val.length() > 0 || came_by_data.val.length() > 0 }
   // (while a block is on its way: those that show where all of it ends, from `top_end`, with those that show `now`, in
   // their order: what shows from where the way set out to where it ends kept made till it ends, let go then)
-  let with_end = fn(all : Places[K], now : Array[K], top_end : Double, vh : Double) -> Array[K] {
+  let with_end = fn(all : Places[Int], now : Array[Int], top_end : Double, vh : Double) -> Array[Int] {
     guard !ways.is_empty() else { return now }
     let more = window(counted(all.col), top_end, vh, all.length(), -1, true).filter(fn(k) { !now.contains(k) })
     guard more.length() > 0 else { return now }
@@ -2638,7 +2719,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     let mut asked = false
     // (the place's ask taken in this fill, as it was asked: put back at its end where this fill could not make what
     // shows, below)
-    let mut taken : ListAsk[K]? = None
+    let mut taken : ListAsk[Int]? = None
     match place {
       Some(p) =>
         match p.asked {
@@ -2773,12 +2854,12 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     let mut top = 0.0
     let mut vh = 0.0
     let mut again = true
-    let measured : Map[K, Bool] = Map([])
+    let measured : Map[Int, Bool] = Map([])
     // (what showed as this layout began, kept made while it still measures: a pass that finds what shows otherwise for
     // one never measured (the appended one at its foot, as tall as `est` till it is measured, all that shows by itself)
     // lets none of it go, to make it again a pass later; what shows no more let go once, after the last pass)
     let showed = shown_now.copy()
-    let mut found : Array[K] = []
+    let mut found : Array[Int] = []
     while again {
       again = false
       fill_passes.val = fill_passes.val + 1
@@ -3494,7 +3575,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // shows over it) and over where what shows ends. Going: it showed, at its foot or under the top of what showed. Else
   // there or gone at once. One that makes its way kept among its ways (Places) till that ends.
   // (the slot of key `k`, by its key while it is made: as tall as it is now)
-  let slot_views : Map[K, View] = Map([])
+  let slot_views : Map[Int, View] = Map([])
   // (`flips`: what its keys bring or take by data laid out at once as it ends, each block drawn off where it is laid
   // out by how far it was from there as the change came, all of it on one way (flex's FlipWay), read where it is drawn:
   // nothing laid out again on the way (the user, 2026-11-10 and 2026-11-15). `flip_way`: the way, while it goes;
@@ -3503,21 +3584,21 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   let flip_end_off : Ref[() -> Unit] = Ref(fn() {  })
   // (a flight in from outside the tree in a key's block (View::flies_in, Tree::carried): the change's moment, the key
   // and the flight's way: the way of a change that brings that key goes on the flight's rise, as long)
-  let flip_said : Ref[(Double, K, (Double, (Double) -> Double))?] = Ref(None)
+  let flip_said : Ref[(Double, Int, (Double, (Double) -> Double))?] = Ref(None)
   let flip_rebuild : Ref[() -> Unit] = Ref(fn() {  })
   // (what the held column's blocks hold coming or going tells it: the list's set-out, Tree's flip_lists)
   let flip_inner_tell : Ref[(Int) -> Unit] = Ref(fn(_) {  })
   // (the keys come at its end by the change being set out, at its foot: the room under the last block taken by them)
-  let flip_takes : Ref[Array[K]] = Ref([])
+  let flip_takes : Ref[Array[Int]] = Ref([])
   // (block `k`'s offset drawn at `t`: across, down, less wide, less tall)
-  let flip_at = fn(k : K, t : Double) -> (Double, Double, Double, Double) {
+  let flip_at = fn(k : Int, t : Double) -> (Double, Double, Double, Double) {
     match (flip_way.untracked(), flip_items.get(k)) {
       (Some(w), Some(i)) => w.drawn(i, t).0
       _ => (0.0, 0.0, 0.0, 0.0)
     }
   }
   // (as drawn now, bound: following the clock while the way goes)
-  let flip_drawn = fn(k : K, v : View) -> (Double, Double, Double, Double) {
+  let flip_drawn = fn(k : Int, v : View) -> (Double, Double, Double, Double) {
     match flip_way.get() {
       Some(w) => {
         let ends = w.ends()
@@ -3529,8 +3610,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   }
   // (how much of block `k` is open as drawn now, 0 to 1: as it grows from its top, all of it at rest; a key a flight
   // carries open all the way, its words drawn whole as they fly (the flight's))
-  let flip_whole : Map[K, Bool] = Map([])
-  let flip_open = fn(k : K, v : View) -> Double {
+  let flip_whole : Map[Int, Bool] = Map([])
+  let flip_open = fn(k : Int, v : View) -> Double {
     let (_, _, _, d) = flip_drawn(k, v)
     guard d > 0.0 && flip_new.contains(k) && !flip_whole.contains(k) else { return 1.0 }
     match tall.get(k) {
@@ -3561,9 +3642,9 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // block's nodes were drawn as the change came (down from its top, how tall), by the change's moment)
   let flip_in_amts : Map[Int, (Double, Double, Double, Bool)] = Map([])
   let flip_in_bound : Map[Int, Int] = Map([])
-  let flip_in_of : Map[K, Array[Int]] = Map([])
-  let flip_in_before : Map[K, (Double, Map[Int, (Double, Double)])] = Map([])
-  let flip_in_take = fn(k : K, at : Double) {
+  let flip_in_of : Map[Int, Array[Int]] = Map([])
+  let flip_in_before : Map[Int, (Double, Map[Int, (Double, Double)])] = Map([])
+  let flip_in_take = fn(k : Int, at : Double) {
     match flip_in_before.get(k) {
       Some((t, _)) if t == at => return
       _ => ()
@@ -3673,7 +3754,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     (set_out, left, out)
   }
   if flips {
-    let flip_was : Ref[Array[K]] = Ref([])
+    let flip_was : Ref[Array[Int]] = Ref([])
     // (what a block holds coming or going down its column (a show, a pick, an each in it: View::comes) laid out at once
     // in the change, the block then as tall as that, set out as its keys' change is: Tree's flip_lists)
     let inner_at = Ref(-1.0)
@@ -3681,11 +3762,11 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     // comes down into that room on the list's way, not held where it was)
     let gave_back : Ref[Bool] = Ref(false)
     let pending_at : Ref[Double] = Ref(-1.0)
-    let pending_was : Ref[Array[K]] = Ref([])
-    let pending_ks : Ref[Array[K]] = Ref([])
+    let pending_was : Ref[Array[Int]] = Ref([])
+    let pending_ks : Ref[Array[Int]] = Ref([])
     let pending_inner : Ref[Bool] = Ref(false)
     let pending_builds : Ref[Int] = Ref(0)
-    fn change(ks : Array[K], was : Array[K], inner : Bool) -> Unit {
+    fn change(ks : Array[Int], was : Array[Int], inner : Bool) -> Unit {
       guard was.length() > 0 else { return }
       let at = self.tree.cause_now()
       let base_was = if pending_at.val == at { pending_was.val } else { was }
@@ -3752,7 +3833,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       for k, _ in flip_in_of {
         flip_in_take(k, at)
       }
-      let before : Map[K, (Double, Double, Double, Double)] = Map([])
+      let before : Map[Int, (Double, Double, Double, Double)] = Map([])
       for k, v in slot_views {
         guard v.alive() else { continue }
         let (x, y, w, h) = v.placed_window_now()
@@ -3762,7 +3843,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
         before[k] = (x + a, y + b, w - c, h - d)
       }
       // (and how fast: what is left of the way's speed then)
-      let speed : Map[K, (Double, Double, Double, Double)] = Map([])
+      let speed : Map[Int, (Double, Double, Double, Double)] = Map([])
       match flip_way.untracked() {
         Some(w) =>
           for k, i in flip_items {
@@ -3781,8 +3862,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       @signals.after_flush(fn() {
         @signals.after_flush(fn() {
           let came_once : Ref[Bool?] = Ref(None)
-          let snap_was : Ref[Array[K]] = Ref(pending_was.val)
-          let snap_ks : Ref[Array[K]] = Ref(pending_ks.val)
+          let snap_was : Ref[Array[Int]] = Ref(pending_was.val)
+          let snap_ks : Ref[Array[Int]] = Ref(pending_ks.val)
           let snap_inner : Ref[Bool] = Ref(pending_inner.val)
           fn set_out(fix : Bool) -> Unit {
           if !fix {
@@ -3803,8 +3884,8 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           if !fix {
             self.tree.laid_now() |> ignore
           }
-          let items : Map[K, @flex.FlipItem] = Map([])
-          let fresh : Map[K, Bool] = Map([])
+          let items : Map[Int, @flex.FlipItem] = Map([])
+          let fresh : Map[Int, Bool] = Map([])
           // (where each is laid out as the change ends it)
           if !fix && flip_takes.val.length() > 0 {
             let mut came = 0.0
@@ -3818,7 +3899,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
               self.tree.laid_now() |> ignore
             }
           }
-          let after : Map[K, (Double, Double, Double, Double)] = Map([])
+          let after : Map[Int, (Double, Double, Double, Double)] = Map([])
           for k, v in slot_views {
             if v.alive() {
               after[k] = v.laid_window_now()
@@ -3929,7 +4010,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
           }
           // (the key a flight carries in, told already: drawn where it rests, the flight bringing it, open all the way;
           // where a later change moves it while the flight goes, it goes on that way as the rest)
-          let carried_in = fn(k : K) -> Bool {
+          let carried_in = fn(k : Int) -> Bool {
             fresh.contains(k) &&
             (flip_whole.contains(k) ||
             (match flip_said.val {
@@ -4260,7 +4341,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     flip_inner_tell.val = fn(part) {
       let at = self.tree.cause_now()
       // (the block it is in: where all of it was drawn, before it is laid out again)
-      let blocks : Map[Int, K] = Map([])
+      let blocks : Map[Int, Int] = Map([])
       for k, v in slot_views {
         if v.alive() {
           blocks[v.at] = k
@@ -4283,7 +4364,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     }
     self.owns(fn() { (flip_end_off.val)() }) |> ignore
   }
-  let slot_tall = fn(k : K) {
+  let slot_tall = fn(k : Int) {
     match slot_views.get(k) {
       Some(v) if v.alive() => self.tree.along_now(v.at, self.tree.cause_now())
       _ => 0.0
@@ -4295,7 +4376,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
   // than it needs past the room)
   // (the same where it comes with no way (there at once: motion reduced, or not seen to come): the room less by as tall
   // as it is, in the fill that measures it)
-  let take_room = fn(k : K, row : View) -> Double {
+  let take_room = fn(k : Int, row : View) -> Double {
     let quiet = gone_quiet.keys().filter(fn(g) { gone_quiet.get(g) == Some(false) }).collect()
     for g in quiet {
       gone_quiet[g] = true
@@ -4313,7 +4394,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     took_room[k] = (row, r)
     r
   }
-  let from_of = fn(k : K, row : View) -> Double { take_room(k, row) }
+  let from_of = fn(k : Int, row : View) -> Double { take_room(k, row) }
   // (a key gone leaving its room: what it showed fading out where it is, as a pick's that leaves (pick_leave.mbt), its
   // slot as tall as it is till that and its way in are done, then let go; back, seen again whole)
   let fade_off = Ref(fn() {  })
@@ -4398,7 +4479,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       foot_room.set(left)
     }
   })
-  let way_of = fn(k : K, row : View, coming : Bool) -> Bool {
+  let way_of = fn(k : Int, row : View, coming : Bool) -> Bool {
     // (`flips`: no way of its own, nor any room kept or taken for one: FlipWay's)
     if flips {
       return false
@@ -4596,7 +4677,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
     // (a row whose key moved among them by this change, its page saying it reorders: split, asked once)
     // (the row made anew for it another row from the one closing where it was: a number of its own, View::row_place's
     // and what judges how rows go)
-    let splits = fn(k : K) {
+    let splits = fn(k : Int) {
       guard moved_now.val.contains(k) else { return false }
       moved_now.val.remove(k)
       row_numbered.val = row_numbered.val + 1
@@ -4779,7 +4860,7 @@ pub fn[K : Hash + Eq] View::scrolls_window(
       // it no more does, for the next of its kind to show)
       match (reused, make_reused) {
         (Some(kind_of), Some(make_by)) if kind_of(k) is Some(kind) => {
-          let mine : Ref[(View, @signals.Signal[K])?] = Ref(None)
+          let mine : Ref[(View, @signals.Signal[Int])?] = Ref(None)
           let stop = slot.tree.structured(shows, fn(on) {
             guard slot.alive() else { return }
             match (on, mine.val) {
@@ -4998,29 +5079,104 @@ priv enum ListAsk[K] {
 /// anchor: what is over it measured anew moves none of it), or gliding there from where it is, at that moment. One
 /// asked before the block is among its keys waits for it; a later one in its place.
 pub struct ListPlace[K] {
-  priv mut asked : ListAsk[K]?
-  priv mut jumped_to_end : Bool
+  priv at : PlaceAt
+  priv ids : ListKeys[K]
+}
+
+///|
+/// What a ListPlace keeps, of its list's keys by their numbers (ListKeys), as View::scrolls_window_ids reads and sets it.
+priv struct PlaceAt {
+  mut asked : ListAsk[Int]?
+  mut jumped_to_end : Bool
   /// its foot followed no further than this block's top so far under what covers its top (ListPlace::follow_from): a
   /// standing limit, kept as it takes hold, till the hand takes the list, an ask, another said, or its key goes
-  priv mut from : (K, Double)?
+  mut from : (Int, Double)?
   /// whether the key `from` names has been among the keys since it was said (gone after that, the limit goes with it)
-  priv mut from_met : Bool
-  priv mut laid_again : () -> Unit
-  priv mut glide : (ListAsk[K]) -> Bool
+  mut from_met : Bool
+  mut laid_again : () -> Unit
+  mut glide : (ListAsk[Int]) -> Bool
   /// what is told what is in sight as that changes (ListPlace::on_sight), what was told last (ListPlace::sight_now),
   /// and what its list has in sight as it is counted now (none before it is made)
-  priv sight_fns : Array[(Sight[K]) -> Unit]
-  priv mut sight : Sight[K]?
-  priv mut sight_of : () -> Sight[K]?
-  priv mut sight_listened : () -> Unit
+  sight_fns : Array[(Sight[Int]) -> Unit]
+  mut sight : Sight[Int]?
+  mut sight_of : () -> Sight[Int]?
+  mut sight_listened : () -> Unit
+}
+
+///|
+/// The keys of a page's list by number: each key given one as it is first seen (among its keys, asked of its place, a
+/// band's), the same one for as long as the list is, so a number stands for one key and a key for one number and its
+/// work, compiled once (View::scrolls_window_ids), compares and keeps them by number as it kept the keys. Kept as long
+/// as the list: as its heights and what its rows kept are, a key's own.
+priv struct ListKeys[K] {
+  ids : Map[K, Int]
+  keys : Array[K]
+  // (the keys last numbered whole and their numbers: the same array asked again, its keys the same, is the same
+  // numbers' array, so what the list's work tells by its keys being the same array is as it was)
+  mut last : (Array[K], Array[Int])?
+}
+
+///|
+fn[K : Hash + Eq] ListKeys::new() -> ListKeys[K] {
+  { ids: Map([]), keys: [], last: None }
+}
+
+///|
+fn[K : Hash + Eq] ListKeys::id(self : ListKeys[K], k : K) -> Int {
+  match self.ids.get(k) {
+    Some(i) => i
+    None => {
+      let i = self.keys.length()
+      self.ids[k] = i
+      self.keys.push(k)
+      i
+    }
+  }
+}
+
+///|
+fn[K] ListKeys::key(self : ListKeys[K], i : Int) -> K {
+  self.keys[i]
+}
+
+///|
+fn[K : Hash + Eq] ListKeys::all(self : ListKeys[K], ks : Array[K]) -> Array[Int] {
+  if self.last is Some((was, nums)) && physical_equal(was, ks) && nums.length() == ks.length() {
+    let mut same = true
+    for j, k in ks {
+      if self.id(k) != nums[j] {
+        same = false
+        break
+      }
+    }
+    if same {
+      return nums
+    }
+  }
+  let nums = ks.map(fn(k) { self.id(k) })
+  self.last = Some((ks, nums))
+  nums
 }
 
 ///|
 /// One for a page's list, asking nothing yet.
-pub fn[K] ListPlace::new() -> ListPlace[K] {
-  { asked: None, jumped_to_end: false, from: None, from_met: false, laid_again: fn() {  }, glide: fn(_) { false }, sight_fns: [], sight: None, sight_of: fn() { None }, sight_listened: fn() {  } }
+pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
+  {
+    at: {
+      asked: None,
+      jumped_to_end: false,
+      from: None,
+      from_met: false,
+      laid_again: fn() {  },
+      glide: fn(_) { false },
+      sight_fns: [],
+      sight: None,
+      sight_of: fn() { None },
+      sight_listened: fn() {  },
+    },
+    ids: ListKeys::new(),
+  }
 }
-
 ///|
 /// Block `key` brought to the top of where the list shows, under what covers its top (Scroll::top_covered: the bar it
 /// runs under; none, its own top), `offset` above that edge (its top that far over it, under it where less than 0: what
@@ -5029,13 +5185,19 @@ pub fn[K] ListPlace::new() -> ListPlace[K] {
 /// go-to brings (View::sought) before the eyes, in the same fill: where it would lie low (its middle past 80% of the
 /// room between what covers the list's top and its pinned foot's top), its middle at the middle of that room instead
 /// (list_sought.mbt), as far as the list goes; gliding there too where `glide` and it is near, as it is laid out then.
-pub fn[K] ListPlace::bring(
+pub fn[K : Hash + Eq] ListPlace::bring(
   self : ListPlace[K],
   key : K,
   offset? : Double = 0.0,
   glide? : Bool = false,
   sought? : Bool = false,
 ) -> Unit {
+  self.at.bring(self.ids.id(key), offset~, glide~, sought~)
+}
+
+///|
+/// ListPlace::bring, of a key by its number.
+fn PlaceAt::bring(self : PlaceAt, key : Int, offset? : Double = 0.0, glide? : Bool = false, sought? : Bool = false) -> Unit {
   self.from = None
   self.jumped_to_end = false
   if glide && (self.glide)(Bring(key, offset, sought)) {
@@ -5052,33 +5214,39 @@ pub fn[K] ListPlace::bring(
 /// wherever in the block it lies, as far as the list goes; where the block marks none, its top there. In one fill, the
 /// block measured as it is laid out (a reader's column opened where it was left: an old view's list scrolled there a
 /// frame after its height was laid out). Not gliding.
-pub fn[K] ListPlace::bring_sought(self : ListPlace[K], key : K, under? : Double = 0.0) -> Unit {
-  self.from = None
-  self.asked = Some(BringSought(key, under))
-  (self.laid_again)()
+pub fn[K : Hash + Eq] ListPlace::bring_sought(self : ListPlace[K], key : K, under? : Double = 0.0) -> Unit {
+  self.at.from = None
+  self.at.asked = Some(BringSought(self.ids.id(key), under))
+  (self.at.laid_again)()
 }
 
 ///|
 /// Whether something asked of it (a block brought, its foot) is still to be done by its list's next layout: what it
 /// has in sight told meanwhile (ListPlace::on_sight, at the input that asked it) is where it was, not where it goes.
 pub fn[K] ListPlace::asking(self : ListPlace[K]) -> Bool {
-  self.asked is Some(_)
+  self.at.asked is Some(_)
 }
 
 ///|
 /// Block `key` brought to the middle of where the list shows, between what covers its top (Scroll::top_covered) and its
 /// pinned foot's top, its middle there as tall as it is counted then (an entry gone to).
-pub fn[K] ListPlace::centre(self : ListPlace[K], key : K) -> Unit {
-  self.from = None
-  self.jumped_to_end = false
-  self.asked = Some(Centre(key))
-  (self.laid_again)()
+pub fn[K : Hash + Eq] ListPlace::centre(self : ListPlace[K], key : K) -> Unit {
+  self.at.from = None
+  self.at.jumped_to_end = false
+  self.at.asked = Some(Centre(self.ids.id(key)))
+  (self.at.laid_again)()
 }
 
 ///|
 /// Back to the list's foot (Ctx::list_to_end's): gliding there where `glide` and it is near (else at once), followed
 /// there from then where its list follows its foot.
 pub fn[K] ListPlace::to_end(self : ListPlace[K], glide? : Bool = true) -> Unit {
+  self.at.to_end(glide~)
+}
+
+///|
+/// ListPlace::to_end.
+fn PlaceAt::to_end(self : PlaceAt, glide? : Bool = true) -> Unit {
   self.from = None
   self.jumped_to_end = false
   self.asked = None
@@ -5103,10 +5271,10 @@ pub fn[K] ListPlace::to_end(self : ListPlace[K], glide? : Bool = true) -> Unit {
 /// not bind (all from that key down fits), the list is at its foot as any, following it, held again as it comes to
 /// bind. None: followed all the way again. (Counted from the list's own top till 2026-11-14, when only its own test
 /// said it, under no cover.)
-pub fn[K] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double = 0.0) -> Unit {
-  self.from = key.map(fn(k) { (k, margin) })
-  self.from_met = false
-  (self.laid_again)()
+pub fn[K : Hash + Eq] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double = 0.0) -> Unit {
+  self.at.from = key.map(fn(k) { (self.ids.id(k), margin) })
+  self.at.from_met = false
+  (self.at.laid_again)()
 }
 
 ///|

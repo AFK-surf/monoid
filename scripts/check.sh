@@ -281,7 +281,7 @@ if part ts; then
     step "operation bindings" after core node client/core-ts/scripts/operations.ts --check
   fi
   # still.fail's colours are web/ui/src/palette.ts's (the app's palette made from it); the web's curves are the app's.
-  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^apps/mbui/src/sf/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
+  if touches '^web/ui/src/(palette|curves-data)\.ts$|^scripts/(palette|curves)\.ts$|^libs/sf-ui/src/(palette_data|tokens)\.mbt$|^libs/mbui/src/ui/motion\.mbt$'; then
     step "palette and curves" sh -c 'node scripts/palette.ts --check && node scripts/curves.ts --check'
   fi
   # The app's UI fault categories are the core's (client/core-ts/src/ui-faults.ts).
@@ -490,8 +490,8 @@ if part ts; then
   # The TypeScript core: its own tsconfig.
   # (with the station's deps: what the core imports of the station's imports its packages, effect among them)
   if touches "$ts_core" || touches "$core_station"; then prep core deps client/core-ts; prep station deps station; step "typecheck: core-ts" after core after station sh -c 'cd client/core-ts && pnpm exec tsgo --noEmit'; fi
-  if touches "$ts_core|^client/math/|^apps/mbui/src/sf/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
-  if touches "$ts_core|^client/fixtures/math\\.json$|^apps/mbui/src/sf/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
+  if touches "$ts_core|^client/math/|^libs/sf-ui/src/math_glyphs\\.mbt$"; then prep core deps client/core-ts; step "shared math alphabet" after core node client/core-ts/scripts/math-font.ts --check; fi
+  if touches "$ts_core|^client/fixtures/math\\.json$|^libs/sf-ui/src/math\\.json$"; then prep core deps client/core-ts; step "shared math fixture" after core node client/core-ts/scripts/math-fixture.ts --check; fi
   # The core's pure answers the mbui app's runs without a core keep (apps/mbui/src/sfkept), as the core answers them now.
   if touches "$ts_core|^apps/mbui/src/sfkept/kept\\.mbt$"; then prep core deps client/core-ts; step "kept core answers" after core node client/core-ts/scripts/kept-answers.ts --check; fi
   # What makes the views writes only on what it made, never on what it was given (「谁能改什么」).

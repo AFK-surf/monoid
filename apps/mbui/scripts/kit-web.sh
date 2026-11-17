@@ -1,5 +1,5 @@
 #!/bin/bash
-# The component library's page (src/sfstories: each part of src/sf beside its states) built for the browser into OUT,
+# The component library's page (src/sfstories: each part of libs/sf-ui's src beside its states) built for the browser into OUT,
 # as cloud/wrangler.kit.jsonc serves it (kit.monoid.zone): mbui's web host, the app minified as mbui's scripts/web.sh
 # bundle does, the files it carries, the sources it shows, and a page that gives them to it before it starts.
 #   scripts/kit-web.sh OUT
@@ -13,11 +13,14 @@ bash "$D/assets" "$MBUI_APP_MOD" "$out/assets" > /dev/null
 inter=$(ls "$SF_SRC"/node_modules/.pnpm/@fontsource-variable+inter@*/node_modules/@fontsource-variable/inter/files/inter-latin-wght-normal.woff2 2>/dev/null | tail -1)
 [ -z "$inter" ] || cp "$inter" "$out/assets/inter.woff2"
 # (the sources the page shows: stories.mbt, whose lines each state's code is cut from, and each file of the library
-# it names, whose functions it lists; each after a line naming it, src/sfstories/sources.mbt)
+# (libs/sf-ui/src) it names, whose functions it lists; each after a line naming it as sf/<file>,
+# src/sfstories/sources.mbt)
+lib=$(cd "$MBUI_APP_MOD/../../libs/sf-ui/src" && pwd)
 (cd "$MBUI_APP_MOD/src" && for f in sfstories/stories.mbt $(grep -o '"[a-z_]*\.mbt"' sfstories/stories.mbt | tr -d '"' | sort -u | sed 's|^|sf/|'); do
-  [ -f "$f" ] || continue
+  case $f in sf/*) at=$lib/${f#sf/} ;; *) at=$f ;; esac
+  [ -f "$at" ] || continue
   printf '//@@ %s\n' "$f"
-  cat "$f"
+  cat "$at"
 done) > "$out/assets/sources.txt"
 cp "$D/kit.html" "$out/index.html"
 APP=sfstories MBUI_WEB_BROTLI=0 exec bash "$MBUI_DIR/scripts/web.sh" bundle "$out"

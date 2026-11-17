@@ -129,6 +129,7 @@ fn board_words(key : String) -> String {
     "new" => @sf.t("web-main.board.new")
     "new-here" => @sf.t("web-main.board.new_here")
     "add" => @sf.t("web-main.board.add")
+    "dispatch" => @sf.t("web-main.board.dispatch")
     "cancel" => @sf.t("web-main.board.cancel")
     "goes-on" => @sf.t("web-main.board.goes_on")
     "start" => @sf.t("web-main.board.start")
@@ -1326,9 +1327,13 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
 
 ///|
 /// The card a draft is written in at 待派发's top, as the cards under it look: what it is, × to put it away (wide), the
-/// station it goes to, 添加.
+/// station it goes to, ＋ to add it; while the command key is held, the send arrow starts it at once.
 fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -> Unit {
   let card_at : Ref[@view.View?] = Ref(None)
+  let dispatching = fn() {
+    let primary = match @ui.keys_system() { 0 | 1 => @ui.mod_cmd; _ => @ui.mod_ctrl }
+    (@ui.key_modifiers() & primary) != 0
+  }
   let ws = @signals.untracked(own.ws)
   let writing = fn() { @sfbase.writing(own.src, @sfbase.board_file_key(ws, own.draft_id.get())) }
   let files = fn() {
@@ -1344,7 +1349,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     @sfbase.board_files_discard(own.src, ws, own.draft_id.untracked(), @signals.untracked(files))
     own.draft_id.set(@sfbase.board_next_id())
   }
-  let add = fn() {
+  let add = fn(start : Bool) {
     guard @signals.untracked(ready) else { return }
     let words = own.field.text()
     let st = @signals.untracked(fn() { board_station_now(own) })
@@ -1364,12 +1369,23 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       @sfbase.board_adding.set(false)
     }
     let added = @sfbase.board_draft_add(own.src, ws, words, st, name, id~, files=attached)
-    if wide && added is Some(id) {
+    if wide && !start && added is Some(id) {
       own.added_from = from.map(fn(r) { (id, r) })
     }
     if added is Some(_) { own.draft_id.set(@sfbase.board_next_id()) }
     @signals.end_batch()
-    guard added is Some(_) else { return }
+    guard added is Some(id) else { return }
+    if start {
+      let draft : @sfbase.BoardDraft = {
+        id,
+        title: words.trim(chars=" \n\r\t").to_owned(),
+        station: st,
+        station_name: name,
+        files: attached,
+      }
+      own.start_from = from.map(fn(r) { (st + "/" + @sfbase.board_key_of(draft), r) })
+      @sfbase.board_start(own.src, ws, draft)
+    }
     if !wide {
       // (narrow it stays, 待派发's own line, empty for the next)
       own.field.set("")
@@ -1383,10 +1399,9 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
   // (what stands in its foot's corners, as tall as a control, concentric with the card's: as far in as that leaves)
   let h = fn() { @sf.theme().control_h }
   let foot_in = fn() { @sf.card_corner - h() / 2.0 }
-  // (添加 as tall as a button, lower than a control where it is touched: as far in from the end as its middle leaves it
-  // from the foot, concentric with the card's corner too)
+  // (the round key sits concentric with the card's foot corner)
   let add_in = fn() {
-    let d = h() - @sf.button_height()
+    let d = h() - @sf.theme().round.side
     if d > 0.0 { d / 2.0 } else { 0.0 }
   }
   a.box(fn(card) {
@@ -1425,7 +1440,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
           label=board_words("placeholder"),
           max_lines=3,
           enter_sends=true,
-          submitted=fn(_) { add() },
+          submitted=fn(_) { add(@signals.untracked(dispatching)) },
           files=fn(got) {
             let w = @signals.untracked(writing)
             let station = @signals.untracked(fn() { board_station_now(own) })
@@ -1490,7 +1505,14 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       r.box(fn(g) { g.grow(Is(1.0)).min_width(Is(Some(0.0))) |> ignore }) |> ignore
       r.box(fn(k) {
         k.shrink(Is(0.0)).margin(By(fn() { (0.0, 0.0, add_in(), 0.0) })) |> ignore
-        @sf.button_node(k, fn() { board_words("add") }, add, tone=Primary, disabled=fn() { !ready() })
+        @sf.send_button_node(
+          k,
+          fn() { board_words(if dispatching() { "dispatch" } else { "add" }) },
+          ready,
+          fn() { false },
+          fn() { add(@signals.untracked(dispatching)) },
+          icon_now=fn() { if dispatching() { "arrow-up" } else { "plus" } },
+        )
         |> ignore
       })
       |> ignore

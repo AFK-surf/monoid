@@ -21,9 +21,16 @@ impl @hostapi.Host for FakeHost with reduce_motion(self) {
 }
 
 ///|
-/// A scripted run's step given to it to send as its own (drive.mbt): the window resized (8: "<w>x<h>", the Tester's
-/// next frames that size); none of the others (the script sends them to the app itself).
-impl @hostapi.Host for FakeHost with drive(_, kind, text) {
+/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), or resize the next frame (8).
+impl @hostapi.Host for FakeHost with drive(self, kind, text) {
+  if kind == 6 || kind == 7 {
+    guard self.find_notice(text) is Some(index) else { return false }
+    if kind == 6 {
+      self.open_notice(index)
+      self.wants = true
+    }
+    return true
+  }
   if kind != 8 {
     return false
   }
@@ -1977,6 +1984,16 @@ impl @hostapi.Host for FakeHost with cl_file(self, id, i) {
 // The system's notifications (@hostapi notify.mbt) as a test has them: those shown kept (Tester::notices), one tapped
 // as the test says (Tester::tap_notice), what the system lets the app show and what the person answers when asked
 // (Tester::set_notice_permission, set_notice_reply).
+
+///|
+fn FakeHost::find_notice(self : FakeHost, text : String) -> Int? {
+  self.notices.search_by(fn(n) { n.title.contains(text) || n.body.contains(text) })
+}
+
+///|
+fn FakeHost::open_notice(self : FakeHost, index : Int) -> Unit {
+  self.notice_opened = self.notices.remove(index).opens
+}
 
 ///|
 /// A notification shown: kept, one of the same tag replaced.

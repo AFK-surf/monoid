@@ -231,7 +231,77 @@ static int payload_read(size_t *stub) {
   return ok;
 }
 
-// --pack OUT ENV FILE…: this program with ENV (as setup.env) and the FILEs (by their own names) after it
+// A payload written whole after a program (STUB, its SN bytes) into TO, as payload_read reads it: MAGIC_ at both ends,
+// COUNT files, each its name, its size (SIZES), its stored size (STORED) and its stored bytes (BYTES: packed, or as
+// they are). One writer for the packed installer, its raw form made by --pack (MBUI_SETUP_RAW) and by --raw, so the
+// two raw forms are the same bytes. Each piece in as many WriteFile calls as it takes, every one checked: 1 written,
+// else TO taken away.
+static int put_all(HANDLE out, const void *p, size_t n) {
+  const unsigned char *at = (const unsigned char *)p;
+  while (n > 0) {
+    DWORD k = 0;
+    if (!WriteFile(out, at, (DWORD)(n > (1u << 30) ? (1u << 30) : n), &k, NULL) || !k) return 0;
+    at += k, n -= k;
+  }
+  return 1;
+}
+static int write_payload(const wchar_t *to, const unsigned char *stub, size_t sn, const char *magic_, uint32_t count,
+                         const wchar_t *const *names, const size_t *sizes, const size_t *stored,
+                         const unsigned char *const *bytes) {
+  HANDLE out = CreateFileW(to, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+  if (out == INVALID_HANDLE_VALUE) return 0;
+  uint64_t at = sn;
+  int ok = put_all(out, stub, sn) && put_all(out, magic_, 8) && put_all(out, &count, 4);
+  for (uint32_t i = 0; ok && i < count; i++) {
+    uint16_t nl = (uint16_t)wcslen(names[i]);
+    uint64_t size = sizes[i], pk = stored[i];
+    ok = put_all(out, &nl, 2) && put_all(out, names[i], (size_t)nl * 2) && put_all(out, &size, 8) && put_all(out, &pk, 8) &&
+         put_all(out, bytes[i], stored[i]);
+  }
+  ok = ok && put_all(out, &at, 8) && put_all(out, magic_, 8);
+  CloseHandle(out);
+  if (!ok) DeleteFileW(to);
+  return ok;
+}
+
+// --pack's files, each packed on its own (LZMS's blocks hold nothing of another file's): the biggest first, by as
+// many threads as the machine has cores (8 at most), each with its own compressor. One after another they were 23 s of
+// a release's job on its 4 cores, the program's 45 MB most of it (2026-11-17).
+typedef struct {
+  const wchar_t *name;
+  unsigned char *b, *z;
+  size_t n;
+  SIZE_T packed;
+  DWORD err;
+} pack_item;
+typedef struct {
+  pack_item *items;
+  int *order;
+  LONG next;
+  int count;
+} pack_work;
+static DWORD WINAPI pack_thread(void *arg) {
+  pack_work *w = (pack_work *)arg;
+  COMPRESSOR_HANDLE c = NULL;
+  DWORD no_c = CreateCompressor(COMPRESS_ALGORITHM_LZMS, NULL, &c) ? 0 : GetLastError();
+  if (no_c) c = NULL;
+  for (;;) {
+    LONG i = InterlockedIncrement(&w->next) - 1;
+    if (i >= w->count) break;
+    pack_item *it = &w->items[w->order[i]];
+    SIZE_T cap = it->n + it->n / 2 + 65536;
+    it->z = (unsigned char *)malloc(cap);
+    if (!c) it->err = no_c ? no_c : ERROR_INVALID_HANDLE;
+    else if (!it->z) it->err = ERROR_NOT_ENOUGH_MEMORY;
+    else if (it->n && !Compress(c, it->b, it->n, it->z, cap, &it->packed)) it->err = GetLastError() ? GetLastError() : ERROR_GEN_FAILURE;
+  }
+  if (c) CloseCompressor(c);
+  return 0;
+}
+
+// --pack OUT ENV FILE…: this program with ENV (as setup.env) and the FILEs (by their own names) after it, in that
+// order; with MBUI_SETUP_RAW (a path) its raw form written there too, as --raw would write it, from the files as read
+// (the release's: --raw after it unpacked them all again, 2026-11-17)
 static int pack(int argc, wchar_t **argv) {
   if (argc < 4) return 2;
   wchar_t self[MAX_PATH * 2];
@@ -241,48 +311,76 @@ static int pack(int argc, wchar_t **argv) {
   if (!me) return 1;
   // (this program as built, not one with a payload already, packed or stored)
   if (sn >= 16 && payload_mark(me + sn - 8)) memcpy(&sn, me + sn - 16, 8);
-  HANDLE out = CreateFileW(argv[2], GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (out == INVALID_HANDLE_VALUE) return 1;
-  DWORD k;
-  WriteFile(out, me, (DWORD)sn, &k, NULL);
-  free(me);
-  uint64_t at = sn;
-  WriteFile(out, MAGIC, 8, &k, NULL);
-  uint32_t count = (uint32_t)(argc - 3);
-  WriteFile(out, &count, 4, &k, NULL);
-  COMPRESSOR_HANDLE c = NULL;
-  if (!CreateCompressor(COMPRESS_ALGORITHM_LZMS, NULL, &c)) return 1;
-  for (int i = 3; i < argc; i++) {
-    size_t n = 0;
-    unsigned char *b = read_all(argv[i], &n);
-    if (!b) {
-      say(L"no %ls", argv[i]);
-      return 1;
+  int count = argc - 3, rc = 1;
+  pack_item *items = (pack_item *)calloc((size_t)count, sizeof(pack_item));
+  int *order = (int *)calloc((size_t)count, sizeof(int));
+  const wchar_t **names = (const wchar_t **)calloc((size_t)count, sizeof(wchar_t *));
+  size_t *sizes = (size_t *)calloc((size_t)count, sizeof(size_t)), *stored = (size_t *)calloc((size_t)count, sizeof(size_t));
+  const unsigned char **bytes = (const unsigned char **)calloc((size_t)count, sizeof(unsigned char *));
+  HANDLE threads[8];
+  int nthreads = 0;
+  if (!items || !order || !names || !sizes || !stored || !bytes) goto done;
+  for (int i = 0; i < count; i++) {
+    const wchar_t *path = argv[i + 3];
+    items[i].b = read_all(path, &items[i].n);
+    if (!items[i].b) {
+      say(L"no %ls", path);
+      goto done;
     }
-    const wchar_t *name = i == 3 ? L"setup.env" : wcsrchr(argv[i], L'\\') ? wcsrchr(argv[i], L'\\') + 1 : argv[i];
+    const wchar_t *name = i == 0 ? L"setup.env" : wcsrchr(path, L'\\') ? wcsrchr(path, L'\\') + 1 : path;
     if (wcsrchr(name, L'/')) name = wcsrchr(name, L'/') + 1;
-    SIZE_T cap = n + n / 2 + 65536, packed = 0;
-    unsigned char *z = (unsigned char *)malloc(cap);
-    if (!z || (n && !Compress(c, b, n, z, cap, &packed))) {
-      say(L"%ls not packed (%lu)", name, GetLastError());
-      return 1;
-    }
-    uint16_t nl = (uint16_t)wcslen(name);
-    uint64_t size = n, pk = packed;
-    WriteFile(out, &nl, 2, &k, NULL);
-    WriteFile(out, name, nl * 2, &k, NULL);
-    WriteFile(out, &size, 8, &k, NULL);
-    WriteFile(out, &pk, 8, &k, NULL);
-    WriteFile(out, z, (DWORD)packed, &k, NULL);
-    say(L"packed %ls: %zu bytes as %zu", name, n, (size_t)packed);
-    free(b);
-    free(z);
+    items[i].name = name;
+    // (the biggest first: an insertion by size, a handful of files)
+    int j = i;
+    while (j > 0 && items[order[j - 1]].n < items[i].n) order[j] = order[j - 1], j--;
+    order[j] = i;
   }
-  CloseCompressor(c);
-  WriteFile(out, &at, 8, &k, NULL);
-  WriteFile(out, MAGIC, 8, &k, NULL);
-  CloseHandle(out);
-  return 0;
+  SYSTEM_INFO si;
+  GetSystemInfo(&si);
+  int want = (int)si.dwNumberOfProcessors;
+  if (want > 8) want = 8;
+  if (want > count) want = count;
+  if (want < 1) want = 1;
+  pack_work work = {items, order, 0, count};
+  for (; nthreads < want; nthreads++) {
+    threads[nthreads] = CreateThread(NULL, 0, pack_thread, &work, 0, NULL);
+    if (!threads[nthreads]) break;
+  }
+  if (nthreads == 0) pack_thread(&work);  // (no thread to be had: packed here)
+  else WaitForMultipleObjects((DWORD)nthreads, threads, TRUE, INFINITE);
+  for (int t = 0; t < nthreads; t++) CloseHandle(threads[t]);
+  for (int i = 0; i < count; i++)
+    if (items[i].err) {
+      say(L"%ls not packed (%lu)", items[i].name, items[i].err);
+      goto done;
+    }
+  for (int i = 0; i < count; i++) {
+    names[i] = items[i].name, sizes[i] = items[i].n, stored[i] = items[i].packed, bytes[i] = items[i].z;
+    say(L"packed %ls: %zu bytes as %zu", items[i].name, items[i].n, (size_t)items[i].packed);
+  }
+  if (!write_payload(argv[2], me, sn, MAGIC, (uint32_t)count, names, sizes, stored, bytes)) {
+    say(L"%ls not written (%lu)", argv[2], GetLastError());
+    goto done;
+  }
+  wchar_t raw_to[MAX_PATH * 2];
+  DWORD rl = GetEnvironmentVariableW(L"MBUI_SETUP_RAW", raw_to, MAX_PATH * 2);
+  if (rl > 0 && rl < MAX_PATH * 2) {
+    for (int i = 0; i < count; i++) stored[i] = items[i].n, bytes[i] = items[i].b;
+    if (!write_payload(raw_to, me, sn, MAGIC_RAW, (uint32_t)count, names, sizes, stored, bytes)) {
+      say(L"%ls not written (%lu)", raw_to, GetLastError());
+      goto done;
+    }
+    say(L"%ls: %d files stored", raw_to, count);
+  } else if (rl >= MAX_PATH * 2) {
+    say(L"MBUI_SETUP_RAW is too long");
+    goto done;
+  }
+  rc = 0;
+done:
+  if (items)
+    for (int i = 0; i < count; i++) free(items[i].b), free(items[i].z);
+  free(items), free(order), free((void *)names), free(sizes), free(stored), free((void *)bytes), free(me);
+  return rc;
 }
 
 // --raw OUT: this installer written again with what it carries stored (MAGIC_RAW): the same program, the same files in
@@ -296,45 +394,20 @@ static int raw(const wchar_t *to) {
   wchar_t self[MAX_PATH * 2];
   GetModuleFileNameW(NULL, self, MAX_PATH * 2);
   unsigned char *me = read_all(self, &sn);
-  if (!me || stub > sn) return 1;
-  HANDLE out = CreateFileW(to, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-  if (out == INVALID_HANDLE_VALUE) {
+  if (!me || stub > sn) {
     free(me);
     return 1;
   }
-  int ok = 1;
-  // (whole, in pieces a WriteFile takes)
-#define PUT(p, len)                                                                                   \
-  do {                                                                                                \
-    const unsigned char *at_ = (const unsigned char *)(p);                                            \
-    for (size_t left_ = (len); ok && left_ > 0;) {                                                    \
-      DWORD k_ = 0;                                                                                   \
-      ok = WriteFile(out, at_, (DWORD)(left_ > (1u << 30) ? (1u << 30) : left_), &k_, NULL) && k_ > 0; \
-      at_ += k_, left_ -= k_;                                                                         \
-    }                                                                                                 \
-  } while (0)
-  PUT(me, stub);
-  free(me);
-  uint64_t at = stub;
-  uint32_t count = (uint32_t)nentries;
-  PUT(MAGIC_RAW, 8);
-  PUT(&count, 4);
-  for (int i = 0; i < nentries; i++) {
-    uint16_t nl = (uint16_t)wcslen(entries[i].name);
-    uint64_t size = entries[i].size;
-    PUT(&nl, 2);
-    PUT(entries[i].name, (size_t)nl * 2);
-    PUT(&size, 8);
-    PUT(&size, 8);
-    PUT(entries[i].data, entries[i].size);
-  }
-  PUT(&at, 8);
-  PUT(MAGIC_RAW, 8);
-#undef PUT
-  CloseHandle(out);
+  int n = nentries ? nentries : 1;
+  const wchar_t **names = (const wchar_t **)calloc((size_t)n, sizeof(wchar_t *));
+  size_t *sizes = (size_t *)calloc((size_t)n, sizeof(size_t));
+  const unsigned char **bytes = (const unsigned char **)calloc((size_t)n, sizeof(unsigned char *));
+  int ok = names && sizes && bytes;
+  for (int i = 0; ok && i < nentries; i++) names[i] = entries[i].name, sizes[i] = entries[i].size, bytes[i] = entries[i].data;
+  ok = ok && write_payload(to, me, stub, MAGIC_RAW, (uint32_t)nentries, names, sizes, sizes, bytes);
+  free(me), free((void *)names), free(sizes), free((void *)bytes);
   if (!ok) {
     say(L"%ls not written (%lu)", to, GetLastError());
-    DeleteFileW(to);
     return 1;
   }
   say(L"%ls: %d files stored", to, nentries);

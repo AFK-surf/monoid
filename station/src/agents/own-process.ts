@@ -180,7 +180,7 @@ export abstract class OwnProcessDriver<S extends OwnProcessSession = OwnProcessS
       // A turn is running that this station did not start.
       if (session.busy()) events({ type: "turnStarted" });
     }
-    session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow()));
+    session.attach(HostedProcess.adopt(this.agents, info, session.hostedOptions(this.label(options, session)), session.turnNow(), session.liveNow(), options.router ?? null));
     await session.adopted();
     this.live.add(session);
     return session;
