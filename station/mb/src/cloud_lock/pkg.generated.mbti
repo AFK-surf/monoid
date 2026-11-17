@@ -1,0 +1,505 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/cloud_lock"
+
+import {
+  "moonbitlang/core/json",
+  "station/host",
+  "stillfail/rules/lock",
+}
+
+// Values
+pub fn admit(Crypto, @lock.LockState, Who, Double) -> (@lock.Device, String) raise Failure
+
+pub fn admit_person(Crypto, @lock.LockState, Who, Array[@json.Json]) -> (String, String, @lock.Person) raise Failure
+
+pub fn answer_bodies(Cloud, @json.Json, String, String?) -> @json.Json raise Failure
+
+pub fn answer_person(Cloud, @json.Json, String) -> @json.Json raise Failure
+
+pub fn apply(Crypto, @lock.LockState, @json.Json, Double?) -> @lock.LockState raise Failure
+
+pub fn as_entry(@json.Json) -> @json.Json?
+
+pub let aside_most : Int32
+
+pub let at_odds : String
+
+pub fn b64_bytes(String) -> Bytes
+
+pub fn b64url_of(BytesView) -> String
+
+pub fn bind_digest(String, String, String, String) -> (String, String)
+
+pub fn bodies_given(Cloud, String, String) -> Map[String, @json.Json]
+
+pub fn bodies_path(String, String) -> String
+
+pub fn body_hash(@json.Json) -> String?
+
+pub let body_most : Int32
+
+pub fn body_refusal(Crypto, String, @json.Json, Array[Commit]) -> String?
+
+pub fn build_of(String?) -> Int32?
+
+pub fn canonical(@json.Json) -> String raise Failure
+
+pub let chain_most : Int32
+
+pub let chains_a_person : Int32
+
+pub let counted_from : Int32
+
+pub fn devices_for(@lock.LockState, String) -> Array[String]
+
+pub fn dirname(String) -> String
+
+pub fn endpoint_bytes(String, String) -> Bytes
+
+pub fn entries_of(Array[@json.Json]) -> Array[@json.Json]?
+
+pub fn entry_hash(@json.Json) -> String raise Failure
+
+pub fn fold(Crypto, Array[@json.Json], Double?) -> @lock.LockState raise Failure
+
+pub fn fold_chain(Crypto, @json.Json?, String?) -> (String, String) raise Failure
+
+pub let fork_words : String
+
+pub fn genesis(Crypto, @json.Json) -> @lock.LockState raise Failure
+
+pub fn gives_device(Cloud, String?, Viewer) -> Bool
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn hash_of(@json.Json) -> String
+
+pub fn hashable(Array[@json.Json]) -> Unit raise Failure
+
+pub fn hex_bytes(String) -> Bytes
+
+pub fn hex_of(BytesView) -> String
+
+pub fn is_hex32(String) -> Bool
+
+pub fn is_revocation(@json.Json) -> Bool
+
+pub fn join(Array[String]) -> String
+
+pub fn joined_lock_path(String, String) -> String
+
+pub fn joined_of(@json.Json?) -> Array[@json.Json]
+
+pub fn joined_pending_path(String, String) -> String
+
+pub fn js_compare(String, String) -> Int32
+
+pub fn keep(Kept, Array[@json.Json], LogRules) -> Took raise Failure
+
+pub fn left_of(Cloud, String?, String, @json.Json?, String) -> @json.Json?
+
+pub async fn load_key(@host.Host, String) -> StationKey raise Failure
+
+pub fn lock_chain(Crypto, Array[@json.Json], String) -> Chain raise Failure
+
+pub fn lock_head(Cloud, String?) -> @json.Json
+
+pub fn lock_part_route(Cloud, DeviceBuilds, String, String, String, Viewer) -> (Int32, @json.Json)
+
+pub fn lock_path(String) -> String
+
+pub fn lock_refusal(Cloud, @json.Json?, String, String, String?) -> @json.Json
+
+pub fn lock_route(Cloud, DeviceBuilds, String, Array[(String, String)], String, Viewer) -> (Int32, @json.Json)
+
+pub let lock_serves : Array[String]
+
+pub let logs_any_from_build : Int32
+
+pub let logs_before : Int32
+
+pub fn lower_role(String, String) -> String
+
+pub fn member_with_email(@lock.LockState, String) -> @lock.Member?
+
+pub fn members_with_email(@lock.LockState, String) -> Array[@lock.Member]
+
+pub fn mesh_dir(String) -> String
+
+pub let mode_pending_s : Double
+
+pub fn move_former_host(Disk, String) -> Unit raise Failure
+
+pub fn moved_floor(Cloud, String) -> Int32?
+
+pub let moved_from_build : Int32
+
+pub fn moved_too_old(Cloud, String, Int32?) -> Bool
+
+pub let not_given : String
+
+pub fn own_chains_of(Cloud, String, String?) -> Array[(String, Array[@json.Json])]
+
+pub fn parse(String) -> @json.Json?
+
+pub fn pending_lock_path(String) -> String
+
+pub fn person_chain(Crypto, Array[@json.Json], String) -> Chain raise Failure
+
+pub fn person_fold(Crypto, Array[@json.Json], String) -> @lock.Person raise Failure
+
+pub fn person_json(@lock.Person) -> @json.Json
+
+pub fn pin_brought(Cloud, String?, String, Array[@json.Json], @json.Json?, @json.Json?, Who, String) -> Unit raise Failure
+
+pub async fn pin_moved(Cloud, async (String, String, @json.Json) -> @json.Json, String, Array[String], String) -> Bool raise Failure
+
+pub fn rank(String) -> Int32
+
+pub fn read_lock(Disk, Crypto, String, String?) -> KeptLock?
+
+pub fn read_state(Disk, String) -> CloudState? raise Failure
+
+pub fn rechoose(Kept, LogRules) -> Took raise Failure
+
+pub fn reset_lock(Disk, String, Double) -> Bool
+
+pub fn rig_grants_path(String) -> String
+
+pub fn rigs_of(@json.Json?) -> Array[@json.Json]
+
+pub let roles : Array[String]
+
+pub let root_out_from_build : Int32
+
+pub fn roster4(Crypto, String, String, Array[Array[@json.Json]], Array[@json.Json], without? : Array[String]) -> @lock.Roster
+
+pub fn roster4_moved(Crypto, String, Array[@json.Json], Array[Array[@json.Json]], Array[@json.Json], without? : Array[String]) -> @lock.Roster
+
+pub fn roster_json(@lock.Roster) -> @json.Json
+
+pub fn saw_build(Cloud, DeviceBuilds, Viewer, Int32?) -> Int32?
+
+pub fn sha256(BytesView) -> Bytes
+
+pub fn sha256_hex(String) -> String
+
+pub fn sha256_hex_bytes(BytesView) -> String
+
+pub fn short_code(String) -> String
+
+pub fn signed_bytes(String) -> Bytes
+
+pub async fn signed_post(CloudState?, StationKey, String, String, @json.Json, Double, async (SignedRequest) -> (Int32, String), name? : String) -> @json.Json raise Failure
+
+pub fn signed_request(CloudState?, StationKey, String, String, @json.Json, Double, name? : String) -> SignedRequest raise Failure
+
+pub fn signer(@lock.LockState, String, Double?) -> @lock.Signer?
+
+pub fn[T] stable_sort(Array[T], (T, T) -> Int32) -> Unit
+
+pub fn state4(Crypto, String, String, Array[Array[@json.Json]], Array[@json.Json], Double) -> @lock.State4
+
+pub fn state4_moved(Crypto, String, Array[@json.Json], Array[Array[@json.Json]], Array[@json.Json], Double) -> @lock.State4
+
+pub fn state_json(@lock.LockState) -> @json.Json
+
+pub fn state_text(CloudState) -> String
+
+pub fn stringify(@json.Json) -> String
+
+pub fn stringify_pretty(@json.Json) -> String
+
+pub fn sub_of(Array[@json.Json]) -> String?
+
+pub fn take_chain(Cloud, @json.Json?, String?, String?, Bool) -> (String, PersonTook) raise Failure
+
+pub fn told_out(Cloud, String?, String, @json.Json?) -> @json.Json?
+
+pub let unprotected_words : String
+
+pub fn utf8_of(String) -> Bytes
+
+pub fn ways_said_of(@json.Json?) -> @json.Json?
+
+pub let web_device_secs : Double
+
+pub fn write_state(Disk, String, CloudState) -> Unit raise Failure
+
+pub fn ws_tag(String, String) -> String
+
+// Errors
+pub(all) suberror Failure {
+  Failed(String)
+  Refused(String)
+}
+pub fn Failure::message(Self) -> String
+pub impl Show for Failure
+
+// Types and methods
+pub(all) struct BodyRefused {
+  hash : String?
+  why : String
+}
+pub fn BodyRefused::to_json(Self) -> @json.Json
+
+pub(all) struct BuildsKept {
+  device_builds : () -> Array[(String, Int32, Double)]
+  put_device_build : (String, Int32, Double) -> Unit
+  device_builds_since : (Double) -> Double
+}
+
+pub(all) struct Chain {
+  at : Array[Int32]
+  hashes : Array[String]
+  off : Array[Off]
+}
+
+pub struct Cloud {
+  data : String
+  crypto : Crypto
+  now : () -> Double
+  mut state : CloudState?
+  mut peers_current : Bool
+  mut reached : Bool
+  rosters_said : Int32
+  mut lock : KeptLock?
+  plane_lock_seq : Double?
+  plane_lock_seqs : Map[String, Double?]
+  plane_lock_hashes : Map[String, String]
+  plane_parted : Map[String, String]
+  mut rig_vouched : (String, @json.Json) -> Bool
+  moved_offered : Map[String, Array[@json.Json]]
+  // private fields
+}
+pub fn Cloud::bodies(Self, String?) -> LockBodies
+pub fn Cloud::chain(Self, ws? : String?) -> Locked?
+pub fn Cloud::disk(Self) -> Disk
+pub fn Cloud::filtered(Self, CloudState) -> (Array[@json.Json], @json.Json?)
+pub fn Cloud::force_word(Self, String?) -> String
+pub fn Cloud::given_to(Self, String?, String) -> Given
+pub fn Cloud::grant_keys(Self, ws? : String?) -> @json.Json?
+pub fn Cloud::home(Self) -> String?
+pub fn Cloud::keep_lock(Self, Array[@json.Json], ws? : String?, fork? : Bool) -> LockTook raise Failure
+pub fn Cloud::kept_lock(Self, ws? : String?) -> KeptLock?
+pub fn Cloud::lacking(Self, String?) -> Array[String]
+pub fn Cloud::lapsed(Self) -> Unit
+pub fn Cloud::left_joined(Self, String) -> Unit
+pub fn Cloud::left_out(Self, String) -> String?
+pub fn Cloud::list(Self, String?) -> Locked?
+pub fn Cloud::listen(Self, (CloudState?) -> Unit) -> () -> Unit
+pub fn Cloud::lock_after(Self, Double, ws? : String?) -> Array[@json.Json]
+pub fn Cloud::lock_kept(Self, ws? : String?) -> Array[@json.Json]
+pub fn Cloud::lock_off(Self, ws? : String?) -> Kept?
+pub fn Cloud::locked(Self, ws? : String?) -> Locked?
+pub fn Cloud::logs_of(Self, String?) -> Array[String]
+pub fn Cloud::membership(Self, String) -> @json.Json?
+pub fn Cloud::memberships(Self) -> Array[@json.Json]
+pub fn Cloud::needs(Self, String?) -> Array[String]
+pub fn Cloud::new(@host.Host, String, Crypto, () -> Double) -> Self raise Failure
+pub fn Cloud::offer_moved(Self, String, Array[@json.Json]) -> Unit
+pub fn Cloud::pending_lock(Self, String) -> String?
+pub fn Cloud::person_chains(Self) -> PersonChains
+pub fn Cloud::provider(Self) -> String
+pub fn Cloud::relays(Self) -> Array[String]
+pub fn Cloud::reload(Self, tell? : Bool) -> Unit
+pub fn Cloud::reload_joined(Self) -> Unit
+pub fn Cloud::reload_lock(Self) -> Unit
+pub fn Cloud::removed(Self) -> Bool
+pub fn Cloud::rig_of(Self, String, workspace? : String?) -> (String, @json.Json)?
+pub fn Cloud::rigs(Self, String) -> Array[@json.Json]
+pub fn Cloud::rigs_changed(Self) -> Unit
+pub fn Cloud::rigs_named(Self, String) -> Array[@json.Json]
+pub fn Cloud::root_out(Self, String?) -> Bool
+pub fn Cloud::roster_of(Self, ws? : String?) -> Locked?
+pub fn Cloud::set_plane_lists(Self, Array[@json.Json], @json.Json?) -> Unit
+pub fn Cloud::set_rig_vouched(Self, (String, @json.Json) -> Bool) -> Unit
+pub fn Cloud::state_word(Self, String?) -> String
+pub fn Cloud::succeed(Self, String) -> Bool
+pub fn Cloud::take_bodies(Self, String?, Array[@json.Json]) -> (Int32, Array[BodyRefused])
+pub fn Cloud::take_lock(Self, Array[@json.Json], ws? : String?, fork? : Bool) -> Int32 raise Failure
+pub fn Cloud::unprotected(Self, ws? : String?) -> Array[@json.Json]
+pub fn Cloud::update(Self, (CloudState) -> Unit) -> Unit
+pub fn Cloud::waiting(Self, ws? : String?) -> Bool
+pub fn Cloud::ways_said(Self, String) -> @json.Json?
+
+pub(all) struct CloudState {
+  fields : Map[String, @json.Json]
+}
+pub fn CloudState::get(Self, String) -> @json.Json?
+pub fn CloudState::joined(Self) -> Array[@json.Json]
+pub fn CloudState::text(Self, String) -> String
+pub fn CloudState::to_json(Self) -> @json.Json
+
+pub(all) struct Commit {
+  genesis : String
+  chain : Array[@json.Json]
+}
+
+pub(all) struct Crypto {
+  verify : (String, Bytes, Bytes, Bytes) -> Bool
+}
+pub fn Crypto::endpoint_ok(Self, String, String, String, String) -> Bool
+pub fn Crypto::of_host(@host.Host) -> Self
+pub fn Crypto::sig_ok(Self, @json.Json, String, Array[String], String, Bool) -> Bool
+pub fn Crypto::signature_ok(Self, String, Bytes, Bytes, der? : Bool) -> Bool raise Failure
+pub fn Crypto::tagged_ok(Self, String, String, String, String) -> Bool
+pub fn Crypto::valid_key(Self, String) -> Bool
+pub impl @lock.Crypto for Crypto
+
+pub struct DeviceBuilds {
+  since : Double
+  // private fields
+}
+pub fn DeviceBuilds::new(BuildsKept?, Double) -> Self
+pub fn DeviceBuilds::of(Self, Array[String]) -> @json.Json
+pub fn DeviceBuilds::saw(Self, String, Int32?, Double) -> Unit
+
+pub(all) struct Disk {
+  host : @host.Host
+}
+pub fn Disk::bytes(Self, String) -> Bytes?
+pub fn Disk::exists(Self, String) -> Bool
+pub fn Disk::mkdir(Self, String) -> Unit
+pub async fn Disk::put(Self, String, Bytes) -> Unit raise Failure
+pub fn Disk::read(Self, String) -> String?
+pub fn Disk::remove(Self, String) -> Unit
+pub fn Disk::rename(Self, String, String) -> Unit raise Failure
+pub fn Disk::write(Self, String, String) -> Unit raise Failure
+
+pub(all) enum Given {
+  All
+  Only(Array[String])
+}
+
+pub(all) struct Kept {
+  entries : Array[@json.Json]
+  aside : Array[@json.Json]
+}
+
+pub(all) struct KeptLock {
+  entries : Array[@json.Json]
+  aside : Array[@json.Json]
+  state : @lock.LockState?
+}
+
+pub struct LockBodies {
+  mut version : Int32
+  // private fields
+}
+pub fn LockBodies::all(Self) -> Map[String, @json.Json]
+pub fn LockBodies::has(Self, String) -> Bool
+pub fn LockBodies::new(Disk?, String?) -> Self
+pub fn LockBodies::take(Self, Crypto, String, Array[@json.Json], (String) -> Array[Commit]) -> (Int32, Array[BodyRefused])
+
+pub(all) struct LockTook {
+  taken : Int32
+  off : Array[OffChain]
+  refusal : String?
+}
+
+pub(all) struct Locked {
+  state : @lock.LockState?
+  waiting : Bool
+}
+
+pub(all) struct LogRules {
+  chain : (Array[@json.Json]) -> Chain raise Failure
+  pre : ((@json.Json) -> String?)?
+  now : ((String, @json.Json, (String) -> @json.Json?) -> String?)?
+}
+
+pub(all) struct Off {
+  at : Int32
+  why : String
+  refusal : String?
+  winner : String?
+  step : String?
+  under : String?
+}
+
+pub(all) struct OffChain {
+  why : String
+  refusal : String?
+  winner : String?
+  step : String?
+  under : String?
+  hash : String
+  seq : Double
+  kept : Bool
+}
+pub fn OffChain::to_json(Self) -> @json.Json
+
+pub struct PersonChains {
+  mut needs : (String) -> Array[String]
+  // private fields
+}
+pub fn PersonChains::all(Self, String) -> Array[@json.Json]
+pub fn PersonChains::aside_of(Self, String) -> Int32
+pub fn PersonChains::chosen(Self, String, String, Array[@json.Json]) -> Array[@json.Json] raise Failure
+pub fn PersonChains::commits_to(Self, String) -> Array[Commit]
+pub fn PersonChains::every(Self) -> Array[(String, Array[@json.Json])]
+pub fn PersonChains::heard_in(Self, String) -> Array[(String, Array[@json.Json])]
+pub fn PersonChains::keep(Self, String, Array[@json.Json], ws? : String?, fork? : Bool) -> Unit
+pub fn PersonChains::kept(Self, String) -> Array[@json.Json]?
+pub fn PersonChains::listen(Self, (String) -> Unit) -> () -> Unit
+pub fn PersonChains::new(Crypto, Disk?, String?) -> Self
+pub fn PersonChains::newest(Self, String, String, Array[@json.Json]) -> Array[@json.Json] raise Failure
+pub fn PersonChains::of(Self, String) -> Array[(String, Array[@json.Json])]
+pub fn PersonChains::take(Self, String, String, Array[@json.Json], ws? : String?, fork? : Bool) -> PersonTook raise Failure
+pub fn PersonChains::watch(Self, (String) -> Unit) -> () -> Unit
+
+pub(all) struct PersonTook {
+  chain : Array[@json.Json]
+  taken : Int32
+  off : Array[OffChain]
+  on : Bool
+}
+
+pub(all) struct Seen {
+  build : Int32
+  at : Double
+}
+
+pub(all) struct SignedRequest {
+  url : String
+  headers : Array[(String, String)]
+  body : String
+}
+
+pub struct StationKey {
+  seed : Bytes
+  id : String
+  // private fields
+}
+pub fn StationKey::new(@host.Host, Bytes) -> Self raise Failure
+pub fn StationKey::sign(Self, String) -> String raise Failure
+
+pub(all) struct Took {
+  kept : Kept
+  taken : Int32
+  off : Array[OffChain]
+  moved : Bool
+  changed : Bool
+}
+
+pub(all) struct Viewer {
+  sub : String
+  role : String
+  workspace : String
+  device : String
+  lock_device : (String, String)?
+  lock_id : String?
+}
+pub fn Viewer::of_json(@json.Json) -> Self
+
+pub(all) struct Who {
+  sub : String
+  endpoint : String
+  base : String?
+  proof : String?
+}
+
+// Type aliases
+
+// Traits

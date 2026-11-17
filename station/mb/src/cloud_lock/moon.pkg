@@ -1,0 +1,12 @@
+import {
+  "station/host",
+  "station/jsjson",
+  "stillfail/rules/form",
+  "stillfail/rules/lock",
+  "stillfail/rules/fork",
+  "moonbitlang/core/encoding/utf8",
+  "moonbitlang/core/buffer",
+  "moonbitlang/core/bigint",
+  "moonbitlang/core/string",
+  "moonbitlang/core/double",
+}
