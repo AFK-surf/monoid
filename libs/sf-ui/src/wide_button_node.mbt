@@ -7,7 +7,8 @@
 /// in the ink (red when `danger`, faded so while not `enabled`; the line's colour, a primary not enabled), else the ink
 /// at 8%; its words `label` in the page's ground on a primary, else in the ink, 15 semibold on one line; a spinner
 /// before them, in their ink, while `busy`. Pressed (`press`) only while `enabled` and not `busy`, rippled then, its
-/// ground sinking under the finger. Read out a button named `label`. Each as it changes.
+/// ground sinking under the finger (ripple_hold: handed by the headless button), the hover's ink over its ground under
+/// the pointer or the keyboard's focus. Read out a button named `label`. Each as it changes.
 #callsite(autofill(loc))
 pub fn wide_button_node(
   parent : @view.View,
@@ -19,13 +20,16 @@ pub fn wide_button_node(
   danger? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
+  let live = fn() { enabled() && !busy() }
+  let rippled : Ref[PressLook?] = Ref(None)
   @headless.button(
     made_for=loc,
     parent,
     label,
     fn(_) { press() },
-    disabled=fn() { !enabled() || busy() },
-    fn(v, b) {
+    disabled=fn() { !live() },
+    hold=ripple_hold(rippled, live),
+    fn(v, _) {
       v.focus_ring_theme() |> ignore
       let ground = fn() {
         let t = theme()
@@ -72,31 +76,17 @@ pub fn wide_button_node(
         }
       })
       |> ignore
+      // (lit while it may be pressed and the hand or the keyboard's focus is on it: a primary's ink a step towards the
+      // page (way_in_button_node's solid one, Over(Fg, A(Bg, O15))), else the hover's ink over its quiet ground)
+      hover_ground_node(v, on=live, color=fn() {
+        if primary {
+          alpha(theme().p.bg, 0.15)
+        } else {
+          @ui.tree_theme().color(Hover)
+        }
+      })
       // (its ripple and sink while it may be pressed: Security.kt WideButton's clickable over its capsule)
-      let rippled = press_look(loc~, v, Is(wide_button_node_h / 2.0), fn() { true })
-      v.gesture(
-        @ui.touch_slop(),
-        press=fn(d) {
-          if !b.disabled() {
-            (rippled.down)(d)
-          }
-        },
-        tap=fn(d) {
-          if !b.disabled() {
-            (rippled.tapped)(d)
-            if v.finger_target(d.wx, d.wy) {
-              b.press()
-            }
-          }
-        },
-        drag=fn(d) {
-          // (a mouse's moved on it past the slop: still a press as it is let go on it, as a click is)
-          if d.kind == Up && @ui.pointing() is Mouse && v.finger_target(d.wx, d.wy) {
-            b.press()
-          }
-        },
-      )
-      |> ignore
+      rippled.val = Some(press_look(loc~, v, Is(wide_button_node_h / 2.0), fn() { true }))
     },
   )
 }

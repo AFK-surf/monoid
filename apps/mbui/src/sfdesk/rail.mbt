@@ -539,15 +539,8 @@ fn rail_in_view(src : Source, w : Workspace) -> String {
 pub fn rail_overlays(c : @ui.Ctx, src : Source, w : Workspace) -> Unit {
   rail_menu(c, src, w)
   rail_adder(c, src, w)
-  // (what opens from its foot's keys, nodes of the window's tree: beside where each was as it was pressed, else where it
-  // is now)
+  // (the list of what comes and goes, nodes of the window's tree, beside where its key was as it was pressed)
   if !@sf.native_on() {
-    let at = match (workspace_add_from.val, rail_add.val) {
-      (Some(r), _) => r
-      (None, Some(v)) if v.alive() => v.placed_window_now()
-      _ => (0.0, 0.0, 0.0, 0.0)
-    }
-    @sfpages.workspace_menu(c, src, at)
     rail_transfers_list(src, w)
   }
 }

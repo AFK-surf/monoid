@@ -716,7 +716,7 @@ fn tab_keys_node(
   })
   // 下载: what is here saved at once; one told of, read whole first; a ring while the core downloads it
   let dl = fn() { vw.download(src) }
-  r.show(fn() { !vw.coming() && !downloading(dl()) }, fn(x) {
+  r.show(fn() { !vw.coming() }, fn(x) {
     @sf.tool_node(
       x,
       fn() {
@@ -728,11 +728,8 @@ fn tab_keys_node(
       corner,
       fn() { vw.save_now() },
       tip=tips,
+      progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
     )
-    |> ignore
-  })
-  r.show(fn() { !vw.coming() && downloading(dl()) }, fn(x) {
-    @sf.tool_ring_node(x, fn() { number(dl(), "progress") }, fn() { @sf.t("web-main.preview.download") }, ink, corner)
     |> ignore
   })
   // 全屏: the tab over the whole window (tab_full.mbt)

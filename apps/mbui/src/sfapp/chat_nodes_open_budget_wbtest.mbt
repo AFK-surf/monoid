@@ -84,7 +84,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "wide cold": (2476, 503, 1920, 220, 2475),
   "wide again": (905, 130, 871, 124, 1083),
   "phone up": (552, 359, 601, 87, 0),
-  "wide up": (724, 372, 914, 114, 0),
+  // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
+  // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
+  // where a bare box was pressed by hand; before it 724 and 914)
+  "wide up": (726, 372, 915, 114, 0),
   "phone up frame": (139, 100, 124, 28, 0),
   "wide up frame": (160, 103, 152, 28, 0),
 }

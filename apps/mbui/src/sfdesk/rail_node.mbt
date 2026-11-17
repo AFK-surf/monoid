@@ -779,7 +779,7 @@ let transfers_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 /// pointer); the one in view a short bar at its left; another with what waits in it (the core's marks' tone) its mark on
 /// its corner, said beside its name. The ＋ (making one, another account, invitations; the accent's dot on its corner
 /// while one waits) always seen (the web's only as the pointer comes over them), lit while its menu is open; pressed,
-/// its menu (sfpages' workspace_menu, beside where it was as it was pressed: rail_overlays). Pressed, that workspace.
+/// its menu (sfpages' workspace_add_pressed, beside it). Pressed, that workspace.
 /// Giving way and scrolling where the window is short.
 fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : () -> RailAt) -> Unit {
   let ws = fn() { @sfbase.workspace_in_view(src).0 }
@@ -804,10 +804,10 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
           @sfpages.workspace_menu_open,
           fn() { @sf.t("web-main.rail.addWorkspace") },
           fn() {
-            if !@sfpages.workspace_menu_open() {
-              workspace_add_from.val = rail_add.val.map(fn(v) { v.placed_window_now() })
+            match rail_add.val {
+              Some(v) => @sfpages.workspace_add_pressed(src, from=Node(v))
+              None => ()
             }
-            @sfpages.workspace_add_pressed()
           },
           square=true,
           rest=@sfpages.workspace_menu_open,
@@ -913,14 +913,9 @@ fn rail_workspaces_node(r : @view.View, src : Source, tips : @sf.TipLayer, at : 
 }
 
 ///|
-/// The ＋ over the workspaces as it is made, and where it was as its menu was opened from it: where the menu opens beside
-/// (rail_overlays).
+/// The ＋ over the workspaces as it is made: what its menu opens beside (sfpages' workspace_add_pressed).
 // kept across runs: let go with its node
 let rail_add : Ref[@view.View?] = Ref(None)
-
-///|
-// kept across runs: said as the menu is opened from the ＋, put back by wide_reset
-let workspace_add_from : Ref[(Double, Double, Double, Double)?] = Ref(None)
 
 ///|
 /// An invitation waiting, hung on the ＋'s corner (sfpages' invite_dot): the chats' blue dot, 8 across.

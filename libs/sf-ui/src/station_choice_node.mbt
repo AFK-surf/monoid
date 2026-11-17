@@ -19,7 +19,7 @@ pub(all) struct StationChoice {
 /// pressed (as a crumb of a way is: lit under the hand, its corner the theme's Md), the presenters' menu of them titled
 /// `title` beside it, the one chosen checked: one chosen, `choose` given its address. Read out a button named `label` given the station's name; with one alone, words.
 /// `round`: round as its height, as a foot's buttons are beside it (in a panel's foot, its corner concentric with the
-/// panel's as theirs is). The node.
+/// panel's as theirs is).
 #callsite(autofill(loc))
 pub fn station_choice_node(
   parent : @view.View,
@@ -30,7 +30,7 @@ pub fn station_choice_node(
   label~ : (String) -> String,
   round? : Bool = false,
   loc~ : SourceLoc,
-) -> @view.View {
+) -> Unit {
   let now = fn() -> StationChoice {
     let all = stations()
     match all.iter().find_first(fn(s) { s.station == chosen() }) {
@@ -40,41 +40,43 @@ pub fn station_choice_node(
   }
   let several = fn() { stations().length() > 1 }
   let opener = Opener::new()
-  parent.box(made_for=loc, fn(b) {
-    style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
-    // (shrinking to its words' least where the line is short: its name cut short, its mark and chevron whole)
-    b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(theme().items.least) })) |> ignore
-    let lit = fn() { several() && lit_node(b) }
-    b.ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } })) |> ignore
-    presses_node(b, on=several, fn() {
+  // (a disclosure where there are others to choose, its menu what it opens; else what it is, nothing to press:
+  // button_while_node)
+  button_while_node(
+    parent,
+    several,
+    fn() { label(now().name) },
+    fn(b) {
       let at = @signals.untracked(chosen)
       let items : Array[MenuItem?] = @signals.untracked(stations).map(fn(s) {
         Some(menu_item_of(s.name, fn() { if s.station != at { choose(s.station) } }, chosen=s.station == at))
       })
       present(Menu(items, title, Start), Node(b))
       opener.mark()
-    })
-    b
-    .says(By(fn() {
-      if several() {
-        Some(@view.said(Button, label=label(now().name), expanded=opener.open()))
-      } else {
-        None
+    },
+    open=fn() { opener.open() },
+    in_row=true,
+    fn(b, pressed) {
+      style_node(b, fn() { if round { station_choice_round } else { station_choice_box } }, in_row=true)
+      // (shrinking to its words' least where the line is short: its name cut short, its mark and chevron whole)
+      b.shrink(Is(1.0)).min_width(Is(Some(0.0))).min_height(By(fn() { Some(theme().items.least) })) |> ignore
+      if pressed {
+        hover_ground_node(b)
       }
-    }))
-    |> ignore
-    b.pick(fn() { (now().emoji, now().icon) }, at_once=true, fn(m, mark) {
-      if has_station_mark(mark.0, mark.1) {
-        station_mark_node(m, fn() { mark.0 }, fn() { mark.1 }, station_choice_mark, fn() { theme().p.muted }, fn() { 0 })
-      } else {
-        icon_node(m, "server", station_choice_mark, By(fn() { theme().p.muted })) |> ignore
+      b.pick(fn() { (now().emoji, now().icon) }, at_once=true, fn(m, mark) {
+        if has_station_mark(mark.0, mark.1) {
+          station_mark_node(m, fn() { mark.0 }, fn() { mark.1 }, station_choice_mark, fn() { theme().p.muted }, fn() { 0 })
+        } else {
+          icon_node(m, "server", station_choice_mark, By(fn() { theme().p.muted })) |> ignore
+        }
+      })
+      words_node(b, fn() { now().name }, fn() { station_choice_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+      if pressed {
+        icon_node(b, "chevron-down", station_choice_chevron, By(fn() { theme().p.muted })) |> ignore
       }
-    })
-    words_node(b, fn() { now().name }, fn() { station_choice_words }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
-    b.show(several, at_once=true, fn(c) {
-      icon_node(c, "chevron-down", station_choice_chevron, By(fn() { theme().p.muted })) |> ignore
-    })
-  })
+    },
+    loc~,
+  )
 }
 
 ///|

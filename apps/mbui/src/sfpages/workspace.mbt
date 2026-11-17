@@ -684,7 +684,7 @@ fn new_workspace_body(v : @view.View, src : Source, close : () -> Unit) -> Unit 
     })
   })
   v.show(fn() { new_ws.asked.get() || wants_code() }, fn(s) {
-    @sf.labelled_field_node(
+    @sf.field_node(
       s,
       fn() { @sf.t("web-pages.cloud.inviteCode") },
       fn(b) {
@@ -776,85 +776,52 @@ pub fn workspace_menu_open() -> Bool {
 }
 
 ///|
-/// The ＋ over the workspaces at the rail's foot pressed and let go (sfdesk's rail_node): its menu opened, or closed
-/// where it is open.
-pub fn workspace_add_pressed() -> Unit {
-  ws_menu.set(!ws_menu.get())
-}
-
-///|
-/// The ＋'s menu, beside the ＋ (a node of the window's tree, where it was placed as it was pressed: `at`), its foot
-/// level with the ＋'s (WorkspaceSwitcher `adder`): 新建 workspace, 添加另一个账号, then the invitations waiting, each
-/// joined or ignored. Drawn over the frame (sfdesk's rail_overlays). A press on the ＋ while it is open is one outside
-/// it, as the menu is modal: it closes it, and the ＋ under it is not pressed.
-pub fn workspace_menu(c : @ui.Ctx, src : Source, at : (Double, Double, Double, Double)) -> Unit {
-  let entries : Array[@kit.Entry] = [
-    @kit.menu_item("create", label=@sf.t("web-pages.workspace.create")),
-    @kit.menu_item("account", label=@sf.t("web-pages.workspace.addAccount")),
+/// The ＋ over the workspaces at the rail's foot pressed (sfdesk's rail_node), `from` it: its menu (a menu of the
+/// presenters', beside it on every screen: @sf.menu): 新建 workspace, 添加另一个账号, then the invitations waiting, each
+/// joined or ignored. Modal as every menu is: a press on the ＋ while it is open is one outside it, which closes it.
+pub fn workspace_add_pressed(src : Source, from~ : @sf.Beside) -> Unit {
+  let chose = fn(go : () -> Unit) {
+    fn() {
+      ws_menu.set(false)
+      go()
+    }
+  }
+  let items : Array[@sf.MenuItem?] = [
+    Some(@sf.menu_item_of(@sf.t("web-pages.workspace.create"), chose(fn() { open_new_workspace(src) }), icon="plus")),
+    Some(@sf.menu_item_of(@sf.t("web-pages.workspace.addAccount"), chose(fn() { (src.sign_in)() }), icon="user-plus")),
   ]
-  let icons : Map[String, String] = { "create": "plus", "account": "user-plus" }
   let pending = invitations_waiting(src)
   if pending.length() > 0 {
-    entries.push(@kit.menu_separator())
-    entries.push(@kit.menu_label(@sf.t("web-pages.workspace.invitations")))
+    items.push(None)
+    items.push(Some(@sf.menu_item_of(@sf.t("web-pages.workspace.invitations"), fn() {  }, heading=true)))
     for p in pending {
       let iv = Some(p.1)
       let id = text(iv, "id")
+      let name = text(iv, "name")
       let inviter = match text(iv, "inviter") {
         "" => @sf.t("web-pages.cloud.someone")
         x => x
       }
-      entries.push(
-        @kit.menu_label(@sf.t("web-pages.workspace.invitedYou", args=[("inviter", inviter), ("name", text(iv, "name"))])),
+      items.push(
+        Some(
+          @sf.menu_item_of(
+            @sf.t("web-pages.workspace.invitedYou", args=[("inviter", inviter), ("name", name)]),
+            fn() {  },
+            heading=true,
+          ),
+        ),
       )
-      entries.push(@kit.menu_item("join:" + id, label=@sf.t("web-pages.cloud.join")))
-      entries.push(@kit.menu_item("ignore:" + id, label=@sf.t("web-pages.workspace.ignore")))
+      items.push(
+        Some(@sf.menu_item_of(@sf.t("web-pages.cloud.join"), chose(fn() { answer_invitation(src, p.0, id, true, name, fn() {  }) }))),
+      )
+      items.push(
+        Some(
+          @sf.menu_item_of(@sf.t("web-pages.workspace.ignore"), chose(fn() { answer_invitation(src, p.0, id, false, name, fn() {  }) })),
+        ),
+      )
     }
   }
-  // beside it, its foot level with the ＋'s (side right, align end, sideOffset 10)
-  // (dismissed by the hand, Escape or a press outside it and the ＋: closed at that moment; closed as an item is chosen)
-  let menu : Ref[@kit.Menu?] = Ref(None)
-  c.with_dismissed(fn(_) { ws_menu.set(false) }, fn() {
-    menu.val = Some(
-      @sf.dropdown(
-        c,
-        "rail/ws-menu",
-        ws_menu.get(),
-        0,
-        entries,
-        icons,
-        rail_ws_menu_w,
-        side=Right,
-        along=End,
-        offset=rail_ws_menu_off,
-        at~,
-      ),
-    )
-  })
-  let m = menu.val.unwrap()
-  if m.chosen is Some(_) {
-    ws_menu.set(false)
-  }
-  match m.chosen {
-    Some("create") => open_new_workspace(src)
-    Some("account") => (src.sign_in)()
-    Some(v) if v.has_prefix("join:") || v.has_prefix("ignore:") => {
-      let join = v.has_prefix("join:")
-      let id = v.exact_view(start=if join { 5 } else { 7 }).to_owned()
-      for p in pending {
-        if text(Some(p.1), "id") == id {
-          answer_invitation(src, p.0, id, join, text(Some(p.1), "name"), fn() {  })
-        }
-      }
-    }
-    _ => ()
-  }
+  ws_menu.set(true)
+  // (closed with nothing chosen: back, Escape, a press outside it, the ＋ too)
+  @sf.menu(items, from~, gone=fn() { ws_menu.set(false) })
 }
-
-
-///|
-let rail_ws_menu_off : Double = 10.0
-
-///|
-/// The ＋'s menu: 260 at least.
-let rail_ws_menu_w : Double = 260.0

@@ -691,13 +691,12 @@ pub fn web_peek_node(@view.View, @sfbase.Source, String, () -> String, () -> Str
 
 pub fn work_mark(@ui.Ctx, @sfbase.Source, String, String, @ui.TextStyle, @ui.TextStyle, lead? : String, smallest? : Bool) -> Unit
 
-pub fn workspace_add_pressed() -> Unit
+pub fn workspace_add_pressed(@sfbase.Source, from~ : @sf.Beside) -> Unit
 
 pub fn workspace_mark(@ui.Ctx, @sfbase.Workspace, Double, Int64, @ui.TextStyle, still? : Bool) -> Unit
 
 pub fn workspace_marked(@sfbase.Workspace) -> Bool
 
-pub fn workspace_menu(@ui.Ctx, @sfbase.Source, (Double, Double, Double, Double)) -> Unit
 
 pub fn workspace_menu_open() -> Bool
 

@@ -803,12 +803,22 @@ let heading_lead_gap : Double = 6.0
 /// its middle, so a control there makes the line no taller than its words do.
 #callsite(autofill(loc))
 pub fn line_end_node(parent : @view.View, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
+  line_end_while_node(loc~, parent, fn() { true }, make)
+}
+
+///|
+/// line_end_node's, as high as its line only while `on` says so (a switch row's note under its title: the switch on
+/// the title's first line); else as high as what it holds, so a row of one line is as tall as its control, lined up
+/// in its middle as it was.
+#callsite(autofill(loc))
+fn line_end_while_node(parent : @view.View, on : () -> Bool, make : (@view.View) -> Unit, loc~ : SourceLoc) -> Unit {
   parent.box(made_for=loc, fn(l) {
     l
     .row(Is(true))
     .gap(Is(12.0))
     .lines_up(Is(Some(Middle)))
     .height(By(fn() {
+      guard on() else { return None }
       let th = @ui.tree_theme()
       let line = match look_node(l) {
         Narrow => th.text_size(Body).1
@@ -891,7 +901,7 @@ pub(all) enum RowLead {
 
 ///|
 /// What a row says after its title of whose or what it is (a tag: link_row_node's `title_after`), `words` as it says
-/// it now: the meta's size, subtle, on one line (memoryTag).
+/// it now: the meta's size, subtle, on one line, on no ground (memoryTag): its words alone, nothing round them.
 #callsite(autofill(loc))
 pub fn row_tag_node(parent : @view.View, words : () -> String, loc~ : SourceLoc) -> Unit {
   words_node(loc~, parent, words, fn() { row_tag }) |> ignore
@@ -970,6 +980,7 @@ pub fn link_row_node(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
   link_row_made(
@@ -1011,6 +1022,7 @@ pub fn link_row_node(
     chevron_room~,
     lines_from_lead~,
     title_masked?,
+    busy?,
   )
 }
 
@@ -1139,8 +1151,15 @@ fn link_row_made(
   chevron_room? : Bool = false,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool,
   loc~ : SourceLoc,
 ) -> Unit {
+  // (`busy`: a spinner after what it says where nothing else is there, pressed none, lit none)
+  let off = busy.unwrap_or(fn() { false })
+  let (tail, tail_shown) = match (busy, tail) {
+    (Some(b), None) => (Some(fn(s : @view.View) { spinner_node(s, size=link_row_spin) |> ignore }), b)
+    _ => (tail, tail_shown)
+  }
   // (one that adds: one that acts, after a ＋ in the link's ink, link_row's `adds`)
   let acts = acts || adds
   let lead = if adds { LeadIcon("plus") } else { lead }
@@ -1180,7 +1199,7 @@ fn link_row_made(
       parent, title, pressed_by, value, value_bad, value_dot, note, trouble, strong, danger, value_look, note_look, lead,
       face || by_side, by_side,
       lead_ink, goes, ends, mark, acts, below, below_open, note_cut, title_after, title_after_shown, folds, tail, tail_shown,
-      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?,
+      control, wide_title, title_cut, value_cut, chevron_room, lines_from_lead~, title_masked?, busy=off,
     )
     return
   }
@@ -1215,8 +1234,14 @@ fn link_row_made(
     .lines_up(By(fn() { Some(if under() && !(lead is LeadTile(_)) && !face { Start } else { Middle }) }))
     |> ignore
     if goes {
-      hover_ground_node(r)
-      pressed_node(r, pressed_by(r), Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      hover_ground_node(r, on=fn() { !off() })
+      // (busy: pressed none)
+      let pressed = pressed_by(r)
+      pressed_node(r, fn() { if !off() { pressed() } }, Is(if in_panel is Some(_) { corner } else { row_corner }), Link, title)
+      // (bound only where it can be busy: every other row's press as pressed_node's, nothing more bound)
+      if busy is Some(_) {
+        r.presses(By(fn() { !off() })).focusable(By(fn() { !off() })) |> ignore
+      }
       row_folds_said(r, title, folds)
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as that line at least, across its
@@ -1321,7 +1346,7 @@ fn link_row_made(
             |> ignore
             tv.show(fn() { value() != "" }, fn(said) {
               said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-              said.show(value_dot, fn(d) { status_dot_node(d) })
+              said.show(value_dot, fn(d) { state_dot_node(d, fn() { "error" }, in_node=true) })
               if value_cut || value_wraps {
                 said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
               }
@@ -1661,20 +1686,15 @@ pub fn row_lead_mark_node(parent : @view.View, name : String, color? : () -> Int
 }
 
 ///|
-/// A red dot (status_dot's "error", as a node): something there is not right though nothing is wrong to say.
-pub fn status_dot_node(d : @view.View) -> Unit {
-  d
-  .width(Is(Some(status_dot_side)))
-  .height(Is(Some(status_dot_side)))
-  // (round as a pill is said to be, Full: as round as it can be)
-  .radius(Is(1.0e6))
-  .ground(By(fn() { theme().p.red }))
-  |> ignore
-}
+/// A busy link row's spinner (link_row_node's `busy`): 14.
+let link_row_spin : Double = 14.0
 
 ///|
-/// status_dot_box's side (dot_size).
-let status_dot_side : Double = 7.0
+/// A red dot (status_dot's "error", as a node: state_dot_node's, in `d` itself): something there is not right though
+/// nothing is wrong to say.
+pub fn status_dot_node(d : @view.View) -> Unit {
+  state_dot_node(d, fn() { "error" }, in_node=true)
+}
 
 ///|
 /// A switch (switch's, as a node: @kit.switch's look in the web's, switch_look_for), `on()` as it is, named `label`

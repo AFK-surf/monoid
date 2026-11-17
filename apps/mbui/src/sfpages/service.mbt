@@ -273,7 +273,7 @@ fn page_sizes(v : @view.View, key : String, close : () -> Unit) -> Unit {
         }
         room.show(tools_shown, fn(tools) {
           @sf.style_node(tools, fn() { sizes_tools })
-          @sf.panel_switch_noted_node(
+          @sf.panel_switch_row_node(
             tools,
             fn() { svc("android-chat.preview.move") },
             fn() { x.moving.get() },
@@ -296,6 +296,8 @@ fn page_sizes(v : @view.View, key : String, close : () -> Unit) -> Unit {
           tools.show(
             fit_shown,
             fn(b) {
+              // (in by a row's padding: the switch over it lays out its own, panel_switch_row_node)
+              @sf.style_node(b, fn() { sizes_fit })
               @sf.button_node(
                 b,
                 fn() { svc("android-chat.preview.fitView") },
@@ -379,7 +381,12 @@ let size_name_on : @ui.TextStyle = @ui.text_style(weight=Medium, wrap=false)
 ///|
 /// Moving and fitting under 自定义, 12 under it, 8 apart.
 // kept across runs: a value (no field of it changes)
-let sizes_tools : @ui.Style = @ui.css("w=Full pt=S3 px=S2_5 gap=S2")
+let sizes_tools : @ui.Style = @ui.css("w=Full pt=S3 gap=S2")
+
+///|
+/// Fitting under moving: a row's padding in.
+// kept across runs: a value (no field of it changes)
+let sizes_fit : @ui.Style = @ui.css("w=Full px=S2_5")
 
 ///|
 /// The turn key's icon.

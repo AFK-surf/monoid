@@ -1507,7 +1507,7 @@ fn image_tools(
     |> ignore
   })
   // download: what is here saved at once; one told of, read whole first; a ring while the core downloads it (none for a `.mbui` mini-program)
-  row.show(fn() { !is_mini_app() && !vw.coming() && !downloading(dl()) }, fn(r) {
+  row.show(fn() { !is_mini_app() && !vw.coming() }, fn(r) {
     @sf.tool_node(
       r,
       fn() {
@@ -1518,11 +1518,8 @@ fn image_tools(
       corner,
       fn() { vw.save_tree() },
       tip=tips,
+      progress=fn() { if downloading(dl()) { Some(number(dl(), "progress")) } else { None } },
     )
-    |> ignore
-  })
-  row.show(fn() { !is_mini_app() && !vw.coming() && downloading(dl()) }, fn(r) {
-    @sf.tool_ring_node(r, fn() { number(dl(), "progress") }, fn() { @sf.t("web-main.preview.download") }, ink, corner)
     |> ignore
   })
 }

@@ -49,10 +49,10 @@ pub fn viewer_steps_node(
 }
 
 ///|
-/// One way, in `b` (its slot, all of it): see viewer_steps_node.
+/// One way, in `slot` (all of it): see viewer_steps_node.
 #callsite(autofill(loc))
 fn step_disc(
-  b : @view.View,
+  slot : @view.View,
   dir : Int,
   icon : String,
   label : String,
@@ -63,55 +63,58 @@ fn step_disc(
   tips : TipLayer,
   loc~ : SourceLoc,
 ) -> Unit {
-  // (where the hand is on it, as a box's hovered look has it: its ground)
-  let hot = fn() {
-    match @ui.pointing() {
-      Mouse => b.pointed()
-      Finger => b.pressed()
+  // (mbui's headless button, its look this disc: pressed only while any of it shows)
+  let takes : Ref[() -> Bool] = Ref(fn() { false })
+  @headless.button(made_for=loc, slot, fn() { t(label) }, fn(_) { go(dir) }, disabled=fn() { !(takes.val)() }, fn(b, _) {
+    // (where the hand is on it, as a box's hovered look has it: its ground)
+    let hot = fn() {
+      match @ui.pointing() {
+        Mouse => b.pointed()
+        Finger => b.pressed()
+      }
     }
-  }
-  // (there while the bars are, or the hand is on it or holds it: a mouse's button held down on it and moved off it, it
-  // stays, as one lit or pressed does)
-  let woke = fn() { awake() || hot() || b.pressed() }
-  let seen = @motion.NodeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
-  b.reacts(woke, fn(on) { seen.go_ms(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
-  b
-  .width(By(fn() { Some(disc()) }))
-  .height(By(fn() { Some(disc()) }))
-  .radius(By(fn() { disc() / 2.0 }))
-  .lines_up(Is(Some(Middle)))
-  .glass(By(fn() {
-    let p = theme().p
-    Some(@ui.Glass::frosted(blur=viewer_step_blur, tint=alpha(p.canvas, viewer_step_share), solid=p.canvas))
-  }))
-  .shadow(By(fn() {
-    let (blur, dy) = @ui.Shadow::blur_y(Base)
-    (blur, dy, @ui.tree_theme().shadow)
-  }))
-  .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
-  .alpha(By(fn() { seen.shown(b) * shown(b) }))
-  // (taking a press while any of it shows: on its way in, there, or on its way out)
-  .presses(By(fn() { seen.target() > 0.0 || seen.goes(b) }))
-  .says(By(fn() { Some(@view.said(Button, label=t(label))) }))
-  .on_press(fn() { go(dir) })
-  |> ignore
-  // (its chevron in its middle)
-  b.box(made_for=loc, fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-  b.box(fn(i) {
-    i
-    .width(Is(Some(viewer_step_icon)))
-    .height(Is(Some(viewer_step_icon)))
-    .shapes(Is(
-      match icon_numbers(icon) {
-        Some(d) => icon_shapes(d, viewer_step_icon / 24.0, 0x000000FFL)
-        None => []
-      },
-    ))
-    .drawn_as(Is("/icon/" + icon + "/"))
-    .tint(By(fn() { theme().p.text }))
+    // (there while the bars are, or the hand is on it or holds it: a mouse's button held down on it and moved off it, it
+    // stays, as one lit or pressed does)
+    let woke = fn() { awake() || hot() || b.pressed() }
+    let seen = @motion.NodeWay::new(if @signals.untracked(woke) { 1.0 } else { 0.0 })
+    b.reacts(woke, fn(on) { seen.go_ms(b, if on { 1.0 } else { 0.0 }, if on { wake_ms } else { sleep_ms }) })
+    b
+    .width(By(fn() { Some(disc()) }))
+    .height(By(fn() { Some(disc()) }))
+    .radius(By(fn() { disc() / 2.0 }))
+    .lines_up(Is(Some(Middle)))
+    .glass(By(fn() {
+      let p = theme().p
+      Some(@ui.Glass::frosted(blur=viewer_step_blur, tint=alpha(p.canvas, viewer_step_share), solid=p.canvas))
+    }))
+    .shadow(By(fn() {
+      let (blur, dy) = @ui.Shadow::blur_y(Base)
+      (blur, dy, @ui.tree_theme().shadow)
+    }))
+    .ground(By(fn() { if hot() { @ui.tree_theme().color(Hover) } else { 0L } }))
+    .alpha(By(fn() { seen.shown(b) * shown(b) }))
     |> ignore
+    // (taking a press while any of it shows: on its way in, there, or on its way out)
+    takes.val = fn() { seen.target() > 0.0 || seen.goes(b) }
+    // (its chevron in its middle)
+    b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    b.box(fn(i) {
+      i
+      .width(Is(Some(viewer_step_icon)))
+      .height(Is(Some(viewer_step_icon)))
+      .shapes(Is(
+        match icon_numbers(icon) {
+          Some(d) => icon_shapes(d, viewer_step_icon / 24.0, 0x000000FFL)
+          None => []
+        },
+      ))
+      .drawn_as(Is("/icon/" + icon + "/"))
+      .tint(By(fn() { theme().p.text }))
+      |> ignore
+    })
+    |> ignore
+    b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
+    tip_node(tips, b, fn() { t(label) }) |> ignore
   })
   |> ignore
-  b.box(fn(g) { g.grow(Is(1.0)) |> ignore }) |> ignore
-  tip_node(tips, b, fn() { t(label) }) |> ignore
 }

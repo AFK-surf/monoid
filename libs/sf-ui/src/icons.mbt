@@ -674,7 +674,7 @@ pub fn progress_ring(c : @ui.Ctx, size : Double, part : Double, color : Int64) -
 
 ///|
 /// What progress_ring draws, `size` across: its track and as much of its ring as `part` says, in `color` (a node's
-/// shapes: tool_ring_node).
+/// shapes: tool_node's ring while what it does goes on).
 pub fn ring_shapes(size : Double, part : Double, color : Int64) -> Array[@ui.Shape] {
   let share = if part < 0.0 { 0.0 } else if part > 1.0 { 1.0 } else { part }
   let r = 8.5 * size / 24.0

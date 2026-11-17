@@ -14,16 +14,13 @@ pub fn progress_spinner_node(
   stroke? : Double = spin_stroke,
   loc~ : SourceLoc,
 ) -> @view.View {
-  let pi = 3.141592653589793
-  let mid = size / 2.0
-  let r = mid - stroke / 2.0
-  let part = fn(k : Double) { if k < 0.0 { 0.0 } else if k > 1.0 { 1.0 } else { k } }
-  // (its points worked out once: only the part come and the colours change as it lives)
-  let round = @ui.arc(mid, mid, r, from=0.0, sweep=2.0 * pi)
-  let quarter = @ui.arc(mid, mid, r, from=-0.75 * pi, sweep=0.25 * 2.0 * pi)
+  // (its points worked out once, SpinRing's: only the part come and the colours change as it lives)
+  let ring = SpinRing::new(size, stroke)
+  let round = ring.round()
+  let quarter = ring.turning(0.25)
   // (how far it has come, drawn: the first part told there at once, each after from where it is drawn)
   let first = @signals.untracked(coming)
-  let at = @motion.NodeWay::new(first.map(part).unwrap_or(0.0))
+  let at = @motion.NodeWay::new(first.map(spin_part).unwrap_or(0.0))
   let told = Ref(first is Some(_))
   parent.box(made_for=loc, fn(v) {
     v
@@ -33,27 +30,20 @@ pub fn progress_spinner_node(
       let p = theme().p
       match coming() {
         None => [@ui.line(round, width=stroke, color=p.line_strong), @ui.line(quarter, width=stroke, color=p.accent)]
-        Some(_) => {
-          let shown = at.shown(v)
-          let lines = [@ui.line(round, width=stroke, color=p.line_strong)]
-          if shown > 0.0 {
-            lines.push(@ui.line(@ui.arc(mid, mid, r, from=-0.5 * pi, sweep=shown * 2.0 * pi), width=stroke, color=p.accent))
-          }
-          lines
-        }
+        Some(_) => ring.come_lines(round, at.shown(v), p)
       }
     }))
     // (turning only while not known, about the middle of its ring, as spinner_node's)
-    .turn(By(fn() { if coming() is None { v.cycle(spinner_turn_ms) * 2.0 * pi } else { 0.0 } }), drawn=true)
+    .turn(By(fn() { if coming() is None { v.cycle(spinner_turn_ms) * 2.0 * spin_pi } else { 0.0 } }), drawn=true)
     |> ignore
     v.reacts(coming, fn(c) {
       match c {
         Some(k) =>
           if told.val {
-            at.go_ms(v, part(k), @kit.progress_ms, ease=Out)
+            at.go_ms(v, spin_part(k), @kit.progress_ms, ease=Out)
           } else {
             told.val = true
-            at.put(part(k))
+            at.put(spin_part(k))
           }
         None => ()
       }

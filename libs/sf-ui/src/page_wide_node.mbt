@@ -616,6 +616,7 @@ fn wide_link_row_node(
   chevron_room : Bool,
   lines_from_lead? : Bool = false,
   title_masked? : () -> Bool,
+  busy? : () -> Bool = fn() { false },
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -680,8 +681,10 @@ fn wide_link_row_node(
       r.clips(Is(true)) |> ignore
     }
     if goes {
-      hover_ground_node(if reach { o } else { r }, by=r)
-      presses_node(r, press(r))
+      hover_ground_node(if reach { o } else { r }, by=r, on=fn() { !busy() })
+      // (busy: pressed none)
+      let pressed = press(r)
+      presses_node(r, fn() { if !busy() { pressed() } }, on=fn() { !busy() })
       r.says(By(fn() { Some(@view.said(Link, label=title(), expanded?=folds.map(fn(f) { f() }))) })) |> ignore
     }
     // what it is by: on its first line where lines are under it (row_lead: as tall as a list's title's line at least,
@@ -772,7 +775,7 @@ fn wide_link_row_node(
         }
         first.show(fn() { value() != "" }, fn(said) {
           said.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-          said.show(value_dot, fn(d) { status_dot_node(d) })
+          said.show(value_dot, fn(d) { state_dot_node(d, fn() { "error" }, in_node=true) })
           if value_cut {
             said.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
           }
@@ -817,8 +820,8 @@ fn wide_link_row_node(
 /// list's card (part_of) a row of it (wide_in_list: as far in as its rows' words, 10 over and under, as high as one at
 /// least, its corner concentric with the card's), its title as strong as the list's other rows' (setting_title); its
 /// words' looks `looks` where given; `first_line`: the control on its title's line (line_end_node's: a switch beside a
-/// title and the note under it on the first of their lines, never across their middle, the user, 2026-11-14). The
-/// control alone answers.
+/// title and the note under it on the first of their lines, never across their middle, the user, 2026-11-14), while
+/// `first_line_while` says so (else in the row's middle, as tall as it). The control alone answers.
 #callsite(autofill(loc))
 fn wide_control_row_node(
   parent : @view.View,
@@ -828,6 +831,7 @@ fn wide_control_row_node(
   control : (@view.View) -> Unit,
   looks? : (() -> @ui.TextStyle, () -> @ui.TextStyle),
   first_line? : Bool = false,
+  first_line_while? : () -> Bool = fn() { true },
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -836,7 +840,11 @@ fn wide_control_row_node(
     None => (fn() { if at.list { setting_title() } else { theme().rows.title } }, fn() { theme().rows.note })
   }
   let row = fn(r : @view.View) {
-    r.row(Is(true)).gap(Is(16.0)).lines_up(Is(Some(if first_line { Start } else { Middle }))) |> ignore
+    r
+    .row(Is(true))
+    .gap(Is(16.0))
+    .lines_up(By(fn() { Some(if first_line && first_line_while() { Start } else { Middle }) }))
+    |> ignore
     r.box(fn(words) {
       words.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))).gap(Is(desk_list_gap)) |> ignore
       led_title_node(words, title, title_look, lead)
@@ -844,7 +852,7 @@ fn wide_control_row_node(
     })
     |> ignore
     if first_line {
-      line_end_node(r, control)
+      line_end_while_node(r, first_line_while, control)
     } else {
       control(r)
     }
