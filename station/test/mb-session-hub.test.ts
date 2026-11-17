@@ -965,9 +965,14 @@ class HubPair {
     }
   }
   /// Once B's world has seen what `seen` waits for (each thing the program tells or asks is looked at as it comes).
-  untilB(seen: (log: Json[]) => boolean, why: string): Promise<void> {
-    if (seen(this.b.log)) return Promise.resolve();
-    return given(new Promise<void>((resolve) => this.#bWaits.push(() => (seen(this.b.log) ? (resolve(), true) : false))), why);
+  async untilB(seen: (log: Json[]) => boolean, why: string): Promise<void> {
+    if (seen(this.b.log)) return;
+    const waited = new Promise<void>((resolve) => this.#bWaits.push(() => (seen(this.b.log) ? (resolve(), true) : false)));
+    // (what was sent the program before is taken, and what it told of it heard here, once a call of its own sent after it
+    // is answered: it runs the calls' fibers in turn and says all on one stdout. `given` counts this process's work
+    // alone, not the program's: on a busy runner what it told came after `given` gave up, 2026-11-17)
+    await this.askB("moveOn");
+    return given(waited, why);
   }
   #bWaits: (() => boolean)[] = [];
   #bHeard() {
