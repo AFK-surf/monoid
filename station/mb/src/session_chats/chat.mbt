@@ -155,7 +155,13 @@ pub fn parse_thread_address(value : String) -> (String, String)? {
   if starts(channel, "oc_") && all_in(slice(channel, 3), alnum) && feishu_ts {
     return Some((channel, ts))
   }
-  if channel.length() == 16 && all_in(channel, c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) && ts == channel {
+  // A group connect's: its space's id, twice for its lobby, or with a topic's (src/group: a space's stream is a thread).
+  let hex = (c : Int) => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
+  let space = channel.length() == 26 &&
+    (starts(channel, "d_") || starts(channel, "s_")) &&
+    all_in(slice(channel, 2), hex)
+  let topic = ts.length() == 18 && starts(ts, "t_") && all_in(slice(ts, 2), hex)
+  if space && (ts == channel || topic) {
     return Some((channel, ts))
   }
   let dot = index_of(ts, ".")

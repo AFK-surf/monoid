@@ -135,6 +135,11 @@ export class KeptLog<T> {
     }
   }
 
+  /// Once what was asked to be written (the file of before taken in and let go too) is on disk.
+  settled(): Promise<void> {
+    return this.#ready.catch(() => {});
+  }
+
   get(key: string): T | undefined {
     return this.#map.get(key);
   }

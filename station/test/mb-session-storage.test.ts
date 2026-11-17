@@ -613,7 +613,7 @@ async function main() {
     ];
     await both("formatSteps", a, b, () => others.formatSteps(7, entries, 100), "formatSteps", 7, entries, 100);
     for (const r of ["remote tasks are not enabled here", "no task key", "other"]) await both(`fromBefore ${r}`, a, b, () => others.fromBefore(r), "fromBefore", r);
-    const addresses = ["C123/1700000000.000100", "oc_abc/om_x1", "oc_abc/omt_x1", "0123456789abcdef/0123456789abcdef", " CHAT/1.2 ", "c1/1.2", "C1/12", "C1/1.x", "nope"];
+    const addresses = ["C123/1700000000.000100", "oc_abc/om_x1", "oc_abc/omt_x1", "0123456789abcdef/0123456789abcdef", "d_0123456789abcdef01234567/d_0123456789abcdef01234567", "s_0123456789abcdef01234567/t_0123456789abcdef", "s_0123456789abcdef01234567/t_0123456789abcdeF", "x_0123456789abcdef01234567/x_0123456789abcdef01234567", " CHAT/1.2 ", "c1/1.2", "C1/12", "C1/1.x", "nope"];
     const { parseThreadAddress } = await import(src("agents/instructions.ts"));
     for (const t of addresses) await both(`parseThreadAddress ${t}`, a, b, () => parseThreadAddress(t), "parseThreadAddress", t);
     const { iso } = await import(src("read/transcript.ts"));

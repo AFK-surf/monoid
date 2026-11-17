@@ -123,29 +123,38 @@ pub fn service_view_node(
       Some(k) if in_panel => Some(@sf.corner_radii(k))
       _ => None
     }
-    v.pick(at_once=true, fn() { @sf.keys_at_foot(width()) }, fn(col, at_foot) {
+    // (its stage made once, never again as the width moves its bar over or under it: the page's native view stays
+    // open, its room and corners bound to where the bar is; each bar there at once as the width says, no motion of
+    // its own: #5767)
+    let at_foot = fn() { @sf.keys_at_foot(width()) }
+    // (which bar holds the address's one Field now, 0 none, 1 over, 2 under: the one going lets it go before the other
+    // is made, in whatever order the width tells the two)
+    let held : @signals.Signal[Int] = @signals.signal(0)
+    let bar = fn(parent : @view.View, foot : Bool, make : (@view.View) -> Unit) {
+      let mine = if foot { 2 } else { 1 }
+      parent.show(at_once=true, fn() { at_foot() == foot && held.get() != 3 - mine }, fn(b) {
+        held.set(mine)
+        b.owns(fn() { held.set(0) }) |> ignore
+        make(b)
+      })
+    }
+    v.box(fn(col) {
       col.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-      let stage = fn(s : @view.View) {
-        s.box(fn(st) {
-          st.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-          if in_panel {
-            let (room, k) = stage_in_panel(bar_at_foot=at_foot, round~)
-            st.padding(Is(if at_foot { (room, room, room, 0.0) } else { (room, 0.0, room, room) })) |> ignore
-            service_stage_node(st, p, site, Some(k), now)
-          } else {
-            service_stage_node(st, p, site, None, now)
-          }
-        })
-        |> ignore
-      }
-      if at_foot {
-        stage(col)
-        service_foot_bar_node(col, src, p, site, station, fixed, close, tips)
-      } else {
-        service_page_bar_node(col, src, p, site, station, fixed, close, corners, tips)
-        stage(col)
-      }
+      bar(col, false, fn(top) { service_page_bar_node(top, src, p, site, station, fixed, close, corners, tips) })
+      col.box(fn(st) {
+        st.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
+        if in_panel {
+          let room = stage_in_panel_room
+          st.padding(By(fn() { if at_foot() { (room, room, room, 0.0) } else { (room, 0.0, room, room) } })) |> ignore
+          service_stage_node(st, p, site, Some(fn() { stage_in_panel(bar_at_foot=at_foot(), round~).1 }), now)
+        } else {
+          service_stage_node(st, p, site, None, now)
+        }
+      })
+      |> ignore
+      bar(col, true, fn(foot) { service_foot_bar_node(foot, src, p, site, station, fixed, close, tips) })
     })
+    |> ignore
   })
   |> ignore
 }
@@ -652,13 +661,13 @@ fn service_stage_node(
   parent : @view.View,
   p : ServicePage,
   site : @ui.NativeView,
-  corners : FixedArray[@ui.CornerOf]?,
+  corners : (() -> FixedArray[@ui.CornerOf])?,
   now : () -> ServiceNow,
 ) -> Unit {
   let radii = fn() {
     match corners {
       Some(k) => {
-        let r = @sf.corner_radii(k)
+        let r = @sf.corner_radii(k())
         (r[0], r[1], r[2], r[3])
       }
       None => (0.0, 0.0, 0.0, 0.0)

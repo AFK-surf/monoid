@@ -79,6 +79,10 @@ export interface Env {
   OIDC_ISSUER?: string;
   /** What the sign-in page calls that provider (使用 {name} 继续). Unset: its host. */
   OIDC_NAME?: string;
+  /** A claim of that provider's ID token saying someone's role there (monoid's console: `monoid_role`), which they
+   * have in the workspaces open to its sign-in (Directory joinBySignIn): `owner` and `admin` as they are, any other a
+   * member. Unset: they join as members, and a role given there stays. */
+  OIDC_ROLE_CLAIM?: string;
   AUTH_SIGNING_KEY: string;
   ADMIN_TOKEN?: string;
   /**

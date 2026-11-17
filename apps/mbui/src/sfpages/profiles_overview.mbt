@@ -658,7 +658,8 @@ fn ov_pool_pill_node(
   selected : () -> Bool,
   on_select : () -> Unit,
 ) -> Unit {
-  parent.box(fn(pill) {
+  // (one of the pools to choose: read out selected while it is the one shown, the pointer's ground over its own)
+  @headless.choice(parent, Button, fn() { title() + " " + count_txt() }, selected, fn(_) { on_select() }, fn(pill, _) {
     pill
     .row(Is(true))
     .gap(Is(6.0))
@@ -673,15 +674,13 @@ fn ov_pool_pill_node(
       let t = @sf.theme()
       if selected() {
         @sf.alpha(t.p.accent, if t.dark { 0.18 } else { 0.11 })
-      } else if @sf.lit_node(pill) {
-        @ui.tree_theme().color(Hover)
       } else {
         @ui.tree_theme().color(Tint)
       }
     }))
-    .says(By(fn() { Some(@view.said(Button, label=title() + " " + count_txt())) }))
     |> ignore
-    @sf.presses_node(pill, on_select)
+    @sf.focus_ring_node(pill)
+    @sf.hover_ground_node(pill, on=fn() { !selected() })
 
     @sf.words_node(pill, title, fn() {
       if selected() {
@@ -962,9 +961,9 @@ fn ov_pools_card_node(
         .radius(By(ug_row_corner))
         .height(By(fn() { Some(@cmp.maximum(@sf.theme().items.least, @sf.node_sp(r, 20.0) + 16.0)) }))
         .lies_along(Is(Middle))
-        .ground(By(fn() { if @sf.lit_node(r) { @ui.tree_theme().color(Hover) } else { 0L } }))
         .says(By(fn() { Some(@view.said(Link, label=ov_account_name(kev()) + " " + bal())) }))
         |> ignore
+        @sf.hover_ground_node(r)
         @sf.presses_node(r, fn() { ov_open_account(core, open_profile, @signals.untracked(kev)) })
         ug_line_node(r, fn(l) {
           @sf.words_node(l, fn() { ov_account_name(kev()) }, fn() { if @sf.lit_node(r) { ug_row_title_lit } else { ug_row_title } })

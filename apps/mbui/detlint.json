@@ -323,7 +323,6 @@
       "src/sfpages/permissions.mbt": 8,
       "src/sfpages/security.mbt": 23,
       "src/sfpages/slack_app.mbt": 5,
-      "src/sfpages/vault.mbt": 2,
       "src/sfpages/vault_dialogs.mbt": 6,
       "src/sfpages/vault_item.mbt": 5
     },
@@ -515,8 +514,6 @@
       "src/sfbase/viewer_marks_node.mbt": 1,
       "src/sfbase/viewer_tab.mbt": 1,
       "src/sfbase/viz_mbui_node.mbt": 3,
-      "src/sfdesk/jobs_pop_node.mbt": 1,
-      "src/sfdesk/letters.mbt": 1,
       "src/sfpages/accounts.mbt": 1,
       "src/sfpages/attach.mbt": 1,
       "src/sfpages/automatic_decisions.mbt": 2,
@@ -534,10 +531,7 @@
       "src/sfpages/board_node.mbt": 1
     },
     "shader-int": {},
-    "raw-hover-ground": {
-      "src/sf/reader_node.mbt": 6,
-      "src/sfpages/profiles_overview.mbt": 2
-    }
+    "raw-hover-ground": {}
   },
   "excused": {
     "frame-request": {},
