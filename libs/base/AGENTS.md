@@ -22,8 +22,9 @@ of its workspace (`moon.work`); `effect` stays in mbui.
 - `src/mesh`: the device side of the mesh on top of `shell` and `wire` (endpoints, scoped peer links, hello/pings/renewal,
   requests/streams/duplex, health racing in `health.mbt`, wake/rebind in `wake.mbt`, what the endpoint is bound
   with, relays told again and connections peers dial to it in `bind.mbt`, where peers are dialled straight in
-  `addrs.mbt`, the ways to a place and the choice among them in `ways.mbt`, with `sha256.mbt` for the keys of
-  relays' own endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself in `trace.mbt`,
+  `addrs.mbt`, a connection dialled once on a protocol of its program's in `dial_once.mbt`, the ways to a place and
+  the choice among them in `ways.mbt`, with `sha256.mbt` (a program's to call too) for the keys of relays' own
+  endpoints, ways' speeds and the day's tally in `speed.mbt`, what it tells of itself in `trace.mbt`,
   and a program's other asks in `hooks.mbt`, with Ed25519 and SHA-512 in `sign.mbt`).
 
 ## It knows no program
@@ -73,6 +74,11 @@ of its workspace (`moon.work`); `effect` stays in mbui.
   (`Incoming::accept`) and its program's (`Incoming::open`), are waited for in the mesh's fibers as a link's are,
   and are its program's to bound, as are how long a taken one stays and how many at once; while one is open the
   endpoint is not bound anew.
+- A connection dialled to a peer on a protocol of its program's (`Mesh::dial_once`, its other way) is no link
+  either, and is on an endpoint bound for it alone with a key drawn for it: never the device's (on the relay the
+  device's endpoint is on, the same endpoint id puts that one off it), so it proves nothing of the device; that is
+  its program's to send on it (`Mesh::sign`). Its connection and that endpoint are closed to be forgotten as it is
+  closed, ends, fails to open, is given up or the mesh closes.
 - What a peer's hello answer says of its `lan` / `tailnet` addresses (IPv4 `a.b.c.d:port`, 8 of each, as the
   TypeScript mesh's check) is kept by place in the program's `Store` (`Mesh::make`'s `addresses`), unreadable kept
   values taken for none. A dial given them does not wait to be on a relay (`onto_max_ms`), as in that mesh.
