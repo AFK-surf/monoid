@@ -21,7 +21,7 @@ let tree_as_sheet : Map[Int, Bool] = Map([])
 ///|
 /// Whether `p` is drawn as a sheet of the window's tree on screen `sheet` (小屏's): sheet_node, as presented_nodes picks.
 fn tree_sheet_of(p : Presented, sheet : Bool) -> Bool {
-  sheet && (p.shows is Panel(x) && (x.nodes is Some(_) || (sheet_panel_of(x) && !over_host_sheet(p))))
+  sheet && (p.shows is Panel(x) && !x.stage && (x.nodes is Some(_) || (sheet_panel_of(x) && !over_host_sheet(p))))
 }
 
 ///|
@@ -259,12 +259,10 @@ pub fn presented_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
         Panel(x) if x.stage =>
           stage_node(
             row,
-            "sf-present/\{serial}",
             open,
             x,
             fn() { done(fn() {  }) },
             fn() { dismissed_now(serial) },
-            p,
             shown~,
             gone~,
             covered~,

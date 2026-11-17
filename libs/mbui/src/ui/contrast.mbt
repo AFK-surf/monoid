@@ -702,6 +702,18 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
       None => false
     }
   }
+  // (what a node of the window's tree said to be a picture holds (Role Image: a drawing of something else, its inks its
+  // own), as an old view's in a box said so: asked nothing)
+  let tree_pictured : Array[@view.NodeId] = match view_app.val {
+    Some(tree) => tree.said_order().filter(fn(s) { s.said is Some({ role: Image, .. }) }).map(fn(s) { s.id })
+    None => []
+  }
+  let tree_in_picture = fn(id : @view.NodeId) {
+    match view_app.val {
+      Some(tree) => tree_pictured.iter().any(fn(o) { o == id || tree.holds(o, id) })
+      None => false
+    }
+  }
   for k in 0..<self.ninst {
     let b = k * inst_size
     match inst_by(k) {
@@ -713,7 +725,7 @@ fn Ctx::contrast_faults_drawn(self : Ctx, marks : Double) -> Array[String] {
         if !is_words && mark == 0 {
           continue
         }
-        if tree_off_holds(id) {
+        if tree_off_holds(id) || tree_in_picture(id) {
           continue
         }
         // (a picture in its own colours (View::picture: a maker's mark, a logo), its owner's, as an old view's own_colours

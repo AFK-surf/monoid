@@ -83,20 +83,20 @@ fn gc_stop(stops : Array[(Double, Int64)], t : Double) -> Int64 {
 
 ///|
 /// A gradient down the box it is in: `n` bands, each the colour `stops` say at its middle.
-fn gc_grad(c : @ui.Ctx, stops : Array[(Double, Int64)], n : Int) -> Unit {
+fn gc_grad(c : Pen, stops : Array[(Double, Int64)], n : Int) -> Unit {
   for i in 0..<n {
     let t = (i.to_double() + 0.5) / n.to_double()
-    c.box(style=gc_band.then(@ui.style(bg=Data(gc_stop(stops, t)))), fn() {  }) |> ignore
+    c.box(style=gc_band.then(@ui.style(bg=Data(gc_stop(stops, t)))), fn(_) {  }) |> ignore
   }
 }
 
 ///|
 /// The same across the box it is in.
-fn gc_grad_across(c : @ui.Ctx, stops : Array[(Double, Int64)], n : Int) -> Unit {
-  c.box(style=gc_row_full, fn() {
+fn gc_grad_across(c : Pen, stops : Array[(Double, Int64)], n : Int) -> Unit {
+  c.box(style=gc_row_full, fn(c) {
     for i in 0..<n {
       let t = (i.to_double() + 0.5) / n.to_double()
-      c.box(style=gc_band_across.then(@ui.style(bg=Data(gc_stop(stops, t)))), fn() {  }) |> ignore
+      c.box(style=gc_band_across.then(@ui.style(bg=Data(gc_stop(stops, t)))), fn(_) {  }) |> ignore
     }
   })
   |> ignore
@@ -104,19 +104,19 @@ fn gc_grad_across(c : @ui.Ctx, stops : Array[(Double, Int64)], n : Int) -> Unit 
 
 ///|
 /// A gradient over the whole of the box it is laid in, from `top` to `bottom`.
-fn gc_ground(c : @ui.Ctx, stops : Array[(Double, Int64)]) -> Unit {
-  c.layer(fn() { gc_grad(c, stops, gc_ground_bands) }) |> ignore
+fn gc_ground(c : Pen, stops : Array[(Double, Int64)]) -> Unit {
+  c.layer(fn(c) { gc_grad(c, stops, gc_ground_bands) }) |> ignore
 }
 
 ///|
 /// Words with an edge round them in `edge`, `o` out each way (a title's white edge, a glow over a picture): the words
 /// drawn in it eight ways round, under them.
-fn gc_edged(c : @ui.Ctx, runs : Array[@ui.Run], style : @ui.TextStyle, edge : Int64, o : Double) -> Unit {
+fn gc_edged(c : Pen, runs : Array[@ui.Run], style : @ui.TextStyle, edge : Int64, o : Double) -> Unit {
   let edged = runs.map(fn(r) { @ui.span(r.text, weight=r.weight, italic=r.italic, scale=r.scale, color=edge) })
   let edge_style = style.then(@ui.text_style(color=Data(edge)))
-  c.box(fn() {
+  c.box(fn(c) {
     for d in gc_edge_ways {
-      c.layer(fn() { c.box(tx=d.0 * o, ty=d.1 * o, fn() { sr_rich(c, edged, edge_style) }) |> ignore }) |> ignore
+      c.layer(fn(c) { c.box(tx=d.0 * o, ty=d.1 * o, fn(c) { sr_rich(c, edged, edge_style) }) |> ignore }) |> ignore
     }
     sr_rich(c, runs, style)
   })
@@ -196,7 +196,7 @@ fn gc_caps(words : String, small : Double, spread : Bool) -> Array[@ui.Run] {
 /// times over, its point (`fx`, `fy`: shares of its width and height) as near the box's middle as it can be: a part of a
 /// picture as a CSS background's size and place cut it (a face, the side of a picture a girl is on).
 fn gc_pic(
-  c : @ui.Ctx,
+  c : Pen,
   style : @ui.Style,
   art : String,
   ratio : Double,
@@ -211,8 +211,8 @@ fn gc_pic(
   let ph = ch * zoom
   let x = gc_clamp(w / 2.0 - fx * pw, w - pw, 0.0)
   let y = gc_clamp(h / 2.0 - fy * ph, h - ph, 0.0)
-  c.box(style=style.then(@ui.style(w=Fixed(w), h=Fixed(h))), fn() {
-    c.box(left=x, top=y, fn() { sr_art(c, art, pw, ph, at=0.0) |> ignore }) |> ignore
+  c.box(style=style.then(@ui.style(w=Fixed(w), h=Fixed(h))), fn(c) {
+    c.box(left=x, top=y, fn(c) { sr_art(c, art, pw, ph, at=0.0) |> ignore }) |> ignore
   })
   |> ignore
 }
@@ -220,7 +220,7 @@ fn gc_pic(
 ///|
 /// A round face `d` across from picture `art`: its face's middle at (`fx`, `fy`), the face `fw` of the picture's width,
 /// drawn `k` of the circle's.
-fn gc_face(c : @ui.Ctx, art : String, ratio : Double, d : Double, fx : Double, fy : Double, fw : Double, k : Double) -> Unit {
+fn gc_face(c : Pen, art : String, ratio : Double, d : Double, fx : Double, fy : Double, fw : Double, k : Double) -> Unit {
   let cover = if ratio > 1.0 { d * ratio } else { d }
   gc_pic(c, gc_round_cut, art, ratio, d, d, k * d / fw / cover, fx, fy)
 }
@@ -417,15 +417,15 @@ let gc_white : Int64 = 0xFFFFFFFFL
 /// 标题画面: the game's title screen, the six under the sakura (c1-title-kv) the whole card. In its open sky the logo
 /// 千恋✿万Token (pink, its letters edged white) still.fail's edition, who stars and what she burned; on the dusk at its
 /// foot the menu, 继续游戏 lit (the chats at work), 回想模式 the week's archived; Click to Start, a copyright of the week.
-fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_title(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
-  sr_box(c, id, flat, tt_ground, fn() {
+  sr_box(c, flat, tt_ground, fn(c) {
     sr_art(c, "c1-title-kv", @sf.share_w_most, tt_h, at=0.0) |> ignore
     // the dusk deepening under the menu
-    c.box(style=tt_shade, left=0.0, top=tt_h - tt_shade_h, fn() { gc_grad(c, tt_shade_stops, tt_shade_bands) }) |> ignore
+    c.box(style=tt_shade, left=0.0, top=tt_h - tt_shade_h, fn(c) { gc_grad(c, tt_shade_stops, tt_shade_bands) }) |> ignore
     // the logo in the open sky: 千恋✿ over 万Token, white-edged
-    c.box(style=tt_logo, left=tt_logo_left, top=tt_logo_top, fn() {
-      c.box(style=tt_logo_row, fn() {
+    c.box(style=tt_logo, left=tt_logo_left, top=tt_logo_top, fn(c) {
+      c.box(style=tt_logo_row, fn(c) {
         gc_edged(
           c,
           [@ui.span(@sf.t("web-main.stations.shareSenren.title.logoA"), scale=tt_logo_scale)],
@@ -433,13 +433,13 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
           gc_white,
           tt_edge,
         )
-        c.shapes(tt_flower(), w=Px(tt_flower_side), h=Px(tt_flower_side)) |> ignore
+        c.shapes(tt_flower(), tt_flower_side, tt_flower_side) |> ignore
       })
       |> ignore
     })
     |> ignore
-    c.box(style=tt_logo, left=tt_logo_left, top=tt_logo_top2, fn() {
-      c.box(style=tt_logo_row2, fn() {
+    c.box(style=tt_logo, left=tt_logo_left, top=tt_logo_top2, fn(c) {
+      c.box(style=tt_logo_row2, fn(c) {
         gc_edged(
           c,
           [
@@ -454,7 +454,7 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=tt_under, left=tt_logo_left, top=tt_edition_top, fn() {
+    c.box(style=tt_under, left=tt_logo_left, top=tt_edition_top, fn(c) {
       gc_edged(
         c,
         [
@@ -467,7 +467,7 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         gc_white,
         tt_glow,
       )
-      c.box(style=tt_star, fn() {
+      c.box(style=tt_star, fn(c) {
         gc_edged(c, gc_plain(sr_said("web-main.stations.shareSenren.title.star1", args, tt_rose), sr_arg(args, "model")), tt_star_words, gc_white, tt_glow)
         gc_edged(c, sr_said("web-main.stations.shareSenren.title.star2", args, tt_rose), tt_star_words, gc_white, tt_glow)
       })
@@ -475,7 +475,7 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
     })
     |> ignore
     // the menu, translucent on the dusk; 继续游戏 lit
-    c.box(style=tt_menu, left=tt_menu_left, top=tt_menu_top, fn() {
+    c.box(style=tt_menu, left=tt_menu_left, top=tt_menu_top, fn(c) {
       tt_item(c, [@ui.span(@sf.t("web-main.stations.shareSenren.title.new"))], false)
       tt_item(
         c,
@@ -493,14 +493,14 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }),
         false,
       )
-      c.box(style=tt_menu_pair, fn() {
-        c.box(style=gc_grow, fn() { tt_item(c, [@ui.span(@sf.t("web-main.stations.shareSenren.title.config"))], false) }) |> ignore
-        c.box(style=gc_grow, fn() { tt_item(c, [@ui.span(@sf.t("web-main.stations.shareSenren.title.quit"))], false) }) |> ignore
+      c.box(style=tt_menu_pair, fn(c) {
+        c.box(style=gc_grow, fn(c) { tt_item(c, [@ui.span(@sf.t("web-main.stations.shareSenren.title.config"))], false) }) |> ignore
+        c.box(style=gc_grow, fn(c) { tt_item(c, [@ui.span(@sf.t("web-main.stations.shareSenren.title.quit"))], false) }) |> ignore
       })
       |> ignore
     })
     |> ignore
-    c.box(style=tt_line, left=0.0, top=tt_click_top, fn() {
+    c.box(style=tt_line, left=0.0, top=tt_click_top, fn(c) {
       gc_edged(
         c,
         [@ui.span("—  " + gc_spread(@sf.t("web-main.stations.shareSenren.title.click")) + "  —")],
@@ -510,7 +510,7 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       )
     })
     |> ignore
-    c.box(style=tt_line, left=0.0, top=tt_h - tt_copy_up, fn() {
+    c.box(style=tt_line, left=0.0, top=tt_h - tt_copy_up, fn(c) {
       sr_words(c, @sf.t("web-main.stations.shareSenren.title.copy", args~), tt_copy)
     })
     |> ignore
@@ -520,14 +520,14 @@ fn sr_title(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// An item of the title's menu: its words in the middle of a band of white fading at its ends (the lit one pink, a ✿
 /// at either end).
-fn tt_item(c : @ui.Ctx, runs : Array[@ui.Run], lit : Bool) -> Unit {
-  c.box(style=tt_item_box, fn() {
-    c.layer(fn() { gc_grad_across(c, if lit { tt_lit_stops } else { tt_item_stops }, tt_item_bands) }) |> ignore
+fn tt_item(c : Pen, runs : Array[@ui.Run], lit : Bool) -> Unit {
+  c.box(style=tt_item_box, fn(c) {
+    c.layer(fn(c) { gc_grad_across(c, if lit { tt_lit_stops } else { tt_item_stops }, tt_item_bands) }) |> ignore
     if lit {
-      c.layer(fn() {
-        c.box(style=tt_item_marks, fn() {
+      c.layer(fn(c) {
+        c.box(style=tt_item_marks, fn(c) {
           sr_words(c, "✿", tt_mark)
-          c.box(style=gc_grow, fn() {  }) |> ignore
+          c.box(style=gc_grow, fn(_) {  }) |> ignore
           sr_words(c, "✿", tt_mark)
         })
         |> ignore
@@ -750,7 +750,7 @@ let tt_copy : @ui.TextStyle = @ui.text_style(size=Xs3, color=Data(tt_copy_ink), 
 /// its chats archived (a day with none locked, ？？？), today's NEW; the eighth the week's 回收率. Under them the best
 /// CG of the week (the day with the most), large, who starred in it (the top model) and the week's three figures; the
 /// theme song playing, and when.
-fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_cg(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let days = sr_days(fleet)
   let got = days.filter(fn(d) { d.2 != "0" }).length()
@@ -761,10 +761,10 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
     }
   }
   let best_i = best
-  sr_box(c, id, flat, cg_ground, fn() {
-    c.box(style=cg_inner, fn() {
-      c.box(style=cg_head, fn() {
-        c.box(style=gc_grow, fn() {
+  sr_box(c, flat, cg_ground, fn(c) {
+    c.box(style=cg_inner, fn(c) {
+      c.box(style=cg_head, fn(c) {
+        c.box(style=gc_grow, fn(c) {
           sr_words(c, gc_spread(@sf.t("web-main.stations.shareSenren.cg.extra")), cg_extra)
           sr_rich(c, [@ui.span(@sf.t("web-main.stations.shareSenren.cg.title"), scale=cg_title_scale)], cg_title)
         })
@@ -773,23 +773,23 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       })
       |> ignore
       // the tabs: CG 鉴赏 on, underlined in pink
-      c.box(style=cg_tabs, fn() {
-        c.box(style=cg_tab_on, fn() {
+      c.box(style=cg_tabs, fn(c) {
+        c.box(style=cg_tab_on, fn(c) {
           sr_words(c, @sf.t("web-main.stations.shareSenren.cg.title"), cg_tab_lit)
-          c.box(style=cg_tab_bar, fn() {  }) |> ignore
+          c.box(style=cg_tab_bar, fn(_) {  }) |> ignore
         })
         |> ignore
         sr_words(c, @sf.t("web-main.stations.shareSenren.cg.tabRecall"), cg_tab)
         sr_words(c, @sf.t("web-main.stations.shareSenren.cg.tabBgm"), cg_tab)
-        c.box(style=gc_grow, fn() {  }) |> ignore
+        c.box(style=gc_grow, fn(_) {  }) |> ignore
         sr_words(c, @sf.t("web-main.stations.shareSenren.cg.page"), cg_page)
       })
       |> ignore
-      c.box(style=cg_rule, fn() {  }) |> ignore
+      c.box(style=cg_rule, fn(_) {  }) |> ignore
       // the grid: a CG a day, the 回收率 last
-      c.box(style=cg_grid, fn() {
+      c.box(style=cg_grid, fn(c) {
         for r in 0..<2 {
-          c.box(style=cg_grid_row, fn() {
+          c.box(style=cg_grid_row, fn(c) {
             for k in 0..<4 {
               let i = r * 4 + k
               if i < days.length() {
@@ -804,10 +804,10 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       })
       |> ignore
       // the best CG of the week
-      c.box(style=cg_best, fn() {
-        c.box(style=cg_best_head, fn() {
+      c.box(style=cg_best, fn(c) {
+        c.box(style=cg_best_head, fn(c) {
           sr_rich(c, [@ui.span("✿  ", color=cg_pink), @ui.span(@sf.t("web-main.stations.shareSenren.cg.best"))], cg_best_label)
-          c.box(style=gc_grow, fn() {  }) |> ignore
+          c.box(style=gc_grow, fn(_) {  }) |> ignore
           sr_words(
             c,
             @sf.t("web-main.stations.shareSenren.cg.bestOf", args=[
@@ -821,14 +821,14 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         if days.length() > 0 {
           let d = days[best_i]
           let shot = cg_shots[best_i % cg_shots.length()]
-          c.box(style=cg_pic_ring, fn() {
-            c.box(style=cg_pic, fn() {
+          c.box(style=cg_pic_ring, fn(c) {
+            c.box(style=cg_pic, fn(c) {
               sr_art(c, shot.0, cg_pic_w, cg_pic_h, at=cg_best_at) |> ignore
-              c.layer(fn() {
+              c.layer(fn(c) {
                 c.spacer()
-                c.box(style=cg_pic_cap, fn() {
-                  c.layer(fn() { gc_grad(c, cg_cap_stops, cg_cap_bands) }) |> ignore
-                  c.box(style=cg_pic_cap_row, fn() {
+                c.box(style=cg_pic_cap, fn(c) {
+                  c.layer(fn(c) { gc_grad(c, cg_cap_stops, cg_cap_bands) }) |> ignore
+                  c.box(style=cg_pic_cap_row, fn(c) {
                     sr_words(
                       c,
                       if d.4 {
@@ -843,7 +843,7 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
                       sr_said("web-main.stations.shareSenren.cg.archivedN", [("n", d.2)], gc_white, scale=cg_best_n_scale),
                       cg_pic_n,
                     )
-                    c.box(style=gc_grow, fn() {  }) |> ignore
+                    c.box(style=gc_grow, fn(_) {  }) |> ignore
                     sr_words(c, @sf.t("web-main.stations.shareSenren.cg.most"), cg_pic_most)
                   })
                   |> ignore
@@ -851,14 +851,14 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
                 |> ignore
               })
               |> ignore
-              c.layer(fn() { c.box(style=cg_pic_edge, fn() {  }) |> ignore }) |> ignore
+              c.layer(fn(c) { c.box(style=cg_pic_edge, fn(_) {  }) |> ignore }) |> ignore
             })
             |> ignore
           })
           |> ignore
         }
-        c.box(style=cg_cast, fn() {
-          c.box(style=cg_cast_tag, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.cg.cast"), cg_cast_tag_words) })
+        c.box(style=cg_cast, fn(c) {
+          c.box(style=cg_cast_tag, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.cg.cast"), cg_cast_tag_words) })
           |> ignore
           // the model said plain, its tokens and cost lit (as the mockup)
           let model = sr_arg(args, "model")
@@ -878,13 +878,13 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       })
       |> ignore
       // the week's three figures
-      c.box(style=cg_week, fn() {
+      c.box(style=cg_week, fn(c) {
         for x in [
           (sr_arg(args, "archived"), "web-main.stations.shareSenren.cg.weekArchived"),
           (sr_arg(args, "weekTokens"), "web-main.stations.shareSenren.cg.weekTokens"),
           (sr_arg(args, "weekCost"), "web-main.stations.shareSenren.cg.weekCost"),
         ] {
-          c.box(style=cg_week_box, fn() {
+          c.box(style=cg_week_box, fn(c) {
             sr_rich(c, [@ui.span(x.0, scale=cg_week_scale)], cg_week_value)
             sr_words(c, @sf.t(x.1), cg_week_label)
           })
@@ -892,15 +892,15 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }
       })
       |> ignore
-      c.box(style=cg_foot, fn() {
-        c.box(style=cg_eq, fn() {
+      c.box(style=cg_foot, fn(c) {
+        c.box(style=cg_eq, fn(c) {
           for h in cg_eq_heights {
-            c.box(style=cg_eq_bar.then(@ui.style(h=Fixed(h))), fn() {  }) |> ignore
+            c.box(style=cg_eq_bar.then(@ui.style(h=Fixed(h))), fn(_) {  }) |> ignore
           }
         })
         |> ignore
         sr_rich(c, [@ui.span("♪ ", color=cg_pink), @ui.span(@sf.t("web-main.stations.shareSenren.cg.song"))], cg_song)
-        c.box(style=gc_grow, fn() {  }) |> ignore
+        c.box(style=gc_grow, fn(_) {  }) |> ignore
         sr_words(c, sr_arg(args, "at"), cg_at)
       })
       |> ignore
@@ -912,19 +912,19 @@ fn sr_cg(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// A day's CG: its picture, its date and chats archived over a dark fading up at its foot (today's ringed pink, NEW); a
 /// day with none locked, ？？？.
-fn cg_tile(c : @ui.Ctx, d : (String, String, String, Double, Bool), i : Int) -> Unit {
+fn cg_tile(c : Pen, d : (String, String, String, Double, Bool), i : Int) -> Unit {
   let shot = cg_shots[i % cg_shots.length()]
   let locked = d.2 == "0"
-  c.box(style=if locked { cg_tile_locked } else { cg_tile_box }, fn() {
+  c.box(style=if locked { cg_tile_locked } else { cg_tile_box }, fn(c) {
     if locked {
-      c.box(style=cg_lock, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.cg.locked"), cg_lock_words) }) |> ignore
+      c.box(style=cg_lock, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.cg.locked"), cg_lock_words) }) |> ignore
     } else {
       gc_pic(c, cg_cut, shot.0, shot.1, cg_tile_w, cg_tile_h, shot.2, shot.3, shot.4)
     }
-    c.layer(fn() {
+    c.layer(fn(c) {
       c.spacer()
-      c.box(style=cg_cap, fn() {
-        c.layer(fn() { gc_grad(c, cg_cap_stops, cg_cap_bands) }) |> ignore
+      c.box(style=cg_cap, fn(c) {
+        c.layer(fn(c) { gc_grad(c, cg_cap_stops, cg_cap_bands) }) |> ignore
         sr_rich(
           c,
           if locked {
@@ -939,20 +939,20 @@ fn cg_tile(c : @ui.Ctx, d : (String, String, String, Double, Bool), i : Int) -> 
     })
     |> ignore
     if d.4 && !locked {
-      c.box(style=cg_new, left=cg_new_at, top=cg_new_at, fn() {
+      c.box(style=cg_new, left=cg_new_at, top=cg_new_at, fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareSenren.cg.new"), cg_new_words)
       })
       |> ignore
     }
-    c.layer(fn() { c.box(style=if d.4 { cg_tile_edge_today } else { cg_tile_edge }, fn() {  }) |> ignore }) |> ignore
+    c.layer(fn(c) { c.box(style=if d.4 { cg_tile_edge_today } else { cg_tile_edge }, fn(_) {  }) |> ignore }) |> ignore
   })
   |> ignore
 }
 
 ///|
 /// The eighth tile: how many of the days have their CG, of how many, and as a percentage.
-fn cg_sum(c : @ui.Ctx, got : Int, all : Int) -> Unit {
-  c.box(style=cg_sum_box, fn() {
+fn cg_sum(c : Pen, got : Int, all : Int) -> Unit {
+  c.box(style=cg_sum_box, fn(c) {
     sr_words(c, @sf.t("web-main.stations.shareSenren.cg.rate"), cg_sum_k)
     sr_rich(c, [@ui.span(got.to_string() + "/" + all.to_string(), scale=cg_sum_scale)], cg_sum_v)
     sr_words(c, (if all > 0 { got * 100 / all } else { 0 }).to_string() + "%", cg_sum_p)
@@ -1328,24 +1328,24 @@ let cg_at : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(cg_at_ink), wrap
 /// (丛雨线 the most): each its heroine's face, her route and the model, its hearts (five, by its tokens on a log scale:
 /// the most MAX) and its tokens and cost. Over them the route now played; under them the endings reached (the week's
 /// archived) and the routes being played (the chats at work).
-fn sr_affection(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_affection(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let ranked = gc_ranked(fleet)
   let most = if ranked.length() > 0 { gc_log10(ranked[0].3) } else { 0.0 }
-  sr_box(c, id, flat, af_ground, fn() {
+  sr_box(c, flat, af_ground, fn(c) {
     gc_ground(c, af_ground_stops)
-    c.box(style=af_inner, fn() {
-      c.box(style=af_top, fn() {
+    c.box(style=af_inner, fn(c) {
+      c.box(style=af_top, fn(c) {
         sr_brand(c, af_brand)
-        c.box(style=gc_grow, fn() {  }) |> ignore
+        c.box(style=gc_grow, fn(_) {  }) |> ignore
         sr_words(c, sr_arg(args, "at"), af_at)
       })
       |> ignore
-      c.box(style=af_title_row, fn() {
-        c.box(fn() {
+      c.box(style=af_title_row, fn(c) {
+        c.box(fn(c) {
           // its shadow, then its white edge, then it
-          c.layer(fn() {
-            c.box(ty=af_title_drop, fn() {
+          c.layer(fn(c) {
+            c.box(ty=af_title_drop, fn(c) {
               gc_edged(c, [@ui.span(@sf.t("web-main.stations.shareSenren.aff.title"))], af_title_drop_words, af_title_drop_ink, af_title_edge)
             })
             |> ignore
@@ -1354,23 +1354,23 @@ fn sr_affection(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
           gc_edged(c, [@ui.span(@sf.t("web-main.stations.shareSenren.aff.title"))], af_title, gc_white, af_title_edge)
         })
         |> ignore
-        c.box(style=af_tag_ledge, fn() {
-          c.box(style=af_tag, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.tag"), af_tag_words) }) |> ignore
+        c.box(style=af_tag_ledge, fn(c) {
+          c.box(style=af_tag, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.tag"), af_tag_words) }) |> ignore
         })
         |> ignore
       })
       |> ignore
       // the route now played
-      c.box(style=af_now_ledge, fn() {
-        c.box(style=af_now, fn() {
+      c.box(style=af_now_ledge, fn(c) {
+        c.box(style=af_now, fn(c) {
           let route = @sf.t("web-main.stations.shareSenren.aff.route", args=[("name", @sf.t(af_girls[0].0))])
           sr_rich(c, sr_said("web-main.stations.shareSenren.aff.now", [("route", route)], af_girls[0].1), af_now_words)
-          c.box(style=af_max, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.max"), af_max_words) }) |> ignore
+          c.box(style=af_max, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.max"), af_max_words) }) |> ignore
         })
         |> ignore
       })
       |> ignore
-      c.box(style=af_list, fn() {
+      c.box(style=af_list, fn(c) {
         for i, m in ranked {
           if i >= af_girls.length() {
             break
@@ -1390,7 +1390,7 @@ fn sr_affection(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }
       })
       |> ignore
-      c.box(style=af_stats, fn() {
+      c.box(style=af_stats, fn(c) {
         af_stat(
           c,
           @sf.t("web-main.stations.shareSenren.aff.ended"),
@@ -1407,7 +1407,7 @@ fn sr_affection(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         )
       })
       |> ignore
-      c.box(style=af_foot, fn() { sr_words(c, @sf.t("web-main.stations.shareTagline"), af_tagline) }) |> ignore
+      c.box(style=af_foot, fn(c) { sr_words(c, @sf.t("web-main.stations.shareTagline"), af_tagline) }) |> ignore
     })
     |> ignore
   })
@@ -1439,21 +1439,21 @@ fn gc_ranked(fleet : Json?) -> Array[(String, String, String, Double)] {
 /// A route: its heroine's face ringed in her colour, her route and the model, its hearts (MAX at five), its tokens and
 /// cost; the lead's ringed mint.
 fn af_row(
-  c : @ui.Ctx,
+  c : Pen,
   girl : (String, Int64, String, Double, Double, Double, Double),
   m : (String, String, String, Double),
   hearts : Double,
   lead : Bool,
 ) -> Unit {
   let (name, ink, art, ratio, fx, fy, fw) = girl
-  c.box(style=if lead { af_row_ledge_lead } else { af_row_ledge }, fn() {
-    c.box(style=if lead { af_card_lead } else { af_card }, fn() {
-      c.box(style=af_av_ring.then(@ui.style(bg=Data(ink))), fn() {
-        c.box(style=af_av_white, fn() { gc_face(c, art, ratio, af_av_d, fx, fy, fw, af_face_k) }) |> ignore
+  c.box(style=if lead { af_row_ledge_lead } else { af_row_ledge }, fn(c) {
+    c.box(style=if lead { af_card_lead } else { af_card }, fn(c) {
+      c.box(style=af_av_ring.then(@ui.style(bg=Data(ink))), fn(c) {
+        c.box(style=af_av_white, fn(c) { gc_face(c, art, ratio, af_av_d, fx, fy, fw, af_face_k) }) |> ignore
       })
       |> ignore
-      c.box(style=af_mid, fn() {
-        c.box(style=af_name_row, fn() {
+      c.box(style=af_mid, fn(c) {
+        c.box(style=af_name_row, fn(c) {
           sr_rich(
             c,
             [@ui.span(@sf.t("web-main.stations.shareSenren.aff.route", args=[("name", @sf.t(name))]), color=ink, scale=af_route_scale)],
@@ -1462,17 +1462,17 @@ fn af_row(
           sr_words(c, m.0, af_model)
         })
         |> ignore
-        c.box(style=af_hearts_row, fn() {
-          c.shapes(af_hearts(hearts), w=Px(af_hearts_w), h=Px(af_heart_h)) |> ignore
+        c.box(style=af_hearts_row, fn(c) {
+          c.shapes(af_hearts(hearts), af_hearts_w, af_heart_h) |> ignore
           if hearts >= 5.0 {
-            c.box(style=af_max_small, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.max"), af_max_small_words) })
+            c.box(style=af_max_small, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.aff.max"), af_max_small_words) })
             |> ignore
           }
         })
         |> ignore
       })
       |> ignore
-      c.box(style=af_num, fn() {
+      c.box(style=af_num, fn(c) {
         sr_words(c, m.1, af_tokens)
         sr_words(c, m.2, af_cost)
       })
@@ -1502,11 +1502,11 @@ fn af_hearts(n : Double) -> Array[@ui.Shape] {
 
 ///|
 /// A figure's card under the routes: a heart and what it is, the figure large (its unit small after it), a line.
-fn af_stat(c : @ui.Ctx, what : String, value : String, unit : String, sub : String) -> Unit {
-  c.box(style=af_stat_ledge, fn() {
-    c.box(style=af_stat_card, fn() {
-      c.box(style=af_stat_k, fn() {
-        c.shapes([@ui.shape_of([(gc_heart(0.0, 0.0, af_stat_heart_w, af_stat_heart_h, false), true)], fill=af_heart_full)], w=Px(af_stat_heart_w), h=Px(af_stat_heart_h))
+fn af_stat(c : Pen, what : String, value : String, unit : String, sub : String) -> Unit {
+  c.box(style=af_stat_ledge, fn(c) {
+    c.box(style=af_stat_card, fn(c) {
+      c.box(style=af_stat_k, fn(c) {
+        c.shapes([@ui.shape_of([(gc_heart(0.0, 0.0, af_stat_heart_w, af_stat_heart_h, false), true)], fill=af_heart_full)], af_stat_heart_w, af_stat_heart_h)
         |> ignore
         sr_words(c, what, af_stat_k_words)
       })
@@ -1804,31 +1804,31 @@ let af_tagline : @ui.TextStyle = @ui.text_style(size=Xs, tracking=Widest, color=
 /// figure in her voice (丛雨 the top model's tokens, 芳乃 its cost, 茉子 the tasks across devices, 蕾娜 the devices, 小春
 /// the chats at work), 因幡巡 joins with her Ciallo, 茉子 asks if she is in the wrong game, 芳乃 sends her dog-ear
 /// sticker, 芦花 the week's archived; each a minute or so before the card's time. The field to write in, still.fail.
-fn sr_chat(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_chat(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let now = ch_minutes(sr_arg(args, "at"))
-  sr_box(c, id, flat, ch_ground, fn() {
+  sr_box(c, flat, ch_ground, fn(c) {
     // the phone's status bar
-    c.box(style=ch_status, fn() {
+    c.box(style=ch_status, fn(c) {
       sr_words(c, ch_clock(now, 0), ch_status_words)
-      c.box(style=gc_grow, fn() {  }) |> ignore
-      c.box(style=ch_bars, fn() {
+      c.box(style=gc_grow, fn(_) {  }) |> ignore
+      c.box(style=ch_bars, fn(c) {
         for h in ch_signal {
-          c.box(style=ch_signal_bar.then(@ui.style(h=Fixed(h))), fn() {  }) |> ignore
+          c.box(style=ch_signal_bar.then(@ui.style(h=Fixed(h))), fn(_) {  }) |> ignore
         }
       })
       |> ignore
-      c.box(style=ch_battery_row, fn() {
-        c.box(style=ch_battery, fn() { c.box(style=ch_battery_fill, fn() {  }) |> ignore }) |> ignore
-        c.box(style=ch_battery_nub, fn() {  }) |> ignore
+      c.box(style=ch_battery_row, fn(c) {
+        c.box(style=ch_battery, fn(c) { c.box(style=ch_battery_fill, fn(_) {  }) |> ignore }) |> ignore
+        c.box(style=ch_battery_nub, fn(_) {  }) |> ignore
       })
       |> ignore
     })
     |> ignore
     // the group's bar
-    c.box(style=ch_bar, fn() {
+    c.box(style=ch_bar, fn(c) {
       sr_words(c, "‹", ch_back)
-      c.box(style=gc_grow, fn() {
+      c.box(style=gc_grow, fn(c) {
         sr_rich(
           c,
           [@ui.span(@sf.t("web-main.stations.shareSenren.chat.group")), @ui.span(@sf.t("web-main.stations.shareSenren.chat.count"), weight=500, color=ch_count_ink)],
@@ -1836,14 +1836,14 @@ fn sr_chat(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         )
       })
       |> ignore
-      c.shapes(ch_search(), w=Px(ch_icon), h=Px(ch_icon)) |> ignore
-      c.shapes(ch_menu(), w=Px(ch_icon), h=Px(ch_icon)) |> ignore
+      c.shapes(ch_search(), ch_icon, ch_icon) |> ignore
+      c.shapes(ch_menu(), ch_icon, ch_icon) |> ignore
     })
     |> ignore
-    c.box(style=ch_rule, fn() {  }) |> ignore
-    c.box(style=ch_log, fn() {
-      c.box(style=ch_pill_row, fn() {
-        c.box(style=ch_day, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.today"), ch_pill_words) }) |> ignore
+    c.box(style=ch_rule, fn(_) {  }) |> ignore
+    c.box(style=ch_log, fn(c) {
+      c.box(style=ch_pill_row, fn(c) {
+        c.box(style=ch_day, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.today"), ch_pill_words) }) |> ignore
       })
       |> ignore
       ch_said(c, 0, sr_said("web-main.stations.shareSenren.chat.m1", args, ch_hi), ch_clock(now, 9), false)
@@ -1851,8 +1851,8 @@ fn sr_chat(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       ch_said(c, 2, sr_said("web-main.stations.shareSenren.chat.m3", args, ch_hi), ch_clock(now, 7), false)
       ch_said(c, 3, sr_said("web-main.stations.shareSenren.chat.m4", args, ch_hi), ch_clock(now, 6), false)
       ch_said(c, 4, sr_said("web-main.stations.shareSenren.chat.m5", args, ch_hi), ch_clock(now, 5), false)
-      c.box(style=ch_pill_row, fn() {
-        c.box(style=ch_sys, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.join"), ch_pill_words) }) |> ignore
+      c.box(style=ch_pill_row, fn(c) {
+        c.box(style=ch_sys, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.join"), ch_pill_words) }) |> ignore
       })
       |> ignore
       ch_said(c, 6, [@ui.span(@sf.t("web-main.stations.shareSenren.chat.ciallo"), weight=700, color=ch_ciallo)], ch_clock(now, 3), false)
@@ -1862,17 +1862,17 @@ fn sr_chat(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
     })
     |> ignore
     // the field to write in
-    c.box(style=ch_rule, fn() {  }) |> ignore
-    c.box(style=ch_input, fn() {
+    c.box(style=ch_rule, fn(_) {  }) |> ignore
+    c.box(style=ch_input, fn(c) {
       sr_words(c, "+", ch_plus)
-      c.box(style=ch_field, fn() { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.input"), ch_field_words) }) |> ignore
-      c.shapes(ch_mic(), w=Px(ch_icon), h=Px(ch_icon)) |> ignore
+      c.box(style=ch_field, fn(c) { sr_words(c, @sf.t("web-main.stations.shareSenren.chat.input"), ch_field_words) }) |> ignore
+      c.shapes(ch_mic(), ch_icon, ch_icon) |> ignore
     })
     |> ignore
-    c.box(style=ch_foot, fn() {
+    c.box(style=ch_foot, fn(c) {
       sr_brand(c, ch_brand)
       sr_words(c, @sf.t("web-main.stations.shareTagline"), ch_foot_words)
-      c.box(style=gc_grow, fn() {  }) |> ignore
+      c.box(style=gc_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), ch_foot_words)
     })
     |> ignore
@@ -1882,28 +1882,28 @@ fn sr_chat(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 ///|
 /// One of the group says `runs` at `time` (`who` her place in ch_who): her face and name, the bubble (or 芳乃's dog-ear
 /// sticker), the time after it.
-fn ch_said(c : @ui.Ctx, who : Int, runs : Array[@ui.Run], time : String, sticker : Bool) -> Unit {
+fn ch_said(c : Pen, who : Int, runs : Array[@ui.Run], time : String, sticker : Bool) -> Unit {
   let w = ch_who[who]
-  c.box(style=ch_msg, fn() {
-    c.box(style=ch_av_ring, fn() {
+  c.box(style=ch_msg, fn(c) {
+    c.box(style=ch_av_ring, fn(c) {
       if w.2 == "" {
-        c.box(style=ch_av_letter, fn() { sr_words(c, @sf.t(w.1), ch_av_letter_words) }) |> ignore
+        c.box(style=ch_av_letter, fn(c) { sr_words(c, @sf.t(w.1), ch_av_letter_words) }) |> ignore
       } else {
         gc_face(c, w.2, w.3, ch_av_d, w.4, w.5, w.6, ch_face_k)
       }
     })
     |> ignore
-    c.box(style=ch_msg_body, fn() {
+    c.box(style=ch_msg_body, fn(c) {
       sr_words(c, @sf.t(w.0), ch_name)
-      c.box(style=ch_line, fn() {
+      c.box(style=ch_line, fn(c) {
         if sticker {
-          c.box(style=ch_sticker, fn() {
+          c.box(style=ch_sticker, fn(c) {
             gc_pic(c, ch_sticker_cut, "b2-chibi-yoshino-ears", 1.0, ch_sticker_d, ch_sticker_d, 1.0, 0.5, 0.3)
           })
           |> ignore
         } else {
-          c.box(style=ch_bubble, fn() {
-            c.box(left=ch_tail_x, top=ch_tail_y, fn() { c.shapes(ch_tail(), w=Px(ch_tail_w), h=Px(ch_tail_h)) |> ignore }) |> ignore
+          c.box(style=ch_bubble, fn(c) {
+            c.box(left=ch_tail_x, top=ch_tail_y, fn(c) { c.shapes(ch_tail(), ch_tail_w, ch_tail_h) |> ignore }) |> ignore
             sr_rich(c, runs, ch_words)
           })
           |> ignore
@@ -2284,7 +2284,7 @@ let ch_foot_words : @ui.TextStyle = @ui.text_style(size=Xs2, color=Data(ch_foot_
 /// town darkened under them, the two on the steps left in the clear and THE END under them. Starring the top model (its
 /// tokens and cost), co-starring the others (the most tokens first), funded by each kind of account, the devices on
 /// location, the tasks across devices its stunts, the theme song, the week's archived its episodes; still.fail and when.
-fn sr_staff(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_staff(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let co : Array[String] = []
   for i, m in gc_ranked(fleet) {
@@ -2302,47 +2302,47 @@ fn sr_staff(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       ]),
     )
   }
-  sr_box(c, id, flat, sfr_ground, fn() {
+  sr_box(c, flat, sfr_ground, fn(c) {
     sr_art(c, "c5-staffroll-bg", @sf.share_w_most, sfr_h, at=0.5) |> ignore
-    c.layer(fn() { gc_grad(c, sfr_dim_stops, sfr_dim_bands) }) |> ignore
-    c.box(style=sfr_roll, left=sfr_side, top=sfr_roll_top, fn() {
+    c.layer(fn(c) { gc_grad(c, sfr_dim_stops, sfr_dim_bands) }) |> ignore
+    c.box(style=sfr_roll, left=sfr_side, top=sfr_roll_top, fn(c) {
       sr_rich(c, gc_caps(@sf.t("web-main.stations.shareSenren.staff.staff"), sfr_caps_small, true), sfr_staff)
-      c.box(style=sfr_orn, fn() {
-        c.box(style=sfr_orn_line, fn() {  }) |> ignore
+      c.box(style=sfr_orn, fn(c) {
+        c.box(style=sfr_orn_line, fn(_) {  }) |> ignore
         sr_words(c, "✿", sfr_orn_mark)
-        c.box(style=sfr_orn_line, fn() {  }) |> ignore
+        c.box(style=sfr_orn_line, fn(_) {  }) |> ignore
       })
       |> ignore
-      sfr_section(c, "web-main.stations.shareSenren.staff.lead", fn() {
+      sfr_section(c, "web-main.stations.shareSenren.staff.lead", fn(c) {
         sr_words(c, sr_arg(args, "model"), sfr_who_big)
         sr_rich(c, sr_said("web-main.stations.shareSenren.staff.leadLine", args, sfr_gold), sfr_sub)
       })
-      sfr_section(c, "web-main.stations.shareSenren.staff.co", fn() { sfr_rows(c, co, 3) })
-      sfr_section(c, "web-main.stations.shareSenren.staff.funds", fn() { sfr_rows(c, funds, 2) })
-      sfr_section(c, "web-main.stations.shareSenren.staff.location", fn() {
+      sfr_section(c, "web-main.stations.shareSenren.staff.co", fn(c) { sfr_rows(c, co, 3) })
+      sfr_section(c, "web-main.stations.shareSenren.staff.funds", fn(c) { sfr_rows(c, funds, 2) })
+      sfr_section(c, "web-main.stations.shareSenren.staff.location", fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareSenren.staff.devices", args~), sfr_who)
       })
-      sfr_section(c, "web-main.stations.shareSenren.staff.stunts", fn() {
+      sfr_section(c, "web-main.stations.shareSenren.staff.stunts", fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareSenren.staff.tasks", args~), sfr_who)
       })
-      sfr_section(c, "web-main.stations.shareSenren.staff.song", fn() {
+      sfr_section(c, "web-main.stations.shareSenren.staff.song", fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareSenren.staff.songName"), sfr_who)
         sr_words(c, @sf.t("web-main.stations.shareSenren.staff.singer"), sfr_sub)
       })
-      sfr_section(c, "web-main.stations.shareSenren.staff.done", fn() {
+      sfr_section(c, "web-main.stations.shareSenren.staff.done", fn(c) {
         sr_words(c, @sf.t("web-main.stations.shareSenren.staff.episodes", args~), sfr_who)
         sr_words(c, @sf.t("web-main.stations.shareTagline"), sfr_sub)
       })
     })
     |> ignore
-    c.box(style=sfr_end, left=0.0, top=sfr_end_top, fn() {
+    c.box(style=sfr_end, left=0.0, top=sfr_end_top, fn(c) {
       sr_rich(c, gc_caps(@sf.t("web-main.stations.shareSenren.staff.end"), sfr_caps_small, true), sfr_end_words)
       sr_rich(c, [@ui.span(@sf.t("web-main.stations.shareSenren.staff.thanks"), italic=true)], sfr_thanks)
     })
     |> ignore
-    c.box(style=sfr_foot, left=sfr_side, top=sfr_h - sfr_foot_up, fn() {
+    c.box(style=sfr_foot, left=sfr_side, top=sfr_h - sfr_foot_up, fn(c) {
       sr_brand(c, sfr_brand)
-      c.box(style=gc_grow, fn() {  }) |> ignore
+      c.box(style=gc_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), sfr_at)
     })
     |> ignore
@@ -2351,17 +2351,17 @@ fn sr_staff(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 
 ///|
 /// A credit: its role spread small in the gold, who under it.
-fn sfr_section(c : @ui.Ctx, role : String, body : () -> Unit) -> Unit {
-  c.box(style=sfr_sec, fn() {
+fn sfr_section(c : Pen, role : String, body : (Pen) -> Unit) -> Unit {
+  c.box(style=sfr_sec, fn(c) {
     sr_words(c, gc_spread(@sf.t(role)), sfr_role)
-    body()
+    body(c)
   })
   |> ignore
 }
 
 ///|
 /// Names `per` to a line, a gold dot between each two.
-fn sfr_rows(c : @ui.Ctx, names : Array[String], per : Int) -> Unit {
+fn sfr_rows(c : Pen, names : Array[String], per : Int) -> Unit {
   let mut i = 0
   while i < names.length() {
     let runs : Array[@ui.Run] = []
@@ -2513,40 +2513,40 @@ let sfr_at : @ui.TextStyle = @ui.text_style(size=Xs, color=Data(sfr_at_ink), wra
 /// shares of their chats archived, each a red dot with its count and date under it. Its fields: 丛雨丸 of 建实神社, its
 /// length the top model's tokens, its price their cost, 锋利无比 (no blunt blade), once snapped by 有地将臣. Signed by
 /// still.fail with its seal, when; 丛雨 pouting in a taped photo, 「吾辈才不是钝刀！」.
-fn sr_sword(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_sword(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let days = sr_days(fleet)
   let small = fn(runs : Array[@ui.Run]) {
     runs.map(fn(r) { @ui.span(r.text, scale=swd_small_scale, color=swd_note) })
   }
-  sr_box(c, id, flat, swd_ground, fn() {
-    c.box(style=swd_pad, fn() {
-      c.box(style=swd_frame, fn() {
-        c.box(style=swd_inner, fn() {
-          c.box(style=swd_corner, left=swd_corner_in, top=swd_corner_top, fn() { sr_words(c, "❖", swd_corner_mark) }) |> ignore
-          c.box(style=swd_corner, right=swd_corner_in, top=swd_corner_top, fn() { sr_words(c, "❖", swd_corner_mark) }) |> ignore
-          c.box(style=swd_heads, fn() {
+  sr_box(c, flat, swd_ground, fn(c) {
+    c.box(style=swd_pad, fn(c) {
+      c.box(style=swd_frame, fn(c) {
+        c.box(style=swd_inner, fn(c) {
+          c.box(style=swd_corner, left=swd_corner_in, top=swd_corner_top, fn(c) { sr_words(c, "❖", swd_corner_mark) }) |> ignore
+          c.box(style=swd_corner, right=swd_corner_in, top=swd_corner_top, fn(c) { sr_words(c, "❖", swd_corner_mark) }) |> ignore
+          c.box(style=swd_heads, fn(c) {
             sr_words(c, gc_spread_han(@sf.t("web-main.stations.shareSenren.sword.kick")), swd_kick)
             sr_rich(c, [@ui.span(gc_spread_han(@sf.t("web-main.stations.shareSenren.sword.title")), scale=swd_title_scale)], swd_title)
           })
           |> ignore
-          c.box(style=swd_seal_big, right=swd_seal_right, top=swd_seal_top, fn() {
+          c.box(style=swd_seal_big, right=swd_seal_right, top=swd_seal_top, fn(c) {
             swd_seal_words(c, @sf.t("web-main.stations.shareSenren.sword.seal1"), swd_seal_big_words)
           })
           |> ignore
           // the oshigata
-          c.box(style=swd_blade_row, fn() {
-            c.box(style=swd_blade_box, fn() {
-              c.shapes(swd_blade(days), w=Px(swd_blade_w), h=Px(swd_blade_h)) |> ignore
+          c.box(style=swd_blade_row, fn(c) {
+            c.box(style=swd_blade_box, fn(c) {
+              c.shapes(swd_blade(days), swd_blade_w, swd_blade_h) |> ignore
               let mid = (swd_back(0.0) + 1.8 + swd_edge(0.0) - 4.5) / 2.0
-              c.box(style=swd_tang_box, left=swd_tang_x - swd_tang_w / 2.0, top=mid - swd_tang_up, fn() {
+              c.box(style=swd_tang_box, left=swd_tang_x - swd_tang_w / 2.0, top=mid - swd_tang_up, fn(c) {
                 sr_rich(c, [@ui.span(@sf.t("web-main.stations.shareSenren.sword.tang"), scale=swd_tang_scale)], swd_tang_words)
               })
               |> ignore
               for i, d in days {
                 let x = swd_x(swd_knot_t(i, days.length()))
-                c.box(style=swd_label_box, left=x - swd_label_w / 2.0, top=swd_n_top, fn() { sr_words(c, d.2, swd_n) }) |> ignore
-                c.box(style=swd_label_box, left=x - swd_label_w / 2.0, top=swd_date_top, fn() {
+                c.box(style=swd_label_box, left=x - swd_label_w / 2.0, top=swd_n_top, fn(c) { sr_words(c, d.2, swd_n) }) |> ignore
+                c.box(style=swd_label_box, left=x - swd_label_w / 2.0, top=swd_date_top, fn(c) {
                   sr_rich(
                     c,
                     [@ui.span(if d.4 { @sf.t("web-main.stations.shareSenren.sword.today") } else { d.0 }, scale=swd_date_scale)],
@@ -2563,8 +2563,8 @@ fn sr_sword(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
             |> ignore
           })
           |> ignore
-          c.box(style=swd_rule, fn() {  }) |> ignore
-          c.box(style=swd_fields, fn() {
+          c.box(style=swd_rule, fn(_) {  }) |> ignore
+          c.box(style=swd_fields, fn(c) {
             swd_field(c, "web-main.stations.shareSenren.sword.kind", [@ui.span(@sf.t("web-main.stations.shareSenren.sword.kindV"))], true)
             swd_field(
               c,
@@ -2603,14 +2603,14 @@ fn sr_sword(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
           })
           |> ignore
           // the signature, and 丛雨 pouting
-          c.box(style=swd_bottom, fn() {
-            c.box(style=swd_sign, fn() {
+          c.box(style=swd_bottom, fn(c) {
+            c.box(style=swd_sign, fn(c) {
               sr_words(c, @sf.t("web-main.stations.shareSenren.sword.cert"), swd_cert)
               sr_words(c, sr_arg(args, "at"), swd_date_line)
-              c.box(style=swd_by, fn() {
+              c.box(style=swd_by, fn(c) {
                 sr_words(c, @sf.t("web-main.stations.shareSenren.sword.by"), swd_by_words)
                 sr_brand(c, swd_brand)
-                c.box(style=swd_seal_small, fn() {
+                c.box(style=swd_seal_small, fn(c) {
                   swd_seal_words(c, @sf.t("web-main.stations.shareSenren.sword.seal2"), swd_seal_small_words)
                 })
                 |> ignore
@@ -2619,18 +2619,18 @@ fn sr_sword(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
               sr_words(c, @sf.t("web-main.stations.shareTagline"), swd_tag)
             })
             |> ignore
-            c.box(style=swd_pout, fn() {
-              c.box(style=swd_photo, fn() {
+            c.box(style=swd_pout, fn(c) {
+              c.box(style=swd_photo, fn(c) {
                 gc_pic(c, swd_photo_cut, "b6-chibi-murasame-pout", 1.0, swd_photo_d, swd_photo_d, swd_photo_zoom, 0.5, swd_photo_fy)
               })
               |> ignore
-              c.box(style=swd_tape, left=swd_tape_x, top=swd_tape_y, fn() {  }) |> ignore
+              c.box(style=swd_tape, left=swd_tape_x, top=swd_tape_y, fn(_) {  }) |> ignore
             })
             |> ignore
-            c.box(style=swd_bubble, right=swd_bubble_right, bottom=swd_bubble_bottom, fn() {
+            c.box(style=swd_bubble, right=swd_bubble_right, bottom=swd_bubble_bottom, fn(c) {
               sr_words(c, @sf.t("web-main.stations.shareSenren.sword.pout"), swd_bubble_words)
-              c.box(right=swd_tail_right, bottom=-swd_tail_h + swd_tail_over, fn() {
-                c.shapes(swd_tail(), w=Px(swd_tail_w), h=Px(swd_tail_h)) |> ignore
+              c.box(right=swd_tail_right, bottom=-swd_tail_h + swd_tail_over, fn(c) {
+                c.shapes(swd_tail(), swd_tail_w, swd_tail_h) |> ignore
               })
               |> ignore
             })
@@ -2648,20 +2648,20 @@ fn sr_sword(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
 
 ///|
 /// A field of the certificate: its name spread in the red, what it is after it; a hairline over it but the first's.
-fn swd_field(c : @ui.Ctx, key : String, runs : Array[@ui.Run], first : Bool) -> Unit {
+fn swd_field(c : Pen, key : String, runs : Array[@ui.Run], first : Bool) -> Unit {
   if !first {
-    c.box(style=swd_field_rule, fn() {  }) |> ignore
+    c.box(style=swd_field_rule, fn(_) {  }) |> ignore
   }
-  c.box(style=swd_field_row, fn() {
-    c.box(style=swd_k_box, fn() { sr_words(c, gc_spread_han(@sf.t(key)), swd_k) }) |> ignore
-    c.box(style=gc_grow, fn() { sr_rich(c, runs, swd_v) }) |> ignore
+  c.box(style=swd_field_row, fn(c) {
+    c.box(style=swd_k_box, fn(c) { sr_words(c, gc_spread_han(@sf.t(key)), swd_k) }) |> ignore
+    c.box(style=gc_grow, fn(c) { sr_rich(c, runs, swd_v) }) |> ignore
   })
   |> ignore
 }
 
 ///|
 /// A seal's four characters, two over two.
-fn swd_seal_words(c : @ui.Ctx, words : String, style : @ui.TextStyle) -> Unit {
+fn swd_seal_words(c : Pen, words : String, style : @ui.TextStyle) -> Unit {
   let chars : Array[String] = []
   for ch in words {
     chars.push(ch.to_string())
@@ -3200,22 +3200,22 @@ let swd_tail_right : Double = 18.0
 /// lantern a day, each its chats archived, as bright as its share of the most (today's pink). Under her: 七夜点亮 the
 /// week's archived 盏灯笼, the tokens offered and what the incense cost, the chats still dancing and on how many devices,
 /// and that the shrine princess dances it only at the spring festival.
-fn sr_kagura(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
+fn sr_kagura(c : Pen, fleet : Json?, flat : Bool) -> Pen {
   let args = gc_args(fleet)
   let days = sr_days(fleet)
-  sr_box(c, id, flat, kg_ground, fn() {
+  sr_box(c, flat, kg_ground, fn(c) {
     sr_art(c, "d2-yoshino-kagura", @sf.share_w_most, kg_art_h, at=kg_art_at) |> ignore
-    c.box(style=kg_rest, fn() {  }) |> ignore
-    c.box(style=kg_top_shade, left=0.0, top=0.0, fn() { gc_grad(c, kg_top_stops, kg_top_bands) }) |> ignore
-    c.box(style=kg_shade, left=0.0, top=kg_shade_top, fn() { gc_grad(c, kg_shade_stops, kg_shade_bands) }) |> ignore
-    c.box(left=0.0, top=0.0, fn() { c.shapes(kg_cord(), w=Px(@sf.share_w_most), h=Px(kg_cord_h)) |> ignore }) |> ignore
-    c.box(style=kg_lanterns, left=kg_lanterns_x, top=kg_lanterns_y, fn() {
+    c.box(style=kg_rest, fn(_) {  }) |> ignore
+    c.box(style=kg_top_shade, left=0.0, top=0.0, fn(c) { gc_grad(c, kg_top_stops, kg_top_bands) }) |> ignore
+    c.box(style=kg_shade, left=0.0, top=kg_shade_top, fn(c) { gc_grad(c, kg_shade_stops, kg_shade_bands) }) |> ignore
+    c.box(left=0.0, top=0.0, fn(c) { c.shapes(kg_cord(), @sf.share_w_most, kg_cord_h) |> ignore }) |> ignore
+    c.box(style=kg_lanterns, left=kg_lanterns_x, top=kg_lanterns_y, fn(c) {
       for d in days {
         kg_lantern(c, d)
       }
     })
     |> ignore
-    c.box(style=kg_panel, left=kg_side, top=kg_panel_top, fn() {
+    c.box(style=kg_panel, left=kg_side, top=kg_panel_top, fn(c) {
       sr_words(c, gc_spread_han(@sf.t("web-main.stations.shareSenren.kagura.kick")), kg_kick)
       sr_rich(
         c,
@@ -3224,14 +3224,14 @@ fn sr_kagura(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
         }),
         kg_title,
       )
-      c.box(style=kg_lines, fn() {
+      c.box(style=kg_lines, fn(c) {
         for line in [
           ("web-main.stations.shareSenren.kagura.l1", sr_arg(args, "model")),
           ("web-main.stations.shareSenren.kagura.l2", sr_arg(args, "devices")),
           ("web-main.stations.shareSenren.kagura.l3", ""),
         ] {
-          c.box(style=kg_line, fn() {
-            c.box(style=kg_dot, fn() {  }) |> ignore
+          c.box(style=kg_line, fn(c) {
+            c.box(style=kg_dot, fn(_) {  }) |> ignore
             sr_rich(c, gc_plain(sr_said(line.0, args, gc_white, scale=kg_line_n_scale), line.1), kg_line_words)
           })
           |> ignore
@@ -3240,9 +3240,9 @@ fn sr_kagura(c : @ui.Ctx, fleet : Json?, id : Int, flat : Bool) -> Int {
       |> ignore
     })
     |> ignore
-    c.box(style=kg_foot, left=kg_side, top=kg_h - kg_foot_up, fn() {
+    c.box(style=kg_foot, left=kg_side, top=kg_h - kg_foot_up, fn(c) {
       sr_brand(c, kg_brand)
-      c.box(style=gc_grow, fn() {  }) |> ignore
+      c.box(style=gc_grow, fn(_) {  }) |> ignore
       sr_words(c, sr_arg(args, "at"), kg_at)
     })
     |> ignore
@@ -3268,7 +3268,7 @@ fn gc_plain(runs : Array[@ui.Run], plain : String) -> Array[@ui.Run] {
 ///|
 /// A day's lantern on its string: its cap, its body as bright as the day's share of the most (today's pink), its
 /// count on it, its tail; the date under it.
-fn kg_lantern(c : @ui.Ctx, d : (String, String, String, Double, Bool)) -> Unit {
+fn kg_lantern(c : Pen, d : (String, String, String, Double, Bool)) -> Unit {
   let (label, _, n, share, today) = d
   let lit = gc_clamp(kg_dim_least + (1.0 - kg_dim_least) * share, 0.0, 1.0)
   let o = kg_opacities[(lit * 20.0).round().to_int()]
@@ -3277,28 +3277,28 @@ fn kg_lantern(c : @ui.Ctx, d : (String, String, String, Double, Bool)) -> Unit {
   let outer = if today { kg_today_outer } else { kg_outer }
   let mid = if today { kg_today_mid } else { kg_mid }
   let core = if today { kg_today_core } else { kg_core_ink }
-  c.box(style=kg_lantern_box, fn() {
-    c.box(style=kg_halo.then(@ui.style(bg=Data(halo))), left=kg_halo_x, top=kg_halo_y, fn() {  }) |> ignore
-    c.box(style=kg_string, fn() {  }) |> ignore
-    c.box(style=kg_cap, fn() {  }) |> ignore
-    c.box(style=kg_body.then(@ui.style(opacity=o, bg=Data(outer))), fn() {
-      c.box(style=kg_glow.then(@ui.style(bg=Data(mid))), fn() {
-        c.box(style=kg_core.then(@ui.style(bg=Data(core))), fn() {  }) |> ignore
+  c.box(style=kg_lantern_box, fn(c) {
+    c.box(style=kg_halo.then(@ui.style(bg=Data(halo))), left=kg_halo_x, top=kg_halo_y, fn(_) {  }) |> ignore
+    c.box(style=kg_string, fn(_) {  }) |> ignore
+    c.box(style=kg_cap, fn(_) {  }) |> ignore
+    c.box(style=kg_body.then(@ui.style(opacity=o, bg=Data(outer))), fn(c) {
+      c.box(style=kg_glow.then(@ui.style(bg=Data(mid))), fn(c) {
+        c.box(style=kg_core.then(@ui.style(bg=Data(core))), fn(_) {  }) |> ignore
       })
       |> ignore
-      c.layer(fn() {
-        c.box(style=kg_ribs, fn() {
-          c.box(style=kg_rib, fn() {  }) |> ignore
-          c.box(style=gc_grow, fn() {  }) |> ignore
-          c.box(style=kg_rib, fn() {  }) |> ignore
+      c.layer(fn(c) {
+        c.box(style=kg_ribs, fn(c) {
+          c.box(style=kg_rib, fn(_) {  }) |> ignore
+          c.box(style=gc_grow, fn(_) {  }) |> ignore
+          c.box(style=kg_rib, fn(_) {  }) |> ignore
         })
         |> ignore
       })
       |> ignore
-      c.layer(fn() { c.box(style=kg_n_box, fn() { sr_words(c, n, kg_n) }) |> ignore }) |> ignore
+      c.layer(fn(c) { c.box(style=kg_n_box, fn(c) { sr_words(c, n, kg_n) }) |> ignore }) |> ignore
     })
     |> ignore
-    c.box(style=kg_tail, fn() {  }) |> ignore
+    c.box(style=kg_tail, fn(_) {  }) |> ignore
     sr_words(c, if today { @sf.t("web-main.stations.shareSenren.kagura.today") } else { label }, if today { kg_date_today } else { kg_date })
   })
   |> ignore

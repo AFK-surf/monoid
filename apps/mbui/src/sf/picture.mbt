@@ -420,6 +420,28 @@ let opencode_frame : @ui.Style = @ui.css("border=B1_5 border_color=Fg")
 /// at its ends; a share past 1 (two accounts' quota past one's) goes round again over it, each turn past the first
 /// deeper (ring_turn_keep), the last whole one under what is left of it.
 pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track : Int64, most~ : Int) -> Int {
+  let (key, d) = rings_drawn(shares, side, track, most)
+  vector(c, key, d, side)
+}
+
+///|
+/// The rings (rings') as a node of the window's tree in `parent`, `side` across. The node.
+#callsite(autofill(loc))
+pub fn rings_node(
+  parent : @view.View,
+  shares : Array[(Double, Int64)],
+  side : Double,
+  track : Int64,
+  most~ : Int,
+  loc~ : SourceLoc,
+) -> @view.View {
+  let (_, d) = rings_drawn(shares, side, track, most)
+  parent.box(made_for=loc, fn(v) { v.width(Is(Some(side))).height(Is(Some(side))).picture(Is(Some(d))) |> ignore })
+}
+
+///|
+/// The rings' picture (rings'), and the key it is kept by.
+fn rings_drawn(shares : Array[(Double, Int64)], side : Double, track : Int64, most : Int) -> (String, @pixels.Vector) {
   let mid = side / 2.0
   let n = (if most > 1 { most } else { 1 }).to_double()
   let width = mid / (n + ring_hole + ring_apart * (n - 1.0))
@@ -459,7 +481,7 @@ pub fn rings(c : @ui.Ctx, shares : Array[(Double, Int64)], side : Double, track 
       layers.push(path("M \{mid} \{mid - r} A \{r} \{r} 0 \{large} 1 \{x} \{y}", turn(whole.to_int())))
     }
   }
-  vector(c, "rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers }, side)
+  ("rings/\{side}/\{width}/\{gap}/\{track}/" + keys.join(","), { w: side, h: side, layers })
 }
 
 ///|

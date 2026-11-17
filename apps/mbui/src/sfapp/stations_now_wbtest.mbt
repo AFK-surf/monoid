@@ -30,7 +30,7 @@ test "wide: the rail's 用量 place, the pointer resting on it, offers 分享卡
 
 ///|
 test "the card to share is one picture, in a dialog as on a phone: what leads the first's share over the rings, the share beside them, today over the last 7 days, each day a bar, the chats at work, still.fail's line, each part in the same place" {
-  // (windows with the room for all of it: @sf.whole_fitted draws it its own size; each its own app, the card opened
+  // (windows with the room for all of it: the stage draws it its own size; each its own app, the card opened
   // as it starts)
   let desk_src = fixture_app("share-card")
   let desk = @ui.Tester::new(fn(c) { view(c, desk_src) }, tree=app_tree(desk_src), w=1440.0, h=1000.0, platform=0)
@@ -135,9 +135,10 @@ let picture_part_words : Array[String] = [
 
 ///|
 /// Where each of picture_part_words is in the picture `t` shows, from what leads its share (用 6 个 Claude 订阅账号消耗了),
-/// rounded to the point.
+/// as it is laid out (where it is drawn, as large as the picture is drawn: picture_drawn_k), rounded to the point.
 fn picture_parts(t : @ui.Tester) -> Array[(String, Int, Int)] {
   let words = picture_words(t)
+  let k = picture_drawn_k(t)
   let lead = words.filter(fn(w) { w.0 == "用 6 个 Claude 订阅账号消耗了" })
   if lead.length() != 1 {
     return []
@@ -148,7 +149,7 @@ fn picture_parts(t : @ui.Tester) -> Array[(String, Int, Int)] {
     // (in the picture: under its head, as wide as it is; 今天 is the chats' heading too)
     for w in words {
       if w.0 == s && w.1 > lx - 40.0 && w.1 < lx + 360.0 && w.2 > ly - 40.0 {
-        parts.push((s, (w.1 - lx).round().to_int(), (w.2 - ly).round().to_int()))
+        parts.push((s, ((w.1 - lx) / k).round().to_int(), ((w.2 - ly) / k).round().to_int()))
         break
       }
     }
@@ -365,12 +366,13 @@ test "stage, 大屏 keyboard and mouse in a tall and a short window, touch in a 
   }
   // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
   // strip as wide as the picture is laid out, from its start, scrolled, the stage as wide; in sets since, their names
-  // over the strip: the stage a line taller where the window has the room, 840 by 1100)
+  // over the strip: the stage a line taller where the window has the room, 840 by 1100; its line where it is drawn,
+  // as large, since the picture is made as nodes: its old body's words were said where they were laid out)
   assert_eq(out, [
-    "(1440, 1000, 0): dialog Some((分享卡片, (540, 24, 360, 952))) line [(564, 761.6, 312, 21)] look Some((540, 795.2, 78, 124.8)) close Some((635.6, 940, 58, 36)) copy Some((701.6, 940, 102.7, 36)) save None squeeze 0",
-    "(1280, 640, 0): dialog Some((分享卡片, (460, 24, 360, 592))) line [(484, 761.6, 312, 21)] look Some((460, 435.2, 78, 124.8)) close Some((555.6, 580, 58, 36)) copy Some((621.6, 580, 102.7, 36)) save None squeeze 0",
+    "(1440, 1000, 0): dialog Some((分享卡片, (540, 24, 360, 952))) line [(577.1, 699.8, 285.8, 19.2)] look Some((540, 795.2, 78, 124.8)) close Some((635.6, 940, 58, 36)) copy Some((701.6, 940, 102.7, 36)) save None squeeze 0",
+    "(1280, 640, 0): dialog Some((分享卡片, (460, 24, 360, 592))) line [(568.8, 360.5, 142.3, 9.6)] look Some((460, 435.2, 78, 124.8)) close Some((555.6, 580, 58, 36)) copy Some((621.6, 580, 102.7, 36)) save None squeeze 0",
     "(840, 1100, 1): dialog Some((分享卡片, (240, 41.2, 360, 1017.6))) line [(264, 778.8, 312, 21)] look Some((240, 878, 78, 124.8)) close Some((321.8, 1022.8, 62, 36)) copy None save Some((391.8, 1022.8, 126.4, 36)) squeeze 0",
-    "(390, 844, 2): dialog Some((分享卡片, (24, 24, 342, 796))) line [(39, 761.6, 312, 21)] look Some((15, 639.2, 78, 124.8)) close Some((96.8, 784, 62, 36)) copy None save Some((166.8, 784, 126.4, 36)) squeeze 0",
+    "(390, 844, 2): dialog Some((分享卡片, (24, 24, 342, 796))) line [(83.2, 552.7, 223.7, 15.1)] look Some((15, 639.2, 78, 124.8)) close Some((96.8, 784, 62, 36)) copy None save Some((166.8, 784, 126.4, 36)) squeeze 0",
   ])
   assert_eq(drawn, [true, true, true, true])
 }
@@ -391,11 +393,12 @@ test "stage, 大屏 keyboard and mouse: the window made shorter and taller again
     ink.push("\{h}: \{stage_ink(t, 1280.0, h)}")
   }
   // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; 34 of them since 千恋＊万花's: their
-  // strip as wide as the picture is laid out, from its start, scrolled, the stage as wide)
+  // strip as wide as the picture is laid out, from its start, scrolled, the stage as wide; its line where it is drawn, as large,
+  // since the picture is made as nodes: its old body's words were said where they were laid out)
   assert_eq(out, [
-    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
-    "560: dialog Some((分享卡片, (460, 24, 360, 512))) line [(484, 761.6, 312, 21)] look Some((460, 355.2, 78, 124.8)) close Some((555.6, 500, 58, 36)) copy Some((621.6, 500, 102.7, 36)) save None squeeze 0",
-    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(484, 761.6, 312, 21)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
+    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(536.9, 511.3, 206.1, 13.9)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
+    "560: dialog Some((分享卡片, (460, 24, 360, 512))) line [(584.8, 285.1, 110.4, 7.4)] look Some((460, 355.2, 78, 124.8)) close Some((555.6, 500, 58, 36)) copy Some((621.6, 500, 102.7, 36)) save None squeeze 0",
+    "800: dialog Some((分享卡片, (460, 24, 360, 752))) line [(536.9, 511.3, 206.1, 13.9)] look Some((460, 595.2, 78, 124.8)) close Some((555.6, 740, 58, 36)) copy Some((621.6, 740, 102.7, 36)) save None squeeze 0",
   ])
   // (what it paints: its night over the window, the picture as large as it is drawn)
   // (as main has it, 435d3ba8, its buttons 0.2 wider since a small icon's strokes are (sf/icons.mbt stroke_k); the looks each their picture drawn small, 2026-11-02; the stage's own words alone since
@@ -454,8 +457,9 @@ test "stage, 大屏 keyboard and mouse: the focus as it opens and after a Tab: a
   t.key(@ui.key_tab)
   t.run_for(@kit.presence_in_ms)
   let tabbed = focused()
-  // (as main has it, 435d3ba8: nothing of it given the focus, nor by a Tab)
-  assert_eq(["open \{@ui.some_text(open)}", "tab \{@ui.some_text(tabbed)}"], ["open None", "tab None"])
+  // (nothing of it given the focus as it opens; a Tab to its first control, the sets' first: made as nodes, each a
+  // control the keyboard reaches, where its old body's took no Tab)
+  assert_eq(["open \{@ui.some_text(open)}", "tab \{@ui.some_text(tabbed)}"], ["open None", "tab Some(Tab still.fail)"])
 }
 
 
@@ -484,6 +488,8 @@ test "a look with files of its own (千恋＊万花's): handed out only once its
       }
     }
   }
+  // (come together, as a device takes the core's messages come between two frames)
+  @signals.start_batch()
   for file in asked {
     if file.has_suffix(".webp") {
       answer(file, @sffixture.fixture_looks_answer(file))
@@ -491,6 +497,7 @@ test "a look with files of its own (千恋＊万花's): handed out only once its
   }
   answer("1/face-400.gz", Err({ "code": "fonts", "message": "下载到的文件不对" }))
   answer("1/face-600.gz", @sffixture.fixture_looks_answer("1/face-600.gz"))
+  @signals.end_batch()
   t.run_for(@kit.presence_in_ms)
   assert_true(t.query(Button, label="保存到相册") is None)
   held.clear()
@@ -506,5 +513,25 @@ test "a look with files of its own (千恋＊万花's): handed out only once its
   match png_size(t.kept()[0].2) {
     Some((pw, _)) => assert_eq(pw, 1080)
     None => fail("not a PNG")
+  }
+}
+
+///|
+/// How large the picture `t` shows is drawn for how large it is laid out (@sf.share_w_most wide): its ground's width as
+/// drawn (the largest instance in share_ground's colour) over that.
+fn picture_drawn_k(t : @ui.Tester) -> Double {
+  let ink = @sf.share_ground
+  let ch = fn(shift : Int) { ((ink >> shift) & 0xFFL).to_double() / 255.0 }
+  let mut widest = 0.0
+  for a in t.drawn_instances() {
+    let near = (a[8] - ch(24)).abs() < 0.01 && (a[9] - ch(16)).abs() < 0.01 && (a[10] - ch(8)).abs() < 0.01
+    if a[5] == 0.0 && near && a[11] > 0.5 && a[2] > widest {
+      widest = a[2]
+    }
+  }
+  if widest > 0.0 {
+    widest / @sf.share_w_most
+  } else {
+    1.0
   }
 }

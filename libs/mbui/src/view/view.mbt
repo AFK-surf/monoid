@@ -4366,17 +4366,42 @@ pub fn Tree::clear_of(self : Tree, top : Double, right : Double, foot : Double, 
 /// Laid out over what holds it (true), filling all of its room whatever else it holds, or in its turn among them: what
 /// lies one over another (a stack's pages, what floats over them) said so, drawn in the order they are held.
 /// `from_top`: over it from its top across all of its width, as tall as what it holds rather than as tall as it (a page
-/// of a stack laid aside as another shows, kept as tall as it stood).
+/// of a stack laid aside as another shows, kept as tall as it stood). `edges`: put where it says over what holds it,
+/// so far in from its left, top, right and foot (CSS's position: absolute, an old view's box `left`, `top`, `right`,
+/// `bottom`), each it says none of left to its size and the others (a picture's sticker put by its corner), in place
+/// of filling all of it.
 #callsite(autofill(loc))
-pub fn View::over(self : View, on : Live[Bool], from_top? : Bool = false, loc~ : SourceLoc) -> View {
+pub fn View::over(
+  self : View,
+  on : Live[Bool],
+  from_top? : Bool = false,
+  edges? : (Double?, Double?, Double?, Double?),
+  loc~ : SourceLoc,
+) -> View {
   self.bind(loc~, Over, on, Layout, fn(on) {
     let s = self.tree.nodes[self.at].flex.style
     let inset : @flex.Dim = if on { Pt(0.0) } else { Auto }
+    let at = fn(d : Double?) -> @flex.Dim {
+      match d {
+        Some(p) if on => Pt(p)
+        _ => Auto
+      }
+    }
     s.position = if on { Absolute } else { Relative }
-    s.set_inset_left(inset)
-    s.set_inset_top(inset)
-    s.set_inset_right(inset)
-    s.set_inset_bottom(if from_top { Auto } else { inset })
+    match edges {
+      Some((l, t, r, b)) => {
+        s.set_inset_left(at(l))
+        s.set_inset_top(at(t))
+        s.set_inset_right(at(r))
+        s.set_inset_bottom(at(b))
+      }
+      None => {
+        s.set_inset_left(inset)
+        s.set_inset_top(inset)
+        s.set_inset_right(inset)
+        s.set_inset_bottom(if from_top { Auto } else { inset })
+      }
+    }
   })
   self
 }

@@ -351,7 +351,15 @@ fn Ctx::shown_whole(self : Ctx) -> (Array[Bool], Array[Int]) {
           b.x + b.fw <= a.x + a.fw + gap_slack &&
           b.y + b.fh <= a.y + a.fh + gap_slack
         )
-      whole[i] = whole[p] && b.opacity > 0.01 && inside && !moved && cut_in && !a.sideways && !self.island_scrolls(i)
+      // (nor in a picture of a part drawn another size than laid out: its places drawn, its words laid out, tree_drawn_scaled)
+      whole[i] = whole[p] &&
+        b.opacity > 0.01 &&
+        inside &&
+        !moved &&
+        cut_in &&
+        !a.sideways &&
+        !self.island_scrolls(i) &&
+        !tree_drawn_scaled.contains(i)
       layer[i] = if aside { i } else { layer[p] }
     }
   }

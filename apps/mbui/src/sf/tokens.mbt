@@ -1843,8 +1843,8 @@ pub let share_ground : Int64 = 0x111114FFL
 ///|
 /// How wide it is laid out: one picture whatever it is seen on (2026-10-26 用户「感觉分享图片不应该分电脑和手机…按最合理的
 /// 布局生成」), a portrait poster as a phone shows what is shared (1080 pixels across at a phone's 3), laid out the one
-/// way (narrower only where its room is), drawn smaller where it has not the room's height (a short window:
-/// @sf.whole_fitted).
+/// way whatever its room, drawn smaller where it has not the room's width or height (a phone, a short window: the
+/// stage's stage_fit_node).
 pub let share_w_most : Double = 360.0
 
 ///|

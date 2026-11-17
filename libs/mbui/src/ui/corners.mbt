@@ -407,6 +407,11 @@ fn[T] Ctx::with_tree_nodes(
     if facts && holder >= 0 && self.tree_scaled(d.id, held[holder].0.id, contents) {
       tree_scaled_at.add(i)
     }
+    // (drawn another size than laid out, itself or by what holds it: a picture of a part drawn small or large, its
+    // places drawn and its words laid out, tree_drawn_scaled)
+    if !laid && scales[k] != 1.0 {
+      tree_drawn_scaled.add(i)
+    }
     // (said to be a picture, as an old view's box is by its semantics: Ctx::pictures)
     if tree.says_picture(d.id) {
       tree_pictures.add(i)
@@ -448,6 +453,7 @@ fn[T] Ctx::with_tree_nodes(
   }
   tree_field_boxes.clear()
   tree_scaled_at.clear()
+  tree_drawn_scaled.clear()
   corner_scale_at.clear()
   tree_draws_at.clear()
   tree_marks_at.clear()

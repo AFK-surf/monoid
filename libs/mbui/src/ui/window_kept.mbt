@@ -478,6 +478,7 @@ fn window_kept_ui_5() -> Array[WindowKept] {
 fn window_kept_ui_6() -> Array[WindowKept] {
   [
     kept_set(tree_scaled_at),
+    kept_set(tree_drawn_scaled),
     kept_ref(tree_nodes_from, fn() { -1 }),
     kept_set(tree_draws_at),
     kept_set(tree_marks_at),

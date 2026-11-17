@@ -29,9 +29,16 @@ fn looks_files_reset() -> Unit {
 }
 
 ///|
-/// File `file` of the looks: asked of the core the first time (`here` told its bytes once it is), how it stands since.
-pub fn looks_file(src : Source, file : String, here : (Bytes) -> Unit) -> LooksFile {
+/// File `file` of the looks: asked of the core the first time (`here` told its bytes once it is), how it stands since;
+/// asked again where it is here but what it was told is `kept` no more (a picture let go of).
+pub fn looks_file(src : Source, file : String, here : (Bytes) -> Unit, kept? : () -> Bool = fn() { true }) -> LooksFile {
   match looks_files.get(file) {
+    // (here, but what it was told let go of since: asked again, told again)
+    Some(LooksHere(_)) if !kept() => {
+      looks_files_here[file] = here
+      looks_file_ask(src, file)
+      looks_files.get(file).unwrap_or(LooksComing)
+    }
     Some(s) => s
     None => {
       looks_files_here[file] = here
