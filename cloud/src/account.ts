@@ -8,7 +8,7 @@ import { ACCESS_TTL_SEC, REFRESH_RETRY_SEC, SESSION_IDLE_SEC, SESSION_TTL_SEC, b
 
 const LIMITS = { sessions: 16, requestsPerMinute: 120 };
 /** What of an account moves into another cloud (moveExport). */
-const MOVED_KEYS = ["account", "personal-lock", "beta"];
+const MOVED_KEYS = ["account", "personal-lock", "personal-lock-aside", "beta"];
 type Retry = { hash: string; request: string; until: number; response: string };
 /** Why a session ended, kept a while (the last 32) for the span of a refresh that finds it gone. */
 type Ended = { id: string; at: number; why: "reused" | "logout" | "logout_all" | "removed" | "blocked" };
