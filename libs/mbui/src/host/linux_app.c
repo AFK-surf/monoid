@@ -576,6 +576,7 @@ static int mods_of(GdkModifierType m) {
   return ((m & GDK_SHIFT_MASK) ? 1 : 0) | ((m & GDK_CONTROL_MASK) ? 2 : 0) | ((m & GDK_ALT_MASK) ? 4 : 0) |
          ((m & GDK_SUPER_MASK) ? 8 : 0);
 }
+int32_t mb_host_mods_held(void);
 
 // the device beyond the window (device.mbt): a key catcher's keys, the clipboard read
 #include "linux_device.h"
@@ -843,6 +844,13 @@ static gboolean on_key(GtkEventControllerKey *k, guint keyval, guint keycode, Gd
   win_put_back(back);
   return r;
 }
+static gboolean on_modifiers(GtkEventControllerKey *k, GdkModifierType state, gpointer data) {
+  (void)k;
+  int back = win_in(data);
+  mb_cb.key(0, mods_of(state));
+  win_put_back(back);
+  return FALSE;
+}
 static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer data) {
   int back = win_in(data);
   gboolean r = on_event_here(c, ev, data);
@@ -851,11 +859,13 @@ static gboolean on_event(GtkEventControllerLegacy *c, GdkEvent *ev, gpointer dat
 }
 static void on_focus_in(GtkEventControllerFocus *f, gpointer data) {
   int back = win_in(data);
+  mb_cb.key(0, mb_host_mods_held());
   on_focus_in_here(f, data);
   win_put_back(back);
 }
 static void on_focus_out(GtkEventControllerFocus *f, gpointer data) {
   int back = win_in(data);
+  mb_cb.key(0, 0);
   on_focus_out_here(f, data);
   win_put_back(back);
 }
@@ -1076,6 +1086,7 @@ static void win_parts(void) {
   gtk_widget_add_controller(ws->area, events);
   ws->keys = gtk_event_controller_key_new();
   g_signal_connect(ws->keys, "key-pressed", G_CALLBACK(on_key), wid);
+  g_signal_connect(ws->keys, "modifiers", G_CALLBACK(on_modifiers), wid);
   gtk_widget_add_controller(ws->area, ws->keys);
   GtkEventController *focus = gtk_event_controller_focus_new();
   g_signal_connect(focus, "enter", G_CALLBACK(on_focus_in), wid);

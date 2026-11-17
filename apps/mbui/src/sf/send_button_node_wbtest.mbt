@@ -4,19 +4,51 @@
 
 ///|
 /// A window holding one send, as `ready` and `starting` say, its presses counted in `pressed`.
-fn send_tester(ready : @signals.Signal[Bool], starting : @signals.Signal[Bool], pressed : Ref[Int]) -> @ui.Tester {
+fn send_tester(
+  ready : @signals.Signal[Bool],
+  starting : @signals.Signal[Bool],
+  pressed : Ref[Int],
+  icon_now? : () -> String = fn() { "arrow-up" },
+) -> @ui.Tester {
   let t = @ui.Tester::new(fn(_c) {  }, w=200.0, h=160.0, platform=0)
   set_dark(Some(false))
   @ui.set_tree_theme(ui_theme_now)
   @ui.set_view_app(fn(root) {
     root.box(fn(page) {
       page.pad(Is(24.0)).lines_up(Is(Some(Start))) |> ignore
-      send_button_node(page, fn() { "发送" }, fn() { ready.get() }, fn() { starting.get() }, fn() { pressed.val += 1 }) |> ignore
+      send_button_node(page, fn() { "发送" }, fn() { ready.get() }, fn() { starting.get() }, fn() { pressed.val += 1 }, icon_now~) |> ignore
     })
     |> ignore
   })
   t.draw()
   t
+}
+
+///|
+/// The icon drawn in the button's own bounds.
+fn send_drawn_icon(t : @ui.Tester) -> String {
+  guard t.query(Button, label="发送") is Some(button) && @ui.view_tree() is Some(tree) else { return "" }
+  let (x, y, w, h) = button.rect
+  for d in tree.drawn() {
+    let name = tree.drawn_name(d.id)
+    if name.has_prefix("/icon/") && d.x >= x && d.y >= y && d.x + d.w <= x + w && d.y + d.h <= y + h {
+      return name
+    }
+  }
+  ""
+}
+
+///|
+test "send: a changed icon follows its action without drawing its accessible name" {
+  let icon = @signals.signal("plus")
+  let t = send_tester(@signals.signal(true), @signals.signal(false), Ref(0), icon_now=fn() { icon.get() })
+  assert_eq(send_drawn_icon(t), "/icon/plus/")
+  assert_false(t.words().iter().any(fn(w) { w.0 == "发送" }))
+  icon.set("arrow-up")
+  t.draw()
+  assert_eq(send_drawn_icon(t), "/icon/arrow-up/")
+  assert_true(t.query(Button, label="发送") is Some(_))
+  assert_eq(t.audit(), [])
 }
 
 ///|

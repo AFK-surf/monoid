@@ -143,6 +143,17 @@ pub let mod_alt : Int = 4
 pub let mod_cmd : Int = 8
 
 ///|
+// Each window keeps the signal itself, not just its value, so its bindings stay with that window.
+let modifiers_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(0))
+
+///|
+/// The modifiers the window was last told are held. Hosts tell a change even when no other key is pressed, so a
+/// control can follow this in a binding.
+pub fn key_modifiers() -> Int {
+  modifiers_said.val.get()
+}
+
+///|
 priv struct Desk {
   /// what was clicked with the secondary button since the last frame: the target under it and what holds it
   /// (innermost first: Ctx::secondary_press), where

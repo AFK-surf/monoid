@@ -55,6 +55,7 @@ pub fn run_let_go() -> Unit {
   made_forget()
   view_forget()
   frame_watches_let_go()
+  modifiers_said.val.set(0)
 }
 
 ///|
@@ -1650,6 +1651,7 @@ pub fn Tester::app_told(self : Tester, name : String) -> Array[String] {
 /// The keys held down from now on (@ui.mods_held: @ui.mod_alt, mod_cmd…; 0 none).
 pub fn Tester::hold_mods(self : Tester, mods : Int) -> Unit {
   self.fake.mods = mods
+  on_key(0, mods)
 }
 
 ///|

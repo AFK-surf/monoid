@@ -117,6 +117,7 @@ fn window_kept_ui() -> Array[WindowKept] {
 fn window_kept_ui_0() -> Array[WindowKept] {
   [
     kept_ref(the_ctx, fn() { Ctx::new() }),
+    kept_ref(modifiers_said, fn() { @signals.signal(0) }),
     kept_ref(g_view, fn() { fn(_c) { () } }),
     kept_ref(frame_afters, fn() { [] }),
     kept_ref(building, fn() { false }),

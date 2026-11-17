@@ -7,7 +7,7 @@
 ///|
 /// Send in `parent`, named `label` (read out, and its tip in `tips`, over it); `press` done as it is pressed while
 /// `ready()`; while it is not, read out disabled and taking no press nor the focus. While `starting()`, a ring turning
-/// in its middle. The node.
+/// in its middle. `icon_now` changes the arrow where the same control can do another action. The node.
 #callsite(autofill(loc))
 pub fn send_button_node(
   parent : @view.View,
@@ -16,6 +16,7 @@ pub fn send_button_node(
   starting : () -> Bool,
   press : () -> Unit,
   tips? : TipLayer,
+  icon_now? : () -> String = fn() { "arrow-up" },
   loc~ : SourceLoc,
 ) -> @view.View {
   let tip : Ref[TipHand?] = Ref(None)
@@ -60,7 +61,7 @@ pub fn send_button_node(
           icon_node(i, "arrow-up", theme().round.glyph, By(fn() {
             let p = theme().p
             mix(p.canvas, able.shown(v), p.raised)
-          }))
+          }), name_now=icon_now)
           |> ignore
         }
       })

@@ -365,6 +365,8 @@ pub let key_in_meta : Int32
 
 pub let key_in_shift : Int32
 
+pub fn key_modifiers() -> Int32
+
 pub fn key_of_char(Char) -> Int32
 
 pub let key_space : Int32
