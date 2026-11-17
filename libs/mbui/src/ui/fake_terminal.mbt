@@ -940,17 +940,17 @@ impl @hostapi.Host for FakeHost with tm_text(_, id, sel_only) {
 
 ///|
 impl @hostapi.Host for FakeHost with tm_mouse(_, id, action, button, mods, x, y, _w, _h, cw, ch) {
-  guard fake_terminals.get(id) is Some(t) && t.mouse_mode != 0 else { return Bytes::new(0) }
+  guard fake_terminals.get(id) is Some(t) && t.mouse_mode != 0 else { return Bytes::make(0, b'\x00') }
   let cw = if cw > 0 { cw } else { 8 }
   let ch = if ch > 0 { ch } else { 16 }
   let col = (x / cw).clamp(min=0, max=t.cols - 1) + 1
   let row = (y / ch).clamp(min=0, max=t.rows - 1) + 1
   if action == 2 {
     if t.mouse_mode == 1000 || (t.mouse_mode == 1002 && t.buttons_down == 0) {
-      return Bytes::new(0)
+      return Bytes::make(0, b'\x00')
     }
     if col == t.last_mouse_col && row == t.last_mouse_row {
-      return Bytes::new(0)
+      return Bytes::make(0, b'\x00')
     }
   }
   t.last_mouse_col = col
@@ -989,13 +989,13 @@ impl @hostapi.Host for FakeHost with tm_mouse(_, id, action, button, mods, x, y,
     let cb = if action == 1 && button < 4 { 3 + (code & 28) } else { code }
     Bytes::from_array([0x1b, '['.to_int().to_byte(), 'M'.to_int().to_byte(), (cb + 32).to_byte(), (col + 32).to_byte(), (row + 32).to_byte()])
   } else {
-    Bytes::new(0)
+    Bytes::make(0, b'\x00')
   }
 }
 
 ///|
 impl @hostapi.Host for FakeHost with tm_frame(_, id, flags) {
-  guard fake_terminals.get(id) is Some(t) else { return Bytes::new(0) }
+  guard fake_terminals.get(id) is Some(t) else { return Bytes::make(0, b'\x00') }
   let g = fake_active_grid(t)
   let top = if t.alt_screen { 0 } else { t.vp_top }
   let force_full = (flags & 1) != 0 || t.dirty_all
@@ -1081,7 +1081,7 @@ impl @hostapi.Host for FakeHost with tm_frame(_, id, flags) {
           if cell.width == 0 {
             continue
           }
-          let utf8 = if cell.ch == "" || cell.ch == " " { Bytes::new(0) } else { @utf8.encode(cell.ch) }
+          let utf8 = if cell.ch == "" || cell.ch == " " { Bytes::make(0, b'\x00') } else { @utf8.encode(cell.ch) }
           let cell_bg = (cell.sflags & 4096) != 0
           if utf8.length() == 0 && !cell_bg && (cell.sflags & (16 | 64 | 128 | 0x0700)) == 0 {
             continue

@@ -48,13 +48,16 @@ fn pick_leave_walk(t : @view.Tree, from : Double, to : Double) -> Array[(Double,
 }
 
 ///|
-test "a pick leaving over a time, to a wider one along its row: the ground there at once, the wider words in once it is, never both seen" {
+test "a pick leaving over a time, to a wider one along its row: the ground there at once, the wider words in as the narrow are gone, never both seen" {
   let wide = @signals.signal(false, same=fn(a, b) { a == b })
   let t = pick_leave_row(wide)
   t.frame(390.0, 844.0) |> ignore
   assert_eq(pick_leave_alpha(t, "窄"), 1.0)
   t.event(100.0, fn() { wide.set(true) })
+  // (the wider words come in as the narrow ones are gone, their place still on its way: nothing blank between, its
+  // ground the wider one's from the first frame)
   let way_ms = @flex.move_ms(20.0)
+  let gone = 100.0 + pick_leave_ms
   let seen = 100.0 + (if way_ms > pick_leave_ms { way_ms } else { pick_leave_ms })
   for s in pick_leave_walk(t, 100.0, seen + pick_leave_ms + 50.0) {
     let (m, x, narrow, wider) = s
@@ -65,8 +68,10 @@ test "a pick leaving over a time, to a wider one along its row: the ground there
     if m >= 100.0 + pick_leave_ms {
       assert_eq(narrow, 0.0, msg="窄 still seen at \{m}")
     }
-    if m <= seen {
-      assert_eq(wider, 0.0, msg="宽宽 seen at \{m}, before its place held it and 窄 was gone")
+    if m <= gone {
+      assert_eq(wider, 0.0, msg="宽宽 seen at \{m}, before 窄 was gone")
+    } else if m >= gone + 2.0 {
+      assert_true(wider > 0.0, msg="nothing seen at \{m}: 窄 gone at \{gone}, 宽宽 not come")
     }
   }
   assert_eq(pick_leave_alpha(t, "宽宽"), 1.0)

@@ -4,8 +4,8 @@
 
 ///|
 /// What the modes of the cards and words set going as the chat opens: chat-answering's option under way, chat-pick's
-/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's and
-/// chat-menu-choice's menu presented.
+/// word picked, chat-link-menu's link held, chat-ask's and chat-ask-long's question asked, chat-menu's,
+/// chat-menu-choice's and chat-menu-levels' menu presented, chat-confirm's confirm.
 pub fn open_cards_fixture(mode : String) -> Unit {
   match mode {
     "chat-answering" => acting.doing["answer/" + seq_key("ws1/st1", 7.0, 8.0) + "/一起换"] = true
@@ -46,6 +46,37 @@ pub fn open_cards_fixture(mode : String) -> Unit {
         ],
         from=@sf.at_point(700.0, 300.0),
       )
+    // a menu whose item opens a menu (分享: on 小屏 a level of the same sheet, back to the first)
+    "chat-menu-levels" =>
+      @sf.menu(
+        [
+          Some(@sf.menu_item_of("复制链接", fn() {  }, icon="copy")),
+          Some(
+            @sf.menu_item_of("分享", fn() {
+              @sf.menu(
+                [
+                  Some(@sf.menu_item_of("发到 Slack", fn() {  }, icon="send")),
+                  Some(@sf.menu_item_of("发到飞书", fn() {  }, icon="send")),
+                  None,
+                  Some(@sf.menu_item_of("生成图片", fn() {  }, icon="photo")),
+                ],
+                title="分享到",
+                from=@sf.at_point(700.0, 300.0),
+              )
+            }, icon="share", further=true),
+          ),
+          None,
+          Some(
+            @sf.menu_item_of("删除", fn() {
+              @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true)
+            }, icon="trash", danger=true, further=true),
+          ),
+        ],
+        from=@sf.at_point(700.0, 300.0),
+      )
+    // a confirm over the chat (the presenters'), one that cannot be undone, its warning under its words
+    "chat-confirm" =>
+      @sf.confirm("删除这个对话？", "对话和它的记录会从这台工作站上删除。", "删除", fn() {  }, danger=true, warning="删除后不能恢复。")
     "chat-menu-choice" =>
       @sf.menu(
         [
@@ -207,7 +238,7 @@ pub fn open_drive_fixture(mode : String) -> Unit {
             root: @sffixture.fix_docs,
             dir: "",
             name: @signals.signal(name),
-            bytes: Bytes::new(size),
+            bytes: Bytes::make(size, b'\x00'),
             sent: @signals.signal(sent),
             state: @signals.signal(state),
             error: @signals.signal(error),
@@ -370,8 +401,8 @@ pub fn open_fixture_mode(mode : String) -> Unit {
   // a device not yet confirmed in the workspace's safe mode: lock-waiting, lock-finding, lock-code, lock-wrong (its
   // waiting page in the chats' place), lock-security (its security page), lock-upgrade (in the lock without its key:
   // the code typed on its security page); lock-needs-app (a web page nobody can approve: its waiting page saying so),
-  // lock-needs-app-security (its security page)
-  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" {
+  // lock-needs-app-security (its security page); lock-out-security (its person taken out: its security page)
+  if mode == "lock-security" || mode == "lock-upgrade" || mode == "lock-needs-app-security" || mode == "lock-out-security" {
     open_setting(@settings.fixture_page("settings-security"))
   }
   // ⌘/'s shortcuts at a glance
@@ -866,9 +897,9 @@ fn open_share_fixture(mode : String) -> Unit {
     "share-in-files" => {
       share_in.shared.set(Some(("", None)))
       share_in.files.set([
-        { name: "home-after.png", bytes: Bytes::new(182345), image: @sffixture.fixture_file("home-after.png") },
-        { name: "compare.png", bytes: Bytes::new(96512), image: @sffixture.fixture_file("compare.png") },
-        { name: "季度数据.csv", bytes: Bytes::new(23110), image: "" },
+        { name: "home-after.png", bytes: Bytes::make(182345, b'\x00'), image: @sffixture.fixture_file("home-after.png") },
+        { name: "compare.png", bytes: Bytes::make(96512, b'\x00'), image: @sffixture.fixture_file("compare.png") },
+        { name: "季度数据.csv", bytes: Bytes::make(23110, b'\x00'), image: "" },
       ])
       share_in.env_taken.set(true)
     }

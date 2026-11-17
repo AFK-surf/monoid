@@ -114,7 +114,7 @@ pub fn hover_card_node(
     }
   })
   // (how far it is in, and which way it goes: in as hover_card_in, out as hover_card_out)
-  let way = EdgeWay::new(0.0)
+  let way = @motion.NodeWay::new(0.0)
   // (what the card it opens holds made first, what it reads then waited for before it comes in: OpenGate; a card
   // made anew each time it opens from none)
   let gate : Ref[OpenGate] = Ref(OpenGate::new())
@@ -193,6 +193,7 @@ pub fn hover_card_node(
       .max_height(By(fn() { Some(dmax(0.0, over_room(t).1 - 16.0)) }))
       .alpha(By(fn() { look().alpha }))
       .scale(By(fn() { look().sx }), about=FromBeside)
+      .carries_until(fn() { way.ends_at() })
       .says(Is(Some(@view.said(Group))))
       // (closed with the focus in it: back to what it is of, not to what had it as it opened)
       .focus_returns()
@@ -244,10 +245,10 @@ pub fn hover_card_node(
       if card.untracked() is None {
         gate.val = OpenGate::new()
       }
-      gate.val.go(anchor, fn() { way.go(anchor, 1.0, hover_card_in_ms, ease=Out) })
+      gate.val.go(anchor, fn() { way.go_ms(anchor, 1.0, hover_card_in_ms, ease=Out) })
     } else {
       gate.val.stop()
-      way.go(anchor, 0.0, hover_card_out_ms, ease=Leave)
+      way.go_ms(anchor, 0.0, hover_card_out_ms, ease=Leave)
     }
     open.set(on)
   }

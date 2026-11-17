@@ -52,7 +52,7 @@ fn jobs_pop_node(
       // (its jobs by id once: each row reads its own, told only as that one changes)
       let by_id = list.keyed_by(jobs, fn(j) { text(Some(j), "id") })
       // (its services, then its jobs: each group while it has any, each row by its job's id)
-      for services in [true, false] {
+      let group = fn(services : Bool) {
         list.show(fn() { of_kind(services).length() > 0 }, fn(g) {
           @sf.style_node(g, fn() { jobs_group })
           jobs_pop_head(
@@ -78,6 +78,8 @@ fn jobs_pop_node(
           })
         })
       }
+      group(true)
+      group(false)
     })
     |> ignore
     p.box(fn(foot) {

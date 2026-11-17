@@ -43,11 +43,11 @@ pub fn viewer_bar_node(
   // back as wide as it alone then)
   let held = fn() { middle is Some(_) && middle_shown() }
   // (hidden as it is made: gone whole, not gone up; its way a motion's, there at once with motion reduced)
-  let gone = EdgeWay::new(if @signals.untracked(hidden) { 1.0 } else { 0.0 })
+  let gone = @motion.NodeWay::new(if @signals.untracked(hidden) { 1.0 } else { 0.0 })
   let mut bar : @view.View? = None
   parent.box(made_for=loc, fn(room) {
     room.over(Is(true)) |> ignore
-    room.reacts(hidden, fn(off) { gone.go(room, if off { 1.0 } else { 0.0 }, viewer_bar_ms) })
+    room.reacts(hidden, fn(off) { gone.go_ms(room, if off { 1.0 } else { 0.0 }, viewer_bar_ms) })
     let b = room.box(fn(b) {
       b
       .glass(By(fn() {

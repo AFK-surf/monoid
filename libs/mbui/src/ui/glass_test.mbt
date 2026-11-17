@@ -205,3 +205,35 @@ test "glass made to share a capture frosts what the glass before it frosts, over
   // the shared glass has no notch of its own
   assert_eq(t.drawn_notches().length(), 1)
 }
+
+///|
+test "liquid glass says where the pointer lights it (14): none 0; a spot each of x and y at half a point from 256 before its top left" {
+  let t = @ui.Tester::new(fn(c) {
+    c.box(w=Fill(1.0), h=Fill(1.0), bg=0xE5704AFFL, gap=8.0, fn() {
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((12.5, 8.0))), fn() {  })
+      |> ignore
+      c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(), fn() {  }) |> ignore
+      c.box(w=Px(60.0), h=Px(10.0), bg=0x000000FFL, fn() {  }) |> ignore
+      // (far past its edge either way: held at the packing's ends)
+      c.box(w=Px(120.0), h=Px(44.0), radius=22.0, glass=@ui.Glass::liquid(spot=Some((-900.0, 5000.0))), fn() {  })
+      |> ignore
+      // (frosted glass's 14 is its rim's back, as ever)
+      c.box(w=Px(120.0), h=Px(44.0), glass=@ui.Glass::frosted(blur=8.0, tint=0L, solid=0L, rim_back=0.25), fn() {  })
+      |> ignore
+    })
+    |> ignore
+  })
+  let glass = t.drawn_instances().filter(fn(a) { a[5] == 6.0 || a[5] == 5.0 })
+  assert_eq(glass.map(fn(a) { (a[5], a[14]) }), [
+    (6.0, 537.0 * 4096.0 + 528.0 + 1.0),
+    (6.0, 0.0),
+    (6.0, 0.0 * 4096.0 + 4095.0 + 1.0),
+    (5.0, 0.25),
+  ])
+  // (taken apart as the renderers take it, by a power of two: the point it said, from the glass's own top left)
+  let q = glass[0][14] - 1.0
+  let qx = (q * 0.000244140625).floor()
+  let qy = q - qx * 4096.0
+  assert_eq((qx * 0.5 - 256.0, qy * 0.5 - 256.0), (12.5, 8.0))
+}

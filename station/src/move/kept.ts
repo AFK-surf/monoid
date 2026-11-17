@@ -135,6 +135,11 @@ export class KeptLog<T> {
     }
   }
 
+  /// Once what was asked to be written (the file of before taken in and let go too) is on disk.
+  settled(): Promise<void> {
+    return this.#ready.catch(() => {});
+  }
+
   get(key: string): T | undefined {
     return this.#map.get(key);
   }
@@ -222,6 +227,11 @@ export class LentLog<T extends { for: string[] }> {
     });
     for (const k of this.#log.keys()) if (k.startsWith("s:")) this.#shares.add(k.slice(2));
     for (const k of this.#log.keys()) if (k.startsWith("f:")) this.#index(k.slice(2, k.indexOf("\n")), k.slice(k.indexOf("\n") + 1), true);
+  }
+
+  /// Once what was asked to be written (the file of before taken in and let go too) is on disk (KeptLog `settled`).
+  settled(): Promise<void> {
+    return this.#log.settled();
   }
 
   #index(share: string, item: string, on: boolean): void {

@@ -530,6 +530,10 @@ fn lint_mbt(
     if hold_still.contains(c.name) && (c.kind == "method" || c.kind == "bare") {
       add("at-rest-wait", c.at, f.line_text(c.at))
     }
+    // a page asking a moment of its own (View::at_moment), not in its tests: what comes and goes put together by hand
+    if c.name == "at_moment" && c.kind == "method" && !in_t && under(f.rel, cfg.pages) {
+      add("page-at-moment", c.at, f.line_text(c.at))
+    }
     // a page reading the hand (its tests may say which hand they are)
     if c.name == "pointing" && c.kind == "pkg" && c.qual == "@ui" && !in_t && under(f.rel, cfg.pages) {
       add("page-hand", c.at, f.line_text(c.at))

@@ -32,6 +32,9 @@ pub(all) struct Glass {
   // past them (CSS backdrop-filter's), so nothing round it bleeds in at its
   // rim: a picture's frost (a message's image coming in)
   contained : Bool
+  // liquid: where the pointer is over it, in points from its own top left (View::pointer_here's), a light drawn
+  // there along its rim and over its face; None: none
+  spot : (Double, Double)?
 }
 
 ///|
@@ -64,6 +67,7 @@ pub fn Glass::frosted(
     adaptive: false,
     shares_capture,
     contained,
+    spot: None,
   }
 }
 
@@ -79,7 +83,8 @@ pub fn Glass::sharing(self : Glass) -> Glass {
 /// `bezel` wide moving it by up to `refraction` px, the colours split by
 /// `chroma`), a light rim, text in it inked by what is under it
 /// (`adaptive`); shapes of one `glass_group` within `merge` of each other
-/// flow into one.
+/// flow into one; `spot`, where the pointer is over it (points from its
+/// top left), lights its rim and face round that point.
 pub fn Glass::liquid(
   blur? : Double = 1.0,
   tint? : Int64 = 0xFFFFFF1AL,
@@ -91,6 +96,7 @@ pub fn Glass::liquid(
   chroma? : Double = 0.18,
   merge? : Double = 16.0,
   adaptive? : Bool = true,
+  spot? : (Double, Double)? = None,
 ) -> Glass {
   {
     blur,
@@ -109,6 +115,7 @@ pub fn Glass::liquid(
     adaptive,
     shares_capture: false,
     contained: false,
+    spot,
   }
 }
 

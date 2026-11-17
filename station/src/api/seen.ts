@@ -1,11 +1,15 @@
 // What of the station's chats a viewer sees: those of their own workspace. A request that names
 // a session, a chat or a job of another workspace is answered as one naming what is not there.
 import { percentDecode } from "./request.ts";
-import { type InWorkspace, handedWs, sees } from "../store/rows.ts";
+import { type InWorkspace, handedWs, sees, seesMissing } from "../store/rows.ts";
 import type { Store } from "../store/store.ts";
 
-/// Whether `viewer` sees a session (one not there: the home workspace's).
-export const sessionSeen = (store: Store, viewer: InWorkspace, key: string) => sees(viewer, store.sessionWs(key) ?? null);
+/// Whether `viewer` sees a session (one not there: the home workspace's, but another station's task its workspace's:
+/// rows.ts `seesMissing`).
+export const sessionSeen = (store: Store, viewer: InWorkspace, key: string) => {
+  const ws = store.sessionWs(key);
+  return ws === undefined ? seesMissing(viewer, key) : sees(viewer, ws);
+};
 
 /// Whether `viewer` sees a thread: one of its sessions is in their workspace (a thread with none: the home one's).
 export function threadSeen(store: Store, viewer: InWorkspace, id: number): boolean {

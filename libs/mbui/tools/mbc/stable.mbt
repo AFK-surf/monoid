@@ -379,7 +379,7 @@ fn split_stable(
   }
   let name_layouts = fn(text : Bytes) -> (Bytes, BSet) {
     let used = BSet::new()
-    let buf = Buffer(size_hint=text.length())
+    let buf = Buffer(capacity=text.length())
     let mut last = 0
     for m in layout_matches(text) {
       let n = layout_named[key_of[parse_int(text[m.0:m.1])]]

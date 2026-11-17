@@ -158,8 +158,8 @@ fn field_frame(
   let made : Ref[@view.View?] = Ref(None)
   parent.box(made_for=loc, fn(f) {
     let live = fn() { !disabled() }
-    let seen = EdgeWay::new(if @signals.untracked(disabled) { field_disabled_alpha } else { 1.0 })
-    f.reacts(disabled, fn(off) { seen.go(f, if off { field_disabled_alpha } else { 1.0 }, dur_ms) })
+    let seen = @motion.NodeWay::new(if @signals.untracked(disabled) { field_disabled_alpha } else { 1.0 })
+    f.reacts(disabled, fn(off) { seen.go_ms(f, if off { field_disabled_alpha } else { 1.0 }, dur_ms) })
     f
     .row(Is(row))
     .lines_up(Is(if row { Some(Middle) } else { None }))

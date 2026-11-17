@@ -1,0 +1,369 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/share_sync"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "station/host",
+  "station/sql",
+}
+
+// Values
+pub fn agy_expiry_in(String) -> Double
+
+pub fn agy_lent_file(@json.Json) -> String
+
+pub fn allowed_in(@json.Json, String?, String?) -> Bool
+
+pub fn aside_skill(Bytes, String, String) -> Bytes
+
+pub let builtin_skills : Array[String]
+
+pub let codex_token_url : String
+
+pub fn date_parse(String) -> Double
+
+pub fn decode_uri_component(String) -> String raise
+
+pub fn error_words(Error) -> String
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn iso_string(Double) -> String
+
+pub fn js_stringify(@json.Json) -> String
+
+pub fn js_stringify2(@json.Json) -> String
+
+pub fn jwt_expiry(@json.Json?) -> Double?
+
+pub let lapsed_words : String
+
+pub fn link_parts(String) -> (String, String, String)? raise
+
+pub fn live_share(@json.Json, Double) -> @json.Json?
+
+pub fn memory_followed(String) -> Bool
+
+pub fn memory_path(@json.Json?) -> Bool
+
+pub let memory_retry_ms : Double
+
+pub fn portable(@json.Json) -> @json.Json
+
+pub fn rec_of_peer(@json.Json?) -> @json.Json?
+
+pub fn share_refusal(@json.Json) -> String?
+
+pub fn sign_in_files(@json.Json, String) -> Array[String]
+
+pub let skipped : Array[String]
+
+pub fn to_chat_share(Map[String, @json.Json]) -> @json.Json
+
+pub fn tr(String, String, args? : Array[(String, String)]) -> String
+
+pub fn who_said(Error) -> String
+
+pub fn workspace_agent_home_path(String, String, String?, String?) -> String raise
+
+pub let xshare_idle_ms : Double
+
+// Errors
+pub suberror ShareError {
+  Refused(String)
+  Said(String)
+  Stopped(String)
+  TooLarge(String)
+  Failed(String)
+}
+pub impl Show for ShareError
+
+// Types and methods
+pub struct ChatShareIndexBuilder {
+  // private fields
+}
+pub async fn ChatShareIndexBuilder::close(Self) -> Unit
+pub fn ChatShareIndexBuilder::new(SqlChatShares, () -> @sql.Db? raise, @effect.Deferred[Bool], @effect.Runtime, Log) -> Self
+pub fn ChatShareIndexBuilder::request(Self) -> Unit
+pub async fn ChatShareIndexBuilder::settled(Self) -> Unit
+
+pub struct ChatShares {
+  deps : XshareDeps
+  // private fields
+}
+pub fn ChatShares::address(Self, String, @json.Json) -> @json.Json
+pub fn ChatShares::borrowed(Self, as_? : String?) -> Array[@json.Json] raise
+pub fn ChatShares::busy(Self) -> Int32
+pub async fn ChatShares::close(Self) -> Unit
+pub async fn ChatShares::inside(Self, String, @json.Json, workspace? : String?) -> @json.Json
+pub async fn ChatShares::load(Self) -> Unit
+pub fn ChatShares::new(XshareDeps, @effect.Runtime) -> Self
+pub async fn ChatShares::outside(Self, String, @json.Json, workspace? : String?) -> @json.Json
+pub fn ChatShares::reaches(Self, String, String) -> Bool
+pub async fn ChatShares::reconcile(Self) -> Unit
+pub fn ChatShares::reconcile_soon(Self) -> Unit
+pub async fn ChatShares::send(Self, String, @json.Json, async (@json.Json) -> @json.Json) -> @json.Json
+pub fn ChatShares::share(Self, String, Array[@json.Json], Bool, String) -> @json.Json? raise
+pub fn ChatShares::start(Self) -> Unit raise
+pub fn ChatShares::state_json(Self) -> @json.Json
+pub fn ChatShares::trust(Self, String, String, String, String, as_? : String?) -> Unit raise
+pub fn ChatShares::workspace_of(Self, String, as_? : String??) -> String?
+pub async fn ChatShares::written(Self) -> Unit
+
+pub struct ChatStore {
+  chat_share : (String) -> @json.Json? raise
+  chat_shares : () -> Array[(String, @json.Json)] raise
+  chat_share_lapsed : (String, Array[String]?) -> Bool raise
+  lapsed_share_workspaces : (Array[String]?) -> Array[String] raise
+  used_chat_share : (String, Array[String]) -> Unit raise
+  lapse_chat_shares : (Double) -> Double? raise
+  set_chat_share : (String, Array[(String, String)], Bool, String) -> Unit raise
+  subscribe : ((@json.Json) -> Unit) -> () -> Unit
+  thread_home : (String) -> String? raise
+}
+
+pub struct Clock {
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+}
+pub fn Clock::live(@effect.Runtime) -> Self
+
+pub struct Cloud {
+  has_state : () -> Bool
+  station : () -> String?
+  name : () -> String?
+  rig : () -> Bool
+  peers_current : () -> Bool
+  memberships : () -> Array[Membership]
+  membership : (String) -> Membership?
+  home : () -> String?
+  removed : () -> Bool
+  listen : (() -> Unit) -> () -> Unit
+}
+
+pub struct Config {
+  raw : () -> @json.Json
+  update_soon : async ((@json.Json) -> Unit raise) -> @json.Json
+  listen : (() -> Unit) -> () -> Unit
+}
+
+pub struct Files {
+  host : @host.Host
+  sep : String
+}
+pub fn Files::basename(Self, String) -> String
+pub async fn Files::chmod(Self, String, Int32) -> Unit
+pub async fn Files::copy(Self, String, String) -> Unit
+pub async fn Files::dir_key(Self, String) -> String?
+pub fn Files::dirname(Self, String) -> String
+pub async fn Files::exists(Self, String) -> Bool
+pub fn Files::join(Self, Array[String]) -> String
+pub async fn Files::lstat(Self, String) -> Stat?
+pub async fn Files::mkdir(Self, String) -> Unit
+pub async fn Files::need_text(Self, String) -> String
+pub async fn Files::read_bytes(Self, String) -> Bytes?
+pub async fn Files::read_text(Self, String) -> String?
+pub async fn Files::readdir(Self, String) -> Array[String]?
+pub async fn Files::readdir_types(Self, String) -> Array[(String, String)]?
+pub async fn Files::readlink(Self, String) -> String?
+pub async fn Files::remove(Self, String, recursive? : Bool) -> Unit
+pub async fn Files::rename(Self, String, String) -> Unit
+pub async fn Files::stat_kind(Self, String) -> String?
+pub async fn Files::symlink(Self, String, String) -> Unit
+pub async fn Files::write(Self, String, Bytes, Int32) -> Unit
+pub async fn Files::write_private(Self, String, Bytes) -> Unit
+pub async fn Files::write_private_text(Self, String, String) -> Unit
+
+pub struct Log {
+  say : (String, String, String, @json.Json) -> Unit
+}
+pub fn Log::error(Self, String, String, @json.Json) -> Unit
+pub fn Log::info(Self, String, String, @json.Json) -> Unit
+pub fn Log::stderr() -> Self
+pub fn Log::warn(Self, String, String, @json.Json) -> Unit
+
+pub struct Membership {
+  workspace : String
+  workspace_name : String
+  peers : Array[@json.Json]
+}
+
+pub struct MemoryDeps {
+  data : String
+  cloud : Cloud
+  ask : async (String, String, @json.Json) -> @json.Json
+  agent_home : () -> String
+  workspace_agent_home : async (String, String?, String?) -> String
+  still : Bool
+  watching : Watching
+  clock : Clock
+  log : Log
+  files : Files
+}
+
+pub struct MemoryProgram {
+  host : @host.Host
+  sep : String
+  turn : Turn
+  mut closed : Bool
+  mut asked : Int32
+}
+pub async fn MemoryProgram::ask(Self, String, Array[(String, @json.Json)]) -> @json.Json
+pub async fn MemoryProgram::close(Self) -> Unit
+pub fn MemoryProgram::new(@host.Host, String) -> Self
+pub fn MemoryProgram::trim_idle(Self) -> Int32
+
+pub struct MemorySync {
+  deps : MemoryDeps
+  // private fields
+}
+pub fn MemorySync::busy(Self) -> Int32
+pub async fn MemorySync::handle(Self, String, @json.Json, String?) -> @json.Json
+pub fn MemorySync::kept_json(Self, String) -> @json.Json?
+pub async fn MemorySync::level_now(Self) -> Unit
+pub fn MemorySync::new(MemoryDeps, @effect.Runtime) -> Self
+pub fn MemorySync::start(Self) -> Unit
+pub async fn MemorySync::stop(Self) -> Unit
+pub fn MemorySync::trim_idle(Self) -> Int32
+pub async fn MemorySync::written(Self) -> Unit
+
+pub struct PrivateFile {
+  files : Files
+  path : String
+  tasks : Tasks
+  // private fields
+}
+pub fn PrivateFile::new(Files, String, Tasks) -> Self
+pub fn PrivateFile::write(Self, String) -> Unit
+pub async fn PrivateFile::written(Self) -> Unit
+
+pub struct Sharing {
+  deps : SharingDeps
+  // private fields
+}
+pub fn Sharing::borrowed_subscription(Self, @json.Json) -> Bool
+pub fn Sharing::busy(Self) -> Int32
+pub async fn Sharing::close(Self) -> Unit
+pub async fn Sharing::handle(Self, String, @json.Json, workspace? : String?) -> @json.Json
+pub async fn Sharing::lend_agy(Self, @json.Json, rejected? : Bool) -> Double
+pub async fn Sharing::lend_claude(Self, @json.Json, rejected? : String?) -> (String, Double)
+pub async fn Sharing::lend_codex(Self, @json.Json, rejected? : Bool) -> Double
+pub async fn Sharing::lend_to(Self, String, String) -> (String, Bool, Bool)
+pub async fn Sharing::load(Self) -> Unit
+pub fn Sharing::login_updated(Self, profile_id? : String?) -> Unit
+pub async fn Sharing::move_profile(Self, String, String, lang? : String?, share_first? : (async (String) -> Unit)?) -> (String, String?)
+pub fn Sharing::new(SharingDeps, @effect.Runtime) -> Self
+pub fn Sharing::profile_view(Self, @json.Json) -> @json.Json?
+pub async fn Sharing::quota_reset(Self, String, String) -> Unit
+pub async fn Sharing::reconcile(Self) -> Unit
+pub fn Sharing::reconcile_soon(Self) -> Unit
+pub async fn Sharing::renewed_behind(Self, String) -> Unit
+pub fn Sharing::set_on_hosted(Self, ((String, String) -> Unit)?) -> Unit
+pub async fn Sharing::share_profile(Self, String, Bool, @json.Json, among? : Array[String]?, by? : String?) -> Unit
+pub async fn Sharing::share_skill(Self, String, Bool, @json.Json) -> Unit
+pub async fn Sharing::skill_view(Self, String) -> @json.Json?
+pub fn Sharing::start(Self) -> Unit
+pub fn Sharing::state_json(Self) -> @json.Json
+pub async fn Sharing::state_written(Self) -> Unit
+pub async fn Sharing::status(Self, @json.Json) -> @json.Json
+pub fn Sharing::trim_idle(Self) -> Int32
+pub async fn Sharing::unlend(Self, String, String, Bool, Bool) -> Unit
+pub async fn Sharing::unshare_moved(Self, String, Array[String]) -> Bool
+
+pub struct SharingDeps {
+  data : String
+  config : Config
+  cloud : Cloud
+  ask : async (String, String?, @json.Json) -> @json.Json
+  agent_home : () -> String
+  codex_auth_file : () -> String
+  machine_email : ((String) -> String?)?
+  claude_token : async (@json.Json, String?) -> (String, Double)
+  codex_renew_running : async (String) -> Bool
+  agy_renew : (async (String) -> Unit)?
+  status : async (String) -> @json.Json
+  changed : () -> Unit
+  recheck : (() -> Unit)?
+  profile_changed : (async (String, Bool) -> Unit)?
+  quota_reset : (async (String) -> Unit)?
+  profile_gone : (async (String) -> Unit)?
+  itself : ((String) -> Bool)?
+  codex_token_url : String
+  fetch : async (String, String) -> (Int32, String)
+  account_email : async (String, String) -> String?
+  lang : () -> String
+  random_hex : async (Int32) -> String
+  watching : Watching
+  clock : Clock
+  log : Log
+  files : Files
+}
+
+pub struct SqlChatShares {
+  db : @sql.Db
+  now : () -> Double
+  listeners : Array[(Int32, (@json.Json) -> Unit)]
+  mut next : Int32
+  mut presence : Bool?
+}
+pub fn SqlChatShares::has_index(Self) -> Bool raise
+pub fn SqlChatShares::index_ready(Self) -> Bool raise
+pub fn SqlChatShares::new(@sql.Db, () -> Double) -> Self
+pub fn SqlChatShares::refresh_index(Self) -> Bool raise
+pub fn SqlChatShares::store(Self) -> ChatStore
+
+pub struct Stat {
+  kind : String
+  size : Double
+  mode : Int32
+  ino : @json.Json
+  mtime : Double
+}
+
+pub struct Tasks {
+  rt : @effect.Runtime
+  log : Log
+  what : String
+  mut busy : Int32
+}
+pub fn Tasks::new(@effect.Runtime, Log, String) -> Self
+pub fn Tasks::spawn(Self, async () -> Unit) -> Unit
+
+pub struct Turn {
+  // private fields
+}
+pub fn Turn::new() -> Self
+pub async fn[T] Turn::run(Self, async () -> T) -> T
+pub async fn Turn::settled(Self) -> Unit
+
+pub struct Watcher {
+  close : () -> Unit
+  scan : async () -> String?
+}
+
+pub struct Watching {
+  tree : (String, (String) -> Bool, Int32, (String) -> Unit, (String) -> Unit) -> Watcher
+  dir : (String, (String?) -> Unit, () -> Unit) -> Watcher?
+}
+pub fn Watching::none() -> Self
+
+pub struct XshareDeps {
+  data : String
+  store : ChatStore
+  cloud : Cloud
+  chat_ws : ((String) -> String?)?
+  ask : async (String, @json.Json) -> @json.Json
+  link : (String) -> String?
+  title : (String) -> String
+  touches : (@json.Json) -> Array[String]
+  inbox : async (String, @json.Json) -> @json.Json
+  prepare_index : (() -> Unit)?
+  clock : Clock
+  log : Log
+  files : Files
+}
+
+// Type aliases
+
+// Traits

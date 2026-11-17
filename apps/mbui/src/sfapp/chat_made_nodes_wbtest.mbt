@@ -219,3 +219,42 @@ test "中屏 and 大屏, a chat's detail asked as a page (its agent's history, a
   let (t, _, _) = made_beside_tester("chat", 1280.0, 800.0, false)
   assert_true(made_old_frames_opening(t, History(r0, "s-c1", None)) > 0, msg="the old chat page not seen")
 }
+
+///|
+test "a new chat become its chat with its inside nodes, on 小屏 and 大屏: its scene fades over new_leave_ms instead of vanishing in one frame, and the sent words fly smoothly from where they were typed" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    let (t, _) = made_tester(w, h, platform, true)
+    if name == "小屏" {
+      let (_, y) = bar_places_at()
+      t.tap(195.0, y - 28.0 - 4.0)
+    }
+    t.run_for(@ui.move_most_ms)
+    let title = "想让 agent 做什么？"
+    t.tap_text("做任何事")
+    let words = "看下进度"
+    t.type_text(words)
+    t.draw()
+    let (fx, fy, _, fh) = made_composer_field(t).unwrap()
+    let typed_mid_y = fy + fh / 2.0
+    tap_send(t)
+    t.draw()
+    assert_true(app.nav.top() is Chat(_))
+    // Halfway through new_leave_ms: the greeting scene is still drawn fading out, not snapped away in 1 frame.
+    t.run_for(new_leave_ms / 2.0)
+    let scene_mid = t.words().filter(fn(x) { x.0 == title && x.5 > 0.05 && x.5 < 0.95 })
+    assert_eq(scene_mid.length(), 1, msg="\{name}: scene mid-leave \{Repr(t.words().filter(fn(x) { x.0 == title }))}")
+    let (mx1, my1) = made_words_at(t, words).unwrap()
+    // Past new_leave_ms: scene is gone, sent words continue moving smoothly toward their bubble.
+    t.run_for(new_leave_ms / 2.0 + @ui.move_most_ms / 16.0)
+    assert_true(t.words().filter(fn(x) { x.0 == title && x.5 > 0.0 }).is_empty(), msg="\{name}: scene gone after new_leave_ms")
+    let (mx2, my2) = made_words_at(t, words).unwrap()
+    t.run_for(@sfbase.flight_desk_ms + @ui.move_most_ms)
+    let (ex, ey) = made_words_at(t, words).unwrap()
+    assert_true(
+      ((mx2 - fx).abs() > 2.0 || (my2 - typed_mid_y).abs() > 2.0) &&
+      ((ex - mx1).abs() > 2.0 || (ey - my1).abs() > 2.0),
+      msg="\{name}: sent words flew (\{fx}, \{typed_mid_y}) -> (\{mx1}, \{my1}) -> (\{mx2}, \{my2}) -> (\{ex}, \{ey})",
+    )
+  }
+}

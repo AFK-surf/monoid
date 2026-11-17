@@ -667,6 +667,7 @@
   "station.notice.compactFailed": "Couldn't compact the context: {why}",
   "station.notice.afresh": "Context started afresh; the next message reads back what it needs first",
   "station.notice.afreshCold": "The cache had expired, so the context started afresh; reading back what it needs first",
+  "station.notice.afreshRefused": "Codex still refused the conversation (Bad Request), so the context started afresh; reading back what it needs first",
   "station.notice.cleared": "Context cleared; the next message starts a new conversation",
   "station.relay.opening": "{who} relayed the still.fail chat {chat} here; it goes on in this thread.",
   "station.relay.relayed": "{who} relayed this chat to {place}",

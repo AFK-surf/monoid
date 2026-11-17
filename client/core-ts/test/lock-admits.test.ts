@@ -178,10 +178,10 @@ async function setUp(o: { w2?: "moved" | "chain"; root?: "me" | "alice"; mine?: 
     return f.devices.get(WEB)?.kind === "web";
   };
   /// Someone's first device asking (`id` its base key; an app, with `log` the log of its own it brings) as `sub`.
-  const helloApp = async (sub: string, id: string, log: StationEntry[] | null) => {
+  const helloApp = async (sub: string, id: string, log: StationEntry[] | null, also: string[] = []) => {
     const [trusted, phone] = await pipe();
     inner.runner.fork(serveTrusted(inner, id, ME, trusted));
-    const first = await run(Effect.andThen(phone.send({ t: "hello", v: 1, workspaces: [{ ws: "ws", credential: g.credential("ws", id, sub) }], kind: "app", label: "Pixel", sign_key: "ed25519:" + "11".repeat(32), ...(log !== null ? { log } : {}) }), phone.next()));
+    const first = await run(Effect.andThen(phone.send({ t: "hello", v: 1, workspaces: ["ws", ...also].map((ws) => ({ ws, credential: g.credential(ws, id, sub) })), kind: "app", label: "Pixel", sign_key: "ed25519:" + "11".repeat(32), ...(log !== null ? { log } : {}) }), phone.next()));
     return { phone, answer: first.ok as { t: string; workspaces?: string[]; error?: string } };
   };
   const proveApp = async (phone: Awaited<ReturnType<typeof helloApp>>["phone"], id: string) => {
@@ -349,6 +349,18 @@ test("someone's first device where the chain moved: the code shown by an owner's
   assert.equal(w.members(), "r2 admin, r3 member, r9 admin, s1 owner");
   assert.equal(inForceOf(w.inner, "ws").f.persons.get("r9"), gOf(log), "bound to the log it brought");
   assert.equal(w.r.cloud.posted.length, 0, "nothing on the chain");
+});
+
+// Asking into a moved workspace and another beside it (one prompt, both listed): the role is said with the name of the
+// workspace it is for, not bare, which would read as said of every workspace listed.
+test("someone's first device asking into a moved workspace and another: the role approving lets them in as said with that workspace's name", async () => {
+  const w = await setUp({ w2: "chain", view: [...VIEW, { sub: "r9", email: "r9@x.com", role: "admin" }] });
+  assert.equal((await addHere(w, "admin")).error, undefined, "added here as an admin");
+  const { answer } = await w.helloApp("r9", NEW, newcomer().chain, ["w2"]);
+  assert.deepEqual(answer, { t: "code", workspaces: ["ws", "w2"] }, "a code shown for both");
+  const prompt = ((await w.prompts()).pairing as { device: string; roleText?: string; workspaces: unknown[] }[]).find((p) => p.device === NEW)!;
+  assert.equal(prompt.workspaces.length, 2, "both listed");
+  assert.match(prompt.roleText ?? "", /^「.+」：批准后以管理员身份加入$/, "said with the workspace's name");
 });
 
 /// What this device noted of whom its person added to `ws` (views/lock.ts `lockAdded`): each one's name.
@@ -564,6 +576,21 @@ test("a device whose person was taken out where the chain moved: the refusal's r
   assert.equal(inForceOf(other.inner, "ws").f.members.has("s1"), true, "a body no log kept commits to is not taken");
   assert.equal(outOf(other.inner, "ws"), null);
   assert.equal(lockView(other.inner, "ws").me.outText, undefined);
+});
+
+// A web page whose person was taken out, its refusal saying as well that the list names no app of theirs (`left`'s
+// `apps`): who took them out and whom to ask, not to install an app first, which would let nobody in again.
+test("a web page whose person was taken out where the chain moved, the list naming no app of theirs: who took them out, not told to install an app", async () => {
+  const w = await setUp({ root: "alice", mine: "member" });
+  (w.inner.host as { appKeys?: boolean }).appKeys = false;
+  const admit = w.bodies.find((b) => (b as { kind: string; sub?: string }).kind === "member" && (b as { sub: string }).sub === "s1")!;
+  const removal = say(w.alice, "member.remove", { sub: "s1", cancels: [bodyHash(admit)!] });
+  const out = { bodies: [removal], logs: [{ genesis: gOf(w.alice), entries: w.alice.chain }] };
+  hooks.lockRefused?.(w.inner, "ws", A, null, { out, left: { approvers: [], apps: false } });
+  await w.r.host.time.pass(100);
+  const me = lockView(w.inner, "ws").me;
+  assert.match(String(me.outText ?? ""), / 于 .+ 将你移出了此 workspace 的安全模式/, "who and whom to ask");
+  assert.equal(me.needsAppText, undefined, "not told to install an app");
 });
 
 /// The new device's side: s1's device (ME) waiting in `ws`, whose list (alice's log the root) does not name s1: given

@@ -111,6 +111,10 @@ static GtkAccessibleRole a11y_role(const char *r) {
       {"Navigation", GTK_ACCESSIBLE_ROLE_NAVIGATION},
       {"Form", GTK_ACCESSIBLE_ROLE_FORM},
       {"Heading", GTK_ACCESSIBLE_ROLE_HEADING},
+      {"Table", GTK_ACCESSIBLE_ROLE_TABLE},
+      {"Row", GTK_ACCESSIBLE_ROLE_ROW},
+      {"ColumnHeader", GTK_ACCESSIBLE_ROLE_COLUMN_HEADER},
+      {"Cell", GTK_ACCESSIBLE_ROLE_CELL},
   };
   for (gsize i = 0; i < G_N_ELEMENTS(roles); i++)
     if (strcmp(roles[i].name, r) == 0) return roles[i].role;
