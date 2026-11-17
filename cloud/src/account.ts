@@ -62,7 +62,7 @@ export class Account extends DurableObject<Env> {
   private save(data: AccountData) {
     this.ctx.storage.kv.put("account", data);
   }
-  private session(data: AccountData | undefined, claims: Claims): Session | undefined {
+  private session(data: AccountData | undefined, claims: Pick<Claims, "sub" | "sid">): Session | undefined {
     const now = nowSeconds();
     return data && !data.blocked && data.sub === claims.sub ? data.sessions.find((s) => s.id === claims.sid && s.expires > now && s.idle > now) : undefined;
   }
@@ -166,7 +166,7 @@ export class Account extends DurableObject<Env> {
       const data = this.data() ?? { ...identity, blocked: false, sessions: [] };
       if (data.sub !== identity.sub || !validId(id) || name.length > 80) return denied();
       if (data.blocked) return reply({ error: "account_blocked" }, 403);
-      this.prune(data);
+      await this.prune(data);
       if (shared)
         for (const old of [...data.sessions].sort((a, b) => a.created - b.created).slice(0, Math.max(0, data.sessions.length - LIMITS.sessions + 1)))
           await this.revoke(data, old.id, "removed");
@@ -265,6 +265,7 @@ export class Account extends DurableObject<Env> {
     data.ended = [...(data.ended ?? []), ...ending.map((s) => ({ id: s.id, at: now, why }))].slice(-ENDED_KEPT);
     data.sessions = id ? data.sessions.filter((s) => s.id !== id) : [];
     this.save(data);
+    this.#liveSockets();
     await this.env.DIRECTORY.getByName("primary").revokeSessions(data.sub, id ? [id] : null);
   }
 
@@ -285,8 +286,11 @@ export class Account extends DurableObject<Env> {
 
   /** The account deleted itself (DELETE /v1/me, once the Directory let it go): every session ends and nothing of it is kept. */
   async erase(): Promise<void> {
+    const data = this.data();
+    if (data) await this.revoke(data, undefined, "removed");
     await this.ctx.storage.deleteAlarm();
     await this.ctx.storage.deleteAll();
+    this.#liveSockets();
   }
 
   async administer(blocked: boolean): Promise<Response> {
@@ -299,9 +303,13 @@ export class Account extends DurableObject<Env> {
     return reply({ blocked: data.blocked });
   }
 
-  private prune(data: AccountData) {
+  private async prune(data: AccountData) {
     const now = nowSeconds();
+    const ended = data.sessions.filter((s) => s.expires <= now || s.idle <= now).map((s) => s.id);
     data.sessions = data.sessions.filter((s) => s.expires > now && s.idle > now);
+    this.#liveSockets();
+    // Keep the ended ids until the Directory has taken them: a failed call must leave the next alarm able to retry.
+    if (ended.length) await this.env.DIRECTORY.getByName("primary").revokeSessions(data.sub, ended);
     this.save(data);
   }
   private async schedule(data: AccountData) {
@@ -310,11 +318,13 @@ export class Account extends DurableObject<Env> {
     else await this.ctx.storage.deleteAlarm();
   }
   async alarm() {
-    const data = this.data();
-    if (data) {
-      this.prune(data);
-      await this.schedule(data);
-    }
+    return this.ctx.blockConcurrencyWhile(async () => {
+      const data = this.data();
+      if (data) {
+        await this.prune(data);
+        await this.schedule(data);
+      }
+    });
   }
 
   /**
@@ -330,7 +340,7 @@ export class Account extends DurableObject<Env> {
 
   /** Whether an access token's session is still live, not charged to the account's requests a minute: for what has
    * a budget of its own (telemetry, tracing.ts's by sender), so that it uses up none of the account system's. */
-  signedIn(claims: Claims): boolean {
+  signedIn(claims: Pick<Claims, "sub" | "sid">): boolean {
     return this.session(this.data(), claims) !== undefined;
   }
 
@@ -350,11 +360,24 @@ export class Account extends DurableObject<Env> {
       this.#betaTold++;
       this.ctx.storage.kv.put("beta", body.beta);
     }
-    const open = this.ctx.getWebSockets().filter((ws) => ws.readyState === WebSocket.OPEN);
+    const open = this.#liveSockets();
     for (const ws of open) this.#send(ws, body.frames ?? []);
     // One opening is told as it opens, and is a socket already to the Directory, which would else stop telling it.
     if (this.#opening > 0) this.#toldMeanwhile.push(...(body.frames ?? []));
     return { live: open.length > 0 || this.#opening > 0 };
+  }
+
+  /** A connection belongs to its sign-in session, including after hibernation or a revocation. */
+  #liveSockets(): WebSocket[] {
+    const data = this.data();
+    return this.ctx.getWebSockets().filter((ws) => {
+      if (ws.readyState !== WebSocket.OPEN) return false;
+      const claims = ws.deserializeAttachment() as Pick<Claims, "sub" | "sid">;
+      if (this.session(data, claims)) return true;
+      // Connections from before the session was kept reconnect and are checked there too.
+      ws.close(1008, "session ended");
+      return false;
+    });
   }
 
   #send(ws: WebSocket, frames: string[]): void {
@@ -373,7 +396,7 @@ export class Account extends DurableObject<Env> {
    * The Directory notes the device was seen, and tells this object what its devices are to hear from then on.
    */
   private async events(request: Request): Promise<Response> {
-    const claims = { sub: header(request, "sub") ?? "", sid: header(request, "sid") ?? "" } as Claims;
+    const claims = { sub: header(request, "sub") ?? "", sid: header(request, "sid") ?? "" };
     if (!this.session(this.data(), claims)) return denied();
     if (header(request, "channel") === "beta" && !(await this.beta(claims.sub))) return reply({ error: "not_beta" }, 403);
     if (!this.charge()) return limited();
@@ -387,10 +410,19 @@ export class Account extends DurableObject<Env> {
     }
     this.#opening--;
     // The latest opening's, whichever answer came last.
-    this.ctx.storage.kv.put("events-gen", Math.max(gen, this.ctx.storage.kv.get<number>("events-gen") ?? 0));
+    const latest = Math.max(gen, this.ctx.storage.kv.get<number>("events-gen") ?? 0);
+    this.ctx.storage.kv.put("events-gen", latest);
+    // A revocation may have completed while the Directory was noting this opening. Nothing queued for it may leak.
+    if (!this.session(this.data(), claims)) {
+      if (this.#opening === 0) {
+        this.#toldMeanwhile = [];
+        if (this.#liveSockets().length === 0) await this.env.DIRECTORY.getByName("primary").closed(claims.sub, latest);
+      }
+      return denied();
+    }
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1]);
-    pair[1].serializeAttachment({ sub: claims.sub });
+    pair[1].serializeAttachment({ sub: claims.sub, sid: claims.sid });
     this.#send(pair[1], this.#toldMeanwhile);
     if (this.#opening === 0) this.#toldMeanwhile = [];
     return new Response(null, { status: 101, webSocket: pair[0], headers: { "sec-websocket-protocol": header(request, "protocol") ?? EVENTS_PROTOCOLS[0] } });

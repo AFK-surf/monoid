@@ -248,7 +248,7 @@ export async function api(request: Request, env: Env, url: URL): Promise<Respons
       const claims = await account(socket?.token ?? null, env, request);
       if (claims instanceof Response) return claims;
       if (!socket) return denied();
-      return env.DIRECTORY.getByName("primary").fetch(new Request("https://directory/events", { headers: { upgrade: "websocket", "x-stillfail-sub": claims.sub, "x-stillfail-protocol": socket.protocol } }));
+      return env.DIRECTORY.getByName("primary").fetch(new Request("https://directory/events", { headers: { upgrade: "websocket", "x-stillfail-sub": claims.sub, "x-stillfail-sid": claims.sid, "x-stillfail-protocol": socket.protocol } }));
     }
     // On the account's object, which checks the session itself (and, on the test channel, that it is let in).
     const claims = socket ? await verifyToken(env, socket.token, "access") : null;
