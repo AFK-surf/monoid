@@ -1,0 +1,1416 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/screens"
+
+import {
+  "mbui/effect",
+  "station/host",
+  "station/jsjson",
+}
+
+// Values
+pub const ADDRESS_MOST : Int32 = 2048
+
+pub const AGAIN_MS : Double = 180000
+
+pub const CLICK_MS : Double = 500
+
+pub const CLIP_PNG_MAX : Int32 = 8388608
+
+pub const CLIP_TEXT_MAX : Int32 = 1048576
+
+pub const FLAG_ALT : Int32 = 0x80000
+
+pub const FLAG_COMMAND : Int32 = 0x100000
+
+pub const FLAG_CTRL : Int32 = 0x40000
+
+pub const FLAG_FN : Int32 = 0x800000
+
+pub const FLAG_NUMERIC_PAD : Int32 = 0x200000
+
+pub const FLAG_SHIFT : Int32 = 0x20000
+
+pub const HELPER_APP : String = "still.fail Helper.app"
+
+pub const LOCAL_NETWORK_SETTINGS : String = "x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork"
+
+pub const LOOK_LEAST : Double = 0.02
+
+pub const OPUS_MAX : Int32 = 1275
+
+pub const PEEKS_MOST : Int32 = 2
+
+pub const PEEK_BITRATE : Int32 = 300000
+
+pub const PEEK_FPS : Int32 = 2
+
+pub const SCREEN_BINARY : String = "stillfail-screen.exe"
+
+pub const SERVER_VERSION : String = "5.0.1"
+
+pub const SIMCTL : String = "/Library/Developer/PrivateFrameworks/CoreSimulator.framework/Versions/A/Resources/bin/simctl"
+
+pub const TO_AUDIO : Int32 = 9
+
+pub const TO_BOUNDS : Int32 = 8
+
+pub const TO_CLIPBOARD : Int32 = 4
+
+pub const TO_INPUT : Int32 = 3
+
+pub const TO_KEYFRAME : Int32 = 2
+
+pub const TO_NEXT : Int32 = 1
+
+pub const TO_RATE : Int32 = 7
+
+pub const TO_REVEAL : Int32 = 6
+
+pub const TO_WATCH : Int32 = 5
+
+pub const TO_WINDOW : Int32 = 10
+
+pub const UI_BINARY : String = "agent-desktop.exe"
+
+pub const UI_LIMIT_MS : Double = 60000
+
+pub const WATCH_HELD_MS : Double = 90000
+
+pub const WHEEL_PER_PIXEL : Double = 1.2
+
+pub const WINDOWS_MOST : Int32 = 60
+
+pub const WINDOW_WORDS_MOST : Int32 = 200
+
+pub fn access_shown(Words, ScreenAccess?, String) -> AccessShown?
+
+pub fn adb_env(Io) -> Env
+
+pub fn address_shown(String?) -> String?
+
+pub let android_keycodes : Map[String, Int32]
+
+pub fn apps_of(@jsjson.JValue, String) -> Array[SimApp]
+
+pub fn ask_words(Io, String) -> @jsjson.JValue
+
+pub fn avcc_config_of(Array[BytesView]) -> Bytes?
+
+pub fn avcc_of(Array[BytesView]) -> Bytes
+
+pub fn bitrate_of(Int32) -> Int32
+
+pub fn booted_of(Io, @jsjson.JValue) -> Array[Booted]
+
+pub fn child_pipe(Io, Child, ChildTold) -> HelperPipe
+
+pub async fn chrome_of(Io, ChromeDisplay, String, String?, root? : String, how? : Drawing?) -> ChromeSource?
+
+pub fn clip_fits(Clip) -> Bool
+
+pub fn clip_of(@jsjson.JValue) -> Clip?
+
+pub fn codec_for(ViewOptions, Array[Codec]) -> Codec?
+
+pub fn codec_of(String) -> Codec?
+
+pub fn date_parse_utc(String) -> Double
+
+pub fn decode_png(Bytes) -> Pixels raise Failed
+
+pub fn deflate(BytesView) -> Bytes
+
+pub async fn desktop_environment(Io, Env) -> Env
+
+pub fn devices_of(String) -> Array[String]
+
+pub async fn dial(Io, Target) -> Sock
+
+pub fn displays_of(@jsjson.JValue, @jsjson.JValue) -> Array[ChromeDisplay]
+
+pub async fn emulator_start(Io, String, ps? : (async () -> String)?) -> Double?
+
+pub fn encode_png(Pixels) -> Bytes
+
+pub fn envelope(String, Double) -> @jsjson.JValue
+
+pub fn error_j(Error) -> @jsjson.JValue
+
+pub let evdev : Map[String, Int32]
+
+pub async fn executable(Io, String, Env) -> String?
+
+pub fn files_words(Io, String) -> @jsjson.JValue
+
+pub fn flags_of(Int32) -> Int32
+
+pub fn grant_state(@jsjson.JValue, String) -> String
+
+pub let grants_all : Array[String]
+
+pub fn graphical_session(String, Int32, String) -> Session?
+
+pub async fn harness(@host.Host) -> Unit
+
+pub fn helper_app(Io, Env) -> String?
+
+pub fn helper_clip(Clip, flags? : Int32?) -> Bytes
+
+pub fn helper_message(Int32, payload? : BytesView) -> Bytes
+
+pub fn helper_ui(HelperApp) -> async (Array[String]) -> @jsjson.JValue
+
+pub fn host_io(@host.Host, Procs, Os, Words, now? : (() -> Double)?) -> Io
+
+pub fn inflate(BytesView) -> Bytes raise Failed
+
+pub fn input_of(@jsjson.JValue) -> ScreenInput?
+
+pub async fn install(Io, String, String) -> (String, Bool)
+
+pub fn is_bundle_id(String) -> Bool
+
+pub fn is_grant(String) -> Bool
+
+pub fn is_user_tab_id(String) -> Bool
+
+pub fn local_network_name(String) -> String
+
+pub fn locale_compare(String, String) -> Int32
+
+pub fn log_of(String) -> (String, String, String, String)?
+
+pub fn log_stream(Io) -> LogStream
+
+pub let mac_keycodes : Map[String, Int32]
+
+pub fn message_of(Error) -> String
+
+pub fn meta_of(Int32) -> Int32
+
+pub fn nals_of(BytesView) -> Array[BytesView]
+
+pub fn open_app(Io) -> async (String, Array[(String, String)]) -> Unit
+
+pub fn page_size(Bytes) -> (Double, Double)?
+
+pub fn panel_of(Bytes) -> Panel?
+
+pub fn panels_of(String) -> Array[Panel]
+
+pub async fn pictures_of(Io, ChromeSource, Int32, how? : Drawing?) -> ChromePictures
+
+pub fn process_ui(Io, String) -> async (Array[String]) -> @jsjson.JValue
+
+pub fn recorder(Io) -> (Array[String]) -> Recording
+
+pub fn region_of(@jsjson.JValue?) -> Region?
+
+pub fn resolution_of(@jsjson.JValue?) -> ScreenResolution?
+
+pub fn runtime_name(String) -> String
+
+pub fn scale_of(@jsjson.JValue?) -> ScreenScale?
+
+pub fn screen_binary(Io, Env) -> String?
+
+pub fn screen_of(@jsjson.JValue) -> (Double, Double)
+
+pub fn server_file(Io) -> String
+
+pub fn shown_device(String) -> Bool
+
+pub fn side_of(ViewOptions) -> Int32
+
+pub fn sim_run(Io) -> Run
+
+pub let sim_typed : Map[Char, (Int32, Bool)]
+
+pub let sim_usages : Map[String, Int32]
+
+pub fn sips(Io) -> Drawing
+
+pub fn size_of(String) -> (Double, Double)
+
+pub fn sock_pipe(Sock) -> HelperPipe
+
+pub fn start_of(Io, String, String) -> Double?
+
+pub fn stat_j(Stat) -> @jsjson.JValue
+
+pub fn tree_text(@jsjson.JValue) -> String
+
+pub async fn turn_movie(Io, String, Int32) -> Bool
+
+pub fn turn_of(String, String) -> Int32
+
+pub fn turned(Pixels, Int32) -> Pixels
+
+pub fn ui_binary(Io, Env) -> String?
+
+pub fn view_args(ViewOptions) -> ViewArgs
+
+pub fn view_on(ViewShown, Double) -> String
+
+pub fn view_options_of(@jsjson.JValue) -> ViewOptions
+
+pub let win_keys : Map[String, WinKey]
+
+pub fn window_words(Io, String) -> @jsjson.JValue
+
+pub fn windows_of(@jsjson.JValue?) -> Array[ScreenWindow]
+
+// Errors
+pub(all) suberror ExecFailed {
+  ExecFailed(message~ : String, code~ : @jsjson.JValue, signal~ : String?, stdout~ : String, stderr~ : String)
+}
+
+pub(all) suberror Failed {
+  Failed(String, @jsjson.JValue)
+}
+
+pub(all) suberror FsFailed {
+  FsFailed(String, String)
+}
+
+pub(all) suberror GrantRefused {
+  GrantRefused(String)
+}
+
+pub(all) suberror ScreenRefused {
+  ScreenRefused(status~ : Int32, key~ : String, args~ : @jsjson.JValue, access~ : ScreenAccess?, message~ : String)
+}
+
+// Types and methods
+pub struct AbortSignal {
+  // private fields
+}
+pub fn AbortSignal::abort(Self) -> Unit
+pub fn AbortSignal::new() -> Self
+
+pub(all) struct AccessShown {
+  capture : Bool
+  control : Bool
+  message : String
+  app : String?
+  path : String?
+  asking : Bool
+  help : String?
+}
+pub fn AccessShown::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Adb {
+  run : async (Array[String]) -> String
+  shell : (String, ChildEvents) -> Child
+}
+
+pub struct AndroidInput {
+  // private fields
+}
+pub fn AndroidInput::messages(Self, ScreenInput, (Double, Double)) -> Array[Bytes]
+pub fn AndroidInput::new() -> Self
+
+pub struct AndroidScreen {
+  id : String
+  panels : Array[Panel]
+  // private fields
+}
+pub async fn AndroidScreen::discard(Self) -> Unit
+pub fn AndroidScreen::gone(Self) -> Unit
+pub fn AndroidScreen::new(Io, String, String, (Double, Double), Array[Panel], Adb, String, () -> Unit, peeks? : PeekCount?, emulator_since? : Double?) -> Self
+pub async fn AndroidScreen::open(Self, ViewOptions) -> AndroidView
+pub fn AndroidScreen::since(Self) -> Double?
+pub fn AndroidScreen::size(Self) -> (Double, Double)
+pub fn AndroidScreen::source(Self) -> ScreenSource
+pub fn AndroidScreen::title(Self) -> String
+
+pub struct AndroidScreens {
+  // private fields
+}
+pub fn AndroidScreens::close(Self) -> Unit
+pub fn AndroidScreens::new(Io, (ScreenSource) -> () -> Unit, () -> Unit, () -> String?, file? : String?, look_again? : Double?) -> Self
+pub async fn AndroidScreens::refresh(Self) -> Unit
+pub fn AndroidScreens::start(Self) -> Unit
+
+pub struct AndroidView {
+  // private fields
+}
+pub fn AndroidView::close(Self) -> Unit
+pub async fn AndroidView::input(Self, ScreenInput) -> Unit
+pub fn AndroidView::keyframe(Self) -> Unit
+pub fn AndroidView::new(Io, Adb, () -> Unit, ((Double, Double)) -> Unit) -> Self
+pub async fn AndroidView::next(Self) -> Frame?
+pub async fn AndroidView::start(Self, String, ViewArgs) -> Unit
+pub fn AndroidView::video(Self) -> ScreenVideo
+pub fn AndroidView::view(Self) -> ScreenView
+
+pub(all) struct AudioFrame {
+  ts : Double
+  data : Bytes
+  codec : String
+}
+pub fn AudioFrame::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Booted {
+  udid : String
+  name : String
+  runtime : String
+  type_ : String
+  booted_at : Double?
+}
+pub fn Booted::to_j(Self) -> @jsjson.JValue
+
+type Carry
+
+type Chain
+
+pub(all) struct Child {
+  pid : () -> Int32?
+  write : (Bytes, ((String?) -> Unit)?) -> Unit
+  end_input : (Bytes?) -> Unit
+  destroy_input : () -> Unit
+  input_open : () -> Bool
+  kill : (String) -> Unit
+  running : () -> Bool
+}
+
+pub(all) struct ChildEvents {
+  out : (Bytes) -> Unit
+  err : (Bytes) -> Unit
+  error : (String) -> Unit
+  close : (Int32?, String?) -> Unit
+}
+pub fn ChildEvents::none() -> Self
+
+type ChildTold
+
+pub(all) struct ChromeButton {
+  name : String
+  x : Double
+  y : Double
+  width : Double
+  height : Double
+  dx : Double
+  dy : Double
+  front : Bool
+  page : Double?
+  usage : Double?
+}
+pub fn ChromeButton::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ChromeDisplay {
+  chrome : String
+  mask : String?
+  width : Double
+  height : Double
+  scale : Double
+}
+
+pub(all) struct ChromeImage {
+  name : String
+  image : String
+  down : String?
+  under : Bool
+}
+
+pub(all) struct ChromePanel {
+  key : String
+  width : Double
+  height : Double
+  frame : (Double, Double)
+  screen : Rect
+  corners : Array[Double]
+  buttons : Array[ChromeButton]
+}
+pub fn ChromePanel::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ChromePictures {
+  body : String
+  buttons : Array[(String, String, String?)]
+}
+pub fn ChromePictures::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ChromeSource {
+  panel : ChromePanel
+  dir : String
+  body : Rect
+  composite : String?
+  slice : Slice?
+  sizing : Insets
+  mask : String?
+  sensor : String?
+  images : Array[ChromeImage]
+}
+pub fn ChromeSource::to_j(Self) -> @jsjson.JValue
+pub fn ChromeSource::told(Self) -> ChromePanel
+
+pub(all) enum Clip {
+  ClipText(String)
+  ClipPng(Bytes)
+}
+pub fn Clip::to_j(Self) -> @jsjson.JValue
+pub fn Clip::type_name(Self) -> String
+
+pub(all) struct Clock {
+  now : () -> Double
+  after : (Double, () -> Unit) -> () -> Unit
+  micros : () -> Double
+}
+pub fn Clock::ms(Self) -> Double
+pub async fn Clock::sleep(Self, Double) -> Unit
+pub fn Clock::us(Self) -> Double
+
+#derive(Eq)
+pub(all) enum Codec {
+  H265
+  H264
+  Jpeg
+}
+pub fn Codec::name(Self) -> String
+
+pub(all) struct Conn {
+  write : (Bytes) -> Unit
+  end : () -> Unit
+  destroy : () -> Unit
+  destroyed : () -> Bool
+  pause : () -> Unit
+  flow_again : () -> Unit
+}
+
+pub(all) struct ConnEvents {
+  connect : () -> Unit
+  data : (Bytes) -> Unit
+  error : (String) -> Unit
+  close : () -> Unit
+}
+
+pub struct Desktop {
+  // private fields
+}
+pub fn Desktop::access(Self) -> ScreenAccess
+pub fn Desktop::clipboard(Self) -> Array[String]
+pub async fn Desktop::close(Self) -> Unit
+pub async fn Desktop::helper_back(Self) -> Unit
+pub fn Desktop::new(Io, DesktopOptions) -> Self
+pub async fn Desktop::open(Self, ViewOptions) -> ScreenView
+pub async fn Desktop::refresh(Self, force? : Bool) -> Unit
+pub fn Desktop::size(Self) -> (Double, Double)
+pub fn Desktop::source(Self) -> ScreenSource
+pub fn Desktop::title(Self) -> String
+pub async fn Desktop::ui(Self, Array[String]) -> @jsjson.JValue
+
+pub(all) struct DesktopOptions {
+  supported : Bool
+  helper : HelperApp?
+  grants : HelperGrants?
+  reach : async () -> String?
+  changed : () -> Unit
+  title : (() -> String)?
+  lang : (() -> String)?
+  synthetic : String?
+}
+
+#derive(Eq)
+pub(all) struct Dirent {
+  name : String
+  dir : Bool
+}
+
+pub(all) struct Drawing {
+  cache : String
+  draw : async (String, String, Double?) -> Unit
+}
+
+pub(all) struct Env {
+  pairs : Array[(String, String)]
+}
+pub fn Env::copy(Self) -> Self
+pub fn Env::delete(Self, String) -> Unit
+pub fn Env::get(Self, String) -> String?
+pub fn Env::new(Array[(String, String)]) -> Self
+pub fn Env::of_j(@jsjson.JValue) -> Self
+pub fn Env::set(Self, String, String) -> Unit
+pub fn Env::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ExecOptions {
+  env : Env?
+  timeout : Double?
+  max_buffer : Double?
+  verbatim : Bool
+}
+pub fn ExecOptions::new(env? : Env?, timeout? : Double?, max_buffer? : Double?) -> Self
+
+pub(all) struct Files {
+  read : async (String) -> Bytes
+  write : async (String, Bytes, Int32?) -> Unit
+  access : async (String, Int32) -> Bool
+  readdir : async (String) -> Array[Dirent]
+  mkdir : async (String, Bool, Int32?) -> Unit
+  mkdtemp : async (String) -> String
+  rename : async (String, String) -> Unit
+  rm : async (String, Bool, Bool) -> Unit
+  unlink : async (String) -> Unit
+  stat : async (String) -> Stat
+  lstat : async (String) -> Stat
+  copy_tree : async (String, String) -> Unit
+  read_at : async (String, Double, Int32) -> Bytes
+  write_at : async (String, Double, Bytes) -> Unit
+  create : async (String) -> Unit
+  append : async (String, Bytes) -> Unit
+  exists_sync : (String) -> Bool
+  read_sync : (String) -> String?
+  watch : (String, (String?) -> Unit, () -> Unit) -> (() -> Unit) raise FsFailed
+}
+
+pub(all) struct Frame {
+  config : FrameConfig?
+  key : Bool
+  ts : Double
+  data : Bytes
+}
+pub fn Frame::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct FrameConfig {
+  codec : Codec
+  width : Double
+  height : Double
+  description : Bytes?
+  region : Region?
+}
+pub fn FrameConfig::to_j(Self) -> @jsjson.JValue
+
+pub struct HelperApp {
+  app : String
+  dir : String
+  socket : String
+  // private fields
+}
+pub async fn HelperApp::back(Self, ms? : Double) -> Unit
+pub async fn HelperApp::connect(Self, @jsjson.JValue) -> Sock
+pub async fn HelperApp::ensure(Self) -> Unit
+pub fn HelperApp::listen(Self, (@jsjson.JValue) -> Unit) -> () -> Unit
+pub fn HelperApp::new(Io, String, String, launch? : (async (String, Array[(String, String)]) -> Unit)?, on_back? : (() -> Unit)?, clock? : HelperClock?) -> Self
+pub fn HelperApp::on_back(Self, () -> Unit) -> () -> Unit
+pub async fn HelperApp::pid(Self) -> Double?
+pub async fn HelperApp::quit(Self) -> Unit
+pub async fn HelperApp::request(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn HelperApp::restarted(Self, Double, ms? : Double) -> Unit
+
+pub(all) struct HelperClock {
+  now : () -> Double
+  sleep : async (Double) -> Unit
+}
+
+pub struct HelperFiles {
+  // private fields
+}
+pub async fn HelperFiles::ask(Self, String, String) -> String
+pub fn HelperFiles::check(Self, Array[String]) -> Unit
+pub fn HelperFiles::fs(Self, Array[String], Array[String]) -> HelperFs
+pub fn HelperFiles::known(Self, String) -> (String, String)?
+pub fn HelperFiles::new(Io, HelperApp, () -> Unit, async () -> String?, lang? : (() -> String)?, now? : (() -> Double)?, grants? : HelperGrants?) -> Self
+pub async fn HelperFiles::request(Self, @jsjson.JValue) -> @jsjson.JValue
+pub async fn HelperFiles::search(Self, String, String, Double, Array[String]) -> Array[String]
+pub async fn HelperFiles::stream(Self, @jsjson.JValue) -> (@jsjson.JValue, Sock, Bytes)
+
+pub struct HelperFs {
+  // private fields
+}
+pub async fn HelperFs::copy_to(Self, String, String) -> Unit
+pub async fn HelperFs::list(Self, String, Double) -> (Array[Listed], Bool)
+pub async fn HelperFs::lstat(Self, String) -> Stat
+pub async fn HelperFs::mkdir(Self, String, Bool) -> Unit
+pub async fn HelperFs::names(Self, String) -> Array[String]
+pub async fn HelperFs::read(Self, String, Double, Double) -> (Bytes, Double, Double)
+pub async fn HelperFs::read_all(Self, String) -> Bytes
+pub async fn HelperFs::real(Self, String) -> String
+pub async fn HelperFs::remove(Self, String) -> Unit
+pub async fn HelperFs::rename(Self, String, String) -> Unit
+pub async fn HelperFs::stat(Self, String) -> Stat
+pub async fn HelperFs::trash(Self, String) -> String?
+pub async fn HelperFs::unlink(Self, String) -> Unit
+pub async fn HelperFs::write(Self, String, Write) -> (Double, Bool)
+
+pub struct HelperGrants {
+  helper : HelperApp
+  // private fields
+}
+pub fn HelperGrants::new(Io, HelperApp, async () -> String?, folders? : Bool, now? : (() -> Double)?, volumes? : String, mounts? : (async () -> Array[String])?, open? : ((String) -> Unit)?) -> Self
+pub fn HelperGrants::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn HelperGrants::refresh(Self, force? : Bool) -> Unit
+pub async fn HelperGrants::request(Self, String, @jsjson.JValue, again? : Bool) -> (String, Bool)
+pub async fn HelperGrants::show(Self, String, @jsjson.JValue, paths? : @jsjson.JValue?, again? : Bool) -> String
+pub fn HelperGrants::state(Self, String) -> String
+pub fn HelperGrants::status(Self) -> @jsjson.JValue?
+pub fn HelperGrants::view(Self) -> @jsjson.JValue?
+
+pub(all) struct HelperPipe {
+  write : (Bytes) -> Unit
+  destroy : () -> Unit
+  on_data : ((Bytes) -> Unit) -> Unit
+  on_error : (() -> Unit) -> Unit
+  on_close : (() -> Unit) -> Unit
+}
+
+pub struct HelperView {
+  ready : @effect.Deferred[@jsjson.JValue]
+  // private fields
+}
+pub fn HelperView::bounds(Self, Double, Double, Region?) -> Unit
+pub fn HelperView::close(Self) -> Unit
+pub fn HelperView::has_audio(Self) -> Bool
+pub fn HelperView::input(Self, ScreenInput) -> Unit
+pub fn HelperView::keyframe(Self) -> Unit
+pub fn HelperView::new(Io, Codec, HelperPipe, () -> Unit, input? : InputOps?, capture? : String, audio? : Bool) -> Self
+pub async fn HelperView::next(Self) -> Frame?
+pub async fn HelperView::next_audio(Self) -> AudioFrame?
+pub fn HelperView::rate(Self, Double) -> Unit
+pub fn HelperView::regions(Self) -> Bool
+pub fn HelperView::reveal(Self, String) -> Unit
+pub fn HelperView::set_clipboard(Self, Clip, Bool) -> Unit
+pub fn HelperView::video(Self) -> ScreenVideo
+pub fn HelperView::view(Self) -> ScreenView
+pub fn HelperView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
+pub fn HelperView::watch_cursor(Self, (ScreenCursor) -> Unit) -> () -> Unit
+pub fn HelperView::watch_turn(Self, (Int32) -> Unit) -> () -> Unit
+pub fn HelperView::watch_windows(Self, (ScreenWindows) -> Unit) -> () -> Unit
+pub fn HelperView::window(Self, Double?) -> Unit
+
+pub(all) struct InputOps {
+  ops : (ScreenInput, Double) -> Array[@jsjson.JValue]
+  release : (() -> Array[@jsjson.JValue])?
+}
+
+pub(all) struct Insets {
+  left : Double
+  top : Double
+  right : Double
+  bottom : Double
+}
+
+pub(all) struct Io {
+  clock : Clock
+  spawn : (async () -> Unit) -> Unit
+  procs : Procs
+  net : Net
+  fs : Files
+  log : Log
+  os : Os
+  words : Words
+  random : (Int32) -> Bytes
+  random_int : (Int32, Int32) -> Int32
+}
+
+pub struct LastingView {
+  // private fields
+}
+pub fn LastingView::bounds(Self, Double, Double, Region?) -> Unit
+pub fn LastingView::close(Self) -> Unit
+pub fn LastingView::input(Self, ScreenInput) -> Unit
+pub fn LastingView::keyframe(Self) -> Unit
+pub fn LastingView::new(Io, HelperView, async () -> HelperView, () -> Unit) -> Self
+pub async fn LastingView::next(Self) -> Frame?
+pub async fn LastingView::next_audio(Self) -> AudioFrame?
+pub fn LastingView::rate(Self, Double) -> Unit
+pub fn LastingView::regions(Self) -> Bool
+pub fn LastingView::reveal(Self, String) -> Unit
+pub fn LastingView::set_clipboard(Self, Clip, Bool) -> Unit
+pub fn LastingView::video(Self) -> ScreenVideo
+pub fn LastingView::view(Self) -> ScreenView
+pub fn LastingView::watch_clipboard(Self, (Clip) -> Unit) -> () -> Unit
+pub fn LastingView::watch_cursor(Self, (ScreenCursor) -> Unit) -> () -> Unit
+
+pub struct LinuxDesktop {
+  // private fields
+}
+pub fn LinuxDesktop::access(Self) -> ScreenAccess
+pub async fn LinuxDesktop::close(Self) -> Unit
+pub fn LinuxDesktop::new(Io, LinuxOptions) -> Self
+pub async fn LinuxDesktop::open(Self, ViewOptions) -> ScreenView
+pub async fn LinuxDesktop::refresh(Self, force? : Bool) -> Unit
+pub fn LinuxDesktop::size(Self) -> (Double, Double)
+pub fn LinuxDesktop::source(Self) -> ScreenSource
+pub fn LinuxDesktop::title(Self) -> String
+
+pub struct LinuxGstDesktop {
+  // private fields
+}
+pub fn LinuxGstDesktop::access(Self) -> ScreenAccess
+pub async fn LinuxGstDesktop::close(Self) -> Unit
+pub fn LinuxGstDesktop::new(Io, PortalOptions) -> Self
+pub async fn LinuxGstDesktop::open(Self, ViewOptions) -> ScreenView
+pub async fn LinuxGstDesktop::refresh(Self, force? : Bool) -> Unit
+pub fn LinuxGstDesktop::set_env(Self, Env) -> Unit
+pub fn LinuxGstDesktop::size(Self) -> (Double, Double)
+pub fn LinuxGstDesktop::source(Self) -> ScreenSource
+pub fn LinuxGstDesktop::title(Self) -> String
+
+pub(all) struct LinuxOptions {
+  data : String
+  changed : () -> Unit
+  title : (() -> String)?
+  env : Env?
+  discover : (async (Env) -> Env)?
+}
+
+pub struct LinuxScreenTools {
+  // private fields
+}
+pub async fn LinuxScreenTools::can_prepare(Self, Env) -> Bool
+pub fn LinuxScreenTools::close(Self) -> Unit
+pub fn LinuxScreenTools::new(Io, String) -> Self
+pub async fn LinuxScreenTools::prepare(Self, Env) -> Unit
+pub async fn LinuxScreenTools::prepared(Self, Env) -> LinuxToolPair?
+
+pub(all) struct LinuxToolPair {
+  ffmpeg : String
+  xdotool : String
+  env : Env
+}
+
+pub(all) struct Listed {
+  name : String
+  link : Bool
+  real : String
+  stat : Stat?
+}
+
+pub(all) struct Log {
+  say : (String, String, String, @jsjson.JValue) -> Unit
+}
+pub fn Log::info(Self, String, String, fields? : @jsjson.JValue) -> Unit
+pub fn Log::warn(Self, String, String, fields? : @jsjson.JValue) -> Unit
+
+pub(all) struct LogStream {
+  start : (Array[String], (String) -> Unit, () -> Unit) -> () -> Unit
+}
+
+pub(all) struct LoginField {
+  host : String
+  field : String
+}
+
+pub(all) struct LoginFill {
+  host : String
+  username : String?
+  password : String?
+}
+
+pub struct MacInput {
+  // private fields
+}
+pub fn MacInput::input_ops(Self) -> InputOps
+pub fn MacInput::new() -> Self
+pub fn MacInput::ops(Self, ScreenInput, Double) -> Array[@jsjson.JValue]
+pub fn MacInput::release(Self) -> Array[@jsjson.JValue]
+
+pub(all) struct Net {
+  connect : (Target, ConnEvents) -> Conn
+}
+
+pub(all) struct Os {
+  hostname : () -> String
+  tmpdir : () -> String
+  homedir : () -> String
+  arch : String
+  os : String
+  uid : Int32?
+  exec_path : String
+  pid : Int32
+  env : () -> Env
+  runnable : (String, Array[String], Env) -> Runnable
+  runnable_soon : async (String, Array[String], Env) -> Runnable
+  mounts_soon : async () -> Array[String]
+  date_parse : (String) -> Double
+  cwd : String
+  code_dir : String
+}
+
+#derive(Eq)
+pub(all) struct Panel {
+  width : Double
+  height : Double
+  corners : Array[Double]
+}
+pub fn Panel::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct PasskeyAnswer {
+  id : String
+  fields : @jsjson.JValue
+}
+
+pub(all) struct PasskeyAsk {
+  id : String
+  host : String
+  rp_id : String
+  client_data : String
+  allow : Array[String]
+  user_verification : String
+}
+
+pub struct PeekCount {
+  // private fields
+}
+pub fn PeekCount::free(Self) -> Unit
+pub fn PeekCount::new(most? : Int32) -> Self
+pub fn PeekCount::running(Self) -> Int32
+pub fn PeekCount::take(Self) -> Bool
+
+pub(all) struct Pixels {
+  width : Int32
+  height : Int32
+  data : FixedArray[Byte]
+}
+
+pub(all) struct PortalOptions {
+  changed : () -> Unit
+  mut env : Env
+  mode : String?
+  title : (() -> String)?
+  python : String?
+  helper : String?
+  consent_wait_ms : Double?
+}
+
+pub struct PortalProcess {
+  ready : @effect.Deferred[Unit]
+  exited : @effect.Deferred[Unit]
+  mut normal : Bool
+  // private fields
+}
+pub fn PortalProcess::close(Self) -> Unit
+pub async fn PortalProcess::input(Self, ScreenInput) -> Unit
+pub fn PortalProcess::is_ready(Self) -> Bool
+pub fn PortalProcess::keyframe(Self) -> Unit
+pub fn PortalProcess::new(Io, String, String, Env, ((Double, Double)) -> Unit, () -> Unit, String) -> Self
+pub async fn PortalProcess::next(Self) -> Frame?
+pub async fn PortalProcess::start(Self, ViewOptions) -> Unit
+pub fn PortalProcess::video(Self) -> ScreenVideo
+pub fn PortalProcess::view(Self) -> ScreenView
+pub fn PortalProcess::why(Self) -> String?
+
+pub(all) struct Procs {
+  spawn : (String, Array[String], SpawnOptions, ChildEvents) -> Child
+  exec : async (String, Array[String], ExecOptions) -> String
+}
+
+pub(all) struct Recording {
+  started : @effect.Deferred[Unit]
+  ended : @effect.Deferred[Unit]
+  stop : () -> Unit
+}
+
+#derive(Eq)
+pub(all) struct Rect {
+  x : Double
+  y : Double
+  width : Double
+  height : Double
+}
+
+#derive(Eq)
+pub(all) struct Region {
+  x : Double
+  y : Double
+  w : Double
+  h : Double
+}
+pub fn Region::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Run {
+  run : async (String, Array[String]) -> String
+}
+
+pub(all) struct Runnable {
+  file : String
+  args : Array[String]
+  verbatim : Bool
+}
+
+pub(all) struct ScrcpyPacket {
+  config : Bool
+  key : Bool
+  pts : UInt64
+  data : Bytes
+}
+
+pub struct ScrcpyStream {
+  // private fields
+}
+pub fn ScrcpyStream::heard(Self, BytesView) -> Unit
+pub fn ScrcpyStream::new(((Double, Double)) -> Unit, (ScrcpyPacket) -> Unit) -> Self
+
+#derive(Eq)
+pub(all) struct ScreenAccess {
+  capture : Bool
+  control : Bool
+  unsupported : String?
+  reason : String?
+  app : String?
+  path : String?
+  asking : Bool
+}
+pub fn ScreenAccess::new(Bool, Bool, unsupported? : String?, reason? : String?, app? : String?, path? : String?, asking? : Bool) -> Self
+pub fn ScreenAccess::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ScreenBrowser {
+  available : () -> Bool
+  open_user_tab : async (String, String?) -> String
+}
+
+#derive(Eq)
+pub(all) struct ScreenCursor {
+  x : Double
+  y : Double
+  shape : String
+}
+pub fn ScreenCursor::to_j(Self) -> @jsjson.JValue
+
+pub struct ScreenHub {
+  // private fields
+}
+pub fn ScreenHub::add(Self, ScreenSource) -> () -> Unit
+pub fn ScreenHub::changed(Self) -> Unit
+pub async fn ScreenHub::chrome_of(Self, String, Int32, Double) -> ChromePictures
+pub fn ScreenHub::close(Self) -> Unit
+pub async fn ScreenHub::close_screen(Self, String) -> Unit
+pub fn ScreenHub::debug_of(Self, String) -> SimDebug raise ScreenRefused
+pub fn ScreenHub::drive(Self, String, String, Bool, String) -> (Bool, Array[String])
+pub fn ScreenHub::end_view(Self, String, String, String) -> Unit raise ScreenRefused
+pub fn ScreenHub::end_views(Self, String, String) -> Int32 raise ScreenRefused
+pub fn ScreenHub::get(Self, String) -> ScreenSource?
+pub async fn ScreenHub::history_screen(Self, String, Int32) -> Unit
+pub fn ScreenHub::join(Self, String, Watcher) -> () -> Unit
+pub fn ScreenHub::list(Self) -> Array[ScreenSource]
+pub fn ScreenHub::listed(Self, String) -> @jsjson.JValue
+pub fn ScreenHub::may_drive(Self, String, String, Bool) -> Bool
+pub fn ScreenHub::new(Io, drop? : (() -> String?)?) -> Self
+pub fn ScreenHub::on_change(Self, () -> Unit) -> () -> Unit
+pub async fn ScreenHub::open_as(Self, String, ViewOptions, String, Bool) -> ScreenView
+pub async fn ScreenHub::open_browser(Self, String, id? : String?) -> String
+pub async fn ScreenHub::open_url(Self, String, String) -> Unit
+pub fn ScreenHub::people(Self, String) -> @jsjson.JValue
+pub async fn ScreenHub::refresh(Self) -> Unit
+pub fn ScreenHub::refresher(Self, async () -> Unit) -> () -> Unit
+pub async fn ScreenHub::reload_screen(Self, String) -> Unit
+pub fn ScreenHub::set_browser(Self, ScreenBrowser?) -> Unit
+pub async fn ScreenHub::sleep_screen(Self, String) -> Unit
+pub fn ScreenHub::take_control(Self, String, by? : String?) -> Int32 raise ScreenRefused
+pub fn ScreenHub::watch(Self, (Array[ScreenSource]) -> Unit) -> () -> Unit
+pub fn ScreenHub::watch_only(Self, String, String) -> Unit raise ScreenRefused
+pub fn ScreenHub::when_stopping(Self, () -> Unit) -> () -> Unit
+
+pub(all) enum ScreenInput {
+  Pointer(kind~ : String, x~ : Double, y~ : Double, buttons~ : Int32)
+  Wheel(x~ : Double, y~ : Double, dx~ : Double, dy~ : Double)
+  Key(kind~ : String, key~ : String, code~ : String, mods~ : Int32)
+  Text(String)
+  Pose(String)
+  Device(String)
+  Button(page~ : Int32, usage~ : Int32, down~ : Bool)
+}
+pub fn ScreenInput::to_j(Self) -> @jsjson.JValue
+
+#derive(Eq)
+pub(all) enum ScreenKind {
+  DesktopKind
+  BrowserKind
+  SimulatorKind
+}
+pub fn ScreenKind::name(Self) -> String
+
+#derive(Eq)
+pub(all) struct ScreenResolution {
+  width : Double
+  height : Double
+  modes : Array[(Double, Double)]
+}
+pub fn ScreenResolution::to_j(Self) -> @jsjson.JValue
+
+#derive(Eq)
+pub(all) struct ScreenScale {
+  percent : Double
+  recommended : Double
+  steps : Array[Double]
+}
+pub fn ScreenScale::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ScreenSource {
+  id : String
+  kind : ScreenKind
+  title : () -> String
+  size : () -> (Double, Double)
+  open : async (ViewOptions) -> ScreenView
+  access : (() -> ScreenAccess)?
+  clipboard : (() -> Array[String])?
+  reveal : Bool
+  peek : Bool
+  farview : Bool
+  opened_by : (() -> String?)?
+  user_tab : Bool
+  sleeping : (() -> Bool)?
+  site : (() -> String?)?
+  address : (() -> String)?
+  open_url : (async (String) -> Unit)?
+  reload : (async () -> Unit)?
+  back : (async () -> Unit)?
+  forward : (async () -> Unit)?
+  sleep : (async () -> Unit)?
+  discard : (async () -> Unit)?
+  since : (() -> Double?)?
+  scale : (async () -> ScreenScale?)?
+  set_scale : (async (Double) -> ScreenScale)?
+  resolution : (async () -> ScreenResolution?)?
+  set_resolution : (async (Double, Double) -> ScreenResolution)?
+  ui : (async (Array[String]) -> @jsjson.JValue)?
+  debug : SimDebug?
+  poses : Bool
+  chrome : Array[ChromeSource]?
+  panels : Array[Panel]?
+}
+pub fn ScreenSource::bare(String, ScreenKind, () -> String, () -> (Double, Double), async (ViewOptions) -> ScreenView) -> Self
+
+pub(all) struct ScreenStart {
+  start : (String, Array[String], ChildEvents) -> Child
+}
+
+#derive(Eq)
+pub(all) struct ScreenVideo {
+  capture : String
+  encoder : String?
+  hardware : Bool?
+}
+pub fn ScreenVideo::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct ScreenView {
+  next : async () -> Frame?
+  next_audio : (async () -> AudioFrame?)?
+  keyframe : () -> Unit
+  input : async (ScreenInput) -> Unit
+  rate : ((Double) -> Unit)?
+  bounds : ((Double, Double, Region?) -> Unit)?
+  regions : (() -> Bool)?
+  video : (() -> ScreenVideo)?
+  why : (() -> String?)?
+  close : () -> Unit
+  set_clipboard : (async (Clip, Bool) -> Unit)?
+  watch_clipboard : (((Clip) -> Unit) -> (() -> Unit))?
+  watch_cursor : (((ScreenCursor) -> Unit) -> (() -> Unit))?
+  watch_turn : (((Int32) -> Unit) -> (() -> Unit))?
+  watch_windows : (((ScreenWindows) -> Unit) -> (() -> Unit))?
+  window : ((Double?) -> Unit)?
+  reveal : (async (String) -> Unit)?
+  watch_login : (((LoginField?) -> Unit) -> (() -> Unit))?
+  fill : (async (LoginFill) -> Unit)?
+  watch_passkey : (((PasskeyAsk?) -> Unit) -> (() -> Unit))?
+  passkey : (async (PasskeyAnswer) -> Unit)?
+  watch_child : (((String) -> Unit) -> (() -> Unit))?
+}
+pub fn ScreenView::bare(async () -> Frame?, () -> Unit, async (ScreenInput) -> Unit, () -> Unit) -> Self
+
+#derive(Eq)
+pub(all) struct ScreenWindow {
+  id : Double
+  app : String
+  title : String
+}
+
+#derive(Eq)
+pub(all) struct ScreenWindows {
+  windows : Array[ScreenWindow]
+  window : Double?
+}
+pub fn ScreenWindows::to_j(Self) -> @jsjson.JValue
+
+pub struct Screens {
+  // private fields
+}
+pub fn Screens::add(Self, ScreenSource) -> () -> Unit
+pub fn Screens::changed(Self) -> Unit
+pub fn Screens::get(Self, String) -> ScreenSource?
+pub fn Screens::list(Self) -> Array[ScreenSource]
+pub fn Screens::new() -> Self
+pub fn Screens::watch(Self, (Array[ScreenSource]) -> Unit) -> () -> Unit
+
+pub(all) struct Session {
+  id : String
+  uid : Int32
+  type_ : String
+  active : Bool
+  remote : Bool
+  display : String?
+}
+pub fn Session::to_j(Self) -> @jsjson.JValue
+
+type Shared[T]
+
+pub(all) struct SimApp {
+  id : String
+  name : String
+  running : Bool
+}
+pub fn SimApp::to_j(Self) -> @jsjson.JValue
+
+pub struct SimDebug {
+  // private fields
+}
+pub async fn SimDebug::apps(Self) -> Array[SimApp]
+pub async fn SimDebug::biometrics(Self, String) -> Bool
+pub fn SimDebug::close(Self) -> Unit
+pub async fn SimDebug::install(Self, String) -> String?
+pub fn SimDebug::install_folder(Self) -> String
+pub async fn SimDebug::location(Self, String?) -> Bool
+pub fn SimDebug::logs(Self, Double) -> (Int32, Array[SimLog])
+pub fn SimDebug::new(Io, String, String, Run, async () -> Bytes, stream? : LogStream?, record? : ((Array[String]) -> Recording)?) -> Self
+pub async fn SimDebug::open_url(Self, String) -> Bool
+pub async fn SimDebug::push(Self, String, String) -> Bool
+pub async fn SimDebug::record_start(Self, String?) -> Unit
+pub async fn SimDebug::record_stop(Self) -> (String, String)?
+pub fn SimDebug::recording(Self) -> Bool
+pub async fn SimDebug::relaunch(Self, String) -> Bool
+pub async fn SimDebug::screenshot(Self) -> Bytes
+pub async fn SimDebug::set_setting(Self, String, String) -> Bool
+pub async fn SimDebug::settings(Self) -> @jsjson.JValue
+pub async fn SimDebug::status_bar(Self, Bool) -> Unit
+pub async fn SimDebug::uninstall(Self, String) -> Bool
+
+pub struct SimInput {
+  // private fields
+}
+pub fn SimInput::input_ops(Self) -> InputOps
+pub fn SimInput::new() -> Self
+pub fn SimInput::ops(Self, ScreenInput) -> Array[@jsjson.JValue]
+
+pub(all) struct SimLog {
+  seq : Int32
+  at : String
+  level : String
+  app : String
+  text : String
+}
+pub fn SimLog::to_j(Self) -> @jsjson.JValue
+
+pub struct Simulator {
+  id : String
+  poses : Bool
+  panels : Array[Panel]
+  chrome : Array[ChromeSource]
+  // private fields
+}
+pub fn Simulator::debug(Self) -> SimDebug
+pub async fn Simulator::discard(Self) -> Unit
+pub fn Simulator::gone(Self) -> Unit
+pub fn Simulator::new(Io, Booted, HelperApp, (Double, Double), simctl? : Run?, panels? : Array[Panel], chrome? : Array[ChromeSource]) -> Self
+pub async fn Simulator::open(Self, ViewOptions) -> HelperView
+pub fn Simulator::since(Self) -> Double
+pub fn Simulator::size(Self) -> (Double, Double)
+pub fn Simulator::source(Self) -> ScreenSource
+pub fn Simulator::title(Self) -> String
+
+pub struct Simulators {
+  // private fields
+}
+pub fn Simulators::close(Self) -> Unit
+pub fn Simulators::new(Io, (ScreenSource) -> () -> Unit, HelperApp?, devices? : String?, run? : Run?) -> Self
+pub async fn Simulators::refresh(Self) -> Unit
+pub async fn Simulators::start(Self) -> Unit
+
+pub(all) struct Slice {
+  top_left : String
+  top : String
+  top_right : String
+  right : String
+  bottom_right : String
+  bottom : String
+  bottom_left : String
+  left : String
+}
+
+pub struct Sock {
+  // private fields
+}
+pub fn Sock::create(Io, Target) -> Self
+pub fn Sock::destroy(Self) -> Unit
+pub fn Sock::destroyed(Self) -> Bool
+pub fn Sock::flow_again(Self) -> Unit
+pub fn Sock::off(Self, Int32) -> Unit
+pub fn Sock::on_close(Self, () -> Unit) -> Int32
+pub fn Sock::on_connect(Self, () -> Unit) -> Int32
+pub fn Sock::on_data(Self, (Bytes) -> Unit) -> Int32
+pub fn Sock::on_error(Self, (String) -> Unit) -> Int32
+pub fn Sock::pause(Self) -> Unit
+pub fn Sock::write(Self, Bytes) -> Unit
+
+pub(all) struct SpawnOptions {
+  env : Env?
+  group : Bool
+  verbatim : Bool
+  stdio : (String, String, String)
+}
+pub fn SpawnOptions::piped(env? : Env?) -> Self
+
+#derive(Eq)
+pub(all) struct Stat {
+  dir : Bool
+  file : Bool
+  link : Bool
+  size : Double
+  mtime_ms : Double
+}
+
+#derive(Eq)
+pub(all) enum Target {
+  Unix(String)
+  Tcp(Int32)
+}
+
+type Typed
+
+pub(all) struct ViewArgs {
+  max_side : Int32
+  bitrate : Int32
+  fps : Double?
+  wake : Bool
+}
+
+pub(all) struct ViewFit {
+  width : Double
+  height : Double
+  scale : Double
+}
+
+pub(all) struct ViewOptions {
+  max_width : Double
+  max_height : Double
+  codecs : Array[Codec]
+  peek : Bool
+  bitrate : Double?
+  fps : Double?
+  fit : ViewFit?
+  audio : Bool
+  opus : Bool
+  gamut : String?
+}
+pub fn ViewOptions::new(Double, Double, Array[Codec], peek? : Bool, bitrate? : Double?, fps? : Double?, audio? : Bool, opus? : Bool, gamut? : String?) -> Self
+
+pub(all) struct ViewShown {
+  id : String
+  name : String
+  control : Bool
+  at : Double
+  device : String?
+  self_ : String?
+  client : String?
+  app : String?
+  agent : Bool
+}
+pub fn ViewShown::to_j(Self) -> @jsjson.JValue
+
+pub(all) struct Watcher {
+  name : String
+  mut control : Bool
+  tell : (@jsjson.JValue) -> Unit
+  device : String?
+  self_ : String?
+  client : String?
+  app : String?
+  agent : Bool
+  end : ((String) -> Unit)?
+  watch_only : ((String?) -> Unit)?
+  mut at : Double
+}
+pub fn Watcher::new(String, Bool, (@jsjson.JValue) -> Unit, device? : String?, self_? : String?, client? : String?, app? : String?, agent? : Bool, end? : ((String) -> Unit)?, watch_only? : ((String?) -> Unit)?) -> Self
+
+pub struct WinInput {
+  // private fields
+}
+pub fn WinInput::input_ops(Self) -> InputOps
+pub fn WinInput::new() -> Self
+pub fn WinInput::ops(Self, ScreenInput) -> Array[@jsjson.JValue]
+pub fn WinInput::release(Self) -> Array[@jsjson.JValue]
+
+pub(all) struct WinKey {
+  scan : Int32
+  ext : Bool
+  vk : Int32
+}
+
+pub struct WindowsDesktop {
+  // private fields
+}
+pub fn WindowsDesktop::access(Self) -> ScreenAccess
+pub fn WindowsDesktop::clipboard(Self) -> Array[String]
+pub fn WindowsDesktop::close(Self) -> Unit
+pub fn WindowsDesktop::new(Io, WindowsDesktopOptions) -> Self
+pub async fn WindowsDesktop::open(Self, ViewOptions) -> ScreenView
+pub async fn WindowsDesktop::refresh(Self, force? : Bool) -> Unit
+pub async fn WindowsDesktop::resolution(Self) -> ScreenResolution?
+pub async fn WindowsDesktop::scale(Self) -> ScreenScale?
+pub async fn WindowsDesktop::set_resolution(Self, Double, Double) -> ScreenResolution
+pub async fn WindowsDesktop::set_scale(Self, Double) -> ScreenScale
+pub fn WindowsDesktop::size(Self) -> (Double, Double)
+pub fn WindowsDesktop::source(Self) -> ScreenSource
+pub fn WindowsDesktop::title(Self) -> String
+pub async fn WindowsDesktop::ui(Self, Array[String]) -> @jsjson.JValue
+
+pub(all) struct WindowsDesktopOptions {
+  binary : String?
+  ui : String?
+  changed : () -> Unit
+  title : (() -> String)?
+  start : ScreenStart?
+}
+
+pub(all) struct Words {
+  tr : (String, String, @jsjson.JValue) -> String
+  station_lang : () -> String
+}
+
+pub(all) struct Write {
+  create : Bool
+  offset : Double
+  data : Bytes
+  at_least : Double?
+  truncate : Double?
+  sync : Bool
+}
+
+pub struct X11Desktop {
+  // private fields
+}
+pub fn X11Desktop::access(Self) -> ScreenAccess
+pub fn X11Desktop::close(Self) -> Unit
+pub fn X11Desktop::new(Io, X11DesktopOptions) -> Self
+pub async fn X11Desktop::open(Self, ViewOptions) -> ScreenView
+pub async fn X11Desktop::refresh(Self, force? : Bool) -> Unit
+pub fn X11Desktop::set_env(Self, Env) -> Unit
+pub fn X11Desktop::size(Self) -> (Double, Double)
+pub fn X11Desktop::source(Self) -> ScreenSource
+pub fn X11Desktop::title(Self) -> String
+
+pub(all) struct X11DesktopOptions {
+  changed : () -> Unit
+  title : (() -> String)?
+  tools : LinuxScreenTools?
+  mut env : Env?
+  ffmpeg : String?
+  xdotool : String?
+  prepare_wait_ms : Double?
+}
+
+pub struct X11H264 {
+  ready : @effect.Deferred[Unit]
+  // private fields
+}
+pub fn X11H264::close(Self) -> Unit
+pub fn X11H264::keyframe(Self) -> Unit
+pub fn X11H264::new(Io, String, Env, (Double, Double), (Double, Double), Double, Double?, () -> Unit) -> Self
+pub async fn X11H264::next(Self) -> Frame?
+pub fn X11H264::rate(Self, Double) -> Unit
+pub fn X11H264::video(Self) -> ScreenVideo
+pub fn X11H264::why(Self) -> String?
+
+// Type aliases
+pub using @jsjson {type JValue as J}
+
+// Traits
