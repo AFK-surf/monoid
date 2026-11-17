@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 2.51 | 3.54 | 15.21 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [cc51d6fc6](https://github.com/AFK-surf/monoid/commit/cc51d6fc6dfdb0d7965eb15d303936f27d1b60d3) mbui: a table's columns sized by the tree's own me | 2.51 | 3.54 | 15.21 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [ea08aff29](https://github.com/AFK-surf/monoid/commit/ea08aff29c69fa5f152ebb10f20373aebc066884) mbui: 已迁移节点清扫：服务页随宽度不再重建网页舞台，整块 pick 改为分区 show 与按键 | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
 | [15d0f113d](https://github.com/AFK-surf/monoid/commit/15d0f113d35fa0926c0eb687adcc8eeb0dbdb21e) app, mbui iOS: a chat's notification taken off as  | 2.5 | 3.52 | 15.13 | 36.53 | 60.06 | 32.07 | 67.25 | 95.83 | 121.58 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.64 | 65.84 | 95.78 | 120.08 |
 | [4398bbe68](https://github.com/AFK-surf/monoid/commit/4398bbe68ada35728a9fc98f005af1b631ca2c36) mbui: 服务页、可视化文件页与侧栏 service/file 标签改为节点（5B-2a、5B-2 | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.61 | 65.73 | 95.95 | 116.5 |
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 2.48 | 3.47 | 14.85 | 36.19 | 58.5 | 31.61 | 65.73 | 95.95 | 116.5 |
-| [cda493b2d](https://github.com/AFK-surf/monoid/commit/cda493b2d361e4bbfadd3c436b6952ae18f8313b) docs: changelog notes for the 16 squash commits me | 2.47 | 3.46 | 14.83 | 36.08 | 58.35 | 31.61 | 65.73 | 95.95 | 116.5 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [389e103a1](https://github.com/AFK-surf/monoid/commit/389e103a1ed314e75944c86a85b6e2d44474993f) mbui: liquid glass spread into a spectrum, its lip | 0.43 | 0.56 | 2.13 | 3.24 | 5.11 | 1.57 | 4.2 | 53.31 |
 | [cc51d6fc6](https://github.com/AFK-surf/monoid/commit/cc51d6fc6dfdb0d7965eb15d303936f27d1b60d3) mbui: a table's columns sized by the tree's own me | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 54.84 |
 | [ea08aff29](https://github.com/AFK-surf/monoid/commit/ea08aff29c69fa5f152ebb10f20373aebc066884) mbui: 已迁移节点清扫：服务页随宽度不再重建网页舞台，整块 pick 改为分区 show 与按键 | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 54.84 |
 | [15d0f113d](https://github.com/AFK-surf/monoid/commit/15d0f113d35fa0926c0eb687adcc8eeb0dbdb21e) app, mbui iOS: a chat's notification taken off as  | 0.43 | 0.56 | 2.13 | 3.24 | 5.1 | 1.57 | 4.18 | 55.2 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [4398bbe68](https://github.com/AFK-surf/monoid/commit/4398bbe68ada35728a9fc98f005af1b631ca2c36) mbui: 服务页、可视化文件页与侧栏 service/file 标签改为节点（5B-2a、5B-2 | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.2 |
 | [4d341da51](https://github.com/AFK-surf/monoid/commit/4d341da51245c1a344ec532b4e0f7ed61cbc2cd0) 状态与通知：对话阶段一处算出，系统卡与对话卡分开，看板待收口一键归档已读 (#6746) | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
-| [cda493b2d](https://github.com/AFK-surf/monoid/commit/cda493b2d361e4bbfadd3c436b6952ae18f8313b) docs: changelog notes for the 16 squash commits me | 0.42 | 0.55 | 2.11 | 3.22 | 5.05 | 1.56 | 4.15 | 53.18 |
