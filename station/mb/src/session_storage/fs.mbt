@@ -43,7 +43,7 @@ pub fn code_of(e : Error) -> String {
     1 => "EPERM"
     2 => "ENOENT"
     13 => "EACCES"
-    17 => "EEXIST"
+    17 | 80 | 183 => "EEXIST"
     20 => "ENOTDIR"
     21 => "EISDIR"
     39 | 66 => "ENOTEMPTY"

@@ -15,6 +15,14 @@ test "times as toISOString writes them" {
 }
 
 ///|
+test "exclusive file creation recognises an occupied name on Unix and Windows" {
+  for code in [17, 80, 183] {
+    assert_eq(@session_storage.code_of(@session_storage.failed("already exists (os error \{code})")), "EEXIST")
+  }
+  assert_eq(@session_storage.code_of(@session_storage.failed("permission denied (os error 13)")), "EACCES")
+}
+
+///|
 test "links named by their session, station and workspace" {
   assert_eq(@session_storage.linked_session("https://app/o/W1/st-1/a%2Fb+c) more"), Some(("a/b+c", None)))
   assert_eq(@session_storage.linked_session("x?history=h%41&entry=12#"), Some(("hA", Some(12))))

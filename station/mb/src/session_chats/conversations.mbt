@@ -568,8 +568,20 @@ pub async fn attach(w : World, key : String, paths : Array[String], into : Strin
         safe.write_char(c)
       }
     }
-    let copy = join_path([dir, "\{stamp}-\{safe}"])
-    w.ask("fs.copyFile", [js(path), js(copy)]) |> ignore
+    let mut copy = ""
+    let mut n = 1
+    while copy == "" {
+      let number = if n == 1 { "" } else { "-\{n}" }
+      let into = join_path([dir, "\{stamp}\{number}-\{safe}"])
+      try {
+        // Node's COPYFILE_EXCL: a copy never replaces an attachment already kept.
+        w.ask("fs.copyFile", [js(path), js(into), ji(1)]) |> ignore
+        copy = into
+      } catch {
+        e => if str_of(at(Some(w.thrown.val), "code")) != Some("EEXIST") { raise e }
+      }
+      n += 1
+    }
     let facts = w.dep("shownFactsSoon", [js(copy)])
     out.push(spread(jo([("name", js(name)), ("path", js(copy)), ("size", jn(size))]), facts))
   }
