@@ -27,9 +27,11 @@ function browser() {
   const document = { activeElement: null, createElement: () => ({ ...element(), getContext: () => ({}) }),
     getElementById: (id) => id === 'c' ? canvas : ta, addEventListener() {} };
   // (a textarea's words, selection and focus)
-  const ta = { ...element(), value: '', selectionStart: 0, selectionEnd: 0,
+  const ta = { ...element(), value: '', selectionStart: 0, selectionEnd: 0, attrs: new Map(), focusings: 0,
+    setAttribute(k, v) { this.attrs.set(k, String(v)); }, removeAttribute(k) { this.attrs.delete(k); },
+    getAttribute(k) { return this.attrs.get(k) ?? null; },
     setSelectionRange(s, e) { this.selectionStart = s; this.selectionEnd = e; },
-    focus() { document.activeElement = this; },
+    focus() { if (document.activeElement !== this) this.focusings++; document.activeElement = this; },
     blur() { if (document.activeElement === this) { document.activeElement = null; this.dispatch('blur'); } } };
   const visualViewport = { ...element(), height: 300, offsetTop: 0, scale: 1 };
   const win = { ...element(), document, navigator: { platform: 'iPhone' }, location: { search: '' }, URLSearchParams,
@@ -167,4 +169,39 @@ test("a mouse's click is drawn at the display's frame, as before", async () => {
   assert.equal(b.document.activeElement, null, 'nothing drawn in the click');
   b.draw();
   assert.equal(b.document.activeElement, b.ta);
+});
+
+// A field's keyboard (@hostapi.ime_action, said before setIme): what the textarea asks the phone's keyboard for. Moving
+// from one field to another of another kind with the keyboard up, the textarea is focused again, the keyboard coming
+// up anew for its kind (no blur told to the app as the field let go).
+test("a field's kind sets the keyboard it asks for, a keyboard already up asked again", async () => {
+  const b = browser();
+  await Promise.resolve();
+  b.draw();
+  b.host.imeAction(5);
+  b.ime();
+  assert.equal(b.ta.getAttribute('inputmode'), 'email');
+  assert.equal(b.ta.getAttribute('autocorrect'), 'off');
+  const focusings = b.ta.focusings;
+  b.visualViewport.height = 180;
+  b.texts.length = 0;
+  // another field, words taken as typed (a server's id), with the keyboard still up
+  b.host.imeAction(6);
+  b.ime('abc', 3);
+  assert.equal(b.ta.getAttribute('inputmode'), null);
+  assert.equal(b.ta.getAttribute('autocorrect'), 'off');
+  assert.equal(b.document.activeElement, b.ta);
+  assert.equal(b.ta.focusings, focusings + 1, 'focused again, for the keyboard to come up for its kind');
+  assert.deepEqual(b.texts, [], 'the app told nothing of the textarea let go between');
+  // the same kind again: nothing touched
+  b.host.imeAction(6);
+  b.ime('abcd', 4);
+  assert.equal(b.ta.focusings, focusings + 1);
+  // back to a plain field: its attributes gone
+  b.host.imeAction(0);
+  assert.equal(b.ta.getAttribute('autocorrect'), null);
+  // an address's: the keyboard for addresses, its Enter a go key
+  b.host.imeAction(2);
+  assert.equal(b.ta.getAttribute('inputmode'), 'url');
+  assert.equal(b.ta.getAttribute('enterkeyhint'), 'go');
 });
