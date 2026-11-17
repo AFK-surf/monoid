@@ -191,10 +191,7 @@ fn steps_centred_node(
             row.alpha(By(fn() { look().words })) |> ignore
             row.box(fn(at) {
               style_node(at, fn() { dialog_close_corner() })
-              icon_button_node(at, "close", fn() { t("common.close") }, fn() {
-                field_let_go(keyed)
-                cancel()
-              }, size=dialog_close)
+              icon_button_node(at, "close", fn() { t("common.close") }, cancel, size=dialog_close)
               .tab_stop(Is(false))
               |> ignore
             })
@@ -269,7 +266,7 @@ fn step_page_node(
   })
   |> ignore
   let nodes = px.nodes
-  let footed = nodes.bind(fn(n) { n.foot }) is Some(_)
+  let footed = nodes.foot is Some(_)
   // (what it holds scrolling in itself where the dialog is short of room, between its head and its foot, as a dialog's
   // that goes in no steps does (panel_centred_node's): never laid out past its own box, under its foot or out of the
   // dialog's corners)
@@ -286,24 +283,20 @@ fn step_page_node(
         })
         col.alpha(By(fn() { look().words })) |> ignore
         panel_in_lend(col, Wide, 0.0, sides=dialog_pad + words_in, rows_out=panel_words - panel_card_in, centred=true)
-        match nodes {
-          Some(n) =>
-            // (a share of the window tall where it says one, in a box of its own that height)
-            if px.tall > 0.0 && !px.form {
-              col.box(fn(held) {
-                let share = fn() { Some(dmax(0.0, px.tall * over_room(held).1 - dialog_frame_h)) }
-                if n.hugs {
-                  held.max_height(By(share)) |> ignore
-                } else {
-                  held.height(By(share)) |> ignore
-                }
-                (n.body)(held, close)
-              })
-              |> ignore
+        // (a share of the window tall where it says one, in a box of its own that height)
+        if px.tall > 0.0 && !px.form {
+          col.box(fn(held) {
+            let share = fn() { Some(dmax(0.0, px.tall * over_room(held).1 - dialog_frame_h)) }
+            if nodes.hugs {
+              held.max_height(By(share)) |> ignore
             } else {
-              (n.body)(col, close)
+              held.height(By(share)) |> ignore
             }
-          None => ()
+            (nodes.body)(held, close)
+          })
+          |> ignore
+        } else {
+          (nodes.body)(col, close)
         }
       })
       |> ignore
@@ -311,7 +304,7 @@ fn step_page_node(
     |> ignore
   })
   |> ignore
-  match nodes.bind(fn(n) { n.foot }) {
+  match nodes.foot {
     Some(f) =>
       page.box(made_for=loc, fn(fv) {
         style_node(fv, fn() { centred_part_in(0.0, 0.0) })

@@ -1,6 +1,6 @@
-// A panel whose body and foot are nodes of the window's tree (@sf.panel_nodes): laid out where the old frame's body and
-// foot of the same panel are (beside what opened it, and in the middle of the window), drawn by the tree, closed by
-// what it is given and by Escape as an old-bodied panel is.
+// A panel whose body and foot are nodes of the window's tree (@sf.panel_nodes): laid out where they were when the old
+// frame's body and foot of the same panel stood beside them (beside what opened it, and in the middle of the window),
+// drawn by the tree, closed by what it is given and by Escape.
 
 ///|
 /// Where a box of `color` is drawn (its rect: x, y, width, height), the one there is.
@@ -23,18 +23,6 @@ let foot_ink : Int64 = 0xB45A29FFL
 let ink_corner : Double = 18.0
 
 ///|
-/// An old body: a box 40 by 36 of body_ink.
-fn old_body() -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _) { c.box(w=Px(40.0), h=Px(36.0), bg=body_ink, radius=ink_corner, fn() {  }) |> ignore }
-}
-
-///|
-/// An old foot: a box 60 by 36 of foot_ink.
-fn old_foot() -> (@ui.Ctx, () -> Unit) -> Unit {
-  fn(c, _) { c.box(w=Px(60.0), h=Px(36.0), bg=foot_ink, radius=ink_corner, fn() {  }) |> ignore }
-}
-
-///|
 /// A box `w` by `h` of `ink`, as a node in `v`.
 fn ink_node(v : @view.View, w : Double, h : Double, ink : Int64) -> Unit {
   v.box(fn(b) { b.width(Is(Some(w))).height(Is(Some(h))).ground(Is(ink)).radius(Is(ink_corner)) |> ignore }) |> ignore
@@ -48,7 +36,7 @@ fn body_and_foot(
   close? : Bool = false,
 ) -> ((Double, Double, Double, Double), (Double, Double, Double, Double), Array[String], String) raise {
   t.run_for(@ui.move_most_ms)
-  // (in any order: what of it is nodes listed before or after the old frame's as the tree draws it)
+  // (in any order: as the tree draws them)
   let words = t.words().map(fn(w) { "\{w.0} \{@ui.rect_text(tenth4((w.1, w.2, w.3, w.4)))}" })
   words.sort()
   // (its close button where it has one: asked of what is read out only where asked, `close`)
@@ -61,47 +49,302 @@ fn body_and_foot(
 }
 
 ///|
-test "大屏: a panel beside what opened it whose body and foot are nodes: each where the old frame's body and foot of the same panel are" {
+test "大屏: a panel beside what opened it whose body and foot are nodes: each where it was beside the old frame's body and foot of the same panel" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("面板", from=At(600.0, 300.0, 0.0, 0.0), foot=old_foot(), old_body())
-  let old = body_and_foot(t)
   @sf.panel_nodes("面板", from=At(600.0, 300.0, 0.0, 0.0), foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(body_and_foot(t), old)
+  debug_inspect(body_and_foot(t), content=(
+    #|(
+    #|  (606, 342, 40, 36),
+    #|  (830, 386, 60, 36),
+    #|  [
+    #|    "A (440, 18, 4, 8)",
+    #|    "A (241, 435, 4, 8)",
+    #|    "A (268, 175, 4, 8)",
+    #|    "周 (266, 435, 8, 8)",
+    #|    "林 (252, 175, 8, 8)",
+    #|    "林 (253, 435, 8, 8)",
+    #|    "今天 (66, 65, 212, 18)",
+    #|    "+2 (266, 633, 12, 18)",
+    #|    "个 (20.5, 719, 13, 20)",
+    #|    "你 (424.5, 16, 11, 12)",
+    #|    "待处理 (66, 173, 36, 18)",
+    #|    "星 (20.5, 683, 13, 20)",
+    #|    "昨天 (66, 381, 212, 18)",
+    #|    "新建对话 (90, 17, 152, 20)",
+    #|    "星期三 (66, 585, 212, 18)",
+    #|    "面板 (616, 318, 264, 20)",
+    #|    "周报的模板 (82, 671, 168, 20)",
+    #|    "忽略 (408, 277.8, 760, 18)",
+    #|    "搜索全部内容 (90, 19, 188, 20)",
+    #|    "整理发布清单 (316, 12, 96, 20)",
+    #|    "整理发布清单 (82, 95, 168, 20)",
+    #|    "一起换 (454, 217.8, 396, 20)",
+    #|    "先不换 (454, 163.8, 396, 20)",
+    #|    "按空格输入 (402, 710, 772, 22)",
+    #|    "5 分钟前 (450, 565.9, 44, 18)",
+    #|    "Claude (408, 71.7, 36, 18)",
+    #|    "Claude (408, 394.8, 36, 18)",
+    #|    "Claude (408, 565.9, 36, 18)",
+    #|    "等 林 决定 (408, 123.8, 60, 18)",
+    #|    "迁移数据库的演练 (66, 615, 168, 20)",
+    #|    "30 分钟前 (450, 71.7, 49.5, 18)",
+    #|    "夜里的构建又失败了 (82, 207, 168, 20)",
+    #|    "15 分钟前 (450, 394.8, 49.5, 18)",
+    #|    "把旧的截图都换成新的 (66, 523, 184, 20)",
+    #|    "开关和三处颜色都改好了 (82, 285, 132, 18)",
+    #|    "盯着 CI，绿了告诉我 (66, 319, 184, 20)",
+    #|    "首页的列表改成按天分组 (82, 151, 168, 20)",
+    #|    "40 分钟前 (1118.5, 16.7, 49.5, 18)",
+    #|    "等你在浏览器里登录 (426, 492.9, 108, 18)",
+    #|    "Slack 里问的报销流程 (66, 467, 168, 20)",
+    #|    "模板放在共享文件夹的第一层 (66, 693, 188, 18)",
+    #|    "给设置页加一个深色模式开关 (82, 263, 168, 20)",
+    #|    "已经把三个步骤整理成一页文档 (66, 489, 188, 18)",
+    #|    "正在核对第三项：安装包的签名 (66, 117, 168, 18)",
+    #|    "还有深色模式也看一下 (1014, -17.3, 140, 22)",
+    #|    "和 Ana 一起看新版的引导页 (66, 411, 184, 20)",
+    #|    "Ana：第二屏的插画可以再小一点 (66, 433, 137, 18)",
+    #|    "把首页和聊天页的截图都更新 (454, 237.8, 396, 18)",
+    #|    "这次只改列表，截图下次再说 (454, 183.8, 396, 18)",
+    #|    "演练到第二步时 Maple 断开了 (66, 637, 132, 18)",
+    #|    "在 Willow 上登录 gh (426, 472.9, 324, 18)",
+    #|    "推送截图前要先登录 gh。 (408, 419.8, 760, 23.1)",
+    #|    "监控中：每 5 分钟看一次主干的构建 (82, 341, 172, 18)",
+    #|    "测试机的磁盘满了，要不要清理旧的缓存？ (82, 229, 172, 18)",
+    #|    " · 分组的标题用相对日期还是具体日期？ (102, 173, 114, 18)",
+    #|    "Willow 上 codex 的登录已失效：请在设置里重新登录 (644, 329.8, 288, 22)",
+    #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.9, 760, 23.1)",
+    #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.7, 760, 23.1)",
+    #|  ],
+    #|  "None",
+    #|)
+  ))
 }
 
 ///|
-test "大屏: an untitled panel beside what opened it whose body is nodes, ruled over its foot: each where the old frame's are" {
+test "大屏: an untitled panel beside what opened it whose body is nodes, ruled over its foot: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("", from=At(600.0, 300.0, 0.0, 0.0), ruled=true, foot=old_foot(), old_body())
-  let old = body_and_foot(t)
   @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), ruled=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(body_and_foot(t), old)
+  debug_inspect(body_and_foot(t), content=(
+    #|(
+    #|  (606, 312, 40, 36),
+    #|  (830, 361, 60, 36),
+    #|  [
+    #|    "A (440, 18, 4, 8)",
+    #|    "A (241, 435, 4, 8)",
+    #|    "A (268, 175, 4, 8)",
+    #|    "周 (266, 435, 8, 8)",
+    #|    "林 (252, 175, 8, 8)",
+    #|    "林 (253, 435, 8, 8)",
+    #|    "今天 (66, 65, 212, 18)",
+    #|    "+2 (266, 633, 12, 18)",
+    #|    "个 (20.5, 719, 13, 20)",
+    #|    "你 (424.5, 16, 11, 12)",
+    #|    "待处理 (66, 173, 36, 18)",
+    #|    "星 (20.5, 683, 13, 20)",
+    #|    "昨天 (66, 381, 212, 18)",
+    #|    "新建对话 (90, 17, 152, 20)",
+    #|    "星期三 (66, 585, 212, 18)",
+    #|    "周报的模板 (82, 671, 168, 20)",
+    #|    "忽略 (408, 277.8, 760, 18)",
+    #|    "搜索全部内容 (90, 19, 188, 20)",
+    #|    "整理发布清单 (316, 12, 96, 20)",
+    #|    "整理发布清单 (82, 95, 168, 20)",
+    #|    "一起换 (454, 217.8, 396, 20)",
+    #|    "先不换 (454, 163.8, 396, 20)",
+    #|    "按空格输入 (402, 710, 772, 22)",
+    #|    "5 分钟前 (450, 565.9, 44, 18)",
+    #|    "Claude (408, 71.7, 36, 18)",
+    #|    "Claude (408, 394.8, 36, 18)",
+    #|    "Claude (408, 565.9, 36, 18)",
+    #|    "等 林 决定 (408, 123.8, 60, 18)",
+    #|    "迁移数据库的演练 (66, 615, 168, 20)",
+    #|    "30 分钟前 (450, 71.7, 49.5, 18)",
+    #|    "夜里的构建又失败了 (82, 207, 168, 20)",
+    #|    "15 分钟前 (450, 394.8, 49.5, 18)",
+    #|    "把旧的截图都换成新的 (66, 523, 184, 20)",
+    #|    "开关和三处颜色都改好了 (82, 285, 132, 18)",
+    #|    "盯着 CI，绿了告诉我 (66, 319, 184, 20)",
+    #|    "首页的列表改成按天分组 (82, 151, 168, 20)",
+    #|    "40 分钟前 (1118.5, 16.7, 49.5, 18)",
+    #|    "等你在浏览器里登录 (426, 492.9, 108, 18)",
+    #|    "Slack 里问的报销流程 (66, 467, 168, 20)",
+    #|    "模板放在共享文件夹的第一层 (66, 693, 188, 18)",
+    #|    "给设置页加一个深色模式开关 (82, 263, 168, 20)",
+    #|    "已经把三个步骤整理成一页文档 (66, 489, 188, 18)",
+    #|    "正在核对第三项：安装包的签名 (66, 117, 168, 18)",
+    #|    "还有深色模式也看一下 (1014, -17.3, 140, 22)",
+    #|    "和 Ana 一起看新版的引导页 (66, 411, 184, 20)",
+    #|    "Ana：第二屏的插画可以再小一点 (66, 433, 137, 18)",
+    #|    "把首页和聊天页的截图都更新 (454, 237.8, 396, 18)",
+    #|    "这次只改列表，截图下次再说 (454, 183.8, 396, 18)",
+    #|    "演练到第二步时 Maple 断开了 (66, 637, 132, 18)",
+    #|    "在 Willow 上登录 gh (426, 472.9, 324, 18)",
+    #|    "推送截图前要先登录 gh。 (408, 419.8, 760, 23.1)",
+    #|    "监控中：每 5 分钟看一次主干的构建 (82, 341, 172, 18)",
+    #|    "测试机的磁盘满了，要不要清理旧的缓存？ (82, 229, 172, 18)",
+    #|    " · 分组的标题用相对日期还是具体日期？ (102, 173, 114, 18)",
+    #|    "Willow 上 codex 的登录已失效：请在设置里重新登录 (644, 329.8, 288, 22)",
+    #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.9, 760, 23.1)",
+    #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.7, 760, 23.1)",
+    #|  ],
+    #|  "None",
+    #|)
+  ))
 }
 
 ///|
-test "大屏: a panel in the middle of the window whose body and foot are nodes, titled and saying what it is: each where the old frame's are" {
+test "大屏: a panel in the middle of the window whose body and foot are nodes, titled and saying what it is: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("对话框", description="它说的话", from=Unanchored, foot=old_foot(), old_body())
-  let old = body_and_foot(t, close=true)
   @sf.panel_nodes("对话框", description="它说的话", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(body_and_foot(t, close=true), old)
+  debug_inspect(body_and_foot(t, close=true), content=(
+    #|(
+    #|  (404, 390.5, 40, 36),
+    #|  (816, 450.5, 60, 36),
+    #|  [
+    #|    "A (440, 18, 4, 8)",
+    #|    "A (241, 435, 4, 8)",
+    #|    "A (268, 175, 4, 8)",
+    #|    "周 (266, 435, 8, 8)",
+    #|    "林 (252, 175, 8, 8)",
+    #|    "林 (253, 435, 8, 8)",
+    #|    "今天 (66, 65, 212, 18)",
+    #|    "+2 (266, 633, 12, 18)",
+    #|    "个 (20.5, 719, 13, 20)",
+    #|    "你 (424.5, 16, 11, 12)",
+    #|    "待处理 (66, 173, 36, 18)",
+    #|    "星 (20.5, 683, 13, 20)",
+    #|    "昨天 (66, 381, 212, 18)",
+    #|    "新建对话 (90, 17, 152, 20)",
+    #|    "星期三 (66, 585, 212, 18)",
+    #|    "周报的模板 (82, 671, 168, 20)",
+    #|    "对话框 (404, 315.5, 66, 30)",
+    #|    "忽略 (408, 277.8, 760, 18)",
+    #|    "搜索全部内容 (90, 19, 188, 20)",
+    #|    "整理发布清单 (316, 12, 96, 20)",
+    #|    "整理发布清单 (82, 95, 168, 20)",
+    #|    "一起换 (454, 217.8, 396, 20)",
+    #|    "先不换 (454, 163.8, 396, 20)",
+    #|    "按空格输入 (402, 710, 772, 22)",
+    #|    "5 分钟前 (450, 565.9, 44, 18)",
+    #|    "Claude (408, 71.7, 36, 18)",
+    #|    "它说的话 (404, 352.5, 472, 20)",
+    #|    "Claude (408, 394.8, 36, 18)",
+    #|    "Claude (408, 565.9, 36, 18)",
+    #|    "等 林 决定 (408, 123.8, 60, 18)",
+    #|    "迁移数据库的演练 (66, 615, 168, 20)",
+    #|    "30 分钟前 (450, 71.7, 49.5, 18)",
+    #|    "夜里的构建又失败了 (82, 207, 168, 20)",
+    #|    "15 分钟前 (450, 394.8, 49.5, 18)",
+    #|    "把旧的截图都换成新的 (66, 523, 184, 20)",
+    #|    "开关和三处颜色都改好了 (82, 285, 132, 18)",
+    #|    "盯着 CI，绿了告诉我 (66, 319, 184, 20)",
+    #|    "首页的列表改成按天分组 (82, 151, 168, 20)",
+    #|    "40 分钟前 (1118.5, 16.7, 49.5, 18)",
+    #|    "等你在浏览器里登录 (426, 492.9, 108, 18)",
+    #|    "Slack 里问的报销流程 (66, 467, 168, 20)",
+    #|    "模板放在共享文件夹的第一层 (66, 693, 188, 18)",
+    #|    "给设置页加一个深色模式开关 (82, 263, 168, 20)",
+    #|    "已经把三个步骤整理成一页文档 (66, 489, 188, 18)",
+    #|    "正在核对第三项：安装包的签名 (66, 117, 168, 18)",
+    #|    "还有深色模式也看一下 (1014, -17.3, 140, 22)",
+    #|    "和 Ana 一起看新版的引导页 (66, 411, 184, 20)",
+    #|    "Ana：第二屏的插画可以再小一点 (66, 433, 137, 18)",
+    #|    "把首页和聊天页的截图都更新 (454, 237.8, 396, 18)",
+    #|    "这次只改列表，截图下次再说 (454, 183.8, 396, 18)",
+    #|    "演练到第二步时 Maple 断开了 (66, 637, 132, 18)",
+    #|    "在 Willow 上登录 gh (426, 472.9, 324, 18)",
+    #|    "推送截图前要先登录 gh。 (408, 419.8, 760, 23.1)",
+    #|    "监控中：每 5 分钟看一次主干的构建 (82, 341, 172, 18)",
+    #|    "测试机的磁盘满了，要不要清理旧的缓存？ (82, 229, 172, 18)",
+    #|    " · 分组的标题用相对日期还是具体日期？ (102, 173, 114, 18)",
+    #|    "Willow 上 codex 的登录已失效：请在设置里重新登录 (644, 329.8, 288, 22)",
+    #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.9, 760, 23.1)",
+    #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.7, 760, 23.1)",
+    #|  ],
+    #|  "Some((842, 315.5, 32, 32))",
+    #|)
+  ))
 }
 
 ///|
-test "大屏: an untitled form whose body and foot are nodes: each where the old frame's are" {
+test "大屏: an untitled form whose body and foot are nodes: each where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("", from=At(600.0, 300.0, 0.0, 0.0), form=true, foot=old_foot(), old_body())
-  let old = body_and_foot(t)
   @sf.panel_nodes("", from=At(600.0, 300.0, 0.0, 0.0), form=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(body_and_foot(t), old)
+  debug_inspect(body_and_foot(t), content=(
+    #|(
+    #|  (404, 369, 40, 36),
+    #|  (816, 429, 60, 36),
+    #|  [
+    #|    "A (440, 18, 4, 8)",
+    #|    "A (241, 435, 4, 8)",
+    #|    "A (268, 175, 4, 8)",
+    #|    "周 (266, 435, 8, 8)",
+    #|    "林 (252, 175, 8, 8)",
+    #|    "林 (253, 435, 8, 8)",
+    #|    "今天 (66, 65, 212, 18)",
+    #|    "+2 (266, 633, 12, 18)",
+    #|    "个 (20.5, 719, 13, 20)",
+    #|    "你 (424.5, 16, 11, 12)",
+    #|    "待处理 (66, 173, 36, 18)",
+    #|    "星 (20.5, 683, 13, 20)",
+    #|    "昨天 (66, 381, 212, 18)",
+    #|    "新建对话 (90, 17, 152, 20)",
+    #|    "星期三 (66, 585, 212, 18)",
+    #|    "周报的模板 (82, 671, 168, 20)",
+    #|    "忽略 (408, 277.8, 760, 18)",
+    #|    "搜索全部内容 (90, 19, 188, 20)",
+    #|    "整理发布清单 (316, 12, 96, 20)",
+    #|    "整理发布清单 (82, 95, 168, 20)",
+    #|    "一起换 (454, 217.8, 396, 20)",
+    #|    "先不换 (454, 163.8, 396, 20)",
+    #|    "按空格输入 (402, 710, 772, 22)",
+    #|    "5 分钟前 (450, 565.9, 44, 18)",
+    #|    "Claude (408, 71.7, 36, 18)",
+    #|    "Claude (408, 394.8, 36, 18)",
+    #|    "Claude (408, 565.9, 36, 18)",
+    #|    "等 林 决定 (408, 123.8, 60, 18)",
+    #|    "迁移数据库的演练 (66, 615, 168, 20)",
+    #|    "30 分钟前 (450, 71.7, 49.5, 18)",
+    #|    "夜里的构建又失败了 (82, 207, 168, 20)",
+    #|    "15 分钟前 (450, 394.8, 49.5, 18)",
+    #|    "把旧的截图都换成新的 (66, 523, 184, 20)",
+    #|    "开关和三处颜色都改好了 (82, 285, 132, 18)",
+    #|    "盯着 CI，绿了告诉我 (66, 319, 184, 20)",
+    #|    "首页的列表改成按天分组 (82, 151, 168, 20)",
+    #|    "40 分钟前 (1118.5, 16.7, 49.5, 18)",
+    #|    "等你在浏览器里登录 (426, 492.9, 108, 18)",
+    #|    "Slack 里问的报销流程 (66, 467, 168, 20)",
+    #|    "模板放在共享文件夹的第一层 (66, 693, 188, 18)",
+    #|    "给设置页加一个深色模式开关 (82, 263, 168, 20)",
+    #|    "已经把三个步骤整理成一页文档 (66, 489, 188, 18)",
+    #|    "正在核对第三项：安装包的签名 (66, 117, 168, 18)",
+    #|    "还有深色模式也看一下 (1014, -17.3, 140, 22)",
+    #|    "和 Ana 一起看新版的引导页 (66, 411, 184, 20)",
+    #|    "Ana：第二屏的插画可以再小一点 (66, 433, 137, 18)",
+    #|    "把首页和聊天页的截图都更新 (454, 237.8, 396, 18)",
+    #|    "这次只改列表，截图下次再说 (454, 183.8, 396, 18)",
+    #|    "演练到第二步时 Maple 断开了 (66, 637, 132, 18)",
+    #|    "在 Willow 上登录 gh (426, 472.9, 324, 18)",
+    #|    "推送截图前要先登录 gh。 (408, 419.8, 760, 23.1)",
+    #|    "监控中：每 5 分钟看一次主干的构建 (82, 341, 172, 18)",
+    #|    "测试机的磁盘满了，要不要清理旧的缓存？ (82, 229, 172, 18)",
+    #|    " · 分组的标题用相对日期还是具体日期？ (102, 173, 114, 18)",
+    #|    "Willow 上 codex 的登录已失效：请在设置里重新登录 (644, 329.8, 288, 22)",
+    #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.9, 760, 23.1)",
+    #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.7, 760, 23.1)",
+    #|  ],
+    #|  "None",
+    #|)
+  ))
 }
 
 ///|
@@ -128,22 +371,84 @@ test "大屏: a panel whose body is nodes: drawn by the window's tree, read out 
 }
 
 ///|
-test "大屏: an untitled panel in the middle of the window whose body and foot are nodes: its close button in its corner where the old frame's is" {
+test "大屏: an untitled panel in the middle of the window whose body and foot are nodes: its close button in its corner where it was beside the old frame's" {
   let t = menu_tester(1280.0, 800.0, 0)
-  @sf.panel("", from=Unanchored, foot=old_foot(), old_body())
-  let old = body_and_foot(t, close=true)
   @sf.panel_nodes("", from=Unanchored, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     ink_node(v, 40.0, 36.0, body_ink)
   })
-  assert_eq(body_and_foot(t, close=true), old)
+  debug_inspect(body_and_foot(t, close=true), content=(
+    #|(
+    #|  (404, 369, 40, 36),
+    #|  (816, 429, 60, 36),
+    #|  [
+    #|    "A (440, 18, 4, 8)",
+    #|    "A (241, 435, 4, 8)",
+    #|    "A (268, 175, 4, 8)",
+    #|    "周 (266, 435, 8, 8)",
+    #|    "林 (252, 175, 8, 8)",
+    #|    "林 (253, 435, 8, 8)",
+    #|    "今天 (66, 65, 212, 18)",
+    #|    "+2 (266, 633, 12, 18)",
+    #|    "个 (20.5, 719, 13, 20)",
+    #|    "你 (424.5, 16, 11, 12)",
+    #|    "待处理 (66, 173, 36, 18)",
+    #|    "星 (20.5, 683, 13, 20)",
+    #|    "昨天 (66, 381, 212, 18)",
+    #|    "新建对话 (90, 17, 152, 20)",
+    #|    "星期三 (66, 585, 212, 18)",
+    #|    "周报的模板 (82, 671, 168, 20)",
+    #|    "忽略 (408, 277.8, 760, 18)",
+    #|    "搜索全部内容 (90, 19, 188, 20)",
+    #|    "整理发布清单 (316, 12, 96, 20)",
+    #|    "整理发布清单 (82, 95, 168, 20)",
+    #|    "一起换 (454, 217.8, 396, 20)",
+    #|    "先不换 (454, 163.8, 396, 20)",
+    #|    "按空格输入 (402, 710, 772, 22)",
+    #|    "5 分钟前 (450, 565.9, 44, 18)",
+    #|    "Claude (408, 71.7, 36, 18)",
+    #|    "Claude (408, 394.8, 36, 18)",
+    #|    "Claude (408, 565.9, 36, 18)",
+    #|    "等 林 决定 (408, 123.8, 60, 18)",
+    #|    "迁移数据库的演练 (66, 615, 168, 20)",
+    #|    "30 分钟前 (450, 71.7, 49.5, 18)",
+    #|    "夜里的构建又失败了 (82, 207, 168, 20)",
+    #|    "15 分钟前 (450, 394.8, 49.5, 18)",
+    #|    "把旧的截图都换成新的 (66, 523, 184, 20)",
+    #|    "开关和三处颜色都改好了 (82, 285, 132, 18)",
+    #|    "盯着 CI，绿了告诉我 (66, 319, 184, 20)",
+    #|    "首页的列表改成按天分组 (82, 151, 168, 20)",
+    #|    "40 分钟前 (1118.5, 16.7, 49.5, 18)",
+    #|    "等你在浏览器里登录 (426, 492.9, 108, 18)",
+    #|    "Slack 里问的报销流程 (66, 467, 168, 20)",
+    #|    "模板放在共享文件夹的第一层 (66, 693, 188, 18)",
+    #|    "给设置页加一个深色模式开关 (82, 263, 168, 20)",
+    #|    "已经把三个步骤整理成一页文档 (66, 489, 188, 18)",
+    #|    "正在核对第三项：安装包的签名 (66, 117, 168, 18)",
+    #|    "还有深色模式也看一下 (1014, -17.3, 140, 22)",
+    #|    "和 Ana 一起看新版的引导页 (66, 411, 184, 20)",
+    #|    "Ana：第二屏的插画可以再小一点 (66, 433, 137, 18)",
+    #|    "把首页和聊天页的截图都更新 (454, 237.8, 396, 18)",
+    #|    "这次只改列表，截图下次再说 (454, 183.8, 396, 18)",
+    #|    "演练到第二步时 Maple 断开了 (66, 637, 132, 18)",
+    #|    "在 Willow 上登录 gh (426, 472.9, 324, 18)",
+    #|    "推送截图前要先登录 gh。 (408, 419.8, 760, 23.1)",
+    #|    "监控中：每 5 分钟看一次主干的构建 (82, 341, 172, 18)",
+    #|    "测试机的磁盘满了，要不要清理旧的缓存？ (82, 229, 172, 18)",
+    #|    " · 分组的标题用相对日期还是具体日期？ (102, 173, 114, 18)",
+    #|    "Willow 上 codex 的登录已失效：请在设置里重新登录 (644, 329.8, 288, 22)",
+    #|    "做完了：列表、跳到最新的按钮、加载更早的消息都好了，截图也换了。 (408, 590.9, 760, 23.1)",
+    #|    "高度先按 90 估，量过一次就记住。深色模式我一起看。要不要把旧的截图也一起换掉？ (408, 96.7, 760, 23.1)",
+    #|  ],
+    #|  "Some((842, 337, 32, 32))",
+    #|)
+  ))
 }
 
 ///|
-/// A panel a share of the window caps (`tall`) holding a list of one row (a box 40 by 36 of body_ink), with a foot: the
-/// old frame's (its list said how tall it would be: panel_list), and the node one's as tall as what it holds up to that
-/// share (`hugs`: panel_list_node). Where its body's and its foot's boxes are drawn once it is in, each; closed by
-/// Escape and gone between them.
-fn hugging(t : @ui.Tester) -> Array[((Double, Double, Double, Double), (Double, Double, Double, Double))] raise {
+/// A panel a share of the window caps (`tall`) holding a list of one row (a box 40 by 36 of body_ink), with a foot, as
+/// tall as what it holds up to that share (`hugs`: panel_list_node). Where its body's and its foot's boxes are drawn
+/// once it is in; closed by Escape and gone after.
+fn hugging(t : @ui.Tester) -> ((Double, Double, Double, Double), (Double, Double, Double, Double)) raise {
   let at = fn() raise {
     t.run_for(@ui.move_most_ms)
     let boxes = (painted_at(t, body_ink), painted_at(t, foot_ink))
@@ -152,22 +457,22 @@ fn hugging(t : @ui.Tester) -> Array[((Double, Double, Double, Double), (Double, 
     assert_false(@sf.presenter_visible(), msg="gone")
     boxes
   }
-  @sf.panel("列表", from=Unanchored, tall=0.78, foot=old_foot(), fn(c, close) {
-    @sf.panel_list(c, "hugging", 1, 40.0, fn(_) { old_body()(c, close) }) |> ignore
-  })
-  let old = at()
   @sf.panel_nodes("列表", from=Unanchored, tall=0.78, hugs=true, foot=fn(v, _) { ink_node(v, 60.0, 36.0, foot_ink) }, fn(v, _) {
     @sf.panel_list_node(v, fn() { [0] }, fn(b, _) { ink_node(b, 40.0, 36.0, body_ink) }, est=40.0) |> ignore
   })
-  [old, at()]
+  at()
 }
 
 ///|
-test "a panel a share of the window caps whose body is nodes, as tall as what it holds (hugs): its list's row and its foot where the old frame's are, as a sheet and in the middle of the window" {
+test "a panel a share of the window caps whose body is nodes, as tall as what it holds (hugs): its list's row and its foot where they were beside the old frame's, as a sheet and in the middle of the window" {
   let sheet = hugging(menu_tester(390.0, 844.0, 2))
-  assert_eq(sheet[1], sheet[0])
   let dialog = hugging(menu_tester(1280.0, 800.0, 0))
-  assert_eq(dialog[1], dialog[0])
+  debug_inspect((sheet, dialog), content=(
+    #|(
+    #|  ((0, 700, 40, 36), (310, 784, 60, 36)),
+    #|  ((396, 377.5, 40, 36), (816, 437.5, 60, 36)),
+    #|)
+  ))
 }
 
 ///|

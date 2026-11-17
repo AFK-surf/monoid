@@ -117,8 +117,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     through the client (what names a station by them takes no kept value: `station_marks`).
   - A card, a panel, a sheet or a dialog opened the first time comes in once what its nodes read as they are made is
     answered, `open_hold_ms` at most, never held for what waits on a station (`src/sf/open_gate.mbt`: what reads a topic
-    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`). What an old body
-    (an `@ui.old` island) reads is read as frames build it, after, and is not waited for.
+    tells it through sfbase's `Source::topic`; MBUI_OPEN_WHOLE, `src/sfapp/open_whole_wbtest.mbt`).
   - On 小屏 a place of the bottom bar switched away from is kept, not let go (2026-11-12: making Home, 连接 or 用量
     anew at each switch was the largest cause of hangs on Home): its page's nodes put on the stack's shelf at rest and
     taken back as it is switched to (sfbase's `nav_root_kept`: the bar, back to the chats, the history; the rail and the
@@ -169,7 +168,7 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
     all of it), a menu a menu's item opens is a level of the same sheet, and on 小屏 whatever a sheet closes for comes
     in its place, one sheet all along and the scrim as it was, never one sheet sinking as the next rises
     (presenters_wbtest's every pair of kinds holds it). On 小屏 a panel's step further in is a page of the same sheet
-    of the window's tree (`sheet_node`, every panel there but a stage or one with steps of its own; a confirm, a
+    of the window's tree (`sheet_node`, every panel there but a stage; a confirm, a
     question, a menu and a pick are sheets of it too, `sheet_shows_node.mbt`, a menu's level a page of its sheet): it
     slides in as the one before slides off, and that one is kept as it was left for back.
 

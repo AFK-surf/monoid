@@ -23,14 +23,12 @@ fn init {
 }
 
 ///|
-/// The library as a run begins: nothing presented, no menu open, no mark tapped open (parts_reset); no page's
-/// rows as drawn (page_rows_reset); no text read, no film played, the reader's layout as at
-/// first (viewer_reset); none of the system's bars said (native_bars_reset). Said as a Tester begins a run (init
+/// The library as a run begins: nothing presented, no menu open, no mark tapped open (parts_reset); no text read, no
+/// film played, the reader's layout as at first (viewer_reset); none of the system's bars said (native_bars_reset). Said as a Tester begins a run (init
 /// above) and by what runs the app as it begins one itself (its reset). Each was put back by the app's reset alone: a
 /// run without the app (a Tester of sfpages' or of this library's) was given what the run before it left.
 pub fn run_begin() -> Unit {
   parts_reset()
-  page_rows_reset()
   viewer_reset()
   native_bars_reset()
 }

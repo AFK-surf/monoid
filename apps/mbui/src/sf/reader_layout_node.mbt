@@ -34,8 +34,6 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
   let x : PanelOf = {
     title: t("web-pages.drive.reader.layout"),
     description: "",
-    body: fn(_, _) {  },
-    foot: None,
     w: panel_w,
     fits: false,
     wide: false,
@@ -44,21 +42,17 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     grows: false,
     focus: true,
     ruled: false,
-    lists: false,
     fade_out_together: false,
     form: false,
-    field: "",
     stage: false,
     above: None,
-    title_row: None,
     heads_itself: true,
     side: Bottom,
     along: Start,
     offset: panel_offset,
     match_panel: 0,
-    steps: false,
     on_back: None,
-    nodes: Some({
+    nodes: {
       body: fn(col, _) {
         col.box(fn(head) {
           style_node(head, fn() { layout_sheet_head })
@@ -84,7 +78,7 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
       top: 0.0,
       most: None,
       flush: false,
-    }),
+    },
   }
   let shut = fn() {
     match layout_open.untracked() {
@@ -96,9 +90,8 @@ fn reader_layout_nodes(root : @view.View, loc~ : SourceLoc) -> Unit {
     layer.over(Is(true)).stacked(Is(0)) |> ignore
     sheet_node(
       layer,
-      "sf-reader-layout",
       fn() { open() && small() },
-      fn() { [{ n: 0, x, nodes: x.nodes, close: shut, from: Unanchored, lists: -1 }] },
+      fn() { [{ n: 0, x, close: shut, from: Unanchored }] },
       shut,
     )
   })
