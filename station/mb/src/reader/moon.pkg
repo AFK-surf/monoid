@@ -23,6 +23,7 @@ import {
   "station/store_threads",
   "station/usage",
   "station/recent",
+  "station/share_sync",
   "station/lookups",
   "station/agent_drivers",
   "station/legacy",

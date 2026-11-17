@@ -902,6 +902,8 @@ fn main {
     (Some("session-counts"), Some(db), _) =>
       // (a backfill the station drives itself: each line, whatever it says, asks for the next batch)
       @host.run(shell_dir=beside(db, "shell"), host => builder(host, db, "session count", (db, _) => Some(@counts.step(db))))
+    (Some("harness-share-sync"), _, _) =>
+      @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @share_sync.harness(host))
     (Some("harness-cloud-lock"), _, _) =>
       @host.run(shell_dir=flag("--shell-dir").unwrap_or("."), host => @cloud_lock.harness(host))
     (Some("session-backfill"), Some(db), _) =>
