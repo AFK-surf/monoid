@@ -1383,6 +1383,14 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     .padding(By(fn() { (foot_in(), card_pad, foot_in(), foot_in()) }))
     .gap(Is(12.0))
     |> ignore
+    // its pictures over its words, as the composer has them, only once there are some (pasted, dropped or picked: the
+    // field takes them, nothing says it does); clear of 取消's corner where that stands
+    card.show(fn() { !files().is_empty() }, at_once=true, fn(at) {
+      at.padding(By(fn() { (0.0, 0.0, if wide { card_title_end() + card_pad - foot_in() } else { 0.0 }, 0.0) })) |> ignore
+      board_files_node(at, own.src, fn() { @sfbase.board_file_key(ws, own.draft_id.get()) }, files, remove=fn(f) {
+        @sfbase.writing_remove(own.src, @signals.untracked(writing), f.id)
+      })
+    })
     // its words, on the card's own paper: no frame round them, where a card's title begins
     card.box(fn(w) {
       w.row(Is(true)).padding(By(fn() { (card_pad - foot_in(), 0.0, if wide { card_title_end() + card_pad - foot_in() } else { card_pad - foot_in() }, 0.0) })) |> ignore
@@ -1455,9 +1463,6 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
       |> ignore
     })
     |> ignore
-    board_files_node(card, own.src, fn() { @sfbase.board_file_key(ws, own.draft_id.get()) }, files, remove=fn(f) {
-      @sfbase.writing_remove(own.src, @signals.untracked(writing), f.id)
-    })
   })
   |> ignore
   if wide {
@@ -1474,17 +1479,10 @@ fn board_files_node(
   files : () -> Array[@sfbase.BoardFile],
   remove? : (@sfbase.BoardFile) -> Unit,
 ) -> Unit {
-  // The entry always has room for its attachments, so adding or removing one never moves its actions or the cards below.
   let strip = fn(p : @view.View) {
     p.height(Is(Some(64.0))).min_width(Is(Some(0.0))) |> ignore
     p.scrolls(@view.Scroll::across(), slop=@ui.touch_slop(), fn(row) {
       row.row(Is(true)).gap(Is(6.0)).padding(Is((0.0, 8.0, 8.0, 0.0))) |> ignore
-      match remove {
-        Some(_) => row.show(fn() { files().is_empty() }, at_once=true, fn(hint) {
-          @sf.words_node(hint, fn() { @sf.t("web-main.board.paste_image") }, fn() { card_meta_look }) |> ignore
-        })
-        None => ()
-      }
       let by_id = row.keyed_by(files, fn(f) { f.id })
       row.each(fn() { by_id.keys() }, fn(id) { id }, fn(slot, id) {
         let file = fn() { by_id.get(id.get()).unwrap_or({ id: "", name: "" }) }
@@ -1522,10 +1520,7 @@ fn board_files_node(
       })
     }) |> ignore
   }
-  match remove {
-    Some(_) => parent.box(strip) |> ignore
-    None => parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
-  }
+  parent.show(fn() { !files().is_empty() }, at_once=true, fn(p) { p.box(strip) |> ignore })
 }
 
 

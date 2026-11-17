@@ -2869,7 +2869,6 @@ web-main.board.full
 web-main.board.close
 web-main.board.placeholder
 web-main.board.files_unavailable
-web-main.board.paste_image
 web-main.board.empty
 web-main.board.empty_draft
 web-main.board.pinned
