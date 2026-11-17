@@ -97,13 +97,13 @@ const viewer = (name: string, over: Partial<Viewer> = {}): Viewer => ({ sub: nam
 function station() {
   const runners: FakeRunner[] = [];
   const gone: string[] = [];
-  let changes = 0;
+  const events: { workspace: string; live: number }[] = [];
   let n = 0;
   const terminals = new Terminals({
     home: "/home/a",
     chatDir: (chat) => (chat === "c1" ? "/work/c1" : undefined),
     newId: () => `term-${++n}`,
-    changed: () => void changes++,
+    changed: (workspace) => void events.push({ workspace, live: terminals.list(workspace).length }),
     gone: (id) => void gone.push(id),
     async start() {
       const r = new FakeRunner();
@@ -111,7 +111,7 @@ function station() {
       return new TerminalLink(r.wire);
     },
   });
-  return { terminals, runners, gone, changes: () => changes };
+  return { terminals, runners, gone, events };
 }
 
 const head = (id: string, terminal: Record<string, unknown>) => ({ method: "POST", path: `/admin/api/terminals/${id}/view`, terminal });
@@ -273,7 +273,7 @@ test("a workspace's terminals are its own", async () => {
 });
 
 test("ending one kills its program; it leaves the list once it ended and none looks", async () => {
-  const { terminals, runners, gone } = station();
+  const { terminals, runners, gone, events } = station();
   const a = new FakeStream();
   const ad = terminals.answer(a, Buffer.alloc(0), head("new", { cols: 80, rows: 24 }), viewer("ann"));
   await settle();
@@ -291,6 +291,7 @@ test("ending one kills its program; it leaves the list once it ended and none lo
   await given(ad, "the view ends");
   assert.deepEqual(terminals.list("w1"), []);
   assert.deepEqual(gone, ["term-1"]);
+  assert.deepEqual(events.at(-1), { workspace: "w1", live: 0 });
 });
 
 test("a station keeps so many terminals at most", async () => {

@@ -58,7 +58,7 @@ export type TerminalDeps = {
   home: string;
   /// A chat's folder, if it is one of this station's.
   chatDir(chat: string): string | undefined;
-  changed(): void;
+  changed(workspace: string): void;
   /// Updates what is kept of an open terminal (e.g. its live folder after `cd`).
   meta?(id: string, meta: TerminalMeta): void;
   /// It left the list (ended, and no view is left on it): what was kept of it goes.
@@ -154,9 +154,9 @@ export class Terminals {
       for (const v of t.views.values()) v.tell(this.#state(t, v));
       // Its views say how it ended; it leaves the list once none is left.
       if (t.views.size === 0) this.#drop(t);
-      this.#deps.changed();
+      this.#deps.changed(t.workspace);
     });
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   async open(o: Opening): Promise<Terminal> {
@@ -177,7 +177,7 @@ export class Terminals {
     const t = this.#terminals.get(id);
     if (t === undefined || t.workspace !== workspace) return false;
     log.info("terminal", "ended by a member", { id, by });
-    if (t.link.over) this.#drop(t), this.#deps.changed();
+    if (t.link.over) this.#drop(t), this.#deps.changed(t.workspace);
     else t.link.kill();
     return true;
   }
@@ -201,7 +201,7 @@ export class Terminals {
 
   #tellAll(t: Terminal) {
     for (const v of t.views.values()) v.tell(this.#state(t, v));
-    this.#deps.changed();
+    this.#deps.changed(t.workspace);
   }
 
   /// A view of a terminal, for as long as its stream lasts.
