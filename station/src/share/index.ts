@@ -2010,15 +2010,16 @@ export class Sharing {
   profileView(p: Json, workspace: string | null = null): ShareView | null {
     if (!isObject(p?.share) || typeof p.share.id !== "string") return null;
     const id = p.share.id as string;
-    if (p.share.borrowed === true) {
-      const host = String(p.share.host ?? "");
-      const had = this.readState().borrowed[id];
-      return { id, role: "user", host, allow: had?.allow ?? null, reachable: !this.unreachable.has(host), pausable: true };
-    }
-    const told = this.readState().hosted[id]?.told ?? {};
     const me = this.me();
     const rosters = workspace === null ? null : this.rosters();
     const seen = (station: string) => rosters === null || station === me || rosters.get(station)?.includes(workspace!) === true;
+    if (p.share.borrowed === true) {
+      // The allowance is the host's, naming the stations of each of its workspaces: only this one's and the viewer's.
+      const host = String(p.share.host ?? "");
+      const had = this.readState().borrowed[id];
+      return { id, role: "user", host, allow: had?.allow?.filter(seen) ?? null, reachable: !this.unreachable.has(host), pausable: true };
+    }
+    const told = this.readState().hosted[id]?.told ?? {};
     const users = Object.entries(told).filter(([k, v]) => v >= 0 && seen(k)).map(([k]) => k);
     return { id, role: "host", host: me ?? "", allow: Array.isArray(p.share.allow) ? p.share.allow.filter(seen) : null, reachable: null, users };
   }

@@ -255,6 +255,18 @@ test("a profile is shared with the stations of every workspace it serves, whiche
   await assert.rejects(h.sharing.handle(R1, { method: "share.get", id }, "W2"), /not for this station/);
 });
 
+test("a copy's allowance, the host's naming the stations of each of its workspaces, is said to a viewer of the borrower's with this station and the viewer's workspace's only", async () => {
+  const { h, r2, every } = joinedWorkspaces();
+  await h.sharing.shareProfile("deepseek", true, [H, O, R1, R2]);
+  await settle(...every);
+  const id = h.config.raw().profiles[0].share.id;
+  const copy = r2.config.raw().profiles.find((p: any) => p.share?.id === id);
+  // R2 is in W2 (with H and R1) and its home W3 (alone); O is W1's, which R2 is not in.
+  assert.deepEqual(r2.sharing.profileView(copy, "W2")!.allow, [H, R1, R2]);
+  assert.deepEqual(r2.sharing.profileView(copy, "W3")!.allow, [R2]);
+  assert.deepEqual(r2.sharing.profileView(copy)!.allow, [H, O, R1, R2]);
+});
+
 test("stations chosen among one workspace's change only theirs: a choice in another does not undo it, and all of them allowed again is every station", async () => {
   const { h, o, r1, r2, every } = joinedWorkspaces();
   await h.sharing.shareProfile("deepseek", true, null);
