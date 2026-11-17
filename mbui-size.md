@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 2.5 | 3.52 | 15.2 | 36.57 | 60.12 | 31.7 | 65.98 | 95.9 | 111.99 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 2.5 | 3.52 | 15.2 | 36.55 | 60.12 | 31.7 | 65.98 | 95.9 | 121.93 |
 | [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 95.9 | 120.37 |
 | [bdec3efba](https://github.com/AFK-surf/monoid/commit/bdec3efba2fbe447cf2bcdb07c493b078efc358d) mbui: chat page as nodes moves as the old page doe | 2.47 | 3.47 | 14.83 | 36.19 | 58.72 | 31.7 | 65.98 | 96.11 | 118.63 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 2.47 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.7 | 172.38 |
 | [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.51 | 65.33 | 95.65 | 184.2 |
 | [2c83f8771](https://github.com/AFK-surf/monoid/commit/2c83f8771bda03f00e56d135146c79c5bf087f21) station, app: a Claude code pasted without its #st | 2.46 | 3.45 | 14.76 | 35.96 | 57.87 | 31.5 | 65.24 | 95.57 | 117.52 |
-| [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 2.47 | 3.45 | 14.76 | 35.95 | 57.87 | 31.5 | 65.24 | 95.57 | 126.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [21b399404](https://github.com/AFK-surf/monoid/commit/21b399404a5169ed399023c8add21f9407a3df3b) station: the store's opening in MoonBit (store_sch | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [dfc546b11](https://github.com/AFK-surf/monoid/commit/dfc546b118d84d828fd592e6317381d2597cbd53) station/mb: GET /events, the overview, the status  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [0e192d941](https://github.com/AFK-surf/monoid/commit/0e192d941f969b3ffe98dbc579debae44c153fba) station/mb: the store of threads in MoonBit, held  | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
 | [bdec3efba](https://github.com/AFK-surf/monoid/commit/bdec3efba2fbe447cf2bcdb07c493b078efc358d) mbui: chat page as nodes moves as the old page doe | 0.43 | 0.55 | 2.13 | 3.23 | 5.09 | 1.56 | 4.18 | 53.17 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [ab789ef41](https://github.com/AFK-surf/monoid/commit/ab789ef4122d9b8d55d5a2fcb973588866109cbf) app: one Profile page for its list and 概览 on every | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [c334aecb3](https://github.com/AFK-surf/monoid/commit/c334aecb34ce2c3a66816e0b374fe91f778ea08a) feat(base): streams both ways on a taken connectio | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
 | [2c83f8771](https://github.com/AFK-surf/monoid/commit/2c83f8771bda03f00e56d135146c79c5bf087f21) station, app: a Claude code pasted without its #st | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
-| [931d887f9](https://github.com/AFK-surf/monoid/commit/931d887f97060707bfe9a5f786b0b48bccfd9e63) feat(relay): add relays (#6725) | 0.42 | 0.55 | 2.11 | 3.2 | 5.04 | 1.56 | 4.15 | 52.87 |
