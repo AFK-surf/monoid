@@ -57,6 +57,7 @@ pub fn quote_card_node(
 /// A quote card's head (its source) in `card`: its mark and whose it is (a pin's number and first line instead), laid
 /// out by `look` (a message's or the composer's room round it); where it `jumps`, pressed it does `jump`, its tip says
 /// so and its words take the text's ink under the pointer; a pin's that does not, its tip its words whole.
+#callsite(autofill(loc))
 fn quote_source_node(
   card : @view.View,
   tips : TipLayer,
@@ -66,8 +67,9 @@ fn quote_source_node(
   jumps : () -> Bool,
   jump : () -> Unit,
   look : () -> @ui.Style,
+  loc~ : SourceLoc,
 ) -> Unit {
-  card.box(fn(source) {
+  card.box(made_for=loc, fn(source) {
     // (a pin in its top corner: there the ladder's inset from both its edges, concentric with it)
     style_node(source, look)
     // (where it leads nowhere, a pin's tip says its words whole, shown by the pointer within it: tip_node's `within`,
