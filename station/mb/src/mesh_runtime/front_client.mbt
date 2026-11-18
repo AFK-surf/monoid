@@ -274,6 +274,9 @@ pub struct Front {
   priv mut gone : String?
   priv went : @effect.Deferred[Unit]
   priv said : Said
+  /// What the front said last of its endpoint's mesh scopes (`meshScopes`), and who is told it as it says it.
+  priv mut mesh_scopes : Array[Json]?
+  priv mut on_mesh_scopes : (Array[Json]) -> Unit
 }
 
 ///|
@@ -343,6 +346,8 @@ pub async fn Front::open(sockets : Sockets, socket : String, pid : Int, rt : @ef
     gone: None,
     went: @effect.Deferred::new(),
     said,
+    mesh_scopes: None,
+    on_mesh_scopes: _ => (),
   }
   ignore(
     rt.fork(name="front control", () => {
@@ -354,6 +359,13 @@ pub async fn Front::open(sockets : Sockets, socket : String, pid : Int, rt : @ef
               said("warn", "mesh", "the front said what is not JSON", jobj([("line", jstr(line.clamped_view(end=200).to_owned()))]))
               continue
             }
+          }
+          if field(got, "event") is Some(String("meshScopes")) {
+            if field(got, "scopes") is Some(Array(scopes)) && scopes.length() <= 32 {
+              front.mesh_scopes = Some(scopes)
+              (front.on_mesh_scopes)(scopes)
+            }
+            continue
           }
           guard field(got, "id") is Some(Number(n, ..)) && front.asked.get(n.to_int()) is Some(d) else { continue }
           front.asked.remove(n.to_int())
@@ -991,6 +1003,11 @@ pub struct FrontEndpoint {
   priv mut again : @effect.Deferred[Unit]?
   priv mut routed : Json?
   priv disabled : Map[String, Json]
+  /// The mesh scopes as last asked (a config, or None: removed till the front says so), given again to a front linked
+  /// to anew: a reply lost leaves what was asked unknown, so it is asked again before anything is served.
+  priv mesh_wanted : Map[String, Json?]
+  priv mesh_listeners : Map[Int, (Array[Json]) -> Unit]
+  priv mut mesh_next : Int
   priv closing : () -> Unit
   priv rt : @effect.Runtime
   priv sleep : async (Int) -> Unit
@@ -1078,15 +1095,117 @@ pub async fn FrontEndpoint::bind(
     again: None,
     routed: None,
     disabled: Map([]),
+    mesh_wanted: Map([]),
+    mesh_listeners: Map([]),
+    mesh_next: 0,
     closing,
     rt,
     sleep,
     log,
   }
   e.relays = front.ask("relayStatus") catch { _ => Json::array([]) }
+  e.attach_mesh(front)
   e.watch(front)
   e
 }
+
+///|
+/// What `front` says of its scopes told this endpoint's listeners while it is the front linked to.
+fn FrontEndpoint::attach_mesh(self : FrontEndpoint, front : Front) -> Unit {
+  front.on_mesh_scopes = scopes => if physical_equal(self.front, front) && !self.closed {
+    for _, f in self.mesh_listeners {
+      f(scopes)
+    }
+  }
+  match front.mesh_scopes {
+    Some(scopes) => (front.on_mesh_scopes)(scopes)
+    None => ()
+  }
+}
+
+///|
+/// Told what the front says of the endpoint's mesh scopes (`meshListen`), what it said last at once.
+pub fn FrontEndpoint::mesh_listen(self : FrontEndpoint, f : (Array[Json]) -> Unit) -> () -> Unit {
+  self.mesh_next += 1
+  let id = self.mesh_next
+  self.mesh_listeners[id] = f
+  match self.front.mesh_scopes {
+    Some(scopes) => f(scopes)
+    None => ()
+  }
+  () => self.mesh_listeners.remove(id)
+}
+
+///|
+async fn FrontEndpoint::mesh_change(self : FrontEndpoint, scope : String, config : Json?) -> Json {
+  if self.again is Some(a) {
+    a.wait()
+  }
+  let front = self.front
+  let before = self.mesh_wanted.get(scope)
+  if before is None && self.mesh_wanted.length() >= 32 {
+    raise Failure("too many mesh scopes")
+  }
+  self.mesh_wanted[scope] = config
+  let asked = (match config {
+    Some(c) => front.ask("meshConfigure", args=[("args", c)])
+    None => front.ask("meshRemove", args=[("args", jobj([("scope", jstr(scope))]))])
+  }) catch {
+    e => {
+      // (a refusal leaves what was there; a link lost leaves it unknown, asked again before serving)
+      if !front.is_gone() {
+        match before {
+          Some(b) => self.mesh_wanted[scope] = b
+          None => self.mesh_wanted.remove(scope)
+        }
+      }
+      raise e
+    }
+  }
+  if config is None && self.mesh_wanted.get(scope) is Some(None) {
+    self.mesh_wanted.remove(scope)
+  }
+  asked
+}
+
+///|
+/// A scope configured on the endpoint (`meshConfigure`): this station's descriptor in it.
+pub async fn FrontEndpoint::mesh_configure(self : FrontEndpoint, config : Json) -> Json {
+  let scope = match config {
+    Object(m) => str_of(m.get("scope")).unwrap_or("")
+    _ => ""
+  }
+  self.mesh_change(scope, Some(config))
+}
+
+///|
+pub async fn FrontEndpoint::mesh_remove(self : FrontEndpoint, scope : String) -> Unit {
+  ignore(self.mesh_change(scope, None))
+}
+
+///|
+/// A member's connection the front holds (`handed`) let into a scope as a leaf (`meshAttachLeaf`).
+pub async fn FrontEndpoint::mesh_attach_leaf(self : FrontEndpoint, handed : Int?, value : Json) -> Json {
+  guard handed is Some(h) else { raise Failure("leaf connection is not held by this front") }
+  let args = match value {
+    Object(m) => {
+      let out : Map[String, Json] = Map([])
+      for k, v in m {
+        out[k] = v
+      }
+      out["connection"] = jnum(h.to_double())
+      Json::object(out)
+    }
+    _ => jobj([("connection", jnum(h.to_double()))])
+  }
+  self.ask("meshAttachLeaf", args=[("args", args)])
+}
+
+///|
+pub async fn FrontEndpoint::mesh_detach_leaf(self : FrontEndpoint, value : Json) -> Unit {
+  ignore(self.ask("meshDetachLeaf", args=[("args", value)]))
+}
+
 
 ///|
 /// The link gone while the endpoint is open: made again, a while after each try that fails.
@@ -1113,6 +1232,16 @@ fn FrontEndpoint::watch(self : FrontEndpoint, front : Front) -> Unit {
             for _, args in self.disabled {
               ignore(next.ask("disabledRelays", args=[("args", args)]))
             }
+            for pair in self.mesh_wanted.to_array() {
+              let (scope, wanted) = pair
+              match wanted {
+                Some(config) => ignore(next.ask("meshConfigure", args=[("args", config)]))
+                None => {
+                  ignore(next.ask("meshRemove", args=[("args", jobj([("scope", jstr(scope))]))]))
+                  self.mesh_wanted.remove(scope)
+                }
+              }
+            }
             if self.routed is Some(Object(r)) {
               ignore(next.ask("route", args=r.to_array()))
             }
@@ -1125,6 +1254,7 @@ fn FrontEndpoint::watch(self : FrontEndpoint, front : Front) -> Unit {
           }
           self.front = next
           self.said = said
+          self.attach_mesh(next)
           self.watch(next)
           (self.log)("info", "mesh", "linked to the front again", jobj([("station", field(said, "id").unwrap_or(Json::null()))]))
           true

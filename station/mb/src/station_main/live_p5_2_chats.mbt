@@ -1643,9 +1643,18 @@ async fn P52::tools_call(
             None => Null
           }
       }
-    // (agents.ts `meshList`: the relays the mesh directory registered in the workspace, none where there is no
-    // directory, as here)
-    "relays.meshList" => @api_routes.jarr([])
+    // (agents.ts `meshList`, `revoke`, `enroll`: the mesh directory's, P5-1's on the bus)
+    "relays.meshList" => rv_of((self.bus.cloud_call.val)("meshList", { "workspace": json_of_rv(a(0)) }))
+    "relays.revoke" =>
+      rv_of((self.bus.cloud_call.val)("meshRevoke", { "workspace": json_of_rv(a(0)), "node": json_of_rv(a(1)) }))
+    "relays.enroll" =>
+      rv_of(
+        (self.bus.cloud_call.val)("meshEnroll", {
+          "workspace": json_of_rv(a(0)),
+          "name": json_of_rv(a(1)),
+          "by": json_of_rv(a(2)),
+        }),
+      )
     "relays.by" => {
       let row = self.store("getSession", [jstr(s(0))]) catch { _ => Json::null() }
       rjs(@session_hub.agent_name(jtext(row, "title"), s(0)))
@@ -1889,9 +1898,8 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
     },
     ..@mcp_tools.forward_tools(c),
     // (`list` says the mesh's relays as agents.ts's `meshList` does; enrolling and revoking one are the mesh
-    // directory's (mesh/scope-sync.ts, enrollment-door.ts), which this program does not run: refused, as agents.ts
-    // refuses them where the native mesh has no directory)
-    ..@mcp_tools.relay_tools(c, mesh_list=true),
+    // directory's (live_p5_1_scopes.mbt), refused where the endpoint keeps no scopes, as agents.ts refuses them)
+    ..@mcp_tools.relay_tools(c, mesh_list=true, enroll=true, revoke=true),
     ..@mcp_tools.search_tools(c),
     // (feedback/module.ts: offered only where its part is live)
     ..match self.feedback {
