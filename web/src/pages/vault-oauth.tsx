@@ -8,10 +8,11 @@ import { useEffect, useState } from "preact/hooks";
 import { addWords, I18nRoot, t, type Words } from "@stillfail/ui/i18n.ts";
 import zhPages from "../../../client/i18n/catalog/zh/web-pages.json" with { type: "json" };
 import enPages from "../../../client/i18n/catalog/en/web-pages.json" with { type: "json" };
+import { ButtonLink } from "@stillfail/ui/button.tsx";
+import { StandPage } from "@stillfail/ui/standPage.tsx";
 import { core } from "../core/react.ts";
 import { NAME } from "../channel.ts";
 import { accounts, signInHere, takeSignedIn } from "./core.ts";
-import * as css from "../login/login.css.ts";
 
 addWords({ zh: zhPages as Words, en: enPages as Words });
 
@@ -52,11 +53,7 @@ function VaultOauth() {
     });
   }, []);
   const page = (title: string, lead: string, action?: [string, string]) => (
-    <main className={css.page}>
-      <h1 className={css.title}>{title}</h1>
-      <p className={css.lead}>{lead}</p>
-      {action && <div className={css.actions}><a className={css.button} href={action[1]}>{action[0]}</a></div>}
-    </main>
+    <StandPage title={title} lead={lead} actions={action && <ButtonLink href={action[1]}>{action[0]}</ButtonLink>} />
   );
   const back: [string, string] = [t("web-pages.cloud.backTo", { name: NAME }), "/"];
   if (params.has("done")) return page(t("web-pages.cloud.vaultOauth.added"), t("web-pages.cloud.vaultOauth.backInApp", { name: NAME }));

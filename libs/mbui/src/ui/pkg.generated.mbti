@@ -1541,6 +1541,7 @@ pub fn Ctx::roving_prefer(Self, Int32) -> Unit
 pub fn Ctx::row(Self, w? : Size, h? : Size, pad? : Double, padx? : Double, pady? : Double, gap? : Double, align? : Align, justify? : Justify, bg? : Int64, radius? : Double, () -> Unit) -> Int32
 pub fn Ctx::row_way(Self) -> (Double, Double)?
 pub fn Ctx::rtl(Self) -> Bool
+pub fn Ctx::runs_extent(Self, Array[@text.Run], @view.WordsLook, @view.RunsLook) -> (Double, Double)
 pub fn Ctx::say(Self, String) -> Unit
 pub fn Ctx::scope(Self, Int32, () -> Unit) -> Unit
 pub fn Ctx::second_pointer(Self) -> (Double, Double)?

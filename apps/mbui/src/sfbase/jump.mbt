@@ -100,6 +100,12 @@ pub fn open_chat_found(r : ChatRef, seq : Double, words : Array[String]) -> Unit
 pub let places_back : Map[String, (Double, Double)] = Map([])
 
 ///|
+/// Of the places kept to go back to (places_back), where the page that kept it draws the message at its top in pieces:
+/// which piece was at the top and how far its top was below the list's, by chat (a page made as nodes alone).
+// kept across runs: put back by the package's reset (pages.mbt)
+pub let places_back_pieces : Map[String, (Int, Double)] = Map([])
+
+///|
 /// Told as a place is kept or forgotten: what says the way to the newest (its tip, its name) built again.
 // kept across runs: a count, only compared
 pub let places_back_said : @signals.Signal[Int] = @signals.signal(0)
@@ -109,6 +115,12 @@ pub let places_back_said : @signals.Signal[Int] = @signals.signal(0)
 /// far under the list's, not flashing (list_after).
 // kept across runs: put back by the package's reset (pages.mbt)
 pub let go_back_offsets : Map[String, Double] = Map([])
+
+///|
+/// The piece of the message each chat's list goes back to (go_back_to), where the place kept said one: that piece and
+/// its own top's offset, as kept (a page made as nodes alone; go_back_offsets stays the whole message's, the old page's).
+// kept across runs: put back by the package's reset (pages.mbt)
+pub let go_back_pieces : Map[String, (Int, Double)] = Map([])
 
 ///|
 /// Where the reader was is kept for chat `k` (go_to's): its list showing, placed, more than its own height from the
@@ -125,6 +137,11 @@ fn keep_place_of(k : String) -> Unit {
     return
   }
   places_back[k] = (rd.top_seq, rd.top_off)
+  if rd.top_piece >= 0 {
+    places_back_pieces[k] = (rd.top_piece, rd.top_piece_off)
+  } else {
+    places_back_pieces.remove(k)
+  }
   places_back_said.set(places_back_said.untracked() + 1)
 }
 
@@ -139,6 +156,7 @@ pub fn place_kept(k : String) -> Bool {
 ///|
 /// Chat `k`'s kept place forgotten (its end reached, words sent, `chat.latest`).
 pub fn place_forget(k : String) -> Unit {
+  places_back_pieces.remove(k)
   if places_back.contains(k) {
     places_back.remove(k) |> ignore
     places_back_said.set(places_back_said.untracked() + 1)
@@ -151,11 +169,16 @@ pub fn go_back_to(r : ChatRef) -> Bool {
   let k = r.station + "\u{1}" + r.session
   match places_back.get(k) {
     Some((seq, off)) => {
+      let piece = places_back_pieces.get(k)
       place_forget(k)
       go_tos[k] = seq
       go_to_passages.remove(k) |> ignore
       go_to_words.remove(k) |> ignore
       go_back_offsets[k] = off
+      match piece {
+        Some(p) => go_back_pieces[k] = p
+        None => go_back_pieces.remove(k)
+      }
       go_tos_said.set(go_tos_said.untracked() + 1)
       true
     }

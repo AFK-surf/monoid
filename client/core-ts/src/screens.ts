@@ -338,13 +338,21 @@ function names(v: unknown): string[] {
 
 /// The prefix an agent's view has among a screen's people (station/src/tools/computer.ts: `agent: <chat title>`).
 const AGENT = "agent: ";
+const RAW_AGENT_ID = /^(?:(?:chat|ember|slack|feishu|group|comma):)?c-[0-9a-f]{8,}$/i;
+const AGENT_TITLE_MOST = 18;
 
 /// The station machine's own display among its screens (station/src/screens/desktop.ts, win-desktop.ts).
 const DESKTOP = "desktop";
 
-/// A name among a screen's people as the viewer reads it: an agent's by its chat.
+/// A name among a screen's people as the viewer reads it: an agent's by its chat (or plain `Agent` while unnamed, so an
+/// internal session key like `chat:c-…` never leaks into the UI and a long title keeps its closing quote).
 export function personShown(name: string): string {
-  return name.startsWith(AGENT) ? t("core-views.screen.agent", { title: name.slice(AGENT.length).trim() }) : name;
+  if (!name.startsWith(AGENT)) return name;
+  const raw = name.slice(AGENT.length).trim();
+  if (raw === "" || RAW_AGENT_ID.test(raw)) return "Agent";
+  const chars = Array.from(raw);
+  const title = chars.length > AGENT_TITLE_MOST ? chars.slice(0, AGENT_TITLE_MOST).join("").trimEnd() + "…" : raw;
+  return t("core-views.screen.agent", { title });
 }
 
 /// What is said of each view open on a screen (the station's `views`), as the viewer reads it: on which device (its own

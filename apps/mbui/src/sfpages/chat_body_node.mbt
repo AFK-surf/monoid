@@ -442,6 +442,33 @@ fn chat_piece_of(k : String) -> String {
 }
 
 ///|
+/// Which piece of its message a row's key `k` is (chat_piece_key's `b`): 0 its first, or where it is no piece.
+fn chat_piece_index(k : String) -> Int {
+  let base = chat_piece_of(k)
+  guard base != k else { return 0 }
+  let n = k.unsafe_substring(start=base.length() + 1, end=k.length())
+  let mut b = 0
+  for c in n {
+    guard c >= '0' && c <= '9' else { return 0 }
+    b = b * 10 + (c.to_int() - '0'.to_int())
+  }
+  b
+}
+
+///|
+/// The key of piece `piece` (a place kept said it: 0 its first) of the message whose first piece's key is `base`, where
+/// the list's rows `rs` have that piece still; none where none was said (-1) or they have it no more.
+fn chat_piece_kept(rs : ChatBodyNow, base : String, piece : Int) -> String? {
+  guard piece >= 0 else { return None }
+  let want = chat_piece_key(base, piece)
+  if rs.get(want) is Some(_) {
+    Some(want)
+  } else {
+    None
+  }
+}
+
+///|
 /// The pieces entry `e` is drawn in, a block of the list each (none: one, as ever): an agent's message whose words
 /// the core read as more than one piece (sf's markdown_pieces: a block each, a table a few rows each), its card in
 /// their place none. A long message
@@ -492,12 +519,32 @@ fn chat_body_gap_room(gap : ChatBodyGap, w : Double) -> Double {
 /// How row `r` is made (chat_body_row's): its kind, and of an agent's message read before the chat showed it, which make
 /// of piece it is (chat_body_piece_make), what such a row's nodes are made as (a long message's first piece, under its
 /// head; a piece after it, its block alone; the last, its files and what it asks under it); -1 for any other. Made again
-/// only as that changes.
+/// only as that changes. A piece after the first of one said while the chat shows is so too, with its block, whether it
+/// holds its table's head and whether it is the last: it comes out of no picture, and its message streamed in makes it
+/// another piece (a table come to more rows than a piece holds, its rows after the first a piece of their own, scrolled
+/// across with them: chat_table_kept).
 fn chat_body_made_as(r : ChatBodyRow) -> (ChatBodyKind, Int) {
   let kind = chat_body_kind(r.entry)
   match r.entry {
     Said(m) if kind == KAgent && !m.said => (kind, chat_body_piece_make(r.piece))
+    Said(_) if kind == KAgent && chat_piece_after_first(r.piece) => {
+      // (which block it is and whether it holds its table's head too: what its nodes are made for)
+      let (from, head, last) = match r.piece {
+        Some(pc) => (pc.from, pc.rows.map_or(true, fn(rows) { rows.0 == 0 }), pc.last)
+        None => (0, true, true)
+      }
+      (kind, (((from * 2 + (if head { 1 } else { 0 })) * 8 + chat_body_piece_make(r.piece)) * 2) + (if last { 1 } else { 0 }))
+    }
     _ => (kind, -1)
+  }
+}
+
+///|
+/// Whether a piece of a message is one after its first (agent_said_node draws it its blocks alone, no head over it).
+fn chat_piece_after_first(piece : @sf.MdPiece?) -> Bool {
+  match piece {
+    Some(pc) => pc.from > 0 || (pc.rows is Some((r, _)) && r > 0)
+    None => false
   }
 }
 
@@ -1381,8 +1428,8 @@ fn chat_body_node(
     }
   })
   |> ignore
-  if opened is Some((k, offset)) && !@sfbase.go_tos.contains(chat) {
-    chat_stand(jump, place, k, offset)
+  if opened is Some((k, at)) && !@sfbase.go_tos.contains(chat) {
+    chat_stand(jump, place, k, at, @signals.untracked(cover))
   }
   // (where the core says the chat was left come only after the list was made at its end, nothing done there since (the
   // hand, a go-to, words sent): put there then, once)
@@ -1398,9 +1445,9 @@ fn chat_body_node(
       return
     }
     match opens() {
-      Some((k, offset)) => {
+      Some((k, at)) => {
         jump.put.set(1)
-        chat_stand(jump, place, k, offset)
+        chat_stand(jump, place, k, at, @signals.untracked(cover))
       }
       None => ()
     }
@@ -1482,7 +1529,8 @@ fn chat_body_node(
           jump,
           place,
           "line",
-          @sfbase.kept_place_under(@signals.untracked(top) + lead - gap, @signals.untracked(cover)),
+          UnderBar(gap - (@signals.untracked(top) - @signals.untracked(cover)) - lead),
+          @signals.untracked(cover),
         )
       }
     },

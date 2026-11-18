@@ -194,7 +194,7 @@ pub fn split(
           }
         _ => ()
       }
-    })
+    }, captures=true)
     .on_step(fn(by) {
       if !disabled() && step_by > 0.0 {
         let cur = split_clamp(value(), lo, hi)

@@ -137,6 +137,8 @@ priv struct Slot {
   proc : MbProc
   mut held : Asked?
   mut idle_since : Int64
+  /// The model catalog's version this reader was last given (read/pool.ts `Slot.catalogVersion`).
+  mut catalog_version : Double
 }
 
 ///|
@@ -163,6 +165,9 @@ priv struct Readers {
   /// What only the hub knows, given to every read (its processes' states, its clients' keys).
   mut processes : async () -> Json
   mut client_keys : async () -> Json
+  /// The model catalog now ({ version, models }), given to a reader with a read when it changed: its prices are the
+  /// usage page's (readops `price`).
+  mut catalog : () -> Json
   builders : Map[String, Requested]
   mut checkpointing : Bool
   mut again : Bool
@@ -294,6 +299,7 @@ fn Readers::new(host : @host.Host, program : String, data : String) -> Readers {
     names: {},
     processes: async fn() { Json::array([]) },
     client_keys: async fn() { Json::array([]) },
+    catalog: () => { "version": Json::number(0.0), "models": Json::object({}) },
     builders: {},
     checkpointing: false,
     again: false,
@@ -311,7 +317,7 @@ fn Readers::start(self : Readers, line : Line) -> Slot? {
       return None
     }
   }
-  let slot : Slot = { proc, held: None, idle_since: @host.now() }
+  let slot : Slot = { proc, held: None, idle_since: @host.now(), catalog_version: 0.0 }
   line.slots.push(slot)
   ignore(
     self.host.rt.fork(name="reader", async fn() {
@@ -389,11 +395,24 @@ fn Readers::pump(self : Readers, line : Line) -> Unit {
     guard free is Some(slot) else { break }
     let asked = line.waiting.remove(at)
     slot.held = Some(asked)
-    if !slot.proc.post(asked.ask) {
+    if !slot.proc.post(self.with_catalog(slot, asked.ask)) {
       slot.held = None
       ignore(asked.answer.succeed(Err((500, "the reader stopped"))))
     }
   }
+}
+
+///|
+/// `ask` with the model catalog where it changed since this reader was last given it (read/pool.ts `give`).
+fn Readers::with_catalog(self : Readers, slot : Slot, ask : Json) -> Json {
+  guard (self.catalog)() is { "version": Number(version, ..), "models": models, .. } && version != slot.catalog_version &&
+    ask is Object(fields) else {
+    return ask
+  }
+  slot.catalog_version = version
+  let given = fields.copy()
+  given["catalog"] = models
+  Json::object(given)
 }
 
 ///|
@@ -954,6 +973,7 @@ fn P51::readers_live(self : P51) -> Readers {
   let bus = self.bus
   let r = Readers::new(self.host, bus.argv0, bus.data)
   r.previous_gone.val = bus.previous_gone
+  r.catalog = () => (bus.model_catalog.val)()
   r.processes = async fn() {
     match (bus.hub_ask.val)("processes", Json::null()) {
       Array(_) as a => a

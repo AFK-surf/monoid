@@ -288,7 +288,7 @@ void mb_host_keep_awake(int32_t on) {
 }
 
 void mb_host_haptic(int32_t kind) { (void)kind; }
-void mb_host_ime_action(int32_t kind) { (void)kind; }
+// (the kind of field taking the keys, mb_host_ime_action: win_app.c, beside ime_sync)
 
 // An app's own native calls (src/hostapi/native.mbt): none on this host yet.
 int32_t mb_host_native_call(moonbit_string_t name, moonbit_string_t params) { return 0; }

@@ -38,7 +38,24 @@ fn board_beside_page(page : @view.View, src : Source, r : ChatRef, tips : @sf.Ti
 /// and its menu; felt as it comes to need its viewer; its messages under the bar's room (board_beside's bar, none of
 /// its own here), the composer in their list's foot; a picture flying from it drawn under the bar.
 fn board_beside_nodes(p : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer, serial : Int) -> Unit {
+  // (let go (closed, another card's chat in its place, or opened over the whole page): the core told it shows no more
+  // and where it was left, as a page left is (sfapp's chat_left), by the source it outlives; said before what it reads
+  // is let go, so its view is still there to tell it by)
+  let read_by : Ref[Source?] = Ref(None)
+  p.owns(fn() {
+    let view = match read_by.val {
+      Some(own) =>
+        match @sfbase.chat_kept_from(own, r) {
+          Some(v) => Some(v)
+          None => @sfbase.chat_kept_from(src, r)
+        }
+      None => @sfbase.chat_kept_from(src, r)
+    }
+    @sfpages.chat_read_left(src, r, view, unless_shown=true) |> ignore
+  })
+  |> ignore
   let retained = @sfbase.page_entry_source(src, p, serial)
+  read_by.val = Some(retained)
   @sfbase.page_entry_read(serial, retained, Chat(r))
   (@sfbase.page_chat_reader(retained, p, serial))(Chat(r))
   // (drawn while Home's entry is, or kept shown in place while the one on top waits: the pane's)

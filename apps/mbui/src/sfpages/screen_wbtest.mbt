@@ -2157,28 +2157,40 @@ test "browser tab bar with keyboard and mouse, passkey close button, and blocked
   assert_eq(cancelled.length(), 1)
   assert_eq(text(Some(cancelled[0]), "id"), "pk-1")
 
-  // 3. While an agent operates the browser, clicking on the picture sends no pointer input and shows a clear heldBy toast.
+  // 3. While an agent operates the browser (watch-only: openUrl omitted, address kept), the browser bar stays visible
+  //    in read-only mode (no height jump), and clicking the picture sends no pointer input and nudges the 接管 capsule.
+  let addr_rect = fn() {
+    r.t.semantics().filter(fn(s) { s.label == tr("web-pages.screen.addressHint") && !s.hidden })[0].rect
+  }
+  let bar_before = addr_rect()
   r.state(
     "live",
     control=false,
     take_over=true,
-    controllers=["agent: 查询 Google 账号"],
-    line="只看 · agent: 查询 Google 账号 正在控制",
+    controllers=["Agent「查询 Google 账号」"],
+    line="只看 · Agent「查询 Google 账号」 正在控制",
     more={
       "kind": Json::string("browser"),
-      "openUrl": Json::boolean(true),
       "address": Json::string("https://accounts.google.com/"),
     },
   )
   r.t.draw()
-  assert_true(r.t.find("agent: 查询 Google 账号 正在控制") is Some(_))
+  assert_true(r.t.find("Agent「查询 Google 账号」 正在控制") is Some(_))
   assert_true(r.labelled(tr("android-misc.screen.takeOver")) is Some(_))
+  let addr_ro = addr_rect()
+  assert_eq(addr_ro.1, bar_before.1)
+  assert_eq(addr_ro.3, bar_before.3)
+  let (rx, ry) = r.labelled(tr("web-pages.screen.reload")).unwrap()
+  r.t.tap(rx, ry)
+  r.t.draw()
+  assert_eq(r.told("screen.reload").length(), 0)
+  assert_eq(r.ui().held_nudge.get(), 0)
   let before_ptr = pointers_of(r).length()
   let (px, py) = r.at(0.5, 0.5)
   r.t.tap(px, py)
   r.t.run_for(@sf.later_ms + 20.0)
   assert_eq(pointers_of(r).length(), before_ptr)
-  assert_true(r.t.find("agent: 查询 Google 账号 正在操作此画面，点「接管」后可操作") is Some(_))
-  r.t.run_for(@sf.toast_ms)
+  assert_eq(r.ui().held_nudge.get(), 1)
+  r.t.run_for(@sf.refused_ms)
   screen_done(r.t)
 }

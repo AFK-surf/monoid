@@ -91,7 +91,10 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   "phone cold": (1030, 31, 661, 80, 968),
   "phone again": (341, 19, 227, 28, 346),
   "wide cold": (2473, 503, 1914, 217, 2470),
-  "wide again": (899, 134, 870, 121, 1080),
+  // (2026-11-18: a chat's list's keys worked out of each message's JSON, its pieces of the core's tree's shape (sfpages
+  // chat_said_keys_raw, sf core_pieces), each message read as a Message only as a row of it shows: wide again 2 made, 2
+  // let go, 17 laid and 18 bindings fewer, the same at 60, 120, 24 and 7; before it (899, 134, 870, 121, 1080))
+  "wide again": (897, 132, 853, 121, 1062),
   "phone up": (551, 358, 593, 87, 0),
   // (wide up 2 made and 1 laid more, 2026-11-18: a quote's source that leads somewhere is mbui's headless button, read
   // out and pressed as one (sf button_while_node), the pick that makes it a button only then and the button's own box
@@ -324,3 +327,153 @@ test "a real chat as nodes, opened cold and again from Home and scrolled up: wha
   }
   assert_true(wrong.is_empty(), msg=wrong.join(" | "))
 }
+
+///|
+/// What message `n` of a window of agents' answers (chat_nodes_window_source) says: three paragraphs, a piece each of
+/// its rows, its number first in each.
+fn chat_nodes_window_words(n : Int) -> Array[String] {
+  ["第\{n}条甲段：检查了构建脚本，签名和上传也过了一遍。", "第\{n}条乙段：列表只读看得见的消息。", "第\{n}条丙段：滚到时再读。"]
+}
+
+///|
+/// The fixture's chat on a made-up core that keeps its messages by key as the app's client does (Sub::keyed), its
+/// window `n` agents' answers of three paragraphs each (chat_nodes_window_words), the chat open at its end.
+fn chat_nodes_window_source(n : Int) -> Source {
+  let base = fixture("chat")
+  let made : Ref[Json?] = Ref(None)
+  let list : Ref[@signals.KeyedList[String, Json]?] = Ref(None)
+  let value = fn(v : Json) -> Json {
+    match made.val {
+      Some(m) => return m
+      None => ()
+    }
+    guard v is Object(chat) else { return v }
+    let template = items(Some(v), "messages")
+      .iter()
+      .find_first(fn(m) { !flag(Some(m), "system") && !flag(Some(m), "mine") })
+      .unwrap_or(Json::object({}))
+    guard template is Object(t) else { return v }
+    let messages : Array[Json] = []
+    for i in 1..=n {
+      let m = t.copy()
+      let paras = chat_nodes_window_words(i)
+      let words = paras.join("\n\n")
+      m["seq"] = Json::number(i.to_double())
+      m["ts"] = Json::string("ts\{i}")
+      m["text"] = Json::string(words)
+      m["words"] = Json::array([{ "text": Json::string(words) }])
+      m["md"] = Json::array(paras.map(fn(p) { ["p", [Json::string(p)]] }))
+      m["joined"] = Json::boolean(i % 4 != 1)
+      for k in ["said", "attachments", "card", "options", "quotes", "decision", "elsewhere"] {
+        m.remove(k)
+      }
+      messages.push(Json::object(m))
+    }
+    let c = chat.copy()
+    c["messages"] = Json::array(messages)
+    for k in ["more", "newer", "unreadLine", "at"] {
+      c.remove(k)
+    }
+    let out = Json::object(c)
+    made.val = Some(out)
+    out
+  }
+  {
+    ..base,
+    topic_read: fn(name, params) {
+      let got = base.topic(name, params).get().snapshot()
+      guard name == "chat" && got.value is Some(v) else { return got }
+      { ..got, value: Some(value(v)) }
+    },
+    topic_keyed: fn(name, params, field, keys) {
+      guard name == "chat" else { return (base.topic_keyed)(name, params, field, keys) }
+      match list.val {
+        Some(l) => Some(l)
+        None => {
+          guard @signals.untracked(fn() { base.topic(name, params).get().snapshot().value }) is Some(v) else {
+            return None
+          }
+          let l : @signals.KeyedList[String, Json] = @signals.keyed_list()
+          let ks : Array[String] = []
+          let vals : Map[String, Json] = Map([])
+          for m in items(Some(value(v)), "messages") {
+            let k = Json::array([field_or_null(m, "seq"), field_or_null(m, "outgoing")]).stringify()
+            ks.push(k)
+            vals[k] = m
+          }
+          l.reset(ks, vals)
+          list.val = Some(l)
+          Some(l)
+        }
+      }
+    },
+  }
+}
+
+///|
+/// Field `name` of `m`, null where it has none (a key's part as the core keys a message).
+fn field_or_null(m : Json, name : String) -> Json {
+  match m {
+    Object(o) => o.get(name).unwrap_or(Json::null())
+    _ => Json::null()
+  }
+}
+
+///|
+/// The chat of chat_nodes_window_source(`n`) opened cold at its end on screen `s`, made as nodes: how many of its
+/// messages were read as Messages (chat_messages_read) as it opened; then scrolled up through 10 notches of the wheel,
+/// how many more, and whether a message far over its end then shows.
+fn chat_nodes_window_read(n : Int, s : (String, Double, Double, Int)) -> (Int, Int, Bool, @ui.Tester, Source) raise {
+  let (_, w, h, platform) = s
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
+  let src = chat_nodes_window_source(n)
+  let read0 = @sfbase.chat_messages_read.val
+  open_chat(long_ref)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
+    @sfbase.window_tall.val = h
+  })
+  t.run_for(long_opened_ms)
+  assert_true(app.nav.top() is Chat(_), msg="\{n}: on the chat")
+  assert_true(t.find(chat_nodes_window_words(n)[2]) is Some(_), msg="\{n}: its last message shown")
+  let opened = @sfbase.chat_messages_read.val - read0
+  let read1 = @sfbase.chat_messages_read.val
+  let _ = chat_nodes_scrolled(t, w, h)
+  let up = @sfbase.chat_messages_read.val - read1
+  // (one far over the end it opened at: its words drawn in sight)
+  let far = t
+    .words()
+    .iter()
+    .any(fn(x) { x.2 + x.4 > 0.0 && x.2 < h && x.5 > 0.0 && x.0.has_prefix("第") && x.0.contains("条") && !x.0.has_prefix("第\{n}条") && !x.0.has_prefix("第\{n - 1}条") && !x.0.has_prefix("第\{n - 2}条") })
+  (opened, up, far, t, src)
+}
+
+///|
+test "a chat opened cold reads as Messages only the messages round what shows: the same of a window of 30 as of 120, and those scrolled to as they come" {
+  let wrong : Array[String] = []
+  for s in long_screens {
+    let (open30, up30, far30, _, _) = chat_nodes_window_read(30, s)
+    let (open120, up120, far120, t, src) = chat_nodes_window_read(120, s)
+    println("chat window read \{s.0}: opened 30 \{open30} 120 \{open120}, scrolled up 30 \{up30} 120 \{up120}")
+    if open120 != open30 {
+      wrong.push("\{s.0}: opened 120 read \{open120}, 30 \{open30}")
+    }
+    if open120 > chat_nodes_window_read_most {
+      wrong.push("\{s.0}: opened read \{open120} over \{chat_nodes_window_read_most}")
+    }
+    if up120 <= 0 || !far120 || !far30 {
+      wrong.push("\{s.0}: scrolled up read \{up120} more, older shown \{far120} \{far30}")
+    }
+    // (大屏, a mouse's: what is picked of the messages read as they were scrolled to their own)
+    if s.3 == 0 {
+      wrong.append(chat_nodes_reused_picked(t, src, long_ref, s.2).map(fn(x) { "\{s.0}: \{x}" }))
+    }
+  }
+  assert_true(wrong.is_empty(), msg=wrong.join(" | "))
+}
+
+///|
+/// The most of a chat's messages its cold opening reads as Messages (chat_nodes_window_read): those round what shows
+/// (a page's list's slots, a screen over and under it), whatever its window holds.
+let chat_nodes_window_read_most : Int = 10

@@ -89,7 +89,7 @@ test("a Gemini key runs the Antigravity CLI in its profile's files, with the sta
   // The turn's counts, input apart from the cache's, thoughts with the output; the context it ended with.
   const calls = callsOf("agy", readFileSync(path, "utf8"), false, { model: null, codexId: null });
   assert.equal(calls.length, 1);
-  assert.deepEqual([calls[0]!.input, calls[0]!.cacheRead, calls[0]!.output, calls[0]!.model, calls[0]!.context, calls[0]!.window], [1000, 200, 400, "gemini-3.1-pro", 5000, 1048576]);
+  assert.deepEqual([calls[0]!.input, calls[0]!.cacheRead, calls[0]!.output, calls[0]!.model, calls[0]!.context, calls[0]!.window], [1200, 200, 300, "gemini-3.1-pro", 5000, 1048576]);
   const id = session.id();
   await session.dispose();
   events.length = 0;
@@ -345,7 +345,7 @@ test("steering mid-turn injects a prompt, completes once on the steered prompt, 
   const calls = callsOf("agy", readFileSync(path, "utf8"), false, { model: null, codexId: null });
   assert.equal(calls.length, 2);
   assert.deepEqual([calls[0]!.input, calls[0]!.output, calls[0]!.model], [500, 10, "gemini-3.1-pro"]);
-  assert.deepEqual([calls[1]!.input, calls[1]!.cacheRead, calls[1]!.output, calls[1]!.model], [1000, 200, 400, "gemini-3.1-pro"]);
+  assert.deepEqual([calls[1]!.input, calls[1]!.cacheRead, calls[1]!.output, calls[1]!.model], [1200, 200, 300, "gemini-3.1-pro"]);
   await s.dispose();
 });
 

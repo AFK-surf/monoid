@@ -401,47 +401,33 @@ fn full_key_node(parent : @view.View, full : (() -> Unit)?, tips : @sf.TipLayer)
 
 ///|
 /// How far the page's resources came in `parent` (load_key's): a ring in a key's room, red with one failed; pressed,
-/// each of them in a panel beside it. Read out one key whatever has come: its name, and how far it came as its value.
+/// each of them in a panel beside it. Read out a button by its name whatever has come, its ring a progress bar of how
+/// far it came.
 fn load_key_node(parent : @view.View, src : Source, p : ServicePage, station : String) -> Unit {
   let load = fn() { load_now(src, p, station, false) }
   // (its panel beside the box it is in, which takes no focus: closed, the focus goes back to what had it as it opened,
   // the address being typed in with the mouse's press, the key itself from the keyboard; key_beside)
   let at = key_beside(parent)
-  @headless.button(
+  // (to a screen reader one key whatever has come: its name, and its ring how far it came, said as that changes; none
+  // said till the station says)
+  @sf.bar_meter_button_node(
     at,
     fn() { svc("android-chat.load.name") },
     fn(_) { service_load_panel(src, station, p.port, Node(at)) },
-    fn(v, _) {
-      v
-      .width(By(fn() { Some(@sf.theme().bars.key) }))
-      .height(By(fn() { Some(@sf.theme().bars.key) }))
-      .lines_up(Is(Some(Middle)))
-      .lies_along(Is(Middle))
-      |> ignore
-      @sf.progress_ring_node(v, load_ring_side, fn() { number(load(), "percent") / 100.0 }, fn() {
-        if number(load(), "failed") > 0.0 {
-          @sf.theme().p.red
-        } else {
-          @sf.theme().p.muted
-        }
-      })
-      |> ignore
+    ring=load_ring_side,
+    part=fn() { number(load(), "percent") },
+    value=fn() {
+      let l = load()
+      if l is Some(Object(_)) { load_label(l) } else { "" }
+    },
+    color=fn() {
+      if number(load(), "failed") > 0.0 {
+        @sf.theme().p.red
+      } else {
+        @sf.theme().p.muted
+      }
     },
   )
-  // (to a screen reader one key whatever has come: its name, how far it came as its value, said as that changes;
-  // none said till the station says. Said after the button's own words, which say its name alone)
-  .says(By(fn() {
-    let l = load()
-    Some(
-      @view.said(
-        Button,
-        label=svc("android-chat.load.name"),
-        value=if l is Some(Object(_)) { load_label(l) } else { "" },
-        range=(0.0, number(l, "percent"), 100.0),
-        actions=[Activate],
-      ),
-    )
-  }))
   |> ignore
 }
 
@@ -572,7 +558,7 @@ fn size_key_node(parent : @view.View, p : ServicePage, tips : @sf.TipLayer) -> U
   let moving = fn() { p.moving.get() }
   // (its panel beside the box it is in: load_key_node's)
   let at = key_beside(parent)
-  @headless.button(
+  @sf.action_box_node(
     at,
     fn() { size_said(p) },
     fn(_) {
@@ -582,7 +568,7 @@ fn size_key_node(parent : @view.View, p : ServicePage, tips : @sf.TipLayer) -> U
         service_sizes_panel(service_key(p.station, p.job), Node(at))
       }
     },
-    fn(v, s) {
+    fn(v) {
       @sf.style_node(v, fn() {
         if moving() {
           size_key_moving
@@ -594,7 +580,7 @@ fn size_key_node(parent : @view.View, p : ServicePage, tips : @sf.TipLayer) -> U
       })
       v.fits(Is(true)) |> ignore
       @sf.hover_ground_node(v, on=fn() { p.viewport.get() is None && !moving() }, lit=Some(fn() {
-        s.hovered() || s.pressed() || s.focus_shown()
+        v.pointed() || v.pressed() || v.focus_shown()
       }))
       @sf.icon_node(
         v,

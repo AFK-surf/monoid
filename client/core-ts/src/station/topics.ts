@@ -22,6 +22,7 @@ import { type StationsSync, retryAfter, stepShown } from "./sync.ts";
 import type { LinkNet } from "./wire.ts";
 import { screenCard, screensChanged, screensView } from "../screens.ts";
 import { terminalCard, terminalsView } from "../terminals.ts";
+import { isStationAuthor } from "../titles.ts";
 import { down, downWords, isLetter, members } from "../views/views.ts";
 import { type Link, MEMORY, filePeekKey, linkPreviewKey, logKey, messagePeekKey } from "./link.ts";
 import * as logins from "./machine-logins.ts";
@@ -34,6 +35,28 @@ import { freeText, moveShown, moveWhy } from "../move.ts";
 export const WINDOW = 3 * PAGE;
 /// How many entries a message found is to have on either side of it in the window, for the window to be left as it is.
 const AROUND = 10;
+
+/// What a chat's message takes at least on its page, in rows of the least a message takes (a folded notice's 38 pt, what
+/// the page's `chat.window` rows are counted in): never more than it takes at the chat's widest (760 pt, about 100
+/// characters a line). A notice is folded to its one line; a message's text, each line of it past its first and each
+/// 100 characters a line wraps at, takes a line of words (about 22 pt, 0.55 of a row: blank lines and paragraphs' room
+/// not counted, below what they take); its files at least two rows; six rows at most, as one message alone never
+/// holds a screen open past what shows.
+export function entryMinRows(e: Record<string, unknown>): number {
+  if (isObject(e.notice) || isStationAuthor(typeof e.authorKind === "string" ? e.authorKind : "")) return 1;
+  const text = typeof e.text === "string" ? e.text : "";
+  let lines = 0;
+  for (const line of text.split("\n")) {
+    const length = line.trim().length;
+    if (length > 0) lines += 1 + Math.floor(length / 100);
+  }
+  const extra = Math.floor(Math.max(0, lines - 1) * 0.55);
+  const files = Array.isArray(e.attachments) && e.attachments.length > 0 ? 2 : 0;
+  return Math.min(1 + extra + files, 6);
+}
+
+/// The fewest messages a chat opens on by what they take (`#firstShown` weighed): a screen of them however long.
+const FIRST_SHOWN_FEWEST = 6;
 /// How often a station's connection is sampled while its card shows it, and how many samples are kept.
 export const NET_EVERY_MS = 2_000;
 const NET_KEPT = 30;
@@ -740,7 +763,7 @@ export class StationTopics implements Owner {
     // ends short of the latest: the window ends there (the chat goes on after it).
     const last = isDown && span.max < latest ? span.max : null;
     const rows = this.#core.views.chatFirstRows(station, id);
-    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows).first, last, at: null, atOffset: null, caught: span.max }, bring: null };
+    if (rows !== null) return { window: { first: this.#firstShown(station, id, span.max, rows, true).first, last, at: null, atOffset: null, caught: span.max }, bring: null };
     const pageFrom = span.max >= latestFrom ? latestFrom : Math.max(1, span.max - PAGE + 1);
     const page = data.logRange("entry", station, String(id), pageFrom, span.max);
     let first = span.max;
@@ -874,11 +897,14 @@ export class StationTopics implements Owner {
   /// messages, not what agents wrote each other nor edits: #shownTo's), as far back as it runs unbroken; `done` once it
   /// holds them, or reaches the chat's first entry or WINDOW entries (else what is held ran out before them). Read back
   /// from `last` a step at a time, `rows` entries a step, a further one only while fewer were found: a chat of
-  /// messages is read for as many entries as it shows.
-  #firstShown(station: string, id: number, last: number, rows: number): { first: number; done: boolean } {
+  /// messages is read for as many entries as it shows. `weighed` (a chat opening at its end): done too once what they
+  /// take at least fills the rows (`entryMinRows`), FIRST_SHOWN_FEWEST of them at least: a chat of long replies opens
+  /// on the screen of them it shows, not on as many replies as short notices would fill it with.
+  #firstShown(station: string, id: number, last: number, rows: number, weighed = false): { first: number; done: boolean } {
     const keys = new Set(members(this.summary(station, id)));
     let first = last + 1;
     let shown = 0;
+    let weight = 0;
     let n = last;
     while (n >= 1 && last - n < WINDOW) {
       const from = Math.max(1, n - rows + 1);
@@ -887,7 +913,10 @@ export class StationTopics implements Owner {
         if (!held.has(n)) return { first, done: false };
         first = n;
         const e = held.get(n);
-        if (isObject(e) && e.kind === "message" && !isLetter(e, keys) && ++shown >= rows) return { first, done: true };
+        if (!isObject(e) || e.kind !== "message" || isLetter(e, keys)) continue;
+        shown++;
+        weight += weighed ? entryMinRows(e) : 1;
+        if (shown >= rows || (weighed && shown >= Math.min(FIRST_SHOWN_FEWEST, rows) && weight >= rows)) return { first, done: true };
       }
     }
     return { first, done: true };

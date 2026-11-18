@@ -66,6 +66,8 @@ static void device_init(JNIEnv *env);  // android_device.h
 static jmethodID m_mk_start, m_mk_state, m_mk_png;
 static jclass autofills_cls;
 static jmethodID m_af_able, m_af_ask, m_af_take, m_af_end;
+static jclass passkeys_cls;
+static jmethodID m_wa_able, m_wa_get, m_wa_out, m_wa_end;
 static jmethodID m_face_add, m_face_add_bytes, m_face_clear, m_ahead, m_flush;
 static jmethodID m_cs_known, m_cs_decode;
 static jmethodID m_v_text, m_v_still, m_v_lost;
@@ -169,6 +171,11 @@ JNIEXPORT jint JNI_OnLoad(JavaVM *v, void *reserved) {
   m_af_ask = (*env)->GetStaticMethodID(env, autofills_cls, "ask", "(Ljava/lang/String;)I");
   m_af_take = (*env)->GetStaticMethodID(env, autofills_cls, "take", "()Ljava/lang/String;");
   m_af_end = (*env)->GetStaticMethodID(env, autofills_cls, "end", "()V");
+  passkeys_cls = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "dev/mbui/Passkeys"));
+  m_wa_able = (*env)->GetStaticMethodID(env, passkeys_cls, "able", "()I");
+  m_wa_get = (*env)->GetStaticMethodID(env, passkeys_cls, "get", "(Ljava/lang/String;)I");
+  m_wa_out = (*env)->GetStaticMethodID(env, passkeys_cls, "out", "(I)Ljava/lang/String;");
+  m_wa_end = (*env)->GetStaticMethodID(env, passkeys_cls, "end", "(I)V");
   m_open_tab = (*env)->GetStaticMethodID(env, login_cls, "openTab", "(Ljava/lang/String;)Z");
   holds_cls = (*env)->NewGlobalRef(env, (*env)->FindClass(env, "dev/mbui/LoginService"));
   m_hold_words = (*env)->GetStaticMethodID(env, holds_cls, "words",
@@ -2597,11 +2604,33 @@ int32_t mb_host_passwords_run(moonbit_string_t args) { (void)args; return 0; }
 moonbit_string_t mb_host_passwords_out(int32_t id) { (void)id; return moonbit_make_string_raw(0); }
 void mb_host_passwords_end(int32_t id) { (void)id; }
 
-// This device's passkeys (host_native.mbt `wa_*`): none here (win_passkeys.c).
-int32_t mb_host_passkeys_able(void) { return 0; }
-int32_t mb_host_passkeys_get(moonbit_string_t ask) { (void)ask; return 0; }
-moonbit_string_t mb_host_passkeys_out(int32_t id) { (void)id; return moonbit_make_string_raw(0); }
-void mb_host_passkeys_end(int32_t id) { (void)id; }
+// This device's passkeys (host_native.mbt `wa_*`, hostapi/passkeys.mbt): dev.mbui.Passkeys asks Android 14+'s
+// CredentialManager when a third-party passkey provider is enabled.
+int32_t mb_host_passkeys_able(void) {
+  JNIEnv *env = env_();
+  return (*env)->CallStaticIntMethod(env, passkeys_cls, m_wa_able);
+}
+
+int32_t mb_host_passkeys_get(moonbit_string_t ask) {
+  JNIEnv *env = env_();
+  jstring a = jstr(env, ask);
+  jint id = (*env)->CallStaticIntMethod(env, passkeys_cls, m_wa_get, a);
+  (*env)->DeleteLocalRef(env, a);
+  return id;
+}
+
+moonbit_string_t mb_host_passkeys_out(int32_t id) {
+  JNIEnv *env = env_();
+  jstring s = (jstring)(*env)->CallStaticObjectMethod(env, passkeys_cls, m_wa_out, (jint)id);
+  moonbit_string_t out = s ? mstr(env, s) : moonbit_make_string_raw(0);
+  if (s) (*env)->DeleteLocalRef(env, s);
+  return out;
+}
+
+void mb_host_passkeys_end(int32_t id) {
+  JNIEnv *env = env_();
+  (*env)->CallStaticVoidMethod(env, passkeys_cls, m_wa_end, (jint)id);
+}
 
 // A frame not to be shown, a decoder emptied, the sound's clock, reserve and volume (@hostapi.stream_frame_shown,
 // stream_flush, stream_audio_played, _queued, _wanted, _volume): win_stream.cpp's alone so far. Here a frame not to be

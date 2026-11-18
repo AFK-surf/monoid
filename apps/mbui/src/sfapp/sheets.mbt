@@ -20,43 +20,8 @@ fn state_of_badge(badge : String) -> String {
 }
 
 ///|
-/// A row of an info card, its ground under the finger: a row of the ladder's.
-let info_row_radius : Double = @sf.row_corner
-
-///|
-/// An info card round its rows: a card of the ladder's (what it holds is content: a model's tile, its words, its
-/// allowance; the user, 2026-11-03), its rows the ladder's inset in, so their words and tiles 16 in from its edges.
-let info_list_radius : Double = @sf.card_corner
-
-///|
-/// Rows on one quiet card: its rows the ladder's inset in, the ink at 5%.
-// kept across runs: a value (no field of it changes)
-let info_list_style : @ui.Style = @ui.css("w=Full bg=A(Fg,O5) clip").then(@ui.style(p=@sf.room_of(@sf.corner_inset)))
-
-///|
-/// A row of it (Android InfoRow): 44 high at least, its words the ladder's inset (8) in from its sides and INFO_IN (4) from
-/// top and bottom, what it holds 12 apart.
-// kept across runs: a value (no field of it changes)
-let info_row_style : @ui.Style = @ui.css("row w=Full min_h=S11 py=S1 gap=S3").then(@ui.style(px=@sf.room_of(@sf.text_in)))
-
-///|
-/// A row that leads with a tile (a model's mark, 36): its tile the ladder's inset in from the row's top and start, so
-/// round by the ladder's next step in the row's corner (mbui works it out: 18 less 8, 10).
-// kept across runs: a value (no field of it changes)
-let info_row_tile : @ui.Style = @ui.style(p=@sf.room_of(@sf.corner_inset), align=AStart)
-
-///|
 /// An agent's tile leading its row (a model's mark): as tall as its row's two lines (15 and 12 on the app's 1.4).
 let info_tile : Double = 38.0
-
-///|
-/// A row that leads with a dot (a job's: 8 round, `job_dot_over` under its top): in the card's corner as far from both
-/// its edges as makes it concentric with it (@sf.capsule_in), its words on the dot's line.
-// kept across runs: a value (no field of it changes)
-let info_row_dot : @ui.Style = @ui.style(
-  pl=@sf.capsule_room(info_list_radius, job_dot_side, less=@sf.corner_inset),
-  pt=@sf.capsule_room(info_list_radius, job_dot_side, less=@sf.corner_inset + job_dot_over),
-)
 
 ///|
 /// A job's dot (job_dot: 8), and how far under its row's words' top it stands, on its name's line (7).
@@ -94,18 +59,7 @@ fn open_rename(src : Source, r : ChatRef, thread : Double?, was : String, from~ 
   @sf.ask(
     tr("android-chat.rename.title"),
     tr("common.save"),
-    fn(title) {
-      let p : Map[String, Json] = {
-        "station": Json::string(r.station),
-        "session": Json::string(r.session),
-        "title": Json::string(title),
-      }
-      match thread {
-        Some(th) => p["thread"] = Json::number(th)
-        None => ()
-      }
-      act(src, tr("android-chat.rename.verb"), "", "chat.rename", Json::object(p))
-    },
+    fn(title) { @sfpages.chat_rename_call(src, r.station, r.session, thread, title) },
     value=was,
     placeholder=tr("android-chat.rename.field"),
     hint=tr("android-chat.rename.note"),
@@ -123,10 +77,6 @@ fn open_rename(src : Source, r : ChatRef, thread : Double?, was : String, from~ 
 ///|
 // kept across runs: a value (no field of it changes)
 let agent_row_body_style : @ui.Style = @ui.css("w=Full")
-
-///|
-// kept across runs: a value (no field of it changes)
-let agent_row_label : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, wrap=false)
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -154,9 +104,6 @@ fn agent_tiles_known(card : Json?) -> Bool {
   text(card, "cost") != "" || field(card, "cache") is Some(Object(_)) || field(card, "context") is Some(Object(_))
 }
 
-///|
-/// The figures that say most (AgentTiles): what it cost, the cache's hit rate, how full its context is, each large over
-/// its name, side by side; a context worth a look in its level's colour.
 ///|
 /// The chat itself, from ⓘ (chat_info_body's, as nodes of the window's tree made once in `v`, open_info's panel's body),
 /// as the core's `chat` and the chat's view say it now: its name (with a way to change it) over who started it, how
@@ -197,7 +144,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     }
   }
   let tools = fn() { finds() || remote() }
-  let holds = @signals.computed(fn(_) { info_holds_said(src, r, chat()) })
+  let holds = @signals.computed(fn(_) { @sfpages.chat_holds_said(src, r, chat()) })
   let pulls = fn() { holds.get().pulls }
   // (a card come or gone, or a row of one, a later answer's (what is in it told after the sheet came up): the sheet
   // goes on from as tall as it is seen then to its new height, @sf.panel_reshaped_node; said before what it shows is
@@ -282,7 +229,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // only as that one changes: an agent come or gone makes or lets go its row alone)
     let agent_key = fn(a : Json) { text(field(Some(a), "session"), "key") }
     col.show(fn() { agents().length() > 0 }, fn(p) {
-      info_list_node(p, fn(k) {
+      @sf.quiet_card_node(p, fn(k) {
         let by_key = k.keyed_by(agents, agent_key)
         k.each(fn() { by_key.keys() }, fn(key) { key }, fn(row, key) {
           let key = key.untracked()
@@ -311,10 +258,10 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
             None => []
           }
         }
-        info_list_node(p, fn(k) {
+        @sf.quiet_card_node(p, fn(k) {
           let at : Ref[@view.View?] = Ref(None)
           at.val = Some(
-            info_row_node(
+            @sf.quiet_row_node(
               k,
               fn() { words },
               fn(row) {
@@ -324,7 +271,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
                   @sf.words_node(w, fn() { words }, fn() { info_opened_title }) |> ignore
                 })
                 |> ignore
-                chevron_node(row)
+                @sf.row_chevron_node(row)
               },
               press=fn() {
                 match at.val {
@@ -341,7 +288,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // each row there while it may be done
     col.show(tools, fn(p) {
       info_gap_node(p, fn() { agents().length() > 0 || opened_any() })
-      info_list_node(p, fn(k) {
+      @sf.quiet_card_node(p, fn(k) {
         // ⌘F's bar, in the chat's bar (chat_bar_node's)
         k.show(finds, fn(m) {
           info_more_row_node(m, "search", fn() { tr("web-main.keymap.chat.find") }, fn() { "" }, fn() {
@@ -409,7 +356,7 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
     // a thing come or gone makes again only the row it changes)
     col.show(fn() { holds.get().any() }, fn(p) {
       info_gap_node(p, fn() { agents().length() > 0 || opened_any() || tools() })
-      info_list_node(p, fn(k) {
+      @sf.quiet_card_node(p, fn(k) {
         // the pull requests linked in it, the latest 3 (the user, 2026-10-29: most chats have one or two, seen at a
         // look), 全部 N 个 to the rest; tapped, one opens in the browser
         k.each(
@@ -485,24 +432,16 @@ fn chat_info_node(v : @view.View, src : Source, r : ChatRef, close : () -> Unit)
 fn info_facts_said(chat : Json?, view : ChatView?) -> String {
   let thread = field(chat, "thread")
   let facts : Array[String] = []
-  // (a Feishu chat's by Feishu, a Comma Task's by Comma alone: it is in no place)
-  let surface = text(thread, "surface")
-  match text(chat, "place") {
-    "" if surface.has_prefix("comma:") => facts.push("Comma")
-    "" => ()
-    p if surface.has_prefix("feishu:") || text(chat, "feishuUrl") != "" => facts.push(@sf.t("web-pages.connect.feishu.name") + " · " + p)
-    p => facts.push(fill("android-chat.info.from.slack", [("place", p)]))
+  // (where it came from, as every screen's info reads it: sfpages' chat_through)
+  let place = text(chat, "place")
+  match @sfpages.chat_through(chat) {
+    Some(@sfpages.ChatThrough::Comma) => facts.push(if place == "" { "Comma" } else { "Comma · " + place })
+    Some(@sfpages.ChatThrough::Feishu) => facts.push(@sf.t("web-pages.connect.feishu.name") + " · " + place)
+    Some(@sfpages.ChatThrough::Slack) => facts.push(fill("android-chat.info.from.slack", [("place", place)]))
+    None => ()
   }
   // (made by another chat's agent: that chat said over this line, not a person)
-  let creator = match field(thread, "creator") {
-    _ if view is Some({ opener: Some(_), .. }) => ""
-    Some(Object(_)) as cr =>
-      match text(field(cr, "shown"), "display") {
-        "" => text(cr, "name")
-        d => d
-      }
-    _ => ""
-  }
+  let creator = if view is Some({ opener: Some(_), .. }) { "" } else { @sfpages.chat_creator_said(thread) }
   let created = text(field(field(thread, "time"), "createdAt"), "ago")
   if creator != "" && created != "" {
     facts.push(fill("android-chat.info.startedAt", [("name", creator), ("ago", created)]))
@@ -526,38 +465,6 @@ fn info_facts_said(chat : Json?, view : ChatView?) -> String {
 }
 
 ///|
-/// What the card of what is in the chat is made of (chat_info_node's last): its thread, its pull requests, how much
-/// else was said in it, whether the workspace's stations lend their files, and how many letters.
-#derive(Eq)
-priv struct InfoHolds {
-  thread : Double?
-  pulls : Array[Json]
-  said : Int
-  files : Bool
-  letters : Int
-}
-
-///|
-/// Whether it holds anything to show (else the card is not there).
-fn InfoHolds::any(self : InfoHolds) -> Bool {
-  self.pulls.length() > 0 || self.said > 0 || self.files || self.letters > 0
-}
-
-///|
-/// What is in chat `r` as its head `chat` says it (InfoHolds): what is in its thread (none before it has one), and the
-/// files of its workspace's stations (their rows, read as every list reads them: sfbase's dv_stations).
-fn info_holds_said(src : Source, r : ChatRef, chat : Json?) -> InfoHolds {
-  let thread = opt_number(field(chat, "thread"), "id")
-  let (said, pulls) = match thread {
-    Some(th) => @sfpages.things_now(src, r.station, th)
-    None => (0, [])
-  }
-  let letters = if thread is Some(_) { number(chat, "letters").to_int() } else { 0 }
-  let files = dv_stations(src, @sfbase.workspace_of(r.station)).0.unwrap_or([]).iter().any(fn(s) { s.drive })
-  { thread, pulls, said, files, letters }
-}
-
-///|
 /// The room between two of the info's cards in `p`, over the card after it, while one is over it (`over`).
 fn info_gap_node(p : @view.View, over : () -> Bool) -> Unit {
   p.show(over, fn(g) { @sf.style_node(g, fn() { info_lists_gap }) })
@@ -574,12 +481,12 @@ fn info_more_row_node(
   end : () -> String,
   press : () -> Unit,
 ) -> @view.View {
-  info_row_node(k, words, press~, fn(row) {
+  @sf.quiet_row_node(k, words, press~, fn(row) {
     // (one line on the row's middle; more, the icon and the chevron on the first of them)
     row.box(fn(line) {
       @sf.style_node(line, fn() { info_more_line }, in_row=true)
       line.box(fn(i) {
-        agent_first_line(i)
+        @sf.quiet_first_line(i)
         @sf.icon_node(i, icon, info_icon, By(fn() { @sf.theme().p.text })) |> ignore
       })
       |> ignore
@@ -591,8 +498,8 @@ fn info_more_row_node(
       })
       |> ignore
       line.box(fn(c) {
-        agent_first_line(c)
-        chevron_node(c)
+        @sf.quiet_first_line(c)
+        @sf.row_chevron_node(c)
       })
       |> ignore
     })
@@ -619,9 +526,9 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
   let title = fn() { @sfpages.pull_title(pull()) }
   let url = fn() { text(pull(), "url") }
   k.box(fn(b) {
-    @sf.style_node(b, fn() { info_row_middle })
+    @sf.style_node(b, fn() { @sf.quiet_row_middle })
     b
-    .radius(Is(info_row_radius))
+    .radius(Is(@sf.quiet_row_corner))
     .says(By(fn() { Some(@view.said(Link, label=title())) }))
     |> ignore
     @sf.hover_ground_node(b)
@@ -658,7 +565,7 @@ fn info_pull_row_node(k : @view.View, src : Source, r : ChatRef, pull : () -> Js
 /// name's room, or left the row where it had not the room: the allowance gone), its chevron. Pressed, `press`.
 fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : () -> Unit) -> Unit {
   let s = fn() { field(a(), "session") }
-  info_row_node(k, fn() { text(s(), "agentText") }, look=info_row_style.then(info_row_tile), press~, fn(row) {
+  @sf.quiet_row_node(k, fn() { text(s(), "agentText") }, look=@sf.quiet_row_style.then(@sf.quiet_row_tile), press~, fn(row) {
     model_mark_big_node(
       row,
       fn() { text(field(s(), "maker"), "id") },
@@ -693,7 +600,7 @@ fn info_agent_row_node(k : @view.View, src : Source, a : () -> Json?, press : ()
       })
     })
     |> ignore
-    chevron_node(row)
+    @sf.row_chevron_node(row)
   })
   |> ignore
 }
@@ -815,17 +722,11 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
     // at once, one that comes later from none to all of its height, the card and the sheet going with it, never a step;
     // the card itself and the room under it only once a part of it shows: group_rows', 2026-11-09 the user:
     // 「好像还存在高度突变的元素」)
-    reveal_part_node(col, fn() { agent_card_says(card()) }, look=fn(b) { @sf.panel_card_out_node(b) }, fn(c) {
-      c.box(fn(k) {
-        @sf.style_node(k, fn() { info_list_style })
-        k.radius(Is(info_list_radius)) |> ignore
-        reveal_part_node(k, fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) })
-        reveal_part_node(k, fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) })
-        reveal_part_node(k, fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) })
-      })
-      |> ignore
-      c.box(fn(g) { @sf.style_node(g, fn() { info_card_under }) }) |> ignore
-    })
+    @sf.stats_card_node(col, fn() { agent_card_says(card()) }, [
+      (fn() { items(card(), "latest").length() > 0 }, fn(l) { agent_lines_node(l, card) }),
+      (fn() { items(card(), "attention").length() > 0 }, fn(n) { agent_notes_node(n, card, agent_notes_over) }),
+      (fn() { agent_tiles_known(card()) }, fn(t) { card_tiles_node(t, card, agent_tiles_over, entry) }),
+    ])
     let station = fn() { station_marks(src, @sfbase.workspace_of(r.station)).iter().find_first(fn(st) { st.address == r.station }) }
     let chat_cv = fn() { view_of_chat(src, r).0 }
     let has_remote = fn() {
@@ -845,7 +746,6 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
     // (all its rows' labels in a column as wide as the widest of those it shows, in this language and at this size of
     // words, so the values beside them line up as well)
     let label_w = fn() {
-      col.words_redone() |> ignore
       let labels = [tr("android-chat.agent.account"), tr("android-chat.agent.history"), tr("android-chat.new.model")]
       if station() is Some(_) {
         labels.push(tr("android-chat.agent.station"))
@@ -859,8 +759,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
       if jobs_row() {
         labels.push(tr("android-chat.agent.jobs"))
       }
-      let size = @sf.theme().t.meta * col.words_scale()
-      labels.fold(init=0.0, fn(w, label) { dmax(w, @ui.text_advance(label, size~).ceil()) })
+      @sf.labels_across(col, labels)
     }
     let account = fn() {
       match field(a(), "account") {
@@ -868,17 +767,17 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
         _ => field(a(), "profile")
       }
     }
-    info_list_node(
+    @sf.quiet_card_node(
       col,
       fn(list) {
         list.pick(fn() { station().map(fn(st) { (st.address, st.name, st.emoji, st.icon) }) }, fn(p, said) {
           guard said is Some((address, name, emoji, icon)) else { return }
           let st : Station = { address, name, emoji, icon, via: "" }
-          info_row_node(
+          @sf.quiet_row_node(
             p,
             fn() { tr("android-chat.agent.station") + " " + st.name },
             fn(row) {
-              agent_label_node(row, tr("android-chat.agent.station"), label_w)
+              @sf.row_label_node(row, tr("android-chat.agent.station"), label_w)
               row.box(fn(w) {
                 @sf.style_node(w, fn() { agent_station_line }, in_row=true)
                 if @sf.has_station_mark(st.emoji, st.icon) {
@@ -889,7 +788,7 @@ fn agent_node(v : @view.View, src : Source, r : ChatRef, key : String, close : (
                 @sf.words_node(w, fn() { st.name }, fn() { agent_row_value }) |> ignore
               })
               |> ignore
-              chevron_node(row)
+              @sf.row_chevron_node(row)
             },
             press=fn() {
               // the station's card in place of this one
@@ -1070,9 +969,9 @@ fn agent_row_node(
   }
   // (one of a line on its middle, as every row of the card; one with a line under its value (an account's allowance)
   // on its top, its label and chevron on its value's first line)
-  let look = if under is Some(_) { agent_row_look } else { info_row_middle }
-  info_row_node(p, label_said, look~, press~, fn(row) {
-    agent_label_node(row, label, label_w)
+  let look = if under is Some(_) { @sf.quiet_row_top } else { @sf.quiet_row_middle }
+  @sf.quiet_row_node(p, label_said, look~, press~, fn(row) {
+    @sf.row_label_node(row, label, label_w)
     row.box(fn(w) {
       @sf.style_node(w, fn() { agent_row_body_style }, in_row=true)
       @sf.words_node(w, value, fn() { agent_row_value }) |> ignore
@@ -1088,39 +987,11 @@ fn agent_row_node(
     }
     // (on its value's first line, as its label is: not on the middle of what is under it)
     row.box(fn(c) {
-      agent_first_line(c)
-      chevron_node(c)
+      @sf.quiet_first_line(c)
+      @sf.row_chevron_node(c)
     })
     |> ignore
   })
-}
-
-///|
-/// A row of the agent's card: its label, value and chevron on their tops, each on its value's first line.
-// kept across runs: a value (no field of it changes)
-let agent_row_look : @ui.Style = info_row_style.then(@ui.css("align=AStart"))
-
-///|
-/// Node `c` as tall as a row's value's first line (15 on the theme's line, at the system's size of words), what it
-/// holds down its middle.
-fn agent_first_line(c : @view.View) -> Unit {
-  c
-  .min_height(By(fn() { Some(@sf.theme().t.ui_line * c.words_scale()) }))
-  .shrink(Is(0.0))
-  .lies_along(Is(Middle))
-  |> ignore
-}
-
-///|
-/// A row's label in its column (agent_label's, as a node) in `row`, `width` wide as it is now, at its start, on its
-/// value's first line.
-fn agent_label_node(row : @view.View, label : String, width : () -> Double) -> Unit {
-  row.box(fn(l) {
-    agent_first_line(l)
-    l.width(By(fn() { Some(width()) })).lines_up(Is(Some(Start))) |> ignore
-    @sf.words_node(l, fn() { label }, fn() { agent_row_label }) |> ignore
-  })
-  |> ignore
 }
 
 ///|
@@ -1191,64 +1062,6 @@ fn agent_name_line(c : @view.View) -> Unit {
 }
 
 ///|
-/// A part of a card in `parent` (group_rows', as nodes) while `shown()` says so, what `make` makes in it: there whole
-/// as it is made where it shows then; one that comes to show later opens its room from none to all of its height (a
-/// Move as long as it is tall, cut to the room it has so far), what is under it going down with it, and closes again
-/// as it goes; its words faded in from half as it opens (reveal's). `look`: where it stands (out of its column).
-fn reveal_part_node(
-  parent : @view.View,
-  shown : () -> Bool,
-  make : (@view.View) -> Unit,
-  look? : (@view.View) -> @ui.Style,
-) -> Unit {
-  // (where it starts said as it is made, by what a reader reads: a topic read outside any reader would be held by the
-  // core's client for good)
-  let share = @motion.NodeWay::new(0.0)
-  let made = Ref(false)
-  // (while it closes, what it holds still there, let go once it has)
-  let closing = @signals.signal(false)
-  let stop : Ref[() -> Unit] = Ref(fn() {  })
-  parent.by_room(fn(b, room) {
-    let inner : Ref[@view.View?] = Ref(None)
-    let tall = fn() {
-      match inner.val {
-        Some(i) => room.tall(i)
-        None => 0.0
-      }
-    }
-    // (where what it holds stands out of its column (a card a panel's sides set), it stands so itself: cut to itself)
-    match look {
-      Some(l) => @sf.style_node(b, fn() { l(b) })
-      None => ()
-    }
-    b.clips(Is(true)).height(By(fn() { Some(tall() * share.shown(b)) })) |> ignore
-    inner.val = Some(
-      b.box(fn(i) {
-        i.alpha(By(fn() { 0.5 + 0.5 * share.shown(b) })) |> ignore
-        i.show(at_once=true, fn() { shown() || closing.get() }, make)
-      }),
-    )
-    b.reacts(shown, fn(on) {
-      if !made.val {
-        made.val = true
-        share.put(if on { 1.0 } else { 0.0 })
-        return
-      }
-      // (as far as it is tall once made: what has not been laid out yet goes as a row of words does)
-      let far = dmax(@signals.untracked(tall), reveal_least)
-      share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
-      (stop.val)()
-      stop.val = fn() {  }
-      if !on {
-        closing.set(true)
-        stop.val = b.at_moment(share.end(), fn() { closing.set(false) })
-      }
-    })
-  })
-  |> ignore
-}
-
-///|
 /// One part of a card or a sheet in `parent` that shows `first` (what is read meanwhile) till `second()` says so, then
 /// `second` (what was read) in its place: there as it is made where `second()` says so then; else, as it comes to,
 /// from none to as tall as `second` is, one way (a Move as far as that), what it holds there whole from the first frame;
@@ -1285,7 +1098,7 @@ fn swap_part_node(
         share.put(if on { 1.0 } else { 0.0 })
         return
       }
-      let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), reveal_least)
+      let far = dmax((@signals.untracked(fn() { tall(two) - tall(one) })).abs(), @sf.reveal_least)
       share.go(b, if on { 1.0 } else { 0.0 }, @motion.moved(points=far))
     })
     one.val = Some(
@@ -1304,10 +1117,6 @@ fn swap_part_node(
   })
   |> ignore
 }
-
-///|
-/// How far a part's way goes at least, where it has not been laid out yet as it comes: a row's.
-let reveal_least : Double = 44.0
 
 ///|
 /// Whether the core's card of an agent says anything its card shows: its latest lines, what is wrong, its figures.
@@ -1476,62 +1285,6 @@ fn job_tint(tone : String) -> Int64? {
     _ => None
   }
 }
-
-///|
-/// A row of an info card (info_row's, as a node) in `parent`, laid out `look` (info_row_style's, its tile's or dot's
-/// room), its ground rounded as a row of the ladder's; what `body` makes in it; pressed (`press`, none: a row that leads
-/// nowhere), `press` done, rippling round its corner, read out a button named `label`. Its node.
-fn info_row_node(
-  parent : @view.View,
-  label : () -> String,
-  body : (@view.View) -> Unit,
-  look? : @ui.Style = info_row_middle,
-  press? : () -> Unit,
-) -> @view.View {
-  parent.box(fn(b) {
-    @sf.style_node(b, fn() { look })
-    b.radius(Is(info_row_radius)) |> ignore
-    match press {
-      Some(f) => @sf.rippled_node(b, f, info_row_radius, label)
-      None => ()
-    }
-    body(b)
-  })
-}
-
-///|
-/// An info row's look, what it holds on its middle across (info_row's ACenter).
-// kept across runs: a value (no field of it changes)
-let info_row_middle : @ui.Style = info_row_style.then(@ui.css("align=ACenter"))
-
-///|
-/// A card of info rows (info_list's, as a node) in `parent`: the ladder's card, its rows the ladder's inset in,
-/// `panel_card_in` from the panel's sides; `last`: the last of what a dialog holds, its foot concentric with the
-/// dialog's (panel_card_foot's under it). What `rows` makes on it.
-fn info_list_node(parent : @view.View, rows : (@view.View) -> Unit, last? : () -> Bool = fn() { false }) -> Unit {
-  parent.box(fn(k) {
-    @sf.style_node(k, fn() {
-      let card = info_list_style.then(@sf.panel_card_out_node(k))
-      if last() {
-        card.then(@sf.panel_card_last_node(k))
-      } else {
-        card
-      }
-    })
-    k.radius(Is(info_list_radius)) |> ignore
-    rows(k)
-  })
-  |> ignore
-}
-
-///|
-/// A row's chevron at its end (chevron's, as a node) in `parent`.
-fn chevron_node(parent : @view.View) -> Unit {
-  @sf.icon_node(parent, "chevron-right", info_chevron, By(fn() { @sf.theme().p.subtle })) |> ignore
-}
-
-///|
-let info_chevron : Double = 14.0
 
 ///|
 /// What fills the room a row leaves it (an old view's Fill along a row).
@@ -1709,11 +1462,11 @@ fn job_press(src : Source, r : ChatRef, j : Json?, close : () -> Unit) -> Unit {
 /// it is up to under it, its chevron; an over one's name stepped back to the muted grey, not faded (at 55% its words
 /// were 2.3 to 1: mbui ui/contrast.mbt). Pressed, `press`.
 fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
-  info_row_node(k, fn() { text(job(), "name") }, look=job_row_look, press~, fn(row) {
+  @sf.quiet_row_node(k, fn() { text(job(), "name") }, look=job_row_look, press~, fn(row) {
     // (its dot and its chevron each down the middle of its name's first line, at the system's size of words)
     row.box(fn(d) {
-      agent_first_line(d)
-      job_dot_node(d, fn() { text(job(), "tone") })
+      @sf.quiet_first_line(d)
+      @sf.state_dot_node(d, fn() { text(job(), "tone") }, size=job_dot_side, breathes=true)
     })
     |> ignore
     row.box(fn(w) {
@@ -1730,8 +1483,8 @@ fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
     })
     |> ignore
     row.box(fn(c) {
-      agent_first_line(c)
-      chevron_node(c)
+      @sf.quiet_first_line(c)
+      @sf.row_chevron_node(c)
     })
     |> ignore
   })
@@ -1741,7 +1494,7 @@ fn job_row_node(k : @view.View, job : () -> Json?, press : () -> Unit) -> Unit {
 ///|
 /// A job's row: its dot and its chevron on its name's first line, its words 1 apart.
 // kept across runs: a value (no field of it changes)
-let job_row_look : @ui.Style = info_row_style.then(info_row_dot).then(@ui.css("align=AStart"))
+let job_row_look : @ui.Style = @sf.quiet_row_style.then(@sf.quiet_row_dot(job_dot_side, job_dot_over)).then(@ui.css("align=AStart"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1823,34 +1576,6 @@ fn job_runs_node(parent : @view.View, runs : () -> Array[@ui.Run], look : () -> 
 }
 
 ///|
-/// A job's dot (job_dot's, as a node) in `parent`: 8 across, its tone's tint as it is now; restarting, breathing to .35
-/// and back (@sf.breathe's: breath_ms each way and back, from moment 0 on).
-fn job_dot_node(parent : @view.View, tone : () -> String) -> Unit {
-  parent.box(fn(d) {
-    d
-    .width(Is(Some(job_dot_side)))
-    .height(Is(Some(job_dot_side)))
-    .radius(Is(job_dot_side / 2.0))
-    .ground(By(fn() { job_tint(tone()).unwrap_or(@sf.theme().p.subtle) }))
-    .alpha(By(fn() {
-      if tone() != "restart" {
-        1.0
-      } else {
-        let f = d.cycle(@sf.breath_ms)
-        let way = if f < 0.5 { f * 2.0 } else { 2.0 - f * 2.0 }
-        1.0 - (1.0 - job_dot_low) * @ui.Ease::InOut.at(way)
-      }
-    }))
-    |> ignore
-  })
-  |> ignore
-}
-
-///|
-/// How faint a job's dot breathes while it restarts (Jobs.css.ts jobBreathe).
-let job_dot_low : Double = 0.35
-
-///|
 /// The line under a job's name (job_meta's, as a node) in `parent`: its state's word in its dot's colour's ink, what it
 /// said in the ink, the rest muted, `size`, on one line; the job as it is now.
 fn job_meta_node(parent : @view.View, job : () -> Json?, size : Double) -> Unit {
@@ -1917,7 +1642,7 @@ fn job_detail_node(v : @view.View, src : Source, r : ChatRef, id : String, j : (
     @sf.style_node(h, fn() { @sf.panel_words_in_node(h).then(@sf.untitled_clear_node(h)).then(job_head_at) })
     h.box(fn(b) {
       @sf.style_node(b, fn() { job_head_dot })
-      job_dot_node(b, fn() { text(j(), "tone") })
+      @sf.state_dot_node(b, fn() { text(j(), "tone") }, size=job_dot_side, breathes=true)
     })
     |> ignore
     h.box(fn(b) {
@@ -2343,11 +2068,6 @@ let info_opener_words : @ui.TextStyle = @ui.text_style(size=Body, color=AccentTe
 /// The row of the chats its agent made, in the chat's sheet (chat_info_body): how many, its words a row's.
 // kept across runs: a value (no field of it changes)
 let info_opened_title : @ui.TextStyle = @ui.text_style(size=Body, color=Fg, wrap=false, w=Full)
-
-///|
-/// The room under a panel's last card: as far as its sides are in (panel_card_in).
-// kept across runs: a value (no field of it changes)
-let info_card_under : @ui.Style = @ui.style(h=Fixed(@sf.panel_card_in))
 
 ///|
 /// What an info row says at its end (how many, a pull request's number): 13, muted, on one line.

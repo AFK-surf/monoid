@@ -403,7 +403,7 @@ fn case_button_press_node(
       None => ()
     }
   }
-  let k = @headless.button(p, fn() { word }, fn(_) {
+  let k = @sf.action_box_node(p, fn() { word }, fn(_) {
     match held.get(b.name) {
       // (no hand's press on it: a key's, a screen reader's Activate) down and up at once
       None => {
@@ -418,7 +418,7 @@ fn case_button_press_node(
       Some(false) => ()
     }
     held.remove(b.name)
-  }, fn(n, _) {
+  }, fn(n) {
     n
     .over(Is(true))
     .offset(By(fn() {

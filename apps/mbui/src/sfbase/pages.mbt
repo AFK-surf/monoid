@@ -1505,6 +1505,7 @@ pub fn reset() -> Unit {
   @ui.set_motion_chosen(None)
   @ui.set_haptics(true)
   felt_reset()
+  awake_reset()
   board_reset()
   app.filters.clear()
   app.menu = false
@@ -1586,7 +1587,9 @@ pub fn reset() -> Unit {
   go_to_around.clear()
   // and where each chat's reader was as a go-to took its list away (jump.mbt)
   places_back.clear()
+  places_back_pieces.clear()
   go_back_offsets.clear()
+  go_back_pieces.clear()
   places_back_said.set(0)
   // when the flash of a message gone to on a page made as nodes is over (chat_list.mbt)
   flash_rest_nodes.val = -1.0

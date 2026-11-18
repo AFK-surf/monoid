@@ -1597,6 +1597,175 @@ test "a long table a few rows a piece: each piece a block of the list, all of th
 }
 
 ///|
+/// The core's reading of a table of `rows` rows (its head's not counted) and `cols` columns, each cell's words
+/// `r<row>c<col>` and a run of x (`fill` more in its first column's), a paragraph `words` over it where it says one.
+fn body_wide_table(words : String?, rows : Int, cols : Int, fill? : Int = 0) -> Json {
+  let xs = fn(n : Int) { "x".repeat(n) }
+  let cell = fn(r : Int, c : Int) {
+    Json::array([Json::string("td"), Json::array([Json::string("r\{r}c\{c}" + xs(if c == 0 { 4 + fill } else { 28 }))])])
+  }
+  let line = fn(r : Int) { Json::array([Json::string("tr"), Json::array(Array::makei(cols, fn(c) { cell(r, c) }))]) }
+  let table = Json::array([
+    Json::string("table"),
+    Json::array(Array::makei(rows + 1, line)),
+    Json::object({ "md": Json::string(""), "csv": Json::string("") }),
+  ])
+  match words {
+    Some(w) => Json::array([body_para(w), table])
+    None => Json::array([table])
+  }
+}
+
+///|
+/// What body_table_case read of the chat by the old body, by screen.
+// kept across runs: written by body_table_case as each screen is read
+let body_table_read : Map[Int, (ChatView, Array[Entry])] = Map([])
+
+///|
+/// A chat's list as nodes on screen `si` (body_screens'), its last agent's message `md` and `text` (said while the chat
+/// shows where `said`), its messages' files and pictures taken off (none decoded: as many cases as a test makes): the
+/// Tester, the entries it is given (to give it others), that message as it is in them, its place among them and what
+/// asks the list where to be.
+fn body_table_case(
+  si : Int,
+  text : String,
+  md : Json,
+  said : Bool,
+) -> (@ui.Tester, @signals.Signal[Array[Entry]], Message, Int, @view.ListPlace[String]) {
+  let s = body_screens()[si]
+  // (the chat's view and entries as view_of_chat says them on that screen: read once a screen, by the old body)
+  let (v0, read0) = match body_table_read.get(si) {
+    Some(r) => r
+    None => {
+      @sfbase.reset()
+      reset()
+      let src = @sffixture.fixture("chat")
+      let seen : Ref[(ChatView, Array[Entry])?] = Ref(None)
+      body_old(src, s.1, s.2, s.3, seen~) |> ignore
+      let r = seen.val.unwrap()
+      body_table_read[si] = r
+      r
+    }
+  }
+  @sfbase.reset()
+  reset()
+  let src = @sffixture.fixture("chat")
+  let read = read0.map(fn(e) -> Entry {
+    match e {
+      Said(m) => Said({ ..m, attachments: [], placed: [] })
+      e => e
+    }
+  })
+  let mut last = -1
+  for i, e in read {
+    if e is Said(m) && chat_body_pieces(Said({ ..m, text: "| a |", md: Some(body_wide_table(None, 13, 2)) })) is Some(_) {
+      last = i
+    }
+  }
+  guard last >= 0 && read[last] is Said(m) else { @halt.saying("no agent's message") }
+  let m = { ..m, text, md: Some(md), said }
+  read[last] = Said(m)
+  let entries = @signals.signal(read)
+  let place = @view.ListPlace::new()
+  let t = body_new(src, s.1, s.2, s.3, @signals.signal(v0), entries, place~)
+  t.run_for(@ui.move_most_ms)
+  (t, entries, m, last, place)
+}
+
+///|
+/// The words of a table of `rows` rows (its head's not counted) under a paragraph `words` where it says one, as an
+/// agent writes it out: the same words before it, a row more each time (a message streamed in).
+fn body_wide_text(words : String?, rows : Int) -> String {
+  let lines = Array::makei(rows + 1, fn(r) { "| r\{r} |" })
+  match words {
+    Some(w) => w + "\n\n" + lines.join("\n")
+    None => lines.join("\n")
+  }
+}
+
+///|
+/// Where words holding `words` are drawn first along the row, and where they end, in `t`.
+fn body_x_of(t : @ui.Tester, words : String) -> (Double, Double) {
+  match t.run_rects(words).get(0) {
+    Some(r) => (r.0, r.0 + r.2)
+    None => @halt.saying("no words drawn holding \{words}")
+  }
+}
+
+///|
+/// Table rows `rows` of `t` scrolled across as far as they go by the wheel over row `over`'s first cell: where each
+/// row's first cell is then.
+fn body_swiped(t : @ui.Tester, over : String, rows : Array[Int]) -> Array[Double] {
+  let (x, _) = body_x_of(t, over)
+  let (_, y, _, _) = t.run_rects(over).get(0).unwrap()
+  t.wheel_with(x + 20.0, y + 4.0, 5000.0, 0.0, 0)
+  t.run_for(@ui.move_most_ms)
+  rows.map(fn(r) { body_x_of(t, "r\{r}c0").0 })
+}
+
+///|
+test "a long table a few rows a piece scrolled across to its end, wheeled over its first rows or its last: every piece as far, on a wide pane and a phone's" {
+  for si in [0, 2] {
+    for over in ["r1c0", "r13c0"] {
+      let (t, _, _, _, _) = body_table_case(si, body_wide_text(Some("表格在下面。"), 13), body_wide_table(Some("表格在下面。"), 13, 8), false)
+      let xs = body_swiped(t, over, [1, 5, 7, 9, 13])
+      assert_true(xs[0] < body_x_of(t, "表格在下面。").0, msg="\{body_screens()[si].0}: scrolled across: \{Repr(xs)}")
+      assert_eq(xs, Array::make(5, xs[0]), msg="\{body_screens()[si].0}, wheeled over \{over}: \{Repr(xs)}")
+      // (its last column at one place in its last rows as in its first, whole at its end: in the pane)
+      assert_eq(body_x_of(t, "r13c7").0, body_x_of(t, "r1c7").0, msg="\{body_screens()[si].0}")
+      assert_true(body_x_of(t, "r13c7").1 <= body_screens()[si].1, msg="\{body_screens()[si].0}: \{body_x_of(t, "r13c7").1}")
+    }
+  }
+}
+
+///|
+test "a long table a few rows a piece a little wider than the pane, less than its copy key's room: its last rows scrolled across as far as its first" {
+  // (its first column made wider a letter at a time till its first rows go across by less than the copy key's room)
+  let mut found = false
+  for fill in 0..<60 {
+    let (t, _, _, _, _) = body_table_case(2, body_wide_text(Some("表格在下面。"), 13), body_wide_table(Some("表格在下面。"), 13, 4, fill~), false)
+    let before = body_x_of(t, "r1c0").0
+    let xs = body_swiped(t, "r1c0", [1, 5, 13])
+    let gone = before - xs[0]
+    // (less than the copy key's room, 44: table_copy.mbt's table_key_room)
+    if gone > 0.0 && gone < 44.0 {
+      assert_eq(xs, [xs[0], xs[0], xs[0]], msg="gone across \{gone}: \{Repr(xs)}")
+      found = true
+      break
+    }
+  }
+  assert_true(found, msg="no table found a little wider than the pane")
+}
+
+///|
+test "a table streamed in while the chat shows, from 3 rows to 10, as a message's first block or after a paragraph: its pieces scrolled across as one, no row drawn twice" {
+  for words in [None, Some("表格在下面。")] {
+    for si in [0, 2] {
+      let (t, entries, m, last, place) = body_table_case(si, body_wide_text(words, 3), body_wide_table(words, 3, 8), true)
+      // (more rows come: cut into pieces of 4 now)
+      let read = entries.get().copy()
+      read[last] = Said({ ..m, text: body_wide_text(words, 10), md: Some(body_wide_table(words, 10, 8)) })
+      entries.set(read)
+      t.run_for(@ui.move_most_ms)
+      let label = "\{body_screens()[si].0}, \{if words is None { "first" } else { "after a paragraph" }}"
+      // (the list at its foot, where the rows come: its every row in sight)
+      place.to_end(glide=false)
+      t.run_for(@ui.move_most_ms)
+      let ys = Array::makei(11, fn(r) { t.run_rects("r\{r}c0").map(fn(q) { q.1 }) })
+      for r in [1, 5, 9, 10] {
+        assert_eq(t.run_rects("r\{r}c0").length(), 1, msg="\{label}: row \{r} drawn once: \{Repr(ys)}")
+      }
+      let xs = body_swiped(t, "r1c0", [1, 5, 9])
+      assert_true(xs[0] < body_x_of(t, "r1c7").0, msg="\{label}: \{Repr(xs)}")
+      assert_eq(xs, [xs[0], xs[0], xs[0]], msg=label)
+      for c in 1..<8 {
+        assert_eq(body_x_of(t, "r9c\{c}").0, body_x_of(t, "r1c\{c}").0, msg="\{label}: column \{c}")
+      }
+    }
+  }
+}
+
+///|
 test "a long list a few items a piece: each piece a block of the list, numbered on and in one indent as drawn whole" {
   @sfbase.reset()
   reset()

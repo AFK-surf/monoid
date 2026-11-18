@@ -149,7 +149,20 @@ fn pair_steps_node(col : @view.View, core : Core, ws : () -> String, in_card? : 
           },
         )
         |> ignore
-        v.show(checking, fn(n) { lock_note_node(n, fn() { @sf.t("web-pages.security.pairChecking") }, turning=true, in_card~) })
+        // (the trusted device asking its person there: where to look, as the core says it; till then 正在验证)
+        v.show(checking, fn(n) {
+          lock_note_node(
+            n,
+            fn() {
+              match text(pair(), "checkingText") {
+                "" => @sf.t("web-pages.security.pairChecking")
+                words => words
+              }
+            },
+            turning=true,
+            in_card~,
+          )
+        })
         v.show(fn() { !checking() }, fn(n) {
           lock_steps_node(n, in_card)
           // (what the core says of it, the device showing the code maybe gone; a core of before says nothing)
@@ -270,12 +283,30 @@ let lock_steps_carded : @ui.Style = @ui.css("w=Full gap=S2 align=AStart")
 /// `in_card`.
 fn lock_note_node(parent : @view.View, words : () -> String, turning? : Bool = false, in_card? : Bool = false) -> Unit {
   parent.box(fn(row) {
-    @sf.style_node(row, fn() { lock_note })
+    @sf.style_node(row, fn() { if turning { lock_note_turning } else { lock_note } })
     if turning {
-      @sf.spinner_node(row, size=lock_spin) |> ignore
+      // (the ring on the words' first line, in the middle of it, never on the middle of words of two lines; a line
+      // after it starts where the first's words do: the row as wide as its words, in the middle of the steps)
+      row.box(fn(g) {
+        g
+        .width(Is(Some(lock_spin)))
+        .height(By(fn() { Some(@sf.node_sp(g, @ui.tree_theme().text_size(Meta).1)) }))
+        .shrink(Is(0.0))
+        .lines_up(Is(Some(Middle)))
+        .lies_along(Is(Middle))
+        |> ignore
+        @sf.spinner_node(g, size=lock_spin) |> ignore
+      })
+      |> ignore
+      row.box(fn(w) {
+        w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+        @sf.words_node(w, words, fn() { lock_note_words }).words_centered(Is(false)) |> ignore
+      })
+      |> ignore
+    } else {
+      // (each line in the middle: lock_note_words' center; on a card from where its words start)
+      @sf.words_node(row, words, fn() { lock_note_words }).words_centered(Is(!in_card)) |> ignore
     }
-    // (each line in the middle: lock_note_words' center; on a card from where its words start)
-    @sf.words_node(row, words, fn() { lock_note_words }).words_centered(Is(!in_card)) |> ignore
   })
   |> ignore
 }
@@ -342,6 +373,11 @@ fn lock_actions_node(
 /// What is so (waitingNote: a turning ring 8 before it, muted, the meta's size); why it failed (waitingFailed: red).
 // kept across runs: a value (no field of it changes)
 let lock_note : @ui.Style = @ui.css("row gap=S2 align=ACenter")
+
+///|
+/// With its turning ring: lock_note's, the ring on the first line (lock_note_node).
+// kept across runs: a value (no field of it changes)
+let lock_note_turning : @ui.Style = @ui.css("row gap=S2 align=AStart")
 ///|
 // kept across runs: a value (no field of it changes)
 let lock_note_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted, center=true)
