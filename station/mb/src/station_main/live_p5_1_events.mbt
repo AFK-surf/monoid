@@ -539,18 +539,35 @@ fn P51::events_live(self : P51) -> EventsLive {
       None => events.take_up(text, unread~)
     }
   })
-  // Handed over as the station stops: what the next process takes up.
+  // Handed over as the station stops: what the next process takes up. A read under way is waited for first (the
+  // events' `idle_waiters`), so the process waits for it before it ends (`live_p5_1_handed`).
+  let handed_now : @effect.Deferred[Unit] = @effect.Deferred::new()
+  p51_events_handed.val = Some(handed_now)
   self.stops.push(() => {
-    events.hand_over(@drive.pid(), handed => match handed {
-      Written(t) => write_whole(handover_file, t)
-      Removed => @drive.rm_force(handover_file)
-      Nothing => ()
+    events.hand_over(@drive.pid(), handed => {
+      match handed {
+        Written(t) => write_whole(handover_file, t)
+        Removed => @drive.rm_force(handover_file)
+        Nothing => ()
+      }
+      ignore(handed_now.succeed(()))
     })
     for _, s in e.streams {
       ignore(s.0.try_offer(None))
     }
   })
   e
+}
+
+///|
+/// Whether this process's events were handed over as it stopped (None where it serves none).
+let p51_events_handed : Ref[@effect.Deferred[Unit]?] = Ref(None)
+
+///|
+/// Waits, as the process ends, for its events to be handed over: a read under way when it stopped ends first.
+pub async fn live_p5_1_handed() -> Unit {
+  guard p51_events_handed.val is Some(d) else { return }
+  ignore(@effect.timeout(5_000, async fn() { d.wait() })) // timer: a deadline to the process's end
 }
 
 ///|

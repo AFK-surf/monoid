@@ -1299,6 +1299,7 @@ async function main() {
             app: o.app, data: o.data, config, origin: () => state.origin, env: { ...o.env }, registry: o.registry, devinManifest: o.devinManifest,
             claudeReleases: o.claudeReleases, agyManifests: o.agyManifests, nodeDist: o.nodeDist, running: () => state.running,
             stationOnly: o.stationOnly, timing: o.timing, clock: clock.clock, trusted: trustedMap(o.trusted),
+            ...(o.launcherInstaller === true ? { launcherInstaller: (script: string, env: Record<string, string>) => void W("opts.launcherInstaller", [script, env]) } : {}),
           });
           u.onRuntimeChanged((k: string, i: boolean, r: boolean) => void W("opts.runtimeChanged", [k, i, r]));
           u.changes(() => void W("listener.changed", []));
@@ -2346,6 +2347,24 @@ function cases(o: { deltaScripts: any; signedKeys: typeof KEYS }): Case[] {
       w.is("platform.startInstaller", false);
       await step("not started", () => s.call("update", "station", "en"), true);
       await pages(s, step, "not started");
+      await step("closed", () => s.call("close"));
+    },
+  });
+  out.push({
+    name: "updates: the installer not started here, the launcher starts it",
+    world: () => {
+      const w = stationWorld({ feed: feedOf(6, {}, OTHER) });
+      for (const lang of ["zh", "en"]) w.vfs.file(`/st/app/bin/install.${lang}.sh`, "#!/bin/sh\necho installing\n", 0o755);
+      return w;
+    },
+    run: async (s, step, w) => {
+      await step("made", () => s.updates({ ...OPTS, launcherInstaller: true }), true);
+      await step("read", () => s.call("check"), true);
+      await step("asked", () => s.call("update", "station", "zh"), true);
+      w.route("https://o/releases/station.json", { body: JSON.stringify(feedOf(6)) });
+      w.is("platform.startInstaller", false);
+      await step("started by the launcher", () => s.call("update", "station", "en"), true);
+      await pages(s, step, "started by the launcher");
       await step("closed", () => s.call("close"));
     },
   });

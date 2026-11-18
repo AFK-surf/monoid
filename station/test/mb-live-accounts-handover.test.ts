@@ -419,3 +419,50 @@ test("a machine that only runs tasks keeps its own release: `stillfail update --
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
 });
+
+/// What the parts said to the station, asked through `STILLFAIL_PARTS_DOOR`'s place (live_p5_3.mbt `/parts/…`).
+async function parts(door: number, path: string, body: unknown): Promise<{ status: number; body: any }> {
+  const r = await ask(door, `/parts${path}`, { body: JSON.stringify(body) });
+  return { status: r.status, body: r.body === "" ? null : JSON.parse(r.body) };
+}
+
+test("a session archived keeps its jobs that ended and their logs, and a hand-over's kept sends are kept and given under the thread's id there", { skip }, async () => {
+  const { data, app } = stationData();
+  const work = fresh("work");
+  // (in a workspace: a station in none refuses a job's start)
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "http://127.0.0.1:9", station: "st-here", workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: null, peers: [], revocations: [] }));
+  const a = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  try {
+    store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+    const over = await parts(door, "/ask/jobs.start", ["s1", "over", "echo done", work, null, false, false]);
+    assert.equal(over.status, 200, JSON.stringify(over.body));
+    await given("the first job ended", () => {
+      const row = store.getJob(over.body.id);
+      return row !== null && row.state !== "running";
+    });
+    const long = await parts(door, "/ask/jobs.start", ["s1", "long", "sleep 30", work, null, false, false]);
+    assert.equal(long.status, 200, JSON.stringify(long.body));
+    assert.equal((await parts(door, "/ask/jobs.sessionEnded", ["s1"])).status, 200);
+    await given("the running job no longer running", () => store.getJob(long.body.id)?.state !== "running");
+    assert.equal(store.getJob(over.body.id)?.state, "exited", "the job that ended is still on the session's record");
+    assert.equal(store.getJob(long.body.id)?.state, "stopped", "and the one it stopped");
+    assert.ok(existsSync(over.body.log), "with its log");
+    assert.match(readFileSync(over.body.log, "utf8"), /done/);
+
+    // move/live.ts `keepSends`, then `keptSends` (replica_coord's `w.part`, as the moves ask the admin API on the bus)
+    const send = { viewer: "owner", thread: 77, key: "k1", at: 1_000, status: 201, headers: { "content-type": "application/json" }, body: Buffer.from('{"ok":true}').toString("base64") };
+    assert.equal((await parts(door, "/peer/$admin.keepSends?from=self", { sends: [send] })).status, 200);
+    const kept = await parts(door, "/peer/$admin.keptSends?from=self", { threads: [[77, 5]] });
+    assert.equal(kept.status, 200, JSON.stringify(kept.body));
+    assert.deepEqual(kept.body, [{ ...send, thread: 5 }]);
+    assert.deepEqual((await parts(door, "/peer/$admin.keptSends?from=self", { threads: [[78, 5]] })).body, [], "none of a thread not named");
+  } finally {
+    store.close();
+  }
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});

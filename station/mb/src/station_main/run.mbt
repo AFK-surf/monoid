@@ -989,6 +989,7 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   ignore(why)
   // (what the live parts started let go of before the process ends: their processes, what they hand over)
   stop_live_p5_1()
+  live_p5_1_handed()
   // (what the agents' side ends as the station stops, not handing over: its sessions' processes)
   match s.bus {
     Some(b) => ignore(@effect.timeout(10_000, async fn() { ignore((b.hub_ask.val)("shutdown", Json::null())) }))

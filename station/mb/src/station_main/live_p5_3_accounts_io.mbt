@@ -807,7 +807,24 @@ fn p53_login_manager(
     },
     key_name: () => "still.fail · \{hostname()}",
   }
-  @accounts_oauth.LoginManager::new(oauth_io, deps, words, bus.data)
+  let logins = @accounts_oauth.LoginManager::new(oauth_io, deps, words, bus.data)
+  // (Accounts `login_state_file`, as this has to say it at once: a profile config.json keeps, in its home, none for a
+  // machine's or a borrowed one; else the home of its sign-in under way)
+  logins.set_state_file(id => {
+    for p in jitems(jfield((bus.config_raw.val)(), "profiles")) {
+      if jtext(p, "id") != Some(id) {
+        continue
+      }
+      let profile = @accounts_pool.profile_of(p53_jv(p), bus.data, _ => None)
+      return if profile.machine || @accounts_pool.borrowed(profile.raw) {
+        None
+      } else {
+        Some(@accounts_pool.join_path([profile.home, @accounts_oauth.login_browser_file]))
+      }
+    }
+    logins.job_state_file(id)
+  })
+  logins
 }
 
 ///|

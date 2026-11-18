@@ -105,6 +105,8 @@ pub fn lan_addrs() -> Array[@json.Json]
 
 pub fn lang_of(String?) -> String
 
+pub async fn live_p5_1_handed() -> Unit
+
 pub fn lock_command(@host.Host, String, String, String?) -> String
 
 pub fn loopback_answer(String, String?, Bool, @json.Json?, String) -> Reply
