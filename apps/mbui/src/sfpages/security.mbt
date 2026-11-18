@@ -952,7 +952,7 @@ fn security_device_node(parent : @view.View, core : Core, ws : () -> String, d :
         device_menu(core, @signals.untracked(ws), @signals.untracked(d), @signals.untracked(renews), At(x, y, w, h))
       },
       note=fn() { text(d(), "metaText") },
-      lead=LeadIcon(@signals.untracked(mark)),
+      lead=LeadLine(fn(l) { sec_mark_column_node(l, fn(c) { @sf.icon_node(c, @signals.untracked(mark), @sf.row_icon, By(fn() { @sf.theme().p.muted }), name_now=mark) |> ignore }) }),
       title_after=fn(a) { @sf.words_node(a, fn() { text(d(), "leftText") }, fn() { sec_warn_state }) |> ignore },
       title_after_shown=fn() { text(d(), "leftText") != "" },
       tail=fn(e) { doing_mark_node(e, busy, failed, size=ws_doing_mark) },
@@ -961,6 +961,17 @@ fn security_device_node(parent : @view.View, core : Core, ws : () -> String, d :
       chevron=false,
     )
   })
+}
+
+///|
+/// A row's mark (a device's, a station's own), made by `mark`, in a column as wide as a person's picture over them
+/// and across its middle, so the rows' words start where the person's name does.
+fn sec_mark_column_node(parent : @view.View, mark : (@view.View) -> Unit) -> Unit {
+  parent.box(fn(c) {
+    c.width(Is(Some(ws_avatar))).row(Is(true)).lies_along(Is(Middle)).lines_up(Is(Some(Middle))) |> ignore
+    mark(c)
+  })
+  |> ignore
 }
 
 ///|
@@ -1024,8 +1035,8 @@ fn stations_node(parent : @view.View, core : Core, ws : () -> String, lock : () 
 }
 
 ///|
-/// A station and whether the lock protects it (StationRow), `sv` as it is now, a row as the Station page's: its mark
-/// (whether it is online wide, then its emoji or icon: station_lead), its name; 受保护 at its end, or why not under its
+/// A station and whether the lock protects it (StationRow), `sv` as it is now: its own mark where it has one, its
+/// name; 受保护 at its end, or why not under its
 /// name and at its end 保护 in the link's ink, the row pressed (where `can`: the owner's signing device; asked first, a
 /// ring in its place while that goes), or 未保护 in amber.
 fn security_station_node(
@@ -1040,15 +1051,18 @@ fn security_station_node(
   let name = fn() { text(sv(), "name") }
   let guarded = fn() { flag(sv(), "protected") }
   let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", ws()), ("station", id())]) }
-  let wide = @sf.look_node(parent) is Wide
-  let marked = fn() { @sf.has_station_mark(text(sv(), "emoji"), text(sv(), "icon")) }
-  // (what is before its name as the Station page's: wide, whether it is online, then its mark; narrow its mark alone,
-  // and nothing, no room kept, where it has none)
-  let lead = @sf.station_lead(fn() { flag(sv(), "online") }, fn() { text(sv(), "emoji") }, fn() { text(sv(), "icon") }, stint)
+  let emoji = fn() { text(sv(), "emoji") }
+  let icon = fn() { text(sv(), "icon") }
+  let marked = fn() { @sf.has_station_mark(emoji(), icon()) }
+  // (before its name its own mark where its managers gave it one, in the devices' column, at either width; nothing,
+  // no room kept, where it has none: whether it is protected is said at its end, once)
+  let lead : @sf.RowLead = LeadLine(fn(l) {
+    sec_mark_column_node(l, fn(c) { @sf.station_mark_node(c, emoji, icon, @sf.row_icon, fn() { @sf.theme().p.text }, stint) })
+  })
   parent.pick(
     fn() {
       let state = if guarded() { 0 } else if can() { 1 } else { 2 }
-      if wide || marked() {
+      if marked() {
         state
       } else {
         state + 3
