@@ -263,3 +263,46 @@ test "a combobox not wrapping: ↓ stops at the last enabled option, ↑ at the 
   t.key(@ui.key_code_up)
   assert_eq((last, now()), ("二", "一"))
 }
+
+///|
+test "a combobox in the node that holds its field (in_node): that node read out the Combobox; `moved` told the key the keys made active, a press none" {
+  let active : @signals.Signal[String?] = @signals.signal(None)
+  let moved : Array[String] = []
+  let chosen : Array[String] = []
+  let f = @ui.Field::new(text="")
+  let t = window(fn(root) {
+    root.keymap(Is(@view.Keymap::new(@headless.combobox_keys))) |> ignore
+    root.box(fn(holder) {
+      @headless.combobox(
+        holder,
+        fn() { "水果" },
+        fn() { combo_all },
+        fn() { active.get() },
+        fn(k) { active.set(k) },
+        fn(k) { chosen.push(k) },
+        moved=fn(k) { moved.push(k) },
+        in_node=true,
+        fn(c, cb) {
+          @ui.field(c, f, label="搜索", max_lines=1) |> ignore
+          cb.listbox(c, fn(l) {
+            for name in combo_all {
+              cb.option(l, fn() { name }, fn() { name }, fn(v, _) {
+                v.width(Is(Some(160.0))).height(Is(Some(28.0))) |> ignore
+              })
+              |> ignore
+            }
+          })
+          |> ignore
+        },
+      )
+      |> ignore
+    })
+    |> ignore
+  })
+  let combo = t.get(Combobox, label="水果")
+  t.act(TextField, Focus, label="搜索")
+  t.key(@ui.key_code_down)
+  t.key(@ui.key_code_down)
+  t.click(Option, label="葡萄")
+  assert_eq((t.all(Combobox).length(), combo.expanded, moved, chosen, active.get()), (1, Some(true), ["香蕉", "橙子"], ["葡萄"], Some("葡萄")))
+}

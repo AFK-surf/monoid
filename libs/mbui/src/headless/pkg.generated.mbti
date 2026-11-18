@@ -30,7 +30,7 @@ pub fn[K : Eq] cmdk_move(Array[CmdkEntry[K]], K?, CmdkMove, wraps? : Bool) -> K?
 pub fn cmdk_score(String, String, keywords? : Array[String]) -> Double
 
 #callsite(autofill(loc))
-pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn[K : Eq] combobox(@view.View, () -> String, () -> Array[K], () -> K?, (K?) -> Unit, (K) -> Unit, (@view.View, Combobox[K]) -> Unit, chosen? : () -> K?, open? : () -> Bool, key_disabled? : (K) -> Bool, disabled? : () -> Bool, on_close? : () -> Unit, wraps? : Bool, field? : Bool, moved? : (K) -> Unit, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub let combobox_choose : String
 
@@ -62,7 +62,7 @@ pub fn format_stroke(@view.Stroke, apple~ : Bool) -> String
 pub fn hover_reveal(@view.View, @view.View, also? : Array[@view.View], always? : () -> Bool) -> HoverReveal
 
 #callsite(autofill(loc))
-pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+pub fn menu(@view.View, (@view.View, Menu) -> Unit, label? : () -> String, on_close? : () -> Unit, close_key? : Int32, wraps? : Bool, disabled? : () -> Bool, takes_focus? : Bool, roving? : Bool, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 
 pub fn platform_stroke(@view.Stroke, apple~ : Bool) -> @view.Stroke
 
@@ -79,6 +79,13 @@ pub fn stroke_caps(@view.Stroke, apple~ : Bool) -> Array[String]
 
 #callsite(autofill(loc))
 pub fn table(@view.View, (@view.View, Table) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+#callsite(autofill(loc))
+pub fn[T : Eq] toaster(@view.View, () -> Array[T], (T) -> String, (T) -> (String, String), (T) -> Double, (@view.View) -> Unit, (@view.View, ToastItem[T]) -> Unit, (String) -> Unit, (String) -> Unit, key? : String, label? : String, leave? : Double, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
+
+pub fn toaster_due(String) -> Double?
+
+pub fn toaster_rest(String) -> Double?
 
 #callsite(autofill(loc))
 pub fn toggle(@view.View, ToggleKind, () -> String, () -> Bool, (Bool) -> Unit, (@view.View, Toggle) -> Unit, disabled? : () -> Bool, mixed? : () -> Bool, hold? : Hold, hold_press? : (Double, Double), made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
@@ -325,6 +332,18 @@ pub fn TableRow::cell(Self, @view.View, (@view.View) -> Unit, label? : () -> Str
 #callsite(autofill(loc))
 pub fn TableRow::header(Self, @view.View, (@view.View) -> Unit, label? : () -> String, in_node? : Bool, made_for? : SourceLoc, loc~ : SourceLoc) -> @view.View
 pub fn TableRow::node(Self) -> @view.View
+
+pub struct ToastItem[T] {
+  // private fields
+}
+pub fn[T] ToastItem::action(Self[T], @view.View, () -> String) -> @view.View
+pub fn[T] ToastItem::close(Self[T]) -> Unit
+pub fn[T] ToastItem::dx(Self[T]) -> Double
+pub fn[T] ToastItem::holds_focus(Self[T], @view.View) -> Unit
+pub fn[T] ToastItem::live(Self[T]) -> Bool
+pub fn[T] ToastItem::moves(Self[T], (Double) -> Double) -> Unit
+pub fn[T] ToastItem::row(Self[T]) -> @view.View
+pub fn[T] ToastItem::toast(Self[T]) -> T
 
 pub struct Toggle {
   // private fields

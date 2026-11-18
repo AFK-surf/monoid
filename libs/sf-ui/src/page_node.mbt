@@ -177,6 +177,77 @@ pub fn rippled_node(
 }
 
 ///|
+/// A search whose list is a page's list of its own (⌘K's, the search page's): mbui's headless combobox
+/// (`@headless.combobox`) in the node that holds its field, its options made by `ripple_option_node` in that list's
+/// rows, its list by `SearchCombo::list_node`.
+pub struct SearchCombo {
+  priv cb : @headless.Combobox[String]
+}
+
+///|
+/// Node `v` (what holds a search's field) the combobox of that search (`@headless.combobox` in `v` itself), called
+/// `label`: `keys` its options shown now, in order, `active` the one the keys are on (the caller's) and `activate` told
+/// one to move them to, by the keys or a press; `choose` told the one chosen (a press on one, just made active; Enter on
+/// the active one where the keymap gives Enter to it: `combobox_bindings`); `chosen` the one read out selected; `moved`
+/// told the one the keys made active (what the list brings into sight). ↓ and ↑ go no further than the ends. Its
+/// combobox.
+#callsite(autofill(loc))
+pub fn search_combo_node(
+  v : @view.View,
+  label : () -> String,
+  keys : () -> Array[String],
+  active : () -> String?,
+  activate : (String?) -> Unit,
+  choose : (String) -> Unit,
+  chosen? : () -> String? = fn() { None },
+  moved? : (String) -> Unit = fn(_) {  },
+  loc~ : SourceLoc,
+) -> SearchCombo {
+  let made : Ref[@headless.Combobox[String]?] = Ref(None)
+  @headless.combobox(
+    v,
+    label,
+    keys,
+    active,
+    activate,
+    choose,
+    fn(_, cb) { made.val = Some(cb) },
+    chosen~,
+    wraps=false,
+    moved~,
+    in_node=true,
+    made_for=loc,
+  )
+  |> ignore
+  { cb: made.val.unwrap() }
+}
+
+///|
+/// Node `l` (the search's list, what scrolls its lines) the combobox's listbox, called as the combobox is.
+pub fn SearchCombo::list_node(self : SearchCombo, l : @view.View) -> Unit {
+  self.cb.listbox(l, fn(_) {  }, in_node=true) |> ignore
+}
+
+///|
+/// Node `v` an option of search `combo` (`@headless.Combobox::option` in its node, read out an option called
+/// `label()`, selected as the combobox says; taking no focus), its key `key()`: rippling round its `corner` as a finger
+/// or the pointer presses it, as rippled_node's, that press the option's (made active and chosen).
+#callsite(autofill(loc))
+pub fn ripple_option_node(
+  v : @view.View,
+  combo : SearchCombo,
+  key : () -> String,
+  label : () -> String,
+  corner : Double,
+  loc~ : SourceLoc,
+) -> Unit {
+  combo.cb.option(v, key, label, in_node=true, made_for=loc, fn(o, opt) {
+    rippled_look(loc~, o, Is(corner), fn() { opt.press() })
+  })
+  |> ignore
+}
+
+///|
 /// A button in `parent` of mbui's headless button (`@headless.button`: read out a button named `label()`, `press` done
 /// as it is pressed, however it came), rippling as a finger or the pointer presses it (press_look's, heard through its
 /// `Hold`, as media_key_node's): `look` lays it out and draws it as it is made, saying how round it is (the ripple's

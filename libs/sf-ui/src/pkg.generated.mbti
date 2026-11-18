@@ -2,6 +2,7 @@
 package "stillfail/sf"
 
 import {
+  "mbui/headless",
   "mbui/kit",
   "mbui/motion",
   "mbui/paint",
@@ -1846,6 +1847,9 @@ pub let ring_turn_keep : Double
 
 pub fn rings(@ui.Ctx, Array[(Double, Int64)], Double, Int64, most~ : Int32) -> Int32
 
+#callsite(autofill(loc))
+pub fn ripple_option_node(@view.View, SearchCombo, () -> String, () -> String, Double, loc~ : SourceLoc) -> Unit
+
 pub fn rippled_node(@view.View, () -> Unit, Double, () -> String) -> Unit
 
 pub fn rolling_number_node(@view.View, () -> Int32, format? : (Int32) -> String, style? : () -> @ui.TextStyle, rolls? : () -> Bool) -> @view.View
@@ -1911,6 +1915,9 @@ pub let rule_line : @ui.Style
 pub fn run_begin() -> Unit
 
 pub let run_begun_by_app : Ref[() -> Bool]
+
+#callsite(autofill(loc))
+pub fn search_combo_node(@view.View, () -> String, () -> Array[String], () -> String?, (String?) -> Unit, (String) -> Unit, chosen? : () -> String?, moved? : (String) -> Unit, loc~ : SourceLoc) -> SearchCombo
 
 pub fn said_row(@ui.Ctx, String, String, value? : () -> Unit, lead? : (@ui.Ctx) -> Unit) -> Unit
 
@@ -2310,8 +2317,6 @@ pub let toast_bottom : Double
 
 pub let toast_line : Double
 
-pub fn toast_look_node(@view.View, @kit.ToastNode) -> Unit
-
 pub let toast_max : Double
 
 pub let toast_ms : Double
@@ -2329,6 +2334,9 @@ pub fn toast_said(String) -> String
 pub let toast_shadow : Double
 
 pub let toast_shadow_y : Double
+
+#callsite(autofill(loc))
+pub fn toaster_node(@view.View, () -> Array[@kit.Toast], (@kit.Toast) -> Double, () -> Double, (String) -> Unit, (String) -> Unit, key? : String, w? : Double, label? : String, loc~ : SourceLoc) -> @view.View
 
 pub fn tone_ground(Int64) -> Int64
 
@@ -3301,6 +3309,11 @@ pub(all) struct ScreensNode {
   card : (@view.View, String, LinkTo, String?) -> Unit
   title : (String, LinkTo) -> String
 }
+
+pub struct SearchCombo {
+  // private fields
+}
+pub fn SearchCombo::list_node(Self, @view.View) -> Unit
 
 pub struct SegThumb {
   // private fields

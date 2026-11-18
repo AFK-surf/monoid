@@ -24,8 +24,8 @@ a sample of what mbui needs to carry a second design (the user, 2026-11-13: 先�
   (`View::beside`, which flips and keeps it in the window as it lays out), not `@headless.anchor_place`'s numbers: those
   are for a look that places what it draws itself, and reading the anchor's laid-out box back to feed them is what
   mbui's layout forbids (`layout-told`). `src/cm/presses.mbt` keeps only what a look reads of the hand (`lit`,
-  `ring_node`). A toast's time stops while the pointer is over one or the focus is on its ✕ (`hold_while`, as kit's
-  `toast_node`). How a look moves (`src/cm/eased.mbt`) is
+  `ring_node`). Toasts are `@headless.toaster` with Comma's card (its time stopped while the pointer is over one or the
+  focus is on its ✕, `ToastItem::holds_focus`; swiped away to the right; read out a status in a region). How a look moves (`src/cm/eased.mbt`) is
   still.fail's `EdgeWay` (`libs/sf-ui/src`), copied: it belongs in mbui, shared by both libraries.
 - What floats (tooltip, menu, dropdown, popup, dialog, toast) is drawn in the layer `layer_node` makes in the window's root: mbui's `View::over_all` puts a node over all else only among what the root holds; made elsewhere it is drawn under the page.
 - mbui's rules hold here as in an app (`libs/mbui/AGENTS.md`): tests declare their moments, warnings are errors or off

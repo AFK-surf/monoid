@@ -54,6 +54,8 @@ pub fn first_when((Double) -> Bool, Double, Double) -> Double
 
 pub fn fling_distance(Double, Double) -> Double
 
+pub let flung_away : Double
+
 pub let focus_enter : Int32
 
 pub let focus_space : Int32
@@ -76,6 +78,10 @@ pub fn hold_note(() -> Bool, loc~ : SourceLoc) -> Unit
 pub fn hold_reset() -> Unit
 
 pub let ios_decel : Double
+
+pub fn lands_at(Double, Double) -> Double
+
+pub fn lands_past(Double, Double, Double) -> Bool
 
 pub let letters_own : Spacing
 
