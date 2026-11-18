@@ -781,6 +781,8 @@ struct Node {
   /// a mark over what holds it (View::flight_mark): on that one's flight's way, carried at its own size by its nearest
   /// corner, gone as the way is halfway from the end it lies at
   mut flight_mark : Bool
+  /// what flies between two places both within it is drawn within it as it goes (View::flights_within)
+  mut flights_within : Bool
   /// on a flight's way, drawn over the rest of its layer where the flight has it (shared.mbt); none, where it is
   mut lift : Lift?
 }
@@ -2009,6 +2011,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
       n.share_with_stays = false
       n.share_told = None
       n.flight_mark = false
+      n.flights_within = false
       n.lift = None
       i
     }
@@ -2183,6 +2186,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         share_with_stays: false,
         share_told: None,
         flight_mark: false,
+        flights_within: false,
         lift: None,
       })
       self.nodes.length() - 1
