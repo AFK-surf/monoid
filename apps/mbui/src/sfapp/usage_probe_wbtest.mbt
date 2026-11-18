@@ -232,7 +232,7 @@ test "usage probe: kept and woken, then a row picked" {
             Some(Object(o)) => {
               let m = o.copy()
               m["detailsPreparing"] = Json::boolean(true)
-              { ..answer, value: Some(Object(m)) }
+              { ..answer, value: Some(Json::object(m)) }
             }
             _ => answer
           }
