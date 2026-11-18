@@ -188,7 +188,9 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   },
   "excused": {
     "frame-request": {},
@@ -277,8 +279,7 @@
     "layout-drawn-while": {},
     "shader-int": {},
     "raw-hover-ground": {
-      "src/menu_node.mbt": 1,
-      "src/pick_node.mbt": 1
+      "src/menu_node.mbt": 1
     },
     "width-structure": {
       "src/player_node.mbt": 1
@@ -287,6 +288,8 @@
     "manual-fade-way": {},
     "page-at-moment": {},
     "along-row-at-once": {},
-    "headless-on-drag": {}
+    "headless-on-drag": {},
+    "page-headless": {},
+    "page-control-by-hand": {}
   }
 }

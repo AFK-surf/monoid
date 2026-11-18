@@ -519,7 +519,6 @@ fn P51::events_live(self : P51) -> EventsLive {
     }),
   ))
   // The store's changes, told.
-  self.stops.push(bus.store.subscribe(change => events.store_changed(jv(change))))
   self.stops.push(bus.subscribe_store(change => events.store_changed(jv(change))))
   bus.events_tell.val = (event, data, key, to) => events.tell(event, jv(data), key, jv(to))
   bus.overview_changed.val = () => events.overview_changed()

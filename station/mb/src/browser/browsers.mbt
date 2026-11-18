@@ -38,6 +38,8 @@ pub struct Browsers {
   /// put in again.
   priv mut resumed : (String) -> Unit
   priv mut used_ : (String, String) -> Unit
+  priv mut agent_act : (String, String, String) -> String?
+  priv mut stopped : (String) -> Unit
   /// The chats' Farview, where the config makes it their browser.
   priv mut farview : FarviewTabs?
   priv mut closed : Bool
@@ -74,6 +76,8 @@ pub async fn Browsers::new(o : BrowserOptions) -> Browsers {
     fresh: _ => (),
     resumed: _ => (),
     used_: (_, _) => (),
+    agent_act: (_, _, _) => None,
+    stopped: _ => (),
     farview: None,
     closed: false,
   }
@@ -165,6 +169,18 @@ pub fn Browsers::on_resumed(self : Browsers, f : (String) -> Unit) -> Unit {
 /// A person or agent deliberately used a site in this chat's browser.
 pub fn Browsers::on_used(self : Browsers, f : (String, String) -> Unit) -> Unit {
   self.used_ = f
+}
+
+///|
+/// An agent operated a tab of its chat's browser over DevTools (`Gate`).
+pub fn Browsers::on_agent_act(self : Browsers, f : (String, String, String) -> String?) -> Unit {
+  self.agent_act = f
+}
+
+///|
+/// `session`'s browser context was stopped or closed.
+pub fn Browsers::on_stopped(self : Browsers, f : (String) -> Unit) -> Unit {
+  self.stopped = f
 }
 
 ///|
@@ -315,8 +331,9 @@ pub async fn Browsers::open(self : Browsers, session : String) -> (String, GateP
     {
       context,
       context_of: id => self.station.context_of(id),
-      opened: None,
+      opened: Some(id => ignore((self.agent_act)(session, id, "Target.createTarget"))),
       used: Some((id, url) => self.used(session, id, url?)),
+      act: Some((id, m) => (self.agent_act)(session, id, m)),
     },
   )
 }
@@ -380,6 +397,7 @@ pub fn Browsers::status(self : Browsers, session : String) -> BrowserStatus {
 ///|
 /// Closes `session`'s chat's context, its tabs with it; its sign-ins still granted are put in again when it asks.
 pub async fn Browsers::stop(self : Browsers, session : String) -> Unit {
+  (self.stopped)(session)
   self.dispose(session)
 }
 
@@ -387,6 +405,7 @@ pub async fn Browsers::stop(self : Browsers, session : String) -> Unit {
 /// `session`'s chat was archived or deleted: its context goes, its tabs and sign-ins with it; tabs it opened in the
 /// station's own context (before chats had their own) are closed.
 pub async fn Browsers::close_of(self : Browsers, session : String) -> Unit {
+  (self.stopped)(session)
   self.dispose(session)
   for x in self.signed_in.get(session).unwrap_or([]) {
     match self.timers.get(x.request) {

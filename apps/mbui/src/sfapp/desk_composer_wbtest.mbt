@@ -256,6 +256,17 @@ fn shown_lines(t : @ui.Tester) -> Int {
 }
 
 ///|
+/// What a row of the `@` menu is to a screen reader as both_pages runs now: the old composer's a button, the one made as
+/// nodes an option of its combobox (@sf.offers_node).
+fn at_row() -> @ui.Role {
+  if both_nodes.val {
+    Option
+  } else {
+    Button
+  }
+}
+
+///|
 /// The composer's field tapped in its middle (the lowest field drawn: the composer's, the old one's or made as nodes).
 fn desk_field_tap(t : @ui.Tester) -> Unit {
   match composer_field(t) {
@@ -323,7 +334,7 @@ test "desk composer: the `@` menu offers the workspace's other stations' chats t
     assert_true(after_on_its_row(t, "夜里的构建又失败了") == ["Maple", "15 分钟前"], msg=about_its_row(t, "夜里的构建又失败了"))
     assert_true(after_on_its_row(t, "首页的列表改成按天分组") == ["8 分钟前"], msg=about_its_row(t, "首页的列表改成按天分组"))
     // keyboard and mouse's row: a menu's 34 (a finger's 44: chat_refs_wbtest)
-    let (_, _, _, high) = t.get(Button, label="夜里的构建又失败了").rect
+    let (_, _, _, high) = t.get(at_row(), label="夜里的构建又失败了").rect
     assert_true(high >= 34.0 && high < 44.0, msg="\{high}")
   })
 }
@@ -337,9 +348,9 @@ test "desk composer: the pointer moving over the `@` menu's chats chooses them; 
     t.type_text("@的")
     t.frame()
     let b = "首页的列表改成按天分组"
-    let chosen = fn() raise { t.get(Button, label=b).selected }
+    let chosen = fn() raise { t.get(at_row(), label=b).selected }
     // moved onto it: chosen
-    let (x, y, w, h) = t.get(Button, label=b).rect
+    let (x, y, w, h) = t.get(at_row(), label=b).rect
     t.move_to(x + w / 2.0, y + h / 2.0)
     t.frame()
     assert_eq(chosen(), Some(true))

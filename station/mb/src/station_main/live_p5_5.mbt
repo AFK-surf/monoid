@@ -37,7 +37,10 @@ pub async fn start_live_p5_5(bus : LiveBus) -> Unit {
       e => err_write("station: the \{part.0} part is not made: \{p55_said_of(e)}\n")
     }
   }
-  // (closed as the station stops, each on its own)
+  // (closed as the station stops, each on its own; the station's run waits for them before its process ends:
+  // `p55_closed`)
+  let closed : @effect.Deferred[Unit] = @effect.Deferred::new()
+  p55_closed.val = Some(closed)
   ignore(
     bus.host.rt.fork(name="p5-5 close", async fn() {
       ignore(bus.stopped.wait())
@@ -46,8 +49,22 @@ pub async fn start_live_p5_5(bus : LiveBus) -> Unit {
           _ => ()
         }
       }
+      ignore(closed.succeed(()))
     }),
   )
+}
+
+///|
+/// Once the slice's parts are closed as the station stops (their processes ended: the copies' export).
+let p55_closed : Ref[@effect.Deferred[Unit]?] = Ref(None)
+
+///|
+/// What the station's run waits for before its process ends, a while at most.
+async fn wait_live_p5_5_closed() -> Unit {
+  match p55_closed.val {
+    Some(d) => ignore(@effect.timeout(10_000, async fn() { d.wait() }))
+    None => ()
+  }
 }
 
 ///|

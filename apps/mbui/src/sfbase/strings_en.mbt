@@ -3003,4 +3003,5 @@ let en : Map[String, String] = {
   "web-pages.remote.newViewOn": "New view on {station}",
   "core-views.screen.kind.desktop": "Desktop",
   "core-views.screen.kind.simulator": "iOS Simulator",
+  "web-pages.screen.heldBy": "{who} is operating this screen — click Take over to interact",
 }

@@ -134,6 +134,8 @@ fn sending_line_node(
   progress : () -> Double?,
   since : () -> Double,
   flying : () -> Bool,
+  held? : () -> Bool = fn() { false },
+  take_back? : (@view.View) -> Unit = fn(_) {  },
 ) -> @view.View {
   parent.box(fn(w) {
     @sf.style_node(w, fn() { msg_waiting })
@@ -168,6 +170,12 @@ fn sending_line_node(
     |> ignore
     @sf.progress_spinner_node(w, progress, size=waiting_spin) |> ignore
     @sf.words_node(w, words, fn() { msg_time }) |> ignore
+    // held here till its station is reached: what takes it back after it (outbox_row's)
+    w.show(held, fn(b) {
+      @sf.style_node(b, fn() { held_buttons })
+      take_back(b)
+    })
+    |> ignore
   })
 }
 

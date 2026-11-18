@@ -436,6 +436,11 @@ pub fn FrontEndpoint::id(Self) -> String
 pub async fn FrontEndpoint::insert_relay(Self, String) -> Unit
 pub fn FrontEndpoint::keep(Self, Array[String]) -> Unit
 pub fn FrontEndpoint::linked(Self) -> Bool
+pub async fn FrontEndpoint::mesh_attach_leaf(Self, Int32?, @json.Json) -> @json.Json
+pub async fn FrontEndpoint::mesh_configure(Self, @json.Json) -> @json.Json
+pub async fn FrontEndpoint::mesh_detach_leaf(Self, @json.Json) -> Unit
+pub fn FrontEndpoint::mesh_listen(Self, (Array[@json.Json]) -> Unit) -> () -> Unit
+pub async fn FrontEndpoint::mesh_remove(Self, String) -> Unit
 pub async fn FrontEndpoint::network_change(Self) -> Unit
 pub async fn FrontEndpoint::online(Self) -> Unit
 pub async fn FrontEndpoint::public_relays(Self, Bool) -> Unit

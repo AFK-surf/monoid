@@ -1471,6 +1471,7 @@
   "web-pages.screen.someone": "他人",
   "web-pages.screen.takeOver": "接管",
   "web-pages.screen.takeOverTip": "暂停 {names}，由你控制",
+  "web-pages.screen.heldBy": "{who} 正在操作此画面，点「接管」后可操作",
   "web-pages.screen.copiedText": "远端已复制：",
   "web-pages.screen.copiedImage": "远端复制了一张图片",
   "web-pages.screen.copyHere": "复制到本机",

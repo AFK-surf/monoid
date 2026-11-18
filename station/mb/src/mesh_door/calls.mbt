@@ -367,6 +367,7 @@ fn Harness::members(self : Harness, words : Map[String, Json]) -> @gate.Members 
     served: None,
     lang_of: hs => @gate.lang_of_core(hs),
     update_words: lang => match words.get(lang) { Some(String(w)) => w; _ => "" },
+    leaves: None,
   }
 }
 

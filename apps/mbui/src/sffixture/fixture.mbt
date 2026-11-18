@@ -71,7 +71,7 @@ pub fn fixture_chat_tabs(mode : String) -> Map[String, Json] {
   let kept = fn(tab : String) -> Json { { "tabs": [Json::string(tab)], "active": Json::string(tab) } }
   match mode {
     "newchat-files" => { "new:ws1": kept("files") }
-    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
+    "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": kept("screen:[\"ws-1/st-1\",\"browser:tab-1\"]") }
     "chat-letters-side" => { "ws1/st1:s-c1": kept("letters") }
     "chat-things-side" => { "ws1/st1:s-c1": kept("things") }
     "chat-jobs-side" => { "ws1/st1:s-c1": kept("jobs") }
@@ -114,7 +114,7 @@ pub fn fixture_view_tab(mode : String) -> String {
 /// panel's two tabs pointed at), as the core shows what is kept (chat-tabs.ts tabsOf).
 pub fn fixture_tabs_shown(mode : String) -> Map[String, Json] {
   match mode {
-    "chat-screen-tab" | "chat-browser-tab" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
+    "chat-screen-tab" | "chat-browser-tab" | "chat-browser-agent-driving" => { "ws1/st1:s-c1": { "open": ["screen:[\"ws-1/st-1\",\"browser:tab-1\"]"], "shown": "screen:[\"ws-1/st-1\",\"browser:tab-1\"]" } }
     "chat-tabs-side" => { "ws1/st1:s-c1": { "open": ["s-c1", "jobs"], "shown": "jobs" } }
     "chat-terminal-side" => { "ws1/st1:s-c1": { "open": ["terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]", "s-c1"], "shown": "terminal:[\"ws1/st1\",\"term-2\",\"~/still.fail\"]" } }
     "chat-view-side" | "chat-view-side-image" | "chat-view-side-video" | "chat-view-side-audio" | "chat-view-side-mbui" | "chat-view-side-memory-mbui" => {

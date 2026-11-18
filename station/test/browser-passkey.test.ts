@@ -180,3 +180,26 @@ test("a page kept across an update replaces the legacy unowned hook without invo
   assert.equal(p.run("nativeCalls"), 1);
   assert.equal(p.run("legacyCalls"), 0);
 });
+
+test("silent conditional mediation is not intercepted, while large Google-sized challenges reach the viewer", async () => {
+  const p = page();
+  const v = p.viewer();
+  await p.settle();
+  assert.equal(await p.run("PublicKeyCredential.isConditionalMediationAvailable()"), false);
+  p.run(`navigator.credentials.get({ mediation: "conditional", publicKey: { rpId: "example.org", challenge: new Uint8Array([1, 2, 3]) } })`);
+  await p.settle();
+  assert.equal(v.heard.length, 0, "silent conditional autofill calls fall through without popping a card");
+  assert.equal(p.run("nativeCalls"), 1);
+  // Google's /v3/signin/challenge/pk sends a ~10 KB (~13,664 base64url chars) challenge.
+  p.run(`window.bigResult = "pending";
+    navigator.credentials.get({ publicKey: { rpId: "example.org", challenge: new Uint8Array(10248).fill(7) } })
+      .then(x => window.bigResult = x.id, e => window.bigResult = e.name);`);
+  await p.settle();
+  const ask = v.heard.at(-1)!;
+  assert.ok(ask && ask.clientData.length > 13_600);
+  await v.view.passkey({ id: ask.id, credential: "Y3JlZA", authenticatorData: "YQ", signature: "c2ln" });
+  await p.settle();
+  assert.equal(p.run("bigResult"), "Y3JlZA");
+  v.stop();
+  await p.settle();
+});

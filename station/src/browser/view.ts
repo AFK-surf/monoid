@@ -275,10 +275,11 @@ export const passkeyHook = (owner: string): string => `(() => {
   } });
   creds.get = function (options) {
     const pk = options && options.publicKey;
-    if (active === null || !pk || !bytes(pk.challenge)) return get(options);
+    const ch = pk && b64(pk.challenge);
+    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
     const id = String(++next);
     const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
-    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: b64(pk.challenge), allow, userVerification: pk.userVerification || "preferred" };
+    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
     return new Promise((yes, no) => {
       const signal = options.signal;
       if (signal && signal.aborted) return no(signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
@@ -295,7 +296,7 @@ export const passkeyHook = (owner: string): string => `(() => {
   window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); });
   if (window.PublicKeyCredential) {
     PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);
-    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(true);
+    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   }
 })()`;
 
@@ -594,9 +595,9 @@ export class TabView implements ScreenView {
         }
         return;
       }
-      const b64 = (v: unknown): v is string => typeof v === "string" && v !== "" && v.length <= 1366 && /^[A-Za-z0-9_-]+$/.test(v);
+      const b64 = (v: unknown, most: number): v is string => typeof v === "string" && v !== "" && v.length <= most && /^[A-Za-z0-9_-]+$/.test(v);
       const allow: unknown[] = Array.isArray(said.allow) ? said.allow.slice(0, 64) : [];
-      if (typeof said.rpId !== "string" || !b64(said.challenge) || !allow.every(b64)) return;
+      if (typeof said.rpId !== "string" || !b64(said.challenge, 32768) || !allow.every((a) => b64(a, 1366))) return;
       const userVerification = ["required", "preferred", "discouraged"].includes(said.userVerification) ? said.userVerification : "preferred";
       const request = {};
       pending.set(id, request);

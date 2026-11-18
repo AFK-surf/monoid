@@ -36,7 +36,10 @@
     station's chats taken back before the store opens, the control plane and its presence, the readers and their
     builders, the machine and the event streams, the admin API (the platform's calls answered there, another slice's
     asked through the bus), the mesh (the front's endpoint or one bound through the shell, members, peers, the agents'
-    `/peer/` door, the device tools), the forwards of other stations' ports and devices (`$forwards`) and the rigs.
+    `/peer/` door, the device tools), the workspaces' mesh directory, the relays' enrollment door and a device's leaf
+    in its workspace's scope (live_p5_1_scopes.mbt over src/mesh_scopes: mesh/scope-sync.ts, enrollment-door.ts and
+    leaf.ts as the TypeScript has them, where the endpoint is the front's), the forwards of other stations' ports and
+    devices (`$forwards`) and the rigs.
     With `STILLFAIL_LOCAL_ADMIN=1` (a test with no mesh) the admin API is on the agents' door under `/admin-api/`, as
     the station's owner: station/test/mb-live-p5-1.test.ts.
   - P5-2 (`live_p5_2_*.mbt`), the agents' side: the hub, its actors and their drivers in the sessions' program

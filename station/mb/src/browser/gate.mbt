@@ -60,6 +60,27 @@ fn cookie_method(m : String) -> Bool {
 }
 
 ///|
+/// Target sessions' methods that operate a tab (navigation, input, script evaluation, file selection).
+fn acting_method(m : String) -> Bool {
+  match m {
+    "Page.navigate"
+    | "Page.reload"
+    | "Page.navigateToHistoryEntry"
+    | "Page.setDocumentContent"
+    | "Input.dispatchMouseEvent"
+    | "Input.dispatchKeyEvent"
+    | "Input.dispatchTouchEvent"
+    | "Input.insertText"
+    | "Input.imeSetComposition"
+    | "Runtime.callFunctionOn"
+    | "Runtime.evaluate"
+    | "DOM.focus"
+    | "DOM.setFileInputFiles" => true
+    _ => false
+  }
+}
+
+///|
 /// The browser's news of targets the gate reads (with a target's info, or its id).
 fn news_method(m : String) -> Bool {
   match m {
@@ -83,6 +104,8 @@ pub(all) struct GateParts {
   opened : ((String) -> Unit)?
   /// A deliberate action on a tab (not page background traffic).
   used : ((String, String?) -> Unit)?
+  /// An operating command on a tab (`acting_method`, `Target.closeTarget`): returns why it is refused, or None.
+  act : ((String, String) -> String?)?
 }
 
 ///|
@@ -231,6 +254,15 @@ pub fn Gate::from_client(self : Gate, text_ : String) -> Passed {
           down: [gate_error(at(mv, "id"), at(mv, "sessionId"), "No such session of this chat's.")],
         }
       }
+      match (self.targets.get(sid), self.p.act) {
+        (Some(target), Some(act)) if target != "" && acting_method(method) =>
+          match act(target, method) {
+            Some(refused) =>
+              return { up: [], down: [gate_error(at(mv, "id"), at(mv, "sessionId"), refused)] }
+            None => ()
+          }
+        _ => ()
+      }
       match self.targets.get(sid) {
         Some(target) if target != "" && at(mv, "id") is Some(Num(_)) &&
           (
@@ -304,6 +336,16 @@ fn Gate::browser(self : Gate, m : J, method : String, params : J, session_id : S
       }
       if !self.target(at(pv, "targetId")) {
         return no("No such target of this chat's.")
+      }
+      if method == "Target.closeTarget" {
+        match self.p.act {
+          Some(act) =>
+            match act(js_str(at(pv, "targetId")), method) {
+              Some(refused) => return no(refused)
+              None => ()
+            }
+          None => ()
+        }
       }
       if method == "Target.attachToTarget" {
         let target_id = js_str(at(pv, "targetId"))

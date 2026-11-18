@@ -16,6 +16,7 @@ pub(all) struct Watcher {
   client : String?
   app : String?
   agent : Bool
+  mut taken : Bool
   end : ((String) -> Unit)?
   watch_only : ((String?) -> Unit)?
   mut at : Double
@@ -31,10 +32,11 @@ pub fn Watcher::new(
   client? : String? = None,
   app? : String? = None,
   agent? : Bool = false,
+  taken? : Bool = false,
   end? : ((String) -> Unit)? = None,
   watch_only? : ((String?) -> Unit)? = None,
 ) -> Watcher {
-  { name, control, tell, device, self_, client, app, agent, end, watch_only, at: 0.0 }
+  { name, control, tell, device, self_, client, app, agent, taken, end, watch_only, at: 0.0 }
 }
 
 ///|
@@ -193,6 +195,8 @@ pub struct ScreenHub {
   priv mut view_count : Int
   /// Until when a device's views of a screen are held to only looking, by device and screen.
   priv held : Map[String, Double]
+  /// Devices whose next driving view of a screen was explicitly asked (`taken: true` in `drive`).
+  priv taking : Map[String, Unit]
   priv listeners : Array[(Int, () -> Unit)]
   priv refreshers : Array[(Int, async () -> Unit)]
   priv stopping : Array[(Int, () -> Unit)]
@@ -209,6 +213,7 @@ pub fn ScreenHub::new(io : Io, drop? : (() -> String?)? = None) -> ScreenHub {
     views: {},
     view_count: 0,
     held: {},
+    taking: {},
     listeners: [],
     refreshers: [],
     stopping: [],
@@ -328,6 +333,11 @@ pub fn ScreenHub::join(self : ScreenHub, id : String, watcher : Watcher) -> () -
   self.views[id] = on
   self.view_count += 1
   let view = "v\{self.view_count}"
+  let taken_key = watcher.device.unwrap_or("")
+  if watcher.control && !watcher.agent && taken_key != "" && self.taking.contains("\{taken_key}\n\{id}") {
+    self.taking.remove("\{taken_key}\n\{id}")
+    watcher.taken = true
+  }
   watcher.at = self.io.clock.ms()
   on[view] = watcher
   self.tell_people(id)
@@ -391,24 +401,28 @@ pub fn ScreenHub::watch_only(self : ScreenHub, id : String, view : String) -> Un
 }
 
 ///|
-/// `w` goes on only looking, its device held from driving again by itself for WATCH_HELD_MS; `by`: who took it.
-fn ScreenHub::look_only(self : ScreenHub, id : String, w : Watcher, by : String?) -> Unit {
+/// `w` goes on only looking, its device held from driving again by itself for WATCH_HELD_MS (unless `hold` is false:
+/// an agent stepping in while a view watched passively); `by`: who took it.
+fn ScreenHub::look_only(self : ScreenHub, id : String, w : Watcher, by : String?, hold? : Bool = true) -> Unit {
   if !w.control {
     return
   }
   w.control = false
-  match w.device {
-    Some(device) if device != "" => {
-      let now = self.io.clock.ms()
-      for key in self.held.keys().collect() {
-        if self.held.get(key).unwrap() <= now {
-          self.held.remove(key)
+  w.taken = false
+  if hold {
+    match w.device {
+      Some(device) if device != "" => {
+        let now = self.io.clock.ms()
+        for key in self.held.keys().collect() {
+          if self.held.get(key).unwrap() <= now {
+            self.held.remove(key)
+          }
         }
+        // (set again: in the place it had where it was still held)
+        self.held["\{device}\n\{id}"] = now + WATCH_HELD_MS
       }
-      // (set again: in the place it had where it was still held)
-      self.held["\{device}\n\{id}"] = now + WATCH_HELD_MS
+      _ => ()
     }
-    _ => ()
   }
   match w.watch_only {
     Some(f) => f(by)
@@ -443,6 +457,13 @@ pub fn ScreenHub::drive(self : ScreenHub, id : String, device : String, taken : 
   }
   let others = on.filter(w => w.control && !w.agent && w.device != Some(device))
   if others.length() == 0 {
+    if device != "" {
+      if taken {
+        self.taking["\{device}\n\{id}"] = ()
+      } else {
+        self.taking.remove("\{device}\n\{id}")
+      }
+    }
     return (true, [])
   }
   if !taken {
@@ -451,6 +472,9 @@ pub fn ScreenHub::drive(self : ScreenHub, id : String, device : String, taken : 
   for w in others {
     self.look_only(id, w, Some(by))
   }
+  if device != "" {
+    self.taking["\{device}\n\{id}"] = ()
+  }
   let took = []
   for w in others {
     if !took.contains(w.name) {
@@ -458,6 +482,46 @@ pub fn ScreenHub::drive(self : ScreenHub, id : String, device : String, taken : 
     }
   }
   (true, took)
+}
+
+///|
+/// Distinct names of people's views currently driving `id` (`control && !agent`).
+pub fn ScreenHub::driving_people(self : ScreenHub, id : String) -> Array[String] {
+  let out : Array[String] = []
+  match self.views.get(id) {
+    Some(m) =>
+      for _, w in m {
+        if w.control && !w.agent && !out.contains(w.name) {
+          out.push(w.name)
+        }
+      }
+    None => ()
+  }
+  out
+}
+
+///|
+/// Whether any person's view currently driving `id` explicitly asked to take control (`taken: true`).
+pub fn ScreenHub::has_taken_view(self : ScreenHub, id : String) -> Bool {
+  match self.views.get(id) {
+    Some(m) => m.values().any(w => w.control && !w.agent && w.taken)
+    None => false
+  }
+}
+
+///|
+/// Yields passive (`!taken`) person views on `id` to watch-only while agent `by` operates it, without locking their
+/// devices from resuming once the agent finishes.
+pub fn ScreenHub::yield_to_agent(self : ScreenHub, id : String, by : String) -> Int {
+  let on = match self.views.get(id) {
+    Some(m) => m.values().collect()
+    None => []
+  }
+  let passive = on.filter(w => w.control && !w.agent && !w.taken && w.watch_only is Some(_))
+  for w in passive {
+    self.look_only(id, w, Some(by), hold=false)
+  }
+  passive.length()
 }
 
 ///|

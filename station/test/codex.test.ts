@@ -578,6 +578,27 @@ describe("the Codex driver", { concurrency: true }, () => {
     await session.prompt("mcp");
     await until(ended(1));
     assert.equal(said(events), "connected");
+    // The door's address changed, not the app-server: the same one serves it.
+    assert.equal(starts(p.dump).length, 1);
+  });
+
+  test("an app-server that could not reach the station's tools at an address is replaced for the next thread opened with it", async () => {
+    const d = driver();
+    // Its first app-server reaches no MCP url (its environment went wrong), though the door is open.
+    const base = profile();
+    const p = { ...base, env: { ...(base.env as object), FAKE_MCP_BROKEN_ONCE: "1" } };
+    const first = options(p);
+    const { events, push, until } = listen();
+    const failed = await d.open(first, push);
+    await assert.rejects(failed.prompt("mcp"), /station's tools failed/);
+    await failed.dispose();
+    // Opened again with the same address, as the session does after such a failure: on a new app-server, which reaches it.
+    const session = await d.open(options(p, { key: first.key, resume: failed.id() }), push);
+    assert.equal(session.mcpUrl?.(), first.mcpUrl);
+    await session.prompt("mcp");
+    await until(ended(1));
+    assert.equal(said(events), "connected");
+    assert.equal(starts(p.dump).length, 2, "a second app-server");
   });
 
   test("the app-server exiting fails the thread's turn as exited and closes every thread on it", async () => {

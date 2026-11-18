@@ -1,0 +1,202 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "station/mesh_scopes"
+
+import {
+  "mbui/effect",
+  "moonbitlang/core/json",
+  "moonbitlang/core/set",
+  "station/cloud_net",
+  "station/mesh_door/door",
+  "station/sql",
+}
+
+// Values
+pub let announcement_domain : String
+
+pub fn announcement_of(Crypto, @json.Json, String, @set.Set[String], minimum_generation? : Int64) -> Announced raise
+
+pub fn base64url(Bytes) -> String
+
+pub fn descriptor_of(Crypto, @json.Json, String, String, minimum_generation? : Int64) -> @json.Json raise
+
+pub let enrollment_alpn : String
+
+pub async fn exchange_signed_records(() -> Array[@json.Json], async (Array[@json.Json]) -> Unit, async (@json.Json) -> @json.Json, String) -> Unit
+
+pub fn field(@json.Json, String) -> @json.Json
+
+pub fn hex64(String) -> Bool
+
+pub fn hex_of(BytesView) -> String
+
+pub fn int_json(Int64) -> @json.Json
+
+pub let relay_record_domain : String
+
+pub fn relay_record_of(Crypto, @json.Json, String, @set.Set[String]) -> @json.Json raise
+
+pub fn safe_int(@json.Json) -> Int64?
+
+pub fn sign_relay_record(Crypto, Registration) -> @json.Json raise
+
+pub fn take_relay_record(@sql.Db, Crypto, @json.Json, String, @set.Set[String]) -> Bool raise
+
+pub fn text(@json.Json) -> String?
+
+pub fn utf8(String) -> Bytes
+
+pub async fn watch_relay(ScopeSync, String, String, @json.Json, @door.Stream, @door.Connection, @door.Reader) -> Unit
+
+pub fn workspace_scope(Crypto, String, String) -> String
+
+// Errors
+
+// Types and methods
+pub(all) struct Announced {
+  scope : String
+  node : String
+  revision : Int64
+  descriptor : @json.Json
+}
+
+pub struct Announcements {
+  db : @sql.Db
+  crypto : Crypto
+  cache : Map[String, Map[String, @json.Json]]
+  mut roster_version : Int32
+  read : async (String, Array[String]) -> Array[@json.Json]
+}
+pub fn Announcements::list(Self, String, Array[String]) -> Array[@json.Json] raise
+pub async fn Announcements::load(Self, String, @set.Set[String]) -> Unit
+pub fn Announcements::new(@sql.Db, Crypto, async (String, Array[String]) -> Array[@json.Json]) -> Self
+pub fn Announcements::publish(Self, String, @json.Json, String) -> @json.Json raise
+pub fn Announcements::retain(Self, Map[String, @set.Set[String]]) -> Unit
+pub fn Announcements::take(Self, @json.Json, String, @set.Set[String]) -> Bool raise
+
+pub(all) struct Crypto {
+  verify : (String, Bytes, String) -> Bool
+  sign : (String) -> String raise
+  sha256 : (Bytes) -> String
+  random : (Int32) -> Bytes
+}
+
+pub(all) struct DoorParts {
+  enrollment : Enrollment
+  allowed : (String) -> Bool
+  read : async (String, String) -> @json.Json
+  registered : async (@json.Json) -> Unit
+  sync : ScopeSync?
+  crypto : Crypto
+}
+
+pub struct Enrollment {
+  db : @sql.Db
+  issuer : String
+  now : () -> Double
+  crypto : Crypto
+}
+pub fn Enrollment::issue(Self, String, String, String) -> @json.Json raise
+pub fn Enrollment::new(@sql.Db, String, () -> Double, Crypto) -> Self raise
+pub fn Enrollment::redeem(Self, String, String, String) -> Registration raise
+pub fn Enrollment::revoke(Self, String, String) -> Registration raise
+
+pub struct EnrollmentDoor {
+  parts : DoorParts
+  // private fields
+}
+pub async fn EnrollmentDoor::answer(Self, @json.Json, String) -> @json.Json
+pub fn EnrollmentDoor::new(DoorParts) -> Self
+pub async fn EnrollmentDoor::serve(Self, @door.Connection) -> Unit
+
+pub(all) struct LeafEndpoint {
+  id : String
+  attach : async (Int32?, @json.Json) -> @json.Json
+  detach : async (@json.Json) -> Unit
+}
+
+pub struct Leaves {
+  endpoint : LeafEndpoint
+  sync : ScopeSync
+  // private fields
+}
+pub async fn Leaves::attach(Self, @door.Connection, String, @json.Json, String) -> @json.Json
+pub fn Leaves::authenticated(Self, @door.Connection, String, Int64) -> Unit
+pub async fn Leaves::follow(Self, @door.Connection, String, @door.Stream) -> Unit
+pub fn Leaves::new(LeafEndpoint, ScopeSync) -> Self
+pub fn Leaves::view(Self, String) -> @json.Json raise
+
+pub(all) struct MeshEndpoint {
+  configure : async (@json.Json) -> @json.Json
+  remove : async (String) -> Unit
+  listen : ((Array[@json.Json]) -> Unit) -> () -> Unit
+}
+
+#derive(Eq)
+pub(all) struct Registration {
+  scope : String
+  node : String
+  issuer : String
+  generation : Int64
+  name : String
+  made_by : String
+  revoked : Int64
+}
+pub fn Registration::to_json(Self) -> @json.Json
+
+pub(all) struct Roster {
+  scope : String
+  nodes : @set.Set[String]
+  generations : Map[String, Int64]
+  relay_urls : Array[String]
+  transit : Bool
+  global_relays : Array[@json.Json]
+}
+
+pub struct ScopeDirectory {
+  endpoint : MeshEndpoint
+  kept : Announcements
+  crypto : Crypto
+  signer : String
+  // private fields
+}
+pub fn ScopeDirectory::close(Self) -> Unit
+pub async fn ScopeDirectory::exchange(Self, String, @json.Json) -> @json.Json
+pub fn ScopeDirectory::new(MeshEndpoint, Announcements, Crypto, String, (String) -> Unit, (Error) -> Unit, @effect.Runtime) -> Self
+pub fn ScopeDirectory::policy(Self, String) -> @json.Json raise
+pub fn ScopeDirectory::ready(Self, String, String) -> Bool
+pub async fn ScopeDirectory::reconcile(Self) -> Unit
+pub fn ScopeDirectory::records(Self, String) -> Array[@json.Json]
+pub async fn ScopeDirectory::set(Self, Array[Roster]) -> Unit
+pub async fn ScopeDirectory::take(Self, String, Array[@json.Json]) -> Unit
+
+pub struct ScopeSync {
+  directory : ScopeDirectory
+  parts : SyncParts
+  db : @sql.Db
+  crypto : Crypto
+  // private fields
+}
+pub async fn ScopeSync::answer(Self, String, String, @json.Json) -> @json.Json
+pub fn ScopeSync::close(Self) -> Unit
+pub fn ScopeSync::listen(Self, (String) -> Unit) -> () -> Unit
+pub fn ScopeSync::new(MeshEndpoint, @sql.Db, Crypto, String, SyncParts, @effect.Runtime) -> Self
+pub async fn ScopeSync::registration(Self, @json.Json) -> Unit
+pub async fn ScopeSync::relay_announcement(Self, String, String, @json.Json) -> Unit
+pub fn ScopeSync::relay_view(Self, String, String) -> @json.Json raise
+pub fn ScopeSync::relays(Self, String) -> Array[@json.Json] raise
+pub async fn ScopeSync::revoke(Self, String, String, local_only? : Bool) -> @json.Json
+pub fn ScopeSync::scope_for(Self, String, String?) -> String?
+
+pub(all) struct SyncParts {
+  cloud : @cloud_net.CloudView
+  ways : @cloud_net.Ways
+  call : async (String, String, @json.Json) -> @json.Json
+  read : async (@json.Json) -> @json.Json
+  after : (Int32, () -> Unit) -> () -> Unit
+  now : () -> Double
+  log : (String) -> Unit
+}
+
+// Type aliases
+
+// Traits

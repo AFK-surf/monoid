@@ -289,13 +289,28 @@ export function outboxWaits(outbox: J[], notice: J): J[] {
   return outbox.map((e) => (get(e, "state") === "sending" && (get(e, "seq") === undefined || get(e, "seq") === null) ? { ...e, waits: t("core-logic.looks.update.waits") } : e));
 }
 
+/// Whether an entry of the outbox may be the station's already: its POST went out and no answer came (`queued` false,
+/// failed as its station was not reached). Taken back here it would not be unsaid there, so it is only sent again, once
+/// by its idempotency key: deleted (calls.ts chatDiscard) or held to be taken back (`outboxHeld`) it is not.
+export function outboxUnsure(e: J): boolean {
+  return get(e, "queued") === false && get(e, "unreached") === true && get(e, "state") === "failed" && get(e, "final") !== true;
+}
+
+/// The outbox as it is shown: what may be the station's already says so (`unsure`: 重试 under it, no 删除).
+export function outboxShown(outbox: J[]): J[] {
+  return outbox.some(outboxUnsure) ? outbox.map((e) => (outboxUnsure(e) ? { ...e, unsure: true } : e)) : outbox;
+}
+
 /// The outbox while its station is taken for down: what failed as the station was not reached (and is sent once it is:
 /// calls.ts `stationBack`) waits for it, said under it (`waits`) in place of 未发送; what the station refused stays failed.
+/// One whose POST never started may still be taken back (`held`: edited or deleted before it goes), not one that may be
+/// the station's already (`outboxUnsure`).
 export function outboxHeld(outbox: J[]): J[] {
   return outbox.map((e) => {
     if (get(e, "state") !== "failed" || get(e, "unreached") !== true || get(e, "final") === true) return e;
     const { error: _error, ...rest } = e as Record<string, unknown>;
-    return { ...rest, state: "sending", waits: t("core-logic.looks.outbox.held") };
+    const { unsure: _unsure, ...left } = rest;
+    return { ...left, state: "sending", waits: t("core-logic.looks.outbox.held"), ...(!outboxUnsure(e) ? { held: true } : {}) };
   });
 }
 

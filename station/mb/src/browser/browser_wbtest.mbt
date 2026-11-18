@@ -199,7 +199,7 @@ test "keys, pictures, digests and Farview's wire" {
 
 ///|
 test "the gate puts the chat's context on a new tab, opened behind, and refuses another's" {
-  let g = Gate::new({ context: "C1", context_of: _ => None, opened: None, used: None })
+  let g = Gate::new({ context: "C1", context_of: _ => None, opened: None, used: None, act: None })
   let up = g.from_client("{\"id\":1,\"method\":\"Target.createTarget\",\"params\":{\"url\":\"https://a/\"}}").up
   assert_eq(
     up,
