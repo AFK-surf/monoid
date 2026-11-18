@@ -179,3 +179,41 @@ test "usage probe: the filtered view answered late" {
     uprobe_end(t, "D\{late} answered")
   }
 }
+
+///|
+test "usage probe: answered mid-way" {
+  for late in [0.0, 16.0, 50.0, 100.0, 150.0, 200.0, 300.0, 450.0] {
+    new_run()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let base = fixture("home")
+    let src = { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
+    } }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    t.drag(180.0, 600.0, 180.0, 300.0, steps=20)
+    t.run_for(kept_glide_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    pending.set(true)
+    uprobe_tap(t, "林")
+    t.run_for(late)
+    pending.set(false)
+    t.run_for(kept_switch_over_ms)
+    let chip = t.rect_of("只看 林")
+    let head = t.rect_of("花费明细")
+    match (chip, head) {
+      (Some(c), Some(h)) => println("midway \{late}: chip→head \{h.1 - c.1}")
+      _ => println("midway \{late}: chip \{chip is Some(_)} head \{head is Some(_)}")
+    }
+    uprobe_end(t, "M\{late}")
+    match (t.rect_of("只看 林"), t.rect_of("花费明细")) {
+      (Some(c), Some(h)) => println("midway \{late} at end: chip→head \{h.1 - c.1}")
+      _ => ()
+    }
+  }
+}
