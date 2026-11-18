@@ -2164,7 +2164,7 @@ test("usage: a call is recorded once, its output grown; turns tell whom they wer
   const of = { turn: "t1", person: "me@x", thread: 3, profile: "cc" };
   assert.equal(store.recordUsage("/t.jsonl", { session: "a", offset: 10, model: "m" }, "claude", [[call, of]]), 1);
   assert.equal(store.recordUsage("/t.jsonl", { session: "a", offset: 20, model: "m" }, "claude", [[{ ...call, output: 9 }, of]]), 0);
-  assert.deepEqual(store.usageFiles().get("/t.jsonl"), { session: "a", offset: 20, model: "m" });
+  assert.deepEqual(store.usageFiles().get("/t.jsonl"), { session: "a", offset: 20, model: "m", speed: null });
   const [g] = store.usageGroups(0, 2000, 0);
   assert.deepEqual([g!.calls, g!.output, g!.fast, g!.day], [1, 9, true, "1970-01-01"]);
   assert.equal(store.usageSince(), 1000);

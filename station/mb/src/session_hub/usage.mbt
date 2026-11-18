@@ -14,6 +14,10 @@ pub let settle_ms : Double = 2_000.0
 pub let safety_ms : Double = 600_000.0
 
 ///|
+/// counter.ts `TIMED_BACK_MS`: how far back the calls read before their time was kept are timed as it starts.
+pub let timed_back_ms : Double = 691_200_000.0
+
+///|
 /// module.ts `keepUsage`: a session's usage as its summary says it, as recorded now (none before a call). `quiet`: not
 /// told as a change of the session.
 pub fn Hub::keep_usage(self : Hub, key : String, quiet? : Bool = false) -> Unit raise {
@@ -135,7 +139,11 @@ pub async fn UsageCounter::start(self : UsageCounter) -> Unit {
   }
   self.started_at = self.hub.now()
   self.state = 2
-  ignore(self.read(None))
+  // (as it starts: what was read before calls were timed, of the sessions that ran the last TIMED_BACK_MS, timed too)
+  let from = self.hub.now() - timed_back_ms
+  ignore(self.read(None, time_from=from))
+  let active = self.hub.store.usage_active_sessions(Json::number(from)) catch { _ => [] }
+  ignore(self.read(Some(active.map(js_string)), time_from=from))
   self.due = self.hub.now() + self.safety
   self.waiting()
 }
@@ -246,7 +254,7 @@ pub fn UsageCounter::stop(self : UsageCounter) -> Unit {
 ///|
 /// One read by the program: the transcripts of sessions that ran since the last sweep (`only`: of those alone). How many
 /// calls were new; a failure is only told.
-pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?) -> Double {
+pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?, time_from? : Double) -> Double {
   let started = self.hub.now()
   let last = self.last
   if only is None {
@@ -262,6 +270,10 @@ pub async fn UsageCounter::read(self : UsageCounter, only : Array[String]?) -> D
     "last": num(last),
     "dataDir": field(config, "dataDir").unwrap_or(Json::null()),
     "homes": Json::array(items(field(config, "profiles")).map(p => field(p, "home").unwrap_or(Json::null()))),
+    "timeFrom": match time_from {
+      Some(t) => num(t)
+      None => Json::null()
+    },
   }) catch {
     _ => return 0.0
   }
