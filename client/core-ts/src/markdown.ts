@@ -34,7 +34,8 @@ export type MdNode = MdWords | [kind: string] | [kind: string, children: MdNode[
 export type Md = MdNode[];
 
 /// Where trees are kept past this run (an account's database: `md_kept`), by their text's key (`mdKey`), as JSON.
-export type MdStore = { has(key: string): boolean; get(key: string): string | null; put(key: string, json: string, replaces?: string): void; refresh?(text: string): void };
+/// `preload`: the trees of these keys read at once (one statement for a page of them), before each is asked for.
+export type MdStore = { has(key: string): boolean; get(key: string): string | null; put(key: string, json: string, replaces?: string): void; refresh?(text: string): void; preload?(keys: readonly string[]): void };
 
 /// How the trees kept are read: another number whenever what `parse` makes of a text changes (a test holds it to the
 /// trees of a set of texts: markdown.test.ts). A drawable older tree can be shown while it is read again in the background.
@@ -58,25 +59,29 @@ export function mdKey(text: string): string {
 
 /// The latest drawable older reading, if one is still kept. Each lookup is by the cache's primary key.
 export function oldMdKey(store: MdStore, key: string, from = MD_DRAWABLE_FROM): string | null {
-  const suffix = key.slice(key.indexOf("."));
-  for (let reading = MD_READING - 1; reading >= from; reading--) {
-    const old = `${reading}${suffix}`;
-    if (store.has(old)) return old;
-  }
+  for (const old of olderMdKeys(key, from)) if (store.has(old)) return old;
   return null;
+}
+
+/// The keys the same text had in the drawable older readings, the latest first.
+export function olderMdKeys(key: string, from = MD_DRAWABLE_FROM): string[] {
+  const suffix = key.slice(key.indexOf("."));
+  const out: string[] = [];
+  for (let reading = MD_READING - 1; reading >= from; reading--) out.push(`${reading}${suffix}`);
+  return out;
 }
 
 /// The tree of `text`: read once while it is kept here (the latest texts, up to `KEPT_CHARS` of them), and, given
 /// `store`, once on the device: read from it where it was kept, else kept in it. Reading a chat's Markdown can dominate
 /// opening it (bench/chat-open.ts), so a chat opened after an app restart need not read it all again.
-export function markdown(text: string, store?: MdStore): Md {
+export function markdown(text: string, store?: MdStore, known?: string): Md {
   const hit = kept.get(text);
   if (hit) {
     kept.delete(text);
     kept.set(text, hit);
     return hit.md;
   }
-  const key = store ? mdKey(text) : "";
+  const key = store ? (known ?? mdKey(text)) : "";
   const stored = store?.get(key) ?? null;
   let md: Md | null = null;
   if (stored !== null) {
@@ -139,6 +144,12 @@ export const readAfresh = { chars: 0 };
 /// Whether `text`'s tree is read and kept here this run.
 export function markdownHere(text: string): boolean {
   return kept.has(text);
+}
+
+/// What is kept here this run let go of, as a process started anew has none (a test's app started again).
+export function forgetMarkdownHere(): void {
+  kept.clear();
+  keptChars = 0;
 }
 
 function remember(text: string, md: Md, cost: number): void {

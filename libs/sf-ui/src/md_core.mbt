@@ -145,6 +145,100 @@ fn core_blocks(nodes : Array[Json], text : String) -> Array[MdBlock] {
 }
 
 ///|
+/// The pieces a list draws the core's tree `nodes` in (markdown_pieces'), worked out of its shape alone: the blocks
+/// core_blocks reads it as, counted as it counts them (a table's rows, its head one, and a list's items by their
+/// nodes), none of their words read, so how many rows a message is in costs its blocks' count and no reading of it.
+fn core_pieces(nodes : Array[Json], at : Ref[Int], out : Array[MdPiece]) -> Unit {
+  for j in nodes {
+    let (name, kids, _) = md_parts(j)
+    match name {
+      "p" | "h" | "pre" | "quote" | "hr" => md_pieces_put(out, at, 1, 1)
+      // (core_blocks' Table: its head the first row, the rest its rows; one row where it has none)
+      "table" => md_pieces_put(out, at, if kids.length() > 0 { kids.length() } else { 1 }, md_table_piece_rows)
+      "list" => md_pieces_put(out, at, kids.length(), md_list_piece_items)
+      _ => if kids.length() > 0 { core_pieces(kids, at, out) }
+    }
+  }
+}
+
+///|
+/// Block `at`'s pieces put in `out` (markdown_pieces'): one where its `all` rows are `most` or fewer, else `most` of
+/// them a piece; `at` the next block's.
+fn md_pieces_put(out : Array[MdPiece], at : Ref[Int], all : Int, most : Int) -> Unit {
+  let i = at.val
+  if all > most {
+    let mut r = 0
+    while r < all {
+      let upto = if r + most < all { r + most } else { all }
+      out.push({ from: i, upto: i + 1, rows: Some((r, upto)), last: false })
+      r = upto
+    }
+  } else {
+    out.push({ from: i, upto: i + 1, rows: None, last: false })
+  }
+  at.val = i + 1
+}
+
+///|
+/// The links of the core's tree `nodes` of `text` put in `out` by their address, each its first (md_links_to's), as
+/// core_blocks would read them, in its order: found by walking the tree to its links alone, no words of it read and
+/// nothing of a code block or a formula walked.
+fn core_links(nodes : Array[Json], text : String, out : Map[String, LinkTo]) -> Unit {
+  for j in nodes {
+    let (name, kids, _) = md_parts(j)
+    match name {
+      "p" | "h" => core_inline_links(kids, text, out)
+      "pre" | "hr" => ()
+      "quote" => core_links(kids, text, out)
+      "list" =>
+        for li in kids {
+          // (core_item's: a block of an item read as a block, the rest as its words)
+          let (_, k, _) = md_parts(li)
+          for x in k {
+            let (n, _, _) = md_parts(x)
+            match n {
+              "p" | "h" | "list" | "quote" | "pre" | "table" | "hr" => core_links([x], text, out)
+              _ => core_inline_links([x], text, out)
+            }
+          }
+        }
+      "table" =>
+        for r in kids {
+          let (_, cells, _) = md_parts(r)
+          for c in cells {
+            let (_, k, _) = md_parts(c)
+            core_inline_links(k, text, out)
+          }
+        }
+      _ => if kids.length() > 0 { core_links(kids, text, out) }
+    }
+  }
+}
+
+///|
+/// The links of inline nodes `nodes` (core_inlines'), as core_links has them.
+fn core_inline_links(nodes : Array[Json], text : String, out : Map[String, LinkTo]) -> Unit {
+  for j in nodes {
+    // (words: a run of the text or words of their own, none of it a link)
+    if j is String(_) || j is Array([Number(_, ..), Number(_, ..)]) {
+      continue
+    }
+    let (name, kids, a) = md_parts(j)
+    match name {
+      "code" | "img" | "br" => ()
+      "a" => {
+        let href = md_words(math_field(a, "href"), text).unwrap_or("")
+        if !out.contains(href) {
+          out[href] = link_to_of(math_field(a, "to"), text~, bare=math_field(a, "bare") == Json::boolean(true))
+        }
+        core_inline_links(kids, text, out)
+      }
+      _ => core_inline_links(kids, text, out)
+    }
+  }
+}
+
+///|
 // Tight items mix words and nested blocks. Preserve both, in order.
 fn core_item(nodes : Array[Json], text : String) -> Array[MdBlock] {
   let out : Array[MdBlock] = []

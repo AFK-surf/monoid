@@ -7,12 +7,12 @@
 // out; each database's writer says which topics a burst changed, and the store pushes what changed (keyed deltas).
 import { Effect, Fiber, Queue } from "effect";
 import { OVERVIEW_CHAT, OVERVIEW_PROFILED, OVERVIEW_SETTINGS } from "./db/schema.ts";
-import { AccountDb, LIST_OF, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MovedTo, type RowChange, frozen } from "./db/account.ts";
+import { AccountDb, LIST_OF, MD_SHOWN_EVERY, foundOf, type ChatFound, type Changes, type Derive, type HeadRow, type ListKind, type LogTable, type MdPut, type MovedTo, type RowChange, frozen } from "./db/account.ts";
 import { KEPT as BESIDE, type AnyKept, type Kept, type Maker, type Owner } from "./db/kept.ts";
 import { CHAT_READS, chatKeys, type ChatRead, type ReadKey } from "./db/chat-reads.ts";
 import type { Host, Sql, SqlRow, SqlValue } from "./host.ts";
 import { HostError, SqlError, sqlError } from "./host.ts";
-import type { MdStore } from "./markdown.ts";
+import { olderMdKeys, type MdStore } from "./markdown.ts";
 import { topicKey, type Topic } from "./protocol.ts";
 import { Marks, signal, tracking, untracked, type Source as ReactiveSource } from "./reactive.ts";
 import type { Runner } from "./runtime.ts";
@@ -304,6 +304,16 @@ export class Data {
   readonly #chatsChanged: ((station: string, changes: RowChange[], first: boolean) => void)[] = [];
   /// What reads what is kept of a thread's or a session's read Markdown (`mdStore`), by `station of`.
   readonly #mdSeen = new Marks();
+  /// The trees read and shown since they were last written (`flushMd`), by station: what showing a chat would write,
+  /// written after what pages wait for, never as it is shown (with `#shownWrites`).
+  readonly #mdPending = new Map<string, { puts: Map<string, MdPut>; touches: Map<string, number> }>();
+  #mdFlushing = false;
+  /// What showing a page notes besides (a log opened: `opened`), by what it notes: written with the trees (`flushMd`).
+  readonly #shownWrites = new Map<string, () => void>();
+  /// When each log was opened this run (`opened`), by `kind station id`: read as it is, its write maybe still to come.
+  readonly #openedAt = new Map<string, number>();
+  /// When what is pending of the trees is written (`flushMd`): after what pages wait for (core.ts: store.ts `turn`).
+  mdTurn: () => Effect.Effect<void> = () => Effect.yieldNow;
   /// Indexed reads can follow changes without loading a whole topic or keeping a network watch open.
   readonly #queryReads = new Map<string, { signal: ReactiveSource<number>; revision: number }>();
   /// What each read's revision is taken from (`#queryReads`): one count for all, so that a read let go of and read
@@ -728,9 +738,12 @@ export class Data {
     this.#tell({ topic: "*" });
   }
 
-  /// Resolves once every write asked for so far is committed.
+  /// Resolves once every write asked for so far is committed (what showing noted too, written now: `flushMd`).
   get written(): Effect.Effect<void> {
-    return Effect.suspend(() => Effect.all([...this.#dbs.values()].map((db) => db.written), { discard: true }));
+    return Effect.suspend(() => {
+      this.flushMd();
+      return Effect.all([...this.#dbs.values()].map((db) => db.written), { discard: true });
+    });
   }
 
   // ── held topics ──
@@ -1564,7 +1577,13 @@ export class Data {
     if (count > 0) this.#shown.set(key, count);
     else this.#shown.delete(key);
     const db = this.of(station);
-    return db !== undefined && !db.readOnly ? db.opened(kind, station, id, this.#host.nowMs()) && open : false;
+    if (db === undefined || db.readOnly) return false;
+    // (when it was opened written after what pages wait for, as what showing it reads of Markdown is: `flushMd`)
+    const was = db.openedHere(kind, station, id);
+    const at = this.#host.nowMs();
+    this.#openedAt.set(key, at);
+    this.#afterShown(`opened\u0001${kind}\u0001${station}\u0001${id}`, () => db.noteOpened(kind, station, id, at));
+    return was && open;
   }
 
   /// Past its room: the agents' transcripts not shown, least recently used first, let go down to KEPT_TO. Each
@@ -1577,6 +1596,8 @@ export class Data {
         // Do not make the account's first values or a committed change wait for maintenance.
         yield* Effect.yieldNow;
         if (this.#dbs.get(db.sub) !== db || db.used() <= this.#kept) return;
+        // (the logs opened lately written first: they go last, by when they were opened)
+        this.flushMd();
         const to = this.#kept * KEPT_TO;
         const gone = new Set<string>();
         for (;;) {
@@ -1630,7 +1651,12 @@ export class Data {
     if (db === undefined) return false;
     const since = this.#host.nowMs() - RECENT_MS;
     const thread = db.threadOf(station, key);
-    return (db.lastOpened("transcript", station, key) ?? 0) >= since || (thread !== null && (db.lastOpened("entry", station, String(thread)) ?? 0) >= since);
+    return this.#lastOpened(db, "transcript", station, key) >= since || (thread !== null && this.#lastOpened(db, "entry", station, String(thread)) >= since);
+  }
+
+  /// When a log was last opened: as noted this run, its write maybe still to come (`opened`), else as kept.
+  #lastOpened(db: AccountDb, kind: LogTable, station: string, id: string): number {
+    return this.#openedAt.get(`${kind}\u0001${station}\u0001${id}`) ?? db.lastOpened(kind, station, id) ?? 0;
   }
 
   raiseTranscript(station: string, key: string, n: number): void {
@@ -1843,7 +1869,9 @@ export class Data {
   }
 
   /// Where the trees of the Markdown `station`'s agents said for `of` (a chat, `t:<thread>`; an agent, `s:<session>`) are
-  /// kept on the device (AccountDb.keptMd): none without its account's database.
+  /// kept on the device (AccountDb.keptMd): none without its account's database. It only reads: a tree read afresh, or
+  /// one shown that was not noted shown lately, is pending here (read back at once) and written after what pages wait
+  /// for (`flushMd`), so a chat's page opening writes nothing. `preload` reads a page's trees in one statement.
   mdStore(station: string, of: string): MdStore | undefined {
     // (read again in the background, what it keeps changes: md-ahead.ts `mdChanged`)
     this.#mdSeen.read(`${station} ${of}`);
@@ -1851,12 +1879,104 @@ export class Data {
     if (db === undefined) return undefined;
     // (when each was last used: no time a reader's words change by)
     const now = () => untracked(() => this.#host.nowMs());
-    return {
-      has: (key) => db.hasMd(station, key),
-      get: (key) => db.keptMd(station, key, now()),
-      put: (key, json, replaces) => db.keepMd(station, of, key, json, Math.floor(now()), replaces),
-      ...(this.onOldMd === null ? {} : { refresh: (text: string) => this.onOldMd?.(station, of, text) }),
+    const pending = this.#mdPendingOf(station);
+    // What this store read of the device (`preload`): found, or not there (null).
+    const read = new Map<string, { used: number; json: string } | null>();
+    const kept = (key: string): { used: number; json: string } | null => {
+      let r = read.get(key);
+      if (r === undefined) {
+        r = db.keptMd(station, key);
+        read.set(key, r);
+      }
+      return r;
     };
+    const refresh = this.onOldMd === null ? null : (text: string) => this.onOldMd?.(station, of, text);
+    return {
+      has: (key) => pending.puts.has(key) || (read.has(key) ? read.get(key) !== null : db.hasMd(station, key)),
+      get: (key) => {
+        const put = pending.puts.get(key);
+        if (put !== undefined) return put.json;
+        const r = kept(key);
+        if (r === null) return null;
+        const at = Math.floor(now());
+        if (at - r.used >= MD_SHOWN_EVERY && !pending.touches.has(key)) {
+          pending.touches.set(key, at);
+          this.#mdLater();
+        }
+        return r.json;
+      },
+      put: (key, json, replaces) => {
+        pending.puts.set(key, { of, key, json, at: Math.floor(now()), ...(replaces === undefined ? {} : { replaces }) });
+        pending.touches.delete(key);
+        if (replaces !== undefined) {
+          pending.puts.delete(replaces);
+          read.set(replaces, null);
+        }
+        read.delete(key);
+        this.#mdLater();
+      },
+      preload: (keys) => {
+        const rest = keys.filter((k) => !pending.puts.has(k) && !read.has(k));
+        if (rest.length === 0) return;
+        const found = db.keptMdMany(station, rest);
+        for (const k of rest) read.set(k, found.get(k) ?? null);
+        // Those not kept as this reading reads them: an older reading's tree drawn while it is read again (markdown.ts
+        // `oldMdKey`), looked for in one statement too.
+        if (refresh === null) return;
+        const older = rest.filter((k) => !found.has(k)).flatMap((k) => olderMdKeys(k)).filter((k) => !pending.puts.has(k) && !read.has(k));
+        if (older.length === 0) return;
+        const old = db.keptMdMany(station, older);
+        for (const k of older) read.set(k, old.get(k) ?? null);
+      },
+      ...(refresh === null ? {} : { refresh }),
+    };
+  }
+
+  #mdPendingOf(station: string): { puts: Map<string, MdPut>; touches: Map<string, number> } {
+    let p = this.#mdPending.get(station);
+    if (p === undefined) {
+      p = { puts: new Map(), touches: new Map() };
+      this.#mdPending.set(station, p);
+    }
+    return p;
+  }
+
+  /// A write of what showing a page notes, after what pages wait for (`#mdLater`); the last of each `what` alone.
+  #afterShown(what: string, write: () => void): void {
+    this.#shownWrites.delete(what);
+    this.#shownWrites.set(what, write);
+    this.#mdLater();
+  }
+
+  /// What is pending of the trees written once what pages wait for has gone (`mdTurn`): one write for all of it.
+  #mdLater(): void {
+    if (this.#mdFlushing) return;
+    this.#mdFlushing = true;
+    this.#runner.fork(Effect.andThen(this.mdTurn(), Effect.sync(() => this.flushMd())));
+  }
+
+  /// The core closing (core.ts `close`): what is pending of the trees written and every database's burst committed,
+  /// so what was read is kept by the core that follows.
+  closing(): void {
+    this.flushMd();
+    for (const db of this.#dbs.values()) db.commitNow();
+  }
+
+  /// Writes what is pending of the trees (`mdStore`), a transaction a station's database, and what showing a page noted.
+  flushMd(): void {
+    this.#mdFlushing = false;
+    const writes = [...this.#shownWrites.values()];
+    this.#shownWrites.clear();
+    for (const write of writes) write();
+    // (each station's pending kept as the same object, emptied: a store made before goes on putting in it)
+    for (const [station, p] of this.#mdPending) {
+      if (p.puts.size === 0 && p.touches.size === 0) continue;
+      const puts = [...p.puts.values()];
+      const touches = [...p.touches].map(([key, at]) => ({ key, at }));
+      p.puts.clear();
+      p.touches.clear();
+      this.of(station)?.flushMd(station, puts, touches);
+    }
   }
 
   /// The chats `station`'s agents last spoke in (AccountDb.recentThreads).
