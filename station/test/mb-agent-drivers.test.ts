@@ -341,7 +341,7 @@ const PURE: [string, unknown[], (...a: any[]) => unknown][] = [
     ["a", undefined, ["a-low", "a-zz"], null],
   ].map((a) => ["agyVariant", a, agyVariant] as [string, unknown[], (...a: any[]) => unknown]),
   ...[{ models: { currentModelId: "m1", availableModels: [{ modelId: "m2" }, { modelId: "m1" }, { modelId: " " }] } }, {}].map((r) => ["agyModels", [r], agyModels] as [string, unknown[], (...a: any[]) => unknown]),
-  ...[{ result: { usage: { inputTokens: 100, cachedReadTokens: 30, cachedWriteTokens: 10, outputTokens: 5, thoughtTokens: 7 } } }, { result: { usage: { inputTokens: 1, cachedReadTokens: 30 } } }, {}].map(
+  ...[{ result: { usage: { inputTokens: 100, cachedReadTokens: 30, cachedWriteTokens: 10, outputTokens: 5, thoughtTokens: 7 } } }, { result: { usage: { inputTokens: 1, cachedReadTokens: 30 } } }, { result: { usage: { inputTokens: 409896, outputTokens: 621, cachedReadTokens: 404509, cachedWriteTokens: 0, thoughtTokens: 315, totalTokens: 815026 } } }, { result: { usage: { inputTokens: -5, outputTokens: "x" } } }, {}].map(
     (r) => ["turnUsage", [r], turnUsage] as [string, unknown[], (...a: any[]) => unknown],
   ),
   ...["", "be brief"].map((t) => ["agyOpening", [t], agyOpening] as [string, unknown[], (...a: any[]) => unknown]),
