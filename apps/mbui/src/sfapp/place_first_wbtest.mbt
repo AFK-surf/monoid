@@ -323,7 +323,7 @@ test "a place of the bar in view shows what the device holds the first time it i
 ///|
 /// What Station draws in its bones when all but how each station up is reached is held (stationNet, asked only from its
 /// tab: bars.mbt place_reads): the network line of each online station of the fixture's, its bars (a bar a word of it:
-/// sfpages' sl_net_node, a card's: how it goes and packets lost, ·, 当前延迟, its round trip, ↑, ↓ and their speeds), nothing else.
+/// @sf.station_net_line_node, a card's: how it goes and packets lost, ·, 当前延迟, its round trip, ↑, ↓ and their speeds), nothing else.
 let station_net_bones : Int = 17
 
 ///|

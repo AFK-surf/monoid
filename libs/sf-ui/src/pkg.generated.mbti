@@ -968,6 +968,11 @@ pub let leave_scale : Double
 
 pub fn level_color(String) -> Int64
 
+#callsite(autofill(loc))
+pub fn level_figure_node(@view.View, () -> @json.Json?, style? : () -> @ui.TextStyle, loc~ : SourceLoc) -> @view.View
+
+pub fn level_figure_style(String, @ui.TextStyle) -> @ui.TextStyle
+
 pub let lift_held : Double
 
 pub fn lift_node(@view.View, () -> Bool, () -> Bool, Double) -> Unit
@@ -2203,6 +2208,11 @@ pub fn station_mark_node(@view.View, () -> String, () -> String, Double, () -> I
 
 pub fn station_mark_visible(@ui.Ctx, String, String, Double) -> Bool
 
+#callsite(autofill(loc))
+pub fn station_net_line_node(@view.View, () -> @json.Json?, look? : NetLook, loc~ : SourceLoc) -> Unit
+
+pub let station_net_sample : @json.Json
+
 pub fn status_dot(@ui.Ctx, String) -> Unit
 
 pub let status_ring : Double
@@ -2238,6 +2248,11 @@ pub fn styled_words(@view.View, () -> String, () -> @ui.TextStyle) -> @view.View
 pub fn submenu_row(@ui.Ctx, String, String, Array[MenuItem?], icon? : String, side? : @view.Side) -> Unit
 
 pub fn submenu_row_node(@view.View, () -> String, () -> Array[MenuItem?], icon? : () -> String, side? : @view.Side) -> Unit
+
+#callsite(autofill(loc))
+pub fn summary_mark_card_node(@view.View, (@view.View) -> Unit, () -> String, () -> String, () -> Unit, end? : (@view.View) -> Unit, body? : (@view.View) -> Unit, tag? : () -> String, loc~ : SourceLoc) -> Unit
+
+pub let summary_mark_side : Double
 
 pub fn surface(Double, Double) -> Surface
 
@@ -3101,6 +3116,13 @@ pub(all) struct NativeOver {
   acts : Array[(String, String, String, () -> Unit)]
   active : Array[String]
   mut alive : () -> Bool
+}
+
+#derive(Eq, @debug.Debug)
+pub(all) enum NetLook {
+  Card
+  Peek
+  Page
 }
 
 pub(all) struct PageBar {

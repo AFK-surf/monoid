@@ -744,7 +744,7 @@ fn station_resources_node(b : @view.View, core : Core, here : () -> Here, s : ()
           let net = fn() { station_part_read(core, address, station_net_ask(address)).value }
           let uses = fn() { items(station_part_read(core, address, resources_ask(here(), address)).value, "stations").get(0) }
           station_dials_node(r, fn() { field(s(), "host") })
-          r.show(fn() { net() is Some(Object(_)) }, fn(x) { station_net_node(x, net) })
+          r.show(fn() { net() is Some(Object(_)) }, fn(x) { @sf.station_net_line_node(x, net, look=Page) })
           // (what still.fail itself uses of the machine, opening its 进程: read while shown)
           r.show(fn() { uses() is Some(_) }, fn(x) { station_uses_node(x, uses, processes) })
           r.show(fn() { uses() is None && items(field(s(), "overview"), "processes").length() > 0 }, fn(x) {
