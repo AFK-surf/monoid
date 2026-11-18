@@ -584,30 +584,38 @@ export class Requests {
     });
   }
 
-  /// GET /sessions/:key/open?path=&raw=1: a file a message names, whole, and what it is (`size`: its whole size). A
-  /// station from before `raw` answers its JSON with the bytes in it as base64. With `range`, only that part of it (as
-  /// the station's `stillfail-total` says its size); a station from before parts by path answers the whole (at most
-  /// 16 MB), whose part is cut from it here.
-  fileOpen(station: StationAddr, key: string, path: string, range: { offset: number; length: number } | null, ctx: SpanContext | null): Effect.Effect<{ name: string; path: string; type: string; size: number; bytes: Uint8Array }, CoreError> {
-    const asked = `/sessions/${encode(key)}/open?path=${encode(path)}&raw=1${range === null ? "" : `&offset=${range.offset}&length=${range.length}`}`;
-    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, false, ctx), (r) => {
-      if (r.status !== 200) {
+  /// GET /sessions/:key/open?path=&raw=1: a file a message names, whole, and what it is (`size`: its whole size;
+  /// `mtime`: its version, where the station says it). A station from before `raw` answers its JSON with the bytes in it
+  /// as base64. With `range`, only that part of it (as the station's `stillfail-total` says its size); a station from
+  /// before parts by path answers the whole (at most 16 MB), whose part is cut from it here. With `have` (the version
+  /// kept here, `<mtime>:<size>`), a file not changed since is answered `same`, with no bytes; a station from before
+  /// versions answers it whole all the same.
+  fileOpen(station: StationAddr, key: string, path: string, range: { offset: number; length: number } | null, ctx: SpanContext | null, have?: string): Effect.Effect<{ name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array }, CoreError> {
+    const asked = `/sessions/${encode(key)}/open?path=${encode(path)}&raw=1${range === null ? "" : `&offset=${range.offset}&length=${range.length}`}${have === undefined ? "" : `&have=${encode(have)}`}`;
+    type Opened = { name: string; path: string; type: string; size: number; mtime: number | null; same: boolean; bytes: Uint8Array };
+    return Effect.flatMap(this.exchange(station, "GET", asked, [], empty, false, ctx), (r): Effect.Effect<Opened, CoreError> => {
+      if (r.status !== 200 && r.status !== 304) {
         const data = parseJson(r.body);
         return Effect.fail(httpError(r.status, data === undefined ? {} : data));
       }
       const header = (name: string) => r.headers.find(([k]) => k.toLowerCase() === name)?.[1];
       const total = Number(header("stillfail-total"));
+      const stamp = Number(header("stillfail-mtime"));
+      const mtime = header("stillfail-mtime") !== undefined && Number.isSafeInteger(stamp) ? stamp : null;
+      const decoded = (v: string | undefined) => { try { return decodeURIComponent(v ?? ""); } catch { return v ?? ""; } };
+      if (r.status === 304) {
+        return Effect.succeed({ name: decoded(header("stillfail-name")), path: decoded(header("stillfail-path")), type: header("content-type") ?? "", size: Number.isSafeInteger(total) ? total : 0, mtime, same: true, bytes: new Uint8Array() });
+      }
       // (the whole, from a station that gives no parts: the part asked cut from it)
       const cut = (bytes: Uint8Array) =>
         range === null || Number.isSafeInteger(total) ? { size: Number.isSafeInteger(total) ? total : bytes.length, bytes } : { size: bytes.length, bytes: bytes.subarray(Math.min(range.offset, bytes.length), Math.min(range.offset + range.length, bytes.length)) };
       const named = header("stillfail-name");
       if (named !== undefined) {
-        const decoded = (v: string | undefined) => { try { return decodeURIComponent(v ?? ""); } catch { return v ?? ""; } };
-        return Effect.succeed({ name: decoded(named), path: decoded(header("stillfail-path")), type: header("content-type") ?? "", ...cut(r.body) });
+        return Effect.succeed({ name: decoded(named), path: decoded(header("stillfail-path")), type: header("content-type") ?? "", mtime, same: false, ...cut(r.body) });
       }
       const data = parseJson(r.body);
       const str = (k: string) => { const v = get(data, k); return typeof v === "string" ? v : ""; };
-      return Effect.succeed({ name: str("name"), path: str("path"), type: str("type"), ...cut(fromBase64(str("bytes")) ?? new Uint8Array()) });
+      return Effect.succeed({ name: str("name"), path: str("path"), type: str("type"), mtime: null, same: false, ...cut(fromBase64(str("bytes")) ?? new Uint8Array()) });
     });
   }
 

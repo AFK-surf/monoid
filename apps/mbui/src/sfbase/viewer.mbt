@@ -1562,6 +1562,47 @@ pub fn file_params(v : Viewer) -> Map[String, Json] {
 }
 
 ///|
+/// One a message names (`file.open` with `params`), read first of what this device kept of it (`kept`, no station
+/// asked) and `shown` with it at once where that is all of what is asked, then asked again as it is now (it may have
+/// changed since: the core asks by the version it kept), `renewed` with what the station answers where that differs;
+/// `otherwise`, none kept, read as it is now alone.
+fn Viewer::kept_first(
+  self : Viewer,
+  src : Source,
+  params : Map[String, Json],
+  shown : (Json, Bytes) -> Unit,
+  renewed : (Json, Bytes) -> Unit,
+  otherwise : () -> Unit,
+) -> Unit {
+  let p = named_params(self)
+  for k, v in params {
+    p[k] = v
+  }
+  p["kept"] = Json::boolean(true)
+  (src.read_bytes)("file.open", Json::object(p), fn(r) {
+    match r {
+      Ok((said, bytes)) if number(Some(said), "size") == bytes.length().to_double() => {
+        shown(said, bytes)
+        (src.read_bytes)("file.open", Json::object(params), fn(again) {
+          match again {
+            Ok((now, b)) if !(field(Some(now), "same") is Some(True)) && b != bytes => renewed(now, b)
+            _ => ()
+          }
+        })
+      }
+      _ => otherwise()
+    }
+  })
+}
+
+///|
+/// What was shown of one a message names given way to what it is now (Viewer::kept_first): its picture put up anew.
+fn Viewer::renewed(self : Viewer, b : Bytes) -> Unit {
+  self.image = ""
+  self.bytes.set(Some(b))
+}
+
+///|
 /// What a file a message names is read by (`file.open`): its path as the message has it, in its agent's session.
 pub fn named_params(v : Viewer) -> Map[String, Json] {
   {
@@ -1794,13 +1835,15 @@ pub fn Viewer::read_whole(self : Viewer, src : Source, done : (Result[Bytes, Jso
     @signals.end_batch()
   }
   match self.drive {
-    // one a message names: as it is now (at most 16 MB)
+    // one a message names: what this device kept of it shown at once, then as it is now (at most 16 MB)
     None if self.named =>
-      (src.read_bytes)("file.open", Json::object(named_params(self)), fn(r) {
-        match r {
-          Ok((_, bytes)) => done(Ok(bytes))
-          Err(e) => done(Err(e))
-        }
+      self.kept_first(src, named_params(self), fn(_, bytes) { done(Ok(bytes)) }, fn(_, b) { self.renewed(b) }, fn() {
+        (src.read_bytes)("file.open", Json::object(named_params(self)), fn(r) {
+          match r {
+            Ok((_, bytes)) => done(Ok(bytes))
+            Err(e) => done(Err(e))
+          }
+        })
       })
     // what else, an image too (grown from its thumbnail meanwhile): how much has come as it comes, said in its bar
     // as the web's (the core's `{loaded, total}`)

@@ -596,10 +596,25 @@ async fn Admin::open_file(self : Admin, r : Request, key : String) -> Answer {
   let path = jstr(found.get("path")).unwrap_or("")
   let name = jstr(found.get("name")).unwrap_or("")
   let content_type = jstr(found.get("contentType")).unwrap_or("")
+  let mtime = js_string(found.get("mtime"))
+  let size = js_string(found.get("size"))
   let named = [
     ("stillfail-name", encode_uri_component(name)),
     ("stillfail-path", encode_uri_component(path)),
+    ("stillfail-mtime", mtime),
   ]
+  // (the version the device keeps, not changed since: no bytes, they are its already)
+  if r.param("raw") == Some("1") && r.param("have") == Some(mtime + ":" + size) {
+    let headers : Map[String, String] = {
+      "content-type": content_type,
+      "cache-control": "no-store",
+    }
+    for e in named {
+      headers[e.0] = e.1
+    }
+    headers["stillfail-total"] = size
+    return { status: 304, headers, body: Whole(b"") }
+  }
   if r.param("raw") == Some("1") &&
     (r.param("offset") is Some(_) || r.param("length") is Some(_)) {
     guard range_of(r) is Some((offset, length)) else {

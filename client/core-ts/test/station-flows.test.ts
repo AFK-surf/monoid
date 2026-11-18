@@ -295,6 +295,47 @@ test("a_file_a_message_names_opens_whole_its_bytes_beside_from_a_station_new_or_
   core.close();
 });
 
+test("a_file_a_message_names_is_kept_by_its_version_and_asked_again_by_it_each_time_it_is_opened", async () => {
+  const { host, core } = await started(base());
+  // The file on the station: its bytes and its version, changed as the test goes.
+  let file = { bytes: new Uint8Array([1, 2, 3]), mtime: 100 };
+  const asked: string[] = [];
+  stationReplies(host, (req) => {
+    const url = new URL(req.url);
+    if (!url.pathname.endsWith("/sessions/k/open")) return undefined;
+    const have = url.searchParams.get("have");
+    asked.push(have ?? "");
+    const headers: [string, string][] = [["content-type", "image/png"], ["stillfail-name", "a.png"], ["stillfail-path", encodeURIComponent("/w/a.png")], ["stillfail-mtime", String(file.mtime)]];
+    if (have === `${file.mtime}:${file.bytes.length}`) return new Raw({ status: 304, headers: [...headers, ["stillfail-total", String(file.bytes.length)]], body: new Uint8Array() });
+    return new Raw({ status: 200, headers, body: file.bytes });
+  });
+  const ui = core.connect();
+  const said = (id: number) => host.takeEmitted().map(([, m]) => m as J).find((m) => m.id === id && ("ok" in m || "error" in m)) as J;
+  const open = async (id: number, more: Record<string, unknown> = {}) => {
+    call(core, ui, id, "file.open", { station: ST, key: "k", path: "/w/a.png", ...more });
+    await host.settle();
+    return said(id);
+  };
+  try {
+    // Nothing kept yet: only what is kept asked for, none; then read whole and kept.
+    assert.equal((await open(1, { kept: true })).error.code, "not_kept");
+    const first = await open(2);
+    assert.deepEqual([first.ok, [...first.bytes]], [{ name: "a.png", path: "/w/a.png", type: "image/png", size: 3 }, [1, 2, 3]]);
+    // Kept: shown at once with no station asked, then asked again by its version: the same, none of its bytes sent.
+    const kept = await open(3, { kept: true });
+    assert.deepEqual([kept.ok, [...kept.bytes]], [{ name: "a.png", path: "/w/a.png", type: "image/png", size: 3 }, [1, 2, 3]]);
+    const same = await open(4);
+    assert.deepEqual([same.ok.same, [...same.bytes]], [true, [1, 2, 3]]);
+    // Changed on the station: read anew, and that is what is kept from then.
+    file = { bytes: new Uint8Array([7, 8]), mtime: 200 };
+    const changed = await open(5);
+    assert.deepEqual([changed.ok.same, [...changed.bytes]], [undefined, [7, 8]]);
+    assert.deepEqual([...(await open(6, { kept: true })).bytes], [7, 8]);
+    // (only what is not kept, or kept and asked again by its version, went to the station)
+    assert.deepEqual(asked, ["", "100:3", "100:3"]);
+  } finally { core.close(); }
+});
+
 test("a_windows_file_an_agent_names_in_code_can_be_peeked_and_opened_by_its_marked_path", async () => {
   const { host, core } = await started(base());
   const paths = ["C:/work/report.md", "C:\\work\\报告.md"];

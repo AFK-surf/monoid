@@ -186,6 +186,8 @@ pub fn fix_meter(String, Int32, String, String, String) -> Json
 
 pub fn fix_model(String) -> Json
 
+pub let fix_named_kept : Map[String, Bool]
+
 pub fn fix_new_chat(Fixture) -> Json
 
 pub fn fix_no_agent(Json) -> Json
@@ -251,6 +253,8 @@ pub fn fix_split_tabs() -> Json
 pub let fix_srt : String
 
 pub fn fix_station(String) -> Json
+
+pub let fix_station_for : @ref.Ref[Double]
 
 pub let fix_stream_ids : @ref.Ref[Int32]
 

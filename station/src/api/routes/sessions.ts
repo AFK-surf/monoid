@@ -223,11 +223,17 @@ async function peek(read: Tools["read"], r: Request, key: string, dataDir: strin
 /// `stillfail-path` (URI-encoded), as a client from now asks it (base64 made it a third bigger, and slow to read back).
 /// With `raw=1` and `offset` or `length`: only that part of it (as /parts gives one, its whole size in
 /// `stillfail-total`), however big it is: a text shown as it comes, read on as it is read.
+/// With `raw=1` it says what version of the file it is (`stillfail-mtime`, beside its size), so a device keeps what it
+/// read of it; asked with `have=<mtime>:<size>` of the version it keeps, the file not changed since is answered 304
+/// with no bytes (whole or a part: they are the device's already).
 async function openFile(read: Tools["read"], r: Request, key: string): Promise<Answer> {
   const found = await placeOf(read, r, key);
   if ("status" in found) return found;
   if (found.dir) return error(400, "a directory");
-  const named = { "stillfail-name": encodeURIComponent(found.name), "stillfail-path": encodeURIComponent(found.path) };
+  const named = { "stillfail-name": encodeURIComponent(found.name), "stillfail-path": encodeURIComponent(found.path), "stillfail-mtime": String(found.mtime) };
+  if (param(r, "raw") === "1" && param(r, "have") === `${found.mtime}:${found.size}`) {
+    return { status: 304, headers: { "content-type": found.contentType, "cache-control": "no-store", ...named, "stillfail-total": String(found.size) }, body: Buffer.alloc(0) };
+  }
   if (param(r, "raw") === "1" && (param(r, "offset") !== undefined || param(r, "length") !== undefined)) {
     const range = rangeOf(r);
     if (range === null) return error(400, "invalid offset or length");

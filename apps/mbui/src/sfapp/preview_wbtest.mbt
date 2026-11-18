@@ -715,7 +715,8 @@ fn named_tester(path : String) -> @ui.Tester {
 ///|
 test "a long log a message names: its first part shown at once, the next read as its end comes near, never all of it first" {
   let t = named_tester("logs/build.log")
-  let reads = fn() { fix_fetches.filter(fn(f) { f.0 == "file.open" }) }
+  // (what the station is asked: not what the device kept, asked first)
+  let reads = fn() { fix_fetches.filter(fn(f) { f.0 == "file.open" && field(Some(f.1), "kept") is None }) }
   // read by its path, a part from its start, shown
   assert_eq(reads().length(), 1)
   assert_eq(text(Some(reads()[0].1), "path"), "logs/build.log")
@@ -759,6 +760,33 @@ test "a file a message names that comes whole in its first part: shown as any fi
   let t = named_tester("src/list/place.mbt")
   assert_true(viewer.get().unwrap().bytes.get() is Some(_))
   assert_true(t.find("self.anchor = self.anchor + n") is Some(_) || t.locate("self.anchor = self.anchor + n").length() > 0)
+}
+
+///|
+test "a file a message names opened again: what the device kept of it shown at once, then asked again as it is now" {
+  let path = "src/list/place.mbt"
+  new_run()
+  let src = fixture("chat-preview-named")
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0)
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  t.draw()
+  let file = attachment_of({ "name": Json::string(base_name(path)), "path": Json::string(path) })
+  open_preview("ws1/st1", "s-c1", file, named=true)
+  t.frame()
+  t.run_for(@ui.move_most_ms)
+  let asked = fn() { fix_fetches.filter(fn(f) { f.0 == "file.open" && field(Some(f.1), "kept") is None }).length() }
+  assert_eq(asked(), 1, msg="read of the station the first time")
+  // the station slow now: opened again, its words there in the frame it opens, while the station is asked again
+  @sffixture.fix_station_for.val = 5000.0
+  let first = viewer.get().unwrap()
+  viewer.set(None)
+  t.frame()
+  open_preview("ws1/st1", "s-c1", file, named=true)
+  t.frame()
+  assert_true(!physical_equal(viewer.get().unwrap(), first), msg="opened anew")
+  assert_true(viewer.get().unwrap().bytes.get() is Some(_), msg="what was kept, at once")
+  assert_true(t.find("self.anchor = self.anchor + n") is Some(_) || t.locate("self.anchor = self.anchor + n").length() > 0)
+  assert_eq(asked(), 2, msg="and asked again as it is now")
 }
 
 ///|

@@ -1284,6 +1284,10 @@ function defineCases() {
   add("session open", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"]] });
   add("session open raw", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"]] });
   add("session open raw part", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["offset", "2"], ["length", "4"]] });
+  // (a version the device keeps: 304, no bytes, whole or a part; one it changed since read as before)
+  add("session open raw kept", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["have", "5:11"]] });
+  add("session open raw part kept", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["offset", "2"], ["length", "4"], ["have", "5:11"]] });
+  add("session open raw changed", { method: "GET", path: "/sessions/s1/open", query: [["path", "a.txt"], ["raw", "1"], ["have", "4:11"]] });
   add("session open dir", { method: "GET", path: "/sessions/s1/open" }, { world: (w) => (w.state.place = { path: "/rooms/s1", name: "s1", dir: true, size: 0, mtime: 5, contentType: "x" }) });
   add("session unknown action", { method: "GET", path: "/sessions/s1/what" });
   add("changed sessions", { method: "POST", path: "/changed/sessions", body: { held: {} } });

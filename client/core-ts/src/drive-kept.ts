@@ -69,6 +69,13 @@ export function previewKeptId(station: string, key: string, name: string): strin
 /// An image this small or smaller is read whole in the viewer at once: its station makes no preview of it.
 export const PREVIEW_SMALL = 300 * 1024;
 
+/// A file a message names by its path, among those kept (`file.open`): its station, the session it is named in, the
+/// path as named (`open` first: no station's is so). Kept as `file` is, by its version (its mtime and size, as the
+/// station says), and asked again of the station by that version each time it is opened: it may have changed.
+export function openKeptId(station: string, key: string, path: string): string {
+  return `open\n${station}\n${key}\n${path}`;
+}
+
 /// A file sent up from here, among those kept: its station, and the name the station keeps it under (unique there, and
 /// kept as it moves the file into the chat's uploads), whichever chat it is in (`sent` first: no station's is so).
 export function sentKeptId(station: string, name: string): string {
@@ -245,6 +252,14 @@ export class DriveKept {
     return Effect.map(this.#db(), (sql) => {
       const row = sql?.all("SELECT size FROM kept WHERE id = ? UNION ALL SELECT size FROM saved WHERE id = ? LIMIT 1", [id, id])[0];
       return row ? Number(row[0]) : null;
+    });
+  }
+
+  /// The version of the file `id` kept (its mtime, size and type), whatever of it is kept; null where none is.
+  version(id: string): Effect.Effect<{ mtime: number; size: number; type: string } | null> {
+    return Effect.map(this.#db(), (sql) => {
+      const kept = sql === null ? null : this.#kept(sql, id);
+      return kept === null ? null : { mtime: kept.mtime, size: kept.size, type: kept.type };
     });
   }
 

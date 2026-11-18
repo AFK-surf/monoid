@@ -64,6 +64,8 @@ function rig(withAgents = true) {
     const a = await admin.handle(r);
     return [a.status, JSON.parse(String(a.body))] as const;
   };
+  // (an answer as it is: its headers and its bytes)
+  const answer = async (method: string, path: string, query: [string, string][] = []) => admin.handle({ method, path, query, headers: {}, body: Buffer.alloc(0), viewer, lang: "en" });
   const close = async () => {
     await hub.shutdown();
     await jobs.shutdown();
@@ -71,7 +73,7 @@ function rig(withAgents = true) {
     store.close();
     rmSync(data, { recursive: true, force: true });
   };
-  return { data, store, hub, jobs, readers, claude, codex, ask, close };
+  return { data, store, hub, jobs, readers, claude, codex, ask, answer, close };
 }
 
 test("a new chat: its session and its thread, refused without a runtime or with an unknown profile", async () => {
@@ -753,6 +755,19 @@ test("a file a message names by its path: its peek and the file whole, only with
     const [, whole] = await r.ask("GET", `/sessions/${key}/open`, undefined, [["path", "src/a.ts"]]);
     assert.equal(Buffer.from(whole.bytes, "base64").toString("utf8").split("\n").length, 40);
     assert.equal(whole.name, "a.ts");
+    // Its version said beside its bytes; asked again with that version, nothing but that it is the same (whole or a
+    // part); changed since, read as before.
+    const raw = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"]]);
+    const mtime = raw.headers["stillfail-mtime"]!;
+    const size = Buffer.from(whole.bytes, "base64").length;
+    assert.equal(raw.status, 200);
+    assert.ok(Number(mtime) > 0, mtime);
+    for (const more of [[], [["offset", "0"], ["length", "4"]]] as [string, string][][]) {
+      const same = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"], ["have", `${mtime}:${size}`], ...more]);
+      assert.deepEqual([same.status, (same.body as Buffer).length, same.headers["stillfail-total"], same.headers["stillfail-mtime"]], [304, 0, String(size), mtime]);
+    }
+    const changed = await r.answer("GET", `/sessions/${key}/open`, [["path", "src/a.ts"], ["raw", "1"], ["have", `${mtime}:${size - 1}`]]);
+    assert.deepEqual([changed.status, (changed.body as Buffer).length], [200, size]);
   } finally {
     await r.close();
   }

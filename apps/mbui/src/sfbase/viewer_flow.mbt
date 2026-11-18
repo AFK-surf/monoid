@@ -102,7 +102,7 @@ pub fn Viewer::read_on(self : Viewer, src : Source) -> Unit {
   guard !f.reading && !f.whole() && f.failed.get() is None else { return }
   f.reading = true
   let first = f.got == 0.0
-  v.read_part(src, f.got, flow_part, "file", fn(r) {
+  let took = fn(r : Result[(Json, Bytes), Json]) {
     f.reading = false
     match r {
       Ok((said, bytes)) => {
@@ -136,7 +136,24 @@ pub fn Viewer::read_on(self : Viewer, src : Source) -> Unit {
         f.failed.set(Some(said))
       }
     }
-  })
+  }
+  // (one a message names, all of it in its first part: what this device kept of it shown at once, then as it is now)
+  if first && v.named {
+    v.kept_first(src, v.part_params(0.0, flow_part, "file"), fn(said, bytes) { took(Ok((said, bytes))) }, fn(now, b) {
+      if number(Some(now), "size") == b.length().to_double() {
+        f.total = b.length().to_double()
+        f.got = f.total
+        v.renewed(b)
+      } else {
+        // (grown past a part since: read as it comes again, from its start)
+        v.flow = None
+        v.flow_told.set(v.flow_told.untracked() + 1)
+        v.bytes.set(None)
+      }
+    }, fn() { v.read_part(src, f.got, flow_part, "file", took) })
+  } else {
+    v.read_part(src, f.got, flow_part, "file", took)
+  }
 }
 
 ///|

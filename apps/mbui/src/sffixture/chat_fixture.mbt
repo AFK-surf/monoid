@@ -1058,7 +1058,13 @@ pub let fix_sent_for : Ref[Double] = Ref(-1.0)
 pub let fix_core_for : Ref[Double] = Ref(0.0)
 
 ///|
-/// The pace a fixture's program was given (MBUI_FIX_PACE's "DELIVER,ANSWER,END" ms: fix_pace; MBUI_FIX_CORE's ms:
+/// How long the made-up station takes to give a file a message names (`file.open`) as it is now; 0, at once. What the
+/// device kept of one read before is given at once whatever this is (`kept`: fixture_fetch).
+// kept across runs: put back as a fixture is made (made.mbt)
+pub let fix_station_for : Ref[Double] = Ref(0.0)
+
+///|
+/// The pace a fixture's program was given (MBUI_FIX_PACE's "DELIVER,ANSWER,END[,FILE]" ms: fix_pace, fix_station_for; MBUI_FIX_CORE's ms:
 /// fix_core_for), set once its fixture is made; what is not said, or not numbers, left as the fixture has it. Read by
 /// the fixture's programs alone (sffix, sfbench, a film's scene), never by the app; a run given one says so in what
 /// it puts out (sfbench's APPBENCH, a film's record).
@@ -1070,11 +1076,15 @@ pub fn fix_pace_said(pace : String, core : String) -> Unit {
     }
   }
   let parts = pace.split(",").collect()
-  if parts.length() == 3 {
+  if parts.length() == 3 || parts.length() == 4 {
     match (ms(parts[0]), ms(parts[1]), ms(parts[2])) {
       (Some(d), Some(a), Some(e)) => fix_pace.val = (d, a, e)
       _ => ()
     }
+  }
+  // (a fourth: how long the station takes to give a file a message names, fix_station_for)
+  if parts.length() == 4 && ms(parts[3]) is Some(f) {
+    fix_station_for.val = f
   }
   if ms(core) is Some(c) {
     fix_core_for.val = c

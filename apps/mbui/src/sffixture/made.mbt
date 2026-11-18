@@ -74,6 +74,8 @@ pub fn fixture_reset() -> Unit {
   fix_pace.val = (fix_deliver_ms, fix_answer_ms, fix_turn_end_ms)
   fix_sent_for.val = -1.0
   fix_core_for.val = 0.0
+  fix_station_for.val = 0.0
+  fix_named_kept.clear()
   fix_vault.val = ""
   fix_phone.val = ""
   fix_phone_scope.val = ""
