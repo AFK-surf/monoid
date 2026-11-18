@@ -159,12 +159,16 @@ fn history_details_node(v : @view.View, src : Source, r : ChatRef, key : String,
         b.each(fn() { Array::makei(usage().length(), fn(i) { i }) }, fn(i) { i }, fn(x, i) {
           let k = i.untracked()
           let one = fn() { usage().get(k) }
-          @sf.style_node(x, fn() { details_figure })
-          @sf.words_node(x, fn() { text(one(), "label") }, fn() { details_figure_label })
-          .width(By(fn() { Some(label_w(x)) }))
-          .shrink(Is(0.0))
+          // (the row in its slot: as tall as a fact's at least, by what it holds)
+          x.box(fn(f) {
+            @sf.style_node(f, fn() { details_figure })
+            @sf.words_node(f, fn() { text(one(), "label") }, fn() { details_figure_label })
+            .width(By(fn() { Some(label_w(f)) }))
+            .shrink(Is(0.0))
+            |> ignore
+            said(fn() { text(one(), "value") })(f)
+          })
           |> ignore
-          said(fn() { text(one(), "value") })(x)
         })
       })
       |> ignore
