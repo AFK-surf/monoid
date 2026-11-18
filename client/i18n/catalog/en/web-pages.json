@@ -1304,6 +1304,21 @@
   "web-pages.security.devicesWhich": "Signed in within the last 30 days",
   "web-pages.security.lead": "Who can access this workspace's stations and run commands on them",
   "web-pages.security.members": "Members",
+  "web-pages.security.myDevices": "My devices",
+  "web-pages.security.otherMembers": "Other members",
+  "web-pages.security.memberTrustedDevices": {
+    "one": "{n} trusted device",
+    "other": "{n} trusted devices"
+  },
+  "web-pages.security.memberDevices": {
+    "one": "{n} device",
+    "other": "{n} devices"
+  },
+  "web-pages.security.memberWebDevices": {
+    "one": "{n} web session",
+    "other": "{n} web sessions"
+  },
+  "web-pages.security.memberNoDevices": "No devices",
   "web-pages.security.needsAppTitle": "Install the app first",
   "web-pages.security.newDeviceOf": "{name}'s new device",
   "web-pages.security.newDevices": "New devices need approval",

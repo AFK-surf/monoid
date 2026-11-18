@@ -3387,32 +3387,33 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("you", Json::boolean(true)),
                 ("nameText", str("林")),
                 ("roleText", str("Owner")),
+                ("devicesText", str(if fx.lock_case == "confirm" { "3 台受信任设备 · 1 台设备 · 1 个网页版" } else { "4 台受信任设备 · 1 个网页版" })),
                 (
                   "groups",
                   [
                     obj([
                       ("appText", str("still.fail Android")),
                       ("devices", [
-                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(fx.lock_case != "confirm")), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str(if fx.lock_case == "confirm" { "此设备" } else { "此设备 · 受信任" }))]),
+                        obj([("id", str("d1")), ("kind", str("app")), ("label", str("still.fail Android · Pixel 9")), ("signs", Json::boolean(fx.lock_case != "confirm")), ("older", Json::boolean(false)), ("mine", Json::boolean(true)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1760000000.0)), ("removable", Json::boolean(false)), ("nameText", str("Pixel 9")), ("fullText", str("Pixel 9 · still.fail Android")), ("metaText", str(if fx.lock_case == "confirm" { "此设备" } else { "此设备 · 受信任" })), ("machine", str("phone")), ("appText", str("still.fail Android")), ("noteText", str(if fx.lock_case == "confirm" { "still.fail Android" } else { "still.fail Android · 受信任" }))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 桌面版")),
                       ("devices", [
-                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任"))]),
-                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任"))]),
+                        obj([("id", str("d4")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 林的 MacBook Pro")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759990000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("林的 MacBook Pro")), ("fullText", str("林的 MacBook Pro · still.fail 桌面版")), ("metaText", str("一天内使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 一天内使用过 · 受信任"))]),
+                        obj([("id", str("d6")), ("kind", str("app")), ("label", str("still.fail 桌面版 · 示例工作站")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759700000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("示例工作站")), ("fullText", str("示例工作站 · still.fail 桌面版")), ("metaText", str("3 天前使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 3 天前使用过 · 受信任"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("still.fail 网页版")),
                       ("devices", [
-                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天"))]),
+                        obj([("id", str("d2")), ("kind", str("web")), ("label", str("still.fail 网页版 · Chrome · macOS")), ("signs", Json::boolean(false)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("daysLeft", Json::number(4.0)), ("renewSoon", Json::boolean(true)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759800000.0)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("Chrome · macOS")), ("fullText", str("Chrome · macOS · still.fail 网页版")), ("metaText", str("2 天前使用过 · 剩余 4 天")), ("appText", str("still.fail 网页版")), ("noteText", str("still.fail 网页版 · 2 天前使用过")), ("leftText", str("剩余 4 天"))]),
                       ]),
                     ]),
                     obj([
                       ("appText", str("其他")),
                       ("devices", [
-                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任"))]),
+                        obj([("id", str("d5")), ("kind", str("app")), ("label", str("")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("removable", Json::boolean(fx.lock_case != "confirm")), ("nameText", str("客户端")), ("fullText", str("客户端")), ("metaText", str("超过一个月未使用 · 受信任")), ("machine", str("computer")), ("noteText", str("超过一个月未使用 · 受信任"))]),
                       ]),
                     ]),
                   ],
@@ -3426,13 +3427,14 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
                 ("you", Json::boolean(false)),
                 ("nameText", str("Ana")),
                 ("roleText", str("管理员")),
+                ("devicesText", str("1 台受信任设备")),
                 (
                   "groups",
                   [
                     obj([
                       ("appText", str("still.fail 桌面版")),
                       ("devices", [
-                        obj([("id", str("d3")), ("kind", str("app")), ("label", str("still.fail 桌面版 · Ana 的 MacBook Air")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759570000.0)), ("removable", Json::boolean(false)), ("nameText", str("Ana 的 MacBook Air")), ("fullText", str("Ana 的 MacBook Air · still.fail 桌面版")), ("metaText", str("5 天前使用过 · 受信任"))]),
+                        obj([("id", str("d3")), ("kind", str("app")), ("label", str("still.fail 桌面版 · Ana 的 MacBook Air")), ("signs", Json::boolean(true)), ("older", Json::boolean(false)), ("mine", Json::boolean(false)), ("renewSoon", Json::boolean(false)), ("recent", Json::boolean(false)), ("lastSeen", Json::number(1759570000.0)), ("removable", Json::boolean(false)), ("nameText", str("Ana 的 MacBook Air")), ("fullText", str("Ana 的 MacBook Air · still.fail 桌面版")), ("metaText", str("5 天前使用过 · 受信任")), ("machine", str("computer")), ("appText", str("still.fail 桌面版")), ("noteText", str("still.fail 桌面版 · 5 天前使用过 · 受信任"))]),
                       ]),
                     ]),
                   ],
@@ -3443,7 +3445,7 @@ pub fn fixture_topic(mode : String, name : String, params : Map[String, Json]) -
           (
             "stations",
             [
-              obj([("id", str("st1")), ("name", str("Willow")), ("online", Json::boolean(true)), ("protected", Json::boolean(true))]),
+              obj([("id", str("st1")), ("name", str("Willow")), ("online", Json::boolean(true)), ("protected", Json::boolean(true)), ("icon", str("glyph:desktop"))]),
               obj([("id", str("st2")), ("name", str("Maple")), ("online", Json::boolean(false)), ("protected", Json::boolean(false))]),
             ],
           ),

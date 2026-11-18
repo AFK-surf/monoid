@@ -637,6 +637,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "phone settings-policy-option stationPart part=automaticDecisions/decided": 8,
   "phone settings-security-join profiles/down": 12,
   "phone settings-security-off profiles/down": 12,
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "phone settings-security-open profiles/down": 12,
   "phone settings-security-pending profiles/down": 12,
   "phone settings-security-again profiles/down": 12,
   "phone settings-security-root-off profiles/down": 12,
@@ -1540,6 +1542,8 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide settings-policy-option profiles/down": 6,
   "wide settings-security-join profiles/down": 6,
   "wide settings-security-off profiles/down": 6,
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "wide settings-security-open profiles/down": 6,
   "wide settings-security-pending profiles/down": 6,
   "wide settings-security-again profiles/down": 6,
   "wide settings-security-root-off profiles/down": 6,

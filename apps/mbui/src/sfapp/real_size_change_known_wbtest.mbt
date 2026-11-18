@@ -1313,6 +1313,11 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "phone settings-security-off vaults/item": (0, 0, 0, 0, 0, 0),
   "phone settings-security-off profiles/quota": (0, 0, 0, 0, 0, 0),
   "phone settings-security-off profiles/down": (0, 0, 7, 0, 0, 0),
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "phone settings-security-open connects/session": (0, 0, 0, 0, 0, 0),
+  "phone settings-security-open vaults/item": (0, 0, 0, 0, 0, 0),
+  "phone settings-security-open profiles/quota": (0, 0, 0, 0, 0, 0),
+  "phone settings-security-open profiles/down": (0, 0, 7, 0, 0, 0),
   "phone settings-security-pending connects/session": (0, 0, 0, 0, 0, 0),
   "phone settings-security-pending vaults/item": (0, 0, 0, 0, 0, 0),
   "phone settings-security-pending profiles/quota": (0, 0, 0, 0, 0, 0),
@@ -3027,6 +3032,11 @@ let real_size_change_known : Map[String, (Int, Int, Int, Int, Int, Int)] = {
   "wide settings-security-off vaults/item": (0, 0, 0, 0, 0, 0),
   "wide settings-security-off profiles/quota": (0, 0, 0, 0, 0, 0),
   "wide settings-security-off profiles/down": (0, 0, 22, 2, 0, 0),
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "wide settings-security-open connects/session": (0, 0, 0, 0, 0, 0),
+  "wide settings-security-open vaults/item": (0, 0, 0, 0, 0, 0),
+  "wide settings-security-open profiles/quota": (0, 0, 0, 0, 0, 0),
+  "wide settings-security-open profiles/down": (0, 0, 22, 2, 0, 0),
   "wide settings-security-pending connects/session": (0, 0, 0, 0, 0, 0),
   "wide settings-security-pending vaults/item": (0, 0, 0, 0, 0, 0),
   "wide settings-security-pending profiles/quota": (0, 0, 0, 0, 0, 0),

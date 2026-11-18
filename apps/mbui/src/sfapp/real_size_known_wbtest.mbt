@@ -437,6 +437,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   // Raised 2026-11-17: what it opens with up a sheet of the window's tree on 小屏 (as phone newchat-preset's).
   "phone settings-security-join": (504, 349, 42),
   "phone settings-security-off": (519, 370, 47),
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "phone settings-security-open": (509, 349, 52),
   "phone settings-security-pending": (446, 313, 38),
   "phone settings-security-again": (461, 313, 38),
   "phone settings-security-root-off": (461, 313, 38),
@@ -848,6 +850,8 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "wide settings-policy-option": (616, 497, 88),
   "wide settings-security-join": (694, 540, 90),
   "wide settings-security-off": (737, 577, 96),
+  // (开启安全模式, settings-security-open: swept since it joined the corner modes, its rows as the sweep first measured them)
+  "wide settings-security-open": (631, 496, 96),
   "wide settings-security-pending": (670, 519, 86),
   "wide settings-security-again": (680, 519, 86),
   "wide settings-security-root-off": (680, 519, 86),

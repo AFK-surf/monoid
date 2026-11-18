@@ -913,7 +913,8 @@ let row_tag : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=Subtle
 
 ///|
 /// A row on a group's card that goes somewhere (link_row's, narrow, in a card): `lead` before its title (`strong`
-/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, a red dot before it
+/// where it names who or what it is), what it says at its end (`value`, in red where `value_bad`, in amber where
+/// `value_warn`: soon not as it should be, a web page's days left; a red dot before it
 /// where `value_dot`) and a chevron (none where not `chevron`; an arrow out where it goes `out` of the app); `note` under
 /// its title, a line of its own as wide as its words, its end then on its first line, its lead across that line's
 /// middle; `below` under that while `below_open` says it is any of the way open (a room opening on it, its row growing
@@ -948,6 +949,7 @@ pub fn link_row_node(
   press : () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -990,6 +992,7 @@ pub fn link_row_node(
     fn(_) { press },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1038,6 +1041,7 @@ pub fn link_row_opens_node(
   opens : (@view.View) -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1077,6 +1081,7 @@ pub fn link_row_opens_node(
     fn(row) { fn() { opens(row) } },
     value~,
     value_bad~,
+    value_warn~,
     value_dot~,
     value_lit~,
     note~,
@@ -1119,6 +1124,7 @@ fn link_row_made(
   pressed_by : (@view.View) -> () -> Unit,
   value? : () -> String = fn() { "" },
   value_bad? : () -> Bool = fn() { false },
+  value_warn? : () -> Bool = fn() { false },
   value_dot? : () -> Bool = fn() { false },
   value_lit? : Bool = false,
   note? : () -> String = fn() { "" },
@@ -1182,7 +1188,10 @@ fn link_row_made(
   }
   let ends = goes && (out || (chevron && !acts && control is None))
   // (what it says, its note: in the link's ink, in amber, where it says so)
-  let value_look = fn(base : @ui.TextStyle) { if value_lit { base.then(lit_words) } else { base } }
+  let value_look = fn(base : @ui.TextStyle) {
+    let lit = if value_lit { base.then(lit_words) } else { base }
+    if value_warn() { lit.then(lacking) } else { lit }
+  }
   let note_look = fn(base : @ui.TextStyle) { if lacks { base.then(lacking) } else { base } }
   if look_node(parent) is Wide {
     // (its note as a wide page says it, where it says it otherwise: `wide_note`)

@@ -27,10 +27,8 @@ let corners_everywhere_known : Map[String, Int] = {
   // gone as the page's height is any other (English's has none).
   known["touch-zh settings-vault-waits"] = 3
   // 安全 made its person's only trusted device (lock-rebound-security) in the 600 wide window touch is in, in Chinese: the rail's
-  // one, and its page, which does not fill its panel, ending with 网页版's card 17 over the panel's foot, 16 in, its foot
-  // corners where the panel's 42 would want them 25. Where it ends is its words' and the window's, as 密钥's above: gone
-  // as the page's height is any other (English's has none).
-  known["touch-zh lock-rebound-security"] = 3
+  // one (its workspace's mark in the panel's top left corner).
+  known["touch-zh lock-rebound-security"] = 1
   // A request for the phone waiting (chat-phone-lacks, swept since 2026-11-11; the same card as chat-phone's, on main
   // unswept): its length's chooser, the last of its answer's row, stands in the card's foot end corner off concentric
   // with it where its words are long (闲置 1 小时后失效 on a phone; Until idle for 1 hour wherever English is), as the
@@ -137,7 +135,7 @@ let corners_tape_rail : Array[String] = [
   "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add", "settings-vault-editor", "settings-vault-recover",
   "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people", "settings-workspace-mark", "settings-local-fonts",
   "settings-policy", "settings-policy-text", "settings-policy-option", "settings-security-join",
-  "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-fonts",
+  "settings-security-off", "settings-security-open", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices", "settings-fonts",
   "settings-fonts-code", "settings-decisions", "settings-completion", "settings-bars", "settings-about",
   "settings-changelog", "settings-prices", "settings-notify-off", "settings-notify-denied", "share-card-poster",
   "share-card-receipt", "share-card-senren-adv", "share-card-senren-affection", "share-card-senren-cg",
