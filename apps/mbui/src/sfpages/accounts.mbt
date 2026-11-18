@@ -326,8 +326,8 @@ fn profile_block_node(
 
 ///|
 /// Its head (AccountView's identity) in node `h`: its provider's mark, its name (renamed here, but for the machine's own
-/// and a copy) and the runtimes it serves, what it is (its station's name where it is on several or is that machine's
-/// own login), its last check and when, checking again (its allowance read again with it); its ⋯.
+/// and a copy) and the runtimes it serves, what it is (its station's name where it is on several), its last check and
+/// when, checking again (its allowance read again with it); its ⋯.
 fn profile_head_node(
   h : @view.View,
   core : Core,
@@ -352,10 +352,9 @@ fn profile_head_node(
       text(pv, "kindText")
     }
     let email = text(pv, "email")
-    // of an account on several stations, this station's (each's own part is under Station), not all of them; a
-    // machine's own login always, as 终端里的登录 says nothing of which machine's terminal
+    // of an account on several stations, this station's (each's own part is under Station), not all of them
     let several = items(entry(), "members").filter(fn(m) { text(Some(m), "role") != "user" }).length() > 1
-    let place = if (several || flag(pv, "machine")) && text(s(), "name") != "" {
+    let place = if several {
       @sf.t("web-pages.profiles.onStation", args=[("station", text(s(), "name"))])
     } else {
       ""

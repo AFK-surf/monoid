@@ -356,46 +356,6 @@ test "a subscription's tier is shown on its page at every width" {
 }
 
 ///|
-test "a machine's own login says on its page which station's terminal it is, at every width" {
-  // Willow's Claude account as that machine's own login (终端里的登录), on that station alone
-  let machine = fn(s : Source) -> Source {
-    fn shaped(v : Json) -> Json {
-      match v {
-        Object(o) if o.get("id") == Some(Json::string("cc")) => {
-          let p = o.copy()
-          p["machine"] = Json::boolean(true)
-          p["kindText"] = Json::string("终端里的登录")
-          Json::object(p)
-        }
-        Object(o) => {
-          let p = o.copy()
-          for k, x in o {
-            p[k] = shaped(x)
-          }
-          Json::object(p)
-        }
-        Array(a) => Json::array(a.map(shaped))
-        _ => v
-      }
-    }
-
-    {
-      ..s,
-      topic_read: fn(name, params) {
-        let r = s.topic(name, params).get().snapshot()
-        { ..r, value: r.value.map(shaped) }
-      },
-    }
-  }
-  for case in page_cases {
-    let (w, platform) = case
-    let t = setting_tester(Profile("ws1/st1", "cc"), w, platform~, over=machine)
-    let shown = t.words().map(fn(x) { x.0 }).join("")
-    assert_true(shown.contains("终端里的登录 · Ultra · 在 Willow"), msg="width \{w} platform \{platform}: \{shown}")
-  }
-}
-
-///|
 test "a key's profile's page, wide: its key masked, a new one asked for from its row" {
   let t = setting_tester(Profile("ws1/st1", "k2"), 1280.0)
   assert_true(t.find("备用 key") is Some(_))
