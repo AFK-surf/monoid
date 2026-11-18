@@ -590,3 +590,36 @@ test "settings' 共享调试 on a phone's narrow page: what it is behind the ⓘ
     assert_true(t.find("agent 在对话里申请，你允许后只有那个对话能用。") is Some(_), msg="\{w}")
   }
 }
+
+///|
+test "settings' 共享调试 with two accounts signed in, the workspace's account not approved while the other's is: that account's step alone, 发送批准请求 asking it for that account" {
+  let (t, calls) = adb_settings_calls("settings-adb-lock-multi")
+  assert_true(t.find("此设备尚未获批") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("重启手机、更新 app 后也保持开启") is None)
+  t.tap_text("发送批准请求")
+  t.draw()
+  let asked = calls.filter(fn(call) { call.0 == "adb.personalJoin" })
+  assert_eq(asked.length(), 1, msg="\{Repr(calls.map(fn(call) { call.0 }))}")
+  assert_eq(asked[0].1, { "sub": "u1" })
+}
+
+///|
+test "settings' 共享调试 with two accounts signed in, the workspace's account's lock set up again elsewhere while the other's has this device: that account's step, forgetting it for that account" {
+  let (t, calls) = adb_settings_calls("settings-adb-lock-multi-replaced")
+  let forget = @sf.t("android-misc.personal.forget")
+  assert_true(t.find(forget) is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("重启手机、更新 app 后也保持开启") is None)
+  t.tap_text(forget)
+  t.draw()
+  let asked = calls.filter(fn(call) { call.0 == "adb.personalForget" })
+  assert_eq(asked.length(), 1, msg="\{Repr(calls.map(fn(call) { call.0 }))}")
+  assert_eq(asked[0].1, { "sub": "u1" })
+}
+
+///|
+test "settings' 共享调试 with two accounts signed in, the workspace's account approved while the other is not: the page as it is, its switch and the chats, no step of the other's" {
+  let (t, _) = adb_settings_calls("settings-adb-lock-multi-member")
+  assert_true(t.find("此设备尚未获批") is None)
+  assert_true(t.find("重启手机、更新 app 后也保持开启") is Some(_), msg="\{Repr(t.words().map(fn(w) { w.0 }))}")
+  assert_true(t.find("通知权限检查") is Some(_))
+}

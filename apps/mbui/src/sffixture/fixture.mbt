@@ -1361,20 +1361,40 @@ pub fn fixture_topic_inner(f : Fixture, name : String, params : Map[String, Json
         "on": f.mode != "chat-phone-off" && f.mode != "chat-phone-step-off",
         "lends": fixture_phone_lend(f.mode),
         "pairPort": if f.mode == "chat-phone-step-code" { Json::number(37115.0) } else { Json::null() },
-        "personal": [
-          {
-            "sub": "s",
-            "email": "lin@example.com",
-            "standing": match f.mode {
-              "chat-phone-outside" => "outside"
-              "chat-phone-none" => "none"
-              _ => "member"
+        "personal": if f.mode == "chat-phone-multi" {
+          // (two accounts signed in here: another's lock has this device on it; the workspace's account, u1, is to be
+          // approved on its own, a trusted device of theirs showing the code once it asks)
+          [
+            { "sub": "s-work", "email": "lin@work.example", "standing": "member", "devices": [] },
+            {
+              "sub": "u1",
+              "email": "lin@example.com",
+              "standing": "outside",
+              "devices": [],
+              "pair": if fix_phone_join.val {
+                { "state": "code", "devices": 1, "untilText": "14:05 前有效", "showing": ["MacBook Pro"] }
+              } else {
+                Json::null()
+              },
             },
-            "devices": [],
-          },
-        ],
+          ]
+        } else {
+          [
+            {
+              "sub": "s",
+              "email": "lin@example.com",
+              "standing": match f.mode {
+                "chat-phone-outside" => "outside"
+                "chat-phone-none" => "none"
+                _ => "member"
+              },
+              "devices": [],
+            },
+          ]
+        },
         "grants": match f.mode {
           "chat-phone-outside" => [{ "id": "p-1", "status": "pending", "sub": "s", "join": true }]
+          "chat-phone-multi" => [{ "id": "p-1", "status": "pending", "sub": "u1", "join": true }]
           "chat-phone-none" => [{ "id": "p-1", "status": "pending", "sub": "s" }]
           _ => []
         },

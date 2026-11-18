@@ -9,6 +9,10 @@
 //   for approval, take a lock begun elsewhere as theirs, make this their only trusted device) or says who must act
 //   (taken out, needs an app, waits to be taken out and added again); and asking does not answer that it waits in
 //   no workspace. Its words never name a lock of one's own (to people there is one safe mode).
+// - Law C, the vaults' page and the security page agree: safe mode on or off alike on both; where the vaults are
+//   offered on this device, it signs for them exactly where the page says it signs, is offered 验证 on the vaults'
+//   page exactly where the security page offers it, and, not confirmed, is never held on the vaults' page by a card
+//   with nothing to press (it says it is not confirmed, with the way to 安全).
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { mkdtempSync } from "node:fs";
@@ -19,6 +23,7 @@ import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { bring } from "../../../station/test/lock-moved-world.ts";
 import type { CoreError } from "../src/error.ts";
 import { lockView, read } from "../src/views/lock.ts";
+import { vaultsView } from "../src/views/vault.ts";
 import { hello as stationHello, setUp } from "./lock-handover-world.ts";
 import { type Mode, type World, cleanText, stringsOf, world } from "./lock-pair-world.ts";
 
@@ -33,7 +38,22 @@ async function lawful(w: World, where: string): Promise<J> {
   if (page.locked === true) assert.equal(page.me.confirmed === true, w.admits(), `the page ${page.me.confirmed ? "confirmed" : "not confirmed"}, the station ${w.admits() ? "letting it in" : "refusing it"}; ${why}`);
   // Law B
   waysOut(page, why);
+  // Law C
+  agrees(page, vaultsView(w.inner, "ws") as J, why);
   return page;
+}
+
+/// Law C: the vaults' page (`vaults`) as the security page (`page`) says this device stands.
+function agrees(page: J, vaults: J, why: string) {
+  const at = `${why}; vaults ${JSON.stringify({ locked: vaults.locked, canSign: vaults.canSign, stateText: vaults.stateText, confirmText: vaults.confirmText, plain: vaults.plain })}`;
+  assert.equal(vaults.locked, page.locked, `safe mode ${page.locked ? "on" : "off"} on the security page, ${vaults.locked ? "on" : "off"} on the vaults'; ${at}`);
+  if (page.locked === true && vaults.available === true) {
+    assert.equal(vaults.canSign, page.signs, `the vaults' page ${vaults.canSign ? "signs" : "does not sign"}, the security page ${page.signs ? "signs" : "does not"}; ${at}`);
+    assert.equal(Boolean(vaults.confirmText), Boolean(page.me.confirmText), `验证 offered on ${vaults.confirmText ? "the vaults' page alone" : "the security page alone"}; ${at}`);
+    if (page.me.confirmed !== true) assert.equal(vaults.stateText, undefined, `not confirmed, held on the vaults' page by words with nothing to press; ${at}`);
+  }
+  for (const s of stringsOf(vaults)) assert.doesNotMatch(s, /个人锁|共享调试/, `the vaults' page says ${s}; ${at}`);
+  assert.equal(cleanText(vaults), null, `${cleanText(vaults)}; ${at}`);
 }
 
 /// Law B of a page whatever its world: not confirmed, a way out or who must act; confirmed and not signing where it
@@ -157,6 +177,7 @@ async function lawfulOwner(w: Awaited<ReturnType<typeof setUp>>, where: string, 
   const why = `${where}: ${JSON.stringify(page.me).slice(0, 300)}`;
   if (page.locked === true) assert.equal(page.me.confirmed === true, stationHello(w.stations.A, "s1", w.base, page.role).in, `the page and station A disagree; ${why}`);
   waysOut(page, why, root);
+  agrees(page, vaultsView(w.inner, "ws") as J, why);
   return page;
 }
 const ask = (w: Awaited<ReturnType<typeof setUp>>, name: string, params: Record<string, unknown>) => w.run(Effect.tryPromise({ try: () => w.r.ask(name, params), catch: (e) => e as CoreError }));
@@ -226,4 +247,13 @@ test("every station of a moved workspace reset on its machine (stillfail lock re
   assert.equal(again.error, undefined, again.error?.message);
   assert.deepEqual(w.r.cloud.chains.get("ws")?.map((e) => e.kind), ["genesis"], "a genesis of its own at the cloud");
   await lawfulOwner(w, "on anew");
+});
+
+test("its lock of before replaced elsewhere, this device on it with no signer said there: the vaults' page offers no 验证 (nothing to confirm on a lock the workspace does not bind it by), it is not confirmed, with the way to 安全: all three laws", async () => {
+  const w = await world("personal", 1, { replaced: true });
+  const page = await lawful(w, "its lock begun anew elsewhere");
+  assert.equal(w.inner.adb.personal().standing("s1"), "replaced", w.why());
+  assert.equal(w.inner.adb.personal().signerUnsaid("s1"), true, "its signer not said on the lock of before");
+  const vaults = vaultsView(w.inner, "ws") as J;
+  assert.deepEqual([page.me.confirmed, vaults.canSign, vaults.confirmText ?? null, vaults.stateText ?? null], [false, false, null, null], JSON.stringify(vaults).slice(0, 400));
 });

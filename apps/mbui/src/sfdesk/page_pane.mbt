@@ -504,7 +504,9 @@ fn pane_made(
       })
     // (by the station whose step is said first: another station's another page)
     Setting(AdbShare(focus)) =>
-      made("adb/" + focus, fn(a, core, _here, _stint, frame, width) { @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~) })
+      made("adb/" + focus, fn(a, core, here, _stint, frame, width) {
+        @settings.adb_node(a, core, focus, on_back=core.pop, frame~, width~, tips~, sub=fn() { here().sub })
+      })
     Setting(Vault) =>
       made("vault", fn(a, core, here, _stint, frame, width) { @sfpages.vault_node(a, core, here, on_back=core.pop, frame~, width~, tips~) })
     // (by its vault and item: another's another page)

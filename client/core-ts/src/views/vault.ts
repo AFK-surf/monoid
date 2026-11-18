@@ -61,7 +61,7 @@ import type { Owner } from "../core/routing.ts";
 import { CoreError, asCoreError } from "../error.ts";
 import { t } from "../i18n.ts";
 import { type Entry, Signer } from "../lock.ts";
-import { OTHERS_MS, answersOf, askPerson, tookOrRefused, deviceText, held as lockHeld, inForceOf, lockSeen, movedHere, nameOf as workspaceName, signerOf, stateOf } from "./lock.ts";
+import { OTHERS_MS, answersOf, askPerson, tookOrRefused, deviceText, held as lockHeld, inForceOf, leftIn, lockSeen, movedHere, onBoundPerson, nameOf as workspaceName, signerOf, stateOf } from "./lock.ts";
 import { workspaceIds } from "./marks.ts";
 import type { Topic } from "../protocol.ts";
 import { StationAddr } from "../station/addr.ts";
@@ -423,9 +423,13 @@ const over = (ok: boolean, okHad: () => boolean, later: boolean) => (ok && !okHa
 /// press says it (`confirm`: the call `lock.confirmSigner`). Null otherwise.
 function whyNot(inner: Inner, ws: string): { code: string; text: string; confirm: boolean } | null {
   const force = inForceOf(inner, ws);
-  if (force.said === "waiting") return { code: "vault_lock_waiting", text: t("core-misc.vault.lockWaiting"), confirm: false };
+  // (told by a station that it is left out of the state in force there, it waits on nothing: not a signer, as the
+  // `lock` topic's `waits` says, views/lock.ts)
+  if (force.said === "waiting" && leftIn(inner, ws) === null) return { code: "vault_lock_waiting", text: t("core-misc.vault.lockWaiting"), confirm: false };
   const sub = inner.workspaces.owner(ws);
-  if (force.said === "on" && sub !== null && inner.adb.personal().signerUnsaid(sub)) return { code: "vault_signer_unsaid", text: t("core-misc.vault.signerUnsaid"), confirm: true };
+  // (only where its person's own lock lets it in here, as the `lock` topic's `confirmSigner`: a device replaced, or on a
+  // lock this workspace is not bound to, has nothing to confirm)
+  if (force.said === "on" && onBoundPerson(inner, ws) && sub !== null && inner.adb.personal().signerUnsaid(sub)) return { code: "vault_signer_unsaid", text: t("core-misc.vault.signerUnsaid"), confirm: true };
   return null;
 }
 
@@ -940,7 +944,8 @@ const notHere = (r: Request | undefined, device: string | null, box: string | nu
 
 export function askAnswers(inner: Inner, ws: string, asks: { request: string; save: boolean }[]): AskAnswer[] {
   const lock = lockOf(inner, ws);
-  const plain = lock instanceof CoreError;
+  // (only a workspace without security mode keeps the plain library: a lock that does not check out is no way to it)
+  const plain = lock instanceof CoreError && lock.code === "vault_needs_lock";
   if (!able(inner) && !plain) return asks.map(() => ({ answer: "elsewhere" }));
   const h = held(inner, ws);
   const self = lock instanceof CoreError ? null : me(lock, signerOf(inner));
@@ -977,6 +982,8 @@ export function vaultCome(inner: Inner, ws: string): void {
   // A device confirmed in the lock whose certificate came first: given the keys unsealed here; the prompts of every
   // workspace follow the lock too.
   giveKept(inner, ws);
+  // (a chat's vault cards open already answered as the lock was: answered again as it is now, with no vault changed)
+  inner.views?.vaultChanged(ws);
   // A device or member taken out who held a key of a vault of this person's own: the vault keyed anew without them.
   if (able(inner)) inner.runner.fork(Effect.ignore(new Vaults(inner, ws, null).rekeyGone(), { log: "Unhandled", message: "vaults keyed anew" }));
   lockSeen(inner).touch("prompts");
@@ -1154,6 +1161,10 @@ export function vaultsView(inner: Inner, ws: string): J {
     ...(r.remove ? { remove: true } : {}),
   });
   const personal = t("core-misc.vault.personal");
+  // Security mode on and its lock not checking out here: no plain library and nothing signed (a lock that does not
+  // check out is never taken for one turned off). No words of its own: the page's not-signer card, whose press leads
+  // to 安全 where the lock's state is said (its message is the core's own English, never a person's words).
+  if (lock instanceof CoreError && lock.code !== "vault_needs_lock") return { ...base, locked: true, ...statusWords([], []) };
   // No security mode: the plain library, one vault on the station keeping most of its items (or the first keeping one).
   if (lock instanceof CoreError) {
     const count = new Map<string, number>();

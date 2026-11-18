@@ -22,6 +22,7 @@ pub fn adb_node(
   said? : (@sf.PageSaid) -> Unit,
   width? : () -> Double,
   tips? : @sf.TipLayer,
+  sub? : () -> String = fn() { "" },
 ) -> Unit {
   let view = fn() { (core.topic)("adbShare", Map([])).get().value }
   let phone = adb_phone_node(v)
@@ -37,20 +38,30 @@ pub fn adb_node(
     // about, its mark beside its title and said with it; narrow, the mark at the end of its bar's title line)
     about=fn() { tr("android-misc.adb.chats.about") },
     actions=fn(a) { @sf.narrow_about_node(a, fn() { tr("android-misc.adb.chats.about") }, tips.unwrap_or(@sf.window_tips())) },
-    fn() { adb_keys(view(), phone()) },
-    fn(b, k) { adb_block(b, core, view, phone, focus, k) },
+    fn() { adb_keys(view(), phone(), sub()) },
+    fn(b, k) { adb_block(b, core, view, phone, focus, sub, k) },
   )
 }
 
 ///|
-/// The person's own lock this device is off and has a step on (to be approved, or set up again elsewhere), where it is
-/// on none as a member.
-fn adb_lock_step(view : Json?) -> Json? {
+/// The person's own lock this device is off and has a step on (to be approved, or set up again elsewhere): the lock of
+/// the account whose workspace is in view (`sub`) where the core lists it, by its standing alone (another account signed
+/// in here being a member lends this one nothing); else, where it is on none as a member, the first with a step.
+fn adb_lock_step(view : Json?, sub : String) -> Json? {
   let locks = items(view, "personal")
+  let needs = fn(l : Json) {
+    text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced"
+  }
+  if sub != "" {
+    match locks.iter().find_first(fn(l) { text(Some(l), "sub") == sub }) {
+      Some(own) => return if needs(own) { Some(own) } else { None }
+      None => ()
+    }
+  }
   if locks.iter().any(fn(l) { text(Some(l), "standing") == "member" }) {
     return None
   }
-  locks.iter().find_first(fn(l) { text(Some(l), "standing") == "outside" || text(Some(l), "standing") == "replaced" })
+  locks.iter().find_first(needs)
 }
 
 ///|
@@ -80,8 +91,8 @@ fn adb_phone_step(view : Json?, phone : Json?, focus : String) -> (AdbStep, Stri
 /// 共享调试's blocks by their keys: the step alone off the person's own lock ("lock"); else the phone's switch where it
 /// lends ("switch"), its step ("phone-step"), an Android before 11 ("unsupported"), the grants from before signatures
 /// ("confirm"), the chats it is lent to now ("live-heading", "live").
-fn adb_keys(view : Json?, phone : Json?) -> Array[String] {
-  if adb_lock_step(view) is Some(_) {
+fn adb_keys(view : Json?, phone : Json?, sub : String) -> Array[String] {
+  if adb_lock_step(view, sub) is Some(_) {
     return ["lock"]
   }
   let out : Array[String] = []
@@ -104,9 +115,17 @@ fn adb_keys(view : Json?, phone : Json?) -> Array[String] {
 
 ///|
 /// 共享调试's block `k` (adb_keys') in `b`, as the core's `adbShare` (`view`) and the phone's host (`phone`) say it now.
-fn adb_block(b : @view.View, core : Core, view : () -> Json?, phone : () -> Json?, focus : String, k : String) -> Unit {
+fn adb_block(
+  b : @view.View,
+  core : Core,
+  view : () -> Json?,
+  phone : () -> Json?,
+  focus : String,
+  sub : () -> String,
+  k : String,
+) -> Unit {
   match k {
-    "lock" => adb_lock_node(b, core, fn() { adb_lock_step(view()) })
+    "lock" => adb_lock_node(b, core, fn() { adb_lock_step(view(), sub()) })
     "switch" =>
       @sf.group_node(b, fn(g) {
         // (the library's switch row, as every setting's; 2026-11-06 左子健: 共享调试的标题为啥没有加粗)

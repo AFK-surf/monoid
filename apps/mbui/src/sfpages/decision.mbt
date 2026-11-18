@@ -340,7 +340,7 @@ fn phone_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask
   let decided = ask.status != ""
   let asking = fn() {
     c.box(style=@sf.ask_card_room.then(ask_card_under_head), fn() {
-      @settings.phone_card(c, here.core, here.station, ask.request, ask.reason, mine_to(here, card.assignee), lasts=ask.lasts, who=card.assignee_text, ended=if decided { Some((ask.status, ask.scope, ask.why)) } else { None }, how=fn() { open_page(Setting(@settings.Route::AdbShare(""))) })
+      @settings.phone_card(c, here.core, here.station, ask.request, ask.reason, mine_to(here, card.assignee), lasts=ask.lasts, who=card.assignee_text, ended=if decided { Some((ask.status, ask.scope, ask.why)) } else { None }, how=fn() { open_page(Setting(@settings.Route::AdbShare(here.station))) })
     })
     |> ignore
   }
@@ -439,7 +439,7 @@ fn rig_ask_card(c : @ui.Ctx, here : MessageHere, m : Message, card : Card, ask :
         device=ask.device_name,
         who=card.assignee_text,
         ended=if decided { Some((ask.status == "granted", words())) } else { None },
-        lock=fn() { open_page(Setting(@settings.Route::AdbShare(""))) },
+        lock=fn() { open_page(Setting(@settings.Route::AdbShare(here.station))) },
       )
     })
     |> ignore
