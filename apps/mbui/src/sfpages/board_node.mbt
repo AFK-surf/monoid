@@ -2272,7 +2272,7 @@ fn board_chat_card(
   let pressing = Ref(false)
   let whole = WholeHeld::new(src, item_now, fn() { pressing.val || menu_on() })
   let card_at : Ref[@view.View?] = Ref(None)
-  let menu_ok = fn() { item().map(fn(i) { i.offline is None && !i.pending }).unwrap_or(false) }
+  let menu_ok = fn() { item().map(row_menu_offered).unwrap_or(false) }
   // (its menu, once its whole row is answered, whole: right clicked at the pointer; held long from the card, felt)
   let open_menu = fn(x : Double, y : Double, held : Bool) {
     hand.up()
