@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 | [8a803008d](https://github.com/AFK-surf/monoid/commit/8a803008d1952beb11e22733c2bfcd8d64594441) refactor(mbui): close tabs in the headless tab lis | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 | [be1efb0e2](https://github.com/AFK-surf/monoid/commit/be1efb0e29af8af10a53e47c21bfbc34d9b9bcb7) fix(mbui): walk the first-frame step test's own fr | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
 | [4f71795db](https://github.com/AFK-surf/monoid/commit/4f71795dbee93a597424ce40fb6209eef9309a98) refactor(mbui): share jobs' and history's parts, m | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 | [12b686226](https://github.com/AFK-surf/monoid/commit/12b68622622ca727739e7b1e9bf7e1271625cc01) feat(station): a station's switch to run the MoonB | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.56 | 63.51 | 96.72 | 121.49 |
 | [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 2.55 | 3.43 | 14.03 | 36 | 53.96 | 31.56 | 63.51 | 96.72 | 120.01 |
-| [b5ef8a1f2](https://github.com/AFK-surf/monoid/commit/b5ef8a1f2f835766f18eead01a594e2eb8710f39) fix(station): retry unreachable mesh directory pee | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [8a803008d](https://github.com/AFK-surf/monoid/commit/8a803008d1952beb11e22733c2bfcd8d64594441) refactor(mbui): close tabs in the headless tab lis | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.12 |
 | [be1efb0e2](https://github.com/AFK-surf/monoid/commit/be1efb0e29af8af10a53e47c21bfbc34d9b9bcb7) fix(mbui): walk the first-frame step test's own fr | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
 | [4f71795db](https://github.com/AFK-surf/monoid/commit/4f71795dbee93a597424ce40fb6209eef9309a98) refactor(mbui): share jobs' and history's parts, m | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 54.13 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [12b686226](https://github.com/AFK-surf/monoid/commit/12b68622622ca727739e7b1e9bf7e1271625cc01) feat(station): a station's switch to run the MoonB | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
-| [b5ef8a1f2](https://github.com/AFK-surf/monoid/commit/b5ef8a1f2f835766f18eead01a594e2eb8710f39) fix(station): retry unreachable mesh directory pee | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
