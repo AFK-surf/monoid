@@ -118,6 +118,11 @@ for t in $targets; do
     light="$light ${p#stillfail/}/$n.internal_test ${p#stillfail/}/$n.blackbox_test ${p#stillfail/}/$n.whitebox_test"
   done
   export MBC_LIGHT_TESTS="$light"
+  if [[ " $pkgs " = *" -p stillfail/sfapp "* ]]; then
+    export MBC_LIGHT_UNITS="stillfail_sfapp_ stillfail_sfscreens_ stillfail_sffixture_"
+  else
+    unset MBC_LIGHT_UNITS
+  fi
   out=$(mktemp)
   # Built first on its own (TIMES=1, as CI's: each said with how long it took; its errors shown by the run), then run.
   s=$(date +%s)
@@ -256,25 +261,19 @@ for t in $targets; do
     # 256 s of app 4/4 at 120 fps part 2/3 and 117 s of app 1/4 at 24 7 fps, which its 7 then cut at its 5 minutes,
     # main 0d56014c 43468965521, 2026-11-13) (in five since, its 中屏 and 大屏 a run each: in three, beside the first's
     # pages and packages at 120, its 小屏 pair was 118 s and the others 218 and 224, main af1435b8 43476543010)
-    # (switches_still's 68-90, cut at 79: as screens came that run grew from 106-113 s to 163-279 s on main's runs of
-    # 2026-11-15, app switches part 4/4 292 s of its 5 minutes on 927e8653 43692601857)
-    # (and 68-79 cut at 73: as #6459's previews were swept that run was 231-260 s, part 4/4 269 and 275 s of its 5
-    # minutes on main ab2d43d7 43718049538 and 4e8f3be0 43718632655, its other three runs 25-151)
-    # (and 60-68 cut at 64: that run 249 s, part 3/4 268 s of its 5 minutes on main e18b38e4 43719996435)
-    # (all its cuts again by each test's time alone, -O2, four side by side on four of gt1's cores, 2026-11-17: 1015 s
-    # of its 320 tests, five of them 50-58 s each (53, 54, 55, 125, 126) and the rest 0.3-15 s, so 52-56 was one run of
-    # 168 s, 123-146 one of 142, where the others were 10-101: each of the five a run of its own now, the rest cut at
-    # some 42 s, 25 runs dealt in turn to the four parts 246-264 s each of those seconds, some 66 s a part on gt1's
-    # four cores, where the slowest part was dealt 168 s in one run of 52-56 (main 44047312768 cut at its 5 minutes))
+    # Five share-card tests take about 55 s each. They moved to indices 72, 73, 74, 130, and 131 as screens were added.
+    # Give each its own run. Two together made tests 73-82 take 273 s on main (44211717525).
     # (chat_drive_parity's four by its tests' times the same way: 29, 35, 32 and 35 s, where by count 0-10 was 54 of
     # 130 s; each on one of the app part's four runners, app_group_of)
     sweeps=(src/sfapp/screens_wbtest.mbt:1 src/sfapp/corners_wbtest.mbt:5 src/sfapp/squeeze_said_wbtest.mbt:1
       src/sfapp/contrast_wbtest.mbt:1 src/sfapp/kept_rows_kinds_wbtest.mbt:@2@3@4@5@8 src/sfapp/preview_tree_wbtest.mbt:@54
       src/sfapp/words_large_wbtest.mbt:2 src/sfapp/duo_side_wbtest.mbt:2 src/sfapp/real_size_wbtest.mbt:@1@2 src/sfapp/send_steady_wbtest.mbt:@1@2
       src/sfapp/chat_page_nodes_wbtest.mbt:2 src/sfapp/answers_still_wbtest.mbt:@2@3@4@5 src/sfapp/chat_drive_parity_wbtest.mbt:@4@15@27
-      src/sfapp/switches_still_wbtest.mbt:@14@32@40@52@53@54@55@56@66@73@82@87@99@113@125@126@127@147@176@191@213@232@266@288)
+      src/sfapp/switches_still_wbtest.mbt:@7@14@23@32@40@48@56@61@66@72@73@74@75@82@87@93@99@113@122@130@131@132@147@176@191@202@213@232@266@288@304)
     pages=()
-    for f in "${files[@]}"; do [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f"); done
+    while IFS= read -r f; do
+      [[ " ${sweeps[*]} " = *" $f:"* ]] || pages+=("$f")
+    done < <(grep -l '^test "' "${files[@]}" </dev/null 2>/dev/null)
     for w in "${sweeps[@]}"; do
       f=${w%:*} k=${w##*:}
       [ -f "$f" ] && [[ " ${files[*]} " = *" $f "* ]] || continue
@@ -511,17 +510,15 @@ for t in $targets; do
           # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
-          # (44196822098 and 44200405812 across GitHub's fast and slow 4-core SKUs: the groups' sweeps take some 275,
-          # 530, 315 and 365 table-seconds of their cores, and p3=$n keeps the third's four cores busy once its sweeps
-          # finish: by the table 731, 476, 691 and 641 s of pages, ~167 s a job on the fast SKU and ~240 s on the slow)
-          *) specs="4,4,275,1 3,4,530,1 4,4,315,1 4,4,365,1" ;;
+          # Use the measured sweep costs after three runs move from the first group to contrast.
+          *) specs="4,4,215,1 3,4,525,1 4,4,440,1 4,4,380,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
         # (the second's pages on three programs beside its sweeps at the default rate, on $n at a rate, where it has
-        # none; the third's on $n at the default rate since two of kept_rows' moved to the first, on one at a rate
+        # none; the third's on $n at the default rate since two of kept_rows' moved to contrast, on one at a rate
         # beside kept_rows' five runs, as it was)
         p2=3 p3=$n
         [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
@@ -619,19 +616,16 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate the wide sweep was still running alongside the fourth group's pages after 150 s,
-      # and the group hit its five-minute limit. The first group finished in 148 s (44164320005).
-      "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo 1 ;; *) echo 4 ;; esac ;;
+      # At the default rate, contrast has three free cores for the wide sweep and two kept-row ranges.
+      "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
       # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
       # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
       # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
       # 124-243)
       "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
-      # At the default rate three kept-row ranges were still running at 150 s beside the third group's pages.
-      # It timed out at 316 s while the first finished in 158 (44161134705). Move two ranges onto the first.
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
-        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo 1; else echo 3; fi ;;
+        if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its

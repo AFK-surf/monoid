@@ -833,6 +833,30 @@ fn is_init(unit : Bytes) -> Bool {
 }
 
 ///|
+fn is_data(unit : Bytes) -> Bool {
+  unit == b"data.c" || starts(unit, b"data_")
+}
+
+///|
+/// MBC_LIGHT_UNITS lists unit name prefixes that use the init optimization level.
+fn is_light_unit(unit : Bytes) -> Bool {
+  match getenv("MBC_LIGHT_UNITS") {
+    Some(list) =>
+      split_words(list).iter().any(fn(prefix) { prefix.length() > 0 && starts(unit, prefix) })
+    None => false
+  }
+}
+
+///|
+fn unopt_flags(flags : Array[Bytes], init_flags : Array[Bytes], msvc : Bool) -> Array[Bytes] {
+  let f = flags.filter(fn(x) { !starts(x, b"-O") && !(msvc && starts(x, b"/O")) })
+  for x in init_flags {
+    f.push(x)
+  }
+  f
+}
+
+///|
 /// What the split made, as mbc keeps it beside the units (manifest.txt)
 priv struct Made {
   key : Bytes
@@ -1016,12 +1040,16 @@ fn split_jobs(
     if !ends(name, b".c") {
       continue
     }
-    // the units but moonbit_init's as ThinLTO's bitcode (lto): the link inlines across them as the whole file did
-    let f = flags.copy()
+    // ThinLTO uses bitcode for every unit except moonbit_init's.
+    let unopt = !lto && (is_data(name) || is_light_unit(name))
+    let base = if unopt { unopt_flags(flags, init_flags, msvc) } else { flags }
+    let f = base.copy()
     for x in gen_flags {
       f.push(x)
     }
-    let more = if is_init(name) {
+    let more = if unopt {
+      []
+    } else if is_init(name) {
       init_flags
     } else if lto {
       lto_compile(msvc)
@@ -1034,7 +1062,11 @@ fn split_jobs(
     let src = path_join(srcdir, name)
     let obj = path_join(objdir, cat([b"u_", sub(name, 0, name.length() - 2), ext]))
     let (argv, dep) = compile_args(cc, f, src, obj, msvc)
-    let alt_argv = alt_flags.map(fn(af) {
+    let fallback = match alt_flags {
+      None if unopt && base != flags => Some(flags)
+      _ => alt_flags
+    }
+    let alt_argv = fallback.map(fn(af) {
       let f0 = af.copy()
       for x in gen_flags {
         f0.push(x)
@@ -1044,7 +1076,7 @@ fn split_jobs(
       }
       compile_args(cc, f0, src, obj, msvc).0
     })
-    // moonbit_init first: the slowest to compile at any level
+    // Start init and data units early. Large tables can take longer than their size suggests.
     let size = match stat(src) {
       Some(s) => s.0
       None => 0L
@@ -1055,7 +1087,7 @@ fn split_jobs(
         obj,
         argv,
         dep,
-        if is_init(name) { size * 4L } else { size },
+        if is_init(name) || is_data(name) { size * 4L } else { size },
         cc,
         alt_argv~,
       ),

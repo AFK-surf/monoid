@@ -138,6 +138,67 @@ fn fn_units(files : Map[String, String]) -> Array[String] {
 }
 
 ///|
+test "data and selected units share compile commands across optimization levels" {
+  let env_name = b"MBC_LIGHT_UNITS"
+  let previous = getenv("MBC_LIGHT_UNITS").unwrap_or(b"")
+  defer ignore(c_setenv(env_name, previous))
+  assert_true(is_data(b"data.c"))
+  assert_true(is_data(b"data_layout.c"))
+  assert_false(is_data(b"database.c"))
+  assert_false(is_data(b"init.c"))
+  assert_eq(c_setenv(env_name, b" \t "), 1)
+  assert_false(is_light_unit(b"fixture_4.c"))
+  assert_eq(c_setenv(env_name, b"  demo_\tfixture_\n"), 1)
+  assert_true(is_light_unit(b"demo_1.c"))
+  assert_true(is_light_unit(b"fixture_4.c"))
+  assert_false(is_light_unit(b"other_fixture_4.c"))
+
+  let c = prelude_src + "\n" + items_src
+  let (files, _) = sp(c)
+  let function_unit = utf8(fn_units(files)[0])
+  assert_eq(c_setenv(env_name, function_unit), 1)
+  let dir = tmp_path("light units")
+  makedirs(dir)
+  defer rmtree(dir)
+  let src = path_join(dir, b"sample.c")
+  let objs = path_join(dir, b"objects")
+  assert_true(write_file(src, utf8(c)))
+  makedirs(objs)
+  let cc = [b"clang"]
+  let flags0 = [b"-O2", b"-Wall"]
+  let flags = [b"-Wall", b"-O0"]
+  let gen_flags = [b"-DGEN=1"]
+  let (main_jobs, _) = split_jobs(src, objs, cc, flags0, gen_flags, [b"-O0"], false, false)
+  let (branch_jobs, _) = split_jobs(
+    src, objs, cc, flags, gen_flags, [b"-O0"], false, false, alt_flags=Some(flags0),
+  )
+  let mut checked = 0
+  for i, main_job in main_jobs {
+    let name = basename(main_job.src)
+    if is_data(name) || name == function_unit {
+      let branch_job = branch_jobs[i]
+      assert_eq(branch_job.src, main_job.src)
+      assert_eq(
+        main_job.argv,
+        compile_args(cc, [b"-Wall", b"-O0", b"-DGEN=1"], main_job.src, main_job.obj, false).0,
+      )
+      assert_eq(branch_job.argv, main_job.argv)
+      let fallback = compile_args(
+        cc, [b"-O2", b"-Wall", b"-DGEN=1"], main_job.src, main_job.obj, false,
+      ).0
+      assert_eq(main_job.alt_argv, Some(fallback))
+      assert_eq(branch_job.alt_argv, Some(fallback))
+      checked += 1
+    }
+  }
+  assert_true(checked >= 3)
+  assert_eq(
+    unopt_flags([b"/GL", b"/O2", b"-Os", b"/W4"], [b"/Od"], true),
+    [b"/GL", b"/W4", b"/Od"],
+  )
+}
+
+///|
 test "kinds" {
   let (files, m) = sp(prelude_src + "\n" + items_src)
   assert_eq(m.functions, 5)

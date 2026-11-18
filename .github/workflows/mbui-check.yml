@@ -242,7 +242,7 @@ jobs:
       # 156-162 s, app build 267-311 s of its 5 minutes (1bf02b58, 16c0c777 stopped, f150a1db, 2026-11-11), the branch
       # having compiled the same units by their content already. What is not found is compiled, as before.
       - name: The units the merged branches compiled
-        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'm-' && github.event_name == 'push'
         continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
@@ -275,7 +275,7 @@ jobs:
       # (what main's store had: a branch puts all its units main's lacks, its earlier pushes' too, so what it compiled
       # is main's once merged. Only a run that built every program it builds: one cut at its limit puts none, below)
       - name: The units main's store had
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-'
         run: |
           mkdir -p "$RUNNER_TEMP/store-main" "$RUNNER_TEMP/store-arch"
           # (and arch/next's: everyone's already, a cache on main's ref)
@@ -300,7 +300,11 @@ jobs:
         run: |
           if [ '${{ steps.app-start.outcome }}' = success ]; then
             while [ ! -s "$RUNNER_TEMP/app-status" ]; do
-              [ "$(date +%s)" -lt "$((JOB_END - 25))" ] || { echo 'app build did not report its result before the deadline' >&2; exit 124; }
+              if [ "$(date +%s)" -ge "$((JOB_END - 20))" ]; then
+                echo 'app build did not report its result before the deadline' >&2
+                cat "$RUNNER_TEMP/mbui-test.log" "$RUNNER_TEMP/app-worker.log" 2>/dev/null || true
+                exit 124
+              fi
               if ! kill -0 "$(cat "$RUNNER_TEMP/app-pid")" 2>/dev/null; then
                 [ ! -s "$RUNNER_TEMP/app-status" ] || break
                 cat "$RUNNER_TEMP/app-worker.log" "$RUNNER_TEMP/mbui-test.log"
@@ -399,7 +403,7 @@ jobs:
       # 25-30 s of tar and upload pushed the store's save past the job's end, 44071439638 attempt 4)
       - name: The units this run compiled, for main's
         id: queue-units
-        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && !(env.PART == 'app' && env.GROUP == 'build')
+        if: runner.environment != 'self-hosted' && env.OWN == 'b-' && steps.tests.outcome == 'success'
         run: |
           (cd "$MBC_STORE" && find . -mindepth 2 -maxdepth 2 -type d | sort) > "$RUNNER_TEMP/units-after"
           comm -13 "$RUNNER_TEMP/units-before" "$RUNNER_TEMP/units-after" > "$RUNNER_TEMP/units-new"
