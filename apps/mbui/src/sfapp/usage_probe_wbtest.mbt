@@ -473,7 +473,7 @@ test "usage probe: scrolled while the pick is read" {
     }
     uprobe_at(t, "S\{platform}/\{how} before")
     pending.set(true)
-    uprobe_tap(t, "林")
+    uprobe_tap(t, "陈")
     t.run_for(100.0)
     uprobe_at(t, "S\{platform}/\{how} pending")
     if how == 0 {
@@ -491,7 +491,7 @@ test "usage probe: scrolled while the pick is read" {
     }
     pending.set(false)
     t.run_for(kept_glide_over_ms)
-    match (t.rect_of("只看 林"), t.rect_of("花费明细")) {
+    match (t.rect_of("只看 陈"), t.rect_of("花费明细")) {
       (Some(c), Some(h)) => println("scrolled \{platform}/\{how}: chip→head \{h.1 - c.1}")
       (c, h) => println("scrolled \{platform}/\{how}: chip \{c is Some(_)} head \{h is Some(_)}")
     }
