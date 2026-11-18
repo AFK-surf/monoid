@@ -30,6 +30,10 @@ pub let config_backups_kept : Int = 3
 pub let node_part_ms : Double = day_ms
 
 ///|
+/// storage.ts `BOARD_FILES_GONE_MS`.
+pub let board_files_gone_ms : Double = day_ms
+
+///|
 pub let upkeep_every_ms : Double = 600000.0
 
 ///|
@@ -116,6 +120,13 @@ pub let storage_manifest : Array[StorageEntry] = [
   se("sessions", "session-bound", "each chat's workspace", reclaim="sessions/lifecycle.ts expireArchived, relieveArchived"),
   se("archive", "authoritative", "chats put away (store/archive.ts)"),
   se("uploads", "authoritative", "files sent in chats"),
+  se(
+    "board-files",
+    "authoritative",
+    "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)",
+    max_age_ms=board_files_gone_ms,
+    reclaim="Upkeep goneBoardFiles",
+  ),
   se("homes", "authoritative", "the runtimes' homes (accounts' sign-ins, their settings)"),
   se("repos", "authoritative", "the repositories' shared clones"),
   se("agent", "authoritative", "the agents' memory and skills"),
@@ -299,6 +310,52 @@ pub fn remove_stale(fs : Fs, dir : String, prefix : String, max_age_ms : Double,
 }
 
 ///|
+/// storage.ts `goneBoardFiles`: the files of drafts of 待派发 started or deleted (`dir` is board-files:
+/// <person>/.gone/<draft>/<file>) put aside `max_age_ms` or longer before `now`, removed, and a draft's folder left
+/// empty: the files removed, as <person>/<draft>/<file>, sorted.
+pub fn gone_board_files(fs : Fs, dir : String, max_age_ms : Double, now : Double) -> Array[String] raise {
+  let gone = []
+  for person in fs.names(dir).unwrap_or([]) {
+    let aside = posix_join([dir, person, ".gone"])
+    for draft in fs.names(aside).unwrap_or([]) {
+      guard fs.names(posix_join([aside, draft])) is Some(files) else { continue }
+      let mut left = files.length()
+      for f in files {
+        guard fs.lstat(posix_join([aside, draft, f])) is Some(st) else { continue }
+        if now - st.mtime_ms < max_age_ms {
+          continue
+        }
+        try fs.remove(posix_join([aside, draft, f]), recursive=true) catch {
+          _ => ()
+        }
+        gone.push(person + "/" + draft + "/" + f)
+        left -= 1
+      }
+      if left == 0 {
+        try fs.remove(posix_join([aside, draft]), recursive=true) catch {
+          _ => ()
+        }
+      }
+    }
+  }
+  gone.sort_by(units_order)
+  gone
+}
+
+///|
+/// As JavaScript's sort() compares strings: by their UTF-16 code units (MoonBit's compare puts the shorter first).
+fn units_order(a : String, b : String) -> Int {
+  let n = if a.length() < b.length() { a.length() } else { b.length() }
+  for i in 0..<n {
+    let d = a.unsafe_charcode_at(i) - b.unsafe_charcode_at(i)
+    if d != 0 {
+      return d
+    }
+  }
+  a.length() - b.length()
+}
+
+///|
 /// storage.ts `capByAge`'s choice: of `files` (a path, its bytes, its mtime), those to remove, the longest unchanged
 /// first, until they are `max_bytes` together; and the bytes freed.
 pub fn cap_plan(files : Array[(String, Double, Double)], max_bytes : Double) -> (Array[String], Double) {
@@ -416,7 +473,7 @@ pub fn upkeep_round(runners : Bool, jobs : Bool, remote : Bool, checkpoint : Boo
   if checkpoint {
     out.push("database log")
   }
-  out.push_iter(["thumbs", "node parts", "config backups", "transcript marks"].iter())
+  out.push_iter(["thumbs", "node parts", "config backups", "transcript marks", "board files"].iter())
   out
 }
 

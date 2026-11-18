@@ -1187,7 +1187,7 @@ function baseWorld(): World {
     if (draft !== "new:board-1" || path === "") throw thrown("DraftRefusal", { message: "no such draft or file" });
     return { files: [file] };
   });
-  on("hub.boardDrafts.bytes", ([, , draft, file]) => (draft === "new:board-1" && file === "f1" ? { type: "image/png", bytes: Buffer.from("png!") } : null));
+  on("hub.boardDrafts.bytes", ([, , draft, file]) => (draft === "new:board-1" && file === "f1" ? { type: "image/png", bytes: { $bytes: Buffer.from("png!").toString("base64") } } : null));
   on("hub.boardDrafts.stage", ([, , draft, file, name]) => (draft === "new:board-1" && file === "f1" ? { name, path: "/data/uploads/x-a.png", size: 4 } : null));
   // the machine's files
   w.files.set("/rooms/s1/uploads/a.png", { bytes: Buffer.from("png!"), mtimeMs: 10 });

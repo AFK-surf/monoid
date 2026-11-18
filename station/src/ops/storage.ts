@@ -59,6 +59,9 @@ export const THUMBS_CAP = 512 * MiB;
 export const CONFIG_BACKUPS_KEPT = 3;
 /// A download of Node half done (node/.part-*) older than this is left over.
 export const NODE_PART_MS = DAY;
+/// A file of a draft of 待派发 started or deleted is put aside (board-files/<person>/.gone, sessions/board-drafts.ts),
+/// for the device starting it to still send it, so long.
+export const BOARD_FILES_GONE_MS = DAY;
 /// How often the upkeep runs, and how long after the station starts it first does.
 export const UPKEEP_EVERY_MS = 10 * 60_000;
 export const UPKEEP_FIRST_MS = 2 * 60_000;
@@ -104,7 +107,7 @@ export const STORAGE_MANIFEST: readonly StorageEntry[] = [
   { name: "sessions", class: "session-bound", what: "each chat's workspace", reclaim: "sessions/lifecycle.ts expireArchived, relieveArchived" },
   { name: "archive", class: "authoritative", what: "chats put away (store/archive.ts)" },
   { name: "uploads", class: "authoritative", what: "files sent in chats" },
-  { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; a draft started or deleted, its files a day more)" },
+  { name: "board-files", class: "authoritative", what: "the files of people's drafts of 待派发 (sessions/board-drafts.ts; those of a draft started or deleted, .gone, a day more, held by Upkeep)", maxAgeMs: BOARD_FILES_GONE_MS, reclaim: "Upkeep goneBoardFiles" },
   { name: "homes", class: "authoritative", what: "the runtimes' homes (accounts' sign-ins, their settings)" },
   { name: "repos", class: "authoritative", what: "the repositories' shared clones" },
   { name: "agent", class: "authoritative", what: "the agents' memory and skills" },
@@ -218,6 +221,31 @@ export async function removeStale(dir: string, prefix: string, maxAgeMs: number,
     gone.push(n);
   }
   return gone;
+}
+
+/// The files of drafts of 待派发 started or deleted (`dir` is board-files: <person>/.gone/<draft>/<file>,
+/// sessions/board-drafts.ts) put aside `maxAgeMs` or longer before `now`, removed, and a draft's folder left empty: the
+/// files removed, as <person>/<draft>/<file>. What a person's next carry would drop, held to its bound though they never
+/// come back.
+export async function goneBoardFiles(dir: string, maxAgeMs: number, now: number): Promise<string[]> {
+  const gone: string[] = [];
+  for (const person of await readdir(dir).catch(() => [] as string[])) {
+    const aside = join(dir, person, ".gone");
+    for (const draft of await readdir(aside).catch(() => [] as string[])) {
+      const files = await readdir(join(aside, draft)).catch(() => null);
+      if (files === null) continue;
+      let left = files.length;
+      for (const f of files) {
+        const st = await lstat(join(aside, draft, f)).catch(() => null);
+        if (st === null || now - st.mtimeMs < maxAgeMs) continue;
+        await rm(join(aside, draft, f), { recursive: true, force: true }).catch(() => undefined);
+        gone.push(`${person}/${draft}/${f}`);
+        left--;
+      }
+      if (left === 0) await rm(join(aside, draft), { recursive: true, force: true }).catch(() => undefined);
+    }
+  }
+  return gone.sort();
 }
 
 /// The files of `dir` (not its directories) taken down to `maxBytes` together, the longest unchanged first: a cache
@@ -346,6 +374,7 @@ export class Upkeep {
     await this.#step("node parts", () => removeStale(join(data, "node"), ".part-", NODE_PART_MS, now));
     await this.#step("config backups", () => keepNewest(data, "config.json.bak-", CONFIG_BACKUPS_KEPT));
     await this.#step("transcript marks", () => orphanMarks(join(data, "transcript-marks")));
+    await this.#step("board files", () => goneBoardFiles(join(data, "board-files"), BOARD_FILES_GONE_MS, now));
   }
 
   async #step(what: string, f: () => Promise<unknown>): Promise<void> {

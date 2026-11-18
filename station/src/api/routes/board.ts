@@ -4,7 +4,8 @@
 // alone as it changed (`boardDrafts`, `{workspace}`). POST /board/files `{draft, file, path}` keeps an upload (POST
 // /uploads) as a file of one of their drafts here; GET /board/files?draft=&file= gives its bytes; POST /board/stage
 // `{draft, file, name}` copies it among the uploads for a message to take, answered as POST /uploads answers. A station
-// from before answers 404 `no route …`.
+// from before answers 404 `no route …`. What is brought that does not check is answered 400 (a DraftRefusal); what
+// fails here (the disk) 500, with its words.
 import { type Answer, type Request, error, json, param } from "../request.ts";
 import type { Route } from "../admin.ts";
 import { DraftRefusal } from "../../../../client/core-ts/src/board-drafts.ts";
@@ -52,7 +53,7 @@ export function routes({ drafts, told }: BoardDeps): Route[] {
           return json(200, JSON.stringify(said));
         } catch (e) {
           if (e instanceof DraftRefusal) return error(400, e.message);
-          throw e;
+          return error(500, (e as Error)?.message ?? String(e));
         }
       },
     },
@@ -67,7 +68,7 @@ export function routes({ drafts, told }: BoardDeps): Route[] {
           return json(200, JSON.stringify(await drafts.keep(r.viewer.workspace, r.viewer.sub, text(b.draft), text(b.file), text(b.path))));
         } catch (e) {
           if (e instanceof DraftRefusal) return error(400, e.message);
-          throw e;
+          return error(500, (e as Error)?.message ?? String(e));
         }
       },
     },

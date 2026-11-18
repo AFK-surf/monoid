@@ -34,11 +34,11 @@ fn board_who(r : Request) -> (JV, JV) {
 }
 
 ///|
-/// A part's refusal of what was brought (a DraftRefusal) answered 400 with its words; anything else as it is.
-fn board_refused(e : Error) -> Answer raise {
+/// A part's refusal of what was brought (a DraftRefusal) answered 400 with its words; anything else (the disk) 500.
+fn board_refused(e : Error) -> Answer {
   match thrown_as(e, "DraftRefusal") {
     Some(_) => error(400, message_of(e))
-    None => raise e
+    None => error(500, message_of(e))
   }
 }
 

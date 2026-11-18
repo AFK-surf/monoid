@@ -1003,6 +1003,21 @@ test("ops/storage.ts: the manifest and the upkeep", { skip }, async () => {
   const now = 10_000_000;
   const [r1, r2] = twin((d) => dated(d, [[".part-a", 1000], [".part-b", 9000], ["keep", 1], [".part-c", 9999]]));
   assert.deepEqual(await mb({ fn: "removeStale", dir: r2, prefix: ".part-", maxAgeMs: 1_000_000, now }), plain(await removeStale(r1, ".part-", 1_000_000, now)));
+  // board-files: a person's files of drafts put aside (.gone) an age ago, one not yet, and a live draft's left alone.
+  const [g1, g2] = twin((d) => {
+    const files: [string[], [string, number][]][] = [
+      [["p1", ".gone", "d1"], [["old", 1000], ["new", 9999]]],
+      [["p1", ".gone", "d2"], [["a", 1000], ["b", 2000]]],
+      [["p2", ".gone", "d3"], [["c", 9999]]],
+      [["p1", "d4"], [["live", 1]]],
+    ];
+    for (const [at, names] of files) {
+      mkdirSync(join(d, ...at), { recursive: true });
+      dated(join(d, ...at), names);
+    }
+  });
+  assert.deepEqual(await mb({ fn: "goneBoardFiles", dir: g2, maxAgeMs: 1_000_000, now }), plain(await st.goneBoardFiles(g1, 1_000_000, now)));
+  for (const at of [["p1", ".gone"], ["p1", ".gone", "d1"], ["p2", ".gone", "d3"], ["p1", "d4"]]) assert.deepEqual(readdirSorted(join(g2, ...at)), readdirSorted(join(g1, ...at)), at.join("/"));
   const [c1, c2] = twin((d) => { dated(d, [["t1", 1000], ["t2", 3000], ["t3", 2000], ["t4", 4000]]); mkdirSync(join(d, "sub")); });
   assert.deepEqual(await mb({ fn: "capByAge", dir: c2, max: 500 }), await capByAge(c1, 500));
   for (const d of [c1, c2]) assert.deepEqual(readdirSorted(d), ["sub", "t2", "t4"].filter((n) => readdirSorted(c1).includes(n)));
@@ -1028,7 +1043,7 @@ test("ops/storage.ts: the manifest and the upkeep", { skip }, async () => {
     const said: { what: string; did: unknown }[] = [];
     const u = await privateOf("ops/storage.ts", {
       log: { info: (_a: string, _b: string, f: { what: string; did: unknown }) => said.push(f), warn: () => {} },
-      rotateInPlace: async (p: string) => (p.endsWith("stillfail.log") ? did : false), capByAge: async () => 0, removeStale: async () => [], keepNewest: async () => [], orphanMarks: async () => [],
+      rotateInPlace: async (p: string) => (p.endsWith("stillfail.log") ? did : false), capByAge: async () => 0, removeStale: async () => [], keepNewest: async () => [], orphanMarks: async () => [], goneBoardFiles: async () => [],
     }, `step-${JSON.stringify(did)}`);
     const up = new u.Upkeep({ data: "/nonexistent" });
     await up.run();
@@ -1039,7 +1054,7 @@ test("ops/storage.ts: the manifest and the upkeep", { skip }, async () => {
     const seen: string[] = [];
     const u = await privateOf("ops/storage.ts", {
       log: { info: (_a: string, _b: string, f: { what: string }) => seen.push(f.what), warn: () => {} }, rotateInPlace: async () => true, capByAge: async () => 1, removeStale: async () => ["x"],
-      keepNewest: async () => ["x"], orphanMarks: async () => ["x"], walCheckpoint: async () => true, diskOf: async () => null,
+      keepNewest: async () => ["x"], orphanMarks: async () => ["x"], goneBoardFiles: async () => ["x"], walCheckpoint: async () => true, diskOf: async () => null,
     }, `round-${runners}-${remote}-${checkpoint}`);
     const up = new u.Upkeep({ data: "/d", runners: runners ? async () => true : undefined, jobs: async () => true, remote: remote ? async () => true : undefined, checkpoint: checkpoint ? async () => true : undefined });
     await up.run();

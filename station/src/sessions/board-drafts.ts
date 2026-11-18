@@ -30,7 +30,10 @@ export type BoardDraftsDeps = {
   now: () => number;
 };
 
-/// A file of a draft started or deleted is kept aside so long, for the device that started it to send it.
+/// A file of a draft started or deleted is kept aside so long, for the device that started it to send it (a person's
+/// next carry drops it after; the station's upkeep, ops/storage.ts `goneBoardFiles`, where none comes).
+/// (ops/storage.ts `BOARD_FILES_GONE_MS` is the same; not imported, so the core's tests that read this file stay apart
+/// from the upkeep.)
 export const GONE_FILES_MS = 24 * 3600 * 1000;
 const GONE = ".gone";
 

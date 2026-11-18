@@ -326,6 +326,8 @@ fn io_case(host : @host.Host, c : Json) -> Json? raise {
     "keepNewest" => Some(jstrs(keep_newest(fs, s("dir"), s("prefix"), int_field(c, "kept", 0))))
     "removeStale" =>
       Some(jstrs(remove_stale(fs, s("dir"), s("prefix"), num_field(c, "maxAgeMs").unwrap_or(0.0), num_field(c, "now").unwrap_or(0.0))))
+    "goneBoardFiles" =>
+      Some(jstrs(gone_board_files(fs, s("dir"), num_field(c, "maxAgeMs").unwrap_or(0.0), num_field(c, "now").unwrap_or(0.0))))
     "capByAge" => Some(jn(cap_by_age(fs, s("dir"), num_field(c, "max").unwrap_or(0.0))))
     "orphanMarks" => Some(jstrs(orphan_marks(fs, s("dir"))))
     "placeFollow" | "placeWalk" => {
