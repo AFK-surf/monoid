@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.58 | 63.66 | 96.75 | 123.6 |
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 2.56 | 3.44 | 14.07 | 36.02 | 54.16 | 31.58 | 63.66 | 96.75 | 131.73 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.32 | 96.77 | 126.18 |
-| [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 2.54 | 3.41 | 13.98 | 35.9 | 53.78 | 31.48 | 63.32 | 96.77 | 116.78 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
-| [228075b1c](https://github.com/AFK-surf/monoid/commit/228075b1c42786382c7c7283bbdc18e99ffb4132) Show live agent output speed across a workspace (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
