@@ -550,11 +550,12 @@ fn P51::events_live(self : P51) -> EventsLive {
         Removed => @drive.rm_force(handover_file)
         Nothing => ()
       }
+      // (the streams ended once what was handed over is written: a stream that ended before would be no listener)
+      for _, s in e.streams {
+        ignore(s.0.try_offer(None))
+      }
       ignore(handed_now.succeed(()))
     })
-    for _, s in e.streams {
-      ignore(s.0.try_offer(None))
-    }
   })
   e
 }
