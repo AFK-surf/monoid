@@ -69,6 +69,7 @@ priv struct StyleSet {
   min_w : Double?
   min_w_within : Bool
   max_w : Double?
+  max_w_within : Bool
   min_h : Double?
   padding : (Double, Double, Double, Double)
   gap : Double
@@ -203,6 +204,8 @@ fn style_of(q : @ui.Patch, in_row : Bool, loc : SourceLoc) -> StyleSet {
     // (a least across: View::min_width's `within`)
     min_w_within: q.min_w is Some(Within(_)),
     max_w,
+    // (a most across: View::max_width's `within`, never wider than what holds it where that is known)
+    max_w_within: q.max_w is Some(Within(_)),
     min_h,
     padding: style_sides(false, q.p, q.px, q.py, q.pl, q.pt, q.pr, q.pb),
     gap: style_room(q.gap).unwrap_or(0.0),
@@ -336,8 +339,9 @@ fn style_set(v : @view.View, was : StyleSet?, s : StyleSet, loc : SourceLoc) -> 
     (before.min_w && (w.min_w != s.min_w || w.min_w_within != s.min_w_within)) {
     v.min_width(loc~, Is(s.min_w), within=s.min_w_within) |> ignore
   }
-  if style_first(new, before.max_w, now.max_w) || (before.max_w && w.max_w != s.max_w) {
-    v.max_width(loc~, Is(s.max_w)) |> ignore
+  if style_first(new, before.max_w, now.max_w) ||
+    (before.max_w && (w.max_w != s.max_w || w.max_w_within != s.max_w_within)) {
+    v.max_width(loc~, Is(s.max_w), within=s.max_w_within) |> ignore
   }
   if style_first(new, before.min_h, now.min_h) || (before.min_h && w.min_h != s.min_h) {
     v.min_height(loc~, Is(s.min_h)) |> ignore

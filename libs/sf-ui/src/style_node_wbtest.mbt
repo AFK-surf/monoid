@@ -149,6 +149,37 @@ test "style_node: a least width said Within is so many points where what holds i
 }
 
 ///|
+test "style_node: a most width said Within is so many points where what holds it has the room, all of it where it has less" {
+  let wide = @signals.signal(true, same=fn(a, b) { a == b })
+  let at : Ref[@view.View?] = Ref(None)
+  let t = @ui.Tester::new(fn(_c) {  }, w=500.0, h=300.0, platform=0)
+  @ui.set_view_app(fn(root) {
+    root.lines_up(Is(Some(Start))) |> ignore
+    root.box(fn(r) {
+      r.width(By(fn() { Some(if wide.get() { 400.0 } else { 180.0 }) })).lines_up(Is(Some(Start))) |> ignore
+      // (a box as wide as what it holds, 300, not cut short (no w=Cut): its most alone keeps it in)
+      r.box(fn(b) {
+        at.val = Some(b)
+        style_node(b, fn() { @ui.style(max_w=Within(240.0)) })
+        b.box(fn(k) { style_node(k, fn() { @ui.style(w=Fixed(300.0), h=Fixed(10.0)) }) }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  t.run_for(@ui.move_most_ms)
+  let seen = [at.val.unwrap().placed_window_now().2]
+  wide.set(false)
+  t.run_for(@ui.move_most_ms)
+  seen.push(at.val.unwrap().placed_window_now().2)
+  wide.set(true)
+  t.run_for(@ui.move_most_ms)
+  seen.push(at.val.unwrap().placed_window_now().2)
+  assert_eq(seen, [240.0, 180.0, 240.0])
+}
+
+///|
 test "style_node: a share of what holds it as a size is laid on no node: a fault naming where it was said, the property and its value" {
   let told : Array[String] = []
   @view.faults_stop.val = false
