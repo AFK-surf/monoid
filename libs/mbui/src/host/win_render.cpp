@@ -1979,3 +1979,5 @@ int mb_screen_snapshot(void *hwnd, const wchar_t *path) {
 
 // The GPU's time is not measured here.
 extern "C" double mb_host_gpu_ms(void) { return -1; }
+// Each frame drawn as it is made, on the window's thread: none dropped.
+extern "C" int32_t mb_host_frames_dropped(void) { return 0; }

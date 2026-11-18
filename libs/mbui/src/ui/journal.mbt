@@ -151,7 +151,9 @@ pub(all) struct Hang {
 /// out for it (`still`, `still_laid`, `moved`, `moved_laid`, each frame in one). Frames whose interval the journal
 /// lost the beginning of are in none. `by_page`: of the frames presented, stalls, late frames and blocking, those
 /// counted while each name the app said it showed was (journal_shows; "" before it said one), in the order the names
-/// were said: they add up to the four counts above.
+/// were said: they add up to the four counts above. `gpu`: what the drawing side did with the frames meanwhile
+/// (frame_watch.mbt's GpuFrames: their GPU time past each budget, those never drawn), which the app's own work does not
+/// show.
 #derive(Eq, Debug)
 pub(all) struct HangSummary {
   shown_ms : Double
@@ -165,6 +167,7 @@ pub(all) struct HangSummary {
   moved : Array[Int]
   moved_laid : Array[Int]
   by_page : Array[(String, Int, Int, Int, Int)]
+  gpu : GpuFrames
 }
 
 ///|
@@ -425,6 +428,7 @@ fn journal_reset() -> Unit {
   shown_said.val = ""
   arranged_said.val = ("", 0.0, 0.0)
   shown_counts.fill(0)
+  gpu_frames_reset()
   journal_listens()
 }
 
@@ -797,6 +801,7 @@ fn journal_said_shown(at : Double) -> Unit {
     moved: bands(2),
     moved_laid: bands(3),
     by_page: shown_by_page(),
+    gpu: gpu_frames_take(),
   }
   journal_counts.fill(0.0)
   journal_counts[5] = -1.0
@@ -981,13 +986,14 @@ pub fn Hang::json(self : Hang) -> Json {
 
 ///|
 /// The summary as JSON (reports.mbt's): its counts by what was shown as `by_page`, each name's [frames, stalls, late
-/// frames, blocking] (none said yet: under "").
+/// frames, blocking] (none said yet: under ""); what the drawing side did as `gpu`, where its host said any (a GPU
+/// time known, a frame never drawn).
 pub fn HangSummary::json(self : HangSummary) -> Json {
   let by_page : Map[String, Json] = Map([])
   for p in self.by_page {
     by_page[p.0] = journal_counts_json([p.1, p.2, p.3, p.4])
   }
-  {
+  let o : Map[String, Json] = {
     "shown_ms": Json::number(journal_ms(self.shown_ms)),
     "work_ms": Json::number(journal_ms(self.work_ms)),
     "frames": Json::number(self.frames.to_double()),
@@ -1003,6 +1009,18 @@ pub fn HangSummary::json(self : HangSummary) -> Json {
     },
     "by_page": Json::object(by_page),
   }
+  let g = self.gpu
+  if g.timed > 0 || g.dropped > 0 {
+    o["gpu"] = {
+      "frames": Json::number(g.timed.to_double()),
+      "over_8ms": Json::number(g.over_120.to_double()),
+      "over_16ms": Json::number(g.over_60.to_double()),
+      "over_24ms": Json::number(g.over_hang.to_double()),
+      "worst_ms": Json::number(journal_ms(g.worst_ms)),
+      "dropped": Json::number(g.dropped.to_double()),
+    }
+  }
+  Json::object(o)
 }
 
 ///|

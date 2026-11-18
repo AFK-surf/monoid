@@ -230,6 +230,8 @@ pub fn go_back() -> Bool
 
 pub fn gone_ms(Double) -> Double
 
+pub fn gpu_frames_take() -> GpuFrames
+
 pub fn h264_here() -> Bool
 
 pub fn h265_here() -> Bool
@@ -1880,6 +1882,17 @@ pub(all) struct GifFrames {
   delays : Array[Double]
 }
 
+#derive(Eq, @debug.Debug)
+pub(all) struct GpuFrames {
+  timed : Int32
+  over_120 : Int32
+  over_60 : Int32
+  over_hang : Int32
+  worst_ms : Double
+  dropped : Int32
+}
+pub fn GpuFrames::said(Self) -> String
+
 type Group
 
 #derive(Eq, @debug.Debug)
@@ -1918,6 +1931,7 @@ pub(all) struct HangSummary {
   moved : Array[Int32]
   moved_laid : Array[Int32]
   by_page : Array[(String, Int32, Int32, Int32, Int32)]
+  gpu : GpuFrames
 }
 pub fn HangSummary::json(Self) -> @json.Json
 

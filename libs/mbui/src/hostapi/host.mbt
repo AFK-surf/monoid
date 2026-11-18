@@ -103,6 +103,7 @@ pub(open) trait Host {
   increase_contrast(Self) -> Bool = _
   thermal_throttled(Self) -> Bool = _
   gpu_ms(Self) -> Double = _
+  frames_dropped(Self) -> Int = _
   cpu_ms(Self) -> Double = _
   env(Self, String) -> String = _
   set_app_state(Self, FuncRef[(Int) -> Unit]) -> Unit = _
@@ -767,6 +768,11 @@ impl Host with thermal_throttled(_) {
 ///|
 impl Host with gpu_ms(_) {
   -1.0
+}
+
+///|
+impl Host with frames_dropped(_) {
+  0
 }
 
 ///|
@@ -2374,6 +2380,14 @@ pub fn thermal_throttled() -> Bool {
 /// this host).
 pub fn gpu_ms() -> Double {
   current.val.gpu_ms()
+}
+
+///|
+/// How many frames the app made were never drawn, each's place taken by a newer one while it waited for a drawing
+/// thread slower than the app's (Android's GL thread: FrameMail), since the run began (0: none, or a host that draws
+/// each frame on the app's own thread).
+pub fn frames_dropped() -> Int {
+  current.val.frames_dropped()
 }
 
 ///|
