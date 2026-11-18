@@ -1961,6 +1961,41 @@ test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps 
 
 
 ///|
+test "待派发: a draft edited is in the composer a new one is written in: ＋, its station chosen, ⌘ starts it" {
+  let (t, src) = board_at("board", 1440.0, 900.0)
+  let before = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
+  t.click(Button, label=before.title)
+  t.run_for(@ui.move_most_ms)
+  // (what the new task's card has: ＋, the choice of a station, send, ×)
+  assert_true(t.query(Button, label="在哪台机器上运行: Willow") is Some(_))
+  assert_true(t.query(Button, label="保存") is Some(_))
+  assert_true(t.query(Button, label="取消") is Some(_))
+  assert_eq(board_faults(t), [])
+  // (another station chosen in its menu: the card stays open, and 保存 sends it there)
+  t.click(Button, label="在哪台机器上运行: Willow")
+  t.run_for(@ui.move_most_ms)
+  t.click(MenuItemRadio, label="Maple")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="在哪台机器上运行: Maple") is Some(_))
+  t.click(Button, label="保存")
+  t.run_for(@ui.move_most_ms)
+  let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
+  assert_eq((after.id, after.title, after.station, after.station_name), (before.id, before.title, "ws1/st2", "Maple"))
+  // (the command key held, its send starts it at once)
+  t.click(Button, label=after.title)
+  t.run_for(@ui.move_most_ms)
+  t.hold_mods(@ui.mod_cmd)
+  t.draw()
+  guard t.query(Button, label="派发") is Some(go) else { fail("no 派发 while ⌘ is held") }
+  let (gx, gy, gw, gh) = go.rect
+  t.tap(gx + gw / 2.0, gy + gh / 2.0)
+  t.hold_mods(0)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(board_lane_now(src, after.title), "run")
+  assert_eq(board_faults(t), [])
+}
+
+///|
 test "大屏: Enter or pressing another card keeps edited words; an empty edit does not replace the draft" {
   let (t, _) = board_at("board", 1440.0, 900.0)
   t.click(Button, label="给导出加上按月份筛选")

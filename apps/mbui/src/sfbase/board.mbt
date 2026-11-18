@@ -408,13 +408,29 @@ pub fn board_draft_add(
 }
 
 ///|
-/// The words of draft `id` changed in place, keeping its key, order and destination.
-pub fn board_draft_edit(src : Source, ws : String, id : String, title : String) -> Unit {
+/// Draft `id` changed in place (its words, the station it goes to, its files), keeping its key and order: left as it
+/// was where nothing would be written in it.
+pub fn board_draft_edit(
+  src : Source,
+  ws : String,
+  id : String,
+  title : String,
+  station? : String = "",
+  station_name? : String = "",
+  files? : Array[BoardFile],
+) -> Unit {
   let words = title.trim(chars=" \n\r\t").to_owned()
-  guard words != "" else { return }
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
-  guard was.iter().any(fn(d) { d.id == id && d.title != words }) else { return }
-  board_drafts_put(src, ws, was.map(fn(d) { if d.id == id { { ..d, title: words } } else { d } }))
+  guard was.iter().find_first(fn(d) { d.id == id }) is Some(d) else { return }
+  let next : BoardDraft = {
+    ..d,
+    title: words,
+    station: if station == "" { d.station } else { station },
+    station_name: if station == "" { d.station_name } else { station_name },
+    files: files.unwrap_or(d.files),
+  }
+  guard (words != "" || !next.files.is_empty()) && next != d else { return }
+  board_drafts_put(src, ws, was.map(fn(o) { if o.id == id { next } else { o } }))
 }
 
 ///|
