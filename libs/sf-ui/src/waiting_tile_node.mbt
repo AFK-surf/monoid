@@ -27,12 +27,17 @@ pub fn waiting_tile_node(
     .min_width(Is(Some(waiting_tile_side)))
     .radius(By(fn() { composer_inner() }))
     .clips(Is(true))
-    |> ignore
-    // (failed: edged red, over what it shows)
-    tile.box(fn(edge) {
-      edge.over(Is(true)) |> ignore
-      style_node(edge, fn() { if failed() { waiting_tile_failed } else { waiting_tile_whole } })
-    })
+    // (its rim, drawn over all it holds, its veils too: a hairline so a light picture stands off a light composer and a
+    // dark one off a dark one (the line, as a message's picture's: sfpages' image_frame); failed, edged red)
+    .edge(
+      By(fn() {
+        if failed() {
+          (waiting_failed_edge, @ui.tree_theme().color(Danger))
+        } else {
+          (1.0, theme().p.line)
+        }
+      }),
+    )
     |> ignore
     tile.box(fn(p) {
       p.grow(Is(1.0)) |> ignore
@@ -79,12 +84,8 @@ let waiting_play_side : Double = 24.0
 let waiting_on_veil : Int64 = 0xFFFFFFFFL
 
 ///|
-// kept across runs: a value (no field of it changes)
-let waiting_tile_whole : @ui.Style = @ui.css("")
-
-///|
-// kept across runs: a value (no field of it changes)
-let waiting_tile_failed : @ui.Style = @ui.css("border=B2 border_color=Danger")
+/// How wide a failed tile's red edge is (B2).
+let waiting_failed_edge : Double = 2.0
 
 ///|
 // kept across runs: a value (no field of it changes)

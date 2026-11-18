@@ -106,7 +106,8 @@ pub fn switcher_node(v : @view.View, src : Source) -> Unit {
         @sf.style_node(p, fn() { switcher_panel.then(@ui.style(w=Fixed(room()))) }, in_row=true)
         p
         .ground(By(fn() { @sf.panel_ground() }))
-        .shadow(By(fn() { (@sf.dialog_shadow, @sf.dialog_shadow_y, @sf.theme().p.shadow) }))
+        .edge(By(fn() { (1.0, @sf.panel_edge()) }))
+        .shadow(By(fn() { (@sf.dialog_shadow, @sf.dialog_shadow_y, @sf.float_shadow_ink()) }))
         .alpha(By(fn() { look().alpha }))
         .scale(By(fn() { look().sx }))
         .offset(By(fn() { (look().dx, look().dy) }))

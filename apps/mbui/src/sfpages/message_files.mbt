@@ -1053,9 +1053,15 @@ let files_row : @ui.Style = @ui.css("row gap=S1_5 align=AStart")
 
 ///|
 /// An image's box (msgImage): clipped to its corners (in a corner of what holds it, a quote's card, concentric with
-/// that one); the neutral ground while it waits.
+/// that one); the neutral ground while it waits; the hairline drawn over its picture, as round as it, so a light
+/// screenshot stands off a light chat and a dark one off a dark one.
 // kept across runs: a value (no field of it changes)
-let image_frame : @ui.Style = @ui.style(radius=InnerOr(@sf.message_file_radius), clip=true)
+let image_frame : @ui.Style = @ui.style(
+  radius=InnerOr(@sf.message_file_radius),
+  clip=true,
+  border=B1,
+  border_color=Line,
+)
 
 ///|
 /// A picture's box rounded `corner` (a message's file's, its frames' own; a quote's picture's, concentric with its
