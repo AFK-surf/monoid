@@ -15,7 +15,7 @@ import { MANUAL, Store, newMessage } from "../src/store/store.ts";
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member", workspace: "A", device: "dev", home: true } as const;
 
 function session(store: Store, key: string, ws: string | null = null) {
-  store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
+  store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key,
     createdAt: 1, lastActiveAt: 1, createdBy: "ann@x", ws });
 }
 function job(store: Store, key: string) {
@@ -39,8 +39,8 @@ for (const title of ["Given title", null]) test(`a job's own chat with title ${t
   const store = Store.open(":memory:");
   try {
     session(store, "a"); job(store, "a");
-    const chat = store.openThread("ember", "CHAT", "1.1", title, "ann@x");
-    store.joinThread(chat.id, "a", "ember");
+    const chat = store.openThread("chat", "CHAT", "1.1", title, "ann@x");
+    store.joinThread(chat.id, "a", "chat");
     store.insertMessage({ ...newMessage(chat.id, "1", "person", "ann@x", "first"), at: 1 });
     const reader = makeStore(store.db, ".");
     const expected = jobChats(openJobs(reader, viewer, "en"));
@@ -59,8 +59,8 @@ for (const own of [false, true]) test(`a named ${own ? "own chat" : "external or
   try {
     session(store, "a"); job(store, "a");
     if (own) {
-      const chat = store.openThread("ember", "CHAT", "own", "Own title", "ann@x");
-      store.joinThread(chat.id, "a", "ember");
+      const chat = store.openThread("chat", "CHAT", "own", "Own title", "ann@x");
+      store.joinThread(chat.id, "a", "chat");
     }
     const source = store.openThread("slack:one", "C1", "origin", own ? null : "Origin title", "ann@x");
     store.joinThread(source.id, "a", "one");
@@ -97,8 +97,8 @@ test("the selected origin and its name share the reader's snapshot", () => {
   const path = join(dir, "stillfail.db"), store = Store.open(path), writer = new DatabaseSync(path);
   try {
     session(store, "a"); job(store, "a");
-    const own = store.openThreadOf("ember", "CHAT", "own", null, "ann@x", "a");
-    store.joinThread(own.id, "a", "ember");
+    const own = store.openThreadOf("chat", "CHAT", "own", null, "ann@x", "a");
+    store.joinThread(own.id, "a", "chat");
     const source = store.openThread("slack:one", "C1", "origin", null, "ann@x");
     store.joinThread(source.id, "a", "one");
     store.insertMessage({ ...newMessage(source.id, "1", "person", "ann@x", "Before"), at: 1 });
@@ -138,16 +138,16 @@ test("job title rows preserve the full sidebar's names, agents and order", () =>
   try {
     for (const [key, ws] of [["a", null], ["b", null], ["old", null], ["away", "B"]] as const) session(store, key, ws);
     for (const key of ["a", "b", "old", "away"]) job(store, key);
-    const ownA = store.openThread("ember", "CHAT", "own-a", null, "ann@x");
-    store.joinThread(ownA.id, "a", "ember");
-    store.joinThread(ownA.id, "b", "ember");
-    const ownB = store.openThread("ember", "CHAT", "own-b", "B name", "ann@x");
-    store.joinThread(ownB.id, "b", "ember");
-    const old = store.openThreadOf("ember", "CHAT", "own-old", "Old name", "ann@x", "old");
-    store.joinThread(old.id, "old", "ember");
+    const ownA = store.openThread("chat", "CHAT", "own-a", null, "ann@x");
+    store.joinThread(ownA.id, "a", "chat");
+    store.joinThread(ownA.id, "b", "chat");
+    const ownB = store.openThread("chat", "CHAT", "own-b", "B name", "ann@x");
+    store.joinThread(ownB.id, "b", "chat");
+    const old = store.openThreadOf("chat", "CHAT", "own-old", "Old name", "ann@x", "old");
+    store.joinThread(old.id, "old", "chat");
     store.setArchived("old", true, MANUAL);
-    const away = store.openThread("ember", "CHAT", "own-away", "Away", "ann@x");
-    store.joinThread(away.id, "away", "ember");
+    const away = store.openThread("chat", "CHAT", "own-away", "Away", "ann@x");
+    store.joinThread(away.id, "away", "chat");
     const older = store.openThread("slack:one", "C1", "old-origin", "Earlier origin", "ann@x");
     const newer = store.openThread("slack:one", "C1", "new-origin", null, "ann@x");
     store.joinThread(older.id, "a", "one");

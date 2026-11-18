@@ -52,8 +52,8 @@ export async function kept(thumbs: string, id: string, since?: number): Promise<
 
 /// The addon's codecs; none where it is not there (a checkout not built), and then images are shown as they are and kept
 /// without a ThumbHash.
-let codecs: Codecs | null | undefined;
-function native(): Codecs | null {
+let codecs: Mesh | null | undefined;
+function native(): Mesh | null {
   if (codecs === undefined) {
     try {
       codecs = loadMesh();
@@ -73,6 +73,18 @@ export async function thumbnail(image: string, thumbs: string, using: Codecs | n
   if (since !== undefined) await kept(thumbs, idOf(image), since);
   try {
     return await using.thumbnail(image, thumbs);
+  } catch {
+    return null;
+  }
+}
+
+/// thumbs.rs `preview`: what the whole-window viewer shows before the image itself (at most 2048 across), made if it is
+/// not there yet (`<id>.p.jpg`, `.p.png` or `.p.webp` beside the thumbnail); null when the image itself is shown (300 KiB or less, not readable
+/// as an image, or no copy at half its bytes or less). A chat's images never change, so it is never made again.
+export async function preview(image: string, thumbs: string, using: Pick<Mesh, "preview"> | null = native()): Promise<Thumbnail | null> {
+  if (using === null) return null;
+  try {
+    return await using.preview(image, thumbs);
   } catch {
     return null;
   }

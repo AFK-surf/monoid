@@ -103,6 +103,7 @@ pub fn open(db : @sql.Db, host : @host.Host, path : String, now : Int64, archive
   install_session_chat_index(db)
   install_latest_thread_index(db)
   install_card_posts(db)
+  rename_own_chats(db)
   let archive = match archive {
     Some(a) => a
     None => joined_path(dirname(path), "archive")
@@ -517,4 +518,55 @@ fn upgrade_from_12(db : @sql.Db, host : @host.Host, archive : String) -> Unit ra
     remove_path(host, file)
   }
   db.exec("DROP INDEX IF EXISTS threads_archived; DROP TABLE IF EXISTS items;")
+}
+
+///|
+/// What stations wrote for the station's own chats' surface and connect before the rename (rows.ts FORMER_OWN_NAMES).
+let former_own_names : Array[String] = ["ember", "stillfail"]
+
+///|
+/// The tables that name a session's connect as they are written (schema.ts CONNECT_TABLES).
+let connect_tables : Array[String] = [
+  "sessions", "thread_sessions", "bindings", "connect_threads", "relayed_to", "slack_stops",
+]
+
+///|
+/// schema.ts `renameOwnChats`: the station's own chats as their names are now, what stations wrote before the rename
+/// written over once as the database opens, and what was made of it then made again.
+fn rename_own_chats(db : @sql.Db) -> Unit raise {
+  let former = former_own_names.map(n => "'\{n}'").join(",")
+  let stale = (name : String) => {
+    let sql = match db.all("SELECT sql FROM sqlite_master WHERE name = ?", [Json::string(name)]) {
+      [row, ..] => match row.get("sql") { Some(String(s)) => Some(s); _ => None }
+      _ => None
+    }
+    match sql {
+      Some(s) => former_own_names.iter().any(n => s.contains("'\{n}'"))
+      None => false
+    }
+  }
+  let surfaces = some_row(db, "SELECT 1 FROM threads WHERE surface IN (\{former}) LIMIT 1")
+  let tables = connect_tables.filter(t => exists(db, "table", t))
+  let connects = tables.filter(t => some_row(db, "SELECT 1 FROM \{t} WHERE connect IN (\{former}) LIMIT 1"))
+  let order = stale("cc_session_order")
+  let answered = stale("pending_cards_answered")
+  if !surfaces && connects.length() == 0 && !order && !answered {
+    return
+  }
+  immediate(db, () => {
+    if order {
+      db.exec(
+        "DROP INDEX cc_session_order; CREATE INDEX cc_session_order ON cc_session_rows(session,last_at DESC,created_at DESC,thread DESC)\n        WHERE surface != '\{stillfail_surface}';",
+      )
+    }
+    if answered {
+      db.exec(
+        "DROP TRIGGER pending_cards_answered; CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries\nWHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '\{stillfail_surface}' BEGIN\n  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;\nEND;",
+      )
+    }
+    db.exec("UPDATE OR IGNORE threads SET surface = '\{stillfail_surface}' WHERE surface IN (\{former})")
+    for t in tables {
+      db.exec("UPDATE OR IGNORE \{t} SET connect = '\{stillfail_surface}' WHERE connect IN (\{former})")
+    }
+  })
 }

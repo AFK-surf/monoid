@@ -68,6 +68,7 @@ pub async fn start_live_p5_2(bus : LiveBus) -> Unit {
     card_outcomes: None,
     outcomes_following: false,
   }
+  p52_lang_fn.val = () => ctx.lang()
   // The cards' queued outcomes, written by the parts that decide a card (the rigs, the phones, the vault) and their
   // cards closed and restated by one worker here (agents.ts `cardOutcomes`).
   ctx.outcomes_start()
@@ -615,10 +616,16 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       ji(n)
     }
     "drivers.freeze" => {
-      for d in self.drivers.values() {
-        (d.freeze)()
+      let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
+      let done = @effect.timeout(limit, async fn() {
+        for d in self.drivers.values() {
+          (d.freeze)()
+        }
+      })
+      match done {
+        Some(_) => Json::object({})
+        None => { "error": jstr("the drivers did not freeze in \{limit} ms") }
       }
-      Json::object({})
     }
     "drivers.owns" => {
       let id = match args {
@@ -774,8 +781,16 @@ async fn P52::hub_asked(self : P52, what : String, args : Json) -> Json {
       guard self.actors_program is Some(p) else { return Json::object({}) }
       let limit = jnum_of(args, "limitMs").unwrap_or(30_000.0).to_int()
       let done = @effect.timeout(limit, async fn() {
-        while p.busy() || p.actors.values().any(a => !a.settled()) {
-          @effect.sleep(20) // timer: a deadline to a handover's settling (the program says where each actor stands)
+        // Each session's actor alone, its queue run out and again while more came (hub.ts `settled`): the
+        // program's own count of asks under way is the shells' too (`#remote`, `#jobs`), which a mirror's sync keeps
+        // busy for minutes. (What a runtime said goes to an actor in the program itself, not counted here: the
+        // actor's `flushed` waits for it.)
+        while true {
+          let actors = p.actors.values().to_array()
+          ignore(@effect.all(actors.map(a => async fn() { ignore(a.call("flushed", [])) })))
+          if actors.iter().all(a => a.settled()) && p.actors.values().all(a => a.settled()) {
+            break
+          }
         }
       })
       match done {
@@ -1392,7 +1407,9 @@ fn P52::status_agents(self : P52) -> Json {
 /// sessions handed over.
 async fn P52::hand_over(self : P52) -> Array[Json] {
   guard self.hub is Some(hub) else { return [] }
-  let handed = hub.hand_over() catch {
+  // Within the launcher's 30 s (`Times::exit`): a session that does not settle fails the handover in time for
+  // what the parts carry to be sent.
+  let handed = hub.hand_over(limit_ms=12_000.0) catch {
     e => {
       live_log("warn", "agents", "the sessions were not handed over", {
         "error": jstr(said_of(e)),

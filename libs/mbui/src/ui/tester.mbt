@@ -136,6 +136,8 @@ fn reset_globals() -> Unit {
   pace_none()
   notices_reset()
   hand_reset()
+  frame_end_sets.val = -1
+  frame_quiet.val = false
   corners_hold.val = true
   corners_known_now.val = []
   presses_hold.val = true
@@ -360,6 +362,7 @@ fn leaked_state() -> Array[String] {
 /// is drawn here: what is set before the Tester is made is the run before's, put back as this one begins.
 /// `keeps_sources`: whether the window's tree keeps where in the source each node was made (Tester::sources_at); off
 /// for a run measured as a device runs it.
+/// `theme`: the theme the window's tree's nodes are drawn in (set_view_app's), told before the first of them is made.
 /// `loc`: where it is made, said where a check of its frames fails (frame_watch.mbt, words_over.mbt).
 #callsite(autofill(loc))
 pub fn Tester::new(
@@ -396,6 +399,169 @@ pub fn Tester::new(
   before? : () -> Unit,
   begun? : () -> Unit,
   keeps_sources? : Bool = true,
+  theme? : () -> Theme,
+  loc~ : SourceLoc,
+) -> Tester {
+  let (around, made) : (((Ctx) -> Unit)?, (@view.View) -> Unit) = match tree {
+    Some(make) => (Some(view), make)
+    None => (None, fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
+  }
+  tester_make(
+    around,
+    made,
+    theme,
+    w~,
+    h~,
+    dark~,
+    window_inset~,
+    env~,
+    app_version~,
+    images~,
+    platform~,
+    keys?,
+    pointing?,
+    native?,
+    keyboard?,
+    seed?,
+    text?,
+    scale~,
+    time~,
+    stable~,
+    finish~,
+    run?,
+    h264~,
+    copy_shown~,
+    live?,
+    corners_held~,
+    presses_held~,
+    window_corner~,
+    window_corners?,
+    words_over_held~,
+    nav_able~,
+    before?,
+    begun?,
+    keeps_sources~,
+    loc~,
+  )
+}
+
+///|
+/// A tester showing the window's tree `tree` alone, made once, no old frame built round it (as run_tree runs it), its
+/// nodes drawn in `theme` (set_tree_theme) from the first of them made: the rest as Tester::new's.
+#callsite(autofill(loc))
+pub fn Tester::tree(
+  tree : (@view.View) -> Unit,
+  w? : Double = 390.0,
+  h? : Double = 844.0,
+  dark? : Bool = false,
+  window_inset? : Bool = false,
+  env? : Array[(String, String)] = [],
+  app_version? : Int = 0,
+  images? : Array[(String, Int, Int)] = [],
+  platform? : Int = 0,
+  keys? : Int,
+  pointing? : Pointing,
+  native? : Pointing,
+  keyboard? : Bool,
+  seed? : Int,
+  text? : String,
+  scale? : Double = 2.0,
+  time? : Double = 1000.0,
+  stable? : Bool = false,
+  finish? : Bool = true,
+  run? : String,
+  h264? : Bool = false,
+  copy_shown? : Bool = false,
+  live? : Live,
+  corners_held? : Bool = true,
+  presses_held? : Bool = true,
+  window_corner? : Double = 0.0,
+  window_corners? : FixedArray[Double],
+  words_over_held? : Bool = true,
+  nav_able? : Bool = false,
+  before? : () -> Unit,
+  begun? : () -> Unit,
+  keeps_sources? : Bool = true,
+  theme? : () -> Theme,
+  loc~ : SourceLoc,
+) -> Tester {
+  tester_make(
+    None,
+    tree,
+    theme,
+    w~,
+    h~,
+    dark~,
+    window_inset~,
+    env~,
+    app_version~,
+    images~,
+    platform~,
+    keys?,
+    pointing?,
+    native?,
+    keyboard?,
+    seed?,
+    text?,
+    scale~,
+    time~,
+    stable~,
+    finish~,
+    run?,
+    h264~,
+    copy_shown~,
+    live?,
+    corners_held~,
+    presses_held~,
+    window_corner~,
+    window_corners?,
+    words_over_held~,
+    nav_able~,
+    before?,
+    begun?,
+    keeps_sources~,
+    loc~,
+  )
+}
+
+///|
+/// The Tester of Tester::new and Tester::tree: the window's tree `tree`, the old frame `around` it where there is one
+/// (set_view_app's), drawn in `theme`.
+fn tester_make(
+  around : ((Ctx) -> Unit)?,
+  tree : (@view.View) -> Unit,
+  theme : (() -> Theme)?,
+  w~ : Double,
+  h~ : Double,
+  dark~ : Bool,
+  window_inset~ : Bool,
+  env~ : Array[(String, String)],
+  app_version~ : Int,
+  images~ : Array[(String, Int, Int)],
+  platform~ : Int,
+  keys? : Int,
+  pointing? : Pointing,
+  native? : Pointing,
+  keyboard? : Bool,
+  seed? : Int,
+  text? : String,
+  scale~ : Double,
+  time~ : Double,
+  stable~ : Bool,
+  finish~ : Bool,
+  run? : String,
+  h264~ : Bool,
+  copy_shown~ : Bool,
+  live? : Live,
+  corners_held~ : Bool,
+  presses_held~ : Bool,
+  window_corner~ : Double,
+  window_corners? : FixedArray[Double],
+  words_over_held~ : Bool,
+  nav_able~ : Bool,
+  before? : () -> Unit,
+  begun? : () -> Unit,
+  keeps_sources~ : Bool,
   loc~ : SourceLoc,
 ) -> Tester {
   host_settings_given.val = ""
@@ -676,9 +842,9 @@ pub fn Tester::new(
   }
   // (the window a tree made once: `tree`, the view under test the old frame around its old views; else the view its
   // one old view: view_host.mbt)
-  match tree {
-    Some(make) => set_view_app(make, around=view)
-    None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
+  match around {
+    Some(view) => set_view_app(tree, around=view, theme?=theme)
+    None => set_view_app(tree, theme?=theme)
   }
   let between = test_frames_between()
   tester_rested.clear()
@@ -1230,6 +1396,8 @@ pub fn Tester::frame_shown_at(self : Tester, now : Double, shown : Double) -> Un
 /// The first window's frame of frame_shown_at's, with every check the Tester holds it to.
 fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Unit {
   let at = now
+  // (a frame nothing asks for draws what the screen shows before it: tester_unasked.mbt)
+  let unasked = self.unasked_before(now)
   // (what was posted told at its moment, and what the fake host does at its own moments up to this frame's, before the
   // clock comes there: posted_tell, FakeHost::due)
   posted_tell()
@@ -1273,6 +1441,7 @@ fn Tester::frame_shown_first(self : Tester, now : Double, shown : Double) -> Uni
   // Gallery reads complete on the next frame, including frames that reuse the view.
   self.fake.gallery_frame += 1
   on_frame(self.w, self.h, self.fake.scale, if shown > at { shown } else { at })
+  self.unasked_after(unasked, at)
   // (a bench's measured frame ends here: what follows is the Tester's own checks of it, which a device runs not)
   bench_frame_ends()
   // (how many times it laid the window's tree out, and each event since the frame before: tester_passes.mbt)
@@ -2575,10 +2744,11 @@ pub fn Tester::perf_said(self : Tester) -> (Array[Bool], Array[String]) {
 }
 
 ///|
-/// The system asks for less transparency from now on, or no longer.
+/// The system asks for less transparency from now on, or no longer: the host asks a frame as it changes.
 pub fn Tester::set_reduce_transparency(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_reduce_transparency")
   self.fake.reduce_transparency = on
+  self.fake.wants = true
 }
 
 ///|
@@ -2590,10 +2760,11 @@ pub fn Tester::set_thermal_throttled(self : Tester, on : Bool) -> Unit {
 }
 
 ///|
-/// The system asks for more contrast from now on, or no longer.
+/// The system asks for more contrast from now on, or no longer: the host asks a frame as it changes.
 pub fn Tester::set_increase_contrast(self : Tester, on : Bool) -> Unit {
   host_setting_set("set_increase_contrast")
   self.fake.increase_contrast = on
+  self.fake.wants = true
 }
 
 ///|

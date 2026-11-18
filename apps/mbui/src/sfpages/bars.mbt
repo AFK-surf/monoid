@@ -242,10 +242,8 @@ fn bar_card_node(
     // with room left, a slot that adds one, from where it is
     r.show(fn() { set().length() < @settings.bar_size }, fn(a) {
       @sf.style_node(a, fn() { bar_slot }, in_row=true)
-      a.box(fn(face) {
+      @sf.action_box_node(a, fn() { @sf.t("android-misc.bar.add") }, fn(face) { add(Node(face)) }, fn(face) {
         @sf.style_node(face, fn() { bar_face })
-        @sf.presses_node(face, fn() { add(Node(face)) })
-        face.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-misc.bar.add"))) })) |> ignore
         face.box(fn(w) {
           @sf.style_node(w, fn() { bar_face_words })
           w.box(fn(ring) {
@@ -351,11 +349,8 @@ fn bar_remove_at_node(m : @view.View) -> Unit {
 ///|
 /// The "−" that takes place `key` out of its bar, in `m` (bar_remove_at_node's), `press` as it is pressed.
 fn bar_remove_node(m : @view.View, key : String, press : () -> Unit) -> Unit {
-  m.box(fn(minus) {
+  @sf.action_box_node(m, fn() { @sf.t("android-misc.bar.remove", args=[("name", bar_place_name(key))]) }, fn(_) { press() }, fn(minus) {
     @sf.style_node(minus, fn() { bar_remove })
-    @sf.presses_node(minus, press)
-    minus.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-misc.bar.remove", args=[("name", bar_place_name(key))]))) }))
-    |> ignore
     @sf.icon_node(minus, "minus", bar_remove_mark, By(fn() { @sf.theme().p.muted })) |> ignore
   })
   |> ignore

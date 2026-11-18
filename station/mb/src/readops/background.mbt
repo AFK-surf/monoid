@@ -218,7 +218,7 @@ pub fn recent_connect_people(db : @sql.Db, args : Json) -> Json raise {
       String(s) => Some(s)
       _ => None
     })
-    let people = if field(r, "surface") == Json::string("ember") {
+    let people = if field(r, "surface") == Json::string("chat") {
       authors
     } else {
       match first {

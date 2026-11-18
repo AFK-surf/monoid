@@ -90,13 +90,17 @@ const MEASURE_LEFT : Int = 3
 /// What a node drawn was seen at in its last frames, each measure where it is (measure_slot): its samples
 /// (rows_steady_fault's) and when it last turned back (rows_turn_ms); the words it said (words are new words across
 /// where they say another thing: their place across seen anew); which slots this frame measured (`touched`, as of
-/// `at`): one it did not is let go as the frame ends, as one never seen.
+/// `at`): one it did not is let go as the frame ends, as one never seen. And for each slot whether the frame of its
+/// second sample came with nothing to cause it (`first_unasked`: frame_quiet), its first two frames its first ever
+/// (`ever`: the slots seen so far, a slot seen anew after a gap no node's first frame).
 priv struct SizesSeen {
   seen : FixedArray[Array[(Double, Double, Double)]]
   turned : FixedArray[Double]
   mut text : String
   mut at : Double
   mut touched : Int
+  first_unasked : FixedArray[Bool]
+  mut ever : Int
 }
 
 ///|
@@ -107,6 +111,8 @@ fn SizesSeen::new(text : String) -> SizesSeen {
     text,
     at: -1.0e9,
     touched: 0,
+    first_unasked: FixedArray::make(6, false),
+    ever: 0,
   }
 }
 
@@ -170,6 +176,8 @@ pub fn sizes_steady_known(bars : Array[(String, Int)]) -> Unit {
 ///|
 fn sizes_steady_begin(loc : String, held : Bool) -> Unit {
   sizes_steady.held = held
+  frame_end_sets.val = -1
+  frame_quiet.val = false
   sizes_steady.seen.clear()
   sizes_steady.found.clear()
   sizes_steady.found_across.clear()
@@ -185,6 +193,19 @@ fn sizes_steady_begin(loc : String, held : Bool) -> Unit {
     None => loc
   }
 }
+
+///|
+/// How many signals had been set as the last frame ended (on_frame; -1 before the first): what was set after it,
+/// between frames or as the next began, a cause of what that one draws.
+// kept across runs: begun anew by each Tester (sizes_steady_begin)
+let frame_end_sets : Ref[Int] = Ref(-1)
+
+///|
+/// Whether the frame being drawn began with nothing come since the one before it to cause anything of it (on_frame:
+/// no signal set, no input, no message, nothing due, the window and its glyphs as they were): what steps in it steps for
+/// no cause of its own.
+// kept across runs: begun anew by each Tester (sizes_steady_begin)
+let frame_quiet : Ref[Bool] = Ref(false)
 
 ///|
 /// Whether node `n` draws anything of its own (a ground, an edge, a glass, a shadow, words, a picture).
@@ -313,10 +334,30 @@ fn sizes_steady_fault(
   period : Double,
   turned~ : Double,
   set_out? : Double = -1.0,
+  unasked? : Bool = true,
 ) -> (String?, Double) {
   // (the last four; the one before them, where there is one, for whether they set out from rest)
   let seen = if all.length() > 4 { all[all.length() - 4:].to_owned() } else { all }
   let n = seen.length()
+  // (its first three frames ever, one after another, the second come with nothing to cause it (`unasked`): a step in
+  // its first frame and then standing still (a frame drawn by what was worked out late, a value told the tree a frame
+  // after it was made), which no frame of four ever has before it, the step its first)
+  if n == 3 &&
+    unasked &&
+    seen[0].1 < seen[1].1 &&
+    seen[1].1 < seen[2].1 &&
+    seen[1].1 - seen[0].1 <= 1.5 * period &&
+    seen[2].1 - seen[1].1 <= 1.5 * period &&
+    !(set_out > seen[0].1 && set_out <= seen[2].1) {
+    let v0 = (seen[1].2 - seen[0].2) / (seen[1].1 - seen[0].1) * period
+    let v1 = (seen[2].2 - seen[1].2) / (seen[2].1 - seen[1].1) * period
+    if v0.abs() > rows_speed_least && v1.abs() <= 0.25 {
+      return (
+        Some("stepped \{v0} in its first frame then stood (\{v1}) at \{seen[1].1} seen=[\{all.map(fn(s) { "(\{s.0}, \{s.1}, \{s.2})" }).join(", ")}]"),
+        turned,
+      )
+    }
+  }
   if n >= 4 && seen[0].1 < seen[1].1 && seen[1].1 < seen[2].1 && seen[2].1 < seen[3].1 &&
     !(set_out > seen[0].1 && set_out <= seen[3].1) {
     let speed = fn(a : Int) { (seen[a + 1].2 - seen[a].2) / (seen[a + 1].1 - seen[a].1) * period }
@@ -748,6 +789,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         for s in [4, 5] {
           ns.seen[s].clear()
           ns.turned[s] = -1.0e9
+          ns.first_unasked[s] = false
         }
       }
       for m in measures {
@@ -759,6 +801,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         // frame its column was put at once, or its list's keys changed by data, as far as that took it)
         if gap || resized || !shows || self.down || view_holds() || (hand_now && by_scroll[i]) || put_now[i] {
           seen.clear()
+          ns.first_unasked[slot] = false
           continue
         }
         // (its left edge while it shakes across: the shake's, there and back on purpose; seen anew from its first frame
@@ -766,19 +809,35 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         if shaken[i] && m.0 == MEASURE_LEFT {
           seen.clear()
           ns.turned[slot] = -1.0e9
+          ns.first_unasked[slot] = false
           continue
         }
         if seen.length() > 0 && now - seen[seen.length() - 1].0 < 0.5 * period {
-          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt)
+          // (laid out again in the frame: one frame, as it stands now: rows_steady.mbt; its second laid out again for a
+          // cause, a step in it that cause's)
+          if seen.length() == 2 && !frame_quiet.val {
+            ns.first_unasked[slot] = false
+          }
           seen[seen.length() - 1] = (seen[seen.length() - 1].0, now, m.1)
         } else {
+          // (its second frame ever: whether it stepped with nothing before it to cause it)
+          if seen.length() == 1 && (ns.ever & (1 << slot)) == 0 {
+            ns.first_unasked[slot] = frame_quiet.val && (m.1 - seen[0].2).abs() > 0.01
+            ns.ever = ns.ever | (1 << slot)
+          }
           seen.push((now, now, m.1))
         }
         while seen.length() > 5 {
           seen.remove(0) |> ignore
         }
         let turned = ns.turned[slot]
-        let (fault, turn) = sizes_steady_fault(seen, period, turned~, set_out=set_out[i])
+        let (fault, turn) = sizes_steady_fault(
+          seen,
+          period,
+          turned~,
+          set_out=set_out[i],
+          unasked=ns.first_unasked[slot],
+        )
         ns.turned[slot] = turn
         match fault {
           Some(f) => {
@@ -849,6 +908,7 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
         if (ns.touched & (1 << s)) == 0 {
           ns.seen[s].clear()
           ns.turned[s] = -1.0e9
+          ns.first_unasked[s] = false
         }
       }
     }

@@ -1381,7 +1381,7 @@ let swipe_words_line : @ui.Style = @ui.style(
 
 ///|
 // kept across runs: a value (no field of it changes)
-let swipe_words : @ui.TextStyle = @ui.text_style(size=Body, weight=Semibold, wrap=false)
+let swipe_words : @ui.TextStyle = @ui.text_style(size=Ui, weight=Medium, wrap=false)
 
 ///|
 /// Whether a row's title is being written in place (what the frame holds open meanwhile).

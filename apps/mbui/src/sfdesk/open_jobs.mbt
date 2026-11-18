@@ -367,10 +367,9 @@ fn open_jobs_node(v : @view.View, src : Source, w : Workspace, close : () -> Uni
   v.show(fn() { others().length() > 0 }, fn(o) {
     let open = fn() { open_jobs_others.contains(w.id) }
     let label = fn() { open_jobs_others_text(src, w, open_jobs_count(others())) }
-    @headless.disclosure(
+    @sf.action_box_node(
       o,
       label,
-      open,
       fn(_) {
         if open_jobs_others.contains(w.id) {
           open_jobs_others.remove(w.id)
@@ -378,7 +377,8 @@ fn open_jobs_node(v : @view.View, src : Source, w : Workspace, close : () -> Uni
           open_jobs_others[w.id] = true
         }
       },
-      fn(k, _) {
+      expanded=open,
+      fn(k) {
         @sf.style_node(k, fn() { open_jobs_fold.then(jobs_pop_round) })
         @sf.hover_ground_node(k)
         @sf.words_node(k, label, fn() { open_jobs_fold_words }) |> ignore
@@ -431,11 +431,11 @@ fn open_jobs_groups_node(
       rows.each(shown, fn(j) { open_job_key(Some(j)) }, fn(row, j) { open_job_node(row, src, fn() { Some(j.get()) }, close, alone) })
       rows.show(fn() { shown().length() < list().length() }, fn(m) {
         let label = fn() { @sf.t("web-main.jobs.more", args=[("n", (list().length() - shown().length()).to_string())]) }
-        @headless.button(m, label, fn(_) {
+        @sf.action_box_node(m, label, fn(_) {
           let k = @signals.untracked(key)
           open_jobs_all[k] = true
           opened.set(opened.untracked() + [k])
-        }, fn(b, _) {
+        }, fn(b) {
           @sf.style_node(b, fn() { open_jobs_more })
           @sf.words_node(b, label, fn() { if @sf.lit_node(b) { open_jobs_more_lit } else { open_jobs_more_words } }) |> ignore
         })
@@ -476,7 +476,7 @@ fn open_job_node(parent : @view.View, src : Source, job : () -> Json?, close : (
       b.box(fn(m) {
         @sf.style_node(m, fn() { if alone { open_job_mark } else { open_job_mark_start } }, in_row=true)
         m.height(By(fn() { Some(name_line()) })) |> ignore
-        jobs_pop_dot(m, fn() { text(job(), "tone") })
+        @sf.state_dot_node(m, size=@sfpages.job_dot_across, breathes=true, fn() { @sfpages.job_dot_tone(text(job(), "tone")) })
       })
       |> ignore
       b.box(fn(words) {
@@ -491,11 +491,11 @@ fn open_job_node(parent : @view.View, src : Source, job : () -> Json?, close : (
           .allow_ellipsis(Is(true))
           |> ignore
           // (its stop at its end, a press of its own in the row's, on that line's middle as the dot is)
-          @headless.button(line, fn() { open_job_stop_label(job()) }, fn(_) {
+          @sf.action_box_node(line, fn() { open_job_stop_label(job()) }, fn(_) {
             if !@signals.untracked(stopping) {
               open_job_stop_now(src, @signals.untracked(job))
             }
-          }, fn(k, _) {
+          }, fn(k) {
             @sf.style_node(k, fn() { open_job_stop }, in_row=true)
             k.height(By(fn() { Some(name_line()) })) |> ignore
             k.pick(fn() { if stopping() || failed() is Some(_) { 1 } else { 0 } }, fn(p, which) {

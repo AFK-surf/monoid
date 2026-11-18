@@ -108,7 +108,7 @@ pub fn World::title_of(
 
 ///|
 /// rows.ts STILLFAIL_SURFACE.
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
 /// title.ts `grantChatTitle`: the grant named by its original chat if that chat is still a member of the session.

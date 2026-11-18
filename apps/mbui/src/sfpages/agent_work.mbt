@@ -358,10 +358,8 @@ pub fn work_mark_node(
       if lead != "" {
         @sf.words_node(f, fn() { lead }, fn() { words }) |> ignore
       }
-      f.box(fn(p) {
+      @sf.action_box_node(f, label, fn(p) { open_work(src, params, Node(p)) }, fn(p) {
         @sf.style_node(p, fn() { work_mark_press }, in_row=true)
-        @sf.presses_node(p, fn() { open_work(src, params, Node(p)) })
-        p.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
         body(p)
       })
       |> ignore

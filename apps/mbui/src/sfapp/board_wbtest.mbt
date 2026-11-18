@@ -709,6 +709,8 @@ test "大屏: a draft started becomes its chat by the core's own way, newChat.cr
   t.run_for(@ui.move_most_ms)
   // (its draft let go of as its chat is made: the core's pending chat keeps it)
   assert_eq(board_kept_drafts(), ["看一下 Android 冷启动为什么慢了 300ms"])
+  // (made with what was picked for the draft: its own model control's)
+  assert_eq(@sffixture.board_created_of.get("new:board-seed-1"), Some("board:new:board-seed-1"))
   let made = @sfbase.board_items(src, "ws1").filter(fn(i) { i.client_key == "new:board-seed-1" })
   assert_eq(made.map(fn(i) { (i.title, @sfbase.board_lane_of(i)) }), [("给导出加上按月份筛选", "run")])
   assert_true(board_words_at(t, "正在读取仓库与分析改动点…") is Some(_))
@@ -1915,7 +1917,7 @@ test "大屏: Ctrl Enter dispatches with a Windows keyboard" {
 
 
 ///|
-test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps its identity and destination, and can be cancelled" {
+test "待派发: pressing a draft opens its panel on 大屏 and 小屏: its words kept as it closes, its identity and destination kept, 派发 starts it" {
   for (w, h, platform) in [(1440.0, 900.0, 0), (390.0, 844.0, 2)] {
     let (t, src) = board_at("board", w, h, platform~)
     if platform == 2 {
@@ -1926,42 +1928,36 @@ test "待派发: pressing a draft edits it in place on 大屏 and 小屏, keeps 
     t.click(Button, label=before.title)
     t.run_for(@ui.move_most_ms)
     assert_eq(t.focused().map(fn(f) { (f.role, f.value) }), Some((TextField, before.title)))
+    // (where it runs, and on what, in its panel)
+    assert_true(board_words_at(t, "编辑待办") is Some(_))
     assert_eq(board_faults(t), [])
     t.type_text("，包括 CSV")
-    t.click(Button, label="保存")
+    t.click(Button, label="完成")
     t.run_for(@ui.move_most_ms)
     let after = @signals.untracked(fn() { @sfbase.board_drafts_of(src, "ws1")[0] })
     assert_eq((after.id, after.station, after.station_name), (before.id, before.station, before.station_name))
     assert_eq(after.title, before.title + "，包括 CSV")
     assert_eq(board_kept_drafts()[0], after.title)
+    // (closed by Escape: what was written kept as well)
     t.click(Button, label=after.title)
     t.run_for(@ui.move_most_ms)
-    t.type_text(" 不保存")
+    t.type_text(" 文件")
     t.key(@ui.key_escape)
     t.run_for(@ui.move_most_ms)
-    assert_eq(board_kept_drafts()[0], after.title)
-    assert_true(t.query(Button, label=after.title) is Some(_))
+    let edited = after.title + " 文件"
+    assert_eq(board_kept_drafts()[0], edited)
     assert_eq(board_faults(t), [])
-    if platform == 0 {
-      // The same card can be reached and activated from the keyboard.
-      t.act(Button, Focus, label=after.title)
-      t.enter()
-      t.run_for(@ui.move_most_ms)
-      assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
-      t.click(Button, label="取消")
-      t.run_for(@ui.move_most_ms)
-      let starts = t.all(Button, label="开始")
-      let (sx, sy, sw, sh) = starts[0].rect
-      t.tap(sx + sw / 2.0, sy + sh / 2.0)
-      t.run_for(@ui.move_most_ms)
-      assert_eq(board_lane_now(src, after.title), "run")
-    }
+    // (派发 from its panel: its chat made)
+    t.click(Button, label=edited)
+    t.run_for(@ui.move_most_ms)
+    t.click(Button, label="派发")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(board_lane_now(src, edited), "run")
   }
 }
 
-
 ///|
-test "大屏: Enter or pressing another card keeps edited words; an empty edit does not replace the draft" {
+test "大屏: Enter in a draft's panel keeps its words; emptied, with nothing carried, the words it had are kept" {
   let (t, _) = board_at("board", 1440.0, 900.0)
   t.click(Button, label="给导出加上按月份筛选")
   t.run_for(@ui.move_most_ms)
@@ -1971,21 +1967,24 @@ test "大屏: Enter or pressing another card keeps edited words; an empty edit d
   assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
   t.click(Button, label=board_kept_drafts()[0])
   t.run_for(@ui.move_most_ms)
-  t.type_text(" 文件")
-  t.click(Button, label="看一下 Android 冷启动为什么慢了 300ms")
-  t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV 文件")
-  assert_eq(t.focused().map(fn(f) { f.role }), Some(TextField))
   t.key(@ui.key_of_char('a'), mods=@ui.mod_cmd)
   t.type_text(" ")
   t.enter()
   t.run_for(@ui.move_most_ms)
-  assert_eq(board_kept_drafts()[1], "看一下 Android 冷启动为什么慢了 300ms")
-  t.key(@ui.key_escape)
-  t.run_for(@ui.move_most_ms)
+  assert_eq(board_kept_drafts()[0], "给导出加上按月份筛选，并导出 CSV")
   assert_eq(board_faults(t), [])
 }
 
+///|
+test "大屏: the new task's card holds its words and send alone, no ＋ and no station in it" {
+  let (t, _) = board_at("board", 1440.0, 900.0)
+  t.click(Button, label="新待办")
+  t.run_for(@ui.move_most_ms)
+  assert_true(t.query(Button, label="发送文件") is None)
+  assert_true(t.query(Button, label="在哪台机器上运行: Willow") is None)
+  assert_true(t.query(Button, label="添加") is Some(_))
+  assert_eq(board_faults(t), [])
+}
 
 ///|
 /// Whether the chat beside the board is its page made as nodes, by the message `words` it shows (whole, as no card's

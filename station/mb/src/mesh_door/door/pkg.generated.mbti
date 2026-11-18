@@ -15,8 +15,6 @@ pub fn after(@effect.Runtime, Int32, () -> Unit) -> () -> Unit
 
 pub fn asks_zstd(Array[(String, String)]) -> Bool
 
-pub let batch_level : Int32
-
 pub fn closed_with(Connection) -> (String, String)?
 
 pub async fn compressed(Packer, Answer, Array[(String, String)], String) -> Answer

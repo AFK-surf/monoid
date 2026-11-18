@@ -304,7 +304,7 @@ async fn P55::start_connects(self : P55) -> Unit {
   let data = bus.data
   let fs = connects_fs()
   let log = connects_log()
-  let clock = @connects_hub.Clock::live()
+  let clock = p5_connects_clock()
   let (zh, en) = catalogs_json()
   let words = @replica_coord.station_words(of_core(zh), of_core(en))
   let lang = Ref((bus.lang.val)())
@@ -365,7 +365,7 @@ async fn P55::start_connects(self : P55) -> Unit {
           sc.app_token,
           sc.bot_token,
           client,
-          @slack.host_clock(host),
+          @slack.host_clock(host, now=() => p5_epoch_ms().to_double()),
           @slack.host_ws(host),
           words,
           lang,
@@ -908,3 +908,10 @@ fn p55_bot_identity(j : Json) -> @feishu.BotIdentity? {
 ///|
 /// The group's part, made by `start_group`, for what the overview shows of a group connect.
 let p55_group_parts : Ref[@connects_hub.GroupParts?] = Ref(None)
+
+///|
+/// The connects' clock (`@connects_hub.Clock::live`) with its time since the epoch: what it keeps (a name's `at`) is
+/// read again by the next process.
+fn p5_connects_clock() -> @connects_hub.Clock {
+  { ..@connects_hub.Clock::live(), now: () => p5_epoch_ms().to_double() }
+}

@@ -313,7 +313,7 @@ async fn P55::start_moves(self : P55) -> Unit {
     home: () => self.home(),
     roster,
     ask: { ask: ask_peer },
-    clock: @move_coord.host_clock(host),
+    clock: { ..@move_coord.host_clock(host), now: () => p5_epoch_ms() },
     disk: @move_coord.host_disk(host),
     fs: @move_coord.host_fs(host),
     say,

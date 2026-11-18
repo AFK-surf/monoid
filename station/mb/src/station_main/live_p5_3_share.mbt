@@ -31,7 +31,7 @@ fn P53Share::new(bus : LiveBus, accounts : P53Accounts) -> P53Share {
     accounts,
     files: { host: bus.host, sep: sep() },
     log: { say: (level, part, message, fields) => p53_log(level, part, message, fields~) },
-    clock: @share_sync.Clock::live(bus.host.rt),
+    clock: { ..@share_sync.Clock::live(bus.host.rt), now: () => p5_epoch_ms().to_double() },
     sharing: None,
     memory: None,
     shares: None,

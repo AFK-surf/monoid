@@ -94,11 +94,14 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
   let net : Net = {
     connect: (target, events) => {
       let id : Ref[Double?] = Ref(None)
-      let gone = Ref(false)
+      // Destroyed (by its owner) apart from closed (told): a destroy tells its close on a later turn, as Node's
+      // socket.destroy() does, so what its owner does right after (an answer taken) comes before the close.
+      let destroyed = Ref(false)
+      let closed = Ref(false)
       let paused = Ref(false)
       let waiting : Ref[@effect.Deferred[Unit]?] = Ref(None)
-      let close_once = () => if !gone.val {
-        gone.val = true
+      let close_once = () => if !closed.val {
+        closed.val = true
         (events.close)()
       }
       ignore(
@@ -121,12 +124,12 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
             return
           }
           id.val = Some(n)
-          if gone.val {
+          if destroyed.val {
             ignore(host.shell("tcp.close", Json::object({ "id": Json::number(n) }))) catch { _ => () }
             return
           }
           (events.connect)()
-          while !gone.val {
+          while !destroyed.val {
             if paused.val {
               let d : @effect.Deferred[Unit] = @effect.Deferred::new()
               waiting.val = Some(d)
@@ -141,7 +144,7 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
             }
             match (said, bytes) {
               (Object(m), _) if m.get("end") is Some(True) => break
-              (_, Some(b)) => if !gone.val { (events.data)(b) }
+              (_, Some(b)) => if !destroyed.val { (events.data)(b) }
               _ => break
             }
           }
@@ -167,11 +170,12 @@ pub fn host_io(host : @host.Host, procs : Procs, os : Os, words : Words, now? : 
       {
         write: b => send("tcp.write", Some(b)),
         end: () => send("tcp.end", None),
-        destroy: () => if !gone.val {
+        destroy: () => if !destroyed.val {
+          destroyed.val = true
           send("tcp.close", None)
-          close_once()
+          ignore(host.rt.fork(() => close_once()))
         },
-        destroyed: () => gone.val,
+        destroyed: () => destroyed.val,
         pause: () => paused.val = true,
         flow_again: () => {
           paused.val = false

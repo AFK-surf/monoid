@@ -606,9 +606,9 @@ test("titles: naming a chat, and the chat still unnamed", { skip }, async () => 
   }
   const sessions = (states: Json[]) => (): World => ({
     store: {
-      latestThread: (k: string) => (k === "none" ? null : { thread: k === "hidden" ? { ...thread, hiddenAt: 5 } : k === "named" ? { ...thread, title: "x" } : k === "auto" ? { ...thread, autoTitle: "y" } : thread, connect: "ember" }),
+      latestThread: (k: string) => (k === "none" ? null : { thread: k === "hidden" ? { ...thread, hiddenAt: 5 } : k === "named" ? { ...thread, title: "x" } : k === "auto" ? { ...thread, autoTitle: "y" } : thread, connect: "chat" }),
       firstText: () => (states.length === 0 ? null : "hello"),
-      threadSessions: () => [{ session: "me", connect: "ember" }, ...states.map((_s, i) => ({ session: `s${i}`, connect: "ember" }))],
+      threadSessions: () => [{ session: "me", connect: "chat" }, ...states.map((_s, i) => ({ session: `s${i}`, connect: "chat" }))],
       lastTurn: (k: string) => states[Number(k.slice(1))]?.last ?? null,
       hasPending: (k: string) => states[Number(k.slice(1))]?.pending ?? false,
     },
@@ -694,7 +694,7 @@ test("cc: who said it, and a copy to each thread ticked (or what did not go, sai
     { picked: [[slack, "s"], [feishu, "f"], [group, "g"]], to: [3, 9], userOf: { f: "ou_1" } },
     { picked: [[slack, "s"]], to: [2], userOf: { s: "U9" }, mention: true },
     { picked: [[slack, "s"], [group, "g"]], to: [2, 4], fail: ["s", "g"] },
-    { picked: [[group, "g"]], to: [4], fail: ["g", "ember"] },
+    { picked: [[group, "g"]], to: [4], fail: ["g", "chat"] },
     { unavailable: true, to: [2] },
     { unavailable: true, prepare: true, picked: [[slack, "s"]], to: [2] },
     { broken: true, to: [2] },
@@ -717,11 +717,11 @@ test("cc: who said it, and a copy to each thread ticked (or what did not go, sai
             return (v.picked ?? []).map(([t, c]: [Json, string]) => ({ thread: t, connect: c }));
           },
           getThread: () => (v.noChat ? null : thread),
-          threadSessions: () => [{ session: "k", connect: "ember" }],
+          threadSessions: () => [{ session: "k", connect: "chat" }],
           insertMessage: () => [7],
         },
         hub: v.prepare ? { prepareCcSessions: async () => {} } : {},
-        chats: { s: surface("s"), f: surface("f"), g: surface("g"), ember: surface("ember") },
+        chats: { s: surface("s"), f: surface("f"), g: surface("g"), chat: surface("chat") },
       };
     };
     const run = async (hub: Json) => cc(hub, 1, "Ann", "ann@x.com", "hi there", [], v.to);
@@ -756,7 +756,7 @@ async function withLog<T>(into: Json[], f: () => Promise<T> | T): Promise<T> {
 class Occupied extends Error {}
 
 test("card-place: a card's place, and a card posted only while it is still wanted", { skip }, async () => {
-  const st = { thread: { id: 5, channel: "CHAT", threadTs: "1.1" }, connect: "ember" };
+  const st = { thread: { id: 5, channel: "CHAT", threadTs: "1.1" }, connect: "chat" };
   for (const [thread, ts] of [[null, "1"], [5, null], [5, "1.5"], [5, "1.6"]] as [number | null, string | null][]) {
     for (const v of [{ ready: true, header: null }, { ready: true, header: [{ ts: "1.5" }, 1] }, { ready: false }, { old: true, header: [{ ts: "1.6" }] }, { gone: true }] as Json[]) {
       const make = (): World => ({
@@ -798,7 +798,7 @@ test("card-place: a card's place, and a card posted only while it is still wante
             : (_m: Json, before?: () => void) => { inserts++; if (busy > 0) { busy--; throw new MessageWriteBusy(); } if (v.otherWhileInserting) header = [{ ts: "y" }]; before?.(); return [40 + inserts]; },
         },
         hub: { shared: () => {}, ...(v.prepare ? { prepareCardPosts: async () => {} } : {}) },
-        chats: { ember: { post: async () => "1.900" } },
+        chats: { chat: { post: async () => "1.900" } },
         actors: v.identity ? { k: { messageIdentity: () => ({ model: "m", effort: null, runtime: "codex" }) } } : {},
       };
     };
@@ -861,16 +861,16 @@ const STATION_DEPS: Record<string, (...a: Json[]) => Json> = {
 function chatsWorld(o: Json = {}) {
   return (mb: boolean): World => {
     const sessions: Json = {
-      me: { key: "me", title: o.myTitle ?? null, workspace: o.workspace ?? "/w/me", createdBy: "ann@x.com", runtime: "codex", ws: o.ws ?? null, connect: "ember" },
-      other: { key: "other", title: null, workspace: o.workspace ?? "/w/other", createdBy: "bob@x.com", runtime: "claude", ws: o.otherWs ?? null, connect: "ember" },
+      me: { key: "me", title: o.myTitle ?? null, workspace: o.workspace ?? "/w/me", createdBy: "ann@x.com", runtime: "codex", ws: o.ws ?? null, connect: "chat" },
+      other: { key: "other", title: null, workspace: o.workspace ?? "/w/other", createdBy: "bob@x.com", runtime: "claude", ws: o.otherWs ?? null, connect: "chat" },
       third: { key: "third", title: "Third's own", workspace: "/w/third", runtime: "claude", ws: null, connect: "slack1" },
     };
     const threads: Json = {
-      1: { id: 1, surface: "ember", channel: "CHAT", threadTs: "1.000001", title: "Mine", autoTitle: null, home: "me", createdBy: "ann@x.com", hiddenAt: null },
-      2: { id: 2, surface: "ember", channel: "CHAT", threadTs: "2.000002", title: null, autoTitle: "Theirs auto", home: "other", createdBy: "bob@x.com", hiddenAt: null },
+      1: { id: 1, surface: "chat", channel: "CHAT", threadTs: "1.000001", title: "Mine", autoTitle: null, home: "me", createdBy: "ann@x.com", hiddenAt: null },
+      2: { id: 2, surface: "chat", channel: "CHAT", threadTs: "2.000002", title: null, autoTitle: "Theirs auto", home: "other", createdBy: "bob@x.com", hiddenAt: null },
       3: { id: 3, surface: "slack:T1", channel: "C9", threadTs: "3.000003", title: null, autoTitle: null, home: null, createdBy: null, hiddenAt: null },
     };
-    const members: Json = { 1: [{ session: "me", connect: "ember" }], 2: [{ session: "other", connect: "ember" }, ...(o.both ? [{ session: "me", connect: "ember" }] : [])], 3: [{ session: "third", connect: "slack1" }] };
+    const members: Json = { 1: [{ session: "me", connect: "chat" }], 2: [{ session: "other", connect: "chat" }, ...(o.both ? [{ session: "me", connect: "chat" }] : [])], 3: [{ session: "third", connect: "slack1" }] };
     const homeOf: Json = { me: 1, other: 2, third: null };
     let n = 100;
     let ts = 0;
@@ -878,8 +878,8 @@ function chatsWorld(o: Json = {}) {
     return {
       store: {
         getSession: (k: string) => (o.gone === k ? null : sessions[k] ?? null),
-        sessionHomeThread: (k: string) => (homeOf[k] ? { thread: threads[homeOf[k]], connect: "ember" } : null),
-        latestThread: (k: string) => (k === "third" ? { thread: threads[3], connect: "slack1" } : homeOf[k] ? { thread: threads[homeOf[k]], connect: "ember" } : null),
+        sessionHomeThread: (k: string) => (homeOf[k] ? { thread: threads[homeOf[k]], connect: "chat" } : null),
+        latestThread: (k: string) => (k === "third" ? { thread: threads[3], connect: "slack1" } : homeOf[k] ? { thread: threads[homeOf[k]], connect: "chat" } : null),
         latestThreadIfReady: (k: string) => (o.notReady ? undefined : k === "third" ? { thread: threads[3], connect: "slack1" } : null),
         firstText: (t: number) => (t === 3 ? "the first words in slack" : "hello"),
         threadSessions: (t: number) => members[t] ?? [],
@@ -904,7 +904,7 @@ function chatsWorld(o: Json = {}) {
         inWorkspace: (k: string, ws: string) => (sessions[k]?.ws ?? null) === ws,
       },
       chats: {
-        ember: { post: async () => `8.${String(++ts).padStart(6, "0")}` },
+        chat: { post: async () => `8.${String(++ts).padStart(6, "0")}` },
         slack1: { post: async (_w: Json, text: string, files: Json[]) => { if (o.missingScope && files.length > 0) throw new Error("missing_scope"); return `7.${text.length}`; } },
       },
       actors: o.identity ? { me: { messageIdentity: () => ({ model: "gpt-6", effort: "high", runtime: "codex" }) } } : {},
@@ -914,7 +914,7 @@ function chatsWorld(o: Json = {}) {
 }
 
 test("messages: who a letter is from, and session_send to a chat here or on another station", { skip }, async () => {
-  for (const [surface, title, link] of [["ember", "A [b] c", "https://x/y"], ["slack:T", "a & <b> | c", "https://x/y"], ["ember", "t", null], ["feishu:z", "t", null]] as [string, string, string | null][]) {
+  for (const [surface, title, link] of [["chat", "A [b] c", "https://x/y"], ["slack:T", "a & <b> | c", "https://x/y"], ["chat", "t", null], ["feishu:z", "t", null]] as [string, string, string | null][]) {
     await same("chatNamed", () => chatNamed(surface, title, link), surface, title, link);
   }
   for (const lang of ["zh", "en"] as const) {
@@ -966,7 +966,7 @@ test("messages: who a letter is from, and session_send to a chat here or on anot
   for (const [o, request, ws] of peers) await sameWorld("fromPeer", chatsWorld(o), (hub) => fromPeer(hub, "S2", request, ws), "S2", request, ws);
   for (const opened of [false, true]) {
     for (const o of [{}, { opener: { other: { led: false } } }, { missingScope: true }, { missingScope: true, noLinks: true }]) {
-      const thread = (o as Json).missingScope ? { thread: { id: 3, surface: "slack:T1", channel: "C9", threadTs: "3.000003" }, connect: "slack1" } : { thread: { id: 2, surface: "ember", channel: "CHAT", threadTs: "2.000002" }, connect: "ember" };
+      const thread = (o as Json).missingScope ? { thread: { id: 3, surface: "slack:T1", channel: "C9", threadTs: "3.000003" }, connect: "slack1" } : { thread: { id: 2, surface: "chat", channel: "CHAT", threadTs: "2.000002" }, connect: "chat" };
       const files = (o as Json).missingScope ? [{ name: "fig.html", path: "/w/f.html", size: 3 }] : [];
       await sameWorld("postFrom", chatsWorld(o), (hub) => postFrom(hub, thread as Json, "me", "Mine", "https://x/me", "text", ["other", "me"], files as Json, opened), thread, "me", "Mine", "https://x/me", "text", ["other", "me"], files, opened);
     }
@@ -975,7 +975,7 @@ test("messages: who a letter is from, and session_send to a chat here or on anot
 
 // ── conversations: chat_post, chat_state, chat_history, chat_leave, slack_api ─────────────────────────────────────
 
-const HERE = { id: 1, surface: "ember", channel: "CHAT", threadTs: "1.000001", title: null, autoTitle: null, hiddenAt: null };
+const HERE = { id: 1, surface: "chat", channel: "CHAT", threadTs: "1.000001", title: null, autoTitle: null, hiddenAt: null };
 const SLACK = { id: 3, surface: "slack:T1", channel: "C9", threadTs: "3.000003", title: null, autoTitle: null, hiddenAt: null };
 
 /// A session `me` in a still.fail chat (CHAT/1.000001) and a Slack thread (C9/3.000003), with its actor and what its
@@ -988,7 +988,7 @@ function postWorld(o: Json = {}) {
     let changedOnce = false;
     let busy = o.busy ?? 0;
     const messages: Json[] = o.messages ?? [];
-    const threadOf = (ch: string, ts: string) => (ch === "CHAT" && ts === "1.000001" ? { thread: HERE, connect: "ember" } : ch === "C9" && ts === "3.000003" ? { thread: SLACK, connect: "slack1" } : null);
+    const threadOf = (ch: string, ts: string) => (ch === "CHAT" && ts === "1.000001" ? { thread: HERE, connect: "chat" } : ch === "C9" && ts === "3.000003" ? { thread: SLACK, connect: "slack1" } : null);
     const actor = {
       messageIdentity: () => (o.identity ? { model: "gpt-6", effort: "high", runtime: "codex" } : null),
       currentTurnId: () => o.turn ?? "t1",
@@ -1004,10 +1004,10 @@ function postWorld(o: Json = {}) {
     });
     return {
       store: {
-        getSession: (k: string) => (k === "me" ? { key: "me", workspace: o.workspace ?? "/w/me", runtime: "codex", connect: o.connect ?? "ember", ws: null } : null),
+        getSession: (k: string) => (k === "me" ? { key: "me", workspace: o.workspace ?? "/w/me", runtime: "codex", connect: o.connect ?? "chat", ws: null } : null),
         sessionThread: (_k: string, ch: string, ts: string) => threadOf(ch, ts),
-        sessionThreadById: (_k: string, id: number) => (o.goneWhileChecking ? null : id === 1 ? { thread: HERE, connect: "ember" } : id === 3 ? { thread: SLACK, connect: "slack1" } : null),
-        recentSessionThreads: () => ({ threads: [{ thread: HERE, connect: "ember" }, { thread: SLACK, connect: "slack1" }], more: o.more ?? false }),
+        sessionThreadById: (_k: string, id: number) => (o.goneWhileChecking ? null : id === 1 ? { thread: HERE, connect: "chat" } : id === 3 ? { thread: SLACK, connect: "slack1" } : null),
+        recentSessionThreads: () => ({ threads: [{ thread: HERE, connect: "chat" }, { thread: SLACK, connect: "slack1" }], more: o.more ?? false }),
         manuallyArchived: (id: number) => o.archived === id,
         cardAt: () => o.cardAt ?? null,
         withdrawCard: () => o.withdraws ?? true,
@@ -1053,7 +1053,7 @@ function postWorld(o: Json = {}) {
         stoppingSignal: new AbortController().signal,
         ...(o.logins ? { logins: { page: (id: string) => (id === "L1" ? "https://login.example/L1" : undefined) } } : {}),
       },
-      chats: { ember: surface("ember"), slack1: surface("slack1") },
+      chats: { chat: surface("chat"), slack1: surface("slack1") },
       actors: o.noActor ? {} : { me: actor },
       db: {
         get: (sql: string, ...a: Json[]) => (sql.startsWith("PRAGMA main.data_version") ? { data_version: o.version ?? 1 } : sql.startsWith("PRAGMA busy_timeout") ? { timeout: 5000 } : sql.includes("lower(author)") ? (o.wrote?.includes(a[1]) ? { 1: 1 } : undefined) : undefined),
@@ -1298,13 +1298,13 @@ function openedWorld(o: Json = {}) {
     void mb;
     let ts = 0;
     const profiles = o.profiles ?? [{ id: "p1", runtimes: ["codex"], models: ["gpt-6", "gpt-6.1"], model: "gpt-6", enabled: true }, { id: "p2", runtimes: ["claude"], models: ["claude-opus-5-5"], enabled: true }];
-    const child = (k: string) => ({ id: 70, surface: "ember", channel: "CHAT", threadTs: "7.000007", home: k, createdBy: "ann@x.com", title: null, autoTitle: null });
+    const child = (k: string) => ({ id: 70, surface: "chat", channel: "CHAT", threadTs: "7.000007", home: k, createdBy: "ann@x.com", title: null, autoTitle: null });
     return {
       store: {
         getSession: (k: string) => (k === "me" ? { key: "me", title: null, runtime: "codex", ws: o.ws ?? null, createdBy: "ann@x.com", workspace: "/w/me" } : k.startsWith("chat:c-") || k === "kid" ? (o.kidGone ? null : { key: k, title: null, ws: o.kidWs ?? null, workspace: "/w/kid" }) : null),
         openerOf: (k: string) => o.openerOf?.[k] ?? null,
-        sessionHomeThread: (k: string) => (k === "me" ? { thread: { id: 1, surface: "ember", channel: "CHAT", threadTs: "1.000001", title: "Lead chat", createdBy: "ann@x.com" }, connect: "ember" } : k.startsWith("chat:c-") || k === "kid" ? { thread: child(k), connect: "ember" } : null),
-        latestThread: (k: string) => (k === "me" || k === "kid" ? { thread: { id: 1, surface: "ember", channel: "CHAT", threadTs: "1.000001" }, connect: "ember" } : null),
+        sessionHomeThread: (k: string) => (k === "me" ? { thread: { id: 1, surface: "chat", channel: "CHAT", threadTs: "1.000001", title: "Lead chat", createdBy: "ann@x.com" }, connect: "chat" } : k.startsWith("chat:c-") || k === "kid" ? { thread: child(k), connect: "chat" } : null),
+        latestThread: (k: string) => (k === "me" || k === "kid" ? { thread: { id: 1, surface: "chat", channel: "CHAT", threadTs: "1.000001" }, connect: "chat" } : null),
         homeChat: (k: string) => child(k),
         joinThread: () => true,
         openedWith: () => o.before ?? null,
@@ -1344,7 +1344,7 @@ function openedWorld(o: Json = {}) {
         },
         clientKeysMade: new Map(),
       },
-      chats: { ember: { post: async () => { if (o.postFails) throw new Error("cannot post"); return `8.${String(++ts).padStart(6, "0")}`; } } },
+      chats: { chat: { post: async () => { if (o.postFails) throw new Error("cannot post"); return `8.${String(++ts).padStart(6, "0")}`; } } },
       deps: STATION_DEPS,
     };
   };
@@ -1590,7 +1590,7 @@ function reviewWorld(o: Json = {}) {
         archivePolicy: (ws: Json) => o.policies?.[String(ws)] ?? null,
         recordDecision: () => { if (o.recordFails) throw new Error("full"); },
         setArchiveVerdict: () => {},
-        recentSessionThreads: (k: string) => ({ threads: (o.threads?.[k] ?? [1, 2]).map((id: number) => ({ thread: { id }, connect: "ember" })), more: false }),
+        recentSessionThreads: (k: string) => ({ threads: (o.threads?.[k] ?? [1, 2]).map((id: number) => ({ thread: { id }, connect: "chat" })), more: false }),
         lastEntry: (id: number) => { reads++; if (o.moves && reads > o.moves) entries[id] = (entries[id] ?? 0) + 1; return entries[id] ?? 0; },
         messagesBefore: (id: number, _from: Json, limit: number) => (o.messages?.[id] ?? [{ authorKind: "person", author: "a", text: "please", ts: "1.1", attachments: [] }, { authorKind: "agent", author: "k", text: "done", ts: "1.2", attachments: [{}] }]).slice(-limit),
         pendingCard: (id: number) => (o.pending === id ? [{ ts: "1.3", text: "still asking", thread: id, n: 3 }] : null),
@@ -2060,7 +2060,7 @@ test("the rest: headers, arguments, notices and what a delivery waits for", { sk
   for (const lang of ["zh", "en"] as const) {
     setStationLang(lang);
     await mbLang(lang);
-    for (const [surface, opened, led] of [["ember", false, null], ["ember", true, true], ["slack:T", true, false], ["ember", true, null]] as [string, boolean, boolean | null][]) {
+    for (const [surface, opened, led] of [["chat", false, null], ["chat", true, true], ["slack:T", true, false], ["chat", true, null]] as [string, boolean, boolean | null][]) {
       await same("header", () => headerOf(surface, "Lead [chat]", "https://x/l", opened, led), surface, "Lead [chat]", "https://x/l", opened, led);
     }
   }

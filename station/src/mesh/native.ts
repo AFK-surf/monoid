@@ -11,6 +11,9 @@ export type Mesh = Endpoints & {
   /// thumbs.rs `thumbnail` (native/mesh/src/thumbs.rs): the image's thumbnail in `dir`, made if not there yet; null when
   /// the image is shown itself.
   thumbnail(image: string, dir: string): Promise<{ path: string; type: string } | null>;
+  /// thumbs.rs `preview`: the image's preview in `dir` (at most 2048 across), made if not there yet; null when the image
+  /// is shown itself (300 KiB or less, or no copy at half its bytes or less).
+  preview(image: string, dir: string): Promise<{ path: string; type: string } | null>;
   /// thumbs.rs `keep` for one image: its ThumbHash (base64) and its size as seen; with `dir`, its thumbnail made after
   /// (not waited for) when it is over 24 KiB. Null when it is not readable as an image.
   thumbhash(image: string, dir?: string | null): Promise<{ hash: string; width: number; height: number } | null>;

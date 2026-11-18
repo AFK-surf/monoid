@@ -579,6 +579,9 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
     let mut y1 = -1.0e9
     let mut sx0 = 1.0e9
     let mut sx1 = -1.0e9
+    // (what is seen at its left end and at its right)
+    let mut sk0 = -1
+    let mut sk1 = -1
     let mut tallest = 0.0
     let touched : Array[String] = []
     for k in kids {
@@ -593,8 +596,14 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
       }
       y0 = dmin(y0, cy0)
       y1 = dmax(y1, cy1)
-      sx0 = dmin(sx0, cx0)
-      sx1 = dmax(sx1, cx1)
+      if cx0 < sx0 {
+        sx0 = cx0
+        sk0 = k
+      }
+      if cx1 > sx1 {
+        sx1 = cx1
+        sk1 = k
+      }
       tallest = dmax(tallest, cy1 - cy0)
       let words = self.nodes[k].kind != kind_box
       let l = cx0 - gb.x
@@ -718,7 +727,38 @@ fn Ctx::gap_rules(self : Ctx) -> Array[String] {
     // wherever in it (its held, as above), not a row's padding nor a button's room whose ground only the hand shows. A
     // wide chat's bar: its title's row 12 in, its last button's room 6 from its end, concentric with the window's corner
     // as the corner rule has it, its title and that button's icon each 20 in where the window's corner is round; 2026-11-15)
-    let seen = if sx0 < sx1 { Some((sx0 - gb.x, gb.x + gb.fw - sx1)) } else { None }
+    // (a block with a ground at one end, as far from the box's top, foot and that end and round by the box's corner
+    // less that, is concentric with the box's corners there, as what stands at a capsule's end is (a tip's last key
+    // cap, 4 in, 6 round in a tip 10 round): that end is seen as far in as the centre of their arcs, the box's corner,
+    // as words held clear of the curve at the other end are)
+    let concentric_in = fn(i : Int, left : Bool) -> Double? {
+      if i < 0 || gb.corner() < gap_slack {
+        return None
+      }
+      let kn = self.nodes[i]
+      if kn.kind != kind_box || !kn.grounded() || kn.corner() < gap_slack {
+        return None
+      }
+      let d = if left { kn.x - gb.x } else { gb.x + gb.fw - (kn.x + kn.fw) }
+      if d >= gap_slack &&
+        (kn.y - gb.y - d).abs() <= gap_slack &&
+        (gb.y + gb.fh - (kn.y + kn.fh) - d).abs() <= gap_slack &&
+        (d + kn.corner() - gb.corner()).abs() <= gap_slack {
+        Some(d + kn.corner())
+      } else {
+        None
+      }
+    }
+    let seen = if sx0 < sx1 {
+      Some(
+        (
+          concentric_in(sk0, true).unwrap_or(sx0 - gb.x),
+          concentric_in(sk1, false).unwrap_or(gb.x + gb.fw - sx1),
+        ),
+      )
+    } else {
+      None
+    }
     let seen_even = match seen {
       Some((sl, sr)) => (sl - sr).abs() <= 2.0 * gap_slack
       None => false

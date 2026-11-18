@@ -8,7 +8,7 @@
 // takes it out again, and counted, so that the station it leaves can compare it with what it sent.
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { join, sep } from "node:path";
-import { STILLFAIL_SURFACE } from "./rows.ts";
+import { FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "./rows.ts";
 
 type Json = any;
 type Row = Record<string, unknown>;
@@ -183,8 +183,16 @@ const moved = (path: unknown, from: string, to: string): unknown => {
   return path.startsWith(f + sep) || path.startsWith(`${f}/`) ? join(to, path.slice(f.length + 1)) : path;
 };
 
+/// A connect as it is here: one the move maps, the station's own chats' as named now.
+export function connectHere(connect: string, connects: Record<string, string>): string {
+  if (FORMER_OWN_NAMES.includes(connect)) return STILLFAIL_CONNECT;
+  return connects[connect] ?? connect;
+}
+
 /// A surface naming a connect (`feishu:<id>`, `comma:<id>`, a Slack connect's while its team is not known) as it is here.
 export function surfaceHere(surface: string, connects: Record<string, string>): string {
+  // (the station's own chats, as a station from before the rename names them)
+  if (FORMER_OWN_NAMES.includes(surface)) return STILLFAIL_SURFACE;
   const at = surface.indexOf(":");
   if (at < 0) return surface;
   const id = surface.slice(at + 1);
@@ -259,7 +267,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         break;
       }
       case "sessions": {
-        if (typeof r.connect === "string" && ctx.connects[r.connect] !== undefined) r.connect = ctx.connects[r.connect];
+        if (typeof r.connect === "string") r.connect = connectHere(r.connect, ctx.connects);
         r.workspace = moved(r.workspace, ctx.fromData, ctx.toData);
         r.cwd = moved(r.cwd, ctx.fromData, ctx.toData);
         r.running = 0;
@@ -296,7 +304,7 @@ export function importRows(db: DatabaseSync, ctx: ImportCtx, table: ChatTable, r
         const t = thread(r.thread);
         if (t === undefined) break;
         r.thread = t.id;
-        if (typeof r.connect === "string" && ctx.connects[r.connect] !== undefined) r.connect = ctx.connects[r.connect];
+        if (typeof r.connect === "string") r.connect = connectHere(r.connect, ctx.connects);
         if (insert(db, "thread_sessions", r, " OR IGNORE").changes > 0) ctx.made.members.push([t.id, String(r.session)]);
         ctx.counts.rows.thread_sessions = (ctx.counts.rows.thread_sessions ?? 0) + 1;
         touched.threads.add(t.id);

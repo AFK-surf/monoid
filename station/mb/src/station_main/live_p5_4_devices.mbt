@@ -232,14 +232,14 @@ async fn p54_port_pids(host : @host.Host, port : Int) -> Json {
 }
 
 ///|
-/// A process's start, ms (platform `startTimeOf`).
+/// A process's start, ms since the epoch (platform `startTimeOf`), as the system says it: `ps -o lstart=` is in the
+/// machine's own time zone.
 async fn p54_start_time(host : @host.Host, pid : Int) -> Json {
-  let (code, out, _) = p54_run(host, "ps", ["-o", "lstart=", "-p", pid.to_string()]) catch { _ => return Json::null() }
-  if code != Some(0) || out.trim() == "" {
-    return Json::null()
+  ignore(host)
+  match start_time_of(pid) {
+    Some(ms) => Json::number(ms)
+    None => Json::null()
   }
-  let ms = @screens.date_parse_utc(out.trim().to_owned())
-  if ms.is_nan() { Json::null() } else { Json::number(ms) }
 }
 
 ///|

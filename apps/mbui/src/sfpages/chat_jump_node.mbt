@@ -899,7 +899,14 @@ fn chat_rail_node(
         guard @signals.untracked(fn() { said.get() }) is Some((_, seqs)) && seqs.get(t.at) is Some(seq) else { return }
         @sfbase.go_to(r, seq)
       }
-      o.box(fn(press) {
+      // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)
+      @sf.action_box_node(o, fn() { @sf.t("web-main.outline.title") }, fn(press) {
+        let cv = @signals.untracked(view)
+        guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
+        let (seq, at_end) = jump.reader.untracked()
+        let current = outline_current(seqs, seq, at_end)
+        open_outline(src, r, th, current, from=Node(press), side=Left, along=Middle, stint=@signals.untracked(stint))
+      }, fn(press) {
         @sf.style_node(press, fn() { chat_rail_press })
         press
         // (as the old composer's foot came down at once at words sent, drawn from where it stood down to where it is
@@ -909,16 +916,7 @@ fn chat_rail_node(
           fn(_, _, t) { (0.0, @sfbase.chat_foot_dropped_off(r.station + ":" + r.session, t).0) },
           fn(_, _) { @sfbase.chat_foot_dropped_off(r.station + ":" + r.session, 0.0).1 },
         )
-        .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.outline.title"))) }))
         .cursor(Is(Some(Hand)))
-        // (the keys' or a screen reader's press: the outline beside it, at the message the reader is at)
-        .on_press(fn() {
-          let cv = @signals.untracked(view)
-          guard cv.thread is Some(th) && @signals.untracked(fn() { said.get() }) is Some((_, seqs)) else { return }
-          let (seq, at_end) = jump.reader.untracked()
-          let current = outline_current(seqs, seq, at_end)
-          open_outline(src, r, th, current, from=Node(press), side=Left, along=Middle, stint=@signals.untracked(stint))
-        })
         // (the hand's, a finger's or the pointer's: the message of the tick it went down on)
         .gesture(@ui.touch_slop(), tap=fn(d) {
           match chat_rail_tick_at(@signals.untracked(fn() { ticks.get() }), d.y, d.h) {

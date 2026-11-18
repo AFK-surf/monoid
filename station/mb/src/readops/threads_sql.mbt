@@ -28,7 +28,7 @@ let legacy_unread_sql : String =
 /// store/cc-thread-index.ts CC_SESSION_KEYS.
 let cc_session_keys_sql : String =
   #|SELECT CAST(thread AS TEXT) AS thread FROM cc_session_rows INDEXED BY cc_session_order
-  #|  WHERE session=?1 AND surface != 'ember' ORDER BY last_at DESC,created_at DESC,cc_session_rows.thread DESC LIMIT 20
+  #|  WHERE session=?1 AND surface != 'chat' ORDER BY last_at DESC,created_at DESC,cc_session_rows.thread DESC LIMIT 20
 
 ///|
 /// store/cc-thread-index.ts CC_INDEXED_THREADS.
@@ -36,7 +36,7 @@ let cc_indexed_threads_sql : String =
   #|SELECT t.*,o.connect FROM json_each(?1) c
   #|  CROSS JOIN threads t ON t.id=CAST(json_extract(c.value,'$[0]') AS INTEGER)
   #|  CROSS JOIN thread_sessions o ON o.thread=t.id AND o.session=json_extract(c.value,'$[1]')
-  #|  WHERE t.surface != 'ember'
+  #|  WHERE t.surface != 'chat'
   #|  ORDER BY (SELECT e.at FROM thread_state st JOIN entries e ON e.thread=st.thread AND e.n=st.last_n
   #|    WHERE st.thread=t.id) DESC, t.created_at DESC, t.id DESC LIMIT 20
 

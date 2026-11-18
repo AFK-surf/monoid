@@ -8,11 +8,16 @@ import { LEGACY_SAID_LATEST } from "./legacy-said-build.ts";
 
 export type Json = any;
 
-/// The page's own threads live on this surface (stored under the name of before the rename: the stations' data and
-/// the indexes made of it have it).
-export const STILLFAIL_SURFACE = "ember";
-/// The connect the page's own threads' sessions are in (sessions/internal.ts INTERNAL_CONNECT), stored the same way.
-export const STILLFAIL_CONNECT = "ember";
+/// The page's own threads live on this surface, as the clients have read it since #4101.
+export const STILLFAIL_SURFACE = "chat";
+/// The connect the page's own threads' sessions are in (sessions/internal.ts INTERNAL_CONNECT).
+export const STILLFAIL_CONNECT = "chat";
+/// What stations wrote for both before the rename: a database is written over once as it opens (schema.ts
+/// `renameOwnChats`), and only what comes from elsewhere (a copy, another station's hand-over) is read in these names.
+export const FORMER_OWN_NAMES: readonly string[] = ["ember", "stillfail"];
+/// A surface or connect as it is written now: the station's own chats' names of before are its name now
+/// (STILLFAIL_SURFACE and STILLFAIL_CONNECT are one name), anything else as it is.
+export const ownName = (name: string): string => (FORMER_OWN_NAMES.includes(name) ? STILLFAIL_SURFACE : name);
 /// What a chat handed to another station one at a time (replica/handover.ts) says its workspace is here once it went
 /// (store `handOff`), out of every device's sight here; and what one coming here says until it is shown (`comingWs`).
 export const handedWs = (ws: string) => `handed:${ws}`;

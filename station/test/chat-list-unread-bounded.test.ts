@@ -8,10 +8,10 @@ import { Store } from "../src/store/store.ts";
 
 function fixture() {
   const store = Store.open(":memory:");
-  store.insertSession({ key: "agent", connect: "ember", runtime: "claude", profile: "cc",
+  store.insertSession({ key: "agent", connect: "chat", runtime: "claude", profile: "cc",
     workspace: "/work", token: "token", createdAt: 1, lastActiveAt: 1 });
-  const thread = store.openThread("ember", "CHAT", "the-chat", "The chat", null).id;
-  store.joinThread(thread, "agent", "ember");
+  const thread = store.openThread("chat", "CHAT", "the-chat", "The chat", null).id;
+  store.joinThread(thread, "agent", "chat");
   const db = store.db;
   const put = db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at) VALUES (?,?,'message','agent','agent','findable',?)");
   db.exec("BEGIN");
@@ -66,12 +66,12 @@ test("a list that asks for no unread counts can still provide people and convers
   const f = fixture();
   try {
     const other = f.store.openThread("slack:T", "C", "1.0", null, null).id;
-    f.store.joinThread(other, "agent", "ember");
+    f.store.joinThread(other, "agent", "chat");
     f.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,text,at) VALUES (?,1,'message','person','alice','hi',6000)").run(other);
     Object.defineProperty(f.store, "db", { configurable: true, value: f.instrumented });
     const rows = f.store.listThreads("", null, null, "none");
     assert.deepEqual(rows.map((row) => row.thread.id), [other, f.thread]);
-    assert.deepEqual(rows[0]?.people, ["slack:ember:alice"]);
+    assert.deepEqual(rows[0]?.people, ["slack:chat:alice"]);
     assert.equal(rows[1]?.lastMessage?.text, "findable");
     assert.equal(f.visited(), 0, `the list visited ${f.visited()} unread messages`);
     assert.equal(f.store.listThreads("", null, f.thread)[0]?.unread, 5_000, "the normal store list keeps its exact count");

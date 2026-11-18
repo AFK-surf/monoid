@@ -13,7 +13,7 @@ pub let not_posted : String = "Not posted:"
 
 ///|
 /// The still.fail surface (store/rows.ts STILLFAIL_SURFACE).
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
 /// sessions/args.ts `jsString`.

@@ -93,7 +93,7 @@ pub(all) struct Hub {
   /// A notice given a session (`hub.notify`): raises where the session is gone.
   notify : (String, String) -> Unit raise
   /// The identity a session's actor says its messages with (`actors.get(session)?.messageIdentity()`).
-  identity : (String) -> Json?
+  identity : async (String) -> Json?
 }
 
 ///|

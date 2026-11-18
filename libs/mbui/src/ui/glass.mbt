@@ -67,6 +67,13 @@ let glass_paint : GlassPaint = {
 }
 
 ///|
+/// Glass made solid or glass by the app (set_glass_solid: 1 solid, 0 glass, -1 as the system says), followed: what read
+/// it (a node's View::glass_solid, the paint) told as it changes, in the frame it changes, not as the next one paints.
+/// The window's, as glass_paint's `forced` is (window_kept.mbt).
+// kept across runs: put back by each Tester (reset_glass)
+let glass_forced_said : Ref[@signals.Signal[Int]] = Ref(@signals.signal(-1, same=fn(a, b) { a == b }))
+
+///|
 fn reset_glass() -> Unit {
   glass_paint.run = 0
   glass_paint.frost_run = 0
@@ -74,6 +81,7 @@ fn reset_glass() -> Unit {
   glass_paint.run_len = 0
   glass_paint.solid = false
   glass_paint.forced = -1
+  @signals.untracked(fn() { glass_forced_said.val.set(-1) })
   glass_paint.in_group = 0
   glass_paint.ink_r = 0.0
 }
@@ -82,19 +90,22 @@ fn reset_glass() -> Unit {
 /// Glass as glass, or solid from now on (None: as the system says, which is
 /// what MBUI_GLASS=solid or the system's reduce transparency make solid).
 pub fn set_glass_solid(solid : Bool?) -> Unit {
-  glass_paint.forced = match solid {
+  let f = match solid {
     None => -1
     Some(true) => 1
     Some(false) => 0
   }
+  glass_paint.forced = f
+  glass_forced_said.val.set(f)
 }
 
 ///|
-/// Whether glass is drawn solid in this frame.
+/// Whether glass is drawn solid in this frame, followed: as the app set it (set_glass_solid), else as the system says.
 pub fn Ctx::glass_solid(self : Ctx) -> Bool {
   ignore(self)
-  if glass_paint.forced >= 0 {
-    glass_paint.forced == 1
+  let f = glass_forced_said.val.get()
+  if f >= 0 {
+    f == 1
   } else {
     glass_solid_said.now()
   }

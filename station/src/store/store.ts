@@ -23,11 +23,11 @@ import {
   type Attachment, type AutoTitle, type ChatShare, type EntryRow, type JobNotice, type JobRow, type Json, type Membership,
   type MessageRow, type NewMessage, type NewSession, type Opened, type PendingMessage, type Handed, type HandedChat, type Letter, type AuthorKind, type ProcessRow, type ProfileStatus,
   type SessionBusy, type SessionRow, type SessionStats, type SessionThread, type StoreChange, type ThreadRow, type ThreadSummary,
-  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, attachment, handedWs,
+  type CardChoice, type TurnFor, type TurnRow, type TurnSummary, type WidgetModel, type InWorkspace, AUTO, XSHARE_IDLE_MS, I64_MAX, MANUAL, STATION_AUTHOR, STILLFAIL_SURFACE, ownName, attachment, handedWs,
   byBytes, cardOf, entryColumns, jsonList, letterEntry, letterMessage, mergeEntries, optionsCard, parsed, stored, takeChars, toEntry, toJob, toMembership,
   LAST_MESSAGE, LEGACY_LAST_MESSAGE, LEGACY_MESSAGES_BEFORE, LETTER_SQL, MESSAGES_BEFORE, MESSAGE_PAGE_ENTRIES, isLetter, liveShare, shareLive, toChatShare, toMessage, toOpened, toSession, toSessionThread, toThread, toTurnSummary, JOBS_RUNNING, JOBS_UP, JOB_AT_PORT, LAST_JOBS_OF, LIVE_ON_PROFILE, SESSION_JOBS, CARD_BEFORE, OPTIONS_BEFORE, SESSION_OF_RUNTIME, PEOPLE_AT,
 } from "./rows.ts";
-import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn } from "./schema.ts";
+import { SCHEMA, SCHEMA_VERSION, addArchiveColumns, addEditIndex, repairMergedEditLookup, addRuntimeSessionRuntime, hasRuntimeOrderIndex, addCardOutcomes, addListState, addLetters, addPendingCards, addPendingSystemCards, addSessionTurns, addSessionWork, addTellIndexes, addThreadIndexes, addUsageCompactions, addAutoTitleColumns, addClientColumn, addLetterColumn, addQueueColumns, addSizeColumn, addSmallJobColumn, addUsageColumns, addUsageTotals, addWaitWatchColumn, addWatchColumn, addWorkspaceColumns, addOpenerTitle, addLedColumn, addLeftColumn, renameOwnChats } from "./schema.ts";
 import { installUsageCompactions, usageCompactionsReady } from "./usage-compactions.ts";
 import { installPeopleSinceIndex } from "./legacy-people-since.ts";
 import { ARCHIVE_POLICY, LEGACY_ARCHIVE_POLICY, hasLegacyArchivePolicy, installArchivePolicyIndex } from "./archive-policy-index.ts";
@@ -798,6 +798,7 @@ export class Store {
       installSessionChatIndex(db);
       installLatestThreadIndex(db);
       installCardPosts(db);
+      renameOwnChats(db, (t) => db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(t) !== undefined);
     } catch (e) {
       db.close();
       throw e;
@@ -1132,6 +1133,7 @@ export class Store {
   }
 
   insertSession(s: NewSession): void {
+    s = { ...s, connect: ownName(s.connect) };
     const list = s.profiles !== undefined ? (s.profiles && s.profiles.length > 0 ? s.profiles : null) : (s.profilePinned ? [s.profile] : null);
     const pinned = list !== null ? list.length === 1 : (s.profilePinned ?? false);
     this.#with((changes) => {
@@ -2070,6 +2072,7 @@ export class Store {
   }
 
   threadAt(surface: string, channel: string, threadTs: string): ThreadRow | null {
+    surface = ownName(surface);
     const r = this.#one("SELECT * FROM threads WHERE surface = ? AND channel = ? AND thread_ts = ?", surface, channel, threadTs);
     return r ? toThread(r) : null;
   }
@@ -2086,6 +2089,7 @@ export class Store {
 
   /// The thread at this address, made if new as `home`'s own chat (ThreadRow.home).
   openThreadOf(surface: string, channel: string, threadTs: string, title: string | null, createdBy: string | null, home: string | null): ThreadRow {
+    surface = ownName(surface);
     this.#run(
       THREAD_INSERT_IF_ABSENT,
       surface, channel, threadTs, title, createdBy, this.now(), home,
@@ -2097,6 +2101,7 @@ export class Store {
 
   /// The thread a platform message is in: the one it was said in, else the one it starts.
   threadOfMessage(surface: string, channel: string, ts: string): ThreadRow | null {
+    surface = ownName(surface);
     const said = this.#one(
       "SELECT t.* FROM entries e JOIN threads t ON t.id = e.thread WHERE t.surface = ? AND t.channel = ? AND e.ts = ? LIMIT 1",
       surface, channel, ts,
@@ -2107,6 +2112,7 @@ export class Store {
   /// Makes a session take part in a thread, posting through `connect`, or hear it again after it left. False if it
   /// already did.
   joinThread(thread: number, session: string, connect: string): boolean {
+    connect = ownName(connect);
     return this.#with((changes) => {
       const joined = this.#run(
         MEMBER_JOIN_IF_NEEDED,
@@ -2132,6 +2138,7 @@ export class Store {
 
   /// Whether a session left a thread it takes part in through `connect` (leaveThread) and was not mentioned there since.
   leftThread(session: string, connect: string, channel: string, threadTs: string): boolean {
+    connect = ownName(connect);
     return (
       this.#one(
         `SELECT 1 FROM thread_sessions m JOIN threads t ON t.id = m.thread
@@ -2424,6 +2431,7 @@ export class Store {
   }
 
   #editMessage(surface: string, channel: string, threadTs: string, ts: string, text: string, bounded: boolean): number | null | undefined {
+    surface = ownName(surface);
     return this.#with((changes) => {
       const thread = this.threadAt(surface, channel, threadTs);
       if (thread === null) return null;

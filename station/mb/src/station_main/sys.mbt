@@ -162,6 +162,22 @@ pub fn wall_ms() -> Int64 {
 }
 
 ///|
+/// The wall's time and the host's (a monotonic clock, `@host.now`, what the runtime's timers go by) as the program
+/// started.
+let p5_wall_0 : Int64 = wall_ms_ffi()
+
+///|
+let p5_mono_0 : Int64 = @host.now()
+
+///|
+/// Now, ms since the epoch, going on as the host's monotonic clock goes from the wall's time as the program started:
+/// what the parts keep or compare as a time of the world's (a token's expiry, a record's `at`, a sample's time) never
+/// the host's clock alone, which counts from the machine's start (a date in January 1970), and never going back.
+fn p5_epoch_ms() -> Int64 {
+  p5_wall_0 + (@host.now() - p5_mono_0)
+}
+
+///|
 /// Writes `text` to stderr as it is.
 pub fn err_write(text : String) -> Unit {
   ignore(err_ffi(@utf8.encode(text)))

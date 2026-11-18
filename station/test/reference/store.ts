@@ -422,7 +422,7 @@ export const HAS_NAMING_ORIGIN = `SELECT 1 FROM thread_sessions origin
 // An existing copy-destination index already separates external memberships. Its order is different from naming
 // order, but existence needs no order. A live member itself makes each of its external threads visible.
 export const HAS_NAMING_ORIGIN_PREPARED = `SELECT 1 FROM cc_session_rows INDEXED BY cc_session_order
-  WHERE session = ?1 AND surface != 'ember' LIMIT 1`;
+  WHERE session = ?1 AND surface != 'chat' LIMIT 1`;
 // A short membership list is cheaper to check directly than to verify the prepared projection's journals.
 export const HAS_NAMING_ORIGIN_POSSIBLE = `SELECT 1 FROM cc_sessions c CROSS JOIN sessions live ON live.key = c.session
       WHERE c.session = ?1 AND c.complete = 1 AND EXISTS (
@@ -492,7 +492,7 @@ export const LATEST_NAMING_ORIGIN_POSSIBLE = `SELECT requested.key AS ordinal FR
 // original batch query when there are more external origins; the index is useful here only for a live, ready member.
 export const LATEST_NAMING_ORIGIN_PREPARED = `WITH candidates AS MATERIALIZED (
     SELECT thread FROM cc_session_rows INDEXED BY cc_session_order
-    WHERE session=?1 AND surface != 'ember' LIMIT 9
+    WHERE session=?1 AND surface != 'chat' LIMIT 9
   ) SELECT (SELECT COUNT(*) FROM candidates) AS count,
     CASE WHEN (SELECT COUNT(*) FROM candidates)<9 THEN (SELECT t.id FROM candidates r
       CROSS JOIN threads t ON t.id=r.thread LEFT JOIN thread_state st ON st.thread=t.id

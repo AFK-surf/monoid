@@ -95,10 +95,11 @@ async fn shell_fetch(host : @host.Host, args : Map[String, Json], body : Bytes?)
 }
 
 ///|
-/// The runtime's clock and fibers.
-pub fn host_clock(host : @host.Host) -> Clock {
+/// The runtime's clock and fibers; `now`, what it keeps as a time (a name's `at`), ms since the epoch where it is
+/// given (the runtime's clock counts from the machine's start).
+pub fn host_clock(host : @host.Host, now? : () -> Double) -> Clock {
   {
-    now: () => host.rt.now().to_double(),
+    now: now.unwrap_or(() => host.rt.now().to_double()),
     sleep: async fn(ms : Int) { @effect.sleep(ms) },
     fork: f => host.rt.fork(f),
   }

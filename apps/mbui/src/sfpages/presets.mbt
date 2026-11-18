@@ -835,18 +835,13 @@ fn preset_row(
   tail? : (@view.View) -> Unit,
   opens? : Bool = false,
 ) -> Unit {
-  v.box(fn(r) {
+  let look = fn(r : @view.View) {
     @sf.style_node(r, fn() { preset_row_at.then(@sf.panel_row_in_node(r)) })
-    match press {
-      Some(p) => {
-        @sf.hover_ground_node(r)
-        r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
-        @sf.presses_node(r, p)
-        if opens {
-          @sf.panel_opens_on_node(r)
-        }
+    if press is Some(_) {
+      @sf.hover_ground_node(r)
+      if opens {
+        @sf.panel_opens_on_node(r)
       }
-      None => ()
     }
     r.box(fn(l) {
       l.shrink(Is(0.0)) |> ignore
@@ -870,8 +865,11 @@ fn preset_row(
         |> ignore
       None => ()
     }
-  })
-  |> ignore
+  }
+  match press {
+    Some(p) => @sf.action_box_node(v, title, fn(_) { p() }, look) |> ignore
+    None => v.box(look) |> ignore
+  }
 }
 
 ///|

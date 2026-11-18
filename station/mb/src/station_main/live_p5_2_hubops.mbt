@@ -398,6 +398,22 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.has" if ["prepareCardPosts", "prepareLatestThreads"].contains(arg_text(args, 0)) => Json::boolean(true)
       // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: who the card is said by)
       "hub.identity" => p52_json_of_jv(self.chats_answer("actor.messageIdentity", args.map(jv_of), args))
+      // (`hub.chat(connect).post` as the vault's cards say theirs: the thread's connect, channel, ts and the text)
+      "hub.post" =>
+        Json::string(self.chat_post(arg_text(args, 0), arg_text(args, 1), arg_text(args, 2), arg_text(args, 3), []))
+      // (adb/card.ts's `chat.post` as the phones', devices' and rigs' cards say it: connect, thread, text, files)
+      "chat.post" => {
+        let here = arg_or_null(args, 1)
+        Json::string(
+          self.chat_post(
+            arg_text(args, 0),
+            jtext(here, "channel").unwrap_or(""),
+            jtext(here, "threadTs").unwrap_or(""),
+            arg_text(args, 2),
+            jitems(arg_or_null(args, 3)),
+          ),
+        )
+      }
       // (agents.ts `cardOutcomes.save`: a decided card's outcome queued, the request written by its part before)
       "cardOutcomes.save" => self.outcome_save(arg_or_null(args, 0))
       // (a part that queued one itself, on a connection of its own: the vault)
@@ -531,7 +547,7 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
         if thread is Null {
           raise @api_routes.Thrown("Refused", jv_of_json({ "message": "this session has no chat to ask in" }))
         }
-        if jtext(jfield(thread, "thread"), "surface") != Some("ember") {
+        if jtext(jfield(thread, "thread"), "surface") != Some("chat") {
           raise @api_routes.Thrown(
             "Refused",
             jv_of_json({
@@ -818,7 +834,7 @@ fn P52::grant_chat_title(self : P52, r : Json) -> String? raise {
     let without = self.title_of(own, None, None)
     // (a given name and a still.fail chat's name do not depend on the session's most recent chat)
     let surface = jtext(own, "surface")
-    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("ember") || surface == Some("stillfail") {
+    if @adb_devices.given_title(jv_of(own)) is Some(_) || surface == Some("chat") || surface == Some("ember") || surface == Some("stillfail") {
       return Some(without)
     }
     let first = match self.store("firstText", [jfield(own, "id")]) {

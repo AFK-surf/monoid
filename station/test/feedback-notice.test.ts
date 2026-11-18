@@ -21,11 +21,11 @@ function ask(admin: Admin, who: typeof member, path: string, body: unknown) {
 test("a failure notice reported: the turn, the agent, versions, variables' names and the session's log lines go", async () => {
   const store = Store.open(":memory:", null);
   try {
-    store.insertSession({ key: "chat:c-aaa111", connect: "ember", runtime: "codex", profile: "pro", model: "gpt-6", workspace: "/w", token: "t", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
+    store.insertSession({ key: "chat:c-aaa111", connect: "chat", runtime: "codex", profile: "pro", model: "gpt-6", workspace: "/w", token: "t", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
     store.setRuntimeSessionId("chat:c-aaa111", "019a-codex-thread");
-    store.insertSession({ key: "other", connect: "ember", runtime: "claude", profile: "cc", workspace: "/o", token: "t2", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
-    const chat = store.openThread("ember", "CHAT", "1.1", null, "ada@x.com");
-    store.joinThread(chat.id, "chat:c-aaa111", "ember");
+    store.insertSession({ key: "other", connect: "chat", runtime: "claude", profile: "cc", workspace: "/o", token: "t2", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
+    const chat = store.openThread("chat", "CHAT", "1.1", null, "ada@x.com");
+    store.joinThread(chat.id, "chat:c-aaa111", "chat");
     store.insertMessage(newMessage(chat.id, "1.2", "person", "ada@x.com", "fix it"));
     store.startTurn("t1", "chat:c-aaa111", "message");
     store.endTurn("t1", "failed", "other: workspace routing discovery timed out", null, null);
@@ -63,7 +63,7 @@ test("a failure notice reported: the turn, the agent, versions, variables' names
     assert.match(report.body, /names only\): HTTPS_PROXY, HTTP_PROXY/);
     assert.deepEqual(
       { ...report.context, notice: undefined },
-      { notice: undefined, os: report.context.os, arch: report.context.arch, software: { station: "0.1.3600", codex: "0.160.0" }, agentEnv: ["HTTPS_PROXY", "HTTP_PROXY"], session: "chat:c-aaa111", connect: "ember", runtime: "codex", profile: "pro", model: "gpt-6", link: "https://app/o/chat:c-aaa111", thread: "CHAT/1.1" },
+      { notice: undefined, os: report.context.os, arch: report.context.arch, software: { station: "0.1.3600", codex: "0.160.0" }, agentEnv: ["HTTPS_PROXY", "HTTP_PROXY"], session: "chat:c-aaa111", connect: "chat", runtime: "codex", profile: "pro", model: "gpt-6", link: "https://app/o/chat:c-aaa111", thread: "CHAT/1.1" },
     );
     // The session's lines of the turn's time: not an hour before, not another session's, not the mesh's; homes scrubbed.
     const lines = report.logs.split("\n");
@@ -90,7 +90,7 @@ test("a failure notice reported: the turn, the agent, versions, variables' names
 test("a report not taken by still.fail cloud is said so", async () => {
   const store = Store.open(":memory:", null);
   try {
-    const chat = store.openThread("ember", "CHAT", "2.1", null, "ada@x.com");
+    const chat = store.openThread("chat", "CHAT", "2.1", null, "ada@x.com");
     store.insertMessage(newMessage(chat.id, "2.2", "station", "station", "⚠️ 本轮出错：boom"));
     const parts = new StationParts();
     const deps = { logTail: async () => null, versions: () => ({}), envNames: () => [], link: () => null, home: "/h" };

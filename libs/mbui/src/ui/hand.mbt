@@ -45,6 +45,8 @@ priv struct Hand {
   mut presses : @signals.Signal[Int]
   /// what a reader asked something of (Ctx::ask_action), by member (Ctx::action_asked): what asked of none, not built
   mut asked : @signals.Keyed[Int]
+  /// what `over` was last told, as a plain array (hand_over_same: whether the next frame tells it anew)
+  mut over_now : Array[Int]
 }
 
 ///|
@@ -67,6 +69,7 @@ let hand : Hand = {
   typed: @signals.signal(0),
   presses: @signals.signal(0),
   asked: @signals.keyed(),
+  over_now: [],
 }
 
 ///|
@@ -79,6 +82,7 @@ fn hand_arrive(c : Ctx) -> Unit {
     over.push(c.hover)
   }
   hand.over.set(over)
+  hand.over_now = over
   hand.pressed.set(if c.down && c.active != 0 { [c.active] } else { [] })
   hand.press_on.set(c.press_on)
   hand.clicked.set(c.clicked)
@@ -142,11 +146,29 @@ fn hand_presses_read() -> Unit {
 }
 
 ///|
+/// Whether what the pointer is over in `c` (an old view's, as its last layout found it: Ctx::hover, hover_in) is what
+/// the hand was last told it is over (hand_arrive): where not, the next frame tells it anew, what read it (Ctx::hovered)
+/// drawn again by it.
+fn hand_over_same(c : Ctx) -> Bool {
+  let n = c.hover_in.length() + (if c.hover != 0 { 1 } else { 0 })
+  if hand.over_now.length() != n {
+    return false
+  }
+  for i, id in c.hover_in {
+    if hand.over_now[i] != id {
+      return false
+    }
+  }
+  c.hover == 0 || hand.over_now[c.hover_in.length()] == c.hover
+}
+
+///|
 /// Put back as a run begins (reset_globals): nothing over, pressed, clicked, held or focused.
 fn hand_reset() -> Unit {
   for k in [hand.over, hand.pressed, hand.press_on, hand.clicked, hand.double, hand.held, hand.focus, hand.shown] {
     k.set([])
   }
+  hand.over_now = []
   turns_reset(0.0)
 }
 

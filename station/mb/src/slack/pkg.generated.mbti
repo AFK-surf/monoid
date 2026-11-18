@@ -56,7 +56,7 @@ pub async fn harness(@host.Host) -> Unit
 
 pub fn header(Array[(String, String)], String) -> String?
 
-pub fn host_clock(@host.Host) -> Clock
+pub fn host_clock(@host.Host, now? : () -> Double) -> Clock
 
 pub fn host_log() -> (String, String, String, @jsjson.JValue) -> Unit
 
