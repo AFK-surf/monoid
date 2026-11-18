@@ -6,6 +6,9 @@
 // turned away, within PAIR_TRIES; every code typed is answered; once the code's time is over the new device's page is
 // done or says why it is not, in words that fit what happened (turned away only if it was, out of tries only if they
 // were used, too old only once it was, unreachable only if the line went); no prompt stays on the trusted device. A
+// line that goes may go silently too (a phone put away, suspended with no close sent: nothing more arrives either way,
+// and neither end hears it end).
+// A
 // failure says its seed: PAIR_FAULT_SEED=<seed> runs only that one (PAIR_FAULT_RUNS=<n> runs n seeds from 1).
 import assert from "node:assert/strict";
 import { test } from "node:test";
@@ -14,7 +17,7 @@ import { CoreError } from "../src/error.ts";
 import { t } from "../src/i18n.ts";
 import { PAIR_TRIES } from "../src/pair.ts";
 import { pairs } from "../src/views/lock.ts";
-import { type Duplex, keep, PAIR_GRACE_MS, PAIR_SIGNED_MS, PAIR_WAIT_MS, serveTrusted, trying } from "../src/views/pair.ts";
+import { type Duplex, keep, PAIR_GRACE_MS, PAIR_PROVE_MS, PAIR_REPLY_MS, PAIR_SIGNED_MS, PAIR_WAIT_MS, serveTrusted, trying } from "../src/views/pair.ts";
 import { jsonResponse } from "../src/testing.ts";
 import { call } from "./helpers.ts";
 import { stationLater } from "./station-fixture.ts";
@@ -44,12 +47,16 @@ function draw(seed: number) {
   const acts = Array.from({ length: 1 + r.int(7) }, (): Act => ({ kind: kinds[r.int(kinds.length)]!, ms: [1_000, 30_000, 90_000, 4 * 60_000][r.int(4)]! }));
   // Whether the cloud keeps the trusted device's entry but its answer is lost on the way back.
   const lost = r.int(4) === 0;
-  return { delays, cutAfter, acts, lost };
+  // Whether the cut is silent (drawn last, so the seeds of before draw as they did).
+  const silent = cutAfter !== null && r.int(2) === 0;
+  return { delays, cutAfter, acts, lost, silent };
 }
 
 /// Two ends of a connection on the core's clock: the n-th message (both ways counted) arrives `delays[n]` ms after it is
 /// sent, each way in order; after `cutAfter` messages the connection is cut (each end hears its end, sending fails).
-function line(fork: (e: Effect.Effect<void>) => void, delays: number[], cutAfter: number | null): { ends: [Duplex, Duplex]; cut: () => boolean; cutNow: () => void } {
+/// `silent`, it is cut as a peer suspended without a close is: nothing arrives any more either way, sending goes on
+/// without a word, closing tells nobody, and neither end hears its end.
+function line(fork: (e: Effect.Effect<void>) => void, delays: number[], cutAfter: number | null, silent = false): { ends: [Duplex, Duplex]; cut: () => boolean; cutNow: () => void } {
   const a = Effect.runSync(Queue.unbounded<unknown>());
   const b = Effect.runSync(Queue.unbounded<unknown>());
   let sent = 0;
@@ -59,13 +66,14 @@ function line(fork: (e: Effect.Effect<void>) => void, delays: number[], cutAfter
   const cutNow = () => {
     if (cut) return;
     cut = true;
+    if (silent) return;
     Queue.offerUnsafe(a, null);
     Queue.offerUnsafe(b, null);
   };
   const end = (mine: Queue.Queue<unknown>, theirs: Queue.Queue<unknown>): Duplex => ({
     send: (m) =>
       Effect.suspend(() => {
-        if (cut) return Effect.fail(new CoreError("pair", "the connection was cut"));
+        if (cut) return silent ? Effect.void : Effect.fail(new CoreError("pair", "the connection was cut"));
         const n = sent++;
         const copy = JSON.parse(JSON.stringify(m));
         const before = last.get(theirs) ?? Promise.resolve();
@@ -80,7 +88,9 @@ function line(fork: (e: Effect.Effect<void>) => void, delays: number[], cutAfter
         return Effect.void;
       }),
     next: () => Queue.take(mine) as Effect.Effect<any>,
-    close: () => void Queue.offerUnsafe(theirs, null),
+    close: () => {
+      if (!(cut && silent)) Queue.offerUnsafe(theirs, null);
+    },
   });
   return { ends: [end(a, b), end(b, a)], cut: () => cut, cutNow };
 }
@@ -93,8 +103,8 @@ const TEXTS = {
 };
 
 async function once(seed: number): Promise<string[]> {
-  const { delays, cutAfter, acts, lost } = draw(seed);
-  const said: string[] = [`delays ${delays.join(",")}; cut after ${cutAfter ?? "never"}${lost ? "; the cloud's answer to the approval lost" : ""}`];
+  const { delays, cutAfter, acts, lost, silent } = draw(seed);
+  const said: string[] = [`delays ${delays.join(",")}; cut ${silent ? "silently " : ""}after ${cutAfter ?? "never"}${lost ? "; the cloud's answer to the approval lost" : ""}`];
   const g = grant();
   const r = await rig((me) => ({ ws: genesis("ws", me, true, [], g.keys, ME) }));
   const defects: unknown[] = [];
@@ -103,7 +113,7 @@ async function once(seed: number): Promise<string[]> {
   const prompts = await r.watch({ topic: "lockPrompts" });
   if (lost) r.cloud.lose.posts = 1;
   const inner = r.core.inner;
-  const { ends: [trusted, phone], cut } = line((e) => void inner.runner.fork(e), delays, cutAfter);
+  const { ends: [trusted, phone], cut } = line((e) => void inner.runner.fork(e), delays, cutAfter, silent);
   inner.runner.fork(Effect.ignore(serveTrusted(inner, PHONE, ME, trusted)));
   const start = r.host.nowMs();
 
@@ -229,7 +239,7 @@ async function metOver(r: Awaited<ReturnType<typeof rig>>, g: ReturnType<typeof 
   const y = trying(inner, workspaces);
   keep(inner, y, ME, phone, (answer[0] as { workspaces: string[] }).workspaces);
   inner.mesh = () => withoutMesh(PHONE);
-  return { code, prompts };
+  return { code, prompts, y };
 }
 
 test("signed in, its answer lost on the way back (the line gone as the trusted device answered): done, not said to have failed", async () => {
@@ -345,6 +355,72 @@ test("the line gone at the pake, before the confirmation: said gone at once, not
   assert.deepEqual([error.code, error.message], ["pair_ended", TEXTS.gone]);
   assert.equal(phoneSigned(r), 0);
   assert.ok(ms! <= 100, `answered after ${ms} ms`);
+});
+
+test("a trusted device goes silent after showing its code (suspended with no close): answered in time, never stuck checking", async (t) => {
+  // (2026-11-18: a new phone stayed on 正在验证 for good once the code was typed, the trusted phone put away as its
+  // code was read off it: nothing it sent arrived, nor its end, and the new device read on with no deadline)
+  {
+    // Silent from the code on: the pake never answered.
+    const g = grant();
+    const r = await rig((me) => ({ ws: genesis("ws", me, true, [], g.keys, ME) }));
+    await r.watch({ topic: "lock", workspace: "ws" });
+    const l = line((e) => void r.core.inner.runner.fork(e), [0], 2, true);
+    const { code } = await metOver(r, g, l, ["ws"]);
+    assert.ok(l.cut(), "silent once the code is shown");
+    const { ms, answer } = await typedTimed(r, code);
+    t.diagnostic(`silent before the pake: answered after ${ms} ms`);
+    assert.ok(ms !== null && ms <= PAIR_REPLY_MS + 10, `answered after ${ms} ms`);
+    assert.ok(answer !== undefined && "error" in answer, JSON.stringify(answer));
+    const error = answer.error as { code: string; message: string };
+    assert.deepEqual([error.code, error.message], ["pair_ended", TEXTS.gone]);
+    assert.deepEqual(pairs.mine(r.core.inner, "ws"), { state: "failed", devices: 0, error: TEXTS.gone });
+    assert.equal(phoneSigned(r), 0);
+  }
+  // Silent after the pake (hello, code, pake, pake: 4) or after the confirmation (5): the approval lost on the way
+  // back, the lock naming the new device; or the confirmation lost on its way, nothing signed.
+  for (const [after, signed] of [[5, true], [4, false]] as const) {
+    const g = grant();
+    const r = await rig((me) => ({ ws: genesis("ws", me, true, [], g.keys, ME) }));
+    await r.watch({ topic: "lock", workspace: "ws" });
+    const l = line((e) => void r.core.inner.runner.fork(e), [0], after, true);
+    const { code } = await metOver(r, g, l, ["ws"]);
+    const { ms, answer } = await typedTimed(r, code);
+    t.diagnostic(`silent after ${after} messages: answered after ${ms} ms`);
+    assert.ok(l.cut(), "silent");
+    // (the approval lost: as the lock names it once PAIR_PROVE_MS went with no answer; else PAIR_SIGNED_MS after it)
+    assert.ok(ms !== null && ms <= PAIR_PROVE_MS + (signed ? 100 : PAIR_SIGNED_MS + 100), `answered after ${ms} ms`);
+    assert.equal(phoneSigned(r), signed ? 1 : 0);
+    if (signed) {
+      assert.ok(answer !== undefined && "ok" in answer, JSON.stringify(answer));
+      assert.deepEqual((answer.ok as { workspaces: string[] }).workspaces, ["ws"]);
+      assert.equal(pairs.mine(r.core.inner, "ws")?.state, "done");
+    } else {
+      assert.ok(answer !== undefined && "error" in answer, JSON.stringify(answer));
+      const error = answer.error as { code: string; message: string };
+      assert.deepEqual([error.code, error.message], ["pair_ended", TEXTS.gone]);
+      assert.deepEqual(pairs.mine(r.core.inner, "ws"), { state: "failed", devices: 0, error: TEXTS.gone });
+    }
+  }
+});
+
+test("two trusted devices show codes, one goes silent while the other approves: approved at once without waiting on the silent one", async (t) => {
+  const g = grant();
+  const r = await rig((me) => ({ ws: genesis("ws", me, true, [], g.keys, ME) }));
+  await r.watch({ topic: "lock", workspace: "ws" });
+  const inner = r.core.inner;
+  // B, this core, over a line that works; its code is the one typed.
+  const l = line((e) => void inner.runner.fork(e), [0], null);
+  const { code, y } = await metOver(r, g, l, ["ws"]);
+  // A, met before (its hello answered with a code), then put away: nothing it is sent arrives, nothing comes back.
+  keep(inner, y, "aa".repeat(32), { send: () => Effect.void, next: () => Effect.never, close: () => {} }, ["ws"]);
+  assert.deepEqual([pairs.mine(inner, "ws")?.state, pairs.mine(inner, "ws")?.devices], ["code", 2]);
+  const { ms, answer } = await typedTimed(r, code);
+  t.diagnostic(`answered after ${ms} ms`);
+  assert.ok(ms !== null && ms < 500, `answered after ${ms} ms`);
+  assert.ok(answer !== undefined && "ok" in answer, JSON.stringify(answer));
+  assert.equal(pairs.mine(inner, "ws")?.state, "done");
+  assert.equal(phoneSigned(r), 1);
 });
 
 const RUNS = Number(process.env.PAIR_FAULT_RUNS ?? 40);
