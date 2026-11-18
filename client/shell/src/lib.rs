@@ -3427,7 +3427,7 @@ impl Inner {
                 endpoint.set_disabled_relays(peer, disabled).await;
                 Ok(Answer::json(json!({})))
             }
-            "iroh.online" | "iroh.insertRelay" | "iroh.removeRelay" | "iroh.publicRelays" | "iroh.keep" | "iroh.setCongestion" | "iroh.holdIncoming" => {
+            "iroh.online" | "iroh.insertRelay" | "iroh.removeRelay" | "iroh.publicRelays" | "iroh.keep" | "iroh.setCongestion" | "iroh.setAlpns" | "iroh.holdIncoming" => {
                 let (endpoint, kept) = match self.handle(id_of(&a)?)? {
                     Handle::Endpoint(endpoint, kept) => (endpoint, kept),
                     Handle::Unbound { .. } => return Err("the endpoint is closed".into()),
@@ -3443,6 +3443,13 @@ impl Inner {
                         if kept.bound.contains(&url) && !homes.contains(&url) {
                             homes.push(url);
                         }
+                    }
+                    // The protocols it takes from now on (`alpns`, hex), the connections it has kept: a binding that
+                    // changes only these needs no endpoint of its own beside it (two of one key on the relays at once,
+                    // the one closing refusing what comes to it).
+                    "iroh.setAlpns" => {
+                        let alpns: Vec<Vec<u8>> = a.get("alpns").and_then(Value::as_array).into_iter().flatten().map(|x| hex::decode(x.as_str().unwrap_or_default()).map_err(err)).collect::<Result<_, _>>()?;
+                        endpoint.set_alpns(alpns);
                     }
                     // Off every relay transport: its connection there ended, no longer home there nor in its address.
                     "iroh.removeRelay" => {
