@@ -80,6 +80,34 @@ fn P52::chats_world(self : P52) -> @session_chats.World {
 }
 
 ///|
+/// `hub.store.subscribe(listener)` as the conversations ask it (conversations.mbt `state_read`): the store's changes on
+/// the bus (LiveBus::subscribe_store) kept as they come, and told the listener (a callback they gave, `{"$fn": id}`)
+/// as the function this answers with is called to stop it, which state_read calls before it looks at what it was told.
+/// (The listener is async and a change is told on the bus's own turn: kept there, not called there.) Not answered, it
+/// failed every state an agent recorded (`no such store method: subscribe`).
+fn P52::store_subscribe(self : P52, listener : J) -> J {
+  let id = jnum_of(Json::object({ "f": jfield(p52_json_of_jv(listener), "$fn") }), "f")
+    .unwrap_or(-1.0)
+    .to_int()
+  let seen : Array[Json] = []
+  let off = self.bus.subscribe_store(change => seen.push(change))
+  chat_state.next_cb += 1
+  let stop_id = chat_state.next_cb
+  chat_state.callbacks[stop_id] = async fn(_) {
+    off()
+    chat_state.callbacks.remove(stop_id)
+    let told = chat_state.callbacks.get(id)
+    chat_state.callbacks.remove(id)
+    match told {
+      Some(f) => for change in seen { f([jv_of(change)]) |> ignore }
+      None => ()
+    }
+    Null
+  }
+  Obj([(@jsjson.units("$fn"), Num(stop_id.to_double()))])
+}
+
+///|
 /// The conversations' storage parts (session_storage `Storage`), their station's calls answered here.
 fn P52::storage(self : P52) -> @session_storage.Storage {
   @session_storage.Storage::new(
@@ -192,6 +220,7 @@ async fn P52::chats_answer(
   }
   let db = self.bus.db
   match part {
+    "store" if meth == "subscribe" => self.store_subscribe(raw.get(0).unwrap_or(Null))
     "store" => jv_of(self.store(meth, args))
     "hub" =>
       match meth {
@@ -299,6 +328,9 @@ async fn P52::chats_answer(
             .fetched(s(0), s(1), s(2), args[3:].to_owned())
           J::Arr([j_s(text), J::Arr(files.map(jv_of))])
         }
+        // (hub.ts `fork(effect)`: the conversations give a stand-in, `<effect>`, for the review the TypeScript forked
+        // there (review.mbt `suggest_archive`), nothing to run here; refused, it failed every all_done state)
+        "fork" => Null
         _ => jv_of(@session_hub.hub_call(self.the_hub(), meth, args))
       }
     "chat" | "chatOf" => {
