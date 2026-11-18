@@ -290,7 +290,9 @@ describe("the Cursor driver", { concurrency: true }, () => {
       // (the station let go before the next takes up, as the hub waits: every line handled acknowledged)
       await allLeft();
       const b = listen();
-      const taken: AgentSession = await driver().adopt(o, snapshot, b.push);
+      // (after a crash, taken up before the station's door opened: no address of its tools known)
+      const taken: AgentSession = await driver().adopt(crashed ? { ...o, mcpUrl: "" } : o, snapshot, b.push);
+      assert.equal(taken.mcpUrl?.(), crashed ? null : o.mcpUrl);
       assert.equal(taken.id(), session.id());
       assert.equal(taken.busy(), true);
       await gate.open("a");

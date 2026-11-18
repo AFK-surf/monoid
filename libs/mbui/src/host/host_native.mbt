@@ -176,6 +176,8 @@ extern "C" fn ffi_thermal_throttled() -> Int = "mb_host_thermal_throttled"
 
 extern "C" fn ffi_gpu_ms() -> Double = "mb_host_gpu_ms"
 
+extern "C" fn ffi_frames_dropped() -> Int = "mb_host_frames_dropped"
+
 extern "C" fn ffi_cpu_ms() -> Double = "mb_host_cpu_ms"
 
 extern "C" fn ffi_perf_state() -> Int = "mb_host_perf_state"
@@ -885,6 +887,12 @@ fn thermal_throttled() -> Bool {
 /// this host).
 fn gpu_ms() -> Double {
   ffi_gpu_ms()
+}
+
+///|
+/// How many frames the app made were never drawn, a newer one taking each's place, since the run began.
+fn frames_dropped() -> Int {
+  ffi_frames_dropped()
 }
 
 ///|

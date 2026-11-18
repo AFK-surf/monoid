@@ -71,11 +71,16 @@ const hasSimctl = platform() === "darwin" && existsSync(SIMCTL);
 const run = (file: string, args: string[]) => Promise.resolve(execFileSync(file, args, { encoding: "utf8", maxBuffer: 16 << 20, timeout: 60_000 }));
 
 test("keys and text on a simulator, with and without its Device Hub window", { skip: !hasSimctl && "no Xcode simulators here" }, async () => {
-  const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
-  // (SIM_RUNTIME: an older one, as "iOS-17": what an old runtime does on this Xcode)
-  const runtime = runtimes.findLast((r: any) => r.identifier.includes(process.env.SIM_RUNTIME ?? "")) ?? runtimes.at(-1);
-  const type = runtime.supportedDeviceTypes.find((t: any) => t.productFamily === "iPhone");
-  const udid = simctl("create", `still.fail side keys ${process.pid}`, type.identifier, runtime.identifier);
+  // (SIM_SHARED_UDID: the run's iPhone of the newest runtime, set booting before and shared by the side tests in turn,
+  // .github/workflows/side.yml: used where no runtime or type is asked for, kept booted and left as it was found)
+  const shared = !process.env.SIM_RUNTIME && !process.env.SIM_TYPE ? process.env.SIM_SHARED_UDID : undefined;
+  const udid = shared ?? (() => {
+    const runtimes = JSON.parse(simctl("list", "-j", "runtimes")).runtimes.filter((r: any) => r.isAvailable && r.platform === "iOS");
+    // (SIM_RUNTIME: an older one, as "iOS-17": what an old runtime does on this Xcode)
+    const runtime = runtimes.findLast((r: any) => r.identifier.includes(process.env.SIM_RUNTIME ?? "")) ?? runtimes.at(-1);
+    const type = runtime.supportedDeviceTypes.find((t: any) => t.productFamily === "iPhone");
+    return simctl("create", `still.fail side keys ${process.pid}`, type.identifier, runtime.identifier);
+  })();
   const dir = mkdtempSync(join(tmpdir(), "sim-keys-"));
   const debug = new SimDebug(SIMCTL, udid, run, async () => { throw new Error("no view here"); });
   const helper = new HelperApp({ app: process.env.STILLFAIL_HELPER ?? execFileSync(process.execPath, [join(ROOT, "scripts/native.ts"), "file", "helper"], { encoding: "utf8" }).trim(), dir: process.env.STILLFAIL_HELPER_DIR ?? join(dir, "helper") });
@@ -238,10 +243,17 @@ test("keys and text on a simulator, with and without its Device Hub window", { s
     debug.close();
     // (the station's own, as this Mac granted it: left running)
     if (!process.env.STILLFAIL_HELPER_DIR) await helper.quit();
-    try {
-      simctl("shutdown", udid);
-    } catch {}
-    simctl("delete", udid);
+    if (shared) {
+      try { simctl("terminate", udid, APP); } catch {}
+      try { simctl("uninstall", udid, APP); } catch {}
+      try { simctl("ui", udid, "appearance", "light"); } catch {}
+      try { simctl("ui", udid, "content_size", "large"); } catch {}
+    } else {
+      try {
+        simctl("shutdown", udid);
+      } catch {}
+      simctl("delete", udid);
+    }
     rmSync(dir, { recursive: true, force: true });
   }
 });

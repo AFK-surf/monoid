@@ -73,6 +73,8 @@ pub fn find_spring(Double, Double) -> (Double, Double, Double)
 
 pub fn flight_by(Spec) -> @view.Flight
 
+pub fn flight_scaled((Double) -> Double, ease~ : @ui.Ease, delay? : Double) -> @view.Flight
+
 pub fn fly(@ui.Ctx, Int32, Double, Double, scale? : Double, px~ : Double, py~ : Double, ps? : Double) -> Unit
 
 pub fn fly_by(@ui.Ctx, Int32, () -> (Double, Double, Double, Double, Double, Double)) -> Unit
@@ -187,6 +189,9 @@ pub let pointer_veil_part : Double
 pub fn pregenerate_keyframes(Generator) -> (Array[Double], Double)
 
 pub fn presence(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double) -> @ui.Look?
+
+#callsite(autofill(loc))
+pub fn presence_by(@ui.Ctx, String, Bool, enter? : Trans, exit? : Trans, initial? : Bool, start_at? : Double, loc~ : SourceLoc) -> Showing?
 
 #callsite(autofill(loc))
 pub fn press_feel(@view.View, live? : () -> Bool, sink_px? : Double, sink_most? : Double, hover_ms? : Double, hovers? : Bool, scale_node? : Bool, size? : (Double, Double), loc~ : SourceLoc) -> PressFeel
@@ -428,6 +433,11 @@ pub fn SheetWay::offset_y(Self, @view.View, Double) -> Double
 pub fn SheetWay::show_in(Self, @view.View, open~ : () -> Bool, close~ : () -> Unit, scrim? : (Double) -> Int64, (@view.View) -> Unit, loc~ : SourceLoc) -> Unit
 pub fn SheetWay::shown_on(Self, @view.View) -> Double
 pub fn SheetWay::target(Self) -> Double
+
+pub struct Showing {
+  // private fields
+}
+pub fn Showing::look_on(Self, @ui.Ctx, Int32, then? : (@ui.Look) -> @ui.Look) -> Unit
 
 #derive(Eq, @debug.Debug)
 pub(all) enum Spec {

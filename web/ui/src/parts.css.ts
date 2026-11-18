@@ -92,6 +92,33 @@ export const switchThumbSmall = style({
 /** Its switch beside the first line of the words, however many lines they take (22px, the switch's height). */
 export const switchRow = style({ display: "flex", alignItems: "flex-start", gap: "16px" });
 export const switchRowText = style({ flex: "1", display: "grid", gap: "2px", fontSize: vars.textUi, lineHeight: "22px", cursor: "pointer" });
+/** Its switch as tall as the title's line, so it is centred on that line however many the description takes. */
+export const switchRowBox = style({ flex: "none", height: "22px", display: "flex", alignItems: "center", gap: "8px" });
+/** A line among a panel's lines (an admin's detail): on their ground, as tall as one, 8 between. */
+export const switchRowCompact = style({
+  gap: "8px", minWidth: "0", minHeight: "36px", padding: "7px 12px", borderRadius: vars.rOption,
+  background: vars.canvas, color: vars.text, cornerShape: vars.cornerShape,
+});
+globalStyle(`${switchRowCompact} > ${switchRowText}`, { gap: "0" });
+/** A search field: its glass in it before the words, its clear button at its end. */
+export const search = style({ position: "relative", minWidth: "0", display: "flex" });
+export const searchClear = style({
+  position: "absolute", right: "6px", top: "50%", transform: "translateY(-50%)", width: "24px", height: "24px",
+  display: "grid", placeItems: "center", padding: "0", border: "0", borderRadius: "999px", background: "none",
+  color: vars.subtle, cursor: "pointer", cornerShape: "round", transition: `background ${vars.dur} ${vars.easeOut}`,
+  selectors: { "&:hover": { background: vars.hover, color: vars.text } },
+});
+/** Pills to narrow a list by: one row, wrapping where it is narrow. */
+export const filterPills = style({ display: "flex", gap: "4px", flexWrap: "wrap" });
+export const filterPill = style({
+  height: "28px", padding: "0 10px", border: "0", borderRadius: "999px", background: "none", color: vars.muted,
+  fontSize: vars.textUi, display: "inline-flex", alignItems: "center", gap: "6px", cursor: "pointer", cornerShape: "round",
+  transition: `background ${vars.dur} ${vars.easeOut}`,
+  selectors: {
+    "&:hover": { background: vars.hover },
+    "&[data-on]": { background: vars.selected, color: vars.text },
+  },
+});
 export const choice = style({
   border: `1px solid ${vars.lineStrong}`, borderRadius: `calc(16px * ${vars.cornerScale})`, background: vars.canvas,
   transition: `border-color ${vars.dur} ${vars.easeOut}, box-shadow ${vars.dur} ${vars.easeOut}`,
@@ -239,6 +266,16 @@ globalStyle(`${edgeTip} > *`, { transform: "translateY(-50%)" });
 globalStyle(`${empty} h2`, { margin: "10px 0 0", fontSize: vars.textTitle, color: vars.text });
 globalStyle(`${empty} p`, { margin: "0", maxWidth: "34em", fontSize: vars.textUi });
 globalStyle(`${switchRowText} ${note}`, { fontSize: vars.textMeta, lineHeight: "18px" });
+globalStyle(`${search} > svg`, { position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: vars.subtle, pointerEvents: "none" });
+/** (`[type="search"]`: over the round field's own inset, controls.css.ts's `input.input`, whichever sheet comes last;
+ * `appearance: none`: a search field drawn by the system keeps the system's own inset, under the glass) */
+globalStyle(`${search} > input[type="search"]`, {
+  appearance: "none", paddingLeft: "36px", borderColor: "transparent", background: vars.neutralBg, textOverflow: "ellipsis",
+});
+globalStyle(`${search}:has(> button) > input[type="search"]`, { paddingRight: "34px" });
+/** The browser's own clear mark is the field's button's to draw. */
+globalStyle(`${search} > input::-webkit-search-cancel-button`, { appearance: "none" });
+globalStyle(`${filterPill} > span`, { fontSize: vars.textMeta, color: vars.subtle, fontVariantNumeric: "tabular-nums" });
 globalStyle(`${select} > span:first-child`, { minWidth: "0", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
 globalStyle(`${command} code`, { flex: "1", fontSize: vars.textMeta, overflowX: "auto", whiteSpace: "nowrap" });
 globalStyle(`${dialogAlert} ${dialogLead}`, { margin: "0" });

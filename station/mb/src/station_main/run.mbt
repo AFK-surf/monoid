@@ -904,7 +904,8 @@ pub async fn run_station(host : @host.Host, argv0 : String, args : Array[String]
   ignore(
     host.rt.fork(name="agents' door", async fn() {
       let mut waited = 0
-      while held_by_hub(data) is Some(_) && !s.stopped.is_done() {
+      // (as the bus's `previous_gone`: the process before gone by its pid, PREVIOUS_LIMIT_MS at most)
+      while (previous_pid.map(pid_alive).unwrap_or(false) || held_by_hub(data) is Some(_)) && waited < 200 && !s.stopped.is_done() {
         // (still taking over, and getting on with it: said now and then, the launcher's limit far off)
         if waited % 25 == 0 {
           control.say({ "taking": Json::boolean(true) })

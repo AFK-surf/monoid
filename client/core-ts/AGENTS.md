@@ -293,7 +293,8 @@ another; the accounts' list's merge across stations and its refills.
   station's own code and to the model's `m8`), `test/lock-left-out.test.ts` (a device left out, and the asks counted),
   `test/lock-pair-modes-faults.test.ts` (approved face to face in every way there, its trusted devices failing as real
   ones do: answered within a call's 40 s, in wherever one signed it in) and `test/lock-state-invariants.test.ts` (the
-  page confirmed exactly where the station lets it in, and every state with a way out).
+  page confirmed exactly where the station lets it in, every state with a way out, and the vaults' page standing as it
+  does).
 
 ## The base stands apart
 

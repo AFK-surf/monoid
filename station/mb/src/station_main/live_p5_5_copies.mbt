@@ -20,6 +20,12 @@ async fn P55::jobs(self : P55, name : String, args : Array[Json]) -> Json {
 }
 
 ///|
+/// What the slice asks of the vault's and the devices' part (P5-4), by name, its arguments in order.
+async fn P55::ui(self : P55, name : String, args : Array[Json]) -> Json {
+  (self.bus.ui_ask.val)(name, Json::array(args))
+}
+
+///|
 fn jv_strs(xs : Array[String]) -> @jsjson.JValue {
   @jsjson.JValue::Arr(xs.map(x => of_core(Json::string(x))))
 }

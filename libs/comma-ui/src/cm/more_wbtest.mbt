@@ -56,7 +56,7 @@ test "a menu opens from its button, its rows walked by the arrow keys, Enter doi
 }
 
 ///|
-test "a dropdown's trigger opens its list; an option activated is chosen, read out as the trigger's value, and the list shut" {
+test "a dropdown's trigger (a disclosure) opens its list, a menu of radios; an option activated is chosen, read out in the trigger's name, and the list shut" {
   let chosen = @signals.signal(-1)
   let t = floating_case(fn(p, layer) {
     p.box(fn(b) {
@@ -65,14 +65,15 @@ test "a dropdown's trigger opens its list; an option activated is chosen, read o
     })
     |> ignore
   })
-  let before = t.get(Combobox, label="Appearance").value
-  t.act(Combobox, Activate, label="Appearance")
+  let before = t.get(Button, label="Appearance").expanded
+  t.act(Button, Activate, label="Appearance")
   t.run_for(floating_ms)
-  t.act(MenuItem, Activate, label="Dark")
+  let open = (t.get(Button, label="Appearance").expanded, t.all(MenuItemRadio).map(fn(s) { s.label }))
+  t.act(MenuItemRadio, Activate, label="Dark")
   t.run_for(floating_ms)
   assert_eq(
-    (before, chosen.get(), t.get(Combobox, label="Appearance").value, t.all(Listbox, label="Appearance").length()),
-    ("", 1, "Dark", 0),
+    (before, open, chosen.get(), t.query(Button, label="Appearance: Dark") is Some(_), t.all(Menu).length()),
+    (Some(false), (Some(true), ["Light", "Dark", "System"]), 1, true, 0),
   )
 }
 
@@ -277,4 +278,57 @@ test "a scroll area fades only where what it holds goes on: under its foot at it
     (edge_fades(0.0, 300.0), edge_fades(10.0, 300.0), edge_fades(150.0, 300.0), edge_fades(300.0, 300.0), edge_fades(0.0, 0.0)),
     ((0.0, 24.0), (10.0, 24.0), (24.0, 24.0), (24.0, 0.0), (0.0, 0.0)),
   )
+}
+
+///|
+test "a menu's rows are mbui's headless menu's: read out as its items, ↑ from the first round to the last, End and Home to the ends, a row pressed doing it and shutting the menu" {
+  let open = @signals.signal(false)
+  let done = Ref([])
+  let t = floating_case(fn(p, layer) {
+    let a = button_node(p, fn() { "Options" }, fn() { open.set(true) }, hierarchy=SecondaryGray)
+    menu_node(layer, a, open, fn() {
+      [
+        menu_item("Profile", fn() { done.val.push("Profile") }),
+        menu_item("Settings", fn() { done.val.push("Settings") }),
+        menu_item("Log out", fn() { done.val.push("Log out") }, danger=true),
+      ]
+    })
+  })
+  t.act(Button, Activate, label="Options")
+  t.run_for(floating_ms)
+  let items = t.all(MenuItem).map(fn(s) { s.label })
+  t.key(@ui.key_code_down)
+  t.key(@ui.key_code_up)
+  let round = t.focused().map(fn(s) { s.label })
+  t.key(@ui.key_code_home)
+  let home = t.focused().map(fn(s) { s.label })
+  t.key(@ui.key_code_end)
+  let end = t.focused().map(fn(s) { s.label })
+  t.act(MenuItem, Activate, label="Settings")
+  t.run_for(floating_ms)
+  assert_eq(
+    (items, round, home, end, done.val, open.get()),
+    (["Profile", "Settings", "Log out"], Some("Log out"), Some("Profile"), Some("Log out"), ["Settings"], false),
+  )
+}
+
+///|
+test "a toast's time stops while the pointer is over it, going on from what it had left once it leaves" {
+  let toaster = Toaster::new()
+  let t = floating_case(fn(p, layer) {
+    button_node(p, fn() { "Save" }, fn() { toaster.show("Changes saved", intent=Success) }) |> ignore
+    toaster_node(layer, toaster)
+  })
+  t.act(Button, Activate, label="Save")
+  t.run_for(floating_ms)
+  t.run_for(toast_stays / 4.0)
+  let (x, y, w, h) = t.get(Status, label="Changes saved").rect
+  t.move_to(x + w / 2.0, y + h / 2.0)
+  t.run_for(toast_stays)
+  let held = t.all(Status, label="Changes saved").length()
+  t.move_to(10.0, 690.0)
+  t.run_for(toast_stays / 2.0)
+  let left = t.all(Status, label="Changes saved").length()
+  t.run_for(toast_stays / 2.0)
+  assert_eq((held, left, t.all(Status, label="Changes saved").length()), (1, 1, 0))
 }

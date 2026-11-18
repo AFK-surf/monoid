@@ -294,3 +294,28 @@ test "an agent's message with a card in its words' place draws none of its words
   assert_true(t.find("要一个 vault 里的东西") is None)
 }
 
+
+///|
+/// A plan of a message held out of a chat's list (chat_body_node's held keys), its moments said; what it flies from and
+/// its pictures none.
+fn ag_held_plan() -> AgentOutPlan {
+  { came: 0.0, folds: true, float_at: 170.0, float_ms: 440.0, spit_end: 990.0, from: fn() { (0.0, 0.0, 0.0, 0.0) }, face_at: Ref(None), av: Ref(None), glyphs: Ref(None) }
+}
+
+///|
+test "a chat's list's held keys: an answer held out with its pieces, the line it ends kept under the row it stood under, or at the end where that is gone; nothing held, the keys as given" {
+  let ks = ["m:1", "m:2", "m:3", "m:3#1", "act:a"]
+  let held : Map[String, AgentOutPlan] = Map([])
+  let lingering : Map[String, (ChatBodyRow, String?)] = Map([])
+  assert_true(physical_equal(chat_keys_held(ks, held, lingering), ks), msg="nothing held: the keys as given")
+  held["m:3"] = ag_held_plan()
+  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
+  // (its turn said over: the line gone from the core's rows, kept under the row it stood under)
+  let row : ChatBodyRow = { entry: Entry::Newer, gap: NoGap, piece: None }
+  lingering["act:a"] = (row, chat_key_before(ks, "act:a", fn(k) { held.contains(chat_piece_of(k)) }))
+  assert_eq(lingering.get("act:a").map(fn(l) { l.1 }), Some(Some("m:2")))
+  assert_eq(chat_keys_held(["m:1", "m:2", "m:3", "m:3#1", "o:x"], held, lingering), ["m:1", "m:2", "act:a", "o:x"])
+  assert_eq(chat_keys_held(["m:1", "m:3"], held, { "act:a": (row, Some("gone")) }), ["m:1", "act:a"])
+  // (still in the core's rows: as they have it)
+  assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
+}

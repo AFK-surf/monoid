@@ -55,6 +55,7 @@ chat_card_answered_wbtest.mbt 3 3 4 2
 chat_drive_parity_wbtest.mbt 143 - - -
 chat_drop_wbtest.mbt 1 2 2 1
 chat_find_wbtest.mbt 53 34 49 17
+chat_floats_wbtest.mbt 1 2 3 1
 chat_images_told_wbtest.mbt 0 1 2 0
 chat_images_wbtest.mbt 1 2 5 1
 chat_info_wbtest.mbt 2 5 5 1
@@ -82,6 +83,7 @@ chat_nodes_read_stays_wbtest.mbt 5 7 13 3
 chat_nodes_said_at_once_wbtest.mbt 76 22 28 12
 chat_nodes_seen_whole_wbtest.mbt 0 2 2 0
 chat_nodes_sent_quote_wbtest.mbt 2 5 7 2
+chat_nodes_smooth_wbtest.mbt 2 4 6 2
 chat_nodes_told_wbtest.mbt 3 5 9 2
 chat_nodes_vs_old_wbtest.mbt 39 28 94 17
 chat_old_at_once_help_wbtest.mbt 0 0 0 0
@@ -309,6 +311,7 @@ panel_centred_tall_wbtest.mbt 5 4 9 3
 panel_centred_wbtest.mbt 3 12 16 3
 panel_fits_wbtest.mbt 2 3 4 2
 panel_form_wbtest.mbt 3 4 5 3
+panel_inline_way_wbtest.mbt 2 3 5 2
 panel_live_beside_wbtest.mbt 4 6 10 2
 panel_live_wbtest.mbt 4 5 6 2
 panel_node_wbtest.mbt 13 23 24 16
@@ -373,6 +376,7 @@ search_wbtest.mbt 2 3 6 2
 send_hold_wbtest.mbt 6 13 32 8
 send_steady_wbtest.mbt 151 1 0 0
 sent_first_wbtest.mbt 1 2 5 1
+sent_time_one_way_wbtest.mbt 2 4 6 2
 service_link_wbtest.mbt 0 1 2 0
 service_panels_wbtest.mbt 7 13 28 9
 service_wbtest.mbt 0 1 2 0

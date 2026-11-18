@@ -58,21 +58,27 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       }
     })
     let lit = q.selected(fn() { chosen.get() })
-    place_list_node(q, list_at, lines, fn(line, key, now) {
+    place_list_node(q, list_at, lines, stations_line_shape, fn(line, key, now) {
       let data = fn() { now().bind(fn(p) { p.data }) }
       // (told on only as it comes out otherwise: its line changed tells its room under it nothing)
       let more_c = @signals.computed(fn(_) { now().map(fn(p) { p.more }).unwrap_or(false) })
       let more = fn() { more_c.get() }
-      if key == "dh" {
+      // (a station's or a rig's address as its key now says it)
+      let address = fn() {
+        let k = key()
+        k.unsafe_substring(start=2, end=k.length())
+      }
+      // (its make, which never changes for a block: stations_line_shape's)
+      let made_as = stations_line_shape(@signals.untracked(key))
+      if made_as == 0 {
         @sf.list_heading_node(line, fn() { @sf.t("web-pages.devices.title") }, list_at)
-      } else if key.has_prefix("s/") {
-        let address = key.unsafe_substring(start=2, end=key.length())
+      } else if made_as == 1 {
         @sf.nav_item_node(
           line,
           list_at,
-          fn() { lit(address) },
+          fn() { lit(address()) },
           fn() { text(data(), "name") },
-          fn(_) { pick(address) },
+          fn(_) { pick(address()) },
           fn(m) {
             m.pick(fn() { (text(data(), "emoji"), text(data(), "icon")) }, fn(k, mk) {
               if @sf.has_station_mark(mk.0, mk.1) {
@@ -90,15 +96,14 @@ fn stations_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           keep_lines=2,
           more~,
         )
-      } else if key.has_prefix("r/") {
-        let address = key.unsafe_substring(start=2, end=key.length())
+      } else if made_as == 2 {
         // those that only run tasks: whose each is and how it is, in the figures' place
         @sf.nav_item_node(
           line,
           list_at,
-          fn() { lit(address) },
+          fn() { lit(address()) },
           fn() { text(data(), "name") },
-          fn(_) { pick(address) },
+          fn(_) { pick(address()) },
           fn(m) { @sf.icon_node(m, "boxes", @sf.nav_mark_side, By(fn() { @sf.theme().p.text })) |> ignore },
           fn(t) { @sf.nav_title_node(t, fn() { text(data(), "name") }) },
           lines=fn(ls) { @sfpages.rig_figures_node(ls, data) },
@@ -222,12 +227,14 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
       }
     })
     let lit = q.selected(fn() { chosen.get() })
-    place_list_node(q, list_at, lines, fn(line, key, now) {
+    place_list_node(q, list_at, lines, profiles_line_shape, fn(line, key, now) {
       let data = fn() { now().bind(fn(p) { p.data }) }
       // (told on only as it comes out otherwise: its line changed tells its room under it nothing)
       let more_c = @signals.computed(fn(_) { now().map(fn(p) { p.more }).unwrap_or(false) })
       let more = fn() { more_c.get() }
-      if key == "ov" {
+      // (its make, which never changes for a block: profiles_line_shape's)
+      let made_as = profiles_line_shape(@signals.untracked(key))
+      if made_as == 0 {
         // (what it says of all of them, told on only as that comes out otherwise: a quota changed tells it nothing)
         let summed = @signals.computed(fn(_) { @sfpages.profiles_side_summary(list()) })
         let summary = fn() { summed.get() }
@@ -250,10 +257,10 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
             })
           },
         )
-      } else if key.has_prefix("h/") {
+      } else if made_as == 1 {
         // (its words alone: a change of the account under it tells it nothing)
         @sf.list_heading_node(line, fn() { heading_words(data()) }, list_at)
-      } else if key.has_prefix("mh/") {
+      } else if made_as == 2 {
         @sf.list_heading_node(
           line,
           fn() {
@@ -261,13 +268,45 @@ fn profiles_side_node(s : @view.View, src : Source, tips : @sf.TipLayer, at : ()
           },
           list_at,
         )
-      } else if key.has_prefix("p/") {
+      } else if made_as == 3 {
         profile_side_row_node(line, src, w, tips, list_at, data, more, lit, widest)
       } else {
         machine_side_row_node(line, src, core, here, tips, list_at, data, more, widest)
       }
     })
   })
+}
+
+///|
+/// Which block of the stations' sidebar a line takes as it comes to show (place_list_node's `shape`, by its key): the
+/// devices' heading, a station, a rig, a device, each its own make.
+fn stations_line_shape(key : String) -> Int {
+  if key == "dh" {
+    0
+  } else if key.has_prefix("s/") {
+    1
+  } else if key.has_prefix("r/") {
+    2
+  } else {
+    3
+  }
+}
+
+///|
+/// Which block of the accounts' sidebar a line takes as it comes to show (place_list_node's `shape`, by its key): the
+/// overview, a heading, a machine's heading, an account, a machine's sign-in, each its own make.
+fn profiles_line_shape(key : String) -> Int {
+  if key == "ov" {
+    0
+  } else if key.has_prefix("h/") {
+    1
+  } else if key.has_prefix("mh/") {
+    2
+  } else if key.has_prefix("p/") {
+    3
+  } else {
+    4
+  }
 }
 
 ///|
@@ -607,13 +646,16 @@ fn place_side_node(
 ///|
 /// A place's sidebar's list in `l` (place_side_node's): a block a line of `lines()` by its key, made only while it
 /// shows (View::scrolls_window), each in from the sidebar's edge as its rows are (the theme's side_list) and back over
-/// the rail's empty side the list reaches into; `make` makes the line of a key in its block, given what that line is
-/// now (told on only as it comes out otherwise: a line changed tells the others nothing); the room under its last.
+/// the rail's empty side the list reaches into; `make` makes the line of a key in its block, given what says its key
+/// and what that line is now (told on only as it comes out otherwise: a line changed tells the others nothing), a block
+/// taken by the next line of its make (`shape`, by its key) to show as it no more does, its key that one's
+/// (View::scrolls_reused); the room under its last.
 fn place_list_node(
   l : @view.View,
   list_at : @sf.ListAt,
   lines : () -> Array[PlaceLine],
-  make : (@view.View, String, () -> PlaceLine?) -> Unit,
+  shape : (String) -> Int,
+  make : (@view.View, () -> String, () -> PlaceLine?) -> Unit,
 ) -> Unit {
   let held = l.keyed_by(lines, fn(p) { p.key })
   let keys = @signals.computed(fn(_) {
@@ -621,21 +663,23 @@ fn place_list_node(
     ks.push(place_list_foot)
     ks
   })
-  l.scrolls_window(
+  l.scrolls_reused(
     @view.Scroll::list(),
     fn() { keys.get() },
+    shape~,
+    reuses=fn(k) { k != place_list_foot },
     est=@signals.untracked(fn() { @sf.theme().chat_list.row_h }),
     slop=@ui.touch_slop(),
     bar=@ui.tree_scroll_bar(),
     fn(b, k) {
       b.box(fn(back) {
         back.margin(Is((-side_into_rail, 0.0, 0.0, 0.0))) |> ignore
-        if k == place_list_foot {
-          // (the room under its last)
+        // (the room under its last: never taken, so its key is the one it was made for)
+        if @signals.untracked(k) == place_list_foot {
           back.height(Is(Some(@sf.list_foot_in(list_at)))) |> ignore
         } else {
           @sf.style_node(back, fn() { @sf.theme().chat_list.side_list.then(@ui.style(h=Hug)) })
-          make(back, k, fn() { held.get(k) })
+          make(back, k, fn() { held.get(k()) })
         }
       })
       |> ignore

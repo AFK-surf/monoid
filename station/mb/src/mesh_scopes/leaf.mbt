@@ -42,7 +42,12 @@ fn Leaves::admitted(self : Leaves, conn : @door.Connection) -> Admitted? {
 
 ///|
 /// A member's connection let in (or its credential renewed) for `workspace` until `expires` (unix seconds).
+/// The device's control stream sends its credential again on every ping (5 s): the same one changes nothing, so its
+/// view is not written again; a renewal or another workspace is.
 pub fn Leaves::authenticated(self : Leaves, conn : @door.Connection, workspace : String, expires : Int64) -> Unit {
+  if self.admitted(conn) is Some(prev) && prev.workspace == workspace && prev.expires == expires {
+    return
+  }
   // (those of connections gone let go first)
   let kept = self.members.filter(a => !(a.conn.is_closed)() && !physical_equal(a.conn, conn))
   self.members.clear()
@@ -64,9 +69,17 @@ pub fn Leaves::view(self : Leaves, workspace : String) -> Json raise {
   }
   let scope = workspace_scope(self.sync.crypto, origin, workspace)
   let policy = self.sync.directory.policy(scope)
-  let peers = self.sync.directory
+  // No peers until this station's own scope is configured and its own descriptor is among them: a device given the
+  // others would ask this station to issue attachments it cannot yet, and be refused. Its publishing changes the
+  // scope, so `follow` writes the peers then.
+  let records = if self.sync.directory.ready(scope, self.endpoint.id) {
+    self.sync.directory
     .records(scope)
     .map(a => field((try { @json.parse(text(field(a, "body")).unwrap_or("")) } catch { _ => Json::null() }), "descriptor"))
+  } else {
+    []
+  }
+  let peers = leaf_peers(records, self.endpoint.id)
   {
     "scope": Json::string(scope),
     "transit": Json::boolean(false),
@@ -166,10 +179,7 @@ pub async fn Leaves::attach(self : Leaves, conn : @door.Connection, workspace : 
       Array(ps) =>
         ps
         .iter()
-        .find_first(p => match field(field(p, "binding"), "endpoint") {
-          Array(_) as e => hex_of_json_bytes(e) == self.endpoint.id
-          _ => false
-        })
+        .find_first(p => is_endpoint(p, self.endpoint.id))
         .map(p => field(p, "binding"))
       _ => None
     }
@@ -184,7 +194,7 @@ pub async fn Leaves::attach(self : Leaves, conn : @door.Connection, workspace : 
     let policy_of = (j : Json) => Json::array([field(j, "scope"), field(j, "relayUrls"), field(j, "globalRelays")]).stringify()
     let ok = !(conn.is_closed)() &&
       (match self.admitted(conn) {
-        Some(a) => physical_equal(a, m)
+        Some(a) => still_admitted(a.workspace, a.expires, workspace, m.expires)
         None => false
       }) &&
       (match latest {
@@ -206,6 +216,34 @@ pub async fn Leaves::attach(self : Leaves, conn : @door.Connection, workspace : 
       (self.endpoint.detach)({ "scope": Json::string(scope), "attachmentId": field(attachment, "id") })
       raise e
     }
+  }
+}
+
+///|
+/// The peers a device is given of `records` (those of a scope this station has configured): none until this
+/// station's own (`id`) is among them.
+fn leaf_peers(records : Array[Json], id : String) -> Array[Json] {
+  if records.iter().any(p => is_endpoint(p, id)) {
+    records
+  } else {
+    []
+  }
+}
+
+///|
+/// Whether a connection admitted for `workspace` until `expires` when an attachment was asked still is, now admitted
+/// for `now_workspace` until `now_expires`: a ping with the same credential, or its renewal, is no change; another
+/// workspace or a shorter credential is.
+fn still_admitted(now_workspace : String, now_expires : Int64, workspace : String, expires : Int64) -> Bool {
+  now_workspace == workspace && now_expires >= expires
+}
+
+///|
+/// Whether descriptor `p` is of endpoint `id`.
+fn is_endpoint(p : Json, id : String) -> Bool {
+  match field(field(p, "binding"), "endpoint") {
+    Array(_) as e => hex_of_json_bytes(e) == id
+    _ => false
   }
 }
 

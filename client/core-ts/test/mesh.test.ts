@@ -20,6 +20,7 @@ import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIR
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
+import { NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -28,9 +29,10 @@ import { Status } from "../src/status.ts";
 import { FakeHost } from "../src/testing.ts";
 import { Tracer } from "../src/trace.ts";
 import { hex } from "../src/util.ts";
+import { PAIR_ALPN } from "../src/pair.ts";
 import { Wake, WakingHost, Wakes } from "../src/wake.ts";
 import { Station } from "./mesh-station.ts";
-import { PATH_IDLE_MS, type RelaySpec, SimNet, SimTime } from "./sim-iroh.ts";
+import { PATH_IDLE_MS, type RelaySpec, type SimConnection, SimNet, SimTime } from "./sim-iroh.ts";
 import { seeds } from "./sim-seeds.ts";
 
 holdLanguage();
@@ -1042,6 +1044,104 @@ sim("a_wake_while_a_try_goes_unanswered_opens_one_beside_it", async (s) => {
   await close(s, station, mesh);
 });
 
+/// A connection of the mesh's user's on the main endpoint (views/pair.ts: a new device dialling a trusted one, and the
+/// trusted one taking it) and a peer's end of it, both open, each heard by the other.
+async function talks(s: Sim, mine: IrohConnection, theirs: SimConnection, what: string) {
+  assert.equal(mine.closeReason(), null, `${what}: closed here`);
+  assert.equal(theirs.closeReason(), null, `${what}: closed there`);
+  const gather = async (read: () => Promise<Uint8Array | null>, n: number) => {
+    let got = "";
+    while (got.length < n) {
+      const b = await s.settle(read());
+      if (b === null) break;
+      got += text(b);
+    }
+    return got;
+  };
+  const here = await s.run(mine.openBi());
+  await s.run(here.write(new TextEncoder().encode(`${what}?`)));
+  const there = await s.settle(theirs.acceptBi());
+  assert.ok(there !== null, `${what}: no stream came`);
+  assert.equal(await gather(() => there.read(), what.length + 1), `${what}?`);
+  await s.settle(there.write(new TextEncoder().encode(`${what}!`)));
+  assert.equal(await gather(() => s.runner.run(here.read()), what.length + 1), `${what}!`);
+}
+
+/// A device paired with nothing open: every station refused or not answering (a new device not yet approved), its one
+/// use of the main endpoint the pairing's connections. A dial left unanswered (`#stuck`) must not bind it anew beneath
+/// them, neither as a station is dialled again nor as a wake tries one beside it (`#hedge`): the old one closed would
+/// cut the code being typed.
+sim("a_pairings_connections_keep_the_main_endpoint_while_no_link_is_open", async (s) => {
+  const lines: string[] = [];
+  s.host.recorder = { on: () => true, line: (l) => lines.push(l) };
+  try {
+    const relay = s.relay("https://a.relay.test/");
+    const station = await s.stationOn(relay, []);
+    const taken: IrohConnection[] = [];
+    const mesh = await s.run(Mesh.make({ ...env(s), takes: [PAIR_ALPN], incoming: (c) => void taken.push(c) }, [relay]));
+    const peer = s.net.bindStation({ secretKey: s.net.key(), alpns: [PAIR_ALPN], relayUrls: [relay] });
+    await s.settle(peer.online());
+    const out = await s.run(mesh.endpoint().connect({ id: peer.id(), relays: [relay] }, PAIR_ALPN, []));
+    const outThere = (await s.settle(peer.accept()))!;
+    const inThere = await s.settle(peer.connect({ id: mesh.endpoint().id(), relays: [relay] }, PAIR_ALPN));
+    await s.until(() => taken.length === 1);
+    const inHere = taken[0]!;
+    station.unanswered(1);
+    const failed = await s.run(mesh.link(station.id(), grants("ok", { n: 0 }))).then(() => null, (e) => e as CoreError);
+    assert.ok(failed !== null, "the dial left unanswered failed");
+    // Dialled again, and woken while a try goes unanswered: on the endpoint they are on.
+    station.unanswered(1);
+    const opening = s.runner.run(mesh.link(station.id(), grants("ok", { n: 0 })));
+    await s.time.pass(50);
+    s.wakes.wake(network(s.host));
+    await s.settle(opening);
+    assert.ok(!lines.some((l) => /^conn rebind: .* -> bound$/.test(l)), lines.filter((l) => l.startsWith("conn rebind")).join("\n"));
+    await talks(s, out, outThere, "dialled");
+    await talks(s, inHere, inThere, "taken");
+    await close(s, station, mesh);
+    await s.settle(peer.close());
+  } finally {
+    s.host.recorder = undefined;
+  }
+});
+
+/// Told other relays (`retune`), the main endpoint is bound anew and dialled on at once, while the one before goes on
+/// carrying the pairing's connections on it till they end, then closes.
+sim("an_endpoint_bound_over_by_retune_closes_once_the_pairings_connections_on_it_end", async (s) => {
+  const lines: string[] = [];
+  s.host.recorder = { on: () => true, line: (l) => lines.push(l) };
+  try {
+    const a = s.relay("https://a.relay.test/");
+    const b = s.relay("https://b.relay.test/");
+    const taken: IrohConnection[] = [];
+    const mesh = await s.run(Mesh.make({ ...env(s), takes: [PAIR_ALPN], incoming: (c) => void taken.push(c) }, [a]));
+    const peer = s.net.bindStation({ secretKey: s.net.key(), alpns: [PAIR_ALPN], relayUrls: [a] });
+    await s.settle(peer.online());
+    const old = s.net.endpoint(mesh.endpoint().id())!;
+    const out = await s.run(mesh.endpoint().connect({ id: peer.id(), relays: [a] }, PAIR_ALPN, []));
+    const outThere = (await s.settle(peer.accept()))!;
+    const inThere = await s.settle(peer.connect({ id: mesh.endpoint().id(), relays: [a] }, PAIR_ALPN));
+    await s.until(() => taken.length === 1);
+    const inHere = taken[0]!;
+    mesh.retune([b], []);
+    await s.until(() => lines.some((l) => /^conn rebind: relays retold -> bound$/.test(l)));
+    assert.notEqual(s.net.endpoint(mesh.endpoint().id()), old, "bound anew");
+    assert.deepEqual(mesh.endpoint().relayStatus().map((r) => r.url), [b]);
+    assert.ok(!old.isClosed(), "the endpoint before closed beneath the pairing");
+    await talks(s, out, outThere, "dialled");
+    await talks(s, inHere, inThere, "taken");
+    out.close(0, "done");
+    await s.time.pass(1);
+    assert.ok(!old.isClosed(), "closed while a connection on it was open");
+    inHere.close(0, "done");
+    await s.until(() => old.isClosed());
+    await s.run(mesh.close());
+    await s.settle(peer.close());
+  } finally {
+    s.host.recorder = undefined;
+  }
+});
+
 // ── relays ──
 
 const sameRelay = (a: string | null, b: string) => a !== null && new URL(a).host === new URL(b).host;
@@ -1326,6 +1426,62 @@ sim("a_read_let_go_of_before_its_answer_stops_the_station_sending_it", async (s)
   await close(s, station, mesh);
 });
 
+/// A read slow on its way is asked on another as well; one kept current in the background (a batch of the history, a
+/// file brought after all else: requests.ts NO_HEDGE) is never asked twice at once, and the mark goes to no station.
+/// (Over a mesh whose ways are given here: its link slow until let go, another way at hand.)
+sim("a_read_in_the_background_slow_on_its_way_is_not_asked_on_another_as_well", async (s) => {
+  const asked: string[] = [];
+  let go: () => void = () => {};
+  const slow = Effect.callback<void>((resume) => {
+    go = () => resume(Effect.void);
+  });
+  const wayOf = (name: string, answer: Effect.Effect<void>) => ({
+    request: (h: RequestHead) => Effect.andThen(
+      Effect.sync(() => void asked.push(`${name} ${h.path}${h.headers.some(([k]) => k.toLowerCase() === NO_HEDGE) ? " marked" : ""}`)),
+      Effect.as(answer, { status: 200, headers: [], body: { take: Effect.succeed(null) }, cancel: () => {} }),
+    ),
+    path: () => "direct",
+    via: () => null,
+    conn: { closeReason: () => null },
+    closed: () => null,
+  }) as unknown as Link;
+  const main = wayOf("main", slow);
+  const other = wayOf("other", Effect.void);
+  const mesh = {
+    link: () => Effect.succeed(main), hedgeAfter: () => HEDGE_FLOOR_MS, standby: () => other, replaced: () => Effect.never,
+    now: () => s.time.now(), outran: () => {}, dropWay: () => {},
+  } as unknown as Mesh;
+  const status = new Status(s.host, s.runner);
+  const wire = new MeshWire({ mesh: () => Effect.succeed(mesh), meshNow: () => mesh, credentials: () => grants("ok", { n: 0 }), relays: () => [], status: () => status });
+  const addr = StationAddr.parse("w/st");
+  const ask = (h: RequestHead) => s.runner.run(Effect.scoped(Effect.map(wire.request(addr, h, new Uint8Array()), (r) => r.status)));
+  assert.equal(await s.settle(ask({ method: "GET", path: "/admin/api/slow", headers: [] })), 200);
+  assert.deepEqual(asked, ["main /admin/api/slow", "other /admin/api/slow"], "a read in sight: asked on the other way too");
+  asked.length = 0;
+  const batch = ask({ method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"], ["accept", NDJSON]] });
+  await s.time.pass(10 * HEDGE_FLOOR_MS);
+  assert.deepEqual(asked, ["main /admin/api/batch"], "in the background: asked once, the mark the wire's alone");
+  go();
+  assert.equal(await s.settle(batch), 200);
+});
+
+/// One in the background whose way is gone under it is still asked again on the link put in its place.
+sim("a_read_in_the_background_whose_link_is_replaced_is_answered_on_the_new_one", async (s) => {
+  const { mesh, station } = await setup(s);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(`w/${station.id()}`);
+  const batch: RequestHead = { method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"]] };
+  const ask = (h: RequestHead) => s.runner.run(Effect.scoped(Effect.flatMap(wire.request(addr, h, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.status))));
+  assert.equal(await s.settle(ask(batch)), 200);
+  station.deadBelow = station.conns.length;
+  const asked = ask(batch);
+  await s.time.pass(50);
+  s.wakes.wake(network(s.host));
+  assert.equal(await s.settle(asked), 200);
+  assert.equal(station.conns.length, 2);
+  await close(s, station, mesh);
+});
+
 /// Two ways as good as each other: the requests are not moved back and forth between them.
 sim("ways_as_good_as_each_other_are_not_swapped", async (s) => {
   const a = s.relay("https://a.relay.test/", { station: { ms: 20 } });
@@ -1504,6 +1660,52 @@ sim("a_station_on_the_lan_is_dialled_at_its_lan_addresses_and_the_requests_stay_
   assert.ok(direct(mesh, id), JSON.stringify(mesh.measured(id)));
   assert.ok(mesh.moves(id) - moves <= 1, `moved ${mesh.moves(id) - moves} times in ten minutes`);
   assert.equal((await request(s, mesh.current(id)!, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
+/// A device that reached a station on its LAN once, its next run dialling it with every relay a dozen seconds away.
+async function rememberedOnLan(s: Sim, deviceMs: number) {
+  const { station, mesh, id } = await onLan(s);
+  station.lan = station.addr().ips;
+  await reach(s, mesh, id);
+  await s.until(() => s.host.storage.has(STATION_MESH.addressesKey));
+  await s.run(mesh.close());
+  const [a, b] = mesh.relays as [string, string];
+  s.relay(a, { device: { ms: deviceMs }, station: { ms: 40 } });
+  s.relay(b, { device: { ms: deviceMs }, station: { ms: 10 } });
+  const next = await s.run(Mesh.make(env(s), [a, b]));
+  return { station, mesh: next, id };
+}
+
+/// 2026-11-18: the web and Android, their stations' LAN addresses kept from before, off that LAN (or a web page, which
+/// dials no address), with every relay slow to get onto: each dial counted CONNECT_TIMEOUT_MS from its start as one at
+/// addresses, ran out before the endpoint was on a relay, and the next bound it anew, for up to 25 minutes. Given
+/// relays, its time counts once it is on one, and the first dial is the link.
+sim("a_device_off_the_lan_it_kept_addresses_of_waits_for_its_relays_before_its_dial_runs_out", async (s) => {
+  const { station, mesh, id } = await rememberedOnLan(s, 3_000);
+  s.net.away = true;
+  const endpoint = mesh.endpoint();
+  const tries = s.net.tries.length;
+  const started = s.time.now();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })), 60_000);
+  // Onto a relay (4 legs of 3 s) is past CONNECT_TIMEOUT_MS by itself.
+  assert.ok(s.time.now() - started > CONNECT_TIMEOUT_MS, `reached ${s.time.now() - started} ms after it was asked`);
+  assert.equal(mesh.endpoint(), endpoint, "the endpoint was not bound anew");
+  assert.ok(s.net.tries.slice(tries).some((t) => t.to === id && t.ips), "the addresses it kept were dialled");
+  assert.equal(s.net.tries.slice(tries).filter((t) => t.to === id && t.ips).length, 1, "dialled once at them");
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
+  await close(s, station, mesh);
+});
+
+/// The same device back on that LAN, no relay reached yet: the addresses it kept answer, and nothing waits for a relay.
+sim("a_device_on_the_lan_it_kept_addresses_of_is_linked_there_before_any_relay", async (s) => {
+  const { station, mesh, id } = await rememberedOnLan(s, 60_000);
+  const started = s.time.now();
+  const link = await s.run(mesh.link(id, grants("ok", { n: 0 })), 60_000);
+  assert.ok(s.time.now() - started < 5_000, `reached ${s.time.now() - started} ms after it was asked`);
+  assert.ok(mesh.endpoint().relayStatus().every((r) => !r.connected), JSON.stringify(mesh.endpoint().relayStatus()));
+  assert.equal(link.path(), "direct");
+  assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
   await close(s, station, mesh);
 });
 

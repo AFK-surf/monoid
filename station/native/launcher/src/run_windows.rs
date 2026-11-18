@@ -195,7 +195,7 @@ impl Os for System {
         let name = format!(r"\\.\pipe\stillfail-launcher-{}-{}", std::process::id(), self.next);
         let pipe = Pipe::create(&name, &self.security).map_err(|error| io::Error::new(error.kind(), format!("{name}: {error}")))?;
         let app = &self.options.app;
-        let mut command = crate::station(app).command();
+        let mut command = crate::station_of(app, &self.options.data).command();
         // Node listens where it may (127.0.0.1, any port) and says where once it serves; the launcher's ports, which
         // agents and the CLI are told, it is given to say as its own.
         let ports = format!("{},{}", self.ports.0, self.ports.1);
@@ -233,7 +233,7 @@ impl Os for System {
     }
 
     fn program(&self) -> String {
-        crate::station(&self.options.app).program.display().to_string()
+        crate::station_of(&self.options.app, &self.options.data).program.display().to_string()
     }
 
     fn route(&mut self, name: &str, port: Option<u16>) {

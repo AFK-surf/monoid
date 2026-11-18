@@ -845,7 +845,11 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
       }
       return 0;
     case WM_ENTERSIZEMOVE: sizing = 1; SetTimer(h, 1, 16, NULL); return 0;
-    case WM_EXITSIZEMOVE: sizing = 0; KillTimer(h, 1); return 0;
+    case WM_EXITSIZEMOVE:
+      sizing = 0;
+      KillTimer(h, 1);
+      place_keep();
+      return 0;
     case WM_TIMER:
       // (inside the system's move or size loop, its window's frames: the others' as the loop ends)
       if (wake_at >= 0 && mb_now_ms() >= wake_at) {
@@ -970,7 +974,7 @@ static LRESULT wndproc_here(HWND h, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_IME_ENDCOMPOSITION:
       if (ws->marked_len) ime_compose(NULL, 0, 0);
       return 0;
-    case WM_DESTROY: exit(0);
+    case WM_DESTROY: place_keep(); exit(0);
   }
   return DefWindowProcW(h, msg, wp, lp);
 }
@@ -1119,10 +1123,12 @@ void mb_host_run(moonbit_string_t title, mb_frame_fn frame, mb_pointer_fn pointe
   // (SWP_FRAMECHANGED: its frame asked for again, an inset window's without the title bar: WM_NCCALCSIZE)
   SetWindowPos(hwnd, NULL, 0, 0, r.right - r.left, r.bottom - r.top, SWP_NOMOVE | SWP_NOZORDER | SWP_FRAMECHANGED);
   ImmAssociateContextEx(hwnd, NULL, 0);  // no input method until an editor has focus
+  // (where it was last left, an app's: win_life.h place_put_back)
+  int show = place_put_back();
   if (!mb_render_init(hwnd)) exit(1);
   // (held: out of sight till the app shows it, mb_host_window_show; shown at once where DWM cannot cloak it)
   if (window_held && !window_shown && !cloak(hwnd, TRUE)) window_shown = 1;
-  ShowWindow(hwnd, SW_SHOW);
+  ShowWindow(hwnd, show);
   life_start(t);
   files_start();
   free(given);

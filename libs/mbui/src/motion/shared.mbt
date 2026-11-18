@@ -23,3 +23,19 @@ pub fn flight_by(spec : Spec) -> @view.Flight {
     },
   }
 }
+
+///|
+/// A flight as long as `ms_of` says for one `far` points long (its length scaled to how far it goes, as a Move's is,
+/// on a curve of its own), on `ease` after `delay`: a way from 0 to 1, said from moment 0, there at once with motion
+/// reduced (Way::go). What goes with what flies reads how far along it is where it is drawn (@view's
+/// View::flight_across_now), never a way and a length of its own.
+pub fn flight_scaled(ms_of : (Double) -> Double, ease~ : @ui.Ease, delay? : Double = 0.0) -> @view.Flight {
+  {
+    way: fn(far) {
+      let w = Way::new(0.0)
+      w.go(1.0, tween(dmax(0.0, ms_of(far)), ease~, delay~), at=0.0)
+      let end = w.ends_at()
+      (if end < 0.0 { 0.0 } else { end }, fn(ms) { w.value_at(ms) })
+    },
+  }
+}

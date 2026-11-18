@@ -32,6 +32,7 @@ import { runnerBinary, type RunnerInfo } from "./runner.ts";
 import { withShellCommand } from "../ops/shell-path.ts";
 import type { AgentsHost } from "./mb-agents.ts";
 import { TOOL_SERVERS, cleanEnv, unreachable, uuid, type BackgroundTask, type OpenOptions, type Profile } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 import { wall } from "../ops/fibers.ts";
 import { peerHttpBase } from "../tools/http.ts";
 import { Said, stationLang, tr } from "../ops/i18n.ts";
@@ -320,7 +321,7 @@ export class ClaudeDriver extends OwnProcessDriver<ClaudeSession> {
     const sessionId = options.resume ?? uuid();
     const mcpConfig = options.textOnly ? { mcpServers: {} } : { mcpServers: { stillfail: { type: "http", url: options.mcpUrl, headers: { Authorization: `Bearer \${${MCP_TOKEN_VAR}}` } } } };
     const model = options.model ?? profileModel(options.profile);
-    const env = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) };
+    const env = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "claude"), options.route) });
     const tui = !options.textOnly && options.tui === true;
     const args: string[] = tui ? [] : ["-p", "--input-format", "stream-json", "--output-format", "stream-json", "--verbose", "--include-partial-messages"];
     if (!options.textOnly) args.push("--dangerously-skip-permissions");

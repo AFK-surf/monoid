@@ -129,14 +129,15 @@ pub fn check_mark_node(
   let narrow = look_node(parent) is Narrow
   let at = panel_in_of(parent)
   let card = on_card_node(parent)
-  let reach = !narrow && part_of(parent).list && in_pane_node(parent) && at.words == 0.0
   // (a narrow row in a panel is round where it stands in from the panel's sides (panel_row_corner): its mark stands
   // out of its corner there, as on a card)
   let panel_round = match panel_row_at(at, own=card_pad - corner_inset, card~) {
     Some(p) => narrow && !card && !at.small && panel_row_corner(at, p.out) > 0.0
     None => false
   }
-  let inset = if (narrow && !card && !at.small && !panel_round) || reach {
+  // (a row of a pane's list on a card reaching out to its edge is round all the same, row_corner, corner_inset in from
+  // the card's corner: its mark stands out of both as anywhere else)
+  let inset = if narrow && !card && !at.small && !panel_round {
     0.0
   } else {
     let pad = match panel_row_at(at, own=if narrow { card_pad - corner_inset } else { desk_list_out }, card~) {

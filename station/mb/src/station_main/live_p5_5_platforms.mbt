@@ -930,6 +930,7 @@ async fn P55::start_group(self : P55, options : @connects_hub.ConnectsOptions) -
     signer,
   })
   self.closing(async fn() { group.close() })
+  p55_group_parts.val = Some(group)
   // (the overview says a station has the group connect, which the pages offer only then)
   bus.parts.overview("group", async fn(_viewer, _lang) { Json::boolean(true) })
   group.connects

@@ -34,8 +34,9 @@ import { checkLock } from "../src/vault/lock-check.ts";
 import { OAUTH_WAIT_MS, SLACK, handedTo, stateOf as oauthState } from "../src/vault/oauth.ts";
 import { sha256 } from "@noble/hashes/sha2.js";
 import { checkWith, forgetVerifiedHere, keepVerified } from "../src/vault/verified.ts";
-import { BOX_KEY, BOX_PUB, UNLOCK_MS, levelVaults, tookOut, waitingAs, waitingChecks } from "../src/views/vault.ts";
-import { handOver, inForceOf, pendingHeld, read as readLock, roster } from "../src/views/lock.ts";
+import { BOX_KEY, BOX_PUB, UNLOCK_MS, levelVaults, tookOut, vaultCome, vaultsView, waitingAs, waitingChecks } from "../src/views/vault.ts";
+import { handOver, inForceOf, leftIn, pendingHeld, read as readLock, roster } from "../src/views/lock.ts";
+import { world as pairWorld } from "./lock-pair-world.ts";
 import { subscribe, call } from "./helpers.ts";
 import { withoutMesh } from "./lock-rig.ts";
 import { type Answers, base, entry, started, stationLater, stationReplies, status } from "./station-fixture.ts";
@@ -906,6 +907,75 @@ test("a chat's card of an agent's request comes answered with its post, from the
   const there = await w.watch(2, { topic: "chat", station: "ws/st", thread: 7 });
   assert.deepEqual(there().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => m.card.vaultAsk.answer), ["elsewhere", "elsewhere"]);
   w.core.close();
+});
+
+test("a device a moved workspace's station left out: the vaults' page says it is not confirmed (with the way to 安全), never that the members are syncing; the calls refuse it as one not trusted", async () => {
+  // (the station gives a device it refuses none of the logs and bodies the state is made of: the state here waits, for
+  // good, on what it will never be given; 2026-11-18, every device not approved held on 正在同步… with nothing to press)
+  const w = await pairWorld("admit");
+  await w.sync();
+  assert.notEqual(leftIn(w.inner, "ws"), null, `told it is left out: ${w.why()}`);
+  const v = vaultsView(w.inner, "ws") as any;
+  assert.deepEqual([v.locked, v.canSign, v.stateText ?? null, v.confirmText ?? null], [true, false, null, null], JSON.stringify(v).slice(0, 300));
+  for (const name of ["vault.setup", "vault.create"]) {
+    const out = await w.timed(name, { workspace: "ws", ...(name === "vault.create" ? { name: "x" } : {}) });
+    assert.equal(out.answer?.error?.code, "vault_not_signer", `${name}: ${JSON.stringify(out.answer)}`);
+  }
+});
+
+test("a lock that does not check out on this device is never the plain library: the vaults' page in safe mode signing nothing, a chat's request to keep a secret not approved as a plain one", async () => {
+  const r = await rig(false, false, cardsInChat());
+  // (its genesis's signature broken: checkLock refuses the chain, `vault_lock_invalid`)
+  const [g] = r.lock.entries as Entry[];
+  r.lock.entries[0] = { ...g!, sig: { ...g!.sig!, sig: "00".repeat(64) } } as never;
+  r.putLock();
+  const page = await r.watch(3, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual([page().locked, page().plain ?? false, page().canSign, page().stateText ?? null], [true, false, false, null], JSON.stringify(page()).slice(0, 300));
+  const chat = await r.watch(2, { topic: "chat", station: "ws/st", thread: 7 });
+  assert.deepEqual(chat().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => m.card.vaultAsk.answer), ["approve", "setUp"]);
+  // Nothing read of the plain library, nothing written to it.
+  const plainItems = await r.watch(4, { topic: "vaultItems", workspace: "ws", vault: "plain" });
+  assert.deepEqual(plainItems().items, []);
+  await fails(r.ask("vault.putItem", { vault: "plain", plain: { kind: "token", name: "x", fields: { value: "y" } }, listing: { name: "x", kind: "token", modes: ["proxy"], hosts: ["api.github.com"] } }), "vault_locked");
+  r.core.close();
+  // A web page: approved elsewhere, as in safe mode.
+  const w = await rig(true, false, cardsInChat());
+  w.lock.entries[0] = { ...w.lock.entries[0]!, sig: { ...(w.lock.entries[0] as Entry).sig!, sig: "00".repeat(64) } } as never;
+  w.putLock();
+  const there = await w.watch(2, { topic: "chat", station: "ws/st", thread: 7 });
+  assert.deepEqual(there().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => m.card.vaultAsk.answer), ["elsewhere", "elsewhere"]);
+  w.core.close();
+});
+
+test("safe mode on, a request a station says is the plain library's (one to keep, typed in): refused, what was typed sent nowhere", async () => {
+  const r = await rig();
+  r.putLock();
+  r.st.requests.push({ id: "r_t", ws: "ws", vault: "plain", item: "i_01JAKEEP0000000000000TYPED", session: "ember:s", chat: "", mode: "env", reason: "go", box: "", at: 1000, status: "pending", owner: "me@x.com", save: { kind: "token", name: "Go", modes: ["env"], hosts: [], typed: true } } as Request);
+  await fails(r.ask("vault.approve", { request: "r_t", scope: "once", typed: { secret: "sk-go" } }), "vault_locked");
+  await fails(r.ask("vault.deny", { request: "r_t" }), "vault_locked");
+  assert.deepEqual(r.st.plainSaves, []);
+  // (nor listed among the vaults' requests)
+  const vaults = await r.watch(1, { topic: "vaults", workspace: "ws" });
+  assert.deepEqual(vaults().requests.map((x: any) => x.id), []);
+  r.core.close();
+});
+
+test("a chat open before the lock it is answered by: as the lock's state comes (vaultCome), its cards are answered again with no vault written, on a web page and in an app", async () => {
+  for (const web of [false, true]) {
+    const r = await rig(web, false, cardsInChat());
+    const chat = await r.watch(2, { topic: "chat", station: "ws/st", thread: 7 });
+    const answers = () => chat().messages.filter((m: any) => m.card?.vaultAsk).map((m: any) => m.card.vaultAsk.answer);
+    // (no lock yet: the plain library's, approved anywhere)
+    assert.deepEqual(answers(), ["approve", "approve"], `${web ? "web" : "app"}: before`);
+    // The lock comes as a moved workspace's state does: made anew of what is held, the vaults told (views/lock.ts
+    // `inForceOf`), nothing of the vaults written.
+    r.core.inner.data.put("lock", "ws", r.lock);
+    vaultCome(r.core.inner, "ws");
+    await r.host.time.pass(200);
+    r.take();
+    assert.deepEqual(answers(), web ? ["elsewhere", "elsewhere"] : ["approve", "setUp"], `${web ? "web" : "app"}: after`);
+    r.core.close();
+  }
 });
 
 test("a_chat_with_vault_cards_opens_checking_no_signature_once_this_device_checked_them_the_app_started_anew", async () => {

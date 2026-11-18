@@ -204,3 +204,14 @@ pub fn failure_rest(text : String) -> String {
   }
   "model"
 }
+
+///|
+/// Where the station's tools were for a process taken up after a crash (`options.mcpUrl || null`): none where the
+/// station's door was not open yet ("") as it took it up, so the address the door opens on is not taken for another
+/// one the process was told (`Actors::tools_at`).
+fn crashed_tools_url(o : JValue?) -> String? {
+  match str_at(o, "mcpUrl") {
+    Some(u) if u != "" => Some(u)
+    _ => None
+  }
+}

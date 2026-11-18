@@ -637,6 +637,7 @@ fn Scroll::glide_on(self : Scroll, v : View, t : Double, to : Double, most : Dou
   (self.settle_off)()
   self.settle_off = fn() {  }
   if total <= 0.0 {
+    self.set_notch_landed(true)
     self.notch.set(None)
     self.x.set(to)
     self.list_settles(v, t)
@@ -668,6 +669,7 @@ fn Scroll::list_settles(self : Scroll, v : View, t : Double) -> Unit {
     }
     self.fling.set(None)
     self.past.set(None)
+    self.set_notch_landed(notch is Some(_))
     self.notch.set(None)
     let top = @signals.untracked(fn() { self.top_now() })
     match (flung, notch) {

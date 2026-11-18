@@ -13,7 +13,7 @@ import { parseTopic, type Topic } from "../src/protocol.ts";
 import { EVICT_AFTER_MS } from "../src/store.ts";
 import { FakeHost } from "../src/testing.ts";
 import { work, workSince, type Work } from "../src/work.ts";
-import { CHAT, SIZE, fixture, more, type Size } from "./real-size.ts";
+import { CHAT, PLAIN_WORKSPACE, SIZE, fixture, more, type Size } from "./real-size.ts";
 import { AGAIN, ASKED, CAUSES, LONG, WINDOWS, held, topicOf, type Cause } from "./real-size-asked.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -262,7 +262,7 @@ export const INTERACTIONS: Record<string, { before: Ask[]; asks: Ask[] }> = {
   "place stations": { before: [...own(), chats(ws)], asks: [[{ topic: "stations", scope: ws }, true]] },
   "place profiles": { before: [...own(), chats(ws)], asks: [[{ topic: "profiles", scope: ws }, true]] },
   "place connects": { before: [...own(), chats(ws)], asks: [[{ topic: "stations", scope: ws }, true], [{ topic: "connects", scope: ws, mine: false }, true]] },
-  "place vault": { before: [...own(), chats(ws)], asks: [[{ topic: "vaults", workspace: ws }, true]] },
+  "place vault": { before: [...own(), chats(ws)], asks: [[{ topic: "vaults", workspace: PLAIN_WORKSPACE }, true]] },
   "place usage": { before: [...own(), chats(ws)], asks: [[{ topic: "usage", scope: ws, days: 7 }, true]] },
   "place archive": { before: [...own(), chats(ws)], asks: [[{ topic: "archive", scope: ws, limit: 60 }, true]] },
 };

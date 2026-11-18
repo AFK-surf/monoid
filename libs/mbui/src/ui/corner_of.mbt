@@ -36,12 +36,13 @@ pub fn tree_corner_roots_now() -> CornerRoots {
 
 ///|
 /// The theme the window's tree's nodes are drawn in (what the old views are built in for the window's width), as the
-/// frame began (view_frame); told as it changes (another width's, the system's dark coming), what read it worked out
-/// again.
+/// frame began (view_frame) and as the old views set it building it (view_told_as_built); told as it changes (another
+/// width's, the system's dark coming, one the app set), what read it worked out again; one made anew as it was is no
+/// change.
 // kept across runs: set as each frame begins
 let tree_theme_said : Ref[@signals.Signal[Theme?]] = Ref(@signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
-    (Some(x), Some(y)) => physical_equal(x, y)
+    (Some(x), Some(y)) => physical_equal(x, y) || x == y
     (None, None) => true
     _ => false
   }

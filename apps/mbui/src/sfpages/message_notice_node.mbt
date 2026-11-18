@@ -114,15 +114,13 @@ fn notice_pill_node(
 ) -> Unit {
   let failed = fn() { m().notice_failed }
   let ink = fn() -> @ui.Color { if failed() { Danger } else { Fg } }
-  v.box(fn(p) {
+  // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
+  // press_stays)
+  @sf.action_box_node(v, fn() { notice_label(m()) }, expanded=open, fn(_) {
+    let ts = @signals.untracked(m).ts
+    opened[ts] = !opened.get(ts).unwrap_or(false)
+  }, fn(p) {
     @sf.style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
-    @sf.presses_node(p, fn() {
-      let ts = @signals.untracked(m).ts
-      opened[ts] = !opened.get(ts).unwrap_or(false)
-    })
-    // (saying whether it is open: pressed, it stays where it was pressed as it opens or closes, the framework's
-    // press_stays)
-    p.says(By(fn() { Some(@view.said(Button, label=notice_label(m()), expanded=open())) })) |> ignore
     p.box(fn(line) {
       @sf.style_node(line, fn() { if open() { notice_line_open } else { notice_line } })
       line.box(fn(room) {
@@ -363,9 +361,7 @@ fn notice_action_node(
       @sf.words_node(d, fn() { "·" }, fn() { if ink() == Danger { notice_dot_failed } else { notice_dot } }) |> ignore
     })
     |> ignore
-    e.box(fn(b) {
-      @sf.presses_node(b, run, on=fn() { !busy() })
-      b.says(By(fn() { Some(@view.said(Button, label=action())) })) |> ignore
+    @sf.action_box_node(e, fn() { action() }, fn(_) { run() }, disabled=fn() { busy() }, fn(b) {
       let look = fn() {
         match (ink() == Danger, busy()) {
           (false, false) => notice_act
@@ -458,17 +454,15 @@ fn notice_copy_node(v : @view.View, m : () -> Message, ink : () -> @ui.Color, co
     }
   })
   v.owns(fn() { (off.val)() }) |> ignore
-  v.box(fn(b) {
+  let words = fn() { @sf.t(if said.get() { "common.copied" } else { "common.copy" }) }
+  @sf.action_box_node(v, words, fn(b) {
+    let now = @signals.untracked(m)
+    @ui.clipboard_set(now.notice_detail)
+    let at = b.cause_at()
+    copied[now.ts] = at
+    said_from(at)
+  }, fn(b) {
     @sf.style_node(b, fn() { notice_copy_room })
-    @sf.presses_node(b, fn() {
-      let now = @signals.untracked(m)
-      @ui.clipboard_set(now.notice_detail)
-      let at = b.cause_at()
-      copied[now.ts] = at
-      said_from(at)
-    })
-    let words = fn() { @sf.t(if said.get() { "common.copied" } else { "common.copy" }) }
-    b.says(By(fn() { Some(@view.said(Button, label=words())) })) |> ignore
     let look = fn() { if ink() == Danger { notice_act_failed } else { notice_act } }
     b.box(fn(w) {
       w

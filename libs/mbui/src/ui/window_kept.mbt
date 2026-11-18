@@ -132,7 +132,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
     kept_ref(tree_window_zoom, fn() { @signals.signal(1.0, same=fn(a, b) { a == b }) }),
     kept_ref(tree_theme_said, fn() { @signals.signal_by(None, same=fn(a, b) {
   match (a, b) {
-    (Some(x), Some(y)) => physical_equal(x, y)
+    (Some(x), Some(y)) => physical_equal(x, y) || x == y
     (None, None) => true
     _ => false
   }

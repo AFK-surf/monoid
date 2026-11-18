@@ -1,7 +1,8 @@
 // src/host/apple_render.m's tests: after mb_render_trim shrinks the layer's drawableSize to 1x1 (the window hidden,
 // covered, minimized or the Mac asleep) and mb_render_set_size restores the window's size, the next frame is drawn
 // whole into a new canvas and presented, never skipped by same_as_shown as equal to the frame before the trim; the
-// blur under glass kept while what is under it is the same, never while a picture under it had no texture yet; frames
+// blur under glass kept while what is under it is the same, never while a picture under it had no texture yet; three
+// groups of glass on one screen each keeping its own blur, made again only for the one something moved under; frames
 // handed to the presenting queue while it is busy drawn as the newest alone, what each said to differ joined, the
 // glyphs put meanwhile kept, the canvas then the same to the byte as the frame drawn whole; and many frames in a row
 // with sizes, trims and read-backs between them:
@@ -194,6 +195,65 @@ int main(void) {
       CHECK(blurs_made == made + 1);
       CHECK(kept_ok == 1);
       picture_one = nil;
+    }
+
+    // Three groups of glass on one screen (frosted at the top, liquid in the middle, frosted at the foot, each with
+    // something of its own under it, a caret over all): each keeps its own blur. A frame where only what is over them
+    // moves makes none; one where something moves under the middle one alone makes that one's again, the others kept.
+    // The canvas each time the same to the byte as the frame drawn whole with every blur made anew.
+    {
+      double s3[8 * MB_INST];
+      rect_at(s3, 0, 0, 400, 300, 0, 0.95, 0.95, 0.9, 0);
+      rect_at(s3 + 1 * MB_INST, 32, 16, 104, 32, 0, 0.9, 0.1, 0.1, 0);
+      rect_at(s3 + 2 * MB_INST, 20, 8, 144, 40, 5, 1, 1, 1, -2);
+      s3[2 * MB_INST + 7] = 8;
+      s3[2 * MB_INST + 11] = 0.5;
+      rect_at(s3 + 3 * MB_INST, 248, 128, 80, 32, 0, 0.1, 0.7, 0.2, 0);
+      rect_at(s3 + 4 * MB_INST, 240, 120, 120, 48, 6, 1, 1, 1, -3);
+      s3[4 * MB_INST + 4] = 24;
+      s3[4 * MB_INST + 7] = 8;
+      s3[4 * MB_INST + 11] = 0.3;
+      s3[4 * MB_INST + 21] = 8;
+      s3[4 * MB_INST + 23] = 4;
+      rect_at(s3 + 5 * MB_INST, 40, 240, 100, 24, 0, 0.2, 0.2, 0.9, 0);
+      rect_at(s3 + 6 * MB_INST, 20, 228, 160, 48, 5, 1, 1, 1, -4);
+      s3[6 * MB_INST + 7] = 8;
+      s3[6 * MB_INST + 11] = 0.5;
+      rect_at(s3 + 7 * MB_INST, 360, 260, 8, 24, 0, 0, 0, 0, 0);
+      int made = blurs_made;
+      mb_render_present(s3, 8, 0.1, 0.2, 0.3);
+      present_drain();
+      printf("apple_render_test: three groups, first frame: %d blurs\n", blurs_made - made);
+      CHECK(blurs_made == made + 3);
+      glass_forget();
+      CHECK(canvas_as_whole());
+      for (int i = 0; i < 3; i++) {
+        s3[7 * MB_INST + 1] = 250 + 4 * i;  // the caret: moved
+        made = blurs_made;
+        mb_render_present(s3, 8, 0.1, 0.2, 0.3);
+        present_drain();
+        printf("apple_render_test: three groups, the caret moved: %d blurs\n", blurs_made - made);
+        CHECK(blurs_made == made);
+        CHECK(kept_ok == 1);
+        CHECK(canvas_as_whole());
+        glass_forget();
+        CHECK(canvas_as_whole());
+      }
+      s3[3 * MB_INST + 0] = 256;  // under the liquid glass alone: moved
+      made = blurs_made;
+      mb_render_present(s3, 8, 0.1, 0.2, 0.3);
+      present_drain();
+      printf("apple_render_test: three groups, what is under the middle one moved: %d blurs\n", blurs_made - made);
+      CHECK(blurs_made == made + 1);
+      glass_forget();
+      CHECK(canvas_as_whole());
+      s3[1 * MB_INST + 0] = 36;  // under the top one: moved, that one's alone made again
+      made = blurs_made;
+      mb_render_present(s3, 8, 0.1, 0.2, 0.3);
+      present_drain();
+      CHECK(blurs_made == made + 1);
+      glass_forget();
+      CHECK(canvas_as_whole());
     }
 
     // Frames handed over while the queue is busy (here held by a block of the test's): drawn once, the newest, in

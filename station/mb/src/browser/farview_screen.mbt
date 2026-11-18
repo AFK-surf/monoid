@@ -671,7 +671,7 @@ pub fn FarviewView::bounds(self : FarviewView, max_width : Double, max_height : 
   if self.peek {
     return
   }
-  let size = size_for({ codecs: ["jpeg"], max_width, max_height, peek: false, fit: None })
+  let size = size_for({ codecs: ["jpeg"], max_width, max_height, peek: false, fit: None, passkeys: None })
   if size.0 == self.size_.0 && size.1 == self.size_.1 && size.2 == self.size_.2 {
     return
   }

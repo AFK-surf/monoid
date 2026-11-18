@@ -180,6 +180,7 @@ pub(all) struct ViewOptions {
   audio : Bool
   opus : Bool
   gamut : String?
+  passkeys : Bool?
 }
 
 ///|
@@ -193,8 +194,9 @@ pub fn ViewOptions::new(
   audio? : Bool = false,
   opus? : Bool = false,
   gamut? : String? = None,
+  passkeys? : Bool? = None,
 ) -> ViewOptions {
-  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut }
+  { max_width, max_height, codecs, peek, bitrate, fps, fit: None, audio, opus, gamut, passkeys }
 }
 
 ///|
@@ -220,6 +222,10 @@ pub fn view_options_of(j : J) -> ViewOptions {
     audio: get(Some(j), "audio") is Some(Bool(true)),
     opus: get(Some(j), "opus") is Some(Bool(true)),
     gamut: text(get(Some(j), "gamut")),
+    passkeys: match get(Some(j), "passkeys") {
+      Some(Bool(b)) => Some(b)
+      _ => None
+    },
   }
 }
 

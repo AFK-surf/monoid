@@ -13,7 +13,10 @@
 // (the arrow toward the side a submenu opened from: the caller's, its look given the same, headless.mbt) while the
 // focus is in it, tell `on_close`: the caller closes what holds the menu and gives the focus back to what opened it.
 // Where it opens, the caller asks the focus onto its first item by the keys (`Menu::focus_first`), or leaves it where
-// it is for the pointer.
+// it is for the pointer: on the menu itself where it `takes_focus` (nothing lit, the keys its, ↓ the first and ↑ the
+// last as from nowhere; no key presses it), else where it was. `roving` (Radix's roving focus): Tab stops on one of its
+// items, the last that had the focus while it is still enabled, else the first enabled, as a group of them takes one
+// stop; else Tab passes them all by.
 //
 // What its look reads of an item: disabled, hovered (the pointer over it), pressed, focused (the keys on it, however
 // they came), focus shown (they came by the keys), checked (a check's or a radio's).
@@ -26,11 +29,20 @@ priv struct MenuEntry {
 }
 
 ///|
+/// Where Tab stops among a roving menu's items: the last of them that had the focus (none yet), and a count of the
+/// items made and let go, each a change of it (what a stop reads to follow them).
+priv struct MenuStop {
+  last : @signals.Signal[@view.NodeId?]
+  made : @signals.Signal[Int]
+}
+
+///|
 /// A menu as its look reads it and makes its items by (`Menu::item`, `Menu::check_item`, `Menu::radio_item`).
 pub struct Menu {
   priv node : @view.View
   priv off : () -> Bool
   priv items : Array[MenuEntry]
+  priv stop : MenuStop?
 }
 
 ///|
@@ -53,6 +65,24 @@ fn Menu::live(self : Menu) -> Array[MenuEntry] {
     return []
   }
   self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
+}
+
+///|
+/// The item Tab stops on in a roving menu: the last that had the focus while it is still enabled, else the first
+/// enabled; none in a menu not roving, or with none enabled. Followed where a binding reads it.
+fn Menu::stop_at(self : Menu) -> @view.NodeId? {
+  guard self.stop is Some(st) else { return None }
+  st.made.get() |> ignore
+  // (an item still leaving, made another kind or let go as the menu stays open, is none to stop on)
+  let live = self.items.filter(fn(e) { e.node.takes_input() && !(e.off)() })
+  match st.last.get() {
+    Some(id) if live.iter().any(fn(e) { e.node.id() == id }) => Some(id)
+    _ =>
+      match live {
+        [first, ..] => Some(first.node.id())
+        [] => None
+      }
+  }
 }
 
 ///|
@@ -155,7 +185,9 @@ fn focus_in(v : @view.View, or_none : Bool) -> Bool {
 /// and the `Menu` its items are made by (directly or inside `View::each`), once as it is made: all that is drawn of it
 /// and how it is laid out. `on_close` told by Escape, and by `close_key` (a submenu's arrow toward its parent), while
 /// the focus is in it; `wraps`: whether ↓ past the last item comes to the first, and ↑ before the first to the last;
-/// `disabled` while none of it takes a press or the focus. Its node.
+/// `disabled` while none of it takes a press or the focus; `takes_focus`: the menu itself takes the focus as it is given
+/// it (one opened by the pointer, its keys from nowhere), no key pressing it, one stop of Tab's; `roving`: Tab stops on
+/// one of its items (the last that had the focus, else the first). Its node.
 #callsite(autofill(loc))
 pub fn menu(
   parent : @view.View,
@@ -165,13 +197,19 @@ pub fn menu(
   close_key? : Int,
   wraps? : Bool = true,
   disabled? : () -> Bool = fn() { false },
+  takes_focus? : Bool = false,
+  roving? : Bool = false,
   in_node? : Bool = false,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
   let setup = fn(v : @view.View) {
-    let m : Menu = { node: v, off: disabled, items: [] }
+    let stop : MenuStop? = if roving { Some({ last: @signals.signal(None), made: @signals.signal(0) }) } else { None }
+    let m : Menu = { node: v, off: disabled, items: [], stop }
     look(v, m)
+    if takes_focus {
+      v.focusable(Is(true), keys=0) |> ignore
+    }
     v
     .says(
       match label {
@@ -193,7 +231,10 @@ pub fn menu(
           _ => return false
         }
       }
-      if !focus_in(v, true) {
+      // (from nowhere, the focus on no node of the tree's (one opened by the keys); never so for one that takes the
+      // focus itself, which has it while its keys are its: the focus elsewhere, held outside the tree (an old view's
+      // field kept as the menu opened beside it), the keys are that one's)
+      if !focus_in(v, !takes_focus) {
         return false
       }
       let live = m.live()
@@ -263,7 +304,18 @@ fn Menu::part(
       None => fn() { false }
     }
     self.items.push({ node: v, off })
-    v.owns(fn() { self.items.retain(fn(e) { e.node.id() != v.id() }) }) |> ignore
+    let made = fn() {
+      match self.stop {
+        Some(st) => st.made.set(st.made.untracked() + 1)
+        None => ()
+      }
+    }
+    made()
+    v.owns(fn() {
+      self.items.retain(fn(e) { e.node.id() != v.id() })
+      made()
+    })
+    |> ignore
     look(v, { node: v, on, off })
     v
     .presses(By(able))
@@ -280,6 +332,14 @@ fn Menu::part(
       }
     })
     |> ignore
+    // (roving: Tab's one stop among the items, the last with the focus; said after `focusable`, which lets a stop go)
+    match self.stop {
+      Some(st) => {
+        v.tab_stop(By(fn() { self.stop_at() == Some(v.id()) })) |> ignore
+        v.reacts(fn() { v.focused() }, fn(f) { if f { st.last.set(Some(v.id())) } })
+      }
+      None => ()
+    }
   }
   if in_node {
     setup(parent)

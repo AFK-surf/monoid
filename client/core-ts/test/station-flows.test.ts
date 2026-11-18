@@ -639,12 +639,12 @@ const batchesIn = (host: FakeHost, from = 0) => host.requests.slice(from).filter
 
 test("a_stations_history_comes_in_batches", async () => {
   const { host, core } = await started(manyChats(60, 3));
-  // 60 chats' entries, the session's detail and its transcript's latest page: in two batches of what was 62 requests,
-  // nothing read alone.
+  // 60 chats' entries and the session's detail in two batches of what was 61 requests, nothing read alone; its
+  // transcript's latest page (off the station's disk) in a batch of its own, never in one with what its database answers.
   const batches = batchesIn(host).map((r) => JSON.parse(new TextDecoder().decode(r.body!)).gets as string[]);
-  assert.deepEqual(batches.map((b) => b.length), [40, 22]);
+  assert.deepEqual(batches.map((b) => b.length), [40, 21, 1]);
   assert.deepEqual(batches[0]!.slice(0, 3), ["/sessions/k1?turns=0&jobs=now", "/threads/60/entries?limit=50", "/threads/59/entries?limit=50"], "the latest chats first");
-  assert.equal(batches[1]!.at(-1), "/sessions/k1/timeline?before=1000000000000000&limit=200&brief=1");
+  assert.deepEqual(batches[2], ["/sessions/k1/timeline?before=1000000000000000&limit=200&brief=1"]);
   assert.equal(host.requests.filter((r) => r.method === "GET" && r.url.includes("/entries")).length, 0);
   for (const id of [1, 30, 60]) assert.deepEqual(core.inner.data.logNumbers("entry", ST, String(id)), [1, 2, 3]);
   core.close();

@@ -36,7 +36,8 @@
 //   - what only an eye could tell is the look's;
 //   - what every node has whatever it is is the framework's: used, never written again here. What a component needs of
 //     the tree and is not there is added to src/view (View::press, for a press asked by what is no hand), never gone
-//     around here: of mbui this package's own files import the tree alone (moon.pkg);
+//     around here: of mbui this package's own files import the tree alone and its signals (moon.pkg), the signals for
+//     what a component keeps that its look follows (how far a finger draws a toast: toaster.mbt);
 //   - what one app alone wants of a control stays in that app's look, over the component: never a parameter here.
 //
 // State. Who keeps it: the caller. A component is controlled: what decides what the control takes or says (the

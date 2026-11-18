@@ -983,6 +983,8 @@ fn paint_frame(c : Ctx, t : Double) -> Double {
 /// paint waits for came or the paint before drew otherwise (painted_why); else of its looks alone. When it began.
 fn frame_drawn(c : Ctx, w : Double, h : Double, scale : Double, t : Double) -> Double {
   looks_heads_only.val = false
+  // (what the drawing side did with the frames before: GpuFrames)
+  gpu_frames_count(h_gpu_ms(), @hostapi.frames_dropped())
   // (where the hand's inputs since the frame before went, among the old views: view_host.mbt)
   let went_to = view_input_taken()
   let watch = frame_watch_of()
@@ -1255,4 +1257,101 @@ fn frame_read_told(set_as_read : () -> Array[String]) -> Unit {
     watch_told_at()
     h_frame_owed()
   }
+}
+
+///|
+/// What the drawing side did with the frames, since it was last taken (gpu_frames_take): of the frames the app drew,
+/// those whose GPU time the host knew (`timed`; @hostapi.gpu_ms, the time of the last frame it finished: the Mac's and
+/// iOS's GPU's, Android's GL thread's), read as each is drawn, how many went past a frame's budget at 120 frames a
+/// second (8.33 ms), at 60 (16.67 ms) and as long as a hang's (24 ms and over), the longest; and the frames the app
+/// made that the host never drew, a newer one taking each's place as it waited for a drawing thread slower than the
+/// app's (`dropped`; @hostapi.frames_dropped). What the app's own work cost is the journal's (HangSummary); this is
+/// what it cannot see: a frame made in time drawn late or not at all.
+#derive(Eq, Debug)
+pub(all) struct GpuFrames {
+  timed : Int
+  over_120 : Int
+  over_60 : Int
+  over_hang : Int
+  worst_ms : Double
+  dropped : Int
+}
+
+///|
+/// The budgets GpuFrames counts a frame's GPU time past, in ms: 120 and 60 frames a second's, and a hang's (journal's
+/// frame_band_ms's last).
+let gpu_budget_120_ms : Double = 1000.0 / 120.0
+
+///|
+let gpu_budget_60_ms : Double = 1000.0 / 60.0
+
+///|
+let gpu_budget_hang_ms : Double = 24.0
+
+///|
+/// GpuFrames's counts as they go (timed, the three budgets, dropped), the longest, and the host's count of frames
+/// dropped when it was last read.
+// kept across runs: the host's, as its frames are; put back as they are taken (gpu_frames_take)
+let gpu_counts : FixedArray[Int] = FixedArray::make(5, 0)
+
+///|
+// kept across runs: the host's, as its frames are; put back as they are taken (gpu_frames_take)
+let gpu_worst : Ref[Double] = Ref(0.0)
+
+///|
+// kept across runs: the host's count, only growing
+let gpu_dropped_seen : Ref[Int] = Ref(0)
+
+///|
+/// A frame drawn, the GPU's time of the last the host finished `gms` (-1: not known) and the frames it never drew in
+/// all `dropped` (frame_drawn, as each frame is drawn).
+fn gpu_frames_count(gms : Double, dropped : Int) -> Unit {
+  if gms >= 0.0 {
+    gpu_counts[0] += 1
+    if gms > gpu_budget_120_ms {
+      gpu_counts[1] += 1
+    }
+    if gms > gpu_budget_60_ms {
+      gpu_counts[2] += 1
+    }
+    if gms >= gpu_budget_hang_ms {
+      gpu_counts[3] += 1
+    }
+    if gms > gpu_worst.val {
+      gpu_worst.val = gms
+    }
+  }
+  if dropped > gpu_dropped_seen.val {
+    gpu_counts[4] += dropped - gpu_dropped_seen.val
+    gpu_dropped_seen.val = dropped
+  }
+}
+
+///|
+/// What the drawing side did with the frames since this was last asked (GpuFrames), its counts put back to none.
+pub fn gpu_frames_take() -> GpuFrames {
+  let f = GpuFrames::{
+    timed: gpu_counts[0],
+    over_120: gpu_counts[1],
+    over_60: gpu_counts[2],
+    over_hang: gpu_counts[3],
+    worst_ms: gpu_worst.val,
+    dropped: gpu_counts[4],
+  }
+  gpu_counts.fill(0)
+  gpu_worst.val = 0.0
+  f
+}
+
+///|
+/// GpuFrames's counts put back to none (a run begun again: journal_reset).
+fn gpu_frames_reset() -> Unit {
+  gpu_counts.fill(0)
+  gpu_worst.val = 0.0
+}
+
+///|
+/// GpuFrames as a line of a log (a key=value each, as the probe's PERF line).
+pub fn GpuFrames::said(self : GpuFrames) -> String {
+  "GPU frames=\{self.timed} over_8ms=\{self.over_120} over_16ms=\{self.over_60} over_24ms=\{self.over_hang} worst=\{self.worst_ms} dropped=\{self.dropped}"
 }

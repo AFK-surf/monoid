@@ -137,7 +137,7 @@ pub fn chat_marks(db : @sql.Db, host : @host.Host, data : String, sep : String, 
   let own : Array[(Map[String, Json], Array[Map[String, Json]])] = []
   for id in thread_ids {
     guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) else { continue }
-    if field(t, "surface") == Json::string("ember") && field(t, "hidden_at") is Null {
+    if field(t, "surface") == Json::string("chat") && field(t, "hidden_at") is Null {
       own.push((t, db.all("SELECT * FROM thread_sessions WHERE thread = ? ORDER BY joined_at, rowid", [id])))
     }
   }

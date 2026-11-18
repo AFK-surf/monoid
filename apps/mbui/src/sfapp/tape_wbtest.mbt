@@ -1215,6 +1215,51 @@ test "on the tape a panel's ground goes behind or comes in front with the tape's
 }
 
 ///|
+test "on the tape the page going behind the sidebar is not built again at each frame of the move, its ground eased" {
+  let t = tape_chat(0, 720.0, 800.0)
+  t.set_rows_on_pixels(true)
+  let settle = fn() {
+    t.run_for(kept_rows_still_ms)
+    t.run_for(@ui.move_most_ms)
+  }
+  settle()
+  page_over(t, 720.0)
+  settle()
+  // (the composer's own hint at rest: the page's side panel opened and closed, its width as it will stay)
+  let (x, y, w, h) = t.query(Button, label="打开侧栏").unwrap().rect
+  t.tap(x + w / 2.0, y + h / 2.0)
+  settle()
+  t.back()
+  settle()
+  let behind = @sf.behind_ground()
+  let bg = @sf.theme().p.bg
+  // back to the sidebar: the page goes behind it, its ground a step darker as far as the tape's move has got, worked
+  // out as it is painted (tape_behind); its old view built as the move sets off and at no frame of it after
+  let t0 = t.time()
+  t.advance(between_frames_ms)
+  t.back()
+  let built : Array[String] = []
+  let eased : Array[Int64] = []
+  for at = 16.0; at <= 480.0; at = at + 16.0 {
+    t.frame_at(t0 + at)
+    // (what the frame built of an old view for something it read in it: an island built again)
+    let why = t.built_why()
+    if why.has_prefix("what a part or a list's row read changed") {
+      built.push("\{at}: \{why}")
+    }
+    if at == 80.0 {
+      let (mx, my) = t.find("做完了：列表、跳到最新的按钮").unwrap()
+      eased.push(grounds_at(t, mx, my).filter(fn(g) { g != 0L })[0])
+    }
+  }
+  assert_true(built.is_empty(), msg=Repr(built).to_string())
+  // (on its way, between the page's ground and the darker one; there at the end)
+  assert_true(eased[0] != bg && eased[0] != behind, msg="\{eased[0]}")
+  let (mx, my, _, _) = t.rect_of("做完了：列表、跳到最新的按钮").unwrap()
+  assert_true(grounds_at(t, mx + 4.0, my).contains(behind))
+}
+
+///|
 test "on the tape the sidebar's rows stand in a side column's line, their words as 新建对话's; a phone's 22 from the screen's edge" {
   let t = tape_chat(2, 750.0, 830.0, width="medium", height="medium")
   // the sidebar's panel 6 from the window's edge, its list from 8 into the rail, the rail as much wider as its places

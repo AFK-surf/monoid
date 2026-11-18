@@ -26,7 +26,7 @@ import { install } from "../src/station/calls.ts";
 import { FakeHost } from "../src/testing.ts";
 import { work } from "../src/work.ts";
 import { held } from "./real-size-asked.ts";
-import { DOWN, UP, fixture, more } from "./real-size.ts";
+import { DOWN, PLAIN_WORKSPACE, UP, fixture, more } from "./real-size.ts";
 import { call, subscribe } from "./helpers.ts";
 import { started } from "./station-fixture.ts";
 
@@ -69,7 +69,7 @@ const PAGES: Record<string, { topics: Record<string, unknown>[]; usage?: true }>
   "一个连接": { topics: [{ topic: "connect", scope: ws, station, id: "c-slack-1" }] },
   "Station": { topics: [{ topic: "stations", scope: ws }] },
   "账号": { topics: [{ topic: "profiles", scope: ws }] },
-  "密钥": { topics: [{ topic: "vaults", workspace: ws }] },
+  "密钥": { topics: [{ topic: "vaults", workspace: PLAIN_WORKSPACE }] },
   "自动决策": { topics: [{ topic: "settings", scope: ws }, { topic: "stationPart", scope: ws, station, part: "automaticDecisions" }] },
   "自动归档": { topics: [{ topic: "settings", scope: ws }, { topic: "stationPart", scope: ws, station, part: "archiving" }] },
   "已归档": { topics: [{ topic: "archive", scope: ws, limit: 60 }] },

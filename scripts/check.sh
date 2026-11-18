@@ -148,6 +148,30 @@ open_tests() {
 export STILLFAIL_TEST_HUNG="$tmp/hung"
 mkdir -p "$STILLFAIL_TEST_HUNG"
 trap 'echo "stopped; still running:"; running tail; open_tests; exit 1' INT TERM
+# A failed step said to GitHub Actions too: an `::error` annotation of the lines that say what failed (the check run's
+# annotations held only "Process completed with exit code 1.", and with the REST quota spent by every session sharing
+# one token, an agent reading the run by GraphQL could not tell which test failed), and a section of the job's summary.
+annotate() {
+  [ "${GITHUB_ACTIONS:-}" = true ] || return 0
+  # (without colours: POSIX sh has no $'\033', awk's escape stands for it)
+  awk '{ gsub(/\033\[[0-9;]*[A-Za-z]/, ""); sub(/\r$/, ""); print }' "$tmp/step.$1.log" > "$tmp/step.$1.plain"
+  grep -E 'left running after its tests|the program running the sessions ended|\.test\.ts: as it ended: |^✖ |AssertionError|ERR_ASSERTION|Error:|error TS[0-9]+|error\[E[0-9]+\]|FAILED' "$tmp/step.$1.plain" | head -12 > "$tmp/step.$1.key" || true
+  [ -s "$tmp/step.$1.key" ] || grep -v '^[[:space:]]*$' "$tmp/step.$1.plain" | tail -10 > "$tmp/step.$1.key" || true
+  shard=${STATION_SLICE:-${STILLFAIL_STATION_SHARD:-${STILLFAIL_CORE_SHARD:-}}}
+  # (a workflow command is one line: its message's %, CR and LF encoded, its title's colons and commas too)
+  err_title=$(printf '%s' "${shard:+$shard }$2 failed (${3} s)" | awk '{ gsub(/%/, "%25"); gsub(/:/, "%3A"); gsub(/,/, "%2C"); printf "%s%s", (NR > 1 ? " " : ""), $0 }')
+  err_msg=$(head -c 1500 "$tmp/step.$1.key" | awk '{ gsub(/%/, "%25"); gsub(/\r/, "%0D"); printf "%s%s", (NR > 1 ? "%0A" : ""), $0 }')
+  printf '::error title=%s::%s\n' "$err_title" "$err_msg"
+  [ -n "${GITHUB_STEP_SUMMARY:-}" ] || return 0
+  {
+    echo "### ${shard:+$shard }$2 FAILED (${3} s)"
+    echo '```'
+    cat "$tmp/step.$1.key"
+    echo '…'
+    grep -v '^[[:space:]]*$' "$tmp/step.$1.plain" | tail -30
+    echo '```'
+  } >> "$GITHUB_STEP_SUMMARY"
+}
 # Says each step, in order, as it is done; every minute spent waiting, the ones still running.
 report() {
   i=0
@@ -173,6 +197,7 @@ report() {
       # (what a test file left running as it ended fails that file with nothing of its own in the tail: said here
       # wherever it is in the log; main 345b3c51's station 4/6, hub-routes failed whole and nothing said why)
       grep -A6 ': left running after its tests' "$tmp/step.$i.log" | head -60 | sed 's/^/    /'
+      annotate "$i" "$name" "$took"
       failed="$failed $name"
     fi
   done
@@ -553,7 +578,7 @@ if [ $full = 1 ]; then
   if part station && touches "$station_paths"; then
     prep station deps station
     # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_scopes && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.

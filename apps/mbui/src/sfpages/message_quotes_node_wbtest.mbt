@@ -369,10 +369,10 @@ test "what was sent from here quoting, as nodes, is drawn as outbox_row draws it
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
       let old = out_old(w, src(c.1), c.1)
-      old.run_for(sending_shows_ms)
+      old.run_for(sending_shows_ms + @ui.move_most_ms)
       let was = lines(head_drawn(old))
       let t = out_new(w, src(c.1), fn() { c.1 })
-      t.run_for(sending_shows_ms)
+      t.run_for(sending_shows_ms + @ui.move_most_ms)
       match qt_differ(at, was, lines(head_drawn(t))) {
         Some(d) => differ.push(d)
         None => ()

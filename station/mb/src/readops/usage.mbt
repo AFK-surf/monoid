@@ -126,7 +126,7 @@ pub fn usage_turns(db : @sql.Db, args : Json) -> Json raise {
     _ => []
   }
   let delivered : Array[(Double, Json, Json)] = if turns.iter().any(t => field(t, "person") is Null) {
-    db.all(taken_since_sql, [session, Json::string("ember"), begins]).map(r => (match field(r, "at") { Number(a, ..) => a; _ => 0.0 }, field(r, "who"), field(r, "thread")))
+    db.all(taken_since_sql, [session, Json::string("chat"), begins]).map(r => (match field(r, "at") { Number(a, ..) => a; _ => 0.0 }, field(r, "who"), field(r, "thread")))
   } else {
     []
   }

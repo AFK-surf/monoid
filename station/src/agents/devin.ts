@@ -24,6 +24,7 @@ import { AcpDriver, AcpSession, KeptTranscript, acpOutcome, type AcpStart } from
 import type { Events, Replayed } from "./own-process.ts";
 import { expandRoute, profileEnv, profileModel } from "./profiles.ts";
 import { cleanEnv, failureOf, uuid, type FailureReason, type OpenOptions } from "./runtime.ts";
+import { keepLocal } from "../ops/agent-env.ts";
 
 type Json = any;
 
@@ -200,7 +201,7 @@ export function devinArgs(config: string, model: string | undefined, effort: str
 
 /// Its environment: its sessions' store in the shared sessions; no key of anyone else's.
 export function devinEnv(options: OpenOptions): Record<string, string> {
-  const env: Record<string, string> = { ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "devin"), options.route) };
+  const env: Record<string, string> = keepLocal({ ...cleanEnv(SCRUBBED), ...expandRoute(profileEnv(options.profile, "devin"), options.route) });
   env.DEVIN_SESSIONS_DIR = join(devinHome(options.profile.home), SESSIONS, STORE);
   env.STILLFAIL_PEER_HTTP = peerHttpBase(options.mcpUrl);
   return env;

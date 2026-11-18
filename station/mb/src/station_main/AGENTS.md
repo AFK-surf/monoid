@@ -29,7 +29,11 @@
   `start_live_p5_<N>`): P5-1 first, then on a whole station P5-2, P5-3, P5-4 and P5-5 in that order (P5-3 finds the
   hub's sessions' program there and mounts `#jobs` and `#remote` on it); a station that only runs tasks (`--rig`, or
   cloud.json's `rig`) starts P5-3 and the devices of P5-4 alone. What one slice asks of another goes by name on the bus
-  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file.
+  (`hub_ask`, `jobs_ask`, `ui_ask`, `coord_ask`, `cloud_call`, the peers' `$…` handlers), never an import of its file;
+  what several slices follow is a list on the bus each adds to (`on_release`, `on_peer_heard`, `on_trim`,
+  `register_pids`). station/test/mb-station-contracts.test.ts holds every `Ref` of the bus given by a slice, and every
+  `parts.carry`, `plane.told` and `events.follow` hook of the TypeScript's given here; station/test/mb-live-hooks-parity.test.ts
+  holds them live.
   A release runs this program alone (station/AGENTS.md); held by station/test/mb-live-station.test.ts whole, under the
   real launcher, and each slice by its own test:
   - P5-1 (`live_p5_1_*.mbt`), the platform: config.json, the log and error reports, the machine kept awake, a lost
@@ -56,7 +60,7 @@
     so, one of its own only where there is no hub, a rig's or a test's: never two on one data directory); a sandbox's
     task runs through this program as its bridge's host side (`stillfail-reader <…>/sandbox-bridge.mjs host
     '<json>'`: live_p5_3_sandbox.mbt). With `STILLFAIL_PARTS_DOOR=1` the agents' door answers the parts' routes,
-    `jobs_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
+    `jobs_ask`, `hub_ask`, overview fields and peers' requests under `/parts/`: station/test/mb-live-p5-3.test.ts.
   - P5-4 (`live_p5_4_*.mbt`), the vault, the drive and its transfers, the screens with the Helper and its grants, the
     browser, the phones and devices, the terminals and the logins, answered by name on `ui_ask`:
     station/test/mb-live-p5-4.test.ts.

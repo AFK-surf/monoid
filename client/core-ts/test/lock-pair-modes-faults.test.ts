@@ -32,11 +32,15 @@ function rng(seed: number) {
 /// The most a call is given (the app's and the rig's): every code typed is answered before it.
 const CALL_MS = 40_000;
 
-/// `lock.pair` asked, and the clock let go until a code is shown (or `most` ms).
+/// `lock.pair` asked, and the clock let go until a code is shown (or `most` ms). Whatever the way in and whatever its
+/// trusted devices do, nobody is asked on this device from asking to the code shown: a code is shown before anyone is
+/// asked anything (the trusted device's own ask is held in lock-admits.test.ts, the person's own lock asked into).
 async function asked(w: World, most = 5_000) {
+  const before = w.r.host.secureAsked.length;
   const out = await w.timed("lock.pair", { workspace: "ws" });
   assert.ok(out.answer !== undefined && "ok" in out.answer, `lock.pair: ${JSON.stringify(out.answer)} (${w.why()})`);
   for (let i = 0; i < most / 100 && w.shown.length === 0; i++) await w.r.host.time.pass(100);
+  assert.deepEqual(w.r.host.secureAsked.slice(before), [], `asked before a code was typed (${w.mode}; ${w.why()})`);
 }
 
 const typed = (w: World, code: string) => w.timed("lock.pairCode", { workspace: "ws", code });

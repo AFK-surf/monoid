@@ -35,7 +35,7 @@ let corner_modes : Array[String] = {
     "chat-agent-unsaid", "chat-answering", "chat-attach", "chat-attach-row", "chat-cards", "chat-compose", "chat-download", "chat-failed", "chat-feedback", "chat-image-coming",
     "chat-file-links", "chat-find", "chat-flash", "chat-flash-mine", "chat-flash-notice", "chat-history-side",
     // (its agent at work: what the history's head shows only then, #6246's stop among its keys)
-    "chat-history-side-working", "chat-info", "chat-job",
+    "chat-history-side-working", "chat-info", "chat-info-bare", "chat-job",
     "chat-jobs", "chat-jobs-pop", "chat-jobs-side", "chat-letters", "chat-letters-info", "chat-letters-open",
     "chat-letters-pop", "chat-letters-side", "chat-things", "chat-things-side", "chat-info-pulls", "chat-link-menu", "chat-loading", "chat-login", "chat-long", "chat-md",
     "chat-model-pop", "chat-model-accounts", "chat-need", "chat-peek", "chat-pick", "chat-preview-apk", "chat-preview-audio",
@@ -105,7 +105,7 @@ let corner_modes : Array[String] = {
     "settings-kept-many", "settings-vault-off", "settings-vault-plain", "settings-vault-waits", "settings-vault-confirm", "settings-vault-syncing", "settings-vault-words", "settings-vault-add",
     "settings-vault-editor", "settings-vault-recover", "settings-lock-prompt", "settings-lock-prompt-role", "settings-add-people",
     "settings-workspace-mark", "settings-local-fonts", "settings-policy", "settings-policy-text",
-    "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
+    "settings-policy-option", "settings-security-join", "settings-security-off", "settings-security-open", "settings-security-pending", "settings-security-confirm", "settings-security-root", "settings-security-root-off", "settings-security-again", "settings-security-upgrade-station", "settings-security-upgrade-station-not", "settings-security-upgrade-member", "settings-security-upgrade-device", "settings-security-upgrade-many", "settings-security-upgrade-other", "settings-security-upgrade-updating", "settings-stations-tasks", "place-stations-tasks", "settings-station-tasks", "settings-station-tasks-other", "settings-station-tasks-locked", "settings-stations-devices", "place-stations-devices", "settings-station-devices",
     "settings-fonts", "settings-fonts-code",
     "settings-decisions", "settings-completion", "settings-bars", "settings-about", "settings-changelog", "settings-prices",
     "settings-notify-off", "settings-notify-denied",

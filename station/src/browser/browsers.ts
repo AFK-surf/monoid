@@ -52,6 +52,8 @@ export class Browsers {
   /// the passkeys of its sign-ins still granted are to be put in again.
   #resumed: (session: string) => void = () => {};
   #used: (session: string, host: string) => void = () => {};
+  #agentAct: (session: string, target: string, method: string) => string | null = () => null;
+  #stopped: (session: string) => void = () => {};
   /// The chats' Farview, where the config makes it their browser.
   #farview: FarviewTabs | null = null;
 
@@ -107,6 +109,12 @@ export class Browsers {
 
   /// A person or agent deliberately used a site in this chat's browser.
   onUsed(f: (session: string, host: string) => void) { this.#used = f; }
+
+  /// An agent operated a tab of its chat's browser over DevTools (`Gate`).
+  onAgentAct(f: (session: string, target: string, method: string) => string | null) { this.#agentAct = f; }
+
+  /// `session`'s browser context was stopped or closed.
+  onStopped(f: (session: string) => void) { this.#stopped = f; }
 
   used(session: string, target: string, url?: string) {
     const address = url ?? this.tabs(session).find((t) => t.id === target)?.url;
@@ -193,7 +201,16 @@ export class Browsers {
     await this.#due(session);
     const ws = this.station.status().ws;
     if (ws === undefined) throw new Error("the browser has no DevTools address");
-    return { ws, gate: { context, contextOf: (id) => this.station.contextOf(id), used: (id, url) => this.used(session, id, url) } };
+    return {
+      ws,
+      gate: {
+        context,
+        contextOf: (id) => this.station.contextOf(id),
+        opened: (id) => { this.#agentAct(session, id, "Target.createTarget"); },
+        used: (id, url) => this.used(session, id, url),
+        act: (id, method) => this.#agentAct(session, id, method),
+      },
+    };
   }
 
   /// What `session`'s agent is told of the browser (its tool): it runs, its chat's context made.
@@ -228,12 +245,14 @@ export class Browsers {
 
   /// Closes `session`'s chat's context, its tabs with it; its sign-ins still granted are put in again when it asks.
   async stop(session: string): Promise<void> {
+    this.#stopped(session);
     await this.#dispose(session);
   }
 
   /// `session`'s chat was archived or deleted: its context goes, its tabs and sign-ins with it; tabs it opened in the
   /// station's own context (before chats had their own) are closed.
   async closeOf(session: string): Promise<void> {
+    this.#stopped(session);
     await this.#dispose(session);
     for (const x of this.#signedIn.get(session) ?? []) {
       this.#timers.get(x.request)?.();

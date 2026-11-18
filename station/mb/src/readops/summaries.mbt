@@ -155,7 +155,7 @@ fn participants_of(db : @sql.Db, keys : Array[String]) -> Map[String, Array[Json
     }
     for a in db.all(people_at_sql, [field(r, "id")]) {
       let author = js_text(field(a, "author"))
-      let reference = if field(r, "surface") == Json::string("ember") { author } else { "slack:\{js_text(field(r, "connect"))}:\{author}" }
+      let reference = if field(r, "surface") == Json::string("chat") { author } else { "slack:\{js_text(field(r, "connect"))}:\{author}" }
       let at = num(field(a, "at"))
       match refs.get(reference) {
         Some(first) if at >= first => ()

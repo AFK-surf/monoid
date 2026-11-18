@@ -12,7 +12,8 @@
 // (s. on night; design/brand/icon-beta.svg) under the same paths.
 import { betaOrigin, publicOrigins } from "./compat.ts";
 
-export type WebEnv = { ASSETS: Fetcher; PUBLIC_ORIGIN: string; PUBLIC_ORIGIN_ALIASES?: string; BETA_ORIGIN?: string };
+/** `CONNECT_CONSOLES`: the consoles a station is connected for (`/connect/station`, below), their origins comma-separated. */
+export type WebEnv = { ASSETS: Fetcher; PUBLIC_ORIGIN: string; PUBLIC_ORIGIN_ALIASES?: string; BETA_ORIGIN?: string; CONNECT_CONSOLES?: string };
 
 /** Where a page asked for on an old host has moved to, or null when it is served here. */
 export function moved(request: Request, env: Omit<WebEnv, "ASSETS">): Response | null {
@@ -59,10 +60,10 @@ function unkept(file: Response): Response {
 /**
  * The web's pages of their own, apart from the app (index.html: mbui's, web/vite.config.ts), which web.html answers
  * (web/src/main.tsx): signing in (/login, and /auth/callback it comes back to), Slack sending back an app a station
- * made, a service sending back a person who signed in to it for their vault, and a station's web service on a page of
- * its own. Every other page is the app's.
+ * made, a service sending back a person who signed in to it for their vault, a console asking for a machine's station
+ * to be added (/connect/station), and a station's web service on a page of its own. Every other page is the app's.
  */
-const WEB_PAGES = /^\/(login|auth\/callback|slack\/installed|vault\/oauth|w\/[^/]+\/s\/[^/]+\/services\/[^/]+)\/?$/;
+const WEB_PAGES = /^\/(login|auth\/callback|slack\/installed|vault\/oauth|connect\/station|w\/[^/]+\/s\/[^/]+\/services\/[^/]+)\/?$/;
 
 /** The file that answers `request`: web.html (at /web, as Cloudflare serves a page's .html) for one of WEB_PAGES. */
 function fileOf(request: Request): Request {
@@ -73,9 +74,9 @@ function fileOf(request: Request): Request {
 
 /** The web app's answer to `request`, its files got by `files`: as above, on the test channel's host or the others. */
 export async function serveWeb(request: Request, env: Omit<WebEnv, "ASSETS">, assets: (request: Request) => Promise<Response> | Response): Promise<Response> {
-  const redirect = moved(request, env);
+  const redirect = moved(request, env) ?? connectRefused(request, env);
   if (redirect) return redirect;
-  const answer = built(request, hardened(await page(request, env, assets)));
+  const answer = built(request, hardened(await page(request, env, assets), connectConsole(request, env)));
   return (await packed(request, answer, assets)) ?? answer;
 }
 
@@ -153,11 +154,38 @@ async function page(request: Request, env: Omit<WebEnv, "ASSETS">, assets: (requ
  * injected one in just as well. What it does say holds however a script comes to be there: no plugins, no <base>, and
  * forms only to this host or Google's sign-in.
  */
+/**
+ * A console's request to add a machine's station (web/src/pages/connect.tsx): the page posts the station's command
+ * back to `return`, so that console is let in its form-action, and only one CONNECT_CONSOLES lists, at its
+ * /connect/station. Null for any other page or console.
+ */
+export function connectConsole(request: Request, env: Pick<WebEnv, "CONNECT_CONSOLES">): string | null {
+  const url = new URL(request.url);
+  if (url.pathname.replace(/\/+$/, "") !== "/connect/station") return null;
+  const back = url.searchParams.get("return");
+  if (back === null) return null;
+  let to: URL;
+  try {
+    to = new URL(back);
+  } catch {
+    return null;
+  }
+  const listed = (env.CONNECT_CONSOLES ?? "").split(",").map((o) => o.trim()).filter(Boolean);
+  return listed.includes(to.origin) && to.href === `${to.origin}/connect/station` ? to.origin : null;
+}
+
+/** A request to add a station that names a console not listed: the page again without it, which says so and sends nothing. */
+function connectRefused(request: Request, env: Pick<WebEnv, "CONNECT_CONSOLES">): Response | null {
+  const url = new URL(request.url);
+  if (url.pathname.replace(/\/+$/, "") !== "/connect/station" || !url.searchParams.has("return") || connectConsole(request, env) !== null) return null;
+  return Response.redirect(`${url.origin}/connect/station?refused=1`, 302);
+}
+
 const APP_CSP = ["object-src 'none'", "base-uri 'none'", "form-action 'self' https://accounts.google.com", "frame-ancestors 'none'"].join("; ");
 
-function hardened(answer: Response): Response {
+function hardened(answer: Response, formTo: string | null = null): Response {
   const headers = new Headers(answer.headers);
-  headers.set("content-security-policy", APP_CSP);
+  headers.set("content-security-policy", formTo === null ? APP_CSP : APP_CSP.replace("form-action 'self'", `form-action 'self' ${formTo}`));
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
   return new Response(answer.body, { status: answer.status, statusText: answer.statusText, headers });

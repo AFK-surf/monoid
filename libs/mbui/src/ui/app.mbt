@@ -178,6 +178,9 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   // out, and what came from outside handed on as the frame begins, frame_drawn's start)
   let tw = work_now()
   view_frame(w, h, scale, t)
+  // what the window's tree shaped as it was laid out handed to the host to draw ahead now, while the old views are
+  // built and the frame painted, not after all of it (text.mbt glyphs_ahead: when the work is done, not what is drawn)
+  glyphs_ahead()
   let t0 = frame_drawn(c, w, h, scale, t)
   in_frame.val = false
   // inputs came before this frame: one more, for what they changed late in it (inputrec.mbt `took_input`), built where
@@ -642,6 +645,9 @@ fn frame_paint(c : Ctx, root : Int, alone? : Bool = false) -> Unit {
   c.next_bars.clear()
   c.across_seen.clear()
   c.glass_frame()
+  // (what the old views' builds shaped since the window's tree was laid out (on_frame), handed to the host to draw
+  // ahead before the painting asks for any of it: glyphs_ahead)
+  glyphs_ahead()
   // (the window's tree in its order, the old frame or its old views in their places in it: view_host.mbt)
   c.view_paint(root)
   // what flies that no stratum over it took (strata.mbt), then what is over everything of the page wherever it was
@@ -656,7 +662,7 @@ fn frame_paint(c : Ctx, root : Int, alone? : Bool = false) -> Unit {
   c.paint_over_layers()
   // (the handles of words a finger picked, over everything, as a field's: finger_select.mbt)
   c.paint_finger_ends()
-  // what was shaped and not drawn, for the host to draw ahead while it presents this frame (text.mbt)
+  // what was shaped as it was painted and not drawn, for the host to draw ahead while it presents this frame (text.mbt)
   glyphs_ahead()
   c.emit_segs()
   // what is drawn by the clock, as its cycle is now (cycle_look.mbt), what it is drawn over kept for a frame of it alone

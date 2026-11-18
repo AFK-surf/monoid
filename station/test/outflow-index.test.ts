@@ -14,11 +14,11 @@ function fixture() {
   const store = Store.open(":memory:");
   const db = store.db;
   const addSession = (key: string, ws: string | null, token = key) => store.insertSession({
-    key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token, createdAt: 1, lastActiveAt: 1, ws,
+    key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token, createdAt: 1, lastActiveAt: 1, ws,
   });
   const addThread = (name: string, members: string[]) => {
-    const thread = store.openThreadOf("ember", "CHAT", name, name, "ann@x", members[0]!);
-    for (const member of members) store.joinThread(thread.id, member, "ember");
+    const thread = store.openThreadOf("chat", "CHAT", name, name, "ann@x", members[0]!);
+    for (const member of members) store.joinThread(thread.id, member, "chat");
     db.prepare("UPDATE threads SET created_at=10 WHERE id=?").run(thread.id);
     return thread.id;
   };
@@ -75,9 +75,9 @@ for (const recursive of [false, true]) test(`outflow chat order follows writes a
     db.prepare("UPDATE entries SET at=75 WHERE thread=? AND n=4").run(shared); settle();
     db.prepare("UPDATE sessions SET ws='B' WHERE key='a'").run(); settle();
     db.prepare("DELETE FROM thread_sessions WHERE thread=? AND session='b'").run(shared); settle();
-    db.prepare("INSERT OR IGNORE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('ignored','ember','thread','claude','cc','/w','home',1,1,'A')").run(); settle();
-    db.prepare("INSERT OR REPLACE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('replacement','ember','thread','claude','cc','/w','home',1,1,'A')").run(); settle();
-    db.prepare("INSERT OR REPLACE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('a','ember','thread','claude','cc','/w','a',1,1,'A')").run(); settle();
+    db.prepare("INSERT OR IGNORE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('ignored','chat','thread','claude','cc','/w','home',1,1,'A')").run(); settle();
+    db.prepare("INSERT OR REPLACE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('replacement','chat','thread','claude','cc','/w','home',1,1,'A')").run(); settle();
+    db.prepare("INSERT OR REPLACE INTO sessions (key,connect,scope,runtime,profile,workspace,token,created_at,last_active_at,ws) VALUES ('a','chat','thread','claude','cc','/w','a',1,1,'A')").run(); settle();
     db.prepare("DELETE FROM entries WHERE thread=? AND n=4").run(shared); settle();
     db.prepare("DELETE FROM threads WHERE id=?").run(other); settle();
   } finally { store.close(); }
@@ -96,7 +96,7 @@ for (const recursive of [false, true]) test(`outflow chat order follows replacem
     assert.equal(outflowChatIndexReady(db, viewers[0]!), false);
     settle();
     // A new thread can likewise evict a different id by the surface/channel/thread address.
-    db.prepare("INSERT OR REPLACE INTO threads (id,surface,channel,thread_ts,created_at) VALUES (999,'ember','CHAT','shared',5)").run();
+    db.prepare("INSERT OR REPLACE INTO threads (id,surface,channel,thread_ts,created_at) VALUES (999,'chat','CHAT','shared',5)").run();
     assert.equal(outflowChatIndexReady(db, viewers[0]!), false);
     settle();
     const source = addThread("source", ["a"]), target = addThread("target", ["a"]);

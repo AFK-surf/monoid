@@ -614,7 +614,71 @@ fn dk_host_each(
 }
 
 ///|
-test "words sent fly bare out of the field: no ground round them for the first quarter of their way, as the old page's flight_ground" {
+/// Each frame of words sent by `script` over the chat on `screen`, from the frame they are first seen to the drive's
+/// end, as nodes: (its moment, where they are drawn, what `look` reads of that frame round them).
+fn dk_sent_frames(
+  screen : (String, Double, Double, Int),
+  script : String,
+  text : String,
+  look : (@view.Tree, @ui.Tester, (Double, Double, Double, Double)) -> Double,
+  delivered_in? : Double,
+) -> Array[(Double, Double, Double, Double)] {
+  let (_, w, h, platform) = screen
+  let frames = []
+  dk_host_each(
+    "chat",
+    w,
+    h,
+    platform,
+    script,
+    fn(t, at) {
+      guard @ui.view_tree() is Some(tr) else { return }
+      let drawn = tr.drawn()
+      guard drawn.search_by(fn(d) { d.words == text && d.alpha > 0.05 }) is Some(i) else { return }
+      let wd = drawn[i]
+      frames.push((at, wd.x, wd.y, look(tr, t, (wd.x, wd.y, wd.w, wd.h))))
+    },
+    delivered_in?,
+  )
+  frames
+}
+
+///|
+/// Of `frames` (dk_sent_frames'), the first index from which their words are where they rest (the last frame's place).
+fn dk_landed_at(frames : Array[(Double, Double, Double, Double)]) -> Int {
+  guard frames.last() is Some((_, lx, ly, _)) else { return 0 }
+  let mut i = frames.length() - 1
+  while i > 0 && (frames[i - 1].1 - lx).abs() < 0.5 && (frames[i - 1].2 - ly).abs() < 0.5 {
+    i -= 1
+  }
+  i
+}
+
+///|
+/// What of `frames` (dk_sent_frames') from their first to where they land (`landed`) breaks one way in with their
+/// flight: what `look` read falling on the way, unseen a quarter of the way in, or not whole as they land.
+fn dk_one_way_in(name : String, what : String, frames : Array[(Double, Double, Double, Double)], landed : Int) -> Array[String] {
+  let bad = []
+  guard landed > 0 else { return ["\{name}: words sent never seen on their way"] }
+  let (set_out, _, _, _) = frames[0]
+  let (land, _, _, _) = frames[landed]
+  for i in 1..=landed {
+    if frames[i].3 < frames[i - 1].3 - 0.02 {
+      bad.push("\{name} @\{frames[i].0.round()}ms: \{what} fell \{frames[i - 1].3} → \{frames[i].3} on their way")
+    }
+  }
+  let quarter = frames.search_by(fn(f) { f.0 >= set_out + 0.25 * (land - set_out) }).unwrap_or(landed)
+  if frames[quarter].3 <= 0.05 {
+    bad.push("\{name} @\{frames[quarter].0.round()}ms: \{what} unseen a quarter of their way in (\{frames[quarter].3})")
+  }
+  if frames[landed].3 < 0.99 {
+    bad.push("\{name} @\{land.round()}ms: \{what} not whole as they land (\{frames[landed].3})")
+  }
+  bad
+}
+
+///|
+test "words sent fly out of the field with their ground coming in round them as they go across, from the first, whole as they land: the old page's desktop flight_ground" {
   let text = "发布前再看一眼签名"
   let script =
     #|timeout 20000
@@ -629,35 +693,32 @@ test "words sent fly bare out of the field: no ground round them for the first q
     #|exit
   let bad = []
   for screen in dk_screens {
-    let (name, w, h, platform) = screen
-    let mut set_out = -1.0
-    dk_host_each("chat", w, h, platform, script, fn(_, at) {
-      guard @ui.view_tree() is Some(tr) else { return }
-      let drawn = tr.drawn()
-      guard drawn.search_by(fn(d) { d.words == text && d.alpha > 0.05 }) is Some(i) else { return }
-      let wd = drawn[i]
-      if set_out < 0.0 {
-        set_out = at
-      }
-      guard at < set_out + 0.24 * @sfbase.flight_desk_ms - 1.0 else { return }
-      // (a ground round the words drawn by the window's tree, as big as a bubble at most (not the column's, the
-      // list's): theirs come in early)
-      let (cx, cy) = (wd.x + wd.w / 2.0, wd.y + 4.0)
-      for d in drawn {
+    let (name, w, _, _) = screen
+    // (a ground round the words drawn by the window's tree, as big as a bubble at most (not the column's, the list's):
+    // how much of it is seen)
+    let frames = dk_sent_frames(screen, script, text, fn(tr, _, wd) {
+      let (cx, cy) = (wd.0 + wd.2 / 2.0, wd.1 + 4.0)
+      let mut seen = 0.0
+      for d in tr.drawn() {
         if (d.ground & 0xFFL) > 0L && d.w < 0.6 * w && d.h < 200.0 && d.x <= cx && d.x + d.w >= cx && d.y <= cy && d.y + d.h >= cy {
-          bad.push("\{name} @\{at.round()}ms (set out @\{set_out.round()}): ground \{d.ground} round them at (\{d.x}, \{d.y}, \{d.w}, \{d.h})")
-          break
+          seen = @cmp.maximum(seen, (d.ground & 0xFFL).to_double() / 255.0 * d.alpha)
         }
       }
+      seen
     })
+    // (their ground's own alpha whole as it rests: what it is seen at as they land is the most it is)
+    let most = frames.fold(init=0.0, fn(m, f) { @cmp.maximum(m, f.3) })
+    let frames = frames.map(fn(f) { (f.0, f.1, f.2, if most > 0.0 { f.3 / most } else { 0.0 }) })
+    bad.append(dk_one_way_in(name, "their ground", frames, dk_landed_at(frames)))
   }
   if !bad.is_empty() {
-    fail("ground round words sent too early: \{bad.length()}, first \{bad[0]}")
+    fail("ground round words sent not on their way across: \{bad.length()}, first \{bad[0]}")
   }
 }
 
 ///|
-test "words sent the station takes at once: what is under them (its time, 等待 agent 接收) comes in as they land, never seen while they fly" {
+test "words sent the station takes at once: what is under them (its time, 等待 agent 接收) comes in on their flight's way across, whole as they land, never after" {
+  let text = "发布前再看一眼签名"
   let script =
     #|timeout 20000
     #|until 发消息
@@ -671,33 +732,28 @@ test "words sent the station takes at once: what is under them (its time, 等待
     #|exit
   let bad = []
   for screen in dk_screens {
-    let (name, w, h, platform) = screen
-    let mut set_out = -1.0
-    dk_host_each(
-      "chat",
-      w,
-      h,
-      platform,
+    let (name, _, h, _) = screen
+    let under = ["等待 agent 接收", "刚刚"]
+    let frames = dk_sent_frames(
+      screen,
       script,
-      fn(t, at) {
-        guard @ui.view_tree() is Some(tr) else { return }
-        if set_out < 0.0 && tr.drawn().iter().any(fn(d) { d.words == "发布前再看一眼签名" && d.alpha > 0.05 }) {
-          set_out = at
-        }
-        guard set_out >= 0.0 && at < set_out + @sfbase.flight_desk_ms - 1.0 else { return }
-        let under = ["等待 agent 接收", "刚刚"]
+      text,
+      fn(_, t, _) {
+        let mut seen = 0.0
         for wd in t.words() {
-          let (txt, x, y, _, _, a) = wd
-          if a > 0.05 && under.contains(txt) && y > h / 2.0 {
-            bad.push("\{name} @\{at.round()}ms (set out @\{set_out.round()}): 「\{txt}」 at (\{x}, \{y}) seen \{a}")
+          let (txt, _, y, _, _, a) = wd
+          if under.contains(txt) && y > h / 2.0 {
+            seen = @cmp.maximum(seen, a)
           }
         }
+        seen
       },
       delivered_in=60.0,
     )
+    bad.append(dk_one_way_in(name, "what is under them", frames, dk_landed_at(frames)))
   }
   if !bad.is_empty() {
-    fail("under words sent seen while they fly: \{bad.length()}, first \{bad[0]}")
+    fail("under words sent not on their way across: \{bad.length()}, first \{bad[0]}")
   }
 }
 

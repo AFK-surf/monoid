@@ -176,6 +176,13 @@ fn build(host : @host.Host, files : Files, db_path : String, dir : String, from_
                   return
                 }
                 let mut row = shaped(files, table, get(rec, "row").unwrap_or(Obj([])), head_dir, data_dir)
+                // (the station's own chats, as a copy from before the rename names them)
+                if table == "threads" && text_of(get(row, "surface")) is Some(s) && former_own_names.contains(s) {
+                  row = set(row, "surface", str(stillfail_surface))
+                }
+                if (table == "sessions" || table == "thread_sessions") && text_of(get(row, "connect")) is Some(c) && former_own_names.contains(c) {
+                  row = set(row, "connect", str(stillfail_connect))
+                }
                 if (table == "sessions" || table == "thread_sessions") && text_of(get(row, "connect")) is Some(c) && get(connects, c) is Some(Str(there)) {
                   row = set(row, "connect", Str(there))
                 }

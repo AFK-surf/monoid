@@ -20,7 +20,8 @@
 /// `default_on`: while it is its layer's default, pressed by Enter that nothing with the focus takes (a dialog's primary
 /// button; never one that cannot be undone: @view.View::default_press).
 /// `on_night`: on a stage, on the night whatever the theme (the old button's `on_night`: the primary the white, its words
-/// the night; the others the white at 12%).
+/// the night; the others the white at 12%). Pressed while `disabled` and not `busy`, shaken across where it is drawn
+/// (refused_shake), its press not run.
 /// The node.
 #callsite(autofill(loc))
 pub fn button_node(
@@ -123,6 +124,9 @@ fn button_by(
     v.reacts(marked, fn(on) { if icon == "" { open.go(v, if on { 1.0 } else { 0.0 }, button_reshape) } else { open.go_ms(v, if on { 1.0 } else { 0.0 }, dur_ms) } })
     v.reacts(done, fn(on) { if on { tick.go_from(v, 0.0, 1.0, button_tick_in) } else { tick.go_ms(v, 0.0, dur_ms) } })
     v.reacts(disabled, fn(off) { seen.go_ms(v, if off { 0.45 } else { 1.0 }, dur_ms) })
+    // (pressed while it cannot be (not at work: a press then is on its way already), shaken where it is drawn: told
+    // from a press that missed it, refused_shake)
+    refused_shake(v, fn() { disabled() && !busy() })
     // (its ground, edge and words' ink as the tone has them, the hand's step as far as it has gone; pressed, that step
     // whole and one more: a solid one a shade darker, a quiet one the hover's ink once more over it)
     let looks_by = fn(h : Double) {

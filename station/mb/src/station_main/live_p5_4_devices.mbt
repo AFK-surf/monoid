@@ -690,8 +690,16 @@ async fn P54DevWorld::call(self : P54DevWorld, name : String, given : Array[@jsj
     "store.getSession" => p54_session_row(bus, s(0)).unwrap_or(Json::null())
     "store.starter" => self.threads.starter(a(0).unwrap_or(Json::null()))
     "store.firstText" => self.threads.first_text(a(0).unwrap_or(Json::null()))
-    "store.latestThread" => self.threads.latest_thread(a(0).unwrap_or(Json::null()))
-    "store.latestThreadIfReady" => self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
+    "store.latestThread" => {
+      let v = self.threads.latest_thread(a(0).unwrap_or(Json::null()))
+      bus.drain_thread_requests(self.threads)
+      v
+    }
+    "store.latestThreadIfReady" => {
+      let v = self.threads.latest_thread_if_ready(a(0).unwrap_or(Json::null()))
+      bus.drain_thread_requests(self.threads)
+      v
+    }
     "store.sessionThreadById" => self.threads.session_thread_by_id(a(0).unwrap_or(Json::null()), a(1).unwrap_or(Json::null()))
     "store.pendingCardHeader" => self.threads.pending_card_header(a(0).unwrap_or(Json::null()))
     "store.pendingCardHeaderIfReady" => self.threads.pending_card_header_if_ready(a(0).unwrap_or(Json::null()))

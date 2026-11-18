@@ -60,9 +60,10 @@ pub fn chat_talk(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, pane : I
   chat_drop(c, src, r.station, draft, pane)
   // words dragged in from another app and let go anywhere on the pane but a field (a field takes them where they
   // were let go: ⌘F's, the composer's): into the composer's field at its caret, as a paste's
-  // files from this machine's Finder let go anywhere on it but another field, where it is a station: into the draft by
-  // their station and path, as a row of the 文件 tab let go there (chat_drop); elsewhere as words, as above
-  if @sfbase.finder_by_station() {
+  // files from this machine's Finder let go anywhere on it but another field, where it is a station of the chat's
+  // workspace: into the draft by their station and path, as a row of the 文件 tab let go there (chat_drop); elsewhere
+  // (or where the host says no paths, as Windows' does) read and put in as files picked are
+  if @sfbase.finder_by_station_in(w.id) {
     match c.paths_into(pane, @sfpages.composer_field_key) {
       Some(paths) => {
         let dragged = @sfbase.finder_dragged(src, paths)
@@ -73,6 +74,7 @@ pub fn chat_talk(c : @ui.Ctx, src : Source, w : Workspace, r : ChatRef, pane : I
       None => ()
     }
   }
+  c.files_into(pane, @sfpages.composer_field_key, fn(files) { @sfbase.picked_files_into(draft, files) })
   c.words_into(pane, @sfpages.composer_field_key)
 }
 

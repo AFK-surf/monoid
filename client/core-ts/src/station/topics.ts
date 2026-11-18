@@ -74,6 +74,8 @@ export class StationTopics implements Owner {
   readonly #olders = new Map<string, { reading: boolean; failed: string | null; misses: number }>();
   /// Each open `letters` topic: how far its chat went when all of it was last asked for.
   readonly #wholes = new Map<string, number>();
+  /// What each topic shown makes urgent in the sync now (`#urgent`), as it was last said to the scheduler.
+  readonly #raised = new Map<string, string>();
   /// Where chats were left (`chat.place`), as told this run or read from the database.
   readonly #places = new Map<string, LeftAt | null>();
   /// The chats whose place cores before kept in the host's storage was looked for this run.
@@ -116,33 +118,53 @@ export class StationTopics implements Owner {
     };
   }
 
-  /// What a topic shown makes urgent in the sync.
-  #urgent(topic: Topic): string | null {
-    const station = topic.station as string;
+  /// What a topic shown makes urgent in the sync (the scheduler's keys' prefixes): a chat's messages, its summary and
+  /// its agents' sessions; an agent's session; its history and session; the jobs a job's card shows; the logins a
+  /// login's card does.
+  #urgent(topic: Topic, station: string): string[] {
     switch (topic.topic) {
       case "thread":
-        return `${station} entries/${topic.thread}`;
+        return [`${station} entries/${topic.thread}`, `${station} thread/${topic.thread}`, ...membersOf(this.summary(station, topic.thread as number)).map((k) => `${station} session/${k}`)];
       case "session":
-        return `${station} session/${topic.key}`;
+        return [`${station} session/${topic.key}`];
       case "live":
-        return `${station} transcript/${topic.key}`;
+        return [`${station} transcript/${topic.key}`, `${station} session/${topic.key}`];
+      case "job":
+        return [`${station} jobs`];
+      case "machineLogin":
+        return [`${station} machineLogins`];
       default:
-        return null;
+        return [];
     }
   }
 
+  /// What a topic shown makes urgent said to the scheduler, where it changed (a chat's summary come after it opened,
+  /// naming its agents): ahead of what is kept current around it, and in the room a station's lane keeps for the urgent
+  /// (scheduler.ts URGENT_ROOM), so a slow read of a list never holds it up.
+  #raise(topic: Topic, station: string): void {
+    const key = topicKey(topic);
+    const urgent = this.#urgent(topic, station);
+    const said = urgent.join("\n");
+    if (urgent.length === 0 || this.#raised.get(key) === said) return;
+    this.#raised.set(key, said);
+    this.#core.scheduler.prioritize(key, urgent, Priority.focused);
+  }
+
+  /// The station a topic of a station's is of: a job's names it as the others do, though no list of the station's is it.
+  #stationOf(topic: Topic): string | null {
+    return topicStation(topic) ?? (topic.topic === "job" && typeof topic.station === "string" ? topic.station : null);
+  }
+
   start(topic: Topic): void {
-    const station = topicStation(topic);
+    const station = this.#stationOf(topic);
     if (station === null) return;
     try {
       StationAddr.parse(station);
     } catch {
       return;
     }
-    // What a UI has open (a chat's messages, its agent, a history): ahead of what is kept current around it, and in the
-    // room a station's lane keeps for the urgent (scheduler.ts URGENT_ROOM), so a slow read of a list never holds it up.
-    const urgent = this.#urgent(topic);
-    if (urgent) this.#core.scheduler.prioritize(topicKey(topic), urgent, Priority.focused);
+    // What a UI has open (a chat's messages, its agent, a history, a job's or a login's card): urgent (#raise).
+    this.#raise(topic, station);
     if (topic.topic === "thread") {
       const id = topic.thread as number;
       // Opened: the most recently used, kept while shown. Let go for room before, or a chat no list has (opened from an
@@ -213,9 +235,10 @@ export class StationTopics implements Owner {
   }
 
   stop(topic: Topic): void {
-    const station = topicStation(topic);
+    const station = this.#stationOf(topic);
     if (station === null) return;
     const key = topicKey(topic);
+    this.#raised.delete(key);
     if (topic.topic === "thread") this.#core.data.opened("entry", station, String(topic.thread), false);
     this.#wholes.delete(key);
     if (topic.topic === "live") this.#core.data.opened("transcript", station, topic.key as string, false);
@@ -731,6 +754,8 @@ export class StationTopics implements Owner {
     const data = this.#core.data;
     const tk = topicKey(topic);
     const summary = this.summary(station, id);
+    // (its summary come after it opened: its agents' sessions urgent too)
+    if (summary !== null && this.#raised.has(tk)) this.#raise(topic, station);
     const span = data.logSpan("entry", station, String(id));
     const latest = this.#latest(station, id);
     let window = this.#windows.get(tk);
@@ -1007,8 +1032,10 @@ export class StationTopics implements Owner {
   }
 
   /// What of a chat is not on the device read onto it (`chat.bring`), while its station answers; how much of it is then.
+  /// A person waits on it (a search in the chat): the station's background waits meanwhile, and what is idle there gives
+  /// way (scheduler.ts `foregroundBegin`), its reads quiet all the same.
   bring(station: string, id: number): Effect.Effect<{ held: number; of: number; whole: boolean }, CoreError> {
-    return Effect.gen({ self: this }, function* () {
+    const reading = Effect.gen({ self: this }, function* () {
       const channel = entriesOf(station, id);
       if (this.#sync.link(station) && this.#sync.reachable(station)) {
         for (let read = this.#sync.channels.next(channel); read !== null; read = this.#sync.channels.next(channel)) {
@@ -1018,6 +1045,11 @@ export class StationTopics implements Owner {
       }
       return this.held(station, id);
     });
+    return Effect.acquireUseRelease(
+      Effect.sync(() => this.#core.scheduler.foregroundBegin(station)),
+      () => reading,
+      (end) => Effect.sync(end),
+    );
   }
 
   /// The messages of a chat that have every word of `query`, oldest first, with their words and how many times the

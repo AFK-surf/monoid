@@ -1239,7 +1239,7 @@ pub async fn Hub::continue_machine_session(self : Hub, roots : Json, found : Jso
   ], lang~)
   ignore(
     self.tw(() => self.threads.insert_message(
-      jv({ "thread": thread_id, "ts": Json::string(self.next_ts()), "authorKind": "ember", "author": "ember", "text": Json::string(note) }),
+      jv({ "thread": thread_id, "ts": Json::string(self.next_ts()), "authorKind": "station", "author": "station", "text": Json::string(note) }),
     )),
   )
   ignore(self.tw(() => self.threads.set_read(Json::string(created_by), thread_id, self.threads.last_entry(thread_id))))

@@ -99,11 +99,12 @@ test "what was sent from here, made once as nodes, is drawn as the old view drew
   for c in out_cases() {
     for w in [760.0, 390.0] {
       let at = "\{c.0} at \{w}"
+      // (past sending_shows_ms, 正在发送 in its time's place where the station has it not, settled)
       let old = out_old(w, dec_src(@signals.signal(c.2), []), c.1)
-      old.run_for(sending_shows_ms)
+      old.run_for(sending_shows_ms + @ui.move_most_ms)
       let was = head_drawn(old)
       let t = out_new(w, dec_src(@signals.signal(c.2), []), fn() { c.1 })
-      t.run_for(sending_shows_ms)
+      t.run_for(sending_shows_ms + @ui.move_most_ms)
       assert_eq(head_drawn(t), was, msg=at)
       dec_audit(t, at)
     }
@@ -112,18 +113,18 @@ test "what was sent from here, made once as nodes, is drawn as the old view drew
     let c = out_cases()[k]
     let old = out_old(390.0, dec_src(@signals.signal(c.2), []), c.1)
     old.set_font_scale(1.3)
-    old.run_for(sending_shows_ms)
+    old.run_for(sending_shows_ms + @ui.move_most_ms)
     let was = head_drawn(old)
     let t = out_new(390.0, dec_src(@signals.signal(c.2), []), fn() { c.1 })
     t.set_font_scale(1.3)
-    t.run_for(sending_shows_ms)
+    t.run_for(sending_shows_ms + @ui.move_most_ms)
     assert_eq(head_drawn(t), was, msg=c.0 + " at 1.3")
     dec_audit(t, c.0 + " at 1.3")
   }
 }
 
 ///|
-test "正在发送 is not seen before it has been on its way sending_shows_ms, as the old view's" {
+test "before it has been on its way sending_shows_ms: its time under it, as the core says it from the first, not 正在发送, as the old view's" {
   let o = out_entry("sending")
   let old = out_old(760.0, dec_src(@signals.signal(None), []), o)
   old.run_for(@ui.move_most_ms)
@@ -131,6 +132,8 @@ test "正在发送 is not seen before it has been on its way sending_shows_ms, a
   let t = out_new(760.0, dec_src(@signals.signal(None), []), fn() { o })
   t.run_for(@ui.move_most_ms)
   assert_eq(head_drawn(t), was)
+  assert_true(t.find("刚刚") is Some(_))
+  assert_false(t.words().iter().any(fn(w) { w.0 == @sf.t("web-main.chat.sending") && w.5 > 0.0 }))
   dec_audit(t, "before")
 }
 

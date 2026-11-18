@@ -299,7 +299,7 @@ async fn Reading::thread(self : Reading, id : Json) -> Unit {
   if self.archived && !archived {
     return
   }
-  let surface = if field(row, "surface") == Json::string("ember") { "stillfail" } else { "slack" }
+  let surface = if field(row, "surface") == Json::string("chat") { "stillfail" } else { "slack" }
   let first_text = match
     one(
       self.db,
@@ -649,7 +649,7 @@ fn js_string(v : Json) -> String {
 fn Reading::job_thread(self : Reading, key : Json) -> Json? raise {
   for t in
     self.db.all(
-      "SELECT t.id FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = 'ember' ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
+      "SELECT t.id FROM thread_sessions ts JOIN threads t ON t.id = ts.thread WHERE ts.session = ? AND t.surface = 'chat' ORDER BY ts.joined_at DESC, ts.rowid DESC LIMIT 1",
       [key],
     ) {
     return Some(field(t, "id"))

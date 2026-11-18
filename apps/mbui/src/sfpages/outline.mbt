@@ -707,6 +707,16 @@ fn said_now(src : Source, r : ChatRef, v : ChatView, railed? : Bool = false) -> 
 }
 
 ///|
+/// The message chat `r`'s outline opens at as a press finds it (outline_current, as outline_open_keys reads it): where
+/// its list's reader is (sfbase's Reading), among what people said as its rail or its window holds it, the chat's
+/// messages read at once where its view `v` is its head alone (a chat's info's 对话目录, chat_info_node).
+pub fn outline_reading_at(src : Source, r : ChatRef, v : ChatView) -> Double {
+  let whole = chat_whole(src, r, v)
+  let rd = reading_of(chat_key(r))
+  outline_current(said_now(src, r, whole), reader_top(rd, whole, rd.top_seq), rd.at_end)
+}
+
+///|
 /// The outline of chat `r` (its view `v`) opened from the keys or ⌘K: beside its round button or its rail where one
 /// shows (a page made as nodes: its round button's node `button`, while it shows, else its rail's `rail`, beside its
 /// middle), else as the presenters put what nothing opened (a dialog; a sheet on Small); its field taking the keys.

@@ -505,7 +505,7 @@ test("cancel retry addresses the notice and leaves a different retry alone", asy
   try {
     const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const thread = made.thread.id;
-    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "ember", "ember", "⚠️ capacity"));
+    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "station", "station", "⚠️ capacity"));
     r.store.startTurn("retry", made.key, "input");
     r.store.setAbout("retry", [thread, seq, "2.0"]);
     r.store.endTurn("retry", "failed", "overloaded: at capacity", "waiting", 30);
@@ -525,7 +525,7 @@ test("retry takes up again the failed turn its notice is about, and only that no
   try {
     const [, made] = await r.ask("POST", "/sessions", { runtime: "claude" });
     const thread = made.thread.id;
-    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "ember", "ember", "⚠️ 与模型服务的连接中断，回复即可重试"));
+    const [seq] = r.store.insertMessage(newMessage(thread, "2.0", "station", "station", "⚠️ 与模型服务的连接中断，回复即可重试"));
     r.store.startTurn("lost", made.key, "input");
     r.store.setAbout("lost", [thread, seq, "2.0"]);
     r.store.endTurn("lost", "failed", "network: fetch failed", null, null);

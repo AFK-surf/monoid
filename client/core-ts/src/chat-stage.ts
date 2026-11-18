@@ -110,6 +110,14 @@ export function isRunningOrWaitingAsync(row: J): boolean {
   return leadsActive(row);
 }
 
+/// Whether its agents are seated and none has begun a turn (nothing asked of them yet). Of itself no stage: a chat a
+/// connect made waits so for its first message from a person; a chat made here whose first message is still on its way
+/// is at work (views.ts #unsentRow, `going`).
+export function noTurnBegun(row: J): boolean {
+  const agents = arr(get(row, "agents"));
+  return agents.length > 0 && agents.every((a) => present.sessionStatus(a) === "idle");
+}
+
 /// The board's column of a chat for the viewer, the first that holds: it needs them (等你处理, even while it keeps
 /// watch); a watch kept (监控中, while the watch wakes it too); at work, or asking a colleague (进行中); else ended
 /// (待收口).

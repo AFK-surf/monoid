@@ -377,6 +377,7 @@ pub fn search_page_node(
   })
   |> ignore
   v.box(fn(top) { top.height(By(fn() { Some(inset()) })) |> ignore }) |> ignore
+  let combo : Ref[@sf.SearchCombo?] = Ref(None)
   v.box(fn(bar) {
     @sf.style_node(bar, fn() { search_bar_row })
     // (取消's room beside the field as it comes in: its words' width and the room before them)
@@ -394,6 +395,8 @@ pub fn search_page_node(
       // (from where it stood in the list: its top in the window then, to where it rests)
       .offset(By(fn() { (0.0, (search.from - inset() - search_bar_top) * (1.0 - u())) }))
       |> ignore
+      // (the search's combobox: the field's slot, its list's lines the options: finder_combobox_node)
+      combo.val = Some(finder_combobox_node(slot, fn() { @sf.t("android-chat.search.field") }, close))
       // (the library's field to look through a list by, as the one in the list it came up from looks: its clear key
       // while it holds words)
       let field = @sf.search_input_node(
@@ -434,10 +437,10 @@ pub fn search_page_node(
     @sf.style_node(l, fn() { @sf.list_line(at) })
     finder_list_node(
       l,
+      combo.val.unwrap(),
       src,
       workspace,
       fn() { (search.offered)() },
-      close,
       // (who, where and when under a line's words where the list is narrow: a side column's always, across a
       // phone's screen by its width)
       fn() {

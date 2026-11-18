@@ -1935,8 +1935,22 @@ fn P52::tools(self : P52) -> Array[@mcp_tools.Tool] {
       None => tools.push(tool)
     }
   }
+  // (in the order the TypeScript lists them, its tools then its parts' as main.ts's layers give them: a session handed
+  // between the two keeps its list of tools, and so its runtime's cached prompt; one not named here after, as given)
+  let place = (t : @mcp_tools.Tool) => tools_order.search(t.name).unwrap_or(tools_order.length())
+  tools.mut_view().stable_sort_by((a, b) => place(a).compare(place(b)))
   tools
 }
+
+///|
+let tools_order : Array[String] = [
+  "chat_post", "slack_api", "chat_state", "chat_leave", "chat_history", "chat_list", "chat_read", "session_send", "chat_create",
+  "chat_archive", "session_history", "archive_policy", "station_list", "station_task", "station_file", "workspace_limit",
+  "job_start", "job_list", "job_log", "job_stop", "screen", "permissions", "computer", "peer_forward", "relays",
+  "station_version", "sign_in", "secret_list", "secret_use", "secret_save", "secret_describe", "secret_delete", "secret_cancel",
+  "secret_reask", "secret_run", "phone_use", "phone_send", "adb_devices", "browser", "feedback_send", "feedback_reply",
+  "skill_read", "search", "station_use", "device_list", "device_use", "station_retire", "station_move", "login", "feishu_api",
+]
 
 ///|
 /// The agents' door's `/mcp` (tools/http.ts over tools/mcp.ts `McpEndpoint`).

@@ -13,8 +13,8 @@ test("missing old decision results leave the available usage and chat totals vis
   const store = Store.open(":memory:");
   try {
     session(store, "a", "workspace-a");
-    const thread = store.openThread("ember", "CHAT", "chat", null, null).id;
-    store.joinThread(thread, "a", "ember");
+    const thread = store.openThread("chat", "CHAT", "chat", null, null).id;
+    store.joinThread(thread, "a", "chat");
     store.recordUsage("/a", { session: "a", offset: 1, model: "m" }, "claude", [[{
       id: "call", at: 60_000, model: "m", subagent: false, fast: false, input: 2, cacheRead: 0,
       cacheWrite: 0, cacheWriteLong: 0, output: 1, calls: 1, context: null, window: null,
@@ -24,7 +24,7 @@ test("missing old decision results leave the available usage and chat totals vis
     assert.equal(result.history.cardsIncomplete, true);
     assert.equal(result.history.cards, undefined);
     assert.equal(result.history.picked, undefined);
-    assert.deepEqual(result.history.places, { ember: 1 });
+    assert.deepEqual(result.history.places, { chat: 1 });
     assert.deepEqual(result.history.days.map((day: { tokens: number }) => day.tokens), [3]);
   } finally { store.close(); }
 });
@@ -43,12 +43,12 @@ test("usage history counts only the chats and cards visible in the viewer's work
     thread("slack:a", "a", ["a"], true);
     const b = thread("feishu:b", "b", ["b"], false);
     thread("slack:shared", "shared", ["a", "b"], true);
-    thread("ember", "orphan", [], false);
+    thread("chat", "orphan", [], false);
     store.db.prepare("UPDATE threads SET hidden_at = 1 WHERE id = ?").run(b);
     const reader = makeStore(store.db, ".");
 
     const a = usageHistory(reader, 0n, { workspace: "workspace-a", home: true });
-    assert.deepEqual(a.places, { slack: 2, ember: 1 });
+    assert.deepEqual(a.places, { slack: 2, chat: 1 });
     assert.deepEqual([a.cards, a.picked, a.archived], [3, 2, 0]);
     const other = usageHistory(reader, 0n, { workspace: "workspace-b", home: false });
     assert.deepEqual(other.places, { feishu: 1, slack: 1 });

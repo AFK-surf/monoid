@@ -442,6 +442,18 @@ pub async fn answer_screen(
   if field(ask, "gamut") is Some(g) {
     options.push(("gamut", g))
   }
+  let no_passkeys = match field(ask, "passkeys") {
+    Some(False) => true
+    Some(True) => false
+    _ =>
+      match field(ask, "app") {
+        Some(String("ios" | "android" | "web")) => true
+        _ => false
+      }
+  }
+  if driven && no_passkeys {
+    options.push(("passkeys", Json::boolean(false)))
+  }
   let view = (source.open)(jobj(options)) catch {
     ScreenRefused(status, key, args, access) => {
       let shown = access_shown(access, lang, tr)

@@ -592,14 +592,26 @@ test("children started, followed to their end, given input and signals; a lock o
   const missing = await harness().send("spawn", { program: "/no/such/program", args: [] });
   assert.match(missing.error, /^ENOENT/);
   // a group of its own, ended with its children
-  const sleeper = await ok("spawn", { program: "/bin/sh", args: ["-c", "sleep 30 & sleep 30; wait"], env: { PATH: "/bin:/usr/bin" }, group: true, detach: true });
-  assert.equal(await ok("pidAlive", { pid: sleeper.pid }), true);
-  assert.equal(await ok("kill", { pid: sleeper.pid, signal: "SIGTERM", group: true }), true);
-  for (let i = 0; i < 100 && (await ok("pidAlive", { pid: sleeper.pid })); i++) await new Promise((r) => setTimeout(r, 20));
-  // (a zombie until it is waited for: the program's thread waits for it)
-  // (its children, orphaned as it ended, reaped by the system a moment after)
-  for (let i = 0; i < 100 && spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim() !== ""; i++) await new Promise((r) => setTimeout(r, 20));
-  assert.equal(spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim(), "", "nothing of its group left");
+  const sleeper = await ok("spawn", { program: "/bin/sh", args: ["-c", "sleep 30 & sleep 30 & wait"], env: { PATH: "/bin:/usr/bin" }, group: true, detach: true });
+  const group = () => spawnSync("pgrep", ["-g", String(sleeper.pid)], { encoding: "utf8" }).stdout.trim().split("\n").filter((p) => p !== "");
+  try {
+    assert.equal(await ok("pidAlive", { pid: sleeper.pid }), true);
+    // (both children in its group before the group is signalled: a child the shell forks as the signal walks the group
+    // is not in it yet, takes no signal pending on the shell, and is left sleeping in the group once the shell ends)
+    for (let i = 0; i < 100 && group().length < 3; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.equal(group().length, 3, "the shell and both its children in its group");
+    assert.equal(await ok("kill", { pid: sleeper.pid, signal: "SIGTERM", group: true }), true);
+    for (let i = 0; i < 100 && (await ok("pidAlive", { pid: sleeper.pid })); i++) await new Promise((r) => setTimeout(r, 20));
+    // (a zombie until it is waited for: the program's thread waits for it)
+    // (its children, orphaned as it ended, reaped by the system a moment after)
+    for (let i = 0; i < 100 && group().length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    assert.deepEqual(group(), [], "nothing of its group left");
+  } finally {
+    // (what a failed assertion leaves of the group, not left sleeping past the test)
+    try {
+      process.kill(-sleeper.pid, "SIGKILL");
+    } catch {}
+  }
   assert.equal(await ok("parentPid"), process.pid);
   // the lock: taken, then a second process waits for it until it is let go
   const lock = join(dir, "pack.lock");
@@ -742,7 +754,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
   a.tell({ op: "handover" });
   const carry = await a.next("carry", (m) => m.carry !== undefined);
-  assert.deepEqual(Object.keys(carry.carry), ["vault"], "what its parts carry, by part (the vault's grants and boxes waiting)");
+  assert.deepEqual(Object.keys(carry.carry).sort(), ["live.plans", "live.tails", "vault"], "what its parts carry, by part (where the live view read each checklist and transcript to; the vault's grants and boxes waiting)");
+  assert.ok(Array.isArray(carry.carry["live.plans"]) && Array.isArray(carry.carry["live.tails"]), JSON.stringify(carry.carry));
   assert.equal(typeof carry.carry.vault, "object");
   assert.notEqual(carry.carry.vault, null);
   assert.equal(await a.ended, 0);

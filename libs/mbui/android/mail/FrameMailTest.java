@@ -113,6 +113,8 @@ public final class FrameMailTest {
         check(t.glyphs.equals(List.of("a", "b", "c")), "both's glyphs, in order: " + t.glyphs);
         check(t.shows == 20 && t.lat == 1, "shown when the second is, its latency frame");
         check(!m.take().took, "none left");
+        check(m.takeDropped() == 1, "the first, never drawn, counted dropped");
+        check(m.takeDropped() == 0, "read once: none since");
         // (one that presents nothing: no frame, its glyphs left for the next, counted as made)
         long made = m.made();
         List<String> placed = glyphs("d");
@@ -221,8 +223,38 @@ public final class FrameMailTest {
         check(t.took && t.glyphs.equals(List.of("c")) && t.shows == 4, "and drawn");
     }
 
+    /**
+     * The frames never drawn, each's place taken by a newer one while it waited, counted as they are: not one taken to
+     * read back, nor one that presents nothing, nor a redraw of the frame kept; read and put back at once.
+     */
+    static void droppedCounted() {
+        List<String> log = new ArrayList<>();
+        Native n = new Native(log);
+        FrameMail<String> m = new FrameMail<>(n);
+        m.contextTold(m.contextMade());
+        frame(m, n, 0);
+        draw(m, log);
+        check(m.takeDropped() == 0, "one handed over, drawn: none dropped");
+        // three handed over while the GL thread draws none of them: the first two's places taken
+        frame(m, n, 1);
+        frame(m, n, 2);
+        frame(m, n, 3);
+        check(m.takeDropped() == 2, "two never drawn");
+        draw(m, log);
+        check(m.takeDropped() == 0, "the newest drawn: none more");
+        // (nor one presenting nothing, a redraw of the frame kept, one taken to read back and drawn as owed)
+        m.handOver(4, glyphs());
+        check(m.redrawAsked(5), "a redraw");
+        frame(m, n, 6);
+        m.takeForSync();
+        frame(m, n, 7);
+        draw(m, log);
+        check(m.takeDropped() == 0, "none of those dropped");
+    }
+
     public static void main(String[] args) {
         newestDrawn();
+        droppedCounted();
         tasksAmongFrames();
         retiredOnceShown();
         contextAnew();

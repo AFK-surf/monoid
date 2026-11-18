@@ -1628,6 +1628,7 @@ test "自动 asks again as the stage grows a tenth a side, not as it grows less 
 test "a page asking for a passkey while driving a tab: 用通行密钥登录; signed on this device, what it signed sent; a no told the page; none on a host without passkeys" {
   let r = screen_rig()
   r.live(others=[])
+  assert_eq(r.told("screen.view")[0] is { "passkeys": False, .. }, true)
   let ask = fn(rp : String) -> Json {
     {
       "id": "7",
@@ -2101,5 +2102,83 @@ test "a screen left covered by a background tab opens at once when mounted in an
   nav_rested(r.t)
   assert_false(screen_ui(screen_key("ws-1/st-1", "browser:tab-1")).covered.get())
   assert_eq(r.told("screen.view").length(), 3)
+  screen_done(r.t)
+}
+
+///|
+test "browser tab bar with keyboard and mouse, passkey close button, and blocked agent-operating prompt" {
+  // 1. In a wide window, a chat side-panel browser tab shows ← → ⟳ directly on its bar.
+  let r = screen_rig(w=1100.0, h=760.0, screen="browser:tab-1", in_tab=true)
+  r.state(
+    "live",
+    others=[],
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "title": Json::string("Welcome"),
+      "address": Json::string("https://accounts.google.com/v3/signin/challenge/pk"),
+    },
+  )
+  r.config()
+  r.frame(1000.0)
+  for label in ["web-pages.screen.back", "web-pages.screen.forward", "web-pages.screen.reload"] {
+    assert_true(r.labelled(tr(label)) is Some(_), msg=label)
+  }
+  assert_false(r.ui().narrow_bar)
+
+  // 2. 用通行密钥登录 always has a close button (×), and pressing it dismisses the card and sends NotAllowedError.
+  screen_fix_passkeys()
+  r.state(
+    "live",
+    others=[],
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "address": Json::string("https://accounts.google.com/v3/signin/challenge/pk"),
+      "passkey": {
+        "id": "pk-1",
+        "host": "accounts.google.com",
+        "rpId": "google.com",
+        "clientData": "{\"type\":\"webauthn.get\"}",
+        "allow": [],
+        "userVerification": "preferred",
+      },
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("用通行密钥登录") is Some(_))
+  let closes = r.t.semantics().filter(fn(s) { s.label == tr("common.close") && !s.hidden && s.rect.1 > 200.0 })
+  assert_eq(closes.length(), 1)
+  let (cx, cy, cw, ch) = closes[0].rect
+  r.t.tap(cx + cw / 2.0, cy + ch / 2.0)
+  r.t.draw()
+  assert_true(r.t.find("用通行密钥登录") is None)
+  let cancelled = r.inputs().filter(fn(i) { text(Some(i), "t") == "passkey" && text(Some(i), "error") == "NotAllowedError" })
+  assert_eq(cancelled.length(), 1)
+  assert_eq(text(Some(cancelled[0]), "id"), "pk-1")
+
+  // 3. While an agent operates the browser, clicking on the picture sends no pointer input and shows a clear heldBy toast.
+  r.state(
+    "live",
+    control=false,
+    take_over=true,
+    controllers=["agent: 查询 Google 账号"],
+    line="只看 · agent: 查询 Google 账号 正在控制",
+    more={
+      "kind": Json::string("browser"),
+      "openUrl": Json::boolean(true),
+      "address": Json::string("https://accounts.google.com/"),
+    },
+  )
+  r.t.draw()
+  assert_true(r.t.find("agent: 查询 Google 账号 正在控制") is Some(_))
+  assert_true(r.labelled(tr("android-misc.screen.takeOver")) is Some(_))
+  let before_ptr = pointers_of(r).length()
+  let (px, py) = r.at(0.5, 0.5)
+  r.t.tap(px, py)
+  r.t.run_for(@sf.later_ms + 20.0)
+  assert_eq(pointers_of(r).length(), before_ptr)
+  assert_true(r.t.find("agent: 查询 Google 账号 正在操作此画面，点「接管」后可操作") is Some(_))
+  r.t.run_for(@sf.toast_ms)
   screen_done(r.t)
 }

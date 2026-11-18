@@ -208,6 +208,7 @@ fn glyphs_forget() -> Unit {
   glyph_moves.val += 1
   text_cache.glyphs.clear()
   text_cache.fresh.clear()
+  glyphs_laid.clear()
   text_cache.atlas = None
   text_cache.colour_atlas = None
 }
@@ -539,6 +540,7 @@ fn clear_shapes() -> Unit {
   // faces change)
   spaced_said.val = None
   spaced_stops_left.val = None
+  marks_narrow.clear()
   for f in text_cache.fonts {
     // a shape and its last layout refer to each other (reference counts
     // never free a cycle): let go of the layout first
@@ -568,24 +570,49 @@ fn has_digit(text : String) -> Bool {
 /// The host's clusters of `text` (h_shape), shaped as they always were; and where the face drew a mark of ambiguous
 /// width a whole em among Latin letters (a CJK face: 思源黑体's "it’s"), shaped again a piece at a time
 /// (@text.width_runs), the narrow pieces with @hostapi.style_proportional, their clusters put together. A face whose
-/// such marks are narrow already (Inter, Segoe UI, San Francisco, the system's) is asked nothing more.
+/// such marks are narrow already (Inter, Segoe UI, San Francisco, the system's) is asked nothing more, and words
+/// with none of those marks, or only marks the face was seen to draw narrow so (marks_narrow), are not cut at all.
 fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : FixedArray[Double]) -> Int {
   let k = h_shape(text, size, weight, style, out)
+  // (only a mark can be found drawn a whole em below: words with none, or with none this face is not known to draw
+  // narrow, come out as shaped, not cut into pieces and looked through)
+  let face = marks_face(weight, style)
+  let known = marks_narrow.get(face).unwrap_or(0)
+  let mut unknown = false
+  for i in 0..<text.length() {
+    if @text.width_mark(text, i) {
+      let bit = width_mark_bit(text.code_unit_at(i).to_int())
+      if bit == 0 || (known & bit) == 0 {
+        unknown = true
+        break
+      }
+    }
+  }
+  guard unknown else { return k }
   let runs = @text.width_runs(text)
   guard runs.length() > 1 || runs[0].2 else { return k }
   // a quote, a middle dot or an ellipsis in a narrow piece drawn a whole em (@text.width_mark): the face is one that
-  // has its marks narrow only when asked
+  // has its marks narrow only when asked; one drawn well under an em there is so in this face (marks_narrow)
   let mut wide = false
+  let mut seen = known
   let mut r = 0
   for j in 0..<k {
     let st = out[j * 4].to_int()
     while r < runs.length() - 1 && st >= runs[r].1 {
       r = r + 1
     }
-    if runs[r].2 && @text.width_mark(text, st) && out[j * 4 + 2] >= size * 0.95 {
-      wide = true
-      break
+    if runs[r].2 && @text.width_mark(text, st) {
+      if out[j * 4 + 2] >= size * 0.95 {
+        wide = true
+        break
+      }
+      if out[j * 4 + 2] < size * marks_narrow_under {
+        seen = seen | width_mark_bit(text.code_unit_at(st).to_int())
+      }
     }
+  }
+  if seen != known {
+    marks_narrow[face] = seen
   }
   guard wide else { return k }
   let cap = out.length() / 4
@@ -607,6 +634,40 @@ fn shape_widths(text : String, size : Double, weight : Int, style : Int, out : F
     }
   }
   k
+}
+
+///|
+/// The marks of ambiguous width (@text.width_mark) each face was seen to draw narrow among Latin letters, as it was
+/// asked for (no style_proportional), a bit a mark (width_mark_bit), by the face (marks_face): words whose every such
+/// mark is one of them are not looked through again (shape_widths).
+// kept across runs: forgotten with the shapes (clear_shapes: a Tester's run, the host's faces changed)
+let marks_narrow : Map[Int, Int] = Map([])
+
+///|
+/// How far under an em a mark is drawn to be seen narrow in its face (marks_narrow): well under the whole em
+/// (shape_widths' 0.95) at any size, whatever a size's pixels round its advance to.
+let marks_narrow_under : Double = 0.6
+
+///|
+/// A face as marks_narrow keeps it: its style (what face, slant and features) and its weight.
+fn marks_face(weight : Int, style : Int) -> Int {
+  (style << 12) | (weight & 0xFFF)
+}
+
+///|
+/// The bit of marks_narrow of the code unit `c`, a mark of @text.width_mark; 0 of any other (never known narrow).
+fn width_mark_bit(c : Int) -> Int {
+  match c {
+    0x2018 => 1
+    0x2019 => 2
+    0x201C => 4
+    0x201D => 8
+    0xB7 => 16
+    0x2027 => 32
+    0x2022 => 64
+    0x2026 => 128
+    _ => 0
+  }
 }
 
 ///|
@@ -1175,24 +1236,66 @@ fn glyph_drawn_any_sub(k : Int) -> Bool {
 }
 
 ///|
-/// The glyphs of what the frame shaped and did not draw (a page pushed, still off the screen; the lines below what a
-/// list shows), handed to the host as the frame's painting is over, to draw them ahead, off the frames' thread: there
-/// when they come into view, a frame or more later, not all drawn in the frame they first show in. What is drawn is the
-/// same; only when the work is done changes (@hostapi.glyphs_ahead).
+/// The glyphs of words just laid out (layout_text, layout_rich) not drawn yet, each with the quarter-pixel phase it is
+/// drawn at (glyph_sub_at) where what holds the words stands on a whole pixel, its pen `x(c)` points into its line: for
+/// the host to draw first at that phase (glyphs_ahead). Most words stand so (a list's rows, a page's columns); one that
+/// does not (centred, or at a padding of no whole pixels) has its glyphs at another phase, drawn on the frame's thread
+/// as before.
+fn laid_ahead(keys : Array[Int], x : (Int) -> Double) -> Unit {
+  let sc = g().scale
+  let z = words_zoom.val
+  for c in 0..<keys.length() {
+    if glyphs_laid.length() >= glyphs_ahead_most {
+      break
+    }
+    let k = keys[c]
+    if k >= 0 && !glyph_drawn_any_sub(k) {
+      glyphs_laid.push(glyph_sub_at(k, x(c), sc, z))
+    }
+  }
+}
+
+///|
+/// The glyphs of what was laid out since they were last handed to the host, each at its phase (laid_ahead).
+// kept across runs: emptied as each frame hands them on (glyphs_ahead) and with the glyphs (glyphs_forget)
+let glyphs_laid : Array[Int] = []
+
+///|
+/// The glyphs of what the frame shaped and laid out and did not draw yet (a page pushed, still off the screen; the lines
+/// below what a list shows; what the frame is about to paint), handed to the host to draw them ahead, off the frames'
+/// thread: as the window's tree is laid out, as the painting begins and as it is over (app.mbt), so what was laid out is
+/// drawn on the host's other cores while the frame goes on, and the rest is there when it comes into view, a frame or
+/// more later. Each at the phase its line put it at (glyphs_laid: bits 26..27 of its key, glyph_sub_at), the host
+/// drawing that phase first; one shaped and not laid out at phase 0. What is drawn is the same; only when and where the
+/// work is done changes (@hostapi.glyphs_ahead).
 fn glyphs_ahead() -> Unit {
   let fresh = text_cache.fresh
-  if fresh.is_empty() {
+  let laid = glyphs_laid
+  if fresh.is_empty() && laid.is_empty() {
     return
   }
-  let keys = FixedArray::make(fresh.length(), 0)
+  let keys = FixedArray::make(fresh.length() + laid.length(), 0)
   let mut n = 0
+  // (each key once; a glyph laid out at a phase not asked again at phase 0 for having been shaped)
+  let asked : Map[Int, Bool] = Map([])
+  for k in laid {
+    let base = k & 0x03FFFFFF
+    if !asked.contains(k) && !glyph_drawn_any_sub(base) {
+      asked[k] = true
+      asked[base | (1 << 30)] = true
+      keys[n] = k
+      n = n + 1
+    }
+  }
   for k in fresh {
-    if !glyph_drawn_any_sub(k) {
+    if !asked.contains(k | (1 << 30)) && !glyph_drawn_any_sub(k) {
+      asked[k | (1 << 30)] = true
       keys[n] = k
       n = n + 1
     }
   }
   fresh.clear()
+  laid.clear()
   if n > 0 {
     h_glyphs_ahead(keys, n)
   }
@@ -1643,6 +1746,8 @@ fn layout_text(
     line_h,
     lv,
   }
+  // (its glyphs not drawn yet, at the phases its lines put them at: drawn ahead so, glyphs_ahead)
+  laid_ahead(s.keys, fn(c) { xs[c] + s.pad })
   if indent == 0.0 {
     s.lay = Some(tl)
     s.lay_max = max_w

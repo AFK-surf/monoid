@@ -111,7 +111,7 @@ fn attention_of(db : @sql.Db, thread : Map[String, Json], latest : Json, creator
     })
   }
   if said == Json::string("all_done") {
-    guard email is Some(e) && creator is Some(c) && field(thread, "surface") == Json::string("ember") else { return None }
+    guard email is Some(e) && creator is Some(c) && field(thread, "surface") == Json::string("chat") else { return None }
     return if unread_by(db, field(thread, "id"), c, @jscase.lower(e)) {
       Some({ "kind": "done", "waitsFor": Json::array(mine), "note": words(latest.value("need")) })
     } else {
@@ -273,7 +273,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     let first = if needs_first { first_text(db, id) } else { Json::null() }
     let chat : Map[String, Json] = {
       "thread": id,
-      "surface": if field(thread, "surface") == Json::string("ember") { "stillfail" } else { field(thread, "surface") },
+      "surface": if field(thread, "surface") == Json::string("chat") { "stillfail" } else { field(thread, "surface") },
       "title": Json::string(chat_title(thread_json(thread), first, Json::null(), word("untitled"), word("directMessage"))),
       "state": outflow_state(latest),
       "creator": who,
@@ -291,7 +291,7 @@ pub fn outflow_chats(db : @sql.Db, host : @host.Host, data : String, sep : Strin
     if url is Some(u) {
       chat["url"] = Json::string(u)
     }
-    if field(thread, "surface") == Json::string("ember") &&
+    if field(thread, "surface") == Json::string("chat") &&
       one(db, "SELECT 1 AS x FROM thread_people WHERE thread = ? AND author >= 'slack:' AND author < 'slack;' LIMIT 1", [id]) is Some(_) {
       chat["router"] = true
     }

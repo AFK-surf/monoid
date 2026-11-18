@@ -946,17 +946,17 @@ let letter_sql_sql : String =
 ///|
 let answer_after_sql : String =
   #|SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.kind = 'message' AND p.author_kind = 'person'
-  #|  AND p.n > ?2 AND ((SELECT surface FROM threads WHERE id = ?1) = 'ember' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = p.n)) LIMIT 1
+  #|  AND p.n > ?2 AND ((SELECT surface FROM threads WHERE id = ?1) = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = p.n)) LIMIT 1
 
 ///|
 let answer_between_sql : String =
   #|SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.kind = 'message' AND p.author_kind = 'person'
-  #|  AND p.n > ?2 AND p.n < ?3 AND ((SELECT surface FROM threads WHERE id = ?1) = 'ember' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = p.n)) LIMIT 1
+  #|  AND p.n > ?2 AND p.n < ?3 AND ((SELECT surface FROM threads WHERE id = ?1) = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = p.n)) LIMIT 1
 
 ///|
 let answer_at_sql : String =
   #|SELECT 1 AS x FROM entries p WHERE p.thread = ?1 AND p.n = ?2 AND p.kind = 'message' AND p.author_kind = 'person'
-  #|  AND ((SELECT surface FROM threads WHERE id = ?1) = 'ember' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = ?2))
+  #|  AND ((SELECT surface FROM threads WHERE id = ?1) = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = ?1 AND d.n = ?2))
 
 ///|
 let conversation_card_before_sql : String =
@@ -1346,14 +1346,14 @@ let session_chat_indexed_sql : String =
 ///|
 let cc_session_keys_sql : String =
   #|SELECT CAST(thread AS TEXT) AS thread FROM cc_session_rows INDEXED BY cc_session_order
-  #|  WHERE session=?1 AND surface != 'ember' ORDER BY last_at DESC,created_at DESC,cc_session_rows.thread DESC LIMIT 20
+  #|  WHERE session=?1 AND surface != 'chat' ORDER BY last_at DESC,created_at DESC,cc_session_rows.thread DESC LIMIT 20
 
 ///|
 let cc_indexed_threads_sql : String =
   #|SELECT t.*,o.connect FROM json_each(?1) c
   #|  CROSS JOIN threads t ON t.id=CAST(json_extract(c.value,'$[0]') AS INTEGER)
   #|  CROSS JOIN thread_sessions o ON o.thread=t.id AND o.session=json_extract(c.value,'$[1]')
-  #|  WHERE t.surface != 'ember'
+  #|  WHERE t.surface != 'chat'
   #|  ORDER BY (SELECT e.at FROM thread_state st JOIN entries e ON e.thread=st.thread AND e.n=st.last_n
   #|    WHERE st.thread=t.id) DESC, t.created_at DESC, t.id DESC LIMIT 20
 

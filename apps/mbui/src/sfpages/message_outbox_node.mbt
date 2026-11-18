@@ -10,15 +10,19 @@
 
 ///|
 /// What is under `o` now, where anything is (outbox_row's order; nothing while it is followed and went, which its row
-/// says apart: mine_said_node's `lone`): what did not go, its time (the station has it), 正在发送; as what is under the
-/// viewer's message is said (mine_said_node's).
-fn outbox_mine_under(o : Outgoing) -> MineUnder {
+/// says apart: mine_said_node's `lone`): what did not go; 正在发送 once it has been on its way a while (`late`:
+/// sending_shows_ms from when it was sent) and the station has not taken it, or while no time of it is said (none is
+/// sent from here: sfbase's sent_local says 刚刚 from the frame it is sent, the core its time of its `createdAt` from
+/// the moment it has it, Outgoing's `time`); else that time. So the station taking it changes
+/// nothing seen: its time was under it already (2026-11-17: 「刚刚」 came in a second time, the room under it opening,
+/// as the station took the message a moment after its words landed).
+fn outbox_mine_under(o : Outgoing, late : Bool) -> MineUnder {
   if o.state == "failed" {
     MineUnsent
-  } else if o.state == "sent" {
-    MineTime
-  } else {
+  } else if o.state != "sent" && (late || o.time is None) {
     MineSending
+  } else {
+    MineTime
   }
 }
 
@@ -128,7 +132,8 @@ let outbox_uploads : @ui.Style = @ui.css("w=Full gap=S1 align=AEnd")
 
 ///|
 /// Under what did not go (outbox_unsent's, as nodes) in `v`: 未发送 (refused as it is: why), why in its tip; then 重试,
-/// or, refused as it is, 编辑 (its words back in the composer, the entry dropped); then 删除. Each turning while the
+/// or, refused as it is, 编辑 (its words back in the composer, the entry dropped); then 删除, not where it may be the
+/// station's already (`unsure`). Each turning while the
 /// core does it, red a moment where that failed (the core's doing, as it says it now), none pressed while one is done,
 /// 重试 and 编辑 not while the chat's station is not reached.
 fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : () -> Outgoing) -> Unit {
@@ -197,18 +202,44 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
         )
       }
     })
-    unsent_button_node(
-      row,
-      here.tips,
-      "trash",
-      @sf.t("common.delete"),
-      fn() { !busy() },
-      dropping,
-      fn() { core_failed(src, ["chat.discard"], on()) },
-      fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
-    )
+    // (one that may be the station's already is only sent again: deleted here it would not be unsaid there)
+    row.show(fn() { !o().unsure }, fn(d) {
+      unsent_button_node(
+        d,
+        here.tips,
+        "trash",
+        @sf.t("common.delete"),
+        fn() { !busy() },
+        dropping,
+        fn() { core_failed(src, ["chat.discard"], on()) },
+        fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+      )
+    })
+    |> ignore
   })
   |> ignore
+}
+
+///|
+/// Beside what is held till its station is reached (outbox_take_back's, as nodes) in `v`: 编辑 (its words back in the
+/// composer, the entry dropped) and 删除, each pressed whether or not the station is reached, none while one is done.
+fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o : () -> Outgoing) -> Unit {
+  let on = fn() { [("station", here.station), ("id", o().id)] }
+  let dropping = fn() { core_doing(src, ["chat.discard"], on()) }
+  unsent_button_node(v, here.tips, "edit", @sf.t("common.edit"), fn() { !dropping() }, fn() { false }, fn() { None }, fn() {
+    let now = @signals.untracked(o)
+    outbox_edit(src, here.station + ":" + here.session, now, fn() { outbox_node_call(src, here, "chat.discard", now.id) })
+  })
+  unsent_button_node(
+    v,
+    here.tips,
+    "trash",
+    @sf.t("common.delete"),
+    fn() { !dropping() },
+    dropping,
+    fn() { core_failed(src, ["chat.discard"], on()) },
+    fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+  )
 }
 
 ///|

@@ -73,6 +73,17 @@ impl Station {
     }
 }
 
+/// What runs the station of the data directory `data` from the release at `app`: the MoonBit station where its
+/// config.json says `"engine": "moonbit"` and the release has the program (a switch of one station's, read at each
+/// start of its process: the next handover or restart takes it), else as `station` says.
+pub fn station_of(app: &Path, data: &Path) -> Station {
+    let reader = app.join(READER_IN_APP);
+    if reader.is_file() && data::Config::read(data).is_ok_and(|c| c.moonbit) {
+        return Station { program: reader, script: None };
+    }
+    station(app)
+}
+
 /// The MoonBit station where the release has it and no Node script; else Node and the script (a release from
 /// before the MoonBit station, rolled back to, and the tests' stand-in), which needs Node in the release.
 pub fn station(app: &Path) -> Station {
@@ -188,6 +199,26 @@ mod tests {
         let station = super::station(&dir);
         assert_eq!(station.script, Some(dir.join("station/main.js")));
         assert_ne!(station.program, dir.join(super::READER_IN_APP));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_station_switched_to_moonbit_runs_it_where_the_release_has_node_too() {
+        let dir = std::env::temp_dir().join(format!("launcher-app-switch-{}", std::process::id()));
+        let data = dir.join("data");
+        std::fs::create_dir_all(dir.join("station")).unwrap();
+        std::fs::create_dir_all(&data).unwrap();
+        std::fs::write(dir.join("station/main.js"), "").unwrap();
+        std::fs::write(dir.join(super::READER_IN_APP), "").unwrap();
+        // not switched: Node, as the release says
+        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
+        // switched in its config.json: the MoonBit station alone
+        std::fs::write(data.join("config.json"), r#"{"engine":"moonbit"}"#).unwrap();
+        let station = super::station_of(&dir, &data);
+        assert_eq!((station.program, station.script), (dir.join(super::READER_IN_APP), None));
+        // switched, but a release with no MoonBit station: Node
+        std::fs::remove_file(dir.join(super::READER_IN_APP)).unwrap();
+        assert_eq!(super::station_of(&dir, &data).script, Some(dir.join("station/main.js")));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }
