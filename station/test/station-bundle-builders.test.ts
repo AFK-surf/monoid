@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, sep } from "node:path";
 import { test } from "node:test";
@@ -15,24 +15,17 @@ import { installLegacyAgent } from "../src/store/legacy-agent-build.ts";
 import { installPeopleSinceIndex } from "../src/store/legacy-people-since.ts";
 import { installWorkspaceUpJobs } from "../src/store/workspace-up-jobs.ts";
 
-// The release is the MoonBit station run by its launcher: no Node's script, addon or version in it (a release that had
-// them is one from before: the launcher runs Node only for station/main.js, the installer fetches Node only for
-// NODE_VERSION), and both programs there to run.
-test("the station in a release is the MoonBit station and its launcher, with no Node", { skip: !process.env.STATION_BUNDLE }, () => {
-  const station = process.env.STATION_BUNDLE!;
-  for (const gone of ["main.js", "mesh.node", "package.json", join("..", "NODE_VERSION"), join("..", "node")])
-    assert.equal(existsSync(join(station, gone)), false, gone);
-  const launcher = join(station, "..", "mesh", "target", "release", platform.exe("stillfail-station"));
-  for (const file of [launcher, program(), join(station, platform.exe("stillfail-runner"))]) {
-    assert.ok(statSync(file).isFile(), file);
-    if (process.platform !== "win32") assert.notEqual(statSync(file).mode & 0o111, 0, `${file} runs`);
-  }
-  const said = spawnSync(launcher, ["handoff-version"], { encoding: "utf8" });
-  assert.equal(said.status, 0, said.stderr);
-  assert.equal(said.stdout, "3\n");
+// The release's main.js loads and answers: a module importing createRequire as the bundle's banner did declared it
+// twice, and every station updated to 0.1.7119 kept its old one (the new one exited with 1 before it was ready).
+test("the station in a release starts", { skip: !process.env.STATION_BUNDLE }, () => {
+  const data = mkdtempSync(join(tmpdir(), "station-bundle-main-"));
+  try {
+    const run = spawnSync(process.execPath, [join(process.env.STATION_BUNDLE!, "main.js"), "status", "--data", data], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+  } finally { rmSync(data, { recursive: true, force: true }); }
 });
 
-/// The release's MoonBit program: the station itself.
+/// The release's MoonBit program, beside its main.js.
 const program = () => join(process.env.STATION_BUNDLE!, platform.exe("stillfail-reader"));
 
 test("a release's live locator finds a transcript", { skip: !process.env.STATION_BUNDLE }, async () => {

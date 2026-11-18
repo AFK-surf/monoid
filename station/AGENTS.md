@@ -2,13 +2,14 @@
 
 ## Its shape
 
-- A release is the MoonBit station (`mb/`, the reader's program at `<app>/station/stillfail-reader`) with the launcher,
-  the runner, the Helper and the files `package.json`'s `build` lays out beside it (`../scripts/station-bundle.sh`): no
-  Node, no `main.js`, no addon, no `NODE_VERSION`, so the installer fetches no Node for it (`../cloud/src/install.ts`)
-  and its feed signs a Node hash of zeros, which stations from before take (`../scripts/release-sign.ts`). The launcher
-  runs `stillfail-reader` with the arguments it gave Node, and Node on `<app>/station/main.js` only for a release with one
-  (one from before, rolled back to; the launcher's tests' stand-in): `native/launcher/src/main.rs` `station`. What
-  follows of Node is the TypeScript the program is held to, run by the tests and `pnpm run build:node`.
+- A release is the TypeScript station on its own Node (`main.js`, `pnpm run build:node`, its `NODE_VERSION`, which the
+  installer fetches: `../cloud/src/install.ts`) beside the MoonBit program it runs as its readers and builders
+  (`<app>/station/stillfail-reader`), the launcher, the runner, the Helper and what `package.json`'s `build` lays out
+  (`../scripts/station-bundle.sh`). The MoonBit program can be the whole station (`mb/src/station_main`, its
+  `mb-live-*.test.ts`), and the launcher runs it so for a release with no `main.js`
+  (`native/launcher/src/main.rs` `station`). Releases ran it so as 0.1.9984 to 0.1.9996 and came back to Node: alone it
+  fell short of the TypeScript in the chats' events, files, peers and the accounts, so a release runs it alone again
+  only once it does all the TypeScript does, held by those tests.
 - Processes: the launcher (`native/launcher`, Rust) keeps the pid, the data directory's lock and the ports, and on an
   update starts the next station process before letting the old one go; each agent process runs under a runner
   (`native/runner`), so a turn goes on while the station restarts or crashes and the next one takes it up

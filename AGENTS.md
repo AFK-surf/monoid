@@ -8,10 +8,10 @@ touch its directory (a station session's hook) and read by Claude Code as it ope
 still.fail is a coding-agent service in team chats: people talk to agents in Slack, Feishu, Comma or still.fail's own
 chats, each conversation an agent session on a **station** (a machine of theirs), driven by Claude Code, Codex and others.
 
-- `station/`: the station, released as one MoonBit program (`station/mb`, `scripts/station-bundle.sh`: no Node in a
-  release) run by its launcher, with prebuilt native parts (`station/native`); its TypeScript (Effect) is what the
-  program is held to and the tests' and development's. Holds the chats, sessions, agents, jobs, accounts; serves
-  devices over the mesh.
+- `station/`: the station (TypeScript on its own Node, Effect, as a release carries it: `scripts/station-bundle.sh`),
+  with prebuilt native parts (`station/native`) and its MoonBit program (`station/mb`): the readers and builders a
+  release runs, and the whole station, which no release runs alone until it does what the TypeScript does. Holds the
+  chats, sessions, agents, jobs, accounts; serves devices over the mesh.
 - `cloud/`: still.fail cloud on Cloudflare Workers: accounts, workspaces, members' credentials, the relays. Only people.
 - `client/core-ts/`: the client core every app runs (TypeScript, Effect): accounts, links to stations, everything kept
   on the device, the views. The UIs only render it. `client/shell` (Rust) is its IO in the native apps,
