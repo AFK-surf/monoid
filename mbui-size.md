@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.58 | 63.66 | 96.75 | 123.6 |
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 2.56 | 3.44 | 14.07 | 36.02 | 54.16 | 31.58 | 63.66 | 96.75 | 131.73 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 2.54 | 3.42 | 13.99 | 35.91 | 53.81 | 31.48 | 63.36 | 96.52 | 123.09 |
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.34 | 96.72 | 126.18 |
-| [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 2.54 | 3.41 | 13.99 | 35.91 | 53.79 | 31.48 | 63.32 | 96.77 | 126.18 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [96481b962](https://github.com/AFK-surf/monoid/commit/96481b962598f2f852d3a4fb204a2b0e8e32c280) fix(station): yield while jobs' files are collecte | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [1334ddddc](https://github.com/AFK-surf/monoid/commit/1334ddddc1608709e960436791117257e82846fc) sf-ui: search field, inline rename, find bar and f | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [53ebc9dfa](https://github.com/AFK-surf/monoid/commit/53ebc9dfa53e06ffd6a9cf614766b2f4e8daa895) Port AndroidLiquidGlass and refine glass controls | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
 | [021eab5d9](https://github.com/AFK-surf/monoid/commit/021eab5d9a5649274cc87dfe15aae3eb9e2f095d) app: show refresh countdown capsule on spent quota | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.27 |
 | [5409b4cbc](https://github.com/AFK-surf/monoid/commit/5409b4cbc70cc6419539de41783a28be85367f26) feat(station): Farview 8B and 8C, farview.pin to 8 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
-| [38f019e17](https://github.com/AFK-surf/monoid/commit/38f019e17b9fc66d6664a4b921905c495dd40622) fix(app): 控制中心 and a side tab's history open once  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
