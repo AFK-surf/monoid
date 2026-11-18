@@ -140,6 +140,8 @@ export class ScopeSync {
         if (this.#closed || this.#jobs.get(key) !== job) return;
         if (/unknown.*method|no such method/i.test(String(error))) { job.done = word; return; }
         this.#failed(error);
+        // (a front from before: tried again with the next word, or by the Node a new front is handed)
+        if (OLD_FRONT.test(String(error))) { job.done = word; return; }
         job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
         job.cancel = this.#fibers.after(job.wait, () => { // timer: retry after failed directory exchange, with backoff
           job.cancel = undefined; this.#pump();
