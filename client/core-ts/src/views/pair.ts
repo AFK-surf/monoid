@@ -79,6 +79,14 @@ const PAIR_ANSWER_MS = 30_000;
 /// confirmation, then brings the entry to the cloud. What it costs: a line that went before the trusted device had the
 /// confirmation is said gone that much later.
 export const PAIR_SIGNED_MS = 10_000;
+/// How long the new device waits for a trusted device to answer a code typed: its first answer (its pake, which it
+/// makes at once) PAIR_REPLY_MS, the whole of it (that the code was wrong, or the approval: it signs within lock.ts
+/// ASKED_MS, then brings the entry to the cloud) PAIR_PROVE_MS from the code typed; no answer then is its end. A
+/// trusted phone put away as its code was read off it closes nothing (its connection is kept 10 minutes idle), so
+/// without these the new device waited on it that long (2026-11-18). Two round trips of a slow line fit in
+/// PAIR_PROVE_MS (lock-pair-faults.test.ts: 6 s a message), and PAIR_SIGNED_MS after it is still under 40 s.
+export const PAIR_REPLY_MS = 15_000;
+export const PAIR_PROVE_MS = 25_000;
 /// Who signs member credentials, and what kind they are (station/src/cloud/provider.ts STILLFAIL `credential`).
 const ISSUERS = ["stillfail-cloud"];
 const TYPES = ["stillfail-member+jwt"];
@@ -1055,7 +1063,24 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
     // A device can show its code while these are being checked. It did not receive this code and must not be reported
     // as having rejected it.
     const checked = [...y.met.values()];
-    const results = yield* Effect.forEach(checked, (m) => Effect.map(Effect.result(tryOne(inner, m, base, code)), (r) => [m, r] as const), { concurrency: "unbounded" });
+    // Each tried at once, and the first to take the code taken: the others are not waited for (2026-11-18: one trusted
+    // phone approved in 50 ms while another, put away after it showed its code, held the new device on 正在验证).
+    // Those not answered then are let go with the rest once approved (`drop`). Till one takes it, all are waited for.
+    const attempt = (m: Met) => Effect.result(tryOne(inner, m, base, code));
+    const tryAll = (ms: Met[]) =>
+      Effect.gen(function* () {
+        const tried: (readonly [Met, Effect.Success<ReturnType<typeof attempt>>])[] = [];
+        const took = Deferred.makeUnsafe<void>();
+        yield* Effect.raceFirst(
+          Effect.forEach(ms, (m) => Effect.map(attempt(m), (r) => {
+            tried.push([m, r] as const);
+            if (r._tag === "Success" && "approved" in r.success) Deferred.doneUnsafe(took, Effect.void);
+          }), { concurrency: "unbounded", discard: true }),
+          Deferred.await(took),
+        );
+        return tried;
+      });
+    const results = yield* tryAll(checked);
     // None took it, and a device reached is still to answer with its code (its dial's own wait, PAIR_ANSWER_MS): it may
     // show the code typed already, its answer on the way (2026-11-14, side run of 09719be0: D typed the code its second
     // trusted device showed while D had heard only the first's, which said it was wrong). Those it answers with, tried
@@ -1064,7 +1089,7 @@ function prove(inner: Inner, typed: string): Effect.Effect<unknown, CoreError> {
       yield* Effect.forEach([...y.answering!.values()], (a) => Deferred.await(a), { discard: true });
       const late = [...y.met.values()].filter((m) => !checked.includes(m));
       checked.push(...late);
-      results.push(...(yield* Effect.forEach(late, (m) => Effect.map(Effect.result(tryOne(inner, m, base, code)), (r) => [m, r] as const), { concurrency: "unbounded" })));
+      results.push(...(yield* tryAll(late)));
     }
     let approved: J | null = null;
     let left = 0;
@@ -1186,19 +1211,23 @@ function ended(answer: unknown): CoreError {
 export function tryOne(inner: Inner, m: Met, base: string, code: string): Effect.Effect<{ approved: J } | { left: number }, CoreError> {
   return Effect.gen(function* () {
     const p = pakeStart(code, pairSession(base, m.id, m.workspaces), (b) => inner.host.randomBytes(b));
+    // (no answer in time is taken as its end: `ended(null)`)
+    const until = inner.host.nowMs() + PAIR_PROVE_MS;
+    const next = (most: number) =>
+      Effect.suspend(() => Effect.map(Effect.timeoutOption(m.d.next(), Math.max(0, Math.min(most, until - inner.host.nowMs()))), (o) => (o._tag === "Some" ? o.value : null))); // timer: a deadline
     yield* m.d.send({ t: "pake", y: hex(p.share) });
-    const r = yield* m.d.next();
+    const r = yield* next(PAIR_REPLY_MS);
     if (!isObject(r) || r.t !== "pake") return yield* Effect.fail(ended(r));
     const keys = pakeKeys(p, unhex(str(r.y) ?? ""), "new");
     if (keys !== null && sameMac(keys.theirs, unhex(str(r.mac) ?? ""))) {
       yield* m.d.send({ t: "confirm", mac: hex(keys.mine) });
       m.confirmed = true;
-      const a = yield* m.d.next();
+      const a = yield* next(PAIR_PROVE_MS);
       if (isObject(a) && a.t === "approved") return arr(a.workspaces).length > 0 ? { approved: a } : yield* Effect.fail(unsigned(a));
       return yield* Effect.fail(ended(a));
     }
     yield* m.d.send({ t: "wrong" });
-    const w = yield* m.d.next();
+    const w = yield* next(PAIR_PROVE_MS);
     if (isObject(w) && w.t === "wrong" && typeof w.left === "number" && w.left > 0) return { left: w.left };
     return yield* Effect.fail(ended(w));
   });
