@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d61377bd9](https://github.com/AFK-surf/monoid/commit/d61377bd9f7a08047ca54a93486084e276cc880b) fix(mbui): let users swipe between segmented optio | 2.54 | 3.42 | 14 | 35.92 | 53.83 | 31.49 | 63.36 | 96.68 | 117.45 |
 | [890460249](https://github.com/AFK-surf/monoid/commit/890460249ac0a2002e44e1a53c1e14be19c02d13) feat(station): the launcher starts the installer t | 2.54 | 3.42 | 14 | 35.92 | 53.83 | 31.49 | 63.36 | 96.68 | 117.45 |
 | [13e6f174e](https://github.com/AFK-surf/monoid/commit/13e6f174e360c105172832205fd342177986a7f9) test(station): a station updates itself again afte | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.68 | 117.45 |
 | [2f5363912](https://github.com/AFK-surf/monoid/commit/2f5363912f1a1d6837b16de2c728c060b6da4f95) fix(ci): prefer optimized mbui objects and rebalan | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.75 | 117.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [22d710a47](https://github.com/AFK-surf/monoid/commit/22d710a4790454fb0face4be2d50b8e15ddbefb0) mbui: add writable derivations, optimistic project | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.66 | 64.57 | 96.21 | 124.28 |
 | [0e7a6fd68](https://github.com/AFK-surf/monoid/commit/0e7a6fd68280c9c72a313cab07f0b2107b84fb78) Choose the Claude TUI runtime in model settings (# | 2.56 | 3.63 | 15.18 | 36.32 | 58.04 | 31.66 | 64.57 | 96.21 | 124.28 |
 | [9cc460c07](https://github.com/AFK-surf/monoid/commit/9cc460c078d346956000a18aeb25b2d101be646d) mbui: reuse each layout tree on its own pixel grid | 2.57 | 3.63 | 15.18 | 36.31 | 58.04 | 32.51 | 68.98 | 96.26 | 115.92 |
-| [7ea31c7e4](https://github.com/AFK-surf/monoid/commit/7ea31c7e4681f5ba1f74094658295c348aada469) Farview Stage 7: the app's tab draws native select | 2.56 | 3.62 | 15.18 | 36.31 | 58.03 | 32.51 | 68.98 | 96.26 | 123.94 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [d61377bd9](https://github.com/AFK-surf/monoid/commit/d61377bd9f7a08047ca54a93486084e276cc880b) fix(mbui): let users swipe between segmented optio | 0.44 | 0.57 | 2.17 | 3.27 | 5.21 | 1.6 | 4.28 | 53.48 |
 | [890460249](https://github.com/AFK-surf/monoid/commit/890460249ac0a2002e44e1a53c1e14be19c02d13) feat(station): the launcher starts the installer t | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.33 |
 | [13e6f174e](https://github.com/AFK-surf/monoid/commit/13e6f174e360c105172832205fd342177986a7f9) test(station): a station updates itself again afte | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.33 |
 | [2f5363912](https://github.com/AFK-surf/monoid/commit/2f5363912f1a1d6837b16de2c728c060b6da4f95) fix(ci): prefer optimized mbui objects and rebalan | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.33 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [22d710a47](https://github.com/AFK-surf/monoid/commit/22d710a4790454fb0face4be2d50b8e15ddbefb0) mbui: add writable derivations, optimistic project | 0.43 | 0.56 | 2.17 | 3.27 | 5.19 | 1.59 | 4.28 | 53.4 |
 | [0e7a6fd68](https://github.com/AFK-surf/monoid/commit/0e7a6fd68280c9c72a313cab07f0b2107b84fb78) Choose the Claude TUI runtime in model settings (# | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.64 |
 | [9cc460c07](https://github.com/AFK-surf/monoid/commit/9cc460c078d346956000a18aeb25b2d101be646d) mbui: reuse each layout tree on its own pixel grid | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.64 |
-| [7ea31c7e4](https://github.com/AFK-surf/monoid/commit/7ea31c7e4681f5ba1f74094658295c348aada469) Farview Stage 7: the app's tab draws native select | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
