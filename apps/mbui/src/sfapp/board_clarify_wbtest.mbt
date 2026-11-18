@@ -79,7 +79,7 @@ test "大屏: 放入待派发 makes each task a 待派发 card, together where t
   // (in its place, in their order: the first keeps its key, all of one group, the seeds after them as they were)
   assert_eq(drafts[0].id, @sffixture.fix_clarify_id)
   assert_eq(drafts[:3].iter().map(fn(d) { d.group }).collect(), [@sffixture.fix_clarify_words, @sffixture.fix_clarify_words, @sffixture.fix_clarify_words])
-  assert_true(drafts[0].title.has_prefix("设置页导出对话记录\n\n目标：在设置页把对话记录导出成 Markdown 文件"))
+  assert_true(drafts[0].title.has_prefix("设置页导出对话记录\n目标：在设置页把对话记录导出成 Markdown 文件"))
   assert_true(drafts[1].title.has_prefix("导入对话记录"))
   assert_true(drafts[2].title.has_prefix("补导出导入的测试"))
   assert_eq(drafts[3].title, "给导出加上按月份筛选")
@@ -124,7 +124,7 @@ test "大屏: one task started on its own: its chat in 进行中, the others sti
 ///|
 test "a task as a draft's words: its title, then each part that says something under its name, a blank line between" {
   let task = @sfbase.clarify_task_of({ "title": "导出", "goal": "能导出", "scope": " ", "accept": "1. 一\n2. 二", "ask": "" })
-  assert_eq(@sfbase.clarify_task_text(task), "导出\n\n目标：能导出\n\n验收标准：\n1. 一\n2. 二")
+  assert_eq(@sfbase.clarify_task_text(task), "导出\n目标：能导出\n\n验收标准：\n1. 一\n2. 二")
   assert_eq(@sfbase.clarify_task_text(@sfbase.clarify_task_of(Json::object({}))), "")
 }
 

@@ -138,7 +138,8 @@ pub fn clarify_remove(id : Int) -> Unit {
 
 ///|
 /// Task `t` as a 待派发 draft's words, plain text: its title, then each part that says something under its name
-/// (目标：…), a blank line between them ("" where it says nothing at all).
+/// (目标：…), a blank line between parts ("" where it says nothing at all). The first part is on the line right after
+/// the title: a card shows two lines of a draft, so its second is the 目标, not a blank line cut to "…".
 pub fn clarify_task_text(t : ClarifyTask) -> String {
   let parts = [
     ("web-main.board.clarify.goal", t.goal),
@@ -148,9 +149,6 @@ pub fn clarify_task_text(t : ClarifyTask) -> String {
   ]
   let out : Array[String] = []
   let title = t.title.text().trim(chars=" \n\t").to_owned()
-  if title != "" {
-    out.push(title)
-  }
   for part in parts {
     let (key, f) = part
     let words = f.text().trim(chars=" \n\t").to_owned()
@@ -161,7 +159,12 @@ pub fn clarify_task_text(t : ClarifyTask) -> String {
     let sep = if words.contains("\n") { "\n" } else { "" }
     out.push(@sf.t(key) + "：" + sep + words)
   }
-  out.join("\n\n")
+  let body = out.join("\n\n")
+  match (title, body) {
+    ("", _) => body
+    (_, "") => title
+    _ => title + "\n" + body
+  }
 }
 
 ///|
