@@ -570,26 +570,32 @@ fn station_head_node(
           |> ignore
         }
       })
-      // its mark: its managers pick it, by what it is called (图标)
-      if manager {
-        @sf.presses_node(m, fn() {
-          let now = @signals.untracked(s)
-          let workspace = @signals.untracked(here)
-          guard flag(now, "online") else { @settings.mark_offline(core, text(now, "name")) }
-          open_mark_pick(core, text(now, "name"), text(now, "emoji"), text(now, "icon"), @sf.t("android-settings.station.emojiWhat"), fn(
-            emoji,
-            icon,
-            done,
-          ) {
-            (core.call)(
-              "workspace.renameStation",
-              obj([("workspace", str(workspace.workspace)), ("station", str(text(now, "id"))), ("emoji", str(emoji)), ("icon", str(icon)), ("account", str(workspace.sub))]),
+    },
+    // its mark: its managers pick it, by what it is called (图标)
+    mark_press?=if manager {
+      Some(
+        (
+          fn() { @sf.t("android-settings.station.emoji") },
+          fn() {
+            let now = @signals.untracked(s)
+            let workspace = @signals.untracked(here)
+            guard flag(now, "online") else { @settings.mark_offline(core, text(now, "name")) }
+            open_mark_pick(core, text(now, "name"), text(now, "emoji"), text(now, "icon"), @sf.t("android-settings.station.emojiWhat"), fn(
+              emoji,
+              icon,
               done,
-            )
-          })
-        })
-        m.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-settings.station.emoji"))) })) |> ignore
-      }
+            ) {
+              (core.call)(
+                "workspace.renameStation",
+                obj([("workspace", str(workspace.workspace)), ("station", str(text(now, "id"))), ("emoji", str(emoji)), ("icon", str(icon)), ("account", str(workspace.sub))]),
+                done,
+              )
+            })
+          },
+        ),
+      )
+    } else {
+      None
     },
     name,
     rename?=if manager { Some(fn() { station_rename(core, @signals.untracked(here), @signals.untracked(s)) }) } else { None },

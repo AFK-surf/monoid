@@ -37,7 +37,8 @@ pub fn text_action_node(
 /// (given its node: what it opens goes beside it). `selected`: one of several to choose between (@headless.choice),
 /// read out selected while it says so. `expanded`: what it opens or shuts is open while it says so (a disclosure,
 /// read out expanded). `on`: a toggle button, on while it says so (read out pressed: 全屏, 控制, the keyboard up).
-/// None of them: a button. While `disabled()`, taking no press nor the focus. The node.
+/// None of them: a button, `label_is` its name where it never changes (`label` is it: said once, no binding made for
+/// it, @headless.button's). While `disabled()`, taking no press nor the focus. The node.
 #callsite(autofill(loc))
 pub fn action_box_node(
   parent : @view.View,
@@ -47,7 +48,8 @@ pub fn action_box_node(
   selected? : () -> Bool,
   expanded? : () -> Bool,
   on? : () -> Bool,
-  disabled? : () -> Bool = fn() { false },
+  disabled? : () -> Bool,
+  label_is? : String,
   loc~ : SourceLoc,
 ) -> @view.View {
   let drawn = fn(v : @view.View) {
@@ -57,14 +59,14 @@ pub fn action_box_node(
   // (its node, for a toggle's press: what it opens goes beside it)
   let me : Ref[@view.View?] = Ref(None)
   match (selected, expanded, on) {
-    (Some(chosen), _, _) => @headless.choice(made_for=loc, parent, Button, label, chosen, press, disabled~, fn(v, _) { drawn(v) })
-    (None, Some(open), _) => @headless.disclosure(made_for=loc, parent, label, open, press, disabled~, fn(v, _) { drawn(v) })
+    (Some(chosen), _, _) => @headless.choice(made_for=loc, parent, Button, label, chosen, press, disabled?, fn(v, _) { drawn(v) })
+    (None, Some(open), _) => @headless.disclosure(made_for=loc, parent, label, open, press, disabled?, fn(v, _) { drawn(v) })
     (None, None, Some(now)) =>
-      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled~, fn(v, _) {
+      @headless.toggle(made_for=loc, parent, Button, label, now, fn(_) { if me.val is Some(v) { press(v) } }, disabled?, fn(v, _) {
         me.val = Some(v)
         drawn(v)
       })
-    (None, None, None) => @headless.button(made_for=loc, parent, label, press, disabled~, fn(v, _) { drawn(v) })
+    (None, None, None) => @headless.button(made_for=loc, parent, label, press, disabled?, label_is?, fn(v, _) { drawn(v) })
   }
 }
 

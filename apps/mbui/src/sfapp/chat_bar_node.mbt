@@ -562,15 +562,13 @@ fn bar_middle_node(
       }
       for i, ag in v.agents {
         let key = ag.key
-        mid.box(fn(k) {
+        // each opens its card, said as the agent (with the station it runs on, the first's): its name said once
+        let label = match station {
+          Some(s) if i == 0 => ag.who + " · " + s.name
+          _ => ag.who
+        }
+        @sf.action_box_node(mid, fn() { label }, label_is=label, fn(_) { open_agent(src, r, key) }, fn(k) {
           slides(k)
-          // each opens its card, said as the agent (with the station it runs on, the first's)
-          @sf.presses_node(k, fn() { open_agent(src, r, key) })
-          let label = match station {
-            Some(s) if i == 0 => ag.who + " · " + s.name
-            _ => ag.who
-          }
-          k.says(Is(Some(@view.said(Button, label~)))) |> ignore
           if i == 0 {
             agent_station_node(k, ag, badge_of(key), station, via, stint)
           } else {
