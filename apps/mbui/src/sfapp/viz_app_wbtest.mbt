@@ -1,6 +1,7 @@
 // A station's app (sfbase's viz_app.mbt): a widget bound to one asks its documents and its LLM through the core, its
 // program's imports answering at once with a request id and their answers coming to its `mbui_event` as the core gives
-// them; a document changed is told by `app.watch`; `sf-app:` links name an app; a declarative button asks the LLM.
+// them; a document changed is told by `app.watch`; `sf-app:` links name an app; a declarative button asks the LLM; with
+// 实验性功能's 站点应用 off (the default) a chat's widget is given nothing to ask, as before apps.
 
 ///|
 /// A call the widget made of the made-up core: its name, what it gave, and how it is answered.
@@ -278,4 +279,26 @@ test "a declarative llm button bound to no app asks nothing and says so in state
     Some(String(s)) => assert_true(s.contains("not bound to an app"))
     other => fail("expected the words saying it is bound to no app, got \{Repr(other)}")
   }
+}
+
+///|
+test "站点应用 off (the default): a chat's widget is given no app to ask, its llm button asking nothing and saying nothing; on, it is" {
+  let (t, src) = exp_at("settings-experimental", 390.0, 844.0)
+  assert_true(@sfbase.viz_app_host(src, "ws1/st1", "s-c1") is None, msg="off by default")
+  exp_set(t, src, ["apps"], true)
+  match @sfbase.viz_app_host(src, "ws1/st1", "s-c1") {
+    Some(h) => assert_eq((h.station, h.key), ("ws1/st1", "s-c1"))
+    None => fail("站点应用 on: the chat's widget asks its station")
+  }
+  exp_set(t, src, ["apps"], false)
+  assert_true(@sfbase.viz_app_host(src, "ws1/st1", "s-c1") is None, msg="off again")
+  // a widget naming its app, shown with none to ask: its button does what it did before apps (nothing)
+  let kept : Ref[Json] = Ref(Json::null())
+  let widget = @sfbase.viz_mbui_parse("notes.mbui", llm_widget).unwrap()
+  let t2 = app_tester("test:app:llm-off", widget, kept, None)
+  t2.frame()
+  t2.tap_text("Summarize")
+  t2.frame()
+  assert_eq(kept_field(kept, "summary_error"), None)
+  assert_eq(kept_field(kept, "summary_pending"), None)
 }

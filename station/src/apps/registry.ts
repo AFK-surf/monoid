@@ -97,6 +97,13 @@ export type AppEvent =
   | { kind: "app"; ws: string; id: string; rev: number; current: number }
   | { kind: "app-doc"; ws: string; app: string; collection: string; id: string; rev: number; deleted: boolean };
 
+/// An event as the station's event stream tells it to the app's workspace (api/events.ts `tell`): its name, its data
+/// (what the core's views/apps.ts `told` reads) and the key a later one of the same thing replaces it by.
+export function appEventTold(e: AppEvent): { name: "app" | "app-doc"; data: Record<string, unknown>; key: string } {
+  if (e.kind === "app") return { name: "app", data: { id: e.id, rev: e.rev, current: e.current }, key: `app\0${e.ws}\0${e.id}` };
+  return { name: "app-doc", data: { app: e.app, collection: e.collection, id: e.id, rev: e.rev, deleted: e.deleted }, key: `app-doc\0${e.ws}\0${e.app}\0${e.collection}\0${e.id}` };
+}
+
 /// A refusal: its status as an HTTP answer gives it, its message what to do next.
 export class AppRefused extends Error {
   readonly status: number;

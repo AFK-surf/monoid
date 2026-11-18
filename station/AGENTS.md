@@ -140,7 +140,9 @@
 - A workspace's station apps (`src/apps/registry.ts`) are versions, never changed once saved: a save makes a new one
   current, a rollback makes an older one current again; neither overwrites, and a save made on a version that is no
   longer the newest is refused. Their documents are the app's, shared by every version; what each version reads of them
-  is its `schema`, which only rises unless forced.
+  is its `schema`, which only rises unless forced. What a device draws of them and asks of these routes is behind its
+  own 实验性功能 switch (client/core-ts/src/features.ts `apps`); no device's switch reaches the station, so its routes,
+  the app_* tools and the stillfail-apps skill are not gated here.
 - Nothing in a workspace is hidden from its members: there is no permission system (the user, 2026-10-25). Every
   chat, a private one too, is open to every member and every agent of the workspace. The station is its server and
   the agents run as one system user, reading its database and every session's directory, so what is hidden from one

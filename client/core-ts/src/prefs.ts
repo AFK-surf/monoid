@@ -3,7 +3,7 @@
 import * as brand from "./brand.ts";
 import * as fonts from "./fonts.ts";
 import { conform } from "./conform.ts";
-import { experimentalItemsOf, experimentalOf, featuresOf, isExperimentalFeature } from "./features.ts";
+import { type FeatureId, experimentalItemsOf, experimentalOf, featureEnabled, featuresOf, isExperimentalFeature } from "./features.ts";
 import { railView } from "./rail.ts";
 import type { Data } from "./data.ts";
 import { CoreError } from "./error.ts";
@@ -475,4 +475,9 @@ export function deviceApp(data: Data): string | null {
 /// The name the device signs in as.
 export function deviceName(data: Data): string | null {
   return deviceSaid(data, "name");
+}
+
+/// Whether the device's own feature `id` is on here (features.ts `featureEnabled`, by what is kept and the channel).
+export function featureOn(data: Data, id: FeatureId): boolean {
+  return featureEnabled(id, kept(data), brand.isTestChannel());
 }

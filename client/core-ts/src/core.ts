@@ -612,6 +612,12 @@ export class Core {
     let call: Call;
     // (what it names aimed where its chat is now: views/moved.ts)
     const aimed = movedChats.aimed(inner, params);
+    // (a station's apps' calls, only with 实验性功能's 站点应用 on: views/apps.ts)
+    const off = appCalls.appsRefusal(inner, name);
+    if (off !== null) {
+      inner.host.emit(client, answer(id, { err: off }));
+      return;
+    }
     try {
       call = parseCall(name, aimed, bytes);
     } catch (e) {

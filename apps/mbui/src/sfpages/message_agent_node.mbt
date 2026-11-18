@@ -358,9 +358,9 @@ fn agent_prose_node(
           fn(d) { message_files_node(d, src, here.tips, place, fn() { [a] }, fn() { false }, by, at) }
         }
         // a station's app it links to alone on its line (`sf-app:<id>`, `sf-app:<id>@<rev>`): the app, where it is
-        // linked (message_app_node)
+        // linked (message_app_node), with 实验性功能's 站点应用 on; off, the link is what it was before apps
         match @sfbase.viz_app_link(name) {
-          Some((id, rev)) if here.picture is None =>
+          Some((id, rev)) if here.picture is None && @sfbase.feature_on(src, "apps") =>
             return Some({
               draw: fn(d) {
                 let ts = @signals.untracked(m).ts

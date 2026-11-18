@@ -28,6 +28,9 @@ updated later; use a plain attached `.mbui` (skill `stillfail-viz`) for a one-of
 3. Post it in the chat with a link on its own line: `[待办](sf-app:todo)`. The chat loads the station's **current**
    version of `todo` and follows it as it changes. `[待办 v2](sf-app:todo@2)` pins version 2. You can still attach the
    file instead (`chat_post files=[…]`), as for any widget; it is then bound by its `"app"` field.
+   Apps are an experimental feature of the still.fail app: a person sees one inline and uses it only with
+   设置 › 实验性功能 › 站点应用 on, on their device; otherwise its link shows as a plain link. Say so when you post
+   one to someone who may not have turned it on.
 
 ## Change it: versions
 

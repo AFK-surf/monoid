@@ -77,10 +77,10 @@ test "实验性功能's page: its switches, each off by default and on and off a
     let (t, src) = exp_at("settings-experimental", w, h, platform~)
     let at = "\{w}"
     let kept = fn(id : String) { field(field(src.topic("prefs", {}).get().value, "experimental"), id) is Some(True) }
-    for label in ["试用新对话页", "Farview 原生标签页渲染", "对话列表看板视图"] {
+    for label in ["试用新对话页", "Farview 原生标签页渲染", "对话列表看板视图", "站点应用"] {
       assert_true(t.query(Switch, label~) is Some(_), msg="\{at}: \{label}")
     }
-    assert_true(!kept("chatPage") && !kept("farviewNative") && !kept("board"), msg="\{at}: all off by default")
+    assert_true(!kept("chatPage") && !kept("farviewNative") && !kept("board") && !kept("apps"), msg="\{at}: all off by default")
     // (but the wide frame's own: the sidebar's edge over what its pane shows by 6, sfdesk/pane_view.mbt's, as
     // station_move_wbtest's move_audit has it)
     let faults = t.audit().filter(fn(f) { !f.contains("stillfail/sf/src/edge_node.mbt:37, in what was asked for at stillfail/src/sfdesk/pane_view.mbt:") })

@@ -25,6 +25,9 @@ export type CompletionSide = {
   driver(runtime: "claude" | "codex"): AgentDriver | undefined;
   /// Where a runtime's turn gets an empty working directory of its own (`<data>/run/app-llm`).
   scratch: string;
+  /// Told once a runtime's turn is over: its session ended (Claude Code's process gone, Codex's thread let go) and its
+  /// directory removed (what a test waits on).
+  turnOver?: () => void;
 };
 
 /// What the model is told before the widget's own system text.
@@ -65,7 +68,7 @@ export function appCompletion(side: CompletionSide, key: string): AppCompletion 
       return runtimeText(driver, {
         key: runtime === "codex" ? row.key : `${row.key}-app-${id}`,
         profile, cwd, model, instructions, mcpToken: "", mcpUrl: "", route: row.key,
-      }, ask.prompt, signal, () => rm(cwd, { recursive: true, force: true }));
+      }, ask.prompt, signal, () => rm(cwd, { recursive: true, force: true }).finally(() => side.turnOver?.()));
     },
   };
 }

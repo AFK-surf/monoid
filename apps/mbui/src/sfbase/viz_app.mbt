@@ -21,9 +21,10 @@ pub(all) struct VizAppHost {
 }
 
 ///|
-/// The app host of a widget in chat `key` on `station`, asked through `src`.
+/// The app host of a widget in chat `key` on `station`, asked through `src`: none while 实验性功能's 站点应用 is off
+/// (the core's `apps`), so a widget's `"app"` is bound to nothing and its `llm` buttons ask nothing, as before apps.
 pub fn viz_app_host(src : Source, station : String, key : String) -> VizAppHost? {
-  if station == "" || key == "" {
+  if station == "" || key == "" || !feature_on(src, "apps") {
     return None
   }
   Some({
@@ -422,10 +423,12 @@ fn viz_app_llm_press(store : VizMbuiStore, hears : VizHears, llm : Map[String, J
   let pending_key = into + "_pending"
   let host = match hears.app {
     Some(h) if store.app != "" => h
-    _ => {
+    Some(_) => {
       viz_state_set(store, hears, err_key, Json::string("this widget is not bound to an app: give its .mbui \"app\": \"<id>\" and save it as an app"))
       return
     }
+    // (shown where no app is asked: in no chat, or with 站点应用 off: the button does nothing, as before apps)
+    None => return
   }
   if prompt == "" {
     return

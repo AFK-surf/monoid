@@ -2006,6 +2006,7 @@ let fixture_experimental_features : Array[(String, Bool)] = [
   ("composerNodes", true),
   ("farviewNative", true),
   ("board", false),
+  ("apps", false),
 ]
 
 ///|

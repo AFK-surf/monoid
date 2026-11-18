@@ -100,7 +100,7 @@ import { readAgentEnvFrom } from "../ops/agent-env.ts";
 import { CardOutcomeWorker } from "../store/card-outbox-worker.ts";
 import { type PageBase, pageOrigin, sessionPage } from "./page.ts";
 import { stationMoveOn } from "../features.ts";
-import { Apps } from "../apps/registry.ts";
+import { Apps, appEventTold } from "../apps/registry.ts";
 import { appTools } from "../tools/apps.ts";
 import { appCompletion } from "../apps/completion.ts";
 import type { AppCompletion } from "../api/routes/apps.ts";
@@ -546,8 +546,8 @@ export const AgentsLive = (control: Control) =>
       // The workspaces' station apps: what changes told on the event stream to the app's workspace (`app`, `app-doc`).
       const homeWs = () => plane.state.home() ?? "";
       const apps = new Apps(store.db, () => hub.clock.currentTimeMillisUnsafe(), (e) => {
-        if (e.kind === "app") events.tell("app", { id: e.id, rev: e.rev, current: e.current }, `app\0${e.ws}\0${e.id}`, { workspace: e.ws });
-        else events.tell("app-doc", { app: e.app, collection: e.collection, id: e.id, rev: e.rev, deleted: e.deleted }, `app-doc\0${e.ws}\0${e.app}\0${e.collection}\0${e.id}`, { workspace: e.ws });
+        const said = appEventTold(e);
+        events.tell(said.name, said.data, said.key, { workspace: e.ws });
       });
       const tools = [
         ...appTools(apps, (key) => {

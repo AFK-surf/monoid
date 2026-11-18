@@ -9,11 +9,23 @@ import type { Call } from "../core/calls.ts";
 import { handlers } from "../core/execute.ts";
 import type { Progress } from "../core.ts";
 import { StationAddr } from "../station/addr.ts";
-import { asCoreError } from "../error.ts";
+import { CoreError, asCoreError } from "../error.ts";
+import { t } from "../i18n.ts";
+import { featureOn } from "../prefs.ts";
 import { get } from "../util.ts";
 
 type Of = Extract<Call, { kind: "appWatch" }>;
 type Watch = { id: string; progress: Progress };
+
+/// A station's apps' calls (ops.ts `app.*` and `app.watch`; not the app's own, `app.update` and the like).
+export const APP_CALLS: ReadonlySet<string> = new Set(["app.list", "app.get", "app.versions", "app.publish", "app.docs", "app.putDoc", "app.deleteDoc", "app.llm", "app.watch"]);
+
+/// Why call `name` is refused here: a station app's call while 实验性功能's 站点应用 (features.ts `apps`) is off on
+/// this device, saying where to turn it on; null for any other call, or with it on.
+export function appsRefusal(inner: Inner, name: string): CoreError | null {
+  if (!APP_CALLS.has(name) || featureOn(inner.data, "apps")) return null;
+  return new CoreError("feature_off", t("core-misc.apps.off"));
+}
 
 /// A station's address as one key, however it was written.
 const keyOf = (address: string): string => {

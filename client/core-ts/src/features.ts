@@ -26,6 +26,10 @@ export const FEATURES = {
   composerNodes: { stage: "experimental", betaOnly: true },
   farviewNative: { stage: "experimental", betaOnly: true },
   board: { stage: "experimental" },
+  /// Station apps (station/src/apps/registry.ts): what the device draws of them (`sf-app:` links, a widget's `"app"`)
+  /// and its `app.*` calls. The station has no switch of its own: what it offers agents is not gated (no device's
+  /// switch reaches it).
+  apps: { stage: "experimental" },
   terminal: { stage: "beta", station: true },
   stationMove: { stage: "beta", station: true },
 } as const satisfies Record<string, FeatureSpec>;
