@@ -114,9 +114,9 @@ export type SessionThread = { thread: ThreadRow; connect: string };
 /// nothing there until someone mentions it again. Absent where it is not read (chat lists).
 export type Membership = { thread: number; session: string; connect: string; joinedAt: number; leftAt?: number | null };
 
-/// The station itself as a message's author (its kind and its name): stored, and sent to the clients, as named before
-/// the rename, like STILLFAIL_SURFACE.
-export const STATION_AUTHOR = "ember";
+/// The station itself as a message's author: its kind and its name, stored and sent to the clients (who have read it so
+/// since #4101). An author kind is never a person's name: a person is of kind "person" whatever they are called.
+export const STATION_AUTHOR = "station";
 export type AuthorKind = "person" | "agent" | typeof STATION_AUTHOR;
 export type EntryKind = "message" | "edit";
 
@@ -425,7 +425,8 @@ export function jsonList<T>(value: T[], write: (v: Json) => T): string | null {
 /// AuthorKind::parse.
 export function authorKind(s: string): AuthorKind {
   if (s === "agent") return "agent";
-  if (s === STATION_AUTHOR || s === "stillfail") return STATION_AUTHOR;
+  // ("ember" and "stillfail": the kind stations wrote for the station before, in their databases and archives.)
+  if (s === STATION_AUTHOR || s === "ember" || s === "stillfail") return STATION_AUTHOR;
   return "person";
 }
 

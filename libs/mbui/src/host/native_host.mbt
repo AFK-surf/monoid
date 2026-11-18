@@ -478,6 +478,11 @@ impl @hostapi.Host for Native with gpu_ms(_) {
 }
 
 ///|
+impl @hostapi.Host for Native with frames_dropped(_) {
+  frames_dropped()
+}
+
+///|
 impl @hostapi.Host for Native with cpu_ms(_) {
   cpu_ms()
 }

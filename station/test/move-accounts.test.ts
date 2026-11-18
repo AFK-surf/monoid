@@ -596,7 +596,7 @@ test("a chat whose login is on no station any more (its profile removed here sin
   const view = moveView(plan, a.moves.modules.map((m) => m.id), a.moves.scheduler.stopped(), { limit: 50 }, null, false, (id) => id.slice(0, 1).toUpperCase());
   assert.equal(view.modules.find((m: Json) => m.id === "accounts")?.cannot ?? 0, 0, "nothing counted as unable to move");
   // (what a person's word to it does: here, then there, then here again, the same)
-  const said = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
+  const said = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'station' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
   const react = async (st: Station, thread: number, text: string) => {
     const before = said(st, thread).length;
     say(st.rig.hub, thread, "p@x", text);
@@ -1071,7 +1071,7 @@ test("a chat stopped by a move says so once, as a person speaks in it, never by 
   const one = await chatOn(a, "kimi");
   const account = `own:kimi@${A}`;
   // (what the station said in a chat, and what was handed to its agents)
-  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
+  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'station' ORDER BY n").all(thread) as { text: string }[]).map((r) => r.text);
   const handed = (st: Station) => st.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
   const said0 = stationSaid(a, one.thread).length;
   // Its login moved away: the chat stopped here, nothing said by that.
@@ -1152,7 +1152,7 @@ test("a chat stopped by a move and archived by hand: a person's word to it is re
   await quiet();
   a.rig.store.setArchived(one.key, true, "manual");
   const archived = a.rig.store.getSession(one.key)!.archivedAt;
-  const stationSaid = () => (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(one.thread) as { n: number }).n;
+  const stationSaid = () => (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'station'").get(one.thread) as { n: number }).n;
   const said = stationSaid();
   assert.throws(() => say(a.rig.hub, one.thread, "p@x", "still?"), /手动归档|archived/, "refused, as a chat archived by hand refuses a message");
   await quiet();
@@ -1166,7 +1166,7 @@ test("a chat stopped here for its login, then moved itself, then back alone whil
   const one = await chatOn(a, "kimi");
   const account = `own:kimi@${A}`;
   const handed = (st: Station) => st.rig.claude.sessions.flatMap((s) => s.prompts).join("\n");
-  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(thread) as { n: number }).n;
+  const stationSaid = (st: Station, thread: number) => (st.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'station'").get(thread) as { n: number }).n;
   // Its login away: stopped here.
   assert.equal((await a.moves.scheduler.move(WS, B, { module: "accounts", item: account })).failed, null);
   await quiet();
@@ -1293,10 +1293,10 @@ test("two chats on one login that cannot be shared, moved with what they need, o
   assert.equal(b.rig.store.getSession(one.key)?.ws, null, "the one that went is there");
   assert.equal(b.rig.hub.chatHeld(one.key), null, "and works there");
   assert.match(a.rig.hub.chatHeld(two.key) ?? "", /^stopped: /, "the failed one stopped here, waiting for its login");
-  const said = (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(two.thread) as { n: number }).n;
+  const said = (a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'station'").get(two.thread) as { n: number }).n;
   say(a.rig.hub, two.thread, "p@x", "and me?");
   await quiet();
-  assert.equal((a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'ember'").get(two.thread) as { n: number }).n, said + 1, "says so when spoken to");
+  assert.equal((a.rig.store.db.prepare("SELECT COUNT(*) AS n FROM entries WHERE thread = ? AND author_kind = 'station'").get(two.thread) as { n: number }).n, said + 1, "says so when spoken to");
 });
 
 /// What one chat's trip costs on A (move/bounded.ts: bytes written under move/ by file, rows read by table, what is

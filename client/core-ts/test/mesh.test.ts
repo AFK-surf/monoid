@@ -28,9 +28,10 @@ import { Status } from "../src/status.ts";
 import { FakeHost } from "../src/testing.ts";
 import { Tracer } from "../src/trace.ts";
 import { hex } from "../src/util.ts";
+import { PAIR_ALPN } from "../src/pair.ts";
 import { Wake, WakingHost, Wakes } from "../src/wake.ts";
 import { Station } from "./mesh-station.ts";
-import { PATH_IDLE_MS, type RelaySpec, SimNet, SimTime } from "./sim-iroh.ts";
+import { PATH_IDLE_MS, type RelaySpec, type SimConnection, SimNet, SimTime } from "./sim-iroh.ts";
 import { seeds } from "./sim-seeds.ts";
 
 holdLanguage();
@@ -1040,6 +1041,104 @@ sim("a_wake_while_a_try_goes_unanswered_opens_one_beside_it", async (s) => {
   const link = mesh.current(id)!;
   assert.equal((await request(s, link, head("/admin/api/overview"))).status, 200);
   await close(s, station, mesh);
+});
+
+/// A connection of the mesh's user's on the main endpoint (views/pair.ts: a new device dialling a trusted one, and the
+/// trusted one taking it) and a peer's end of it, both open, each heard by the other.
+async function talks(s: Sim, mine: IrohConnection, theirs: SimConnection, what: string) {
+  assert.equal(mine.closeReason(), null, `${what}: closed here`);
+  assert.equal(theirs.closeReason(), null, `${what}: closed there`);
+  const gather = async (read: () => Promise<Uint8Array | null>, n: number) => {
+    let got = "";
+    while (got.length < n) {
+      const b = await s.settle(read());
+      if (b === null) break;
+      got += text(b);
+    }
+    return got;
+  };
+  const here = await s.run(mine.openBi());
+  await s.run(here.write(new TextEncoder().encode(`${what}?`)));
+  const there = await s.settle(theirs.acceptBi());
+  assert.ok(there !== null, `${what}: no stream came`);
+  assert.equal(await gather(() => there.read(), what.length + 1), `${what}?`);
+  await s.settle(there.write(new TextEncoder().encode(`${what}!`)));
+  assert.equal(await gather(() => s.runner.run(here.read()), what.length + 1), `${what}!`);
+}
+
+/// A device paired with nothing open: every station refused or not answering (a new device not yet approved), its one
+/// use of the main endpoint the pairing's connections. A dial left unanswered (`#stuck`) must not bind it anew beneath
+/// them, neither as a station is dialled again nor as a wake tries one beside it (`#hedge`): the old one closed would
+/// cut the code being typed.
+sim("a_pairings_connections_keep_the_main_endpoint_while_no_link_is_open", async (s) => {
+  const lines: string[] = [];
+  s.host.recorder = { on: () => true, line: (l) => lines.push(l) };
+  try {
+    const relay = s.relay("https://a.relay.test/");
+    const station = await s.stationOn(relay, []);
+    const taken: IrohConnection[] = [];
+    const mesh = await s.run(Mesh.make({ ...env(s), takes: [PAIR_ALPN], incoming: (c) => void taken.push(c) }, [relay]));
+    const peer = s.net.bindStation({ secretKey: s.net.key(), alpns: [PAIR_ALPN], relayUrls: [relay] });
+    await s.settle(peer.online());
+    const out = await s.run(mesh.endpoint().connect({ id: peer.id(), relays: [relay] }, PAIR_ALPN, []));
+    const outThere = (await s.settle(peer.accept()))!;
+    const inThere = await s.settle(peer.connect({ id: mesh.endpoint().id(), relays: [relay] }, PAIR_ALPN));
+    await s.until(() => taken.length === 1);
+    const inHere = taken[0]!;
+    station.unanswered(1);
+    const failed = await s.run(mesh.link(station.id(), grants("ok", { n: 0 }))).then(() => null, (e) => e as CoreError);
+    assert.ok(failed !== null, "the dial left unanswered failed");
+    // Dialled again, and woken while a try goes unanswered: on the endpoint they are on.
+    station.unanswered(1);
+    const opening = s.runner.run(mesh.link(station.id(), grants("ok", { n: 0 })));
+    await s.time.pass(50);
+    s.wakes.wake(network(s.host));
+    await s.settle(opening);
+    assert.ok(!lines.some((l) => /^conn rebind: .* -> bound$/.test(l)), lines.filter((l) => l.startsWith("conn rebind")).join("\n"));
+    await talks(s, out, outThere, "dialled");
+    await talks(s, inHere, inThere, "taken");
+    await close(s, station, mesh);
+    await s.settle(peer.close());
+  } finally {
+    s.host.recorder = undefined;
+  }
+});
+
+/// Told other relays (`retune`), the main endpoint is bound anew and dialled on at once, while the one before goes on
+/// carrying the pairing's connections on it till they end, then closes.
+sim("an_endpoint_bound_over_by_retune_closes_once_the_pairings_connections_on_it_end", async (s) => {
+  const lines: string[] = [];
+  s.host.recorder = { on: () => true, line: (l) => lines.push(l) };
+  try {
+    const a = s.relay("https://a.relay.test/");
+    const b = s.relay("https://b.relay.test/");
+    const taken: IrohConnection[] = [];
+    const mesh = await s.run(Mesh.make({ ...env(s), takes: [PAIR_ALPN], incoming: (c) => void taken.push(c) }, [a]));
+    const peer = s.net.bindStation({ secretKey: s.net.key(), alpns: [PAIR_ALPN], relayUrls: [a] });
+    await s.settle(peer.online());
+    const old = s.net.endpoint(mesh.endpoint().id())!;
+    const out = await s.run(mesh.endpoint().connect({ id: peer.id(), relays: [a] }, PAIR_ALPN, []));
+    const outThere = (await s.settle(peer.accept()))!;
+    const inThere = await s.settle(peer.connect({ id: mesh.endpoint().id(), relays: [a] }, PAIR_ALPN));
+    await s.until(() => taken.length === 1);
+    const inHere = taken[0]!;
+    mesh.retune([b], []);
+    await s.until(() => lines.some((l) => /^conn rebind: relays retold -> bound$/.test(l)));
+    assert.notEqual(s.net.endpoint(mesh.endpoint().id()), old, "bound anew");
+    assert.deepEqual(mesh.endpoint().relayStatus().map((r) => r.url), [b]);
+    assert.ok(!old.isClosed(), "the endpoint before closed beneath the pairing");
+    await talks(s, out, outThere, "dialled");
+    await talks(s, inHere, inThere, "taken");
+    out.close(0, "done");
+    await s.time.pass(1);
+    assert.ok(!old.isClosed(), "closed while a connection on it was open");
+    inHere.close(0, "done");
+    await s.until(() => old.isClosed());
+    await s.run(mesh.close());
+    await s.settle(peer.close());
+  } finally {
+    s.host.recorder = undefined;
+  }
 });
 
 // ── relays ──

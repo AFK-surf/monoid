@@ -4,13 +4,13 @@
 // each page together (views/admin.ts: found, filtered, sorted, counted); this draws it. Where the page is (a list's
 // words, filter and sort, the item open) is in its URL, so a link shows the same. A page's own parts are beside it:
 // feedback.tsx, workspace.tsx, relays.tsx; what they share, shared.tsx; what the core gives, types.ts.
-import { Boxes, ChevronRight, Copy, List as ListIcon, LogOut, Monitor, Plus, Said, Search, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
+import { Boxes, ChevronRight, Copy, List as ListIcon, LogOut, Monitor, Plus, Said, Server, Ticket, Users } from "@stillfail/ui/icons.tsx";
 import { useEffect, useState, type ReactNode } from "preact/compat";
 import { Link, Redirect, Route, Switch as Routes, useLocation, useParams, useRoute, useSearchParams } from "wouter-preact";
 import { Wordmark } from "../brand.tsx";
 import { stamp } from "../api.ts";
 import { failure, useToast } from "@stillfail/ui/toast.tsx";
-import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, Menu, MobileBack, ResizeHandle, Select, StatusDot, Switch, SwitchRow, Time, ICON, type Presence, Waiting } from "../ui.tsx";
+import { Button, Confirm, CopyCommand, Dialog, Field, FilterPills, IconButton, Menu, MobileBack, ResizeHandle, SearchInput, Select, StatusDot, SwitchRow, Time, ICON, type Presence, Waiting } from "../ui.tsx";
 import { useSignOut, type Account } from "../cloud/accounts.ts";
 import { admin, useAction } from "../cloud/api.ts";
 import { Avatar } from "../cloud/gate.tsx";
@@ -176,10 +176,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           {list === "workspaces" && <Button icon={Plus} onClick={() => setCreating(true)}>{t("web-pages.admin.ws.new")}</Button>}
         </header>
         <div className={css.toolbar}>
-          <label className={css.search}>
-            <Search {...ICON} />
-            <input className={controlsCss.input} value={query} placeholder={PLACEHOLDER[list]} aria-label={t("web-pages.admin.search")} onChange={(e) => set("q", e.currentTarget.value)} />
-          </label>
+          <SearchInput className={css.search} value={query} placeholder={PLACEHOLDER[list]} label={t("web-pages.admin.search")} onChange={(v) => set("q", v)} clearable />
           {view?.areas && (
             <span className={css.sort}>
               <Select value={view.area ?? ""} onChange={(v) => setFilter(tab, v)} label={t("web-pages.admin.fb.area")}
@@ -194,12 +191,7 @@ function ListPage({ account, list }: { account: Account; list: List }) {
           )}
         </div>
         {view && (
-          <div className={css.filters} role="tablist">
-            {view.filters.map((f) => (
-              <button key={f.id} role="tab" aria-selected={view.filter === f.id} className={css.filter} data-on={view.filter === f.id || undefined}
-                onClick={() => setFilter(f.id, area)}>{f.label}<span>{f.count}</span></button>
-            ))}
-          </div>
+          <FilterPills className={css.filters} items={view.filters} value={view.filter} onChange={(id) => setFilter(id, area)} />
         )}
         {/* A still.fail cloud from before bug reports has no such list. */}
         {list === "feedback" && error?.status === 404 ? <p className={css.empty}>{t("web-pages.admin.noFeedback")}</p> : <Failed error={error} />}
@@ -357,16 +349,12 @@ function UserShown({ account, id, close, search, u, bones = false }: { account: 
       {!u.admin && <>
         <div className={css.group}>{t("web-pages.admin.user.rights")}</div>
         {u.mayCreate !== null && (
-          <label className={`${css.line} ${css.switchLine}`}>
-            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.mayCreate")}</span><span className={css.hint}>{u.mayCreateHint}</span></span>
-            <span className={css.switchBox}><Switch checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} label={t("web-pages.admin.user.mayCreate")} /></span>
-          </label>
+          <SwitchRow compact title={t("web-pages.admin.user.mayCreate")} description={u.mayCreateHint} label={t("web-pages.admin.user.mayCreate")}
+            checked={mayCreate.busy ? Boolean(mayCreate.arg) : u.mayCreate} disabled={u.mayCreateFixed || mayCreate.busy} onChange={(on) => mayCreate.run(on)} />
         )}
         {u.beta !== null && (
-          <label className={`${css.line} ${css.switchLine}`}>
-            <span className={css.grow}><span className={css.switchTitle}>{t("web-pages.admin.user.beta")}</span><span className={css.hint}>{t("web-pages.admin.user.betaHint")}</span></span>
-            <span className={css.switchBox}><Switch checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} label={t("web-pages.admin.user.beta")} /></span>
-          </label>
+          <SwitchRow compact title={t("web-pages.admin.user.beta")} description={t("web-pages.admin.user.betaHint")} label={t("web-pages.admin.user.beta")}
+            checked={beta.busy ? Boolean(beta.arg) : u.beta} disabled={beta.busy} onChange={(on) => beta.run(on)} />
         )}
         {/* (not one's own: the cloud refuses it, and nobody is to lock themselves out of the console) */}
         {u.blocked !== null && u.id !== account.sub && (

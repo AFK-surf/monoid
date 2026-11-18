@@ -114,6 +114,22 @@ async fn LineProgram::ask(self : LineProgram, message : Json) -> Json {
 }
 
 ///|
+/// Its process let go where nothing is asked of it (resources' `trimIdle`): 1 where it was, else 0.
+fn LineProgram::trim_idle(self : LineProgram) -> Int {
+  if self.proc is Some(_) && self.waiting.length() == 0 {
+    self.close()
+    1
+  } else {
+    0
+  }
+}
+
+///|
+fn LineProgram::pid(self : LineProgram) -> Int? {
+  self.proc.map(p => p.pid)
+}
+
+///|
 fn LineProgram::close(self : LineProgram) -> Unit {
   match self.proc {
     Some(p) => {

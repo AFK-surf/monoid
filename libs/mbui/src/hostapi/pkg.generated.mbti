@@ -143,6 +143,8 @@ pub fn frame_awaiting(Int32, String) -> Unit
 
 pub fn frame_late() -> Double
 
+pub fn frames_dropped() -> Int32
+
 pub fn frames_paced(Double) -> Unit
 
 pub fn from_base64(String) -> String
@@ -964,6 +966,7 @@ pub(open) trait Host {
   fn reduce_transparency(Self) -> Bool = _
   fn increase_contrast(Self) -> Bool = _
   fn gpu_ms(Self) -> Double = _
+  fn frames_dropped(Self) -> Int32 = _
   fn cpu_ms(Self) -> Double = _
   fn env(Self, String) -> String = _
   fn set_app_state(Self, FuncRef[(Int32) -> Unit]) -> Unit = _

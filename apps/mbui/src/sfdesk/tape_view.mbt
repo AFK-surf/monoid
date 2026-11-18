@@ -252,7 +252,8 @@ fn tape_page_at(t : Double) -> Double {
 fn tape_page_narrower(n : @view.View) -> @sfbase.ColumnLaid {
   let t = tape_drawn_at(n)
   if t == @double.infinity || !tape_goes.way.goes_at(t) {
-    return { by: 0.0, across: 0.0, laid: tape_page_at(t) }
+    let at = tape_page_at(t)
+    return { by: 0.0, across: 0.0, laid: at, toward: at, toward_by: 0.0 }
   }
   laid_across(tape_page_at(t), dmin(tape_goes.page[0], tape_goes.page[1]), dmax(tape_goes.page[0], tape_goes.page[1]))
 }

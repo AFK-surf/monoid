@@ -220,8 +220,9 @@ yet and you can add one, add it.
   keeps state, what a look may say of a component's node, and what the sample leaves undecided (a control of several
   parts). Read it before writing a component or a look; a change to the rule is made there.
 - A new component, and one moved off `Ctx`, goes in `src/headless`, its look given by its caller: never in `src/kit`,
-  whose components stay as they are and go as their callers do (its toasts, `src/kit/toast_node.mbt`, are of the tree
-  and take a look, but set some of it themselves: not yet of this kind).
+  whose components stay as they are and go as their callers do (the toasts of the tree are `src/headless/toaster.mbt`,
+  where they are and how they move their looks'; kit's `toast_due` and `toast_rest` answer for them as for kit's own
+  toaster of the old view).
 
 ## Time in a test is declared, never waited for
 

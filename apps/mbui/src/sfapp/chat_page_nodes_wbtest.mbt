@@ -85,10 +85,13 @@ fn chat_nodes_calling(
   long_md? : Bool = false,
   scale? : Double = 2.0,
   on_pixels? : Bool = false,
+  composer_nodes? : Bool = false,
 ) -> (@ui.Tester, Source) {
   new_run()
   @sf.presenters_reset()
   @sfbase.chat_page_nodes.set(true)
+  // (its composer made as nodes too where said: 试用新输入框)
+  @sfbase.composer_nodes.set(composer_nodes)
   let base = fixture(fixture_mode)
   let src : Source = {
     ..base,
@@ -599,21 +602,24 @@ test "where a chat was left as one page keeps it, the other opens at the same me
 }
 
 ///|
-test "a chat's page made with its inside nodes opens where it was left, on 小屏 and 大屏: left at its end, at its end, what came since too; read up, at the same messages as far down" {
+test "a chat's page made with its inside nodes opens where it was left, on 小屏 and 大屏: left at its end, at its end; left there with a message come since, where it was, what came under it to read on (the old page's left_at_end); read up, at the same messages as far down" {
   for s in long_screens {
     let (name, w, h, _) = s
     // left at its end, with nothing come since and with a message come since
     for came in [0, 1] {
       let l = long_chat()
-      let t = place_long_open(l, s)
+      // (its composer made as nodes too, in the list's foot as it is laid out: the old view's composer there is as tall
+      // as its first build only a frame after, the list brought short of its foot in the first fill held at it)
+      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
       // (at its end as it opens: how far down its last message's words end)
       let foot_of = fn(n : Int) { t.rect_of("第\{n}条：").map(fn(r) { r.1 + r.3 }) }
       guard foot_of(long_count) is Some(end) else { fail("\{name}: its last message not drawn as it opens") }
       place_left_and_opened(t, l, meanwhile=fn() { if came > 0 { l.last.set(l.last.get() + came) } })
-      let now = foot_of(long_count + came)
+      // (the message last as it was left where it was: what came since under it, not shown in its place)
+      let now = foot_of(long_count)
       assert_true(
         now is Some(y) && (y - end).abs() <= 1.0,
-        msg="\{name}, \{came} come since: its last message at \{Repr(now)}, its end \{end}",
+        msg="\{name}, \{came} come since: the message last as it was left at \{Repr(now)}, its end then \{end}",
       )
     }
     // read up
@@ -682,6 +688,29 @@ test "a chat's page made with its inside nodes opens at its unread line before w
     place_left_and_opened(t, l, meanwhile=fn() { line.set(l.first.get() + 3) })
     let at = t.rect_of("以下是新消息")
     assert_true(at is Some((_, y, _, _)) && y > 0.0 && y < h / 3.0, msg="\{name}: the unread line at \{Repr(at)}")
+  }
+}
+
+///|
+test "a chat's page made with its inside nodes left at its end, messages come while it was away: opened where it was left, what came read from there, not at its end; nothing come since, at its end, on 小屏 and 大屏" {
+  for s in long_screens {
+    let (name, _, h, _) = s
+    for came in [20, 0] {
+      let l = long_chat()
+      let t = place_long_open(l, s, before=fn() { @sfbase.composer_nodes.set(true) })
+      let last = "第\{long_count}条："
+      guard t.rect_of(last) is Some((_, y0, _, _)) else { fail("\{name}: its last message not drawn as it opens") }
+      place_left_and_opened(t, l, meanwhile=fn() { l.last.set(long_count + came) })
+      let newest = "第\{long_count + came}条："
+      if came > 0 {
+        // (where it was left: its last message then where it was, what came since under it, out of sight)
+        let at = t.rect_of(last)
+        assert_true(at is Some((_, y, _, _)) && (y - y0).abs() <= 1.0, msg="\{name}: its last message then at \{Repr(at)}, \{y0} as left")
+        assert_false(long_drawn(t, long_count + came, h), msg="\{name}: opened at its end, \{newest} drawn")
+      } else {
+        assert_true(t.rect_of(last) is Some(_) && to_newest_shown(t) is None, msg="\{name}: nothing came, not at its end")
+      }
+    }
   }
 }
 
@@ -1154,6 +1183,56 @@ test "a chat's page made with its inside nodes, on 小屏 and 大屏: files from
       msg="\{name}: the words drawn in the field at \{Repr((nx, ny, nw, nh))}: \{Repr(drawn.map(fn(r) { (r.x0, r.top, r.bottom) }))}",
     )
   }
+}
+
+///|
+test "a chat's page and its composer made as nodes, on 小屏 and 大屏, where this machine is no station: files from the Finder let go on a message, on the composer's capsule or on its field go up as files, read, the field's words untouched; on ⌘F's field, their paths in it" {
+  for screen in [("小屏", 390.0, 844.0, 2), ("大屏", 1280.0, 800.0, 0)] {
+    let (name, w, h, platform) = screen
+    let calls : Array[(String, Json)] = []
+    let (t, _) = chat_nodes_calling(w, h, platform, calls, composer_nodes=true)
+    @sfbase.machine_here.val = None
+    // (what the draft holds, each by its name and how it goes: read, its bytes going up, it has no `ref`; the bytes go
+    // to the core by call_bytes, which this source does not count)
+    let added = fn() { draft_files() }
+    let typed = fn() { @sfbase.writings.get("ws1/st1:s-c1").map(fn(d) { d.field.text() }).unwrap_or("") }
+    guard t.rect_of("做完了：列表、跳到最新的按钮") is Some((mx, my, mw, mh)) else { fail("\{name}: its last message not drawn") }
+    t.drop_files(mx + mw / 2.0, my + mh / 2.0, [("报告.pdf", b"%PDF"), ("截图/", b"")], paths=[
+      "/Users/lin/报告.pdf", "/Users/lin/截图",
+    ])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/", msg="\{name}: on a message")
+    guard composer_field(t) is Some((fx, fy, fw, fh)) else { fail("\{name}: no composer's field") }
+    guard composer_capsule(t) is Some((cx, cy, _, ch)) else { fail("\{name}: no composer's capsule") }
+    // (on the capsule, beside its field: its ＋'s side)
+    t.drop_files(cx + 4.0, cy + ch / 2.0, [("纪要.txt", b"txt")], paths=["/Users/lin/纪要.txt"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/ 纪要.txt/", msg="\{name}: on the capsule")
+    t.drop_files(fx + fw / 2.0, fy + fh / 2.0, [("图.png", b"PNG")], paths=["/Users/lin/图.png"])
+    t.run_for(@ui.move_most_ms)
+    assert_eq(added(), "报告.pdf/ 纪要.txt/ 图.png/", msg="\{name}: on its field")
+    assert_eq(typed(), "", msg="\{name}: the field's words")
+  }
+  // ⌘F's field takes them as their paths, as any field does
+  let calls : Array[(String, Json)] = []
+  let (t, _) = chat_nodes_calling(1280.0, 800.0, 0, calls, composer_nodes=true)
+  @sfbase.machine_here.val = None
+  t.key(@ui.key_of_char('f'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  // (the field that is not the composer's)
+  let composer_label = @sf.t("web-main.composer.placeholder")
+  guard t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.label != composer_label }) is [find] else {
+    fail("no ⌘F field: \{Repr(t.semantics().filter(fn(s) { s.role == @ui.Role::TextField }).map(fn(s) { (s.label, s.value) }))}")
+  }
+  let (sx, sy, sw, sh) = find.rect
+  let before = find.value
+  t.drop_files(sx + sw - 4.0, sy + sh / 2.0, [("a.txt", b"a")], paths=["/Users/lin/a.txt"])
+  // (looked at as the drop is taken, before the find's typing pause asks the core for what it says)
+  t.frame()
+  t.frame()
+  let now = t.semantics().filter(fn(s) { s.role == @ui.Role::TextField && s.rect.1 == sy })
+  assert_true(now.iter().any(fn(s) { s.value.contains("/Users/lin/a.txt") && s.value != before }), msg="⌘F's field: \{Repr(now.map(fn(s) { s.value }))}")
+  assert_eq(draft_files(), "")
 }
 
 ///|

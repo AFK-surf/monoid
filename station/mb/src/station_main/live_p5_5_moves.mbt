@@ -303,6 +303,10 @@ async fn P55::start_moves(self : P55) -> Unit {
   }
   let hub_bool = async fn(name : String, args : Array[Json]) -> Bool { self.hub(name, args) is True }
   let items_of = (v : Json) => core_items(v).map(of_core)
+  let opt_of = (v : Json) => match v {
+    Null => None
+    v => Some(of_core(v))
+  }
   let moves = @move_coord.Moves::new({
     data,
     here: () => Some(bus.key.id),
@@ -445,7 +449,37 @@ async fn P55::start_moves(self : P55) -> Unit {
         ignore((bus.config_update.val)(_ => n))
       },
     }),
-    vault: None,
+    // (move/live.ts `vault`: an owner's plain items and the vaults they own, the store's rows as they are, the vault's
+    // part (P5-4) asked for them)
+    vault: Some({
+      owners: async fn(ws) { core_strs(self.ui("vault.moveOwners", [Json::string(ws)])) },
+      grant_owners: async fn(keys) {
+        let out : Map[String, Array[String]] = {}
+        match self.ui("vault.moveGrantOwners", [Json::array(keys.map(Json::string(_)))]) {
+          Object(m) => for k, v in m { out[k] = core_strs(v) }
+          _ => ()
+        }
+        out
+      },
+      stores: {
+        plain_items: async fn(ws, owner) { items_of(self.ui("secrets.plain.items", [Json::string(ws), Json::string(owner)])) },
+        plain_item: async fn(ws, id) { opt_of(self.ui("secrets.plain.item", [Json::string(ws), Json::string(id)])) },
+        plain_put: async fn(row) { ignore(self.ui("secrets.plain.put", [to_core(row)])) },
+        plain_forget: async fn(ws, id) { ignore(self.ui("secrets.plain.forget", [Json::string(ws), Json::string(id)])) },
+        vaults: async fn(ws) { items_of(self.ui("vaults.vaults", [Json::string(ws)])) },
+        vault: async fn(ws, id) { opt_of(self.ui("vaults.vault", [Json::string(ws), Json::string(id)])) },
+        items: async fn(ws, vault) { items_of(self.ui("vaults.items", [Json::string(ws), Json::string(vault)])) },
+        item: async fn(ws, vault, id) {
+          opt_of(self.ui("vaults.item", [Json::string(ws), Json::string(vault), Json::string(id)]))
+        },
+        put_vault: async fn(row) { ignore(self.ui("vaults.putVault", [to_core(row)])) },
+        put_item: async fn(row) { ignore(self.ui("vaults.putItem", [to_core(row)])) },
+        forget_item: async fn(ws, vault, id) {
+          ignore(self.ui("vaults.forgetItem", [Json::string(ws), Json::string(vault), Json::string(id)]))
+        },
+        forget_vault: async fn(ws, id) { ignore(self.ui("vaults.forgetVault", [Json::string(ws), Json::string(id)])) },
+      },
+    }),
     // (a beta feature of the station's: features.ts stationMoveOn)
     move_on: Some(() => self.move_on()),
     plan_page: None,
@@ -495,6 +529,17 @@ async fn P55::start_moves(self : P55) -> Unit {
       return (move_asked(moves, asks, from, ws, params), None)
     }
     peer_answer(from, ws, meth, params, bytes)
+  })
+  // (a station heard from again: what is owed to it of a hand-over is told now, move/live.ts `bus.heard`)
+  bus.on_peer_heard(peer => {
+    (moves.handover.reached)(peer)
+    moves.heard(peer)
+  })
+  // (a login home again, by any route: the share a trip made for it undone, move/live.ts `sharing.onHosted`)
+  self.op("move.shareCameHome", async fn(arg) {
+    let a = core_strs(arg)
+    moves.share_came_home(a.get(0).unwrap_or(""), a.get(1).unwrap_or(""))
+    Json::null()
   })
   // (the logins changed: what is stopped here for one looked at again)
   ignore((bus.config_listen.val)(_raw => moves.logins_changed()))

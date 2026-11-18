@@ -12,7 +12,7 @@
 let shown_known : Array[String] = [
   "Starting", "Sign in", "Landing", "Share", "Home", "Chat", "Archived", "History", "NewChat", "Files", "Drive",
   "DriveRead", "DrivePlay", "Service", "Screen", "Terminal", "Place remote", "Place stations", "Place profiles", "Settings", "Setting Appearance", "Setting Experimental",
-  "Setting Me", "Setting Workspace", "Setting Security", "Setting Vault", "Setting VaultItems", "Setting VaultItem",
+  "Setting Me", "Setting Workspace", "Setting Security", "Setting SecurityOpen", "Setting Vault", "Setting VaultItems", "Setting VaultItem",
   "Setting Stations", "Setting Station", "Setting StationMove", "Setting AdbShare", "Setting Profiles", "Setting Profile", "Setting ProfileAccount",
   "Setting NewProfile", "Setting Connects", "Setting Connect", "Setting Memory", "Setting MemoryDoc", "Setting Usage",
   "Setting Archive", "Setting KeptFiles", "Setting Fonts", "Setting AutoPolicy",

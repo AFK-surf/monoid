@@ -1269,3 +1269,60 @@ test "a phone's chat: each key of its bar, over the messages scrolled under the 
   let p = @sfbase.picked.get()
   assert_true(p.ts != "" && p.b > p.a, msg="held long on \{past.text} at (\{x}, \{y}): \{Repr(p)}")
 }
+
+///|
+/// The fixture's chat on 小屏 (a phone's touch), its calls kept in `calls` and answered as the made-up core answers
+/// them; `nodes`: its page made as nodes (sfbase's chat_page_nodes).
+fn find_small_tester(calls : Array[Made], nodes? : Bool = false) -> @ui.Tester {
+  new_run()
+  @sf.presenters_reset()
+  @sfbase.chat_page_nodes.set(nodes)
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    call: fn(name, params, done) {
+      calls.push({ name, params, bytes: None, done })
+      (base.call)(name, params, done)
+    },
+  }
+  open_fixture_over("chat", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+  t.run_for(@ui.move_most_ms)
+  t
+}
+
+///|
+test "小屏: 在对话中查找 from the chat's sheet: the find's bar in the chat's bar, what is typed looked for in its thread, where the reader is among what was found counted, the words marked; Enter the next; its close button closes it" {
+  for nodes in [false, true] {
+    let calls : Array[Made] = []
+    let t = find_small_tester(calls, nodes~)
+    let key = "ws1/st1\u{1}s-c1"
+    t.click(Button, label=@sf.t("android-chat.info.title"))
+    t.run_for(@sf.presented_rest() - t.time())
+    t.tap_text(@sf.t("web-main.keymap.chat.find"))
+    t.run_for(@sf.presented_rest() - t.time())
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfpages.find_chat(), key, msg="nodes \{nodes}")
+    t.type_text("截图")
+    t.draw()
+    t.run_for(@sfpages.find_typing_ms)
+    t.run_for(@ui.move_most_ms)
+    let asked = named(calls, "chat.find").filter(fn(c) { !flag(Some(c.params), "bring") })
+    assert_true(asked.length() >= 1, msg="nodes \{nodes}: not asked")
+    assert_eq(text(Some(asked[0].params), "query"), "截图")
+    assert_eq(number(Some(asked[0].params), "thread"), 7.0)
+    assert_true(t.find("1/3") is Some(_), msg="nodes \{nodes}: \{Repr(t.words().map(fn(w) { w.0 }))}")
+    assert_eq(@sfpages.find_words_in(key), ["截图"])
+    t.key(@ui.key_code_enter)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("2/3") is Some(_), msg="nodes \{nodes}: Enter")
+    // (its own close button, at the bar's end: in the window's width)
+    let (cx, _, cw, _) = t.get(Button, label=@sf.t("web-main.find.close")).rect
+    assert_true(cx >= 0.0 && cx + cw <= 390.0, msg="nodes \{nodes}: its close button at \{cx}+\{cw}")
+    t.click(Button, label=@sf.t("web-main.find.close"))
+    t.run_for(@ui.move_most_ms)
+    assert_eq(@sfpages.find_chat(), "")
+    assert_eq(@sfpages.find_words_in(key), [])
+    assert_true(app.nav.top() is Chat(_))
+  }
+}

@@ -1304,10 +1304,11 @@ test("canonical and legacy system authors are read as the same kind", () => {
   const store = memory();
   const thread = store.openThread("ember", "CHAT", "1.1", null, null);
   store.db.exec(`INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (${thread.id}, 1, 'message', '1.1', 'stillfail', 'stillfail', 'x', 1)`);
-  say(store, thread.id, "1.2", "ember", "ember", "y");
-  assert.deepEqual(store.entriesAfter(thread.id, 0).map((e) => e.authorKind), ["ember", "ember"]);
-  // Writes keep the legacy spelling.
-  assert.equal((store.db.prepare("SELECT author_kind FROM entries WHERE n = 2").get() as any).author_kind, "ember");
+  store.db.exec(`INSERT INTO entries (thread, n, kind, ts, author_kind, author, text, at) VALUES (${thread.id}, 2, 'message', '1.2', 'ember', 'ember', 'y', 2)`);
+  say(store, thread.id, "1.3", "station", "station", "z");
+  assert.deepEqual(store.entriesAfter(thread.id, 0).map((e) => e.authorKind), ["station", "station", "station"]);
+  // Writes say station; what stations wrote before is read as it.
+  assert.equal((store.db.prepare("SELECT author_kind FROM entries WHERE n = 3").get() as any).author_kind, "station");
 });
 
 // ── beyond tests.rs ──

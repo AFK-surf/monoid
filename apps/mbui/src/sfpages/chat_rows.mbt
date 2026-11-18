@@ -211,35 +211,35 @@ fn outbox_row(c : @ui.Ctx, src : Source, here : MessageHere, o : Outgoing) -> Un
     } else if o.followed && !o.held {
       // (one held is taken back on its own: what takes it back under each)
       ()
-    } else if o.state == "sent" {
-      // the station took it: its time under it, as its message has it, until the message takes its place
-      let at = c.box(fn() { message_time(c, "o:" + o.id, o.time) })
-      match flight_here(here) {
-        // (how settled they are read as it is painted, not as its row is built)
-        Some(f) if f.text != "" => c.look_by(at, fn() { @ui.look(alpha=flight_settled_of(c, f)) })
-        _ => ()
-      }
     } else {
-      let words = if o.waits != "" { o.waits } else { @sf.t("web-main.chat.sending") }
-      // (shown once it has been on its way a while, counted from when it was sent (the time of day): a chat opened on
-      // one long on its way shows it at once, and the row taken over by the core's, its id another, goes on as it was;
-      // from when its row was first drawn as well, for a source whose time of day stands still)
+      // (on its way a while, counted from when it was sent (the time of day): a chat opened on one long on its way
+      // shows it at once, and the row taken over by the core's, its id another, goes on as it was; from when its row
+      // was first drawn as well, for a source whose time of day stands still)
       let gone = (src.now)() - o.created_at
-      let shows = gone >= sending_shows_ms || @kit.after(c, "sending/" + o.id, true, sending_shows_ms)
-      if !shows {
+      let late = o.state != "sent" &&
+        (gone >= sending_shows_ms || @kit.after(c, "sending/" + o.id, true, sending_shows_ms))
+      if o.state != "sent" && !late {
         c.wake_in(sending_shows_ms - gone)
       }
-      let w = c.box(style=msg_waiting, fn() {
-        @sf.progress_spinner(c, "sending/" + o.id, o.progress, size=waiting_spin) |> ignore
-        c.text(words, style=msg_time) |> ignore
-        // held here till its station is reached: nothing of it gone, so it may still be taken back
-        if o.held {
-          c.box(style=held_buttons, fn() { outbox_take_back(c, src, here, o) }) |> ignore
+      if !late && o.time is Some(_) {
+        // its time under it from the moment the core has it (taken by the station or not: the station taking it
+        // changes nothing seen, as mine_said_node has it), until the message takes its place
+        let at = c.box(fn() { message_time(c, "o:" + o.id, o.time) })
+        mine_time_flight(c, here, at, "o:" + o.id)
+      } else {
+        let words = if o.waits != "" { o.waits } else { @sf.t("web-main.chat.sending") }
+        let w = c.box(style=msg_waiting, fn() {
+          @sf.progress_spinner(c, "sending/" + o.id, o.progress, size=waiting_spin) |> ignore
+          c.text(words, style=msg_time) |> ignore
+          // held here till its station is reached: nothing of it gone, so it may still be taken back
+          if o.held {
+            c.box(style=held_buttons, fn() { outbox_take_back(c, src, here, o) }) |> ignore
+          }
+        })
+        // (while its words fly here, or before it is late (no time said yet), its room kept and nothing of it seen)
+        if !late || flight_here(here) is Some(_) {
+          c.look(w, @ui.look(alpha=0.0))
         }
-      })
-      // (while its words fly here, its room kept and nothing of it seen)
-      if !shows || flight_here(here) is Some(_) {
-        c.look(w, @ui.look(alpha=0.0))
       }
     }
   })

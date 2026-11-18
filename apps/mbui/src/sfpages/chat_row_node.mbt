@@ -262,7 +262,7 @@ pub fn chat_row_node(
       fn(h) {
         let tone = fn() { @sfbase.row_tone(item()) }
         // (the show's own box its slot: a box a part, no box round one)
-        h.show(fn() { tone() != "" && !renaming() }, fn(m) {
+        h.show(fn() { tone() != "" && !renaming() }, along_row=true, fn(m) {
           @sf.style_node(m, fn() { mark_slot }, in_row=true)
           chat_mark_node(m, tone)
         })
@@ -287,7 +287,7 @@ pub fn chat_row_node(
           |> ignore
         })
         // failed a moment ago: a red mark, why on it
-        h.show(fn() { failed() is Some(_) }, fn(s) {
+        h.show(fn() { failed() is Some(_) }, along_row=true, fn(s) {
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
           let why = fn() { failed().unwrap_or("") }
           s.says(By(fn() { Some(@view.said(Image, label=why())) })) |> ignore
@@ -311,7 +311,7 @@ pub fn chat_row_node(
             0
           }
         }
-        h.pick(away_which, fn(s, which) {
+        h.pick(away_which, along_row=true, fn(s, which) {
           if which == 0 {
             // An empty pick is still a box in this row. Leave it out of layout too, including its gap.
             s.laid_nowhere(Is(true)) |> ignore
@@ -340,7 +340,7 @@ pub fn chat_row_node(
           @sf.tip_node(tips, s, said, within=true) |> ignore
         })
         // opened by another chat's agent: marked so, that chat named on it
-        h.show(fn() { item().opener is Some(_) && !renaming() }, fn(s) {
+        h.show(fn() { item().opener is Some(_) && !renaming() }, along_row=true, fn(s) {
           @sf.style_node(s, fn() { kind_slot }, in_row=true)
           let said = fn() {
             match item().opener {

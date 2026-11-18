@@ -522,6 +522,15 @@ fn P51::events_live(self : P51) -> EventsLive {
   self.stops.push(bus.subscribe_store(change => events.store_changed(jv(change))))
   bus.events_tell.val = (event, data, key, to) => events.tell(event, jv(data), key, jv(to))
   bus.overview_changed.val = () => events.overview_changed()
+  // config.json changed: the overview and every chat row told again; cloud.json changed: the overview (agents.ts
+  // `config.listen(() => (events.overviewChanged(), events.rowsChanged(null)))`, `cloud.listen(() => events.overviewChanged())`).
+  self.stops.push(
+    (bus.config_listen.val)(_ => {
+      events.overview_changed()
+      events.rows_changed(None)
+    }),
+  )
+  self.stops.push((bus.cloud_listen.val)(_ => events.overview_changed()))
   // What the process before told, taken up once it is gone.
   self.fork("events take up", async fn() {
     (bus.previous_gone)()

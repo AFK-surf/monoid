@@ -275,7 +275,10 @@ fn real_size_sweep(win : (String, Double, Double, Int, String)) -> Unit raise {
   // (Home first: the shell's ways are given there, those it does not read on the first screen that does)
   // These fixtures differ only in their pick topic. The real workspace replaces it with the same value.
   // The test below holds their work to newchat-model exactly, whose opening and changes have their bars here.
-  let distinct = corner_modes.filter(fn(m) { m != "newchat-station-models" && m != "newchat-station-empty" })
+  // (chat-info-bare differs from chat-info only in its chat's and chatThings' values: the same screen here)
+  let distinct = corner_modes.filter(fn(m) {
+    m != "newchat-station-models" && m != "newchat-station-empty" && m != "chat-info-bare"
+  })
   let modes = distinct.filter(fn(m) { m == "home" }) + distinct.filter(fn(m) { m != "home" })
   for mode in modes {
     let (opening, rows) = real_size_screen(mode, win, fn(way) {

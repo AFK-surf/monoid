@@ -195,13 +195,23 @@ priv struct Flying {
   fades : Bool
   from_fn : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)?
   start : Double
-  dur : Double
-  along : (Double) -> Double
+  /// its length and how far along it is at each ms: as its flight says for how far it goes, said anew where that is
+  /// laid out anew before it is first drawn (Tree::flights_refresh_now)
+  mut dur : Double
+  mut along : (Double) -> Double
   top : Int
   mut stop : () -> Unit
+  /// what calls off its end on the timeline, set anew with its length
+  mut stop_end : () -> Unit
   /// where it is drawn among the rest now (its route's `level`), and the foot it is drawn under then (-1 none)
   mut level : FlightLevel
   foot : Int
+  /// how far it goes from where it sets out to where it goes (View::flies_in's `far_of`; none: flight_far's own)
+  far_of : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)?
+  /// whether it leads the others of its Flight set out with it (View::flies_in's `lead`): their length and curve its
+  lead : Bool
+  /// whether it still waits for its hosted foot's old view to lay out its height in that change (Tree::flights_refresh_now)
+  mut awaits_old : Bool
 }
 
 ///|
@@ -274,6 +284,21 @@ priv struct Incoming {
   late : Double
   bare : Bool
   look_late : Double
+  far_of : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)?
+  lead : Bool
+}
+
+///|
+/// How far one flying from `from` to `to` goes, as its flight's length is said by: `far_of` where it is given
+/// (View::flies_in's), else the most of how far its place, its width and its height go.
+fn flight_far(from : (Double, Double, Double, Double), to : (Double, Double, Double, Double), far_of : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)?) -> Double {
+  match far_of {
+    Some(far) => far(from, to)
+    None => {
+      let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
+      dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
+    }
+  }
 }
 
 ///|
@@ -285,8 +310,12 @@ priv struct Incoming {
 /// (the head of this file). `flight` is the way, @motion's shared, a Move; its rise (down or up, and its height) lags
 /// its way across by `up_late` of its length, both eased as the way is over the rest (0: one way; words sent: across
 /// first, up a little after). Its look stays the one it sets out with for `look_late` of its way, coming to its own over
-/// the rest (bare words out of the field before their ground comes round them). Made outside a change it is there at
-/// once.
+/// the rest (bare words out of the field before their ground comes round them). How far it goes, which its flight's
+/// length is said by, is `far_of` of where it sets out and where it goes (none: the most of how far its place, its
+/// width and its height go). Of those that fly in on one Flight (the same one, not an equal) in one change, the first
+/// said `lead` leads: all of them go on its length and curve, landing as one (words, a quote and a picture grown from
+/// a thumbnail sent as one), and the key of a page's list they come in is carried by its way alone (Tree::carried); none
+/// said so, each goes as long as its own way, the key on the longest. Made outside a change it is there at once.
 #callsite(autofill(loc))
 pub fn View::flies_in(
   self : View,
@@ -295,6 +324,8 @@ pub fn View::flies_in(
   up_late? : Double = 0.0,
   bare_from? : Bool = false,
   look_late? : Double = 0.0,
+  far_of? : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double),
+  lead? : Bool = false,
   loc~ : SourceLoc,
 ) -> View {
   ignore(loc)
@@ -306,6 +337,8 @@ pub fn View::flies_in(
     late: dclamp(up_late, 0.0, 0.9),
     bare: bare_from,
     look_late: dclamp(look_late, 0.0, 0.9),
+    far_of,
+    lead,
   })
   self.tree.pairs_due()
   self
@@ -317,14 +350,43 @@ pub fn View::flies_in(
 fn Tree::incoming_now(self : Tree) -> Unit {
   let all = self.incoming.copy()
   self.incoming.clear()
-  for i in all {
-    guard self.alive_id(i.node) && self.attached(i.node.at) else { continue }
-    let n = self.nodes[i.node.at]
+  // (where each sets out and goes: none where it is let go of, out of the window's tree or flies from nowhere)
+  let ends : Array[((Double, Double, Double, Double), (Double, Double, Double, Double))?] = all.map(fn(i) {
+    guard self.alive_id(i.node) && self.attached(i.node.at) else { return None }
     let to = self.handle(i.node.at).laid_window_now()
-    guard (i.from)(to) is Some(from) else { continue }
-    // (in a page's list key's block coming in this change: that key carried by this flight, the list's one way of this
-    // moment on its rise (Tree::carried))
-    self.carried(i.node.at, from, to, i.late)
+    (i.from)(to).map(fn(from) { (from, to) })
+  })
+  // (the lead of each Flight, the first said so that flies: its way, by how far it goes, all of that Flight's)
+  let leads : Array[(Flight, Int, (Double, (Double) -> Double))] = []
+  for j, i in all {
+    guard i.lead && ends[j] is Some((from, to)) && self.nodes[i.node.at].in_flight is Some(fl) else { continue }
+    guard leads.search_by(fn(l) { physical_equal(l.0, fl) }) is None else { continue }
+    let far = flight_far(from, to, i.far_of)
+    let (ms, along) = (fl.way)(far)
+    guard ms > 0.0 && far > 0.5 else { continue }
+    leads.push((fl, j, (ms, along)))
+  }
+  let led_of = fn(j : Int, i : Incoming) {
+    let led = match self.nodes[i.node.at].in_flight {
+      Some(fl) => leads.search_by(fn(l) { physical_equal(l.0, fl) }).map(fn(x) { leads[x] })
+      None => None
+    }
+    (led, led is Some((_, lj, _)) && lj == j)
+  }
+  // (in a page's list key's block coming in this change: that key carried by this flight, the list's one way of this
+  // moment on its rise (Tree::carried); one led, by its lead's alone. All of them carried before any sets out, so that
+  // what flies in a block sets out from where the block is drawn once carried, whichever of them is said first)
+  for j, i in all {
+    guard ends[j] is Some((from, to)) else { continue }
+    let (led, leads_it) = led_of(j, i)
+    if led is None || leads_it {
+      self.carried(i.node.at, from, to, i.late, self.cause_now(), far_of=i.far_of, lead=leads_it)
+    }
+  }
+  for j, i in all {
+    guard ends[j] is Some((from, _)) else { continue }
+    let n = self.nodes[i.node.at]
+    let (led, leads_it) = led_of(j, i)
     let (a, b, c, d) = corners_of(n.look)
     let look : FromLook = {
       ground: if i.bare { n.look.ground & 0xFFFFFF00L } else { n.look.ground },
@@ -345,7 +407,19 @@ fn Tree::incoming_now(self : Tree) -> Unit {
         }
       None => None
     }
-    self.fly_from(i.node, from, look, None, i.late, from_fn=Some(i.from), within~) |> ignore
+    self.fly_from(
+      i.node,
+      from,
+      look,
+      None,
+      i.late,
+      from_fn=Some(i.from),
+      within~,
+      far_of=i.far_of,
+      lead=leads_it,
+      way=led.map(fn(l) { l.2 }),
+    )
+    |> ignore
   }
   // (told for this change alone)
   self.carried_rows.clear()
@@ -362,7 +436,7 @@ fn Tree::rides_said_way(self : Tree, at : Int) -> Bool {
     }
     // (or a page's list's block on its one way (`flips`, Tree's flip_rows): drawn off where it is laid out as that way
     // goes, a later change moving it on while the flight goes; the flight goes with it)
-    if n.live && p != at && self.flip_rows.contains(p) {
+    if n.live && p != at && (self.flip_rows.contains(p) || self.motion_aux().flip_rows.contains(p)) {
       return true
     }
     p = n.parent
@@ -1321,8 +1395,12 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
     along,
     top,
     stop: fn() {  },
+    stop_end: fn() {  },
     level: Held,
     foot: -1,
+    far_of: None,
+    lead: false,
+    awaits_old: false,
   }
   self.flights.push(f)
   self.nodes[to.at].lift = Some({ follow: to.at, top, d: dd, late: 0.0, k: 1.0, ky: 1.0, a: 0.0, from: d.look, stays: None, fixed: None, held_off: self.held_off(to.at), within })
@@ -1330,13 +1408,14 @@ fn Tree::paired(self : Tree, d : Departure, to : NodeId) -> NodeId? {
   self.lifted_order()
   // (drawn as of each frame's moment while it goes; over at its end, a moment of its own)
   let stop_way = self.queued(fn() { self.drawn_at() }, fn(t) { self.flight_at(f, t) })
-  let stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
-    stop_end()
+    (f.stop_end)()
     unkeep()
   }
+  self.flight_told(to.at)
   Some({ at: ghost, gen: g.gen })
 }
 
@@ -1440,6 +1519,9 @@ fn Tree::fly_from(
   late : Double,
   from_fn? : (((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?)? = None,
   within? : NodeId? = None,
+  far_of? : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)? = None,
+  lead? : Bool = false,
+  way? : (Double, (Double) -> Double)? = None,
 ) -> Bool {
   // (one flying in from what is none of the tree's on that way of its own, View::flies_in; else as it flies with
   // another of its id, View::shared)
@@ -1453,7 +1535,7 @@ fn Tree::fly_from(
   let (tx, ty, tw, th) = to_v.laid_window_now()
   let (fx, fy, fw, fh) = from
   let dd = (fx - tx, fy - ty, fw - tw, fh - th)
-  let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
+  let far = flight_far(from, (tx, ty, tw, th), far_of)
   // (one with an end that stays: what it sets out between told its route, as far as that says it goes; none said, as far
   // as its furthest going edge goes)
   let far = match stays {
@@ -1467,7 +1549,11 @@ fn Tree::fly_from(
     }
     None => far
   }
-  let (ms, along) = (flight.way)(far)
+  // (one led by another of its Flight (View::flies_in's `lead`): that one's way, how far this one goes aside)
+  let (ms, along) = match way {
+    Some(w) => w
+    None => (flight.way)(far)
+  }
   let waits_old = stays is None && from_fn is Some(_) && self.holds_hosted(0)
   if ms <= 0.0 || (!waits_old && far <= 0.5) {
     return false
@@ -1495,8 +1581,12 @@ fn Tree::fly_from(
     along,
     top,
     stop: fn() {  },
+    stop_end: fn() {  },
     level,
     foot,
+    far_of,
+    lead,
+    awaits_old: waits_old,
   }
   self.flights.push(f)
   // (set out from what is none of the tree's while an old view is hosted in it: refreshed against where it is laid out
@@ -1518,13 +1608,14 @@ fn Tree::fly_from(
   }
   self.lifted_order()
   let stop_way = self.queued(fn() { self.drawn_said() }, fn(t) { self.flight_at(f, t) })
-  let stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
+  f.stop_end = to_v.at_moment(at + ms, fn() { self.flight_over(f) })
   let unkeep = to_v.owns_while(fn() { self.flight_over(f) })
   f.stop = fn() {
     stop_way()
-    stop_end()
+    (f.stop_end)()
     unkeep()
   }
+  self.flight_told(to.at)
   true
 }
 
@@ -1536,34 +1627,113 @@ fn Tree::flights_refresh_now(self : Tree) -> Unit {
   guard !self.flights.is_empty() else { return }
   let now = self.drawn_said()
   let mut laid = false
+  // (those set out from what is none of the tree's that have not gone far yet, and where each sets out and goes now)
+  let due : Array[(Flying, (Double, Double, Double, Double)?, (Double, Double, Double, Double))] = []
   for f in self.flights.copy() {
-    guard self.alive_id(f.node) && f.from_fn is Some(from_fn) && now - f.start < 100.0 else { continue }
+    guard f.awaits_old && self.alive_id(f.node) && f.from_fn is Some(from_fn) && now - f.start < 100.0 else { continue }
+    f.awaits_old = false
     if !laid {
       self.laid_now() |> ignore
       laid = true
     }
     let to = self.handle(f.node.at).laid_window_now()
-    match from_fn(to) {
-      Some(from) => {
-        let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
-        let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
-        if far <= 0.5 {
+    due.push((f, from_fn(to), to))
+  }
+  // (the lead of each Flight set out at one moment (View::flies_in's `lead`): its way for how far it goes now, all of
+  // that Flight's)
+  let leads : Array[(Flight, Double, Flying, (Double, (Double) -> Double))] = []
+  for d in due {
+    let (f, from, to) = d
+    guard f.lead && from is Some(from) && self.flight_of_node(f.node.at) is Some(fl) else { continue }
+    let far = flight_far(from, to, f.far_of)
+    let (ms, along) = (fl.way)(far)
+    guard ms > 0.0 && far > 0.5 else { continue }
+    leads.push((fl, f.start, f, (ms, along)))
+  }
+  // (the keys' blocks told their way anew in this pass: the first flight in one told it as it is now, the others in it
+  // as the longest)
+  let told : Array[Int] = []
+  // (those still flying, where each sets out from and how far off where it is laid out)
+  let going : Array[(Flying, (Double, Double, Double, Double), (Double, Double, Double, Double))] = []
+  for d in due {
+    let (f, from, to) = d
+    guard from is Some(from) else {
+      self.flight_over(f)
+      continue
+    }
+    let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
+    let far = flight_far(from, to, f.far_of)
+    if far <= 0.5 {
+      self.flight_over(f)
+      continue
+    }
+    // (as long as its flight says for how far it goes now, not for how far it was before that view laid out its
+    // height: its end on the timeline with it, what reads how far along it is told so (View::flight_across_now),
+    // and the key it carries told the same (Tree::carried); one led, as long as its lead and on its curve)
+    let flight = self.flight_of_node(f.node.at)
+    let led = match flight {
+      Some(fl) =>
+        leads.search_by(fn(l) { physical_equal(l.0, fl) && l.1 == f.start }).map(fn(x) { leads[x] })
+      None => None
+    }
+    match flight {
+      Some(fl) => {
+        let (ms, along) = match led {
+          Some((_, _, _, w)) => w
+          None => (fl.way)(far)
+        }
+        if ms <= 0.0 {
           self.flight_over(f)
-        } else {
-          self.carried(f.node.at, from, to, f.late)
-          match self.nodes[f.node.at].lift {
-            Some(l) => {
-              l.d = dd
-              l.fixed = if l.stays is None && !self.rides_said_way(f.node.at) { Some(from) } else { None }
-              l.held_off = self.held_off(l.follow)
-            }
-            None => ()
-          }
-          self.flight_at(f, now)
+          continue
+        }
+        // (its curve as it is said for how far it goes now, as long or not)
+        f.along = along
+        if ms != f.dur {
+          f.dur = ms
+          (f.stop_end)()
+          f.stop_end = self.handle(f.node.at).at_moment(f.start + ms, fn() { self.flight_over(f) })
+          self.flight_told(f.node.at)
         }
       }
-      None => self.flight_over(f)
+      None => ()
     }
+    match led {
+      Some((_, _, lf, _)) =>
+        if physical_equal(lf, f) {
+          self.carried(f.node.at, from, to, f.late, f.start, far_of=f.far_of, anew=true, lead=true)
+        }
+      None => {
+        let row = self.carried_row(f.node.at)
+        self.carried(f.node.at, from, to, f.late, f.start, far_of=f.far_of, anew=!told.contains(row))
+        if row >= 0 {
+          told.push(row)
+        }
+      }
+    }
+    going.push((f, from, dd))
+  }
+  // (all of them carried before any is drawn anew, so that what flies in a block is held off where the block is drawn
+  // once carried, whichever of them came first)
+  for g in going {
+    let (f, from, dd) = g
+    match self.nodes[f.node.at].lift {
+      Some(l) => {
+        l.d = dd
+        l.fixed = if l.stays is None && !self.rides_said_way(f.node.at) { Some(from) } else { None }
+        l.held_off = self.held_off(l.follow)
+      }
+      None => ()
+    }
+    self.flight_at(f, now)
+  }
+}
+
+///|
+/// The Flight node `at` flies on: its own in from outside the tree (View::flies_in), else the one it is shared by.
+fn Tree::flight_of_node(self : Tree, at : Int) -> Flight? {
+  match self.nodes[at].in_flight {
+    Some(fl) => Some(fl)
+    None => self.nodes[at].share_flight
   }
 }
 
@@ -1682,6 +1852,7 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
   f.stop = fn() {  }
   stop()
   if self.alive_id(f.node) {
+    self.flight_told(f.node.at)
     self.nodes[f.node.at].lift = None
     self.places_rev = self.places_rev + 1
     self.look_marked_at(f.node.at)
@@ -1704,6 +1875,142 @@ fn Tree::flight_over(self : Tree, f : Flying) -> Unit {
 /// The flight node `at` is the new one of, if it is.
 fn Tree::flying_of(self : Tree, at : Int) -> Flying? {
   self.flights.iter().find_first(fn(f) { f.node.at == at && self.alive_id(f.node) })
+}
+
+///|
+/// Per-tree flight, `flips` list and foot-resize tables kept off `pub struct Tree` and `struct Node` so extending them
+/// keeps `Tree`'s C layout unchanged across downstream packages.
+priv struct TreeMotionAux {
+  tree : Tree
+  flip_rows : Map[Int, ((Double, (Double) -> Double), Bool, Bool) -> Unit]
+  flip_gone : Map[Int, (View, Double) -> Double]
+  feet_resized : Map[Int, Double]
+  feet_lead : Map[Int, (Double, Bool)]
+  flight_cells : Map[Int, (Int, @signals.Signal[Int])]
+  pick_faders : Map[Int, Int]
+}
+
+///|
+// kept across runs: each tree owns its entry until disposal (Tree::motion_aux)
+let tree_motion_auxs : Array[TreeMotionAux] = []
+
+///|
+// kept across runs: last tree's entry for O(1) lookup, cleared when its tree disposes
+let tree_motion_last : Ref[TreeMotionAux?] = Ref(None)
+
+///|
+fn Tree::motion_aux(self : Tree) -> TreeMotionAux {
+  if tree_motion_last.val is Some(last) && physical_equal(last.tree, self) {
+    return last
+  }
+  for aux in tree_motion_auxs {
+    if physical_equal(aux.tree, self) {
+      tree_motion_last.val = Some(aux)
+      return aux
+    }
+  }
+  let aux : TreeMotionAux = {
+    tree: self,
+    flip_rows: {},
+    flip_gone: {},
+    feet_resized: {},
+    feet_lead: {},
+    flight_cells: {},
+    pick_faders: {},
+  }
+  tree_motion_auxs.push(aux)
+  tree_motion_last.val = Some(aux)
+  self.root().owns_while(fn() {
+    if tree_motion_last.val is Some(last) && physical_equal(last, aux) {
+      tree_motion_last.val = None
+    }
+    if tree_motion_auxs.search_by(fn(it) { physical_equal(it, aux) }) is Some(i) {
+      tree_motion_auxs.remove(i) |> ignore
+    }
+  }) |> ignore
+  aux
+}
+
+///|
+fn Tree::mark_pick_fader(self : Tree, at : Int) -> Unit {
+  let n = self.nodes[at]
+  if n.live {
+    self.motion_aux().pick_faders[at] = n.gen
+  }
+}
+
+///|
+fn Tree::is_pick_fader(self : Tree, at : Int) -> Bool {
+  let n = self.nodes[at]
+  n.live && self.motion_aux().pick_faders.get(at) == Some(n.gen)
+}
+
+///|
+/// What reads node `at`'s flight (View::flying_now, View::flight_across_now) told it set out, was said anew or is
+/// over: at those causes alone, never as it goes (what reads how far along it is follows the clock meanwhile).
+fn Tree::flight_told(self : Tree, at : Int) -> Unit {
+  let n = self.nodes[at]
+  match self.motion_aux().flight_cells.get(at) {
+    Some((gen, c)) if gen == n.gen => c.set(c.untracked() + 1)
+    _ => ()
+  }
+}
+
+///|
+/// The flight of the node of `v` as what reads it reads it (View::flying_now, View::flight_across_now): followed as it
+/// sets out, is said anew and is over (Tree::flight_told); none where it does not fly as the new one of a flight.
+fn View::flight_read(self : View) -> Flying? {
+  guard self.live() is Some(n) else { return None }
+  let cells = self.tree.motion_aux().flight_cells
+  let cell = match cells.get(self.at) {
+    Some((gen, c)) if gen == n.gen => c
+    _ => {
+      let c = @signals.signal(0)
+      cells[self.at] = (n.gen, c)
+      c
+    }
+  }
+  cell.get() |> ignore
+  self.tree.flying_of(self.at)
+}
+
+///|
+/// Whether it is on its way as the new one of a flight (View::shared, View::flies_in) now, followed: true from the
+/// change that sets it out, false from the moment it is there (its end, as its flight says for how far it went),
+/// told at those two causes alone, never by the clock. What goes with what flies (a time under a bubble that flies in)
+/// shows by it.
+pub fn View::flying_now(self : View) -> Bool {
+  guard self.flight_read() is Some(f) else { return false }
+  self.goes_now(fn(now) { now < f.start + f.dur })
+}
+
+///|
+/// When its flight as the new one (View::shared, View::flies_in) ends on the clock (ms), followed as it sets out, is
+/// said anew and is over; none where it is there, or flies not.
+pub fn View::flight_ends_now(self : View) -> Double? {
+  guard self.flight_read() is Some(f) else { return None }
+  Some(f.start + f.dur)
+}
+
+///|
+/// How far across its way it is as the new one of a flight (View::shared, View::flies_in), 0 to 1, where what is drawn
+/// is drawn, followed: as its flight draws it across (Tree::flight_at: over the first of its length where its rise
+/// lags), as long as its flight says for how far it goes; 1 where it is there, or flies not. What goes with what flies
+/// (a time under a bubble flying in, faded in as it comes) reads it in its look, never a way and a length of its own:
+/// one curve, one length, one clock.
+pub fn View::flight_across_now(self : View) -> Double {
+  guard self.flight_read() is Some(f) else { return 1.0 }
+  let ends = f.start + f.dur
+  let t = self.drawn_while(fn(now) { now < ends })
+  guard t < ends else { return 1.0 }
+  let ms = (t - f.start) / (1.0 - f.late)
+  if ms <= 0.0 {
+    0.0
+  } else if ms >= f.dur {
+    1.0
+  } else {
+    (f.along)(ms)
+  }
 }
 
 ///|
@@ -1835,47 +2142,141 @@ fn Tree::change_ended(self : Tree) -> Unit {
 /// where it lies in the block of a key a page's list brings by data in this change (Tree's carried_rows), that key is
 /// carried by it: told the flight's way, as long as the flight and on the curve its rise goes, which that list's one way
 /// of this moment then goes on. The cause says where it comes from; the list does the rest (the user, 2026-11-10: the
-/// row grows on the same curve and length as the words leave the field; 2026-11-15).
+/// row grows on the same curve and length as the words leave the field; 2026-11-15). How far it goes by `far_of`
+/// (View::flies_in's); `anew`: said again for where it goes now (Tree::flights_refresh_now), taken shorter or not;
+/// `lead`: by the lead of its Flight, whose way no other of that moment takes the place of.
 fn Tree::carried(
   self : Tree,
   at : Int,
   from : (Double, Double, Double, Double),
   to : (Double, Double, Double, Double),
   late : Double,
+  cause : Double,
+  far_of? : (((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double)? = None,
+  anew? : Bool = false,
+  lead? : Bool = false,
 ) -> Unit {
-  let flight = match self.nodes[at].in_flight {
-    Some(f) => Some(f)
-    None => self.nodes[at].share_flight
+  guard self.flight_of_node(at) is Some(flight) else { return }
+  let p = self.carried_row(at)
+  guard p >= 0 else { return }
+  let far = flight_far(from, to, far_of)
+  let (ms, along) = (flight.way)(far)
+  guard ms > 0.0 && far > 0.5 else { return }
+  // (its rise: what flight_at draws its way down or up by, as a share of the time of all of it)
+  let rise = fn(x : Double) {
+    let m = (x * ms - late * ms) / (1.0 - late)
+    if m <= 0.0 {
+      0.0
+    } else if m >= ms {
+      1.0
+    } else {
+      along(m)
+    }
   }
-  guard flight is Some(flight) else { return }
+  match self.carried_rows.get(p) {
+    Some(tell) if self.carried_row_now(p) => tell((ms, rise))
+    _ =>
+      match self.motion_aux().flip_rows.get(p) {
+        Some(tell) => tell((ms, rise), anew, lead)
+        None =>
+          match self.flip_rows.get(p) {
+            Some(tell) => tell((ms, rise))
+            None => ()
+          }
+      }
+  }
+  self.feet_carried(p, cause, (ms, rise), anew~, lead~)
+}
+
+///|
+/// Whether row `p`'s key comes by data in the change committed now (Tree's carried_rows: one carried by a flight).
+fn Tree::carried_row_now(self : Tree, p : Int) -> Bool {
+  self.carried_rows.contains(p) && self.nodes[p].live && self.nodes[p].flex.style.come_at == self.cause_now()
+}
+
+///|
+/// The row or block of a page's list node `at` lies in that a flight in to it carries (Tree::carried): its key's come
+/// by data in the change committed now (carried_rows), else a block of a list said `flips` (flip_rows); -1 none.
+fn Tree::carried_row(self : Tree, at : Int) -> Int {
+  let flip_rows = self.motion_aux().flip_rows
   let mut p = at
   while p >= 0 {
-    let tell = match self.carried_rows.get(p) {
-      Some(tell) if self.nodes[p].live && self.nodes[p].flex.style.come_at == self.cause_now() => Some(tell)
-      _ => self.flip_rows.get(p)
+    if self.carried_row_now(p) || flip_rows.contains(p) || self.flip_rows.contains(p) {
+      return p
     }
-    match tell {
-      Some(tell) => {
-        let dd = (from.0 - to.0, from.1 - to.1, from.2 - to.2, from.3 - to.3)
-        let far = dmax(dmax((dd.0 * dd.0 + dd.1 * dd.1).sqrt(), dd.2.abs()), dd.3.abs())
-        let (ms, along) = (flight.way)(far)
-        guard ms > 0.0 && far > 0.5 else { return }
-        // (its rise: what flight_at draws its way down or up by, as a share of the time of all of it)
-        let rise = fn(x : Double) {
-          let m = (x * ms - late * ms) / (1.0 - late)
-          if m <= 0.0 {
-            0.0
-          } else if m >= ms {
-            1.0
-          } else {
-            along(m)
-          }
+    p = self.nodes[p].parent
+  }
+  -1
+}
+
+///|
+/// A key of a page's list carried in by a flight set out at `cause` (Tree::carried; `slot`, its block's), on `way`:
+/// what in that list's pinned foot said its height goes its way at that moment on no way said with it
+/// (View::resizes, `foot`: the composer giving back what it held as the words fly up out of it) goes on the same way,
+/// as long, rising with the rows over it as one (the user, 2026-11-17: 发送回缩 on the rows' own curve, never one of its
+/// own beside theirs).
+fn Tree::feet_carried(
+  self : Tree,
+  slot : Int,
+  cause : Double,
+  way : (Double, (Double) -> Double),
+  anew? : Bool = false,
+  lead? : Bool = false,
+) -> Unit {
+  let aux = self.motion_aux()
+  let resized = aux.feet_resized
+  guard !resized.is_empty() && !self.list_feet.is_empty() else { return }
+  // (the list's feet: those whose held column holds the slot)
+  let feet : Array[Int] = []
+  for foot, held in self.list_feet {
+    let mut p = slot
+    while p >= 0 && p != held {
+      p = self.nodes[p].parent
+    }
+    if p >= 0 && self.nodes[foot].live {
+      feet.push(foot)
+    }
+  }
+  guard feet.length() > 0 else { return }
+  for at, t in resized.copy() {
+    guard t == cause && self.nodes[at].live && self.nodes[at].coming else { continue }
+    let st = self.nodes[at].flex.style
+    guard st.come_at == t else { continue }
+    let mut p = at
+    while p >= 0 && !feet.contains(p) {
+      p = self.nodes[p].parent
+    }
+    guard p >= 0 else { continue }
+    let keep = match (self.come_ways_lead.get(at), aux.feet_lead.get(at)) {
+      (Some(w0), Some((t0, l0))) if !lead &&
+        t0 == cause &&
+        (l0 || (!anew && w0.0 > way.0)) => true
+      _ => false
+    }
+    if keep {
+      continue
+    }
+    aux.feet_lead[at] = (cause, lead)
+    let m = self.nodes[at]
+    st.come_spec = Some(way)
+    // (its group's way as well when the group is settled after this (Tree::come_group_settle), as a row's: lead_way)
+    self.come_ways_lead[at] = way
+    match st.come_group {
+      Some(g) => {
+        g.spec = Some(way)
+        if g.set {
+          @flex.come_group_set(g)
         }
-        tell((ms, rise))
-        return
       }
-      _ => p = self.nodes[p].parent
+      None => st.come_ends = st.come_at + way.0
     }
+    // (done at its end as it is now, sooner or later than the Move it was said on)
+    if st.come_ends == st.come_ends {
+      let v = self.handle(at)
+      (m.come_off)()
+      m.come_off = v.at_moment(st.come_ends, fn() { come_done(self, v, m) })
+    }
+    self.marked()
   }
 }
 

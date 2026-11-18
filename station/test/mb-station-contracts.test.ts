@@ -279,3 +279,111 @@ test("every STILLFAIL_* the TypeScript station reads, the program reads", () => 
   assert.deepEqual(missing, [], `read by src/ and by no .mbt: ${missing.join(", ")}`);
   for (const v of Object.keys(ENV_NOT_THE_PROGRAMS)) assert.ok(ts.has(v) && !theirs.has(v), `${v}: take it out of ENV_NOT_THE_PROGRAMS`);
 });
+
+// ── the hooks that are no call by name: the bus's providers, what a handover carries, what the plane tells, what
+// the event streams follow ──
+
+/// station_main's own files, its harnesses' (a slice test's stand-ins) left out.
+const programFiles = () => mbt(join(mb, "station_main")).filter((f) => !/\/harness[^/]*\.mbt$/.test(f));
+const tsFiles = () => walk(join(station, "src"), (p) => p.endsWith(".ts") && !p.endsWith(".test.ts"));
+
+/// The `LiveBus` fields that are `Ref`s no slice gives anew: each with why.
+const BUS_REFS_GIVEN_WHOLE: Record<string, string> = {
+  own_add: "LiveBus::new's own list of the data directory's paths, which every slice adds to through it",
+  own_paths: "LiveBus::new's own list of the data directory's paths, read whole",
+};
+
+test("every Ref of the composition bus is given by a slice", () => {
+  const bus = read(join(mb, "station_main", "live_bus.mbt"));
+  const body = /pub\(all\) struct LiveBus \{([\s\S]*?)\n\}/.exec(bus)?.[1] ?? "";
+  const refs = [...body.matchAll(/^\s+([a-z_]+) : Ref\[/gm)].map((m) => m[1]!);
+  assert.ok(refs.length >= 30, `the bus's Refs read: ${refs.length}`);
+  const program = programFiles().map(read).join("\n");
+  const results: Result[] = refs.filter((r) => !(r in BUS_REFS_GIVEN_WHOLE)).map((r) => ({
+    name: `bus ${r}`,
+    ok: new RegExp(`\\.${r}\\.val = `).test(program),
+    why: `live_bus.mbt's ${r} keeps LiveBus::new's stand-in: no slice says \`.${r}.val = …\``,
+  }));
+  for (const r of Object.keys(BUS_REFS_GIVEN_WHOLE)) assert.ok(refs.includes(r), `${r}: no Ref of the bus any more, take it out of BUS_REFS_GIVEN_WHOLE`);
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/// The literal first arguments of `<callee>("…",` in `files`, each with where it is first.
+function firstArgs(files: string[], callee: RegExp): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const f of files) {
+    read(f).split("\n").forEach((line, i) => {
+      if (/^\s*\/\//.test(line)) return;
+      for (const m of line.matchAll(new RegExp(`${callee.source}\\(\\s*"([^"]+)",`, "g"))) {
+        if (!out.has(m[1]!)) out.set(m[1]!, `${relative(station, f)}:${i + 1}`);
+      }
+    });
+  }
+  return out;
+}
+
+test("everything the TypeScript carries over a handover, the program carries", () => {
+  const ts = firstArgs(tsFiles(), /\bparts\.carry/);
+  const theirs = firstArgs(programFiles(), /\.carry/);
+  assert.ok(ts.size >= 3, `the TypeScript's carried parts: ${[...ts.keys()].join(",")}`);
+  const results: Result[] = [...ts].map(([key, where]) => ({ name: `carry ${key}`, ok: theirs.has(key), why: `${where} carries "${key}"; no \`.carry("${key}", …)\` in station_main` }));
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+test("everything the control plane's presence tells the TypeScript, the program follows", () => {
+  const ts = firstArgs(tsFiles(), /\b(?:plane|control)\.told/);
+  const theirs = firstArgs(programFiles(), /\bcontrol\.told/);
+  assert.ok(ts.size >= 2, `the kinds the TypeScript follows: ${[...ts.keys()].join(",")}`);
+  const results: Result[] = [...ts].map(([kind, where]) => ({ name: `told ${kind}`, ok: theirs.has(kind), why: `${where} follows the plane's "${kind}"; no \`control.told("${kind}", …)\` in station_main` }));
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});
+
+/// The arguments' names at the top level of each `events.follow(…)` call in `text` (`{ key: …, key(…) {…} }` in the
+/// TypeScript, `key=…` in the program).
+function followed(text: string, labelled: boolean): Set<string> {
+  const out = new Set<string>();
+  text = text.replace(/^\s*\/\/.*$/gm, "");
+  for (const m of text.matchAll(/\bevents\.follow\(/g)) {
+    let depth = 0;
+    let i = m.index! + m[0].length;
+    let word = "";
+    let quoted: string | null = null;
+    for (; i < text.length; i++) {
+      const c = text[i]!;
+      if (quoted !== null) {
+        if (c === "\\") i++;
+        else if (c === quoted) quoted = null;
+        continue;
+      }
+      if (c === '"' || c === "'" || c === "`") quoted = c;
+      else if ("({[".includes(c)) depth++;
+      else if (")}]".includes(c)) {
+        if (depth === 0) break;
+        depth--;
+      }
+      const top = labelled ? depth === 0 : depth === 1;
+      if (/[A-Za-z_]/.test(c)) word += c;
+      else {
+        if (top && word !== "" && (labelled ? c === "=" && text[i + 1] !== ">" && text[i + 1] !== "=" : c === ":" || c === "(")) out.add(word);
+        word = "";
+      }
+    }
+  }
+  return out;
+}
+
+const snake = (s: string) => s.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+
+test("every hook the TypeScript gives the event streams, the program gives them", () => {
+  const ts = new Map<string, string>();
+  for (const f of tsFiles()) for (const k of followed(read(f), false)) if (!ts.has(k)) ts.set(k, relative(station, f));
+  const theirs = new Set<string>();
+  for (const f of programFiles()) for (const k of followed(read(f), true)) theirs.add(k);
+  assert.ok(ts.size >= 8, `the hooks the TypeScript gives: ${[...ts.keys()].join(",")}`);
+  const results: Result[] = [...ts].map(([key, where]) => ({ name: `events.follow ${key}`, ok: theirs.has(snake(key)), why: `${where} gives events.follow ${key}; no events.follow(${snake(key)}=…) in station_main` }));
+  const wrong = judge(results);
+  assert.deepEqual(wrong, [], wrong.join("\n"));
+});

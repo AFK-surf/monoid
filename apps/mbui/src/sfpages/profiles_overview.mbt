@@ -1112,10 +1112,20 @@ fn ov_charts_node(
 
 ///|
 /// `输出速度`, under the pool's two charts: its title and the speed now, the span to show, and each window's speed over
-/// it; where none of the pool's calls was timed in the span, says so in the chart's place.
+/// it; where none of the pool's calls was timed in the span, says so in the chart's place. A pool none of whose calls
+/// was timed in any span shows none of it, title and spans too: nothing to choose between.
 fn ov_speed_node(parent : @view.View, active_pool : () -> ModelPool?) -> Unit {
   let points_now = @signals.computed(fn(_) { active_pool().map(ov_speed_points).unwrap_or([]) }, same=fn(a, b) { a == b })
   let points = fn() { points_now.get() }
+  let any_timed = @signals.computed(
+    fn(_) { active_pool().map(fn(p) { p.speed.iter().any(ov_speed_known) }).unwrap_or(false) },
+    same=fn(a, b) { a == b },
+  )
+  parent.show(fn() { any_timed.get() }, at_once=true, fn(sec) { ov_speed_section_node(sec, points) })
+}
+
+///|
+fn ov_speed_section_node(parent : @view.View, points : () -> Array[Double]) -> Unit {
   parent.box(fn(col) {
     col.gap(Is(6.0)).padding(Is((0.0, 16.0, 0.0, 0.0))) |> ignore
     ug_line_node(col, fn(h) {

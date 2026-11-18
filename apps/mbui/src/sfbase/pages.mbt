@@ -124,11 +124,17 @@ pub fn feature_on(src : Source, id : String) -> Bool {
 ///|
 /// How a chat's column is laid out as the shell has it at a node's moment (chat_page_made's `narrower`): how much narrower
 /// than it is drawn (`by`), how far across it is moved (`across`), and the width it is laid out at (`laid`: where that
-/// steps, all it holds is laid out anew at once, View::lays_anew). None at rest but the width.
+/// steps, all it holds is laid out anew at once, View::lays_anew); the width at the other end of its way (`toward`:
+/// where it set off from, or the wider end it is laid out short of) and how much of the way it has still to go to be
+/// drawn as at `laid` (`toward_by`, 1 … 0): what is arranged otherwise at the two widths (a message's picture out in the
+/// margin or over its head, chat_narrow_w) drawn that much of the way to how it is at `toward`, never stepping where the
+/// column is laid out anew. None at rest but the width.
 pub(all) struct ColumnLaid {
   by : Double
   across : Double
   laid : Double
+  toward : Double
+  toward_by : Double
 }
 
 ///|
@@ -207,7 +213,7 @@ pub fn column_set_off_by(chat : String, n : @view.View, f : () -> Unit) -> Unit 
 pub fn column_laid(chat : String, n : @view.View) -> ColumnLaid {
   match columns_laid.get(chat) {
     Some(f) => f(n)
-    None => { by: 0.0, across: 0.0, laid: 0.0 }
+    None => { by: 0.0, across: 0.0, laid: 0.0, toward: 0.0, toward_by: 0.0 }
   }
 }
 
@@ -412,53 +418,96 @@ pub fn chat_page_made(
                   None => ()
                 }
               }, fn() { drawn(serial) })
-              // (the new chat's scene leaving over the chat it just became, for new_leave_ms from its first words sent,
-              // drawn only, then let go)
-              match leaving {
-                Some(leave_fn) if @signals.untracked(fn() { fresh.became.get() == Some(r) }) => {
-                  let scene_open = @signals.signal(true, same=fn(a, b) { a == b })
-                  let leave_end = col.cause_at() + new_leave_ms
-                  col.at_moment(leave_end, fn() { scene_open.set(false) }) |> ignore
-                  col.show(
-                    fn() { scene_open.get() && fresh.became.get() == Some(r) && drawn(serial) },
-                    fn(o) {
-                      o.over(Is(true)).hides(Is(true)).carries_until(fn() { leave_end }) |> ignore
-                      app.nav.page_island(
-                        o,
-                        serial,
-                        fn(c, _page) { leave_fn(c, retained, r) },
-                        key=fn() { key() + "/leaving" },
-                      )
-                      .grow(Is(1.0))
-                      |> @ui.old_takes_own
-                      |> ignore
-                    },
-                    at_once=true,
-                  )
-                }
-                _ => ()
-              }
             }
-            _ => {
-              // (a new chat: its old view, what it reads let go with this node as the page becomes its chat)
-              let here = src.owned_by(col)
-              app.nav.page_island(
-                col,
-                serial,
-                fn(c, page) {
-                  page_entry_read(serial, retained, page)
-                  page_read(page)
-                  build(c, if page is Chat(_) { retained } else { here }, page)
-                },
-                key~,
-              )
-              .grow(Is(1.0))
-              |> ignore
-            }
+            // (a new chat: nothing here, its old view the scene's over it, below)
+            _ => ()
           }
         },
         at_once=true,
       )
+      // the new chat's scene: its old view while the page is the new chat, and the same view, the same node, drawing it
+      // leaving over the chat it becomes for new_leave_ms from its first words sent (its scene fading where it is, its
+      // composer the chat's now: new_chat_left), then let go: never let go as the page becomes the chat and made again
+      // to draw it leaving, an old view drawing nothing in the frame it is made (the frame the words were sent in drawn
+      // with neither the scene nor a composer); what it reads as the new chat let go with it
+      // (what the scene is: none; the new chat; leaving over the chat it became; only mounted when the entry begins as
+      // NewChat or just became Chat from NewChat, never adding an unused show slot to normal Chat pages)
+      let has_scene = @signals.untracked(fn() {
+        match app.nav.page_of(serial) {
+          Some((NewChat, _)) => true
+          Some((Chat(r), _)) => leaving is Some(_) && fresh.became.get() == Some(r)
+          _ => false
+        }
+      })
+      if has_scene {
+        let scene = fn() {
+          match app.nav.page_of(serial) {
+            Some((NewChat, _)) => 1
+            Some((Chat(r), _)) if leaving is Some(_) && fresh.became.get() == Some(r) => 2
+            _ => 0
+          }
+        }
+        // (its way over: told at new_leave_ms from the moment the page became the chat; none while it is the new chat)
+        let scene_left = @signals.signal(false, same=fn(a, b) { a == b })
+        let leave_end = Ref(-1.0)
+        v.show(
+          fn() {
+            match scene() {
+              1 => true
+              2 => !scene_left.get() && drawn(serial)
+              _ => false
+            }
+          },
+          fn(o) {
+            // (over the chat's column, as the page is; drawn only as it leaves, read out by nothing then; moved aside with
+            // the chat's column as it leaves, where something moves that)
+            o.over(Is(true)).hides(By(fn() { scene() == 2 })).carries_until(fn() { leave_end.val }) |> ignore
+            if aside is Some(_) {
+              o.offset(By(fn() { (if scene() == 2 { aside_of(o) } else { 0.0 }, 0.0) })) |> ignore
+            }
+            // (leaving from the change the page becomes the chat in, at its cause, or from its making where it is made so;
+            // back as the new chat again, its scene whole: the chat not made, leaving_back)
+            let going = Ref(0)
+            o.reacts(fn() { scene() == 2 }, fn(leaves) {
+              going.val += 1
+              if leaves {
+                let now = going.val
+                leave_end.val = o.cause_at() + new_leave_ms
+                o.at_moment(leave_end.val, fn() { if going.val == now { scene_left.set(true) } }) |> ignore
+              } else {
+                leave_end.val = -1.0
+                scene_left.set(false)
+              }
+            })
+            let here = src.owned_by(o)
+            app.nav.page_island(
+              o,
+              serial,
+              fn(c, page) {
+                match page {
+                  Chat(r) =>
+                    match leaving {
+                      Some(leave_fn) => leave_fn(c, retained, r)
+                      None => ()
+                    }
+                  _ => {
+                    page_entry_read(serial, retained, page)
+                    page_read(page)
+                    build(c, here, page)
+                  }
+                }
+              },
+              key~,
+            )
+            .grow(Is(1.0))
+            // (the page's to the hand all over while it is the new chat, as ever; as it leaves, drawn only, none of it: the
+            // chat under it takes what is pressed there)
+            .hosted_takes(fn(_, _, _) { @signals.untracked(fn() { scene() != 2 }) })
+            |> ignore
+          },
+          at_once=true,
+        )
+      }
     }
     None => {
       // (its old view, on the block's way laid out where and as wide as it is where the way ends (`held`, the

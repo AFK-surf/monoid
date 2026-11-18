@@ -509,6 +509,57 @@ fn Readers::let_go_idle(self : Readers) -> Unit {
 }
 
 ///|
+/// Short of memory: every reader and builder that answers nothing let go (pool.ts `trimIdle`), a count of them. A line
+/// with reads waiting keeps its readers.
+fn Readers::trim_idle(self : Readers) -> Int {
+  if self.closed {
+    return 0
+  }
+  let mut trimmed = 0
+  for line in [self.moved, self.pages, self.log] {
+    if line.waiting.length() > 0 {
+      continue
+    }
+    for s in line.slots.filter(s => s.held is None) {
+      match line.slots.search_by(x => physical_equal(x, s)) {
+        Some(i) => ignore(line.slots.remove(i))
+        None => ()
+      }
+      s.proc.stop()
+      trimmed += 1
+    }
+  }
+  for _, b in self.builders {
+    if !b.running && b.waiting.length() == 0 && b.proc is Some(p) {
+      p.stop()
+      b.proc = None
+      trimmed += 1
+    }
+  }
+  trimmed
+}
+
+///|
+/// The readers' and builders' processes running (resources' `programs`: the station's own memory).
+fn Readers::pids(self : Readers) -> Array[Int] {
+  let out : Array[Int] = []
+  for line in [self.moved, self.pages, self.log] {
+    for s in line.slots {
+      if !s.proc.gone {
+        out.push(s.proc.proc.pid)
+      }
+    }
+  }
+  for _, b in self.builders {
+    match b.proc {
+      Some(p) if !p.gone => out.push(p.proc.pid)
+      _ => ()
+    }
+  }
+  out
+}
+
+///|
 fn Readers::close(self : Readers) -> Unit {
   self.closed = true
   for f in self.stops {
@@ -882,6 +933,21 @@ fn P51::readers_live(self : P51) -> Readers {
       r.builder("cc-index-latest", s => { "session": s, "latest": true }, program="cc-index").ready(jitems(args))
       return Json::null()
     }
+    // (`$sessionChatNames`: hub.ts `prepareSessionChatNames`, the cc index's chat names of these sessions)
+    if op == "$sessionChatNames" {
+      r.builder("cc-index-names", s => { "session": s, "name": true }, program="cc-index").ready(jitems(args))
+      return Json::null()
+    }
+    // (`$sessionCounts`: agents.ts `waitForSessionCounts`, the sessions' counts built for the overview, a batch at a
+    // time, by `--builder session-counts`)
+    if op == "$sessionCounts" {
+      r.builder("session-counts", _ => Json::object({})).ready([Json::string("all")])
+      return Json::null()
+    }
+    // (the station short of memory: what answers nothing let go, a count; resources/module.ts `trimIdle`)
+    if op == "trimIdle" {
+      return Json::number(r.trim_idle().to_double())
+    }
     if op == "$cardPosts" {
       r.builder("card-posts", t => { "thread": t }).ready(jitems(args))
       return Json::null()
@@ -889,6 +955,7 @@ fn P51::readers_live(self : P51) -> Readers {
     r.read(op, args, lang)
   }
   self.stops.push(bus.subscribe_store(_ => r.checkpoint_soon()))
+  bus.register_pids(() => r.pids())
   self.every("idle readers", 15000, async fn() { r.let_go_idle() }) // timer: a debounce of a burst (a reader idle a minute let go, pool.ts IDLE_MS)
   self.fork("old lookups", async fn() { r.legacy_lookups(bus) })
   r

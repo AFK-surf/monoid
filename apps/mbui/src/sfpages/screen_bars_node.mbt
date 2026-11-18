@@ -6,7 +6,7 @@
 // its work in its handler.
 
 ///|
-/// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: round_button_box's), its name `label` read out and its tip;
+/// A round button in `parent` (`side`, 40 by default, its icon 20 in the ink: @sf.tool_round_node's), its name `label` read out and its tip;
 /// the ink at 10% under it while `lit` (the keyboard up, 控制, 全屏), the hover's under the hand; pressed, `press`. The
 /// node (what a panel it opens stands beside). In a pane's own bar (ScreenPage's `tab_pads`, 远程's), a bar's key: 32,
 /// its icon 16, its corner the window's where it stands there (sf's bar_keys_link), as a page's bar's keys.
@@ -19,9 +19,7 @@ fn screen_round_node(
   lit? : () -> Bool = fn() { false },
   side? : Double = round_side,
 ) -> @view.View {
-  let me : Ref[@view.View?] = Ref(None)
-  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
-    me.val = Some(v)
+  @sf.action_box_node(parent, label, on=lit, press, fn(v) {
     let pane = pg.tab_pads is Some(_) && side == round_side
     let side = if pane { round_bar_side } else { side }
     v
@@ -43,7 +41,7 @@ fn screen_round_node(
     .lies_along(Is(Middle))
     .ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } }))
     |> ignore
-    @sf.hover_ground_node(v, lit=Some(fn() { b.hovered() || b.pressed() || b.focus_shown() }))
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pointed() || v.pressed() || v.focus_shown() }))
     @sf.icon_node(v, "", if pane { round_bar_icon } else { round_icon }, By(fn() { @ui.tree_theme().color(Fg) }), name_now=icon)
     |> ignore
     @sf.tip_node(pg.tips, v, label) |> ignore
@@ -471,7 +469,7 @@ fn screen_viewer_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 fn net_chip_node(parent : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
-  let b = @headless.button(parent, fn() { @sf.t("web-pages.screen.stats") }, fn(b) { net_panel_open(s, u, Node(b)) }, fn(b, _) {
+  let b = @sf.action_box_node(parent, fn() { @sf.t("web-pages.screen.stats") }, fn(b) { net_panel_open(s, u, Node(b)) }, fn(b) {
     @sf.style_node(b, fn() { net_chip_box }, in_row=true)
     @sf.hover_ground_node(b)
     b.box(fn(t) {
@@ -750,12 +748,10 @@ fn foot_action_node(
   press : (@view.View) -> Unit,
 ) -> @view.View {
   ignore(pg)
-  let me : Ref[@view.View?] = Ref(None)
-  @headless.toggle(parent, Button, label, lit, fn(_) { if me.val is Some(v) { press(v) } }, fn(v, b) {
-    me.val = Some(v)
+  @sf.action_box_node(parent, label, on=lit, press, fn(v) {
     @sf.style_node(v, fn() { foot_action_box }, in_row=true)
     v.ground(By(fn() { if lit() { @sf.alpha(@ui.tree_theme().color(Fg), 0.1) } else { 0L } })) |> ignore
-    @sf.hover_ground_node(v, lit=Some(fn() { b.pressed() }))
+    @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() }))
     @sf.icon_node(v, icon, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
     @sf.words_node(v, words, fn() { foot_action_words }) |> ignore
     if felt != 0 {
@@ -848,7 +844,7 @@ fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> 
     row.box(fn(more) {
       let turned = fn() { !u.keys_turned.get().is_empty() }
       more.drops(By(fn() { if turned() { 0 } else { -1 } })) |> ignore
-      @headless.toggle(more, Button, fn() { @sf.t("common.more") }, turned, fn(_) {
+      @sf.key_cap_node(more, "", fn() { @sf.t("common.more") }, icon="more", held=turned, fn() {
         // (turned to those this face left out as last laid out: from the first face its others, and from them, where
         // they too have not the room, the rest; none left out, back)
         u.keys_turned.set(
@@ -859,11 +855,6 @@ fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> 
           })
           .map(fn(k) { k.name }),
         )
-      }, fn(v, _) {
-        @sf.style_node(v, fn() { row_key_box }, in_row=true)
-        v.ground(By(fn() { @ui.tree_theme().color(if turned() { Fg } else { Tint }) })) |> ignore
-        @sf.hover_ground_node(v)
-        @sf.icon_node(v, "more", key_icon, By(fn() { @ui.tree_theme().color(if turned() { Bg } else { Fg }) })) |> ignore
       })
       |> ignore
     })
@@ -879,29 +870,37 @@ fn keys_row_node(parent : @view.View, pg : ScreenPage, mouse? : Bool = true) -> 
 fn row_key_node(slot : @view.View, pg : ScreenPage, k : RowKey, held : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
-  @headless.toggle(slot, Button, fn() { k.name }, held, fn(_) {
-    if k.mod_ != 0 {
-      u.held.toggle(k.mod_)
-    } else if k.button != 0 {
-      button_clicked(s, u, k.button)
-    } else {
-      let mods = u.held.take()
-      stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
-    }
-  }, fn(v, _) {
-    @sf.style_node(v, fn() { row_key_box }, in_row=true)
-    v.ground(By(fn() { @ui.tree_theme().color(if held() { Fg } else { Tint }) })) |> ignore
-    @sf.hover_ground_node(v)
-    if k.icon != "" {
-      @sf.icon_node(v, k.icon, key_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
-    } else {
-      @sf.words_node(v, fn() { k.label }, fn() { if held() { row_key_on_words } else { row_key_words } }) |> ignore
-    }
-    if k.button != 0 {
-      button_felt_node(v, k.button)
-    }
-  })
+  @sf.key_cap_node(
+    slot,
+    k.label,
+    fn() { k.name },
+    fn() {
+      if k.mod_ != 0 {
+        u.held.toggle(k.mod_)
+      } else if k.button != 0 {
+        button_clicked(s, u, k.button)
+      } else {
+        let mods = u.held.take()
+        stroke(fn(j) { s.input(s.src, j) }, k.key, k.code, mods)
+      }
+    },
+    icon=k.icon,
+    held?=if k.mod_ != 0 { Some(held) } else { None },
+    felt?=button_felt(k.button),
+  )
   |> ignore
+}
+
+///|
+/// How a mouse button `button` is felt as a press goes down on it (button_felt_node's); none for a key.
+fn button_felt(button : Int) -> @ui.Haptic? {
+  if button == 0 {
+    None
+  } else if button == btn_secondary {
+    Some(ContextClick)
+  } else {
+    Some(KeyboardTap)
+  }
 }
 
 ///|
@@ -940,14 +939,8 @@ fn mouse_float_node(row : @view.View, pg : ScreenPage) -> Unit {
         ("mouse-left", "android-misc.screen.key.mouseLeft", btn_primary),
         ("mouse-right", "android-misc.screen.key.mouseRight", btn_secondary),
       ] {
-        let button = @headless.button(cap, fn() { @sf.t(b.1) }, fn(_) { button_clicked(s, u, b.2) }, fn(v, _) {
-          @sf.style_node(v, fn() { mouse_button_box }, in_row=true)
-          floats_node(v)
-          @sf.hover_ground_node(v, lit=Some(fn() { v.pressed() }))
-          @sf.icon_node(v, b.0, round_icon, By(fn() { @ui.tree_theme().color(Fg) })) |> ignore
-          button_felt_node(v, b.2)
-        })
-        ignore(button)
+        @sf.tool_round_node(cap, b.0, fn() { @sf.t(b.1) }, fn() { button_clicked(s, u, b.2) }, look=Floating, felt?=button_felt(b.2))
+        |> ignore
       }
       afloat_node(cap, u.mouse_moved)
     })
@@ -1051,7 +1044,7 @@ fn take_over_capsule_node(at : @view.View, pg : ScreenPage, in_bar : Bool, place
     }
     // the main solid button, as the web's primary (dark in the light theme, light in the dark one), not the accent
     // (whole, what says who drives cut short beside it)
-    let button = @headless.button(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn(_) { control_chosen(s, u, true) }, fn(v, _) {
+    let button = @sf.action_box_node(b, fn() { @sf.t("android-misc.screen.takeOver") }, fn(_) { control_chosen(s, u, true) }, fn(v) {
       @sf.style_node(v, fn() { take_over_button }, in_row=true)
       v.shrink(Is(0.0)) |> ignore
       @sf.hover_ground_node(v)

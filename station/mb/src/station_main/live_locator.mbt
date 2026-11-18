@@ -495,6 +495,25 @@ async fn LiveLocator::locate(self : LiveLocator, key : String) -> Json {
 }
 
 ///|
+/// Its program let go where nothing is looked for (live-locator.ts `trimIdle`): 1 where it was, else 0.
+fn LiveLocator::trim_idle(self : LiveLocator) -> Int {
+  match self.proc {
+    Some(p) if self.active.length() == 0 => {
+      self.proc = None
+      p.end_input()
+      ignore(kill(p.pid, "SIGTERM"))
+      1
+    }
+    _ => 0
+  }
+}
+
+///|
+fn LiveLocator::pid(self : LiveLocator) -> Int? {
+  self.proc.map(p => p.pid)
+}
+
+///|
 /// The locator ended with the station.
 fn LiveLocator::close(self : LiveLocator) -> Unit {
   (self.unlisten)()

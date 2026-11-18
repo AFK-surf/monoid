@@ -26,7 +26,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
     store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 100, ...extra } as Parameters<Store["insertSession"]>[0]);
   for (const [key, by] of [["done", "p@x"], ["quiet", "p@x"], ["card", "slack:team:U1"], ["ask", "local"], ["told", "p@x"], ["failed", "p@x"], ["hidden", "p@x"]] as const) session(key, { createdBy: by });
   let ts = 0;
-  const say = (t: number, kind: "person" | "agent" | "ember", author: string, text: string, at: number, extra: Record<string, unknown> = {}) => {
+  const say = (t: number, kind: "person" | "agent" | "station", author: string, text: string, at: number, extra: Record<string, unknown> = {}) => {
     store.insertMessage({ ...newMessage(t, String(++ts), kind, author, text), at, ...extra } as ReturnType<typeof newMessage>);
     return Number(db.prepare("SELECT MAX(n) AS n FROM entries WHERE thread = ?").get(t)!.n);
   };
@@ -70,8 +70,8 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
   say(talk, "person", "r@x", "earlier", 1000);
   const person = say(talk, "person", "r@x", "a word", 3000);
   const file = say(talk, "person", "s@x", "  ", 3001, { attachments: [{ name: "a.png", path: "/a.png", size: 1 }] });
-  const wrong = say(talk, "ember", "ember", "⚠️ The model failed  \n\nwhat it said", 3002);
-  const plain = say(talk, "ember", "ember", "just a note", 3003);
+  const wrong = say(talk, "station", "station", "⚠️ The model failed  \n\nwhat it said", 3002);
+  const plain = say(talk, "station", "station", "just a note", 3003);
   const entry = (n: number, kind: string, authorKind: string, author: string, text: string | null, at: number) => ({ n, kind, authorKind, author, text, at });
   const readers = (mb: string | null) => {
     const r = readersOf(data, mb);
@@ -92,7 +92,7 @@ test("the MoonBit reader makes chats' notices as the worker does", { skip: binar
         out.push(await read(r, "turnNotices", { key, since: 0, ended: 2200, lang }, lang));
       }
       const entries = [entry(person, "message", "person", "r@x", "a word", 3000), entry(file, "message", "person", "s@x", "  ", 3001),
-        entry(wrong, "message", "ember", "ember", "⚠️ The model failed  \n\nwhat it said", 3002), entry(plain, "message", "ember", "ember", "just a note", 3003)];
+        entry(wrong, "message", "station", "station", "⚠️ The model failed  \n\nwhat it said", 3002), entry(plain, "message", "station", "station", "just a note", 3003)];
       for (const [thread, list, since] of [[talk, entries, 0], [talk, entries.slice(0, 1), 0], [talk, entries.slice(2), 0], [card, entries.slice(0, 1), 0], [talk, entries, 5000], [hidden, entries, 0], [quiet, [], 0], [9999, entries, 0]] as const)
         out.push(await read(r, "saidNotices", { thread, entries: list, since, lang }, lang));
     }

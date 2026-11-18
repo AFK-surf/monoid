@@ -347,7 +347,7 @@ fn Names::name(self : Names, kind : String, author : String) -> Json raise {
   if self.names.get(key) is Some(n) {
     return n
   }
-  let name = if kind == "ember" {
+  let name = if kind == "station" {
     Json::string("still.fail")
   } else if kind == "agent" {
     // An agent goes by the name of the connect it posts through (on the page, of the connect that started it).

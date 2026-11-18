@@ -229,8 +229,8 @@ pub fn author_name(
   admin : String?,
   person : (String, String) -> Json,
 ) -> (String?, String?) {
-  // (rows.ts STATION_AUTHOR, STILLFAIL_CONNECT, STILLFAIL_SURFACE: still.fail's own, "ember")
-  if kind == "ember" {
+  // (rows.ts STATION_AUTHOR: the station itself)
+  if kind == "station" {
     return (Some("still.fail"), None)
   }
   if kind == "agent" {

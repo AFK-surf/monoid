@@ -347,7 +347,7 @@ pub fn said_notices(db : @sql.Db, host : @host.Host, data : String, sep : String
   let fresh = entries.filter(e => e.value("kind") == Some(Json::string("message")) && num(e.value("at").unwrap_or(Json::null())) >= since)
   let person = fresh.filter(e => e.value("authorKind") == Some(Json::string("person"))).last()
   let wrong = fresh
-    .filter(e => e.value("authorKind") == Some(Json::string("ember")))
+    .filter(e => e.value("authorKind") == Some(Json::string("station")))
     .filter_map(e => match e.value("text") {
       Some(String(t)) => went_wrong(t).map(w => (e.value("n").unwrap_or(Json::null()), w))
       _ => None

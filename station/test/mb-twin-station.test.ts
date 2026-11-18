@@ -166,13 +166,23 @@ async function freeUdpPort(): Promise<number> {
   return port;
 }
 
-/// The control plane of the test's, one for both: its HTTP (every request answered `{}`) and its presence socket, which
-/// tells each station its state.
+/// The control plane of the test's, one for both: its HTTP (the model catalog at `/v1/models` under an ETag the test
+/// changes, every other request answered `{}`) and its presence socket, which tells each station its state and carries
+/// what the test pushes to one station's socket (`push`, by the station's id its upgrade was signed with).
 async function controlPlane() {
   const sockets: WebSocket[] = [];
+  const of = new Map<string, WebSocket>();
+  const asked: string[] = [];
+  const catalog = { etag: '"m-1"', models: { "m-1": { name: "One" } } as Record<string, unknown> };
   const server = httpServer((req, res) => {
     req.resume();
-    req.on("end", () => res.writeHead(200, { "content-type": "application/json" }).end("{}"));
+    req.on("end", () => {
+      asked.push(req.url ?? "");
+      if ((req.url ?? "").startsWith("/v1/models")) {
+        return void res.writeHead(200, { "content-type": "application/json", etag: catalog.etag }).end(JSON.stringify({ models: catalog.models }));
+      }
+      res.writeHead(200, { "content-type": "application/json" }).end("{}");
+    });
   });
   const wss = new WebSocketServer({ noServer: true });
   const peers: unknown[] = [];
@@ -180,6 +190,7 @@ async function controlPlane() {
     if (!req.url?.startsWith("/v1/stations/connect")) return void socket.destroy();
     wss.handleUpgrade(req, socket, head, (ws) => {
       sockets.push(ws);
+      of.set(String(req.headers["x-stillfail-station"] ?? ""), ws);
       ws.on("message", (m) => {
         if (String(m) === "ping") ws.send("pong");
       });
@@ -197,7 +208,9 @@ async function controlPlane() {
     server.close();
   };
   closers.push(close);
-  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, peers, close };
+  const connected = (station: string) => of.get(station)?.readyState === 1;
+  const push = (station: string, frame: unknown) => of.get(station)!.send(JSON.stringify(frame));
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, peers, close, asked, catalog, connected, push };
 }
 
 /// A fake Claude Code (stream-json in and out, /bin/sh and curl alone). Each prompt's text says what it does: a line
@@ -318,7 +331,7 @@ class Station {
 class Twins {
   readonly grant = new GrantKey();
   stations: Station[] = [];
-  plane!: { origin: string; peers: unknown[]; close: () => void };
+  plane!: Awaited<ReturnType<typeof controlPlane>>;
   client!: Awaited<ReturnType<NonNullable<typeof addon>["bind"]>>;
   scripts!: string;
 
@@ -822,6 +835,35 @@ async function sideBySide(twins: Twins) {
     });
   }
 
+  // ── what the plane's presence socket tells each: the model catalog changed (models/module.ts `plane.told("models")`)
+  {
+    for (const s of [node, mb]) await until(`${s.kind}: on the presence socket`, () => twins.plane.connected(s.id), s.tail);
+    for (const s of [node, mb]) await until(`${s.kind}: the catalog read as it started`, () => readJson(join(s.data, "model-catalog.json"))?.etag === '"m-1"', s.tail);
+    twins.plane.catalog.etag = '"m-2"';
+    twins.plane.catalog.models = { "m-2": { name: "Two" } };
+    for (const s of [node, mb]) twins.plane.push(s.id, { type: "models", etag: '"m-2"' });
+    for (const s of [node, mb]) {
+      await check(`presence models: ${s.kind} reads the catalog the plane named`, () =>
+        until(`${s.kind}: model-catalog.json of the plane's new catalog`, () => readJson(join(s.data, "model-catalog.json"))?.etag === '"m-2"', s.tail, 20_000).then(() => undefined));
+    }
+    await check("presence models: both catalogs alike", () => assert.deepEqual(readJson(join(mb.data, "model-catalog.json")), readJson(join(node.data, "model-catalog.json"))));
+  }
+
+  // ── config.json edited by another program while an event stream is open: the overview told again by both ──
+  {
+    const streams = await Promise.all([node, mb].map((s) => events(s)));
+    for (const [i, st] of streams.entries()) await until(`${[node, mb][i]!.kind}: the event stream's first id`, () => st.ids().length > 0, () => st.text().slice(0, 400));
+    const marks = streams.map((st) => st.text().length);
+    for (const s of [node, mb]) {
+      const raw = readJson(join(s.data, "config.json"));
+      writeFileSync(join(s.data, "config.json"), JSON.stringify({ ...raw, connects: [{ id: "s9", kind: "slack", enabled: false, bind: { runtime: "claude" }, slack: { appToken: "xapp-9", botToken: "xoxb-9" } }] }));
+    }
+    for (const [i, s] of [node, mb].entries()) {
+      await check(`config.json changed: ${s.kind} tells the overview again`, () =>
+        until(`${s.kind}: an overview with the connect added`, () => /^event: overview$/m.test(streams[i]!.text().slice(marks[i]!)) && streams[i]!.text().slice(marks[i]!).includes('"s9"'), () => streams[i]!.text().slice(-1200), 20_000).then(() => undefined));
+    }
+  }
+
   // ── the overview, once both have been up a while (what each part puts in it, its first look done): a field each ──
   {
     // (each one's first look done: the machine's sign-ins read, the copies' export caught up with the chats; on a
@@ -929,6 +971,10 @@ async function chain(twins: Twins) {
     s.child.kill("SIGUSR2");
     const next = await until(`${hop.name}: the next process took over`, () => s.takenOver()[seen], s.tail, 60_000);
     await until(`${hop.name}: the process before gone`, () => !alive(before), s.tail);
+    await check(`${hop.name}: every part's memory carried over and taken up (live.plans, live.tails, vault)`, () => {
+      const failed = s.said.split("\n").filter((l) => /memory is not carried over|carried over is not taken up/.test(l));
+      assert.deepEqual(failed, [], failed.join("\n"));
+    });
     await check(`${hop.name}: the process serving is the release's`, () => {
       const cmd = commandOf(next);
       assert.ok(hop.to === "node" ? cmd.includes("main.js") : cmd.includes("stillfail-reader") && !cmd.includes("main.js"), cmd);

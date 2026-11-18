@@ -836,6 +836,13 @@ export class Mesh {
   readonly #health = new Map<string, boolean>();
   readonly #healthWaiting = new Map<string, Deferred.Deferred<boolean>[]>();
   #closed = false;
+  /// By endpoint: the connections its user made or took on it (`endpoint()`'s dials, `#accepting`'s), none of them
+  /// links: an endpoint they are open on counts as in use (`#anyOpen`), and is closed only once they are (`#closeOld`).
+  readonly #peers = new WeakMap<IrohEndpoint, Set<IrohConnection>>();
+  /// Endpoints bound over that wait for their user's connections to end before they close (`#closeOld`).
+  readonly #retired = new Set<IrohEndpoint>();
+  /// By endpoint: what `endpoint()` gives of it.
+  readonly #shown = new WeakMap<IrohEndpoint, IrohEndpoint>();
   /// By address: the relays its workspace has of its own, and the ways it turned off (its `ways_off`: relays, kinds of
   /// way), as the last `link` to it said.
   readonly #theirs = new Map<string, string[]>();
@@ -908,10 +915,17 @@ export class Mesh {
     const env = this.#env;
     const accept = endpoint.accept;
     if (!accept || !env.incoming || (env.takes ?? []).length === 0) return Effect.void;
+    const self = this;
     return Effect.gen(function* () {
       for (;;) {
         const taken = yield* accept.call(endpoint);
         if (taken === null) return;
+        // (bound over: what still comes to the old endpoint is not taken, its connections open on it let end)
+        if (self.#endpoint !== endpoint) {
+          taken.connection.close(0, "rebound");
+          return;
+        }
+        self.#trackPeer(endpoint, taken.connection);
         env.incoming!(taken.connection, taken.alpn);
       }
     });
@@ -1125,8 +1139,74 @@ export class Mesh {
     return this.#env.host.nowMs();
   }
 
+  /// The main endpoint as it is bound now, for its user's own connections: what it dials is counted as the endpoint in
+  /// use (`#trackPeer`), so it is not bound over beneath them nor closed while they are open. The same object until
+  /// it is bound anew.
   endpoint(): IrohEndpoint {
-    return this.#endpoint;
+    const e = this.#endpoint;
+    let shown = this.#shown.get(e);
+    if (shown === undefined) {
+      const self = this;
+      const connect: IrohEndpoint["connect"] = (addr, alpn, additional, givenUp) => Effect.tap(e.connect(addr, alpn, additional, givenUp), (conn) => Effect.sync(() => self.#trackPeer(e, conn)));
+      // (every other part of it the endpoint's own, called on it)
+      shown = new Proxy(e, {
+        get: (target, key) => {
+          if (key === "connect") return connect;
+          const v = Reflect.get(target, key, target);
+          return typeof v === "function" ? v.bind(target) : v;
+        },
+      });
+      this.#shown.set(e, shown);
+    }
+    return shown;
+  }
+
+  /// A connection of its user's on `endpoint`, counted while it is open.
+  #trackPeer(endpoint: IrohEndpoint, conn: IrohConnection): void {
+    if (conn.closeReason() !== null) return;
+    let peers = this.#peers.get(endpoint);
+    if (peers === undefined) {
+      peers = new Set();
+      this.#peers.set(endpoint, peers);
+    }
+    peers.add(conn);
+    const held = peers;
+    this.#env.runner.fork(Effect.andThen(conn.closed(), Effect.sync(() => { held.delete(conn); })));
+  }
+
+  /// Whether a connection of its user's is open on `endpoint`.
+  #peersOpen(endpoint: IrohEndpoint): boolean {
+    const peers = this.#peers.get(endpoint);
+    if (peers === undefined) return false;
+    let open = false;
+    for (const c of [...peers]) {
+      if (c.closeReason() !== null) peers.delete(c);
+      else open = true;
+    }
+    return open;
+  }
+
+  /// An endpoint bound over closed: at once, or once its user's connections on it ended (a pairing under way on it is
+  /// not cut).
+  #closeOld(old: IrohEndpoint): void {
+    const peers = [...(this.#peers.get(old) ?? [])].filter((c) => c.closeReason() === null);
+    if (peers.length === 0) {
+      this.#env.runner.fork(old.close());
+      return;
+    }
+    this.#retired.add(old);
+    const self = this;
+    this.#env.runner.fork(
+      Effect.ensuring(
+        Effect.gen(function* () {
+          yield* Effect.forEach(peers, (c) => c.closed(), { concurrency: "unbounded", discard: true });
+          if (!self.#closed) yield* old.close();
+        }),
+        Effect.sync(() => {
+          self.#retired.delete(old);
+        }),
+      ),
+    );
   }
 
   /// Tells this endpoint, and each bound after it, where a station is (no relay: tests, a LAN).
@@ -1136,7 +1216,7 @@ export class Mesh {
   }
 
   #anyOpen(): boolean {
-    return this.#openLinks().length > 0;
+    return this.#openLinks().length > 0 || this.#peersOpen(this.#endpoint);
   }
 
   /// The endpoint bound anew with the same key, the old one closed: at most once in REBIND_MS (`always`: whenever).
@@ -1157,7 +1237,7 @@ export class Mesh {
       const old = this.#endpoint;
       this.#endpoint = endpoint;
       this.#stuck = false;
-      this.#env.runner.fork(old.close());
+      this.#closeOld(old);
       return endpoint;
     });
   }
@@ -2382,6 +2462,9 @@ export class Mesh {
         if (e) yield* e.close();
       }
       this.#pinned.clear();
+      const retired = [...this.#retired];
+      this.#retired.clear();
+      for (const e of retired) yield* e.close();
       yield* this.#endpoint.close();
     });
   }

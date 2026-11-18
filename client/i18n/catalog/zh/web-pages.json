@@ -1253,6 +1253,21 @@
   "web-pages.security.devicesWhich": "最近 30 天内登录过",
   "web-pages.security.lead": "谁可以访问此 workspace 的 station 并在其上执行命令",
   "web-pages.security.members": "成员",
+  "web-pages.security.myDevices": "我的设备",
+  "web-pages.security.otherMembers": "其他成员",
+  "web-pages.security.memberTrustedDevices": {
+    "one": "{n} 台受信任设备",
+    "other": "{n} 台受信任设备"
+  },
+  "web-pages.security.memberDevices": {
+    "one": "{n} 台设备",
+    "other": "{n} 台设备"
+  },
+  "web-pages.security.memberWebDevices": {
+    "one": "{n} 个网页版",
+    "other": "{n} 个网页版"
+  },
+  "web-pages.security.memberNoDevices": "暂无设备",
   "web-pages.security.needsAppTitle": "请先安装客户端",
   "web-pages.security.newDeviceOf": "{name}的新设备",
   "web-pages.security.newDevices": "新设备登录后需经批准",

@@ -23,13 +23,6 @@ let screen_foot_center : @ui.Style = @ui.css("w=Full h=Full p=S2 align=ACenter j
 let mouse_pair_box : @ui.Style = @ui.css("row gap=S2 align=ACenter")
 
 ///|
-/// One of them, floating on its own: round, 44 (a press's least), on the floating ground (the ink at 8% pressed).
-// kept across runs: a value (no field of it changes)
-let mouse_button_box : @ui.Style = @ui.css((
-  #|w=S11 h=S11 radius=Full bg=Floating shadow=Sm align=ACenter justify=JCenter pressed{bg=Hover}
-))
-
-///|
 /// The mouse's buttons at the end of the frame's foot (stage_foot_paired's).
 // kept across runs: a value (no field of it changes)
 let mouse_pair_end : @ui.Style = @ui.css("justify=JEnd")
@@ -55,13 +48,6 @@ let take_over_place : @ui.Style = @ui.css("w=Full px=S3 py=S1 align=ACenter")
 // ── buttons ───────────────────────────────────────────────────────────────
 
 ///|
-/// A round button (40), the ink at 10% under it while it is on, the hover ground under the hand.
-// kept across runs: a value (no field of it changes)
-let round_button_box : @ui.Style = @ui.css((
-  #|w=S10 h=S10 radius=Full align=ACenter justify=JCenter hovered{bg=Hover} pressed{bg=Hover} selected{bg=A(Fg,O10)}
-))
-
-///|
 let round_icon : Double = 20.0
 
 ///|
@@ -73,7 +59,7 @@ let round_bar_icon : Double = 16.0
 let round_bar_side : Double = 32.0
 
 ///|
-/// How high a round button is (round_button_box's S10): what is pressed beside it in its row is as high (the address
+/// How high a round button is (@sf.tool_round_node's, S10): what is pressed beside it in its row is as high (the address
 /// field beside ← → ⟳, 36 till 2026-11-15: what is pressed side by side is one height, the user, 2026-10-30).
 let round_side : Double = 40.0
 
@@ -208,31 +194,6 @@ let foot_action_words : @ui.TextStyle = @ui.text_style(size=Caption, leading=L4,
 ///|
 // kept across runs: a value (no field of it changes)
 let keys_row_box : @ui.Style = @ui.css("row gap=S1 align=ACenter")
-
-///|
-/// A key: 36 high, 40 wide at least, round, 10 in, its words or mark in a row (never squeezed: a key short of room
-/// leaves whole); the ink at 6%, or the ink while it is held.
-// kept across runs: a value (no field of it changes)
-let row_key_box : @ui.Style = @ui.css((
-  #|row h=S9 min_w=S10 px=S2_5 radius=Full bg=Tint align=ACenter justify=JCenter selected{bg=Fg}
-))
-
-///|
-let key_icon : Double = 18.0
-
-///|
-// kept across runs: a value (no field of it changes)
-let row_key_words : @ui.TextStyle = @ui.text_style(
-  size=Ui,
-  leading=L4_75,
-  weight=Semibold,
-  color=Fg,
-  wrap=false,
-)
-
-///|
-// kept across runs: a value (no field of it changes)
-let row_key_on_words : @ui.TextStyle = row_key_words.then(@ui.text_style(color=Bg))
 
 ///|
 /// The keys row floating over the frame: a capsule 4 round it.

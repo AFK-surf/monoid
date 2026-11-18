@@ -554,17 +554,6 @@ async fn P52::start_feedback(self : P52) -> Unit {
       tell()
     }),
   )
-  // (the plane's `release`: what of it the cloud state says, as the updates read it)
-  let last = Ref((bus.cloud_state.val)().map(s => jfield(s, "release")).unwrap_or(Json::null()))
-  ignore(
-    (bus.cloud_listen.val)(s => {
-      let now = s.map(x => jfield(x, "release")).unwrap_or(Json::null())
-      if now != last.val {
-        last.val = now
-        if !(now is Null) {
-          tell()
-        }
-      }
-    }),
-  )
+  // (the plane's `release`, told by its presence socket: feedback/module.ts `plane.told("release", tellingFixed)`)
+  bus.on_release(tell)
 }

@@ -1053,6 +1053,33 @@ fn View::scrolls_window_ids(
   let flip_came : Map[Int, Bool] = Map([])
   // (a way made anew at each change, none like another: each said is told, none compared)
   let flip_way : @signals.Signal[@flex.FlipWay?] = @signals.signal_by(None, same=fn(_, _) { false })
+  // (`flips`: how far what each change set out has gone, by the change's moment, as long as it goes: its end, and its
+  // share gone at each moment, 0 at the change, 1 at that end. What was set out at a change (a pick leaving in a block:
+  // Tree's flip_gone) goes on its own way to its end, never on the way of a later change that set out another, nor set
+  // out again by it; told as flip_way is)
+  let flip_ways : Map[Double, (Double, (Double) -> Double)] = Map([])
+  let flip_gone_said = fn(at : Double, ends : Double, gone : (Double) -> Double) {
+    let over = flip_ways.iter().filter(fn(e) { e.0 != at && e.1.0 <= at }).map(fn(e) { e.0 }).to_array()
+    for t in over {
+      flip_ways.remove(t)
+    }
+    flip_ways[at] = (ends, gone)
+  }
+  // (the way the change at `at` set out, `w`: the list's, and that change's own, from what of it is left at `at` (one
+  // set out before it, a flight's still going, gone on as that change's from none of it gone); never over sooner than
+  // the least of a Move's time from `at`, as a change that moves nothing goes (below): one come at the tail of a way
+  // nearly over (刚刚 as the words sent land) not drawn whole within a frame or two of none of it)
+  let flip_way_said = fn(at : Double, w : @flex.FlipWay) {
+    let k0 = w.left(at).0
+    let least = @flex.move_least_ms
+    flip_gone_said(at, dmax(w.ends(), at + least), fn(t) {
+      let on_way = if k0 <= 1.0e-6 { 1.0 } else { 1.0 - w.left(t).0 / k0 }
+      let u = dmax(0.0, dmin(1.0, (t - at) / least))
+      let least_way = 1.0 - (1.0 - u) * (1.0 - u) * (1.0 - u)
+      dmax(0.0, dmin(1.0, dmin(on_way, least_way)))
+    })
+    flip_way.set(Some(w))
+  }
   // (`flips`: what each block made at rest binds to its way, bound once a way first sets out, all of them then, by the
   // list's one watch of it, not one of each block's: by the order they were made, each let go with its block)
   let flip_unbound : Map[Int, () -> Unit] = Map([])
@@ -1471,6 +1498,12 @@ fn View::scrolls_window_ids(
   // foot meanwhile, nothing following it; and the ask so put back, which the hand lets go of)
   let ask_cut = Ref(false)
   let ask_cut_was : Ref[ListAsk[Int]?] = Ref(None)
+  // (its pinned foot holding an old view not built yet since the foot was made (the chat's composer, while it is one):
+  // as tall as nothing till then, so where all of it ends is not known: a block asked to be brought is not put by it,
+  // the ask kept for the fill after that view is built (or the frame about to be painted, whichever is first), never
+  // taken for good where the list ends short of where it will (the fill's `cut`); a bridge while old views are hosted in
+  // a list's foot, as one_move_builds is)
+  let foot_unbuilt = Ref(false)
   // (the column marked laid out again: not while it is laid out, its fill going on to what that changed itself)
   let laid_again = fn() {
     if self.tree.rooming != self.at {
@@ -1878,6 +1911,38 @@ fn View::scrolls_window_ids(
   // (the glide back to its foot it is on (ListPlace::to_end), while it is: gone on toward where its foot is as that
   // moves, in its fill; none once another way is in its place (the hand, the wheel, another ask) or it is at rest)
   let end_glide : Ref[Notch?] = Ref(None)
+  // (whether one is said, told as that changes: what reads whether it glides there (follows_now) told it)
+  let end_glide_said = @signals.signal(false, same=fn(a, b) { a == b })
+  let end_glide_set = fn(g : Notch?) {
+    end_glide.val = g
+    end_glide_said.set(g is Some(_))
+  }
+  // (following its foot, as a page asks what comes at it to be followed by (Scroll::follows_now): at it; held by a
+  // standing limit the reader has not moved it off (ListPlace::follow_from); or on its glide back to it, not stopped
+  // by another way, or come to its end, till the fill after takes where it landed (the old view's list's `at_end ||
+  // gliding || following_row`). Its notch let go of as it is stopped (the hand, the wheel: Scroll::stopped) as it is
+  // as it lands, the two told apart by how it was let go of (Scroll's notch_landed), as the fill tells them
+  // (glide_landed). Scoped as at_foot_now is)
+  let follows_now = @signals.computed_scoped(fn(_) {
+    at_foot_now.get() ||
+    capped_now() ||
+    (end_glide_said.get() &&
+    (match (end_glide.val, s.notch.get()) {
+      (Some(g), Some(n)) => physical_equal(g, n)
+      (Some(_), None) => s.is_notch_landed()
+      _ => false
+    }))
+  }, same=fn(a, b) { a == b })
+  s.set_follows_said(Some(fn() { follows_now.get() }))
+  // (on its glide back to its foot, not stopped by another way: Scroll::glides_to_foot. Scoped as at_foot_now is)
+  let glides_foot = @signals.computed_scoped(fn(_) {
+    end_glide_said.get() &&
+    (match (end_glide.val, s.notch.get()) {
+      (Some(g), Some(n)) => physical_equal(g, n)
+      _ => false
+    })
+  }, same=fn(a, b) { a == b })
+  s.set_glides_foot_said(Some(fn() { glides_foot.get() }))
   // (come to its foot by that glide since its last fill: what the next fill finds the scroll moved by since then is
   // the glide's, not the hand's, and lets go of nothing the hand would (a limit said at its foot from then stands))
   let glided_foot = Ref(false)
@@ -2099,6 +2164,14 @@ fn View::scrolls_window_ids(
         (p.sight_listened)()
       }
       p.glide = fn(ask) {
+        // (its pinned foot not laid out as tall as it is yet: where all of it ends not known, nothing to glide to; the
+        // fill takes the ask, keeping it till it is: foot_unbuilt)
+        if foot_unbuilt.val {
+          match ask {
+            ToEnd => ()
+            _ => return false
+          }
+        }
         let all = places(laid.untracked())
         let vh = match s.seen.untracked() {
           Some((_, vh)) => vh
@@ -2139,10 +2212,12 @@ fn View::scrolls_window_ids(
                 s.glide_on(self, self.cause_at(), dclamp(to, top, most), most)
               _ => s.glide_to(self, self.cause_at(), dclamp(to, top, most))
             }
-            end_glide.val = match ask {
-              ToEnd => s.notch.untracked()
-              _ => None
-            }
+            end_glide_set(
+              match ask {
+                ToEnd => s.notch.untracked()
+                _ => None
+              },
+            )
             true
           }
           _ => false
@@ -2254,7 +2329,12 @@ fn View::scrolls_window_ids(
     guard (x - was).abs() > 0.000001 else { return }
     // (moved off where a limit held it: the reader took it, the limit let go of, before the anchor is put where it is
     // now and the move is no longer seen)
-    if capped.untracked() {
+    // (not by its glide back to its foot, which ends where the limit holds it)
+    let gliding_foot = match (end_glide.val, s.notch.untracked()) {
+      (Some(g), Some(n)) => physical_equal(g, n)
+      _ => false
+    }
+    if capped.untracked() && !gliding_foot {
       match place {
         Some(p) => p.from = None
         None => ()
@@ -2682,6 +2762,26 @@ fn View::scrolls_window_ids(
       return
     }
     let x = @signals.untracked(at)
+    // (on its glide back to its foot (ListPlace::to_end), or come to the end of it, not stopped by another way: what it
+    // moved by since is the glide's, not the reader's, and a limit said meanwhile stands, the glide ending where it
+    // holds it (glide_limit), held there as it lands)
+    let (on_end_glide, glide_landed) = match (end_glide.val, s.notch.untracked()) {
+      (Some(g), Some(n)) if physical_equal(g, n) => (true, false)
+      (Some(_), None) => (false, s.is_notch_landed())
+      _ => (false, false)
+    }
+    // (a limit said anew where the one before held it, not moved by the reader since: following its foot still, back at
+    // it first, the new one holding it from there: ListPlace::follow_from)
+    let refollow = match place {
+      Some(p) if p.from_new => {
+        p.from_new = false
+        @signals.untracked(capped_now)
+      }
+      _ => false
+    }
+    if refollow {
+      s.to_foot()
+    }
     // (held where it is at its foot (Scroll::holds_here): not following it, the anchor it had holding what shows; blocks
     // come or gone since, nothing having opened: followed again)
     if s.held && s.at_foot() {
@@ -2726,15 +2826,16 @@ fn View::scrolls_window_ids(
     // (moved by the hand, the wheel or a fling since: the anchor taken again where it is now, by what is counted now,
     // before what comes to show is measured; not moved, the one it had, whatever came or went over it)
     match anchor_x.val {
-      Some(was) if !held && !glided && (x - was).abs() > 0.000001 => {
+      Some(was) if !held && !glided && !refollow && (x - was).abs() > 0.000001 => {
         // (moved by the hand: held where it was no more, nor by what was pressed; held by a field in a row, let go
         // of as the hand brings it back to its foot; an ask this list put back as it was cut short by its foot still
         // going down let go of, the list where the hand put it: not one its page gave anew)
         s.held = false
-        // (a limit its foot was followed by let go of: the reader took the list, to its foot or not)
+        // (a limit its foot was followed by let go of: the reader took the list, to its foot or not; not the glide back
+        // to its foot, which ends where the limit holds it)
         match place {
-          Some(p) => p.from = None
-          None => ()
+          Some(p) if !on_end_glide && !glide_landed => p.from = None
+          _ => ()
         }
         match (place, ask_cut_was.val) {
           (Some(p), Some(was)) if ask_cut.val && p.asked is Some(a) && physical_equal(a, was) => {
@@ -2949,6 +3050,8 @@ fn View::scrolls_window_ids(
     }
     let was_capped = @signals.untracked(capped_now)
     let mut binds = false
+    // (where a limit that stands holds it as it glides back to its foot: that glide's end, fill_put)
+    let mut glide_limit : Double? = None
     let mut top = 0.0
     let mut vh = 0.0
     let mut again = true
@@ -3062,8 +3165,15 @@ fn View::scrolls_window_ids(
       // (its margin under what covers its top, as a block brought is: ListPlace::follow_from)
       let from_edge = fn(margin : Double) { margin + @signals.untracked(fn() { s.top_covered() }) }
       binds = false
+      glide_limit = None
       match from {
-        Some((i, margin)) if (follows_foot || was_capped) &&
+        // (on its glide back to its foot: where it holds it, the glide's end; what shows where the glide has it now)
+        Some((i, margin)) if on_end_glide && !asked && i < all.length() && all.top(i) - from_edge(margin) < most =>
+          glide_limit = Some(dmax(0.0, all.top(i) - from_edge(margin)))
+        _ => ()
+      }
+      match from {
+        Some((i, margin)) if (follows_foot || was_capped || glide_landed) &&
           !asked &&
           i < all.length() &&
           all.top(i) - from_edge(margin) < most => {
@@ -3228,7 +3338,9 @@ fn View::scrolls_window_ids(
           let i = ai.min(all.length() - 1).max(0)
           let wants = all.top(i) + aoff
           let ends = dmax(0.0, whole_of(counted(laid.untracked())) - vh)
-          wants > top + 0.5 && ends > top + 0.5
+          // (or its pinned foot not laid out as tall as it is yet (foot_unbuilt): where it ends is not known, and the
+          // block asked further down than the list goes now may well be put there once it is)
+          wants > top + 0.5 && (ends > top + 0.5 || foot_unbuilt.val)
         }
       }
     }
@@ -3527,16 +3639,25 @@ fn View::scrolls_window_ids(
       }
       // (gliding back to its foot, its foot moved since the glide set out or went on (a block measured or come at its
       // end, its pinned foot grown or shrunk, a way under it): on to where it is now, from where the glide has it and as
-      // fast; another way in its place let be, the hand's, the wheel's, another ask's)
+      // fast; another way in its place let be, the hand's, the wheel's, another ask's. A limit said meanwhile that holds
+      // it short of its foot (ListPlace::follow_from: glide_limit), on to where it holds it instead, back up to it
+      // where the glide is past it already)
       match (end_glide.val, s.notch.untracked()) {
         (Some(g), Some(n)) if physical_equal(g, n) && vh > 0.0 => {
           let most = dmax(0.0, whole_now() - vh)
-          if (n.x0 + n.total - most).abs() > 1.0 / 128.0 {
-            s.glide_on(self, dmax(self.tree.drawn_said(), n.t0), most, most)
-            end_glide.val = s.notch.untracked()
+          let to = glide_limit.unwrap_or(most)
+          if (n.x0 + n.total - to).abs() > 1.0 / 128.0 {
+            let t = dmax(self.tree.drawn_said(), n.t0)
+            let (came, _) = ease_state(n.total, n.v0, t - n.t0, tau=n.tau)
+            if to < n.x0 + came {
+              s.glide_to(self, t, to)
+            } else {
+              s.glide_on(self, t, to, most)
+            }
+            end_glide_set(s.notch.untracked())
           }
         }
-        (Some(_), _) => end_glide.val = None
+        (Some(_), _) => end_glide_set(None)
         _ => ()
       }
     }
@@ -3683,6 +3804,8 @@ fn View::scrolls_window_ids(
   // (a flight in from outside the tree in a key's block (View::flies_in, Tree::carried): the change's moment, the key
   // and the flight's way: the way of a change that brings that key goes on the flight's rise, as long)
   let flip_said : Ref[(Double, Int, (Double, (Double) -> Double))?] = Ref(None)
+  // (whether what flip_said holds is a lead's (View::flies_in's `lead`): no other flight of that moment takes its place)
+  let flip_said_lead : Ref[Bool] = Ref(false)
   let flip_rebuild : Ref[() -> Unit] = Ref(fn() {  })
   // (what the held column's blocks hold coming or going tells it: the list's set-out, Tree's flip_lists)
   let flip_inner_tell : Ref[(Int) -> Unit] = Ref(fn(_) {  })
@@ -3931,22 +4054,36 @@ fn View::scrolls_window_ids(
       for k, _ in flip_in_of {
         flip_in_take(k, at)
       }
+      let g_near = @signals.untracked(fn() { self.tree.rows_grid_now() })
+      let near = if g_near > 0.0 { 1.0 / g_near } else { 0.0 }
       let before : Map[Int, (Double, Double, Double, Double)] = Map([])
       for k, v in slot_views {
         guard v.alive() else { continue }
         let (x, y, w, h) = v.placed_window_now()
-        // (one a flight carries: drawn off as its slot is (where a change before moved it), open all the way)
+        // (one a flight carries: drawn off as its slot is (where a change before moved it), open all the way; within a
+        // pixel of the host's grid of its rest, drawn at its rest already: slot's drawn_off)
+        // (one still growing open from its top: drawn where its way has it, as its slot is till all of it is open)
         let (a, b, c, d) = flip_at(k, at)
         let d = if flip_whole.contains(k) { 0.0 } else { d }
+        let near_k = if d > 0.0 && flip_new.contains(k) { 0.0 } else { near }
+        let a = if a.abs() < near_k { 0.0 } else { a }
+        let b = if b.abs() < near_k { 0.0 } else { b }
         before[k] = (x + a, y + b, w - c, h - d)
       }
-      // (and how fast: what is left of the way's speed then)
+      // (and how fast: what is left of the way's speed then; none along an axis already at its rest on the grid)
       let speed : Map[Int, (Double, Double, Double, Double)] = Map([])
       match flip_way.untracked() {
         Some(w) =>
           for k, i in flip_items {
+            let (oa, ob, _, od) = flip_at(k, at)
+            let near_k = if od > 0.0 && flip_new.contains(k) && !flip_whole.contains(k) { 0.0 } else { near }
             let (va, vb, vc, vd) = w.drawn(i, at).1
-            speed[k] = (va, vb, vc, if flip_whole.contains(k) { 0.0 } else { vd })
+            speed[k] = (
+              if oa.abs() < near_k { 0.0 } else { va },
+              if ob.abs() < near_k { 0.0 } else { vb },
+              vc,
+              if flip_whole.contains(k) { 0.0 } else { vd },
+            )
           }
         None => ()
       }
@@ -4195,6 +4332,11 @@ fn View::scrolls_window_ids(
                 }
                 let y = base + n.flex.top + off_y(n) - n.flip_in.0
                 let h = n.flex.height
+                // (what a pick leaving makes for what it shows now (pick_leave.mbt) is drawn coming by its place's way
+                // itself, held_scaled: not grown and faded in again here, the two at once)
+                if self.tree.is_pick_fader(c) && !m.contains(c) {
+                  continue
+                }
                 match m.get(c) {
                   // (in a block laid out at another width (its column on its way to another width, View::lays_anew),
                   // what comes out otherwise across was laid out anew: its words broken again, its ground round them
@@ -4311,7 +4453,7 @@ fn View::scrolls_window_ids(
                 } else {
                   @flex.FlipWay::new(t, list, said=w)
                 }
-                flip_way.set(Some(way))
+                flip_way_said(at, way)
                 rests_at(way)
               }
               _ => ()
@@ -4346,7 +4488,7 @@ fn View::scrolls_window_ids(
                 }
               }
               let way = @flex.FlipWay::new(prev.at, list, said=prev.said.unwrap())
-              flip_way.set(Some(way))
+              flip_way_said(at, way)
               return
             }
             _ => ()
@@ -4370,15 +4512,38 @@ fn View::scrolls_window_ids(
             _ => ()
           }
           flip_raise()
+          let kept_new : Array[Int] = []
+          for k, _ in flip_new {
+            if !flip_whole.contains(k) && items.get(k) is Some(i) && i.off.3 > 0.5 {
+              kept_new.push(k)
+            }
+          }
           flip_items.clear()
           flip_new.clear()
           for k, i in items {
             flip_items[k] = i
           }
+          for k in kept_new {
+            flip_new[k] = true
+          }
           for k, _ in fresh {
             flip_new[k] = true
           }
-          flip_way.set(if way.far > 0.5 { Some(way) } else { None })
+          if way.far > 0.5 {
+            flip_way_said(at, way)
+          } else {
+            // (nothing moved by it, what a block holds told it (a pick to one as tall): what changed in it goes on the
+            // least of a Move's time all the same, as it does where nothing holds it so (pick_leave.mbt's
+            // leave_held_progress, as big at both ends), never at once)
+            if inner {
+              let ms = @flex.move_least_ms
+              flip_gone_said(at, at + ms, fn(t) {
+                let u = dmax(0.0, dmin(1.0, (t - at) / ms))
+                1.0 - (1.0 - u) * (1.0 - u) * (1.0 - u)
+              })
+            }
+            flip_way.set(None)
+          }
           rests_at(way)
           }
           fn wait_old(settled : Bool) -> Unit {
@@ -4415,7 +4580,7 @@ fn View::scrolls_window_ids(
               flip_items[k] = it
               held.push(it)
             }
-            flip_way.set(Some(@flex.FlipWay::new(at, held)))
+            flip_way_said(at, @flex.FlipWay::new(at, held))
             // (those drawn where the list shows as the change came: by where each was drawn then, the fill in the
             // change having found what shows by where all goes already)
             let (_, ly, _, lh) = self.placed_window_now()
@@ -4804,37 +4969,58 @@ fn View::scrolls_window_ids(
       slot_views[k] = slot
       if flips {
         let slot_at = slot.at
-        self.tree.flip_rows[slot_at] = fn(w) {
+        let aux = self.tree.motion_aux()
+        aux.flip_rows[slot_at] = fn(w, anew, lead) {
           let now = self.tree.cause_now()
+          // (of several flights in this key's block at its change, the longest, but where one leads its flight's others
+          // (View::flies_in's `lead`): that one's; one said anew (Tree::flights_refresh_now, the foot's old view built)
+          // taken as it is now, shorter or not)
           let keep = match flip_said.val {
-            Some((t0, k0, w0)) if t0 == now && k0 == k && w0.0 > w.0 => w0
-            _ => w
+            Some((t0, k0, w0)) if !lead &&
+              t0 == now &&
+              k0 == k &&
+              (flip_said_lead.val || (!anew && w0.0 > w.0)) => Some(w0)
+            _ => None
           }
-          flip_said.val = Some((now, k, keep))
+          if keep is None {
+            flip_said_lead.val = lead
+          }
+          flip_said.val = Some((now, k, keep.unwrap_or(w)))
           (flip_rebuild.val)()
           // (carried: at its rest from now on, as its flight sets out from here (what holds the flight, as it is drawn
           // off now, is where the flight goes from: Lift's held_off), not as the frame before had it)
           if flip_whole.contains(k) && slot.alive() {
-            self.tree.nodes[slot.at].look.drawn_off = (0.0, 0.0)
+            let d = match (flip_items.get(k), flip_way.untracked()) {
+              (Some(it), Some(way)) => {
+                let (s, _) = way.left(now)
+                (it.off.0 * s, it.off.1 * s)
+              }
+              _ => (0.0, 0.0)
+            }
+            self.tree.nodes[slot.at].look.drawn_off = d
           }
         }
-        slot.owns(fn() { self.tree.flip_rows.remove(slot_at) }) |> ignore
-        // (how far the list's way has gone where this block is drawn: what a pick leaving in it is held by)
-        self.tree.flip_gone[slot_at] = fn(v) {
-          match flip_way.get() {
-            Some(w) => {
-              let ends = w.ends()
+        slot.owns(fn() { aux.flip_rows.remove(slot_at) }) |> ignore
+        // (how far the way the change at `at` set out has gone where this block is drawn: what a pick leaving in it at
+        // that change is held by, to that way's end alone; a later change's way neither sets it out again nor takes it
+        // back (the user, 2026-11-17: 「你 选择了…」 and 刚刚 shown twice, a row come under them as they were there);
+        // none set out at that moment (or that way over): where it rests)
+        aux.flip_gone[slot_at] = fn(v, at) {
+          // (told as a way is said: one said for that change after this is first read)
+          flip_way.get() |> ignore
+          match flip_ways.get(at) {
+            Some((ends, gone)) => {
               let t = v.drawn_while(fn(t) { t < ends })
               if t >= ends {
                 1.0
               } else {
-                dmax(0.0, dmin(1.0, 1.0 - w.left(t).0))
+                gone(t)
               }
             }
             None => 1.0
           }
         }
-        slot.owns(fn() { self.tree.flip_gone.remove(slot_at) }) |> ignore
+        slot.owns(fn() { aux.flip_gone.remove(slot_at) }) |> ignore
       }
       // (`flips`: drawn off where it is laid out while its way goes, come by it growing from its top: FlipWay's. Bound
       // as it is made while a way is out, else once one first sets out (the list's one watch, flip_unbound): a block made
@@ -4854,9 +5040,11 @@ fn View::scrolls_window_ids(
                 let (a, b, _, _) = flip_drawn(k, slot)
                 // (within a pixel of the host's of where it rests: there, as a row on its grid is at its rest before its
                 // way ends, never past it; how far off it its way has it kept for what grows in it on the same way,
-                // Node's near_rest)
+                // Node's near_rest. Only once all of it is open, as a row is put on its grid only then: one still growing
+                // open from its top drawn where its way has it)
+                let open = flip_open(k, slot) == 1.0
                 let g = self.tree.rows_grid_now()
-                let near = if g > 0.0 { 1.0 / g } else { 0.0 }
+                let near = if open && g > 0.0 { 1.0 / g } else { 0.0 }
                 self.tree.nodes[slot.at].near_rest = if b.abs() < near { b } else { 0.0 }
                 (if a.abs() < near { 0.0 } else { a }, if b.abs() < near { 0.0 } else { b })
               }),
@@ -4871,25 +5059,9 @@ fn View::scrolls_window_ids(
             // still takes as the blocks under it come up, from as tall as it was to as it rests; drawn only)
             .clips_past(By(fn() { dmax(0.0, -flip_drawn(k, slot).3) }))
             .scale(By(fn() { flip_open(k, slot) }), about=DrawnSide(0.0))
-            .alpha(
-              By(fn() {
-                // (one a flight carries in: what of it does not fly (its time line, its state under it) seen as the
-                // flight lands, not at its rest while the flight is still on its way to it)
-                if flip_whole.contains(k) {
-                  match flip_way.get() {
-                    Some(w) => {
-                      let ends = w.ends()
-                      let t = slot.drawn_while(fn(t) { t < ends })
-                      // (the last tenth of the way: what does not fly is under where the flight is till then)
-                      dmax(0.0, (0.1 - w.left(t).0) / 0.1)
-                    }
-                    None => 1.0
-                  }
-                } else {
-                  row_seen_at(flip_open(k, slot))
-                }
-              }),
-            )
+            // (one a flight carries in open all the way (flip_open), seen whole as in a list not said `flips`: what of it
+            // goes with the flight says so itself, by View::flight_across_now or View::flying_now)
+            .alpha(By(fn() { row_seen_at(flip_open(k, slot)) }))
             |> ignore
           }
         }
@@ -5130,6 +5302,26 @@ fn View::scrolls_window_ids(
           i.shrink(Is(0.0)) |> ignore
           foot_v.val = Some(i)
           make_foot(i)
+          // (an old view in it: laid out as tall as it is only once it is built (Tree::old_views_built), the list laid out
+          // again then; till then no ask to bring a block is taken by where it ends: foot_unbuilt)
+          if self.tree.holds_hosted(i.at) {
+            foot_unbuilt.val = true
+            let begun = self.tree.old_builds_begun
+            fn wait_built(settled : Bool) -> Unit {
+              if !settled && self.tree.old_builds <= begun {
+                self.tree.old_built_waits.push(wait_built)
+              } else {
+                foot_unbuilt.val = false
+                // (an ask kept for it taken now; nothing else laid out again for it: the foot's own height laid out
+                // as it is built tells the list as ever)
+                match place {
+                  Some(p) if p.asked is Some(_) => laid_again()
+                  _ => ()
+                }
+              }
+            }
+            self.tree.old_built_waits.push(wait_built)
+          }
         })
         |> ignore
       })
@@ -5203,6 +5395,9 @@ priv struct PlaceAt {
   mut from : (Int, Double)?
   /// whether the key `from` names has been among the keys since it was said (gone after that, the limit goes with it)
   mut from_met : Bool
+  /// said (ListPlace::follow_from) since the list's last fill took it: where the one before held it, the reader not
+  /// having moved it, it follows its foot again for this one
+  mut from_new : Bool
   mut laid_again : () -> Unit
   mut glide : (ListAsk[Int]) -> Bool
   /// what is told what is in sight as that changes (ListPlace::on_sight), what was told last (ListPlace::sight_now),
@@ -5277,6 +5472,7 @@ pub fn[K : Hash + Eq] ListPlace::new() -> ListPlace[K] {
       jumped_to_end: false,
       from: None,
       from_met: false,
+      from_new: false,
       laid_again: fn() {  },
       glide: fn(_) { false },
       sight_fns: [],
@@ -5376,14 +5572,18 @@ fn PlaceAt::to_end(self : PlaceAt, glide? : Bool = true) -> Unit {
 /// scrolls, the bar's thumb; to its foot too: the reader's choice, followed from there), an ask (`bring`, `centre`,
 /// `to_end`, a glide), another said here (or None), or its key is no longer among the keys. While it stands and binds
 /// (that top would go over the margin at its foot), the list is held by that top at the margin and is off its foot to
-/// every rule of its foot, however near the foot it lies (Scroll::at_foot_now false, a key come after not followed),
-/// from the frame it would go further, however its key comes (on its way or at once) or grows; while it stands and does
-/// not bind (all from that key down fits), the list is at its foot as any, following it, held again as it comes to
-/// bind. None: followed all the way again. (Counted from the list's own top till 2026-11-14, when only its own test
-/// said it, under no cover.)
+/// every rule of its foot, however near the foot it lies (Scroll::at_foot_now false, a key come after not followed by
+/// the list itself), from the frame it would go further, however its key comes (on its way or at once) or grows; while
+/// it stands and does not bind (all from that key down fits), the list is at its foot as any, following it, held again
+/// as it comes to bind. Held so and not moved by the reader, it still follows its foot (Scroll::follows_now: the old
+/// view's list's `following_row`), so another said then (a key come after it, or None) takes it back to its foot first,
+/// held by that one from there; said while it glides back to its foot (`to_end`), that glide ends where this one holds
+/// it. None: followed all the way again. (Counted from the list's own top till 2026-11-14, when only its own test said
+/// it, under no cover.)
 pub fn[K : Hash + Eq] ListPlace::follow_from(self : ListPlace[K], key : K?, margin? : Double = 0.0) -> Unit {
   self.at.from = key.map(fn(k) { (self.ids.id(k), margin) })
   self.at.from_met = false
+  self.at.from_new = true
   (self.at.laid_again)()
 }
 

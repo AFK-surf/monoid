@@ -138,11 +138,11 @@ export function credentialOf(token: string, keys: unknown, ws: string, device: s
 /// A new device showing this one's code: who, where it asks, the code, how to turn it away.
 /// `hidden`: its prompt closed here, the code still good. `until`: when the code is too old (ms).
 /// `personal`: it asks into this person's own locks, each account's it can be let into here, not a workspace
-///; `places` is empty then. `seed`: the key, read as the person was asked before the code showed.
+///; `places` is empty then. Nobody is asked as the code shows: the key is read once the code is proved (`approve`).
 /// A place's `joins`: the lock there has not heard of this person (made a member since it was turned on); `moved`: its
 /// chain moved to its people's own logs, where a web page is let in by an entry of its person's own log (`movedPlace`);
 /// `admit`, there, someone's first device: who is said a member, with the log of their own its hello brought.
-type Asking = { personal?: { subs: string[]; key: string; seed: Uint8Array | null }; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
+type Asking = { personal?: { subs: string[]; key: string }; device: string; name: string; email: string; kind: "app" | "web"; label: string; signKey: string | null; code: string; at: number; until: number; places: { ws: string; sub: string; account: string; joins?: boolean; moved?: true; admit?: Admit }[]; hidden: boolean; away: Deferred.Deferred<void> };
 
 const askings = new WeakMap<Inner, Map<string, Asking>>();
 const askingsOf = (inner: Inner) => {
@@ -407,6 +407,8 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
     const personal = places.length === 0 ? personalAsked(inner, hello.value) : null;
     const who = personal !== null ? personal.who : asked.who;
     if ((places.length === 0 && personal === null) || who === null) return yield* d.send({ t: "no", error: "not_here" });
+    // (their lock begun with nobody asked where it can be, so that its root goes with the code, `rootsOf`)
+    if (personal !== null) for (const sub of personal.subs) yield* inner.adb.personal().beginForQuietly(sub);
     const all = askingsOf(inner);
     const before = all.get(peer);
     if (before) Deferred.doneUnsafe(before.away, Effect.void);
@@ -415,8 +417,7 @@ export function serveTrusted(inner: Inner, peer: string, me: string, d: Duplex):
       device: peer, name: who.name, email: who.email, kind, label: (str(get(hello.value, "label")) ?? "").slice(0, 120),
       signKey: kind === "app" ? str(get(hello.value, "sign_key")) : null, code: pairCode((b) => inner.host.randomBytes(b)),
       at: Math.floor(inner.host.nowMs() / 1000), until: inner.host.nowMs() + PAIR_WAIT_MS, places, hidden: false, away: Deferred.makeUnsafe<void>(),
-      // (their lock begun in this ask where they have none, personal-lock.ts `seedFor`)
-      ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key, seed: yield* Effect.orElseSucceed(inner.adb.personal().seedFor(personal.subs[0]!, t("core-misc.personal.reason.add")), () => null) } } : {}),
+      ...(personal !== null ? { personal: { subs: personal.subs, key: personal.key } } : {}),
     };
     all.set(peer, asking);
     told(inner);
@@ -484,14 +485,32 @@ function rootsOf(inner: Inner, subs: readonly string[]): Record<string, string> 
 function approve(inner: Inner, a: Asking): Effect.Effect<J> {
   return Effect.gen(function* () {
     if (a.personal) {
-      const { subs, key, seed } = a.personal;
+      const { subs, key } = a.personal;
+      const reason = t("core-misc.personal.reason.add");
       const chains: Record<string, Entry[]> = {};
       const failed: { ws: string; error: string }[] = [];
       // (its entry pending on their lock, no station of theirs up: the first such row, which the answer carries)
       let pending: unknown = null;
+      // The key, read once the code is proved and once for every account (their lock begun in this ask where they have
+      // none, personal-lock.ts `seedFor`): one turned down is not asked again for the next account.
+      let seed: Uint8Array | null = null;
+      let seedErr: CoreError | null = null;
       for (const sub of subs) {
+        if (seed === null && seedErr === null) {
+          const got = yield* Effect.result(inner.adb.personal().seedFor(sub, reason));
+          if (got._tag === "Success") seed = got.success;
+          else if (got.failure.code !== "personal_outside") seedErr = got.failure;
+          else {
+            failed.push({ ws: personOf(sub), error: got.failure.message });
+            continue;
+          }
+        }
+        if (seedErr !== null) {
+          failed.push({ ws: personOf(sub), error: seedErr.message });
+          continue;
+        }
         // (put on the person's lock, then in the workspaces' where they bound it, as one: `withBound`)
-        const add = inner.adb.personal().addDevice(sub, { key, id: a.device, label: a.label, ...(a.signKey !== null ? { sign_key: a.signKey } : {}) }, t("core-misc.personal.reason.add"), seed);
+        const add = inner.adb.personal().addDevice(sub, { key, id: a.device, label: a.label, ...(a.signKey !== null ? { sign_key: a.signKey } : {}) }, reason, seed);
         const added = yield* Effect.result(withBound(inner, sub, Effect.tap(add, () => putOnBound(inner, sub, { id: a.device, label: a.label, signKey: a.signKey }))));
         if (added._tag === "Success") chains[sub] = added.success;
         else failed.push({ ws: personOf(sub), error: added.failure.message });
@@ -827,12 +846,37 @@ export const dialer = {
   open(inner: Inner, id: string, relays: string[]): Effect.Effect<Duplex, CoreError> {
     return Effect.gen(function* () {
       const endpoint = (yield* inner.mesh()).endpoint();
-      const connection = yield* Effect.mapError(endpoint.connect({ id, relays }, PAIR_ALPN, []), (e) => CoreError.plainly("pair", e));
-      const stream = yield* Effect.mapError(connection.openBi(), (e) => {
-        connection.close(0, "done");
+      // (dialled on the core's fiber, given up as this one is interrupted: a dial that comes through after it was given
+      // up on, a later round's under way, is closed, not left to show the trusted device's code again)
+      let abandoned = false;
+      const givenUp = Deferred.makeUnsafe<void>();
+      let connection: IrohConnection | null = null;
+      const dialled = Deferred.makeUnsafe<IrohConnection, CoreError>();
+      inner.runner.fork(
+        Effect.flatMap(Effect.result(endpoint.connect({ id, relays }, PAIR_ALPN, [], Deferred.await(givenUp))), (r) =>
+          Effect.sync(() => {
+            if (r._tag === "Success") {
+              if (abandoned) return r.success.close(0, "done");
+              connection = r.success;
+              Deferred.doneUnsafe(dialled, Effect.succeed(r.success));
+            } else Deferred.doneUnsafe(dialled, Effect.fail(CoreError.plainly("pair", r.failure)));
+          }),
+        ),
+      );
+      const conn = yield* Deferred.await(dialled).pipe(
+        Effect.onInterrupt(() =>
+          Effect.sync(() => {
+            abandoned = true;
+            Deferred.doneUnsafe(givenUp, Effect.void);
+            (connection as IrohConnection | null)?.close(0, "done");
+          }),
+        ),
+      );
+      const stream = yield* Effect.mapError(conn.openBi(), (e) => {
+        conn.close(0, "done");
         return CoreError.plainly("pair", e);
       });
-      return streamDuplex(stream, () => connection.close(0, "done"));
+      return streamDuplex(stream, () => conn.close(0, "done"));
     });
   },
 };

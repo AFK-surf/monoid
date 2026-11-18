@@ -234,6 +234,7 @@ let composing : Composing = {
 ///|
 fn composing_reset() -> Unit {
   composer_foot_way.val = None
+  composer_width_last.val = ("", "", 0.0, 0.0)
   composing.let_go.set(false)
   composing.had_focus = false
   composing.let_go_at = @double.neg_infinity
@@ -449,15 +450,26 @@ pub fn composer(
   }
   // words dragged in from another app and let go on it beside its field (its ＋, send, its edge: on the field they go
   // where they were let go): into its field at its caret, as a paste's
-  // files from this machine's Finder let go on it (or on its field) where it is a station: by its station and path,
-  // named so or sent as files as the chat takes what is dragged in; elsewhere into its field as their paths, as words
-  if !no_files && @sfbase.finder_by_station() {
+  // files from this machine's Finder let go on it (or on its field) where it is a station of the chat's workspace: by
+  // its station and path, named so or sent as files as the chat takes what is dragged in; elsewhere (or where the host
+  // says no paths, as Windows' does) read and put in as files picked are (take_in says why where none goes up now)
+  if @sfbase.finder_by_station_in(ws.id) {
     match c.paths_into(cap, composer_field_key) {
       Some(paths) =>
-        writing_drop(src, w, spec.station, @sfbase.finder_dragged(src, paths).map(dropped_of), drops_as_files(src, w.key))
+        if no_files {
+          let why = if spec.offline {
+            @sf.t("web-main.composer.filesOffline")
+          } else {
+            @sf.t("web-main.composer.filesLocked")
+          }
+          c.tell("composer/files-refused/" + w.key, fn() { toast_later(why) })
+        } else {
+          writing_drop(src, w, spec.station, @sfbase.finder_dragged(src, paths).map(dropped_of), drops_as_files(src, w.key))
+        }
       None => ()
     }
   }
+  c.files_into(cap, composer_field_key, fn(files) { @sfbase.picked_files_into(w.key, files) })
   if !spec.locked {
     c.words_into(cap, composer_field_key)
   }
@@ -490,10 +502,11 @@ pub fn composer(
     @motion.tween(flight_desk_ms, ease=Flight)
   } else if moved && sent_out is Some(_) {
     // (gone to its chat's foot as a new chat's first words set out from it on a chat's page made as nodes: held where
-    // it was as long as they go across before they rise (sent_out_hold_ms), then down on their flight's clock and
-    // curve, one way with them, not ahead of them and back: sfbase's sent_out_said, said by new_chat's send)
-    // det-ok(motion-length): words sent's own, their flight's (message_words_node's flies_in), sf/motion.mbt kind 4
-    @motion.tween(flight_desk_ms - @sfbase.sent_out_hold_ms, ease=Flight, delay=@sfbase.sent_out_hold_ms)
+    // it was as long as they go across before they rise (sent_up_late of their flight), then down on their flight's
+    // curve within move_most_ms, one way with them, not ahead of them and back)
+    let ms = @ui.move_most_ms
+    let hold_ms = ms * sent_up_late
+    @motion.tween(ms - hold_ms, ease=Flight, delay=hold_ms)
   } else if sent_lets_go || sent_out is Some(_) {
     // (let go by words sent from it: down on their flight's clock, with its room, flight_lets_go)
     // (said where their row's opening is: flight_lets_go)
@@ -705,11 +718,18 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   // writes to the core told after the build (Ctx::tell) but what the system's picker answered, taken in before the
   // box is laid out (the host's word that it answered brings this frame)
   let dropped : Array[Dragged] = []
+  // (files read as they were let go on the chat, or picked, where none goes up now: said why below)
+  let mut picked_refused = false
   for g in @sfbase.draft_taken(w.key) {
     match g {
       // (the system's picker's answer taken in before the box is laid out: the host's word that it answered brings
       // this frame)
-      Picked(_) => @signals.untracked(fn() { given_into(src, spec.station, w, no_files, g) })
+      Picked(list) => {
+        if no_files && !list.is_empty() {
+          picked_refused = true
+        }
+        @signals.untracked(fn() { given_into(src, spec.station, w, no_files, g) })
+      }
       // words a visualization of this chat asked to send (sfbase viz_page.mbt): after what is written, the cursor in it
       Followed(words) => {
         let said = followed_words(w, words)
@@ -734,7 +754,7 @@ fn take_in(c : @ui.Ctx, src : Source, spec : ComposerSpec, w : Writing, no_files
   }
   // the videos waiting that the host has no picture of: their first frames, made from their bytes
   @sfbase.writing_stills(c)
-  if !dropped.is_empty() {
+  if !dropped.is_empty() || picked_refused {
     if no_files {
       // (not taken in where none goes up now: said why, and what to do, never let go of with nothing said)
       let why = if spec.offline {
@@ -2394,6 +2414,7 @@ fn sent_from_composer(c : @ui.Ctx, src : Source, w : Writing, station : String) 
     words: w.field.words_at().map(fn(at) { at.0 }),
     quotes: w.quotes.get().map(fn(q) { @motion.measured_rect(c, quote_card_key(text(Some(q), "id"))) }),
     parts,
+    delay: 0.0,
   })
 }
 
@@ -2741,7 +2762,7 @@ pub fn chat_composer(c : @ui.Ctx, src : Source, ws : Workspace, r : ChatRef, v :
     },
     warm_agent: !v.map(fn(v) { v.archived }).unwrap_or(false),
   }
-  let width = composer_width(c.width)
+  let width = composer_width_in(spec.draft, c.width)
   let place = if apart { composer_place(c, c.width) } else { composer_alone }
   let mut notices = -1
   let mut shaped = None
@@ -3381,6 +3402,58 @@ fn composer_foot_at(pane : Double) -> Double {
 /// How far under the composer its room is since a page's way set it off (composer_foot_in), and the way it was on as it
 /// was last asked ("" none) and when that is there: none till then, and none once the window takes the pane across with no way going.
 let composer_foot_way : Ref[(@motion.Anim, String, Double)?] = Ref(None)
+
+///|
+/// Draft, page_way id, starting pane width, and starting composer width (composer_width_in); reset by composing_reset.
+// kept across runs: reset by composing_reset
+let composer_width_last : Ref[(String, String, Double, Double)] = Ref(("", "", 0.0, 0.0))
+
+///|
+/// Width of `draft`'s composer in a pane `pane` wide: smoothly interpolated between the endpoints of `@sfbase.page_way`
+/// while the side panel slides so its edges never hit the piecewise clamp corner at `composer_most` mid-flight.
+fn composer_width_in(draft : String, pane : Double) -> Double {
+  let way = @sfbase.page_way
+  if way.id == "" {
+    let cw = composer_width(pane)
+    composer_width_last.val = (draft, "", pane, cw)
+    return cw
+  }
+  let (from, cw0) = match composer_width_last.val {
+    (d, id, w, cw) if d == draft && id == way.id => (w, cw)
+    (d, _, _, cw_was) if d == draft && cw_was > 0.0 => {
+      composer_width_last.val = (draft, way.id, pane, cw_was)
+      (pane, cw_was)
+    }
+    _ => {
+      let cw = composer_width(pane)
+      composer_width_last.val = (draft, way.id, pane, cw)
+      (pane, cw)
+    }
+  }
+  let to = way.to
+  if (from - to).abs() <= 0.5 {
+    composer_width(pane)
+  } else {
+    let gone = @sf.dclamp((from - pane) / (from - to), 0.0, 1.0)
+    let cw1 = composer_width(to)
+    let cw = cw0 + (cw1 - cw0) * gone
+    composer_width_last.val = (draft, way.id, from, cw0)
+    cw
+  }
+}
+
+///|
+/// Width of a composer in a tree node `w` wide while its column is on `c` (`@sfbase.column_laid`): smoothly interpolated
+/// between `c.laid` and `c.toward` so its edges never hit the piecewise clamp corner at `composer_most` mid-flight.
+fn composer_width_on(w : Double, c : @sfbase.ColumnLaid) -> Double {
+  if c.toward_by <= 0.0 || (c.toward - c.laid).abs() <= 0.5 {
+    composer_width(w)
+  } else {
+    let cw0 = composer_width(c.laid)
+    let cw1 = composer_width(c.toward)
+    cw0 + (cw1 - cw0) * c.toward_by
+  }
+}
 
 ///|
 /// Whether a chat's composer reaches across a pane `pane` wide, as far from its sides as from its foot

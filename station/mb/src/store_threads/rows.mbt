@@ -6,7 +6,7 @@
 let stillfail_surface : String = "ember"
 
 ///|
-let station_author : String = "ember"
+let station_author : String = "station"
 
 ///|
 let manual : String = "manual"
@@ -206,7 +206,7 @@ fn change_of_column(v : Json) -> @jsjson.JValue? {
 fn author_kind_of(v : Json) -> String {
   match v {
     String("agent") => "agent"
-    String("ember" | "stillfail") => station_author
+    String("station" | "ember" | "stillfail") => station_author
     _ => "person"
   }
 }

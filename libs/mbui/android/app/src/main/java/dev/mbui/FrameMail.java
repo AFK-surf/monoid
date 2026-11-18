@@ -12,7 +12,8 @@ import java.util.List;
  *
  * <ul>
  *   <li>A frame handed over (handOver) while the one before still waits takes its place (the native frames: android_host.c,
- *   frame_mail.h), its glyphs after the other's, the other's latency run's events its own.
+ *   frame_mail.h), its glyphs after the other's, the other's latency run's events its own; the one whose place it took,
+ *   never on the screen, counted (takeDropped).
  *   <li>What the app asks of the GL context (task) is numbered among the frames: done before the frame handed over after
  *   it is drawn, after the one handed over before it.
  *   <li>What lets go of what a frame draws (retire: a picture's texture, a native view's, a stream's) is done only once
@@ -111,6 +112,8 @@ final class FrameMail<G> {
     private long contextGen, appGen;
     /** How many frames the app's thread made for the context now (handed over or not: one that presents nothing too). */
     private long made;
+    /** How many frames handed over took the place of one still waiting, never drawn, since takeDropped last read. */
+    private int dropped;
 
     // ---- the app's thread ----
 
@@ -141,6 +144,8 @@ final class FrameMail<G> {
         notifyAll();
         if (!f.publish()) return false;
         int lat = f.built();
+        // (the frame waiting, never drawn: its place taken by this one)
+        if (pendingSeq >= 0) dropped++;
         if (pendingLat >= 0) {
             if (lat >= 0) f.merged(pendingLat, lat);
             else lat = pendingLat;
@@ -270,6 +275,17 @@ final class FrameMail<G> {
         owedRetire.addAll(pendingRetire);
         pendingRetire.clear();
         return t;
+    }
+
+    /**
+     * How many frames handed over were never drawn, each's place taken by a newer one as it waited (the GL thread slower
+     * than the app's thread makes them), since this was last read: read and put back to none at once (MBView, as the GL
+     * thread draws).
+     */
+    synchronized int takeDropped() {
+        int n = dropped;
+        dropped = 0;
+        return n;
     }
 
     /** The number of the frame pending, or past every task where there is none: the tasks before it may run now. */

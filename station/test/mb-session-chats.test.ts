@@ -1204,7 +1204,7 @@ test("conversations: chat_state, chat_leave, chat_history, the Slack bot and sla
     { thread: 1, n: 1, ts: "1.1", authorKind: "person", author: "U1", text: "hi", attachments: [{ name: "a.txt", path: "/w/a.txt", size: 1 }] },
     { thread: 1, n: 2, ts: "1.2", authorKind: "agent", author: "me", text: "q", card: { type: "options", options: [{ label: "a" }] }, attachments: [] },
     { thread: 1, n: 3, ts: "1.3", authorKind: "person", author: "U2", text: "x", options: [{ label: "z" }], attachments: [] },
-    { thread: 1, n: 4, ts: "1.4", authorKind: "ember", author: "ember", text: "notice", attachments: [] },
+    { thread: 1, n: 4, ts: "1.4", authorKind: "station", author: "station", text: "notice", attachments: [] },
   ];
   for (const [o, args] of [
     [{ messages: msgs, pendingCard: [{ thread: 1, n: 2, ts: "1.2" }], choices: [[3, { by: "U1", option: "z" }]] }, { to: "C9/3.000003" }],

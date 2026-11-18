@@ -8,7 +8,8 @@
 /// unread line, the line `lead` under the list's top (`top`: the bar and the room under it), the room over its block
 /// (chat_body_gap_room) over that; else where it was left this run (`kept`: the message
 /// at its top as far under the list's window's top, as kept: sfbase's kept_place_under), unless it was left at its end
-/// (then at its end, what came since showing);
+/// with nothing come since (its last message the one its end was then: at its end; something come since is read from
+/// where it was left, as the old list's left_at_end);
 /// else where the core says it was left (`v.at`: the first message at or after it, its top `v.at_offset` under the
 /// window's top in the screen's pixels of `scale`, as kept; else what is read in it at the list's top, the room over its
 /// block over that, as a go-to puts it: chat_goes_to).
@@ -32,7 +33,19 @@ fn chat_open_place(
   if rows.get("line") is Some(_) {
     return Some(("line", @sfbase.kept_place_under(top + lead - gap("line"), cover)))
   }
-  if kept is Some(p) && p.bottom >= 0.0 {
+  // (its last message, looked for from its end)
+  let mut newest = -1.0
+  let mut i = rows.keys.length() - 1
+  while i >= 0 {
+    match rows.get(rows.keys[i]).map(fn(row) { row.entry }) {
+      Some(Said(m)) => {
+        newest = m.seq
+        break
+      }
+      _ => i = i - 1
+    }
+  }
+  if kept is Some(p) && p.bottom >= 0.0 && p.bottom == newest {
     return None
   }
   // (the first message's row that is one `want` takes, by its key)

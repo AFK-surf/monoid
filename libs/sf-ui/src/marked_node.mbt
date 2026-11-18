@@ -131,8 +131,9 @@ pub fn found_words_node(
 }
 
 ///|
-/// The keys of a search's list where it is up (the keymap's own, never changed): ↓ and ↑ choose a line, with the cursor
-/// in its field too (sfpages' finder_keys_node: ⌘K's and the search's page's).
+/// The keys of a search's list where it is up (the keymap's own, never changed): ↓ and ↑ where it has no line to choose,
+/// taken all the same by what holds it (sfpages' finder_keys_node), nothing of them the field's; where it has, its
+/// combobox's first (combobox_bindings: sfpages' finder_combobox_node, ⌘K's and the search's page's).
 pub fn finder_bindings() -> Array[@view.Binding] {
   [
     { keys: [{ code: @ui.key_code_down, mods: 0 }], action: "finder.down", when: In("Finder") },

@@ -33,7 +33,7 @@ test("the MoonBit reader reads a chat's entries and letters as the worker does",
   store.joinThread(chat, "a1", "ember");
   store.joinThread(chat, "a2", "ember");
   let ts = 0;
-  const say = (t: number, kind: "person" | "agent" | "ember", author: string, text: string, extra: Record<string, unknown> = {}) => {
+  const say = (t: number, kind: "person" | "agent" | "station", author: string, text: string, extra: Record<string, unknown> = {}) => {
     const at = String(++ts);
     store.insertMessage({ ...newMessage(t, at, kind, author, text), at: 1000 + ts, ...extra } as ReturnType<typeof newMessage>);
     return at;
@@ -48,7 +48,7 @@ test("the MoonBit reader reads a chat's entries and letters as the worker does",
   say(chat, "agent", "gone", "of a session no more");
   say(chat, "agent", "a1", "identity null", { profile: "cc", runtime: "claude" });
   db.prepare("UPDATE entries SET agent_identity = 'null' WHERE thread = ? AND n = (SELECT MAX(n) FROM entries WHERE thread = ?)").run(chat, chat);
-  say(chat, "ember", "ember", "a notice");
+  say(chat, "station", "station", "a notice");
   db.prepare("UPDATE entries SET change = ? WHERE thread = ? AND n = (SELECT MAX(n) FROM entries WHERE thread = ?)").run(JSON.stringify({ was: { model: "a" }, now: { model: "b" } }), chat, chat);
   say(chat, "person", "p@x", "bad list");
   db.prepare("UPDATE entries SET quotes = '[{\"author\":1}]', attachments = 'nope' WHERE thread = ? AND n = (SELECT MAX(n) FROM entries WHERE thread = ?)").run(chat, chat);

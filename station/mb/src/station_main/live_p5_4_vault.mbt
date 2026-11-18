@@ -132,6 +132,8 @@ fn p54_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
   for c in sent {
     bus.notify_store(c)
   }
+  // (what it found not prepared yet, asked of the builders: agents.ts `requestSessionChat`, `followLatestThreadRequests`)
+  bus.drain_thread_requests(threads)
 }
 
 ///|
@@ -152,10 +154,18 @@ fn p54_vault_store(bus : LiveBus, threads : @store_threads.Store) -> @vault_serv
     },
     starter: k => p54_str(Some(threads.starter(Json::string(k)) catch { _ => Json::null() })),
     participants: k => p54_strs(Some(threads.participants(Json::string(k)) catch { _ => Json::null() })),
-    latest_thread: k => thread_of(threads.latest_thread(Json::string(k)) catch { _ => Json::null() }),
-    latest_thread_if_ready: Some(k => match (threads.latest_thread_if_ready(Json::string(k)) catch { _ => Json::null() }) {
-      Object(m) if m.get("ready") is Some(False) => None
-      v => Some(thread_of(v))
+    latest_thread: k => {
+      let t = thread_of(threads.latest_thread(Json::string(k)) catch { _ => Json::null() })
+      bus.drain_thread_requests(threads)
+      t
+    },
+    latest_thread_if_ready: Some(k => {
+      let v = threads.latest_thread_if_ready(Json::string(k)) catch { _ => Json::null() }
+      bus.drain_thread_requests(threads)
+      match v {
+        Object(m) if m.get("ready") is Some(False) => None
+        v => Some(thread_of(v))
+      }
     }),
     session_thread_by_id: (k, id) => thread_of(
       threads.session_thread_by_id(Json::string(k), Json::number(id.to_double())) catch {
@@ -445,6 +455,8 @@ async fn p54_vault_live(
   // The grants, the boxes of requests waiting and the secrets to keep, only in memory: over to the next process at a
   // handover (an update), so no agent asks again.
   bus.parts.carry("vault", async fn() { vault.carried() }, what => vault.carry(what))
+  // (vault/module.ts `readers.onTrim`: the use index's reader let go short of memory)
+  bus.on_trim(() => vault.secrets.trim_idle())
   // Another station's requests (`vault.`): a command run here with a secret, a secret read here.
   bus.on_peer_prefix("vault.", async fn(peer, ws, meth, params, _bytes) {
     let request = match params {
@@ -639,6 +651,70 @@ async fn p54_vault_ask(v : P54Vault, op : String, a : Json) -> Json? {
     "secrets.plain.put" => {
       plain.put(j(0))
       Json::null()
+    }
+    "secrets.plain.forget" => {
+      plain.forget(s(0), s(1))
+      Json::null()
+    }
+    // the moves' vault module (move/live.ts `vault`): an owner's rows sent as they are, taken out on a move back
+    "vaults.vaults" => p54_arr(vaults.vaults(s(0)))
+    "vaults.item" => p54_opt_json(vaults.item(s(0), s(1), s(2)))
+    "vaults.putVault" => {
+      vaults.put_vault(j(0))
+      Json::null()
+    }
+    "vaults.putItem" => {
+      vaults.put_item(j(0))
+      Json::null()
+    }
+    "vaults.forgetItem" => {
+      vaults.forget_item(s(0), s(1), s(2))
+      Json::null()
+    }
+    "vaults.forgetVault" => {
+      vaults.forget_vault(s(0), s(1))
+      Json::null()
+    }
+    // (move/live.ts `vault.owners`: whose plain items and vaults a workspace keeps here)
+    "vault.moveOwners" => {
+      let out : Array[String] = []
+      for r in v.db.all("SELECT DISTINCT owner FROM vault_plain WHERE ws = ? LIMIT 500", [Json::string(s(0))]) {
+        if r.get(0) is Some(String(o)) && !out.contains(o) {
+          out.push(o)
+        }
+      }
+      for x in vaults.vaults(s(0)) {
+        if x is { "owner": String(o), .. } && !out.contains(o) {
+          out.push(o)
+        }
+      }
+      Json::array(out.map(Json::string(_)))
+    }
+    // (move/live.ts `vault.grantOwners`: each session's owners, of the grants it holds: one read for a page of chats)
+    "vault.moveGrantOwners" => {
+      let keys = p54_strs(Some(j(0)))
+      let out : Map[String, Json] = {}
+      let rows = v.db.all(
+        "SELECT session, body FROM vault_grants WHERE session IN (SELECT value FROM json_each(?)) ORDER BY session, rowid LIMIT ?",
+        [Json::string(Json::array(keys.map(Json::string(_))).stringify()), Json::number((keys.length() * 50).to_double())],
+      )
+      for r in rows {
+        guard r.get(0) is Some(String(session)) && r.get(1) is Some(String(body)) else { continue }
+        let owner = match (try Some(@json.parse(body)) catch { _ => None }) {
+          Some({ "request": { "owner": String(o), .. }, .. }) => Some(o)
+          _ => None
+        }
+        guard owner is Some(o) else { continue }
+        let list = match out.get(session) {
+          Some(Array(l)) => l
+          _ => []
+        }
+        if !list.contains(Json::string(o)) {
+          list.push(Json::string(o))
+        }
+        out[session] = Json::array(list)
+      }
+      Json::object(out)
     }
     // a sign-in from a card (signin.ts), by the member who has it: [email, workspace, id, …]
     "signIns.fill" => p54_opt(v.vault.sign_ins.fill(s(0), s(1), s(2), j(3)))

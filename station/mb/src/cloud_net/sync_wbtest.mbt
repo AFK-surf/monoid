@@ -430,10 +430,10 @@ test "a turn is noticed once, a led chat's none; people's words and the station'
     at: 5L,
   }
   (tell.val)(ThreadSaid(1L, [entry("agent", "hi")]))
-  (tell.val)(ThreadSaid(1L, [entry("ember", "fine")]))
+  (tell.val)(ThreadSaid(1L, [entry("station", "fine")]))
   assert_eq(asked.length(), 1)
   (tell.val)(ThreadSaid(1L, [entry("person", "hi")]))
-  (tell.val)(ThreadSaid(1L, [entry("ember", "⚠️ stopped")]))
+  (tell.val)(ThreadSaid(1L, [entry("station", "⚠️ stopped")]))
   assert_eq(asked, ["turnNotices", "saidNotices", "saidNotices"])
   n.close()
 }

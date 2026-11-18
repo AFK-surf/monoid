@@ -385,7 +385,9 @@ test "the fixture's station: sending, then the message, then an answer; a failur
     t.type_text("测试一下")
     tap_send(t)
     assert_true(t.find("测试一下") is Some(_))
-    assert_true(t.find("正在发送") is Some(_))
+    // (its time under it from the first, as the core says it of when it went: 正在发送 only once it has been on its way
+    // a while with the station not having it)
+    assert_false(t.words().iter().any(fn(w) { w.0.contains("正在发送") && w.5 > 0.0 }))
     // the station's clock on past its deliveries, its answers, a frame drawn for each
     fix_clock_set(clock, clock.val + fix_deliver_ms)
     t.draw()
@@ -951,6 +953,8 @@ test "lines typed while words sent let go of the composer: the list's foot goes 
     // point; the composer stopped where it was going as the words were sent, @motion.stop_for)
     let now = foot() - @sfpages.composer_room(t.ctx(), "ws1/st1:s-c1")
     assert_true((now - over).abs() < 0.01, msg="\{now} after \{over}")
+    // (its row under way: said so once it has been a while, sfpages chat_rows.mbt)
+    t.run_for(@sfpages.sending_shows_ms)
     t.assert_idle()
   })
 }
@@ -1039,5 +1043,67 @@ test "files put into the draft of a chat whose station is not reached: none goes
     t.run_for(@ui.move_most_ms)
     assert_eq(named(calls, "composer.drop").length() + named(calls, "composer.add").length(), 0, msg="composed=\{composed}")
     assert_true(t.find("无法连接此 station，文件没有添加。连上后再添加一次") is Some(_), msg="composed=\{composed}")
+  }
+}
+
+///|
+/// The highest words containing `part` drawn now (y), with how opaque.
+fn cw_highest(t : @ui.Tester, part : String) -> Double? {
+  let mut y : Double? = None
+  for w in t.words() {
+    if w.0.contains(part) && w.5 > 0.05 {
+      y = match y {
+        Some(was) if was <= w.2 => Some(was)
+        _ => Some(w.2)
+      }
+    }
+  }
+  y
+}
+
+///|
+test "the composer made as nodes sends a quote and a file with its words: each flies from where its card stood in it, on 小屏 and 大屏" {
+  for screen in [(390.0, 2), (1280.0, 0)] {
+    let (w, platform) = screen
+    let calls : Array[Made] = []
+    let made : Ref[Source?] = Ref(None)
+    let t = fake_core(calls, made~, platform~, composed=true)
+    if w != 390.0 {
+      t.resize(w, 844.0)
+      t.run_for(@ui.move_most_ms)
+    }
+    let src = made.val.unwrap()
+    let wr = @sfbase.writing(src, "ws1/st1:s-c1")
+    @sfbase.writing_quote(src, wr, { "author": "Ana", "text": "签名已经核对完了", "ts": "ts8" })
+    @sfbase.writing_add(src, wr, "ws1/st1", "notes.txt", b"release notes")
+    t.run_for(@ui.move_most_ms)
+    // (with keyboard and mouse its field has the focus already, its hint away)
+    if t.find("发消息") is Some(_) {
+      t.tap_text("发消息")
+    }
+    t.type_text("看看这个")
+    t.run_for(@ui.move_most_ms)
+    // (where each card stood in the composer as it went)
+    let quote_at = cw_highest(t, "签名已经核对完了")
+    let file_at = cw_highest(t, "notes")
+    assert_true(quote_at is Some(_) && file_at is Some(_), msg="\{w}: not waiting in the composer: \{Repr((quote_at, file_at))}")
+    tap_send(t)
+    t.draw()
+    // (in the press's frame, the highest of each drawn where it stood: its card in the message flying from there, never
+    // at its place in the list at once)
+    for p in [("签名已经核对完了", quote_at.unwrap()), ("notes", file_at.unwrap())] {
+      match cw_highest(t, p.0) {
+        Some(y) if (y - p.1).abs() <= 24.0 => ()
+        y => fail("\{w}: 「\{p.0}」 drawn at \{Repr(y)} as it was sent, where it stood \{p.1}")
+      }
+    }
+    t.run_for(@sfbase.flight_desk_ms * 2.0 + @ui.move_most_ms)
+    // (landed: in its message, over the composer)
+    for p in [("签名已经核对完了", quote_at.unwrap()), ("notes", file_at.unwrap())] {
+      match cw_highest(t, p.0) {
+        Some(y) if y < p.1 - 24.0 => ()
+        y => fail("\{w}: 「\{p.0}」 at \{Repr(y)} once it landed, where it stood \{p.1}")
+      }
+    }
   }
 }

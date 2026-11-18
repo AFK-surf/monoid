@@ -186,12 +186,12 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 /// at rest, and over a page too narrow for both (the page as wide as it is), none, laid out as wide as it is.
 fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLaid {
   let pane = pane_w_at(src, n)
-  guard app.nav.page_of(serial) is Some((Chat(r), _)) else { return { by: 0.0, across: 0.0, laid: pane } }
+  guard app.nav.page_of(serial) is Some((Chat(r), _)) else { return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 } }
   let way = side_way(chat_key(r))
   way.said()
   let t = n.drawn_while(fn(at) { way.goes_at(at) })
   if pane < side_both_least {
-    return { by: 0.0, across: 0.0, laid: pane }
+    return { by: 0.0, across: 0.0, laid: pane, toward: pane, toward_by: 0.0 }
   }
   if t == @double.infinity || !way.goes_at(t) {
     let open = side_now(src, r).0.length() > 0
@@ -199,9 +199,9 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
     // (about to set off: as it is still, where the column is (side_setting_off), laid out anew only as the way sets off,
     // its rows told then: side_slides)
     if side_setting_off(chat_key(r), open) {
-      return { by: 0.0, across: 0.0, laid: pane - way.target() }
+      return { by: 0.0, across: 0.0, laid: pane - way.target(), toward: pane - way.target(), toward_by: 0.0 }
     }
-    return { by: 0.0, across: 0.0, laid: pane - to }
+    return { by: 0.0, across: 0.0, laid: pane - to, toward: pane - to, toward_by: 0.0 }
   }
   laid_toward(pane - way.value_at(t), pane - way.value_at(way.starts_at()), pane - way.target())
 }
@@ -211,13 +211,16 @@ fn side_narrower(src : Source, n : @view.View, serial : Int) -> @sfbase.ColumnLa
 /// than it is drawn: less than none where it is drawn narrower, its page cutting it), moved across by as much further in
 /// as its rows' words stood at `from` than they stand at `to`, less as much of it as the way has come
 /// (chat_page_made's `narrower`): so they go with the page from where they stood as it set off to where they stand, never
-/// stepping where they are laid out anew.
+/// stepping where they are laid out anew; what is arranged otherwise at `from` than at `to` drawn as much of the way
+/// as is left to how it was at `from`.
 fn laid_toward(now : Double, from : Double, to : Double) -> @sfbase.ColumnLaid {
   let gone = if (from - to).abs() > 0.5 { dmax(0.0, dmin(1.0, (from - now) / (from - to))) } else { 1.0 }
   {
     by: now - to,
     across: (@sfpages.chat_row_side(from) - @sfpages.chat_row_side(to)) * (1.0 - gone),
     laid: to,
+    toward: from,
+    toward_by: 1.0 - gone,
   }
 }
 
@@ -226,11 +229,18 @@ fn laid_toward(now : Double, from : Double, to : Double) -> @sfbase.ColumnLaid {
 /// wider): how much narrower it is laid out, and how far across it is moved, by as much of the way as it has come from
 /// `laid` to `wide`, as far as its rows' words start further in at `wide` than at `laid` (chat_page_made's `narrower`):
 /// none at the narrower end, all of it at the wider, so that they go across with the page all the way, never stepping
-/// where the width crosses one of row_side's (a breadth that lays them out otherwise).
+/// where the width crosses one of row_side's (a breadth that lays them out otherwise); what is arranged otherwise at
+/// `wide` than at `laid` drawn as far of the way to how it is at `wide`.
 fn laid_across(now : Double, laid : Double, wide : Double) -> @sfbase.ColumnLaid {
   let now = dmax(laid, dmin(now, wide))
   let part = if wide > laid { (now - laid) / (wide - laid) } else { 0.0 }
-  { by: now - laid, across: part * (@sfpages.chat_row_side(wide) - @sfpages.chat_row_side(laid)), laid }
+  {
+    by: now - laid,
+    across: part * (@sfpages.chat_row_side(wide) - @sfpages.chat_row_side(laid)),
+    laid,
+    toward: wide,
+    toward_by: part,
+  }
 }
 
 ///|

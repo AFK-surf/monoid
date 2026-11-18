@@ -52,7 +52,8 @@ pub fn chat_page_body_node(
   // machine's Finder, where it is a station, into the draft by their station and path, as a row of the 文件 tab put
   // there (its composer takes them: draft_give); words dragged in from another app into the composer's field at its
   // caret, as a paste's
-  // (by where they are only where this machine is a station, finder_by_station: elsewhere their paths, as words)
+  // (by where they are only where this machine is a station of the chat's workspace, finder_by_station_in: elsewhere,
+  // or where the host says no paths, read and put in as files picked are, picked_files_into)
   @ui.paths_into(
     v,
     w.field,
@@ -61,8 +62,9 @@ pub fn chat_page_body_node(
         @sfbase.files_into(draft, d)
       }
     },
-    takes=fn() { @sfbase.finder_by_station() },
+    takes=fn() { @sfbase.finder_by_station_in(@sfbase.workspace_of(r.station)) },
   )
+  |> @ui.files_into(w.field, fn(files) { @sfbase.picked_files_into(draft, files) })
   |> @ui.words_into(w.field)
   |> ignore
   // its words in pieces picked with the pointer (@ui.words_picked), as the old page's in its frame are (c.selectable):

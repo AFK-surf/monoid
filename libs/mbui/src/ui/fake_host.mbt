@@ -21,8 +21,12 @@ impl @hostapi.Host for FakeHost with reduce_motion(self) {
 }
 
 ///|
-/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), or resize the next frame (8).
+/// Scripted system input (drive.mbt): tap a matching notification (6), look for one (7), resize the next frame (8), or
+/// let files go on the window as a file manager does (13: fake_drop_drive).
 impl @hostapi.Host for FakeHost with drive(self, kind, text) {
+  if kind == 13 {
+    return fake_drop_drive(self, text)
+  }
   if kind == 6 || kind == 7 {
     guard self.find_notice(text) is Some(index) else { return false }
     if kind == 6 {
@@ -39,6 +43,64 @@ impl @hostapi.Host for FakeHost with drive(self, kind, text) {
     return false
   }
   tester_size.val = Some((wh[0], wh[1]))
+  true
+}
+
+///|
+/// A script's `drop X Y PATH|PATH…` (drive.mbt, @hostapi.drive 13): those files let go at (X, Y) of the window with their
+/// paths, as Tester::drop_files lets them go; what they hold is what the script's `picks` said, or, where it said none,
+/// a file each of a few bytes named as its path ends (a folder, ending in "/", empty). False where the step says no
+/// place.
+fn fake_drop_drive(f : FakeHost, text : String) -> Bool {
+  guard text.find(" ") is Some(i) else { return false }
+  let after_x = text[i + 1:].to_owned()
+  let (y_said, rest) = match after_x.find(" ") {
+    Some(k) => (after_x[:k].to_owned(), after_x[k + 1:].to_owned())
+    None => (after_x, "")
+  }
+  let x = number(text[:i].to_owned())
+  let y = number(y_said)
+  let paths = rest.split("|").filter(fn(p) { p != "" }).map(fn(p) { p.to_owned() }).to_array()
+  if f.picks.is_empty() {
+    for p in paths {
+      let dir = p.has_suffix("/")
+      let base = if dir { p[:p.length() - 1].to_owned() } else { p }
+      let name = match base.rev_find("/") {
+        Some(i) => base[i + 1:].to_owned()
+        None => base
+      }
+      let bytes = if dir { b"" } else { b"file" }
+      f.picks.push({ name: if dir { name + "/" } else { name }, bytes, held: 0, size: bytes.length().to_double(), src: "" })
+    }
+  }
+  f.pick_asks.push({ kind: Files, said: false, taken: false })
+  let id = f.pick_asks.length()
+  if !f.picks_by_hand {
+    f.due(f.time, "files dropped", fn() { fake_pick_said(f, id) })
+  }
+  let m : Map[String, Json] = {
+    "type": Json::string("drop"),
+    "x": Json::number(x),
+    "y": Json::number(y),
+    "pick": Json::number(id.to_double()),
+  }
+  if !paths.is_empty() {
+    m["paths"] = Json::array(
+      paths.mapi(fn(i, p) {
+        let size = match f.picks.get(i) {
+          Some(p) => p.size
+          None => 0.0
+        }
+        let o : Map[String, Json] = {
+          "path": Json::string(p),
+          "dir": Json::boolean(p.has_suffix("/")),
+          "size": Json::number(size),
+        }
+        Json::object(o)
+      }),
+    )
+  }
+  fake_post(f, "mbui.drop", Json::object(m).stringify(), None)
   true
 }
 

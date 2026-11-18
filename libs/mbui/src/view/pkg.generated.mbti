@@ -54,6 +54,8 @@ pub fn first_when((Double) -> Bool, Double, Double) -> Double
 
 pub fn fling_distance(Double, Double) -> Double
 
+pub let flung_away : Double
+
 pub let focus_enter : Int32
 
 pub let focus_space : Int32
@@ -76,6 +78,10 @@ pub fn hold_note(() -> Bool, loc~ : SourceLoc) -> Unit
 pub fn hold_reset() -> Unit
 
 pub let ios_decel : Double
+
+pub fn lands_at(Double, Double) -> Double
+
+pub fn lands_past(Double, Double, Double) -> Bool
 
 pub let letters_own : Spacing
 
@@ -827,8 +833,10 @@ pub fn Scroll::at_foot_now(Self) -> Bool
 pub fn Scroll::beside(Self) -> Self
 pub fn Scroll::drawn(Self, Tree) -> Double
 pub fn Scroll::edge_toward(Self, Double) -> Unit
+pub fn Scroll::follows_now(Self) -> Bool
 pub fn Scroll::foot_covered_now(Self) -> Double
 pub fn Scroll::glides_till(Self) -> Double?
+pub fn Scroll::glides_to_foot(Self) -> Bool
 pub fn Scroll::goes(Self) -> Bool
 pub fn Scroll::grew_above(Self, Double) -> Unit
 pub fn Scroll::holds_here(Self) -> Unit
@@ -1509,7 +1517,10 @@ pub fn View::fit_whole(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::fits(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::flies(Self) -> Bool
 #callsite(autofill(loc))
-pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, loc~ : SourceLoc) -> Self
+pub fn View::flies_in(Self, Flight, ((Double, Double, Double, Double)) -> (Double, Double, Double, Double)?, up_late? : Double, bare_from? : Bool, look_late? : Double, far_of? : ((Double, Double, Double, Double), (Double, Double, Double, Double)) -> Double, lead? : Bool, loc~ : SourceLoc) -> Self
+pub fn View::flight_across_now(Self) -> Double
+pub fn View::flight_ends_now(Self) -> Double?
+pub fn View::flying_now(Self) -> Bool
 pub fn View::focus_let_go(Self) -> Unit
 pub fn View::focus_opens(Self, Self) -> Self
 pub fn View::focus_opens_first(Self, takes? : (Said) -> Bool) -> Self

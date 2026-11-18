@@ -1,9 +1,13 @@
 // An answer come at a chat's list's foot is read from its top (the old page's follow_newest, the chat's page made with
 // its inside nodes: chat_body_node's, by ListPlace::follow_from): the list follows its foot till the answer's top is as
 // far under the bar as the list keeps its first row and follow_margin more, and holds it there; its words never go over
-// the bar's foot in any frame. So held, the list is off its foot: the next message moves nothing that shows, till the
-// hand takes the list back to its foot; the viewer's own words sent take it there. On 小屏 and 大屏, every frame a
-// device draws from the cause to rest (Tester::run_shown), its rows on the host's pixels.
+// the bar's foot in any frame. So held and not moved by the reader, the list follows its foot still (the old page's
+// following_row): the next message is followed as at the foot; read up by the hand, it moves nothing that shows. The
+// viewer's own words sent take it to its foot. On 小屏 and 大屏, every frame a device draws from the cause to rest
+// (Tester::run_shown), its rows on the host's pixels.
+// An agent's answer come while its line shows waits out of the list while the line folds to its picture (Fold), comes
+// in as the picture sets out for it (Float), the line its turn ends going in that change, its words never under the
+// line's; words sent from here still flying go first (chat_body_node's held keys).
 
 ///|
 /// The answer's first words (long_reply's), and the paragraphs said after them.
@@ -252,23 +256,183 @@ fn rp_hand(t : @ui.Tester, screen : (String, Double, Double, Int), d : Double) -
 }
 
 ///|
-test "chat as nodes: held by an answer's top, the next message moves nothing that shows; the hand back at the foot, the one after is followed" {
+test "chat as nodes: held by an answer's top, not moved by the reader, it follows its foot still: the next message followed (the old page's following_row), a tall one after read from its top; read up by the hand, the next moves nothing that shows" {
   for screen in rp_screens {
     let (t, clock, ys) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
     let (_, rest) = rp_never_over(screen.0, ys)
-    let next = rp_frames(t, clock, fn() { rp_said(171, rp_next) }, rp_first, rp_rest_ms)
-    for i, y in next {
-      assert_true(y is Some(y) && (y - rest).abs() < 0.01, msg="\{screen.0}, frame \{i}: \{Repr(y)}, held at \{rest}")
-    }
-    // the hand takes it to its foot
-    rp_hand(t, screen, 6000.0)
-    t.run_for(rp_rest_ms)
+    // the next message, short: followed to the foot, the answer gone up
+    let _ = rp_frames(t, clock, fn() { rp_said(171, rp_next) }, rp_first, rp_rest_ms)
     let foot = t.drawn_of(rp_next).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
     assert_true(foot > bar_foot() && foot < rp_field_top(t), msg="\{screen.0}: the next message not in sight at the foot: \{foot}")
-    // followed there: the one after comes in, what was over it gone up
-    let _ = rp_frames(t, clock, fn() { rp_said(172, rp_after) }, rp_next, rp_rest_ms)
-    let now = t.drawn_of(rp_next).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(now < foot - 20.0 && t.drawn_of(rp_after) is Some(_), msg="\{screen.0}: \{foot} → \{now}")
+    let first = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
+    assert_true(first < rest - 20.0, msg="\{screen.0}: the answer held at \{rest}, now \{first}")
+    // a tall one after: read from its top, never over the margin's line
+    let tall = "又一个长回答"
+    let ys = rp_frames(t, clock, fn() { rp_said(172, tall + "\n\n" + rp_paras(30)) }, tall, rp_rest_ms)
+    let (wrong, held) = rp_never_over(screen.0, ys)
+    if wrong is Some(w) {
+      fail("\{screen.0}: the tall one after: \{w}")
+    }
+    assert_true((held - rp_held_at(screen.0)).abs() < rp_half_px, msg="\{screen.0}: the tall one after rests at \{held}")
+    // read up by the hand: the one after moves nothing that shows (a paragraph of what shows then followed)
+    rp_hand(t, screen, -300.0)
+    t.run_for(rp_rest_ms)
+    let mut seen = ""
+    for i in 1..=30 {
+      let p = "第 \{i} 段，接着往下讲。"
+      if seen == "" && t.drawn_of(p) is Some(_) {
+        seen = p
+      }
+    }
+    guard t.drawn_of(seen) is Some((_, up)) else { fail("\{screen.0}: read up, nothing of the answer drawn") }
+    let after = rp_frames(t, clock, fn() { rp_said(173, rp_after) }, seen, rp_rest_ms)
+    for i, y in after {
+      assert_true(y is Some(y) && (y - up).abs() < 0.01, msg="\{screen.0}, frame \{i}: \{Repr(y)}, read up at \{up}")
+    }
+  }
+  fix_clock.val = None
+}
+
+///|
+test "chat as nodes: two tall answers one after the other, the list held by the first's top and not moved: the second followed to its own top; out of its agent's picture, never drawn before it set out, where that picture is made (its line in or near sight), else simply there as the old page's" {
+  for screen in rp_screens {
+    let (t, clock, _) = rp_answer(screen, long_reply + "\n\n" + rp_paras(30), "work")
+    let tall = "又一个长回答"
+    let busy = @sf.t("web-main.activity.busy")
+    let line_shown = t.words().iter().any(fn(w) { w.0 == busy && w.5 > 0.0 })
+    let from = t.time()
+    let frames = rp_watch(t, clock, fn() { rp_said(171, tall + "\n\n" + rp_paras(30)) }, rp_rest_ms)
+    let out = from + 1.0 + @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms()
+    let ys : Array[Double?] = []
+    for f in frames {
+      let drawn = f.1.iter().find_first(fn(w) { w.0.contains(tall) && w.5 > 0.0 })
+      assert_false(line_shown && drawn is Some(_) && f.0 < out - 1.0, msg="\{screen.0}, +\{f.0 - from} ms: its words drawn before its picture set out (\{out - from} ms)")
+      ys.push(drawn.map(fn(w) { w.2 }))
+    }
+    let (wrong, held) = rp_never_over(screen.0, ys)
+    if wrong is Some(w) {
+      fail("\{screen.0}: the second: \{w}")
+    }
+    assert_true((held - rp_held_at(screen.0)).abs() < rp_half_px, msg="\{screen.0}: the second rests at \{held}")
+  }
+  fix_clock.val = None
+}
+
+///|
+/// Each frame drawn while `ms` go by from `cause` (done at the fixture's clock's moment + 1, between frames): its moment
+/// and the words drawn in it (Tester::words).
+fn rp_watch(
+  t : @ui.Tester,
+  clock : Ref[Double],
+  cause : () -> Unit,
+  ms : Double,
+) -> Array[(Double, Array[(String, Double, Double, Double, Double, Double)])] {
+  let frames : Array[(Double, Array[(String, Double, Double, Double, Double, Double)])] = []
+  t.each_frame(Some(fn() { frames.push((t.time(), t.words())) }))
+  fix_later(1.0, cause)
+  fix_clock_set(clock, clock.val + 1.0)
+  t.draw()
+  t.run_shown(ms)
+  t.each_frame(None)
+  frames
+}
+
+///|
+/// What of the words drawn `ws` that are `words` other words seen are drawn over (more than half a point across and down
+/// both): the first such, said; None: none.
+fn rp_words_over(ws : Array[(String, Double, Double, Double, Double, Double)], words : String) -> String? {
+  for a in ws {
+    guard a.0.contains(words) && a.5 > 0.0 else { continue }
+    for b in ws {
+      guard !b.0.contains(words) && b.5 > 0.0 else { continue }
+      let across = @sf.dmin(a.1 + a.3, b.1 + b.3) - @sf.dmax(a.1, b.1)
+      let down = @sf.dmin(a.2 + a.4, b.2 + b.4) - @sf.dmax(a.2, b.2)
+      if across > 0.5 && down > 0.5 {
+        return Some("「\{b.0}」 at \{b.1},\{b.2} over 「\{words}」 at \{a.1},\{a.2}")
+      }
+    }
+  }
+  None
+}
+
+///|
+test "chat as nodes: an answer that ends its agent's turn waits out of the list while the line folds, comes in as its picture sets out, the line going in that change: never drawn before, never under the line's words, the line gone at rest" {
+  for screen in rp_screens {
+    let clock = Ref(0.0)
+    let t = rp_open(screen, clock)
+    let busy = @sf.t("web-main.activity.busy")
+    let line_shown = t.words().iter().any(fn(w) { w.0 == busy && w.5 > 0.0 })
+    let short = rp_next
+    let from = t.time()
+    let frames = rp_watch(t, clock, fn() { rp_said(170, short, ends=true) }, rp_rest_ms)
+    let out = from + 1.0 + @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms()
+    for f in frames {
+      let drawn = f.1.iter().any(fn(w) { w.0.contains(short) && w.5 > 0.0 })
+      assert_false(drawn && f.0 < out - 1.0, msg="\{screen.0}, +\{f.0 - from} ms: drawn before its picture set out")
+      if rp_words_over(f.1, short) is Some(w) {
+        fail("\{screen.0}, +\{f.0 - from} ms: \{w}")
+      }
+    }
+    assert_true(t.drawn_of(short) is Some(_), msg="\{screen.0}: the answer not drawn at rest")
+    if line_shown {
+      assert_false(t.words().iter().any(fn(w) { w.0 == busy && w.5 > 0.0 }), msg="\{screen.0}: the line still drawn at rest")
+    }
+  }
+  fix_clock.val = None
+}
+
+///|
+test "chat as nodes: two answers of one agent close together, the second ending its turn: each comes in as its picture sets out for it, the second after the first is out, never under another's words, the line gone at rest" {
+  for screen in rp_screens {
+    let clock = Ref(0.0)
+    let t = rp_open(screen, clock)
+    let (a, b) = (rp_next, rp_after)
+    let from = t.time()
+    // (the second come 100 ms after the first, as the first's line still folds)
+    let frames : Array[(Double, Array[(String, Double, Double, Double, Double, Double)])] = []
+    t.each_frame(Some(fn() { frames.push((t.time(), t.words())) }))
+    fix_later(1.0, fn() { rp_said(170, a) })
+    fix_clock_set(clock, clock.val + 1.0)
+    t.draw()
+    t.run_shown(100.0)
+    fix_later(1.0, fn() { rp_said(171, b, ends=true) })
+    fix_clock_set(clock, clock.val + 1.0)
+    t.draw()
+    t.run_shown(rp_rest_ms)
+    t.each_frame(None)
+    // (the second waits for the first's words to be out of the picture, then drops on from it)
+    let first_out = from + 1.0 + @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms()
+    let second_in = first_out + @sfbase.Pose::Spit.ms()
+    for f in frames {
+      for (words, at) in [(a, first_out), (b, second_in)] {
+        let drawn = f.1.iter().any(fn(w) { w.0.contains(words) && w.5 > 0.0 })
+        assert_false(drawn && f.0 < at - 1.0, msg="\{screen.0}, +\{f.0 - from} ms: 「\{words}」 drawn before \{at - from} ms")
+        if rp_words_over(f.1, words) is Some(w) {
+          fail("\{screen.0}, +\{f.0 - from} ms: \{w}")
+        }
+      }
+    }
+    assert_true(t.drawn_of(a) is Some(_) && t.drawn_of(b) is Some(_), msg="\{screen.0}: not both drawn at rest")
+  }
+  fix_clock.val = None
+}
+
+///|
+test "chat as nodes: an answer come as the viewer's own words still fly to their row waits for them to land, then comes out of its picture: never drawn before" {
+  for screen in rp_screens {
+    let clock = Ref(0.0)
+    let t = rp_open(screen, clock)
+    let mine = "收到，我先看"
+    let short = rp_after
+    rp_send(t, mine)
+    let sent = t.time()
+    let frames = rp_watch(t, clock, fn() { rp_said(170, short) }, rp_rest_ms)
+    let out = sent + @sfbase.flight_desk_ms + @sfbase.Pose::Fold.ms() + @sfbase.Pose::Float.ms()
+    for f in frames {
+      let drawn = f.1.iter().any(fn(w) { w.0.contains(short) && w.5 > 0.0 })
+      assert_false(drawn && f.0 < out - 1.0, msg="\{screen.0}, +\{f.0 - sent} ms: drawn before what was sent landed and its picture set out (\{out - sent} ms)")
+    }
+    assert_true(t.drawn_of(short) is Some(_) && t.drawn_of(mine) is Some(_), msg="\{screen.0}: not both drawn at rest")
   }
   fix_clock.val = None
 }

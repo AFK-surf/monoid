@@ -40,8 +40,9 @@ Write PR descriptions and anything said to people in these words: not 电脑版,
   keyboard and a screen reader is mbui's headless component's (`libs/mbui/src/headless`), where there is one, and its
   part here is that component with still.fail's look (every unconditional plain button in `libs/sf-ui/src` over
   `@headless.button`; checkboxes, switches and toggle buttons over `@headless.toggle`; disclosures and menu triggers
-  over `@headless.disclosure`; choice rows over `@headless.choice`; offers, a long pick's search and list and 前往文件夹 over
-  `@headless.combobox` (`combo_node`, `offers_node`, `pick_node`); segmented controls, one-of lists and
+  over `@headless.disclosure`; choice rows over `@headless.choice`; offers, a long pick's search and list, 前往文件夹 and the search (⌘K's, the
+  search page's) over `@headless.combobox` (`combo_node`, `offers_node`, `pick_node`, `search_combo_node`); a menu and
+  its rows over `@headless.menu` (`menu_node`); the toasts over `@headless.toaster` (`toaster_node`); segmented controls, one-of lists and
   accent radio dots over `@headless.radio_group`; hue slider over `@headless.slider`; split handles over
   `@headless.split`; a Markdown table's and 进程's table over `@headless.table`): it says no role, press or focus of its own. A part that is a button only while something
   says so (a head's name renamed by a press, a quote's source that leads somewhere, a station's choice with others to

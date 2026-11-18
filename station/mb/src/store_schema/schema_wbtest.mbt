@@ -24,7 +24,7 @@ test "an archived entry's columns as entryColumns(archivedEntry(line)) writes th
       "{\"thread\":1,\"n\":2,\"kind\":\"message\",\"ts\":\"a\",\"authorKind\":\"stillfail\",\"author\":\"x\",\"attachments\":[{\"path\":\"/p\",\"name\":\"n\",\"size\":1,\"frames\":2,\"extra\":3}],\"quotes\":[{\"author\":\"a\",\"text\":\"t\",\"comment\":\"c\",\"role\":\"r\"}],\"options\":[{\"label\":\"A\"}],\"at\":5,\"letter\":\"{\\\"way\\\":\\\"in\\\",\\\"title\\\":\\\"q\\\",\\\"link\\\":7}\",\"change\":{\"was\":{},\"now\":{\"2\":1,\"b\":2,\"1\":0}}}",
     ),
     content=(
-      #|[1,2,"message",null,"a","ember","x",null,"[{\"name\":\"n\",\"path\":\"/p\",\"size\":1,\"frames\":2}]","[{\"author\":\"a\",\"text\":\"t\",\"comment\":\"c\",\"role\":\"r\"}]",null,null,null,null,"[{\"label\":\"A\"}]",null,5,null,"{\"way\":\"in\",\"title\":\"q\",\"link\":null}","{\"was\":{},\"now\":{\"1\":0,\"2\":1,\"b\":2}}"]
+      #|[1,2,"message",null,"a","station","x",null,"[{\"name\":\"n\",\"path\":\"/p\",\"size\":1,\"frames\":2}]","[{\"author\":\"a\",\"text\":\"t\",\"comment\":\"c\",\"role\":\"r\"}]",null,null,null,null,"[{\"label\":\"A\"}]",null,5,null,"{\"way\":\"in\",\"title\":\"q\",\"link\":null}","{\"was\":{},\"now\":{\"1\":0,\"2\":1,\"b\":2}}"]
     ),
   )
   inspect(

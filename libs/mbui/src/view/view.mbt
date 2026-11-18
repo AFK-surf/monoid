@@ -5482,7 +5482,7 @@ pub fn Tree::fades_of(self : Tree, id : NodeId) -> (Double, Double, Double, Doub
 ///|
 /// Where node `at` is drawn bigger or smaller about, laid out `w` by `h` (View::scale's pivot): the middle of what it
 /// and what it holds draw where it says `Drawn`; where `DrawnSide`, across the side of it what they draw is laid from, as
-/// laid out now (pivot_side).
+/// laid out now (pivot_side; where it shows none, the side it is laid at in what holds it: Tree::pivot_held_side).
 fn Tree::pivot_of(self : Tree, at : Int, w : Double, h : Double) -> (Double, Double) {
   let n = self.nodes[at]
   guard n.look.pivot.drawn() else { return n.pivot_at(w, h) }
@@ -5495,8 +5495,84 @@ fn Tree::pivot_of(self : Tree, at : Int, w : Double, h : Double) -> (Double, Dou
   let (x0, y0, x1, y1) = n.drawn_box
   match n.look.pivot {
     // (DrawnSide: down, its share of its height, whatever is drawn)
-    DrawnSide(fy) => if x1 < x0 { (w / 2.0, fy * h) } else { (pivot_side(x0, x1, w, n.drawn_words), fy * h) }
+    DrawnSide(fy) =>
+      if x1 < x0 {
+        (w / 2.0, fy * h)
+      } else if (x0 - (w - x1)).abs() <= 1.0 && n.drawn_words == 0 {
+        // (it shows no side of its own, as wide as what it draws (a fader round a short line, 刚刚): the side it is laid
+        // at in what holds it, Tree::pivot_held_side)
+        (self.pivot_held_side(at, x0, x1), fy * h)
+      } else {
+        (pivot_side(x0, x1, w, n.drawn_words), fy * h)
+      }
     _ => if x1 < x0 { (w / 2.0, h / 2.0) } else { ((x0 + x1) / 2.0, (y0 + y1) / 2.0) }
+  }
+}
+
+///|
+/// The side of node `at` (drawing from `x0` to `x1` across, in its own terms) that it is laid at in what holds it,
+/// where it shows none of its own (Tree::pivot_of: as wide as what it draws, its words on one line): from it out to
+/// the first that holds it wider than it by more than a point, as laid out now (what lays out nothing of its own, a
+/// slot, passed), its start where the room before it there is less by more than a point (a column's start), its end
+/// where the room after it is (a column laid at its end: a reply's time under one's own bubble), else its middle. Only
+/// across a column (what lays it out down its height): not past a row, whatever its structure says (its place along
+/// the row is what is beside it, not a side), nor past a node that scrolls (where it is in what is scrolled is no side
+/// of what shows).
+/// Grown or shrunk about that side, it stays laid at it as it changes (the user, 2026-11-17: what is laid out is where
+/// things rest; a short line at the end of its column shrinking about its middle drifted off that end each frame).
+fn Tree::pivot_held_side(self : Tree, at : Int, x0 : Double, x1 : Double) -> Double {
+  let mid = (x0 + x1) / 2.0
+  let aw = self.nodes[at].flex.width
+  // (where `at` is in the box of `cur`'s holder, as laid out: each layout's place summed, a slot's none)
+  let mut off = 0.0
+  let mut cur = at
+  while self.nodes[cur].parent >= 0 {
+    let c = self.nodes[cur]
+    let p = c.parent
+    guard self.nodes[p].live else { return mid }
+    if !c.slot {
+      off = off + c.flex.left
+    }
+    let h = self.nodes[p]
+    // (a slot lays out nothing of its own: what it holds is placed in what holds it)
+    if h.slot {
+      cur = p
+      continue
+    }
+    // (a row: where along it is what is beside it, no side)
+    guard h.flex.style.direction is (Column | ColumnReverse) else { return mid }
+    // (what scrolls: what it holds is laid where it is scrolled, no side of what shows)
+    guard h.scroll_held < 0 else { return mid }
+    // (the room it lays out across inside its padding and border: one hugging it within them (a capsule round a short
+    // line) has none to spare, the side taken further out)
+    let st = h.flex.style
+    let outer = if h.parent >= 0 { self.nodes[h.parent].flex.width } else { h.flex.width }
+    let inset_l = inset_across(st.get_padding_left(), outer) + inset_across(st.get_border_left(), outer)
+    let inset_r = inset_across(st.get_padding_right(), outer) + inset_across(st.get_border_right(), outer)
+    if h.flex.width - inset_l - inset_r > aw + 1.0 {
+      let before = off - inset_l
+      let after = h.flex.width - inset_r - (off + aw)
+      return if before < after - 1.0 {
+        x0
+      } else if after < before - 1.0 {
+        x1
+      } else {
+        mid
+      }
+    }
+    cur = p
+  }
+  mid
+}
+
+///|
+/// How wide a padding or border across said `d` is, of a box whose holder is `outer` wide (a share of that, as CSS's).
+fn inset_across(d : @flex.Dim, outer : Double) -> Double {
+  match d {
+    Pt(v) => v
+    Pct(p) => if outer == outer { outer * p / 100.0 } else { 0.0 }
+    Within(v) => if outer == outer { dmin(v, outer) } else { v }
+    Auto => 0.0
   }
 }
 
@@ -5510,8 +5586,8 @@ fn Tree::pivot_of(self : Tree, at : Int, w : Double, h : Double) -> (Double, Dou
 /// middle; 4. else its middle (a line across with a label in its middle; a thing centred by what holds it). 2 and 3 come
 /// as `words` (Tree::drawn_box_of's: 1 its start, 2 its middle, 3 its end, 0 neither); the pivot is always all it
 /// draws' `x0`, `x1` or their middle. A line laid from an edge belongs to that edge (the coordinator of the migration,
-/// 2026-11-14). Known and left (the same, that day): one line of words drawn alone that fills its node within a point,
-/// nothing else drawn with it, shows no laying and gets the middle.
+/// 2026-11-14). One line of words drawn alone that fills its node within a point, nothing else drawn with it, shows no
+/// laying and gets the middle here; Tree::pivot_of takes that one's side from what holds it (Tree::pivot_held_side).
 fn pivot_side(x0 : Double, x1 : Double, w : Double, words : Int) -> Double {
   let (before, after) = (x0, w - x1)
   if before < after - 1.0 {
@@ -14993,6 +15069,7 @@ fn Tree::raise_in_list(self : Tree, list : Int, bs : Array[NodeId]) -> Unit {
     // (drawn in another order: painted again)
     self.draws_rev = self.draws_rev + 1
     self.draws_any_rev = self.draws_any_rev + 1
+    self.drawn_due = true
     self.marked()
   }
 }

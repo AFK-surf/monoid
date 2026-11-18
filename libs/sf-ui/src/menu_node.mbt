@@ -151,20 +151,9 @@ fn menu_node_by(
       // (its words and icons as far in as its look says: its ground first, then they, as pop_in has it)
       let words_in = fn() { look().words }
       // (its rows that can be chosen, by their index: the one with the focus is lit; the keyboard moves the focus along
-      // them, shown, the pointer onto one, unseen)
+      // them, shown, the pointer onto one, unseen; Tab's one stop among them the last that had the focus, else the
+      // first: @headless.menu's `roving`, Radix's roving focus)
       let rows : Map[Int, @view.View] = Map([])
-      // (the row of the rows' one stop of Tab's: the last that had the focus, else the first: Radix's roving focus)
-      let current = @signals.signal(first_live(@signals.untracked(content), 0, 1), same=fn(a, b) { a == b })
-      // (where Tab stops in its rows, as they are now: that one while it can still be chosen; else (made one not to be
-      // chosen, taken out, a heading now) the first that can, as ui's group_stop falls back)
-      let stop = fn() {
-        let items = content()
-        let at = current.get()
-        match items.get(at) {
-          Some(Some(item)) if !item.disabled && !item.heading => at
-          _ => first_live(items, 0, 1)
-        }
-      }
       let lit = fn() {
         let mut at = -1
         for i, r in rows {
@@ -292,6 +281,8 @@ fn menu_node_by(
           // (but a letter with Shift, typed); Escape closes it whatever is held)
           false
         } else if k.code == @ui.key_code_down || k.code == @ui.key_code_up {
+          // (the focus in the menu, @headless.menu's: these where it is not, the pointer having opened it beside a
+          // field, the keys none of the field's)
           let down = k.code == @ui.key_code_down
           // (from nothing lit, Down to the first and Up to the last; on from one, round past either end to the other, as a
           // Mac's menus go: the owner, 2026-11-16, 照苹果的来)
@@ -378,77 +369,92 @@ fn menu_node_by(
       }
       layer.box(fn(p) {
         panel.val = Some(p)
-        p
-        .beside(at.id(), side~, along=view_along(along), offset~, padding=8.0)
-        .min_width(Is(Some(min_w)))
-        .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
-        .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
-        // (small_panel: its padding, its rows reaching past it to stand concentric with its corners)
-        .padding(
-          By(fn() {
-            (panel_pad - reach, if first_row() { panel_pad - reach } else { panel_pad }, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
-          }),
-        )
-        .radius(Is(r_menu))
-        .ground(By(fn() { panel_ground() }))
-        .edge(By(fn() { (1.0, panel_edge()) }))
-        .shadow(By(fn() { float_shadow() }))
-        .clips(Is(true))
-        .alpha(By(fn() { look().alpha }))
-        .scale(By(fn() { look().sx }), about=FromBeside)
-        .says(Is(Some(@view.said(Menu, label=title_plain(title)))))
-        // (the focus its own as it opens, opened by the pointer: no key presses it; its rows lit as they have it; one of
-        // the menu's two stops of Tab's, its rows the other, as kit's panel and roving group are)
-        .focusable(Is(true), keys=0)
-        // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
-        // nothing, not outside it)
-        |> ground_node
-        |> ignore
-        p.box(fn(body) {
-          // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
-          // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
-          body.alpha(By(words_in)) |> ignore
-          body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
-            if title != "" {
-              menu_heading_node(b, fn() { title }, past, reach)
+        // (what it is to the keys and a screen reader: @headless.menu, in its own node; the focus its own as it opens by
+        // the pointer, no key pressing it, one of its two stops of Tab's, its rows the other; Escape, and not modal the
+        // arrow back, closing it while the focus is in it, the layer's keys closing it otherwise)
+        @headless.menu(
+          p,
+          label=fn() { title_plain(title) },
+          on_close=fn() {
+            if @signals.untracked(live) {
+              cancel()
             }
-            // (each of what it holds by its place and its kind: one changing what it is (a line, a heading, a row) made
-            // anew there; a row's words, icon, check and whether it can be chosen read again as they change, the row the
-            // same, its focus kept)
-            b.each(fn() { content().mapi(fn(i, x) { (i, menu_kind(x)) }) }, fn(k) { k }, fn(cell, k) {
-              let (i, kind) = k.untracked()
-              let item = fn() {
-                match content().get(i) {
-                  Some(Some(item)) => item
-                  _ => menu_none
+          },
+          close_key?=if !modal && back >= 0 { Some(back) } else { None },
+          takes_focus=true,
+          roving=true,
+          in_node=true,
+          fn(p, menu) {
+            p
+            .beside(at.id(), side~, along=view_along(along), offset~, padding=8.0)
+            .min_width(Is(Some(min_w)))
+            .max_width(By(fn() { Some(over_room(layer).0 - 16.0) }))
+            .max_height(By(fn() { Some(dmax(0.0, over_room(layer).1 - 16.0)) }))
+            // (small_panel: its padding, its rows reaching past it to stand concentric with its corners)
+            .padding(
+              By(fn() {
+                (panel_pad - reach, if first_row() { panel_pad - reach } else { panel_pad }, panel_pad - reach, if last_row() { panel_pad - reach } else { panel_pad })
+              }),
+            )
+            .radius(Is(r_menu))
+            .ground(By(fn() { panel_ground() }))
+            .edge(By(fn() { (1.0, panel_edge()) }))
+            .shadow(By(fn() { float_shadow() }))
+            .clips(Is(true))
+            .alpha(By(fn() { look().alpha }))
+            .scale(By(fn() { look().sx }), about=FromBeside)
+            // (a press on it its own: on what of it takes none (its padding, a heading, a line, a row not to be chosen),
+            // nothing, not outside it)
+            |> ground_node
+            |> ignore
+            p.box(fn(body) {
+              // (all it holds as far in as its look says, past the panel's own ground, edge and shadow: its rows, their
+              // grounds, checks, marks and words, its headings and lines, the same, Look's `words` as a surface's are)
+              body.alpha(By(words_in)) |> ignore
+              body.scrolls(@view.Scroll::new(), slop=@ui.touch_slop(), bar=@ui.tree_scroll_bar(), fn(b) {
+                if title != "" {
+                  menu_heading_node(b, fn() { title }, past, reach)
                 }
-              }
-              match kind {
-                0 => menu_rule_node(cell, reach)
-                1 => menu_heading_node(cell, fn() { item().label }, past, reach)
-                _ => {
-                  rows[i] = menu_row_node(cell, item, i, lead, gap, reach, go, current, stop, extras(i), ticks, check_end~)
-                  cell.owns(fn() { rows.remove(i) }) |> ignore
-                }
-              }
+                // (each of what it holds by its place and its kind: one changing what it is (a line, a heading, a row) made
+                // anew there; a row's words, icon, check and whether it can be chosen read again as they change, the row the
+                // same, its focus kept)
+                b.each(fn() { content().mapi(fn(i, x) { (i, menu_row_kind(x, ticks)) }) }, fn(k) { k }, fn(cell, k) {
+                  let (i, kind) = k.untracked()
+                  let item = fn() {
+                    match content().get(i) {
+                      Some(Some(item)) => item
+                      _ => menu_none
+                    }
+                  }
+                  match kind {
+                    0 => menu_rule_node(cell, reach)
+                    1 => menu_heading_node(cell, fn() { item().label }, past, reach)
+                    _ => {
+                      rows[i] = menu_row_node(cell, menu, item, kind, lead, gap, reach, fn() { go(i) }, extras(i), check_end~)
+                      cell.owns(fn() { rows.remove(i) }) |> ignore
+                    }
+                  }
+                })
+              })
+              |> ignore
             })
-          })
-          |> ignore
-        })
+            |> ignore
+            // (the focus given as it opens: opened by the keyboard, to its first row; else its panel; back to what had it
+            // as it goes)
+            let first = match rows.get(first_live(@signals.untracked(content), 0, 1)) {
+              Some(r) if by_key => r
+              _ => p
+            }
+            // (the focus given as it opens; or, by a finger beside a field, left in that field, what had it given back as it
+            // goes all the same: View::focus_returns)
+            if keep_field {
+              layer.focus_returns() |> ignore
+            } else {
+              layer.focus_opens(first) |> ignore
+            }
+          },
+        )
         |> ignore
-        // (the focus given as it opens: opened by the keyboard, to its first row; else its panel; back to what had it
-        // as it goes)
-        let first = match rows.get(first_live(@signals.untracked(content), 0, 1)) {
-          Some(r) if by_key => r
-          _ => p
-        }
-        // (the focus given as it opens; or, by a finger beside a field, left in that field, what had it given back as it
-        // goes all the same: View::focus_returns)
-        if keep_field {
-          layer.focus_returns() |> ignore
-        } else {
-          layer.focus_opens(first) |> ignore
-        }
       })
       |> ignore
     },
@@ -474,6 +480,22 @@ fn menu_kind(x : MenuItem?) -> Int {
 }
 
 ///|
+/// What a menu (not a sheet's) holds at a place is, by its kind: a line (0), a heading (1), a row: an action (2), a
+/// check (3: a choice's checkbox, or any choice of a menu ticking several), a radio (4); a row turned another kind made
+/// anew, said as what it is now.
+fn menu_row_kind(x : MenuItem?, ticks : Bool) -> Int {
+  match x {
+    Some(item) if !item.heading =>
+      match item.chosen {
+        Some(_) if item.checkbox || ticks => 3
+        Some(_) => 4
+        None => 2
+      }
+    _ => menu_kind(x)
+  }
+}
+
+///|
 /// What a row of a menu reads where its place holds nothing more (its menu holding less now, the row about to go).
 let menu_none : MenuItem = {
   label: "",
@@ -488,28 +510,30 @@ let menu_none : MenuItem = {
 }
 
 ///|
-/// A row of a menu (menu_row's look) in `b`: what `item()` is now, the `i`th; lit while it has the focus (its ground
-/// the pointer's or the keyboard's where that is shown or the pointer is on it); the pointer moving onto it gives it the
-/// focus, unseen; pressed, `go`. Its words, icon, check and whether it can be chosen as the item has them now. The row.
+/// A row of a menu (menu_row's look) in `b`, an item of `menu` (@headless.menu's: an action, a check or a radio as
+/// `kind` says, menu_row_kind): what `item()` is now; lit while it has the focus (its ground the pointer's or the
+/// keyboard's where that is shown or the pointer is on it); the pointer moving onto it gives it the focus, unseen;
+/// pressed, `go`. Its words, icon, check and whether it can be chosen as the item has them now. The row.
 #callsite(autofill(loc))
 fn menu_row_node(
   b : @view.View,
+  menu : @headless.Menu,
   item : () -> MenuItem,
-  i : Int,
+  kind : Int,
   lead : () -> Bool,
   gap : () -> Double,
   reach : Double,
-  go : (Int) -> Unit,
-  current : @signals.Signal[Int],
-  stop : () -> Int,
+  go : () -> Unit,
   extra : MenuExtra,
-  ticks : Bool,
   check_end? : Bool = false,
   loc~ : SourceLoc,
 ) -> @view.View {
   let t = theme()
   let off = fn() { item().disabled }
-  b.box(made_for=loc, fn(r) {
+  let label = fn() { item().label }
+  let checked = fn() { item().chosen == Some(true) }
+  let act = fn(_ : @view.View) { go() }
+  let look = fn(r : @view.View, _ : @headless.MenuItem) {
     r
     .row(Is(true))
     .lines_up(Is(Some(Middle)))
@@ -519,38 +543,9 @@ fn menu_row_node(
     .radius(Is(small_panel_inner(r_menu)))
     // det-ok(raw-hover-ground): roving menu active bar moves at once across items without trailing fade
     .ground(By(fn() { if r.focused() && (r.focus_shown() || r.pointed()) { library_theme().p.hover } else { 0L } }))
-    .presses(By(fn() { !off() }))
-    // (one of the roving group: the menu's keys move along it, no key of its own; Tab stopping on the group's current
-    // one alone)
-    .focusable(By(fn() { !off() }), keys=0, tab=false)
-    .tab_stop(By(fn() { stop() == i }))
-    .on_press(fn() { go(i) })
-    .says(
-      By(fn() {
-        let it = item()
-        let actions : Array[@view.Action] = if it.disabled { [] } else { [Activate] }
-        Some(
-          match it.chosen {
-            Some(on) =>
-              @view.said(if it.checkbox || ticks { MenuItemCheckbox } else { MenuItemRadio }, label=it.label, check=if on {
-                On
-              } else {
-                Off
-              }, actions~)
-            None => @view.said(MenuItem, label=it.label, actions~)
-          },
-        )
-      }),
-    )
     |> ignore
     // (the pointer moved onto it or over it: the focus its, unseen, as kit's menu has it (hovered and the pointer moved);
     // come under a pointer that stays still (what holds it scrolled to bring another into sight), nothing)
-    // (come to have the focus, however: the group's current one)
-    r.reacts(fn() { r.focused() }, fn(f) {
-      if f {
-        current.set(i)
-      }
-    })
     r.on_pointer_moved(fn() {
       if !@signals.untracked(off) {
         r.ask_focus() |> ignore
@@ -676,7 +671,12 @@ fn menu_row_node(
       })
       |> ignore
     }
-  })
+  }
+  match kind {
+    3 => menu.check_item(b, label, checked, act, look, disabled=off, made_for=loc)
+    4 => menu.radio_item(b, label, checked, act, look, disabled=off, made_for=loc)
+    _ => menu.item(b, label, act, look, disabled=off, made_for=loc)
+  }
 }
 
 ///|

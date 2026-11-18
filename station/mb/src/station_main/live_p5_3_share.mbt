@@ -265,6 +265,25 @@ fn P53Share::attach(self : P53Share) -> Unit {
     rt,
   )
   self.sharing = Some(sharing)
+  // (agents.ts `readers.onTrim`: the shares' and the memory's programs let go short of memory)
+  bus.on_trim(() => {
+    let mut n = sharing.trim_idle()
+    match self.memory {
+      Some(m) => n += m.trim_idle()
+      None => ()
+    }
+    n
+  })
+  // (a login home again, by any route: the share a trip made for it undone; move/live.ts `sharing.onHosted`)
+  sharing.set_on_hosted(
+    Some((share, from) => ignore(
+      bus.host.rt.fork(name="share came home", async fn() {
+        ignore((bus.coord_ask.val)("move.shareCameHome", Json::array([Json::string(share), Json::string(from)]))) catch {
+          _ => ()
+        }
+      }),
+    )),
+  )
   self.accounts.sharing = Some(sharing)
   bus.on_peer_prefix("share.", async fn(_peer, ws, _meth, request, _bytes) { (sharing.handle(_peer, request, workspace=ws), None) })
   // ── the agents' memory ──

@@ -398,7 +398,7 @@ fn archived_columns(e : @jsjson.JValue) -> Array[Json] raise {
     Some(Str(k)) =>
       match @jsjson.text(k) {
         "agent" => "agent"
-        "ember" | "stillfail" => "ember"
+        "station" | "ember" | "stillfail" => "station"
         "person" => "person"
         _ => refuse("unknown author kind \{@jsjson.text(k)}")
       }

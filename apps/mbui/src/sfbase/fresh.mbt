@@ -26,6 +26,18 @@ pub(all) struct FreshChat {
 }
 
 ///|
+/// Its composer's place as its first words were sent, in the window (x, y, w, h; none where it was not laid out):
+/// where the chat's composer it became comes from (kept off FreshChat so its struct layout stays stable).
+// kept across runs: cleared on fresh_reset and as composer_node takes it
+pub let fresh_composer_at : @signals.Signal[(Double, Double, Double, Double)?] = @signals.signal(None)
+
+///|
+/// How long after they were sent its first words set out from where they were typed: 窄排法, as the scene's foot fades
+/// first, flight_carry_after_ms; 宽排法, none (became_starts).
+// kept across runs: cleared on fresh_reset and set by became_starts
+pub let fresh_fly_after : @signals.Signal[Double] = @signals.signal(0.0, same=fn(a, b) { a == b })
+
+///|
 pub let fresh : FreshChat = {
   made: @signals.signal("", same=fn(a, b) { a == b }),
   made_sig: @signals.signal("", same=fn(a, b) { a == b }),
@@ -50,6 +62,8 @@ pub fn fresh_reset() -> Unit {
   fresh.scene.set(None)
   fresh.room.set(0.0)
   fresh.foot.set(0.0)
+  fresh_composer_at.set(None)
+  fresh_fly_after.set(0.0)
 }
 
 ///|
@@ -71,8 +85,9 @@ pub fn new_fade(c : @ui.Ctx) -> @motion.Anim {
 }
 
 ///|
-/// The new chat's first words on their way to the chat it became (0 … 1), when the chat's list is made as nodes
-/// (`chat_page_nodes`: where `flight_carried` is not used, the words flying on `View::flies_in` for `flight_desk_ms`).
+/// The new chat's first words on their way to the chat it became (0 … 1), from fresh's `fly_after` after they were sent,
+/// for flight_desk_ms: on the old list the flight it carries (flight_carried), on the list made as nodes (`chat_page_nodes`)
+/// their row's flight from where they stood in the field (View::flies_in), each setting out as long after.
 pub fn new_first_fly(c : @ui.Ctx) -> @motion.Anim {
   @motion.anim(c, "new/first-fly", 1.0, global=true)
 }
@@ -80,7 +95,9 @@ pub fn new_first_fly(c : @ui.Ctx) -> @motion.Anim {
 ///|
 /// The new chat's first words sent, or the new chat left for a chat: its scene leaves, from now, and its choices fade
 /// (on a phone as Android's LeaveFade), over the chat it became (new_chat_leaving_of): as the words go, not once the
-/// core has made the chat and taken them in.
+/// core has made the chat and taken them in. 窄排法 (not `wide`) the words set out a little after, as the scene's foot
+/// fades out of their way (flight_carry_after_ms), on either list: said once, here (fresh's `fly_after`), for what
+/// flies them to read.
 pub fn became_starts(c : @ui.Ctx, wide~ : Bool) -> Unit {
   let leave = new_leave(c)
   leave.snap(c, 0.0)
@@ -88,9 +105,10 @@ pub fn became_starts(c : @ui.Ctx, wide~ : Bool) -> Unit {
   let fade = new_fade(c)
   fade.snap(c, 0.0)
   fade.animate(c, 1.0, @motion.tween(new_fade_ms, ease=Leave))
+  let after = if wide { 0.0 } else { flight_carry_after_ms }
+  fresh_fly_after.set(after)
   let fly = new_first_fly(c)
   fly.snap(c, 0.0)
-  let after = if wide || @signals.untracked(fn() { chat_page_nodes.get() }) { 0.0 } else { flight_carry_after_ms }
   fly.animate(c, 1.0, @motion.tween(flight_desk_ms, ease=Flight, delay=after))
 }
 

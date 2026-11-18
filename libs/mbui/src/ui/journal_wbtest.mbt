@@ -469,3 +469,48 @@ test "a run begun again takes nothing of the run before's into its first frame's
   perf_tree.input_since = 5.0
   assert_eq(perf_first_frame(), (laid, 0.0))
 }
+
+///|
+test "what the drawing side did is said with the summary where its host said any, and counted from none once said" {
+  let (t, clock) = journal_start()
+  defer set_work_clock(None)
+  gpu_dropped_seen.val = 0
+  let said : Array[HangSummary] = []
+  hang_summary_told(Some(fn(s) { said.push(s) }))
+  t.draw()
+  // (a Tester's host knows no GPU time and drops no frame: nothing of it said)
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_eq(said.length(), 1)
+  assert_eq(said[0].gpu.timed, 0)
+  assert_false(said[0].json().stringify().contains("\"gpu\""), msg=said[0].json().stringify())
+  // a host that does: frames drawn in 5, 12 and 30 ms of the GPU's, two never drawn
+  t.draw()
+  gpu_frames_count(5.0, 0)
+  gpu_frames_count(12.0, 1)
+  gpu_frames_count(30.0, 2)
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_eq(said.length(), 2)
+  assert_eq(said[1].gpu, {
+    timed: 3,
+    over_120: 2,
+    over_60: 1,
+    over_hang: 1,
+    worst_ms: 30.0,
+    dropped: 2,
+  })
+  let j = said[1].json().stringify()
+  assert_true(
+    j.contains(
+      "\"gpu\":{\"frames\":3,\"over_8ms\":2,\"over_16ms\":1,\"over_24ms\":1,\"worst_ms\":30,\"dropped\":2}",
+    ),
+    msg=j,
+  )
+  // (counted from none once said)
+  t.draw()
+  clock.val += 1000.0
+  view_event_said(fn() {  }, fn() { journal_hidden.val = true }, what="app-state")
+  assert_eq(said[2].gpu.timed, 0)
+  assert_eq(said[2].gpu.dropped, 0)
+}

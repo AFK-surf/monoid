@@ -85,6 +85,7 @@ fn P51::mesh_scopes(
             after: @cloud_net.After::effect(bus.host.rt).after,
             now,
             log: words => p51_log("WARN", "mesh", words),
+            info: (words, fields) => p51_log("INFO", "mesh", words, fields~),
           },
           bus.host.rt,
         ),

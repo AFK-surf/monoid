@@ -742,7 +742,8 @@ test("run: ready, serving, its heartbeat, the loopback port, the status socket, 
   assert.equal(b.said.some((m) => m.serving === "mcp"), false, "its door not open while the one before holds the sessions");
   a.tell({ op: "handover" });
   const carry = await a.next("carry", (m) => m.carry !== undefined);
-  assert.deepEqual(Object.keys(carry.carry), ["vault"], "what its parts carry, by part (the vault's grants and boxes waiting)");
+  assert.deepEqual(Object.keys(carry.carry).sort(), ["live.plans", "live.tails", "vault"], "what its parts carry, by part (where the live view read each checklist and transcript to; the vault's grants and boxes waiting)");
+  assert.ok(Array.isArray(carry.carry["live.plans"]) && Array.isArray(carry.carry["live.tails"]), JSON.stringify(carry.carry));
   assert.equal(typeof carry.carry.vault, "object");
   assert.notEqual(carry.carry.vault, null);
   assert.equal(await a.ended, 0);
