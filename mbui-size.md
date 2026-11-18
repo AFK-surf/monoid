@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 2.57 | 3.46 | 14.12 | 36.14 | 54.34 | 31.68 | 63.77 | 97.16 | 125.57 |
 | [67138bbb4](https://github.com/AFK-surf/monoid/commit/67138bbb43b89f83af21d1780ffad26e405febf4) fix(core): wait for a relay before timing out dial | 2.57 | 3.46 | 14.12 | 36.13 | 54.34 | 31.66 | 63.79 | 97.47 | 126.37 |
 | [28154207f](https://github.com/AFK-surf/monoid/commit/28154207fcef82650a0d589a5bf56b69c577f7ea) fix(mbui): read files dropped on a chat where they | 2.57 | 3.46 | 14.12 | 36.13 | 54.34 | 31.66 | 63.79 | 97.47 | 123.88 |
 | [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 2.56 | 3.44 | 14.07 | 36.02 | 54.16 | 31.58 | 63.66 | 96.75 | 131.73 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 2.56 | 3.44 | 14.07 | 36.02 | 54.15 | 31.58 | 63.66 | 96.75 | 118.31 |
-| [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 2.56 | 3.43 | 14.07 | 36.01 | 54.14 | 31.58 | 63.66 | 96.58 | 115.97 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8ff3ce3b2](https://github.com/AFK-surf/monoid/commit/8ff3ce3b20acc851acf42a79f6cc36c870cfcfcb) perf(sync): isolate background batch reads, stream | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [67138bbb4](https://github.com/AFK-surf/monoid/commit/67138bbb43b89f83af21d1780ffad26e405febf4) fix(core): wait for a relay before timing out dial | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [28154207f](https://github.com/AFK-surf/monoid/commit/28154207fcef82650a0d589a5bf56b69c577f7ea) fix(mbui): read files dropped on a chat where they | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
 | [5d389fb3e](https://github.com/AFK-surf/monoid/commit/5d389fb3e91367d2b0541a20b989b66096a0f712) fix(station): bind the front's endpoint one ask at | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 54.28 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [3694f65a8](https://github.com/AFK-surf/monoid/commit/3694f65a8653c0a5dac35665a72f08176db29dba) fix(mbui): keep the Mac window's size and place ac | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [f6a8271e3](https://github.com/AFK-surf/monoid/commit/f6a8271e3cb5d4d7a24bb97c252b78dffca26c18) mbui app: the library's overlapping parts made one | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.43 |
 | [9fe2303fd](https://github.com/AFK-surf/monoid/commit/9fe2303fd4ab738aaaf7db52da58975505202b0c) fix(screens): coalesce unsent pointer moves, recov | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
-| [b5c70cdc0](https://github.com/AFK-surf/monoid/commit/b5c70cdc09495a54107ea7d332195db61b15967f) fix(mbui): keep a Windows video's frame shown thro | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.66 |
