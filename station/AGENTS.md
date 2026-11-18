@@ -28,12 +28,13 @@
   the launcher changes seldom, so a station whose own program is broken still updates. What a Node says of itself for
   `stillfail status` is `<data>/run/health.json` (`src/ops/health.ts`), fresh
   only while its loop runs. A device's requests of the
-  routes in `src/mesh/served.ts` (the reads a device makes, `/batch`, `/changed`, its marks, names and a message in
+  routes in `src/mesh/served.ts` (the reads a device makes, `/changed`, its marks, names and a message in
   words and quotes) the front hands the MoonBit program that answers them itself (station/mb's reader `--serve`), not
   Node, which only tells it who each connection's member is and the floor a core is too old under there, takes what it wrote (`changes`, `said`: Node's store
   tells, the hub delivers) and keeps a message's idempotency slot and timestamp (`claim`); and `GET /events`, which
   Node's events make and give it a piece at a time, each told several streams given once (`relay`), and which it
-  compresses and writes. The native
+  compresses and writes. A device's batch of reads (`POST /batch`, a history brought on in the background) stays Node's,
+  read after what a person waits on (`src/read/pool.ts`), so it never holds up one of those programs. The native
   parts are prebuilt by their sources (`scripts/native.ts`): even a comment changed in one makes every machine and
   CI build it again, so touch them only for what they do.
 - What still.fail draws outside the app (the Helper's windows, `native/helper`) is in still.fail's design (the

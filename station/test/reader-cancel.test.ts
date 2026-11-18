@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { Admin } from "../src/api/admin.ts";
 import { json } from "../src/api/request.ts";
+import { RUNTIME_KINDS } from "../src/agents/runtime.ts";
 import { Cloud, writeState } from "../src/cloud/state.ts";
 import { ALPN, Reader, serve, writeLine } from "../src/mesh/serve.ts";
 import { HttpError } from "./reference/views.ts";
@@ -51,6 +52,76 @@ test("abandoning a batch stops its waiting pages and a keyed retry reads them ag
   assert.equal(calls, 4, "the remaining pages were not started");
   assert.equal((await admin.handle({ ...request, signal: new AbortController().signal })).status, 200);
   assert.equal(calls, 12, "the retry reads every page");
+});
+
+for (const how of ["let go of", "abandoned by its device"] as const) test(`a batch given a line at a time gives each page as it is read, and once ${how} stops the read under way and starts none`, async () => {
+  let calls = 0;
+  let waiting: AbortSignal | undefined;
+  let began!: () => void;
+  const begun = new Promise<void>((resolve) => { began = resolve; });
+  const readers = { data: "", names: new Map(), read: async (_op: string, _args: unknown, _lang: string, options: { signal?: AbortSignal; background?: boolean }) => {
+    calls++;
+    assert.equal(options.background, true);
+    if (calls === 1) return '{"page":1}';
+    waiting = options.signal;
+    began();
+    return new Promise<string>((_resolve, reject) => options.signal!.addEventListener("abort", () => reject(new HttpError(503, "read cancelled")), { once: true }));
+  } };
+  const admin = new Admin(readers as any);
+  const device = new AbortController();
+  const answer = await admin.handle({ method: "POST", path: "/batch", query: [], headers: { Accept: "application/x-ndjson", "idempotency-key": "lines" }, body: Buffer.from(JSON.stringify({ gets: Array.from({ length: 8 }, (_, i) => `/threads/${i + 1}/entries`) })), viewer, lang: "en", signal: device.signal });
+  assert.equal(answer.status, 200);
+  assert.equal(answer.headers["content-type"], "application/x-ndjson");
+  assert.equal(answer.headers["cache-control"], "no-store");
+  assert.ok(!Buffer.isBuffer(answer.body));
+  const it = (answer.body as AsyncIterable<Buffer>)[Symbol.asyncIterator]();
+  const first = await it.next();
+  assert.equal(first.value!.toString(), '{"status":200,"body":{"page":1}}\n', "the first page, while the second is not read yet");
+  const pending = it.next();
+  await begun;
+  assert.equal(waiting?.aborted, false);
+  if (how === "let go of") await it.return!();
+  else device.abort();
+  assert.equal(waiting?.aborted, true);
+  assert.deepEqual(await pending, { done: true, value: undefined });
+  assert.deepEqual(await it.next(), { done: true, value: undefined });
+  assert.equal(calls, 2, "the pages after the one under way were not started");
+});
+
+test("a batch given a line at a time is said to a client from before as the whole batch is", async () => {
+  const sessions = [{ key: "cc", runtime: "claude" }, { key: "hm", runtime: "hermes" }];
+  const readers = { data: "", names: new Map(), read: async (op: string, args: any) => (op === "session" ? JSON.stringify({ session: sessions.find((s) => s.key === args.key) }) : "[]") };
+  const admin = new Admin(readers as any);
+  const ask = async (headers: Record<string, string>) => {
+    const answer = await admin.handle({ method: "POST", path: "/batch", query: [], headers, body: Buffer.from('{"gets":["/sessions/cc","/sessions/hm","/nope"]}'), viewer, lang: "en" });
+    if (Buffer.isBuffer(answer.body)) return JSON.parse(answer.body.toString()).answers;
+    let text = "";
+    for await (const chunk of answer.body) text += chunk.toString();
+    return text.trimEnd().split("\n").map((l) => JSON.parse(l));
+  };
+  const lines = await ask({ accept: "application/x-ndjson" });
+  assert.deepEqual(lines[0], { status: 200, body: { session: sessions[0] } });
+  assert.equal(lines[1].status, 426, "a runtime it cannot read: told to update, as a GET of it is");
+  assert.deepEqual(lines[2], { status: 400, body: { error: "not read in a batch: /nope" } });
+  assert.deepEqual(lines, await ask({}), "each line as the whole batch's answer");
+  const modern = await ask({ accept: "application/x-ndjson", "stillfail-runtimes": RUNTIME_KINDS.join(",") });
+  assert.deepEqual(modern[1], { status: 200, body: { session: sessions[1] } });
+});
+
+for (const path of ["/batch", "/changed/sessions"]) test(`POST ${path} under a key it was asked with before is read again`, async () => {
+  let reads = 0;
+  const readers = { data: "", names: new Map(), read: async () => {
+    reads++;
+    return path === "/batch" ? `{"n":${reads}}` : `{"order":["s${reads}"],"rows":[]}`;
+  } };
+  const admin = new Admin(readers as any);
+  const body = Buffer.from(path === "/batch" ? '{"gets":["/threads/1/entries"]}' : '{"held":{}}');
+  const ask = async () => JSON.parse(((await admin.handle({ method: "POST", path, query: [], headers: { "idempotency-key": "same", "stillfail-runtimes": RUNTIME_KINDS.join(",") }, body, viewer, lang: "en" })).body as Buffer).toString());
+  const first = await ask();
+  const second = await ask();
+  assert.equal(reads, 2, "read each time, never the answer kept under the key");
+  assert.notDeepEqual(first, second);
+  assert.equal((admin as any).slots.size, 0, "nothing kept under the key");
 });
 
 test("a write and its keyed answer finish even if its caller stops waiting", async () => {

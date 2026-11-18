@@ -22,8 +22,9 @@ export const SERVED_ROUTES = [
   "GET /admin/api/chats",
   "GET /admin/api/sessions", "GET /admin/api/sessions/*", "GET /admin/api/sessions/*/timeline",
   "GET /admin/api/threads", "GET /admin/api/threads/*", "GET /admin/api/threads/*/entries", "GET /admin/api/threads/*/letters",
-  // (several of those in one: admin.ts `batch`, all answered there or the batch given Node)
-  "POST /admin/api/batch",
+  // (not several of those in one, POST /admin/api/batch: a history brought on in the background is Node's, its reads
+  // after every other a person waits on, one at a time, read/pool.ts; here it held one of the two programs for its
+  // whole batch, and a person's read waited behind it)
   "GET /admin/api/jobs", "GET /admin/api/jobs/*", "GET /admin/api/jobs/*/log",
   // (a list read again as what changed of it: routes/changed.ts)
   "POST /admin/api/changed/chats", "POST /admin/api/changed/sessions", "POST /admin/api/changed/threads",

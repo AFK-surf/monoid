@@ -461,7 +461,7 @@ async fn Serving::answer(self : Serving, id : Json, conn : Json, who : Member, a
       }
       answers.write_string("{\"status\":\{status},\"body\":\{if text == "" { "\"\"" } else { text }}}")
     }
-    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"), level=9)
+    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"))
   }
   // A mark the member puts on a chat or a session (api/routes/marks.ts): written here, Node told what changed.
   let marked = match (asked.value("method"), route_of_path(path)) {
@@ -585,7 +585,7 @@ fn Serving::read_path(
 ///|
 /// An answer's head and its body as it goes: the admin API's headers, compressed where the core asks so
 /// (mesh/compress.ts: zstd, from 512 bytes, at its level and window).
-async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200, level? : Int = 3) -> (Json, Bytes) raise {
+async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200) -> (Json, Bytes) raise {
   let headers : Map[String, Json] = {
     "content-type": "application/json",
     "cache-control": "no-store",
@@ -598,7 +598,7 @@ async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : I
   }
   let status = Json::number(status.to_double())
   if zstd && bytes.length() >= 512 {
-    let (_, out) = self.host.shell("zstd.compress", { "level": Json::number(level.to_double()), "window": 20 }, bytes~)
+    let (_, out) = self.host.shell("zstd.compress", { "level": 3, "window": 20 }, bytes~)
     headers["content-encoding"] = "zstd"
     return ({ "status": status, "headers": Json::object(headers) }, out.unwrap_or(b""))
   }

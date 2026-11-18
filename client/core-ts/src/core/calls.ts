@@ -95,8 +95,9 @@ export type Call =
   /// `from`: where it was opened (KeptFrom: its chat, the file as its message has it), kept with it while it is kept, so
   /// what lists it (`downloads`' `keeping`, a download) leads back there.
   | { kind: "stationFile"; station: string; key: string; name: string; thumb: boolean; progress: boolean; keep: number | null; from?: unknown }
-  /// `quiet`: the core's own (fill.ts), in the background: not waited on, and nothing a viewer let go.
-  | { kind: "stationFilePart"; station: string; key: string; name: string; offset: number; length: number; progress: boolean; stream: boolean; keep: number | null; quiet?: boolean; from?: unknown }
+  /// `quiet`: the core's own (fill.ts), in the background: not waited on, and nothing a viewer let go; `noHedge`: brought
+  /// after all else, never asked twice at once (requests.ts NO_HEDGE).
+  | { kind: "stationFilePart"; station: string; key: string; name: string; offset: number; length: number; progress: boolean; stream: boolean; keep: number | null; quiet?: boolean; noHedge?: boolean; from?: unknown }
   | { kind: "stationPoster"; station: string; key: string; name: string }
   /// A link's card's picture, or a file's peek's, its bytes beside: out of what the topic's read brought (peek-pictures.ts).
   | { kind: "linkPicture"; station: string; url: string; which: LinkPicture }
@@ -105,7 +106,7 @@ export type Call =
   /// `keep`: what is read kept on the device and what is kept answered (drive-kept.ts), the file as its folder said it
   /// is (`mtime`, `size`; neither said, nothing kept).
   /// `quiet`: as a chat's file's part's.
-  | { kind: "driveRead"; station: string; root: string; path: string; offset: number; length: number; progress: boolean; stream: boolean; keep: KeepKind | null; mtime: number | null; size: number | null; quiet?: boolean; from?: unknown }
+  | { kind: "driveRead"; station: string; root: string; path: string; offset: number; length: number; progress: boolean; stream: boolean; keep: KeepKind | null; mtime: number | null; size: number | null; quiet?: boolean; noHedge?: boolean; from?: unknown }
   | { kind: "driveUploadPart"; station: string; root: string; path: string; id: string; offset: number; total: number; replace: boolean; bytes: Uint8Array }
   | { kind: "driveRefresh"; station: string; root: string; path: string }
   /// A login's page to open: a loopback login's callback listened for here first, unless the

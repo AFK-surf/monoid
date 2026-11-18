@@ -20,6 +20,7 @@ import { ADDRESSES_KEY, clearlyBetter, CONNECT_TIMEOUT_MS, cost, DEVICE_KEY, DIR
 import { claimBy, lockClaim } from "../src/lock.ts";
 import { TRACES } from "../src/route.ts";
 import { ALPN, LockUnconfirmed, MeshWire, STATION_MESH, meshEnv, presented, refusedForLock } from "../src/station/mesh-wire.ts";
+import { NDJSON, NO_HEDGE, READS } from "../src/station/requests.ts";
 import { Runner } from "../src/runtime.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { readAll, type RequestHead } from "../src/station/wire.ts";
@@ -1422,6 +1423,62 @@ sim("a_read_let_go_of_before_its_answer_stops_the_station_sending_it", async (s)
   );
   await s.time.pass(10_000);
   assert.deepEqual(station.letGo, ["/admin/api/part"]);
+  await close(s, station, mesh);
+});
+
+/// A read slow on its way is asked on another as well; one kept current in the background (a batch of the history, a
+/// file brought after all else: requests.ts NO_HEDGE) is never asked twice at once, and the mark goes to no station.
+/// (Over a mesh whose ways are given here: its link slow until let go, another way at hand.)
+sim("a_read_in_the_background_slow_on_its_way_is_not_asked_on_another_as_well", async (s) => {
+  const asked: string[] = [];
+  let go: () => void = () => {};
+  const slow = Effect.callback<void>((resume) => {
+    go = () => resume(Effect.void);
+  });
+  const wayOf = (name: string, answer: Effect.Effect<void>) => ({
+    request: (h: RequestHead) => Effect.andThen(
+      Effect.sync(() => void asked.push(`${name} ${h.path}${h.headers.some(([k]) => k.toLowerCase() === NO_HEDGE) ? " marked" : ""}`)),
+      Effect.as(answer, { status: 200, headers: [], body: { take: Effect.succeed(null) }, cancel: () => {} }),
+    ),
+    path: () => "direct",
+    via: () => null,
+    conn: { closeReason: () => null },
+    closed: () => null,
+  }) as unknown as Link;
+  const main = wayOf("main", slow);
+  const other = wayOf("other", Effect.void);
+  const mesh = {
+    link: () => Effect.succeed(main), hedgeAfter: () => HEDGE_FLOOR_MS, standby: () => other, replaced: () => Effect.never,
+    now: () => s.time.now(), outran: () => {}, dropWay: () => {},
+  } as unknown as Mesh;
+  const status = new Status(s.host, s.runner);
+  const wire = new MeshWire({ mesh: () => Effect.succeed(mesh), meshNow: () => mesh, credentials: () => grants("ok", { n: 0 }), relays: () => [], status: () => status });
+  const addr = StationAddr.parse("w/st");
+  const ask = (h: RequestHead) => s.runner.run(Effect.scoped(Effect.map(wire.request(addr, h, new Uint8Array()), (r) => r.status)));
+  assert.equal(await s.settle(ask({ method: "GET", path: "/admin/api/slow", headers: [] })), 200);
+  assert.deepEqual(asked, ["main /admin/api/slow", "other /admin/api/slow"], "a read in sight: asked on the other way too");
+  asked.length = 0;
+  const batch = ask({ method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"], ["accept", NDJSON]] });
+  await s.time.pass(10 * HEDGE_FLOOR_MS);
+  assert.deepEqual(asked, ["main /admin/api/batch"], "in the background: asked once, the mark the wire's alone");
+  go();
+  assert.equal(await s.settle(batch), 200);
+});
+
+/// One in the background whose way is gone under it is still asked again on the link put in its place.
+sim("a_read_in_the_background_whose_link_is_replaced_is_answered_on_the_new_one", async (s) => {
+  const { mesh, station } = await setup(s);
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(`w/${station.id()}`);
+  const batch: RequestHead = { method: "POST", path: "/admin/api/batch", headers: [[READS, "1"], [NO_HEDGE, "1"]] };
+  const ask = (h: RequestHead) => s.runner.run(Effect.scoped(Effect.flatMap(wire.request(addr, h, new Uint8Array()), (r) => Effect.map(readAll(r.body), () => r.status))));
+  assert.equal(await s.settle(ask(batch)), 200);
+  station.deadBelow = station.conns.length;
+  const asked = ask(batch);
+  await s.time.pass(50);
+  s.wakes.wake(network(s.host));
+  assert.equal(await s.settle(asked), 200);
+  assert.equal(station.conns.length, 2);
   await close(s, station, mesh);
 });
 
