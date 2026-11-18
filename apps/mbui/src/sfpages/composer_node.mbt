@@ -340,7 +340,14 @@ fn composer_node(
         gap.grow(Is(1.0)).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
         match spec.tools {
           Some(tools) => {
-            gap.row(Is(true)).lines_up(Is(Some(@view.Along::Middle))).padding(Is((6.0, 0.0, 6.0, 0.0))) |> ignore
+            // (as tall as ＋ and send, what it holds centred on theirs whatever its own press room: a station choice is as
+            // tall as a row, ＋ and send are round; not on the row's foot they line up by)
+            gap
+            .row(Is(true))
+            .lines_up(Is(Some(@view.Along::Middle)))
+            .height(By(fn() { Some(side()) }))
+            .padding(Is((6.0, 0.0, 6.0, 0.0)))
+            |> ignore
             tools(gap)
           }
           None => ()
