@@ -301,6 +301,7 @@ fn p54_browser_source(s : @browser.ScreenSource) -> @screens.ScreenSource {
       max_height: o.max_height,
       peek: o.peek,
       fit: o.fit.map(f => (f.width, f.height, f.scale)),
+      passkeys: o.passkeys,
     })
     let next = async fn() -> @screens.Frame? {
       match (v.next)() {

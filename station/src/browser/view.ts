@@ -225,40 +225,56 @@ const passkeyBinding = (owner: string): string => `${PASSKEY_BINDING}_${owner.re
 /// up (its signal), and answered by the station with `__stillfailPasskeyReply(owner, id, answer)`: a credential made as the
 /// browser makes it, or the error the browser would give. The platform is said to have an authenticator, so that sites
 /// offer passkeys. Anything else (a password asked, a passkey made) goes to the browser as before.
-export const passkeyHook = (owner: string): string => `(() => {
+export const passkeyHook = (owner: string, device = true): string => `(() => {
   if (window !== window.top || !navigator.credentials) return;
   const owner = ${JSON.stringify(owner)};
-  if (window.__stillfailPasskeyWatch) return window.__stillfailPasskeyWatch(owner, true);
+  const device = ${device ? "true" : "false"};
+  if (window.__stillfailPasskeyWatch) return window.__stillfailPasskeyWatch(owner, true, device);
   // A page kept across a station update may still have the old, unowned hook. Its get falls through while off.
   if (window.__stillfailPasskeyOff) window.__stillfailPasskeyOff(true);
-  const owners = new Set();
+  const owners = new Map();
   let active = null;
+  let activeDevice = false;
   const creds = navigator.credentials;
   const get = creds.get.bind(creds);
   const bytes = (v) => v instanceof ArrayBuffer ? new Uint8Array(v) : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : null;
   const b64 = (v) => { const u = bytes(v); if (!u) return null; let s = ""; for (const b of u) s += String.fromCharCode(b); return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, ""); };
   const buf = (s) => { const t = atob(s.replace(/-/g, "+").replace(/_/g, "/")); const u = new Uint8Array(t.length); for (let i = 0; i < t.length; i++) u[i] = t.charCodeAt(i); return u.buffer; };
   const waiting = new Map();
+  const uvpaWaiting = new Map();
   let next = 0;
   const said = (v) => { try { window[${JSON.stringify(PASSKEY_BINDING)} + "_" + active.replaceAll("-", "")](JSON.stringify({ ...v, owner: active })); return true; } catch { return false; } };
   // New and old screen streams overlap on a resize. Only the active owner answers; an old stream ending cannot
-  // switch off its replacement or reject a request it handed over. Pending requests follow the active stream.
-  Object.defineProperty(window, "__stillfailPasskeyWatch", { value: (id, on) => {
-    if (on ? owners.has(id) : !owners.has(id)) return;
-    if (on) owners.add(id); else owners.delete(id);
-    const nextOwner = [...owners].at(-1) || null;
-    if (nextOwner === active) return;
-    for (const id of waiting.keys()) said({ id, gone: true });
+  // switch off its replacement or reject a request it handed over. Pending requests follow an active stream whose
+  // device signs passkeys, and settle as NotAllowedError when none does.
+  Object.defineProperty(window, "__stillfailPasskeyWatch", { value: (id, on, dev = true) => {
+    const useDevice = Boolean(dev);
+    if (on ? owners.has(id) && owners.get(id) === useDevice : !owners.has(id)) return;
+    if (on) owners.set(id, useDevice); else owners.delete(id);
+    const last = [...owners.entries()].at(-1);
+    const nextOwner = last ? last[0] : null;
+    const nextDevice = last ? last[1] : false;
+    if (nextOwner === active && nextDevice === activeDevice) return;
+    if (active !== null && activeDevice) { for (const wid of waiting.keys()) said({ id: wid, gone: true }); }
     active = nextOwner;
-    if (active !== null) { for (const w of waiting.values()) said(w.ask); }
+    activeDevice = nextDevice;
+    if (active !== null && activeDevice) { for (const w of waiting.values()) said(w.ask); }
     else {
       for (const w of waiting.values()) w.no(new DOMException("The operation either timed out or was not allowed.", "NotAllowedError"));
       waiting.clear();
     }
+    if (active === null || activeDevice) {
+      for (const u of uvpaWaiting.values()) u.res(Boolean(activeDevice));
+      uvpaWaiting.clear();
+    } else {
+      for (const [uid, u] of uvpaWaiting) { if (!said({ id: uid, uvpa: u.host })) { uvpaWaiting.delete(uid); u.res(false); } }
+    }
   } });
-  window.__stillfailPasskeyWatch(owner, true);
+  window.__stillfailPasskeyWatch(owner, true, device);
   Object.defineProperty(window, "__stillfailPasskeyReply", { value: (owner, id, a) => {
     if (owner !== active) return;
+    const u = uvpaWaiting.get(id);
+    if (u) { uvpaWaiting.delete(id); return u.res(a.available === true); }
     const w = waiting.get(id);
     if (!w) return;
     waiting.delete(id);
@@ -276,7 +292,7 @@ export const passkeyHook = (owner: string): string => `(() => {
   creds.get = function (options) {
     const pk = options && options.publicKey;
     const ch = pk && b64(pk.challenge);
-    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
+    if (active === null || !activeDevice || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
     const id = String(++next);
     const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
     const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
@@ -293,9 +309,19 @@ export const passkeyHook = (owner: string): string => `(() => {
     });
   };
   // (a page left takes what it asked with it)
-  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); });
+  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); uvpaWaiting.clear(); });
   if (window.PublicKeyCredential) {
-    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);
+    const uvpa = typeof PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable === "function" ? PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.bind(PublicKeyCredential) : () => Promise.resolve(false);
+    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => {
+      if (active === null) return uvpa();
+      if (activeDevice) return Promise.resolve(true);
+      const id = "u" + (++next);
+      const host = String(location.hostname || "");
+      return new Promise((res) => {
+        uvpaWaiting.set(id, { host, res });
+        if (!said({ id, uvpa: host })) { uvpaWaiting.delete(id); res(false); }
+      });
+    };
     PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   }
 })()`;
@@ -373,6 +399,8 @@ export class TabView implements ScreenView {
   #peek = false;
   /// Laid out for the viewer's phone (ViewOptions.fit) until it ends.
   #fitted = false;
+  /// Whether the driving viewer's host signs arbitrary-site passkeys (`ViewOptions.passkeys !== false`).
+  #devicePasskeys = true;
 
   /// Chrome's own screencast, a JPEG a picture.
   video(): ScreenVideo {
@@ -391,6 +419,7 @@ export class TabView implements ScreenView {
   async start(options: ViewOptions, viewport?: { width: number; height: number }) {
     if (viewport) this.#viewport = viewport;
     this.#peek = options.peek === true;
+    this.#devicePasskeys = options.passkeys !== false;
     const { cdp, session } = this.#p;
     await cdp.send("Page.enable", {}, session);
     const fit = options.fit && !this.#peek ? options.fit : undefined;
@@ -573,7 +602,7 @@ export class TabView implements ScreenView {
     // Each viewer owns its binding as well as its subscription: page requests go to just that viewer, and an old
     // session removes only its own name on cleanup.
     const binding = passkeyBinding(owner);
-    const hook = passkeyHook(owner);
+    const hook = passkeyHook(owner, this.#devicePasskeys);
     this.#passkeyOwner = owner;
     let on = true;
     let script: string | null = null;
@@ -593,6 +622,22 @@ export class TabView implements ScreenView {
           this.#asked = null;
           heard(null);
         }
+        return;
+      }
+      if (typeof said.uvpa === "string" && said.uvpa.length <= 253) {
+        const h = said.uvpa.toLowerCase().replace(/\.$/, "");
+        let available = false;
+        if (this.#p.ownPasskey && h !== "") {
+          const parts = h.split(".");
+          for (let i = 0; i < parts.length; i++) {
+            const rp = parts.slice(i).join(".");
+            if ((i === 0 || rp.includes(".")) && this.#p.ownPasskey(rp)) {
+              available = true;
+              break;
+            }
+          }
+        }
+        void this.#answer({ id, available });
         return;
       }
       const b64 = (v: unknown, most: number): v is string => typeof v === "string" && v !== "" && v.length <= most && /^[A-Za-z0-9_-]+$/.test(v);

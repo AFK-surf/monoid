@@ -663,6 +663,11 @@ pub fn asked(screen : Json) -> Json {
   if m.get("gamut") is Some(String("p3")) {
     out.push(("gamut", jstr("p3")))
   }
+  match m.get("passkeys") {
+    Some(True) if !peek => out.push(("passkeys", Json::boolean(true)))
+    Some(False) if !peek => out.push(("passkeys", Json::boolean(false)))
+    _ => ()
+  }
   for kv in [("client", 80), ("app", 16), ("self", 64)] {
     if said_word(m.get(kv.0), kv.1) is Some(w) {
       out.push((kv.0, jstr(w)))

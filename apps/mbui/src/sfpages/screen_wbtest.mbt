@@ -1628,6 +1628,7 @@ test "自动 asks again as the stage grows a tenth a side, not as it grows less 
 test "a page asking for a passkey while driving a tab: 用通行密钥登录; signed on this device, what it signed sent; a no told the page; none on a host without passkeys" {
   let r = screen_rig()
   r.live(others=[])
+  assert_eq(r.told("screen.view")[0] is { "passkeys": False, .. }, true)
   let ask = fn(rp : String) -> Json {
     {
       "id": "7",

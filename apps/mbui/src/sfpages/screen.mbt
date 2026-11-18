@@ -805,6 +805,7 @@ fn ScreenSess::open(self : ScreenSess, src : Source) -> Unit {
     "codecs": Json::array(codecs),
     "maxWidth": Json::number(mw.to_double()),
     "maxHeight": Json::number(mh.to_double()),
+    "passkeys": Json::boolean(@hostapi.passkeys()),
   }
   asks_into(params, quality, fps)
   if @ui.stream_audio_here() {
