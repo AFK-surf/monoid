@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7006c0215](https://github.com/AFK-surf/monoid/commit/7006c0215bb79c59d7b4db560b82d9e71be95554) fix(mbui): keep the new chat page's place in long  | 2.58 | 3.47 | 14.15 | 36.19 | 54.43 | 31.71 | 63.82 | 97.14 | 129.14 |
 | [981a5d730](https://github.com/AFK-surf/monoid/commit/981a5d7307c20cb4d87df705264d1648563b2d4c) fix(station, mbui): keep media facts and pictures  | 2.58 | 3.46 | 14.14 | 36.19 | 54.43 | 31.71 | 63.82 | 97.14 | 129.14 |
 | [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.14 | 113.6 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 122.22 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 115.44 |
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 2.56 | 3.44 | 14.07 | 36.06 | 54.14 | 31.59 | 63.59 | 97.16 | 106 |
-| [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [7006c0215](https://github.com/AFK-surf/monoid/commit/7006c0215bb79c59d7b4db560b82d9e71be95554) fix(mbui): keep the new chat page's place in long  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
 | [981a5d730](https://github.com/AFK-surf/monoid/commit/981a5d7307c20cb4d87df705264d1648563b2d4c) fix(station, mbui): keep media facts and pictures  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.12 |
 | [8ef99af72](https://github.com/AFK-surf/monoid/commit/8ef99af72ee6e3c270ae494b42cc2c6ae979d779) fix(lock): keep pairing codes when verification is | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.12 |
 | [3c955f582](https://github.com/AFK-surf/monoid/commit/3c955f582a66d9dc0d31ae2650debf2e73e00bb9) test(mbui): lower motion bars that main's mbui-che | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [67b858b04](https://github.com/AFK-surf/monoid/commit/67b858b044a40f7bf29ba899194293c609b59e78) fix(lock): vault gate, refused statements and adb  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
 | [2e7b5df70](https://github.com/AFK-surf/monoid/commit/2e7b5df7029d1b3564d404ab5d1b69d4301ffbcb) perf(mbui): the composer's placeholder fades by it | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.31 | 53.92 |
 | [578a45fe4](https://github.com/AFK-surf/monoid/commit/578a45fe4e650c946d00c0081a40e7b8a6b301a6) feat(mbui): move the wide frame's overlays onto th | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
-| [0218efe31](https://github.com/AFK-surf/monoid/commit/0218efe3185f5810e93f2d33a36a27a8c3bd464f) fix(station): keep local tools out of profile prox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
