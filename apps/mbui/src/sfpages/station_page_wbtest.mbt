@@ -928,3 +928,64 @@ test "a station's overview: its browser one row opening it, the agents' pages an
     assert_true(calls.iter().all(fn(c) { c.0 != "screen.openBrowser" }), msg=at)
   }
 }
+
+///|
+test "the station goes back to an earlier release: picked from its menu, asked, then asked of the station" {
+  for (w, platform) in page_cases {
+    let calls : Array[Json] = []
+    let t = setting_tester(Station("ws1/st1"), w, platform~, mode="settings-station-back", h=2400.0, over=fn(s) {
+      { ..s, call: fn(name, params, done) {
+        if name == "software.update" { calls.push(params) }
+        (s.call)(name, params, done)
+      } }
+    })
+    t.run_for(@ui.move_most_ms)
+    let at = "\{w} platform \{platform}"
+    assert_eq(t.audit(), [], msg=at)
+    t.tap_text("退回旧版本")
+    t.draw()
+    presented_in(t)
+    for v in ["0.1.1280", "0.1.1276", "0.1.1262"] {
+      assert_true(t.find(v) is Some(_), msg="\{at}: \{v} offered")
+    }
+    assert_eq(t.audit(), [], msg="\{at}: its menu")
+    t.tap_text("0.1.1276")
+    t.draw()
+    presented_in(t)
+    assert_true(t.find("退回到 0.1.1276？") is Some(_), msg=at)
+    assert_eq(calls.length(), 0, msg="\{at}: asked first")
+    assert_eq(t.audit(), [], msg="\{at}: asked")
+    t.click(Button, label="退回")
+    t.draw()
+    presented_in(t)
+    assert_eq(calls.length(), 1, msg=at)
+    assert_eq(text(Some(calls[0]), "id"), "station")
+    assert_eq(text(Some(calls[0]), "to"), "0.1.1276")
+    assert_eq(text(Some(calls[0]), "station"), "ws1/st1")
+  }
+}
+
+///|
+test "gone back, updating by itself held till a newer release says so under the version; none to go back to, no link" {
+  for (w, platform) in page_cases {
+    @sfbase.reset()
+    reset()
+    @settings.reset()
+    @sffixture.fixture_reset()
+    @sf.presenters_reset()
+    @sf.set_words(@sfbase.fill)
+    let src = @sffixture.fixture("settings")
+    let held : Json = {
+      "id": "station", "name": "Station", "installed": true, "updatable": true, "state": "idle", "shownText": "0.1.1290",
+      "latest": "0.1.1300", "newer": true, "channel": "stable", "auto": false, "autoAfter": "0.1.1300",
+    }
+    let core = @sfbase.settings_core(src, rig_workspace)
+    let t = station_part_tester(fn(p) {
+      software_row_node(p, core, "ws1/st1", fn() { Some(held) }, true, fn() { false }, fn() { false }, @sf.TipLayer::new(fn() { None }))
+    }, w~, h=400.0, platform~)
+    let at = "\{w} platform \{platform}"
+    assert_true(t.find("自动更新暂停到 0.1.1300 之后的版本") is Some(_), msg=at)
+    assert_true(t.find("退回旧版本") is None, msg=at)
+    assert_eq(t.audit(), [], msg=at)
+  }
+}

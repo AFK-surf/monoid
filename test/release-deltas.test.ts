@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { crc32, deflateRawSync, gunzipSync, zstdCompressSync } from "node:zlib";
 import { applyFile, storedZip } from "../scripts/delta.ts";
+import { earlierOf } from "../scripts/release-deltas.ts";
 
 // scripts/release-deltas.ts on a release directory of every kind of feed, the releases "published" before it a
 // directory too (--releases): the deltas made, each giving the package's raw form from what an installed build has
@@ -332,6 +333,28 @@ test("every feed's deltas: made from what an installed build has, giving the raw
     assert.ok(readFileSync(join(w.rel, copy)).equals(readFileSync(join(w.rel, own))), `${copy}: this release's archive under its own name`);
   }
   assert.match(out, /station-beta linux-x64 101: from 100 [0-9.]+ MB; package/);
+});
+
+test("the station's feed carries the signed words of the releases before it, to go back to", (t) => {
+  const w = world(t);
+  const prev = json(w.pub, "station-beta.json");
+  run(w.rel, w.pub);
+  const st = json(w.rel, "station-beta.json");
+  assert.deepEqual(st.earlier, [{ version: prev.version, release: prev.release, signature: prev.signature, key: prev.key }]);
+  // (the archives they name are where a station downloads them: 100's under its own name)
+  assert.ok(existsSync(join(w.pub, `station/archive/beta/100-${w.prevStationWords.builds["win32-x64"].sha256}-win32-x64.zip`)));
+});
+
+test("earlier: the feed before and its own earlier, older builds only, each once, newest first, so many", () => {
+  const feed = (n: number, earlier?: object[]) => ({ version: `0.1.${n}`, ...signed({ kind: "stillfail-station-release", version: `0.1.${n}`, build: n, builds: {} }), ...(earlier ? { earlier } : {}) });
+  const bare = ({ earlier: _e, ...f }: any) => f;
+  const f7 = feed(7), f8 = feed(8), f9 = feed(9, [bare(f8), bare(f7), bare(f8), { release: 1 }]);
+  assert.deepEqual(earlierOf(10, f9, 10).map((e) => e.version), ["0.1.9", "0.1.8", "0.1.7"]);
+  assert.deepEqual(earlierOf(10, f9, 2).map((e) => e.version), ["0.1.9", "0.1.8"]);
+  // (published again as this build, or a feed newer than it: none of those)
+  assert.deepEqual(earlierOf(9, f9, 10).map((e) => e.version), ["0.1.8", "0.1.7"]);
+  assert.deepEqual(earlierOf(8, null, 10), []);
+  assert.deepEqual(Object.keys(earlierOf(10, f9, 10)[0]!), ["version", "release", "signature", "key"]);
 });
 
 test("run again, nothing changes; one pair at a time, the same is made", (t) => {

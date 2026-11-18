@@ -60,6 +60,7 @@ import { type Listing, McpEndpoint, UNBOUND_REFUSAL } from "../tools/mcp.ts";
 import { remoteTools } from "../tools/remote.ts";
 import { workspaceSizeTools } from "../tools/workspace-size.ts";
 import { relayTools } from "../tools/relays.ts";
+import { versionTools } from "../tools/version.ts";
 import { waysOf } from "../mesh/ways.ts";
 import { type Accounts, checkConfig, makeAccounts } from "../accounts/index.ts";
 import { Sharing } from "../share/index.ts";
@@ -589,6 +590,8 @@ export const AgentsLive = (control: Control) =>
       });
       codexIncomplete = () => { void updates.check().catch((error) => log.warn("updates", "Codex installation not checked", { error: String(error) })); };
       updates.start();
+      // Its agents' hand on its release: updated, or put back to an earlier one (tools/version.ts).
+      parts.tools(versionTools(updates));
       plane.told("release", () => void updates.check().catch((error) => log.warn("updates", "the release not read", { error: String(error) })));
       // `stillfail update --beta|--stable` asks a running station by SIGHUP (run/channel-ask).
       control.on("hup", () => void updates.answerChannelAsk());

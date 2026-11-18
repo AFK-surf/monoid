@@ -9,7 +9,8 @@
 // still updates by difference. A Windows installer's raw form (.raw.zst) stays as long as its installer. A delta
 // (….from-<n>.delta) stays while its feed offers it (and when it is newer than what the feed names: being put); the
 // station's archives kept under their own names (station/archive/<channel>/…) while their channel's feed names them,
-// as its build or a base of its deltas (or are newer than it), and its deltas while it offers them. The web archives
+// as its build, a base of its deltas or a release a station may go back to (its `earlier`), or are newer than it, and
+// its deltas while it offers them. The web archives
 // the beta Electron app took without a new app (made until 2026-10-26, when that app was moved to mbui's): the one its
 // feed names, any newer, and the newest 5. What a station's job staged (staged/<when>-<commit>/: scripts/release-put.sh
 // --stage) and no put took back and deleted: after two days. An Android release's native symbols (symbols/android/…:
@@ -115,6 +116,12 @@ export function doomedOf(keys: string[], feeds: Record<string, string>, webNamed
       const named = new Set<string>(Object.values(words.builds ?? {}).map((b: any) => String(b.sha256)));
       const deltas = new Set<string>();
       for (const list of Object.values(f.deltas ?? {})) for (const d of list as any[]) { named.add(String(d.base)); deltas.add(String(d.file)); }
+      // (the releases a station may go back to: their archives, by their signed words)
+      for (const e of Array.isArray(f.earlier) ? f.earlier : []) {
+        try {
+          for (const b of Object.values<any>(JSON.parse(Buffer.from(e.release, "base64").toString("utf8")).builds ?? {})) named.add(String(b.sha256));
+        } catch {}
+      }
       station.set(channel, { build: Number(words.build), named, deltas });
     } catch {
       // (a feed not read as one: nothing of its channel goes)

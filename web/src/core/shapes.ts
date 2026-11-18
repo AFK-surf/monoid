@@ -1132,6 +1132,11 @@ export interface SoftwareVersion {
 	 */
 	downgrade?: boolean;
 	/**
+	 * The station's: the releases it can go back to (退回旧版本), newest first: those its channel's feed names before its
+	 * latest that are older than the one it runs. None where it cannot be updated from here, and from a station older than it.
+	 */
+	earlier?: string[];
+	/**
 	 * The station's: which releases it is updated to, `stable` or `beta`; none where it cannot be updated from here,
 	 * and from a station older than channels.
 	 */
@@ -1141,6 +1146,11 @@ export interface SoftwareVersion {
 	 * cannot be updated from here, and from a station older than it.
 	 */
 	auto?: boolean;
+	/**
+	 * The station's, updating by itself turned off as it went back to an earlier release: the release it left, past
+	 * which it updates itself again (a newer one out). None otherwise, and from a station older than it.
+	 */
+	autoAfter?: string;
 	/** Automatic updates wait for clients and running turns to leave, then five quiet minutes. */
 	idleOnly?: boolean;
 	/** The pages can update it (or install it, when it is not installed). */

@@ -84,3 +84,7 @@ export function nextRelease(dir: string, app: string, build = 1310) {
 
 /// A release's feed with `deltas` beside its signed words (as scripts/release.sh writes it).
 export const withDeltas = (feed: object, deltas: object[]) => ({ ...feed, deltas: { [platform() ?? "darwin-arm64"]: deltas } });
+
+/// A release's feed naming before it the releases of `earlier` (their feeds: only their signed words are kept), as
+/// scripts/release-deltas.ts writes it.
+export const withEarlier = (feed: object, earlier: object[]) => ({ ...feed, earlier: earlier.map((f: any) => ({ version: f.version, release: f.release, signature: f.signature, key: f.key })) });

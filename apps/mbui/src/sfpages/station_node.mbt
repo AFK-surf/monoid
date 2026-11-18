@@ -2061,7 +2061,7 @@ fn software_row_node(
 ) -> Unit {
   let id = text(@signals.untracked(v), "id")
   let own = id == "station"
-  let switches = fn() { own && manager && ((beta() && has(v(), "channel")) || has(v(), "auto")) }
+  let switches = fn() { own && manager && ((beta() && has(v(), "channel")) || has(v(), "auto") || software_earlier(v()).length() > 0) }
   let call = fn(name : String, params : Array[(String, Json)]) { software_call(core, station, name, params) }
   @sf.item_row_node(row, fn(r) {
     // (its mark on its first line, never centred on the lines under it (its version, what an update says, its switches):
@@ -2114,6 +2114,11 @@ fn software_row_node(
         @sf.words_node(w, fn() { software_said(v()) }, fn() { sw_note }) |> ignore
       })
       u.show(fn() { text(v(), "note") != "" }, fn(w) { @sf.words_node(w, fn() { text(v(), "note") }, fn() { sw_note }) |> ignore })
+      // gone back to a release before: updating by itself held till a newer one than the release it left is out
+      u.show(fn() { text(v(), "autoAfter") != "" }, fn(w) {
+        @sf.words_node(w, fn() { @sf.t("web-main.versions.autoAfter", args=[("version", text(v(), "autoAfter"))]) }, fn() { sw_note })
+        |> ignore
+      })
       u.show(fn() { text(v(), "state") == "failed" && text(v(), "message") != "" }, fn(w) {
         @sf.words_node(w, fn() { text(v(), "message") }, fn() { sw_note }) |> ignore
       })
@@ -2147,6 +2152,22 @@ fn software_row_node(
               fn() { @sf.t(if flag(v(), "idleOnly") { "web-main.versions.autoIdleTip" } else { "web-main.versions.autoTip" }) },
             )
           })
+          // back to a release before (the ones its channel's feed names): which one picked in a menu, then asked
+          sw.show(fn() { software_earlier(v()).length() > 0 }, fn(l) {
+            // (its chevron in the words' own ink: the link's default, the theme's blue, is not the Link words' colour here)
+            @sf.link_opens_node(l, fn() { @sf.t("web-main.versions.back") }, chevron=true, ink=fn() { @ui.style_ink(@sf.link) }, on=fn() { !busy() }, fn(b) {
+              let (x, y, w, h) = b.placed_window_now()
+              let now = @signals.untracked(v)
+              @sf.menu(
+                software_earlier(now).map(fn(version) {
+                  Some(@sf.menu_item_of(version, further=true, fn() { software_back_ask(now, version, call) }))
+                }),
+                from=At(x, y, w, h),
+                title=@sf.t("web-main.versions.backTo"),
+              )
+            })
+            |> ignore
+          })
         })
         |> ignore
       })
@@ -2175,6 +2196,32 @@ fn software_end(v : Json?) -> String {
   } else {
     ""
   }
+}
+
+///|
+/// The releases the station can go back to (its `earlier`), newest first.
+fn software_earlier(v : Json?) -> Array[String] {
+  items(v, "earlier").filter_map(fn(e) {
+    match e {
+      String(s) => Some(s)
+      _ => None
+    }
+  })
+}
+
+///|
+/// Asks before the station `v` goes back to `version` (software_row's 退回旧版本): what it does, and what becomes of its
+/// updating by itself; said, `call` puts it back.
+fn software_back_ask(v : Json?, version : String, call : (String, Array[(String, Json)]) -> Unit) -> Unit {
+  confirm(
+    @sf.t("web-main.versions.backAsk", args=[("version", version)]),
+    @sf.t(if flag(v, "auto") { "web-main.versions.backNoteAuto" } else { "web-main.versions.backNote" }, args=[
+      ("version", version),
+      ("current", text(v, "shownText")),
+    ]),
+    @sf.t("web-main.versions.backDo"),
+    fn() { call("software.update", [("id", str("station")), ("to", str(version))]) },
+  )
 }
 
 ///|

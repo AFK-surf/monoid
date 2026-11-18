@@ -207,7 +207,7 @@ export const PARAMS: Record<string, string> = {
   "signin.deny": "id:string",
   "memory.get": "",
   "process.end": "pid:number session:string",
-  "software.update": "id?:string repair?:boolean",
+  "software.update": "id?:string repair?:boolean to?:string",
   "software.updateAll": "",
   "software.check": "",
   "software.channel": "channel?:string",
@@ -759,7 +759,7 @@ function stationOp(name: string, params: unknown): Request | null {
     case "process.end":
       return op("POST", () => `/resources/processes/${p.u64("pid")}/end`, p.pick(["session"]), NONE);
     case "software.update":
-      return op("POST", () => "/updates", p.pick(["id", "repair"]), OVERVIEW);
+      return op("POST", () => "/updates", p.pick(["id", "repair", "to"]), OVERVIEW);
     case "software.updateAll":
       return op("POST", () => "/updates/all", null, OVERVIEW);
     case "software.check":

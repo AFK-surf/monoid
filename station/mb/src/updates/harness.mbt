@@ -289,11 +289,23 @@ fn plan_arg(j : J) -> Plan {
       })
     _ => None
   }
+  let archive = match get(Some(j), "archive") {
+    Some(Obj(_) as a) =>
+      Some(
+        (
+          text(get(Some(a), "url")).unwrap_or(""),
+          get(Some(a), "sha256").unwrap_or(Null),
+          num(get(Some(a), "size")).unwrap_or(0.0),
+        ),
+      )
+    _ => None
+  }
   {
     release: get(Some(j), "release").unwrap_or(Null),
     script: text(get(Some(j), "script")).unwrap_or(""),
     env,
     delta,
+    archive,
   }
 }
 
@@ -426,6 +438,66 @@ async fn Harness::call_fn(self : Harness, w : World, name : String, a : Array[J]
         request_by(w, text(get(Some(o), "request")).unwrap_or("fetch")),
         wait?,
       ).to_j()
+    }
+    "earlierIn" => {
+      let (rs, why) = earlier_in(w, jarg(a, 0), trusted_of(jarg(a, 1)))
+      jo([("releases", ja(rs)), ("why", jstrs(why))])
+    }
+    "backTo" =>
+      ja(
+        back_to(
+          match jarg(a, 0) {
+            Arr(xs) => xs
+            _ => []
+          },
+          match jarg(a, 1) {
+            Num(n) => Some(n)
+            _ => None
+          },
+          oarg(a, 2),
+        ),
+      )
+    "archiveUrl" => js(archive_url(sarg(a, 0), sarg(a, 1), jarg(a, 2), sarg(a, 3)))
+    "planBack" => {
+      let o = jarg(a, 0)
+      let wait : Wait? = if get(Some(o), "wait") is Some(Bool(true)) {
+        Some(async fn(ms) { fibers.sleep(ms) })
+      } else {
+        None
+      }
+      plan_back(
+        w,
+        text(get(Some(o), "base")).unwrap_or(""),
+        text(get(Some(o), "channel")).unwrap_or(""),
+        text(get(Some(o), "app")).unwrap_or(""),
+        text(get(Some(o), "to")).unwrap_or(""),
+        text(get(Some(o), "lang")).unwrap_or(""),
+        trusted_of(get(Some(o), "trusted").unwrap_or(Null)),
+        request_by(w, text(get(Some(o), "request")).unwrap_or("fetch")),
+        wait?,
+      ).to_j()
+    }
+    "takeArchive" => {
+      let o = jarg(a, 1)
+      let signal = Signal::new()
+      if get(Some(o), "aborted") is Some(Bool(true)) {
+        signal.abort(reason=timed_out())
+      }
+      let wait : Wait? = if get(Some(o), "wait") is Some(Bool(true)) {
+        Some(async fn(ms) { fibers.sleep(ms) })
+      } else {
+        None
+      }
+      pairs_j(
+        take_archive(
+          w,
+          plan_arg(jarg(a, 0)),
+          signal,
+          progress=fn(p) { w.now("takeArchive.progress", [ji(p)]) },
+          request_by(w, text(get(Some(o), "request")).unwrap_or("fetch")),
+          wait?,
+        ),
+      )
     }
     "takeDelta" => {
       let o = jarg(a, 1)
@@ -592,9 +664,14 @@ async fn Harness::call_updates(self : Harness, name : String, a : Array[J]) -> J
       Null
     }
     "update" => {
-      u.update(sarg(a, 0), sarg(a, 1))
+      u.update(sarg(a, 0), sarg(a, 1), to?=oarg(a, 2))
       Null
     }
+    "resumeAutoForTests" => {
+      u.resume_auto_for_tests()
+      Null
+    }
+    "autoAfter" => opt_j(u.auto_after())
     "setAuto" => {
       u.set_auto(jarg(a, 0) is Bool(true), sarg(a, 1))
       Null

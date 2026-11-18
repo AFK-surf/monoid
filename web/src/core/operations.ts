@@ -138,7 +138,7 @@ export interface OperationParams {
   "signin.deny": { id: string };
   "memory.get": {  };
   "process.end": { pid: number; session: string };
-  "software.update": { id?: string | null | undefined; repair?: boolean | null | undefined };
+  "software.update": { id?: string | null | undefined; repair?: boolean | null | undefined; to?: string | null | undefined };
   "software.updateAll": {  };
   "software.check": {  };
   "software.channel": { channel?: string | null | undefined };

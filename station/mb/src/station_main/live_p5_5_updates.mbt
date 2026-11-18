@@ -193,6 +193,14 @@ async fn P55::start_updates(self : P55) -> Unit {
   )
   bus.parts.overview("updates", async fn(_viewer, lang) { to_core(@jsjson.JValue::Arr(u.get(lang))) })
   bus.parts.routes(updates_routes(u))
+  // Its agents' hand on its release (tools/version.ts): updated, or put back to an earlier one.
+  bus.parts.tools([
+    {
+      name: "station_version",
+      declared: tool_declared(version_declared),
+      call: async fn(args, _context) { tool_said(async fn() { Json::string(version_tool(u, args).stringify()) }) },
+    },
+  ])
   self.admin_ops(u)
   self.op("agents.updates.get", async fn(arg) { to_core(@jsjson.JValue::Arr(u.get(lang_arg(arg)))) })
   self.op("agents.updates.channel", async fn(_arg) { Json::string(u.channel()) })
@@ -275,9 +283,15 @@ fn updates_routes(u : @updates.Updates) -> Array[PartRoute] {
       let lang = lang_in(r)
       let body = p55_jfield(r, "body")
       let id = p55_jtext(body, "id")
+      // The station put back to a release before it: { id, to }.
+      let to = match p55_jfield(body, "to") {
+        Null => None
+        String(t) => Some(t)
+        _ => raise BusError(@updates.tr(lang, "station.updates.badVersion"))
+      }
       match p55_jfield(body, "repair") {
         True if id == "codex" => u.repair_codex(lang)
-        Null | False => u.update(id, lang)
+        Null | False => u.update(id, lang, to?)
         _ => raise BusError(@updates.tr(lang, "station.updates.codexRepairUnavailable"))
       }
     })),
@@ -338,3 +352,89 @@ fn p55_watch_dir(bus : LiveBus, dir : String, told : (String?) -> Unit) -> async
 
 ///|
 let p55_watch_ms : Int = 250
+
+///|
+/// station_version (tools/version.ts `VERSION_TOOL`), as it is declared to the agents.
+let version_declared : String =
+  #|{
+  #|  "name": "station_version",
+  #|  "description": "This station's release: list (version, latest, earlier releases), update to the latest, or back to an earlier one when the latest broke something (auto-update pauses until a newer one).",
+  #|  "inputSchema": {
+  #|    "type": "object",
+  #|    "properties": {
+  #|      "action": {
+  #|        "enum": [
+  #|          "list",
+  #|          "update",
+  #|          "back"
+  #|        ]
+  #|      },
+  #|      "to": {
+  #|        "type": "string",
+  #|        "description": "back: a version from list's earlier."
+  #|      }
+  #|    },
+  #|    "required": [
+  #|      "action"
+  #|    ],
+  #|    "additionalProperties": false
+  #|  }
+  #|}
+
+///|
+/// What station_version says of the station's line (tools/version.ts `said`), and what an action does.
+async fn version_tool(u : @updates.Updates, args : Json) -> Json {
+  let line = () => {
+    let v = match u.get("en").map(to_core).search_by(l => p55_jtext(l, "id") == "station") {
+      Some(i) => u.get("en").map(to_core)[i]
+      None => return Map::new()
+    }
+    let or_null = (k : String) => match p55_jfield(v, k) {
+      Null => Json::null()
+      x => x
+    }
+    let m : Map[String, Json] = {
+      "version": or_null("version"),
+      "latest": or_null("latest"),
+      "newer": p55_jfield(v, "newer"),
+      "channel": or_null("channel"),
+      "auto": or_null("auto"),
+      "autoAfter": or_null("autoAfter"),
+      "earlier": match p55_jfield(v, "earlier") {
+        Array(_) as e => e
+        _ => Json::array([])
+      },
+      "state": p55_jfield(v, "state"),
+    }
+    for k in ["progress", "message", "note"] {
+      match p55_jfield(v, k) {
+        String(t) if t != "" => m[k] = Json::string(t)
+        _ => ()
+      }
+    }
+    m
+  }
+  let started = () => {
+    let m : Map[String, Json] = { "started": Json::boolean(true) }
+    for k, x in line() {
+      m[k] = x
+    }
+    Json::object(m)
+  }
+  match p55_jfield(args, "action") {
+    String("list") => Json::object(line())
+    String("update") => {
+      u.update("station", "en")
+      started()
+    }
+    String("back") => {
+      let to = match p55_jfield(args, "to") {
+        String(t) if t != "" => t
+        _ => raise BusError("to: a version list names in earlier")
+      }
+      u.update("station", "en", to~)
+      started()
+    }
+    _ => raise BusError("action: list, update or back")
+  }
+}

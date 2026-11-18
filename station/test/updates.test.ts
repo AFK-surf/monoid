@@ -17,6 +17,7 @@ import { hearLines, type Line } from "../src/ops/log.ts";
 import { type Env, type Found, howToInstallSoon, howToUpdateSoon, findCommandSoon, ownNode, pinNpmVersion, run, runLines, Unable, kindCommand, kindPackage } from "../src/updates/runtimes.ts";
 import { hold } from "../src/updates/holds.ts";
 import { Updates, type UpdatesOptions } from "../src/updates/updates.ts";
+import { versionTools } from "../src/tools/version.ts";
 import { WINDOWS, platform as machine } from "../src/platform/index.ts";
 import { windowsUpdateScript, wingetPackage } from "../src/platform/windows.ts";
 import {
@@ -24,7 +25,7 @@ import {
 } from "../src/updates/versions.ts";
 import { setChannelIn } from "../src/updates/channel.ts";
 import { exe, launcher, script as stand_in } from "./accounts-fakes.ts";
-import { OTHER, SHA_A, SHA_B, feedOf, nextRelease, programBytes, trusted, withDeltas } from "./release-fakes.ts";
+import { OTHER, SHA_A, SHA_B, feedOf, nextRelease, programBytes, signed as signedWords, trusted, withDeltas, withEarlier } from "./release-fakes.ts";
 import { settle, testClock } from "./hub-fakes.ts";
 
 delete process.env.STILLFAIL_CONFIG;
@@ -1198,6 +1199,156 @@ describe("the station's update by a delta", { skip: WINDOWS && "install.sh is ma
         assert.equal(told, c.release.build.sha256);
         assert.ok(!c.asked.some((a) => a.endsWith(".delta")), c.asked.join());
         assert.ok(!c.lines.some((l) => l.message.startsWith("the delta not used")), "nothing to say: none was tried");
+      });
+    }
+  });
+});
+
+describe("going back to a release before the one the station runs", { skip: WINDOWS && "install.sh is macOS's and Linux's" }, () => {
+  const shInstaller = {};
+  const here = npmPlatform() ?? "darwin-arm64";
+  const archiveOf = (build: number) => Buffer.from(`the archive of ${build}`);
+  const shaOf = (b: Buffer) => createHash("sha256").update(b).digest("hex");
+  const builtAs = (build: number) => ({ sha256: shaOf(archiveOf(build)), size: archiveOf(build).length });
+  const kept = (build: number) => `station/archive/stable/${build}-${shaOf(archiveOf(build))}-${here}.tar.gz`;
+
+  /// A station on 1300 (updating by itself when `auto`), the stable feed's latest 1310 naming before it `earlier`
+  /// (default: 1300, 1290, 1280 signed by a key no station takes, 1270 with no build for this machine), each archive
+  /// under its own name (`archive`: what the cloud answers for it instead); the installer puts `to`'s BUILD in place.
+  async function backCase(t: { after: (f: () => unknown) => void; signal: AbortSignal }, o: { auto?: boolean; to?: string; earlier?: object[]; archive?: (build: number) => Said } = {}) {
+    const dir = temp();
+    const tmp = join(dir, "tmp");
+    mkdirSync(tmp);
+    const before = process.env.TMPDIR;
+    process.env.TMPDIR = tmp;
+    t.after(() => (before === undefined ? delete process.env.TMPDIR : (process.env.TMPDIR = before)));
+    const data = join(dir, "data");
+    const earlier = o.earlier ?? [feedOf(1300, builtAs(1300)), feedOf(1290, builtAs(1290)), feedOf(1280, builtAs(1280), OTHER), { ...feedOf(1270), ...signedFor(1270, "no-such-machine") }];
+    const files: Record<string, () => Said> = {};
+    for (const b of [1300, 1290, 1280, 1270]) files[kept(b)] = () => (o.archive ? o.archive(b) : { type: "application/gzip", body: archiveOf(b) });
+    const [origin, server, asked, , installer] = await cloudWithRelease("0.1.1310", (o.to ?? "0.1.1290").split(".").at(-1)!, false, withEarlier(feedOf(1310), earlier), files);
+    t.after(() => server.close());
+    const updates = installed(data, "1300", "stable\n", { origin: () => origin, env: { PATH: "/usr/bin:/bin" } }, installer);
+    t.after(() => updates.close());
+    // (on once its feed is read: on before, it would update itself to the latest as it reads it)
+    const check = async () => {
+      await updates.check();
+      if (o.auto) new ConfigFile(data).update((raw) => (raw.autoUpdate = true));
+    };
+    const lines: Line[] = [];
+    hearLines((l) => void (l.at === "updates" && lines.push(l)));
+    t.after(() => hearLines(null));
+    return { data, tmp, asked, updates, lines, check, config: () => new ConfigFile(data).raw() as Record<string, unknown> };
+  }
+  /// Release `build`'s words signed with only `platform`'s build in them.
+  const signedFor = (build: number, platform: string) => {
+    const f = feedOf(build) as any;
+    const w = JSON.parse(Buffer.from(f.release, "base64").toString("utf8"));
+    w.builds = { [platform]: w.builds[here] };
+    return signedWords(w);
+  };
+
+  test("the releases it can go back to: those its feed names before the latest that verify, older than its own, built for this machine", async (t) => {
+    const c = await backCase(t);
+    await c.check();
+    const line = station(c.updates);
+    assert.deepEqual(line.earlier, ["0.1.1290"]);
+    assert.ok(c.lines.some((l) => l.message === "releases before the latest do not verify: not offered"), c.lines.map((l) => l.message).join());
+    // None where the feed names none, nor a line of a runtime.
+    const bare = await backCase(t, { earlier: [] });
+    await bare.check();
+    assert.equal(station(bare.updates).earlier, undefined);
+    assert.ok(bare.updates.get("zh").every((l) => l.earlier === undefined));
+  });
+
+  test("gone back to: its archive downloaded and checked here, handed to the installer, updating by itself off until a release newer than the one left", shInstaller, async (t) => {
+    const c = await backCase(t, { auto: true });
+    await c.check();
+    await c.updates.update("station", "zh", "0.1.1290");
+    await until("ended", () => station(c.updates).state !== "updating", t.signal);
+    const [, saw] = readFileSync(join(c.data, "installer-saw"), "utf8").trim().split("\n");
+    assert.equal(saw!.split(" ")[1], shaOf(archiveOf(1290)), "told the signed hash of the release gone back to");
+    assert.ok(readFileSync(join(c.data, "handed")).equals(archiveOf(1290)), "handed its archive");
+    assert.ok(c.asked.includes(`/releases/${kept(1290)}`), c.asked.join());
+    assert.equal(readFileSync(join(c.data, "app", "BUILD"), "utf8").trim(), "1290");
+    assert.equal(c.config().autoUpdate, false);
+    assert.equal(c.config().autoUpdateAfter, "0.1.1300");
+    assert.deepEqual(readdirSync(c.tmp), [], "nothing left of it");
+    // The pages say so, and it does not update itself back to the release it left.
+    assert.equal(c.updates.stationWith("0.1.1300").autoAfter, "0.1.1300");
+    assert.equal(c.updates.toUpdateTo(), null);
+  });
+
+  test("station_version: what the agents see of the release, and going back by it", shInstaller, async (t) => {
+    const c = await backCase(t);
+    await c.check();
+    // (asked in English, as agents are: the release's English installer)
+    writeFileSync(join(c.data, "app", "bin", "install.en.sh"), readFileSync(join(c.data, "app", "bin", "install.zh.sh")));
+    const [tool] = versionTools(c.updates);
+    const listed = JSON.parse(await tool!.run("s", { action: "list" }));
+    assert.deepEqual(listed, { version: "0.1.1300", latest: "0.1.1310", newer: true, channel: "stable", auto: false, autoAfter: null, earlier: ["0.1.1290"], state: "idle" });
+    await assert.rejects(tool!.run("s", { action: "back" }), /to: a version list names in earlier/);
+    await assert.rejects(tool!.run("s", { action: "back", to: "0.1.1250" }), (e: Error) => e.message === tr("en", "station.updates.backUnknown", { version: "0.1.1250" }));
+    await assert.rejects(tool!.run("s", { action: "other" }), /action: list, update or back/);
+    const started = JSON.parse(await tool!.run("s", { action: "back", to: "0.1.1290" }));
+    assert.equal(started.started, true);
+    await until("ended", () => station(c.updates).state !== "updating", t.signal);
+    assert.equal(readFileSync(join(c.data, "app", "BUILD"), "utf8").trim(), "1290");
+  });
+
+  test("updating by itself, off since it went back, is on again once the latest is newer than the release it left", async (t) => {
+    const dir = temp();
+    const updates = installed(dir, "1290", "stable\n");
+    t.after(() => updates.close());
+    new ConfigFile(dir).update((raw) => {
+      raw.autoUpdate = false;
+      raw.autoUpdateAfter = "0.1.1300";
+    });
+    for (const [latest, on] of [["0.1.1300", false], ["0.1.1310", true]] as const) {
+      updates.stationWith(latest);
+      await updates.resumeAutoForTests();
+      assert.equal(updates.auto(), on, latest);
+    }
+    assert.equal((new ConfigFile(dir).raw() as Record<string, unknown>).autoUpdateAfter, undefined);
+    assert.equal(updates.toUpdateTo(), "0.1.1310");
+    // Turned on or off by someone meanwhile: what they said, and nothing kept of the release left.
+    new ConfigFile(dir).update((raw) => {
+      raw.autoUpdate = false;
+      raw.autoUpdateAfter = "0.1.1300";
+    });
+    await updates.setAuto(false, "zh").catch(() => {});
+    assert.equal((new ConfigFile(dir).raw() as Record<string, unknown>).autoUpdateAfter, undefined);
+  });
+
+  test("refused: a release its feed does not name or that does not verify, one not older, a runtime", shInstaller, async (t) => {
+    const c = await backCase(t);
+    await c.check();
+    await assert.rejects(c.updates.update("station", "zh", "0.1.1250"), (e: Error) => e.message === tr("zh", "station.updates.backUnknown", { version: "0.1.1250" }));
+    await assert.rejects(c.updates.update("station", "zh", "0.1.1280"), (e: Error) => e.message === tr("zh", "station.updates.backUnknown", { version: "0.1.1280" }), "signed by a key it does not take");
+    await assert.rejects(c.updates.update("station", "zh", "0.1.1300"), (e: Error) => e.message === tr("zh", "station.updates.backNotOlder", { version: "0.1.1300", current: "0.1.1300" }));
+    await assert.rejects(c.updates.update("station", "zh", "0.1.1270"), (e: Error) => e.message === tr("zh", "station.updates.noBuild", { version: "0.1.1270" }));
+    await assert.rejects(c.updates.update("claude", "zh", "0.1.1290"), (e: Error) => e.message === tr("zh", "station.updates.backStationOnly"));
+    assert.equal(station(c.updates).state, "idle");
+    assert.ok(!existsSync(join(c.data, "installer-ran")));
+  });
+
+  test("an archive not the one its words sign: not gone back, said why, nothing installed and updating by itself as it was", shInstaller, async (t) => {
+    for (const [name, archive] of [
+      ["another archive", () => ({ type: "application/gzip", body: Buffer.from("something else") })],
+      ["not there", () => null],
+    ] as [string, (b: number) => Said][]) {
+      await t.test(name, async (t) => {
+        const c = await backCase(t, { auto: true, archive });
+        await c.check();
+        await c.updates.update("station", "zh", "0.1.1290");
+        await until("ended", () => station(c.updates).state !== "updating", t.signal);
+        const line = station(c.updates);
+        assert.equal(line.state, "failed");
+        assert.ok(line.message?.startsWith("0.1.1290 下载失败，没有退回："), line.message);
+        assert.ok(!existsSync(join(c.data, "installer-ran")), "the installer not run (it would install the latest)");
+        assert.equal(c.config().autoUpdate, true);
+        assert.equal(c.config().autoUpdateAfter, undefined);
+        assert.deepEqual(readdirSync(c.tmp), [], "nothing left of it");
       });
     }
   });

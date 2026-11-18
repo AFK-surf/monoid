@@ -7,6 +7,10 @@
 // downloaded and applied to the installed release, and the installer is handed what it made (STILLFAIL_ARCHIVE, where it
 // takes a handed archive from) with the raw form's hash to check instead of the archive's. Anything wrong with it is a
 // line in the log, and the installer downloads the whole archive as without one.
+// Going back: the feed also carries the signed words of the releases before it (`earlier`, scripts/release-deltas.ts),
+// each verified as the feed's own is; a person (or an agent) asks for one older than the build this station runs, its
+// archive is downloaded under its own name and checked against its signed hash before the installer is handed it
+// (planBack, takeArchive), never the channel's latest in its place.
 import type { CloudFetch } from "../cloud/transport.ts";
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
@@ -183,14 +187,14 @@ function hashFile(file: string): Promise<{ sha256: string; size: number }> {
   });
 }
 
-/// Downloads the delta to `to`, refused unless it is the size and sha256 the feed says (failed on the way: OnTheWay, a
-/// TypeError or a TimeoutError).
-async function download(d: Delta, to: string, signal: AbortSignal, progress: (percent: number) => void, request: CloudFetch) {
+/// Downloads the delta (`what`: or the release's archive) to `to`, refused unless it is the size and sha256 the feed
+/// says (failed on the way: OnTheWay, a TypeError or a TimeoutError).
+async function download(d: { url: string; sha256: string; size: number }, to: string, signal: AbortSignal, progress: (percent: number) => void, request: CloudFetch, what = "delta") {
   const response = await request(d.url, { headers: UA, signal });
   if ([502, 503, 504].includes(response.status)) throw new OnTheWay(`${d.url}: ${response.status}`);
   if (!response.ok || !response.body) throw new Error(`${d.url}: ${response.status}`);
   const length = response.headers.get("content-length");
-  if (length !== null && Number(length) !== d.size) throw new Error(`the delta is ${length} bytes, the feed says ${d.size}`);
+  if (length !== null && Number(length) !== d.size) throw new Error(`the ${what} is ${length} bytes, the feed says ${d.size}`);
   const hash = createHash("sha256");
   const out = createWriteStream(to);
   let got = 0;
@@ -198,7 +202,7 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
   try {
     for await (const chunk of response.body as unknown as AsyncIterable<Uint8Array>) {
       got += chunk.length;
-      if (got > d.size) throw new Error(`the delta is more than the ${d.size} bytes the feed says`);
+      if (got > d.size) throw new Error(`the ${what} is more than the ${d.size} bytes the feed says`);
       hash.update(chunk);
       if (!out.write(chunk)) await new Promise<void>((r) => out.once("drain", () => r()));
       const percent = Math.floor((got * 100) / d.size);
@@ -207,8 +211,8 @@ async function download(d: Delta, to: string, signal: AbortSignal, progress: (pe
   } finally {
     await new Promise<void>((r, j) => out.end((e?: Error | null) => (e ? j(e) : r())));
   }
-  if (got < d.size) throw new OnTheWay(`the delta broke off at ${got} of the ${d.size} bytes the feed says`);
-  if (hash.digest("hex") !== d.sha256) throw new Error("the delta's sha256 is not the feed's");
+  if (got < d.size) throw new OnTheWay(`the ${what} broke off at ${got} of the ${d.size} bytes the feed says`);
+  if (hash.digest("hex") !== d.sha256) throw new Error(`the ${what}'s sha256 is not the feed's`);
 }
 
 /// What the installer is told beside `plan.env` once the plan's delta made the release's raw archive: where it is
@@ -250,5 +254,100 @@ export async function takeDelta(plan: Plan, o: { app: string; apply: Applier; si
     await rm(dir, { recursive: true, force: true }).catch(() => {});
     log.warn("updates", "the delta not used: the installer downloads the whole release", { from: d.from, url: d.url, why: (e as Error).message });
     return {};
+  }
+}
+
+// ---- going back ----
+
+/// The releases `said` (a feed as served) names as before it (`earlier`), each whose words verify (as verifyFeed's);
+/// `why` says, of each that does not, why. Newest first, each build once.
+export function earlierIn(said: any, trusted = trustedKeys()): { releases: Release[]; why: string[] } {
+  const releases: Release[] = [];
+  const why: string[] = [];
+  for (const e of Array.isArray(said?.earlier) ? said.earlier : []) {
+    try {
+      const r = verifyFeed(e, trusted);
+      if (!releases.some((x) => x.build === r.build)) releases.push(r);
+    } catch (err) {
+      if (!(err instanceof Unverified)) throw err;
+      why.push(err.message);
+    }
+  }
+  return { releases: releases.sort((a, b) => b.build - a.build), why };
+}
+
+/// Of `earlier`, those this station may go back to: older than the build it runs (`current`), with a build for
+/// `platform`.
+export const backTo = (earlier: readonly Release[], current: number | null, platform: string | null): Release[] =>
+  current === null || platform === null ? [] : earlier.filter((r) => r.build < current && r.builds[platform] !== undefined);
+
+/// Where a release's archive for `platform` is kept under its own name on `channel` (scripts/release-deltas.ts).
+export const archiveUrl = (base: string, channel: Channel, release: Release, platform: string) =>
+  `${base}/releases/station/archive/${channel}/${release.build}-${release.builds[platform]!.sha256}-${platform}${platform.startsWith("win32") ? ".zip" : ".tar.gz"}`;
+
+/// A plan to go back: the installer is handed the archive downloaded (takeArchive), never left to download the latest.
+export type Back = Plan & { archive: { url: string; sha256: string; size: number } };
+
+/// What going back to `to` (a version `channel`'s feed at `base` names in its `earlier`) runs. Refused in `lang`: a
+/// version it does not name (or not verified), one not older than the build this station runs, none for this machine,
+/// no installer in this release.
+export async function planBack(o: { base: string; channel: Channel; app: string; to: string; lang: Lang; trusted?: Map<string, string>; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Back> {
+  const said = await readFeed(o.channel, o.base, 15_000, o.request, o.wait);
+  const { releases, why } = earlierIn(said, o.trusted);
+  if (why.length > 0) log.warn("updates", "releases before the latest do not verify: not offered", { channel: o.channel, why });
+  const release = releases.find((r) => r.version === o.to);
+  if (release === undefined) throw new Error(tr(o.lang, "station.updates.backUnknown", { version: o.to }));
+  const version = (await stationVersionSoon(o.app)) ?? null;
+  const current = version === null ? null : Number(/^0\.\d+\.(\d+)$/.exec(version)?.[1] ?? NaN);
+  if (current === null || !Number.isSafeInteger(current) || release.build >= current) throw new Error(tr(o.lang, "station.updates.backNotOlder", { version: release.version, current: version }));
+  let build;
+  try {
+    build = expected(release, platform());
+  } catch {
+    throw new Error(tr(o.lang, "station.updates.noBuild", { version: release.version }));
+  }
+  const script = bundledInstaller(o.app, o.lang);
+  if (!(await access(script).then(() => true, () => false))) throw new Error(tr(o.lang, "station.updates.noInstaller"));
+  return {
+    release,
+    script,
+    env: {
+      STILLFAIL_ORIGIN: o.base,
+      STILLFAIL_CHANNEL: o.channel,
+      STILLFAIL_RELEASE_SHA256: build.sha256,
+      STILLFAIL_NODE_SHA256: build.nodeSha256,
+      STILLFAIL_INSTALL_LANG: o.lang,
+    },
+    delta: null,
+    archive: { url: archiveUrl(o.base, o.channel, release, platform()!), sha256: build.sha256, size: build.size },
+  };
+}
+
+/// Downloads the archive of `back` where the installer takes one it is handed (STILLFAIL_ARCHIVE), checked against
+/// its signed size and sha256: what the installer is told beside `back.env`. Throws what failed (what it left
+/// removed): without it, the installer would download the channel's latest. `signal` ends it; `progress` hears how
+/// much is in (0–100); given `wait`, a download that failed on the way is tried again after each of `FEED_AGAIN_MS`.
+export async function takeArchive(back: Back, o: { signal: AbortSignal; progress?: (percent: number) => void; request?: CloudFetch; wait?: (ms: number) => Promise<void> }): Promise<Record<string, string>> {
+  const { dir, archive } = handedArchive();
+  const file = join(dir, archive);
+  try {
+    await mkdir(dir, { mode: 0o700 });
+    for (let i = 0; ; i++) {
+      try {
+        await download(back.archive, file, o.signal, o.progress ?? (() => {}), o.request ?? fetch, "release");
+        break;
+      } catch (e) {
+        await rm(file, { force: true });
+        if (o.wait === undefined || i >= FEED_AGAIN_MS.length || o.signal.aborted || !onTheWay(e)) throw e;
+        log.warn("updates", "the release not downloaded, tried again", { url: back.archive.url, error: (e as Error).message, after: FEED_AGAIN_MS[i] });
+        // timer: a retry after a failure, with a backoff (the caller's clock).
+        await o.wait(FEED_AGAIN_MS[i]!);
+      }
+    }
+    log.info("updates", "the release to go back to downloaded", { version: back.release.version, size: back.archive.size });
+    return { STILLFAIL_ARCHIVE: file };
+  } catch (e) {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+    throw e;
   }
 }

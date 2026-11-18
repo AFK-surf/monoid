@@ -113,6 +113,17 @@ test("the station's own archives: while their channel's feed names them, as its 
   for (const k of [a("stable", 5, "f"), a("stable", 3, "h"), "beta/stillfail-station-linux-x64.tar.gz", "stillfail-station-linux-x64.tar.gz", "station-beta.json"]) assert.ok(!doomed.has(k), k);
 });
 
+test("the station's archives a station may go back to stay, by their signed words in the feed's earlier", () => {
+  const a = (build: number, s: string, p = "linux-x64") => `station/archive/beta/${build}-${sha(s)}-${p}.tar.gz`;
+  const words = (build: number, builds: Record<string, string>) =>
+    ({ release: Buffer.from(JSON.stringify({ build, builds: Object.fromEntries(Object.entries(builds).map(([p, s]) => [p, { sha256: s }])) })).toString("base64") });
+  const keys = [a(10, "a"), a(9, "b"), a(9, "b", "darwin-arm64"), a(8, "c"), a(7, "d")];
+  const feed = { ...JSON.parse(station(10, { "linux-x64": sha("a") })), earlier: [words(9, { "linux-x64": sha("b"), "darwin-arm64": sha("b") }), words(8, { "linux-x64": sha("c") }), { release: "not words" }] };
+  const doomed = new Set(doomedOf(keys, { "station-beta.json": JSON.stringify(feed) }, null, NOW));
+  for (const k of [a(10, "a"), a(9, "b"), a(9, "b", "darwin-arm64"), a(8, "c")]) assert.ok(!doomed.has(k), k);
+  assert.ok(doomed.has(a(7, "d")), "named by nothing");
+});
+
 test("staged files after two days; the web archives as before", () => {
   const keys = [`staged/${NOW - 3 * 86400}-abc/x.tar.gz`, `staged/${NOW - 3600}-def/x.tar.gz`, ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `desktop/web/stillfail-beta-web-0.1.${n}.tar.gz`)];
   const doomed = doomedOf(keys, {}, 8, NOW);

@@ -1177,6 +1177,15 @@ async function main() {
       bundledInstaller: release.bundledInstaller,
       deltaFor: release.deltaFor,
       planUpdate: (o: any) => release.planUpdate({ ...o, trusted: trustedMap(o.trusted), request: o.request === "cloud.fetch" ? worldFetch("cloud.fetch") : fetch, wait: wait(o.wait === true) }),
+      earlierIn: (said: any, t: any) => release.earlierIn(said, trustedMap(t) ?? signed.trustedKeys()),
+      backTo: release.backTo,
+      archiveUrl: release.archiveUrl,
+      planBack: (o: any) => release.planBack({ ...o, trusted: trustedMap(o.trusted), request: o.request === "cloud.fetch" ? worldFetch("cloud.fetch") : fetch, wait: wait(o.wait === true) }),
+      takeArchive: (back: any, o: any) => {
+        const ac = new AbortController();
+        if (o.aborted) ac.abort(new DOMException("timed out", "TimeoutError"));
+        return release.takeArchive(back, { signal: ac.signal, progress: (p: number) => void W("takeArchive.progress", [p]), request: o.request === "cloud.fetch" ? worldFetch("cloud.fetch") : fetch, wait: wait(o.wait === true) });
+      },
       takeDelta: (plan: any, o: any) => {
         const ac = new AbortController();
         if (o.aborted) ac.abort(new DOMException("timed out", "TimeoutError"));
@@ -1820,6 +1829,69 @@ function cases(o: { deltaScripts: any; signedKeys: typeof KEYS }): Case[] {
     },
   });
 
+  // Going back: the feed's earlier releases, verified; the plan; the archive taken.
+  const archive4 = Buffer.from("the archive of build 4, as it was put");
+  const built4 = { sha256: shaHex(archive4), size: archive4.length };
+  const withEarlier = (feed: any, earlier: any[]) => ({ ...feed, earlier: earlier.map((f) => ({ version: f.version, release: f.release, signature: f.signature, key: f.key })) });
+  const earlier = [
+    feedOf(9), feedOf(4, built4), feedOf(7, {}, OTHER), { ...feedOf(6), ...signedBy({ ...words(6), builds: { "linux-x64": { sha256: SHA_A, size: 1, nodeSha256: SHA_B } } }) },
+    feedOf(4), { version: "0.1.3", release: 1, signature: "x", key: "k" }, feedOf(8),
+  ];
+  const backWorld = () => {
+    const w = planWorld();
+    w.vfs.dir("/tmp");
+    w.route("https://back/releases/station.json", { body: JSON.stringify(withEarlier(feedOf(10), earlier)) });
+    w.route("https://bare/releases/station.json", { body: JSON.stringify(feedOf(10)) });
+    let broken = 0;
+    const kept = `https://back/releases/station/archive/stable/4-${built4.sha256}-${PLATFORM}.tar.gz`;
+    w.route(kept, { headers: { "content-length": String(archive4.length) }, chunks: [archive4.subarray(0, 10), archive4.subarray(10)] });
+    w.route("https://back/releases/long.tar.gz", { headers: { "content-length": "3" }, body: archive4 });
+    w.route("https://back/releases/sum.tar.gz", { body: Buffer.concat([archive4.subarray(0, -1), Buffer.from("x")]) });
+    w.route("https://back/releases/busy.tar.gz", { status: 503, body: "" });
+    w.route("https://back/releases/broke.tar.gz", () => (++broken <= 1 ? { chunks: [archive4.subarray(0, 5)] } : { body: archive4 }));
+    return w;
+  };
+  out.push({
+    name: "release: going back, the releases before the latest verified, the plan, the archive",
+    world: backWorld,
+    run: async (s, step) => {
+      const feed = withEarlier(feedOf(10), earlier);
+      for (const [said, t] of [[feed, TRUSTED], [feed, null], [feedOf(10), TRUSTED], [{ earlier: "x" }, TRUSTED], [{ earlier: [null, 1] }, TRUSTED]] as const) {
+        await step("earlierIn", () => s.fn("earlierIn", said, t));
+      }
+      const verified = [words(9), words(8), words(6), { ...words(4), builds: { [PLATFORM]: { sha256: SHA_A, size: 1000, nodeSha256: SHA_B } } }];
+      for (const [cur, p] of [[9, PLATFORM], [10, PLATFORM], [4, PLATFORM], [9, null], [null, PLATFORM], [9, "linux-x64"]] as const) {
+        await step("backTo", () => s.fn("backTo", verified, cur, p));
+      }
+      await step("archiveUrl", () => s.fn("archiveUrl", "https://o", "beta", words(4), PLATFORM));
+      await step("archiveUrl on Windows", () => s.fn("archiveUrl", "https://o", "stable", { ...words(4), builds: { "win32-x64": { sha256: SHA_B } } }, "win32-x64"));
+      const plan = (o: any) => s.fn("planBack", { base: "https://back", channel: "stable", app: "/app9", to: "0.1.4", lang: "zh", trusted: TRUSTED, request: "fetch", ...o });
+      await step("planned", () => plan({}));
+      await step("not named", () => plan({ to: "0.1.5", lang: "en" }));
+      await step("not verified", () => plan({ to: "0.1.7" }));
+      await step("not older", () => plan({ to: "0.1.9" }));
+      await step("not older, in English", () => plan({ app: "/app5", to: "0.1.8", lang: "en" }));
+      await step("no build here", () => plan({ to: "0.1.6" }));
+      await step("no installer", () => plan({ app: "/noinst" }));
+      await step("no version of its own", () => plan({ app: "/nobuild" }));
+      await step("a feed naming none", () => plan({ base: "https://bare" }));
+      await step("by the cloud", () => plan({ request: "cloud.fetch" }));
+      const backOf = (url: string, sha = built4.sha256, size = built4.size) => ({
+        release: words(4, built4), script: "/app9/bin/install.zh.sh", env: { STILLFAIL_ORIGIN: "https://back" }, delta: null,
+        archive: { url, sha256: sha, size },
+      });
+      const take = (back: any, o: any = {}) => s.fn("takeArchive", back, { request: "fetch", ...o });
+      await step("taken", () => take(backOf(`https://back/releases/station/archive/stable/4-${built4.sha256}-${PLATFORM}.tar.gz`)));
+      await step("its length not its words'", () => take(backOf("https://back/releases/long.tar.gz")));
+      await step("its sha256 not its words'", () => take(backOf("https://back/releases/sum.tar.gz")));
+      await step("busy, no wait", () => take(backOf("https://back/releases/busy.tar.gz")));
+      await step("not there", () => take(backOf("https://back/releases/gone.tar.gz")));
+      const again = await s.begin("takeArchive", backOf("https://back/releases/broke.tar.gz"), { request: "fetch", wait: true });
+      await step("broke off, tried again", async () => s.advance(1000));
+      await step("taken at last", () => again());
+    },
+  });
+
   // ---- runtimes.ts ----
   const runtimeWorld = () => {
     const w = new World();
@@ -2274,6 +2346,49 @@ function cases(o: { deltaScripts: any; signedKeys: typeof KEYS }): Case[] {
       w.is("platform.startInstaller", false);
       await step("not started", () => s.call("update", "station", "en"), true);
       await pages(s, step, "not started");
+      await step("closed", () => s.call("close"));
+    },
+  });
+  out.push({
+    name: "updates: gone back to a release before, updating by itself held until a newer one",
+    world: () => {
+      const w = stationWorld({ feed: withEarlier(feedOf(6), [feedOf(5), feedOf(4, built4), feedOf(3, {}, OTHER)]) });
+      w.route(`https://o/releases/station/archive/stable/4-${built4.sha256}-${PLATFORM}.tar.gz`, { headers: { "content-length": String(archive4.length) }, chunks: [archive4.subarray(0, 10), archive4.subarray(10)] });
+      return w;
+    },
+    run: async (s, step, w) => {
+      await step("made", () => s.updates(OPTS), true);
+      await step("read", () => s.call("check"), true);
+      await pages(s, step, "what it can go back to");
+      await step("refused: not named", () => s.call("update", "station", "zh", "0.1.3"));
+      await step("refused: not older", () => s.call("update", "station", "en", "0.1.5"));
+      await step("refused: a runtime", () => s.call("update", "claude", "zh", "0.1.4"));
+      await step("updating by itself on", () => s.call("setAuto", true, "zh"), true);
+      await step("asked", () => s.call("update", "station", "en", "0.1.4"), true);
+      await pages(s, step, "gone back");
+      for (const m of ["auto", "autoAfter", "toUpdateTo", "tried"]) await step(m, () => s.call(m));
+      await followSteps(s, step, w, "0", "4\n");
+      await step("as if 0.1.5 were out", () => s.call("stationWith", "0.1.5", "zh"));
+      await step("not past the release left", () => s.call("resumeAutoForTests"), true);
+      await step("as if 0.1.7 were out", () => s.call("stationWith", "0.1.7", "zh"));
+      await step("past it", () => s.call("resumeAutoForTests"), true);
+      for (const m of ["auto", "autoAfter", "toUpdateTo"]) await step(m, () => s.call(m));
+      await step("closed", () => s.call("close"));
+    },
+  });
+  out.push({
+    name: "updates: going back, its archive not the one signed",
+    world: () => {
+      const w = stationWorld({ feed: withEarlier(feedOf(6), [feedOf(4, built4)]) });
+      w.route(`https://o/releases/station/archive/stable/4-${built4.sha256}-${PLATFORM}.tar.gz`, { body: Buffer.from("something else entirely") });
+      return w;
+    },
+    run: async (s, step) => {
+      await step("made", () => s.updates({ ...OPTS, config: { autoUpdate: false } }), true);
+      await step("read", () => s.call("check"), true);
+      await step("asked", () => s.call("update", "station", "zh", "0.1.4"), true);
+      await pages(s, step, "not gone back");
+      await step("set to update itself, nothing kept of before", () => s.call("setAuto", false, "en"), true);
       await step("closed", () => s.call("close"));
     },
   });

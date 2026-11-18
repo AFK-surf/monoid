@@ -55,7 +55,8 @@ import type { RuntimeKind } from "../agents/runtime.ts";
 import { platform as machine } from "../platform/index.ts";
 import { holding, onLetGo } from "./holds.ts";
 import { AGY_MANIFESTS, watchAgyDownload } from "./agy-download.ts";
-import { applyApart, planUpdate, readFeed, takeDelta, verifiedOrNull, type Plan } from "./release.ts";
+import { type Back, applyApart, backTo, earlierIn, planBack, planUpdate, readFeed, takeArchive, takeDelta, verifiedOrNull, type Plan } from "./release.ts";
+import type { Release } from "./signed.ts";
 import { SDK_PACKAGE, sdkPrefix, sdkVersionSoon } from "../agents/cursor.ts";
 import { canSwitchCodexSoon, captureCodexSoon, codexBinarySoon, hasCodexHostSoon, missingCodexHost, restoreCodex, switchCodex, type CodexEntry } from "./codex-repair.ts";
 import {
@@ -77,8 +78,13 @@ export type SoftwareVersion = {
   latest?: string;
   newer: boolean;
   downgrade: boolean;
+  /// The station's: the releases it can go back to (older than the one it runs, which its channel's feed names as
+  /// before its latest), newest first.
+  earlier?: string[];
   channel?: string;
   auto?: boolean;
+  /// The station's, updating by itself turned off as it went back: the release it left, past which it turns on again.
+  autoAfter?: string;
   updatable: boolean;
   repairable?: boolean;
   note?: string;
@@ -176,9 +182,11 @@ type Item = {
   failed: Words | null;
   /// The station's: the channel whose latest `latest` is.
   channel: Channel | null;
+  /// The station's: the releases before the latest its feed names, verified (release.ts earlierIn).
+  earlier: Release[];
 };
 
-const empty = (): Item => ({ installed: false, version: null, latest: null, how: null, repairable: false, note: null, updating: null, progress: null, step: null, percent: null, done: null, failed: null, channel: null });
+const empty = (): Item => ({ installed: false, version: null, latest: null, how: null, repairable: false, note: null, updating: null, progress: null, step: null, percent: null, done: null, failed: null, channel: null, earlier: [] });
 
 /// What the station's update started from the pages leaves in <data>/run/update.started, for whichever process runs
 /// the station when it ends.
@@ -191,6 +199,12 @@ export const startInstaller = (script: string, runDir: string, env: Record<strin
   machine.startInstaller(script, runDir, env, app);
 
 const UA = { "user-agent": "stillfail-station" };
+
+/// The build of a station's version (0.<m>.<n>: n), when it is one.
+const buildOf = (version: string | null | undefined): number | null => {
+  const n = Number(/^0\.\d+\.(\d+)$/.exec(version ?? "")?.[1] ?? NaN);
+  return Number.isSafeInteger(n) ? n : null;
+};
 
 async function fetchJson(url: string, ms = 15_000): Promise<any> {
   const response = await fetch(url, { headers: UA, signal: AbortSignal.timeout(ms) });
@@ -357,6 +371,13 @@ export class Updates {
     return this.config.raw()?.autoUpdate === true;
   }
 
+  /// The release the station went back from while it updated itself (`autoUpdateAfter`): updating by itself is off
+  /// until a newer one than it is out, then on again (resumeAuto). Only while it is off.
+  autoAfter(): string | null {
+    const after = this.config.raw()?.autoUpdateAfter;
+    return !this.auto() && typeof after === "string" && buildOf(after) !== null ? after : null;
+  }
+
   // ---- the life of the part ----
 
   /// Reads them at once and every few hours after (every ten minutes while the station updates itself); an update of
@@ -394,7 +415,7 @@ export class Updates {
   }
 
   private setting() {
-    return `${this.channel()} ${this.auto()}`;
+    return `${this.channel()} ${this.auto()} ${this.autoAfter()}`;
   }
 
   private spawn(f: () => Promise<unknown>) {
@@ -471,8 +492,10 @@ export class Updates {
         latest: latest ?? undefined,
         newer: isNewer,
         downgrade,
+        earlier: here && station ? this.earlier() : undefined,
         channel: here ? channel : undefined,
         auto: here ? this.auto() : undefined,
+        autoAfter: here ? (this.autoAfter() ?? undefined) : undefined,
         updatable: item.how !== null || here,
         repairable: item.repairable || undefined,
         note: item.note ? say(item.note, lang) : undefined,
@@ -483,10 +506,18 @@ export class Updates {
         message: item.failed ? say(item.failed, lang) : undefined,
         checkedAt: this.checkedAt ?? undefined,
       };
+      if (line.earlier?.length === 0) delete line.earlier;
       for (const k of Object.keys(line) as (keyof SoftwareVersion)[]) if (line[k] === undefined) delete line[k];
       return line;
     });
     return own;
+  }
+
+  /// The releases the station can go back to now (release.ts backTo), as read from the channel it is on.
+  private earlier(): string[] {
+    const item = this.items.station;
+    if (item.channel !== this.channel()) return [];
+    return backTo(item.earlier, buildOf(item.version), platform()).map((r) => r.version);
   }
 
   /// Reads every version and what is out, now (once at a time: asked while a reading goes on, it is that reading);
@@ -514,6 +545,7 @@ export class Updates {
     this.checkedAt = this.fibers.now();
     this.lastCheck = this.fibers.now();
     this.changed();
+    await this.resumeAuto();
     this.autoUpdate("a newer release out");
     this.schedule();
   }
@@ -528,17 +560,22 @@ export class Updates {
     const origin = this.origin() || null;
     if (note === null && origin === null) note = { key: "station.updates.notJoined" };
     let latest: string | null = null;
+    let earlier: Release[] = [];
     if (origin !== null) {
       try {
+        const said = await readFeed(channel, origin, 15_000, this.cloudRequest);
         // Only a release whose words verify is one (none is newer than a feed that does not).
-        const { release, why } = verifiedOrNull(await readFeed(channel, origin, 15_000, this.cloudRequest), this.trusted);
+        const { release, why } = verifiedOrNull(said, this.trusted);
         if (release === null) log.warn("updates", "the station's latest release does not verify: not offered", { channel, why });
         latest = release?.version ?? null;
+        const before = earlierIn(said, this.trusted);
+        if (before.why.length > 0) log.warn("updates", "releases before the latest do not verify: not offered", { channel, why: before.why });
+        earlier = before.releases;
       } catch (e) {
         log.warn("updates", "the station's latest release not read", { error: (e as Error).message });
       }
     }
-    return { ...empty(), installed: true, version, latest, note, channel };
+    return { ...empty(), installed: true, version, latest, note, channel, earlier };
   }
 
   private async readRuntime(kind: Kind): Promise<Item> {
@@ -605,9 +642,10 @@ export class Updates {
   /// read at once, and a newer release installed.
   async setAuto(on: boolean, lang: Lang = stationLang()) {
     this.refuseStationNote(lang);
-    if (this.auto() !== on) {
+    if (this.auto() !== on || this.config.raw()?.autoUpdateAfter !== undefined) {
       await this.config.updateSoon((raw) => {
         raw.autoUpdate = on;
+        delete raw.autoUpdateAfter;
       });
       this.lastSetting = this.setting();
       log.info("updates", "the station's updating by itself set", { on });
@@ -677,6 +715,23 @@ export class Updates {
     return isNewer && (this.tried !== item.latest || this.retryDue === item.latest) ? item.latest : null;
   }
 
+  /// Updating by itself, turned off as the station went back (backStation), on again once its channel's latest is
+  /// newer than the release it left.
+  private async resumeAuto() {
+    const after = this.autoAfter();
+    const item = this.items.station;
+    if (after === null || item.channel !== this.channel() || item.latest === null) return;
+    const [latest, left] = [buildOf(item.latest), buildOf(after)];
+    if (latest === null || left === null || latest <= left) return;
+    await this.config.updateSoon((raw) => {
+      raw.autoUpdate = true;
+      delete raw.autoUpdateAfter;
+    });
+    this.lastSetting = this.setting();
+    log.info("updates", "a release newer than the one gone back from is out: the station updates itself again", { left: after, latest: item.latest });
+    this.changed();
+  }
+
   private autoUpdate(why: string) {
     const to = this.toUpdateTo();
     if (to === null) return;
@@ -715,10 +770,11 @@ export class Updates {
 
   /// Updates one (`station`, `claude`, `codex`, `dsh`), or installs a runtime the machine has not: answers once it has
   /// started; how it goes shows in `get`. Refusals are said in `lang`.
-  async update(id: string, lang: Lang = stationLang()): Promise<void> {
+  async update(id: string, lang: Lang = stationLang(), to?: string): Promise<void> {
     if (this.closed) throw new Error("updates are closed");
     const kind = KINDS.find((k) => k === id);
     if (kind === undefined) throw refused(lang, "station.updates.noSuchItem", { id });
+    if (to !== undefined && kind !== "station") throw refused(lang, "station.updates.backStationOnly");
     const item = this.items[kind];
     const name = kindName(kind);
     if (item.updating !== null) throw refused(lang, "station.updates.alreadyUpdating", { name });
@@ -726,7 +782,7 @@ export class Updates {
     if (kind === "station") {
       const runtime = this.runtimeUpdating();
       if (runtime !== null) throw refused(lang, "station.updates.runtimeBusy", { name: kindName(runtime) });
-      return this.updateStation(lang);
+      return to === undefined ? this.updateStation(lang) : this.backStation(to, lang);
     }
     if (this.items.station.updating !== null) throw refused(lang, item.installed ? "station.updates.stationBusyUpdate" : "station.updates.stationBusyInstall", { name });
     const how = item.how;
@@ -1176,6 +1232,87 @@ export class Updates {
     });
   }
 
+  /// Puts the station back to `to`, a release older than the one it runs that its channel's feed names (`earlier`):
+  /// answered once that is planned; its archive is downloaded and checked here (shown as the installer's download),
+  /// then the installer is handed it. Updating by itself, when on, is turned off for it, with the release left kept
+  /// (`autoUpdateAfter`): the release gone back to, from before this, knows only that it is off; one that knows it
+  /// turns it on again once a newer release than the one left is out (resumeAuto).
+  private async backStation(to: string, lang: Lang): Promise<void> {
+    const origin = this.origin() || null;
+    if (origin === null) throw refused(lang, "station.updates.notJoined");
+    const runDir = join(this.data, "run");
+    const station = this.items.station;
+    // Taken now, so another ask meanwhile finds it updating.
+    const before = { updating: station.updating, failed: station.failed, done: station.done };
+    station.updating = this.fibers.now();
+    let plan: Back;
+    try {
+      await mkdir(runDir, { recursive: true });
+      await Promise.all(["update.exit", "update.step"].map((f) => rm(join(runDir, f), { force: true })));
+      plan = await planBack({ base: origin, channel: this.channel(), app: this.app, to, lang, trusted: this.trusted, request: this.cloudRequest });
+    } catch (e) {
+      Object.assign(station, before);
+      throw e;
+    }
+    this.set("station", (i) => {
+      i.step = "download";
+      i.percent = 0;
+      i.failed = null;
+      i.done = null;
+    });
+    this.spawn(async () => {
+      let handed: Record<string, string>;
+      try {
+        handed = await this.archiveFor(plan);
+      } catch (e) {
+        log.warn("updates", "the release to go back to not downloaded", { to: plan.release.version, error: (e as Error).message });
+        this.set("station", (i) => Object.assign(i, { updating: null, step: null, percent: null, done: null, failed: { key: "station.updates.backNotDownloaded", args: { version: plan.release.version, why: (e as Error).message } } }));
+        return;
+      }
+      const left = this.items.station.version;
+      const wasAuto = this.auto();
+      if (wasAuto && left !== null) await this.holdAuto(left);
+      if (await this.startPlanned(plan, handed)) return;
+      if (wasAuto && left !== null) {
+        await this.config.updateSoon((raw) => {
+          raw.autoUpdate = true;
+          delete raw.autoUpdateAfter;
+        });
+        this.lastSetting = this.setting();
+      }
+      log.warn("updates", "the station's installer not started");
+      this.set("station", (i) => Object.assign(i, { updating: null, step: null, percent: null, done: null, failed: { key: "station.updates.couldNotStart" } }));
+    });
+  }
+
+  /// Updating by itself turned off as the station goes back from `left`, kept to be turned on again past it.
+  private async holdAuto(left: string) {
+    await this.config.updateSoon((raw) => {
+      raw.autoUpdate = false;
+      raw.autoUpdateAfter = left;
+    });
+    this.lastSetting = this.setting();
+    log.info("updates", "the station goes back: updating by itself off until a newer release is out", { left });
+    this.changed();
+  }
+
+  /// The archive of the release `back` goes back to, downloaded (release.ts takeArchive) within the delta's deadline.
+  private async archiveFor(back: Back): Promise<Record<string, string>> {
+    const over = new AbortController();
+    // timer: a deadline of an outside request (the release's download).
+    const cancel = this.fibers.after(this.timing.deltaLimit, () => over.abort(new DOMException("timed out", "TimeoutError")));
+    try {
+      return await takeArchive(back, {
+        request: this.cloudRequest,
+        signal: over.signal,
+        progress: (percent) => this.set("station", (i) => (i.percent = percent)),
+        wait: (ms) => this.fibers.sleep(ms),
+      });
+    } finally {
+      cancel();
+    }
+  }
+
   /// What the installer is told of the release the plan's delta made (release.ts takeDelta), applied apart from the
   /// station; nothing when it was not made.
   private async fromDelta(plan: Plan): Promise<Record<string, string>> {
@@ -1427,6 +1564,11 @@ export class Updates {
     item.latest = latest;
     item.channel = this.channel();
     return this.get(lang)[0]!;
+  }
+
+  /// Updating by itself turned on again if the latest read is past the release gone back from (tests: resumeAuto).
+  resumeAutoForTests(): Promise<void> {
+    return this.resumeAuto();
   }
 
   /// Sets a line's state by hand (tests).

@@ -17,19 +17,20 @@ import { stationTools } from "./station-tools.ts";
 /// The factories the list (test/station-tools.ts `stationTools`) is made of, by the names their callers call them by.
 const FACTORIES = [
   "chatTools", "archiveTools", "remoteTools", "workspaceSizeTools", "jobTools", "screenTools", "permissionTools", "computerTools", "forwardTools", "relayTools",
-  "phoneTools", "adbTools", "browserTools", "deviceTools", "feedbackTools", "feishuTools", "loginTools", "retireTools", "rigTools", "searchTools", "vaultTools", "moveTools",
+  "phoneTools", "adbTools", "browserTools", "deviceTools", "feedbackTools", "feishuTools", "loginTools", "retireTools", "rigTools", "searchTools", "vaultTools", "moveTools", "versionTools",
 ];
 /// How many times the parts give tools (`parts.tools(`, anywhere in src/): one a factory above but adb's, which also
 /// gives phone_send by itself.
-const PARTS_GIVE = 13;
+const PARTS_GIVE = 14;
 
 // The ceilings, in bytes: what the list weighed once it was slimmed (2026-11-14: 60,925 in all, from 80,230; the core
 // ones 13,951, from 22,140; chat_post the heaviest at 4,705, from 8,125), each rounded up to the next thousand. The
 // whole list's is 63,000 and not 61,000 for station_retire (1,827), which came the same day (#6084): 62,752 with it;
 // 64,000 for station_move, the migration's face that replaces station_retire's use (the owner, 2026-11-14), until
-// station_retire goes.
+// station_retire goes; 65,000 for station_version (445), the agents' way to put their station back to an earlier
+// release when the latest broke something (2026-11-18), which no tool did before.
 // TOOLS_WEIGHT_TABLE=1 prints every tool's.
-const TOTAL = 64_000;
+const TOTAL = 65_000;
 const CORE_TOTAL = 14_000;
 const HEAVIEST = 5_000;
 // One tool's input schema, as compact JSON. Not a rounding: Codex 0.169.0 strips every description from an MCP tool's

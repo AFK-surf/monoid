@@ -22,8 +22,10 @@ pub fn software_version(
   latest : String?,
   newer : Bool,
   downgrade : Bool,
+  earlier : Array[String],
   channel : String?,
   auto : Bool?,
+  auto_after : String?,
   updatable : Bool,
   repairable : Bool,
   note : String?,
@@ -43,11 +45,15 @@ pub fn software_version(
   opt("latest", latest)
   fs.push(("newer", jb(newer)))
   fs.push(("downgrade", jb(downgrade)))
+  if earlier.length() > 0 {
+    fs.push(("earlier", jstrs(earlier)))
+  }
   opt("channel", channel)
   match auto {
     Some(a) => fs.push(("auto", jb(a)))
     None => ()
   }
+  opt("autoAfter", auto_after)
   fs.push(("updatable", jb(updatable)))
   if repairable {
     fs.push(("repairable", jb(true)))
@@ -148,7 +154,19 @@ pub fn Config::tell(self : Config) -> Unit {
 
 ///|
 pub async fn Config::update_soon(self : Config, w : World, k : String, v : J) -> Unit {
-  let next = set(self.raw, k, v)
+  self.edit_soon(w, [(k, Some(v))])
+}
+
+///|
+/// Several keys set (`Some`) or deleted (`None`) in one edit, in order.
+pub async fn Config::edit_soon(self : Config, w : World, edits : Array[(String, J?)]) -> Unit {
+  let mut next = self.raw
+  for e in edits {
+    next = match e.1 {
+      Some(v) => set(next, e.0, v)
+      None => del(next, e.0)
+    }
+  }
   self.raw = next
   self.tell()
   ignore(w.call("config.updateSoon", [next]))
@@ -202,6 +220,8 @@ priv struct Item {
   mut failed : Words?
   /// The station's: the channel whose latest `latest` is.
   mut channel : String?
+  /// The station's: the releases before the latest its feed names, verified (earlier_in).
+  mut earlier : Array[J]
 }
 
 ///|
@@ -220,6 +240,7 @@ fn empty() -> Item {
     done: None,
     failed: None,
     channel: None,
+    earlier: [],
   }
 }
 
@@ -244,6 +265,7 @@ fn Item::assign(self : Item, from : Item) -> Unit {
   self.done = from.done
   self.failed = from.failed
   self.channel = from.channel
+  self.earlier = from.earlier
 }
 
 ///|
@@ -517,6 +539,47 @@ pub fn Updates::auto(self : Updates) -> Bool {
   get(Some(self.config.raw), "autoUpdate") is Some(Bool(true))
 }
 
+///|
+/// `autoAfter`: the release the station went back from while it updated itself (`autoUpdateAfter`): updating by
+/// itself is off until a newer one than it is out, then on again (resume_auto). Only while it is off.
+pub fn Updates::auto_after(self : Updates) -> String? {
+  match get(Some(self.config.raw), "autoUpdateAfter") {
+    Some(Str(u)) if !self.auto() && build_or_none(Some(@jsjson.text(u))) is Some(_) => Some(@jsjson.text(u))
+    _ => None
+  }
+}
+
+///|
+/// The build of a station's version (0.<m>.<n>: n), when it is one.
+fn build_or_none(version : String?) -> Double? {
+  match version {
+    Some(v) => {
+      let ps = split(v, ".")
+      if ps.length() == 3 && ps[0] == "0" && all_digits(ps[1]) && all_digits(ps[2]) {
+        let n = decimal(ps[2])
+        if is_safe_integer(Some(Num(n))) {
+          Some(n)
+        } else {
+          None
+        }
+      } else {
+        None
+      }
+    }
+    None => None
+  }
+}
+
+///|
+/// The releases the station can go back to now (back_to), as read from the channel it is on.
+fn Updates::earlier(self : Updates) -> Array[String] {
+  let item = self.item("station")
+  if item.channel != Some(self.channel()) {
+    return []
+  }
+  back_to(item.earlier, build_or_none(item.version), platform()).map(release_version)
+}
+
 // ---- the life of the part ----
 
 ///|
@@ -573,7 +636,11 @@ pub async fn Updates::close(self : Updates) -> Unit {
 
 ///|
 fn Updates::setting(self : Updates) -> String {
-  "\{self.channel()} \{self.auto()}"
+  let after = match self.auto_after() {
+    Some(a) => a
+    None => "null"
+  }
+  "\{self.channel()} \{self.auto()} \{after}"
 }
 
 ///|
@@ -696,8 +763,10 @@ pub fn Updates::get(self : Updates, lang : String) -> Array[J] {
       latest,
       is_newer,
       downgrade,
+      if here && station { self.earlier() } else { [] },
       if here { Some(channel) } else { None },
       if here { Some(self.auto()) } else { None },
+      if here { self.auto_after() } else { None },
       item.how is Some(_) || here,
       item.repairable,
       item.note.map(n => say(n, lang)),
@@ -786,6 +855,7 @@ async fn Updates::read(self : Updates, with_station : Bool) -> Unit {
   self.checked_at = Some(self.fibers.now())
   self.last_check = Some(self.fibers.now())
   self.changed()
+  self.resume_auto()
   self.auto_update("a newer release out")
   self.schedule()
 }
@@ -810,11 +880,13 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
     note = Some(Key("station.updates.notJoined", None))
   }
   let mut latest : String? = None
+  let mut earlier : Array[J] = []
   match origin {
     Some(o) =>
       (try {
+        let said = read_feed(w, channel, o, self.cloud_request())
         // Only a release whose words verify is one.
-        let (release, why) = verified_or_null(w, read_feed(w, channel, o, self.cloud_request()), self.trusted)
+        let (release, why) = verified_or_null(w, said, self.trusted)
         if release is None {
           w.warn(
             "updates",
@@ -823,6 +895,15 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
           )
         }
         latest = release.map(release_version)
+        let (before, why_before) = earlier_in(w, said, self.trusted)
+        if why_before.length() > 0 {
+          w.warn(
+            "updates",
+            "releases before the latest do not verify: not offered",
+            fields=jo([("channel", js(channel)), ("why", jstrs(why_before))]),
+          )
+        }
+        earlier = before
       } catch {
         e =>
           w.warn("updates", "the station's latest release not read", fields=jo([("error", js(message_of(e)))]))
@@ -835,6 +916,7 @@ async fn Updates::read_station(self : Updates, channel : String) -> Item {
   i.latest = latest
   i.note = note
   i.channel = Some(channel)
+  i.earlier = earlier
   i
 }
 
@@ -1041,8 +1123,8 @@ async fn Updates::read_cursor(self : Updates) -> Item {
 /// Turns updating by itself on or off: kept in its config; turned on, what is out is read at once.
 pub async fn Updates::set_auto(self : Updates, on : Bool, lang : String) -> Unit {
   self.refuse_station_note(lang)
-  if self.auto() != on {
-    self.config.update_soon(self.w, "autoUpdate", jb(on))
+  if self.auto() != on || get(Some(self.config.raw), "autoUpdateAfter") is Some(_) {
+    self.config.edit_soon(self.w, [("autoUpdate", Some(jb(on))), ("autoUpdateAfter", None)])
     self.last_setting = self.setting()
     self.w.info("updates", "the station's updating by itself set", fields=jo([("on", jb(on))]))
     self.changed()
@@ -1149,6 +1231,31 @@ pub fn Updates::to_update_to(self : Updates) -> String? {
 }
 
 ///|
+async fn Updates::resume_auto(self : Updates) -> Unit {
+  guard self.auto_after() is Some(after) else { return }
+  let item = self.item("station")
+  guard item.channel == Some(self.channel()) && item.latest is Some(latest) else { return }
+  match (build_or_none(Some(latest)), build_or_none(Some(after))) {
+    (Some(l), Some(left)) if l > left => ()
+    _ => return
+  }
+  self.config.edit_soon(self.w, [("autoUpdate", Some(jb(true))), ("autoUpdateAfter", None)])
+  self.last_setting = self.setting()
+  self.w.info(
+    "updates",
+    "a release newer than the one gone back from is out: the station updates itself again",
+    fields=jo([("left", js(after)), ("latest", js(latest))]),
+  )
+  self.changed()
+}
+
+///|
+/// Updating by itself turned on again if the latest read is past the release gone back from (tests).
+pub async fn Updates::resume_auto_for_tests(self : Updates) -> Unit {
+  self.resume_auto()
+}
+
+///|
 fn Updates::auto_update(self : Updates, why : String) -> Unit {
   guard self.to_update_to() is Some(to) else { return }
   self.w.info("updates", "\{why}: the station updates itself", fields=jo([("to", js(to))]))
@@ -1231,11 +1338,14 @@ fn Updates::retry_station(self : Updates, version : String) -> Unit {
 ///|
 /// Updates one (`station`, `claude`, `codex`, `dsh`…), or installs a runtime the machine has not: answers once it has
 /// started; how it goes shows in `get`. Refusals are said in `lang`.
-pub async fn Updates::update(self : Updates, id : String, lang : String) -> Unit {
+pub async fn Updates::update(self : Updates, id : String, lang : String, to? : String) -> Unit {
   if self.closed {
     raise fail("updates are closed")
   }
   guard kinds.contains(id) else { raise refused(lang, "station.updates.noSuchItem", args=[("id", js(id))]) }
+  if to is Some(_) && id != "station" {
+    raise refused(lang, "station.updates.backStationOnly")
+  }
   let kind = id
   let item = self.item(kind)
   let name = kind_name(kind)
@@ -1253,7 +1363,10 @@ pub async fn Updates::update(self : Updates, id : String, lang : String) -> Unit
       None => ()
     }
     let begun = self.update_station_begin(lang)
-    return self.update_station_rest(lang, begun)
+    return match to {
+      None => self.update_station_rest(lang, begun)
+      Some(to) => self.back_station(to, lang, begun)
+    }
   }
   if self.item("station").updating is Some(_) {
     raise refused(
@@ -2070,6 +2183,121 @@ async fn Updates::update_station_rest(self : Updates, lang : String, begun : Beg
       i.failed = Some(Key("station.updates.couldNotStart", None))
     })
   })
+}
+
+///|
+/// Puts the station back to `to`, a release older than the one it runs that its channel's feed names (`earlier`):
+/// answered once that is planned; its archive is downloaded and checked here, then the installer is handed it.
+/// Updating by itself, when on, is turned off for it, with the release left kept (`autoUpdateAfter`).
+async fn Updates::back_station(self : Updates, to : String, lang : String, begun : Begun) -> Unit {
+  let w = self.w
+  let run_dir = pjoin([self.data, "run"])
+  let station = self.item("station")
+  let put_back = () => {
+    station.updating = begun.before.0
+    station.failed = begun.before.1
+    station.done = begun.before.2
+  }
+  let plan = {
+    errdefer put_back()
+    w.mkdir(run_dir, opts=jo([("recursive", jb(true))]))
+    ignore(
+      @effect.all([
+        async fn() { w.rm(pjoin([run_dir, "update.exit"])) },
+        async fn() { w.rm(pjoin([run_dir, "update.step"])) },
+      ]),
+    )
+    plan_back(w, begun.origin, self.channel(), self.app, to, lang, self.trusted, self.cloud_request())
+  }
+  self.set("station", i => {
+    i.step = Some("download")
+    i.percent = Some(0)
+    i.failed = None
+    i.done = None
+  })
+  self.spawn(async fn() {
+    let handed = self.archive_for(plan) catch {
+      e => {
+        w.warn(
+          "updates",
+          "the release to go back to not downloaded",
+          fields=jo([("to", js(release_version(plan.release))), ("error", js(message_of(e)))]),
+        )
+        self.set("station", i => {
+          i.updating = None
+          i.step = None
+          i.percent = None
+          i.done = None
+          i.failed = Some(
+            key("station.updates.backNotDownloaded", args=[
+              ("version", js(release_version(plan.release))),
+              ("why", js(message_of(e))),
+            ]),
+          )
+        })
+        return
+      }
+    }
+    let left = self.item("station").version
+    let was_auto = self.auto()
+    match left {
+      Some(l) if was_auto => self.hold_auto(l)
+      _ => ()
+    }
+    if self.start_planned(plan, handed) {
+      return
+    }
+    if was_auto && left is Some(_) {
+      self.config.edit_soon(w, [("autoUpdate", Some(jb(true))), ("autoUpdateAfter", None)])
+      self.last_setting = self.setting()
+    }
+    w.warn("updates", "the station's installer not started")
+    self.set("station", i => {
+      i.updating = None
+      i.step = None
+      i.percent = None
+      i.done = None
+      i.failed = Some(Key("station.updates.couldNotStart", None))
+    })
+  })
+}
+
+///|
+/// Updating by itself turned off as the station goes back from `left`, kept to be turned on again past it.
+async fn Updates::hold_auto(self : Updates, left : String) -> Unit {
+  self.config.edit_soon(self.w, [("autoUpdate", Some(jb(false))), ("autoUpdateAfter", Some(js(left)))])
+  self.last_setting = self.setting()
+  self.w.info(
+    "updates",
+    "the station goes back: updating by itself off until a newer release is out",
+    fields=jo([("left", js(left))]),
+  )
+  self.changed()
+}
+
+///|
+/// The archive of the release `back` goes back to, downloaded (take_archive) within the delta's deadline.
+async fn Updates::archive_for(self : Updates, back : Plan) -> Array[(String, String)] {
+  let over = Signal::new()
+  // timer: a deadline of an outside request (the release's download).
+  let cancel = self.fibers.after(self.timing.delta_limit, fn() { over.abort(reason=timed_out()) })
+  let r = (try Ok(
+      take_archive(
+        self.w,
+        back,
+        over,
+        progress=fn(percent) { self.set("station", i => i.percent = Some(percent)) },
+        self.cloud_request(),
+        wait=async fn(ms) { self.fibers.sleep(ms) },
+      ),
+    ) catch {
+    e => Err(e)
+  })
+  cancel()
+  match r {
+    Ok(v) => v
+    Err(e) => raise e
+  }
 }
 
 ///|

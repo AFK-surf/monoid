@@ -363,6 +363,12 @@ let fx_station_update_failed : Ref[Bool] = Ref(false)
 let fx_station_updated : Ref[Bool] = Ref(false)
 
 ///|
+/// A station whose channel's feed names earlier releases to go back to (the core's `earlier`), updating itself
+/// (`settings-station-back`), or gone back to one, updating by itself held till a newer one than it left (`autoAfter`:
+/// `settings-station-back-held`).
+let fx_station_back : Ref[String] = Ref("")
+
+///|
 /// The workspace in safe mode with its stations not named by it: Willow, online, which the viewer could protect here
 /// (the core's `protect`), and Maple, offline, which it could not.
 let fx_unprotected : Ref[Bool] = Ref(false)
@@ -379,6 +385,7 @@ fn fixture_reset() -> Unit {
   fx_station_many_profiles.val = false
   fx_station_update_failed.val = false
   fx_station_updated.val = false
+  fx_station_back.val = ""
   fx_unprotected.val = false
   fx.restored.clear()
   fx.skills_shared.clear()
@@ -809,10 +816,11 @@ pub fn fixture_page(mode : String) -> String {
       station_parts["ws1/st1"] = "settings"
       up("", "settings/station/ws1/st1", 0)
     }
-    "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" => {
+    "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" => {
       station_parts["ws1/st1"] = "settings"
       fx_station_update_failed.val = m == "settings-station-update-failed"
       fx_station_updated.val = m == "settings-station-updated"
+      fx_station_back.val = if m.has_prefix("settings-station-back") { m } else { "" }
       up("", "settings/station/ws1/st1", 0)
     }
     "settings-stations-add" => up("add", "", 0)
@@ -991,7 +999,7 @@ pub fn fixture_page(mode : String) -> String {
     "settings" => "home"
     _ if moves && (m == "settings-station-move-section" || m == "settings-station-move-offered") => "station:ws1/st1"
     _ if moves => "move:ws1/st1"
-    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
+    "settings-station-mark" | "settings-station-gpu" | "settings-station-gpu-many" | "settings-station-env" | "settings-station-processes" | "settings-station-lower" | "settings-station-versions" | "settings-station-update-failed" | "settings-station-updated" | "settings-station-back" | "settings-station-back-held" | "settings-station-network" | "settings-station-away" | "settings-station-copies" | "settings-station-copies-alone" | "settings-station-restore" | "settings-station-restore-offer" | "settings-station-restore-confirm" | "settings-station-restore-confirm-long" | "settings-station-restored" | "settings-station-retire" | "settings-station-retire-panel" | "settings-station-retire-panel-pick" | "settings-station-retire-panel-none" | "settings-station-retire-panel-joined" | "settings-station-retire-panel-long" | "settings-station-retire-sending" | "settings-station-retire-sent" | "settings-station-retire-sent-failed" | "settings-station-retire-quiet" | "settings-station-retire-failed" | "settings-station-retire-accounts" | "settings-station-retire-done" | "settings-station-retire-done-left" | "settings-station-taking" | "settings-station-terminals" =>
       "station:ws1/st1"
     "settings-stations-add" | "settings-stations-existing" | "settings-stations-command" | "settings-first-station" =>
       "stations"
@@ -2243,7 +2251,7 @@ fn fx_station(address : String) -> Json {
                 ("latest", str("0.1.1300")),
                 ("newer", Json::boolean(!fx_station_updated.val)),
                 ("channel", str("stable")),
-                ("auto", Json::boolean(fx.auto)),
+                ("auto", Json::boolean(if fx_station_back.val == "" { fx.auto } else { fx_station_back.val == "settings-station-back" })),
                 ("updatable", Json::boolean(true)),
                 ("state", str(if fx_station_update_failed.val { "failed" } else { "idle" })),
                 ("failedText", str("更新失败")),
@@ -2253,7 +2261,13 @@ fn fx_station(address : String) -> Json {
                 // (the core's words of it: present.ts software)
                 ("shownText", str(if fx_station_updated.val { "0.1.1300" } else { "0.1.1288" })),
                 ("tipText", str("")),
-              ]),
+              ] +
+                (if fx_station_back.val == "" {
+                  []
+                } else {
+                  [("earlier", Json::array([str("0.1.1280"), str("0.1.1276"), str("0.1.1262")]))] +
+                  (if fx_station_back.val == "settings-station-back-held" { [("autoAfter", str("0.1.1300"))] } else { [] })
+                })),
               obj([
                 ("id", str("claude")),
                 ("name", str("Claude Code")),

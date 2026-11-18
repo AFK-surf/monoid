@@ -57,16 +57,17 @@ export const routes = ({ updates }: UpdatesDeps): Route[] => {
         await u.setAuto(on, r.lang);
       }),
     },
-    // One of them updated (or a runtime installed): { id }.
+    // One of them updated (or a runtime installed): { id }; the station put back to a release before it: { id, to }.
     {
       method: "POST",
       pattern: /^\/updates$/,
       handle: answer(async (u, r) => {
         const asked = input(r);
         const id = typeof asked.id === "string" ? asked.id : "";
+        if (asked.to !== undefined && typeof asked.to !== "string") throw new Refused(400, tr(r.lang, "station.updates.badVersion"));
         if (asked.repair === true && id === "codex") await u.repairCodex(r.lang);
         else if (asked.repair !== undefined && asked.repair !== false) throw new Refused(400, tr(r.lang, "station.updates.codexRepairUnavailable"));
-        else await u.update(id, r.lang);
+        else await u.update(id, r.lang, asked.to);
       }),
     },
   ];

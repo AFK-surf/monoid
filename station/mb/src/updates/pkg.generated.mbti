@@ -27,6 +27,10 @@ pub fn apply_apart(World) -> async (String, String, String, Signal) -> Unit
 
 pub async fn apply_file(World, Old, String, String, async (Bytes) -> Bytes) -> Unit
 
+pub fn archive_url(String, String, @jsjson.JValue, String) -> String
+
+pub fn back_to(Array[@jsjson.JValue], Double?, String?) -> Array[@jsjson.JValue]
+
 pub fn base64_bytes(String) -> Bytes
 
 pub fn base64_of(Bytes) -> String
@@ -82,6 +86,8 @@ pub let delta_ms : Double
 pub let devin_manifest : String
 
 pub fn downloading(String, Double, Double?) -> (Words, Int32?)
+
+pub async fn earlier_in(World, @jsjson.JValue, Array[(String, String)]?) -> (Array[@jsjson.JValue], Array[String])
 
 pub fn ends_with(String, String) -> Bool
 
@@ -229,6 +235,8 @@ pub fn pis_absolute(String) -> Bool
 
 pub fn pjoin(Array[String]) -> String
 
+pub async fn plan_back(World, String, String, String, String, String, Array[(String, String)]?, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Plan
+
 pub async fn plan_update(World, String, String, String, String, String, Array[(String, String)]?, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Plan
 
 pub fn platform() -> String?
@@ -305,7 +313,7 @@ pub fn sha256(Bytes) -> String
 
 pub fn slice(String, Int32, end? : Int32) -> String
 
-pub fn software_version(String, String, Bool, String?, String?, Bool, Bool, String?, Bool?, Bool, Bool, String?, String, String?, Int32?, String?, String?, Double?) -> @jsjson.JValue
+pub fn software_version(String, String, Bool, String?, String?, Bool, Bool, Array[String], String?, Bool?, String?, Bool, Bool, String?, String, String?, Int32?, String?, String?, Double?) -> @jsjson.JValue
 
 pub fn split(String, String) -> Array[String]
 
@@ -330,6 +338,8 @@ pub fn stringify(@jsjson.JValue) -> String
 pub async fn switch_codex(World, CodexEntry, String, Array[(String, String)]) -> String
 
 pub fn tail(String, String) -> String
+
+pub async fn take_archive(World, Plan, Signal, progress? : async (Int32) -> Unit, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Array[(String, String)]
 
 pub async fn take_delta(World, Plan, String, async (String, String, String, Signal) -> Unit, Signal, progress? : async (Int32) -> Unit, async (String, String?) -> Response, wait? : async (Double) -> Unit) -> Array[(String, String)]
 
@@ -403,6 +413,7 @@ pub(all) struct Config {
   listeners : Array[(Int32, () -> Unit)]
   mut serial : Int32
 }
+pub async fn Config::edit_soon(Self, World, Array[(String, @jsjson.JValue?)]) -> Unit
 pub fn Config::listen(Self, () -> Unit) -> () -> Unit
 pub fn Config::new(@jsjson.JValue) -> Self
 pub fn Config::tell(Self) -> Unit
@@ -509,6 +520,7 @@ pub struct Plan {
   script : String
   env : Array[(String, String)]
   delta : Delta?
+  archive : (String, @jsjson.JValue, Double)?
 }
 pub fn Plan::to_j(Self) -> @jsjson.JValue
 
@@ -588,6 +600,7 @@ pub struct Updates {
 }
 pub async fn Updates::answer_channel_ask(Self) -> Unit
 pub fn Updates::auto(Self) -> Bool
+pub fn Updates::auto_after(Self) -> String?
 pub fn Updates::changes(Self, () -> Unit) -> () -> Unit
 pub fn Updates::channel(Self) -> String
 pub async fn Updates::check(Self, station? : Bool) -> Unit
@@ -601,12 +614,13 @@ pub async fn Updates::new(World, UpdatesOptions) -> Self
 pub fn Updates::on_runtime_changed(Self, (String, Bool, Bool) -> Unit) -> Unit
 pub fn Updates::poke(Self, String, @jsjson.JValue) -> Unit
 pub async fn Updates::repair_codex(Self, String) -> Unit
+pub async fn Updates::resume_auto_for_tests(Self) -> Unit
 pub async fn Updates::set_auto(Self, Bool, String) -> Unit
 pub async fn Updates::set_channel(Self, String, String) -> Unit
 pub fn Updates::start(Self) -> Unit
 pub async fn Updates::station_with(Self, String, String) -> @jsjson.JValue
 pub fn Updates::to_update_to(Self) -> String?
-pub async fn Updates::update(Self, String, String) -> Unit
+pub async fn Updates::update(Self, String, String, to? : String) -> Unit
 pub async fn Updates::update_old_codex(Self, String?, String) -> Unit
 
 pub(all) struct UpdatesOptions {

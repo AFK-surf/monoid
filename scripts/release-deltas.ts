@@ -28,6 +28,10 @@
 // (station/archive/<channel>/<build>-<sha256>-<platform>.<ext>: what later releases make their deltas from), its
 // deltas beside it (….from-<build>-<its sha256's first 16>.delta), each delta in the feed saying its archive's sha256
 // (`base`, which the station passes over). scripts/release-prune.ts deletes what no feed names any more.
+// The station's feed also carries `earlier`: the signed words of the releases before it (newest first, --bases of them:
+// the published feed's own and its `earlier`), each as its feed said it ({version, release, signature, key}), which a
+// station verifies to go back to one of them (station/src/updates/release.ts planBack), its archive downloaded under
+// its own name; release-prune.ts keeps the archives these name.
 // Run twice on the same directory, the second run changes nothing (a delta already made and in the feed is kept).
 //   node scripts/release-deltas.ts --zst RAW OUT     RAW compressed (zstd) to OUT: the Windows raw installer's .raw.zst
 import { spawn, spawnSync } from "node:child_process";
@@ -311,6 +315,26 @@ const wordsOf = (feed: any): any => {
   try { return typeof feed?.release === "string" ? JSON.parse(Buffer.from(feed.release, "base64").toString("utf8")) : null; } catch { return null; }
 };
 
+/** A release's signed words as its feed said them: what a station verifies (station/src/updates/signed.ts). */
+type Signed = { version: string; release: string; signature: string; key: string };
+const signedOf = (feed: any): Signed | null =>
+  ["version", "release", "signature", "key"].every((k) => typeof feed?.[k] === "string") ? { version: feed.version, release: feed.release, signature: feed.signature, key: feed.key } : null;
+
+/** The `earlier` of the station's feed of `build`: `prev` (the feed published before it) and its own `earlier`, those
+ * older than `build`, each build once, newest first, `most` of them. */
+export function earlierOf(build: number, prev: any, most: number): Signed[] {
+  const all = [signedOf(prev), ...(Array.isArray(prev?.earlier) ? prev.earlier.map(signedOf) : [])];
+  const seen = new Set<number>();
+  const out: { build: number; signed: Signed }[] = [];
+  for (const signed of all) {
+    const b = Number(wordsOf(signed)?.build);
+    if (signed === null || !Number.isSafeInteger(b) || b >= build || seen.has(b)) continue;
+    seen.add(b);
+    out.push({ build: b, signed });
+  }
+  return out.sort((a, b) => b.build - a.build).slice(0, most).map((e) => e.signed);
+}
+
 // --- the run ---
 
 type Base = { build: number; names: string[]; sha256?: string; size?: number; rawSha256?: string; path?: string; missing?: boolean };
@@ -340,6 +364,8 @@ export type Options = { releases: string; bases: number; jobs: number; deadline:
 class Run {
   readonly warnings: string[] = [];
   readonly lines: string[] = [];
+  /** The station's feeds' `earlier`, by feed (stationTargets). */
+  readonly earlier = new Map<string, Signed[]>();
   private readonly work = mkdtempSync(join(tmpdir(), "release-deltas-"));
   private readonly abort = new AbortController();
   private readonly src: Source;
@@ -485,6 +511,7 @@ class Run {
       try { prev = JSON.parse(published); } catch { throw new Error(`the feed at ${this.o.releases} is not JSON`); }
     }
     const prevWords = wordsOf(prev);
+    this.earlier.set(feedName, earlierOf(build, prev, this.o.bases));
     const inPlace = (p: string) => `${channel === "beta" ? "beta/" : ""}stillfail-station-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const archive = (b: number, sha: string, p: string) => `station/archive/${channel}/${b}-${sha}-${p}${p.startsWith("win32") ? ".zip" : ".tar.gz"}`;
     const out: Target[] = [];
@@ -617,7 +644,9 @@ class Run {
     if (feedName.startsWith("station")) {
       const deltas: Record<string, Made[]> = {};
       for (const t of targets) if (t.made_.length) deltas[t.platform!] = [...t.made_].sort((a, b) => b.from - a.from);
-      amended = Object.keys(deltas).length ? { ...rest, deltas } : rest;
+      const { earlier: _e, ...words } = rest;
+      const earlier = this.earlier.get(feedName) ?? [];
+      amended = { ...words, ...(earlier.length ? { earlier } : {}), ...(Object.keys(deltas).length ? { deltas } : {}) };
     } else {
       const t = targets[0];
       const made = t ? [...t.made_].sort((a, b) => b.from - a.from) : [];

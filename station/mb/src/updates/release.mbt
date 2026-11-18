@@ -5,6 +5,9 @@
 // station runs, the delta is downloaded and applied to the installed release, and the installer is handed what it
 // made (STILLFAIL_ARCHIVE) with the raw form's hash to check instead of the archive's. Anything wrong with it is a line
 // in the log, and the installer downloads the whole archive as without one.
+// Going back: the feed also carries the signed words of the releases before it (`earlier`), each verified as the
+// feed's own is; one older than the build this station runs is asked for, its archive downloaded under its own name and
+// checked against its signed hash before the installer is handed it (plan_back, take_archive), never the latest.
 
 ///|
 /// The pauses before each try again of a feed read, or a delta's download, that failed on the way.
@@ -140,6 +143,8 @@ pub struct Plan {
   env : Array[(String, String)]
   /// The delta to try first, when there is one.
   delta : Delta?
+  /// Going back: the archive to download and hand the installer (take_archive), its url, sha256 and size.
+  archive : (String, J, Double)?
 }
 
 ///|
@@ -155,7 +160,11 @@ pub fn Plan::to_j(self : Plan) -> J {
         None => Null
       },
     ),
-  ])
+  ] +
+    (match self.archive {
+      Some((url, sha, size)) => [("archive", jo([("url", js(url)), ("sha256", sha), ("size", jn(size))]))]
+      None => []
+    }))
 }
 
 ///|
@@ -290,6 +299,7 @@ pub async fn plan_update(
       ("STILLFAIL_INSTALL_LANG", lang),
     ],
     delta: delta_for(said, build, platform(), safe, base),
+    archive: None,
   }
 }
 
@@ -433,16 +443,32 @@ async fn download_delta(
   progress : async (Int) -> Unit,
   request : Request,
 ) -> Unit {
-  let response = request(d.url, None)
+  download_checked(w, d.url, d.sha256, d.size, to, progress, request, "delta")
+}
+
+///|
+/// Downloads `url` (`what`: the delta, or the release's archive) to `to`, refused unless it is `size` bytes hashing to
+/// `sha` (failed on the way: OnTheWay, a TypeError or a TimeoutError).
+async fn download_checked(
+  w : World,
+  url : String,
+  sha : J,
+  size : Double,
+  to : String,
+  progress : async (Int) -> Unit,
+  request : Request,
+  what : String,
+) -> Unit {
+  let response = request(url, None)
   if response.status == 502 || response.status == 503 || response.status == 504 {
-    raise on_way("\{d.url}: \{response.status}")
+    raise on_way("\{url}: \{response.status}")
   }
   if !response.ok() || !response.has_body {
-    raise fail("\{d.url}: \{response.status}")
+    raise fail("\{url}: \{response.status}")
   }
   match response.header("content-length") {
-    Some(length) if js_number(length) != d.size =>
-      raise fail("the delta is \{length} bytes, the feed says \{num_text(d.size)}")
+    Some(length) if js_number(length) != size =>
+      raise fail("the \{what} is \{length} bytes, the feed says \{num_text(size)}")
     _ => ()
   }
   let all = Buffer()
@@ -452,12 +478,12 @@ async fn download_delta(
   let streamed : Result[Unit, Error] = try {
     for chunk in response.chunks {
       got += chunk.length().to_double()
-      if got > d.size {
-        raise fail("the delta is more than the \{num_text(d.size)} bytes the feed says")
+      if got > size {
+        raise fail("the \{what} is more than the \{num_text(size)} bytes the feed says")
       }
       all.write_bytes(chunk)
       out.write(chunk)
-      let percent = (got * 100.0 / d.size).floor().to_int()
+      let percent = (got * 100.0 / size).floor().to_int()
       if percent != said {
         said = percent
         progress(percent)
@@ -476,11 +502,11 @@ async fn download_delta(
     Err(e) => raise e
     Ok(_) => ()
   }
-  if got < d.size {
-    raise on_way("the delta broke off at \{num_text(got)} of the \{num_text(d.size)} bytes the feed says")
+  if got < size {
+    raise on_way("the \{what} broke off at \{num_text(got)} of the \{num_text(size)} bytes the feed says")
   }
-  if !(d.sha256 is Str(u) && @jsjson.text(u) == sha256(all.to_bytes())) {
-    raise fail("the delta's sha256 is not the feed's")
+  if !(sha is Str(u) && @jsjson.text(u) == sha256(all.to_bytes())) {
+    raise fail("the \{what}'s sha256 is not the feed's")
   }
 }
 
@@ -556,6 +582,191 @@ pub async fn take_delta(
         fields=jo([("from", jn(d.from)), ("url", js(d.url)), ("why", js(message_of(e)))]),
       )
       []
+    }
+  }
+}
+
+// ---- going back ----
+
+///|
+/// `earlierIn`: the releases `said` names as before it (`earlier`), each whose words verify (as `verify_feed`'s); of
+/// each that does not, why. Newest first, each build once.
+pub async fn earlier_in(w : World, said : J, trusted : Array[(String, String)]?) -> (Array[J], Array[String]) {
+  let t = trusted_or_default(trusted)
+  let releases : Array[J] = []
+  let why : Array[String] = []
+  match get(Some(said), "earlier") {
+    Some(Arr(xs)) =>
+      for e in xs {
+        let r = verify_feed(w, e, t) catch {
+          Thrown("Unverified", _) as err => {
+            why.push(message_of(err))
+            continue
+          }
+          err => raise err
+        }
+        if !releases.iter().any(x => release_build(x) == release_build(r)) {
+          releases.push(r)
+        }
+      }
+    _ => ()
+  }
+  releases.sort_by((a, b) => release_build(b).compare(release_build(a)))
+  (releases, why)
+}
+
+///|
+/// `backTo`: of `earlier`, those this station may go back to: older than the build it runs (`current`), with a build
+/// for `platform`.
+pub fn back_to(earlier : Array[J], current : Double?, platform : String?) -> Array[J] {
+  match (current, platform) {
+    (Some(c), Some(p)) =>
+      earlier.filter(r => {
+        if release_build(r) >= c {
+          return false
+        }
+        let _ = expected(r, Some(p)) catch { _ => return false }
+        true
+      })
+    _ => []
+  }
+}
+
+///|
+/// `archiveUrl`: where a release's archive for `platform` is kept under its own name on `channel`.
+pub fn archive_url(base : String, channel : String, release : J, platform : String) -> String {
+  let sha = js_string_opt(get(get(get(Some(release), "builds"), platform), "sha256"))
+  let ext = if starts_with(platform, "win32") { ".zip" } else { ".tar.gz" }
+  "\{base}/releases/station/archive/\{channel}/\{num_text(release_build(release))}-\{sha}-\{platform}\{ext}"
+}
+
+///|
+/// `planBack`: what going back to `to` (a version `channel`'s feed at `base` names in its `earlier`) runs. Refused in
+/// `lang`: a version it does not name (or not verified), one not older than the build this station runs, none for
+/// this machine, no installer in this release.
+pub async fn plan_back(
+  w : World,
+  base : String,
+  channel : String,
+  app : String,
+  to : String,
+  lang : String,
+  trusted : Array[(String, String)]?,
+  request : Request,
+  wait? : Wait,
+) -> Plan {
+  let said = read_feed(w, channel, base, request, wait?)
+  let (releases, why) = earlier_in(w, said, trusted)
+  if why.length() > 0 {
+    w.warn(
+      "updates",
+      "releases before the latest do not verify: not offered",
+      fields=jo([("channel", js(channel)), ("why", jstrs(why))]),
+    )
+  }
+  guard releases.search_by(r => release_version(r) == to) is Some(i) else {
+    raise fail(tr(lang, "station.updates.backUnknown", args=jo([("version", js(to))])))
+  }
+  let release = releases[i]
+  let version = station_version_soon(w, app)
+  let current = match version {
+    Some(v) => build_of(v)
+    None => @double.not_a_number
+  }
+  if !is_safe_integer(Some(Num(current))) || release_build(release) >= current {
+    raise fail(
+      tr(
+        lang,
+        "station.updates.backNotOlder",
+        args=jo([("version", js(release_version(release))), ("current", jopt(version))]),
+      ),
+    )
+  }
+  let build = expected(release, platform()) catch {
+    _ => raise fail(tr(lang, "station.updates.noBuild", args=jo([("version", js(release_version(release)))])))
+  }
+  let script = bundled_installer(app, lang)
+  if !w.accessible(script) {
+    raise fail(tr(lang, "station.updates.noInstaller"))
+  }
+  let sha = get(Some(build), "sha256").unwrap_or(Null)
+  {
+    release,
+    script,
+    env: [
+      ("STILLFAIL_ORIGIN", base),
+      ("STILLFAIL_CHANNEL", channel),
+      ("STILLFAIL_RELEASE_SHA256", js_string_opt(get(Some(build), "sha256"))),
+      ("STILLFAIL_NODE_SHA256", js_string_opt(get(Some(build), "nodeSha256"))),
+      ("STILLFAIL_INSTALL_LANG", lang),
+    ],
+    delta: None,
+    archive: Some(
+      (
+        archive_url(base, channel, release, platform().unwrap()),
+        sha,
+        num(get(Some(build), "size")).unwrap_or(0.0),
+      ),
+    ),
+  }
+}
+
+///|
+/// `takeArchive`: downloads the archive of `back` where the installer takes one it is handed (STILLFAIL_ARCHIVE),
+/// checked against its signed size and sha256. Raises what failed (what it left removed): without it, the installer
+/// would download the channel's latest.
+pub async fn take_archive(
+  w : World,
+  back : Plan,
+  signal : Signal,
+  progress? : async (Int) -> Unit = fn(_) {  },
+  request : Request,
+  wait? : Wait,
+) -> Array[(String, String)] {
+  guard back.archive is Some((url, sha, size)) else { return [] }
+  let (dir, archive) = handed_archive(w)
+  let file = pjoin([dir, archive])
+  let took : Result[Array[(String, String)], Error] = try {
+    w.mkdir(dir, opts=jo([("mode", ji(448))]))
+    let mut i = 0
+    while true {
+      let got : Result[Unit, Error] = try {
+        download_checked(w, url, sha, size, file, progress, request, "release")
+        Ok(())
+      } catch {
+        e => Err(e)
+      }
+      match got {
+        Ok(_) => break
+        Err(e) => {
+          w.rm(file)
+          guard wait is Some(wait) && i < feed_again_ms.length() && !signal.aborted && on_the_way(e) else {
+            raise e
+          }
+          w.warn(
+            "updates",
+            "the release not downloaded, tried again",
+            fields=jo([("url", js(url)), ("error", js(message_of(e))), ("after", jn(feed_again_ms[i]))]),
+          )
+          wait(feed_again_ms[i])
+          i += 1
+        }
+      }
+    }
+    w.info(
+      "updates",
+      "the release to go back to downloaded",
+      fields=jo([("version", js(release_version(back.release))), ("size", jn(size))]),
+    )
+    Ok([("STILLFAIL_ARCHIVE", file)])
+  } catch {
+    e => Err(e)
+  }
+  match took {
+    Ok(handed) => handed
+    Err(e) => {
+      w.rm_quiet(dir, recursive=true)
+      raise e
     }
   }
 }

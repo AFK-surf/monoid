@@ -20,6 +20,7 @@ import { permissionTools } from "../src/tools/permissions.ts";
 import { relayTools } from "../src/tools/relays.ts";
 import { remoteTools } from "../src/tools/remote.ts";
 import { retireTools } from "../src/tools/retire.ts";
+import { versionTools } from "../src/tools/version.ts";
 import { moveTools } from "../src/tools/move.ts";
 import { screenTools } from "../src/tools/screen.ts";
 import { workspaceSizeTools } from "../src/tools/workspace-size.ts";
@@ -50,6 +51,7 @@ export function stationTools(): Tool[] {
     ...feishuTools(() => undefined, () => false),
     ...loginTools(none),
     ...retireTools(none),
+    ...versionTools(none),
     ...moveTools(none),
     ...rigTools(none),
     ...searchTools(none),

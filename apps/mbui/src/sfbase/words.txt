@@ -1829,8 +1829,15 @@ web-main.usage.rates
 web-main.usage.ratesNote
 web-main.usage.tokens
 web-main.versions.auto
+web-main.versions.autoAfter
 web-main.versions.autoIdleTip
 web-main.versions.autoTip
+web-main.versions.back
+web-main.versions.backAsk
+web-main.versions.backDo
+web-main.versions.backNote
+web-main.versions.backNoteAuto
+web-main.versions.backTo
 web-main.versions.backToStable
 web-main.versions.beta
 web-main.versions.betaNote
