@@ -4614,6 +4614,16 @@ fn View::scrolls_window_ids(
                     put(c, flip_in_down(b.y - y - held, 0.0, 0.0, false))
                     walk(c, y, b.y - y, x, 0.0)
                   }
+                  // (a place that held nothing as the change came (a pick showing nothing, laid out nowhere) and holds
+                  // something now, down a column: where it was laid out then is no place it stood, so it comes from
+                  // the foot of the one before as that is drawn on the way, as one come does (below), what it holds
+                  // drawn there by its own way (a pick's fader: whole, never cut), not from the top of what holds it
+                  // across what is over it (a notice's time over its pill as the pill opens))
+                  Some(b) if down && b.h <= 0.5 && h > 0.5 && held_x == 0.0 && !laid_anew => {
+                    put(c, flip_in_down(foot_off, 0.0, 0.0, false))
+                    walk(c, y, held + foot_off, x, 0.0)
+                    foot_off = foot_off - h
+                  }
                   Some(b) => {
                     let d = b.y - y
                     let grown = h - b.h

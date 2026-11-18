@@ -49,10 +49,11 @@ fn notice_body_node(
       notice_pill_node(beside, src, here, m, open, opened, copied, across)
     })
     |> ignore
-    // (its time under it while it is open, coming with the pill's foot as the pill opens in its list's block, never
-    // drawn where it rests over the pill still growing to it (a pick's fader is drawn by its own place's way there);
-    // going, it fades where it is, msg_part_leave_ms)
-    across.show(open, leave=msg_part_leave_ms, fn(t) { message_time_node(t, here.tips, fn() { m().time }) })
+    // (its time under it while it is open: one against nothing said to leave, as a show said so would not (it holds
+    // its place unfaded, then lets it go at once): coming, its place opens from the pill's foot as that is drawn on its
+    // way and it is seen once that holds it whole, never cut, never over the pill still opening; going, it fades where
+    // it is, its place closing after (msg_part_leave_ms; the coordinator of the migration, 2026-11-14))
+    across.pick(open, leave=msg_part_leave_ms, fn(t, on) { if on { message_time_node(t, here.tips, fn() { m().time }) } })
   })
   |> ignore
 }
