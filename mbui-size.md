@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.58 | 123.22 |
 | [918c33836](https://github.com/AFK-surf/monoid/commit/918c338368e4074de489f36a8f85972a98e99bdf) Merge pull request #7041 from AFK-surf/feat/scoped | 2.54 | 3.41 | 13.98 | 35.9 | 53.77 | 31.47 | 63.32 | 96.47 | 123.22 |
 | [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.47 | 123.22 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.78 | 61.72 | 96.49 | 123.22 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.34 | 125.46 |
 | [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.51 | 68.98 | 96.29 | 129.87 |
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.5 | 68.98 | 96.21 | 126.98 |
-| [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 2.56 | 3.62 | 15.8 | 37.18 | 62.82 | 32.34 | 68.4 | 96.03 | 124.96 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [8dea365d1](https://github.com/AFK-surf/monoid/commit/8dea365d1d1817c3ab8256bf568900d88cafc779) test(mbui): sizes_across bars hold what 60 and 120 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.51 |
 | [918c33836](https://github.com/AFK-surf/monoid/commit/918c338368e4074de489f36a8f85972a98e99bdf) Merge pull request #7041 from AFK-surf/feat/scoped | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [e8271ed6e](https://github.com/AFK-surf/monoid/commit/e8271ed6e93314315beb5266a2650b6b3dc9d23a) station: wait for connect file writes in tests (#7 | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
 | [0b4845931](https://github.com/AFK-surf/monoid/commit/0b4845931b37f62b20f25fce13fe46037ebe3ff1) mbui: sizes_steady measures across as down (sizes_ | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.58 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [4c9974d97](https://github.com/AFK-surf/monoid/commit/4c9974d978dda945aaf942569ce00b751874b9f5) app: mark the station process group (#6962) | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
 | [cd45b23e0](https://github.com/AFK-surf/monoid/commit/cd45b23e09995b4ef82c6d335ff7917488b69696) mbui: headless cmdk scoring, grouped filter and mo | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.3 |
 | [2b1e1f4f5](https://github.com/AFK-surf/monoid/commit/2b1e1f4f5fd7ded787a2140c00a136e8815d651b) base/shell: one tab at a time, a tab's claim taken | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
-| [a28a82885](https://github.com/AFK-surf/monoid/commit/a28a82885a84c98b92373eac3c56f9cf7fb0b443) mbui motion: a finger's physics, an interactive sh | 0.43 | 0.56 | 2.16 | 3.26 | 5.18 | 1.59 | 4.26 | 53.45 |
