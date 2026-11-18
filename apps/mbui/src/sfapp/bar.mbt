@@ -80,20 +80,6 @@ let closes : Double = 16.0
 let bar_hold_ms : Double = 200.0
 
 ///|
-/// A slide let go while the finger still moves across: the place chosen is where the finger would be this long on at
-/// the speed it was let go at (a flick's way projected on, as a list's fling carries its speed), never further than one
-/// place's room past where it is let go; let go still, where it is (bar_flung).
-let bar_fling_ms : Double = 100.0
-
-///|
-/// Where a slide let go at `px` across a bar `w` wide, the finger moving at `vx` (points a ms), chooses its place by
-/// (bar_fling_ms on, within one place's room of `px`): `px` itself where it was still.
-fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
-  let slot = (w - 2.0 * c0) / 3.0
-  px + dclamp(vx * bar_fling_ms, -slot, slot)
-}
-
-///|
 /// What a place's top page keeps clear at its foot for the bar (Places.kt BAR_ROOM: the bar, its 22 from the foot, a
 /// little air, and the action standing 32 over it).
 let bar_room : Double = 56.0 + 22.0 + 16.0 + 32.0
@@ -2627,4 +2613,18 @@ fn place_top_bar(c : @ui.Ctx, place : String) -> Unit {
   })
   // over what runs under it: the scroll bar there keeps clear of it
   c.floats_over(glass_top)
+}
+
+///|
+/// A slide let go while the finger still moves across: the place chosen is where the finger would be this long on at
+/// the speed it was let go at (a flick's way projected on, as a list's fling carries its speed), never further than one
+/// place's room past where it is let go; let go still, where it is (bar_flung).
+let bar_fling_ms : Double = 100.0
+
+///|
+/// Where a slide let go at `px` across a bar `w` wide, the finger moving at `vx` (points a ms), chooses its place by
+/// (bar_fling_ms on, within one place's room of `px`): `px` itself where it was still.
+fn bar_flung(px : Double, vx : Double, w : Double) -> Double {
+  let slot = (w - 2.0 * c0) / 3.0
+  px + dclamp(vx * bar_fling_ms, -slot, slot)
 }
