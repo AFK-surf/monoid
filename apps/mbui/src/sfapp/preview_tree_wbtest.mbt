@@ -1164,7 +1164,7 @@ test "viewer on the tree, a wide window: a picture as it comes says how much has
 }
 
 ///|
-test "viewer on the tree, a phone's screen: a picture as it comes, its floating bar its nodes: its name and ×, nothing of how much before the core has said; then a card saying how much in words and a bar at that share, read again as more comes; whole, the card gone and its tools there; nothing of it reading the clock once it is gone" {
+test "viewer on the tree, a phone's screen: a picture as it comes, its floating bar its nodes: its name and ×, nothing of how much before the core has said; then, in the bar beside its name, how much in words and a bar at that share, read again as more comes, its name drawn whole; whole, they are gone and its tools there; nothing of it reading the clock once it is gone" {
   new_run()
   let base = fixture("chat-preview-step")
   // (its whole held: how much of it has come told by the test, then the whole given)
@@ -1201,7 +1201,9 @@ test "viewer on the tree, a phone's screen: a picture as it comes, its floating 
   assert_eq(now.length(), 1, msg="its bar read out at once")
   assert_eq((now[0].value, now[0].range), ("25%", Some((0.0, 25.0, 100.0))), msg="at once")
   t.draw()
-  assert_true(t.find("正在读取 1 KB / 4 KB") is Some(_), msg="how much, in words")
+  assert_true(t.find("1 KB / 4 KB") is Some(_), msg="how much, in words")
+  assert_true(t.find("正在读取") is None, msg="no 正在读取 in the bar: its bar says it")
+  assert_true(t.find(@sfbase.vf_title(v)) is Some(_), msg="its name drawn whole beside it")
   let bars = t.all(ProgressBar)
   assert_eq(bars.length(), 1, msg="one bar")
   assert_eq(bars[0].value, "25%")
@@ -1209,7 +1211,7 @@ test "viewer on the tree, a phone's screen: a picture as it comes, its floating 
   (said.get(v.file.name).unwrap())({ "loaded": 3072.0, "total": 4096.0 })
   assert_eq((t.all(ProgressBar)[0].value, t.all(ProgressBar)[0].range), ("75%", Some((0.0, 75.0, 100.0))), msg="more come: said at once, no frame drawn")
   t.draw()
-  assert_true(t.find("正在读取 3 KB / 4 KB") is Some(_), msg="more come: its words again")
+  assert_true(t.find("3 KB / 4 KB") is Some(_), msg="more come: its words again")
   assert_eq(t.all(ProgressBar)[0].value, "75%", msg="and its bar")
   assert_eq(t.all(ProgressBar)[0].range, Some((0.0, 75.0, 100.0)), msg="its range at once")
   // (whole: the card gone, its tools there)
@@ -1217,8 +1219,8 @@ test "viewer on the tree, a phone's screen: a picture as it comes, its floating 
   t.draw()
   t.run_for(@kit.progress_known_ms)
   assert_true(!v.coming(), msg="whole")
-  assert_eq(t.all(ProgressBar).length(), 0, msg="its card gone")
-  assert_true(t.find("正在读取") is None)
+  assert_eq(t.all(ProgressBar).length(), 0, msg="its bar gone")
+  assert_true(t.find("3 KB / 4 KB") is None)
   for l in [@sf.t("web-main.annotate.image"), @sf.t("common.copy"), @sf.t("android-misc.drive.share"), @sf.t("web-main.preview.download"), close] {
     assert_eq(t.all(Button, label=l).length(), 1, msg="\{l}: \{t.all(Button, label=l).length()}")
   }
@@ -1226,7 +1228,7 @@ test "viewer on the tree, a phone's screen: a picture as it comes, its floating 
 }
 
 ///|
-test "viewer on the tree, a phone's screen: a picture coming, its card shown: at rest between what the core says; closed as it comes, nothing of it reading the clock once it is gone" {
+test "viewer on the tree, a phone's screen: a picture coming, how much in its bar: at rest between what the core says; closed as it comes, nothing of it reading the clock once it is gone" {
   new_run()
   let base = fixture("chat-preview-step")
   let said : Map[String, (Json) -> Unit] = Map([])
@@ -1249,7 +1251,7 @@ test "viewer on the tree, a phone's screen: a picture coming, its card shown: at
   t.draw()
   assert_eq(t.all(ProgressBar).length(), 1, msg="a bar")
   let tree = @ui.view_tree().unwrap()
-  assert_true(t.find("正在读取") is Some(_))
+  assert_true(t.find("1 KB / ") is Some(_), msg="its size not said by the core: how much of the size it was sent with, in its bar")
   t.run_for(@kit.progress_known_ms)
   t.assert_idle()
   pressed(t, Button, @sf.t("web-main.preview.closeKey"))

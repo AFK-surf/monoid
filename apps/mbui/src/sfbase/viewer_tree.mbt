@@ -1285,7 +1285,7 @@ fn Viewer::shown_on(self : Viewer, node : @view.View) -> Double {
 ///|
 /// Viewer `vw`'s floating bar as nodes in `h` (viewer_head_node): its file's name (its kind and
 /// size after it, wider than a phone), there while its bars are (Viewer::bars_shown), as far in as the viewer is
-/// (Viewer::shown_on); while its picture comes, how much of it has once the core has said (file_progress_node); its
+/// (Viewer::shown_on); while its picture comes, how much of it has once the core has said (viewer_coming_node); its
 /// tools (image_tools), ×. Each press done at its moment. Their tips in a layer of its own over all of it.
 fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, Double)) -> Unit {
   h.over(Is(true)) |> ignore
@@ -1311,9 +1311,11 @@ fn image_head(h : @view.View, src : Source, vw : Viewer, stage : () -> (Double, 
     ink,
     fn() { @sf.viewer_page_glass() },
     fn(row) {
-      // while it comes, how much of it has, once the core has said
+      // while it comes, how much of it has, once the core has said: a line of the bar's own as the wide bar's is
+      // (viewer_coming_node), never the stage's card (file_progress_node), taller than the bar and crowding its name out
       row.show(fn() { vw.coming() && vw.got.get() is Some(_) }, fn(r) {
-        file_progress_node(r, fn() { vw.got.get().unwrap_or((0.0, None)) }, fn() { vw.file.size }) |> ignore
+        @sf.viewer_coming_node(r, fn() { vw.got.get() }, fn() { vw.file.size }, ink, lead=false, track=@sf.vfr_head_coming_track)
+        |> ignore
       })
       // (its tools; marking, marking's actions in their place)
       row.show(fn() { !marked() }, fn(r) {
