@@ -292,7 +292,7 @@ test("a chat held as what it needs moved away says so as its process ends, not t
   assert.deepEqual(ending, ["ending the runtime process: the chat is held: stopped: waits for accounts own:solo@A, moved away"]);
   assert.match(a.rig.store.listTurns(key).at(-1)?.summary.detail ?? "", /the chat is held: stopped: waits for accounts/);
   // (what it waits for is said as a person next speaks in it, never as its turn is cut: move-accounts.test.ts)
-  const said = (a.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'ember'").all(t.id) as { text: string }[]).map((r) => r.text);
+  const said = (a.rig.store.db.prepare("SELECT text FROM entries WHERE thread = ? AND author_kind = 'station'").all(t.id) as { text: string }[]).map((r) => r.text);
   assert.ok(!said.some((x) => x.includes("waits for its account")), `nothing said by the stop itself: ${JSON.stringify(said)}`);
 });
 
@@ -346,8 +346,8 @@ test("a chat stopped as its account moved away says once what it waits for, as a
   assert.equal(a.rig.hub.chatHeld(key), `stopped: waits for accounts own:solo@${A}, moved away`);
   // (the catalog's words, the stations' names whatever they are: move/chats.ts `holdChat`'s notice)
   const shapeOf = (k: string) => tr(stationLang(), k, { here: "\u0000", item: "solo", there: "\u0000" }).replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("\u0000", ".+");
-  const shape = new RegExp(`^ember:⚠️ (${shapeOf("station.move.stoppedChat")}|${shapeOf("station.move.stoppedChatHere")})$`);
-  const said = () => entries(a, t.id).filter((e) => e.startsWith("ember:"));
+  const shape = new RegExp(`^station:⚠️ (${shapeOf("station.move.stoppedChat")}|${shapeOf("station.move.stoppedChatHere")})$`);
+  const said = () => entries(a, t.id).filter((e) => e.startsWith("station:"));
   assert.deepEqual(said(), [], "the stop itself says nothing");
   say(a.rig.hub, t.id, "p@x", "are you there?");
   await w.quiet();
