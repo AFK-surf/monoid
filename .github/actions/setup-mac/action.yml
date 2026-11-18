@@ -42,6 +42,12 @@ runs:
         # load from other jobs as before, #3887, 2026-11-04)
         # The Node the station runs on (.node-version), ahead of ~/.local/bin's: what it is checked and built with.
         echo "$(sh scripts/node-here.sh)" >> "$GITHUB_PATH"
+        sh .github/actions/setup-linux/whole-clone.sh || echo "::warning::the checkout's partial clone not made whole (whole-clone.sh)"
+        upkeep="$HOME/stillfail-ci/.upkeep"
+        if [ -z "$(find "$upkeep" -mmin -60 2>/dev/null)" ]; then
+          mkdir -p "$HOME/stillfail-ci" && touch "$upkeep"
+          sh .github/actions/setup-mac/upkeep.sh || echo "::warning::macos-ci disk upkeep failed"
+        fi
         # The actions' archives the runners take instead of downloading them (.github/action-archives.sh): those of
         # refs that moved since, once an hour at most; one that cannot be had is downloaded by the runner as before.
         archives="$HOME/stillfail-ci/action-archives"

@@ -218,6 +218,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - if: runner.os == 'Linux'
         uses: ./.github/actions/setup-linux
       - if: runner.os == 'macOS'
@@ -312,6 +313,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
+        with: { fetch-depth: 0 }
       - uses: ./.github/actions/setup-mac
       - uses: ./.github/actions/mbui-moonbit
       - name: Build the rest of main's Apple parts (into macos-ci's cache)
@@ -525,7 +527,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - uses: actions/checkout@v5
-        with: { fetch-depth: 0, filter: "blob:none" }
+        with: { fetch-depth: 0, filter: "${{ (github.ref != 'refs/heads/main' || vars.MINI1 == 'off') && 'blob:none' || '' }}" }
       - if: runner.environment == 'self-hosted'
         uses: ./.github/actions/setup-mac
       # (GitHub's: the pinned Node, and rustup's Rust the image has, in a target of the job's own; no sccache there)
