@@ -172,7 +172,9 @@ jobs:
           packages: libgtk-4-dev libepoxy-dev libsoup-3.0-dev libsecret-1-dev clang
       # (Node alone here: pnpm and its store only for a core.hbc not kept, below)
       - uses: ./.github/actions/node
+      # (mbc and chk alone, as pipeline.yml's desktop-build: the other tools' keys and caches were a step's 12 s)
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       # mbc's units and the core's bytecode: main's newest, and on a branch its own last push's over them (m- and b-, as
       # check-mbui keeps its own). With main's alone, every push of a branch compiled all it had changed since main
       # again: presets' two pushes 273 and 276 of 480 units, 78 s of each Linux x64 build (41288956328, 41289661355,
@@ -364,10 +366,11 @@ jobs:
   # with cargo, ~4.5 min of its 5: cancelled at its limit each time, nothing made and nothing kept for the next (six
   # of main's pushes on 2026-11-12, each after a change to client/shell: b57eff00's after #5802's). Such a push makes
   # no iOS app: the ios job is skipped, and the next push that finds the shell builds one. A run by hand builds with
-  # the shell as it finds it, built there when not prebuilt, as before.
+  # the shell as it finds it, built there when not prebuilt, as before. (Beside what, not after it: what's ios is yes
+  # for every push to main and every run by hand, beta.sh never asked for it, and waiting for it was ~20 s of the ios
+  # job's start, 44411432671.)
   ios-shell:
-    needs: what
-    if: github.repository_owner == 'AFK-surf' && needs.what.outputs.ios == 'yes'
+    if: github.repository_owner == 'AFK-surf' && (github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && github.ref == 'refs/heads/main'))
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     outputs:
@@ -417,19 +420,55 @@ jobs:
       # gives a push one of two images while it moves to a newer one, and their compilers or headers make other units,
       # so one store over both kept only the last run's image's units (used.sh), the other's run compiling all again:
       # preview's ios on main, 20261104.0337.1 and 20261112.0361.1 in turn, 43919855625 to 43925936518, 2026-11-16)
-      # (less the 1-5 s of "Set up job" before it, as windows')
-      - name: The job's end and its image
+      # (less the 1-5 s of "Set up job" before it, as windows'; the SDK checked in the same step, one step's start less)
+      - name: The job's end, its image and iOS's SDK 27.1 or later
         run: |
           echo "JOB_END=$(( $(date +%s) + ${{ github.event_name == 'push' && 5 || 10 }} * 60 - 5 ))" >> "$GITHUB_ENV"
           echo "IMG=$(printf '%s' "${ImageVersion:-own}" | tr -c 'A-Za-z0-9._-' '_')" >> "$GITHUB_ENV"
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
-      - name: iOS's SDK 27.1 or later
-        run: |
           v=$(xcrun --sdk iphoneos --show-sdk-version)
           echo "iOS SDK $v ($(xcodebuild -version | head -1))"
           case "$v" in 2[0-6].*|27.0*) echo "::error::iOS SDK $v: an iPhone Duo letterboxes an app built before 27.1"; exit 1 ;; esac
       - uses: actions/checkout@v5
+      # (mbc and chk alone: the other tools' keys and caches were 12 s of the job before moonc, 44411432671; Farview's
+      # client fetched here too, so env.sh's farview.sh in moonc's build below only finds it)
+      - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
+      # moon's own build of the app (moonc's C, what it checked) as main's newest run left it, as check-mbui keeps its
+      # own: without, moonc made all of it again each run, ~2 of the .ipa step's 2-3 minutes, the release's longest job
+      # (main ca1e5c05, 40613958685, 2026-10-28). Main's only, as the units' store. (Without each program's objects: the
+      # store keeps those.)
+      - uses: actions/cache/restore@v4
+        id: moon
+        with:
+          path: |
+            apps/mbui/out/ios-device/_build
+            !apps/mbui/out/ios-device/_build/**/*.mbc
+          # (of no image: moonc is the same program on each, its C the same; keyed by the image, a run on the other
+          # image found none and did moonc's work again, main fa3e94723, 44370994879)
+          key: mbui-ios-moon-${{ github.sha }}
+          restore-keys: mbui-ios-moon-
+      # moonc's C (mbc gen) started at once, in the background, beside the caches' restores and the setup below: it reads
+      # none of what they write (.ci's store and hbc, ~/Library/Caches, out/core, out/ios-assets-*, out/core-target),
+      # and those ~30 s in a row before it left moonc and clang -O2 193 s of the job's 300 (44411432671, fc2ad0f66b).
+      # Its processes carry the build's mark (MBUI_BUILD_TREE): a step stopped leaves them running, and the step after
+      # the build stops what is left of them when it was cut (they wrote the store as the cache's tar read it).
+      - name: Start Moon's build (moonc's C, beside the caches' restores)
+        id: start
+        run: |
+          bash apps/mbui/scripts/moon-mtimes.sh
+          touch "$RUNNER_TEMP/start"
+          echo "$$-$(date +%s)-$RANDOM" > "$RUNNER_TEMP/build-tree"
+          B=$RUNNER_TEMP/ios-gen
+          mkdir -p "$B" apps/mbui/out/ios-device
+          MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree") nohup bash -c '
+            . apps/mbui/scripts/env.sh
+            cd apps/mbui
+            "$MBUI_DIR/scripts/mbc" gen --target-dir out/ios-device/_build src/stillfail > "$0/gen" 2> out/ios-device/moon.log
+            echo $? > "$0/status.tmp" && mv "$0/status.tmp" "$0/status"
+          ' "$B" > "$B/log" 2>&1 < /dev/null &
+          echo "$!" > "$B/pid"
       # (restored on every run; saved by main's alone: a branch's would be its own, and the cache has 10 GB; before the
       # setup: whether core.hbc is in it says whether the job needs pnpm, below)
       - uses: actions/cache/restore@v4
@@ -492,24 +531,6 @@ jobs:
         with:
           path: ~/Library/Caches/stillfail-native/ghostty-vt
           key: ${{ steps.ghostty-key.outputs.key }}
-      - uses: ./.github/actions/mbui-moonbit
-      # moon's own build of the app (moonc's C, what it checked) as main's newest run left it, as check-mbui keeps its
-      # own: without, moonc made all of it again each run, ~2 of the .ipa step's 2-3 minutes, the release's longest job
-      # (main ca1e5c05, 40613958685, 2026-10-28). Main's only, as the units' store. (Without each program's objects: the
-      # store keeps those.)
-      - uses: actions/cache/restore@v4
-        id: moon
-        with:
-          path: |
-            apps/mbui/out/ios-device/_build
-            !apps/mbui/out/ios-device/_build/**/*.mbc
-          # (of no image: moonc is the same program on each, its C the same; keyed by the image, a run on the other
-          # image found none and did moonc's work again, main fa3e94723, 44370994879)
-          key: mbui-ios-moon-${{ github.sha }}
-          restore-keys: mbui-ios-moon-
-      - run: bash apps/mbui/scripts/moon-mtimes.sh
-      - id: start
-        run: touch "$RUNNER_TEMP/start"
       # Always unsigned. TestFlight signing/upload is a separate manual workflow.
       # (the shell's cargo build, its dependencies kept, as main's newest that built it left it: a shell changed is built
       # here when not prebuilt yet, and from nothing that was 180-320 s of the job, a crate of its own again and again
@@ -527,20 +548,33 @@ jobs:
       # (a build cut short by its own limit, before the job's, still keeps what it compiled: main's store saved over what
       # was restored, nothing taken out, so the next run goes on from there, as the Linux jobs' do. Cut at the job's five
       # minutes it kept nothing: main's ten pushes up to c64dfaa7 (2026-11-16, libs/mbui changed) each compiled from
-      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 40 s before the job is, moon's
-      # build saved after the store too: the upload,
-      # the key and both saves after a whole build took 14 s (43981912517), ~21 s on a slower runner, and the post steps
-      # ~6 s; the stop, the key and the save after a cut 7.5 s (43981921907, cut 35 s before with its link done and only
-      # the .ipa's zip left). The .ipa: the app moved
-      # into Payload/ and back, not copied, and zipped fast (-1: upload-artifact zips it again))
+      # the same old store till they were cut, 43908146733's after 254 s of it. Cut 30 s before the job is, moon's
+      # build saved after the store too: the upload, the key and both saves after a whole build took 14 s
+      # (43981912517), ~21 s on a slower runner, and the post steps ~6 s; after a cut the stop, the key, both saves and
+      # the post steps 18 s (44411432671; 40 s before, 22 s of it went unused). The core for a device first (its
+      # engine, the shell's and libghostty-vt's headers, core.hbc), beside moonc where that still runs, so that
+      # ios.sh's own (app_libs, beside its mbc compile) only finds it and no unit reads ghostty/vt.h as it is copied;
+      # then moonc's end awaited, ios.sh's mbc gen finding its C made. The .ipa: the app moved into Payload/ and back,
+      # not copied, and zipped fast (-1: upload-artifact zips it again))
       - name: The iOS app for a device, as an .ipa
         id: build
         run: |
-          # (every process of the build's carries this mark, for the step after to stop what is left of it when it was
-          # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
-          echo "$$-$(date +%s)-$RANDOM" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 40)) bash -ec '
+          APP=stillfail MBUI_IOS_SDK=iphoneos MBUI_IOS_ID=fail.still.mbui SF_SRC=$PWD bash scripts/with-timeout.sh @$((JOB_END - 30)) bash -ec '
+            bash apps/mbui/scripts/core.sh apple aarch64-apple-ios
+            B=$RUNNER_TEMP/ios-gen
+            while [ ! -s "$B/status" ]; do
+              kill -0 "$(cat "$B/pid")" 2>/dev/null || { [ -s "$B/status" ] && break; cat "$B/log" apps/mbui/out/ios-device/moon.log 2>/dev/null || true; exit 1; }
+              sleep 1
+            done
+            if [ "$(cat "$B/status")" != 0 ]; then
+              cat "$B/log"
+              libs/mbui/scripts/chk errs < apps/mbui/out/ios-device/moon.log || true
+              grep "^mbc:" apps/mbui/out/ios-device/moon.log || true
+              exit 1
+            fi
+            libs/mbui/scripts/chk errs < apps/mbui/out/ios-device/moon.log | grep -v "^errors: 0" || true
+            grep "^mbc:" apps/mbui/out/ios-device/moon.log || true
             bash apps/mbui/scripts/ios.sh build
             cd apps/mbui/out/ios-device && rm -rf Payload *.ipa && mkdir Payload && mv MBUI.app Payload/
             zip -1qry stillfail-mbui.ipa Payload && mv Payload/MBUI.app . && rm -rf Payload && ls -la stillfail-mbui.ipa'
@@ -600,13 +634,14 @@ jobs:
           key: ${{ env.HBC_KEY }}
       # (moon's build kept once moonc has made the app's C (stillfail.c), a cut build's too, as the linux job's moon-room:
       # saved only of a build that went through, every run cut in its -O2 C did moonc's ~90-120 s again and was cut again
-      # (44334978946, 2026-11-18). Keyed by that C: one the same is not saved again; mbc's units are the store's.)
+      # (44334978946, 2026-11-18). Keyed by that C: one the same is not saved again; mbc's units are the store's. Only
+      # of a moonc that went through (its status 0): one stopped in the middle left its C half written.)
       - id: moon-room
         if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
         run: |
           c=apps/mbui/out/ios-device/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ -s "$c" ] && [ "$left" -gt 20 ]; then
+          if [ "$(cat "$RUNNER_TEMP/ios-gen/status" 2>/dev/null)" = 0 ] && [ -s "$c" ] && [ "$left" -gt 18 ]; then
             find apps/mbui/out/ios-device/_build -type d -name '*.mbc' -prune -exec rm -rf {} +
             echo "key=mbui-ios-moon-$(shasum -a 256 "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
           else
@@ -710,6 +745,7 @@ jobs:
         with: { node-version-file: .node-version, package-manager-cache: false }
       - uses: ./.github/actions/msvc
       - uses: ./.github/actions/mbui-moonbit
+        with: { tools: 'mbc chk' }
       - name: Tools (MSVC's link.exe for cargo, which Git Bash's /usr/bin/link shadows)
         run: |
           echo "CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$(cygpath -m "$(dirname "$(which cl)")/link.exe")" >> "$GITHUB_ENV"
