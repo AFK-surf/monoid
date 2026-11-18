@@ -6,10 +6,9 @@ import { Fragment } from "preact/compat";
 import { useSearchParams } from "wouter-preact";
 import { Close, Edit, Plus, Trash } from "@stillfail/ui/icons.tsx";
 import { useToast } from "@stillfail/ui/toast.tsx";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import type { Account } from "../cloud/accounts.ts";
 import { admin, useAction } from "../cloud/api.ts";
-import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, MobileBack, Segmented, Select, StatusDot, Waiting } from "../ui.tsx";
+import { Button, Confirm, CopyCommand, Dialog, Field, IconButton, MobileBack, Segmented, Select, StatusDot, Waiting, ErrorLine, TextInput } from "../ui.tsx";
 import * as pagesCss from "../styles/pages.css.ts";
 import { t } from "../i18n.ts";
 import * as css from "./console.css.ts";
@@ -221,14 +220,14 @@ function RelayTokenDialog({ account, targets, onClose }: { account: Account; tar
             </Field>
           )}
           <Field label={t("web-pages.admin.relays.name")} htmlFor="relay-name" hint={t("web-pages.admin.relays.nameHint")}>
-            <input id="relay-name" className={controlsCss.input} value={name} autoFocus maxLength={40} placeholder={t(entry ? "web-pages.admin.relays.entryPlaceholder" : "web-pages.admin.relays.namePlaceholder")} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={enter} />
+            <TextInput id="relay-name" value={name} autoFocus maxLength={40} placeholder={t(entry ? "web-pages.admin.relays.entryPlaceholder" : "web-pages.admin.relays.namePlaceholder")} onChange={(e) => setName(e.currentTarget.value)} onKeyDown={enter} />
           </Field>
           <Field label={t("web-pages.admin.relays.url")} htmlFor="relay-url" hint={t("web-pages.admin.relays.urlHint")}>
-            <input id="relay-url" className={controlsCss.input} type="url" inputMode="url" autoComplete="off" spellcheck={false} value={url} placeholder="https://relay.example.com:8443" onChange={(e) => setUrl(e.currentTarget.value)} onKeyDown={enter} />
+            <TextInput id="relay-url" type="url" inputMode="url" autoComplete="off" spellcheck={false} value={url} placeholder="https://relay.example.com:8443" onChange={(e) => setUrl(e.currentTarget.value)} onKeyDown={enter} />
           </Field>
         </>
       )}
-      {failed && <p className={controlsCss.fieldError} role="alert">{failed}</p>}
+      {failed && <ErrorLine>{failed}</ErrorLine>}
     </Dialog>
   );
 }
@@ -248,10 +247,10 @@ function RenameRelayDialog({ account, relay, onClose }: { account: Account; rela
         <Button variant="primary" busy={save.busy} disabled={!ready} onClick={submit}>{t("common.save")}</Button>
       </>}>
       <Field label={t("web-pages.admin.relays.name")} htmlFor="relay-rename">
-        <input id="relay-rename" className={controlsCss.input} value={name} autoFocus maxLength={40} onChange={(e) => setName(e.currentTarget.value)}
+        <TextInput id="relay-rename" value={name} autoFocus maxLength={40} onChange={(e) => setName(e.currentTarget.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.isComposing) submit(); }} />
       </Field>
-      {failed && <p className={controlsCss.fieldError} role="alert">{failed}</p>}
+      {failed && <ErrorLine>{failed}</ErrorLine>}
     </Dialog>
   );
 }

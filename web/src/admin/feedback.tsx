@@ -5,11 +5,10 @@ import { Fragment } from "preact/compat";
 import { Link } from "wouter-preact";
 import { Copy, Send } from "@stillfail/ui/icons.tsx";
 import { useToast } from "@stillfail/ui/toast.tsx";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import { stamp } from "../api.ts";
 import type { Account } from "../cloud/accounts.ts";
 import { admin, useAction, type FeedbackStatus } from "../cloud/api.ts";
-import { Button, Pill, Select, Time, WaitLine } from "../ui.tsx";
+import { Button, Pill, Select, Time, WaitLine, ErrorLine, TextArea } from "../ui.tsx";
 import * as shellCss from "../styles/shell.css.ts";
 import { t } from "../i18n.ts";
 import * as css from "./console.css.ts";
@@ -78,11 +77,11 @@ function Replies({ account, f }: { account: Account; f: FeedbackPage }) {
       {replies.length > 0 && <div className={css.replies}>{replies.map((r) => <ReplyShown key={r.id} r={r} />)}</div>}
       {f.canReply ? (
         <div className={css.replyForm}>
-          <textarea className={`${controlsCss.input} ${css.replyInput}`} rows={3} value={text} maxLength={4000} aria-label={t("web-pages.admin.fb.reply")}
+          <TextArea className={css.replyInput} rows={3} value={text} maxLength={4000} aria-label={t("web-pages.admin.fb.reply")}
             placeholder={t("web-pages.admin.fb.replyPlaceholder")} onInput={(e) => setText(e.currentTarget.value)}
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !e.isComposing) { e.preventDefault(); submit(); } }} />
           <span className={css.hint}>{f.replyHint}</span>
-          {failed && <p className={controlsCss.fieldError} role="alert">{failed}</p>}
+          {failed && <ErrorLine>{failed}</ErrorLine>}
           <div className={css.replySend}>
             <Button variant="primary" icon={Send} busy={send.busy} disabled={!ready} onClick={submit}>{t("web-pages.admin.fb.send")}</Button>
           </div>
