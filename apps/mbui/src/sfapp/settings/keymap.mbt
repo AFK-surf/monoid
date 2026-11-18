@@ -149,6 +149,41 @@ pub fn binding_of(code : Int, mods : Int) -> String? {
 }
 
 ///|
+/// What keys_recording says while the 快捷键 page looks for shortcuts by the keys pressed (按键搜索): no action's name,
+/// so no row records, and the window's keys stand aside as they do while one does (keymap_of, window_zoom's).
+pub let keys_searching : String = " search"
+
+///|
+/// A binding (Shift+Mod+H) as a key cap shows it, as the core's keymap.ts label does: ⌘⇧H on a Mac, Ctrl+Shift+H
+/// elsewhere.
+pub fn binding_label(binding : String) -> String {
+  let parts = binding.split("+").map(fn(p) { p.to_owned() }).collect()
+  let key = parts.last().unwrap_or("")
+  let mods = parts[:parts.length() - 1].to_owned()
+  let shown = match key {
+    "Up" => "↑"
+    "Down" => "↓"
+    "Left" => "←"
+    "Right" => "→"
+    "Escape" => "Esc"
+    "Enter" => "↩"
+    "Plus" => "+"
+    "Space" => @sf.t("web-main.keymap.space")
+    k => k
+  }
+  if @ui.keys_system() == 0 {
+    let marks = [("Ctrl", "⌃"), ("Alt", "⌥"), ("Shift", "⇧"), ("Mod", "⌘")]
+    marks.iter().filter(fn(m) { mods.contains(m.0) }).map(fn(m) { m.1 }).collect().join("") + shown
+  } else {
+    let said : Array[String] = ["Mod", "Ctrl", "Alt", "Shift"]
+      .filter(fn(m) { mods.contains(m) })
+      .map(fn(m) { if m == "Mod" { "Ctrl" } else { m } })
+    said.push(shown)
+    said.join("+")
+  }
+}
+
+///|
 /// The window's keymap (mbui's view keymap.mbt) as the core's prefs say it: each action's keys here, where it works by
 /// its group (anywhere; `Chat` in a chat; `Files` in a folder of the files) and with the cursor in a field by its
 /// `typing` (always; never: `!Field`; with the field empty: `!Field || FieldEmpty`); then the app's own, never changed
