@@ -120,10 +120,15 @@ fn stories_u5(tips : @sf.TipLayer) -> Array[Story] {
           },
         ),
         (
-          "圆钮 Plain · Floating",
+          "圆钮 Plain",
+          fn(card) {
+            side_by_side(card, fn(r) { @sf.tool_round_node(r, "shrink", fn() { "退出全屏" }, fn() {  }, tips~) |> ignore })
+          },
+        ),
+        (
+          "圆钮 Floating（画面上浮着的）",
           fn(card) {
             side_by_side(card, fn(r) {
-              @sf.tool_round_node(r, "shrink", fn() { "退出全屏" }, fn() {  }, tips~) |> ignore
               @sf.tool_round_node(r, "mouse-left", fn() { "鼠标左键" }, fn() {  }, look=Floating, felt=KeyboardTap) |> ignore
             })
           },
