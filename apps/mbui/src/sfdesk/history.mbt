@@ -58,12 +58,7 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ti
         // as 只看收发 and 详情 are, faded while asked; gone as it rests (2026-11-14: 「右侧需要有一个停止按钮」; not the
         // panel's bar, which is the panel's own, nor the card's round stop, which did not match these chips: 左子健,
         // 2026-11-17)
-        let working = fn() {
-          match text(a(), "status") {
-            "running" | "queued" => true
-            _ => false
-          }
-        }
+        let working = fn() { @sfpages.history_working(a()) }
         let stop_key = "stop/" + station + "/" + key
         k.show(at_once=true, working, fn(e) {
           let stop = @sf.press_chip_node(
@@ -163,18 +158,11 @@ fn wh_summary_node(v : @view.View, a : () -> Json?, tips : @sf.TipLayer) -> Unit
 }
 
 ///|
-/// What 详情 reads as it is first drawn (all but the chat's agent, the head's), each as it is read by: its card, its
-/// station's machine, its figures (the quiet line's where the card has none), the stations' rows its station is named
-/// and marked from, what the core has under way. What its chip pressed asks first. (Where its runtime keeps the
-/// transcript is a call, asked once a run as the details are first made: wh_transcript_node.)
+/// What 详情 reads as it is first drawn (sfpages' history_details_asks: its figures the quiet line's where the card has
+/// none; what the core has under way, its context line's). What its chip pressed asks first. (Where its runtime keeps
+/// the transcript is a call, asked once a run as the details are first made: wh_transcript_node.)
 fn wh_details_asks(station : String, key : String) -> Array[(String, Map[String, Json])] {
-  [
-    @sfpages.agent_card_ask(station, key),
-    @sfpages.history_host_ask(station),
-    @sfpages.history_ask(station, key),
-    @sfbase.station_rows_ask(scope_of(station)),
-    @sfbase.doing_ask(),
-  ]
+  @sfpages.history_details_asks(station, key, doing=true)
 }
 
 ///|
@@ -289,9 +277,7 @@ fn wh_details_node(
       )
     })
     // the station it runs on, what runs low on it at its end
-    let look = fn() {
-      @sfbase.station_marks(src, scope_of(station)).iter().find_first(fn(x) { x.address == station })
-    }
+    let look = fn() { @sfpages.history_station(src, station) }
     wh_line_node(
       d,
       fn(m) {
@@ -537,12 +523,9 @@ fn wh_line_node(
 let wh_mark_side : Double = 16.0
 
 ///|
-/// A station's workspace, from its address (ws/station).
+/// A station's workspace, from its address (ws/station: sfpages' history_station_scope).
 fn scope_of(station : String) -> String {
-  match station.find("/") {
-    Some(i) => station.exact_view(end=i).to_owned()
-    None => station
-  }
+  @sfpages.history_station_scope(station)
 }
 
 ///|

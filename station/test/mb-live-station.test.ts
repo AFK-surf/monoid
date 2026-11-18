@@ -671,9 +671,15 @@ test("a release with no Node: a relay enrolled by an agent's token on the statio
     turns++;
     const sent = await ask(here.mcpPort, `/admin-api/threads/${threadId}/messages`, { body: { text: `relays ${turns}` } });
     assert.ok(sent.status >= 200 && sent.status < 300, sent.body);
-    await until(`turn ${turns} ended all_done`, () => store.listTurns(key).filter((t) => t.summary.ending === "all_done").length >= turns, here.tail);
-    const file = readdirSync(out).find((f) => f.includes("-extra-"));
-    assert.ok(file !== undefined, readdirSync(out).join(","));
+    // (the turn that read this call is the one that answered it: a turn the station began of itself meanwhile, a
+    // nudge's, read no call and is no sign this one ended, so its end is waited for by what it wrote, the call and
+    // then its post)
+    const done = () => {
+      const file = readdirSync(out).find((f) => f.includes("-extra-"));
+      return file !== undefined && existsSync(join(out, file.replace(/-extra-(\d+)\.json$/, "-post-$1.json"))) ? file : undefined;
+    };
+    await until(`turn ${turns} answered its call`, done, () => `${readdirSync(out).join(",")}; ${here.tail()}`);
+    const file = done();
     const said = JSON.parse(readFileSync(join(out, file!), "utf8"));
     assert.notEqual(said.result?.isError, true, `${JSON.stringify(said)}; ${here.tail()}`);
     return JSON.parse(said.result.content[0].text);

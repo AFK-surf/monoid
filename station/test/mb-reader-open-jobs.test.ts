@@ -22,14 +22,14 @@ test("the MoonBit reader reads the open jobs as the worker does", { skip: binary
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const db = store.db;
   const session = (key: string, extra: Record<string, unknown> = {}) =>
-    store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 100, ...extra } as Parameters<Store["insertSession"]>[0]);
+    store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key, createdAt: 1, lastActiveAt: 100, ...extra } as Parameters<Store["insertSession"]>[0]);
   let ts = 0;
   const say = (t: number, author: string, text: string, at: number) =>
     store.insertMessage({ ...newMessage(t, String(++ts), "person", author, text), at } as ReturnType<typeof newMessage>);
   const chat = (key: string, title: string | null, members: string[], home: string | null = null) => {
-    const id = store.openThread("ember", "CHAT", key, title, null).id;
+    const id = store.openThread("chat", "CHAT", key, title, null).id;
     if (home !== null) db.prepare("UPDATE threads SET home = ? WHERE id = ?").run(home, id);
-    for (const m of members) store.joinThread(id, m, "ember");
+    for (const m of members) store.joinThread(id, m, "chat");
     return id;
   };
   session("named", { ws: "w", lastActiveAt: 500 });
@@ -115,8 +115,8 @@ for (const ready of [true, false]) test(`the MoonBit reader lists another statio
   const data = mkdtempSync(join(tmpdir(), "mb-reader-open-jobs-remote-"));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"));
   const db = store.db;
-  store.insertSession({ key: "mine", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "mine", createdAt: 1, lastActiveAt: 1, ws: "x" });
-  store.insertSession({ key: "ours", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "ours", createdAt: 1, lastActiveAt: 1, ws: null });
+  store.insertSession({ key: "mine", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: "mine", createdAt: 1, lastActiveAt: 1, ws: "x" });
+  store.insertSession({ key: "ours", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: "ours", createdAt: 1, lastActiveAt: 1, ws: null });
   const keys = ["remote:w:st:a", "remote:x:st:b", "remote:y:st:c", "remote:x:st:d:e", "remote:x:st:é", "remote:x", "remote:x:st:",
     "remote:x/z:st:f", "remote:x:st/z:g", "remote::st:h", "remote:x:st:i\nj", "nobody", "mine", "ours"];
   keys.forEach((key, i) => db.prepare("INSERT INTO jobs(id,session_key,name,command,cwd,port,token,state,started_at,restarts,log,watch,queued) VALUES (?,?,?,'true','/',?,?,?,?,0,'/dev/null',0,?)")

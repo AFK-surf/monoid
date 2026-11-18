@@ -73,3 +73,30 @@ test "a node's picture in a matte, the node's corners each its own: the frame dr
   let frames = t.drawn_instances().filter(fn(a) { a[5] == 4.0 })
   assert_eq(frames.map(fn(a) { (a[36], a[37], a[38], a[39]) }), [(12.0, 12.0, 0.0, 0.0)])
 }
+
+///|
+test "a node's picture at a rect in a matte, said to cover it: drawn in its own proportions, cut to the rect's middle, never stretched to it" {
+  // ("tall.jpg", 240 by 400, at a rect 100 by 60: covering it, its middle band shown across its whole width)
+  let t = Tester::new(fn(_c) {  }, w=200.0, h=100.0, images=[("tall.jpg", 240, 400)])
+  set_view_app(fn(root) {
+    root.box(fn(n) {
+      n
+      .width(Is(Some(200.0)))
+      .height(Is(Some(100.0)))
+      .image(Is(Some(("tall.jpg", "", 8192))))
+      .image_covers(Is(true))
+      .image_in(Is(Some(((10.0, 20.0, 100.0, 60.0), 0x000000FFL))))
+      |> ignore
+    })
+    |> ignore
+  })
+  t.draw()
+  let drawn = matte_drawn(t)
+  assert_eq(drawn.length(), 1, msg="\{Repr(drawn)}")
+  let (_, _, w, h, u0, v0, du, dv, _, _, _) = drawn[0]
+  // (as wide for as tall as the picture is: a point of the frame as much of the picture across as down)
+  assert_true(((w / du) / (h / dv) - 240.0 / 400.0).abs() < 0.001, msg="\{Repr(drawn[0])}")
+  // (the rect's left edge at the picture's, its middle band down: the frame's top over the rect's 20, cut there)
+  assert_true((u0 + 10.0 * du / w).abs() < 0.001, msg="\{Repr(drawn[0])}")
+  assert_true((v0 + 20.0 * dv / h - (1.0 - 0.36) / 2.0).abs() < 0.001, msg="\{Repr(drawn[0])}")
+}

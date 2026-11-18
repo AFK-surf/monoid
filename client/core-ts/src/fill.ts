@@ -266,14 +266,18 @@ export class Fill {
         const loaded = isObject(v) && typeof v.loaded === "number" ? v.loaded : 0;
         self.#moved(id, f.have + loaded, f.size);
       };
-      const reading = Effect.map(read(inner, call, heard, [0, 0], span.context), (got) => {
+      // (one not asked for is brought after all else: never asked twice at once on a slow link)
+      const asked = f.wanted ? call : { ...call, noHedge: true };
+      const reading = Effect.map(read(inner, asked, heard, [0, 0], span.context), (got) => {
         [ended, answer] = [true, got];
       });
-      // (one asked to load is what a person waits on itself: nothing else stops it but its being stopped)
+      // (one asked to load is what a person waits on itself: nothing else stops it but its being stopped; any other
+      // gives way to what is waited on, and to what its station's sync asks that is more urgent than the background,
+      // a read in the background too that is waited on by nobody: scheduler.ts `preempted`)
       const part = Effect.suspend(() =>
         f.wanted ? Effect.raceFirst(reading, stopped)
         : inner.waited.count > 0 ? Effect.void
-        : Effect.raceFirst(reading, Effect.raceFirst(inner.waited.begun(), stopped)),
+        : Effect.raceFirst(reading, Effect.raceFirst(inner.waited.begun(), Effect.raceFirst(inner.scheduler.preempted(station), stopped))),
       );
       const done = yield* Effect.result(inner.scheduler.ask(station, `${station} fill`, f.wanted ? Priority.asked : Priority.idle, part));
       span.end();

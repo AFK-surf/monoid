@@ -62,14 +62,29 @@ priv struct Bench {
 ///|
 /// Opens the window and runs `view` for every frame until it closes: the window a tree made once, `tree` (`view` the
 /// old frame around the old views it holds, put where `view` says: old_views_here), else `view` its one old view
-/// (view_host.mbt).
-pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit) -> Unit {
+/// (view_host.mbt). `theme`: the theme the tree's nodes are drawn in (set_view_app's).
+pub fn run(title : String, view : (Ctx) -> Unit, tree? : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
   // (an app's run on a host: what faults is told and its boundary shows it, the app going on: @view's boundary.mbt)
   @view.faults_stop.val = false
   match tree {
-    Some(make) => set_view_app(make, around=view)
-    None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore })
+    Some(make) => set_view_app(make, around=view, theme?)
+    None => set_view_app(fn(root) { old(root, view).grow(Is(1.0)) |> ignore }, theme?)
   }
+  start_host_window(title)
+}
+
+///|
+/// Opens the window and runs `tree`, made once, until it closes (`theme`: the theme its nodes are drawn in, followed
+/// as it changes). No old frame is built around it.
+pub fn run_tree(title : String, tree : (@view.View) -> Unit, theme? : () -> Theme) -> Unit {
+  @view.faults_stop.val = false
+  set_view_app(tree, theme?)
+  start_host_window(title)
+}
+
+///|
+/// The window `title` opened on the host, its frames and inputs handed to what was set to run in it (run, run_tree).
+fn start_host_window(title : String) -> Unit {
   bench.host = @hostapi.bench_mode()
   // (the app's own bench, bench_app: the framework's does not run beside it)
   bench.mode = if bench.host == bench_app { 0 } else { bench.host }
@@ -149,6 +164,17 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   paint_phase.val = 0
   scroll_paint_uncompared.val = false
   lists_scrolled.clear()
+  // (what the frame before left, to tell whether anything came since to cause what this one draws: frame_quiet)
+  let was_window = (c.window_w, c.window_h, c.scale)
+  let was_atlas = atlas_said.val
+  let events_now = @signals.untracked(fn() { hand.events.get() + hand.presses.get() })
+  let wake_due = (c.wake_at >= 0.0 && t >= c.wake_at - due_hair) ||
+    (looks_base.wake >= 0.0 && t >= looks_base.wake - due_hair) ||
+    (paint_base.wake >= 0.0 && t >= paint_base.wake - due_hair) ||
+    (match view_app.val {
+      Some(tree) => view_owes(tree) || (tree.wake() is Some(tw) && t >= tw - due_hair)
+      None => false
+    })
   // (the soft keyboard's height as the frame begins: device.mbt; the system's settings it is drawn by, kept with the
   // run's input: envrec.mbt)
   c.device_frame_start()
@@ -170,6 +196,25 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   faces_from_env()
   atlas_said.val = Some(h_atlas_generation())
   text_arrive()
+  // (whether nothing came since the frame before to cause anything of this one: no signal set since it ended (what
+  // the host's settings, the device and the faces said as this one began among them), no input, nothing from outside,
+  // nothing due, the window and its glyphs as they were: sizes_steady.mbt's first frame)
+  frame_quiet.val = frame_end_sets.val >= 0 &&
+    @signals.sets_said() == frame_end_sets.val &&
+    !fed &&
+    !taken &&
+    was_window == (w, h, scale) &&
+    was_atlas == atlas_said.val &&
+    events_now == events_seen.val &&
+    hand.typed.untracked() == typed_seen.val &&
+    outside_events.val == outside_seen.val &&
+    messages_in.is_empty() &&
+    outside_tickets.is_empty() &&
+    outside_takers.is_empty() &&
+    views_stirred.is_empty() &&
+    !wake_due &&
+    !paint_left() &&
+    !layout_left()
   // (built whole where what it read changed, painted alone where only what its paint read did, or of its looks by the
   // clock alone: frame_watch.mbt)
   // what is made once laid out, placed and drawn as its frame does; the old view in the room its node is given
@@ -281,6 +326,8 @@ fn on_frame(w : Double, h : Double, scale : Double, t : Double) -> Unit {
   }
   frame_afters_run()
   journal_frame_ended(t4)
+  // (as many as were set by its end: what is set after, a cause of the next: frame_quiet)
+  frame_end_sets.val = @signals.sets_said()
   frame_running.val = false
   frame_moment.val = -1.0
   frame_built.val = false

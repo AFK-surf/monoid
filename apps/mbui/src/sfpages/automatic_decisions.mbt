@@ -571,10 +571,8 @@ fn policy_body_node(v : @view.View, core : Core, station : String, policy : () -
   v.show(fn() { failed() is Some(_) }, fn(n) { @sf.page_note_node(n, fn() { failed().unwrap_or("") }, bad=fn() { true }) })
   // its words, on a card: pressed, edited
   @sf.page_card_node(v, fn(k) {
-    k.box(fn(w) {
+    @sf.action_box_node(k, fn() { text(policy(), "text") }, fn(_) { if !busy() { open("", None) } }, fn(w) {
       @sf.style_node(w, fn() { pol_words_box })
-      @sf.presses_node(w, fn() { if !busy() { open("", None) } })
-      w.says(By(fn() { Some(@view.said(Button, label=text(policy(), "text"))) })) |> ignore
       @sf.words_node(w, fn() { text(policy(), "text") }, fn() { pol_words }) |> ignore
     })
     |> ignore

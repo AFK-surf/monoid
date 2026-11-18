@@ -37,7 +37,7 @@ after(async () => {
 
 /// The commands a job of the test runs (and its wrapper: mv), each linked into a directory of its own: what is on the
 /// station's PATH, so no Node is.
-const TOOLS = ["sh", "mv", "cat", "curl", "sleep", "echo", "printf", "env", "python3", "git", "ls", "find", "sort", "rm", "mkdir", "cp", "dirname", "basename", "sed", "tr", "head", "wc", "uname", "ssh"];
+const TOOLS = ["sh", "ps", "mv", "cat", "curl", "sleep", "echo", "printf", "env", "python3", "git", "ls", "find", "sort", "rm", "mkdir", "cp", "dirname", "basename", "sed", "tr", "head", "wc", "uname", "ssh"];
 /// Where a command is on this machine: the first of the test's own PATH's directories, then the system's, that has it
 /// (no `which`, which a system need not have where the test expects it).
 function binOf(name: string): string {
@@ -249,6 +249,62 @@ test("jobs: job_start, stillfail-job notify, job_list, job_log, job_stop and a w
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0);
   assert.equal(alive(a.child.pid!), false);
+});
+
+test("a job running through a restart is followed again, its group the same, never started twice; the times kept are the wall's", { skip }, async () => {
+  const data = fresh("p53r");
+  const app = fresh("app");
+  const work = fresh("work");
+  writeFileSync(join(app, "BUILD"), "9500\n");
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({ origin: "http://127.0.0.1:9", station: "st-here", workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: null, peers: [], revocations: [] }));
+  const a = await launch(data, app);
+  await a.next("ready", (m) => m.ready === true);
+  const doorA = (await a.next("mcp", (m) => m.serving === "mcp")).port as number;
+  const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  let pgid = 0;
+  let jobId = "";
+  try {
+    store.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+    const job = JSON.parse((await tool(doorA, "t1", "job_start", { name: "keeper", command: "sleep 600" })).text);
+    jobId = job.id;
+    pgid = await within("its group recorded", 5_000, () => store.getJob(job.id)?.pgid ?? null);
+    assert.ok(alive(pgid, true));
+    a.tell({ op: "stop" });
+    assert.equal(await a.ended, 0);
+    assert.ok(alive(pgid, true), "a job goes on while the station is away");
+
+    // The next station on the same data: the group is the job's still (its start as the system says it, against the
+    // wall's time it was recorded at), so it is followed, not started again beside it.
+    const b = await launch(data, app, { STILLFAIL_PARTS_DOOR: "1" });
+    await b.next("ready", (m) => m.ready === true);
+    const doorB = (await b.next("mcp", (m) => m.serving === "mcp")).port as number;
+    await within("the jobs of before taken up", 10_000, () => (b.err().includes("jobs: the jobs of before taken up") ? true : null));
+    const listed = await within("the job listed again", 10_000, async () => {
+      const v = JSON.parse((await tool(doorB, "t1", "job_list")).text);
+      return Array.isArray(v) && v.length > 0 ? v : null;
+    });
+    assert.deepEqual(listed.map((j: any) => [j.id, j.state]), [[job.id, "running"]]);
+    const row = store.getJob(job.id)!;
+    assert.deepEqual([row.pgid, row.restarts ?? 0], [pgid, 0], b.err());
+    // The times the station keeps and says are the wall's (ms since the epoch), not its host clock's.
+    const at = await within("the machine sampled", 15_000, async () => {
+      const looked = await parts(doorB, "GET", "/route/resources");
+      assert.equal(looked.status, 200);
+      return typeof looked.body.at === "number" ? looked.body.at : null;
+    });
+    assert.ok(at > 1_700_000_000_000 && at < Date.now() + 60_000, `${at}`);
+    // Stopped: the group it ran in from the start ended.
+    assert.equal((await tool(doorB, "t1", "job_stop", { id: job.id })).text, `Job "keeper" (${job.id}) is stopped.`);
+    await within("its group ended", 10_000, () => (alive(pgid, true) ? null : true));
+    b.tell({ op: "stop" });
+    assert.equal(await b.ended, 0);
+  } finally {
+    // (what is left of it where this failed: its group, and a copy started beside it)
+    const now = jobId === "" ? null : store.getJob(jobId)?.pgid ?? null;
+    store.close();
+    for (const g of [pgid, now]) if (g !== null && g > 0 && alive(g, true)) process.kill(-g, "SIGKILL");
+  }
 });
 
 /// What the parts said to the station (StationParts, LiveBus), asked through the place a station run alone opens for a

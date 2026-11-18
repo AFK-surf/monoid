@@ -348,6 +348,20 @@ pub fn board_next_id() -> String {
 }
 
 ///|
+/// The model control of draft `id` (model_triple's `of`): what it is to run on, picked for it alone and kept by the
+/// core apart from a new chat's (`board:<id>`), its chat made with it (`newChat.create` `of`).
+pub fn board_pick_of(id : String) -> String {
+  "board:" + id
+}
+
+///|
+/// What was picked for draft `id` on `station` let go of: the draft deleted or never added.
+pub fn board_pick_forget(src : Source, station : String, id : String) -> Unit {
+  guard station != "" && !src.read_only else { return }
+  (src.call)("pick.set", { "station": Json::string(station), "of": Json::string(board_pick_of(id)), "clear": Json::boolean(true) }, answer_unread)
+}
+
+///|
 /// The task being written in 待派发 of each workspace: its key, kept while the board is away (a chat or the list shown
 /// in its place, the board made again as it comes back), so that its words and pictures, the core's composer's under
 /// it, are there again; a new one only once it is added or put away (board_writing_renew).
@@ -408,13 +422,17 @@ pub fn board_draft_add(
 }
 
 ///|
-/// The words of draft `id` changed in place, keeping its key, order and destination.
-pub fn board_draft_edit(src : Source, ws : String, id : String, title : String) -> Unit {
+/// Draft `id` changed in place (its panel's): its words and the station it goes to (`station`, named `station_name`),
+/// keeping its key, order and files. Words left empty keep the words it had where it carries no file.
+pub fn board_draft_set(src : Source, ws : String, id : String, title : String, station : String, station_name : String) -> Unit {
   let words = title.trim(chars=" \n\r\t").to_owned()
-  guard words != "" else { return }
   let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
-  guard was.iter().any(fn(d) { d.id == id && d.title != words }) else { return }
-  board_drafts_put(src, ws, was.map(fn(d) { if d.id == id { { ..d, title: words } } else { d } }))
+  guard was.iter().find_first(fn(d) { d.id == id }) is Some(d) else { return }
+  let title = if words == "" && d.files.is_empty() { d.title } else { words }
+  let station_name = if station == "" { d.station_name } else { station_name }
+  let station = if station == "" { d.station } else { station }
+  guard d.title != title || d.station != station || d.station_name != station_name else { return }
+  board_drafts_put(src, ws, was.map(fn(x) { if x.id == id { { ..x, title, station, station_name } } else { x } }))
 }
 
 ///|
@@ -426,6 +444,7 @@ pub fn board_draft_remove(src : Source, ws : String, id : String, discard_files?
     for d in was {
       if d.id == id {
         board_files_discard(src, ws, id, d.files)
+        board_pick_forget(src, d.station, id)
       }
     }
   }
@@ -474,7 +493,9 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
     toast_later(why)
   }
   let create = fn(taken : Json?) {
-    (src.call)("newChat.create", { "station": Json::string(d.station), "key": Json::string(key) }, fn(res) {
+    // (with what was picked for it: its own control's, as a new chat there runs where nothing was)
+    let made : Map[String, Json] = { "station": Json::string(d.station), "key": Json::string(key), "of": Json::string(board_pick_of(d.id)) }
+    (src.call)("newChat.create", Json::object(made), fn(res) {
       match res {
         Ok(_) => {
           board_draft_remove(src, ws, d.id, discard_files=false)

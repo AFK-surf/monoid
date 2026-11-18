@@ -540,6 +540,11 @@ export class Jobs {
     return running;
   }
 
+  /// Whether its process is still the station's to end: so until its end is taken in (`ended`), after the store says it ended.
+  isRunning(id: string): boolean {
+    return this.running.has(id);
+  }
+
   /// Its end said to the program, which takes it in (its record, its agent told, a service started again).
   private ended(id: string, running: Running, code: number | null, ranMs: number): Effect.Effect<void> {
     return Effect.promise(async () => {

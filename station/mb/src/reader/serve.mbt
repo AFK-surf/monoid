@@ -461,7 +461,7 @@ async fn Serving::answer(self : Serving, id : Json, conn : Json, who : Member, a
       }
       answers.write_string("{\"status\":\{status},\"body\":\{if text == "" { "\"\"" } else { text }}}")
     }
-    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"), level=9)
+    return self.whole(headers, @utf8.encode("{\"answers\":[\{answers}]}"))
   }
   // A mark the member puts on a chat or a session (api/routes/marks.ts): written here, Node told what changed.
   let marked = match (asked.value("method"), route_of_path(path)) {
@@ -585,7 +585,7 @@ fn Serving::read_path(
 ///|
 /// An answer's head and its body as it goes: the admin API's headers, compressed where the core asks so
 /// (mesh/compress.ts: zstd, from 512 bytes, at its level and window).
-async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200, level? : Int = 3) -> (Json, Bytes) raise {
+async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : Int = 200) -> (Json, Bytes) raise {
   let headers : Map[String, Json] = {
     "content-type": "application/json",
     "cache-control": "no-store",
@@ -598,7 +598,7 @@ async fn Serving::whole(self : Serving, asked : Json, bytes : Bytes, status? : I
   }
   let status = Json::number(status.to_double())
   if zstd && bytes.length() >= 512 {
-    let (_, out) = self.host.shell("zstd.compress", { "level": Json::number(level.to_double()), "window": 20 }, bytes~)
+    let (_, out) = self.host.shell("zstd.compress", { "level": 3, "window": 20 }, bytes~)
     headers["content-encoding"] = "zstd"
     return ({ "status": status, "headers": Json::object(headers) }, out.unwrap_or(b""))
   }
@@ -1235,7 +1235,7 @@ fn Serving::mark(
   match what {
     // A chat named by hand; none names it by its first message again. Answered as the chat is read.
     "title" => {
-      if found.get("surface") != Some(Json::string("ember")) {
+      if found.get("surface") != Some(Json::string("chat")) {
         return Text(400, error(word("renameOnlyStillfail")))
       }
       let name = title_of(input)
@@ -1451,7 +1451,7 @@ async fn Serving::say(
   let thread = Json::number(signed_number(id))
   let found = db.all("SELECT surface, hidden_at, home FROM threads WHERE id = ?", [thread])
   guard found is [t, ..] else { return error(404, "unknown thread \{id}") }
-  if t.get("surface") != Some(Json::string("ember")) {
+  if t.get("surface") != Some(Json::string("chat")) {
     return error(400, word("postOnlyStillfail"))
   }
   if body.length() > 1000000 {

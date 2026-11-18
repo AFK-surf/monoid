@@ -9,7 +9,7 @@ import { type Answer, type Request, error, json, param, segment } from "../reque
 import type { Route, Tools } from "../admin.ts";
 import { changed } from "./changed.ts";
 import { ioMessage, mime } from "../../read/sessions.ts";
-import { dir as thumbsDir, thumbnail, wanted as wantedThumb } from "../../drive/thumbs.ts";
+import { preview, dir as thumbsDir, thumbnail, wanted as wantedThumb } from "../../drive/thumbs.ts";
 import { poster, wanted as wantedPoster } from "../../drive/posters.ts";
 import { withLock, workspaceFile } from "../../sessions/archive.ts";
 import { roomOfSoon } from "../../sessions/footprint.ts";
@@ -65,9 +65,10 @@ const STREAMED = 8 * 1024 * 1024;
 
 /// The bytes of a file sent in a chat, answered as files.rs does; an error as it came. With `thumb`, an image's thumbnail
 /// (made by the image codecs off this thread when it is not yet: drive/thumbs.ts), or the image itself when it gets none
-/// (small already, not an image). One packed with its archived workspace is read out of the archive here, under the
-/// room's lock (sessions/archive.ts).
-async function file(tools: Tools, r: Request, key: string, name: string, thumb: boolean): Promise<Answer> {
+/// (small already, not an image). With `thumb` 2, its preview for the whole-window viewer, or the image itself where it
+/// gets none: a core tells which by the bytes, the image's size (what a station from before answers too). One packed
+/// with its archived workspace is read out of the archive here, under the room's lock (sessions/archive.ts).
+async function file(tools: Tools, r: Request, key: string, name: string, thumb: "1" | "2" | null): Promise<Answer> {
   const found = await uploaded(tools, r, key, name);
   if ("status" in found) return found;
   if ("archived" in found) {
@@ -76,7 +77,8 @@ async function file(tools: Tools, r: Request, key: string, name: string, thumb: 
     const bytes = await withLock(room, async () => (await readFile(path).catch(() => null)) ?? workspaceFile(room, relative));
     return bytes === null ? error(404, "station.files.notFound") : answered(found.contentType, bytes);
   }
-  const small = thumb && tools.data !== undefined ? await thumbnail(found.file, thumbsDir(tools.data)) : null;
+  const made = thumb === "1" ? thumbnail : thumb === "2" ? preview : null;
+  const small = made !== null && tools.data !== undefined ? await made(found.file, thumbsDir(tools.data)) : null;
   return small !== null ? fromDisk(small.type, small.path) : fromDisk(found.contentType, found.file);
 }
 
@@ -260,7 +262,10 @@ export const routes = (tools: Tools): Route[] => {
         if (action === undefined) return read(r, "session", { key, viewer: r.viewer, lang: r.lang, turns: param(r, "turns"), jobs: param(r, "jobs") });
         // `brief=1`: in brief (what a history shows unopened); `from`, `to`: those entries whole, as one is opened.
         if (action === "timeline") return read(r, "timeline", { key, before: param(r, "before"), limit: param(r, "limit"), lang: r.lang, from: param(r, "from"), to: param(r, "to"), brief: param(r, "brief"), after: param(r, "after") });
-        if (action === "files") return file(tools, r, key, param(r, "name") ?? "", param(r, "thumb") === "1");
+        if (action === "files") {
+          const thumb = param(r, "thumb");
+          return file(tools, r, key, param(r, "name") ?? "", thumb === "1" || thumb === "2" ? thumb : null);
+        }
         if (action === "parts") return part(tools, r, key);
         if (action === "poster") return posterOf(tools, r, key, tools.agents?.hub.config().dataDir);
         if (action === "transcript") return read(r, "transcriptFile", { key, lang: r.lang });

@@ -8,7 +8,7 @@
 pub let served_routes : Array[String] = [
   "GET /admin/api/chats", "GET /admin/api/sessions", "GET /admin/api/sessions/*", "GET /admin/api/sessions/*/timeline",
   "GET /admin/api/threads", "GET /admin/api/threads/*", "GET /admin/api/threads/*/entries", "GET /admin/api/threads/*/letters",
-  "POST /admin/api/batch", "GET /admin/api/jobs", "GET /admin/api/jobs/*", "GET /admin/api/jobs/*/log", "POST /admin/api/changed/chats",
+  "GET /admin/api/jobs", "GET /admin/api/jobs/*", "GET /admin/api/jobs/*/log", "POST /admin/api/changed/chats",
   "POST /admin/api/changed/sessions", "POST /admin/api/changed/threads", "GET /admin/api/events", "PUT /admin/api/threads/*/read",
   "PUT /admin/api/threads/*/hidden", "PUT /admin/api/threads/*/muted", "PUT /admin/api/threads/*/keep", "DELETE /admin/api/threads/*/keep",
   "PUT /admin/api/sessions/*/pin", "DELETE /admin/api/sessions/*/pin", "POST /admin/api/threads/*/messages", "POST /admin/api/sessions/*/title",

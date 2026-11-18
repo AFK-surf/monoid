@@ -3,7 +3,15 @@
 
 ///|
 /// rows.ts STILLFAIL_SURFACE.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
+
+///|
+/// rows.ts STILLFAIL_CONNECT.
+let internal_connect : String = "chat"
+
+///|
+/// rows.ts FORMER_OWN_NAMES.
+let former_own_names : Array[String] = ["ember", "stillfail"]
 
 ///|
 /// rows.ts MANUAL.

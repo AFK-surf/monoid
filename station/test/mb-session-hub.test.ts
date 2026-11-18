@@ -249,7 +249,7 @@ test("what the actors are told in the station's words, as actor.ts says it", { s
     await both(p, "retryable", retryable, turn);
   }
   for (const at of [0, 1_800_000_000_123, -1, 253_402_300_799_999]) await both(p, "timed", timed, "hello", at);
-  for (const m of [{ surface: "ember", connect: "ember", message: { author: "a@x.com" } }, { surface: "slack:T1", connect: "cl", message: { author: "U1" } }]) await both(p, "personRef", personRef, m);
+  for (const m of [{ surface: "chat", connect: "chat", message: { author: "a@x.com" } }, { surface: "slack:T1", connect: "cl", message: { author: "U1" } }]) await both(p, "personRef", personRef, m);
 });
 
 test("cards and their options, as args.ts keeps them and refuses them", { skip }, async () => {
@@ -476,7 +476,7 @@ class Surface {
     this.side = side;
   }
   botUserId() { return this.bot; }
-  botName() { return "ember"; }
+  botName() { return "chat"; }
   workspace() { return "T1"; }
   async post(thread: Json, message: string, files: Json[]) {
     this.side.log.push(["post", this.connect, `${thread.channel}/${thread.threadTs}`, message, files.map((f: Json) => f.name)]);
@@ -645,6 +645,9 @@ class HubPair {
   now = 0;
   readonly a: Side = { log: [], states: {}, actors: new Map() };
   readonly b: Side = { log: [], states: {}, actors: new Map() };
+  /// What the program asked of the world as it handed over (hub.ts `handOver`: settled, frozen, settled again), with
+  /// the limit it gave each.
+  readonly handoverAsks: Json[] = [];
   readonly tsA: Store;
   readonly tsB: Store;
   hub: Hub;
@@ -828,7 +831,8 @@ class HubPair {
       case "fs.write": await mkdir(join(this.shadow(x.path), ".."), { recursive: true }); await writeFile(this.shadow(x.path), x.text); return null;
       case "fs.read": return readFile(this.shadow(x.path), "utf8").catch(() => null);
       case "fs.rm": await rm(this.shadow(x.path), { force: true }); return null;
-      case "actors.settled": case "drivers.freeze": case "runners.allLeft": return {};
+      case "actors.settled": case "drivers.freeze": this.handoverAsks.push([what, x.limitMs]); return {};
+      case "runners.allLeft": return {};
       case "runners": return this.runners;
       case "runnerId": return runnerId(x.runtime, x.key);
       case "sandboxNames.takeUp": {
@@ -902,7 +906,7 @@ class HubPair {
   }
   #world() {
     const chats: Record<string, Json> = Object.fromEntries(CHATS.map(([id, bot]) => [id, { botUserId: bot, workspace: "T1", has: ["download", "history"] }]));
-    chats.ember = { botUserId: "UEMBER", workspace: null, has: [] };
+    chats.chat = { botUserId: "UEMBER", workspace: null, has: [] };
     return { config: this.config, workspaces: this.workspaces, station: "st", links: true, chats, states: this.a.states, now: this.now, moveOn: this.moveOn ?? null };
   }
   /// The config, the workspaces or the actors' states changed, alike on both.
@@ -1167,7 +1171,7 @@ test("holds, workspaces, held chats, recovery, idle processes and the pages' com
   await pair.advance(5_000);
   pair.compareStores("lengths written");
   // What the station reads of its connects and workspaces.
-  for (const c of ["cl", "gpt", "team", "ember", "pinned", "nope"]) {
+  for (const c of ["cl", "gpt", "team", "chat", "pinned", "nope"]) {
     await pair.call("surface", c);
     await pair.call("modelsFor", c);
     await pair.call("modelsFirst", c, "U1");
@@ -1211,6 +1215,8 @@ test("a handover and its taking up, runners nobody holds, a profile gone, as hub
   pair.compareStores("a profile gone");
   // Handed over: held, every actor's snapshot taken (those cold and holding nothing closed), the drivers let go.
   await pair.call("handOver");
+  // What the drivers took in as they froze settled too before the snapshots, as hub.ts does.
+  assert.deepEqual(pair.handoverAsks, [["actors.settled", 30_000], ["drivers.freeze", 30_000], ["actors.settled", 30_000]]);
   await pair.call("holds", "drain");
   // The next station takes up the snapshots, and of the runners it finds, those of sessions running.
   pair.runners = ["claude-zz", "term-1"];
@@ -1251,7 +1257,7 @@ test("chats made, said in, bound, archived and deleted, as lifecycle.ts does", {
   await pair.call("newSession", { runtime: "codex", createdBy: "a@x.com", context: 200_000 });
   // Chats: one opened with a session, another joined to it, said in, archived by hand and shown again.
   const first = pair.tsA.listSessions().find((r) => r.title === "First")!;
-  const second = pair.tsA.listSessions().find((r) => r.key !== first.key && r.connect === "ember")!;
+  const second = pair.tsA.listSessions().find((r) => r.key !== first.key && r.connect === "chat")!;
   const chat: Json = await pair.call("openChat", first.key, "a@x.com", "A chat of its own");
   await pair.call("openChat", "nobody", "a@x.com", null);
   await pair.call("addToThread", chat.id, second.key);

@@ -246,6 +246,7 @@ fn values_of(v : Json) -> Array[@jsjson.JValue] {
 
 ///|
 fn Store::edit(self : Store, surface : Json, channel : Json, thread_ts : Json, ts : Json, text : Json, bounded : Bool) -> Json raise {
+  let surface = own_name(surface)
   self.with_(changes => {
     let thread = self.thread_at(surface, channel, thread_ts)
     guard thread is Object(t) else { return Json::null() }

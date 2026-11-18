@@ -52,6 +52,10 @@ priv struct Mesh {
   waiting : Array[Json]
   clients : Array[Client]
   mut binds : Int
+  /// Serialises `bind` and the changes to `bound_relays` and `bound_congestion` reconciled there, so two Nodes binding
+  /// a fresh front side by side (a handover's new Node and the old Node's `#watch` linking again) never both run
+  /// `iroh.bind` and leave an unclosed endpoint of the same key on the relays.
+  bind_lock : @effect.Semaphore
 }
 
 ///|
@@ -74,6 +78,7 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     waiting: [],
     clients: [],
     binds: 0,
+    bind_lock: @effect.Semaphore::new(1),
   }
   // `streams`: how it hands Node the streams the other end opens and what it does (front.rs `STREAMS`): 5, each with
   // its index, a route Node gave it (`route`, a segment `*` any one) to what answers it, and the mesh's scopes and
@@ -480,19 +485,36 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
       guard arg("key") is String(key) else { fail("no key") }
       let options = arg("options")
       guard options is Object(_) else { fail("no options") }
-      let said = self.bind(options, unhex(key))
-      client.streams = streams
-      self.binds += 1
-      client.bound = self.binds
-      if self.endpoint is Some(endpoint) {
-        ignore(self.host.shell("iroh.meshSubscribe", { "id": endpoint, "socket": client.conn.id }))
-      }
-      let waited = self.waiting.copy()
-      self.waiting.clear()
-      for c in waited {
-        self.give(c)
-      }
-      said
+      let key_bytes = unhex(key)
+      self.bind_lock.with_permit(() => {
+        // (a Node gone while it waited here binds nothing, nor is it given what comes)
+        if client.gone {
+          fail("the endpoint is closed")
+        }
+        let said = self.bind(options, key_bytes)
+        if client.gone {
+          fail("the endpoint is closed")
+        }
+        if self.endpoint is Some(endpoint) {
+          ignore(self.host.shell("iroh.meshSubscribe", { "id": endpoint, "socket": client.conn.id }))
+          if client.gone {
+            ignore(self.host.shell("iroh.meshUnsubscribe", { "id": endpoint, "socket": client.conn.id })) catch {
+              _ => ()
+            }
+            fail("the endpoint is closed")
+          }
+        }
+        // (nothing waits from here on: one gone by now has not parted yet, and its part undoes this)
+        client.streams = streams
+        self.binds += 1
+        client.bound = self.binds
+        let waited = self.waiting.copy()
+        self.waiting.clear()
+        for c in waited {
+          self.give(c)
+        }
+        said
+      })
     }
     "route" => {
       client.front = arg("front")
@@ -588,7 +610,31 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
     }
     "conn.answers" => self.host.shell("conn.answers", { "id": arg("conn"), "within": arg("within") }).0
     "conn.seen" => self.seen(arg("conn"))
-    "online" | "insertRelay" | "removeRelay" | "publicRelays" | "keep" | "setCongestion" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
+    // (what is on the endpoint now, which the next bind is reconciled with: one bind's reconciling at a time)
+    "insertRelay" | "removeRelay" | "setCongestion" =>
+      self.bind_lock.with_permit(() => {
+        let args = match asked_args(arg) {
+          Object(m) => {
+            m["id"] = self.bound()
+            Json::object(m)
+          }
+          _ => { "id": self.bound() }
+        }
+        let said = self.host.shell("iroh." + op, args).0
+        match (op, field(args, "congestion"), field(args, "url")) {
+          ("setCongestion", String(c), _) => self.bound_congestion = c
+          ("insertRelay", _, String(url)) =>
+            if !has_relay(self.bound_relays, url) {
+              self.bound_relays.push(url)
+            }
+          ("removeRelay", _, String(url)) =>
+            self.bound_relays = self.bound_relays.filter(u => bare_url(u) != bare_url(url))
+          _ => ()
+        }
+        said
+      })
+    // (not under `bind_lock`: `online` waits up to 15 s for a relay, which a bind must not wait behind)
+    "online" | "publicRelays" | "keep" | "holdIncoming" | "setRelayEntries" | "networkChange" | "disabledRelays" | "meshConfigure" | "meshRemove" | "meshAttachLeaf" | "meshDetachLeaf" => {
       let args = match asked_args(arg) {
         Object(m) => {
           m["id"] = self.bound()
@@ -596,19 +642,7 @@ async fn Mesh::act(self : Mesh, client : Client, ask : Json, op : String, arg : 
         }
         _ => { "id": self.bound() }
       }
-      let said = self.host.shell("iroh." + op, args).0
-      // (what is on the endpoint now, which the next bind is reconciled with)
-      match (op, field(args, "congestion"), field(args, "url")) {
-        ("setCongestion", String(c), _) => self.bound_congestion = c
-        ("insertRelay", _, String(url)) =>
-          if !has_relay(self.bound_relays, url) {
-            self.bound_relays.push(url)
-          }
-        ("removeRelay", _, String(url)) =>
-          self.bound_relays = self.bound_relays.filter(u => bare_url(u) != bare_url(url))
-        _ => ()
-      }
-      said
+      self.host.shell("iroh." + op, args).0
     }
     "addAddr" => self.host.shell_sync("iroh.addAddr", { "id": self.bound(), "addr": arg("addr") })
     "relayStatus" => self.host.shell_sync("iroh.relayStatus", { "id": self.bound() })

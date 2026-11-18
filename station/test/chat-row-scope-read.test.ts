@@ -59,9 +59,9 @@ test("a change's sidebar items and a chat's view read their own shares and opene
   const dir = mkdtempSync(join(tmpdir(), "chat-row-scope-"));
   const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
   try {
-    store.insertSession({ key: "k", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: "t", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
-    const chat = store.openThread("ember", "CHAT", "1.1", null, "ada@x.com");
-    store.joinThread(chat.id, "k", "ember");
+    store.insertSession({ key: "k", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: "t", createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
+    const chat = store.openThread("chat", "CHAT", "1.1", null, "ada@x.com");
+    store.joinThread(chat.id, "k", "chat");
     store.insertMessage(newMessage(chat.id, "1.2", "person", "ada@x.com", "看一下"));
     const shared = JSON.stringify([{ workspace: "w2", name: "W2", used: Date.now() }]);
     const share = store.db.prepare("INSERT INTO chat_shares (session, shared, write, by, at) VALUES (?, ?, 0, 'ada@x.com', ?)");
@@ -69,7 +69,7 @@ test("a change's sidebar items and a chat's view read their own shares and opene
     share.run("k", shared, Date.now());
     open.run("k", "p", "o");
     for (let i = 0; i < 500; i++) {
-      store.insertSession({ key: `s${i}`, connect: "ember", runtime: "claude", profile: "cc", workspace: `/w/${i}`, token: `t${i}`, createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
+      store.insertSession({ key: `s${i}`, connect: "chat", runtime: "claude", profile: "cc", workspace: `/w/${i}`, token: `t${i}`, createdAt: 1, lastActiveAt: 1, createdBy: "ada@x.com" } as any);
       share.run(`s${i}`, shared, Date.now());
       open.run(`c${i}`, `p${i}`, `o${i}`);
       open.run(`d${i}`, "k2", `q${i}`);
@@ -145,25 +145,25 @@ test("the jobs up are listed with their own chats, not every job and chat the st
   const dir = mkdtempSync(join(tmpdir(), "chat-row-scope-"));
   const store = Store.open(join(dir, "stillfail.db"), join(dir, "archive"));
   try {
-    const session = (key: string, at: number) => store.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: at, lastActiveAt: at, createdBy: "ada@x.com" } as any);
+    const session = (key: string, at: number) => store.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: `/w/${key}`, token: key, createdAt: at, lastActiveAt: at, createdBy: "ada@x.com" } as any);
     const job = (id: string, key: string, state: string, at: number, port: number | null = null) =>
       store.insertJob({ id, sessionKey: key, name: id, command: "sleep 9", cwd: "/", port, token: id, state, pgid: null, exitCode: null, startedAt: at, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
     // A job running in a listed chat, and a service up in one whose chat is archived.
     session("k", 10);
-    const chat = store.openThread("ember", "CHAT", "1.1", null, "ada@x.com");
-    store.joinThread(chat.id, "k", "ember");
+    const chat = store.openThread("chat", "CHAT", "1.1", null, "ada@x.com");
+    store.joinThread(chat.id, "k", "chat");
     store.setThreadTitle(chat.id, "修登录");
     session("old", 5);
-    const gone = store.openThread("ember", "CHAT", "2.1", null, "ada@x.com");
-    store.joinThread(gone.id, "old", "ember");
+    const gone = store.openThread("chat", "CHAT", "2.1", null, "ada@x.com");
+    store.joinThread(gone.id, "old", "chat");
     store.setArchived("old", true, MANUAL);
     job("j1", "k", "running", 3);
     job("j2", "old", "exited", 2, 8080);
     // And 300 chats, listed and archived, each with jobs long over.
     for (let i = 0; i < 300; i++) {
       session(`s${i}`, 1);
-      const t = store.openThread("ember", "CHAT", `3.${i}`, null, "ada@x.com");
-      store.joinThread(t.id, `s${i}`, "ember");
+      const t = store.openThread("chat", "CHAT", `3.${i}`, null, "ada@x.com");
+      store.joinThread(t.id, `s${i}`, "chat");
       if (i % 2 === 0) store.setArchived(`s${i}`, true, MANUAL);
       job(`x${i}`, `s${i}`, "exited", 1);
     }

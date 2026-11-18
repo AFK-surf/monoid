@@ -9,7 +9,9 @@
 // - "fileLock" {path}: the lock taken ({handle}), "fileUnlock" {handle};
 // - "words": the catalogs the program carries; "iso" {ms}: an instant as toISOString says it;
 // - "loopback" {path, query, ready, place, lang}: what the loopback port says;
-// - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt).
+// - "p5_5" {step, …}: P5-5's live parts on a data directory of the test's (live_p5_5_harness.mbt);
+// - "saidOf" {key, lang}, "log" {level, at, message}, "noted" {text}, "treeBytes" {program, path}, "helperEvict"
+//   {dir}, "helperRequest" {program, app, dir, launch, ask}: what station/test/mb-live-canary-fixes.test.ts holds of the parts live canaries found wrong.
 
 ///|
 pub async fn harness(host : @host.Host) -> Unit {
@@ -186,6 +188,48 @@ pub async fn harness(host : @host.Host) -> Unit {
         Ok({ "zh": zh, "en": en })
       }
       "iso" => Ok(Json::string(iso_time(match v("ms") { Some(Number(m, ..)) => m; _ => 0.0 })))
+      // (what a driver's error says in the station's language: live_p5_2_io.mbt `said_of`)
+      "saidOf" => {
+        let lang = s("lang")
+        p52_lang_fn.val = () => lang
+        Ok(Json::string(said_of(@agent_drivers.Said(s("key")))))
+      }
+      // (a line of the station's log, and one a part noted, written to stderr: live_p5_1.mbt)
+      "log" => {
+        p51_log(s("level"), s("at"), s("message"))
+        Ok(Json::null())
+      }
+      "noted" => {
+        noted(s("text"))
+        Ok(Json::null())
+      }
+      // (a tree's size measured by the footprint builder of the program at `program`: live_p5_3_remote.mbt)
+      "treeBytes" => Ok(Json::number(p53_tree_bytes_by(host, s("program"), s("path"))))
+      // (a still.fail Helper holding its lock with no socket ended before the next is launched: live_p5_4_screens.mbt)
+      "helperEvict" => {
+        p54_helper_evict(host, s("dir"))
+        Ok(Json::null())
+      }
+      // (still.fail Helper asked as P5-4 asks it, over the shell's Unix socket: started, where it is not up, by
+      // `launch` {program, args} given its socket and token, as `p54_helper_launch` launches it)
+      "helperRequest" => {
+        let launcher = strs("launch")
+        let io = @screens.host_io(host, p54_screen_procs(host), p54_screen_os_of(s("program")), p54_screen_words())
+        let opened = async fn(_app : String, env : Array[(String, String)]) {
+          ignore(spawn(host, launcher[0], launcher[1:].to_array(), env=env_all() + env, group=true)) catch {
+            SysError(why) => raise Failure(why)
+          }
+        }
+        let dir = s("dir")
+        let helper = @screens.HelperApp::new(io, s("app"), dir, launch=Some(p54_helper_launch(host, dir, opened)))
+        let said = p54_of_jv(helper.request(p54_jv(v("ask").unwrap_or(Json::null())))) catch {
+          e => { "error": Json::string(said_of(e)) }
+        }
+        helper.quit() catch {
+          _ => ()
+        }
+        Ok(said)
+      }
       // (P5-5's live parts made on a data directory of the test's: live_p5_5_harness.mbt)
       "p5_5" => p5_5_harness(host, ask)
       "loopback" => {

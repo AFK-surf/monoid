@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { type Head, type Rec, type Row, Folded, OWN_LOG, RESTORE_ORDER, THREAD_COLUMNS, asHead, attachedPaths, bumpedTs, decodeBatch } from "./replica-format.ts";
 import { headFile } from "./replica-export.ts";
-import { STILLFAIL_SURFACE } from "../../src/store/rows.ts";
+import { FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "../../src/store/rows.ts";
 import { NotEmpty, type Outcome, type Ready, copyDir, moved, outcomeFile, readyFile, restoreDir } from "../../src/replica/restore.ts";
 export * from "../../src/replica/restore.ts";
 
@@ -98,6 +98,9 @@ export function build(db: string, dir: string, files: string, dataDir: string, n
               if (!has(rec.r)) continue;
               const r = shaped(rec.r, rec.row, head.dataDir, dataDir);
               // (a connect of the station retired here named as it is here)
+              // (the station's own chats, as a copy from before the rename names them)
+              if (rec.r === "threads" && FORMER_OWN_NAMES.includes(r.surface as string)) r.surface = STILLFAIL_SURFACE;
+              if ((rec.r === "sessions" || rec.r === "thread_sessions") && FORMER_OWN_NAMES.includes(r.connect as string)) r.connect = STILLFAIL_CONNECT;
               if ((rec.r === "sessions" || rec.r === "thread_sessions") && typeof r.connect === "string" && connects[r.connect] !== undefined) r.connect = connects[r.connect]!;
               // (its workspace as it is said here)
               if (rec.r === "sessions" && merge && ws !== undefined) r.ws = ws;

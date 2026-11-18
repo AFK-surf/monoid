@@ -2935,6 +2935,7 @@ let en : Map[String, String] = {
   "web-main.board.new_here": "Add a task to To do",
   "web-main.board.add": "Add",
   "web-main.board.dispatch": "Dispatch",
+  "web-main.board.edit": "Edit task",
   "web-main.board.cancel": "Cancel",
   "web-main.board.goes_on": "Run on",
   "web-main.board.start": "Start",

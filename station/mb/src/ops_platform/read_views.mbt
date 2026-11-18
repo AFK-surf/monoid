@@ -239,7 +239,7 @@ pub fn author_name(
       None => None
     }
     let connect = match via {
-      Some(v) if v != "ember" => Some(v)
+      Some(v) if v != "chat" => Some(v)
       _ => session_connect
     }
     let named = match connect {
@@ -258,10 +258,10 @@ pub fn author_name(
       None,
     )
   }
-  if surface == Some("ember") {
+  if surface == Some("chat") {
     return (if author == "local" { admin } else { Some(env_get(names, author).unwrap_or(author)) }, None)
   }
-  let connect = match members.search_by(m => m.1 != "ember") {
+  let connect = match members.search_by(m => m.1 != "chat") {
     Some(k) => Some(members[k].1)
     None => None
   }

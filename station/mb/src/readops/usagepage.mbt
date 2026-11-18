@@ -928,7 +928,7 @@ fn usage_answer(
       guard one(db, "SELECT * FROM threads WHERE id = ?", [id]) is Some(t) else {
         continue
       }
-      let own = field(t, "surface") == Json::string("ember")
+      let own = field(t, "surface") == Json::string("chat")
       let first = if !own &&
         field(t, "title") is Null &&
         field(t, "auto_title") is Null {
@@ -944,7 +944,7 @@ fn usage_answer(
         let connect = match
           one(
             db,
-            "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'ember' ORDER BY joined_at, rowid LIMIT 1",
+            "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'chat' ORDER BY joined_at, rowid LIMIT 1",
             [id],
           ) {
           Some(r) =>

@@ -539,9 +539,7 @@ fn list_empty_node(v : @view.View, read : () -> (ChatsView?, String?), filter : 
                 @sf.t(if stations() > 1 { "android-chat.home.empty.many" } else { "android-chat.home.empty.one" })
               }, fn() { empty_note })
               |> ignore
-              b.box(fn(k) {
-                @sf.presses_node(k, fn() { open_page(NewChat) })
-                k.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-chat.newChat"))) })) |> ignore
+              @sf.action_box_node(b, fn() { @sf.t("android-chat.newChat") }, fn(_) { open_page(NewChat) }, fn(k) {
                 @sf.words_node(k, fn() { @sf.t("android-chat.newChat") }, fn() { empty_link }) |> ignore
               })
               |> ignore

@@ -411,8 +411,8 @@ async fn P53Remote::asked(self : P53Remote, f : String, args : Array[Json]) -> J
       ignore(host.shell("fs.remove", { "path": p53_s(s(0)), "recursive": p53_b(true) }))
       Json::null()
     }
-    "node.treeBytes" => p53_n(@jobs_host.tree_bytes(s(0)))
-    "node.roomInfo" => p53_obj([("bytes", p53_n(@jobs_host.tree_bytes(s(0)))), ("seenAt", p53_n(self.rooms.seen_at(s(0)).unwrap_or(0.0)))])
+    "node.treeBytes" => p53_n(p53_tree_bytes(self.bus, s(0)))
+    "node.roomInfo" => p53_obj([("bytes", p53_n(p53_tree_bytes(self.bus, s(0)))), ("seenAt", p53_n(self.rooms.seen_at(s(0)).unwrap_or(0.0)))])
     "node.load" => self.measured_load()
     "node.workspaceSize" => {
       let limit = p53_num(p53_obj([("n", a(1))]), "n").unwrap_or(@jobs_host.default_limit)
@@ -756,6 +756,31 @@ async fn p53_workspace_size(bus : LiveBus, path : String, limit : Double) -> @jo
   } else {
     { bytes, complete: false, truncated: true }
   }
+}
+
+///|
+/// The size of a tree on its disk (ops/storage.ts `treeBytes`, as `@jobs_host.tree_bytes` asks it), measured by the
+/// footprint builder in a process of its own: walked here, a mirror's room of a hundred GB held the station's loop for
+/// half a minute. Nothing where it could not be measured.
+async fn p53_tree_bytes(bus : LiveBus, path : String) -> Double {
+  p53_tree_bytes_by(bus.host, p53_program(bus), path)
+}
+
+///|
+/// `p53_tree_bytes` by the program at `reader`.
+async fn p53_tree_bytes_by(host : @host.Host, reader : String, path : String) -> Double {
+  // (a builder nobody waits on: yields the machine, its disk too, to the foreground; mb-reader.ts BACKGROUND_BUILDERS)
+  let (program, args) = p53_backgrounded(reader, ["--builder", "footprint", "--sep", sep()])
+  let proc = spawn(host, program, args, stdin_piped=true, stdout=Piped, stderr=Ignored) catch {
+    _ => return 0.0
+  }
+  let ask = p53_obj([("path", p53_s(path)), ("maxEntries", p53_i(1_000_000)), ("maxDurationMs", p53_i(60_000))])
+  ignore(proc.write(@utf8.encode(ask.stringify() + "\n")))
+  proc.end_input()
+  let (_, _, out, _) = proc.finished() catch { _ => return 0.0 }
+  let line = p53_utf8(out).split("\n").to_array()
+  let said = if line.length() > 0 { attempt(() => @json.parse(line[0].to_string())).unwrap_or(Json::null()) } else { Json::null() }
+  p53_num(said, "size").unwrap_or(0.0)
 }
 
 ///|

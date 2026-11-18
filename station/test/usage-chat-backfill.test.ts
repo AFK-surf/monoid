@@ -42,7 +42,7 @@ test("old chat totals fill in bounded resumable batches while writes and workspa
     const addCard = store.db.prepare("INSERT INTO card_outcomes (thread, n, author, labels, answered, said) VALUES (?, ?, 'agent', '[]', 1, ?)");
     const ids: number[] = [];
     for (let i = 0; i < 48; i++) {
-      const t = store.openThread(i % 2 ? "slack:one" : "ember", `${i}`, `${i}`, null, null).id;
+      const t = store.openThread(i % 2 ? "slack:one" : "chat", `${i}`, `${i}`, null, null).id;
       ids.push(t);
       if (i % 4 !== 0) store.joinThread(t, i % 2 ? "a" : "b", "connect");
       if (i % 5 === 0) store.joinThread(t, "home", "connect");
@@ -90,7 +90,7 @@ test("an incomplete chat summary is omitted without holding a reader or rebuildi
   const dir = mkdtempSync(join(tmpdir(), "usage-chat-wait-"));
   const path = join(dir, "stillfail.db");
   let store = Store.open(path);
-  store.openThread("ember", "old", "old", null, null);
+  store.openThread("chat", "old", "old", null, null);
   oldSchema(store);
   store.close();
   store = Store.open(path);
@@ -132,7 +132,7 @@ test("an incomplete chat summary does not attempt to fill a missing index", asyn
   const dir = mkdtempSync(join(tmpdir(), "usage-chat-error-"));
   const path = join(dir, "stillfail.db");
   const store = Store.open(path);
-  const thread = store.openThread("ember", "old", "old", null, null).id;
+  const thread = store.openThread("chat", "old", "old", null, null).id;
   store.db.prepare("INSERT INTO card_outcomes VALUES (?, 1, 'agent', '[]', 1, 0)").run(thread);
   oldSchema(store);
   installUsageChatStats(store.db);
@@ -151,7 +151,7 @@ test("maintained chat totals agree with visible records through membership and c
     const addSession = (key: string, ws: string | null) => store.insertSession({ key, connect: key, runtime: "claude",
       profile: "cc", workspace: `/w/${key}`, token: key, ws, createdAt: 1, lastActiveAt: 1 });
     for (let i = 0; i < 6; i++) addSession(`s${i}`, ["A", "B", null][i % 3]!);
-    const threads = Array.from({ length: 12 }, (_, i) => store.openThread(i % 2 ? "slack:w" : "ember", `${i}`, `${i}`, null, null).id);
+    const threads = Array.from({ length: 12 }, (_, i) => store.openThread(i % 2 ? "slack:w" : "chat", `${i}`, `${i}`, null, null).id);
     let seed = 173;
     const next = (n: number) => { seed = (seed * 48271) % 2147483647; return seed % n; };
     const db = store.db;
@@ -168,7 +168,7 @@ test("maintained chat totals agree with visible records through membership and c
         case 5: db.prepare("DELETE FROM card_outcomes WHERE thread = ? AND n = ?").run(thread, n); break;
         case 6: db.prepare("INSERT OR REPLACE INTO closed_cards VALUES (?, ?, ?, 1)").run(thread, n, next(2) ? "agent" : "person"); break;
         case 7: db.prepare("INSERT OR REPLACE INTO thread_sessions (thread, session, connect, joined_at) VALUES (?, ?, 'connect', 1)").run(thread, session); break;
-        case 8: db.prepare("UPDATE threads SET surface = ? WHERE id = ?").run(next(2) ? "slack:w" : "ember", thread); break;
+        case 8: db.prepare("UPDATE threads SET surface = ? WHERE id = ?").run(next(2) ? "slack:w" : "chat", thread); break;
         case 9: db.prepare("DELETE FROM closed_cards WHERE thread = ? AND n = ?").run(thread, n); break;
       }
       while (!backfillUsageChatStats(db, 4).done) {}
@@ -193,7 +193,7 @@ test("moving a session does not rewrite all of its chat statistics in the foregr
     store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
       token: "s", ws: "A", createdAt: 1, lastActiveAt: 1 });
     for (let i = 0; i < 80; i++) {
-      const thread = store.openThread("ember", `${i}`, `${i}`, null, null).id;
+      const thread = store.openThread("chat", `${i}`, `${i}`, null, null).id;
       store.joinThread(thread, "s", "s");
     }
     store.db.exec(`CREATE TEMP TABLE member_changes (n INTEGER NOT NULL);
@@ -209,7 +209,7 @@ test("moving a session does not rewrite all of its chat statistics in the foregr
     let step: { done: boolean; processed: number };
     do { step = backfillUsageChatStats(store.db, 5); assert.ok(step.processed <= 5); } while (!step.done);
     assert.deepEqual(usageChatTotals(makeStore(store.db, "."), { workspace: "C", home: false }),
-      { places: { ember: 80 }, archived: 0, cards: 0, picked: 0 });
+      { places: { chat: 80 }, archived: 0, cards: 0, picked: 0 });
     assert.deepEqual(usageChatTotals(makeStore(store.db, "."), { workspace: "B", home: false }),
       { places: {}, archived: 0, cards: 0, picked: 0 });
   } finally { store.close(); }
@@ -221,7 +221,7 @@ test("a moved session leaves affected chat totals unavailable until their scope 
   const store = Store.open(path);
   store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
     token: "s", ws: "A", createdAt: 1, lastActiveAt: 1 });
-  const thread = store.openThread("ember", "shared", "shared", null, null).id;
+  const thread = store.openThread("chat", "shared", "shared", null, null).id;
   store.joinThread(thread, "s", "s");
   const worker = new MinuteReader(path);
   try {
@@ -242,21 +242,21 @@ test("a session moving between two workspaces does not hold a third workspace's 
     for (const ws of ["A", "C"]) {
       store.insertSession({ key: ws, connect: ws, runtime: "claude", profile: "cc", workspace: `/w/${ws}`,
         token: ws, ws, createdAt: 1, lastActiveAt: 1 });
-      const thread = store.openThread("ember", ws, ws, null, null).id;
+      const thread = store.openThread("chat", ws, ws, null, null).id;
       store.joinThread(thread, ws, ws);
     }
     store.db.prepare("UPDATE sessions SET ws = 'B' WHERE key = 'A'").run();
     const reader = makeStore(store.db, ".");
     assert.throws(() => usageChatTotals(reader, { workspace: "A", home: false }), /chat statistics.*being filled/);
     assert.throws(() => usageChatTotals(reader, { workspace: "B", home: false }), /chat statistics.*being filled/);
-    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: false }), { places: { ember: 1 }, archived: 0, cards: 0, picked: 0 });
-    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: true }), { places: { ember: 1 }, archived: 0, cards: 0, picked: 0 });
+    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: false }), { places: { chat: 1 }, archived: 0, cards: 0, picked: 0 });
+    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: true }), { places: { chat: 1 }, archived: 0, cards: 0, picked: 0 });
     assert.throws(() => usageChatTotals(reader, null), /chat statistics.*being filled/);
     store.db.prepare("UPDATE sessions SET ws = NULL WHERE key = 'A'").run();
     assert.throws(() => usageChatTotals(reader, { workspace: "C", home: true }), /chat statistics.*being filled/);
-    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: false }), { places: { ember: 1 }, archived: 0, cards: 0, picked: 0 });
+    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: false }), { places: { chat: 1 }, archived: 0, cards: 0, picked: 0 });
     while (!backfillUsageChatStats(store.db, 4).done) {}
-    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: true }), { places: { ember: 2 }, archived: 0, cards: 0, picked: 0 });
+    assert.deepEqual(usageChatTotals(reader, { workspace: "C", home: true }), { places: { chat: 2 }, archived: 0, cards: 0, picked: 0 });
   } finally { store.close(); }
 });
 
@@ -266,7 +266,7 @@ test("a moved session does not prevent an unrelated workspace reading its totals
   const store = Store.open(path);
   store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
     token: "s", ws: "A", createdAt: 1, lastActiveAt: 1 });
-  const thread = store.openThread("ember", "shared", "shared", null, null).id;
+  const thread = store.openThread("chat", "shared", "shared", null, null).id;
   store.joinThread(thread, "s", "s");
   store.db.prepare("UPDATE sessions SET ws = 'B' WHERE key = 's'").run();
   const priority = new SharedArrayBuffer(8);
@@ -289,7 +289,7 @@ test("replacing a session invalidates the previous workspace as well as the new 
   try {
     store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
       token: "s", ws: "A", createdAt: 1, lastActiveAt: 1 });
-    const thread = store.openThread("ember", "chat", "chat", null, null).id;
+    const thread = store.openThread("chat", "chat", "chat", null, null).id;
     store.joinThread(thread, "s", "s");
     store.db.exec(`INSERT OR REPLACE INTO sessions
       (key, connect, scope, runtime, profile, workspace, token, created_at, last_active_at, ws)
@@ -299,7 +299,7 @@ test("replacing a session invalidates the previous workspace as well as the new 
     assert.throws(() => usageChatTotals(reader, { workspace: "B", home: false }), /chat statistics.*being filled/);
     while (!backfillUsageChatStats(store.db, 4).done) {}
     assert.deepEqual(usageChatTotals(reader, { workspace: "A", home: false }), { places: {}, archived: 0, cards: 0, picked: 0 });
-    assert.deepEqual(usageChatTotals(reader, { workspace: "B", home: false }), { places: { ember: 1 }, archived: 0, cards: 0, picked: 0 });
+    assert.deepEqual(usageChatTotals(reader, { workspace: "B", home: false }), { places: { chat: 1 }, archived: 0, cards: 0, picked: 0 });
   } finally { store.close(); }
 });
 
@@ -308,7 +308,7 @@ test("replacing another session by token invalidates the removed session's works
   try {
     store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
       token: "shared", ws: "A", createdAt: 1, lastActiveAt: 1 });
-    const thread = store.openThread("ember", "chat", "chat", null, null).id;
+    const thread = store.openThread("chat", "chat", "chat", null, null).id;
     store.joinThread(thread, "s", "s");
     store.db.exec(`INSERT OR REPLACE INTO sessions
       (key, connect, scope, runtime, profile, workspace, token, created_at, last_active_at, ws)
@@ -326,13 +326,13 @@ test("a returned chat keeps the cards and memberships remembered while it was ab
   try {
     store.insertSession({ key: "s", connect: "s", runtime: "claude", profile: "cc", workspace: "/w/s",
       token: "s", ws: "A", createdAt: 1, lastActiveAt: 1 });
-    const thread = store.openThread("ember", "chat", "chat", null, null).id;
+    const thread = store.openThread("chat", "chat", "chat", null, null).id;
     store.joinThread(thread, "s", "s");
     store.db.prepare("INSERT INTO card_outcomes VALUES (?, 1, 'agent', '[]', 1, 1)").run(thread);
     store.db.prepare("DELETE FROM threads WHERE id = ?").run(thread);
-    store.db.prepare("INSERT OR IGNORE INTO threads (id, surface, channel, thread_ts, created_at) VALUES (?, 'ember', 'chat', 'chat', 1)").run(thread);
+    store.db.prepare("INSERT OR IGNORE INTO threads (id, surface, channel, thread_ts, created_at) VALUES (?, 'chat', 'chat', 'chat', 1)").run(thread);
     const viewer = { workspace: "A", home: false };
     assert.deepEqual(usageChatTotals(makeStore(store.db, "."), viewer), expected(store, viewer));
-    assert.deepEqual(usageChatTotals(makeStore(store.db, "."), viewer), { places: { ember: 1 }, archived: 0, cards: 1, picked: 1 });
+    assert.deepEqual(usageChatTotals(makeStore(store.db, "."), viewer), { places: { chat: 1 }, archived: 0, cards: 1, picked: 1 });
   } finally { store.close(); }
 });

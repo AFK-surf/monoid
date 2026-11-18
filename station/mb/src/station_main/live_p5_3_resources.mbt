@@ -115,7 +115,7 @@ fn P53Resources::new(bus : LiveBus, jobs : P53Jobs) -> P53Resources {
 
 ///|
 fn p53_clock() -> Double {
-  @host.now().to_double()
+  p5_epoch_ms().to_double()
 }
 
 ///|

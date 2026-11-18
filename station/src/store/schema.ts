@@ -7,7 +7,8 @@ import { hasLegacyAgent, installLegacyAgent } from "./legacy-agent-build.ts";
 import { hasLegacyLoginCards, installLegacyLoginCards } from "./legacy-login-cards.ts";
 import { hasLegacyEdits, hasOldEditIndex, installLegacyEdits, legacyEditLatest, legacyEditsUseOldIndex, usesLegacyEdits } from "./legacy-edits-build.ts";
 import { repairWidgetSourceBeforeAdd, widgetSourceBeforeAddNeedsRepair } from "./widget-sources.ts";
-import { COMPACTED_FROM, STILLFAIL_SURFACE } from "./rows.ts";
+import { COMPACTED_FROM, FORMER_OWN_NAMES, STILLFAIL_CONNECT, STILLFAIL_SURFACE } from "./rows.ts";
+import { CC_SESSION_ORDER } from "./cc-thread-index.ts";
 import { systemCardSql } from "./card-kinds.ts";
 import { incrementalTotalsDecided } from "./usage-totals-source.ts";
 
@@ -1292,6 +1293,12 @@ export function addPendingCards(db: DatabaseSync): void {
   }
 }
 
+/// A person's message in a chat of the station's own answers the card it waits on (renamed with them: `renameOwnChats`).
+const PENDING_CARDS_ANSWERED = `CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
+WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
+  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
+END;`;
+
 /// The system cards each chat waits on (store/card-kinds.ts: a login, a vault's secret, a phone, a rig, a sign-in),
 /// several at once, kept apart from PENDING_CARDS, which from here on keeps the conversational card each chat waits on:
 /// a system card is let go only as it is closed (its outcome, its withdrawal), a conversational one as a person's
@@ -1324,10 +1331,7 @@ WHEN NEW.kind = 'message' AND (NEW.card IS NOT NULL OR NEW.options IS NOT NULL) 
   INSERT INTO pending_cards VALUES (NEW.thread, NEW.n) ON CONFLICT (thread) DO UPDATE SET n = excluded.n WHERE excluded.n > pending_cards.n;
 END;
 DROP TRIGGER IF EXISTS pending_cards_answered;
-CREATE TRIGGER pending_cards_answered AFTER INSERT ON entries
-WHEN NEW.kind = 'message' AND NEW.author_kind = 'person' AND (SELECT surface FROM threads WHERE id = NEW.thread) = '${STILLFAIL_SURFACE}' BEGIN
-  DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
-END;
+${PENDING_CARDS_ANSWERED}
 CREATE TRIGGER pending_cards_delivered AFTER INSERT ON deliveries
 WHEN EXISTS (SELECT 1 FROM entries e WHERE e.thread = NEW.thread AND e.n = NEW.n AND e.kind = 'message' AND e.author_kind = 'person') BEGIN
   DELETE FROM pending_cards WHERE thread = NEW.thread AND n < NEW.n;
@@ -1463,3 +1467,30 @@ export function addWorkspaceColumns(db: DatabaseSync): void {
   db.exec("DROP INDEX IF EXISTS sessions_by_ws");
   db.exec("CREATE INDEX IF NOT EXISTS sessions_of_ws ON sessions (COALESCE(ws, ''), key)");
 }
+
+/// The station's own chats as their names are now (rows.ts STILLFAIL_SURFACE, STILLFAIL_CONNECT): what stations wrote
+/// before the rename (FORMER_OWN_NAMES) written over once, here, as the database opens, and what was made of it then
+/// made again. The tables' triggers carry it into what is kept of them; nothing else reads the names of before.
+export function renameOwnChats(db: DatabaseSync, has: (table: string) => boolean): void {
+  const former = FORMER_OWN_NAMES.map((n) => `'${n}'`).join(",");
+  const made = (name: string) => (db.prepare("SELECT sql FROM sqlite_master WHERE name = ?").get(name) as { sql: string } | undefined)?.sql ?? null;
+  const stale = (sql: string | null) => sql !== null && FORMER_OWN_NAMES.some((n) => sql.includes(`'${n}'`));
+  const surfaces = db.prepare(`SELECT 1 FROM threads WHERE surface IN (${former}) LIMIT 1`).get() !== undefined;
+  const tables = CONNECT_TABLES.filter(has);
+  const connects = tables.filter((t) => db.prepare(`SELECT 1 FROM ${t} WHERE connect IN (${former}) LIMIT 1`).get() !== undefined);
+  if (!surfaces && connects.length === 0 && !stale(made("cc_session_order")) && !stale(made("pending_cards_answered"))) return;
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    if (stale(made("cc_session_order"))) db.exec(`DROP INDEX cc_session_order; ${CC_SESSION_ORDER}`);
+    if (stale(made("pending_cards_answered"))) db.exec(`DROP TRIGGER pending_cards_answered; ${PENDING_CARDS_ANSWERED}`);
+    db.exec(`UPDATE OR IGNORE threads SET surface = '${STILLFAIL_SURFACE}' WHERE surface IN (${former})`);
+    for (const t of tables) db.exec(`UPDATE OR IGNORE ${t} SET connect = '${STILLFAIL_CONNECT}' WHERE connect IN (${former})`);
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
+}
+
+/// The tables that name a session's connect as they are written (what is made of them follows by their triggers).
+const CONNECT_TABLES = ["sessions", "thread_sessions", "bindings", "connect_threads", "relayed_to", "slack_stops"];

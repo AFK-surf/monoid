@@ -438,18 +438,19 @@ fn local_faces_node(v : @view.View, core : Core, place : String, picked : () -> 
           rows.each(shown, fn(f) { f }, fn(row, f) {
             let f = f.untracked()
             fonts_tried_by(row, local_prefix + f)
-            let hot = fn() { f == picked() || @sf.lit_node(row) }
-            @sf.style_node(row, fn() { (if hot() { local_row_hot } else { local_row }).then(@sf.pick_high()) })
-            row.radius(Is(@sf.small_panel_inner(@sf.r_menu))) |> ignore
-            @sf.presses_node(row, fn() {
+            @sf.action_box_node(row, fn() { f }, fn(_) {
               @settings.set_font(core, place, Some(local_prefix + f))
               close()
+            }, fn(b) {
+              let hot = fn() { f == picked() || @sf.lit_node(b) }
+              @sf.style_node(b, fn() { (if hot() { local_row_hot } else { local_row }).then(@sf.pick_high()) })
+              b.radius(Is(@sf.small_panel_inner(@sf.r_menu))) |> ignore
+              @sf.words_node(b, fn() { f }, fn() { local_name }) |> ignore
+              b.show(fn() { f == picked() }, fn(k) {
+                @sf.icon_node(k, "check", font_check, By(fn() { @sf.theme().p.text })) |> ignore
+              })
             })
-            row.says(Is(Some(@view.said(Button, label=f)))) |> ignore
-            @sf.words_node(row, fn() { f }, fn() { local_name }) |> ignore
-            row.show(fn() { f == picked() }, fn(k) {
-              @sf.icon_node(k, "check", font_check, By(fn() { @sf.theme().p.text })) |> ignore
-            })
+            |> ignore
           })
         })
         |> ignore

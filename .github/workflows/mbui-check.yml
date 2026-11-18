@@ -524,9 +524,10 @@ jobs:
           # Include the indented details of assertion failures and programs that ended early.
           ended=$(awk '/^\[[^]]*\] test .* failed/ { on = 1; h = $0; next } on && /^  / { if (h != "") { print h; h = "" } print; next } { on = 0; h = "" }' "$RUNNER_TEMP/mbui-test.log" | head -40)
           [ -z "$ended" ] || { echo '#### failure details'; echo '```'; printf '%s\n' "$ended" | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          why=$(grep -a '^flow: \|assert_idle: not' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle' | sort -u | head -10)
+          # (and what test.sh said ended the run where no test failed: its answers not kept (src/sfkept), a check of its own)
+          why=$(grep -a '^flow: \|assert_idle: not\|^test\.sh: ' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle\|^test\.sh: \(a run of \|run in \|built in \|what failed, whole\|still running after \)\|^test\.sh: .* put in ' | sort -u | head -10)
           subject=$(git log -1 --format='%h %an: %s' "$GITHUB_SHA")
-          echo "::error title=check-mbui (${{ env.PART }}${{ env.GROUP && format(' {0}', env.GROUP) || '' }}${{ env.FPS && format(' at {0} fps', env.FPS) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "$failed" | tr '\n' ';')"
+          echo "::error title=check-mbui (${{ env.PART }}${{ env.GROUP && format(' {0}', env.GROUP) || '' }}${{ env.FPS && format(' at {0} fps', env.FPS) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "${failed:-${why:-(no test named: see the job summary)}}" | tr '\n' ';')"
           {
             echo "### check-mbui (${{ env.PART }}${{ env.GROUP && format(' {0}', env.GROUP) || '' }}${{ env.FPS && format(' at {0} fps', env.FPS) || '' }}) failed at $subject"
             echo
@@ -618,7 +619,9 @@ jobs:
           # Include the indented details of assertion failures and programs that ended early.
           ended=$(awk '/^\[[^]]*\] test .* failed/ { on = 1; h = $0; next } on && /^  / { if (h != "") { print h; h = "" } print; next } { on = 0; h = "" }' "$RUNNER_TEMP/mbui-test.log" | head -40)
           [ -z "$ended" ] || { echo '#### failure details'; echo '```'; printf '%s\n' "$ended" | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          echo "::error title=check-mbui (replay${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "$failed" | tr '\n' ';')"
+          # (and what test.sh said ended the run where no test failed: its answers not kept (src/sfkept), a check of its own)
+          why=$(grep -a '^flow: \|assert_idle: not\|^test\.sh: ' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle\|^test\.sh: \(a run of \|run in \|built in \|what failed, whole\|still running after \)\|^test\.sh: .* put in ' | sort -u | head -10)
+          echo "::error title=check-mbui (replay${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "${failed:-${why:-(no test named: see the job summary)}}" | tr '\n' ';')"
 
   # sfapp's tests, the app part's groups (scripts/test.sh app_group_of), each run on the program app-build made
   # (APP_EXE: nothing built here, no MoonBit, no units: a checkout, the program, the runs); at the default rate here, at
@@ -707,9 +710,10 @@ jobs:
           # Include the indented details of assertion failures and programs that ended early.
           ended=$(awk '/^\[[^]]*\] test .* failed/ { on = 1; h = $0; next } on && /^  / { if (h != "") { print h; h = "" } print; next } { on = 0; h = "" }' "$RUNNER_TEMP/mbui-test.log" | head -40)
           [ -z "$ended" ] || { echo '#### failure details'; echo '```'; printf '%s\n' "$ended" | cut -c1-400; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          why=$(grep -a '^flow: \|assert_idle: not' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle' | sort -u | head -10)
+          # (and what test.sh said ended the run where no test failed: its answers not kept (src/sfkept), a check of its own)
+          why=$(grep -a '^flow: \|assert_idle: not\|^test\.sh: ' "$RUNNER_TEMP/mbui-test.log" | grep -v 'not checked idle\|^test\.sh: \(a run of \|run in \|built in \|what failed, whole\|still running after \)\|^test\.sh: .* put in ' | sort -u | head -10)
           subject=$(git log -1 --format='%h %an: %s' "$GITHUB_SHA")
-          echo "::error title=check-mbui (app ${{ matrix.group }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "$failed" | tr '\n' ';')"
+          echo "::error title=check-mbui (app ${{ matrix.group }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at ${GITHUB_SHA:0:9}::$(printf '%s' "${failed:-${why:-(no test named: see the job summary)}}" | tr '\n' ';')"
           {
             echo "### check-mbui (app ${{ matrix.group }}${{ matrix.fps && format(' at {0} fps', matrix.fps) || '' }}) failed at $subject"
             echo

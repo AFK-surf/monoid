@@ -80,7 +80,7 @@ fn list_threads(db : @sql.Db, viewer : String, session : String?, thread : Json?
     let last = last_entry(db, id)
     let last_message = last_said(db, id)
     let read = field(r, "read_n")
-    let selves = if field(r, "surface") != Json::string("ember") { slack_selves } else { own }
+    let selves = if field(r, "surface") != Json::string("chat") { slack_selves } else { own }
     let unread = match one(db, if legacy { legacy_unread_sql } else { unread_sql }, [id, read, selves]) {
       Some(u) => field(u, "c")
       None => Json::number(0.0)
@@ -246,7 +246,7 @@ fn thread_view(db : @sql.Db, known : Known, t : Summary, shares : Map[String, Js
   if t.letters_last > 0.0 {
     v["lettersLast"] = Json::number(t.letters_last)
   }
-  let own = field(t.thread, "surface") == Json::string("ember")
+  let own = field(t.thread, "surface") == Json::string("chat")
   v["channelName"] = if own { Json::null() } else { known.channel(slack_connect_of(t.sessions), field(t.thread, "channel")) }
   v["creator"] = known.creator(field(t.thread, "created_by"))
   if own {
@@ -278,7 +278,7 @@ fn thread_views(db : @sql.Db, known : Known, viewer : Json, session : String?) -
   let wanted : Array[Json] = []
   let seen : Set[String] = Set::new()
   for t in visible {
-    if field(t.thread, "surface") == Json::string("ember") {
+    if field(t.thread, "surface") == Json::string("chat") {
       for m in t.sessions {
         let s = js_text(field(m, "session"))
         if !seen.contains(s) {

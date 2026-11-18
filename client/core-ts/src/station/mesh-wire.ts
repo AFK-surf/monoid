@@ -19,7 +19,7 @@ import { RELAY, type Place, type Status } from "../status.ts";
 import { route } from "../route.ts";
 import { utf8 } from "../util.ts";
 import type { StationAddr } from "./addr.ts";
-import { IDEMPOTENCY_KEY, IDEMPOTENT, READS } from "./requests.ts";
+import { IDEMPOTENCY_KEY, IDEMPOTENT, NDJSON, NO_HEDGE, READS } from "./requests.ts";
 import type { LinkNet, RequestHead, ScreenAsk, StationWire, TerminalAsk, WireReply, WireSocket } from "./wire.ts";
 import { RECHECKING } from "./words.ts";
 
@@ -104,10 +104,14 @@ export class MeshWire implements StationWire {
       const link = yield* waiting(status, address, t("station.core.connecting"), mesh.link(key, credentials, theirs, off, asker));
       const repeats = mayRepeat(head, idempotent.has(key));
       const write = !["GET", "HEAD"].includes(head.method.toUpperCase()) && !onlyReads(head);
+      // Kept current in the background (requests.ts NO_HEDGE): never asked on another way at once, only again where its
+      // way is gone. The mark is the wire's alone: it goes to no station.
+      const noHedge = head.headers.some(([k]) => k.toLowerCase() === NO_HEDGE);
+      const sent: RequestHead = noHedge ? { ...head, headers: head.headers.filter(([k]) => k.toLowerCase() !== NO_HEDGE) } : head;
       // Asked on more than one way (or again), the body is told of as far as the furthest has gone.
       let furthest = 0;
       const told = wrote && ((n: number) => { if (n > furthest) wrote((furthest = n)); });
-      const ask = (l: Link) => Effect.map(l.request(head, body, told), (reply) => [l, reply] as [Link, Reply]);
+      const ask = (l: Link) => Effect.map(l.request(sent, body, told), (reply) => [l, reply] as [Link, Reply]);
       let answered: [Link, Reply];
       if (repeats) {
         // Asked on its link; on another way as well if not answered within what its way is expected to take
@@ -125,7 +129,11 @@ export class MeshWire implements StationWire {
             yield* Effect.sleep(HEDGE_RECHECK_MS);
           }
         });
-        const first = yield* Effect.raceAllFirst([Effect.map(Fiber.join(asked), (r) => ({ asked: r }) as const), Effect.as(mesh.replaced(key, link), { replaced: true } as const), slow]);
+        const first = yield* Effect.raceAllFirst([
+          Effect.map(Fiber.join(asked), (r) => ({ asked: r }) as const),
+          Effect.as(mesh.replaced(key, link), { replaced: true } as const),
+          ...(noHedge ? [] : [slow]),
+        ]);
         if ("asked" in first) {
           const r = first.asked;
           if (r._tag === "Success") answered = r.success;
@@ -175,8 +183,9 @@ export class MeshWire implements StationWire {
       yield* Effect.addFinalizer(() => Effect.sync(() => reply.cancel()));
       if (reply.headers.some(([k]) => k.toLowerCase() === IDEMPOTENT)) idempotent.add(key);
       const relay = l.path() === "relay" ? l.via() : null;
-      // How fast it comes tells how fast that way is; not an event stream's, which comes as things happen.
-      const streams = head.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("text/event-stream"));
+      // How fast it comes tells how fast that way is; not an event stream's, which comes as things happen, nor a batch
+      // streamed (NDJSON), which comes as the station reads each of it.
+      const streams = head.headers.some(([k, v]) => k.toLowerCase() === "accept" && (v.includes("text/event-stream") || v.includes(NDJSON)));
       const timed = relay !== null && !streams ? mesh.timed(key, relay, reply.body) : reply.body;
       // Why the station ended the connection it came on, as its close said (shell, iroh-wasm and node-iroh give it).
       const ended = () => {

@@ -459,10 +459,8 @@ fn head_retry_node(parent : @view.View, words : () -> String, bad : Bool, retry 
       if bad { note.then(head_bad) } else { note.then(head_wraps) }
     })
     |> ignore
-    p.box(fn(l) {
+    @sf.action_box_node(p, fn() { @sf.t("web-pages.drive.retry") }, fn(_) { retry() }, fn(l) {
       @sf.style_node(l, fn() { head_link }, in_row=true)
-      @sf.presses_node(l, retry)
-      l.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.drive.retry"))) })) |> ignore
       @sf.words_node(l, fn() { @sf.t("web-pages.drive.retry") }, fn() { @sf.theme().rows.note.then(head_link_words) }) |> ignore
     })
     |> ignore

@@ -31,8 +31,13 @@ fn video_box() -> (Double, Double) {
 
 ///|
 /// The video in a column 390 wide, the core saying what it brings once let go in `keeping`; what is presented drawn.
-fn video_tester(keeping : Array[Json], platform? : Int = 0) -> @ui.Tester {
-  let src : Source = { ..files_src(keeping~), poster: fn(_, _, _) { "video/still.png" } }
+fn video_tester(
+  keeping : Array[Json],
+  platform? : Int = 0,
+  video? : Attachment = video_one(),
+  still? : (String, Int, Int) = ("video/still.png", 1280, 720),
+) -> @ui.Tester {
+  let src : Source = { ..files_src(keeping~), poster: fn(_, _, _) { still.0 } }
   // (shown once its still is said to decode a while after it is asked)
   let list : @signals.Signal[Array[Attachment]] = @signals.signal([])
   let t = @ui.Tester::new(
@@ -54,10 +59,10 @@ fn video_tester(keeping : Array[Json], platform? : Int = 0) -> @ui.Tester {
     w=430.0,
     h=400.0,
     platform~,
-    images=[("video/still.png", 1280, 720)],
+    images=[still],
   )
-  t.decode_after("video/still.png", video_test_decode)
-  list.set([video_one()])
+  t.decode_after(still.0, video_test_decode)
+  list.set([video])
   t.run_for(video_test_decode + video_test_hair)
   t
 }
@@ -75,6 +80,22 @@ test "a message's video: its still on black in its box, its capsule saying how l
   assert_true(lx < bw / 2.0 && ly + lh <= bh && ly > bh / 2.0, msg="\{lx},\{ly}")
   assert_true(t.query(Button, label=@sf.t("web-main.file.play", args=[("name", "clip.mp4")])) is Some(_))
   assert_eq(t.audit(), [])
+}
+
+///|
+test "a message's video whose size was not sent: its still covering the unknown box in its own proportions, never stretched to it" {
+  // (an agent's screen recording, upright, sent with no size: its station's still 295 × 640 in the 240 × 160 box)
+  let video = attachment_of({ "name": "rec.mp4", "path": "/w/uploads/rec.mp4", "size": 4200000.0, "owner": "ag", "duration": 9000.0 })
+  let t = video_tester([], video~, still=("video/tall.png", 295, 640))
+  t.run_for(@ui.move_most_ms)
+  let pic = t.drawn_images()
+  assert_eq(pic.length(), 1, msg="\{Repr(pic)}")
+  let p = pic[0]
+  assert_true((p[2] - box_unknown_w).abs() < 0.01 && (p[3] - box_unknown_h).abs() < 0.01, msg="\{Repr(p)}")
+  // (what of the still is drawn, as wide for as tall as the still is: its middle, cut top and bottom)
+  let shown = p[2] / p[6] / (p[3] / p[7])
+  assert_true((shown - 295.0 / 640.0).abs() < 0.01, msg="\{Repr(p)}")
+  assert_true(p[6] > 0.99 && p[7] < 0.5, msg="\{Repr(p)}")
 }
 
 ///|

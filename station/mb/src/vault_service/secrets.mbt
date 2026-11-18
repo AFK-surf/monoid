@@ -122,7 +122,7 @@ fn thread_address(channel : String, thread_ts : String) -> String {
 
 ///|
 /// The surface of still.fail's own chats.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
 /// What a station from before a method answers it with: as a method it does not know, or as one of its remote tasks.

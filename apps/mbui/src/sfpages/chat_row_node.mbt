@@ -513,7 +513,9 @@ pub fn chat_row_node(
         .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @ui.capsule_in(@sf.row_corner, row_key_side), 0.0)))
         .offset(By(fn() { (off.shown(o), 0.0) }))
         |> ignore
-        o.box(fn(k) {
+        @sf.action_box_node(o, fn() { @sf.t("web-main.chat.archiveNamed", args=[("title", item().title)]) }, fn(_) {
+          then_whole(fn(w) { archive_row(src, w, here=kept is Some(_)) }, fn() {  })
+        }, fn(k) {
           k
           .width(Is(Some(row_key_side)))
           .height(Is(Some(row_key_side)))
@@ -522,13 +524,8 @@ pub fn chat_row_node(
           .lies_along(Is(Middle))
           |> ignore
           @sf.hover_ground_node(k)
-          @sf.presses_node(k, fn() { then_whole(fn(w) { archive_row(src, w, here=kept is Some(_)) }, fn() {  }) })
           // (beside the row now, not in it: right clicked, the row's menu still, as on its name)
           k.on_menu(fn(m) { open_menu(m.wx, m.wy, false) }) |> ignore
-          k.says(By(fn() {
-            Some(@view.said(Button, label=@sf.t("web-main.chat.archiveNamed", args=[("title", item().title)])))
-          }))
-          |> ignore
           @sf.icon_node(k, "archive", row_icon, By(fn() { if @sf.lit_node(k) { t().p.text } else { t().p.muted } })) |> ignore
           @sf.tip_node(tips, k, fn() { @sf.t("web-main.chat.archive") }) |> ignore
         })

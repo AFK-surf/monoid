@@ -602,7 +602,10 @@ pub fn peer_call(
           }))
           let sent = Ref(false)
           let source_failed : Ref[Error?] = Ref(None)
-          let sending = rt.fork(name="peer bytes", () => {
+          // What the sending fails with stays in it (said by `failed` above, and by the answer's stream it reset):
+          // once the answer came first nothing waits on it, and an error left in it was the runtime's defect (`the
+          // other station took nothing for 30 s`, a broken pipe).
+          let sending = rt.fork(name="peer bytes", () => try {
             send_bytes(stream, b, Some((source, e) => {
               if source {
                 source_failed.val = Some(e)
@@ -614,6 +617,8 @@ pub fn peer_call(
               })
             }), idle_ms=idle_wait)
             sent.val = true
+          } catch {
+            _ => ()
           })
           ignore(@effect.race_first(() => { ignore(sending.wait()) }, () => { ignore(answered.wait()) catch { _ => () } }))
           let a = within(answer_wait, () => watched(target, conn, before, () => answered.wait()), late)

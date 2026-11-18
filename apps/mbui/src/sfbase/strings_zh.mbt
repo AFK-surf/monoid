@@ -2906,6 +2906,7 @@ let zh : Map[String, String] = {
   "web-main.board.new_here": "在待派发里写一条",
   "web-main.board.add": "添加",
   "web-main.board.dispatch": "派发",
+  "web-main.board.edit": "编辑待办",
   "web-main.board.cancel": "取消",
   "web-main.board.goes_on": "在哪台机器上运行",
   "web-main.board.start": "开始",
