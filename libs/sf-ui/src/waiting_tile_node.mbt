@@ -69,9 +69,11 @@ pub fn waiting_tile_node(
 }
 
 ///|
-/// The veil over a tile going up or failed: over all of it, the ink's veil, what it says in its middle.
+/// The veil over a tile going up or failed: over all of it, the ink's veil, what it says in its middle (its style's
+/// align and justify: style_node sets how a node lines up what it holds whatever its style says, so a lines_up said
+/// before it was undone, the ring drawn in the tile's top left corner).
 fn waiting_veil(v : @view.View) -> Unit {
-  v.over(Is(true)).lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+  v.over(Is(true)) |> ignore
   style_node(v, fn() { waiting_tile_veil })
 }
 
@@ -94,4 +96,4 @@ let waiting_failed_edge : Double = 2.0
 
 ///|
 // kept across runs: a value (no field of it changes)
-let waiting_tile_veil : @ui.Style = @ui.css("bg=Veil")
+let waiting_tile_veil : @ui.Style = @ui.css("bg=Veil align=ACenter justify=JCenter")
