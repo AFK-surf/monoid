@@ -1516,6 +1516,7 @@ fn View::scrolls_window_ids(
     (@double.neg_infinity, @double.infinity, @double.neg_infinity, @double.infinity),
     same=fn(a, b) { a == b },
   )
+  let made_rev = Ref(0)
   // (the anchor among the blocks as they are counted now, or the first of its stand-ins that is: where it is among them
   // and how far down its top the top of what shows was; none put yet, or none of them left, none)
   let held_at = fn(all : Places[Int]) -> (Int, Double)? {
@@ -2518,24 +2519,24 @@ fn View::scrolls_window_ids(
       out
     })
   }
-  // (what is made, the stretch it covers, as `shown_now` says)
-  let made_now = fn(all : Places[Int]) {
-    match (shown_now.get(0), shown_now.last()) {
-      (Some(a), Some(b)) =>
-        match (laid_at.get(a), laid_at.get(b)) {
-          (Some(i), Some(j)) =>
-            made.set(
-              (
-                if i == 0 { @double.neg_infinity } else { all.top(i) },
-                all.top(i) + all.h(i),
-                all.top(j),
-                if j == all.length() - 1 { @double.infinity } else { all.top(j) + all.h(j) },
-              ),
-            )
-          _ => ()
-        }
-      _ => made.set((@double.neg_infinity, @double.infinity, @double.neg_infinity, @double.infinity))
+  // Rows kept for the far end of a way do not cover a gap between them and what shows now.
+  let made_now = fn(all : Places[Int], visible : Array[Int]) {
+    made_rev.val = laid_rev.val
+    guard visible.get(0) is Some(k) && laid_at.get(k) is Some(i) else {
+      made.set((@double.neg_infinity, @double.infinity, @double.neg_infinity, @double.infinity))
+      return
     }
+    let mut j = i
+    for k in visible[1:] {
+      guard laid_at.get(k) == Some(j + 1) else { break }
+      j += 1
+    }
+    made.set((
+      if i == 0 { @double.neg_infinity } else { all.top(i) },
+      all.top(i) + all.h(i),
+      all.top(j),
+      if j == all.length() - 1 { @double.infinity } else { all.top(j) + all.h(j) },
+    ))
   }
   // (which show where the column shows from `top`, `vh` tall, by where they are counted: going out from those whose
   // place is sure, `lo` to `hi` (what was seen and still shows, or the one the column is held by), up and down
@@ -2638,28 +2639,65 @@ fn View::scrolls_window_ids(
   // rest put by: nothing laid out but the slot of each that comes, alone
   // (the slot as tall as it is counted, shown or not). Where that comes out another height than it is counted, the
   // column is laid out (Tree::alone_asks), and its fill measures it there. What is made is what shows, no more. Told
-  // only as it comes to be past what is made or back, not each time the column is scrolled: a computed's same value
-  // telling nothing. Past it as soon as one more meets where it shows by any of it, as the window finds what meets it
-  // (`window`: a top over where it shows ends, a foot under where it starts): one meeting it by half a point or less,
-  // left for the scroll to go half a point further, showed the list's ground there for a frame.
+  // only as a row meets or leaves what shows, or while the viewport still extends beyond the window.
+  let window_top = fn(all : Places[Int], x : Double, vh : Double) {
+    if s.at_foot() { foot_top(all, vh) } else { top_now(all, x) }
+  }
+  let past_made_at = fn(x : Double, vh : Double, bounds : (Double, Double, Double, Double)) {
+    let (lo, first_end, last_top, hi) = bounds
+    x < lo || x + vh > hi || x >= first_end || x + vh <= last_top
+  }
   let past_made = @signals.computed(fn(_) {
-    match s.seen.get() {
-      Some((_, vh)) => {
-        let x = at()
-        let (lo, first_end, last_top, hi) = made.get()
-        x < lo || x + vh > hi || x >= first_end || x + vh <= last_top
-      }
-      None => false
-    }
-  }, same=fn(a, b) { a == b })
+    guard s.seen.get() is Some((_, vh)) && vh > 0.0 else { return None }
+    let x = at()
+    let bounds = made.get()
+    let all = laid.get()
+    let top = @signals.untracked(fn() { window_top(places(all), x, vh) })
+    if past_made_at(top, vh, bounds) { Some(top) } else { None }
+  })
+  let row_ready = fn(k) { showing.contains(k) && heights.contains(k) }
+  let coverage_due = Ref(false)
+  // The fill normally measures its way out to both edges in one pass. Bound retries if it cannot make progress.
+  let coverage_passes = Ref(0)
+  let check_coverage = fn() {
+    guard self.alive() && !coverage_due.val else { return }
+    coverage_due.val = true
+    @signals.after_flush(fn() {
+      guard self.alive() else { return }
+      self.tree.once_laid_out(fn() {
+        coverage_due.val = false
+        guard self.alive() else { return }
+        guard s.seen.untracked() is Some((_, vh)) && vh > 0.0 else {
+          coverage_passes.val = 0
+          return
+        }
+        let all = places(laid.untracked())
+        let x = window_top(all, @signals.untracked(at), vh)
+        if coverage_passes.val < 4 &&
+          (made_rev.val != laid_rev.val ||
+          past_made_at(x, vh, made.untracked()) ||
+          shown_now.iter().any(fn(k) { !row_ready(k) })) {
+          coverage_passes.val += 1
+          laid_again()
+        } else {
+          coverage_passes.val = 0
+        }
+      })
+    })
+  }
   self.reacts(fn() {
-    let out = past_made.get()
     laid.get() |> ignore
-    (out, laid_rev.val)
+    (past_made.get(), laid_rev.val)
   }, fn(now) {
     let (out, _) = now
-    // (as the column is laid out: its fill shows what shows, by what it measures; never laid out yet, nothing shows)
-    guard self.tree.rooming != self.at && s.seen.untracked() is Some((_, vh)) else { return }
+    guard s.seen.untracked() is Some((_, vh)) && vh > 0.0 else { return }
+    // A reach measurement can tell a new offset in its final round. Settle it after leaving the room.
+    if self.tree.rooming == self.at {
+      if out is Some(_) || made_rev.val != laid_rev.val {
+        check_coverage()
+      }
+      return
+    }
     // (put at its foot: where that is the column's layout says, its fill making what shows there)
     if s.at_foot() {
       // (and where the keys changed under its slots (one come at its end, put in or taken among them): its slots
@@ -2672,11 +2710,15 @@ fn View::scrolls_window_ids(
         // (none found: slots there for no keys, or keys there with no slots, the first come to a list that had none)
         None => slot_keys.untracked().length() > 0 || all.length() > 0
       }
-      if stale {
+      let changed = if stale {
         let top = foot_top(all, vh)
-        slots_cover(all, window(all, top, vh, all.length(), -1, true), top, vh)
+        let visible = window(all, top, vh, all.length(), -1, true)
+        slots_cover(all, visible, top, vh)
+        visible != shown_now
+      } else {
+        false
       }
-      if out {
+      if changed || out is Some(_) {
         laid_again()
       }
       return
@@ -2709,16 +2751,16 @@ fn View::scrolls_window_ids(
         hi = hi.max(i)
       }
     }
-    let now = with_end(all, window(all, x, vh, lo, hi, true), top_now(counted(all.col), @signals.untracked(at)), vh)
+    let visible = window(all, x, vh, lo, hi, true)
+    let now = with_end(all, visible, top_now(counted(all.col), @signals.untracked(at)), vh)
     show_only(now)
     slots_cover(all, now, x, vh)
-    made_now(all)
-    // (what shows still past what is made: the window stopped at a block never measured whose slot nothing lays out (made
-    // before as a slot round what showed, its height forgotten as the words were redone: Tree::alone_asks never asked
-    // of it), so `past_made` stays true and tells nothing more: the column laid out, its fill measuring what shows.
-    // Else a fling after the app came back with its glyphs moved on showed the list's ground till it came to rest)
-    if past_made.untracked() {
+    made_now(all, visible)
+    // A window cut short at an unmeasured row needs a fill even if its slot was already there.
+    if past_made.untracked() is Some(_) {
       laid_again()
+    } else if shown_now.iter().any(fn(k) { !showing.contains(k) }) {
+      check_coverage()
     }
     // (those come in not seen yet: seen as they are laid out, Tree::alone_asks)
     let still = seen_rows.keys().filter(fn(k) { !now.contains(k) }).collect()
@@ -3061,6 +3103,7 @@ fn View::scrolls_window_ids(
     // lets none of it go, to make it again a pass later; what shows no more let go once, after the last pass)
     let showed = shown_now.copy()
     let mut found : Array[Int] = []
+    let mut visible : Array[Int] = []
     while again {
       again = false
       fill_passes.val = fill_passes.val + 1
@@ -3216,6 +3259,7 @@ fn View::scrolls_window_ids(
         all.first_past(top).min(all.length() - 1)
       }
       let now = window(all, top, vh, si, si, !foot && !centring)
+      visible = now
       let mut short = window_short.val
       // (a block on its way: what shows where all of it ends as well, kept made till then; stopped short there too, at
       // one never measured, a pass again as well)
@@ -3562,10 +3606,19 @@ fn View::scrolls_window_ids(
     read_keeps.val = false
     row_vh.val = vh
     // (what is made, the stretch it covers)
-    made_now(all)
+    made_now(all, visible)
     seen_rows.clear()
+    let mut incomplete = past_made_at(top, vh, made.untracked())
     for k in shown_now {
-      seen_rows[k] = true
+      if row_ready(k) {
+        seen_rows[k] = true
+      } else {
+        incomplete = true
+      }
+    }
+    // In an outer batch the slot watches cannot mount the blocks until that change has been told.
+    if vh > 0.0 && incomplete {
+      check_coverage()
     }
     // (what came or went by the last change of its keys, told its rows by now: what shows found from here by its ways)
     if came_by_data.val.length() > 0 {
@@ -5166,6 +5219,10 @@ fn View::scrolls_window_ids(
                     // block made anew, answering.mbt; what its parts keep that key's: reused_state.mbt)
                     taken_for(v, key.untracked(), k, wake, key)
                     mine.val = Some((v, key))
+                    if !heights.contains(k) {
+                      self.tree.layout_marked_at(v.at)
+                      self.tree.place_marked_at(v.at)
+                    }
                   }
                   // (in another's slot, out of sight there, or held by no node since that slot left what has slots: taken
                   // into this one, made this one's)
