@@ -1732,6 +1732,9 @@ test("a chat's own display on the phone: made by scrcpy's server, found by Surfa
     await t.advance(60_000);
     out.push(await call("has", "g1"));
     t.now += 10 * 60_000;
+    // (the next look's wait under way first: the program sets it again once the last look is through, which its
+    // answer to `has` can come before)
+    await t.waitFor(60_000);
     await t.advance(60_000);
     await adb.until("removed", 2);
     out.push(await call("has", "g1"), changed, t.waiting());
