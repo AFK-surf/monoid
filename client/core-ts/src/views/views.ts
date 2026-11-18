@@ -456,8 +456,17 @@ function madeDay(d: J, n: number): J {
   const rows = items.slice(0, n).map(madeRow);
   const day = n === items.length && rows.every((r, i) => r === items[i]) ? d : { ...d, items: rows };
   madeDays.set(d, { n, day });
+  // (a day made is itself made, each of its `n` rows: asked again, it is taken as it is)
+  if (day !== d) madeDays.set(day, { n, day });
   return day;
 }
+
+/// What a chat list is made of that no station's link says (Views #chatsMade): its stations, its days, how many more it
+/// has and how many in all, which stations' rows run and how many rows do, the stations not read yet, and each station's
+/// rows read (`ok`) or failed; or, its stations not known, what the workspace says (`value`).
+type ChatsMade = { value: Value | undefined } | { stations: StationInfo[]; me: J; days: J[]; more: number; total: number; running: Set<string>; runningRows: number; unread: string[]; reads: Map<string, "ok" | { err: J }> };
+/// How many lists' #chatsMade are kept (those shown, a rail's count, a search's whole list, and the last ones left).
+const CHATS_MADE_KEPT = 8;
 
 /// A chat list's key among the windows (Views `chatsWindow`): its topic's params, said or left to their defaults.
 /// Which chats a list is of: those shown (`visible`), those hidden, both (`all`), or both and those an agent leads too
@@ -1014,6 +1023,8 @@ export class Views implements Owner {
   readonly #shownMade = new WeakMap<object, { by: unknown; waiting: boolean; out: J }>();
   /// Each list's rows as its stations' records made them last time, by the list (`#chats`).
   readonly #chatsKept = new Map<string, Map<string, { listed: J[]; made: (J | null)[]; sig: string; failedKey: string }>>();
+  /// Each list's rows and days as #chatsMade makes them, by the list and its window: a computed that reads no link.
+  readonly #chatsMadeKept = new Map<string, Derived<ChatsMade>>();
   /// Each list's days as they were last made, from which rows (`#daysOf`).
   readonly #daysKept = new Map<string, { rows: J[]; days: J[]; today: number; offset: number }>();
   /// A row's local day by its time (`#days`), while the zone's offset now is `#daysZone`.
@@ -1839,8 +1850,8 @@ export class Views implements Owner {
     switch (view.topic) {
       case "chats": {
         const chats = this.#chats(view.scope as string, view.mine === true, view.watching === true, view.hidden === true ? "hidden" : "visible", this.chatsWindow(view));
-        if (chats === undefined || !("ok" in chats)) return chats;
-        return { ok: firstRows(chats.ok, this.chatsWindow(view)) };
+        // (its days are the window's first rows made already, #chatsOf: `firstRows` of them again would give them as they are)
+        return chats;
       }
       case "chatRow":
         return this.#wholeRow(view.station as string, view.session as string);
@@ -2248,9 +2259,107 @@ export class Views implements Owner {
   /// overlaid), how many it shows and which stations' rows run counted by SQLite (`counts`); a row kept beside its record
   /// taken from the cache where held, its text read only where not. Else the stations' rows whole (#chatsWhole).
   /// With it, how many of its rows run (their `state`: `running`), counted of a windowed list.
+  /// Its rows and days are made apart from what its stations' links say (#chatsMade, a computed kept by the list and its
+  /// window), so that a link's state, its catching up (each batch of it on its way back, 14 in a minute, each making a
+  /// phone's list again whole: 1,170 ms, 2026-11-18) or its speed makes again only what is said of the stations here.
   #chatsOf(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): { value: Value | undefined; running: number } {
+    // (and by the local day and the zone's offset: its days are made again as either is another, #daysOf, whatever made
+    // the list again then, the clock's turn at midnight, a zone changed)
+    const host = this.#core.host;
+    const nowMs = host.nowMs();
+    const offset = host.utcOffsetMin(nowMs);
+    const key = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}\u0001${first}\u0001${Math.floor((nowMs + offset * 60_000) / DAY_MS)}\u0001${offset}`;
+    let kept = this.#chatsMadeKept.get(key);
+    if (kept === undefined) kept = computed(() => this.#chatsMade(scope, mine, watching, visibility, first, windowed));
+    this.#chatsMadeKept.delete(key);
+    this.#chatsMadeKept.set(key, kept);
+    // (a few lists': those shown, and the last ones left)
+    for (const k of this.#chatsMadeKept.keys()) if (this.#chatsMadeKept.size > CHATS_MADE_KEPT) this.#chatsMadeKept.delete(k);
+    const made = kept.get();
+    if ("value" in made) return { value: made.value, running: 0 };
+    const { stations, me, days, more, total, running, runningRows, unread, reads } = made;
+    const data = this.#core.data;
+    const states: J[] = [];
+    // Each station in trouble: its state, its line, the words said once when every one says the same (the device's
+    // network; this app or page too old for them), and its address.
+    const troubles: [string, string, string | null, string][] = [];
+    // The stations find this core too old (link.ts TooOld `app`): a web page is reloaded, an app updated.
+    const appOld = this.#core.host.appKeys === true ? t("core-views.station.appOld") : t("core-views.station.pageOld");
+    let loading = false;
+    // Catching up on what changed while away (station/sync.ts `#catching`): whether a station has yet to say what, and
+    // how many chats are left to bring the latest of.
+    let checking = false;
+    let behind = 0;
+    for (const s of stations) {
+      const read = reads.get(s.address);
+      const part = data.overviewPart(s.address);
+      let state: string;
+      let message: J = null;
+      if (!s.online) state = "offline";
+      else {
+        const link = this.link(s.address);
+        const linkState = str(link.state) ?? "connecting";
+        if (read !== undefined && read !== "ok") [state, message] = ["error", read.err];
+        else if (read === "ok") {
+          if (linkState === "error") [state, message] = ["error", link.message];
+          else if (linkState === "reconnecting") [state, message] = ["connecting", link.message];
+          else state = "online";
+        } else {
+          loading = true;
+          if (linkState === "error") [state, message] = ["error", link.message];
+          else state = "connecting";
+        }
+      }
+      if (s.online) {
+        const link = this.link(s.address);
+        const catching = typeof link.catching === "number" ? (link.catching as number) : null;
+        if (link.state === "connecting" && link.retrying !== true) checking = true;
+        else if (link.state === "online" && catching !== null) {
+          if (catching < 0) checking = true;
+          else behind += catching;
+        }
+      }
+      if (state === "offline") troubles.push(["offline", downWords(this.link(s.address), s.name), get(this.link(s.address), "cause") === "network" ? t("core-views.station.network") : null, s.address]);
+      else if (state === "error") {
+        // Answered that one side is too old (link.ts TooOld): what to update, not 无法连接.
+        const old = get(this.link(s.address), "old");
+        if (old === "app") troubles.push(["error", appOld, appOld, s.address]);
+        else if (old === "station") troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
+        else troubles.push(["error", t("core-views.station.unreachable", { name: s.name }), null, s.address]);
+      } else if (state === "connecting" && read === "ok") troubles.push(["reconnecting", t("core-views.station.reconnecting", { name: s.name }), null, s.address]);
+      else if (state === "online" && get(this.link(s.address), "hostUnreadable") === true) troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
+      const cause = state === "offline" ? get(this.link(s.address), "cause") : undefined;
+      // Refused for a security mode: why.
+      if (cause === "lock") message = get(this.link(s.address), "message") ?? null;
+      const now = looks.doing(state, cause, part === undefined ? undefined : { counts: { running: get(part, "running") } });
+      states.push({ station: s.address, id: s.id, name: s.name, state, message, ...(typeof cause === "string" ? { cause } : {}), ...now, ...rowWords(s, this.link(s.address)) });
+    }
+    let trouble: J = null;
+    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, station: troubles[0][3] };
+    else if (troubles.length > 1) {
+      const worst = ["error", "offline", "reconnecting", "incompatible"].find((w) => troubles.some(([s]) => s === w)) ?? "offline";
+      // Every one down as the device's network is, or finding this app too old: that, once, and not as so many stations
+      // amiss.
+      const once = troubles[0][2];
+      const same = once !== null && troubles.every(([, , w]) => w === once);
+      trouble = { text: same ? once : t("core-views.station.troubles", { n: troubles.length }), state: worst, retry: false };
+    }
+    const glyph = windowed ? looks.glyphOf(states, stations.map((s) => s.address).filter((a) => running.has(a))) : looks.glyph(states, days);
+    const note = looks.listNote(states, windowed ? total > 0 : days.length > 0, loading, unread);
+    const ws = this.ok({ topic: "workspace", workspace: scope });
+    const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
+    // (one station still to say: how many are left is not known yet)
+    const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
+    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}) } }, running: runningRows };
+  }
+
+  /// What #chatsOf makes of a list that no station's link says: its stations, its days (its first `first` rows where
+  /// `windowed`) and how many more it has, how many it has and which stations' rows run, and whether each station's
+  /// rows were read (`reads`: read, its error, or not yet). Read in a computed (#chatsMadeKept), it reads no link: what
+  /// the stations' links say is said of it by #chatsOf alone.
+  #chatsMade(scope: string, mine: boolean, watching: boolean, visibility: Visibility, first: number, windowed: boolean): ChatsMade {
     const stations = this.#stationsOr(scope);
-    if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined, running: 0 };
+    if (stations === undefined || !Array.isArray(stations)) return { value: stations as Value | undefined };
     let runningRows = 0;
     const data = this.#core.data;
     const me = this.me(scope);
@@ -2259,12 +2368,7 @@ export class Views implements Owner {
     // (written out once for every station's rows' signature: `sig` below)
     let membersJson: string | null = null;
     const hint = this.#core.store.select({ topic: "prefs" }, archiveHintIn);
-    const states: J[] = [];
-    // Each station in trouble: its state, its line, the words said once when every one says the same (the device's
-    // network; this app or page too old for them), and its address.
-    const troubles: [string, string, string | null, string][] = [];
-    // The stations find this core too old (link.ts TooOld `app`): a web page is reloaded, an app updated.
-    const appOld = this.#core.host.appKeys === true ? t("core-views.station.appOld") : t("core-views.station.pageOld");
+    const reads = new Map<string, "ok" | { err: J }>();
     const rows: J[] = [];
     // The rows each station's records made last time (`keptBetween`), and which of them changed since.
     const listKey = `${scope}\u0001${mine}\u0001${watching}\u0001${visibility}\u0001${windowed}`;
@@ -2273,12 +2377,7 @@ export class Views implements Owner {
     let whole = false;
     const gone: J[] = [];
     const come: J[] = [];
-    let loading = false;
     const unread: string[] = [];
-    // Catching up on what changed while away (station/sync.ts `#catching`): whether a station has yet to say what, and
-    // how many chats are left to bring the latest of.
-    let checking = false;
-    let behind = 0;
     // The first screen first: while the stations' rows are not loaded, and they are more than the list shows first
     // (its window, and one more to know it has more), those are read by one query, and the rest are loaded after, a
     // station at a time.
@@ -2315,6 +2414,8 @@ export class Views implements Owner {
         ? (data.listed(s.address, "chats") ? ({ ok: win.items.get(s.address) ?? [] } as Value) : this.listKnown(s.address, "chats"))
         : head !== null && data.listed(s.address, "chats") ? ({ ok: head.get(s.address) ?? [] } as Value) : this.value({ topic: "chatRows", station: s.address }); // whole-lists: #chatsWhole
       if (!(read && "ok" in read)) unread.push(s.address);
+      if (read && "ok" in read) reads.set(s.address, "ok");
+      else if (read && "err" in read) reads.set(s.address, { err: read.err.message });
       // What the list reads of its station's overview, kept beside it (account.ts overviewPart): not the whole of it,
       // the largest record there is (3.25 ms of the list's 21.8 ms in Hermes, five stations read and parsed, 2026-11-11),
       // and the list made again only as this changes, not with each quota, usage or job of the overview.
@@ -2322,7 +2423,11 @@ export class Views implements Owner {
       if (read && "ok" in read) {
         const slackUsers = arr(get(part, "slackUsers")).filter((u): u is string => typeof u === "string");
         this.local.settle(s.address, data.rowsRev(s.address));
-        const listed = arr(read.ok);
+        // (the window's rows as they were, the same rows: the list it made them into last time, so that they are taken
+        // as they were by one comparison, `was.listed === listed` below)
+        const was = keptLists.get(s.address);
+        const read_ = arr(read.ok);
+        const listed = was !== undefined && was.listed !== read_ && was.listed.length === read_.length && read_.every((r, i) => r === was.listed[i]) ? was.listed : read_;
         const asked = [...this.local.pendingRows(s.address), ...this.local.restoringRows(s.address).filter((row) => {
           const thread = get(row, "thread");
           const session = get(row, "session");
@@ -2449,7 +2554,6 @@ export class Views implements Owner {
         // (each change of one made all of a station's 1400 again, 2026-11-08).
         const failedKey = JSON.stringify([[...failed].map(([thread, m]) => [thread, get(m, "id"), get(m, "text")]), [...going]]);
         const quiet = head === null && asked.length === 0 && this.local.rowsQuiet(s.address);
-        const was = keptLists.get(s.address);
         let made: (J | null)[];
         if (quiet && was !== undefined && was.sig === sig && was.failedKey === failedKey) {
           if (was.listed === listed) made = was.made;
@@ -2492,46 +2596,6 @@ export class Views implements Owner {
           });
         }
       }
-      let state: string;
-      let message: J = null;
-      if (!s.online) state = "offline";
-      else {
-        const link = this.link(s.address);
-        const linkState = str(link.state) ?? "connecting";
-        if (read && "err" in read) [state, message] = ["error", read.err.message];
-        else if (read && "ok" in read) {
-          if (linkState === "error") [state, message] = ["error", link.message];
-          else if (linkState === "reconnecting") [state, message] = ["connecting", link.message];
-          else state = "online";
-        } else {
-          loading = true;
-          if (linkState === "error") [state, message] = ["error", link.message];
-          else state = "connecting";
-        }
-      }
-      if (s.online) {
-        const link = this.link(s.address);
-        const catching = typeof link.catching === "number" ? (link.catching as number) : null;
-        if (link.state === "connecting" && link.retrying !== true) checking = true;
-        else if (link.state === "online" && catching !== null) {
-          if (catching < 0) checking = true;
-          else behind += catching;
-        }
-      }
-      if (state === "offline") troubles.push(["offline", downWords(this.link(s.address), s.name), get(this.link(s.address), "cause") === "network" ? t("core-views.station.network") : null, s.address]);
-      else if (state === "error") {
-        // Answered that one side is too old (link.ts TooOld): what to update, not 无法连接.
-        const old = get(this.link(s.address), "old");
-        if (old === "app") troubles.push(["error", appOld, appOld, s.address]);
-        else if (old === "station") troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
-        else troubles.push(["error", t("core-views.station.unreachable", { name: s.name }), null, s.address]);
-      } else if (state === "connecting" && read && "ok" in read) troubles.push(["reconnecting", t("core-views.station.reconnecting", { name: s.name }), null, s.address]);
-      else if (state === "online" && get(this.link(s.address), "hostUnreadable") === true) troubles.push(["incompatible", t("core-views.station.incompatible_named", { name: s.name }), null, s.address]);
-      const cause = state === "offline" ? get(this.link(s.address), "cause") : undefined;
-      // Refused for a security mode: why.
-      if (cause === "lock") message = get(this.link(s.address), "message") ?? null;
-      const now = looks.doing(state, cause, part === undefined ? undefined : { counts: { running: get(part, "running") } });
-      states.push({ station: s.address, id: s.id, name: s.name, state, message, ...(typeof cause === "string" ? { cause } : {}), ...now, ...rowWords(s, this.link(s.address)) });
     }
     let days = this.#daysOf(listKey, rows, { whole, gone, come });
     // (the window's first rows of what it read, in the list's order; how many more it has, of the counts)
@@ -2542,23 +2606,7 @@ export class Views implements Owner {
       const shown = days.reduce((n, d) => n + arr(get(d, "items")).length, 0);
       more = total - shown;
     }
-    let trouble: J = null;
-    if (troubles.length === 1) trouble = { text: troubles[0][1], state: troubles[0][0], retry: false, station: troubles[0][3] };
-    else if (troubles.length > 1) {
-      const worst = ["error", "offline", "reconnecting", "incompatible"].find((w) => troubles.some(([s]) => s === w)) ?? "offline";
-      // Every one down as the device's network is, or finding this app too old: that, once, and not as so many stations
-      // amiss.
-      const once = troubles[0][2];
-      const same = once !== null && troubles.every(([, , w]) => w === once);
-      trouble = { text: same ? once : t("core-views.station.troubles", { n: troubles.length }), state: worst, retry: false };
-    }
-    const glyph = win !== null ? looks.glyphOf(states, stations.map((s) => s.address).filter((a) => running.has(a))) : looks.glyph(states, days);
-    const note = looks.listNote(states, win !== null ? total > 0 : days.length > 0, loading, unread);
-    const ws = this.ok({ topic: "workspace", workspace: scope });
-    const count = Array.isArray(get(ws, "members")) ? ws.members.length : null;
-    // (one station still to say: how many are left is not known yet)
-    const syncing = checking ? t("core-views.station.syncing") : behind > 0 ? t("core-views.station.syncing_left", { n: behind }) : null;
-    return { value: { ok: { me, stations: states, loading, days, trouble, members: count, leading: "agents", glyph, note, ...(syncing !== null ? { syncing } : {}), ...(more > 0 ? { more } : {}) } }, running: runningRows };
+    return { stations, me, days, more, total, running, runningRows, unread, reads };
   }
 
   /// What a chat list's window reads of `stations` (#chatsOf `windowed`): of each, its first rows in the list's order
@@ -2582,19 +2630,27 @@ export class Views implements Owner {
     if (addresses.length === 0) return { items, apart, counts };
     // (each station's in its own order, as its rows were listed whole: by their place, then their ids)
     const placed = new Map<string, { item: J; ord: number; id: string }[]>();
-    const put = (station: string, item: J, ord: SqlValue, id: string) => placed.set(station, [...(placed.get(station) ?? []), { item, ord: typeof ord === "number" ? ord : 0, id }]);
+    const put = (station: string, item: J, ord: SqlValue, id: string) => {
+      let list = placed.get(station);
+      if (list === undefined) placed.set(station, (list = []));
+      list.push({ item, ord: typeof ord === "number" ? ord : 0, id });
+    };
     // (the rows kept beside their records read of them alone, from the cache where held; the records of the rest. A
     // record held already is taken as it is, kept beside it or not: what the list made of it before is taken again)
     // (the stations' rows in the list's order, across their databases: each read its own first. The window's answer is
     // of their keys and columns alone, read again only as a write changes what of a row it reads (chat-reads.ts `by`):
     // each row's record or kept row is taken by its own key, so a chat that changes and moves nothing is told by its key)
     const found = data.chatFound(CHAT_READS.window, p, () => false);
-    const at = (f: ChatFound) => [typeof f.cols[0] === "number" ? 0 : 1, -(typeof f.cols[0] === "number" ? f.cols[0] : 0), -(typeof f.cols[1] === "number" ? f.cols[1] : 0), addresses.indexOf(f.station)];
+    const place = new Map(addresses.map((a, i) => [a, i]));
     const shown = [...found].sort((a, b) => {
-      const x = at(a);
-      const y = at(b);
-      for (let i = 0; i < x.length; i++) if (x[i] !== y[i]) return x[i] - y[i];
-      return 0;
+      const pa = typeof a.cols[0] === "number";
+      const pb = typeof b.cols[0] === "number";
+      if (pa !== pb) return pa ? -1 : 1;
+      if (pa && a.cols[0] !== b.cols[0]) return (b.cols[0] as number) - (a.cols[0] as number);
+      const la = typeof a.cols[1] === "number" ? a.cols[1] : 0;
+      const lb = typeof b.cols[1] === "number" ? b.cols[1] : 0;
+      if (la !== lb) return lb - la;
+      return (place.get(a.station) ?? -1) - (place.get(b.station) ?? -1);
     }).slice(0, first);
     for (const f of shown) f.record = data.heldChat(f.station, f.id);
     const notHeld = shown.filter((f) => f.record === undefined);
@@ -2617,7 +2673,11 @@ export class Views implements Owner {
       list.sort((a, b) => a.ord - b.ord || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
       items.set(station, list.map((x) => x.item));
     }
-    for (const r of data.chatCounted(CHAT_READS.counts, p)) counts.set(String(r[0]), { n: Number(r[1]), runs: r[2] === 1, running: Number(r[3] ?? 0) });
+    // (each station's counted alone, kept by itself: one station's chat starting its work reads that station's again)
+    for (const station of addresses) {
+      const r = data.chatCounted(CHAT_READS.counts, { station, mine, hidden: p.hidden, watching, threads, sessions })[0];
+      if (r !== undefined) counts.set(station, { n: Number(r[0] ?? 0), runs: r[1] === 1, running: Number(r[2] ?? 0) });
+    }
     return { items, apart, counts };
   }
 
@@ -3692,7 +3752,8 @@ export class Views implements Owner {
     // (2026-11-09).
     const summary = (listed ? data.listedThread(station, id) : undefined) ?? (isObject(page.thread) ? page.thread : undefined);
     if (summary === undefined) return undefined;
-    const thread: J = structuredClone(summary);
+    // (a copy of its top alone: what is put in it here is `people` and `creator`, made anew; the rest is shared as read)
+    const thread: J = { ...(summary as Record<string, unknown>) };
     const agents = timed("chat.agents", () => this.#agentsOf(station, thread));
     // What two chats' agents wrote each other is not said in it: it has a page of its own (`chatLetters`).
     const keys = new Set(members(thread));
@@ -4196,12 +4257,8 @@ export class Views implements Owner {
       return merge([entry, ...(edits.get(seq) ?? []).map(read)])[0] ?? null;
     };
     if (kept === undefined || since.put === null) {
-      const held = data.logRange("entry", station, String(id), 1, of);
-      const edits = new Map<number, number[]>();
-      for (const [n, e] of held) {
-        const target = get(e, "kind") === "edit" ? get(e, "target") : undefined;
-        if (typeof target === "number") edits.set(target, [...(edits.get(target) ?? []), n]);
-      }
+      // (their messages and the edits of those alone, found by their indexes: not the agents' replies, most of a chat)
+      const { held, edits } = data.peopleEntries(station, id, of);
       const people = merge([...held.keys()].sort((a, b) => a - b).map((n) => held.get(n))).filter((m) => m.authorKind === "person");
       kept = { rev: since.rev, changed: (kept?.changed ?? 0) + 1, messages: new Map(people.map((m) => [m.seq as number, m])), order: people.map((m) => m.seq as number), edits };
     } else if (since.rev !== kept.rev) {

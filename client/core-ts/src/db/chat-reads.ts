@@ -236,22 +236,24 @@ export const CHAT_READS = {
     // (whether it is in it; its order: pinned, last active, its place, its id the key)
     by: (c) => [shown(c), c.pinnedAt, c.lastActive, c.ord],
   } satisfies ChatRead<ListWindow>,
-  /// Of the same rows (the window's but its limit), each station's count, whether one of them runs (`state`) and how many:
-  /// of `chat_listed` alone.
+  /// Of the same rows of one station (the window's but its limit), its count, whether one of them runs (`state`) and how
+  /// many: of `chat_listed` alone. A station's alone, read and kept by itself (Data #chatRows), so that one chat of one
+  /// station starting or ending its work reads that station's count again, not every station's of the list.
   counts: {
     name: "$chat-counts", bound: "count", records: false,
-    sql: `SELECT c.station, count(*), max(c.state IS 'run'), sum(c.state IS 'run')
-      FROM chat AS c
-      WHERE c.archived = 0 AND c.station IN (SELECT value FROM json_each(?1)) AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
+    sql: `SELECT count(*), max(c.state IS 'run'), sum(c.state IS 'run')
+      FROM chat AS c INDEXED BY chat_listed
+      WHERE c.station = ?1 AND c.archived = 0 AND (?2 = 0 OR c.mine = 1) AND (?3 = 2 OR coalesce(c.hidden, 0) = ?3) AND coalesce(c.led, 0) = 0 AND (?4 = 0 OR c.watched = 1)
         AND (?5 = '' OR c.thread IS NULL OR instr(?5, char(1) || c.station || char(2) || c.thread || char(1)) = 0)
-        AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)
-      GROUP BY c.station`,
-    params: (p: ListWindow) => [JSON.stringify(p.stations), p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, keyed(p.threads), keyed(p.sessions)],
-    keys: each,
+        AND (?6 = '' OR c.session IS NULL OR instr(?6, char(1) || c.station || char(2) || c.session || char(1)) = 0)`,
+    // (those apart of its own station alone: what another station has overlaid changes nothing of its answer, nor of
+    // the key it is kept by)
+    params: (p: StationWindow) => [p.station, p.mine ? 1 : 0, p.hidden, p.watching ? 1 : 0, keyed(ofStation(p.threads, p.station)), keyed(ofStation(p.sessions, p.station))],
+    keys: (p: StationWindow): ReadKey[] => [[p.station]],
     of: station(false),
     // (whether it is in them, and whether it runs)
     by: (c) => [shown(c), c.state === "run"],
-  } satisfies ChatRead<ListWindow>,
+  } satisfies ChatRead<StationWindow>,
   /// Of a station's listed chats, those whose agents run (`state`: their ids and sessions), and whether any was last
   /// active from `from` to before `to` (fleet.ts: the chats at work, the stations used today): of `chat_listed` alone.
   /// In the order of their ids (after the row that says whether any was active): the index's own order goes by columns
@@ -324,6 +326,12 @@ export type ListWindow = Stations & {
   watching: boolean;
   limit: number;
 } & Apart;
+
+/// The window's terms for one station (`counts`): its threads and sessions apart given as the window's, every station's,
+/// of which its own are taken.
+export type StationWindow = Omit<ListWindow, "stations" | "limit"> & { station: string };
+/// Of rows apart (`station␁key`), those of `station`.
+const ofStation = (apart: readonly string[], station: string): string[] => apart.filter((a) => a.startsWith(`${station}\u0001`));
 
 /// Rows read apart from a read by their keys on their station (`station␁thread`, `station␁session`).
 type Apart = { threads: string[]; sessions: string[] };

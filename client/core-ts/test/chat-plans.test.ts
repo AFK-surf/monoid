@@ -95,6 +95,9 @@ function faults(read: ChatRead<J>, steps: Step[]): string[] {
       const beside = chat.filter((a) => a.step.parent === s.parent && walks(a));
       for (const a of beside) out.push(`sorts a walk whole before its LIMIT: ${a.step.detail}`);
     }
+    // (one that names no JSON is of columns alone: walked of a covering index, no row of the table read for each row it
+    // passes, the window's rows of other stations, of agents' leading, of others' among them)
+    if (!/\bjson\b/i.test(read.sql)) for (const a of chat) if (!a.covering) out.push(`reads rows of the table as it walks: ${a.step.detail}`);
   } else {
     for (const a of chat) if (!a.covering) out.push(`reads rows of the table: ${a.step.detail}`);
   }
@@ -152,8 +155,9 @@ test("a_plan_that_walks_a_station_or_sorts_a_walk_whole_is_found", () => {
   assert.equal(faults(one, [{ id: 2, parent: 0, detail: "SEARCH chat USING INDEX chat_ord (station=? AND archived=?)" }, { id: 3, parent: 0, detail: "USE TEMP B-TREE FOR LAST TERM OF ORDER BY" }]).length, 1);
   assert.deepEqual(faults(one, [{ id: 2, parent: 0, detail: "SEARCH chat USING INDEX chat_session (station=? AND session=?)" }, { id: 3, parent: 0, detail: "USE TEMP B-TREE FOR ORDER BY" }]), []);
   const first = { bound: "first", sql: "SELECT c.id FROM json_each(?) AS s JOIN chat AS c ON c.station = s.value ORDER BY c.last_active DESC LIMIT ?" } as ChatRead<J>;
-  assert.equal(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING INDEX chat_recent (archived=?)" }, { id: 9, parent: 0, detail: "SCAN s VIRTUAL TABLE INDEX 1:" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR ORDER BY" }]).length, 1);
-  assert.deepEqual(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING INDEX chat_recent (archived=?)" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY" }]), []);
+  assert.ok(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING COVERING INDEX chat_recent (archived=?)" }, { id: 9, parent: 0, detail: "SCAN s VIRTUAL TABLE INDEX 1:" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR ORDER BY" }]).some((f) => f.startsWith("sorts a walk whole")));
+  assert.deepEqual(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING COVERING INDEX chat_recent (archived=?)" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY" }]), []);
+  assert.equal(faults(first, [{ id: 2, parent: 0, detail: "SEARCH c USING INDEX chat_recent (archived=?)" }, { id: 10, parent: 0, detail: "USE TEMP B-TREE FOR LAST 3 TERMS OF ORDER BY" }]).length, 1);
   const count = { bound: "count", sql: "SELECT count(*) FROM chat WHERE station = ? AND archived = 0" } as ChatRead<J>;
   assert.equal(faults(count, [{ id: 2, parent: 0, detail: "SEARCH chat USING INDEX chat_ord (station=? AND archived=?)" }]).length, 1);
   assert.deepEqual(faults(count, [{ id: 2, parent: 0, detail: "SEARCH chat USING COVERING INDEX chat_listed (station=? AND archived=?)" }]), []);

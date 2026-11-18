@@ -128,7 +128,9 @@ agent's state changing tells the window nothing, the row reaching the list by it
 read found by `$chat-record`); `test/chat-told.test.ts` holds every declaration to it (a write that changes an answer
 told it, and what a view reads is what the statement gives), and its `TOLD_SAME` (told, the answer the same) only
 falls. A read's name is its own. The chat list is a window over the index
-(views.ts `#window`), what is overlaid here (local.ts `overlaid`) read apart by its keys. A new read is a declaration
+(views.ts `#window`), what is overlaid here (local.ts `overlaid`) read apart by its keys; what its stations' links say
+is said of it apart from its rows (`#chatsMade`, a computed that reads no link), so a link catching up makes no row,
+window or count again, and each station's counts are read and kept by themselves (`test/hot-paths.test.ts`). A new read is a declaration
 there; `scripts/whole-lists.ts` refuses a whole list read, and its `WHOLE` says where one still is and what takes it away.
 A column a read needs is derived as the record is written (SQLite's of its JSON, schema.ts `CHAT_COLUMNS`, held to the
 JS's rule by list-rows.test.ts; the core's, `state` and `watched`, Derive: one algorithm each), and for rows an older core wrote (their `made` not `CHAT_MADE`) at the next open: every host opens its
