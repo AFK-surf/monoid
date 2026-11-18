@@ -1933,7 +1933,8 @@ pub fn row_keys(
 /// Whether chat `v`'s window took in a page since its rows were last given: the page before it (its first entry
 /// earlier), or the page that reaches the chat's end (short of it till now); or its first page come into a list that
 /// had none (a chat opened before the device kept any of it, drawn empty till the station answered), none of it said
-/// as it showed and nothing sent from here on its way (`flight`): what was said before it was opened, there at once.
+/// as it showed and nothing of it sent from here (on its way, `flight`, in its outbox, or a message of it sent from
+/// here: a new chat's first words): what was said before it was opened, there at once.
 fn paged_in(rd : Reading, v : ChatView, flight : SendFlight?) -> Bool {
   let first = match v.first_entry {
     Some(f) => f
@@ -1945,7 +1946,11 @@ fn paged_in(rd : Reading, v : ChatView, flight : SendFlight?) -> Bool {
   }
   let paged = (first >= 0.0 && rd.first_was >= 0.0 && first < rd.first_was) ||
     (rd.newer_was && !v.newer) ||
-    (first >= 0.0 && rd.first_was < 0.0 && flight is None && !v.messages.iter().any(fn(m) { m.said }))
+    (first >= 0.0 &&
+     rd.first_was < 0.0 &&
+     flight is None &&
+     v.outbox.is_empty() &&
+     !v.messages.iter().any(fn(m) { m.said || m.outgoing != "" }))
   rd.first_was = first
   rd.newer_was = v.newer
   paged
