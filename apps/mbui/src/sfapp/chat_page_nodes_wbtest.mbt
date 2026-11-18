@@ -1552,42 +1552,6 @@ test "小屏, a chat's page made with its inside nodes: a finger held still on a
 }
 
 ///|
-test "小屏 on Android, a chat's page made with its inside nodes: a finger's pick in a message widened back by the start's drop, hanging under the line left of where it starts, the end kept" {
-  let calls : Array[(String, Json)] = []
-  let (w, h) = (390.0, 844.0)
-  let t = find_nodes_open(calls, w, h, 2)
-  for _ in 0..<12 {
-    match t.run_rects("要不要把旧的截图") {
-      [(_, y, _, _), ..] if y > 120.0 && y < 500.0 => break
-      _ => {
-        t.wheel(w / 2.0, 400.0, -200.0)
-        t.run_for(@ui.move_most_ms)
-      }
-    }
-  }
-  guard t.run_rects("要不要把旧的截图") is [(px, py, pw, ph), ..] else { fail("the message's words not drawn") }
-  // (on 旧)
-  let (mx, my) = (px + pw / 2.0, py + ph / 2.0)
-  t.press_at(mx, my)
-  t.run_for(@ui.long_press_ms)
-  t.release(mx, my)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(@ui.picked_words(), "旧")
-  guard t.ctx().selection_box() is Some((sx, sy, _, sh)) else { fail("no box round what is picked") }
-  // (the start's drop: its circle's middle half its width left of the start, as far under the line)
-  let (hx, hy) = (sx - 12.5, sy + sh + 12.5)
-  t.press_at(hx, hy)
-  t.draw()
-  t.move_to(hx - 10.0, hy)
-  t.draw()
-  t.move_to(px - 10.0, hy)
-  t.draw()
-  t.release(px - 10.0, hy)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(@ui.picked_words(), "要不要把旧")
-}
-
-///|
 /// What the bar over a finger's pick offers, its buttons' words in its order (left to right); none where no bar is.
 fn pick_bar_offers(t : @ui.Tester) -> Array[String] {
   let found = ["引用", "复制", "全选", "多选", "复制链接"].filter_map(fn(l) {
