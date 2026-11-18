@@ -891,6 +891,10 @@ fn viz_nodes_open(w : Double, h : Double, platform : Int, asked : Array[String],
   }
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, finish=!held)
+  // (its list's rows on the host's pixels, as every device's host sets them: the page's hole is put on them, so its row
+  // is too; set anywhere, a row stood a fraction of a pixel off the hole wherever what the list had counted of its
+  // rows came out at one, as with the composer made as nodes, its height known as the list is first filled)
+  t.set_rows_on_pixels(true)
   viz_nodes_run(t, @ui.move_most_ms, held)
   t
 }

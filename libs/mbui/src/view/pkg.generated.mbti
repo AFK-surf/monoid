@@ -1518,7 +1518,7 @@ pub fn View::focused(Self) -> Bool
 pub fn View::follows_back(Self, (BackStep) -> Unit) -> Self
 #callsite(autofill(loc))
 pub fn View::gap(Self, Live[Double], loc~ : SourceLoc) -> Self
-pub fn View::gesture(Self, Double, press? : (Drag) -> Unit, tap? : (Drag) -> Unit, hold? : (Double, (Drag) -> Unit), drag? : (Drag) -> Unit, through? : Double, held_first? : (Drag) -> Bool) -> Self
+pub fn View::gesture(Self, Double, press? : (Drag) -> Unit, tap? : (Drag) -> Unit, hold? : (Double, (Drag) -> Unit), drag? : (Drag) -> Unit, through? : Double, held_first? : (Drag) -> Bool, hold_yields? : Bool) -> Self
 #callsite(autofill(loc))
 pub fn View::glass(Self, Live[@paint.Glass?], loc~ : SourceLoc) -> Self
 pub fn View::glass_solid(Self) -> Bool

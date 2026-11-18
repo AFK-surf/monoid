@@ -243,7 +243,7 @@ pub fn chat_page_made(
   drawn? : (Int) -> Bool = fn(serial) { app.nav.shows(serial) },
   body? : (@view.View, Source, ChatRef, (@view.View) -> Unit, () -> Bool) -> Unit,
   foot? : (@ui.Ctx, Source, ChatRef) -> Unit,
-  foot_node? : (@view.View, Source, ChatRef) -> Unit,
+  foot_node? : (@view.View, Source, ChatRef, () -> Bool, () -> Double?) -> Unit,
   leaving? : (@ui.Ctx, Source, ChatRef) -> Unit,
   narrower? : (@view.View) -> ColumnLaid,
   aside? : (@view.View) -> Double,
@@ -334,13 +334,38 @@ pub fn chat_page_made(
                 match foot_node {
                   // (over a picture flying out from under it (the viewer's route, FlightLevel's UnderFoot), the round
                   // buttons the foot holds made before it under that picture, as over the list they stand on)
-                  Some(fnode) if composed =>
+                  Some(make) if composed => {
+                    // (what the page reads as its entry, read as its old view's build read it: its source's page, its
+                    // chat's subscription held by the entry; read again as the page it is changes)
+                    n.reacts(fn() { app.nav.page_of(serial).map(fn(e) { e.0 }) }, fn(page) {
+                      match page {
+                        Some(page) => {
+                          page_entry_read(serial, retained, page)
+                          page_read(page)
+                        }
+                        None => ()
+                      }
+                    })
                     n
                     .box(fn(at) {
                       at.flights_under() |> ignore
-                      fnode(at, retained, r)
+                      // (and the width its column is laid out at on the page's way, the narrower end: none at rest)
+                      make(at, retained, r, fn() { drawn(serial) }, fn() {
+                        match narrower {
+                          Some(by) => {
+                            let c = by(n)
+                            if c.by == 0.0 && c.across == 0.0 {
+                              None
+                            } else {
+                              Some(c.laid)
+                            }
+                          }
+                          None => None
+                        }
+                      })
                     })
                     |> ignore
+                  }
                   _ => {
                     let island : Ref[@view.View?] = Ref(None)
                     island.val = app.nav.page_island(

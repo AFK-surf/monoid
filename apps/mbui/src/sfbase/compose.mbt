@@ -108,6 +108,37 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
 }
 
 ///|
+/// The still of video `id` waiting here that the host has no picture of, made from its bytes for a node of the window's
+/// tree `v` (writing_stills', a composer's tile made as nodes): its tile's picture and its message's once made, as it
+/// comes ("" while it does, none to be had: "!").
+pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
+  guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {
+    return fn() { writing_pictures.get(id).unwrap_or("") }
+  }
+  let still = bytes_first_frame_node(v, "draft/" + id, name, bytes)
+  v.reacts(still, fn(k) {
+    guard k != "" && writing_unseen.contains(id) else { return }
+    writing_unseen.remove(id)
+    if k != "!" {
+      writing_pictures[id] = k
+      sent_picture_kept("upload\u{1}" + id, k)
+      for _, w in writings {
+        for f in writing_files(w) {
+          let o = Some(f)
+          if text(o, "id") == id {
+            let path = text(field(o, "done"), "path")
+            if path != "" {
+              sent_picture_kept(sent_key(station, path), k)
+            }
+          }
+        }
+      }
+    }
+  })
+  still
+}
+
+///|
 /// The station each file added here goes up to, by its id.
 // kept across runs: put back by writings_reset (sfbase's reset)
 let writing_stations : Map[String, String] = Map([])
@@ -1001,7 +1032,14 @@ pub fn draft_given(key : String) -> Unit {
 ///|
 /// Whether something put into the draft `key` from elsewhere waits, read (its composer taking it).
 pub fn drafts_given_read(key : String) -> Unit {
-  drafts_given.has(key) |> ignore
+  drafts_given_now(key) |> ignore
+}
+
+///|
+/// drafts_given_read's, its answer: what waits for a composer made as nodes to take it, as it comes to wait (taken,
+/// files_taken lets it go, so the next comes to wait anew).
+pub fn drafts_given_now(key : String) -> Bool {
+  drafts_given.has(key)
 }
 
 ///|

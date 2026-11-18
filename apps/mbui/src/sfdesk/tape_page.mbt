@@ -712,10 +712,12 @@ fn tape_made(
                 tape_behind(c, Page, fn() { chat_composer_nodes(c, s, r, wide.tape.get()) })
                 @sf.pane_round.val = None
               },
-              foot_node=fn(n, s, r) {
-                @sf.pane_round.val = Some(tape_page_round())
-                @sfpages.chat_composer_node(n, s, r, tips, apart=true)
-                @sf.pane_round.val = None
+              // (its composer made as nodes in the list's foot, in the page's panel: what stands in its corners concentric
+              // with them, sfpages' chat_composer_node)
+              foot_node=fn(n, s, r, shows, laid) {
+                @sfpages.chat_composer_node(n, s, r, shows~, laid~, tips~, apart=fn() { wide.tape.get() }, pane=fn() {
+                  Some(tape_page_round())
+                })
               },
               leaving=fn(c, s, r) {
                 match @sfbase.workspace_in_view(s).0 {

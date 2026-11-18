@@ -293,14 +293,39 @@ let seg_lens_shadow : Double = 6.0
 let seg_lens_shadow_y : Double = 2.0
 
 ///|
+/// The thumb's motion belongs to the view that keeps the selection across page changes.
+pub struct SegThumb {
+  priv held : @motion.NodeWay
+  priv position : @motion.NodeWay
+  priv fingered : @signals.Signal[Double?]
+}
+
+///|
+/// Keep the thumb's current position and press motion on `owner`, so a new view can draw the same motion.
+pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
+  let fingered : @signals.Signal[Double?] = @signals.signal(None)
+  let held = @motion.NodeWay::new(0.0)
+  owner.reacts(fn() { !owner.glass_solid() && fingered.get() is Some(_) }, fn(down) {
+    held.go(owner, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring)
+  })
+  let goal = fn() { fingered.get().unwrap_or(chosen().to_double()) }
+  let position = @motion.NodeWay::new(@signals.untracked(goal))
+  owner.reacts(at_start=false, goal, fn(p) {
+    let spring = if fingered.untracked() is Some(_) { @kit.follow_spring } else { @motion.cover_spring }
+    position.go(owner, p, spring)
+  })
+  { held, position, fingered }
+}
+
+///|
 /// A narrow page's choice of a few (seg's filling Seg, as nodes: segmented's on a narrow page) in `parent`: as wide as
 /// where it is, `labels` sharing it alike, none narrower than its words with their sides (fitted: where they need more,
 /// their sides narrower, else their words smaller alike, else the chosen one alone with a chevron, the others in a pick a
 /// press on it opens), on a neutral capsule track, 34 high, 2 in. A thumb in the theme's lifted colour sits under the
-/// chosen one's words and slides to the one chosen as that changes, from where it is then,
-/// as a cover does (@ui.Ctx::cover: on its spring, between where those options are laid out as it is drawn); a finger
-/// held on an option (glass not drawn solid), the thumb there, fading under a lens of liquid glass growing over it, the
-/// option chosen as it is let go on it. `chosen()` the one chosen; `choose` told the one a press, an arrow, a screen
+/// chosen one's words and slides to the new option when the selection changes. On a hold or horizontal drag,
+/// a glass lens grows over the thumb. The thumb follows the nearest option and leans toward the finger.
+/// The finger can leave the track. Release selects the nearest option. `chosen()` gives the selected option.
+/// `choose` receives the option a press, an arrow, a screen
 /// reader or its pick chooses (the caller says it chosen then: `chosen` follows it); `said` what a screen reader calls
 /// it. As wide as where it is laid out, its words at the system's size of words, in the language as it is, as those
 /// change. `labels()` says how many options there are once, as it is made: their words may change (another language),
@@ -312,9 +337,14 @@ pub fn seg_fill_node(
   chosen : () -> Int,
   choose : (Int) -> Unit,
   said? : String = "",
+  thumb? : SegThumb,
   loc~ : SourceLoc,
 ) -> @view.View {
   parent.box(made_for=loc, fn(track) {
+    let thumb = match thumb {
+      Some(kept) => kept
+      None => SegThumb::new(track, chosen)
+    }
     // (its inset round its options inside what it holds: what is said of it as a group (View::by_room's) out to its
     // edges)
     track
@@ -362,8 +392,9 @@ pub fn seg_fill_node(
         }
       }
       inner.row(Is(true)) |> ignore
+      let felt : Ref[Int?] = Ref(None)
       let felt_choose = fn(k : Int) {
-        if @ui.pointing() is Finger {
+        if @ui.pointing() is Finger && felt.val != Some(k) {
           @ui.haptic(TextHandleMove)
         }
         choose(k)
@@ -402,36 +433,56 @@ pub fn seg_fill_node(
             }
             x
           }
-          // The thumb previews the option under the finger until release commits the selection.
-          let fingered : @signals.Signal[Int?] = @signals.signal(None)
-          let preview = fn(k) {
-            fingered.set(if @ui.pointing() is Finger { k } else { None })
-          }
-          let lensed = fn() { !strip.glass_solid() && fingered.get() is Some(_) }
-          let held = @motion.NodeWay::new(0.0)
-          strip.reacts(lensed, fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) })
-          let lens = fn() { if strip.glass_solid() { 0.0 } else { held.shown(strip) } }
-          // the thumb's and the lens's cover (@ui.Ctx::cover's): the item it goes to, what it set out from (items by their
-          // shares) and how far it is from there (0 to 1, on a cover's spring), sent on as it goes to another item, from
-          // that moment; where it is drawn the blend of where those items are laid out as it is drawn (moved or resized
-          // meanwhile: with them)
-          let at = fn() { fingered.get().unwrap_or(chosen()) }
-          let first = @signals.untracked(at)
-          let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
-          let way = @motion.NodeWay::new(1.0)
-          strip.reacts(at, fn(k) {
-            let (from, to) = cover.untracked()
-            if k != to {
-              let p = way.value_at(strip.cause_at())
-              cover.set((@ui.cover_set_out(from, to, p), k))
-              way.go_from(strip, 0.0, 1.0, @motion.cover_spring)
+          // Follow the touch between option centers. The nearest center sets the snap point.
+          let along = fn(x : Double) -> Double {
+            let mut left = seg_inset
+            let mut from = left + w_of(0) / 2.0
+            left = left + w_of(0)
+            for k in 1..<n {
+              let w = w_of(k)
+              let to = left + w / 2.0
+              if x < to && to > from {
+                return (k - 1).to_double() + dclamp((x - from) / (to - from), 0.0, 1.0)
+              }
+              from = to
+              left = left + w
             }
+            dmax(0.0, (n - 1).to_double())
+          }
+          let preview = fn(k : Int, event : @view.Drag?) -> Int? {
+            match event {
+              Some(d) if @ui.pointing() is Finger => {
+                let p = along(x_of(k) + d.x)
+                let nearest = (p + 0.5).floor().to_int()
+                if nearest != felt.val.unwrap_or(chosen()) {
+                  @ui.haptic(TextHandleMove)
+                }
+                felt.val = Some(nearest)
+                let target = nearest.to_double()
+                thumb.fingered.set(Some(target + (p - target) * seg_drag_lean))
+                Some(nearest)
+              }
+              _ => {
+                felt.val = None
+                thumb.fingered.set(None)
+                None
+              }
+            }
+          }
+          strip.owns(fn() {
+            felt.val = None
+            thumb.fingered.set(None)
           })
+          |> ignore
+          let lens = fn() { if strip.glass_solid() { 0.0 } else { thumb.held.shown(strip) } }
           let rect = fn() {
-            let (from, to) = cover.get()
-            let p = way.shown(strip)
-            let h = segmented_narrow_h - 2.0 * seg_inset
-            @ui.cover_rect(from, to, p, fn(k) { if k >= 0 && k < n { Some((x_of(k), 0.0, w_of(k), h)) } else { None } })
+            guard n > 0 else { return None }
+            let p = dclamp(thumb.position.shown(strip), 0.0, (n - 1).to_double())
+            let a = p.floor().to_int()
+            let b = imin(a + 1, n - 1)
+            let f = p - a.to_double()
+            let w = w_of(a)
+            Some((x_of(a) + w * f, 0.0, w + (w_of(b) - w) * f, segmented_narrow_h - 2.0 * seg_inset))
           }
           // (each of its corners as the corner rule makes it in the track's (@ui corners.mbt, as the old frame works them out
           // after layout): concentric with the track's where it lies in that corner as far from both its edges, at an end
@@ -466,7 +517,7 @@ pub fn seg_fill_node(
             }
           }
           // the thumb: where its cover has it, its corner concentric in the track's; faded under the lens
-          strip.show(fn() { w_of(cover.get().1) > 0.0 }, fn(th) {
+          strip.show(fn() { w_of(chosen()) > 0.0 }, fn(th) {
             th
             .over(Is(true))
             .offset(By(fn() { (rect().map(fn(r) { r.0 }).unwrap_or(seg_inset) - seg_inset, 0.0) }))
@@ -495,7 +546,7 @@ pub fn seg_fill_node(
           // chosen one's in the ink, the others muted, smaller as fitted
           for k in 0..<n {
             let label = fn() { labels().get(k).unwrap_or("") }
-            rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), slide=preview, fn(o, item) {
+            rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), slide=(seg_hold_ms, fn(d) { preview(k, d) }), fn(o, item) {
               let on = fn() { item.chosen() }
               o
               // (its share, or as fitted)
@@ -637,6 +688,13 @@ fn seg_shares(room : Double, least : Array[Double]) -> Array[Double] {
 ///|
 /// A filling Seg’s full-height capsule.
 let seg_radius : Double = segmented_narrow_h / 2.0
+
+///|
+/// Match the bottom bar's hold time and how far its thumb leans toward the finger.
+let seg_hold_ms : Double = 200.0
+
+///|
+let seg_drag_lean : Double = 0.25
 
 ///|
 /// How wide a filling Seg of `labels` is with their words whole at their size with their sides, and how narrow it may

@@ -33,7 +33,7 @@ let csa_after_ms : Double = 1500.0
 fn csa_open(screen : (String, Double, Double, Int)) -> @ui.Tester {
   let (_, w, h, platform) = screen
   new_run()
-  @sfbase.chat_page_nodes.set(both_nodes.val)
+  both_way()
   fix_pace.val = csa_pace
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })

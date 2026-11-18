@@ -571,8 +571,22 @@ test "profiles overview: wide defaults to 概览 with pool switching; narrow def
   let ov_radio_0 = t_phone.all(Radio, label="概览")[0].rect
   assert_true(acc_radio_0.0 >= 12.0, msg="place accounts radio inset from left edge: \{acc_radio_0.0}")
   assert_true(ov_radio_0.0 + ov_radio_0.2 <= 390.0 - 12.0, msg="place overview radio inset from right edge: \{ov_radio_0.0 + ov_radio_0.2}")
+  let thumb_x = fn() {
+    t_phone.drawn_rects().iter().find_first(fn(r) {
+      (r.1 - acc_radio_0.1).abs() < 0.5 &&
+      (r.2 - acc_radio_0.2).abs() < 0.5 &&
+      (r.3 - acc_radio_0.3).abs() < 0.5 &&
+      r.4 == @ui.tree_theme().lifted
+    }).map(fn(r) { r.0 })
+  }
+  let start_x = thumb_x().unwrap()
   t_phone.tap_text("概览")
+  assert_true(t_phone.find("额度与恢复") is Some(_))
+  t_phone.run_for(@sf.dur_ms / 4.0)
+  let mid_x = thumb_x().unwrap()
   t_phone.run_for(@ui.move_most_ms)
+  let end_x = thumb_x().unwrap()
+  assert_true(start_x < mid_x && mid_x < end_x, msg="the thumb slides across as the pane changes: \{start_x}, \{mid_x}, \{end_x}")
   assert_true(t_phone.find("额度与恢复") is Some(_), msg="Place(\"profiles\") switches to 概览")
   assert_true(t_phone.find("消耗速度") is Some(_))
   let ov_radio_1 = t_phone.all(Radio, label="概览")[0].rect

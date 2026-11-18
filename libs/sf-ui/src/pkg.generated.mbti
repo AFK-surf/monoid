@@ -1370,7 +1370,7 @@ pub fn page_card_node(@view.View, (@view.View) -> Unit, footed? : Bool, layered?
 
 pub fn page_choice(@ui.Ctx, String, Array[String], Int32, item_w? : Double, on_pick? : (Int32) -> Unit) -> Int32
 
-pub fn page_choice_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double) -> Unit
+pub fn page_choice_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, thumb? : SegThumb) -> Unit
 
 pub let page_list_opened : @ref.Ref[(@ui.Ctx, String, Int32) -> Unit]
 
@@ -1910,7 +1910,7 @@ pub let section_note_most : @ui.Len
 
 pub fn seen_at(Double) -> Double
 
-pub fn seg_fill_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String) -> @view.View
+pub fn seg_fill_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String, thumb? : SegThumb) -> @view.View
 
 pub fn seg_head_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String) -> @view.View
 
@@ -3248,6 +3248,11 @@ pub(all) struct ScreensNode {
   card : (@view.View, String, LinkTo, String?) -> Unit
   title : (String, LinkTo) -> String
 }
+
+pub struct SegThumb {
+  // private fields
+}
+pub fn SegThumb::new(@view.View, () -> Int32) -> Self
 
 pub(all) struct StrokeShape {
   up : Double

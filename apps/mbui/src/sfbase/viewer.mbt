@@ -493,6 +493,28 @@ fn first_player(src : Source, station : String, key : String, a : Attachment) ->
 /// from when all its bytes came (@kit.media_decode_stalled's): first_frame's rule, followed as it is told, not asked
 /// each frame.
 pub fn first_frame_node(v : @view.View, src : Source, station : String, key : String, a : Attachment, id : String) -> () -> String {
+  first_frame_by(v, id, a.name, a.size, fn() { first_player(src, station, key, a) })
+}
+
+///|
+/// The first frame of a video waiting in a draft here, by its bytes (bytes_first_frame's, for a node of the window's
+/// tree `v`: a composer's tile made as nodes), `id` naming it, `name` its file's: as first_frame_node has a chat's.
+pub fn bytes_first_frame_node(v : @view.View, id : String, name : String, bytes : Bytes) -> () -> String {
+  let (_, mime, _) = preview_kind(name)
+  first_frame_by(v, id, name, bytes.length().to_double(), fn() {
+    @ui.NativeView::video(mime, fn(offset, length, answer) {
+      let n = bytes.length()
+      let from = if offset < 0.0 { 0 } else if offset > n.to_double() { n } else { offset.to_int() }
+      let to = if length > n - from { n } else { from + length }
+      answer(bytes[from:to].to_owned(), n.to_double(), false)
+      fn() {  }
+    })
+  })
+}
+
+///|
+/// first_frame_node's grab of the video `open` makes (`id` naming it, `name` its file's, `size` its bytes').
+fn first_frame_by(v : @view.View, id : String, name : String, size : Double, open : () -> @ui.NativeView) -> () -> String {
   let picture = fn() {
     pv_first_told.get() |> ignore
     match pv_first.get(id) {
@@ -501,12 +523,12 @@ pub fn first_frame_node(v : @view.View, src : Source, station : String, key : St
     }
   }
   if !pv_first.contains(id) {
-    if a.size <= 0.0 || a.size > big_file {
+    if size <= 0.0 || size > big_file {
       return picture
     }
     let f : FirstFrame = { view: None, picture: "" }
     pv_first[id] = f
-    let n = first_player(src, station, key, a)
+    let n = open()
     if !n.here() {
       f.picture = "!"
       return picture
@@ -527,15 +549,15 @@ pub fn first_frame_node(v : @view.View, src : Source, station : String, key : St
     fn(told) {
       guard told is Some(_) && pv_first.get(id) is Some(f) && f.view is Some(n) else { return }
       match n.grabbed() {
-        Some(png) => first_settled(f, n, id, a.name, png)
+        Some(png) => first_settled(f, n, id, name, png)
         None =>
           if n.state() < 0 && !n.grabbing() {
-            first_settled(f, n, id, a.name, b"")
+            first_settled(f, n, id, name, b"")
           } else if n.state() == 2 && n.decode_since() >= 0.0 {
             (stall.val)()
             stall.val = v.at_moment(n.decode_since() + @kit.media_decode_wait_ms, fn() {
               if f.view is Some(m) && physical_equal(m, n) {
-                first_settled(f, n, id, a.name, b"")
+                first_settled(f, n, id, name, b"")
               }
             })
           }

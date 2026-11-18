@@ -238,9 +238,13 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     let sent = sending_of("ws1/st1\u{1}s-c1")
     assert_eq(sent.length(), 1)
     assert_eq(sent[0].row.quotes.map(fn(q) { (q.text, q.comment, q.ts) }), [(quote_passage, "这里要对齐", "ts8")])
-    match send_flight.get() {
-      Some(f) => assert_eq(f.files.map(fn(ff) { ff.key }), [@sfbase.quote_key(0)])
-      None => fail("nothing flies")
+    // (the old page's flight; made as nodes, its row flies from where the composer had it: its SentFrom, mbui's
+    // View::flies_in, what follows holds the same of it)
+    if !both_nodes.val {
+      match send_flight.get() {
+        Some(f) => assert_eq(f.files.map(fn(ff) { ff.key }), [@sfbase.quote_key(0)])
+        None => fail("nothing flies")
+      }
     }
     // where its words were as it is sent, then every frame till it has landed: never gone, never twice apart
     let at = quote_once(t)
@@ -269,11 +273,17 @@ test "a quote sent alone is in the list at once, its card flying there from the 
     assert_true(y < was.1 - 40.0, msg="landed at \{y}, its words were at \{was.1}")
     let landed = widths[widths.length() - 1]
     assert_true(landed < wide - 40.0, msg="landed \{landed} wide, as the composer's \{wide}")
-    assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
-    for k in 1..<widths.length() {
-      if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
-        fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
+    // (the old page's card going from the composer's width to its own on its way; made as nodes, the message's card
+    // flies at its own width all the way, from the height it stood at there: message_quotes_node's `from`, #6593)
+    if !both_nodes.val {
+      assert_true((widths[0] - wide).abs() < 0.5, msg="set out \{widths[0]} wide, not \{wide}: \{Repr(widths)}")
+      for k in 1..<widths.length() {
+        if widths[k] > widths[k - 1] + 0.5 || widths[k - 1] - widths[k] > (wide - landed) / 2.0 {
+          fail("its width went from \{widths[k - 1]} to \{widths[k]} at once: \{Repr(widths)}")
+        }
       }
+    } else {
+      assert_true(widths.iter().all(fn(x) { (x - landed).abs() < 0.5 }), msg="its own width all the way: \{Repr(widths)}")
     }
   })
 }
@@ -350,9 +360,13 @@ test "sent, a quote's ✕ leaves with its card and the send button fades to fain
       // over its card all the way, never under it
       assert_true(x_over_card(t), msg="the ✕ under its card at \{t.time()}")
     }
-    // the ✕: seen as it sets out, fading on (never back), gone once it has left
-    assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
-    assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
+    // the ✕: seen as it sets out, fading on (never back), gone once it has left (the old page's: made as nodes, what
+    // flies is the message's quote card, which has none, as with its comment line: decided a known difference,
+    // 2026-11-16, quote_media_departure's)
+    if !both_nodes.val {
+      assert_true(xs[0] > 0.9, msg="\{Repr(xs)}")
+      assert_true(xs.iter().any(fn(a) { a > 0.1 && a < 0.9 }), msg="\{Repr(xs)}")
+    }
     assert_eq(xs[xs.length() - 1], 0.0)
     for k in 1..<xs.length() {
       if xs[k] > xs[k - 1] + 0.01 {
@@ -364,4 +378,22 @@ test "sent, a quote's ✕ leaves with its card and the send button fades to fain
     assert_true(faint != ready)
     assert_true(grounds.iter().any(fn(g) { g != ready && g != faint }), msg="\{Repr(grounds)}")
   })
+}
+
+///|
+test "a draft's quote with no id of its own takes no cursor on a phone, on the old page and made as nodes; its ✕ leaves none" {
+  for nodes in [false, true] {
+    new_run()
+    @sf.presenters_reset()
+    @sfbase.chat_page_nodes.set(nodes)
+    @sfbase.composer_nodes.set(nodes)
+    let src = fixture("chat-quote")
+    open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=2)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(focused_field(t), "", msg="nodes \{nodes}: opened")
+    t.click(Button, label=@sf.t("web-main.quote.remove"))
+    t.run_for(@ui.move_most_ms)
+    assert_eq(focused_field(t), "", msg="nodes \{nodes}: its quote taken out")
+  }
 }

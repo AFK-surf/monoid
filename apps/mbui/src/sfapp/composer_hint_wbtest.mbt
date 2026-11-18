@@ -55,44 +55,48 @@ fn assert_hint_still(seen : Array[(Double, Double)], at : (Double, Double)) -> U
 
 ///|
 test "desk composer: its hint gone as its field takes the cursor, back once it is let go of where it was, never moving with the composer's shape" {
-  let calls : Array[Made] = []
-  let (t, _) = desk_composer_tester(calls)
-  t.draw()
-  // (the cursor in it as it is first drawn, the keyboard at hand): not shown; let go of, a capsule, it is (saying
-  // which key brings the cursor back: what it says then, the only words in it)
-  assert_true(composer_focused())
-  assert_eq(hint_shown_at(t, "发消息"), None)
-  t.ctx().blur()
-  let rest = @sfpages.let_go_ms + @ui.move_most_ms + @sf.hint_back_ms
-  hint_watch(t, "发消息", rest) |> ignore
-  let hint = t.words()[0].0
-  let at = hint_shown_at(t, hint).unwrap()
-  let (x, y) = t.find(hint).unwrap()
-  t.tap(x, y)
-  assert_true(composer_focused())
-  // opened to a box with the cursor in it: not shown at all, in any frame
-  let opened = hint_watch(t, "发消息", @ui.move_most_ms + @sf.hint_back_ms)
-  assert_eq(opened, [])
-  // let go of: a box a moment longer, then a capsule again; the hint only once it is one, where it was
-  t.ctx().blur()
-  let shut = hint_watch(t, hint, rest)
-  assert_hint_still(shut, at)
-  assert_true(hint_shown_at(t, hint) is Some(_))
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let (t, _) = desk_composer_tester(calls)
+    t.draw()
+    // (the cursor in it as it is first drawn, the keyboard at hand): not shown; let go of, a capsule, it is (saying
+    // which key brings the cursor back: what it says then, the only words in it)
+    assert_true(composer_focused())
+    assert_eq(hint_shown_at(t, "发消息"), None)
+    t.ctx().blur()
+    let rest = @sfpages.let_go_ms + @ui.move_most_ms + @sf.hint_back_ms
+    hint_watch(t, "发消息", rest) |> ignore
+    let hint = t.words()[0].0
+    let at = hint_shown_at(t, hint).unwrap()
+    let (x, y) = t.find(hint).unwrap()
+    t.tap(x, y)
+    assert_true(composer_focused())
+    // opened to a box with the cursor in it: not shown at all, in any frame
+    let opened = hint_watch(t, "发消息", @ui.move_most_ms + @sf.hint_back_ms)
+    assert_eq(opened, [])
+    // let go of: a box a moment longer, then a capsule again; the hint only once it is one, where it was
+    t.ctx().blur()
+    let shut = hint_watch(t, hint, rest)
+    assert_hint_still(shut, at)
+    assert_true(hint_shown_at(t, hint) is Some(_))
+  })
 }
 
 ///|
 test "a phone's composer: its hint gone as its field takes the cursor, back once it is let go of where it was, never moving with the composer's shape" {
-  let calls : Array[Made] = []
-  let t = fake_core(calls)
-  t.draw()
-  let at = hint_shown_at(t, "发消息").unwrap()
-  t.tap_text("发消息")
-  let opened = hint_watch(t, "发消息", @ui.move_most_ms + @sf.hint_back_ms)
-  assert_eq(opened, [])
-  t.ctx().blur()
-  // (a box a moment longer, then a capsule again, as on a computer)
-  let shut = hint_watch(t, "发消息", @sfpages.let_go_ms + @ui.move_most_ms + @sf.hint_back_ms)
-  assert_hint_still(shut, at)
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = fake_core(calls)
+    t.draw()
+    let at = hint_shown_at(t, "发消息").unwrap()
+    t.tap_text("发消息")
+    let opened = hint_watch(t, "发消息", @ui.move_most_ms + @sf.hint_back_ms)
+    assert_eq(opened, [])
+    t.ctx().blur()
+    // (a box a moment longer, then a capsule again, as on a computer)
+    let shut = hint_watch(t, "发消息", @sfpages.let_go_ms + @ui.move_most_ms + @sf.hint_back_ms)
+    assert_hint_still(shut, at)
+  })
 }
 
 ///|
@@ -111,17 +115,19 @@ fn drawn_whole_at(t : @ui.Tester, x : Double, y : Double, r : Double) -> Bool {
 
 ///|
 test "a phone's composer opened by a tap keeps its ＋ and send whole on their way, its field beside them covering neither (the user, 2026-10-30: 「输入框盖住了加号和发送」)" {
-  let calls : Array[Made] = []
-  let t = fake_core(calls)
-  t.draw()
-  let side = @sf.theme().round.side
-  t.tap_text("发消息")
-  let until = t.time() + @ui.move_most_ms
-  while t.time() < until {
-    let (px, py) = t.locate("icon:plus")[0]
-    let (sx, sy) = t.locate("icon:arrow-up")[0]
-    assert_true(drawn_whole_at(t, px, py, side / 2.0), msg="＋ cut at \{t.time()}")
-    assert_true(drawn_whole_at(t, sx, sy, side / 2.0 + 1.0), msg="send cut at \{t.time()}")
-    t.frame()
-  }
+  both_pages(fn() raise {
+    let calls : Array[Made] = []
+    let t = fake_core(calls)
+    t.draw()
+    let side = @sf.theme().round.side
+    t.tap_text("发消息")
+    let until = t.time() + @ui.move_most_ms
+    while t.time() < until {
+      let (px, py) = t.locate("icon:plus")[0]
+      let (sx, sy) = t.locate("icon:arrow-up")[0]
+      assert_true(drawn_whole_at(t, px, py, side / 2.0), msg="＋ cut at \{t.time()}")
+      assert_true(drawn_whole_at(t, sx, sy, side / 2.0 + 1.0), msg="send cut at \{t.time()}")
+      t.frame()
+    }
+  })
 }

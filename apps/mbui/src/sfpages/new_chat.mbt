@@ -1080,6 +1080,9 @@ fn new_send(
           // something is written there by now: then said so); the page the new chat again, its scene back, only
           // while it is still the chat it became: a page come on top since, or a new chat begun anew, is left as it
           // is (Nav::become changes whatever is on top)
+          // (whether the cursor is in a field as it is now, on the chat's page its composer's: its draft carried back from
+          // here)
+          let had_cursor = @ui.field_has_focus()
           sending.val = false
           @sfbase.sent_local_gone(rk, row)
           @sfbase.flight_carry_gone(draft)
@@ -1093,6 +1096,12 @@ fn new_send(
             fresh.became.set(None)
           }
           if here {
+            // (the cursor in the chat's composer, as it was taken over from the new chat's (`became`): back with the
+            // words in the new chat's, its keyboard as it was; the chat's composer made as nodes is a field of its own,
+            // its cursor let go with its page, so asked for there: composer_take_focus; `had_cursor`)
+            if had_cursor {
+              composer_take_focus()
+            }
             @sfbase.leaving_back()
             app.nav.become(NewChat)
           }

@@ -93,9 +93,16 @@ fn rs_width(s : (String, Double, Double, Int), at_end : Bool) -> Array[String] {
 /// On 大屏 over a core `late` late, read up (else at the end): the chat's side panel opened (its agent's history), then
 /// closed.
 fn rs_side(late : Double, at_end : Bool) -> Array[String] {
+  // (its composer an old view's, then made as nodes: 试用新输入框)
+  rs_side_by(late, at_end, false) + rs_side_by(late, at_end, true)
+}
+
+///|
+fn rs_side_by(late : Double, at_end : Bool, composed : Bool) -> Array[String] {
   let broken : Array[String] = []
   let s = long_screens[1]
-  let (t, src, k) = rs_open(s)
+  let (t, src, k) = rs_open(s, composed~)
+  let said = if composed { "\{late}, its composer made as nodes" } else { "\{late}" }
   if !at_end {
     rs_read_up(t, s)
   }
@@ -108,11 +115,11 @@ fn rs_side(late : Double, at_end : Bool) -> Array[String] {
     }
   }
   let wide = rs_ground(t).map(fn(g) { g.2 })
-  rs_push(broken, held("大屏 late \{late}: the side panel opened", fn() { @sfdesk.side_toggle(src, long_ref, "s-c1") }))
+  rs_push(broken, held("大屏 late \{said}: the side panel opened", fn() { @sfdesk.side_toggle(src, long_ref, "s-c1") }))
   if rs_ground(t).map(fn(g) { g.2 }) == wide {
-    broken.push("大屏 late \{late}: the chat no narrower with the side panel opened (the cause not made)")
+    broken.push("大屏 late \{said}: the chat no narrower with the side panel opened (the cause not made)")
   }
-  rs_push(broken, held("大屏 late \{late}: the side panel closed", fn() { @sfdesk.side_toggle(src, long_ref, "s-c1") }))
+  rs_push(broken, held("大屏 late \{said}: the side panel closed", fn() { @sfdesk.side_toggle(src, long_ref, "s-c1") }))
   broken
 }
 

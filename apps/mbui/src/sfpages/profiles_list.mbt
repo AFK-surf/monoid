@@ -25,6 +25,7 @@ pub fn profiles_list_node(
   bar_actions? : ((@view.View) -> Unit, (@sf.Look) -> Double) -> Unit,
   bar_add? : Bool = true,
   on_show_overview? : () -> Unit = fn() { @settings.profiles_narrow_overview.set(true) },
+  tabs_thumb? : @sf.SegThumb,
 ) -> Unit {
   let tips = match tips {
     Some(t) => t
@@ -197,6 +198,7 @@ pub fn profiles_list_node(
                 on_show_overview()
               }
             },
+            thumb?=tabs_thumb,
           )
         "reading" =>
           @sf.group_node(b, fn(g) {
@@ -928,17 +930,18 @@ pub fn profiles_page_node(
   let scope = { "scope": Json::string(ws) }
   held.prefetch("profiles", scope) |> ignore
   held.prefetch("stations", scope) |> ignore
+  let tabs_thumb = @sf.SegThumb::new(v, fn() { if overview.get() { 1 } else { 0 } })
   v.pick(fn() { overview.get() }, fn(p, shown) {
     p.grow(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
     if shown {
-      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_accounts=fn() {
+      profiles_overview_node(p, core, here, on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_accounts=fn() {
         overview.set(false)
       })
       // (what the switch asked ahead, its pools, read anew by the overview just made: overview_switch)
       @sfbase.shown_read("profiles-list\u{1}" + ws)
     } else {
       // (概览 once what it shows is answered, the list meanwhile: overview_switch)
-      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, on_show_overview=fn() {
+      profiles_list_node(p, core, here, "", on_back~, frame~, said?, width?, tips?, bar_actions?, bar_add~, tabs_thumb~, on_show_overview=fn() {
         (@settings.overview_switch.val)(ws, fn() { overview.set(true) })
       })
     }

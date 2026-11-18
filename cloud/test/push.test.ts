@@ -118,6 +118,13 @@ test("a notification's text is one line of at most 140 characters, made by its k
   assert.equal(line("x".repeat(140)), "x".repeat(140));
 });
 
+test("a notification says what was said as plain words, Markdown's marks out, as a chat's row shows it", () => {
+  assert.equal(noticeBody("done", "## 结论\n- 改成 `tsgo` 了，**快**很多\n- 看 [PR #12](https://github.com/a/b/pull/12)", "Claude"), "Claude: 结论 改成 tsgo 了，快很多 看 PR #12");
+  assert.equal(noticeBody("message", "![](shot.png) https://x.dev/a", "Bob"), "Bob: [图片] [链接]");
+  assert.equal(noticeBody("message", "see https://x.dev/a", "Bob", "en"), "Bob: see [link]");
+  assert.equal(noticeBody("block", "选 **A** 还是 *B*", "Claude"), "需要你处理 · 选 A 还是 B");
+});
+
 test("a device that says what it shows gets only those kinds, and with its preview off only what happened", () => {
   const shows = showsOf({ kinds: { wait: true, failed: true, done: "off", message: false }, preview: false });
   assert.deepEqual([shown(shows, "block"), shown(shows, "failed"), shown(shows, "done"), shown(shows, "message"), shown(shows, "new_kind")], [true, true, false, false, false]);

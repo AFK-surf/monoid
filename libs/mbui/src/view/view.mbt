@@ -8028,7 +8028,7 @@ fn Tree::fingers_off(self : Tree) -> Array[Int] {
 /// from it that takes one, as were it not there; held still within the slop as long as its hold, the finger its from
 /// then, what had it told Off (no tap, no press of it), its hold told at once (hold_in.mbt). Not in a top row that moves
 /// the window (the window's drag begins as the press goes down) nor over an old view: a finger held on it there is
-/// theirs.
+/// theirs. With `hold_yields`, an ancestor can still take the drag after the hold callback runs.
 pub fn View::gesture(
   self : View,
   slop : Double,
@@ -8038,6 +8038,7 @@ pub fn View::gesture(
   drag? : (Drag) -> Unit,
   through? : Double,
   held_first? : (Drag) -> Bool,
+  hold_yields? : Bool = false,
 ) -> View {
   // (a hold told, or handed through: one way of a hold, its moment the one recognizer's)
   let hold_ms = match (hold, through) {
@@ -8122,10 +8123,11 @@ pub fn View::gesture(
                 match hold {
                   Some((_, f)) => {
                     held.val = true
-                    // (held: the hold its own from now)
-                    match self.live() {
-                      Some(n) => n.yields = false
-                      None => ()
+                    if !hold_yields {
+                      match self.live() {
+                        Some(n) => n.yields = false
+                        None => ()
+                      }
                     }
                     word(f, { ..o, at: due }, o)
                   }

@@ -846,6 +846,19 @@ fn is_light_unit(unit : Bytes) -> Bool {
 }
 
 ///|
+/// MBC_LIGHT_KEEP lists unit name prefixes that a program of MBC_LIGHT_TESTS keeps at its own level: the framework's
+/// units every test runs through each frame, at -O0 the whole program's tests 2.5 times as long (a branch changing them
+/// took them from no store, its app shards past five minutes, 44243493008, 2026-11-18), compiled at its level once
+/// and taken from MBC_STORE as main's after.
+fn is_light_keep(unit : Bytes) -> Bool {
+  match getenv("MBC_LIGHT_KEEP") {
+    Some(list) =>
+      split_words(list).iter().any(fn(prefix) { prefix.length() > 0 && starts(unit, prefix) })
+    None => false
+  }
+}
+
+///|
 fn unopt_flags(flags : Array[Bytes], init_flags : Array[Bytes], msvc : Bool) -> Array[Bytes] {
   let f = flags.filter(fn(x) { !starts(x, b"-O") && !(msvc && starts(x, b"/O")) })
   for x in init_flags {
@@ -1040,7 +1053,17 @@ fn split_jobs(
     }
     // ThinLTO uses bitcode for every unit except moonbit_init's.
     let unopt = !lto && (is_data(name) || is_light_unit(name))
-    let base = if unopt { unopt_flags(flags, init_flags, msvc) } else { flags }
+    // (a unit MBC_LIGHT_KEEP names in a program of MBC_LIGHT_TESTS: at the program's own level, alt_flags, and nothing
+    // less optimised to fall back on)
+    let kept = match alt_flags {
+      Some(af) if !unopt && !is_init(name) && is_light_keep(name) => Some(af)
+      _ => None
+    }
+    let base = if unopt {
+      unopt_flags(flags, init_flags, msvc)
+    } else {
+      kept.unwrap_or(flags)
+    }
     let f = base.copy()
     for x in gen_flags {
       f.push(x)
@@ -1061,6 +1084,7 @@ fn split_jobs(
     let obj = path_join(objdir, cat([b"u_", sub(name, 0, name.length() - 2), ext]))
     let (argv, dep) = compile_args(cc, f, src, obj, msvc)
     let fallback = match alt_flags {
+      _ if kept is Some(_) => None
       None if unopt && base != flags => Some(flags)
       _ => alt_flags
     }
@@ -1728,7 +1752,7 @@ fn link_key(argv : Array[Bytes], deps : Array[Bytes], out : Bytes) -> Bytes {
 /// response file. Keep them on one line: /link applies only to the rest of its line in a CL command file.
 fn msvc_link_command(argv : Array[Bytes], rsp : Bytes) -> Array[Bytes] {
   if !write_file(rsp, cat([list2cmdline(argv[1:].to_owned()), b"\n"])) {
-    fatal("cannot write link response file \{str(rsp)}")
+    fatal("cannot write link response file \{str(rsp)}: \{write_error()}")
   }
   [argv[0], cat([b"@", rsp])]
 }
@@ -1934,7 +1958,7 @@ fn msvc_core_obj(real : Array[Bytes], wargs : Array[Bytes], c_file : Bytes, obj 
   )
   let objs = run_jobs_c(jobs, j, basename(c_file))
   if !write_file(cat([obj, b".mbc-units"]), join_words(objs, b"\n")) {
-    fatal("cannot write \{str(obj)}.mbc-units")
+    fatal("cannot write \{str(obj)}.mbc-units: \{write_error()}")
   }
   let ph = path_join(objdir, b"placeholder.c")
   let _ = write_file(ph, b"int mbc_link_core_placeholder;\n")

@@ -141,11 +141,17 @@ fn rs_answer(k : RsCore) -> Unit {
 ///|
 /// The long chat opened on screen `s` with its page made as nodes, at its end and at rest, the core answering at once.
 /// Its list's rows on the device's pixels. The opening run on by rs_skip where `skip` is said (else rs_rest).
-fn rs_open(s : (String, Double, Double, Int), skip? : Bool = false) -> (@ui.Tester, Source, RsCore) {
+fn rs_open(
+  s : (String, Double, Double, Int),
+  skip? : Bool = false,
+  composed? : Bool = false,
+) -> (@ui.Tester, Source, RsCore) {
   let (_, w, h, platform) = s
   new_run()
   @sf.presenters_reset()
   @sfbase.chat_page_nodes.set(true)
+  // (its composer made as nodes too where `composed` says: 试用新输入框)
+  @sfbase.composer_nodes.set(composed)
   let k : RsCore = {
     l: long_chat(),
     now: 0.0,

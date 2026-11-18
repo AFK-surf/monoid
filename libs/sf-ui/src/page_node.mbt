@@ -2035,6 +2035,7 @@ pub fn page_choice_node(
   chosen : () -> Int,
   choose : (Int) -> Unit,
   item_w? : Double = 0.0,
+  thumb? : SegThumb,
   loc~ : SourceLoc,
 ) -> Unit {
   let at = part_of(parent)
@@ -2062,7 +2063,7 @@ pub fn page_choice_node(
   parent.box(fn(b) {
     b.padding(Is((0.0, 0.0, 0.0, pg_choice_foot))) |> ignore
     // (a narrow page's: Seg filling the page's room, as segmented's on a narrow page; `item_w` a wide page's alone)
-    seg_fill_node(b, labels, chosen, choose) |> ignore
+    seg_fill_node(b, labels, chosen, choose, thumb?) |> ignore
   })
   |> ignore
 }
