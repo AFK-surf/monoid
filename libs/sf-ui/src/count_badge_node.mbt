@@ -15,7 +15,8 @@ pub(all) enum CountLook {
 }
 
 ///|
-/// The count's tone: `CountRed` (what waits on someone: the danger's red) or `CountAccent` (the accent's).
+/// The count's tone: `CountRed` (what waits on someone: the danger's red) or `CountAccent` (the accent's; a mark with
+/// figures the primary ink's, since small white figures on the accent fall short of 4.5:1).
 #derive(Eq, Debug)
 pub(all) enum CountTone {
   CountRed
@@ -116,7 +117,7 @@ let count_mark_danger : @ui.Style = @ui.css("row h=S4 min_w=S4 px=S1 radius=Full
 
 ///|
 // kept across runs: a value (no field of it changes)
-let count_mark_accent : @ui.Style = @ui.css("row h=S4 min_w=S4 px=S1 radius=Full bg=Accent align=ACenter justify=JCenter")
+let count_mark_accent : @ui.Style = @ui.css("row h=S4 min_w=S4 px=S1 radius=Full bg=Primary align=ACenter justify=JCenter")
 
 ///|
 /// A mark's figures: the caption's size, semibold, the tone's ink on it.
@@ -125,7 +126,7 @@ let count_mark_words_danger : @ui.TextStyle = @ui.text_style(size=Caption, weigh
 
 ///|
 // kept across runs: a value (no field of it changes)
-let count_mark_words_accent : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, color=OnAccent, wrap=false)
+let count_mark_words_accent : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, color=OnPrimary, wrap=false)
 
 ///|
 /// A count in a line: the tone's tint, round, 6 in at either end, as tall as its words.

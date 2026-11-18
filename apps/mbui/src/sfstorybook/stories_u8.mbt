@@ -11,10 +11,10 @@ fn stories_u8() -> Array[Story] {
       file: "count_badge_node.mbt",
       api: [("count_badge_node.mbt", "count_badge_node"), ("count_badge_node.mbt", "count_words")],
       play: None,
-      about: "数着的数：挂在所数之物角上的角标（红或强调色实心，16 高的圆或胶囊，数字按角标的尺寸画，不随系统字号放大；不给数时是 8 的圆点），和排在标题旁的行内计数（浅底，随字号长高）。超过上限写成 99+。",
+      about: "数着的数：挂在所数之物角上的角标（红色或主色实心，16 高的圆或胶囊，数字按角标的尺寸画，不随系统字号放大；不给数时是 8 的圆点），和排在标题旁的行内计数（浅底，随字号长高）。超过上限写成 99+。",
       cases: [
         (
-          "角标：数、超过 99、强调色、圆点",
+          "角标：数、超过 99、主色、圆点",
           fn(card) {
             side_by_side(card, fn(r) {
               @sf.count_badge_node(r, count=fn() { 3 }) |> ignore
