@@ -193,7 +193,9 @@ async function launch(data: string, app: string, path: string, out: string, sock
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
     // (no Node: the PATH the fakes are on, and nothing else)
-    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "" },
+    // (traced by default: what it says goes into a failure's message only, and Linux CI's rare hang at "the turn's end",
+    // `a turn is already running` at a session's first prompt, never came where it could be looked at)
+    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "1" },
   });
   children.push(child);
   // (the launcher's copies let go: the station alone accepts on them)
