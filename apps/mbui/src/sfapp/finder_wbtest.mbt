@@ -459,7 +459,6 @@ test "⌘K: ↓ and ↑ move the list only as far as brings the line chosen whol
 /// lines, the panel's foot over its last), on main as well: a design not yet decided, apart from where its list stands.
 let finder_short_corners_known : Array[String] = [
   "「通用 快捷键一览 ⌘/」 (at 360,90 560×142, node 610) (corner 30): something lies in its bottom right, and its corner is not one of the ladder's [42, 26, 24, 18, 10]",
-  "「对话 整理发布清单 Willow ·  2 分钟…」 (at 360,90 560×142, node 610) (corner 30): something lies in its bottom right, and its corner is not one of the ladder's [42, 26, 24, 18, 10]",
 ]
 
 ///|
@@ -488,7 +487,8 @@ test "⌘K: as words are typed letter by letter and cleared, the list stands at 
       assert_true(r[1] >= list.y - 0.5 && r[1] + r[3] <= list.y + list.h + 0.5, msg="\{at}: the line chosen at \{r[1]}, in view from \{list.y}")
     }
   }
-  for words in [["快", "捷", "键"], ["发", "布"], ["签", "名"]] {
+  // (words whose answers the made-up core keeps: src/sfkept)
+  for words in [["快", "捷", "键"], ["签", "名"]] {
     for w in words {
       t.type_text(w)
       t.run_for(@ui.move_most_ms)
