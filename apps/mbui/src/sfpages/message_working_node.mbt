@@ -143,15 +143,13 @@ fn working_said_node(
           }
           dmax(room.width() - start - stop - clock_w.get(), 0.0)
         }
-        area.box(fn(line) {
+        @sf.action_box_node(area, fn() { a().who + "：" + said().words }, fn(_) {
+          open_detail(src, message_node_ref(here), @signals.untracked(a).key)
+        }, fn(line) {
           @sf.style_node(line, fn() { if message_inline(here) { activity_line_narrow } else { activity_line } })
           // (giving way where the row has not the room, down to nothing: what it does now is cut short, as its stop
           // shows beside it, the rest whole)
           line.cuts(Is(true)).min_width(Is(Some(0.0))) |> ignore
-          line.says(By(fn() { Some(@view.said(Button, label=a().who + "：" + said().words)) })) |> ignore
-          @sf.presses_node(line, fn() {
-            open_detail(src, message_node_ref(here), @signals.untracked(a).key)
-          })
           line.box(fn(face) {
             @sf.style_node(face, fn() { activity_face })
             // (away, its picture and its ring with it drawn nowhere, its room kept: one binding for all of it, bound once a
@@ -257,16 +255,14 @@ fn working_said_node(
 /// pointer, its words in its tip; pressed, its turn asked to stop (session.stop). Read out a button.
 fn working_stop_node(v : @view.View, src : Source, here : MessageNodeHere, a : () -> Agent) -> Unit {
   let label = fn() { @sf.t("web-main.activity.stop", args=[("who", a().who)]) }
-  v.box(fn(b) {
+  @sf.action_box_node(v, label, fn(_) {
+    act(src, @sf.t("web-pages.chat.stop"), "", "session.stop", {
+      "station": Json::string(here.station),
+      "key": Json::string(@signals.untracked(a).key),
+    }, done=@sf.t("web-pages.chat.stopAsked"))
+  }, fn(b) {
     let hot = fn() { @sf.hovered_node(b) }
     @sf.style_node(b, fn() { if hot() { activity_stop_hot } else { activity_stop } })
-    b.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
-    @sf.presses_node(b, fn() {
-      act(src, @sf.t("web-pages.chat.stop"), "", "session.stop", {
-        "station": Json::string(here.station),
-        "key": Json::string(@signals.untracked(a).key),
-      }, done=@sf.t("web-pages.chat.stopAsked"))
-    })
     @sf.icon_node(b, "stop", stop_icon, By(fn() {
       let p = @sf.theme().p
       if hot() {

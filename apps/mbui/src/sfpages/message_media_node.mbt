@@ -77,7 +77,14 @@ fn message_image_node(
   }
   // the menu up by a finger's hold (its serial among what is presented: lifted while it is drawn)
   let held_menu : @signals.Signal[Int?] = @signals.signal(None)
-  parent.box(fn(f) {
+  let pressed = fn() {
+    if unreached() {
+      src.images.again(station())
+    } else {
+      open_file(place.here(), a(), at=at())
+    }
+  }
+  @sf.action_box_node(parent, fn() { @sf.t("web-main.file.view", args=[("name", a().name)]) }, fn(_) { pressed() }, fn(f) {
     // (all of it kept, one value, as it comes to another: what is bound to it worked out again only then, not as the
     // message's data is said again with its size, its picture's share and its likeness the same: @sf.value_kept)
     let kept = @sf.value_kept(f, fn() { (w(), h(), share(), most(), start_crop(), likeness()) })
@@ -102,7 +109,6 @@ fn message_image_node(
       .then(@ui.style(w=Fixed(w()), h=Fixed(h())))
       .then(frame_corner_node(corner))
     })
-    f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.file.view", args=[("name", a().name)]))) })) |> ignore
     let open_menu = fn(x : Double, y : Double, finger : Bool) {
       let here = place.here()
       let a = a()
@@ -127,17 +133,7 @@ fn message_image_node(
       held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
     }
     // (right clicked, its menu where the pointer is; held by a finger, there, felt, the press the menu's)
-    @sf.menu_presses_node(
-      f,
-      fn() {
-        if unreached() {
-          src.images.again(station())
-        } else {
-          open_file(place.here(), a(), at=at())
-        }
-      },
-      open_menu,
-    )
+    @sf.menu_presses_node(f, pressed, open_menu)
     // held by a finger for its menu: lifted over the menu's scrim while that menu is drawn
     @sf.lift_node(
       f,

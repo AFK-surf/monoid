@@ -202,9 +202,7 @@ fn own_face_node(
     (picking() && own_picture.sub.get() == sub()) ||
     is_doing(core, ["account.setPicture", "account.removePicture"], [("account", sub())])
   }
-  parent.box(fn(f) {
-    @sf.style_node(f, fn() { own_face_room })
-    @sf.presses_node(f, on=fn() { !busy() && !picking() }, fn() {
+  @sf.action_box_node(parent, fn() { @sf.t("android-settings.me.picture") }, disabled=fn() { busy() || picking() }, fn(f) {
       let sub = @signals.untracked(sub)
       if !@signals.untracked(fn() { own_picture_of(core, sub) }) {
         pick_own_picture(core, sub)
@@ -227,8 +225,8 @@ fn own_face_node(
           from=Node(f),
         )
       }
-    })
-    f.says(By(fn() { Some(@view.said(Button, label=@sf.t("android-settings.me.picture"))) })) |> ignore
+    }, fn(f) {
+    @sf.style_node(f, fn() { own_face_room })
     @sf.avatar_node(f, email, name, fn() {
       let p = picture()
       if p == "" { "" } else { (core.picture)(p, stint()) }

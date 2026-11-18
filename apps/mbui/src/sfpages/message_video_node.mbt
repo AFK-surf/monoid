@@ -40,7 +40,12 @@ fn message_video_node(
   // (its capsule seen once it is here, where it flies here from the composer's tile: none of it on the way, coming in
   // over dur_ms from its landing, as the old page's video_item's marks; at once otherwise)
   let marks = @motion.Way::new(1.0)
-  parent.box(fn(f) {
+  let pressed = fn() {
+    if !going_up() {
+      open_file(place.here(), a(), at=at())
+    }
+  }
+  @sf.action_box_node(parent, fn() { @sf.t("web-main.file.play", args=[("name", a().name)]) }, fn(_) { pressed() }, fn(f) {
     @sf.style_node(f, fn() { video_frame.then(@ui.style(w=Fixed(w()), h=Fixed(h()))).then(frame_corner_node(corner)) })
     // (sent from here a moment ago: from where its tile stood in the composer, its still in its frame all the way, as a
     // picture's flies: message_files_node's `from`, View::flies_in, with the rest of what was sent (`fly`, its part `part`); its capsule coming
@@ -53,7 +58,6 @@ fn message_video_node(
       }
       None => ()
     }
-    f.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.file.play", args=[("name", a().name)]))) })) |> ignore
     // (its name, which nothing over its picture says, whole by it while what it shows shows cut short: video_item's tip)
     @sf.tip_node(tips, f, fn() { a().name }, repeats=true) |> ignore
     // its still: what the viewer left, one sent from here, its station's (going up: the picture this device has)
@@ -119,15 +123,7 @@ fn message_video_node(
       @sf.menu(items, from=@sf.at_point(x, y))
       held_menu.set(if finger { Some(@sf.last_presented()) } else { None })
     }
-    @sf.menu_presses_node(
-      f,
-      fn() {
-        if !going_up() {
-          open_file(place.here(), a(), at=at())
-        }
-      },
-      open_menu,
-    )
+    @sf.menu_presses_node(f, pressed, open_menu)
     @sf.lift_node(
       f,
       fn() { false },

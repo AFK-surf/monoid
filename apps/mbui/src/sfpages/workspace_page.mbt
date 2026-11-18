@@ -66,7 +66,10 @@ pub fn workspace_node(
     // adding people, by email or from Slack: its managers'
     actions=fn(a) {
       a.show(manager, fn(s) {
-        s.box(fn(k) {
+        @sf.action_box_node(s, fn() { @sf.t("web-pages.settings.members.add") }, fn(k) {
+          let (x, y, w, h) = k.placed_window_now()
+          open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=At(x, y, w, h))
+        }, fn(k) {
           k
           .width(Is(Some(ws_add_side)))
           .height(Is(Some(ws_add_side)))
@@ -74,13 +77,8 @@ pub fn workspace_node(
           .radius(Is(1.0e6))
           .lines_up(Is(Some(Middle)))
           .lies_along(Is(Middle))
-          .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.settings.members.add"))) }))
           |> ignore
           @sf.hover_ground_node(k)
-          @sf.presses_node(k, fn() {
-            let (x, y, w, h) = k.placed_window_now()
-            open_add_people(core, @signals.untracked(here), @signals.untracked(view), from=At(x, y, w, h))
-          })
           @sf.icon_node(k, "user-plus", ws_add_icon, By(fn() { @sf.link_ink() })) |> ignore
         })
         |> ignore

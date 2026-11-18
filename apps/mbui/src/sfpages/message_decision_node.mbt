@@ -519,19 +519,13 @@ fn ask_dismiss_node(
   let live = fn() { shown() && !resolved() }
   v.show(shown, fn(s) {
     @sf.style_node(s, fn() { if lead { under_post_room_lead } else { under_post_room } })
-    s.box(fn(b) {
+    @sf.action_box_node(s, fn() { @sf.t("web-main.chat.asks.dismiss") }, disabled=fn() { !live() }, fn(_) {
+      if @signals.untracked(live) {
+        let_go(src, here, @signals.untracked(seq))
+      }
+    }, fn(b) {
       @sf.style_node(b, fn() { dismiss_room })
       let hot = fn() { live() && @sf.hovered_node(b) }
-      b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.chat.asks.dismiss"))) })) |> ignore
-      @sf.presses_node(
-        b,
-        fn() {
-          if @signals.untracked(live) {
-            let_go(src, here, @signals.untracked(seq))
-          }
-        },
-        on=live,
-      )
       b.box(fn(w) {
         let style = fn() { if hot() { dismiss_words_hot } else { dismiss_words } }
         w

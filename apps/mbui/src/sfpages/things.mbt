@@ -807,7 +807,9 @@ fn media_tile_node(
   }
   // (longer than its tile: as wide as it, its top showing)
   let tall = a.width > 0.0 && a.height > 0.0 && a.height / a.width > h / w + things_tall_by
-  line.box(fn(b) {
+  let pressed = fn() { @sfbase.open_preview(r.station, owner, a, steps=InChat(Some(thread), r.session)) }
+  let label = @sf.t(if video { "web-main.file.play" } else { "web-main.file.view" }, args=[("name", a.name)])
+  @sf.action_box_node(line, fn() { label }, fn(_) { pressed() }, fn(b) {
     // (a video's still: the station's, else its first frame drawn here)
     let picture = if video {
       @sfbase.video_still_node(b, src, r.station, owner, a, thumb)
@@ -822,14 +824,9 @@ fn media_tile_node(
     .alpha(By(fn() { if @sf.hovered_node(b) { things_tile_lit } else { 1.0 } }))
     .on_menu(fn(m) { thing_menu_at(m.wx, m.wy, number(tv, "seq"), "", away, beside=thing_beside(r, "media", tv)) })
     |> ignore
-    @sf.presses_held_node(
-      b,
-      fn() { @sfbase.open_preview(r.station, owner, a, steps=InChat(Some(thread), r.session)) },
-      @ui.long_press_ms,
-      fn(d) { thing_held_at(d.wx, d.wy, number(tv, "seq"), "", away, beside=thing_beside(r, "media", tv)) },
-    )
-    b.says(Is(Some(@view.said(Button, label=@sf.t(if video { "web-main.file.play" } else { "web-main.file.view" }, args=[("name", a.name)])))))
-    |> ignore
+    @sf.presses_held_node(b, pressed, @ui.long_press_ms, fn(d) {
+      thing_held_at(d.wx, d.wy, number(tv, "seq"), "", away, beside=thing_beside(r, "media", tv))
+    })
     b.box(fn(i) {
       i
       .width(Is(Some(w)))
@@ -879,10 +876,10 @@ let things_tile_most : Int = 8192
 /// a pull request in the browser; held or right clicked, its menu.
 fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t : () -> Json?, away : (Double) -> Unit) -> Unit {
   let words = fn() { thing_words(kind, t()) }
-  row.box(fn(b) {
+  let pressed = fn() { thing_open(r, kind, @signals.untracked(t)) }
+  @sf.action_box_node(row, fn() { words().0 }, fn(_) { pressed() }, fn(b) {
     @sf.style_node(b, fn() { things_row })
     b
-    .says(By(fn() { Some(@view.said(Button, label=words().0)) }))
     .on_menu(fn(m) {
       let tn = @signals.untracked(t)
       thing_menu_at(m.wx, m.wy, number(tn, "seq"), text(tn, "url"), away, beside=thing_beside(r, kind, tn))
@@ -894,7 +891,7 @@ fn thing_row_node(row : @view.View, src : Source, r : ChatRef, kind : String, t 
     if kind != "files" {
       web_peek_node(b, src, r.station, fn() { text(t(), "url") }, fn() { words().0 }, side=Left, peek=fn() { text(t(), "peek") })
     }
-    @sf.presses_held_node(b, fn() { thing_open(r, kind, @signals.untracked(t)) }, @ui.long_press_ms, fn(d) {
+    @sf.presses_held_node(b, pressed, @ui.long_press_ms, fn(d) {
       let tn = @signals.untracked(t)
       thing_held_at(d.wx, d.wy, number(tn, "seq"), text(tn, "url"), away, beside=thing_beside(r, kind, tn))
     })
