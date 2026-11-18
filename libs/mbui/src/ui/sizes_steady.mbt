@@ -144,8 +144,10 @@ let sizes_across_bars : Map[String, Int] = Map([])
 
 ///|
 /// The faults along a row known in the tests of the files `bars` names, each how many a Tester made there may show (as
-/// sizes_steady_known): those there were as the check came (2026-11-17). Said by a test package as it starts (`fn
-/// init`); only falls.
+/// sizes_steady_known): those there were as the check came (2026-11-17), the most one Tester found at the default rate
+/// and at 60 and 120 a second, where how what moves goes is judged on run_for's frames too (MBUI_TEST_MOTION: a bar of
+/// the default run's alone stopped every run at those rates on main). Said by a test package as it starts (`fn init`);
+/// only falls.
 pub fn sizes_across_known(bars : Array[(String, Int)]) -> Unit {
   motion_bars_said("sizes_across", bars)
   for b in bars {
