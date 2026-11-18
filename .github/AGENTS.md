@@ -22,7 +22,8 @@
   image (`IMG`, its `ImageVersion`): two images in turn kept only the last run's units in one.
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
-  (any `ci-1` runner), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
+  (any `ci-1` runner; a branch's Windows reader after it in `natives-win-reader`, each cold reader at -O2 a job's
+  five minutes' worth when two shared the cores), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
   a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
   of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh`,
