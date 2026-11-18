@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 2.58 | 3.47 | 14.16 | 36.23 | 54.52 | 31.74 | 63.89 | 96.95 | 117.95 |
 | [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 2.58 | 3.47 | 14.15 | 36.22 | 54.47 | 31.74 | 63.89 | 96.95 | 121.72 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.66 | 63.79 | 97.47 | 133.62 |
 | [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 2.57 | 3.46 | 14.12 | 36.11 | 54.34 | 31.61 | 63.66 | 96.93 | 117.54 |
 | [0cb26c4a6](https://github.com/AFK-surf/monoid/commit/0cb26c4a6a4dd706a0224bf9a27fbd5636388637) feat(mbui): open an app's Windows window where it  | 2.56 | 3.45 | 14.08 | 36.08 | 54.2 | 31.61 | 63.66 | 96.93 | 126.06 |
-| [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 2.56 | 3.45 | 14.08 | 36.08 | 54.2 | 31.61 | 63.66 | 96.93 | 126.06 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [03f939eab](https://github.com/AFK-surf/monoid/commit/03f939eab6f37cb1952dab8a80abf84ae56ccf15) perf(mbui): skip core messages a later whole value | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 53.99 |
 | [f4f4a2c2d](https://github.com/AFK-surf/monoid/commit/f4f4a2c2d8cd521d1f651d45d27cc67efa12876c) feat(mbui): independent windows: a spec for each,  | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
 | [6411be4f6](https://github.com/AFK-surf/monoid/commit/6411be4f6b8aa7a4f3c783de6dfc766703dd9ec6) refactor(sf-ui): share the app look, permission gr | 0.44 | 0.57 | 2.21 | 3.31 | 5.3 | 1.62 | 4.36 | 54.4 |
 | [00131c048](https://github.com/AFK-surf/monoid/commit/00131c048583b0c91471b6f3e71819077937356b) fix(station): updates read the station apart, Wind | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.97 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [f38e1d768](https://github.com/AFK-surf/monoid/commit/f38e1d76815cb5f8b66dd0559df4c6005c54e914) fix(station): the station's own messages say stati | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
 | [6a5fa8a4e](https://github.com/AFK-surf/monoid/commit/6a5fa8a4e1477cdef8485a97a859bae82ee6ee3f) fix(mbui): a wide pane off a chat says where it go | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
 | [0cb26c4a6](https://github.com/AFK-surf/monoid/commit/0cb26c4a6a4dd706a0224bf9a27fbd5636388637) feat(mbui): open an app's Windows window where it  | 0.44 | 0.57 | 2.21 | 3.29 | 5.28 | 1.62 | 4.35 | 53.84 |
-| [e7edaa07a](https://github.com/AFK-surf/monoid/commit/e7edaa07a33f8248bf09289cb18c9a5db21fd5fa) feat(ui): move toasts, menus and the switcher onto | 0.44 | 0.57 | 2.19 | 3.28 | 5.23 | 1.61 | 4.31 | 54.04 |
