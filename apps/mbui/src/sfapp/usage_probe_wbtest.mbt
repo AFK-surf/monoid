@@ -354,3 +354,92 @@ test "usage probe: answered empty while reading first" {
     uprobe_end(t, "G\{mode}")
   }
 }
+
+///|
+fn uprobe_filtered(v : Json?, list : String, key : String) -> Json? {
+  match v {
+    Some(Object(o)) => {
+      let m = o.copy()
+      let lists = match o.get("lists") {
+        Some(Array(ls)) =>
+          ls.map(fn(l) {
+            match l {
+              Object(lo) if text(Some(l), "key") == list => {
+                let lm = lo.copy()
+                match lo.get("items") {
+                  Some(Array(its)) => lm["items"] = Json::array(its.filter(fn(it) { text(Some(it), "key") == key }))
+                  _ => ()
+                }
+                Json::object(lm)
+              }
+              _ => l
+            }
+          })
+        _ => []
+      }
+      m["lists"] = Json::array(lists)
+      Some(Json::object(m))
+    }
+    _ => v
+  }
+}
+
+///|
+test "usage probe: real size, a person's row picked" {
+  for late in [false, true] {
+    let c = @sfrealsize.RealSizeChanging::new()
+    reset()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let real = c.source(@sffixture.fixture("home"))
+    let src = { ..real, topic_read: fn(name, params) {
+      match (name, params.get("only")) {
+        ("usage", Some(only)) => {
+          let p = params.copy()
+          p.remove("only")
+          let answer = real.topic_read(name, p)
+          let list = text(Some(only), "list")
+          let key = text(Some(only), "key")
+          { ..answer, value: if pending.get() { None } else { uprobe_filtered(answer.value, list, key) } }
+        }
+        _ => real.topic_read(name, params)
+      }
+    } }
+    open_fixture_over("home", src)
+    let t = @ui.Tester::new(fn(x) { view(x, src) }, tree=app_tree(src), w=390.0, h=844.0, platform=1, scale=3.0, env=[("MBUI_LOCALE", "zh")])
+    t.motion_unjudged(true)
+    t.set_rows_on_pixels(true)
+    t.run_for(kept_switch_over_ms)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_at(t, "H\{late} opened")
+    for _ in 0..<2 {
+      t.drag(180.0, 650.0, 180.0, 250.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    }
+    let head = t.words().iter().find_first(fn(w) { w.0 == "花费明细" && w.2 > 0.0 })
+    println("H\{late}: head \{head.map(fn(h) { h.2 })}")
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    let hy = match t.words().iter().find_first(fn(w) { w.0 == "花费明细" }) { Some(w) => w.2; None => 0.0 }
+    let rows = t.words().filter(fn(w) { w.2 > hy + 70.0 && w.2 < 700.0 && w.1 < 60.0 && w.1 > 20.0 })
+    println("H\{late}: rows \{rows.map(fn(w) { "\{w.0}@\{w.2}" }).join(" / ")}")
+    pending.set(late)
+    match rows.get(0) {
+      Some(r) => t.tap(r.1 + 4.0, r.2 + 4.0)
+      None => println("H: no row")
+    }
+    t.run_for(150.0)
+    pending.set(false)
+    t.run_for(kept_switch_over_ms)
+    let ws = t.words().filter(fn(w) { w.1 >= 0.0 && w.2 > -30.0 && w.2 < 900.0 }).map(fn(w) { "\{w.0}@\{w.2.to_int()}" })
+    println("H\{late} picked: \{ws.join(" / ")}")
+    for _ in 0..<3 {
+      t.drag(180.0, 650.0, 180.0, 150.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    }
+    let ws = t.words().filter(fn(w) { w.1 >= 0.0 && w.2 > -30.0 && w.2 < 900.0 }).map(fn(w) { "\{w.0}@\{w.2.to_int()}" })
+    println("H\{late} picked, at its end: \{ws.join(" / ")}")
+  }
+}
