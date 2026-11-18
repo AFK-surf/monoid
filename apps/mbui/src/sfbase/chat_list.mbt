@@ -1596,7 +1596,7 @@ pub fn row_keys(
 ) -> (Array[Entry], Array[String]) {
   let info = c.list_info_as(key, follows)
   let following = match info {
-    Some(i) => i.at_end || i.gliding || i.following_row
+    Some(i) => i.at_end || i.gliding
     None => true
   }
   rd.following_row = match info {
@@ -2012,7 +2012,7 @@ pub fn follow_newest(c : @ui.Ctx, rd : Reading, list : Array[Entry], keys : Arra
     }
   }
   let newest = if at >= 0 { keys[at] } else { "" }
-  let info = c.list_info_as(key, fn(i) { i.map(fn(v) { (v.at_end, v.gliding, v.following_row) }) })
+  let info = c.list_info_as(key, follows)
   let following = match info {
     Some(i) => i.at_end || i.gliding
     None => false

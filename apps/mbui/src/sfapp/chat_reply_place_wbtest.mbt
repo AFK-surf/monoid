@@ -289,7 +289,7 @@ test "chat as nodes: the viewer's own words sent while an answer's top holds the
 }
 
 ///|
-test "chat list: held by an answer's top, the next message moves nothing; the viewer's own words sent take it to its foot and follow what comes after" {
+test "chat list: held by an answer's top, the next message moves nothing; the viewer's own words sent set the list gliding to its foot with the row placed" {
   for screen in rp_screens {
     let (_, w, h, platform) = screen
     let clock = Ref(0.0)
@@ -299,6 +299,9 @@ test "chat list: held by an answer's top, the next message moves nothing; the vi
     open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
     let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
     t.set_rows_on_pixels(true)
+    t.run_for(@ui.move_most_ms)
+    t.tap_text("发消息")
+    t.type_text("收到，我先看")
     t.run_for(@ui.move_most_ms)
     fix_later(1.0, fn() { rp_said(170, long_reply + "\n\n" + rp_paras(30)) })
     fix_clock_set(clock, clock.val + 1.0)
@@ -312,26 +315,12 @@ test "chat list: held by an answer's top, the next message moves nothing; the vi
     t.run_for(rp_rest_ms)
     let held = t.drawn_of(rp_first).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
     assert_true((held - rest).abs() < 0.01, msg="\{screen.0}: \{held}, held at \{rest}")
-    let mine = "收到，我先看"
     if platform == 2 {
-      rp_send(t, mine)
+      tap_send(t)
     } else {
-      t.tap_text("发消息")
-      t.type_text(mine)
       t.key(@ui.key_code_enter)
     }
-    fix_clock_set(clock, clock.val + fix_deliver_ms)
-    fix_chat("s-c1").working = -1.0
-    t.draw()
-    t.run_for(rp_rest_ms)
-    let y = t.drawn_of(mine).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(y > bar_foot() && y < rp_field_top(t), msg="\{screen.0}: what was sent at \{y}")
-    fix_later(1.0, fn() { rp_said(172, rp_after) })
-    fix_clock_set(clock, clock.val + 1.0)
-    t.draw()
-    t.run_for(rp_rest_ms)
-    let now = t.drawn_of(mine).map(fn(d) { d.1 }).unwrap_or(-1.0e9)
-    assert_true(now < y - 20.0 && t.drawn_of(rp_after) is Some(_), msg="\{screen.0}: \{y} → \{now}")
+    assert_eq(hold_placed(), Some(true))
   }
   fix_clock.val = None
 }
