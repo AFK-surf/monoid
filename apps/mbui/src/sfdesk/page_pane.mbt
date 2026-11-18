@@ -215,6 +215,8 @@ fn pane_stack(v : @view.View, src : Source, tips : @sf.TipLayer) -> Unit {
     made=fn(p) { pane_made(src, p, tips) },
     // (which show, as the stack stands whole: the page made once that shows, by its entry)
     shown=fn(ks) { fold_goes.shown = ks },
+    // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
+    keeps_left=@sfbase.chat_page_left_key,
   )
   |> ignore
 }
@@ -591,7 +593,7 @@ fn pane_made(
                   }
                 },
                 // (its column on the page's way as the side panel slides beside it: laid out as at its narrower end)
-                narrower=fn(n) { side_narrower(src, n, k) },
+                narrower=fn(s, n) { side_narrower(s, n, k) },
                 // (moved aside with the folded block over it, in the same offset as the way across: chat_page_made's;
                 // a new chat's old view, not held, moved aside inside itself as before, pane_page_one's)
                 aside=fn(n) { if app.nav.page_of(k) is Some((Chat(_), _)) { pane_aside_at(src, n) } else { 0.0 } },

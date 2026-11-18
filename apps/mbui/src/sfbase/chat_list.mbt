@@ -681,6 +681,18 @@ pub fn chat_inputs_left(r : ChatRef) -> Unit {
 }
 
 ///|
+/// What was made of chat `r` from source `src` (its read, its head's), nothing following it, let go of: one read untracked
+/// holds the chat's subscription till it is. What is still read is kept.
+pub fn chat_reads_forget_from(src : Source, r : ChatRef) -> Unit {
+  let key = chat_inputs_key(r)
+  // (what reads them first, then them: each let go leaves what it read unread by it)
+  chat_heads.forget_unwatched_from(src, key)
+  chat_head_jsons.forget_unwatched_from(src, key)
+  chat_read.forget_from(src, chat_params(r))
+  chat_head_read.forget_from(src, chat_params(r))
+}
+
+///|
 /// Let one source's chat input go without invalidating another source that still reads the chat.
 pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
   let key = chat_inputs_key(r)
@@ -690,6 +702,7 @@ pub fn chat_inputs_left_from(src : Source, r : ChatRef) -> Unit {
   }
   // (what was read of it kept for its page opened again: chat_seeds_put)
   chat_seeds_put(key, chat_read.kept_from(src, chat_params(r)), chat_head_read.kept_from(src, chat_params(r)))
+  chat_reads_forget_from(src, r)
   chat_inputs.forget_from(src, key)
   chat_heads.forget_from(src, key)
   chat_head_jsons.forget_from(src, key)

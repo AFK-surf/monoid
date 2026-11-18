@@ -69,6 +69,8 @@ fn tape_page_pane(v : @view.View, src : Source) -> Unit {
       // (back its while the page is in use: the side panel's, the sidebar's first)
       takes_back=fn() { wide.tape_at.get() == Page },
       page_key=fn(_) { tape_island_key() },
+      // (a chat's page made as nodes left kept, taken back as it is opened again: sfbase's chat_page_left_key)
+      keeps_left=@sfbase.chat_page_left_key,
     )
     |> ignore
   })
@@ -722,7 +724,7 @@ fn tape_made(
                 }
               },
               // (its column on the page's way as the tape takes its panel to another width: laid out as at its narrower end)
-              narrower=tape_page_narrower,
+              narrower=fn(_s, n) { tape_page_narrower(n) },
             )
             |> ignore
           },

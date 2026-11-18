@@ -961,9 +961,16 @@ fn chat_body_node(
       }
     }
   }
-  let whole = ChatBodyList::of_made(fn() { rows.get() })
+  let whole = ChatBodyList::of_made(fn() { rows.get() }, rest=fn() { if !rows.watched() { rows.dispose() } })
   // (the list as the core's rows and what is on its way make it, before what is held out of it: below)
   let listed : ChatBodyList = {
+    rest_unwatched: fn() {
+      match by_key_made.val {
+        Some(l) => (l.rest_unwatched)()
+        None => ()
+      }
+      (whole.rest_unwatched)()
+    },
     taken: fn() {
       match by_key() {
         Some(l) => (l.taken)()
@@ -1099,7 +1106,13 @@ fn chat_body_node(
       }
     }
   }
+  // (what the list worked out that nothing follows let go of: below, once all of it is made)
+  let rest_body : Ref[() -> Unit] = Ref(fn() {  })
   let list : ChatBodyList = {
+    rest_unwatched: fn() {
+      place.rest_unwatched()
+      (rest_body.val)()
+    },
     taken: listed.taken,
     keys: fn() {
       held_told.get() |> ignore
@@ -1118,7 +1131,18 @@ fn chat_body_node(
       }
     },
   }
-  let keys = @signals.computed(fn(_) { (list.keys)() }, same=fn(a, b) { physical_equal(a, b) || a == b })
+  // (the same keys the same object as before: worked out anew as its page is woken from rest, what lays them out finds
+  // them as it left them)
+  let keys = @signals.computed(
+    fn(was) {
+      let ks = (list.keys)()
+      match was {
+        Some(prev) if physical_equal(prev, ks) || prev == ks => prev
+        _ => ks
+      }
+    },
+    same=fn(a, b) { physical_equal(a, b) || a == b },
+  )
   // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
@@ -1127,6 +1151,18 @@ fn chat_body_node(
     (list.taken)() |> ignore
     kept.sent_as.length()
   }, same=fn(a, b) { a == b })
+  // (as its page is put by at rest, and once as it is let go: what nothing follows of what the list worked out, read
+  // untracked as it was laid out and told what is in sight, let go of what it read; View::on_rest)
+  rest_body.val = fn() {
+    if !keys.watched() {
+      keys.dispose()
+    }
+    if !taken_over.watched() {
+      taken_over.dispose()
+    }
+    (listed.rest_unwatched)()
+  }
+  v.on_rest(fn() { (rest_body.val)() }) |> ignore
   let sent_as = fn() {
     taken_over.get() |> ignore
     kept.sent_as

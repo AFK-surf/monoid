@@ -179,13 +179,9 @@ fn wide_bar_title_row(
     row.keeps_held(Is(true)).fits(Is(true)) |> ignore
     wide_bar_title(row, src, r, view, across, tips)
     // (the station the chat runs on, as the workspace's marks have it)
-    let station = fn() {
-      let w = match @sfbase.workspace_in_view(src).0 {
-        Some(w) => w.id
-        None => ""
-      }
-      @sfbase.station_marks(src, w).iter().find_first(fn(x) { x.address == r.station })
-    }
+    // (what it last was while the marks are asked again: sfbase's asked_again.mbt)
+    let station_held = @sfbase.station_mark_held(src, r.station)
+    let station = fn() { station_held.get() }
     let station_key = fn() {
       match station() {
         Some(s) => "\{s.name}\u{1}\{s.emoji}\u{1}\{s.icon}"
@@ -712,7 +708,9 @@ fn wide_bar_keys(
       },
     )
     // its services and jobs, while it has any
-    let jobs = fn() { src.topic("chatJobs", chat_jobs_summary_params(r)).get().value }
+    // (what they last were while asked again: sfbase's asked_again.mbt)
+    let jobs_held = @sfbase.topic_value_held(src, "chatJobs", chat_jobs_summary_params(r))
+    let jobs = fn() { jobs_held.get() }
     let has_jobs = fn() { flag(jobs(), "hasJobs") || items(jobs(), "jobs").length() > 0 }
     k.show(fn() { own() && has_jobs() }, along_row=true, fn(b) {
       let button = @sf.icon_button_node(b, "web", fn() { @sf.t("web-pages.chat.services") }, fn() { jobs_pressed(src, r) }, tips~, linked=ends.linked, shortcut="chat.jobs")

@@ -1,0 +1,42 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/scheduler"
+
+// Values
+pub let priority_asked : Int32
+
+pub let priority_background : Int32
+
+pub let priority_detail : Int32
+
+pub let priority_focused : Int32
+
+pub let priority_idle : Int32
+
+pub let priority_shown : Int32
+
+// Errors
+
+// Types and methods
+pub struct Preempt {
+  // private fields
+}
+pub fn Preempt::is_preempted(Self) -> Bool
+pub async fn Preempt::wait(Self) -> Unit
+
+pub struct Scheduler {
+  width : Int32
+  urgent_room : Int32
+  // private fields
+}
+pub fn Scheduler::busy(Self) -> Bool
+pub fn Scheduler::foreground_begin(Self) -> () -> Unit
+pub fn Scheduler::new(width? : Int32, urgent_room? : Int32) -> Self
+pub fn Scheduler::on_idle(Self, () -> Unit) -> Unit
+pub fn Scheduler::pending(Self) -> Array[String]
+pub fn Scheduler::prioritize(Self, String, String?, boost? : Int32) -> Unit
+pub fn Scheduler::queued(Self, String) -> Bool
+pub async fn[T] Scheduler::run(Self, String, Int32, async (Preempt) -> T) -> T
+
+// Type aliases
+
+// Traits

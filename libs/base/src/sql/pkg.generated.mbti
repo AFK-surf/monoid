@@ -1,0 +1,65 @@
+// Generated using `moon info`, DON'T EDIT IT
+package "base/sql"
+
+import {
+  "base/shell",
+  "moonbitlang/core/json",
+}
+
+// Values
+pub let chunk_most : Int32
+
+pub fn col_bool(Array[@json.Json], Int32) -> Bool
+
+pub fn col_double(Array[@json.Json], Int32) -> Double
+
+pub fn col_int(Array[@json.Json], Int32) -> Int32
+
+pub fn col_int64(Array[@json.Json], Int32) -> Int64
+
+pub fn col_opt_int64(Array[@json.Json], Int32) -> Int64?
+
+pub fn col_opt_text(Array[@json.Json], Int32) -> String?
+
+pub fn col_text(Array[@json.Json], Int32) -> String
+
+pub fn delete_db(@shell.Shell, String) -> Unit raise @shell.ShellError
+
+pub fn placeholders(Int32) -> String
+
+pub fn[T] query_in_chunks(Sql, Array[String], chunk_size? : Int32, make_sql~ : (String) -> String, extra_params? : Array[@json.Json], decode~ : (Array[@json.Json]) -> T?) -> Array[T] raise @shell.ShellError
+
+// Errors
+
+// Types and methods
+pub struct Burst {
+  db : Sql
+  // private fields
+}
+pub fn Burst::all(Self, String, params? : Array[@json.Json]) -> Array[Array[@json.Json]] raise @shell.ShellError
+pub fn Burst::begun(Self) -> Int32
+pub fn Burst::commit(Self) -> Unit raise @shell.ShellError
+pub fn Burst::committed(Self) -> Int32
+pub fn Burst::exec(Self, String) -> Unit raise @shell.ShellError
+pub fn[T] Burst::in_tx(Self, (Self) -> T raise) -> T raise
+pub fn Burst::is_open(Self) -> Bool
+pub fn Burst::new(Sql) -> Self
+pub fn Burst::rollback(Self) -> Unit
+pub fn Burst::run(Self, String, params? : Array[@json.Json]) -> Int32 raise @shell.ShellError
+
+pub struct Sql {
+  shell : @shell.Shell
+  id : Int32
+  // private fields
+}
+pub fn Sql::all(Self, String, params? : Array[@json.Json]) -> Array[Array[@json.Json]] raise @shell.ShellError
+pub fn Sql::attach(@shell.Shell, String, create? : Bool, wait_ms? : Int32) -> Self raise @shell.ShellError
+pub fn Sql::close(Self) -> Unit
+pub fn Sql::exec(Self, String) -> Unit raise @shell.ShellError
+pub fn Sql::is_closed(Self) -> Bool
+pub fn Sql::open(@shell.Shell, String) -> Self raise @shell.ShellError
+pub fn Sql::run(Self, String, params? : Array[@json.Json]) -> Int32 raise @shell.ShellError
+
+// Type aliases
+
+// Traits

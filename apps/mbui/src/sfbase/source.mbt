@@ -621,12 +621,12 @@ fn let_go_unread(declared : Array[(Source, String, Map[String, Json], String)]) 
         let holder = followed_topics.val[i].holder
         followed_topics.val = followed_topics.val.filter(fn(t) { !(physical_equal(t.source, src) && t.key == key && !t.independent) })
         topic_readers_drop(src, key)
-        (src.release)(name, params)
-        // (its holder, read once as it was declared and by no reader since, let go of what it read: else that read
-        // still follows the subscription, which the client then never ends, its unsubscribe never sent; till
-        // 2026-11-12, every switch of workspace left what was declared and never read subscribed:
-        // src/sfapp/declared_let_go_wbtest.mbt)
+        // (its holder, read once as it was declared and by no reader since, let go of what it read, before the
+        // subscription is released: else that read still follows it as the client asks whether any does, and the client
+        // then never ends it, its unsubscribe never sent; till 2026-11-12, every switch of workspace left what was
+        // declared and never read subscribed: src/sfapp/declared_let_go_wbtest.mbt)
         holder.dispose()
+        (src.release)(name, params)
       }
       _ => ()
     }
@@ -747,11 +747,16 @@ fn followed_topic(
           @ui.after_frame(fn() {
             match followed_topics.val.search_by(fn(t) { physical_equal(t.token, token) }) {
               Some(i) if !followed_topics.val[i].holder.watched() => {
+                let holder = followed_topics.val[i].holder
                 // A removed Array slot keeps its old value alive; replace the array before releasing.
                 followed_topics.val = followed_topics.val.filter(fn(t) { !physical_equal(t.token, token) })
                 if !independent {
                   topic_readers_drop(src, key)
                 }
+                // (its holder let go of what it read before the subscription is released, as let_go_unread's: an untracked
+                // read of it since it lost its last reader (existing_followed_topic, read_held_found) linked it to the
+                // subscription again, which the client would then never end)
+                holder.dispose()
                 (src.release)(name, params)
               }
               _ => ()

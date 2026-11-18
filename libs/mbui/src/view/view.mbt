@@ -439,6 +439,9 @@ struct Node {
   /// whether its starting to leave has been told (Tree::tell_leaving: once, told anew once it has come back)
   leavings : Array[() -> Unit]
   backs : Array[() -> Unit]
+  /// what it said to do as it is put by at rest (View::on_rest), after all it holds is: run again as it is put by again,
+  /// and once more as it is let go (View::owns)
+  rests : Array[(() -> Unit, () -> Unit)]
   mut leave_told : Bool
   /// its properties' bindings, by property (Prop::ord): what stops each (Node::prop_set; a few, as `drops`)
   props : Array[(Int, () -> Unit)]
@@ -2037,6 +2040,7 @@ fn Tree::made(self : Tree, parent : Int, words_as_said? : Bool = false, loc? : S
         drop_next: 0,
         leavings: [],
         backs: [],
+        rests: [],
         leave_told: false,
         props: [],
         on_press: None,
@@ -8458,6 +8462,17 @@ pub fn View::owns(self : View, f : () -> Unit) -> View {
 }
 
 ///|
+/// `f` run as it is put by at rest (View::park, View::rests: after what it holds is, so what binds in it has let go of
+/// what it read by then) and once as it is let go (View::owns): what it worked out that nothing follows (a computed read
+/// untracked as it laid out) let go of what that read, or it holds what that read while nothing shows it. `wake`: what
+/// it does as it is woken again (taken in: View::park's waking), not as it is let go.
+pub fn View::on_rest(self : View, f : () -> Unit, wake? : () -> Unit = fn() {  }) -> View {
+  guard self.live() is Some(n) else { return self }
+  n.rests.push((f, wake))
+  self.owns(f)
+}
+
+///|
 /// `stop` kept as one it lets go of as it goes (View::owns), and what lets go of that keeping again: for what ends
 /// before it does (a moment's work done or called off), nothing of it kept by it after.
 pub fn View::owns_while(self : View, stop : () -> Unit) -> () -> Unit {
@@ -8553,6 +8568,7 @@ fn View::let_go(self : View) -> Unit {
   }
   n.leavings.clear()
   n.backs.clear()
+  n.rests.clear()
   n.leave_told = false
   n.on_press = None
   n.on_double_press = None
@@ -9041,12 +9057,18 @@ fn View::rests(self : View) -> () -> Unit {
 /// What node `at` and what it holds bind, at rest (View::park), each's waking added to `wakes`.
 fn Tree::rest_in(self : Tree, at : Int, wakes : Array[() -> Unit]) -> Unit {
   let n = self.nodes[at]
+  // (what it holds first, then it, then what it said to do at rest (View::on_rest): what binds in all of it has let go
+  // of what it read by then, so what nothing follows is known)
+  for k in n.kids {
+    self.rest_in(k, wakes)
+  }
   match n.owner {
     Some(o) => wakes.push(@signals.rest(o))
     None => ()
   }
-  for k in n.kids {
-    self.rest_in(k, wakes)
+  for pair in n.rests.copy() {
+    (pair.0)()
+    wakes.push(pair.1)
   }
 }
 

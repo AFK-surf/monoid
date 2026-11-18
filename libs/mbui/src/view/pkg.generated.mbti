@@ -601,6 +601,7 @@ pub fn[K] ListPlace::centre(Self[K], K) -> Unit
 pub fn[K] ListPlace::follow_from(Self[K], K?, margin? : Double) -> Unit
 pub fn[K] ListPlace::new() -> Self[K]
 pub fn[K] ListPlace::on_sight(Self[K], (Sight[K]) -> Unit) -> Unit
+pub fn[K] ListPlace::rest_unwatched(Self[K]) -> Unit
 pub fn[K] ListPlace::sight_now(Self[K]) -> Sight[K]?
 pub fn[K] ListPlace::to_end(Self[K], glide? : Bool) -> Unit
 
@@ -1660,6 +1661,7 @@ pub fn View::over_all(Self, Live[Bool]) -> Self
 #callsite(autofill(loc))
 pub fn View::over_scrim(Self, Live[Bool], loc~ : SourceLoc) -> Self
 pub fn View::owned_count(Self) -> Int32
+pub fn View::on_rest(Self, () -> Unit, wake? : () -> Unit) -> Self
 pub fn View::owns(Self, () -> Unit) -> Self
 pub fn View::owns_while(Self, () -> Unit) -> () -> Unit
 #callsite(autofill(loc))
