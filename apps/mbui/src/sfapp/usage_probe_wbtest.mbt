@@ -446,3 +446,60 @@ test "usage probe: real size, a person's row picked" {
     println("H\{late} picked, at its end: \{ws.join(" / ")}")
   }
 }
+
+///|
+test "usage probe: scrolled while the pick is read" {
+  for case in [(2, 0), (2, 1), (2, 2), (1, 0), (1, 1), (1, 2)] {
+    let (platform, how) = case
+    new_run()
+    let pending = @signals.signal(false, same=fn(a, b) { a == b })
+    let base = fixture("home")
+    let src = { ..base, topic_read: fn(name, params) {
+      let answer = base.topic(name, params).get().snapshot()
+      if name == "usage" && params.get("only") is Some(_) && pending.get() { { ..answer, value: None } } else { answer }
+    } }
+    let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=390.0, h=844.0, platform~, scale=3.0)
+    t.set_rows_on_pixels(true)
+    bars_picked.set(Some(([kept_bar], 0)))
+    t.run_for(kept_switch_over_ms)
+    kept_go(t, "usage", true)
+    t.run_for(kept_switch_over_ms)
+    uprobe_tap(t, "人")
+    t.run_for(kept_switch_over_ms)
+    // to its end, the person's row in view
+    for _ in 0..<3 {
+      t.drag(180.0, 650.0, 180.0, 250.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    }
+    uprobe_at(t, "S\{platform}/\{how} before")
+    pending.set(true)
+    uprobe_tap(t, "林")
+    t.run_for(100.0)
+    uprobe_at(t, "S\{platform}/\{how} pending")
+    if how == 0 {
+      // a finger up the page while it is read, the answer after it rests
+      t.drag(180.0, 650.0, 180.0, 250.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    } else if how == 1 {
+      // a finger down the page, answered in its glide
+      t.drag(180.0, 250.0, 180.0, 650.0, steps=6)
+      t.run_for(120.0)
+    } else {
+      // a finger up the page, answered in its glide
+      t.drag(180.0, 650.0, 180.0, 250.0, steps=6)
+      t.run_for(120.0)
+    }
+    pending.set(false)
+    t.run_for(kept_glide_over_ms)
+    match (t.rect_of("只看 林"), t.rect_of("花费明细")) {
+      (Some(c), Some(h)) => println("scrolled \{platform}/\{how}: chip→head \{h.1 - c.1}")
+      (c, h) => println("scrolled \{platform}/\{how}: chip \{c is Some(_)} head \{h is Some(_)}")
+    }
+    uprobe_end(t, "S\{platform}/\{how}")
+    for _ in 0..<3 {
+      t.drag(180.0, 200.0, 180.0, 600.0, steps=20)
+      t.run_for(kept_glide_over_ms)
+    }
+    uprobe_at(t, "S\{platform}/\{how} back to its top")
+  }
+}
