@@ -134,9 +134,11 @@ fn notice_pill_node(
     open,
     failed,
     fn() { m().notice_count },
+    // (opened or closed by the person's press: its pill goes from the shape it had to the one it comes to, across and
+    // down, its corners with it, on its list's way, @view.transition)
     fn() {
       let ts = @signals.untracked(m).ts
-      opened[ts] = !opened.get(ts).unwrap_or(false)
+      @view.transition(fn() { opened[ts] = !opened.get(ts).unwrap_or(false) })
     },
     fn(room) { room.pick(fn() { notice_words_of(m(), open()) }, fn(w, how) { notice_words_node(w, here, m, ink, how) }) },
     // (what follows its words held to the foot of their first line where they are Markdown)

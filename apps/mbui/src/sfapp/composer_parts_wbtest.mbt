@@ -230,6 +230,8 @@ test "what waits to go has its ✕ hung on its corner, its centre on the curve, 
       assert_true(next_x >= x + bw + 6.0 - 0.01, msg="the next at \{next_x}, the ✕ ends at \{x + bw}")
       t.tap(x + bw / 2.0, y + bh / 2.0)
       t.draw()
+      // (the one taken out fading where it stood, the rest sliding over: at rest before the next is pressed)
+      t.run_for(@ui.move_most_ms)
       let (cx, cy, cw, ch) = t.query(Button, label=@sf.t("web-main.file.remove", args=[("name", "build.log")])).unwrap().rect
       t.tap(cx + cw / 2.0, cy + ch / 2.0)
       t.draw()

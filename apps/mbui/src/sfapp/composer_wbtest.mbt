@@ -1107,3 +1107,65 @@ test "the composer made as nodes sends a quote and a file with its words: each f
     }
   }
 }
+
+///|
+/// The leftmost words containing `part` drawn now (x, how opaque), the most opaque first among those drawn.
+fn cw_word(t : @ui.Tester, part : String) -> (Double, Double)? {
+  let mut at : (Double, Double)? = None
+  for w in t.words() {
+    if w.0.contains(part) && w.5 > 0.01 {
+      at = match at {
+        Some(was) if was.1 >= w.5 => Some(was)
+        _ => Some((w.1, w.5))
+      }
+    }
+  }
+  at
+}
+
+///|
+test "the composer made as nodes: what a hand puts in or takes out goes its way; a tile taken out fades where it stood as those after it slide over; sent, all of it goes at once" {
+  let calls : Array[Made] = []
+  let made : Ref[Source?] = Ref(None)
+  let t = fake_core(calls, made~, platform=0, composed=true)
+  t.resize(1280.0, 844.0)
+  t.run_for(@ui.move_most_ms)
+  let src = made.val.unwrap()
+  let wr = @sfbase.writing(src, "ws1/st1:s-c1")
+  // (put in by a hand here: seen at once in the same turn, the quote too, before the core answers)
+  @sfbase.writing_quote(src, wr, { "author": "Ana", "text": "签名已经核对完了", "ts": "ts8" })
+  assert_eq(wr.quotes.get().length(), 1, msg="the quote shown before the core answers")
+  for name in ["alpha.txt", "beta.txt", "gamma.txt"] {
+    @sfbase.writing_add(src, wr, "ws1/st1", name, b"release notes")
+  }
+  t.run_for(@ui.move_most_ms * 2.0)
+  if t.find("发消息") is Some(_) {
+    t.tap_text("发消息")
+  }
+  t.type_text("看看这个")
+  t.run_for(@ui.move_most_ms)
+  let beta_at = cw_word(t, "beta")
+  let alpha_at = cw_word(t, "alpha")
+  assert_true(alpha_at is Some(_) && beta_at is Some(_), msg="tiles not shown: \{Repr((alpha_at, beta_at))} in \{Repr(t.words().map(fn(w) { w.0 }))}")
+  let (ax, _) = alpha_at.unwrap()
+  let (bx, _) = beta_at.unwrap()
+  // (taken out by its ✕, a hand's press on the composer as it shows it)
+  let (rx, ry, rw, rh) = t.query(Button, label=@sf.t("web-main.file.remove", args=[("name", "alpha.txt")])).unwrap().rect
+  t.tap(rx + rw / 2.0, ry + rh / 2.0)
+  // (a moment in: the one taken out still drawn, fading where it stood; the next on its way over to its place)
+  t.run_for(@sf.leave_ms / 2.0)
+  match (cw_word(t, "alpha"), cw_word(t, "beta")) {
+    (Some((x, a)), Some((nx, _))) => {
+      assert_true((x - ax).abs() < 16.0, msg="the tile taken out drawn at \{x}, where it stood \{ax}")
+      assert_true(a < 0.99, msg="the tile taken out not fading: \{a}")
+      assert_true(nx < bx - 0.5 && nx > ax + 0.5, msg="the next tile at \{nx}, not on its way from \{bx} to \{ax}")
+    }
+    got => fail("half way: \{Repr(got)}")
+  }
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_true(cw_word(t, "alpha") is None, msg="the tile taken out still drawn")
+  match cw_word(t, "beta") {
+    Some((x, _)) => assert_true((x - ax).abs() < 1.0, msg="the next tile rests at \{x}, not \{ax}")
+    None => fail("the next tile gone")
+  }
+}

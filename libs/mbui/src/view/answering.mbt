@@ -119,5 +119,6 @@ pub fn answer_marks_left() -> Bool {
   answer_marked.length() > 0 ||
   answered.val ||
   answer_held.val.length() > 0 ||
-  cause_open.val > 0
+  cause_open.val > 0 ||
+  transition_marks_left()
 }

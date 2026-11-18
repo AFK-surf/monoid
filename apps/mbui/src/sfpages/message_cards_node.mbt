@@ -116,6 +116,8 @@ fn[T] ask_in_place_node(
   line : (@view.View) -> Unit,
 ) -> Unit {
   let leave = if @signals.untracked(decided) { 0.0 } else { msg_part_leave_ms }
+  // (decided while it shows, by a press here or the core's answer: a live cause, ends_on_way)
+  ends_on_way(v, decided)
   v.pick(decided, leave~, fn(p, ended) {
     @sf.style_node(p, fn() { under_post_room })
     if ended {

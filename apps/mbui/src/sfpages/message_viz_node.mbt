@@ -188,7 +188,13 @@ fn viz_page_node(parent : @view.View, place : String, html : String, state : Jso
         |> ignore
         // (as tall as it says by a move, the list's with what is round it: the height it comes to as its page says it
         // is for that word's moment, View::resizes; what was read over it does not step)
-        fr.reacts(fn() { f.said.get() }, fn(_) { fr.resizes() |> ignore }, at_start=false)
+        // (its page telling its height is a live cause of its own: what it moves round it in its list goes its way too,
+        // @view.transition)
+        fr.reacts(
+          fn() { f.said.get() },
+          fn(_) { @view.transition(within=fr.transitions_root(), fn() { fr.resizes() |> ignore }) },
+          at_start=false,
+        )
       }
       // drawn, the first time: brought in, as a message's image is (viz_reveal_node), from that moment, once (however
       // soon its node is let go and made again, as its chat is left and gone back to); what it waited under let go at

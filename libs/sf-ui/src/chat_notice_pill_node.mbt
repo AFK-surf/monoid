@@ -162,6 +162,8 @@ pub fn notice_pill_node(
   // press_stays)
   action_box_node(loc~, parent, label, expanded=open, fn(_) { press() }, fn(p) {
     style_node(p, fn() { notice_pill_of(failed(), open()) }, in_row=true)
+    // (what it holds cut to its ground as that is drawn on its way: its words and what more there is never past it)
+    p.clips(Is(true)) |> ignore
     p.box(made_for=loc, fn(line) {
       style_node(line, fn() { if open() { notice_pill_line_open } else { notice_pill_line } })
       line.box(made_for=loc, fn(room) {
@@ -188,7 +190,8 @@ pub fn notice_pill_node(
     })
     |> ignore
     // (what more there is of it: open only)
-    p.show(fn() { open() && detailed() }, fn(d) {
+    // (closed, faded where it stood as the pill closes round it, out of the flow: pop_leave)
+    p.show(fn() { open() && detailed() }, leave=leave_ms, pop_leave=true, fn(d) {
       style_node(d, fn() { notice_pill_detail_room })
       detail(d)
     })

@@ -301,7 +301,12 @@ fn View::pick_leaving(
         leaving_faders.retain(fn(e) { e.0.live() is Some(_) })
         // (under a page's list, its way not said at once: held by its place's way, waiting for nothing: the file's head)
         // (or in a block of one said `flips`, held by that list's way: Tree::flip_gone_of)
-        let in_list = !at_once && (tree.pick_held(p) || tree.flip_gone_of(p.at) is Some(_))
+        // (where only a transition moves it, told outside one: what showed gone at once, what it shows now seen whole
+        // at once, no way, transition.mbt)
+        let quiet = !tree.transition_gate(p.at)
+        let in_list = !at_once &&
+          !quiet &&
+          (tree.pick_held(p) || tree.flip_gone_of(p.at) is Some(_))
         // (its place's way from as big as it is now to what it holds now: down its column, or along its row; read
         // before old.fader is taken out of flow)
         let from = tree.along_now(p.at, at)
@@ -339,14 +344,25 @@ fn View::pick_leaving(
         }
         // (what showed: not seen yet, let go at once (nothing seen goes); else over the place where it was, taking no
         // room, fading out over `leave` from as opaque as it is)
-        let unseen = match old.held.untracked() {
-          1 =>
-            match old.fader.live() {
-              Some(n) => n.look.alpha <= 0.0
-              None => true
+        if quiet {
+          tree.answer_mark(p.at)
+          for e in leaving_faders {
+            if e.0.alive() {
+              p.leave(e.0, 0.0)
             }
-          _ => old.seen_from.untracked() > at
+          }
+          leaving_faders.clear()
+          gone_by.val = -1.0 / 0.0
         }
+        let unseen = quiet ||
+          (match old.held.untracked() {
+            1 =>
+              match old.fader.live() {
+                Some(n) => n.look.alpha <= 0.0
+                None => true
+              }
+            _ => old.seen_from.untracked() > at
+          })
         let mut last_way_at = -1.0 / 0.0
         for e in leaving_faders {
           last_way_at = e.4
@@ -406,7 +422,13 @@ fn View::pick_leaving(
             }
           })
         }
-        let waits = if in_list { at } else { dmax(gone_by.val, at) }
+        let waits = if in_list {
+          at
+        } else if quiet {
+          -1.0 / 0.0
+        } else {
+          dmax(gone_by.val, at)
+        }
         let now = fader(p, k, waits)
         if in_list {
           now.way_at.val = if unseen && last_way_at > -1.0 / 0.0 { last_way_at } else { at }

@@ -140,8 +140,15 @@ pub fn field(
   }
   // (what it says it is while empty as said once, or followed as it changes (`placeholder_by`: in the words as they
   // are now), its node and its editor kept
-  let hint = match placeholder_by {
-    Some(f) => f
+  // (followed, it is shown as it last came to rest: a change of it while it shows in a field at rest (empty, nothing
+  // composed in it, drawn, in a transition where only one moves it) goes out over placeholder_fade_ms and the new one
+  // comes in over as long, where it stands; else it is the new one at once (placeholder_crossfade, below))
+  let shown_hint : @signals.Signal[String]? = match placeholder_by {
+    Some(f) => Some(@signals.signal(@signals.untracked(f), same=fn(a, b) { a == b }))
+    None => None
+  }
+  let hint = match shown_hint {
+    Some(s) => fn() { s.get() }
     None => fn() { placeholder }
   }
   let most = match max_lines_by {
@@ -164,6 +171,10 @@ pub fn field(
     st.tree_node = Some(id)
     st.color = color
     st.ph_color = placeholder_color
+    match (placeholder_by, shown_hint) {
+      (Some(by), Some(shown)) => placeholder_crossfade(f, field, by, shown)
+      _ => ()
+    }
     st.caret_color = caret_color
     st.sel_color = (caret_color & 0xFFFFFF00L) | 0x40L
     match colors_by {
@@ -1163,4 +1174,84 @@ pub fn Tester::drawn_words_found(self : Tester) -> Array[(@view.Drawn, Int, Bool
     }
     (d, holder, presses, view_words_found(d), size)
   })
+}
+
+///|
+/// How long a field's placeholder goes out as another is said, and the new one comes in (placeholder_crossfade).
+let placeholder_fade_ms : Double = 160.0
+
+///|
+/// Field node `f` (showing `field`) whose placeholder follows `by`, shown as `shown` says: as `by` comes to another while
+/// it shows at rest (the field empty, nothing composed in it, its placeholder seen, drawn already, motion not reduced, in
+/// a transition where only one moves it: View::allows_transition), the one it shows goes out where it stands over
+/// placeholder_fade_ms and the new one comes in there over as long (the user's 2026-11-18: 「按 Space 输入 ⇄ 发消息」 swapped
+/// in one frame); else the new one is shown at once. How far it shows is worked out as it is painted
+/// (EditorState::ph_alpha_by), by the clock while it goes.
+fn placeholder_crossfade(
+  f : @view.View,
+  field : Field,
+  by : () -> String,
+  shown : @signals.Signal[String],
+) -> Unit {
+  let st = field.st
+  // (its fade: from, to, from when, how long, on what curve)
+  let from_v = Ref(1.0)
+  let to_v = Ref(1.0)
+  let start = Ref(-1.0 / 0.0)
+  let ms = Ref(0.0)
+  let ease : Ref[Ease] = Ref(Out)
+  let value_at = fn(t : Double) {
+    if ms.val <= 0.0 || t >= start.val + ms.val {
+      to_v.val
+    } else if t <= start.val {
+      from_v.val
+    } else {
+      from_v.val + (to_v.val - from_v.val) * ease.val.at((t - start.val) / ms.val)
+    }
+  }
+  let fade = fn(at : Double, to : Double, e : Ease) {
+    from_v.val = value_at(at)
+    to_v.val = to
+    start.val = at
+    ms.val = placeholder_fade_ms
+    ease.val = e
+  }
+  st.ph_alpha_by = Some(fn() {
+    let ends = start.val + ms.val
+    value_at(f.drawn_while(fn(t) { t < ends }))
+  })
+  let off : Ref[() -> Unit] = Ref(fn() {  })
+  f.owns(fn() { (off.val)() }) |> ignore
+  f.reacts(
+    by,
+    fn(wanted) {
+      (off.val)()
+      off.val = fn() {  }
+      let stationary = wanted != shown.untracked() &&
+        st.text == "" &&
+        !field.composing() &&
+        (st.ph_color & 0xFFL) > 2L &&
+        f.was_placed() &&
+        !@signals.untracked(reduced_motion) &&
+        f.allows_transition()
+      if !stationary {
+        shown.set(wanted)
+        from_v.val = 1.0
+        to_v.val = 1.0
+        ms.val = 0.0
+        tree_field_redraw()
+        return
+      }
+      let at = f.cause_at()
+      fade(at, 0.0, Leave)
+      off.val = f.at_moment(at + placeholder_fade_ms, fn() {
+        off.val = fn() {  }
+        shown.set(@signals.untracked(by))
+        fade(f.cause_at(), 1.0, Out)
+        tree_field_redraw()
+      })
+      tree_field_redraw()
+    },
+    at_start=false,
+  )
 }

@@ -722,20 +722,23 @@ fn Ctx::sizes_faults(self : Ctx, now : Double, period : Double) -> Array[(Bool, 
       }
       let gy = ya[i] * ny + yb[i]
       let gh = ya[i] * nh
-      let (top0, bot0) = match self.drawn_entry(i) {
-        Some({ ground: Some((_, y, _, h, _)), .. }) => (y, y + h)
+      // (and across: where its ground starts and how wide it is drawn, the same way)
+      let (top0, bot0, ground_left, ground_w) = match self.drawn_entry(i) {
+        Some({ ground: Some((x, y, w, h, _)), .. }) => (y, y + h, x, w)
         // (a node of the window's tree: its ground as drawn, off where it is laid out (Tree::ground_drawn_of: a
-        // ground grown on a list's one way, Node's flip_in))
+        // ground grown on a list's one way, Node's flip_in, down and across))
         _ =>
           match (tree, tree_frame_ids.get(i)) {
             (Some(tr), Some(id)) => {
               let gd = tr.ground_drawn_of(id)
-              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh))
+              (gy + ya[i] * gd.dy, gy + gh + ya[i] * (gd.dy + gd.dh), nx + xb[i] + gd.dx, nw + gd.dw)
             }
-            _ => (gy, gy + gh)
+            _ => (gy, gy + gh, nx + xb[i], nw)
           }
       }
-      let left0 = nx + xb[i]
+      // (words are measured where they stand, their box's; a ground where it is drawn)
+      let left0 = if words { nx + xb[i] } else { ground_left }
+      let nw = if words { nw } else { ground_w }
       // (none of an old view the window's tree places nowhere now: laid out nowhere, its page off to a side)
       let placed = match n.island {
         Some(id) => old_placed.iter().any(fn(p) { p.0 == id })

@@ -1900,9 +1900,27 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       let ch = dmax(0.0, c.h + tree.clips_past_of(c.id)) * s
       // (said down alone: open across, Content::clips_way)
       let (cx, cy, cw, ch) = clip_way_box(c.clips_way, x, y, c.w * s, ch)
-      match c.corners {
-        Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
-        None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
+      // (its ground drawn other than as it is laid out (View::ground_drawn: a shape going to its new one): what it holds
+      // cut to that ground as it is drawn, its corners with it, not to where it rests)
+      if ground_drawn.reshaped() && c.clips_way == 0 {
+        let g = ground_drawn
+        let gw = dmax(0.0, cw + g.dw * s)
+        let gh = dmax(0.0, ch + g.dh * s)
+        match g.corners {
+          Some((tl, tr, br, bl)) =>
+            push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
+          None =>
+            match c.corners {
+              Some((tl, tr, br, bl)) =>
+                push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, tl * s, tr * s, br * s, bl * s)
+              None => push_box_clip(cx + g.dx * s, cy + g.dy * s, gw, gh, r, r, r, r)
+            }
+        }
+      } else {
+        match c.corners {
+          Some((tl, tr, br, bl)) => push_box_clip(cx, cy, cw, ch, tl * s, tr * s, br * s, bl * s)
+          None => push_box_clip(cx, cy, cw, ch, r, r, r, r)
+        }
       }
       clipping.push(c.id)
     }

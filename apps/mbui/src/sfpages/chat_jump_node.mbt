@@ -367,7 +367,10 @@ fn chat_goes_to(
     // (at its foot within half a point, as Scroll::at_foot_now has it: what the way to the newest and the place told go by)
     let at_foot = s.at_foot || s.from_foot <= 0.5
     // (first in sight: what floats over its foot stands as it is found then, chat_float_stand)
-    if jump.sight_from == @double.infinity {
+    // (not while the chat is not there yet (no thread, nothing but its top and its empty row): what comes as it is
+    // first there is there at once, its buttons with it)
+    if jump.sight_from == @double.infinity &&
+      (cv.thread is Some(_) || rs.keys.iter().any(fn(k) { k != "top" && k != "empty" })) {
       jump.sight_from = v.cause_at()
     }
     // (on its glide back to its end: there, the glide over short of it (what it holds changed under it), or going
@@ -379,7 +382,14 @@ fn chat_goes_to(
         jump.glide_left = s.from_foot
       }
     }
-    jump.away.set(!at_foot && s.from_foot > to_newest_away)
+    // (scrolled by the hand once it was in sight, shown: what floats over its foot comes and goes on its way; as it is
+    // first in sight, at once, @view.transition)
+    let away_now = !at_foot && s.from_foot > to_newest_away
+    if v.cause_at() > jump.sight_from && @signals.untracked(shows) {
+      @view.transition(fn() { jump.away.set(away_now) })
+    } else {
+      jump.away.set(away_now)
+    }
     jump.sight.set(Some((s.first, s.last)))
     // (where the page put it: there once what it asked is done, its block's top as it then stood; moved off it since,
     // the reader's (a message streamed into at the foot, a page before come in over it, a row over it measured anew
@@ -1055,8 +1065,21 @@ fn chat_rail_node(
           }
         })
         |> ignore
+        // (its ticks changed as the chat goes on while it shows (a message said, the reader moved along it): a live cause
+        // of its own, judged as it reads them, so what comes on it and what moves along it goes its way, @view.transition;
+        // as it is first there, at once)
+        let judged : Ref[Array[ChatRailTick]?] = Ref(None)
         press.each(
-          fn() { ticks.get() },
+          fn() {
+            let ts = ticks.get()
+            match judged.val {
+              Some(was) if !physical_equal(was, ts) && @signals.untracked(@ui.app_visible) =>
+                @view.transition(within=o, fn() {  })
+              _ => ()
+            }
+            judged.val = Some(ts)
+            ts
+          },
           // (each by its place on the rail and whether a day starts at it: as a message comes the ticks there already
           // keep theirs (the map's stand each for a share of the chat, which moves as it grows: by what they stand for,
           // all of them would be made again); one a day comes to start or stops starting at is another, going as it

@@ -153,6 +153,10 @@ pub let tracker_gap_ms : Double
 
 pub let tracker_horizon_ms : Double
 
+pub fn transition(() -> Unit, within? : View) -> Unit
+
+pub fn transition_now() -> Bool
+
 pub fn unrubber(Double, Double) -> Double
 
 pub fn untracked_read_fault(String, Array[String], String) -> String?
@@ -1175,6 +1179,7 @@ pub fn Tree::alive(Self) -> Int32
 pub fn Tree::allows(Self, NodeId) -> Bool
 pub fn Tree::allows_as_its_own(Self, NodeId) -> Bool
 pub fn Tree::allows_ellipsis(Self, NodeId) -> Bool
+pub fn Tree::allows_transition(Self, Int32) -> Bool
 pub fn Tree::alone(Self, NodeId) -> Bool
 pub fn Tree::answered_between(Self, Double, Double) -> Array[Int32]
 pub fn Tree::ask_action(Self, String, Double, from? : NodeId?) -> Bool
@@ -1443,6 +1448,7 @@ pub struct View {
 pub fn View::alive(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::allow_ellipsis(Self, Live[Bool], loc~ : SourceLoc) -> Self
+pub fn View::allows_transition(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::alpha(Self, Live[Double], loc~ : SourceLoc) -> Self
 pub fn View::as_ground(Self) -> Self
@@ -1498,7 +1504,7 @@ pub fn View::drawn_while(Self, (Double) -> Bool) -> Double
 #callsite(autofill(loc))
 pub fn View::drops(Self, Live[Int32], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn[T : Eq, K : Hash + Eq] View::each(Self, () -> Array[T], (T) -> K, (Self, @signals.Signal[T]) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, keeps? : () -> Array[K], loc~ : SourceLoc) -> Unit
+pub fn[T : Eq, K : Hash + Eq] View::each(Self, () -> Array[T], (T) -> K, (Self, @signals.Signal[T]) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, keeps? : () -> Array[K], pop_leave? : Bool, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
 pub fn[T] View::each_of(Self, () -> Array[T], (Self, T) -> Unit, leave? : Double, at_once? : Bool, loc~ : SourceLoc) -> Unit
 #callsite(autofill(loc))
@@ -1606,6 +1612,7 @@ pub fn View::lays_out_alone(Self) -> Self
 pub fn View::leaves_at(Self) -> Double
 pub fn View::leaves_typing(Self) -> Self
 pub fn View::leaving(Self) -> Bool
+pub fn View::leaving_now(Self) -> Bool
 pub fn View::left_out(Self) -> Bool
 pub fn[T] View::lends(Self, Lent[T], T) -> Self
 pub fn[T] View::lent(Self, Lent[T]) -> T?
@@ -1732,7 +1739,7 @@ pub fn View::shift(Self, Live[(Double, Double)], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
 pub fn View::shorter(Self, Live[Array[String]], loc~ : SourceLoc) -> Self
 #callsite(autofill(loc))
-pub fn View::show(Self, () -> Bool, (Self) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, loc~ : SourceLoc) -> Unit
+pub fn View::show(Self, () -> Bool, (Self) -> Unit, leave? : Double, at_once? : Bool, along_row? : Bool, pop_leave? : Bool, loc~ : SourceLoc) -> Unit
 pub fn View::shown_across(Self, but? : Self) -> (Double, Double)?
 pub fn View::shown_by(Self, Self, (Double) -> GroundShape) -> Self
 pub fn View::shown_nowhere(Self) -> Bool
@@ -1755,6 +1762,9 @@ pub fn View::takes_back(Self, () -> Unit) -> Self
 pub fn View::takes_input(Self) -> Bool
 #callsite(autofill(loc))
 pub fn View::tint(Self, Live[Int64], loc~ : SourceLoc) -> Self
+pub fn View::transition_gate(Self) -> Bool
+pub fn View::transitions_only(Self) -> Self
+pub fn View::transitions_root(Self) -> Self
 #callsite(autofill(loc))
 pub fn View::turn(Self, Live[Double], drawn? : Bool, loc~ : SourceLoc) -> Self
 pub fn View::twice(Self, Drag) -> Bool

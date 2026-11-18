@@ -666,7 +666,8 @@ fn chat_agent_of(here : MessageNodeHere, m : Message) -> Agent? {
 /// one way (the old view's chat_tick: `answered`). One held goes as it comes out (chat_body_node's held keys, as it is let in).
 fn chat_turn_out(v : @view.View, here : MessageNodeHere, turns : ChatTurnsOut, m : Message) -> Unit {
   guard chat_agent_of(here, m) is Some(a) else { return }
-  v.at_moment(v.cause_at(), fn() { turns.answered[a.key] = a.last_turn }) |> ignore
+  // (a live cause: its line going and its answer taking its place go their way, @view.transition)
+  v.at_moment(v.cause_at(), fn() { @view.transition(within=v, fn() { turns.answered[a.key] = a.last_turn }) }) |> ignore
 }
 
 ///|
@@ -865,6 +866,8 @@ fn chat_body_node(
   shows? : () -> Bool = fn() { true },
   msgs? : () -> @sfbase.ChatMessages? = fn() { None },
 ) -> @view.View {
+  // (its rows move only for a cause said: chat_page_body_node's, @view.transition)
+  v.transitions_only() |> ignore
   let jump = ChatJump::new()
   // (the list's top: the bar and the room under it, its head; where it opens, where a go-to puts a message and the
   // unread line are counted from it, as before the bar's own edge was told the list)
@@ -1055,16 +1058,20 @@ fn chat_body_node(
         if plan.folds {
           plan.face_at.val = Some(agent_face_at(face))
         }
-        held.remove(k)
-        match ends {
-          Some(a) => {
-            lingering.remove("act:" + a.key)
-            turns.answered[a.key] = a.last_turn
+        // (the message let out of its agent's picture, a live cause: what it changes in the list goes its way,
+        // @view.transition)
+        @view.transition(within=v, fn() {
+          held.remove(k)
+          match ends {
+            Some(a) => {
+              lingering.remove("act:" + a.key)
+              turns.answered[a.key] = a.last_turn
+            }
+            None => ()
           }
-          None => ()
-        }
-        face.away.set(true)
-        held_told.set(held_told.untracked() + 1)
+          face.away.set(true)
+          held_told.set(held_told.untracked() + 1)
+        })
       })
       |> ignore
       v.at_moment(plan.spit_end, fn() {
@@ -1147,6 +1154,9 @@ fn chat_body_node(
     },
     same=fn(a, b) { physical_equal(a, b) || a == b },
   )
+  // (judged as the list reads its keys, in the read that takes them: what the change moves in the list is that
+  // cause's from its first frame, no other reader of the keys put before the list's)
+  let live_causes = chat_live_causes(v, here, list, shows, reopening)
   // (the keys the core's rows that took over what was sent from here go on by, given the chat's viewer, which names an
   // occurrence of a picture by its row's key here and asks the core by the core's: told again as a row is taken over,
   // which only adds one)
@@ -1346,7 +1356,11 @@ fn chat_body_node(
     }
     o.scrolls_window(
       scroll,
-      fn() { keys.get() },
+      fn() {
+        let ks = keys.get()
+        live_causes(ks)
+        ks
+      },
       est=chat_row_est,
       bar=@ui.tree_scroll_bar(),
       // (what hides its top is the bar alone, as it is drawn: a message whose words start in the room under it is seen,
@@ -2057,3 +2071,125 @@ fn ask_again_ms(fails : Int) -> Double {
   }
   ms
 }
+
+///|
+/// What came into chat `here`'s list `list` (in `v`, while it `shows`) as a live cause, judged by the keys it is given
+/// as the list reads them, before the list takes them (the list and what its blocks hold move only for a cause:
+/// chat_page_body_node's, @view.transition): a message said in the chat after the newest it had (said while it shows),
+/// one between the oldest and the newest it had taken out (deleted), what was sent from here come or gone, an agent at
+/// work begun or done, where the chat stands changed at its foot (none newer to come). Their change goes its way, the
+/// list's and what its blocks hold in it (@view.transition within `v`); none of it before the chat is first there
+/// (its thread come), nor while it is not shown or the window is not: the older or newer pages read in, what was caught
+/// up, its first value or one come from a cache are there at once.
+fn chat_live_causes(
+  v : @view.View,
+  here : MessageNodeHere,
+  list : ChatBodyList,
+  shows : () -> Bool,
+  reopening : Ref[Bool],
+) -> (Array[String]) -> Unit {
+  // (the pieces it had, in order, and what kind those at its end were: read of no row but the few that came or went
+  // there, so opening or paging reads no message more than the list shows)
+  let had : Ref[Array[String]] = Ref([])
+  let kinds : Map[String, Int] = Map([])
+  let settled = Ref(false)
+  let kind_of = fn(k : String) -> Int {
+    match kinds.get(k) {
+      Some(e) => e
+      None => {
+        let e = match @signals.untracked(fn() { (list.row)(k) }).map(fn(r) { r.entry }) {
+          Some(Said(m)) => if m.said { 1 } else { 0 }
+          Some(Out(_)) => 2
+          Some(Working(a)) => if a.started { 3 } else { 4 }
+          Some(State(_, _, _)) => 5
+          _ => -1
+        }
+        kinds[k] = e
+        e
+      }
+    }
+  }
+  // (the keys last judged: each change judged once, however often the list reads them)
+  let judged : Ref[Array[String]?] = Ref(None)
+  fn(ks : Array[String]) {
+    match judged.val {
+      Some(j) if physical_equal(j, ks) => return
+      _ => ()
+    }
+    judged.val = Some(ks)
+    let view = @signals.untracked(here.view)
+    let was_settled = settled.val
+    settled.val = view.thread is Some(_)
+    let now : Array[String] = []
+    let seen : Map[String, Bool] = Map([])
+    for k in ks {
+      let p = chat_piece_of(k)
+      if !seen.contains(p) {
+        seen[p] = true
+        now.push(p)
+      }
+    }
+    let was = had.val
+    had.val = now
+    let in_was : Map[String, Bool] = Map([])
+    for k in was {
+      in_was[k] = true
+    }
+    // (where what it had and has now meet: the first of the pieces kept, in the order they were)
+    let mut first_kept = -1
+    for i, k in was {
+      if seen.contains(k) {
+        if first_kept < 0 {
+          first_kept = i
+        }
+      }
+    }
+    let mut live = false
+    // (caught up on: what was said while it did not show come at its end; nothing of that change is a live cause)
+    let mut caught_up = false
+    // (come after the first it kept, at its foot or among the last (what is sent from here comes over an agent's line
+    // at work): what was said, sent or begun; a page read in comes many at once, before them, and is no live cause)
+    let came : Array[String] = []
+    if first_kept >= 0 {
+      match now.search(was[first_kept]) {
+        Some(from) =>
+          for i in (from + 1)..<now.length() {
+            if !in_was.contains(now[i]) {
+              came.push(now[i])
+            }
+          }
+        None => ()
+      }
+    }
+    if was_settled && came.length() > 0 && came.length() <= chat_live_tail_most && !view.newer {
+      for k in came {
+        match kind_of(k) {
+          1 | 2 | 3 | 5 => live = true
+          0 => caught_up = true
+          _ => ()
+        }
+      }
+    }
+    // (gone from between those it kept or from its end: taken out, an agent's work done, what was sent taken over;
+    // gone from before the first it kept, the window moved)
+    if was_settled && !view.newer {
+      for i, k in was {
+        if !seen.contains(k) && first_kept >= 0 && i > first_kept {
+          live = true
+        }
+      }
+    }
+    for k in kinds.keys().to_array() {
+      if !seen.contains(k) {
+        kinds.remove(k)
+      }
+    }
+    guard !reopening.val && was_settled && live && !caught_up && @signals.untracked(shows) && @signals.untracked(@ui.app_visible) else { return }
+    @view.transition(within=v, fn() {  })
+  }
+}
+
+///|
+/// The most pieces come at a chat list's end in one change that are judged a live cause (chat_live_causes): more is a
+/// page read in or what was said while it did not show, there at once.
+let chat_live_tail_most : Int = 4

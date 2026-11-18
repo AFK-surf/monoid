@@ -377,7 +377,8 @@ fn writing_adopt(w : WritingState, v : Json?, version : Int, generation : Int, f
 
 ///|
 /// Has the core do `what` to the draft (`composer.<what>`), what the page shows of it meanwhile done by `show`; `done`
-/// its answer.
+/// its answer. `moves`: what `show` does is a person's act on the draft (a file or a quote put in or taken out), its
+/// change shown on its way where the page moves only for a cause (@view.transition); else at once.
 fn writing_act(
   src : Source,
   w : Writing,
@@ -386,17 +387,26 @@ fn writing_act(
   show? : (Writing) -> Unit = fn(_) {  },
   done? : (Result[Json, Json]) -> Unit = fn(_) {  },
   bytes? : Bytes,
+  moves? : Bool = false,
 ) -> Unit {
   if src.read_only {
     toast_later(read_only_words)
     return
   }
   @signals.start_batch()
-  w.pending.set(w.pending.get() + 1)
-  show(w)
+  // (the act told whole inside its transition: what reads the draft is marked by it there, not first by `pending`)
+  let act = fn() {
+    w.pending.set(w.pending.get() + 1)
+    show(w)
+  }
+  if moves {
+    @view.transition(act)
+  } else {
+    act()
+  }
   @signals.end_batch()
   params["key"] = Json::string(w.key)
-  let answered = fn(r : Result[Json, Json]) {
+  let answered_now = fn(r : Result[Json, Json]) {
     @signals.start_batch()
     match r {
       Ok(a) =>
@@ -409,6 +419,14 @@ fn writing_act(
     w.pending.set(w.pending.get() - 1)
     done(r)
     @signals.end_batch()
+  }
+  // (the answer to a person's act on the draft (`moves`): what it settles of that act is the act's, on its way)
+  let answered = fn(r : Result[Json, Json]) {
+    if moves {
+      @view.transition(fn() { answered_now(r) })
+    } else {
+      answered_now(r)
+    }
   }
   match bytes {
     Some(b) => (src.call_bytes)("composer." + what, Json::object(params), b, answered)
@@ -541,6 +559,7 @@ pub fn writing_add(
       }
     },
     bytes~,
+    moves=true,
   )
 }
 
@@ -587,6 +606,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
     "add",
     { "station": Json::string(station), "files": Json::array([Json::object(one)]) },
     show=fn(w) { w.state.files.set(w.state.files.get() + [Json::object(shown)]) },
+    moves=true,
   )
 }
 
@@ -694,7 +714,7 @@ pub fn writing_drop(src : Source, d : Writing, station : String, dropped : Array
     }
     Json::object(one)
   })
-  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, show=fn(d) {
+  writing_act(src, d, "add", { "station": Json::string(station), "files": Json::array(files) }, moves=true, show=fn(d) {
     d.state.files.set(d.state.files.get() + files)
   })
 }
@@ -712,7 +732,7 @@ pub fn writing_remove(src : Source, w : Writing, id : String) -> Unit {
   writing_went.remove(id)
   writing_unseen.remove(id)
   writing_seeds.remove(id)
-  writing_act(src, w, "remove", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "remove", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.files.set(w.state.files.get().filter(fn(f) { text(Some(f), "id") != id }))
   })
 }
@@ -740,7 +760,24 @@ pub fn writing_quote(src : Source, w : Writing, quote : Json, file? : Json, pict
     }
     None => ()
   }
-  writing_act(src, w, "quote", p, show=fn(w) { if ask { w.state.focus.set(id) } })
+  // (shown at once as the core will have it (composer.ts `quote`, `quoteOf`): the quote, by its id, with what is said
+  // of it)
+  let shown : Map[String, Json] = match quote {
+    Object(m) => m.copy()
+    _ => {}
+  }
+  shown["id"] = Json::string(id)
+  if !shown.contains("comment") {
+    shown["comment"] = Json::string("")
+  }
+  writing_act(src, w, "quote", p, moves=true, show=fn(w) {
+    if !w.state.quotes.get().iter().any(fn(q) { text(Some(q), "id") == id }) {
+      w.state.quotes.set(w.state.quotes.get() + [Json::object(shown)])
+    }
+    if ask {
+      w.state.focus.set(id)
+    }
+  })
   match picture {
     Some((station, name, bytes)) => writing_add(src, w, station, name, bytes, quote=id)
     None => ()
@@ -782,7 +819,7 @@ pub fn writing_unquote(src : Source, w : Writing, id : String) -> Unit {
     }
     None => ()
   }
-  writing_act(src, w, "unquote", { "id": Json::string(id) }, show=fn(w) {
+  writing_act(src, w, "unquote", { "id": Json::string(id) }, moves=true, show=fn(w) {
     w.state.quotes.set(w.state.quotes.get().filter(fn(q) { text(Some(q), "id") != id }))
     if w.state.focus.get() == id {
       w.state.focus.set("")

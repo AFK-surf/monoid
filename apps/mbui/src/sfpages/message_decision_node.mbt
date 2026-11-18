@@ -182,6 +182,7 @@ fn decision_rooms_node(
   v.box(fn(rooms) {
     // (its place across all of it: the pick's place is stretched across, each side laid as the rooms were)
     @sf.style_node(rooms, fn() { under_post_room })
+    ends_on_way(rooms, settled)
     rooms.pick(settled, leave=msg_part_leave_ms, fn(side, is_settled) {
       @sf.style_node(side, fn() { decision_rooms })
       if !is_settled {
@@ -661,3 +662,21 @@ let vault_actions_room : @ui.Style = @ui.css("gap=S1_5")
 ///|
 /// How it was settled: its first line's height where the theme says none (settled_line's leading).
 let settled_line_h : Double = 18.0
+
+///|
+/// A card in node `v` coming to an end (`ended` turning true: decided, answered, signed in, whether by a press here or
+/// by the core's answer) while the app shows: a live cause of its message (chat_live_causes' fourth), so what that
+/// change does in the chat's list (the card fading where it stood, how it ended taking its room, what is under it
+/// moving) goes its way (@view.transition within the part `v` moves with). Said before what it ends (its pick), so the
+/// change is the transition's as that runs; one ended as it is made, or come so where the app does not show, is there
+/// at once.
+fn ends_on_way(v : @view.View, ended : () -> Bool) -> Unit {
+  let was = Ref(@signals.untracked(ended))
+  v.reacts(ended, at_start=false, fn(now) {
+    let before = was.val
+    was.val = now
+    if now && !before && @signals.untracked(@ui.app_visible) {
+      @view.transition(within=v.transitions_root(), fn() {  })
+    }
+  })
+}

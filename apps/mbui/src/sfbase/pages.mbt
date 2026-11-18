@@ -252,15 +252,19 @@ let columns_set_off : Map[String, () -> Unit] = Map([])
 ///|
 /// Chat `chat`'s list told, at the cause of the page's way to another width, that its column sets off on it.
 pub fn column_sets_off(chat : String) -> Unit {
-  columns_set_off_said.set(columns_set_off_said.untracked() + 1)
-  match columns_set_off.get(chat) {
-    Some(f) => f()
-    None => ()
-  }
-  // (each row's room over it told after its list, in the same change: column_set_off_each)
-  for _, f in columns_set_off_each.copy() {
-    f()
-  }
+  // (the page set off on its way by its cause (a side panel opened or shut): what it changes on the chat's page goes its
+  // way, @view.transition)
+  @view.transition(fn() {
+    columns_set_off_said.set(columns_set_off_said.untracked() + 1)
+    match columns_set_off.get(chat) {
+      Some(f) => f()
+      None => ()
+    }
+    // (each row's room over it told after its list, in the same change: column_set_off_each)
+    for _, f in columns_set_off_each.copy() {
+      f()
+    }
+  })
 }
 
 ///|
@@ -742,8 +746,10 @@ fn foot_resizes(island : @view.View?, r : ChatRef, was : Double, now : Double) -
     return
   }
   composer_set_out.val = None
+  // (said by the old composer for a person's act on it (a line typed, the cursor come or let go, a file or a quote put
+  // in): its way, where the chat's page moves only for a cause, @view.transition)
   guard declared() is Some((start, dur, ground)) && dur > 0.0 else {
-    v.resizes(foot=true) |> ignore
+    @view.transition(fn() { v.resizes(foot=true) |> ignore })
     return
   }
   // (told after it set out: the rest of its way, from where it has got to)
@@ -752,17 +758,19 @@ fn foot_resizes(island : @view.View?, r : ChatRef, was : Double, now : Double) -
   let left = dur - gone
   guard left > 0.0 else { return }
   let p0 = ground(start + gone)
-  v.resizes(
-    spec=(left, fn(f) {
-      if p0 >= 1.0 {
-        1.0
-      } else {
-        (ground(start + gone + f * left) - p0) / (1.0 - p0)
-      }
-    }),
-    foot=true,
-  )
-  |> ignore
+  @view.transition(fn() {
+    v.resizes(
+      spec=(left, fn(f) {
+        if p0 >= 1.0 {
+          1.0
+        } else {
+          (ground(start + gone + f * left) - p0) / (1.0 - p0)
+        }
+      }),
+      foot=true,
+    )
+    |> ignore
+  })
 }
 
 ///|

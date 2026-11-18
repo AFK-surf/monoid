@@ -4047,10 +4047,10 @@ fn View::scrolls_window_ids(
   // of it is open; all on the list's one way, nothing laid out on it (Node's flip_in, Tree::flip_in_by). By node: down,
   // shorter ground, less tall, whether come, at the way's set-out; the nodes of each block that are; where each
   // block's nodes were drawn as the change came (down from its top, how tall, how wide), by the change's moment)
-  let flip_in_amts : Map[Int, (Double, Double, Double, Bool)] = Map([])
+  let flip_in_amts : Map[Int, FlipInAmt] = Map([])
   let flip_in_bound : Map[Int, Int] = Map([])
   let flip_in_of : Map[Int, Array[Int]] = Map([])
-  let flip_in_before : Map[Int, (Double, Map[Int, (Double, Double, Double)])] = Map([])
+  let flip_in_before : Map[Int, (Double, Map[Int, FlipInWas])] = Map([])
   let flip_in_take = fn(k : Int, at : Double) {
     match flip_in_before.get(k) {
       Some((t, _)) if t == at => return
@@ -4059,27 +4059,39 @@ fn View::scrolls_window_ids(
     guard slot_views.get(k) is Some(v) && v.alive() && !flip_new.contains(k) && !flip_whole.contains(k) else {
       return
     }
-    let m : Map[Int, (Double, Double, Double)] = Map([])
-    fn walk(i : Int, base : Double) -> Unit {
+    let m : Map[Int, FlipInWas] = Map([])
+    // (and across, where each stood and how wide its ground was drawn, and how round, as the change came)
+    let round_of = fn(c : Int, n : Node, w : Double, h : Double) {
+      let r = match n.flip_round {
+        Some(r) => r
+        None => self.tree.handle(c).corners_drawn()
+      }
+      corners_held_in(r, w, h)
+    }
+    fn walk(i : Int, base : Double, base_x : Double) -> Unit {
       for c in self.tree.nodes[i].kids {
         let n = self.tree.nodes[c]
         guard n.live else { continue }
         if n.slot {
-          walk(c, base)
+          walk(c, base, base_x)
           continue
         }
         guard n.placed else { continue }
         let y = base + n.flex.top + off_y(n)
+        let x = base_x + n.flex.left + off_x(n)
         let (_, g, o, _) = n.flip_in
-        m[c] = (y, if o != 1.0 { n.flex.height * o } else { n.flex.height - g }, n.flex.width)
+        let h = if o != 1.0 { n.flex.height * o } else { n.flex.height - g }
+        let w = n.flex.width - n.flip_across.1
+        m[c] = { x, y, h, w, r: round_of(c, n, w, h) }
         if o == 1.0 {
-          walk(c, y)
+          walk(c, y, x)
         }
       }
     }
     let root = self.tree.nodes[v.at]
-    m[v.at] = (0.0, root.flex.height - root.flip_in.1, root.flex.width)
-    walk(v.at, 0.0)
+    let root_h = root.flex.height - root.flip_in.1
+    m[v.at] = { x: 0.0, y: 0.0, h: root_h, w: root.flex.width, r: round_of(v.at, root, root.flex.width, root_h) }
+    walk(v.at, 0.0, 0.0)
     flip_in_before[k] = (at, m)
   }
   let flip_in_clear = fn() {
@@ -4173,6 +4185,9 @@ fn View::scrolls_window_ids(
     let pending_ks : Ref[Array[Int]] = Ref([])
     let pending_inner : Ref[Bool] = Ref(false)
     let pending_builds : Ref[Int] = Ref(0)
+    // (whether what changed at this moment was told outside a transition where only one moves the list: set out
+    // nowhere, all of it at once, transition.mbt; one change of the moment within one moves it all)
+    let pending_quiet : Ref[Bool] = Ref(false)
     fn change(ks : Array[Int], was : Array[Int], inner : Bool) -> Unit {
       guard was.length() > 0 else { return }
       let at = self.tree.cause_now()
@@ -4217,6 +4232,9 @@ fn View::scrolls_window_ids(
         }
         flip_takes.val = ks[kept:].to_owned()
       }
+      // (what a block holds or its foot changing inside it (`inner`) was judged where it changed (View::comes, View::resizes):
+      // the list sets out what that told it as it comes)
+      let quiet = !inner && !self.tree.transition_gate(self.at)
       guard !@signals.untracked(self.tree.motion_reduced) else {
         steady_left.val = base_was.iter().any(fn(k) { !ks.contains(k) }) && !ks.iter().any(fn(k) { !base_was.contains(k) })
         return
@@ -4225,6 +4243,7 @@ fn View::scrolls_window_ids(
         if !inner {
           pending_ks.val = ks
         }
+        pending_quiet.val = pending_quiet.val && quiet
         pending_inner.val = pending_inner.val || inner
         pending_builds.val = self.tree.old_builds_begun
         return
@@ -4234,6 +4253,7 @@ fn View::scrolls_window_ids(
       pending_ks.val = ks
       pending_inner.val = inner
       pending_builds.val = self.tree.old_builds_begun
+      pending_quiet.val = quiet
       // (how far off its foot it was as the change came: brought to its foot at once by it (words sent read up the
       // list: a go-to, no motion), where each was is counted as it would have been there)
       let off_foot = @signals.untracked(fn() { if s.at_foot() { 0.0 } else { dmax(0.0, s.most() - s.at(self.tree)) } })
@@ -4283,6 +4303,10 @@ fn View::scrolls_window_ids(
       @signals.after_flush(fn() {
         @signals.after_flush(fn() {
           let came_once : Ref[Bool?] = Ref(None)
+          // (the keys come by data its page says come, as the change ended: those alone grow open from none; kept for the
+          // set-out worked out again as it is first placed, flip_came emptied by then)
+          let came_keys : Ref[Map[Int, Bool]] = Ref(Map([]))
+          let quiet_once : Ref[Bool] = Ref(pending_quiet.val)
           let snap_was : Ref[Array[Int]] = Ref(pending_was.val)
           let snap_ks : Ref[Array[Int]] = Ref(pending_ks.val)
           let snap_inner : Ref[Bool] = Ref(pending_inner.val)
@@ -4291,6 +4315,7 @@ fn View::scrolls_window_ids(
             snap_was.val = pending_was.val
             snap_ks.val = pending_ks.val
             snap_inner.val = pending_inner.val
+            quiet_once.val = pending_quiet.val
             pending_at.val = -1.0
             steady_left.val = snap_was.val.iter().any(fn(k) { !snap_ks.val.contains(k) }) &&
               !snap_ks.val.iter().any(fn(k) { !snap_was.val.contains(k) })
@@ -4354,21 +4379,35 @@ fn View::scrolls_window_ids(
           }
           let order = keys().filter(fn(k) { after.contains(k) })
           // (none come by data its page says comes, or gone: there at once as it is, no way)
+          // (told outside a transition where only one moves the list: nothing set out for it, all of it laid out at
+          // once where it rests, a way going let go of (transition.mbt))
+          let quiet = quiet_once.val
           let came = match came_once.val {
             Some(c) => c
             None => {
-              // (or one that showed put elsewhere among them: those that stay in another order)
+              came_keys.val = if quiet { Map([]) } else { flip_came.copy() }
+              // (or one that showed put elsewhere among them: those that stay in another order; a key that goes only
+              // where its page says it closes its way (`goes`), one that is simply gone (a row saying more come before)
+              // none of it)
               let kept_was = was.filter(fn(k) { ks.contains(k) })
               let kept_now = ks.filter(fn(k) { kept_was.contains(k) })
-              let c = inner ||
-                flip_came.length() > 0 ||
-                was.iter().any(fn(k) { !ks.contains(k) && before.contains(k) }) ||
+              let c = if quiet {
+                false
+              } else {
+                inner ||
+                came_keys.val.length() > 0 ||
+                was.iter().any(fn(k) { !ks.contains(k) && before.contains(k) && @signals.untracked(fn() { goes(k) }) }) ||
                 kept_was != kept_now
+              }
               came_once.val = Some(c)
               c
             }
           }
           flip_came.clear()
+          if quiet {
+            moved_now.val = Map([])
+            self.tree.answer_mark(self.at)
+          }
           guard came else {
             (flip_end_off.val)()
             flip_items.clear()
@@ -4475,12 +4514,19 @@ fn View::scrolls_window_ids(
             let m = b.1
             // (the block laid out at another width than it was as the change came)
             let laid_anew = match m.get(v.at) {
-              Some((_, _, bw)) => (self.tree.nodes[v.at].flex.width - bw).abs() > 0.5
+              Some(b) => (self.tree.nodes[v.at].flex.width - b.w).abs() > 0.5
               None => false
             }
             let ats : Array[Int] = []
-            let put = fn(a : Int, amt : (Double, Double, Double, Bool)) {
-              guard amt.0.abs() > 0.01 || amt.1.abs() > 0.01 || amt.2 > 0.01 else { return }
+            let put = fn(a : Int, amt : FlipInAmt) {
+              guard amt.dy.abs() > 0.01 ||
+                amt.g.abs() > 0.01 ||
+                amt.sh > 0.01 ||
+                amt.dx.abs() > 0.01 ||
+                amt.lw.abs() > 0.01 ||
+                amt.from_r is Some(_) else {
+                return
+              }
               flip_in_amts[a] = amt
               ats.push(a)
               inner_now.push(a)
@@ -4492,35 +4538,54 @@ fn View::scrolls_window_ids(
                 match flip_way.get() {
                   Some(w) =>
                     match flip_in_amts.get(a) {
-                      Some((dy, g, sh, come)) => {
+                      Some(amt) => {
                         let ends = w.ends()
                         let t = hv.drawn_while(fn(t) { t < ends })
                         let left = w.left(t).0
-                        let h = self.tree.nodes[a].flex.height
+                        let n = self.tree.nodes[a]
+                        let h = n.flex.height
                         // (drawn as big as it is open only as it comes: what stays is drawn at its size, never squeezed
                         // by the way, whatever it was told)
-                        let o = if come && sh > 0.0 && h > 0.0 { dmax(0.0, (h - sh * left) / h) } else { 1.0 }
-                        (dy * left, g * left, o, if come { row_seen_at(o) } else { 1.0 })
+                        let o = if amt.come && amt.sh > 0.0 && h > 0.0 { dmax(0.0, (h - amt.sh * left) / h) } else { 1.0 }
+                        // (its corners from how round they were drawn as the change came to how round they are said,
+                        // each held to half of how big its ground is drawn then: concentric all the way)
+                        let round = match amt.from_r {
+                          Some(fr) if left > 0.0 => {
+                            let to = corners_held_in(hv.corners_said(), n.flex.width, h)
+                            Some(flip_corners_mix(to, fr, left))
+                          }
+                          _ => None
+                        }
+                        (
+                          (amt.dy * left, amt.g * left, o, if amt.come { row_seen_at(o) } else { 1.0 }),
+                          (amt.dx * left, amt.lw * left),
+                          round,
+                        )
                       }
-                      None => (0.0, 0.0, 1.0, 1.0)
+                      None => ((0.0, 0.0, 1.0, 1.0), (0.0, 0.0), None)
                     }
-                  None => (0.0, 0.0, 1.0, 1.0)
+                  None => ((0.0, 0.0, 1.0, 1.0), (0.0, 0.0), None)
                 }
               })
             }
-            fn walk(i : Int, base : Double, held : Double) -> Unit {
+            fn walk(i : Int, base : Double, held : Double, base_x : Double, held_x : Double) -> Unit {
               for c in self.tree.nodes[i].kids {
                 let n = self.tree.nodes[c]
                 guard n.live else { continue }
                 if n.slot {
-                  walk(c, base, held)
+                  walk(c, base, held, base_x, held_x)
                   continue
                 }
                 let y = base + n.flex.top + off_y(n) - n.flip_in.0
+                let x = base_x + n.flex.left + off_x(n) - n.flip_across.0
                 let h = n.flex.height
                 // (what a pick leaving makes for what it shows now (pick_leave.mbt) is drawn coming by its place's way
                 // itself, held_scaled: not grown and faded in again here, the two at once)
                 if self.tree.is_pick_fader(c) && !m.contains(c) {
+                  continue
+                }
+                // (one leaving out of the flow (pop_leave.mbt): drawn where it stood as it fades, nothing of the way's)
+                if self.tree.handle(c).leaving_now() && n.flex.style.position == @flex.PositionType::Absolute {
                   continue
                 }
                 match m.get(c) {
@@ -4529,13 +4594,27 @@ fn View::scrolls_window_ids(
                   // as they are now, at once, as the window made another size has it, only its place on the list's
                   // way; never drawn as grown from its top, its words squeezed and sprung back (the user, 2026-11-17:
                   // 「新架构下文字的右侧展开收起挤压的时候效果不对」「很 q 弹的垃圾」))
-                  Some((by, _, bw)) if laid_anew && (n.flex.width - bw).abs() > 0.5 => {
-                    put(c, (by - y - held, 0.0, 0.0, false))
-                    walk(c, y, by - y)
+                  Some(b) if laid_anew && (n.flex.width - b.w).abs() > 0.5 => {
+                    put(c, flip_in_down(b.y - y - held, 0.0, 0.0, false))
+                    walk(c, y, b.y - y, x, 0.0)
                   }
-                  Some((by, bh, _)) => {
-                    let d = by - y
-                    let grown = h - bh
+                  Some(b) => {
+                    let d = b.y - y
+                    let grown = h - b.h
+                    // (across, where the block is as wide as it was (a pill opened in a row that stays as wide): from
+                    // where it stood and as wide as its ground was drawn, as round, on the same way; in a block laid out
+                    // anew at another width, across at once, as ever (the user, 2026-11-17))
+                    let lw = if laid_anew || (n.flex.width - b.w).abs() <= 0.5 { 0.0 } else { n.flex.width - b.w }
+                    // (only what came to another width goes across, and what it holds with it: what only stands
+                    // elsewhere across as the change came (a row sent while what holds the list moves) is where it is laid)
+                    let dxx = if laid_anew || (lw == 0.0 && held_x == 0.0) { 0.0 } else { b.x - x }
+                    let from_r = if laid_anew {
+                      None
+                    } else {
+                      let to = corners_held_in(self.tree.handle(c).corners_said(), n.flex.width, h)
+                      if corners_near(to, b.r) { None } else { Some(b.r) }
+                    }
+                    let across = fn(amt : FlipInAmt) { { ..amt, dx: dxx - held_x, lw, from_r } }
                     let leaf = !n.kids.iter().any(fn(x) { self.tree.nodes[x].live })
                     if leaf && grown > 0.5 {
                       // (a leaf grown: drawn as tall as it was, growing to as it rests on the way, as a ground alone (a
@@ -4544,25 +4623,33 @@ fn View::scrolls_window_ids(
                       // (Tree::grown_cut_of), opened from its top, what is under it in its block coming down as it
                       // opens: never drawn smaller and grown back, its words squeezed and sprung back (the user,
                       // 2026-11-17: 「这种动效不是从原则上禁止存在吗」), nor over what is under it)
-                      put(c, (d - held, grown, 0.0, false))
+                      put(c, across(flip_in_down(d - held, grown, 0.0, false)))
                     } else {
-                      put(c, (d - held, if grown.abs() > 0.5 { grown } else { 0.0 }, 0.0, false))
-                      walk(c, y, d)
+                      put(c, across(flip_in_down(d - held, if grown.abs() > 0.5 { grown } else { 0.0 }, 0.0, false)))
+                      walk(c, y, d, x, dxx)
                     }
                   }
-                  None => if h > 0.5 { put(c, (0.0, 0.0, h, true)) }
+                  // (one come in what goes across to another shape (a pill opened): drawn whole where it rests in what holds
+                  // it, moved with it (what holds it carries it: Tree::place), cut by that shape as it is drawn on its way,
+                  // never grown from its top inside it)
+                  None =>
+                    if held_x != 0.0 {
+                      ()
+                    } else if h > 0.5 {
+                      put(c, flip_in_down(0.0, 0.0, h, true))
+                    }
                 }
               }
             }
             let root = self.tree.nodes[v.at]
             match m.get(v.at) {
-              Some((_, bh, _)) => {
-                let grown = root.flex.height - bh
-                put(v.at, (0.0, if grown.abs() > 0.5 { grown } else { 0.0 }, 0.0, false))
+              Some(b) => {
+                let grown = root.flex.height - b.h
+                put(v.at, flip_in_down(0.0, if grown.abs() > 0.5 { grown } else { 0.0 }, 0.0, false))
               }
               None => ()
             }
-            walk(v.at, 0.0, 0.0)
+            walk(v.at, 0.0, 0.0, 0.0, 0.0)
             flip_in_of[k] = ats
           }
           // (worked out again as it is first placed: where each is laid out read once the frame has laid out all the
@@ -4594,7 +4681,7 @@ fn View::scrolls_window_ids(
             })
           }
           // (what each node in a block was set out to, as it is now: unscaled, the change's own)
-          let amts_now : Map[Int, (Double, Double, Double, Bool)] = Map([])
+          let amts_now : Map[Int, FlipInAmt] = Map([])
           for a in inner_now {
             match flip_in_amts.get(a) {
               Some(amt) => amts_now[a] = amt
@@ -4669,7 +4756,15 @@ fn View::scrolls_window_ids(
               }
               for a in inner_now {
                 match flip_in_amts.get(a) {
-                  Some((dy, g, sh, come)) => flip_in_amts[a] = (dy / k, g / k, sh / k, come)
+                  Some(amt) =>
+                    flip_in_amts[a] = {
+                      ..amt,
+                      dy: amt.dy / k,
+                      g: amt.g / k,
+                      sh: amt.sh / k,
+                      dx: amt.dx / k,
+                      lw: amt.lw / k,
+                    }
                   None => ()
                 }
               }
@@ -4682,6 +4777,18 @@ fn View::scrolls_window_ids(
           let list : Array[@flex.FlipItem] = []
           for _, i in items {
             list.push(i)
+          }
+          // (what changed inside a block across (a pill opened as wide again, its corners rounder): as far as that goes,
+          // the way as long, though nothing of it moves far down)
+          let mut across_far = 0.0
+          for a in inner_now {
+            match flip_in_amts.get(a) {
+              Some(amt) => across_far = dmax(across_far, dmax(amt.dx.abs(), amt.lw.abs()))
+              None => ()
+            }
+          }
+          if across_far > 0.5 {
+            list.push({ off: (across_far, 0.0, 0.0, 0.0), v: (0.0, 0.0, 0.0, 0.0) })
           }
           let said = match flip_said.val {
             Some((t, k, w)) if (!moving || was_said) && t >= at && t - at < 100.0 && fresh.contains(k) => Some((t, w))
@@ -5832,4 +5939,59 @@ fn in_order_most(was : Array[Int]) -> Array[Bool] {
     i = back[i]
   }
   kept
+}
+
+///|
+/// How each node of a block said `flips` was drawn as a change inside it came (View::scrolls_window's flip_in): across
+/// and down from the block's top left, how tall and how wide its ground, how round its corners (each held to half of
+/// that size).
+priv struct FlipInWas {
+  x : Double
+  y : Double
+  h : Double
+  w : Double
+  r : (Double, Double, Double, Double)
+}
+
+///|
+/// What a node of a block said `flips` is drawn off by as its block's way sets out, all of it gone to none at the way's
+/// end (View::scrolls_window's flip_in): down, how much shorter its ground, how tall it comes from (grown from none:
+/// `come`), across, how much narrower its ground, and the corners its ground goes from (none: as said all the way).
+priv struct FlipInAmt {
+  dy : Double
+  g : Double
+  sh : Double
+  come : Bool
+  dx : Double
+  lw : Double
+  from_r : (Double, Double, Double, Double)?
+}
+
+///|
+/// A FlipInAmt down alone (nothing across, its corners as said).
+fn flip_in_down(dy : Double, g : Double, sh : Double, come : Bool) -> FlipInAmt {
+  { dy, g, sh, come, dx: 0.0, lw: 0.0, from_r: None }
+}
+
+///|
+/// Corners `r` held to half of the least of `w` and `h` (how round a ground that big is drawn).
+fn corners_held_in(r : (Double, Double, Double, Double), w : Double, h : Double) -> (Double, Double, Double, Double) {
+  let half = dmax(0.0, dmin(w, h) / 2.0)
+  (dmin(r.0, half), dmin(r.1, half), dmin(r.2, half), dmin(r.3, half))
+}
+
+///|
+/// Corners from `a` to `b`, `p` of the way.
+fn flip_corners_mix(
+  a : (Double, Double, Double, Double),
+  b : (Double, Double, Double, Double),
+  p : Double,
+) -> (Double, Double, Double, Double) {
+  (a.0 + (b.0 - a.0) * p, a.1 + (b.1 - a.1) * p, a.2 + (b.2 - a.2) * p, a.3 + (b.3 - a.3) * p)
+}
+
+///|
+/// Whether corners `a` and `b` are drawn the same (within a tenth of a point each).
+fn corners_near(a : (Double, Double, Double, Double), b : (Double, Double, Double, Double)) -> Bool {
+  (a.0 - b.0).abs() < 0.1 && (a.1 - b.1).abs() < 0.1 && (a.2 - b.2).abs() < 0.1 && (a.3 - b.3).abs() < 0.1
 }

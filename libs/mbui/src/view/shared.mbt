@@ -1130,6 +1130,9 @@ fn Tree::departed(self : Tree, found : Array[Int], held : NodeId, leaving : Bool
   for at in found {
     let n = self.nodes[at]
     guard n.share is Some(id) else { continue }
+    // (told once a change: one leaving with what holds it as that leaves too (a row of a show said to pop out of the
+    // flow with it, pop_leave.mbt) is one departure, not two)
+    guard !self.departures.iter().any(fn(d) { d.node.at == at && d.node.gen == n.gen }) else { continue }
     let (from, look) = match n.lift {
       Some(l) => {
         // (on a flight's way: where it is drawn as of the change's moment, as it looks there; that flight over)

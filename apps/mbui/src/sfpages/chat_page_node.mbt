@@ -26,6 +26,9 @@ pub fn chat_page_body_node(
   composer? : (@view.View) -> Unit,
   lead? : Double = unread_lead,
 ) -> Unit {
+  // (what changes on it moves only for a cause said (a press, a key, a live cause its list judges so): what the core
+  // brings or a page coming to show is there at once, @view.transition)
+  v.transitions_only() |> ignore
   let draft = r.station + ":" + r.session
   let w = @signals.untracked(fn() { @sfbase.writing(src, draft) })
   // the chat's keys (keymap.ts's chat group: the keymap's Chat), its actions here, taken while the tree gives the page
