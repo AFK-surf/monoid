@@ -311,7 +311,7 @@ pub fn SegThumb::new(owner : @view.View, chosen : () -> Int) -> SegThumb {
   let goal = fn() { fingered.get().unwrap_or(chosen().to_double()) }
   let position = @motion.NodeWay::new(@signals.untracked(goal))
   owner.reacts(at_start=false, goal, fn(p) {
-    let spring = if fingered.untracked() is Some(_) { @kit.follow_spring } else { @motion.cover_spring }
+    let spring = if fingered.untracked() is Some(_) { @kit.follow_spring } else { seg_thumb_spring }
     position.go(owner, p, spring)
   })
   { held, position, fingered }
@@ -475,8 +475,8 @@ pub fn seg_fill_node(
           })
           |> ignore
           let lens = fn() { if strip.glass_solid() { 0.0 } else { thumb.held.shown(strip) } }
-          // (past either end as the cover's spring overshoots it, the end pair's blend carried on, as @ui.cover_rect's
-          // does: held at the end, the thumb would stop dead there from full speed)
+          // (past either end, where a way turned back with speed takes it (seg_thumb_spring goes past no end from rest),
+          // the end pair's blend carried on, as @ui.cover_rect's does: held at the end, the thumb would stop dead there)
           let rect = fn() {
             guard n > 0 else { return None }
             let h = segmented_narrow_h - 2.0 * seg_inset
@@ -699,6 +699,13 @@ let seg_hold_ms : Double = 200.0
 
 ///|
 let seg_drag_lean : Double = 0.25
+
+///|
+/// How the thumb goes to the option chosen: as stiff as the cover's spring, critically damped, so it comes to an end
+/// option without going past it out of the track, and slows to rest there, never held at the end from speed. At rest
+/// within a thousandth of an option (a tenth of a point or so).
+// kept across runs: a value (no field of it changes)
+let seg_thumb_spring : @motion.Spec = @motion.spring(ratio=1.0, stiffness=420.0, threshold=0.001)
 
 ///|
 /// How wide a filling Seg of `labels` is with their words whole at their size with their sides, and how narrow it may
