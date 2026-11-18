@@ -402,6 +402,48 @@ test("the people's devices by app say which machine each is and when it was last
   assert.deepEqual(r.cloud.posted.map((p) => [p.kind, p.id]), [["device.remove", PHONE]]);
 });
 
+test("a device says whether it is a phone or a computer, and a web page's days left apart from the rest where they are soon up", async () => {
+  const phone = { id: "56".repeat(32), sub: "s1", kind: "app", label: "still.fail Android · Pixel 9", sign_key: "ed25519:" + "01".repeat(32) };
+  const iphone = { id: "78".repeat(32), sub: "s1", kind: "app", label: "still.fail iOS · iPhone 16", sign_key: "ed25519:" + "02".repeat(32) };
+  const mac = { id: "9a".repeat(32), sub: "s1", kind: "app", label: "still.fail 桌面版 · MacBook Pro", sign_key: "ed25519:" + "03".repeat(32) };
+  // (the rig's clock starts at 1791277200: one page 2 days and an hour from running out, one 20)
+  const start = 1791277200;
+  const soon = { id: "ef".repeat(32), sub: "s1", kind: "web", label: "still.fail Web · Chrome · macOS", exp: start + 2 * 86400 + 3600 };
+  const later = { id: "cd".repeat(32), sub: "s1", kind: "web", label: "still.fail Web · Firefox · Linux", exp: start + 20 * 86400 + 3600 };
+  const r = await rig((me) => ({ ws: genesis("ws", me, true, [], {}, ME, [phone, iphone, mac, soon, later]) }));
+  const now = Math.floor(r.host.nowMs() / 1000);
+  r.cloud.devices.set("ws", [
+    { sub: "s1", device: "e-soon", base: soon.id, kind: "web", label: soon.label, last_seen: now - 3 * 86400 },
+    { sub: "s1", device: "e-later", base: later.id, kind: "web", label: later.label, last_seen: now - 3 * 86400 },
+  ]);
+  const v = await (await r.watch({ topic: "lock", workspace: "ws" }))();
+  type Row = { id: string; kind: string; machine?: string; metaText: string; leftText?: string; renewSoon: boolean };
+  const rows = new Map<string, Row>(v.members.find((m: { sub: string }) => m.sub === "s1").groups
+    .flatMap((g: { devices: Row[] }) => g.devices).map((d: Row) => [d.id, d]));
+  // (an app's machine by the app its name says; this one names none, a computer; a web page none: its mark is the web's)
+  assert.deepEqual([phone.id, iphone.id, mac.id, ME, soon.id].map((id) => rows.get(id)?.machine), ["phone", "phone", "computer", "computer", undefined]);
+  // (soon up: its days left apart, after the rest, so that only they are in amber; else in the line as before)
+  const s = rows.get(soon.id)!;
+  const l = rows.get(later.id)!;
+  assert.equal(now, start);
+  assert.deepEqual([s.renewSoon, s.metaText, s.leftText], [true, "3 天前使用过", "剩余 3 天"]);
+  assert.deepEqual([l.renewSoon, l.metaText, l.leftText], [false, "3 天前使用过 · 剩余 21 天", undefined]);
+  // (the renew list holds the same row)
+  assert.equal(v.renew.find((d: Row) => d.id === soon.id)?.leftText, s.leftText);
+});
+
+test("the lock says each station's mark as its managers gave it, none where it has none", async () => {
+  const r = await rig((me) => ({ ws: genesis("ws", me, true) }));
+  const lock = await r.watch({ topic: "lock", workspace: "ws" });
+  r.core.inner.data.update({ topic: "workspace", workspace: "ws" }, (w) => ({
+    ...(w as object),
+    stations: [{ id: "st1", name: "Willow", emoji: "🌲", online: true }, { id: "st2", name: "Maple", icon: "glyph:mini:green", online: true }, { id: "st3", name: "Ash", emoji: null, online: true }],
+  }));
+  await r.host.time.pass(100);
+  const v = await lock();
+  assert.deepEqual(v.stations.map((s: { name: string; emoji?: string; icon?: string }) => [s.name, s.emoji, s.icon]), [["Willow", "🌲", undefined], ["Maple", undefined, "glyph:mini:green"], ["Ash", undefined, undefined]]);
+});
+
 test("turning the lock on says what it would sign in words: this device first, its people", async () => {
   const r = await rig(() => ({}));
   const draft = await r.watch({ topic: "lockDraft", workspace: "ws" });

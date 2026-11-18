@@ -2617,6 +2617,12 @@ function usedText(secs: number): string {
 /// A line's first letter capital (a line of the device's said parts, any may lead it: "This device · trusted").
 const upperFirst = (s: string) => s.charAt(0).toUpperCase() + s.slice(1);
 
+/// Which machine an app is, as people know it, by the app its name says: a phone (Android, iOS) or a computer.
+function machineOf(label: string): "phone" | "computer" {
+  const { group } = prefs.deviceParts(label);
+  return group !== null && /^(android|ios) /.test(group) ? "phone" : "computer";
+}
+
 /// A member's role as the security pages name it.
 export function roleText(role: string): string {
   const key = ({ owner: "web-pages.roles.owner", admin: "web-pages.roles.admin", member: "web-pages.roles.member", viewer: "web-pages.security.viewer" } as Record<string, string>)[role];
@@ -2696,13 +2702,17 @@ export function lockView(inner: Inner, ws: string): J {
     const lastSeen = typeof said?.last_seen === "number" ? said.last_seen : null;
     if (lastSeen !== null) dayStep(lastSeen, false);
     const label = str(said?.label) || d.label || "";
+    const leftWords = left !== null ? t("web-pages.security.daysLeft", { n: left }) : null;
+    const renewSoon = typeof d.exp === "number" && d.exp - at < RENEW_SECS;
     const used = mine ? t("web-pages.security.thisDevice")
       : lastSeen !== null ? usedText(at - lastSeen)
       : seen !== null && (manages || d.sub === sub) ? t("web-pages.security.unused")
       : null;
     return {
       id: d.id, kind, label, signs: trusted, older, mine, daysLeft: left,
-      renewSoon: typeof d.exp === "number" && d.exp - at < RENEW_SECS,
+      // (an app's: a phone or a computer, as its name says the app; its mark tells them apart)
+      ...(kind === "app" ? { machine: machineOf(label) } : {}),
+      renewSoon,
       recent, lastSeen, usedText: used,
       // taken out by this device, where it signs: the viewer's own others. Someone else's is theirs alone to take out
       // (owners and admins take the member out; the user, 2026-11-10: a person's devices are their own lock's, which
@@ -2712,13 +2722,15 @@ export function lockView(inner: Inner, ws: string): J {
       nameText: machineText({ kind, label, older }),
       fullText: deviceText({ kind, label, older }),
       // the rest in a line: this device or when it was last used, whether it signs, the days a web page has left, new
-      // (whether it is a web page or an app its mark says, and its name)
+      // (whether it is a web page or an app its mark says, and its name); the days left apart where they are soon up
+      // (`leftText`, after the rest: only they are in amber)
       metaText: upperFirst([
         used,
         trusted ? t("web-pages.security.signs") : null,
-        left !== null ? t("web-pages.security.daysLeft", { n: left }) : null,
+        renewSoon ? null : leftWords,
         recent ? t("web-pages.security.recent") : null,
       ].filter((x) => x !== null).join(" · ")),
+      ...(renewSoon && leftWords !== null ? { leftText: leftWords } : {}),
     };
   };
   // this device first, then the most lately used
@@ -2736,8 +2748,10 @@ export function lockView(inner: Inner, ws: string): J {
     }
     return [...groups.values()];
   };
+  // (its mark as its managers gave it, shown before its name at either width; none where it has none)
   const stations = arr(get(v, "stations")).map((s) => ({
-    id: s.id, name: s.name, version: s.version ?? null, online: s.online !== false, protected: f.stations.has(s.id) && keeps(inner, ws, s.id),
+    id: s.id, name: s.name, ...(str(s.emoji) ? { emoji: s.emoji } : {}), ...(str(s.icon) ? { icon: s.icon } : {}),
+    version: s.version ?? null, online: s.online !== false, protected: f.stations.has(s.id) && keeps(inner, ws, s.id),
   }));
   // (those added who have not signed in yet are the workspace page's, `added`: no one here to show devices of)
   const members = [...f.members].filter(([s]) => !isPending(s)).map(([s, m]) => ({
@@ -2787,10 +2801,9 @@ export function lockView(inner: Inner, ws: string): J {
         const on = sub === null ? undefined : inner.adb.personal().approvers(sub).find((x) => x.id === a.id);
         const d = f.devices.get(a.id) ?? (on === undefined ? undefined : { id: a.id, sub, kind: "app", label: on.label });
         const v = d === undefined ? null : device(d);
-        const { group } = prefs.deviceParts(v?.label ?? "");
         return {
           id: a.id, showing: a.showing === true,
-          kind: group !== null && /^(android|ios) /.test(group) ? "phone" : "computer",
+          kind: machineOf(v?.label ?? ""),
           nameText: v?.nameText ?? t("web-pages.security.appDevice"),
           lastSeen: v?.lastSeen ?? null,
         };

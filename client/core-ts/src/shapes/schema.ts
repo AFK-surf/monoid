@@ -2083,6 +2083,7 @@ export const SHAPES: Record<string, Shape> = {
     ["signs", "bool"],
     ["older", "bool", { doc: "An older client, known by the endpoint it connects with." }],
     ["mine", "bool", { doc: "This device." }],
+    ["machine", opt("String"), { doc: "An app's: `phone` (Android, iOS) or `computer`, as its name says the app; none for a web page,\nand from a core from before." }],
     ["daysLeft", opt("u32"), { doc: "A web page's: days until it runs out." }],
     ["renewSoon", "bool"],
     ["recent", "bool", { doc: "One of the viewer's own, added lately (shown on their other devices)." }],
@@ -2091,7 +2092,8 @@ export const SHAPES: Record<string, Shape> = {
     ["removable", "bool", { doc: "This device may take it out (`lock.removeDevice`): it signs, and the device is another of the viewer's own\n(someone else's is theirs alone to take out; owners and admins take the member out)." }],
     ["nameText", "String", { said: true, doc: "Which machine it is (its group says the app): what it calls itself now, else its label, else what kind\nof client it is." }],
     ["fullText", "String", { said: true, doc: "Its machine and its app in a line (asked about it: 移除「…」？)." }],
-    ["metaText", "String", { doc: "The rest in a line: this device or when it was last used, whether it signs, days left, new." }],
+    ["metaText", "String", { doc: "The rest in a line: this device or when it was last used, whether it signs, days left, new; the days\nleft not in it where `leftText` says them." }],
+    ["leftText", opt("String"), { doc: "Where it is to be renewed soon (`renewSoon`), its days left (剩余 2 天), apart from `metaText` and\nafter it: only they are in amber. None otherwise, and from a core from before (its `metaText` says them)." }],
   ], { doc: "A device in the workspace's lock: this one first, then the most lately used." }),
   LockGroup: struct([
     ["appText", "String", { said: true, doc: "The app its devices are, its brand's (still.fail 桌面版, still.fail 网页版), or 其他: those whose\nname says none." }],
@@ -2110,6 +2112,8 @@ export const SHAPES: Record<string, Shape> = {
   LockStation: struct([
     ["id", "String"],
     ["name", "String", { said: true }],
+    ["emoji", opt("String"), { doc: "Its mark as its managers gave it (as a station's), shown before its name; none when none." }],
+    ["icon", opt("String"), { doc: "As StationView's." }],
     ["version", opt("String")],
     ["online", "bool"],
     ["protected", "bool", { doc: "The lock names it: it holds the lock." }],

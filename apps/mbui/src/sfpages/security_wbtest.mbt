@@ -797,3 +797,114 @@ test "安全, at each width and with either hand: none of its person's devices a
     }
   }
 }
+
+///|
+test "a device's mark: a phone's, a computer's, a web page's globe; an app a core from before says not which is a computer" {
+  let mark = fn(fields : Map[String, Json]) { sec_device_mark(Some(Json::object(fields))) }
+  assert_eq(mark({ "kind": "app", "machine": "phone" }), "phone")
+  assert_eq(mark({ "kind": "app", "machine": "computer" }), "monitor")
+  assert_eq(mark({ "kind": "app" }), "monitor")
+  assert_eq(mark({ "kind": "web" }), "web")
+}
+
+///|
+test "安全, at each width and with either hand: only a web page's days left are amber, the rest of its line quiet" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Chrome · macOS")
+    let words = t.words()
+    let left = words.filter(fn(x) { x.0 == "剩余 4 天" })
+    let used = words.filter(fn(x) { x.0 == "2 天前使用过 ·" })
+    assert_eq(left.length(), 1, msg="\{at}: \{Repr(words.map(fn(x) { x.0 }))}")
+    assert_eq(used.length(), 1, msg=at)
+    // (the two on one line, the days left after the rest)
+    assert_true((left[0].2 - used[0].2).abs() < 1.0 && left[0].1 > used[0].1, msg=at)
+    let p = @sf.theme().p
+    let amber = sec_word_inks(t, left[0])
+    let quiet = sec_word_inks(t, used[0])
+    assert_true(amber.length() > 0 && amber.iter().all(fn(i) { i >> 8 == p.warn_ink >> 8 }), msg="\{at}: 剩余 in \{Repr(amber)}")
+    assert_true(quiet.length() > 0 && quiet.iter().all(fn(i) { i >> 8 != p.warn_ink >> 8 }), msg="\{at}: 使用过 in \{Repr(quiet)}")
+  }
+}
+
+///|
+test "安全, at each width and with either hand: a station's own mark before its name, none where it has none" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Maple")
+    let words = t.words()
+    let willow = words.filter(fn(x) { x.0 == "Willow" })
+    let maple = words.filter(fn(x) { x.0 == "Maple" })
+    assert_eq(willow.length(), 1, msg=at)
+    assert_eq(maple.length(), 1, msg=at)
+    // (Willow has a mark of its own: its name starts past it, Maple's where the mark would be)
+    assert_true(willow[0].1 > maple[0].1 + 8.0, msg="\{at}: Willow at \{willow[0].1}, Maple at \{maple[0].1}")
+  }
+}
+
+///|
+/// The inks of the glyphs drawn over the words `x` (as Tester::words gives them).
+fn sec_word_inks(t : @ui.Tester, x : (String, Double, Double, Double, Double, Double)) -> Array[Int64] {
+  let (_, wx, wy, ww, wh, _) = x
+  let out = []
+  for g in t.drawn_glyphs() {
+    if g.0 >= wx - 1.0 && g.0 <= wx + ww + 1.0 && g.1 >= wy - 1.0 && g.1 <= wy + wh + 1.0 && !out.contains(g.2) {
+      out.push(g.2)
+    }
+  }
+  out
+}
+
+///|
+test "安全, at each width and with either hand: a core from before, its days left in the line and no machine said: the whole line amber, as before" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Security, w, platform~, over=fn(base) {
+      {
+        ..base,
+        topic_read: fn(name, params) {
+          @settings.fixture_followed()
+          let topic = base.topic(name, params).get().snapshot()
+          if name == "lock" {
+            { ..topic, value: topic.value.map(sec_from_before) }
+          } else {
+            topic
+          }
+        },
+      }
+    })
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Chrome · macOS")
+    let words = t.words()
+    let line = words.filter(fn(x) { x.0 == "2 天前使用过 · 剩余 4 天" })
+    assert_eq(line.length(), 1, msg="\{at}: \{Repr(words.map(fn(x) { x.0 }))}")
+    let p = @sf.theme().p
+    let inks = sec_word_inks(t, line[0])
+    assert_true(inks.length() > 0 && inks.iter().all(fn(i) { i >> 8 == p.warn_ink >> 8 }), msg="\{at}: \{Repr(inks)}")
+  }
+}
+
+///|
+/// The lock as a core from before says it: no device's `machine` or `leftText`, the days left in its `metaText`.
+fn sec_from_before(j : Json) -> Json {
+  match j {
+    Object(m) => {
+      let out : Map[String, Json] = Map([])
+      for k, v in m {
+        if k != "machine" && k != "leftText" {
+          out[k] = sec_from_before(v)
+        }
+      }
+      if m.get("leftText") is Some(String(left)) && m.get("metaText") is Some(String(meta)) {
+        out["metaText"] = Json::string(if meta == "" { left } else { meta + " · " + left })
+      }
+      Json::object(out)
+    }
+    Array(a) => Json::array(a.map(sec_from_before))
+    x => x
+  }
+}

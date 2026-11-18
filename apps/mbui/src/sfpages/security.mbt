@@ -723,7 +723,7 @@ fn sec_group_node(
 
 ///|
 /// A row of a section, going nowhere (sec_line's): `mark` before it, its title, `note` under it (narrow) or after it
-/// (wide; amber while `warn`), `end` at its end; `acts`, what it does (while `acts_shown` says) where its title is
+/// (wide; amber while `warn`; `warn_note`, words in amber after it, the rest of it quiet), `end` at its end; `acts`, what it does (while `acts_shown` says) where its title is
 /// words of no length known (a device's name): at its end wide, narrow a line of its own under its words, the title
 /// never squeezed by it. `over`: the name of the rows it starts, over it at its mark while it says one (a person's
 /// devices of one app: still.fail 桌面版), `apart` from the rows before it. Its words as they are said. `wraps`: its
@@ -734,6 +734,7 @@ fn sec_line_node(
   title : () -> String,
   note? : () -> String = fn() { "" },
   warn? : () -> Bool = fn() { false },
+  warn_note? : () -> String = fn() { "" },
   strong? : Bool = true,
   indent? : Bool = false,
   mark? : (@view.View) -> Unit,
@@ -782,8 +783,14 @@ fn sec_line_node(
             }
           })
           |> ignore
-          lines.show(fn() { note() != "" }, fn(n) {
-            @sf.words_node(n, note, fn() { if warn() { sec_narrow_warn } else { @sf.pg_link_note } }) |> ignore
+          lines.show(fn() { note() != "" || warn_note() != "" }, fn(n) {
+            n.pick(fn() { warn_note() != "" }, fn(p, parted) {
+              if parted {
+                sec_note_parts_node(p, note, warn_note, sec_narrow_note_part, sec_narrow_warn_part, in_row=false)
+              } else {
+                @sf.words_node(p, note, fn() { if warn() { sec_narrow_warn } else { @sf.pg_link_note } }) |> ignore
+              }
+            })
           })
         })
         |> ignore
@@ -850,17 +857,23 @@ fn sec_line_node(
             })
             |> ignore
           })
-          t.show(fn() { note() != "" }, fn(w) {
-            @sf.words_node(w, note, fn() {
-              if wraps {
-                sec_pending_why
-              } else if warn() {
-                sec_warn
+          t.show(fn() { note() != "" || warn_note() != "" }, fn(w) {
+            w.pick(fn() { warn_note() != "" }, fn(p, parted) {
+              if parted {
+                sec_note_parts_node(p, note, warn_note, sec_row_meta, sec_warn_state, in_row=true)
               } else {
-                sec_row_meta
+                @sf.words_node(p, note, fn() {
+                  if wraps {
+                    sec_pending_why
+                  } else if warn() {
+                    sec_warn
+                  } else {
+                    sec_row_meta
+                  }
+                })
+                |> ignore
               }
             })
-            |> ignore
           })
           match acts {
             Some(f) if wraps =>
@@ -887,6 +900,25 @@ fn sec_line_node(
       |> ignore
     }
   }
+}
+
+///|
+/// A row's note with its warning apart (sec_line's `warn_note`): the rest of it quiet and the warning in amber after it,
+/// on one line (2 天前使用过 · then 剩余 4 天), so that only what is to be done something about is amber.
+fn sec_note_parts_node(
+  parent : @view.View,
+  rest : () -> String,
+  warning : () -> String,
+  quiet : @ui.TextStyle,
+  amber : @ui.TextStyle,
+  in_row~ : Bool,
+) -> Unit {
+  parent.box(fn(b) {
+    @sf.style_node(b, fn() { sec_note_parts }, in_row~)
+    b.show(fn() { rest() != "" }, fn(r) { @sf.words_node(r, fn() { rest() + " ·" }, fn() { quiet }) |> ignore })
+    @sf.words_node(b, warning, fn() { amber }) |> ignore
+  })
+  |> ignore
 }
 
 ///|
@@ -935,9 +967,10 @@ fn sec_end_words_node(parent : @view.View, words : () -> String, warn? : Bool = 
 }
 
 ///|
-/// A device in the lock (DeviceRow), `d` as it is now: its mark (a web page's, an app's), which machine it is (`over`:
-/// the app over the first of its group), this device or when it was last used and the rest in a line (amber where it is
-/// to be renewed soon); 续期 where this device signs (`can_renew`), 移除 (asked first) where it may take it out.
+/// A device in the lock (DeviceRow), `d` as it is now: its mark (a web page's globe, a phone's, a computer's: an app
+/// whose core from before says not which is a computer's), which machine it is (`over`: the app over the first of its
+/// group), this device or when it was last used and the rest in a line, the days left in amber after it where it is to
+/// be renewed soon (a core from before says them in the line: all of it amber then); 续期 where this device signs (`can_renew`), 移除 (asked first) where it may take it out.
 fn sec_device_node(
   parent : @view.View,
   core : Core,
@@ -952,12 +985,13 @@ fn sec_device_node(
   let removing = fn() { is_doing(core, ["lock.removeDevice"], [("workspace", ws()), ("device", id())]) }
   let renews = fn() { has(d(), "daysLeft") && can_renew() }
   let removes = fn() { flag(d(), "removable") }
-  let kind = fn() { if text(d(), "kind") == "web" { "web" } else { "monitor" } }
+  let kind = fn() { sec_device_mark(d()) }
   sec_line_node(
     parent,
     fn() { text(d(), "nameText") },
     note=fn() { text(d(), "metaText") },
-    warn=fn() { flag(d(), "renewSoon") },
+    warn=fn() { flag(d(), "renewSoon") && !has(d(), "leftText") },
+    warn_note=fn() { text(d(), "leftText") },
     strong=false,
     indent=true,
     over~,
@@ -982,6 +1016,19 @@ fn sec_device_node(
     },
     acts_shown=fn() { renews() || removes() },
   )
+}
+
+///|
+/// A device's mark (LockDevice): a web page's globe, a phone's, else a computer's (an app whose core from before says not
+/// which machine it is too).
+fn sec_device_mark(d : Json?) -> String {
+  if text(d, "kind") == "web" {
+    "web"
+  } else if text(d, "machine") == "phone" {
+    "phone"
+  } else {
+    "monitor"
+  }
 }
 
 ///|
@@ -1013,7 +1060,7 @@ fn stations_node(parent : @view.View, core : Core, ws : () -> String, lock : () 
 
 ///|
 /// A station and whether the lock protects it (StationRow), `sv` as it is now: a dot (green, amber where not), its mark
-/// and name (wide, the two together) and why not; 受保护, or 加入 (where `can`: the owner's signing device), or 未保护 in
+/// where it has one (wide, with its name together; narrow, in the row's mark beside the dot, its name the title) and why not; 受保护, or 加入 (where `can`: the owner's signing device), or 未保护 in
 /// amber.
 fn sec_station_node(
   parent : @view.View,
@@ -1029,14 +1076,23 @@ fn sec_station_node(
   let joining = fn() { is_doing(core, ["lock.joinStation"], [("workspace", ws()), ("station", id())]) }
   let emoji = fn() { text(sv(), "emoji") }
   let icon = fn() { text(sv(), "icon") }
-  // (wide: its mark before its name, the two together)
-  let marked = fn() { wide && @sf.has_station_mark(emoji(), icon()) }
+  // (its mark before its name at either width: wide, the two together)
+  let has_mark = fn() { @sf.has_station_mark(emoji(), icon()) }
+  let marked = fn() { wide && has_mark() }
   sec_line_node(
     parent,
     fn() { if marked() { "" } else { text(sv(), "name") } },
     note=fn() { if guarded() { "" } else { @sf.t("web-pages.security.unprotectedWhy") } },
     mark=fn(m) {
-      sec_dot_node(m, guarded)
+      // (the dot, and narrow its own mark beside it: one line, wherever the row puts its mark)
+      m.box(fn(dm) {
+        @sf.style_node(dm, fn() { sec_dot_mark }, in_row=true)
+        sec_dot_node(dm, guarded)
+        dm.show(fn() { !wide && has_mark() }, fn(n) {
+          @sf.station_mark_node(n, emoji, icon, sec_device_glyph, fn() { @sf.theme().p.text }, stint)
+        })
+      })
+      |> ignore
       m.show(marked, fn(n) {
         n.box(fn(b) {
           @sf.style_node(b, fn() { @sf.desk_named }, in_row=true)
@@ -1612,6 +1668,26 @@ let sec_narrow_over_words : @ui.TextStyle = @sf.secondary.then(@ui.text_style(we
 ///|
 // kept across runs: a value (no field of it changes)
 let sec_narrow_warn : @ui.TextStyle = @sf.pg_link_note.then(@ui.text_style(color=WarnInk))
+
+///|
+/// A station's dot and, narrow, its own mark after it, on one line (sec_station_node's).
+// kept across runs: a value (no field of it changes)
+let sec_dot_mark : @ui.Style = @ui.css("row gap=S3 align=ACenter")
+
+///|
+/// A note's two parts on one line (sec_note_parts): a space's room between them, on their baseline.
+// kept across runs: a value (no field of it changes)
+let sec_note_parts : @ui.Style = @ui.css("row gap=S1 align=AEnd")
+
+///|
+/// Narrow, a note's quiet part beside its warning: on one line, cut before the warning is.
+// kept across runs: a value (no field of it changes)
+let sec_narrow_note_part : @ui.TextStyle = @sf.pg_link_note.then(@ui.text_style(wrap=false, w=Cut))
+
+///|
+/// Narrow, a note's warning: amber, whole.
+// kept across runs: a value (no field of it changes)
+let sec_narrow_warn_part : @ui.TextStyle = sec_narrow_warn.then(@ui.text_style(wrap=false))
 
 ///|
 // kept across runs: a value (no field of it changes)
