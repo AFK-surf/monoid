@@ -729,12 +729,6 @@ fn row_reach(own : Double) -> Double {
 }
 
 ///|
-/// What the small panel beside what opened it that is drawn now was given by its popover (the side it went on, the
-/// room there), for what it holds to keep within (@kit.in_room).
-// kept across runs: said by the presenters' looks as each is drawn, before what it holds
-let beside_given : Ref[@kit.PopState] = { val: { side: Bottom, room: 1.0e9, panel: 0 } }
-
-///|
 /// The room at a panel's sides its rows' grounds reach out across while its body is drawn: a sheet's (its column's
 /// sides), none in a small panel (its rows at its padding, as a menu's are).
 let rows_out : Ref[Double] = { val: 0.0 }
@@ -749,14 +743,6 @@ pub fn in_small_panel() -> Bool {
 ///|
 // kept across runs: said by the presenters while a panel's body is drawn
 let small_panel_now : Ref[Bool] = { val: false }
-
-///|
-/// Whether the panel whose body is drawn now stands above what opened it: a small panel gone up from it (asked to, or
-/// flipped there for want of room below), or a sheet risen from the screen's foot. What a panel keeps nearest what
-/// opened it is at its foot then, else at its top.
-pub fn panel_opens_up() -> Bool {
-  !small_panel_now.val || beside_given.val.side is Top
-}
 
 ///|
 /// How far in from the column a panel's body stands in its words go (each block of them, a row's), so they stand on

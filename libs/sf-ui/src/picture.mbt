@@ -38,7 +38,7 @@ pub fn vector(c : @ui.Ctx, key : String, d : @pixels.Vector, w : Double) -> Int 
 /// The picture `name` drawn `px` pixels wide (as tall as it is for that), in its own colours or all in `tint`: its
 /// width, height and pixels (RGBA, straight, rows from the top), to make another picture with; None when there is no
 /// such picture.
-pub fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
+fn drawable_pixels(name : String, px : Int, tint? : Int64) -> (Int, Int, FixedArray[Byte])? {
   match drawables.get(name) {
     Some(d) => {
       let ph = (px.to_double() * d.h / d.w).round().to_int()

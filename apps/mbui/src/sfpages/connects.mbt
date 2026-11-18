@@ -915,15 +915,13 @@ fn cn_waiting_app_node(
 /// end, of one thing, taking it away (`drop`, asked first). Last on its card's first row's first line, its ground
 /// grown into the card's corner, concentric with it (row_corner_key_look: the corner rule's).
 fn cn_more_node(parent : @view.View, drop : () -> Unit) -> Unit {
-  parent.box(fn(m) {
+  @sf.action_box_node(parent, fn() { @sf.t("web-pages.connects.removeHere") }, fn(m) {
+    let (x, y, w, h) = m.placed_window_now()
+    @sf.menu([Some(@sf.menu_item_of(@sf.t("web-pages.connects.removeHere"), drop, danger=true))], from=At(x, y, w, h), along=End)
+  }, fn(m) {
     @sf.style_node(m, fn() { cn_more })
     @sf.row_corner_key_look(m, cn_more_w) |> ignore
     @sf.hover_ground_node(m)
-    m.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.connects.removeHere"))) })) |> ignore
-    @sf.presses_node(m, fn() {
-      let (x, y, w, h) = m.placed_window_now()
-      @sf.menu([Some(@sf.menu_item_of(@sf.t("web-pages.connects.removeHere"), drop, danger=true))], from=At(x, y, w, h), along=End)
-    })
     @sf.icon_node(m, "more", cn_more_icon, By(fn() { @sf.theme().p.muted })) |> ignore
   })
   |> ignore
@@ -940,17 +938,7 @@ fn mine_filter_node(parent : @view.View, key : String, of : String, mine : () ->
   let t = fn() { @sf.theme() }
   let open : @signals.Signal[Bool] = @signals.signal(mine_filter_open.get(key).unwrap_or(false), same=fn(a, b) { a == b })
   let named = fn() { if mine() { @sf.t("web-main.filter." + of + ".mine") } else { @sf.t("web-main.filter.all") } }
-  parent.box(fn(b) {
-    let lit = fn() { @sf.lit_node(b) || open.get() }
-    @sf.style_node(b, fn() { mine_filter_box })
-    b
-    .edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) }))
-    .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
-    .says(By(fn() {
-      Some(@view.said(Button, label=@sf.t("web-main.filter." + of + ".named", args=[("named", named())]), expanded=open.get()))
-    }))
-    |> ignore
-    @sf.presses_node(b, fn() {
+  @sf.action_box_node(parent, fn() { @sf.t("web-main.filter." + of + ".named", args=[("named", named())]) }, expanded=fn() { open.get() }, fn(b) {
       if open.untracked() {
         return
       }
@@ -978,7 +966,13 @@ fn mine_filter_node(parent : @view.View, key : String, of : String, mine : () ->
         along=End,
         gone=closed,
       )
-    })
+  }, fn(b) {
+    let lit = fn() { @sf.lit_node(b) || open.get() }
+    @sf.style_node(b, fn() { mine_filter_box })
+    b
+    .edge(By(fn() { (1.0, @ui.tree_theme().color(Line)) }))
+    .ground(By(fn() { if lit() { @ui.tree_theme().color(Hover) } else { 0L } }))
+    |> ignore
     @sf.icon_node(b, "filter", mine_filter_icon, By(fn() { if lit() { t().p.text } else { t().p.muted } })) |> ignore
     @sf.words_node(b, named, fn() { if lit() { mine_filter_lit_words } else { mine_filter_words } }) |> ignore
   })

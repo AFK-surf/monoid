@@ -458,6 +458,18 @@ fn Ctx::in_said_scope(self : Ctx, f : () -> Unit) -> () -> Unit {
 }
 
 ///|
+/// `f` with one argument, as Ctx::in_said_scope runs a handler in the scope the build that said it was in then.
+fn[T] Ctx::in_said_scope_1(self : Ctx, f : (T) -> Unit) -> (T) -> Unit {
+  let seed = self.id_seed
+  fn(x) {
+    let was = self.id_seed
+    self.id_seed = seed
+    f(x)
+    self.id_seed = was
+  }
+}
+
+///|
 /// The second of two presses on target `id` (a desktop's double click: the second let go within double_click_ms of the
 /// first, as near as double_click_slop) does `f` in place of what a press on it does (Ctx::on_press, which the first
 /// did): as it is let go, outside any build, its moment the event's. Said as `id`'s box is built.

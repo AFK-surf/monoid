@@ -101,8 +101,8 @@ pub fn Ctx::code_field(
     let b = StringBuilder()
     let mut n = 0
     for ch in typed {
-      if ch >= '0' && ch <= '9' && n < length {
-        b.write_char(ch)
+      if code_digit(ch) is Some(d) && n < length {
+        b.write_char(d)
         n = n + 1
       }
     }

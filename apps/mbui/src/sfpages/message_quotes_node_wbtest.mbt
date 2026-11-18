@@ -387,3 +387,56 @@ test "what was sent from here quoting, as nodes, is drawn as outbox_row draws it
     fail(differ.join("\n"))
   }
 }
+
+///|
+/// A quote's own picture or video (quote_picture_node) in a column as wide as `width` says, as it changes.
+fn qt_own_tester(a : Attachment, width : @signals.Signal[Double]) -> @ui.Tester {
+  let src : Source = { ..files_src(), file: fn(_, _, _) { "qt/own.png" }, poster: fn(_, _, _) { "qt/still.png" } }
+  @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let tips = @sf.TipLayer::new(fn() { Some(root) })
+      let here : MessageNodeHere = {
+        station: "st",
+        session: "s1",
+        view: fn() { said_view() },
+        width: fn() { width.get() },
+        tips,
+        stint: fn() { 0 },
+        jump: None,
+        picture: None,
+      }
+      let col = root.box(fn(v) { v.width(By(fn() { Some(width.get()) })) |> ignore })
+      quote_picture_node(col, src, here, files_place(), fn() { Some(a) }, fn() { "ts5/q:0" })
+      @sf.presented_nodes(root)
+    },
+    w=430.0,
+    h=500.0,
+    images=[("qt/own.png", 800, 600), ("qt/still.png", 1280, 720)],
+  )
+}
+
+///|
+test "a quote's own picture and video: the card's room narrower sizes them again, the same nodes, none made again" {
+  for a in [cmp_picture("here.png", 800.0, 600.0), cmp_picture("clip.mp4", 1280.0, 720.0)] {
+    let width = @signals.signal(400.0)
+    let t = qt_own_tester(a, width)
+    t.run_for(@ui.move_most_ms)
+    let wide = t.drawn_images()
+    assert_true(wide.length() > 0, msg=a.name)
+    t.tree_frames_from_now()
+    width.set(200.0)
+    t.run_for(@ui.move_most_ms)
+    let frames = t.tree_frames()
+    let made = frames.fold(init=0, fn(n, f) { n + f.made })
+    let let_go = frames.fold(init=0, fn(n, f) { n + f.let_go })
+    assert_eq((made, let_go), (0, 0), msg="\{a.name} \{Repr(frames)}")
+    // (as wide as the room it has now)
+    let narrow = t.drawn_images()
+    assert_true(narrow.length() > 0 && narrow[0][2] <= 200.0 + 0.5 && narrow[0][2] < wide[0][2], msg="\{a.name} \{Repr(narrow)}")
+  }
+}

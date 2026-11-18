@@ -925,9 +925,9 @@ pub fn Ctx::editor(
   st.limit = paste_limit
   st.enter_sends = enter_sends.unwrap_or(enter_sends_by(max_lines, ime_action))
   st.command_sends = command_sends
-  st.on_submit = on_submit
-  st.on_change = on_change
-  st.on_edit = on_edit
+  st.on_submit = on_submit.map(fn(f) { self.in_said_scope_1(f) })
+  st.on_change = on_change.map(fn(f) { self.in_said_scope_1(f) })
+  st.on_edit = on_edit.map(fn(f) { self.in_said_scope_1(f) })
   st.leaves = leaves
   st.ime_action = ime_action
   st.secret = secret

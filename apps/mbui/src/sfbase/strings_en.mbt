@@ -2935,6 +2935,7 @@ let en : Map[String, String] = {
   "web-main.board.new_here": "Add a task to To do",
   "web-main.board.add": "Add",
   "web-main.board.dispatch": "Dispatch",
+  "web-main.board.edit": "Edit task",
   "web-main.board.cancel": "Cancel",
   "web-main.board.goes_on": "Run on",
   "web-main.board.start": "Start",
@@ -3010,5 +3011,4 @@ let en : Map[String, String] = {
   "web-pages.remote.newViewOn": "New view on {station}",
   "core-views.screen.kind.desktop": "Desktop",
   "core-views.screen.kind.simulator": "iOS Simulator",
-  "web-pages.screen.heldBy": "{who} is operating this screen — click Take over to interact",
 }

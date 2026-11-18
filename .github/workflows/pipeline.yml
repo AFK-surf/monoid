@@ -1985,7 +1985,10 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.MONOID_CLOUDFLARE_API_TOKEN }}
         run: sh scripts/changelog-put.sh
+      # The release is put and told by now: an old file Cloudflare's API would not list or delete (a 5xx, a 429, a reset)
+      # stays for the next put's prune, and holds back neither this put nor station-update.
       - name: Delete old installers and beta blockmaps (scripts/release-prune.ts says which stay)
+        continue-on-error: true
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: node scripts/release-prune.ts

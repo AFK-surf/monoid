@@ -292,19 +292,27 @@ fn lists_band_node(
       })
       // the filter: its menu (sfpages' filter_menu), a filter its list, 已归档 the archive's list
       line.show(at_once=true, fn() { !@sf.native_on() && view().map(fn(v) { v.stations > 0 }).unwrap_or(false) }, fn(k) {
-        k.box(fn(f) {
-          let shown = fn() {
-            match workspace() {
-              Some(w) => list_place(list_mode(src, w))
-              None => "chats"
-            }
+        let shown = fn() {
+          match workspace() {
+            Some(w) => list_place(list_mode(src, w))
+            None => "chats"
           }
+        }
+        // (its menu, while drawn: what it says of itself)
+        let opener = @sf.Opener::new()
+        @sf.action_box_node(k, fn() { @sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]) }, fn(f) {
+          guard @signals.untracked(workspace) is Some(w) else { return }
+          let (x, y, wd, h) = f.placed_window_now()
+          let now = @signals.untracked(shown)
+          @sfpages.filter_menu(At(x, y, wd, h), if now == "chats" { "all" } else { now }, fn(pick) {
+            rail_go_told(src, w, if pick == "all" { "chats" } else { pick }, fn(_, g) { g() })
+          })
+          opener.mark()
+        }, expanded=fn() { opener.open() }, fn(f) {
           let hot = @motion.NodeWay::new(0.0)
           f.reacts(fn() { @sf.lit_node(f) || @sfpages.filter_menu_open() }, fn(on) {
             hot.go_ms(f, if on { 1.0 } else { 0.0 }, @sf.dur_ms)
           })
-          // (its menu, while drawn: what it says of itself)
-          let opener = @sf.Opener::new()
           @sf.style_node(f, fn() { filter_box })
           // (round as its ground is while it shows one, as an old view's is drawn: at rest nothing of it stands in the
           // panel's corner; in the closed bar's, its corner linked, below)
@@ -318,25 +326,6 @@ fn lists_band_node(
             }
           })
           f.ground(By(fn() { @sf.alpha(@sf.theme().p.hover, hot.shown(f)) })) |> ignore
-          @sf.presses_node(f, fn() {
-            guard @signals.untracked(workspace) is Some(w) else { return }
-            let (x, y, wd, h) = f.placed_window_now()
-            let now = @signals.untracked(shown)
-            @sfpages.filter_menu(At(x, y, wd, h), if now == "chats" { "all" } else { now }, fn(pick) {
-              rail_go_told(src, w, if pick == "all" { "chats" } else { pick }, fn(_, g) { g() })
-            })
-            opener.mark()
-          })
-          f.says(By(fn() {
-            Some(
-              @view.said(
-                Button,
-                label=@sf.t("web-main.filter.chats.named", args=[("named", filter_named(shown()))]),
-                expanded=opener.open(),
-              ),
-            )
-          }))
-          |> ignore
           @sf.icon_node(f, "filter", side_icon, By(fn() {
             let t = @sf.theme()
             @sf.mix(t.p.text, hot.shown(f), t.p.muted)

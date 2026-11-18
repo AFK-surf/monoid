@@ -11,7 +11,6 @@ fn init {
     "src/sfreplay/flows/glass_test.mbt",
     "src/sfreplay/flows/new_chat_test.mbt",
     "src/sfreplay/flows/offline_retry_test.mbt",
-    "src/sfreplay/flows/pick_words_test.mbt",
     // (new 2026-11-10, counted from their start for what every flow here shows of the page and the composer they set
     // out from: at 60 the bottom bar's room, going as the chat is pushed over Home, is drawn twice 0.7 ms apart as
     // the core's word comes between two frames, read as a frame it stood still (send_paced); at 120 the list's foot

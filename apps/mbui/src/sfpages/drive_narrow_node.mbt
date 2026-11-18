@@ -12,10 +12,8 @@ fn narrow_retry_node(v : @view.View, words : () -> String, look : @ui.TextStyle,
       @sf.words_node(w, words, fn() { look }) |> ignore
     })
     |> ignore
-    b.box(fn(l) {
+    @sf.action_box_node(b, fn() { @sf.t("web-pages.drive.retry") }, fn(_) { retry() }, fn(l) {
       @sf.style_node(l, fn() { narrow_link }, in_row=true)
-      @sf.presses_node(l, retry)
-      l.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.drive.retry"))) })) |> ignore
       @sf.words_node(l, fn() { @sf.t("web-pages.drive.retry") }, fn() { narrow_link_words }) |> ignore
     })
     |> ignore

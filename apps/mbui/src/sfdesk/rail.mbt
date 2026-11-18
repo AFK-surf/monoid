@@ -412,11 +412,6 @@ pub fn closed_ground() -> Int64 {
 }
 
 ///|
-/// What waits on a place: a red dot 8 across hung on its ground's corner.
-// kept across runs: a value (no field of it changes)
-let rail_dot : @ui.Style = @ui.css("w=S2 h=S2 radius=Full bg=Danger")
-
-///|
 /// Whether place `place` has a card as the pointer rests on it (the core's `railCard`: 对话, 用量; 2026-10-26 用户「stations
 /// 和 profiles tab 的 hover 卡片去掉吧」); the others keep their tip.
 fn rail_carded(place : String) -> Bool {

@@ -303,11 +303,9 @@ fn letters_list_node(
 /// panel's body, its words on its words' line, its ground a panel's row's (panel_row_in_node: round where it stands in
 /// from the panel's sides, square across a sheet).
 fn letters_chat_node(row : @view.View, chat : () -> Json?, press : () -> Unit, panel? : Bool = false) -> Unit {
-  row.box(fn(b) {
+  @sf.action_box_node(row, fn() { text(chat(), "title") }, fn(_) { press() }, fn(b) {
     @sf.style_node(b, fn() { if panel { letters_row_panel.then(@sf.panel_row_in_node(b)) } else { letters_row } })
     @sf.hover_ground_node(b)
-    b.says(By(fn() { Some(@view.said(Button, label=text(chat(), "title"))) })) |> ignore
-    @sf.presses_node(b, press)
     b.box(fn(h) {
       @sf.style_node(h, fn() { letters_row_head })
       h.box(fn(g) {

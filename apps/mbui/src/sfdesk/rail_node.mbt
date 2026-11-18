@@ -262,9 +262,9 @@ fn rail_key_node(
   rest? : () -> Bool = fn() { false },
   lit? : Bool = true,
 ) -> @view.View {
-  let made : Ref[@view.View?] = Ref(None)
-  parent.box(fn(item) {
-    made.val = Some(item)
+  // (the library's block pressed as a whole, @headless.button's: read out a button, Enter and Space pressing it, its
+  // focus ring round it)
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(item) {
     @sf.style_node(item, fn() { if square { rail_sq } else { rail_item } })
     let hover = @motion.NodeWay::new(0.0)
     let chosen = @motion.NodeWay::new(if lit && @signals.untracked(on) { 1.0 } else { 0.0 })
@@ -274,12 +274,6 @@ fn rail_key_node(
       item.reacts(on, fn(o) { chosen.go_ms(item, if o { 1.0 } else { 0.0 }, @sf.dur_ms) })
     }
     item.reacts(fn() { on() || @sf.lit_node(item) }, fn(k) { ink.go_ms(item, if k { 1.0 } else { 0.0 }, @sf.dur_ms) })
-    item
-    .presses(Is(true))
-    .focusable(Is(true))
-    .on_press(press)
-    .says(By(fn() { Some(@view.said(Button, label=label())) }))
-    |> ignore
     if tipped {
       @sf.tip_node(tips, item, label, side=Right) |> ignore
     }
@@ -317,8 +311,6 @@ fn rail_key_node(
       |> ignore
     }
   })
-  |> ignore
-  made.val.unwrap_or(parent)
 }
 
 ///|
@@ -359,9 +351,9 @@ fn rail_hung_node(sq : @view.View, at : () -> RailAt, shown : () -> Double, mark
 }
 
 ///|
-/// What waits on a place: a red dot 8 across.
+/// What waits on a place: the library's count mark with no count, a red dot 8 across.
 fn rail_dot_node(ring : @view.View) -> Unit {
-  ring.box(fn(d) { @sf.style_node(d, fn() { rail_dot }) }) |> ignore
+  @sf.count_badge_node(ring) |> ignore
 }
 
 ///|
@@ -582,22 +574,22 @@ fn rail_place_node(
       |> ignore
     })
     |> ignore
-    e.box(fn(rm) {
-      @sf.style_node(rm, fn() { rail_remove })
-      rm
-      .over(Is(true), edges=(Some(rail_remove_in), Some(rail_remove_in), None, None))
-      .presses(Is(true))
-      .on_press(fn() {
+    @sf.action_box_node(
+      e,
+      fn() { @sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]) },
+      fn(_) {
         guard ws() is Some(w) else { return }
         let items = rail_items(src, w.id)
         if items.length() > 1 {
           rail_keep(src, w.id, items.filter(fn(i) { i != place }))
         }
-      })
-      .says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.rail.remove", args=[("name", rail_label(src, place))]))) }))
-      |> ignore
-      @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
-    })
+      },
+      fn(rm) {
+        @sf.style_node(rm, fn() { rail_remove })
+        rm.over(Is(true), edges=(Some(rail_remove_in), Some(rail_remove_in), None, None)) |> ignore
+        @sf.icon_node(rm, "minus", rail_remove_icon, By(fn() { t().p.sidebar })) |> ignore
+      },
+    )
     |> ignore
   })
   // 对话's, 用量's: what the place is about at a glance, beside it as the pointer rests on it (in place of its tip)

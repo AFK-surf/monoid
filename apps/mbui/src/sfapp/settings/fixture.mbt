@@ -101,6 +101,9 @@ priv struct SettingsFixture {
   mut lock_doing_ws : String
   /// how its prompt went: "deny" (turned away), "hide" (closed, the code still good), "" while it is up
   mut pair_ended : String
+  /// a code typed on the page that waits (fixture_pair_typed): how far it got, "" none typed; how many were typed
+  mut pair_flow : String
+  mut pair_typed : Int
   /// a device of lin's (Pixel 9) set up without the key to 林的库, waiting on this one for it (settings-vault-prompt),
   /// until given it or put away
   mut key_ask : Bool
@@ -208,6 +211,8 @@ let fx : SettingsFixture = {
   lock_doing: "",
   lock_doing_ws: "",
   pair_ended: "",
+  pair_flow: "",
+  pair_typed: 0,
   key_ask: false,
   key_ask_ended: "",
   key_giving: false,
@@ -435,6 +440,8 @@ fn fixture_reset() -> Unit {
   fx.lock_doing = ""
   fx.lock_doing_ws = ""
   fx.pair_ended = ""
+  fx.pair_flow = ""
+  fx.pair_typed = 0
   fx.key_ask = false
   fx.key_ask_ended = ""
   fx.key_giving = false
@@ -620,6 +627,46 @@ pub fn fixture_lock_done() -> Unit {
   fx.lock_case = ""
   fx_changed()
 }
+
+///|
+/// A code typed on the page that waits (`lock.pairCode`), as a trusted device that asks its person takes it: checked
+/// (`checking`), then that device asking them there (fixture_pair_asking), whose person is not through its prompt the
+/// first time (the app not in front there: the same code to type again) and is the next (fixture_pair_answer). True
+/// for that call: the made-up core takes it so (src/sffixture fixture.mbt).
+pub fn fixture_pair_typed(name : String) -> Bool {
+  if name != "lock.pairCode" {
+    return false
+  }
+  fx.pair_typed += 1
+  fx.pair_flow = "checking"
+  fx_changed()
+  true
+}
+
+///|
+/// The trusted device asks its person for the code typed (fixture_pair_typed).
+pub fn fixture_pair_asking() -> Unit {
+  fx.pair_flow = "confirming"
+  fx_changed()
+}
+
+///|
+/// What came of the code typed (fixture_pair_typed): the first time not through, the next let in.
+pub fn fixture_pair_answer() -> Result[Json, Json] {
+  if fx.pair_typed < 2 {
+    fx.pair_flow = "retry"
+    fx_changed()
+    Err(obj([("code", str("pair_wrong")), ("message", str(fixture_pair_retry))]))
+  } else {
+    fx.pair_flow = "done"
+    fx_changed()
+    Ok(obj([]))
+  }
+}
+
+///|
+/// The core's words for a code right whose trusted device's person was not through its prompt (core-misc.lock.pairRetryAway).
+let fixture_pair_retry : String = "显示安全码的设备上 still.fail 不在前台，没能验证身份：在那台设备上打开 still.fail，再在这里输入一次同一个安全码"
 
 ///|
 /// The bot being made by scanning (MBUI_FIXTURE=settings-new-connect-scan) made: the wizard done on its own, the
@@ -1005,7 +1052,7 @@ pub fn fixture_page(mode : String) -> String {
       "stations"
     "settings-adb" | "settings-adb-off" | "settings-adb-unpaired" | "settings-adb-pairing" | "settings-adb-connected" | "settings-adb-failed" =>
       "adb:ws1/st1"
-    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
+    "settings-adb-chats" | "settings-adb-chats-off" | "settings-adb-chats-long" | "settings-adb-desk" | "settings-adb-unsigned" | "settings-adb-gate-none" | "settings-adb-gate-code" | "settings-adb-gate-checking" | "settings-adb-idle" | "settings-adb-lock-member" | "settings-adb-lock-two" | "settings-adb-lock-outside" | "settings-adb-lock-multi" | "settings-adb-lock-multi-replaced" | "settings-adb-lock-multi-member" =>
       "adb:"
     // the second station a phone is lent to, its first paired already
     "settings-adb-second" => "adb:ws1/st2"
@@ -4131,8 +4178,9 @@ fn waiting_approvers(code : Bool) -> Json {
 
 ///|
 /// The lock as a device not confirmed in it has it (MBUI_FIXTURE=lock-waiting, lock-finding, lock-code, lock-wrong,
-/// lock-wrong-gone, lock-checking, lock-none, lock-failed, lock-nocode, lock-security, each also -dark: its waiting page
-/// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked, no device found,
+/// lock-wrong-gone, lock-checking, lock-confirming, lock-none, lock-failed, lock-nocode, lock-security, each also -dark: its waiting page
+/// asking, finding, the code being typed, typed wrong (or the device showing it gone), being checked (the device showing
+/// it asking its person there), no device found,
 /// the pairing failed (lock-elsewhere: approved in another workspace, not this one), this device without
 /// its code yet; its security page): this device waiting, not a signer. lock-upgrade: in the lock but not signing (its key lost), the code being typed on its
 /// security page. lock-needs-app, lock-needs-app-security: a web page left out of an upgraded workspace that nobody can
@@ -4157,6 +4205,13 @@ fn waiting_lock(mode : String) -> Json {
     ""
   }
   let pair = match mode {
+    // (a code typed here, as the made-up core takes it: fixture_pair_typed)
+    _ if fx.pair_flow == "checking" => obj([("state", str("checking")), ("left", Json::number(3.0))])
+    _ if fx.pair_flow == "confirming" =>
+      obj([("state", str("checking")), ("left", Json::number(3.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])
+    _ if fx.pair_flow == "retry" =>
+      obj([("state", str("wrong")), ("left", Json::number(3.0)), ("error", str(fixture_pair_retry)), ("untilText", str("14:05 前有效"))])
+    _ if fx.pair_flow == "done" => obj([("state", str("done"))])
     _ if own == "restart" => obj([("state", str("none")), ("approvers", waiting_approvers(false))])
     _ if own != "" => Json::null()
     // (the devices it dials, the core's rows; one showing the code, once it does)
@@ -4167,6 +4222,9 @@ fn waiting_lock(mode : String) -> Json {
     "lock-wrong-gone" =>
       obj([("state", str("wrong")), ("left", Json::number(2.0)), ("error", str("安全码不对，或显示它的设备已断开，还可以试 2 次")), ("untilText", str("14:05 前有效"))])
     "lock-checking" => obj([("state", str("checking")), ("left", Json::number(3.0))])
+    // (the trusted device took the code and asks its person there: where to look, the core's words)
+    "lock-confirming" =>
+      obj([("state", str("checking")), ("left", Json::number(3.0)), ("checkingText", str("请在显示安全码的设备上完成身份验证"))])
     "lock-none" => obj([("state", str("none")), ("approvers", waiting_approvers(false))])
     "lock-failed" => obj([("state", str("failed")), ("error", str("配对超时"))])
     "lock-elsewhere" =>
@@ -4182,8 +4240,8 @@ fn waiting_lock(mode : String) -> Json {
     ("device", str("d-me")),
     ("code", str(code)),
     ("kind", str(if needs_app { "web" } else { "app" })),
-    ("confirmed", Json::boolean(upgrade)),
-    ("waiting", Json::boolean(!upgrade && !needs_app)),
+    ("confirmed", Json::boolean(upgrade || fx.pair_flow == "done")),
+    ("waiting", Json::boolean(!upgrade && !needs_app && fx.pair_flow != "done")),
     ("unsigned", Json::boolean(upgrade)),
     ("pair", pair),
   ]
@@ -4878,6 +4936,11 @@ fn fx_adb_share() -> Json {
     "gate-code" =>
       lent("connected", [
         ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("code")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
+      ])
+    // (the code typed being checked, the device showing it asking its person there)
+    "gate-checking" =>
+      lent("connected", [
+        ("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([])), ("pair", obj([("state", str("checking")), ("devices", Json::number(1.0)), ("untilText", str("14:05 前有效")), ("checkingText", str("请在显示安全码的设备上完成身份验证")), ("showing", Json::array([str("MacBook Pro")]))]))])])),
       ])
     "lock-outside" => lent("connected", [("personal", Json::array([obj([("sub", str("s")), ("email", str("lin@example.com")), ("standing", str("outside")), ("devices", Json::array([]))])]))])
     // two accounts signed in here: another's lock has this device on it, the workspace's account (u1) is to be approved

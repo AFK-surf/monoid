@@ -508,12 +508,13 @@ export class Requests {
     return Effect.map(this.upload(station, q.name, whole, ctx), (file) => ({ have: q.size, file }));
   }
 
-  /// GET /sessions/:key/files?name=(&thumb=1): [content type, bytes]; `progress` hears the bytes so far and the whole
-  /// size (when the station gives it), now and then.
-  file(station: StationAddr, key: string, name: string, thumb: boolean, progress: (loaded: number, total: number | null) => void, ctx: SpanContext | null): Effect.Effect<[string, Uint8Array], CoreError> {
+  /// GET /sessions/:key/files?name=(&thumb=1|2): [content type, bytes]; `progress` hears the bytes so far and the whole
+  /// size (when the station gives it), now and then. `thumb` "preview" (thumb=2): the whole-window viewer's preview, or
+  /// the file itself where there is none (and from a station from before).
+  file(station: StationAddr, key: string, name: string, thumb: boolean | "preview", progress: (loaded: number, total: number | null) => void, ctx: SpanContext | null): Effect.Effect<[string, Uint8Array], CoreError> {
     return Effect.scoped(
       Effect.gen({ self: this }, function* () {
-        const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb ? "&thumb=1" : ""}`;
+        const path = `/sessions/${encode(key)}/files?name=${encode(name)}${thumb === "preview" ? "&thumb=2" : thumb ? "&thumb=1" : ""}`;
         const status = this.#status(station);
         const waiting = status.begin({ station: station.toString() }, stationWhat("GET", path), false);
         const [span, head] = this.#head(station, "GET", path, [], 0, ctx);

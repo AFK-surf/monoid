@@ -140,21 +140,19 @@ fn usage_ranks_node(parent : @view.View, core : Core, v : () -> Json?) -> Unit {
           fn(row, it) { usage_rank_row_node(row, core, fn() { rk }, fn() { Some(it.get()) }) },
         )
         rows.show(fn() { all_items().length() > ug_first }, fn(m) {
-          m.box(fn(b) {
-            let words = fn() {
-              if usage_pick.all.get() {
-                @sf.t("web-main.fold")
-              } else {
-                @sf.t("web-main.usage.showAll", args=[("n", all_items().length().to_string())])
-              }
+          let words = fn() {
+            if usage_pick.all.get() {
+              @sf.t("web-main.fold")
+            } else {
+              @sf.t("web-main.usage.showAll", args=[("n", all_items().length().to_string())])
             }
+          }
+          @sf.action_box_node(m, words, fn(_) { usage_pick.all.set(!usage_pick.all.untracked()) }, fn(b) {
             b
             .padding(Is((@sf.card_pad - @sf.corner_inset, 8.0, @sf.card_pad - @sf.corner_inset, 8.0)))
             .radius(By(ug_row_corner))
-            .says(By(fn() { Some(@view.said(Button, label=words())) }))
             |> ignore
             @sf.hover_ground_node(b)
-            @sf.presses_node(b, fn() { usage_pick.all.set(!usage_pick.all.untracked()) })
             @sf.words_node(b, words, fn() { if @sf.lit_node(b) { ug_more_lit } else { ug_more_words } }) |> ignore
           })
           |> ignore

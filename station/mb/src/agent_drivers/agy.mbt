@@ -542,22 +542,21 @@ pub fn agy_models(result : JValue?) -> Array[String] {
 }
 
 ///|
-/// A turn's counts as the prompt's answer says them (`turnUsage`).
+/// A turn's counts as the prompt's answer says them (`turnUsage`). agy says them apart, as its `totalTokens` adds them
+/// up (`inputTokens + outputTokens + cachedReadTokens`): what was read from the cache is not in `inputTokens`, and
+/// `thoughtTokens` is already in `outputTokens`.
 pub fn turn_usage(answer : JValue?) -> JValue? {
   guard get(get(answer, "result"), "usage") is Some(Obj(_) as u) else { return None }
   let num = (k : String) => match get(Some(u), k) {
-    Some(Num(x)) if x - x == 0.0 => x
+    Some(Num(x)) if x - x == 0.0 && x > 0.0 => x
     _ => 0.0
   }
-  let read = num("cachedReadTokens")
-  let written = num("cachedWriteTokens")
-  let input = num("inputTokens") - read - written
   Some(
     obj([
-      ("inputTokens", d(if input > 0.0 { input } else { 0.0 })),
-      ("cacheReadTokens", d(read)),
-      ("cacheWriteTokens", d(written)),
-      ("outputTokens", d(num("outputTokens") + num("thoughtTokens"))),
+      ("inputTokens", d(num("inputTokens"))),
+      ("cacheReadTokens", d(num("cachedReadTokens"))),
+      ("cacheWriteTokens", d(num("cachedWriteTokens"))),
+      ("outputTokens", d(num("outputTokens"))),
     ]),
   )
 }

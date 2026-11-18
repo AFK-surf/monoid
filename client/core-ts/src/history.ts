@@ -4,7 +4,7 @@
 import { agentsOf, args, doing, epochMs, importantCall, kindOf, type Known, tasksOf, told, toolName } from "./activity.ts";
 import * as format from "./format.ts";
 import * as brand from "./brand.ts";
-import { t } from "./i18n.ts";
+import { current, t } from "./i18n.ts";
 import { lineOf, markdown, type MdStore } from "./markdown.ts";
 import * as present from "./present.ts";
 import { money } from "./views/usage.ts";
@@ -42,6 +42,171 @@ function worded(e: J): J {
   return e?.inScript === true && e.text === "" ? { ...e, text: t("station.transcript.inScriptOutput") } : e;
 }
 
+// ── What is kept between two makings of a history ──
+//
+// A chat's page makes its history again whole as anything it read changes: while its agent works, its steps in flight,
+// its phase and its usage change many times a second, and its transcript grows an entry or two at a time. Made afresh
+// each time, a long one (a thousand entries, calls with inputs of tens of KB) took 250 ms on a phone and up to 8.7 s on
+// a desktop each time (Cloud Trace `ms.history.make`, 0.1.10103 to 0.1.10130). So what it makes is kept, each part by what it
+// is made of, and taken again only where all of that is the same: an input read as JSON by its words (argsOf), an
+// entry's own facts by the entry (`entryKept`), an item shown by its first entry with every entry, step, word of its
+// context, tree of Markdown and name it read (`Shown`), and a page's items whole by its entries (`Page`).
+// `presentHistoryUncached` makes the same with nothing kept, what this is held to (history.test.ts).
+
+/// How many inputs, and how many of their characters, `argsOf` keeps.
+const ARGS_KEPT = 4096;
+const ARGS_KEPT_CHARS = 4_000_000;
+const argsKept = new Map<string, Record<string, J> | null>();
+let argsKeptChars = 0;
+/// Off while `presentHistoryUncached` makes a history: nothing kept is read or kept then.
+let keeping = true;
+
+/// A call's input read as JSON (activity.ts `args`), read once while kept: the history reads one call's input in
+/// many places, and again each time it is made. What it answers is shared, so read-only (frozen).
+function argsOf(text: string): Record<string, J> | null {
+  if (!keeping) return args(text);
+  const hit = argsKept.get(text);
+  if (hit !== undefined) return hit;
+  const a = args(text);
+  if (a !== null) Object.freeze(a);
+  argsKept.set(text, a);
+  argsKeptChars += text.length;
+  while (argsKept.size > ARGS_KEPT || (argsKeptChars > ARGS_KEPT_CHARS && argsKept.size > 1)) {
+    const oldest = argsKept.keys().next().value as string;
+    argsKept.delete(oldest);
+    argsKeptChars -= oldest.length;
+  }
+  return a;
+}
+
+/// What is made of one entry alone: the entry as this device words it (`worded`, in its language), its call's phase,
+/// whether its thought says anything.
+type EntryKept = { lang?: string; worded?: J; phase?: "explore" | "act" | null; blank?: boolean };
+const entryKept = new WeakMap<object, EntryKept>();
+
+function keptOf(e: J): EntryKept | null {
+  if (!keeping || e === null || typeof e !== "object") return null;
+  let k = entryKept.get(e);
+  if (k === undefined) entryKept.set(e, (k = {}));
+  return k;
+}
+
+function wordedKept(e: J): J {
+  if (e?.inScript !== true || e.text !== "") return e;
+  const k = keptOf(e);
+  if (k === null) return worded(e);
+  const lang = current();
+  if (k.lang !== lang) [k.lang, k.worded] = [lang, worded(e)];
+  return k.worded;
+}
+
+/// What an item shown reads of its context besides its entries, one object for equal ones (`sigOf`): an item made
+/// with the same object read the same.
+type Sig = {
+  lang: string;
+  brand: string;
+  threads: J[];
+  members: J[];
+  slackUsers: string[];
+  botUserId: string | null;
+  botName: string;
+  slackNames: [string, string][] | undefined;
+  offsetMin: number;
+  workspaces: Map<string, format.SlackWorkspace>;
+  stations: ReadonlyMap<string, string> | undefined;
+};
+const SIG_FIELDS = ["lang", "brand", "threads", "members", "slackUsers", "botUserId", "botName", "slackNames", "offsetMin", "workspaces", "stations"] as const;
+const SIGS_KEPT = 8;
+const sigs: Sig[] = [];
+
+/// Whether two values say the same: the same object, or arrays, maps and plain objects of the same. The page makes
+/// some of its context anew each time (views.ts `slackWorkspaces`, `stationNames`, the Slack people it filters).
+function same(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || typeof a !== "object" || typeof b !== "object") return false;
+  if (a instanceof Map || b instanceof Map) {
+    if (!(a instanceof Map) || !(b instanceof Map) || a.size !== b.size) return false;
+    for (const [k, v] of a) if (!b.has(k) || !same(v, b.get(k))) return false;
+    return true;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (!same(a[i], b[i])) return false;
+    return true;
+  }
+  const ka = Object.keys(a);
+  if (ka.length !== Object.keys(b).length) return false;
+  const has = Object.prototype.hasOwnProperty;
+  for (const k of ka) if (!has.call(b, k) || !same((a as J)[k], (b as J)[k])) return false;
+  return true;
+}
+
+function sigOf(cx: Context): Sig {
+  const now: Sig = {
+    lang: current(),
+    brand: brand.name(),
+    threads: cx.threads,
+    members: cx.members,
+    slackUsers: cx.slackUsers,
+    botUserId: cx.botUserId,
+    botName: cx.botName,
+    slackNames: cx.slackNames,
+    offsetMin: cx.offsetMin,
+    workspaces: cx.workspaces,
+    stations: cx.stations,
+  };
+  const at = sigs.findIndex((s) => SIG_FIELDS.every((f) => same(s[f], now[f])));
+  if (at < 0) {
+    sigs.unshift(now);
+    if (sigs.length > SIGS_KEPT) sigs.pop();
+    return now;
+  }
+  const kept = sigs[at];
+  // The latest objects, so that the next time they are found by reference.
+  Object.assign(kept, now);
+  if (at > 0) sigs.unshift(...sigs.splice(at, 1));
+  return kept;
+}
+
+/// What an item shown was made of: its context, the entries and steps it read (`deps`), the trees of Markdown it was
+/// given (`md`) and the tasks' and agents' names it looked up (`names`), each to be the same to take it again.
+type Shown = {
+  sig: Sig;
+  deps: unknown[];
+  md: [string, unknown][];
+  names: [0 | 1, string, string | undefined][];
+  out: J;
+  final: J;
+  turn: { at: number | null; time: string | null } | null;
+};
+const shownKept = new WeakMap<object, Shown>();
+
+/// A page of a history made last: its entries and context, and the items it showed.
+type Page = { held: J[]; from: number; sig: Sig; day: number | null; base: number; shown: J[]; made: Shown[] };
+const PAGES_KEPT = 8;
+const pages: Page[] = [];
+
+/// How much of a history was made afresh (items, not taken again): what history.test.ts holds the keeping to.
+export const historyMade = { items: 0 };
+
+function mdSame(made: Shown, store: MdStore | undefined): boolean {
+  for (const [text, md] of made.md) if (markdown(text, store) !== md) return false;
+  return true;
+}
+
+function pageOf(held: J[], from: number, sig: Sig, day: number | null, store: MdStore | undefined): Page | null {
+  for (let p = 0; p < pages.length; p++) {
+    const page = pages[p];
+    if (page.from !== from || page.sig !== sig || page.day !== day || page.held.length !== held.length) continue;
+    let all = true;
+    for (let i = 0; i < held.length && all; i++) all = page.held[i] === held[i];
+    if (!all || !page.made.every((m) => mdSame(m, store))) continue;
+    if (p > 0) pages.unshift(...pages.splice(p, 1));
+    return page;
+  }
+  return null;
+}
+
 function kindKey(kind: string): string {
   return ["read", "search", "edit", "command", "web", "agent", "thread"].includes(kind) ? kind : "other";
 }
@@ -68,11 +233,11 @@ function jsExecCommand(text: string): string | null {
 export function hint(text: string, tool = ""): string {
   const name = toolName(tool);
   if (name.endsWith(" on Web")) {
-    const a = args(text);
+    const a = argsOf(text);
     const q = typeof a?.query === "string" && a.query ? a.query : name.slice(0, -7).replace(/^["']|["']$/g, "");
     return line(q, 160);
   }
-  const a = args(text);
+  const a = argsOf(text);
   if (!a) {
     const jsCmd = name === "exec" ? jsExecCommand(text) : null;
     if (jsCmd) return line(jsCmd, 160);
@@ -177,7 +342,7 @@ export function hint(text: string, tool = ""): string {
 }
 
 function describe(text: string): string | null {
-  const a = args(text);
+  const a = argsOf(text);
   const d = typeof a?.description === "string"
     ? a.description
     : typeof a?.toolSummary === "string"
@@ -190,7 +355,7 @@ function describe(text: string): string | null {
 }
 
 function fileOf(text: string, tool = ""): string | null {
-  const a = args(text);
+  const a = argsOf(text);
   if (a) {
     for (const k of ["file_path", "target_file", "path", "Path", "notebook_path"]) {
       if (typeof a[k] === "string" && a[k] !== "") return cleanPath(a[k]);
@@ -204,7 +369,7 @@ function fileOf(text: string, tool = ""): string | null {
 }
 
 function lineRangeOf(text: string): [number, number] | null {
-  const a = args(text);
+  const a = argsOf(text);
   if (!a) return null;
   const start = typeof a.StartLine === "number" ? a.StartLine : typeof a.start_line === "number" ? a.start_line : undefined;
   const end = typeof a.EndLine === "number" ? a.EndLine : typeof a.end_line === "number" ? a.end_line : undefined;
@@ -224,7 +389,7 @@ function lineRangeOf(text: string): [number, number] | null {
 function stepName(tool: string, text: string): string {
   const name = toolName(tool);
   if (name.endsWith(" on Web")) return "WebSearch";
-  const a = args(text);
+  const a = argsOf(text);
   if (name === "edit" || name === "edit_file" || name === "replace_file_content" || name === "multi_replace_file_content" || name === "search_replace") return "Edit";
   if (name === "write" || name === "write_file" || name === "write_to_file") return "Write";
   if (name === "read" || name === "read_file" || name === "view_file_outline" || name === "view_code_item" || name === "read_image" || name === "view_image") return "Read";
@@ -571,7 +736,7 @@ export function beginsItem(e: J): boolean {
   if (kind !== "tool_call") return true;
   if (e.subagent === true) return false;
   const name = toolName(typeof e.tool === "string" ? e.tool : "");
-  const a = args(typeof e.text === "string" ? e.text : "");
+  const a = argsOf(typeof e.text === "string" ? e.text : "");
   return (name === "chat_post" && typeof a?.text === "string") || (name === "chat_state" && typeof a?.kind === "string");
 }
 
@@ -583,13 +748,82 @@ export function carriedOver(timeline: readonly J[]): number {
 }
 
 export function presentHistory(live: J, cx: Context): J {
+  return make(live, cx, true);
+}
+
+/// The same history made afresh, nothing of an earlier making taken again: what `presentHistory` is held to.
+export function presentHistoryUncached(live: J, cx: Context): J {
+  return make(live, cx, false);
+}
+
+function make(live: J, cx: Context, keep: boolean): J {
+  const was = keeping;
+  keeping = keep;
+  try {
+    return made(live, cx, keep);
+  } finally {
+    keeping = was;
+  }
+}
+
+function made(live: J, cx: Context, keep: boolean): J {
   const held: J[] = Array.isArray(live?.timeline) ? live.timeline : [];
   const from = typeof live?.first === "number" ? live.first : 0;
+  const sig = keep ? sigOf(cx) : null;
+  const day = cx.now !== undefined ? format.localDay(cx.now, cx.offsetMin) : null;
+  // The same entries in the same context: the items it showed, as they were (its steps in flight, its phase or its
+  // usage are what changed).
+  let page = sig !== null ? pageOf(held, from, sig, day, cx.md) : null;
+  if (page === null) {
+    page = itemsOf(held, from, cx, sig, day);
+    if (sig !== null) {
+      pages.unshift(page);
+      if (pages.length > PAGES_KEPT) pages.pop();
+    }
+  }
+  const { shown, base } = page;
+
+  const pushedNow = pushed(live, cx.runtime);
+  const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));
+  const phase = pushedNow.phase;
+  const { usage, usageLine } = usageOf(live?.usage);
+  const loaded = live?.loaded === true;
+  // Why its first read failed (it is read again), and how the page before stands: being read, or why it was not.
+  const failed = typeof live?.failed === "string" && live.failed !== "" ? live.failed : null;
+  const older = live?.older === "reading" || live?.older === "failed" ? live.older : null;
+  let edge: string;
+  let empty: boolean;
+  if (!loaded && shown.length === 0) [edge, empty] = [t("core-logic.history.edge.loading"), true];
+  else if (shown.length === 0 && liveSteps.length === 0 && phase === null && base === 0) {
+    const why = live?.offline === true ? "core-logic.history.edge.offline" : cx.started ? "core-logic.history.edge.missing" : "core-logic.history.edge.not_started";
+    [edge, empty] = [t(why), true];
+  } else if (base > 0 && older === "failed") [edge, empty] = [t("core-logic.history.edge.earlier_failed", { why: String(live.olderFailed ?? "") }), false];
+  else if (base > 0) [edge, empty] = [t("core-logic.history.edge.earlier"), false];
+  else [edge, empty] = [t("core-logic.history.edge.start"), false];
+  return { items: shown, live: liveSteps, phase, usage, usageLine, edge, empty, loaded, more: base > 0, ...(failed !== null && !loaded && shown.length === 0 ? { failed } : {}), ...(base > 0 && older !== null ? { older } : {}) };
+}
+
+/// Where a waiting mark's wait is over: what moves the agent on, a prompt bringing it back or a call of its own after
+/// the mark (it went on working instead; a later state stands in its place); -1 while nothing has. Words it posts as
+/// its turn ends are part of the ending, not more work.
+function waitEnd(timeline: J[], mark: number): number {
+  for (let j = mark + 1; j < timeline.length; j++) {
+    const e = timeline[j];
+    if (e?.subagent === true) continue;
+    const kind = typeof e?.kind === "string" ? e.kind : "";
+    const posting = kind === "tool_call" && toolName(typeof e.tool === "string" ? e.tool : "") === "chat_post" && typeof argsOf(typeof e.text === "string" ? e.text : "")?.kind !== "string";
+    if (kind === "user" || (kind === "tool_call" && !posting)) return j;
+  }
+  return -1;
+}
+
+/// A page's items: each taken again where what it was made of is the same (`Shown`), else made.
+function itemsOf(held: J[], from: number, cx: Context, sig: Sig | null, day: number | null): Page {
   // A page's first entries that go on with an item begun on the page before are left to that page: an item is shown
   // whole, and is the same item (its key, what it counts) however many pages are loaded. Shown in part, a group cut by
   // a page became another item as the page before came (its key its first loaded entry), and what was read jumped.
   const carried = from > 0 ? carriedOver(held) : 0;
-  const timeline: J[] = (carried > 0 ? held.slice(carried) : held).map(worded);
+  const timeline: J[] = (carried > 0 ? held.slice(carried) : held).map(wordedKept);
   const base = from + carried;
   const s = (e: J, k: string): string => (typeof e?.[k] === "string" ? e[k] : "");
   const flag = (e: J, k: string): boolean => e?.[k] === true;
@@ -604,7 +838,7 @@ export function presentHistory(live: J, cx: Context): J {
   const isReadOnlyCommand = (tool: string, text: string): boolean => {
     const name = toolName(tool);
     if (name === "manage_task" || name === "sleep" || name === "get_output" || name === "command_status" || name === "wait" || name === "job_output") return true;
-    const a = args(text);
+    const a = argsOf(text);
     if (name === "write_stdin") return typeof a?.chars !== "string" || a.chars === "";
     const raw =
       typeof a?.command === "string"
@@ -614,9 +848,9 @@ export function presentHistory(live: J, cx: Context): J {
           : typeof a?.CommandLine === "string"
             ? a.CommandLine
             : Array.isArray(a?.command)
-              ? a.command.filter((p): p is string => typeof p === "string").join(" ")
+              ? a.command.filter((p: J): p is string => typeof p === "string").join(" ")
               : Array.isArray(a?.cmd)
-                ? a.cmd.filter((p): p is string => typeof p === "string").join(" ")
+                ? a.cmd.filter((p: J): p is string => typeof p === "string").join(" ")
                 : name;
     const cmd = summaryCommand(raw);
     if (!cmd) return false;
@@ -629,16 +863,29 @@ export function presentHistory(live: J, cx: Context): J {
   const phaseOf = (tool: string, text: string): "explore" | "act" | null => {
     const name = toolName(tool);
     if (name === "station_task") {
-      const act = args(text)?.action;
+      const act = argsOf(text)?.action;
       return act === "prepare" || act === "start" ? "act" : "explore";
     }
     if (name === "job_start") return "act";
     if (name === "job_list" || name === "job_log" || name === "station_list" || name === "device_list" || name === "adb_devices" || name === "screen") return "explore";
-    const k = kindOf(tool, text);
+    const k = kindOf(tool, argsOf(text));
     if (k === "read" || k === "search" || k === "web" || k === "thread") return "explore";
     if (k === "command") return isReadOnlyCommand(tool, text) ? "explore" : "act";
     if (k === "edit" || k === "agent") return "act";
     return null;
+  };
+  // Of the entry alone (its tool and its input), so kept with it.
+  const phaseOfEntry = (e: J): "explore" | "act" | null => {
+    const k = keptOf(e);
+    if (k === null) return phaseOf(s(e, "tool"), s(e, "text"));
+    if (k.phase === undefined) k.phase = phaseOf(s(e, "tool"), s(e, "text"));
+    return k.phase;
+  };
+  const blankThought = (e: J): boolean => {
+    const k = keptOf(e);
+    if (k === null) return cleanThoughtText(s(e, "text")) === "";
+    if (k.blank === undefined) k.blank = cleanThoughtText(s(e, "text")) === "";
+    return k.blank;
   };
   const cover = (i: number) => {
     const last = items[items.length - 1];
@@ -654,7 +901,7 @@ export function presentHistory(live: J, cx: Context): J {
         cover(i);
         return;
       }
-      const a = args(s(e, "text"));
+      const a = argsOf(s(e, "text"));
       const arg = (k: string) => (typeof a?.[k] === "string" ? (a[k] as string) : null);
       const sub = flag(e, "subagent");
       const name = toolName(s(e, "tool"));
@@ -674,7 +921,7 @@ export function presentHistory(live: J, cx: Context): J {
         groupPhase = null;
         groupHasAct = false;
       } else {
-        const nextPhase = phaseOf(s(e, "tool"), s(e, "text"));
+        const nextPhase = phaseOfEntry(e);
         if (grouping && groupSteps >= 8) {
           const last = items[items.length - 1];
           const prevRows = last[0].kind === "group" ? last[0].rows : [];
@@ -720,7 +967,7 @@ export function presentHistory(live: J, cx: Context): J {
         }
       }
     } else if (kind === "thinking") {
-      if (cleanThoughtText(s(e, "text")) === "") {
+      if (blankThought(e)) {
         cover(i);
         return;
       }
@@ -757,7 +1004,7 @@ export function presentHistory(live: J, cx: Context): J {
       if (!other || other[0].kind !== "post") return false;
       const st = steps[other[0].step];
       if (failedOf(st)) return false;
-      const a = args(s(timeline[st.call], "text"));
+      const a = argsOf(s(timeline[st.call], "text"));
       return typeof a?.text === "string" && a.text.trim() === said;
     };
     if (matchPost(items[idx + 1])) {
@@ -768,8 +1015,70 @@ export function presentHistory(live: J, cx: Context): J {
       items.splice(idx, 1);
     }
   }
+
+  // What an item reads of the page: its place, and each entry and step it is made of (by reference: entries are
+  // shared, never changed). A wait reads on to what ended it, or to the end while nothing has.
+  const depsOf = (item: Item, first: number, last: number): unknown[] => {
+    const deps: unknown[] = [item.kind, base, first, last];
+    switch (item.kind) {
+      case "received":
+      case "text":
+        deps.push(item.i, timeline[item.i]);
+        break;
+      case "post": {
+        const st = steps[item.step];
+        deps.push(st.call, st.result, timeline[st.call], st.result !== null ? timeline[st.result] : undefined);
+        break;
+      }
+      case "mark": {
+        deps.push(item.mark, item.seconds, item.what, item.why);
+        if (item.mark === "waiting") {
+          const end = waitEnd(timeline, first);
+          for (let j = first; j <= (end < 0 ? timeline.length - 1 : end); j++) deps.push(timeline[j]);
+          deps.push(end < 0 ? timeline.length : -1);
+        }
+        break;
+      }
+      case "group":
+        for (const r of item.rows) {
+          if ("thought" in r) deps.push("t", r.thought, timeline[r.thought]);
+          else {
+            const st = steps[r.step];
+            deps.push("s", st.call, st.result, st.firstEntry, st.scriptCount, st.scriptTools, timeline[st.call], st.result !== null ? timeline[st.result] : undefined);
+          }
+        }
+        break;
+    }
+    return deps;
+  };
+  const sameDeps = (a: unknown[], b: unknown[]) => {
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  };
+  const namesSame = (m: Shown) => {
+    for (const [which, key, name] of m.names) if ((which === 0 ? known.tasks : known.agents)?.get(key) !== name) return false;
+    return true;
+  };
+
   const place = (address: string | null, message: string | null = null) => (address === null ? null : format.place(cx.threads, address, cx.offsetMin, cx.workspaces, message));
-  const shown = items.map(([item, first, last]) => {
+  const render = (item: Item, first: number, last: number, md: [string, unknown][], names: [0 | 1, string, string | undefined][]): J => {
+    // Each tree of Markdown given and each name looked up, to know that the item made of them stands.
+    const mdOf = (text: string) => {
+      const tree = markdown(text, cx.md);
+      md.push([text, tree]);
+      return tree;
+    };
+    const looked = (which: 0 | 1, map: ReadonlyMap<string, string> | undefined): ReadonlyMap<string, string> | undefined =>
+      map === undefined
+        ? undefined
+        : ({
+            get: (key: string) => {
+              const name = map.get(key);
+              names.push([which, key, name]);
+              return name;
+            },
+          } as unknown as ReadonlyMap<string, string>);
     let v: J;
     switch (item.kind) {
       case "received": {
@@ -786,14 +1095,14 @@ export function presentHistory(live: J, cx: Context): J {
             agent: task.agent,
             failed: task.status === "failed" || task.status === "killed",
             result: task.result,
-            md: task.result !== null ? markdown(task.result, cx.md) : null,
+            md: task.result !== null ? mdOf(task.result) : null,
           })).concat(events.map((n) => answered({
             text: n.line,
             agent: n.chat,
             failed: n.failed,
             result: n.more,
             // A job's output is a block of code, all of it.
-            md: n.more === null ? null : n.output ? (n.more === "" ? [] : [["pre", { code: [0, n.more.length] }]]) : markdown(n.more, cx.md),
+            md: n.more === null ? null : n.output ? (n.more === "" ? [] : [["pre", { code: [0, n.more.length] }]]) : mdOf(n.more),
           }))),
           messages: messages.flatMap((m, k): J[] => {
             // A job's own words, as it wrote them (drawn in a monospaced font); still.fail's of any other kind, as they are.
@@ -806,7 +1115,7 @@ export function presentHistory(live: J, cx: Context): J {
             const sent = m.agent ? sentFrom(m.text) : null;
             if (sent !== null) {
               const said = mentions(sent[2], cx);
-              return [{ key: m.ts, from: { name: sent[0], slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: markdown(said, cx.md) }];
+              return [{ key: m.ts, from: { name: sent[0], slackUser: null, bound: false }, text: said, place: place(m.thread, m.slack ? m.ts : null), md: mdOf(said) }];
             }
             let from: J;
             if (m.slack) {
@@ -819,24 +1128,24 @@ export function presentHistory(live: J, cx: Context): J {
             }
             // A person's words are drawn as they wrote them; an agent's are Markdown, as a chat's page reads them.
             const said = mentions(cleanReceivedMessageText(m.text), cx);
-            return [{ key: m.ts, from, text: said, place: place(m.thread, m.slack ? m.ts : null), ...(m.agent ? { md: markdown(said, cx.md) } : {}) }];
+            return [{ key: m.ts, from, text: said, place: place(m.thread, m.slack ? m.ts : null), ...(m.agent ? { md: mdOf(said) } : {}) }];
           }),
         };
         break;
       }
       case "text": {
         const said = s(timeline[item.i], "text");
-        const md = markdown(said, cx.md);
+        const md = mdOf(said);
         v = { kind: "text", text: said, md, line: lineOf(md, said), subagent: flag(timeline[item.i], "subagent") };
         break;
       }
       case "post": {
-        const a = args(s(timeline[steps[item.step].call], "text")) ?? {};
+        const a = argsOf(s(timeline[steps[item.step].call], "text")) ?? {};
         const text = (k: string): string | null => (typeof a[k] === "string" ? a[k] : null);
         const kind = text("kind");
         const said = mentions(text("text") ?? "", cx);
         const isFailed = failedOf(steps[item.step]);
-        v = { kind: "post", text: said, md: markdown(said, cx.md), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed };
+        v = { kind: "post", text: said, md: mdOf(said), place: place(text("to")), block: kind === "block" || kind === "need_help" || kind === "need_decision", failed: isFailed };
         const ends = isFailed ? null : endsOf(kind);
         if (ends !== null && ends !== "waiting") v.ends = ends;
         break;
@@ -851,19 +1160,8 @@ export function presentHistory(live: J, cx: Context): J {
           const since = at(first);
           let until: number | null = null;
           if (since !== null) {
-            // The wait is over at what moves the agent on: a prompt bringing it back, or a call of its own after the
-            // mark (it went on working instead; a later state stands in its place). Words it posts as its turn ends
-            // are part of the ending, not more work.
-            for (let j = first + 1; j < timeline.length; j++) {
-              const e = timeline[j];
-              if (flag(e, "subagent")) continue;
-              const kind = s(e, "kind");
-              const posting = kind === "tool_call" && toolName(s(e, "tool")) === "chat_post" && typeof args(s(e, "text"))?.kind !== "string";
-              if (kind === "user" || (kind === "tool_call" && !posting)) {
-                until = at(j) ?? since;
-                break;
-              }
-            }
+            const end = waitEnd(timeline, first);
+            if (end >= 0) until = at(end) ?? since;
           }
           const waited = since !== null && until !== null ? (() => {
             const w = Math.trunc(Math.max(until - since, 0) / 1000);
@@ -901,7 +1199,7 @@ export function presentHistory(live: J, cx: Context): J {
         }
         break;
       case "group":
-        v = group(timeline, steps, item.rows, base, known, cx.md);
+        v = group(timeline, steps, item.rows, base, { stations: known.stations, tasks: looked(0, known.tasks), agents: looked(1, known.agents) }, mdOf);
         break;
     }
     const kind = v.kind ?? null;
@@ -910,6 +1208,21 @@ export function presentHistory(live: J, cx: Context): J {
     // Its own work (its steps and thoughts, and the words it says to itself): what 只看收发 leaves out.
     if (kind === "group" || kind === "text") out.work = true;
     return out;
+  };
+  const makings: Shown[] = items.map(([item, first, last]) => {
+    const deps = depsOf(item, first, last);
+    // Kept by the entry it begins at: one item of a page begins at each.
+    const head = timeline[first];
+    const keyed = sig !== null && head !== null && typeof head === "object";
+    const kept = keyed ? shownKept.get(head) : undefined;
+    if (kept !== undefined && kept.sig === sig && sameDeps(kept.deps, deps) && namesSame(kept) && mdSame(kept, cx.md)) return kept;
+    if (sig !== null) historyMade.items++;
+    const md: [string, unknown][] = [];
+    const names: [0 | 1, string, string | undefined][] = [];
+    const out = render(item, first, last, md, names);
+    const m: Shown = { sig: sig!, deps, md, names, out, final: out, turn: null };
+    if (keyed) shownKept.set(head, m);
+    return m;
   });
 
   // Turns: each prompt that woke the agent (not one of a sub-agent's) begins one, on its item; its time is shown when
@@ -917,7 +1230,9 @@ export function presentHistory(live: J, cx: Context): J {
   // first loaded one belong to a turn that began on an earlier page.
   const TURN_TIME_GAP_MS = 5 * 60_000;
   let lastTurnTimeAt: number | null = null;
-  items.forEach(([item, first], n) => {
+  const shown = items.map(([item, first], n) => {
+    const m = makings[n];
+    let turn: { at: number | null; time: string | null } | null = null;
     if (item.kind === "received" && !flag(timeline[item.i], "subagent")) {
       const rawAt = typeof timeline[first]?.at === "string" ? epochMs(timeline[first].at) : null;
       const at = rawAt === null ? null : Math.trunc(rawAt);
@@ -927,33 +1242,17 @@ export function presentHistory(live: J, cx: Context): J {
           Math.abs(at - lastTurnTimeAt) >= TURN_TIME_GAP_MS ||
           format.localDay(at, cx.offsetMin) !== format.localDay(lastTurnTimeAt, cx.offsetMin));
       if (showTime) lastTurnTimeAt = at;
-      shown[n].turn = {
-        ...(at !== null ? { at } : {}),
-        ...(showTime
-          ? { time: cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin) }
-          : {}),
-      };
+      turn = { at, time: showTime ? (cx.now !== undefined ? format.dayClock(at, cx.now, cx.offsetMin) : format.clock(at, cx.offsetMin)) : null };
     }
+    // What is kept is never changed: an item with its turn is another object, made again only as its turn changes.
+    const sameTurn = turn === null ? m.turn === null : m.turn !== null && m.turn.at === turn.at && m.turn.time === turn.time;
+    if (!sameTurn) {
+      m.turn = turn;
+      m.final = turn === null ? m.out : { ...m.out, turn: { ...(turn.at !== null ? { at: turn.at } : {}), ...(turn.time !== null ? { time: turn.time } : {}) } };
+    }
+    return m.final;
   });
-
-  const pushedNow = pushed(live, cx.runtime);
-  const liveSteps = pushedNow.liveSteps.map(({ id, text }) => ({ id, text }));
-  const phase = pushedNow.phase;
-  const { usage, usageLine } = usageOf(live?.usage);
-  const loaded = flag(live, "loaded");
-  // Why its first read failed (it is read again), and how the page before stands: being read, or why it was not.
-  const failed = typeof live?.failed === "string" && live.failed !== "" ? live.failed : null;
-  const older = live?.older === "reading" || live?.older === "failed" ? live.older : null;
-  let edge: string;
-  let empty: boolean;
-  if (!loaded && shown.length === 0) [edge, empty] = [t("core-logic.history.edge.loading"), true];
-  else if (shown.length === 0 && liveSteps.length === 0 && phase === null && base === 0) {
-    const why = flag(live, "offline") ? "core-logic.history.edge.offline" : cx.started ? "core-logic.history.edge.missing" : "core-logic.history.edge.not_started";
-    [edge, empty] = [t(why), true];
-  } else if (base > 0 && older === "failed") [edge, empty] = [t("core-logic.history.edge.earlier_failed", { why: String(live.olderFailed ?? "") }), false];
-  else if (base > 0) [edge, empty] = [t("core-logic.history.edge.earlier"), false];
-  else [edge, empty] = [t("core-logic.history.edge.start"), false];
-  return { items: shown, live: liveSteps, phase, usage, usageLine, edge, empty, loaded, more: base > 0, ...(failed !== null && !loaded && shown.length === 0 ? { failed } : {}), ...(base > 0 && older !== null ? { older } : {}) };
+  return { held: sig !== null ? held.slice() : held, from, sig: sig!, day, base, shown, made: makings };
 }
 
 /// What a session's calls used (views/brief.ts `usageNow`), as its history shows it: label and value rows, and in a
@@ -1023,7 +1322,7 @@ function answered(task: J): J {
 
 /// A group of the history; `base`: the transcript entry its timeline starts at (what a step's or thought's `entries` count
 /// from: what `history.detail` reads whole, of one in brief).
-function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: Known, store?: MdStore): J {
+function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: Known, mdOf: (text: string) => ReturnType<typeof markdown>): J {
   const members = rows.flatMap((r) => ("step" in r ? [r.step] : []));
   const thinking = rows.flatMap((r) => ("thought" in r ? [r.thought] : []));
   const text = (i: number): string => (typeof timeline[i]?.text === "string" ? timeline[i].text : "");
@@ -1033,7 +1332,7 @@ function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: K
   const counts: [string, string[], number][] = [];
   for (const m of members) {
     const call = steps[m].call;
-    const kind = steps[m].scriptCount !== undefined && steps[m].scriptCount! >= 2 ? "other" : kindOf(tool(call), text(call));
+    const kind = steps[m].scriptCount !== undefined && steps[m].scriptCount! >= 2 ? "other" : kindOf(tool(call), argsOf(text(call)));
     const file = kind === "read" || kind === "edit" ? fileOf(text(call), tool(call)) : null;
     let at = counts.findIndex(([k]) => k === kind);
     if (at < 0) {
@@ -1079,7 +1378,7 @@ function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: K
   const thought = (i: number) => {
     const raw = text(i);
     const cleaned = cleanThoughtText(raw) || raw;
-    const md = markdown(cleaned, store);
+    const md = mdOf(cleaned);
     const first = lineOf(md, cleaned);
     return { text: cleaned, md, first };
   };
@@ -1144,8 +1443,9 @@ function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: K
       }
     }
     let enrichedCall = callText;
-    if (known.agents && known.agents.size > 0) {
-      const a = args(callText);
+    // Looked up by its target alone (where no names are known none is found): what an item asked is what it read.
+    if (known.agents) {
+      const a = argsOf(callText);
       if (a) {
         const rawTarget = [a.to, a.recipient, a.Recipient, a.agent_id, a.agentId, a.conversationId, a.chat].find(
           (v): v is string => typeof v === "string" && v.trim() !== "",
@@ -1247,7 +1547,7 @@ function group(timeline: J[], steps: Step[], rows: Row[], base: number, known: K
     const dirName = slash > 0 ? file.slice(0, slash) : "";
     const edits: { old_string: string; new_string: string }[] = [];
     for (const m of run) {
-      const a = args(text(steps[m].call));
+      const a = argsOf(text(steps[m].call));
       if (!a) continue;
       if (Array.isArray(a.edits)) {
         for (const e of a.edits) {
@@ -1370,7 +1670,7 @@ function pair(timeline: J[]): { steps: Step[]; stepAt: Map<number, number> } {
     const cid = typeof e?.callId === "string" ? e.callId : "";
     if (!cid || cid.includes("#") || toolName(typeof e?.tool === "string" ? e.tool : "") !== "exec") continue;
     const callText = typeof e?.text === "string" ? e.text : "";
-    if (args(callText) !== null) continue;
+    if (argsOf(callText) !== null) continue;
     const prefix = `${cid}#`;
     const innerSteps: number[] = [];
     for (let j = idx + 1; j < steps.length; j++) {

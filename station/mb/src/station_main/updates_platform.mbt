@@ -19,6 +19,35 @@ let command_most_ms : Int = 10 * 60000
 let commands_running : Map[String, Array[Proc]] = Map([])
 
 ///|
+/// Where the runner is looked for (the release, this program, the data directory: `runner_binary`'s), as the updates
+/// were set up (`updates_setup`, its release given by the live station).
+let updates_runner_from : Ref[(String, String, String)] = Ref(("", "", ""))
+
+///|
+/// The runner found for the updates' commands on Windows (none looked for yet: None; looked for: Some of what it found).
+let updates_runner : Ref[Option[String?]] = Ref(None)
+
+///|
+/// windows.ts `grouped`: `stillfail-runner --job -- <program> <args…>`, whose job ends the command and all it started as
+/// the runner is ended (the group a command runs in on Unix), and which runs a `.cmd` shim as cmd would; as it is where
+/// no runner is there.
+fn updates_grouped(program : String, args : Array[String]) -> (String, Array[String]) {
+  let runner = match updates_runner.val {
+    Some(found) => found
+    None => {
+      let (app, argv0, data) = updates_runner_from.val
+      let found = runner_binary(app, argv0, data)
+      updates_runner.val = Some(found)
+      found
+    }
+  }
+  match runner {
+    Some(r) => (r, ["--job", "--", program, ..args])
+    None => (program, args)
+  }
+}
+
+///|
 /// What the updates ask of the machine, by name; None where it is none of this file's.
 async fn updates_platform(host : @host.Host, data : String, name : String, a : Array[Json]) -> Json? {
   let s = (i : Int) => match a.get(i) {
@@ -217,13 +246,15 @@ async fn command_events(
   env : Array[(String, String)]?,
   cwd : String?,
 ) -> Json {
+  // (Windows: under the runner's job, so the command and all it started end as it is ended, its pipes closed with them)
+  let (run, run_args) = if is_windows() { updates_grouped(program, args) } else { (program, args) }
   let started = try {
     Ok(
       match (env, cwd) {
-        (Some(e), Some(c)) => spawn(host, program, args, env=e, cwd=c, stdout=Piped, stderr=Piped, group=true)
-        (Some(e), None) => spawn(host, program, args, env=e, stdout=Piped, stderr=Piped, group=true)
-        (None, Some(c)) => spawn(host, program, args, cwd=c, stdout=Piped, stderr=Piped, group=true)
-        (None, None) => spawn(host, program, args, stdout=Piped, stderr=Piped, group=true)
+        (Some(e), Some(c)) => spawn(host, run, run_args, env=e, cwd=c, stdout=Piped, stderr=Piped, group=true)
+        (Some(e), None) => spawn(host, run, run_args, env=e, stdout=Piped, stderr=Piped, group=true)
+        (None, Some(c)) => spawn(host, run, run_args, cwd=c, stdout=Piped, stderr=Piped, group=true)
+        (None, None) => spawn(host, run, run_args, stdout=Piped, stderr=Piped, group=true)
       },
     )
   } catch {

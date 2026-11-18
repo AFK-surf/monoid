@@ -2392,6 +2392,15 @@ pub fn fixture(mode : String) -> Source {
         })
         return
       }
+      // a code typed on a page that waits: the trusted device asks its person there, who is not through its prompt the
+      // first time (the same code typed again lets it in)
+      if @settings.fixture_pair_typed(name) {
+        fix_later(800.0, fn() {
+          @settings.fixture_pair_asking()
+          fix_later(2500.0, fn() { done(@settings.fixture_pair_answer()) })
+        })
+        return
+      }
       match @settings.fixture_call(name, params) {
         Some(r) => {
           done(r)

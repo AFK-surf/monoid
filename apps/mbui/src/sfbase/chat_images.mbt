@@ -288,3 +288,12 @@ pub fn Source::poster_told(self : Source, station : String, key : String, name :
   self.images.track(poster_image_id(station, key, name))
   k
 }
+
+///|
+/// A draft's picture the page holds no bytes of (Source's `draft_picture`) read by a node: told as it comes, by the id
+/// the app's images keep it under (stillfail's draft_picture).
+pub fn Source::draft_picture_told(self : Source, key : String, id : String) -> String {
+  let k = (self.draft_picture)(key, id)
+  self.images.track("draft\u{1}" + key + "\u{1}" + id)
+  k
+}

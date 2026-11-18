@@ -410,19 +410,14 @@ fn station_row_node(
       fn() { open() && places().unwrap_or([]).length() > 0 },
       fn(r) {
         // its disclosure, as wide as makes it a press's room inside its row, the chevron in its middle
-        r.box(fn(dis) {
+        @sf.action_box_node(r, fn() { @sf.t(if open() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", s().name)]) }, expanded=open, fn(_) {
+          if places_open.contains(station) {
+            places_open.remove(station)
+          } else {
+            places_open.put(station, true)
+          }
+        }, fn(dis) {
           @sf.style_node(dis, fn() { disclosure_at(at) }, in_row=true)
-          @sf.presses_node(dis, fn() {
-            if places_open.contains(station) {
-              places_open.remove(station)
-            } else {
-              places_open.put(station, true)
-            }
-          })
-          dis.says(By(fn() {
-            Some(@view.said(Button, label=@sf.t(if open() { "web-pages.files.collapse" } else { "web-pages.files.expand" }, args=[("name", s().name)]), expanded=open()))
-          }))
-          |> ignore
           @sf.icon_node(dis, "", nav_icon, By(fn() { @sf.theme().p.subtle }), name_now=fn() { if open() { "chevron-down" } else { "chevron-right" } })
           |> ignore
         })

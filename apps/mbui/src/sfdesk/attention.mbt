@@ -448,10 +448,8 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
     }
   }
   let tips = @sf.panel_tips_of(row)
-  row.box(fn(r) {
+  @sf.action_box_node(row, title, fn(_) { go() }, fn(r) {
     @sf.style_node(r, fn() { if @sf.lit_in_node(r) { att_item_on } else { att_item } })
-    @sf.presses_node(r, go)
-    r.says(By(fn() { Some(@view.said(Button, label=title())) })) |> ignore
     // (its first line: the dot, the title and 忽略, their middles on one line; the line under it from the title's edge,
     // never the dot centred on both: the user, 2026-11-14)
     r.box(fn(head) {
@@ -484,15 +482,13 @@ fn attention_item_node(row : @view.View, src : Source, i : () -> Json, go : () -
         at_once=true,
         fn() { attention_dismiss(src, i()) is Some(_) && (!@sf.pointer_rests() || @sf.lit_in_node(r)) },
         fn(d) {
-          d.box(fn(x) {
+          @sf.action_box_node(d, fn() { @sf.t("web-main.attention.dismiss") }, fn(_) {
+            match attention_dismiss(src, @signals.untracked(i)) {
+              Some(f) => f()
+              None => ()
+            }
+          }, fn(x) {
             @sf.style_node(x, fn() { if @sf.lit_node(x) { att_dismiss_on } else { att_dismiss } })
-            @sf.presses_node(x, fn() {
-              match attention_dismiss(src, @signals.untracked(i)) {
-                Some(f) => f()
-                None => ()
-              }
-            })
-            x.says(Is(Some(@view.said(Button, label=@sf.t("web-main.attention.dismiss"))))) |> ignore
             @sf.words_node(x, fn() { @sf.t("web-main.attention.dismiss") }, fn() {
               if @sf.lit_node(x) {
                 att_dismiss_on_words

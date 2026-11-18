@@ -20,6 +20,10 @@ test("a_message_change_keeps_unchanged_readings_ready_without_hashing_their_word
   const data = {
     logSpan: () => ({ min: 1, max: Math.max(...entries.keys()), count: entries.size }),
     logRange: () => entries,
+    // (where a chat opens when not at its end, and what a step read written: none here)
+    thread: () => undefined,
+    record: () => undefined,
+    flushMd: () => {},
     mdStore: () => ({ has: (key: string) => { checks.push(key); return true; } }),
   } as unknown as Data;
   const ahead = new MdAhead(data, {} as Runner, () => 0);
@@ -72,6 +76,10 @@ test("a_reply_is_prepared_again_when_its_cached_reading_has_been_evicted", async
   const data = {
     logSpan: () => ({ min: 1, max: 1, count: 1 }),
     logRange: () => entries,
+    // (where a chat opens when not at its end, and what a step read written: none here)
+    thread: () => undefined,
+    record: () => undefined,
+    flushMd: () => {},
     mdStore: () => store,
   } as unknown as Data;
   const runner = new Runner();
@@ -97,6 +105,10 @@ test("the_chats_read_ahead_as_the_core_starts_are_looked_up_a_chat_a_turn", asyn
     recentThreads: (station: string) => (station === "w/a" ? [1, 2] : [3]),
     logSpan: (_t: string, station: string, id: string) => { said.push(`read ${station} ${id}`); return { min: 1, max: 1, count: 1 }; },
     logRange: () => entries,
+    // (where a chat opens when not at its end, and what a step read written: none here)
+    thread: () => undefined,
+    record: () => undefined,
+    flushMd: () => {},
     mdStore: () => ({ has: () => true }),
   } as unknown as Data;
   const runner = new Runner();

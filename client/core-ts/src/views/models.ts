@@ -7,7 +7,7 @@ import * as jobs from "../jobs.ts";
 import * as present from "../present.ts";
 import * as model from "../shapes/model.ts";
 import * as reasoning from "../shapes/reasoning.ts";
-import { arr as arrU, equal, get as getU, isObject } from "../util.ts";
+import { arr as arrU, equal, get as getU, isObject, sharedValue } from "../util.ts";
 import { work } from "../work.ts";
 import { profileServes } from "./profile-scope.ts";
 
@@ -473,8 +473,7 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
     for (const p of profilesOf(s.overview)) {
       if (!lent(p, ownHere)) continue;
       const share = get(p, "share");
-      const lone = { ...s.overview, profiles: [p] };
-      for (const o of models(lone, now)) {
+      for (const o of lentModels(s.overview, p, now)) {
         if (runtime !== null && !arr(o.runtimes).includes(runtime)) continue;
         const key = model.key(o.model);
         if (taken.has(key)) continue;
@@ -510,6 +509,23 @@ export function borrowable(stations: J, here: string, have: J[], runtime: string
 
 /// The shares a station has copies of (its overview's profiles' `share.id`): what another station lends it already.
 const copiesHere = (overview: J): Set<string> => new Set(allProfilesOf(overview).flatMap((p) => (typeof get(get(p, "share"), "id") === "string" ? [p.share.id] : [])));
+
+/// The models profile `p` of a station with `overview` would lend (`models` of the overview with it alone), made once
+/// for that overview and profile, the same objects, while the minute of `now` is the one they were made at: every
+/// draft changed in a model control's panel made every model of every profile every other station up could lend again.
+const lentMade = new WeakMap<object, WeakMap<object, { minute: number; list: readonly J[] }>>();
+function lentModels(overview: J, p: J, now: number): readonly J[] {
+  const lone = (): J[] => models({ ...overview, profiles: [p] }, now);
+  if (!isObject(overview) || !isObject(p)) return lone();
+  const minute = Math.floor(now / 60_000);
+  let byProfile = lentMade.get(overview);
+  if (byProfile === undefined) lentMade.set(overview, (byProfile = new WeakMap()));
+  const was = byProfile.get(p);
+  if (was !== undefined && was.minute === minute) return was.list;
+  const list = sharedValue(lone());
+  byProfile.set(p, { minute, list });
+  return list;
+}
 
 /// Whether profile `p` (an enabled one) of another station would be lent to one with copies `ownHere`: its own, not a
 /// copy it borrows itself, and not shared with that one already (its copy on its way, or there and its models with it).

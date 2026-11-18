@@ -532,13 +532,11 @@ let chip_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, c
 /// marked, its chevron down or up.
 pub fn list_head_node(parent : @view.View, a : () -> Arrangement, on_sort : (String) -> Unit) -> Unit {
   let head = fn(row : @view.View, by : String, words : String, style : @ui.Style, drop : Int) {
-    row.box(fn(h) {
+    @sf.action_box_node(row, fn() { words }, on=fn() { a().by == by }, fn(_) { on_sort(by) }, fn(h) {
       @sf.style_node(h, fn() { style.then(@ui.style(min_h=Fixed(@ui.room_least()))) }, in_row=true)
       if drop > 0 {
         h.drops(Is(drop)) |> ignore
       }
-      @sf.presses_node(h, fn() { on_sort(by) })
-      h.says(By(fn() { Some(@view.said(Button, label=words, pressed=a().by == by)) })) |> ignore
       @sf.words_node(h, fn() { words }, fn() { if a().by == by || @sf.lit_node(h) { head_words_on } else { head_words } }) |> ignore
       h.show(fn() { a().by == by }, at_once=true, fn(c) {
         @sf.icon_node(c, "", head_chevron, By(fn() { @sf.theme().p.text }), name_now=fn() {

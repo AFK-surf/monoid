@@ -218,55 +218,67 @@ test "sizes_steady: a step in a measure's first frame and then standing still, s
 
 ///|
 test "sizes_steady: a box that steps in its first frame and stands, while something else moves on, said" {
-  let on = @signals.signal(false)
-  let t = Tester::tree(
-    fn(root) {
-      // (something moving all the while: no frame at rest to look at)
-      root.box(fn(n) {
-        n
-        .over(Is(true))
-        .offset(Is((200.0, 10.0)))
-        .width(Is(Some(20.0)))
-        .height(Is(Some(20.0)))
-        .ground(Is(0x884422FFL))
-        .moved_by(fn(_w, _h, at) { (0.0, (at / 10.0).floor() % 40.0) }, fn(_w, _h) { 1.0e7 })
-        |> ignore
-      })
-      |> ignore
-      // (its ground its own: what is measured is known by it, the same before the theme and after)
-      root.show(fn() { on.get() }, fn(v) {
-        v.box(fn(n) {
+  // (frames it walks itself, judged by the default run alone: test_at_a_rate)
+  if test_at_a_rate() {
+    return
+  }
+  for period in [1000.0 / 60.0, 1000.0 / 120.0] {
+    let on = @signals.signal(false)
+    let t = Tester::tree(
+      fn(root) {
+        // (something moving all the while: no frame at rest to look at)
+        root.box(fn(n) {
           n
           .over(Is(true))
-          .offset(Is((10.0, 10.0)))
-          .width(By(fn() { Some(if tree_theme().tabular { 120.0 } else { 60.0 }) }))
-          .height(Is(Some(40.0)))
-          .ground(Is(0x3366CCFFL))
+          .offset(Is((200.0, 10.0)))
+          .width(Is(Some(20.0)))
+          .height(Is(Some(20.0)))
+          .ground(Is(0x884422FFL))
+          .moved_by(fn(_w, _h, at) { (0.0, (at / 10.0).floor() % 40.0) }, fn(_w, _h) { 1.0e7 })
           |> ignore
         })
         |> ignore
-      })
-    },
-    w=300.0,
-    h=200.0,
-    // (what it finds said here, not stopped on)
-    words_over_held=false,
-  )
-  let found : Array[String] = []
-  let judged = fn() {
-    // (its width: along a row, sizes_across's)
-    for f in g().sizes_faults(t.time(), t.motion_period()) {
-      found.push(f.1)
+        // (its ground its own: what is measured is known by it, the same before the theme and after)
+        root.show(fn() { on.get() }, fn(v) {
+          v.box(fn(n) {
+            n
+            .over(Is(true))
+            .offset(Is((10.0, 10.0)))
+            .width(By(fn() { Some(if tree_theme().tabular { 120.0 } else { 60.0 }) }))
+            .height(Is(Some(40.0)))
+            .ground(Is(0x3366CCFFL))
+            |> ignore
+          })
+          |> ignore
+        })
+      },
+      w=300.0,
+      h=200.0,
+      // (what it finds said here, not stopped on)
+      words_over_held=false,
+    )
+    let found : Array[String] = []
+    let judged = fn() {
+      // (its width: along a row, sizes_across's)
+      for f in g().sizes_faults(t.time(), t.period) {
+        found.push(f.1)
+      }
     }
+    t.set_frame_period(period)
+    // (its window known before the box shows, at any rate the run is made at)
+    g().sizes_faults(t.time(), t.period) |> ignore
+    on.set(true)
+    t.frame()
+    judged()
+    assert_false(t.frame_unasked(t.at_due(t.tick_after(t.time()))), msg="something moves")
+    t.ctx().set_theme(phase_theme)
+    t.frame()
+    judged()
+    t.frame()
+    judged()
+    assert_true(
+      found.iter().any(fn(f) { f.contains("its width stepped") && f.contains("in its first frame then stood") }),
+      msg="at \{period}: " + found.join("\n"),
+    )
   }
-  on.set(true)
-  t.frame()
-  judged()
-  assert_false(t.frame_unasked(t.at_due(t.tick_after(t.time()))), msg="something moves")
-  t.ctx().set_theme(phase_theme)
-  t.frame()
-  judged()
-  t.frame()
-  judged()
-  assert_true(found.iter().any(fn(f) { f.contains("its width stepped") && f.contains("in its first frame then stood") }), msg=found.join("\n"))
 }

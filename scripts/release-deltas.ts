@@ -356,6 +356,22 @@ type Signed = { version: string; release: string; signature: string; key: string
 const signedOf = (feed: any): Signed | null =>
   ["version", "release", "signature", "key"].every((k) => typeof feed?.[k] === "string") ? { version: feed.version, release: feed.release, signature: feed.signature, key: feed.key } : null;
 
+/** `from` moved to `to`, its directory made. `this.work` is in the system's temp (C: on Windows' runners) and `--into`
+ * may be on another disk ($RUNNER_TEMP, D:), where a rename fails with EXDEV (preview 44334978946's windows, every
+ * delta left out): there it is copied beside `to` and renamed into place, so `to` is never seen half written. */
+export function moveInto(from: string, to: string, rename: (a: string, b: string) => void = renameSync): void {
+  mkdirSync(dirname(to), { recursive: true });
+  try {
+    rename(from, to);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException)?.code !== "EXDEV") throw e;
+    const staged = `${to}.${process.pid}.new`;
+    copyFileSync(from, staged);
+    renameSync(staged, to);
+    rmSync(from, { force: true });
+  }
+}
+
 /** The `earlier` of the station's feed of `build`: `prev` (the feed published before it) and its own `earlier`, those
  * older than `build`, each build once, newest first, `most` of them. */
 export function earlierOf(build: number, prev: any, most: number): Signed[] {
@@ -663,8 +679,7 @@ class Run {
         return void t.outcome.set(b, `not kept (${mb(size)}, ${KEPT_BELOW * 100}% of the package or more)`);
       }
       const name = t.name(b);
-      mkdirSync(dirname(join(this.o.into, name)), { recursive: true });
-      renameSync(out, join(this.o.into, name));
+      moveInto(out, join(this.o.into, name));
       t.made_.push(t.entry(b, name, sha256(readFileSync(join(this.o.into, name))), size));
       t.outcome.set(b, mb(size));
     };

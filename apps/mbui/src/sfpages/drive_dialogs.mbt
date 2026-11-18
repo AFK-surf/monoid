@@ -103,15 +103,13 @@ fn which_station(
   v.box(fn(l) {
     @sf.style_node(l, fn() { roots_list.then(list) })
     for s in stations {
-      l.box(fn(r) {
+      @sf.action_box_node(l, fn() { s.name }, fn(_) {
+        close()
+        picker_open(src, ws, s, picked)
+      }, fn(r) {
         @sf.style_node(r, fn() { pick_row.then(row) })
         // (the list's ground under the hand: pick_row's hovered)
         @sf.hover_ground_node(r)
-        r.says(Is(Some(@view.said(Button, label=s.name)))) |> ignore
-        @sf.presses_node(r, fn() {
-          close()
-          picker_open(src, ws, s, picked)
-        })
         if @sf.has_station_mark(s.emoji, s.icon) {
           // (a panel's pictures asked for on no page's time on top)
           @sf.station_mark_node(r, fn() { s.emoji }, fn() { s.icon }, pick_icon, fn() { @sf.theme().p.muted }, fn() { 0 })
@@ -398,11 +396,9 @@ fn picker_list_node(v : @view.View, src : Source) -> Unit {
 /// a chevron right at its end; as high as a press at least, its words on the panel's words' line (panel_row_in_node),
 /// its ground under the hand out to the panel's sides as the panel's rows' are.
 fn picker_row_node(v : @view.View, e : PickerEntry, name : () -> String, note : () -> String, press : () -> Unit) -> Unit {
-  v.box(fn(r) {
+  @sf.action_box_node(v, name, fn(_) { press() }, fn(r) {
     @sf.style_node(r, fn() { picker_row_at.then(@sf.panel_row_in_node(r)) })
     @sf.hover_ground_node(r)
-    r.says(By(fn() { Some(@view.said(Button, label=name())) })) |> ignore
-    @sf.presses_node(r, press)
     r.box(fn(l) {
       l.shrink(Is(0.0)) |> ignore
       picker_mark_node(l, e)

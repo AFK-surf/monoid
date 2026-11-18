@@ -1062,6 +1062,11 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
           }
           _ => ()
         }
+        // A viewer without host passkeys never invokes headful Chrome's OS WebAuthn dialog (hidden outside screencast).
+        if !self.device_passkeys {
+          self.answer_now([("id", js(id)), ("error", js("NotAllowedError"))])
+          return
+        }
         let client_data = stringify(
           jo([
             ("type", js("webauthn.get")),

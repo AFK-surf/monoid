@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { crc32, deflateRawSync, gunzipSync, zstdCompressSync } from "node:zlib";
 import { applyFile, storedZip } from "../scripts/delta.ts";
-import { earlierOf } from "../scripts/release-deltas.ts";
+import { earlierOf, moveInto } from "../scripts/release-deltas.ts";
 
 // scripts/release-deltas.ts on a release directory of every kind of feed, the releases "published" before it a
 // directory too (--releases): the deltas made, each giving the package's raw form from what an installed build has
@@ -357,6 +357,31 @@ test("earlier: the feed before and its own earlier, older builds only, each once
   assert.deepEqual(earlierOf(9, f9, 10).map((e) => e.version), ["0.1.8", "0.1.7"]);
   assert.deepEqual(earlierOf(8, null, 10), []);
   assert.deepEqual(Object.keys(earlierOf(10, f9, 10)[0]!), ["version", "release", "signature", "key"]);
+});
+
+test("moveInto: renamed where it can be, copied then renamed into place across disks (EXDEV), the source gone", (t) => {
+  const d = mkdtempSync(join(tmpdir(), "move-into-"));
+  t.after(() => rmSync(d, { recursive: true, force: true }));
+  const left = (dir: string) => readdirSync(dir).filter((n) => n.endsWith(".new"));
+  // (the same disk: a rename, its directory made)
+  writeFileSync(join(d, "a"), "one");
+  moveInto(join(d, "a"), join(d, "into/x/a.delta"));
+  assert.equal(readFileSync(join(d, "into/x/a.delta"), "utf8"), "one");
+  assert.equal(existsSync(join(d, "a")), false);
+  // (another disk: the rename refused with EXDEV, as Windows' C: to D:; an old file there replaced whole)
+  writeFileSync(join(d, "b"), "two");
+  writeFileSync(join(d, "into/x/b.delta"), "old");
+  const exdev = () => { throw Object.assign(new Error("EXDEV: cross-device link not permitted"), { code: "EXDEV" }); };
+  moveInto(join(d, "b"), join(d, "into/x/b.delta"), exdev);
+  assert.equal(readFileSync(join(d, "into/x/b.delta"), "utf8"), "two");
+  assert.equal(existsSync(join(d, "b")), false);
+  assert.deepEqual(left(join(d, "into/x")), []);
+  // (any other failure is the caller's, the source left as it was)
+  writeFileSync(join(d, "c"), "three");
+  const other = () => { throw Object.assign(new Error("EACCES"), { code: "EACCES" }); };
+  assert.throws(() => moveInto(join(d, "c"), join(d, "into/x/c.delta"), other), /EACCES/);
+  assert.equal(readFileSync(join(d, "c"), "utf8"), "three");
+  assert.equal(existsSync(join(d, "into/x/c.delta")), false);
 });
 
 test("run again, nothing changes; one pair at a time, the same is made", (t) => {
