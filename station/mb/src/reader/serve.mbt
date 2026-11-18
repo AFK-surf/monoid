@@ -1235,7 +1235,7 @@ fn Serving::mark(
   match what {
     // A chat named by hand; none names it by its first message again. Answered as the chat is read.
     "title" => {
-      if found.get("surface") != Some(Json::string("ember")) {
+      if found.get("surface") != Some(Json::string("chat")) {
         return Text(400, error(word("renameOnlyStillfail")))
       }
       let name = title_of(input)
@@ -1451,7 +1451,7 @@ async fn Serving::say(
   let thread = Json::number(signed_number(id))
   let found = db.all("SELECT surface, hidden_at, home FROM threads WHERE id = ?", [thread])
   guard found is [t, ..] else { return error(404, "unknown thread \{id}") }
-  if t.get("surface") != Some(Json::string("ember")) {
+  if t.get("surface") != Some(Json::string("chat")) {
     return error(400, word("postOnlyStillfail"))
   }
   if body.length() > 1000000 {

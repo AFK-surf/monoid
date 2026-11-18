@@ -270,8 +270,24 @@ fn moved_path(path : Json, from : String, to : String) -> Json {
 }
 
 ///|
+/// handover.ts `connectHere`.
+pub fn connect_here(connect : String, connects : Json) -> String {
+  if former_own_names.contains(connect) {
+    return internal_connect
+  }
+  match field(connects, connect) {
+    Some(to) => js_string(to)
+    None => connect
+  }
+}
+
+///|
 /// handover.ts `surfaceHere`.
 pub fn surface_here(surface : String, connects : Json) -> String {
+  // (the station's own chats, as a station from before the rename names them)
+  if former_own_names.contains(surface) {
+    return stillfail_surface
+  }
   match surface.find(":") {
     None => surface
     Some(at) => {
@@ -558,8 +574,8 @@ fn import_page(
         touched.thread(id.0)
       }
       "sessions" => {
-        if get("connect") is String(cn) && field(connects, cn) is Some(to) {
-          r["connect"] = to
+        if get("connect") is String(cn) {
+          r["connect"] = jstr(connect_here(cn, connects))
         }
         r["workspace"] = moved_path(get("workspace"), from_data, to_data)
         r["cwd"] = moved_path(get("cwd"), from_data, to_data)
@@ -637,8 +653,8 @@ fn import_page(
         guard t is Some(t) else { continue }
         let id = nullish(field(t, "id"))
         r["thread"] = id
-        if get("connect") is String(cn) && field(connects, cn) is Some(to) {
-          r["connect"] = to
+        if get("connect") is String(cn) {
+          r["connect"] = jstr(connect_here(cn, connects))
         }
         if insert_row(db, "thread_sessions", r, " OR IGNORE").0 > 0 {
           if made.get("members") is Some(Array(a)) {

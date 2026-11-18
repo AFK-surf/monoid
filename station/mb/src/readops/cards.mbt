@@ -21,7 +21,7 @@ fn system_card_sql(col : String) -> String {
 ///|
 /// card-kinds.ts `reachedSql`.
 fn reached_sql(thread : String, n : String) -> String {
-  "((SELECT surface FROM threads WHERE id = \{thread}) = 'ember' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = \{thread} AND d.n = \{n}))"
+  "((SELECT surface FROM threads WHERE id = \{thread}) = 'chat' OR EXISTS (SELECT 1 FROM deliveries d WHERE d.thread = \{thread} AND d.n = \{n}))"
 }
 
 ///|

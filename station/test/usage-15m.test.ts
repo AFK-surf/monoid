@@ -30,7 +30,7 @@ function random(seed: number) {
   return (n: number) => { seed = (seed * 48271) % 2147483647; return seed % n; };
 }
 
-const session = (store: Store, key: string, ws: string | null) => store.insertSession({ key, connect: "ember", runtime: "claude",
+const session = (store: Store, key: string, ws: string | null) => store.insertSession({ key, connect: "chat", runtime: "claude",
   profile: "cc", workspace: `/w/${key}`, token: key, ws, createdAt: 1, lastActiveAt: 1 } as Parameters<Store["insertSession"]>[0]);
 
 /// Where each session's calls are counted, as the quarters keep it: its workspace while it is there; where it was while
@@ -123,7 +123,7 @@ for (const recursive of ["OFF", "ON"]) test(`the quarters are the calls through 
           case 6: db.prepare("UPDATE usage SET at = ?, session = ?, fast = 1 - fast WHERE id = ?").run(at, key, id); break;
           case 7: db.prepare("DELETE FROM usage WHERE id = ?").run(id); break;
           case 8: db.prepare(`INSERT OR REPLACE INTO sessions (key, connect, scope, runtime, profile, workspace, token, created_at, last_active_at, ws)
-            VALUES (?, 'ember', 'thread', 'claude', 'cc', '/w', ?, 1, 1, ?)`).run(key, `t${next(4)}`, places[next(3)]!); break;
+            VALUES (?, 'chat', 'thread', 'claude', 'cc', '/w', ?, 1, 1, ?)`).run(key, `t${next(4)}`, places[next(3)]!); break;
           case 9: store.deleteSession(key); break;
           case 10: db.prepare("UPDATE sessions SET ws = ? WHERE key = ?").run(places[next(3)]!, key); break;
           case 11: db.prepare("UPDATE sessions SET key = ? WHERE key = ?").run(keys[next(keys.length)]!, key); break;
@@ -373,13 +373,13 @@ test("the chats of sessions that moved are counted again by the station itself, 
   try {
     for (const [key, ws] of [["a", "A"], ["b", "A"], ["c", null]] as const) session(store, key, ws);
     for (let i = 0; i < 70; i++) {
-      const thread = store.openThread("ember", "CHAT", `t${i}`, `Chat ${i}`, null).id;
-      store.joinThread(thread, i % 2 === 0 ? "a" : "b", "ember");
-      if (i % 5 === 0) store.joinThread(thread, "c", "ember");
+      const thread = store.openThread("chat", "CHAT", `t${i}`, `Chat ${i}`, null).id;
+      store.joinThread(thread, i % 2 === 0 ? "a" : "b", "chat");
+      if (i % 5 === 0) store.joinThread(thread, "c", "chat");
     }
     const reader = makeStore(store.db, ".");
     const history = (viewer: InWorkspace) => usageHistory(reader, 0n, viewer) as { chatsIncomplete?: boolean; places: Record<string, number> };
-    assert.deepEqual(history({ workspace: "A", home: false }).places, { ember: 70 });
+    assert.deepEqual(history({ workspace: "A", home: false }).places, { chat: 70 });
     let handover!: () => void;
     const told: unknown[] = [];
     const stop = store.subscribe((change) => { if (change.type === "usage") told.push(change); });
@@ -394,7 +394,7 @@ test("the chats of sessions that moved are counted again by the station itself, 
     await drain.drained();
     assert.equal(store.db.prepare("SELECT 1 FROM usage_chat_dirty LIMIT 1").get(), undefined);
     assert.equal(history({ workspace: "B", home: false }).chatsIncomplete, undefined);
-    assert.deepEqual(history({ workspace: "B", home: false }).places, { ember: 70 });
+    assert.deepEqual(history({ workspace: "B", home: false }).places, { chat: 70 });
     assert.deepEqual(history({ workspace: "A", home: false }).places, {});
     assert.deepEqual(told, [{ type: "usage", sessions: [], statisticsOnly: true }], "pages open are told once");
     // Moved again later: counted again at once.
@@ -403,8 +403,8 @@ test("the chats of sessions that moved are counted again by the station itself, 
     await new Promise<void>((resolve) => setImmediate(resolve));
     await drain.drained();
     assert.equal(store.db.prepare("SELECT 1 FROM usage_chat_dirty LIMIT 1").get(), undefined);
-    assert.deepEqual(history({ workspace: "D", home: false }).places, { ember: 35 });
-    assert.deepEqual(history({ workspace: "C", home: true }).places, { ember: 42 }, "a's chats and the home ones, each once");
+    assert.deepEqual(history({ workspace: "D", home: false }).places, { chat: 35 });
+    assert.deepEqual(history({ workspace: "C", home: true }).places, { chat: 42 }, "a's chats and the home ones, each once");
     stop();
   } finally {
     drain?.stop();

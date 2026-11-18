@@ -350,7 +350,7 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
   let chatted : Set[String] = Set::new()
   let spoke : Map[String, Array[Json]] = Map([])
   for t in threads {
-    let own = field(t.thread, "surface") == Json::string("ember")
+    let own = field(t.thread, "surface") == Json::string("chat")
     let writers = if own { [] } else { known.people(t.people) }
     for m in t.sessions {
       let s = js_text(field(m, "session"))
@@ -368,7 +368,7 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       }
     }
   }
-  let item_threads = threads.filter(t => field(t.thread, "surface") == Json::string("ember") && listed(t) && in_chat(t).length() > 0)
+  let item_threads = threads.filter(t => field(t.thread, "surface") == Json::string("chat") && listed(t) && in_chat(t).length() > 0)
   let carded = if archived { [] } else { threads_with_cards(db, item_threads.map(t => field(t.thread, "id"))) }
   let carded_set : Set[String] = Set::new()
   for c in carded {
@@ -546,12 +546,12 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
     let origin = match from { Some(f) => known.origin(f.thread, f.sessions); None => Json::null() }
     let own = match field(x, "title") { String(s) => @jscase.trim_white(s); _ => "" }
     let named : Json = if own != "" {
-      { "thread": { "surface": "ember", "title": Json::string(own) } }
+      { "thread": { "surface": "chat", "title": Json::string(own) } }
     } else {
       match from {
         Some(f) if !(origin is Null) =>
           { "thread": thread_json(f.thread), "firstText": f.first_text, "channelName": origin.value("channelName").unwrap_or(Json::null()) }
-        _ => { "thread": { "surface": "ember" } }
+        _ => { "thread": { "surface": "chat" } }
       }
     }
     let starter = known.creator(field(x, "created_by"))
@@ -565,7 +565,7 @@ fn shared_rows(db : @sql.Db, known : Known, scope : Scope?, archived? : Bool = f
       "unread": false,
       "mine": false,
       "lastActiveAt": field(x, "last_active_at"),
-      "connect": if field(x, "connect") == Json::string("ember") { Json::null() } else { field(x, "connect") },
+      "connect": if field(x, "connect") == Json::string("chat") { Json::null() } else { field(x, "connect") },
       "origin": origin,
       "people": Json::array(if starter is Null { [] } else { [starter] }),
       "creator": starter,

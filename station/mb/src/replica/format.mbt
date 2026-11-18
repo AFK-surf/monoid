@@ -70,7 +70,15 @@ let own_log : Array[String] = ["entries", "letters", "closed_cards", "dismissed"
 
 ///|
 /// still.fail's own chats' surface (store/rows.ts `STILLFAIL_SURFACE`): each station mints their ts itself.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
+
+///|
+/// rows.ts STILLFAIL_CONNECT.
+let stillfail_connect : String = "chat"
+
+///|
+/// rows.ts FORMER_OWN_NAMES.
+let former_own_names : Array[String] = ["ember", "stillfail"]
 
 ///|
 /// A thread's ts a step on (format.ts `bumpedTs`): its last digits counted up by one, a `1` put after it where it ends

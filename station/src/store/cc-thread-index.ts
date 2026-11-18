@@ -23,6 +23,10 @@ const displacedEntry = "(SELECT thread FROM entries WHERE rowid=NEW.rowid)";
 const displacedThread = `(SELECT id FROM threads WHERE surface=NEW.surface AND channel=NEW.channel
   AND thread_ts=NEW.thread_ts)`;
 
+/// The order of a session's threads that are no chat of the station's own (renamed with them: schema.ts `renameOwnChats`).
+export const CC_SESSION_ORDER = `CREATE INDEX cc_session_order ON cc_session_rows(session,last_at DESC,created_at DESC,thread DESC)
+        WHERE surface != '${STILLFAIL_SURFACE}';`;
+
 export function installCcIndex(db: DatabaseSync): void {
   const installed = () => db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='cc_index_meta'").get() !== undefined;
   if (installed()) { checkCcIndex(db); return; }
@@ -36,8 +40,7 @@ export function installCcIndex(db: DatabaseSync): void {
       -- Keep memberships whose thread is missing or currently internal too: a later thread write may expose them.
       CREATE TABLE cc_session_rows (session TEXT NOT NULL, thread INTEGER NOT NULL, surface TEXT,
         created_at INTEGER, last_at INTEGER, PRIMARY KEY(session,thread)) WITHOUT ROWID;
-      CREATE INDEX cc_session_order ON cc_session_rows(session,last_at DESC,created_at DESC,thread DESC)
-        WHERE surface != '${STILLFAIL_SURFACE}';
+      ${CC_SESSION_ORDER}
       CREATE INDEX cc_rows_thread ON cc_session_rows(thread,session);
       CREATE TABLE cc_session_dirty (session TEXT NOT NULL, thread INTEGER NOT NULL,
         PRIMARY KEY(session,thread)) WITHOUT ROWID;

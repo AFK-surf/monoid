@@ -3,7 +3,7 @@
 // a string (sessions/args.ts), JavaScript's `\s`.
 
 ///|
-let stillfail_surface = "ember"
+let stillfail_surface = "chat"
 
 ///|
 let manual = "manual"

@@ -19,7 +19,7 @@ pub let line_most : Int = 1500
 
 ///|
 /// rows.ts `STILLFAIL_SURFACE` and `STATION_AUTHOR`.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
 let station_author : String = "station"
