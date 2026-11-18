@@ -222,6 +222,11 @@ test "安全, at each width and with either hand: another device of one's own ta
         near = x
       }
     }
+    // (it takes a device out: its words red at either width, as the other pages' removals are, not the link's ink
+    // nor a plain button's)
+    let red = @sf.theme().p.red
+    let inks = sec_inks_in(t, near.1, near.2, near.3, near.4)
+    assert_true(inks.length() > 0 && inks.iter().all(fn(i) { i >> 8 == red >> 8 }), msg="\{at}: 移除 drawn in \{Repr(inks)}")
     t.tap(near.1 + near.3 / 2.0, near.2 + near.4 / 2.0)
     t.frame()
     assert_true(@sf.presenting(), msg=at)
@@ -796,4 +801,16 @@ test "安全, at each width and with either hand: none of its person's devices a
       assert_true(shown.contains(after), msg="\{at}: \{shown}")
     }
   }
+}
+
+///|
+/// The inks of the glyphs drawn in the box at (`x`, `y`), `w` by `h` (their tops in its upper half).
+fn sec_inks_in(t : @ui.Tester, x : Double, y : Double, w : Double, h : Double) -> Array[Int64] {
+  let out = []
+  for g in t.drawn_glyphs() {
+    if g.0 >= x - 1.0 && g.0 <= x + w + 1.0 && g.1 >= y - 1.0 && g.1 < y + h / 2.0 && !out.contains(g.2) {
+      out.push(g.2)
+    }
+  }
+  out
 }

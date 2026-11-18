@@ -891,30 +891,47 @@ fn sec_line_node(
 
 ///|
 /// What a row does at its end (sec_do's): narrow, words in the link's ink (a spinner in their place while it is at
-/// work); wide, the web's quiet button (`primary`: its main one). `press` done as it is pressed.
+/// work); wide, the web's quiet button (`primary`: its main one). `danger`: it takes something away (移除), red at
+/// either width (GhostDanger wide, as the other pages' row removals are). `press` done as it is pressed.
 fn sec_do_node(
   parent : @view.View,
   label : () -> String,
   press : () -> Unit,
   busy? : () -> Bool = fn() { false },
   primary? : Bool = false,
+  danger? : Bool = false,
 ) -> Unit {
   match @sf.look_node(parent) {
-    Narrow => sec_tap_do_node(parent, label, press, busy)
-    Wide => @sf.button_node(parent, label, press, tone=if primary { Primary } else { Ghost }, busy~) |> ignore
+    Narrow => sec_tap_do_node(parent, label, press, busy, danger~)
+    Wide => {
+      let tone : @sf.Tone = if primary {
+        Primary
+      } else if danger {
+        GhostDanger
+      } else {
+        Ghost
+      }
+      @sf.button_node(parent, label, press, tone~, busy~) |> ignore
+    }
   }
 }
 
 ///|
 /// What a row does as words in the link's ink (the library's tap_text_node: its words where the row's start, its room
 /// to be pressed round them), a spinner in their place while it is at work: a narrow row's at its end, and a change
-/// not in effect's 知道了 at either width.
-fn sec_tap_do_node(parent : @view.View, label : () -> String, press : () -> Unit, busy : () -> Bool) -> Unit {
+/// not in effect's 知道了 at either width. `danger`: in red (移除).
+fn sec_tap_do_node(
+  parent : @view.View,
+  label : () -> String,
+  press : () -> Unit,
+  busy : () -> Bool,
+  danger? : Bool = false,
+) -> Unit {
   parent.pick(busy, fn(p, at_work) {
     if at_work {
       @sf.spinner_node(p, size=sec_spin) |> ignore
     } else {
-      @sf.tap_text_node(p, label, press)
+      @sf.tap_text_node(p, label, press, danger~)
     }
   })
 }
@@ -975,7 +992,7 @@ fn sec_device_node(
         })
       })
       a.show(removes, fn(x) {
-        sec_do_node(x, fn() { @sf.t("web-pages.security.remove") }, busy=removing, fn() {
+        sec_do_node(x, fn() { @sf.t("web-pages.security.remove") }, busy=removing, danger=true, fn() {
           remove_dialog(core, @signals.untracked(ws), @signals.untracked(id), @signals.untracked(fn() { text(d(), "fullText") }))
         })
       })

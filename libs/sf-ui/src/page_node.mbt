@@ -2095,12 +2095,14 @@ let pg_choice_foot : Double = 10.0
 ///|
 /// Words that do something when tapped (tap_text's, as a node): a link's ink, `size` (15) on 1.4 its size, one line,
 /// rippled round its words (6 past them on each side, 3 over and under, 8 round) as it is pressed; `press` done then.
+/// `danger`: what it does takes something away (移除), its words in the red a GhostDanger button's are.
 #callsite(autofill(loc))
 pub fn tap_text_node(
   parent : @view.View,
   label : () -> String,
   press : () -> Unit,
   size? : Double = 15.0,
+  danger? : Bool = false,
   loc~ : SourceLoc,
 ) -> Unit {
   parent.box(made_for=loc, fn(b) {
@@ -2115,7 +2117,7 @@ pub fn tap_text_node(
       w
       .words(By(label))
       .words_look(Is({ size, weight: 400, line: size * 1.4, wrap: false, tracking: @view.letters_own, balance: false, max_lines: 0 }))
-      .ink(By(fn() { link_ink() }))
+      .ink(By(fn() { if danger { theme().p.red } else { link_ink() } }))
       |> ignore
     })
     |> ignore
