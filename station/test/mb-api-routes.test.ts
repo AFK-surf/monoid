@@ -231,6 +231,7 @@ function fsPromises() {
 /// Each module a route imports from outside src/api, as the world answers it: a function its call, an object of
 /// functions a part, a class and a constant as they are.
 const MOCKED: [string, string][] = [
+  ["../../client/core-ts/src/board-drafts.ts", "core/board-drafts"],
   ["../../client/core-ts/src/cache-policy.ts", "core/cache-policy"],
   ["../../client/core-ts/src/model-speed.ts", "core/model-speed"],
   ["../../client/core-ts/src/preset-records.ts", "core/preset-records"],
@@ -1175,6 +1176,19 @@ function baseWorld(): World {
   });
   on("core/preset-records.mergeStars", ([a, b]) => ({ ...a, ...b }));
   on("core/preset-records.canonical", ([v]) => JSON.stringify(Object.keys(v).sort().map((k) => [k, v[k]])));
+  // board.ts
+  on("hub.boardDrafts.said", ([, sub]) => ({ drafts: sub === "u1" ? [{ id: "new:board-1", rev: 1 }] : [], files: [] }));
+  on("hub.boardDrafts.carry", ([, , given]) => {
+    if (!Array.isArray(given)) throw thrown("DraftRefusal", { message: "drafts: a list of drafts" });
+    if (given.some((d: any) => d.id === "boom")) throw thrown("Error", { message: "disk full" });
+    return { drafts: given, files: ["f1"], changed: given.length > 0 };
+  });
+  on("hub.boardDrafts.keep", ([, , draft, file, path]) => {
+    if (draft !== "new:board-1" || path === "") throw thrown("DraftRefusal", { message: "no such draft or file" });
+    return { files: [file] };
+  });
+  on("hub.boardDrafts.bytes", ([, , draft, file]) => (draft === "new:board-1" && file === "f1" ? { type: "image/png", bytes: Buffer.from("png!") } : null));
+  on("hub.boardDrafts.stage", ([, , draft, file, name]) => (draft === "new:board-1" && file === "f1" ? { name, path: "/data/uploads/x-a.png", size: 4 } : null));
   // the machine's files
   w.files.set("/rooms/s1/uploads/a.png", { bytes: Buffer.from("png!"), mtimeMs: 10 });
   w.files.set("/rooms/s1/a.txt", { bytes: Buffer.from("line 1\nline 2\nline 3\n"), mtimeMs: 5 });
@@ -1474,6 +1488,28 @@ function defineCases() {
   add("stars put same", { method: "PUT", path: "/stars", body: { stars: {} } });
   add("stars put bad", { method: "PUT", path: "/stars", body: { stars: [1] } });
   add("stars put bad json", { method: "PUT", path: "/stars", body: "{" });
+  // board.ts
+  add("board drafts", { method: "GET", path: "/board/drafts" });
+  add("board drafts no person", { method: "GET", path: "/board/drafts", viewer: { ...OWNER, sub: "" } });
+  add("board drafts carried", { method: "PUT", path: "/board/drafts", body: { drafts: [{ id: "new:board-2", rev: 1 }] } });
+  add("board drafts carried none", { method: "PUT", path: "/board/drafts", body: { drafts: [] } });
+  add("board drafts carried bad", { method: "PUT", path: "/board/drafts", body: { drafts: 1 } });
+  add("board drafts carried failing", { method: "PUT", path: "/board/drafts", body: { drafts: [{ id: "boom" }] } });
+  add("board drafts carried bad json", { method: "PUT", path: "/board/drafts", body: "{" });
+  add("board drafts carried no object", { method: "PUT", path: "/board/drafts", body: "[1]" });
+  add("board drafts carried too large", { method: "PUT", path: "/board/drafts", body: "x".repeat(4 * 1024 * 1024 + 1) });
+  add("board drafts carried no person", { method: "PUT", path: "/board/drafts", body: { drafts: [] }, viewer: { ...OWNER, sub: "" } });
+  add("board file kept", { method: "POST", path: "/board/files", body: { draft: "new:board-1", file: "f1", path: "/data/uploads/a.png" } });
+  add("board file kept refused", { method: "POST", path: "/board/files", body: { draft: "new:board-9", file: 3 } });
+  add("board file kept bad json", { method: "POST", path: "/board/files", body: "{" });
+  add("board file kept no person", { method: "POST", path: "/board/files", body: {}, viewer: { ...OWNER, sub: "" } });
+  add("board file read", { method: "GET", path: "/board/files", query: [["draft", "new:board-1"], ["file", "f1"]] });
+  add("board file read none", { method: "GET", path: "/board/files", query: [["draft", "new:board-1"]] });
+  add("board file read no person", { method: "GET", path: "/board/files", viewer: { ...OWNER, sub: "" } });
+  add("board file staged", { method: "POST", path: "/board/stage", body: { draft: "new:board-1", file: "f1", name: "a.png" } });
+  add("board file staged none", { method: "POST", path: "/board/stage", body: { draft: "new:board-1", file: "f2" } });
+  add("board file staged bad json", { method: "POST", path: "/board/stage", body: "{" });
+  add("board file staged no person", { method: "POST", path: "/board/stage", body: {}, viewer: { ...OWNER, sub: "" } });
   // accounts.ts
   add("machine profile", { method: "POST", path: "/profiles/machine", body: { runtime: "claude" } });
   add("keyed profile", { method: "POST", path: "/profiles", body: { key: "k" } });

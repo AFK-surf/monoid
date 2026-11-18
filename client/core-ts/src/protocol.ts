@@ -155,6 +155,8 @@ export const TOPICS: Record<string, Spec> = {
   preset: { scope: S, id: S },
   /// Others' presets of a workspace, read as it is shown (a press: views/presets.ts).
   otherPresets: { scope: S },
+  /// A person's drafts of 待派发 in a workspace, as the device carries them (views/board-drafts.ts).
+  boardDrafts: { scope: S },
   shareIn: { scope: S, source: S, query: ["string", "def"] },
   pick: { station: S, of: S },
   chatJobs: { station: S, thread: ["u64", "opt"], session: ["string", "opt"], compact: ["bool", "skipFalse"], summary: ["bool", "skipFalse"] },

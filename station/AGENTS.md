@@ -339,6 +339,9 @@
   /presets/kept: its maker's device takes it as its own.
 - Agents see every preset a station keeps, whoever's (chat_create `preset`); people see their own by default and
   others' after a press (`GET /presets/others`). That is a default filter, not a permission (Its data, above).
+- A person's drafts of the board's 待派发 are carried the same way (`src/sessions/board-drafts.ts`, the rule
+  `client/core-ts/src/board-drafts.ts`; GET and PUT /board/drafts), their files kept only by the station each draft is
+  to run on and given to that person's devices alone (GET /board/files).
 
 ## A station's mode: whole, or only tasks (a rig)
 

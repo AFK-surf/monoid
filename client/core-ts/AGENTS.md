@@ -192,6 +192,10 @@ another; the accounts' list's merge across stations and its refills.
 - People see their own presets; others' only at a press (`otherPresets`, read as shown, kept in memory but for the one
   picked; its `reading` waits for a station `OTHERS_WAIT_MS` at most, so one slow or hung holds the press no longer,
   what it says later joining the list while it is held). Someone else's is looked at, opened with and copied (`preset.copy`), never changed from here.
+- The board's drafts of 待派发 are the person's too and carried the same way (`src/views/board-drafts.ts`, the rule
+  `src/board-drafts.ts`, the `boardDrafts` topic), no longer the prefs': what a device kept there is taken in once.
+  A draft's files go up to the station it is to run on as they are added; another device shows them from there
+  (`BoardDraftViews.picture`, GET /board/files) and, starting it, has that station copy them among its uploads (composer.ts `#board`).
 
 ## A lock held here
 
