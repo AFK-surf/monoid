@@ -203,10 +203,11 @@ let passkey_hook_text : String =
   #|  } });
   #|  creds.get = function (options) {
   #|    const pk = options && options.publicKey;
-  #|    if (active === null || !pk || !bytes(pk.challenge)) return get(options);
+  #|    const ch = pk && b64(pk.challenge);
+  #|    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
   #|    const id = String(++next);
   #|    const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
-  #|    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: b64(pk.challenge), allow, userVerification: pk.userVerification || "preferred" };
+  #|    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
   #|    return new Promise((yes, no) => {
   #|      const signal = options.signal;
   #|      if (signal && signal.aborted) return no(signal.reason !== undefined ? signal.reason : new DOMException("The operation was aborted.", "AbortError"));
@@ -223,7 +224,7 @@ let passkey_hook_text : String =
   #|  window.addEventListener("pagehide", () => { for (const id of waiting.keys()) said({ id, gone: true }); waiting.clear(); });
   #|  if (window.PublicKeyCredential) {
   #|    PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable = () => Promise.resolve(true);
-  #|    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(true);
+  #|    PublicKeyCredential.isConditionalMediationAvailable = () => Promise.resolve(false);
   #|  }
   #|})()
 

@@ -1446,3 +1446,38 @@ test("a_tab_opened_by_its_own_id_is_there_at_once_and_its_view_waits_for_its_sta
   assert.equal(made.views.length, 1, "its stream asked once the station listed it");
   made.core.close();
 });
+
+test("an_auto_view_yielded_to_an_agent_resumes_control_when_the_agent_leaves_and_accepts_google_sized_passkey_challenges", async () => {
+  const { host, core, ui, views } = await viewing(1);
+  const log: J[] = [];
+  call(core, ui, 1, "screen.view", { station: "ws/st", screen: "desktop", view: "v", codecs: ["jpeg"] });
+  await host.settle();
+  assert.equal(views[0]!.ask.control, true);
+  // Google-sized passkey clientData (~13.7 KB) is accepted, and macOS-signed clientData (~18.4 KB) passes checkInput.
+  const bigClientData = JSON.stringify({ type: "webauthn.get", challenge: "A".repeat(13_664), origin: "https://accounts.google.com", crossOrigin: false });
+  views[0]!.send(join([
+    stateFrame({ title: "Sign in", control: true, passkey: { id: "1", host: "accounts.google.com", rpId: "google.com", clientData: bigClientData, allow: [] } }),
+    configFrame({ codec: "jpeg", width: 100, height: 80 }),
+    videoFrame(true, 1, bytesOf(10, 1)),
+  ]));
+  await host.settle();
+  said(host, log);
+  assert.equal(lastState(log, 1).passkey?.clientData?.length, bigClientData.length);
+  assert.equal((checkInput({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", clientData: "B".repeat(18_400) }) as J).clientData.length, 18_400);
+
+  // Agent steps in on the browser tab: passive auto view yields to watch-only without locking out automatic resume.
+  views[0]!.send(stateFrame({ control: false, passkey: null, takenBy: "agent: 查询账号" }));
+  views[0]!.send(stateFrame({ viewers: ["alice@example.com", "agent: 查询账号"], controlledBy: ["agent: 查询账号"] }));
+  await host.settle();
+  said(host, log);
+  const held = lastState(log, 1);
+  assert.deepEqual([held.control, held.watchOnly, held.takeOver, held.controllers], [false, undefined, true, ["Agent「查询账号」"]]);
+  assert.equal(views.length, 1);
+
+  // Agent finishes its turn and leaves controlledBy: the passive view automatically reopens with control: true!
+  views[0]!.send(stateFrame({ viewers: ["alice@example.com"], controlledBy: [] }));
+  await host.settle();
+  assert.equal(views.length, 2);
+  assert.equal(views[1]!.ask.control, true);
+  core.close();
+});

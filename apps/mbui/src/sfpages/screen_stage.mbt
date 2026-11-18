@@ -625,6 +625,11 @@ fn again_key_node(parent : @view.View, words : String, press : () -> Unit) -> Un
 fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Unit {
   let s = pg.s
   let u = pg.u
+  st.reacts(fn() { s.taking_over_now() }, fn(on) {
+    if !on {
+      u.held_hint.set(false)
+    }
+  })
   st.pick(at_once=true, pair, fn(f, paired) {
     f.over(Is(true)) |> ignore
     let notes = fn(n : @view.View) {
@@ -640,7 +645,21 @@ fn screen_stage_foot(st : @view.View, pg : ScreenPage, pair : () -> Bool) -> Uni
         c.pick(at_once=true, fn() {
           s.said.get() |> ignore
           s.pad_set.get() |> ignore
-          s.undriven()
+          let hinted = u.held_hint.get()
+          match s.undriven() {
+            Some(why) => Some(why)
+            None =>
+              if hinted && !s.driving() && s.can_take_over() {
+                let who = strings(s.state, "controllers").join(@sf.t("web-main.list.separator"))
+                if who != "" {
+                  Some(@sf.t("web-pages.screen.heldBy", args=[("who", who)]))
+                } else {
+                  None
+                }
+              } else {
+                None
+              }
+          }
         }, fn(w, why) {
           guard why is Some(why) else { return }
           w.box(fn(b) {
@@ -1038,7 +1057,7 @@ fn screen_stage_gestures(stage : @view.View, pg : ScreenPage) -> Unit {
     }
   })
   // a mouse's secondary button: a right click where it is
-  .on_menu(fn(m) {
+      .on_menu(fn(m) {
     if @sf.pointer_rests() {
       screen_mouse_menu(pg, m)
     }
@@ -1055,12 +1074,14 @@ fn screen_stage_gestures(stage : @view.View, pg : ScreenPage) -> Unit {
       screen_mouse_moved(stage, pg)
     }
   })
-  // this device's mouse over the picture driving it: in the screen's pointer's shape
+  // this device's mouse over the picture driving it: in the screen's pointer's shape; blocked while another operates it
   .cursor(By(fn() {
     if u.mouse.over.get() {
       s.cursor_said.get() |> ignore
       s.said.get() |> ignore
       Some(cursor_of_shape(text(field(s.state, "cursor"), "shape")))
+    } else if !s.driving_now() && s.taking_over_now() {
+      Some(@ui.Cursor::NotAllowed)
     } else {
       None
     }
@@ -1226,6 +1247,9 @@ fn screen_finger(stage : @view.View, s : ScreenSess, u : ScreenUi, d : @view.Dra
               g.tap_open = false
             } else {
               screen_tap_open(stage, g, at)
+              if screen_frame_at(g.sx, g.sy, shown(), false) is Some(_) {
+                screen_held_by_hint(s, u)
+              }
             }
           }
         1 if !g.pad =>
@@ -1423,6 +1447,15 @@ fn MouseDrive::move_to(self : MouseDrive, s : ScreenSess, at : (Double, Double),
 }
 
 ///|
+/// Shows a notice over the stage's foot when the person presses on the picture while another (e.g. an agent) operates
+/// it, pointing them to 接管; cleared immediately once they take control or the controller leaves.
+fn screen_held_by_hint(s : ScreenSess, u : ScreenUi) -> Unit {
+  if !s.driving() && s.can_take_over() && !strings(s.state, "controllers").is_empty() {
+    u.held_hint.set(true)
+  }
+}
+
+///|
 /// The mouse's primary button on the stage (`d`, a drag of it): down where it is (a press on the stage, a picture's
 /// letterbox too, gives it the keyboard, this device's input method placed by it), moved held (past the picture's
 /// edge, at its edge) and up, with ⇧ ⌃ ⌥ ⌘ held as it goes down, their keys round it. Only while driving it.
@@ -1458,6 +1491,8 @@ fn screen_mouse_drag(stage : @view.View, pg : ScreenPage, d : @view.Drag) -> Uni
           }
           None => ()
         }
+      } else if screen_frame_at(d.x, d.y, shown, false) is Some(_) {
+        screen_held_by_hint(s, u)
       }
     }
     Moved =>
@@ -1508,7 +1543,12 @@ fn screen_mouse_moved(stage : @view.View, pg : ScreenPage) -> Unit {
 fn screen_mouse_menu(pg : ScreenPage, menu : @view.Menu) -> Unit {
   let s = pg.s
   let u = pg.u
-  guard s.driving() else { return }
+  if !s.driving() {
+    if screen_frame_at(menu.x, menu.y, u.shown_at(menu.at), false) is Some(_) {
+      screen_held_by_hint(s, u)
+    }
+    return
+  }
   match u.catcher {
     Some(k) => @ui.key_catcher_focus_set(k, true)
     None => ()

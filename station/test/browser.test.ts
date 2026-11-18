@@ -16,6 +16,7 @@ import { described, letGo } from "../src/tools/screen.ts";
 import { Admin } from "../src/api/admin.ts";
 import type { Viewer } from "../src/mesh/credential.ts";
 import { Browsers } from "../src/browser/browsers.ts";
+import { BrowserAgentHold } from "../src/browser/agent-hold.ts";
 import { Gate } from "../src/browser/gate.ts";
 import { expired, keptOf, ofSites, siteCookies, stateOf } from "../src/browser/signins.ts";
 import { passkeyOf, sitePasskeys } from "../src/browser/passkeys.ts";
@@ -1034,6 +1035,8 @@ test("a login form filled from a person's app: what the wire takes (a host, an a
 
 test("a passkey sign-in answered from a person's app: what the wire takes (base64url, bounded; or a browser's error); the relying parties a tab's host may name", () => {
   assert.deepEqual(parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", userHandle: "BQ" }), { id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", userHandle: "BQ" });
+  const parsedBig = parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AAAA", signature: "BwcH", clientData: "A".repeat(20_000) });
+  assert.equal(parsedBig && "clientData" in parsedBig ? parsedBig.clientData?.length : 0, 20_000, "macOS clientData wrapping a 10 KB Google challenge");
   assert.deepEqual(parsePasskey({ t: "passkey", id: "1", error: "NotAllowedError" }), { id: "1", error: "NotAllowedError" });
   assert.equal(parsePasskey({ t: "passkey", id: "1", credential: "CQk", authenticatorData: "AA==", signature: "BwcH" }), null, "base64url only");
   assert.equal(parsePasskey({ t: "passkey", id: "1", credential: "CQk", signature: "BwcH" }), null);
@@ -1479,4 +1482,55 @@ test("LOGIN_HOOK and watchLogin report filled state, update as values change, an
   ]);
   stop();
   v.close();
+});
+
+test("an agent operating a browser tab joins ScreenHub, yields passive viewers without locking their device, and is refused once a person takes control", () => {
+  const hub = new ScreenHub();
+  hub.add({ id: "browser:T1", kind: "browser", title: () => "Welcome", size: () => ({ width: 800, height: 600 }), open: async () => { throw new Error("unused"); } });
+  const timers: (() => void)[] = [];
+  const hold = new BrowserAgentHold({
+    hub,
+    name: (s) => `agent: ${s}`,
+    later: (_ms, f) => { timers.push(f); return () => {}; },
+  });
+  const g = new Gate({
+    context: "C1",
+    contextOf: (id) => (id === "T1" ? "C1" : undefined),
+    act: (id, method) => hold.act("查询账号", id, method),
+  });
+  g.fromChrome(JSON.stringify({ method: "Target.attachedToTarget", params: { sessionId: "ST1", targetInfo: { targetId: "T1", browserContextId: "C1" } } }));
+
+  // Passive person view opens (taken = false).
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  let yieldedBy: string | undefined;
+  let leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: (by) => { yieldedBy = by; } });
+
+  // Agent navigates: Alice's passive view yields to watch-only, and agent shows in controlledBy.
+  const nav = g.fromClient(JSON.stringify({ id: 1, sessionId: "ST1", method: "Page.navigate", params: { url: "https://example.org" } }));
+  assert.equal(nav.up.length, 1);
+  assert.equal(yieldedBy, "agent: 查询账号");
+  assert.deepEqual(hub.people("browser:T1").controlledBy, ["agent: 查询账号"]);
+
+  // Agent turn ends: Alice's device is NOT held by WATCH_HELD_MS, so automatic reopen drives immediately.
+  hold.releaseSession("查询账号");
+  assert.deepEqual(hub.people("browser:T1").controlledBy, []);
+  leaveAlice();
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", false, "Alice"), { control: true, took: [] });
+  leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
+
+  // Now agent acts again, then Alice explicitly clicks [接管] (taken = true).
+  assert.equal(g.fromClient(JSON.stringify({ id: 2, sessionId: "ST1", method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } })).up.length, 1);
+  leaveAlice();
+  assert.deepEqual(hub.drive("browser:T1", "dev-1", true, "Alice"), { control: true, took: [] });
+  leaveAlice = hub.join("browser:T1", { name: "Alice", device: "dev-1", control: true, tell: () => {}, watchOnly: () => {} });
+  assert.equal(hub.hasTakenView("browser:T1"), true);
+
+  // Read-only screenshot still passes, while operating commands and closing the tab are refused!
+  assert.equal(g.fromClient(JSON.stringify({ id: 3, sessionId: "ST1", method: "Page.captureScreenshot", params: {} })).up.length, 1);
+  const blockedClick = JSON.parse(g.fromClient(JSON.stringify({ id: 4, sessionId: "ST1", method: "Input.dispatchMouseEvent", params: { type: "mousePressed" } })).down[0]!);
+  assert.match(blockedClick.error.message, /Alice is controlling browser:T1 right now/);
+  const blockedClose = JSON.parse(g.fromClient(JSON.stringify({ id: 5, method: "Target.closeTarget", params: { targetId: "T1" } })).down[0]!);
+  assert.match(blockedClose.error.message, /Alice is controlling browser:T1 right now/);
+  leaveAlice();
+  hold.close();
 });

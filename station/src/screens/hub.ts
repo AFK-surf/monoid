@@ -12,7 +12,7 @@ import { type ScreenAccess, type ScreenBrowser, type ScreenSource, type ScreenVi
 /// it is (shown only; none from a client before them). `self`: the device's own main id as it says it, which its link's
 /// `device` is not on a link made for a LAN or a relay (only for it to know its own views). `agent`: an agent's own view (computer.ts). `end` and `watchOnly`:
 /// how a member elsewhere ends it or stops its input being taken, `by` naming them (for `watchOnly`, who took it, if one did).
-export type Watcher = { name: string; control: boolean; tell(state: Record<string, unknown>): void; device?: string; self?: string; client?: string; app?: string; agent?: boolean; end?(by: string): void; watchOnly?(by?: string): void };
+export type Watcher = { name: string; control: boolean; tell(state: Record<string, unknown>): void; device?: string; self?: string; client?: string; app?: string; agent?: boolean; taken?: boolean; end?(by: string): void; watchOnly?(by?: string): void };
 
 /// One view as members are told of it: `id`, the hub's, to end it by; `at`,
 /// when it opened (ms).
@@ -81,6 +81,8 @@ export class ScreenHub implements Screens {
   #viewCount = 0;
   /// Until when a device's views of a screen are held to only looking (`watchOnly`), by device and screen.
   readonly #held = new Map<string, number>();
+  /// Devices whose next driving view of a screen was explicitly asked (`taken: true` in `drive`).
+  readonly #taking = new Set<string>();
   readonly #listeners = new Set<() => void>();
   readonly #refreshers = new Set<() => Promise<void>>();
   readonly #stopping = new Set<() => void>();
@@ -147,7 +149,10 @@ export class ScreenHub implements Screens {
     const on = this.#views.get(id) ?? new Map<string, Watcher & { at: number }>();
     this.#views.set(id, on);
     const view = `v${++this.#viewCount}`;
-    on.set(view, Object.assign(watcher, { at: wall.now() }));
+    const takenKey = watcher.device ? `${watcher.device}\n${id}` : "";
+    const fromDrive = watcher.control && !watcher.agent && takenKey !== "" && this.#taking.delete(takenKey);
+    const taken = watcher.taken === true || fromDrive;
+    on.set(view, Object.assign(watcher, { taken, at: wall.now() }));
     this.#tellPeople(id);
     let left = false;
     return () => {
@@ -185,11 +190,13 @@ export class ScreenHub implements Screens {
     this.#lookOnly(id, this.#viewOf(id, view));
   }
 
-  /// `w` goes on only looking, its device held from driving again by itself for WATCH_HELD_MS; `by`: who took it.
-  #lookOnly(id: string, w: Watcher, by?: string): void {
+  /// `w` goes on only looking, its device held from driving again by itself for WATCH_HELD_MS (unless `hold` is false:
+  /// an agent stepping in while a view watched passively); `by`: who took it.
+  #lookOnly(id: string, w: Watcher, by?: string, hold = true): void {
     if (!w.control) return;
     w.control = false;
-    if (w.device) {
+    w.taken = false;
+    if (hold && w.device) {
       const now = wall.now();
       for (const [key, until] of this.#held) if (until <= now) this.#held.delete(key);
       this.#held.set(`${w.device}\n${id}`, now + WATCH_HELD_MS);
@@ -219,10 +226,31 @@ export class ScreenHub implements Screens {
   drive(id: string, device: string, taken: boolean, by: string): { control: boolean; took: string[] } {
     if (!this.mayDrive(id, device, taken)) return { control: false, took: [] };
     const others = [...(this.#views.get(id)?.values() ?? [])].filter((w) => w.control && !w.agent && w.device !== device);
-    if (others.length === 0) return { control: true, took: [] };
+    if (others.length === 0) {
+      if (device) {
+        if (taken) this.#taking.add(`${device}\n${id}`);
+        else this.#taking.delete(`${device}\n${id}`);
+      }
+      return { control: true, took: [] };
+    }
     if (!taken) return { control: false, took: [] };
     for (const w of others) this.#lookOnly(id, w, by);
+    if (device) this.#taking.add(`${device}\n${id}`);
     return { control: true, took: [...new Set(others.map((w) => w.name))] };
+  }
+
+  /// Whether any person's view currently driving `id` explicitly asked to take control (`taken: true`).
+  hasTakenView(id: string): boolean {
+    for (const w of this.#views.get(id)?.values() ?? []) if (w.control && !w.agent && w.taken === true) return true;
+    return false;
+  }
+
+  /// Yields passive (`!taken`) person views on `id` to watch-only while agent `by` operates it, without locking their
+  /// devices from resuming once the agent finishes.
+  yieldToAgent(id: string, by: string): number {
+    const passive = [...(this.#views.get(id)?.values() ?? [])].filter((w) => w.control && !w.agent && !w.taken && w.watchOnly !== undefined);
+    for (const w of passive) this.#lookOnly(id, w, by, false);
+    return passive.length;
   }
 
   /// An agent `by` asked by a person to take the screen (the `screen` tool's take_control): every person's view that
