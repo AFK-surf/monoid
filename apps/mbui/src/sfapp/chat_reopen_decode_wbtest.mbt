@@ -197,6 +197,9 @@ fn rd_reopen(nodes : Bool, one_more : Bool, screen : (String, Double, Double, In
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~, begun=fn() {
     @sfbase.window_tall.val = h
   })
+  // (what is counted here is what is read, not how it moves: the chat's pages' motion is their own tests', and the old
+  // view's pane on 大屏 goes as it goes on main)
+  t.motion_unjudged(true)
   // (the core's client keeping a chat's value as it lets it go, as src/stillfail's main has it)
   @core.client.keep(@sfbase.topic_kept)
   t.run_for(long_rest_ms * 2.0)
