@@ -741,6 +741,23 @@ fn entry_of(a: &Value) -> Result<Option<(String, u16)>, String> {
     Ok(Some((host.to_string(), port as u16)))
 }
 
+/// Which of a connection's ways it goes by now (an index into them, each said as whether iroh selected it, whether it
+/// is a relay's, and the datagrams sent on it): the one iroh selected; where it selected none while the connection
+/// carries on (two connections of one endpoint to the same other, a way moved between a machine's interfaces: Windows to
+/// Windows on several networks), the way the packets go, a direct one before a relay's and the busiest first; with none
+/// sent yet, the only way there is, or the first where every way is direct. None only where it may still be a relay's.
+/// (station/native/mesh's `chosen_way`, the same.)
+fn chosen_way(ways: &[(bool, bool, u64)]) -> Option<usize> {
+    if let Some(i) = ways.iter().position(|w| w.0) {
+        return Some(i);
+    }
+    let busiest = ways.iter().enumerate().filter(|(_, w)| w.2 > 0).max_by_key(|(i, w)| (!w.1, w.2, std::cmp::Reverse(*i)));
+    if let Some((i, _)) = busiest {
+        return Some(i);
+    }
+    (ways.len() == 1 || (!ways.is_empty() && ways.iter().all(|w| !w.1))).then_some(0)
+}
+
 fn http_error(error: reqwest::Error) -> String {
     let mut message = error.to_string();
     let mut source = std::error::Error::source(&error);
@@ -2654,9 +2671,30 @@ impl Inner {
     async fn run(self: &Arc<Self>, op: &str, a: Value, bytes: Option<Vec<u8>>) -> Done {
         match op {
             "fetch" => {
-                let response = self.request(&a, bytes)?.send().await.map_err(http_error)?;
+                // `timeoutMs`: how long the answer's head may take to come; `stallMs`: how long its body may stay
+                // silent between two pieces (a whole-download deadline would cut a large one off on a slow network).
+                // Neither given: as long as the caller waits (it cancels the call).
+                let within = |key: &str| a.get(key).and_then(Value::as_f64).filter(|ms| *ms > 0.0).map(|ms| std::time::Duration::from_millis(ms as u64));
+                let (head_within, stall_within) = (within("timeoutMs"), within("stallMs"));
+                let sent = self.request(&a, bytes)?.send();
+                let mut response = match head_within {
+                    Some(d) => tokio::time::timeout(d, sent).await.map_err(|_| format!("no answer within {} ms", d.as_millis()))?,
+                    None => sent.await,
+                }
+                .map_err(http_error)?;
                 let (status, headers) = (response.status().as_u16(), headers_of(&response));
-                let body = response.bytes().await.map_err(http_error)?.to_vec();
+                let mut body = Vec::new();
+                loop {
+                    let piece = match stall_within {
+                        Some(d) => tokio::time::timeout(d, response.chunk()).await.map_err(|_| format!("nothing more came within {} ms", d.as_millis()))?,
+                        None => response.chunk().await,
+                    }
+                    .map_err(http_error)?;
+                    match piece {
+                        Some(piece) => body.extend_from_slice(&piece),
+                        None => break,
+                    }
+                }
                 Ok(Answer::bytes(json!({ "status": status, "headers": headers }), body))
             }
             "stream.open" => {
@@ -4448,16 +4486,27 @@ impl Inner {
             ("iroh.sockets", Handle::Endpoint(e, _)) => Ok(json!(e.bound_sockets().iter().map(ToString::to_string).collect::<Vec<_>>())),
             ("iroh.sockets", Handle::Unbound { .. }) => Ok(json!([])),
             // How it runs now: "relay", "direct", or null while none is chosen.
-            ("conn.via", Handle::Conn(c)) => Ok(c.paths().iter().find(|p| p.is_selected()).map(|p| json!(if p.is_relay() { "relay" } else { "direct" })).unwrap_or(Value::Null)),
+            ("conn.via", Handle::Conn(c)) => {
+                let paths = c.paths();
+                let ways: Vec<_> = paths.iter().collect();
+                let chosen = chosen_way(&ways.iter().map(|p| (p.is_selected(), p.is_relay(), p.stats().udp_tx.datagrams)).collect::<Vec<_>>());
+                Ok(chosen.map(|i| json!(if ways[i].is_relay() { "relay" } else { "direct" })).unwrap_or(Value::Null))
+            }
             ("conn.via", Handle::Gone { .. }) => Ok(Value::Null),
             ("iroh.relayStatus", Handle::Endpoint(e, _)) => Ok(Value::Array(e.home_relay_status().get().iter().map(|s| json!({ "url": s.url().to_string(), "connected": s.is_connected(), "access": s.access_url().to_string(), "conflict": s.same_endpoint_id_connected() })).collect())),
             ("conn.alpn", Handle::Conn(c)) => Ok(json!(hex::encode(c.alpn()))),
             ("conn.remoteId", Handle::Conn(c)) => Ok(json!(hex::encode(c.remote_id().as_bytes()))),
             ("conn.closeReason", Handle::Conn(c)) => Ok(c.close_reason().map(|e| close_info(&e)).unwrap_or(Value::Null)),
-            ("conn.paths", Handle::Conn(c)) => Ok(Value::Array(
-                c.paths()
+            ("conn.paths", Handle::Conn(c)) => {
+                let paths = c.paths();
+                let ways: Vec<_> = paths.iter().collect();
+                // `selected`: the way it goes by (chosen_way), which iroh may leave unmarked while it carries on.
+                let chosen = chosen_way(&ways.iter().map(|p| (p.is_selected(), p.is_relay(), p.stats().udp_tx.datagrams)).collect::<Vec<_>>());
+                Ok(Value::Array(
+                ways
                     .iter()
-                    .map(|p| {
+                    .enumerate()
+                    .map(|(i, p)| {
                         let (relay, ip) = match p.remote_addr() {
                             iroh::TransportAddr::Relay(url) => (Some(url.to_string()), None),
                             iroh::TransportAddr::Ip(addr) => (None, Some(addr.to_string())),
@@ -4465,10 +4514,11 @@ impl Inner {
                         };
                         // Packets sent and lost on this way alone: the connection's counts take in every way it tried.
                         let stats = p.stats();
-                        json!({ "id": p.id().to_string(), "selected": p.is_selected(), "relay": relay, "ip": ip, "rttMs": stats.same_path_rtt.map(|rtt| rtt.as_secs_f64() * 1000.0), "txPackets": stats.udp_tx.datagrams, "lostPackets": stats.lost_packets, "cwnd": stats.cwnd, "congestionEvents": stats.congestion_events })
+                        json!({ "id": p.id().to_string(), "selected": chosen == Some(i), "relay": relay, "ip": ip, "rttMs": stats.same_path_rtt.map(|rtt| rtt.as_secs_f64() * 1000.0), "txPackets": stats.udp_tx.datagrams, "lostPackets": stats.lost_packets, "cwnd": stats.cwnd, "congestionEvents": stats.congestion_events })
                     })
                     .collect(),
-            )),
+                ))
+            }
             // What went over it since it opened (the addon's `stats`, which says what each is for).
             ("conn.stats", Handle::Conn(c)) => {
                 let s = c.stats();
@@ -5182,6 +5232,57 @@ mod tests {
             assert_eq!(answer(id).1, "cancelled");
             assert!(shell.runtime.block_on(closed).unwrap().is_err());
             assert_eq!(cancel(), json!({ "value": false }));
+        }
+    }
+
+    /// The way a connection goes by where iroh marked none: the busiest direct one, a relay's only where no direct one
+    /// carried anything, the only way or the first of direct ways before anything was sent, and none where a relay's may
+    /// still be it.
+    #[test]
+    fn the_way_a_connection_goes_by_is_found_where_iroh_marks_none() {
+        assert_eq!(chosen_way(&[(false, true, 3), (true, false, 0)]), Some(1));
+        assert_eq!(chosen_way(&[(false, false, 12)]), Some(0));
+        assert_eq!(chosen_way(&[(false, true, 0), (false, false, 12)]), Some(1));
+        assert_eq!(chosen_way(&[(false, true, 40), (false, false, 2), (false, false, 9)]), Some(2));
+        assert_eq!(chosen_way(&[(false, true, 5), (false, false, 0)]), Some(0));
+        assert_eq!(chosen_way(&[(false, false, 0)]), Some(0));
+        assert_eq!(chosen_way(&[(false, false, 0), (false, false, 0)]), Some(0));
+        assert_eq!(chosen_way(&[(false, true, 0), (false, false, 0)]), None);
+        assert_eq!(chosen_way(&[]), None);
+    }
+
+    /// A fetch given `timeoutMs` ends with an error once its answer's head has not come by then, and one given `stallMs`
+    /// once its body stayed silent that long: a server that never answers holds nobody's reading for good (the station's
+    /// program's updates, whose deadlines the TypeScript's `AbortSignal`s were).
+    #[test]
+    fn a_fetch_ends_when_its_answer_does_not_come_in_time() {
+        for (id, body) in [(93_101, false), (93_102, true)] {
+            let dir = TempDir::new();
+            let shell = Shell::start(dir.path().to_path_buf(), complete, ctx()).unwrap();
+            let (listener, addr) = shell.runtime.block_on(async {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let addr = listener.local_addr().unwrap();
+                (listener, addr)
+            });
+            shell.runtime.spawn(async move {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                while !request.ends_with(b"\r\n\r\n") {
+                    request.push(socket.read_u8().await.unwrap());
+                }
+                if body {
+                    socket.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\na").await.unwrap();
+                }
+                // Nothing more comes, and the socket stays open.
+                let _ = socket.read_u8().await;
+            });
+            let within = if body { json!({ "stallMs": 200 }) } else { json!({ "timeoutMs": 200 }) };
+            let mut args = json!({ "url": format!("http://{addr}/feed"), "method": "GET", "headers": [] });
+            args.as_object_mut().unwrap().extend(within.as_object().unwrap().clone());
+            shell.call(id, "fetch".into(), serde_json::to_vec(&args).unwrap().as_slice(), None);
+            let (_, error, _) = answer(id);
+            let said = if body { "nothing more came within 200 ms" } else { "no answer within 200 ms" };
+            assert_eq!(error, said);
         }
     }
 

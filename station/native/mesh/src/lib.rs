@@ -601,6 +601,23 @@ pub struct CloseInfo {
     pub reason: String,
 }
 
+/// Which of a connection's ways it goes by now (an index into them, each said as whether iroh selected it, whether it
+/// is a relay's, and the datagrams sent on it): the one iroh selected; where it selected none while the connection
+/// carries on (two connections of one endpoint to the same other, a way moved between a machine's interfaces: Windows to
+/// Windows on several networks), the way the packets go, a direct one before a relay's and the busiest first; with none
+/// sent yet, the only way there is, or the first where every way is direct. None only where it may still be a relay's.
+/// (client/shell's `chosen_way`, the same.)
+fn chosen_way(ways: &[(bool, bool, u64)]) -> Option<usize> {
+    if let Some(i) = ways.iter().position(|w| w.0) {
+        return Some(i);
+    }
+    let busiest = ways.iter().enumerate().filter(|(_, w)| w.2 > 0).max_by_key(|(i, w)| (!w.1, w.2, std::cmp::Reverse(*i)));
+    if let Some((i, _)) = busiest {
+        return Some(i);
+    }
+    (ways.len() == 1 || (!ways.is_empty() && ways.iter().all(|w| !w.1))).then_some(0)
+}
+
 fn close_info(error: &iroh::endpoint::ConnectionError) -> CloseInfo {
     use iroh::endpoint::ConnectionError;
     match error {
@@ -632,7 +649,10 @@ impl Connection {
     /// How it runs now: "relay", "direct", or null while none is chosen.
     #[napi]
     pub fn via(&self) -> Option<String> {
-        self.inner.paths().iter().find(|p| p.is_selected()).map(|p| if p.is_relay() { "relay" } else { "direct" }.to_string())
+        let paths = self.inner.paths();
+        let ways: Vec<_> = paths.iter().collect();
+        let chosen = chosen_way(&ways.iter().map(|p| (p.is_selected(), p.is_relay(), p.stats().udp_tx.datagrams)).collect::<Vec<_>>());
+        chosen.map(|i| if ways[i].is_relay() { "relay" } else { "direct" }.to_string())
     }
 
     /// The next stream the other end opened; null once the connection is gone.
@@ -680,11 +700,15 @@ impl Connection {
     /// Every way it can go now.
     #[napi]
     pub fn paths(&self) -> Vec<PathState> {
-        self.inner.paths().iter().map(|p| {
+        let paths = self.inner.paths();
+        let ways: Vec<_> = paths.iter().collect();
+        // `selected`: the way it goes by (chosen_way), which iroh may leave unmarked while it carries on.
+        let chosen = chosen_way(&ways.iter().map(|p| (p.is_selected(), p.is_relay(), p.stats().udp_tx.datagrams)).collect::<Vec<_>>());
+        ways.iter().enumerate().map(|(i, p)| {
             let stats = p.stats();
             PathState {
                 id: p.id().to_string(),
-                selected: p.is_selected(),
+                selected: chosen == Some(i),
                 relay: match p.remote_addr() {
                     iroh::TransportAddr::Relay(url) => Some(url.to_string()),
                     _ => None,

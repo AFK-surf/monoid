@@ -297,15 +297,16 @@ fn find_command(name : String, env : Array[(String, String)]) -> String? {
     Some(kv) => kv.1
     None => return None
   }
-  let delim = if is_windows() { ";" } else { ":" }
-  let exts = if is_windows() { ["", ".exe", ".cmd", ".bat"] } else { [""] }
-  for d in p.split(delim) {
+  // (Windows: by PATHEXT, as windows.ts `findCommand`: a bare name tried first found npm's POSIX script `codex` beside
+  // `codex.cmd`, which no Windows process runs)
+  if is_windows() {
+    return @ops_platform.win_find_command(name, env, ";", path, executable)
+  }
+  for d in p.split(":") {
     let dir = if d == "" { "." } else { d.to_owned() }
-    for ext in exts {
-      let on = path([dir, name + ext])
-      if executable(on) {
-        return Some(on)
-      }
+    let on = path([dir, name])
+    if executable(on) {
+      return Some(on)
     }
   }
   None
