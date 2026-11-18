@@ -506,17 +506,20 @@ for t in $targets; do
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
           # Account for the real_size and kept_rows sweeps on groups 1 and 4.
-          *) specs="4,4,290,1 3,4,490,1 4,4,430,1 4,4,380,1" ;;
+          # Group 2 now runs its pages on four workers after its sweeps finish. words_large and the second
+          # chat_page_nodes run moved to contrast and group 1 (app 2/4 was cut at 292 s with 549 -O0 units,
+          # mbui-w5c-composer-node 44240663495, while contrast took 112 s, 4/4 137 s and 3/4 150 s). Pages lean
+          # to group 1, which had the most room at -O0 (44243280552: 1/4 174 s, 3/4 236 s, 4/4 268 s).
+          *) specs="4,4,260,1 4,4,600,1 4,4,520,1 4,4,460,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
           case $g in 1) g1+=("$f") ;; 2) g2+=("$f") ;; 3) g3+=("$f") ;; *) g4+=("$f") ;; esac
         done < <(page_deal "$specs" "${pages[@]}")
-        # (the second's pages on three programs beside its sweeps at the default rate, on $n at a rate, where it has
-        # none; the third's on $n at the default rate since two of kept_rows' moved to contrast, on one at a rate
-        # beside kept_rows' five runs, as it was)
-        p2=3 p3=$n
-        [ -z "${MBUI_TEST_FPS:-}" ] || { p2=$n; p3=1; }
+        # The second group's pages use $n workers at every rate, so they fill all cores once its sweeps finish.
+        # The third's use $n at the default rate and one at a rate, beside kept_rows' five runs.
+        p2=$n p3=$n
+        [ -z "${MBUI_TEST_FPS:-}" ] || p3=1
         runs+=("@pages 1 $n ${g1[*]}" "@pages 2 $p2 ${g2[*]}" "@pages 3 $p3 ${g3[*]}" "@pages 4 $n ${g4[*]}")
       else
         runs+=("@pages 0 $n $(page_deal 1,1,0,1 "${pages[@]}" | cut -d' ' -f2 | tr '\n' ' ')")
@@ -597,7 +600,9 @@ for t in $targets; do
       # 62fed392 42751653901)
       # (its two, the app's two languages, a run each: in one at 120 a second it was 173 s of the second's part 2/2, 257 s
       # of its 5 minutes on main caa9c272, 42759467421, 2026-11-10)
-      "src/sfapp/words_large_wbtest.mbt "*) echo 2 ;;
+      # (on contrast since: on the second beside its other sweeps, app 2/4 was cut at 292 s when 549 -O0 units were
+      # compiled, mbui-w5c-composer-node 44240663495, while contrast took 112 s)
+      "src/sfapp/words_large_wbtest.mbt "*) echo contrast ;;
       # (real_size's, its two windows a test each since it gives each screen its changes as well, apart on the two with
       # the most room at the default rate: the wide window's, the longer, on the first, where the opening alone was
       # 103 s of its 5 minutes (#5407 42976047326); the phone's on the fourth, which has no run but its pages. On Studio
@@ -611,7 +616,7 @@ for t in $targets; do
       # (and on the fourth since: on the second beside its pages on three programs and its sweeps, eleven processes on
       # its four cores, it ran 200 s and app 2/4 293 s, every other run there slowed alike (screens 175 s), where app 4/4
       # with send_steady's three alone beside its pages was 108, #6694's 43864771728)
-      # At the default rate, contrast runs the wide real_size sweep, three kept_rows ranges, and both duo_side runs.
+      # At the default rate, contrast runs the wide real_size sweep, three kept_rows ranges, and both duo_side and words_large runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
       "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
       # At the default rate, group 1 takes the small-screen real_size sweep and group 4 kept_rows 3-4.
@@ -651,7 +656,10 @@ for t in $targets; do
       # (at 120 a second on the third since, whose two parts had the room, 112-189 s: on the fourth's three parts, its
       # tests 14-28 beside preview_tree's 0-54 on the first, app 4/4 at 120 fps part 1/3 was 272-295 s of its 5
       # minutes on main's runs after #6096 and cut at them on 8b149318 43562087371)
-      "src/sfapp/chat_page_nodes_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "") echo 2 ;; 120) echo 3 ;; *) echo 4 ;; esac ;;
+      # (at the default rate its second run on the first since, for the same cut of app 2/4 as words_large's; the
+      # fourth, beside send_steady's three, was the longest at -O0, 268 s, 44243280552)
+      "src/sfapp/chat_page_nodes_wbtest.mbt --index 0-"*) case "${MBUI_TEST_FPS:-}" in "") echo 2 ;; 120) echo 3 ;; *) echo 4 ;; esac ;;
+      "src/sfapp/chat_page_nodes_wbtest.mbt "*) case "${MBUI_TEST_FPS:-}" in "") echo 1 ;; 120) echo 3 ;; *) echo 4 ;; esac ;;
       # (answers_still's three where each rate's jobs had the most room on main 0d56014c 43468965521 without it: the
       # first at the default rate (162 s) and at 120 (122 s), the third at 60 (150 s), the fourth at 24 and at 7, a
       # runner each; reckoned in specs below: 31, 256, 91 and some 120 s of its cores)
