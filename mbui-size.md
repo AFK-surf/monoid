@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 2.58 | 3.46 | 14.12 | 36.16 | 54.38 | 31.69 | 63.81 | 97.14 | 121.14 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 2.57 | 3.46 | 14.12 | 36.15 | 54.37 | 31.69 | 63.79 | 97.35 | 121.99 |
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.69 | 63.79 | 97.35 | 125.85 |
 | [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 2.58 | 3.46 | 14.12 | 36.15 | 54.35 | 31.68 | 63.77 | 96.85 | 113.34 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [49440f883](https://github.com/AFK-surf/monoid/commit/49440f883492d3a040c3f9c173af456638a5ca4c) feat(mbui): storybook foundations, accent preview  | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 | [89302f4f7](https://github.com/AFK-surf/monoid/commit/89302f4f7ae17ff0c1f2c65e1f7604db91fd83e7) perf(mbui): draw a frame's new glyphs ahead as the | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 | [b02c0c878](https://github.com/AFK-surf/monoid/commit/b02c0c878ec23b7d2caf279494cbf7fa718d5d80) perf(mbui): the chat's old view held through the s | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
-| [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [47d40edf6](https://github.com/AFK-surf/monoid/commit/47d40edf65d86bbde88b8393fb19532e686a59a8) fix(screen,browser): fix headful passkey hang, wat | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.95 |
 | [140f48085](https://github.com/AFK-surf/monoid/commit/140f480854671be455ce595a929a1ba7b4b00556) fix(station): price Gemini usage right, on agy and | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [ae48917b5](https://github.com/AFK-surf/monoid/commit/ae48917b5d408f07959cdb33436b00bfcef41d2e) fix(mbui): set a player's volume on Windows and th | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
 | [74027d5e6](https://github.com/AFK-surf/monoid/commit/74027d5e6c2ff8f7a3c40b91e974e43f18d9fdd3) fix(sf-ui): centre the ring and ↻ over a picture g | 0.44 | 0.57 | 2.21 | 3.29 | 5.29 | 1.62 | 4.35 | 53.82 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [49440f883](https://github.com/AFK-surf/monoid/commit/49440f883492d3a040c3f9c173af456638a5ca4c) feat(mbui): storybook foundations, accent preview  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
 | [89302f4f7](https://github.com/AFK-surf/monoid/commit/89302f4f7ae17ff0c1f2c65e1f7604db91fd83e7) perf(mbui): draw a frame's new glyphs ahead as the | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.86 |
 | [b02c0c878](https://github.com/AFK-surf/monoid/commit/b02c0c878ec23b7d2caf279494cbf7fa718d5d80) perf(mbui): the chat's old view held through the s | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.9 |
-| [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
