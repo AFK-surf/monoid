@@ -9,7 +9,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, test } from "node:test";
 import { groupAlive, signalGroup } from "../src/ops/group.ts";
-import { JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
+import { COLLECT_YIELD_EVERY, JOB_FILES_ORPHAN_MS, JOB_LOGS_KEPT_MS, Jobs, WRAPPER, tail } from "../src/jobs/jobs.ts";
 import { JOB_LOG_CAP } from "../src/ops/storage.ts";
 import { Store } from "../src/store/store.ts";
 import { WINDOWS } from "../src/platform/index.ts";
@@ -110,6 +110,52 @@ describe("jobs' files", { concurrency: true }, () => {
     assert.equal(r.store.getJob(done.id)!.state, "exited");
     await g.open();
     await r.jobs.stop(live.id);
+  });
+
+  test("collecting goes through many kept jobs' files giving the loop back as it goes, and reads no job up", async () => {
+    // (1,043 reads of the store in one turn of the loop held a station's main thread 4.5 s, 2026-11-18)
+    const r = rig();
+    const logs = join(r.dir, "jobs", "logs");
+    const exits = join(r.dir, "jobs", "exit");
+    mkdirSync(logs, { recursive: true });
+    mkdirSync(exits, { recursive: true });
+    const T = 1_000_000_000_000;
+    const row = (id: string, state: string, endedAt: number | null) => ({
+      id, sessionKey: "s1", name: id, command: "true", cwd: r.work, port: null, token: `t-${id}`, state, pgid: null, exitCode: state === "running" ? null : 0,
+      startedAt: T - 1000, endedAt, restarts: 0, log: join(logs, `${id}.log`), watch: false,
+    });
+    const N = 1000;
+    for (let i = 0; i < N; i++) {
+      r.store.insertJob(row(`kept${i}`, "exited", T));
+      writeFileSync(join(logs, `kept${i}.log`), "x");
+      writeFileSync(join(exits, `kept${i}`), "0");
+    }
+    r.store.insertJob(row("up", "running", null));
+    writeFileSync(join(logs, "up.log"), "x");
+    writeFileSync(join(logs, "up.log.1"), "x");
+    const read: string[] = [];
+    const getJob = r.store.getJob.bind(r.store);
+    r.store.getJob = (id: string) => (read.push(id), getJob(id));
+    // what else the loop has to do while it collects: each turn it is given back, the reads since the last counted
+    let last = 0;
+    let most = 0;
+    let turns = 0;
+    let collecting = true;
+    const other = () => {
+      most = Math.max(most, read.length - last);
+      last = read.length;
+      turns++;
+      if (collecting) setImmediate(other);
+    };
+    setImmediate(other);
+    const gone = await r.jobs.collect(T + 1000);
+    collecting = false;
+    most = Math.max(most, read.length - last);
+    assert.deepEqual(gone, [], "all within their time");
+    assert.ok(!read.includes("up"), "a job up is not read");
+    assert.equal(read.length, N, "each kept job read once, for its log and its exit file both");
+    assert.ok(most <= COLLECT_YIELD_EVERY, `${most} reads in one turn of the loop`);
+    assert.ok(turns >= N / COLLECT_YIELD_EVERY, `the loop given back ${turns} times`);
   });
 
   test("a job's exit code is there whole or not at all: written aside, then moved into place", { skip: WINDOWS && "the wrapper's sh and mv" }, () => {
