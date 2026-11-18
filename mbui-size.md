@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a1ec718e](https://github.com/AFK-surf/monoid/commit/1a1ec718ef17b3553793058626bac94a494753d7) fix(mbui): a board card that moves to another colu | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.56 | 63.51 | 96.72 | 96.78 |
 | [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 2.55 | 3.43 | 14.03 | 35.99 | 53.96 | 31.55 | 63.49 | 96.8 | 114.79 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 2.55 | 3.43 | 14.04 | 35.97 | 53.98 | 31.55 | 63.49 | 96.8 | 122.16 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.81 | 123.09 |
 | [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 2.54 | 3.42 | 13.99 | 35.92 | 53.81 | 31.49 | 63.36 | 96.95 | 123.09 |
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
-| [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.83 | 123.09 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [1a1ec718e](https://github.com/AFK-surf/monoid/commit/1a1ec718ef17b3553793058626bac94a494753d7) fix(mbui): a board card that moves to another colu | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.2 |
 | [869829a2c](https://github.com/AFK-surf/monoid/commit/869829a2cec7570fc8bb5f1bf05902771c24ccd4) fix(core): a new device approved face to face is i | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
 | [855e7eb76](https://github.com/AFK-surf/monoid/commit/855e7eb76d16328411aa3049bb80511fd5785cc1) fix(mbui): a node shaken by ShakeWay is no jolt al | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.87 |
 | [6929f9fd6](https://github.com/AFK-surf/monoid/commit/6929f9fd68926826d669230eee805202501b7e8d) fix(sf-ui): keep the segmented thumb inside its tr | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.71 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [9c59a1b52](https://github.com/AFK-surf/monoid/commit/9c59a1b52521d9b7ce6aa38ecb255123f4e3a022) fix(app): open PR links and refresh selected photo | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [6122dc262](https://github.com/AFK-surf/monoid/commit/6122dc2629ec4ca2f73e5673f582c4667ccf61d4) fix(mbui): add LiquidBottomTabs shadows to the bot | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.25 |
 | [b7b134825](https://github.com/AFK-surf/monoid/commit/b7b134825f2d0db5c79fe3c8d36fdcca73b9ef21) fix(station): make one profile, not all, when the  | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
-| [e076785f3](https://github.com/AFK-surf/monoid/commit/e076785f3b101f4f7582b0e2f0750647331039f6) fix(ci): rebalance native mbui builds and tests (# | 0.43 | 0.57 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.28 |
