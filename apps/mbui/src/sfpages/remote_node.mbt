@@ -592,7 +592,9 @@ fn remote_row_node(
       .lines_up(Is(Some(End)))
       .padding(Is((0.0, @ui.capsule_in(@sf.row_corner, row_key_side), @ui.capsule_in(@sf.row_corner, row_key_side), 0.0)))
       |> ignore
-      o.box(fn(k) {
+      @sf.action_box_node(o, fn() { close_label() + " " + item().title }, fn(_) {
+        remote_row_close(src, @signals.untracked(ws), @signals.untracked(item))
+      }, fn(k) {
         k
         .width(Is(Some(row_key_side)))
         .height(Is(Some(row_key_side)))
@@ -601,9 +603,7 @@ fn remote_row_node(
         .lies_along(Is(Middle))
         |> ignore
         @sf.hover_ground_node(k)
-        @sf.presses_node(k, fn() { remote_row_close(src, @signals.untracked(ws), @signals.untracked(item)) })
         k.on_menu(fn(m) { open_menu(m.wx, m.wy, false) }) |> ignore
-        k.says(By(fn() { Some(@view.said(Button, label=close_label() + " " + item().title)) })) |> ignore
         @sf.icon_node(k, "close", row_icon, By(fn() { if @sf.lit_node(k) { t().p.text } else { t().p.muted } })) |> ignore
         @sf.tip_node(tips, k, close_label) |> ignore
       })

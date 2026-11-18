@@ -209,9 +209,15 @@ pub async fn Admin::handle(self : Admin, r : Request) -> Answer {
       ])
   }
   let key = header_of(r.headers, "idempotency-key")
+  // (not a read that sends what the client holds, or several reads in one: a retry reads again, and an answer as it
+  // comes is never held whole to be kept)
   let keyed = match key {
     Some(k) =>
-      k != "" && k.length() <= 200 && r.verb != "GET" && r.verb != "HEAD"
+      k != "" &&
+      k.length() <= 200 &&
+      r.verb != "GET" &&
+      r.verb != "HEAD" &&
+      !reads_re.matches(r.path)
     None => false
   }
   let answer = if keyed {
@@ -439,7 +445,8 @@ pub fn answer_of(said : JV) -> Answer {
 
 ///|
 /// Several reads in one (POST /batch `{ gets }`, each a path with its query): each answered as its GET is, all in one
-/// answer, `{ answers: [{ status, body }] }` in their order. Only the reads in BATCHED.
+/// answer, `{ answers: [{ status, body }] }` in their order. Only the reads in BATCHED. A client that accepts
+/// `application/x-ndjson` is given each answer as a line of its own as soon as it is read (`batch_lines`).
 async fn Admin::batch(self : Admin, r : Request) -> Answer {
   if r.body.length() > 1000000 {
     return error(413, "request too large")
@@ -453,14 +460,20 @@ async fn Admin::batch(self : Admin, r : Request) -> Answer {
       items.all(g => g is Str(_)) => items.map(g => jstr(Some(g)).unwrap())
     _ => return error(400, "gets: at most \{BATCH_MOST} paths to read")
   }
-  let answers : Array[String] = Array::make(paths.length(), "")
-  let next = Ref(0)
   let aborted = () => {
     match r.signal {
       Some(s) => s.aborted
       None => false
     }
   }
+  if aborted() {
+    return error(503, "read cancelled")
+  }
+  if header_of(r.headers, "accept").unwrap_or("").to_lower().contains(ndjson) {
+    return self.batch_lines(r, paths)
+  }
+  let answers : Array[String] = Array::make(paths.length(), "")
+  let next = Ref(0)
   let work = async fn() {
     while next.val < paths.length() {
       let i = next.val
@@ -468,44 +481,7 @@ async fn Admin::batch(self : Admin, r : Request) -> Answer {
       if aborted() {
         return
       }
-      let p = paths[i]
-      let (path, query, search) = match p.find("?") {
-        Some(at) =>
-          (
-            p.unsafe_substring(start=0, end=at),
-            query_pairs(p.unsafe_substring(start=at + 1, end=p.length())),
-            p.unsafe_substring(start=at, end=p.length()),
-          )
-        None => (p, [], "")
-      }
-      let a = if batched.iter().any(b => b.matches(path)) {
-        self.answer({
-          ..r,
-          background: true,
-          verb: "GET",
-          path,
-          query,
-          search: Some(search),
-          body: b"",
-        })
-      } else {
-        error(400, "not read in a batch: \{path}")
-      }
-      let (text, is_json) = match a.body {
-        Whole(b) => {
-          let t = utf8_text(b)
-          (
-            t,
-            a.headers
-            .get("content-type")
-            .unwrap_or("")
-            .has_prefix("application/json") &&
-            t != "",
-          )
-        }
-        _ => ("", false)
-      }
-      answers[i] = "{\"status\":\{a.status},\"body\":\{if is_json { text } else { stringify(js(text)) }}}"
+      answers[i] = batch_line(self.batch_read(r, paths[i], r.signal))
     }
   }
   let n = if paths.length() < BATCH_AT_ONCE {
@@ -514,11 +490,116 @@ async fn Admin::batch(self : Admin, r : Request) -> Answer {
     BATCH_AT_ONCE
   }
   ignore(@effect.all(Array::makei(n, _ => work)))
-  // A cancelled batch has no answer to keep under an idempotency key; a retry must read its pages again.
+  // A cancelled batch has no answer to keep; a retry must read its pages again.
   if aborted() {
     return error(503, "read cancelled")
   }
   json(200, "{\"answers\":[\{answers.join(",")}]}")
+}
+
+///|
+/// A batch's reads one at a time, each answer a line (`{"status":…,"body":…}`) given as soon as it is read: a page read
+/// waits for no other, and a client stopping (the device gone, or the stream let go of) starts no read after the one
+/// under way. Each line is as a client from before takes it (compat.mbt, as the whole batch's answers are: that one
+/// sees a stream, and leaves it as it is).
+fn Admin::batch_lines(self : Admin, r : Request, paths : Array[String]) -> Answer {
+  let own = Signal::new()
+  let stopped = Ref(false)
+  let at = Ref(0)
+  let gone = () => {
+    stopped.val ||
+    own.aborted ||
+    (match r.signal {
+      Some(s) => s.aborted
+      None => false
+    })
+  }
+  let next = async fn() -> Bytes? {
+    if gone() || at.val >= paths.length() {
+      stopped.val = true
+      return None
+    }
+    let p = paths[at.val]
+    at.val += 1
+    let a = self.batch_read(r, p, Some(own))
+    if gone() {
+      stopped.val = true
+      return None
+    }
+    let shown = self.runtime_compatible({ ..r, verb: "GET", path: path_of(p) }, a)
+    Some(utf8(batch_line(shown) + "\n"))
+  }
+  let close = async fn() {
+    stopped.val = true
+    own.abort()
+  }
+  {
+    status: 200,
+    headers: { "content-type": ndjson, "cache-control": "no-store" },
+    body: Streamed(next, close),
+  }
+}
+
+///|
+/// One read of a batch, as its GET is answered, in the background.
+async fn Admin::batch_read(
+  self : Admin,
+  r : Request,
+  p : String,
+  signal : Signal?,
+) -> Answer {
+  let (path, query, search) = match p.find("?") {
+    Some(at) =>
+      (
+        p.unsafe_substring(start=0, end=at),
+        query_pairs(p.unsafe_substring(start=at + 1, end=p.length())),
+        p.unsafe_substring(start=at, end=p.length()),
+      )
+    None => (p, [], "")
+  }
+  if batched.iter().any(b => b.matches(path)) {
+    self.answer({
+      ..r,
+      signal,
+      background: true,
+      verb: "GET",
+      path,
+      query,
+      search: Some(search),
+      body: b"",
+    })
+  } else {
+    error(400, "not read in a batch: \{path}")
+  }
+}
+
+///|
+/// A batch's answers a line at a time (`Admin::batch_lines`).
+let ndjson : String = "application/x-ndjson"
+
+///|
+fn path_of(p : String) -> String {
+  match p.find("?") {
+    Some(at) => p.unsafe_substring(start=0, end=at)
+    None => p
+  }
+}
+
+///|
+/// One answer of a batch as it is said: its body as it is where it is JSON, else as a string.
+fn batch_line(a : Answer) -> String {
+  let (text, is_json) = match a.body {
+    Whole(b) => {
+      let t = utf8_text(b)
+      (
+        t,
+        a.headers.get("content-type").unwrap_or("").has_prefix("application/json") &&
+        t != "",
+      )
+    }
+    _ => ("", false)
+  }
+  "{\"status\":\{a.status},\"body\":\{if is_json { text } else { stringify(js(text)) }}}"
 }
 
 ///|

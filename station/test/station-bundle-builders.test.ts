@@ -34,7 +34,7 @@ test("a release's live locator finds a transcript", { skip: !process.env.STATION
   const locator = new LiveLocator(data, (key) => store.getSession(key), () => [],
     (at) => new MbProcess(program(), ["--builder", "live-locator", "--db", join(at, "stillfail.db"), "--data", at, "--sep", sep]));
   try {
-    store.insertSession({ key: "one", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",
+    store.insertSession({ key: "one", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w",
       token: "one", createdAt: 1, lastActiveAt: 1, ws: "mine" });
     store.setRuntimeSessionId("one", "current");
     const directory = join(data, "transcripts", "claude", "-w");
@@ -58,10 +58,10 @@ test("the builders of a station release's program start and process a batch", { 
     store.db.exec(`CREATE TABLE signin_asks (id TEXT PRIMARY KEY, session TEXT NOT NULL, owner TEXT NOT NULL, status TEXT NOT NULL, body TEXT NOT NULL);
       CREATE INDEX signin_asks_by_session ON signin_asks (session, status);`);
     installSigninSaveIndex(store.db);
-    const thread = store.openThread("ember", "CHAT", "old", null, null).id;
-    store.joinThread(thread, "old-cc", "ember");
+    const thread = store.openThread("chat", "CHAT", "old", null, null).id;
+    store.joinThread(thread, "old-cc", "chat");
     store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,ts,at) VALUES (?,1,'message','agent','s','post',1)").run(thread);
-    const saidThread = store.openThread("ember", "CHAT", "old-said", null, null).id;
+    const saidThread = store.openThread("chat", "CHAT", "old-said", null, null).id;
     const put = store.db.prepare("INSERT INTO entries(thread,n,kind,author_kind,author,ts,at) VALUES (?,?,'message',?,?,?,?)");
     put.run(saidThread, 1, "agent", "s", "first", 1);
     for (let n = 2; n <= 70; n++) put.run(saidThread, n, "person", "p", `m${n}`, n);
@@ -72,7 +72,7 @@ test("the builders of a station release's program start and process a batch", { 
     for (let n = 0; n < 70; n++) turn.run(`old-${n}`, n);
     store.db.prepare("DELETE FROM session_turns WHERE session='old-turn'").run();
     store.db.exec("UPDATE post_blocks_meta SET fresh = 0; DELETE FROM post_blocks");
-    store.insertSession({ key: "old-count", connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",
+    store.insertSession({ key: "old-count", connect: "chat", runtime: "claude", profile: "cc", workspace: "/w",
       token: "old-count", createdAt: 1, lastActiveAt: 1, ws: "mine" });
     store.db.prepare("INSERT INTO turns(id,session_key,kind,started_at,ended_at,outcome,declared) VALUES ('old-wait','old-count','user',0,1,'completed','waiting')").run();
     store.db.exec("DELETE FROM session_recover_waits; UPDATE session_recover_wait_meta SET cursor=NULL,complete=0 WHERE id=1");
@@ -159,7 +159,7 @@ test("the builders of a station release's program start and process a batch", { 
     assert.equal(store.db.prepare("SELECT job FROM process_job_rows WHERE job=?").get("old-job")?.job, "old-job");
     assert.equal(store.db.prepare("SELECT scanned FROM legacy_said_meta WHERE id=1").get()?.scanned, 1);
     assert.equal(store.db.prepare("SELECT scanned FROM legacy_agent_meta WHERE id=1").get()?.scanned, 1);
-    assert.deepEqual(store.sessionCounts(), [{ connect: "ember", ws: "mine", n: 1 }]);
+    assert.deepEqual(store.sessionCounts(), [{ connect: "chat", ws: "mine", n: 1 }]);
     assert.equal(store.db.prepare("SELECT session FROM session_list_rows WHERE ws='mine'").get()?.session, "old-count");
     assert.equal(store.db.prepare("SELECT connect FROM session_binding_rows WHERE session='old-count'").get()?.connect, "old-binding");
     assert.equal(store.db.prepare("SELECT session FROM archive_pin_rows WHERE session='old-count'").get()?.session, "old-count");

@@ -509,6 +509,7 @@ pub struct TabView {
   priv mut unlisten : () -> Unit
   priv mut peek : Bool
   priv mut fitted : Bool
+  priv mut device_passkeys : Bool
   priv mut heard_ids : Int
 }
 
@@ -534,6 +535,7 @@ pub fn TabView::new(p : ViewParts) -> TabView {
     unlisten: () => (),
     peek: false,
     fitted: false,
+    device_passkeys: true,
     heard_ids: 0,
   }
   v.unlisten = (p.cdp.on)(e => v.heard(e))
@@ -559,6 +561,7 @@ pub async fn TabView::start(self : TabView, options : ViewOptions, viewport? : (
     None => ()
   }
   self.peek = options.peek
+  self.device_passkeys = options.passkeys != Some(false)
   let cdp = self.p.cdp
   let session = self.p.session
   ignore(cdp.send("Page.enable", Obj([]), Some(session)))
@@ -938,7 +941,7 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
   // Each viewer owns its binding as well as its subscription: page requests go to just that viewer, and an old
   // session removes only its own name on cleanup.
   let binding = passkey_binding_of(owner)
-  let hook = passkey_hook(owner)
+  let hook = passkey_hook(owner, device=self.device_passkeys)
   self.passkey_owner = owner
   let on = Ref(true)
   self.heard_ids += 1
@@ -985,6 +988,26 @@ pub fn TabView::watch_passkey(self : TabView, heard : (J) -> Unit) -> () -> Unit
           }
           _ => ()
         }
+        return
+      }
+      if at(said, "uvpa") is Some(Str(uu)) && uu.length() <= 253 {
+        let raw = lower(@jsjson.text(uu))
+        let h = if raw.has_suffix(".") { slice(raw, 0, b=raw.length() - 1) } else { raw }
+        let mut available = false
+        match self.p.own_passkey {
+          Some(f) if h != "" => {
+            let parts = h.split(".").map(p => p.to_owned()).collect()
+            for i in 0..<parts.length() {
+              let rp = parts[i:].to_owned().join(".")
+              if (i == 0 || rp.contains(".")) && f(rp) {
+                available = true
+                break
+              }
+            }
+          }
+          _ => ()
+        }
+        self.answer_now([("id", js(id)), ("available", jb(available))])
         return
       }
       let allow = match at(said, "allow") {

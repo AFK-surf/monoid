@@ -136,3 +136,48 @@ test("so is the MoonBit front's, as the station has it", async (t) => {
   });
   await twoOnOneKey(t, withFront(loadMesh(), socket));
 });
+
+// Two Nodes binding a fresh front at once (FB-36: a handover's new Node and the old Node's link made again) bind one
+// endpoint of the key, never two: with two, the one the front kept was later held inactive by the relay for the other,
+// left over, and every station this one dialed answered that other, so no dial of this station's came through.
+test("two Nodes binding a fresh MoonBit front at once leave one endpoint of the key on the relay, which dials and is dialed", async (t) => {
+  needs();
+  const url = await relay(t);
+  const data = stationData(t);
+  const dir = mkdtempSync(join(tmpdir(), "relay-conflict-race-"));
+  const socket = join(dir, "front.sock");
+  const front = new MbProcess(reader!, ["--builder", "mesh", "--socket", socket, "--shell-dir", join(dir, "shell")]);
+  await new Promise<void>((resolve, reject) => {
+    front.once("message", (m: { listening?: string }) => (m.listening === socket ? resolve() : reject(new Error(JSON.stringify(m)))));
+    front.once("exit", (code: number) => reject(new Error(`ended (${code})`)));
+  });
+  t.after(async () => {
+    await front.terminate();
+    rmSync(dir, { recursive: true, force: true });
+  });
+  const key = randomBytes(32);
+  const options = { secretKey: key, alpns: [ALPN], relayUrls: [url], discovery: false, relayOnly: true };
+  const m1 = withFront(loadMesh(), socket);
+  const m2 = withFront(loadMesh(), socket);
+  const [e1, e2] = await Promise.all([m1.bind(options), m2.bind(options)]);
+  t.after(() => e2.close().catch(() => {}));
+  assert.deepEqual(e2.sockets(), e1.sockets(), "one endpoint of the key, not two");
+  await Promise.all([e1.online(), e2.online()]);
+  // The Node before goes, as in a handover.
+  await e1.close();
+  await until(() => m2.relayConflict?.() === true, 2_000);
+  assert.equal(m2.relayConflict?.(), false, "no other endpoint of the key on the relay");
+  assert.equal(await said(data, m2), NORMAL);
+  // Another station on the same relay: this one dials it, and it dials this one.
+  const peer = await loadMesh().bind({ secretKey: randomBytes(32), alpns: [ALPN], relayUrls: [url], discovery: false, relayOnly: true });
+  t.after(() => peer.close().catch(() => {}));
+  await peer.online();
+  const comingThere = peer.accept();
+  const out = await e2.connect({ id: peer.id(), relays: [url] }, ALPN);
+  assert.equal((await comingThere)?.remoteId(), e2.id());
+  out.close(0, "");
+  const comingHere = e2.accept();
+  const back = await peer.connect({ id: e2.id(), relays: [url] }, ALPN);
+  assert.equal((await comingHere)?.remoteId(), peer.id());
+  back.close(0, "");
+});

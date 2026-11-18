@@ -15,7 +15,7 @@ let has_naming_origin_sql : String =
 /// read/store.ts HAS_NAMING_ORIGIN_PREPARED.
 let has_naming_origin_prepared_sql : String =
   #|SELECT 1 FROM cc_session_rows INDEXED BY cc_session_order
-  #|  WHERE session = ?1 AND surface != 'ember' LIMIT 1
+  #|  WHERE session = ?1 AND surface != 'chat' LIMIT 1
 
 ///|
 /// read/store.ts HAS_NAMING_ORIGIN_POSSIBLE.
@@ -51,7 +51,7 @@ let latest_naming_origin_possible_sql : String =
 let latest_naming_origin_prepared_sql : String =
   #|WITH candidates AS MATERIALIZED (
   #|    SELECT thread FROM cc_session_rows INDEXED BY cc_session_order
-  #|    WHERE session=?1 AND surface != 'ember' LIMIT 9
+  #|    WHERE session=?1 AND surface != 'chat' LIMIT 9
   #|  ) SELECT (SELECT COUNT(*) FROM candidates) AS count,
   #|    CASE WHEN (SELECT COUNT(*) FROM candidates)<9 THEN (SELECT t.id FROM candidates r
   #|      CROSS JOIN threads t ON t.id=r.thread LEFT JOIN thread_state st ON st.thread=t.id

@@ -1198,7 +1198,7 @@ jobs:
           git config --global http.lowSpeedLimit 1024
           git config --global http.lowSpeedTime 20
       - uses: actions/checkout@v5
-      - run: bash scripts/git-history.sh main arch/next
+      - run: bash scripts/git-history.sh ${{ github.ref == 'refs/heads/main' && 'main' || 'main arch/next' }}
       # (mbc's units and the core's bytecode, and moon's own build below: main's newest, saved by this job on main by what
       # they hold, as preview.yml's jobs keep theirs; stable.yml's Mac app restores them too)
       # mbc still validates the full compiler and every dependency; the prefix just keeps each launcher’s store.
@@ -1371,12 +1371,12 @@ jobs:
         with:
           path: apps/mbui/out/mac/AppIcon-*
           key: mbui-mac-icon-beta-${{ hashFiles('apps/mbui/scripts/mac-icon.swift') }}
-      # Reserve the measured post-build chain, including post-actions: 60 seconds on main, 48 on a branch.
-      # The same diagnostics and process cleanup apply to both.
+      # Reserve the measured post-build chain, including post-actions: 48 seconds (main's cut run took 33 s after it,
+      # 44304867702). The same diagnostics and process cleanup apply on main and on a branch.
       - name: Finish the Mac app build
         id: finish
         run: |
-          if [ "$GITHUB_REF" = refs/heads/main ]; then reserve=60; else reserve=48; fi
+          reserve=48
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash .github/mac-release-prebuild.sh wait || {
               status=$?
               echo "::error::the Mac app's build not done $(( $(date +%s) - $(stat -f %m "$RUNNER_TEMP/start") )) s after it started; where it had got to:"

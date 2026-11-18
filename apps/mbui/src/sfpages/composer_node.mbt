@@ -269,14 +269,16 @@ pub fn chat_composer_node(
 /// What a composer's box made as nodes is for: a chat's (`chat`: its `@` menu, 抄送, its agent warmed as it is typed,
 /// ↑ ↓ to the chat beside it with nothing typed, what is said over it, its words sent into the chat, its foot kept as
 /// it grows), or what is written for something else in it (待派发's new task): opened however little it holds
-/// (`roomy`), what its field says while empty (`placeholder`, the chat's where none), what stands in its foot's row
-/// between ＋ and send (`tools`: where it goes), how much room its words leave at their end, clear of what stands over
+/// (`roomy`), what its field says while empty (`placeholder`, the chat's where none), whether ＋ stands in its foot
+/// (`attach`: what is pasted or dropped in is taken either way), what stands in its foot's row between ＋ and send
+/// (`tools`: where it goes), how much room its words leave at their end, clear of what stands over
 /// its top corner (`words_end`), what send is called and shows (`sends`, `send_icon`), and what it does with what is
 /// written once it is ready (`send`: composer_submit's; a chat's sends it into the chat).
 priv struct BoxSpec {
   chat : Bool
   roomy : Bool
   placeholder : String
+  attach : Bool
   tools : ((@view.View) -> Unit)?
   words_end : Double
   sends : () -> String
@@ -291,6 +293,7 @@ fn chat_box_spec() -> BoxSpec {
     chat: true,
     roomy: false,
     placeholder: "",
+    attach: true,
     tools: None,
     words_end: 0.0,
     sends: fn() { @sf.t("web-main.composer.send") },
@@ -866,6 +869,7 @@ fn composer_box_node(
     // with it)
     // (laid over the box from its foot's start, no box of its own round it: as far in as the capsule's round end
     // leaves it, or concentric with the box's foot corner)
+    if spec.attach {
     attach_node(box, src, w, tips, no_files, place=fn(b) {
       b
       .over(Is(true), edges=(Some(0.0), None, None, Some(0.0)))
@@ -890,6 +894,7 @@ fn composer_box_node(
       )
       |> ignore
     })
+    }
   })
   |> ignore
   // (its corners going from a capsule's to its box's as it opens, and back as it is let go, as far as its height

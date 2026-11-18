@@ -3,7 +3,7 @@
 
 ///|
 /// The connect id the station's own chat goes by (store/rows.ts STILLFAIL_CONNECT).
-pub let internal_connect : String = "ember"
+pub let internal_connect : String = "chat"
 
 ///|
 pub let internal_channel : String = "CHAT"

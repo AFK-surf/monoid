@@ -105,7 +105,7 @@ fn P53Accounts::new(bus : LiveBus) -> P53Accounts {
     station_lang: (bus.lang.val)(),
     tz_offset_ms: _ => 0.0,
   }
-  let oauth_io = @accounts_oauth.host_io(bus.host)
+  let oauth_io = p5_oauth_io(bus.host)
   let claude_auth = @accounts_oauth.ClaudeAuth::new(oauth_io, p53_claude_store(bus.host), {
     tr: (lang, key, args) => ctx.words.tr(lang, key, args~),
   })
@@ -946,4 +946,11 @@ async fn P53Models::written(self : P53Models) -> Unit {
   if self.catalog is Some(c) {
     c.written()
   }
+}
+
+///|
+/// The accounts' IO (`@accounts_oauth.host_io`) with the times it keeps (an expiry, when a lock was taken) since the
+/// epoch.
+fn p5_oauth_io(host : @host.Host) -> @accounts_oauth.Io {
+  { ..@accounts_oauth.host_io(host), now: () => p5_epoch_ms(), wall: () => p5_epoch_ms() }
 }

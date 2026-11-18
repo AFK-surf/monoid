@@ -12,13 +12,13 @@ import { Store } from "../src/store/store.ts";
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member" as const, workspace: "A", device: "dev", home: false };
 
 function fixture(s: Store, count: number): number {
-  const add = (key: string, ws: string) => s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w",
+  const add = (key: string, ws: string) => s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w",
     token: key, ws, createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
   add("a", "A");
   s.insertJob({ id: "job-a", sessionKey: "a", name: "job", command: "true", cwd: "/", port: null, token: "job-a",
     state: "running", pgid: null, exitCode: null, startedAt: 1, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
-  const t = s.openThreadOf("ember", "CHAT", "shared", "Shared", "ann@x", "a");
-  const member = s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,?,'ember',?)");
+  const t = s.openThreadOf("chat", "CHAT", "shared", "Shared", "ann@x", "a");
+  const member = s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,?,'chat',?)");
   member.run(t.id, "a", 0);
   for (let i = 0; i < count; i++) { const key = `peer-${i}`; add(key, "B"); member.run(t.id, key, i + 1); }
   return t.id;
@@ -84,7 +84,7 @@ test("a first raw membership decoding to the job session keeps the same title", 
   const s = Store.open(":memory:");
   try {
     const thread = fixture(s, 100), reader = makeStore(s.db, ".");
-    s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,CAST(X'610078' AS TEXT),'ember',-1)").run(thread);
+    s.db.prepare("INSERT INTO thread_sessions(thread,session,connect,joined_at) VALUES (?,CAST(X'610078' AS TEXT),'chat',-1)").run(thread);
     prepare(s, thread);
     assert.deepEqual(openJobs(reader, viewer, "en")[0]?.chat, { id: "a", title: "Shared", archived: false });
   } finally { s.close(); }

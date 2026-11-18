@@ -457,7 +457,7 @@ async fn P52::net_fetch(self : P52, meth : String, args : Array[Json]) -> Json {
     Object(m) => m.to_array().filter_map(kv => if kv.1 is String(v) { Some((kv.0, v)) } else { None })
     _ => []
   }
-  let answer = (@accounts_oauth.host_io(self.host).fetch)({
+  let answer = (p5_oauth_io(self.host).fetch)({
     url: jtext(Json::object({ "u": args.get(0).unwrap_or(Json::null()) }), "u").unwrap_or(""),
     method_: jtext(init, "method").unwrap_or("GET"),
     headers,

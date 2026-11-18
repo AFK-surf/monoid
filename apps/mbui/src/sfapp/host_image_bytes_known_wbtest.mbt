@@ -62,6 +62,8 @@ fn init {
     ("src/sfapp/place_first_wbtest.mbt", 10862),
     ("src/sfapp/preview_tree_wbtest.mbt", 1934327),
     ("src/sfapp/preview_wbtest.mbt", 2894865),
+    // (a picture's preview, then the image itself put in its place as it is zoomed into: both decoding at once)
+    ("src/sfapp/viewer_preview_wbtest.mbt", 1921076),
     ("src/sfapp/publish_wbtest.mbt", 96306),
     ("src/sfapp/quote_flight_wbtest.mbt", 115644),
     ("src/sfapp/quote_image_wbtest.mbt", 320444),

@@ -103,10 +103,13 @@ jobs:
       - uses: actions/checkout@v5
       - uses: ./.github/actions/setup
       - uses: ./.github/actions/natives
+      # (the .debs kept in the cache: fetched bare from Ubuntu's mirror they took the job past its 5 minutes, 44303560210)
+      - uses: ./.github/actions/apt
+        with:
+          name: side-x11
+          packages: ffmpeg xdotool xvfb xauth x11-utils x11-xkb-utils x11-xserver-utils python3-gi gir1.2-gtk-3.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libxtst6
       - name: Linux X11 capture and input
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y ffmpeg xdotool xvfb xauth x11-utils x11-xkb-utils x11-xserver-utils python3-gi gir1.2-gtk-3.0 gir1.2-gstreamer-1.0 gstreamer1.0-plugins-base gstreamer1.0-plugins-good libxtst6
           pnpm --dir station install --frozen-lockfile
           export STILLFAIL_TEST_X11=1 STILLFAIL_TEST_X11_REAL_MESH=1 XDG_SESSION_TYPE=x11
           unset WAYLAND_DISPLAY

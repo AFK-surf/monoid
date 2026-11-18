@@ -214,25 +214,24 @@ test("a routed request is answered by the MoonBit program as the admin API answe
     catch (e) { theirs = { status: (e as { status: number }).status, body: { error: (e as Error).message } }; }
     assert.deepEqual(ours, theirs, `${path}: ${diffAt(ours, theirs)}`);
   }
-  // several in one (admin.ts `batch`): each as its own GET, one it does not read in a batch refused there
-  const gets = [`/threads/${thread}/entries?limit=5`, "/sessions/s0", "/sessions/s0/timeline?limit=3", `/threads/${thread}`, "/nope"];
+  // several in one (admin.ts `batch`): not given the program, a history brought on in the background is Node's (its
+  // reads after every other a person waits on, read/pool.ts), and a routed read after it is answered meanwhile
+  assert.equal(SERVED_ROUTES.includes("POST /admin/api/batch"), false);
+  const gets = [`/threads/${thread}/entries?limit=5`, "/sessions/s0"];
   const bs = await theirs.openBi();
-  await bs.write(Buffer.from(`${JSON.stringify({ ...routedHead, method: "POST", path: "/admin/api/batch" })}\n${JSON.stringify({ gets })}`));
+  await bs.write(Buffer.from(`${JSON.stringify({ ...routedHead, method: "POST", path: "/admin/api/batch", headers: { ...routedHead.headers, accept: "application/x-ndjson" } })}\n${JSON.stringify({ gets })}`));
   await bs.finish();
-  const all = await readAll(bs);
-  const at = all.indexOf(10);
-  const bh = JSON.parse(all.subarray(0, at).toString());
-  const bb = all.subarray(at + 1);
-  const batched = JSON.parse((bh.headers["content-encoding"] === "zstd" ? zstdDecompressSync(bb) : bb).toString());
-  const expected = { answers: [
-    { status: 200, body: JSON.parse(await worker.read("entries", { viewer, thread, params: [["limit", "5"]] }, "en")) },
-    { status: 200, body: JSON.parse(await worker.read("session", { key: "s0", viewer, lang: "en" }, "en")) },
-    { status: 200, body: JSON.parse(await worker.read("timeline", { key: "s0", lang: "en", limit: "3" }, "en")) },
-    { status: 200, body: JSON.parse(await worker.read("thread", { id: String(thread), viewer, lang: "en" }, "en")) },
-    { status: 400, body: { error: "not read in a batch: /nope" } },
-  ] };
-  assert.equal(bh.status, 200, JSON.stringify(bh));
-  assert.deepEqual(batched, expected, diffAt(batched, expected) ?? "");
+  const nodes = (await conn.acceptBi())!;
+  const asked = await readAll(nodes);
+  const nl = asked.indexOf(10);
+  assert.equal(JSON.parse(asked.subarray(0, nl).toString()).path, "/admin/api/batch");
+  assert.deepEqual(JSON.parse(asked.subarray(nl + 1).toString()), { gets });
+  const meanwhile = await ask(theirs, routedHead);
+  assert.equal(meanwhile.head.status, 200, "a routed read while Node has not answered the batch");
+  await nodes.write(Buffer.from('{"status":200,"headers":{"content-type":"application/x-ndjson"}}\n{"status":200,"body":{}}\n'));
+  await nodes.finish();
+  const batchAnswer = await readAll(bs);
+  assert.equal(batchAnswer.toString(), '{"status":200,"headers":{"content-type":"application/x-ndjson"}}\n{"status":200,"body":{}}\n');
   // the event stream: Node's, carried and compressed by the program as it comes, let go once the device is gone
   {
     // (a connection of its own: the device goes by closing it)

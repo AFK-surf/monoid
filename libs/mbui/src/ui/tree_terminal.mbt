@@ -836,10 +836,16 @@ fn Ctx::paint_tree_terminal(
     let age = view_moment() - tt.sb_changed_at
     let thumb_alpha = if !at_bottom {
       0.52
-    } else if age >= 0.0 && age < 900.0 {
+    } else if age >= 0.0 && age < 600.0 {
+      // (shown as it is till its fade sets out: a frame asked for then, none before)
+      self.wake_at_time(tt.sb_changed_at + 600.0, later=true)
+      0.42
+    } else if age >= 600.0 && age < 900.0 {
+      // (fading by the clock: a frame each frame till it is gone, and one at its end)
       frame_clock.val.get() |> ignore
-      let fade = ((900.0 - age) / 300.0).clamp(min=0.0, max=1.0)
-      0.42 * fade
+      self.motion_read = true
+      self.wake_at_time(tt.sb_changed_at + 900.0, later=true)
+      0.42 * ((900.0 - age) / 300.0).clamp(min=0.0, max=1.0)
     } else {
       0.0
     }

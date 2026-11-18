@@ -1551,6 +1551,8 @@ pub fn panel_tip_node(@view.View, () -> String) -> Unit
 
 pub fn panel_tips_of(@view.View) -> TipLayer?
 
+pub fn panel_title_at_node(@view.View) -> Double
+
 pub let panel_w : Double
 
 pub fn panel_words_at_node(@view.View) -> Double

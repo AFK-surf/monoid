@@ -8,7 +8,7 @@ pub let schema_version : Int = 13
 
 ///|
 /// rows.ts STILLFAIL_SURFACE: a still.fail chat's surface.
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
 
 ///|
 /// rows.ts COMPACTED_FROM: a context this large and then halved was compacted.

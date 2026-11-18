@@ -25,7 +25,7 @@ pub fn resource_chats(db : @sql.Db, host : @host.Host, data : String, sep : Stri
       None => out[key] = { "thread": Json::null(), "title": Json::null() }
       Some(t) => {
         let id = field(t, "id")
-        let own = field(t, "surface") == Json::string("ember")
+        let own = field(t, "surface") == Json::string("chat")
         // store.ts `usageThreads`: a thread's first words where it has no name and is not one of the station's own
         let first = if !own && field(t, "title") is Null && field(t, "auto_title") is Null {
           try { first_text(db, id) } catch { _ => Json::null() }
@@ -33,7 +33,7 @@ pub fn resource_chats(db : @sql.Db, host : @host.Host, data : String, sep : Stri
           Json::null()
         }
         // usage.ts `threadConnect`: the first of its sessions' connects that is not the station's own
-        let connect = match one(db, "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'ember' ORDER BY joined_at, rowid LIMIT 1", [id]) {
+        let connect = match one(db, "SELECT connect FROM thread_sessions WHERE thread = ? AND connect != 'chat' ORDER BY joined_at, rowid LIMIT 1", [id]) {
           Some(r) => match field(r, "connect") { String(c) => Some(c); _ => None }
           None => None
         }

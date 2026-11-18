@@ -108,6 +108,7 @@ pub(all) struct ViewOptions {
   peek : Bool
   /// The viewer's phone: its width, height and scale.
   fit : (Double, Double, Double)?
+  passkeys : Bool?
 }
 
 ///|
@@ -123,6 +124,10 @@ pub fn ViewOptions::of_j(v : J) -> ViewOptions {
     max_height: js_num(at(Some(v), "maxHeight")),
     peek: is_true(at(Some(v), "peek")),
     fit,
+    passkeys: match at(Some(v), "passkeys") {
+      Some(Bool(b)) => Some(b)
+      _ => None
+    },
   }
 }
 

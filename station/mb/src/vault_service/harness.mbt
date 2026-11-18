@@ -312,7 +312,7 @@ fn Harness::world(self : Harness, setup : Json) -> World {
       post: async fn(_, _, _, _) { (self.cards.length() + 1).to_string() },
       shared: (_, _, _, _) => (),
       notify: (k, text) => self.effect("notified", jarr([js(k), js(text)])),
-      identity: _ => None,
+      identity: async fn(_) { None },
     },
     card_outcomes: None,
     home: () => gs(Some(self.state), "home"),

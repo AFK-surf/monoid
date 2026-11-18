@@ -1405,9 +1405,16 @@ test "the workspaces' sheet: more workspaces than it holds are reached by scroll
   assert_true(@sf.presenting())
   let last = "工作区 20"
   let (_, foot_y) = t.find("登录其他账号").unwrap()
+  // (the list's room ends at the line over its foot: a row's words under it, though over 登录其他账号's, are cut away)
+  let line_y = t
+    .drawn_rects()
+    .filter(fn(r) { r.3 == 1.0 && r.2 > 200.0 && r.1 < foot_y && r.1 > foot_y - 80.0 })
+    .map(fn(r) { r.1 })
+  assert_eq(line_y.length(), 1, msg="the line over the sheet's foot: \{Repr(line_y)}")
   let in_view = fn() {
     match t.find(last) {
-      Some((_, y)) => y < foot_y
+      // (clear of where it fades out towards it, 24: @sf.panel_list_node's)
+      Some((_, y)) => y < line_y[0] - 24.0
       None => false
     }
   }

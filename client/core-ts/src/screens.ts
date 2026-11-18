@@ -118,12 +118,13 @@ export function parseScreen(name: string, params: unknown, bytes?: Uint8Array): 
       const fps = peek ? null : fpsOf(get(params, "fps"));
       // The UI shows a video tagged Display P3 as such: the station may send wider colours than sRGB's.
       const p3 = get(params, "gamut") === "p3";
+      const passkeys = get(params, "passkeys");
       return {
         kind: "view",
         station,
         screen: text(params, "screen"),
         view: text(params, "view"),
-        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}) },
+        ask: { maxWidth: size("maxWidth", MAX_WIDTH), maxHeight: size("maxHeight", MAX_HEIGHT), codecs, control: control !== false && !peek, ...(peek ? { peek: true } : {}), ...(get(params, "audio") === "pcm_s16le" && !peek ? { audio: "pcm_s16le" as const } : {}), ...(quality ? { quality } : {}), ...(fps ? { fps } : {}), ...(fit ? { fit } : {}), ...(p3 ? { gamut: "p3" as const } : {}), ...(!peek && typeof passkeys === "boolean" ? { passkeys } : {}) },
         auto: !peek && typeof control !== "boolean",
         sound: get(params, "sound") !== false,
       };

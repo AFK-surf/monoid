@@ -154,6 +154,9 @@ test("a_persons_input_is_checked_and_put_in_the_frame", () => {
   for (const fps of [120, 90, 60, 30, 15]) assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", fps }) as J).call.ask.fps, fps);
   for (const fps of [undefined, 0, 45, 240, "60"]) assert.equal("fps" in (parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", fps }) as J).call.ask, false, String(fps));
   assert.equal((parseCall("screen.view", { station: "ws/st", screen: "desktop", view: "v1", fps: 30, peek: true }) as J).call.ask.fps, undefined);
+  for (const passkeys of [true, false]) assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", passkeys }) as J).call.ask.passkeys, passkeys);
+  for (const passkeys of [undefined, "true", 1]) assert.equal("passkeys" in (parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", passkeys }) as J).call.ask, false, String(passkeys));
+  assert.equal((parseCall("screen.view", { station: "ws/st", screen: "browser:T1", view: "v1", passkeys: false, peek: true }) as J).call.ask.passkeys, undefined);
 });
 
 test("a_screen_link_opens_the_screen", () => {

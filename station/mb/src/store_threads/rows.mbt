@@ -3,7 +3,16 @@
 // leaves an undefined out of JSON.
 
 ///|
-let stillfail_surface : String = "ember"
+let stillfail_surface : String = "chat"
+
+///|
+/// rows.ts `ownName`: a surface or connect as it is written now, the station's own chats' names of before its name now.
+fn own_name(name : Json) -> Json {
+  match name {
+    String("ember" | "stillfail") => Json::string(stillfail_surface)
+    v => v
+  }
+}
 
 ///|
 let station_author : String = "station"

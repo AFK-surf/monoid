@@ -211,11 +211,16 @@ fn jopt(s : String?) -> Json {
 }
 
 ///|
-/// What an error says: the drivers', the store's, the hub's, a thrown one's.
+/// The station's language, for what a driver says by its words' key (`Said("station.…")`): set as P5-2 starts.
+let p52_lang_fn : Ref[() -> String] = Ref(() => "zh")
+
+///|
+/// What an error says: the drivers', the store's, the hub's, a thrown one's. A driver's words said by their key
+/// (claude.ts `tr(stationLang(), …)`) in the station's language.
 fn said_of(e : Error) -> String {
   match e {
     @agent_drivers.Failed(m) => m
-    @agent_drivers.Said(m) => m
+    @agent_drivers.Said(m) => if m.has_prefix("station.") { tr((p52_lang_fn.val)(), m) } else { m }
     @agent_drivers.RenewRefused(m) => m
     @session_hub.Refused(m) => m
     BusError(m) => m

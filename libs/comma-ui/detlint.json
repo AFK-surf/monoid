@@ -92,6 +92,10 @@
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
+    "old-set-theme": {},
+    "old-empty-around": {
+      "src/gallery/main.mbt": 1
+    },
     "click-read": {},
     "key-read": {},
     "submitted-read": {},
@@ -178,6 +182,8 @@
     "list-comes-off": {},
     "old-island": {},
     "old-panel": {},
+    "old-set-theme": {},
+    "old-empty-around": {},
     "click-read": {},
     "key-read": {},
     "submitted-read": {},

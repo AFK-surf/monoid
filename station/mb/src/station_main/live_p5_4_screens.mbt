@@ -124,8 +124,14 @@ fn p54_screen_procs(host : @host.Host) -> @screens.Procs {
 ///|
 /// The machine as the screens' parts know it (screens `Os`).
 fn p54_screen_os(bus : LiveBus) -> @screens.Os {
+  p54_screen_os_of(bus.argv0)
+}
+
+///|
+/// `p54_screen_os` of the program at `argv0`.
+fn p54_screen_os_of(argv0 : String) -> @screens.Os {
   let env = () => @screens.Env::new(env_all())
-  let code_dir = @nodepath.dirname(sep(), @drive.real_of(bus.argv0))
+  let code_dir = @nodepath.dirname(sep(), @drive.real_of(argv0))
   let os = match platform() {
     "darwin" => "darwin"
     "windows" => "win32"
@@ -138,7 +144,7 @@ fn p54_screen_os(bus : LiveBus) -> @screens.Os {
     arch: arch(),
     os,
     uid: Some(@drive.uid()),
-    exec_path: bus.argv0,
+    exec_path: argv0,
     pid: @drive.pid(),
     env,
     runnable: (file, args, _) => { file, args, verbatim: false },
@@ -179,6 +185,61 @@ priv struct P54Screens {
 }
 
 ///|
+/// How still.fail Helper of `dir` is launched (`opened`: by LaunchServices), one holding its lock with no socket ended
+/// first (`p54_helper_evict`).
+fn p54_helper_launch(
+  host : @host.Host,
+  dir : String,
+  opened : async (String, Array[(String, String)]) -> Unit,
+) -> async (String, Array[(String, String)]) -> Unit {
+  async fn(app_path, env) {
+    p54_helper_evict(host, dir)
+    opened(app_path, env)
+  }
+}
+
+///|
+/// Before still.fail Helper is launched (no helper answered its socket): one of this directory's that still holds its
+/// lock (`helper.lock`) with its socket gone would make the one launched exit at once, every launch after it too, so it
+/// is ended first. Its pid is said in the lock by a helper of now; one from before left it empty, found by `lsof`.
+/// Only a `stillfail-helper` that is this directory's is ended: its command in it (the copy installed here, as
+/// LaunchServices starts it), or the lock open in it as `lsof` says.
+async fn p54_helper_evict(host : @host.Host, dir : String) -> Unit {
+  let lock = path([dir, "helper.lock"])
+  let pids : Array[Int] = []
+  let add = (t : String) => for line in t.split("\n") {
+    let n = @string.parse_int(line.trim().to_owned()) catch { _ => continue }
+    if n > 1 && n != @drive.pid() && !pids.contains(n) {
+      pids.push(n)
+    }
+  }
+  match read_text(lock) {
+    Some(t) => add(t)
+    None => return
+  }
+  let by_lsof = pids.is_empty()
+  if by_lsof {
+    match p53_run(host, "lsof", ["-t", "--", lock], timeout_ms=2000) {
+      Some(t) => add(t)
+      None => ()
+    }
+  }
+  for pid in pids {
+    guard p53_run(host, "ps", ["-ww", "-p", pid.to_string(), "-o", "command="], timeout_ms=2000) is Some(command) else {
+      continue
+    }
+    let here = by_lsof ||
+      command.contains(dir) ||
+      (p53_run(host, "lsof", ["-t", "-a", "-p", pid.to_string(), "--", lock], timeout_ms=2000) is Some(t) && t.trim() != "")
+    if here && command.contains("stillfail-helper") {
+      p51_log("WARN", "helper", "ending a still.fail Helper that holds its lock with no socket", fields={ "pid": Json::number(pid.to_double()) })
+      ignore(kill(pid, "SIGKILL"))
+      @effect.sleep(100)
+    }
+  }
+}
+
+///|
 /// The screens made (services.ts `Helper`, `Grants`, `HelperFolders`, `ScreenRegistry`), each list's change told.
 fn p54_screens_start(bus : LiveBus) -> P54Screens {
   let host = bus.host
@@ -189,7 +250,10 @@ fn p54_screens_start(bus : LiveBus) -> P54Screens {
   let env = @screens.Env::new(env_all())
   let helper = if mac {
     match @screens.helper_app(io, env) {
-      Some(app) => Some(@screens.HelperApp::new(io, app, path([bus.data, "helper"])))
+      Some(app) => {
+        let dir = path([bus.data, "helper"])
+        Some(@screens.HelperApp::new(io, app, dir, launch=Some(p54_helper_launch(host, dir, @screens.open_app(io)))))
+      }
       None => None
     }
   } else {

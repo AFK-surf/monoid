@@ -9,14 +9,14 @@ import { LATEST_NAMING_ORIGIN, makeStore } from "./reference/store.ts";
 import { Store, newMessage } from "../src/store/store.ts";
 
 const viewer = { sub: "ann@x", email: "ann@x", name: "Ann", role: "member", workspace: "A", device: "dev", home: true } as const;
-const session = (s: Store, key: string) => s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
+const session = (s: Store, key: string) => s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key,
   createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
 const job = (s: Store, key: string) => s.insertJob({ id: `j-${key}`, sessionKey: key, name: "job", command: "true", cwd: "/", port: null, token: key,
   state: "running", pgid: null, exitCode: null, startedAt: 1, endedAt: null, restarts: 0, log: "/dev/null", watch: false });
 const result = (rows: any[]) => rows.map((j) => [j.id, j.chat?.id, j.chat?.title, j.chat?.archived]);
 const own = (s: Store, name: string, members: string[]) => {
-  const chat = s.openThreadOf("ember", "CHAT", name, null, "ann@x", members.at(-1) ?? null);
-  for (const member of members) s.joinThread(chat.id, member, "ember");
+  const chat = s.openThreadOf("chat", "CHAT", name, null, "ann@x", members.at(-1) ?? null);
+  for (const member of members) s.joinThread(chat.id, member, "chat");
   return chat.id;
 };
 const origin = (s: Store, name: string, title: string | null, members: string[], at: number | null) => {

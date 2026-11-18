@@ -201,7 +201,7 @@ pub(all) struct Hub {
   post : async (String, String, String, String) -> String
   shared : (Int32, Int32, String, String) -> Unit
   notify : (String, String) -> Unit raise
-  identity : (String) -> @json.Json?
+  identity : async (String) -> @json.Json?
 }
 
 pub struct Incoming {

@@ -1831,7 +1831,7 @@ test("a chat opened on the admin page reaches the session like Slack, and the ag
   sayIn(r.hub, thread.id, "local", "现在进展如何？");
   await settle();
   const prompt = r.claude.last().prompts.at(-1)!;
-  assert.ok(matches(prompt, [`<message via="web" connect="ember" thread="CHAT/${thread.threadTs}"`, `from="管理员 (local)"`]), prompt);
+  assert.ok(matches(prompt, [`<message via="web" connect="chat" thread="CHAT/${thread.threadTs}"`, `from="管理员 (local)"`]), prompt);
   assert.ok(prompt.includes("现在进展如何"));
   const to = `CHAT/${thread.threadTs}`;
   assert.equal(await r.call(key, "chat_post", { to, text: "快好了", kind: "all_done", done: "答了进展：快好了，没有别的要做" }), `Posted to ${to}, and recorded state all_done.`);

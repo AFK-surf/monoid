@@ -152,18 +152,38 @@ fn image_layer(n : @view.View, src : Source, vw : Viewer, stage : () -> (Double,
   )
   // what was asked to be saved: a chat's file's download said to the core at the moment it was asked; what was asked
   // for before it was here saved as its whole comes; each once (Viewer::ask_save)
-  n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_)) }, fn(_) {
+  n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
     download_told(src, vw)
-    if vw.save_after && vw.bytes.untracked() is Some(_) {
+    if vw.save_after && vw.whole_here() is Some(_) {
       vw.save_after = false
       vw.save_tree()
     }
   })
   // what it reads asked of the core as what it needs comes (its kind sniffed, its bytes, a read failed)
   // (and as it is asked for: 下载 on one told of, 安装, its whole read first: Viewer::ask_save, ask_install)
-  n.reacts(fn() { (vw.sniffed.get(), vw.bytes.get() is Some(_), vw.error.get() is Some(_), vw.fetching.get(), vw.asked_told.get()) }, fn(_) {
-    vw.fetch(src)
-  })
+  n.reacts(
+    fn() {
+      (
+        vw.sniffed.get(),
+        vw.bytes.get() is Some(_),
+        vw.error.get() is Some(_),
+        vw.fetching.get(),
+        vw.asked_told.get(),
+        vw.whole_due(),
+      )
+    },
+    fn(_) { vw.fetch(src) },
+  )
+  // zoomed in past fitted (or gliding there): the image itself asked for in place of its preview (Viewer::whole_due);
+  // once asked, wanted till it comes, zoomed out again or not
+  n.reacts(
+    fn() {
+      vw.zoom.told()
+      let z = vw.zoom
+      z.nw > 0.0 && (if z.gliding { z.g_to[0] } else { z.scale }) > z.fit() * 1.01
+    },
+    fn(zoomed) { if zoomed { vw.zoomed_in.set(true) } },
+  )
   // Read the neighbours ahead once the open picture has come (or failed). Revisit both when imageNear changes and
   // when this picture finishes, even if no frame was drawn in between.
   n.reacts(fn() { (vw.near_ids(src), vw.bytes.get() is Some(_), vw.error.get() is Some(_)) }, fn(_) {
@@ -1728,8 +1748,8 @@ fn viewer_hosted(n : @view.View, src : Source, vw : Viewer, width : () -> Double
   |> ignore
   // 下载 asked on it (Viewer::ask_save): the core told at that change, on by itself whatever becomes of this viewer;
   // 安装 asked before its bytes came, done as they come (Viewer::ask_install)
-  n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_)) }, fn(_) {
-    if vw.install_after && vw.bytes.untracked() is Some(_) {
+  n.reacts(fn() { (vw.asked_told.get(), vw.bytes.get() is Some(_), vw.previewed.get()) }, fn(_) {
+    if vw.install_after && vw.whole_here() is Some(_) {
       vw.install_after = false
       vw.ask_install()
     }

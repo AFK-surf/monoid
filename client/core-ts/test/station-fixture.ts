@@ -84,9 +84,10 @@ export function stationHost(answers: Answers) {
   const streams: { path: string; queue: Queue.Queue<Uint8Array | null>; closed: boolean; headers?: [string, string][] }[] = [];
   host.onFetch((req: HttpRequest) => later.get(host)?.(req) ?? compressedFor(req, answer(req)));
   // How it answers what changed of a list (POST /changed/<list>) and several reads in one (POST /batch): `false`, as a
-  // station from before (no such route).
+  // station from before (no such route); a batch a line of JSON a read (`ndjson`, to a core that accepts it), or, as a
+  // station from before that, all of them in one `{ answers }`.
   const changes = { on: true };
-  const batches = { on: true };
+  const batches = { on: true, ndjson: true };
   // Whether still.fail cloud lists the station as online; the viewer's role in the workspace (none: a member); more of
   // what its view says (`also`); the account's other workspaces, as their views (`more`, no station in them).
   const cloud: { online: boolean; role?: string; also?: Record<string, unknown>; more?: ({ id: string; name: string } & Record<string, unknown>)[]; me?: Record<string, unknown> } = { online: true };
@@ -107,6 +108,8 @@ export function stationHost(answers: Answers) {
         const a = answer({ ...req, method: "GET", url: `https://stillfail.test/admin/api${g}`, body: null });
         return { status: a.status, body: a.body.length > 0 ? JSON.parse(new TextDecoder().decode(a.body)) : null };
       });
+      const streams = batches.ndjson && req.headers.some(([k, v]) => k.toLowerCase() === "accept" && v.includes("application/x-ndjson"));
+      if (streams) return { status: 200, headers: [["content-type", "application/x-ndjson"]], body: new TextEncoder().encode(answers.map((a) => `${JSON.stringify(a)}\n`).join("")) };
       return jsonResponse(200, { answers });
     }
     const list = /^\/admin\/api\/changed\/(chats|threads|sessions)(\?|$)/.exec(path);

@@ -5263,7 +5263,8 @@ pub fn View::image_for(self : View, room : Live[(Double, Double)], loc~ : Source
 /// Where in it its picture lies (View::image: x, y, w, h, in its own terms) and the colour filling the rest of it, as
 /// changes: its picture and that matte drawn as one instance (its edge cut once, its corners its own), the matte alone
 /// over its box till the picture is decoded, as an old view's picture at a rect of its own in a matte (Ctx::picture's
-/// `matte`); None, the picture filling it. Paint's.
+/// `matte`); None, the picture filling it. Its picture fills that rect, or covers it where View::image_covers or
+/// View::image_covers_at says so (a still of other proportions than the rect cut, never stretched to it). Paint's.
 #callsite(autofill(loc))
 pub fn View::image_in(self : View, at : Live[((Double, Double, Double, Double), Int64)?], loc~ : SourceLoc) -> View {
   self.bind(loc~, ImageIn, at, Paint, fn(i) { self.tree.nodes[self.at].look.image_in = i })

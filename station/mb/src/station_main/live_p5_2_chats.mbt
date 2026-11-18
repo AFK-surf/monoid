@@ -1683,7 +1683,7 @@ async fn P52::tools_call(
       rv_of((self.bus.cloud_call.val)("removeRelay", { "workspace": json_of_rv(a(1)), "url": json_of_rv(a(2)) }))
     // (relays.ts `probeRelay`: a relay reached over https, its answer's status)
     "fetch" => {
-      let answer = (@accounts_oauth.host_io(self.host).fetch)({
+      let answer = (p5_oauth_io(self.host).fetch)({
         url: s(0),
         method_: "GET",
         headers: [],

@@ -83,7 +83,8 @@ describe("jobs' files", { concurrency: true }, () => {
     const done = await r.jobs.start("s1", "done", "echo done", r.work, null, false);
     const g = gate(r.dir);
     const live = await r.jobs.start("s1", "live", g.wait, r.work, null, false);
-    await until(() => r.store.getJob(done.id)!.state === "exited");
+    // The store says it ended before its end is taken in: until then its files are still a running job's.
+    await until(() => r.store.getJob(done.id)!.state === "exited" && !r.jobs.isRunning(done.id));
     const endedAt = r.store.getJob(done.id)!.endedAt!;
     const logs = join(r.dir, "jobs", "logs");
     const exits = join(r.dir, "jobs", "exit");

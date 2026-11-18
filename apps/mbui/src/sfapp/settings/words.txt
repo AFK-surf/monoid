@@ -1078,6 +1078,11 @@ web-main.shortcuts.moved
 web-main.shortcuts.recording
 web-main.shortcuts.reset
 web-main.shortcuts.resetAll
+web-main.shortcuts.search
+web-main.shortcuts.searchKeys
+web-main.shortcuts.searchKeysStop
+web-main.shortcuts.searchNone
+web-main.shortcuts.searchPressing
 web-main.shortcuts.sendNote
 web-main.shortcuts.sendWith
 web-main.shortcuts.sending

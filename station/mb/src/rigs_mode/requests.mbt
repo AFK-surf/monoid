@@ -30,7 +30,7 @@ pub let card_occupied : String = "Another card is pending in that conversation. 
 
 ///|
 /// store/rows.ts `STILLFAIL_SURFACE`.
-pub let stillfail_surface : String = "ember"
+pub let stillfail_surface : String = "chat"
 
 ///|
 /// A request as kept (rigs/requests.ts `RigRequest`): its fields in the order they were set.

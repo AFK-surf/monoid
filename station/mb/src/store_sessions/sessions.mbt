@@ -449,7 +449,10 @@ pub fn Store::insert_session(self : Store, s : Json) -> Unit raise {
         ),
         [
           nullish(get("key")),
-          nullish(get("connect")),
+          match nullish(get("connect")) {
+            String("ember" | "stillfail") => Json::string(internal_connect)
+            v => v
+          },
           or_else(nullish(get("scope")), jstr("thread")),
           nullish(get("title")),
           nullish(get("createdBy")),

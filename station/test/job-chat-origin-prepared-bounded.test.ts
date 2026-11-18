@@ -11,7 +11,7 @@ import { Store } from "../src/store/store.ts";
 const preparedLookup = HAS_NAMING_ORIGIN_PREPARED;
 const possibleLookup = HAS_NAMING_ORIGIN_POSSIBLE;
 
-const addSession = (s: Store, key: string) => s.insertSession({ key, connect: "ember", runtime: "claude", profile: "cc", workspace: "/w", token: key,
+const addSession = (s: Store, key: string) => s.insertSession({ key, connect: "chat", runtime: "claude", profile: "cc", workspace: "/w", token: key,
   createdAt: 1, lastActiveAt: 1, createdBy: "ann@x" });
 
 const prepare = (s: Store, key: string) => {
@@ -24,8 +24,8 @@ const prepare = (s: Store, key: string) => {
 };
 
 const addOwnChats = (s: Store, key: string, count = 9) => {
-  const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('ember','C',?,1)");
-  const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,?,'ember',1)");
+  const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('chat','C',?,1)");
+  const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,?,'chat',1)");
   s.db.exec("BEGIN IMMEDIATE");
   for (let i = 0; i < count; i++) member.run(thread.run(`${key}-own-${i}`).lastInsertRowid, key);
   s.db.exec("COMMIT");
@@ -35,8 +35,8 @@ for (const count of [40, 400, 4000]) test(`a prepared live member checks no ${co
   const s = Store.open(":memory:");
   try {
     addSession(s, "member");
-    const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('ember','C',?,1)");
-    const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,'member','ember',1)");
+    const thread = s.db.prepare("INSERT INTO threads (surface,channel,thread_ts,created_at) VALUES ('chat','C',?,1)");
+    const member = s.db.prepare("INSERT INTO thread_sessions (thread,session,connect,joined_at) VALUES (?,'member','chat',1)");
     s.db.exec("BEGIN IMMEDIATE");
     for (let i = 0; i < count; i++) member.run(thread.run(`own-${i}`).lastInsertRowid);
     s.db.exec("COMMIT");
@@ -52,7 +52,7 @@ for (const count of [40, 400, 4000]) test(`a prepared live member checks no ${co
           "origin.session = ?1 AND visit_original_origin(origin.thread) = origin.thread AND t.surface");
         if (sql === preparedLookup) {
           usedPrepared = true;
-          traced = sql.replace("surface != 'ember'", "surface != 'ember' AND visit_prepared_origin(thread) = thread");
+          traced = sql.replace("surface != 'chat'", "surface != 'chat' AND visit_prepared_origin(thread) = thread");
         }
         if (sql === possibleLookup) traced = sql.replace("WHERE session = c.session LIMIT",
           "WHERE session = c.session AND visit_candidate_member(rowid) = rowid LIMIT");
@@ -240,7 +240,7 @@ test("an older nullable thread surface is not confused with a missing thread", (
       CREATE TABLE cc_index_meta(id INTEGER PRIMARY KEY,version INTEGER);
       CREATE TABLE cc_sessions(session TEXT PRIMARY KEY,complete INTEGER);
       CREATE TABLE cc_session_rows(session TEXT,thread INTEGER,surface TEXT,created_at INTEGER,last_at INTEGER,PRIMARY KEY(session,thread));
-      CREATE INDEX cc_session_order ON cc_session_rows(session,last_at DESC,created_at DESC,thread DESC) WHERE surface != 'ember';
+      CREATE INDEX cc_session_order ON cc_session_rows(session,last_at DESC,created_at DESC,thread DESC) WHERE surface != 'chat';
       CREATE TABLE cc_session_dirty(session TEXT,thread INTEGER,PRIMARY KEY(session,thread));
       CREATE TABLE cc_order_dispatch(thread INTEGER PRIMARY KEY);
       INSERT INTO sessions VALUES('member'); INSERT INTO threads VALUES(1,NULL);

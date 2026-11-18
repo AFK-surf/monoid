@@ -1091,13 +1091,10 @@ pub fn usage_tiles_node(
         b.radius(Is(@sf.row_corner)) |> ignore
         let role : @view.Role = if press is Some(_) { Button } else { Text }
         b.says(By(fn() { Some(@view.said(role, label=name() + " " + figure())) })) |> ignore
-      } else if press is Some(_) {
-        // (a hover card's: what its press opens)
-        b.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-pages.chat.contextActions"))) })) |> ignore
-      }
-      match press {
-        Some(f) => @sf.presses_node(b, fn() { f(b) })
-        None => ()
+        match press {
+          Some(f) => @sf.presses_node(b, fn() { f(b) })
+          None => ()
+        }
       }
       figure_node(b, figure, level, room)
       match more {
@@ -1129,7 +1126,11 @@ pub fn usage_tiles_node(
       .grow(Is(1.0))
       .basis(Is(Some(0.0)))
     } else {
-      t.box(fn(b) { made(b, fn() { 0.0 }) })
+      match press {
+        // (a hover card's: what its press opens)
+        Some(f) => @sf.action_box_node(t, fn() { @sf.t("web-pages.chat.contextActions") }, f, fn(b) { made(b, fn() { 0.0 }) })
+        None => t.box(fn(b) { made(b, fn() { 0.0 }) })
+      }
     }
   }
   // (each tile's share of the row: what shows it takes it)

@@ -100,7 +100,7 @@ fn surface_options(host : @host.Host, connect : String, book : @connects_hub.Nam
     ping_ms: 5000.0,
     stale_ms: 20000.0,
     backoff_ms: 1000.0,
-    clock: @connects_hub.Clock::live(),
+    clock: p5_connects_clock(),
     on_heard: () => (),
     log: connects_log(),
     open_socket: Some(p55_shell_socket(host, binary~)),
@@ -357,7 +357,7 @@ fn feishu_book(book : @connects_hub.NameBook) -> @feishu.NameBook {
 async fn P55::start_feishu(self : P55, options : @connects_hub.ConnectsOptions) -> @connects_hub.Connects {
   let bus = self.bus
   let host = bus.host
-  let net = @feishu.host_net(host, stand_in=env_get("STILLFAIL_FEISHU_API"))
+  let net = { ..@feishu.host_net(host, stand_in=env_get("STILLFAIL_FEISHU_API")), now: () => p5_epoch_ms() }
   let words = feishu_words(bus)
   let disk = @feishu.host_disk(host, sep=sep())
   let feishu = @feishu.make_feishu(host.rt, bus.data, sep(), net, words, @feishu.host_log(), disk, @feishu.host_random_hex(host), bus.argv0)
@@ -629,7 +629,10 @@ async fn P55::start_comma(self : P55, options : @connects_hub.ConnectsOptions) -
   let host = bus.host
   let db = bus.db
   let (zh, en) = catalogs_json()
-  let io = @comma.host_io(host, words=@comma.Words::new(of_core(zh), of_core(en)), lang=() => (bus.lang.val)(), platform=platform(), arch=arch(), hostname=hostname(), version=bus.version)
+  let io = {
+    ..@comma.host_io(host, words=@comma.Words::new(of_core(zh), of_core(en)), lang=() => (bus.lang.val)(), platform=platform(), arch=arch(), hostname=hostname(), version=bus.version),
+    now: () => p5_epoch_ms().to_double(),
+  }
   let cloud_listeners = (f : () -> Unit) => (bus.cloud_listen.val)(_ => f())
   let rows = (sql : String, args : Array[@jsjson.JValue]) => db.all(sql, args.map(to_core)).map(r => of_core(Json::object(r)))
   let live = @comma.CommaLive::new(
