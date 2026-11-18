@@ -702,7 +702,9 @@ pub fn finder_list_node(
         None => true
       })
     let first = if finder.kind.untracked() != "" { 1 } else { 0 }
-    if made_for.val != Some(words) || (at_top && finder.chosen.untracked() <= first) {
+    // (the same first line: the list held by it stays at its top as it is, nothing asked of it)
+    let first_moved = was.get(0).map(finder_key) != ls.get(0).map(finder_key)
+    if made_for.val != Some(words) || (first_moved && at_top && finder.chosen.untracked() <= first) {
       match ls.get(0) {
         Some(l) => place.bring(finder_key(l))
         None => ()
