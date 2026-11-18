@@ -1662,7 +1662,7 @@ pub fn row_keys(
   // not known yet, and with the same entries every row was made known then.
   // (a page read in, before the window or reaching the chat's end: what it brings was said long ago, there at once,
   // the rows it joins as they are now; only what is said while the list is at the chat's end comes and changes)
-  let watched = !v.newer && !paged_in(rd, v)
+  let watched = !v.newer && !paged_in(rd, v, flight)
   let sending = sending_of(rk)
   match rd.rows_made {
     Some(m) if rd.drawn &&
@@ -1931,8 +1931,10 @@ pub fn row_keys(
 
 ///|
 /// Whether chat `v`'s window took in a page since its rows were last given: the page before it (its first entry
-/// earlier), or the page that reaches the chat's end (short of it till now).
-fn paged_in(rd : Reading, v : ChatView) -> Bool {
+/// earlier), or the page that reaches the chat's end (short of it till now); or its first page come into a list that
+/// had none (a chat opened before the device kept any of it, drawn empty till the station answered), none of it said
+/// as it showed and nothing sent from here on its way (`flight`): what was said before it was opened, there at once.
+fn paged_in(rd : Reading, v : ChatView, flight : SendFlight?) -> Bool {
   let first = match v.first_entry {
     Some(f) => f
     None =>
@@ -1941,7 +1943,9 @@ fn paged_in(rd : Reading, v : ChatView) -> Bool {
         None => -1.0
       }
   }
-  let paged = (first >= 0.0 && rd.first_was >= 0.0 && first < rd.first_was) || (rd.newer_was && !v.newer)
+  let paged = (first >= 0.0 && rd.first_was >= 0.0 && first < rd.first_was) ||
+    (rd.newer_was && !v.newer) ||
+    (first >= 0.0 && rd.first_was < 0.0 && flight is None && !v.messages.iter().any(fn(m) { m.said }))
   rd.first_was = first
   rd.newer_was = v.newer
   paged

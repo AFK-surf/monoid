@@ -196,9 +196,10 @@ fn chats_pane_node(
   v.reacts(
     fn() {
       // (the core's days, a new array each time they change: told by a number as they do)
-      let days = match read().0 {
-        Some(view) => view.days
-        None => []
+      // (and whether what changed since the app was last with the stations is still coming in: ChatsView's syncing)
+      let (days, syncing) = match read().0 {
+        Some(view) => (view.days, view.syncing is Some(_))
+        None => ([], false)
       }
       if !physical_equal(days, seen.val) {
         seen.val = days
@@ -206,11 +207,19 @@ fn chats_pane_node(
       }
       // (and its page's stay on top: what changed while it was off the top said as it is put back there, RowsMotion::said;
       // and whether it is the core's answer now or what it said before it was let go of: chats_live)
-      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter))
+      (stamp.val, held(), stint(), @sfbase.chats_live(src, id, filter), syncing)
     },
     fn(at) {
       let days = seen.val
       let hold = at.1 && !@sfbase.viewer_moved(key, days)
+      // (only whether it is still catching up changed: nothing of its rows to say again, what comes next told by it)
+      if at.0 == said_stamp.val &&
+        hold == said_hold.val &&
+        at.2 == motion.stint &&
+        (!at.3 || motion.had) {
+        motion.syncing = at.4
+        return
+      }
       // (the hand let go of the list (gone to the chat beside it) with nothing come meanwhile: the order it held back
       // put in place quietly, no row seen to run off and back for the hand leaving; what comes while it is away, as ever)
       let let_go = at.0 == said_stamp.val && said_hold.val && !hold
@@ -242,6 +251,7 @@ fn chats_pane_node(
         at.2,
         @sfbase.chats_window_asked(id, filter),
         at.3,
+        at.4,
       )
       ordered.set(shown)
       rows.reset(names, by_name)
@@ -645,6 +655,9 @@ priv struct RowsMotion {
   undo_lines : Map[String, (ChatItem?, String)]
   closed : Set[String]
   told : @signals.Signal[Int]
+  // (whether it was catching up as it was last said: what the stations bring in then, the last of it too, is there at
+  // once)
+  mut syncing : Bool
 }
 
 ///|
@@ -660,6 +673,7 @@ fn RowsMotion::new() -> RowsMotion {
     undo_lines: {},
     closed: Set([]),
     told: @signals.signal(0),
+    syncing: false,
   }
 }
 
@@ -693,6 +707,8 @@ fn day_line(key : String) -> Bool {
 /// coordinator of the migration's ruling, 2026-11-13: a page more's rows opening one by one, measured as they opened, a
 /// fling into them showed the list's ground). `live`: what is said is the core's answer now (sfbase's chats_live), not
 /// what it said before the list was let go of; till it is, and as it is first told, nothing of it makes its way.
+/// `syncing`: what changed since the app was last with the stations is still coming (ChatsView's syncing): what the
+/// stations bring in then, and the batch that ends it, is there at once, but a row archived here from the list.
 fn RowsMotion::said(
   self : RowsMotion,
   v : @view.View,
@@ -703,8 +719,11 @@ fn RowsMotion::said(
   stint : Int,
   asked : Int,
   live : Bool,
+  syncing : Bool,
 ) -> Unit {
   let was = self.last
+  let catching_up = syncing || self.syncing
+  self.syncing = syncing
   self.quiet.clear()
   // (archived here and come back (撤销, or its archive refused): the list's again, in the line it kept, no way in)
   let mut back = false
@@ -722,7 +741,13 @@ fn RowsMotion::said(
   self.held = held
   // (what the core answers first, and what it said before it was let go of shown till it does (`live` not yet: a
   // workspace or 设置 come back from), is where it is at once: only what changes after its answer is seen to)
-  let watched = watched && live && !@view.answering_now() && self.had && !lines.is_empty() && stint == self.stint
+  let watched = watched &&
+    live &&
+    !@view.answering_now() &&
+    self.had &&
+    !lines.is_empty() &&
+    stint == self.stint &&
+    (!catching_up || archived_here.untracked() is Some(_))
   self.stint = stint
   self.watched = watched
   if watched && !(was == lines) {
