@@ -307,7 +307,8 @@ fn P51::rigs_live(self : P51) -> Unit {
   bus.parts.overview("rigs", async fn(viewer, _) { Json::array(rigs.listed(rigs_viewer(viewer).workspace)) }) catch {
     _ => ()
   }
-  // station_use: a chat's grant of a rig asked of its person; offered where the workspace has rigs.
+  // station_use: a chat's grant of a rig asked of its person; always offered, as rigs/module.ts's (where the workspace
+  // has none, its call says so).
   let workspace_of = (session : String) => match bus.store.get_session(session) {
     { "ws": String(w), .. } if w != "" => w
     _ =>
@@ -339,7 +340,6 @@ fn P51::rigs_live(self : P51) -> Unit {
         },
       },
     ],
-    offered=() => cloud.memberships().iter().any(m => match m { { "workspace": String(w), .. } => cloud.rigs_named(w).length() > 0; _ => false }),
   )
   // Windows: running as the machine's administrator.
   if is_windows() {

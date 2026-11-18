@@ -65,6 +65,10 @@ fn P52::the_hub(self : P52) -> @session_hub.Hub raise LiveError {
 /// One of the store's calls by its TypeScript name (store.ts): the sessions' store's, else the threads'.
 fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
   self.threads.set_now(wall_ms().to_double())
+  // (the store's clock, as store.ts's `now`: what the storage's policy view counts its decisions since)
+  if name == "now" {
+    return Json::number(self.bus.store.now().to_double())
+  }
   match (try { Ok(self.bus.store.call(name, args)) } catch { e => Err(e) }) {
     Ok(v) => v
     Err(e) => {

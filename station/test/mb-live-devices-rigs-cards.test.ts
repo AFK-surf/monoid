@@ -283,3 +283,38 @@ test("a station that only runs tasks runs what another station sends with a secr
   a.tell({ op: "stop" });
   assert.equal(await a.ended, 0, a.err());
 });
+
+test("a whole station with no rig still offers station_use, and its owner's overview carries the decisions' policy", { skip }, async () => {
+  const data = fresh("whole");
+  const app = fresh("app");
+  const work = fresh("work");
+  writeFileSync(join(app, "BUILD"), "9500\n");
+  const id = stationId(data);
+  mkdirSync(join(data, "mesh"), { recursive: true });
+  writeFileSync(join(data, "mesh", "cloud.json"), JSON.stringify({
+    origin: "http://127.0.0.1:9", station: id, workspace: "w1", workspace_name: "W", name: "here", relay_url: "", relay_urls: [], grant_keys: {}, peers: [], revocations: [],
+  }));
+  const before = store(data);
+  before.insertSession({ key: "s1", connect: "ember", runtime: "claude", profile: "cc", workspace: work, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+  before.close();
+  const a = await launch(data, app, { STILLFAIL_LOCAL_ADMIN: "1" });
+  await a.next("ready", (m) => m.ready === true);
+  const door = (await a.next("the agents' door", (m) => m.serving === "mcp")).port as number;
+
+  // rigs/module.ts gives the tool whether or not the workspace has a rig: its call says there is none
+  const listed = await http(door, "/mcp", { body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "tools/list" }), headers: { authorization: "Bearer t1" } });
+  assert.equal(listed.status, 200, listed.body);
+  const names = (JSON.parse(listed.body).result.tools as { name: string }[]).map((t) => t.name);
+  assert.ok(names.includes("station_use"), names.join(","));
+  const used = await tool(door, "t1", "station_use", { station: "box", reason: "build there" });
+  assert.equal(used.error, true, used.text);
+
+  // the overview's automatic decisions as an owner sees them: the policy's view (storage's policyView asks the store's now)
+  const overview = await http(door, "/admin-api/overview");
+  assert.equal(overview.status, 200, overview.body);
+  const decisions = JSON.parse(overview.body).automaticDecisions;
+  assert.ok(decisions !== null && decisions !== undefined, overview.body);
+  assert.notEqual(decisions.policy ?? null, null, `${JSON.stringify(decisions)}\n${a.err()}`);
+  a.tell({ op: "stop" });
+  assert.equal(await a.ended, 0, a.err());
+});
