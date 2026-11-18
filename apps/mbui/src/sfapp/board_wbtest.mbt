@@ -709,6 +709,8 @@ test "大屏: a draft started becomes its chat by the core's own way, newChat.cr
   t.run_for(@ui.move_most_ms)
   // (its draft let go of as its chat is made: the core's pending chat keeps it)
   assert_eq(board_kept_drafts(), ["看一下 Android 冷启动为什么慢了 300ms"])
+  // (made with what was picked for the draft: its own model control's)
+  assert_eq(@sffixture.board_created_of.get("new:board-seed-1"), Some("board:new:board-seed-1"))
   let made = @sfbase.board_items(src, "ws1").filter(fn(i) { i.client_key == "new:board-seed-1" })
   assert_eq(made.map(fn(i) { (i.title, @sfbase.board_lane_of(i)) }), [("给导出加上按月份筛选", "run")])
   assert_true(board_words_at(t, "正在读取仓库与分析改动点…") is Some(_))

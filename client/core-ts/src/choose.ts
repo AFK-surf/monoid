@@ -60,7 +60,7 @@ const contextOf = (v: J): number | null => {
 /// What a pick's save does: done here, or a request to the station.
 export type Saved = { done: J } | { op: ops.Request };
 
-type Of = { kind: "new" } | { kind: "session"; key: string } | { kind: "connect"; id: string } | { kind: "connectNew"; form: string };
+type Of = { kind: "new" } | { kind: "board"; id: string } | { kind: "session"; key: string } | { kind: "connect"; id: string } | { kind: "connectNew"; form: string };
 
 function of(o: string): Of {
   const at = o.indexOf(":");
@@ -71,6 +71,7 @@ function of(o: string): Of {
     const [head, rest] = [o.slice(0, at), o.slice(at + 1)];
     if (head === "connect-new" && rest !== "") return { kind: "connectNew", form: rest };
     if (head === "session" && rest !== "") return { kind: "session", key: rest };
+    if (head === "board" && rest !== "") return { kind: "board", id: rest };
     if (head === "connect" && rest !== "") return { kind: "connect", id: rest };
   }
   throw CoreError.invalid(t("core-logic.choose.error.no_such", { of: o }));
@@ -667,6 +668,28 @@ export class Choose implements Owner {
     return [options, resolve(options, this.#choice(ofAddress(addr), stationId(addr)), subsets)];
   }
 
+  /// Where the pick of board draft `id` on station `addr` is kept: the workspace's, by the station and the draft, so a
+  /// draft moved to another station starts from that station's.
+  #boardKey(addr: string, id: string): string {
+    return `ws:${ofAddress(addr)}:board:${stationId(addr)}:${id}`;
+  }
+
+  /// What board draft `id` is to run on at `addr` (`board:<id>`): as picked for it, else as a new chat there would
+  /// run, until something is picked for it.
+  #choiceOf(addr: string, oName: string): J {
+    const o = oName === "new" ? ({ kind: "new" } as Of) : of(oName);
+    if (o.kind !== "board") return this.#choice(ofAddress(addr), stationId(addr));
+    return this.#record(this.#boardKey(addr, o.id)) ?? this.#choice(ofAddress(addr), stationId(addr));
+  }
+
+  #onStationFor(addr: string, oName: string): [J[], Resolved] {
+    if (oName === "new") return this.#onStation(addr);
+    const overview = this.#env.store.get({ topic: "overview", station: addr });
+    const options = models(overview, this.#env.now());
+    const subsets = overview === undefined || get(overview, "accountSubsets") === true;
+    return [options, resolve(options, this.#choiceOf(addr, oName), subsets)];
+  }
+
   /// A new chat's model control as its page draws it closed (NewChatPick), on `station` of `options` (its models as
   /// `#onStation` makes them: of every profile enabled there): what it runs on now and how
   /// (the model's name, maker and runtimes; whether it says how hard it thinks, Fast; the account kept to), worked out
@@ -897,14 +920,16 @@ export class Choose implements Owner {
     this.#changed();
   }
 
-  /// `newChat.create`: what a new chat on `station` is asked to be made with, as picked there.
-  create(station: string): J {
+  /// `newChat.create`: what a new chat on `station` is asked to be made with, as picked there: in the new chat's own
+  /// control (`new`), or in a board draft's (`board:<id>`, as picked for that draft).
+  create(station: string, oName = "new"): J {
+    if (oName !== "new" && of(oName).kind !== "board") throw CoreError.invalid(t("core-logic.choose.error.no_such", { of: oName }));
     const scope = ofAddress(station);
     const sid = stationId(station);
-    const lent = this.#lentFor(station, "new");
+    const lent = this.#lentFor(station, oName);
     if (lent !== undefined) throw CoreError.invalid(t("core-logic.choose.borrow.coming", { model: model.name(String(lent.model)) }));
     const overview = this.#env.store.get({ topic: "overview", station });
-    const [, r] = this.#onStation(station);
+    const [, r] = this.#onStationFor(station, oName);
     let runtime = r.runtime;
     let chosenModel: string | null = r.entry?.model ?? null;
     let effort = r.effort;
@@ -917,7 +942,7 @@ export class Choose implements Owner {
     if ((r.entry === null || runtime === null) && overview === undefined) {
       const bound = this.#bound(scope);
       const saved: J = (bound !== undefined && bound.model !== null ? bound.model : undefined)
-        ?? this.#choice(scope, sid)
+        ?? this.#choiceOf(station, oName)
         ?? arr(this.#record(`ws:${scope}:frequent`))[0];
       runtime = text(get(saved, "runtime")) ?? "claude";
       chosenModel = text(get(saved, "model"));
@@ -1034,6 +1059,11 @@ export class Choose implements Owner {
     switch (o.kind) {
       case "new": {
         const [options, r] = this.#onStation(station);
+        if (overview() === undefined) return undefined;
+        return [options, picked(r), null, false, true, 0];
+      }
+      case "board": {
+        const [options, r] = this.#onStationFor(station, `board:${o.id}`);
         if (overview() === undefined) return undefined;
         return [options, picked(r), null, false, true, 0];
       }
@@ -1198,7 +1228,7 @@ export class Choose implements Owner {
     const effort = e !== null && efforts.some((x) => x === e) ? e : null;
     // How much less context than its whole window it can be kept to: a new chat's and a chat's (a connect's sessions
     // are made by the station, as it is set).
-    const contexts: number[] = option !== undefined && (o.kind === "new" || o.kind === "session" || isPreset)
+    const contexts: number[] = option !== undefined && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset)
       ? arr(get(get(option, "contexts"), onName)).filter((n): n is number => typeof n === "number")
       : [];
     const cPicked = contextOf("context" in draft ? draft.context : get(value, "context"));
@@ -1208,9 +1238,9 @@ export class Choose implements Owner {
     const allowedIds: string[] | null = profiles ?? (profile !== null ? [profile] : null);
     const fastAvailable =
       fastRuntime(onName) &&
-      (o.kind === "new" || o.kind === "session" || isPreset) &&
+      (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset) &&
       arr(get(overview, "profiles")).some((p) => typeof p.fast === "boolean" && (allowedIds === null || allowedIds.includes(p.id)) && accounts.some((a) => a.id === p.id));
-    const offersTui = get(overview, "claudeTui") === true && (o.kind === "new" || o.kind === "session" || isPreset);
+    const offersTui = get(overview, "claudeTui") === true && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset);
     const claudeModeAvailable = offersTui && onName === "claude";
     const deviceTui = offersTui && this.#record("defaultTui") === true;
     const newTui = o.kind === "new" && offersTui && !this.#bound(ofAddress(station))?.model
@@ -1230,7 +1260,7 @@ export class Choose implements Owner {
     const next = { model: nextModel, runtime: on ?? null, effort, profile, ...(profiles !== null ? { profiles } : {}), fast, ...speedFields({ speed }), ...tuiFields({ tui }), context };
     const changed = !nonePicked && FIELDS.some((f) => !equal((next as J)[f] ?? null, value[f] ?? null));
     const { kept, keptProfiles, low, account: accountView } = named(value, valueOption, current, quiet);
-    const effectiveFast = (o.kind === "new" || o.kind === "session" || isPreset) && value.model !== null && runsFast(overview, value, current);
+    const effectiveFast = (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset) && value.model !== null && runsFast(overview, value, current);
     const drafted = account(profile);
     const who = nonePicked
       ? t("core-logic.choose.account.none")
@@ -1333,7 +1363,7 @@ export class Choose implements Owner {
         fast: typeof hand.fast === "boolean" && fastRuntime(at) ? hand.fast : null,
         ...(at === "claude" ? tuiFields(hand) : {}),
         ...speedFields(fastRuntime(at) && (hand.speed !== "ultrafast" || (at === "codex" && ultrafastOffered(opt.model))) ? hand : null),
-        context: c !== null && (o.kind === "new" || o.kind === "session" || isPreset) && has("contexts").some((n) => n === c) ? c : null,
+        context: c !== null && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset) && has("contexts").some((n) => n === c) ? c : null,
       };
       return took.runtime === null && took.effort === null && took.fast === null && took.tui === undefined && took.speed === undefined && took.context === null ? undefined : took;
     };
@@ -1359,13 +1389,13 @@ export class Choose implements Owner {
         if (r.tui) parts.push("TUI");
         if (r.speed === "ultrafast") parts.push("Ultrafast");
         else if (r.fast === true) parts.push("Fast");
-        if (r.context !== null && (o.kind === "new" || o.kind === "session" || isPreset)) parts.push(format.compactNumber(r.context));
+        if (r.context !== null && (o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset)) parts.push(format.compactNumber(r.context));
       } else if (!fixed && rts.length > 1) {
         parts.push(rts.map((rt) => format.runtimeShort(String(rt))).join(" · "));
       } else if (multiRuntime && rts.length === 1) {
         parts.push(format.runtimeShort(String(rts[0])));
       }
-      const usual = r === null ? null : { runtime: r.runtime, effort: r.effort, fast: r.fast, ...speedFields(r), ...tuiFields(r), context: o.kind === "new" || o.kind === "session" || isPreset ? r.context : null };
+      const usual = r === null ? null : { runtime: r.runtime, effort: r.effort, fast: r.fast, ...speedFields(r), ...tuiFields(r), context: o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset ? r.context : null };
       return { ...opt, usual, usualText: parts.length > 0 ? parts.join(" · ") : null, liked: likedKeys.includes(model.key(id)) };
     });
     // Two things, apart (the user, 2026-11-10: 「收藏跟常用不一样」「常用包括了思考深度和速度还有上下文长度」「是一种
@@ -1374,7 +1404,7 @@ export class Choose implements Owner {
     // and the starred models (`liked`), in the order they were starred, every one of them, one of those used most or
     // not. Then every model, by its maker (`makers`).
     const draftNow: Resolved = { entry: value.model !== null || "model" in draft ? (option ?? null) : null, runtime: typeof on === "string" ? on : null, effort, fast, ...speedFields({ speed }), ...tuiFields({ tui }), context, profile, profiles, efforts, contexts, accounts };
-    const combos = o.kind === "new" || o.kind === "session" || isPreset
+    const combos = o.kind === "new" || o.kind === "board" || o.kind === "session" || isPreset
       ? frequentCombos(history, options, draftNow, fixed && typeof value.runtime === "string" ? value.runtime : null, multiRuntime, ultrafastOffered, offersTui).map((c: J) => ({
           model: c.model,
           runtime: c.runtime,
@@ -1570,6 +1600,7 @@ export class Choose implements Owner {
     const key = topicKey({ topic: "pick", station, of: oName });
     if (get(params, "model") !== undefined || get(params, "clear") === true) this.#lent.delete(key);
     if (get(params, "clear") === true && o.kind === "connectNew") this.#adding.delete(`${station}\u0001${o.form}`);
+    if (get(params, "clear") === true && o.kind === "board") this.#env.data.forgetRecord(TABLE, this.#boardKey(station, o.id));
     if (get(params, "open") === true || get(params, "clear") === true) {
       this.#drafts.delete(key);
       this.#otherStations.delete(key);
@@ -1684,7 +1715,7 @@ export class Choose implements Owner {
       return { done: { saved: false } };
     }
     const textOf = (field: string) => (typeof next[field] === "string" ? next[field] : "");
-    if (o.kind === "new" || o.kind === "session" || (o.kind === "connectNew" && o.form === "preset")) this.#keepUsual(ofAddress(station), next);
+    if (o.kind === "new" || o.kind === "board" || o.kind === "session" || (o.kind === "connectNew" && o.form === "preset")) this.#keepUsual(ofAddress(station), next);
     let saved: Saved;
     switch (o.kind) {
       case "new":
@@ -1704,6 +1735,10 @@ export class Choose implements Owner {
         break;
       case "connectNew":
         this.#adding.set(`${station}\u0001${o.form}`, next);
+        saved = { done: { saved: true } };
+        break;
+      case "board":
+        this.#keepChoice(ofAddress(station), stationId(station), next, this.#boardKey(station, o.id));
         saved = { done: { saved: true } };
         break;
       case "session": {

@@ -1346,6 +1346,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
   }
   let discard = fn() {
     @sfbase.board_files_discard(own.src, ws, own.draft_id.untracked(), @signals.untracked(files))
+    @sfbase.board_pick_forget(own.src, @signals.untracked(fn() { board_station_now(own) }), own.draft_id.untracked())
     emptied(@signals.untracked(writing))
     own.draft_id.set(@sfbase.board_next_id())
   }
@@ -1435,6 +1436,8 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
             round=true,
           )
           |> ignore
+          // (on what: the one model control, picked for this draft alone, as a new chat there runs till then)
+          model_triple_node(r, own.src, st, @sfbase.board_pick_of(id))
         }),
         // (wide, clear of × in its corner)
         words_end: if wide { card_title_end() } else { 0.0 },
@@ -1901,7 +1904,7 @@ fn draft_card(
   }
   row.pick(fn() { editing.get() }, at_once=true, fn(w, is_editing) {
   if is_editing {
-    draft_edit_card(w, src, edit_ws.val, id, edit_field, editing)
+    draft_edit_card(w, src, edit_ws.val, id, @signals.untracked(fn() { d().map(fn(d) { d.station }).unwrap_or("") }), edit_field, editing)
   } else {
   let lifted = lift.node(w)
   w.box(fn(card) {
@@ -1989,6 +1992,7 @@ fn draft_edit_card(
   src : Source,
   ws : String,
   id : String,
+  station : String,
   field : @ui.Field,
   editing : @signals.Signal[Bool],
 ) -> Unit {
@@ -2055,6 +2059,21 @@ fn draft_edit_card(
     }, at_start=false)
     card.box(fn(foot) {
       foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+      // (what it is to run on, changed here as where it was written: its own model control, concentric with the
+      // card's foot corner as 保存 is with the other)
+      if station != "" {
+        foot.box(fn(m) {
+          // (its round corner as far in from the card's start and foot as the card's corner less its own: in from
+          // the start past the card's padding, and held off the foot past where the row's middle puts it, the row
+          // as tall as 保存 and what holds 保存 off the foot)
+          let h = @ui.Space::S7.px()
+          let pick_in = fn() { (@sf.card_corner - h / 2.0 - foot_in()).max(0.0) }
+          let pick_up = fn() { (2.0 * pick_in() - (@sf.button_height() + save_in() - h)).max(0.0) }
+          m.margin(By(fn() { (pick_in(), 0.0, 0.0, pick_up()) })).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+          model_triple_node(m, src, station, @sfbase.board_pick_of(id))
+        })
+        |> ignore
+      }
       foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
       @sf.button_node(foot, fn() { board_words("cancel") }, fn() { finish(false) }) |> ignore
       foot.box(fn(k) {

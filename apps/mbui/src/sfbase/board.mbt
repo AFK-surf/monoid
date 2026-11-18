@@ -347,6 +347,20 @@ pub fn board_next_id() -> String {
 }
 
 ///|
+/// The model control of draft `id` (model_triple's `of`): what it is to run on, picked for it alone and kept by the
+/// core apart from a new chat's (`board:<id>`), its chat made with it (`newChat.create` `of`).
+pub fn board_pick_of(id : String) -> String {
+  "board:" + id
+}
+
+///|
+/// What was picked for draft `id` on `station` let go of: the draft deleted or never added.
+pub fn board_pick_forget(src : Source, station : String, id : String) -> Unit {
+  guard station != "" && !src.read_only else { return }
+  (src.call)("pick.set", { "station": Json::string(station), "of": Json::string(board_pick_of(id)), "clear": Json::boolean(true) }, answer_unread)
+}
+
+///|
 /// The task's composer, kept separately in the workspace's draft store; `id` stays with its board card.
 pub fn board_file_key(ws : String, id : String) -> String {
   "new:" + ws + ":board:" + id
@@ -391,6 +405,7 @@ pub fn board_draft_remove(src : Source, ws : String, id : String, discard_files?
     for d in was {
       if d.id == id {
         board_files_discard(src, ws, id, d.files)
+        board_pick_forget(src, d.station, id)
       }
     }
   }
@@ -439,7 +454,9 @@ pub fn board_start(src : Source, ws : String, d : BoardDraft) -> Unit {
     toast_later(why)
   }
   let create = fn(taken : Json?) {
-    (src.call)("newChat.create", { "station": Json::string(d.station), "key": Json::string(key) }, fn(res) {
+    // (with what was picked for it: its own control's, as a new chat there runs where nothing was)
+    let made : Map[String, Json] = { "station": Json::string(d.station), "key": Json::string(key), "of": Json::string(board_pick_of(d.id)) }
+    (src.call)("newChat.create", Json::object(made), fn(res) {
       match res {
         Ok(_) => {
           board_draft_remove(src, ws, d.id, discard_files=false)
