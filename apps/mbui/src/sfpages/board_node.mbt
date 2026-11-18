@@ -186,6 +186,10 @@ let clarify_block_gap : Double = 20.0
 let clarify_item_gap : Double = 8.0
 
 ///|
+/// The corner of a split's keys at its foot: the card's (26) less card_pad (16), one of the theme's steps (10).
+let clarify_key_corner : Double = 10.0
+
+///|
 /// How wide a split's line's place (1.) is, and where its words start (past it and the gap after it).
 let clarify_num_w : Double = 18.0
 
@@ -2137,21 +2141,18 @@ fn draft_clarify_card(
       from=beside_of(more_key.val),
     )
   }
-  // (a card of the board's: its words as far in as an ordinary card's on every side (card_pad), its blocks one gap
-  // apart, the lines of its list another; its keys at its foot as far in from its corner as its curve has them, as a
-  // card's corner key is, so the card's own end and foot are in by that and its words by card_pad)
-  let foot_in = fn() { @sf.card_corner - @sf.theme().control_h / 2.0 }
-  let save_in = fn() { (@sf.theme().control_h - @sf.button_height()).max(0.0) / 2.0 }
+  // (a card of the board's: everything in it as far in as an ordinary card's words on every side (card_pad), its keys
+  // too; its blocks one gap apart, the lines of its list another)
   parent.box(fn(outer) {
     outer
     .ground(By(fn() { @sf.theme().p.card }))
     .radius(Is(@sf.card_corner))
-    .padding(By(fn() { (card_pad, card_pad, foot_in(), foot_in()) }))
+    .padding(Is((card_pad, card_pad, card_pad, card_pad)))
     .gap(Is(clarify_block_gap))
     |> ignore
     outer.says(By(fn() { Some(@view.said(Group, label=board_words("clarify"))) })) |> ignore
     outer.box(fn(card) {
-    card.gap(Is(clarify_block_gap)).padding(By(fn() { (0.0, 0.0, card_pad - foot_in(), 0.0) })) |> ignore
+    card.gap(Is(clarify_block_gap)) |> ignore
     // 先理清 and its ⋯ (按原话派发, 返回修改): one icon's width at the line's end, no ground of its own at rest
     card.box(fn(head) {
       head.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
@@ -2209,14 +2210,15 @@ fn draft_clarify_card(
       // (its keys a little further from what is above them than the blocks are from each other: their own block)
       foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).padding(Is((0.0, 4.0, 0.0, 0.0))) |> ignore
       foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
-      @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() }) |> ignore
-      foot.box(fn(k) {
-        k.margin(By(fn() { (0.0, 0.0, save_in(), save_in()) })).shrink(Is(0.0)) |> ignore
-        @sf.button_node(k, fn() { @sf.t("web-main.board.clarify.dispatch_all") }, start_all, tone=Primary, disabled=fn() {
-          !ready() || !has_words()
-        })
-        |> ignore
+      // (in by card_pad from the card's corner, as its words are: so their corner the card's less that (clarify_key_corner),
+      // following the card's curve from there, not a capsule's, which only a key in by the curve's own inset could be)
+      @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() })
+      .radius(Is(clarify_key_corner))
+      |> ignore
+      @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.dispatch_all") }, start_all, tone=Primary, disabled=fn() {
+        !ready() || !has_words()
       })
+      .radius(Is(clarify_key_corner))
       |> ignore
     })
     |> ignore
