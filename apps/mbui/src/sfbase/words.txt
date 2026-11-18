@@ -2877,6 +2877,7 @@ web-main.board.new
 web-main.board.new_here
 web-main.board.add
 web-main.board.dispatch
+web-main.board.edit
 web-main.board.cancel
 web-main.board.goes_on
 web-main.board.start
