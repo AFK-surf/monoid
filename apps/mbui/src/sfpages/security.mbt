@@ -757,7 +757,10 @@ fn sec_line_node(
       // own)
       let words = fn(w : @view.View) {
         match mark {
-          Some(f) => f(w)
+          // (a sentence's mark is set on its first line by its own room, sec_pending_mark)
+          Some(f) if wraps => f(w)
+          // (beside its title and the note under it, on its title's line, never across the two: apps/mbui/AGENTS.md)
+          Some(f) => @sf.first_line_node(w, Body, f) |> ignore
           None => ()
         }
         w.box(fn(lines) {
@@ -791,7 +794,7 @@ fn sec_line_node(
       parent.box(fn(r) {
         @sf.style_node(r, fn() {
           let row = (if indent { sec_narrow_row_in } else { @sf.pg_said_row }).then(sec_narrow_round)
-          if wraps {
+          if wraps || mark is Some(_) {
             row.then(sec_pending_top)
           } else {
             row
@@ -805,7 +808,13 @@ fn sec_line_node(
             r.box(fn(wa) {
               @sf.style_node(wa, fn() { sec_with_acts }, in_row=true)
               wa.box(fn(mw) {
-                @sf.style_node(mw, fn() { if wraps { sec_mark_words.then(sec_pending_top) } else { sec_mark_words } })
+                @sf.style_node(mw, fn() {
+                  if wraps || mark is Some(_) {
+                    sec_mark_words.then(sec_pending_top)
+                  } else {
+                    sec_mark_words
+                  }
+                })
                 words(mw)
               })
               |> ignore
@@ -879,8 +888,16 @@ fn sec_line_node(
           Some(f) => f(r)
           None => ()
         }
+        // (what it does side by side at its end, one line high as the rows without it: 续期 beside 移除)
         match acts {
-          Some(f) if !wraps => r.show(acts_shown, f)
+          Some(f) if !wraps =>
+            r.show(acts_shown, fn(a) {
+              a.box(fn(ab) {
+                @sf.style_node(ab, fn() { sec_actions }, in_row=true)
+                f(ab)
+              })
+              |> ignore
+            })
           _ => ()
         }
       })

@@ -76,6 +76,26 @@ test "安全, at each width and with either hand: its people, devices and statio
 }
 
 ///|
+test "安全, at each width and with either hand: a device's 续期 and 移除 side by side" {
+  for case in page_cases {
+    let (w, platform) = case
+    let t = setting_tester(Security, w, platform~)
+    let at = "\{w} platform \{platform}"
+    scrolled_to(t, w, "Chrome · macOS")
+    let words = t.words()
+    let renew = words.filter(fn(x) { x.0 == "续期" })
+    assert_eq(renew.length(), 1, msg=at)
+    let (_, rx, ry, _, _, _) = renew[0]
+    // (移除 of the same device beside it, on its line: never stacked under it at the row's end)
+    let beside = words.filter(fn(x) { x.0 == "移除" && (x.2 - ry).abs() < 1.0 && x.1 > rx })
+    assert_eq(beside.length(), 1, msg="\{at}: \{Repr(words.filter(fn(x) { x.0 == "移除" || x.0 == "续期" }))}")
+    // (no mark the audit knows off the first line beside it; a device's glyph beside its name and the line under it
+    // is held by the pictures in the pull request, the audit does not count it as a mark yet)
+    assert_eq(t.first_line_faults(), [], msg=at)
+  }
+}
+
+///|
 test "安全, at each width and with either hand: no row of a lock of one's own, the workspace's safe mode alone" {
   // (to people there is one safe mode, the user, 2026-11-10: its row was at the page's top, on every app but the web)
   for case in page_cases {
