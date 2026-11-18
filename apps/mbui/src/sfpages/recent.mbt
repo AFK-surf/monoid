@@ -246,8 +246,7 @@ fn recent_strip_node(v : @view.View, tapped : (Int) -> Unit) -> Unit {
           fn() { recent_strip_row.then(@ui.style(pl=@sf.room_of(side), pr=@sf.room_of(side), pt=@sf.room_of(top))) },
         )
         // the camera
-        recent_tile_node(held, small, fn(t) {
-          recent_tile_press(t, fn() { @sf.t("android-chat.attach.camera") }, fn() { tapped(0) })
+        recent_tile_node(held, small, fn() { @sf.t("android-chat.attach.camera") }, fn() { tapped(0) }, fn(t) {
           @sf.icon_node(t, "camera", 24.0, By(fn() { @sf.theme().p.text })) |> ignore
         })
         // the photos, newest first
@@ -260,8 +259,7 @@ fn recent_strip_node(v : @view.View, tapped : (Int) -> Unit) -> Unit {
         // the tile that asks for the gallery
         held.show(fn() { ask() is Some(_) }, fn(s) {
           let words = fn() { ask().unwrap_or("") }
-          recent_tile_node(s, small, fn(t) {
-            recent_tile_press(t, words, fn() { tapped(-1) })
+          recent_tile_node(s, small, words, fn() { tapped(-1) }, fn(t) {
             t.box(fn(b) {
               @sf.style_node(b, fn() { recent_ask })
               @sf.icon_node(b, "photo", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
@@ -281,25 +279,19 @@ fn recent_strip_node(v : @view.View, tapped : (Int) -> Unit) -> Unit {
 
 ///|
 /// A tile of the strip in `parent` (92 × 122, the chip's grey under it), as round as attach_block_radius; `body` making
-/// what it holds in it.
-fn recent_tile_node(parent : @view.View, small : Bool, body : (@view.View) -> Unit) -> Unit {
-  parent.box(fn(t) {
+/// what it holds in it. Pressed as a button called `label` (the strip's tiles answer nothing more of the hand: the
+/// strip glides under it), `press` done then.
+fn recent_tile_node(
+  parent : @view.View,
+  small : Bool,
+  label : () -> String,
+  press : () -> Unit,
+  body : (@view.View) -> Unit,
+) -> Unit {
+  @sf.action_box_node(parent, label, fn(_) { press() }, fn(t) {
     @sf.style_node(t, fn() { recent_tile_box.then(@ui.style(radius=attach_block_radius(small))) }, in_row=true)
     body(t)
   })
-  |> ignore
-}
-
-///|
-/// Tile `t` pressed as a button called `label` (the strip's tiles answer nothing more of the hand: the strip glides
-/// under it), `press` done then.
-fn recent_tile_press(t : @view.View, label : () -> String, press : () -> Unit) -> Unit {
-  t
-  .presses(Is(true))
-  .focusable(Is(true))
-  .focus_ring_theme()
-  .says(By(fn() { Some(@view.said(Button, label=label())) }))
-  .on_press(press)
   |> ignore
 }
 
@@ -322,57 +314,54 @@ fn recent_photo_node(
       None => 0
     }
   }
-  recent_tile_node(parent, small, fn(t) {
-    recent_tile_press(
-      t,
-      fn() { @sf.t(if p.get().1 { "web-main.preview.kind.video" } else { "web-main.preview.kind.image" }) },
-      fn() {
-        let s = @signals.untracked(src)
-        if recent.chosen.length() > 0 {
-          recent_choose(s)
-        } else {
-          match recent.photos.search_by(fn(x) { x.src == s }) {
-            Some(i) => tapped(i + 1)
-            None => ()
-          }
+  recent_tile_node(
+    parent,
+    small,
+    fn() { @sf.t(if p.get().1 { "web-main.preview.kind.video" } else { "web-main.preview.kind.image" }) },
+    fn() {
+      let s = @signals.untracked(src)
+      if recent.chosen.length() > 0 {
+        recent_choose(s)
+      } else {
+        match recent.photos.search_by(fn(x) { x.src == s }) {
+          Some(i) => tapped(i + 1)
+          None => ()
         }
-      },
-    )
-    t.box(fn(i) {
-      i
-      .width(Is(Some(recent_tile_w)))
-      .height(Is(Some(recent_tile_h)))
-      .radius(Is(corner))
-      .clips(Is(true))
-      .image(By(fn() { Some((src(), "", (recent_tile_h * i.pixel_scale()).ceil().to_int())) }))
-      .image_covers(Is(true))
-      |> ignore
-    })
-    |> ignore
-    // (over the picture: its ring, chosen its number, and a video's play mark)
-    t.box(fn(m) {
-      m.over(Is(true)) |> ignore
-      @sf.style_node(m, fn() { recent_marks.then(@ui.style(p=@sf.room_of(recent_mark_in(corner)))) })
-      m.box(fn(room) {
-        @sf.style_node(room, fn() { recent_ring_room })
-        @headless.toggle(
-          room,
-          Checkbox,
-          fn() { @sf.t("android-chat.marks.tool.select") },
-          fn() { n() > 0 },
-          fn(_) { recent_choose(@signals.untracked(src)) },
-          fn(r, _) {
-            @sf.style_node(r, fn() { if n() > 0 { recent_ring_on } else { recent_ring } }, in_row=true)
-            r.show(fn() { n() > 0 }, fn(w) { @sf.words_node(w, fn() { n().to_string() }, fn() { recent_ring_words }) |> ignore }, at_once=true)
-          },
-        )
+      }
+    },
+    fn(t) {
+      t.box(fn(i) {
+        i
+        .width(Is(Some(recent_tile_w)))
+        .height(Is(Some(recent_tile_h)))
+        .radius(Is(corner))
+        .clips(Is(true))
+        .image(By(fn() { Some((src(), "", (recent_tile_h * i.pixel_scale()).ceil().to_int())) }))
+        .image_covers(Is(true))
         |> ignore
       })
       |> ignore
-      m.show(fn() { p.get().1 }, fn(k) { @sf.play_mark_node(k, recent_mark_side, A(Theater, O45)) |> ignore }, at_once=true)
-    })
-    |> ignore
-  })
+      // (over the picture: its ring, chosen its number, and a video's play mark)
+      t.box(fn(m) {
+        m.over(Is(true)) |> ignore
+        @sf.style_node(m, fn() { recent_marks.then(@ui.style(p=@sf.room_of(recent_mark_in(corner)))) })
+        m.box(fn(room) {
+          @sf.style_node(room, fn() { recent_ring_room })
+          @sf.select_ring_node(
+            room,
+            fn() { @sf.t("android-chat.marks.tool.select") },
+            n,
+            fn() { recent_choose(@signals.untracked(src)) },
+            side=recent_mark_side,
+          )
+          |> ignore
+        })
+        |> ignore
+        m.show(fn() { p.get().1 }, fn(k) { @sf.play_mark_node(k, recent_mark_side, A(Theater, O45)) |> ignore }, at_once=true)
+      })
+      |> ignore
+    },
+  )
 }
 
 ///|
@@ -449,26 +438,8 @@ fn recent_mark_in(corner : Double) -> Double {
 // kept across runs: a value (no field of it changes)
 let recent_ring_room : @ui.Style = @ui.css("row w=Full justify=JEnd")
 
-///|
-/// A photo's ring, not chosen: white, over a shade of black so that it shows on a white picture too.
-// kept across runs: a value (no field of it changes)
-let recent_ring : @ui.Style = @ui.style(
-  w=Fixed(recent_mark_side),
-  h=Fixed(recent_mark_side),
-  radius=Full,
-  bg=A(Theater, O20),
-  border=B1_5,
-  border_color=OnVeil,
-)
 
-///|
-/// Chosen: filled with the primary (as a checkbox ticked), its number on it.
-// kept across runs: a value (no field of it changes)
-let recent_ring_on : @ui.Style = recent_ring.then(@ui.css("bg=Primary align=ACenter justify=JCenter"))
 
-///|
-// kept across runs: a value (no field of it changes)
-let recent_ring_words : @ui.TextStyle = @ui.text_style(size=Caption, weight=Semibold, color=OnPrimary, wrap=false)
 
 ///|
 /// 添加 n 个's row, where the tiles under the strip were (as far over the foot: attach_foot).

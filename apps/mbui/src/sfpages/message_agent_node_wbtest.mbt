@@ -319,3 +319,63 @@ test "a chat's list's held keys: an answer held out with its pieces, the line it
   // (still in the core's rows: as they have it)
   assert_eq(chat_keys_held(ks, held, lingering), ["m:1", "m:2", "act:a"])
 }
+
+///|
+/// An agent's message placing its picture shot.png (ag_tree's "placed" but of a picture), `w` × `h` as its data says.
+fn ag_placed_picture(w : Double, h : Double) -> Message {
+  let s = fn(x : String) { Json::string(x) }
+  let p = fn(xs : Array[Json]) { Json::array([s("p"), Json::array(xs)]) }
+  let a = Json::array([s("a"), Json::array([s("shot.png")]), Json::object({ "href": s("shot.png"), "bare": Json::boolean(false) })])
+  @sfbase.message_of({
+    "seq": 9,
+    "thread": 7,
+    "ts": "ts9",
+    "authorKind": "agent",
+    "author": "codex",
+    "text": "截图：",
+    "md": Json::array([p([s("截图：")]), p([a])]),
+    "by": { "name": "Codex", "agent": "s-c1", "maker": { "id": "openai" }, "runtime": "codex" },
+    "placed": ["shot.png"],
+    "attachments": [
+      {
+        "name": "shot.png",
+        "path": "/w/uploads/shot.png",
+        "size": 12345.0,
+        "owner": "s-c1",
+        "width": Json::number(w),
+        "height": Json::number(h),
+      },
+    ],
+    "createdAt": 9,
+    "time": @sffixture.ago("1 分钟前", "2026-11-11 21:07"),
+  })
+}
+
+///|
+test "a picture an agent places in its words: told another size, its box follows it, not the size it was made with" {
+  let m = @signals.signal(ag_placed_picture(800.0, 600.0))
+  // (its station's picture of it, a PNG's head: what its size is read from; handed over each time it is asked for, as
+  // the fixture's are: what holds it is emptied as a Tester starts)
+  let src : Source = {
+    ..files_src(),
+    file: fn(_, _, _) {
+      match cmp_here_bytes(800, 600) {
+        Ok((_, Some(b))) => @ui.add_image("mem:ag/shot", b)
+        _ => ()
+      }
+      "mem:ag/shot"
+    },
+  }
+  let t = ag_new_row(720.0, fn() { m.get() }, src~, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  let before = t.drawn_images()
+  assert_true(before.length() > 0, msg="\{Repr(before)}")
+  assert_true((before[0][3] / before[0][2] - 600.0 / 800.0).abs() < 0.02, msg="\{Repr(before)}")
+  // (the same file told taller than wide: its box as its data says it now)
+  m.set(ag_placed_picture(600.0, 800.0))
+  t.run_for(@ui.move_most_ms)
+  let after = t.drawn_images()
+  assert_true(after.length() > 0, msg="\{Repr(after)}")
+  let (bw, bh, _) = image_box(attachment_of({ "name": "shot.png", "path": "/w/uploads/shot.png", "width": 600.0, "height": 800.0 }), image_least, min_side=image_min_side)
+  assert_true((after[0][3] - after[0][2] * bh / bw).abs() < 0.5, msg="\{Repr(after)}")
+}

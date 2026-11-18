@@ -567,10 +567,8 @@ export function agyModels(result: Json): string[] {
 export function turnUsage(answer: Json): { inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; outputTokens: number } | null {
   const u = answer?.result?.usage;
   if (u === null || typeof u !== "object") return null;
-  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
-  const read = n(u.cachedReadTokens);
-  const written = n(u.cachedWriteTokens);
-  return { inputTokens: Math.max(0, n(u.inputTokens) - read - written), cacheReadTokens: read, cacheWriteTokens: written, outputTokens: n(u.outputTokens) + n(u.thoughtTokens) };
+  const n = (v: unknown) => (typeof v === "number" && Number.isFinite(v) && v > 0 ? v : 0);
+  return { inputTokens: n(u.inputTokens), cacheReadTokens: n(u.cachedReadTokens), cacheWriteTokens: n(u.cachedWriteTokens), outputTokens: n(u.outputTokens) };
 }
 
 export type AgyDriverOptions = {

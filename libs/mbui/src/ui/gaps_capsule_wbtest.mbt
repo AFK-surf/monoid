@@ -62,3 +62,36 @@ test "rule 4: one line of words at a capsule's end with a mark concentric with i
   assert_eq(capsule_words_faults(14.0, lines=1), [])
   assert_true(capsule_words_faults(24.0, lines=1).length() > 0, msg="24 in beside the mark's 14")
 }
+
+///|
+/// A box 10 round, 4 over and under what it holds: words `left` in from its start, then a key's cap (18 high and wide,
+/// `cap_round` round, a ground of its own) `right` from its end. Rule 4's faults in it.
+fn concentric_end_faults(left : Double, right : Double, cap_round : Double) -> Array[String] {
+  let t = Tester::new(
+    fn(c) {
+      c.row(align=AStart, fn() {
+        c.box(dir=Row, pl=left, pr=right, pt=4.0, pb=4.0, gap=8.0, radius=10.0, bg=0x2A2B2FFFL, align=ACenter, fn() {
+          c.text("Find", size=12.0) |> ignore
+          c.box(w=Px(18.0), h=Px(18.0), radius=cap_round, bg=0x45464AFFL, align=ACenter, justify=JCenter, fn() {
+            c.text("F", size=11.0) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    },
+    w=400.0,
+    h=200.0,
+    corners_held=false,
+  )
+  t.draw()
+  t.gap_faults().filter(fn(f) { f.has_prefix("rule 4") })
+}
+
+///|
+test "rule 4: a key's cap concentric with a box's corners at its end (4 in, 6 round in 10) seen as far in as their arcs' centre, words 10 in at the other end as even; not concentric, or the words further in, found" {
+  assert_eq(concentric_end_faults(10.0, 4.0, 6.0), [])
+  assert_true(concentric_end_faults(10.0, 4.0, 4.0).length() > 0, msg="a cap 4 round, 4 in a box 10 round")
+  assert_true(concentric_end_faults(16.0, 4.0, 6.0).length() > 0, msg="words 16 in beside a concentric cap")
+}

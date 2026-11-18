@@ -77,21 +77,33 @@ pub fn Raised::cast(self : Raised) -> @ui.Shadow {
 pub let held_raised : Raised = raised(6.0, ambient=0.14, spot=0.14)
 
 ///|
-/// What floats over a card (a menu, a popover, a hover card, a small panel): blurred 16, 12 down, in float_shadow_ink.
+/// What floats over a card (a menu, a popover, a hover card, a small panel): in light blurred 12, 8 down, in the
+/// palette's ink; in the dark tighter, blurred 8, 6 down, in float_shadow_ink: a wide dark blur over a dark card is a
+/// smudge round it, not a lift.
 pub fn float_shadow() -> (Double, Double, Int64) {
-  (float_blur, float_fall, float_shadow_ink())
+  if theme().dark {
+    (dark_float_blur, dark_float_fall, float_shadow_ink())
+  } else {
+    (float_blur, float_fall, theme().p.shadow)
+  }
 }
 
 ///|
-let float_blur : Double = 16.0
+let float_blur : Double = 12.0
 
 ///|
-let float_fall : Double = 12.0
+let float_fall : Double = 8.0
 
 ///|
-/// The ink of what floats' shadow, as the theme is now: the palette's in light (the lights above, as clear as it was);
-/// in the dark black at `dark_float_shadow`, the palette's 45% all but lost on a ground as dark as the shadow itself,
-/// so what floats is seen over what it floats on, with its lifted ground and lit rim (panel_ground, panel_edge).
+let dark_float_blur : Double = 8.0
+
+///|
+let dark_float_fall : Double = 6.0
+
+///|
+/// The ink of what floats' shadow, as the theme is now: the palette's in light; in the dark black at
+/// `dark_float_shadow`, the palette's all but lost on a ground as dark as the shadow itself, so what floats is seen over
+/// what it floats on, with its lifted ground and its line (panel_ground, panel_edge).
 pub fn float_shadow_ink() -> Int64 {
   let t = theme()
   if t.dark {
@@ -102,4 +114,4 @@ pub fn float_shadow_ink() -> Int64 {
 }
 
 ///|
-let dark_float_shadow : Double = 0.62
+let dark_float_shadow : Double = 0.34

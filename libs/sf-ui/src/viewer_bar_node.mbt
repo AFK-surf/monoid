@@ -291,13 +291,16 @@ fn back_shapes() -> Array[@ui.Shape] {
 /// : "正在读取 **1.2 MB** / 3.4 MB" in the meta's size in the ink's quieter colour, the
 /// size so far in bold in its own, then a progress bar 120 wide (progress_node); before the core has said how much and
 /// with no size it was sent with, 正在打开 over a bar that sweeps. `got`: what has come and its whole size; `size`: the
-/// size it was sent with. Each as it changes. The row's node.
+/// size it was sent with. Each as it changes. `lead`: 正在读取 before the sizes (none in the floating bar, where the
+/// bar beside them says it and the file's name keeps its room); `track`: how wide its bar is. The row's node.
 #callsite(autofill(loc))
 pub fn viewer_coming_node(
   parent : @view.View,
   got : () -> (Double, Double?)?,
   size : () -> Double,
   ink : () -> ViewerInk,
+  lead? : Bool = true,
+  track? : Double = vfr_coming_track,
   loc~ : SourceLoc,
 ) -> @view.View {
   let total = fn() -> Double? {
@@ -319,7 +322,7 @@ pub fn viewer_coming_node(
         match (got(), total()) {
           (Some((loaded, _)), Some(n)) =>
             [
-              @view.words_run(t("web-main.preview.loadingLabel") + " "),
+              @view.words_run(if lead { t("web-main.preview.loadingLabel") + " " } else { "" }),
               @view.words_run(file_size(loaded), weight=600, ink=ink().ink),
               @view.words_run(" / " + file_size(n)),
             ]
@@ -345,7 +348,7 @@ pub fn viewer_coming_node(
       fn() { @ui.tree_theme().line },
       fn() { theme().p.accent },
     )
-    .width(Is(Some(vfr_coming_track)))
+    .width(Is(Some(track)))
     |> ignore
   })
 }

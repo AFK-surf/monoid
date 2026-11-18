@@ -172,7 +172,7 @@ pub fn slider(
           _ => ()
         }
       }
-    })
+    }, captures=true)
     .on_key(fn(k) {
       if disabled() || !v.focused() || k.mods != 0 {
         return false

@@ -53,7 +53,7 @@ export function once(inner: Inner, key: string, progress: Progress, read: (progr
 }
 
 /// The legacy whole-file endpoint, also used by a download on a station without range reads.
-export function wholeFile(inner: Inner, station: StationAddr, key: string, name: string, thumb: boolean, progress: Progress, ctx: SpanContext | null): Effect.Effect<Beside, CoreError> {
+export function wholeFile(inner: Inner, station: StationAddr, key: string, name: string, thumb: boolean | "preview", progress: Progress, ctx: SpanContext | null): Effect.Effect<Beside, CoreError> {
   return once(inner, JSON.stringify(["whole", station.toString(), key, name, thumb]), progress, (tell) =>
     Effect.map(inner.stations.requests.file(station, key, name, thumb, (loaded, total) => tell({ loaded, total }), ctx),
       ([type, bytes]) => new Beside({ type }, bytes)));

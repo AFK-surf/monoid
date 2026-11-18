@@ -358,20 +358,16 @@ fn mark_colours_node(row : @view.View, st : MarkPick, glyph : (String, String)?,
     }
     let of = fn() { mark_color(col).unwrap_or(@sf.theme().p.text) }
     let on = fn() { st.color.get() == col }
-    row.box(fn(ring) {
+    let label = fn() { if col == "" { tr("android-settings.station.glyphs") } else { col } }
+    @sf.action_box_node(row, label, selected=on, fn(_) {
+      st.color.set(col)
+      match glyph {
+        Some((g, _)) => set(glyph_emoji(g), "glyph:" + g + (if col == "" { "" } else { ":" + col }))
+        None => ()
+      }
+    }, fn(ring) {
       @sf.style_node(ring, fn() { mark_colour }, in_row=true)
       ring.edge(By(fn() { (if on() { mark_ring } else { 0.0 }, of()) })) |> ignore
-      @sf.presses_node(ring, fn() {
-        st.color.set(col)
-        match glyph {
-          Some((g, _)) => set(glyph_emoji(g), "glyph:" + g + (if col == "" { "" } else { ":" + col }))
-          None => ()
-        }
-      })
-      ring.says(By(fn() {
-        Some(@view.said(Button, label=if col == "" { tr("android-settings.station.glyphs") } else { col }, selected=on()))
-      }))
-      |> ignore
       ring.box(fn(dot) {
         @sf.style_node(dot, fn() { mark_colour_dot })
         dot.ground(By(of)) |> ignore
@@ -518,7 +514,7 @@ fn mark_row_node(
         }
       }
       let label = if none { tr("android-settings.station.emojiClear") } else { key }
-      row.box(fn(cell) {
+      @sf.action_box_node(row, fn() { label }, selected=fn() { on }, fn(_) { press() }, fn(cell) {
         @sf.style_node(cell, fn() { if on { mark_cell_on } else { mark_cell } }, in_row=true)
         // (square: as tall as it is wide)
         cell.aspect(Is(1.0)) |> ignore
@@ -538,9 +534,9 @@ fn mark_row_node(
             mark_color(st.color.get()).unwrap_or(if on { t.p.accent_text } else { t.p.text })
           })
         }
-        // (a finger's press rippling over it, as an old row's: square outside a card)
+        // (a finger's press rippling over it, as an old row's: square outside a card; what it is to the hand, the keyboard
+        // and a screen reader the choice's, said after this look)
         @sf.rippled_node(cell, press, 0.0, fn() { label })
-        cell.says(By(fn() { Some(@view.said(Button, label~, selected=on)) })) |> ignore
       })
       |> ignore
     }

@@ -220,7 +220,7 @@ let passkey_hook_text : String =
   #|  creds.get = function (options) {
   #|    const pk = options && options.publicKey;
   #|    const ch = pk && b64(pk.challenge);
-  #|    if (active === null || !activeDevice || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
+  #|    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
   #|    const id = String(++next);
   #|    const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
   #|    const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };

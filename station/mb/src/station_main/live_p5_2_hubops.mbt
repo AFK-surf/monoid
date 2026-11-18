@@ -398,6 +398,22 @@ async fn P52::hub_bridge(self : P52, op : String, given : Array[Json]) -> Json {
       "hub.has" if ["prepareCardPosts", "prepareLatestThreads"].contains(arg_text(args, 0)) => Json::boolean(true)
       // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: who the card is said by)
       "hub.identity" => p52_json_of_jv(self.chats_answer("actor.messageIdentity", args.map(jv_of), args))
+      // (`hub.chat(connect).post` as the vault's cards say theirs: the thread's connect, channel, ts and the text)
+      "hub.post" =>
+        Json::string(self.chat_post(arg_text(args, 0), arg_text(args, 1), arg_text(args, 2), arg_text(args, 3), []))
+      // (adb/card.ts's `chat.post` as the phones', devices' and rigs' cards say it: connect, thread, text, files)
+      "chat.post" => {
+        let here = arg_or_null(args, 1)
+        Json::string(
+          self.chat_post(
+            arg_text(args, 0),
+            jtext(here, "channel").unwrap_or(""),
+            jtext(here, "threadTs").unwrap_or(""),
+            arg_text(args, 2),
+            jitems(arg_or_null(args, 3)),
+          ),
+        )
+      }
       // (agents.ts `cardOutcomes.save`: a decided card's outcome queued, the request written by its part before)
       "cardOutcomes.save" => self.outcome_save(arg_or_null(args, 0))
       // (a part that queued one itself, on a connection of its own: the vault)

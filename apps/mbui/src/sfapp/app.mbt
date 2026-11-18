@@ -157,7 +157,11 @@ fn pages_shell(src : Source, wide : Bool, window_width : Double) -> Shell {
     close_overlays,
     open_invite,
     open_login,
-    behind: peeks_stop_all,
+    behind: fn(s) {
+      peeks_stop_all(s)
+      // (where each chat open on a page made as nodes is, kept and told now: no frame may come after)
+      @sfpages.chat_reads_behind()
+    },
     open: fn(p) { open_where(src, p) },
     open_over: fn(p) { open_over_where(src, p) },
     detail: detail_where,

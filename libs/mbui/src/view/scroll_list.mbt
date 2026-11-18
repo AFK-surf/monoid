@@ -333,8 +333,8 @@ fn Scroll::past_held(self : Scroll, t : Double) -> Unit {
     _ => (dmax((self.tall)(), 1.0), dmax((self.tall)(), 1.0))
   }
   if flung is None {
-    (self.settle_off)()
-    self.settle_off = fn() {  }
+    (self.settle_off.val)()
+    self.settle_off.val = fn() {  }
   }
   match now {
     Some((edge, x, feel)) if x > 0.0 =>
@@ -598,8 +598,8 @@ fn Scroll::notched(self : Scroll, v : View, t : Double, d : Double) -> Bool {
       (x, d, 0.0)
     }
   }
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   self.x.set(x0)
   self.notch.set(Some({ x0, total, v0, t0: t, tau: wheel_ease_ms, end: self.ease_drawn_end(x0, total, v0) }))
   self.scrolled_at(t)
@@ -615,8 +615,8 @@ fn Scroll::glide_to(self : Scroll, v : View, t : Double, to : Double) -> Unit {
   if to == x {
     return
   }
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   self.notch.set(Some({ x0: x, total: to - x, v0: 0.0, t0: t, tau: wheel_ease_ms, end: self.ease_drawn_end(x, to - x, 0.0, most=dmax(self.most(), to)) }))
   self.scrolled_at(t)
   self.list_settles(v, t)
@@ -634,8 +634,8 @@ fn Scroll::glide_on(self : Scroll, v : View, t : Double, to : Double, most : Dou
   let (came, speed) = ease_state(n.total, n.v0, t - n.t0, tau=n.tau)
   let x = n.x0 + came
   let total = to - x
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   if total <= 0.0 {
     self.set_notch_landed(true)
     self.notch.set(None)
@@ -652,16 +652,16 @@ fn Scroll::glide_on(self : Scroll, v : View, t : Double, to : Double, most : Dou
 /// What it does by itself, set out at `t`, told to what hosts the tree (Tree::on_glides) and at rest at its end, said
 /// on the timeline: then where its fling ended, nothing past an end.
 fn Scroll::list_settles(self : Scroll, v : View, t : Double) -> Unit {
-  (self.settle_off)()
-  self.settle_off = fn() {  }
+  (self.settle_off.val)()
+  self.settle_off.val = fn() {  }
   // (what it does by itself set going or stopped: drawn moved by it from now, Scroll::offset_said)
   self.offset_said()
   guard @signals.untracked(fn() { self.rest_now() }) is Some(rest) else { return }
   (v.tree.glides)(self.serial, fn() { self.glides_till() })
   ignore(t)
   v.tree.hand_at_end(rest)
-  self.settle_off = v.at_moment(rest, fn() {
-    self.settle_off = fn() {  }
+  self.settle_off.val = v.at_moment(rest, fn() {
+    self.settle_off.val = fn() {  }
     let flung = self.fling.untracked()
     let notch = self.notch.untracked()
     if flung is Some(_) || notch is Some(_) {

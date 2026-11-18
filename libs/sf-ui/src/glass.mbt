@@ -69,7 +69,7 @@ pub fn glass_bar_ball() -> @ui.Glass {
 ///|
 /// The bar's ball held (the lens over the places, iOS 26's tab bar's): liquid glass, nearly clear, its rim bending
 /// the places under it; a touch of the page's paper so it reads as glass in both themes.
-pub fn glass_lens() -> @ui.Glass {
+fn glass_lens() -> @ui.Glass {
   let t = theme()
   @ui.Glass::liquid(
     blur=0.0,
@@ -143,37 +143,8 @@ pub fn glass_action() -> @ui.Glass {
 }
 
 ///|
-/// How far a sheet reaches on under the window's foot (sheet_look: its foot's corners out of sight).
+/// How far a sheet reaches on under the window's foot (sheet_node's: its foot's corners out of sight).
 let sheet_under : Double = pane_corner
-
-///|
-/// still.fail's sheet as mbui's sheet draws it (@kit.sheet's look): the sheet's glass over the page, the
-/// scrim's black as far as it shows (`s.t`) under it, its top corners a panel's (pane_corner: it holds cards, the
-/// user 2026-11-03: 卡片里不能放卡片，面板里可以放卡片; sheet_under more of it under the window's foot), a shadow; `ground` (not 0) a solid ground in the glass's place. What it holds starts with its grabber.
-pub fn sheet_look(ground? : Int64 = 0L) -> (@ui.Ctx, @kit.SheetState, () -> Unit) -> Unit {
-  fn(c, s, body) {
-    let t = theme()
-    // (the sheet: the surface of the look it comes in by: Ctx::surface)
-    let sheet = c.box(
-      w=Fill(1.0),
-      h=Px(s.h + sheet_under),
-      radius=pane_corner,
-      bg=ground,
-      glass?=if ground != 0L {
-        None
-      } else {
-        Some({ ..glass_sheet(), solid: over(over(t.p.bg, alpha(0x000000FFL, 0.28 * s.t)), alpha(t.p.card, 0.8)) })
-      },
-      shadow=sheet_raised.sigma,
-      shadow_y=sheet_raised.dy,
-      shadow_color=sheet_raised.color,
-      clip=true,
-      pb=sheet_under,
-      body,
-    )
-    c.surface(sheet)
-  }
-}
 
 ///|
 /// The scrim under a sheet at its fullest: black at 28%.

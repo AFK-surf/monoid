@@ -715,15 +715,6 @@ pub fn segmented_height() -> Double {
 ///|
 let segmented_corner : Double = 15.0
 
-///|
-/// A line to type in as a look for mbui's field (@kit.text_field) where its words are set apart (a sheet's, a dialog's):
-/// a one-line field's, `input`'s (a capsule as tall as the theme's controls), one frame for every line to type in (the
-/// user, 2026-10-29: fields 37, 41 and 44 high, 12, 18 and 22 round, side by side).
-pub fn field_look(c : @ui.Ctx, s : @kit.FieldState, editor : () -> Unit) -> Unit {
-  let look = if s.hovered || s.focused { input_box_hot } else { input_box }
-  c.box(id=s.id, style=look.then(control_height()).then(field_corner()), editor) |> ignore
-}
-
 // ---------------------------------------------------------------------------
 // Small panels
 
@@ -989,19 +980,9 @@ let sheet_grab_outer : @ui.Style = @ui.css("w=Full pt=S2 pb=S1")
 let sheet_grab_inner : @ui.Style = @ui.css("w=Full py=S1 align=ACenter")
 
 ///|
-/// How tall a sheet's grabber stands at its top, all round it (sheet_grab: 8 and 4 over its 5, 4 and 4 under): where
+/// How tall a sheet's grabber stands at its top, all round it (sheet_node's grabber: 8 and 4 over its 5, 4 and 4 under): where
 /// what the sheet holds begins.
 pub let sheet_grab_h : Double = 8.0 + 4.0 + 5.0 + 4.0 + 4.0
-
-///|
-/// The grabber at a sheet's top: 38 × 5 in the line's colour, 12 above it and 8 under.
-pub fn sheet_grab(c : @ui.Ctx) -> Unit {
-  let grabber = sheet_grabber.then(@ui.style(bg=Data(theme().p.line)))
-  c.box(style=sheet_grab_outer, fn() {
-    c.box(style=sheet_grab_inner, fn() { c.box(style=grabber, fn() {  }) |> ignore }) |> ignore
-  })
-  |> ignore
-}
 
 ///|
 /// How long the pointer rests on a control before its tip shows (the web's Tooltip.Provider delayDuration).
@@ -1036,9 +1017,10 @@ pub fn tip(
 
 ///|
 /// A tip as the web draws it (parts.css.ts tooltip), as tip_node's tip_look_node draws one, said in the theme's roles:
-/// small words on the primary ink, 5 by 10 in, 8 round, a soft shadow; in the dark not that ink (the light grey, a glare
-/// of a block) but the raised grey lifted a step toward the words, its line round it. Its keys, where it says any, each
-/// a cap of its own after its words (key_caps), the tip then 4 over and under them and 8 from either side.
+/// small words on the primary ink, 5 by 10 in, 10 round, a small shadow; in the dark not that ink (the light grey, a
+/// glare of a block) but the raised grey lifted a step toward the words, a faint line round it. Its keys, where it says
+/// any, each a cap of its own after its words (key_caps), the tip then 4 over, under and after them (concentric with
+/// them, 6 round), its words 10 from its start.
 pub fn tip_look(c : @ui.Ctx, words : String, keys : String) -> Unit {
   let caps = key_caps(keys)
   // (the tip: the surface of the look it comes in by: Ctx::surface)
@@ -1068,15 +1050,15 @@ let tip_box : @ui.Style = @ui.style(
   px=S2_5,
   py=S1_25,
   bg=Primary,
-  radius=Lg,
+  radius=rounded(small_corner),
   max_w=tip_max,
-  shadow=Md,
-  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O20)),
+  shadow=Sm,
+  dark=@ui.patch(bg=Over(Raised, A(Fg, O5)), border=B1, border_color=A(Fg, O10)),
 )
 
 ///|
 // kept across runs: a value (no field of it changes)
-let tip_key_box : @ui.Style = tip_box.then(@ui.css("px=S2 py=S1"))
+let tip_key_box : @ui.Style = tip_box.then(@ui.css("pl=S2_5 pr=S1 py=S1"))
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1105,7 +1087,7 @@ let tip_caps_row : @ui.Style = @ui.css("row gap=S0_5")
 ///|
 // kept across runs: a value (no field of it changes)
 let tip_cap_box : @ui.Style = @ui.css((
-  #|row h=S5 min_w=S5 px=S1_25 radius=Base border=B1 bg=Over(Primary,A(OnPrimary,O10)) border_color=Over(Primary,A(OnPrimary,O20)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10)) border_color=Over(Over(Raised,A(Fg,O5)),A(Fg,O20))}
+  #|row h=S5 min_w=S5 px=S1_25 radius=Md bg=Over(Primary,A(OnPrimary,O10)) align=ACenter justify=JCenter dark{bg=Over(Over(Raised,A(Fg,O5)),A(Fg,O10))}
 ))
 
 ///|
@@ -1133,26 +1115,11 @@ pub fn panel_ground() -> Int64 {
 }
 
 ///|
-/// The line round what floats (panel_ground's): the line in light; in the dark the line seen `float_edge_seen` times as
-/// much (20% of the ink, and as much more again as the line is where more contrast is asked), a lit rim that cuts it off
-/// what it floats over, as a dark ground swallows a shadow.
+/// The line round what floats (panel_ground's): the theme's line, light or dark (in the dark 12% of the ink, as much
+/// more as more contrast is asked: contrasted). Seen twice as much it was a white frame round every menu; what cuts what
+/// floats off a dark card is its lifted ground and its shadow.
 pub fn panel_edge() -> Int64 {
-  let t = theme()
-  if t.dark {
-    seen_times(t.p.line, float_edge_seen)
-  } else {
-    t.p.line
-  }
-}
-
-///|
-let float_edge_seen : Double = 2.0
-
-///|
-/// `c` `times` as opaque, opaque at most.
-fn seen_times(c : Int64, times : Double) -> Int64 {
-  let a = ((c & 0xFFL).to_double() * times).round().to_int64()
-  (c & 0xFFFFFF00L) | (if a > 255L { 255L } else { a })
+  theme().p.line
 }
 
 ///|
@@ -2277,26 +2244,6 @@ let first_actions : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter justify
 // Dialogs (parts.tsx Dialog; parts.css.ts dialog, dialogHead, dialogLead, dialogBody, dialogFoot, overlay)
 
 ///|
-/// How tall box `inner` that dialog `key` holds can show at most, in the window as it is now: the dialog as tall as it
-/// may be (the window less dialog_room) less what is not its body (its title, what it says, its buttons, its padding)
-/// and less what its body holds besides `inner` (its padding over it), as the last layout had them; None before it is
-/// laid out. What holds a share of the window (presenters' `tall`) is held to it, all of it in view rather than
-/// scrolled in a body taller than the dialog shows.
-pub fn dialog_body_most(c : @ui.Ctx, key : String, inner : Int) -> Double? {
-  match
-    (
-      c.laid_size(c.id(key + "/frame")),
-      c.laid_size(c.capped_id(key + "/body")),
-      c.laid_size(c.id(key + "/held")),
-      c.laid_size(inner),
-    ) {
-    (Some((_, framed)), Some((_, shown)), Some((_, held)), Some((_, laid))) =>
-      Some(dmax(0.0, c.height - dialog_room - (framed - shown) - (held - laid)))
-    _ => None
-  }
-}
-
-///|
 /// A dialog (parts.tsx Dialog: mbui's, @kit.dialog: the page under it dimmed and taking no press, the focus kept in
 /// it, Escape, the back and a press outside closing it) in the web's look: `w` wide (520; `wide` 640), 32 short of the
 /// window at most; its corner 42 (its padding 24 and a pill's half height, so a pill in its corner and the close
@@ -3243,18 +3190,6 @@ pub fn panel_note(c : @ui.Ctx, words : String) -> Unit {
 }
 
 ///|
-/// A block of words in a small panel (PanelText): in by a row's padding, on the line its rows' words are.
-pub fn panel_text(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.box(style=panel_text_box, body) |> ignore
-}
-
-///|
-/// A small panel's buttons at its foot (PanelFoot): at its end, 6 apart, 4 under what is over them.
-pub fn panel_foot(c : @ui.Ctx, body : () -> Unit) -> Unit {
-  c.box(style=panel_foot_box, body) |> ignore
-}
-
-///|
 /// How a small panel's button stands (PanelButton's tone): its words alone, the accent's ink (the one thing to do),
 /// muted (a lesser one), or the accent's pale ground always (one that must be seen).
 #derive(Eq)
@@ -3328,19 +3263,6 @@ let panel_label_led : @ui.Style = @ui.css("row gap=S1_5 align=ACenter")
 ///|
 // kept across runs: a value (no field of it changes)
 let panel_text_box : @ui.Style = @ui.css("w=Full px=S2_5")
-
-///|
-// kept across runs: a value (no field of it changes)
-let panel_foot_box : @ui.Style = @ui.style(
-  row=true,
-  w=Full,
-  justify=JEnd,
-  gap=S1_5,
-  pt=S1,
-  // (the last in its panel's foot corner: as far in as makes a pill concentric with it)
-  pr=capsule_room(r_menu, panel_pill, less=panel_pad),
-  pb=capsule_room(r_menu, panel_pill, less=panel_pad),
-)
 
 ///|
 // kept across runs: a value (no field of it changes)

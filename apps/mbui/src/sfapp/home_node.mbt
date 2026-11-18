@@ -255,22 +255,20 @@ fn home_top_bar_node(
         end.row(Is(true)).grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(10.0)).lines_up(Is(Some(Middle))).lies_along(Is(End))
         |> ignore
         // the workspace's switcher: its mark, its name, what the others have waiting
-        end.box(fn(s) {
+        let open = fn(s : @view.View) {
+          @sfpages.open_workspaces(src, {
+            let (x, y, w, h) = s.placed_window_now()
+            @sf.Anchor::At(x, y, w, h)
+          })
+        }
+        @sf.action_box_node(end, fn() { workspace().map(fn(w) { w.name }).unwrap_or("") }, open, fn(s) {
           s.row(Is(true)).height(Is(Some(34.0))).gap(Is(6.0)).lines_up(Is(Some(Middle))).shrink(Is(1.0)).min_width(Is(Some(0.0)))
           |> ignore
-          let open = fn() {
-            @sfpages.open_workspaces(src, {
-              let (x, y, w, h) = s.placed_window_now()
-              @sf.Anchor::At(x, y, w, h)
-            })
-          }
-          @sf.presses_node(s, open)
           // (the fixture's home-sheet: opened by it as the app starts, beside it wherever it is laid out)
           if home_sheet_at_start.val {
             home_sheet_at_start.val = false
             @sfpages.open_workspaces(src, @sf.Anchor::Node(s))
           }
-          s.says(By(fn() { Some(@view.said(Button, label=workspace().map(fn(w) { w.name }).unwrap_or(""))) })) |> ignore
           @sf.icon_node(s, "chevron-down", 16.0, By(fn() { @sf.theme().p.muted })) |> ignore
           s.show(fn() { workspace().map(fn(w) { @sf.has_station_mark(w.emoji, w.icon) }).unwrap_or(false) }, fn(m) {
             @sf.station_mark_node(

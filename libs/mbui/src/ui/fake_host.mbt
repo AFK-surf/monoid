@@ -1614,9 +1614,15 @@ impl @hostapi.Host for FakeHost with full_screen(self) {
 }
 
 ///|
-/// The window made to fill the screen or back: kept (@ui.full_screen).
+/// The window made to fill the screen or back: kept (@ui.full_screen), a frame asked for it as a host's window that
+/// changes so draws one, between frames; in one, that frame draws it (view_told_as_built).
 impl @hostapi.Host for FakeHost with set_full_screen(self, on) {
-  self.full = on
+  if self.full != on {
+    self.full = on
+    if !frame_running.val {
+      self.wants = true
+    }
+  }
 }
 
 ///|

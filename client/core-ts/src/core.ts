@@ -283,6 +283,8 @@ export class Core {
       // What agents said lately read ahead, kept on the device: a chat opens with its Markdown read (md-ahead.ts).
       const ahead = new MdAhead(inner.data, inner.runner, () => inner.host.nowMs(), (station, of) => inner.data.mdChanged(station, of), () => inner.store.turn());
       inner.data.onOldMd = (station, of, text) => ahead.refresh(station, of, text);
+      // (what reading and showing them notes of the trees written after what pages wait for: data.ts `flushMd`)
+      inner.data.mdTurn = () => inner.store.turn();
       inner.data.onLogChange((table, station, id) => {
         if (table === "entry") ahead.thread(station, Number(id));
       });
@@ -714,6 +716,8 @@ export class Core {
   close(): Promise<void> {
     if (this.#closing) return this.#closing;
     const { runner, data } = this.inner;
+    // (the trees read and not yet written, and what is written and not yet committed: kept for the core that follows)
+    data.closing();
     runner.shutdown();
     this.#closing = runner.run(data.device.close());
     return this.#closing;

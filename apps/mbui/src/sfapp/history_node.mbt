@@ -145,7 +145,7 @@ fn history_head_node(v : @view.View, src : Source, r : ChatRef, key : String, ag
       waiting.val = Some(
         @sfpages.history_details_open(
           src,
-          history_details_asks(r, key),
+          @sfpages.history_details_asks(r.station, key),
           @sfpages.history_details_at(r.station, key),
           fn() {
             history_tab.set(i)
@@ -197,10 +197,7 @@ let history_name_words : @ui.TextStyle = @ui.text_style(size=Title, weight=Bold,
 fn history_actions_node(v : @view.View, src : Source, r : ChatRef, agent : () -> Json?) -> Unit {
   let s = fn() { field(agent(), "session") }
   let key = fn() { text(s(), "key") }
-  let has_stop = fn() {
-    let status = text(agent(), "status")
-    status == "running" || status == "queued"
-  }
+  let has_stop = fn() { @sfpages.history_working(agent()) }
   let has_evict = fn() { text(s(), "process") == "warm" }
   v.show(at_once=true, fn() { has_stop() || has_evict() }, fn(row) {
     @sf.style_node(row, fn() { @sf.keys_row(size=28.0) })

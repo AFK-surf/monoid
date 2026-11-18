@@ -698,10 +698,10 @@ export class PersonalLock {
     return Effect.gen({ self: this }, function* () {
       if (this.#myKey !== null) return { id: this.#myKey, seed: null };
       if (!host.appKeys || !host.secureSet) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
-      if (reason !== null && host.secureAsk) yield* Effect.mapError(host.secureAsk(reason), asCoreError);
+      if (reason !== null && host.secureAsk) yield* Effect.mapError(host.secureAsk(reason), (e) => CoreError.refused(e, "personal_no_key"));
       const seed = new Uint8Array(32);
       host.randomBytes(seed);
-      yield* Effect.mapError(host.secureSet(KEY, seed, { user: true }), asCoreError);
+      yield* Effect.mapError(host.secureSet(KEY, seed, { user: true }), (e) => CoreError.refused(e, "personal_no_key"));
       const id = `ed25519:${hex(ed25519.getPublicKey(seed))}`;
       yield* Effect.mapError(host.storageSet(KEY_ID, utf8(id)), asCoreError);
       this.#myKey = id;
@@ -714,7 +714,7 @@ export class PersonalLock {
     const { host } = this.#env;
     return Effect.gen(function* () {
       if (!host.secureGet) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
-      const seed = yield* Effect.mapError(host.secureGet(KEY, { user: true, reason }), asCoreError);
+      const seed = yield* Effect.mapError(host.secureGet(KEY, { user: true, reason }), (e) => CoreError.refused(e, "personal_no_key"));
       if (seed === null || seed.length !== 32) return yield* Effect.fail(new CoreError("personal_no_key", t("core-misc.personal.noKey")));
       return seed;
     });
@@ -1619,7 +1619,7 @@ export class PersonalLock {
   /// A lock the person says they began anew elsewhere: this device leaves the one pinned, and joins it or begins again.
   forget(sub: string, reason: string): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
-      if (this.#env.host.secureAsk) yield* Effect.mapError(this.#env.host.secureAsk(reason), asCoreError);
+      if (this.#env.host.secureAsk) yield* Effect.catch(this.#env.host.secureAsk(reason), (e) => (e.message === "no_device_lock" ? Effect.void : Effect.fail(CoreError.refused(e, "lock_refused"))));
       this.#pinned.delete(sub);
       this.#aside.delete(sub);
       yield* Effect.mapError(this.#env.host.storageDelete(keptAs(sub)), asCoreError);

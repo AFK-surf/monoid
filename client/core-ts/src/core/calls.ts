@@ -94,7 +94,9 @@ export type Call =
   /// kept answered (drive-kept.ts `chat`); without a size, nothing kept.
   /// `from`: where it was opened (KeptFrom: its chat, the file as its message has it), kept with it while it is kept, so
   /// what lists it (`downloads`' `keeping`, a download) leads back there.
-  | { kind: "stationFile"; station: string; key: string; name: string; thumb: boolean; progress: boolean; keep: number | null; from?: unknown }
+  /// `preview` (with `keep`): an image over PREVIEW_SMALL answered first as its station's preview for the whole-window
+  /// viewer, `{ type, preview: true }`, where the image itself is not kept whole (station/calls.ts `preview`).
+  | { kind: "stationFile"; station: string; key: string; name: string; thumb: boolean; progress: boolean; keep: number | null; preview?: true; from?: unknown }
   /// `quiet`: the core's own (fill.ts), in the background: not waited on, and nothing a viewer let go; `noHedge`: brought
   /// after all else, never asked twice at once (requests.ts NO_HEDGE).
   | { kind: "stationFilePart"; station: string; key: string; name: string; offset: number; length: number; progress: boolean; stream: boolean; keep: number | null; quiet?: boolean; noHedge?: boolean; from?: unknown }
@@ -1027,10 +1029,12 @@ export function parseCall(name: string, params: unknown, bytes?: Uint8Array): Ca
         ["progress", "bool", "default"],
         ["keep", "bool", "default"],
         ["size", "f64", "opt"],
+        ["preview", "bool", "default"],
       ]);
+      const keep = p.keep && !p.thumb && p.size !== null ? (p.size as number) : null;
       return {
         kind: "stationFile", station: p.station as string, key: p.key as string, name: p.name as string, thumb: p.thumb as boolean, progress: p.progress as boolean,
-        keep: p.keep && !p.thumb && p.size !== null ? (p.size as number) : null, ...fromOf(params),
+        keep, ...(p.preview && keep !== null ? { preview: true as const } : {}), ...fromOf(params),
       };
     }
     case "station.file.part": {

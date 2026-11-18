@@ -12,6 +12,7 @@ import { FarviewTabs, farviewConfig } from "./farview.ts";
 import { readOnly } from "../mesh/credential.ts";
 import { pipeTcp, reachLocal } from "../mesh/peer-forward.ts";
 import { writeLine } from "../mesh/wire.ts";
+import { given } from "../read/views.ts";
 
 export const BrowserLive = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -26,7 +27,8 @@ export const BrowserLive = Layer.effectDiscard(
         const h = new BrowserAgentHold({
           hub: screens,
           name: (session) => {
-            const title = store.getSession(session)?.title?.trim() ?? "";
+            const thread = store.sessionHomeThread(session)?.thread ?? store.recentSessionThreads(session, 1).threads[0]?.thread ?? null;
+            const title = (thread ? given(thread) : null) ?? store.getSession(session)?.title?.trim() ?? "";
             return `agent: ${title !== "" ? title : session}`;
           },
         });

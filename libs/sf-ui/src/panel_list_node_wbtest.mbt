@@ -328,3 +328,38 @@ test "capped_node: past its most, kept to it, scrolled by the wheel as the old o
     lists_same_rects(t, "\{ms} after the wheel")
   }
 }
+
+///|
+/// How far what panel_list_node's column draws fades out towards its top and its foot, at most of all it draws.
+fn lists_softs(t : @ui.Tester) -> (Double, Double) {
+  let mut top = 0.0
+  let mut foot = 0.0
+  for f in t.drawn_fades() {
+    if f.4 > top {
+      top = f.4
+    }
+    if f.6 > foot {
+      foot = f.6
+    }
+  }
+  (top, foot)
+}
+
+///|
+test "panel_list_node: faded out towards an end it goes on past, as far as it does, none where it holds all it has" {
+  for platform in [0, 2] {
+    let (t, _) = lists_tester(3, platform~)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(lists_softs(t), (0.0, 0.0), msg="short, platform \{platform}")
+    let (t, _) = lists_tester(20, platform~)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(lists_softs(t), (0.0, panel_list_fade), msg="long at its top, platform \{platform}")
+    t.wheel(100.0 + lists_apart, 150.0, 100.0)
+    t.run_for(@ui.move_most_ms)
+    let (top, foot) = lists_softs(t)
+    assert_true(top > 0.0 && foot > 0.0, msg="long in its middle, platform \{platform}: \{top} \{foot}")
+    t.wheel(100.0 + lists_apart, 150.0, 4000.0)
+    t.run_for(@ui.move_most_ms)
+    assert_eq(lists_softs(t), (panel_list_fade, 0.0), msg="long at its foot, platform \{platform}")
+  }
+}

@@ -12,12 +12,17 @@
     <!-- mbui's Updates: the app's own newer build installed without the system asking the person each time (Android 12+:
          PackageInstaller USER_ACTION_NOT_REQUIRED takes effect only with this) -->
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
-    <!-- BrowserLogin asks whether there is a browser to open a login page in -->
+    <!-- Passkeys (Passkeys.java, Android 14+): CredentialManager asked with the page's origin and clientDataHash -->
+    <uses-permission android:name="android.permission.CREDENTIAL_MANAGER_SET_ORIGIN" />
+    <!-- BrowserLogin asks whether there is a browser to open a login page in; Passkeys checks third-party providers -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.service.credentials.CredentialProviderService" />
         </intent>
     </queries>
     <application android:label="MoonBit UI" android:hasCode="true" android:enableOnBackInvokedCallback="true" android:usesCleartextTraffic="true" android:theme="@android:style/Theme.Material.Light.NoActionBar">

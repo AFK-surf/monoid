@@ -233,10 +233,8 @@ fn settings_back_node(parent : @view.View, band : Bool, at : @sf.ListAt) -> Unit
   if band {
     @sf.band_row_node(parent, fn() { false }, label, back, at, body)
   } else {
-    parent.box(fn(r) {
+    @sf.action_box_node(parent, label, fn(_) { back() }, fn(r) {
       @sf.style_node(r, fn() { @sf.side_row_at(at).then(settings_back_row).then(@sf.row_least_h()) })
-      @sf.presses_node(r, back)
-      r.says(By(fn() { Some(@view.said(Button, label=label())) })) |> ignore
       @sf.nav_ground_node(r, fn() { false })
       body(r)
     })

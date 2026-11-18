@@ -189,9 +189,12 @@ function mathParen(state: J, silent: boolean): boolean {
   return false;
 }
 
-/// A table, its cells split at bars outside formulas: `| \(|x| \le 1\) | 2 |` is two cells, not four. Its rows'
-/// bars within a `\(…\)` are hidden from GFM's own rule (as NUL, which no text read has: markdown-it reads it as
-/// U+FFFD), and its cells given them back.
+/// A table, its cells split at bars outside formulas and code: `| \(|x| \le 1\) | 2 |` and ``| `a | b` | 2 |`` are two
+/// cells each, not four and three (GFM splits a row at its bars before it reads code in it, so an agent's union type,
+/// `a || b` or a pipe in a command broke its row up). Its rows' bars within a `\(…\)`, and within a code span closed on
+/// its line but one escaped (GFM's own escape, which GFM undoes), are hidden from GFM's own rule (as NUL, which no text
+/// read has: markdown-it reads it as U+FFFD), and its cells given them back. Each row's `tr_open` says where its cells
+/// stand in their line (`meta.cells`, from the line's start), for their words to be found there and not in another.
 function mathTable(state: J, startLine: number, endLine: number, silent: boolean): boolean {
   const src: string = state.src;
   // (no line of bars and dashes under it: no table, and nothing to look through)
@@ -199,39 +202,105 @@ function mathTable(state: J, startLine: number, endLine: number, silent: boolean
   if (!/^[-:|][-:|\s]*$/.test(under)) return false;
   let end = startLine;
   while (end < endLine && state.bMarks[end] + state.tShift[end] < state.eMarks[end]) end++;
-  const from = state.bMarks[startLine];
-  const to = state.eMarks[Math.max(startLine, end - 1)];
-  let hidden = "";
-  let last = from;
-  for (let at = from; at < to; ) {
-    if (src.charCodeAt(at) !== 0x5c) {
-      at++;
-      continue;
+  const bars: number[] = [];
+  for (let line = startLine; line < end; line++) if (line !== startLine + 1) hiddenBars(src, state.bMarks[line] + state.tShift[line], state.eMarks[line], bars);
+  if (bars.length > 0) {
+    let hidden = "";
+    let last = 0;
+    for (const bar of bars) {
+      hidden += src.slice(last, bar) + "\0";
+      last = bar + 1;
     }
-    if (src.charCodeAt(at + 1) !== 0x28) {
-      at += 2;
-      continue;
-    }
-    let close = at + 2;
-    while (close < to && src.charCodeAt(close) !== 0x0a && !(src.charCodeAt(close) === 0x5c && src.charCodeAt(close + 1) === 0x29)) close += src.charCodeAt(close) === 0x5c ? 2 : 1;
-    if (close >= to || src.charCodeAt(close) === 0x0a) {
-      at = close;
-      continue;
-    }
-    hidden += src.slice(last, at) + src.slice(at, close).replaceAll("|", "\0");
-    last = at = close + 2;
-    hidden += "\\)";
+    state.src = hidden + src.slice(last);
   }
-  if (hidden === "") return gfmTable(state, startLine, endLine, silent);
   const first = state.tokens.length;
-  state.src = src.slice(0, from) + hidden + src.slice(last);
   try {
     if (!gfmTable(state, startLine, endLine, silent)) return false;
+    if (silent) return true;
+    const read: string = state.src;
+    for (let i = first; i < state.tokens.length; i++) {
+      const t = state.tokens[i];
+      if (t.type === "inline") t.content = t.content.replaceAll("\0", "|");
+      else if (t.type === "tr_open" && t.map) {
+        const line = t.map[0];
+        const from = state.bMarks[line] + state.tShift[line];
+        // (from the line's own start, a quote's marks and a list's indent before `from`; a line's end of `\r\n` is one
+        // character to markdown-it, so it is only within a line that its offsets are the text's)
+        const lineStart = read.lastIndexOf("\n", from - 1) + 1;
+        t.meta = { cells: rowCellSpans(read, from, state.eMarks[line]).map(([a, b]) => [a - lineStart, b - lineStart]) };
+      }
+    }
   } finally {
     state.src = src;
   }
-  for (let i = first; i < state.tokens.length; i++) if (state.tokens[i].type === "inline") state.tokens[i].content = state.tokens[i].content.replaceAll("\0", "|");
   return true;
+}
+
+/// The bars of a table's line `[from, to)` (its line's end not in it) that split no cell, pushed on `out` in order: those
+/// within a `\(…\)` closed on the line, and those within a code span closed on it but one after an odd number of
+/// backslashes (GFM reads `\|` as a bar in a cell, in code too, and drops its backslash). Outside code a backslash takes
+/// the character after it with it (an escaped backtick opens no code); in code it escapes nothing, and a run of backticks
+/// is closed only by a run as long. A run of backticks not closed on its line is words, all of it.
+function hiddenBars(src: string, from: number, to: number, out: number[]): void {
+  for (let at = from; at < to; ) {
+    const c = src.charCodeAt(at);
+    if (c === 0x5c) {
+      if (src.charCodeAt(at + 1) !== 0x28) {
+        at += 2;
+        continue;
+      }
+      let close = at + 2;
+      while (close < to && !(src.charCodeAt(close) === 0x5c && src.charCodeAt(close + 1) === 0x29)) close += src.charCodeAt(close) === 0x5c ? 2 : 1;
+      if (close >= to) {
+        at += 2;
+        continue;
+      }
+      for (let k = at + 2; k < close; k++) if (src.charCodeAt(k) === 0x7c) out.push(k);
+      at = close + 2;
+      continue;
+    }
+    if (c !== 0x60) {
+      at++;
+      continue;
+    }
+    let ticks = 1;
+    while (at + ticks < to && src.charCodeAt(at + ticks) === 0x60) ticks++;
+    const close = closingTicks(src, at + ticks, to, ticks);
+    if (close < 0) {
+      at += ticks;
+      continue;
+    }
+    for (let k = at + ticks; k < close; k++) {
+      if (src.charCodeAt(k) !== 0x7c) continue;
+      let slashes = 0;
+      while (src.charCodeAt(k - 1 - slashes) === 0x5c) slashes++;
+      if (slashes % 2 === 0) out.push(k);
+    }
+    at = close + ticks;
+  }
+}
+
+/// Where each cell of a table's row stands in `src`, its line `[from, to)` (its indent and its line's end not in it),
+/// the spaces round each left out: split as GFM splits it (`escapedSplit`: at a bar with no backslash just before it,
+/// hidden ones NUL), an empty cell at either end the row's edge.
+function rowCellSpans(src: string, from: number, to: number): [number, number][] {
+  while (to > from && isSpace(src.charCodeAt(to - 1))) to--;
+  while (from < to && isSpace(src.charCodeAt(from))) from++;
+  const cells: [number, number][] = [];
+  let start = from;
+  for (let at = from; at < to; at++) {
+    if (src.charCodeAt(at) !== 0x7c || (at > from && src.charCodeAt(at - 1) === 0x5c)) continue;
+    cells.push([start, at]);
+    start = at + 1;
+  }
+  cells.push([start, to]);
+  if (cells.length > 0 && cells[0][0] === cells[0][1]) cells.shift();
+  if (cells.length > 0 && cells[cells.length - 1][0] === cells[cells.length - 1][1]) cells.pop();
+  return cells.map(([a, b]): [number, number] => {
+    while (a < b && isSpace(src.charCodeAt(a))) a++;
+    while (b > a && isSpace(src.charCodeAt(b - 1))) b--;
+    return [a, b];
+  });
 }
 
 // ── tokens into nodes ──
@@ -360,7 +429,12 @@ function tableOf(w: Walk, open: J): Node {
       const inline = w.tokens[w.at]?.type === "inline" ? w.tokens[w.at++] : null;
       w.at++; // th_close, td_close
       // (`value`: the cell as written, between its bars, an escaped bar a bar: what the table as Markdown is made of)
-      cells.push({ type: "tableCell", value: inline ? String(inline.content ?? "") : "", children: inline ? inlinesOf(w, inline.children ?? [], span(w, t.map)) : [] });
+      // (its words found in its own cell: a cell's code or words are found again in the cells after it, a path's
+      // file name after the path)
+      const own = t.meta?.cells?.[cells.length] as [number, number] | undefined;
+      const base = t.map ? w.starts[t.map[0]] : undefined;
+      const where: [number, number] = own && base !== undefined ? [base + own[0], base + own[1]] : span(w, t.map);
+      cells.push({ type: "tableCell", value: inline ? String(inline.content ?? "") : "", children: inline ? inlinesOf(w, inline.children ?? [], where) : [] });
     }
     w.at++;
     rows.push({ type: "tableRow", children: cells });
@@ -443,6 +517,15 @@ function inlinesOf(w: Walk, tokens: J[], [from, to]: [number, number]): Node[] {
         const start = k >= 0 && k < cursor.to ? k : undefined;
         const inside = found(t.content);
         if (inside) cursor.at += t.markup.length;
+        else if (start !== undefined) {
+          // (its words are not the text's, `\|` read as a bar in a table: on past the run of backticks that closes it,
+          // for the code after it in the same cell not to be found here)
+          const close = closingTicks(w.source, start + t.markup.length, cursor.to, t.markup.length);
+          if (close >= 0) {
+            cursor.at = close + t.markup.length;
+            return { type: "inlineCode", value: t.content, position: at(start, cursor.at) };
+          }
+        }
         return { type: "inlineCode", value: t.content, ...(start !== undefined ? { position: at(start, cursor.to) } : {}) };
       }
       case "math_inline": {
@@ -473,6 +556,21 @@ function inlinesOf(w: Walk, tokens: J[], [from, to]: [number, number]): Node[] {
     }
   };
   return until("");
+}
+
+/// Where the first run of exactly `ticks` backticks in `[from, to)` starts, or -1.
+function closingTicks(source: string, from: number, to: number, ticks: number): number {
+  for (let k = from; k < to; ) {
+    if (source.charCodeAt(k) !== 0x60) {
+      k++;
+      continue;
+    }
+    let run = 1;
+    while (k + run < to && source.charCodeAt(k + run) === 0x60) run++;
+    if (run === ticks) return k;
+    k += run;
+  }
+  return -1;
 }
 
 /// What an image's words say, without their marks.

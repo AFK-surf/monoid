@@ -27,6 +27,7 @@ pub fn address_field_node(
   go : (String) -> Unit,
   label : () -> String,
   placeholder? : () -> String = fn() { "" },
+  editable? : () -> Bool = fn() { true },
   lead? : (@view.View) -> Unit,
   end? : ((@view.View) -> Unit)? = None,
   progress? : () -> (Double, @ui.Color)? = fn() { None },
@@ -52,11 +53,14 @@ pub fn address_field_node(
   bar_field_node(
     loc~,
     parent,
-    fn() { writing.get() },
+    fn() { writing.get() && editable() },
     fn(b) {
-      // (a press anywhere on it writes there, where the caller says so)
+      // (a press anywhere on it writes there, where the caller says so and it is editable)
       if anywhere {
-        b.cursor(Is(Some(IBeam))).on_press(fn() { field.focus() }) |> ignore
+        b
+        .cursor(By(fn() { if editable() { Some(IBeam) } else { None } }))
+        .on_press(fn() { if @signals.untracked(editable) { field.focus() } })
+        |> ignore
       }
       // (Escape, which the field takes not, gives the writing up: the page's address again, the field let go)
       b.on_key(fn(k) {
@@ -74,13 +78,16 @@ pub fn address_field_node(
         None => ()
       }
       // where the page is is what it says, unless someone is writing there
-      b.reacts(fn() { (url(), writing.get()) }, fn(told) {
-        if !told.1 {
+      b.reacts(fn() { (url(), writing.get(), editable()) }, fn(told) {
+        if !told.2 && field.focused() {
+          field.let_go()
+        }
+        if !told.1 || !told.2 {
           put_back()
         }
       })
       b.box(fn(f) {
-        f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
+        f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).presses(By(editable)) |> ignore
         let input = @ui.field(
           f,
           field,
@@ -92,9 +99,14 @@ pub fn address_field_node(
           size_by=fn() { theme().t.ui },
           colors_by=fn() {
             let t = theme()
-            (if writing.get() || framed { t.p.text } else { t.p.muted }, t.p.muted, t.p.accent)
+            (if editable() && (writing.get() || framed) { t.p.text } else { t.p.muted }, t.p.muted, t.p.accent)
           },
           submitted=fn(typed) {
+            if !@signals.untracked(editable) {
+              field.let_go()
+              put_back()
+              return
+            }
             let to = typed.trim().to_owned()
             field.let_go()
             if to == "" {
@@ -150,6 +162,8 @@ pub fn address_bar_node(
   reload : () -> Unit,
   can_back? : () -> Bool = fn() { true },
   can_forward? : () -> Bool = fn() { true },
+  can_reload? : () -> Bool = fn() { true },
+  editable? : () -> Bool = fn() { true },
   busy? : () -> Bool = fn() { false },
   stop? : () -> Unit = fn() {  },
   keys_shown? : () -> Bool = fn() { true },
@@ -178,11 +192,12 @@ pub fn address_bar_node(
         fn() { if busy() { "close" } else { "refresh" } },
         fn() { t(if busy() { "android-chat.agent.stop" } else { "web-pages.screen.reload" }) },
         fn() { if @signals.untracked(busy) { stop() } else { reload() } },
+        enabled=can_reload,
         tips?,
       )
       |> ignore
     })
-    address_field_node(row, field, url, go, label, placeholder~, lead?, progress~, least=0.0, framed~) |> ignore
+    address_field_node(row, field, url, go, label, placeholder~, editable~, lead?, progress~, least=0.0, framed~) |> ignore
     match end {
       Some(f) => f(row)
       None => ()

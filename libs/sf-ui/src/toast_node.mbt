@@ -8,14 +8,45 @@
 // room and the 8 over it opening and closing with it, it on its foot, those over it moved up and down with it.
 
 ///|
+/// A toast (toaster_node's): its id (unique among those showing), its title, its description ("" none), its action's
+/// words ("" none).
+#derive(Eq, Debug)
+pub(all) struct Toast {
+  id : String
+  title : String
+  description : String
+  action : String
+}
+
+///|
+/// A toast of `title`, its id `id`.
+pub fn toast(id : String, title : String, description? : String = "", action? : String = "") -> Toast {
+  { id, title, description, action }
+}
+
+///|
+/// When the next of toaster `key`'s toasts goes by itself (@headless.toaster_due): -1 where none is counting, None
+/// where there is no toaster `key`.
+pub fn toast_due(key : String) -> Double? {
+  @headless.toaster_due(key)
+}
+
+///|
+/// When toaster `key`'s toasts are done moving (@headless.toaster_rest): -1 where none moves, None where there is no
+/// toaster `key`.
+pub fn toast_rest(key : String) -> Double? {
+  @headless.toaster_rest(key)
+}
+
+///|
 /// The toasts `toasts` gives, over all of `parent` (toaster's: `duration`, `acted`, `gone`, read out as a region named
-/// `label`, its times as `key`'s: @kit.toast_due, @kit.toast_rest), at the window's foot `bottom` over its system's
+/// `label`, its times as `key`'s: toast_due, toast_rest), at the window's foot `bottom` over its system's
 /// bars, `w` wide at most, each in still.fail's look. The node.
 #callsite(autofill(loc))
 pub fn toaster_node(
   parent : @view.View,
-  toasts : () -> Array[@kit.Toast],
-  duration : (@kit.Toast) -> Double,
+  toasts : () -> Array[Toast],
+  duration : (Toast) -> Double,
   bottom : () -> Double,
   acted : (String) -> Unit,
   gone : (String) -> Unit,
@@ -78,7 +109,7 @@ pub fn toaster_node(
 #callsite(autofill(loc))
 fn toast_look(
   b : @view.View,
-  s : @headless.ToastItem[@kit.Toast],
+  s : @headless.ToastItem[Toast],
   key : String,
   width : () -> Double,
   loc~ : SourceLoc,

@@ -338,8 +338,8 @@ fn p54_vault_world(
       prepare_card_posts: Some(async fn(threads) {
         ignore(hub_ask("hub.prepareCardPosts", [Json::array(threads.map(t => Json::number(t.to_double())))]))
       }),
-      post: async fn(session, connect, channel, text) {
-        match hub_ask("hub.post", [Json::string(session), Json::string(connect), Json::string(channel), Json::string(text)]) {
+      post: async fn(connect, channel, thread_ts, text) {
+        match hub_ask("hub.post", [Json::string(connect), Json::string(channel), Json::string(thread_ts), Json::string(text)]) {
           String(ts) => ts
           Object(_) as got => p54_text(Some(got), "ts").unwrap_or("")
           _ => raise Failure("the chat's post was not said (the agents' side is not up)")
@@ -361,7 +361,16 @@ fn p54_vault_world(
         }
         fork("vault notify", async fn() { ignore(hub_ask("hub.notify", [Json::string(session), Json::string(text)])) })
       },
-      identity: _ => None,
+      // (card-place.ts `postCard`'s `hub.actors.get(session)?.messageIdentity()`: none where the actor is not up)
+      identity: async fn(session) {
+        let got = hub_ask("hub.identity", [Json::string(session)]) catch { _ => Json::null() }
+        match got {
+          Null => None
+          // (JavaScript's undefined as the bus carries it: session_chats `is_undefined`)
+          Object(m) if m.size() == 1 && m.contains("$u") => None
+          other => Some(other)
+        }
+      },
     },
     card_outcomes: db.map(db => p54_vault_outcomes(bus, threads, db)),
     home: () => p54_home(bus),

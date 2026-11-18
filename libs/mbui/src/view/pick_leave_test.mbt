@@ -166,3 +166,50 @@ test "a pick leaving over a time, made with what holds it: shown at once, whole,
   assert_eq(t.drawn().filter(fn(d) { d.words == "右" })[0].x, 80.0)
   assert_false(t.clock_read())
 }
+
+///|
+test "a pick leaving over a time, changed again where it is laid out nowhere halfway on a way set out as it showed: shown again, what it shows now there whole, nothing of the way before left" {
+  let which = @signals.signal(1, same=fn(a, b) { a == b })
+  let hide = @signals.signal(false, same=fn(a, b) { a == b })
+  let t = @view.Tree::new(fn(root) {
+    root.box(fn(page) {
+      page.laid_nowhere(By(fn() { hide.get() })) |> ignore
+      page.box(fn(r) {
+        r.row(Is(true)) |> ignore
+        r.box(fn(b) { b.width(Is(Some(20.0))).words(Is("左")) |> ignore }) |> ignore
+        // (0 makes nothing, 1 窄 40 wide, 2 宽宽 60 wide)
+        r.pick(along_row=true, leave=pick_leave_ms, fn() { which.get() }, fn(v, k) {
+          if k > 0 {
+            v.width(Is(Some(if k == 2 { 60.0 } else { 40.0 }))).words(Is(if k == 2 { "宽宽" } else { "窄" })) |> ignore
+          }
+        })
+        r.box(fn(b) { b.width(Is(Some(20.0))).words(Is("右")) |> ignore }) |> ignore
+      })
+      |> ignore
+    })
+    |> ignore
+  })
+  t.frame(390.0, 844.0) |> ignore
+  // (to nothing as it shows: 窄 fading, its place closing on its way)
+  t.event(100.0, fn() { which.set(0) })
+  t.at(110.0)
+  t.frame(390.0, 844.0) |> ignore
+  // (laid out nowhere then, and changed again there)
+  t.event(110.0, fn() { hide.set(true) })
+  t.at(110.0)
+  t.frame(390.0, 844.0) |> ignore
+  t.event(115.0, fn() { which.set(2) })
+  t.at(115.0)
+  t.frame(390.0, 844.0) |> ignore
+  // (shown again 50 ms on, before the way set out at 100 would have ended)
+  t.event(160.0, fn() { hide.set(false) })
+  for m in [160.0, 200.0, 400.0, 900.0] {
+    t.at(m)
+    t.frame(390.0, 844.0) |> ignore
+    let x = t.drawn().filter(fn(d) { d.words == "右" })[0].x
+      assert_eq(x, 80.0, msg="右 at \{m}: \{x}")
+    assert_eq(pick_leave_alpha(t, "宽宽"), 1.0, msg="宽宽 at \{m}")
+    assert_eq(pick_leave_alpha(t, "窄"), 0.0, msg="窄 at \{m}")
+  }
+  assert_false(t.clock_read())
+}

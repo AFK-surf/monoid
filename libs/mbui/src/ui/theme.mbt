@@ -506,7 +506,8 @@ pub fn Ctx::theme(self : Ctx) -> Theme {
 /// The theme from here on (this frame's rest and the next frames'), until set again. With `narrow`, that one in its
 /// place in the frames whose window is narrower than `narrow_below` (a phone's), picked as each frame starts from its
 /// width (Ctx::narrow; style.mbt's `narrow` blocks). The app calls it as it starts and when the person picks light
-/// or dark, not every frame.
+/// or dark, not every frame. It is the old view's (`Ctx`, built each frame): a window's tree made once says its theme
+/// as it is made, followed as it changes (run_tree's and Tester::tree's `theme`, set_tree_theme).
 pub fn Ctx::set_theme(self : Ctx, t : Theme, narrow? : Theme, narrow_below? : Double = 700.0) -> Unit {
   self.theme_wide = t
   self.theme_narrow = narrow

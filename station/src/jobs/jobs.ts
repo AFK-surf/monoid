@@ -363,7 +363,11 @@ export class Jobs {
       const method = f.slice("store.".length);
       const store = this.store as unknown as Record<string, (...a: Json[]) => Json>;
       if (typeof store[method] !== "function") throw new Error(`no store method ${method}`);
-      return store[method]!(...args) ?? null;
+      const said = store[method]!(...args) ?? null;
+      // (its end kept: it is no longer up from here on, though the program has yet to answer `exited`, its notice
+      // and the queue still to come. Left up till then, `collect` kept its log and took its exit file, 2026-11-18)
+      if (method === "jobEnded" && typeof args[0] === "string") this.running.delete(args[0]);
+      return said;
     }
     const [a, b, c, d, e, g, h, i, k] = args;
     switch (f) {
@@ -538,6 +542,11 @@ export class Jobs {
     const running: Running = { pgid, gone, settled, settle };
     this.running.set(id, running);
     return running;
+  }
+
+  /// Whether its process is still the station's to end: so until its end is taken in (`ended`), after the store says it ended.
+  isRunning(id: string): boolean {
+    return this.running.has(id);
   }
 
   /// Its end said to the program, which takes it in (its record, its agent told, a service started again).

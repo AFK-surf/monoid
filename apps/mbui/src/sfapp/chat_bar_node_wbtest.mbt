@@ -438,3 +438,57 @@ test "小屏顶栏：归档或服务键出现时人头栈刚好放不下，人�
     assert_eq(bar_node_audit(t), [], msg=cause)
   }
 }
+
+///|
+/// How the bar's second row shows on each frame a host draws through `ms` after `change` (its title's words there:
+/// how opaque, 0 not drawn), the frame before it first.
+fn bar_row2_way(t : @ui.Tester, title : String, change : () -> Unit, ms : Double) -> Array[Double] {
+  let now = fn() {
+    t.words().filter(fn(w) { w.0 == title && w.2 >= 48.0 }).fold(init=0.0, fn(a, w) { if w.5 > a { w.5 } else { a } })
+  }
+  let seen = [now()]
+  t.each_frame(Some(fn() { seen.push(now()) }))
+  change()
+  t.run_shown(ms)
+  t.each_frame(None)
+  seen
+}
+
+///|
+test "小屏顶栏：服务键出现使标题放不下 3 字时，实时出现则第 2 行平滑展开；作为订阅首次应答出现（重进带后台任务的对话）则在其布局那一帧直接展开，不在页面横滑中途做展开动画" {
+  let title = "极窄标题测试：当第 1 行连三个汉字加省略号都放不下时自动展开"
+  let bar_ref : ChatRef = { station: "ws1/st1", session: "s-c1", title, station_name: "Willow" }
+  // (the widest bar where the services' key leaves the title less than 3 characters, found once: without it, more)
+  let mut lo = 260.0
+  let mut hi = 420.0
+  while hi - lo > 1.0 {
+    let mid = (lo + hi) / 2.0
+    chat_bar_node_tester(title, jobs_on=@signals.signal(true), w=mid, msg_count=1) |> ignore
+    let open = bar_extra_target(bar_ref) > 30.0
+    if open {
+      lo = mid
+    } else {
+      hi = mid
+    }
+  }
+  let w = lo.floor()
+  let jobs = @signals.signal(false)
+  let (t, _) = chat_bar_node_tester(title, jobs_on=jobs, w~, msg_count=1)
+  assert_true(bar_extra_target(bar_ref) < 0.5, msg="at \{w}: its second row open without the services' key")
+  // live: on its way
+  let came = bar_row2_way(t, title, fn() { jobs.set(true) }, @ui.move_most_ms)
+  assert_true(bar_extra_target(bar_ref) > 30.0, msg="at \{w}: its second row not opened by the services' key")
+  let between = came.filter(fn(a) { a > 0.0 && a < 0.99 })
+  assert_true(between.length() > 3, msg="at \{w}: live, not on its way: \{Repr(came)}")
+  assert_eq(bar_node_audit(t), [])
+  // told as an answer (the jobs' first value as the chat opens again): open at once, as it is laid out
+  let jobs = @signals.signal(false)
+  let (t, _) = chat_bar_node_tester(title, jobs_on=jobs, w~, msg_count=1)
+  assert_true(bar_extra_target(bar_ref) < 0.5, msg="at \{w}: its second row open without the services' key")
+  let told = bar_row2_way(t, title, fn() { @view.answering(fn() { jobs.set(true) }) }, @ui.move_most_ms)
+  assert_true(bar_extra_target(bar_ref) > 30.0, msg="at \{w}: its second row not opened by the answer")
+  let between = told.filter(fn(a) { a > 0.0 && a < 0.99 })
+  assert_eq(between, [], msg="at \{w}: an answer's on its way: \{Repr(told)}")
+  assert_true(told[told.length() - 1] >= 0.99, msg="at \{w}: \{Repr(told)}")
+  assert_eq(bar_node_audit(t), [])
+}

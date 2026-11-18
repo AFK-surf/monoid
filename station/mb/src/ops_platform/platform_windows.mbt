@@ -149,6 +149,43 @@ pub fn win_command_candidates(
 }
 
 ///|
+/// Where `name` is on `env`'s PATH on Windows, as windows.ts `findCommand` finds it: with each of PATHEXT's extensions,
+/// never a file with none first (npm puts a POSIX `#!/bin/sh` script `codex` beside `codex.cmd`, which Windows cannot
+/// run). A name that has an extension already (`git.exe`) is looked for as it is too, before those. `there`: whether a
+/// file is at a path.
+pub fn win_find_command(
+  name : String,
+  env : Array[(String, String)],
+  delim : String,
+  join : (Array[String]) -> String,
+  there : (String) -> Bool,
+) -> String? {
+  guard win_command_candidates(name, env, delim, join) is Some(candidates) else { return None }
+  let mut last = name
+  for sep in ["\\", "/"] {
+    let parts = split_on(last, sep)
+    last = parts[parts.length() - 1]
+  }
+  let as_it_is = if has(last, ".") {
+    guard env_key_ci(env, "PATH") is Some(key) else { return None }
+    split_on(env_get(env, key).unwrap_or(""), delim).map(dir => join([if dir == "" { "." } else { dir }, name]))
+  } else {
+    []
+  }
+  for c in as_it_is {
+    if there(c) {
+      return Some(c)
+    }
+  }
+  for c in candidates {
+    if there(c) {
+      return Some(c)
+    }
+  }
+  None
+}
+
+///|
 pub(all) struct ShellCandidate {
   path : String
   beside : String?

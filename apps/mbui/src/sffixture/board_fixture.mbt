@@ -31,10 +31,16 @@ pub let board_prefs : Map[String, Map[String, Json]] = Map([])
 pub let board_create_refused : Ref[String] = Ref("")
 
 ///|
+/// The model control each board chat was made with (`newChat.create` `of`), by its key.
+// kept across runs: put back as a fixture is made (board_prefs_seed)
+pub let board_created_of : Map[String, String] = Map([])
+
+///|
 /// The board's prefs a fixture of `mode` starts with: board-list none; the others the board shown in ws1 (board-off
 /// not shown), its two drafts.
 pub fn board_prefs_seed(mode : String) -> Unit {
   board_create_refused.val = ""
+  board_created_of.clear()
   board_prefs.clear()
   for k in ["boardViews", "boardGroups", "boardShowEmpty", "boardDrafts"] {
     board_prefs[k] = Map([])
@@ -468,6 +474,7 @@ pub fn fixture_board_call(f : Fixture, name : String, params : Json) -> Result[J
       Some(Err({ "code": "unavailable", "message": Json::string(board_create_refused.val) }))
     "newChat.create" if text(p, "key").has_prefix("new:board-") => {
       let key = text(p, "key")
+      board_created_of[key] = text(p, "of")
       let station = text(p, "station")
       board_started_rows.retain(fn(r) { text(Some(r), "clientKey") != key })
       board_started_rows.insert(

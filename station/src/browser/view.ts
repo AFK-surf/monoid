@@ -292,7 +292,7 @@ export const passkeyHook = (owner: string, device = true): string => `(() => {
   creds.get = function (options) {
     const pk = options && options.publicKey;
     const ch = pk && b64(pk.challenge);
-    if (active === null || !activeDevice || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
+    if (active === null || !pk || options.mediation === "conditional" || !ch || ch.length > 32768) return get(options);
     const id = String(++next);
     const allow = Array.isArray(pk.allowCredentials) ? pk.allowCredentials.map((c) => b64(c && c.id)).filter((x) => x) : [];
     const ask = { id, rpId: typeof pk.rpId === "string" && pk.rpId !== "" ? pk.rpId : location.hostname, challenge: ch, allow, userVerification: pk.userVerification || "preferred" };
@@ -663,6 +663,11 @@ export class TabView implements ScreenView {
         // A passkey of the vault's in the tab's context: its own authenticator signs it, no device asked.
         if (this.#p.ownPasskey?.(said.rpId) === true) {
           void this.#answer({ id, browser: true });
+          return;
+        }
+        // A viewer without host passkeys never invokes headful Chrome's OS WebAuthn dialog (hidden outside screencast).
+        if (!this.#devicePasskeys) {
+          void this.#answer({ id, error: "NotAllowedError" });
           return;
         }
         const clientData = JSON.stringify({ type: "webauthn.get", challenge: said.challenge, origin, crossOrigin: false });

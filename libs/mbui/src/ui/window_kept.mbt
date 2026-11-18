@@ -145,6 +145,7 @@ fn window_kept_ui_0() -> Array[WindowKept] {
   }
 }) }),
     kept_ref(tree_inset_said, fn() { @signals.signal(None, same=fn(a, b) { a == b }) }),
+    kept_ref(glass_forced_said, fn() { @signals.signal(-1, same=fn(a, b) { a == b }) }),
     kept_by_node(tree_links),
     kept_map(corner_scale_at),
     kept_set(tree_pictures),
@@ -346,6 +347,7 @@ fn window_kept_ui_3() -> Array[WindowKept] {
   typed: @signals.signal(0),
   presses: @signals.signal(0),
   asked: @signals.keyed(),
+  over_now: [],
 }) }),
     kept_struct(fn() { let held = { ..turns }; fn() { turns.window_put(held) } }, fn() { turns.window_put({
   over: {},
@@ -415,6 +417,8 @@ fn window_kept_ui_4() -> Array[WindowKept] {
 ///|
 fn window_kept_ui_5() -> Array[WindowKept] {
   [
+    kept_ref(frame_end_sets, fn() { -1 }),
+    kept_ref(frame_quiet, fn() { false }),
     kept_map(made_double_presses),
     kept_map(made_beside_presses),
     kept_map(keys_taken),
@@ -822,6 +826,7 @@ fn Hand::window_put(self : Hand, o : Hand) -> Unit {
   self.typed = o.typed
   self.presses = o.presses
   self.asked = o.asked
+  self.over_now = o.over_now
 }
 
 ///|

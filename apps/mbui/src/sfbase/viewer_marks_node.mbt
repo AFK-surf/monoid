@@ -187,18 +187,18 @@ fn marks_tools_node(col : @view.View, tips : @sf.TipLayer) -> Unit {
     }
     gap_node(row)
     // the colour, its palette asked for or put away
-    row.box(fn(b) {
+    @sf.action_box_node(row, fn() { pv("android-chat.marks.color") }, fn(_) {
+      marking.palette = !marking.palette
+      marks_changed()
+    }, expanded=fn() {
+      marks_said()
+      marking.palette
+    }, fn(b) {
       b
       .width(Is(Some(32.0)))
       .height(Is(Some(32.0)))
       .radius(Is(picture_key))
       .lines_up(Is(Some(Middle)))
-      .presses(Is(true))
-      .says(Is(Some(@view.said(Button, label=pv("android-chat.marks.color")))))
-      .on_press(fn() {
-        marking.palette = !marking.palette
-        marks_changed()
-      })
       |> ignore
       swatch_node(b, fn() {
         marks_said()
@@ -455,16 +455,13 @@ fn note_box_node(w : @view.View) -> Unit {
 /// across in `ink` in its middle, read out as a button `label`; pressed (its press let go on it), `press`.
 fn note_key_node(row : @view.View, icon : String, size : Double, ground : Int64, ink : Int64, label : String, press : () -> Unit) -> Unit {
   let inset = (36.0 - size) / 2.0
-  row.box(fn(k) {
+  @sf.action_box_node(row, fn() { label }, fn(_) { press() }, fn(k) {
     k
     .width(Is(Some(36.0)))
     .height(Is(Some(36.0)))
     .radius(Is(18.0))
     .ground(Is(ground))
     .padding(Is((inset, inset, inset, inset)))
-    .presses(Is(true))
-    .says(Is(Some(@view.said(Button, label~))))
-    .on_press(press)
     |> ignore
     @sf.icon_node(k, icon, size, Is(ink)) |> ignore
   })

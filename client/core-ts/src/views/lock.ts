@@ -524,7 +524,8 @@ export function safeMode(inner: Inner, ws: string): boolean {
   if (isObject(k) && (typeof k.on === "boolean" || k.on === null)) on = k.on as boolean | null;
   else {
     on = safeHeld(inner, ws);
-    inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+    // (kept after what pages wait for: the page that read it writes nothing as it opens, store.ts `turn`)
+    inner.runner.fork(inner.store.turn().pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
   }
   return on ?? get(view(inner, ws), "locked") === true;
 }
@@ -570,7 +571,7 @@ export function stationsGuard(inner: Inner, ws: string): { protects: (id: string
   if (inner.provider.kind !== "stillfail" || !safeMode(inner, ws)) return null;
   const k = inner.data.record(SAFE, ws);
   // (kept by a core from before, without them: kept again, in a turn of its own, as `safeMode` keeps it)
-  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(laterSleep(0).pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
+  if (isObject(k) && !Array.isArray(k.stations)) inner.runner.fork(inner.store.turn().pipe(Effect.andThen(Effect.sync(() => keepSafe(inner, ws)))));
   if (!isObject(k) || !Array.isArray(k.stations) || !Array.isArray(k.keys) || k.stations.length === 0) return null;
   const named = new Set<unknown>(k.stations);
   const keys = k.keys as unknown[];
@@ -2959,7 +2960,10 @@ export const pairs: {
   moved(inner: Inner, ws: string): void;
   reading(inner: Inner, ws: string): void;
   run(inner: Inner, name: string, ws: string, params: Record<string, unknown>): Effect.Effect<unknown, CoreError>;
-} = { shown: () => [], mine: () => null, deny: () => {}, hide: () => {}, moved: () => {}, reading: () => {}, run: () => Effect.fail(CoreError.invalid("no face-to-face approval here")) };
+  /// Whether this device waits in a workspace that a code shown on a trusted device approves it in by that workspace's
+  /// own entry (views/pair.ts `waitingIn`): one asked with the person's own lock then (`begin`'s `personal`).
+  waiting(inner: Inner): boolean;
+} = { shown: () => [], mine: () => null, deny: () => {}, hide: () => {}, moved: () => {}, reading: () => {}, run: () => Effect.fail(CoreError.invalid("no face-to-face approval here")), waiting: () => false };
 
 /// The draft of turning it on: the devices that came to the stations (that asked the cloud for credentials, where no
 /// station says), the stations asked whether they understand a lock (GET /lock: one from before answers 404).
@@ -3104,10 +3108,18 @@ function run(inner: Inner, c: Of, ctx: SpanContext | null): Effect.Effect<unknow
         // Asked before this device knows which it is (the lock not held yet, or its person's own lock not heard of):
         // both read first, within the call's wait, as the page that waits would have them (2026-11-14, the side run
         // of f6cfdf7af1: asked a moment after the first refusal, "this device waits in no workspace").
-        if (!offOwnLock(inner, c.workspace) && (!held(inner, c.workspace)?.head || inner.adb.personal().standing(sub) === "none")) {
-          yield* within.wait(Effect.ignore(Effect.all([read(inner, c.workspace), inner.adb.personal().refresh(sub)], { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
+        // So are the person's other workspaces whose lock is not held yet while the cloud says one is: what one code is
+        // to let this device into, each by what lets it in there, is known before it is asked (below).
+        {
+          const unread = [...inner.workspaces.owned()].filter(([w, o]) => o === sub && w !== c.workspace && !held(inner, w)?.head && cloudSays(view(inner, w)) !== undefined).map(([w]) => w);
+          const here = !offOwnLock(inner, c.workspace) && (!held(inner, c.workspace)?.head || inner.adb.personal().standing(sub) === "none");
+          const reads = [...(here ? [read(inner, c.workspace), inner.adb.personal().refresh(sub)] : []), ...unread.map((w) => read(inner, w))];
+          if (reads.length > 0) yield* within.wait(Effect.ignore(Effect.all(reads, { concurrency: "unbounded", discard: true }), { log: "Unhandled", message: "lock read before asking" }));
         }
-        if (offOwnLock(inner, c.workspace)) return yield* inner.adb.run({ kind: "personalJoin", sub });
+        // One code for all of it (2026-11-18: a person whose upgraded workspace lets their devices in by their own lock,
+        // beside one whose chain still lets each in by its own entry, typed two codes and was asked twice): their own
+        // lock alone where nothing else waits, else the workspaces' exchange carrying it too (views/pair.ts `begin`).
+        if (offOwnLock(inner, c.workspace) && !pairs.waiting(inner)) return yield* inner.adb.run({ kind: "personalJoin", sub });
         // (its person's only trusted device since it began their lock anew, the workspace binding the one of before: no
         // approval lets it in until they are taken out, `reboundIn`; its page says whom to ask)
         if (reboundIn(inner, c.workspace)) return yield* Effect.fail(new CoreError("lock_rebound", t(get(view(inner, c.workspace), "role") === "owner" ? "core-misc.lock.reboundOwner" : "core-misc.lock.reboundMember")));
