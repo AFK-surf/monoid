@@ -700,9 +700,13 @@ pub fn finder_list_node(
       l.fades(Is((0.0, 0.0, 0.0, foot_in))) |> ignore
     }
     let lit = l.selected(fn() { chosen_key.get() })
-    l.scrolls_window(
+    // (a line's block taken by the next line of its make to show as it no more does, or as the words typed bring
+    // others, its key that one's: finder_line_shape; the room under its last line made once)
+    l.scrolls_reused(
       @view.Scroll::list(),
       fn() { keys.get() },
+      shape=fn(k) { finder_line_shape(of_key.untracked().get(k)) },
+      reuses=fn(k) { k != finder_foot && of_key.untracked().get(k) is Some(_) },
       est=@signals.untracked(fn() { theme().found.row_h }),
       slop=@ui.touch_slop(),
       bar=@ui.tree_scroll_bar(),
@@ -712,11 +716,12 @@ pub fn finder_list_node(
       comes=fn(_) { false },
       goes=fn(_) { false },
       fn(b, k) {
-        if k == finder_foot {
+        // (the room under its last line: never taken, so its key is the one it was made for)
+        if @signals.untracked(k) == finder_foot {
           b.height(Is(Some(foot_in))) |> ignore
           return
         }
-        let held = @signals.computed_by(fn(_) { of_key.get().get(k) }, same=fn(a, b) {
+        let held = @signals.computed_by(fn(_) { of_key.get().get(k()) }, same=fn(a, b) {
           match (a, b) {
             (Some(x), Some(y)) => physical_equal(x.0, y.0) && x.1 == y.1
             (None, None) => true
@@ -724,6 +729,7 @@ pub fn finder_list_node(
           }
         })
         let line = fn() { held.get() }
+        // (what it is made as: its make, which never changes for a block, finder_line_shape's)
         match @signals.untracked(line) {
           Some((first, pick)) if pick >= 0 =>
             found_line_node(b, first, line, k, close, lit, several, at, stacked)
@@ -735,6 +741,33 @@ pub fn finder_list_node(
     |> ignore
   })
   |> ignore
+}
+
+///|
+/// Which block of the search's list a line takes as it comes to show (View::scrolls_reused's `shape`): each make its
+/// own (found_line_node's and quiet_line_node's by what the line is; a station's line by whether it has a mark).
+fn finder_line_shape(held : (FindLine, Int)?) -> Int {
+  match held {
+    Some((Head(_), _)) => 0
+    Some((Note(_), _)) => 1
+    Some((Wait(_, false), _)) => 2
+    Some((Wait(_, true), _)) => 3
+    Some((Said(_), _)) => 4
+    Some((Back, _)) => 5
+    Some((More(_), _)) => 6
+    Some((Command(_, _), _)) => 7
+    Some((Chat(_), _)) => 8
+    Some((Message(_), _)) => 9
+    Some((Item(it), _)) =>
+      if it.kind != "station" {
+        10
+      } else if @sf.has_station_mark(it.station_emoji, it.station_icon) {
+        11
+      } else {
+        12
+      }
+    None => 13
+  }
 }
 
 ///|
@@ -827,7 +860,7 @@ fn found_line_node(
   b : @view.View,
   first : FindLine,
   line : () -> (FindLine, Int)?,
-  k : String,
+  k : () -> String,
   close : () -> Unit,
   lit : (String) -> Bool,
   several : @signals.Computed[Bool],
@@ -893,7 +926,7 @@ fn found_line_node(
       row.radius(Is(@sf.row_corner)) |> ignore
     }
     // (chosen by the keys: on the words' tint)
-    row.ground(By(fn() { if keys() && lit(k) { @ui.tree_theme().color(Tint) } else { 0L } })) |> ignore
+    row.ground(By(fn() { if keys() && lit(k()) { @ui.tree_theme().color(Tint) } else { 0L } })) |> ignore
     @sf.rippled_node(row, fn() { finder_go(@signals.untracked(now), close) }, @sf.row_corner, label)
     // (the pointer moving onto it chooses it, as the keys do)
     row.on_pointer_moved(fn() {
@@ -919,8 +952,8 @@ fn found_line_node(
         },
         in_row=true,
       )
-      let icon = fn(name : String) {
-        @sf.icon_node(m, name, @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted })) |> ignore
+      let icon = fn(name : () -> String) {
+        @sf.icon_node(m, "", @sf.theme().chat_list.found.icon, By(fn() { @sf.theme().p.muted }), name_now=name) |> ignore
       }
       // a chat's picture: its first agent's maker's mark, as the line now says it (the agent changed while it shows)
       let picture = fn() {
@@ -943,9 +976,16 @@ fn found_line_node(
         })
       }
       match first {
-        Back => icon("chevron-left")
-        More(_) => icon("more")
-        Command(_, o) => icon(o.icon)
+        Back => icon(fn() { "chevron-left" })
+        More(_) => icon(fn() { "more" })
+        // (its icon as the line now says it: the block taken for another command)
+        Command(_, o) =>
+          icon(fn() {
+            match now() {
+              Command(_, now) => now.icon
+              _ => o.icon
+            }
+          })
         Chat(_) | Message(_) => picture()
         Item(it) =>
           if it.kind == "station" {
@@ -961,10 +1001,21 @@ fn found_line_node(
                 @sf.theme().p.muted
               }, fn() { 0 })
             } else {
-              icon("server")
+              icon(fn() { "server" })
             }
           } else {
-            icon(if it.kind == "file" && it.dir { "folder" } else { @sf.kind_icon(it.kind) })
+            // (its kind's icon as the line now says it: the block taken for another item)
+            icon(fn() {
+              let it = match now() {
+                Item(i) => i
+                _ => it
+              }
+              if it.kind == "file" && it.dir {
+                "folder"
+              } else {
+                @sf.kind_icon(it.kind)
+              }
+            })
           }
         _ => ()
       }

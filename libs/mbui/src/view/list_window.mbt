@@ -595,6 +595,104 @@ pub fn[K : Hash + Eq] View::scrolls_window(
 }
 
 ///|
+/// View::scrolls_window whose blocks are taken again as they leave what shows (its `reused`), said by one make:
+/// `make` makes a block in its node with what says its key as it is now, the one key it is made for or, taken for
+/// another, that one's from then (its parts read it through `key()` where they are bound, a press as it runs: what reads
+/// it untracked as it is made keeps the key it was first made for, all but which make it is, its `shape`, which never
+/// changes for a block). Every block is of
+/// one kind (`shape`: what it gives a key, `0` for all of them), taken only by a block of its kind; a key `reuses` says
+/// not (a head, words for none: what is made once) is made by `make` as well, given its key alone, and let go as it no
+/// more shows. So a list's rows are the same make put by and taken, never made and let go as the list is scrolled, and
+/// a page writes no second make for it. The rest is View::scrolls_window's. Over View::scrolls_window_ids as that is,
+/// so compiled once whatever its keys.
+pub fn[K : Hash + Eq] View::scrolls_reused(
+  self : View,
+  s : Scroll,
+  keys : () -> Array[K],
+  make : (View, () -> K) -> Unit,
+  shape? : (K) -> Int = fn(_) { 0 },
+  reuses? : (K) -> Bool = fn(_) { true },
+  est? : Double = 80.0,
+  slop? : Double,
+  bar? : ScrollBar,
+  top_covered? : () -> Double = fn() { 0.0 },
+  bar_clear? : () -> (Double, Double),
+  holds? : (K) -> Bool = fn(_) { true },
+  follows? : () -> Bool = fn() { false },
+  from_end? : Bool = false,
+  comes? : (K) -> Bool = fn(_) { true },
+  goes? : (K) -> Bool = fn(_) { true },
+  leaves_room? : (K) -> Bool = fn(_) { false },
+  comes_whole? : (K) -> Bool = fn(_) { false },
+  comes_way? : (K) -> (Double, (Double) -> Double)? = fn(_) { None },
+  reorders? : (K) -> Bool = fn(_) { false },
+  at_once? : Bool = false,
+  flips? : Bool = false,
+  place? : ListPlace[K],
+  near_foot? : (Double, () -> Bool, () -> Unit),
+  near_top? : (Double, () -> Bool, () -> Unit),
+  head? : (View) -> Unit,
+  foot? : (View) -> Unit,
+  foot_clear? : () -> Double = fn() { 0.0 },
+  bands? : (() -> Array[ListBand[K]], (View, () -> ListBand[K]) -> Unit),
+) -> View {
+  guard self.live() is Some(_) else { return self }
+  let place = place.unwrap_or(ListPlace::new())
+  let ids = place.ids
+  let k = fn(i : Int) { ids.key(i) }
+  let band_ids = fn(b : ListBand[K]) -> ListBand[Int] {
+    { from: ids.id(b.from), upto: ids.id(b.upto), top: b.top, foot: b.foot }
+  }
+  let band_keys = fn(b : ListBand[Int]) -> ListBand[K] {
+    { from: k(b.from), upto: k(b.upto), top: b.top, foot: b.foot }
+  }
+  self.scrolls_window_ids(
+    s,
+    fn() { ids.all(keys()) },
+    // (a key made once, not taken: its key alone)
+    fn(v, i) {
+      let key = k(i)
+      make(v, fn() { key })
+    },
+    est~,
+    slop?=slop,
+    bar?=bar,
+    top_covered~,
+    bar_clear?=bar_clear,
+    holds=fn(i) { holds(k(i)) },
+    follows~,
+    from_end~,
+    comes=fn(i) { comes(k(i)) },
+    goes=fn(i) { goes(k(i)) },
+    leaves_room=fn(i) { leaves_room(k(i)) },
+    comes_whole=fn(i) { comes_whole(k(i)) },
+    comes_way=fn(i) { comes_way(k(i)) },
+    reorders=fn(i) { reorders(k(i)) },
+    at_once~,
+    flips~,
+    place=place.at,
+    near_foot?=near_foot,
+    near_top?=near_top,
+    reused=fn(i) {
+      let key = k(i)
+      if reuses(key) {
+        Some(shape(key))
+      } else {
+        None
+      }
+    },
+    make_reused=fn(v, i) { make(v, fn() { k(i()) }) },
+    head?=head,
+    foot?=foot,
+    foot_clear~,
+    bands?=bands.map(fn(b) {
+      let (all, look) = b
+      (fn() { all().map(band_ids) }, fn(v, band : () -> ListBand[Int]) { look(v, fn() { band_keys(band()) }) })
+    }),
+  )
+}
+
+///|
 /// View::scrolls_window's work, of its keys by their numbers (ListKeys): compiled once, not once for every type of key
 /// a page's list holds (11 of it were 26 MB of a program's C).
 fn View::scrolls_window_ids(
