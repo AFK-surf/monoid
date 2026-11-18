@@ -52,7 +52,26 @@ pub fn open_app(io : Io) -> async (String, Array[(String, String)]) -> Unit {
       args.push("\{p.0}=\{p.1}")
     }
     args.push(app)
-    ignore((io.procs.exec)("open", args, ExecOptions::new(timeout=Some(START_MS))))
+    ignore(
+      (io.procs.exec)("open", args, ExecOptions::new(timeout=Some(START_MS))) catch {
+        ExecFailed(signal~, stderr~, ..) => raise launch_failed(signal, stderr)
+        e => raise e
+      },
+    )
+  }
+}
+
+///|
+/// Why `open` failed, as it said it, without its command line: the exec's message carries that whole, the token's
+/// `--env` with it, and the error goes to the station's log (app.ts `launchFailed`).
+fn launch_failed(signal : String?, stderr : String) -> Failed {
+  let said = trim_js(stderr)
+  if said != "" {
+    return fail(said)
+  }
+  match signal {
+    Some(s) if s != "" => fail("open was ended (\{s})")
+    _ => fail("open failed")
   }
 }
 

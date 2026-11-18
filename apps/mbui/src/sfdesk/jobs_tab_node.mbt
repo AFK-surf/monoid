@@ -81,41 +81,54 @@ fn jobs_tab_node(
       tab.box(fn(room) {
         @sf.style_node(room, fn() { jobs_tab_list_room })
         room.height(By(fn() { Some(tall()) })).shrink(Is(1.0)).min_height(Is(Some(0.0))) |> ignore
-        room.scrolls_window(
+        // (a row's block taken by the next of its kind (a group's head, a service, a job) to show as it no more does,
+        // its key that one's)
+        room.scrolls_reused(
           @view.Scroll::list(),
           keys,
+          shape=jobs_tab_row_shape,
           fn(row, k) {
             // (its sides the list's, 8 in (jobs_tab_list); 4 under what is over it in its group, its head 6 under the
             // group over it (jobs_group, jobs_group_after))
-            let over = match k {
-              JobsHead(false) => fn() { if of_kind(true).length() > 0 { jobs_group_gap } else { 0.0 } }
-              JobsHead(true) => fn() { 0.0 }
-              _ => fn() { jobs_row_gap }
+            let over = fn() {
+              match k() {
+                JobsHead(false) => if of_kind(true).length() > 0 { jobs_group_gap } else { 0.0 }
+                JobsHead(true) => 0.0
+                _ => jobs_row_gap
+              }
             }
             @sf.style_node(row, fn() { jobs_tab_row_room.then(@ui.style(pt=@sf.room_of(over()))) })
-            match k {
-              JobsHead(services) =>
+            let id = fn() {
+              match k() {
+                JobsService(id) | JobsJob(id) => id
+                JobsHead(_) => ""
+              }
+            }
+            let job = fn() { job_of(id()) }
+            // (its kind, which never changes for a block: jobs_tab_row_shape's)
+            match @signals.untracked(k) {
+              JobsHead(_) =>
                 row.box(fn(h) {
                   @sf.style_node(h, fn() { jobs_head_box })
-                  @sf.words_node(h, fn() { @sf.t(if services { "web-main.jobs.services" } else { "web-main.jobs.jobs" }) }, fn() {
+                  @sf.words_node(h, fn() { @sf.t(if k() is JobsHead(true) { "web-main.jobs.services" } else { "web-main.jobs.jobs" }) }, fn() {
                     jobs_head_words
                   })
                   |> ignore
                 })
                 |> ignore
-              JobsService(id) => {
-                let job = fn() { job_of(id) }
+              JobsService(_) => {
                 // (one up or restarting opens its tab; else it does nothing)
                 let opens = fn() { text(job(), "tone") == "up" || text(job(), "tone") == "restart" }
                 jobs_tab_row(row, job, fn() { if opens() { "arrow-right" } else { "" } }, fn() { false }, opens, fn() {
                   // (its tab opens on the job as this row has it: job_now)
+                  let id = id()
                   job_handed(station, id, job())
                   service(id)
                 })
               }
-              JobsJob(id) =>
-                jobs_tab_row(row, fn() { job_of(id) }, fn() { "" }, fn() { picked.get() == id }, fn() { true }, fn() {
-                  jobs_own.picked.set(id)
+              JobsJob(_) =>
+                jobs_tab_row(row, job, fn() { "" }, fn() { picked.get() == id() }, fn() { true }, fn() {
+                  jobs_own.picked.set(id())
                 })
             }
           },
@@ -140,6 +153,17 @@ fn jobs_tab_node(
     .min_height(Is(Some(0.0)))
     |> ignore
   })
+}
+
+///|
+/// Which block of the 任务 tab's list a row takes as it comes to show (View::scrolls_reused's `shape`): a group's head,
+/// a service, a job, each its own make.
+fn jobs_tab_row_shape(k : JobsTabRow) -> Int {
+  match k {
+    JobsHead(_) => 0
+    JobsService(_) => 1
+    JobsJob(_) => 2
+  }
 }
 
 ///|
@@ -298,7 +322,8 @@ fn job_detail_node(
 /// of its own, a notice a block; none said, how a job says something.
 fn job_notices_node(v : @view.View, job : () -> Json?) -> Unit {
   let notices = fn() { items(job(), "notices") }
-  v.scrolls_window(
+  // (a notice's block taken by the next to show as it no more does, its number that one's: words for none made once)
+  v.scrolls_reused(
     @view.Scroll::list(),
     fn() {
       let n = notices().length()
@@ -308,8 +333,10 @@ fn job_notices_node(v : @view.View, job : () -> Json?) -> Unit {
         Array::makei(n, fn(i) { i })
       }
     },
+    reuses=fn(i) { i >= 0 },
     fn(row, i) {
-      if i < 0 {
+      // (words for none: never taken, so its number is the one it was made for)
+      if @signals.untracked(i) < 0 {
         row
         .words_runs(Is([
           @ui.span(@sf.t("web-main.jobs.noNotices.before")),
@@ -321,8 +348,8 @@ fn job_notices_node(v : @view.View, job : () -> Json?) -> Unit {
         |> ignore
         return
       }
-      let nv = fn() { notices().get(i) }
-      @sf.style_node(row, fn() { if i > 0 { job_notice_after } else { job_notice } })
+      let nv = fn() { notices().get(i()) }
+      @sf.style_node(row, fn() { if i() > 0 { job_notice_after } else { job_notice } })
       row.box(fn(a) {
         @sf.style_node(a, fn() { job_notice_clock }, in_row=true)
         a.shrink(Is(0.0)) |> ignore
@@ -377,12 +404,14 @@ fn job_output_node(v : @view.View, src : Source, station : String, id : String) 
           0 => @sf.wait_line_node(p, fn() { "" }) |> ignore
           1 => @sf.words_node(p, fn() { @sf.t("web-main.jobs.noOutput") }, fn() { job_output_none }) |> ignore
           _ =>
-            p.scrolls_window(
+            // (a line's block taken by the next line to show as it no more does, its number that one's: hundreds of
+            // lines scrolled through a screen's few blocks)
+            p.scrolls_reused(
               @view.Scroll::list(),
               fn() { lines.get().map_or([], fn(l) { l.lines.map(fn(x) { x.n }) }) },
               fn(row, n) {
-                // (its own line's runs, read again only as that line changes)
-                let runs = @signals.computed(fn(_) { lines.get().bind(fn(l) { l.at(n) }).map_or([], fn(l) { l.runs }) }, same=fn(
+                // (its own line's runs, read again only as that line changes or the block is taken for another)
+                let runs = @signals.computed(fn(_) { lines.get().bind(fn(l) { l.at(n()) }).map_or([], fn(l) { l.runs }) }, same=fn(
                   a,
                   b,
                 ) {
