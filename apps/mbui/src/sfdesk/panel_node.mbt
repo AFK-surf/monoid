@@ -177,6 +177,25 @@ fn side_col(src : Source, n : @view.View, key : String, open : Bool) -> Double {
 }
 
 ///|
+/// How far closed chat `r`'s side panel is as node `n` is drawn (1 closed, 0 open): on the tape (its panel a card of
+/// its own) at once by `open`; off it, with the panel's column (`side_col` against `side_whole`). (Read again as the
+/// column's way ends and what it showed is let go of, side_left: at 1 then, exactly.)
+fn side_closed_part(src : Source, n : @view.View, r : ChatRef, open : Bool) -> Double {
+  if @sf.in_pane() {
+    return if open { 0.0 } else { 1.0 }
+  }
+  let _ = panel_own.leaving.get()
+  let whole = side_whole(src, n)
+  if whole <= 0.0 {
+    return if open { 0.0 } else { 1.0 }
+  }
+  let key = chat_key(r)
+  let _ = side_way(key)
+  let col = side_col(src, n, key, open)
+  dmax(0.0, dmin(1.0, 1.0 - col / whole))
+}
+
+///|
 /// How much narrower than it is drawn in node `n` chat page `serial`'s column is laid out (less than none: wider), and
 /// how far across it is moved (chat_page_made's `narrower`): while its panel's column slides, as where it goes, from the
 /// moment it sets off, moved across as laid_toward has it (the old list's laid_w and list_shift: laid out anew only as
