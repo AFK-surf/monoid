@@ -136,6 +136,8 @@ test "大屏: a line deleted, one added by hand, empty; 返回修改 leaves the 
   clarify_press(t, "添加")
   assert_eq(clarify_now(), [clarify_lines()[0], clarify_lines()[2], ""])
   assert_eq(board_faults(t), [])
+  // (the split's own ⋯, on its head: the first of them)
+  clarify_press(t, "更多操作", k=0)
   board_tap_words(t, "返回修改")
   assert_eq(@sfbase.clarify.draft.untracked(), "")
   assert_eq(board_kept_drafts()[0], @sffixture.fix_clarify_words)
@@ -271,4 +273,36 @@ test "小屏: the split in 待派发's column, a phone's width: three lines, the
   assert_eq(clarify_lanes(src, clarify_lines()[:2].to_owned()), ["run", "run"])
   assert_eq(clarify_drafts(src)[0].title, clarify_lines()[2])
   assert_eq(board_faults(t), [])
+}
+
+///|
+test "大屏: a predecessor seen in 待收口, then archived while no board shows, is still done when the board shows again" {
+  let (t, src) = board_at("board-clarify-split", 1440.0, 900.0)
+  clarify_press(t, "全部派发")
+  t.run_for(@ui.move_most_ms)
+  let lines = clarify_lines()
+  let waiting = clarify_drafts(src)[0]
+  assert_eq(waiting.title, lines[2])
+  let (a, b) = (waiting.after[0], waiting.after[1])
+  guard @sffixture.board_fix_now.val is Some(f) else { fail("no fixture") }
+  // (the first done: kept so on the waiting draft, in the prefs)
+  @sffixture.board_fix_settle(f, a.id)
+  t.run_for(@ui.move_most_ms)
+  assert_eq(clarify_drafts(src)[0].after.map(fn(x) { x.done }), [true, false])
+  match @sffixture.board_prefs["boardDrafts"].get("ws1") {
+    Some(Array(ds)) => assert_eq(items(Some(ds[0]), "after").map(fn(x) { field(Some(x), "done") }), [Some(Json::boolean(true)), None])
+    _ => fail("not kept")
+  }
+  // (archived while no board shows, and the app run again: what this run saw is gone, the prefs' kept)
+  @sffixture.board_fix_archive(f, a.id)
+  @sfbase.board_after_reset()
+  t.run_for(@ui.move_most_ms)
+  let d = clarify_drafts(src)[0]
+  assert_eq(@signals.untracked(fn() { @sfbase.board_wait_of(d, clarify_drafts(src), @sfbase.board_items(src, "ws1"), true) }), Waits([lines[1]]))
+  assert_true(@sfbase.board_started.untracked().filter(fn(s) { s.draft.title == lines[2] }).is_empty())
+  // (the other done: started by itself, once)
+  @sffixture.board_fix_settle(f, b.id)
+  t.run_for(@ui.move_most_ms * 2.0)
+  assert_eq(@sfbase.board_started.untracked().filter(fn(s) { s.draft.title == lines[2] }).length(), 1)
+  assert_eq(clarify_lanes(src, [lines[2]]), ["run"])
 }

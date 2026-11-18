@@ -2999,6 +2999,7 @@ let zh : Map[String, String] = {
   "web-main.board.clarify.waits": "等 {task}",
   "web-main.board.clarify.waits_more": "等 {n} 个任务",
   "web-main.board.clarify.waits_list": "要等这些做完",
+  "web-main.board.clarify.auto_hint": "在本设备打开看板时自动开始",
   "web-main.board.clarify.more": "更多操作",
   "web-main.board.clarify.waits_nums": "等 {list}",
   "web-main.board.clarify.sep": "、",

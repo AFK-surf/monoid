@@ -1980,6 +1980,7 @@ export const SHAPES: Record<string, Shape> = {
   BoardAfter: struct([
     ["id", "String"],
     ["title", "String"],
+    ["done", opt("bool"), { doc: "Its chat was seen in 待收口: done for good, though archived since." }],
   ], { doc: "A draft another waits for: its key and its words as they were, said where it is gone." }),
   BoardDraft: struct([
     ["id", "String"],

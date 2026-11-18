@@ -626,6 +626,18 @@ pub fn fix_clarify_tasks() -> Json {
 pub let fix_clarify_settle_ms : Double = 3000.0
 
 ///|
+/// The made-up core made last (a test's, to move its board's chats on: board_fix_settle, board_fix_archive).
+// kept across runs: put back as a fixture is made (fixture)
+pub let board_fix_now : Ref[Fixture?] = Ref(None)
+
+///|
+/// The started chat made under key `key` archived: no longer listed.
+pub fn board_fix_archive(f : Fixture, key : String) -> Unit {
+  board_started_rows.retain(fn(r) { text(Some(r), "clientKey") != key })
+  f.changed()
+}
+
+///|
 /// The started chat made under key `key` done with (待收口), or gone wrong (`failed`), as its station would say.
 pub fn board_fix_settle(f : Fixture, key : String, failed? : Bool = false) -> Unit {
   guard board_started_rows.search_by(fn(r) { text(Some(r), "clientKey") == key }) is Some(at) else { return }

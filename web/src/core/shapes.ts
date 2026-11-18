@@ -1495,6 +1495,8 @@ export interface BoardFile {
 export interface BoardAfter {
 	id: string;
 	title: string;
+	/** Its chat was seen in 待收口: done for good, though archived since. */
+	done?: boolean;
 }
 
 /** An unstarted task kept in a workspace's 待派发 column on this device: its key, its words, the station it is to run on and that station's name. */

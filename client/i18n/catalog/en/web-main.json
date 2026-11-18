@@ -1280,6 +1280,7 @@
   "web-main.board.clarify.waits": "After {task}",
   "web-main.board.clarify.waits_more": "Waiting for {n} tasks",
   "web-main.board.clarify.waits_list": "Waits for these",
+  "web-main.board.clarify.auto_hint": "Starts by itself while this device shows the board",
   "web-main.board.clarify.more": "More actions",
   "web-main.board.clarify.waits_nums": "Waits for {list}",
   "web-main.board.clarify.sep": ", ",

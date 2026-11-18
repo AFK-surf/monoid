@@ -179,6 +179,24 @@ let card_pad : Double = 16.0
 let card_key : Double = 28.0
 
 ///|
+/// A split's (先理清's) spacing: between its blocks (its head, its words, its lines, ＋ 添加, its keys), between its lines.
+let clarify_block_gap : Double = 12.0
+
+///|
+let clarify_item_gap : Double = 8.0
+
+///|
+/// How wide a split's line's place (1.) is, and where its words start (past it and the gap after it).
+let clarify_num_w : Double = 18.0
+
+///|
+let clarify_text_in : Double = 24.0
+
+///|
+/// A split's ⋯: one icon's width, pressed in its own row's height.
+let clarify_key : Double = 24.0
+
+///|
 fn card_key_in() -> Double {
   @sf.card_corner - card_key / 2.0
 }
@@ -459,7 +477,11 @@ pub fn board_node(
       None => None
     }
   })
-  // (a draft whose predecessors are all in 待收口 started by itself, once, as the board shows: sfbase's board_after.mbt)
+  // (a predecessor seen in 待收口 kept so on what waits for it, in the prefs; a draft whose predecessors are all done
+  // started by itself, once, as the board shows: sfbase's board_after.mbt)
+  v.reacts(fn() { @sfbase.board_after_newly_done(drafts(), items(), @sfbase.board_listed_of(src, ws())) }, fn(done) {
+    @sfbase.board_after_keep_done(src, @signals.untracked(ws), done)
+  })
   v.reacts(fn() { @sfbase.board_after_due(drafts(), items(), @sfbase.board_listed_of(src, ws())).map(fn(d) { d.id }) }, fn(due) {
     for id in due {
       match @signals.untracked(fn() { drafts_map.get().get(id) }) {
@@ -2087,7 +2109,7 @@ fn draft_clarify_card(
     match @sfbase.board_draft_after(src, ws(), id, @sfbase.clarify_task_text(t), clarify.words.untracked()) {
       Some(d) => {
         // (what waits for it waits for its draft, started)
-        clarify.started[t.id] = { id: d.id, title: d.title }
+        clarify.started[t.id] = { id: d.id, title: d.title, done: false }
         @sfbase.clarify_remove_started(t.id)
         // (the last of its lines gone to work: the draft it was split from is done with)
         if clarify.tasks.untracked().is_empty() {
@@ -2099,82 +2121,91 @@ fn draft_clarify_card(
       None => ()
     }
   }
+  let more_key : Ref[@view.View?] = Ref(None)
+  let more_menu = fn() {
+    @sf.menu(
+      [
+        Some(@sf.menu_item_of(@sf.t("web-main.board.clarify.as_is"), fn() {
+          @sfbase.clarify_reset()
+          start()
+        }, icon="play")),
+        Some(@sf.menu_item_of(@sf.t("web-main.board.clarify.back"), fn() {
+          @sfbase.clarify_reset()
+          edit()
+        }, icon="edit")),
+      ],
+      from=beside_of(more_key.val),
+    )
+  }
+  // (a card of the board's: its words as far in as an ordinary card's on every side (card_pad), its blocks one gap
+  // apart, the lines of its list another; its keys at its foot as far in from its corner as its curve has them, as a
+  // card's corner key is, so the card's own end and foot are in by that and its words by card_pad)
   let foot_in = fn() { @sf.card_corner - @sf.theme().control_h / 2.0 }
   let save_in = fn() { (@sf.theme().control_h - @sf.button_height()).max(0.0) / 2.0 }
-  parent.box(fn(card) {
-    card
+  parent.box(fn(outer) {
+    outer
     .ground(By(fn() { @sf.theme().p.card }))
     .radius(Is(@sf.card_corner))
-    .padding(By(fn() { (foot_in(), card_pad, foot_in(), foot_in()) }))
-    .gap(Is(10.0))
+    .padding(By(fn() { (card_pad, card_pad, foot_in(), foot_in()) }))
+    .gap(Is(clarify_block_gap))
     |> ignore
-    card.says(By(fn() { Some(@view.said(Group, label=board_words("clarify"))) })) |> ignore
-    card.box(fn(body) {
-      body.gap(Is(10.0)).padding(By(fn() { (card_pad - foot_in(), 0.0, 0.0, 0.0) })) |> ignore
-      // 先理清, its ⋯; the words it was asked of, one grey line
-      body.box(fn(top) {
-        top.gap(Is(2.0)) |> ignore
-        top.box(fn(head) {
-          head.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
-          @sf.icon_node(head, "sparks", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
-          @sf.words_node(head, fn() { board_words("clarify") }, fn() { card_title_look }).grow(Is(1.0)) |> ignore
-          // (the draft as it was: started as written, or its words edited again; small grey links)
-          for l in [("web-main.board.clarify.as_is", true), ("web-main.board.clarify.back", false)] {
-            let (key, as_is) = l
-            @sf.link_node(head, fn() { @sf.t(key) }, fn() {
-              @sfbase.clarify_reset()
-              if as_is { start() } else { edit() }
-            }, style=fn() { card_meta_look }, ink=fn() { @sf.theme().p.muted })
-            |> ignore
-          }
+    outer.says(By(fn() { Some(@view.said(Group, label=board_words("clarify"))) })) |> ignore
+    outer.box(fn(card) {
+    card.gap(Is(clarify_block_gap)).padding(By(fn() { (0.0, 0.0, card_pad - foot_in(), 0.0) })) |> ignore
+    // 先理清 and its ⋯ (按原话派发, 返回修改): one icon's width at the line's end, no ground of its own at rest
+    card.box(fn(head) {
+      head.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+      @sf.icon_node(head, "sparks", 14.0, By(fn() { @sf.theme().p.accent_text })) |> ignore
+      @sf.words_node(head, fn() { board_words("clarify") }, fn() { card_title_look }).grow(Is(1.0)) |> ignore
+      more_key.val = Some(
+        @sf.icon_button_node(head, "more", fn() { @sf.t("web-main.board.clarify.more") }, more_menu, tips~, size=clarify_key, icon_size=14.0, grounded=false),
+      )
+    })
+    |> ignore
+    // the words it was asked of, one grey line
+    @sf.words_node(card, fn() { @sf.t("web-main.board.clarify.original", args=[("words", clarify.words.get())]) }, fn() {
+      meta_cut_look
+    })
+    |> ignore
+    card.pick(ready, at_once=true, fn(b, is_ready) {
+      if !is_ready {
+        // (the lines being made: a wait, and their bones breathing)
+        b.box(fn(w) {
+          w.gap(Is(clarify_item_gap)) |> ignore
+          @sf.wait_line_node(w, fn() { @sf.t("web-main.board.clarify.organizing") }) |> ignore
+          clarify_bones_node(w)
         })
         |> ignore
-        top.box(fn(said) {
-          said.padding(By(fn() { (0.0, card_pad - foot_in(), 0.0, 0.0) })) |> ignore
-          @sf.words_node(said, fn() { @sf.t("web-main.board.clarify.original", args=[("words", clarify.words.get())]) }, fn() {
-            meta_cut_look
+      } else {
+        b.box(fn(list) {
+          list.gap(Is(clarify_item_gap)) |> ignore
+          // (kept by its id, each with its place in the split: a row told only as its own line comes, goes or moves)
+          let keyed = list.keyed_by(fn() { clarify.tasks.get().mapi(fn(i, t) { (t, i + 1) }) }, fn(p) { p.0.id })
+          list.each(fn() { keyed.keys() }, fn(k) { k }, fn(slot, k) {
+            guard @signals.untracked(fn() { keyed.get(k.get()) }) is Some((t, n)) else { return }
+            let at = fn() { keyed.get(k.get()).map(fn(p) { p.1 }).unwrap_or(n) }
+            clarify_task_node(slot, tips, t, at, fn() { start_one(t) }, fn() { @sfbase.clarify_remove(t.id) })
           })
-          |> ignore
+          // (none left: what to do)
+          list.show(fn() { clarify.tasks.get().is_empty() }, fn(n) {
+            @sf.words_node(n, fn() { @sf.t("web-main.board.clarify.none") }, fn() { card_meta_look }) |> ignore
+          })
         })
         |> ignore
-      })
+      }
+    })
+    // ＋ 添加, its ＋ where the lines' words start
+    card.show(ready, fn(add) {
+      add.row(Is(true)).padding(Is((clarify_text_in, 0.0, 0.0, 0.0))) |> ignore
+      @sf.link_node(add, fn() { @sf.t("web-main.board.clarify.add") }, fn() { @sfbase.clarify_add() }, icon="plus", style=fn() {
+        card_meta_look
+      }, ink=fn() { @sf.theme().p.muted })
       |> ignore
-      body.pick(ready, at_once=true, fn(b, is_ready) {
-        if !is_ready {
-          // (the lines being made: a wait, and their bones breathing)
-          b.box(fn(w) {
-            w.gap(Is(12.0)).padding(By(fn() { (0.0, card_pad - foot_in(), 0.0, 0.0) })) |> ignore
-            @sf.wait_line_node(w, fn() { @sf.t("web-main.board.clarify.organizing") }) |> ignore
-            clarify_bones_node(w)
-          })
-          |> ignore
-        } else {
-          b.box(fn(list) {
-            list.gap(Is(4.0)) |> ignore
-            // (kept by its id, each with its place in the split: a row told only as its own line comes, goes or moves)
-            let keyed = list.keyed_by(fn() { clarify.tasks.get().mapi(fn(i, t) { (t, i + 1) }) }, fn(p) { p.0.id })
-            list.each(fn() { keyed.keys() }, fn(k) { k }, fn(slot, k) {
-              guard @signals.untracked(fn() { keyed.get(k.get()) }) is Some((t, n)) else { return }
-              let at = fn() { keyed.get(k.get()).map(fn(p) { p.1 }).unwrap_or(n) }
-              clarify_task_node(slot, tips, t, at, fn() { start_one(t) }, fn() { @sfbase.clarify_remove(t.id) })
-            })
-            // (none left: what to do)
-            list.show(fn() { clarify.tasks.get().is_empty() }, fn(n) {
-              @sf.words_node(n, fn() { @sf.t("web-main.board.clarify.none") }, fn() { card_meta_look }) |> ignore
-            })
-            list.box(fn(add) {
-              add.row(Is(true)) |> ignore
-              @sf.button_node(add, fn() { @sf.t("web-main.board.clarify.add") }, fn() { @sfbase.clarify_add() }, tone=Ghost, icon="plus") |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
-      })
+    })
     })
     |> ignore
     // its ways out: into 待派发, or to work
-    card.box(fn(foot) {
+    outer.box(fn(foot) {
       foot.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
       foot.box(fn(space) { space.grow(Is(1.0)) |> ignore }) |> ignore
       @sf.button_node(foot, fn() { @sf.t("web-main.board.clarify.place") }, place, disabled=fn() { !ready() || !has_words() }) |> ignore
@@ -2261,12 +2292,12 @@ fn clarify_task_node(
     @sf.menu(items, from=beside_of(more.val))
   }
   slot.box(fn(row) {
-    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Start))) |> ignore
+    row.row(Is(true)).gap(Is(clarify_text_in - clarify_num_w)).lines_up(Is(Some(Start))) |> ignore
     // (its ⋯'s menu by a right click on it too, as a card's is)
     row.on_menu(fn(_) { menu() }) |> ignore
     // its place
     row.box(fn(num) {
-      num.min_width(Is(Some(18.0))).padding(Is((0.0, 3.0, 0.0, 0.0))) |> ignore
+      num.width(Is(Some(clarify_num_w))).padding(Is((0.0, 2.0, 0.0, 0.0))) |> ignore
       @sf.words_node(num, fn() { "\{n()}." }, fn() { card_meta_look }) |> ignore
     })
     |> ignore
@@ -2276,7 +2307,7 @@ fn clarify_task_node(
       main.box(fn(w) {
         w
         .radius(Is(6.0))
-        .padding(Is((2.0, 4.0, 2.0, 4.0)))
+        .padding(Is((0.0, 2.0, 0.0, 2.0)))
         .ground(By(fn() {
           let p = @sf.theme().p
           match typed.val {
@@ -2303,8 +2334,6 @@ fn clarify_task_node(
       |> ignore
       // what it waits for, one grey line
       main.show(fn() { !t.after.get().is_empty() }, fn(g) {
-        // (where its words start, past their ground's edge)
-        g.padding(Is((4.0, 0.0, 0.0, 0.0))) |> ignore
         @sf.words_node(g, fn() { @sfbase.clarify_waits_words(t) }, fn() { meta_cut_look }) |> ignore
       })
     })
@@ -2319,7 +2348,7 @@ fn clarify_task_node(
       @sf.more_held() || !@sf.pointer_rests() || editing || @sf.hovered_node(row)
     }
     more.val = Some(
-      @sf.icon_button_node(row, "more", fn() { @sf.t("web-main.board.clarify.more") }, menu, tips~, size=card_key, icon_size=14.0)
+      @sf.icon_button_node(row, "more", fn() { @sf.t("web-main.board.clarify.more") }, menu, tips~, size=clarify_key, icon_size=14.0, grounded=false)
       .alpha(By(fn() { if seen() { 1.0 } else { 0.0 } }))
       .presses(By(seen)),
     )
@@ -2377,9 +2406,22 @@ fn draft_wait_node(card : @view.View, src : Source, own : BoardOwn, id : String,
   card.pick(fn() { wait() }, at_once=true, fn(w, now) {
     match now {
       Free | Ready => ()
-      Waits(ts) if ts.length() == 1 => wait_mark_node(w, fn() { @sfbase.board_wait_words(wait()) }, false)
-      // (several: how many, and pressed, which ones)
-      Waits(_) => draft_waits_key(w, fn() { wait() })
+      // (one by its words; several by how many, pressed which ones; and, a grey line under, when it starts itself)
+      Waits(ts) =>
+        w.box(fn(b) {
+          b.gap(Is(2.0)) |> ignore
+          if ts.length() == 1 {
+            wait_mark_node(b, fn() { @sfbase.board_wait_words(wait()) }, false)
+          } else {
+            draft_waits_key(b, fn() { wait() })
+          }
+          b.box(fn(h) {
+            h.padding(Is((16.0, 0.0, 0.0, 0.0))) |> ignore
+            @sf.words_node(h, fn() { @sf.t("web-main.board.clarify.auto_hint") }, fn() { meta_cut_look }) |> ignore
+          })
+          |> ignore
+        })
+        |> ignore
       Gone(_) | Failed(_) | Unstarted(_) =>
         w.box(fn(b) {
           b.gap(Is(4.0)) |> ignore

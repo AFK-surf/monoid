@@ -2186,6 +2186,7 @@ pub fn fixture(mode : String) -> Source {
   paged_rows.clear()
   fixture_preview(mode)
   let f = made_fixture(mode)
+  board_fix_now.val = Some(f)
   if f.mode == "drive-motion" {
     // the folder changing on its own: a note made at 2 s, 发布清单.md taken out at 3.6 s (rows_view's rows coming and
     // going where they are)

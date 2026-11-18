@@ -220,7 +220,7 @@ pub fn clarify_parts(first : String) -> Array[BoardPart] {
   let tasks = clarify.tasks.untracked().filter(fn(t) { clarify_task_text(t) != "" })
   let keys : Map[Int, BoardAfter] = Map([])
   for k, t in tasks {
-    keys[t.id] = { id: if k == 0 { first } else { board_next_id() }, title: clarify_task_text(t) }
+    keys[t.id] = { id: if k == 0 { first } else { board_next_id() }, title: clarify_task_text(t), done: false }
   }
   tasks.map(fn(t) -> BoardPart {
     let after : Array[BoardAfter] = []

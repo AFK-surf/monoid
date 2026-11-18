@@ -76,7 +76,7 @@ test("a_workspaces_drafts_are_kept_whole_the_newest_200_none_left_as_an_empty_li
   assert.deepEqual(v(values, 1).boardDrafts.w1, split);
   assert.equal((await ask(host, core, ui, 22, "prefs.set", { boardDrafts: { w1: [draft(6, { group: 7 })] } })).error.code, "invalid_params");
   // (one of them waits for another of its split (先理清's 「等 X」): kept by key and words; itself, or not a list, refused)
-  const waits = [draft(7, { group: "从一段话拆出" }), draft(8, { group: "从一段话拆出", after: [{ id: draft(7).id, title: draft(7).title }] })];
+  const waits = [draft(7, { group: "从一段话拆出" }), draft(8, { group: "从一段话拆出", after: [{ id: draft(7).id, title: draft(7).title }, { id: "new:board-70", title: "做完的", done: true }] })];
   await ask(host, core, ui, 23, "prefs.set", { boardDrafts: { w1: waits } });
   apply(host, values);
   assert.deepEqual(v(values, 1).boardDrafts.w1, waits);

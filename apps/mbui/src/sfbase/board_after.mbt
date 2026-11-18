@@ -3,8 +3,8 @@
 //
 // The rules, each predecessor by its key (a draft's key is the key its chat is made under and keeps, board_key_of):
 // - still a draft (in 待派发, or started and not yet listed): waited for, by its words;
-// - its chat listed: 待收口 (board_lane_of `done`) is done with, remembered so for the run (archived after, it stays
-//   done); errored (its row's state `failed`) is 「X 出错了」; else waited for;
+// - its chat listed: 待收口 (board_lane_of `done`) is done with, kept so in the waiting draft's prefs (its `after`'s
+//   `done`, board_after_keep_done: archived after, while no board shows or in a later run, it stays done); errored (its row's state `failed`) is 「X 出错了」; else waited for;
 // - neither, with the chats listed: gone (its draft deleted, or its chat archived or deleted before 待收口), 「等的 X 已
 //   删除」. Before the chats are listed nothing is gone: waited for.
 // Gone or errored, it never starts by itself: its card offers 立即派发 and 去掉这个依赖 (board_after_drop: what is gone
@@ -76,6 +76,10 @@ pub fn board_after_short(words : String, n? : Int = 12) -> String {
 ///|
 /// Predecessor `a` as it stands among `drafts` (those not started) and the chats `items` (`listed`: the core lists them).
 fn board_after_now(a : BoardAfter, drafts : Array[BoardDraft], items : Array[ChatItem], listed : Bool) -> AfterNow {
+  // (seen done before, kept so: done for good, though its chat is archived since)
+  if a.done {
+    return AfterDone
+  }
   if drafts.search_by(fn(d) { d.id == a.id }) is Some(at) {
     return AfterWaits(drafts[at].title)
   }
@@ -125,6 +129,33 @@ pub fn board_wait_of(d : BoardDraft, drafts : Array[BoardDraft], items : Array[C
     _ if !waits.is_empty() => Waits(waits)
     _ => Ready
   }
+}
+
+///|
+/// Of `drafts` (待派发's, not started), the predecessors seen done now and not yet kept so (their keys): to keep
+/// (board_after_keep_done).
+pub fn board_after_newly_done(drafts : Array[BoardDraft], items : Array[ChatItem], listed : Bool) -> Array[String] {
+  let out : Array[String] = []
+  for d in drafts {
+    for a in d.after {
+      if !a.done && !out.contains(a.id) && board_after_now(a, drafts, items, listed) is AfterDone {
+        out.push(a.id)
+      }
+    }
+  }
+  out
+}
+
+///|
+/// The predecessors of keys `done` kept done on every draft of workspace `ws` that waits for them (its prefs): so a
+/// predecessor archived while no board shows, or before this run, is still done when the board shows again.
+pub fn board_after_keep_done(src : Source, ws : String, done : Array[String]) -> Unit {
+  guard !done.is_empty() else { return }
+  let was = @signals.untracked(fn() { board_drafts_kept(src, ws) })
+  guard was.iter().any(fn(d) { d.after.iter().any(fn(a) { !a.done && done.contains(a.id) }) }) else { return }
+  board_drafts_put(src, ws, was.map(fn(d) {
+    { ..d, after: d.after.map(fn(a) { if done.contains(a.id) { { ..a, done: true } } else { a } }) }
+  }))
 }
 
 ///|

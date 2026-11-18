@@ -65,11 +65,13 @@ pub(all) struct BoardDraft {
 }
 
 ///|
-/// A draft another waits for (its `after`): its key, and its words as they were, said where it is gone.
+/// A draft another waits for (its `after`): its key, its words as they were (said where it is gone), and whether its
+/// chat was seen in 待收口 (`done`: kept, so that it is done for good though archived since, on this device or another).
 #derive(Eq, Debug)
 pub(all) struct BoardAfter {
   id : String
   title : String
+  done : Bool
 }
 
 ///|
@@ -318,7 +320,9 @@ fn board_drafts_kept(src : Source, ws : String) -> Array[BoardDraft] {
               station_name: text(one, "stationName"),
               files: items(one, "files").map(fn(f) { { id: text(Some(f), "id"), name: text(Some(f), "name") } }),
               group: text(one, "group"),
-              after: items(one, "after").map(fn(a) { { id: text(Some(a), "id"), title: text(Some(a), "title") } }),
+              after: items(one, "after").map(fn(a) {
+                { id: text(Some(a), "id"), title: text(Some(a), "title"), done: field(Some(a), "done") == Some(Json::boolean(true)) }
+              }),
             }
           })
           .filter(fn(d) { d.id != "" && (d.title != "" || !d.files.is_empty()) })
@@ -347,7 +351,15 @@ fn board_drafts_put(src : Source, ws : String, drafts : Array[BoardDraft]) -> Un
         one["group"] = Json::string(d.group)
       }
       if !d.after.is_empty() {
-        one["after"] = Json::array(d.after.map(fn(a) { { "id": Json::string(a.id), "title": Json::string(a.title) } }))
+        one["after"] = Json::array(
+          d.after.map(fn(a) {
+            let o : Map[String, Json] = { "id": Json::string(a.id), "title": Json::string(a.title) }
+            if a.done {
+              o["done"] = Json::boolean(true)
+            }
+            Json::object(o)
+          }),
+        )
       }
       Json::object(one)
     }),

@@ -53,7 +53,8 @@ function boardDraftsOf(v: unknown): Map_[] | null {
       for (const a of after) {
         if (!isObject(a) || typeof a.id !== "string" || !a.id || a.id.length > 120 || a.id === id) return null;
         if (typeof a.title !== "string" || a.title.length > 4000) return null;
-        waits.push({ id: a.id, title: a.title });
+        if (a.done !== undefined && typeof a.done !== "boolean") return null;
+        waits.push({ id: a.id, title: a.title, ...(a.done === true ? { done: true } : {}) });
       }
     }
     out.push({

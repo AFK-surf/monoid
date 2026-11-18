@@ -2994,6 +2994,7 @@ web-main.board.clarify.wait_for
 web-main.board.clarify.waits
 web-main.board.clarify.waits_more
 web-main.board.clarify.waits_list
+web-main.board.clarify.auto_hint
 web-main.board.clarify.more
 web-main.board.clarify.waits_nums
 web-main.board.clarify.sep
