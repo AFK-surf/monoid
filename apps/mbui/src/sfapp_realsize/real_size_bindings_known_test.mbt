@@ -1390,6 +1390,7 @@ let real_size_bindings_known : Map[String, Int] = {
   "wide board chats/down": 72,
   "wide board chats/card": 79,
   "wide board chats/archived": 11,
+  "wide board boardDrafts/boardDraft": 46,
   "phone settings-me-reading connects/session": 1,
   "phone settings-me-reading vaults/item": 1,
   "phone settings-me-reading profiles/quota": 1,

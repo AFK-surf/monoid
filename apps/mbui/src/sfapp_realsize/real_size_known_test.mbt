@@ -5,6 +5,9 @@
 // those a mode puts a sheet or panel up on counted again that day, once the workspace was held as a device holds it (a
 // chat asked `compact`, the sheet or panel reading the real values too).
 
+// Raised once, 2026-11-18: the board's 待派发 holds the person's drafts as the core carries them (its `boardDrafts`
+// topic, views/board-drafts.ts), the workspace of real size a dozen of them, two with a picture: wide board's opening
+// makes, lays out and measures that column's cards, where its drafts were none before (each card as it was).
 // Raised once, 2026-11-18: what opens over the wide frame made as nodes of the window's tree (sfdesk overlays_node), what
 // the old view built of it before now made and laid out in the tree's count: 待处理 open beside the bell
 // (home-shared-bell) its rows, every one the core lists (the 小屏 sheet's nodes, attention_rows_node), the rail's menu
@@ -514,7 +517,7 @@ let real_size_known : Map[String, (Int, Int, Int)] = {
   "phone share-card-senren-class": (1155, 1269, 272),
   "phone share-card-senren-night": (1154, 1279, 260),
   "wide webdemo": (1215, 818, 69),
-  "wide board": (1410, 883, 132),
+  "wide board": (1588, 1029, 145),
   "wide board-side": (1494, 988, 130),
   "wide home": (1222, 822, 71),
   "wide home-bars": (1222, 822, 71),
