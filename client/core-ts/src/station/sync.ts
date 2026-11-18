@@ -2532,6 +2532,9 @@ export class StationsSync {
             current = current.fallback;
             continue;
           }
+          if (result.failure.status === 404 && current.oldStation !== undefined) {
+            return yield* Effect.fail(new CoreError("unsupported", current.oldStation, 404));
+          }
           return yield* Effect.fail(result.failure);
         }
         yield* this.afterWrite(address, current.effect, result.success);

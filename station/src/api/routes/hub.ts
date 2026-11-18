@@ -42,6 +42,7 @@ import { sessionSeen } from "../seen.ts";
 import { runtimeKind } from "../../agents/runtime.ts";
 import { contextAsked } from "../../sessions/context-cap.ts";
 import { regenerateTitle, TitleError } from "../../sessions/regenerate-title.ts";
+import { clarifyTasks, ClarifyError } from "../../sessions/clarify-tasks.ts";
 
 /// A hub error the Rust maps to a status (`map_err(|e| http_error(status, e.to_string()))`).
 async function as<T>(status: number, f: () => T | Promise<T>): Promise<T> {
@@ -428,6 +429,22 @@ export const routes = (tools: Tools): Route[] => {
           throw e;
         }
         return threadView(r, t.id);
+      }),
+    },
+    // A 待派发 draft's words turned into subtasks (the board's 先理清): `{words}` answered `{tasks: [{text, after?}]}`, on
+    // an account of the asker's workspace, in a session of its own that makes no chat (sessions/clarify-tasks.ts).
+    {
+      method: "POST",
+      pattern: /^\/*board\/+clarify\/*$/,
+      handle: (r) => write(async (_s, a) => {
+        const words = said(input(r).words);
+        try {
+          const tasks = await clarifyTasks(a.hub, r.viewer.workspace, words);
+          return json(200, JSON.stringify({ tasks }));
+        } catch (e) {
+          if (e instanceof ClarifyError) throw new Refused(e.problem === "timeout" ? 504 : e.problem === "noAccount" ? 409 : 400, tr(r.lang, `station.clarify.${e.problem}`));
+          throw e;
+        }
       }),
     },
     // Hands the station a chat message as if the connect had received it (development stations, for those who manage

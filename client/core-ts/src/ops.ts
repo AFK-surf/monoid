@@ -48,6 +48,9 @@ export type Request = {
   body: unknown | null;
   /// Made instead when the first one is a 404: what a station from before the first one knew.
   fallback: Request | null;
+  /// Said instead (a CoreError `unsupported`, 404) when a station answers it 404 and there is no fallback: a station
+  /// from before its route, in words that say to update it.
+  oldStation?: string;
   effect: Effect;
 };
 
@@ -102,6 +105,7 @@ export const PARAMS: Record<string, string> = {
   "chat.mute": "muted:boolean thread:number",
   "chat.rename": "session?:string title?:string thread?:number",
   "chat.regenerateTitle": "thread:number",
+  "board.clarify": "words:string",
   "chat.pin": "pinned?:boolean session:string",
   "chat.relayPlaces": "thread:number",
   "chat.relay": "thread:number connect?:string channel?:string link?:string note?:string join?:boolean",
@@ -461,6 +465,13 @@ function stationOp(name: string, params: unknown): Request | null {
     case "chat.regenerateTitle": {
       const thread = p.u64("thread");
       return op("POST", () => `/threads/${thread}/regenerate-title`, null, { kind: "thread", archived: false });
+    }
+    // A 待派发 draft's words turned into subtasks (`{tasks: [{text, after?}]}`), asked of an account of the station's in a
+    // session of its own that changes nothing; a station from before it says to update it.
+    case "board.clarify": {
+      const r = op("POST", () => "/board/clarify", { words: p.str("words") }, NONE);
+      r.oldStation = t("station.core.clarifyOldStation");
+      return r;
     }
     case "chat.pin":
       return op(p.bool("pinned") ? "PUT" : "DELETE", () => `/sessions/${p.at("session")}/pin`, null, session("session"));
