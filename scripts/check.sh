@@ -23,6 +23,9 @@
 # output is kept to itself, and they are reported in the order they are listed here, as each is done, with the seconds
 # it took (the end of its output when it failed). A run takes as long as its longest step, not all of them.
 #
+# STILLFAIL_SKIP_RUST_TESTS=1 leaves out the native parts' Rust tests (station/native's, the mesh transport's, client/'s):
+# CI's check where none of that Rust changed (scripts/plan.sh's check_rust), on a runner without ci-1's sccache.
+#
 # STILLFAIL_SKIP_CHECKS=1 skips it all (git's --no-verify does too); say why when you do.
 set -eu
 cd "$(dirname "$0")/.."
@@ -206,6 +209,7 @@ report() {
 # What this machine has no toolchain for: fine for the quick check, a failure in the full one.
 later() { if [ $full = 1 ]; then failed="$failed $1(no toolchain)"; fi; }
 has() { command -v "$1" > /dev/null 2>&1; }
+rust_tests() { [ "${STILLFAIL_SKIP_RUST_TESTS:-}" != 1 ]; }
 
 # node_modules as the lockfile says: a fresh worktree has none, an old checkout may miss what was added since.
 # pnpm links from its store, and does nothing when all is there: quick either way.
@@ -577,8 +581,9 @@ if [ $full = 1 ]; then
   case "$(uname -s)-$(uname -m)" in Darwin-*|Linux-x86_64) station_natives="mesh runner archive-rs launcher reader" ;; esac
   if part station && touches "$station_paths"; then
     prep station deps station
-    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below).
-    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire && moon test --target native src/jsjson && moon test --target native src/nodepath && moon test --target native src/jscase && moon test --target native src/claude && moon test --target native src/codex && moon test --target native src/dsh && moon test --target native src/cursor && moon test --target native src/acp && moon test --target native src/pi && moon test --target native src/history && moon test --target native src/usagecount && moon test --target native src/pieces && moon test --target native src/admit && moon test --target native src/memory && moon test --target native src/packed && moon test --target native src/store_schema && moon test --target native src/store_sessions && moon test --target native src/store_threads && moon test --target native src/cloud_lock && moon test --target native src/cloud_net && moon test --target native src/mesh_scopes && moon test --target native src/mesh_door/door && moon test --target native src/mesh_door/gate && moon test --target native src/events && moon test --target native src/api_routes && moon test --target native src/vault_crypto && moon test --target native src/jobs_host'
+    # Its programs in MoonBit (station/mb): what of them runs without a host (src/wire, src/claude and the rest below),
+    # in one moon test (a call a package checked their shared dependencies again each time).
+    remembered "tests: station's MoonBit" "station/mb libs/mbui/src/effect libs/mbui/moon.mod rules/src rules/moon.mod" sh -c 'cd station/mb && moon test --target native src/wire src/jsjson src/nodepath src/jscase src/claude src/codex src/dsh src/cursor src/acp src/pi src/history src/usagecount src/pieces src/admit src/memory src/packed src/store_schema src/store_sessions src/store_threads src/cloud_lock src/cloud_net src/mesh_scopes src/mesh_door/door src/mesh_door/gate src/events src/api_routes src/vault_crypto src/jobs_host'
     step "typecheck: station" after station sh -c 'cd station && pnpm exec tsgo --noEmit'
     # The station's time is its Clock's (写法): the machine's only through ops/fibers.ts' wall. The Claude TUI,
     # Cursor and sandbox bridges run in processes of their own.
@@ -604,10 +609,11 @@ if [ $full = 1 ]; then
     prep core deps client/core-ts
     step "tests: station and core usage stream" after station after core sh -c 'cd station && pnpm exec tsgo -p integration/tsconfig.json && node ../scripts/native.ts run reader -- node --disable-warning=ExperimentalWarning --import ./test/setup-env.mjs --test --test-timeout=30000 integration/usage-client-stream.test.ts'
   fi
-  # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too).
+  # The native parts' own tests, where their Rust changed (the mesh addon's: the vendored crates it patches in, too;
+  # STILLFAIL_SKIP_RUST_TESTS leaves these and the core's Rust below out).
   for crate in launcher runner mesh screen; do
     also='^$'; [ $crate = mesh ] && also='^vendor/'
-    if part station && { touches "^station/native/$crate/" || touches "$also"; }; then
+    if part station && rust_tests && { touches "^station/native/$crate/" || touches "$also"; }; then
       inputs="station/native/$crate"; [ $crate = mesh ] && inputs="$inputs vendor"; [ $crate = launcher ] && inputs="$inputs .node-version"
       if has cargo; then remembered "Rust: station/native/$crate" "$inputs" heavy cargo_test "station/native/$crate" --locked -q; else later "Rust: station/native/$crate"; fi
     fi
@@ -618,11 +624,11 @@ if [ $full = 1 ]; then
   if touches '^apps/mbui/(src/host/apple_reports\.m|scripts/ios-reports-test\.sh|scripts/ios_reports_test\.m)$' && has xcrun; then
     step "iOS crash reports" bash apps/mbui/scripts/ios-reports-test.sh
   fi
-  if part core && touches '^libs/mesh-transport/'; then
+  if part core && rust_tests && touches '^libs/mesh-transport/'; then
     if has cargo; then remembered "Rust: mesh transport" "libs/mesh-transport vendor/noq-udp" heavy cargo_test libs/mesh-transport --lib -q; else later "Rust: mesh transport"; fi
   fi
   # The core's native shells (client/shell for Android, client/iroh-wasm for the web).
-  if part core && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
+  if part core && rust_tests && touches '^client/(shell|iroh-wasm)/|^libs/mesh-transport/|^client/Cargo\.(toml|lock)$|^vendor/'; then
     if has cargo; then remembered "Rust: client" "client libs/mesh-transport vendor" heavy cargo_test client --workspace -q; else later "Rust: client"; fi
   fi
 fi

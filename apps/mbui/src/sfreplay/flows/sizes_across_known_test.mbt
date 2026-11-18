@@ -14,7 +14,7 @@ fn init {
     ("src/sfreplay/flows/drive_download_many_test.mbt", 1),
     ("src/sfreplay/flows/drive_lend_test.mbt", 1),
     ("src/sfreplay/flows/drive_list_test.mbt", 2),
-    ("src/sfreplay/flows/drive_play_test.mbt", 4),
+    ("src/sfreplay/flows/drive_play_test.mbt", 3),
     ("src/sfreplay/flows/drive_read_test.mbt", 2),
     ("src/sfreplay/flows/drive_rename_test.mbt", 2),
     ("src/sfreplay/flows/drive_sheet_closing_test.mbt", 2),

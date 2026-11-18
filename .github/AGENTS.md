@@ -24,12 +24,16 @@
 - No paid runners (GitHub's larger ones): horizontal Linux test slices (`check-station`, `check-core`, and `mbui-check`
   unless `vars.CI_1_MBUI == 'on'`) and small deploy jobs run on GitHub's standard elastic runners; non-Apple `natives`
   (any `ci-1` runner; a branch's Windows reader after it in `natives-win-reader`, each cold reader at -O2 a job's
-  five minutes' worth when two shared the cores), `natives-main`, `check` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
-  a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; a branch's `check-mac`
+  five minutes' worth when two shared the cores), `natives-main` and cross-platform `side` parts run on `ci-1` (`linux-ci`, `linux-quick`,
+  a 16-core Linux machine; `vars.CI_1 = 'off'` falls back to `macos-ci`), unloading `Mini1`; `check` runs there only when
+  the Rust it tests changed (`scripts/plan.sh`'s `check_rust`: ci-1's sccache keeps those builds short), otherwise on
+  `ubuntu-24.04` with them left out (`STILLFAIL_SKIP_RUST_TESTS`), so a pull request's check needs no `ci-1` (with its
+  line down every one queued until cancelled, 44383403135); a branch's `check-mac`
   runs on GitHub's `macos-26` (main's too with `vars.MINI1 = 'off'`), and a branch plans `natives-mac` only when a job
   of its uses the Apple parts (`check-mac`, `mac-build`, `desktop-build`), on `macos-26` too unless `mesh`,
   `shell-apple` or `reader` is missing (cold builds there took 228, 323 and 223 s before packing); the other Apple parts,
-  Xcode/Simulator checks (`side-mac`, iOS/macOS builds) and Android's release stay on `Mini1` (`macos-ci`, `quick`), the
+  Xcode/Simulator checks (`side-mac`, iOS/macOS builds), Android's release and main's `station-update` stay on `Mini1`
+  (`macos-ci`, `quick`; `vars.MINI1 = 'off'` leaves `station-update` out), the
   Mac app's and the station's release signing on `macos-26` (`desktop`, `station`: their uploads over Mini1's home line
   were cut at five minutes, 2026-11-17), and
   a branch's `natives-mac-main` runs only with `vars.MINI1 = 'on'`. Runners on one
