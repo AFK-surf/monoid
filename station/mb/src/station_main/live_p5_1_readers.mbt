@@ -888,7 +888,7 @@ fn P51::readers_live(self : P51) -> Readers {
     }
     r.read(op, args, lang)
   }
-  self.stops.push(bus.store.subscribe(_ => r.checkpoint_soon()))
+  self.stops.push(bus.subscribe_store(_ => r.checkpoint_soon()))
   self.every("idle readers", 15000, async fn() { r.let_go_idle() }) // timer: a debounce of a burst (a reader idle a minute let go, pool.ts IDLE_MS)
   self.fork("old lookups", async fn() { r.legacy_lookups(bus) })
   r
@@ -906,7 +906,7 @@ async fn Readers::legacy_lookups(self : Readers, bus : LiveBus) -> Unit {
   ]
   let wake : @effect.Queue[Unit] = @effect.Queue::unbounded()
   self.stops.push(
-    bus.store.subscribe(change => match change {
+    bus.subscribe_store(change => match change {
       { "type": "thread", "entries": Array(e), .. } if e.length() > 0 => ignore(wake.try_offer(()))
       { "type": "threadRemoved", .. } => ignore(wake.try_offer(()))
       _ => ()

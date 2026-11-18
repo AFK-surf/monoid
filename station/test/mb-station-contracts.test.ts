@@ -12,10 +12,8 @@
 // - every command and flag of `main.js` (`src/main.ts`, the launcher's channel `src/ops/launcher.ts`) is the program's
 //   (`station_main/entry.mbt`, `run.mbt`, `cli.mbt`), and every `STILLFAIL_*` the TypeScript reads, the program reads.
 //
-// What is known not wired yet is listed by its check's name: `PENDING_WAVE4_FIXES` (being fixed beside this file),
-// `FOUND_HERE` (found by these checks, reported to be fixed). A listed name must still fail, and one that passes fails
-// this file until it is taken out of its list (they only shrink). What a check passes over is `NOT_REACHED` (an asker
-// the program never makes, each with what shows it), itself checked to be so.
+// Every check must pass: nothing is let off as known to be missing. What a check passes over is `NOT_REACHED` (an
+// asker the program never makes, each with what shows it), itself checked to be so.
 import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join, relative } from "node:path";
@@ -25,26 +23,6 @@ import { test } from "node:test";
 const station = fileURLToPath(new URL("..", import.meta.url));
 const mb = join(station, "mb", "src");
 const repo = join(station, "..");
-
-/// Being fixed now beside this file (W4-1: the launcher's installer and the sign-ins of accounts_oauth, `logins.*`,
-/// `machine.*`; W4-2: the rigs' world, `dep.*`): each a check below by its name.
-const PENDING_WAVE4_FIXES = new Set<string>([
-  "rpc accounts_pool machine.linkCodexAuth",
-  "rpc accounts_pool logins.startConsole",
-  "rpc accounts_pool logins.startKimi",
-  "rpc accounts_pool logins.startCursor",
-  "rpc rigs_mode dep.postCard",
-  "rpc rigs_mode dep.cardPlace",
-  "rpc rigs_mode dep.grantChatTitle",
-  "flag --launcher-installer",
-]);
-
-/// Found by these checks, reported to be fixed: a chat's hand-over asks the hub for the messages' writes it keeps
-/// (`keptSends`, `keepSends`: api/admin.ts `keptSends`, move/live.ts), which no part of the program answers.
-const FOUND_HERE = new Set<string>([
-  "rpc replica_coord keptSends",
-  "rpc replica_coord keepSends",
-]);
 
 /// Calls a package makes that the program never reaches: each with a check that it is so.
 const NOT_REACHED: { name: string; why: string; holds: () => boolean }[] = [
@@ -84,14 +62,8 @@ const programSource = () => (programText ??= mbt(join(mb, "station_main")).map(r
 
 // ── checks by name, judged together ──
 type Result = { name: string; ok: boolean; why: string };
-function judge(results: Result[], known: Set<string>[]) {
-  const wrong: string[] = [];
-  for (const r of results) {
-    const listed = known.find((k) => k.has(r.name));
-    if (!r.ok && listed === undefined) wrong.push(`${r.name}: ${r.why}`);
-    if (r.ok && listed !== undefined) wrong.push(`${r.name} now passes — remove from ${listed === PENDING_WAVE4_FIXES ? "PENDING_WAVE4_FIXES" : "FOUND_HERE"}!`);
-  }
-  return wrong;
+function judge(results: Result[]) {
+  return results.filter((r) => !r.ok).map((r) => `${r.name}: ${r.why}`);
 }
 
 // ── the calls by name ──
@@ -174,10 +146,7 @@ test("every call a package makes of the station's parts by name is answered in t
   }
   for (const w of ANSWERED_WHOLE) assert.match(read(join(mb, "station_main", w.file)), w.arm, `${w.file} answers ${w.part} whole no more: take it out of ANSWERED_WHOLE`);
   assert.ok(counted > 600, `the calls read: ${counted} (fewer than ever: the scan has stopped finding them)`);
-  for (const name of [...PENDING_WAVE4_FIXES, ...FOUND_HERE].filter((n) => n.startsWith("rpc "))) {
-    assert.ok(results.some((r) => r.name === name), `${name} is listed but is no call any package makes`);
-  }
-  const wrong = judge(results, [PENDING_WAVE4_FIXES, FOUND_HERE]);
+  const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
@@ -269,7 +238,7 @@ test("every route of the TypeScript's admin API is one the program serves", () =
     results.push({ name: `route ${route}`, ok, why: `${where} serves it; no route of the program's has this pattern${matched ? ` and ${matched[0]} no longer matches it so` : ""}` });
   }
   for (const route of Object.keys(MATCHED)) assert.ok(ts.has(route), `${route}: no route of the TypeScript's any more, take it out of MATCHED`);
-  const wrong = judge(results, [PENDING_WAVE4_FIXES, FOUND_HERE]);
+  const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
@@ -288,10 +257,7 @@ test("every command and flag of main.js and the launcher's channel is the progra
   const flags = new Set([...`${main}\n${launcher}`.matchAll(/"(--[a-z][a-z0-9-]*)/g)].map((m) => m[1]!));
   assert.ok(flags.size >= 15, `the flags read: ${[...flags].join(",")}`);
   for (const f of flags) results.push({ name: `flag ${f}`, ok: program.includes(`"${f}"`), why: `main.ts or ops/launcher.ts reads ${f}; run.mbt, cli.mbt and entry.mbt never name it` });
-  for (const name of [...PENDING_WAVE4_FIXES, ...FOUND_HERE].filter((n) => n.startsWith("flag ") || n.startsWith("command "))) {
-    assert.ok(results.some((r) => r.name === name), `${name} is listed but is no flag or command of the TypeScript's`);
-  }
-  const wrong = judge(results, [PENDING_WAVE4_FIXES, FOUND_HERE]);
+  const wrong = judge(results);
   assert.deepEqual(wrong, [], wrong.join("\n"));
 });
 
@@ -311,9 +277,4 @@ test("every STILLFAIL_* the TypeScript station reads, the program reads", () => 
   const missing = [...ts].filter((v) => !theirs.has(v) && !(v in ENV_NOT_THE_PROGRAMS)).sort();
   assert.deepEqual(missing, [], `read by src/ and by no .mbt: ${missing.join(", ")}`);
   for (const v of Object.keys(ENV_NOT_THE_PROGRAMS)) assert.ok(ts.has(v) && !theirs.has(v), `${v}: take it out of ENV_NOT_THE_PROGRAMS`);
-});
-
-test("every check named pending is one of this file's", () => {
-  // (each list's names are checks above: rpc, route, flag or command)
-  for (const name of [...PENDING_WAVE4_FIXES, ...FOUND_HERE]) assert.match(name, /^(rpc|route|flag|command) /, name);
 });

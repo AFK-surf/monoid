@@ -8,10 +8,9 @@
 // MoonBit → Node by the launcher (SIGUSR2, the release's main.js taken away and put back between), the session's turns,
 // its job and its rows carried by every hop.
 //
-// What the MoonBit station is known not to do yet is `PENDING`, each entry a check by name: one listed fails here as
-// it is listed, and one listed that passes fails this file until it is taken out (the table only shrinks). A check that
-// fails and is not listed fails as it is. TWIN_DUMP=<dir> writes every answer of both, the checks and the launchers'
-// logs there, for whoever looks at a difference.
+// Every check must pass but those `MB_OVERVIEW_EXTRAS` names (fields the MoonBit overview adds on purpose), which must
+// fail; one of them that passes fails this file until it is taken out. TWIN_DUMP=<dir> writes every answer of both, the checks and the launchers' logs there, for whoever
+// looks at a difference.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
@@ -22,6 +21,7 @@ import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { after, test } from "node:test";
 import { WebSocketServer, type WebSocket } from "ws";
 import { DatabaseSync } from "node:sqlite";
@@ -30,33 +30,15 @@ import { loadMesh, type Connection, type Stream as MeshStream } from "../src/mes
 import { Reader } from "../src/mesh/wire.ts";
 import { GrantKey } from "./fake-control-plane.ts";
 
-// ── what the MoonBit station is known not to do yet: each a check below, by its name ──
+// ── what the MoonBit station is let differ in: each a check below, by its name ──
 //
 // Every check not named here must pass; one named here must fail, and once it passes the file fails until its name is
-// taken out. Sibling fixes (W4-1, W4-2) land with their names taken out of it.
-const PENDING_WAVE4_FIXES = new Set<string>([
-  // (W4-1: the event stream's log carried over a handover, run/events.json: the MoonBit station neither takes the one
-  // Node wrote nor writes one Node takes, so a stream resumed across either says `missed`; MoonBit to MoonBit holds)
-  "Node → MoonBit: the event stream resumed, nothing missed",
-  "MoonBit → Node: the event stream resumed, nothing missed",
-]);
-/// What this file found the MoonBit station does otherwise than the TypeScript, reported to be fixed (not one of the
-/// sibling fixes above): held the same way, each until its fix lands.
-const FOUND_HERE = new Set<string>([
-  // station_use is offered only where a workspace has a station that only runs tasks (live_p5_1_rigs.mbt `offered`);
-  // the TypeScript offers it always (rigs/module.ts `parts.tools(rigTools(…))`)
-  "tools/list: the same tools",
-  "tools/list: each tool in the same place, with what it is loaded by",
-  // an owner's overview has no policy of the automatic decisions (live_p5_1_admin.mbt `storage.policyView` answers
-  // nothing; overview.ts `madeDecisionsView` gives `policyView`)
-  "GET /overview .automaticDecisions",
-  // fields of the overview the TypeScript has not
+// taken out. The MoonBit overview gives two fields the TypeScript's has not, on purpose: `machine` and `rigs`
+// (test/mb-live-station.test.ts asserts both in the overview, test/mb-live-p5-1.test.ts its `rigs`; a client passes
+// over a field it does not know).
+const MB_OVERVIEW_EXTRAS = new Set<string>([
   "GET /overview .machine",
   "GET /overview .rigs",
-  // an archived session's ended jobs taken off its record with their logs (live_p5_3_jobs.mbt `session_ended` →
-  // `clear_ended`): the TypeScript stops its jobs and keeps them, clearing them only as a person asks (DELETE
-  // /sessions/:key/jobs, api/routes/hub.ts)
-  "stillfail.db jobs",
 ]);
 
 const binary = mbReaderBinary();
@@ -136,7 +118,10 @@ after(async () => {
   for (const c of left) c.kill("SIGKILL");
   await Promise.all(left.map((c) => (c.exitCode === null && c.signalCode === null ? new Promise<void>((r) => c.once("exit", () => r())) : undefined)));
   for (const d of dirs) endAll(d);
-  if (process.env.STATION_KEEP !== "1") for (const d of dirs) rmSync(d, { recursive: true, force: true });
+  if (process.env.STATION_KEEP !== "1") for (const d of dirs) {
+    // (a builder the station started may still be leaving its files as its SIGTERM ends it: ENOTEMPTY)
+    rmSync(d, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  }
 });
 
 /// Looked at until `look` gives something (real processes: every 50 ms), or failing with `what` after `ms`.
@@ -202,13 +187,17 @@ async function controlPlane() {
     });
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
-  closers.push(() => {
+  let closed = false;
+  const close = () => {
+    if (closed) return;
+    closed = true;
     for (const s of sockets) s.terminate();
     wss.close();
     server.closeAllConnections();
     server.close();
-  });
-  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, peers };
+  };
+  closers.push(close);
+  return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, peers, close };
 }
 
 /// A fake Claude Code (stream-json in and out, /bin/sh and curl alone). Each prompt's text says what it does: a line
@@ -259,7 +248,7 @@ done
 /// A script the fake runs for a prompt that names it: one MCP call a line (`call <id> <json body>`), each answer kept
 /// in `$FAKE_OUT/$SID-$N-<id>.json`.
 const script = (calls: [string, string][]) =>
-  `JOB=$(/usr/bin/grep -o 'job_[0-9a-f]\\{8\\}' "$FAKE_OUT"/*.json 2>/dev/null | /usr/bin/head -1)\n` +
+  `JOB=$(/usr/bin/grep -h -o 'job_[0-9a-f]\\{8\\}' "$FAKE_OUT"/*.json 2>/dev/null | /usr/bin/head -1)\n` +
   `last() { /usr/bin/grep -o 'job_[0-9a-f]\\{8\\}' "$FAKE_OUT/$SID-$N-start.json" 2>/dev/null | /usr/bin/head -1; }\n` +
   `call() { /usr/bin/curl -s -X POST "$URL" -H 'content-type: application/json' -H "authorization: Bearer $STILLFAIL_MCP_TOKEN" -d "$2" > "$FAKE_OUT/$SID-$N-$1.json"; }\n` +
   calls.map(([id, body]) => `call ${id} '${body.replaceAll("'", "'\\''").replaceAll("$TO", `'"$TO"'`).replaceAll("$JOB", `'"$JOB"'`).replaceAll("$LAST", `'"$(last)"'`)}'`).join("\n") + "\n";
@@ -329,19 +318,29 @@ class Station {
 class Twins {
   readonly grant = new GrantKey();
   stations: Station[] = [];
-  plane!: { origin: string; peers: unknown[] };
+  plane!: { origin: string; peers: unknown[]; close: () => void };
   client!: Awaited<ReturnType<NonNullable<typeof addon>["bind"]>>;
   scripts!: string;
 
   async start(kinds: ("node" | "mb")[] = ["node", "mb"]) {
     this.plane = await controlPlane();
     this.client = await addon!.bind({ secretKey: randomBytes(32), alpns: [Buffer.from("client/1")], relayUrls: [], discovery: false, bindAddr: "127.0.0.1:0" });
-    closers.push(() => void this.client.close());
+    closers.push(() => void this.client.close().catch(() => undefined));
     this.scripts = fresh("scripts");
     // (what the fake does with a prompt that names no script: the station's own asks, a title's or a state's)
     writeFileSync(join(this.scripts, "nudge.sh"), script([["nudge", mcp(1, "chat_post", { to: "$TO", text: "named it", title: "Twin chat", kind: "all_done", done: "named the chat" })]]));
     // (a key each: the member's endpoint reaches a station by its key, and two of one key would be one to it)
     this.stations = await Promise.all(kinds.map((kind) => this.station(kind)));
+  }
+
+  /// Every station of the pair stopped as its launcher is (SIGTERM), what is left of each ended, the member's endpoint
+  /// and the control plane closed: the next test has the machine to itself.
+  async stop() {
+    for (const s of this.stations) if (s.child.exitCode === null && s.child.signalCode === null) s.child.kill("SIGTERM");
+    await Promise.all(this.stations.map((s) => s.ended));
+    for (const s of this.stations) endAll(s.data);
+    await this.client?.close().catch(() => undefined);
+    this.plane?.close();
   }
 
   /// A release laid out as station-bundle.sh lays one: the program, the runner and, for Node, main.js (src/main.ts).
@@ -455,7 +454,11 @@ function normalize(v: any, roots: string[], key = ""): any {
 
 /// A check by name: what `f` asserts must hold, unless its name is pending, when it must fail (and the file fails once
 /// it holds, until the name is taken out).
-const results: { name: string; ok: boolean; why: string }[] = [];
+/// (each test's own, by where its checks run: what a test cut at its limit still checks goes in its list, never the next
+/// one's)
+type Results = { name: string; ok: boolean; why: string }[];
+const ownResults = new AsyncLocalStorage<Results>();
+const sideBySideResults: Results = [];
 async function check(name: string, f: () => void | Promise<void>) {
   let why = "";
   try {
@@ -463,14 +466,14 @@ async function check(name: string, f: () => void | Promise<void>) {
   } catch (e) {
     why = (e as Error).message;
   }
-  results.push({ name, ok: why === "", why });
+  ownResults.getStore()!.push({ name, ok: why === "", why });
 }
-function judged(from = 0) {
+function judged(results: Results) {
   const wrong: string[] = [];
-  for (const r of results.slice(from)) {
-    const pending = PENDING_WAVE4_FIXES.has(r.name) || FOUND_HERE.has(r.name);
-    if (!r.ok && !pending) wrong.push(`${r.name}: ${r.why}`);
-    if (r.ok && pending) wrong.push(`${r.name} now passes — remove from ${PENDING_WAVE4_FIXES.has(r.name) ? "PENDING_WAVE4_FIXES" : "FOUND_HERE"}!`);
+  for (const r of results) {
+    const extra = MB_OVERVIEW_EXTRAS.has(r.name);
+    if (!r.ok && !extra) wrong.push(`${r.name}: ${r.why}`);
+    if (r.ok && extra) wrong.push(`${r.name} now passes — remove from MB_OVERVIEW_EXTRAS!`);
   }
   return wrong;
 }
@@ -550,6 +553,15 @@ async function turn(twins: Twins, made: Made[], name: string, calls: [string, st
 
 /// Whether a session's turns are all over, the last with a state said (a nudge for one with none, or for a title,
 /// is a turn of its own that has to end too).
+/// How many turns a session has had.
+function turnsOf(s: Station, key: string): number {
+  const db = s.db();
+  try {
+    return (db.prepare("SELECT count(*) AS n FROM turns WHERE session_key = ?").get(key) as { n: number }).n;
+  } finally {
+    db.close();
+  }
+}
 function settled(s: Station, key: string): boolean {
   const db = s.db();
   try {
@@ -583,15 +595,17 @@ function shapes(list: any): Record<string, unknown> {
 
 test("the MoonBit station answers as the TypeScript one, side by side, and a handover chain carries a session through both", { skip, timeout: 240_000 }, async () => {
   const twins = new Twins();
+  const results = sideBySideResults;
   try {
-    await sideBySide(twins);
+    await ownResults.run(results, () => sideBySide(twins));
   } finally {
     if (process.env.TWIN_DUMP) {
       writeFileSync(join(process.env.TWIN_DUMP, "results.json"), JSON.stringify(results, null, 1));
       for (const s of twins.stations) writeFileSync(join(process.env.TWIN_DUMP, `log-${s.kind}.txt`), s.said);
     }
+    await twins.stop();
   }
-  const wrong = judged();
+  const wrong = judged(results);
   assert.deepEqual(wrong, [], wrong.join("\n\n"));
 });
 
@@ -606,7 +620,7 @@ async function sideBySide(twins: Twins) {
   const machine = [/\.disk\.freeBytes:/, /\.checkedAt:/, /^\.mesh\.reached:/, /^\.updates\b/, /^\.copies\.to:/];
   // (what an account's routes answer with: the overview, whose fields are each held below once both are settled; the
   // account's own are compared there, beside what is still each one's first look: the copies to take back)
-  const overviewed = [...machine.map((r) => new RegExp(r.source.replace("^\\.", "^(?:\\.overview)?\\."))), /^(?:\.overview)?\.(automaticDecisions|machine|rigs|updates|mesh)\b/, /^(?:\.overview)?\.copies\.(empty|restorable)\b/, /^(?:\.overview)?\.profiles\[\d+\]\.check\b/];
+  const overviewed = [...machine.map((r) => new RegExp(r.source.replace("^\\.", "^(?:\\.overview)?\\."))), /^(?:\.overview)?\.(automaticDecisions|machine|machineLogins|rigs|updates|mesh)\b/, /^(?:\.overview)?\.copies\.(empty|restorable)\b/, /^(?:\.overview)?\.profiles\[\d+\]\.check\b/];
 
   // ── the admin API's reads of a station new to it ──
   for (const path of ["/sessions", "/threads", "/workspaces", "/jobs", "/drive", "/presets", "/stars", "/usage", "/profiles/pace"]) {
@@ -723,9 +737,11 @@ async function sideBySide(twins: Twins) {
     ["list", mcp(2, "job_list", {})],
     ["post", mcp(3, "chat_post", { to: "$TO", text: "started", kind: "all_done", done: "started a job" })],
   ]);
+  const turnsBefore: number[] = [];
   for (const [i, s] of twins.stations.entries()) {
     const db = s.db();
     const ws = (db.prepare("SELECT workspace FROM sessions WHERE key = ?").get(made[i]!.key) as { workspace: string }).workspace;
+    turnsBefore[i] = turnsOf(s, made[i]!.key);
     db.close();
     writeFileSync(join(ws, "..", "go"), "");
     await until(`${s.kind}: the job ended`, () => {
@@ -733,8 +749,9 @@ async function sideBySide(twins: Twins) {
       try { return (db.prepare("SELECT state FROM jobs").get() as { state: string } | undefined)?.state === "exited"; } finally { db.close(); }
     }, s.tail);
   }
-  // (its end told to the session: a turn of its own, which has to end too)
-  for (const [i, s] of twins.stations.entries()) await until(`${s.kind}: settled after the job's end`, () => settled(s, made[i]!.key), s.tail);
+  // (its end told to the session: a turn of its own, which has to begin and end too; the job's row says it exited
+  // before the session is told)
+  for (const [i, s] of twins.stations.entries()) await until(`${s.kind}: settled after the job's end`, () => turnsOf(s, made[i]!.key) > turnsBefore[i]! && settled(s, made[i]!.key), s.tail);
   const ended = await turn(twins, made, "jobs-ended", [
     ["list", mcp(1, "job_list", {})],
     ["log", mcp(2, "job_log", { id: "$JOB" })],
@@ -807,7 +824,11 @@ async function sideBySide(twins: Twins) {
 
   // ── the overview, once both have been up a while (what each part puts in it, its first look done): a field each ──
   {
-    const [a, b] = await twins.both("GET", "/overview");
+    // (each one's first look done: the machine's sign-ins read, the copies' export caught up with the chats; on a
+    // machine short of cores either can come seconds after the other)
+    let [a, b] = await twins.both("GET", "/overview");
+    const settled = (x: typeof a, y: typeof a) => x.json?.machineLogins?.length > 0 && y.json?.machineLogins?.length > 0 && x.json?.copies?.chats === y.json?.copies?.chats;
+    await until("both overviews past their first look", async () => settled(a, b) || ([a, b] = await twins.both("GET", "/overview"), settled(a, b)), () => JSON.stringify({ node: [a.json?.machineLogins?.length, a.json?.copies?.chats], mb: [b.json?.machineLogins?.length, b.json?.copies?.chats] }), 60_000).catch(() => undefined);
     if (process.env.TWIN_DUMP) writeFileSync(join(process.env.TWIN_DUMP, "overview.json"), JSON.stringify({ node: a.json, mb: b.json }, null, 1));
     await check("GET /overview: its status", () => assert.equal(b.status, a.status, b.text.slice(0, 300)));
     for (const k of [...new Set([...Object.keys(a.json ?? {}), ...Object.keys(b.json ?? {})])].sort()) {
@@ -849,8 +870,22 @@ async function events(s: Station, since?: string) {
 const commandOf = (pid: number) => spawnSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf8" }).stdout.trim();
 
 test("a handover chain by the launcher: Node → MoonBit → MoonBit → Node, a session's turns, its job, its rows and the event stream carried by every hop", { skip, timeout: 240_000 }, async () => {
-  const from = results.length;
   const twins = new Twins();
+  const results: Results = [];
+  try {
+    await ownResults.run(results, () => chain(twins));
+  } finally {
+    if (process.env.TWIN_DUMP) {
+      writeFileSync(join(process.env.TWIN_DUMP, "chain.json"), JSON.stringify(results, null, 1));
+      for (const s of twins.stations) writeFileSync(join(process.env.TWIN_DUMP, "log-chain.txt"), s.said);
+    }
+    await twins.stop();
+  }
+  const wrong = judged(results);
+  assert.deepEqual(wrong, [], wrong.join("\n\n"));
+});
+
+async function chain(twins: Twins) {
   await twins.start(["node"]);
   const s = twins.stations[0]!;
   const roots = [s.data, s.app, s.out, twins.scripts, s.id];
@@ -926,10 +961,9 @@ test("a handover chain by the launcher: Node → MoonBit → MoonBit → Node, a
       const d = differences(sessionsBefore, kept("sessions")).filter((x) => !/\.(last_|turns|status|running|state|updated|title)/.test(x));
       assert.deepEqual(d, [], d.join("\n"));
     });
-    await check(`${hop.name}: health.json written by the process serving`, () => {
-      const h = readJson(join(s.data, "run", "health.json"));
-      assert.equal(h?.pid, next, JSON.stringify(h));
-    });
+    // (written each HELD_EVERY_MS from the serving process's loop: the one before's until the next one's first)
+    await check(`${hop.name}: health.json written by the process serving`, () =>
+      until("health.json of the process serving", () => readJson(join(s.data, "run", "health.json"))?.pid === next, () => JSON.stringify(readJson(join(s.data, "run", "health.json"))), 30_000).then(() => undefined));
   }
   // every turn of the session kept, each ended with its state
   await check("the chain: every turn kept", () => {
@@ -944,15 +978,9 @@ test("a handover chain by the launcher: Node → MoonBit → MoonBit → Node, a
   // a stop: the launcher, its station and the job's runner end with it; nothing of the station left
   s.child.kill("SIGTERM");
   await check("the chain: a stop ends with code 0", async () => assert.equal(await s.ended, 0, s.tail()));
-  const wrong = judged(from);
-  if (process.env.TWIN_DUMP) {
-    writeFileSync(join(process.env.TWIN_DUMP, "chain.json"), JSON.stringify(results.slice(from), null, 1));
-    writeFileSync(join(process.env.TWIN_DUMP, "log-chain.txt"), s.said);
-  }
-  assert.deepEqual(wrong, [], wrong.join("\n\n"));
-});
+}
 
-test("every check named pending is one of this file's", { skip }, () => {
-  const unknown = [...PENDING_WAVE4_FIXES, ...FOUND_HERE].filter((name) => !results.some((r) => r.name === name));
+test("every check named in MB_OVERVIEW_EXTRAS is one of this file's", { skip }, () => {
+  const unknown = [...MB_OVERVIEW_EXTRAS].filter((name) => !sideBySideResults.some((r) => r.name === name));
   assert.deepEqual(unknown, [], "listed, but no check of this file has that name");
 });
