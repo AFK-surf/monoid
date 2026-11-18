@@ -159,6 +159,8 @@ priv struct ScreenSess {
   /// signing the page's passkey sign-in on this device (screen_passkey.mbt): where it is (`asking`, `said`; "" nothing
   /// under way), the ask under way, what it said where it did not sign, and the page's ask it is for
   passkey_step : @signals.Signal[String]
+  /// the passkey prompt `id` dismissed by `×`, cleared once the page's ask leaves or changes
+  passkey_dismissed : @signals.Signal[String?]
   mut passkey_run : @hostapi.PasskeyRun?
   mut passkey_note : String
   mut passkey_id : String
@@ -248,6 +250,7 @@ fn screen_sess(src : Source, station : String, screen : String) -> ScreenSess {
         fill_owed: None,
         heard: false,
         passkey_step: @signals.signal(""),
+        passkey_dismissed: @signals.signal(None),
         passkey_run: None,
         passkey_note: "",
         passkey_id: "",
@@ -1086,6 +1089,14 @@ fn ScreenSess::take(self : ScreenSess, value : Json, bytes : Bytes?) -> Unit {
       match self.fill_dismissed.untracked() {
         Some(was) if login_slot_of(self.state) != Some(was) => self.fill_dismissed.set(None)
         _ => ()
+      }
+      match self.passkey_dismissed.untracked() {
+        Some(was) =>
+          match text(field(self.state, "passkey"), "id") {
+            id if id != was => self.passkey_dismissed.set(None)
+            _ => ()
+          }
+        None => ()
       }
       if layered {
         self.pointer_moved()

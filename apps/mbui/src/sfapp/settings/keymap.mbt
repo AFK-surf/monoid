@@ -186,6 +186,9 @@ pub fn keymap_of(prefs : Json?) -> @view.Keymap {
   bindings.push({ keys: [stroke(@ui.key_code_enter, @ui.mod_shift_key)], action: "find.prev", when: In("Find") })
   // (what a field offers as it is typed in, where it is open: sf's offers_node.mbt)
   bindings.append(@sf.offers_bindings())
+  // (↓ ↑ Enter Escape in a combobox, with the cursor in its field too: a long pick's search, 前往文件夹; mbui's
+  // @headless.combobox_keys, sf's combobox_bindings)
+  bindings.append(@sf.combobox_bindings())
   // (↓ ↑ in the search's list, with the cursor in its field: ⌘K's and the search's page's, sfpages' switcher.mbt)
   bindings.append(@sf.finder_bindings())
   // (Escape where a search is up, with the cursor in a field too, or a picture's old viewer, not in a field: sfpages'
@@ -299,9 +302,6 @@ fn files_bindings() -> Array[@view.Binding] {
     b(@ui.key_of_char('['), mod_key() | shift, "files.tab_back", files),
     b(@ui.key_of_char('d'), @ui.mod_cmd | @ui.mod_alt, "files.split", files),
     b(@ui.key_of_char('g'), @ui.mod_cmd | shift, "files.go_to", files),
-    // (↓ ↑ in 前往文件夹, with the cursor in its field: what is chosen under it, sfdesk's files_go.mbt)
-    b(@ui.key_code_down, 0, "files.go_to.down", In("GoTo")),
-    b(@ui.key_code_up, 0, "files.go_to.up", In("GoTo")),
   ]
 }
 

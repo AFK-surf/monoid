@@ -314,7 +314,8 @@ fn screen_top_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
 fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
   let s = pg.s
   let u = pg.u
-  u.narrow_bar = true
+  let narrow = fn() { view_narrow(p, u) }
+  p.reacts(narrow, fn(n) { u.narrow_bar = n })
   p.show(at_once=true, fn() { s.open_said() || pg.own_bar is Some(_) || pg.tab_pads is Some(_) }, fn(slot) {
     slot.box(fn(bar) {
       match (pg.own_bar, pg.tab_pads) {
@@ -340,7 +341,7 @@ fn screen_tab_bar_node(p : @view.View, pg : ScreenPage) -> Unit {
           browser_seen(s)
           m.box(fn(t) {
             @sf.style_node(t, fn() { screen_bar_tools }, in_row=true)
-            browser_tools_node(t, pg, narrow=fn() { true })
+            browser_tools_node(t, pg, narrow~)
           })
           |> ignore
         } else {

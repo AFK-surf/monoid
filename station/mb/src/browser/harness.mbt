@@ -694,6 +694,7 @@ async fn Rpc::make(self : Rpc, c : J) -> J {
         context_of: id => contexts.get(id),
         opened: Some(id => self.tell(inst, "opened", [js(id)])),
         used: Some((id, url) => self.tell(inst, "used", [js(id), opt_str_j(url)])),
+        act: None,
       })
       self.insts[inst] = GateI(g, contexts)
     }
@@ -806,7 +807,7 @@ async fn Rpc::make(self : Rpc, c : J) -> J {
       let p = pass(
         end_("client", client_open),
         end_("upstream", up_open),
-        Gate::new({ context: text(at(cv, "context")), context_of: id => contexts.get(id), opened: None, used: None }),
+        Gate::new({ context: text(at(cv, "context")), context_of: id => contexts.get(id), opened: None, used: None, act: None }),
       )
       self.insts[inst] = PassI(p, client_open, up_open)
     }

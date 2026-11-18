@@ -290,7 +290,10 @@ another; the accounts' list's merge across stations and its refills.
   2026-11-15).
 - **What holds it**: `test/lock-moved-state.test.ts` (the state, to the model), `test/lock-statements-made.test.ts` (the
   bodies and the take-over), `test/lock-handover.test.ts` and `test/lock-handover-model.test.ts` (the hand-over, on the
-  station's own code and to the model's `m8`), `test/lock-left-out.test.ts` (a device left out, and the asks counted).
+  station's own code and to the model's `m8`), `test/lock-left-out.test.ts` (a device left out, and the asks counted),
+  `test/lock-pair-modes-faults.test.ts` (approved face to face in every way there, its trusted devices failing as real
+  ones do: answered within a call's 40 s, in wherever one signed it in) and `test/lock-state-invariants.test.ts` (the
+  page confirmed exactly where the station lets it in, and every state with a way out).
 
 ## The base stands apart
 

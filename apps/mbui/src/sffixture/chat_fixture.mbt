@@ -517,6 +517,16 @@ pub fn fixture_chat_topic(f : Fixture, name : String, params : Map[String, Json]
             with_cache_cold(with_message(rich_chat(f.older), screens_answer))
           } else if f.mode == "chat-archived" {
             with_flag(rich_chat(f.older), "archived")
+          } else if f.mode == "chat-held" {
+            // its station not reached: what is sent is held till it is (looks.ts offlineNote)
+            match with_flag(rich_chat(f.older), "offline") {
+              Object(m) => {
+                let o = m.copy()
+                o["offlineNote"] = Json::string("暂时连不上「Willow」：当前显示的是之前读取的内容，发出的消息会在连上后送达")
+                Json::object(o)
+              }
+              v => v
+            }
           } else if f.mode == "chat-cold-offline" {
             with_flag(with_cache_cold(rich_chat(f.older)), "offline")
           } else if f.mode == "chat-actions-run" {
@@ -1713,6 +1723,27 @@ pub fn seeded_outbox(mode : String) -> Array[Json] {
         o => [o]
       }
     "chat-failed" => [outgoing_json("o-seed", words, "failed", "Willow 没有回应")]
+    // chat-unsure: did not go after it went out with no answer, so it may be the station's already: 重试, no 删除
+    "chat-unsure" =>
+      match outgoing_json("o-seed", words, "failed", "连接断开") {
+        Object(m) => {
+          let o = m.copy()
+          o["unsure"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
+    // chat-held: sent while its station is not reached, held till it is (looks.ts outboxHeld), 编辑 and 删除 beside it
+    "chat-held" =>
+      match outgoing_json("o-seed", words, "sending", "") {
+        Object(m) => {
+          let o = m.copy()
+          o["waits"] = Json::string("连上后发出")
+          o["held"] = Json::boolean(true)
+          [Json::object(o)]
+        }
+        o => [o]
+      }
     // chat-refused: refused as it is (a file the station cannot have), its words and a quote with it, 编辑 under it
     "chat-refused" => {
       let quote : Json = { "author": "Claude", "text": "高度先按 90 估，量过一次就记住。", "ts": "ts8", "role": "agent", "comment": "这个值得再确认" }

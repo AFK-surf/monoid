@@ -3251,3 +3251,58 @@ test "headless-on-drag" {
   )
   assert_eq(lines(fs), [2, 3, 6])
 }
+
+///|
+/// A config whose pages are `src/sfpages`, its library `src/sf` (page-headless, page-control-by-hand).
+fn pages_cfg() -> Config {
+  Config::new(
+    @rjson.parse(
+      (
+        #|{"mbt": {"roots": ["src"], "framework": ["src/kit"]}, "library": {"roots": ["src/sf"]},
+        #| "pages": {"roots": ["src/sfpages"]}}
+      ),
+    ) catch {
+      _ => panic()
+    },
+  )
+}
+
+///|
+test "page-headless" {
+  // a page saying a headless component (a call or a type of the package, each): counted; the library's own, a page's
+  // test, a page's words of it in a comment or a string, another package's `headless` member: not
+  let fs = found(
+    [
+      (
+        "src/sfpages/p.mbt",
+        "fn p(v : @view.View, tb? : @headless.Table) -> Unit {\n  // (@headless.button would do)\n  @headless.button(v, label, press, look) |> ignore\n  let s = \"@headless.toggle\"\n  @sf.headless(v) |> ignore\n  @headless.combobox(v, l, k, a, act, ch, look) |> ignore\n}\n",
+      ),
+      ("src/sf/part.mbt", "fn b(v : @view.View) -> Unit {\n  @headless.button(v, label, press, look) |> ignore\n}\n"),
+      ("src/sfpages/p_wbtest.mbt", "test \"t\" {\n  @headless.button(v, label, press, look) |> ignore\n}\n"),
+    ],
+    "page-headless",
+    3,
+    cfg=pages_cfg(),
+  )
+  assert_eq(lines(fs), [1, 3, 6])
+}
+
+///|
+test "page-control-by-hand" {
+  // a page saying a control's role itself: counted, each (a button, an option, a list, a tab, a radio of a menu);
+  // a link, a region, a status, a dialog, a heading, a role named (not first), the library's, a page's test: not
+  let fs = found(
+    [
+      (
+        "src/sfpages/p.mbt",
+        "fn p(v : @view.View) -> Unit {\n  v.says(Is(Some(@view.said(Button, label=\"b\")))) |> ignore\n  v.says(Is(Some(@view.said(Link, label=\"l\")))) |> ignore\n  v.says(By(fn() { Some(@view.said(Option, label=l(), selected=on())) })) |> ignore\n  v.says(Is(Some(@view.said(Listbox)))) |> ignore\n  v.says(Is(Some(@view.said(Region, label=\"r\")))) |> ignore\n  v.says(Is(Some(@view.said(Status, label=\"s\")))) |> ignore\n  v.says(Is(Some(@view.said(Dialog, label=\"d\")))) |> ignore\n  v.says(Is(Some(@view.said(Heading, label=\"h\")))) |> ignore\n  v.says(Is(Some(@view.said(Tab, label=\"t\")))) |> ignore\n  v.says(Is(Some(@view.said(MenuItemRadio, label=\"m\", check=On)))) |> ignore\n  v.says(Is(Some(@view.said(label=\"x\", Button)))) |> ignore\n}\n",
+      ),
+      ("src/sf/part.mbt", "fn b(v : @view.View) -> Unit {\n  v.says(Is(Some(@view.said(Option, label=\"o\")))) |> ignore\n}\n"),
+      ("src/sfpages/p_wbtest.mbt", "test \"t\" {\n  v.says(Is(Some(@view.said(Button, label=\"b\")))) |> ignore\n}\n"),
+    ],
+    "page-control-by-hand",
+    5,
+    cfg=pages_cfg(),
+  )
+  assert_eq(lines(fs), [2, 4, 5, 10, 11])
+}

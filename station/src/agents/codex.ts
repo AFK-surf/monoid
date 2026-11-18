@@ -199,6 +199,9 @@ class Host {
   runtimeStale = false;
   /// Being replaced with turns running on it (`drain`): no new one goes to it, and it ends after its last.
   draining = false;
+  /// The station's tools at this address failed for a thread of its, opened with them (`CodexSession.prompt`): the
+  /// process cannot reach them, so a thread opened again with the same address goes to a new one (`host`).
+  toolsFailedUrl: string | null = null;
   /// The Codex it runs (null: not known). Updated on the disk, the files it starts its helpers from are gone, and every
   /// tool call of its threads fails: it is replaced once no turn runs on it.
   version: string | null = null;
@@ -967,8 +970,8 @@ export class CodexDriver implements AgentDriver {
   }
 
   /// `work` on a profile's app-server, which is not idle meanwhile (`opening`): it ends only once idle WARM_MS after.
-  private async lease<T>(profile: Profile, work: (host: Host) => Promise<T>, session?: string, cwd?: string): Promise<T> {
-    const host = await this.host(profile, session, cwd);
+  private async lease<T>(profile: Profile, work: (host: Host) => Promise<T>, session?: string, cwd?: string, mcpUrl?: string): Promise<T> {
+    const host = await this.host(profile, session, cwd, mcpUrl);
     try {
       return await work(host);
     } finally {
@@ -983,7 +986,7 @@ export class CodexDriver implements AgentDriver {
   }
 
   /// A profile's app-server, counted as opening on it (`lease`) in the same step that found it: nothing ends it between.
-  private async host(profile: Profile, session?: string, cwd?: string): Promise<Host> {
+  private async host(profile: Profile, session?: string, cwd?: string, mcpUrl?: string): Promise<Host> {
     await this.options.takenUp;
     const installed = await this.installedVersion();
     const key = this.hostKey(profile.id, session);
@@ -994,8 +997,12 @@ export class CodexDriver implements AgentDriver {
       // Signed in again or reinstalled with turns running on it (`retireStale` ends an idle one): those finish there,
       // a new caller starts on a new one. Waiting for it to be idle waited on every other chat of the profile: a turn
       // of an hour held each new one back that long, shown as starting (2026-11-15).
-      if (current && current.alive() && (current.loginStale || current.runtimeStale)) {
-        log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
+      // A thread of its could not reach the station's tools at the address this one is opened with: another thread on
+      // the same process failed the same way, each reopening, until the session gave up (0.1.10064, 2026-11-18).
+      const unreachable = Boolean(mcpUrl) && current?.toolsFailedUrl === mcpUrl;
+      if (current && current.alive() && (current.loginStale || current.runtimeStale || unreachable)) {
+        if (unreachable) log.warn("agents::codex", "its codex app-server could not reach the station's tools; new turns go to a new one", { profile: current.profile, key, turns: current.turns.size, url: mcpUrl });
+        else log.info("agents::codex", "login changed or codex reinstalled; new turns go to a new app-server, its own end there", { profile: current.profile, key, turns: current.turns.size, login: current.loginStale });
         current.draining = true;
         this.hosts.delete(key);
         this.draining.add(current);
@@ -1142,7 +1149,7 @@ export class CodexDriver implements AgentDriver {
         throw new Said(tr(stationLang(), "station.updates.codexMissingHostChat"));
       }
     }
-    return this.lease(options.profile, (host) => this.openOn(host, options, events), options.key, options.cwd);
+    return this.lease(options.profile, (host) => this.openOn(host, options, events), options.key, options.cwd, options.mcpUrl);
   }
 
   /// A session opened on `host`, its profile's app-server.
@@ -1589,7 +1596,12 @@ export class CodexSession implements AgentSession {
     // Its thread could not connect to the station's tools (the door was closed or slow as it was opened, or as it was
     // taken up): its turn would have no chat_post or chat_state, and nothing it called would say so. Opened again,
     // resuming, the thread is loaded with them.
-    if (await stationToolsFailed(this.host, this.threadId)) throw new Error("codex thread's connection to the station's tools failed");
+    if (await stationToolsFailed(this.host, this.threadId)) {
+      // Opened with the address its process failed to reach: the next thread opened with it goes to a new one (`host`).
+      if (this.toolsUrl) this.host.toolsFailedUrl = this.toolsUrl;
+      throw new Error("codex thread's connection to the station's tools failed");
+    }
+    if (this.toolsUrl !== null && this.host.toolsFailedUrl === this.toolsUrl) this.host.toolsFailedUrl = null;
     // Looked at again with nothing awaited before the turn is counted: its app-server being replaced lets go of a
     // thread with no turn in the same step (`drain`), so a turn begins on it before that, or is opened again elsewhere.
     if (this.state.closed) throw new Error("codex session is closed");

@@ -287,7 +287,7 @@ fn mine_said_node(
       // making its way between, no words of either cut by it (msg_part_leave_ms))
       let lone = fn() {
         match out() {
-          Some(o) => o.state == "failed" || !o.followed
+          Some(o) => o.state == "failed" || o.held || !o.followed
           None => !m().followed
         }
       }
@@ -323,6 +323,8 @@ fn mine_said_node(
                 fn() { out().bind(fn(o) { o.progress }) },
                 since,
                 flying,
+                held=fn() { out().map_or(false, fn(o) { o.held }) },
+                take_back=fn(b) { outbox_take_back_node(b, src, here, fn() { out().unwrap_or(chat_body_no_out) }) },
               )
               |> ignore
             MineUnsent =>

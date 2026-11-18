@@ -239,7 +239,10 @@ jobs:
           NAME: "mbui's bars"
         run: |
           find "$RUNNER_TEMP/motion" -type f | xargs -r cat > "$RUNNER_TEMP/motion.txt"
-          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "mbui's bars against what 60, 120 and the default rate found" >> "$GITHUB_STEP_SUMMARY" ||
+          # (pipefail after the find, where an empty download still leaves an empty motion.txt: tee puts the lines to
+          # change in the log too, and the script's own status still fails the step)
+          set -o pipefail
+          MOTION_BARS_FAIL=$STRICT bash libs/mbui/scripts/motion_bars.sh "$RUNNER_TEMP/motion.txt" "mbui's bars against what 60, 120 and the default rate found" | tee -a "$GITHUB_STEP_SUMMARY" ||
             { echo "::error title=$NAME::a bar to fall or a file to leave motion_counted: this job's summary says which, and the one line to change for each"; exit 1; }
 
   # On main, after a merge: what failed and what merged since the last run that went through, the likeliest first

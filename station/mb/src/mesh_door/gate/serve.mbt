@@ -64,6 +64,19 @@ pub(all) struct Members {
   /// A core's language by its headers (api/request.ts `langOfCore`), and what it is told to update in it.
   lang_of : (Array[(String, String)]) -> String
   update_words : (String) -> String
+  /// A member's device in its workspace's mesh scope (mesh/leaf.ts), where the station keeps a directory.
+  leaves : LeafDoor?
+}
+
+///|
+/// What a member's connection asks of its workspace's mesh scope (leaf.ts `LeafAttachments`): told each admission
+/// and renewal of the connection (workspace, expiry in unix seconds), the scope's view, followed as it changes, and a
+/// device's binding attached.
+pub(all) struct LeafDoor {
+  authenticated : (@door.Connection, String, Int64) -> Unit
+  view : (String) -> Json raise
+  follow : async (@door.Connection, String, @door.Stream) -> Unit
+  attach : async (@door.Connection, String, Json, String) -> Json
 }
 
 ///|
@@ -248,6 +261,10 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
       Some((name, _)) => name
       None => (k.name)()
     }
+    match m.leaves {
+      Some(l) => (l.authenticated)(conn, current.val.viewer.workspace, current.val.exp)
+      None => ()
+    }
     let line_m : Map[String, Json] = {
       "ok": true,
       "station": Json::string(station),
@@ -261,6 +278,9 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
     }
     if tailnet.length() > 0 {
       line_m["tailnet"] = Json::array(tailnet.map(x => Json::string(x)))
+    }
+    if m.leaves is Some(_) {
+      line_m["meshLeaf"] = true
     }
     let last_ways = Ref("")
     // Who the member is, told what answers a route itself as it is now (None: gone).
@@ -355,6 +375,10 @@ pub fn admission(m : Members, device : String) -> @door.Admit {
         let (a, n) = check(line, _ => ())
         current.val = a
         named.val = n
+        match m.leaves {
+          Some(l) => (l.authenticated)(conn, a.viewer.workspace, a.exp)
+          None => ()
+        }
         watch_expiry()
         told(false)
         { "ok": true, "expires_at": Json::number(current.val.exp.to_double()) }
@@ -606,6 +630,42 @@ async fn answer_request(
   let build = saw_build(k, viewer, asking)
   if moved_too_old(k, viewer, build) {
     return answer_json(stream, 426, ({ "error": Json::string((m.update_words)(lang)), "update": true } : Json).stringify())
+  }
+  // (a device's leaf in its workspace's mesh scope: serve.ts's `/admin/api/mesh/leaf`, its events)
+  if path == "/admin/api/mesh/leaf/events" && verb == "GET" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    @door.write_line(stream, { "status": 200, "headers": { "content-type": "application/x-ndjson" } })
+    return (l.follow)(conn, viewer.workspace, stream)
+  }
+  if path == "/admin/api/mesh/leaf" {
+    guard m.leaves is Some(l) else {
+      return answer_json(stream, 404, ({ "error": "no leaf transport" } : Json).stringify())
+    }
+    let answered = try {
+      if verb == "GET" {
+        Ok((200, (l.view)(viewer.workspace)))
+      } else {
+        let body = reader.rest()
+        if verb != "POST" || body.length() > 16384 {
+          Ok((400, ({ "error": "invalid leaf attachment request" } : Json)))
+        } else {
+          let input = @json.parse(@utf8.decode_lossy(body))
+          match input {
+            Object(o) if o.get("target") is Some(String(target)) =>
+              Ok((200, (l.attach)(conn, viewer.workspace, o.get("descriptor").unwrap_or(Json::null()), target)))
+            _ => Ok((400, ({ "error": "missing leaf target" } : Json)))
+          }
+        }
+      }
+    } catch {
+      e => Err(e)
+    }
+    return match answered {
+      Ok((code, said)) => answer_json(stream, code, said.stringify())
+      Err(e) => answer_json(stream, 403, ({ "error": Json::string("\{e}") } : Json).stringify())
+    }
   }
   if m.streams is Some(parts) && parts(head) is Some(part) {
     return part({ conn, viewer, head, stream, reader })

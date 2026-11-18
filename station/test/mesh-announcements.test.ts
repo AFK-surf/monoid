@@ -351,6 +351,87 @@ test("a front from before meshConfigure is not retried by a peer's directory exc
   } finally { hearLines(null); await sync.close(); db.close(); theirs.close(); rmSync(data, { recursive: true, force: true }); }
 });
 
+// A peer that does not answer the exchange is the workspace's ordinary state (a station that is off, one from before
+// it), not this station's failure: said at INFO and tried again as ways.ts tries a peer, or not at all for one from
+// before. This station's own directory failing is still a WARN, tried again within a minute.
+async function peerExchange(answer: (request: any) => Promise<unknown>, meshConfigure?: () => Promise<MeshDescriptor>) {
+  const { ScopeSync } = await import("../src/mesh/scope-sync.ts");
+  const { workspaceScope } = await import("../src/mesh/enrollment-door.ts");
+  const { hearLines } = await import("../src/ops/log.ts");
+  const { mkdtempSync, rmSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const data = mkdtempSync(join(tmpdir(), "mesh-peer-exchange-"));
+  const db = new DatabaseSync(":memory:");
+  const peer = "05".repeat(32);
+  const workspace = "ws", origin = "https://example.test";
+  const scopes = workspaceScope(origin, workspace);
+  const membership = { workspace, peers: [{ id: peer }] };
+  const cloud = { data, peersCurrent: true, state: { origin, station: node }, relays: () => [], waysSaid: () => null,
+    memberships: () => [membership], membership: (ws: string) => ws === workspace ? membership : null, listen: () => () => {},
+  } as unknown as import("../src/cloud/state.ts").Cloud;
+  const said: { level: string; message: string }[] = [];
+  hearLines((l) => { if (l.at === "mesh") said.push({ level: l.level, message: l.message }); });
+  const waits: number[] = [];
+  const due: (() => void)[] = [];
+  let calls = 0, tell = () => {};
+  const endpoint = { meshConfigure: meshConfigure ?? (async () => descriptor(1234, { node, privateKey }, scopes)), meshRemove: async () => {} } as unknown as import("../src/mesh/endpoint.ts").Endpoint;
+  const sync = new ScopeSync(endpoint, db, cloud, signer, async (_target, _ws, request: any) => { calls++; return answer(request); },
+    async (args: any) => JSON.stringify(args.kind === "relayRecords" ? db.prepare("SELECT body,signature FROM mesh_relay_records WHERE scope=?").all(args.scope) : []),
+    { after: (ms, f) => { waits.push(ms); due.push(f); tell(); return () => {}; }, close: async () => {} });
+  // until `n` timers are set (the loop's turns its promises settle in, not time)
+  const timers = async (n: number) => {
+    for (let turns = 0; waits.length < n; turns++) {
+      if (turns > 200) throw new Error(`waited for timer ${n}, set: ${JSON.stringify(waits)}`);
+      await new Promise<void>((resolve) => { tell = resolve; setImmediate(resolve); });
+    }
+  };
+  const settled = async () => { for (let i = 0; i < 8; i++) await new Promise<void>((resolve) => setImmediate(resolve)); };
+  const close = async () => { hearLines(null); await sync.close(); db.close(); rmSync(data, { recursive: true, force: true }); };
+  return { sync, said, waits, due, calls: () => calls, timers, settled, close };
+}
+const updateFailed = (said: { level: string; message: string }[]) => said.filter((l) => l.level === "WARN" && /mesh directory update failed/.test(l.message));
+
+test("a peer from before the directory exchange is not tried again on a timer, and is no warning", async () => {
+  for (const refusal of ["session and task key are required (at most 256 / 128 bytes)", "unsupported peer method meshRelays.exchange"]) {
+    const t = await peerExchange(async () => { throw new Error(refusal); });
+    try {
+      await t.settled();
+      assert.equal(t.calls(), 1, refusal);
+      assert.deepEqual(t.waits, [], `no retry timer: ${refusal}`);
+      assert.deepEqual(updateFailed(t.said), [], JSON.stringify(t.said));
+    } finally { await t.close(); }
+  }
+});
+
+test("a peer that does not answer is said at INFO and tried again from 5 s, doubling to 10 min", async () => {
+  const t = await peerExchange(async () => { throw new Error("peer request timed out; execution may have happened — query the same task key"); });
+  try {
+    const expected = [5_000, 10_000, 20_000, 40_000, 80_000, 160_000, 320_000, 600_000, 600_000];
+    for (let i = 0; i < expected.length; i++) {
+      await t.timers(i + 1);
+      if (i + 1 < expected.length) t.due[i]!();
+    }
+    assert.deepEqual(t.waits, expected);
+    assert.equal(t.calls(), expected.length);
+    assert.deepEqual(updateFailed(t.said), [], JSON.stringify(t.said));
+    assert.equal(t.said.filter((l) => l.level === "INFO" && l.message === "a station's mesh directory was not brought level").length, expected.length);
+  } finally { await t.close(); }
+});
+
+test("this station's own directory failing is still a warning, tried again from 1 s up to a minute", async () => {
+  const t = await peerExchange(async () => ({ versions: {}, records: [] }), async () => { throw new Error("ack lost"); });
+  try {
+    const expected = [1_000, 2_000, 4_000, 8_000, 16_000, 32_000, 60_000, 60_000];
+    for (let i = 0; i < expected.length; i++) {
+      await t.timers(i + 1);
+      if (i + 1 < expected.length) t.due[i]!();
+    }
+    assert.deepEqual(t.waits, expected);
+    assert.equal(updateFailed(t.said).length, expected.length, JSON.stringify(t.said));
+  } finally { await t.close(); }
+});
+
 test("Node and Rust verify the same signed address fixture", async () => {
   const { readFile } = await import("node:fs/promises");
   const record = JSON.parse(await readFile(new URL("../../libs/mesh-transport/tests/fixtures/announcement.json", import.meta.url), "utf8"));

@@ -13,12 +13,6 @@ fn init {
     // (words sent in a chat, the core answering 300 to 700 ms after: a row above them goes 82 in a frame as it comes,
     // every screen, at 60 and 120)
     ("src/sfapp/core_pace_rows_wbtest.mbt", 1),
-    // (大屏 at 1.3, the chat's panel opened and closed: a row of the chat goes 14 one way, stands 217 ms and comes back
-    // 2.8, at 60 and 120)
-    ("src/sfapp/daily_paths_wbtest.mbt", 1),
-    // (设置's lists as main's pages came as nodes: a page's list -206 as the page opens, and 大屏's list 5 in a frame
-    // as its foot's way starts, seen by Tree::lists_steady on 2026-11-16)
-    ("src/sfapp/settings_wbtest.mbt", 1),
     // (大屏 over a core answering late: a chat's rows go -73 to -82 in a frame as its answer comes, 归档's second row -4,
     // at 60 and 120)
     ("src/sfapp/ways_told_wbtest.mbt", 1),

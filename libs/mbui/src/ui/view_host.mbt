@@ -1751,7 +1751,9 @@ fn Ctx::view_paint(self : Ctx, root : Int) -> Unit {
       clipping.push(c.id)
     }
     // (on a flight with an end that stays (View::shared's `stays`): cut to that end's room as what held it cut it,
-    // opening as it leaves it, for what it holds too: a picture under a bar flies out from under it)
+    // opening as it leaves it, for what it holds too: a picture under a bar flies out from under it; on one both of
+    // whose ends are within a node said View::flights_within, cut to where that node is seen: a board's card going to
+    // another column)
     // (what is seen of it rounded as the flight has it, cut to the window or to that room: Tree::lift_cut_corners)
     match tree.lift_cut(c.id) {
       Some((x0, y0, x1, y1)) => {
