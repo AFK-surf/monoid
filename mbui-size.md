@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.71 | 63.82 | 97.26 | 130.65 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 2.58 | 3.46 | 14.13 | 36.18 | 54.4 | 31.69 | 63.81 | 97.22 | 126.31 |
 | [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 2.58 | 3.46 | 14.13 | 36.17 | 54.38 | 31.69 | 63.81 | 97.22 | 120.26 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [4f7042b81](https://github.com/AFK-surf/monoid/commit/4f7042b817596cbfbc50847253224a1958b8dd50) fix(station): include command === branches in main | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.16 | 125.87 |
 | [781d75198](https://github.com/AFK-surf/monoid/commit/781d75198f0fb3eaddf1e5242369c35d850b1ba5) fix(ci): build the flows' program light on a branc | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.59 | 63.59 | 97.01 | 121.44 |
-| [43e63e625](https://github.com/AFK-surf/monoid/commit/43e63e625fe5efa6c2090b2e63516ca2682555d2) fix(sf-ui): center a mouse sidebar row's parts on  | 2.56 | 3.44 | 14.05 | 36.04 | 54.05 | 31.57 | 63.54 | 96.86 | 107.17 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [743fff105](https://github.com/AFK-surf/monoid/commit/743fff1051ff1da20398a6c0463ada8f4217281c) fix(mbui): a drag that captures the pointer (on_dr | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 53.99 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.04 |
 | [eb1ccece4](https://github.com/AFK-surf/monoid/commit/eb1ccece4860deda4296c3fdecd0b62910f0e061) fix(mbui): restore rows after late scroll updates  | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.04 |
 | [5ed58cf15](https://github.com/AFK-surf/monoid/commit/5ed58cf1560157bcb4e1a994952e26aeb6c86329) fix(mbui): keep main's sheet and composer motion a | 0.44 | 0.57 | 2.21 | 3.3 | 5.29 | 1.62 | 4.35 | 54.05 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [bdb5fa354](https://github.com/AFK-surf/monoid/commit/bdb5fa354a6b60f7c991e88c9e4f941cb9a78a2c) perf(mbui): add View::scrolls_reused and reuse blo | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.13 |
 | [4f7042b81](https://github.com/AFK-surf/monoid/commit/4f7042b817596cbfbc50847253224a1958b8dd50) fix(station): include command === branches in main | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
 | [781d75198](https://github.com/AFK-surf/monoid/commit/781d75198f0fb3eaddf1e5242369c35d850b1ba5) fix(ci): build the flows' program light on a branc | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
-| [43e63e625](https://github.com/AFK-surf/monoid/commit/43e63e625fe5efa6c2090b2e63516ca2682555d2) fix(sf-ui): center a mouse sidebar row's parts on  | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 54.12 |
