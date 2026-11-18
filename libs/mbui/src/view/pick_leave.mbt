@@ -315,6 +315,19 @@ fn View::pick_leaving(
         // (in what is laid out nowhere (a page under the one on top): what showed gone and what shows now there at once,
         // at rest, no way and nothing fading (Tree::nowhere_at), as it is to be when it is shown again)
         if tree.nowhere_at(slot.at) {
+          // (and what an earlier change, made while it showed, still had on its way: gone, at rest, now)
+          for e in leaving_faders {
+            if e.0.live() is Some(_) {
+              p.leave(e.0, 0.0)
+            }
+          }
+          leaving_faders.clear()
+          if p.live() is Some(m) && m.coming {
+            (m.come_off)()
+            // (its way over now, not at the end it had: come_done waits for that end otherwise)
+            m.flex.style.come_ends = tree.cause_now()
+            come_done(tree, p, m)
+          }
           p.leave(old.fader, 0.0)
           let now = fader(p, k, -1.0 / 0.0)
           had.val = Some((k, now))

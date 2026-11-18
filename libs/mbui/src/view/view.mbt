@@ -10384,14 +10384,16 @@ fn come_done(tree : Tree, v : View, m : Node) -> Unit {
 }
 
 ///|
-/// Whether node `at` lies in what is laid out nowhere (View::laid_nowhere: a page under the one on top; or left out of
-/// its row, View::drops): what is made or let go there comes or goes at once, no way set out, so that it is there as
-/// it is, at rest, when it is shown again (nowhere_changed_test.mbt), and nothing hidden asks for frames meanwhile.
+/// Whether node `at` lies in what is laid out nowhere (View::laid_nowhere: a page under the one on top), as
+/// Tree::alone_laid_out has it: what is made or let go there comes or goes at once, no way set out, so that it is there
+/// as it is, at rest, when it is shown again (nowhere_changed_test.mbt), and nothing hidden asks for frames meanwhile.
+/// Not what was left out of its row as it was last laid out (Node's `out`): a box gone_empty holding nothing is so, and
+/// what comes into it opens it on its way (gone_empty_test.mbt).
 fn Tree::nowhere_at(self : Tree, at : Int) -> Bool {
   let mut p = at
   while p >= 0 {
     let pn = self.nodes[p]
-    if !pn.slot && (pn.out || pn.flex.style.display == @flex.DisplayNone) {
+    if !pn.slot && pn.flex.style.display == @flex.DisplayNone {
       return true
     }
     p = pn.parent
