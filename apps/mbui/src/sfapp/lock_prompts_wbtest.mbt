@@ -159,7 +159,7 @@ test "on a wide window: Escape and a press outside put it away, the code still g
 
 
 ///|
-test "where its words stand on each screen: whose and what, where it asks in, the code in the middle, until when, 拒绝" {
+test "where its words stand on each screen: whose and what, where it asks in, the code in the middle, until when, 拒绝 in its foot" {
   // (touch on a small window, a sheet; keyboard and mouse there, a sheet too; a wide window, a dialog in its middle)
   for screen in [(2, false), (0, false), (0, true)] {
     let t = pair_asked(platform=screen.0, wide=screen.1)
@@ -169,7 +169,7 @@ test "where its words stand on each screen: whose and what, where it asks in, th
     let (star, mine) = (pair_word(t, "星火工作室", under=head.1), pair_word(t, "个人", under=head.1))
     let code = pair_word(t, "4\u{2009}8\u{2009}2\u{2009}9\u{2009}1\u{2009}5")
     let (until, note) = (pair_word(t, "14:05 前有效"), pair_word(t, "安全码只显示在此设备上，不会发送给任何人"))
-    let deny = pair_word(t, "拒绝")
+    let deny = t.get(Button, label="拒绝").rect
     let foot = fn(r : (Double, Double, Double, Double)) { r.1 + r.3 }
     let mid = fn(r : (Double, Double, Double, Double)) { r.0 + r.2 / 2.0 }
     // (one under another, in this order)
@@ -181,8 +181,16 @@ test "where its words stand on each screen: whose and what, where it asks in, th
     // and 拒绝 in the middle of the panel's words)
     assert_true((body.0 - head.0).abs() < 1.0 && star.0 > head.0 && (star.0 - mine.0).abs() < 1.0, msg="\{about}: \{Repr(body)} \{Repr(head)} \{Repr(star)} \{Repr(mine)}")
     let middle = mid(body)
-    for r in [code, until, deny] {
+    for r in [code, until] {
       assert_true((mid(r) - middle).abs() < 1.0, msg="\{about}: \{Repr(r)} not in the middle of \{Repr(body)}")
+    }
+    // (拒绝 in the panel's foot: across a sheet's, at a dialog's end in its corner)
+    if screen.1 {
+      assert_true(deny.0 > middle, msg="\{about}: \{Repr(deny)} not at the end of \{Repr(body)}")
+      assert_eq(t.audit(), [])
+      assert_eq(t.corner_faults(), [])
+    } else {
+      assert_true((mid(deny) - middle).abs() < 1.0, msg="\{about}: \{Repr(deny)} not in the middle of \{Repr(body)}")
     }
   }
 }

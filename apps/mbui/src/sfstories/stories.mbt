@@ -127,32 +127,6 @@ fn stories(tips : @sf.TipLayer) -> Array[Story] {
       ],
     },
     {
-      key: "wide-button",
-      group: "按钮",
-      name: "宽按钮 WideButton",
-      file: "wide_button_node.mbt",
-      api: [("wide_button_node.mbt", "wide_button_node")],
-      play: Some(wide_button_play),
-      about: "登录、引导这类页面底部的一整行按钮。",
-      cases: [
-        (
-          "主要 · 次要 · 危险",
-          fn(card) {
-            @sf.wide_button_node(card, fn() { "继续" }, fn() {  }, true) |> ignore
-            @sf.wide_button_node(card, fn() { "稍后再说" }, fn() {  }, false) |> ignore
-            @sf.wide_button_node(card, fn() { "退出登录" }, fn() {  }, false, danger=true) |> ignore
-          },
-        ),
-        (
-          "忙 · 不可用",
-          fn(card) {
-            @sf.wide_button_node(card, fn() { "正在登录" }, fn() {  }, true, busy=fn() { true }) |> ignore
-            @sf.wide_button_node(card, fn() { "继续" }, fn() {  }, true, enabled=fn() { false }) |> ignore
-          },
-        ),
-      ],
-    },
-    {
       key: "icon-button",
       group: "按钮",
       name: "图标按钮 IconButton",

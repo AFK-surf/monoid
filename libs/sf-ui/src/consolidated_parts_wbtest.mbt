@@ -80,40 +80,6 @@ test "a bar's tool while what it does goes on: unable to be pressed, read out as
 }
 
 ///|
-test "a wide button: under the pointer, the hover's ink over its ground; not pressed while busy, pressed once it is not" {
-  for primary in [false, true] {
-    wide_button_case(primary)
-  }
-}
-
-///|
-/// A wide button, `primary` or not, lit under the pointer, pressed only while not busy.
-fn wide_button_case(primary : Bool) -> Unit raise {
-  let busy = @signals.signal(false)
-  let done = Ref(0)
-  let t = parts_tester(390.0, 200.0, fn(root) {
-    wide_button_node(root, fn() { "继续" }, fn() { done.val += 1 }, primary, busy=fn() { busy.get() }) |> ignore
-  })
-  let (x, y, w, h) = t.get(Button, label="继续").rect
-  let ground = fn() { t.drawn_rects().filter(fn(r) { (r.4 & 0xFFL) != 0L }).map(fn(r) { r.4 }) }
-  let rest = ground()
-  t.move_to(x + w / 2.0, y + h / 2.0)
-  t.run_for(dur_ms + 30.0)
-  let lit = ground()
-  assert_true(lit != rest, msg="primary=\{primary}: a ground of its own under the pointer")
-  busy.set(true)
-  t.draw()
-  t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(done.val, 0)
-  busy.set(false)
-  t.draw()
-  t.tap(x + w / 2.0, y + h / 2.0)
-  t.run_for(@ui.move_most_ms)
-  assert_eq(done.val, 1)
-}
-
-///|
 test "a station's choice: with one station, words alone, nothing to press; with others, a button that opens its menu" {
   let stations = @signals.signal([{ station: "a", name: "办公室", emoji: "", icon: "" }])
   let chosen = Ref("")
