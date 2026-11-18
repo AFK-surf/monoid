@@ -1914,7 +1914,7 @@ pub fn seg_fill_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Un
 
 pub fn seg_head_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, said? : String) -> @view.View
 
-pub fn seg_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, said? : String) -> @view.View
+pub fn seg_node(@view.View, () -> Array[String], () -> Int32, (Int32) -> Unit, item_w? : Double, each_own? : Bool, said? : String) -> @view.View
 
 pub let seg_pill_min : @ui.Len
 

@@ -621,8 +621,10 @@ pub fn open_mode(mode : String) -> Unit {
   }
   if mode.has_prefix("newchat") {
     app.nav.rise(NewChat)
-    if mode == "newchat-station-models" || mode == "newchat-station-empty" {
+    // (newchat-station-models-many: more of this station's than the panel shows without its search)
+    if mode == "newchat-station-models" || mode == "newchat-station-empty" || mode == "newchat-station-models-many" {
       @sffixture.new_fix.station_models = true
+      @sffixture.new_fix.crowded = mode == "newchat-station-models-many"
       @sffixture.new_fix.station_empty = mode == "newchat-station-empty"
     }
     if mode.has_prefix("newchat-crowded") || mode.has_prefix("newchat-providers") || mode == "newchat-tall-model" {
@@ -726,7 +728,7 @@ pub fn open_mode(mode : String) -> Unit {
         @sffixture.new_fix.preset = "p-sf"
         @sffixture.new_fix.bound = true
       }
-      "newchat-station-models" | "newchat-station-empty" | "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
+      "newchat-station-models" | "newchat-station-empty" | "newchat-station-models-many" | "newchat-tui-model" | "newchat-ultrafast-model" | "newchat-model" | "newchat-crowded-model" | "newchat-tall-model" | "newchat-crowded-model-liked" | "newchat-providers-model" | "newchat-providers-model-liked" | "newchat-providers-model-many" | "newchat-providers-model-far" =>
         @sfpages.new_chat_ask("model")
       _ => ()
     }

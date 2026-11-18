@@ -43,6 +43,7 @@ pub fn seg_node(
   chosen : () -> Int,
   choose : (Int) -> Unit,
   item_w? : Double = 0.0,
+  each_own? : Bool = false,
   said? : String = "",
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -51,9 +52,18 @@ pub fn seg_node(
     parent.words_redone() |> ignore
     seg_node_cols(parent, labels(), item_w)
   }
+  // (each option as wide as its own words, `each_own`, or all of them as the widest's)
+  let cols = fn() -> Array[Double] {
+    if each_own {
+      parent.words_redone() |> ignore
+      labels().map(fn(l) { seg_node_cols(parent, [l], item_w) })
+    } else {
+      Array::make(labels().length(), col())
+    }
+  }
   let gaps = fn() { segmented_gap * (labels().length() - 1).to_double() }
   // (as wide as its columns, its track round them: what it is laid out before it gives way)
-  let whole = fn() { col() * labels().length().to_double() + gaps() + 2.0 * segmented_pad }
+  let whole = fn() { cols().fold(init=0.0, fn(a, c) { a + c }) + gaps() + 2.0 * segmented_pad }
   // (a line of its own round its track, whatever way `parent` lays out what it holds: the track's basis its width
   // there; it gives way as the track does, down to nothing)
   parent.box(made_for=loc, fn(line) {
@@ -89,7 +99,7 @@ pub fn seg_node(
         let widths = fn() {
           match fit() {
             Some({ widths, fit: Whole | Smaller(_) }) => widths
-            _ => Array::make(labels().length(), col())
+            _ => cols()
           }
         }
         let smaller = fn() {

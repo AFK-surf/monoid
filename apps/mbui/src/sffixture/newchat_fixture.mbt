@@ -556,7 +556,13 @@ fn fix_shown_models() -> Array[Json] {
       if o is Object(m) { m["availability"] = Json::string(availability) }
       o
     }
-    let here = if n.station_empty { [] } else { [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")] }
+    let here = if n.station_empty {
+      []
+    } else if n.crowded {
+      fix_crowded_models.map(fn(m) { sourced(m, "here") })
+    } else {
+      [sourced("claude-opus-5-5", "here"), sourced("claude-sonnet-5", "borrowed")]
+    }
     if n.other_stations { here + [sourced("gpt-6", "borrowable")] } else { here }
   } else if n.ultrafast {
     fix_crowded_models.map(fix_model) + [fix_model("gpt-6.2-sol")]

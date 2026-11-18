@@ -1408,6 +1408,7 @@ fn triple_body_node(
       fn() { [@sf.t("web-main.model.here"), @sf.t("web-main.model.everywhere")] },
       fn() { if flag(v(), "otherStations") { 1 } else { 0 } },
       fn(i) { pick_draft(src, station, of, { "otherStations": Json::boolean(i == 1) }) },
+      each_own=true,
     )
     |> ignore
   }
