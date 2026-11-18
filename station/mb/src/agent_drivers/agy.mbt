@@ -542,7 +542,7 @@ pub fn agy_models(result : JValue?) -> Array[String] {
 }
 
 ///|
-/// A turn's counts as the prompt's answer says them (`turnUsage`).
+/// Antigravity's ACP turn usage already reports uncached input separately from cache reads and writes.
 pub fn turn_usage(answer : JValue?) -> JValue? {
   guard get(get(answer, "result"), "usage") is Some(Obj(_) as u) else { return None }
   let num = (k : String) => match get(Some(u), k) {
@@ -551,7 +551,7 @@ pub fn turn_usage(answer : JValue?) -> JValue? {
   }
   let read = num("cachedReadTokens")
   let written = num("cachedWriteTokens")
-  let input = num("inputTokens") - read - written
+  let input = num("inputTokens")
   Some(
     obj([
       ("inputTokens", d(if input > 0.0 { input } else { 0.0 })),
