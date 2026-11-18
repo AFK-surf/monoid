@@ -1966,10 +1966,13 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
                 }
                 None => ()
               }
-              // (one a message names: each part in one piece, `file.open` streams none)
+              // (one a message names: each part in one piece, `file.open` streams none; what this device kept of it as
+              // played answered at once, the core asking the station again by its version as its start is read)
               if v.named {
                 let gone = Ref(false)
-                v.read_part(src, offset, length, "", fn(r) {
+                let p = v.part_params(offset, length, "")
+                p["played"] = Json::boolean(true)
+                let took = fn(r : Result[(Json, Bytes), Json]) {
                   guard !gone.val else { return }
                   match r {
                     Ok((said, bytes)) => {
@@ -1977,6 +1980,14 @@ pub fn Viewer::fetch(self : Viewer, src : Source) -> Unit {
                       answer(b"", number(Some(said), "size"), false)
                     }
                     Err(_) => answer(b"", -2.0, false)
+                  }
+                }
+                let kept = p.copy()
+                kept["kept"] = Json::boolean(true)
+                (src.read_bytes)("file.open", Json::object(kept), fn(r) {
+                  match r {
+                    Ok(_) => took(r)
+                    Err(_) => (src.read_bytes)("file.open", Json::object(p), took)
                   }
                 })
                 return fn() { gone.val = true }

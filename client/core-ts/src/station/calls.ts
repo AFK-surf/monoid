@@ -465,8 +465,8 @@ export function install(): void {
   // A file a message names: kept on this device as it is read (drive-kept.ts `openKeptId`), by the version the station
   // says, and asked again by that version each time (it may have changed since): not changed, what is kept is answered
   // (`same`), with none of its bytes from the station; the station not reached, what is kept all the same (`stale`).
-  // With `kept`, what is kept alone, no station asked. What is kept is answered by the path as named (the station's
-  // own name for it is not kept).
+  // With `kept`, what is kept alone, no station asked; with `played`, kept as a video's or song's parts are. What is
+  // kept is answered by the path as named (the station's own name for it is not kept).
   handlers.fileOpen = (inner, call, _p, _a, ctx) => {
     const c = call as Extract<Call, { kind: "fileOpen" }>;
     const id = openKeptId(c.station, c.key, c.path);
@@ -479,6 +479,12 @@ export function install(): void {
       const fromKept = (more: Record<string, boolean>) => new Beside({ name: named, path: c.path, type: kept!.type, size: version!.size, ...more }, kept!.bytes);
       if (c.kept) {
         if (kept === null) return yield* Effect.fail(new CoreError("not_kept", t("station.core.fileUnreadable")));
+        // (a video or song played from what is kept: asked again by its version as its start is read, so what was kept
+        // of it goes once it changed, its new start kept in its place)
+        if (c.played && at === 0) {
+          inner.runner.fork(Effect.ignore(Effect.flatMap(inner.stations.requests.fileOpen(addr, c.key, c.path, c.range, ctx, `${version!.mtime}:${version!.size}`), (said) =>
+            said.same || said.mtime === null || said.bytes.length === 0 ? Effect.void : inner.driveKept.keep(id, "played", said.mtime, said.size, said.type, 0, said.bytes.slice()))));
+        }
         return fromKept({});
       }
       const have = kept === null ? undefined : `${version!.mtime}:${version!.size}`;
@@ -490,7 +496,7 @@ export function install(): void {
       const said = got.success;
       if (said.same && kept !== null) return fromKept({ same: true });
       // (a copy kept: the answer's bytes are the UI's, moved away on the web before the keeping writes them)
-      if (said.mtime !== null && !said.same && said.bytes.length > 0) inner.runner.fork(inner.driveKept.keep(id, "file", said.mtime, said.size, said.type, at, said.bytes.slice()));
+      if (said.mtime !== null && !said.same && said.bytes.length > 0) inner.runner.fork(inner.driveKept.keep(id, c.played ? "played" : "file", said.mtime, said.size, said.type, at, said.bytes.slice()));
       return new Beside({ name: said.name, path: said.path, type: said.type, size: said.size }, said.bytes);
     });
   };

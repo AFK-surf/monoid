@@ -336,6 +336,42 @@ test("a_file_a_message_names_is_kept_by_its_version_and_asked_again_by_it_each_t
   } finally { core.close(); }
 });
 
+test("a_video_a_message_names_is_played_from_what_was_kept_and_let_go_of_once_it_changed", async () => {
+  const { host, core } = await started(base());
+  let file = { bytes: new Uint8Array([1, 2, 3, 4, 5, 6]), mtime: 100 };
+  const asked: string[] = [];
+  stationReplies(host, (req) => {
+    const url = new URL(req.url);
+    if (!url.pathname.endsWith("/sessions/k/open")) return undefined;
+    const have = url.searchParams.get("have");
+    const at = Number(url.searchParams.get("offset") ?? 0);
+    const length = Number(url.searchParams.get("length") ?? file.bytes.length);
+    asked.push(`${at}:${have ?? ""}`);
+    const headers: [string, string][] = [["content-type", "video/mp4"], ["stillfail-name", "a.mp4"], ["stillfail-path", encodeURIComponent("/w/a.mp4")], ["stillfail-mtime", String(file.mtime)], ["stillfail-total", String(file.bytes.length)]];
+    if (have === `${file.mtime}:${file.bytes.length}`) return new Raw({ status: 304, headers, body: new Uint8Array() });
+    return new Raw({ status: 200, headers, body: file.bytes.slice(at, at + length) });
+  });
+  const ui = core.connect();
+  const said = (id: number) => host.takeEmitted().map(([, m]) => m as J).find((m) => m.id === id && ("ok" in m || "error" in m)) as J;
+  const part = async (id: number, kept: boolean) => {
+    call(core, ui, id, "file.open", { station: ST, key: "k", path: "/w/a.mp4", offset: 0, length: 3, played: true, ...(kept ? { kept: true } : {}) });
+    await host.settle();
+    return said(id);
+  };
+  try {
+    assert.equal((await part(1, true)).error.code, "not_kept");
+    assert.deepEqual([...(await part(2, false)).bytes], [1, 2, 3]);
+    // Played again: from what was kept, and its start asked again by its version (the same: nothing more)
+    assert.deepEqual([...(await part(3, true)).bytes], [1, 2, 3]);
+    assert.deepEqual(asked, ["0:", "0:100:6"]);
+    // Changed on the station: the next play still starts from what was kept, and what is kept from then is the new
+    file = { bytes: new Uint8Array([9, 8, 7, 6]), mtime: 200 };
+    assert.deepEqual([...(await part(4, true)).bytes], [1, 2, 3]);
+    await host.settle();
+    assert.deepEqual([...(await part(5, true)).bytes], [9, 8, 7]);
+  } finally { core.close(); }
+});
+
 test("a_windows_file_an_agent_names_in_code_can_be_peeked_and_opened_by_its_marked_path", async () => {
   const { host, core } = await started(base());
   const paths = ["C:/work/report.md", "C:\\work\\报告.md"];
