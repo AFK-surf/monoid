@@ -2,7 +2,7 @@
 // socket of its own, so they come in any order; taken in the order they were opened. 2026-11-13: a device's requests,
 // opened right after its credential stream, came first and were refused as its credential (`malformed credential`).
 import assert from "node:assert/strict";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { createServer, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -73,6 +73,28 @@ test("the front ending with EPIPE on its control socket settles gone without an 
     accepted!.destroy();
     await front.gone;
     await assert.rejects(pending, /the front is gone/);
+    front.close();
+  } finally {
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("the streams' sockets a killed process left are taken away as the next opens; one still running keeps its own", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "front-left-"));
+  const sock = join(dir, "front.sock");
+  const server = createServer(() => {});
+  await new Promise<void>((resolve) => server.listen(sock, resolve));
+  // (a pid no process has: beyond what the systems give)
+  const gone = 4_000_000_000;
+  await writeFile(join(dir, `mesh-${gone}-1.sock`), "");
+  await writeFile(join(dir, `mesh-${gone}-2.sock`), "");
+  await writeFile(join(dir, `mesh-${process.ppid}-1.sock`), "");
+  await writeFile(join(dir, "mesh-not-ours.sock"), "");
+  try {
+    const front = await Front.open(sock);
+    const left = (await readdir(dir)).sort();
+    assert.deepEqual(left, ["front.sock", `mesh-${process.ppid}-1.sock`, "mesh-not-ours.sock", front.streamsPath.slice(dir.length + 1)].sort());
     front.close();
   } finally {
     server.close();

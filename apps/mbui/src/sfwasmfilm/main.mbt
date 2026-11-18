@@ -185,6 +185,7 @@ fn scene_arg(name : String) -> String {
     "MBUI_FIXTURE_JSON" => option(20)
     "MBUI_OPEN_WHOLE" => option(21)
     "MBUI_CHAT_PAGE" => option(23)
+    "MBUI_CORE_CLIENT" => option(24)
     // (1Password's answers in a scene: the native film's only)
     "MBUI_FILM_OP" => ""
     // (the people's faces decoded late and a page waiting for them, sffilmscene's: the native film's only)

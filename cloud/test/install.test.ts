@@ -665,6 +665,156 @@ test("a Node another install put there meanwhile is the one kept, and nothing ha
 });
 
 /**
+ * Releases on a `machine()`'s feed, made one at a time (`serve`): the curl stand-in gives the one served for the
+ * release and a Node of `version` (bin/node, saying it) for the Node; a Node release names it in NODE_VERSION, a
+ * MoonBit station's (`node: null`) has none and its reader. What is installed is the bundled installer, as a station
+ * updating itself runs it, the release and its Node signed (a release with none signs a Node hash of zeros).
+ */
+function feed(m: ReturnType<typeof machine>, version = "24.21.0") {
+  const dist = join(m.root, "node");
+  mkdirSync(join(dist, "bin"), { recursive: true });
+  writeFileSync(join(dist, "bin", "node"), `#!/bin/sh\necho v${version}\n`, { mode: 0o755 });
+  execFileSync("tar", ["-czf", join(m.root, "node.tar.gz"), "-C", dist, "bin/node"]);
+  const stub = join(m.root, "stub");
+  writeFileSync(join(stub, "curl"), `#!/bin/sh\necho "curl $*" >> "$HOME/said"\nwhile [ $# -gt 1 ]; do\n  case "$1" in */releases/node/*) node=yes ;; esac\n  [ "$1" = -o ] && { [ -n "\${node:-}" ] && cp "${join(m.root, "node.tar.gz")}" "$2" || cp "${join(m.root, "release.tar.gz")}" "$2"; }\n  shift\ndone\n`, { mode: 0o755 });
+  const serve = (name: string, node: string | null, installer?: string) => {
+    const at = join(m.root, `release-${name}`);
+    const release = join(at, "stillfail");
+    mkdirSync(join(release, "bin"), { recursive: true });
+    writeFileSync(join(release, "bin", "stillfail"), '#!/bin/sh\necho "stillfail $*" >> "$HOME/said"\n', { mode: 0o755 });
+    writeFileSync(join(release, "VERSION"), `${name}\n`);
+    if (node !== null) writeFileSync(join(release, "NODE_VERSION"), `${node}\n`);
+    else {
+      mkdirSync(join(release, "station"), { recursive: true });
+      writeFileSync(join(release, "station", "stillfail-reader"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    }
+    if (installer !== undefined) writeFileSync(join(release, "bin", "install.zh.sh"), installer);
+    execFileSync("tar", ["-czf", join(m.root, "release.tar.gz"), "-C", at, "stillfail"]);
+    return {
+      STILLFAIL_ORIGIN: "https://releases.test", STILLFAIL_INSTALL_LANG: "zh",
+      STILLFAIL_RELEASE_SHA256: sha256Of(join(m.root, "release.tar.gz")),
+      STILLFAIL_NODE_SHA256: node !== null ? sha256Of(join(dist, "bin", "node")) : "0".repeat(64),
+    };
+  };
+  return { serve };
+}
+
+/// A running station as ps tells it, answering a handover (SIGUSR2) as `took` says: its new release taken over (the
+/// launcher the same process, run/station.json saying it started anew) or failed (run/handoff-failed).
+function running(m: ReturnType<typeof machine>, data: string, took: boolean): number {
+  const fake = join(m.root, "stillfail-station");
+  const listening = join(m.root, "listening");
+  rmSync(listening, { force: true });
+  const run = join(data, "run");
+  writeFileSync(
+    fake,
+    `#!/bin/sh
+n=0
+say() { printf '{"pid": %s, "startedAt": %s, "handoff": 1, "drain": 1, "renew": 1}' $$ "$1" > "${run}/station.json"; }
+took() { n=$((n + 1)); say $((1700000000000 + n)); }
+failed() { echo "the new release did not start" > "${run}/handoff-failed"; }
+mkdir -p "${run}"
+say 1700000000000
+trap ${took ? "took" : "failed"} USR2
+touch "${listening}"
+while :; do sleep 0.2; done
+`,
+    { mode: 0o755 },
+  );
+  // Not this process's child (the installer runs while this waits, so none is reaped here).
+  const pid = Number(execFileSync("sh", ["-c", `"${fake}" </dev/null >/dev/null 2>&1 & echo $!`], { encoding: "utf8" }));
+  while (!existsSync(listening)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  return pid;
+}
+
+test("a Node release updated to the MoonBit station keeps its Node while that handover fails, prunes it once one took over, and a Node release installed again after it fetches and links its Node anew", () => {
+  const m = machine();
+  const data = join(m.home, ".stillfail");
+  const app = join(data, "app");
+  const nodeAt = join(data, "node", "v24.21.0", "bin", "node");
+  const pids: number[] = [];
+  try {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    const f = feed(m);
+    const bundled = bundledInstallScript("zh");
+    // a Node release, its Node fetched and linked
+    const first = m.run([], f.serve("node-1", "24.21.0"), bundled);
+    assert.equal(first.status, 0, first.out);
+    assert.ok(existsSync(nodeAt));
+    assert.equal(realpathSync(join(app, "node")), realpathSync(join(data, "node", "v24.21.0")));
+
+    // the MoonBit station's release, whose handover fails: the release before back, on the Node it runs on
+    pids.push(running(m, data, false));
+    writeFileSync(join(m.home, "said"), "");
+    const failed = m.run([], f.serve("mb-1", null), bundled);
+    assert.equal(failed.status, 1, failed.out);
+    assert.match(failed.out, /the new release did not start/);
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "node-1\n", "the release before back in its place");
+    assert.ok(existsSync(nodeAt), "its Node not pruned");
+    assert.equal(realpathSync(join(app, "node")), realpathSync(join(data, "node", "v24.21.0")), "and still linked");
+    assert.equal(readFileSync(join(app, "NODE_VERSION"), "utf8"), "24.21.0\n");
+    assert.doesNotMatch(failed.said, /releases\/node\//, "no Node asked for");
+    process.kill(pids.pop()!, "SIGKILL");
+
+    // the same release taken over: no Node left once the station runs on none
+    pids.push(running(m, data, true));
+    rmSync(join(data, "run", "handoff-failed"), { force: true });
+    const taken = m.run([], f.serve("mb-2", null), bundled);
+    assert.equal(taken.status, 0, taken.out);
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "mb-2\n");
+    assert.ok(existsSync(join(app, "station", "stillfail-reader")));
+    assert.throws(() => lstatSync(join(app, "node")), "no Node linked");
+    assert.equal(existsSync(join(data, "node")), false, "the Node pruned");
+    assert.ok(!existsSync(join(app + ".old")));
+
+    // back to a Node release (a downgrade, the stable channel's of the day before): its Node fetched, checked and linked
+    writeFileSync(join(m.home, "said"), "");
+    const back = m.run([], f.serve("node-2", "24.21.0"), bundled);
+    assert.equal(back.status, 0, back.out);
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "node-2\n");
+    assert.match(back.said, /curl .*\/releases\/node\/node-v24\.21\.0-darwin-arm64\.tar\.gz/);
+    assert.ok(existsSync(nodeAt));
+    assert.equal(realpathSync(join(app, "node")), realpathSync(join(data, "node", "v24.21.0")));
+    assert.equal(execFileSync(join(app, "node", "bin", "node"), { encoding: "utf8" }), "v24.21.0\n");
+    assert.deepEqual(readdirSync(join(data, "node")), ["v24.21.0"], "nothing half-made beside it");
+  } finally {
+    for (const pid of pids) process.kill(pid, "SIGKILL");
+    m.done();
+  }
+});
+
+test("a station from before the MoonBit station's release (17902afdac's bundled installer) updates to one with no Node: handed to the release's own installer, no Node fetched or linked, the Node before pruned", () => {
+  const m = machine();
+  const data = join(m.home, ".stillfail");
+  const app = join(data, "app");
+  try {
+    mkdirSync(join(data, "mesh"), { recursive: true });
+    writeFileSync(join(data, "mesh", "cloud.json"), '{"origin": "https://app.still.fail"}');
+    // what a release from before left: its Node, kept beside the data
+    mkdirSync(join(data, "node", "v24.21.0", "bin"), { recursive: true });
+    writeFileSync(join(data, "node", "v24.21.0", "bin", "node"), "#!/bin/sh\necho v24.21.0\n", { mode: 0o755 });
+    // The installer a station of then carries (`bundledInstallScript("zh")` at 17902afdac, the last main before #7109:
+    // `git show 17902afdac:cloud/src/install.ts`), and the release's own (this one's, scripts/installers.ts), saying it ran.
+    const before = readFileSync(join(import.meta.dirname, "install-17902afdac.zh.sh"), "utf8");
+    assert.match(before, /prune_node\(\) \{\n {2}\[ -n "\$node_dir" \] \|\| return 0\n/, "the installer of then: no Node pruned when a release names none");
+    const own = bundledInstallScript("zh").replace("set -eu\n", 'set -eu\necho "its own installer: $STILLFAIL_INSTALLER_HANDED" >> "$HOME/said"\n');
+    const told = feed(m).serve("mb", null, own);
+    const done = m.run([], told, before);
+    assert.equal(done.status, 0, done.out);
+    assert.match(done.said, /its own installer: 1/);
+    assert.equal(done.said.match(/^curl /gm)?.length, 1, done.said);
+    assert.doesNotMatch(done.said, /releases\/node\//, "no Node asked for");
+    assert.equal(readFileSync(join(app, "VERSION"), "utf8"), "mb\n");
+    assert.ok(existsSync(join(app, "station", "stillfail-reader")));
+    for (const gone of ["node", "NODE_VERSION"]) assert.throws(() => lstatSync(join(app, gone)), gone);
+    assert.equal(existsSync(join(data, "node")), false, "the Node of before taken away by the release's own installer");
+  } finally {
+    m.done();
+  }
+});
+
+/**
  * The station `machine()` installed taken away by the repository's own command (bin/stillfail, put in place of the
  * release's stand-in): run as the person would (~/.local/bin/stillfail), with the machine's own stand-ins and Node on
  * its PATH. Asynchronous, so a test's Helper on its socket can answer meanwhile.

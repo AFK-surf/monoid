@@ -239,10 +239,11 @@ fn answered_by(port: u16) -> i32 {
 }
 
 #[test]
-fn handoff_version_is_3() {
+fn handoff_version_is_4() {
+    // (3: takes a running launcher's place on Unix; 4: on Windows too, run_windows.rs `renew`)
     let out = output(Command::new(launcher()).arg("handoff-version"));
     assert!(out.status.success());
-    assert_eq!(String::from_utf8(out.stdout).unwrap(), "3\n");
+    assert_eq!(String::from_utf8(out.stdout).unwrap(), "4\n");
 }
 
 #[test]

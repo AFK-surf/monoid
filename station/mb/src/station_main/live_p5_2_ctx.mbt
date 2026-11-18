@@ -66,11 +66,31 @@ fn P52::store(self : P52, name : String, args : Array[Json]) -> Json raise {
     Err(e) => {
       let said = said_of(e)
       if said.contains("no call") {
-        self.threads.call(name, args.map(jv_of))
+        // What it wrote is told as the store's own writes are (the events, the readers), as P5-4's vault does
+        // (`p54_told_threads`): kept in `sent` and never told, an agent's chat_post reached no device until the app
+        // read the chat again, and `sent` grew for good (0.1.9984).
+        let answer = self.threads.call(name, args.map(jv_of)) catch {
+          e => {
+            p52_told_threads(self.bus, self.threads)
+            raise e
+          }
+        }
+        p52_told_threads(self.bus, self.threads)
+        answer
       } else {
         raise e
       }
     }
+  }
+}
+
+///|
+/// The threads' store's changes told to the bus's listeners.
+fn p52_told_threads(bus : LiveBus, threads : @store_threads.Store) -> Unit {
+  let sent = threads.sent.copy()
+  threads.sent.clear()
+  for c in sent {
+    bus.notify_store(c)
   }
 }
 

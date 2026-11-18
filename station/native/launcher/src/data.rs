@@ -77,8 +77,10 @@ pub fn write_whole(path: &Path, text: &str) -> Result<()> {
 
 /// run/station.json's line, its fields in the Rust station's order (the installer reads it with sed). `handoff` stays 1:
 /// the installer takes any for "SIGUSR2 hands over".
-pub fn station_json(pid: u32, started_at: u64, version: &str) -> String {
-    format!("{{\"pid\":{pid},\"startedAt\":{started_at},\"version\":{},{FLAGS}}}\n", Value::from(version))
+/// `renewed_from`: the launcher whose place this one took (Windows' renew), the pid the installer handed over through.
+pub fn station_json(pid: u32, started_at: u64, version: &str, renewed_from: Option<u32>) -> String {
+    let from = renewed_from.map(|p| format!(",\"renewedFrom\":{p}")).unwrap_or_default();
+    format!("{{\"pid\":{pid},\"startedAt\":{started_at},\"version\":{},{FLAGS}{from}}}\n", Value::from(version))
 }
 
 /// What the launcher takes: a handover, a drain, the channel asked again. On Unix as signals (SIGUSR2, SIGUSR1, SIGHUP);
@@ -168,6 +170,6 @@ mod tests {
     #[test]
     fn station_json_is_one_line_in_the_rust_stations_order() {
         let renew = if cfg!(unix) { ",\"renew\":1" } else { "" };
-        assert_eq!(station_json(7, 12, "0.1.\"x"), format!("{{\"pid\":7,\"startedAt\":12,\"version\":\"0.1.\\\"x\",\"handoff\":1,\"drain\":1,\"channel\":1{renew}}}\n"));
+        assert_eq!(station_json(7, 12, "0.1.\"x", None), format!("{{\"pid\":7,\"startedAt\":12,\"version\":\"0.1.\\\"x\",\"handoff\":1,\"drain\":1,\"channel\":1{renew}}}\n"));
     }
 }

@@ -57,7 +57,15 @@ pub fn source(arg : (String) -> String) -> () -> @sfapp.Source {
         if arg("MBUI_WINDOW") != "" { @sfbase.lone_page.val = @sfbase.window_page(arg("MBUI_WINDOW")) }
         if arg("MBUI_UPDATES_MS") != "" { @sffixture.fixture_updates(ms=whole_ms(arg("MBUI_UPDATES_MS"))) }
         if arg("MBUI_UPDATE") != "" { @sffixture.fixture_update(arg("MBUI_UPDATE")) }
-        let s = if late > 0.0 { @sffixture.round_trip(s, late) } else { s }
+        // MBUI_CORE_CLIENT=1: answered through the core's client as a device's is (each message its text, a value's
+        // first told as an answer), MBUI_CORE_MS late
+        let s = if arg("MBUI_CORE_CLIENT") == "1" {
+          @sffixture.round_trip_again(s, late)
+        } else if late > 0.0 {
+          @sffixture.round_trip(s, late)
+        } else {
+          s
+        }
         // MBUI_OPEN_WHOLE=1: a card, a panel or a sheet opened the first time waits for what it reads, as the app does
         // (@sf.OpenGate; a fixture's own tests say what shows before the core answers, so not without it)
         let s = if arg("MBUI_OPEN_WHOLE") == "1" { { ..s, gates_opens: fn() { true } } } else { s }

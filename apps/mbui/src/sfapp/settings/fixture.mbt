@@ -1390,7 +1390,7 @@ fn fx_summary_profiles() -> Array[Json] {
       ("planText", str("Plus")),
       ("quota", ok_q([fx_window("5 小时", "5H", 100, "5 小时后恢复", ""), fx_window("每周", "W", 0, "2 天后恢复", "", short="2d")])),
     ]),
-    // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools
+    // Google 订阅 (2): provides both Gemini and Claude / GPT independent pools, marked as the core marks them
     fx_profile("ag1", "zover.v@gmail.com", "subscription", "green", "可用", "agy", "Google 订阅", [
       ("email", str("zover.v@gmail.com")),
       ("planText", str("AI Ultra")),
@@ -1398,9 +1398,10 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          fx_window("5 小时 · Gemini", "5H", 76, "3 小时后恢复", "Gemini"),
-          fx_window("每周 · Gemini", "W", 68, "3 天后恢复", "Gemini"),
-          fx_window("每周 · Claude / GPT", "W", 80, "3 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "Gemini 5H", 76, "3 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "Gemini W", 68, "3 天后恢复", "Gemini"),
+          fx_window("5 小时 · Claude / GPT", "Claude / GPT 5H", 0, "4 小时 21 分钟后恢复", "Claude / GPT", short="4h21m"),
+          fx_window("每周 · Claude / GPT", "Claude / GPT W", 49, "3 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),
@@ -1411,9 +1412,10 @@ fn fx_summary_profiles() -> Array[Json] {
       (
         "quota",
         ok_q([
-          fx_window("5 小时 · Gemini", "5H", 64, "1 小时后恢复", "Gemini"),
-          fx_window("每周 · Gemini", "W", 62, "4 天后恢复", "Gemini"),
-          fx_window("每周 · Claude / GPT", "W", 68, "4 天后恢复", "Claude / GPT"),
+          fx_window("5 小时 · Gemini", "Gemini 5H", 64, "1 小时后恢复", "Gemini"),
+          fx_window("每周 · Gemini", "Gemini W", 62, "4 天后恢复", "Gemini"),
+          fx_window("5 小时 · Claude / GPT", "Claude / GPT 5H", 100, "5 小时后恢复", "Claude / GPT"),
+          fx_window("每周 · Claude / GPT", "Claude / GPT W", 68, "4 天后恢复", "Claude / GPT"),
         ]),
       ),
     ]),

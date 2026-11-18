@@ -68,18 +68,20 @@
 /// In each half of the windows (corners_check, 2026-11-15): of the 6, 5 in the first and 1 in the second. 文件 and a
 /// station's drive made once as nodes (2026-11-17): none left.
 let rooms_known : Map[String, Int] = {
-  "0/2 room": 0,
-  "0/2 apart": 0,
-  "0/2 hover": 0,
+  "0/4 room": 0,
+  "0/4 apart": 0,
+  "0/4 hover": 0,
+  "2/4 room": 0,
+  "2/4 apart": 0,
+  "2/4 hover": 0,
   "1/2 room": 0,
   "1/2 apart": 0,
   "1/2 hover": 0,
 }
 
 ///|
-/// What is off its bar in the faults `rooms` (each `at: rule: …`) of the windows' half `half` (corners_check), None
-/// where each rule keeps to it.
-fn rooms_wrong(half : Int, rooms : Array[String]) -> String? {
+/// Compare each rule's faults with the known count for this set of windows.
+fn rooms_wrong(windows : String, rooms : Array[String]) -> String? {
   let counts : Map[String, Int] = Map([])
   for f in rooms {
     for rule in ["room", "apart", "hover"] {
@@ -91,10 +93,10 @@ fn rooms_wrong(half : Int, rooms : Array[String]) -> String? {
   let off : Array[String] = []
   for rule in ["room", "apart", "hover"] {
     let have = counts.get(rule).unwrap_or(0)
-    let known = rooms_known.get("\{half}/2 \{rule}").unwrap_or(0)
+    let known = rooms_known.get("\{windows} \{rule}").unwrap_or(0)
     if have != known {
       off.push(
-        "\{half}/2 \{rule}: \{have} faults, \{known} known (" +
+        "\{windows} \{rule}: \{have} faults, \{known} known (" +
         (if have < known {
           "fewer: its bar comes down in rooms_known_wbtest.mbt"
         } else {

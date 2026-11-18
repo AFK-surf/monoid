@@ -9754,9 +9754,10 @@ fn View::comes(
     !@signals.untracked(tree.motion_reduced) &&
     tree.makes_way(v.at) &&
     !tree.holds_shared(v.at) &&
-    // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt)
-    !answered.val &&
-    !tree.answer_holds(v.at) else {
+    // (made or let go as an answer told it, a block given another key or woken: at once, answering.mbt; but one on a
+    // way a cause set it on, turned back by an answer (a show's shown again as it closes), turns back on that way as
+    // it would for a cause: that way is the cause's still, and stopped dead or done at once it jumps)
+    ((n.coming && n.flex.style.come_to <= 0.0 && to > 0.0) || (!answered.val && !tree.answer_holds(v.at))) else {
     // (made or let go at once as an answer told it: marked so, for what judges how what moves goes)
     if answered.val || tree.answer_holds(v.at) {
       tree.answer_mark(v.at)

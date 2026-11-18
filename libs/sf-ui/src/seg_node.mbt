@@ -392,10 +392,12 @@ pub fn seg_fill_node(
             }
             x
           }
-          // (a finger held on an option, where glass is not drawn solid: the thumb there, a lens over it; the one chosen
-          // only as it is let go on it, @kit.toggle_group's)
-          let fingered : @signals.Signal[Int] = @signals.signal(-1)
-          let lensed = fn() { !strip.glass_solid() && fingered.get() >= 0 }
+          // The thumb previews the option under the finger until release commits the selection.
+          let fingered : @signals.Signal[Int?] = @signals.signal(None)
+          let preview = fn(k) {
+            fingered.set(if @ui.pointing() is Finger { k } else { None })
+          }
+          let lensed = fn() { !strip.glass_solid() && fingered.get() is Some(_) }
           let held = @motion.NodeWay::new(0.0)
           strip.reacts(lensed, fn(down) { held.go(strip, if down { 1.0 } else { 0.0 }, @motion.backdrop_press_spring) })
           let lens = fn() { if strip.glass_solid() { 0.0 } else { held.shown(strip) } }
@@ -403,7 +405,7 @@ pub fn seg_fill_node(
           // shares) and how far it is from there (0 to 1, on a cover's spring), sent on as it goes to another item, from
           // that moment; where it is drawn the blend of where those items are laid out as it is drawn (moved or resized
           // meanwhile: with them)
-          let at = fn() { if lensed() { fingered.get() } else { chosen() } }
+          let at = fn() { fingered.get().unwrap_or(chosen()) }
           let first = @signals.untracked(at)
           let cover : @signals.Signal[(Array[(Int, Double)], Int)] = @signals.signal(([(first, 1.0)], first))
           let way = @motion.NodeWay::new(1.0)
@@ -483,7 +485,7 @@ pub fn seg_fill_node(
           // chosen one's in the ink, the others muted, smaller as fitted
           for k in 0..<n {
             let label = fn() { labels().get(k).unwrap_or("") }
-            rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), fn(o, item) {
+            rg.item(strip, fn() { k }, label, slop=@ui.touch_slop(), slide=preview, fn(o, item) {
               let on = fn() { item.chosen() }
               o
               // (its share, or as fitted)
@@ -494,13 +496,6 @@ pub fn seg_fill_node(
               // (its words in its middle, as laid out: seg_full_option's justify)
               .lies_along(Is(Middle))
               |> ignore
-              o.reacts(fn() { item.pressed() && @ui.pointing() is Finger }, fn(down) {
-                if down {
-                  fingered.set(k)
-                } else if fingered.untracked() == k {
-                  fingered.set(-1)
-                }
-              })
               o.box(fn(w) {
                 w
                 .words(By(label))

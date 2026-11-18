@@ -117,6 +117,8 @@ pub struct HelperGrants {
   // (when a look was last tried, answered or not)
   priv mut attempted : Double
   priv checking : Shared[Unit]
+  /// What the Helper's last failure to answer said, logged; None once it answered.
+  priv mut unanswered : String?
   priv asked : Map[String, Double]
   priv listeners : Array[(Int, () -> Unit)]
   priv volumes : String
@@ -148,6 +150,7 @@ pub fn HelperGrants::new(
     checked: @double.neg_infinity,
     attempted: @double.neg_infinity,
     checking: Shared::new(),
+    unanswered: None,
     asked: {},
     listeners: [],
     volumes,
@@ -216,7 +219,12 @@ pub async fn HelperGrants::refresh(self : HelperGrants, force? : Bool = false) -
         async fn() {
           let status = self.helper.request(jo([("op", js("status"))])) catch {
             e => {
-              self.io.log.warn("helper", "still.fail Helper did not answer", fields=jo([("error", js(message_of(e)))]))
+              // (said once until it answers again or says otherwise: grants.ts)
+              let said = message_of(e)
+              if self.unanswered != Some(said) {
+                self.unanswered = Some(said)
+                self.io.log.warn("helper", "still.fail Helper did not answer", fields=jo([("error", js(said))]))
+              }
               return
             }
           }
@@ -253,6 +261,7 @@ pub fn HelperGrants::state(self : HelperGrants, grant : String) -> String {
 
 ///|
 fn HelperGrants::learn(self : HelperGrants, status : J) -> Unit {
+  self.unanswered = None
   self.checked = (self.now)()
   self.attempted = self.checked
   let before = match self.status_ {

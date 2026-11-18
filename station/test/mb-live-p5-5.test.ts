@@ -412,6 +412,44 @@ test("the parts as the admin API asks them: the overview's features, updates, mo
   assert.deepEqual(second.features, ["terminal", "stationMove"]);
   assert.deepEqual(second.move, { offered: true });
   assert.deepEqual((await h.ok({ step: "tools" })).sort(), ["feishu_api", "slack_api", "station_move", "station_retire", "station_version"]);
+  // station_move all (tools/move.ts `MoveAsks`): a card in the asking chat, kept in move/asks.json; nothing moves until
+  // an owner or admin of its workspace confirms it in the app, a member refused (the other station and the hub's
+  // cards and notices the test's)
+  const other = "b".repeat(64);
+  const sessions = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+  sessions.insertSession({ key: "s1", connect: "ember", ws: "w1", runtime: "claude", profile: "cc", workspace: data, token: "t1", createdAt: Date.now(), lastActiveAt: Date.now() });
+  sessions.close();
+  await h.ok({ step: "standIn", hub: { "cards.post": { thread: 7, ts: "1.5" }, "hub.notify": null }, peers: { "move.open": { on: true } } });
+  const all = await h.ok({ step: "call", name: "station_move", args: { action: "move", to: other, all: true }, context: { session: "s1" } });
+  assert.equal(all.isError, undefined, JSON.stringify(all));
+  const asked = JSON.parse(all.content[0].text);
+  assert.equal(asked.card, "posted");
+  assert.match(asked.ask, /^m_[0-9a-f]{12}$/);
+  const posted = (await h.ok({ step: "asked" })).filter((x: any) => x.hub === "cards.post");
+  assert.equal(posted.length, 1);
+  const [cardSession, , card] = posted[0].args;
+  assert.equal(cardSession, "s1");
+  assert.deepEqual(card.move, { ask: asked.ask, to: other, toName: "other" });
+  const asksFile = join(data, "move", "asks.json");
+  const kept = () => JSON.parse(readFileSync(asksFile, "utf8"));
+  assert.deepEqual(kept(), [{ id: asked.ask, session: "s1", ws: "w1", to: other, toName: "other", state: "asked", thread: 7, ts: "1.5", by: null }]);
+  const at = { thread: 7, ts: "1.5" };
+  assert.match(await h.ok({ step: "card", key: "move", call: "may", viewer: member, card, at }), /所有者或管理员|owner or admin/);
+  assert.match(await h.ok({ step: "card", key: "move", call: "may", viewer: owner, card, at: { thread: 7, ts: "2.5" } }), /失效|no longer asks/);
+  assert.equal(await h.ok({ step: "card", key: "move", call: "may", viewer: owner, card, at }), null);
+  await h.ok({ step: "card", key: "move", call: "chosen", viewer: owner, card, option: card.options[0].label, at });
+  // (what the choice set going comes to: the chat told what came of it)
+  await Promise.race([h.ok({ step: "heard", hub: "hub.notify" }), new Promise((_, no) => setTimeout(() => no(new Error(`the chat was never told: ${h.stderr()}`)), 20_000).unref())]);
+  assert.deepEqual([kept()[0].state, kept()[0].by], ["confirmed", "o@x.y"]);
+  const notices = (await h.ok({ step: "asked" })).filter((x: any) => x.hub === "hub.notify");
+  assert.equal(notices.length, 1, JSON.stringify(notices));
+  assert.equal(notices[0].args[0], "s1");
+  assert.match(notices[0].args[1], /^o@x\.y confirmed moving everything to other/);
+  // station_move asked by another station of the workspace (`move.tool`): as a told step where it asks so, answered at
+  // once; else answered with what it comes to; a station not of the workspace refused
+  assert.deepEqual(await h.ok({ step: "peer", from: other, workspace: "w1", method: "move.tool", params: { args: { action: "stop" }, told: "tool:stop:1" } }), { under: true, told: "tool:stop:1" });
+  assert.match((await h.send({ step: "peer", from: other, workspace: "w1", method: "move.tool", params: { args: { action: "go" } } })).error, /action is one of plan, move, back, status, stop/);
+  assert.match((await h.send({ step: "peer", from: "c".repeat(64), workspace: "w1", method: "move.tool", params: { args: { action: "stop" } } })).error, /not a station of this workspace/);
   // the moves' routes: the page of a move to the other station, a move refused to a member, one to a station not of it
   const page = await h.ok({ step: "route", method: "GET", path: "/move", query: { to: "b".repeat(64) }, body: null, viewer: owner, lang: "en" });
   assert.equal(page.status, 200, JSON.stringify(page));

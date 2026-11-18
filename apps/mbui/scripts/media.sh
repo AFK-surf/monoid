@@ -5,7 +5,8 @@
 #   out/home.png out/home.drive. PREPARE is a drive run before the recorded actions (`image_ready SRC` waits for an image).
 #   Scene: MBUI_WIN, MBUI_FILM_SCALE, MBUI_FILM_PLATFORM, MBUI_NATIVE_INPUT, MBUI_POINTING, MBUI_KEYBOARD, MBUI_DARK,
 #   MBUI_LOCALE, MBUI_FONT_SCALE and the fixture's (all of film's: mbui/src/film/film.mbt; the made-up station's pace,
-#   MBUI_FIX_PACE=DELIVER,ANSWER,END and MBUI_FIX_CORE=MS: src/sffixture fix_pace_said; MBUI_OPEN_WHOLE=1: what opens
+#   MBUI_FIX_PACE=DELIVER,ANSWER,END and MBUI_FIX_CORE=MS: src/sffixture fix_pace_said; MBUI_CORE_CLIENT=1: the core
+#   answering through its client, as a device's, src/sffilmscene; MBUI_OPEN_WHOLE=1: what opens
 #   waits for what it reads, src/sffilmscene; MBUI_CHAT_PAGE=nodes: the chat's page made as nodes, 试用新对话页;
 #   MBUI_FILM_FACE_MS=MS the people's faces decoded that late, and MBUI_FILM_FACE_WAITS=1 a page opening waiting for
 #   them, src/sffilmscene: the native film's only). A picture: MBUI_PICTURE_FRAME=K
@@ -153,7 +154,7 @@ jq -n --rawfile drive "$work/drive" --rawfile prepare "$work/prepare" \
   --arg allow_incomplete "${MBUI_FILM_ALLOW_INCOMPLETE:-}" --arg allow_corner_faults "${MBUI_FILM_ALLOW_CORNER_FAULTS:-}" \
   --arg station_sha "$local_station_hash" --arg hold "${MBUI_HOLD:-}" --arg failed "${MBUI_FAILED:-}" \
   --arg failed_why "${MBUI_FAILED_WHY:-}" --arg window "${MBUI_WINDOW:-}" --arg said "${MBUI_SAID:-}" \
-  --arg core_ms "${MBUI_CORE_MS:-}" --arg update "${MBUI_UPDATE:-}" --arg updates_ms "${MBUI_UPDATES_MS:-}" \
+  --arg core_ms "${MBUI_CORE_MS:-}" --arg core_client "${MBUI_CORE_CLIENT:-}" --arg update "${MBUI_UPDATE:-}" --arg updates_ms "${MBUI_UPDATES_MS:-}" \
   --arg fix_pace "${MBUI_FIX_PACE:-}" --arg fix_core "${MBUI_FIX_CORE:-}" --arg open_whole "${MBUI_OPEN_WHOLE:-}" \
   --arg chat_page "${MBUI_CHAT_PAGE:-}" \
   --arg autofill "${MBUI_FILM_AUTOFILL:-}" --argjson extra "${MBUI_MEDIA_RECORD:-null}" \
@@ -169,7 +170,7 @@ jq -n --rawfile drive "$work/drive" --rawfile prepare "$work/prepare" \
       inset: $inset, window_corner: $corner, nav_able: $nav, max_frames: $max, at_ms: $at, frame: $frame,
       transparent: $transparent, allow_incomplete: $allow_incomplete, allow_corner_faults: $allow_corner_faults, local_station_sha256: $station_sha,
       fixture_options: {hold: $hold, failed: $failed, failed_why: $failed_why, window: $window, said: $said,
-        core_ms: $core_ms, update: $update, updates_ms: $updates_ms, autofill: $autofill,
+        core_ms: $core_ms, core_client: $core_client, update: $update, updates_ms: $updates_ms, autofill: $autofill,
         fix_pace: $fix_pace, fix_core: $fix_core, open_whole: $open_whole, chat_page: $chat_page, face_ms: $face_ms,
         face_waits: $face_waits}},
     extra: $extra}' > "$work/scene.json"

@@ -349,6 +349,32 @@ test "a held narrow choice draws the Backdrop lens and respects reduced transpar
 }
 
 ///|
+test "a finger slides the segmented thumb to another option and chooses it only on release" {
+  for scrolled in [false, true] {
+    let rig = seg_rig(true, 390.0, seg_three, scrolled~)
+    let t = rig.t
+    let (x, y, w, h) = t.get(Radio, label=seg_three[0]).rect
+    let (end, _, end_w, _) = t.get(Radio, label=seg_three[2]).rect
+    let from_x = x + w / 2.0
+    let to_x = end + end_w / 2.0
+    let at_y = y + h / 2.0
+    t.touch(0, from_x, at_y)
+    t.run_for(part_whole_ms)
+    t.touch(1, to_x, at_y)
+    t.run_for(part_whole_ms)
+    assert_eq((rig.chosen.val, rig.at.get()), (0, 0))
+    let lens = t.drawn_instances().filter(fn(a) { a[5] == 6.0 })
+    assert_eq(lens.length(), 1)
+    let center = lens[0][0] + lens[0][2] / 2.0
+    assert_true(center > end && center < end + end_w)
+    t.touch(2, to_x, at_y)
+    t.run_for(part_whole_ms)
+    assert_eq((rig.chosen.val, rig.at.get()), (1, 2))
+    assert_true(t.get(Radio, label=seg_three[2]).check is Some(On))
+  }
+}
+
+///|
 /// Five options of unlike widths: 300 wide fitted (their sides narrower); 360, laid out each its least or more; at 1.3
 /// times the words, smaller.
 let seg_five : Array[String] = ["全部", "自动", "关闭", "仅工作日", "每天提醒我"]

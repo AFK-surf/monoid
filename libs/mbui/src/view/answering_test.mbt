@@ -163,3 +163,49 @@ test "answering: in one change an answer told within a part comes at once there,
     assert_true(!b, msg="at \{period} ms a frame: the answer's made its way in")
   }
 }
+
+///|
+test "answering: a show going by an event, shown again by an answer as it closes its way, turns back on that way to all its room" {
+  for period in answer_periods {
+    let clock = Ref(0.0)
+    let on = @signals.signal(true)
+    let line : Ref[@view.View?] = Ref(None)
+    let tree = @view.Tree::new(time=fn() { clock.val }, fn(root) {
+      root.box(fn(col) {
+        col.show(fn() { on.get() }, fn(s) { s.box(fn(x) { x.height(Is(Some(100.0))) |> ignore }) |> ignore })
+        col.box(fn(l) {
+          line.val = Some(l)
+          l.height(Is(Some(40.0))) |> ignore
+        })
+        |> ignore
+      })
+      |> ignore
+    })
+    let top = fn() {
+      match line.val {
+        Some(l) => l.rect().1
+        None => -1.0
+      }
+    }
+    while clock.val + period <= 400.0 {
+      tree.frame(390.0, 844.0, now=clock.val) |> ignore
+      clock.val += period
+    }
+    assert_eq(top(), 100.0, msg="at \{period} ms a frame: at rest")
+    // (gone by an event: its way closing)
+    on.set(false)
+    clock.val += period
+    tree.frame(390.0, 844.0, now=clock.val) |> ignore
+    // (back by an answer before that way ends: the way the event set it on turned back, the line under it where it was
+    // at that moment, not jumping)
+    let was = top()
+    @view.answering(fn() { on.set(true) })
+    tree.frame(390.0, 844.0, now=clock.val) |> ignore
+    assert_true((top() - was).abs() < 0.5, msg="at \{period} ms a frame: the line at \{was}, at \{top()} as it is shown again")
+    while clock.val + period <= 2400.0 {
+      clock.val += period
+      tree.frame(390.0, 844.0, now=clock.val) |> ignore
+    }
+    assert_eq(top(), 100.0, msg="at \{period} ms a frame: at rest after it")
+  }
+}

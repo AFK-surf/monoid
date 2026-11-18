@@ -479,13 +479,13 @@ async fn P55::start_moves(self : P55) -> Unit {
     }
     (to_core(answers(from, of_core(with_method(params, meth)), ws, body)), None)
   }
+  // station_move's asks (tools/move.ts `MoveAsks`: mcp_tools'), all of a station confirmed on a card in the asking chat
+  let asks = @mcp_tools.MoveAsks::new(self.move_tool_ctx(), data, { ask: true, set_wait: true, refusal: true, room: true, told: true })
   bus.on_peer_prefix("handover.", peer_answer)
   bus.on_peer_prefix("move.", async fn(from, ws, meth, params, bytes) {
     if meth == "move.tool" {
-      if !self.in_workspace(from) || ws is None {
-        raise BusError("not a station of this workspace")
-      }
-      return (self.move_tool_in(moves, ws.unwrap(), None, p55_jfield(params, "args")), None)
+      guard self.in_workspace(from) && ws is Some(ws) else { raise BusError("not a station of this workspace") }
+      return (move_asked(moves, asks, from, ws, params), None)
     }
     peer_answer(from, ws, meth, params, bytes)
   })
@@ -519,21 +519,25 @@ async fn P55::start_moves(self : P55) -> Unit {
   })))
   // (whether the app offers moving here: the switch; GET /move answers either way)
   bus.parts.overview("move", async fn(_viewer, _lang) { { "offered": Json::boolean(self.move_on()) } })
+  // (the card's choice, in the app: an owner or admin of the chat's workspace confirms it or declines)
+  bus.parts.card_choice("move", {
+    may: (viewer, card, at) => asks.may(jv_of_json(viewer), jv_of_json(card), jv_of_json(at)),
+    chosen: (viewer, card, option, at) => ignore(host.rt.fork(name="move card chosen", async fn() {
+      asks.chosen(jv_of_json(viewer), jv_of_json(card), option, jv_of_json(at)) catch {
+        e => self.warn("move", "the card's choice was not taken", e)
+      }
+    })),
+  })
   // (station_move is an agent's only where moving is on here)
   bus.parts.tools(
     [
       {
         name: "station_move",
-        declared: tool_declared(move_declared),
+        declared: json_of_jv(asks.c.decl("station_move")),
         call: async fn(args, context) {
           tool_said(async fn() {
             let session = self.session_of(context)
-            let ws = match (try { Ok(bus.store.session_ws(session)) } catch { e => Err(e) }) {
-              Ok(String(w)) => w
-              Ok(Null) => self.home().unwrap_or("")
-              _ => raise BusError("this chat is of no workspace here")
-            }
-            self.move_tool_in(moves, ws, Some(session), args)
+            Json::string(@mcp_tools.pretty(move_tool_said(async fn() { asks.tool(session, jv_of_json(args)) })))
           })
         },
       },
@@ -675,8 +679,9 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
   self.op("move.scheduler.stopTurn", async fn(arg) {
     Json::boolean(moves.scheduler.stop_turn(match args_of(arg).get(0) { Some(String(x)) => Some(x); _ => None }))
   })
+  // (scheduler.ts `stopped()`: each item stopped here and what it waits for)
   self.op("move.scheduler.stopped", async fn(_arg) {
-    Json::array(moves.scheduler.stopped_list().map(p => to_core(@move_coord.jo([("need", p.0.to_j()), ("waits", p.1.to_j())]))))
+    Json::array(moves.scheduler.stopped_list().map(p => to_core(@move_coord.jo([("item", p.0.to_j()), ("waitsFor", p.1.to_j())]))))
   })
   self.op("move.ask", async fn(arg) {
     let a = args_of(arg)
@@ -692,161 +697,81 @@ fn P55::move_ops(self : P55, moves : @move_coord.Moves) -> Unit {
     Json::null()
   })
   self.op("move.on", async fn(_arg) { Json::boolean(self.move_on()) })
+  // (move/live.ts `chatCards`, `hub.notify`: a card in the session's latest still.fail chat, a notice to its agent)
+  self.op("move.cards.post", async fn(arg) {
+    let a = args_of(arg)
+    self.hub("cards.post", [Json::string(s(a, 0)), Json::string(s(a, 1)), a.get(2).unwrap_or(Json::null())])
+  })
+  self.op("move.notify", async fn(arg) {
+    let a = args_of(arg)
+    ignore(self.hub("hub.notify", [Json::string(s(a, 0)), Json::string(s(a, 1))]))
+    Json::null()
+  })
 }
 
 ///|
-/// station_move's work for workspace `ws` (tools/move.ts `MoveAsks.toolIn`; `session`: the chat asking here, None: asked
-/// by another station): a plan or where each stands (a summary, a module's page, or one item), one item moved or moved
-/// back, the turn under way stopped. All of a station is confirmed on a card in the app (mcp_tools' station_move, which
-/// asks `move.*` of this slice, posts it).
-async fn P55::move_tool_in(self : P55, moves : @move_coord.Moves, ws : String, session : String?, args : Json) -> Json {
-  fn station(v : Json) -> (String, String) raise {
-    let want = match v {
-      String(t) => t.trim().to_owned()
-      _ => ""
-    }
-    match self.roster(ws) {
-      Some(r) =>
-        match r.search_by(x => x.0 == want || x.1.to_lower() == want.to_lower() || (want.length() >= 8 && x.0.has_prefix(want))) {
-          Some(i) => (r[i].0, r[i].1)
-          None => raise BusError("no station \{want} in this chat's workspace: station_list lists them")
+/// What station_move's asks (mcp_tools' `MoveAsks`) ask of the station: the move's own parts (`move.*`, as `move_ops`
+/// answers them on coord_ask), its file of asks (`fs.*`) and a temporary name's bytes (`crypto.randomBytes`).
+fn P55::move_tool_ctx(self : P55) -> @mcp_tools.Ctx {
+  let (zh, en) = catalogs_json()
+  let words = @api_routes.Words::new(jv_of_json(zh), jv_of_json(en))
+  let s = (args : Array[@api_routes.JV], i : Int) => match args.get(i) { Some(Str(x)) => x; _ => "" }
+  let backend = @mcp_tools.ToolsBackend::new(async fn(op, args) {
+    match op {
+      "fs.readFileSync" =>
+        match read_text(s(args, 0)) {
+          Some(t) => Str(t)
+          None => raise BusError("ENOENT: no such file, open '\{s(args, 0)}'")
         }
-      None => raise BusError("this station is in no workspace")
-    }
-  }
-  moves.set_wait(!(p55_jfield(args, "wait") is False))
-  let module = p55_jstr(args, "module")
-  let item = p55_jstr(args, "item")
-  let follow = if module == Some("chats") { Some(["jobs"]) } else { None }
-  let sel : @move_coord.Selection = {
-    module,
-    item,
-    all: jtrue(args, "all"),
-    with_needs: jtrue(args, "withNeeds"),
-    follow,
-    arrive_stopped: jtrue(args, "arriveStopped"),
-  }
-  match p55_jstr(args, "action") {
-    Some("plan") | Some("status") => {
-      let status = p55_jstr(args, "action") == Some("status")
-      let to = if status && p55_jfield(args, "to") == Json::null() { "" } else { station(p55_jfield(args, "to")).0 }
-      let plan = to_core(moves.scheduler.plan_shown(ws, to))
-      let items = core_items(p55_jfield(plan, "items"))
-      match item {
-        Some(i) =>
-          match items.search_by(x => p55_jstr(x, "id") == Some(i) && (module is None || p55_jstr(x, "module") == module)) {
-            Some(n) => { "item": items[n] }
-            None => raise BusError("no item \{i} in the plan: plan with module lists them")
-          }
-        None => {
-          let shown = match module {
-            Some(m) => items.filter(x => p55_jstr(x, "module") == Some(m))
-            None => []
-          }
-          let counts : Map[String, Json] = Map([])
-          for x in items {
-            let m = p55_jtext(x, "module")
-            let n = match counts.get(m) { Some(Number(c, ..)) => c; _ => 0.0 }
-            counts[m] = Json::number(n + 1.0)
-          }
-          {
-            "summary": { "items": Json::number(items.length().to_double()), "modules": Json::object(counts) },
-            "items": Json::array(shown[:if shown.length() > 50 { 50 } else { shown.length() }].to_array()),
-          }
+      "fs.mkdir" => {
+        @drive.mkdir(s(args, 0), true)
+        Null
+      }
+      "fs.writeFile" => {
+        @drive.write_private(s(args, 0), s(args, 1))
+        Null
+      }
+      "fs.rename" => {
+        @drive.rename(s(args, 0), s(args, 1))
+        Null
+      }
+      "crypto.randomBytes" =>
+        @api_routes.jbytes(@drive.random_bytes(match args.get(0) { Some(Num(n)) => n.to_int(); _ => 0 }))
+      _ =>
+        match self.ops.get(op) {
+          Some(f) => jv_of_json(f(Json::array(args.map(json_of_jv))))
+          None => raise BusError("no move part \{op}")
         }
-      }
     }
-    Some("move") => {
-      let (to, _name) = station(p55_jfield(args, "to"))
-      match moves.refusal(ws, to) {
-        Some(why) if why != "" => raise BusError(why)
-        _ => ()
-      }
-      if jtrue(args, "all") {
-        raise BusError("moving all of a station is confirmed on a card in a chat on it, by an owner or admin in the app")
-      }
-      if module is None || item is None {
-        raise BusError("move: name the module and the item (station_move plan lists them), or all")
-      }
-      { "outcome": to_core(moves.scheduler.move(ws, to, sel, by?=session)) }
-    }
-    Some("back") => {
-      let (from, _name) = station(p55_jfield(args, "to"))
-      if module is None || (item is None && !jtrue(args, "all")) {
-        raise BusError("back: name the module and the item (station_move status lists them), and to: the station it is on")
-      }
-      match moves.refusal(ws, from) {
-        Some(why) if why != "" => raise BusError(why)
-        _ => ()
-      }
-      { "outcome": to_core(moves.scheduler.back(ws, from, sel, by?=session)) }
-    }
-    Some("stop") => {
-      if !moves.scheduler.stop_turn(session) {
-        raise BusError(tr((self.bus.lang.val)(), "station.move.notRunning"))
-      }
-      { "stopping": Json::boolean(true) }
-    }
-    _ => raise BusError("action is one of plan, move, back, status, stop")
+  })
+  @mcp_tools.Ctx::new(backend, words, { runtime_kinds: [], station_lang: (self.bus.lang.val)(), os: p54_os(), arch: arch() })
+}
+
+///|
+/// station_move asked by another station (tools/move.ts `MoveAsks.answer`): a move or a move back as a told step where
+/// it asks so (`told`, its key), the step's end told to it; else answered with its outcome as before.
+async fn move_asked(moves : @move_coord.Moves, asks : @mcp_tools.MoveAsks, peer : String, ws : String, request : Json) -> Json {
+  let args = match p55_jfield(request, "args") {
+    Object(_) as a => jv_of_json(a)
+    _ => @api_routes.JV::Obj([])
+  }
+  match p55_jfield(request, "told") {
+    String(key) if key.length() <= 300 =>
+      to_core(moves.told.run(peer, key, async fn(_progress) {
+        Some(of_core(json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))))
+      }))
+    _ => json_of_jv(move_tool_said(async fn() { asks.tool_in(ws, None, args) }))
   }
 }
 
 ///|
-/// station_move (tools/move.ts), as it is declared to the agents.
-let move_declared : String =
-  #|{
-  #|  "name": "station_move",
-  #|  "description": "Move this station's chats, accounts, jobs and connects to another station of its workspace, one item or all, and back. Read skill stillfail-move first: it says each option. plan {to}: a summary; module (after, limit) pages, item one. move {to, module, item}: one item (a chat: its session key); withNeeds: its needs first; all: everything, once a card is confirmed in the app. back {module, item, to}: back here. status: where each stands. stop: the move under way stops.",
-  #|  "inputSchema": {
-  #|    "type": "object",
-  #|    "properties": {
-  #|      "action": {
-  #|        "enum": [
-  #|          "plan",
-  #|          "move",
-  #|          "back",
-  #|          "status",
-  #|          "stop"
-  #|        ]
-  #|      },
-  #|      "to": {
-  #|        "type": "string",
-  #|        "description": "The other station: name or id (station_list)."
-  #|      },
-  #|      "module": {
-  #|        "type": "string"
-  #|      },
-  #|      "item": {
-  #|        "type": "string"
-  #|      },
-  #|      "withNeeds": {
-  #|        "type": "boolean"
-  #|      },
-  #|      "arriveStopped": {
-  #|        "type": "boolean"
-  #|      },
-  #|      "all": {
-  #|        "type": "boolean"
-  #|      },
-  #|      "station": {
-  #|        "type": "string"
-  #|      },
-  #|      "wait": {
-  #|        "type": "boolean"
-  #|      },
-  #|      "after": {
-  #|        "type": "string"
-  #|      },
-  #|      "limit": {
-  #|        "type": "number"
-  #|      }
-  #|    },
-  #|    "required": [
-  #|      "action"
-  #|    ],
-  #|    "additionalProperties": false
-  #|  }
-  #|}
+/// What station_move answers, its refusals in their words (a bus error, as the station's other parts say theirs).
+async fn move_tool_said(f : async () -> @api_routes.JV) -> @api_routes.JV {
+  f() catch {
+    @mcp_tools.Refusal(m) | @mcp_tools.Failed(m) => raise BusError(m)
+    e => raise e
+  }
+}
 
 ///|
 fn hex_bytes(h : String) -> Bytes {

@@ -272,6 +272,34 @@ fn borrowed_profile(_ctx : P52, p : Json) -> Bool {
 
 ///|
 /// Codex's driver (codex.ts `CodexDriver`): one app-server per account, a thread per session.
+/// Settled once what the station before left is taken up (`P52::take_handover`; codex.ts `takenUp`, agents.ts
+/// `start`): until then an app-server a runner keeps is that station's, taken up with the snapshot of a session that ran
+/// on it. Left out, a profile's quota or the model catalog asked as the station started took each up as after a crash
+/// (`crashed: true` at every handover of 0.1.9984 to 0.1.9996), from the station still handing it over.
+let codex_taken_up_ref : Ref[@agent_drivers.Later[Unit]?] = Ref(None)
+
+///|
+fn codex_taken_up(lp : @agent_drivers.Loop) -> @agent_drivers.Later[Unit] {
+  match codex_taken_up_ref.val {
+    Some(t) => t
+    None => {
+      let t : @agent_drivers.Later[Unit] = @agent_drivers.Later::new(lp)
+      codex_taken_up_ref.val = Some(t)
+      t
+    }
+  }
+}
+
+///|
+/// What was left is taken up (or there was nothing to take up): the app-servers may be asked for.
+fn codex_left_taken_up() -> Unit {
+  match codex_taken_up_ref.val {
+    Some(t) if !t.settled() => t.resolve(())
+    _ => ()
+  }
+}
+
+///|
 fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.Words) -> Driver {
   let pump = ctx.pump
   let m = pump.machine()
@@ -348,7 +376,7 @@ fn codex_driver(ctx : P52, procs : @agent_drivers.Procs, words : @agent_drivers.
     }),
     remember_rollout: (_id, _dirs, _at) => (),
     update_matches: _ => @agent_drivers.Later::ok(lp, true),
-    taken_up: None,
+    taken_up: Some(codex_taken_up(lp)),
     taking: () => (ctx.bus.control_say)({ "taking": jb(true) }),
     output_limit: 64 * 1024 * 1024,
     take_up_bytes: 16 * 1024 * 1024,

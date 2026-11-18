@@ -786,9 +786,15 @@ pub fn View::window_taps(self : View) -> Int {
 /// Whether what a finger or a button at (`x`, `y`) of the window is for, as the tree is now, is this node (Tree::target_at:
 /// the topmost drawn there that takes it, by the one projection): where a press let go lands, its own or another's.
 pub fn View::finger_target(self : View, x : Double, y : Double) -> Bool {
+  self.finger_target_id(x, y) == Some(self.id())
+}
+
+///|
+/// The node that takes a finger at this window position, if it is a press or drag target.
+pub fn View::finger_target_id(self : View, x : Double, y : Double) -> NodeId? {
   match self.tree.target_at(x, y) {
-    Pressed(id) | Dragged(id) => id == self.id()
-    _ => false
+    Pressed(id) | Dragged(id) => Some(id)
+    _ => None
   }
 }
 

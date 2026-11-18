@@ -122,11 +122,14 @@ while [ $# -gt 0 ]; do
 done
 url=$(printf '%s' "$cfg" | /usr/bin/sed -n 's/.*"url":"\\([^"]*\\)".*/\\1/p')
 say() { printf '%s\\n' "$1"; }
-say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
 n=0
 while IFS= read -r line; do
   case "$line" in *'"type":"user"'*) ;; *) continue ;; esac
   n=$((n+1))
+  # (its init as Claude Code says it: once a turn is given it, never before its first message, which the station reads
+  # as a turn begun: said at its start, it was read before the station's first prompt on a busy machine, and that prompt
+  # was refused as a turn already running, 1 run in 16 or so)
+  say '{"type":"system","subtype":"init","session_id":"'"$sid"'","model":"default","tools":[],"mcp_servers":[]}'
   say '{"type":"system","subtype":"status","status":"requesting","session_id":"'"$sid"'"}'
   to=$(printf '%s' "$line" | /usr/bin/sed -n 's/.*thread=\\\\"\\([^\\\\]*\\)\\\\".*/\\1/p')
   # (a prompt that names no thread, as a resume's: the one it was last asked in, as its conversation would know)
@@ -194,7 +197,9 @@ async function launch(data: string, app: string, path: string, out: string, sock
   const child = spawn(binary!, ["run", "--app", app, "--data", data, "--launcher-fds", "3,4,5", "--launcher-carries", "--launcher-heartbeat"], {
     stdio: ["ignore", "pipe", "pipe", fd(mcp), fd(loop), "pipe"],
     // (no Node: the PATH the fakes are on, and nothing else)
-    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "", ...more },
+    // (traced by default: what it says goes into a failure's message only, and Linux CI's rare hang at "the turn's end",
+    // `a turn is already running` at a session's first prompt, never came where it could be looked at)
+    env: { PATH: path, HOME: data, TMPDIR: tmpdir(), STILLFAIL_RUNNER: runner, STILLFAIL_HELD_EVERY_MS: "300", STILLFAIL_AGENT_NICE: "0", FAKE_OUT: out, STILLFAIL_P52_TRACE: process.env.STILLFAIL_P52_TRACE ?? "1", ...more },
   });
   children.push(child);
   // (the launcher's copies let go: the station alone accepts on them)

@@ -64,6 +64,7 @@ jobs:
       natives_win_reader: ${{ steps.natives.outputs.natives_win_reader }}
       natives_mac_runner: ${{ steps.natives.outputs.natives_mac_runner }}
       windows_natives: ${{ steps.plan.outputs.windows_natives }}
+      launcher_windows: ${{ steps.plan.outputs.launcher_windows }}
       kit: ${{ steps.plan.outputs.kit }}
       mbui: ${{ steps.plan.outputs.mbui }}
       comma_ui: ${{ steps.plan.outputs.comma_ui }}
@@ -349,6 +350,36 @@ jobs:
           node scripts/native.ts fetch engine win32-x64
           shell=$(node scripts/native.ts fetch shell win32-x64)
           for t in "$shell"/tests/*.exe; do echo "== $(basename "$t")"; "$t" --test-threads=2 || exit 1; done
+
+  # The launcher's tests on Windows (station/native/launcher: its unit tests, and tests/windows.rs: an update whose
+  # release has another launcher handed over to it under stillfail-station-w, run_windows.rs `renew`), on GitHub's
+  # Windows (no runner of ours is), with rustup's Rust the image has and the pinned Node, for a change to it.
+  launcher-windows:
+    needs: plan
+    if: needs.plan.outputs.launcher_windows == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 5
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v5
+      - uses: ./.github/actions/node
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            station/native/launcher/target
+          key: launcher-windows-${{ hashFiles('station/native/launcher/Cargo.lock') }}
+          restore-keys: launcher-windows-
+      - name: The launcher's tests on Windows
+        env:
+          CARGO_INCREMENTAL: '0'
+        run: |
+          export STILLFAIL_NODE="$(command -v node)"
+          cargo test --manifest-path station/native/launcher/Cargo.toml --locked -- --test-threads=1
 
   # The desktop's accessibility trees on Windows (station/test/ui-live.test.ts): the agent-desktop.exe a Windows station
   # carries (the native part agent-desktop) driving Notepad through the agents' computer tool, on GitHub's Windows,
@@ -753,7 +784,7 @@ jobs:
   # 2026-10-22): every job a branch runs, one skipped as passing, one failed or cancelled failing it. Its list
   # is the branch's jobs: a job added to them goes here too, or the protection does not wait for it.
   gate:
-    needs: [plan, natives, natives-win-reader, natives-mac, windows-natives, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
+    needs: [plan, natives, natives-win-reader, natives-mac, windows-natives, launcher-windows, ui-windows, check, check-mac, check-linux, check-station, check-core, check-mbui, check-comma-ui, check-sf-ui, bundle, mac-build, mbui-web, static, desktop-build, desktop]
     if: always() && github.ref != 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 2

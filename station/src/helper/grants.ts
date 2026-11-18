@@ -97,6 +97,8 @@ export class HelperGrants {
   /// When a look was last tried, answered or not.
   #attempted = -Infinity;
   #checking: Promise<void> | null = null;
+  /// What the Helper's last failure to answer said, logged; null once it answered.
+  #unanswered: string | null = null;
   readonly #asked = new Map<GrantId, number>();
   readonly #listeners = new Set<() => void>();
   /// Where removable and network disks are mounted (the test's own).
@@ -156,7 +158,14 @@ export class HelperGrants {
       ),
       this.helper.request({ op: "status" }).then(
         (status: HelperStatus) => this.#learn(status),
-        (error) => log.warn("helper", "still.fail Helper did not answer", { error: (error as Error).message }),
+        (error) => {
+          // Said once until it answers again or says otherwise: a station whose Helper cannot start was asked every few
+          // seconds.
+          const said = (error as Error).message;
+          if (said === this.#unanswered) return;
+          this.#unanswered = said;
+          log.warn("helper", "still.fail Helper did not answer", { error: said });
+        },
       ),
     ])
       .then(() => undefined)
@@ -180,6 +189,7 @@ export class HelperGrants {
   }
 
   #learn(status: HelperStatus) {
+    this.#unanswered = null;
     this.#checked = this.#now();
     this.#attempted = this.#checked;
     const before = JSON.stringify(this.#status);

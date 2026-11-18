@@ -230,7 +230,8 @@ pub fn[K : Eq] radio_group(
 /// and read out as `label`. `look` is given the item's node and its `RadioItem` state. `disabled` disables this item
 /// alone; `space_only` limits keyboard activation on the focused item to Space (leaving Enter to a surrounding form);
 /// `slop` attaches a pointer gesture of that touch slop whose tap or release on the item presses it (for sliding-thumb
-/// strips where a finger moved off and back onto an item still chooses it on release). The item's node.
+/// strips where a finger moved off and back onto an item still chooses it on release). With `slide`, a horizontal drag
+/// previews the enabled item under the pointer and presses it on release. The item's node.
 #callsite(autofill(loc))
 pub fn[K : Eq] RadioGroup::item(
   self : RadioGroup[K],
@@ -241,6 +242,7 @@ pub fn[K : Eq] RadioGroup::item(
   disabled? : () -> Bool = fn() { false },
   space_only? : Bool = false,
   slop? : Double,
+  slide? : (K?) -> Unit,
   made_for? : SourceLoc,
   loc~ : SourceLoc,
 ) -> @view.View {
@@ -257,12 +259,58 @@ pub fn[K : Eq] RadioGroup::item(
     look(v, { node: v, now: on, off })
     if slop is Some(s) {
       let on_it = fn(d : @view.Drag) { v.finger_target(d.wx, d.wy) }
-      v.gesture(
-        s,
-        tap=fn(d) { if on_it(d) { v.press() |> ignore } },
-        drag=fn(d) { if d.kind == Up && on_it(d) { v.press() |> ignore } },
-      )
-      |> ignore
+      match slide {
+        None =>
+          v.gesture(
+            s,
+            tap=fn(d) { if on_it(d) { v.press() |> ignore } },
+            drag=fn(d) { if d.kind == Up && on_it(d) { v.press() |> ignore } },
+          )
+          |> ignore
+        Some(preview) => {
+          let horizontal = Ref(false)
+          let across = fn(d : @view.Drag) { (d.x - d.ox).abs() > (d.y - d.oy).abs() }
+          let item_at = fn(d : @view.Drag) {
+            guard v.finger_target_id(d.wx, d.wy) is Some(target) else { return None }
+            self.items.iter().find_first(fn(item) { item.node.id() == target && !(item.off)() })
+          }
+          let tap = fn(d : @view.Drag) {
+            preview(None)
+            if on_it(d) {
+              v.press() |> ignore
+            }
+          }
+          v.gesture(
+            s,
+            press=fn(_) {
+              horizontal.val = false
+              preview(Some(key()))
+            },
+            tap~,
+            drag=fn(d) {
+              match d.kind {
+                Down | Moved => {
+                  if d.kind == Down {
+                    horizontal.val = across(d)
+                  }
+                  if horizontal.val {
+                    preview(item_at(d).map(fn(item) { (item.key)() }))
+                  }
+                }
+                Up if horizontal.val || across(d) => {
+                  preview(None)
+                  if item_at(d) is Some(item) {
+                    item.node.press() |> ignore
+                  }
+                }
+                Up => tap(d)
+                Off => preview(None)
+              }
+            },
+          )
+          |> ignore
+        }
+      }
     }
     let stop = fn() {
       let cur = (self.now)()
