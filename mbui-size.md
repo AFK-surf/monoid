@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f03c25025](https://github.com/AFK-surf/monoid/commit/f03c2502589f6146209a3b49d3dff982ea0244e8) test(station): the whole MoonBit station tells a d | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.78 | 117.45 |
 | [a78791d91](https://github.com/AFK-surf/monoid/commit/a78791d9124a36a6dd422ec5f41a80f955be7844) fix(mbui): keep the segmented thumb moving through | 2.56 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.78 | 117.45 |
 | [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.75 | 117.45 |
 | [1104afa35](https://github.com/AFK-surf/monoid/commit/1104afa35e5423f3d9cd9a5752dea86bf43fd679) fix(cloud): a push says what was said as plain wor | 2.55 | 3.43 | 14.07 | 36.01 | 54.15 | 31.58 | 63.66 | 96.75 | 117.45 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [737fff83c](https://github.com/AFK-surf/monoid/commit/737fff83c7af74ae4b86a48269e881339b14d12b) mbui: drive system notifications offscreen (#7101) | 2.54 | 3.41 | 13.98 | 35.19 | 53.77 | 30.77 | 61.69 | 96.54 | 122.43 |
 | [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.77 | 61.69 | 96.54 | 122.41 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.76 | 61.69 | 96.55 | 121.64 |
-| [5d60f1e5b](https://github.com/AFK-surf/monoid/commit/5d60f1e5bfccc2e05cafb7b798575b96be8b6262) app, mbui: add and dispatch board tasks with icons | 2.54 | 3.41 | 13.97 | 35.17 | 53.73 | 30.76 | 61.69 | 96.55 | 121.64 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [f03c25025](https://github.com/AFK-surf/monoid/commit/f03c2502589f6146209a3b49d3dff982ea0244e8) test(station): the whole MoonBit station tells a d | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.64 |
 | [a78791d91](https://github.com/AFK-surf/monoid/commit/a78791d9124a36a6dd422ec5f41a80f955be7844) fix(mbui): keep the segmented thumb moving through | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.54 |
 | [fee058d70](https://github.com/AFK-surf/monoid/commit/fee058d70bc98ff76618b35e38dbb6dc14a8177d) fix(mbc): keep framework units at -O2 in light sfa | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.45 |
 | [1104afa35](https://github.com/AFK-surf/monoid/commit/1104afa35e5423f3d9cd9a5752dea86bf43fd679) fix(cloud): a push says what was said as plain wor | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.6 | 4.3 | 53.63 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [737fff83c](https://github.com/AFK-surf/monoid/commit/737fff83c7af74ae4b86a48269e881339b14d12b) mbui: drive system notifications offscreen (#7101) | 0.43 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.43 |
 | [75502bc34](https://github.com/AFK-surf/monoid/commit/75502bc34a630f7b0dda5511ed14b8c111b37e8d) ci: reuse Mac app build caches safely (#7049) | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
 | [a1efb1f95](https://github.com/AFK-surf/monoid/commit/a1efb1f95543630f51c5c4c2e89ebb1bdd2ea431) mbui: guard box reads and bound press waits (#7095 | 0.44 | 0.57 | 2.18 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
-| [5d60f1e5b](https://github.com/AFK-surf/monoid/commit/5d60f1e5bfccc2e05cafb7b798575b96be8b6262) app, mbui: add and dispatch board tasks with icons | 0.43 | 0.56 | 2.17 | 3.27 | 5.2 | 1.59 | 4.28 | 53.45 |
