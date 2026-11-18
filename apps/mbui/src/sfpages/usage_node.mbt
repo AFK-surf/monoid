@@ -602,18 +602,16 @@ fn usage_chart_node(parent : @view.View, v : () -> Json?, filtered : () -> Json?
             .min_width(Is(Some(0.0)))
             // (as high as the plot, what is said over its bar past its top where they are taller: its own least none)
             .min_height(Is(Some(0.0)))
+            .lies_along(Is(End))
+            .says(By(fn() { Some(@view.said(Button, label=text(dv(), "label") + " " + shown_cost_text(dv()))) }))
+            .focusable(Is(true))
+            .on_press(fn() { press(@signals.untracked(key)) })
+            .takes(fn(_, _, _) { [] })
             |> ignore
-            // (pressed by the keys or a screen reader alone: the hand's on the days' row, under it)
-            @sf.action_box_node(day, fn() { text(dv(), "label") + " " + shown_cost_text(dv()) }, fn(_) { press(@signals.untracked(key)) }, fn(
-              b,
-            ) {
-              b.grow(Is(1.0)).min_height(Is(Some(0.0))).lies_along(Is(End)).takes(fn(_, _, _) { [] }) |> ignore
-              usage_bar_node(b, v, dv, fn() {
-                let shown = usage_pick.day.get()
-                shown == "" || key() == shown
-              }, fn() { if !many() && key() == said() { shown_cost_text(dv()) } else { "" } })
-            })
-            |> ignore
+            usage_bar_node(day, v, dv, fn() {
+              let shown = usage_pick.day.get()
+              shown == "" || key() == shown
+            }, fn() { if !many() && key() == said() { shown_cost_text(dv()) } else { "" } })
           }
         })
         // (days too many for what is said over one to fit its day, where it was cut to "$…": said over all of them
