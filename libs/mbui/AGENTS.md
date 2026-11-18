@@ -40,6 +40,10 @@ yet and you can add one, add it.
   A binding reads a way only through the framework's entries, following the clock while it goes and reading its end once
   it is there (`Way::shown_on`, `View::drawn_while`, `View::goes_now`); a Tester fails the rest
   (`src/view/clock_read.mbt`). `src/view/view.mbt`'s head says the model whole.
+- A window that is a tree alone runs by `@ui.run_tree` (a test, `Tester::tree`), no old frame built round it, its theme
+  said as it is made (`theme`, before its first node), never by an old view's `Ctx::set_theme`. A frame nothing asks for
+  draws what the screen shows: `Tester::unasked_faults` (first in `Tester::audit`), each such frame a Tester draws, and
+  `sizes_steady`'s step in a measure's first frame hold it (`src/ui/tester_unasked.mbt`).
 - Migrating an old view or fixing UI in `src/view` starts from reading the code logic (how the old or current view works,
   its state, data flow, and git history for why a rule exists) and expressing it through the new architecture's own
   unified mechanisms (`src/view`, `src/motion`, `src/headless`). Never guess from rendered pictures, compare
