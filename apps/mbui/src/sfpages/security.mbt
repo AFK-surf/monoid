@@ -670,7 +670,7 @@ fn people_node(parent : @view.View, core : Core, ws : () -> String, lock : () ->
         }
         if wide {
           row.box(fn(r) {
-            @sf.style_node(r, fn() { sec_rows })
+            @sf.style_node(r, fn() { if e.get().0 > 0 { sec_person_apart } else { sec_rows } })
             body(r)
           })
           |> ignore
@@ -1480,9 +1480,15 @@ let sec_point_rest : @ui.TextStyle = @ui.text_style(size=Meta, leading=L7, color
 
 ///|
 /// A card's rows (rows: 12 apart; a row 30 high at least, 12 apart, the ui's 13; its words in a line, the name in 500,
-/// what it is the meta's 12 muted 6 after it); a person's devices 42 in, 8 apart.
+/// what it is the meta's 12 muted 6 after it); a person's devices under their name, 8 apart.
 // kept across runs: a value (no field of it changes)
 let sec_rows : @ui.Style = @ui.css("w=Full gap=S3")
+
+///|
+/// A person but the first, wide: their name 24 under the devices of the one before (the card's 12 and 12 more), so whose
+/// devices are whose reads without an indent.
+// kept across runs: a value (no field of it changes)
+let sec_person_apart : @ui.Style = @ui.css("w=Full gap=S3 pt=S3")
 
 ///|
 /// sec_rows' gap, over a pending change's piece of the card but the first (pending_node).
@@ -1553,10 +1559,11 @@ let sec_warn : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnI
 let sec_warn_state : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, color=WarnInk, wrap=false)
 
 ///|
-/// A person's devices, 42 in, 8 apart; by app, its name (the meta's 12 in 500, muted, on a line) over the first, a
-/// group 14 from the one before it (deviceGroup, deviceApp).
+/// A person's devices under their name, from where it starts (an indent past it read as a hole where a face was
+/// missing), 8 apart; by app, its name (the meta's 12 in 500, muted, on a line) over the first, a group 20 from the one
+/// before it and 8 over its own, so each app's name goes with the devices under it (deviceGroup, deviceApp).
 // kept across runs: a value (no field of it changes)
-let sec_devices : @ui.Style = @ui.css("w=Full pl=S10 gap=S2")
+let sec_devices : @ui.Style = @ui.css("w=Full gap=S2")
 
 ///|
 // kept across runs: a value (no field of it changes)
@@ -1564,7 +1571,7 @@ let sec_over : @ui.Style = @ui.css("w=Full")
 
 ///|
 // kept across runs: a value (no field of it changes)
-let sec_over_apart : @ui.Style = @ui.css("w=Full pt=S1_5")
+let sec_over_apart : @ui.Style = @ui.css("w=Full pt=S3")
 
 ///|
 // kept across runs: a value (no field of it changes)
