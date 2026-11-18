@@ -227,7 +227,7 @@ async fn DeviceTools::run_op(self : DeviceTools, op : String, a : Json, context 
           e => raise ToolFailed("failed", "\{e}")
         }
         match said {
-          { "value": String(hex), .. } => @cloud_lock.hex_bytes(hex)
+          String(hex) => @cloud_lock.hex_bytes(hex)
           _ => b""
         }
       }

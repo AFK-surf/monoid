@@ -83,7 +83,7 @@ fn p51_file_piece(host : @host.Host, file : String, from : Double, length : Int)
     return b""
   }
   match host.shell_sync("fs.bytes", { "path": Json::string(file), "from": Json::number(from), "length": Json::number(length.to_double()) }) {
-    { "value": String(hex), .. } => @cloud_lock.hex_bytes(hex)
+    String(hex) => @cloud_lock.hex_bytes(hex)
     { "error": String(e), .. } => raise @api_routes.Thrown("Error", jv_of_json({ "message": Json::string(e) }))
     _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "ENOENT: no such file or directory, open '\{file}'", "code": "ENOENT" }))
   }
@@ -440,7 +440,7 @@ async fn P51::backend(self : P51, a : AdminLive, name : String, args : Array[@ap
     }
     "fs.readFile" => {
       match self.host.shell_sync("fs.bytes", { "path": Json::string(text(0)) }) {
-        { "value": String(hex), .. } => @api_routes.jbytes(@cloud_lock.hex_bytes(hex))
+        String(hex) => @api_routes.jbytes(@cloud_lock.hex_bytes(hex))
         _ => raise @api_routes.Thrown("Error", jv_of_json({ "message": "ENOENT: no such file or directory, open '\{text(0)}'", "code": "ENOENT" }))
       }
     }
@@ -948,7 +948,7 @@ async fn P51::admin_live(self : P51) -> AdminLive {
   let key_file = path([bus.data, "drive-grant.key"])
   let kept = try {
     match self.host.shell_sync("fs.bytes", { "path": Json::string(key_file) }) {
-      { "value": String(hex), .. } if hex.length() >= 64 => Some(@cloud_lock.hex_bytes(hex))
+      String(hex) if hex.length() >= 64 => Some(@cloud_lock.hex_bytes(hex))
       _ => None
     }
   } catch {

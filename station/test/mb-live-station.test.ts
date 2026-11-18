@@ -6,7 +6,8 @@
 // turn of a fake Claude Code under the runner, which lists the agents' door's tools (each slice's among them) and posts
 // through it; a message a Slack stand-in sends on its Socket Mode socket comes in through the connects, makes a session
 // whose turn answers in the Slack thread; and the launcher hands the station over to its next process (SIGUSR2), which
-// takes the ports and the sessions up while the one before ends with nothing of it left.
+// takes the ports and the sessions up while the one before ends with nothing of it left. A file of a session's is read
+// as the app reads it (whole, as a thumbnail, a part), and the drive's grant key is read back across the handover.
 import assert from "node:assert/strict";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -275,6 +276,16 @@ async function memberAsk(conn: Connection, method: string, path: string, body?: 
   return [head.status, json];
 }
 
+/// A member's GET on the mesh, its answer's bytes as they came.
+async function memberRaw(conn: Connection, path: string): Promise<[number, Buffer]> {
+  const stream = await conn.openBi();
+  await line(stream, { method: "GET", path, headers: {} });
+  await stream.finish();
+  const reader = new Reader(stream);
+  const head = await reader.line();
+  return [head.status, Buffer.from(await reader.rest())];
+}
+
 const alive = (pid: number) => {
   try {
     process.kill(pid, 0);
@@ -382,6 +393,23 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   const key: string = said.key;
   const threadId: number = said.thread?.id ?? said.thread?.thread?.id;
   assert.ok(typeof key === "string" && typeof threadId === "number", JSON.stringify(said));
+  // ── a file of the session's (one heard from Slack, kept in its uploads), read as the app reads it: whole, as its
+  // thumbnail, a part ──
+  {
+    const probe = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
+    const ws = (probe.getSession(key) as { workspace: string }).workspace;
+    probe.close();
+    mkdirSync(join(ws, "uploads"), { recursive: true });
+    const heard = Buffer.from("heard from Slack\n");
+    writeFileSync(join(ws, "uploads", "2026-11-18T02-38-01-F1-note.txt"), heard);
+    const at = `/admin/api/sessions/${encodeURIComponent(key)}`;
+    const name = encodeURIComponent("2026-11-18T02-38-01-F1-note.txt");
+    for (const [path, want] of [[`${at}/files?name=${name}`, heard], [`${at}/files?name=${name}&thumb=1`, heard], [`${at}/parts?name=${name}&offset=6&length=4`, heard.subarray(6, 10)]] as const) {
+      const [status, body] = await memberRaw(conn, path);
+      assert.equal(status, 200, `${path}: ${body.toString()}`);
+      assert.deepEqual(body, want, path);
+    }
+  }
   const [sent, sentSaid] = await memberAsk(conn, "POST", `/admin/api/threads/${threadId}/messages`, { text: "hello there" });
   assert.ok(sent >= 200 && sent < 300, JSON.stringify(sentSaid));
   const store = Store.open(join(data, "stillfail.db"), join(data, "archive"), { currentTimeMillisUnsafe: () => Date.now() } as never);
@@ -414,6 +442,7 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
 
   // ── a handover by the launcher (SIGUSR2): the next process takes the ports and the sessions, the one before ends ──
   const before = first.pid as number;
+  const grantKey = readFileSync(join(data, "drive-grant.key"));
   station.kill("SIGUSR2");
   const next = { pid: await until("the next process took over", () => takenOver().find((p) => p !== before), tail) };
   await until("the process before gone", () => !alive(before), tail);
@@ -424,6 +453,8 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
   assert.equal((await member(conn2, credential)).ok, true);
   const [again] = await memberAsk(conn2, "GET", "/admin/api/overview");
   assert.equal(again, 200);
+  // the drive's grant key read back, not made anew: a grant given before the handover still holds
+  assert.deepEqual(readFileSync(join(data, "drive-grant.key")), grantKey);
   // the session taken up: a second message to it runs its turn under the next process
   const [sent2, s2] = await memberAsk(conn2, "POST", `/admin/api/threads/${threadId}/messages`, { text: "once more" });
   assert.ok(sent2 >= 200 && sent2 < 300, JSON.stringify(s2));
