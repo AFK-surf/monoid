@@ -1,6 +1,7 @@
 // What was sent from here and is not in the chat yet (sfpages' chat_rows.mbt outbox_row, outbox_unsent): 正在发送 a
 // while after it went (or what it waits on), its time once the station has it, and what did not go: 未发送 with 重试 (or,
-// refused as it is, 编辑: its words back in the composer) and 删除, each asking the core by the chat's thread.
+// refused as it is, 编辑: its words back in the composer) and 删除, each asking the core by the chat's thread; what is
+// held till its station is reached (连上后发出) taken back the same way, 编辑 or 删除 beside it.
 
 ///|
 /// The fixture's chat with `out` (the core's ChatView `outbox`) after its messages, its calls kept in `calls`;
@@ -34,10 +35,14 @@ fn outgoing(
   refused? : Bool = false,
   error? : String = "",
   waits? : String = "",
+  held? : Bool = false,
+  unsure? : Bool = false,
   at? : Double = 0.0,
   quotes? : Array[Json] = [],
 ) -> Json {
   {
+    "held": Json::boolean(held),
+    "unsure": Json::boolean(unsure),
     "id": "o-1",
     "text": "这条还在路上",
     "quotes": Json::array(quotes),
@@ -188,5 +193,56 @@ test "编辑 on what was refused puts its words after the draft begun and its qu
     assert_eq(named(calls, "chat.discard").length(), 1)
     assert_true(t.find("发送失败：a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
     assert_true(t.find("a.jpg 的上传源已丢失") is None, msg="nodes=\{nodes}")
+  }
+}
+
+///|
+test "what is held till its station is reached says 连上后发出 with 编辑 and 删除 beside it, on both pages, pressed with the station not reached" {
+  for nodes in [false, true] {
+    let calls : Array[Made] = []
+    let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true, nodes~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(outbox_seen(t, "连上后发出"), msg="nodes=\{nodes}")
+    assert_true(t.find("未发送") is None)
+    assert_true(t.query(Button, label="重试") is None)
+    unsent_press(t, "删除")
+    let made = named(calls, "chat.discard")
+    assert_eq(made.length(), 1, msg="nodes=\{nodes}")
+    assert_eq(text(Some(made[0].params), "id"), "o-1")
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("这条还在路上") is None, msg="nodes=\{nodes}")
+    assert_true(!outbox_seen(t, "连上后发出"), msg="nodes=\{nodes}")
+    // 编辑: its words back in the composer as it is dropped
+    let calls : Array[Made] = []
+    let t = outbox_chat(calls, outgoing("sending", waits="连上后发出", held=true, at=-5000.0), offline=true, nodes~)
+    t.run_for(@ui.move_most_ms)
+    unsent_press(t, "编辑")
+    t.run_for(@ui.move_most_ms)
+    assert_eq(named(calls, "chat.discard").length(), 1, msg="nodes=\{nodes}")
+    let (_, words, _, _) = t.ime()
+    assert_eq(words, "这条还在路上", msg="nodes=\{nodes}")
+  }
+}
+
+///|
+test "what is on its way and not held (its station updating) has nothing beside its wait to take it back" {
+  let calls : Array[Made] = []
+  let t = outbox_chat(calls, outgoing("sending", waits="station 更新完后发出", at=-5000.0))
+  t.run_for(@ui.move_most_ms)
+  assert_true(outbox_seen(t, "station 更新完后发出"))
+  assert_true(t.query(Button, label="删除") is None)
+  assert_true(t.query(Button, label="编辑") is None)
+}
+
+///|
+test "what did not go after it went out with no answer (it may be the station's already) has 重试 and no 删除, on both pages" {
+  for nodes in [false, true] {
+    let calls : Array[Made] = []
+    let t = outbox_chat(calls, outgoing("failed", error="连接断开", unsure=true), nodes~)
+    t.run_for(@ui.move_most_ms)
+    assert_true(t.find("未发送") is Some(_), msg="nodes=\{nodes}")
+    assert_true(t.query(Button, label="删除") is None, msg="nodes=\{nodes}")
+    unsent_press(t, "重试")
+    assert_eq(named(calls, "chat.retry").length(), 1, msg="nodes=\{nodes}")
   }
 }

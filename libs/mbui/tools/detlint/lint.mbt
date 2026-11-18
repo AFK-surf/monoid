@@ -197,6 +197,20 @@ fn lint_mbt(
       }
     }
   }
+  // a page saying mbui's headless components itself (`@headless.<name>`, each), not in its tests: its controls are
+  // the library's parts, which are those components with the app's look
+  if under(f.rel, cfg.pages) {
+    for k, tk in toks {
+      if tk.kind == "at" &&
+        tk.text == "@headless" &&
+        k + 2 < toks.length() &&
+        toks[k + 1].text == "." &&
+        toks[k + 2].kind == "ident" &&
+        !f.in_test(k) {
+        add("page-headless", k, f.line_text(k))
+      }
+    }
+  }
   // the made-up core said by the app (its pages, its library), not in a file that opens a mode over the app nor a test
   if cfg.fixture_pkg != "" &&
     (under(f.rel, cfg.pages) || under(f.rel, cfg.library)) &&
@@ -673,6 +687,19 @@ fn lint_mbt(
       c.args[0].0 is None &&
       c.args[0].1.map(fn(i) { f.toks[i].text }).join("") == "Button" {
       add("button-by-hand", c.at, f.line_text(c.at))
+    }
+    // a page saying a control's role itself (`@view.said(Button, …)`, a check, a tab, a menu's, a combobox's, a
+    // list's option), where the library's part over a headless component is that control: what is left of them, which
+    // only goes (a link, a region, a status, a heading, a dialog: what a page is made of, not counted)
+    if c.name == "said" &&
+      c.kind == "pkg" &&
+      c.qual == "@view" &&
+      !in_t &&
+      under(f.rel, cfg.pages) &&
+      c.args.length() > 0 &&
+      c.args[0].0 is None &&
+      page_control_roles.contains(c.args[0].1.map(fn(i) { f.toks[i].text }).join("")) {
+      add("page-control-by-hand", c.at, f.line_text(c.at))
     }
     // an old view hosted in a node of the window's tree (`@ui.old(v, build)`): what of the old view is left inside
     // what is made once, waiting for its part as nodes, which only goes
@@ -2760,3 +2787,11 @@ fn chain_drags(toks : Array[Tok], j : Int) -> Bool {
   }
   false
 }
+
+///|
+/// The roles a page may not say itself (page-control-by-hand): a control's, which a headless component is, under the
+/// library's part; a page's link, region, status, heading, alert, dialog, group or picture are not.
+let page_control_roles : Array[String] = [
+  "Button", "Checkbox", "Radio", "Switch", "Tab", "Tablist", "Menu", "MenuItem", "MenuItemCheckbox", "MenuItemRadio",
+  "Combobox", "Listbox", "Option",
+]

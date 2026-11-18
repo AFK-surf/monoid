@@ -1522,6 +1522,7 @@
   "web-pages.screen.someone": "them",
   "web-pages.screen.takeOver": "Take over",
   "web-pages.screen.takeOverTip": "Pause {names} and take control",
+  "web-pages.screen.heldBy": "{who} is operating this screen — click Take over to interact",
   "web-pages.screen.copiedText": "Copied on the remote: ",
   "web-pages.screen.copiedImage": "An image was copied on the remote",
   "web-pages.screen.copyHere": "Copy here",

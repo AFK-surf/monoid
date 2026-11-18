@@ -232,6 +232,8 @@ export class Shares {
   readonly limits: { quick: number | null; long: number | null };
   private stopping = false;
   private stopWaiters: (() => void)[] = [];
+  /// The listeners of phones no longer offered, still closing: `close` waits for them too.
+  private closing = new Set<Promise<void>>();
   /// Its waits, on its clock; they end as it closes.
   private scope: Scope.Closeable;
   readonly run: <A>(effect: Effect.Effect<A>) => Promise<A>;
@@ -261,7 +263,13 @@ export class Shares {
     await Effect.runPromise(Scope.close(this.scope, Exit.void));
     const shares = [...this.byKey.values()];
     this.byKey.clear();
-    await Promise.all(shares.map((s) => s.close()));
+    await Promise.all([...shares.map((s) => s.close()), ...this.closing]);
+  }
+
+  /// `share` closed as its phone is no longer offered, `close` waiting for it.
+  retire(share: Share) {
+    const closing: Promise<void> = Promise.resolve(share.close()).finally(() => this.closing.delete(closing));
+    this.closing.add(closing);
   }
 
   /// Resolves "stopping" once `close` is called.
@@ -446,7 +454,7 @@ async function offer(shares: Shares, conn: Connection, viewer: Viewer, device: s
   if (ended !== "removed") await shares.run(Effect.sleep(GRACE)).catch(() => {});
   if (!shares.isStopping && share.offer === number && shares.byKey.get(device) === share) {
     shares.byKey.delete(device);
-    void share.close();
+    shares.retire(share);
     log.info("adb", "phone no longer offered for adb", { email: viewer.email, port: share.port, ended });
     shares.gone.set(viewer.email.toLowerCase(), { at: wall.now(), ended: String(ended) });
     shares.options.stated?.(viewer.email, null);
@@ -510,12 +518,13 @@ export async function bind(device: string): Promise<net.Server> {
   const usual = usualPort(device);
   // An offer from before (the station handed over to a new one) may hold it a moment yet: tried 5 times, each miss
   // waited 500 ms after.
-  const usualOne = Effect.tryPromise(() => listenOn(usual)).pipe(
-    Effect.tapError(() => Effect.sleep(500)),
-    Effect.retry({ times: 4 }),
-    Effect.orElseSucceed(() => null),
-  );
-  return (await Effect.runPromise(usualOne)) ?? listenOn(0);
+  // (on `wall`, as the program's `bind` waits on its world's clock: a test's time moves both the same)
+  for (let i = 0; i < 5; i++) {
+    const server = await listenOn(usual).catch(() => null);
+    if (server !== null) return server;
+    await wall.sleep(500);
+  }
+  return listenOn(0);
 }
 
 function listenOn(port: number): Promise<net.Server> {

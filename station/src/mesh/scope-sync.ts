@@ -16,6 +16,14 @@ import { waysOf, workspaceRelays } from "./ways.ts";
 import { globalRelaysOf } from "./global-relays.ts";
 /// What a front from before its mesh operations (one saying `streams` under 5, launcher front.rs `STREAMS`) answers them.
 const OLD_FRONT = /no operation mesh(?:Configure|Remove)/i;
+/// What a station from before the directory exchange answers it: a method it does not know, or (one from before
+/// `meshDirectory` in peer.ts `servePeer`) the exchange taken as a task's request (as replica/copies.ts `#reason`).
+const OLD_PEER = /unknown.*method|no such method|unsupported peer method|session and task key (?:is|are) required/i;
+/// How long a station waits before it tries a peer again that it could not reach or exchange with, at first; each
+/// failure after doubles it, up to PEER_RETRY_MOST_MS (as ways.ts's and lock-sync.ts's): a peer that is off is the
+/// workspace's ordinary state, not this station's failure.
+const PEER_RETRY_MS = 5_000;
+const PEER_RETRY_MOST_MS = 10 * 60_000;
 export class ScopeSync {
   readonly directory: ScopeDirectory;
   readonly #cloud: Cloud;
@@ -127,9 +135,12 @@ export class ScopeSync {
       const word = this.#word(job.scope);
       if (job.running || job.cancel || job.done === word) continue;
       job.running = true; this.#active++;
+      // Whether the peer's call failed, not this station's own directory (its front, its store).
+      let peerFailed = false;
       const send = (method: string) => async (request: unknown) => {
         if (this.#closed || this.#jobs.get(key) !== job) throw new Error("mesh membership changed");
-        return this.#call(job.peer, job.workspace, { method, ...request as object });
+        try { return await this.#call(job.peer, job.workspace, { method, ...request as object }); }
+        catch (error) { peerFailed = true; throw error; }
       };
       void (async () => {
         // Membership grants/revocations arrive before any relay address records.
@@ -138,11 +149,17 @@ export class ScopeSync {
         await exchangeScope(this.directory, job.scope, send("meshScopes.exchange"));
       })().then(() => { job.done = word; job.wait = 0; }, (error) => {
         if (this.#closed || this.#jobs.get(key) !== job) return;
-        if (/unknown.*method|no such method/i.test(String(error))) { job.done = word; return; }
-        this.#failed(error);
+        // A station from before the exchange: level with it until this station's word changes.
+        if (peerFailed && OLD_PEER.test(String(error))) { job.done = word; job.wait = 0; return; }
         // (a front from before: tried again with the next word, or by the Node a new front is handed)
-        if (OLD_FRONT.test(String(error))) { job.done = word; return; }
-        job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
+        if (!peerFailed && OLD_FRONT.test(String(error))) { this.#frontTooOld(); job.done = word; return; }
+        if (peerFailed) {
+          log.info("mesh", "a station's mesh directory was not brought level", { peer: job.peer.slice(0, 12), workspace: job.workspace, error: String(error) });
+          job.wait = Math.min(job.wait ? job.wait * 2 : PEER_RETRY_MS, PEER_RETRY_MOST_MS);
+        } else {
+          this.#failed(error);
+          job.wait = Math.min(job.wait ? job.wait * 2 : 1000, 60_000);
+        }
         job.cancel = this.#fibers.after(job.wait, () => { // timer: retry after failed directory exchange, with backoff
           job.cancel = undefined; this.#pump();
         });

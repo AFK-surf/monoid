@@ -1703,6 +1703,8 @@ let chat_body_no_out : Outgoing = {
   uploads: [],
   created_at: 0.0,
   refused: false,
+  held: false,
+  unsure: false,
 }
 
 ///|

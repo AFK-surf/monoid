@@ -128,7 +128,8 @@ let outbox_uploads : @ui.Style = @ui.css("w=Full gap=S1 align=AEnd")
 
 ///|
 /// Under what did not go (outbox_unsent's, as nodes) in `v`: 未发送 (refused as it is: why), why in its tip; then 重试,
-/// or, refused as it is, 编辑 (its words back in the composer, the entry dropped); then 删除. Each turning while the
+/// or, refused as it is, 编辑 (its words back in the composer, the entry dropped); then 删除, not where it may be the
+/// station's already (`unsure`). Each turning while the
 /// core does it, red a moment where that failed (the core's doing, as it says it now), none pressed while one is done,
 /// 重试 and 编辑 not while the chat's station is not reached.
 fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : () -> Outgoing) -> Unit {
@@ -197,18 +198,44 @@ fn outbox_unsent_node(v : @view.View, src : Source, here : MessageNodeHere, o : 
         )
       }
     })
-    unsent_button_node(
-      row,
-      here.tips,
-      "trash",
-      @sf.t("common.delete"),
-      fn() { !busy() },
-      dropping,
-      fn() { core_failed(src, ["chat.discard"], on()) },
-      fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
-    )
+    // (one that may be the station's already is only sent again: deleted here it would not be unsaid there)
+    row.show(fn() { !o().unsure }, fn(d) {
+      unsent_button_node(
+        d,
+        here.tips,
+        "trash",
+        @sf.t("common.delete"),
+        fn() { !busy() },
+        dropping,
+        fn() { core_failed(src, ["chat.discard"], on()) },
+        fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+      )
+    })
+    |> ignore
   })
   |> ignore
+}
+
+///|
+/// Beside what is held till its station is reached (outbox_take_back's, as nodes) in `v`: 编辑 (its words back in the
+/// composer, the entry dropped) and 删除, each pressed whether or not the station is reached, none while one is done.
+fn outbox_take_back_node(v : @view.View, src : Source, here : MessageNodeHere, o : () -> Outgoing) -> Unit {
+  let on = fn() { [("station", here.station), ("id", o().id)] }
+  let dropping = fn() { core_doing(src, ["chat.discard"], on()) }
+  unsent_button_node(v, here.tips, "edit", @sf.t("common.edit"), fn() { !dropping() }, fn() { false }, fn() { None }, fn() {
+    let now = @signals.untracked(o)
+    outbox_edit(src, here.station + ":" + here.session, now, fn() { outbox_node_call(src, here, "chat.discard", now.id) })
+  })
+  unsent_button_node(
+    v,
+    here.tips,
+    "trash",
+    @sf.t("common.delete"),
+    fn() { !dropping() },
+    dropping,
+    fn() { core_failed(src, ["chat.discard"], on()) },
+    fn() { outbox_node_call(src, here, "chat.discard", @signals.untracked(o).id) },
+  )
 }
 
 ///|

@@ -2974,4 +2974,5 @@ let zh : Map[String, String] = {
   "web-pages.remote.newViewOn": "在 {station} 新建视图",
   "core-views.screen.kind.desktop": "桌面",
   "core-views.screen.kind.simulator": "iOS 模拟器",
+  "web-pages.screen.heldBy": "{who} 正在操作此画面，点「接管」后可操作",
 }

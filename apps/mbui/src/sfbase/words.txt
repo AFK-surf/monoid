@@ -2952,3 +2952,4 @@ web-pages.remote.newBrowserTab
 web-pages.remote.newViewOn
 core-views.screen.kind.desktop
 core-views.screen.kind.simulator
+web-pages.screen.heldBy

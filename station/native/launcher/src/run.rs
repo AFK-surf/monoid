@@ -224,7 +224,7 @@ impl Os for System {
         self.end_front_not_in_release();
         let app = &self.options.app;
         let (ours, theirs) = socketpair()?;
-        let mut command = crate::station(app).command();
+        let mut command = crate::station_of(app, &self.options.data).command();
         command
             .arg("run")
             .arg("--app")
@@ -278,7 +278,7 @@ impl Os for System {
     }
 
     fn program(&self) -> String {
-        crate::station(&self.options.app).program.display().to_string()
+        crate::station_of(&self.options.app, &self.options.data).program.display().to_string()
     }
 
     fn has_front(&self) -> bool {

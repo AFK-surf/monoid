@@ -983,10 +983,11 @@ class Machine {
   }
   /// Everything of the machine's let go (a case's end).
   async closeAll() {
-    for (const l of this.listeners.values()) l.server.close();
+    // (each listener closed, not only asked to, before the case ends: the next case may want its port)
+    const closed = [...this.listeners.values()].map((l) => new Promise<void>((r) => (l.server.listening ? l.server.close(() => r()) : r())));
     for (const s of this.sockets.values()) s.socket.destroy();
     // (each gone, not only killed, before the case ends: setup-env.mjs)
-    await Promise.all([...this.procs.values()].map((p) => childGone(p.child, true)));
+    await Promise.all([...closed, ...[...this.procs.values()].map((p) => childGone(p.child, true))]);
   }
   socketOf(socket: net.Socket): number {
     const id = ++this.#next;
@@ -1527,10 +1528,26 @@ async function lending(side: "ts" | "mb", files: Record<string, string>, script:
 /// A phone's connection, its key `id` (hex), its tunnels answered as `phone(refuse)` does.
 const phoneConn = (id: string, refuse: Json = null) => new MemConn(id, phone(refuse));
 
+/// Whether 127.0.0.1:`port` can be listened on now (and let go at once).
+const portFree = (port: number) =>
+  new Promise<boolean>((resolve) => {
+    const server = net.createServer();
+    server.once("error", () => resolve(false));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => server.close(() => resolve(true)));
+  });
+/// A phone of this run's own whose usual port nothing holds now: one held is a case of its own (below), each side
+/// waiting on its clock before it takes another.
+async function freePhone(): Promise<string> {
+  for (;;) {
+    const phone = randomBytes(32).toString("hex");
+    if (await portFree(usualPort(`${VIEWER.sub}/${phone}`))) return phone;
+  }
+}
+
 test("a phone offered: adb connects through its tunnel, keeps it lending, is asked to pair and grant, lets it go", async () => {
   await words("zh");
   // (a phone of this run's own: its usual port is another run's at once otherwise)
-  const PHONE = randomBytes(32).toString("hex");
+  const PHONE = await freePhone();
   await same("an offer", (side) =>
     lending(side, {}, async (l) => {
       const out: Json[] = [];
@@ -1577,7 +1594,7 @@ test("a phone offered: adb connects through its tunnel, keeps it lending, is ask
 });
 
 test("a phone not reached: its tunnel refused unpaired, Wireless debugging off, adb unauthorized, adb missing", async () => {
-  const OTHER = randomBytes(32).toString("hex");
+  const OTHER = await freePhone();
   await words("zh");
   const cases: [string, Record<string, string>, Json, Json][] = [
     ["refused, not paired", {}, { error: "无线调试未配对", unpaired: true }, { adbd: true }],
@@ -1603,6 +1620,33 @@ test("a phone not reached: its tunnel refused unpaired, Wireless debugging off, 
         return out;
       }),
     );
+});
+
+test("a phone offered while its usual port is held: five 500 ms tries on the clock, then any port", async () => {
+  await words("zh");
+  const HELD = await freePhone();
+  // (what an offer from before would be: a listener on the phone's usual port)
+  const holder = net.createServer();
+  await new Promise<void>((r) => holder.listen({ host: "127.0.0.1", port: usualPort(`${VIEWER.sub}/${HELD}`), exclusive: true }, () => r()));
+  try {
+    await same("usual port held", (side) =>
+      lending(side, {}, async (l) => {
+        const a = phoneConn("c4".repeat(32));
+        const offer = l.offer(a, { phone: HELD, device: "Pixel 9", android: "16", package: "fail.still", adbd: true, pair: false, connect: 41000 });
+        await offer.until((s) => s.lines().some((x) => x.adb === "connected"));
+        await loggedOnce("adb asked for adbd's plain port");
+        const listed = await l.list();
+        offer.stop();
+        await l.time.waitFor(5000);
+        await l.time.advance(5000);
+        await offer.until((s) => s.finished);
+        await l.ended();
+        return [listed, await l.list(), await l.gone(), offer.lines()];
+      }),
+    );
+  } finally {
+    await new Promise<void>((r) => holder.close(() => r()));
+  }
 });
 
 // ── a chat's display on the phone ──

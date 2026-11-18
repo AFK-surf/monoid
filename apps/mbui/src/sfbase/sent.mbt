@@ -259,6 +259,8 @@ pub fn sent_local(
       uploads: cards,
       created_at: now,
       refused: false,
+      held: false,
+      unsure: false,
     },
     // (a chat just made: none)
     before: match v {

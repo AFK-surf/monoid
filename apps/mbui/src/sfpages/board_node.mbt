@@ -540,6 +540,9 @@ fn board_wide(
     }
     left.box(fn(area) {
       area.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).min_height(Is(Some(0.0))) |> ignore
+      // (a card going to another column (View::shared, board_chat_card) drawn within the board as it goes, never over
+      // its bar, the chat beside it or the window's edge round it)
+      area.flights_within() |> ignore
       // (short of the chat beside it by as much as that chat's edge reaches over the line between them: a press there
       // the edge's alone)
       area.margin(By(fn() { (0.0, 0.0, if split() { board_edge_reach } else { 0.0 }, 0.0) })) |> ignore

@@ -35,6 +35,7 @@ import {
   "station/agent_runtimes",
   "station/mcp_tools",
   "station/readops",
+  "station/mesh_scopes",
   "station/locate",
   "station/wire",
   "station/accounts_oauth",

@@ -10,7 +10,7 @@ import { CoreError, HostError } from "../src/error.ts";
 import { BRIEF_MAX_MS, OFFLINE_RETRY_MS, RECONNECT_MAX_MS, RECONNECT_MS, STREAM_HELD_MS, UPDATE_DOWN_MS } from "../src/station/link.ts";
 import { StationAddr } from "../src/station/addr.ts";
 import { SOCKET_RETRY_MAX_MS } from "../src/sync/cloud.ts";
-import { apply, call, subscribe } from "./helpers.ts";
+import { answers, apply, call, subscribe } from "./helpers.ts";
 import { HostWire } from "../src/station/wire.ts";
 import { stationOn } from "../src/views/views.ts";
 import { Wake } from "../src/wake.ts";
@@ -461,7 +461,7 @@ test("a_new_chat_whose_station_went_down_stays_said_down_and_is_asked_for_once_t
   }
 });
 
-type Shown = { offline: boolean; offlineNote?: string; outbox: { text: string; state: string; waits?: string; error?: string }[] };
+type Shown = { offline: boolean; offlineNote?: string; outbox: { id: string; text: string; state: string; waits?: string; error?: string; held?: boolean; unsure?: boolean }[] };
 type Listed = { trouble: { text: string; state: string } | null; stations: { station: string }[]; days: { items: { id: string; station: string; offline?: string }[] }[] };
 
 /// A row of the list as it is shown: as its station's state makes it (said once for the station, not on the row).
@@ -508,8 +508,18 @@ test("a_station_down_says_why_as_the_device_can_tell_and_its_chat_takes_messages
     call(s.core, 1, 3, "chat.send", { station: ST, thread: 7, text: "一" });
     await s.host.time.pass(1000, 250);
     apply(s.host, values);
-    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.waits, o.error]), [["一", "sending", t("core-logic.looks.outbox.held"), undefined]]);
+    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.waits, o.error, o.held]), [["一", "sending", t("core-logic.looks.outbox.held"), undefined, true]]);
     assert.equal(tried, 0, "not tried while it is down");
+    // One more, taken back while it is held (held: deleted here): it never goes.
+    call(s.core, 1, 4, "chat.send", { station: ST, thread: 7, text: "二" });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    const second = chat().outbox.find((o) => o.text === "二");
+    assert.equal(second?.held, true);
+    call(s.core, 1, 5, "chat.discard", { station: ST, thread: 7, id: second!.id });
+    await s.host.time.pass(500, 250);
+    apply(s.host, values);
+    assert.deepEqual(chat().outbox.map((o) => o.text), ["一"]);
     // The device's network goes too: still.fail cloud is not reached either, and that is what is said.
     s.host.refuseSockets = true;
     s.host.socketClose("/v1/events");
@@ -528,6 +538,117 @@ test("a_station_down_says_why_as_the_device_can_tell_and_its_chat_takes_messages
     assert.equal(chat().offline, false);
     assert.equal(chat().offlineNote, undefined);
     assert.equal(row()?.offline, undefined);
+  } finally {
+    s.core.close();
+  }
+});
+
+test("a_message_whose_post_went_out_and_was_not_answered_is_not_taken_back_and_goes_once_by_its_key_when_the_station_is_reached", async () => {
+  // Held (连上后发出) and taken back only while nothing of it went: one whose POST went out unanswered may be the
+  // station's already, so deleting it here would not unsay it, and sending it edited would say it twice.
+  const row7 = { id: "k1", session: "k1", thread: 7, title: "部署", agents: [], last: null, unread: false, mine: true, lastActiveAt: 1, connect: null, origin: null };
+  const s = await started({ ...base(), "GET /chats": [row7] });
+  const key = (req: { headers: [string, string][] }) => req.headers.find(([k]) => k.toLowerCase() === "idempotency-key")?.[1];
+  const posted: (string | undefined)[] = [];
+  let n = 3;
+  stationReplies(s.host, (req) => {
+    if (req.method !== "POST" || !req.url.endsWith("/threads/7/messages")) return undefined;
+    posted.push(key(req));
+    return { n: ++n };
+  });
+  let lost: ((e: Error) => void) | null = null;
+  let first: string | undefined;
+  let down = false;
+  stationLater(s.host, (req) => {
+    // its first POST: out, and no answer comes
+    if (req.method === "POST" && req.url.endsWith("/threads/7/messages") && first === undefined) {
+      first = key(req);
+      return new Promise((_, reject) => { lost = reject; });
+    }
+    return down && req.url.includes("/admin/api") ? Promise.reject(new HostError("连不上")) : undefined;
+  });
+  try {
+    const values = new Map<number, unknown>();
+    subscribe(s.core, 1, 1, { topic: "chat", station: ST, thread: 7 });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    const chat = () => values.get(1) as Shown;
+    call(s.core, 1, 2, "chat.send", { station: ST, thread: 7, text: "一" });
+    await s.host.time.pass(500, 250);
+    apply(s.host, values);
+    assert.notEqual(first, undefined, "its POST went out");
+    const id = chat().outbox[0]!.id;
+    // On its way: not dropped here, said why.
+    call(s.core, 1, 3, "chat.discard", { station: ST, thread: 7, id });
+    await s.host.time.pass(250, 250);
+    const emitted = s.host.takeEmitted();
+    assert.equal((answers(emitted, 3)?.error as { message?: string } | undefined)?.message, t("core-misc.call.discard_sending"));
+    apply({ takeEmitted: () => emitted } as never, values);
+    assert.deepEqual(chat().outbox.map((o) => o.text), ["一"]);
+    // The station goes as it is out: its answer never comes.
+    down = true;
+    s.gate.stream = "fail";
+    s.end();
+    lost!(new HostError("connection lost"));
+    await s.host.time.pass(60_000, 1000);
+    apply(s.host, values);
+    assert.equal(chat().offline, true);
+    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.waits, o.held]), [["一", "sending", t("core-logic.looks.outbox.held"), undefined]]);
+    // Back: sent again by the same key, once.
+    down = false;
+    s.gate.stream = "open";
+    await reopens(s, 20 * 60_000);
+    await s.host.time.pass(2000, 250);
+    assert.deepEqual(posted, [first]);
+  } finally {
+    s.core.close();
+  }
+});
+
+test("a_message_whose_post_went_out_unanswered_while_its_station_is_up_is_sent_again_and_never_deleted", async () => {
+  // 未发送 after a POST that went out with no answer: 重试 sends it once by its key, 删除 would not unsay it there.
+  const row7 = { id: "k1", session: "k1", thread: 7, title: "部署", agents: [], last: null, unread: false, mine: true, lastActiveAt: 1, connect: null, origin: null };
+  const s = await started({ ...base(), "GET /chats": [row7] });
+  const key = (req: { headers: [string, string][] }) => req.headers.find(([k]) => k.toLowerCase() === "idempotency-key")?.[1];
+  const posted: (string | undefined)[] = [];
+  let n = 3;
+  stationReplies(s.host, (req) => {
+    if (req.method !== "POST" || !req.url.endsWith("/threads/7/messages")) return undefined;
+    posted.push(key(req));
+    return { n: ++n };
+  });
+  let first: string | undefined;
+  stationLater(s.host, (req) => {
+    // its first POST: out, and cut before its answer
+    if (req.method === "POST" && req.url.endsWith("/threads/7/messages") && first === undefined) {
+      first = key(req);
+      return Promise.reject(new HostError("connection lost"));
+    }
+    return undefined;
+  });
+  try {
+    const values = new Map<number, unknown>();
+    subscribe(s.core, 1, 1, { topic: "chat", station: ST, thread: 7 });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    const chat = () => values.get(1) as Shown;
+    call(s.core, 1, 2, "chat.send", { station: ST, thread: 7, text: "一" });
+    await s.host.time.pass(500, 250);
+    apply(s.host, values);
+    assert.notEqual(first, undefined, "its POST went out");
+    assert.equal(chat().offline, false);
+    assert.deepEqual(chat().outbox.map((o) => [o.text, o.state, o.unsure, o.held]), [["一", "failed", true, undefined]]);
+    const id = chat().outbox[0]!.id;
+    call(s.core, 1, 3, "chat.discard", { station: ST, thread: 7, id });
+    await s.host.time.pass(250, 250);
+    const emitted = s.host.takeEmitted();
+    assert.equal((answers(emitted, 3)?.error as { message?: string } | undefined)?.message, t("core-misc.call.discard_unsure"));
+    apply({ takeEmitted: () => emitted } as never, values);
+    assert.deepEqual(chat().outbox.map((o) => o.text), ["一"]);
+    call(s.core, 1, 4, "chat.retry", { station: ST, thread: 7, id });
+    await s.host.time.pass(1000, 250);
+    apply(s.host, values);
+    assert.deepEqual(posted, [first]);
   } finally {
     s.core.close();
   }

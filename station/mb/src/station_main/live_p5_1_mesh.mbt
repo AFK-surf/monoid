@@ -25,6 +25,15 @@ priv struct Endpoint {
   disabled_relays : async (String, Array[String], Bool) -> Unit
   linked : () -> Bool
   close : async () -> Unit
+  /// Its mesh scopes, where its endpoint keeps them (the front's: endpoint.ts `meshConfigure` and the rest).
+  mesh : MeshOps?
+}
+
+///|
+priv struct MeshOps {
+  scopes : @mesh_scopes.MeshEndpoint
+  attach_leaf : async (Int?, Json) -> Json
+  detach_leaf : async (Json) -> Unit
 }
 
 ///|
@@ -34,6 +43,8 @@ priv struct MeshLive {
   mut http : @gate.PeerHttp?
   peers : @gate.PeerBus
   mut keeper : @gate.Keeper?
+  /// The workspaces' mesh directory (mesh/scope-sync.ts), where the endpoint keeps scopes.
+  mut scopes : @mesh_scopes.ScopeSync?
 }
 
 ///|
@@ -299,6 +310,7 @@ async fn shell_endpoint(host : @host.Host, options : Json, key : Bytes) -> Endpo
         _ => ()
       }
     },
+    mesh: None,
   }
 }
 
@@ -330,6 +342,15 @@ async fn front_endpoint(host : @host.Host, socket : String, bind : Map[String, J
     disabled_relays: async fn(peer, urls, no_public) { e.disabled_relays(peer, urls, no_public) },
     linked: () => e.linked(),
     close: async fn() { e.close() },
+    mesh: Some({
+      scopes: {
+        configure: async fn(config) { e.mesh_configure(config) },
+        remove: async fn(scope) { e.mesh_remove(scope) },
+        listen: f => e.mesh_listen(f),
+      },
+      attach_leaf: async fn(handed, value) { e.mesh_attach_leaf(handed, value) },
+      detach_leaf: async fn(value) { e.mesh_detach_leaf(value) },
+    }),
   }
 }
 
@@ -741,7 +762,7 @@ async fn P51::mesh_live(self : P51, rig : Bool) -> MeshLive {
     let (answer, out) = bus.dispatch_peer(peer, if workspace == "" { None } else { Some(workspace) }, meth, request, bytes)
     (answer, out.map(bytes_body))
   })
-  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None }
+  let m : MeshLive = { endpoint: None, call: None, http: None, peers, keeper: None, scopes: None }
   // Outbound: through the mesh once it is up (the bus's `peer_call`).
   let before = bus.peer_call.val
   bus.peer_call.val = async fn(target, ws, meth, params, bytes) {
@@ -869,7 +890,14 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   let alpns = (if rig {
     [@gate.peer_http_alpn, @gate.peer_bytes_alpn, @gate.peer_alpn]
   } else {
-    [@gate.alpn, @gate.peer_http_alpn, @gate.peer_bytes_alpn, @gate.peer_alpn, @mesh_runtime.tools_alpn]
+    [
+      @gate.alpn,
+      @gate.peer_http_alpn,
+      @gate.peer_bytes_alpn,
+      @gate.peer_alpn,
+      @mesh_runtime.tools_alpn,
+      @mesh_scopes.enrollment_alpn,
+    ]
   }).map(a => @utf8.encode(a))
   let congestion = @mesh_runtime.congestion_of(Some((bus.config_raw.val)()))
   let options = @mesh_runtime.front_bind_options(
@@ -935,9 +963,21 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
   // The keeper of the locks, and the workspace's other stations asked through this endpoint.
   let keeper = self.keeper_of(plane)
   m.keeper = Some(keeper)
+  let scoped = (target : String, ws : String?) => match m.scopes {
+    Some(sync) =>
+      match (peer_addr(plane, target, ws), sync.scope_for(target, ws)) {
+        (Object(a), Some(scope)) => {
+          let out = a.copy()
+          out["meshScope"] = Json::string(scope)
+          Json::object(out)
+        }
+        (a, _) => a
+      }
+    None => peer_addr(plane, target, ws)
+  }
   let dialing : @gate.Dialing = {
     connect: async fn(target, ws, given_up) {
-      (endpoint.connect)(peer_addr(plane, target, ws), @utf8.encode(@gate.peer_bytes_alpn), Some(given_up)) |> with_alpn
+      (endpoint.connect)(scoped(target, ws), @utf8.encode(@gate.peer_bytes_alpn), Some(given_up)) |> with_alpn
     },
     hold: Some(async fn(target) {
       let addr = @cloud_net.station_addr(plane.ways, target)
@@ -961,11 +1001,20 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     None => ()
   }
   scope_stops.push(() => (call.close)())
+  // The workspaces' mesh directory over the peer bus, and the relays' door (mesh.ts, scope-sync.ts, enrollment-door.ts).
+  let door = self.mesh_scopes(m, endpoint, plane, call, scope_stops)
+  scope_stops.push(() => {
+    match m.scopes {
+      Some(sync) => sync.close()
+      None => ()
+    }
+    m.scopes = None
+  })
   // The agents' door's way to the other stations' web services.
   let http_dialing : @gate.Dialing = {
     ..dialing,
     connect: async fn(target, ws, given_up) {
-      (endpoint.connect)(peer_addr(plane, target, ws), @utf8.encode(@gate.peer_http_alpn), Some(given_up)) |> with_alpn
+      (endpoint.connect)(scoped(target, ws), @utf8.encode(@gate.peer_http_alpn), Some(given_up)) |> with_alpn
     },
   }
   let http = @gate.PeerHttp::new(keeper, http_dialing, host.rt)
@@ -1001,7 +1050,20 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
     }),
   ))
   scope_stops.push(() => plane.tool_calls.val = None)
-  let members = if rig { None } else { Some(self.members(keeper, endpoint)) }
+  // (a device's leaf in its workspace's scope, where the endpoint keeps scopes and leaves: leaf.ts)
+  let leaves = match (m.scopes, endpoint.mesh) {
+    (Some(sync), Some(ops)) => {
+      let l = @mesh_scopes.Leaves::new({ id: endpoint.id, attach: ops.attach_leaf, detach: ops.detach_leaf }, sync)
+      Some(@gate.LeafDoor::{
+        authenticated: (conn, ws, exp) => l.authenticated(conn, ws, exp),
+        view: ws => l.view(ws),
+        follow: async fn(conn, ws, stream) { l.follow(conn, ws, stream) },
+        attach: async fn(conn, ws, raw, target) { l.attach(conn, ws, raw, target) },
+      })
+    }
+    _ => None
+  }
+  let members = if rig { None } else { Some(self.members(keeper, endpoint, leaves~)) }
   let superseded = @gate.Superseded::new()
   let storms = @gate.Storms::new(() => wall_ms() / 1000L)
   let storms_fiber = host.rt.fork(name="storms", async fn() { storms.start() })
@@ -1034,6 +1096,8 @@ async fn P51::mesh_run(self : P51, m : MeshLive, rig : Bool) -> Unit {
             @gate.serve_http(keeper, conn, here)
           } else if alpn == @mesh_runtime.tools_alpn {
             @mesh_runtime.serve_tools(tools, conn, host.rt)
+          } else if alpn == @mesh_scopes.enrollment_alpn {
+            door.serve(conn)
           } else {
             match members {
               Some(mem) => @gate.serve(mem, conn)
@@ -1167,7 +1231,7 @@ fn P51::lock_source(self : P51, plane : Plane) -> @mesh_runtime.LockSource {
 ///|
 /// The members of the station's workspaces, as the gate serves them: the admin API, a part's own stream, what the
 /// station's program would answer of a device's reads (this process here: none of its own `--serve` yet).
-fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint) -> @gate.Members {
+fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint, leaves? : @gate.LeafDoor? = None) -> @gate.Members {
   let bus = self.bus
   let host = self.host
   let lan = () => {
@@ -1201,6 +1265,7 @@ fn P51::members(self : P51, keeper : @gate.Keeper, endpoint : Endpoint) -> @gate
     served: None,
     lang_of: hs => @gate.lang_of_core(hs),
     update_words: lang => tr(lang, "station.update.tooOld"),
+    leaves,
   }
 }
 

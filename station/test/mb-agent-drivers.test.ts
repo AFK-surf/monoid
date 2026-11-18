@@ -1095,6 +1095,38 @@ test("Codex: Ultrafast refused off a subscription; standard and the profile's Fa
   });
 });
 
+test("Codex: an app-server whose thread could not reach the station's tools is replaced for a thread opened again with the same address, kept for another", { skip }, async () => {
+  await codexCase("codex tools unreachable", (data) => {
+    const p = codexProfile(join(data, "cu"));
+    const o = (key: string, mcpUrl: string) => ({ key, profile: p, cwd: data, instructions: "x", mcpToken: "t", mcpUrl, route: "r" });
+    const failed = { result: { data: [{ name: "stillfail", runtimeStatus: "failed" }] } };
+    return {
+      profiles: [p],
+      replies: {
+        ...INIT,
+        "thread/start": [thread("t1"), thread("t2"), thread("t3"), thread("t4")],
+        "thread/unsubscribe": [{ result: {} }],
+        "mcpServerStatus/list": [failed, { result: { data: [] } }, failed, { result: { data: [] } }],
+        "turn/start": [{ result: { turn: { id: "u1" } } }],
+      },
+      steps: [
+        // The door not yet open at its first address: another address is opened on the same app-server.
+        { do: "open", options: o("k1", "http://127.0.0.1:1/mcp") },
+        { do: "prompt", s: 0, text: "x" },
+        { do: "dispose", s: 0 },
+        { do: "open", options: o("k1", "http://h/mcp") },
+        { do: "prompt", s: 1, text: "x" },
+        // That app-server fails the open door's address: opened again with it, the thread goes to a new one.
+        { do: "open", options: o("k2", "http://h/mcp") },
+        { do: "prompt", s: 2, text: "x" },
+        { do: "dispose", s: 2 },
+        { do: "open", options: o("k2", "http://h/mcp") },
+        { do: "prompt", s: 3, text: "x" },
+      ],
+    };
+  });
+});
+
 test("Codex: a text-only thread with every MCP server off, opened again where its directory adds one", { skip }, async () => {
   await codexCase("codex text only", (data) => {
     const p = codexProfile(join(data, "ct"));

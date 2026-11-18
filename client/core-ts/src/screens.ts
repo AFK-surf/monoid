@@ -49,8 +49,9 @@ const KEY_MAX = 64;
 const TEXT_MAX = 16_384;
 /// The most a login's account or password filled from this device's password manager may be.
 const FILL_MAX = 1024;
-/// The most each part of a passkey's answer may be, base64url.
+/// The most each part of a passkey's answer may be, base64url (and its client data when a host makes its own of a large challenge).
 const PASSKEY_MAX = 8192;
+const PASSKEY_CLIENT_MAX = 49_152;
 
 export type ScreenCall =
   /// `ask.control` as asked; `auto` (none asked): control unless someone else drives it as it opens.
@@ -280,13 +281,13 @@ export function checkInput(input: unknown): J {
     // A page's passkey sign-in answered from this device (`passkey` of the view's state): what it signed, base64url, or
     // why it signed nothing.
     case "passkey": {
-      const b64 = (v: unknown) => typeof v === "string" && v !== "" && v.length <= PASSKEY_MAX && /^[A-Za-z0-9_-]+$/.test(v);
+      const b64 = (v: unknown, most = PASSKEY_MAX) => typeof v === "string" && v !== "" && v.length <= most && /^[A-Za-z0-9_-]+$/.test(v);
       if (typeof input.id !== "string" || input.id === "" || input.id.length > 32) throw bad();
       if (input.error !== undefined) {
         if (typeof input.error !== "string" || !/^[A-Za-z]{1,40}$/.test(input.error)) throw bad();
         return { t: "passkey", id: input.id, error: input.error };
       }
-      if (!b64(input.credential) || !b64(input.authenticatorData) || !b64(input.signature) || (input.userHandle !== undefined && !b64(input.userHandle)) || (input.clientData !== undefined && !b64(input.clientData))) throw bad();
+      if (!b64(input.credential) || !b64(input.authenticatorData) || !b64(input.signature) || (input.userHandle !== undefined && !b64(input.userHandle)) || (input.clientData !== undefined && !b64(input.clientData, PASSKEY_CLIENT_MAX))) throw bad();
       return { t: "passkey", id: input.id, credential: input.credential, authenticatorData: input.authenticatorData, signature: input.signature, ...(input.userHandle !== undefined ? { userHandle: input.userHandle } : {}), ...(input.clientData !== undefined ? { clientData: input.clientData } : {}) };
     }
     // A file dropped into the view, shown in the machine's file manager (a screen whose `drop` says `reveal`).
@@ -984,7 +985,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                   const p = s.passkey;
                   const str = (v: unknown, max: number): v is string => typeof v === "string" && v !== "" && v.length <= max;
                   const allow = Array.isArray(p.allow) ? p.allow.filter((a: unknown) => str(a, 1366)).slice(0, 64) : [];
-                  if (str(p.id, 32) && str(p.host, 253) && str(p.rpId, 253) && str(p.clientData, 4096)) {
+                  if (str(p.id, 32) && str(p.host, 253) && str(p.rpId, 253) && str(p.clientData, 36864)) {
                     state.passkey = { id: p.id, host: p.host, rpId: p.rpId, clientData: p.clientData, allow, userVerification: typeof p.userVerification === "string" ? p.userVerification : "preferred" };
                   }
                 }
@@ -994,11 +995,18 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 const lacks = isObject(s.access) && s.access.control === false;
                 // Whether this view's input is taken, as the station says (a read-only member's is not).
                 if (typeof s.control === "boolean") state.control = s.control && control && !lacks;
-                // Made to only look from elsewhere (`screen.watchOnly`): it stays so when the view opens again.
+                // Made to only look from elsewhere (`screen.watchOnly`): it stays so when the view opens again, unless an
+                // agent stepped in while this view was opened with no mode asked (`auto`), in which case it resumes once
+                // the agent leaves.
                 if (s.control === false && control && !lacks) {
+                  const yieldedToAgent = auto && typeof s.takenBy === "string" && s.takenBy.startsWith(AGENT);
                   wanted = false;
-                  auto = false;
-                  state.watchOnly = (state.watchOnly ?? 0) + 1;
+                  if (!yieldedToAgent) {
+                    auto = false;
+                    state.watchOnly = (state.watchOnly ?? 0) + 1;
+                  } else if (typeof s.takenBy === "string") {
+                    driving = driving === null ? [s.takenBy] : driving.includes(s.takenBy) ? driving : [...driving, s.takenBy];
+                  }
                   // Taken by another (a person's 接管, an agent asked to): who, the viewer's own other device unnamed.
                   if (typeof s.takenBy === "string") {
                     state.taken = (state.taken ?? 0) + 1;

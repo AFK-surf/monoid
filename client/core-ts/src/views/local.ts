@@ -509,6 +509,20 @@ export class Local {
     return out;
   }
 
+  /// A station's chats made here (asked for and made: `pendingMade`) with a message in the outbox that did not fail: its
+  /// first words on their way, by thread (a chat made from the board, its draft's words sent as it is made).
+  goingFirsts(station: string): Set<number> {
+    this.#seen.pending.read();
+    this.#seen.outbox.read();
+    const out = new Set<number>();
+    for (const chat of this.#pending.values()) {
+      if (chat.station !== station || chat.made === null) continue;
+      const thread = chat.made[1];
+      if ((this.#outbox.get(join([station, thread])) ?? []).some((m) => m.state !== "failed")) out.add(thread);
+    }
+    return out;
+  }
+
   /// Puts back a chat's outbox as its view found it (what arrived goes).
   outboxSettle(station: string, thread: number, list: J[]): void {
     if (equal(list, this.outbox(station, thread))) return;

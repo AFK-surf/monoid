@@ -3248,6 +3248,47 @@ test("the_stations_row_covers_a_chat_made_here_before_its_answer_comes", async (
   assert.deepEqual([mine?.title, mine?.clientKey], ["登录按钮 2", key]);
 });
 
+// A draft started from the board flashed in 待收口 before 进行中: its chat made, the station listed it with its agent
+// seated and no turn begun while its first words were still in the outbox here. While they are, it is at work; a chat
+// seated and asked nothing that was not made here (a connect's, waiting for a person) stays as its station says.
+test("a_chat_made_here_is_at_work_while_its_first_words_are_on_their_way_and_no_other_idle_chat_is", async () => {
+  const t = setup();
+  const local = t.views.local;
+  const list = ui();
+  t.subscribe(2, { topic: "chats", scope: "ws", mine: true });
+  t.set(workspace(), oneStation());
+  await t.host.time.pass(100);
+  // (the board's start: newChat.create made it, then chat.send put the draft's words in its outbox)
+  const key = local.pendingNew("ws/st", { runtime: "claude" });
+  local.pendingMade(key, "chat:c-1", 9);
+  const first = t.views.outboxAdd("ws/st", 9, { text: "修一下登录", attachments: [], quotes: [] });
+  const made: J = { ...row("chat:c-1", t.host.nowMs()), mine: true, thread: 9, clientKey: key };
+  const waiting: J = { ...row("chat:c-2", t.host.nowMs() - 1000), mine: true, thread: 8 };
+  t.set(rows("ws/st"), [made, waiting]);
+  const stageOf = (id: string) => list.value.days.flatMap((d: J) => d.items).find((i: J) => i.id === id)?.stage;
+  await t.read(list, 2);
+  assert.deepEqual([stageOf("chat:c-1"), stageOf("chat:c-2")], ["run", undefined]);
+  // taken by its station, still waiting for its entry: at work all along
+  t.views.outboxSent("ws/st", 9, first, 1);
+  await t.read(list, 2);
+  assert.equal(stageOf("chat:c-1"), "run");
+  // its turn ran and ended: as its station says
+  const ended: J = { ...made, agents: [{ ...made.agents[0], lastTurn: { ...turn("t1"), outcome: "completed", declared: "all_done", endedAt: 2 } }] };
+  t.set(rows("ws/st"), [ended, waiting]);
+  await t.read(list, 2);
+  assert.equal(stageOf("chat:c-1"), undefined);
+  // its words gone from here with no turn begun: nothing makes it at work but its record
+  t.set(rows("ws/st"), [made, waiting]);
+  local.outboxRemove("ws/st", 9, first);
+  await t.read(list, 2);
+  assert.equal(stageOf("chat:c-1"), undefined);
+  // one that did not go needs the viewer, as before
+  const again = t.views.outboxAdd("ws/st", 9, { text: "再试", attachments: [], quotes: [] });
+  local.outboxState("ws/st", 9, again, "连不上");
+  await t.read(list, 2);
+  assert.equal(stageOf("chat:c-1"), "wait");
+});
+
 test("a_chat_made_here_keeps_its_first_message_until_its_page_has_the_entry", async () => {
   const t = setup();
   const local = t.views.local;

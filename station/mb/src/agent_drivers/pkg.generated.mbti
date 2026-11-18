@@ -582,7 +582,7 @@ pub fn CodexDriver::end_idle(Self, Host, String) -> Later[Bool]
 pub fn CodexDriver::evict_idle(Self) -> Later[Int32]
 pub fn CodexDriver::freeze(Self) -> Later[Unit]
 pub fn CodexDriver::hold_left(Self, @jsjson.JValue, RunnerInfo, String) -> Host
-pub fn CodexDriver::host(Self, @jsjson.JValue, cwd? : String) -> Later[Host]
+pub fn CodexDriver::host(Self, @jsjson.JValue, cwd? : String, mcp_url? : String) -> Later[Host]
 pub fn CodexDriver::host_args(Self, @jsjson.JValue) -> Array[String]
 pub fn CodexDriver::host_at(Self, String) -> Host?
 pub fn CodexDriver::host_delete(Self, String) -> Unit
@@ -596,7 +596,7 @@ pub fn CodexDriver::info(Self, String, @jsjson.JValue) -> Unit
 pub fn CodexDriver::installed_version(Self, fresh? : Bool) -> Later[String?]
 pub fn CodexDriver::is_current(Self, Host) -> Bool
 pub fn CodexDriver::keep_draining(Self, Host) -> Unit
-pub fn[T] CodexDriver::lease(Self, @jsjson.JValue, (Host) -> Later[T], cwd? : String) -> Later[T]
+pub fn[T] CodexDriver::lease(Self, @jsjson.JValue, (Host) -> Later[T], cwd? : String, mcp_url? : String) -> Later[T]
 pub fn CodexDriver::left_runners(Self, String) -> Later[Array[RunnerInfo]]
 pub fn CodexDriver::let_go(Self, Host) -> Unit
 pub fn CodexDriver::login_changed(Self, String) -> Later[Unit]
@@ -738,6 +738,7 @@ pub struct Host {
   mut login_stale : Bool
   mut runtime_stale : Bool
   mut draining : Bool
+  mut tools_failed_url : String?
   mut version : String?
   mut ready : Bool
   mut readying : Later[Unit]?
