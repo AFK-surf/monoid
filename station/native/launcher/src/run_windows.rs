@@ -2,9 +2,8 @@
 //! (ready, crashed and started again, stopped) is lifecycle.rs's, as on Unix; this is how Windows gives it its
 //! processes and events, less what Windows cannot do the same way:
 //!
-//! - Node binds its ports itself (Node cannot listen on a socket handed down on Windows), so a new Node is not started
-//!   beside the old one: there is no handover (nothing here asks the lifecycle for one), and a restart leaves the ports
-//!   for a moment.
+//! - Node cannot listen on a socket handed down on Windows, so the launcher keeps the listening sockets and carries
+//!   each connection to the Node serving (proxy.rs): a handover starts the new Node beside the old one, as on Unix.
 //! - The control channel is a named pipe only this user may open, `\\.\pipe\stillfail-launcher-<pid>-<n>`, given as
 //!   `--launcher-pipe`; on it the same lines go both ways as on Unix's socket.
 //! - There are no signals: a ^C (or the console closing) stops the station, as SIGTERM does on Unix. Node runs in a
