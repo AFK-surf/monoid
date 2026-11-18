@@ -248,7 +248,7 @@ jobs:
   # On main, after a merge: what failed and what merged since the last run that went through, the likeliest first
   # (scripts/rates-said.sh), for whoever brought it to mend forward; it holds no pull request back
   rates-said:
-    needs: [test, native, macos, android, motion-bars]
+    needs: [test, native, macos, ios-simulator, android, motion-bars]
     if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -266,9 +266,15 @@ jobs:
     # (the C units its four builds compile, kept by content (scripts/mbc's MBC_STORE): main's last run's, taken by every
     # run. Without it each run compiled all of them anew, 0 up to date, on a runner whose speed differs run to run: 2:57
     # to 3:28 on #5754 to #5776, then 5:02 on #5779 (each step 1.4 to 1.9 times as long: macOS apps 125 s where it was
-    # 85-90, the iOS app's 133 units 52 s for 28-32), cancelled at its five minutes, 2026-11-12)
+    # 85-90, the iOS app's 133 units 52 s for 28-32), cancelled at its five minutes, 2026-11-12). Its three macOS apps
+    # and render_check's two programs alone now; the iOS simulator's app is ios-simulator's, beside it: a pull request
+    # that changes mbui's view, ui or kit compiled most of the five anew at -O2 and the iOS app's C again, over five
+    # minutes (#7244, 2026-11-18)
     env:
       MBC_STORE: ${{ github.workspace }}/libs/mbui/_build/mbc-store-mac
+      # (on a pull request, units not in main's store compile at -O0 while unchanged units still take main's -O2
+      # objects through mbc's alt_flags; gallery's draw-list printer test compiles at -O0 everywhere, as test_native.sh)
+      MBC_LIGHT_TESTS: ${{ github.event_name == 'pull_request' && 'demo/demo textdiff/textdiff kitdemo/kitdemo render/render kitdemo/gallery/gallery.whitebox_test' || 'kitdemo/gallery/gallery.whitebox_test' }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/mbui-moonbit
@@ -293,8 +299,6 @@ jobs:
           scripts/textdiff.sh mac
       - name: "A Tester's draw list drawn offscreen (mbui-render) against the host's own picture of it (scripts/render_check.sh); its md5, to compare machines"
         run: scripts/render_check.sh
-      - name: iOS simulator app
-        run: scripts/ios.sh build
       # (main's run keeps what it used, the units it took or compiled, and lets the rest go: the store no larger than one
       # run's; a branch's run keeps nothing, so each takes main's newest)
       - name: The units kept
@@ -316,6 +320,40 @@ jobs:
             libs/mbui/out/textdiff/
             libs/mbui/out/render-check/
           if-no-files-found: ignore
+
+  # The iOS simulator's app, beside macos: its units of its own store (main's run keeps what it used, as macos does),
+  # main's macOS store taken where it has none yet
+  ios-simulator:
+    defaults:
+      run:
+        working-directory: libs/mbui
+    runs-on: macos-15
+    timeout-minutes: 5
+    env:
+      MBC_STORE: ${{ github.workspace }}/libs/mbui/_build/mbc-store-ios
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/mbui-moonbit
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: mbui-ci-ios-store-${{ github.sha }}
+          restore-keys: |
+            mbui-ci-ios-store-
+            mbui-ci-macos-store-
+      - run: mkdir -p "$MBC_STORE" && touch "$RUNNER_TEMP/start"
+      - name: iOS simulator app
+        run: scripts/ios.sh build
+      - name: The units kept
+        if: success() && github.event_name == 'push'
+        run: |
+          find "$MBC_STORE" -name '*.lock' -delete
+          find "$MBC_STORE" -mindepth 2 -maxdepth 2 -type d ! -newer "$RUNNER_TEMP/start" -exec rm -rf {} +
+      - if: success() && github.event_name == 'push'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ env.MBC_STORE }}
+          key: mbui-ci-ios-store-${{ github.sha }}
 
   android:
     defaults:
