@@ -149,6 +149,27 @@ test "sent read up the list past its end's layout: the words' way as long as the
 }
 
 ///|
+test "sent by Enter read up the list on 大屏: the list glides to its end in the page's scope, the words placed and gone from the composer" {
+  new_run()
+  let src = fixture("chat")
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  t.move_to(640.0, 400.0)
+  t.wheel(640.0, 400.0, -600.0)
+  t.run_for(@ui.move_most_ms)
+  t.tap_text("发消息")
+  let words = "回车发出的话"
+  t.type_text(words)
+  t.run_for(@ui.move_most_ms)
+  t.key(@ui.key_code_enter)
+  assert_eq(hold_placed(), Some(true))
+  t.run_for(@sfbase.flight_most_ms + @ui.move_most_ms)
+  assert_true(flight_of(hold_draft) is None)
+  assert_true(t.drawn_of(words) is Some(_))
+}
+
+///|
 /// Whether words sent from the chat are on their way to a row in the list (None: nothing flies).
 fn hold_placed() -> Bool? {
   flight_of(hold_draft).map(fn(f) { f.placed })
