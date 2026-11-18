@@ -257,7 +257,7 @@ jobs:
       # through, its beta not put all that while)
       # (cut before the job is: a branch's 35 s, what follows a build done there (the keys and the save ~6 s, beta.sh
       # linux ~16 s, its upload ~2 s, post steps ~4 s), the stop, the key and the save after a cut some 30 s; main's
-      # 55 s, beta.sh publish after those, which puts the package at least (~15 s) whatever its deltas get)
+      # 45 s, beta.sh publish after those, which puts the package at least (~15 s) whatever its deltas get)
       - name: Build (APP=stillfail)
         id: build
         run: |
@@ -265,7 +265,7 @@ jobs:
           # cut: a step stopped leaves its children running, and they wrote the store as the cache's tar read it)
           echo "$$-$(date +%s%N)" > "$RUNNER_TEMP/build-tree"
           export MBUI_BUILD_TREE=$(cat "$RUNNER_TEMP/build-tree")
-          reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 55 || echo 35)
+          reserve=$([ "$GITHUB_REF" = refs/heads/main ] && echo 45 || echo 35)
           bash scripts/with-timeout.sh @$((JOB_END - reserve)) bash apps/mbui/scripts/linux.sh build
       # (what a cut build left running stopped on main and a branch alike; a branch's store saved only of a build that
       # went through: a job that needs longer is made faster, never finished over several pushes, .github/AGENTS.md;
@@ -306,13 +306,22 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: bash apps/mbui/scripts/beta.sh publish ${{ matrix.part }}
       # (moon's build saved last, after the package is put and only where the job has the time left for it: a save cut
-      # by the job's limit would cancel a job whose beta was out)
+      # by the job's limit would cancel a job whose beta was out. Kept once moonc has made the app's C (stillfail.c),
+      # a cut build's too: kept only of a build that went through, main's cut in its -O2 C kept none and every run did
+      # moonc's ~75 s again, cut again (2026-11-18, 44310664729, 44312202811). Keyed by that C, as pipeline.yml's
+      # "Moon's build, once moonc made the app's C": one the same is not saved again; mbc's units are not moon's.)
       - id: moon-room
-        if: github.ref == 'refs/heads/main' && steps.build.outcome == 'success' && steps.moon.outputs.cache-hit != 'true'
+        if: always() && github.ref == 'refs/heads/main' && steps.build.outcome != 'skipped'
         run: |
+          c=libs/mbui/out/linux/app/_build/native/release/build/stillfail/stillfail/stillfail.c
           left=$(( JOB_END - $(date +%s) ))
-          if [ "$left" -gt 25 ]; then echo "save=1" >> "$GITHUB_OUTPUT"; else echo "moon's build not saved: ${left} s left"; fi
-      - if: steps.moon-room.outputs.save == '1'
+          if [ -s "$c" ] && [ "$left" -gt 25 ]; then
+            find libs/mbui/out/linux -type d -name '*.mbc' -prune -exec rm -rf {} +
+            echo "key=mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-$(sha256sum "$c" | cut -c1-16)" >> "$GITHUB_OUTPUT"
+          else
+            echo "moon's build not saved: stillfail.c=${c} (${left} s left)"
+          fi
+      - if: always() && steps.moon-room.outputs.key != '' && steps.moon-room.outputs.key != steps.moon.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
           path: |
@@ -320,7 +329,7 @@ jobs:
             libs/mbui/out/linux/app
             !libs/mbui/out/linux/**/*.mbc
             !libs/mbui/out/linux/**/*.mbc/**
-          key: mbui-linux-moon-${{ matrix.arch }}-${{ env.IMG }}-${{ github.sha }}
+          key: ${{ steps.moon-room.outputs.key }}
       - uses: actions/upload-artifact@v4
         if: github.ref != 'refs/heads/main'
         with: { name: "mbui-linux-${{ matrix.arch }}-${{ github.sha }}", path: ".ci/release/release/${{ matrix.part }}", retention-days: 7 }
