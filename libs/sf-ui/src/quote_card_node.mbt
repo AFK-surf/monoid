@@ -178,7 +178,9 @@ pub fn composer_quote_card_node(
       |> ignore
     })
     |> ignore
-  }, remove)
+  // (as wide as what waits in the composer is, its ✕ reaching past its end into the room round it, as the old
+  // composer's quote_card: no room kept for it at its end)
+  }, remove, hung=false)
   |> ignore
   made.val.unwrap()
 }

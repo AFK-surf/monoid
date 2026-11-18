@@ -596,7 +596,7 @@ fn narrow_made_as(
                 )
               },
               foot=chat_foot_nodes,
-              foot_node=fn(n, s, r) { chat_foot_node(n, s, r, @sf.TipLayer::new(fn() { Some(v) })) },
+              foot_node=fn(n, s, r, shows, _) { chat_foot_node(n, s, r, shows, @sf.TipLayer::new(fn() { Some(v) })) },
               leaving=fn(c, s, r) {
                 match workspace_in_view(s).0 {
                   Some(w) => new_chat_leaving(c, s, w, r)

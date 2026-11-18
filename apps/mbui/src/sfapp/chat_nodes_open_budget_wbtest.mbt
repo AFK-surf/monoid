@@ -70,16 +70,23 @@ let chat_nodes_open_budget : Map[String, (Int, Int, Int, Int, Int)] = {
   // (a node more made in each, 2026-11-17, its bindings 2 fewer: what lights a message whole the list's band, drawn
   // under all the rows of it once (View::scrolls_window's `bands`, its each's slot), no more each row's own ground; before
   // it 1014 and 943, 325 and 321)
-  "phone cold": (1015, 29, 673, 79, 941),
-  "phone again": (326, 17, 239, 27, 319),
-  "wide cold": (2443, 483, 2011, 217, 2447),
   // (5 made, 4 laid, 1 measured and 9 bindings more in 大屏's again, 2026-11-17: the agent at work's 停止 chip before
   // 只看收发 in its history's head beside the chat; before it 881, 878, 122, 1048)
-  "wide again": (886, 130, 882, 123, 1057),
-  "phone up": (564, 366, 617, 96, 0),
-  "wide up": (721, 382, 911, 125, 0),
-  "phone up frame": (140, 102, 125, 28, 0),
-  "wide up frame": (160, 105, 146, 28, 0),
+  // (2026-11-17, the chat's composer made as nodes (sfpages composer_node, in its list's foot: 试用新输入框, on here) and
+  // not hosted as an old view: an old view's nodes are none of what is counted here, so what the composer makes (its
+  // foot, box, rows, field, send, ＋ and the structures that come and go in it) is counted now where it was not, its
+  // field's words measured with the page's, and its list laid out less; each the most of the default rate and 60, 120,
+  // 24 and 7, what fell brought down to it: before it (1015, 29, 673, 79, 941), (326, 17, 239, 27, 319), (2443, 483,
+  // 2011, 217, 2447), (886, 130, 882, 123, 1057), (564, 366, 617, 96), (721, 382, 911, 125) scrolling up, its frames
+  // (140, 102, 125, 28), (160, 105, 146, 28))
+  "phone cold": (1035, 31, 667, 80, 969),
+  "phone again": (346, 19, 233, 28, 347),
+  "wide cold": (2476, 503, 1920, 220, 2475),
+  "wide again": (905, 130, 871, 124, 1083),
+  "phone up": (552, 359, 601, 87, 0),
+  "wide up": (724, 372, 914, 114, 0),
+  "phone up frame": (139, 100, 124, 28, 0),
+  "wide up frame": (160, 103, 152, 28, 0),
 }
 
 ///|
@@ -242,7 +249,9 @@ fn chat_nodes_open_measured(
       Some(s) => s
       None => {
         reset()
+        // (its composer made as nodes too, 试用新输入框: what the bars below were raised for)
         @sfbase.chat_page_nodes.set(true)
+        @sfbase.composer_nodes.set(true)
         let c = @sfrealsize.RealSizeChanging::new()
         // (through the app's own client as a phone's core is, so its messages come by key as a device's do:
         // sfbench's chat-real)

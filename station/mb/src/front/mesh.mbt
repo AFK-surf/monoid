@@ -46,6 +46,7 @@ priv struct Mesh {
   /// `insertRelay`, `removeRelay` and `setCongestion` changed them. What a later bind changes in place.
   mut bound_relays : Array[String]
   mut bound_congestion : String
+  mut bound_alpns : String
   mut said : Json
   /// What came while no Node had bound.
   waiting : Array[Json]
@@ -68,6 +69,7 @@ pub async fn mesh(host : @host.Host, path : String) -> Unit {
     identity: "",
     bound_relays: [],
     bound_congestion: default_congestion,
+    bound_alpns: "",
     said: Json::null(),
     waiting: [],
     clients: [],
@@ -239,13 +241,15 @@ fn field(o : Json, k : String) -> Json {
 }
 
 ///|
-/// What of a binding cannot change on an endpoint bound already: its key, its protocols, whether it finds and is found,
-/// its address, whether it goes by relays alone and the DSCP its packets are marked with (`dscp`, set by the shell's
-/// `iroh.bind` alone). Its relays and its congestion controller can (`Mesh::bind`).
+/// What of a binding cannot change on an endpoint bound already: its key, whether it finds and is found, its address,
+/// whether it goes by relays alone and the DSCP its packets are marked with (`dscp`, set by the shell's `iroh.bind`
+/// alone). Its relays, its congestion controller and its protocols can (`Mesh::bind`): a Node that takes another set
+/// of protocols (a release that adds one, the MoonBit station's and Node's) is not given an endpoint of its own beside
+/// the one there, whose closing refused every connection that came to it meanwhile (2026-11-18, Office-Host-2 as
+/// 0.1.10002 took over from 0.1.9996).
 fn identity_of(options : Json, key : Bytes) -> String {
   let parts : Array[Json] = [
     Json::string(hex(key)),
-    field(options, "alpns"),
     field(options, "discovery"),
     field(options, "bindAddr"),
     field(options, "relayOnly"),
@@ -343,6 +347,13 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
       }
       self.bound_congestion = congestion
     }
+    let alpns = field(options, "alpns").stringify()
+    if alpns != self.bound_alpns {
+      match (try { Ok(self.host.shell("iroh.setAlpns", { "id": endpoint, "alpns": field(options, "alpns") })) } catch { e => Err(e) }) {
+        Ok(_) => self.bound_alpns = alpns
+        Err(e) => @host.note("mesh: protocols not changed: \{message(e)}")
+      }
+    }
     return self.said
   }
   let mut old = self.endpoint
@@ -360,6 +371,7 @@ async fn Mesh::bind(self : Mesh, options : Json, key : Bytes) -> Json {
   self.identity = identity
   self.bound_relays = relays_of(options)
   self.bound_congestion = congestion_of(options)
+  self.bound_alpns = field(options, "alpns").stringify()
   self.said = {
     "id": self.host.shell_sync("iroh.endpointId", { "id": endpoint }),
     "sockets": self.host.shell_sync("iroh.sockets", { "id": endpoint }),

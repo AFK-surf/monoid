@@ -66,6 +66,7 @@ pub fn fixture_reset() -> Unit {
   fix_writes.clear()
   fix_xshared.clear()
   fix_decided.clear()
+  fix_cc.clear()
   fix_replied.clear()
   fix_seed_gone.clear()
   fix_card_replies.clear()

@@ -30,11 +30,16 @@ fn film_in_chat(
   w? : Double = 390.0,
   answer? : ((@ui.Tester) -> Unit)? = None,
   nodes? : Bool = false,
+  composed? : Bool = false,
 ) -> (@ui.Tester, Double, Double) {
   new_run()
-  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes)
+  // (the chat's page made as nodes, where `nodes` says so: sfbase's chat_page_nodes; its composer too where
+  // `composed` says so, 试用新输入框: sfbase's composer_nodes)
   if nodes {
     @sfbase.chat_page_nodes.set(true)
+  }
+  if composed {
+    @sfbase.composer_nodes.set(true)
   }
   let src = fixture("chat-download-on")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
@@ -373,12 +378,12 @@ fn ground_over_flight(t : @ui.Tester, w0 : Double) -> Double? {
 /// seen once, wheeled till half of it lies under the composer, pressed and let go a little under its top, then closed:
 /// what went wrong in the frames while it flew (the user, 2026-11-17: 「飞行过程中盖在输入框上」). At its own size (going
 /// out from under the composer, or coming back in under it) none of it drawn over the composer: what is drawn last where
-/// the composer's words are is never it then.
-fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = false) -> Array[String] {
+/// the composer's words are is never it then. `composed`: the composer made as nodes too (试用新输入框).
+fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = false, composed? : Bool = false) -> Array[String] {
   let (t, x, y) = if film {
-    film_in_chat(platform~, w~, nodes=true)
+    film_in_chat(platform~, w~, nodes=true, composed~)
   } else {
-    image_in_chat("compare.png", platform~, w~, nodes=true)
+    image_in_chat("compare.png", platform~, w~, nodes=true, composed~)
   }
   t.tap(x, y)
   t.run_for(@ui.move_most_ms)
@@ -457,10 +462,16 @@ fn picture_under_composer_faults(platform : Int, w : Double, film? : Bool = fals
 
 ///|
 test "a picture and a film half under the composer of a chat's page made as nodes: none of it over the composer at its own size, going out from under it and back in, on 小屏 and 大屏" {
-  for screen in [(2, 390.0), (0, 1280.0)] {
-    for film in [false, true] {
-      let faults = picture_under_composer_faults(screen.0, screen.1, film~)
-      assert_true(faults.is_empty(), msg="\{if film { "film" } else { "picture" }}, \{screen.1} wide: \{Repr(faults)}")
+  // (under the old composer the page hosts, and under the one made as nodes: 试用新输入框)
+  for composed in [false, true] {
+    for screen in [(2, 390.0), (0, 1280.0)] {
+      for film in [false, true] {
+        let faults = picture_under_composer_faults(screen.0, screen.1, film~, composed~)
+        assert_true(
+          faults.is_empty(),
+          msg="\{if composed { "composed" } else { "old composer" }}, \{if film { "film" } else { "picture" }}, \{screen.1} wide: \{Repr(faults)}",
+        )
+      }
     }
   }
 }

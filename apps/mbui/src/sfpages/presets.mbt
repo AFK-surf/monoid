@@ -309,11 +309,13 @@ fn preset_menu_label(all : Array[Json], p : Json) -> String {
 
 ///|
 /// 编辑「X」 of the preset picked (`picked`, of the station the page says, `presetStation`): its dialog, browsing on
-/// the composer's station.
+/// the composer's station. On the composer's station where the preset's is not up (gone, as a station retired, or
+/// off): its model is picked of a station's own models, and one not up has none to offer, the panel empty.
 fn preset_edit_item(src : Source, w : Workspace, address : String, v : Json?, picked : String) -> @sf.MenuItem {
   let at = text(v, "presetStation")
+  let up = items(v, "stations").iter().any(fn(s) { text(Some(s), "station") == at })
   @sf.menu_item_of(@sf.t("web-main.preset.editNamed", args=[("name", text(v, "presetName"))]), fn() {
-    preset_dialog(src, w, if at == "" { address } else { at }, picked, items(v, "stations"), browse_station=address)
+    preset_dialog(src, w, if up { at } else { address }, picked, items(v, "stations"), browse_station=address)
   }, icon="edit")
 }
 

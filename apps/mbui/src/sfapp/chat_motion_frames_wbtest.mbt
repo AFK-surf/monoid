@@ -136,13 +136,35 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame: the reply com
 fn mf_open(screen : (String, Double, Double, Int)) -> (@ui.Tester, Source) {
   let (_, w, h, platform) = screen
   new_run()
+  // (its composer made as nodes too: 试用新输入框, what these frames hold of it)
   @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
   let src = fixture("chat")
   open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
   let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
   t.set_rows_on_pixels(true)
   t.run_for(@ui.move_most_ms)
   (t, src)
+}
+
+///|
+/// The keys of the pictures drawn now outside the composer: what the list shows before something is sent (the
+/// composer made as nodes draws its waiting tiles in the tree too, by the keys the sent row's pictures take: those are
+/// the ones sent, not ones there before).
+fn mf_pictures_drawn(t : @ui.Tester) -> Array[String] {
+  let composer = @sfpages.composer_node_shown(t.time())
+  let out = []
+  for d in @ui.view_tree().unwrap().drawn() {
+    let in_composer = match composer {
+      Some((x, y, w, h)) => d.x >= x && d.x + d.w <= x + w && d.y >= y && d.y + d.h <= y + h
+      None => false
+    }
+    match d.image {
+      Some((k, _, _)) if !in_composer => out.push(k)
+      _ => ()
+    }
+  }
+  out
 }
 
 ///|
@@ -168,13 +190,7 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame: a picture sen
     t.tap(fx + fw / 2.0, fy + fh / 2.0)
     t.type_text("看图")
     t.run_for(@ui.move_most_ms)
-    let before = []
-    for d in @ui.view_tree().unwrap().drawn() {
-      match d.image {
-        Some((k, _, _)) => before.push(k)
-        None => ()
-      }
-    }
+    let before = mf_pictures_drawn(t)
     tap_send(t)
     t.run_for(mf_frame_ms)
     let press = t.time()
@@ -273,13 +289,7 @@ test "a chat's page made as nodes, 小屏 and 大屏, every frame of a picture a
     t.tap(fx + fw / 2.0, fy + fh / 2.0)
     t.type_text("截图和构建日志都在这里")
     t.run_for(@ui.move_most_ms)
-    let before = []
-    for d in @ui.view_tree().unwrap().drawn() {
-      match d.image {
-        Some((k, _, _)) => before.push(k)
-        None => ()
-      }
-    }
+    let before = mf_pictures_drawn(t)
     tap_send(t)
     t.run_for(mf_frame_ms)
     let press = t.time()

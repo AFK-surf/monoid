@@ -196,10 +196,10 @@ fn chat_foot_nodes(c : @ui.Ctx, src : Source, r : ChatRef) -> Unit {
 
 ///|
 /// chat_foot_nodes' with its composer made as nodes (sfbase's composer_nodes) in `n`: over the navigation bar (the
-/// keyboard's top under it), its tips in `tips`.
-fn chat_foot_node(n : @view.View, src : Source, r : ChatRef, tips : @sf.TipLayer) -> Unit {
+/// keyboard's top under it), its tips in `tips`; `shows`, whether its page shows (chat_composer_node's).
+fn chat_foot_node(n : @view.View, src : Source, r : ChatRef, shows : () -> Bool, tips : @sf.TipLayer) -> Unit {
   n.row(Is(false)) |> ignore
-  @sfpages.chat_composer_node(n, src, r, tips)
+  @sfpages.chat_composer_node(n, src, r, shows~, tips~)
   n.box(fn(bar) { bar.height(By(fn() { Some(nav_foot()) })) |> ignore }) |> ignore
 }
 

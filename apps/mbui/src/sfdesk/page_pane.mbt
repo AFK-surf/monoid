@@ -571,7 +571,10 @@ fn pane_made(
                     None => chat_composer_nodes(c, s, r, wide.tape.get())
                   }
                 },
-                foot_node=fn(n, s, r) { @sfpages.chat_composer_node(n, s, r, tips, apart=wide.tape.get()) },
+                // (its composer made as nodes in the list's foot: sfpages' chat_composer_node)
+                foot_node=fn(n, s, r, shows, laid) {
+                  @sfpages.chat_composer_node(n, s, r, shows~, laid~, tips~, apart=fn() { wide.tape.get() })
+                },
                 leaving=fn(c, s, r) {
                   match @sfbase.workspace_in_view(s).0 {
                     Some(w) => new_chat_after(c, s, w, r)

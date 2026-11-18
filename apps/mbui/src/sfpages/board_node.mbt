@@ -1323,7 +1323,7 @@ fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
 }
 
 ///|
-/// The card a draft is written in at 待派发's top: a chat's composer (composer_node), opened all along, its pictures
+/// The card a draft is written in at 待派发's top: a chat's composer's box (composer_alone_node), opened all along, its pictures
 /// over its words, ＋ and send in its foot corners, the station it goes to between them, × to put it away (wide). Its
 /// send adds the draft (its own ＋); while the command key is held it is the send arrow and starts it at once, as
 /// ⌘Enter does. Made again for each draft and each station chosen: its draft is that one's, its files go up to that
@@ -1335,7 +1335,6 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     (@ui.key_modifiers() & primary) != 0
   }
   let ws = @signals.untracked(own.ws)
-  guard @signals.untracked(fn() { @sfbase.workspace_in_view(own.src).0 }) is Some(workspace) else { return }
   let writing = fn() { @sfbase.writing(own.src, @sfbase.board_file_key(ws, own.draft_id.get())) }
   let files = fn() {
     writing().files.get().map(fn(f) -> @sfbase.BoardFile { { id: text(Some(f), "id"), name: text(Some(f), "name") } })
@@ -1420,16 +1419,10 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     }
     card.pick(fn() { (own.draft_id.get(), board_station_now(own)) }, at_once=true, fn(c, made) {
       let (id, st) = made
-      let spec : NodeSpec = {
-        station: st,
-        draft: @sfbase.board_file_key(ws, id),
-        session: "",
-        placeholder: board_words("placeholder"),
-        locked: fn() { false },
-        offline: fn() { false },
-        warm_agent: fn() { false },
+      let spec : BoxSpec = {
+        chat: false,
         roomy: true,
-        takes_focus: false,
+        placeholder: board_words("placeholder"),
         // (where it goes: the library's choice of a station, round as ＋ and send)
         tools: Some(fn(r) {
           @sf.station_choice_node(
@@ -1447,10 +1440,9 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
         words_end: if wide { card_title_end() } else { 0.0 },
         sends: fn() { board_words(if dispatching() { "dispatch" } else { "add" }) },
         send_icon: fn() { if dispatching() { "arrow-up" } else { "plus" } },
+        send: Some(fn(w) { add(w, @signals.untracked(dispatching)) }),
       }
-      composer_node(c, own.src, workspace, spec, fn(w) { add(w, @signals.untracked(dispatching)) }, fn() {
-        composer_alone
-      }, tips)
+      composer_alone_node(c, own.src, st, @sfbase.board_file_key(ws, id), spec, tips)
     })
     // (opened to be written in: the cursor in it, each time it opens; once what opened it is done, its room in use by
     // then, and once its room is laid out open where the host gives the focus by where it is: a browser's)
