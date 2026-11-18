@@ -1550,6 +1550,37 @@ export class PersonalLock {
     });
   }
 
+  /// The lock a device that let this one in put it on, read where that device's answer (`joined`'s chain) was lost on
+  /// the way back (views/pair.ts `signedAnyway`): pinned as `joined` pins it, and given, or null where none is found.
+  /// Taken only of a root that device said (`trustedRoots`, said on the connection to it once it proved it knows the
+  /// code shown there) and with this device's key on it under this device's id, the chain holding by its signatures
+  /// (`checkChain`): read of the stations as ever, and, where they show none such (one the bind has not reached yet
+  /// shows what it refused before), of the cloud too, which forges none of it, the root pinned by that device's word.
+  /// One heard of the stations is not taken by itself where no workspace's lock vouches for this device (`#putOnBy`):
+  /// a new device's never does. `within`: a call's wait.
+  recoverJoined(sub: string, trustedRoots: ReadonlySet<string>, within?: Asked): Effect.Effect<Entry[] | null, CoreError> {
+    const env = this.#env;
+    return Effect.gen({ self: this }, function* () {
+      if (trustedRoots.size === 0 || this.#myKey === null) return null;
+      const id = yield* env.device();
+      const key = this.#myKey;
+      const verified = (entries: readonly Entry[] | undefined): Entry[] | null => {
+        if (entries === undefined || entries.length === 0 || !trustedRoots.has(entryHash(entries[0]!))) return null;
+        return checkChain(entries, sub)?.devices.get(key)?.id === id ? [...entries] : null;
+      };
+      const bounded = <A>(work: Effect.Effect<A>): Effect.Effect<A | undefined> => (within === undefined ? work : within.wait(work));
+      yield* bounded(Effect.ignore(this.refresh(sub, undefined, within), { log: "Unhandled", message: "pairing personal lock read" }));
+      let found = verified(this.#pinned.get(sub)) ?? verified(this.#seen.get(sub));
+      if (found === null) {
+        const said = (yield* bounded(Effect.orElseSucceed(env.cloud(sub, "GET", PATH, null), () => null))) as { entries?: unknown } | null | undefined;
+        found = verified(Array.isArray(said?.entries) ? (said.entries as Entry[]) : undefined);
+      }
+      if (found === null) return null;
+      yield* this.joined(sub, found);
+      return found;
+    });
+  }
+
   /// A lock the person says they began anew elsewhere: this device leaves the one pinned, and joins it or begins again.
   forget(sub: string, reason: string): Effect.Effect<null, CoreError> {
     return Effect.gen({ self: this }, function* () {
