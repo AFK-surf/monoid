@@ -505,8 +505,8 @@ for t in $targets; do
           # (chat_drive_parity's four runs on the four since, some 75 s each of one of its cores (gt1's 29-35 s, CI's
           # runners some 2.3 times slower), each reckoned at half as the others are, 37 s more; its file, 143 s of
           # the first's pages by the table, dealt no more: by the table 621, 430, 293 and 500 s of pages)
-          # Use the measured sweep costs after both duo_side runs move to contrast.
-          *) specs="4,4,130,1 3,4,540,1 4,4,420,1 4,4,340,1" ;;
+          # Account for the real_size and kept_rows sweeps on groups 1 and 4.
+          *) specs="4,4,260,1 3,4,580,1 4,4,260,1 4,4,350,1" ;;
         esac
         g1=() g2=() g3=() g4=()
         while read -r g f; do
@@ -614,15 +614,16 @@ for t in $targets; do
       # At the default rate, contrast runs the wide real_size sweep, two kept_rows ranges, and both duo_side runs.
       "src/sfapp/duo_side_wbtest.mbt "*) echo contrast ;;
       "src/sfapp/real_size_wbtest.mbt --index 2-"*) case "${MBUI_TEST_FPS:-}" in "") echo contrast ;; *) echo 4 ;; esac ;;
-      # (the phone's on the third since, whose one program for its pages leaves its cores the room: on the fourth beside
-      # its pages on four programs and send_steady's three, app 4/4 was the default rate's longest on 2026-11-14's
-      # pushes, 225-295 s and cut at its 5 minutes on two branches (43562536058, 43565983820), where app 3/4 was
-      # 124-243)
-      "src/sfapp/real_size_wbtest.mbt --index 1-2") echo 3 ;;
+      # At the default rate, group 1 takes the small-screen real_size sweep and kept_rows 5-8.
+      # Group 4 takes kept_rows 2-3 and 3-4. These runs share group 3 at explicit rates.
+      "src/sfapp/real_size_wbtest.mbt --index 1-2") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
       "src/sfapp/real_size_wbtest.mbt --index 0-1") echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 0-2" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 4-5")
         if [ -z "${MBUI_TEST_FPS:-}" ]; then echo contrast; else echo 3; fi ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt --index 8-"*) echo 2 ;;
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 5-8") [ -z "${MBUI_TEST_FPS:-}" ] && echo 1 || echo 3 ;;
+      "src/sfapp/kept_rows_kinds_wbtest.mbt --index 2-3" | "src/sfapp/kept_rows_kinds_wbtest.mbt --index 3-4")
+        [ -z "${MBUI_TEST_FPS:-}" ] && echo 4 || echo 3 ;;
       "src/sfapp/kept_rows_kinds_wbtest.mbt "*) echo 3 ;;
       # (preview_tree's two on the fourth, the one with the most programs: at 120 a second APP_PART gives each of its
       # two halves one; at 24 and at 7 the fourth has a runner for each. At the default rate and at 60 on the first:

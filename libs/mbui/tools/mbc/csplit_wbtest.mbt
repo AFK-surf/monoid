@@ -199,6 +199,37 @@ test "data and selected units share compile commands across optimization levels"
 }
 
 ///|
+test "the store prefers an optimized object and falls back to the light object" {
+  let dir = tmp_path("store optimization levels")
+  makedirs(dir)
+  defer rmtree(dir)
+  let src = path_join(dir, b"unit.c")
+  let header = path_join(dir, b"unit.h")
+  let obj = path_join(dir, b"unit.o")
+  let store = path_join(dir, b"store")
+  assert_true(write_file(src, b"#include \"unit.h\"\n"))
+  assert_true(write_file(header, b"#define VALUE 1\n"))
+  let cc = [b"clang"]
+  let (argv, depfile) = compile_args(cc, [b"-O0"], src, obj, false)
+  let (alt, _) = compile_args(cc, [b"-O2"], src, obj, false)
+  let job = Job::new(src, obj, argv, depfile, 1L, cc, alt_argv=Some(alt))
+  let light = job.store_dir(store)
+  let optimized = job.store_dir_of(store, alt)
+  let deps = deps_text([header]).unwrap()
+  for entry in [(light, b"light"), (optimized, b"optimized")] {
+    let (path, contents) = entry
+    makedirs(path)
+    assert_true(write_file(path_join(path, b"obj"), contents))
+    assert_true(write_file(path_join(path, b"deps"), deps))
+  }
+  assert_true(job.from_store(store))
+  assert_eq(read_file(obj), Some(b"optimized"))
+  rmtree(optimized)
+  assert_true(job.from_store(store))
+  assert_eq(read_file(obj), Some(b"light"))
+}
+
+///|
 test "kinds" {
   let (files, m) = sp(prelude_src + "\n" + items_src)
   assert_eq(m.functions, 5)

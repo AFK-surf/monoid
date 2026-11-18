@@ -325,8 +325,7 @@ priv struct Job {
   obj : Bytes
   argv : Array[Bytes]
   // (a unit compiled less optimised, MBC_LIGHT_TESTS: the command it would have been compiled by at the program's own
-  // level, whose object in MBC_STORE it takes where it has none of its own: a branch's Mac app at -O0 over main's -O2
-  // units, cmd_wrap)
+  // level, whose object in MBC_STORE it tries first)
   alt_argv : Array[Bytes]?
   optional : Bool
   depfile : Bytes? // (none with MSVC: those always compile)
@@ -503,15 +502,14 @@ fn Job::store_dir_of(self : Job, store : Bytes, argv : Array[Bytes]) -> Bytes {
 }
 
 ///|
-/// The object another program's unit of the same text, command and compiler made, when what else it read (every
-/// header its depfile named, by content) is as it was; for a unit compiled less optimised, its own level's first, then
-/// the program's own level's (alt_argv)
+/// Read a cached object if its source, command, compiler, and header contents match.
+/// For a unit compiled at a lower optimization level, try the program's own level (alt_argv) first.
 fn Job::from_store(self : Job, store : Bytes) -> Bool {
-  self.from_store_dir(self.store_dir(store)) ||
   (match self.alt_argv {
     Some(alt) => self.from_store_dir(self.store_dir_of(store, alt))
     None => false
-  })
+  }) ||
+  self.from_store_dir(self.store_dir(store))
 }
 
 ///|
