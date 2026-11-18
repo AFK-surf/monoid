@@ -579,6 +579,17 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
       _ => ""
     }
   }
+  // What to write: a string's UTF-8, or the bytes a route gave (`{"$bytes": base64}`).
+  let data = (i : Int32) => {
+    match args.get(i) {
+      Some(String(x)) => @utf8.encode(x)
+      Some(Object({ "$bytes": String(b), .. })) =>
+        @base64.decode(b) catch {
+          _ => b""
+        }
+      _ => b""
+    }
+  }
   let fail = (e : Error) => {
     match e {
       @drive.FsError(f) => @session_chats.Thrown(f.code, f.message)
@@ -591,11 +602,54 @@ fn P52::fs_op(_self : P52, op : String, args : Array[Json]) -> Json raise {
         @utf8.decode_lossy(@drive.read_all(s(0)) catch { e => raise fail(e) }),
       )
     "writeFile" => {
-      if !write_text_mode(s(0), s(1), 0) {
+      // (node's `flag: "wx"`: refused where the file is there, as the hub's uploads ask it)
+      if args.get(2) is Some(Object({ "flag": String("wx"), .. })) &&
+        attempt(() => @drive.lstat(s(0))) is Ok(_) {
+        raise @session_chats.Thrown(
+          "EEXIST",
+          "EEXIST: file already exists, open '\{s(0)}'",
+        )
+      }
+      if live_write_ffi(live_c(s(0)), data(1), 0) != 0 {
         raise @session_chats.Thrown("EIO", "EIO: i/o error, open '\{s(0)}'")
       }
       Json::null()
     }
+    "appendFile" => {
+      // (the hub's uploads add each part at the file's end, making it with the first)
+      let had = match attempt(() => @drive.stat(s(0))) {
+        Ok(st) => Some(st.size)
+        Err(_) => None
+      }
+      ignore(
+        @drive.write_part(s(0), {
+          create: had is None,
+          offset: had.unwrap_or(0.0),
+          data: data(1),
+          at_least: None,
+          truncate: None,
+          sync: false,
+        }) catch {
+          e => raise fail(e)
+        },
+      )
+      Json::null()
+    }
+    "access" => {
+      ignore(@drive.stat(s(0)) catch { e => raise fail(e) })
+      Json::null()
+    }
+    "statfs" =>
+      // (statfs's fields: blocks of one byte each, as the disk's sizes say them)
+      match disk_of(s(0)) {
+        Some((free, total)) =>
+          { "blocks": jn(total), "bavail": jn(free), "bsize": jn(1.0) }
+        None =>
+          raise @session_chats.Thrown(
+            "ENOENT",
+            "ENOENT: no such file or directory, statfs '\{s(0)}'",
+          )
+      }
     "rename" => {
       @drive.rename(s(0), s(1)) catch {
         e => raise fail(e)

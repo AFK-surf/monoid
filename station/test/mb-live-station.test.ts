@@ -262,10 +262,12 @@ async function member(conn: Connection, credential: string) {
   return new Reader(first).line();
 }
 
+/// A member's request on the mesh: a body given as JSON, or bytes as they are (an upload's).
 async function memberAsk(conn: Connection, method: string, path: string, body?: unknown): Promise<[number, any]> {
   const stream = await conn.openBi();
-  await line(stream, { method, path, headers: { "content-type": "application/json" } });
-  if (body !== undefined) await stream.write(Buffer.from(JSON.stringify(body)));
+  const bytes = Buffer.isBuffer(body);
+  await line(stream, { method, path, headers: { "content-type": bytes ? "application/octet-stream" : "application/json" } });
+  if (body !== undefined) await stream.write(bytes ? body : Buffer.from(JSON.stringify(body)));
   await stream.finish();
   const reader = new Reader(stream);
   const head = await reader.line();
@@ -375,6 +377,24 @@ test("a release with no Node: the launcher runs the MoonBit station whole, a mem
 
   // ── the Slack connect, connected on its socket ──
   await until("the Slack socket open", () => slack.sockets.length >= 1, () => `${JSON.stringify(slack.asked.map((x) => x.m))}; ${tail()}`);
+
+  // ── files for a message, kept by the program's own file system: one whole, and one in parts (the app's retry) ──
+  const whole = Buffer.from("a whole file\n");
+  const [upStatus, up] = await memberAsk(conn, "POST", "/admin/api/uploads?name=whole.txt", whole);
+  assert.equal(upStatus, 200, JSON.stringify(up));
+  assert.equal(up.size, whole.length);
+  assert.deepEqual(readFileSync(up.path), whole);
+  const parted = Buffer.concat([Buffer.alloc(5, "a"), Buffer.alloc(4, "b")]);
+  const partOf = (offset: number, piece: Buffer) => memberAsk(conn, "POST", `/admin/api/uploads/parts?id=parted01&name=parted.bin&size=${parted.length}&offset=${offset}`, piece);
+  const [firstStatus, firstSaid] = await partOf(0, parted.subarray(0, 5));
+  assert.equal(firstStatus, 200, JSON.stringify(firstSaid));
+  assert.equal(firstSaid.have, 5);
+  // (the first part again, as after a broken connection, and the rest)
+  assert.equal((await partOf(0, parted.subarray(0, 5)))[1].have, 5);
+  const [lastStatus, lastSaid] = await partOf(5, parted.subarray(5));
+  assert.equal(lastStatus, 200, JSON.stringify(lastSaid));
+  assert.equal(lastSaid.have, parted.length);
+  assert.deepEqual(readFileSync(lastSaid.file.path), parted);
 
   // ── a session made through the admin API, and a turn of its agent under the runner ──
   const [made, said] = await memberAsk(conn, "POST", "/admin/api/sessions", { runtime: "claude", profile: "cc" });
