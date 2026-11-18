@@ -2271,15 +2271,17 @@ fn clarify_task_node(
   slot.box(fn(task) {
     task.gap(Is(6.0)) |> ignore
     task.box(fn(line) {
-      line.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Middle))) |> ignore
+      line.row(Is(true)).gap(Is(2.0)).lines_up(Is(Some(Start))) |> ignore
       line.box(fn(f) {
         f.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
-        @sf.input_node(
+        // (a sentence, wrapped as long as it is: never cut on one line)
+        @sf.textarea_node(
           f,
           t.text,
+          rows=1,
+          most=4,
           placeholder=@sf.t("web-main.board.clarify.line"),
           label=@sf.t("web-main.board.clarify.task", args=[("n", n().to_string())]),
-          small=true,
         )
         |> ignore
       })

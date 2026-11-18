@@ -193,7 +193,7 @@ test "大屏: what a draft waits for gone: said on its card, never started by it
   let d = clarify_drafts(src)[0]
   assert_eq(d.id, @sffixture.fix_clarify_waiting_id)
   assert_true(@sfbase.board_started.untracked().is_empty(), msg="started")
-  assert_true(board_words_at(t, "等的「在设置页加上导入对话记录…」已删除") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
+  assert_true(board_words_at(t, "等的「在设置页加上导入…」已删除") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
   for w in ["立即派发", "去掉这个依赖"] {
     assert_true(board_words_at(t, w) is Some(_), msg=w)
   }
@@ -210,7 +210,7 @@ test "大屏: what a draft waits for errored: said on its card, never started by
   let (t, src) = board_at("board-clarify-failed", 1440.0, 900.0)
   t.run_for(@ui.move_most_ms * 4.0)
   assert_true(@sfbase.board_started.untracked().is_empty(), msg="started")
-  assert_true(board_words_at(t, "「在设置页加上导入对话记录…」出错了") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
+  assert_true(board_words_at(t, "「在设置页加上导入…」出错了") is Some(_), msg=t.words().map(fn(w) { w.0 }).join(" | "))
   assert_eq(board_faults(t), [])
   clarify_press(t, "立即派发")
   t.run_for(@ui.move_most_ms)

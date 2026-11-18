@@ -183,8 +183,8 @@ pub fn board_wait_words(w : BoardWait) -> String {
         @sf.t("web-main.board.clarify.waits_more", args=[("task", first), ("n", (ts.length() - 1).to_string())])
       }
     }
-    Gone(t) => @sf.t("web-main.board.clarify.wait_gone", args=[("task", board_after_short(t))])
-    Failed(t) => @sf.t("web-main.board.clarify.wait_failed", args=[("task", board_after_short(t))])
+    Gone(t) => @sf.t("web-main.board.clarify.wait_gone", args=[("task", board_after_short(t, n=8))])
+    Failed(t) => @sf.t("web-main.board.clarify.wait_failed", args=[("task", board_after_short(t, n=8))])
     Unstarted(why) => @sf.t("web-main.board.clarify.auto_failed", args=[("error", why)])
   }
 }
