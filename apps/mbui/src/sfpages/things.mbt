@@ -252,12 +252,17 @@ fn thing_beside(r : ChatRef, kind : String, t : Json?) -> (() -> Unit)? {
 }
 
 ///|
-/// A picture's or a video's width over its height as its tile shows it: its file's (a square where it does not say),
-/// kept between things_tallest and things_widest (more and its tile shows a part: a phone's long screenshot its top).
+/// A picture's or a video's width over its height as its tile shows it: its file's, else its ThumbHash's (own_size's,
+/// as the chat's; a square where neither says), kept between things_tallest and things_widest (more and its tile shows
+/// a part: a phone's long screenshot its top).
 fn media_aspect(t : Json) -> Double {
   let f = field(Some(t), "file")
   let (w, h) = (number(f, "width"), number(f, "height"))
-  let a = if w > 0.0 && h > 0.0 { w / h } else { 1.0 }
+  let a = if w > 0.0 && h > 0.0 {
+    w / h
+  } else {
+    thumb_ratio(text(f, "thumbhash")).unwrap_or(1.0)
+  }
   if a < things_tallest {
     things_tallest
   } else if a > things_widest {
@@ -805,8 +810,11 @@ fn media_tile_node(
   let likeness = fn() {
     @gallery.thumbhash_image(a.thumbhash, ground=@sf.theme().p.neutral_bg, under=@sf.theme().p.bg).unwrap_or("")
   }
-  // (longer than its tile: as wide as it, its top showing)
-  let tall = a.width > 0.0 && a.height > 0.0 && a.height / a.width > h / w + things_tall_by
+  // (longer than its tile, by its size or its ThumbHash's: covering it from its top, as wide as it, its likeness too)
+  let tall = match own_size(a) {
+    Some((aw, ah)) => ah / aw > h / w + things_tall_by
+    None => false
+  }
   let pressed = fn() { @sfbase.open_preview(r.station, owner, a, steps=InChat(Some(thread), r.session)) }
   let label = @sf.t(if video { "web-main.file.play" } else { "web-main.file.view" }, args=[("name", a.name)])
   @sf.action_box_node(line, fn() { label }, fn(_) { pressed() }, fn(b) {
@@ -814,7 +822,13 @@ fn media_tile_node(
     let picture = if video {
       @sfbase.video_still_node(b, src, r.station, owner, a, thumb)
     } else {
-      fn() { src.file_told(r.station, owner, stored_name(a.path)) }
+      // (one sent from here: the picture it was picked as, not asked of the station again)
+      fn() {
+        match @sfbase.sent_picture_told(r.station, a) {
+          Some(k) if k != "" && k != "!" => k
+          _ => src.file_told(r.station, owner, stored_name(a.path))
+        }
+      }
     }
     @sf.style_node(b, fn() { things_tile })
     b
@@ -830,14 +844,16 @@ fn media_tile_node(
     b.box(fn(i) {
       i
       .width(Is(Some(w)))
-      .height(Is(Some(if tall { w * a.height / a.width } else { h })))
+      .height(Is(Some(h)))
       .image(By(fn() {
         match picture() {
           "" | "!" => if likeness() != "" { Some((likeness(), "", things_tile_most)) } else { None }
           k => Some((k, likeness(), things_tile_most))
         }
       }))
-      .image_covers(Is(!tall))
+      // (in its own proportions, never stretched: a long one from its top)
+      .image_covers(Is(true))
+      .image_covers_at(Is(if tall { Some((0.0, 0.0)) } else { None }))
       // (its picture fading in as it comes, its likeness there at once)
       .image_fades(By(fn() { picture() != "" && picture() != "!" }))
       |> ignore

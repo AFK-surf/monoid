@@ -4407,3 +4407,125 @@ test "viewer on the tree, narrow: a phone's tall picture fitted clear of the bar
   let (_, y, _, _) = v.zoom.rect(t.ctx()).unwrap()
   assert_true(y >= @sf.viewer_bar_clear(390.0), msg="clear of the bar: \{y}")
 }
+
+///|
+test "a video's flight letterboxes it as its thumbnail in the chat does: film_letterboxed is image_box's rule at a video's least" {
+  let of = fn(w : Double, h : Double, hash : String) {
+    @sfbase.attachment_of({ "name": "clip.mp4", "path": "/w/uploads/clip.mp4", "width": w, "height": h, "thumbhash": Json::string(hash) })
+  }
+  let hash = "1QcSHQRnh493V4dIh4eXh1h4kJUI"
+  for a in [
+    of(1280.0, 720.0, ""), of(720.0, 1280.0, ""), of(1920.0, 200.0, ""), of(200.0, 1920.0, ""), of(3000.0, 300.0, ""),
+    of(16.0, 9.0, ""), of(40.0, 2.0, ""), of(0.0, 0.0, hash), of(0.0, 0.0, ""),
+  ] {
+    assert_eq(@sfbase.film_letterboxed(a), @sfpages.image_box(a, @sfpages.video_least).2, msg="\{a.width}×\{a.height} \{a.thumbhash}")
+  }
+  // (a strip thinner than a video's least: letterboxed)
+  assert_true(@sfbase.film_letterboxed(of(3000.0, 300.0, "")))
+  assert_false(@sfbase.film_letterboxed(of(1280.0, 720.0, "")))
+}
+
+///|
+test "the viewer stands in with the picture a file was picked as here: one sent, one still in a draft, never asked of a station" {
+  fresh_app()
+  let asked : Array[String] = []
+  let base = fixture("chat")
+  let src : Source = {
+    ..base,
+    file: fn(_, _, name) {
+      asked.push(name)
+      ""
+    },
+    poster: fn(_, _, name) {
+      asked.push(name)
+      ""
+    },
+  }
+  // (sent from here: the picture it was picked as, kept by its station and path)
+  let sent = @sfbase.attachment_of({ "name": "sent.png", "path": "/w/uploads/sent.png", "owner": "s-c1" })
+  @sfbase.sent_picture_kept(@sfbase.sent_key("ws1/st1", sent.path), "mem:test/sent-picked")
+  let v = @sfbase.new_viewer("ws1/st1", "s-c1", sent, None, NoSteps)
+  assert_eq(v.stand_in(src), "mem:test/sent-picked")
+  // (a video in a draft: its still drawn here, from what was picked; none asked of the station)
+  @sfbase.writing_picture_put("viewer-draft-1", "mem:test/draft-still")
+  let draft = @sfbase.attachment_of({ "name": "clip.mov", "path": "draft:viewer-draft-1" })
+  let dv = @sfbase.new_viewer("ws1/st1", "", draft, None, NoSteps)
+  assert_eq(dv.still(src), "mem:test/draft-still")
+  assert_eq(dv.stand_in(src), "mem:test/draft-still")
+  assert_eq(asked, [])
+}
+
+///|
+/// The chat's page and its composer made as nodes over fixture `mode` in a window `w` × `h`, walked by `script` (a drive's).
+fn film_page(mode : String, script : String, w? : Double = 390.0, h? : Double = 844.0, platform? : Int = 2) -> (@ui.Tester, Source) raise {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
+  let src = @sffixture.fixture(mode)
+  open_fixture_over(mode, src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w~, h~, platform~)
+  // (what is judged here is where a film's marks fly, not how the page moves as a message is sent: the parity tests'
+  // and chat_motion_frames_wbtest's)
+  t.motion_unjudged(true)
+  let failed = t.drive(script).filter(fn(l) { l.has_prefix("DRIVE FAIL") })
+  if !failed.is_empty() {
+    fail(failed.join("\n"))
+  }
+  (t, src)
+}
+
+///|
+/// The picture drawn at its largest that holds (x, y), (x, y, w, h).
+fn film_picture_at(t : @ui.Tester, x : Double, y : Double) -> (Double, Double, Double, Double)? {
+  let found = t.drawn_images().filter(fn(p) { x >= p[0] && x <= p[0] + p[2] && y >= p[1] && y <= p[1] + p[3] })
+  found.sort_by(fn(a, b) { (b[2] * b[3]).compare(a[2] * a[3]) })
+  found.get(0).map(fn(p) { (p[0], p[1], p[2], p[3]) })
+}
+
+///|
+/// Where words `s` are drawn that lie in `box`, from its start and its foot (dx, dy); None where none do.
+fn film_words_in(t : @ui.Tester, s : String, box : (Double, Double, Double, Double)) -> (Double, Double)? {
+  let (bx, by, bw, bh) = box
+  for w in t.words() {
+    if w.0 == s && w.1 >= bx && w.1 <= bx + bw && w.2 >= by && w.2 <= by + bh {
+      return Some((w.1 - bx, by + bh - w.2))
+    }
+  }
+  None
+}
+
+///|
+test "a film flying into the viewer from a quote's video carries its length in a quote's corner, as its card draws it; one in a draft carries none" {
+  // (an agent's recording quoted and sent: its quote's video in the new message, its length where its card has it)
+  let (t, _) = film_page("chat-download", "timeout 20000\nuntil 0:13\nwait 600\nrightclick 0:13\nwait 400\ntap 引用\nwait 900\ntap icon:arrow-up\nwait 1500\nexit\n", w=1280.0, h=800.0, platform=0)
+  let lengths = t.words().filter(fn(w) { w.0 == "0:13" })
+  lengths.sort_by(fn(a, b) { b.2.compare(a.2) })
+  guard lengths.get(0) is Some((_, lx, ly, _, _, _)) else { fail("no quote's video") }
+  guard film_picture_at(t, lx, ly) is Some(card) else { fail("no picture under its length") }
+  let in_card = film_words_in(t, "0:13", card).unwrap()
+  // (pressed: as its flight sets out, its length where its card drew it, carried by the corner its card has)
+  t.tap(card.0 + card.2 / 2.0, card.1 + card.3 / 3.0)
+  t.draw()
+  guard viewer.get() is Some(v) else { fail("the viewer did not open") }
+  assert_true(v.at.contains("/q:"), msg=v.at)
+  let flying = t.words().filter(fn(w) { w.0 == "0:13" }).map(fn(w) { ((w.1 - lx).abs() + (w.2 - ly).abs(), w.1, w.2) })
+  flying.sort_by(fn(a, b) { a.0.compare(b.0) })
+  guard flying.get(0) is Some((off, fx0, fy0)) else { fail("its length does not fly with it") }
+  assert_true(off < 0.75, msg="card \{lx},\{ly} flight \{fx0},\{fy0} (\{Repr(in_card)})")
+  // (a video waiting in the composer, opened: its tile has no length, nor does its flight)
+  let (d, src) = film_page("chat", "timeout 20000\nuntil 发消息\nwait 600\ntap 发消息\nwait 900\nexit\n")
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_add(src, w, "ws1/st1", "视频.mov", b"video")
+  let id = text(Some(w.files.get()[0]), "id")
+  // (its still, as one drawn here of its bytes is kept)
+  @sfbase.writing_picture_put(id, @sffixture.fixture_file("演示录屏.mp4"))
+  d.run_for(@ui.move_most_ms)
+  guard d.stays_of("ws1/st1//draft:" + id) is Some(((x, y, tw, th), _)) else { fail("no video tile") }
+  d.tap(x + tw / 2.0, y + th / 2.0)
+  d.run_for(@ui.frame_period_default)
+  guard viewer.get() is Some(dv) else { fail("the draft's video did not open") }
+  assert_true(dv.file.path.has_prefix("draft:"), msg=dv.file.path)
+  guard film_picture_at(d, x + tw / 2.0, y + th / 2.0) is Some((fx, fy, fw, fh)) else { fail("nothing flies from the tile") }
+  let marks = d.locate("icon:play").filter(fn(p) { p.0 >= fx && p.0 <= fx + fw && p.1 >= fy && p.1 <= fy + fh })
+  assert_eq(marks, [])
+}

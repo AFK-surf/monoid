@@ -330,8 +330,12 @@ fn agent_prose_node(
       glyphs~,
       // (a file it places: its card where it places it; a picture's its box, side by side with others, in a table's cell)
       files=fn(name) {
+        // (what it places as it is now: a file sent from here told its size, its upload taken over by the core's row,
+        // the same nodes reading it; as it was made where it is placed no more)
+        let current = fn(a : Attachment) { fn() { placed(name).unwrap_or(a) } }
         let card = fn(a) {
-          fn(d) { message_files_node(d, src, here.tips, place, fn() { [a] }, fn() { false }, by, at) }
+          let now = current(a)
+          fn(d) { message_files_node(d, src, here.tips, place, fn() { [now()] }, fn() { false }, by, at) }
         }
         match placed(name) {
           // an HTML page: drawn as a page where it is placed (message_viz_node), its card where it cannot be read; in a
@@ -357,7 +361,11 @@ fn agent_prose_node(
               draw: card(a),
               image: image_ratio(a).map(fn(r) {
                 (r, fn(d : @view.View, width : () -> Double) {
-                  message_image_node(d, src, place, fn() { a }, by, at, width, fn() { width() / r })
+                  let now = current(a)
+                  message_image_node(d, src, place, now, by, at, width, fn() {
+                    let (bw, bh, _) = image_box(now(), image_least, min_side=image_min_side)
+                    bh * width() / bw
+                  })
                 })
               }),
             })

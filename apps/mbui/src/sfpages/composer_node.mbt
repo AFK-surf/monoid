@@ -1443,7 +1443,7 @@ fn composer_extras_node(
           pictured=fn() { quote_picture_now(src, w, r.station, v()) is Some(_) },
           picture=fn(b) {
             // (a message's video on the station: its still, as a message's file shows it: video_still_node)
-            let still = quote_still_node(b, src, r.station, @signals.untracked(v))
+            let still = quote_still_node(b, src, r.station, v)
             let tile = waiting_tile_of(
               b,
               fn() {
@@ -1528,7 +1528,8 @@ fn waiting_tile_of(
     parent,
     fn(p) {
       p
-      .ground(By(fn() { if video() { @sf.theme().p.text } else { @ui.tree_theme().color(Neutral) } }))
+      // (a video's black as a message's video draws it, in either theme; a picture's neutral ground)
+      .ground(By(fn() { @ui.tree_theme().color(if video() { @sf.video_ground } else { Neutral }) }))
       .image(
         By(fn() {
           match key() {
@@ -1551,24 +1552,25 @@ fn waiting_tile_of(
 
 ///|
 /// A quote's own picture as the composer shows it now (quote_picture's, a node's): its key and whether it is a video's
-/// still; the device's own while it holds it (a mark's screenshot), else the station's image of a message quoted.
+/// still; the device's own while it holds it (a mark's screenshot), else the station's image of a message quoted. Read
+/// by a node: told as any of them comes.
 fn quote_picture_now(src : Source, w : Writing, station : String, q : Json?) -> (String, Bool)? {
   let own = field(q, "own")
   let kind = file_kind(text(own, "name"))
   guard own is Some(_) && (kind == "image" || kind == "video") else { return None }
-  match writing_pictures.get(text(own, "id")) {
+  match @sfbase.writing_picture_told(text(own, "id")) {
     Some(picture) => Some((picture, kind == "video"))
     None => {
       match field(own, "done") {
         Some(j) => {
           let a = attachment_of(j)
           let owner = text(Some(j), "owner")
-          match sent_picture(station, a) {
+          match @sfbase.sent_picture_told(station, a) {
             Some(k) => return Some((k, kind == "video"))
             None => ()
           }
           if owner != "" && kind == "image" {
-            return Some(((src.file)(station, owner, stored_name(a.path)), false))
+            return Some((src.file_told(station, owner, stored_name(a.path)), false))
           }
           // (a message's video on the station: its first frame, made where its tile is: quote_still_node)
           if owner != "" && kind == "video" {
@@ -1577,7 +1579,7 @@ fn quote_picture_now(src : Source, w : Writing, station : String, q : Json?) -> 
         }
         None => ()
       }
-      waiting_picture(src, w, own).map(fn(p) { (p, kind == "video") })
+      waiting_picture_told(src, w, own).map(fn(p) { (p, kind == "video") })
     }
   }
 }
@@ -1585,17 +1587,32 @@ fn quote_picture_now(src : Source, w : Writing, station : String, q : Json?) -> 
 ///|
 /// The first frame of quote `q`'s own video where it is a message's on the station (its `done` with its session
 /// `owner`), for its tile in node `b` (video_still_node: as a message's file shows it), "" while it is not made or
-/// where it is none such.
-fn quote_still_node(b : @view.View, src : Source, station : String, q : Json?) -> () -> String {
-  let done = field(field(q, "own"), "done")
-  let owner = text(done, "owner")
-  match done {
-    Some(j) if owner != "" && file_kind(text(field(q, "own"), "name")) == "video" => {
-      let a = attachment_of(j)
-      @sfbase.video_still_node(b, src, station, owner, a, station + "/" + owner + "/" + a.path)
+/// where it is none such. Followed as the quote comes to be one (its own video gone up while it is quoted): made again
+/// for the message it names.
+fn quote_still_node(b : @view.View, src : Source, station : String, q : () -> Json?) -> () -> String {
+  let still : @signals.Signal[String] = @signals.signal("")
+  let named = fn() -> (String, String)? {
+    let own = field(q(), "own")
+    let done = field(own, "done")
+    let owner = text(done, "owner")
+    if done is Some(_) && owner != "" && file_kind(text(own, "name")) == "video" {
+      Some((owner, text(done, "path")))
+    } else {
+      None
     }
-    _ => fn() { "" }
   }
+  b.pick(at_once=true, named, fn(p, which) {
+    p.over(Is(true)).presses(Is(false)) |> ignore
+    match (which, field(field(@signals.untracked(q), "own"), "done")) {
+      (Some((owner, _)), Some(j)) => {
+        let a = attachment_of(j)
+        let made = @sfbase.video_still_node(p, src, station, owner, a, station + "/" + owner + "/" + a.path)
+        p.reacts(made, fn(k) { still.set(k) })
+      }
+      _ => p.reacts(fn() { "" }, fn(k) { still.set(k) })
+    }
+  })
+  fn() { still.get() }
 }
 
 ///|
@@ -1613,7 +1630,7 @@ fn composer_file_node(
   let id = text(@signals.untracked(v), "id")
   let name = fn() { text(v(), "name") }
   let remove = fn() { writing_remove(src, w, id) }
-  item.pick(fn() { waiting_picture(src, w, v()) is Some(_) }, at_once=true, fn(p, pictured) {
+  item.pick(fn() { waiting_picture_told(src, w, v()) is Some(_) }, at_once=true, fn(p, pictured) {
     if pictured {
       @sf.with_corner_remove_node(
         p,
@@ -1622,15 +1639,18 @@ fn composer_file_node(
         fn(at) {
           // (a video's that the host has no picture of: its first frame, made from its bytes)
           let still = @sfbase.writing_still_node(at, id)
+          // (what its tile shows, what flies from it and what the viewer opens on: the picture picked, else the still
+          // drawn here of a video's bytes)
+          let picture = fn() {
+            match waiting_picture_told(src, w, v()) {
+              Some("") => still()
+              Some(k) => k
+              None => ""
+            }
+          }
           let tile = waiting_tile_of(
             at,
-            fn() {
-              match waiting_picture(src, w, v()) {
-                Some("") => still()
-                Some(k) => k
-                None => ""
-              }
-            },
+            picture,
             fn() { file_kind(name()) == "video" },
             fn() { going_now(v()) },
             fn() { gone_up(v()) },
@@ -1645,10 +1665,9 @@ fn composer_file_node(
           tile
           .shared(
             By(fn() {
-              let picture = waiting_picture(src, w, v()).unwrap_or("")
               // (one the viewer cannot open yet, a video whose first frame is still being made: the id it will open by
               // once it can, from here, drafted)
-              match waiting_seen(waiting_preview(r.station, id, name(), picture, v())) {
+              match waiting_seen(waiting_preview(r.station, id, name(), picture(), v())) {
                 "" => r.station + "//draft:" + id
                 seen => seen
               }
@@ -1659,7 +1678,7 @@ fn composer_file_node(
           |> ignore
           // tapped, it opens in the viewer (preview_composer_picture's): a press on what holds it and its ✕, so the ✕
           // over its corner is pressed within it, not beside it
-          at.on_press(fn() { preview_waiting(r.station, id, name(), waiting_picture(src, w, v()).unwrap_or(""), v()) })
+          at.on_press(fn() { preview_waiting(r.station, id, name(), @signals.untracked(picture), v()) })
           |> ignore
         },
         remove,
@@ -1867,6 +1886,11 @@ fn preview_waiting(station : String, id : String, name : String, picture : Strin
       match bytes {
         Some(b) => @sfbase.keep_read(waiting_seen(preview), b)
         None => ()
+      }
+      // (a draft's picture, kept for the viewer to stand in with as it opens (Viewer::stand_in, still): one restored
+      // with no bytes here, a video's still drawn here)
+      if a.path.has_prefix("draft:") && picture != "" && picture != "!" {
+        @sfbase.sent_picture_kept(@sfbase.sent_key(s, a.path), picture)
       }
       @sfbase.open_preview(s, owner, a)
     }
@@ -2261,7 +2285,9 @@ fn remember_sent_pictures_now(src : Source, w : Writing, station : String) -> Un
     let own = field(Some(q), "own")
     match writing_pictures.get(text(own, "id")) {
       Some(p) => remember(own, p)
-      None => remember(own, waiting_picture(src, w, own).unwrap_or(""))
+      // (a message's on the station quoted: its picture the station's, never one kept for a draft under its name)
+      None if text(field(own, "done"), "owner") == "" => remember(own, waiting_picture(src, w, own).unwrap_or(""))
+      None => ()
     }
   }
 }

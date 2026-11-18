@@ -1941,6 +1941,30 @@ fn film_flight(
 }
 
 ///|
+/// Whether a video's thumbnail in the chat letterboxes its still: sfpages' image_box at a video's least (96), a film
+/// thinner than that across or high in the chat's box (its own proportions, sent with it or its ThumbHash's at the
+/// unknown box's height, within 360×300, a tiny one drawn to 40) drawn in its proportions with the black round it, as
+/// its flight draws it too (film_shared). The same rule, held to it by preview_tree_wbtest.
+pub fn film_letterboxed(a : Attachment) -> Bool {
+  let least = 96.0
+  let (w, h) = if a.width > 0.0 && a.height > 0.0 {
+    (a.width, a.height)
+  } else {
+    guard a.thumbhash != "" && @pixels.thumbhash_ratio(@codec.from_base64(a.thumbhash)) is Some(r) else {
+      return false
+    }
+    ((160.0 * r).round(), 160.0)
+  }
+  let longer = if w > h { w } else { h }
+  let tiny = if 40.0 / longer > 1.0 { 40.0 / longer } else { 1.0 }
+  let across = 360.0 / w
+  let down = 300.0 / h
+  let scale = if tiny < across { tiny } else { across }
+  let scale = if scale < down { scale } else { down }
+  !(w * scale >= least && h * scale >= least)
+}
+
+///|
 /// A chat's film viewer `vw` opened from a thumbnail that is a node of the window's tree (a chat's page made as nodes:
 /// message_video_node's, the end of the flight that stays), in node `n`: its still where the player draws its picture,
 /// under the player, flown by the tree from that thumbnail as it opens and, let go of as it closes (Viewer::tree_back,
@@ -1954,6 +1978,11 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
     tree_thumb_seen(id) else {
     return fn() { false }
   }
+  // (how its thumbnail draws it: letterboxed or covering its box (message_video_node's), a quote's corner or a
+  // message's file's, a draft's tile with no length over it)
+  let letterbox = film_letterboxed(vw.file)
+  let draft = vw.file.path.has_prefix("draft:")
+  let corner = if vw.at.contains("/q:") { @sf.quote_picture_corner } else { @sf.message_file_corner }
   // (paired as it is made, its thumbnail shown then: its flight's end told once the change is committed, View::shared's
   // `told`; meanwhile as long as a flight may take at most)
   let made = n.cause_at()
@@ -2006,7 +2035,9 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
         k => Some((k, "", stage_px))
       }
     }))
-    .image_covers(Is(true))
+    // (as its thumbnail draws it, so it flies as one: covering its box, a letterboxed one contained)
+    .image_contains(Is(true))
+    .image_covers(Is(!letterbox))
     .shared(Is(id), @motion.flight_by(@motion.moved()), with_stays=true, route~, told=fn(start, end, along) {
       vw.tree_way_told(start, end, grown_of(vw.tree_back.untracked(), along))
     })
@@ -2028,7 +2059,22 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
         }
       }))
       |> ignore
-      @sf.video_capsule_node(c, vw.file.duration, corner=@sf.message_file_corner)
+      // (a draft's has none: its tile in the composer shows no length; a quote's picture its own corner; how far it
+      // has come, as the thumbnail says it: message_video_node's)
+      if !draft {
+        let coming = fn() -> Double? {
+          let dl = download_of(src, vw.station, vw.key, vw.name)
+          if flag(dl, "active") {
+            Some(number(dl, "progress"))
+          } else {
+            match keeping_of(src, vw.station, vw.key, vw.name) {
+              Some(_) as kept => Some(number(kept, "progress"))
+              None => None
+            }
+          }
+        }
+        @sf.video_capsule_node(c, vw.file.duration, corner~, coming~)
+      }
     })
     |> ignore
     // (closing, the frame its player showed, grabbed, over the still: asked for here to be decoded under the player,
@@ -2046,7 +2092,8 @@ fn film_shared(n : @view.View, src : Source, vw : Viewer) -> () -> Bool {
           None
         }
       }))
-      .image_covers(Is(true))
+      .image_contains(Is(true))
+      .image_covers(Is(!letterbox))
       |> ignore
     })
     |> ignore

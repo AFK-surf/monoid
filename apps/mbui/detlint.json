@@ -483,9 +483,7 @@
     },
     "shader-int": {},
     "raw-hover-ground": {},
-    "width-structure": {
-      "src/sfpages/message_quotes_node.mbt": 2
-    },
+    "width-structure": {},
     "reused-untracked-key": {
       "src/sfdesk/archive_side_node.mbt": 1,
       "src/sfpages/sidebar_node.mbt": 1,

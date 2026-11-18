@@ -1456,6 +1456,24 @@ fn waiting_picture(src : Source, w : Writing, v : Json?) -> String? {
 }
 
 ///|
+/// waiting_picture read by a node of the window's tree (the composer's and the board's made as nodes): told as the
+/// picture picked here is kept or let go and as the device's kept one of a draft comes, where the map and the source's
+/// read alone tell nothing.
+fn waiting_picture_told(src : Source, w : Writing, v : Json?) -> String? {
+  let id = text(v, "id")
+  match @sfbase.writing_picture_told(id) {
+    Some(picture) => Some(picture)
+    None if file_kind(text(v, "name")) == "image" && waiting_as(v) is AnyFile =>
+      match src.draft_picture_told(w.key, id) {
+        "!" => None
+        kept => Some(kept)
+      }
+    None if file_kind(text(v, "name")) == "video" && @sfbase.writing_put_here(id) && waiting_as(v) is AnyFile => Some("")
+    None => None
+  }
+}
+
+///|
 /// Whether a file waiting is going up now (its tile darkened with a spinner, its card saying how far): not up, not
 /// failed, nor a new chat's, which waits for its message (nothing going up yet).
 fn going_now(v : Json?) -> Bool {

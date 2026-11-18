@@ -1467,33 +1467,49 @@ fn board_files_node(
       let by_id = row.keyed_by(files, fn(f) { f.id })
       row.each(fn() { by_id.keys() }, fn(id) { id }, fn(slot, id) {
         let file = fn() { by_id.get(id.get()).unwrap_or({ id: "", name: "" }) }
+        let is_video = fn() { file_kind(file().name) == "video" }
+        // (the picture picked here, else the device's kept one of an image (told as each comes); a video's its still
+        // picked or drawn here; "!" none)
         let picture = fn() {
           let f = file()
-          if file_kind(f.name) != "image" {
-            "!"
-          } else {
-            match @sfbase.writing_pictures.get(f.id) {
-              Some(p) => p
-              None => (src.draft_picture)(key(), f.id)
-            }
+          match file_kind(f.name) {
+            "image" =>
+              match @sfbase.writing_picture_told(f.id) {
+                Some(p) => p
+                None => src.draft_picture_told(key(), f.id)
+              }
+            "video" => @sfbase.writing_picture_told(f.id).unwrap_or("!")
+            _ => "!"
           }
         }
-        @sf.waiting_tile_node(slot, fn(p) {
-          p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
-            if has_picture {
-              // (as big as the tile, covering it)
-              v
-              .width(Is(Some(@sf.waiting_tile_side)))
-              .height(Is(Some(@sf.waiting_tile_side)))
-              .image(By(fn() { Some((picture(), "", 168)) }))
-              .image_covers(Is(true))
-              |> ignore
-            } else {
-              v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
-              @sf.icon_node(v, "file", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
-            }
-          })
-        }, fn() { false }, fn() { None }, fn() { false }, fn() {  }, fn() { "" }, rim=false)
+        @sf.waiting_tile_node(
+          slot,
+          fn(p) {
+            p.pick(fn() { picture() != "" && picture() != "!" }, at_once=true, fn(v, has_picture) {
+              if has_picture {
+                // (as big as the tile, covering it, decoded for the device's pixels it is drawn at; a video's on its
+                // black, as the composer's)
+                v
+                .width(Is(Some(@sf.waiting_tile_side)))
+                .height(Is(Some(@sf.waiting_tile_side)))
+                .ground(By(fn() { if is_video() { @ui.tree_theme().color(@sf.video_ground) } else { 0L } }))
+                .image(By(fn() { Some((picture(), "", (@sf.waiting_tile_side * v.pixel_scale()).ceil().to_int())) }))
+                .image_covers(Is(true))
+                |> ignore
+              } else {
+                v.lines_up(Is(Some(Middle))).lies_along(Is(Middle)) |> ignore
+                @sf.icon_node(v, "file", 22.0, By(fn() { @sf.theme().p.muted })) |> ignore
+              }
+            })
+          },
+          fn() { false },
+          fn() { None },
+          fn() { false },
+          fn() {  },
+          fn() { "" },
+          video=fn() { is_video() && picture() != "" && picture() != "!" },
+          rim=false,
+        )
         |> ignore
       })
     }) |> ignore
