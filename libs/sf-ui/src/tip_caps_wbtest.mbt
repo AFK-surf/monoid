@@ -27,7 +27,7 @@ fn caps_light_of(c : Int64) -> Double {
 }
 
 ///|
-test "what floats: light as it was; in the dark lifted off a card and the raised grey, a lit rim, a deeper shadow" {
+test "what floats: light as it was; in the dark the raised grey with a lit rim and a deeper shadow, a tip lifted over it" {
   let _ = @ui.Tester::new(fn(_c) {  }, w=200.0, h=160.0, platform=0)
   set_dark(Some(false))
   assert_eq(panel_ground(), theme().p.canvas)
@@ -37,10 +37,8 @@ test "what floats: light as it was; in the dark lifted off a card and the raised
   set_dark(Some(true))
   let p = theme().p
   let ground = panel_ground()
-  assert_true(caps_light_of(ground) - caps_light_of(p.card) >= 8.0, msg="a card \{p.card}, what floats \{ground}")
-  assert_true(caps_light_of(ground) - caps_light_of(p.raised) >= 5.0, msg="raised \{p.raised}, what floats \{ground}")
-  assert_eq(ground & 0xFFL, 0xFFL)
-  // (its rim: 18% of the ink, as seen as the line is not)
+  assert_eq(ground, p.raised)
+  // (its rim: 20% of the ink, twice as seen as the line)
   let rim = panel_edge() & 0xFFL
   assert_eq(rim, ((p.line & 0xFFL).to_double() * float_edge_seen).round().to_int64())
   assert_true(rim > (p.line & 0xFFL), msg="its rim no more seen than the line")

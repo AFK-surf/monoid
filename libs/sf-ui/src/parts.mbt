@@ -1120,21 +1120,17 @@ let tip_cap_words : @ui.TextStyle = @ui.text_style(
 
 ///|
 /// A small panel's ground (glass.ts panel), what floats over a card (a menu, a popover, a hover card, ⌘K): the canvas
-/// in light; in the dark the raised grey lifted `float_lift` toward the words' ink (#323438), so it stands a step off a
-/// card (#28292C) and the raised grey under it: the raised grey itself was 2 levels off a card and read as one with it.
-/// Its line round it: panel_edge.
+/// in light, the raised grey in the dark. Not lifted further: the chips, tracks and empty cells in it are a step off
+/// it as they are (contrast_wbtest); what cuts it off a card in the dark is its line (panel_edge) and its shadow
+/// (float_shadow).
 pub fn panel_ground() -> Int64 {
   let t = theme()
   if t.dark {
-    mix(t.p.text, float_lift, t.p.raised)
+    t.p.raised
   } else {
     t.p.canvas
   }
 }
-
-///|
-/// How far what floats is lifted toward the words' ink in the dark (panel_ground).
-let float_lift : Double = 0.04
 
 ///|
 /// The line round what floats (panel_ground's): the line in light; in the dark the line seen `float_edge_seen` times as
