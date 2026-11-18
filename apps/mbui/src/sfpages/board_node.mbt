@@ -411,11 +411,13 @@ pub fn board_node(
     me: fn() { me_now.get() },
     columns: fn() { [] },
     cards_of: fn(_) { [] },
-    draft_id: @signals.signal(@sfbase.board_next_id()),
+    draft_id: @signals.signal(@sfbase.board_writing_id(@signals.untracked(ws))),
     station: @signals.signal(""),
     archived: archive,
     stint,
   }
+  // (another workspace in view: the line its own task's, as it was left there)
+  v.reacts(ws, fn(w) { own.draft_id.set(@sfbase.board_writing_id(w)) }, at_start=false)
   let raw_columns_now = @signals.computed(fn(_) { board_columns(own, items(), drafts()) })
   // (every column's cards and every state's (a narrow board's chips count them whatever the grouping), worked out
   // together as a chat or a draft changes; a map made anew each time: each column's own computed says whether its
@@ -1302,15 +1304,8 @@ let board_card_est : Double = 116.0
 /// under it going with it, a Move as far as the card is tall; opened, the card empty. Put away by what was written in
 /// it, gone at once: its draft comes in its place, grown from it (draft_card's), the cards under it going on one Move.
 fn board_add_room(b : @view.View, own : BoardOwn, tips : @sf.TipLayer) -> Unit {
+  // (opened on what was written in it and left: emptied only as that is added or put away, board_add's)
   let open = fn() { @sfbase.board_adding.get() }
-  // (opened: empty)
-  b.reacts(open, fn(o) {
-    if o {
-      let w = @sfbase.writing(own.src, @sfbase.board_file_key(@signals.untracked(own.ws), own.draft_id.untracked()))
-      w.field.set("")
-      writing_text(own.src, w, "")
-    }
-  }, at_start=false)
   // (made anew at once as what was written in it is added, closed and laid nowhere: the one that held it let go with
   // what makes the cards under it, so that what moves for its draft finds both done; opened, mbui's room's way)
   b.pick(fn() { own.room_made.get() }, fn(room, _) {
@@ -1347,7 +1342,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
   let discard = fn() {
     @sfbase.board_files_discard(own.src, ws, own.draft_id.untracked(), @signals.untracked(files))
     emptied(@signals.untracked(writing))
-    own.draft_id.set(@sfbase.board_next_id())
+    own.draft_id.set(@sfbase.board_writing_renew(ws))
   }
   let add = fn(w : Writing, start : Bool) {
     let st = @signals.untracked(fn() { board_station_now(own) })
@@ -1379,7 +1374,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     if added is Some(_) {
       // (narrow it stays, 待派发's own line, empty for the next)
       emptied(w)
-      own.draft_id.set(@sfbase.board_next_id())
+      own.draft_id.set(@sfbase.board_writing_renew(ws))
     }
     @signals.end_batch()
     guard start && added is Some(id) else { return }
@@ -1398,7 +1393,7 @@ fn board_add(a : @view.View, own : BoardOwn, wide : Bool, tips : @sf.TipLayer) -
     @sfbase.board_adding.set(false)
   }
   a.box(fn(card) {
-    card.owns(fn() { discard() }) |> ignore
+    // (let go of with the board, its words and pictures kept for it to come back to: put away only by × or Escape)
     card_at.val = Some(card)
     card.reacts(fn() {
       writing().files.get().map(fn(f) { text(Some(f), "error") }).filter(fn(e) { e != "" }).join("\n")
