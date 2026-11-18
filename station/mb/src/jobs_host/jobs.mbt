@@ -805,7 +805,9 @@ pub async fn JobsHost::collect(
     let dir = pjoin([self.dir, sub])
     for name in readdir(self.host, dir).unwrap_or([]) {
       guard job_file_id(name, sub) is Some(id) else { continue }
-      if up_ids.contains(id) || self.running.contains(id) {
+      // (one whose end the store keeps is not up, though `taken_in` has yet to let it go: jobs.ts `asked`'s
+      // `jobEnded`)
+      if up_ids.contains(id) {
         continue
       }
       let file = pjoin([dir, name])
@@ -819,6 +821,9 @@ pub async fn JobsHost::collect(
       }
       match job {
         None => {
+          if self.running.contains(id) {
+            continue
+          }
           guard lstat(self.host, file) is Some(st) else { continue }
           if now - num(field(st, "mtimeMs")).unwrap_or(now) < job_files_orphan_ms {
             continue
@@ -832,6 +837,14 @@ pub async fn JobsHost::collect(
             continue
           }
         }
+      }
+      // (started again while the files were read)
+      if self.running.contains(id) &&
+        (match job_of(id) {
+          None => true
+          Some(j) => text(j, "state") == "running"
+        }) {
+        continue
       }
       remove(self.host, file)
       if !gone.contains(id) {
