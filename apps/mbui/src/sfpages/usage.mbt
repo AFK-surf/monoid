@@ -318,3 +318,8 @@ let ug_legend_cost : @ui.TextStyle = @ui.text_style(size=Meta, leading=L5, weigh
 // kept across runs: a value (no field of it changes)
 let ug_scale_label : @ui.TextStyle = @ui.text_style(size=Caption, leading=L3, color=Subtle, wrap=false)
 
+
+///|
+pub fn usage_only_for_test(o : (String, String)) -> Unit {
+  usage_pick.only.set(o)
+}

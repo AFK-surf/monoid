@@ -102,3 +102,38 @@ test "usage probe: after a row's pick, dragged elsewhere or after another tap" {
   t.run_for(kept_glide_over_ms)
   uprobe_at(t, "B4 wheel 300")
 }
+
+///|
+test "usage probe: isolate" {
+  // legend picked after a scroll
+  let t = uprobe_open()
+  t.drag(180.0, 600.0, 180.0, 450.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_at(t, "C1 scrolled 150")
+  uprobe_tap(t, "Ana")
+  t.run_for(kept_switch_over_ms)
+  uprobe_end(t, "C1 legend after scroll")
+  // a row picked unscrolled, chats tab (a chat row opens a chat: use the people tab)
+  let t = uprobe_open()
+  uprobe_tap(t, "人")
+  t.run_for(kept_switch_over_ms)
+  uprobe_at(t, "C2 people tab, top")
+  uprobe_tap(t, "Ana")
+  t.run_for(kept_switch_over_ms)
+  uprobe_end(t, "C2 legend at top, people tab")
+  // people tab, scrolled, legend's pick by setting the pick (no press)
+  let t = uprobe_open()
+  t.drag(180.0, 600.0, 180.0, 300.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_tap(t, "人")
+  t.run_for(kept_switch_over_ms)
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.usage_only_for_test(("people", "lin@example.com")) })
+  t.run_for(kept_switch_over_ms)
+  uprobe_end(t, "C3 set, people tab, scrolled")
+  let t = uprobe_open()
+  t.drag(180.0, 600.0, 180.0, 300.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  @ui.view_tree().unwrap().event(t.time(), fn() { @sfpages.usage_only_for_test(("people", "lin@example.com")) })
+  t.run_for(kept_switch_over_ms)
+  uprobe_end(t, "C4 set, chats tab, scrolled")
+}
