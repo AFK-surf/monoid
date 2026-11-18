@@ -179,11 +179,11 @@ fn message_video_node(
         }
       }))
       .image_covers(By(fn() { !letterbox() }))
-      // (a letterboxed one's own proportions in the middle, the black round it, else all of its box; on its way from a
-      // tile (flies_in) one not letterboxed covering the box the way has, never its box at rest scaled in it with the
-      // black under it)
+      // (a letterboxed one's own proportions in the middle, the black round it; one not letterboxed none, covering its
+      // box (image_covers): image_in draws what it is given filling the room it says, so a still of other proportions
+      // than its box (one whose size was not sent, in the unknown box) was stretched to it)
       .image_in(By(fn() {
-        guard letterbox() || !(flies_from is Some(_) && f.flying_now()) else { return None }
+        guard letterbox() else { return None }
         let (w, h) = (w(), h())
         let (sw, sh) = share()
         let (pw, ph) = (w * sw, h * sh)
