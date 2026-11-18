@@ -1,8 +1,9 @@
 // A new device approved face to face in every way a device is (views/pair.ts), each with one to three trusted devices
 // that go wrong as real ones do (lock-pair-world.ts `Fault`), end to end through the calls the app makes (`lock.pair`,
 // `lock.pairCode`), the page it shows (`lock`) and the station's own admission. lock-pair-faults.test.ts holds a line
-// that fails between one trusted device and the new one where the chain has not moved; this holds the other ways in:
-// a newcomer's first app where it moved (`admit`), a member's web page there (`web`), a member's new app joining their
+// that fails between one trusted device and the new one where the chain has not moved; this holds every way in:
+// a member's first device where the chain never moved signed by an owner's (`chain`, one to three of them), a
+// newcomer's first app where it moved (`admit`), a member's web page there (`web`), a member's new app joining their
 // own lock (`personal`), and the new app of a member the chain carries bound to no log (`carried`).
 //
 // What must hold whatever happened (`laws`): every code typed is answered within the 40 s a call is given; a trusted
@@ -12,6 +13,7 @@
 // (PAIR_MODES_RUNS=<n> runs n seeds from 1).
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { t } from "../src/i18n.ts";
 import { PAIR_LATE_CODE_MS, PAIR_PROVE_MS, PAIR_SIGNED_MS } from "../src/views/pair.ts";
 import { type Fault, type Mode, MODES, type World, cleanText, world } from "./lock-pair-world.ts";
 
@@ -43,7 +45,7 @@ const errorOf = (a: Record<string, any> | undefined) => (a !== undefined && "err
 /// The laws, once a code typed was answered (`calls`: each with how long it took) and things settled.
 async function laws(w: World, calls: { ms: number | null; answer?: Record<string, any> }[], why: string) {
   for (const c of calls) assert.ok(c.ms !== null && c.ms < CALL_MS, `a code typed answered after ${c.ms} ms; ${why}`);
-  await w.r.host.time.pass(15_000, 500);
+  await w.r.host.time.pass(15_000, 1_000);
   const page = await w.page();
   const clean = cleanText(page);
   assert.equal(clean, null, `the page ${clean}; ${why}`);
@@ -52,12 +54,34 @@ async function laws(w: World, calls: { ms: number | null; answer?: Record<string
     assert.ok(calls.some((c) => c.answer !== undefined && "ok" in c.answer), `signed in by ${w.signedBy[0]!.id.slice(0, 6)}, yet no code typed was answered so: ${calls.map((c) => JSON.stringify(c.answer?.error ?? "ok")).join(", ")}; ${why}`);
     assert.equal(page.me.confirmed, true, `signed in, yet the page not confirmed (${JSON.stringify(page.me.pair)}); ${why}`);
     assert.equal(w.admits(), true, `signed in, yet the station does not let it in; ${why}`);
+    // In, and able to do what a trusted device does (sign, approve, open what is sealed for it): never confirmed with
+    // its own lock left behind, as a carried member's new app was with its approval lost (the station let it in by
+    // what its own device brought, this device outside that lock and signing nothing).
+    if (w.mode !== "web") assert.equal(page.signs, true, `signed in and confirmed, yet it does not sign; ${why}`);
+    if (w.mode !== "web" && w.mode !== "chain") {
+      assert.equal(w.inner.adb.personal().standing("s1"), "member", `signed in, yet not on its person's own lock; ${why}`);
+      assert.equal(w.inner.adb.personal().signerUnsaid("s1"), false, `on its person's own lock without its signer said; ${why}`);
+    }
   }
   if (page.me.confirmed === true) assert.notEqual(page.me.pair?.state, "failed", `in, yet its page says it failed: ${JSON.stringify(page.me.pair)}; ${why}`);
   for (const c of calls) if (c.answer !== undefined && "ok" in c.answer) assert.ok(signed, `answered approved, yet nothing signed it in; ${why}`);
 }
 
 // ── each bug, as it was found ──
+
+test("waiting in two workspaces, approved into the person's own lock by a carried member's app: in where the moved one lets it in by that lock; the other, whose chain binds them by none, says where it was approved, by its name", async () => {
+  const w = await world("carried", 1, { w2: true });
+  await w.page();
+  await asked(w);
+  const done = await typed(w, w.codes.get(w.ids[0]!)!);
+  assert.ok(done.answer !== undefined && "ok" in done.answer, JSON.stringify(done.answer));
+  await laws(w, [done], w.why());
+  const other = await w.pageOf2();
+  assert.equal(other.me.confirmed, false, "not in the other");
+  assert.equal(other.me.pair?.state, "failed", JSON.stringify(other.me.pair));
+  assert.equal(other.me.pair?.error, t("core-misc.lock.pairElsewhere", { names: "W" }), "says it was approved in W");
+  assert.equal(cleanText(other), null, `${cleanText(other)}`);
+});
 
 test("a carried member's new app: the code shown by their own app is shown on its page as showing, typed it is in, and its page never says it failed elsewhere", async () => {
   const w = await world("carried");
@@ -137,7 +161,6 @@ test("a code typed that one trusted device says is wrong at once, another's code
   await asked(w);
   await w.r.host.time.pass(1_000);
   const done = await typed(w, w.codes.get(w.ids[1]!)!);
-  console.log(`answered after ${done.ms} ms: ${JSON.stringify(done.answer?.error ?? "ok")}`);
   // (nothing signed: the other's code still shown, said wrong or gone)
   assert.ok(["pair_wrong", "pair_ended"].includes(errorOf(done.answer)?.code ?? ""), JSON.stringify(done.answer));
   assert.ok(done.ms !== null && done.ms <= PAIR_PROVE_MS + PAIR_SIGNED_MS + 100, `answered after ${done.ms} ms`);
@@ -177,7 +200,7 @@ async function once(seed: number): Promise<string> {
   return said;
 }
 
-const RUNS = Number(process.env.PAIR_MODES_RUNS ?? 24);
+const RUNS = Number(process.env.PAIR_MODES_RUNS ?? 30);
 const seeds = process.env.PAIR_MODES_SEED ? [Number(process.env.PAIR_MODES_SEED)] : Array.from({ length: RUNS }, (_, i) => i + 1);
 
 test("every way a new device is approved face to face, its trusted devices going wrong as they do: answered in time, in where it was signed in, its page clean", async () => {

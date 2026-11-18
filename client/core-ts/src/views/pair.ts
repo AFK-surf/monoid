@@ -630,12 +630,20 @@ let runs = 0;
 
 /// Whether `places` (where a trusted device shows its code, or this device was approved) take in workspace `ws`: by
 /// itself, or by the person's own lock of the account `ws` is this device's under (`person:<sub>`), which a member
-/// carried by a moved workspace's chain unbound (`carriedUnbound`) asks into from that workspace's page.
+/// carried by a moved workspace's chain unbound (`carriedUnbound`) asks into from that workspace's page, where that lock
+/// is what lets the device in there (`byOwnLock`).
 function coversWorkspace(inner: Inner, places: readonly string[], ws: string): boolean {
   if (places.includes(ws)) return true;
   if (isPerson(ws)) return false;
   const owner = inner.workspaces.owner(ws);
-  return owner !== null && places.includes(personOf(owner));
+  return owner !== null && places.includes(personOf(owner)) && byOwnLock(inner, ws, owner);
+}
+
+/// Whether workspace `ws` lets `sub`'s devices in by their own lock: its chain moved to its people's own logs, or binds
+/// them to a lock of their own. One whose chain binds them to none lets a device in only by its own entry, which an
+/// approval into their own lock does not sign.
+function byOwnLock(inner: Inner, ws: string, sub: string): boolean {
+  return movedHere(inner, ws) || stateOf(inner, ws).persons.get(sub) !== undefined;
 }
 
 function mine(inner: Inner, ws: string): J | null {
@@ -648,9 +656,10 @@ function mine(inner: Inner, ws: string): J | null {
   // had come of it). Put on its person's own lock is signed in to every workspace of theirs (`coversWorkspace`), and
   // said by those workspaces' names, never the lock's own (people are not asked to tell the two apart).
   if (y.state === "done" && y.approvedIn !== undefined && !coversWorkspace(inner, y.approvedIn, ws)) {
-    const where = [...new Set(y.approvedIn.flatMap((w) => (isPerson(w) ? [...inner.workspaces.owned()].filter(([x, o]) => personOf(o) === w && x !== ws).map(([x]) => x) : [w])))];
+    const where = [...new Set(y.approvedIn.flatMap((w) => (isPerson(w) ? [...inner.workspaces.owned()].filter(([x, o]) => personOf(o) === w && x !== ws && byOwnLock(inner, x, o)).map(([x]) => x) : [w])))];
     const names = where.map((w) => nameOf(inner, w)).filter((n) => n !== "");
-    return { state: "failed", devices: 0, error: t("core-misc.lock.pairElsewhere", { names: names.join(t("core-misc.lock.listSep")) }) };
+    // (none to name: said as one that went, never with a name left out)
+    return { state: "failed", devices: 0, error: names.length === 0 ? endedText([]) : t("core-misc.lock.pairElsewhere", { names: names.join(t("core-misc.lock.listSep")) }) };
   }
   const until = Math.max(0, ...[...y.met.values()].map((m) => m.until ?? 0));
   const typing = y.state === "code" || y.state === "wrong";
@@ -1228,16 +1237,23 @@ function signedAnyway(inner: Inner, y: Trying, base: string, results: readonly T
       if (inNow.length === 0 && subs.length === 0) return null;
       return { t: "approved", workspaces: [...inNow, ...subs.map(personOf)], failed: [], ...(subs.length > 0 ? { chains: { ...chains } } : {}) };
     };
-    // Each place not signed in yet read, each lock of the person's not found yet looked for, together, within one
-    // call's wait of the stations (lock.ts ASKED_MS).
-    const look = Effect.suspend(() => {
+    // Each lock of the person's not found yet looked for, then each place not signed in yet read, within one call's
+    // wait of the stations (lock.ts ASKED_MS): a lock found first is pinned before the reads, so a station that lets
+    // this device in by it takes it at the hello those reads make (a member carried unbound, `carriedUnbound`), and the
+    // stations of the workspaces it lets this device in to are asked again (`approvedHere`).
+    const look = Effect.gen(function* () {
       const within = asked(inner);
+      const joins = (unheard ? [...roots] : []).filter(([sub]) => chains[sub] === undefined).map(([sub, of]) =>
+        Effect.map(Effect.orElseSucceed(personal.recoverJoined(sub, of, within), () => null), (chain) => {
+          if (chain === null) return;
+          chains[sub] = chain;
+          for (const [ws, o] of inner.workspaces.owned()) if (o === sub && held(inner, ws)?.head != null) approvedHere(inner, ws);
+        }));
+      yield* Effect.forEach(joins, (e) => e, { concurrency: "unbounded", discard: true });
       const signed = signedIn();
       const reads = places.filter((ws) => !signed.includes(ws)).map((ws) =>
         within.wait(Effect.ignore(Effect.andThen(Effect.sync(() => { if (unheard && movedHere(inner, ws)) refusedAgain(inner, ws); }), read(inner, ws)), { log: "Unhandled", message: "pairing workspace read" })));
-      const joins = (unheard ? [...roots] : []).filter(([sub]) => chains[sub] === undefined).map(([sub, of]) =>
-        Effect.map(Effect.orElseSucceed(personal.recoverJoined(sub, of, within), () => null), (chain) => { if (chain !== null) chains[sub] = chain; }));
-      return Effect.forEach([...reads, ...joins], (e) => e, { concurrency: "unbounded", discard: true });
+      yield* Effect.forEach(reads, (e) => e, { concurrency: "unbounded", discard: true });
     });
     const named = Deferred.makeUnsafe<void>();
     if (unheard) {

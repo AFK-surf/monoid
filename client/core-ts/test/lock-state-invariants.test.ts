@@ -11,7 +11,15 @@
 //   no workspace. Its words never name a lock of one's own (to people there is one safe mode).
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { Effect } from "effect";
+import { Cloud, writeState } from "../../../station/src/cloud/state.ts";
 import { bring } from "../../../station/test/lock-moved-world.ts";
+import type { CoreError } from "../src/error.ts";
+import { lockView, read } from "../src/views/lock.ts";
+import { hello as stationHello, setUp } from "./lock-handover-world.ts";
 import { type Mode, type World, cleanText, stringsOf, world } from "./lock-pair-world.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -24,14 +32,29 @@ async function lawful(w: World, where: string): Promise<J> {
   // Law A
   if (page.locked === true) assert.equal(page.me.confirmed === true, w.admits(), `the page ${page.me.confirmed ? "confirmed" : "not confirmed"}, the station ${w.admits() ? "letting it in" : "refusing it"}; ${why}`);
   // Law B
+  waysOut(page, why);
+  return page;
+}
+
+/// Law B of a page whatever its world: not confirmed, a way out or who must act; confirmed and not signing where it
+/// could, why and what to press; an owner told who alone turns a moved workspace off and on, or offered it; no word of a
+/// lock of one's own.
+function waysOut(page: J, why: string, root?: boolean) {
   const me = page.me;
   if (page.locked === true && me.confirmed !== true) {
     const ways = [me.waiting === true && "asks", me.forgetText && "forget", me.restartText && "restart", me.outText && "out", me.needsAppText && "needs an app", me.reboundText && "rebound"].filter(Boolean);
     assert.ok(ways.length > 0, `not confirmed and nothing to do nor anyone named to do it; ${why}`);
   }
+  if (page.locked === true && me.confirmed === true && page.canSign === true && page.signs === false) {
+    assert.ok(me.unsigned === true || typeof me.confirmText === "string", `confirmed, not signing, and nothing says why nor what to press; ${why}`);
+  }
+  if (page.owner === true && root !== undefined) {
+    if (page.locked === true && !root) assert.equal(typeof page.rootText, "string", `another owner of a moved workspace not told who alone turns it off; ${why}`);
+    if (page.locked === false && root) assert.equal(typeof page.onAgainText, "string", `the root's person not offered turning it on again; ${why}`);
+    if (page.locked === false && !root) assert.equal(typeof page.rootText, "string", `another owner not told who alone turns it on again; ${why}`);
+  }
   for (const s of stringsOf(page)) assert.doesNotMatch(s, /个人锁|共享调试/, `says ${s}; ${why}`);
   assert.equal(cleanText(page), null, `${cleanText(page)}; ${why}`);
-  return page;
 }
 
 /// `lock.pair` asked, as a page that offers it asks it: never that it waits in no workspace.
@@ -102,4 +125,105 @@ test("every other device of a member's lost: offered to make this their only tru
   const back = await lawful(w, "added again");
   assert.equal(back.me.confirmed, true, `in (${w.why()})`);
   assert.equal(w.c.locked()!.state!.persons.get("s1"), w.inner.adb.personal().root("s1"), "bound at the station by the log begun here");
+});
+
+test("a web page of someone the list names with no app: told to install one, asking nothing; both laws", async () => {
+  const w = await world("admit", 1, { web: true });
+  const page = await lawful(w, "a web page, no app of theirs");
+  assert.deepEqual([page.me.confirmed, page.me.waiting], [false, false]);
+  assert.equal(typeof page.me.needsAppText, "string", JSON.stringify(page.me));
+});
+
+test("its lock of before replaced by one begun elsewhere, which the workspace binds them by: refused and not confirmed, offered to take the new one as theirs; taken, it joins it face to face and is in, signing: both laws at each step", async () => {
+  const w = await world("personal", 1, { replaced: true });
+  const replaced = await lawful(w, "its lock begun anew elsewhere");
+  assert.equal(w.inner.adb.personal().standing("s1"), "replaced", w.why());
+  assert.equal(replaced.me.confirmed, false, "not confirmed where the station refuses it");
+  assert.equal(typeof replaced.me.forgetText, "string", `offered to take the new one as theirs (${JSON.stringify(replaced.me)})`);
+  const forgot = await w.timed("lock.forgetOwn", { workspace: "ws" });
+  assert.ok(forgot.answer !== undefined && "ok" in forgot.answer, `lock.forgetOwn: ${JSON.stringify(forgot.answer)}`);
+  await lawful(w, "the new one taken as theirs");
+  await asks(w, "the new one taken as theirs");
+  await typesShown(w, "asking their device on the new one");
+  const after = await lawful(w, "joined the new one");
+  assert.deepEqual([after.me.confirmed, after.signs], [true, true], `in and signing (${w.why()})`);
+});
+
+/// Both laws of the owner's world (lock-handover-world.ts): the page as this device holds it once the workspace was
+/// read, station A's admission for Law A; `root`, whether this device's person is the one who alone turns it off.
+async function lawfulOwner(w: Awaited<ReturnType<typeof setUp>>, where: string, root?: boolean): Promise<J> {
+  await w.run(Effect.ignore(read(w.inner, "ws")));
+  const page = lockView(w.inner, "ws") as J;
+  const why = `${where}: ${JSON.stringify(page.me).slice(0, 300)}`;
+  if (page.locked === true) assert.equal(page.me.confirmed === true, stationHello(w.stations.A, "s1", w.base, page.role).in, `the page and station A disagree; ${why}`);
+  waysOut(page, why, root);
+  return page;
+}
+const ask = (w: Awaited<ReturnType<typeof setUp>>, name: string, params: Record<string, unknown>) => w.run(Effect.tryPromise({ try: () => w.r.ask(name, params), catch: (e) => e as CoreError }));
+
+test("put on its person's own lock without its signer said there: confirmed, not signing, says why and 验证; said, it signs: both laws at each step", async () => {
+  const w = await world("personal", 1, { unsaid: true });
+  await asks(w, "waiting");
+  await typesShown(w, "asked");
+  const before = await lawful(w, "its signer not said");
+  assert.deepEqual([before.me.confirmed, before.signs, typeof before.me.confirmText], [true, false, "string"], JSON.stringify(before.me));
+  const said = await w.timed("lock.confirmSigner", { workspace: "ws" });
+  assert.ok(said.answer !== undefined && "ok" in said.answer, `lock.confirmSigner: ${JSON.stringify(said.answer)}`);
+  const after = await lawful(w, "its signer said");
+  assert.deepEqual([after.me.confirmed, after.signs, after.me.confirmText ?? null], [true, true, null], JSON.stringify(after.me));
+});
+
+test("the root's person turns a moved workspace off and on again: offered at each step, both laws", async () => {
+  const w = await setUp({ early: true });
+  assert.equal((await w.hand()).error, undefined);
+  const on = await lawfulOwner(w, "moved, on", true);
+  assert.deepEqual([on.locked, on.rootText ?? null], [true, null]);
+  const off = await ask(w, "lock.disable", { workspace: "ws" });
+  assert.equal(off.error, undefined, off.error?.message);
+  const offPage = await lawfulOwner(w, "moved, off", true);
+  assert.equal(offPage.locked, false);
+  const again = await ask(w, "lock.open", { workspace: "ws" });
+  assert.equal(again.error, undefined, again.error?.message);
+  const onPage = await lawfulOwner(w, "moved, on again", true);
+  assert.equal(onPage.locked, true);
+});
+
+test("another owner of a workspace moved by the root's person: told who alone turns it off, and turning it off is refused; off by that person, told who alone turns it on: both laws", async () => {
+  const w = await setUp({ mine: "second", unbound: true, noLog: true });
+  const on = await lawfulOwner(w, "moved by another, on", false);
+  assert.equal(on.locked, true);
+  const off = await ask(w, "lock.disable", { workspace: "ws" });
+  // (refused: who alone may is said on the page; this device on no log of its person's answers as one on none does)
+  assert.ok(["lock_root_only", "lock_moved"].includes(off.error?.code ?? ""), JSON.stringify(off));
+  // The root's person turns it off on their own device: `off` in their log, brought to the stations.
+  const first = w.first as unknown as { say: (kind: string, what: Record<string, unknown>, ws?: string) => unknown };
+  first.say("off", {}, "ws");
+  for (const c of Object.values(w.stations)) bring(c, w.first as never, true, "ws");
+  const offPage = await lawfulOwner(w, "turned off by the root's person", false);
+  assert.equal(offPage.locked, false, JSON.stringify(offPage).slice(0, 300));
+});
+
+test("every station of a moved workspace reset on its machine (stillfail lock reset): the lock let go here, never brought back by a read, the cloud's copy dropped, and turned on again anew: both laws", async () => {
+  const w = await setUp({ early: true });
+  assert.equal((await w.hand()).error, undefined);
+  await lawfulOwner(w, "moved, on", true);
+  // Each station's lock gone from its machine: a station keeping none, its state as before.
+  for (const name of ["A", "B"] as const) {
+    const was = w.stations[name];
+    const data = mkdtempSync(join(tmpdir(), "lock-reset-"));
+    writeState(data, { origin: "https://stillfail.test", station: name === "A" ? w.A : w.B, workspace: "ws", workspace_name: "W", name, relay_url: "", relay_urls: [], grant_keys: w.g.keys, peers: [{ id: w.A, name: "A" }, { id: w.B, name: "B" }], revocations: [] } as never);
+    w.stations[name] = new Cloud(data, false);
+    void was;
+  }
+  const reset = await lawfulOwner(w, "every station reset");
+  assert.equal(reset.locked, false, "the lock let go here");
+  await w.r.host.time.pass(5_000);
+  for (const c of Object.values(w.stations)) assert.equal(c.chain(null), null, "never brought back by a read");
+  assert.equal(w.r.cloud.chains.has("ws"), false, "the cloud's copy dropped");
+  // Turned on anew: a genesis of its own, the cloud's copy of before no `lock_exists` in its way; its stations, which
+  // keep none, are protected again by the owner's 保护 (lock.joinStation), each its own step.
+  const again = await ask(w, "lock.open", { workspace: "ws" });
+  assert.equal(again.error, undefined, again.error?.message);
+  assert.deepEqual(w.r.cloud.chains.get("ws")?.map((e) => e.kind), ["genesis"], "a genesis of its own at the cloud");
+  await lawfulOwner(w, "on anew");
 });
