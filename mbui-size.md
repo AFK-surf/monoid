@@ -6,6 +6,7 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle | Android idle PSS |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b02c0c878](https://github.com/AFK-surf/monoid/commit/b02c0c878ec23b7d2caf279494cbf7fa718d5d80) perf(mbui): the chat's old view held through the s | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 | [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.57 | 63.54 | 96.58 | 124.62 |
 | [12b686226](https://github.com/AFK-surf/monoid/commit/12b68622622ca727739e7b1e9bf7e1271625cc01) feat(station): a station's switch to run the MoonB | 2.55 | 3.43 | 14.03 | 36 | 53.97 | 31.56 | 63.51 | 96.72 | 121.49 |
 | [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 2.55 | 3.43 | 14.03 | 36 | 53.96 | 31.56 | 63.51 | 96.72 | 120.01 |
@@ -45,12 +46,12 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13e6f174e](https://github.com/AFK-surf/monoid/commit/13e6f174e360c105172832205fd342177986a7f9) test(station): a station updates itself again afte | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.68 | 117.45 |
 | [2f5363912](https://github.com/AFK-surf/monoid/commit/2f5363912f1a1d6837b16de2c728c060b6da4f95) fix(ci): prefer optimized mbui objects and rebalan | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.75 | 117.45 |
 | [dde626684](https://github.com/AFK-surf/monoid/commit/dde626684c75622e82debae47ca8e3c0a00f0816) revert(station): a release carries the TypeScript  | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.42 | 117.45 |
-| [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 2.54 | 3.42 | 13.99 | 35.92 | 53.82 | 31.49 | 63.36 | 96.73 | 117.45 |
 
 ## Minimal framework baseline (`libs/mbui` `demo`)
 
 | commit | web app.js br | gzip | raw | APK | libmbui.so | Mac zip | Mac program | Mac idle |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| [b02c0c878](https://github.com/AFK-surf/monoid/commit/b02c0c878ec23b7d2caf279494cbf7fa718d5d80) perf(mbui): the chat's old view held through the s | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.9 |
 | [042088dc8](https://github.com/AFK-surf/monoid/commit/042088dc8d7ec3459dea2d6df43a9ddc068d8827) fix(station): replace a codex app-server that cann | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [12b686226](https://github.com/AFK-surf/monoid/commit/12b68622622ca727739e7b1e9bf7e1271625cc01) feat(station): a station's switch to run the MoonB | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
 | [dc4fa2f8b](https://github.com/AFK-surf/monoid/commit/dc4fa2f8bc81320b09dedb45692081a287aa5ca1) ui: pick, offers and 前往文件夹 over @headless.combobox | 0.44 | 0.57 | 2.18 | 3.27 | 5.22 | 1.6 | 4.3 | 53.59 |
@@ -90,4 +91,3 @@ Written by .github/workflows/mbui-size.yml; every line in mbui-size.jsonl (bytes
 | [13e6f174e](https://github.com/AFK-surf/monoid/commit/13e6f174e360c105172832205fd342177986a7f9) test(station): a station updates itself again afte | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.33 |
 | [2f5363912](https://github.com/AFK-surf/monoid/commit/2f5363912f1a1d6837b16de2c728c060b6da4f95) fix(ci): prefer optimized mbui objects and rebalan | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.33 |
 | [dde626684](https://github.com/AFK-surf/monoid/commit/dde626684c75622e82debae47ca8e3c0a00f0816) revert(station): a release carries the TypeScript  | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
-| [c8401bba3](https://github.com/AFK-surf/monoid/commit/c8401bba37ffa2bd7704e9449c472a53817f780a) fix(core): open visited chats at their latest page | 0.43 | 0.57 | 2.17 | 3.27 | 5.21 | 1.59 | 4.28 | 53.54 |
