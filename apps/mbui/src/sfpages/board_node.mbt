@@ -180,7 +180,7 @@ let card_key : Double = 28.0
 
 ///|
 /// A split's (先理清's) spacing: between its blocks (its head, its words, its lines, ＋ 添加, its keys), between its lines.
-let clarify_block_gap : Double = 12.0
+let clarify_block_gap : Double = 16.0
 
 ///|
 let clarify_item_gap : Double = 8.0
@@ -2059,8 +2059,8 @@ priv enum DraftShows {
 /// after the spark, cut short; alike on each task of one split.
 fn draft_group_tag(parent : @view.View, words : () -> String) -> Unit {
   parent.box(fn(row) {
-    row.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
-    @sf.icon_node(row, "sparks", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+    @sf.icon_node(row, "sparks", card_station_mark, By(fn() { @sf.theme().p.muted })) |> ignore
     @sf.words_node(row, words, fn() { meta_cut_look }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
   })
   |> ignore
@@ -2302,7 +2302,7 @@ fn clarify_task_node(
     })
     |> ignore
     row.box(fn(main) {
-      main.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))).gap(Is(2.0)) |> ignore
+      main.grow(Is(1.0)).shrink(Is(1.0)).basis(Is(Some(0.0))).min_width(Is(Some(0.0))) |> ignore
       // its words, plain; edited in place, on a light ground
       main.box(fn(w) {
         w
@@ -2361,8 +2361,8 @@ fn clarify_task_node(
 /// what it waits for gone or errored, in the board's words for what went wrong).
 fn wait_mark_node(parent : @view.View, words : () -> String, broken : Bool) -> Unit {
   parent.box(fn(row) {
-    row.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
-    @sf.icon_node(row, "wait", 12.0, By(fn() { if broken { @sf.theme().p.red } else { @sf.theme().p.muted } })) |> ignore
+    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))).min_width(Is(Some(0.0))) |> ignore
+    @sf.icon_node(row, "wait", card_station_mark, By(fn() { if broken { @sf.theme().p.red } else { @sf.theme().p.muted } })) |> ignore
     @sf.words_node(row, words, fn() { if broken { meta_danger_look } else { meta_cut_look } }).shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
   })
   |> ignore
@@ -2380,8 +2380,8 @@ fn draft_waits_key(parent : @view.View, wait : () -> @sfbase.BoardWait) -> Unit 
     ))
   }
   parent.box(fn(row) {
-    row.row(Is(true)).gap(Is(4.0)).lines_up(Is(Some(Middle))) |> ignore
-    @sf.icon_node(row, "wait", 12.0, By(fn() { @sf.theme().p.muted })) |> ignore
+    row.row(Is(true)).gap(Is(6.0)).lines_up(Is(Some(Middle))) |> ignore
+    @sf.icon_node(row, "wait", card_station_mark, By(fn() { @sf.theme().p.muted })) |> ignore
     key.val = Some(
       @sf.link_node(row, fn() { @sfbase.board_wait_words(wait()) }, list, chevron=true, style=fn() { card_meta_look }, ink=fn() {
         @sf.theme().p.muted
@@ -2403,7 +2403,9 @@ fn draft_wait_node(card : @view.View, src : Source, own : BoardOwn, id : String,
       _ => Free
     }
   }
-  card.pick(fn() { wait() }, at_once=true, fn(w, now) {
+  // (nothing where it waits for nothing: no box of its own, so no gap of the card's either)
+  card.show(fn() { !(wait() is (Free | Ready)) }, fn(shown) {
+  shown.pick(fn() { wait() }, at_once=true, fn(w, now) {
     match now {
       Free | Ready => ()
       // (one by its words; several by how many, pressed which ones; and, a grey line under, when it starts itself)
@@ -2416,7 +2418,7 @@ fn draft_wait_node(card : @view.View, src : Source, own : BoardOwn, id : String,
             draft_waits_key(b, fn() { wait() })
           }
           b.box(fn(h) {
-            h.padding(Is((16.0, 0.0, 0.0, 0.0))) |> ignore
+            h.padding(Is((card_station_mark + 6.0, 0.0, 0.0, 0.0))) |> ignore
             @sf.words_node(h, fn() { @sf.t("web-main.board.clarify.auto_hint") }, fn() { meta_cut_look }) |> ignore
           })
           |> ignore
@@ -2441,6 +2443,7 @@ fn draft_wait_node(card : @view.View, src : Source, own : BoardOwn, id : String,
         })
         |> ignore
     }
+  })
   })
 }
 
