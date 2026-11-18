@@ -475,14 +475,18 @@ pub fn seg_fill_node(
           })
           |> ignore
           let lens = fn() { if strip.glass_solid() { 0.0 } else { thumb.held.shown(strip) } }
+          // (past either end as the cover's spring overshoots it, the end pair's blend carried on, as @ui.cover_rect's
+          // does: held at the end, the thumb would stop dead there from full speed)
           let rect = fn() {
             guard n > 0 else { return None }
-            let p = dclamp(thumb.position.shown(strip), 0.0, (n - 1).to_double())
-            let a = p.floor().to_int()
-            let b = imin(a + 1, n - 1)
+            let h = segmented_narrow_h - 2.0 * seg_inset
+            guard n > 1 else { return Some((x_of(0), 0.0, w_of(0), h)) }
+            let p = thumb.position.shown(strip)
+            let i = p.floor().to_int()
+            let a = if i < 0 { 0 } else { imin(i, n - 2) }
             let f = p - a.to_double()
             let w = w_of(a)
-            Some((x_of(a) + w * f, 0.0, w + (w_of(b) - w) * f, segmented_narrow_h - 2.0 * seg_inset))
+            Some((x_of(a) + w * f, 0.0, dmax(0.0, w + (w_of(a + 1) - w) * f), h))
           }
           // (each of its corners as the corner rule makes it in the track's (@ui corners.mbt, as the old frame works them out
           // after layout): concentric with the track's where it lies in that corner as far from both its edges, at an end

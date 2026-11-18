@@ -330,6 +330,29 @@ test "a narrow page's choice selects the pressed option once and keeps its label
 }
 
 ///|
+test "a narrow page's thumb sent to either end goes past it on its spring and back, never stopped dead there, on the display's frames" {
+  // (judged frame by frame on the display's frames (sizes_across: the thumb's left edge stopped dead at an end, as it
+  // was held to the end options while its cover's spring went past them); each press at another point between two
+  // frames, so that a frame falls where the way crosses the end at speed; the default run's alone, @ui.test_at_a_rate)
+  if @ui.test_at_a_rate() {
+    return
+  }
+  let rig = seg_rig(true, 390.0, seg_three)
+  let t = rig.t
+  let between = 8
+  for i in 0..<between {
+    for k in [2, 0] {
+      t.advance(t.frame_period() * i.to_double() / between.to_double())
+      guard t.find(seg_three[k]) is Some((x, y)) else { fail("no \{seg_three[k]}") }
+      t.touch(0, x, y)
+      t.touch(2, x, y)
+      t.run_shown(@ui.move_most_ms)
+    }
+  }
+  assert_eq((rig.chosen.val, rig.at.get()), (2 * between, 0))
+}
+
+///|
 test "a held narrow choice draws the Backdrop lens and respects reduced transparency" {
   let rig = seg_rig(true, 390.0, seg_three)
   let t = rig.t
