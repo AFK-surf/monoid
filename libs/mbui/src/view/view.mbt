@@ -9761,6 +9761,15 @@ fn View::comes(
     if answered.val || tree.answer_holds(v.at) {
       tree.answer_mark(v.at)
     }
+    // (one closing its way, come back at once (a show's shown again by an answer as it went): whole now, its way done,
+    // never left laid out as that way had it, taking none of its room while it is drawn whole)
+    match v.live() {
+      Some(m) if to >= 1.0 && m.coming => {
+        (m.come_off)()
+        come_done(tree, v, m)
+      }
+      _ => ()
+    }
     return false
   }
   let st = n.flex.style
