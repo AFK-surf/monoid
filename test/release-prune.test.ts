@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { baseFile } from "../scripts/release-deltas.ts";
-import { aheadOf, doomedOf } from "../scripts/release-prune.ts";
+import { aheadOf, apiWithRetry, deleteDoomed, doomedOf, encodeObjectKey, type Fetch } from "../scripts/release-prune.ts";
 
 // What scripts/release-prune.ts deletes of the releases bucket, as a decision on its keys and feeds: the bases of the
 // next deltas stay (the installers the feeds' deltas are from, the Windows installers' raw forms with them, the station's archives its
@@ -153,4 +153,73 @@ test("an Android release's symbols: older than 30 days by when the bucket says t
   assert.deepEqual(others(doomedOf(keys, feeds, null, NOW, old)), others(doomedOf(keys, feeds, null, NOW)));
   assert.deepEqual(others([...doomed]), [1, 2, 3, 4, 5, 6].map(apk));
   assert.deepEqual(doomedOf(keys, feeds, null, NOW).filter((k) => k.startsWith("symbols/")), [], "none goes without times");
+});
+
+// Asking Cloudflare's API: a fetch that answers from a script, and a sleep that only writes down how long it was asked.
+const scripted = (answers: (Response | Error)[]) => {
+  const urls: string[] = [];
+  const fetchFn: Fetch = async (url) => {
+    urls.push(url);
+    const next = answers.shift();
+    if (next === undefined) throw new Error("asked once too often");
+    if (next instanceof Error) throw next;
+    return next;
+  };
+  return { fetchFn, urls };
+};
+const sleeper = () => {
+  const slept: number[] = [];
+  return { slept, sleep: async (ms: number) => { slept.push(ms); } };
+};
+
+test("an object's key: each segment escaped, its slashes kept", () => {
+  assert.equal(encodeObjectKey("desktop/stillfail-0.1.7-arm64-mac.zip"), "desktop/stillfail-0.1.7-arm64-mac.zip");
+  assert.equal(encodeObjectKey("staged/1-abc/a b#c?.tar.gz"), "staged/1-abc/a%20b%23c%3F.tar.gz");
+  assert.equal(encodeObjectKey("symbols/android/x+y%z"), "symbols/android/x%2By%25z");
+});
+
+test("the API: a reset connection and a 429 are asked again, the 429 after its Retry-After held to 1..15 s", async () => {
+  const reset = Object.assign(new Error("other side closed"), { code: "UND_ERR_SOCKET" });
+  const { fetchFn, urls } = scripted([reset, new Response("slow down", { status: 429, headers: { "Retry-After": "2" } }), new Response("ok")]);
+  const { slept, sleep } = sleeper();
+  const response = await apiWithRetry(fetchFn, sleep, "t", "/x");
+  assert.equal(await response.text(), "ok");
+  assert.deepEqual(slept, [5_000, 2_000]);
+  assert.equal(urls.length, 3);
+  for (const [header, ms] of [["60", 15_000], ["0", 1_000], [null, 5_000], ["Wed, 21 Oct 2026 07:28:00 GMT", 5_000]] as const) {
+    const { fetchFn } = scripted([new Response("", { status: 429, headers: header === null ? {} : { "Retry-After": header } }), new Response("ok")]);
+    const s = sleeper();
+    await apiWithRetry(fetchFn, s.sleep, "t", "/x");
+    assert.deepEqual(s.slept, [ms], String(header));
+  }
+});
+
+test("the API: the third answer is returned as it is, the third throw thrown; a 404 is not asked again", async () => {
+  const five = () => new Response("", { status: 500 });
+  const a = scripted([five(), five(), five()]);
+  assert.equal((await apiWithRetry(a.fetchFn, sleeper().sleep, "t", "/x")).status, 500);
+  assert.equal(a.urls.length, 3);
+  const b = scripted([new Error("reset"), new Error("reset"), new Error("reset 3")]);
+  await assert.rejects(apiWithRetry(b.fetchFn, sleeper().sleep, "t", "/x"), /reset 3/);
+  const c = scripted([new Response("", { status: 404 })]);
+  assert.equal((await apiWithRetry(c.fetchFn, sleeper().sleep, "t", "/x")).status, 404);
+  assert.equal(c.urls.length, 1);
+});
+
+test("deleting: a key that will not go is said and left for the next prune, the others deleted, nothing thrown", async () => {
+  const keys = Array.from({ length: 10 }, (_, i) => `android/stillfail-beta-${i}.apk`);
+  const lines: string[] = [];
+  const asked: string[] = [];
+  const result = await deleteDoomed(keys, async (key) => {
+    asked.push(key);
+    if (key === keys[2]) return new Response("", { status: 500 });
+    if (key === keys[9]) throw new Error("other side closed");
+    return new Response(null, { status: key === keys[5] ? 404 : 204 });
+  }, (line) => lines.push(line));
+  assert.deepEqual(result, { deleted: 8, left: 2 });
+  assert.deepEqual(asked.sort(), [...keys].sort());
+  assert.deepEqual(lines, [
+    `deleting ${keys[2]} failed (500): the next prune deletes it`,
+    `deleting ${keys[9]} failed (other side closed): the next prune deletes it`,
+  ]);
 });

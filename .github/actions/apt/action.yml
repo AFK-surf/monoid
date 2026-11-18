@@ -20,22 +20,32 @@ runs:
     # cache matched it, they are what apt would install again, so they are installed from the cache with nothing asked
     # of any mirror: apt-get update alone, of every list the image names (GitHub's third parties' among them), took 74 s
     # of preview's linux (x64) build with every .deb in the cache (run 44340331135, cancelled at its time, exit 124).
+    # v2: kept since apt was asked with --no-upgrade (the caches from before held the image's clang and LLVM upgraded,
+    # some 460 MB unpacked again every run), and they are not taken back.
     - shell: bash
       run: |
-        echo "APT_SPEC=$(printf '%s\n' "${ImageOS:-linux}-${ImageVersion:-0}" "${{ inputs.packages }}" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
+        echo "APT_SPEC=$(printf 'v2\n%s\n' "${ImageOS:-linux}-${ImageVersion:-0}" "${{ inputs.packages }}" | sha256sum | cut -c1-12)" >> "$GITHUB_ENV"
     - uses: actions/cache/restore@v4
       id: debs
       with:
         path: .ci/apt
         key: apt-${{ inputs.name }}-${{ env.APT_SPEC }}-${{ github.sha }}
-        restore-keys: |
-          apt-${{ inputs.name }}-${{ env.APT_SPEC }}-
-          apt-${{ inputs.name }}-
+        restore-keys: apt-${{ inputs.name }}-${{ env.APT_SPEC }}-
     - shell: bash
       run: |
         d="$GITHUB_WORKSPACE/.ci/apt"
         mkdir -p "$d/partial"
         matched="${{ steps.debs.outputs.cache-matched-key }}"
+        # Nothing of the packages' manuals, docs and translations is unpacked, and man-db does not index what was: the
+        # -dev packages' tens of thousands of small files and man-db's trigger took 25-35 s of 66 (preview's linux (x64),
+        # run 44356246478). These runners are GitHub's, made anew for each job.
+        sudo rm -f /var/lib/man-db/auto-update
+        printf '%s\n' \
+          'path-exclude=/usr/share/man/*' \
+          'path-exclude=/usr/share/doc/*' \
+          'path-exclude=/usr/share/gtk-doc/*' \
+          'path-exclude=/usr/share/locale/*' \
+          | sudo tee /etc/dpkg/dpkg.cfg.d/99-ci-nodoc > /dev/null
         # The cache kept for this image and these packages: installed as it is, no mirror asked. Where dpkg refuses it
         # (a package the image updated since), apt is asked as below.
         case "$matched" in
@@ -79,7 +89,7 @@ runs:
           sudo timeout 60 apt-get update -q -o APT::Update::Error-Mode=any
         }
         if { answers || ! ls "$d"/*.deb > /dev/null 2>&1; } && update &&
-          sudo timeout 120 apt-get install -f -y -q --no-install-recommends -o Dir::Cache::Archives="$d" ${{ inputs.packages }}; then
+          sudo timeout 120 apt-get install -f -y -q --no-upgrade --no-install-recommends -o Dir::Cache::Archives="$d" ${{ inputs.packages }}; then
           sudo apt-get autoclean -q -o Dir::Cache::Archives="$d"
           sudo chown -R "$(id -u)" "$d"
           echo "APT_KEY=apt-${{ inputs.name }}-$APT_SPEC-$(cd "$d" && ls *.deb | sha256sum | cut -c1-16)" >> "$GITHUB_ENV"
