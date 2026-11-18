@@ -69,3 +69,36 @@ test "usage probe: a person picked in the breakdown" {
   uprobe_at(t, "B 林 picked")
   uprobe_end(t, "B 林 picked")
 }
+
+///|
+fn uprobe_b() -> @ui.Tester {
+  let t = uprobe_open()
+  t.drag(180.0, 600.0, 180.0, 300.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_tap(t, "人")
+  t.run_for(kept_switch_over_ms)
+  uprobe_tap(t, "林")
+  t.run_for(kept_switch_over_ms)
+  t
+}
+
+///|
+test "usage probe: after a row's pick, dragged elsewhere or after another tap" {
+  let t = uprobe_b()
+  t.drag(180.0, 300.0, 180.0, 100.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_at(t, "B2 dragged from 300")
+  t.drag(180.0, 100.0, 180.0, 500.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_at(t, "B2 dragged down from 100")
+  let t = uprobe_b()
+  t.tap(380.0, 30.0)
+  t.run_for(kept_switch_over_ms)
+  t.drag(180.0, 650.0, 180.0, 150.0, steps=20)
+  t.run_for(kept_glide_over_ms)
+  uprobe_at(t, "B3 after another tap")
+  let t = uprobe_b()
+  t.wheel(180.0, 400.0, 300.0)
+  t.run_for(kept_glide_over_ms)
+  uprobe_at(t, "B4 wheel 300")
+}
