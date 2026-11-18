@@ -455,6 +455,52 @@ test "⌘K: ↓ and ↑ move the list only as far as brings the line chosen whol
 }
 
 ///|
+/// What the corner rule finds in ⌘K's panel as what the words find comes to a line or so (its list as tall as its
+/// lines, the panel's foot over its last), on main as well: a design not yet decided, apart from where its list stands.
+let finder_short_corners_known : Array[String] = [
+  "「通用 快捷键一览 ⌘/」 (at 360,90 560×142, node 610) (corner 30): something lies in its bottom right, and its corner is not one of the ladder's [42, 26, 24, 18, 10]",
+  "「对话 整理发布清单 Willow ·  2 分钟…」 (at 360,90 560×142, node 610) (corner 30): something lies in its bottom right, and its corner is not one of the ladder's [42, 26, 24, 18, 10]",
+]
+
+///|
+test "⌘K: as words are typed letter by letter and cleared, the list stands at its top, the line chosen, the first, in view" {
+  let calls : Array[Made] = []
+  let t = wide_tester(calls, w=1280.0, h=640.0, platform=0)
+  t.corners_known(finder_short_corners_known)
+  t.draw()
+  t.key(@ui.key_of_char('k'), mods=@ui.mod_cmd)
+  t.run_for(@ui.move_most_ms)
+  // the list's top, its first block, and the line shown chosen (its ground as wide as the list), where it stands now
+  let look = fn(at : String) raise {
+    let (px, py, pw, ph) = switcher_panel_rect(t)
+    let lists = t.boxes_held().filter(fn(b) { b.w > pw * 0.8 && b.x >= px && b.x + b.w <= px + pw && b.y >= py && b.y < py + ph && b.h > 0.0 && t.boxes_held().iter().any(fn(c) { c.parent == b.index && c.y <= b.y && c.h >= b.h - 0.5 }) })
+    assert_true(lists.length() > 0, msg="\{at}: the list")
+    let list = lists[0]
+    let content = t.boxes_held().iter().find_first(fn(c) { c.parent == list.index && c.h >= list.h - 0.5 })
+    match content {
+      Some(c) => assert_true((c.y - list.y).abs() < 0.5, msg="\{at}: what it scrolls at \{c.y}, its top at \{list.y}")
+      None => fail("\{at}: what the list scrolls")
+    }
+    let rows = t.drawn_instances().filter(fn(a) { a[5] == 0.0 && (a[0] - list.x).abs() < 0.5 && (a[2] - list.w).abs() < 0.5 })
+    // (none where nothing is found to choose)
+    assert_true(rows.length() <= 1, msg="\{at}: one line shown chosen at most: \{Repr(rows)}")
+    for r in rows {
+      assert_true(r[1] >= list.y - 0.5 && r[1] + r[3] <= list.y + list.h + 0.5, msg="\{at}: the line chosen at \{r[1]}, in view from \{list.y}")
+    }
+  }
+  for words in [["快", "捷", "键"], ["发", "布"], ["签", "名"]] {
+    for w in words {
+      t.type_text(w)
+      t.run_for(@ui.move_most_ms)
+      look(w)
+    }
+    t.clear()
+    t.run_for(@ui.move_most_ms)
+    look("cleared after \{words.join("")}")
+  }
+}
+
+///|
 test "⌘K at its end leaves its last result as far from the foot as from the sides" {
   for width in [600.0, 1280.0] {
     let calls : Array[Made] = []

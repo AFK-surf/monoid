@@ -680,6 +680,9 @@ pub fn finder_list_node(
     // (made anew as anything it is made of changes: a command's line holds the function it runs)
     same=fn(a, b) { physical_equal(a, b) },
   )
+  let place : @view.ListPlace[String] = @view.ListPlace::new()
+  // (the words the lines were last made for: other words, the list from its top)
+  let made_for : Ref[String?] = Ref(None)
   v.reacts(fn() { lines.get() }, fn(ls) {
     let picks : Array[Int] = []
     for i, l in ls {
@@ -687,6 +690,25 @@ pub fn finder_list_node(
         picks.push(i)
       }
     }
+    // The list at its top stays there as the lines change under it with its first line chosen (what can be done by
+    // the words answered after what they found, put over it), and goes back to its top for other words: else it
+    // holds the line it showed at its top where it was, the line chosen, the first, over what shows.
+    let words = query.untracked()
+    let was = finder.lines.untracked()
+    // (where a place asked of it is not yet done, what it has in sight is where it was, not where it goes)
+    let at_top = place.asking() ||
+      (match place.sight_now() {
+        Some(s) => was.get(0).map(finder_key) == Some(s.first) && s.into <= 0.5
+        None => true
+      })
+    let first = if finder.kind.untracked() != "" { 1 } else { 0 }
+    if made_for.val != Some(words) || (at_top && finder.chosen.untracked() <= first) {
+      match ls.get(0) {
+        Some(l) => place.bring(finder_key(l))
+        None => ()
+      }
+    }
+    made_for.val = Some(words)
     finder.lines.set(ls)
     finder.picks.set(picks)
     // (the one chosen kept among them)
@@ -732,7 +754,6 @@ pub fn finder_list_node(
       None => false
     }
   })
-  let place : @view.ListPlace[String] = @view.ListPlace::new()
   // ↑ ↓: the line chosen brought into view only where it is not wholly in it, the list moved no further than that
   // (its top at the top where it lay over it, with its kind's heading over it where it is the first of its kind; its
   // foot at the foot, over the room that fades after the last line, where it lay under it); in view, the list stays
