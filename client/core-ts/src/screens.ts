@@ -901,7 +901,8 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
           // The way to the station replaced (its pings went unanswered, a new link answered beside it: mesh.ts
           // `#suspect`): opened again on the new one, this one kept meanwhile.
           const wire = inner.stations.requests.wire;
-          if (wire.replaced) yield* Effect.forkScoped(Effect.andThen(wire.replaced(addr), Effect.sync(() => Deferred.doneUnsafe(again, Effect.void))));
+          const onReplaced = socket.replaced ? socket.replaced() : wire.replaced ? wire.replaced(addr) : null;
+          if (onReplaced !== null) yield* Effect.forkScoped(Effect.andThen(onReplaced, Effect.sync(() => Deferred.doneUnsafe(again, Effect.void))));
           for (;;) {
             const next = yield* Effect.raceFirst(
               Effect.map(Effect.result(socket.reply.body.take), (r) => ({ r }) as const),
@@ -975,7 +976,7 @@ function view(inner: Inner, c: Extract<ScreenCall, { kind: "view" }>, progress: 
                 // The login field in focus, while driving it: this device's password manager may fill it (`fill`).
                 if (s.login === null) delete state.login;
                 else if (state.control && isObject(s.login) && typeof s.login.host === "string" && s.login.host !== "" && s.login.host.length <= 253 && (s.login.field === "username" || s.login.field === "password")) {
-                  state.login = { host: s.login.host, field: s.login.field };
+                  state.login = { host: s.login.host, field: s.login.field, ...(s.login.filled === true ? { filled: true } : {}) };
                 }
                 // A page's passkey sign-in, while driving it: this device's passkeys may answer it (`passkey`).
                 if (s.passkey === null) delete state.passkey;

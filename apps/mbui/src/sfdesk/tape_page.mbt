@@ -417,7 +417,7 @@ fn tape_made(
       Some(
         (
           "place/remote",
-          fn(v, _page, _under, _stint, _k) {
+          fn(v, _page, _under, _stint, k) {
             v.switch_by(fn() { @sfbase.workspace_in_view(src).0.map(fn(w) { w.id }) }, fn(p, ws_id) {
               guard ws_id is Some(wid) else { return }
               context_node(p)
@@ -442,6 +442,11 @@ fn tape_made(
                   }
                 },
                 width~,
+                shown=pane_shows(k),
+                keep_screen=fn(st, sc) {
+                  side_screen_shown(src, st, sc) ||
+                  (app.nav.top() is Screen(top) && top.station == st && top.screen == sc)
+                },
               )
             })
           },

@@ -735,6 +735,38 @@ sim("a_link_gone_quiet_is_replaced_by_one_opened_beside_it_at_once", async (s) =
   await close(s, station, mesh);
 });
 
+sim("a_screen_view_opening_on_a_link_gone_quiet_moves_to_the_new_link_at_once", async (s) => {
+  const { mesh, station } = await setup(s);
+  const id = `w/${station.id()}`;
+  const wire = wireOf(s, mesh);
+  const addr = StationAddr.parse(id);
+  const old = await s.run(mesh.link(id, grants("ok", { n: 0 })));
+  await request(s, old, head("/admin/api/overview"));
+  station.deadBelow = station.conns.length;
+  station.screenFrames = [{ key: true, ts: 1000, data: new Uint8Array([1, 2, 3]) }];
+  const started = s.time.now();
+  const opening = s.runner.run(
+    Effect.scoped(
+      Effect.gen(function* () {
+        const sock = yield* wire.screen!(addr, head("/admin/api/screens/desktop/view"), { maxWidth: 1280, maxHeight: 720, codecs: ["jpeg"], control: true });
+        const chunk = yield* sock.reply.body.take;
+        assert.ok(chunk !== null && chunk.length > 0);
+        // When the link this view opened on later goes quiet and is replaced, sock.replaced() succeeds.
+        station.deadBelow = station.conns.length;
+        s.wakes.wake(network(s.host));
+        yield* sock.replaced!();
+        return sock.reply.status;
+      }),
+    ),
+  );
+  s.wakes.wake(network(s.host));
+  const status = await s.settle(opening);
+  assert.equal(status, 200);
+  assert.ok(s.time.now() - started < 2 * PROBE_MS, `${s.time.now() - started}`);
+  assert.equal(station.views.length, 1);
+  await close(s, station, mesh);
+});
+
 /// The side run, seed 705982920 (2026-10-15): a link gone quiet was replaced, and the new one lost within RETIRE_MS; the
 /// read asked then went back on the old, which was closed under it as it retired.
 sim("a_link_lost_soon_after_it_replaced_one_gone_quiet_is_not_traded_for_that_one", async (s) => {

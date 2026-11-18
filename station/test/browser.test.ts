@@ -27,7 +27,8 @@ import { Tabs } from "../src/browser/tabs.ts";
 import { openAgentsDoor } from "../src/tools/http.ts";
 import { McpEndpoint } from "../src/tools/mcp.ts";
 import WebSocket, { WebSocketServer } from "ws";
-import { TabView, hostOf, jpegSize, rpFor, sameClientData, keyCode, keyEvent, toViewport } from "../src/browser/view.ts";
+import vm from "node:vm";
+import { LOGIN_BINDING, LOGIN_HOOK, TabView, hostOf, jpegSize, rpFor, sameClientData, keyCode, keyEvent, toViewport } from "../src/browser/view.ts";
 import { makeScreens } from "../src/screens/source.ts";
 import { browserTools, howTo } from "../src/browser/tool.ts";
 import { asked, parseFill, parsePasskey } from "../src/mesh/screens.ts";
@@ -1419,4 +1420,63 @@ test("user pages as a browser's tabs: a new tab by the app's own id on a blank p
   const stored = JSON.parse(readFileSync(join(dir, "user-tabs.json"), "utf8"));
   assert.deepEqual(stored.tabs.map((t: { id: string; url: string }) => [t.id, t.url]), [["u_0123456789ab", "https://mail.proton.me/u/0/inbox"], ["u_ba9876543210", "about:blank"]]);
   await b.close();
+});
+
+test("LOGIN_HOOK and watchLogin report filled state, update as values change, and re-report on a second view", async () => {
+  const listeners = new Map<string, ((e: any) => void)[]>();
+  const pw = { tagName: "INPUT", type: "password", autocomplete: "current-password", name: "pw", id: "pw", value: "", disabled: false, readOnly: false, form: null };
+  const doc: any = {
+    activeElement: pw,
+    addEventListener: (type: string, fn: (e: any) => void) => {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+  };
+  const said: string[] = [];
+  const win: any = { [LOGIN_BINDING]: (s: string) => said.push(s) };
+  win.window = win;
+  win.top = win;
+  win.document = doc;
+  vm.runInNewContext(LOGIN_HOOK, win);
+  assert.deepEqual(said, ['{"field":"password"}']);
+
+  // Agent or user fills the focused field and fires input: now reported with filled: true.
+  pw.value = "s3cr3t";
+  for (const fn of listeners.get("input") ?? []) fn({});
+  assert.deepEqual(said.at(-1), '{"field":"password","filled":true}');
+
+  // Second view opens on the same document without reload: re-running LOGIN_HOOK invokes __stillfailLoginTell and emits current state.
+  said.length = 0;
+  vm.runInNewContext(LOGIN_HOOK, win);
+  assert.deepEqual(said, ['{"field":"password","filled":true}']);
+
+  // Clearing the field emits unfilled again; leaving focus emits null.
+  pw.value = "";
+  for (const fn of listeners.get("input") ?? []) fn({});
+  assert.deepEqual(said.at(-1), '{"field":"password"}');
+  doc.activeElement = null;
+  for (const fn of listeners.get("focusout") ?? []) fn({ relatedTarget: null });
+  assert.deepEqual(said.at(-1), "null");
+
+  // TabView.watchLogin forwards filled: true when present and omits it when empty.
+  const cdp = new FakeCdp();
+  cdp.answers["Target.getTargetInfo"] = () => ({ targetInfo: { targetId: "T", url: "https://account.line.biz/login" } });
+  const v = new TabView({ cdp, session: "S", targetId: "T", now: () => 0 });
+  const heard: any[] = [];
+  const stop = v.watchLogin((l) => heard.push(l));
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: '{"field":"password"}' }, "S");
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: '{"field":"password","filled":true}' }, "S");
+  await turn();
+  cdp.emit("Runtime.bindingCalled", { name: LOGIN_BINDING, payload: "null" }, "S");
+  await turn();
+  assert.deepEqual(heard, [
+    { host: "account.line.biz", field: "password" },
+    { host: "account.line.biz", field: "password", filled: true },
+    null,
+  ]);
+  stop();
+  v.close();
 });

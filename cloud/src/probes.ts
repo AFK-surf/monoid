@@ -1,5 +1,5 @@
 // still.fail's relays measured from inside the networks devices are on, every half hour (index.ts scheduled): a TCP
-// ping to each relay's 443 from the same probes in China's carriers (China Mobile, China Telecom, China Unicom), its
+// ping to each relay's port (the one its URL names, else its scheme's) from the same probes in China's carriers (China Mobile, China Telecom, China Unicom), its
 // data centres and Hong Kong, by Globalping (https://globalping.io: free, its probes run by people and hosts who
 // volunteer them). How a relay does for a network is seen before a device on it complains, and beside what devices
 // report themselves (mesh.speed): 2026-10-30 Guangzhou's China Telecom reached Hong Kong's relay in
@@ -31,7 +31,7 @@ export type ProbeLine = {
   probe_city: string;
   probe_asn: number;
   probe_network: string;
-  /** Round trips of a TCP handshake to the relay's 443, ms (none when no packet came back). */
+  /** Round trips of a TCP handshake to the relay's port, ms (none when no packet came back). */
   rtt_avg?: number;
   rtt_min?: number;
   rtt_max?: number;
@@ -52,12 +52,13 @@ export async function probeRelays(relays: string[], fetch: Fetch, wait: (ms: num
   const ids = new Map<string, string>();
   let first: string | null = null;
   for (const relay of relays) {
-    const target = URL.canParse(relay) ? new URL(relay).hostname.replace(/^\[|\]$/g, "") : null;
-    if (target === null) continue;
+    const at = endpointOf(relay);
+    if (at === null) continue;
+    const { target, port } = at;
     const response: Response | null = await fetch(GLOBALPING, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type: "ping", target, locations: first ?? LOCATIONS, measurementOptions: { protocol: "TCP", port: 443, packets: 16 } }),
+      body: JSON.stringify({ type: "ping", target, locations: first ?? LOCATIONS, measurementOptions: { protocol: "TCP", port, packets: 16 } }),
     }).catch(() => null);
     const id: unknown = response?.ok ? ((await response.json().catch(() => null)) as { id?: unknown } | null)?.id : null;
     if (typeof id !== "string") continue;
@@ -73,6 +74,20 @@ export async function probeRelays(relays: string[], fetch: Fetch, wait: (ms: num
     found.set(relay, value.results.flatMap((r) => lineOf(r)));
   }
   return found;
+}
+
+/** The host and TCP port a relay's URL listens on: the port it names, else its scheme's (relays on 24444 and 8445 are
+ * on the list, so a probe of 443 there measured whatever else the machine serves). An IPv6 host loses its brackets,
+ * as Globalping takes the bare address. Only http and https URLs are relays; anything else is none. */
+export function endpointOf(relay: string): { target: string; port: number } | null {
+  if (!URL.canParse(relay)) return null;
+  const url = new URL(relay);
+  if (url.protocol !== "http:" && url.protocol !== "https:") return null;
+  const target = url.hostname.replace(/^\[|\]$/g, "");
+  if (target === "") return null;
+  const port = url.port === "" ? (url.protocol === "http:" ? 80 : 443) : Number(url.port);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) return null;
+  return { target, port };
 }
 
 function lineOf(result: unknown): ProbeLine[] {
