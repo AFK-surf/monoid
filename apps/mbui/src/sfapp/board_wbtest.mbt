@@ -2060,3 +2060,41 @@ test "大屏, 试用新对话页 on: the chat beside the board made as nodes, it
   assert_true(board_beside_made_nodes(t, c7_last, "turned on"), msg="turned on: the page made as nodes")
   assert_eq(board_beside_faults(t), [])
 }
+
+///|
+test "待派发: a draft's picture the device reads late comes to its tile, and a video picked here stands on a video's black with its play mark" {
+  new_run()
+  let base = fixture("board")
+  let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    // (no bytes of the picture here: the device's kept one, read as composer.picture answers, late)
+    draft_picture: fn(key, id) {
+      base.images.get("", "draft\u{1}" + key + "\u{1}" + id, "mem:test/board-restored", fn(_, done) { answer.val = Some(done) })
+    },
+  }
+  open_fixture_over("board", src)
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1440.0, h=900.0)
+  t.run_for(@ui.move_most_ms)
+  // (the video's still drawn here, as one picked here keeps it; a few bytes, as a test's pictures are)
+  let still = "mem:test/board-still"
+  @ui.add_image(still, @pixels.png(2, 2, FixedArray::make(16, b'\x30')))
+  @sfbase.writing_picture_put("board-vid", still)
+  @sfbase.board_draft_add(src, "ws1", "带图和视频的待办", "ws1/st1", "Willow", files=[
+    { id: "board-img", name: "恢复.png" },
+    { id: "board-vid", name: "录屏.mp4" },
+  ])
+  |> ignore
+  t.run_for(@ui.move_most_ms)
+  assert_true(answer.val is Some(_), msg="the device's kept picture was not asked")
+  assert_eq(t.locate("img:mem:test/board-restored").length(), 0)
+  (answer.val.unwrap())(Ok((Json::object({}), Some(@pixels.png(2, 2, FixedArray::make(16, b'\xff'))))))
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  assert_true(t.locate("img:mem:test/board-restored").length() > 0, msg="the restored picture did not come to its tile")
+  // (the video's tile: its still on a video's black, its play mark over it)
+  guard t.locate("img:" + still).get(0) is Some((vx, vy)) else { fail("the video's still is not drawn") }
+  let grounds = t.drawn_rects().filter(fn(r) { vx >= r.0 && vx <= r.0 + r.2 && vy >= r.1 && vy <= r.1 + r.3 }).map(fn(r) { r.4 })
+  assert_true(grounds.contains(0x000000FFL), msg="\{Repr(grounds)}")
+  let marks = t.locate("icon:play-mark").filter(fn(p) { (p.0 - vx).abs() < 28.0 && (p.1 - vy).abs() < 28.0 })
+  assert_true(marks.length() > 0, msg="no play mark on the video's tile: \{Repr(t.locate("icon:play-mark"))} at \{vx},\{vy}")
+}

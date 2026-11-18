@@ -60,6 +60,32 @@ pub fn[K] ListPlace::sight_now(self : ListPlace[K]) -> Sight[K]? {
 }
 
 ///|
+/// What the list has in sight at this moment as it is counted (Sight's), even while a fling glides or a notch eases on
+/// (`on_sight` and `sight_now` tell where that leaves it, at its end): for what records where the reader left the list
+/// as they leave it mid-glide, never for what is made or bound. None before its first layout or once it is let go.
+pub fn[K] ListPlace::sight_live(self : ListPlace[K]) -> Sight[K]? {
+  (self.at.sight_of)().map(fn(s) { s.keyed(self.ids) })
+}
+
+///|
+/// How far block `to`'s top lies under block `from`'s as the list counts its blocks now (measured, or `est` where not
+/// yet): read off what is counted, nothing laid out or measured. None where either is not among its keys, or the list is
+/// not made; `measured`: none as well where a block from `from` down to `to` is not measured yet (how far is then not
+/// known, only guessed).
+pub fn[K : Hash + Eq] ListPlace::span_between(
+  self : ListPlace[K],
+  from : K,
+  to : K,
+  measured? : Bool = false,
+) -> Double? {
+  // (looked up, not numbered: a key never among them gets no number for it)
+  match (self.ids.ids.get(from), self.ids.ids.get(to)) {
+    (Some(a), Some(b)) => (self.at.span_of)(a, b, measured)
+    _ => None
+  }
+}
+
+///|
 /// What is in sight of the keys by their numbers, as of the keys (ListKeys).
 fn[K] Sight::keyed(self : Sight[Int], ids : ListKeys[K]) -> Sight[K] {
   {

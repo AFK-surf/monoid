@@ -179,7 +179,49 @@ function clone(v: unknown, seen: Map<object, unknown>): unknown {
   for (const k of Object.keys(v)) o[k] = clone((v as Record<string, unknown>)[k], seen);
   return o;
 }
-if (typeof g.structuredClone !== "function") g.structuredClone = (v: unknown) => clone(v, new Map());
+
+/// What the plain copy gives up on: `structuredClone` copies again with `clone`.
+const NOT_PLAIN: unknown = Symbol("not plain");
+/// How deep and how many objects the plain copy goes before it gives up (a cycle: deeper than any JSON the core holds).
+const PLAIN_DEPTH = 64;
+const PLAIN_MOST = 1 << 20;
+let plainLeft = 0;
+
+/// A copy of JSON's arrays and plain objects, without `clone`'s map of what was copied: nearly everything the core copies
+/// (records, summaries, overviews), and putting each of its objects in a Map was most of what copying one took in Hermes.
+/// NOT_PLAIN where it meets anything else (bytes, a Map, a Set, a Date, an object of a class), goes deeper than
+/// PLAIN_DEPTH (a cycle) or copies more than PLAIN_MOST objects (one object met in many places): `clone` copies those,
+/// each object once.
+function plain(v: unknown, depth: number): unknown {
+  if (v === null || typeof v !== "object") return v;
+  if (depth >= PLAIN_DEPTH || --plainLeft < 0) return NOT_PLAIN;
+  if (Array.isArray(v)) {
+    const a: unknown[] = [];
+    for (let i = 0; i < v.length; i++) {
+      const x = plain(v[i], depth + 1);
+      if (x === NOT_PLAIN) return NOT_PLAIN;
+      a.push(x);
+    }
+    return a;
+  }
+  const proto = Object.getPrototypeOf(v);
+  if (proto !== Object.prototype && proto !== null) return NOT_PLAIN;
+  const o: Record<string, unknown> = {};
+  for (const k of Object.keys(v)) {
+    const x = plain((v as Record<string, unknown>)[k], depth + 1);
+    if (x === NOT_PLAIN) return NOT_PLAIN;
+    o[k] = x;
+  }
+  return o;
+}
+
+/// `structuredClone` where the host has none (Hermes): the plain copy, else `clone`'s.
+export function cloneOf(v: unknown): unknown {
+  plainLeft = PLAIN_MOST;
+  const copy = plain(v, 0);
+  return copy !== NOT_PLAIN ? copy : clone(v, new Map());
+}
+if (typeof g.structuredClone !== "function") g.structuredClone = cloneOf;
 
 // ── AbortController (Effect gives one to each promise it may interrupt) ──
 

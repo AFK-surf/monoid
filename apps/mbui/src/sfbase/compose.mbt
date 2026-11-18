@@ -67,6 +67,39 @@ pub let writings : Map[String, Writing] = Map([])
 pub let writing_pictures : Map[String, String] = Map([])
 
 ///|
+/// What a node of the window's tree read of writing_pictures (writing_picture_told): told as one is kept or let go.
+// kept across runs: told again by writings_reset as writing_pictures is emptied
+let writing_pictures_told : @signals.Signal[Int] = @signals.signal(0)
+
+///|
+fn writing_pictures_tell() -> Unit {
+  writing_pictures_told.set(writing_pictures_told.untracked() + 1)
+}
+
+///|
+/// The picture of file `id` picked or pasted here (writing_pictures) read by a node of the window's tree: told as it
+/// is kept or let go, where reading the map alone tells nothing.
+pub fn writing_picture_told(id : String) -> String? {
+  writing_pictures_told.get() |> ignore
+  writing_pictures.get(id)
+}
+
+///|
+/// The picture of file `id` picked or pasted here kept (writing_pictures), what reads it by a node told.
+pub fn writing_picture_put(id : String, picture : String) -> Unit {
+  writing_pictures[id] = picture
+  writing_pictures_tell()
+}
+
+///|
+fn writing_picture_drop(id : String) -> Unit {
+  if writing_pictures.contains(id) {
+    writing_pictures.remove(id)
+    writing_pictures_tell()
+  }
+}
+
+///|
 let writing_went : Map[String, (String, String, Bytes)] = Map([])
 
 ///|
@@ -89,7 +122,7 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
       "!" => writing_unseen.remove(id)
       still => {
         writing_unseen.remove(id)
-        writing_pictures[id] = still
+        writing_picture_put(id, still)
         sent_picture_kept("upload\u{1}" + id, still)
         for _, w in writings {
           for f in writing_files(w) {
@@ -113,14 +146,14 @@ pub fn writing_stills(c : @ui.Ctx) -> Unit {
 /// comes ("" while it does, none to be had: "!").
 pub fn writing_still_node(v : @view.View, id : String) -> () -> String {
   guard writing_unseen.contains(id) && writing_went.get(id) is Some((station, name, bytes)) else {
-    return fn() { writing_pictures.get(id).unwrap_or("") }
+    return fn() { writing_picture_told(id).unwrap_or("") }
   }
   let still = bytes_first_frame_node(v, "draft/" + id, name, bytes)
   v.reacts(still, fn(k) {
     guard k != "" && writing_unseen.contains(id) else { return }
     writing_unseen.remove(id)
     if k != "!" {
-      writing_pictures[id] = k
+      writing_picture_put(id, k)
       sent_picture_kept("upload\u{1}" + id, k)
       for _, w in writings {
         for f in writing_files(w) {
@@ -178,6 +211,7 @@ pub fn writings_reset() -> Unit {
   writing_cache.val = []
   writings.clear()
   writing_pictures.clear()
+  writing_pictures_tell()
   writing_went.clear()
   writing_unseen.clear()
   writing_seeds.clear()
@@ -441,7 +475,7 @@ pub fn writing_add(
       Some(_) => {
         let key = "mem:writing/" + id
         @ui.add_image(key, bytes)
-        writing_pictures[id] = key
+        writing_picture_put(id, key)
         // its message drawn from it, as picked, sent before it is up (it names its upload: sent.mbt)
         sent_picture_kept("upload\u{1}" + id, key)
       }
@@ -450,7 +484,7 @@ pub fn writing_add(
           "" if preview_kind(name).0 == Some(KVideo) => writing_unseen.add(id)
           "" => ()
           picture => {
-            writing_pictures[id] = picture
+            writing_picture_put(id, picture)
             sent_picture_kept("upload\u{1}" + id, picture)
           }
         }
@@ -526,7 +560,7 @@ pub fn writing_add_held(src : Source, w : Writing, station : String, f : @hostap
   match host_picture(f.name, f.src) {
     "" => ()
     picture => {
-      writing_pictures[id] = picture
+      writing_picture_put(id, picture)
       sent_picture_kept("upload\u{1}" + id, picture)
     }
   }
@@ -674,7 +708,7 @@ pub fn writing_mode(src : Source, w : Writing, id : String, mode : String) -> Un
 ///|
 /// A file out of the draft (`composer.remove`), its picture let go.
 pub fn writing_remove(src : Source, w : Writing, id : String) -> Unit {
-  writing_pictures.remove(id)
+  writing_picture_drop(id)
   writing_went.remove(id)
   writing_unseen.remove(id)
   writing_seeds.remove(id)
@@ -743,7 +777,7 @@ pub fn writing_unquote(src : Source, w : Writing, id : String) -> Unit {
   match w.state.quotes.get().iter().find_first(fn(q) { text(Some(q), "id") == id }) {
     Some(q) => {
       let own = text(field(Some(q), "own"), "id")
-      writing_pictures.remove(own)
+      writing_picture_drop(own)
       writing_went.remove(own)
     }
     None => ()

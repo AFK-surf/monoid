@@ -24,6 +24,8 @@
     <!-- CoreHost's secure.* (a secret's use allowed, the workspace's lock): the system's BiometricPrompt asks the person
          (biometrics or the screen lock), which no library's manifest brings in: the app's own to ask for -->
     <uses-permission android:name="android.permission.USE_BIOMETRIC" />
+    <!-- Passkeys (mbui's Passkeys.java, Android 14+): CredentialManager asked with the page's origin and clientDataHash -->
+    <uses-permission android:name="android.permission.CREDENTIAL_MANAGER_SET_ORIGIN" />
     <!-- ＋'s recent photos and videos (mbui's Gallery.java, as still.fail's Attach.kt): the gallery's, all or those chosen -->
     <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
@@ -32,12 +34,15 @@
     <!-- androidx.core's own (its manifest's, merged here: apk.json "merged") -->
     <permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" android:protectionLevel="signature" />
     <uses-permission android:name="${applicationId}.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" />
-    <!-- BrowserLogin asks whether there is a browser to open a login page in -->
+    <!-- BrowserLogin asks whether there is a browser to open a login page in; Passkeys checks third-party providers -->
     <queries>
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <category android:name="android.intent.category.BROWSABLE" />
             <data android:scheme="https" />
+        </intent>
+        <intent>
+            <action android:name="android.service.credentials.CredentialProviderService" />
         </intent>
     </queries>
     <!-- Not backed up (as still.fail's app): the core's data and sealed files restored elsewhere would not match this

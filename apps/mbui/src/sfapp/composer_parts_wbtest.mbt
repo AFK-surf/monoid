@@ -938,3 +938,116 @@ test "a picture restored in the composer opens in the viewer when tapped" {
     }
   })
 }
+
+///|
+test "a video waiting in the composer made as nodes stands on a video's black in the dark, as in the light, never the words' ink" {
+  for dark in [false, true] {
+    let calls : Array[Made] = []
+    let made : Ref[Source?] = Ref(None)
+    let t = fake_core(calls, made~, composed=true)
+    t.set_dark(dark)
+    t.draw()
+    let src = made.val.unwrap()
+    let w = @sfbase.writing(src, "ws1/st1:s-c1")
+    // (no picture of it yet: its tile its ground alone)
+    @sfbase.writing_add(src, w, "ws1/st1", "视频.mov", b"video")
+    t.run_for(@ui.move_most_ms)
+    let id = text(Some(w.files.get()[0]), "id")
+    let (x, y, tw, th) = match t.stays_of("ws1/st1//draft:" + id) {
+      Some((r, _)) => r
+      None => fail("dark \{dark}: no tile for the video")
+    }
+    let grounds = t.drawn_rects().filter(fn(r) { r.0 <= x + tw / 2.0 && r.0 + r.2 >= x + tw / 2.0 && r.1 <= y + th / 2.0 && r.1 + r.3 >= y + th / 2.0 }).map(fn(r) { r.4 })
+    assert_true(grounds.contains(0x000000FFL), msg="dark \{dark}: \{Repr(grounds)}")
+    assert_false(grounds.contains(@sf.theme().p.text), msg="dark \{dark}: \{Repr(grounds)}")
+  }
+}
+
+///|
+test "a picture restored in the composer made as nodes shows as the device reads it, and the viewer opens on it" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
+  let base = fixture("chat")
+  let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    // (read by the device as the core answers composer.picture: here once the test says so)
+    draft_picture: fn(key, id) {
+      base.images.get("", "draft\u{1}" + key + "\u{1}" + id, "mem:test/restored-late", fn(_, done) { answer.val = Some(done) })
+    },
+    topic_read: fn(name, params) {
+      let now = base.topic(name, params).get().snapshot()
+      if name != "composer" { return now }
+      let m = match now.value { Some(Object(v)) => v.copy(); _ => {} }
+      m["files"] = [{ "id": "kept-late", "name": "截图.png", "size": 120, "waits": true }]
+      m["ready"] = Json::boolean(true)
+      { value: Some(Json::object(m)), error: now.error, version: now.version + 1 }
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  assert_true(answer.val is Some(_), msg="the device's kept picture was not asked")
+  assert_eq(t.locate("img:mem:test/restored-late").length(), 0)
+  // (the device has read it: its tile shows it, told, nothing else changed)
+  (answer.val.unwrap())(Ok((Json::object({}), Some(png_head()))))
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  assert_true(t.locate("img:mem:test/restored-late").length() > 0, msg="the restored picture did not come to its tile")
+  let (x, y, tw, th) = match t.stays_of("ws1/st1//draft:kept-late") {
+    Some((r, _)) => r
+    None => fail("no tile for the restored picture")
+  }
+  t.tap(x + tw / 2.0, y + th / 2.0)
+  match @sfbase.viewer.get() {
+    Some(v) => {
+      assert_eq(v.file.path, "draft:kept-late")
+      // (no bytes of it here: what stands in for it the picture its tile shows, never a station's)
+      assert_eq(v.stand_in(src), "mem:test/restored-late")
+    }
+    None => fail("the viewer did not open")
+  }
+  @sfbase.chat_page_nodes.set(false)
+  @sfbase.composer_nodes.set(false)
+}
+
+///|
+test "a message's picture quoted in the composer made as nodes shows as its station's comes, never a grey square for good" {
+  new_run()
+  @sfbase.chat_page_nodes.set(true)
+  @sfbase.composer_nodes.set(true)
+  let base = fixture("chat")
+  let answer : Ref[((Result[(Json, Bytes?), Json]) -> Unit)?] = Ref(None)
+  let src : Source = {
+    ..base,
+    // (its station's picture of it: here once the test says so)
+    file: fn(station, key, name) {
+      if name != "quoted.png" {
+        return (base.file)(station, key, name)
+      }
+      base.images.get(station, @sfbase.file_image_id(station, key, name), "mem:test/quoted", fn(_, done) {
+        answer.val = Some(done)
+      })
+    },
+  }
+  open_chat({ station: "ws1/st1", session: "s-c1", title: "整理发布清单", station_name: "Willow" })
+  let t = @ui.Tester::new(fn(c) { view(c, src) }, tree=app_tree(src), w=1280.0, h=800.0, platform=0)
+  t.run_for(@ui.move_most_ms)
+  let w = @sfbase.writing(src, "ws1/st1:s-c1")
+  @sfbase.writing_quote(src, w, { "author": "Ana", "text": "图", "ts": "ts8" }, file={
+    "name": "quoted.png",
+    "path": "/w/uploads/quoted.png",
+    "size": 120.0,
+    "owner": "s-c1",
+    "width": 800.0,
+    "height": 600.0,
+  })
+  t.run_for(@ui.move_most_ms)
+  assert_true(answer.val is Some(_), msg="its station's picture was not asked")
+  assert_eq(t.locate("img:mem:test/quoted").length(), 0)
+  (answer.val.unwrap())(Ok((Json::object({}), Some(png_head()))))
+  t.run_for(@ui.move_most_ms + @ui.image_fade_ms)
+  assert_true(t.locate("img:mem:test/quoted").length() > 0, msg="the quoted picture did not come to its tile")
+  @sfbase.chat_page_nodes.set(false)
+  @sfbase.composer_nodes.set(false)
+}

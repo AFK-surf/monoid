@@ -81,6 +81,30 @@ const stationId = (address: string) => address.slice(address.lastIndexOf("/") + 
 const address = (scope: string, id: string) => `${scope}/${id}`;
 const text = (v: J): string | null => (typeof v === "string" && v !== "" ? v : null);
 
+/// Whether a station's link says it is up, as the `stations` topic says it (views.ts `stationOnline` of `down` and
+/// `linkValue`): picked of the link alone, so that its readers are told only as that changes.
+const linkUp = (v: Value | undefined): boolean => {
+  if (v === undefined || !("ok" in v)) return true;
+  const state = get(v.ok, "state") ?? "connecting";
+  if (state !== "online" && get(v.ok, "cause") === "updating") return false;
+  return !(state === "offline" || (state === "connecting" && get(v.ok, "last") === "offline"));
+};
+
+/// A station's overview as a model's choice reads another station's (views/models.ts `borrowable`, `sourced` and
+/// `#likedFirst`), of its profiles decorated as its page has them (`stationPart` `profiles`, the same objects): what
+/// they read of the whole decorated overview (its `sharing` and its profiles; the rest it has no field of in the
+/// overview's shape), null where that is none (not read, or not readable here). The same object while both are.
+const shownOverviews = new WeakMap<object, { sharing: boolean; overview: J }>();
+function shownOverview(raw: J, profiles: J): J {
+  if (!Array.isArray(profiles)) return null;
+  const sharing = get(raw, "sharing") === true;
+  const was = shownOverviews.get(profiles);
+  if (was !== undefined && was.sharing === sharing) return was.overview;
+  const overview = Object.freeze({ sharing, profiles });
+  shownOverviews.set(profiles, { sharing, overview });
+  return overview;
+}
+
 /// What preset `p` binds a new chat to (the user, 2026-11-13: what a preset names, its chats run with, and the page does
 /// not change it; to run otherwise is to edit the preset or open the chat with none): the model's configuration it
 /// names (null: any), and the ids of the stations its chats may start on (null: any up, `autoStation` too).
@@ -566,14 +590,15 @@ export class Choose implements Owner {
     const name = typeof station.name === "string" ? station.name : "";
     const addr = typeof station.station === "string" ? station.station : "";
     // The stations are held as a list has them (StationRow; the page is sent what it names them by, NewChatStation);
-    // what it runs is worked out from the one it starts on alone: its page's overview, the models it serves this
-    // workspace (not every station's, by the minute).
-    const page: J = this.#env.store.get({ topic: "station", scope, station: addr });
-    const overview = isObject(get(page, "overview")) ? page.overview : null;
+    // what it runs is worked out from the one it starts on alone: its overview's profiles as its page has them (none
+    // while its overview is not read or not readable here; never its page, which its machine's every reading makes
+    // again), the models it serves this workspace (not every station's, by the minute).
+    const shownProfiles = this.#profilesShown(addr);
+    const overview = Array.isArray(shownProfiles) ? { profiles: shownProfiles } : null;
     const raw: J = this.#env.store.get({ topic: "overview", station: addr });
     const served = servingIn(raw, scope, station.joined === true);
     const options = overview !== null ? models(served, this.#env.now()) : [];
-    const r = resolve(options, this.#choice(scope, id), raw !== undefined ? get(raw, "accountSubsets") === true : overview === null || get(overview, "accountSubsets") === true);
+    const r = resolve(options, this.#choice(scope, id), raw !== undefined ? get(raw, "accountSubsets") === true : true);
     view.frequent = frequentCombos(arr(this.#record(`ws:${scope}:frequent`)), options, r, null, false,
       (id) => offersUltrafast(raw, id, arr(get(get(optionOf(options, id), "accounts"), "codex"))), get(raw, "claudeTui") === true);
     // A station this workspace joined runs its chats on the profiles open to it: with some, but
@@ -723,6 +748,39 @@ export class Choose implements Owner {
   #listed(scope: string): J[] {
     const v = this.#env.store.value({ topic: "stations", scope });
     return v !== undefined && "ok" in v ? arr(v.ok) : [];
+  }
+
+  /// Station `station`'s profiles as its page's overview has them, decorated (the `stationPart` of `profiles`, made
+  /// once for both of its overview alone): an array once its overview is read and readable here, else none.
+  #profilesShown(station: string): J {
+    return this.#env.store.get({ topic: "stationPart", scope: ofAddress(station), station, part: "profiles" });
+  }
+
+  /// The scope's stations as a model's choice reads them (views/models.ts `StationOf`: its address, id, name and mark,
+  /// whether it is up and joined, its overview as `shownOverview` has it), each as the `stations` topic has it, of the
+  /// workspace's list, its link's being up and its overview alone. Never of a station's page nor its row, which its
+  /// machine's readings (`host`) and how it is reached (`way`) make again every few seconds: a panel open read the
+  /// workspace's every page with the models each could run (`stationsWhole`), made again as any of them came, 42 times
+  /// in a row and 3.16 s on a phone (0.1.10130, 2026-11-18).
+  #stationsForModels(scope: string): J[] {
+    const ws = this.#env.store.value({ topic: "workspace", workspace: scope });
+    if (ws === undefined || !("ok" in ws)) return [];
+    return arr(get(ws.ok, "stations")).flatMap((s) => {
+      const id = get(s, "id");
+      if (typeof id !== "string") return [];
+      const station = address(scope, id);
+      const name = get(s, "name");
+      return [{
+        station,
+        id,
+        name: typeof name === "string" ? name : id,
+        emoji: text(get(s, "emoji")),
+        icon: text(get(s, "icon")),
+        online: this.#env.store.select({ topic: "link", station }, linkUp),
+        joined: get(s, "joined") === true,
+        overview: shownOverview(this.#env.store.get({ topic: "overview", station }), this.#profilesShown(station)),
+      }];
+    });
   }
 
   /// What station `address` from before lists (its `presets` topic, as it said them last), where the device holds it
@@ -1118,7 +1176,7 @@ export class Choose implements Owner {
         const ov = overview();
         const switchable = get(ov, "sessionRuntimeChange") === true;
         const scope = ofAddress(station);
-        const stationView = arr(this.#env.store.get({ topic: "stations", scope })).find((s) => s.id === stationId(station));
+        const stationView = this.#stationsForModels(scope).find((s) => s.id === stationId(station));
         const available = servingIn(ov, scope, get(stationView, "joined") === true);
         const list = switchable ? models(available, now) : arr(agent.choices);
         normalizeTieredValue(list, value);
@@ -1130,8 +1188,8 @@ export class Choose implements Owner {
   /// What a station's own options are, said where their accounts are, and the models the workspace's other stations
   /// could lend it after them (of `runtime` alone where it cannot change).
   #withWorkspace(station: string, own: J[], runtime: string | null): J[] {
-    // (every station's models: the core's own whole list, views.ts `stationsWhole`)
-    const stations = this.#env.store.get({ topic: "stationsWhole", scope: ofAddress(station) });
+    // (every station's names and overviews, none of their models made but those another could lend: `borrowable`)
+    const stations = this.#stationsForModels(ofAddress(station));
     const overview = this.#env.store.get({ topic: "overview", station });
     return [...sourced(own, overview, stations), ...borrowable(stations, station, own, runtime, this.#env.now())];
   }
@@ -1532,8 +1590,8 @@ export class Choose implements Owner {
   /// before every model a profile's check found ran (2026-11-02 用户「以前的模型选择变成已经点过的勾」).
   #likedFirst(scope: string, station: string | null): string[] {
     const out: string[] = [];
-    // (the control's own station's overview first, then the workspace's others as `stationsWhole` has them)
-    const overviews = [station !== null ? this.#env.store.get({ topic: "overview", station }) : undefined, ...arr(this.#env.store.get({ topic: "stationsWhole", scope })).map((s) => get(s, "overview"))];
+    // (the control's own station's overview first, then the workspace's others' profiles as their pages have them)
+    const overviews = [station !== null ? this.#env.store.get({ topic: "overview", station }) : undefined, ...this.#stationsForModels(scope).map((s) => get(s, "overview"))];
     for (const ov of overviews) {
       for (const p of arr(get(ov, "profiles"))) {
         // (a station of before `named`: what it ran was what was ticked on)

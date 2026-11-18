@@ -8,15 +8,35 @@ import { Effect } from "effect";
 import type { Data } from "./data.ts";
 import { merge } from "./entries.ts";
 import { MD_READING, mdKey, oldMdKey, refreshMarkdown } from "./markdown.ts";
+import { noticeOf } from "./notice.ts";
+import { runChangeOf } from "./run-change.ts";
 import { laterSleep, type Runner } from "./runtime.ts";
 import { PAGE } from "./station/channel-kinds.ts";
 import { timed } from "./spent.ts";
+import { isStationAuthor } from "./titles.ts";
+import { get, isObject } from "./util.ts";
 
 /// How lately a reply was said to be read ahead, and how many chats a station has read ahead as the core starts.
 export const AHEAD_MS = 3 * 86_400_000;
 export const AHEAD_CHATS = 20;
 /// How long after the core starts those are read ahead: after what the app's first pages ask.
 export const AHEAD_AFTER_MS = 3000;
+/// How many are read in one step, their trees written together at its end (data.ts `flushMd`).
+const AHEAD_STEP = 8;
+
+/// The words of a chat's message its page reads as Markdown (views.ts `drawn`): an agent's text, still.fail's notice's
+/// words as its pill says them (views.ts: `noticeOf`, a run's change said in its place); none of a person's, nor of a
+/// reply with a Slack person in it (shown with their name in place, views.ts shownMessage: read as it opens).
+function mdWordsOf(m: Record<string, unknown>): string | null {
+  const text = typeof m.text === "string" ? m.text : "";
+  if (isObject(m.notice)) return typeof m.notice.words === "string" && m.notice.words !== "" ? m.notice.words : null;
+  if (isStationAuthor(typeof m.authorKind === "string" ? m.authorKind : "")) {
+    const words = runChangeOf(m.change)?.words ?? noticeOf(text, typeof m.profile === "string").words;
+    return words === "" ? null : words;
+  }
+  if (m.authorKind === "person" || text === "" || text.includes("<@")) return null;
+  return text;
+}
 
 type Ahead = { station: string; of: string; text: string; key: string };
 
@@ -109,6 +129,8 @@ export class MdAhead {
                   if (old !== null) timed("md.upgrade", () => refreshMarkdown(text, store, old));
                 }
               }
+              // (a page's trees written in one transaction, before its owner is looked at again: `hasOldMd`)
+              this.#data.flushMd();
             }
           }
         }
@@ -118,27 +140,47 @@ export class MdAhead {
   }
 
   /// A chat's entries held changed: what its agents said on its latest page and is not read yet, read in turn, however
-  /// long ago it was said. (A reply with a Slack person in it is shown with their name in place (views.ts
-  /// shownMessage): read as it opens.)
+  /// long ago it was said; and where it opens to be read when that is not its end (its first unread, where it was left:
+  /// station/topics.ts `#opening`), the page about there too.
   thread(station: string, thread: number): void {
     const id = String(thread);
     const span = this.#data.logSpan("entry", station, id);
     const store = this.#data.mdStore(station, `t:${thread}`);
     if (span === null || store === undefined) return;
-    const page = this.#data.logRange("entry", station, id, Math.max(1, span.max - PAGE + 1), span.max);
-    const sources = new Map<number, object>();
-    for (const m of merge([...page.values()], (seq, entry) => sources.set(seq, entry))) {
-      const text = typeof m.text === "string" ? m.text : "";
-      if (m.authorKind === "person" || text === "" || text.includes("<@")) continue;
-      const source = typeof m.seq === "number" ? sources.get(m.seq) : undefined;
-      let key = source === undefined ? undefined : this.#keys.get(source);
-      if (key === undefined) {
-        key = mdKey(text);
-        if (source !== undefined) this.#keys.set(source, key);
+    const ranges: [number, number][] = [[Math.max(1, span.max - PAGE + 1), span.max]];
+    const at = this.#opensAt(station, thread);
+    if (at !== null && at <= span.max) {
+      const [from, to] = [Math.max(at - PAGE, span.min, 1), Math.min(at + PAGE - 1, span.max)];
+      // (what the latest page reads already left out)
+      if (from < ranges[0]![0]) ranges.push([from, Math.min(to, ranges[0]![0] - 1)]);
+    }
+    for (const [from, to] of ranges) {
+      const page = this.#data.logRange("entry", station, id, from, to);
+      const sources = new Map<number, object>();
+      for (const m of merge([...page.values()], (seq, entry) => sources.set(seq, entry))) {
+        const text = mdWordsOf(m);
+        if (text === null) continue;
+        const source = typeof m.seq === "number" ? sources.get(m.seq) : undefined;
+        let key = source === undefined ? undefined : this.#keys.get(source);
+        if (key === undefined) {
+          key = mdKey(text);
+          if (source !== undefined) this.#keys.set(source, key);
+        }
+        if (!store.has(key)) this.#enqueue({ station, of: `t:${thread}`, text, key });
       }
-      if (!store.has(key)) this.#enqueue({ station, of: `t:${thread}`, text, key });
     }
     this.#run();
+  }
+
+  /// Where a chat opens when not at its end: its first entry not read while something is unread, else where it was
+  /// left (station/topics.ts `#opening`).
+  #opensAt(station: string, thread: number): number | null {
+    const summary = this.#data.thread(station, thread);
+    const unread = get(summary, "unread");
+    const read = get(summary, "read");
+    if (typeof read === "number" && typeof unread === "number" && unread > 0) return read + 1;
+    const at = get(this.#data.record("place", `${station}/${thread}`), "at");
+    return typeof at === "number" ? at : null;
   }
 
   /// An older tree went out in a view. Read it after the view goes out, then tell each view that used that tree.
@@ -172,20 +214,29 @@ export class MdAhead {
     this.#runner.fork(
       Effect.gen({ self: this }, function* () {
         while (this.#queue.length > 0) {
-          // each in a turn of its own: what a UI asks meanwhile goes first
+          // a step in a turn of its own, after what pages wait for: what a UI asks meanwhile goes first
           yield* Effect.yieldNow;
           yield* laterSleep(0);
-          const next = this.#queue.shift()!;
-          const id = `${next.station}\u0001${next.key}`;
-          this.#queued.delete(id);
-          const store = this.#data.mdStore(next.station, next.of);
-          if (store !== undefined && !store.has(next.key)) timed("md.ahead", () => refreshMarkdown(next.text, store, oldMdKey(store, next.key, 1) ?? undefined));
-          const waiting = this.#waiting.get(id);
-          this.#waiting.delete(id);
-          if (store !== undefined) for (const of of waiting ?? []) {
-            const prefix = `${next.station}\u0001`;
-            if (![...this.#waiting].some(([other, owners]) => other.startsWith(prefix) && owners.has(of))) this.#changed(next.station, of);
+          yield* this.#turn();
+          const told: [string, string][] = [];
+          for (let n = 0; n < AHEAD_STEP && this.#queue.length > 0; n++) {
+            const next = this.#queue.shift()!;
+            const id = `${next.station}\u0001${next.key}`;
+            this.#queued.delete(id);
+            const store = this.#data.mdStore(next.station, next.of);
+            if (store !== undefined && !store.has(next.key)) timed("md.ahead", () => refreshMarkdown(next.text, store, oldMdKey(store, next.key, 1) ?? undefined));
+            const waiting = this.#waiting.get(id);
+            this.#waiting.delete(id);
+            if (store !== undefined) for (const of of waiting ?? []) {
+              const prefix = `${next.station}\u0001`;
+              if (![...this.#waiting].some(([other, owners]) => other.startsWith(prefix) && owners.has(of))) told.push([next.station, of]);
+            }
+            // (one a view waits for goes alone: it is told at once)
+            if (waiting !== undefined) break;
           }
+          // what the step read, written in one transaction before what showed an older tree is made again
+          this.#data.flushMd();
+          for (const [station, of] of told) this.#changed(station, of);
         }
       }).pipe(Effect.ensuring(Effect.sync(() => (this.#running = false)))),
     );

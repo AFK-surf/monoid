@@ -414,6 +414,10 @@ pub fn act(
         then(v)
       }
       Err(e) => {
+        // The person turned the system's prompt down themselves: nothing to say (as vault_act).
+        if text(Some(e), "code") == "user_cancelled" {
+          return
+        }
         @ui.haptic(Reject)
         (core.say)(
           fill(

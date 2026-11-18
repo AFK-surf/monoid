@@ -327,8 +327,8 @@ fn rs_table_node(
   let lay_at = rs_lay_memo(groups, columns, read.by, fn() { flat })
   // (its heads and rows by how wide it is given to be, laid out in that same layout)
   t.by_room(fn(table, room) {
-    // (read out as a table (@headless.table): its heads' row and its rows, the node each is drawn by)
-    @headless.table(table, in_node=true, fn(table, tb) {
+    // (read out as a table (@sf.grid_table_node): its heads' row and its rows, the node each is drawn by)
+    @sf.grid_table_node(table, in_node=true, fn(table, tb) {
       @sf.style_node(table, fn() { rs_table })
       let lay = rs_lay_in(table, room, lay_at)
       rs_heads_node(table, address, flat, columns, lay, tb~)
@@ -354,7 +354,7 @@ fn rs_row_of(
   columns : () -> Array[(String, String)],
   lay : () -> RsLayout,
   r : RsRow,
-  tb? : @headless.Table,
+  tb? : @sf.GridTable,
 ) -> Unit {
   match (tb, r) {
     (Some(_), RsGroup(_)) | (None, _) => ()
@@ -374,9 +374,7 @@ fn rs_row_of(
       rs_row_node(
         row,
         lay,
-        group=true,
-        press=fn() { rs_open_or_shut(address, groups(), key) },
-        said=fn() { Some(@view.said(Button, label=text(g(), "title"), expanded=on())) },
+        opens=(fn() { text(g(), "title") }, on, fn() { rs_open_or_shut(address, groups(), key) }),
         fn(n) {
           n.box(fn(cell) {
             @sf.style_node(cell, fn() { rs_name_cell }, in_row=true)
@@ -575,31 +573,41 @@ fn rs_end_cell_node(parent : @view.View, end : (@view.View) -> Unit) -> Unit {
 ///|
 /// A row of the table (rs_table_row's, rs_line's) in `row`: its names, its figures and its end on one line; stacked,
 /// its names on a line of their own with its end, and its figures under them; a row's least height at least.
-/// `group`: lit under the pointer, pressed (`press`), read out as `said` says.
+/// `opens`: a group's, what it is called, whether it is open, and what pressing it does: the row a button that opens
+/// and shuts it (read out expanded while it is open), lit under the pointer.
 fn rs_row_node(
   row : @view.View,
   lay : () -> RsLayout,
-  group? : Bool = false,
-  press? : () -> Unit,
-  said? : () -> @view.Said?,
+  opens? : (() -> String, () -> Bool, () -> Unit),
+  names : (@view.View) -> Unit,
+  figures : (@view.View) -> Unit,
+  end : (@view.View) -> Unit,
+) -> Unit {
+  match opens {
+    Some((label, open, press)) => {
+      @sf.style_node(row, fn() { rs_table })
+      @sf.action_box_node(row, label, expanded=open, fn(_) { press() }, fn(b) {
+        rs_row_body(b, lay, names, figures, end)
+        // (round, a list's row's: never a square patch standing in from the pane's sides, the corner rule's lit square)
+        b.radius(Is(@sf.row_corner)) |> ignore
+        @sf.hover_ground_node(b)
+      })
+      |> ignore
+    }
+    None => rs_row_body(row, lay, names, figures, end)
+  }
+}
+
+///|
+/// What a row of the table (rs_row_node's) is in `row`: its names, figures and end as the layout has them.
+fn rs_row_body(
+  row : @view.View,
+  lay : () -> RsLayout,
   names : (@view.View) -> Unit,
   figures : (@view.View) -> Unit,
   end : (@view.View) -> Unit,
 ) -> Unit {
   @sf.style_node(row, fn() { rs_row.then(@sf.row_least_h()) })
-  match press {
-    Some(f) => @sf.presses_node(row, f)
-    None => ()
-  }
-  match said {
-    Some(s) => row.says(By(s)) |> ignore
-    None => ()
-  }
-  if group {
-    // (round, a list's row's: never a square patch standing in from the pane's sides, the corner rule's lit square)
-    row.radius(Is(@sf.row_corner)) |> ignore
-    @sf.hover_ground_node(row)
-  }
   row.pick(fn() { lay().stacked }, fn(r, stacked) {
     r.row(Is(true)).grow(Is(1.0)).basis(Is(Some(0.0))).lines_up(Is(Some(Middle))) |> ignore
     if stacked {
@@ -638,9 +646,9 @@ fn rs_heads_node(
   flat : Bool,
   columns : () -> Array[(String, String)],
   lay : () -> RsLayout,
-  tb? : @headless.Table,
+  tb? : @sf.GridTable,
 ) -> Unit {
-  let row = fn(make : (@view.View, @headless.TableRow?) -> Unit) {
+  let row = fn(make : (@view.View, @sf.GridRow?) -> Unit) {
     match tb {
       Some(tb) => tb.row(table, fn(h, tr) { make(h, Some(tr)) })
       None => table.box(fn(h) { make(h, None) })
@@ -661,7 +669,7 @@ fn rs_heads_node(
           @sf.words_node(cell, fn() { @sf.t(key) }, fn() { rs_head }) |> ignore
         }
         match tr {
-          Some(tr) => tr.header(first, look) |> ignore
+          Some(tr) => tr.head(first, look) |> ignore
           None => first.box(look) |> ignore
         }
       }
@@ -671,16 +679,24 @@ fn rs_heads_node(
       let k = fn() { c.get().0 }
       let on = fn() { rs_shown_of(address).by == col }
       let name = fn() { @sf.t("web-main.resources.column." + col) }
-      @sf.style_node(cell, fn() { rs_column(lay(), k()) }, in_row=true)
-      @sf.presses_node(cell, fn() { rs_shown[address] = { ..rs_shown_of(address), by: col } })
-      cell.says(By(fn() { Some(@view.said(Button, label=@sf.t("web-main.resources.by", args=[("column", name())]))) })) |> ignore
-      @sf.words_node(cell, fn() { if on() { name() + " ↓" } else { name() } }, fn() {
-        if on() || @sf.lit_node(cell) {
-          rs_head_on
-        } else {
-          rs_head
-        }
-      })
+      // (its cell as wide as its column, the head pressed in it as wide)
+      @sf.style_node(cell, fn() { rs_column_room(lay(), k()) }, in_row=true)
+      @sf.action_box_node(
+        cell,
+        fn() { @sf.t("web-main.resources.by", args=[("column", name())]) },
+        fn(_) { rs_shown[address] = { ..rs_shown_of(address), by: col } },
+        fn(b) {
+          @sf.style_node(b, fn() { rs_column(lay(), k()).then(rs_head_pressed) })
+          @sf.words_node(b, fn() { if on() { name() + " ↓" } else { name() } }, fn() {
+            if on() || @sf.lit_node(b) {
+              rs_head_on
+            } else {
+              rs_head
+            }
+          })
+          |> ignore
+        },
+      )
       |> ignore
     })
     h.box(fn(e) { @sf.style_node(e, fn() { rs_end_cell }, in_row=true) }) |> ignore
@@ -903,3 +919,14 @@ let rs_tile_least : Double = @ui.Space::S36.px()
 ///|
 /// A pair's tiles apart (rs_tile_pair's gap=S2).
 let rs_tile_gap : Double = @ui.Space::S2.px()
+
+///|
+/// A column's head's cell in the heads' row: as wide as its column (rs_column's least), the head pressed in it.
+fn rs_column_room(lay : RsLayout, k : Int) -> @ui.Style {
+  @ui.style(min_w=Fixed(lay.widths[k]))
+}
+
+///|
+/// A column's head pressed (to sort by it): as wide as its cell.
+// kept across runs: a value (no field of it changes)
+let rs_head_pressed : @ui.Style = @ui.css("w=Full")

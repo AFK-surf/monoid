@@ -247,7 +247,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     update({ sessionUpdate: 'tool_call', toolCallId: 'call_1', title: 'Run mcp_stillfail_chat_post', kind: 'other', status: 'in_progress', rawInput: { text: 'reply', toolSummary: 'Post reply' } });
     update({ sessionUpdate: 'tool_call_update', toolCallId: 'call_1', status: 'completed', content: [] });
     update({ sessionUpdate: 'usage_update', used: 5000, size: 1048576 });
-    reply(m.id, { stopReason: 'end_turn', usage: { totalTokens: 1600, inputTokens: 1200, outputTokens: 300, thoughtTokens: 100, cachedReadTokens: 200 } });
+    reply(m.id, { stopReason: 'end_turn', usage: { totalTokens: 1700, inputTokens: 1200, outputTokens: 300, thoughtTokens: 100, cachedReadTokens: 200 } });
     held = null;
   } else say({ id: m.id, error: { code: -32601, message: 'Method not found: ' + m.method } });
 }

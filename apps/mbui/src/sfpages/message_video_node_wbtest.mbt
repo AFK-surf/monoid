@@ -142,3 +142,37 @@ test "a message's video as the pointer rests on it: its name in no tip while wha
   assert_eq(tips, [])
   assert_eq(t.audit(), [])
 }
+
+///|
+test "a message's video sent from here: its still decoded again for its box as its size is told, not kept at the unknown box's" {
+  // (sent from here: no size yet, the unknown box; then the core's row takes it over saying its size)
+  let unsized = attachment_of({ "name": "clip.mp4", "path": "/w/uploads/clip.mp4", "size": 4200000.0, "owner": "ag", "duration": 42000.0 })
+  let src : Source = { ..files_src(), poster: fn(_, _, _) { "video/still.png" } }
+  let list : @signals.Signal[Array[Attachment]] = @signals.signal([unsized])
+  let t = @ui.Tester::new(
+    fn(c) {
+      @sf.begin(c) |> ignore
+      c.with_theme(@sf.ui_theme(), fn() { @ui.old_views_here(c) })
+    },
+    tree=fn(root) {
+      @ui.set_tree_theme(@sf.ui_theme_now)
+      let col = root.box(fn(v) { v.width(Is(Some(390.0))) |> ignore })
+      let popup = root.box(fn(v) { v.over(Is(true)) |> ignore })
+      let tips = @sf.TipLayer::new(fn() { Some(popup) })
+      message_files_node(col, src, tips, files_place(), fn() { list.get() }, fn() { false }, fn() { None }, fn() { "" })
+    },
+    w=430.0,
+    h=400.0,
+    images=[("video/still.png", 1280, 720)],
+  )
+  t.run_for(@ui.move_most_ms)
+  let most = fn() {
+    t.image_loads().filter(fn(l) { l.0 == "video/still.png" }).fold(init=0, fn(m, l) { if l.1 > m { l.1 } else { m } })
+  }
+  let before = most()
+  assert_true(before > 0, msg="\{Repr(t.image_loads())}")
+  list.set([video_one()])
+  t.run_for(@ui.move_most_ms)
+  // (asked again for its box as it is now, 360 across for the unknown box's 240: larger)
+  assert_true(most() > before, msg="\{before} \{Repr(t.image_loads())}")
+}

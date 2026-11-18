@@ -1619,6 +1619,40 @@ sim("an_unmeasured_path_has_no_reported_round_trip", async (s) => {
   await close(s, station, mesh);
 });
 
+/// 2026-11-18: Windows dialling Windows went on direct while iroh marked none of its ways chosen (one chosen way an
+/// endpoint to another, left unmarked by a second link to the same station or a way moved between interfaces), and the
+/// page said 正在选择线路 for good. The way its packets go is the one it goes by.
+sim("a_link_iroh_marks_no_way_of_goes_by_the_way_its_packets_take", async (s) => {
+  const relay = s.relay("https://a.relay.test/", { station: { ms: 10 } });
+  const { station, mesh, id } = await onRelays(s, [relay]);
+  await reach(s, mesh, id);
+  const link = mesh.current(id)!;
+  const ip = { id: "1", selected: false, relay: null, ip: "192.168.1.5:51234", rttMs: 0.4, txPackets: 12, lostPackets: 0 };
+  link.conn.paths = () => [ip];
+  assert.equal(link.net().path, "direct");
+  assert.equal(link.net().rttMs, 0.4);
+  assert.deepEqual(link.net().packets, { path: "1", sent: 12, lost: 0 });
+  assert.equal(link.path(), "direct");
+  assert.equal(link.via(), null);
+  // A relay's way kept beside it, nothing sent on it: the direct way, which carries the packets.
+  const spare = { id: "0", selected: false, relay: "https://a.relay.test/", ip: null, rttMs: 30, txPackets: 0, lostPackets: 0 };
+  link.conn.paths = () => [spare, ip];
+  assert.equal(link.net().path, "direct");
+  assert.equal(link.net().relay, null);
+  assert.equal(link.pathShape(), "0@https://a.relay.test/,*1@192.168.1.5:51234");
+  // Only the relay's carried any: through the relay.
+  link.conn.paths = () => [{ ...spare, txPackets: 5 }, { ...ip, txPackets: 0 }];
+  assert.equal(link.net().path, "relay");
+  assert.equal(link.via(), "https://a.relay.test/");
+  // Nothing sent yet on a relay's and a direct way: not chosen yet.
+  link.conn.paths = () => [spare, { ...ip, txPackets: 0 }];
+  assert.equal(link.net().path, null);
+  // What iroh marks is the way, whatever was sent.
+  link.conn.paths = () => [{ ...spare, selected: true }, ip];
+  assert.equal(link.net().path, "relay");
+  await close(s, station, mesh);
+});
+
 /// 2026-10-17: a phone on its station's LAN went on through a relay most of the time. Its link came through first on a
 /// relay's own endpoint, and the main endpoint's, gone direct beside it, waited BETTER_TICKS and MIN_STAY_MS to be
 /// taken, minutes on a phone opened for a while; gone quiet as the phone slept, it waited EXPLORE_MS to be dialled

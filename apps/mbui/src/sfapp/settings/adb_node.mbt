@@ -335,7 +335,9 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
               act(core, tr("android-misc.personal.restart"), "adb.personalRestart", @signals.untracked(said))
             }, tone=Ghost, disabled=doing)
             |> ignore
-            @sf.words_node(s, fn() { tr("android-misc.personal.restart.note") }, fn() { personal_note_centred }) |> ignore
+            @sf.words_node(s, fn() { tr("android-misc.personal.restart.note") }, fn() { personal_note_centred })
+            .words_centered(Is(true))
+            |> ignore
           })
         })
         |> ignore
@@ -358,7 +360,9 @@ fn adb_lock_node(b : @view.View, core : Core, p : () -> Json?) -> Unit {
 fn personal_join_node(j : @view.View, core : Core, p : () -> Json?) -> Unit {
   let pair = fn() { field(p(), "pair") }
   let state = fn() { text(pair(), "state") }
-  let note = fn(at : @view.View, words : () -> String) { @sf.words_node(at, words, fn() { personal_note_centred }) |> ignore }
+  let note = fn(at : @view.View, words : () -> String) {
+    @sf.words_node(at, words, fn() { personal_note_centred }).words_centered(Is(true)) |> ignore
+  }
   // (what is typed, emptied for the next try where it is refused)
   let typed = @ui.Field::new()
   j.pick(fn() { if state() is ("code" | "wrong" | "checking") { "code" } else { state() } }, fn(s, at) {
@@ -390,7 +394,45 @@ fn personal_join_node(j : @view.View, core : Core, p : () -> Json?) -> Unit {
           },
         )
         |> ignore
-        s.show(fn() { text(pair(), "untilText") != "" }, fn(u) { note(u, fn() { text(pair(), "untilText") }) })
+        // (the code typed being checked: a turning ring on the first line of what it waits for, as the waiting page
+        // says it, where to look once the device showing the code asks its person there; how long the code holds
+        // otherwise)
+        s.show(fn() { state() == "checking" }, fn(c) {
+          @sf.style_node(c, fn() { personal_checking })
+          c.box(fn(row) {
+            @sf.style_node(row, fn() { personal_checking_row })
+            row.box(fn(g) {
+              g
+              .width(Is(Some(personal_spin)))
+              .height(By(fn() { Some(@sf.node_sp(g, @ui.tree_theme().text_size(Meta).1)) }))
+              .shrink(Is(0.0))
+              .lines_up(Is(Some(Middle)))
+              .lies_along(Is(Middle))
+              |> ignore
+              @sf.spinner_node(g, size=personal_spin) |> ignore
+            })
+            |> ignore
+            row.box(fn(w) {
+              w.shrink(Is(1.0)).min_width(Is(Some(0.0))) |> ignore
+              @sf.words_node(
+                w,
+                fn() {
+                  match text(pair(), "checkingText") {
+                    "" => tr("web-pages.security.pairChecking")
+                    words => words
+                  }
+                },
+                fn() { personal_checking_words },
+              )
+              |> ignore
+            })
+            |> ignore
+          })
+          |> ignore
+        })
+        s.show(fn() { state() != "checking" && text(pair(), "untilText") != "" }, fn(u) {
+          note(u, fn() { text(pair(), "untilText") })
+        })
       }
       "none" => note(s, fn() { tr("android-misc.personal.none.found") })
       "failed" => note(s, fn() { text(pair(), "error") })
@@ -407,6 +449,23 @@ let adb_step_head : @ui.Style = @ui.css("row w=Full gap=S2 align=AStart")
 ///|
 /// The code's words, its boxes and how long it holds, 12 apart.
 let personal_join_gap : Double = 12.0
+
+///|
+/// The code being checked (personal_join_node): its line in the middle under the boxes, as wide as its words, the
+/// ring 8 before them on their first line.
+// kept across runs: a value (no field of it changes)
+let personal_checking : @ui.Style = @ui.css("w=Full align=ACenter")
+
+///|
+// kept across runs: a value (no field of it changes)
+let personal_checking_row : @ui.Style = @ui.css("row gap=S2 align=AStart")
+
+///|
+// kept across runs: a value (no field of it changes)
+let personal_checking_words : @ui.TextStyle = @ui.text_style(size=Meta, color=Muted)
+
+///|
+let personal_spin : Double = 12.0
 
 ///|
 /// The step's title (a card's line's: 13 on 24, 600) and what is said under it (12 on 24, muted), as card_lines_node's.

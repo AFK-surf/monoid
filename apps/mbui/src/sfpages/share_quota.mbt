@@ -117,39 +117,13 @@ let share_mask_all : @signals.Signal[Bool] = @signals.signal(false)
 fn share_mask_pick_node(v : @view.View) -> Unit {
   v.box(fn(all) {
     @sf.style_node(all, fn() { groups_and_looks })
-    @headless.radio_group(
+    @sf.share_tabs_node(
       all,
       fn() { @sf.t("web-main.share.mask") },
+      [false, true],
+      fn(b) { @sf.t(if b { "web-main.share.maskAll" } else { "web-main.share.maskSome" }) },
       fn() { share_mask_all.get() },
       fn(b) { share_mask_all.set(b) },
-      kind=Tab,
-      fn(row, rg) {
-        @sf.style_node(row, fn() { groups_row })
-        for b in [false, true] {
-          let name = fn() { @sf.t(if b { "web-main.share.maskAll" } else { "web-main.share.maskSome" }) }
-          rg.item(row, fn() { b }, name, fn(item, it) {
-            @sf.style_node(item, fn() { groups_item })
-            item.box(fn(n) {
-              let look = fn() {
-                if it.chosen() {
-                  groups_name_on
-                } else if it.hovered() || it.focus_shown() {
-                  groups_name_lit
-                } else {
-                  groups_name
-                }
-              }
-              n
-              .words(By(name))
-              .words_look(By(fn() { @ui.style_words(look()) }))
-              .ink(By(fn() { @ui.style_ink(look()) }))
-              |> ignore
-            })
-            |> ignore
-          })
-          |> ignore
-        }
-      },
     )
     |> ignore
   })

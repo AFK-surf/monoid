@@ -6,9 +6,8 @@ import { Link } from "wouter-preact";
 import { useTopic } from "../core/react.ts";
 import type { CoreError, Topic } from "../core/client.ts";
 import { Close } from "@stillfail/ui/icons.tsx";
-import { ICON, MobileBack, Pill, Waiting } from "../ui.tsx";
+import { ICON, MobileBack, Pill, Waiting, ErrorLine } from "../ui.tsx";
 import { sampleStamp, sampleWords } from "../samples.ts";
-import * as controlsCss from "@stillfail/ui/styles/controls.css.ts";
 import * as css from "./console.css.ts";
 import { t } from "../i18n.ts";
 import type { FeedbackPage, List, Mark, Overview, Relay, Row, UserPage, WorkspacePage } from "./types.ts";
@@ -27,7 +26,7 @@ export const PATH: Record<List, string> = { users: "/users", workspaces: "/works
 export const narrow = () => matchMedia("(max-width: 700px)").matches;
 
 export function Failed({ error }: { error: Error | null }) {
-  return error ? <p className={controlsCss.fieldError} role="alert">{t("web-pages.admin.readFailed", { error: error.message })}</p> : null;
+  return error ? <ErrorLine>{t("web-pages.admin.readFailed", { error: error.message })}</ErrorLine> : null;
 }
 
 export function Marks({ marks }: { marks: Mark[] }) {

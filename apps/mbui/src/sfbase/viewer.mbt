@@ -1250,6 +1250,17 @@ pub fn Viewer::chat_file(self : Viewer) -> Bool {
 }
 
 ///|
+/// The id of the file a draft holds (its path `draft:<id>`, a file picked here not yet sent): None for any other.
+fn Viewer::draft_id(self : Viewer) -> String? {
+  let path = self.file.path
+  if path.has_prefix("draft:") {
+    Some(path.unsafe_substring(start=6, end=path.length()))
+  } else {
+    None
+  }
+}
+
+///|
 /// The file's own id: its station, the session that keeps it (or the drive's root), its path.
 pub fn Viewer::id(self : Viewer) -> String {
   match self.drive {
@@ -2900,13 +2911,23 @@ pub fn Viewer::picture(self : Viewer, src : Source) -> String {
 ///|
 /// What stands in for an image until its whole picture is here and decoded: the picture its thumbnail in the chat
 /// shows (the same picture, decoded already: it flies out as the chat drew it, one sent from here the picture picked),
-/// else the station's thumbnail of it, else its likeness; "" none.
+/// else the picture it was picked as here (one sent, one still in a draft: never asked of a station), else the
+/// station's thumbnail of it, else its likeness; "" none. Read by a node, told as either comes.
 pub fn Viewer::stand_in(self : Viewer, src : Source) -> String {
   match pv_thumbs.get(self.thumb_id()) {
     Some(l) if l.picture != "" => return l.picture
     _ => ()
   }
-  let thumb = if self.chat_file() { (src.file)(self.station, self.key, self.name) } else { "" }
+  if self.chat_file() {
+    match sent_picture_told(self.station, self.file) {
+      Some(k) if k != "" && k != "!" => return k
+      _ => ()
+    }
+  }
+  let thumb = match self.draft_id() {
+    Some(id) => writing_picture_told(id).unwrap_or("")
+    None => if self.chat_file() { src.file_told(self.station, self.key, self.name) } else { "" }
+  }
   if thumb != "" && thumb != "!" {
     thumb
   } else {
@@ -3128,6 +3149,7 @@ pub fn Viewer::still(self : Viewer, src : Source) -> String {
   if !self.chat_file() {
     return ""
   }
+  pv_frame_track(self.id())
   match pv_frames.get(self.id()) {
     // (where it was left kept with no frame of it: what shows of it as before)
     Some((k, _)) if k != "" => return k
@@ -3138,13 +3160,35 @@ pub fn Viewer::still(self : Viewer, src : Source) -> String {
     Some(l) if l.picture != "" => return l.picture
     _ => ()
   }
-  match (src.poster)(self.station, self.key, self.name) {
+  // (one sent from here: the picture it was picked as, where no thumbnail of it was drawn)
+  match sent_picture_told(self.station, self.file) {
+    Some(k) if k != "" && k != "!" => return k
+    _ => ()
+  }
+  // (one still in a draft: what was picked of it, else the first frame drawn here of its bytes; never a station's)
+  match self.draft_id() {
+    Some(id) =>
+      match writing_picture_told(id) {
+        Some(k) if k != "" && k != "!" => return k
+        _ => {
+          pv_first_told.get() |> ignore
+          return match pv_first.get("draft/" + id) {
+            Some(f) if f.picture != "!" => f.picture
+            _ => ""
+          }
+        }
+      }
+    None => ()
+  }
+  match src.poster_told(self.station, self.key, self.name) {
     // none made by the station: the first frame the chat drew of it, if it did
-    "!" =>
+    "!" => {
+      pv_first_told.get() |> ignore
       match pv_first.get(self.id()) {
         Some(f) if f.picture != "!" => f.picture
         _ => ""
       }
+    }
     k => k
   }
 }

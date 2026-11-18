@@ -97,15 +97,7 @@ fn message_image_node(
     let start_crop = fn() { kept().4 }
     let likeness = fn() { kept().5 }
     @sf.style_node(f, fn() {
-      (
-        if image_rimmed(key(), letterbox(), corner) {
-          image_frame_rimmed
-        } else if key() != "!" || letterbox() {
-          image_frame
-        } else {
-          image_frame_waiting
-        }
-      )
+      (if key() != "!" || letterbox() { image_frame } else { image_frame_waiting })
       .then(@ui.style(w=Fixed(w()), h=Fixed(h())))
       .then(frame_corner_node(corner))
     })

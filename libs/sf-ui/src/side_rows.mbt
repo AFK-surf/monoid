@@ -105,7 +105,7 @@ let band_row_look : @ui.Style = @ui.css("row w=Full gap=S2 align=ACenter").then(
 
 ///|
 /// A band's action's mark, as large as the search's (the theme's band's).
-pub fn band_mark(c : @ui.Ctx, name : String, color : Int64) -> Unit {
+fn band_mark(c : @ui.Ctx, name : String, color : Int64) -> Unit {
   icon(c, name, size=theme().chat_list.band_icon, color~) |> ignore
 }
 
