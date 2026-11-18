@@ -59,8 +59,9 @@ fn screen_rig(
       } else if name == "screens" {
         screens
       } else if name == "stationNet" {
-        // how this device reaches the station (`net`), as the core says it; none by default
-        net
+        // how this device reaches the station (`net`), as the core says it; none by default (null, as the core answers
+        // a station it has no network for: views.ts stationNet)
+        Some(net.unwrap_or(Json::null()))
       } else {
         None
       }
